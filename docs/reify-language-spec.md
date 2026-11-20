@@ -1205,6 +1205,7 @@ structure def Fixture {
 | bare trait `Tr` | anything | **not checked** in expression-position constructors (`let`, `fn` body, ...), a deliberate escape hatch; **checked** in both `sub` forms |
 | structure `S` | another structure, or a primitive | illegal |
 | `String` / `Int` / `Bool` | any type not compatible with it | illegal |
+| `Direction` / `Axis` / `Plane` / `Frame` | any other type, a `Vector3` and another datum type included | illegal: only the same datum type is accepted; a `Vector3` at a `Direction` field is written `dir(x, y, z)` |
 | any field | an argument whose type is unknown at compile time: the result of an earlier error, an unresolved generic `T`, a geometry value, or a trait-typed value | **skipped**, never rejected. The collection-shape check still applies: such a value at a `List`/`Set`/`Map` field is illegal |
 
 The bare-trait row in practice:
@@ -1226,7 +1227,7 @@ structure def Assembly {
 
 | LSP code | Mnemonic | Raised when | Message shape |
 |---|---|---|---|
-| `ArgTypeMismatch` | `E_ARG_TYPE_MISMATCH` | a concrete type mismatch | `argument 'f' has type 'A' but param 'f' requires type 'B'`. A selector field reads `requires selector type 'B'`; a pose adds `; a coordinate pose is not a region target; select a face/edge/vertex instead`; a dimensioned scalar adds the literal hint; a vector whose quantity alone disagrees reads `argument 'f' has quantity 'A' but param 'f' requires quantity 'B' (...)` |
+| `ArgTypeMismatch` | `E_ARG_TYPE_MISMATCH` | a concrete type mismatch | `argument 'f' has type 'A' but param 'f' requires type 'B'`. A selector field reads `requires selector type 'B'`; a pose adds `; a coordinate pose is not a region target; select a face/edge/vertex instead`; a dimensioned scalar adds the literal hint; a `Vector3` at a `Direction` field adds `; write dir(x, y, z)`; a vector whose quantity alone disagrees reads `argument 'f' has quantity 'A' but param 'f' requires quantity 'B' (...)` |
 | `SelectorKindMismatch` | `E_SELECTOR_KIND_MISMATCH` | a wrong-kind selector | `argument 'f' has selector kind 'EdgeSelector' but param 'f' requires selector kind 'FaceSelector'` |
 | `TypeNotConformingToTrait` | — | trait non-conformance, or a collection-shape mismatch | `type 'X' does not conform to trait 'Tr' required by param 'f'`, or `type 'X' does not match wrapper shape required by param 'f' (expected 'List<T>')` |
 | `TypeNotConformingToStructureRef` | — | a structure-typed field given another type | `argument 'f' has type 'A' but param 'f' requires structure type 'S'` |
@@ -1239,7 +1240,7 @@ structure def Assembly {
 **Known limitations.** Each of these is a gap, not a rule:
 
 - **Known limitation (#7956).** A single selector given to a `List<Geometry>` field is rejected at construction sites, though the same argument to a `fn` parameter is accepted.
-- **Known limitation (#7958).** These field types are not yet checked and accept any argument: `Frame`, `Transform3`, `Direction`, `Axis`, `Plane`, `Orientation`, `Complex`, `Range`, `BoundingBox`, function types, and generic structure types.
+- **Known limitation (#7958).** These field types are not yet checked and accept any argument: `Transform3`, `Orientation`, `Complex`, `Range`, `BoundingBox`, function types, and generic structure types.
 - **Known limitation (#8101).** A `Geometry`-typed field accepts any argument, though a `Geometry` parameter default is checked.
 - **Known limitation (#8121).** A scalar argument at a `Point` field (a bare number, a quantity of any dimension, or a scalar-returning call) is not rejected.
 - **Known limitation (#8100).** Constructors inside associated-function bodies (structure-body and trait default `fn`s) are not checked.

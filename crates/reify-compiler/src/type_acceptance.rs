@@ -41,6 +41,9 @@ pub(crate) enum ParamFamily {
     Enum,
     /// `Bool`, `Int`, `String` and `Scalar`.
     ScalarFamily,
+    /// `Direction`, `Axis`, `Plane` and `Frame`, accepted only by the identical type
+    /// (direction-typing D2/D8).
+    Datum,
 }
 
 /// Judges the leaf pair `arg` against `param`; `enum_defs` tells an applied enum from an
@@ -82,6 +85,8 @@ pub(crate) fn conformance_accepts<'t>(
         Type::Point { .. } => point_verdict(param, arg),
         Type::Matrix { .. } | Type::Tensor { .. } => matrix_tensor_verdict(param, arg),
         Type::Field { .. } => field_verdict(arg),
+        // docs/prds/v0_6/direction-typing.md C7/D8: exact identity; D2 forbids any coercion.
+        Type::Direction | Type::Axis | Type::Plane | Type::Frame(_) => datum_verdict(param, arg),
         // Spec §4.9 Known limitation (#8101): a Geometry field accepts any argument.
         Type::Geometry => ArgVerdict::Unverifiable,
         _ => match base_enum_name(param, enum_defs) {
@@ -145,6 +150,14 @@ fn field_verdict(arg: &Type) -> ArgVerdict<'static> {
     match arg {
         Type::Field { .. } | Type::Function { .. } => ArgVerdict::Unverifiable,
         _ => ArgVerdict::Reject(ParamFamily::Field),
+    }
+}
+
+fn datum_verdict(param: &Type, arg: &Type) -> ArgVerdict<'static> {
+    if param == arg {
+        ArgVerdict::Accept
+    } else {
+        ArgVerdict::Reject(ParamFamily::Datum)
     }
 }
 
@@ -431,6 +444,8 @@ mod tests {
             field(Type::point3(length()), real()),
             Type::Selector(SelectorKind::Face),
             Type::Int,
+            Type::Direction,
+            Type::Frame(3),
         ];
         let args = [
             Type::TypeParam("T".to_string()),
@@ -752,11 +767,88 @@ mod tests {
 
     #[test]
     fn unexamined_families_are_not_judged() {
-        assert_rows(&[(
-            "frame param",
-            Type::Frame(3),
-            Type::Int,
-            ArgVerdict::Unverifiable,
-        )]);
+        assert_rows(&[
+            (
+                "transform param",
+                Type::Transform(3),
+                Type::Int,
+                ArgVerdict::Unverifiable,
+            ),
+            (
+                "complex param",
+                Type::Complex(Box::new(real())),
+                Type::Int,
+                ArgVerdict::Unverifiable,
+            ),
+        ]);
+    }
+
+    #[test]
+    fn datum_params_accept_only_their_own_type() {
+        let reject = ArgVerdict::Reject(ParamFamily::Datum);
+        assert_rows(&[
+            (
+                "direction <- direction",
+                Type::Direction,
+                Type::Direction,
+                ArgVerdict::Accept,
+            ),
+            ("axis <- axis", Type::Axis, Type::Axis, ArgVerdict::Accept),
+            (
+                "plane <- plane",
+                Type::Plane,
+                Type::Plane,
+                ArgVerdict::Accept,
+            ),
+            (
+                "frame <- frame",
+                Type::Frame(3),
+                Type::Frame(3),
+                ArgVerdict::Accept,
+            ),
+            (
+                "direction <- dimensionless vector",
+                Type::Direction,
+                Type::vec3(real()),
+                reject,
+            ),
+            (
+                "direction <- length vector",
+                Type::Direction,
+                Type::vec3(length()),
+                reject,
+            ),
+            ("direction <- string", Type::Direction, Type::String, reject),
+            ("direction <- int", Type::Direction, Type::Int, reject),
+            (
+                "direction <- axis: no implicit lift at a ctor slot",
+                Type::Direction,
+                Type::Axis,
+                reject,
+            ),
+            ("axis <- direction", Type::Axis, Type::Direction, reject),
+            ("axis <- int", Type::Axis, Type::Int, reject),
+            ("plane <- vector", Type::Plane, Type::vec3(real()), reject),
+            ("frame <- int", Type::Frame(3), Type::Int, reject),
+            ("frame <- string", Type::Frame(3), Type::String, reject),
+            (
+                "frame <- transform",
+                Type::Frame(3),
+                Type::Transform(3),
+                reject,
+            ),
+            (
+                "frame <- other arity",
+                Type::Frame(3),
+                Type::Frame(2),
+                reject,
+            ),
+            (
+                "direction <- colliding user enum: the builtin wins in type position",
+                Type::Direction,
+                Type::Enum("Direction".to_string()),
+                reject,
+            ),
+        ]);
     }
 }

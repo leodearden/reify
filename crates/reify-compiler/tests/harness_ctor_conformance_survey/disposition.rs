@@ -164,7 +164,8 @@ fn pinned_clean_files_emit_no_ctor_conformance_diagnostic() {
 /// The `why` column's Greek leaf labels are
 /// `docs/prds/v0_6/dimension-checked-readers.md`'s, kept alongside the `#NNNN`
 /// cite so the attribution stays legible if those cluster tasks are re-split:
-/// γ1/ε/η are #6922, γ2/β/ζ are #6941.
+/// γ1/ε/η are #6922, γ2/β/ζ are #6941. The `direction_typing_*` rows' δ/μ are
+/// `docs/prds/v0_6/direction-typing.md`'s: δ is #9637, μ is #9651.
 ///
 /// # Sibling of `CTOR_CONFORMANCE_MIGRATION_DEBT`, not a merge of it
 ///
@@ -256,6 +257,26 @@ pub(crate) const CTOR_CONFORMANCE_CORPUS_RESIDUAL: &[(&str, &str, &str, &str)] =
         "#6941",
         "leaf β, boundary row B5: `yield_stress: 310mm` is stored as Some(0.31 m) and \
          material_field_si reads it as 0.31 Pa, at exit 0 with zero diagnostics",
+    ),
+    (
+        "tests/prd-gate/fixtures/direction_typing_p1_bad_int.ri",
+        "f",
+        "#9651",
+        "`S(f: 5)`: a grammar-gate study probe of the direction-typing PRD \
+         (docs/prds/v0_6/direction-typing.md §4) whose Frame-field mismatch was silent \
+         until δ #9637 promoted datum slots; μ #9651 owns the survey's direction-typing \
+         rows (PRD §8: the ctor-conformance rejection table and probe-set rows for \
+         B6/B8/B22) and retires or promotes this before-image",
+    ),
+    (
+        "tests/prd-gate/fixtures/direction_typing_p1_bad_str.ri",
+        "f",
+        "#9651",
+        "`S(f: \"hello\")`: a grammar-gate study probe of the direction-typing PRD \
+         (docs/prds/v0_6/direction-typing.md §4) whose Frame-field mismatch was silent \
+         until δ #9637 promoted datum slots; μ #9651 owns the survey's direction-typing \
+         rows (PRD §8: the ctor-conformance rejection table and probe-set rows for \
+         B6/B8/B22) and retires or promotes this before-image",
     ),
 ];
 
@@ -1514,8 +1535,8 @@ fn ctor_conformance_corpus_residual_entries_say_why() {
 ///
 /// # Cost
 ///
-/// The entries name SIX distinct files, so this compiles six `.ri` members
-/// plus the cached stdlib prelude — the same order as
+/// This compiles each distinct file the entries name (a handful) plus the
+/// cached stdlib prelude — the same order as
 /// [`pinned_clean_files_emit_no_ctor_conformance_diagnostic`], and nowhere near
 /// the 689-member corpus walk that keeps the generator `#[ignore]`d per
 /// `docs/prds/merge-gate-compile-cost.md`. Deduplication assumes the table's

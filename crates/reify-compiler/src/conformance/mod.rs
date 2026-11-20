@@ -11,6 +11,7 @@ use super::*;
 use crate::ambient_defaults::AmbientDefaults;
 use crate::geometry_traits_inference::{GeometryTrait, infer_traits_for_expr_in_env};
 use crate::type_acceptance::{ArgVerdict, ParamFamily, conformance_accepts};
+use reify_core::direction::DIRECTION_MIGRATION_HINT;
 
 /// Severity of struct-constructor field-conformance diagnostics: **`Error`**.
 ///
@@ -1145,30 +1146,22 @@ fn emit_selector_mismatch(param_type: &Type, arg_type: &Type, ctx: &mut WalkCtx<
 /// Message shape mirrors the 4598 selector wording (`emit_selector_mismatch`):
 /// `"argument 'X' has type 'A' but param 'X' requires type 'B'"`. Reused for any
 /// non-wrapper / non-trait / non-selector / non-vector / non-structure leaf whose
-/// arg type is not `type_compatible` with the declared param type (String←Int,
-/// Bool←String, dimensioned-scalar mismatch, …). No new diagnostic code is minted
-/// — `ArgTypeMismatch` already exists.
+/// arg the leaf relation ([`conformance_accepts`]) rejects for a family
+/// [`emit_rejection`] routes here (String←Int, Bool←String, dimensioned-scalar
+/// mismatch, a datum slot given another type, …). No new diagnostic code is
+/// minted — `ArgTypeMismatch` already exists.
 ///
-/// A rejection at a DIMENSIONED `Scalar` param additionally carries the D4-6
-/// migration hint (see [`dimensioned_scalar_migration_hint`]); every other
-/// family's message is byte-identical to what it was before task 5627.
+/// Two rejections append a fix hint after `"; "` (see [`arg_type_mismatch_hint`]):
+/// one at a DIMENSIONED `Scalar` param, and a `Vector3` at a `Direction` param.
+/// The label never carries a hint.
 fn emit_arg_type_mismatch(param_type: &Type, arg_ty: &Type, ctx: &mut WalkCtx<'_>) {
     let mut message = format!(
         "argument '{}' has type '{}' but param '{}' requires type '{}'",
         ctx.arg_name, arg_ty, ctx.arg_name, param_type,
     );
-    // Gated on the param being a DIMENSIONED scalar, not applied unconditionally:
-    // this emitter is shared with the `Bool` / `Int` / `String` / dimensionless
-    // `Real` families task 5465 promoted, where the clause would be nonsense
-    // ("pass a dimensioned Bool literal") and would silently reword four
-    // already-shipped diagnostics.
-    let dimensioned = match param_type {
-        Type::Scalar { dimension } if !dimension.is_dimensionless() => Some(dimension),
-        _ => None,
-    };
-    if let Some(dimension) = dimensioned {
+    if let Some(hint) = arg_type_mismatch_hint(param_type, arg_ty) {
         message.push_str("; ");
-        message.push_str(&dimensioned_scalar_migration_hint(dimension));
+        message.push_str(&hint);
     }
     ctx.diagnostics.push(
         diag_at(ctx.severity, message)
@@ -1178,6 +1171,26 @@ fn emit_arg_type_mismatch(param_type: &Type, arg_ty: &Type, ctx: &mut WalkCtx<'_
                 format!("expected '{}', got '{}'", param_type, arg_ty),
             )),
     );
+}
+
+/// The fix hint an [`emit_arg_type_mismatch`] rejection appends, if any.
+///
+/// Gated per family, never appended unconditionally: the emitter is shared with
+/// the `Bool` / `Int` / `String` / dimensionless `Real` families task 5465
+/// promoted, where "pass a dimensioned Bool literal" would be nonsense.
+/// - a DIMENSIONED `Scalar` param: the D4-6 literal hint;
+/// - a `Direction` param given a `Vector3` of any quantity: `dir(...)`
+///   (docs/prds/v0_6/direction-typing.md C7). The builtin-slot gate,
+///   `builtin_signatures::direction_mismatch_hint`, must agree; the test
+///   `ctor_and_builtin_direction_slots_agree_on_the_dir_hint` holds them together.
+fn arg_type_mismatch_hint(param_type: &Type, arg_ty: &Type) -> Option<String> {
+    match (param_type, arg_ty) {
+        (Type::Scalar { dimension }, _) if !dimension.is_dimensionless() => {
+            Some(dimensioned_scalar_migration_hint(dimension))
+        }
+        (Type::Direction, Type::Vector { n: 3, .. }) => Some(DIRECTION_MIGRATION_HINT.to_owned()),
+        _ => None,
+    }
 }
 
 /// An example unit literal for `dimension`: `"1m"`, `"1m/s^2"`, `"1kg/m^3"`,
@@ -1330,7 +1343,8 @@ fn emit_rejection(family: ParamFamily, param_type: &Type, arg_ty: &Type, ctx: &m
         | ParamFamily::MatrixTensor
         | ParamFamily::Field
         | ParamFamily::Enum
-        | ParamFamily::ScalarFamily => emit_arg_type_mismatch(param_type, arg_ty, ctx),
+        | ParamFamily::ScalarFamily
+        | ParamFamily::Datum => emit_arg_type_mismatch(param_type, arg_ty, ctx),
     }
 }
 

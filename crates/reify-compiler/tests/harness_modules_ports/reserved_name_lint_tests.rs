@@ -200,14 +200,13 @@ fn structure_bracket_emits_no_reserved_type_name_warning() {
     );
 }
 
-/// (c) PRECEDENCE / warning-only guarantee: a module declaring `enum Direction`
-/// plus a structure that uses `Direction` as a type annotation produces no
-/// Error-severity diagnostic attributable to the collision. The collision yields
-/// only the Warning; the builtin still resolves.
-///
-/// This confirms the lint is warning-only and type resolution is unchanged.
+/// (c) PRECEDENCE: because the builtin wins in type position, a default drawn
+/// from the colliding user enum lands in a builtin-`Direction` slot and is
+/// judged there: exactly one `ArgTypeMismatch` naming `d`, beside the one
+/// ReservedTypeName Warning the collision always costs. The default-less
+/// fixture is `param_type_resolves_to_builtin_direction_when_user_enum_collides`.
 #[test]
-fn builtin_still_resolves_when_user_enum_collides() {
+fn user_enum_default_into_builtin_direction_param_is_an_arg_type_mismatch() {
     let source = r#"
 enum Direction { In, Out }
 structure Beam {
@@ -216,19 +215,24 @@ structure Beam {
 "#;
     let module = compile_source(source);
 
-    // There must be no Error-severity diagnostics.
     let errors: Vec<_> = module
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(
-        errors.is_empty(),
-        "expected no Error-severity diagnostics when user enum collides with builtin, got: {:?}",
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 Error, got: {:?}",
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
+    assert_eq!(errors[0].code, Some(DiagnosticCode::ArgTypeMismatch));
+    assert!(
+        errors[0].message.contains("'d'"),
+        "ArgTypeMismatch must name param 'd', got: {:?}",
+        errors[0].message
+    );
 
-    // The ReservedTypeName Warning must be present (from the `enum Direction` decl).
     let warnings = warnings_only(&module);
     let reserved = reserved_name_warnings(&warnings);
     assert_eq!(
@@ -238,7 +242,6 @@ structure Beam {
         reserved.len(),
         reserved.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
-    assert_eq!(reserved[0].severity, Severity::Warning);
 }
 
 // ── Amendment: TypeAlias coverage (suggestion 1) ─────────────────────────────
@@ -309,7 +312,8 @@ fn find_param_cell<'a>(template: &'a TopologyTemplate, member: &str) -> &'a Valu
 /// Precedence pin: `param d : Direction` in a structure must compile with
 /// `cell_type == Type::Direction` (the builtin datum direction type), confirming
 /// that builtin resolution wins over the user-declared `enum Direction` in
-/// type-annotation position.
+/// type-annotation position. The collision costs exactly one ReservedTypeName
+/// Warning and no Error: the lint is warning-only.
 ///
 /// This test pins the ACTUAL resolved type — not just error-absence — so a
 /// future change that lets the user enum win in type position would fail here
@@ -335,6 +339,17 @@ structure Beam {
         "expected no Error-severity diagnostics, got: {:?}",
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
+
+    let warnings = warnings_only(&module);
+    let reserved = reserved_name_warnings(&warnings);
+    assert_eq!(
+        reserved.len(),
+        1,
+        "expected exactly 1 ReservedTypeName warning, got {}: {:?}",
+        reserved.len(),
+        reserved.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    assert_eq!(reserved[0].severity, Severity::Warning);
 
     // The param's resolved cell_type must be the builtin Type::Direction.
     let template = find_template(&module, "Beam");
