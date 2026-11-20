@@ -462,15 +462,13 @@ pub fn partition_enforced_and_stale(
 mod tests {
     use super::*;
     use crate::panic_capture::panic_message_of;
-    use std::cell::RefCell;
     use std::path::PathBuf;
-    use std::rc::Rc;
 
     /// THE property this module exists to provide: the directory is removed
     /// when the scope holding the guard unwinds, not merely when it returns.
     ///
-    /// The path is captured in an outer cell so it outlives the closure the
-    /// guard is dropped inside of.
+    /// The path is recorded in an outer variable so it outlives the closure
+    /// the guard is dropped inside of.
     ///
     /// Constructs with retention explicitly OFF rather than through
     /// [`prefixed_tempdir`], so that running the suite under
@@ -479,12 +477,11 @@ mod tests {
     /// `keep_requested_reads_set_and_non_empty`.
     #[test]
     fn prefixed_tempdir_is_removed_on_panic_unwind() {
-        let seen: Rc<RefCell<Option<PathBuf>>> = Rc::new(RefCell::new(None));
-        let seen_inner = Rc::clone(&seen);
+        let mut seen: Option<PathBuf> = None;
 
         let message = panic_message_of(|| {
             let guard = prefixed_tempdir_with_retention("reify-test-support-unwind-", false);
-            *seen_inner.borrow_mut() = Some(guard.path().to_path_buf());
+            seen = Some(guard.path().to_path_buf());
             assert!(
                 guard.path().exists(),
                 "the guard's directory must exist before we force the panic"
@@ -498,10 +495,7 @@ mod tests {
              it unwound earlier (e.g. on the guard-exists assert), so the removal \
              check below would prove nothing"
         );
-        let path = seen
-            .borrow()
-            .clone()
-            .expect("the closure recorded the path before panicking");
+        let path = seen.expect("the closure recorded the path before panicking");
         assert!(
             !path.exists(),
             "unwinding out of the guard's scope must remove {path:?}; \
