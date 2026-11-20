@@ -87,6 +87,12 @@ def clean_env():
             if not k.startswith(("GIT_", "REIFY_"))}
 
 
+def bwrap_refusal(*options):
+    probe = subprocess.run([BWRAP, *options, "--", "/bin/true"],
+                           capture_output=True, text=True, env=clean_env(), check=False)
+    return "" if probe.returncode == 0 else f"(rc={probe.returncode}): {probe.stderr.strip()}"
+
+
 @functools.lru_cache(maxsize=None)
 def namespace_unavailable_reason():
     if not os.access(BWRAP, os.X_OK):
@@ -95,13 +101,14 @@ def namespace_unavailable_reason():
         a, b = Path(scratch, "a"), Path(scratch, "b")
         a.mkdir()
         b.mkdir()
-        probe = subprocess.run(
-            [BWRAP, "--dev-bind", "/", "/", "--bind", str(a), str(b), "--", "/bin/true"],
-            capture_output=True, text=True, env=clean_env(), check=False)
-    if probe.returncode != 0:
-        return (f"bwrap cannot enter a mount namespace here "
-                f"(rc={probe.returncode}): {probe.stderr.strip()}")
-    return ""
+        refusal = bwrap_refusal("--dev-bind", "/", "/", "--bind", str(a), str(b))
+    return f"bwrap cannot enter a mount namespace here {refusal}" if refusal else ""
+
+
+@functools.lru_cache(maxsize=None)
+def chroot_capability_unavailable_reason():
+    refusal = bwrap_refusal("--dev-bind", "/", "/", "--cap-add", "CAP_SYS_CHROOT")
+    return f"bwrap cannot grant CAP_SYS_CHROOT here {refusal}" if refusal else ""
 
 
 class LiveRefsAcrossMountNamespaces(unittest.TestCase):
@@ -112,7 +119,8 @@ class LiveRefsAcrossMountNamespaces(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory(prefix="test-live-refs-ns-")
         self.addCleanup(tmp.cleanup)
         self.root = Path(os.path.realpath(tmp.name))
-        self.canon = self.root / "canon"
+        # The space makes mountinfo escape the canon mount point as \040.
+        self.canon = self.root / "canon dir"
         self.canon.mkdir()
         self.pidfds = {}
 
@@ -180,6 +188,7 @@ class LiveRefsAcrossMountNamespaces(unittest.TestCase):
         result = subprocess.run(
             ["bash", "-c", 'source "$1"; live_ref_present "$2"', "_", str(LIB), str(path)],
             capture_output=True, text=True, cwd=self.root, env=clean_env(), check=False)
+        self.assertIn(result.returncode, (0, 1), f"live_ref_present failed: {result.stderr}")
         return result.returncode == 0
 
     def referenced(self, *paths):
@@ -187,6 +196,7 @@ class LiveRefsAcrossMountNamespaces(unittest.TestCase):
             ["bash", "-c", 'source "$1"; shift; live_referenced_paths "$@"', "_", str(LIB),
              *map(str, paths)],
             capture_output=True, text=True, cwd=self.root, env=clean_env(), check=False)
+        self.assertEqual(result.returncode, 0, f"live_referenced_paths failed: {result.stderr}")
         return set(result.stdout.splitlines())
 
     def test_cwd_inside_a_lane_bound_elsewhere_is_live(self):
@@ -226,6 +236,9 @@ class LiveRefsAcrossMountNamespaces(unittest.TestCase):
         self.assertTrue(self.present(lane))
 
     def test_open_file_held_beside_an_older_process_chrooted_away_from_the_lane_is_live(self):
+        reason = chroot_capability_unavailable_reason()
+        if reason:
+            self.skipTest(reason)
         lane = self.lane("lane")
         jail = self.root / "jail"
         jail.mkdir()
