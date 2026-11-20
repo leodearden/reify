@@ -78,6 +78,8 @@ fn accepted_forms_have_the_c6_static_types() {
 #[test]
 fn vector_is_a_known_builtin() {
     let module = compile_source_with_stdlib(&direction_source("let v = vector(d)"));
+    let errors = errors_only(&module);
+    assert!(errors.is_empty(), "vector(d) must check clean: {errors:?}");
     let unresolved: Vec<_> = module
         .diagnostics
         .iter()
@@ -221,15 +223,30 @@ fn rejected_math_forms_end_with_the_vector_hint() {
 
 #[test]
 fn vector_of_a_non_direction_is_rejected() {
+    for expr in ["vector(vec3(1, 0, 0))", "vector()", "vector(d, e)"] {
+        let error = sole_error(expr);
+        assert_eq!(
+            error.code,
+            Some(DiagnosticCode::ArgTypeMismatch),
+            "`{expr}`: {error:?}"
+        );
+        assert!(
+            error.message.contains("Direction"),
+            "`{expr}` must name the Direction it expects: {error:?}"
+        );
+        assert!(
+            !error.message.contains(VECTOR_HINT),
+            "`{expr}` must not point at the call it already makes: {error:?}"
+        );
+    }
+}
+
+#[test]
+fn vector_of_a_vector3_carries_the_dir_hint() {
     let error = sole_error("vector(vec3(1, 0, 0))");
-    assert_eq!(
-        error.code,
-        Some(DiagnosticCode::ArgTypeMismatch),
-        "{error:?}"
-    );
     assert!(
-        error.message.contains("Direction"),
-        "the error must name the Direction it expects: {error:?}"
+        error.message.ends_with("write dir(x, y, z)"),
+        "a Vector3 at a Direction slot adds the dir(..) hint (C7): {error:?}"
     );
 }
 
@@ -245,4 +262,20 @@ fn non_direction_arithmetic_carries_no_vector_hint() {
         !error.message.contains(VECTOR_HINT),
         "the vector(d) hint is Direction-scoped: {error:?}"
     );
+}
+
+#[test]
+fn a_misuse_inside_a_geometry_argument_is_reported_once() {
+    for expr in [
+        "extrude(circle(magnitude(d) * 1mm), 12mm)",
+        "extrude(circle(magnitude(vector()) * 1mm), 12mm)",
+        "extrude(circle(magnitude(vector(vec3(1, 0, 0))) * 1mm), 12mm)",
+    ] {
+        let error = sole_error(expr);
+        assert_eq!(
+            error.code,
+            Some(DiagnosticCode::ArgTypeMismatch),
+            "`{expr}`: {error:?}"
+        );
+    }
 }
