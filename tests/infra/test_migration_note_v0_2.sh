@@ -2,9 +2,10 @@
 # Infrastructure test for task 9734 (docs/prds/alpha-spine.md D8, B10): the
 # v0.2-alpha migration note docs/releases/v0.2-alpha.md stays true. Every
 # before/after snippet it shows is a committed tests/prd-gate/fixtures/
-# migration_v0_2_*.ri file, each before fails `reify check` with exactly the
-# error lines the note quotes, each after passes, and its one `Closes:` line
-# names the issues scripts/release-alpha.sh will close.
+# migration_v0_2_*.ri file; until the note's release is tagged
+# (docs/prds/alpha-spine.md D8), each before fails `reify check` with exactly
+# the error lines the note quotes and each after passes; and its one `Closes:`
+# line names the issues scripts/release-alpha.sh will close.
 #
 # This wrapper is the member run_all.sh discovers (it globs `test_*.sh` only)
 # and the one that holds the run-all-classification.manifest row. The

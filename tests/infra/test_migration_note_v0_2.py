@@ -24,10 +24,15 @@ newline), the on-disk migration_v0_2_*.ri set equals the set the note names,
 and the note carries exactly one `Closes:` line whose issue set is the one
 scripts/release-alpha.sh must close.
 
-With a reify binary vouched for by scripts/reify-bin-freshness.sh (REIFY_BIN
-is honoured there), each before fixture must fail `reify check` printing
-exactly the quoted error lines, each as many times as it is quoted (order is
-free), and each after fixture must pass printing none. With no vouched binary those tests skip and print why.
+While tag `v0.2-alpha` (the note's file stem) does not exist and
+scripts/reify-bin-freshness.sh vouches for a reify binary (REIFY_BIN is
+honoured there), each before fixture must fail `reify check` printing exactly
+the quoted error lines, each as many times as it is quoted (order is free),
+and each after fixture must pass printing none; with no vouched binary those
+tests skip and print why. Once the tag exists they skip naming the tag's
+commit, and the structure checks above still hold. That lifecycle, and what a
+later release's change does when it reds this member, is
+docs/prds/alpha-spine.md D8.
 """
 
 import os
@@ -50,6 +55,9 @@ FRESHNESS = REPO_ROOT / "scripts/reify-bin-freshness.sh"
 EXPECTED_CLOSES = {1, 2, 3, 4}
 RELEASE_TAG = NOTE.stem
 LIFECYCLE = "docs/prds/alpha-spine.md D8"
+_LIFECYCLE_HINT = (
+    f"{NOTE.relative_to(REPO_ROOT)} documents release {RELEASE_TAG}: read {LIFECYCLE} "
+    f"before editing the note or its migration_v0_2_* fixtures")
 
 CHECK_HANG_GUARD_SECS = 300
 ERROR_PREFIXES = ("error: ", "Parse error: ")
@@ -230,14 +238,17 @@ class NoteStructureTests(unittest.TestCase):
                     fixture = REPO_ROOT / path
                     self.assertTrue(fixture.is_file(), f"{path} does not exist")
                     self.assertEqual(
-                        snippet, _without_one_trailing_newline(fixture.read_text(encoding="utf-8")))
+                        snippet, _without_one_trailing_newline(fixture.read_text(encoding="utf-8")),
+                        f"\n{_LIFECYCLE_HINT}")
 
     def test_fixture_set_equals_the_named_set(self):
         named = {REPO_ROOT / path for entry in parse_entries(_note_text(self))
                  for path in (entry.before_path, entry.after_path)}
         on_disk = set(FIXTURE_DIR.glob(FIXTURE_GLOB))
-        self.assertEqual(sorted(map(str, on_disk - named)), [], "fixtures the note does not name")
-        self.assertEqual(sorted(map(str, named - on_disk)), [], "named fixtures missing on disk")
+        self.assertEqual(sorted(map(str, on_disk - named)), [],
+                         f"fixtures the note does not name\n{_LIFECYCLE_HINT}")
+        self.assertEqual(sorted(map(str, named - on_disk)), [],
+                         f"named fixtures missing on disk\n{_LIFECYCLE_HINT}")
 
     def test_slugs_are_unique(self):
         slugs = [entry.slug for entry in parse_entries(_note_text(self))]
@@ -415,6 +426,11 @@ class TaggedCheckoutTests(unittest.TestCase):
 class FixtureBehaviourTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        tagged = release_tag_commit(REPO_ROOT, RELEASE_TAG)
+        if tagged is not None:
+            raise unittest.SkipTest(
+                f"{RELEASE_TAG} is tagged at {tagged}: the note is that release's record "
+                f"and is no longer checked against HEAD's binary ({LIFECYCLE})")
         proc = subprocess.run(
             ["bash", str(FRESHNESS), "resolve", str(REPO_ROOT)],
             capture_output=True, text=True, check=False,
@@ -435,7 +451,8 @@ class FixtureBehaviourTests(unittest.TestCase):
         except subprocess.TimeoutExpired:
             self.fail(f"{path}: reify check exceeded the {CHECK_HANG_GUARD_SECS}s hang guard")
         output = "\n".join((proc.stdout, proc.stderr))
-        return proc.returncode, error_lines(output), f"{path} rc={proc.returncode}\n{output}"
+        context = f"{path} rc={proc.returncode}\n{output}\n{_LIFECYCLE_HINT}"
+        return proc.returncode, error_lines(output), context
 
     def test_before_fixtures_fail_with_the_quoted_errors(self):
         for entry in parse_entries(NOTE.read_text(encoding="utf-8")):
