@@ -146,7 +146,7 @@ fn user_unit_overrides_hardcoded_fallback() {
 #[test]
 fn cross_module_pub_unit_visible_via_compile_with_prelude() {
     // Compile a "library" module that exports `pub unit mil`.
-    let prelude_module = compile_source("pub unit mil : Length = 0.0000254");
+    let prelude_module = compile_source_named("pub unit mil : Length = 0.0000254", "units_lib");
     assert!(
         errors_only(&prelude_module).is_empty(),
         "prelude errors: {:?}",
@@ -185,7 +185,7 @@ fn cross_module_pub_unit_visible_via_compile_with_prelude() {
 #[test]
 fn cross_module_private_unit_not_visible_via_compile_with_prelude() {
     // Compile a module with a PRIVATE unit (no `pub`).
-    let prelude_module = compile_source("unit privmil : Length = 0.0000254");
+    let prelude_module = compile_source_named("unit privmil : Length = 0.0000254", "units_lib");
     assert!(
         errors_only(&prelude_module).is_empty(),
         "prelude errors: {:?}",
@@ -418,7 +418,7 @@ fn transitive_pub_unit_not_visible_via_compile_with_prelude() {
     // C is compiled with prelude=[B] and tries to use `5mil`.
     // Since B.units is empty (no locally-declared units), the prelude-seeding loop
     // for C finds nothing in B.units, so `mil` is invisible to C.
-    let module_a = compile_source("pub unit mil : Length = 0.0000254");
+    let module_a = compile_source_named("pub unit mil : Length = 0.0000254", "a");
     assert!(
         errors_only(&module_a).is_empty(),
         "module_a errors: {:?}",
