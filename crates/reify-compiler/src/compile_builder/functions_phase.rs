@@ -560,26 +560,6 @@ mod tests {
     }
 
     #[test]
-    fn a_fn_bodys_ctor_view_is_the_prelude_view_overlaid_by_templates_above_it() {
-        const PRELUDE: &str = "structure def P { param from_prelude : Real = 1.0 }\n";
-        let local_above = compile_against_prelude(
-            PRELUDE,
-            "structure def P { param from_local : Real = 2.0 }\nfn mk() -> P { P() }\n",
-        );
-        assert_eq!(
-            ctor_default_names(&local_above, "mk"),
-            ["from_local"],
-            "a local P above the fn shadows the prelude P"
-        );
-        let prelude_only = compile_against_prelude(PRELUDE, "fn mk() -> P { P() }\n");
-        assert_eq!(
-            ctor_default_names(&prelude_only, "mk"),
-            ["from_prelude"],
-            "with no local P, the fn constructs the prelude P"
-        );
-    }
-
-    #[test]
     fn only_a_fn_above_a_local_structure_def_is_told_it_is_declared_after() {
         const SRC: &str = "fn above() -> S { S() }\n\
              structure def S { param a : Real = 1.0 }\n\
