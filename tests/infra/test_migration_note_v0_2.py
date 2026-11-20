@@ -54,9 +54,9 @@ FIXTURE_GLOB = "migration_v0_2_*.ri"
 FRESHNESS = REPO_ROOT / "scripts/reify-bin-freshness.sh"
 EXPECTED_CLOSES = {1, 2, 3, 4}
 RELEASE_TAG = NOTE.stem
-LIFECYCLE = "docs/prds/alpha-spine.md D8"
+LIFECYCLE_DOC = "docs/prds/alpha-spine.md D8"
 _LIFECYCLE_HINT = (
-    f"{NOTE.relative_to(REPO_ROOT)} documents release {RELEASE_TAG}: read {LIFECYCLE} "
+    f"{NOTE.relative_to(REPO_ROOT)} documents release {RELEASE_TAG}: read {LIFECYCLE_DOC} "
     f"before editing the note or its migration_v0_2_* fixtures")
 
 CHECK_HANG_GUARD_SECS = 300
@@ -183,11 +183,12 @@ def closes_issue_numbers(text):
             for line in text.splitlines() if CLOSES_LINE.match(line)]
 
 
+def _without_git_vars(env, keep=()):
+    return {k: v for k, v in env.items() if not k.startswith("GIT_") or k in keep}
+
+
 def _git_environ():
-    env = {k: v for k, v in os.environ.items()
-           if not k.startswith("GIT_") or k == "GIT_CEILING_DIRECTORIES"}
-    env["LC_ALL"] = "C"
-    return env
+    return {**_without_git_vars(os.environ, keep=("GIT_CEILING_DIRECTORIES",)), "LC_ALL": "C"}
 
 
 def release_tag_commit(repo_root, tag):
@@ -330,8 +331,8 @@ class NoteGrammarTests(unittest.TestCase):
 
 
 def _fixture_git(repo, *args):
-    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-    env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+    env = {**_without_git_vars(os.environ), "GIT_CONFIG_GLOBAL": os.devnull,
+           "GIT_CONFIG_NOSYSTEM": "1"}
     return subprocess.run(
         ["git", "-C", str(repo), "-c", "user.name=fixture", "-c", "user.email=fixture@example.test",
          "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", *args],
@@ -346,7 +347,7 @@ def _fixture_repo(root):
 
 
 class ReleaseTagTests(unittest.TestCase):
-    TAG = "v0.2-alpha"
+    TAG = RELEASE_TAG
 
     def test_an_untagged_repository_has_no_release_commit(self):
         with tempfile.TemporaryDirectory() as repo:
@@ -406,10 +407,10 @@ class TaggedCheckoutTests(unittest.TestCase):
             _fixture_git(root, "init", "-q")
             _fixture_git(root, "add", "-A")
             _fixture_git(root, "commit", "-q", "-m", "x")
-            _fixture_git(root, "tag", "-a", "-m", "m", "v0.2-alpha")
+            _fixture_git(root, "tag", "-a", "-m", "m", RELEASE_TAG)
             commit = _fixture_git(root, "rev-parse", "HEAD")
-            env = {k: v for k, v in os.environ.items()
-                   if not k.startswith("GIT_") and k != "REIFY_BIN"}
+            env = _without_git_vars(os.environ)
+            env.pop("REIFY_BIN", None)
             proc = subprocess.run(
                 [sys.executable, str(module), "-v", "FixtureBehaviourTests"],
                 cwd=root, env=env, capture_output=True, text=True,
@@ -430,7 +431,7 @@ class FixtureBehaviourTests(unittest.TestCase):
         if tagged is not None:
             raise unittest.SkipTest(
                 f"{RELEASE_TAG} is tagged at {tagged}: the note is that release's record "
-                f"and is no longer checked against HEAD's binary ({LIFECYCLE})")
+                f"and is no longer checked against HEAD's binary ({LIFECYCLE_DOC})")
         proc = subprocess.run(
             ["bash", str(FRESHNESS), "resolve", str(REPO_ROOT)],
             capture_output=True, text=True, check=False,
