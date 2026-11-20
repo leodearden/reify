@@ -12,6 +12,7 @@ from pathlib import Path
 from reify_verify import bashcall, gitcall, knobs, scope
 from reify_verify.bashcall import BashCall, NotCalled
 from reify_verify.childproc import CallResult
+from reify_verify.diagnostics import ERROR, WARNING
 from reify_verify.plan import Refused
 from reify_verify.policy import RolePolicy
 
@@ -32,11 +33,19 @@ def release_declared(repo_root: Path, planning: Mapping[str, str]) -> tuple[str,
     bash assigns the list under `set -e`, so a failing call ends the run with
     the lib's own stderr and status. bash sources the lib at top level under
     `set -e` too, so a function that never ran ends the run with the shell's
-    stderr and status, whatever that status is.
+    stderr and status. Where that status is 0, bash's run ends as a success
+    having planned nothing, so this refuses with 1 (PRD D8 listed
+    divergence): a refusal never exits 0.
     """
     match bashcall.ask(RELEASE_DECLARED_SET, (), repo_root, planning):
         case CallResult(returncode=0) as declared:
             return declared.lines
+        case NotCalled(result=CallResult(returncode=0) as ended):
+            never_ran = (
+                f"{ERROR}{RELEASE_DECLARED_SET} never ran (exited {ended.returncode}): "
+                "refusing to plan without the release-sensitive crate list"
+            )
+            return Refused((*ended.stderr_lines, never_ran), 1)
         case NotCalled(result=failed) | (CallResult() as failed):
             return Refused(failed.stderr_lines, failed.returncode)
 
@@ -78,7 +87,7 @@ def _decision_from_answer(answer: CallResult | NotCalled) -> tuple[bool, tuple[s
 def _kept_pass(failed: CallResult, what_happened: str) -> tuple[bool, tuple[str, ...]]:
     """The release pass kept: the failed call's stderr lines, then a warning naming its status."""
     warning = (
-        f"verify.sh: WARNING — {RELEASE_DELTA_REQUIRES_PASS} {what_happened} "
+        f"{WARNING}{RELEASE_DELTA_REQUIRES_PASS} {what_happened} "
         f"(exited {failed.returncode}): the release pass runs"
     )
     return False, (*failed.stderr_lines, warning)
