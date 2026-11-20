@@ -1535,8 +1535,8 @@ fn ctor_conformance_corpus_residual_entries_say_why() {
 ///
 /// # Cost
 ///
-/// The entries name EIGHT distinct files, so this compiles eight `.ri` members
-/// plus the cached stdlib prelude — the same order as
+/// This compiles each distinct file the entries name (a handful) plus the
+/// cached stdlib prelude — the same order as
 /// [`pinned_clean_files_emit_no_ctor_conformance_diagnostic`], and nowhere near
 /// the 689-member corpus walk that keeps the generator `#[ignore]`d per
 /// `docs/prds/merge-gate-compile-cost.md`. Deduplication assumes the table's
