@@ -145,8 +145,8 @@ fn every_reload_entry_point_runs_the_pipeline_exactly_once() {
     assert_eq!(log.take(), ONE_RELOAD, "update_source, multi-file branch");
 
     let (mut session, log) = logged_session();
-    session.open_document(&bracket).expect("open_document");
-    assert_eq!(log.take(), ONE_RELOAD, "open_document");
+    session.open_document_even_if_rejected(&bracket).expect("open_document_even_if_rejected");
+    assert_eq!(log.take(), ONE_RELOAD, "open_document_even_if_rejected");
 
     let (mut session, log) = logged_session();
     session
@@ -363,7 +363,7 @@ fn opening_a_rejected_file_drops_the_loaded_document_and_adopts_it_uncompiled() 
     let (_dir, broken) = source_file("broken.ri", UNPARSEABLE_SRC);
 
     let state = session
-        .open_document(&broken)
+        .open_document_even_if_rejected(&broken)
         .expect("a readable file opens even when the engine rejects its source");
 
     assert!(
@@ -441,7 +441,7 @@ fn a_repaired_buffer_compiles_as_the_opened_file() {
     let main_str = main.to_str().unwrap();
 
     let opened = session
-        .open_document(&main)
+        .open_document_even_if_rejected(&main)
         .expect("open the rejected main.ri");
     assert!(
         !opened.compile_diagnostics.is_empty()
@@ -508,7 +508,7 @@ fn opening_an_unreadable_file_leaves_the_loaded_document() {
     let dir = tempfile::tempdir().unwrap();
 
     let err = session
-        .open_document(&dir.path().join("missing.ri"))
+        .open_document_even_if_rejected(&dir.path().join("missing.ri"))
         .expect_err("an unreadable file does not open");
 
     assert!(err.starts_with("Error reading"), "got {err:?}");
