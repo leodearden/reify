@@ -383,6 +383,8 @@ struct RealizationOpsInput<'a> {
     // (one realization finds another's result for the same entity key) which
     // violates the per-build reset invariant and produces wrong geometry (an
     // intermediate let-binding gets the terminal's handle instead of its own).
+    // The same flag selects the one realization whose result the post-loop
+    // VolumeMesh conversion (morph, else remesh) converts.
     is_terminal_realization: bool,
     // Task 4744 β (step-16): bundled morph-dispatch inputs. When a producer
     // + prior source + new-BRep graph are all present, the VolumeMesh
@@ -14203,6 +14205,9 @@ mod dispatch_volume_mesh_tests;
 
 #[cfg(test)]
 mod conversion_source_key_tests;
+
+#[cfg(test)]
+mod terminal_realization_index_tests;
 
 /// Produce an info-level diagnostic when a swept body is meshed with P1
 /// hex/wedge despite the user requesting `element_order = P2`.
