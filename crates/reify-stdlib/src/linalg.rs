@@ -910,6 +910,65 @@ mod tests {
     }
 
     #[test]
+    fn dot_of_directions_stays_in_the_unit_interval() {
+        let d = dir_value(1.0, 1.0, 1.0);
+        let minus_d = dir_value(-1.0, -1.0, -1.0);
+        assert_eq!(
+            eval_builtin("dot", &[d.clone(), d.clone()]),
+            Value::Real(1.0)
+        );
+        assert_eq!(
+            eval_builtin("dot", &[d.clone(), minus_d.clone()]),
+            Value::Real(-1.0)
+        );
+
+        assert_eq!(
+            eval_builtin("acos", &[eval_builtin("dot", &[d.clone(), d.clone()])]),
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::ANGLE,
+            }
+        );
+        match eval_builtin("acos", &[eval_builtin("dot", &[d, minus_d])]) {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert!(
+                    (si_value - std::f64::consts::PI).abs() < 1e-12,
+                    "acos of an antiparallel cosine must be π, got {si_value}"
+                );
+                assert_eq!(dimension, DimensionVector::ANGLE);
+            }
+            other => panic!("expected Angle Scalar, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dot_of_lattice_directions_is_a_bounded_cosine() {
+        let lattice: Vec<[f64; 3]> = (-2..=2)
+            .flat_map(|x| (-2..=2).flat_map(move |y| (-2..=2).map(move |z| [x, y, z])))
+            .filter(|&c| c != [0, 0, 0])
+            .map(|c: [i32; 3]| c.map(f64::from))
+            .collect();
+        for &[dx, dy, dz] in &lattice {
+            for &[ex, ey, ez] in &lattice {
+                let d = dir_value(dx, dy, dz);
+                let e = dir_value(ex, ey, ez);
+                match eval_builtin("dot", &[d, e]) {
+                    Value::Real(c) => assert!(
+                        (-1.0..=1.0).contains(&c),
+                        "dot(dir({dx}, {dy}, {dz}), dir({ex}, {ey}, {ez})) = {c} is outside [-1, 1]"
+                    ),
+                    other => panic!(
+                        "dot(dir({dx}, {dy}, {dz}), dir({ex}, {ey}, {ez})) must be Real, got {other:?}"
+                    ),
+                }
+            }
+        }
+    }
+
+    #[test]
     fn cross_of_directions_is_an_unnormalised_dimensionless_vector() {
         let x = dir_value(1.0, 0.0, 0.0);
         let y = dir_value(0.0, 1.0, 0.0);
