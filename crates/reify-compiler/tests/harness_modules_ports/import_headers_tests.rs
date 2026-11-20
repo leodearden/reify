@@ -928,6 +928,31 @@ fn an_added_import_that_would_take_a_pending_annotation_is_refused() {
     }
 }
 
+#[test]
+fn an_added_import_inside_a_block_comment_is_refused() {
+    let source = "import std.fake.a /* opens\n   and closes */\n\nstructure def S {}\n";
+    assert_eq!(
+        try_insert(source, &["std.fake.c"]),
+        Err(PlacementDefect::NotAnImport {
+            module: module_path("std.fake.c"),
+        })
+    );
+}
+
+#[test]
+fn an_added_import_that_breaks_the_syntax_around_it_is_refused() {
+    let source = "import std.fake.a structure def S {\n}\n";
+    let result = try_insert(source, &["std.fake.c"]);
+    assert!(
+        matches!(
+            &result,
+            Err(PlacementDefect::BreaksParse { modules, .. })
+                if modules == &module_paths(&["std.fake.c"])
+        ),
+        "{result:?}"
+    );
+}
+
 // ─── r1: inserting what is missing satisfies missing_from ──────────────────
 
 #[test]
