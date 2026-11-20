@@ -3159,12 +3159,6 @@ impl EngineSession {
     pub fn open_document_even_if_rejected(&mut self, path: &Path) -> Result<GuiState, String> {
         let (source, module_name) = read_module_file(path)?;
         match compile_buffer(Some(path), &source, module_name) {
-            Ok(compiled) => self.reload_compiled(
-                compiled,
-                module_name,
-                &source,
-                FilePathUpdate::Set(path.to_path_buf()),
-            ),
             Err(rejection) => {
                 // Adopt before recording: `record_compile_failure` classifies
                 // by `compiled`, which the adoption clears, so the failure is
@@ -3173,9 +3167,15 @@ impl EngineSession {
                 self.core.adopt_uncompiled_file(path.to_path_buf());
                 self.reset_document_state();
                 self.record_compile_failure(rejection.diags, &source, module_name);
+                self.build_gui_state()
             }
+            accepted => self.reload(
+                accepted,
+                module_name,
+                &source,
+                FilePathUpdate::Set(path.to_path_buf()),
+            ),
         }
-        self.build_gui_state()
     }
 
     /// Update source code and re-evaluate from scratch.
@@ -3220,18 +3220,18 @@ impl EngineSession {
         self.reload(compiled, module_name, content, FilePathUpdate::Preserve)
     }
 
-    /// The reload pipeline of the whole-file entry points that refuse a
-    /// rejected source (`load_from_source`, `load_file`, `update_source`).
+    /// The whole-file reload pipeline: of `load_from_source`, `load_file` and
+    /// `update_source`, and of an accepted
+    /// [`Self::open_document_even_if_rejected`].
     ///
     /// A rejected compile is recorded for the diagnostics panel (see
     /// [`Self::record_compile_failure`]) and its message returned as the `Err`;
     /// nothing else is touched — no check, no commit, no telemetry. An accepted
     /// compile runs [`Self::reload_compiled`], then builds the new state.
     ///
-    /// [`Self::open_document_even_if_rejected`] does not come through here: it
-    /// shares [`Self::reload_compiled`] for an accepted source but handles a
-    /// rejection itself, by adopting the file. A step added to either arm here
-    /// must be weighed for `open_document_even_if_rejected` too.
+    /// `open_document_even_if_rejected` sends an accepted compile through here
+    /// but handles a rejection itself, by adopting the file, so a step added
+    /// to the rejection arm here must be weighed for it too.
     fn reload(
         &mut self,
         compiled: Result<CompiledSource, CompileRejection>,
