@@ -298,9 +298,9 @@ fn is_reportable(diagnostic: &Diagnostic) -> bool {
 ///
 /// # Errors
 ///
-/// Refuses, rather than returns, an edit whose re-parse would not hold each
-/// added line as a plain import of its module: one that parses, as an
-/// import, with no `#cfg` pragma gating it and no annotation attached to it.
+/// Refuses, rather than returns, an edit whose re-parse would fail, or would
+/// not hold each added line as a plain import of its module: an import with
+/// no `#cfg` pragma gating it and no annotation attached to it.
 ///
 /// # Panics
 ///

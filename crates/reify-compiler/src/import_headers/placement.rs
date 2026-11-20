@@ -25,6 +25,15 @@ pub enum PlacementDefect {
         module: ModulePath,
         annotations: Vec<String>,
     },
+    /// The line added for `module` would not re-parse as its import where it
+    /// is written, for example inside a block comment.
+    NotAnImport { module: ModulePath },
+    /// The lines added for `modules` would leave the module failing to
+    /// parse; `first_error` is the first parse error's message.
+    BreaksParse {
+        modules: Vec<ModulePath>,
+        first_error: String,
+    },
 }
 
 impl fmt::Display for PlacementDefect {
@@ -45,6 +54,25 @@ impl fmt::Display for PlacementDefect {
                 module.to_dotted(),
                 annotations.join(" ")
             ),
+            Self::NotAnImport { module } => write!(
+                f,
+                "the added `import {}` would not parse as an import where it is written",
+                module.to_dotted()
+            ),
+            Self::BreaksParse {
+                modules,
+                first_error,
+            } => {
+                let imports: Vec<String> = modules
+                    .iter()
+                    .map(|module| format!("`import {}`", module.to_dotted()))
+                    .collect();
+                write!(
+                    f,
+                    "the added {} would break the parse: {first_error}",
+                    imports.join(", ")
+                )
+            }
         }
     }
 }
@@ -53,11 +81,19 @@ impl std::error::Error for PlacementDefect {}
 
 /// Re-parses `insertion.text` as the module at `path` and judges the imports
 /// that start inside `insertion.lines`, one per added module in line order.
+/// A parse error comes first: no import of a broken parse can be trusted, and
+/// `insert_imports` edits only a parse-clean module, so the edit caused it.
 pub(crate) fn check(insertion: &Insertion<'_>, path: &ModulePath) -> Result<(), PlacementDefect> {
     if insertion.modules.is_empty() {
         return Ok(());
     }
     let reparsed = reify_syntax::parse(&insertion.text, path.clone());
+    if let Some(error) = reparsed.errors.first() {
+        return Err(PlacementDefect::BreaksParse {
+            modules: insertion.modules.iter().copied().cloned().collect(),
+            first_error: error.message.clone(),
+        });
+    }
     let added: Vec<&ImportDecl> = reparsed
         .declarations
         .iter()
@@ -70,29 +106,39 @@ pub(crate) fn check(insertion: &Insertion<'_>, path: &ModulePath) -> Result<(), 
             _ => None,
         })
         .collect();
-    for module in &insertion.modules {
+    for &module in &insertion.modules {
         let dotted = module.to_dotted();
         let Some(import) = added.iter().find(|import| import.path == dotted) else {
-            continue;
+            return Err(PlacementDefect::NotAnImport {
+                module: module.clone(),
+            });
         };
-        if !import.cfg_predicates.is_empty() {
-            return Err(PlacementDefect::Gated {
-                module: (*module).clone(),
-                pragmas: source_texts(
-                    &insertion.text,
-                    import.cfg_predicates.iter().map(|pragma| pragma.span),
-                ),
-            });
-        }
-        if !import.annotations.is_empty() {
-            return Err(PlacementDefect::TakesAnnotations {
-                module: (*module).clone(),
-                annotations: source_texts(
-                    &insertion.text,
-                    import.annotations.iter().map(|annotation| annotation.span),
-                ),
-            });
-        }
+        check_unattached(import, module, &insertion.text)?;
+    }
+    Ok(())
+}
+
+/// Whether the added `import`, written for `module`, carries no `#cfg`
+/// pragma and no annotation; `text` is the source its spans index.
+fn check_unattached(
+    import: &ImportDecl,
+    module: &ModulePath,
+    text: &str,
+) -> Result<(), PlacementDefect> {
+    if !import.cfg_predicates.is_empty() {
+        return Err(PlacementDefect::Gated {
+            module: module.clone(),
+            pragmas: source_texts(text, import.cfg_predicates.iter().map(|pragma| pragma.span)),
+        });
+    }
+    if !import.annotations.is_empty() {
+        return Err(PlacementDefect::TakesAnnotations {
+            module: module.clone(),
+            annotations: source_texts(
+                text,
+                import.annotations.iter().map(|annotation| annotation.span),
+            ),
+        });
     }
     Ok(())
 }
