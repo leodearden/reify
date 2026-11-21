@@ -54,11 +54,17 @@ source "$SCRIPT_DIR/ts_outputs_manifest_lib.sh"
 [ -f "$SCRIPT_DIR/cargo_inputs_lib.sh" ] || { echo "ERROR: cargo_inputs_lib.sh not found at $SCRIPT_DIR/cargo_inputs_lib.sh"; exit 1; }
 source "$SCRIPT_DIR/cargo_inputs_lib.sh"
 
+# TS_INFRA_RC — "no verdict" at every layer of this suite: run_guarded_cargo_check
+# returns it, each case propagates it, run_tests and ts_require_cargo_inputs exit
+# with it. EX_TEMPFAIL, neither PASS nor FAIL: tests/infra/README.md, "Cargo
+# registry inputs: a verdict never depends on the cache".
+TS_INFRA_RC=75
+
 # ts_require_cargo_inputs — put the workspace's locked inputs for this host in
 # CARGO_HOME before the first test. The workspace's Cargo.lock pins the cc the
-# fixture crates then resolve offline. Ends the suite itself: exit 75 with the
-# INFRASTRUCTURE verdict when the registry cannot be reached, exit 1 when the fetch
-# refuses for any other reason. The verdict line is test_helpers.sh's
+# fixture crates then resolve offline. Ends the suite itself: exit TS_INFRA_RC with
+# the INFRASTRUCTURE verdict when the registry cannot be reached, exit 1 when the
+# fetch refuses for any other reason. The verdict line is test_helpers.sh's
 # test_summary_infra_unavailable shape; this suite cannot source that file, because
 # run_tests would discover its test_summary* functions as cases.
 ts_require_cargo_inputs() {
@@ -72,8 +78,8 @@ ts_require_cargo_inputs() {
     case "$rc" in
         0) ;;
         "$CARGO_INPUTS_UNAVAILABLE_RC")
-            echo "INFRASTRUCTURE: the registry holds the workspace's locked inputs for $host (cargo fetch --locked) — no test ran (exit $CARGO_INPUTS_UNAVAILABLE_RC, EX_TEMPFAIL: neither PASS nor FAIL)"
-            exit "$CARGO_INPUTS_UNAVAILABLE_RC"
+            echo "INFRASTRUCTURE: the registry holds the workspace's locked inputs for $host (cargo fetch --locked) — no test ran (exit $TS_INFRA_RC, EX_TEMPFAIL: neither PASS nor FAIL)"
+            exit "$TS_INFRA_RC"
             ;;
         *)
             echo "  ASSERTION FAILED: cargo fetch --locked --target $host --manifest-path $REPO_ROOT/Cargo.toml refused (rc $rc): a defect in the tree"
@@ -97,19 +103,17 @@ FRESHNESS_SCRIPT="$REPO_ROOT/scripts/tree-sitter-freshness.sh"
 # of the freshness block below own that seam from this side.
 SEMAPHORE_E2E_SUITE="$SCRIPT_DIR/test_verify_semaphore_e2e.sh"
 
-# --- Counters ---
-PASS_COUNT=0
-FAIL_COUNT=0
-
 # --- Colors ---
 if [[ -t 1 ]]; then
     GREEN='\033[0;32m'
     RED='\033[0;31m'
+    YELLOW='\033[0;33m'
     BOLD='\033[1m'
     RESET='\033[0m'
 else
     GREEN=''
     RED=''
+    YELLOW=''
     BOLD=''
     RESET=''
 fi
@@ -817,36 +821,82 @@ ts_assert_fills_only_given_dir() {
 }
 
 # --- Runner ---
-run_tests() {
-    local tests
-    tests=$(declare -F | awk '/test_/{print $3}')
-
-    for t in $tests; do
-        CLEANUP_ACTIONS=()
-        printf "${BOLD}RUN${RESET}  %s ... " "$t"
-        if "$t"; then
-            printf "${GREEN}PASS${RESET}\n"
-            (( PASS_COUNT++ )) || true
-        else
-            printf "${RED}FAIL${RESET}\n"
-            (( FAIL_COUNT++ )) || true
-        fi
-        cleanup
-    done
-
-    echo ""
-    echo "========================================="
-    printf "Results: ${GREEN}%d passed${RESET}, ${RED}%d failed${RESET}\n" "$PASS_COUNT" "$FAIL_COUNT"
-    echo "========================================="
-
-    [[ "$FAIL_COUNT" -eq 0 ]]
-}
+# A case has three outcomes: PASS (rc 0), INFRA (rc TS_INFRA_RC: it reached no
+# verdict, which is neither PASS nor FAIL) and FAIL (any other rc).
 
 ts_discover_cases() {
-    # The suite's cases: every function whose `declare -F` line contains test_.
-    # The same grammar run_tests discovers by, so a helper carrying that
-    # substring would be run as a case.
+    # The cases run_tests runs when it is given none: every function whose
+    # `declare -F` line contains test_, so a helper carrying that substring would
+    # be run as a case.
     declare -F | awk '/test_/{print $3}'
+}
+
+# ts_run_verdict <passed> <failed> <infra-case> <not-run>
+#
+# Prints the run's summary and returns its verdict. A recorded FAIL wins (1), as in
+# test_helpers.sh's test_summary_infra_unavailable. Otherwise <infra-case>, the case
+# that ended the run by reaching no verdict (empty when none did), makes the run
+# INFRASTRUCTURE: TS_INFRA_RC. Otherwise 0.
+ts_run_verdict() {
+    local passed="$1" failed="$2" infra_case="$3" not_run="$4"
+    echo ""
+    echo "========================================="
+    printf "Results: ${GREEN}%d passed${RESET}, ${RED}%d failed${RESET}" "$passed" "$failed"
+    if [ -n "$infra_case" ]; then
+        printf ", ${YELLOW}1 infra${RESET}, %d not run" "$not_run"
+    fi
+    echo ""
+    echo "========================================="
+    if [ "$failed" -gt 0 ]; then
+        return 1
+    fi
+    if [ -n "$infra_case" ]; then
+        echo "INFRASTRUCTURE: $infra_case reached no verdict; $not_run later case(s) did not run (exit $TS_INFRA_RC, EX_TEMPFAIL: neither PASS nor FAIL)"
+        return "$TS_INFRA_RC"
+    fi
+    return 0
+}
+
+# run_tests [case...]
+#
+# Runs the named cases, or every discovered one when none is named. Each case runs
+# under `||`, which turns errexit off inside it, and is followed by cleanup. The
+# run stops at the first INFRA case: a host that just lost a build to its timeout
+# would lose the next one the same way, and the wall around this suite in
+# scripts/verify.sh would then kill it before it could report.
+run_tests() {
+    if [ "$#" -eq 0 ]; then
+        set -- $(ts_discover_cases)
+    fi
+    local total=$# t rc ran=0 passed=0 failed=0 infra_case=""
+
+    for t in "$@"; do
+        ran=$((ran + 1))
+        CLEANUP_ACTIONS=()
+        printf "${BOLD}RUN${RESET}  %s ... " "$t"
+        rc=0
+        "$t" || rc=$?
+        case "$rc" in
+            0)
+                printf "${GREEN}PASS${RESET}\n"
+                passed=$((passed + 1))
+                ;;
+            "$TS_INFRA_RC")
+                printf "${YELLOW}INFRA${RESET}\n"
+                infra_case="$t"
+                ;;
+            *)
+                printf "${RED}FAIL${RESET}\n"
+                failed=$((failed + 1))
+                ;;
+        esac
+        cleanup
+        if [ -n "$infra_case" ]; then
+            break
+        fi
+    done
+
+    ts_run_verdict "$passed" "$failed" "$infra_case" "$((total - ran))"
 }
 
 ts_run_stub_cases() {
