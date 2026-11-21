@@ -29,7 +29,9 @@ use crate::engine::{
     CompileFailureKind, EngineSession, FeaConvergenceEmitter, FeaDiagnosticsEmitter,
     SolveCancellationSink,
 };
-use crate::tests::test_helpers::{rigid_mass_props_fixture_path, rigid_mass_props_session};
+use crate::tests::test_helpers::{
+    UNPARSEABLE_SRC, rigid_mass_props_fixture_path, rigid_mass_props_session,
+};
 use crate::types::{FeaConvergenceInfo, FeaDiagnosticInfo, FileData};
 
 /// What one successful reload of a non-FEA design records, in order.
@@ -39,9 +41,6 @@ const ONE_RELOAD: [&str; 4] = [
     "fea_diagnostics",
     "fea_convergence",
 ];
-
-/// A source that fails to parse.
-const UNPARSEABLE_SRC: &str = "this is not valid {{{}}}";
 
 /// A source that parses but fails to compile: the default names nothing.
 const UNCOMPILABLE_SRC: &str = "structure Bolt { param mass: Length = no_such_name }";

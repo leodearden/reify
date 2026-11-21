@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex, RwLock};
 
 use crate::tests::test_helpers::{
-    assert_rigid_mass_props_determined, assert_rigid_mass_props_final,
+    UNPARSEABLE_SRC, assert_rigid_mass_props_determined, assert_rigid_mass_props_final,
     assert_rigid_mass_props_not_final, bounded_bracket_source, cwd_lock,
     find_moi_principal_constraint, rigid_mass_props_fixture_path, rigid_mass_props_session,
     rigid_mass_props_session_seeded_then_failing, visible_realization_keys,
@@ -2099,9 +2099,6 @@ fn open_file_engine_impl_files_path_is_canonical_absolute() {
     );
 }
 
-/// A source that fails to parse.
-const UNPARSEABLE_SRC: &str = "this is not valid {{{}}}";
-
 /// A file that reads but whose source the engine rejects opens as an
 /// uncompiled document carrying its diagnostics; only an unreadable file
 /// fails the open.
@@ -4117,7 +4114,9 @@ mod queued_requests {
     };
     use crate::engine::EngineSession;
     use crate::eval_queue::{EditOrder, EvalQueue, EvalRequest};
-    use crate::tests::test_helpers::{ManualQueue, Observed, RecordingObserver, settled};
+    use crate::tests::test_helpers::{
+        ManualQueue, Observed, RecordingObserver, UNPARSEABLE_SRC, settled,
+    };
 
     const WIDTH: &str = "Bracket.width";
 
@@ -4452,7 +4451,7 @@ mod queued_requests {
     fn a_queued_initial_file_load_of_a_rejected_source_opens_it_and_records_no_failure() {
         let dir = tempfile::tempdir().expect("tempdir");
         let broken = dir.path().join("broken.ri");
-        std::fs::write(&broken, super::UNPARSEABLE_SRC).expect("write broken.ri");
+        std::fs::write(&broken, UNPARSEABLE_SRC).expect("write broken.ri");
         let canonical = std::fs::canonicalize(&broken).expect("canonicalize");
         let failure_slot = Arc::new(InitialFileLoadFailureSlot::default());
         let rig = ManualQueue::new();
