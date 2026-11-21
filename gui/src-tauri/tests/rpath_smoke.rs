@@ -101,12 +101,22 @@ fn bare_ldd(path: &str) -> Option<String> {
 }
 
 /// Extract the resolved path from an `ldd` output line of the form
-/// `<soname> => <path> (0x...)`. `None` if `soname` has no such line.
+/// `<soname> => <path> (0x...)`. `None` if `soname` has no such line (e.g.
+/// not NEEDED by this binary at all). Panics on `<soname> => not found`: ldd
+/// still exits 0 for it, and a soname the loader cannot place is neither
+/// resolved nor absent, so no caller can handle it as either.
 fn ldd_resolved_path<'a>(ldd_output: &'a str, soname: &str) -> Option<&'a str> {
     let needle = format!("{soname} =>");
-    ldd_output
-        .lines()
-        .find_map(|line| line.trim().strip_prefix(needle.as_str())?.split_whitespace().next())
+    ldd_output.lines().map(str::trim).find_map(|line| {
+        let resolution = line.strip_prefix(needle.as_str())?.trim_start();
+        assert!(
+            !resolution.starts_with("not found"),
+            "ldd reports `{line}`: the loader cannot find {soname} via any RUNPATH entry, the \
+             ld.so cache or the default dirs (bare ldd runs without LD_LIBRARY_PATH).\n\n\
+             Full ldd output:\n{ldd_output}"
+        );
+        resolution.split_whitespace().next()
+    })
 }
 
 /// Bare `ldd` output measured for a cc-built exe whose NEEDED `libfoo.so.1`
