@@ -55,6 +55,35 @@ INSTRUMENT="$SCRIPT_DIR/cpu_gov_instrument.py"
 # shellcheck source=tests/infra/test_helpers.sh
 source "$SCRIPT_DIR/test_helpers.sh"
 
+# _run_with_stall_guard <stall_s> <out_file> <cmd> [arg...]
+#   Runs <cmd> with stdout+stderr in <out_file>. Returns <cmd>'s own exit status,
+#   or 124 after TERMing it once <out_file> has not grown for <stall_s> seconds.
+#   Technique T (docs/prds/infra-test-wallclock-deflake.md §2): the window bounds
+#   SILENCE, so a slow <cmd> that keeps emitting is never killed. Its total
+#   runtime stays bounded by run_all.sh's member budget, whose process-group
+#   kill reaches <cmd> because it stays in this shell's group.
+_run_with_stall_guard() {
+    local stall_s="$1" out="$2"
+    shift 2
+    "$@" >"$out" 2>&1 </dev/null &
+    local pid=$!
+    local size=0 now=0 last_growth=$SECONDS rc=0
+    while kill -0 "$pid" 2>/dev/null; do
+        now=$(stat -c %s "$out" 2>/dev/null || echo 0)
+        if [ "$now" != "$size" ]; then
+            size=$now
+            last_growth=$SECONDS
+        elif (( SECONDS - last_growth >= stall_s )); then
+            kill -TERM "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            return 124
+        fi
+        sleep 1
+    done
+    wait "$pid" || rc=$?
+    return "$rc"
+}
+
 echo "=== cpu-load-governance de-flake meta-test (task 4846) ==="
 
 # ── A3 — NON-VACUOUS guard (share_ge_proportional) ────────────────────────────
