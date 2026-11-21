@@ -338,6 +338,36 @@ fn read_published_pid(pidfile: &Path) -> i32 {
     panic!("stub never published a parseable pid to {}", pidfile.display());
 }
 
+/// An already-cancelled request returns `Cancelled` after exactly one poll and
+/// never spawns the slicer.
+///
+/// `bin` is a path that does not exist, so any spawn attempt fails synchronously
+/// with `NotFound` and yields `Failed`. `Cancelled` is therefore only reachable
+/// if `run_slicer` checks `cancel_poll` before spawning.
+#[test]
+fn run_slicer_precancelled_returns_cancelled_without_spawning() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let absent = dir.path().join("never-spawned-slicer");
+    let polls = std::cell::Cell::new(0usize);
+    let cancel = || {
+        polls.set(polls.get() + 1);
+        true
+    };
+
+    let outcome = run_slicer(&absent, &[], &cancel, Duration::from_millis(200));
+
+    assert!(
+        matches!(outcome, SliceRunOutcome::Cancelled),
+        "a pre-cancelled run must return Cancelled without spawning (a spawn attempt \
+         on the absent path would have yielded Failed), got {outcome:?}"
+    );
+    assert_eq!(
+        polls.get(),
+        1,
+        "a pre-cancelled run must return after exactly one cancel poll"
+    );
+}
+
 /// (a) A long-running slicer cancelled the instant it is up: `run_slicer` returns
 /// `Cancelled` promptly (≪ the 30 s sleep) and the spawned child is reaped — no
 /// orphan, no zombie.

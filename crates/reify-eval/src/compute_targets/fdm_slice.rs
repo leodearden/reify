@@ -1011,8 +1011,9 @@ mod tests {
     // Injected stub "slicers" (CI-portable, no live PrusaSlicer): a `#!/bin/sh`
     // script stands in for the binary, passed straight to the race-free
     // `fdm_slice_dispatch` seam. The stub ignores the body STL the trampoline
-    // exports and drives only the outcome a test needs — a long sleeper (the
-    // cancellation poll) or a fixture-emitting `cp` (the warm-state cache).
+    // exports and drives only the outcome a test needs — a fixture-emitting `cp`
+    // (the warm-state cache). The pre-cancelled test passes an absent slicer
+    // path instead, since a cancelled dispatch must never spawn it.
 
     /// Absolute path to the committed ζ PrusaSlicer-vocabulary fixture in the
     /// sibling `reify-fdm` crate (the same fixture `reify-fdm`'s own slice tests
@@ -1078,32 +1079,27 @@ mod tests {
         RealizationReadHandle::new(RealizationNodeId::new("body", 0), ContentHash(hash), None)
     }
 
-    /// A pre-cancelled dispatch against a long-sleeper stub slicer returns
-    /// `ComputeOutcome::Cancelled` promptly — the `|| is_cancelled()` poll reaches
-    /// `run_slicer`, which SIGTERM→reaps the child (no orphan).
+    /// A pre-cancelled dispatch returns `ComputeOutcome::Cancelled` without ever
+    /// spawning the slicer. The slicer path does not exist, so a spawn attempt
+    /// would yield `Failed`; `Cancelled` therefore also proves the trampoline
+    /// threads the `CancellationHandle` into `slice_body`'s `cancel_poll`.
     #[cfg(unix)]
     #[test]
     fn present_slicer_precancelled_returns_cancelled() {
-        use std::time::{Duration, Instant};
         let dir = tempfile::tempdir().expect("tempdir");
-        let stub = write_stub_script(dir.path(), "sleeper.sh", "exec sleep 30");
+        let absent = dir.path().join("never-spawned-slicer");
 
         let cancel = CancellationHandle::new();
-        cancel.cancel(); // pre-cancelled: the poll fires on the first run_slicer tick.
+        cancel.cancel(); // pre-cancelled: run_slicer's pre-spawn poll sees it.
 
         let inputs = undef_inputs();
         let realizations = [body_handle(0x1111)];
-        let start = Instant::now();
-        let outcome = fdm_slice_dispatch(&inputs, &realizations, Some(&stub), None, &cancel);
-        let elapsed = start.elapsed();
+        let outcome = fdm_slice_dispatch(&inputs, &realizations, Some(&absent), None, &cancel);
 
         assert!(
             matches!(outcome, ComputeOutcome::Cancelled),
-            "a pre-cancelled dispatch must return Cancelled, got {outcome:?}"
-        );
-        assert!(
-            elapsed < Duration::from_secs(10),
-            "cancellation must be prompt (≪ the 30s sleeper), took {elapsed:?}"
+            "a pre-cancelled dispatch must return Cancelled without spawning the slicer \
+             (a spawn attempt on the absent path would have produced Failed), got {outcome:?}"
         );
     }
 
