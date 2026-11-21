@@ -10,8 +10,8 @@ use reify_ast::ParsedModule;
 use reify_compiler::CompiledModule;
 use reify_compiler::cfg::CfgSet;
 use reify_compiler::import_headers::{
-    GatedOffImports, ImportPlan, NameRole, NameUse, RequiredImport, cfg_satisfied_imports,
-    cfg_unsatisfied_imports, derive_std_imports, insert_imports,
+    GatedOffImports, ImportPlan, NameRole, NameUse, PlacementDefect, RequiredImport,
+    cfg_satisfied_imports, cfg_unsatisfied_imports, derive_std_imports, insert_imports,
 };
 use reify_core::{DiagnosticCode, ModulePath, Severity, panic_payload_to_string};
 
@@ -514,11 +514,12 @@ fn an_already_imported_module_is_still_derived() {
 
 // ─── g1-g6: the residual-diagnostics guard ─────────────────────────────────
 
+fn module_path(dotted: &str) -> ModulePath {
+    ModulePath::from_dotted(dotted).expect("valid dotted module path")
+}
+
 fn module_paths(dotted: &[&str]) -> Vec<ModulePath> {
-    dotted
-        .iter()
-        .map(|path| ModulePath::from_dotted(path).expect("valid dotted module path"))
-        .collect()
+    dotted.iter().map(|path| module_path(path)).collect()
 }
 
 /// What `plan.residual_diagnostics` panics with for `given`. `#[should_panic]`
@@ -599,7 +600,8 @@ fn the_subject_re_parsed_with_edited_source_is_refused() {
     let parsed = parse_clean(source, SUBJECT_PATH);
     let plan = derive_parsed(&parsed, &universe);
     let headed = parse_clean(
-        &insert_imports(source, &parsed, &CfgSet::default(), &plan.modules()),
+        &insert_imports(source, &parsed, &CfgSet::default(), &plan.modules())
+            .unwrap_or_else(|defect| panic!("insert_imports refused {source:?}: {defect}")),
         SUBJECT_PATH,
     );
     plan.residual_diagnostics(&headed, &plan.modules());
@@ -752,6 +754,19 @@ fn insert(source: &str, modules: &[&str]) -> String {
 }
 
 fn insert_under(source: &str, modules: &[&str], cfg: &CfgSet) -> String {
+    try_insert_under(source, modules, cfg)
+        .unwrap_or_else(|defect| panic!("insert_imports refused {source:?}: {defect}"))
+}
+
+fn try_insert(source: &str, modules: &[&str]) -> Result<String, PlacementDefect> {
+    try_insert_under(source, modules, &CfgSet::default())
+}
+
+fn try_insert_under(
+    source: &str,
+    modules: &[&str],
+    cfg: &CfgSet,
+) -> Result<String, PlacementDefect> {
     let parsed = parse_clean(source, SUBJECT_PATH);
     insert_imports(source, &parsed, cfg, &module_paths(modules))
 }
@@ -781,6 +796,24 @@ fn new_imports_follow_the_leading_module_pragmas_after_a_blank_line() {
         insert("#no_prelude\n\nstructure def S {}\n", &["std.fake.c"]),
         "#no_prelude\n\nimport std.fake.c\n\nstructure def S {}\n"
     );
+}
+
+#[test]
+fn new_imports_after_an_unterminated_last_line_start_a_line_of_their_own() {
+    for (source, expected) in [
+        (
+            "import std.fake.a",
+            "import std.fake.a\nimport std.fake.c\n",
+        ),
+        ("module a.b", "module a.b\n\nimport std.fake.c\n"),
+        ("#no_prelude", "#no_prelude\n\nimport std.fake.c\n"),
+    ] {
+        assert_eq!(
+            insert(source, &["std.fake.c"]),
+            expected,
+            "source:\n{source}"
+        );
+    }
 }
 
 #[test]
@@ -879,6 +912,93 @@ fn a_new_import_never_lands_where_a_pending_cfg_would_gate_it() {
     }
 }
 
+#[test]
+fn an_added_import_a_pending_cfg_would_gate_is_refused() {
+    for source in [
+        "import std.fake.a #cfg(wide)\n\nstructure def S {}\n",
+        "module a.b #cfg(wide)\n\nstructure def S {}\n",
+    ] {
+        assert_eq!(
+            try_insert(source, &["std.fake.c"]),
+            Err(PlacementDefect::Gated {
+                module: module_path("std.fake.c"),
+                pragmas: vec!["#cfg(wide)".to_string()],
+            }),
+            "source:\n{source}"
+        );
+    }
+}
+
+#[test]
+fn of_several_added_imports_the_first_defective_one_in_line_order_is_named() {
+    assert_eq!(
+        try_insert(
+            "import std.fake.a #cfg(wide)\n\nstructure def S {}\n",
+            &["std.fake.c", "std.fake.d"],
+        ),
+        Err(PlacementDefect::Gated {
+            module: module_path("std.fake.c"),
+            pragmas: vec!["#cfg(wide)".to_string()],
+        })
+    );
+}
+
+#[test]
+fn an_added_import_that_would_take_a_pending_annotation_is_refused() {
+    for source in [
+        "import std.fake.a @solid\n\nstructure def S {}\n",
+        "module a.b @solid\n\nstructure def S {}\n",
+    ] {
+        assert_eq!(
+            try_insert(source, &["std.fake.c"]),
+            Err(PlacementDefect::TakesAnnotations {
+                module: module_path("std.fake.c"),
+                annotations: vec!["@solid".to_string()],
+            }),
+            "source:\n{source}"
+        );
+    }
+}
+
+#[test]
+fn an_added_import_inside_a_block_comment_is_refused() {
+    let source = "import std.fake.a /* opens\n   and closes */\n\nstructure def S {}\n";
+    assert_eq!(
+        try_insert(source, &["std.fake.c"]),
+        Err(PlacementDefect::NotAnImport {
+            module: module_path("std.fake.c"),
+        })
+    );
+}
+
+#[test]
+fn an_added_import_that_breaks_the_syntax_around_it_is_refused() {
+    let source = "import std.fake.a structure def S {\n}\n";
+    let result = try_insert(source, &["std.fake.c"]);
+    assert!(
+        matches!(
+            &result,
+            Err(PlacementDefect::BreaksParse { modules, .. })
+                if modules == &module_paths(&["std.fake.c"])
+        ),
+        "{result:?}"
+    );
+}
+
+#[test]
+#[should_panic(expected = "insert_imports edits only a parse-clean module, but `subject` has")]
+fn a_module_with_parse_errors_is_refused_before_any_edit() {
+    let source = "structure def S {\nimport std.fake.a\n}\n";
+    let parsed = reify_syntax::parse(source, module_path(SUBJECT_PATH));
+    assert!(!parsed.errors.is_empty(), "fixture must fail to parse");
+    let _ = insert_imports(
+        source,
+        &parsed,
+        &CfgSet::default(),
+        &module_paths(&["std.fake.c"]),
+    );
+}
+
 // ─── r1: inserting what is missing satisfies missing_from ──────────────────
 
 #[test]
@@ -896,7 +1016,8 @@ fn inserting_the_missing_imports_leaves_nothing_missing() {
         .iter()
         .map(|required| required.module.clone())
         .collect();
-    let fixed = insert_imports(&source, &parsed, &CfgSet::default(), &modules);
+    let fixed = insert_imports(&source, &parsed, &CfgSet::default(), &modules)
+        .unwrap_or_else(|defect| panic!("insert_imports refused {source:?}: {defect}"));
     let reparsed = parse_clean(&fixed, SUBJECT_PATH);
     assert_eq!(
         derive_parsed(&reparsed, &universe).missing_from(&reparsed, &CfgSet::default()),
@@ -995,7 +1116,8 @@ fn inserting_the_missing_imports_under_a_cfg_leaves_nothing_missing_under_it() {
         .iter()
         .map(|required| required.module.clone())
         .collect();
-    let fixed = insert_imports(&source, &parsed, &cfg, &modules);
+    let fixed = insert_imports(&source, &parsed, &cfg, &modules)
+        .unwrap_or_else(|defect| panic!("insert_imports refused {source:?}: {defect}"));
     let reparsed = parse_clean(&fixed, SUBJECT_PATH);
     assert_eq!(
         derive_parsed(&reparsed, &universe).missing_from(&reparsed, &cfg),

@@ -8,12 +8,15 @@
 //! in a std module need an import. [`coverage`] decides which of those names
 //! a module's own `import` declarations, those in effect under the active
 //! cfg, already make visible, and which those the cfg leaves out would make
-//! visible were their `#cfg` satisfied.
+//! visible were their `#cfg` satisfied. [`placement`] re-parses an edit that
+//! adds import lines, so [`insert_imports`] refuses one whose added lines
+//! would not stand where they are written.
 
 mod attribution;
 mod coverage;
 mod header_edit;
 mod name_uses;
+mod placement;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -21,6 +24,7 @@ use reify_ast::ParsedModule;
 use reify_core::{ContentHash, Diagnostic, DiagnosticIdentity, ModulePath, Severity};
 
 pub use name_uses::{NameRole, NameUse};
+pub use placement::PlacementDefect;
 
 use crate::cfg::CfgSet;
 use crate::types::CompiledModule;
@@ -290,17 +294,33 @@ fn is_reportable(diagnostic: &Diagnostic) -> bool {
 /// in the order given: after the last import, else after the `module`
 /// declaration, else after the leading module pragmas above the line holding
 /// the first leading `#cfg`, else after the leading comment block's last blank
-/// line.
+/// line. `parsed` must be `source` parsed clean, so that every error in the
+/// edit's re-parse is the edit's own.
+///
+/// # Errors
+///
+/// Refuses, rather than returns, an edit whose re-parse would fail, or would
+/// not hold each added line as a plain import of its module: an import with
+/// no `#cfg` pragma gating it and no annotation attached to it.
 ///
 /// # Panics
 ///
-/// If `parsed` declares an import whose path is not a module path, which
-/// only a module with parse errors can.
+/// If `parsed` has parse errors.
 pub fn insert_imports(
     source: &str,
     parsed: &ParsedModule,
     cfg: &CfgSet,
     modules: &[ModulePath],
-) -> String {
-    header_edit::insert_imports(source, parsed, cfg, modules)
+) -> Result<String, PlacementDefect> {
+    assert!(
+        parsed.errors.is_empty(),
+        "insert_imports edits only a parse-clean module, but `{}` has {} parse error(s), \
+         the first: {}",
+        parsed.path.to_dotted(),
+        parsed.errors.len(),
+        parsed.errors[0].message
+    );
+    let insertion = header_edit::insert_imports(source, parsed, cfg, modules);
+    placement::check(&insertion, &parsed.path)?;
+    Ok(insertion.text)
 }
