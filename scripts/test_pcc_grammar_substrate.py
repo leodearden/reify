@@ -9,6 +9,7 @@ tests/infra/test_prd_capability_check.sh.
 """
 
 import glob
+import io
 import os
 import shlex
 import shutil
@@ -26,6 +27,9 @@ from _pcc_test_support import (
     _CACHE_DENIED_STDERR,
     _SCRIPTS_DIR,
     _compute_grammar_e2e_status,
+    _generator_stub_fails,
+    _generator_stub_succeeds,
+    _generator_stub_writes_nothing,
     _ts_stub_cache_denied,
     _ts_stub_clean,
     _ts_stub_hangs,
@@ -114,6 +118,90 @@ class TestGrammarAvailabilityGuard(unittest.TestCase):
             "grammar_generated() must short-circuit before any subprocess is spent",
         )
         self.assertIn("parser.c", reason, "the skip message must name what is missing")
+
+    def test_a_grammar_that_cannot_be_made_current_is_unavailable_and_never_probed(self):
+        """A failing generator over a present parser.c → unavailable, no probe spent.
+
+        The measured divergence: parser.c present and a clean substrate, but no
+        tree-sitter on PATH for the generator.  main() refuses that lane with
+        exit 70, so a guard answering "available" turned a SKIP into a FAIL.
+        """
+        ctx = probe_context(
+            repo_root=make_fixture_repo(os.path.join(self._tmp.name, "repo"), parser_c=True),
+            cache_home_override=os.path.join(self._tmp.name, "cache"),
+            grammar_generator=_generator_stub_fails(
+                self._tmp.name, os.path.join(self._tmp.name, "generator_runs")
+            ),
+        )
+        runner, calls = recording_runner()
+
+        available, reason = _compute_grammar_e2e_status(ctx, runner)
+        self.assertFalse(available)
+        self.assertIn(
+            "tree-sitter CLI not found", reason,
+            "the skip message must carry the generator's own failure",
+        )
+        self.assertEqual(calls, [], "a grammar that cannot be made current is never probed")
+
+    def test_the_guard_answers_as_grammar_substrate_status_does(self):
+        """The guard and --grammar-substrate-status share one answer (SPOT).
+
+        Each side gets its own fresh fixture root, generator stub and runner,
+        because a succeeding generator writes parser.c into its root.
+        """
+        clean = pcc.ProbeRun(0, "", "")
+        denied = pcc.ProbeRun(
+            1, "", _CACHE_DENIED_STDERR,
+            harness_failure=pcc.grammar_load_failure(_CACHE_DENIED_STDERR),
+        )
+        def fails(tmp, _root, marker):
+            return _generator_stub_fails(tmp, marker)
+
+        def writes_nothing(tmp, _root, marker):
+            return _generator_stub_writes_nothing(tmp, marker)
+
+        succeeds = _generator_stub_succeeds
+        scenarios = [
+            ("failing generator, parser.c present", fails, True, clean),
+            ("succeeding generator, no parser.c", succeeds, False, clean),
+            ("writes-nothing generator, no parser.c", writes_nothing, False, clean),
+            ("no generator, no parser.c", None, False, clean),
+            ("no generator, parser.c present, clean run", None, True, clean),
+            ("no generator, parser.c present, cache denied", None, True, denied),
+        ]
+
+        def scenario_ctx(tmp, generator, parser_c):
+            root = make_fixture_repo(os.path.join(tmp, "repo"), parser_c=parser_c)
+            return probe_context(
+                repo_root=root,
+                cache_home_override=os.path.join(tmp, "cache"),
+                grammar_generator=(
+                    None if generator is None
+                    else generator(tmp, root, os.path.join(tmp, "generator_runs"))
+                ),
+            )
+
+        for index, (label, generator, parser_c, run) in enumerate(scenarios):
+            with self.subTest(label):
+                guard_tmp = os.path.join(self._tmp.name, f"{index}-guard")
+                main_tmp = os.path.join(self._tmp.name, f"{index}-main")
+                guard_runner, _ = recording_runner(run)
+                available, reason = _compute_grammar_e2e_status(
+                    scenario_ctx(guard_tmp, generator, parser_c), guard_runner
+                )
+                main_runner, _ = recording_runner(run)
+                out = io.StringIO()
+                with unittest.mock.patch("sys.stdout", out):
+                    rc = pcc.main(
+                        ["--grammar-substrate-status"],
+                        runner=main_runner,
+                        ctx=scenario_ctx(main_tmp, generator, parser_c),
+                    )
+                self.assertEqual(
+                    available, rc == 0,
+                    f"guard said {(available, reason)!r}; "
+                    f"--grammar-substrate-status exited {rc}: {out.getvalue()!r}",
+                )
 
     def test_hermetic_import_spawns_no_substrate_probe(self):
         """The behavioural half is LAZY — importing the partitions must not probe.
