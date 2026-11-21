@@ -174,8 +174,11 @@ fn mint_symbolic(
 /// none of its sites has a template: the `edit_param` walk, `edit_param`'s
 /// collection resize, grown-instance reseed and resolution reseed (wave2), and
 /// `edit_source`'s main walk and its settle pass, collection resize and
-/// resolution reseed (wave2). A caller creating an instance's cells one at a
-/// time commits them in [`slot_commit_order`].
+/// resolution reseed (wave2). Each takes a cell's value from
+/// [`InstanceMintScope::pass_through_or_mint`], or from
+/// [`InstanceMintScope::mint_instance_cell_if_undef`], which is layered on it.
+/// A caller creating an instance's cells one at a time commits them in
+/// [`slot_commit_order`].
 ///
 /// Two edit-path writers re-evaluate a sub-instance cell through
 /// `Engine::reeval_cone_cell`, which does not mint:
@@ -197,7 +200,7 @@ pub(crate) struct InstanceMintScope<'a> {
 /// The outcome of [`InstanceMintScope::mint_undef_instance_cell`].
 #[must_use]
 #[derive(Debug, PartialEq)]
-pub(crate) enum InstanceMint {
+enum InstanceMint {
     /// The cell is not a sub-instance cell of the graph, so its mint is the
     /// caller's.
     NotAnInstanceCell,
@@ -274,7 +277,7 @@ impl InstanceMintScope<'_> {
     /// operations. `InstanceCell(Undef)` when nothing mints, and when the
     /// template holds a read the instance has not committed yet, which declines
     /// the mint.
-    pub(crate) fn mint_undef_instance_cell(
+    fn mint_undef_instance_cell(
         &self,
         instance_cell: &ValueCellId,
         kind: ValueCellKind,
