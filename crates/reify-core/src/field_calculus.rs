@@ -87,14 +87,14 @@ fn domain_dimension(ty: &Type) -> Option<DimensionVector> {
 fn dim_quotient_type(
     codomain_dim: Option<DimensionVector>,
     domain_dim: Option<DimensionVector>,
-    domain_exponent: i8,
+    domain_exponent: i16,
     fallback: Type,
 ) -> Option<Type> {
     match (codomain_dim, domain_dim) {
         (Some(cd), Some(dd))
             if cd != DimensionVector::DIMENSIONLESS && dd != DimensionVector::DIMENSIONLESS =>
         {
-            let divisor = dd.checked_pow_rational(Rational::new(i16::from(domain_exponent), 1))?;
+            let divisor = dd.checked_pow_rational(Rational::new(domain_exponent, 1))?;
             let result_dim = cd.checked_div(&divisor)?;
             Some(if result_dim != DimensionVector::DIMENSIONLESS {
                 Type::Scalar {
@@ -155,8 +155,7 @@ fn dimensionless_fallback(ty: &Type) -> Type {
 ///
 /// `None` is returned for any mismatch (wrong dimensionality, non-scalar quantity,
 /// vector length mismatch, etc.) and when the result dimension has an exponent that
-/// does not fit [`Rational`] (the compiler then declines the call and eval returns
-/// `Undef`, just as for a mismatch).
+/// does not fit [`Rational`].
 pub fn differential_codomain(
     op: DifferentialOp,
     domain: &Type,
@@ -369,7 +368,7 @@ mod tests {
         assert_eq!(domain_dimension(&Type::Bool), None);
     }
 
-    // --- dim_quotient_type unit tests (ported verbatim from calculus.rs:1651-1737) ---
+    // --- dim_quotient_type unit tests ---
 
     #[test]
     fn dim_quotient_both_dimensional_exp1_returns_scalar() {
