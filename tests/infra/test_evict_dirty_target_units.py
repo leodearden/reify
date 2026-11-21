@@ -68,26 +68,37 @@ def make_workspace(root, members):
     stamp_tree(root, FIXTURE_NS)
 
 
-def run_record_json(profile_rel, pkg, hash16, paths, extra_local=()):
+ENV_ONLY_LOCAL = [{"RerunIfEnvChanged": {"var": "X", "val": None}}]
+
+
+def run_record_json(local):
     """The shape of cargo 1.96's run-build-script-*.json."""
-    local = [{"RerunIfChanged": {"output": f"{profile_rel}/build/{pkg}-{hash16}/output",
-                                 "paths": list(paths)}},
-             {"RerunIfEnvChanged": {"var": "X", "val": None}},
-             *extra_local]
     return {"rustc": 16696009966390864400, "features": "", "declared_features": "",
             "target": 0, "profile": 0, "path": 0,
             "deps": [[4674965233221187097, "build_script_build", False, 14320141023770759512]],
             "local": local, "rustflags": [], "config": 0, "compile_kind": 0}
 
 
+def output_rel(profile_rel, pkg, hash16):
+    return f"{profile_rel}/build/{pkg}-{hash16}/output"
+
+
 def write_run_record(target, profile_rel, pkg, hash16, paths, extra_local=()):
-    """A run unit's fingerprint record (hash file + .json) and its output,
-    stamped to REF_NS. Returns the output path."""
+    """A run unit whose `local` opens with RerunIfChanged over `paths`; see
+    write_record. Returns the output path."""
+    local = [{"RerunIfChanged": {"output": output_rel(profile_rel, pkg, hash16),
+                                 "paths": list(paths)}},
+             *ENV_ONLY_LOCAL, *extra_local]
+    return write_record(target, profile_rel, pkg, hash16, local)
+
+
+def write_record(target, profile_rel, pkg, hash16, local):
+    """A run unit's fingerprint record (hash file + .json carrying `local`) and
+    its output, stamped to REF_NS. Returns the output path."""
     unit_dir = target / profile_rel / ".fingerprint" / f"{pkg}-{hash16}"
-    record = run_record_json(profile_rel, pkg, hash16, paths, extra_local)
     write_file(unit_dir / RUN_RECORD, "8a5654c15705d0b3")
-    write_file(unit_dir / f"{RUN_RECORD}.json", json.dumps(record))
-    output = target / profile_rel / "build" / f"{pkg}-{hash16}" / "output"
+    write_file(unit_dir / f"{RUN_RECORD}.json", json.dumps(run_record_json(local)))
+    output = target / output_rel(profile_rel, pkg, hash16)
     write_file(output, "cargo:rerun-if-changed=build.rs\ncargo:rustc-env=BAKED=v1\n")
     set_mtime_ns(output, REF_NS)
     return output
@@ -99,7 +110,9 @@ def record_files(target, profile_rel, pkg, hash16):
 
 
 def snapshot(paths):
-    return {str(p): (p.read_bytes(), p.stat().st_mtime_ns) for p in paths}
+    """Bytes and mtime of each path; None for a path that is gone."""
+    return {str(p): (p.read_bytes(), p.stat().st_mtime_ns) if p.exists() else None
+            for p in paths}
 
 
 def env_without(*prefixes):
@@ -177,6 +190,96 @@ class Rule(EvictHarness):
         result = self.run_evict()
 
         self.assertEvicted(result, output, self.alpha / "src" / "generated.rs")
+
+
+class Boundaries(EvictHarness):
+    """What the evictor does not judge, and where it looks for records."""
+
+    def tree(self):
+        return snapshot(sorted(p for p in self.target.rglob("*") if p.is_file()))
+
+    def test_an_input_outside_the_build_root_is_not_judged(self):
+        outside = self.tmp / "outside.txt"
+        write_file(outside, "the seed never re-stamps me\n")
+        set_mtime_ns(outside, NEWER_NS)
+        output = write_run_record(self.target, "release", "alpha", "6666666666666666",
+                                  ["build.rs", str(outside)])
+        before = snapshot([output])
+
+        result = self.run_evict()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(snapshot([output]), before)
+
+    def test_a_run_of_a_non_member_package_is_not_judged(self):
+        output = write_run_record(self.target, "release", "anyhow", "7777777777777777",
+                                  ["build.rs", "src/nowhere.rs"])
+        before = snapshot([output])
+
+        result = self.run_evict()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(snapshot([output]), before)
+
+    def test_a_record_without_rerun_if_changed_is_not_judged(self):
+        outputs = [
+            write_record(self.target, "release", "alpha", "8888888888888888", ENV_ONLY_LOCAL),
+            write_record(self.target, "debug", "alpha", "9999999999999999",
+                         [{"Precalculated": "0.18.4"}]),
+            write_record(self.target, "debug", "alpha", "aaaaaaaaaaaaaaaa",
+                         [{"Precalculated": "0.1.0"}, *ENV_ONLY_LOCAL]),
+        ]
+        before = snapshot(outputs)
+
+        result = self.run_evict()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(snapshot(outputs), before)
+
+    def test_stale_runs_lose_their_outputs_under_every_profile_and_triple(self):
+        profiles = ["debug", "release", "x86_64-unknown-linux-gnu/release"]
+        outputs = [write_run_record(self.target, profile, "alpha", f"{i:016x}",
+                                    ["src/generated.rs"])
+                   for i, profile in enumerate(profiles, start=0xb0)]
+        self.assertEqual(output_rel(profiles[2], "alpha", f"{0xb2:016x}"),
+                         str(outputs[2].relative_to(self.target)))
+
+        result = self.run_evict()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for output in outputs:
+            self.assertEvicted(result, output, self.alpha / "src" / "generated.rs")
+
+    def test_a_stale_run_whose_output_is_already_absent_changes_nothing(self):
+        output = write_run_record(self.target, "release", "alpha", "cccccccccccccccc",
+                                  ["src/generated.rs"])
+        output.unlink()
+        before = self.tree()
+
+        result = self.run_evict()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.tree(), before)
+
+    def test_cargo_is_never_asked_without_a_rerun_if_changed_record(self):
+        stub_dir = self.tmp / "stub-bin"
+        calls = self.tmp / "cargo-calls"
+        calls.touch()
+        stub_dir.mkdir()
+        stub = stub_dir / "cargo"
+        stub.write_text(f'#!/bin/sh\necho "cargo $*" >> "{calls}"\nexit 1\n')
+        stub.chmod(0o755)
+        env = env_without("GIT_")
+        env["PATH"] = f"{stub_dir}{os.pathsep}{env.get('PATH', '')}"
+
+        with self.subTest("no run record at all"):
+            result = self.run_evict(env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        with self.subTest("only records without RerunIfChanged"):
+            write_record(self.target, "release", "alpha", "dddddddddddddddd", ENV_ONLY_LOCAL)
+            result = self.run_evict(env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls.read_text(), "")
 
 
 BAKED_BUILD_RS = """\
