@@ -1,0 +1,276 @@
+#!/usr/bin/env python3
+"""
+test_evict_dirty_target_units.py — stdlib unittest for
+scripts/evict-dirty-target-units.py, the promote-time eviction of build-script
+runs that the build root's cargo would rerun (task 10152).
+
+WHAT RUNS THIS: run_all.sh discovers `test_*.sh` only, so the discovered member
+is the thin wrapper tests/infra/test_evict_dirty_target_units.sh.
+
+FIXTURE TIMES: every fixture file and directory is stamped to a fixed past
+time, and each case moves only the inputs it is about; no case reads the wall
+clock. CargoHonoursEviction alone runs real cargo, on a two-crate workspace.
+"""
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import tempfile
+import unittest
+from datetime import datetime, timezone
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SCRIPT = REPO_ROOT / "scripts" / "evict-dirty-target-units.py"
+
+SECOND_NS = 10 ** 9
+REF_NS = 1_700_000_000 * SECOND_NS
+NEWER_NS = REF_NS + SECOND_NS
+OLDER_NS = REF_NS - SECOND_NS
+FIXTURE_NS = REF_NS - 3600 * SECOND_NS
+SEED_STAMP_NS = int(datetime(2020, 1, 1, tzinfo=timezone.utc).timestamp()) * SECOND_NS
+
+RUN_RECORD = "run-build-script-build-script-build"
+CARGO_TIMEOUT_SECS = 600
+
+
+def set_mtime_ns(path, ns):
+    os.utime(path, ns=(ns, ns), follow_symlinks=False)
+
+
+def stamp_tree(root, ns):
+    """Stamp `root` and everything below it to `ns`, children before parents."""
+    for dirpath, dirnames, filenames in os.walk(root, topdown=False):
+        for name in filenames + dirnames:
+            set_mtime_ns(os.path.join(dirpath, name), ns)
+    set_mtime_ns(root, ns)
+
+
+def write_file(path, text):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+
+
+def make_workspace(root, members):
+    """A cargo workspace of `members` under crates/, plus crates/shared/src/x.rs,
+    which no member owns. Every file and directory is stamped to FIXTURE_NS."""
+    listed = ", ".join(f'"crates/{m}"' for m in members)
+    write_file(root / "Cargo.toml", f'[workspace]\nmembers = [{listed}]\nresolver = "2"\n')
+    for member in members:
+        crate = root / "crates" / member
+        write_file(crate / "Cargo.toml",
+                   f'[package]\nname = "{member}"\nversion = "0.1.0"\nedition = "2021"\n')
+        write_file(crate / "build.rs", "fn main() {}\n")
+        write_file(crate / "src" / "lib.rs", "")
+    write_file(root / "crates" / "shared" / "src" / "x.rs", "")
+    stamp_tree(root, FIXTURE_NS)
+
+
+def run_record_json(profile_rel, pkg, hash16, paths, extra_local=()):
+    """The shape of cargo 1.96's run-build-script-*.json."""
+    local = [{"RerunIfChanged": {"output": f"{profile_rel}/build/{pkg}-{hash16}/output",
+                                 "paths": list(paths)}},
+             {"RerunIfEnvChanged": {"var": "X", "val": None}},
+             *extra_local]
+    return {"rustc": 16696009966390864400, "features": "", "declared_features": "",
+            "target": 0, "profile": 0, "path": 0,
+            "deps": [[4674965233221187097, "build_script_build", False, 14320141023770759512]],
+            "local": local, "rustflags": [], "config": 0, "compile_kind": 0}
+
+
+def write_run_record(target, profile_rel, pkg, hash16, paths, extra_local=()):
+    """A run unit's fingerprint record (hash file + .json) and its output,
+    stamped to REF_NS. Returns the output path."""
+    unit_dir = target / profile_rel / ".fingerprint" / f"{pkg}-{hash16}"
+    record = run_record_json(profile_rel, pkg, hash16, paths, extra_local)
+    write_file(unit_dir / RUN_RECORD, "8a5654c15705d0b3")
+    write_file(unit_dir / f"{RUN_RECORD}.json", json.dumps(record))
+    output = target / profile_rel / "build" / f"{pkg}-{hash16}" / "output"
+    write_file(output, "cargo:rerun-if-changed=build.rs\ncargo:rustc-env=BAKED=v1\n")
+    set_mtime_ns(output, REF_NS)
+    return output
+
+
+def record_files(target, profile_rel, pkg, hash16):
+    unit_dir = target / profile_rel / ".fingerprint" / f"{pkg}-{hash16}"
+    return [unit_dir / RUN_RECORD, unit_dir / f"{RUN_RECORD}.json"]
+
+
+def snapshot(paths):
+    return {str(p): (p.read_bytes(), p.stat().st_mtime_ns) for p in paths}
+
+
+def env_without(*prefixes):
+    return {k: v for k, v in os.environ.items() if not k.startswith(prefixes)}
+
+
+class EvictHarness(unittest.TestCase):
+    """tmp/ws is a workspace with member `alpha`; tmp/target is the target dir
+    under judgement."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory(prefix="test-evict-dirty-")
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(tmp.name).resolve()
+        self.root = self.tmp / "ws"
+        make_workspace(self.root, ["alpha"])
+        self.alpha = self.root / "crates" / "alpha"
+        self.target = self.tmp / "target"
+        self.target.mkdir()
+
+    def run_evict(self, *args, env=None):
+        argv = [str(SCRIPT), *map(str, args)]
+        if not args:
+            argv = [str(SCRIPT), "--build-root", str(self.root), str(self.target)]
+        return subprocess.run(argv, capture_output=True, text=True, check=False,
+                              env=env if env is not None else env_without("GIT_"))
+
+    def assertEvicted(self, result, output, offending):
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertFalse(output.exists(), f"{output} survived")
+        rel = str(output.relative_to(self.target))
+        self.assertRegex(result.stderr, re.compile(
+            rf"^evicted {re.escape(rel)}: {re.escape(str(offending))} is ", re.M))
+
+
+class Rule(EvictHarness):
+    def test_a_run_with_a_newer_input_loses_its_output_and_keeps_its_record(self):
+        file_out = write_run_record(self.target, "release", "alpha", "1111111111111111",
+                                    ["build.rs"])
+        dir_out = write_run_record(self.target, "debug", "alpha", "2222222222222222",
+                                   ["../shared/src"])
+        records = (record_files(self.target, "release", "alpha", "1111111111111111")
+                   + record_files(self.target, "debug", "alpha", "2222222222222222"))
+        before = snapshot(records)
+        set_mtime_ns(self.alpha / "build.rs", NEWER_NS)
+        set_mtime_ns(self.root / "crates" / "shared" / "src", NEWER_NS)
+
+        result = self.run_evict()
+
+        self.assertEvicted(result, file_out, self.alpha / "build.rs")
+        self.assertEvicted(result, dir_out, self.root / "crates" / "shared" / "src")
+        self.assertEqual(snapshot(records), before)
+
+    def test_a_run_whose_inputs_are_older_or_tied_keeps_its_output(self):
+        older = write_run_record(self.target, "release", "alpha", "3333333333333333",
+                                 ["build.rs", "src/lib.rs"])
+        tied = write_run_record(self.target, "debug", "alpha", "4444444444444444",
+                                ["build.rs", "../shared/src"])
+        set_mtime_ns(self.alpha / "src" / "lib.rs", OLDER_NS)
+        set_mtime_ns(self.alpha / "build.rs", REF_NS)
+        before = snapshot([older, tied])
+
+        result = self.run_evict()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(snapshot([older, tied]), before)
+        self.assertNotRegex(result.stderr, re.compile(r"^evicted ", re.M))
+
+    def test_a_run_listing_a_missing_input_loses_its_output(self):
+        output = write_run_record(self.target, "release", "alpha", "5555555555555555",
+                                  ["build.rs", "src/generated.rs"])
+
+        result = self.run_evict()
+
+        self.assertEvicted(result, output, self.alpha / "src" / "generated.rs")
+
+
+BAKED_BUILD_RS = """\
+use std::path::PathBuf;
+
+fn main() {
+    let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    let inputs = manifest.join("../inputs");
+    let value = inputs.join("value.txt");
+    println!("cargo:rerun-if-changed={}", value.display());
+    println!("cargo:rerun-if-changed={}", inputs.display());
+    let baked = std::fs::read_to_string(&value).unwrap();
+    println!("cargo:rustc-env=BAKED={}", baked.trim());
+}
+"""
+
+
+def make_baked_workspace(ws):
+    """`baked` bakes inputs/value.txt into BAKED via build.rs rustc-env; the
+    `consumer` bin prints baked::BAKED."""
+    write_file(ws / "Cargo.toml",
+               '[workspace]\nmembers = ["baked", "consumer"]\nresolver = "2"\n')
+    write_file(ws / "baked" / "Cargo.toml",
+               '[package]\nname = "baked"\nversion = "0.1.0"\nedition = "2021"\n')
+    write_file(ws / "baked" / "build.rs", BAKED_BUILD_RS)
+    write_file(ws / "baked" / "src" / "lib.rs", 'pub const BAKED: &str = env!("BAKED");\n')
+    write_file(ws / "consumer" / "Cargo.toml",
+               '[package]\nname = "consumer"\nversion = "0.1.0"\nedition = "2021"\n\n'
+               '[dependencies]\nbaked = { path = "../baked" }\n')
+    write_file(ws / "consumer" / "src" / "main.rs",
+               "fn main() {\n    println!(\"{}\", baked::BAKED);\n}\n")
+    write_file(ws / "inputs" / "value.txt", "v1\n")
+
+
+def baked_run_output(target):
+    """The baked run's freshness reference, read from its RerunIfChanged record."""
+    records = sorted(target.glob(f"debug/.fingerprint/baked-*/{RUN_RECORD}.json"))
+    if len(records) != 1:
+        raise AssertionError(f"expected one baked run record under {target}, found {records}")
+    local = json.loads(records[0].read_text())["local"]
+    outputs = [entry["RerunIfChanged"]["output"] for entry in local if "RerunIfChanged" in entry]
+    if len(outputs) != 1:
+        raise AssertionError(f"{records[0]} has no single RerunIfChanged entry: {local}")
+    return target / outputs[0]
+
+
+class CargoHonoursEviction(unittest.TestCase):
+    """The incident in miniature: a lane whose sources the seed back-dated
+    keeps a stale baked value from a promoted run reference, and loses it once
+    the evictor has dropped that reference."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory(prefix="test-evict-cargo-")
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(tmp.name).resolve()
+        self.ws = self.tmp / "ws"
+        make_baked_workspace(self.ws)
+
+    def cargo(self, target, *args):
+        env = env_without("GIT_", "CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR")
+        env.pop("RUSTC_WRAPPER", None)
+        env.pop("CARGO_BUILD_RUSTC_WRAPPER", None)
+        env["CARGO_INCREMENTAL"] = "0"
+        env["CARGO_TARGET_DIR"] = str(target)
+        result = subprocess.run(["cargo", *args, "--offline"], cwd=self.ws, env=env,
+                                capture_output=True, text=True, check=False,
+                                timeout=CARGO_TIMEOUT_SECS)
+        self.assertEqual(result.returncode, 0, f"cargo {args}:\n{result.stderr}")
+        return result
+
+    def test_an_evicted_run_rebakes_while_an_unevicted_copy_stays_stale(self):
+        built = self.tmp / "target_built"
+        self.cargo(built, "build")
+        output = baked_run_output(built)
+        value = self.ws / "inputs" / "value.txt"
+        value.write_text("v2\n")
+        set_mtime_ns(value, output.stat().st_mtime_ns + SECOND_NS)
+        staged = self.tmp / "staged"
+        control = self.tmp / "control"
+        shutil.copytree(built, staged, symlinks=True)
+        shutil.copytree(built, control, symlinks=True)
+
+        evict = subprocess.run([str(SCRIPT), "--build-root", str(self.ws), str(staged)],
+                               capture_output=True, text=True, check=False)
+        self.assertEqual(evict.returncode, 0, evict.stderr)
+        stamp_tree(self.ws, SEED_STAMP_NS)
+
+        self.assertEqual(self.cargo(control, "run", "-q", "-p", "consumer").stdout, "v1\n",
+                         "the unevicted control did not reproduce the stale bake, "
+                         "so this fixture cannot tell an eviction from a no-op")
+        self.assertEqual(self.cargo(staged, "run", "-q", "-p", "consumer").stdout, "v2\n")
+        settled = self.cargo(staged, "build", "-v")
+        self.assertNotRegex(settled.stderr, re.compile(r"^\s*(Compiling|Dirty) baked ", re.M))
+
+
+if __name__ == "__main__":
+    unittest.main()
