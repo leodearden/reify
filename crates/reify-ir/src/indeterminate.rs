@@ -111,6 +111,20 @@ mod tests {
         }
     }
 
+    fn compute_failed() -> TransientReason {
+        TransientReason::ComputeDispatchFailed {
+            target: "solver::elastic_static".into(),
+            kind: ComputeFailureKind::Failed,
+        }
+    }
+
+    fn compute_cancelled() -> TransientReason {
+        TransientReason::ComputeDispatchFailed {
+            target: "solver::elastic_static".into(),
+            kind: ComputeFailureKind::Cancelled,
+        }
+    }
+
     #[test]
     fn undef_inputs_names_each_cell_in_order() {
         assert_eq!(
@@ -144,12 +158,30 @@ mod tests {
     }
 
     #[test]
+    fn compute_dispatch_failed_names_its_target() {
+        assert_eq!(
+            compute_failed().to_string(),
+            "compute dispatch failed for @optimized target \"solver::elastic_static\""
+        );
+    }
+
+    #[test]
+    fn compute_dispatch_cancelled_names_its_target() {
+        assert_eq!(
+            compute_cancelled().to_string(),
+            "compute dispatch cancelled for @optimized target \"solver::elastic_static\""
+        );
+    }
+
+    #[test]
     fn transient_reason_renders_identically_to_its_payload() {
         for transient in [
             undef_inputs(),
             kinds_absent(),
             kinds_named(),
             measurement_unavailable(),
+            compute_failed(),
+            compute_cancelled(),
         ] {
             assert_eq!(
                 IndeterminateReason::Transient(transient.clone()).to_string(),
