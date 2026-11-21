@@ -51,19 +51,11 @@ trait Defaultable {
     );
 
     // The namespaced function must appear in the module's function table.
-    let found = compiled
-        .functions
-        .iter()
-        .any(|f| f.name == "Defaultable::make_default" && f.params.is_empty());
+    let make_default = get_function_in(&compiled, "Defaultable::make_default");
     assert!(
-        found,
-        "expected 'Defaultable::make_default' (0 params) in module functions; \
-         functions present: {:?}",
-        compiled
-            .functions
-            .iter()
-            .map(|f| &f.name)
-            .collect::<Vec<_>>()
+        make_default.params.is_empty(),
+        "expected 'Defaultable::make_default' to take 0 params; got: {:?}",
+        make_default.params
     );
 }
 
