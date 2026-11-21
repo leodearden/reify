@@ -24,6 +24,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "evict-dirty-target-units.py"
+REFRESH = REPO_ROOT / "scripts" / "refresh-warm-base.sh"
 
 SECOND_NS = 10 ** 9
 REF_NS = 1_700_000_000 * SECOND_NS
@@ -117,6 +118,11 @@ def snapshot(paths):
 
 def env_without(*prefixes):
     return {k: v for k, v in os.environ.items() if not k.startswith(prefixes)}
+
+
+def write_executable(path, body):
+    path.write_text(body)
+    path.chmod(0o755)
 
 
 class EvictHarness(unittest.TestCase):
@@ -373,6 +379,92 @@ class Usage(EvictHarness):
         for root in [self.root / "Cargo.toml", self.tmp / "absent"]:
             with self.subTest(str(root)):
                 self.assertUsageError(self.run_evict("--build-root", root, self.target))
+
+
+class RefreshStep(unittest.TestCase):
+    """refresh-warm-base.sh's Step 3c runs the sibling evictor on the staging
+    copy, judged against the advancing worktree. HERMETIC as in
+    test_prune_unconsulted_target.py RefreshDelegation: a copy of the refresh
+    beside the real evictor and a no-op prune, a `cp` PATH stub that drops
+    --reflink=always, and a git lane on main whose untracked target/ advances."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory(prefix="test-evict-refresh-")
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(tmp.name).resolve()
+        self.stub_dir = self.tmp / "stub-bin"
+        self.stub_dir.mkdir()
+        write_executable(self.stub_dir / "cp", f"""#!/usr/bin/env bash
+args=()
+for a in "$@"; do
+    [ "$a" = "--reflink=always" ] && continue
+    args+=("$a")
+done
+exec {shutil.which("cp")} "${{args[@]}}"
+""")
+        self.scripts_dir = self.tmp / "scripts"
+        self.scripts_dir.mkdir()
+        self.refresh = self.scripts_dir / REFRESH.name
+        shutil.copy2(REFRESH, self.refresh)
+        shutil.copy2(SCRIPT, self.scripts_dir / SCRIPT.name)
+        write_executable(self.scripts_dir / "prune-unconsulted-target.sh", "#!/bin/sh\nexit 0\n")
+        self.lane = self.tmp / "lane"
+        make_workspace(self.lane, ["alpha"])
+        self.head = self.commit_lane()
+        self.advancing = self.lane / "target"
+        self.stale = write_run_record(self.advancing, "release", "alpha", "1010101010101010",
+                                      ["build.rs"])
+        self.fresh = write_run_record(self.advancing, "release", "alpha", "2020202020202020",
+                                      ["src/lib.rs"])
+        set_mtime_ns(self.lane / "crates" / "alpha" / "build.rs", NEWER_NS)
+        self.base = self.tmp / "base"
+
+    def git(self, *args):
+        return subprocess.run(["git", "-C", str(self.lane), *args], env=env_without("GIT_"),
+                              check=True, capture_output=True, text=True).stdout.strip()
+
+    def commit_lane(self):
+        self.git("init", "-q", "-b", "main")
+        self.git("add", "--", ".")
+        self.git("-c", "user.email=warm-lane-test@localhost", "-c", "user.name=Warm Lane Test",
+                 "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify",
+                 "-m", "fixture: hermetic advancing workspace")
+        return self.git("rev-parse", "HEAD")
+
+    def run_refresh(self):
+        env = env_without("GIT_")
+        env["PATH"] = f"{self.stub_dir}{os.pathsep}{env.get('PATH', '')}"
+        return subprocess.run(["bash", str(self.refresh), str(self.advancing), str(self.base),
+                               "--landed-commit", self.head],
+                              capture_output=True, text=True, env=env, check=False)
+
+    def in_gen(self, output):
+        return Path(os.readlink(self.base)) / output.relative_to(self.advancing)
+
+    def test_the_new_gen_loses_the_stale_run_output_and_keeps_the_fresh_one(self):
+        result = self.run_refresh()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.in_gen(self.stale).exists(), "the stale run was promoted")
+        self.assertTrue(self.in_gen(self.fresh).is_file(), "a fresh run was evicted")
+        self.assertIn(f"evicted {self.stale.relative_to(self.advancing)}: ", result.stderr)
+
+    def test_the_advancing_target_is_untouched(self):
+        before = snapshot([self.stale, self.fresh])
+
+        result = self.run_refresh()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(snapshot([self.stale, self.fresh]), before)
+
+    def test_a_missing_evictor_fails_the_refresh_closed(self):
+        (self.scripts_dir / SCRIPT.name).unlink()
+
+        result = self.run_refresh()
+
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(os.path.lexists(self.base), "the base advanced without the eviction")
+        self.assertEqual(sorted(self.tmp.glob("base.gen.*.partial")), [])
 
 
 BAKED_BUILD_RS = """\
