@@ -285,22 +285,16 @@ pub(crate) const CTOR_CONFORMANCE_CORPUS_RESIDUAL: &[(&str, &str, &str, &str)] =
         "len",
         "#8898",
         "S8 leaf η's §5 row 9 before-image \
-         (docs/prds/v0_6/builtin-registry-migration-and-interception-classifier.md): inline \
-         `box(..)` at Holder's Length `len` errors naming `Real` today while the Point3 `origin` \
-         is never rejected; η types geometry calls by kind and turns the inline form into \
-         E_GeometryCallInValuePosition, so \"fixing\" the call site here deletes η's recorded \
-         pre-state",
+         (docs/prds/v0_6/builtin-registry-migration-and-interception-classifier.md); \
+         \"fixing\" the call site deletes η's recorded pre-state",
     ),
     (
         "tests/prd-gate/fixtures/s8_geometry_ctor_conformance_inline.ri",
         "name",
         "#8898",
         "S8 leaf η's §5 row 9 before-image \
-         (docs/prds/v0_6/builtin-registry-migration-and-interception-classifier.md): inline \
-         `box(..)` at Holder's String `name` errors naming `Real` today while the Point3 \
-         `origin` is never rejected; η types geometry calls by kind and turns the inline form \
-         into E_GeometryCallInValuePosition, so \"fixing\" the call site here deletes η's \
-         recorded pre-state",
+         (docs/prds/v0_6/builtin-registry-migration-and-interception-classifier.md); \
+         \"fixing\" the call site deletes η's recorded pre-state",
     ),
 ];
 
@@ -419,11 +413,11 @@ const REJECTION_PROBE_SET_REL: &str = "tests/prd-gate/struct-ctor-conformance-pr
 /// The other two tables carry a `#NNNN` owner because their entries are RETIRED
 /// by that task's diff, and [`is_canonical_task_cite`] keeps the cite
 /// liveness-checkable. Neither applies here: these fixtures are never retired —
-/// they are the PRD's G2 headline signal made repeatable, and deleting one reds
-/// `tests/infra/test_prd_gate_struct_ctor_conformance.sh`. Naming #5306 would
-/// orphan the cite the moment δ goes done on merge, and would tell a reader that
-/// someone owes work here. What retires this table is the survey's own
-/// retirement, already documented in the harness root — not a task.
+/// each is its own PRD's or release note's rejection signal made repeatable,
+/// and deleting one reds `tests/infra/test_prd_gate_struct_ctor_conformance.sh`.
+/// Naming #5306 would orphan the cite the moment δ goes done on merge, and would
+/// tell a reader that someone owes work here. What retires this table is the
+/// survey's own retirement, already documented in the harness root — not a task.
 ///
 /// # This is NOT `SKIP_SET`, and the guard that makes that true is not a comment
 ///
