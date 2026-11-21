@@ -3,32 +3,20 @@
 
 #![cfg(all(target_os = "linux", feature = "gui"))]
 
-use std::process::{Command, Output, Stdio};
+mod common;
+
+use std::process::Output;
 
 const DMABUF: &str = "WEBKIT_DISABLE_DMABUF_RENDERER";
 
 fn print_webkit_env(dmabuf: Option<&str>) -> Output {
-    let cache_home = tempfile::tempdir().expect("tempdir for XDG_CACHE_HOME");
-
-    let mut command = Command::new(env!("CARGO_BIN_EXE_reify-gui"));
-    command
-        .arg("--print-webkit-env")
-        .env_remove("DISPLAY")
-        .env_remove("WAYLAND_DISPLAY")
-        .env("GDK_BACKEND", "x11")
-        .env_remove("REIFY_VITE_PORT")
-        .env_remove("REIFY_CACHE_DIR")
-        .env_remove("REIFY_DEBUG")
-        .env("XDG_CACHE_HOME", cache_home.path())
-        .stdin(Stdio::null());
-    match dmabuf {
-        Some(value) => command.env(DMABUF, value),
-        None => command.env_remove(DMABUF),
-    };
-
-    let output = command.output().expect("spawn reify-gui");
-    drop(cache_home);
-    output
+    common::run_hermetic_reify_gui(|command| {
+        command.arg("--print-webkit-env");
+        match dmabuf {
+            Some(value) => command.env(DMABUF, value),
+            None => command.env_remove(DMABUF),
+        };
+    })
 }
 
 fn assert_reports(output: &Output, expected_line: &str) {
