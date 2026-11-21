@@ -270,10 +270,22 @@ provision_fixture_headers() {
 # --- Guard Helper ---
 # run_guarded_cargo_check <out_file> <cmd...>
 # Runs <cmd...>, capturing combined stdout+stderr to <out_file>.
-# Returns a tri-state code safe under `set -euo pipefail`:
-#   0 — success              (caller continues to parser.c existence checks)
-#   1 — hard fail            (diagnostic already printed; caller returns 1)
-#   2 — timeout              (SKIP message printed; caller returns 0 to skip asserts)
+# Returns a code safe under `set -euo pipefail`:
+#   0            — success     (caller continues to parser.c existence checks)
+#   1            — hard fail   (diagnostic already printed; caller returns 1)
+#   TS_INFRA_RC  — <cmd...> was killed by its timeout (exit 124): no verdict.
+#                  Callers propagate it (`return "$TS_INFRA_RC"`) and run_tests ends
+#                  the suite with it; mapping it to a pass would claim a verdict
+#                  nothing reached.
+#
+# A killed build proves nothing about the code under test, so it is neither a SKIP
+# (a vacuous pass) nor a FAIL: a cold sccache or target dir, or a wait on the
+# build-directory lock, can push it past its bound (tests/infra/README.md, "Cargo
+# registry inputs: a verdict never depends on the cache"). The guard gives the
+# verdict itself, whole on stderr, so a caller that discards only the stdout chatter
+# of the FAIL it expects still shows it: the column-0 marker, a line naming the
+# command, and the tail of its output behind "  | ", so a lock wait can be told from
+# a hang.
 #
 # Uses `|| rc=$?` to capture cmd's GENUINE exit code, shielding it from
 # `set -e` (the established codebase idiom; see test_portable_timeout.sh:212).
@@ -290,8 +302,13 @@ run_guarded_cargo_check() {
     if [ "$rc" -eq 0 ]; then
         return 0
     elif [ "$rc" -eq 124 ]; then
-        echo "  SKIP: cargo check timed out after 300 s (cold/contended-cache environment)"
-        return 2
+        {
+            echo ""   # ends the case's still-open `RUN  name ... ` line: the marker is column 0
+            echo "@@REIFY_INFRA_UNAVAILABLE@@ kind=cargo_timeout rc=124 cmd=$*"
+            echo "  INFRA: $* timed out (exit 124): no verdict"
+            tail -n 20 "$out_file" | sed 's/^/  | /'
+        } >&2
+        return "$TS_INFRA_RC"
     else
         echo ""
         echo "  ASSERTION FAILED: cargo check failed (exit $rc)"
@@ -626,10 +643,11 @@ ts_reference_parser() {
 # ts_cargo_build_fixture <fixture> <out_file>
 #
 # One offline `cargo build` of a mk_ts_build_fixture crate, through
-# run_guarded_cargo_check's tri-state: 0 built, 1 failed (diagnostic printed),
-# 2 timed out (SKIP printed). Callers map 2 to `return 0`. CARGO_TARGET_DIR is
-# pinned to <fixture>/target, where ts_fixture_out_dir looks, so an ambient one
-# can neither hide the build nor make fixtures share a target dir.
+# run_guarded_cargo_check's codes: 0 built, 1 failed (diagnostic printed),
+# TS_INFRA_RC timed out (verdict printed). Callers propagate TS_INFRA_RC.
+# CARGO_TARGET_DIR is pinned to <fixture>/target, where ts_fixture_out_dir looks,
+# so an ambient one can neither hide the build nor make fixtures share a target
+# dir.
 ts_cargo_build_fixture() {
     run_guarded_cargo_check "$2" timeout 300 \
         env CARGO_TARGET_DIR="$1/target" \
@@ -2660,7 +2678,7 @@ test_build_rs_watches_all_compiled_inputs() {
     local guard_rc=0
     run_guarded_cargo_check "$cargo_out" timeout 300 cargo check -p tree-sitter-reify \
         --manifest-path "$REPO_ROOT/Cargo.toml" || guard_rc=$?
-    if [ "$guard_rc" -eq 2 ]; then return 0; fi
+    if [ "$guard_rc" -eq "$TS_INFRA_RC" ]; then return "$TS_INFRA_RC"; fi
     if [ "$guard_rc" -ne 0 ]; then return 1; fi
 
     local run_dir
@@ -2800,7 +2818,7 @@ test_build_rs_stamps_a_real_manifest_on_a_shasum_only_host() {
     local guard_rc=0
     run_guarded_cargo_check "$cargo_out" env PATH="$mask" timeout 300 cargo check \
         -p tree-sitter-reify --manifest-path "$REPO_ROOT/Cargo.toml" || guard_rc=$?
-    if [ "$guard_rc" -eq 2 ]; then return 0; fi
+    if [ "$guard_rc" -eq "$TS_INFRA_RC" ]; then return "$TS_INFRA_RC"; fi
     if [ "$guard_rc" -ne 0 ]; then return 1; fi
 
     local run_dir
@@ -3806,7 +3824,10 @@ test_fixture_build_fails_on_a_cold_registry() {
     mk_ts_build_fixture "$fix" "$va" || return 1
     home=$(mktemp -d); CLEANUP_ACTIONS+=("rm -rf '$home'")
     cargo_out=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
-    CARGO_HOME="$home" ts_cargo_build_fixture "$fix" "$cargo_out" >/dev/null 2>&1 || guard_rc=$?
+    # Only stdout is discarded, the guard's chatter for the FAIL expected here: a
+    # timeout's verdict is written to stderr and must reach the suite's stream.
+    CARGO_HOME="$home" ts_cargo_build_fixture "$fix" "$cargo_out" >/dev/null || guard_rc=$?
+    if [ "$guard_rc" -eq "$TS_INFRA_RC" ]; then return "$TS_INFRA_RC"; fi
     if [ "$guard_rc" -ne 1 ]; then
         echo ""
         echo "  ASSERTION FAILED: a fixture build on an empty CARGO_HOME must FAIL (1), got $guard_rc"
@@ -3834,7 +3855,7 @@ test_build_rs_generates_into_out_dir_and_leaves_src_untouched() {
     mk_ts_build_fixture "$fix" "$va" || return 1
     cargo_out=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
     ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
-    case "$guard_rc" in 0) ;; 2) return 0 ;; *) return 1 ;; esac
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
 
     local out f
     local -a missing=()
@@ -3878,7 +3899,7 @@ test_build_rs_never_reruns_for_or_compiles_src_generated_files() {
     mk_ts_build_fixture "$fix" "$va" || return 1
     cargo_out=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
     ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
-    case "$guard_rc" in 0) ;; 2) return 0 ;; *) return 1 ;; esac
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
 
     local out marker archive_mtime
     out=$(ts_fixture_out_dir "$fix") || return 1
@@ -3888,7 +3909,7 @@ test_build_rs_never_reruns_for_or_compiles_src_generated_files() {
     # 1. Nothing changed: a regeneration costs zero extra runs.
     guard_rc=0
     ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
-    case "$guard_rc" in 0) ;; 2) return 0 ;; *) return 1 ;; esac
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
     if [ "$(ts_fixture_marker "$fix")" != "$marker" ] \
         || [ "$(stat -c %y "$out/libtree_sitter_reify.a")" != "$archive_mtime" ]; then
         echo ""
@@ -3903,7 +3924,7 @@ test_build_rs_never_reruns_for_or_compiles_src_generated_files() {
     ts_poison_src_cli_path_files "$fix/src" || return 1
     guard_rc=0
     ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
-    case "$guard_rc" in 0) ;; 2) return 0 ;; *) return 1 ;; esac
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
     if [ "$(ts_fixture_marker "$fix")" != "$marker" ]; then
         echo ""
         echo "  ASSERTION FAILED: files the CLI path wrote into src/ reran the build script."
@@ -3914,7 +3935,7 @@ test_build_rs_never_reruns_for_or_compiles_src_generated_files() {
     ts_remove_src_cli_path_files "$fix/src"
     guard_rc=0
     ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
-    case "$guard_rc" in 0) ;; 2) return 0 ;; *) return 1 ;; esac
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
     if [ "$(ts_fixture_marker "$fix")" != "$marker" ]; then
         echo ""
         echo "  ASSERTION FAILED: deleting src/'s generated files reran the build script."
@@ -3930,7 +3951,7 @@ test_build_rs_never_reruns_for_or_compiles_src_generated_files() {
     touch "$fix/grammar.js"
     guard_rc=0
     ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
-    case "$guard_rc" in 0) ;; 2) return 0 ;; *)
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *)
         echo "  (a build that compiles anything from the poisoned src/ fails with #error)"
         return 1 ;;
     esac
@@ -3971,7 +3992,7 @@ test_build_rs_reruns_cleanly_when_src_scanner_c_is_read_only() {
 
     cargo_out=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
     ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
-    case "$guard_rc" in 0) ;; 2) return 0 ;; *) return 1 ;; esac
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
 
     local out marker
     out=$(ts_fixture_out_dir "$fix") || return 1
@@ -3981,7 +4002,7 @@ test_build_rs_reruns_cleanly_when_src_scanner_c_is_read_only() {
     touch "$fix/grammar.js" || return 1
     guard_rc=0
     ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
-    case "$guard_rc" in 0) ;; 2) return 0 ;; *)
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *)
         echo "  (the rerun over the first run's copy of a 0444 src/scanner.c failed)"
         return 1 ;;
     esac
@@ -4011,7 +4032,7 @@ test_build_rs_regenerates_a_deleted_or_modified_out_dir_output() {
     mk_ts_build_fixture "$fix" "$va" || return 1
     cargo_out=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
     ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
-    case "$guard_rc" in 0) ;; 2) return 0 ;; *) return 1 ;; esac
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
 
     local out hash_a hash_b parser_b
     out=$(ts_fixture_out_dir "$fix") || return 1
@@ -4056,7 +4077,7 @@ test_build_rs_regenerates_a_deleted_or_modified_out_dir_output() {
 
         guard_rc=0
         ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
-        case "$guard_rc" in 0) ;; 2) return 0 ;; *)
+        case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *)
             echo "  (the build that failed followed the victim $victim)"
             return 1 ;;
         esac
@@ -4093,7 +4114,7 @@ test_build_rs_regenerates_a_deleted_or_modified_out_dir_output() {
     cp "$vb" "$fix/grammar.js" || return 1
     guard_rc=0
     ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
-    case "$guard_rc" in 0) ;; 2) return 0 ;; *) return 1 ;; esac
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
     after=$(ts_sha256 "$out/src/parser.c" 2>/dev/null) || after=""
     if [ "$after" != "$hash_b" ]; then
         echo ""
@@ -4127,7 +4148,7 @@ test_build_rs_watches_the_cli_and_regenerates_on_a_version_change() {
     mk_ts_build_fixture "$fix" "$va" || return 1
     cargo_out=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
     ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
-    case "$guard_rc" in 0) ;; 2) return 0 ;; *) return 1 ;; esac
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
 
     local out real shim parser_mtime marker
     out=$(ts_fixture_out_dir "$fix") || return 1
@@ -4148,7 +4169,7 @@ SH
     touch "$fix/grammar.js"
     guard_rc=0
     PATH="$shim:$PATH" ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
-    case "$guard_rc" in 0) ;; 2) return 0 ;; *) return 1 ;; esac
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
     if [ "$(stat -c %y "$out/src/parser.c")" = "$parser_mtime" ]; then
         echo ""
         echo "  ASSERTION FAILED: a CLI reporting another version did not regenerate"
@@ -4167,7 +4188,7 @@ SH
     touch "$shim/tree-sitter"
     guard_rc=0
     PATH="$shim:$PATH" ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
-    case "$guard_rc" in 0) ;; 2) return 0 ;; *) return 1 ;; esac
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
     if [ "$(ts_fixture_marker "$fix")" = "$marker" ]; then
         echo ""
         echo "  ASSERTION FAILED: touching the resolved CLI alone did not rerun the build script"
@@ -4177,7 +4198,7 @@ SH
     marker=$(ts_fixture_marker "$fix") || return 1
     guard_rc=0
     PATH="$shim:$PATH" ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
-    case "$guard_rc" in 0) ;; 2) return 0 ;; *) return 1 ;; esac
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
     if [ "$(ts_fixture_marker "$fix")" != "$marker" ]; then
         echo ""
         echo "  ASSERTION FAILED: a build with nothing changed reran the build script"
@@ -4202,7 +4223,7 @@ test_freshness_detects_and_repairs_a_stale_archive() {
     mk_ts_build_fixture "$fix" "$va" || return 1
     cargo_out=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
     ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
-    case "$guard_rc" in 0) ;; 2) return 0 ;; *) return 1 ;; esac
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
 
     local out dir_name parser_b
     out=$(ts_fixture_out_dir "$fix") || return 1
@@ -4228,7 +4249,7 @@ test_freshness_detects_and_repairs_a_stale_archive() {
     marker=$(ts_fixture_marker "$fix") || return 1
     guard_rc=0
     ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
-    case "$guard_rc" in 0) ;; 2) return 0 ;; *) return 1 ;; esac
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
     if [ "$(ts_fixture_marker "$fix")" != "$marker" ]; then
         echo ""
         echo "  ASSERTION FAILED: the rewound grammar.js reran the build script, so no"
@@ -4262,7 +4283,7 @@ test_freshness_detects_and_repairs_a_stale_archive() {
 
     guard_rc=0
     ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
-    case "$guard_rc" in 0) ;; 2) return 0 ;; *) return 1 ;; esac
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
     local after
     after=$(ts_sha256 "$out/src/parser.c" 2>/dev/null) || after=""
     if [ "$after" != "$(ts_sha256 "$parser_b")" ]; then
