@@ -61,6 +61,16 @@ impl ParsedModule {
         ParseError::render_all(&self.errors, source)
     }
 
+    /// The 1-based `(line, col)` of each parse error against `source`, with its message, in
+    /// parse order, by the same INV-SF-7 position rule as [`render_errors`](Self::render_errors).
+    /// Returns primitives so a caller that cannot name `reify-ast` types (`reify-cli`) formats
+    /// the line itself.
+    pub fn error_positions(&self, source: &str) -> Vec<((usize, usize), &str)> {
+        ParseError::locate_each(&self.errors, source, |e, line, col| {
+            ((line, col), e.message.as_str())
+        })
+    }
+
     /// Render every parse error against `source` as `path:line:col: label: message`, in parse
     /// order — the GNU shape a multi-file report gives every located line.
     ///
@@ -68,7 +78,7 @@ impl ParsedModule {
     /// degenerate inputs included, and are batched the same way. The caller supplies `label`,
     /// so the CLI keeps a single label for both of its parse-error line shapes.
     pub fn render_errors_in(&self, path: &str, label: &str, source: &str) -> Vec<String> {
-        ParseError::render_each(&self.errors, source, |e, line, col| {
+        ParseError::locate_each(&self.errors, source, |e, line, col| {
             format!("{path}:{line}:{col}: {label}: {}", e.message)
         })
     }
@@ -1935,19 +1945,20 @@ impl ParseError {
     /// parse), each of which would re-scan the whole source from byte 0.
     ///
     /// Same output as mapping [`render`](Self::render), one string per input error, in order —
-    /// by construction, since both resolve positions through `line_col_with_offsets` and
-    /// format through `render_at`.
+    /// by construction, since both resolve positions through `line_col_with_offsets` (via
+    /// `locate_each`) and format through `render_at`.
     pub fn render_all(errors: &[ParseError], source: &str) -> Vec<String> {
-        Self::render_each(errors, source, Self::render_at)
+        Self::locate_each(errors, source, Self::render_at)
     }
 
-    /// The batching policy every list renderer shares: resolve each error's position against
-    /// ONE newline table for the whole list, then let `format_line` give it its line shape.
-    fn render_each(
-        errors: &[ParseError],
+    /// The batching policy every list consumer shares: resolve each error's position against
+    /// ONE newline table for the whole list, then let `at` turn the error and its position
+    /// into an output.
+    fn locate_each<'a, T>(
+        errors: &'a [ParseError],
         source: &str,
-        format_line: impl Fn(&ParseError, usize, usize) -> String,
-    ) -> Vec<String> {
+        at: impl Fn(&'a ParseError, usize, usize) -> T,
+    ) -> Vec<T> {
         // The only short-circuit worth having: with nothing to render, the table would be a
         // scan of the whole source for no lookups at all. A SINGLE error is deliberately NOT
         // special-cased — `render` builds exactly this same table to serve its one lookup, so
@@ -1960,7 +1971,7 @@ impl ParseError {
             .iter()
             .map(|e| {
                 let (line, col) = e.line_col_with_offsets(source, &line_offsets);
-                format_line(e, line, col)
+                at(e, line, col)
             })
             .collect()
     }
