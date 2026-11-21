@@ -94,7 +94,9 @@ fn check_failing_fn(
     _cancellation: &CancellationHandle,
 ) -> ComputeOutcome {
     ComputeOutcome::Failed {
-        diagnostics: vec![Diagnostic::error("synthetic solver failure: degenerate mesh")],
+        diagnostics: vec![Diagnostic::error(
+            "synthetic solver failure: degenerate mesh",
+        )],
         structured_detail: vec![],
     }
 }
@@ -205,8 +207,9 @@ fn assert_failure_attributed(
         "{surface}: {id} must be attributed to the failed trampoline"
     );
     assert!(
-        diagnostics.iter().any(|d| d.severity == Severity::Error
-            && d.message.contains(expected_error_fragment)),
+        diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error && d.message.contains(expected_error_fragment)),
         "{surface}: the trampoline's Error containing {expected_error_fragment:?} must be \
          forwarded; got {diagnostics:#?}"
     );

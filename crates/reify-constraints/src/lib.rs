@@ -50,10 +50,13 @@ pub use solver::{DimensionalSolver, TrialModel};
 pub use solver::build_centrality_objective;
 pub use solvespace::{SolveSpaceSolver, solve_sketch};
 
-use reify_core::{Diagnostic, DiagnosticCode};
+use std::sync::OnceLock;
+
+use reify_core::{ConstraintNodeId, Diagnostic, DiagnosticCode};
 use reify_ir::{
-    ComputeDispatch, ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult,
-    IndeterminateReason, Satisfaction, TransientReason, Value,
+    CompiledExpr, ComputeDispatch, ComputeDispatchFailure, ComputeDispatchOutcome,
+    ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult,
+    IndeterminateReason, Satisfaction, TransientReason, Value, ValueMap,
 };
 
 /// Does any leaf operand of `expr` resolve to `Undef` in `values`?
@@ -166,70 +169,149 @@ impl ConstraintChecker for SimpleConstraintChecker {
         input
             .constraints
             .iter()
-            .map(|(id, expr)| {
-                let ctx = reify_expr::EvalContext::new(input.values, input.functions);
-                let ctx = if let Some(det) = input.determinacy {
-                    ctx.with_determinacy(det)
-                } else {
-                    ctx
-                };
-                let ctx = match dispatch {
-                    Some(d) => ctx.with_compute_dispatch(d),
-                    None => ctx,
-                };
-                let value = reify_expr::eval_expr(expr, &ctx);
-                let (satisfaction, diagnostics, indeterminate_reason) = match value {
-                    Value::Bool(true) => {
-                        (Satisfaction::Satisfied, ConstraintDiagnostics::default(), None)
-                    }
-                    Value::Bool(false) => (
-                        Satisfaction::Violated,
-                        ConstraintDiagnostics {
-                            messages: vec![
-                                Diagnostic::error(format!("constraint {} violated", id))
-                                    .with_code(DiagnosticCode::ConstraintViolated),
-                            ],
-                        },
-                        None,
-                    ),
-                    Value::Undef => {
-                        let reason =
-                            IndeterminateReason::Transient(classify_undef(expr, input.values));
-                        let message = format!("constraint {} indeterminate: {}", id, reason);
-                        (
-                            Satisfaction::Indeterminate,
-                            ConstraintDiagnostics {
-                                messages: vec![
-                                    Diagnostic::warning(message)
-                                        .with_code(DiagnosticCode::ConstraintIndeterminate),
-                                ],
-                            },
-                            Some(reason),
-                        )
-                    }
-                    _ => (
-                        Satisfaction::Violated,
-                        ConstraintDiagnostics {
-                            messages: vec![
-                                Diagnostic::error(format!(
-                                    "constraint {} evaluated to non-boolean value",
-                                    id
-                                ))
-                                .with_code(DiagnosticCode::ConstraintViolated),
-                            ],
-                        },
-                        None,
-                    ),
-                };
-
-                ConstraintResult {
-                    id: id.clone(),
-                    satisfaction,
-                    diagnostics,
-                    indeterminate_reason,
-                }
-            })
+            .map(|(id, expr)| check_one(id, expr, input, dispatch))
             .collect()
+    }
+}
+
+/// Evaluate and judge one constraint. A supplied dispatcher is wrapped for
+/// this evaluation only, so a failed `@optimized` call it reaches can
+/// attribute an Indeterminate verdict.
+fn check_one(
+    id: &ConstraintNodeId,
+    expr: &CompiledExpr,
+    input: &ConstraintInput,
+    dispatch: Option<&dyn ComputeDispatch>,
+) -> ConstraintResult {
+    let recorder = dispatch.map(FailureRecordingDispatch::new);
+    let value = evaluate(expr, input, recorder.as_ref());
+    let (satisfaction, diagnostics, indeterminate_reason) = match value {
+        Value::Bool(true) => (
+            Satisfaction::Satisfied,
+            ConstraintDiagnostics::default(),
+            None,
+        ),
+        Value::Bool(false) => (
+            Satisfaction::Violated,
+            ConstraintDiagnostics {
+                messages: vec![
+                    Diagnostic::error(format!("constraint {} violated", id))
+                        .with_code(DiagnosticCode::ConstraintViolated),
+                ],
+            },
+            None,
+        ),
+        Value::Undef => indeterminate_result(
+            id,
+            expr,
+            input.values,
+            recorder.and_then(FailureRecordingDispatch::into_first_failure),
+        ),
+        _ => (
+            Satisfaction::Violated,
+            ConstraintDiagnostics {
+                messages: vec![
+                    Diagnostic::error(format!("constraint {} evaluated to non-boolean value", id))
+                        .with_code(DiagnosticCode::ConstraintViolated),
+                ],
+            },
+            None,
+        ),
+    };
+    ConstraintResult {
+        id: id.clone(),
+        satisfaction,
+        diagnostics,
+        indeterminate_reason,
+    }
+}
+
+fn evaluate(
+    expr: &CompiledExpr,
+    input: &ConstraintInput,
+    dispatch: Option<&FailureRecordingDispatch<'_>>,
+) -> Value {
+    let ctx = reify_expr::EvalContext::new(input.values, input.functions);
+    let ctx = match input.determinacy {
+        Some(det) => ctx.with_determinacy(det),
+        None => ctx,
+    };
+    let ctx = match dispatch {
+        Some(d) => ctx.with_compute_dispatch(d),
+        None => ctx,
+    };
+    reify_expr::eval_expr(expr, &ctx)
+}
+
+/// The verdict for a constraint that evaluated to `Undef`.
+///
+/// A recorded dispatch failure replaces only the all-leaves-defined guess
+/// (`OperatorUndefinedForKinds`): an undefined input is the more upstream
+/// cause and keeps precedence. The failure's own diagnostics follow the
+/// indeterminate warning at their producer's severity.
+fn indeterminate_result(
+    id: &ConstraintNodeId,
+    expr: &CompiledExpr,
+    values: &ValueMap,
+    failure: Option<(String, ComputeDispatchFailure)>,
+) -> (
+    Satisfaction,
+    ConstraintDiagnostics,
+    Option<IndeterminateReason>,
+) {
+    let (reason, forwarded) = match (classify_undef(expr, values), failure) {
+        (TransientReason::OperatorUndefinedForKinds { .. }, Some((target, failure))) => (
+            TransientReason::ComputeDispatchFailed {
+                target,
+                kind: failure.kind,
+            },
+            failure.diagnostics,
+        ),
+        (reason, _) => (reason, Vec::new()),
+    };
+    let reason = IndeterminateReason::Transient(reason);
+    let mut messages = vec![
+        Diagnostic::warning(format!("constraint {} indeterminate: {}", id, reason))
+            .with_code(DiagnosticCode::ConstraintIndeterminate),
+    ];
+    messages.extend(forwarded);
+    (
+        Satisfaction::Indeterminate,
+        ConstraintDiagnostics { messages },
+        Some(reason),
+    )
+}
+
+/// Forwards every call to `inner` unchanged and keeps the first `Failed`
+/// outcome with its target, so the reason (which names one target) and the
+/// forwarded diagnostics describe the same event. `OnceLock` because the
+/// trait is `Send + Sync`.
+struct FailureRecordingDispatch<'a> {
+    inner: &'a dyn ComputeDispatch,
+    first_failure: OnceLock<(String, ComputeDispatchFailure)>,
+}
+
+impl<'a> FailureRecordingDispatch<'a> {
+    fn new(inner: &'a dyn ComputeDispatch) -> Self {
+        Self {
+            inner,
+            first_failure: OnceLock::new(),
+        }
+    }
+
+    fn into_first_failure(self) -> Option<(String, ComputeDispatchFailure)> {
+        self.first_failure.into_inner()
+    }
+}
+
+impl ComputeDispatch for FailureRecordingDispatch<'_> {
+    fn dispatch(&self, target: &str, args: &[Value]) -> ComputeDispatchOutcome {
+        let outcome = self.inner.dispatch(target, args);
+        if let ComputeDispatchOutcome::Failed(failure) = &outcome {
+            self.first_failure
+                .get_or_init(|| (target.to_owned(), failure.clone()));
+        }
+        outcome
     }
 }
 
@@ -896,7 +978,9 @@ mod tests {
                 return ComputeDispatchOutcome::Unregistered;
             }
             let diagnostics = match self.kind {
-                ComputeFailureKind::Failed => vec![Diagnostic::error("stiffness matrix is singular")],
+                ComputeFailureKind::Failed => {
+                    vec![Diagnostic::error("stiffness matrix is singular")]
+                }
                 ComputeFailureKind::Cancelled => vec![],
             };
             ComputeDispatchOutcome::Failed(ComputeDispatchFailure {
@@ -953,7 +1037,11 @@ mod tests {
             },
         );
 
-        assert_eq!(result.satisfaction, Satisfaction::Indeterminate, "{result:?}");
+        assert_eq!(
+            result.satisfaction,
+            Satisfaction::Indeterminate,
+            "{result:?}"
+        );
         assert_eq!(
             result.indeterminate_reason,
             compute_failed(ComputeFailureKind::Failed)
@@ -985,7 +1073,11 @@ mod tests {
             },
         );
 
-        assert_eq!(result.satisfaction, Satisfaction::Indeterminate, "{result:?}");
+        assert_eq!(
+            result.satisfaction,
+            Satisfaction::Indeterminate,
+            "{result:?}"
+        );
         assert_eq!(
             result.indeterminate_reason,
             compute_failed(ComputeFailureKind::Cancelled)
@@ -1015,12 +1107,18 @@ mod tests {
             },
         );
 
-        assert_eq!(result.satisfaction, Satisfaction::Indeterminate, "{result:?}");
+        assert_eq!(
+            result.satisfaction,
+            Satisfaction::Indeterminate,
+            "{result:?}"
+        );
         assert_eq!(
             result.indeterminate_reason,
-            Some(IndeterminateReason::Transient(TransientReason::UndefInputs {
-                cells: vec![vcid("Probe", "bound")],
-            }))
+            Some(IndeterminateReason::Transient(
+                TransientReason::UndefInputs {
+                    cells: vec![vcid("Probe", "bound")],
+                }
+            ))
         );
         assert!(
             error_messages(&result).is_empty(),
