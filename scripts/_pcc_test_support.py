@@ -8,8 +8,9 @@ the recording fake runner, the binary-trust fixtures (profile binaries, the
 sidecar, a hook-safe git repo, and the trust ctx built over them), the
 grammar-e2e and reify-e2e skip-guards (with the un-memoized grammar status it
 wraps; the reify-e2e policy itself lives in _pdv_test_support), the measured
-cache-denial signature and the shared TREE_SITTER_BIN stub factories.  A
-fixture only one partition uses lives in that partition.  It imports no test
+cache-denial signature, the shared TREE_SITTER_BIN stub factories and the
+grammar-generator stub factories.  A fixture only one partition uses lives in
+that partition.  It imports no test
 file and defines no TestCase.  Run the suite through
 tests/infra/test_prd_capability_check.sh, or one partition at a time with
 `python3 scripts/test_pcc_<area>.py`.
@@ -373,3 +374,39 @@ def _ts_stub_not_executable(tmpdir: str, name: str = "ts_stub_not_exec") -> str:
     path = _write_ts_stub(tmpdir, name, "exit 0\n")
     os.chmod(path, 0o644)
     return path
+
+
+# ---------------------------------------------------------------------------
+# Grammar-generator stub factories used by more than one partition, so they all
+# share one definition of "what a succeeding / failing / no-op generator looks
+# like".  Each records its run in `marker`.
+# ---------------------------------------------------------------------------
+
+def _generator_stub_succeeds(tmpdir, repo_root, marker):
+    """A generator that records its run in `marker`, writes parser.c and reports on stdout."""
+    src = os.path.join(repo_root, "tree-sitter-reify", "src")
+    return _write_ts_stub(tmpdir, "generate_succeeds", f"""\
+        echo run >> {shlex.quote(marker)}
+        mkdir -p {shlex.quote(src)}
+        : > {shlex.quote(os.path.join(src, "parser.c"))}
+        echo "tree-sitter: generated parser files"
+        exit 0
+    """)
+
+
+def _generator_stub_fails(tmpdir, marker):
+    """A generator that records its run in `marker` and fails as a lane without the CLI does."""
+    return _write_ts_stub(tmpdir, "generate_fails", f"""\
+        echo run >> {shlex.quote(marker)}
+        echo "ERROR: tree-sitter CLI not found on PATH." >&2
+        echo "Install via: cargo install tree-sitter-cli" >&2
+        exit 1
+    """)
+
+
+def _generator_stub_writes_nothing(tmpdir, marker):
+    """A generator that records its run in `marker` and exits 0 without writing parser.c."""
+    return _write_ts_stub(tmpdir, "generate_writes_nothing", f"""\
+        echo run >> {shlex.quote(marker)}
+        exit 0
+    """)
