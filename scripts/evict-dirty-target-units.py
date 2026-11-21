@@ -25,8 +25,15 @@ NOT JUDGED, because each lane's cargo already judges them correctly:
 - records with no RerunIfChanged entry.
 cargo metadata is asked for member roots only when a record needs judging.
 
+FAILS CLOSED: a record outside the shape below (KNOWN_LOCAL_KINDS, one
+RerunIfChanged with a str `output` inside the target and list[str] `paths`,
+a <package>-<16 lowercase hex> fingerprint dir), a cargo metadata failure or
+a failed unlink exits 1. Every record is judged before the first unlink.
+
 Usage: evict-dirty-target-units.py --build-root DIR TARGET_DIR
-stdout stays empty; each eviction and a closing summary go to stderr.
+Exit: 0 judged; 1 refused (one `evict-dirty-target-units: <path>: <reason>`
+line); 2 usage. stdout stays empty; each eviction and a closing summary go to
+stderr.
 """
 
 import argparse
@@ -44,6 +51,22 @@ RECORD_GLOB_DEPTHS = (  # <profile>/ and <triple>/<profile>/
     "*/*/.fingerprint/*/run-build-script-*.json",
 )
 UNIT_DIR = re.compile(r"^(.+)-([0-9a-f]{16})$")
+KNOWN_LOCAL_KINDS = frozenset({"RerunIfChanged", "RerunIfEnvChanged", "Precalculated",
+                               "CheckDepInfo"})
+METADATA_STDERR_TAIL_LINES = 5
+
+
+class Refusal(Exception):
+    """A condition under which nothing more is deleted and the script exits 1."""
+
+    def __init__(self, path, reason):
+        super().__init__(f"{path}: {reason}")
+        self.path = path
+        self.reason = reason
+
+
+class RecordError(Refusal):
+    """A run-build-script record outside the shape this script can judge."""
 
 
 @dataclass(frozen=True)
@@ -69,24 +92,81 @@ def discover(target):
 
 
 def parse_record(json_path):
-    package = UNIT_DIR.match(os.path.basename(os.path.dirname(json_path))).group(1)
-    with open(json_path, encoding="utf-8") as handle:
-        local = json.load(handle)["local"]
-    for entry in local:
-        if "RerunIfChanged" in entry:
-            rerun = entry["RerunIfChanged"]
-            return RunRecord(json_path, package, rerun["output"], tuple(rerun["paths"]))
-    return RunRecord(json_path, package, None, None)
+    unit_dir = os.path.basename(os.path.dirname(json_path))
+    match = UNIT_DIR.match(unit_dir)
+    if match is None:
+        raise RecordError(json_path, f"fingerprint dir {unit_dir!r} is not "
+                                     f"<package>-<16 lowercase hex>")
+    rerun = rerun_if_changed(json_path, read_local(json_path))
+    if rerun is None:
+        return RunRecord(json_path, match.group(1), None, None)
+    return RunRecord(json_path, match.group(1), *rerun)
+
+
+def read_local(json_path):
+    try:
+        with open(json_path, encoding="utf-8") as handle:
+            record = json.load(handle)
+    except (OSError, ValueError) as error:
+        raise RecordError(json_path, f"not a readable JSON record ({error})") from None
+    local = record.get("local") if isinstance(record, dict) else None
+    if not isinstance(local, list):
+        raise RecordError(json_path, "has no `local` list")
+    return local
+
+
+def rerun_if_changed(json_path, local):
+    """(output_rel, inputs) of the record's RerunIfChanged entry, or None."""
+    entries = [entry for entry in local if local_kind(json_path, entry) == "RerunIfChanged"]
+    if len(entries) > 1:
+        raise RecordError(json_path, "has more than one RerunIfChanged entry")
+    return validated_rerun(json_path, entries[0]["RerunIfChanged"]) if entries else None
+
+
+def local_kind(json_path, entry):
+    if not (isinstance(entry, dict) and len(entry) == 1):
+        raise RecordError(json_path, f"`local` entry {entry!r} is not a single-key object")
+    (kind,) = entry
+    if kind not in KNOWN_LOCAL_KINDS:
+        raise RecordError(json_path, f"unknown LocalFingerprint kind {kind!r}: "
+                                     f"cargo's fingerprint format changed")
+    return kind
+
+
+def validated_rerun(json_path, rerun):
+    output = rerun.get("output") if isinstance(rerun, dict) else None
+    paths = rerun.get("paths") if isinstance(rerun, dict) else None
+    if not (isinstance(output, str) and is_relative_inside(output)):
+        raise RecordError(json_path, f"RerunIfChanged output {output!r} is not a "
+                                     f"relative path inside the target")
+    if not (isinstance(paths, list) and all(isinstance(path, str) for path in paths)):
+        raise RecordError(json_path, "RerunIfChanged paths is not a list of strings")
+    return output, tuple(paths)
+
+
+def is_relative_inside(path):
+    norm = os.path.normpath(path)
+    return not os.path.isabs(norm) and norm.split(os.sep)[0] not in (os.curdir, os.pardir)
 
 
 def member_roots(build_root):
     """Workspace member name -> realpath of its package root, per cargo."""
-    result = subprocess.run(
-        ["cargo", "metadata", "--format-version", "1", "--no-deps", "--offline",
-         "--manifest-path", os.path.join(build_root, "Cargo.toml")],
-        capture_output=True, text=True, check=True)
-    return {package["name"]: os.path.realpath(os.path.dirname(package["manifest_path"]))
-            for package in json.loads(result.stdout)["packages"]}
+    manifest = os.path.join(build_root, "Cargo.toml")
+    argv = ["cargo", "metadata", "--format-version", "1", "--no-deps", "--offline",
+            "--manifest-path", manifest]
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, check=False)
+    except OSError as error:
+        raise Refusal(manifest, f"cargo metadata could not run ({error})") from None
+    if result.returncode != 0:
+        tail = " | ".join(result.stderr.strip().splitlines()[-METADATA_STDERR_TAIL_LINES:])
+        raise Refusal(manifest, f"cargo metadata exited {result.returncode}: {tail}")
+    try:
+        packages = json.loads(result.stdout)["packages"]
+        return {package["name"]: os.path.realpath(os.path.dirname(package["manifest_path"]))
+                for package in packages}
+    except (ValueError, KeyError, TypeError) as error:
+        raise Refusal(manifest, f"cargo metadata printed no package list ({error!r})") from None
 
 
 def newest_mtime_ns(path):
@@ -134,11 +214,37 @@ def offending_input(record, pkg_root, build_root, reference_ns):
 
 def judge(record, pkg_root, build_root, target):
     """The eviction `record` needs, or None when it is fresh or has no output."""
+    output = os.path.join(target, record.output_rel)
     try:
-        reference_ns = os.stat(os.path.join(target, record.output_rel)).st_mtime_ns
+        reference_ns = os.stat(output).st_mtime_ns
     except FileNotFoundError:
         return None
+    except OSError as error:
+        raise Refusal(output, f"cannot stat ({error})") from None
     return offending_input(record, pkg_root, build_root, reference_ns)
+
+
+def judge_target(target, build_root):
+    """(records found, member runs judged, the evictions they need)."""
+    records = [parse_record(path) for path in discover(target)]
+    rerun_records = [record for record in records if record.inputs is not None]
+    roots = member_roots(build_root) if rerun_records else {}
+    member_records = [record for record in rerun_records if record.package in roots]
+    real_root = os.path.realpath(build_root)
+    evictions = [eviction for eviction in (
+        judge(record, roots[record.package], real_root, target)
+        for record in member_records) if eviction is not None]
+    return len(records), len(member_records), evictions
+
+
+def evict(target, eviction):
+    output = os.path.join(target, eviction.output_rel)
+    try:
+        os.unlink(output)
+    except OSError as error:
+        raise Refusal(output, f"unlink failed ({error})") from None
+    print(f"evicted {eviction.output_rel}: {eviction.offending} {eviction.why}",
+          file=sys.stderr)
 
 
 def parse_args(argv):
@@ -148,25 +254,24 @@ def parse_args(argv):
     parser.add_argument("--build-root", required=True, metavar="DIR",
                         help="the worktree the target was built from")
     parser.add_argument("target", metavar="TARGET_DIR", help="the cargo target dir to trim")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    for flag, path in (("--build-root", args.build_root), ("TARGET_DIR", args.target)):
+        if not os.path.isdir(path):
+            parser.error(f"{flag} {path} is not a directory")
+    return args
 
 
 def main(argv=None):
     args = parse_args(argv)
-    records = [parse_record(path) for path in discover(args.target)]
-    rerun_records = [record for record in records if record.inputs is not None]
-    roots = member_roots(args.build_root) if rerun_records else {}
-    member_records = [record for record in rerun_records if record.package in roots]
-    build_root = os.path.realpath(args.build_root)
-    evictions = [eviction for eviction in (
-        judge(record, roots[record.package], build_root, args.target)
-        for record in member_records) if eviction is not None]
-    for eviction in evictions:
-        os.unlink(os.path.join(args.target, eviction.output_rel))
-        print(f"evicted {eviction.output_rel}: {eviction.offending} {eviction.why}",
-              file=sys.stderr)
-    print(f"{PROG}: records={len(records)} judged={len(member_records)} "
-          f"evicted={len(evictions)}", file=sys.stderr)
+    try:
+        found, judged, evictions = judge_target(args.target, args.build_root)
+        for eviction in evictions:
+            evict(args.target, eviction)
+    except Refusal as refusal:
+        print(f"{PROG}: {refusal.path}: {refusal.reason}", file=sys.stderr)
+        return 1
+    print(f"{PROG}: records={found} judged={judged} evicted={len(evictions)}",
+          file=sys.stderr)
     return 0
 
 
