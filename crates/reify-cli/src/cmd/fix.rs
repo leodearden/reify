@@ -11,7 +11,7 @@ use reify_compiler::import_headers::{self, GatedOffImports, RequiredImport};
 use reify_core::{Diagnostic, ModulePath};
 
 use crate::args::split_cfg_args_or_usage;
-use crate::diagnostic_line::render_diagnostic_line;
+use crate::diagnostic_line::{render_diagnostic_line, render_parse_error_line};
 use crate::help::FIX_USAGE;
 
 struct FixArgs<'a> {
@@ -70,8 +70,8 @@ fn fix_imports(path: &str, check_only: bool, cfg: &CfgSet) -> bool {
     };
     let parsed = reify_compiler::parse_with_stdlib(&source, crate::module_path_for_file(path));
     if !parsed.errors.is_empty() {
-        for line in parsed.render_errors_in(path, crate::PARSE_ERROR_LABEL, &source) {
-            eprintln!("{line}");
+        for (position, message) in parsed.error_positions(&source) {
+            eprintln!("{}", render_parse_error_line(path, position, message));
         }
         return false;
     }

@@ -331,10 +331,74 @@ fn each_parse_error_line_leads_with_its_file_line_and_column_when_several_are_fi
             "{reported:?} must locate a position in the file\n{}",
             describe(&output)
         );
-        let message = message.strip_prefix(" Parse error: ").unwrap_or_else(|| {
-            panic!("{reported:?} must label its message\n{}", describe(&output))
-        });
+        let message = message
+            .strip_prefix(" error: Parse error: ")
+            .unwrap_or_else(|| {
+                panic!(
+                    "{reported:?} must carry the `error` severity and the parse-error label \
+                     before its message\n{}",
+                    describe(&output)
+                )
+            });
         assert!(!message.is_empty(), "{}", describe(&output));
+    }
+}
+
+/// Whether `line` matches `^.+:\d+:\d+: (warning|error): `, the shape VS Code's strict `$gcc`
+/// problem matcher accepts.
+fn matches_gcc_problem_matcher(line: &str) -> bool {
+    let is_number = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    ["error", "warning"].iter().any(|severity| {
+        line.match_indices(&format!(": {severity}: "))
+            .any(|(at, _)| {
+                line[..at]
+                    .rsplit_once(':')
+                    .and_then(|(rest, col)| Some((rest.rsplit_once(':')?, col)))
+                    .is_some_and(|((path, line_no), col)| {
+                        !path.is_empty() && is_number(line_no) && is_number(col)
+                    })
+            })
+    })
+}
+
+#[test]
+fn parse_error_and_residual_lines_both_match_a_strict_gcc_problem_matcher() {
+    assert!(matches_gcc_problem_matcher("f.ri:3:20: error: m"));
+    assert!(
+        !matches_gcc_problem_matcher("f.ri:3:20: Parse error: m"),
+        "a line without a severity word after its position must not match"
+    );
+
+    let dir = tempdir().expect("tempdir");
+    let broken = write_ri(dir.path(), "broken.ri", BROKEN);
+    let plate = write_ri(dir.path(), "plate.ri", TYPE_PARAM_HIDES_COLOR);
+
+    let output = run_reify(&["fix", "--imports", &broken, &plate]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let parse_errors: Vec<&str> = stderr
+        .lines()
+        .filter(|line| line.starts_with(&format!("{broken}:")))
+        .collect();
+    let residuals: Vec<&str> = stderr
+        .lines()
+        .filter(|line| line.starts_with(&format!("{plate}:")) && !line.contains("not writing"))
+        .collect();
+    assert!(
+        !parse_errors.is_empty(),
+        "expected parse-error lines\n{}",
+        describe(&output)
+    );
+    assert!(
+        !residuals.is_empty(),
+        "expected residual lines\n{}",
+        describe(&output)
+    );
+    for reported in parse_errors.iter().chain(&residuals) {
+        assert!(
+            matches_gcc_problem_matcher(reported),
+            "{reported:?} must match the `$gcc` problem matcher\n{}",
+            describe(&output)
+        );
     }
 }
 

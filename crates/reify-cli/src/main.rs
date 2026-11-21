@@ -39,6 +39,7 @@ mod diagnostic_line;
 mod help;
 mod module_capabilities;
 mod sigpipe;
+use diagnostic_line::PARSE_ERROR_LABEL;
 use help::Command;
 use reify_core::ModulePath;
 
@@ -107,15 +108,10 @@ fn main() -> ExitCode {
     }
 }
 
-/// The label on every parse-error line the CLI writes: the single-file lines
-/// `report_parse_errors` writes, and the GNU `path:line:col:` lines `cmd::fix` renders through
-/// `ParsedModule::render_errors_in`.
-const PARSE_ERROR_LABEL: &str = "Parse error";
-
 /// Write already-rendered parse errors to `out` and yield the exit code a parse failure
 /// gets, so every program-compiling command writes the same prefix and exits the same way.
-/// The label in that prefix is `PARSE_ERROR_LABEL`, shared with the GNU `path:line:col:` lines
-/// `cmd::fix` renders through `ParsedModule::render_errors_in`.
+/// The label in that prefix is `PARSE_ERROR_LABEL`; the GNU-shape sibling of this line, which
+/// `cmd::fix` writes, is `diagnostic_line::render_parse_error_line`.
 ///
 /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
 /// Takes the RENDERED `line:col: message` strings rather than the `ParsedModule` they came
