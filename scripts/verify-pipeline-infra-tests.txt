@@ -130,6 +130,14 @@ scripts/verify.sh                    tests/infra/test_refresh_warm_base_built_tr
 scripts/evict-dirty-target-units.py  tests/infra/test_evict_dirty_target_units.sh
 tests/infra/test_evict_dirty_target_units.py  tests/infra/test_evict_dirty_target_units.sh
 scripts/refresh-warm-base.sh         tests/infra/test_evict_dirty_target_units.sh
+# The real evictor also runs in place inside test_refresh_warm_base.sh's
+# refreshes, as the prune sibling does, so an evictor edit selects that suite.
+scripts/evict-dirty-target-units.py  tests/infra/test_refresh_warm_base.sh
+# The suites that run a COPY of refresh-warm-base.sh stage it, with its
+# siblings, through one shared harness module, so an edit to it selects each.
+tests/infra/refresh_warm_base_harness.py  tests/infra/test_evict_dirty_target_units.sh
+tests/infra/refresh_warm_base_harness.py  tests/infra/test_prune_unconsulted_target.sh
+tests/infra/refresh_warm_base_harness.py  tests/infra/test_refresh_warm_base_built_tree.sh
 # Task 9246: the cron sweep of idle worktree targets exempts _merge-verify and
 # respects each worktree's lane lock, pinned by a .py suite behind a thin .sh
 # wrapper, same pair shape.

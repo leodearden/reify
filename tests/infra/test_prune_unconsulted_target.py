@@ -27,14 +27,19 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+INFRA_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(INFRA_DIR))
+import refresh_warm_base_harness as refresh_harness  # noqa: E402
+from refresh_warm_base_harness import env_without, write_executable  # noqa: E402
+
+REPO_ROOT = INFRA_DIR.parents[1]
 SCRIPT = REPO_ROOT / "scripts" / "prune-unconsulted-target.sh"
-REFRESH = REPO_ROOT / "scripts" / "refresh-warm-base.sh"
 
 DAY = 24 * 3600
 ANCHOR = datetime(2026, 3, 10, tzinfo=timezone.utc).timestamp()
@@ -65,15 +70,6 @@ sed -n "${n}p" "$REIFY_TEST_DF_SEQ_FILE"
 """
 
 GIB = 1024 ** 3
-
-
-def write_executable(path, body):
-    path.write_text(body)
-    path.chmod(0o755)
-
-
-def env_without(*prefixes):
-    return {k: v for k, v in os.environ.items() if not k.startswith(prefixes)}
 
 
 def make_unit(profile, pkg, hash16, last_use, deps_names):
@@ -757,19 +753,12 @@ exit 0
 class RefreshDelegation(PruneHarness):
     """refresh-warm-base.sh's Step 3b prune comes ONLY from its sibling
     prune-unconsulted-target.sh: with a no-op sibling nothing is pruned, and
-    with no sibling the refresh fails closed rather than skipping the prune."""
+    with no sibling the refresh fails closed rather than skipping the prune.
+    Staged by refresh_warm_base_harness with the prune sibling left out."""
 
     def setUp(self):
         super().setUp()
-        real_cp = shutil.which("cp")
-        self.write_stub("cp", f"""#!/usr/bin/env bash
-args=()
-for a in "$@"; do
-    [ "$a" = "--reflink=always" ] && continue
-    args+=("$a")
-done
-exec {real_cp} "${{args[@]}}"
-""")
+        refresh_harness.install_cp_stub(self.stub_dir)
         self.lane = self.make_git_lane(self.tmp / "lane")
         self.advancing = self.lane / "advancing"
         make_anchor(self.advancing / "debug")
@@ -777,32 +766,22 @@ exec {real_cp} "${{args[@]}}"
                               ANCHOR - 37 * DAY, ["libdead-deadbeef00009246.rlib"])
         self.base = self.tmp / "base"
         self.scripts_dir = self.tmp / "scripts"
-        self.scripts_dir.mkdir()
-        self.refresh = self.scripts_dir / REFRESH.name
-        shutil.copy2(REFRESH, self.refresh)
-        write_executable(self.scripts_dir / "evict-dirty-target-units.py", "#!/bin/sh\nexit 0\n")
+        self.refresh = refresh_harness.stage_refresh(self.scripts_dir, absent=(SCRIPT.name,))
         self.record = self.tmp / "prune-record"
         self.record.touch()
-
-    def git(self, *args):
-        return subprocess.run(["git", *args], env=env_without("GIT_"),
-                              check=True, capture_output=True, text=True).stdout.strip()
 
     def make_git_lane(self, lane):
         """A clean worktree whose HEAD is on main, with an untracked advancing/
         (mirrors mk_git_advancing in tests/infra/test_refresh_warm_base.sh)."""
-        lane.mkdir()
+        refresh_harness.init_lane(lane)
         (lane / ".placeholder").write_text("placeholder\n")
-        self.git("init", "-q", "-b", "main", str(lane))
-        self.git("-C", str(lane), "add", "--", ".placeholder")
-        self.git("-C", str(lane), "-c", "user.email=warm-lane-test@localhost",
-                 "-c", "user.name=Warm Lane Test", "-c", "commit.gpgsign=false",
-                 "commit", "-q", "--no-verify", "-m", "fixture: hermetic advancing lane")
+        refresh_harness.git(lane, "add", "--", ".placeholder")
+        refresh_harness.commit(lane, "-m", "fixture: hermetic advancing lane")
         (lane / "advancing").mkdir()
         return lane
 
     def run_refresh(self):
-        head = self.git("-C", str(self.lane), "rev-parse", "HEAD")
+        head = refresh_harness.git(self.lane, "rev-parse", "HEAD")
         return self.run_prune(self.advancing, self.base, "--landed-commit", head,
                               script=self.refresh,
                               env={"REIFY_TEST_PRUNE_RECORD": str(self.record)})

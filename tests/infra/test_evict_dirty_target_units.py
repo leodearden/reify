@@ -17,16 +17,21 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import tomllib
 import unittest
 from datetime import datetime
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+INFRA_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(INFRA_DIR))
+import refresh_warm_base_harness as refresh_harness  # noqa: E402
+from refresh_warm_base_harness import env_without, write_executable  # noqa: E402
+
+REPO_ROOT = INFRA_DIR.parents[1]
 SCRIPT = REPO_ROOT / "scripts" / "evict-dirty-target-units.py"
 TOOLCHAIN_PIN = REPO_ROOT / "rust-toolchain.toml"
-REFRESH = REPO_ROOT / "scripts" / "refresh-warm-base.sh"
 
 SECOND_NS = 10 ** 9
 REF_NS = 1_700_000_000 * SECOND_NS
@@ -117,15 +122,6 @@ def snapshot(paths):
     """Bytes and mtime of each path; None for a path that is gone."""
     return {str(p): (p.read_bytes(), p.stat().st_mtime_ns) if p.exists() else None
             for p in paths}
-
-
-def env_without(*prefixes):
-    return {k: v for k, v in os.environ.items() if not k.startswith(prefixes)}
-
-
-def write_executable(path, body):
-    path.write_text(body)
-    path.chmod(0o755)
 
 
 class EvictHarness(unittest.TestCase):
@@ -314,9 +310,7 @@ class Boundaries(EvictHarness):
         calls = self.tmp / "cargo-calls"
         calls.touch()
         stub_dir.mkdir()
-        stub = stub_dir / "cargo"
-        stub.write_text(f'#!/bin/sh\necho "cargo $*" >> "{calls}"\nexit 1\n')
-        stub.chmod(0o755)
+        write_executable(stub_dir / "cargo", f'#!/bin/sh\necho "cargo $*" >> "{calls}"\nexit 1\n')
         env = env_without("GIT_")
         env["PATH"] = f"{stub_dir}{os.pathsep}{env.get('PATH', '')}"
 
@@ -440,10 +434,9 @@ class Usage(EvictHarness):
 
 class RefreshStep(unittest.TestCase):
     """refresh-warm-base.sh's Step 3c runs the sibling evictor on the staging
-    copy, judged against the advancing worktree. HERMETIC as in
-    test_prune_unconsulted_target.py RefreshDelegation: a copy of the refresh
-    beside the real evictor and a no-op prune, a `cp` PATH stub that drops
-    --reflink=always, and a git lane on main whose untracked target/ advances."""
+    copy, judged against the advancing worktree. Staged by
+    refresh_warm_base_harness with the REAL evictor; the lane is a git
+    repository on main whose untracked target/ advances."""
 
     def setUp(self):
         tmp = tempfile.TemporaryDirectory(prefix="test-evict-refresh-")
@@ -451,23 +444,14 @@ class RefreshStep(unittest.TestCase):
         self.tmp = Path(tmp.name).resolve()
         self.stub_dir = self.tmp / "stub-bin"
         self.stub_dir.mkdir()
-        write_executable(self.stub_dir / "cp", f"""#!/usr/bin/env bash
-args=()
-for a in "$@"; do
-    [ "$a" = "--reflink=always" ] && continue
-    args+=("$a")
-done
-exec {shutil.which("cp")} "${{args[@]}}"
-""")
+        refresh_harness.install_cp_stub(self.stub_dir)
         self.scripts_dir = self.tmp / "scripts"
-        self.scripts_dir.mkdir()
-        self.refresh = self.scripts_dir / REFRESH.name
-        shutil.copy2(REFRESH, self.refresh)
-        shutil.copy2(SCRIPT, self.scripts_dir / SCRIPT.name)
-        write_executable(self.scripts_dir / "prune-unconsulted-target.sh", "#!/bin/sh\nexit 0\n")
+        self.refresh = refresh_harness.stage_refresh(self.scripts_dir, real=(SCRIPT.name,))
         self.lane = self.tmp / "lane"
         make_workspace(self.lane, ["alpha"])
-        self.head = self.commit_lane()
+        refresh_harness.init_lane(self.lane)
+        refresh_harness.git(self.lane, "add", "--", ".")
+        self.head = refresh_harness.commit(self.lane, "-m", "fixture: hermetic advancing workspace")
         self.advancing = self.lane / "target"
         self.stale = write_run_record(self.advancing, "release", "alpha", "1010101010101010",
                                       ["build.rs"])
@@ -476,24 +460,9 @@ exec {shutil.which("cp")} "${{args[@]}}"
         set_mtime_ns(self.lane / "crates" / "alpha" / "build.rs", NEWER_NS)
         self.base = self.tmp / "base"
 
-    def git(self, *args):
-        return subprocess.run(["git", "-C", str(self.lane), *args], env=env_without("GIT_"),
-                              check=True, capture_output=True, text=True).stdout.strip()
-
-    def commit_lane(self):
-        self.git("init", "-q", "-b", "main")
-        self.git("add", "--", ".")
-        self.git("-c", "user.email=warm-lane-test@localhost", "-c", "user.name=Warm Lane Test",
-                 "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify",
-                 "-m", "fixture: hermetic advancing workspace")
-        return self.git("rev-parse", "HEAD")
-
     def run_refresh(self):
-        env = env_without("GIT_")
-        env["PATH"] = f"{self.stub_dir}{os.pathsep}{env.get('PATH', '')}"
-        return subprocess.run(["bash", str(self.refresh), str(self.advancing), str(self.base),
-                               "--landed-commit", self.head],
-                              capture_output=True, text=True, env=env, check=False)
+        return refresh_harness.run_refresh(self.refresh, self.stub_dir, self.advancing,
+                                           self.base, self.head)
 
     def in_gen(self, output):
         return Path(os.readlink(self.base)) / output.relative_to(self.advancing)
