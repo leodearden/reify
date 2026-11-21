@@ -544,7 +544,7 @@ fn an_earlier_trait_static_fn_body_cannot_call_a_later_one() {
         "the error should name `A::make`; got: {:?}",
         errors[0].message
     );
-    get_function_in(&module, "A::make");
+    let _a_make_still_registered = get_function_in(&module, "A::make");
 }
 
 /// A local trait-static fn shadows the prelude's static fn of the same key, for
