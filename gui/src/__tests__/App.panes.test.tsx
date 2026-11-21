@@ -19,6 +19,7 @@ vi.mock('../stores/viewPersistence', async (importOriginal) => (await import('./
 
 import { computePaneGroups, reconcilePaneViewports, syncActiveViewToViewports, collectViewportLayout, applyViewportLayout, computeAppearanceOverrides } from '../App';
 import * as bridge from '../bridge';
+import './appHarness/harness';
 import { renderAndWaitForReady } from './appHarness/harness';
 import { capturedMultiViewportProps } from './appHarness/renderStubs';
 import { makeMesh } from './test_utils/meshData';

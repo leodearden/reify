@@ -2,8 +2,8 @@
  * Pure helpers for the bridge-mock coverage guard: which bridge.ts runtime
  * exports the shared App factory neither mocks nor allowlists, which
  * allowlist entries have rotted, and which App-rendering test files do not
- * import the App harness. The invariant they enforce, and why a gap in it
- * fails silently, are documented once in the consumer —
+ * import the App harness for its side effect. The invariant they enforce, and
+ * why a gap in it fails silently, are documented once in the consumer —
  * `bridgeMockCoverage.test.ts`. Not restated here.
  *
  * This file has no `.test.` segment, so vitest does not collect it as a suite
@@ -66,17 +66,31 @@ function importSpecifier(fromFile: string, module: string): string {
   return specifier.startsWith('.') ? specifier : `./${specifier}`;
 }
 
+const sourceLines = (source: string) => source.split('\n').map((line) => line.trimEnd());
+
+/** The bare side-effect import on a line of its own: the one import form a TS transform never drops. */
+function sideEffectImports(lines: readonly string[], specifier: string): boolean {
+  return lines.includes(`import '${specifier}';`);
+}
+
+/** Any import of `specifier`, bare or ending `from '<specifier>';` (named, multi-line, namespace or type-only). Errs toward inclusion. */
+function importsModule(lines: readonly string[], specifier: string): boolean {
+  return sideEffectImports(lines, specifier) || lines.some((line) => line.endsWith(` from '${specifier}';`));
+}
+
 /**
- * Paths of the files that default-import App but import nothing from
- * `harnessModule` (an absolute path without extension), by a named or a bare
- * import. Sorted.
+ * Paths of the files that default-import App or import anything from
+ * `harnessModule` (an absolute path without extension), yet lack the bare
+ * `import '<specifier>';` line. Sorted. Why only the bare form counts is
+ * documented in `bridgeMockCoverage.test.ts`.
  */
 export function harnessOffenders(files: readonly TestSource[], harnessModule: string): string[] {
   return files
     .filter(({ path, source }) => {
-      if (!defaultImportsApp(source)) return false;
       const specifier = importSpecifier(path, harnessModule);
-      return !source.includes(`from '${specifier}'`) && !source.includes(`import '${specifier}'`);
+      const lines = sourceLines(source);
+      const isMember = defaultImportsApp(source) || importsModule(lines, specifier);
+      return isMember && !sideEffectImports(lines, specifier);
     })
     .map(({ path }) => path)
     .sort();

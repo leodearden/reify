@@ -18,6 +18,7 @@ import { Editor } from '../editor/Editor';
 import { FileTabs } from '../editor/FileTabs';
 import { APP_BRIDGE_DEFAULTS } from './appHarness/moduleMocks';
 import { APP_HARNESS_INSTALL_LINES } from './appHarness/installLines';
+import './appHarness/harness';
 import {
   PRIMED_MODULES,
   assertEveryInstallBound,

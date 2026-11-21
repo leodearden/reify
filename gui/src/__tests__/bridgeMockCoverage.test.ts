@@ -11,7 +11,8 @@
  * ── Invariant ────────────────────────────────────────────────────────────────
  * Every runtime export of `../bridge` is either a key of APP_BRIDGE_DEFAULTS or
  * carries a documented entry in the `omissions` allowlist, and every test file
- * that renders `<App />` installs the shared harness.
+ * that renders `<App />` installs the shared harness and imports it for its
+ * side effect.
  *
  * ── Why an omitted key is dangerous rather than merely wrong ─────────────────
  * The factory is a NON-partial mock, so an omitted export makes vitest throw
@@ -33,12 +34,18 @@
  * Importing appHarness/harness registers `beforeEach(primeAppHarness)` in the
  * importing file, and `primeAppHarness` resets EVERY factory key to its table
  * default (`mockReset().mockImplementation(default)`), dropping persistent and
- * queued *Once overrides alike. So in every file that imports the harness —
- * which the membership check below requires of every file that renders <App />
- * — the old truth-table row "factory key present, beforeEach restore missing
+ * queued *Once overrides alike. So in every file that carries the bare
+ * `import './appHarness/harness';` line — which the membership check below
+ * requires of every file that renders <App /> or imports the harness at all —
+ * the old truth-table row "factory key present, beforeEach restore missing
  * -> an override leaks into every later test" cannot occur, and needs no
  * per-override detector. appHarness.test.tsx pins both the reset and the
  * import-time registration.
+ *
+ * Only the bare form counts. gui/tsconfig.json sets neither
+ * verbatimModuleSyntax nor noUnusedLocals, so the TS transform drops a named
+ * harness import whose bindings have no value use; harness.tsx then never
+ * evaluates, and neither the priming nor its import-time check runs.
  *
  * ── Standing rules ───────────────────────────────────────────────────────────
  * 1. A new bridge.ts runtime export gets a key in APP_BRIDGE_DEFAULTS, OR an
@@ -53,9 +60,11 @@
  *    is built from `makeGuiState()` / `published()`. A test overrides a
  *    default in its own body or its describe's beforeEach, never by editing
  *    the table for one test.
- * 4. A test file that renders <App /> writes the nine APP_HARNESS_INSTALL_LINES
- *    and imports appHarness/harness; a bare `import './appHarness/harness';`
- *    is enough, because the import itself registers the priming.
+ * 4. A test file that renders <App />, or imports anything from
+ *    appHarness/harness, writes the nine APP_HARNESS_INSTALL_LINES and the
+ *    bare `import './appHarness/harness';` on its own line, plus a separate
+ *    named import for any helper it uses. A named-only import is not enough:
+ *    the transform may drop it, and with it the priming.
  *
  * Shape mirrors `debugParity.test.ts` — the house pattern for "two artifacts
  * must stay in lockstep, with documented legitimate asymmetries": mock the
@@ -190,10 +199,12 @@ describe('bridge-mock coverage: bridge.ts runtime exports ↔ the shared App har
  * Globbing would force them to full coverage or bloat the allowlist with 30+
  * meaningless entries, destroying its signal.
  *
- * This is the construction-time half of the enforcement. The use-time half is
+ * Files that render <App /> only through renderAndWaitForReady
+ * (contextIntegration.test.tsx, App.panes.test.tsx) never default-import App,
+ * so the check selects them by their harness import instead. This is the
+ * construction-time half of the enforcement; the use-time half is
  * harness.tsx's import-time check that the installed mocks are the harness's
- * own, so a file that renders <App /> only through renderAndWaitForReady, and
- * so never imports App (contextIntegration.test.tsx), is held by that check.
+ * own.
  */
 describe('App harness membership', () => {
   const testsRoot = __dirname;
@@ -219,12 +230,13 @@ describe('App harness membership', () => {
     expect(selected).toEqual(expect.arrayContaining(namesWhere((source) => DIRECT_APP_RENDER.test(source))));
   });
 
-  it('every test file that renders <App /> installs the shared App harness', () => {
+  it('every test file that renders <App /> or imports the harness installs the shared App harness', () => {
     expect(
       harnessOffenders(testSources, harnessModule).map(relativeName),
-      'These files render <App /> without the shared App harness. Write these nine lines in each ' +
-        '(specifiers as seen from gui/src/__tests__/), then import the harness; a bare ' +
-        "`import './appHarness/harness';` is enough, as the import registers the per-test priming:\n  " +
+      'These files render <App /> or import the App harness without its bare side-effect import. ' +
+        "Write these nine lines in each (specifiers as seen from gui/src/__tests__/), then `import './appHarness/harness';` " +
+        'on its own line, plus a separate named import for any helper. A named-only import is not enough: ' +
+        'the TS transform drops it when no binding has a value use, and the per-test priming never registers:\n  ' +
         Object.values(APP_HARNESS_INSTALL_LINES).join('\n  '),
     ).toStrictEqual([]);
   });

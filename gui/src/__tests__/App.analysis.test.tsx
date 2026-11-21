@@ -22,6 +22,7 @@ vi.mock('../stores/viewPersistence', async (importOriginal) => (await import('./
 import App from '../App';
 import * as bridge from '../bridge';
 import { SELECTIVE_DEMAND_SYNC_DEBOUNCE_MS } from '../stores/engineStore';
+import './appHarness/harness';
 import { renderAndWaitForReady } from './appHarness/harness';
 import {
   capturedDualViewportProps,

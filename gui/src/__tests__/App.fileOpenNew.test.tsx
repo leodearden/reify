@@ -16,6 +16,7 @@ vi.mock('../stores/viewPersistence', async (importOriginal) => (await import('./
 
 import App from '../App';
 import * as bridge from '../bridge';
+import './appHarness/harness';
 import { renderAndWaitForReady } from './appHarness/harness';
 import { capturedEditorStore, capturedEditorOnOpen } from './appHarness/renderStubs';
 
