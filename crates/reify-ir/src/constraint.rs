@@ -573,6 +573,19 @@ pub trait ComputeDispatch: Send + Sync {
     /// WHY a verdict is indeterminate (the constraint checker) reads the
     /// [`ComputeDispatchOutcome::Failed`] arm.
     fn dispatch(&self, target: &str, args: &[Value]) -> ComputeDispatchOutcome;
+
+    /// Told by the evaluator that the `failure` this dispatcher returned for
+    /// `target` was recovered by evaluating the function's own body, which
+    /// produced `fallback`. A `fallback` that is itself `Undef` means the
+    /// failure left an undefined value in the evaluation. The default ignores
+    /// the report.
+    fn fell_back_after_failure(
+        &self,
+        _target: &str,
+        _failure: ComputeDispatchFailure,
+        _fallback: &Value,
+    ) {
+    }
 }
 
 /// What one [`ComputeDispatch::dispatch`] call produced.
@@ -1325,6 +1338,24 @@ mod tests {
         fn dispatch(&self, _target: &str, _args: &[Value]) -> ComputeDispatchOutcome {
             ComputeDispatchOutcome::Unregistered
         }
+    }
+
+    #[test]
+    fn only_a_resolved_outcome_yields_a_value() {
+        let failure = ComputeDispatchFailure {
+            kind: ComputeFailureKind::Failed,
+            diagnostics: vec![Diagnostic::error("singular")],
+        };
+
+        assert_eq!(
+            ComputeDispatchOutcome::Resolved(Value::Int(7)).resolved_value(),
+            Some(Value::Int(7))
+        );
+        assert_eq!(ComputeDispatchOutcome::Unregistered.resolved_value(), None);
+        assert_eq!(
+            ComputeDispatchOutcome::Failed(failure).resolved_value(),
+            None
+        );
     }
 
     /// I1-style back-compat invariant (task #4880): adding the dispatch hook must not

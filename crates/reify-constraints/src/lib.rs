@@ -245,10 +245,16 @@ fn evaluate(
 
 /// The verdict for a constraint that evaluated to `Undef`.
 ///
-/// A recorded dispatch failure replaces only the all-leaves-defined guess
-/// (`OperatorUndefinedForKinds`): an undefined input is the more upstream
-/// cause and keeps precedence. The failure's own diagnostics follow the
-/// indeterminate warning at their producer's severity.
+/// A recorded dispatch failure (one whose body fallback was itself `Undef`)
+/// replaces only the all-leaves-defined guess (`OperatorUndefinedForKinds`):
+/// an undefined input is the more upstream cause and keeps precedence. The
+/// failure is proven to have contributed an `Undef`, not to be the only cause:
+/// in `(f(x) > 1 or true) and <refused operator>` the failed `f` is absorbed
+/// and the refusal decides, yet the failure is still named.
+///
+/// The failure's own diagnostics follow the indeterminate warning at their
+/// producer's severity, each restated as a claim about this constraint (see
+/// [`forwarded_claim`]).
 fn indeterminate_result(
     id: &ConstraintNodeId,
     expr: &CompiledExpr,
@@ -270,11 +276,14 @@ fn indeterminate_result(
         (reason, _) => (reason, Vec::new()),
     };
     let reason = IndeterminateReason::Transient(reason);
-    let mut messages = vec![
-        Diagnostic::warning(format!("constraint {} indeterminate: {}", id, reason))
-            .with_code(DiagnosticCode::ConstraintIndeterminate),
-    ];
-    messages.extend(forwarded);
+    let claim = format!("constraint {} indeterminate: {}", id, reason);
+    let mut messages =
+        vec![Diagnostic::warning(claim.clone()).with_code(DiagnosticCode::ConstraintIndeterminate)];
+    messages.extend(
+        forwarded
+            .into_iter()
+            .map(|diagnostic| forwarded_claim(&claim, diagnostic)),
+    );
     (
         Satisfaction::Indeterminate,
         ConstraintDiagnostics { messages },
@@ -282,10 +291,23 @@ fn indeterminate_result(
     )
 }
 
-/// Forwards every call to `inner` unchanged and keeps the first `Failed`
-/// outcome with its target, so the reason (which names one target) and the
-/// forwarded diagnostics describe the same event. `OnceLock` because the
-/// trait is `Send + Sync`.
+/// A trampoline diagnostic restated as part of `claim`, keeping its severity
+/// and labels. It takes the claim's message prefix and its
+/// `ConstraintIndeterminate` code (replacing the producer's), so every pass
+/// that retracts a constraint's indeterminate claim once its verdict is
+/// upgraded retracts this line with it.
+fn forwarded_claim(claim: &str, mut diagnostic: Diagnostic) -> Diagnostic {
+    diagnostic.message = format!("{claim}: {}", diagnostic.message);
+    diagnostic.with_code(DiagnosticCode::ConstraintIndeterminate)
+}
+
+/// Forwards every call to `inner` unchanged and keeps the first failure whose
+/// body fallback left `Undef` behind, with its target, so the reason (which
+/// names one target) and the forwarded diagnostics describe the same event. A
+/// failure the body covered decided nothing and is not kept. Failures nest
+/// (a failed call's body can call another), so "first" is in order of
+/// fallback completion: the innermost. `OnceLock` because the trait is
+/// `Send + Sync`.
 struct FailureRecordingDispatch<'a> {
     inner: &'a dyn ComputeDispatch,
     first_failure: OnceLock<(String, ComputeDispatchFailure)>,
@@ -306,12 +328,21 @@ impl<'a> FailureRecordingDispatch<'a> {
 
 impl ComputeDispatch for FailureRecordingDispatch<'_> {
     fn dispatch(&self, target: &str, args: &[Value]) -> ComputeDispatchOutcome {
-        let outcome = self.inner.dispatch(target, args);
-        if let ComputeDispatchOutcome::Failed(failure) = &outcome {
+        self.inner.dispatch(target, args)
+    }
+
+    fn fell_back_after_failure(
+        &self,
+        target: &str,
+        failure: ComputeDispatchFailure,
+        fallback: &Value,
+    ) {
+        if fallback.is_undef() {
             self.first_failure
                 .get_or_init(|| (target.to_owned(), failure.clone()));
         }
-        outcome
+        self.inner
+            .fell_back_after_failure(target, failure, fallback);
     }
 }
 
@@ -1057,8 +1088,17 @@ mod tests {
         );
         assert_eq!(
             error_messages(&result),
-            vec!["stiffness matrix is singular"],
-            "the trampoline's own diagnostic is carried at its producer severity"
+            vec![
+                "constraint Probe#constraint[0] indeterminate: compute dispatch failed for \
+                 @optimized target \"test::stress\": stiffness matrix is singular"
+            ],
+            "the trampoline's own diagnostic is carried at its producer severity, as a \
+             claim about the constraint"
+        );
+        assert_eq!(
+            result.diagnostics.messages[1].code,
+            Some(DiagnosticCode::ConstraintIndeterminate),
+            "the forwarded line is retracted with the claim it belongs to: {result:?}"
         );
     }
 
@@ -1140,5 +1180,117 @@ mod tests {
         assert_eq!(result.satisfaction, Satisfaction::Satisfied, "{result:?}");
         assert_eq!(result.indeterminate_reason, None);
         assert!(result.diagnostics.messages.is_empty(), "{result:?}");
+    }
+
+    /// `tensor > 1mm`: refused for every operand kind, with no leaf to blame.
+    fn refused_operator() -> CompiledExpr {
+        let tensor = CompiledExpr::literal(
+            Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0)]),
+            Type::dimensionless_scalar(),
+        );
+        let one_mm = CompiledExpr::literal(mm(1.0), Type::length());
+        CompiledExpr::binop(BinOp::Gt, tensor, one_mm, Type::Bool)
+    }
+
+    #[test]
+    fn a_failure_the_body_covered_is_not_blamed_for_another_operators_refusal() {
+        // 42 > 100 is false, so the refusal alone leaves the disjunction Undef.
+        let expr = CompiledExpr::binop(BinOp::Or, stress_gt(100.0), refused_operator(), Type::Bool);
+
+        let result = check_one_with(
+            &expr,
+            &ValueMap::new(),
+            &[optimized_stress_fn_with_body(Value::Real(42.0))],
+            &FailingDispatch {
+                kind: ComputeFailureKind::Failed,
+            },
+        );
+
+        assert_eq!(
+            result.satisfaction,
+            Satisfaction::Indeterminate,
+            "{result:?}"
+        );
+        assert_eq!(
+            result.indeterminate_reason,
+            Some(IndeterminateReason::Transient(
+                TransientReason::OperatorUndefinedForKinds { kinds: vec![] }
+            ))
+        );
+        assert!(
+            error_messages(&result).is_empty(),
+            "the covered failure decided nothing; nothing is forwarded: {result:?}"
+        );
+    }
+
+    /// `strain`: `stress` under another target, so two failures can be told apart.
+    fn optimized_strain_fn() -> reify_ir::CompiledFunction {
+        reify_ir::CompiledFunction {
+            name: "strain".to_string(),
+            content_hash: reify_core::ContentHash::of(b"checker_optimized_strain_stub"),
+            optimized_target: Some("test::strain".to_string()),
+            ..optimized_stress_fn()
+        }
+    }
+
+    fn strain_gt(bound: f64) -> CompiledExpr {
+        let call = CompiledExpr {
+            content_hash: reify_core::ContentHash::of(format!("strain_call_gt_{bound}").as_bytes()),
+            result_type: Type::dimensionless_scalar(),
+            kind: reify_ir::CompiledExprKind::UserFunctionCall {
+                function_name: "strain".to_string(),
+                args: vec![CompiledExpr::literal(
+                    Value::Real(5.0),
+                    Type::dimensionless_scalar(),
+                )],
+            },
+        };
+        let bound = CompiledExpr::literal(Value::Real(bound), Type::dimensionless_scalar());
+        CompiledExpr::binop(BinOp::Gt, call, bound, Type::Bool)
+    }
+
+    /// Fails every target with a diagnostic naming it, and records the order of
+    /// the calls it saw.
+    #[derive(Default)]
+    struct FailEverythingDispatch {
+        dispatched: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl reify_ir::ComputeDispatch for FailEverythingDispatch {
+        fn dispatch(&self, target: &str, _args: &[Value]) -> ComputeDispatchOutcome {
+            self.dispatched.lock().unwrap().push(target.to_owned());
+            ComputeDispatchOutcome::Failed(ComputeDispatchFailure {
+                kind: ComputeFailureKind::Failed,
+                diagnostics: vec![Diagnostic::error(format!("{target} diverged"))],
+            })
+        }
+    }
+
+    #[test]
+    fn the_first_failure_names_the_reason_and_alone_is_forwarded() {
+        let expr = CompiledExpr::binop(BinOp::And, stress_gt(10.0), strain_gt(1.0), Type::Bool);
+        let dispatch = FailEverythingDispatch::default();
+
+        let result = check_one_with(
+            &expr,
+            &ValueMap::new(),
+            &[optimized_stress_fn(), optimized_strain_fn()],
+            &dispatch,
+        );
+
+        assert_eq!(
+            *dispatch.dispatched.lock().unwrap(),
+            vec!["test::stress".to_string(), "test::strain".to_string()],
+            "precondition: both calls failed, stress first"
+        );
+        assert_eq!(
+            result.indeterminate_reason,
+            compute_failed(ComputeFailureKind::Failed)
+        );
+        let errors = error_messages(&result);
+        assert!(
+            matches!(errors[..], [only] if only.ends_with("test::stress diverged")),
+            "only the named failure's diagnostics are forwarded: {errors:?}"
+        );
     }
 }

@@ -12,17 +12,19 @@
 //! When the trampoline fails, is cancelled or panics, the verdict stays
 //! `Indeterminate` but its reason names the failed target, and the trampoline's
 //! own diagnostics reach the check result instead of an "operator undefined"
-//! guess.
+//! guess. They reach it as part of the constraint's indeterminate claim, so a
+//! re-check that settles the verdict retracts them with the claim.
 
 use reify_compiler::CompiledModule;
 use reify_constraints::SimpleConstraintChecker;
-use reify_core::{ConstraintNodeId, Diagnostic, Severity};
+use reify_core::{ConstraintNodeId, Diagnostic, DimensionVector, Severity, ValueCellId};
 use reify_eval::{
     CancellationHandle, ComputeFn, ComputeOutcome, ConstraintCheckEntry, Engine,
-    RealizationReadHandle, SolverPosture,
+    RealizationReadHandle, SolverPosture, replace_superseded_constraint_diagnostics,
 };
 use reify_ir::{
     ComputeFailureKind, IndeterminateReason, OpaqueState, Satisfaction, TransientReason, Value,
+    ValueMap,
 };
 use reify_test_support::{collect_errors, compile_source_with_stdlib};
 
@@ -55,6 +57,12 @@ fn check_failing(span : Length) -> Length {
 structure CheckFailureProbe {
     param span : Length = 50mm
     constraint check_failing(span) > 10mm
+}
+
+// Open at 50mm (`Undef || false`), settled by a span above 100mm (`Undef || true`).
+structure CheckUpgradeProbe {
+    param span : Length = 50mm
+    constraint check_failing(span) > 10mm || span > 100mm
 }
 "#;
 
@@ -268,5 +276,71 @@ fn engine_check_attributes_a_panicking_trampoline() {
         &result.diagnostics,
         "Engine::check",
         "panicked",
+    );
+}
+
+/// `values` with `CheckUpgradeProbe.span` set to `si_value` metres.
+fn with_upgrade_probe_span(values: &ValueMap, si_value: f64) -> ValueMap {
+    let mut values = values.clone();
+    values.insert(
+        ValueCellId::new("CheckUpgradeProbe", "span"),
+        Value::Scalar {
+            si_value,
+            dimension: DimensionVector::LENGTH,
+        },
+    );
+    values
+}
+
+fn errors_naming(diagnostics: &[Diagnostic], id: &ConstraintNodeId) -> Vec<Diagnostic> {
+    let subject = id.to_string();
+    diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error && d.message.contains(&subject))
+        .cloned()
+        .collect()
+}
+
+/// A re-check that settles the verdict must not leave the forwarded trampoline
+/// Error behind to gate an all-decided result.
+#[test]
+fn an_upgraded_verdict_retracts_the_forwarded_trampoline_error() {
+    let compiled = compile_probe();
+    let mut engine = failing_probe_engine(check_failing_fn as ComputeFn);
+    let checked = engine.check(&compiled);
+    let upgraded = ConstraintNodeId::new("CheckUpgradeProbe", 0);
+    let still_open = ConstraintNodeId::new("CheckFailureProbe", 0);
+    for id in [&upgraded, &still_open] {
+        assert_eq!(
+            errors_naming(&checked.diagnostics, id).len(),
+            1,
+            "precondition: the failure is forwarded for {id}: {:#?}",
+            checked.diagnostics
+        );
+    }
+
+    let settled = with_upgrade_probe_span(&checked.values, 0.150);
+    let upgrades = engine
+        .upgrade_indeterminate_verdicts(&compiled, &settled, |id| *id == upgraded)
+        .expect("upgrade re-check");
+    assert_eq!(upgrades.len(), 1, "{upgrades:#?}");
+    assert_eq!(
+        upgrades[0].entry().satisfaction,
+        Satisfaction::Satisfied,
+        "{upgrades:#?}"
+    );
+
+    let mut diagnostics = checked.diagnostics.clone();
+    replace_superseded_constraint_diagnostics(&mut diagnostics, &upgrades);
+
+    let orphaned = errors_naming(&diagnostics, &upgraded);
+    assert!(
+        orphaned.is_empty(),
+        "the upgrade retracts the forwarded Error with the claim it belongs to: {orphaned:#?}"
+    );
+    assert_eq!(
+        errors_naming(&diagnostics, &still_open).len(),
+        1,
+        "a constraint still open keeps its forwarded Error: {diagnostics:#?}"
     );
 }
