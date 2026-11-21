@@ -12,20 +12,25 @@ use std::ffi::OsString;
 /// `1` selects the GLX/xlib path. Export `0` to keep the DMABUF renderer.
 const DEFAULTS: &[(&str, &str)] = &[("WEBKIT_DISABLE_DMABUF_RENDERER", "1")];
 
-/// `reify-gui --print-webkit-env` prints the WebKit environment reify-gui
-/// starts WebKitGTK with, then exits.
+/// `reify-gui --print-webkit-env` prints each variable reify-gui defaults (the
+/// [`DEFAULTS`] table) as the process now sees it, then exits.
 pub const PRINT_ENV_FLAG: &str = "--print-webkit-env";
 
-/// One `NAME=value` line per [`DEFAULTS`] variable, read from this process's
-/// environment; the value is empty when the variable is unset.
-pub fn process_env_report() -> String {
+/// One `NAME=value` line per [`DEFAULTS`] variable, in table order, with the
+/// value `current` reports for it; the value is empty when unset.
+pub fn env_report(current: impl Fn(&str) -> Option<OsString>) -> String {
     DEFAULTS
         .iter()
         .map(|(name, _)| {
-            let value = std::env::var_os(name).unwrap_or_default();
+            let value = current(name).unwrap_or_default();
             format!("{name}={}\n", value.to_string_lossy())
         })
         .collect()
+}
+
+/// [`env_report`] of this process's environment.
+pub fn process_env_report() -> String {
+    env_report(|name| std::env::var_os(name))
 }
 
 /// The [`DEFAULTS`] pairs whose variable `current` reports absent or empty.
