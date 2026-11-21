@@ -17,6 +17,7 @@ import * as bridge from '../bridge';
 import * as sidecarPersistence from '../stores/sidecarPersistence';
 import * as viewPersistence from '../stores/viewPersistence';
 import { SELECTIVE_DEMAND_SYNC_DEBOUNCE_MS } from '../stores/engineStore';
+import './appHarness/harness';
 import { renderAndWaitForReady } from './appHarness/harness';
 import { capturedDualViewportProps } from './appHarness/renderStubs';
 

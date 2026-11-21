@@ -19,6 +19,7 @@ import * as bridge from '../bridge';
 import type { ConstraintData, ValueData, EvaluationStatus } from '../types';
 import { published } from './test_utils/publishedState';
 import { makeGuiState } from './test_utils/guiState';
+import './appHarness/harness';
 import { renderAndWaitForReady } from './appHarness/harness';
 
 function makeStore(overrides?: { onSend?: ReturnType<typeof vi.fn>; onAbort?: ReturnType<typeof vi.fn> }) {
