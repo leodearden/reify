@@ -919,13 +919,15 @@ mod tests {
         let mut failures: Vec<String> = Vec::new();
         for (label, case) in cases {
             match std::panic::catch_unwind(case) {
-                Err(err) => {
-                    let msg = reify_core::panic_payload_str(err.as_ref())
-                        .expect("panic payload is a string");
-                    if !msg.contains(label) {
+                Err(err) => match reify_core::panic_payload_str(err.as_ref()) {
+                    None => {
+                        failures.push(format!("label {label:?}: panic payload is not a string"));
+                    }
+                    Some(msg) if !msg.contains(label) => {
                         failures.push(format!("label {label:?}: panic message was {msg:?}"));
                     }
-                }
+                    Some(_) => {}
+                },
                 Ok(_) => failures.push(format!("label {label:?}: case did not panic")),
             }
         }

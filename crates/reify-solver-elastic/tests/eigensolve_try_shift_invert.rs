@@ -188,17 +188,7 @@ fn panicking_sibling_names_the_shift_not_the_stiffness() {
     // sigma sits exactly on an eigenvalue, so K - sigma*B is singular and the
     // panicking entry point must panic.
     let message = panic_message_of(|| {
-        // Discarded rather than returned: `EigenSolverResult` is not `Debug`,
-        // and what this test needs from the Ok side is only that it did not
-        // happen.
-        let _ = solve_eigen_shift_invert(
-            &k,
-            &b,
-            EigenSolverOptions {
-                sigma,
-                ..opts()
-            },
-        );
+        solve_eigen_shift_invert(&k, &b, EigenSolverOptions { sigma, ..opts() })
     });
 
     let lower = message.to_lowercase();
