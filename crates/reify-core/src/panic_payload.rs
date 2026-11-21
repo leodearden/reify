@@ -10,6 +10,10 @@
 
 /// The payload's message, if it is a `&str` or `String`; the borrowing
 /// primitive that [`panic_payload_to_string`] formats.
+///
+/// It is the read for a site that asserts on the message: such a site
+/// `.expect(..)`s the `None`, so a non-string payload fails the test instead
+/// of yielding text a `contains` could match.
 // G-allow: borrowing primitive under panic_payload_to_string; strict test sites consume it directly
 pub fn panic_payload_str(payload: &(dyn std::any::Any + Send)) -> Option<&str> {
     payload
@@ -21,6 +25,10 @@ pub fn panic_payload_str(payload: &(dyn std::any::Any + Send)) -> Option<&str> {
 /// Turn a [`catch_unwind`](std::panic::catch_unwind) panic payload into a
 /// printable message: its [`panic_payload_str`] text, else a fixed
 /// placeholder.
+///
+/// It is for printing, logging and reporting only: its placeholder can
+/// satisfy a `contains(..)` and makes every `!contains(..)` vacuous, so
+/// assertion sites use [`panic_payload_str`].
 pub fn panic_payload_to_string(payload: &(dyn std::any::Any + Send)) -> String {
     panic_payload_str(payload)
         .unwrap_or("<non-string panic payload>")
