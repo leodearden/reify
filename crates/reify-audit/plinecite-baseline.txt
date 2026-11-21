@@ -63,7 +63,6 @@ crates/reify-compiler/src/auto_type_param.rs :: expr.rs:1654
 crates/reify-compiler/src/auto_type_param.rs :: expr.rs:1659
 crates/reify-compiler/src/builtin_signatures.rs :: expr.rs:2037
 crates/reify-compiler/src/builtin_signatures.rs :: ty.rs:432
-crates/reify-compiler/src/compile_builder/defs_phase.rs :: traits_phase.rs:71
 crates/reify-compiler/src/compile_builder/entities_phase.rs :: entity.rs:1175
 crates/reify-compiler/src/compile_builder/entities_phase.rs :: entity.rs:3692
 crates/reify-compiler/src/compile_builder/entities_phase.rs :: expr.rs:1530
@@ -73,7 +72,6 @@ crates/reify-compiler/src/compile_builder/pre_pass.rs :: server.rs:196
 crates/reify-compiler/src/compile_builder/pre_pass.rs :: server.rs:283
 crates/reify-compiler/src/compile_builder/pre_pass.rs :: server.rs:379
 crates/reify-compiler/src/compile_builder/specialization_scope_check.rs :: shadow_lint.rs:39
-crates/reify-compiler/src/conformance/checker.rs :: conformance/mod.rs:2131
 crates/reify-compiler/src/conformance/checker.rs :: conformance/mod.rs:53
 crates/reify-compiler/src/conformance/checker.rs :: expr.rs:388
 crates/reify-compiler/src/conformance/checker.rs :: type_compat.rs:3
@@ -359,7 +357,6 @@ crates/reify-eval/src/engine_eval.rs :: engine_constraints.rs:1504
 crates/reify-eval/src/engine_eval.rs :: engine_edit.rs:1207
 crates/reify-eval/src/engine_eval.rs :: engine_edit.rs:1360
 crates/reify-eval/src/engine_eval.rs :: engine_edit.rs:1423
-crates/reify-eval/src/engine_eval.rs :: engine_eval.rs:2098
 crates/reify-eval/src/engine_eval.rs :: engine_eval.rs:4495
 crates/reify-eval/src/engine_eval.rs :: engine_eval.rs:609
 crates/reify-eval/src/engine_eval.rs :: engine_purposes.rs:809
@@ -570,7 +567,6 @@ crates/reify-kernel-openvdb/src/mesh_to_voxel_options.rs :: reify-eval/tests/har
 crates/reify-kernel-openvdb/src/mesh_to_voxel_options.rs :: reify-ir/src/value.rs:94
 crates/reify-kernel-openvdb/src/register.rs :: crates/reify-kernel-manifold/src/register.rs:106
 crates/reify-lsp/src/analysis.rs :: crates/reify-eval/src/engine_eval.rs:210
-crates/reify-lsp/src/completion.rs :: crates/reify-compiler/src/type_resolution.rs:3790
 crates/reify-lsp/src/diagnostics.rs :: cache.rs:482
 crates/reify-lsp/src/diagnostics.rs :: crates/reify-eval/src/engine_eval.rs:210
 crates/reify-lsp/src/diagnostics/auto_type_param_fixtures.rs :: crates/reify-cli/src/main.rs:200
