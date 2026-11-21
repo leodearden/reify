@@ -14,7 +14,9 @@ use crate::cache::NodeId;
 use crate::cell_commit::{CacheLeg, CommitLegs, DeterminacyRule, commit_cell_result_at};
 use crate::deps::{ReverseDependencyIndex, extract_dependency_trace};
 use crate::eval_ctx_with_meta;
-use crate::geometry_ops::symbolic_cell_mint::{InstanceMint, InstanceMintScope};
+use crate::geometry_ops::symbolic_cell_mint::{
+    InstanceMintOutcome, InstanceMintPath, InstanceMintScope,
+};
 use crate::graph::EvaluationGraph;
 use crate::journal::TraceSource;
 
@@ -56,26 +58,18 @@ impl EditSourceWalkCtx<'_> {
                 .with_determinacy(determinacy)
                 .with_runtime_diagnostics(self.runtime_sink),
         );
-        if !matches!(evaluated, Value::Undef) {
-            return WalkCellValue {
-                value: evaluated,
-                took_instance_mint_path: false,
-            };
-        }
-        let instance_scope = InstanceMintScope {
+        let InstanceMintOutcome { value, path } = InstanceMintScope {
             graph: self.graph,
             values,
             functions: self.functions,
             meta_map: self.meta_map,
-        };
-        match instance_scope.mint_undef_instance_cell(vcid, kind, expr) {
-            InstanceMint::InstanceCell(minted) => WalkCellValue {
-                value: minted,
-                took_instance_mint_path: true,
-            },
-            InstanceMint::NotAnInstanceCell => WalkCellValue {
-                value: Value::Undef,
-                took_instance_mint_path: false,
+        }
+        .pass_through_or_mint(evaluated, vcid, kind, expr);
+        WalkCellValue {
+            value,
+            took_instance_mint_path: match path {
+                InstanceMintPath::InstanceCell => true,
+                InstanceMintPath::PassedThrough | InstanceMintPath::NotAnInstanceCell => false,
             },
         }
     }

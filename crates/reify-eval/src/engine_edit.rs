@@ -158,7 +158,9 @@ use crate::cell_eval_ctx::cell_eval_ctx;
 use crate::deps::{DependencyTrace, extract_dependency_trace};
 use crate::engine_admin::{ParamOverrideRejection, validate_param_override};
 use crate::engine_helpers::collect_member_list;
-use crate::geometry_ops::symbolic_cell_mint::{InstanceMint, InstanceMintScope, slot_commit_order};
+use crate::geometry_ops::symbolic_cell_mint::{
+    InstanceMintOutcome, InstanceMintPath, InstanceMintScope, slot_commit_order,
+};
 use crate::graph::{CollectionSubInfo, ConstraintNodeData, EvaluationGraph, GuardedGroupInfo};
 use crate::journal::TraceSource;
 use crate::realization_staleness::{
@@ -1382,8 +1384,9 @@ impl Engine {
                 // serves the resolution reseed, collection resize and
                 // grown-instance reseed below; its doc lists every site and
                 // the non-minting writers, and it owns the order and
-                // diagnostics policy. Only a cell it answers
-                // `InstanceMint::NotAnInstanceCell` for takes the inline
+                // diagnostics policy. Only a cell its
+                // `InstanceMintScope::pass_through_or_mint` answers
+                // `InstanceMintPath::NotAnInstanceCell` for takes the inline
                 // template-scope arm, geometry handle first, then topology
                 // selector, over the graph's RealizationNodeData (same
                 // operations, same upstream_values_hash fold) because
@@ -1393,40 +1396,39 @@ impl Engine {
                 // `Undef`) are accumulated into `selector_mint_diagnostics`,
                 // since `diagnostics` is declared later in this function, and
                 // drained into its output below.
-                let was_undef = matches!(val, Value::Undef);
                 let instance_scope = InstanceMintScope {
                     graph: &new_snapshot.graph,
                     values: &values,
                     functions: &functions,
                     meta_map: &self.meta_map,
                 };
-                let val = if !was_undef {
-                    val
-                } else {
-                    match instance_scope.mint_undef_instance_cell(vcid, node.kind, expr) {
-                        InstanceMint::InstanceCell(minted) => minted,
-                        InstanceMint::NotAnInstanceCell => {
-                            Engine::mint_symbolic_geometry_handle_for_cell_from_graph(
-                                vcid,
-                                &new_snapshot.graph,
-                                &values,
-                                &functions,
-                                &self.meta_map,
-                            )
-                            .unwrap_or_else(|| {
-                                let mut sel_diags: Vec<reify_core::Diagnostic> = Vec::new();
-                                let selector_val =
-                                    crate::geometry_ops::try_eval_symbolic_topology_selector(
-                                        expr,
-                                        &values,
-                                        &mut sel_diags,
-                                    )
-                                    .unwrap_or(val);
-                                selector_mint_diagnostics.extend(sel_diags);
-                                selector_val
-                            })
-                        }
-                    }
+                let InstanceMintOutcome { value, path } =
+                    instance_scope.pass_through_or_mint(val, vcid, node.kind, expr);
+                let (val, was_undef) = match path {
+                    InstanceMintPath::PassedThrough => (value, false),
+                    InstanceMintPath::InstanceCell => (value, true),
+                    InstanceMintPath::NotAnInstanceCell => (
+                        Engine::mint_symbolic_geometry_handle_for_cell_from_graph(
+                            vcid,
+                            &new_snapshot.graph,
+                            &values,
+                            &functions,
+                            &self.meta_map,
+                        )
+                        .unwrap_or_else(|| {
+                            let mut sel_diags: Vec<reify_core::Diagnostic> = Vec::new();
+                            let selector_val =
+                                crate::geometry_ops::try_eval_symbolic_topology_selector(
+                                    expr,
+                                    &values,
+                                    &mut sel_diags,
+                                )
+                                .unwrap_or(value);
+                            selector_mint_diagnostics.extend(sel_diags);
+                            selector_val
+                        }),
+                        true,
+                    ),
                 };
                 // R3e (#4907): record cells the in-walk mint actually
                 // resolved, so the post-mint re-eval pass after this loop
@@ -1999,21 +2001,14 @@ impl Engine {
                             ),
                         );
                         // #8102: a sub-instance cell mints in its instance's scope.
-                        let val = if !matches!(val, Value::Undef) {
-                            val
-                        } else {
-                            match (InstanceMintScope {
-                                graph,
-                                values: &values,
-                                functions: &functions,
-                                meta_map: &self.meta_map,
-                            })
-                            .mint_undef_instance_cell(vcid, node.kind, expr)
-                            {
-                                InstanceMint::InstanceCell(minted) => minted,
-                                InstanceMint::NotAnInstanceCell => Value::Undef,
-                            }
-                        };
+                        let val = InstanceMintScope {
+                            graph,
+                            values: &values,
+                            functions: &functions,
+                            meta_map: &self.meta_map,
+                        }
+                        .pass_through_or_mint(val, vcid, node.kind, expr)
+                        .value;
 
                         // Commit via the cell-commit primitive (task δ #5056):
                         // atomically writes values/snapshot/cache/journal
