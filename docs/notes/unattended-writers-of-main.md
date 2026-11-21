@@ -64,8 +64,11 @@ refusal, restore it away.
 form: `git diff --binary HEAD` of the targets goes to
 `logs/readme-review-<ts>.refused.patch`, next to the run log (`logs/` is
 untracked). The targets are then restored with
-`git restore --source=HEAD --staged --worktree`, and the script exits 1.
-`tests/infra/test_review_readme.py` pins this behaviour.
+`git restore --source=HEAD --staged --worktree`. The same form is used in
+two cases. When the commit is refused, the script exits 1. When the claude
+session exits non-zero, the script exits 69, so the edit of an audit that
+did not finish never lands. `tests/infra/test_review_readme.py` pins this
+behaviour.
 
 ## Audit
 
