@@ -407,6 +407,32 @@ const REJECTION_PROBE_SET_REL: &str = "tests/prd-gate/struct-ctor-conformance-pr
 /// independently asserts that it DOES reject.
 const CTOR_CONFORMANCE_REJECTION_FIXTURES: &[(&str, Option<&str>, &str)] = &[
     (
+        "tests/prd-gate/fixtures/coordinate_target_fea_pose_rejected.ri",
+        Some("at"),
+        "the coordinate-target-fea PRD's BT14 \"rejection observed\" signal \
+         (docs/prds/v0_6/coordinate-target-fea.capability-manifest.md, bindings \
+         bt14-pose-at-at-rejected / bt14-pose-at-pointmass-rejected): a coordinate pose at a \
+         Point3<Length> field is rejected by the param type; asserted to exit 1 by the `check` \
+         probe for this file in tests/prd-gate/struct-ctor-conformance-probe-set.json",
+    ),
+    (
+        "tests/prd-gate/fixtures/migration_v0_2_ctor_field_type_before.ri",
+        Some("thickness"),
+        "the v0.2-alpha migration note's before-image for \"A constructor argument must match \
+         the field's type\"; the exact error line lives in docs/releases/v0.2-alpha.md, asserted \
+         by tests/infra/test_migration_note_v0_2.sh, so the `check` probe for this file in \
+         tests/prd-gate/struct-ctor-conformance-probe-set.json asserts only that it exits 1",
+    ),
+    (
+        "tests/prd-gate/fixtures/migration_v0_2_ctor_unknown_field_before.ri",
+        Some("thicknes"),
+        "the v0.2-alpha migration note's before-image for \"A misspelled constructor argument \
+         is an error\" (E_CTOR_UNKNOWN_FIELD); the exact error line lives in \
+         docs/releases/v0.2-alpha.md, asserted by tests/infra/test_migration_note_v0_2.sh, so \
+         the `check` probe for this file in tests/prd-gate/struct-ctor-conformance-probe-set.json \
+         asserts only that it exits 1",
+    ),
+    (
         "tests/prd-gate/fixtures/struct_ctor_conformance_int_at_string_field.ri",
         Some("label"),
         "PRD §7 row 2 (general concrete leaf, Int at a String field); asserted to exit 1 by \
