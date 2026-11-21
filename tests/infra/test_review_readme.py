@@ -17,7 +17,7 @@ against a hermetic tempdir fixture:
   - `bin/claude`  a stub standing in for CLAUDE_BIN, with a non-executable
                   twin for the missing-CLI case; it records what
                   ./target/release/reify --version printed when the session
-                  ran;
+                  ran, and exits with REVIEW_README_STUB_CLAUDE_RC (default 0);
   - `bin/cargo`   a stub standing in for CARGO_BIN. Like cargo, it writes the
                   `reify` binary only for `build -p reify-cli`, into release/
                   only with `--release` (else debug/), under the output dir
@@ -86,6 +86,7 @@ _PINNED_KEYS = frozenset(
 # environment, so only a test's explicit override can set one.
 _SCRUBBED_KEYS = (
     "REVIEW_README_STUB_APPEND",
+    "REVIEW_README_STUB_CLAUDE_RC",
     "REVIEW_README_STUB_CARGO_RC",
     "REVIEW_README_STUB_CARGO_SLEEP",
     "REVIEW_README_STUB_CARGO_ADVANCE",
@@ -196,9 +197,10 @@ if [ -x ./{BUILT_BINARY} ]; then
 else
     echo absent > {session_binary_marker}
 fi
-[ -n "${{REVIEW_README_STUB_APPEND:-}}" ] || exit 0
-printf '%s\\n' "$REVIEW_README_STUB_APPEND" >> {shlex.quote(README)}
-exit 0
+if [ -n "${{REVIEW_README_STUB_APPEND:-}}" ]; then
+    printf '%s\\n' "$REVIEW_README_STUB_APPEND" >> {shlex.quote(README)}
+fi
+exit "${{REVIEW_README_STUB_CLAUDE_RC:-0}}"
 """)
         return stub
 
@@ -434,6 +436,22 @@ class RefusalTest(ReviewReadmeFixture):
         patches = sorted((self.main / "logs").glob("readme-review-*.refused.patch"))
         self.assertEqual(len(patches), 1, f"{patches}{_diag(result)}")
         self.assertIn(self.MARKER, patches[0].read_text())
+
+
+class SessionFailureTest(ReviewReadmeFixture):
+    SESSION_FAILED = 69
+
+    def test_a_failed_session_that_left_no_edit_exits_69_not_0(self):
+        before = self.head()
+        result = self.run_script(REVIEW_README_STUB_CLAUDE_RC="1")
+
+        self.assertEqual(self.stub_invoked_in(), str(self.main), _diag(result))
+        self.assertEqual(result.returncode, self.SESSION_FAILED, _diag(result))
+        self.assertEqual(self.head(), before, _diag(result))
+        self.assertIsNone(self.hook_saw_staged(), _diag(result))
+        self.assertEqual(self.git("status", "--porcelain", "--", *TARGETS), "", _diag(result))
+        self.assertEqual(sorted((self.main / "logs").glob("readme-review-*.refused.patch")), [],
+                         _diag(result))
 
 
 class PreflightTest(ReviewReadmeFixture):
