@@ -101,6 +101,52 @@ sys.exit(0 if ok else 1)
         ' _ "$SCRIPT_DIR"
 fi
 
+# ── A5 — NON-VACUOUS guard (_run_with_stall_guard) ─────────────────────────────
+# The SUT below runs under _run_with_stall_guard, which TERMs it only once its
+# output has been silent for the stall window, never on cumulative runtime. Each
+# case drives the guard with a hermetic stub that writes to its own file. A5b is
+# the NON-VACUITY CRUX: its command outlives the stall window yet keeps emitting,
+# so a guard that is really a cumulative `timeout <stall_s>` returns 124 there.
+#   - rc capture is `_rc=0; helper ... || _rc=$?`, never a bare call: `set -e`
+#     must not abort on the helper's meaningful rc, and an undefined helper reads
+#     as 127, which the cases assert as EXACT rcs (never `-ne 0`) so 127 FAILs.
+#   - no assertion bounds an elapsed time (technique T, docs/prds/infra-test-
+#     wallclock-deflake.md).
+echo ""
+echo "--- A5: NON-VACUOUS stall guard (_run_with_stall_guard) ---"
+
+_a5_dir="$(mktemp -d)"
+
+# A5a (STALL CRUX): a command that goes quiet is TERMed, rc exactly 124, and what
+# it printed before going quiet is captured. `exec` makes the TERM reach sleep
+# itself, so no orphan outlives the case.
+_rc=0
+_run_with_stall_guard 2 "$_a5_dir/stall.out" \
+    bash -c 'echo started; exec sleep 30' || _rc=$?
+assert "A5a: a command gone quiet is TERMed after the stall window (want rc=124, got ${_rc})" \
+    test "$_rc" -eq 124
+assert "A5a: the quiet command's output is captured (rc=${_rc}, 'started' in out file)" \
+    grep -q 'started' "$_a5_dir/stall.out"
+
+# A5b (PROGRESS CRUX): a command that keeps emitting past the stall window is NOT
+# killed. 70 ticks 0.1 s apart run for at least 7 s against a 5 s window.
+_rc=0
+_run_with_stall_guard 5 "$_a5_dir/progress.out" \
+    bash -c 'for i in $(seq 70); do echo "tick $i"; sleep 0.1; done' || _rc=$?
+assert "A5b: a command still emitting past the stall window is NOT killed (want rc=0, got ${_rc})" \
+    test "$_rc" -eq 0
+assert "A5b: the emitting command ran to completion (rc=${_rc}, 'tick 70' in out file)" \
+    grep -q 'tick 70' "$_a5_dir/progress.out"
+
+# A5c (STATUS PASSTHROUGH): the command's own exit status is returned unchanged.
+_rc=0
+_run_with_stall_guard 5 "$_a5_dir/status.out" \
+    bash -c 'echo x; exit 3' || _rc=$?
+assert "A5c: the command's own exit status passes through (want rc=3, got ${_rc})" \
+    test "$_rc" -eq 3
+
+rm -rf "$_a5_dir"
+
 # ── A1 + A2 — SUT must NOT emit wall-clock budget skip markers ─────────────────
 echo ""
 echo "--- A1+A2: SUT output must NOT contain 'live section budget' skip marker ---"
