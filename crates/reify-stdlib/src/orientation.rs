@@ -920,12 +920,8 @@ mod tests {
         for (label, case) in cases {
             match std::panic::catch_unwind(case) {
                 Err(err) => {
-                    // Non-string payload falls back to the shared helper's sentinel
-                    // "<non-string panic payload>" (this test-local idiom previously
-                    // returned "" for that case). Unobservable here: `assert!`
-                    // panics always carry a String payload, so `msg` never actually
-                    // takes the fallback branch — noted for future readers only.
-                    let msg = reify_core::panic_payload_to_string(err.as_ref());
+                    let msg = reify_core::panic_payload_str(err.as_ref())
+                        .expect("panic payload is a string");
                     if !msg.contains(label) {
                         failures.push(format!("label {label:?}: panic message was {msg:?}"));
                     }
@@ -963,7 +959,7 @@ mod tests {
     #[test]
     fn explicit_tolerance_tight_panics() {
         // tol=1e-6 is tighter than the x offset of 1e-5 — macro must panic with "x:" in message.
-        let result = std::panic::catch_unwind(|| {
+        let msg = reify_test_support::panic_message_of(|| {
             assert_orientation_approx!(
                 Value::Orientation {
                     w: 1.0,
@@ -978,8 +974,6 @@ mod tests {
                 tol = 1e-6
             );
         });
-        let err = result.expect_err("expected assert_orientation_approx with tight tol to panic");
-        let msg = reify_core::panic_payload_to_string(err.as_ref());
         assert!(
             msg.contains("x:"),
             "expected panic message to contain 'x:', got: {msg:?}"
@@ -1099,7 +1093,7 @@ mod tests {
     #[test]
     fn sign_insensitive_macro_rejects_wrong_value() {
         // w=0.5,x=0.5,y=0.5,z=0.5 does not match ±(1,0,0,0) — macro should panic.
-        let result = std::panic::catch_unwind(|| {
+        let msg = reify_test_support::panic_message_of(|| {
             assert_orientation_approx!(
                 Value::Orientation {
                     w: 0.5,
@@ -1114,10 +1108,6 @@ mod tests {
                 sign_insensitive = 1e-10
             );
         });
-        let err = result.expect_err(
-            "expected assert_orientation_approx sign_insensitive to panic for wrong value",
-        );
-        let msg = reify_core::panic_payload_to_string(err.as_ref());
         assert!(
             msg.contains("expected Orientation(\u{b1}"),
             "expected panic message to contain 'expected Orientation(\u{b1}', got: {msg:?}"
@@ -3124,11 +3114,9 @@ mod tests {
     /// This ensures the previously-silent catch-all is now an unreachable!() guard.
     #[test]
     fn elementary_rotation_quat_invalid_axis_panics_loudly() {
-        let result = std::panic::catch_unwind(|| {
+        let msg = reify_test_support::panic_message_of(|| {
             elementary_rotation_quat(3, 0.0);
         });
-        let err = result.expect_err("expected elementary_rotation_quat(3, ...) to panic");
-        let msg = reify_core::panic_payload_to_string(err.as_ref());
         assert!(
             msg.contains("elementary_rotation_quat called with axis > 2"),
             "expected panic message to contain 'elementary_rotation_quat called with axis > 2', got: {msg:?}"
