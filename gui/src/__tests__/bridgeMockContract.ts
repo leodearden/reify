@@ -56,7 +56,7 @@ export interface TestSource {
 
 const DEFAULT_APP_IMPORT = /^import App\b[^;]*from '(\.\.\/)+App'/m;
 
-/** The membership criterion: a default import of App. A named-only import renders nothing. */
+/** One half of the membership criterion: a default import of App. A named-only import renders nothing. */
 export function defaultImportsApp(source: string): boolean {
   return DEFAULT_APP_IMPORT.test(source);
 }
@@ -73,9 +73,16 @@ function sideEffectImports(lines: readonly string[], specifier: string): boolean
   return lines.includes(`import '${specifier}';`);
 }
 
-/** Any import of `specifier`, bare or ending `from '<specifier>';` (named, multi-line, namespace or type-only). Errs toward inclusion. */
-function importsModule(lines: readonly string[], specifier: string): boolean {
-  return sideEffectImports(lines, specifier) || lines.some((line) => line.endsWith(` from '${specifier}';`));
+/**
+ * A line ending in a `from` clause that names `specifier`: the close of a named,
+ * multi-line, namespace or type-only import. Errs toward inclusion, since a
+ * file missed here fails silently: either quote style, semicolon optional.
+ * Accepted blind spot: a specifier on a line apart from its `from`, or one
+ * followed by a trailing comment, is not seen.
+ */
+function hasFromClause(lines: readonly string[], specifier: string): boolean {
+  const clauses = [`'${specifier}'`, `"${specifier}"`].flatMap((quoted) => [`from ${quoted}`, `from ${quoted};`]);
+  return lines.some((line) => clauses.some((clause) => line.endsWith(clause)));
 }
 
 /**
@@ -89,7 +96,7 @@ export function harnessOffenders(files: readonly TestSource[], harnessModule: st
     .filter(({ path, source }) => {
       const specifier = importSpecifier(path, harnessModule);
       const lines = sourceLines(source);
-      const isMember = defaultImportsApp(source) || importsModule(lines, specifier);
+      const isMember = defaultImportsApp(source) || hasFromClause(lines, specifier);
       return isMember && !sideEffectImports(lines, specifier);
     })
     .map(({ path }) => path)

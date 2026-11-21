@@ -11,8 +11,8 @@
  * ── Invariant ────────────────────────────────────────────────────────────────
  * Every runtime export of `../bridge` is either a key of APP_BRIDGE_DEFAULTS or
  * carries a documented entry in the `omissions` allowlist, and every test file
- * that renders `<App />` installs the shared harness and imports it for its
- * side effect.
+ * that renders `<App />` or imports the harness installs the shared harness
+ * and imports it for its side effect.
  *
  * ── Why an omitted key is dangerous rather than merely wrong ─────────────────
  * The factory is a NON-partial mock, so an omitted export makes vitest throw
@@ -42,10 +42,11 @@
  * per-override detector. appHarness.test.tsx pins both the reset and the
  * import-time registration.
  *
- * Only the bare form counts. gui/tsconfig.json sets neither
- * verbatimModuleSyntax nor noUnusedLocals, so the TS transform drops a named
- * harness import whose bindings have no value use; harness.tsx then never
- * evaluates, and neither the priming nor its import-time check runs.
+ * Only the bare form counts. Without verbatimModuleSyntax (unset in
+ * gui/tsconfig.json) the transform drops a named harness import whose bindings
+ * have no value use, and without noUnusedLocals (also unset) tsc does not flag
+ * it. harness.tsx then never evaluates, and neither the priming nor its
+ * import-time check runs.
  *
  * ── Standing rules ───────────────────────────────────────────────────────────
  * 1. A new bridge.ts runtime export gets a key in APP_BRIDGE_DEFAULTS, OR an

@@ -189,6 +189,19 @@ describe('harnessOffenders', () => {
     expect(harnessOffenders(files, harnessModule)).toStrictEqual(['/gui/src/__tests__/contextShaped.test.tsx']);
   });
 
+  it('selects a harness import written with double quotes or without a semicolon, yet accepts only the exact bare line', () => {
+    const files = [
+      { path: '/gui/src/__tests__/doubleQuoted.test.tsx', source: 'import { renderAndWaitForReady } from "./appHarness/harness";\n' },
+      { path: '/gui/src/__tests__/noSemicolon.test.tsx', source: "import { renderAndWaitForReady } from './appHarness/harness'\n" },
+      { path: '/gui/src/__tests__/bareDoubleQuoted.test.tsx', source: 'import "./appHarness/harness";\nimport { oneFileState } from "./appHarness/harness";\n' },
+    ];
+    expect(harnessOffenders(files, harnessModule)).toStrictEqual([
+      '/gui/src/__tests__/bareDoubleQuoted.test.tsx',
+      '/gui/src/__tests__/doubleQuoted.test.tsx',
+      '/gui/src/__tests__/noSemicolon.test.tsx',
+    ]);
+  });
+
   it('reports a nested file whose harness specifier does not resolve from its directory, sorted with the rest', () => {
     const files = [
       { path: '/gui/src/__tests__/nested/App.deep.test.tsx', source: "import App from '../../App';\nimport './appHarness/harness';\n" },
