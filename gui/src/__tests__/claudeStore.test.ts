@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createClaudeStore } from '../stores/claudeStore';
+import type { AssistantMessage, ChatMessage, SystemMessage } from '../stores/claudeStore';
 import type { OutboundMessage } from '../../sidecar/src/types';
 
 describe('claudeStore', () => {
@@ -600,6 +601,76 @@ describe('claudeStore', () => {
       const systemMsg = state.messages.find((m) => m.role === 'system') as any;
       expect(systemMsg.text).toContain('claude login');
     });
+  });
+
+  describe('notice messages', () => {
+    withSynchronousRAF();
+
+    const NOTICE_TEXT = 'test-local notice text';
+
+    function systemMessagesOf(messages: readonly ChatMessage[]): SystemMessage[] {
+      return messages.filter((m): m is SystemMessage => m.role === 'system');
+    }
+
+    function assistantMessageOf(messages: readonly ChatMessage[], id: string): AssistantMessage | undefined {
+      return messages.find((m): m is AssistantMessage => m.role === 'assistant' && m.id === id);
+    }
+
+    function notice(id: string, code: string): OutboundMessage {
+      return { type: 'notice', id, code, message: NOTICE_TEXT };
+    }
+
+    it('sandbox_unavailable notice adds one system message carrying the notice text', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { state, sendMessage, handleOutboundMessage } = makeStore();
+      sendMessage('hello', {});
+      const msgId = state.currentMessageId!;
+
+      handleOutboundMessage(notice(msgId, 'sandbox_unavailable'));
+
+      const systemMsgs = systemMessagesOf(state.messages);
+      expect(systemMsgs).toHaveLength(1);
+      expect(systemMsgs[0].errorType).toBe('sandbox');
+      expect(systemMsgs[0].text).toBe(NOTICE_TEXT);
+      expect(warn).toHaveBeenCalled();
+    });
+
+    it('sandbox_unavailable notice leaves the in-flight turn running', () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { state, sendMessage, handleOutboundMessage } = makeStore();
+      sendMessage('hello', {});
+      const msgId = state.currentMessageId!;
+
+      handleOutboundMessage({ type: 'text_delta', id: msgId, content: 'partial ' });
+      handleOutboundMessage(notice(msgId, 'sandbox_unavailable'));
+      handleOutboundMessage({ type: 'text_delta', id: msgId, content: 'more' });
+
+      const inFlight = assistantMessageOf(state.messages, msgId);
+      expect(inFlight?.responseText).toBe('partial more');
+      expect(inFlight?.complete).toBe(false);
+      expect(inFlight?.error).toBeUndefined();
+      expect(state.sessionStatus).toBe('responding');
+      expect(state.currentMessageId).toBe(msgId);
+
+      handleOutboundMessage({ type: 'done', id: msgId });
+
+      expect(state.sessionStatus).toBe('idle');
+      expect(assistantMessageOf(state.messages, msgId)?.complete).toBe(true);
+    });
+
+    it.each(['degraded_turn_boundary', 'permission_request_orphaned', 'toString'])(
+      'diagnostic and unknown notice codes add no system message (%s)',
+      (code) => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const { state, sendMessage, handleOutboundMessage } = makeStore();
+        sendMessage('hello', {});
+
+        handleOutboundMessage(notice(state.currentMessageId!, code));
+
+        expect(systemMessagesOf(state.messages)).toHaveLength(0);
+        expect(warn).toHaveBeenCalled();
+      },
+    );
   });
 
   describe('stuck state recovery on unmatched message id', () => {
