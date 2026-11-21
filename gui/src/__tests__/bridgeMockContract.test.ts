@@ -150,13 +150,43 @@ describe('harnessOffenders', () => {
     expect(harnessOffenders(files, harnessModule)).toStrictEqual([]);
   });
 
-  it('accepts a named or a bare harness import, resolved from the file\'s own directory', () => {
+  it('accepts a bare side-effect harness import, alone or beside a named one, resolved from the file\'s own directory', () => {
     const files = [
-      { path: '/gui/src/__tests__/App.named.test.tsx', source: `${appImport}import { renderAndWaitForReady } from './appHarness/harness';\n` },
       { path: '/gui/src/__tests__/App.bare.test.tsx', source: `${appImport}import './appHarness/harness';\n` },
+      { path: '/gui/src/__tests__/App.both.test.tsx', source: `${appImport}import './appHarness/harness';\nimport { renderAndWaitForReady, oneFileState } from './appHarness/harness';\n` },
       { path: '/gui/src/__tests__/nested/App.deep.test.tsx', source: "import App from '../../App';\nimport '../appHarness/harness';\n" },
+      { path: '/gui/src/__tests__/helperOnly.test.tsx', source: "import './appHarness/harness';\nimport { renderAndWaitForReady } from './appHarness/harness';\n" },
     ];
     expect(harnessOffenders(files, harnessModule)).toStrictEqual([]);
+  });
+
+  it('reports a named-only harness import, which the TS transform drops once no binding has a value use', () => {
+    const files = [
+      { path: '/gui/src/__tests__/App.named.test.tsx', source: `${appImport}import { renderAndWaitForReady } from './appHarness/harness';\n` },
+      { path: '/gui/src/__tests__/App.multiline.test.tsx', source: `${appImport}import {\n  renderAndWaitForReady,\n  oneFileState,\n} from './appHarness/harness';\n` },
+    ];
+    expect(harnessOffenders(files, harnessModule)).toStrictEqual([
+      '/gui/src/__tests__/App.multiline.test.tsx',
+      '/gui/src/__tests__/App.named.test.tsx',
+    ]);
+  });
+
+  it('reports a type-only or a commented-out harness import', () => {
+    const files = [
+      { path: '/gui/src/__tests__/App.typeOnly.test.tsx', source: `${appImport}import type { PrimedModule } from './appHarness/harness';\n` },
+      { path: '/gui/src/__tests__/App.commented.test.tsx', source: `${appImport}// import './appHarness/harness';\n` },
+    ];
+    expect(harnessOffenders(files, harnessModule)).toStrictEqual([
+      '/gui/src/__tests__/App.commented.test.tsx',
+      '/gui/src/__tests__/App.typeOnly.test.tsx',
+    ]);
+  });
+
+  it('reports a file that imports a harness helper without App when it lacks the bare import (the contextIntegration / App.panes shape)', () => {
+    const files = [
+      { path: '/gui/src/__tests__/contextShaped.test.tsx', source: "import { renderAndWaitForReady } from './appHarness/harness';\n" },
+    ];
+    expect(harnessOffenders(files, harnessModule)).toStrictEqual(['/gui/src/__tests__/contextShaped.test.tsx']);
   });
 
   it('reports a nested file whose harness specifier does not resolve from its directory, sorted with the rest', () => {
