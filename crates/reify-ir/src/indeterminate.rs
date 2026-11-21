@@ -29,6 +29,22 @@ pub enum TransientReason {
     OperatorUndefinedForKinds { kinds: Vec<String> },
     /// A geometric measurement the verdict depends on was not obtained.
     MeasurementUnavailable { detail: String },
+    /// An `@optimized` call's registered implementation ran and produced no
+    /// value; `target` is its `optimized_target`. Transient because another
+    /// run or surface (corrected inputs, the cell-level ComputeNode path) may
+    /// resolve it.
+    ComputeDispatchFailed {
+        target: String,
+        kind: ComputeFailureKind,
+    },
+}
+
+/// How a registered `@optimized` implementation ended without a value; it
+/// mirrors `ComputeOutcome`'s two non-success arms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ComputeFailureKind {
+    Failed,
+    Cancelled,
 }
 
 /// Uninhabited until a run-invariant cause can be proven: the first variant
@@ -62,6 +78,16 @@ impl Display for TransientReason {
                 write_joined(f, kinds)
             }
             TransientReason::MeasurementUnavailable { detail } => f.write_str(detail),
+            TransientReason::ComputeDispatchFailed { target, kind } => {
+                let ended = match kind {
+                    ComputeFailureKind::Failed => "failed",
+                    ComputeFailureKind::Cancelled => "cancelled",
+                };
+                write!(
+                    f,
+                    "compute dispatch {ended} for @optimized target {target:?}"
+                )
+            }
         }
     }
 }
