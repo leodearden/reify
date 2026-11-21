@@ -398,10 +398,16 @@ fn names_a_ctor_argument(site: &SurveySite) -> bool {
 /// Named here because this table's soundness depends on it: without a probe, an
 /// entry is an unbacked declaration. Run by
 /// `tests/infra/test_prd_gate_struct_ctor_conformance.sh`.
+///
+/// The file is named for δ's struct-ctor PRD, whose §7 boundary rows were its
+/// first probes, but it backs every entry the table claims, whichever PRD or
+/// release note the fixture belongs to.
 const REJECTION_PROBE_SET_REL: &str = "tests/prd-gate/struct-ctor-conformance-probe-set.json";
 
-/// Sites whose ctor-conformance violation IS the deliverable: δ's (#5306)
-/// committed PRD §7 boundary-row rejection fixtures.
+/// Sites whose ctor-conformance violation IS the deliverable: committed
+/// rejection fixtures — δ's (#5306) struct-ctor PRD §7 boundary rows, other
+/// PRDs' rejection-observed fixtures, and release-note migration before-images —
+/// each asserted to reject by a `check` probe in [`REJECTION_PROBE_SET_REL`].
 ///
 /// Each entry is `(repo-relative file, param or `None`, why)`. The param is the
 /// one [`SurveySite::field`] recovers, taken off the generator's MEASURED panic
@@ -511,14 +517,15 @@ pub(crate) enum Disposition {
     /// to go fix three deliberate rejection fixtures whose violation IS their
     /// content.
     NotApplicable,
-    /// An in-scope site whose violation IS the deliverable: a committed PRD §7
-    /// boundary-row fixture that `reify check` is asserted to REJECT.
+    /// An in-scope site whose violation IS the deliverable: a committed rejection
+    /// fixture — a PRD's boundary row or rejection-observed signal, or a release
+    /// note's migration before-image — that `reify check` is asserted to REJECT.
     ///
     /// Distinct from [`Disposition::NotApplicable`] on scope — these sites ARE
     /// knob-governed and DO name a ctor argument — and from
     /// [`Disposition::Deferred`] on ownership: no task retires them, so there is
     /// no owner to carry. Folding either way told the artifact's reader to go
-    /// break δ's own CLI gate.
+    /// break the CLI gate that asserts the rejection.
     IntendedRejection,
     /// A knob-governed site that no table names: it is actionable, and nobody has
     /// claimed it.
@@ -597,8 +604,9 @@ impl Disposition {
 ///   ctor-conformance code but the knob's walk did not emit it; the work does
 ///   not exist.
 /// * [`Disposition::IntendedRejection`] — DO NOT TOUCH IT. In scope and
-///   genuinely violating, on purpose: the violation is a committed PRD §7
-///   signal, and removing it reds the CLI gate that asserts the rejection.
+///   genuinely violating, on purpose: the violation is a committed rejection
+///   fixture's signal, and removing it reds the CLI gate that asserts the
+///   rejection.
 ///
 /// Collapsing any pair sends the reader the opposite way from the right one.
 ///
@@ -835,7 +843,8 @@ pub(crate) fn assert_no_unwaived_ctor_conformance_sites(run: &SurveyRun) {
          Fix the site. Add a waiver ONLY if a LIVE task genuinely owns retiring it, \
          and then name that task and say what breaks if it is migrated here instead. \
          A THIRD, narrower option applies only to a committed rejection FIXTURE whose \
-         violation is itself a PRD §7 signal: add it to \
+         violation is itself its signal (a PRD's rejection row, or a release note's \
+         migration before-image): add it to \
          CTOR_CONFORMANCE_REJECTION_FIXTURES, which requires a probe in \
          tests/prd-gate/struct-ctor-conformance-probe-set.json already asserting that \
          the file rejects.\n\n\
@@ -851,8 +860,8 @@ pub(crate) fn assert_no_unwaived_ctor_conformance_sites(run: &SurveyRun) {
          actionable set for different reasons. Non-knob sites carry a \
          ctor-conformance code but were emitted by another PRD's path, so they name \
          no ctor argument and resolve to `n/a`. In-scope INTENDED REJECTIONS are \
-         knob-governed and genuinely violating, on purpose: they are committed PRD §7 \
-         boundary-row fixtures whose rejection a CLI probe asserts. Neither is waived \
+         knob-governed and genuinely violating, on purpose: they are committed \
+         rejection fixtures whose rejection a CLI probe asserts. Neither is waived \
          and neither is counted here.",
         unexplained.len(),
         stale.len(),
@@ -1298,6 +1307,12 @@ fn ctor_conformance_corpus_residual_is_disjoint_from_migration_debt() {
 // retire them (unlike `Deferred`). The four dispositions map one-to-one onto
 // four DIFFERENT reader actions, which is the property that makes the artifact
 // worth reading at all.
+//
+// δ's five were the table's FIRST members, not its only ones. Any committed
+// fixture whose violation is its own deliverable belongs here on the same terms
+// — another PRD's rejection-observed fixture, or a release note's migration
+// before-image — and each is backed the same way, by a `check` probe in the
+// same probe-set.
 
 /// The first [`CTOR_CONFORMANCE_REJECTION_FIXTURES`] entry that carries a param,
 /// or `None` when the table holds none.
