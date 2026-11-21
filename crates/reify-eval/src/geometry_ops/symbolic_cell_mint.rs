@@ -207,7 +207,58 @@ pub(crate) enum InstanceMint {
     InstanceCell(Value),
 }
 
+/// Which way [`InstanceMintScope::pass_through_or_mint`] decided a cell's value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InstanceMintPath {
+    /// The evaluated value was not `Undef`, so it is the cell's value.
+    PassedThrough,
+    /// The evaluated value was `Undef` and the cell is a sub-instance cell, so
+    /// the value is its instance-scope mint, `Undef` included (nothing mints,
+    /// or the mint declines).
+    InstanceCell,
+    /// The evaluated value was `Undef` and the cell is no sub-instance cell, so
+    /// the value is `Undef` and its mint is the caller's.
+    NotAnInstanceCell,
+}
+
+/// A cell's value after [`InstanceMintScope::pass_through_or_mint`].
+#[must_use]
+#[derive(Debug, PartialEq)]
+pub(crate) struct InstanceMintOutcome {
+    pub(crate) value: Value,
+    pub(crate) path: InstanceMintPath,
+}
+
 impl InstanceMintScope<'_> {
+    /// `evaluated`, unless it is `Undef`; then the value
+    /// [`Self::mint_undef_instance_cell`] gives `instance_cell`, or `Undef` when
+    /// it is no sub-instance cell. The one home of the pass-through-or-mint rule
+    /// every edit-path site takes; `path` says which way it went.
+    pub(crate) fn pass_through_or_mint(
+        &self,
+        evaluated: Value,
+        instance_cell: &ValueCellId,
+        kind: ValueCellKind,
+        expr: &CompiledExpr,
+    ) -> InstanceMintOutcome {
+        if !matches!(evaluated, Value::Undef) {
+            return InstanceMintOutcome {
+                value: evaluated,
+                path: InstanceMintPath::PassedThrough,
+            };
+        }
+        match self.mint_undef_instance_cell(instance_cell, kind, expr) {
+            InstanceMint::InstanceCell(value) => InstanceMintOutcome {
+                value,
+                path: InstanceMintPath::InstanceCell,
+            },
+            InstanceMint::NotAnInstanceCell => InstanceMintOutcome {
+                value: Value::Undef,
+                path: InstanceMintPath::NotAnInstanceCell,
+            },
+        }
+    }
+
     /// [`InstanceMint::InstanceCell`] with the value an `Undef` cell takes when
     /// `instance_cell`, an INSTANCE-scoped id such as `P.s.body`, is a
     /// sub-instance cell of `self.graph`; [`InstanceMint::NotAnInstanceCell`]
@@ -257,11 +308,11 @@ impl InstanceMintScope<'_> {
         ))
     }
 
-    /// `evaluated`, unless it is `Undef`; then the cell minted by
-    /// [`Self::mint_undef_instance_cell`]. `instance_cell` must be a
+    /// The value [`Self::pass_through_or_mint`] gives a cell that must be a
     /// sub-instance cell of `self.graph`, as every caller's slot cell is
     /// stamped through `EvaluationGraph::insert_sub_instance_cell`. A debug
-    /// build panics on one that is not; a release build leaves it `Undef`.
+    /// build panics on an `Undef` one that is not; a release build leaves it
+    /// `Undef`.
     pub(crate) fn mint_instance_cell_if_undef(
         &self,
         evaluated: Value,
@@ -269,21 +320,18 @@ impl InstanceMintScope<'_> {
         kind: ValueCellKind,
         expr: &CompiledExpr,
     ) -> Value {
-        match evaluated {
-            Value::Undef => match self.mint_undef_instance_cell(instance_cell, kind, expr) {
-                InstanceMint::InstanceCell(value) => value,
-                InstanceMint::NotAnInstanceCell => {
-                    debug_assert!(
-                        false,
-                        "{instance_cell} is not a sub-instance cell: a resized or reseeded \
-                         slot cell must be stamped through \
-                         EvaluationGraph::insert_sub_instance_cell"
-                    );
-                    Value::Undef
-                }
-            },
-            evaluated => evaluated,
+        let InstanceMintOutcome { value, path } =
+            self.pass_through_or_mint(evaluated, instance_cell, kind, expr);
+        match path {
+            InstanceMintPath::PassedThrough | InstanceMintPath::InstanceCell => {}
+            InstanceMintPath::NotAnInstanceCell => debug_assert!(
+                false,
+                "{instance_cell} is not a sub-instance cell: a resized or reseeded \
+                 slot cell must be stamped through \
+                 EvaluationGraph::insert_sub_instance_cell"
+            ),
         }
+        value
     }
 }
 
