@@ -208,9 +208,9 @@ def recording_runner(run=None):
 # fails to load the language, observe() classifies it HARNESS_ERROR, and the
 # suite reported a spurious FAIL (exit 70) instead of a clean skip.
 #
-# Order matters.  grammar_generated() runs first and short-circuits, so a lane
-# that never generated the grammar pays no subprocess; only when parser.c exists
-# do we spend one probe asking whether it can be loaded.
+# pcc.prepare_grammar_substrate is the definition this guard shares with main();
+# with ctx.grammar_generator None, as in the hermetic cases, nothing runs before
+# its parser.c check.
 def _compute_grammar_e2e_status(ctx=None, runner=None) -> tuple:
     """Return (available, reason) for the grammar e2e under ctx.  Never raises.
 
@@ -226,13 +226,10 @@ def _compute_grammar_e2e_status(ctx=None, runner=None) -> tuple:
     try:
         if ctx is None:
             ctx = pcc.ProbeContext.from_environment()
-        generated, parser_c = pcc.grammar_generated(ctx)
-        if not generated:
-            return (False, f"{parser_c} not found — grammar never generated")
-        usable, reason = pcc.grammar_substrate_usable(ctx, runner=runner or pcc.run_probe)
+        ready, reason = pcc.prepare_grammar_substrate(ctx, runner=runner or pcc.run_probe)
     except Exception as exc:
         return (False, f"the grammar substrate could not be interrogated ({exc!r})")
-    return (bool(usable), reason)
+    return (bool(ready), reason)
 
 
 @functools.lru_cache(maxsize=1)
@@ -242,7 +239,8 @@ def _grammar_e2e_status() -> tuple:
     Deliberately not a module-level constant: the behavioural half spawns a real
     tree-sitter (on a cold cache, a cc compile of the grammar first), so as an
     import-time constant every importer paid it — including the ~140 hermetic
-    tests that need none of it.
+    tests that need none of it.  The first use also runs the grammar generator,
+    which the grammar e2e's own main() call would run anyway.
     """
     return _compute_grammar_e2e_status()
 
