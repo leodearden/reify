@@ -8,10 +8,9 @@
 //! integration test lives in `harness_cli.rs`'s header; layout contract C1 lives in the
 //! `tests/infra/test_harness_kloc_cap.sh` header.
 //!
-//! Layout-only (invariant I3): no `#[test]` fn is added, removed or renamed by this split, and
-//! every module keeps its stem. Only the binary id moves, from `reify-cli::harness_cli` to
-//! `reify-cli::harness_cli_check`. `#[path]` is mandatory: this is an integration-test crate
-//! root, where a bare `mod <file>;` would resolve to the sibling `tests/<file>.rs`.
+//! Every member keeps its former stem, so `test(/^<stem>::/)` filtersets still resolve.
+//! `#[path]` is mandatory: this is an integration-test crate root, where a bare `mod <file>;`
+//! would resolve to the sibling `tests/<file>.rs`.
 
 mod common;
 

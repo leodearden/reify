@@ -18,6 +18,10 @@
 //!      `harness_cli_check.rs` (task #10100);
 //!   3. else it goes here.
 //!
+//! Nothing enforces these rules mechanically, and two older members here predate rule 1 and
+//! break it: `corpus_no_bare_scalar` and `units_length_boundary_ledger` consume no
+//! `tests/common/` helper. An existing member's placement is therefore not evidence of a rule.
+//!
 //! All three roots share the `tests/fixtures/` `.ri` tree; a `.ri` file is not a seam signal
 //! and costs nothing under C2. The #7365 provenance and pre-split measurement are stated
 //! once, in `harness_cli_surface.rs`'s header. No post-split line count is hand-copied here:
