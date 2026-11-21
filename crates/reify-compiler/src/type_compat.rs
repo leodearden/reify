@@ -1388,6 +1388,8 @@ pub(crate) fn add_sub_dimensioned_complex_reject(left: &Type, right: &Type) -> b
 /// `eval_mul`/`eval_div` over each component against the same "scalar"
 /// operand — so a dimensioned "scalar" (e.g. `Scalar<Time>`) combines
 /// dimensions with the quantity exactly as `Scalar ⊗ Scalar` would.
+/// `Direction ⊗ scalar-like` (Mul only, either order) is the same recursion
+/// with a dimensionless quantity, yielding `Vector3` (direction-typing C6).
 pub(crate) fn infer_mul_div_result(
     op: BinOp,
     left: &Type,
@@ -1524,6 +1526,16 @@ pub(crate) fn infer_mul_div_result(
                 n: *n,
                 quantity: Box::new(q),
             })
+        }
+
+        // ── Direction ⊗ scalar-like — Mul only (direction-typing C6) ────────
+        // A Direction scales as a dimensionless 3-vector; the quantity comes
+        // from the partner. Direction division and Direction × non-scalar
+        // stay `Err(OperandKinds)`.
+        (Type::Direction, other) | (other, Type::Direction)
+            if op == BinOp::Mul && is_mul_div_scalar_like(other) =>
+        {
+            infer_mul_div_result(op, &Type::dimensionless_scalar(), other).map(Type::vec3)
         }
 
         // ── Complex(q) ────────────────────────────────────────────────────────

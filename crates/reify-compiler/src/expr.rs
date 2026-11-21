@@ -174,8 +174,10 @@ fn make_poison_type(diagnostics: &mut Vec<Diagnostic>, diagnostic: Diagnostic) -
 }
 
 /// Emit the canonical `ArithOperandKind` diagnostic — "operator `{op}` is
-/// undefined for operand kinds `{left}` and `{right}`", labeled "unsupported
-/// operand kinds" — via [`make_poison_type`], poisoning to `Type::Error`.
+/// undefined for operand kinds `{left}` and `{right}`", plus "; write
+/// vector(d)" when either operand is a `Direction`
+/// ([`direction_operators::arith_operand_hint`]), labeled "unsupported operand
+/// kinds" — via [`make_poison_type`], poisoning to `Type::Error`.
 ///
 /// Shared by the Add/Sub dimensioned-Complex guard and the Mul/Div guard
 /// (task compiler-type-hygiene β2/5163) so the message/label form has one
@@ -188,10 +190,12 @@ fn poison_arith_operand_kind(
     right_ty: &Type,
     span: reify_core::SourceSpan,
 ) -> Type {
+    let hint = direction_operators::arith_operand_hint(left_ty, right_ty)
+        .map_or(String::new(), |hint| format!("; {hint}"));
     make_poison_type(
         diagnostics,
         Diagnostic::error(format!(
-            "operator `{op}` is undefined for operand kinds `{left_ty}` and `{right_ty}`",
+            "operator `{op}` is undefined for operand kinds `{left_ty}` and `{right_ty}`{hint}",
         ))
         .with_code(DiagnosticCode::ArithOperandKind)
         .with_label(DiagnosticLabel::new(span, "unsupported operand kinds")),
@@ -2060,11 +2064,15 @@ fn compile_expr_guarded_with_expected_inner(
                     // pre-existing placeholder UNCHANGED for this pairing;
                     // this guard overrides `result_type` exactly like the
                     // Mul/Div guard overrides its own placeholder below.
+                    // A `Direction` operand is the same reject (direction C6).
                     if matches!(bin_op, BinOp::Add | BinOp::Sub)
-                        && type_compat::add_sub_dimensioned_complex_reject(
+                        && (type_compat::add_sub_dimensioned_complex_reject(
                             &compiled_left.result_type,
                             &compiled_right.result_type,
-                        )
+                        ) || direction_operators::add_sub_direction_reject(
+                            &compiled_left.result_type,
+                            &compiled_right.result_type,
+                        ))
                     {
                         result_type = poison_arith_operand_kind(
                             diagnostics,
@@ -3571,6 +3579,12 @@ fn compile_expr_guarded_with_expected_inner(
                     // Task 6249: a third diagnostic-only check, with the same
                     // contract as the two above.
                     math_signatures::check_forward_trig_arg_dimensions(
+                        name,
+                        &compiled_args,
+                        expr.span,
+                        diagnostics,
+                    );
+                    direction_operators::check_math_direction_operands(
                         name,
                         &compiled_args,
                         expr.span,

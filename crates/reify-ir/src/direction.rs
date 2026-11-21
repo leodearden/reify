@@ -61,7 +61,6 @@ impl UnitVec3 {
     }
 
     /// Exact: negation leaves every squared term bitwise unchanged.
-    // G-allow: -0.0-canonical negation (PRD C2); production consumer is reify-expr negate_value's Direction arm, owned by #9635 — drop this marker once that arm calls negated().
     pub fn negated(&self) -> UnitVec3 {
         UnitVec3(canonical(self.0.map(|c| -c)))
     }
