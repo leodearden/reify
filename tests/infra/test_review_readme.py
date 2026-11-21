@@ -283,6 +283,18 @@ exit "$(cat {shlex.quote(str(self.hook_rc))})"
         self.assertIn(path, self.git("diff", "--cached", "--name-only").split())
         self.assertEqual(self.git("show", f":{path}") + "\n", content)
 
+    def assert_targets_restored_and_edit_quarantined(self, result, marker):
+        """The targets match HEAD in worktree and index, and the one refused
+        patch under logs/ holds the edit that carried `marker`."""
+        self.assertEqual(self.git("hash-object", README), self.git("rev-parse", f"HEAD:{README}"),
+                         _diag(result))
+        self.assertEqual(self.git("diff", "--name-only", "HEAD", "--", *TARGETS), "", _diag(result))
+        self.assertEqual(self.git("diff", "--cached", "--name-only", "--", *TARGETS), "",
+                         _diag(result))
+        patches = sorted((self.main / "logs").glob("readme-review-*.refused.patch"))
+        self.assertEqual(len(patches), 1, f"{patches}{_diag(result)}")
+        self.assertIn(marker, patches[0].read_text())
+
     def hook_saw_staged(self):
         """Paths the pre-commit hook was shown, or None if it never ran."""
         if not self.hook_log.exists():
@@ -425,20 +437,12 @@ class RefusalTest(ReviewReadmeFixture):
         self.assertEqual(result.returncode, self.REFUSED_EXIT, _diag(result))
         self.assertEqual(self.head(), before, _diag(result))
         self.assertEqual(self.origin_main(), self.origin_main_at_setup, _diag(result))
-
-        self.assertEqual(self.git("hash-object", README), self.git("rev-parse", f"HEAD:{README}"),
-                         _diag(result))
-        self.assertEqual(self.git("diff", "--name-only", "HEAD", "--", *TARGETS), "", _diag(result))
-        self.assertEqual(self.git("diff", "--cached", "--name-only", "--", *TARGETS), "",
-                         _diag(result))
+        self.assert_targets_restored_and_edit_quarantined(result, self.MARKER)
         self.assert_still_staged(UNRELATED, human_content)
-
-        patches = sorted((self.main / "logs").glob("readme-review-*.refused.patch"))
-        self.assertEqual(len(patches), 1, f"{patches}{_diag(result)}")
-        self.assertIn(self.MARKER, patches[0].read_text())
 
 
 class SessionFailureTest(ReviewReadmeFixture):
+    MARKER = "FAILED-SESSION-EDIT-MARKER"
     SESSION_FAILED = 69
 
     def test_a_failed_session_that_left_no_edit_exits_69_not_0(self):
@@ -452,6 +456,19 @@ class SessionFailureTest(ReviewReadmeFixture):
         self.assertEqual(self.git("status", "--porcelain", "--", *TARGETS), "", _diag(result))
         self.assertEqual(sorted((self.main / "logs").glob("readme-review-*.refused.patch")), [],
                          _diag(result))
+
+    def test_a_failed_sessions_edit_is_quarantined_not_landed(self):
+        human_content = self.stage_human_change_to_unrelated()
+        before = self.head()
+        result = self.run_script(REVIEW_README_STUB_CLAUDE_RC="1",
+                                 REVIEW_README_STUB_APPEND=self.MARKER)
+
+        self.assertEqual(result.returncode, self.SESSION_FAILED, _diag(result))
+        self.assertEqual(self.head(), before, _diag(result))
+        self.assertEqual(self.origin_main(), self.origin_main_at_setup, _diag(result))
+        self.assertIsNone(self.hook_saw_staged(), _diag(result))
+        self.assert_targets_restored_and_edit_quarantined(result, self.MARKER)
+        self.assert_still_staged(UNRELATED, human_content)
 
 
 class PreflightTest(ReviewReadmeFixture):
