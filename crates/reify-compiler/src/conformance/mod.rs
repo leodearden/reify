@@ -3582,19 +3582,7 @@ mod tests {
             span: SourceSpan::empty(0),
         };
         let template = minimal_template("Test", vec![param_cell]);
-        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
-        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        check_param_default_conformance(
-            &template,
-            ConformanceRegistries {
-                templates: &template_registry,
-                traits: &trait_registry,
-                enum_defs: &[],
-            },
-            &RejectedParamDefaults::default(),
-            &mut diagnostics,
-        );
+        let diagnostics = param_default_diagnostics(&template, &RejectedParamDefaults::default());
         assert_eq!(
             diagnostics.len(),
             0,
@@ -3654,19 +3642,7 @@ mod tests {
             is_priv: false,
         });
 
-        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
-        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        check_param_default_conformance(
-            &template,
-            ConformanceRegistries {
-                templates: &template_registry,
-                traits: &trait_registry,
-                enum_defs: &[],
-            },
-            &RejectedParamDefaults::default(),
-            &mut diagnostics,
-        );
+        let diagnostics = param_default_diagnostics(&template, &RejectedParamDefaults::default());
         assert_eq!(
             diagnostics.len(),
             1,

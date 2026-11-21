@@ -7188,17 +7188,19 @@ structure def Manifold {
         let dimensionless = CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
         let length_valued = CompiledExpr::literal(Value::Real(1.0), length.clone());
         for (declared, has_explicit_type, default, expected_count) in [
-            (&length, true, &dimensionless, 1),
-            (&length, true, &length_valued, 0),
-            (&length, false, &dimensionless, 0),
-            (&Type::Error, true, &dimensionless, 0),
+            (&length, true, Some(&dimensionless), 1),
+            (&length, true, Some(&length_valued), 0),
+            (&length, false, Some(&dimensionless), 0),
+            (&Type::Error, true, Some(&dimensionless), 0),
+            (&Type::Geometry, true, Some(&dimensionless), 0),
+            (&length, true, None, 0),
         ] {
             let mut diagnostics: Vec<Diagnostic> = Vec::new();
             let rejected = check_param_default_type(
                 "t",
                 declared,
                 has_explicit_type,
-                Some(default),
+                default,
                 SourceSpan::new(10, 40),
                 &mut diagnostics,
             );
@@ -7206,7 +7208,10 @@ structure def Manifold {
                 .iter()
                 .filter(|d| d.code == Some(DiagnosticCode::ParamDefaultTypeMismatch))
                 .count();
-            let row = format!("{declared:?}, explicit={has_explicit_type}");
+            let row = format!(
+                "{declared:?}, explicit={has_explicit_type}, has_default={}",
+                default.is_some()
+            );
             assert_eq!(emitted, expected_count, "{row}: got {diagnostics:?}");
             assert_eq!(
                 diagnostics.len(),
