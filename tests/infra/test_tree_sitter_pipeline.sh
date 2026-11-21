@@ -191,6 +191,16 @@ assert_file_nonempty() {
     fi
 }
 
+ts_print_captured() {
+    # Usage: ts_print_captured <label> <file>
+    # A capture's lines, each behind "  | ", so a captured
+    # @@REIFY_INFRA_UNAVAILABLE@@ marker is never re-emitted at column 0, where
+    # a runner would take it for this suite's own verdict.
+    echo "  --- $1 ---"
+    sed 's/^/  | /' "$2"
+    echo "  --- end $1 ---"
+}
+
 require_tree_sitter_cli() {
     # Usage: require_tree_sitter_cli || return 0
     # SKIPs (not fails) when the tree-sitter CLI is not on PATH. The CLI is
@@ -832,6 +842,34 @@ run_tests() {
     [[ "$FAIL_COUNT" -eq 0 ]]
 }
 
+ts_discover_cases() {
+    # The suite's cases: every function whose `declare -F` line contains test_.
+    # The same grammar run_tests discovers by, so a helper carrying that
+    # substring would be run as a case.
+    declare -F | awk '/test_/{print $3}'
+}
+
+ts_run_stub_cases() {
+    # Usage: ts_run_stub_cases <dir> <case...>
+    # run_tests over the named stub cases, output to <dir>/run.log, status
+    # run_tests'. A subshell, so run_tests' counters and cleanup list stay out of
+    # the suite's. It holds no suite case (each test_* function is unset), so a
+    # runner that ignored <case...> finds nothing to run, where it would
+    # otherwise rerun the suite and this caller.
+    # Stubs: ts_case_passes (0), ts_case_fails (1), ts_case_reaches_no_verdict
+    # ($TS_INFRA_RC), ts_case_must_not_run (creates <dir>/must-not-run).
+    local stub_dir="$1" f
+    shift
+    (
+        for f in $(ts_discover_cases); do unset -f "$f"; done
+        ts_case_passes() { return 0; }
+        ts_case_fails() { return 1; }
+        ts_case_reaches_no_verdict() { return "$TS_INFRA_RC"; }
+        ts_case_must_not_run() { : >"$stub_dir/must-not-run"; }
+        run_tests "$@"
+    ) >"$stub_dir/run.log" 2>&1
+}
+
 # --- Test Cases ---
 
 test_generate_script_exists_and_executable() {
@@ -1080,6 +1118,66 @@ test_print_plan_capture_retries_on_truncation() {
     if [[ "$out" != *"# verify.sh plan"* ]] || [[ "$out" != *"# --- commands"* ]]; then
         echo ""
         echo "  ASSERTION FAILED: capture missing a structural marker: <<<$out>>>"
+        return 1
+    fi
+}
+
+test_runner_stops_with_infrastructure_at_a_case_that_reaches_no_verdict() {
+    # A case that returns TS_INFRA_RC reached no verdict, which is neither PASS nor
+    # FAIL: the run ends there and exits 75 (EX_TEMPFAIL, the literal the
+    # orchestrator reads) with the INFRASTRUCTURE line. The case after it never
+    # runs, so its stub leaves no marker.
+    local dir rc=0
+    dir=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$dir'")
+    ts_run_stub_cases "$dir" \
+        ts_case_passes ts_case_reaches_no_verdict ts_case_must_not_run || rc=$?
+    if [ "$rc" -ne 75 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: run_tests must exit 75 at a case that reaches no verdict, got $rc"
+        ts_print_captured "run_tests output" "$dir/run.log"
+        return 1
+    fi
+    if [ -e "$dir/must-not-run" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: run_tests ran a case after one that reached no verdict"
+        ts_print_captured "run_tests output" "$dir/run.log"
+        return 1
+    fi
+    if ! grep -q '^INFRASTRUCTURE: ' "$dir/run.log"; then
+        echo ""
+        echo "  ASSERTION FAILED: run_tests exited 75 without an INFRASTRUCTURE: verdict line"
+        ts_print_captured "run_tests output" "$dir/run.log"
+        return 1
+    fi
+}
+
+test_runner_lets_a_recorded_fail_outrank_infrastructure() {
+    # An assertion that already FAILed wins over a later case that reached no
+    # verdict (test_helpers.sh test_summary_infra_unavailable's rule): exit 1, and
+    # no INFRASTRUCTURE verdict. A run of passing cases still exits 0.
+    local dir rc=0
+    dir=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$dir'")
+    ts_run_stub_cases "$dir" ts_case_fails ts_case_reaches_no_verdict || rc=$?
+    if [ "$rc" -ne 1 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: a recorded FAIL must win over a later case with no verdict (exit 1), got $rc"
+        ts_print_captured "run_tests output" "$dir/run.log"
+        return 1
+    fi
+    if grep -q '^INFRASTRUCTURE: ' "$dir/run.log"; then
+        echo ""
+        echo "  ASSERTION FAILED: a run that exited 1 for a recorded FAIL also printed an INFRASTRUCTURE: verdict"
+        ts_print_captured "run_tests output" "$dir/run.log"
+        return 1
+    fi
+    rc=0
+    ts_run_stub_cases "$dir" ts_case_passes || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: a run of passing cases must exit 0, got $rc"
+        ts_print_captured "run_tests output" "$dir/run.log"
         return 1
     fi
 }
