@@ -725,6 +725,18 @@ through `test_summary_infra_unavailable`: an assertion that already FAILed
 wins (exit 1); otherwise it prints an `INFRASTRUCTURE:` line and exits 75
 (EX_TEMPFAIL), with no FAIL line. Never a skip and never a FAIL.
 
+**A cargo build killed by its own timeout.** A build a member bounds with
+`timeout` and that is killed (exit 124) reached no verdict: a cold sccache or
+target dir, or a wait on the build-directory lock, can push it past the bound.
+That is the same infrastructure verdict: a column-0
+`@@REIFY_INFRA_UNAVAILABLE@@ kind=cargo_timeout` line on stderr, then exit 75.
+It is never a SKIP (a vacuous pass) and never a FAIL.
+`test_tree_sitter_pipeline.sh`'s `run_guarded_cargo_check` is the first user.
+That suite stops at the first such case, because each timeout spends 300s of
+its 10m selective-infra wall, and an assertion that already FAILed still wins.
+A build that hangs on a real defect also reads as 75, on every run: the guard
+prints the tail of cargo's output so a lock wait can be told from a hang.
+
 **Why network is not a gate constraint.** `verify_env` sets no
 `CARGO_NET_OFFLINE`, and the gate's own `cargo check` / clippy / nextest run
 online and download on a cold registry, so a host with no network and a cold
