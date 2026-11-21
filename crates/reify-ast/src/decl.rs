@@ -70,18 +70,6 @@ impl ParsedModule {
             ((line, col), e.message.as_str())
         })
     }
-
-    /// Render every parse error against `source` as `path:line:col: label: message`, in parse
-    /// order — the GNU shape a multi-file report gives every located line.
-    ///
-    /// Task #10040. Positions follow the same rule as [`render_errors`](Self::render_errors),
-    /// degenerate inputs included, and are batched the same way. The caller supplies `label`,
-    /// so the CLI keeps a single label for both of its parse-error line shapes.
-    pub fn render_errors_in(&self, path: &str, label: &str, source: &str) -> Vec<String> {
-        ParseError::locate_each(&self.errors, source, |e, line, col| {
-            format!("{path}:{line}:{col}: {label}: {}", e.message)
-        })
-    }
 }
 
 /// A top-level declaration in a module.
@@ -2224,67 +2212,6 @@ mod parse_error_render_tests {
         assert_eq!(
             rendered[3], "1:1: prelude",
             "a prelude-sentinel span has no user-file location and must fall back to `1:1`",
-        );
-    }
-
-    /// A multi-file report names the file each parse error is in, in the GNU
-    /// `path:line:col: label: message` shape every other located diagnostic line uses.
-    ///
-    /// Task #10040. Positions come from the same rule as `render_errors`, degenerate inputs
-    /// included: an out-of-range offset clamps to the end of the source and the prelude
-    /// sentinel falls back to `1:1`, rather than dropping the position.
-    #[test]
-    fn render_errors_in_leads_each_error_with_its_path_line_and_column() {
-        let source = "fn f() -> Int {
-  let x = 1
-  x
-}
-";
-        let mk = |off: usize, msg: &str| ParseError {
-            message: msg.to_string(),
-            span: SourceSpan::new(off as u32, off as u32),
-        };
-        let mk_module = |errors: Vec<ParseError>| ParsedModule {
-            path: ModulePath::single("f"),
-            declarations: vec![],
-            errors,
-            content_hash: ContentHash(0),
-            pragmas: vec![],
-            declared_module_path: None,
-        };
-
-        let let_offset = source.find("let x").expect("fixture must contain 'let x'");
-        let module = mk_module(vec![
-            mk(let_offset, "missing ';'"),
-            mk(source.len() + 500, "past end"),
-            mk(SourceSpan::PRELUDE_SENTINEL_OFFSET, "prelude"),
-        ]);
-
-        // Derived, not hard-coded: every expected position is what the canonical scanning
-        // conversion reports.
-        let (line, col) = reify_core::byte_offset_to_line_col(source, let_offset);
-        assert!(
-            line > 1 && col > 1,
-            "the fixture error must sit past the first line and column to pin both; \
-             got {line}:{col}",
-        );
-        let (end_line, end_col) = reify_core::byte_offset_to_line_col(source, source.len());
-        // A label no production surface uses, so only a renderer that formats its `label`
-        // argument can match; the CLI's real label is pinned end to end in cli_fix_imports.rs.
-        assert_eq!(
-            module.render_errors_in("dir/f.ri", "L", source),
-            vec![
-                format!("dir/f.ri:{line}:{col}: L: missing ';'"),
-                format!("dir/f.ri:{end_line}:{end_col}: L: past end"),
-                "dir/f.ri:1:1: L: prelude".to_string(),
-            ],
-        );
-
-        assert!(
-            mk_module(vec![])
-                .render_errors_in("dir/f.ri", "L", source)
-                .is_empty(),
-            "a module with no parse errors must render no lines",
         );
     }
 
