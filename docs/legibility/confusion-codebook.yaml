@@ -2790,6 +2790,13 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: After each CEILING outcome the session fell back to manual polling (mcp__escalation__get_pending_escalations x3, date -u +%s x4) instead of a different wait strategy.
+  - date: '2026-11-20'
+    project: reify
+    session: 944eea98-f88e-4c7b-8e37-8d90272c9672
+    origin_phase: ops
+    manifested_phase: ops
+    note: Each CEILING outcome from watcher-rearm.sh led the agent to re-arm the wait manually instead of changing the approach, so the session repeated the same cycle.
+    evidence_quote: 'WATCHER_REARM_OUTCOME: CEILING exit=124'
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261030
@@ -3281,6 +3288,13 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Agent chose sleep+tail to poll a background task's output file; the guard message directs it to Monitor or run_in_background instead.
+    evidence_quote: 'To wait for a condition, use Monitor with an until-loop (e.g. `until <check>; do sleep 2; done`). To wait for a command you started, use run_in_background: true.'
+  - date: '2026-11-20'
+    project: reify
+    session: 0414a58e-b12b-408b-92dd-930b1064a8bb
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: The agent chained sleep+tail to poll a background task's output file rather than using Monitor or run_in_background, as the guard message directs.
     evidence_quote: 'To wait for a condition, use Monitor with an until-loop (e.g. `until <check>; do sleep 2; done`). To wait for a command you started, use run_in_background: true.'
 - id: entry-cand-20260725-2
   title: Heredoc commit message with literal parentheses breaks under eval-wrapped bash execution
@@ -4966,6 +4980,24 @@ entries:
     manifested_phase: unknown
     note: After watcher-rearm.sh hit its own CEILING (exit 124), the same bounded Bash rearm was re-issued four times with identical arguments and timeout.
     evidence_quote: 'Bash x4: {"command": "cd $DARK_FACTORY_ROOT && scripts/watcher-rearm.sh --queue-dir /home/leo/src/reify/data/escalations --level 1 --timeout 3600", "description": "Wait for next L1 escalation (bounded)", "timeout": 3660000}'
+  - date: '2026-11-20'
+    project: reify
+    session: 944eea98-f88e-4c7b-8e37-8d90272c9672
+    origin_phase: ops
+    manifested_phase: ops
+    note: The same bounded watcher-rearm command was re-issued after each CEILING exit 124 (turns 91, 105, 115), with only the timeout value changed on the last attempt.
+    evidence_quote: '- (turn 105) Bash({"command": "cd $DARK_FACTORY_ROOT && scripts/watcher-rearm.sh --queue-dir /home/leo/src/reify/data/escalations --level 1 --timeout 3600", "description": "Bounded wait for next L1 escalation", "timeou...) -> [exit 124] [watcher-rearm-declared] Exit code 124
+
+      watcher-rearm.sh: level=1 exclude-file=/home/leo/src/reify/data/escalations/.watcher-rearm-exclude-l1 (append a deliberately-pending esc-id here to suppress it)
+
+      WATCHER_REARM_OUTCOME: CEILING exit=124'
+  - date: '2026-11-20'
+    project: reify
+    session: a364265d-093c-4609-b828-91a05e62dea5
+    origin_phase: ops
+    manifested_phase: ops
+    note: The identical watcher-rearm.sh wait (--level 1 --timeout 3600) was re-issued after the first run hit its own CEILING (exit 124), and then re-issued again with the same arguments at turn 88.
+    evidence_quote: 'Bash x4 (2 designed-outcome results: [exit 124] [watcher-rearm-declared]): {"command": "cd $DARK_FACTORY_ROOT && scripts/watcher-rearm.sh --queue-dir /home/leo/src/reify/data/escalations --level 1 --timeout 3600"'
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261030
@@ -9360,6 +9392,13 @@ entries:
     manifested_phase: unknown
     note: Agent issued `sleep 60; cat ...output | tail -30` to wait on a background task's output, and the anti-chaining guard blocked the call.
     evidence_quote: 'Blocked: sleep 60 followed by: cat /tmp/claude-1000/-home-leo-src-warm-lanes-worktrees--lane-36/16811273-f6b9-45e3-be30-afcfe70f99e1/tasks/bix81j80m.output tail -30.'
+  - date: '2026-11-20'
+    project: reify
+    session: 0414a58e-b12b-408b-92dd-930b1064a8bb
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: A chained sleep+tail poll on a background task's output file was blocked by the anti-chaining guard.
+    evidence_quote: 'Blocked: sleep 90 followed by: tail -5 /tmp/claude-1000/-home-leo-src-warm-lanes-worktrees--lane-29/0414a58e-b12b-408b-92dd-930b1064a8bb/tasks/bwr5lfap7.output'
   last_seen_runs:
   - census-reify-20261022
 - id: entry-cand-20260719-7
@@ -9691,6 +9730,13 @@ entries:
     manifested_phase: unknown
     note: A Read of the warm-lane .task/plan.json returned 'File does not exist' from the _lane-12 working directory, which matches the title's warm-lane missing-plan.json mechanism. The digest does not show whether this happened during bootstrap, so the phases are unknown.
     evidence_quote: 'Read({"file_path": "/home/leo/src/warm-lanes/worktrees/_lane-12/.task/plan.json"}) -> File does not exist. Note: your current working directory is /home/leo/src/warm-lanes/worktrees/_lane-12.'
+  - date: '2026-11-20'
+    project: reify
+    session: e3e21c20-5803-49af-bc75-ee1580a4bf2e
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Read of the warm-lane task's .task/plan.json at the lane root returns 'File does not exist', matching the title's missing-plan.json-at-bootstrap mechanism. Phase is not supported by the digest.
+    evidence_quote: 'Read({"file_path": "/home/leo/src/warm-lanes/worktrees/_lane-39/.task/plan.json"}) -> File does not exist. Note: your current working directory is /home/leo/src/warm-lanes/worktrees/_lane-39.'
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261106
@@ -11188,6 +11234,13 @@ entries:
       method: similarity
       score: 0.9157
       run_id: census-reify-20261022
+  - date: '2026-11-20'
+    project: reify
+    session: edff4040-35e3-4fd2-be92-608106883c8c
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: A deferred tool was called with a wrong parameter name (task_id instead of the declared id) while its schema was not loaded into the prompt, and the call was rejected with unknown_argument. The digest's own text says the schema was not in the prompt at call time.
+    evidence_quote: This tool's input schema was not in your prompt when you called it.
   filed_tickets:
   - ticket: null
     project_root: /home/leo/src/reify
