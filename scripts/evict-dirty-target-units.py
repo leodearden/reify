@@ -18,6 +18,13 @@ JUDGED AS CARGO JUDGES: an input is stale when it is missing, or when its
 mtime (for a directory, the newest mtime under it) is strictly newer than the
 output's.
 
+NOT JUDGED, because each lane's cargo already judges them correctly:
+- inputs outside the build root: the seed never re-stamps them;
+- runs of packages that are not workspace members: registry and git sources
+  are immutable per unit hash;
+- records with no RerunIfChanged entry.
+cargo metadata is asked for member roots only when a record needs judging.
+
 Usage: evict-dirty-target-units.py --build-root DIR TARGET_DIR
 stdout stays empty; each eviction and a closing summary go to stderr.
 """
@@ -32,7 +39,10 @@ import sys
 from dataclasses import dataclass
 
 PROG = "evict-dirty-target-units"
-RECORD_GLOB_DEPTHS = ("*/.fingerprint/*/run-build-script-*.json",)
+RECORD_GLOB_DEPTHS = (  # <profile>/ and <triple>/<profile>/
+    "*/.fingerprint/*/run-build-script-*.json",
+    "*/*/.fingerprint/*/run-build-script-*.json",
+)
 UNIT_DIR = re.compile(r"^(.+)-([0-9a-f]{16})$")
 
 
@@ -102,10 +112,17 @@ def entry_mtime_ns(path):
         return own
 
 
-def offending_input(record, pkg_root, reference_ns):
-    """The first input cargo would call stale against `reference_ns`, or None."""
+def is_inside(path, root):
+    return os.path.commonpath([root, path]) == root
+
+
+def offending_input(record, pkg_root, build_root, reference_ns):
+    """The first input inside `build_root` that cargo would call stale against
+    `reference_ns`, or None."""
     for raw in record.inputs:
         path = os.path.normpath(os.path.join(pkg_root, raw))
+        if not is_inside(path, build_root):
+            continue
         try:
             mtime = newest_mtime_ns(path)
         except OSError:
@@ -115,13 +132,13 @@ def offending_input(record, pkg_root, reference_ns):
     return None
 
 
-def judge(record, roots, target):
+def judge(record, pkg_root, build_root, target):
     """The eviction `record` needs, or None when it is fresh or has no output."""
     try:
         reference_ns = os.stat(os.path.join(target, record.output_rel)).st_mtime_ns
     except FileNotFoundError:
         return None
-    return offending_input(record, roots[record.package], reference_ns)
+    return offending_input(record, pkg_root, build_root, reference_ns)
 
 
 def parse_args(argv):
@@ -138,15 +155,17 @@ def main(argv=None):
     args = parse_args(argv)
     records = [parse_record(path) for path in discover(args.target)]
     rerun_records = [record for record in records if record.inputs is not None]
-    roots = member_roots(args.build_root)
-    evictions = [eviction for eviction in (judge(record, roots, args.target)
-                                           for record in rerun_records)
-                 if eviction is not None]
+    roots = member_roots(args.build_root) if rerun_records else {}
+    member_records = [record for record in rerun_records if record.package in roots]
+    build_root = os.path.realpath(args.build_root)
+    evictions = [eviction for eviction in (
+        judge(record, roots[record.package], build_root, args.target)
+        for record in member_records) if eviction is not None]
     for eviction in evictions:
         os.unlink(os.path.join(args.target, eviction.output_rel))
         print(f"evicted {eviction.output_rel}: {eviction.offending} {eviction.why}",
               file=sys.stderr)
-    print(f"{PROG}: records={len(records)} judged={len(rerun_records)} "
+    print(f"{PROG}: records={len(records)} judged={len(member_records)} "
           f"evicted={len(evictions)}", file=sys.stderr)
     return 0
 
