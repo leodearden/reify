@@ -816,8 +816,8 @@ pub async fn create_new_file_on_large_stack(path: String) -> Result<FileData, St
 }
 
 /// A [`GuiState`] fresh out of an engine open (`load_file_into_engine` or
-/// [`open_document_in_engine`]), whose `files[].path` entries are still
-/// stem-only module keys rather than canonical absolute
+/// [`open_document_even_if_rejected_in_engine`]), whose `files[].path`
+/// entries are still stem-only module keys rather than canonical absolute
 /// paths. The only way to get a plain [`GuiState`] back out is
 /// [`resolve`](Self::resolve) — that keeps the rewrite step paired with the
 /// load at the type level, so a future call site cannot return the
@@ -853,9 +853,10 @@ impl UnresolvedGuiState {
 /// (`debug_server::open_source_into_engine_and_refresh_baseline`, behind the
 /// debug bridge's open_file/load_fixture tools). It refuses a source the
 /// engine rejects, so those MCP tools report it as an error; the GUI's own
-/// open adopts such a file instead, through [`open_document_in_engine`]. Both
-/// adopt the opened file's identity on success rather than preserving the
-/// previously loaded one (task #5193).
+/// open adopts such a file instead, through
+/// [`open_document_even_if_rejected_in_engine`]. Both adopt the opened file's
+/// identity on success rather than preserving the previously loaded one
+/// (task #5193).
 ///
 /// Returns an [`UnresolvedGuiState`]: callers MUST call
 /// [`UnresolvedGuiState::resolve`] to obtain a `GuiState` fit to hand to a
@@ -873,19 +874,21 @@ pub(crate) fn load_file_into_engine(
 }
 
 /// Open `canonical` as the engine's document via
-/// `EngineSession::open_document`: the GUI open funnel's choke-point, behind
-/// [`load_initial_file_impl`].
+/// `EngineSession::open_document_even_if_rejected`: the GUI open funnel's
+/// choke-point, behind [`load_initial_file_impl`].
 ///
 /// `Err` only for an unreadable file. A source the engine rejects still
 /// opens, as an uncompiled document whose state carries its diagnostics.
 ///
 /// Returns an [`UnresolvedGuiState`], exactly as `load_file_into_engine`
 /// does: callers MUST call [`UnresolvedGuiState::resolve`].
-fn open_document_in_engine(
+fn open_document_even_if_rejected_in_engine(
     session: &mut EngineSession,
     canonical: &Path,
 ) -> Result<UnresolvedGuiState, String> {
-    session.open_document(canonical).map(UnresolvedGuiState)
+    session
+        .open_document_even_if_rejected(canonical)
+        .map(UnresolvedGuiState)
 }
 
 /// Rewrite each stem-only `GuiState::files[].path` entry to a canonical
@@ -959,7 +962,7 @@ pub fn open_file_evaluation(
 /// The ONE load-and-resolve body behind both file-open entry points: the
 /// startup **argv** launch ([`begin_initial_file_load`] → here) and File-Open
 /// ([`open_file_engine_impl`], which canonicalises and delegates), through the
-/// [`open_document_in_engine`] choke-point.
+/// [`open_document_even_if_rejected_in_engine`] choke-point.
 ///
 /// `Err` means the file is unreadable or the engine failed (a panic). A source
 /// the engine rejects opens as an uncompiled document whose state carries its
@@ -1000,8 +1003,10 @@ pub fn load_initial_file_impl(
     engine: &Mutex<EngineSession>,
     path: &Path,
 ) -> Result<GuiState, String> {
-    let state = crate::engine_lock::with_engine_lock(engine, |s| open_document_in_engine(s, path))
-        .and_then(std::convert::identity)?;
+    let state = crate::engine_lock::with_engine_lock(engine, |s| {
+        open_document_even_if_rejected_in_engine(s, path)
+    })
+    .and_then(std::convert::identity)?;
     Ok(state.resolve(path))
 }
 
