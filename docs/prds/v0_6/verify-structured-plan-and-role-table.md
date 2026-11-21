@@ -291,7 +291,7 @@ Byte-identical to today, except the one plan divergence recorded in §12 and the
 - **`--confirm-failed`**: stdout is the bare id list; the single refusal line `verify.sh: ERROR — confirm refused: …` goes to real stderr; everything else goes to the private log. DF's `_VERIFY_USAGE_MARKER_RE` rejects any `Usage:`/`Options:` line, so the usage text keeps those two header lines.
 - **Unchanged by construction**, because the bash libs still emit them: `@@REIFY_CLOCK_*@@`, `@@REIFY_SLOT_TIMEOUT@@`, `lib_test_semaphore.sh: …` and the `cpu_admit` lines.
 
-**Listed divergences** (critic K16, K17). Each is asserted positively in B1 or B2, and none is read by a consumer:
+**Listed divergences** (critic K16, K17). Each is asserted positively in B1, B2 or `test_verify_plan_model.py`, and none is read by a consumer:
 - A malformed timeout knob warns once, where offline today warns twice.
 - Knob warnings and missing-lib errors fire after argv parsing, so `--help` works with a bad knob.
 - In `--confirm-failed` mode, every diagnostic reaches the private log, including the knob warnings that today leak to the real stderr. The order that guarantees it (fold-verifier V11) is: parse argv; validate, with any refusal on the real stderr; `dup2` the private log over fd 2; then resolve knobs.

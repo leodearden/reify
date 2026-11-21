@@ -42,7 +42,7 @@ def release_declared(repo_root: Path, planning: Mapping[str, str]) -> tuple[str,
             return declared.lines
         case NotCalled(result=CallResult(returncode=0) as ended):
             never_ran = (
-                f"{ERROR}{RELEASE_DECLARED_SET} never ran (exited {ended.returncode}): "
+                f"{ERROR}{RELEASE_DECLARED_SET} never ran (exited 0): "
                 "refusing to plan without the release-sensitive crate list"
             )
             return Refused((*ended.stderr_lines, never_ran), 1)
