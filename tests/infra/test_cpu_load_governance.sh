@@ -887,9 +887,10 @@ _row4_confine_apply_quota() {
 # reify-govtest$$.slice ($$ = this script's PID).  Shared across Cycle ROW1 /
 # ROW2_3 / ROW4 so every confined+pinned burn in this run nests under the
 # SAME parent, bounding the whole script invocation's aggregate footprint to
-# ~confine-cores CPUs (not per-cycle).  Must differ from production slices
-# (reify-governed-{agents,merge}.slice) to isolate usage_usec deltas from
-# concurrent production agent placement (ζ).
+# ~confine-cores CPUs (not per-cycle).  Must differ from the production role
+# slices scripts/lib_cgroup.sh::cgroup_role_slice defaults to, to isolate
+# usage_usec deltas from concurrent production agent placement (ζ) — and from
+# the legacy pre-9998 reify-governed-* names older host listings still show.
 _ROW4_SLICE_TASK="reify-govtest$$-agents.slice"
 _ROW4_SLICE_MERGE="reify-govtest$$-merge.slice"
 
