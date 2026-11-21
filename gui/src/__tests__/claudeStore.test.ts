@@ -635,29 +635,6 @@ describe('claudeStore', () => {
       expect(warn).toHaveBeenCalled();
     });
 
-    it('sandbox_unavailable notice leaves the in-flight turn running', () => {
-      vi.spyOn(console, 'warn').mockImplementation(() => {});
-      const { state, sendMessage, handleOutboundMessage } = makeStore();
-      sendMessage('hello', {});
-      const msgId = state.currentMessageId!;
-
-      handleOutboundMessage({ type: 'text_delta', id: msgId, content: 'partial ' });
-      handleOutboundMessage(notice(msgId, 'sandbox_unavailable'));
-      handleOutboundMessage({ type: 'text_delta', id: msgId, content: 'more' });
-
-      const inFlight = assistantMessageOf(state.messages, msgId);
-      expect(inFlight?.responseText).toBe('partial more');
-      expect(inFlight?.complete).toBe(false);
-      expect(inFlight?.error).toBeUndefined();
-      expect(state.sessionStatus).toBe('responding');
-      expect(state.currentMessageId).toBe(msgId);
-
-      handleOutboundMessage({ type: 'done', id: msgId });
-
-      expect(state.sessionStatus).toBe('idle');
-      expect(assistantMessageOf(state.messages, msgId)?.complete).toBe(true);
-    });
-
     it.each(['degraded_turn_boundary', 'permission_request_orphaned', 'toString'])(
       'diagnostic and unknown notice codes add no system message (%s)',
       (code) => {
@@ -671,6 +648,36 @@ describe('claudeStore', () => {
         expect(warn).toHaveBeenCalled();
       },
     );
+
+    describe('with a pending rAF buffer', () => {
+      const raf = withQueuedRAF();
+
+      it('sandbox_unavailable notice leaves the in-flight turn running', () => {
+        vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const { state, sendMessage, handleOutboundMessage } = makeStore();
+        sendMessage('hello', {});
+        const msgId = state.currentMessageId!;
+
+        handleOutboundMessage({ type: 'text_delta', id: msgId, content: 'partial ' });
+        handleOutboundMessage(notice(msgId, 'sandbox_unavailable'));
+        expect(assistantMessageOf(state.messages, msgId)?.responseText).toBe('');
+
+        handleOutboundMessage({ type: 'text_delta', id: msgId, content: 'more' });
+        for (const flush of raf.callbacks) flush();
+
+        const inFlight = assistantMessageOf(state.messages, msgId);
+        expect(inFlight?.responseText).toBe('partial more');
+        expect(inFlight?.complete).toBe(false);
+        expect(inFlight?.error).toBeUndefined();
+        expect(state.sessionStatus).toBe('responding');
+        expect(state.currentMessageId).toBe(msgId);
+
+        handleOutboundMessage({ type: 'done', id: msgId });
+
+        expect(state.sessionStatus).toBe('idle');
+        expect(assistantMessageOf(state.messages, msgId)?.complete).toBe(true);
+      });
+    });
   });
 
   describe('stuck state recovery on unmatched message id', () => {
