@@ -46,6 +46,7 @@ use reify_solver_elastic::eigensolve::{
     EigenSolverOptions, EigenSolverResult, ShiftInvertFailure, solve_eigen_shift_invert,
     try_solve_eigen_shift_invert,
 };
+use reify_test_support::panic_message_of;
 
 const N: usize = 80;
 
@@ -184,7 +185,9 @@ fn panicking_sibling_names_the_shift_not_the_stiffness() {
     let b = identity();
     let sigma = sigma_on_an_eigenvalue();
 
-    let outcome = std::panic::catch_unwind(|| {
+    // sigma sits exactly on an eigenvalue, so K - sigma*B is singular and the
+    // panicking entry point must panic.
+    let message = panic_message_of(|| {
         // Discarded rather than returned: `EigenSolverResult` is not `Debug`,
         // and what this test needs from the Ok side is only that it did not
         // happen.
@@ -197,12 +200,6 @@ fn panicking_sibling_names_the_shift_not_the_stiffness() {
             },
         );
     });
-    let panicked = outcome.expect_err(
-        "sigma sits exactly on an eigenvalue, so K - sigma*B is singular and the panicking \
-         entry point must panic",
-    );
-
-    let message = reify_core::panic_payload_to_string(panicked.as_ref());
 
     let lower = message.to_lowercase();
 
