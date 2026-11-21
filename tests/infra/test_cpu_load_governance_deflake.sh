@@ -31,9 +31,10 @@
 #     support. Only SELF checks, small FIXTURE-1..5 smoke (bounded workers/
 #     seconds, load-robust), and the hermetic *-VACUITY/NAMING/CONFINE/BYPASS
 #     assertions run.
-#   The SUT runs under _run_with_stall_guard: TERMed only after _SUT_STALL_S s
-#     without output (technique T, docs/prds/infra-test-wallclock-deflake.md §2),
-#     while run_all.sh's member budget bounds its total runtime.
+#   The SUT runs under _run_with_stall_guard: it and its descendants are TERMed
+#     only after more than _SUT_STALL_S s without output (technique T,
+#     docs/prds/infra-test-wallclock-deflake.md §2), while run_all.sh's member
+#     budget bounds its total runtime.
 #
 # Hermetic: no real cgroup-governance CPU load, no systemd scope creation, no
 # PSI required for A1/A2/A4. FIXTURE-3/4/5 still run small bounded real CPU
@@ -63,9 +64,26 @@ INSTRUMENT="$SCRIPT_DIR/cpu_gov_instrument.py"
 # shellcheck source=tests/infra/test_helpers.sh
 source "$SCRIPT_DIR/test_helpers.sh"
 
+# _term_descendants <pid>
+#   TERMs every descendant of <pid>, deepest first so each parent is still there
+#   to be asked for its own children. TERMing <pid> first would put them out of
+#   reach, and its direct children alone would miss whatever runs under a command
+#   substitution, such as the `systemctl --user` calls of the SUT's startup sweep.
+_term_descendants() {
+    local child
+    for child in $(pgrep -P "$1" 2>/dev/null || true); do
+        _term_descendants "$child"
+        kill -TERM "$child" 2>/dev/null || true
+    done
+}
+
 # _run_with_stall_guard <stall_s> <out_file> <cmd> [arg...]
 #   Runs <cmd> with stdout+stderr in <out_file>. Returns <cmd>'s own exit status,
-#   or 124 after TERMing it once <out_file> has not grown for <stall_s> seconds.
+#   or 124 once <out_file> has not grown for more than <stall_s> seconds. `$SECONDS`
+#   ticks in whole seconds, so `>` is what keeps that silence at least <stall_s>
+#   real seconds. On a stall the guard prints a one-line notice naming <out_file>'s
+#   last non-blank line, then TERMs <cmd>'s descendants and <cmd> itself: <cmd>'s
+#   own EXIT trap ends it at once on TERM, which would leave a hung child running.
 #   Technique T (docs/prds/infra-test-wallclock-deflake.md §2): the window bounds
 #   SILENCE, so a slow <cmd> that keeps emitting is never killed. Its total
 #   runtime stays bounded by run_all.sh's member budget, whose process-group
@@ -75,13 +93,16 @@ _run_with_stall_guard() {
     shift 2
     "$@" >"$out" 2>&1 </dev/null &
     local pid=$!
-    local size=0 now=0 last_growth=$SECONDS rc=0
+    local size=0 now=0 last_growth=$SECONDS rc=0 last_line
     while kill -0 "$pid" 2>/dev/null; do
         now=$(stat -c %s "$out" 2>/dev/null || echo 0)
         if [ "$now" != "$size" ]; then
             size=$now
             last_growth=$SECONDS
-        elif (( SECONDS - last_growth >= stall_s )); then
+        elif (( SECONDS - last_growth > stall_s )); then
+            last_line="$(awk 'NF { last = $0 } END { print last }' "$out" 2>/dev/null || true)"
+            echo "  STALL GUARD: no output for ${stall_s}s; TERMing the command and its descendants; last output line: ${last_line:-<none>}"
+            _term_descendants "$pid"
             kill -TERM "$pid" 2>/dev/null || true
             wait "$pid" 2>/dev/null || true
             return 124
@@ -92,19 +113,14 @@ _run_with_stall_guard() {
     return "$rc"
 }
 
-# _print_sut_failure_evidence <rc> <out_file> <stall_s>
-#   For a non-zero SUT status, prints where the SUT stopped: on rc 124 a stall
-#   line naming its last non-blank output line, then the last 40 lines of its
-#   output. Each tail line gets a `  SUT| ` prefix so none can pass for one of
-#   this test's own `  FAIL:` lines when run_all.sh collects FAIL detail.
+# _print_sut_failure_evidence <rc> <out_file>
+#   For a non-zero SUT status, prints the last 40 lines of its output, which this
+#   test otherwise deletes. Each line gets a `  SUT| ` prefix so none can pass for
+#   one of this test's own `  FAIL:` lines when run_all.sh collects FAIL detail.
 #   Returns 0 always: evidence never changes a verdict.
 _print_sut_failure_evidence() {
-    local rc="$1" out="$2" stall_s="$3" last_line
+    local rc="$1" out="$2"
     [ "$rc" -ne 0 ] || return 0
-    if [ "$rc" -eq 124 ]; then
-        last_line="$(awk 'NF { last = $0 } END { print last }' "$out" 2>/dev/null || true)"
-        echo "  SUT STALLED: no output for ${stall_s}s; last SUT line: ${last_line:-<none>}"
-    fi
     tail -n 40 "$out" 2>/dev/null | sed 's/^/  SUT| /' || true
 }
 
@@ -214,10 +230,10 @@ assert "A5d: a command's own exit 124 passes through (want rc=124, got ${_rc})" 
 assert "A5d: a command's own exit 124 draws no stall notice (rc=${_rc}, notice empty)" \
     test ! -s "$_a5_dir/own124.notice"
 
-# A5e (SUBTREE REAPING): on a stall the guard TERMs the command's whole subtree,
-# not only the command, whose own EXIT trap can make it exit at once and orphan a
-# hung child. The stub nests a command substitution, as the SUT's startup sweep
-# does around `systemctl`, so the leaf `sleep` is a grandchild of the command. The
+# A5e (SUBTREE REAPING): on a stall the guard TERMs the command's whole subtree, not
+# just the command: the command's own EXIT trap can end it at once and orphan a hung
+# child. The stub nests a command substitution, as the SUT's startup sweep does
+# around `systemctl`, so the leaf `sleep` is a grandchild of the command. The
 # command and the substitution each handle TERM, which bash defers until its
 # foreground child ends: both outlive the guard's signals, and the substitution
 # records how its leaf ended, 143 if the guard TERMed it and 0 after its full 30 s.
@@ -271,7 +287,7 @@ assert "A4: SUT output contains ROW4 and ROW2_3 host-governance SKIP markers" \
         grep -q "SKIP ROW2_3: host does not support cgroup governance" "$1"
     ' _ "$_SUT_OUT"
 
-_print_sut_failure_evidence "$_SUT_RC" "$_SUT_OUT" "$_SUT_STALL_S"
+_print_sut_failure_evidence "$_SUT_RC" "$_SUT_OUT"
 
 rm -f "$_SUT_OUT"
 
