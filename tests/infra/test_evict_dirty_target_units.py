@@ -19,7 +19,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -31,7 +31,8 @@ REF_NS = 1_700_000_000 * SECOND_NS
 NEWER_NS = REF_NS + SECOND_NS
 OLDER_NS = REF_NS - SECOND_NS
 FIXTURE_NS = REF_NS - 3600 * SECOND_NS
-SEED_STAMP_NS = int(datetime(2020, 1, 1, tzinfo=timezone.utc).timestamp()) * SECOND_NS
+# seed-warm-lane.sh's bulk stamp, `touch -d 2020-01-01T00:00:00`: local time.
+SEED_STAMP_NS = int(datetime(2020, 1, 1).timestamp()) * SECOND_NS
 
 RUN_RECORD = "run-build-script-build-script-build"
 CARGO_TIMEOUT_SECS = 600
@@ -197,6 +198,45 @@ class Rule(EvictHarness):
 
         self.assertEvicted(result, output, self.alpha / "src" / "generated.rs")
 
+    def test_a_listed_directory_is_as_new_as_the_newest_entry_below_it(self):
+        shared = self.root / "crates" / "shared"
+        nested = shared / "src" / "deep" / "y.rs"
+        write_file(nested, "")
+        stamp_tree(shared, OLDER_NS)
+        set_mtime_ns(nested, NEWER_NS)
+        output = write_run_record(self.target, "release", "alpha", "5656565656565656",
+                                  ["../shared/src"])
+
+        result = self.run_evict()
+
+        self.assertEvicted(result, output, shared / "src")
+
+    def test_a_symlink_below_a_listed_directory_is_as_new_as_its_target(self):
+        shared = self.root / "crates" / "shared"
+        linked = shared / "linked.rs"
+        write_file(linked, "")
+        (shared / "src" / "link.rs").symlink_to(linked)
+        stamp_tree(shared, OLDER_NS)
+        set_mtime_ns(linked, NEWER_NS)
+        output = write_run_record(self.target, "release", "alpha", "5757575757575757",
+                                  ["../shared/src"])
+
+        result = self.run_evict()
+
+        self.assertEvicted(result, output, shared / "src")
+
+    def test_an_absolute_input_spelled_through_a_symlink_to_the_root_is_judged(self):
+        via_link = self.tmp / "ws-link"
+        via_link.symlink_to(self.root)
+        set_mtime_ns(self.alpha / "build.rs", NEWER_NS)
+        offending = via_link / "crates" / "alpha" / "build.rs"
+        output = write_run_record(self.target, "release", "alpha", "5858585858585858",
+                                  [str(offending)])
+
+        result = self.run_evict()
+
+        self.assertEvicted(result, output, offending)
+
 
 class Boundaries(EvictHarness):
     """What the evictor does not judge, and where it looks for records."""
@@ -356,6 +396,15 @@ class FailsClosed(EvictHarness):
         result = self.run_evict()
 
         self.assertFailsClosed(result, self.root / "Cargo.toml", "cargo metadata")
+
+    def test_a_build_root_carrying_the_seed_stamp(self):
+        manifests = {"workspace manifest": self.root / "Cargo.toml",
+                     "member manifest": self.alpha / "Cargo.toml"}
+        for case, manifest in manifests.items():
+            with self.subTest(case):
+                set_mtime_ns(manifest, SEED_STAMP_NS)
+                self.assertFailsClosed(self.run_evict(), manifest, "2020-01-01 bulk stamp")
+                set_mtime_ns(manifest, FIXTURE_NS)
 
 
 class Usage(EvictHarness):
