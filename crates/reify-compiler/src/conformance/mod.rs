@@ -10,6 +10,7 @@ pub(crate) use sub_component_validation::check_sub_structure_existence;
 use super::*;
 use crate::ambient_defaults::AmbientDefaults;
 use crate::geometry_traits_inference::{GeometryTrait, infer_traits_for_expr_in_env};
+use crate::rejected_param_defaults::RejectedParamDefaults;
 use crate::type_acceptance::{ArgVerdict, ParamFamily, conformance_accepts};
 use reify_core::direction::DIRECTION_MIGRATION_HINT;
 
@@ -499,32 +500,24 @@ fn param_default_cells(template: &TopologyTemplate) -> impl Iterator<Item = &Val
 ///   concrete-leaf arm routes the default through [`walk_param_against_arg`],
 ///   as described at that arm.
 ///
-/// A cell whose span is in `rejected_at_declaration` is skipped: its default was
-/// already rejected by the declaration-site `check_param_default_type`, and one
-/// mistake gets one diagnostic (PRD D4-4). The skip keys on that rejection, not
-/// on the cell type, because trait-injected cells (`checker.rs`
-/// `check_phase_inject_defaults`) and unannotated fallback cells reach only this
-/// pass and share their cell types with the ones the declaration check judges.
-///
-/// A `SourceSpan` is unique only within one file. Every rejected span is an
-/// offset into the module being compiled, but a cell injected from a trait
-/// declared in another file (prelude or an import) carries that file's
-/// offsets. Such a cell is skipped wrongly only if its span coincides, start and
-/// end, with a rejected local param's span. That residual collision is accepted
-/// because no file identity reaches this pass: neither `SourceSpan` nor
-/// `Diagnostic` carries one, and the rejection is recovered from the
-/// diagnostics rather than handed over as owned state.
+/// A cell in `rejected_at_declaration` is skipped: its default was already
+/// rejected by the declaration-site `check_param_default_type`, and one mistake
+/// gets one diagnostic (PRD D4-4). The skip keys on the cell that check rejected
+/// (its identity plus its span), not on the cell type, because trait-injected
+/// cells (`checker.rs` `check_phase_inject_defaults`) and unannotated fallback
+/// cells reach only this pass and share their cell types with the ones the
+/// declaration check judges.
 pub(crate) fn check_param_default_conformance(
     template: &TopologyTemplate,
     registries: ConformanceRegistries<'_>,
-    rejected_at_declaration: &HashSet<SourceSpan>,
+    rejected_at_declaration: &RejectedParamDefaults,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     for vc in param_default_cells(template) {
         if vc.kind != ValueCellKind::Param {
             continue;
         }
-        if rejected_at_declaration.contains(&vc.span) {
+        if rejected_at_declaration.contains(vc) {
             continue;
         }
         let Some(default) = &vc.default_expr else {
@@ -1733,7 +1726,6 @@ mod tests {
     use crate::compile_builder::names_phase::build_resolution_names;
     use crate::compile_builder::pre_pass::collect_decl_refs;
     use crate::compile_builder::traits_phase::phase_traits;
-    use crate::rejected_param_defaults::RejectedParamDefaults;
 
     /// Everything one `check_trait_conformance` call produced for its conformer.
     ///

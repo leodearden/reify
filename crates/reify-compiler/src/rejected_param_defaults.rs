@@ -15,7 +15,6 @@ pub(crate) struct RejectedParamDefaults {
     spans_by_cell: HashMap<ValueCellId, HashSet<SourceSpan>>,
 }
 
-#[allow(dead_code)]
 impl RejectedParamDefaults {
     pub(crate) fn record(&mut self, cell: &ValueCellDecl) {
         self.spans_by_cell
