@@ -103,7 +103,9 @@ fn panic_site(f: impl FnOnce()) -> PanicSite {
         .expect("panic hook did not record a location");
 
     PanicSite {
-        message: reify_core::panic_payload_to_string(&*payload),
+        message: reify_core::panic_payload_str(&*payload)
+            .expect("panic payload is a string")
+            .to_owned(),
         file,
         line,
     }
