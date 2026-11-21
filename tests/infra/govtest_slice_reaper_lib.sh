@@ -54,14 +54,17 @@
 #
 # WHY THIS LIVES IN tests/infra/ AND NOT scripts/lib_cgroup.sh
 # Both prefixes this library serves are test-private BY CONSTRUCTION: each
-# consuming suite requires its slice names to differ from the production
-# `reify-governed-{agents,merge}.slice` so its measurements stay isolated from
-# concurrent real agent placement (ζ) and so it can never disturb the live
-# orchestrator's governance hierarchy. Meanwhile scripts/lib_cgroup.sh is
-# sourced by scripts/cpu-governed-exec.sh on EVERY governed exec, so teaching
-# that production hot-path library about test-only slice prefixes would be a
-# layering inversion — production code would carry knowledge of, and a stop
-# path for, units only tests create.
+# consuming suite requires its slice names to differ from the production role
+# slices that scripts/lib_cgroup.sh::cgroup_role_slice defaults to
+# (df-reify-governed-{agents,merge}.slice under df-reify.slice since task
+# 9998), so its measurements stay isolated from concurrent real agent
+# placement (ζ) and so it can never disturb the live orchestrator's governance
+# hierarchy. They must also differ from the LEGACY pre-9998 `reify-governed-*`
+# role-slice names, which idle units on a long-lived host may still carry.
+# Meanwhile scripts/lib_cgroup.sh is sourced by scripts/cpu-governed-exec.sh on
+# EVERY governed exec, so teaching that production hot-path library about
+# test-only slice prefixes would be a layering inversion — production code
+# would carry knowledge of, and a stop path for, units only tests create.
 # tests/infra/*_lib.sh is the established house pattern for logic shared
 # between infra tests (cpu_load_fixture.sh, load_tolerance_lib.sh,
 # nextest_absent_lib.sh, run-all-classification-lib.sh). It is also not a
@@ -111,13 +114,14 @@ _GOVTEST_PROFILE_SUFFIX_ALT=""
 #   would never fire at all. That makes the prefix live regex source, and
 #   govtest_slice_pid is the single chokepoint deciding whether a unit is
 #   eligible to be STOPPED. A prefix of `reify-.*` would therefore make
-#   `reify.slice` a match — and that is the shared implicit ROOT of the LIVE
-#   production hierarchy (`reify-governed.slice` and
-#   `reify-governed-agents.slice` nest under it and carry real orchestrator
-#   agent placement), so stopping it cascades into the running fleet. The
-#   conservative charset below — lowercase alphanumerics in dash-separated
-#   segments, nothing else — is what makes every such widening unreachable,
-#   for metacharacters nobody has thought of as much as for the ones above.
+#   `reify.slice` a match — and that is the shared implicit ROOT of every
+#   profile's run slices (`reify-govtest<pid>.slice`, `reify-test<pid>.slice`)
+#   and of the LEGACY pre-9998 `reify-governed-*` role-slice names, so stopping
+#   it cascades into every concurrent run (the live orchestrator's governance
+#   sits outside it, under cgroup_role_slice's slices). The conservative
+#   charset below — lowercase alphanumerics in dash-separated segments,
+#   nothing else — is what makes every such widening unreachable, for
+#   metacharacters nobody has thought of as much as for the ones above.
 #
 #   WHY THE PREFIX MAY NOT END IN A DIGIT. The charset alone would admit
 #   `reify-test1`, and its grammar then OVERLAPS `reify-test`'s rather than
@@ -220,13 +224,14 @@ govtest_profile_set reify-govtest agents merge
 #   The grammar is deliberately EXACT rather than a prefix test. It is the
 #   single chokepoint deciding whether a unit is eligible to be stopped, and
 #   the per-user systemd session it operates in is shared host-wide with the
-#   production `reify-governed-{agents,merge}.slice` units that carry real
-#   agent placement. An exact anchored match is what makes those units
-#   unreachable from here by construction. This is the same defensive
-#   re-filter discipline dark-factory's leftover-scope reaper applies at
-#   verify.py:3503 — it re-checks the full name with an anchored regex even
-#   though it already enumerated by prefix glob, so a surprise in glob
-#   semantics can never widen the blast radius.
+#   production role slices (scripts/lib_cgroup.sh::cgroup_role_slice) and with
+#   any idle units still carrying the LEGACY pre-9998 `reify-governed-*`
+#   names. An exact anchored match is what makes both unreachable from here
+#   by construction. This is the same defensive re-filter discipline
+#   dark-factory's leftover-scope reaper applies at verify.py:3503 — it
+#   re-checks the full name with an anchored regex even though it already
+#   enumerated by prefix glob, so a surprise in glob semantics can never widen
+#   the blast radius.
 # ---------------------------------------------------------------------------
 govtest_slice_pid() {
     local unit="${1:-}" re
@@ -360,14 +365,14 @@ _govtest_pid_alive() {
 #
 #   FAIL-SAFE IN EXACTLY ONE DIRECTION. A pid is skipped when it is alive,
 #   when it is the caller's own, or when the unit name does not parse — and
-#   the name check runs through govtest_slice_pid, so the production
-#   `reify-governed-*` slices and any foreign unit the enumeration glob might
-#   surprise us with are dropped here too. The only error this design can
-#   make is a false NEGATIVE (pid reuse: an unrelated process now holds a
-#   dead run's pid), which merely leaves one empty slice behind for the next
-#   sweep to retry. It can never reap a live concurrent run — which matters
-#   because run_all.sh schedules many lanes at once against ONE shared
-#   per-user systemd session.
+#   the name check runs through govtest_slice_pid, so the production role
+#   slices, the legacy `reify-governed-*` names and any foreign unit the
+#   enumeration glob might surprise us with are dropped here too. The only
+#   error this design can make is a false NEGATIVE (pid reuse: an unrelated
+#   process now holds a dead run's pid), which merely leaves one empty slice
+#   behind for the next sweep to retry. It can never reap a live concurrent
+#   run — which matters because run_all.sh schedules many lanes at once
+#   against ONE shared per-user systemd session.
 #
 #   Dedup uses a plain space-delimited seen-list rather than an associative
 #   array: the candidate count is bounded by the number of leaked runs (a
@@ -426,11 +431,12 @@ EOF
 #
 #   THREE FILTERS, IN ORDER.
 #     1. The arg must match `^<prefix>(-[a-z0-9]+)*\.slice$`. This is what
-#        makes `reify.slice` — the shared implicit ROOT of the LIVE production
-#        hierarchy, under which reify-governed.slice and
-#        reify-governed-agents.slice carry real orchestrator agent placement —
-#        structurally unreachable, along with the production slices themselves,
-#        the other profile's namespace, and any path-traversal string. It also
+#        makes `reify.slice` — the shared implicit ROOT of every profile's run
+#        slices and of the legacy reify-governed.slice /
+#        reify-governed-agents.slice names, so stopping it would cascade into
+#        every concurrent run — structurally unreachable, along with the
+#        production slices themselves (current and legacy names alike), the
+#        other profile's namespace, and any path-traversal string. It also
 #        excludes everything inside the PID grammar, and provably so rather
 #        than incidentally: after the prefix that grammar requires a DIGIT
 #        while this one requires `-` or `.`, so the two languages are disjoint.
@@ -563,12 +569,12 @@ EOF
 #
 #     * THE GLOB IS THE OUTER BLAST-RADIUS BOUND. The systemd user session is
 #       shared host-wide, so listing every unit and filtering afterwards would
-#       put the production `reify-governed-*` slices — and every other
-#       project's units — inside the candidate set in the first place. The
-#       anchored grammar re-filters each caller applies afterwards are the
-#       INNER bound, kept even though the glob already ran: exactly the
-#       belt-and-braces of dark-factory verify.py:3492 (glob) + :3503
-#       (anchored regex re-check).
+#       put the production role slices, the legacy `reify-governed-*` names —
+#       and every other project's units — inside the candidate set in the
+#       first place. The anchored grammar re-filters each caller applies
+#       afterwards are the INNER bound, kept even though the glob already ran:
+#       exactly the belt-and-braces of dark-factory verify.py:3492 (glob) +
+#       :3503 (anchored regex re-check).
 #     * `|| true` INSIDE the capture AND `|| listing=""` OUTSIDE it. The
 #       former covers a non-zero systemctl exit; the latter covers the
 #       assignment itself failing under `set -e`.
