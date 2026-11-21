@@ -165,7 +165,9 @@ fn pinned_clean_files_emit_no_ctor_conformance_diagnostic() {
 /// `docs/prds/v0_6/dimension-checked-readers.md`'s, kept alongside the `#NNNN`
 /// cite so the attribution stays legible if those cluster tasks are re-split:
 /// γ1/ε/η are #6922, γ2/β/ζ are #6941. The `direction_typing_*` rows' δ/μ are
-/// `docs/prds/v0_6/direction-typing.md`'s: δ is #9637, μ is #9651.
+/// `docs/prds/v0_6/direction-typing.md`'s: δ is #9637, μ is #9651. The `s8_*`
+/// rows' η is S8-η #8898 of
+/// `docs/prds/v0_6/builtin-registry-migration-and-interception-classifier.md`.
 ///
 /// # Sibling of `CTOR_CONFORMANCE_MIGRATION_DEBT`, not a merge of it
 ///
@@ -277,6 +279,28 @@ pub(crate) const CTOR_CONFORMANCE_CORPUS_RESIDUAL: &[(&str, &str, &str, &str)] =
          until δ #9637 promoted datum slots; μ #9651 owns the survey's direction-typing \
          rows (PRD §8: the ctor-conformance rejection table and probe-set rows for \
          B6/B8/B22) and retires or promotes this before-image",
+    ),
+    (
+        "tests/prd-gate/fixtures/s8_geometry_ctor_conformance_inline.ri",
+        "len",
+        "#8898",
+        "S8 leaf η's §5 row 9 before-image \
+         (docs/prds/v0_6/builtin-registry-migration-and-interception-classifier.md): inline \
+         `box(..)` at Holder's Length `len` errors naming `Real` today while the Point3 `origin` \
+         is never rejected; η types geometry calls by kind and turns the inline form into \
+         E_GeometryCallInValuePosition, so \"fixing\" the call site here deletes η's recorded \
+         pre-state",
+    ),
+    (
+        "tests/prd-gate/fixtures/s8_geometry_ctor_conformance_inline.ri",
+        "name",
+        "#8898",
+        "S8 leaf η's §5 row 9 before-image \
+         (docs/prds/v0_6/builtin-registry-migration-and-interception-classifier.md): inline \
+         `box(..)` at Holder's String `name` errors naming `Real` today while the Point3 \
+         `origin` is never rejected; η types geometry calls by kind and turns the inline form \
+         into E_GeometryCallInValuePosition, so \"fixing\" the call site here deletes η's \
+         recorded pre-state",
     ),
 ];
 
