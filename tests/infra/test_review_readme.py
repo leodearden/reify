@@ -86,6 +86,7 @@ _PINNED_KEYS = frozenset(
 # environment, so only a test's explicit override can set one.
 _SCRUBBED_KEYS = (
     "REVIEW_README_STUB_APPEND",
+    "REVIEW_README_STUB_STAGE_THEN_REVERT",
     "REVIEW_README_STUB_CLAUDE_RC",
     "REVIEW_README_STUB_CARGO_RC",
     "REVIEW_README_STUB_CARGO_SLEEP",
@@ -200,6 +201,11 @@ fi
 if [ -n "${{REVIEW_README_STUB_APPEND:-}}" ]; then
     printf '%s\\n' "$REVIEW_README_STUB_APPEND" >> {shlex.quote(README)}
 fi
+if [ -n "${{REVIEW_README_STUB_STAGE_THEN_REVERT:-}}" ]; then
+    printf '%s\\n' "$REVIEW_README_STUB_STAGE_THEN_REVERT" >> {shlex.quote(README)}
+    git add -- {shlex.quote(README)}
+    git restore --source=HEAD --worktree -- {shlex.quote(README)}
+fi
 exit "${{REVIEW_README_STUB_CLAUDE_RC:-0}}"
 """)
         return stub
@@ -291,9 +297,13 @@ exit "$(cat {shlex.quote(str(self.hook_rc))})"
         self.assertEqual(self.git("diff", "--name-only", "HEAD", "--", *TARGETS), "", _diag(result))
         self.assertEqual(self.git("diff", "--cached", "--name-only", "--", *TARGETS), "",
                          _diag(result))
-        patches = sorted((self.main / "logs").glob("readme-review-*.refused.patch"))
+        patches = self.refused_patches()
         self.assertEqual(len(patches), 1, f"{patches}{_diag(result)}")
         self.assertIn(marker, patches[0].read_text())
+
+    def refused_patches(self):
+        """The quarantine patches the script left under logs/."""
+        return sorted((self.main / "logs").glob("readme-review-*.refused.patch"))
 
     def hook_saw_staged(self):
         """Paths the pre-commit hook was shown, or None if it never ran."""
@@ -440,6 +450,14 @@ class RefusalTest(ReviewReadmeFixture):
         self.assert_targets_restored_and_edit_quarantined(result, self.MARKER)
         self.assert_still_staged(UNRELATED, human_content)
 
+    def test_a_session_that_staged_an_edit_is_refused_and_leaves_the_index_at_head(self):
+        before = self.head()
+        result = self.run_script(REVIEW_README_STUB_STAGE_THEN_REVERT=self.MARKER)
+
+        self.assertEqual(result.returncode, self.REFUSED_EXIT, _diag(result))
+        self.assertEqual(self.head(), before, _diag(result))
+        self.assertEqual(self.git("status", "--porcelain", "--", *TARGETS), "", _diag(result))
+
 
 class SessionFailureTest(ReviewReadmeFixture):
     MARKER = "FAILED-SESSION-EDIT-MARKER"
@@ -454,8 +472,17 @@ class SessionFailureTest(ReviewReadmeFixture):
         self.assertEqual(self.head(), before, _diag(result))
         self.assertIsNone(self.hook_saw_staged(), _diag(result))
         self.assertEqual(self.git("status", "--porcelain", "--", *TARGETS), "", _diag(result))
-        self.assertEqual(sorted((self.main / "logs").glob("readme-review-*.refused.patch")), [],
-                         _diag(result))
+        self.assertEqual(self.refused_patches(), [], _diag(result))
+
+    def test_a_failed_session_that_staged_an_edit_leaves_the_index_at_head(self):
+        before = self.head()
+        result = self.run_script(REVIEW_README_STUB_CLAUDE_RC="1",
+                                 REVIEW_README_STUB_STAGE_THEN_REVERT=self.MARKER)
+
+        self.assertEqual(result.returncode, self.SESSION_FAILED, _diag(result))
+        self.assertEqual(self.head(), before, _diag(result))
+        self.assertIsNone(self.hook_saw_staged(), _diag(result))
+        self.assertEqual(self.git("status", "--porcelain", "--", *TARGETS), "", _diag(result))
 
     def test_a_failed_sessions_edit_is_quarantined_not_landed(self):
         human_content = self.stage_human_change_to_unrelated()
