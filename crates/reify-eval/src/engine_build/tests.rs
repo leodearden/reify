@@ -9248,17 +9248,7 @@ structure Assembly {
             assert!(cold_swept.is_none(), "premise: a Box has no swept kind, got {cold_swept:?}");
         });
 
-        let swept_ops = vec![
-            CompiledGeometryOp::Primitive {
-                kind: PrimitiveKind::Sphere,
-                args: vec![("radius".into(), mm_lit(5.0))],
-            },
-            CompiledGeometryOp::Sweep {
-                kind: SweepKind::Extrude,
-                profiles: vec![GeomRef::Step(0)],
-                args: vec![("profile".into(), mm_lit(5.0)), ("distance".into(), mm_lit(10.0))],
-            },
-        ];
+        let swept_ops = sphere_extrude_ops();
         assert_cold_warm_side_effect_set_parity("ColdWarmParitySwept", &swept_ops, |_, cold_swept| {
             assert!(
                 matches!(cold_swept, Some(SweptKind::Extrude { .. })),
@@ -9380,19 +9370,15 @@ structure Assembly {
         );
     }
 
-    /// A terminal replaced by the post-loop Voxel edge caches no swept kind
-    /// (task 10153): the BRep extrude the op loop classified is not the cached
-    /// OpenVdb terminal, so a warm hit must not record the extrude's kind under
-    /// the OpenVdb handle's bare id, a key the cold pass never writes.
-    #[test]
-    fn voxel_replaced_terminal_caches_and_restores_no_swept_kind() {
+    /// A Sphere(5mm) followed by an Extrude of step 0 (profile 5mm, distance
+    /// 10mm): a two-op swept body whose cold pass classifies the terminal as an
+    /// extrude.
+    fn sphere_extrude_ops() -> Vec<CompiledGeometryOp> {
         use reify_core::Type;
         use reify_ir::CompiledExpr;
-        use reify_test_support::mocks::MockGeometryKernel;
-        use std::sync::{Arc, Mutex};
 
         let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
-        let swept_ops = vec![
+        vec![
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Sphere,
                 args: vec![("radius".into(), mm_lit(5.0))],
@@ -9400,9 +9386,24 @@ structure Assembly {
             CompiledGeometryOp::Sweep {
                 kind: SweepKind::Extrude,
                 profiles: vec![GeomRef::Step(0)],
-                args: vec![("profile".into(), mm_lit(5.0)), ("distance".into(), mm_lit(10.0))],
+                args: vec![
+                    ("profile".into(), mm_lit(5.0)),
+                    ("distance".into(), mm_lit(10.0)),
+                ],
             },
-        ];
+        ]
+    }
+
+    /// A terminal replaced by the post-loop Voxel edge caches no swept kind
+    /// (task 10153): the BRep extrude the op loop classified is not the cached
+    /// OpenVdb terminal, so a warm hit must not record the extrude's kind under
+    /// the OpenVdb handle's bare id, a key the cold pass never writes.
+    #[test]
+    fn voxel_replaced_terminal_caches_and_restores_no_swept_kind() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use std::sync::{Arc, Mutex};
+
+        let swept_ops = sphere_extrude_ops();
         let desc = dispatch_test_descriptor_all_brep();
         let registry = dispatch_test_single_default_registry(&desc);
         let mut kernels = dispatch_test_kernels(Box::new(MockGeometryKernel::new()));
