@@ -282,6 +282,99 @@ class Boundaries(EvictHarness):
         self.assertEqual(calls.read_text(), "")
 
 
+class FailsClosed(EvictHarness):
+    """Every case also holds a genuinely stale member run, which must keep its
+    output: nothing is deleted until every record has been judged."""
+
+    def setUp(self):
+        super().setUp()
+        self.stale = write_run_record(self.target, "release", "alpha", "eeeeeeeeeeeeeeee",
+                                      ["src/generated.rs"])
+
+    def write_raw_record(self, unit_dir_name, body):
+        record = self.target / "debug" / ".fingerprint" / unit_dir_name / f"{RUN_RECORD}.json"
+        write_file(record, body)
+        return record
+
+    def assertFailsClosed(self, result, names, reason=""):
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertTrue(self.stale.exists(), "an output was deleted before judging ended")
+        self.assertRegex(result.stderr, re.compile(
+            rf"^evict-dirty-target-units: {re.escape(str(names))}: .*{reason}", re.M))
+
+    def test_a_record_that_is_not_json(self):
+        record = self.write_raw_record("alpha-f000000000000001", "{not json")
+
+        self.assertFailsClosed(self.run_evict(), record)
+
+    def test_an_unknown_local_fingerprint_kind(self):
+        local = [{"RerunIfChangedV2": {"output": "debug/build/alpha-f000000000000002/output",
+                                       "paths": ["build.rs"]}}]
+        record = self.write_raw_record("alpha-f000000000000002",
+                                       json.dumps(run_record_json(local)))
+
+        result = self.run_evict()
+
+        self.assertFailsClosed(result, record, "RerunIfChangedV2")
+        self.assertRegex(result.stderr, "cargo's fingerprint format changed")
+
+    def test_a_malformed_rerun_if_changed_entry(self):
+        out = "debug/build/alpha-f000000000000003/output"
+        cases = {
+            "no output": {"paths": ["build.rs"]},
+            "non-list paths": {"output": out, "paths": "build.rs"},
+            "non-string path": {"output": out, "paths": ["build.rs", 7]},
+            "output outside the target": {"output": "../elsewhere/output", "paths": []},
+            "absolute output": {"output": str(self.tmp / "output"), "paths": []},
+        }
+        for case, entry in cases.items():
+            with self.subTest(case):
+                record = self.write_raw_record(
+                    "alpha-f000000000000003",
+                    json.dumps(run_record_json([{"RerunIfChanged": entry}])))
+                self.assertFailsClosed(self.run_evict(), record, "RerunIfChanged")
+
+    def test_a_fingerprint_dir_outside_the_unit_grammar(self):
+        for name in ["alpha-F000000000000004", "alpha-f00000000004", "f000000000000004"]:
+            with self.subTest(name):
+                record = self.write_raw_record(
+                    name, json.dumps(run_record_json(ENV_ONLY_LOCAL)))
+                self.assertFailsClosed(self.run_evict(), record, re.escape(name))
+                shutil.rmtree(record.parent)
+
+    def test_a_cargo_metadata_failure(self):
+        (self.root / "Cargo.toml").unlink()
+
+        result = self.run_evict()
+
+        self.assertFailsClosed(result, self.root / "Cargo.toml", "cargo metadata")
+
+
+class Usage(EvictHarness):
+    def assertUsageError(self, result):
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertRegex(result.stderr, re.compile(r"^usage: ", re.M))
+
+    def test_a_missing_build_root(self):
+        self.assertUsageError(self.run_evict(self.target))
+
+    def test_a_target_that_is_not_a_directory(self):
+        not_dir = self.tmp / "target-file"
+        not_dir.write_text("")
+        for target in [not_dir, self.tmp / "absent"]:
+            with self.subTest(str(target)):
+                self.assertUsageError(self.run_evict("--build-root", self.root, target))
+
+    def test_a_build_root_that_is_not_a_directory(self):
+        write_run_record(self.target, "release", "alpha", "ffffffffffffffff", ["build.rs"])
+        for root in [self.root / "Cargo.toml", self.tmp / "absent"]:
+            with self.subTest(str(root)):
+                self.assertUsageError(self.run_evict("--build-root", root, self.target))
+
+
 BAKED_BUILD_RS = """\
 use std::path::PathBuf;
 
