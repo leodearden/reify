@@ -917,19 +917,32 @@ run_tests() {
     ts_run_verdict "$passed" "$failed" "$infra_case" "$((total - ran))"
 }
 
+ts_unset_cases_except() {
+    # Usage: ts_unset_cases_except [case]
+    # Unsets every suite case but <case> (all of them when it is omitted). For the
+    # subshell in which a test drives run_tests: a run_tests that ignored its
+    # arguments would rediscover the suite there and rerun the driving test, which
+    # drives run_tests in another subshell, and so on without bound. With only
+    # <case> left it runs that one, and the tests of run_tests' own contract are
+    # what fail.
+    local keep="${1:-}" f
+    for f in $(ts_discover_cases); do
+        [ "$f" = "$keep" ] || unset -f "$f"
+    done
+}
+
 ts_run_stub_cases() {
     # Usage: ts_run_stub_cases <dir> <case...>
     # run_tests over the named stub cases, output to <dir>/run.log, status
     # run_tests'. A subshell, so run_tests' counters and cleanup list stay out of
-    # the suite's. It holds no suite case (each test_* function is unset), so a
-    # runner that ignored <case...> finds nothing to run, where it would
-    # otherwise rerun the suite and this caller.
+    # the suite's. It holds no suite case (ts_unset_cases_except), so a runner that
+    # ignored <case...> finds nothing to run.
     # Stubs: ts_case_passes (0), ts_case_fails (1), ts_case_reaches_no_verdict
     # ($TS_INFRA_RC), ts_case_must_not_run (creates <dir>/must-not-run).
-    local stub_dir="$1" f
+    local stub_dir="$1"
     shift
     (
-        for f in $(ts_discover_cases); do unset -f "$f"; done
+        ts_unset_cases_except
         ts_case_passes() { return 0; }
         ts_case_fails() { return 1; }
         ts_case_reaches_no_verdict() { return "$TS_INFRA_RC"; }
@@ -1360,7 +1373,7 @@ test_a_fixture_build_timeout_ends_the_suite_with_infrastructure() {
     # TS_INFRA_RC up, and run_tests must end the suite with it, the marker
     # included. test_fixture_build_fails_on_a_cold_registry is the one build caller
     # that needs no tree-sitter CLI, so this runs on every host.
-    local shim log rc=0
+    local target=test_fixture_build_fails_on_a_cold_registry shim log rc=0
     shim=$(mktemp -d) || return 1
     CLEANUP_ACTIONS+=("rm -rf '$shim'")
     log=$(mktemp) || return 1
@@ -1370,7 +1383,11 @@ test_a_fixture_build_timeout_ends_the_suite_with_infrastructure() {
 exit 124
 SH
     chmod +x "$shim/timeout" || return 1
-    ( PATH="$shim:$PATH"; run_tests test_fixture_build_fails_on_a_cold_registry ) >"$log" 2>&1 || rc=$?
+    (
+        PATH="$shim:$PATH"
+        ts_unset_cases_except "$target"
+        run_tests "$target"
+    ) >"$log" 2>&1 || rc=$?
     if [ "$rc" -ne 75 ]; then
         echo ""
         echo "  ASSERTION FAILED: a fixture build killed by its timeout must end the suite with exit 75, got $rc"
