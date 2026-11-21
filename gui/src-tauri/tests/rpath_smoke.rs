@@ -109,6 +109,34 @@ fn ldd_resolved_path<'a>(ldd_output: &'a str, soname: &str) -> Option<&'a str> {
         .find_map(|line| line.trim().strip_prefix(needle.as_str())?.split_whitespace().next())
 }
 
+/// Bare `ldd` output measured for a cc-built exe whose NEEDED `libfoo.so.1`
+/// sits on no search path: ldd still exits 0 and prints `not found` where a
+/// path would go. Addresses are placeholders.
+const LDD_OUTPUT_WITH_LIBFOO_NOT_FOUND: &str = "\
+\tlinux-vdso.so.1 (0x00007ffd00000000)
+\tlibfoo.so.1 => not found
+\tlibc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x00007f0000000000)
+\t/lib64/ld-linux-x86-64.so.2 (0x00007f0000100000)
+";
+
+#[test]
+#[should_panic(expected = "libfoo.so.1 => not found")]
+fn ldd_resolved_path_panics_quoting_a_not_found_line() {
+    ldd_resolved_path(LDD_OUTPUT_WITH_LIBFOO_NOT_FOUND, "libfoo.so.1");
+}
+
+#[test]
+fn ldd_resolved_path_resolves_listed_and_skips_unlisted_sonames() {
+    assert_eq!(
+        ldd_resolved_path(LDD_OUTPUT_WITH_LIBFOO_NOT_FOUND, "libc.so.6"),
+        Some("/lib/x86_64-linux-gnu/libc.so.6")
+    );
+    assert_eq!(
+        ldd_resolved_path(LDD_OUTPUT_WITH_LIBFOO_NOT_FOUND, "libbar.so.2"),
+        None
+    );
+}
+
 /// (a) RUNTIME RESOLUTION (primary). `env -u LD_LIBRARY_PATH ldd
 /// <reify-gui>` must resolve `libtbb.so.12` to the deps copy —
 /// canonicalized, so it tolerates the tbb-pin symlink hop.
