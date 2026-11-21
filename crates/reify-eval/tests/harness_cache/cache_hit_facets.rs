@@ -158,9 +158,7 @@ fn cache_served_handle_drops_feature_provenance_selector() {
     let second = engine.build(&compiled, ExportFormat::Step);
     assert_build_was_cache_hit(&engine);
     // The probe's invariant 4 (no topology-attribute entries for a cache-served
-    // handle) causes this. The defect was filed as ticket
-    // tkt_0RX4W019PMQR95930EGFZ464G4 and combined into S2 κ #9263, which
-    // restores the attribute facet and flips this assertion.
+    // handle) causes this; S2 κ #9263 restores the attribute facet and flips it.
     assert_eq!(second.values.get(&made_cell), Some(&Value::Undef));
     let misses = provenance_misses(&second);
     assert!(
