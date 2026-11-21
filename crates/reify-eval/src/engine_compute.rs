@@ -4396,21 +4396,35 @@ mod tests {
         }
     }
 
-    // ── task #4880 step-7 RED / step-8 GREEN: OptimizedComputeDispatcher ────
+    // ── task #4880 / #10036: OptimizedComputeDispatcher ─────────────────────
     //
     // `OptimizedComputeDispatcher` is the OWNED `reify_ir::ComputeDispatch`
-    // adapter this task's producer wiring (steps 9-10) attaches to the
-    // `DimensionalSolver` cost loop via `from_engine`. It is built here (not
-    // in an external `tests/*.rs` integration test) because `from_engine` is
-    // `pub(crate)` — the owned snapshot must never outlive/alias the `&self`
-    // solver borrow taken inside the engine's `&mut self` eval loops (task
-    // #4880 design decision), so external crates have no business
-    // constructing one directly.
+    // adapter attached to the `DimensionalSolver` cost loop and the constraint
+    // checker via `from_engine`. It is built here (not in an external
+    // `tests/*.rs` integration test) because `from_engine` is `pub(crate)` —
+    // the owned snapshot must never outlive/alias the `&self` solver borrow
+    // taken inside the engine's `&mut self` eval loops (task #4880 design
+    // decision), so external crates have no business constructing one
+    // directly.
     //
     // `dispatch` mirrors `Engine::dispatch_compute_node`'s semantics exactly:
     // empty realization_inputs, `&Value::Undef` options, no prior warm state,
-    // a fresh `CancellationHandle` per call; `Completed{result}` -> `Some`,
-    // `Failed`/`Cancelled`/unregistered -> `None`.
+    // a fresh `CancellationHandle` per call. Mapping (task #10036):
+    // `Completed{result}` -> `Resolved(result)`; `Failed{diagnostics}` (a
+    // caught panic included) -> `Failed{kind: Failed, diagnostics}`;
+    // `Cancelled` -> `Failed{kind: Cancelled, diagnostics: []}`; no
+    // registered ComputeFn -> `Unregistered`.
+
+    fn dispatch_one(fn_target: &str, f: ComputeFn) -> reify_ir::ComputeDispatchOutcome {
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
+        engine.register_compute_fn(fn_target, f);
+        let d = OptimizedComputeDispatcher::from_engine(&engine);
+        let args = [Value::Scalar {
+            si_value: 1.0,
+            dimension: reify_core::DimensionVector::DIMENSIONLESS,
+        }];
+        reify_ir::ComputeDispatch::dispatch(&d, fn_target, &args)
+    }
 
     #[test]
     fn optimized_compute_dispatcher_dispatches_registered_target() {
@@ -4423,15 +4437,16 @@ mod tests {
             dimension: reify_core::DimensionVector::DIMENSIONLESS,
         };
 
-        assert_eq!(
-            reify_ir::ComputeDispatch::dispatch(&d, "test::probe", std::slice::from_ref(&probe)),
-            Some(probe),
-            "a registered target must dispatch to its ComputeFn's Completed result"
+        let outcome =
+            reify_ir::ComputeDispatch::dispatch(&d, "test::probe", std::slice::from_ref(&probe));
+        assert!(
+            matches!(&outcome, reify_ir::ComputeDispatchOutcome::Resolved(v) if *v == probe),
+            "a registered target must dispatch to its ComputeFn's Completed result, got {outcome:?}"
         );
     }
 
     #[test]
-    fn optimized_compute_dispatcher_unregistered_target_returns_none() {
+    fn optimized_compute_dispatcher_unregistered_target_is_unregistered() {
         let engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         let d = OptimizedComputeDispatcher::from_engine(&engine);
         let args = [Value::Scalar {
@@ -4439,48 +4454,100 @@ mod tests {
             dimension: reify_core::DimensionVector::DIMENSIONLESS,
         }];
 
-        assert_eq!(
-            reify_ir::ComputeDispatch::dispatch(&d, "unregistered::x", &args),
-            None,
-            "an unregistered target (no ComputeFn registered) must dispatch to None"
+        let outcome = reify_ir::ComputeDispatch::dispatch(&d, "unregistered::x", &args);
+        assert!(
+            matches!(outcome, reify_ir::ComputeDispatchOutcome::Unregistered),
+            "an unregistered target (no ComputeFn registered) must dispatch to Unregistered, \
+             got {outcome:?}"
         );
     }
 
     /// Task #5079's crash-safety floor (INV-FEA-2) applied to THIS dispatch
-    /// path: a panicking `ComputeFn` must become `None` — the trait's
-    /// "fall back to ordinary body evaluation" signal — not an unwind.
+    /// path: a panicking `ComputeFn` must become a `Failed` outcome carrying
+    /// the panic diagnostic, not an unwind.
     ///
     /// WHY THIS NEEDS ITS OWN TEST rather than riding on
-    /// `invoke_compute_trampoline`'s. `OptimizedComputeDispatcher` cannot call
-    /// `invoke_compute_trampoline` (that needs an `&Engine`, the borrow the
-    /// owned snapshot exists to avoid), so it reproduces the `catch_unwind`
-    /// guard instead — and a reproduced guard is exactly the kind that drifts
-    /// back out. Dropping it would not fail any other test in this crate: this
-    /// path is reached only from `reify_expr::eval_expr` under argmin's
-    /// `Executor`, which does not catch panics, so the unwind would surface as
-    /// a CLI/GUI crash rather than a red test.
+    /// `invoke_compute_trampoline`'s: this path is reached only from
+    /// `reify_expr::eval_expr` under argmin's `Executor`, which does not catch
+    /// panics, so a dispatcher that stopped routing through the shared guard
+    /// would surface as a CLI/GUI crash rather than a red test anywhere else.
     ///
-    /// Reuses `panics_str_fn` (below) — the same fixture the
-    /// `invoke_compute_trampoline` panic tests use, so the two guards are
-    /// pinned against identical input.
+    /// Reuses `panics_str_fn` (below) and the assertion shape of
+    /// `invoke_compute_trampoline_str_panic_becomes_failed_outcome`, so the two
+    /// dispatch paths are pinned against identical input.
     #[test]
     fn optimized_compute_dispatcher_catches_panicking_trampoline() {
-        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
-        engine.register_compute_fn("test::panics", panics_str_fn as ComputeFn);
+        let outcome = dispatch_one("test::panics", panics_str_fn as ComputeFn);
+        match outcome {
+            reify_ir::ComputeDispatchOutcome::Failed(reify_ir::ComputeDispatchFailure {
+                kind: reify_ir::ComputeFailureKind::Failed,
+                diagnostics,
+            }) => {
+                assert_eq!(diagnostics.len(), 1, "got {diagnostics:?}");
+                let d = &diagnostics[0];
+                assert!(
+                    d.severity == reify_core::Severity::Error
+                        && d.message.contains("test::panics")
+                        && d.message.contains("panicked")
+                        && d.message.contains("boom_str"),
+                    "expected an Error diagnostic naming the target, \"panicked\", and \
+                     the panic payload \"boom_str\", got {diagnostics:?}",
+                );
+            }
+            other => panic!(
+                "a panicking ComputeFn reached through OptimizedComputeDispatcher must be \
+                 caught and reported as Failed{{kind: Failed}}, got {other:?}"
+            ),
+        }
+    }
 
-        let d = OptimizedComputeDispatcher::from_engine(&engine);
-        let args = [Value::Scalar {
-            si_value: 1.0,
-            dimension: reify_core::DimensionVector::DIMENSIONLESS,
-        }];
+    #[test]
+    fn optimized_compute_dispatcher_failed_trampoline_carries_its_diagnostics() {
+        let outcome = dispatch_one("test::fails", always_failed_fn as ComputeFn);
+        match outcome {
+            reify_ir::ComputeDispatchOutcome::Failed(reify_ir::ComputeDispatchFailure {
+                kind: reify_ir::ComputeFailureKind::Failed,
+                diagnostics,
+            }) => {
+                assert_eq!(diagnostics.len(), 1, "got {diagnostics:?}");
+                assert_eq!(diagnostics[0].severity, reify_core::Severity::Error);
+                assert_eq!(diagnostics[0].message, "test trampoline always fails");
+            }
+            other => panic!(
+                "a Failed ComputeOutcome must dispatch to Failed{{kind: Failed}} with the \
+                 trampoline's own diagnostics, got {other:?}"
+            ),
+        }
+    }
 
-        assert_eq!(
-            reify_ir::ComputeDispatch::dispatch(&d, "test::panics", &args),
-            None,
-            "a panicking ComputeFn reached through OptimizedComputeDispatcher must be \
-             caught and reported as None (fall through to body-eval), not unwind into \
-             the constraint solver's cost loop"
-        );
+    /// Returns `Cancelled` unconditionally. The dispatcher creates a fresh,
+    /// never-cancelled handle per call, so `cancellable_fn` cannot drive this
+    /// arm.
+    fn always_cancelled_fn(
+        _value_inputs: &[Value],
+        _realization_inputs: &[RealizationReadHandle],
+        _options: &Value,
+        _prior_warm_state: Option<&OpaqueState>,
+        _cancellation: &CancellationHandle,
+    ) -> ComputeOutcome {
+        ComputeOutcome::Cancelled
+    }
+
+    #[test]
+    fn optimized_compute_dispatcher_cancelled_trampoline_is_a_cancelled_failure() {
+        let outcome = dispatch_one("test::cancels", always_cancelled_fn as ComputeFn);
+        match outcome {
+            reify_ir::ComputeDispatchOutcome::Failed(reify_ir::ComputeDispatchFailure {
+                kind: reify_ir::ComputeFailureKind::Cancelled,
+                diagnostics,
+            }) => {
+                assert!(diagnostics.is_empty(), "got {diagnostics:?}");
+            }
+            other => panic!(
+                "a Cancelled ComputeOutcome must dispatch to Failed{{kind: Cancelled}}, \
+                 got {other:?}"
+            ),
+        }
     }
 
     // ── Task #5079 step-1: RED — catch_unwind crash-safety floor ───────────
