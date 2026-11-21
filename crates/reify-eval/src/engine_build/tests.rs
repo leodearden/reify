@@ -1167,7 +1167,9 @@ structure Assembly {
     /// drive multiple sequential realizations against the same state (the
     /// `_shadows_previous` / `_failed_shadow_…` tests) call
     /// [`Self::reset_attribute_tables`] between calls, mirroring the per-build
-    /// reset in production.
+    /// reset in production. Tests that run a second build against a warm
+    /// `realization_cache` call [`Self::reset_per_build_outputs`] instead,
+    /// which also clears the output views.
     ///
     /// A future signature change to `Engine::execute_realization_ops` updates
     /// [`Self::run`] alone instead of every per-test call site.
@@ -1224,6 +1226,18 @@ structure Assembly {
         fn reset_attribute_tables(&mut self) {
             self.topology_attribute_table = TopologyAttributeTable::default();
             self.swept_kind_table = SweptKindTable::default();
+        }
+
+        /// Reset the realization OUTPUT views, mirroring production's per-build
+        /// reset. Leaves `realization_cache`, `dispatch_count`,
+        /// `dispatch_count_by_realization` and `diagnostics` untouched, so the
+        /// next call is a second build against a warm engine.
+        fn reset_per_build_outputs(&mut self) {
+            self.step_handles.clear();
+            self.named_steps.clear();
+            self.named_step_reprs.clear();
+            self.produced_repr_out = None;
+            self.reset_attribute_tables();
         }
 
         /// Drive [`Engine::execute_realization_ops`] against this state with
@@ -4778,15 +4792,9 @@ structure Assembly {
             "realization 1 must tessellate 2 inputs, ingest 2, run 1 union"
         );
 
-        // Reset only the per-build OUTPUT state, mirroring production's
-        // per-build reset — the shared `realization_cache` is left untouched,
-        // and `diagnostics` is cleared so the assertions below read ONLY
-        // realization 2's diagnostics.
-        state.step_handles.clear();
-        state.named_steps.clear();
-        state.named_step_reprs.clear();
-        state.produced_repr_out = None;
-        state.reset_attribute_tables();
+        state.reset_per_build_outputs();
+        // The reset leaves `diagnostics` alone: clear it so the assertions
+        // below read ONLY realization 2's diagnostics.
         state.diagnostics.clear();
 
         // ── Realization 2: same entity + ops + tol, ANONYMOUS (no name) so
@@ -9309,16 +9317,8 @@ structure Assembly {
         let cold_produced_repr_out = state.produced_repr_out;
         let dispatch_count_after_cold = state.dispatch_count;
 
-        // Reset only the per-build OUTPUT state (mirroring the per-build reset
-        // in production: `build`/`build_snapshot` reset step_handles,
-        // named_steps, named_step_reprs, produced_repr_out, and the attribute
-        // tables before each build) — the shared `realization_cache` is left
-        // untouched, exactly like a real second build against a warm engine.
-        state.step_handles.clear();
-        state.named_steps.clear();
-        state.named_step_reprs.clear();
-        state.produced_repr_out = None;
-        state.reset_attribute_tables();
+        // The shared `realization_cache` stays warm, like a real second build.
+        state.reset_per_build_outputs();
 
         // WARM pass: identical demand — the cache-hit short-circuit must fire.
         state.run_demand(
@@ -9465,11 +9465,7 @@ structure Assembly {
         );
 
         let dispatch_count_after_cold = state.dispatch_count;
-        state.step_handles.clear();
-        state.named_steps.clear();
-        state.named_step_reprs.clear();
-        state.produced_repr_out = None;
-        state.reset_attribute_tables();
+        state.reset_per_build_outputs();
         run(&mut state);
 
         assert_eq!(
