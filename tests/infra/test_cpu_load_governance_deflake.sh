@@ -12,11 +12,14 @@
 #     section budget" skip marker — task 4846 removed the wall-clock budget
 #     gate entirely, so "live section budget" no longer exists anywhere in
 #     the SUT; this assertion now guards against its reintroduction.
-#   A2 (guard): SUT subprocess exits 0 under the governance-disabled config.
+#   A2 (guard): SUT subprocess exits 0 under the governance-disabled config
+#     (run under a no-progress stall guard, see Technique).
 #   A3 (NON-VACUOUS): share_ge_proportional discriminator — broken->False, healthy->True.
 #   A4 (RED→GREEN driver): SUT output contains the ROW4 and ROW2_3
 #     host_supports_governance SKIP markers, proving no real cgroup-governance
 #     burns ran.
+#   A5 (NON-VACUOUS): the stall guard TERMs a command gone quiet (rc 124), spares
+#     one still emitting past its window, and passes a command's exit status through.
 #
 # Technique:
 #   REIFY_CPU_GOVERN_DISABLE=1 → cgroup_governance_supported() (scripts/lib_cgroup.sh)
@@ -26,6 +29,9 @@
 #     support. Only SELF checks, small FIXTURE-1..5 smoke (bounded workers/
 #     seconds, load-robust), and the hermetic *-VACUITY/NAMING/CONFINE/BYPASS
 #     assertions run.
+#   The SUT runs under _run_with_stall_guard: TERMed only after _SUT_STALL_S s
+#     without output (technique T, docs/prds/infra-test-wallclock-deflake.md §2),
+#     while run_all.sh's member budget bounds its total runtime.
 #
 # Hermetic: no real cgroup-governance CPU load, no systemd scope creation, no
 # PSI required for A1/A2/A4. FIXTURE-3/4/5 still run small bounded real CPU
@@ -82,6 +88,22 @@ _run_with_stall_guard() {
     done
     wait "$pid" || rc=$?
     return "$rc"
+}
+
+# _print_sut_failure_evidence <rc> <out_file> <stall_s>
+#   For a non-zero SUT status, prints where the SUT stopped: on rc 124 a stall
+#   line naming its last non-blank output line, then the last 40 lines of its
+#   output. Each tail line gets a `  SUT| ` prefix so none can pass for one of
+#   this test's own `  FAIL:` lines when run_all.sh collects FAIL detail.
+#   Returns 0 always: evidence never changes a verdict.
+_print_sut_failure_evidence() {
+    local rc="$1" out="$2" stall_s="$3" last_line
+    [ "$rc" -ne 0 ] || return 0
+    if [ "$rc" -eq 124 ]; then
+        last_line="$(awk 'NF { last = $0 } END { print last }' "$out" 2>/dev/null || true)"
+        echo "  SUT STALLED: no output for ${stall_s}s; last SUT line: ${last_line:-<none>}"
+    fi
+    tail -n 40 "$out" 2>/dev/null | sed 's/^/  SUT| /' || true
 }
 
 echo "=== cpu-load-governance de-flake meta-test (task 4846) ==="
@@ -185,11 +207,15 @@ assert "SUT exists at $SUT" \
     test -f "$SUT"
 
 # Capture SUT stdout+stderr; preserve exit code without triggering set -e.
+# The stall guard, not a total-time cap: how long the SUT takes follows host
+# load, whereas _SUT_STALL_S seconds without output means it is hung.
+_SUT_STALL_S=120
 _SUT_OUT="$(mktemp)"
 _SUT_RC=0
-timeout 120 env \
-    REIFY_CPU_GOVERN_DISABLE=1 \
-    bash "$SUT" >"$_SUT_OUT" 2>&1 || _SUT_RC=$?
+_SUT_START=$SECONDS
+_run_with_stall_guard "$_SUT_STALL_S" "$_SUT_OUT" \
+    env REIFY_CPU_GOVERN_DISABLE=1 bash "$SUT" || _SUT_RC=$?
+echo "  INFO: SUT elapsed $(( SECONDS - _SUT_START ))s"
 
 # A1: No "live section budget" skip marker in output.
 # Permanent-green regression guard: task 4846 removed the wall-clock budget
@@ -210,6 +236,8 @@ assert "A4: SUT output contains ROW4 and ROW2_3 host-governance SKIP markers" \
         grep -q "SKIP ROW4: host does not support cgroup governance" "$1" &&
         grep -q "SKIP ROW2_3: host does not support cgroup governance" "$1"
     ' _ "$_SUT_OUT"
+
+_print_sut_failure_evidence "$_SUT_RC" "$_SUT_OUT" "$_SUT_STALL_S"
 
 rm -f "$_SUT_OUT"
 
