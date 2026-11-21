@@ -158,7 +158,8 @@ fn cache_served_handle_drops_feature_provenance_selector() {
     let second = engine.build(&compiled, ExportFormat::Step);
     assert_build_was_cache_hit(&engine);
     // The probe's invariant 4 (no topology-attribute entries for a cache-served
-    // handle) causes this; S2 κ #9263 restores the attribute facet and flips it.
+    // handle) causes this; S2 κ #9263 restores the attribute facet and flips
+    // this assertion.
     assert_eq!(second.values.get(&made_cell), Some(&Value::Undef));
     let misses = provenance_misses(&second);
     assert!(
