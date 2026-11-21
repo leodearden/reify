@@ -2276,6 +2276,73 @@ mod parse_error_render_tests {
             "a module with no parse errors must render no lines",
         );
     }
+
+    /// Each parse error's position, for a caller that formats its own line, follows the same
+    /// rule `render_errors` does, degenerate inputs included: an out-of-range offset clamps to
+    /// the end of the source and the prelude sentinel falls back to `1:1`.
+    ///
+    /// Task #10186.
+    #[test]
+    fn error_positions_locate_each_error_by_the_render_rule() {
+        let source = "fn f() -> Int {
+  let x = 1
+  x
+}
+";
+        let mk = |off: usize, msg: &str| ParseError {
+            message: msg.to_string(),
+            span: SourceSpan::new(off as u32, off as u32),
+        };
+        let mk_module = |errors: Vec<ParseError>| ParsedModule {
+            path: ModulePath::single("f"),
+            declarations: vec![],
+            errors,
+            content_hash: ContentHash(0),
+            pragmas: vec![],
+            declared_module_path: None,
+        };
+
+        let let_offset = source.find("let x").expect("fixture must contain 'let x'");
+        let module = mk_module(vec![
+            mk(let_offset, "missing ';'"),
+            mk(source.len() + 500, "past end"),
+            mk(SourceSpan::PRELUDE_SENTINEL_OFFSET, "prelude"),
+        ]);
+
+        // Derived, not hard-coded: every expected position is what the canonical scanning
+        // conversion reports.
+        let (line, col) = reify_core::byte_offset_to_line_col(source, let_offset);
+        assert!(
+            line > 1 && col > 1,
+            "the fixture error must sit past the first line and column to pin both; \
+             got {line}:{col}",
+        );
+        let (end_line, end_col) = reify_core::byte_offset_to_line_col(source, source.len());
+        let positions = module.error_positions(source);
+        assert_eq!(
+            positions,
+            vec![
+                ((line, col), "missing ';'"),
+                ((end_line, end_col), "past end"),
+                ((1, 1), "prelude"),
+            ],
+        );
+
+        let re_rendered: Vec<String> = positions
+            .iter()
+            .map(|((line, col), msg)| format!("{line}:{col}: {msg}"))
+            .collect();
+        assert_eq!(
+            re_rendered,
+            module.render_errors(source),
+            "each position must be the one `render_errors` reports for the same error",
+        );
+
+        assert!(
+            mk_module(vec![]).error_positions(source).is_empty(),
+            "a module with no parse errors must locate no errors",
+        );
+    }
 }
 
 #[cfg(test)]
