@@ -375,9 +375,10 @@ fn run_slicer_precancelled_returns_cancelled_without_spawning() {
 /// The stub publishes its own pid ($$) atomically (write to `.tmp` then rename),
 /// then `exec`s `sleep 30`. `exec` preserves the pid, so the published pid is
 /// exactly the process `run_slicer` must reap. The cancel poll is gated on the
-/// pidfile existing — this is "pre-cancel" in spirit (cancellation fires as soon
-/// as the child is alive) while the atomic publish removes the write-vs-kill race
-/// a bare `|| true` would introduce.
+/// pidfile existing, which is false until the child is up. That gate is what
+/// carries `run_slicer` past its pre-spawn poll, so it cancels a running child.
+/// A bare `|| true` would return `Cancelled` before spawning and never exercise
+/// SIGTERM→reap.
 #[cfg(unix)]
 #[test]
 fn run_slicer_cancel_reaps_child_promptly() {
