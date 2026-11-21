@@ -17,8 +17,9 @@ use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, gt, lit
 use crate::engine::{CompileFailure, CompileFailureKind, CoreState, EngineSession, MergedTraitDefs, build_constraints, build_template_node, module_key, parse_value_string, unit_hint_from_default_literal};
 use crate::mcp_context::TauriToolContext;
 use crate::tests::test_helpers::{
-    assert_rigid_mass_props_determined, bounded_bracket_source, find_moi_principal_constraint,
-    rigid_mass_props_fixture_path, rigid_mass_props_session, visible_realization_keys,
+    UNPARSEABLE_SRC, assert_rigid_mass_props_determined, bounded_bracket_source,
+    find_moi_principal_constraint, rigid_mass_props_fixture_path, rigid_mass_props_session,
+    visible_realization_keys,
 };
 use crate::types::EntityTreeNode;
 
@@ -1515,7 +1516,7 @@ fn update_source_with_invalid_source_returns_err() {
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load");
 
-    let result = session.update_source("bad.ri", "this is not valid {{{}}}");
+    let result = session.update_source("bad.ri", UNPARSEABLE_SRC);
     assert!(result.is_err(), "invalid source should return Err");
 }
 
@@ -1903,7 +1904,7 @@ fn get_source_location_correct_after_failed_update() {
         .expect("should find source location before failed update");
 
     // (3) Attempt invalid update — should fail
-    let result = session.update_source("bracket.ri", "this is not valid {{{}}}");
+    let result = session.update_source("bracket.ri", UNPARSEABLE_SRC);
     assert!(result.is_err(), "invalid source should return Err");
 
     // (4) get_source_location should return the SAME line/col as before the failed update
@@ -1940,7 +1941,7 @@ fn get_source_location_correct_after_failed_update() {
     // correctly indexed.  get_source_location still resolves against the last-good
     // compiled module — the split is intentional and tested separately.
     assert!(
-        state.files[0].content.contains("this is not valid"),
+        state.files[0].content.contains(UNPARSEABLE_SRC),
         "files[0].content must contain the failing buffer after task 4258 fix, got: {}",
         &state.files[0].content[..50.min(state.files[0].content.len())]
     );
@@ -8631,11 +8632,10 @@ fn build_gui_state_surfaces_parse_error_after_failed_update_source_on_fresh_sess
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
-    let bad_source = "this is not valid {{{}}}";
     // Fresh session — no load_file or load_from_source, so self.file_path is None.
     // update_source takes the single-file branch (compile_single_file_with_stdlib).
     let err = session
-        .update_source("foo.ri", bad_source)
+        .update_source("foo.ri", UNPARSEABLE_SRC)
         .expect_err("invalid source should return Err");
     assert!(
         err.contains("Parse errors"),
@@ -8668,7 +8668,7 @@ fn build_gui_state_surfaces_parse_error_after_failed_update_source_on_fresh_sess
         "files[0].path must equal the module key derived from 'foo.ri'"
     );
     assert_eq!(
-        state.files[0].content, bad_source,
+        state.files[0].content, UNPARSEABLE_SRC,
         "files[0].content must equal the exact failing buffer"
     );
 
