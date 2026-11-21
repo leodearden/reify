@@ -105,9 +105,10 @@ class TestGrammarAvailabilityGuard(unittest.TestCase):
     def test_missing_parser_c_short_circuits_without_probing(self):
         """(c) No parser.c → unavailable, and the substrate is never probed.
 
-        Pins the existing cheap short-circuit: a lane that never generated the
-        grammar must pay no subprocess.  Asserted on the runner's calls so a
-        refactor cannot quietly reorder the conjunction.
+        Pins the existing cheap short-circuit: a lane with no parser.c pays no
+        substrate probe (this ctx has no grammar generator to run first).
+        Asserted on the runner's calls so a refactor cannot quietly reorder the
+        conjunction.
         """
         runner, calls = recording_runner()
 
@@ -115,7 +116,7 @@ class TestGrammarAvailabilityGuard(unittest.TestCase):
         self.assertFalse(available)
         self.assertEqual(
             calls, [],
-            "grammar_generated() must short-circuit before any subprocess is spent",
+            "grammar_generated() must short-circuit before any substrate probe is spent",
         )
         self.assertIn("parser.c", reason, "the skip message must name what is missing")
 
@@ -146,6 +147,7 @@ class TestGrammarAvailabilityGuard(unittest.TestCase):
     def test_the_guard_answers_as_grammar_substrate_status_does(self):
         """The guard and --grammar-substrate-status share one answer (SPOT).
 
+        Each row also pins that answer, so both sides going wrong alike reds.
         Each side gets its own fresh fixture root, generator stub and runner,
         because a succeeding generator writes parser.c into its root.
         """
@@ -162,12 +164,12 @@ class TestGrammarAvailabilityGuard(unittest.TestCase):
 
         succeeds = _generator_stub_succeeds
         scenarios = [
-            ("failing generator, parser.c present", fails, True, clean),
-            ("succeeding generator, no parser.c", succeeds, False, clean),
-            ("writes-nothing generator, no parser.c", writes_nothing, False, clean),
-            ("no generator, no parser.c", None, False, clean),
-            ("no generator, parser.c present, clean run", None, True, clean),
-            ("no generator, parser.c present, cache denied", None, True, denied),
+            ("failing generator, parser.c present", fails, True, clean, False),
+            ("succeeding generator, no parser.c", succeeds, False, clean, True),
+            ("writes-nothing generator, no parser.c", writes_nothing, False, clean, False),
+            ("no generator, no parser.c", None, False, clean, False),
+            ("no generator, parser.c present, clean run", None, True, clean, True),
+            ("no generator, parser.c present, cache denied", None, True, denied, False),
         ]
 
         def scenario_ctx(tmp, generator, parser_c):
@@ -181,7 +183,7 @@ class TestGrammarAvailabilityGuard(unittest.TestCase):
                 ),
             )
 
-        for index, (label, generator, parser_c, run) in enumerate(scenarios):
+        for index, (label, generator, parser_c, run, ready) in enumerate(scenarios):
             with self.subTest(label):
                 guard_tmp = os.path.join(self._tmp.name, f"{index}-guard")
                 main_tmp = os.path.join(self._tmp.name, f"{index}-main")
@@ -198,8 +200,8 @@ class TestGrammarAvailabilityGuard(unittest.TestCase):
                         ctx=scenario_ctx(main_tmp, generator, parser_c),
                     )
                 self.assertEqual(
-                    available, rc == 0,
-                    f"guard said {(available, reason)!r}; "
+                    (available, rc == 0), (ready, ready),
+                    f"expected ready={ready}; guard said {(available, reason)!r}; "
                     f"--grammar-substrate-status exited {rc}: {out.getvalue()!r}",
                 )
 
