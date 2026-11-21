@@ -239,7 +239,10 @@ mod tests {
 
     use super::*;
     use reify_core::{ConstraintNodeId, DiagnosticCode, DimensionVector, Severity, Type, ValueCellId};
-    use reify_ir::{BinOp, CompiledExpr, IndeterminateReason, TransientReason, Value, ValueMap};
+    use reify_ir::{
+        BinOp, CompiledExpr, ComputeDispatchOutcome, IndeterminateReason, TransientReason, Value,
+        ValueMap,
+    };
 
     fn mm(v: f64) -> Value {
         Value::Scalar {
@@ -813,12 +816,16 @@ mod tests {
         CompiledExpr::binop(BinOp::Gt, call, bound, Type::Bool)
     }
 
-    /// Resolves `"test::stress"` to a dimensionless 42 and defers everything else.
+    /// Resolves `"test::stress"` to a dimensionless 42; every other target is
+    /// `Unregistered`.
     struct StressDispatch;
 
     impl reify_ir::ComputeDispatch for StressDispatch {
-        fn dispatch(&self, target: &str, _args: &[Value]) -> Option<Value> {
-            (target == "test::stress").then(|| Value::Scalar {
+        fn dispatch(&self, target: &str, _args: &[Value]) -> ComputeDispatchOutcome {
+            if target != "test::stress" {
+                return ComputeDispatchOutcome::Unregistered;
+            }
+            ComputeDispatchOutcome::Resolved(Value::Scalar {
                 si_value: 42.0,
                 dimension: DimensionVector::DIMENSIONLESS,
             })

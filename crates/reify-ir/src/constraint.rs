@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use reify_core::diagnostics::Diagnostic;
 use crate::expr::{CompiledExpr, CompiledFunction};
-use crate::indeterminate::IndeterminateReason;
+use crate::indeterminate::{ComputeFailureKind, IndeterminateReason};
 use reify_core::dimension::DimensionVector;
 use reify_core::identity::{ConstraintNodeId, ValueCellId};
 use crate::persistent::PersistentMap;
@@ -566,10 +566,44 @@ pub trait OptimizedImpl: Send + Sync {
 pub trait ComputeDispatch: Send + Sync {
     /// Attempt to resolve `target` (a `CompiledFunction::optimized_target` string,
     /// e.g. `"solver::elastic_static"`) against `args` (the function's already-evaluated,
-    /// determined arguments). Returns `None` when `target` has no registered
-    /// implementation, or when the underlying dispatch failed/was cancelled — callers
-    /// fall back to ordinary body evaluation in either case.
-    fn dispatch(&self, target: &str, args: &[Value]) -> Option<Value>;
+    /// determined arguments).
+    ///
+    /// Callers that only need a value use [`ComputeDispatchOutcome::resolved_value`]
+    /// and fall back to ordinary body evaluation otherwise. A caller that reports
+    /// WHY a verdict is indeterminate (the constraint checker) reads the
+    /// [`ComputeDispatchOutcome::Failed`] arm.
+    fn dispatch(&self, target: &str, args: &[Value]) -> ComputeDispatchOutcome;
+}
+
+/// What one [`ComputeDispatch::dispatch`] call produced.
+#[derive(Debug, Clone)]
+pub enum ComputeDispatchOutcome {
+    /// The registered implementation completed with this value.
+    Resolved(Value),
+    /// No implementation is registered for `target`; the caller evaluates the
+    /// function body.
+    Unregistered,
+    /// The registered implementation ran and produced no value.
+    Failed(ComputeDispatchFailure),
+}
+
+/// Why a registered `@optimized` implementation produced no value, with the
+/// diagnostics it emitted (a caught panic's diagnostic included).
+#[derive(Debug, Clone)]
+pub struct ComputeDispatchFailure {
+    pub kind: ComputeFailureKind,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+impl ComputeDispatchOutcome {
+    /// The value of a [`Resolved`](Self::Resolved) outcome; `None` for every
+    /// other arm.
+    pub fn resolved_value(self) -> Option<Value> {
+        match self {
+            ComputeDispatchOutcome::Resolved(value) => Some(value),
+            ComputeDispatchOutcome::Unregistered | ComputeDispatchOutcome::Failed(_) => None,
+        }
+    }
 }
 
 /// Trait for constraint solving. Lives in reify-types for dependency inversion —
@@ -1288,8 +1322,8 @@ mod tests {
     struct NoopDispatch;
 
     impl ComputeDispatch for NoopDispatch {
-        fn dispatch(&self, _target: &str, _args: &[Value]) -> Option<Value> {
-            None
+        fn dispatch(&self, _target: &str, _args: &[Value]) -> ComputeDispatchOutcome {
+            ComputeDispatchOutcome::Unregistered
         }
     }
 

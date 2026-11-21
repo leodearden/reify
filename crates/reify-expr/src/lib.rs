@@ -138,10 +138,11 @@ pub struct EvalContext<'a> {
     ///
     /// When `Some`, `eval_user_function_call` probes `d.dispatch(target, args)` for any
     /// call whose resolved `CompiledFunction::optimized_target` is `Some(target)`, using
-    /// it in place of ordinary body-eval when it returns `Some(value)`. When `None` (the
-    /// default), or when the probe returns `None`, evaluation falls through to body-eval
-    /// unchanged — preserving legacy behaviour for every caller that does not attach a
-    /// dispatcher (the compiler, LSP, standalone eval, and all ad-hoc test contexts).
+    /// it in place of ordinary body-eval when it returns `Resolved(value)`. When `None`
+    /// (the default), or when the probe returns anything but `Resolved`, evaluation falls
+    /// through to body-eval unchanged — preserving legacy behaviour for every caller that
+    /// does not attach a dispatcher (the compiler, LSP, standalone eval, and all ad-hoc
+    /// test contexts).
     ///
     /// Wired by `reify-eval`'s `Engine` via `OptimizedComputeDispatcher` wherever it
     /// invokes the constraint solver or the constraint checker.
@@ -1689,7 +1690,7 @@ fn eval_user_function_call(function_name: &str, args: &[CompiledExpr], ctx: &Eva
 /// when `func.optimized_target` names a registered ComputeNode AND `ctx` carries a
 /// dispatcher, return its result in place of body-eval. Returns `None` — meaning
 /// "fall through to body-eval unchanged" — when there is no `optimized_target`, no
-/// dispatcher is attached, or the dispatcher defers on this target.
+/// dispatcher is attached, or the dispatcher returns anything but `Resolved`.
 ///
 /// Extracted to its own `#[inline(never)]` function, rather than inlined `if let`
 /// chains in `eval_user_function_call`, so its locals do not enlarge that function's
@@ -1701,7 +1702,9 @@ fn eval_user_function_call(function_name: &str, args: &[CompiledExpr], ctx: &Eva
 #[inline(never)]
 fn try_compute_dispatch(func: &CompiledFunction, args: &[Value], ctx: &EvalContext) -> Option<Value> {
     let target = func.optimized_target.as_ref()?;
-    ctx.compute_dispatch?.dispatch(target, args)
+    ctx.compute_dispatch?
+        .dispatch(target, args)
+        .resolved_value()
 }
 
 /// Give the kernel-free selector-ctor capability (task #7875) a chance to build a
@@ -9703,12 +9706,15 @@ mod tests {
     }
 
     /// A `ComputeDispatch` that resolves exactly one target (`"test::stress"`) to a
-    /// fixed non-`Undef` `Scalar`, and defers (returns `None`) for everything else.
+    /// fixed non-`Undef` `Scalar`, and is `Unregistered` for everything else.
     struct StubDispatch;
 
     impl reify_ir::ComputeDispatch for StubDispatch {
-        fn dispatch(&self, target: &str, _args: &[Value]) -> Option<Value> {
-            (target == "test::stress").then(|| Value::Scalar {
+        fn dispatch(&self, target: &str, _args: &[Value]) -> reify_ir::ComputeDispatchOutcome {
+            if target != "test::stress" {
+                return reify_ir::ComputeDispatchOutcome::Unregistered;
+            }
+            reify_ir::ComputeDispatchOutcome::Resolved(Value::Scalar {
                 si_value: 42.0,
                 dimension: DimensionVector::DIMENSIONLESS,
             })

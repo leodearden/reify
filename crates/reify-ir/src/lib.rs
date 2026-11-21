@@ -64,7 +64,8 @@ pub use direction::{DirectionFault, UnitVec3};
 pub use direction_decode::{DecodeDirectionError, decode_direction, frame_basis};
 pub use boundary_attachment::{BoundaryAssociation, NodeAttachment};
 pub use constraint::{
-    AutoParam, ComputeDispatch, ConstraintChecker, ConstraintDiagnostics, ConstraintDomain,
+    AutoParam, ComputeDispatch, ComputeDispatchFailure, ComputeDispatchOutcome,
+    ConstraintChecker, ConstraintDiagnostics, ConstraintDomain,
     ConstraintInput, ConstraintResult, ConstraintSolver, DimensionIncoherence,
     ObjectiveCombination, ObjectiveProvenance, ObjectiveSense, ObjectiveSet, ObjectiveTerm,
     OptimizedImpl, OptimizedImplInput, OptimizedImplOutput, ResolutionProblem, SolveResult,

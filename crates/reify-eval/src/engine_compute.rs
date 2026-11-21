@@ -11,7 +11,9 @@
 use std::collections::{HashMap, HashSet};
 
 use reify_core::{ComputeNodeId, ContentHash, Diagnostic, DiagnosticCode, ValueCellId, VersionId};
-use reify_ir::{OpaqueState, Value};
+use reify_ir::{
+    ComputeDispatchFailure, ComputeDispatchOutcome, ComputeFailureKind, OpaqueState, Value,
+};
 
 use crate::cache::NodeId;
 use crate::graph::CancellationHandle;
@@ -213,8 +215,8 @@ pub(crate) fn hard_no_trampoline_diagnostic(target: &str) -> Diagnostic {
 }
 
 // Task #5079 / PRD compute-fea-hardening.md D1 (Contract C2): the
-// `catch_unwind` crash-safety floor in `Engine::invoke_compute_trampoline`
-// below is a documented no-op under `panic = "abort"` (the process would
+// `catch_unwind` crash-safety floor in `call_compute_fn_guarded` below is a
+// documented no-op under `panic = "abort"` (the process would
 // still abort instead of converting a panicking `ComputeFn` into
 // `ComputeOutcome::Failed`). No `panic = "abort"` override exists anywhere
 // in the workspace today, so this cfg is inert — but it is a hard
@@ -223,13 +225,61 @@ pub(crate) fn hard_no_trampoline_diagnostic(target: &str) -> Diagnostic {
 // no other test signal.
 #[cfg(panic = "abort")]
 compile_error!(
-    "reify-eval requires panic = \"unwind\": Engine::invoke_compute_trampoline's \
+    "reify-eval requires panic = \"unwind\": call_compute_fn_guarded's \
      catch_unwind crash-safety floor (task #5079) is a no-op under panic = \"abort\" and \
      would silently stop converting panicking ComputeFn calls into \
      ComputeOutcome::Failed. If this crate must build with panic = \"abort\", the \
      hardening needs a different mechanism (e.g. isolating dispatch in a subprocess) \
      before this guard can be removed."
 );
+
+/// Call `f` for `target` under the crash-safety floor, so a panicking
+/// `ComputeFn` becomes `ComputeOutcome::Failed` carrying one Error diagnostic
+/// naming the target and the panic payload.
+///
+/// Task #5079 (INV-FEA-2 / PRD compute-fea-hardening.md D1, Contract C2): the
+/// single guarded compute-dispatch point. `Engine::invoke_compute_trampoline`
+/// (and through it `run_compute_dispatch` and `Engine::dispatch_compute_node`)
+/// and `OptimizedComputeDispatcher::dispatch` all route through here. Any new
+/// dispatch path must do the same rather than calling a resolved `ComputeFn`
+/// directly.
+///
+/// `AssertUnwindSafe` is sound (every capture is a shared, unmutated
+/// reference); the `panic = "abort"` no-op case is pinned by the
+/// `compile_error!` above. The panic hook is left installed, so caught panics
+/// still print to stderr — accepted, including the volume under a
+/// repeatedly-panicking target in a hot loop (esc-5079-3). Other accepted
+/// limitations (FFI/native aborts escape uncaught; no rollback of pre-panic
+/// side effects) are detailed in the PRD, not repeated here.
+fn call_compute_fn_guarded(
+    f: ComputeFn,
+    target: &str,
+    value_inputs: &[Value],
+    realization_inputs: &[RealizationReadHandle],
+    options: &Value,
+    prior_warm_state: Option<&OpaqueState>,
+    cancellation: &CancellationHandle,
+) -> ComputeOutcome {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        f(
+            value_inputs,
+            realization_inputs,
+            options,
+            prior_warm_state,
+            cancellation,
+        )
+    }));
+    match result {
+        Ok(outcome) => outcome,
+        Err(payload) => ComputeOutcome::Failed {
+            diagnostics: vec![Diagnostic::error(format!(
+                "compute trampoline '{target}' panicked: {}",
+                reify_core::panic_payload_to_string(payload.as_ref())
+            ))],
+            structured_detail: vec![],
+        },
+    }
+}
 
 impl crate::Engine {
     /// Invoke the registered compute trampoline for `target` with the supplied
@@ -255,41 +305,15 @@ impl crate::Engine {
         cancellation: &CancellationHandle,
     ) -> Option<ComputeOutcome> {
         let f = self.compute_registry.fns.get(target).copied()?;
-        // Task #5079 (INV-FEA-2 / PRD compute-fea-hardening.md D1, Contract
-        // C2): the single guarded compute-dispatch point — both
-        // `run_compute_dispatch` (below) and `Engine::dispatch_compute_node`
-        // (engine_admin.rs) route through here, so a panicking `ComputeFn`
-        // uniformly becomes `ComputeOutcome::Failed`. Any new dispatch path
-        // must do the same rather than calling `compute_registry.fns.get(..)`
-        // + `f(..)` directly.
-        //
-        // `AssertUnwindSafe` is sound (every capture is a shared, unmutated
-        // reference); the `panic = "abort"` no-op case is pinned by the
-        // `compile_error!` above. The panic hook is left installed, so caught
-        // panics still print to stderr — accepted, including the volume
-        // under a repeatedly-panicking target in a hot loop (esc-5079-3).
-        // Other accepted limitations (FFI/native aborts escape uncaught; no
-        // rollback of pre-panic side effects) are detailed in the PRD, not
-        // repeated here.
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            f(
-                value_inputs,
-                realization_inputs,
-                options,
-                prior_warm_state,
-                cancellation,
-            )
-        }));
-        Some(match result {
-            Ok(outcome) => outcome,
-            Err(payload) => ComputeOutcome::Failed {
-                diagnostics: vec![Diagnostic::error(format!(
-                    "compute trampoline '{target}' panicked: {}",
-                    reify_core::panic_payload_to_string(payload.as_ref())
-                ))],
-                structured_detail: vec![],
-            },
-        })
+        Some(call_compute_fn_guarded(
+            f,
+            target,
+            value_inputs,
+            realization_inputs,
+            options,
+            prior_warm_state,
+            cancellation,
+        ))
     }
 
     /// Run the full in-flight ComputeNode dispatch lifecycle for `c_id` —
@@ -1029,23 +1053,29 @@ impl crate::Engine {
 /// and no prior warm state (cold per-candidate solves; cross-candidate
 /// warm-start is a future perf-only enhancement).
 ///
+/// ## Outcome mapping
+///
+/// `Completed{result}` -> `Resolved(result)`; `Failed{diagnostics}` ->
+/// `Failed{kind: Failed, diagnostics}`; `Cancelled` -> `Failed{kind:
+/// Cancelled, diagnostics: []}`; a target with no registered `ComputeFn` ->
+/// `Unregistered`. Callers fall back to body-eval on every non-`Resolved` arm;
+/// the constraint checker additionally reads `Failed` to attribute an
+/// Indeterminate verdict (task #10036).
+///
 /// ## Panic containment
 ///
-/// It also mirrors the `catch_unwind` guard task #5079 put on
-/// [`Engine::invoke_compute_trampoline`] (INV-FEA-2 / PRD
+/// It shares the single guarded call, `call_compute_fn_guarded`, with
+/// [`Engine::invoke_compute_trampoline`] (task #5079, INV-FEA-2 / PRD
 /// `docs/prds/compute-fea-hardening.md` contract C2), rather than calling the
-/// resolved `ComputeFn` raw. It cannot simply CALL `invoke_compute_trampoline`
-/// — that needs an `&Engine`, which is exactly the borrow this owned snapshot
-/// exists to avoid — so the guard is reproduced here, and the two must be kept
-/// in step.
+/// resolved `ComputeFn` raw, so a panic surfaces as `Failed{kind: Failed}`
+/// carrying the same "compute trampoline 'T' panicked: …" diagnostic.
 ///
 /// This is not defensive decoration. `dispatch` is reached from
 /// `reify_expr::eval_expr` inside `ConstraintCostFunction::cost`, i.e. from
 /// underneath argmin's `Executor`, which does not catch panics — so an
 /// unguarded panicking trampoline would unwind straight out of `Engine::eval`
-/// into the CLI/GUI instead of degrading to `Failed` -> `None` -> ordinary
-/// body-eval. It fires once per Nelder-Mead trial point, and the compute
-/// targets it reaches (`compute_targets/elastic_static.rs`) panic on
+/// into the CLI/GUI. It fires once per Nelder-Mead trial point, and the
+/// compute targets it reaches (`compute_targets/elastic_static.rs`) panic on
 /// malformed input by design.
 #[derive(Debug, Clone)]
 pub struct OptimizedComputeDispatcher {
@@ -1078,24 +1108,20 @@ impl OptimizedComputeDispatcher {
 }
 
 impl reify_ir::ComputeDispatch for OptimizedComputeDispatcher {
-    fn dispatch(&self, target: &str, args: &[Value]) -> Option<Value> {
-        let f = self.fns.get(target).copied()?;
+    fn dispatch(&self, target: &str, args: &[Value]) -> ComputeDispatchOutcome {
+        let Some(f) = self.fns.get(target).copied() else {
+            return ComputeDispatchOutcome::Unregistered;
+        };
         let cancellation = CancellationHandle::new();
-        // Task #5079's `catch_unwind` guard, reproduced (see the type's
-        // "Panic containment" doc for why this cannot delegate to
-        // `Engine::invoke_compute_trampoline` and why an unguarded call here
-        // escapes `Engine::eval` entirely). `AssertUnwindSafe` is sound for
-        // the same reason it is there: every capture is a shared, unmutated
-        // reference. A caught panic collapses to `None`, which is this
-        // trait's documented "fall back to ordinary body evaluation" signal —
-        // the same outcome a `Failed` outcome already produces.
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            f(args, &[], &Value::Undef, None, &cancellation)
-        }));
-        match outcome {
-            Ok(ComputeOutcome::Completed { result, .. }) => Some(result),
-            Ok(ComputeOutcome::Failed { .. }) | Ok(ComputeOutcome::Cancelled) => None,
-            Err(_) => None,
+        let failure = |kind, diagnostics| {
+            ComputeDispatchOutcome::Failed(ComputeDispatchFailure { kind, diagnostics })
+        };
+        match call_compute_fn_guarded(f, target, args, &[], &Value::Undef, None, &cancellation) {
+            ComputeOutcome::Completed { result, .. } => ComputeDispatchOutcome::Resolved(result),
+            ComputeOutcome::Failed { diagnostics, .. } => {
+                failure(ComputeFailureKind::Failed, diagnostics)
+            }
+            ComputeOutcome::Cancelled => failure(ComputeFailureKind::Cancelled, vec![]),
         }
     }
 }
@@ -4415,8 +4441,12 @@ mod tests {
     // `Cancelled` -> `Failed{kind: Cancelled, diagnostics: []}`; no
     // registered ComputeFn -> `Unregistered`.
 
-    fn dispatch_one(fn_target: &str, f: ComputeFn) -> reify_ir::ComputeDispatchOutcome {
-        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
+    fn dispatch_one(fn_target: &'static str, f: ComputeFn) -> reify_ir::ComputeDispatchOutcome {
+        let mut engine = Engine::new(
+            crate::SolverPosture::SolverFree,
+            Box::new(MockConstraintChecker::new()),
+            None,
+        );
         engine.register_compute_fn(fn_target, f);
         let d = OptimizedComputeDispatcher::from_engine(&engine);
         let args = [Value::Scalar {

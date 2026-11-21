@@ -12305,20 +12305,26 @@ mod tests {
 
     /// A [`reify_ir::ComputeDispatch`] that resolves exactly `"test::stress"` to
     /// `K / t` (reading trial `t` from `args[0]`), counting how many times it was
-    /// asked to resolve that target. Defers (`None`) for every other target.
+    /// asked to resolve that target. Every other target is `Unregistered`.
     struct CountingDispatch {
         calls: std::sync::atomic::AtomicUsize,
         k: f64,
     }
 
     impl reify_ir::ComputeDispatch for CountingDispatch {
-        fn dispatch(&self, target: &str, args: &[reify_ir::Value]) -> Option<reify_ir::Value> {
+        fn dispatch(
+            &self,
+            target: &str,
+            args: &[reify_ir::Value],
+        ) -> reify_ir::ComputeDispatchOutcome {
             if target != "test::stress" {
-                return None;
+                return reify_ir::ComputeDispatchOutcome::Unregistered;
             }
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            let t = args.first()?.as_f64()?;
-            Some(reify_ir::Value::Scalar {
+            let Some(t) = args.first().and_then(reify_ir::Value::as_f64) else {
+                return reify_ir::ComputeDispatchOutcome::Unregistered;
+            };
+            reify_ir::ComputeDispatchOutcome::Resolved(reify_ir::Value::Scalar {
                 si_value: self.k / t,
                 dimension: reify_core::DimensionVector::DIMENSIONLESS,
             })
