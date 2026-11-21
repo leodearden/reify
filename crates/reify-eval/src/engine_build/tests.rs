@@ -1167,9 +1167,9 @@ structure Assembly {
     /// drive multiple sequential realizations against the same state (the
     /// `_shadows_previous` / `_failed_shadow_…` tests) call
     /// [`Self::reset_attribute_tables`] between calls, mirroring the per-build
-    /// reset in production. Tests that run a second build against a warm
-    /// `realization_cache` call [`Self::reset_per_build_outputs`] instead,
-    /// which also clears the output views.
+    /// reset in production. A test that needs a second build to start from
+    /// empty output views while the `realization_cache` stays warm (e.g. the
+    /// cold→warm parity tests) calls [`Self::reset_per_build_outputs`] instead.
     ///
     /// A future signature change to `Engine::execute_realization_ops` updates
     /// [`Self::run`] alone instead of every per-test call site.
@@ -1228,15 +1228,17 @@ structure Assembly {
             self.swept_kind_table = SweptKindTable::default();
         }
 
-        /// Reset the realization OUTPUT views, mirroring production's per-build
-        /// reset. Leaves `realization_cache`, `dispatch_count`,
-        /// `dispatch_count_by_realization` and `diagnostics` untouched, so the
-        /// next call is a second build against a warm engine.
+        /// Reset the realization outputs (the output views plus the
+        /// `produced_repr_out` and `kernel_error_out` out-params), mirroring
+        /// production's per-build reset. Leaves `realization_cache`,
+        /// `dispatch_count`, `dispatch_count_by_realization` and `diagnostics`
+        /// untouched, so the next call is a second build against a warm engine.
         fn reset_per_build_outputs(&mut self) {
             self.step_handles.clear();
             self.named_steps.clear();
             self.named_step_reprs.clear();
             self.produced_repr_out = None;
+            self.kernel_error_out = None;
             self.reset_attribute_tables();
         }
 
