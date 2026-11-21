@@ -5,8 +5,11 @@
 //! like any other dimensionless initializer (D5 reinstated; see
 //! docs/prds/v0_6/dimensioned-construction-strictness.md §0.3).
 
-use reify_core::DiagnosticCode;
-use reify_test_support::{assert_single_declaration_error, compile_source, errors_only};
+use reify_core::{Diagnostic, DiagnosticCode};
+use reify_test_support::{
+    assert_single_declaration_error, compile_source, compile_source_named,
+    compile_source_with_prelude, compile_source_with_stdlib, errors_only,
+};
 
 /// A structure with `param drum_d : Real = rope_dia * d_ratio` where `rope_dia` has
 /// declared type `Length` (Scalar[m]) must produce exactly one `ParamDefaultTypeMismatch`
@@ -440,6 +443,23 @@ fn trait_injected_bare_literal_param_default_is_still_reported_by_conformance() 
     );
 }
 
+/// Assert `errors` holds exactly one diagnostic per `(code, param)` pair and
+/// nothing else.
+fn assert_one_error_per_param(errors: &[&Diagnostic], expected: &[(DiagnosticCode, &str)]) {
+    let shapes: Vec<_> = errors.iter().map(|d| (&d.message, &d.code)).collect();
+    assert_eq!(errors.len(), expected.len(), "got: {shapes:?}");
+    for &(code, param) in expected {
+        let matching = errors
+            .iter()
+            .filter(|d| d.code == Some(code) && d.message.contains(&format!("'{param}'")))
+            .count();
+        assert_eq!(
+            matching, 1,
+            "expected one {code:?} naming '{param}', got: {shapes:?}"
+        );
+    }
+}
+
 /// The D4-4 skip is per cell. A declaration-site rejection in a template does
 /// not silence the conformance pass for that template's other defaults, whether
 /// they are declared locally or injected by a trait.
@@ -453,24 +473,87 @@ structure S : T {
 }
 "#;
     let module = compile_source(source);
-    let errors = errors_only(&module);
-    let shapes: Vec<_> = errors.iter().map(|d| (&d.message, &d.code)).collect();
+    assert_one_error_per_param(
+        &errors_only(&module),
+        &[
+            (DiagnosticCode::ParamDefaultTypeMismatch, "m"),
+            (DiagnosticCode::ArgTypeMismatch, "d"),
+            (DiagnosticCode::ArgTypeMismatch, "s"),
+        ],
+    );
+}
 
-    assert_eq!(errors.len(), 3, "got: {shapes:?}");
-    for (code, param) in [
-        (DiagnosticCode::ParamDefaultTypeMismatch, "m"),
-        (DiagnosticCode::ArgTypeMismatch, "d"),
-        (DiagnosticCode::ArgTypeMismatch, "s"),
-    ] {
-        let matching = errors
+/// A trait default injected from another file is still judged when its byte
+/// offsets coincide with a local param the declaration-site check rejected.
+#[test]
+fn trait_injected_default_at_a_rejected_params_offsets_in_another_file_is_still_reported() {
+    let consumer = "structure S : T { param m : Length = 5kg }";
+    let lib_body = "pub trait T { param d : Length = 1.0 }";
+    let local_member = "param m : Length = 5kg";
+    let injected_member = "param d : Length = 1.0";
+    assert_eq!(local_member.len(), injected_member.len());
+
+    let local_offset = consumer.find(local_member).expect("consumer member");
+    let pad = local_offset - lib_body.find(injected_member).expect("lib member");
+    let lib_src = format!("{}{lib_body}", " ".repeat(pad));
+    assert_eq!(lib_src.find(injected_member), Some(local_offset));
+
+    let lib = compile_source_named(&lib_src, "lib");
+    let module = compile_source_with_prelude(consumer, &[lib]);
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("template S");
+    let cell_span = |member: &str| {
+        template
+            .value_cells
             .iter()
-            .filter(|d| d.code == Some(code) && d.message.contains(&format!("'{param}'")))
-            .count();
-        assert_eq!(
-            matching, 1,
-            "expected one {code:?} naming '{param}', got: {shapes:?}"
-        );
-    }
+            .find(|c| c.id.member == member)
+            .map(|c| c.span)
+    };
+    let (injected, local) = (cell_span("d"), cell_span("m"));
+    assert!(
+        injected.is_some() && injected == local,
+        "fixture no longer aligns the two spans: d={injected:?}, m={local:?}"
+    );
+
+    assert_one_error_per_param(
+        &errors_only(&module),
+        &[
+            (DiagnosticCode::ParamDefaultTypeMismatch, "m"),
+            (DiagnosticCode::ArgTypeMismatch, "d"),
+        ],
+    );
+}
+
+/// A rejected default of a generic is reported once, though its monomorph clone
+/// carries the same cell under another template name.
+#[test]
+fn rejected_default_of_a_monomorphised_generic_is_reported_once() {
+    let source = r#"
+trait Seal {}
+structure def ORingSeal : Seal { param d : Real = 10.0 }
+structure def Bearing<T: Seal> { param bore : Length = 5kg }
+structure def Assembly { sub b = Bearing<auto: Seal>() }
+"#;
+    let module = compile_source_with_stdlib(source);
+
+    let templates_with_bore = module
+        .templates
+        .iter()
+        .filter(|t| t.value_cells.iter().any(|c| c.id.member == "bore"))
+        .count();
+    assert_eq!(
+        templates_with_bore, 2,
+        "expected the generic and its monomorph clone to carry 'bore'"
+    );
+
+    assert_one_error_per_param(
+        &errors_only(&module),
+        &[(DiagnosticCode::ParamDefaultTypeMismatch, "bore")],
+    );
 }
 
 /// A pure numeric-literal-arithmetic default is neither a single literal nor a

@@ -1733,6 +1733,7 @@ mod tests {
     use crate::compile_builder::names_phase::build_resolution_names;
     use crate::compile_builder::pre_pass::collect_decl_refs;
     use crate::compile_builder::traits_phase::phase_traits;
+    use crate::rejected_param_defaults::RejectedParamDefaults;
 
     /// Everything one `check_trait_conformance` call produced for its conformer.
     ///
@@ -3599,7 +3600,7 @@ mod tests {
                 traits: &trait_registry,
                 enum_defs: &[],
             },
-            &HashSet::new(),
+            &RejectedParamDefaults::default(),
             &mut diagnostics,
         );
         assert_eq!(
@@ -3671,7 +3672,7 @@ mod tests {
                 traits: &trait_registry,
                 enum_defs: &[],
             },
-            &HashSet::new(),
+            &RejectedParamDefaults::default(),
             &mut diagnostics,
         );
         assert_eq!(
@@ -3689,12 +3690,8 @@ mod tests {
         );
     }
 
-    /// The `rejected_at_declaration` skip is per cell: of two equally mistaken
-    /// defaults in one template, only the one whose span is in the set is
-    /// skipped, and the other is still judged.
-    #[test]
-    fn rejected_at_declaration_skips_only_the_cell_with_that_span() {
-        let geometry_cell_with_scalar_default = |member: &str, span: SourceSpan| ValueCellDecl {
+    fn geometry_cell_with_scalar_default(member: &str, span: SourceSpan) -> ValueCellDecl {
+        ValueCellDecl {
             id: ValueCellId::new("Test", member),
             kind: ValueCellKind::Param,
             visibility: Visibility::Private,
@@ -3706,33 +3703,75 @@ mod tests {
             )),
             solver_hints: vec![],
             span,
-        };
-        let rejected_span = SourceSpan::new(10, 20);
-        let template = minimal_template(
-            "Test",
-            vec![
-                geometry_cell_with_scalar_default("rejected", rejected_span),
-                geometry_cell_with_scalar_default("judged", SourceSpan::new(30, 40)),
-            ],
-        );
+        }
+    }
 
+    fn param_default_diagnostics(
+        template: &TopologyTemplate,
+        rejected_at_declaration: &RejectedParamDefaults,
+    ) -> Vec<Diagnostic> {
         let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
         let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
         let mut diagnostics: Vec<Diagnostic> = vec![];
         check_param_default_conformance(
-            &template,
+            template,
             ConformanceRegistries {
                 templates: &template_registry,
                 traits: &trait_registry,
                 enum_defs: &[],
             },
-            &HashSet::from([rejected_span]),
+            rejected_at_declaration,
             &mut diagnostics,
         );
+        diagnostics
+    }
+
+    /// The `rejected_at_declaration` skip is per cell: of two equally mistaken
+    /// defaults in one template, only the recorded one is skipped, and the
+    /// other is still judged.
+    #[test]
+    fn rejected_at_declaration_skips_only_the_cell_with_that_span() {
+        let rejected_cell = geometry_cell_with_scalar_default("rejected", SourceSpan::new(10, 20));
+        let mut rejected = RejectedParamDefaults::default();
+        rejected.record(&rejected_cell);
+        let template = minimal_template(
+            "Test",
+            vec![
+                rejected_cell,
+                geometry_cell_with_scalar_default("judged", SourceSpan::new(30, 40)),
+            ],
+        );
+
+        let diagnostics = param_default_diagnostics(&template, &rejected);
         assert_eq!(diagnostics.len(), 1, "got: {diagnostics:?}");
         assert!(
             diagnostics[0].message.contains("'judged'"),
             "the cell outside the set must still be judged, got: {:?}",
+            diagnostics[0].message
+        );
+    }
+
+    /// A cell that shares only its span with a recorded rejection (a trait
+    /// default injected from another file) is still judged.
+    #[test]
+    fn rejected_at_declaration_does_not_skip_a_cell_that_only_shares_its_span() {
+        let shared_span = SourceSpan::new(10, 20);
+        let rejected_cell = geometry_cell_with_scalar_default("rejected", shared_span);
+        let mut rejected = RejectedParamDefaults::default();
+        rejected.record(&rejected_cell);
+        let template = minimal_template(
+            "Test",
+            vec![
+                rejected_cell,
+                geometry_cell_with_scalar_default("injected", shared_span),
+            ],
+        );
+
+        let diagnostics = param_default_diagnostics(&template, &rejected);
+        assert_eq!(diagnostics.len(), 1, "got: {diagnostics:?}");
+        assert!(
+            diagnostics[0].message.contains("'injected'"),
+            "the span-sharing cell must still be judged, got: {:?}",
             diagnostics[0].message
         );
     }

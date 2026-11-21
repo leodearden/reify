@@ -7173,33 +7173,47 @@ structure def Manifold {
         );
     }
 
-    /// `param_default_rejection_span` recovers exactly the span
-    /// `check_param_default_type` was given, and recognises nothing else.
+    /// `check_param_default_type` reports a rejection exactly when it emits a
+    /// `ParamDefaultTypeMismatch`, which the conformance skip relies on.
     #[test]
-    fn param_default_rejection_span_round_trips_the_emitted_span() {
-        let declaration = SourceSpan::new(10, 40);
+    fn check_param_default_type_reports_rejected_exactly_when_it_emits() {
+        let length = Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        };
         let dimensionless = CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        check_param_default_type(
-            "t",
-            &Type::Scalar {
-                dimension: DimensionVector::LENGTH,
-            },
-            true,
-            Some(&dimensionless),
-            declaration,
-            &mut diagnostics,
-        );
-        assert_eq!(diagnostics.len(), 1, "got: {diagnostics:?}");
-        assert_eq!(
-            param_default_rejection_span(&diagnostics[0]),
-            Some(declaration)
-        );
-
-        let other_code = Diagnostic::error("unrelated")
-            .with_code(DiagnosticCode::LetAnnotationTypeMismatch)
-            .with_label(DiagnosticLabel::new(declaration, "unrelated"));
-        assert_eq!(param_default_rejection_span(&other_code), None);
+        let length_valued = CompiledExpr::literal(Value::Real(1.0), length.clone());
+        for (declared, has_explicit_type, default, expected_count) in [
+            (&length, true, &dimensionless, 1),
+            (&length, true, &length_valued, 0),
+            (&length, false, &dimensionless, 0),
+            (&Type::Error, true, &dimensionless, 0),
+        ] {
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let rejected = check_param_default_type(
+                "t",
+                declared,
+                has_explicit_type,
+                Some(default),
+                SourceSpan::new(10, 40),
+                &mut diagnostics,
+            );
+            let emitted = diagnostics
+                .iter()
+                .filter(|d| d.code == Some(DiagnosticCode::ParamDefaultTypeMismatch))
+                .count();
+            let row = format!("{declared:?}, explicit={has_explicit_type}");
+            assert_eq!(emitted, expected_count, "{row}: got {diagnostics:?}");
+            assert_eq!(
+                diagnostics.len(),
+                expected_count,
+                "{row}: got {diagnostics:?}"
+            );
+            assert_eq!(
+                rejected,
+                emitted == 1,
+                "{row}: verdict disagrees with diagnostics"
+            );
+        }
     }
 }
 
