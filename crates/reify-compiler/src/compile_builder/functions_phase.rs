@@ -397,43 +397,12 @@ impl<'p> ResolutionTable<'p> {
 
 #[cfg(test)]
 mod tests {
-    use reify_core::{DiagnosticCode, ModulePath};
+    use reify_core::DiagnosticCode;
 
     use super::*;
-
-    fn parse_at(module: &str, source: &str) -> reify_ast::ParsedModule {
-        let parsed = reify_syntax::parse(source, ModulePath::single(module));
-        assert!(
-            parsed.errors.is_empty(),
-            "fixture must parse: {:?}",
-            parsed.errors
-        );
-        parsed
-    }
-
-    fn compile_src(source: &str) -> CompiledModule {
-        crate::compile(&parse_at("test", source))
-    }
-
-    /// `source` compiled as module `test` with module `p`, compiled from
-    /// `prelude_source`, as its prelude.
-    fn compile_against_prelude(prelude_source: &str, source: &str) -> CompiledModule {
-        let prelude = crate::compile(&parse_at("p", prelude_source));
-        crate::compile_with_prelude(&parse_at("test", source), &[prelude])
-    }
-
-    fn result_expr<'m>(module: &'m CompiledModule, fn_name: &str) -> &'m reify_ir::CompiledExpr {
-        let found = module.functions.iter().find(|f| f.name == fn_name);
-        &found
-            .unwrap_or_else(|| {
-                panic!(
-                    "expected `{fn_name}` in compiled module; found functions: {:?}",
-                    module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
-                )
-            })
-            .body
-            .result_expr
-    }
+    use crate::compile_builder::test_support::{
+        compile_against_prelude, compile_src, constructed_params, fn_result_expr,
+    };
 
     fn codes(module: &CompiledModule) -> Vec<Option<DiagnosticCode>> {
         module.diagnostics.iter().map(|d| d.code).collect()
@@ -539,43 +508,14 @@ mod tests {
              fn h() -> String { f(1.0) }\n",
         );
         assert_eq!(
-            result_expr(&module, "g").result_type,
+            fn_result_expr(&module, "g").result_type,
             reify_core::Type::dimensionless_scalar(),
             "g is above the local f, so its call binds the prelude f"
         );
         assert_eq!(
-            result_expr(&module, "h").result_type,
+            fn_result_expr(&module, "h").result_type,
             reify_core::Type::String,
             "h is below the local f, so its call binds the local f"
-        );
-    }
-
-    fn ctor_default_names(module: &CompiledModule, fn_name: &str) -> Vec<String> {
-        match &result_expr(module, fn_name).kind {
-            reify_ir::CompiledExprKind::StructureInstanceCtor { defaults, .. } => {
-                defaults.iter().map(|(name, _)| name.clone()).collect()
-            }
-            other => panic!("`{fn_name}` should construct a structure; got: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn a_fn_bodys_ctor_view_is_the_prelude_view_overlaid_by_templates_above_it() {
-        const PRELUDE: &str = "structure def P { param from_prelude : Real = 1.0 }\n";
-        let local_above = compile_against_prelude(
-            PRELUDE,
-            "structure def P { param from_local : Real = 2.0 }\nfn mk() -> P { P() }\n",
-        );
-        assert_eq!(
-            ctor_default_names(&local_above, "mk"),
-            ["from_local"],
-            "a local P above the fn shadows the prelude P"
-        );
-        let prelude_only = compile_against_prelude(PRELUDE, "fn mk() -> P { P() }\n");
-        assert_eq!(
-            ctor_default_names(&prelude_only, "mk"),
-            ["from_prelude"],
-            "with no local P, the fn constructs the prelude P"
         );
     }
 
@@ -598,8 +538,8 @@ mod tests {
             module.diagnostics
         );
         assert_eq!(
-            ctor_default_names(&module, "below"),
-            ["a"],
+            constructed_params(fn_result_expr(&module, "below")),
+            Some(vec!["a".to_string()]),
             "`below` is below S, so it constructs the local S"
         );
     }
@@ -610,6 +550,7 @@ mod tests {
         use reify_ir::CompiledExpr;
 
         use super::*;
+        use crate::compile_builder::test_support::parse_at;
 
         /// One defaulted param, `spoiled`, whose default the unified env
         /// compiles to the literal `1.0`.

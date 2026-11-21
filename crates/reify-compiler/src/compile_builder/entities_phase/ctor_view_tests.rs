@@ -6,26 +6,12 @@
 //! visible to them as well.
 
 use reify_core::{DiagnosticCode, Severity};
-use reify_ir::{CompiledExpr, CompiledExprKind};
+use reify_ir::CompiledExpr;
 
+use crate::compile_builder::test_support::{
+    compile_against_prelude, compile_src, constructed_params, fn_result_expr,
+};
 use crate::types::CompiledModule;
-
-fn parse_at(module: &str, source: &str) -> reify_ast::ParsedModule {
-    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single(module));
-    assert!(
-        parsed.errors.is_empty(),
-        "fixture `{module}` must parse: {:?}",
-        parsed.errors
-    );
-    parsed
-}
-
-/// `source` compiled as module `test` with module `p`, compiled from
-/// `prelude_source`, as its prelude.
-fn compile_against_prelude(prelude_source: &str, source: &str) -> CompiledModule {
-    let prelude = crate::compile(&parse_at("p", prelude_source));
-    crate::compile_with_prelude(&parse_at("test", source), &[prelude])
-}
 
 fn let_default<'m>(module: &'m CompiledModule, entity: &str, cell: &str) -> &'m CompiledExpr {
     let template = module
@@ -56,31 +42,6 @@ fn let_default<'m>(module: &'m CompiledModule, entity: &str, cell: &str) -> &'m 
         .default_expr
         .as_ref()
         .unwrap_or_else(|| panic!("`{entity}.{cell}` has no default expression"))
-}
-
-fn fn_result<'m>(module: &'m CompiledModule, fn_name: &str) -> &'m CompiledExpr {
-    let found = module.functions.iter().find(|f| f.name == fn_name);
-    &found
-        .unwrap_or_else(|| {
-            panic!(
-                "expected fn `{fn_name}`; found functions: {:?}",
-                module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
-            )
-        })
-        .body
-        .result_expr
-}
-
-/// The param names a structure ctor fills with defaults, or `None` when `expr`
-/// constructs no structure. `CompiledExprKind` has no `PartialEq`, so the two
-/// sites are compared by what they construct.
-fn constructed_params(expr: &CompiledExpr) -> Option<Vec<String>> {
-    match &expr.kind {
-        CompiledExprKind::StructureInstanceCtor { defaults, .. } => {
-            Some(defaults.iter().map(|(name, _)| name.clone()).collect())
-        }
-        _ => None,
-    }
 }
 
 #[test]
@@ -115,7 +76,7 @@ fn entity_and_fn_bodies_construct_p_against_one_ctor_view() {
             "{label}: entity body `User.x = P()`"
         );
         assert_eq!(
-            constructed_params(fn_result(&module, "mk")),
+            constructed_params(fn_result_expr(&module, "mk")),
             expected,
             "{label}: fn body `mk() = P()`"
         );
@@ -127,7 +88,7 @@ fn a_sub_of_a_local_occurrence_above_gates_priv_and_unknown_members() {
     const SOURCE: &str = "occurrence Out {\n    priv param p : Real = 0\n    param q : Real = 0\n}\n\
                           structure def User {\n    sub o = Out()\n    let hidden = o.p\n    \
                           let missing = o.nope\n    let open = o.q\n}\n";
-    let module = crate::compile(&parse_at("test", SOURCE));
+    let module = compile_src(SOURCE);
     let errors: Vec<(Option<DiagnosticCode>, Vec<Option<&str>>)> = module
         .diagnostics
         .iter()
