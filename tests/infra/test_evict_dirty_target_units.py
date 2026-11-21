@@ -18,12 +18,14 @@ import re
 import shutil
 import subprocess
 import tempfile
+import tomllib
 import unittest
 from datetime import datetime
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "evict-dirty-target-units.py"
+TOOLCHAIN_PIN = REPO_ROOT / "rust-toolchain.toml"
 REFRESH = REPO_ROOT / "scripts" / "refresh-warm-base.sh"
 
 SECOND_NS = 10 ** 9
@@ -329,16 +331,21 @@ class Boundaries(EvictHarness):
 
 
 class FailsClosed(EvictHarness):
-    """Every case also holds a genuinely stale member run, which must keep its
-    output: nothing is deleted until every record has been judged."""
+    """Every case also holds genuinely stale member runs, which must keep their
+    outputs: nothing is deleted until every record has been judged. The bad
+    record sits under release/, between the stale runs under debug/ and the
+    triple dir, so an unlink before judging ends reds in either walk order."""
+
+    STALE_PROFILES = ("debug", "x86_64-unknown-linux-gnu/release")
 
     def setUp(self):
         super().setUp()
-        self.stale = write_run_record(self.target, "release", "alpha", "eeeeeeeeeeeeeeee",
-                                      ["src/generated.rs"])
+        self.stale = [write_run_record(self.target, profile, "alpha", "eeeeeeeeeeeeeeee",
+                                       ["src/generated.rs"])
+                      for profile in self.STALE_PROFILES]
 
     def write_raw_record(self, unit_dir_name, body):
-        record = self.target / "debug" / ".fingerprint" / unit_dir_name / f"{RUN_RECORD}.json"
+        record = self.target / "release" / ".fingerprint" / unit_dir_name / f"{RUN_RECORD}.json"
         write_file(record, body)
         return record
 
@@ -346,7 +353,8 @@ class FailsClosed(EvictHarness):
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertEqual(result.stdout, "")
         self.assertNotIn("Traceback", result.stderr)
-        self.assertTrue(self.stale.exists(), "an output was deleted before judging ended")
+        self.assertEqual([str(p) for p in self.stale if not p.exists()], [],
+                         "an output was deleted before judging ended")
         self.assertRegex(result.stderr, re.compile(
             rf"^evict-dirty-target-units: {re.escape(str(names))}: .*{reason}", re.M))
 
@@ -356,7 +364,7 @@ class FailsClosed(EvictHarness):
         self.assertFailsClosed(self.run_evict(), record)
 
     def test_an_unknown_local_fingerprint_kind(self):
-        local = [{"RerunIfChangedV2": {"output": "debug/build/alpha-f000000000000002/output",
+        local = [{"RerunIfChangedV2": {"output": "release/build/alpha-f000000000000002/output",
                                        "paths": ["build.rs"]}}]
         record = self.write_raw_record("alpha-f000000000000002",
                                        json.dumps(run_record_json(local)))
@@ -367,7 +375,7 @@ class FailsClosed(EvictHarness):
         self.assertRegex(result.stderr, "cargo's fingerprint format changed")
 
     def test_a_malformed_rerun_if_changed_entry(self):
-        out = "debug/build/alpha-f000000000000003/output"
+        out = "release/build/alpha-f000000000000003/output"
         cases = {
             "no output": {"paths": ["build.rs"]},
             "non-list paths": {"output": out, "paths": "build.rs"},
@@ -560,10 +568,19 @@ def baked_run_output(target):
     return target / outputs[0]
 
 
+def pinned_toolchain():
+    """The channel rust-toolchain.toml pins: the toolchain that writes the
+    production _merge-verify records."""
+    with TOOLCHAIN_PIN.open("rb") as handle:
+        return tomllib.load(handle)["toolchain"]["channel"]
+
+
 class CargoHonoursEviction(unittest.TestCase):
     """The incident in miniature: a lane whose sources the seed back-dated
     keeps a stale baked value from a promoted run reference, and loses it once
-    the evictor has dropped that reference."""
+    the evictor has dropped that reference. The fixture lives outside the
+    repo, where rustup would pick the host default, so cargo and the evictor
+    both run under RUSTUP_TOOLCHAIN set to the repo's pin."""
 
     def setUp(self):
         tmp = tempfile.TemporaryDirectory(prefix="test-evict-cargo-")
@@ -571,18 +588,25 @@ class CargoHonoursEviction(unittest.TestCase):
         self.tmp = Path(tmp.name).resolve()
         self.ws = self.tmp / "ws"
         make_baked_workspace(self.ws)
+        self.env = env_without("GIT_", "CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR",
+                               "RUSTC_WRAPPER", "CARGO_BUILD_RUSTC_WRAPPER")
+        self.env["CARGO_INCREMENTAL"] = "0"
+        self.env["RUSTUP_TOOLCHAIN"] = pinned_toolchain()
 
     def cargo(self, target, *args):
-        env = env_without("GIT_", "CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR")
-        env.pop("RUSTC_WRAPPER", None)
-        env.pop("CARGO_BUILD_RUSTC_WRAPPER", None)
-        env["CARGO_INCREMENTAL"] = "0"
-        env["CARGO_TARGET_DIR"] = str(target)
+        env = {**self.env, "CARGO_TARGET_DIR": str(target)}
         result = subprocess.run(["cargo", *args, "--offline"], cwd=self.ws, env=env,
                                 capture_output=True, text=True, check=False,
                                 timeout=CARGO_TIMEOUT_SECS)
         self.assertEqual(result.returncode, 0, f"cargo {args}:\n{result.stderr}")
         return result
+
+    def test_the_fixture_cargo_is_the_pinned_toolchain(self):
+        version = subprocess.run(["cargo", "--version"], cwd=self.ws, env=self.env,
+                                 capture_output=True, text=True, check=False)
+
+        self.assertEqual(version.returncode, 0, version.stderr)
+        self.assertRegex(version.stdout, rf"^cargo {re.escape(pinned_toolchain())}\b")
 
     def test_an_evicted_run_rebakes_while_an_unevicted_copy_stays_stale(self):
         built = self.tmp / "target_built"
@@ -597,7 +621,7 @@ class CargoHonoursEviction(unittest.TestCase):
         shutil.copytree(built, control, symlinks=True)
 
         evict = subprocess.run([str(SCRIPT), "--build-root", str(self.ws), str(staged)],
-                               capture_output=True, text=True, check=False)
+                               capture_output=True, text=True, check=False, env=self.env)
         self.assertEqual(evict.returncode, 0, evict.stderr)
         stamp_tree(self.ws, SEED_STAMP_NS)
 
