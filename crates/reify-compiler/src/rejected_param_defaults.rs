@@ -1,6 +1,45 @@
+//! The param defaults the declaration-site check (`entity.rs`
+//! `check_param_default_type`) rejected, handed to the conformance pass
+//! (`conformance` `check_param_default_conformance`) so one mistake gets one
+//! diagnostic (PRD D4-4). A cell is identified by its `ValueCellId` and its
+//! declaration `SourceSpan`; this module's tests show why both are needed.
+
+use std::collections::{HashMap, HashSet};
+
+use reify_core::{SourceSpan, ValueCellId};
+
+use crate::types::ValueCellDecl;
+
+#[derive(Debug, Default)]
+pub(crate) struct RejectedParamDefaults {
+    spans_by_cell: HashMap<ValueCellId, HashSet<SourceSpan>>,
+}
+
+#[allow(dead_code)]
+impl RejectedParamDefaults {
+    pub(crate) fn record(&mut self, cell: &ValueCellDecl) {
+        self.spans_by_cell
+            .entry(cell.id.clone())
+            .or_default()
+            .insert(cell.span);
+    }
+
+    pub(crate) fn contains(&self, cell: &ValueCellDecl) -> bool {
+        self.spans_by_cell
+            .get(&cell.id)
+            .is_some_and(|spans| spans.contains(&cell.span))
+    }
+
+    pub(crate) fn absorb(&mut self, other: RejectedParamDefaults) {
+        for (id, spans) in other.spans_by_cell {
+            self.spans_by_cell.entry(id).or_default().extend(spans);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use reify_core::{SourceSpan, Type, ValueCellId};
+    use reify_core::Type;
 
     use super::*;
     use crate::types::{ValueCellKind, Visibility};
