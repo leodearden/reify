@@ -18,8 +18,10 @@
 #   A4 (RED→GREEN driver): SUT output contains the ROW4 and ROW2_3
 #     host_supports_governance SKIP markers, proving no real cgroup-governance
 #     burns ran.
-#   A5 (NON-VACUOUS): the stall guard TERMs a command gone quiet (rc 124), spares
-#     one still emitting past its window, and passes a command's exit status through.
+#   A5 (NON-VACUOUS): the stall guard TERMs a command gone quiet together with
+#     its descendants (rc 124, naming its last output line), spares one still
+#     emitting past its window, and passes a command's own exit status through,
+#     124 included, without calling that a stall.
 #
 # Technique:
 #   REIFY_CPU_GOVERN_DISABLE=1 → cgroup_governance_supported() (scripts/lib_cgroup.sh)
@@ -163,21 +165,26 @@ fi
 #     as 127, which the cases assert as EXACT rcs (never `-ne 0`) so 127 FAILs.
 #   - no assertion bounds an elapsed time (technique T, docs/prds/infra-test-
 #     wallclock-deflake.md).
+#   - the guard's stdout is its stall notice. Each case sends it to its own file,
+#     so an expected stall stays out of this transcript and the notice can be
+#     asserted on.
 echo ""
 echo "--- A5: NON-VACUOUS stall guard (_run_with_stall_guard) ---"
 
 _a5_dir="$(mktemp -d)"
 
-# A5a (STALL CRUX): a command that goes quiet is TERMed, rc exactly 124, and what
-# it printed before going quiet is captured. `exec` makes the TERM reach sleep
-# itself, so no orphan outlives the case.
+# A5a (STALL CRUX): a command that goes quiet is TERMed, rc exactly 124, what it
+# printed before going quiet is captured, and the guard's stall notice names that
+# last line. `exec` makes the TERM reach sleep itself, so no orphan outlives the case.
 _rc=0
 _run_with_stall_guard 2 "$_a5_dir/stall.out" \
-    bash -c 'echo started; exec sleep 30' || _rc=$?
+    bash -c 'echo started; exec sleep 30' >"$_a5_dir/stall.notice" || _rc=$?
 assert "A5a: a command gone quiet is TERMed after the stall window (want rc=124, got ${_rc})" \
     test "$_rc" -eq 124
 assert "A5a: the quiet command's output is captured (rc=${_rc}, 'started' in out file)" \
     grep -q 'started' "$_a5_dir/stall.out"
+assert "A5a: the stall notice names the command's last output line (rc=${_rc}, 'started' in notice)" \
+    grep -q 'started' "$_a5_dir/stall.notice"
 
 # A5b (PROGRESS CRUX): a command that keeps emitting past the stall window is NOT
 # killed. 70 ticks 0.1 s apart run for at least 7 s against a 5 s window.
@@ -195,6 +202,33 @@ _run_with_stall_guard 5 "$_a5_dir/status.out" \
     bash -c 'echo x; exit 3' || _rc=$?
 assert "A5c: the command's own exit status passes through (want rc=3, got ${_rc})" \
     test "$_rc" -eq 3
+
+# A5d (OWN 124 IS NOT A STALL): 124 is also what a `timeout` nested inside the
+# command exits with. Passed through like any status, with no stall notice, so the
+# notice marks only the guard's own TERM and never infers a stall from the number.
+_rc=0
+_run_with_stall_guard 5 "$_a5_dir/own124.out" \
+    bash -c 'echo x; exit 124' >"$_a5_dir/own124.notice" || _rc=$?
+assert "A5d: a command's own exit 124 passes through (want rc=124, got ${_rc})" \
+    test "$_rc" -eq 124
+assert "A5d: a command's own exit 124 draws no stall notice (rc=${_rc}, notice empty)" \
+    test ! -s "$_a5_dir/own124.notice"
+
+# A5e (SUBTREE REAPING): on a stall the guard TERMs the command's whole subtree,
+# not only the command, whose own EXIT trap can make it exit at once and orphan a
+# hung child. The stub nests a command substitution, as the SUT's startup sweep
+# does around `systemctl`, so the leaf `sleep` is a grandchild of the command. The
+# command and the substitution each handle TERM, which bash defers until its
+# foreground child ends: both outlive the guard's signals, and the substitution
+# records how its leaf ended, 143 if the guard TERMed it and 0 after its full 30 s.
+_rc=0
+_run_with_stall_guard 2 "$_a5_dir/subtree.out" \
+    bash -c 'echo started; trap : TERM; : "$(trap : TERM; sleep 30; echo "leaf-rc=$?" >"$1")"' \
+    _ "$_a5_dir/subtree.leaf-rc" >"$_a5_dir/subtree.notice" || _rc=$?
+assert "A5e: a stalled command is TERMed (want rc=124, got ${_rc})" \
+    test "$_rc" -eq 124
+assert "A5e: its grandchild was TERMed too, not left running (want leaf-rc=143, got $(cat "$_a5_dir/subtree.leaf-rc" 2>/dev/null || echo none))" \
+    grep -qx 'leaf-rc=143' "$_a5_dir/subtree.leaf-rc"
 
 rm -rf "$_a5_dir"
 
