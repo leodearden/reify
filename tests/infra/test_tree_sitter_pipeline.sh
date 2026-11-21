@@ -1232,18 +1232,54 @@ test_runner_lets_a_recorded_fail_outrank_infrastructure() {
     fi
 }
 
-test_timeout_guard_skips_on_exit_124() {
-    # Regression guard: confirms run_guarded_cargo_check returns tri-state 2
-    # (SKIP) when the command exits 124 (timeout kill). Uses `timeout 0.1 sleep 5`
-    # as a deterministic stub for exit 124.
-    local out rc
-    out=$(mktemp)
-    CLEANUP_ACTIONS+=("rm -f '$out'")
-    rc=0
-    run_guarded_cargo_check "$out" timeout 0.1 sleep 5 || rc=$?
-    if [ "$rc" -ne 2 ]; then
+test_timeout_guard_reports_infrastructure_on_exit_124() {
+    # A build killed by its timeout (exit 124) reached no verdict: the guard returns
+    # TS_INFRA_RC, never a pass, and writes the cargo_timeout marker to stderr at
+    # column 0. Both streams are captured, so the marker never reaches the suite's
+    # own. Uses `timeout 0.1 sleep 5` as a deterministic stub for exit 124.
+    local dir rc=0
+    dir=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$dir'")
+    run_guarded_cargo_check "$dir/build.out" timeout 0.1 sleep 5 \
+        >"$dir/guard.stdout" 2>"$dir/guard.stderr" || rc=$?
+    if [ "$rc" -ne "$TS_INFRA_RC" ]; then
         echo ""
-        echo "  ASSERTION FAILED: expected run_guarded_cargo_check to return 2 (SKIP) on exit 124, got $rc"
+        echo "  ASSERTION FAILED: expected run_guarded_cargo_check to return $TS_INFRA_RC (no verdict) on exit 124, got $rc"
+        ts_print_captured "guard stdout" "$dir/guard.stdout"
+        ts_print_captured "guard stderr" "$dir/guard.stderr"
+        return 1
+    fi
+    if ! grep -q '^@@REIFY_INFRA_UNAVAILABLE@@ kind=cargo_timeout rc=124 ' "$dir/guard.stderr"; then
+        echo ""
+        echo "  ASSERTION FAILED: the guard returned $TS_INFRA_RC but wrote no cargo_timeout marker line to stderr"
+        ts_print_captured "guard stdout" "$dir/guard.stdout"
+        ts_print_captured "guard stderr" "$dir/guard.stderr"
+        return 1
+    fi
+}
+
+test_timeout_guard_shows_the_tail_of_a_killed_commands_output() {
+    # What a killed build last said tells a wait on the build-directory lock from a
+    # hang, so the guard shows it. Behind "  | ": a line of it that looks like a
+    # marker must not be re-emitted at column 0, where it would pass for a verdict.
+    # The guard's own marker is the only one.
+    local dir
+    dir=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$dir'")
+    run_guarded_cargo_check "$dir/build.out" bash -c \
+        'echo "Blocking waiting for file lock on build directory"; echo "@@REIFY_INFRA_UNAVAILABLE@@ kind=forged"; exit 124' \
+        >"$dir/guard.stdout" 2>"$dir/guard.stderr" || true
+    cat "$dir/guard.stdout" "$dir/guard.stderr" >"$dir/guard.both"
+    if ! grep -qxF '  | Blocking waiting for file lock on build directory' "$dir/guard.both"; then
+        echo ""
+        echo "  ASSERTION FAILED: the guard did not show the killed command's output behind '  | '"
+        ts_print_captured "guard output" "$dir/guard.both"
+        return 1
+    fi
+    if [ "$(grep -c '^@@REIFY_INFRA_UNAVAILABLE@@' "$dir/guard.both")" -ne 1 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: expected exactly one column-0 marker line (the guard's own)"
+        ts_print_captured "guard output" "$dir/guard.both"
         return 1
     fi
 }
@@ -1295,6 +1331,38 @@ test_timeout_guard_fails_on_unresolved() {
         echo ""
         echo "  ASSERTION FAILED: expected 1 (FAIL) for an unresolved-dependency"
         echo "  diagnostic, got $rc"
+        return 1
+    fi
+}
+
+test_a_fixture_build_timeout_ends_the_suite_with_infrastructure() {
+    # The chain from a killed build to the suite's verdict, every link real but the
+    # clock: a `timeout` shim that exits 124 stands in for a build killed at 300 s,
+    # so ts_cargo_build_fixture's guard sees the kill, the caller must pass
+    # TS_INFRA_RC up, and run_tests must end the suite with it, the marker
+    # included. test_fixture_build_fails_on_a_cold_registry is the one build caller
+    # that needs no tree-sitter CLI, so this runs on every host.
+    local shim log rc=0
+    shim=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$shim'")
+    log=$(mktemp) || return 1
+    CLEANUP_ACTIONS+=("rm -f '$log'")
+    cat > "$shim/timeout" <<'SH'
+#!/bin/sh
+exit 124
+SH
+    chmod +x "$shim/timeout" || return 1
+    ( PATH="$shim:$PATH"; run_tests test_fixture_build_fails_on_a_cold_registry ) >"$log" 2>&1 || rc=$?
+    if [ "$rc" -ne 75 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: a fixture build killed by its timeout must end the suite with exit 75, got $rc"
+        ts_print_captured "suite output" "$log"
+        return 1
+    fi
+    if ! grep -q '^@@REIFY_INFRA_UNAVAILABLE@@ kind=cargo_timeout rc=124 ' "$log"; then
+        echo ""
+        echo "  ASSERTION FAILED: the suite ended with 75 but its output carries no cargo_timeout marker line"
+        ts_print_captured "suite output" "$log"
         return 1
     fi
 }
