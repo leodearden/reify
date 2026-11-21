@@ -12,9 +12,10 @@ another tree under the landed commit's name.
 WHAT RUNS THIS: run_all.sh discovers `test_*.sh` only, so the discovered member
 is the thin wrapper tests/infra/test_refresh_warm_base_built_tree.sh.
 
-HERMETIC: the refresh script runs from a temp scripts/ dir beside a no-op
-prune-unconsulted-target.sh, `cp` is a PATH stub that drops --reflink=always,
-and the lane is a temp git repository on main with an untracked target/.
+HERMETIC: the refresh script runs from a temp scripts/ dir beside no-op
+prune-unconsulted-target.sh and evict-dirty-target-units.py stubs, `cp` is a
+PATH stub that drops --reflink=always, and the lane is a temp git repository
+on main with an untracked target/.
 WriterParity also reads verify.sh's merge-role --print-plan (a dry run that
 executes no plan line) and replays only its attempt-0 stamp line in the lane.
 """
@@ -79,6 +80,7 @@ exec {shutil.which("cp")} "${{args[@]}}"
         self.refresh = scripts_dir / REFRESH.name
         shutil.copy2(REFRESH, self.refresh)
         write_executable(scripts_dir / "prune-unconsulted-target.sh", "#!/bin/sh\nexit 0\n")
+        write_executable(scripts_dir / "evict-dirty-target-units.py", "#!/bin/sh\nexit 0\n")
         self.lane = self.tmp / "lane"
         self.lane.mkdir()
         self.git("init", "-q", "-b", "main")

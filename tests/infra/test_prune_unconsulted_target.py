@@ -780,6 +780,7 @@ exec {real_cp} "${{args[@]}}"
         self.scripts_dir.mkdir()
         self.refresh = self.scripts_dir / REFRESH.name
         shutil.copy2(REFRESH, self.refresh)
+        write_executable(self.scripts_dir / "evict-dirty-target-units.py", "#!/bin/sh\nexit 0\n")
         self.record = self.tmp / "prune-record"
         self.record.touch()
 
