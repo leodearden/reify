@@ -1289,11 +1289,8 @@ fn an_armed_panic_fires_in_the_numeric_step_after_both_reservations() {
     let _g = probe.install();
     let mut solver = prepared(&system(dense8()), LinearSolverChoice::Direct);
     probe.panic_in_numeric();
-    let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        solve(&mut solver, &[1.0; 8], LIMITS, None)
-    }))
-    .expect_err("the armed hook panics");
-    let message = reify_core::panic_payload_to_string(payload.as_ref());
+    let message =
+        reify_test_support::panic_message_of(|| solve(&mut solver, &[1.0; 8], LIMITS, None));
     assert!(
         message.contains(INJECTED_NUMERIC_PANIC),
         "payload: {message:?}"

@@ -1977,13 +1977,15 @@ impl CountingDispatch {
 }
 
 impl reify_ir::ComputeDispatch for CountingDispatch {
-    fn dispatch(&self, target: &str, args: &[Value]) -> Option<Value> {
+    fn dispatch(&self, target: &str, args: &[Value]) -> reify_ir::ComputeDispatchOutcome {
         if target != "test::stress" {
-            return None;
+            return reify_ir::ComputeDispatchOutcome::Unregistered;
         }
         self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let t = args.first()?.as_f64()?;
-        Some(Value::Scalar {
+        let Some(t) = args.first().and_then(Value::as_f64) else {
+            return reify_ir::ComputeDispatchOutcome::Unregistered;
+        };
+        reify_ir::ComputeDispatchOutcome::Resolved(Value::Scalar {
             si_value: 1.0 / t,
             dimension: DimensionVector::DIMENSIONLESS,
         })

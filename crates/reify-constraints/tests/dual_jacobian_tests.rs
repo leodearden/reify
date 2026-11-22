@@ -1063,7 +1063,7 @@ fn no_dependent_cells_leaves_the_records_exactly_as_the_non_clustered_path_produ
 // wiring regression would have been caught one layer below the seam, in
 // reify-expr, or not at all.
 
-use reify_ir::ComputeDispatch;
+use reify_ir::{ComputeDispatch, ComputeDispatchOutcome};
 use reify_test_support::builders::function::compiled_function;
 
 
@@ -1147,8 +1147,11 @@ fn a_user_function_residual_reaches_the_callee_body_through_the_adapter() {
 struct FixedDispatch;
 
 impl ComputeDispatch for FixedDispatch {
-    fn dispatch(&self, target: &str, _args: &[Value]) -> Option<Value> {
-        (target == "solver::fixed").then_some(Value::Real(40.0))
+    fn dispatch(&self, target: &str, _args: &[Value]) -> ComputeDispatchOutcome {
+        if target != "solver::fixed" {
+            return ComputeDispatchOutcome::Unregistered;
+        }
+        ComputeDispatchOutcome::Resolved(Value::Real(40.0))
     }
 }
 

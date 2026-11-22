@@ -51,12 +51,14 @@ pub use solver::build_centrality_objective;
 pub use solvespace::{SolveSpaceSolver, solve_sketch};
 
 use std::ops::ControlFlow;
+use std::sync::OnceLock;
 
-use reify_core::{Diagnostic, DiagnosticCode, Type};
+use reify_core::{ConstraintNodeId, Diagnostic, DiagnosticCode, Type};
 use reify_ir::{
-    CompiledExpr, CompiledExprKind, ComputeDispatch, ConstraintChecker, ConstraintDiagnostics,
-    ConstraintInput, ConstraintResult, IndeterminateReason, RefusedOperation, Satisfaction,
-    TransientReason, Value,
+    CompiledExpr, CompiledExprKind, ComputeDispatch, ComputeDispatchFailure,
+    ComputeDispatchOutcome, ConstraintChecker, ConstraintDiagnostics, ConstraintInput,
+    ConstraintResult, IndeterminateReason, RefusedOperation, Satisfaction, TransientReason,
+    Value,
 };
 
 /// Does any leaf operand of `expr` resolve to `Undef` in `values`?
@@ -284,73 +286,188 @@ impl ConstraintChecker for SimpleConstraintChecker {
         input
             .constraints
             .iter()
-            .map(|(id, expr)| {
-                let ctx = reify_expr::EvalContext::new(input.values, input.functions);
-                let ctx = if let Some(det) = input.determinacy {
-                    ctx.with_determinacy(det)
-                } else {
-                    ctx
-                };
-                let ctx = match dispatch {
-                    Some(d) => ctx.with_compute_dispatch(d),
-                    None => ctx,
-                };
-                let value = reify_expr::eval_expr(expr, &ctx);
-                let (satisfaction, diagnostics, indeterminate_reason) = match value {
-                    Value::Bool(true) => {
-                        (Satisfaction::Satisfied, ConstraintDiagnostics::default(), None)
-                    }
-                    Value::Bool(false) => (
-                        Satisfaction::Violated,
-                        ConstraintDiagnostics {
-                            messages: vec![
-                                Diagnostic::error(format!("constraint {} violated", id))
-                                    .with_code(DiagnosticCode::ConstraintViolated),
-                            ],
-                        },
-                        None,
-                    ),
-                    Value::Undef => {
-                        let reason = IndeterminateReason::Transient(classify_undef(expr, &ctx));
-                        let message = format!("constraint {} indeterminate: {}", id, reason);
-                        let diagnostic = if reason.is_unexpected() {
-                            Diagnostic::error(message)
-                        } else {
-                            Diagnostic::warning(message)
-                        };
-                        (
-                            Satisfaction::Indeterminate,
-                            ConstraintDiagnostics {
-                                messages: vec![
-                                    diagnostic.with_code(DiagnosticCode::ConstraintIndeterminate),
-                                ],
-                            },
-                            Some(reason),
-                        )
-                    }
-                    _ => (
-                        Satisfaction::Violated,
-                        ConstraintDiagnostics {
-                            messages: vec![
-                                Diagnostic::error(format!(
-                                    "constraint {} evaluated to non-boolean value",
-                                    id
-                                ))
-                                .with_code(DiagnosticCode::ConstraintViolated),
-                            ],
-                        },
-                        None,
-                    ),
-                };
-
-                ConstraintResult {
-                    id: id.clone(),
-                    satisfaction,
-                    diagnostics,
-                    indeterminate_reason,
-                }
-            })
+            .map(|(id, expr)| check_one(id, expr, input, dispatch))
             .collect()
+    }
+}
+
+/// Evaluate and judge one constraint. A supplied dispatcher is wrapped for
+/// this evaluation only, so a failed `@optimized` call it reaches can
+/// attribute an Indeterminate verdict.
+fn check_one(
+    id: &ConstraintNodeId,
+    expr: &CompiledExpr,
+    input: &ConstraintInput,
+    dispatch: Option<&dyn ComputeDispatch>,
+) -> ConstraintResult {
+    let recorder = dispatch.map(FailureRecordingDispatch::new);
+    let ctx = eval_context(input, recorder.as_ref());
+    let value = reify_expr::eval_expr(expr, &ctx);
+    let (satisfaction, diagnostics, indeterminate_reason) = match value {
+        Value::Bool(true) => (
+            Satisfaction::Satisfied,
+            ConstraintDiagnostics::default(),
+            None,
+        ),
+        Value::Bool(false) => (
+            Satisfaction::Violated,
+            ConstraintDiagnostics {
+                messages: vec![
+                    Diagnostic::error(format!("constraint {} violated", id))
+                        .with_code(DiagnosticCode::ConstraintViolated),
+                ],
+            },
+            None,
+        ),
+        Value::Undef => {
+            let classified = classify_undef(expr, &ctx);
+            indeterminate_result(
+                id,
+                classified,
+                recorder.and_then(FailureRecordingDispatch::into_first_failure),
+            )
+        }
+        _ => (
+            Satisfaction::Violated,
+            ConstraintDiagnostics {
+                messages: vec![
+                    Diagnostic::error(format!("constraint {} evaluated to non-boolean value", id))
+                        .with_code(DiagnosticCode::ConstraintViolated),
+                ],
+            },
+            None,
+        ),
+    };
+    ConstraintResult {
+        id: id.clone(),
+        satisfaction,
+        diagnostics,
+        indeterminate_reason,
+    }
+}
+
+fn eval_context<'a>(
+    input: &'a ConstraintInput,
+    dispatch: Option<&'a FailureRecordingDispatch<'_>>,
+) -> reify_expr::EvalContext<'a> {
+    let ctx = reify_expr::EvalContext::new(input.values, input.functions);
+    let ctx = match input.determinacy {
+        Some(det) => ctx.with_determinacy(det),
+        None => ctx,
+    };
+    let ctx = match dispatch {
+        Some(d) => ctx.with_compute_dispatch(d),
+        None => ctx,
+    };
+    ctx
+}
+
+/// The verdict for a constraint that evaluated to `Undef`, whose cause
+/// [`classify_undef`] gave as `classified`.
+///
+/// A recorded dispatch failure (one whose body fallback was itself `Undef`)
+/// replaces only the all-leaves-defined guess (`OperatorUndefinedForKinds`):
+/// an undefined input is the more upstream cause and keeps precedence. The
+/// failure is proven to have contributed an `Undef`, not to be the only cause:
+/// in `(f(x) > 1 or true) and <refused operator>` the failed `f` is absorbed
+/// and the refusal decides, yet the failure is still named.
+///
+/// The indeterminate line is an error when the final reason is unexpected
+/// under INV-SF-4 ([`IndeterminateReason::is_unexpected`]) and a warning
+/// otherwise. The failure's own diagnostics follow it at their
+/// producer's severity, each restated as a claim about this constraint (see
+/// [`forwarded_claim`]).
+fn indeterminate_result(
+    id: &ConstraintNodeId,
+    classified: TransientReason,
+    failure: Option<(String, ComputeDispatchFailure)>,
+) -> (
+    Satisfaction,
+    ConstraintDiagnostics,
+    Option<IndeterminateReason>,
+) {
+    let (reason, forwarded) = match (classified, failure) {
+        (TransientReason::OperatorUndefinedForKinds { .. }, Some((target, failure))) => (
+            TransientReason::ComputeDispatchFailed {
+                target,
+                kind: failure.kind,
+            },
+            failure.diagnostics,
+        ),
+        (reason, _) => (reason, Vec::new()),
+    };
+    let reason = IndeterminateReason::Transient(reason);
+    let claim = format!("constraint {} indeterminate: {}", id, reason);
+    let indeterminate = if reason.is_unexpected() {
+        Diagnostic::error(claim.clone())
+    } else {
+        Diagnostic::warning(claim.clone())
+    };
+    let mut messages = vec![indeterminate.with_code(DiagnosticCode::ConstraintIndeterminate)];
+    messages.extend(
+        forwarded
+            .into_iter()
+            .map(|diagnostic| forwarded_claim(&claim, diagnostic)),
+    );
+    (
+        Satisfaction::Indeterminate,
+        ConstraintDiagnostics { messages },
+        Some(reason),
+    )
+}
+
+/// A trampoline diagnostic restated as part of `claim`, keeping its severity
+/// and labels. It takes the claim's message prefix and its
+/// `ConstraintIndeterminate` code (replacing the producer's), so every pass
+/// that retracts a constraint's indeterminate claim once its verdict is
+/// upgraded retracts this line with it.
+fn forwarded_claim(claim: &str, mut diagnostic: Diagnostic) -> Diagnostic {
+    diagnostic.message = format!("{claim}: {}", diagnostic.message);
+    diagnostic.with_code(DiagnosticCode::ConstraintIndeterminate)
+}
+
+/// Forwards every call to `inner` unchanged and keeps the first failure whose
+/// body fallback left `Undef` behind, with its target, so the reason (which
+/// names one target) and the forwarded diagnostics describe the same event. A
+/// failure the body covered decided nothing and is not kept. Failures nest
+/// (a failed call's body can call another), so "first" is in order of
+/// fallback completion: the innermost. `OnceLock` because the trait is
+/// `Send + Sync`.
+struct FailureRecordingDispatch<'a> {
+    inner: &'a dyn ComputeDispatch,
+    first_failure: OnceLock<(String, ComputeDispatchFailure)>,
+}
+
+impl<'a> FailureRecordingDispatch<'a> {
+    fn new(inner: &'a dyn ComputeDispatch) -> Self {
+        Self {
+            inner,
+            first_failure: OnceLock::new(),
+        }
+    }
+
+    fn into_first_failure(self) -> Option<(String, ComputeDispatchFailure)> {
+        self.first_failure.into_inner()
+    }
+}
+
+impl ComputeDispatch for FailureRecordingDispatch<'_> {
+    fn dispatch(&self, target: &str, args: &[Value]) -> ComputeDispatchOutcome {
+        self.inner.dispatch(target, args)
+    }
+
+    fn fell_back_after_failure(
+        &self,
+        target: &str,
+        failure: ComputeDispatchFailure,
+        fallback: &Value,
+    ) {
+        if fallback.is_undef() {
+            self.first_failure
+                .get_or_init(|| (target.to_owned(), failure.clone()));
+        }
+        self.inner
+            .fell_back_after_failure(target, failure, fallback);
     }
 }
 
@@ -361,8 +478,8 @@ mod tests {
     use super::*;
     use reify_core::{ConstraintNodeId, DiagnosticCode, DimensionVector, Severity, Type, ValueCellId};
     use reify_ir::{
-        BinOp, CompiledExpr, IndeterminateReason, RefusedOperation, TransientReason, UnOp, Value,
-        ValueMap,
+        BinOp, CompiledExpr, ComputeDispatchFailure, ComputeDispatchOutcome, ComputeFailureKind,
+        IndeterminateReason, RefusedOperation, TransientReason, UnOp, Value, ValueMap,
     };
 
     fn mm(v: f64) -> Value {
@@ -1125,6 +1242,11 @@ mod tests {
     /// body-eval (no dispatch) is Undef and only a dispatched result can decide
     /// a constraint that calls it. Mirrors reify-expr's #4880 stub fixture.
     fn optimized_stress_fn() -> reify_ir::CompiledFunction {
+        optimized_stress_fn_with_body(Value::Undef)
+    }
+
+    /// `optimized_stress_fn` with a body that evaluates to `body`.
+    fn optimized_stress_fn_with_body(body: Value) -> reify_ir::CompiledFunction {
         let params = vec![("load".to_string(), Type::dimensionless_scalar())];
         reify_ir::CompiledFunction {
             name: "stress".to_string(),
@@ -1135,19 +1257,21 @@ mod tests {
             return_type: Type::dimensionless_scalar(),
             body: reify_ir::CompiledFnBody {
                 let_bindings: vec![],
-                result_expr: CompiledExpr::literal(Value::Undef, Type::dimensionless_scalar()),
+                result_expr: CompiledExpr::literal(body.clone(), Type::dimensionless_scalar()),
             },
-            content_hash: reify_core::ContentHash::of(b"checker_optimized_stress_stub"),
+            content_hash: reify_core::ContentHash::of(
+                format!("checker_optimized_stress_stub_{body:?}").as_bytes(),
+            ),
             annotations: vec![],
             optimized_target: Some("test::stress".to_string()),
             type_params: vec![],
         }
     }
 
-    /// `stress(5.0) > bound`.
-    fn stress_gt(bound: f64) -> CompiledExpr {
-        let call = CompiledExpr {
-            content_hash: reify_core::ContentHash::of(format!("stress_gt_{bound}").as_bytes()),
+    /// `stress(5.0)`; `tag` keeps each call site's content hash distinct.
+    fn stress_call(tag: &str) -> CompiledExpr {
+        CompiledExpr {
+            content_hash: reify_core::ContentHash::of(format!("stress_call_{tag}").as_bytes()),
             result_type: Type::dimensionless_scalar(),
             kind: reify_ir::CompiledExprKind::UserFunctionCall {
                 function_name: "stress".to_string(),
@@ -1156,17 +1280,26 @@ mod tests {
                     Type::dimensionless_scalar(),
                 )],
             },
-        };
+        }
+    }
+
+    /// `stress(5.0) > bound`.
+    fn stress_gt(bound: f64) -> CompiledExpr {
+        let call = stress_call(&format!("gt_{bound}"));
         let bound = CompiledExpr::literal(Value::Real(bound), Type::dimensionless_scalar());
         CompiledExpr::binop(BinOp::Gt, call, bound, Type::Bool)
     }
 
-    /// Resolves `"test::stress"` to a dimensionless 42 and defers everything else.
+    /// Resolves `"test::stress"` to a dimensionless 42; every other target is
+    /// `Unregistered`.
     struct StressDispatch;
 
     impl reify_ir::ComputeDispatch for StressDispatch {
-        fn dispatch(&self, target: &str, _args: &[Value]) -> Option<Value> {
-            (target == "test::stress").then(|| Value::Scalar {
+        fn dispatch(&self, target: &str, _args: &[Value]) -> ComputeDispatchOutcome {
+            if target != "test::stress" {
+                return ComputeDispatchOutcome::Unregistered;
+            }
+            ComputeDispatchOutcome::Resolved(Value::Scalar {
                 si_value: 42.0,
                 dimension: DimensionVector::DIMENSIONLESS,
             })
@@ -1217,9 +1350,9 @@ mod tests {
     struct CountingDeclineDispatch(std::sync::atomic::AtomicUsize);
 
     impl reify_ir::ComputeDispatch for CountingDeclineDispatch {
-        fn dispatch(&self, _target: &str, _args: &[Value]) -> Option<Value> {
+        fn dispatch(&self, _target: &str, _args: &[Value]) -> ComputeDispatchOutcome {
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            None
+            ComputeDispatchOutcome::Unregistered
         }
     }
 
@@ -1267,5 +1400,302 @@ mod tests {
             );
             assert_eq!(result.diagnostics.messages[0].severity, Severity::Warning);
         }
+    }
+
+    /// For `"test::stress"`, a registered implementation that ran and produced
+    /// no value; every other target is `Unregistered`.
+    struct FailingDispatch {
+        kind: ComputeFailureKind,
+    }
+
+    impl reify_ir::ComputeDispatch for FailingDispatch {
+        fn dispatch(&self, target: &str, _args: &[Value]) -> ComputeDispatchOutcome {
+            if target != "test::stress" {
+                return ComputeDispatchOutcome::Unregistered;
+            }
+            let diagnostics = match self.kind {
+                ComputeFailureKind::Failed => {
+                    vec![Diagnostic::error("stiffness matrix is singular")]
+                }
+                ComputeFailureKind::Cancelled => vec![],
+            };
+            ComputeDispatchOutcome::Failed(ComputeDispatchFailure {
+                kind: self.kind,
+                diagnostics,
+            })
+        }
+    }
+
+    fn check_one_with(
+        expr: &CompiledExpr,
+        values: &ValueMap,
+        functions: &[reify_ir::CompiledFunction],
+        dispatch: &dyn reify_ir::ComputeDispatch,
+    ) -> ConstraintResult {
+        let input = ConstraintInput {
+            constraints: Cow::Owned(vec![(cnid("Probe", 0), expr)]),
+            values,
+            functions,
+            determinacy: None,
+        };
+        let mut results = SimpleConstraintChecker.check_with_dispatch(&input, Some(dispatch));
+        assert_eq!(results.len(), 1);
+        results.remove(0)
+    }
+
+    fn compute_failed(kind: ComputeFailureKind) -> Option<IndeterminateReason> {
+        Some(IndeterminateReason::Transient(
+            TransientReason::ComputeDispatchFailed {
+                target: "test::stress".into(),
+                kind,
+            },
+        ))
+    }
+
+    fn error_messages(result: &ConstraintResult) -> Vec<&str> {
+        result
+            .diagnostics
+            .messages
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .map(|d| d.message.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn a_failed_dispatch_is_attributed_not_reported_as_an_operator_refusal() {
+        let result = check_one_with(
+            &stress_gt(10.0),
+            &ValueMap::new(),
+            &[optimized_stress_fn()],
+            &FailingDispatch {
+                kind: ComputeFailureKind::Failed,
+            },
+        );
+
+        assert_eq!(
+            result.satisfaction,
+            Satisfaction::Indeterminate,
+            "{result:?}"
+        );
+        assert_eq!(
+            result.indeterminate_reason,
+            compute_failed(ComputeFailureKind::Failed)
+        );
+        let first = &result.diagnostics.messages[0];
+        assert_eq!(first.severity, Severity::Warning, "{result:?}");
+        assert_eq!(first.code, Some(DiagnosticCode::ConstraintIndeterminate));
+        assert!(
+            first.message.contains("test::stress") && !first.message.contains("operator undefined"),
+            "the indeterminate line must name the failed target, not guess an operator \
+             refusal: {:?}",
+            first.message
+        );
+        assert_eq!(
+            error_messages(&result),
+            vec![
+                "constraint Probe#constraint[0] indeterminate: compute dispatch failed for \
+                 @optimized target \"test::stress\": stiffness matrix is singular"
+            ],
+            "the trampoline's own diagnostic is carried at its producer severity, as a \
+             claim about the constraint"
+        );
+        assert_eq!(
+            result.diagnostics.messages[1].code,
+            Some(DiagnosticCode::ConstraintIndeterminate),
+            "the forwarded line is retracted with the claim it belongs to: {result:?}"
+        );
+    }
+
+    #[test]
+    fn a_cancelled_dispatch_is_attributed_as_cancelled() {
+        let result = check_one_with(
+            &stress_gt(10.0),
+            &ValueMap::new(),
+            &[optimized_stress_fn()],
+            &FailingDispatch {
+                kind: ComputeFailureKind::Cancelled,
+            },
+        );
+
+        assert_eq!(
+            result.satisfaction,
+            Satisfaction::Indeterminate,
+            "{result:?}"
+        );
+        assert_eq!(
+            result.indeterminate_reason,
+            compute_failed(ComputeFailureKind::Cancelled)
+        );
+        assert_eq!(
+            result.diagnostics.messages.len(),
+            1,
+            "only the indeterminate warning: {result:?}"
+        );
+        assert_eq!(
+            result.diagnostics.messages[0].code,
+            Some(DiagnosticCode::ConstraintIndeterminate)
+        );
+    }
+
+    #[test]
+    fn an_undefined_input_keeps_precedence_over_a_dispatch_failure() {
+        let bound = CompiledExpr::value_ref(vcid("Probe", "bound"), Type::dimensionless_scalar());
+        let expr = CompiledExpr::binop(BinOp::Gt, stress_call("vs_bound"), bound, Type::Bool);
+
+        let result = check_one_with(
+            &expr,
+            &ValueMap::new(),
+            &[optimized_stress_fn()],
+            &FailingDispatch {
+                kind: ComputeFailureKind::Failed,
+            },
+        );
+
+        assert_eq!(
+            result.satisfaction,
+            Satisfaction::Indeterminate,
+            "{result:?}"
+        );
+        assert_eq!(
+            result.indeterminate_reason,
+            Some(IndeterminateReason::Transient(
+                TransientReason::UndefInputs {
+                    cells: vec![vcid("Probe", "bound")],
+                }
+            ))
+        );
+        assert!(
+            error_messages(&result).is_empty(),
+            "an undefined input is the upstream cause; nothing is forwarded: {result:?}"
+        );
+    }
+
+    #[test]
+    fn a_dispatch_failure_does_not_touch_a_definite_verdict() {
+        let result = check_one_with(
+            &stress_gt(10.0),
+            &ValueMap::new(),
+            &[optimized_stress_fn_with_body(Value::Real(42.0))],
+            &FailingDispatch {
+                kind: ComputeFailureKind::Failed,
+            },
+        );
+
+        assert_eq!(result.satisfaction, Satisfaction::Satisfied, "{result:?}");
+        assert_eq!(result.indeterminate_reason, None);
+        assert!(result.diagnostics.messages.is_empty(), "{result:?}");
+    }
+
+    /// `tensor > 1mm`: refused for every operand kind, with no leaf to blame.
+    fn refused_operator() -> CompiledExpr {
+        let tensor = CompiledExpr::literal(
+            Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0)]),
+            Type::dimensionless_scalar(),
+        );
+        let one_mm = CompiledExpr::literal(mm(1.0), Type::length());
+        CompiledExpr::binop(BinOp::Gt, tensor, one_mm, Type::Bool)
+    }
+
+    #[test]
+    fn a_failure_the_body_covered_is_not_blamed_for_another_operators_refusal() {
+        // 42 > 100 is false, so the refusal alone leaves the disjunction Undef.
+        let expr = CompiledExpr::binop(BinOp::Or, stress_gt(100.0), refused_operator(), Type::Bool);
+
+        let result = check_one_with(
+            &expr,
+            &ValueMap::new(),
+            &[optimized_stress_fn_with_body(Value::Real(42.0))],
+            &FailingDispatch {
+                kind: ComputeFailureKind::Failed,
+            },
+        );
+
+        assert_eq!(
+            result.satisfaction,
+            Satisfaction::Indeterminate,
+            "{result:?}"
+        );
+        assert_eq!(
+            result.indeterminate_reason,
+            Some(IndeterminateReason::Transient(
+                TransientReason::OperatorUndefinedForKinds { kinds: vec![] }
+            ))
+        );
+        assert!(
+            error_messages(&result).is_empty(),
+            "the covered failure decided nothing; nothing is forwarded: {result:?}"
+        );
+    }
+
+    /// `strain`: `stress` under another target, so two failures can be told apart.
+    fn optimized_strain_fn() -> reify_ir::CompiledFunction {
+        reify_ir::CompiledFunction {
+            name: "strain".to_string(),
+            content_hash: reify_core::ContentHash::of(b"checker_optimized_strain_stub"),
+            optimized_target: Some("test::strain".to_string()),
+            ..optimized_stress_fn()
+        }
+    }
+
+    fn strain_gt(bound: f64) -> CompiledExpr {
+        let call = CompiledExpr {
+            content_hash: reify_core::ContentHash::of(format!("strain_call_gt_{bound}").as_bytes()),
+            result_type: Type::dimensionless_scalar(),
+            kind: reify_ir::CompiledExprKind::UserFunctionCall {
+                function_name: "strain".to_string(),
+                args: vec![CompiledExpr::literal(
+                    Value::Real(5.0),
+                    Type::dimensionless_scalar(),
+                )],
+            },
+        };
+        let bound = CompiledExpr::literal(Value::Real(bound), Type::dimensionless_scalar());
+        CompiledExpr::binop(BinOp::Gt, call, bound, Type::Bool)
+    }
+
+    /// Fails every target with a diagnostic naming it, and records the order of
+    /// the calls it saw.
+    #[derive(Default)]
+    struct FailEverythingDispatch {
+        dispatched: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl reify_ir::ComputeDispatch for FailEverythingDispatch {
+        fn dispatch(&self, target: &str, _args: &[Value]) -> ComputeDispatchOutcome {
+            self.dispatched.lock().unwrap().push(target.to_owned());
+            ComputeDispatchOutcome::Failed(ComputeDispatchFailure {
+                kind: ComputeFailureKind::Failed,
+                diagnostics: vec![Diagnostic::error(format!("{target} diverged"))],
+            })
+        }
+    }
+
+    #[test]
+    fn the_first_failure_names_the_reason_and_alone_is_forwarded() {
+        let expr = CompiledExpr::binop(BinOp::And, stress_gt(10.0), strain_gt(1.0), Type::Bool);
+        let dispatch = FailEverythingDispatch::default();
+
+        let result = check_one_with(
+            &expr,
+            &ValueMap::new(),
+            &[optimized_stress_fn(), optimized_strain_fn()],
+            &dispatch,
+        );
+
+        assert_eq!(
+            *dispatch.dispatched.lock().unwrap(),
+            vec!["test::stress".to_string(), "test::strain".to_string()],
+            "precondition: both calls failed, stress first"
+        );
+        assert_eq!(
+            result.indeterminate_reason,
+            compute_failed(ComputeFailureKind::Failed)
+        );
+        let errors = error_messages(&result);
+        assert!(
+            matches!(errors[..], [only] if only.ends_with("test::stress diverged")),
+            "only the named failure's diagnostics are forwarded: {errors:?}"
+        );
     }
 }

@@ -160,8 +160,8 @@ const COMPILE_RENDERER: &str = "error";
 /// A test in the `reify-compiler` crate cannot invoke the CLI, so the prefix is
 /// pinned here as a constant and reconstructed onto the live parser message;
 /// that the CLI really prints it is pinned end-to-end at
-/// `crates/reify-cli/tests/harness_cli/cli_check.rs:51`. Between the two, a
-/// rename on either side is caught.
+/// `crates/reify-cli/tests/harness_cli_check/cli_check.rs::check_parse_error_exits_failure`.
+/// Between the two, a rename on either side is caught.
 const CLI_PARSE_ERROR_PREFIX: &str = "Parse error";
 
 /// One `(declaration, rendered diagnostic)` pair transcribed in the exemplar's

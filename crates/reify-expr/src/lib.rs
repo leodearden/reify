@@ -138,10 +138,11 @@ pub struct EvalContext<'a> {
     ///
     /// When `Some`, `eval_user_function_call` probes `d.dispatch(target, args)` for any
     /// call whose resolved `CompiledFunction::optimized_target` is `Some(target)`, using
-    /// it in place of ordinary body-eval when it returns `Some(value)`. When `None` (the
-    /// default), or when the probe returns `None`, evaluation falls through to body-eval
-    /// unchanged — preserving legacy behaviour for every caller that does not attach a
-    /// dispatcher (the compiler, LSP, standalone eval, and all ad-hoc test contexts).
+    /// it in place of ordinary body-eval when it returns `Resolved(value)`. When `None`
+    /// (the default), or when the probe returns anything but `Resolved`, evaluation falls
+    /// through to body-eval unchanged — preserving legacy behaviour for every caller that
+    /// does not attach a dispatcher (the compiler, LSP, standalone eval, and all ad-hoc
+    /// test contexts).
     ///
     /// Wired by `reify-eval`'s `Engine` via `OptimizedComputeDispatcher` wherever it
     /// invokes the constraint solver or the constraint checker.
@@ -1675,9 +1676,10 @@ fn eval_user_function_call(function_name: &str, args: &[CompiledExpr], ctx: &Eva
         None => return Value::Undef, // no matching function
     };
 
-    // `@optimized` compute-dispatch hook (task #4880). See `try_compute_dispatch` doc
-    // for why this is a separate `#[inline(never)]` call rather than inline `if let`s.
-    if let Some(v) = try_compute_dispatch(func, &evaluated_args, ctx) {
+    // `@optimized` compute-dispatch hook (task #4880). See
+    // `try_compute_dispatch_reporting_fallback`'s doc for why this is a separate
+    // `#[inline(never)]` call rather than inline `if let`s.
+    if let Some(v) = try_compute_dispatch_reporting_fallback(func, &evaluated_args, ctx) {
         return v;
     }
 
@@ -1689,7 +1691,23 @@ fn eval_user_function_call(function_name: &str, args: &[CompiledExpr], ctx: &Eva
 /// when `func.optimized_target` names a registered ComputeNode AND `ctx` carries a
 /// dispatcher, return its result in place of body-eval. Returns `None` — meaning
 /// "fall through to body-eval unchanged" — when there is no `optimized_target`, no
-/// dispatcher is attached, or the dispatcher defers on this target.
+/// dispatcher is attached, or the dispatcher returns anything but `Resolved`.
+///
+/// The dual evaluator's probe: it evaluates the body its own way, so it reports no
+/// fallback. Plain evaluation uses [`try_compute_dispatch_reporting_fallback`].
+#[inline(never)]
+fn try_compute_dispatch(func: &CompiledFunction, args: &[Value], ctx: &EvalContext) -> Option<Value> {
+    let target = func.optimized_target.as_ref()?;
+    ctx.compute_dispatch?
+        .dispatch(target, args)
+        .resolved_value()
+}
+
+/// [`try_compute_dispatch`] for plain evaluation, which also tells the dispatcher how
+/// a `Failed` dispatch was recovered: the body is evaluated here and its value both
+/// returned and reported through `ComputeDispatch::fell_back_after_failure`, so a
+/// dispatcher can tell a failure that left `Undef` behind from one the body covered.
+/// `None` still means "evaluate the body" (no target, no dispatcher, `Unregistered`).
 ///
 /// Extracted to its own `#[inline(never)]` function, rather than inlined `if let`
 /// chains in `eval_user_function_call`, so its locals do not enlarge that function's
@@ -1697,11 +1715,25 @@ fn eval_user_function_call(function_name: &str, args: &[CompiledExpr], ctx: &Eva
 /// call chain, whose per-frame size is budgeted against the 3 MiB test-thread stack at
 /// `MAX_RECURSION_DEPTH` (256) levels — same rationale as `eval_variant_bind_arm` /
 /// `eval_structure_instance_ctor` / `eval_fn_field`; pinned by
-/// `eval_user_fn_recursion_depth_exceeded`.
+/// `eval_user_fn_recursion_depth_exceeded`. Only the `Failed` arm keeps this frame on
+/// that chain.
 #[inline(never)]
-fn try_compute_dispatch(func: &CompiledFunction, args: &[Value], ctx: &EvalContext) -> Option<Value> {
+fn try_compute_dispatch_reporting_fallback(
+    func: &CompiledFunction,
+    args: &[Value],
+    ctx: &EvalContext,
+) -> Option<Value> {
     let target = func.optimized_target.as_ref()?;
-    ctx.compute_dispatch?.dispatch(target, args)
+    let dispatch = ctx.compute_dispatch?;
+    match dispatch.dispatch(target, args) {
+        reify_ir::ComputeDispatchOutcome::Resolved(value) => Some(value),
+        reify_ir::ComputeDispatchOutcome::Unregistered => None,
+        reify_ir::ComputeDispatchOutcome::Failed(failure) => {
+            let fallback = eval_compiled_function_with_values(func, args, ctx);
+            dispatch.fell_back_after_failure(target, failure, &fallback);
+            Some(fallback)
+        }
+    }
 }
 
 /// Give the kernel-free selector-ctor capability (task #7875) a chance to build a
@@ -7038,7 +7070,8 @@ mod tests {
         // per-`eval_expr`-frame stack budget that the 15 doc comments in this file
         // quoting a "MiB test-thread stack" cite as the reason for their
         // `#[inline(never)]` / hoisted-locals discipline (`eval_variant_bind_arm`,
-        // `eval_structure_instance_ctor`, `eval_fn_field`, `try_compute_dispatch`, …).
+        // `eval_structure_instance_ctor`, `eval_fn_field`,
+        // `try_compute_dispatch_reporting_fallback`, …).
         // It can only serve as that pin while the stack it runs on is small enough that
         // a frame-size regression actually overflows it — so the size is an explicit,
         // MEASURED ratchet, and raising it to buy headroom silently retires every one of
@@ -9701,12 +9734,15 @@ mod tests {
     }
 
     /// A `ComputeDispatch` that resolves exactly one target (`"test::stress"`) to a
-    /// fixed non-`Undef` `Scalar`, and defers (returns `None`) for everything else.
+    /// fixed non-`Undef` `Scalar`, and is `Unregistered` for everything else.
     struct StubDispatch;
 
     impl reify_ir::ComputeDispatch for StubDispatch {
-        fn dispatch(&self, target: &str, _args: &[Value]) -> Option<Value> {
-            (target == "test::stress").then(|| Value::Scalar {
+        fn dispatch(&self, target: &str, _args: &[Value]) -> reify_ir::ComputeDispatchOutcome {
+            if target != "test::stress" {
+                return reify_ir::ComputeDispatchOutcome::Unregistered;
+            }
+            reify_ir::ComputeDispatchOutcome::Resolved(Value::Scalar {
                 si_value: 42.0,
                 dimension: DimensionVector::DIMENSIONLESS,
             })
@@ -9753,6 +9789,64 @@ mod tests {
             },
             "dispatch hook attached and resolves the target -> hook result wins over body-eval; got {:?}",
             result,
+        );
+    }
+
+    /// Fails `"test::stress"` (`Unregistered` for everything else) and records every
+    /// fallback reported back to it.
+    #[derive(Default)]
+    struct FailingStubDispatch {
+        reported: std::sync::Mutex<Vec<(String, Value)>>,
+    }
+
+    impl reify_ir::ComputeDispatch for FailingStubDispatch {
+        fn dispatch(&self, target: &str, _args: &[Value]) -> reify_ir::ComputeDispatchOutcome {
+            if target != "test::stress" {
+                return reify_ir::ComputeDispatchOutcome::Unregistered;
+            }
+            reify_ir::ComputeDispatchOutcome::Failed(reify_ir::ComputeDispatchFailure {
+                kind: reify_ir::ComputeFailureKind::Failed,
+                diagnostics: vec![Diagnostic::error("stiffness matrix is singular")],
+            })
+        }
+
+        fn fell_back_after_failure(
+            &self,
+            target: &str,
+            _failure: reify_ir::ComputeDispatchFailure,
+            fallback: &Value,
+        ) {
+            self.reported
+                .lock()
+                .unwrap()
+                .push((target.to_owned(), fallback.clone()));
+        }
+    }
+
+    /// A `Failed` dispatch falls back to body-eval exactly as `Unregistered` does, and
+    /// the body's value is reported back to the dispatcher that failed.
+    #[test]
+    fn a_failed_dispatch_falls_back_to_the_body_and_reports_its_value() {
+        let mut stress_fn = make_optimized_stub_fn();
+        stress_fn.body.result_expr = lit(Value::Real(7.0), Type::dimensionless_scalar());
+        stress_fn.content_hash = ContentHash::of(b"stress_optimized_defined_body");
+        let call_expr = make_stress_call_expr(b"call_stress_failing_hook");
+        let values = ValueMap::new();
+        let functions = [stress_fn];
+        let dispatch = FailingStubDispatch::default();
+        let ctx = EvalContext::new(&values, &functions).with_compute_dispatch(&dispatch);
+
+        let result = eval_expr(&call_expr, &ctx);
+
+        assert_eq!(
+            result,
+            Value::Real(7.0),
+            "the body's value stands in for the failed call"
+        );
+        assert_eq!(
+            *dispatch.reported.lock().unwrap(),
+            vec![("test::stress".to_string(), Value::Real(7.0))],
+            "the fallback is reported once, against the failed target"
         );
     }
 

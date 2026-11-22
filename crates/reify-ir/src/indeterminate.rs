@@ -41,6 +41,14 @@ pub enum TransientReason {
         operation: RefusedOperation,
         operands: Vec<String>,
     },
+    /// An `@optimized` call's registered implementation ran and produced no
+    /// value; `target` is its `optimized_target`. Transient because another
+    /// run or surface (corrected inputs, the cell-level ComputeNode path) may
+    /// resolve it.
+    ComputeDispatchFailed {
+        target: String,
+        kind: ComputeFailureKind,
+    },
 }
 
 /// The pure operation behind a [`TransientReason::OperationRefused`].
@@ -49,6 +57,14 @@ pub enum RefusedOperation {
     Binary(BinOp),
     Unary(UnOp),
     Builtin(String),
+}
+
+/// How a registered `@optimized` implementation ended without a value; it
+/// mirrors `ComputeOutcome`'s two non-success arms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ComputeFailureKind {
+    Failed,
+    Cancelled,
 }
 
 /// Uninhabited until a run-invariant cause can be proven: the first variant
@@ -76,7 +92,8 @@ impl TransientReason {
             TransientReason::OperationRefused { .. } => true,
             TransientReason::UndefInputs { .. }
             | TransientReason::OperatorUndefinedForKinds { .. }
-            | TransientReason::MeasurementUnavailable { .. } => false,
+            | TransientReason::MeasurementUnavailable { .. }
+            | TransientReason::ComputeDispatchFailed { .. } => false,
         }
     }
 }
@@ -116,6 +133,16 @@ impl Display for TransientReason {
                 }
                 f.write_str(" for these operands: ")?;
                 write_joined(f, operands)
+            }
+            TransientReason::ComputeDispatchFailed { target, kind } => {
+                let ended = match kind {
+                    ComputeFailureKind::Failed => "failed",
+                    ComputeFailureKind::Cancelled => "cancelled",
+                };
+                write!(
+                    f,
+                    "compute dispatch {ended} for @optimized target {target:?}"
+                )
             }
         }
     }
@@ -227,6 +254,20 @@ mod tests {
         refused(RefusedOperation::Builtin("f".into()), &[])
     }
 
+    fn compute_failed() -> TransientReason {
+        TransientReason::ComputeDispatchFailed {
+            target: "solver::elastic_static".into(),
+            kind: ComputeFailureKind::Failed,
+        }
+    }
+
+    fn compute_cancelled() -> TransientReason {
+        TransientReason::ComputeDispatchFailed {
+            target: "solver::elastic_static".into(),
+            kind: ComputeFailureKind::Cancelled,
+        }
+    }
+
     #[test]
     fn undef_inputs_names_each_cell_in_order() {
         assert_eq!(
@@ -260,6 +301,22 @@ mod tests {
     }
 
     #[test]
+    fn compute_dispatch_failed_names_its_target() {
+        assert_eq!(
+            compute_failed().to_string(),
+            "compute dispatch failed for @optimized target \"solver::elastic_static\""
+        );
+    }
+
+    #[test]
+    fn compute_dispatch_cancelled_names_its_target() {
+        assert_eq!(
+            compute_cancelled().to_string(),
+            "compute dispatch cancelled for @optimized target \"solver::elastic_static\""
+        );
+    }
+
+    #[test]
     fn transient_reason_renders_identically_to_its_payload() {
         for transient in [
             undef_inputs(),
@@ -270,6 +327,8 @@ mod tests {
             sqrt_refused(),
             negation_refused(),
             builtin_refused_without_operands(),
+            compute_failed(),
+            compute_cancelled(),
         ] {
             assert_eq!(
                 IndeterminateReason::Transient(transient.clone()).to_string(),
@@ -342,6 +401,8 @@ mod tests {
             (sqrt_refused(), true),
             (negation_refused(), true),
             (builtin_refused_without_operands(), true),
+            (compute_failed(), false),
+            (compute_cancelled(), false),
         ];
         for (transient, unexpected) in expected {
             assert_eq!(transient.is_unexpected(), unexpected, "{transient:?}");
