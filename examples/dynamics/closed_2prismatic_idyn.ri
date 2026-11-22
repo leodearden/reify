@@ -71,7 +71,7 @@ structure def Closed2PrismaticIdyn {
     // Vertical prismatic axis so gravity [0,0,−9.81] does work on the motion.
     // Distinct ranges (0..1 m vs 0..2 m) make j_a and j_b structurally-distinct
     // Maps so the bridge's Value::Eq joint matching can tell them apart.
-    let axis_z = vec3(0, 0, 1)
+    let axis_z = dir(0, 0, 1)
     let j_a = prismatic(axis_z, 0mm .. 1000mm)
     let j_b = prismatic(axis_z, 0mm .. 2000mm)
 

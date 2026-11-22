@@ -5,8 +5,8 @@ module s6_idyn_open_flexure_control
 // Control: same tree, no closing body (open chain).
 structure def OpenFlexure {
     let steel = Steel_AISI_1045()
-    let j_a = prb_parallelogram_flexure(20mm, 5mm, 0.5mm, 10mm, steel, vec3(0, 0, 1), point3(0mm, 0mm, 0mm))
-    let j_b = prismatic(vec3(0, 0, 1), 0mm .. 2000mm)
+    let j_a = prb_parallelogram_flexure(20mm, 5mm, 0.5mm, 10mm, steel, dir(0, 0, 1), point3(0mm, 0mm, 0mm))
+    let j_b = prismatic(dir(0, 0, 1), 0mm .. 2000mm)
     let m0 = mechanism()
     let m1 = body(m0, point_mass(0.5kg), j_a)
     let m = body(m1, point_mass(0.25kg), j_b)

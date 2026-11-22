@@ -5,9 +5,9 @@ module s6_loopclosure_declared_fields
 // Probe (seat L, S6): kinematic.ri declares LoopClosure{parent,child,joint,residual_dim};
 // the runtime record carries {body_id, closing_joint, kind, path_a, path_b}.
 structure def Kinematic {
-    let j_a = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
-    let j_x = prismatic(vec3(1, 0, 0), 0mm .. 500mm)
-    let j_b = prismatic(vec3(1, 0, 0), 0mm .. 2000mm)
+    let j_a = prismatic(dir(1, 0, 0), 0mm .. 1000mm)
+    let j_x = prismatic(dir(1, 0, 0), 0mm .. 500mm)
+    let j_b = prismatic(dir(1, 0, 0), 0mm .. 2000mm)
     let m1  = body(mechanism(), "solid_a", j_a)
     let m2  = body(m1, "solid_b", j_x, j_a)
     let m2b = body(m2, "solid_c", j_b)

@@ -84,7 +84,7 @@ structure RockerMount {
     let hub_axis  : Axis  = hub_cyl.axis
     let hub_face  = rectangle(8mm, 8mm)
     let hub_plane : Plane = hub_face.plane
-    let axis_dir  = vec3(0, 0, 1)
+    let axis_dir  = dir(0, 0, 1)
 }
 
 // ── Assembly ──────────────────────────────────────────────────────────────────
@@ -92,7 +92,7 @@ structure RockerMount {
 structure RelateMountedFourbar {
     // Shared axis and wide range for the crank / coupler / coupler-tip joints
     // (always fully bound by the snapshot, so their range is not consulted).
-    let axis_z = vec3(0, 0, 1)
+    let axis_z = dir(0, 0, 1)
     let turn   = 0rad..6.283185307179586rad
 
     // ── Relate-mount seam ────────────────────────────────────────────────────

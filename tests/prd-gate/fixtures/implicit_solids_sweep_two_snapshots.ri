@@ -1,6 +1,6 @@
 // kappa: swept sdf_sphere along a two-snapshot translation.
 structure def SweepTwoSnaps {
-    let j_x = prismatic(vec3(1, 0, 0), 0mm .. 100mm)
+    let j_x = prismatic(dir(1, 0, 0), 0mm .. 100mm)
     let head = box(20mm, 20mm, 20mm)
     let m0 = mechanism()
     let m1 = body(m0, "head", j_x)

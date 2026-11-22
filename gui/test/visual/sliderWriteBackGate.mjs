@@ -49,7 +49,7 @@ export const JOINT_RANGE_MIN_MM = 0;
 export const JOINT_RANGE_MAX_MM = 200;
 
 /** The joint declaration, whose range sets the slider's min/max (step 1 mm). */
-export const JOINT_RANGE_DECL = `prismatic(vec3(1, 0, 0), ${JOINT_RANGE_MIN_MM}mm .. ${JOINT_RANGE_MAX_MM}mm)`;
+export const JOINT_RANGE_DECL = `prismatic(dir(1, 0, 0), ${JOINT_RANGE_MIN_MM}mm .. ${JOINT_RANGE_MAX_MM}mm)`;
 
 /** Slider values are the control's own `.value` strings: integer display mm. */
 export const SLIDER_HOLD_FRAMES = Object.freeze(["50", "60", "70", "80"]);

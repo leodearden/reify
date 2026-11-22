@@ -187,7 +187,7 @@ in the probe set), `fixture_present` and `harness_failure`. The record contract 
 | File | Probe kind | What it tests |
 |---|---|---|
 | `fixtures/arrow_type.ri` | grammar | No arrow-type grammar production (3979 class) — `param f : (Length) -> Length` → tree-sitter exits 1 |
-| `fixtures/revolute_silent_accept.ri` | check | §3 4575 silent-accept — `revolute("not-an-axis", …)` → `reify check` exits 0, no rejection diagnostic |
+| `fixtures/revolute_silent_accept.ri` | check | §3 4575 silent-accept — `revolute(dir(0, 0, 1), "not-a-range", …)` → `reify check` exits 0, no rejection diagnostic |
 | `fixtures/ir_clean_eval.ri` | ir | Clean eval baseline — `reify eval` exits 0 with no error |
 | `fixtures/value_clean_eval_cells.ri` | value | #6876 worked example and vacuity evidence — one exit-0 run printing `damping_ratio = 0.018` (in range → PRESENT), `degenerate_ratio = 0` (out of range → ABSENT), `undef_ratio = undef` (not a number → ABSENT). An `ir`/absent probe PASSes on all three. |
 | `fixtures/transform3_unresolved.ri` | check | 4577 — `param t : Transform3` → was exit 1, "unresolved type: Transform3"; **removed from corpus** (task 4577 landed Transform3 resolver — probe flipped PASS) |

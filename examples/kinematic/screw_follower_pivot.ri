@@ -9,7 +9,7 @@
 // Acceptance criterion mirror:
 //   crates/reify-eval/tests/joint_origin_offset_e2e.rs::screw_follower_inherits_parent_pivot_e2e
 structure def ScrewFollowerPivot {
-    let j_drive = prismatic(vec3(0, 0, 1), 0m .. 100m, point3(100mm, 50mm, 0mm))
+    let j_drive = prismatic(dir(0, 0, 1), 0m .. 100m, point3(100mm, 50mm, 0mm))
     let j_nut = screw(j_drive, 5mm)
     let t_nut = transform_at(j_nut, 62.83185307179586m)
     let mech = body(mechanism(), "follower", j_nut)
