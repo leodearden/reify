@@ -1,46 +1,22 @@
 #!/usr/bin/env bash
 # tests/infra/test_cpu_load_governance_deflake.sh — meta-test for PRD T7 (task 4846).
 #
-# Proves that test_cpu_load_governance.sh's live cgroup-governance cycles
-# skip cleanly and hermetically. Spawns the SUT as a subprocess with
-# REIFY_CPU_GOVERN_DISABLE=1 and asserts the SUT emits its
-# host-does-not-support-governance SKIP markers instead of running real
-# CPU-governance burns.
+# Proves that every live cgroup-governance cycle of test_cpu_load_governance.sh
+# SKIPs under the REIFY_CPU_GOVERN_DISABLE=1 break-glass.
 #
 # Assertions:
-#   A1 (permanent-green regression guard): SUT output contains NO "live
-#     section budget" skip marker — task 4846 removed the wall-clock budget
-#     gate entirely, so "live section budget" no longer exists anywhere in
-#     the SUT; this assertion now guards against its reintroduction.
-#   A2 (guard): SUT subprocess exits 0 under the governance-disabled config.
-#   A3 (NON-VACUOUS): share_ge_proportional discriminator — broken->False, healthy->True.
-#   A4 (RED→GREEN driver): SUT output contains the ROW4 and ROW2_3
-#     host_supports_governance SKIP markers, proving no real cgroup-governance
-#     burns ran.
+#   A2  the armed gates-only drive exits 0 under the `timeout 120` anti-hang guard.
+#   A3  NON-VACUOUS: share_ge_proportional discriminator — broken->False, healthy->True.
+#   A4  the drive emits the host-governance SKIP marker of all six live cycles.
+#   A5  the drive short-circuited at the seam: the SUT printed no `Results:` line.
+#   A6  GATES_ONLY without the REIFY_GOVTEST_TEST_MODE arming key is refused
+#       loudly, and the suite runs on to Cycle SELF.
 #
-# Technique:
-#   REIFY_CPU_GOVERN_DISABLE=1 → cgroup_governance_supported() (scripts/lib_cgroup.sh)
-#     break-glass check fires → host_supports_governance() returns false in the
-#     SUT → every host-gated live cycle (ROW1-1, ROW2_3, ROW4, ROW1-2, FIXTURE-6,
-#     CONFINE-APPLIED) SKIPs unconditionally, independent of actual host cgroup
-#     support. Only SELF checks, small FIXTURE-1..5 smoke (bounded workers/
-#     seconds, load-robust), and the hermetic *-VACUITY/NAMING/CONFINE/BYPASS
-#     assertions run.
-#
-# Hermetic: no real cgroup-governance CPU load, no systemd scope creation, no
-# PSI required for A1/A2/A4. FIXTURE-3/4/5 still run small bounded real CPU
-# burns (a few workers for a few seconds each) — load-robust, not host-gated.
+# Technique: the armed REIFY_CPU_GOV_TEST_GATES_ONLY=1 seam consults each live
+# cycle's host gate and exits before any cycle runs, so the drive is sub-second
+# and the guard never decides the verdict. The SUT's always-on body is its own
+# run_all member's job, not this one's.
 # Auto-discovered by tests/infra/run_all.sh (glob test_*.sh).
-#
-# esc-4906-52 cross-reference: a one-off failure of this meta-test surfaced
-# in task 4906's debugging history amid severe host oversubscription (~2.6x
-# cores, sustained). Confirmed non-reproducing post-investigation (task
-# 4962): this meta-test is hermetic by design (see above) and its
-# host-exclusive bucket in run-all-classification.manifest is unchanged
-# since task 4921 — the one-off is attributed to transient host overload,
-# not a code defect. Full write-up (incl. a correction of which task
-# touched this file's manifest row):
-# docs/notes/verify-residual-oneoffs-esc-4906.md
 
 set -euo pipefail
 
@@ -101,42 +77,93 @@ sys.exit(0 if ok else 1)
         ' _ "$SCRIPT_DIR"
 fi
 
-# ── A1 + A2 — SUT must NOT emit wall-clock budget skip markers ─────────────────
+# ── A2 + A4 + A5 — the armed gates-only drive ─────────────────────────────────
 echo ""
-echo "--- A1+A2: SUT output must NOT contain 'live section budget' skip marker ---"
+echo "--- A2+A4+A5: armed REIFY_CPU_GOV_TEST_GATES_ONLY drive ---"
 
-# Sanity: SUT file must exist.
 assert "SUT exists at $SUT" \
     test -f "$SUT"
 
-# Capture SUT stdout+stderr; preserve exit code without triggering set -e.
 _SUT_OUT="$(mktemp)"
 _SUT_RC=0
-timeout 120 env \
-    REIFY_CPU_GOVERN_DISABLE=1 \
-    bash "$SUT" >"$_SUT_OUT" 2>&1 || _SUT_RC=$?
+timeout 120 env -u REIFY_GOVTEST_REAP_FAKE_ALIVE_PIDS REIFY_CPU_GOVERN_DISABLE=1 REIFY_GOVTEST_TEST_MODE=1 REIFY_CPU_GOV_TEST_GATES_ONLY=1 bash "$SUT" >"$_SUT_OUT" 2>&1 || _SUT_RC=$?
 
-# A1: No "live section budget" skip marker in output.
-# Permanent-green regression guard: task 4846 removed the wall-clock budget
-# gate entirely, so "live section budget" no longer exists anywhere in the
-# SUT — grep always finds nothing → bash -c exits 0 → assert PASS. Guards
-# against the gate's reintroduction.
-assert "A1: SUT output contains NO 'live section budget' skip marker" \
-    bash -c '! grep -q "live section budget" "$1"' _ "$_SUT_OUT"
+_sut_exit0() {
+    if [ "$_SUT_RC" -ne 0 ]; then
+        echo "SUT rc=$_SUT_RC (124 = the anti-hang guard fired), want 0"
+        tail -n 40 "$_SUT_OUT" 2>/dev/null || true
+        return 1
+    fi
+    return 0
+}
+assert "A2: SUT exits 0 under the armed gates-only drive" \
+    _sut_exit0
 
-# A2: SUT exits 0 under cheap-skip config (SELF/FIXTURE/ROW4-BYPASS still run).
-assert "A2: SUT exits 0 under cheap-skip config (rc=${_SUT_RC})" \
-    test "${_SUT_RC}" -eq 0
+_sut_skipped_every_live_cycle() {
+    local name missing=()
+    for name in FIXTURE-6 ROW1-2 ROW1-1 ROW2_3 CONFINE-APPLIED ROW4; do
+        grep -qF -- "SKIP $name: host does not support cgroup governance" "$_SUT_OUT" \
+            || missing+=("$name")
+    done
+    if [ "${#missing[@]}" -ne 0 ]; then
+        echo "missing host-governance SKIP markers: ${missing[*]}"
+        tail -n 40 "$_SUT_OUT" 2>/dev/null || true
+        return 1
+    fi
+    return 0
+}
+assert "A4: SUT output contains the host-governance SKIP marker of every live cycle" \
+    _sut_skipped_every_live_cycle
 
-# A4: SUT output contains the host_supports_governance SKIP markers for
-# ROW4 and ROW2_3, proving no real cgroup-governance burns ran.
-assert "A4: SUT output contains ROW4 and ROW2_3 host-governance SKIP markers" \
-    bash -c '
-        grep -q "SKIP ROW4: host does not support cgroup governance" "$1" &&
-        grep -q "SKIP ROW2_3: host does not support cgroup governance" "$1"
-    ' _ "$_SUT_OUT"
+_sut_exited_at_seam() {
+    if grep -q '^Results:' "$_SUT_OUT"; then
+        echo "SUT ran the FULL suite — the gates-only seam did not take effect:"
+        tail -n 15 "$_SUT_OUT" 2>/dev/null || true
+        return 1
+    fi
+    return 0
+}
+assert "A5: the gates-only seam short-circuits before any cycle (no Results: line)" \
+    _sut_exited_at_seam
 
-rm -f "$_SUT_OUT"
+# ── A6 — unarmed GATES_ONLY is refused loudly ─────────────────────────────────
+echo ""
+echo "--- A6: GATES_ONLY without REIFY_GOVTEST_TEST_MODE ---"
+
+_DISARM_OUT="$(mktemp)"
+
+_gates_only_refused_without_arming() {
+    local pid
+    : > "$_DISARM_OUT"
+
+    timeout 120 env -u REIFY_GOVTEST_TEST_MODE -u REIFY_GOVTEST_REAP_FAKE_ALIVE_PIDS REIFY_CPU_GOVERN_DISABLE=1 REIFY_CPU_GOV_TEST_GATES_ONLY=1 bash "$SUT" > "$_DISARM_OUT" 2>&1 &
+    pid=$!
+
+    until grep -q 'GATES_ONLY=1 IGNORED' "$_DISARM_OUT" 2>/dev/null \
+        && grep -q 'Cycle SELF' "$_DISARM_OUT" 2>/dev/null; do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.1
+    done
+
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+
+    if ! grep -q 'GATES_ONLY=1 IGNORED' "$_DISARM_OUT" 2>/dev/null; then
+        echo "unarmed GATES_ONLY was not refused loudly:"
+        head -n 20 "$_DISARM_OUT" 2>/dev/null || true
+        return 1
+    fi
+    if ! grep -q 'Cycle SELF' "$_DISARM_OUT" 2>/dev/null; then
+        echo "unarmed GATES_ONLY short-circuited anyway — the suite never reached Cycle SELF:"
+        head -n 20 "$_DISARM_OUT" 2>/dev/null || true
+        return 1
+    fi
+    return 0
+}
+assert "A6: GATES_ONLY without REIFY_GOVTEST_TEST_MODE is refused loudly and the suite runs on" \
+    _gates_only_refused_without_arming
+
+rm -f "$_SUT_OUT" "$_DISARM_OUT"
 
 # ── Final summary ──────────────────────────────────────────────────────────────
 test_summary
