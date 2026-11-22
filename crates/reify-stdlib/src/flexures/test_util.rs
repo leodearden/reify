@@ -101,7 +101,7 @@ pub fn steel_with_e(e: f64) -> Value {
 }
 
 pub fn axis_y() -> Value {
-    Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)])
+    reify_test_support::direction_val(0.0, 1.0, 0.0)
 }
 
 pub fn origin() -> Value {

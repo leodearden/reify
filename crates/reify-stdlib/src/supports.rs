@@ -39,12 +39,9 @@
 //! full design rationale.
 
 use reify_core::DimensionVector;
-use reify_ir::Value;
+use reify_ir::{Value, decode_direction};
 
-use crate::helpers::{
-    make_kind_map, validate_dimensioned_vec3, validate_dimensionless_unit_axis_vec3,
-    validate_selector_target,
-};
+use crate::helpers::{make_kind_map, validate_dimensioned_vec3, validate_selector_target};
 
 /// Canonical set of support kinds recognized by this module.
 ///
@@ -138,7 +135,7 @@ pub(crate) fn eval_supports(name: &str, args: &[Value]) -> Option<Value> {
             if validate_selector_target(&args[0]).is_none() {
                 return Some(Value::Undef);
             }
-            if validate_dimensionless_unit_axis_vec3(&args[1]).is_none() {
+            if decode_direction(&args[1]).is_err() {
                 return Some(Value::Undef);
             }
             make_kind_map(
@@ -492,7 +489,7 @@ mod tests {
     #[test]
     fn is_support_value_recognises_roller_support() {
         use super::is_support_value;
-        let normal = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        let normal = direction_val(0.0, 0.0, 1.0);
         let v = eval_builtin("RollerSupport", &[point_selector_stub(), normal]);
         assert!(
             is_support_value(&v),
@@ -632,8 +629,7 @@ mod tests {
             m
         });
         let length_vec = make_scalar_vec3([0.001, 0.0, 0.0], DimensionVector::LENGTH);
-        let dimensionless_z =
-            Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        let z_direction = direction_val(0.0, 0.0, 1.0);
 
         for kind in SUPPORT_KINDS {
             // NOTE: SUPPORT_KINDS contains the snake_case kind-tag strings used
@@ -651,7 +647,7 @@ mod tests {
                 ),
                 "roller_support" => eval_supports(
                     "RollerSupport",
-                    &[stub_selector.clone(), dimensionless_z.clone()],
+                    &[stub_selector.clone(), z_direction.clone()],
                 ),
                 other => panic!(
                     "SUPPORT_KINDS contains '{}' but no fixture is defined for it — \
