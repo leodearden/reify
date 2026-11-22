@@ -9,6 +9,7 @@ at CANON, the one path every stamped build directory is built at.
 """
 from __future__ import annotations
 
+import functools
 import json
 import os
 import pwd
@@ -30,6 +31,31 @@ EXIT_REFUSED = 126
 EXIT_NOT_FOUND = 127
 EXIT_USAGE = 2
 USAGE = "usage: canon_run.py status | exec -- <command> [args...] | cargo [args...]"
+TRAMPOLINE_MARKER = b"reify-canon-trampoline"
+MARKER_WINDOW = 1024
+VALUE_TAKING_GLOBALS = frozenset({"--color", "--config", "-Z", "-C"})
+PASS_THROUGH = frozenset(
+    {
+        "metadata",
+        "locate-project",
+        "pkgid",
+        "tree",
+        "search",
+        "login",
+        "logout",
+        "new",
+        "init",
+        "add",
+        "remove",
+        "update",
+        "fetch",
+        "vendor",
+        "generate-lockfile",
+        "help",
+        "version",
+        "install",
+    }
+)
 
 
 class Policy(StrEnum):
@@ -319,14 +345,144 @@ def status_report(environ: Mapping[str, str], cwd: str) -> dict[str, object]:
     return report
 
 
+def is_trampoline(path: str) -> bool:
+    try:
+        with open(path, "rb") as candidate:
+            return TRAMPOLINE_MARKER in candidate.read(MARKER_WINDOW)
+    except OSError:
+        return False
+
+
+def resolve_real_cargo(path_value: str) -> str | None:
+    """The first unmarked cargo after the first trampoline on PATH; the first cargo if none is marked."""
+    cargos = [
+        cargo
+        for cargo in (os.path.join(entry, "cargo") for entry in path_value.split(os.pathsep) if entry)
+        if os.path.isfile(cargo) and os.access(cargo, os.X_OK)
+    ]
+    marked = [is_trampoline(cargo) for cargo in cargos]
+    start = marked.index(True) + 1 if True in marked else 0
+    return next((cargo for cargo, mark in zip(cargos[start:], marked[start:]) if not mark), None)
+
+
+def cargo_subcommand_index(args: list[str]) -> int | None:
+    index = 1 if args and args[0].startswith("+") else 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--explain" or arg.startswith("--explain="):
+            return None
+        if arg in VALUE_TAKING_GLOBALS:
+            index += 2
+        elif arg.startswith("-"):
+            index += 1
+        else:
+            return index
+    return None
+
+
+def option_value(args: list[str], name: str) -> str | None:
+    """`name V` or `name=V` before any `--`."""
+    for index, arg in enumerate(args):
+        if arg == "--":
+            return None
+        if arg == name and index + 1 < len(args):
+            return args[index + 1]
+        if arg.startswith(name + "="):
+            return arg[len(name) + 1 :]
+    return None
+
+
+def cargo_passes_through(
+    args: list[str], environ: Mapping[str, str], cwd: str, tree_root: str | Path
+) -> bool:
+    """Decision 10: cargo invocations that build nothing in the tree run untouched."""
+    index = cargo_subcommand_index(args)
+    if index is None:
+        return True
+    if args[index] not in PASS_THROUGH:
+        return False
+    if args[index] != "install":
+        return True
+    install_args = args[index + 1 :]
+    if any(arg == "--path" or arg.startswith("--path=") for arg in install_args):
+        return False
+    target_dirs = (
+        option_value(install_args, "--target-dir"),
+        environ.get("CARGO_TARGET_DIR"),
+        environ.get("CARGO_BUILD_TARGET_DIR"),
+    )
+    return not any(
+        target_dir and is_inside(os.path.join(cwd, target_dir), tree_root)
+        for target_dir in target_dirs
+    )
+
+
+def flatten(message: object) -> str:
+    return " ".join(str(message).splitlines())
+
+
+def execute(file: str, argv: list[str], env: Mapping[str, str], *, search: bool) -> int:
+    try:
+        if search:
+            os.execvpe(file, argv, env)
+        os.execve(file, argv, env)
+    except OSError as exc:
+        print(f"canon_run: cannot run {file}: {flatten(exc)}", file=sys.stderr)
+    return EXIT_NOT_FOUND
+
+
+def exec_untouched(command: list[str], *, cargo: bool, environ: Mapping[str, str]) -> int:
+    """C2's real-path mode: the command with the caller's exact environment and cwd."""
+    if not cargo:
+        return execute(command[0], command, environ, search=True)
+    real_cargo = resolve_real_cargo(environ.get("PATH", ""))
+    if real_cargo is None:
+        print("canon_run: no cargo on PATH other than reify-canon trampolines", file=sys.stderr)
+        return EXIT_NOT_FOUND
+    return execute(real_cargo, ["cargo", *command], environ, search=False)
+
+
+def enter_canon(build_dir: Path) -> int:
+    raise Refusal(f"build directory {build_dir} builds at CANON, which this canon_run.py cannot enter yet")
+
+
+def run(command: list[str], *, cargo: bool, environ: Mapping[str, str]) -> int:
+    """`exec` (command is the full command) or `cargo` (command is cargo's arguments)."""
+    try:
+        cwd = os.getcwd()
+    except OSError:
+        return exec_untouched(command, cargo=cargo, environ=environ)
+    tree = find_tree(cwd, environ)
+    if tree is None or (cargo and cargo_passes_through(command, environ, cwd, tree.root)):
+        return exec_untouched(command, cargo=cargo, environ=environ)
+    target_dir = option_value(command, "--target-dir") if cargo else None
+    build_dir = build_dir_for(tree, cwd, environ, target_dir)
+    canon = canon_root(environ)
+    host = functools.cache(lambda: load_host_config(host_config_path(environ)))
+    decision = build_dir_decision(tree, build_dir, canon, lambda: host().enabled)
+    if decision.mode is Mode.REAL_PATH:
+        return exec_untouched(command, cargo=cargo, environ=environ)
+    if decision.mode is Mode.REFUSED:
+        raise Refusal(
+            f"build directory {build_dir}: {decision.reason}; run where a mount namespace"
+            f" can be entered, or delete {build_dir} to rebuild it at the real path"
+        )
+    return enter_canon(build_dir)
+
+
 def main(argv: list[str]) -> int:
     environ = caller_environ()
     try:
-        if argv == ["status"]:
-            print(json.dumps(status_report(environ, os.getcwd())))
-            return 0
+        match argv:
+            case ["status"]:
+                print(json.dumps(status_report(environ, os.getcwd())))
+                return 0
+            case ["exec", "--", *command] if command:
+                return run(command, cargo=False, environ=environ)
+            case ["cargo", *args]:
+                return run(args, cargo=True, environ=environ)
     except Refusal as refusal:
-        print("canon_run: " + " ".join(str(refusal).splitlines()), file=sys.stderr)
+        print(f"canon_run: {flatten(refusal)}", file=sys.stderr)
         return EXIT_REFUSED
     print(USAGE, file=sys.stderr)
     return EXIT_USAGE

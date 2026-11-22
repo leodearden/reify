@@ -1,0 +1,83 @@
+#!/usr/bin/python3 -I
+# reify-canon-trampoline
+"""PATH trampoline for cargo (canonical-build-path PRD C7).
+
+Inside a tree (a directory holding Cargo.lock and scripts/canon_run.py) it
+execs that tree's canon_run.py, which decides where cargo runs; anywhere else
+it execs the real cargo untouched. Installed copies live outside any tree, so
+this file imports nothing from one: resolve_real_cargo copies canon_run.py's.
+"""
+import os
+import sys
+
+MARKER = b"reify-canon-trampoline"
+MARKER_WINDOW = 1024
+PYTHON = "/usr/bin/python3"
+EXIT_NOT_FOUND = 127
+
+
+def caller_environ():
+    with open("/proc/self/environ", "rb") as environ_file:
+        raw = environ_file.read()
+    environ = {}
+    for entry in raw.split(b"\0"):
+        name, separator, value = entry.partition(b"=")
+        if separator and name:
+            environ[os.fsdecode(name)] = os.fsdecode(value)
+    return environ
+
+
+def enclosing_canon_run():
+    try:
+        directory = os.getcwd()
+    except OSError:
+        return None
+    while True:
+        script = os.path.join(directory, "scripts", "canon_run.py")
+        if os.path.isfile(os.path.join(directory, "Cargo.lock")) and os.path.isfile(script):
+            return script
+        parent = os.path.dirname(directory)
+        if parent == directory:
+            return None
+        directory = parent
+
+
+def is_trampoline(path):
+    try:
+        with open(path, "rb") as candidate:
+            return MARKER in candidate.read(MARKER_WINDOW)
+    except OSError:
+        return False
+
+
+def resolve_real_cargo(path_value):
+    cargos = [
+        cargo
+        for cargo in (os.path.join(entry, "cargo") for entry in path_value.split(os.pathsep) if entry)
+        if os.path.isfile(cargo) and os.access(cargo, os.X_OK)
+    ]
+    marked = [is_trampoline(cargo) for cargo in cargos]
+    start = marked.index(True) + 1 if True in marked else 0
+    return next((cargo for cargo, mark in zip(cargos[start:], marked[start:]) if not mark), None)
+
+
+def main():
+    environ = caller_environ()
+    canon_run = enclosing_canon_run()
+    if canon_run is not None:
+        file, argv = PYTHON, [PYTHON, "-I", canon_run, "cargo", *sys.argv[1:]]
+    else:
+        file = resolve_real_cargo(environ.get("PATH", ""))
+        if file is None:
+            print("cargo (reify-canon trampoline): no cargo on PATH other than trampolines", file=sys.stderr)
+            return EXIT_NOT_FOUND
+        argv = ["cargo", *sys.argv[1:]]
+    try:
+        os.execve(file, argv, environ)
+    except OSError as exc:
+        print(f"cargo (reify-canon trampoline): cannot run {file}: {exc}", file=sys.stderr)
+    return EXIT_NOT_FOUND
+
+
+if __name__ == "__main__":
+    sys.exit(main())
