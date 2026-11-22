@@ -10,6 +10,16 @@
 # The busy-spin loop (:; done) runs tight enough to saturate one CPU core
 # per worker on any POSIX shell.
 #
+# <duration_s> 0 means no time limit: each worker burns until the fixture is
+# stopped with TERM, so an observer of the burn is never racing a clock. With 0,
+# every process of the burn carries a parent-death signal (TERM), so the burn
+# cannot outlive its launcher, SIGKILL included. A parent-death signal only fires
+# for a death AFTER it is armed, so each process, once armed, checks that its
+# parent is still the one that started it and refuses to burn when it is not.
+# The fixture's check compares against the parent its shell saw at startup: a
+# launcher already gone by then is not detected. That needs setpriv(1); without
+# it duration 0 exits 69, because an unbounded burn is never run unanchored.
+#
 # OPTIONS:
 #   --label NAME          label for progress output (optional, default "fixture")
 #   --emit-cgroup FILE    write own /proc/self/cgroup rel path to FILE on startup
@@ -32,7 +42,8 @@
 #
 # NOTES:
 #   - Dependency-free: uses only POSIX sh builtins + timeout(1); --pin-cpus
-#     additionally needs taskset(1) and awk(1), --ready-file needs mv(1).
+#     additionally needs taskset(1) and awk(1), --ready-file needs mv(1), and
+#     duration 0 needs setpriv(1).
 #   - Safe under set -euo pipefail.
 #   - Workers are backgrounded and waited on with `wait`; EXIT trap reaps any
 #     survivors via a per-PID `kill` over the recorded worker PIDs (harmless
@@ -55,6 +66,7 @@ if [ "$#" -lt 2 ]; then
     exit 64
 fi
 
+_FIXTURE_ARGV=("$@")
 NWORKERS="$1"
 DURATION_S="$2"
 shift 2
@@ -125,14 +137,10 @@ if [ "$NWORKERS" -lt 1 ]; then
 fi
 case "$DURATION_S" in
     ''|*[!0-9]*)
-        echo "$(basename "$0"): duration_s must be a positive integer (got '$DURATION_S')" >&2
+        echo "$(basename "$0"): duration_s must be a non-negative integer (got '$DURATION_S')" >&2
         exit 64
         ;;
 esac
-if [ "$DURATION_S" -lt 1 ]; then
-    echo "$(basename "$0"): duration_s must be >= 1 (got '$DURATION_S')" >&2
-    exit 64
-fi
 
 # --pin-cpus: the list was validated above; refuse to run unpinned if taskset is
 # missing, then split it once for the round-robin below.
@@ -143,6 +151,31 @@ if [ -n "$PIN_CPUS" ]; then
         exit 69
     fi
     IFS=',' read -r -a _PIN_LIST <<< "$PIN_CPUS"
+fi
+
+# duration 0 is a burn with no clock, so only a parent-death signal can end it
+# when its launcher dies: refuse to run one without setpriv(1) to set it.
+if [ "$DURATION_S" -eq 0 ] && ! command -v setpriv >/dev/null 2>&1; then
+    echo "$(basename "$0"): duration 0 needs setpriv(1) for its parent-death anchor, which is not on PATH" >&2
+    exit 69
+fi
+
+# Self-anchor: re-exec once under a parent-death signal, so the launcher's death
+# (SIGKILL included, which runs no trap) TERMs this fixture and its EXIT trap
+# reaps the workers.  exec keeps the pid, so the caller's `$!` stays valid.  The
+# marker is compared with `$$`: one inherited from another process never matches.
+# The launcher may die before the signal is armed, which no signal reports, so
+# the anchored pass compares its parent (read at its startup, after the arming)
+# with the one the first pass saw, and exits 75 without burning on a mismatch.
+if [ "$DURATION_S" -eq 0 ]; then
+    if [ "${CPU_LOAD_FIXTURE_ANCHOR_PID:-}" != "$$" ]; then
+        CPU_LOAD_FIXTURE_ANCHOR_PID=$$ CPU_LOAD_FIXTURE_ANCHOR_PPID=$PPID \
+            exec setpriv --pdeathsig TERM -- "$BASH" "$0" "${_FIXTURE_ARGV[@]}"
+    fi
+    if [ "$PPID" != "${CPU_LOAD_FIXTURE_ANCHOR_PPID:-}" ]; then
+        echo "$(basename "$0"): launcher ${CPU_LOAD_FIXTURE_ANCHOR_PPID:-?} died before the parent-death anchor was armed; not burning" >&2
+        exit 75
+    fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -173,16 +206,17 @@ trap '_cleanup' EXIT
 # still reports the mask it inherited, and a ready report made in that window
 # would list workers that are not yet pinned.  A worker that is gone (taskset
 # refused the CPU, or the burn ended) is not waited for — its absence is the
-# reader's to report.  The burn length bounds the wait: anti-hang only, never a
-# discriminator.  A no-op without --pin-cpus.
+# reader's to report.  No deadline: a worker either applies its pin or exits, so
+# the wait ends on its own (and a burn length would mean nothing at duration 0);
+# the caller's readiness poll is the anti-hang.  A no-op without --pin-cpus.
 _await_pins_applied() {
-    local pair pid want got deadline=$(( SECONDS + DURATION_S ))
+    local pair pid want got
     for pair in $_PINNED_WORKERS; do
         pid="${pair%%:*}"
         want="${pair##*:}"
         while :; do
             got="$(awk '/^Cpus_allowed_list:/ { print $2 }' "/proc/${pid}/status" 2>/dev/null || true)"
-            if [ -z "$got" ] || [ "$got" = "$want" ] || [ "$SECONDS" -ge "$deadline" ]; then
+            if [ -z "$got" ] || [ "$got" = "$want" ]; then
                 break
             fi
             sleep 0.01
@@ -204,18 +238,26 @@ fi
 # Each worker runs: timeout <duration_s> sh -c 'while true; do :; done'
 # timeout(1) is used repo-wide (test_portable_timeout.sh); POSIX sh busy-spin.
 # With --pin-cpus, worker i is launched under `taskset -c <LIST[i mod n]>`;
-# taskset execs timeout, so $! is still the worker handle that _cleanup reaps,
-# and the spinner inherits the single-CPU mask from timeout.
+# with duration 0, under `setpriv --pdeathsig TERM` as well, followed by a check
+# that this fixture is still the worker's parent once the signal is armed (a
+# fixture killed before the arming sends no signal).  All of them exec, so $! is
+# still the worker handle (timeout) that _cleanup reaps, the spinner is still its
+# child and inherits the single-CPU mask.  GNU timeout treats 0 as no limit.
 # ---------------------------------------------------------------------------
+_LIFETIME_PREFIX=()
+if [ "$DURATION_S" -eq 0 ]; then
+    _LIFETIME_PREFIX=(setpriv --pdeathsig TERM
+        sh -c '[ "$PPID" = "$1" ] || exit 75; shift; exec "$@"' _ "$$")
+fi
 _i=0
 while [ "$_i" -lt "$NWORKERS" ]; do
-    # The subshell exits automatically when timeout terminates it.
+    _pin_prefix=()
     if [ -n "$PIN_CPUS" ]; then
         _cpu="$(( 10#${_PIN_LIST[$(( _i % ${#_PIN_LIST[@]} ))]} ))"
-        taskset -c "$_cpu" timeout "$DURATION_S" sh -c 'while true; do :; done' &
-    else
-        timeout "$DURATION_S" sh -c 'while true; do :; done' &
+        _pin_prefix=(taskset -c "$_cpu")
     fi
+    # The subshell exits automatically when timeout terminates it.
+    "${_LIFETIME_PREFIX[@]}" "${_pin_prefix[@]}" timeout "$DURATION_S" sh -c 'while true; do :; done' &
     _pid=$!
     _WORKER_PIDS="${_WORKER_PIDS}${_WORKER_PIDS:+ }${_pid}"
     if [ -n "$PIN_CPUS" ]; then
