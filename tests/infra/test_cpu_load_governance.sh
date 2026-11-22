@@ -1483,6 +1483,13 @@ else
             test "$_fixture_pin4a_rc" -eq 0
 
         _fixture_pin_inherited="$(_row4_worker_affinities "$_fixture_pin_ready_inherited" 2>/dev/null || true)"
+        # (4a-LIVE) -4b's rc 1 must come from the inherited range, never from a
+        # worker that vanished before it was read: a vanished worker reads
+        # "unavailable", which the predicate also rejects.
+        _fixture_pin_inherited_live="$(awk -v w="$_ROW4_CONFINE_W" '$0 != "unavailable" && $0 != "" { n++ } END { print ((n == w && NR == w) ? "yes" : "no") }' <<< "$_fixture_pin_inherited")"
+        assert "FIXTURE-PIN-4a-LIVE: every worker of the unpinned burn is live when observed (workers=${_fixture_pin_inherited//$'\n'/,}); -4b's rc 1 must come from the inherited range, never from a vanished worker" \
+            test "$_fixture_pin_inherited_live" = yes
+
         _fixture_pin4b_rc=0
         _row4_pin_coresident "$_fixture_pin_inherited" "$_fixture_pin_expected" || _fixture_pin4b_rc=$?
         assert "FIXTURE-PIN-4b: NON-VACUITY CRUX -- same fixture WITHOUT --pin-cpus (workers=${_fixture_pin_inherited//$'\n'/,}) => predicate rc EXACTLY 1 (got ${_fixture_pin4b_rc}); the single-CPU affinity of -3 comes from the option, not from inheritance" \
