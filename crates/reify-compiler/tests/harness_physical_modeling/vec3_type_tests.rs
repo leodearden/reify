@@ -2,8 +2,8 @@
 //! (crates/reify-compiler/stdlib/trajectory.ri, task #4575).
 //!
 //! These tests encode the TIGHTENED alias surface:
-//!   - joint axis params (Revolute/Prismatic/Cylindrical/Planar) →
-//!     Vector3<Dimensionless> (they denote DIRECTIONS — task 5848)
+//!   - joint axis params (Revolute/Prismatic/Cylindrical/Planar) → Direction
+//!     (they denote DIRECTIONS — task 5848, retyped to Direction by #9640)
 //!   - EndEffectorTrack.vibration_offset → List<List<Vector3<Length>>>
 //!   - std/trajectory, std/kinematic, std/fea/multi_case load with zero errors
 //!
@@ -106,9 +106,9 @@ fn vec3_length() -> Type {
     })
 }
 
-/// The expected Vector3<Dimensionless> type — the quantity slot every DIRECTION
-/// field takes (task 5848). `Vec3<Dimensionless>` and `Vector3<Dimensionless>`
-/// both resolve here, so these assertions are spelling-independent.
+/// The Vector3<Dimensionless> type, which a Direction axis param must NOT accept.
+/// `Vec3<Dimensionless>` and `Vector3<Dimensionless>` both resolve here, so the
+/// negative assertions are spelling-independent.
 fn vec3_dimensionless() -> Type {
     Type::vec3(Type::Scalar {
         dimension: DimensionVector::DIMENSIONLESS,
@@ -117,104 +117,55 @@ fn vec3_dimensionless() -> Type {
 
 // ─── std/kinematic: axis param cell-type assertions ───────────────────────────
 
-/// Revolute.axis is a DIRECTION, so its param cell type must be
-/// Vector3<Dimensionless> (task 5848).
-#[test]
-fn revolute_axis_is_vec3_dimensionless() {
+/// Asserts that `structure.member` is a `Direction` param: a Direction argument
+/// is compatible with it and a `Vector3<Dimensionless>` argument is not (PRD
+/// `docs/prds/v0_6/direction-typing.md` C3, task #9640).
+fn assert_direction_param(structure: &str, member: &str) {
     let module = load_kinematic();
-    let template = find_structure_in(module, "Revolute");
+    let template = find_structure_in(module, structure);
     let params = param_cells(template);
-    let axis = params
+    let param = params
         .iter()
-        .find(|p| p.id.member == "axis")
-        .expect("Revolute.axis param must exist");
+        .find(|p| p.id.member == member)
+        .unwrap_or_else(|| panic!("{structure}.{member} param must exist"));
     assert_eq!(
-        axis.cell_type,
-        vec3_dimensionless(),
-        "Revolute.axis should be Vector3<Dimensionless> (direction field, task 5848); \
-         got: {:?}",
-        axis.cell_type
+        param.cell_type,
+        Type::Direction,
+        "{structure}.{member} should be Direction; got: {:?}",
+        param.cell_type
     );
-    // Positive compatibility: a Vector3<Dimensionless> argument must be accepted.
     assert!(
-        type_compatible(&axis.cell_type, &vec3_dimensionless()),
-        "type_compatible(Revolute.axis, Vector3<Dimensionless>) should be true after the retype"
+        type_compatible(&param.cell_type, &Type::Direction),
+        "type_compatible({structure}.{member}, Direction) should be true"
+    );
+    assert!(
+        !type_compatible(&param.cell_type, &vec3_dimensionless()),
+        "type_compatible({structure}.{member}, Vector3<Dimensionless>) must be false: \
+         a vector is not a direction"
     );
 }
 
-/// Prismatic.axis is a DIRECTION, so its param cell type must be
-/// Vector3<Dimensionless> (task 5848).
 #[test]
-fn prismatic_axis_is_vec3_dimensionless() {
-    let module = load_kinematic();
-    let template = find_structure_in(module, "Prismatic");
-    let params = param_cells(template);
-    let axis = params
-        .iter()
-        .find(|p| p.id.member == "axis")
-        .expect("Prismatic.axis param must exist");
-    assert_eq!(
-        axis.cell_type,
-        vec3_dimensionless(),
-        "Prismatic.axis should be Vector3<Dimensionless> (direction field, task 5848); \
-         got: {:?}",
-        axis.cell_type
-    );
-    assert!(
-        type_compatible(&axis.cell_type, &vec3_dimensionless()),
-        "type_compatible(Prismatic.axis, Vector3<Dimensionless>) should be true after the retype"
-    );
+fn revolute_axis_is_direction() {
+    assert_direction_param("Revolute", "axis");
 }
 
-/// Cylindrical.axis is a DIRECTION, so its param cell type must be
-/// Vector3<Dimensionless> (task 5848).
 #[test]
-fn cylindrical_axis_is_vec3_dimensionless() {
-    let module = load_kinematic();
-    let template = find_structure_in(module, "Cylindrical");
-    let params = param_cells(template);
-    let axis = params
-        .iter()
-        .find(|p| p.id.member == "axis")
-        .expect("Cylindrical.axis param must exist");
-    assert_eq!(
-        axis.cell_type,
-        vec3_dimensionless(),
-        "Cylindrical.axis should be Vector3<Dimensionless> (direction field, task 5848); \
-         got: {:?}",
-        axis.cell_type
-    );
-    assert!(
-        type_compatible(&axis.cell_type, &vec3_dimensionless()),
-        "type_compatible(Cylindrical.axis, Vector3<Dimensionless>) should be true after the retype"
-    );
+fn prismatic_axis_is_direction() {
+    assert_direction_param("Prismatic", "axis");
+}
+
+#[test]
+fn cylindrical_axis_is_direction() {
+    assert_direction_param("Cylindrical", "axis");
 }
 
 /// Planar.axis_x and Planar.axis_y span the constraint plane — both are
-/// DIRECTIONS, so both must be Vector3<Dimensionless> (task 5848).
+/// DIRECTIONS.
 #[test]
-fn planar_axis_x_and_axis_y_are_vec3_dimensionless() {
-    let module = load_kinematic();
-    let template = find_structure_in(module, "Planar");
-    let params = param_cells(template);
-    for expected_name in ["axis_x", "axis_y"] {
-        let p = params
-            .iter()
-            .find(|p| p.id.member == expected_name)
-            .unwrap_or_else(|| panic!("Planar.{} param must exist", expected_name));
-        assert_eq!(
-            p.cell_type,
-            vec3_dimensionless(),
-            "Planar.{} should be Vector3<Dimensionless> (direction field, task 5848); \
-             got: {:?}",
-            expected_name,
-            p.cell_type
-        );
-        assert!(
-            type_compatible(&p.cell_type, &vec3_dimensionless()),
-            "type_compatible(Planar.{}, Vector3<Dimensionless>) should be true after the retype",
-            expected_name
-        );
+fn planar_axis_x_and_axis_y_are_direction() {
+    for member in ["axis_x", "axis_y"] {
+        assert_direction_param("Planar", member);
     }
 }
 
