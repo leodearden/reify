@@ -220,8 +220,8 @@ fn preview_parameter_changes_width() {
 /// free functions, not method chaining).
 const HAPPY_MECHANISM_SOURCE: &str = r#"
 structure Kinematic {
-    let j_a = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
-    let j_b = revolute(vec3(0, 0, 1), 0rad .. 3.14rad)
+    let j_a = prismatic(dir(1, 0, 0), 0mm .. 1000mm)
+    let j_b = revolute(dir(0, 0, 1), 0rad .. 3.14rad)
     let m0  = mechanism()
     let m1  = body(m0, "solid_a", j_a)
     let m2  = body(m1, "solid_b", j_b, j_a)
@@ -235,7 +235,7 @@ structure Kinematic {
 /// j_f: fixed (no axis, no range)
 const COUPLING_FIXED_SOURCE: &str = r#"
 structure Kinematic {
-    let j_a = prismatic(vec3(1, 0, 0), 0mm .. 500mm)
+    let j_a = prismatic(dir(1, 0, 0), 0mm .. 500mm)
     let j_c = couple(j_a, -1.0)
     let j_f = fixed()
     let m0  = mechanism()
@@ -259,8 +259,8 @@ structure Kinematic {
 /// `error` key, and `get_mechanism_descriptors` must filter it out.
 const DUPLICATE_SOLID_SOURCE: &str = r#"
 structure Kinematic {
-    let j_a = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
-    let j_b = prismatic(vec3(0, 1, 0), 0mm .. 1000mm)
+    let j_a = prismatic(dir(1, 0, 0), 0mm .. 1000mm)
+    let j_b = prismatic(dir(0, 1, 0), 0mm .. 1000mm)
     let m0  = mechanism()
     let m1  = body(m0, "solid_a", j_a)
     let m2  = body(m1, "solid_a", j_b)
@@ -611,7 +611,7 @@ fn get_mechanism_descriptors_filters_intermediate_body_chain_cells() {
 const SNAPSHOT_PARAM_BIND_SOURCE: &str = r#"
 structure Kinematic {
     param y_pos: Length = 100mm
-    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let y_axis = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0     = mechanism()
     let m1     = body(m0, "solid_a", y_axis)
     let snap   = snapshot(m1, [bind(y_axis, y_pos)])
@@ -623,7 +623,7 @@ structure Kinematic {
 /// driving_param_cell_id must remain None.
 const SNAPSHOT_LITERAL_BIND_SOURCE: &str = r#"
 structure Kinematic {
-    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let y_axis = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0     = mechanism()
     let m1     = body(m0, "solid_a", y_axis)
     let snap   = snapshot(m1, [bind(y_axis, 50mm)])
@@ -766,7 +766,7 @@ fn get_mechanism_descriptors_current_value_si_updates_after_preview_parameter() 
 /// initial_value_si should be Some(0.5) (no unit conversion).
 const SNAPSHOT_NUMBER_LITERAL_BIND_SOURCE: &str = r#"
 structure Kinematic {
-    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let y_axis = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0     = mechanism()
     let m1     = body(m0, "solid_a", y_axis)
     let snap   = snapshot(m1, [bind(y_axis, 0.5)])
@@ -937,7 +937,7 @@ fn get_mechanism_descriptors_literal_bind_with_dimensionless_number_literal() {
 /// joint keeps the kind-based `LiteralBound` default with no literal value.
 const UNBOUND_PRISMATIC_SOURCE: &str = r#"
 structure Kinematic {
-    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let y_axis = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0     = mechanism()
     let m1     = body(m0, "solid_a", y_axis)
 }
@@ -1001,7 +1001,7 @@ const DOUBLE_BIND_SOURCE: &str = r#"
 structure Kinematic {
     param p1: Length = 100mm
     param p2: Length = 200mm
-    let j  = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let j  = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0 = mechanism()
     let m1 = body(m0, "solid_a", j)
     let snap1 = snapshot(m1, [bind(j, p1)])
@@ -1040,7 +1040,7 @@ fn get_mechanism_descriptors_double_bind_first_wins() {
 const LET_BIND_SOURCE: &str = r#"
 structure Kinematic {
     let q  = 100mm
-    let j  = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let j  = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0 = mechanism()
     let m1 = body(m0, "solid_a", j)
     let snap = snapshot(m1, [bind(j, q)])
@@ -1111,8 +1111,8 @@ const MULTI_SNAPSHOT_SOURCE: &str = r#"
 structure Kinematic {
     param p1: Length = 100mm
     param p2: Length = 200mm
-    let j1 = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
-    let j2 = prismatic(vec3(0, 1, 0), 0mm .. 600mm)
+    let j1 = prismatic(dir(1, 0, 0), 0mm .. 800mm)
+    let j2 = prismatic(dir(0, 1, 0), 0mm .. 600mm)
     let m0  = mechanism()
     let m1  = body(m0, "solid_a", j1)
     let m2  = body(m1, "solid_b", j2, j1)
@@ -1167,7 +1167,7 @@ fn get_mechanism_descriptors_multiple_snapshot_lets_resolve_both_params() {
 /// telemetry.
 const EMPTY_BIND_SNAPSHOT_SOURCE: &str = r#"
 structure Kinematic {
-    let j1 = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let j1 = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0 = mechanism()
     let m1 = body(m0, "solid_a", j1)
     let snap = snapshot(m1, [])
@@ -1224,7 +1224,7 @@ fn collect_snapshot_bind_pairs_stays_silent_for_empty_bind_list() {
 /// 1-arg call and panic on out-of-bounds indexing with no test catching it.
 const ONE_ARG_SNAPSHOT_SOURCE: &str = r#"
 structure Kinematic {
-    let j1 = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let j1 = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0 = mechanism()
     let m1 = body(m0, "solid_a", j1)
     let snap = snapshot(m1)
@@ -1287,7 +1287,7 @@ fn collect_snapshot_bind_pairs_stays_silent_for_one_arg_call() {
 /// directly via `reify_syntax` so the frontend check is bypassed.
 const NON_LIST_SNAPSHOT_ARG_SOURCE: &str = r#"
 structure Kinematic {
-    let j1 = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let j1 = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0 = mechanism()
     let m1 = body(m0, "solid_a", j1)
     let snap = snapshot(m1, j1)
@@ -1338,7 +1338,7 @@ fn collect_snapshot_bind_pairs_emits_debug_when_args1_not_listliteral() {
 /// `bind(Ident, Ident|Literal)` pair survives the filter — case (c).  Must emit DEBUG.
 const NON_BIND_LIST_SNAPSHOT_SOURCE: &str = r#"
 structure Kinematic {
-    let j1 = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let j1 = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0 = mechanism()
     let m1 = body(m0, "solid_a", j1)
     let snap = snapshot(m1, [bind(j1, 0mm + 1mm)])
@@ -11031,7 +11031,7 @@ fn extract_joint_descriptor_assigns_kind_based_binding_defaults_revolute() {
 const RESERVED_PARAM_NAME_SOURCE: &str = r#"
 structure Kinematic {
     param __joint_y_axis_v: Length = 50mm
-    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let y_axis = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0     = mechanism()
     let m1     = body(m0, "solid_a", y_axis)
 }
@@ -11114,7 +11114,7 @@ fn get_mechanism_descriptors_does_not_warn_for_normally_named_params() {
 /// `literal_bind_resolves_the_builtin_unit_symbols_the_old_table_dropped`.
 const SNAPSHOT_UNSUPPORTED_UNIT_BIND_SOURCE: &str = r#"
 structure Kinematic {
-    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let y_axis = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0     = mechanism()
     let m1     = body(m0, "solid_a", y_axis)
     let snap   = snapshot(m1, [bind(y_axis, 50inch)])
@@ -11188,7 +11188,7 @@ fn get_mechanism_descriptors_literal_bind_with_unsupported_unit_yields_none_and_
 /// dropped.
 const SNAPSHOT_INCH_BIND_SOURCE: &str = r#"
 structure Kinematic {
-    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let y_axis = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0     = mechanism()
     let m1     = body(m0, "solid_a", y_axis)
     let snap   = snapshot(m1, [bind(y_axis, 3in)])
@@ -11199,7 +11199,7 @@ structure Kinematic {
 /// could not resolve at all.
 const SNAPSHOT_KILOGRAM_BIND_SOURCE: &str = r#"
 structure Kinematic {
-    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let y_axis = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0     = mechanism()
     let m1     = body(m0, "solid_a", y_axis)
     let snap   = snapshot(m1, [bind(y_axis, 2kg)])
@@ -11210,7 +11210,7 @@ structure Kinematic {
 /// only through `BUILTIN_UNITS`; no curated display ladder carries it.
 const SNAPSHOT_SECOND_BIND_SOURCE: &str = r#"
 structure Kinematic {
-    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let y_axis = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0     = mechanism()
     let m1     = body(m0, "solid_a", y_axis)
     let snap   = snapshot(m1, [bind(y_axis, 2s)])
@@ -11220,7 +11220,7 @@ structure Kinematic {
 /// `bind(y_axis, 5kg/m^3)` — a COMPOUND unit expression (`UnitExpr::Div`).
 const SNAPSHOT_COMPOUND_DIV_BIND_SOURCE: &str = r#"
 structure Kinematic {
-    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let y_axis = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0     = mechanism()
     let m1     = body(m0, "solid_a", y_axis)
     let snap   = snapshot(m1, [bind(y_axis, 5kg/m^3)])
@@ -11230,7 +11230,7 @@ structure Kinematic {
 /// `bind(y_axis, 5m^2)` — a COMPOUND unit expression (`UnitExpr::Pow`).
 const SNAPSHOT_COMPOUND_POW_BIND_SOURCE: &str = r#"
 structure Kinematic {
-    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let y_axis = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0     = mechanism()
     let m1     = body(m0, "solid_a", y_axis)
     let snap   = snapshot(m1, [bind(y_axis, 5m^2)])
@@ -11306,7 +11306,7 @@ fn literal_bind_still_defers_compound_unit_expressions_to_task_3803() {
 /// `k`/`M`/`G` prefixes), but NOT a `BUILTIN_UNITS` symbol.
 const SNAPSHOT_LADDER_ONLY_LABEL_BIND_SOURCE: &str = r#"
 structure Kinematic {
-    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let y_axis = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0     = mechanism()
     let m1     = body(m0, "solid_a", y_axis)
     let snap   = snapshot(m1, [bind(y_axis, 5MPa)])
@@ -11395,7 +11395,7 @@ fn literal_bind_universe_is_dsl_symbols_not_gui_display_labels() {
 const SNAPSHOT_LITERAL_THEN_PARAM_SOURCE: &str = r#"
 structure Kinematic {
     param y_pos: Length = 100mm
-    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let y_axis = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0     = mechanism()
     let m1     = body(m0, "solid_a", y_axis)
     let snap1  = snapshot(m1, [bind(y_axis, 50mm)])

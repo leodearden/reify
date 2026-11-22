@@ -641,7 +641,7 @@ fn module_structure_all_public_types() {
 const MECHANISM_FIXTURE_SOURCE: &str = r#"
 structure Kinematic {
     param y_pos: Length = 100mm
-    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let y_axis = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0     = mechanism()
     let m1     = body(m0, "solid_a", y_axis)
     let snap   = snapshot(m1, [bind(y_axis, y_pos)])

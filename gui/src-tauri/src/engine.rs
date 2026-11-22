@@ -6392,22 +6392,14 @@ fn extract_joint_descriptor(joint_val: &Value, joint_index: usize) -> Option<Joi
     })
 }
 
-/// Extract a 3-component axis from a joint Map's `"axis"` field.
-///
-/// The axis is stored as `Value::Vector([Real(x), Real(y), Real(z)])` (or
-/// Scalar components — any variant accepted by the joints stdlib validator).
-/// Returns `None` if the field is missing or malformed.
+/// Extract the unit components of a joint Map's `"axis"` field, which the
+/// joints stdlib stores as the joint's unit Direction.
+/// Returns `None` if the field is missing or not a Direction.
 fn extract_axis(joint_map: &std::collections::BTreeMap<Value, Value>) -> Option<[f64; 3]> {
     let axis_val = joint_map.get(&Value::String("axis".to_string()))?;
-    match axis_val {
-        Value::Vector(items) if items.len() == 3 => {
-            let x = scalar_to_f64(&items[0])?;
-            let y = scalar_to_f64(&items[1])?;
-            let z = scalar_to_f64(&items[2])?;
-            Some([x, y, z])
-        }
-        _ => None,
-    }
+    reify_ir::decode_direction(axis_val)
+        .ok()
+        .map(|unit| unit.components())
 }
 
 /// Extract the lower and upper SI bounds from a joint Map's `"range"` field.
