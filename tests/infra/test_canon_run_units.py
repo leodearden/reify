@@ -679,6 +679,34 @@ class CachePolicy(CanonInvocationCase):
                         self.assertIn(needle, message)
 
 
+class EnsureStamp(unittest.TestCase):
+    """C1's stamp as enter_canon writes it: created once, never over another CANON's."""
+
+    CANON = "/opt/reify-canon/ws"
+
+    def setUp(self):
+        self.build = Path(scratch(self), "target")
+
+    def test_fresh_directory_gets_a_stamp_and_nothing_else(self):
+        canon_run.ensure_stamp(self.build, self.CANON)
+        stamp_path = self.build / ".reify-build-root"
+        self.assertEqual(stamp_path.read_text(), self.CANON + "\n")
+        self.assertEqual(stamp_path.stat().st_mode & 0o777, 0o644)
+        self.assertEqual(sorted(entry.name for entry in self.build.iterdir()), [".reify-build-root"])
+
+    def test_existing_stamp_for_the_same_canon_is_kept(self):
+        stamp(self.build, self.CANON)
+        canon_run.ensure_stamp(self.build, self.CANON)
+        self.assertEqual(canon_run.read_build_dir_state(self.build).stamp, self.CANON)
+
+    def test_existing_stamp_for_another_path_refuses(self):
+        stamp(self.build, "/somewhere/else")
+        with self.assertRaises(canon_run.Refusal) as caught:
+            canon_run.ensure_stamp(self.build, self.CANON)
+        self.assertIn("/somewhere/else", str(caught.exception))
+        self.assertEqual(canon_run.read_build_dir_state(self.build).stamp, "/somewhere/else")
+
+
 class ActiveRecord(unittest.TestCase):
     """A nested invocation at CANON takes the real root from REIFY_CANON_ACTIVE."""
 

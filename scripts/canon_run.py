@@ -18,6 +18,7 @@ import re
 import stat
 import subprocess
 import sys
+import tempfile
 import tomllib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -109,6 +110,7 @@ class Reachability:
 class Decision:
     mode: Mode
     reason: str
+    route: Route = Route.NONE
 
 
 @dataclass(frozen=True)
@@ -352,7 +354,7 @@ def decide_mode(
             return Decision(
                 Mode.REFUSED, f"stamped for CANON {canon}, which is unreachable: {reach.reason}"
             )
-        return Decision(Mode.CANON, f"stamped for CANON {canon}; {reach.reason}")
+        return Decision(Mode.CANON, f"stamped for CANON {canon}; {reach.reason}", reach.route)
     if state.built_in:
         return Decision(Mode.REAL_PATH, "unstamped and already built at its real path")
     if not host_enabled():
@@ -360,7 +362,7 @@ def decide_mode(
     reach = reachability()
     if reach.route is Route.NONE:
         return Decision(Mode.REAL_PATH, f"fresh, and CANON is unreachable: {reach.reason}")
-    return Decision(Mode.CANON, f"fresh on an enabled host; {reach.reason}")
+    return Decision(Mode.CANON, f"fresh on an enabled host; {reach.reason}", reach.route)
 
 
 def build_dir_decision(
@@ -596,11 +598,61 @@ def exec_untouched(command: list[str], *, cargo: bool, environ: Mapping[str, str
     return execute(real_cargo, ["cargo", *command], environ, search=False)
 
 
-def enter_canon(build_dir: Path) -> NoReturn:
-    raise Refusal(f"build directory {build_dir} builds at CANON, which cannot be entered yet")
+def ensure_stamp(build_dir: Path, canon: str) -> None:
+    """C1: mark build_dir as built at canon; a stamp already there must name canon."""
+    stamp_path = build_dir / STAMP_NAME
+    try:
+        os.makedirs(build_dir, exist_ok=True)
+        descriptor, pending = tempfile.mkstemp(dir=build_dir, prefix=f"{STAMP_NAME}.")
+    except OSError as exc:
+        raise Refusal(f"cannot stamp {stamp_path}: {exc}") from exc
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as pending_file:
+            pending_file.write(canon + "\n")
+        os.chmod(pending, 0o644)
+        os.link(pending, stamp_path)
+    except FileExistsError:
+        existing = read_build_dir_state(build_dir).stamp
+        if existing != canon:
+            raise Refusal(f"{stamp_path} holds {existing!r}, not CANON {canon}") from None
+    except OSError as exc:
+        raise Refusal(f"cannot stamp {stamp_path}: {exc}") from exc
+    finally:
+        os.unlink(pending)
 
 
-def run(command: list[str], *, cargo: bool, environ: Mapping[str, str]) -> int:
+def enter_canon(
+    command: list[str],
+    *,
+    cargo: bool,
+    environ: Mapping[str, str],
+    tree: Tree,
+    canon: str,
+    cwd: str,
+    build_dir: Path,
+    host: HostConfig,
+    route: Route,
+) -> NoReturn:
+    """Run the command at CANON: directly when CANON is already the tree, else under bwrap."""
+    invocation = canon_invocation(command, environ, tree, canon, cwd, host, cargo=cargo)
+    ensure_stamp(build_dir, canon)
+    if route is Route.NAMESPACE:
+        file, search = BWRAP, False
+        argv = [
+            "bwrap", "--dev-bind", "/", "/", "--bind", str(tree.real_root), canon,
+            "--chdir", invocation.cwd, "--die-with-parent", "--", *invocation.argv,
+        ]
+    else:
+        try:
+            os.chdir(invocation.cwd)
+        except OSError as exc:
+            raise Refusal(f"cannot enter {invocation.cwd}: {exc}") from exc
+        file, search = invocation.argv[0], not cargo
+        argv = ["cargo", *invocation.argv[1:]] if cargo else list(invocation.argv)
+    execute(file, argv, invocation.env, search=search)
+
+
+def run(command: list[str], *, cargo: bool, environ: Mapping[str, str]) -> NoReturn:
     """`exec` (command is the full command) or `cargo` (command is cargo's arguments)."""
     try:
         cwd = os.getcwd()
@@ -621,7 +673,17 @@ def run(command: list[str], *, cargo: bool, environ: Mapping[str, str]) -> int:
             f"build directory {build_dir}: {decision.reason}; run where a mount namespace"
             f" can be entered, or delete {build_dir} to rebuild it at the real path"
         )
-    return enter_canon(build_dir)
+    enter_canon(
+        command,
+        cargo=cargo,
+        environ=environ,
+        tree=tree,
+        canon=canon,
+        cwd=cwd,
+        build_dir=build_dir,
+        host=host(),
+        route=decision.route,
+    )
 
 
 def main(argv: list[str]) -> int:
