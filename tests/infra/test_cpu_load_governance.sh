@@ -1461,7 +1461,8 @@ assert "ROW4-PIN-VACUITY-6: task {5,5} vs merge {5,5} => rc 0 (got ${_row4_pin_v
 # FIXTURE-PIN: the cpu_load_fixture.sh `--pin-cpus` / `--ready-file` contract
 # and the `_row4_worker_affinities` reader that observes it.  Needs taskset and
 # a confined pin list (the same preconditions ROW4 itself has), not cgroup
-# governance: the fixture is driven directly, outside any governed scope.
+# governance: the fixture is driven directly, outside any governed scope.  The
+# cases that launch a burn with no clock (duration 0) also need setpriv(1).
 # ----------------------------------------------------------------------------
 echo ""
 echo "--- FIXTURE-PIN: --pin-cpus / --ready-file contract ---"
@@ -1470,8 +1471,6 @@ if ! command -v taskset >/dev/null 2>&1; then
     echo "  SKIP FIXTURE-PIN: taskset unavailable — cannot observe per-worker pinning"
 elif [ -z "${_ROW4_CONFINE_CPUS:-}" ]; then
     echo "  SKIP FIXTURE-PIN: own Cpus_allowed_list unreadable — no confined pin list to pass"
-elif ! command -v setpriv >/dev/null 2>&1; then
-    echo "  SKIP FIXTURE-PIN: setpriv unavailable — cannot launch a burn with no clock (cpu_load_fixture.sh duration 0)"
 else
     # The placement the fixture must produce: the pin list repeated
     # round-robin to one entry per worker, the same way ROW4 hands it to both
@@ -1492,68 +1491,76 @@ else
     assert "FIXTURE-PIN-READER-1: ready file listing a live pid and a reaped one => its Cpus_allowed_list, then 'unavailable' (got '${_fixture_pin_reader_got//$'\n'/,}')" \
         test "$_fixture_pin_reader_got" = "$_fixture_pin_reader_expected"
 
-    # ── (1)-(3) pinned launch: reports ready, lists one pid per worker, and
-    # every worker is pinned to its round-robin CPU.  Duration 0: the burn has no
-    # clock and ends only on the explicit TERM below, so what is observed cannot
-    # outlast the observation.
-    _fixture_pin_ready="$WORK/fixture-pin-ready"
-    bash "$FIXTURE" "$_ROW4_CONFINE_W" 0 --pin-cpus "$_ROW4_CONFINE_CPUS" \
-        --ready-file "$_fixture_pin_ready" >/dev/null 2>&1 &
-    _fixture_pin_pid=$!
-
-    _fixture_pin1_rc=0
-    _row4_await_ready 30 "$_fixture_pin_ready" || _fixture_pin1_rc=$?
-    assert "FIXTURE-PIN-1: --pin-cpus ${_ROW4_CONFINE_CPUS} --ready-file => the ready file appears (rc ${_fixture_pin1_rc}; the 30 s deadline is an anti-hang guard only)" \
-        test "$_fixture_pin1_rc" -eq 0
-
-    _fixture_pin_lines="$(awk '/^[0-9]+$/ { n++ } END { print n + 0, NR }' "$_fixture_pin_ready" 2>/dev/null || true)"
-    assert "FIXTURE-PIN-2: ready file is exactly ${_ROW4_CONFINE_W} pid lines and nothing else (got 'numeric-lines total-lines' = '${_fixture_pin_lines}')" \
-        test "$_fixture_pin_lines" = "${_ROW4_CONFINE_W} ${_ROW4_CONFINE_W}"
-
-    _fixture_pin_actual="$(_row4_worker_affinities "$_fixture_pin_ready" 2>/dev/null || true)"
-    assert "FIXTURE-PIN-3: every worker pinned to its round-robin CPU (workers=${_fixture_pin_actual//$'\n'/,}, expected=${_fixture_pin_expected//$'\n'/,})" \
-        _row4_pin_coresident "$_fixture_pin_actual" "$_fixture_pin_expected"
-
-    kill -TERM "$_fixture_pin_pid" 2>/dev/null || true
-    wait "$_fixture_pin_pid" 2>/dev/null || true
-
-    # ── (4) NON-VACUITY CRUX: today's ROW4 shape — the SAME fixture, no
-    # --pin-cpus, the whole role set-pinned from outside with taskset.  Its
-    # workers inherit the multi-CPU mask, so the predicate must reject them:
-    # the single-CPU affinity of (3) comes from the OPTION, not from inheriting
-    # the launcher's mask.  Needs a pin list of >=2 CPUs: with one CPU the
-    # inherited mask is already a single CPU and the two shapes coincide.
-    _fixture_pin_ncpus="$(printf '%s\n' "$_ROW4_CONFINE_CPUS" | tr ',' '\n' | awk 'END { print NR }')"
-    if [ "$_fixture_pin_ncpus" -lt 2 ]; then
-        echo "  SKIP FIXTURE-PIN-4: pin list '${_ROW4_CONFINE_CPUS}' is a single CPU — set-pinning and per-worker pinning coincide"
+    # ── (1)-(4) launch a duration-0 burn, which only setpriv(1) can anchor
+    # (cpu_load_fixture.sh refuses it without): the malformed-list and
+    # taskset-refusal contracts of (5) and (6) launch no such burn and stay on
+    # without it.
+    if ! command -v setpriv >/dev/null 2>&1; then
+        echo "  SKIP FIXTURE-PIN-1..4: setpriv unavailable — cannot launch a burn with no clock (cpu_load_fixture.sh duration 0)"
     else
-        _fixture_pin_ready_inherited="$WORK/fixture-pin-ready-inherited"
-        taskset -c "$_ROW4_CONFINE_CPUS" bash "$FIXTURE" "$_ROW4_CONFINE_W" 0 \
-            --ready-file "$_fixture_pin_ready_inherited" >/dev/null 2>&1 &
-        _fixture_pin_inherited_pid=$!
+        # ── (1)-(3) pinned launch: reports ready, lists one pid per worker, and
+        # every worker is pinned to its round-robin CPU.  Duration 0: the burn has no
+        # clock and ends only on the explicit TERM below, so what is observed cannot
+        # outlast the observation.
+        _fixture_pin_ready="$WORK/fixture-pin-ready"
+        bash "$FIXTURE" "$_ROW4_CONFINE_W" 0 --pin-cpus "$_ROW4_CONFINE_CPUS" \
+            --ready-file "$_fixture_pin_ready" >/dev/null 2>&1 &
+        _fixture_pin_pid=$!
 
-        # (4a) The fixture reported, so (4b)'s rc cannot be the vacuous rc 1 of
-        # an empty observation.
-        _fixture_pin4a_rc=0
-        _row4_await_ready 30 "$_fixture_pin_ready_inherited" || _fixture_pin4a_rc=$?
-        assert "FIXTURE-PIN-4a: unpinned fixture under 'taskset -c ${_ROW4_CONFINE_CPUS}' still reports ready (rc ${_fixture_pin4a_rc}); precondition of -4b" \
-            test "$_fixture_pin4a_rc" -eq 0
+        _fixture_pin1_rc=0
+        _row4_await_ready 30 "$_fixture_pin_ready" || _fixture_pin1_rc=$?
+        assert "FIXTURE-PIN-1: --pin-cpus ${_ROW4_CONFINE_CPUS} --ready-file => the ready file appears (rc ${_fixture_pin1_rc}; the 30 s deadline is an anti-hang guard only)" \
+            test "$_fixture_pin1_rc" -eq 0
 
-        _fixture_pin_inherited="$(_row4_worker_affinities "$_fixture_pin_ready_inherited" 2>/dev/null || true)"
-        # (4a-LIVE) -4b's rc 1 must come from the inherited range, never from a
-        # worker that vanished before it was read: a vanished worker reads
-        # "unavailable", which the predicate also rejects.
-        _fixture_pin_inherited_live="$(awk -v w="$_ROW4_CONFINE_W" '$0 != "unavailable" && $0 != "" { n++ } END { print ((n == w && NR == w) ? "yes" : "no") }' <<< "$_fixture_pin_inherited")"
-        assert "FIXTURE-PIN-4a-LIVE: every worker of the unpinned burn is live when observed (workers=${_fixture_pin_inherited//$'\n'/,}); -4b's rc 1 must come from the inherited range, never from a vanished worker" \
-            test "$_fixture_pin_inherited_live" = yes
+        _fixture_pin_lines="$(awk '/^[0-9]+$/ { n++ } END { print n + 0, NR }' "$_fixture_pin_ready" 2>/dev/null || true)"
+        assert "FIXTURE-PIN-2: ready file is exactly ${_ROW4_CONFINE_W} pid lines and nothing else (got 'numeric-lines total-lines' = '${_fixture_pin_lines}')" \
+            test "$_fixture_pin_lines" = "${_ROW4_CONFINE_W} ${_ROW4_CONFINE_W}"
 
-        _fixture_pin4b_rc=0
-        _row4_pin_coresident "$_fixture_pin_inherited" "$_fixture_pin_expected" || _fixture_pin4b_rc=$?
-        assert "FIXTURE-PIN-4b: NON-VACUITY CRUX -- same fixture WITHOUT --pin-cpus (workers=${_fixture_pin_inherited//$'\n'/,}) => predicate rc EXACTLY 1 (got ${_fixture_pin4b_rc}); the single-CPU affinity of -3 comes from the option, not from inheritance" \
-            test "$_fixture_pin4b_rc" -eq 1
+        _fixture_pin_actual="$(_row4_worker_affinities "$_fixture_pin_ready" 2>/dev/null || true)"
+        assert "FIXTURE-PIN-3: every worker pinned to its round-robin CPU (workers=${_fixture_pin_actual//$'\n'/,}, expected=${_fixture_pin_expected//$'\n'/,})" \
+            _row4_pin_coresident "$_fixture_pin_actual" "$_fixture_pin_expected"
 
-        kill -TERM "$_fixture_pin_inherited_pid" 2>/dev/null || true
-        wait "$_fixture_pin_inherited_pid" 2>/dev/null || true
+        kill -TERM "$_fixture_pin_pid" 2>/dev/null || true
+        wait "$_fixture_pin_pid" 2>/dev/null || true
+
+        # ── (4) NON-VACUITY CRUX: today's ROW4 shape — the SAME fixture, no
+        # --pin-cpus, the whole role set-pinned from outside with taskset.  Its
+        # workers inherit the multi-CPU mask, so the predicate must reject them:
+        # the single-CPU affinity of (3) comes from the OPTION, not from inheriting
+        # the launcher's mask.  Needs a pin list of >=2 CPUs: with one CPU the
+        # inherited mask is already a single CPU and the two shapes coincide.
+        _fixture_pin_ncpus="$(printf '%s\n' "$_ROW4_CONFINE_CPUS" | tr ',' '\n' | awk 'END { print NR }')"
+        if [ "$_fixture_pin_ncpus" -lt 2 ]; then
+            echo "  SKIP FIXTURE-PIN-4: pin list '${_ROW4_CONFINE_CPUS}' is a single CPU — set-pinning and per-worker pinning coincide"
+        else
+            _fixture_pin_ready_inherited="$WORK/fixture-pin-ready-inherited"
+            taskset -c "$_ROW4_CONFINE_CPUS" bash "$FIXTURE" "$_ROW4_CONFINE_W" 0 \
+                --ready-file "$_fixture_pin_ready_inherited" >/dev/null 2>&1 &
+            _fixture_pin_inherited_pid=$!
+
+            # (4a) The fixture reported, so (4b)'s rc cannot be the vacuous rc 1 of
+            # an empty observation.
+            _fixture_pin4a_rc=0
+            _row4_await_ready 30 "$_fixture_pin_ready_inherited" || _fixture_pin4a_rc=$?
+            assert "FIXTURE-PIN-4a: unpinned fixture under 'taskset -c ${_ROW4_CONFINE_CPUS}' still reports ready (rc ${_fixture_pin4a_rc}); precondition of -4b" \
+                test "$_fixture_pin4a_rc" -eq 0
+
+            _fixture_pin_inherited="$(_row4_worker_affinities "$_fixture_pin_ready_inherited" 2>/dev/null || true)"
+            # (4a-LIVE) -4b's rc 1 must come from the inherited range, never from a
+            # worker that vanished before it was read: a vanished worker reads
+            # "unavailable", which the predicate also rejects.
+            _fixture_pin_inherited_live="$(awk -v w="$_ROW4_CONFINE_W" '$0 != "unavailable" && $0 != "" { n++ } END { print ((n == w && NR == w) ? "yes" : "no") }' <<< "$_fixture_pin_inherited")"
+            assert "FIXTURE-PIN-4a-LIVE: every worker of the unpinned burn is live when observed (workers=${_fixture_pin_inherited//$'\n'/,}); -4b's rc 1 must come from the inherited range, never from a vanished worker" \
+                test "$_fixture_pin_inherited_live" = yes
+
+            _fixture_pin4b_rc=0
+            _row4_pin_coresident "$_fixture_pin_inherited" "$_fixture_pin_expected" || _fixture_pin4b_rc=$?
+            assert "FIXTURE-PIN-4b: NON-VACUITY CRUX -- same fixture WITHOUT --pin-cpus (workers=${_fixture_pin_inherited//$'\n'/,}) => predicate rc EXACTLY 1 (got ${_fixture_pin4b_rc}); the single-CPU affinity of -3 comes from the option, not from inheritance" \
+                test "$_fixture_pin4b_rc" -eq 1
+
+            kill -TERM "$_fixture_pin_inherited_pid" 2>/dev/null || true
+            wait "$_fixture_pin_inherited_pid" 2>/dev/null || true
+        fi
     fi
 
     # ── (5) Malformed lists are rejected with the usage exit code before any
@@ -1803,10 +1810,16 @@ EOF_SETPRIV_SHIM
                  wait' \
         _ "$FIXTURE" "$_fixture_hold_ready4" "$_fixture_hold_fixture_pid4" &
     _fixture_hold_launcher_pid4=$!
-    wait "$_fixture_hold_launcher_pid4" 2>/dev/null || true
 
+    # The launcher waits for a burn that has no clock, so it ends only if the shim
+    # fires.  Bound the wait on the shim's own report (technique T), then end the
+    # launcher explicitly before reaping it: a shim that never fired must be a
+    # named FAIL below, not a hang.  Killing a launcher the shim already killed is
+    # harmless.
     _fixture_hold4a_rc=0
     _row4_await_ready 30 "$_fixture_hold_victim4" || _fixture_hold4a_rc=$?
+    kill -KILL "$_fixture_hold_launcher_pid4" 2>/dev/null || true
+    wait "$_fixture_hold_launcher_pid4" 2>/dev/null || true
     assert "FIXTURE-HOLD-4a: the shim killed the launcher before the fixture's anchor was armed (rc ${_fixture_hold4a_rc}); precondition of -4b" \
         test "$_fixture_hold4a_rc" -eq 0
     _fixture_hold4b_rc=0
@@ -1833,10 +1846,13 @@ EOF_SETPRIV_SHIM
         bash "$FIXTURE" 1 0 --ready-file "$_fixture_hold_ready5" >/dev/null 2>&1 &
     _fixture_hold_pid5=$!
     printf '%s\n' "$_fixture_hold_pid5" > "$_fixture_hold_fixture_pid5"
-    wait "$_fixture_hold_pid5" 2>/dev/null || true
 
+    # As in group 4: the fixture has no clock, so bound the wait on the shim's own
+    # report and end the fixture explicitly before reaping it.
     _fixture_hold5a_rc=0
     _row4_await_ready 30 "$_fixture_hold_victim5" || _fixture_hold5a_rc=$?
+    kill -KILL "$_fixture_hold_pid5" 2>/dev/null || true
+    wait "$_fixture_hold_pid5" 2>/dev/null || true
     assert "FIXTURE-HOLD-5a: the shim killed the fixture before its worker's anchor was armed (rc ${_fixture_hold5a_rc}); precondition of -5b" \
         test "$_fixture_hold5a_rc" -eq 0
     _fixture_hold5b_rc=0
@@ -1844,6 +1860,7 @@ EOF_SETPRIV_SHIM
     assert "FIXTURE-HOLD-5b: a worker whose fixture died before its anchor was armed has vanished (rc ${_fixture_hold5b_rc}; the 30 s deadline is an anti-hang guard only)" \
         test "$_fixture_hold5b_rc" -eq 0
     _fixture_hold_reap_tree "$_fixture_hold_victim5"
+    _fixture_hold_reap_tree "$_fixture_hold_ready5"
 fi
 
 # ----------------------------------------------------------------------------
