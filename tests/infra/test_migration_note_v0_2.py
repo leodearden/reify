@@ -24,18 +24,28 @@ newline), the on-disk migration_v0_2_*.ri set equals the set the note names,
 and the note carries exactly one `Closes:` line whose issue set is the one
 scripts/release-alpha.sh must close.
 
-With a reify binary vouched for by scripts/reify-bin-freshness.sh (REIFY_BIN
-is honoured there), each before fixture must fail `reify check` printing
-exactly the quoted error lines, each as many times as it is quoted (order is
-free), and each after fixture must pass printing none. With no vouched binary those tests skip and print why.
+While tag `v0.2-alpha` (the note's file stem) does not exist and
+scripts/reify-bin-freshness.sh vouches for a reify binary (REIFY_BIN is
+honoured there), each before fixture must fail `reify check` printing exactly
+the quoted error lines, each as many times as it is quoted (order is free),
+and each after fixture must pass printing none; with no vouched binary those
+tests skip and print why. Once the tag exists they skip naming the tag's
+commit, and the structure checks above still hold. That lifecycle, and what a
+later release's change does when it reds this member, is
+docs/prds/alpha-spine.md D8.
 """
 
+import os
 import re
+import shutil
 import subprocess
+import sys
+import tempfile
 import unittest
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 NOTE = REPO_ROOT / "docs/releases/v0.2-alpha.md"
@@ -43,6 +53,11 @@ FIXTURE_DIR = REPO_ROOT / "tests/prd-gate/fixtures"
 FIXTURE_GLOB = "migration_v0_2_*.ri"
 FRESHNESS = REPO_ROOT / "scripts/reify-bin-freshness.sh"
 EXPECTED_CLOSES = {1, 2, 3, 4}
+RELEASE_TAG = NOTE.stem
+LIFECYCLE_DOC = "docs/prds/alpha-spine.md D8"
+_LIFECYCLE_HINT = (
+    f"{NOTE.relative_to(REPO_ROOT)} documents release {RELEASE_TAG}: read {LIFECYCLE_DOC} "
+    f"before editing the note or its migration_v0_2_* fixtures")
 
 CHECK_HANG_GUARD_SECS = 300
 ERROR_PREFIXES = ("error: ", "Parse error: ")
@@ -168,6 +183,29 @@ def closes_issue_numbers(text):
             for line in text.splitlines() if CLOSES_LINE.match(line)]
 
 
+def _without_git_vars(env, keep=()):
+    return {k: v for k, v in env.items() if not k.startswith("GIT_") or k in keep}
+
+
+def _git_environ():
+    return {**_without_git_vars(os.environ, keep=("GIT_CEILING_DIRECTORIES",)), "LC_ALL": "C"}
+
+
+def release_tag_commit(repo_root, tag):
+    """The commit tag `tag` names in repo_root's git, or None while that tag does not exist."""
+    proc = subprocess.run(
+        ["git", "-C", str(repo_root), "rev-parse", "-q", "--verify", f"refs/tags/{tag}^{{commit}}"],
+        env=_git_environ(), capture_output=True, text=True, check=False,
+    )
+    if proc.returncode == 0:
+        return proc.stdout.strip()
+    if proc.returncode == 1:
+        return None
+    raise RuntimeError(
+        f"cannot read tag {tag!r} in {repo_root}: git rev-parse exited {proc.returncode}: "
+        f"{proc.stderr.strip()}")
+
+
 def _without_one_trailing_newline(text):
     return text[:-1] if text.endswith("\n") else text
 
@@ -201,14 +239,17 @@ class NoteStructureTests(unittest.TestCase):
                     fixture = REPO_ROOT / path
                     self.assertTrue(fixture.is_file(), f"{path} does not exist")
                     self.assertEqual(
-                        snippet, _without_one_trailing_newline(fixture.read_text(encoding="utf-8")))
+                        snippet, _without_one_trailing_newline(fixture.read_text(encoding="utf-8")),
+                        f"\n{_LIFECYCLE_HINT}")
 
     def test_fixture_set_equals_the_named_set(self):
         named = {REPO_ROOT / path for entry in parse_entries(_note_text(self))
                  for path in (entry.before_path, entry.after_path)}
         on_disk = set(FIXTURE_DIR.glob(FIXTURE_GLOB))
-        self.assertEqual(sorted(map(str, on_disk - named)), [], "fixtures the note does not name")
-        self.assertEqual(sorted(map(str, named - on_disk)), [], "named fixtures missing on disk")
+        self.assertEqual(sorted(map(str, on_disk - named)), [],
+                         f"fixtures the note does not name\n{_LIFECYCLE_HINT}")
+        self.assertEqual(sorted(map(str, named - on_disk)), [],
+                         f"named fixtures missing on disk\n{_LIFECYCLE_HINT}")
 
     def test_slugs_are_unique(self):
         slugs = [entry.slug for entry in parse_entries(_note_text(self))]
@@ -289,9 +330,108 @@ class NoteGrammarTests(unittest.TestCase):
                     parse_entries(text)
 
 
+def _fixture_git(repo, *args):
+    env = {**_without_git_vars(os.environ), "GIT_CONFIG_GLOBAL": os.devnull,
+           "GIT_CONFIG_NOSYSTEM": "1"}
+    return subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=fixture", "-c", "user.email=fixture@example.test",
+         "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", *args],
+        env=env, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+
+def _fixture_repo(root):
+    _fixture_git(root, "init", "-q")
+    _fixture_git(root, "commit", "-q", "--allow-empty", "-m", "x")
+    return _fixture_git(root, "rev-parse", "HEAD")
+
+
+class ReleaseTagTests(unittest.TestCase):
+    TAG = RELEASE_TAG
+
+    def test_an_untagged_repository_has_no_release_commit(self):
+        with tempfile.TemporaryDirectory() as repo:
+            _fixture_repo(repo)
+            self.assertIsNone(release_tag_commit(repo, self.TAG))
+
+    def test_a_lightweight_tag_names_its_commit(self):
+        with tempfile.TemporaryDirectory() as repo:
+            head = _fixture_repo(repo)
+            _fixture_git(repo, "tag", self.TAG)
+            self.assertEqual(release_tag_commit(repo, self.TAG), head)
+
+    def test_an_annotated_tag_is_peeled_to_its_commit(self):
+        with tempfile.TemporaryDirectory() as repo:
+            head = _fixture_repo(repo)
+            _fixture_git(repo, "tag", "-a", "-m", "m", self.TAG)
+            tag_object = _fixture_git(repo, "rev-parse", f"refs/tags/{self.TAG}")
+            self.assertNotEqual(tag_object, head)
+            self.assertEqual(release_tag_commit(repo, self.TAG), head)
+
+    def test_near_miss_refs_are_not_the_release(self):
+        with tempfile.TemporaryDirectory() as repo:
+            _fixture_repo(repo)
+            _fixture_git(repo, "tag", f"{self.TAG}.1")
+            _fixture_git(repo, "tag", f"{self.TAG}-rc1")
+            _fixture_git(repo, "branch", self.TAG)
+            self.assertIsNone(release_tag_commit(repo, self.TAG))
+
+    def test_an_exported_git_dir_does_not_decide(self):
+        with tempfile.TemporaryDirectory() as root:
+            tagged, untagged = Path(root, "tagged"), Path(root, "untagged")
+            tagged.mkdir()
+            untagged.mkdir()
+            tagged_head = _fixture_repo(tagged)
+            _fixture_git(tagged, "tag", self.TAG)
+            _fixture_repo(untagged)
+            with mock.patch.dict(os.environ, {"GIT_DIR": str(tagged / ".git")}):
+                self.assertIsNone(release_tag_commit(untagged, self.TAG))
+            with mock.patch.dict(os.environ, {"GIT_DIR": str(untagged / ".git")}):
+                self.assertEqual(release_tag_commit(tagged, self.TAG), tagged_head)
+
+    def test_a_directory_outside_any_repository_is_an_error(self):
+        with tempfile.TemporaryDirectory() as root:
+            plain = Path(root, "plain")
+            plain.mkdir()
+            with mock.patch.dict(os.environ, {"GIT_CEILING_DIRECTORIES": root}):
+                with self.assertRaisesRegex(RuntimeError, re.escape(str(plain))):
+                    release_tag_commit(plain, self.TAG)
+
+
+class TaggedCheckoutTests(unittest.TestCase):
+    def test_a_tagged_checkout_retires_the_binary_half_naming_the_tag_commit(self):
+        with tempfile.TemporaryDirectory() as root:
+            module = Path(root, "tests/infra", Path(__file__).name)
+            module.parent.mkdir(parents=True)
+            shutil.copyfile(Path(__file__).resolve(), module)
+            _fixture_git(root, "init", "-q")
+            _fixture_git(root, "add", "-A")
+            _fixture_git(root, "commit", "-q", "-m", "x")
+            _fixture_git(root, "tag", "-a", "-m", "m", RELEASE_TAG)
+            commit = _fixture_git(root, "rev-parse", "HEAD")
+            env = _without_git_vars(os.environ)
+            env.pop("REIFY_BIN", None)
+            proc = subprocess.run(
+                [sys.executable, str(module), "-v", "FixtureBehaviourTests"],
+                cwd=root, env=env, capture_output=True, text=True,
+                timeout=CHECK_HANG_GUARD_SECS, check=False,
+            )
+            output = "\n".join((proc.stdout, proc.stderr))
+            self.assertEqual(proc.returncode, 0, output)
+            self.assertTrue(
+                [line for line in output.splitlines()
+                 if "setUpClass" in line and "skipped" in line and commit in line],
+                output)
+
+
 class FixtureBehaviourTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        tagged = release_tag_commit(REPO_ROOT, RELEASE_TAG)
+        if tagged is not None:
+            raise unittest.SkipTest(
+                f"{RELEASE_TAG} is tagged at {tagged}: the note is that release's record "
+                f"and is no longer checked against HEAD's binary ({LIFECYCLE_DOC})")
         proc = subprocess.run(
             ["bash", str(FRESHNESS), "resolve", str(REPO_ROOT)],
             capture_output=True, text=True, check=False,
@@ -312,7 +452,8 @@ class FixtureBehaviourTests(unittest.TestCase):
         except subprocess.TimeoutExpired:
             self.fail(f"{path}: reify check exceeded the {CHECK_HANG_GUARD_SECS}s hang guard")
         output = "\n".join((proc.stdout, proc.stderr))
-        return proc.returncode, error_lines(output), f"{path} rc={proc.returncode}\n{output}"
+        context = f"{path} rc={proc.returncode}\n{output}\n{_LIFECYCLE_HINT}"
+        return proc.returncode, error_lines(output), context
 
     def test_before_fixtures_fail_with_the_quoted_errors(self):
         for entry in parse_entries(NOTE.read_text(encoding="utf-8")):
