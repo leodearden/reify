@@ -234,3 +234,35 @@ pub type LoopB<Q: Dimension> = LoopA<Q>\n",
         program.entry().diagnostics
     );
 }
+
+const PROD3: &str = "module prod3\n\
+type InnerZz = Force / Length\n\
+pub type PerInnerZz<Q: Dimension> = Q / InnerZz\n";
+
+/// A pub parametric alias whose body names a non-pub alias cannot be used by
+/// any importer, so `reify check` on its own module rejects it, at the pub
+/// alias rather than at the non-pub one.
+#[test]
+fn pub_parametric_alias_naming_a_non_pub_alias_is_rejected_where_it_is_defined() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let program = compile(dir.path(), "prod3", PROD3);
+
+    let errors = errors(program.entry());
+    assert_eq!(errors.len(), 1, "got {errors:?}");
+    let rejection = errors[0];
+    assert_eq!(rejection.code, Some(DiagnosticCode::NonPubAliasInPubAlias));
+    assert!(
+        rejection.message.contains("'PerInnerZz'") && rejection.message.contains("'InnerZz'"),
+        "the message must name both aliases; got {:?}",
+        rejection.message
+    );
+
+    let line_start = PROD3.find("pub type PerInnerZz").expect("pub alias line");
+    let line_end = line_start + PROD3[line_start..].find('\n').expect("line end");
+    let span = rejection.labels.first().expect("a label").span;
+    assert!(
+        line_start <= span.start && span.end <= line_end,
+        "the label must sit on the `pub type PerInnerZz` line \
+         ({line_start}..{line_end}); got {span:?}"
+    );
+}

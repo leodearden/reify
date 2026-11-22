@@ -9,7 +9,7 @@
 //!   step-6 RED  — over-rejection regression for parameterized builtin containers
 
 use reify_compiler::{compile_with_stdlib, parse_with_stdlib};
-use reify_core::{ModulePath, Severity, SourceSpan};
+use reify_core::{DiagnosticCode, ModulePath, Severity, SourceSpan};
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -343,4 +343,54 @@ fn pub_parametric_alias_body_referencing_trait_name_accepted() {
         errors.len(),
         errors
     );
+}
+
+// ── task 10297: case (c) — a pub parametric alias names only pub aliases ─────
+
+fn compile_source(source: &str) -> reify_compiler::CompiledModule {
+    let parsed = parse_with_stdlib(source, ModulePath::single("test_alias_visibility"));
+    assert!(
+        parsed.errors.is_empty(),
+        "fixture must parse without errors: {:?}",
+        parsed.errors
+    );
+    compile_with_stdlib(&parsed)
+}
+
+/// No importer can see `Hidden`, so a pub parametric alias naming it is
+/// rejected where it is defined.
+#[test]
+fn pub_parametric_alias_naming_a_non_pub_alias_rejected_at_def_site() {
+    let module = compile_source("type Hidden = Length\npub type P<Q: Dimension> = Q / Hidden\n");
+    let errors = error_diagnostics(&module);
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::NonPubAliasInPubAlias)),
+        "got {errors:?}"
+    );
+}
+
+#[test]
+fn pub_parametric_alias_naming_a_pub_alias_accepted() {
+    let module = compile_source("pub type Shown = Length\npub type P<Q: Dimension> = Q / Shown\n");
+    let errors = error_diagnostics(&module);
+    assert!(errors.is_empty(), "got {errors:?}");
+}
+
+/// `Stress` is the stdlib's (analysis.ri `pub type Stress = Pressure`), seeded
+/// into this module: pub where it is declared, so an importer can use `P`.
+#[test]
+fn pub_parametric_alias_naming_a_seeded_stdlib_alias_accepted() {
+    let module = compile_source("pub type P<Q: Dimension> = Q / Stress\n");
+    let errors = error_diagnostics(&module);
+    assert!(errors.is_empty(), "got {errors:?}");
+}
+
+/// The rule binds pub aliases only: a private alias is used in its own module.
+#[test]
+fn non_pub_parametric_alias_naming_a_non_pub_alias_accepted() {
+    let module = compile_source("type Hidden = Length\ntype P<Q: Dimension> = Q / Hidden\n");
+    let errors = error_diagnostics(&module);
+    assert!(errors.is_empty(), "got {errors:?}");
 }
