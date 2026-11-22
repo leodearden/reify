@@ -983,3 +983,43 @@ scripts/reify_verify/diagnostics.py    tests/infra/test_verify_*.sh
 scripts/reify_verify/diagnostics.py    tests/infra/test_verify_policy.sh
 # The plan-model member compares nextest_config_path's lines with the generator's own stderr.
 scripts/gen-nextest-config.sh    tests/infra/test_verify_plan_model.sh
+# Task 10341: the PRD-gate substrate guard is sourced by two wrappers and tested directly by a third.
+scripts/prd-gate-substrate-guard.sh    tests/infra/test_prd_gate_substrate_guard.sh
+scripts/prd-gate-substrate-guard.sh    tests/infra/test_prd_gate_corpus.sh
+scripts/prd-gate-substrate-guard.sh    tests/infra/test_prd_gate_compiler_type_hygiene.sh
+# Task 10341: the decompose workflow script, which the decompose wrapper syntax-checks and its _mjs partition drives.
+scripts/prd-decompose-verify.mjs    tests/infra/test_prd_decompose_verify.sh
+# Task 10341: the unittest partitions the prd-capability-check and prd-decompose-verify wrappers discover.
+scripts/test_pcc_grammar_cache.py    tests/infra/test_prd_capability_check.sh
+scripts/test_pcc_grammar_generate.py    tests/infra/test_prd_capability_check.sh
+scripts/test_pcc_grammar_substrate.py    tests/infra/test_prd_capability_check.sh
+scripts/test_pcc_main.py    tests/infra/test_prd_capability_check.sh
+scripts/test_pcc_outcome_ratchet.py    tests/infra/test_prd_capability_check.sh
+scripts/test_pcc_probe_context.py    tests/infra/test_prd_capability_check.sh
+scripts/test_pcc_probe_set.py    tests/infra/test_prd_capability_check.sh
+scripts/test_pcc_run_probe.py    tests/infra/test_prd_capability_check.sh
+scripts/test_pcc_schema.py    tests/infra/test_prd_capability_check.sh
+scripts/test_pcc_seam_ratchet.py    tests/infra/test_prd_capability_check.sh
+scripts/test_pcc_verdict.py    tests/infra/test_prd_capability_check.sh
+scripts/test_prd_decompose_verify.py    tests/infra/test_prd_decompose_verify.sh
+scripts/test_prd_decompose_verify_bind.py    tests/infra/test_prd_decompose_verify.sh
+scripts/test_prd_decompose_verify_mjs.py    tests/infra/test_prd_decompose_verify.sh
+scripts/test_prd_decompose_verify_schema.py    tests/infra/test_prd_decompose_verify.sh
+scripts/test_prd_decompose_verify_synthesize.py    tests/infra/test_prd_decompose_verify.sh
+# Task 10341: modules the two wrappers' partitions load or scan; prd-decompose-verify.py loads prd-capability-check.py in-process, and the prd-capability-check partitions import _pdv_test_support.
+scripts/prd-capability-check.py    tests/infra/test_prd_decompose_verify.sh
+scripts/prd-decompose-verify.py    tests/infra/test_prd_decompose_verify.sh
+scripts/prd-decompose-verify.py    tests/infra/test_prd_capability_check.sh
+scripts/_pcc_test_support.py    tests/infra/test_prd_capability_check.sh
+scripts/_pdv_test_support.py    tests/infra/test_prd_capability_check.sh
+scripts/_pdv_test_support.py    tests/infra/test_prd_decompose_verify.sh
+scripts/_schema_test_support.py    tests/infra/test_prd_capability_check.sh
+scripts/_schema_test_support.py    tests/infra/test_prd_decompose_verify.sh
+# Task 10341: test_prd_gate_substrate_guard.sh's filtered-probe-set check loads the real prd-capability-check.py and calls load_probe_set on it.
+scripts/prd-capability-check.py    tests/infra/test_prd_gate_substrate_guard.sh
+# Task 10341: the prd-capability-check seam ratchet (test_pcc_seam_ratchet.py) scans the prd-decompose-verify partitions as source.
+scripts/test_prd_decompose_verify.py    tests/infra/test_prd_capability_check.sh
+scripts/test_prd_decompose_verify_bind.py    tests/infra/test_prd_capability_check.sh
+scripts/test_prd_decompose_verify_mjs.py    tests/infra/test_prd_capability_check.sh
+scripts/test_prd_decompose_verify_schema.py    tests/infra/test_prd_capability_check.sh
+scripts/test_prd_decompose_verify_synthesize.py    tests/infra/test_prd_capability_check.sh
