@@ -1745,6 +1745,105 @@ else
         fi
     fi
     _fixture_hold_reap "$_fixture_hold_launcher_pid" "$_fixture_hold_fixture_pid3" "$_fixture_hold_ready3" "$_fixture_hold_spinners3"
+
+    # ── groups 4 and 5: a parent that dies BEFORE a parent-death signal is armed.
+    # No signal reports that death, so these groups place it exactly in that
+    # window: a `setpriv` shim ahead of the real one on PATH SIGKILLs its caller's
+    # parent once, waits until the caller is re-parented, records the caller's
+    # pid and only then execs the real setpriv.  The shim acts only on the call
+    # it is aimed at — the fixture's own re-exec (group 4: its pid is the
+    # recorded fixture pid) or a worker's (group 5: its parent is the recorded
+    # fixture pid) — and passes every other call straight through.
+    _fixture_hold_shim_dir="$(mktemp -d -p "$WORK" fixture-hold-shim.XXXXXX)"
+    cat > "$_fixture_hold_shim_dir/setpriv" << 'EOF_SETPRIV_SHIM'
+#!/bin/sh
+while [ ! -s "$GOVTEST_SHIM_FIXTURE_PID_FILE" ]; do sleep 0.01; done
+fixture_pid="$(cat "$GOVTEST_SHIM_FIXTURE_PID_FILE")"
+case "$GOVTEST_SHIM_AIM" in
+    fixture) aimed=$$ ;;
+    worker) aimed=$PPID ;;
+esac
+if [ "$aimed" = "$fixture_pid" ] && rm "$GOVTEST_SHIM_TRIGGER" 2>/dev/null; then
+    kill -KILL "$PPID"
+    while [ "$(awk '/^PPid:/ { print $2 }' /proc/$$/status)" = "$PPID" ]; do sleep 0.01; done
+    printf '%s\n' "$$" > "$GOVTEST_SHIM_VICTIM_FILE"
+fi
+exec "$GOVTEST_SHIM_REAL" "$@"
+EOF_SETPRIV_SHIM
+    chmod +x "$_fixture_hold_shim_dir/setpriv"
+    _fixture_hold_real_setpriv="$(command -v setpriv)"
+
+    # _fixture_hold_reap_tree <pid_file>
+    #   Unconditional cleanup for groups 4/5: SIGKILL every recorded pid and its
+    #   children (an unanchored burn's spinner is the recorded handle's child).
+    _fixture_hold_reap_tree() {
+        local recorded
+        [ -r "$1" ] || return 0
+        while IFS= read -r recorded; do
+            if [ -n "$recorded" ]; then
+                pkill -KILL -P "$recorded" 2>/dev/null || true
+                kill -KILL "$recorded" 2>/dev/null || true
+            fi
+        done < "$1"
+    }
+
+    # ── group 4: the launcher dies after the fixture has started but before the
+    # fixture's own parent-death signal is armed.  The fixture must not burn.
+    _fixture_hold_ready4="$WORK/fixture-hold-ready-4"
+    _fixture_hold_fixture_pid4="$WORK/fixture-hold-fixture-pid-4"
+    _fixture_hold_victim4="$WORK/fixture-hold-victim-4"
+    : > "$WORK/fixture-hold-trigger-4"
+    GOVTEST_SHIM_AIM=fixture GOVTEST_SHIM_REAL="$_fixture_hold_real_setpriv" \
+    GOVTEST_SHIM_FIXTURE_PID_FILE="$_fixture_hold_fixture_pid4" \
+    GOVTEST_SHIM_TRIGGER="$WORK/fixture-hold-trigger-4" \
+    GOVTEST_SHIM_VICTIM_FILE="$_fixture_hold_victim4" \
+    PATH="$_fixture_hold_shim_dir:$PATH" \
+        bash -c 'bash "$1" 1 0 --ready-file "$2" >/dev/null 2>&1 &
+                 printf "%s\n" "$!" > "$3"
+                 wait' \
+        _ "$FIXTURE" "$_fixture_hold_ready4" "$_fixture_hold_fixture_pid4" &
+    _fixture_hold_launcher_pid4=$!
+    wait "$_fixture_hold_launcher_pid4" 2>/dev/null || true
+
+    _fixture_hold4a_rc=0
+    _row4_await_ready 30 "$_fixture_hold_victim4" || _fixture_hold4a_rc=$?
+    assert "FIXTURE-HOLD-4a: the shim killed the launcher before the fixture's anchor was armed (rc ${_fixture_hold4a_rc}); precondition of -4b" \
+        test "$_fixture_hold4a_rc" -eq 0
+    _fixture_hold4b_rc=0
+    _row4_await_vanished 30 "$_fixture_hold_fixture_pid4" || _fixture_hold4b_rc=$?
+    assert "FIXTURE-HOLD-4b: a fixture whose launcher died before its anchor was armed has vanished (rc ${_fixture_hold4b_rc}; the 30 s deadline is an anti-hang guard only)" \
+        test "$_fixture_hold4b_rc" -eq 0
+    assert "FIXTURE-HOLD-4c: that fixture forked no worker (no ready file)" \
+        test ! -e "$_fixture_hold_ready4"
+    _fixture_hold_reap_tree "$_fixture_hold_ready4"
+    _fixture_hold_reap_tree "$_fixture_hold_fixture_pid4"
+
+    # ── group 5: an unpinned fixture is SIGKILLed after forking a worker but
+    # before that worker's parent-death signal is armed.  The worker must not
+    # burn.
+    _fixture_hold_ready5="$WORK/fixture-hold-ready-5"
+    _fixture_hold_fixture_pid5="$WORK/fixture-hold-fixture-pid-5"
+    _fixture_hold_victim5="$WORK/fixture-hold-victim-5"
+    : > "$WORK/fixture-hold-trigger-5"
+    GOVTEST_SHIM_AIM=worker GOVTEST_SHIM_REAL="$_fixture_hold_real_setpriv" \
+    GOVTEST_SHIM_FIXTURE_PID_FILE="$_fixture_hold_fixture_pid5" \
+    GOVTEST_SHIM_TRIGGER="$WORK/fixture-hold-trigger-5" \
+    GOVTEST_SHIM_VICTIM_FILE="$_fixture_hold_victim5" \
+    PATH="$_fixture_hold_shim_dir:$PATH" \
+        bash "$FIXTURE" 1 0 --ready-file "$_fixture_hold_ready5" >/dev/null 2>&1 &
+    _fixture_hold_pid5=$!
+    printf '%s\n' "$_fixture_hold_pid5" > "$_fixture_hold_fixture_pid5"
+    wait "$_fixture_hold_pid5" 2>/dev/null || true
+
+    _fixture_hold5a_rc=0
+    _row4_await_ready 30 "$_fixture_hold_victim5" || _fixture_hold5a_rc=$?
+    assert "FIXTURE-HOLD-5a: the shim killed the fixture before its worker's anchor was armed (rc ${_fixture_hold5a_rc}); precondition of -5b" \
+        test "$_fixture_hold5a_rc" -eq 0
+    _fixture_hold5b_rc=0
+    _row4_await_vanished 30 "$_fixture_hold_victim5" || _fixture_hold5b_rc=$?
+    assert "FIXTURE-HOLD-5b: a worker whose fixture died before its anchor was armed has vanished (rc ${_fixture_hold5b_rc}; the 30 s deadline is an anti-hang guard only)" \
+        test "$_fixture_hold5b_rc" -eq 0
+    _fixture_hold_reap_tree "$_fixture_hold_victim5"
 fi
 
 # ----------------------------------------------------------------------------

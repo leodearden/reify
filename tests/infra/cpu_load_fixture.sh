@@ -13,7 +13,11 @@
 # <duration_s> 0 means no time limit: each worker burns until the fixture is
 # stopped with TERM, so an observer of the burn is never racing a clock. With 0,
 # every process of the burn carries a parent-death signal (TERM), so the burn
-# cannot outlive its launcher, SIGKILL included. That needs setpriv(1); without
+# cannot outlive its launcher, SIGKILL included. A parent-death signal only fires
+# for a death AFTER it is armed, so each process, once armed, checks that its
+# parent is still the one that started it and refuses to burn when it is not.
+# The fixture's check compares against the parent its shell saw at startup: a
+# launcher already gone by then is not detected. That needs setpriv(1); without
 # it duration 0 exits 69, because an unbounded burn is never run unanchored.
 #
 # OPTIONS:
@@ -160,8 +164,18 @@ fi
 # (SIGKILL included, which runs no trap) TERMs this fixture and its EXIT trap
 # reaps the workers.  exec keeps the pid, so the caller's `$!` stays valid.  The
 # marker is compared with `$$`: one inherited from another process never matches.
-if [ "$DURATION_S" -eq 0 ] && [ "${CPU_LOAD_FIXTURE_ANCHOR_PID:-}" != "$$" ]; then
-    CPU_LOAD_FIXTURE_ANCHOR_PID=$$ exec setpriv --pdeathsig TERM -- "$BASH" "$0" "${_FIXTURE_ARGV[@]}"
+# The launcher may die before the signal is armed, which no signal reports, so
+# the anchored pass compares its parent (read at its startup, after the arming)
+# with the one the first pass saw, and exits 75 without burning on a mismatch.
+if [ "$DURATION_S" -eq 0 ]; then
+    if [ "${CPU_LOAD_FIXTURE_ANCHOR_PID:-}" != "$$" ]; then
+        CPU_LOAD_FIXTURE_ANCHOR_PID=$$ CPU_LOAD_FIXTURE_ANCHOR_PPID=$PPID \
+            exec setpriv --pdeathsig TERM -- "$BASH" "$0" "${_FIXTURE_ARGV[@]}"
+    fi
+    if [ "$PPID" != "${CPU_LOAD_FIXTURE_ANCHOR_PPID:-}" ]; then
+        echo "$(basename "$0"): launcher ${CPU_LOAD_FIXTURE_ANCHOR_PPID:-?} died before the parent-death anchor was armed; not burning" >&2
+        exit 75
+    fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -224,13 +238,16 @@ fi
 # Each worker runs: timeout <duration_s> sh -c 'while true; do :; done'
 # timeout(1) is used repo-wide (test_portable_timeout.sh); POSIX sh busy-spin.
 # With --pin-cpus, worker i is launched under `taskset -c <LIST[i mod n]>`;
-# with duration 0, under `setpriv --pdeathsig TERM` as well.  Both exec, so $! is
+# with duration 0, under `setpriv --pdeathsig TERM` as well, followed by a check
+# that this fixture is still the worker's parent once the signal is armed (a
+# fixture killed before the arming sends no signal).  All of them exec, so $! is
 # still the worker handle (timeout) that _cleanup reaps, the spinner is still its
 # child and inherits the single-CPU mask.  GNU timeout treats 0 as no limit.
 # ---------------------------------------------------------------------------
 _LIFETIME_PREFIX=()
 if [ "$DURATION_S" -eq 0 ]; then
-    _LIFETIME_PREFIX=(setpriv --pdeathsig TERM)
+    _LIFETIME_PREFIX=(setpriv --pdeathsig TERM
+        sh -c '[ "$PPID" = "$1" ] || exit 75; shift; exec "$@"' _ "$$")
 fi
 _i=0
 while [ "$_i" -lt "$NWORKERS" ]; do
