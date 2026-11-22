@@ -67,6 +67,9 @@ test_verify_semaphore_e2e.sh intra-run-serial
 # /usr/bin/bwrap and runs whole-/proc liveness scans against holder processes it
 # starts; the canonical-build-path PRD §6 classifies such members intra-run-serial.
 test_live_refs_namespace.sh intra-run-serial
+# test_canon_run_host.sh (task #10229) enters mount namespaces with /usr/bin/bwrap
+# and compiles a scratch crate; PRD §6 classifies such members intra-run-serial.
+test_canon_run_host.sh intra-run-serial
 
 # --- host-exclusive (5) ------------------------------------------------------
 # test_bundle_clean_install.sh (task #9732) is default-SKIPPING: armed only by
