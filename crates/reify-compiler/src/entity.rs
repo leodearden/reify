@@ -6,6 +6,7 @@ use crate::member_cell_decls::{
     fixup_option_none_for_param, priv_flag_to_visibility, reject_keyed_value_position,
     resolve_auto_let_cell_type,
 };
+use crate::rejected_param_defaults::RejectedParamDefaults;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashSet;
@@ -903,7 +904,8 @@ fn emit_outside_match_collision(
 /// with the annotation, with no literal exemption: `param t : Length = 1.0` is
 /// rejected like any dimensionless initializer (reversal history: PRD
 /// dimensioned-construction-strictness §0.3). The conformance param-default entry
-/// defers to this check (see [`param_default_rejection_span`]).
+/// defers to this check: a `true` verdict means the caller records the cell in a
+/// [`RejectedParamDefaults`], which that entry skips.
 ///
 /// Mirrors the analogous trait-let cross-check at `conformance/checker.rs:1813-1824`.
 /// Uses `type_compatible` (bidirectional; Int→Real widening; `Type::Error` anti-cascade)
@@ -922,6 +924,7 @@ fn emit_outside_match_collision(
 /// declared-vs-initializer contract exists ONLY when the user actually wrote a
 /// type annotation; for an untyped param the cell type IS conceptually the
 /// initializer's type so there is nothing to validate.
+#[must_use]
 fn check_param_default_type(
     name: &str,
     declared: &Type,
@@ -929,17 +932,17 @@ fn check_param_default_type(
     default_expr: Option<&CompiledExpr>,
     span: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
-) {
+) -> bool {
     // Gate: only cross-check when the user wrote an explicit `: Type` annotation.
     // For untyped params declared is only a dimensionless-scalar inference fallback
     // (not a user contract), so checking it would produce false positives.
     if !has_explicit_type {
-        return;
+        return false;
     }
     // Anti-cascade: if the declared type failed to resolve, a root-cause
     // diagnostic was already emitted; skip to avoid a confusing secondary one.
     if declared.is_error() {
-        return;
+        return false;
     }
     // Restrict to scalar-comparable types only.
     // Complex declared types (Geometry, TraitObject, Vector, Tensor, StructureRef,
@@ -949,36 +952,28 @@ fn check_param_default_type(
     // dimensionless `Type::Scalar { dimension }`, so it is already covered by the
     // `Type::Scalar { .. }` arm (there is no separate `Type::Real` variant).
     if !matches!(declared, Type::Int | Type::Scalar { .. }) {
-        return;
+        return false;
     }
     // No initializer — nothing to check.
     let Some(default) = default_expr else {
-        return;
+        return false;
     };
-    if !type_compatible(declared, &default.result_type) {
-        diagnostics.push(
-            Diagnostic::error(format!(
-                "parameter '{}' declared `{}` but its initializer evaluates to `{}`; \
-                 declared type and initializer dimension must agree",
-                name, declared, default.result_type
-            ))
-            .with_code(DiagnosticCode::ParamDefaultTypeMismatch)
-            .with_label(DiagnosticLabel::new(
-                span,
-                "initializer dimension does not match declared type",
-            )),
-        );
+    if type_compatible(declared, &default.result_type) {
+        return false;
     }
-}
-
-/// Recognises a diagnostic emitted by [`check_param_default_type`] and returns the
-/// param declaration span its first label carries, which is also that param's
-/// `ValueCellDecl.span` at both call sites.
-pub(crate) fn param_default_rejection_span(diagnostic: &Diagnostic) -> Option<SourceSpan> {
-    if diagnostic.code != Some(DiagnosticCode::ParamDefaultTypeMismatch) {
-        return None;
-    }
-    diagnostic.labels.first().map(|label| label.span)
+    diagnostics.push(
+        Diagnostic::error(format!(
+            "parameter '{}' declared `{}` but its initializer evaluates to `{}`; \
+             declared type and initializer dimension must agree",
+            name, declared, default.result_type
+        ))
+        .with_code(DiagnosticCode::ParamDefaultTypeMismatch)
+        .with_label(DiagnosticLabel::new(
+            span,
+            "initializer dimension does not match declared type",
+        )),
+    );
+    true
 }
 
 /// Cross-check a structure `let` binding's declared type against its initializer's
@@ -1324,7 +1319,7 @@ pub(crate) fn compile_entity(
     // travel bundled so the two same-typed maps cannot be transposed here; see
     // `types::PreludeRegistries` for the full contract.
     prelude: &PreludeRegistries<'_, '_>,
-) -> TopologyTemplate {
+) -> (TopologyTemplate, RejectedParamDefaults) {
     let functions = calls.functions;
     // task 5345: desugar inline geometry-query arguments into synthetic geometry
     // lets BEFORE any `structure.members` walk (pass-1 registration, realization
@@ -2621,6 +2616,7 @@ pub(crate) fn compile_entity(
     // merged order is true source order — the "newest member" (last) is the most
     // recently declared, which ζ's conflict attribution flags as primary.
     let mut relations: Vec<CompiledExpr> = Vec::new();
+    let mut rejected_param_defaults = RejectedParamDefaults::default();
     for member in structure.members {
         match member {
             // Member-level `relate {}` enforcement (E_RELATE_EXPECTS_RELATION,
@@ -2675,6 +2671,7 @@ pub(crate) fn compile_entity(
                 validate_solver_hint_collections(&solver_hints, &scope, functions, diagnostics);
 
                 let visibility = priv_flag_to_visibility(param.is_priv);
+                let mut default_rejected = false;
                 let decl = build_param_value_cell_decl(
                     id,
                     auto_free,
@@ -2707,7 +2704,7 @@ pub(crate) fn compile_entity(
                         // Site 1: top-level structure-param declared-vs-initializer check.
                         // Pass `param.type_expr.is_some()` to suppress the check for
                         // untyped params whose cell_type is only a dimensionless-scalar fallback.
-                        check_param_default_type(
+                        default_rejected = check_param_default_type(
                             &param.name,
                             ct,
                             param.type_expr.is_some(),
@@ -2719,6 +2716,9 @@ pub(crate) fn compile_entity(
                         default_expr
                     },
                 );
+                if default_rejected {
+                    rejected_param_defaults.record(&decl);
+                }
 
                 if let Some(wc) = &param.where_clause {
                     compile_per_decl_guard(
@@ -3999,6 +3999,7 @@ pub(crate) fn compile_entity(
                             // so thread `param.is_priv` through instead of hardcoding
                             // Public — mirrors Site 1 (#5161).
                             let visibility = priv_flag_to_visibility(param.is_priv);
+                            let mut default_rejected = false;
                             let decl = build_param_value_cell_decl(
                                 id,
                                 auto_free,
@@ -4026,7 +4027,7 @@ pub(crate) fn compile_entity(
                                     // Site 2: port-member param declared-vs-initializer check.
                                     // Pass `param.type_expr.is_some()` to suppress the check for
                                     // untyped params whose cell_type is only a dimensionless-scalar fallback.
-                                    check_param_default_type(
+                                    default_rejected = check_param_default_type(
                                         &param.name,
                                         ct,
                                         param.type_expr.is_some(),
@@ -4038,6 +4039,9 @@ pub(crate) fn compile_entity(
                                     default_expr
                                 },
                             );
+                            if default_rejected {
+                                rejected_param_defaults.record(&decl);
+                            }
                             port_members.push(decl);
                         }
                         reify_ast::MemberDecl::Let(let_decl) => {
@@ -5030,7 +5034,7 @@ pub(crate) fn compile_entity(
         Some(obj_set)
     };
 
-    TopologyTemplate {
+    let template = TopologyTemplate {
         name: entity_name.to_string(),
         doc: structure.doc.clone(),
         entity_kind,
@@ -5073,7 +5077,8 @@ pub(crate) fn compile_entity(
         // is keyed by (trait_name, type_name) with the structure-provided or
         // trait-default resolved Type.
         assoc_types: structure_assoc_types,
-    }
+    };
+    (template, rejected_param_defaults)
 }
 
 /// Build the `member_name → Type` map for a child `TopologyTemplate`.
@@ -7173,33 +7178,52 @@ structure def Manifold {
         );
     }
 
-    /// `param_default_rejection_span` recovers exactly the span
-    /// `check_param_default_type` was given, and recognises nothing else.
+    /// `check_param_default_type` reports a rejection exactly when it emits a
+    /// `ParamDefaultTypeMismatch`, which the conformance skip relies on.
     #[test]
-    fn param_default_rejection_span_round_trips_the_emitted_span() {
-        let declaration = SourceSpan::new(10, 40);
+    fn check_param_default_type_reports_rejected_exactly_when_it_emits() {
+        let length = Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        };
         let dimensionless = CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        check_param_default_type(
-            "t",
-            &Type::Scalar {
-                dimension: DimensionVector::LENGTH,
-            },
-            true,
-            Some(&dimensionless),
-            declaration,
-            &mut diagnostics,
-        );
-        assert_eq!(diagnostics.len(), 1, "got: {diagnostics:?}");
-        assert_eq!(
-            param_default_rejection_span(&diagnostics[0]),
-            Some(declaration)
-        );
-
-        let other_code = Diagnostic::error("unrelated")
-            .with_code(DiagnosticCode::LetAnnotationTypeMismatch)
-            .with_label(DiagnosticLabel::new(declaration, "unrelated"));
-        assert_eq!(param_default_rejection_span(&other_code), None);
+        let length_valued = CompiledExpr::literal(Value::Real(1.0), length.clone());
+        for (declared, has_explicit_type, default, expected_count) in [
+            (&length, true, Some(&dimensionless), 1),
+            (&length, true, Some(&length_valued), 0),
+            (&length, false, Some(&dimensionless), 0),
+            (&Type::Error, true, Some(&dimensionless), 0),
+            (&Type::Geometry, true, Some(&dimensionless), 0),
+            (&length, true, None, 0),
+        ] {
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let rejected = check_param_default_type(
+                "t",
+                declared,
+                has_explicit_type,
+                default,
+                SourceSpan::new(10, 40),
+                &mut diagnostics,
+            );
+            let emitted = diagnostics
+                .iter()
+                .filter(|d| d.code == Some(DiagnosticCode::ParamDefaultTypeMismatch))
+                .count();
+            let row = format!(
+                "{declared:?}, explicit={has_explicit_type}, has_default={}",
+                default.is_some()
+            );
+            assert_eq!(emitted, expected_count, "{row}: got {diagnostics:?}");
+            assert_eq!(
+                diagnostics.len(),
+                expected_count,
+                "{row}: got {diagnostics:?}"
+            );
+            assert_eq!(
+                rejected,
+                emitted == 1,
+                "{row}: verdict disagrees with diagnostics"
+            );
+        }
     }
 }
 

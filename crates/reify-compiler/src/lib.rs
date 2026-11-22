@@ -63,6 +63,7 @@ mod port_path;
 pub mod prelude_context;
 pub mod program;
 pub(crate) mod recursion_guard;
+mod rejected_param_defaults;
 pub mod relation_signatures;
 mod scc;
 mod scope;
@@ -769,7 +770,7 @@ pub fn compile_with_prelude_context_checked_with_config(
         &trait_names,
     );
 
-    compile_builder::entities_phase::phase_entities(
+    let rejected_param_defaults = compile_builder::entities_phase::phase_entities(
         &mut compile_ctx,
         parsed,
         &trait_names,
@@ -822,7 +823,11 @@ pub fn compile_with_prelude_context_checked_with_config(
     // param against its arg via check_fn_arg_conformance. See the
     // phase_fn_arg_conformance / for_each_template_root_expr doc-comments for the
     // exact root set and the documented residual (connections, compiled_purposes).
-    compile_builder::entities_phase::phase_fn_arg_conformance(&mut compile_ctx, prelude_refs);
+    compile_builder::entities_phase::phase_fn_arg_conformance(
+        &mut compile_ctx,
+        prelude_refs,
+        &rejected_param_defaults,
+    );
 
     // Compile-time existence check: every sub's structure_name must resolve in
     // (local templates ∪ prelude).  Runs after all entity/auto/bound phases so

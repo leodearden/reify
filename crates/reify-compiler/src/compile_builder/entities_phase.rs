@@ -47,10 +47,11 @@ use crate::conformance::{
 use crate::connect::PendingConnectAutoParam;
 use crate::entity::{
     AutoResolutionRequest, EntityDefRef, PendingBoundCheck, PendingSubOverrideAuto,
-    check_type_param_bounds, compile_entity, param_default_rejection_span,
+    check_type_param_bounds, compile_entity,
 };
 use crate::expr::compile_expr;
 use crate::name_env;
+use crate::rejected_param_defaults::RejectedParamDefaults;
 use crate::scope::CompilationScope;
 use crate::type_compat::{
     OverloadResolution, resolve_function_overload, type_carries_trait_object,
@@ -80,12 +81,15 @@ use reify_core::ValueCellId;
 /// emitted only when the import path is absent from `prelude` (see import
 /// warning policy in the module-level doc). Joint arm runs the DOF self-check.
 /// The remaining arms are passthroughs — handled in earlier phases.
+///
+/// Returns the param defaults `compile_entity` rejected at their declaration,
+/// for `phase_fn_arg_conformance` to skip.
 pub(crate) fn phase_entities(
     ctx: &mut CompilationCtx,
     parsed: &ParsedModule,
     trait_names: &HashSet<String>,
     prelude: &[&CompiledModule],
-) {
+) -> RejectedParamDefaults {
     // Rebuild the trait registry fresh: prelude first, then local overrides.
     let trait_registry = build_trait_registry(&ctx.trait_defs, prelude);
 
@@ -216,6 +220,7 @@ pub(crate) fn phase_entities(
     // `pre_pass::collect_decl_refs` pushes every `Declaration::Function` in source
     // order with no filtering.
     let mut fn_decl_index: usize = 0;
+    let mut rejected_param_defaults = RejectedParamDefaults::default();
     // What every fn body compiles against besides the fns and templates above
     // it. Built once; its borrows of `ctx` fields are disjoint from the `&mut`
     // field borrows the loop takes.
@@ -253,6 +258,7 @@ pub(crate) fn phase_entities(
                         &mut ctx.pending_connect_auto_params,
                         &mut ctx.diagnostics,
                         &mut ctx.templates,
+                        &mut rejected_param_defaults,
                         &prelude_registries,
                     );
                 }
@@ -362,6 +368,7 @@ pub(crate) fn phase_entities(
                         &mut ctx.pending_connect_auto_params,
                         &mut ctx.diagnostics,
                         &mut ctx.templates,
+                        &mut rejected_param_defaults,
                         &prelude_registries,
                     );
                 }
@@ -407,6 +414,7 @@ pub(crate) fn phase_entities(
                             &mut ctx.pending_connect_auto_params,
                             &mut ctx.diagnostics,
                             &mut ctx.templates,
+                            &mut rejected_param_defaults,
                             &prelude_registries,
                         );
                     }
@@ -467,6 +475,7 @@ pub(crate) fn phase_entities(
     // and the stubs still pending in it.
     ctx.resolution_functions = resolution_functions;
     ctx.fns_with_pending_defaults = pending;
+    rejected_param_defaults
 }
 
 /// The unified pass's per-fn records — `ctx.fn_signatures`,
@@ -912,12 +921,13 @@ fn compile_entity_decl(
     pending_connect_auto_params: &mut Vec<PendingConnectAutoParam>,
     diagnostics: &mut Vec<Diagnostic>,
     templates: &mut Vec<TopologyTemplate>,
+    rejected_param_defaults: &mut RejectedParamDefaults,
     // task 5867: the prelude-derived lookup tables, bundled — see
     // `types::PreludeRegistries` for why they travel as one named-field value
     // rather than as adjacent same-typed positional parameters.
     prelude_registries: &PreludeRegistries<'_, '_>,
 ) {
-    let template = compile_entity(
+    let (template, rejected) = compile_entity(
         &entity_ref,
         kind,
         resolution_enums,
@@ -940,6 +950,7 @@ fn compile_entity_decl(
         prelude_registries,
     );
     templates.push(template);
+    rejected_param_defaults.absorb(rejected);
 }
 
 /// Post-compilation pass: drain `ctx.pending_bound_checks` now that all
@@ -1433,7 +1444,11 @@ pub(crate) fn phase_connect_auto_params(ctx: &mut CompilationCtx, prelude: &[&Co
 /// `resolve_function_overload` filters by name on a `&[CompiledFunction]` slice, so
 /// an index would require changing that shared signature; deferred pending
 /// profiling that warrants it (esc-4081 amend, reviewer_comprehensive performance).
-pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&CompiledModule]) {
+pub(crate) fn phase_fn_arg_conformance(
+    ctx: &mut CompilationCtx,
+    prelude: &[&CompiledModule],
+    rejected_at_declaration: &RejectedParamDefaults,
+) {
     // Build template registry (same composition as phase_pending_bound_checks).
     let template_registry: HashMap<String, &TopologyTemplate> =
         name_env::ctor_template_registry(&ctx.templates, prelude);
@@ -1476,14 +1491,6 @@ pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&Com
     // template_registry / resolution_functions while also needing &mut ctx.diagnostics).
     let mut new_diagnostics: Vec<reify_core::Diagnostic> = Vec::new();
 
-    // Param defaults the declaration-site check already rejected; the conformance
-    // entry does not re-judge them (PRD D4-4: one mistake, one diagnostic).
-    let rejected_at_declaration: HashSet<SourceSpan> = ctx
-        .diagnostics
-        .iter()
-        .filter_map(param_default_rejection_span)
-        .collect();
-
     let walk = |expr: &CompiledExpr, span: SourceSpan, diags: &mut Vec<reify_core::Diagnostic>| {
         // task 4232 γ: single walk resolves each UserFunctionCall overload once,
         // performing both trait-object arg conformance (D4) and fn type-param
@@ -1525,7 +1532,7 @@ pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&Com
         check_param_default_conformance(
             template,
             registries,
-            &rejected_at_declaration,
+            rejected_at_declaration,
             &mut new_diagnostics,
         );
     }

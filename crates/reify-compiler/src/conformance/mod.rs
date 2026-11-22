@@ -10,6 +10,7 @@ pub(crate) use sub_component_validation::check_sub_structure_existence;
 use super::*;
 use crate::ambient_defaults::AmbientDefaults;
 use crate::geometry_traits_inference::{GeometryTrait, infer_traits_for_expr_in_env};
+use crate::rejected_param_defaults::RejectedParamDefaults;
 use crate::type_acceptance::{ArgVerdict, ParamFamily, conformance_accepts};
 use reify_core::direction::DIRECTION_MIGRATION_HINT;
 
@@ -499,32 +500,24 @@ fn param_default_cells(template: &TopologyTemplate) -> impl Iterator<Item = &Val
 ///   concrete-leaf arm routes the default through [`walk_param_against_arg`],
 ///   as described at that arm.
 ///
-/// A cell whose span is in `rejected_at_declaration` is skipped: its default was
-/// already rejected by the declaration-site `check_param_default_type`, and one
-/// mistake gets one diagnostic (PRD D4-4). The skip keys on that rejection, not
-/// on the cell type, because trait-injected cells (`checker.rs`
-/// `check_phase_inject_defaults`) and unannotated fallback cells reach only this
-/// pass and share their cell types with the ones the declaration check judges.
-///
-/// A `SourceSpan` is unique only within one file. Every rejected span is an
-/// offset into the module being compiled, but a cell injected from a trait
-/// declared in another file (prelude or an import) carries that file's
-/// offsets. Such a cell is skipped wrongly only if its span coincides, start and
-/// end, with a rejected local param's span. That residual collision is accepted
-/// because no file identity reaches this pass: neither `SourceSpan` nor
-/// `Diagnostic` carries one, and the rejection is recovered from the
-/// diagnostics rather than handed over as owned state.
+/// A cell in `rejected_at_declaration` is skipped: its default was already
+/// rejected by the declaration-site `check_param_default_type`, and one mistake
+/// gets one diagnostic (PRD D4-4). The skip keys on the cell that check rejected
+/// (its identity plus its span), not on the cell type, because trait-injected
+/// cells (`checker.rs` `check_phase_inject_defaults`) and unannotated fallback
+/// cells reach only this pass and share their cell types with the ones the
+/// declaration check judges.
 pub(crate) fn check_param_default_conformance(
     template: &TopologyTemplate,
     registries: ConformanceRegistries<'_>,
-    rejected_at_declaration: &HashSet<SourceSpan>,
+    rejected_at_declaration: &RejectedParamDefaults,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     for vc in param_default_cells(template) {
         if vc.kind != ValueCellKind::Param {
             continue;
         }
-        if rejected_at_declaration.contains(&vc.span) {
+        if rejected_at_declaration.contains(vc) {
             continue;
         }
         let Some(default) = &vc.default_expr else {
@@ -3589,19 +3582,7 @@ mod tests {
             span: SourceSpan::empty(0),
         };
         let template = minimal_template("Test", vec![param_cell]);
-        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
-        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        check_param_default_conformance(
-            &template,
-            ConformanceRegistries {
-                templates: &template_registry,
-                traits: &trait_registry,
-                enum_defs: &[],
-            },
-            &HashSet::new(),
-            &mut diagnostics,
-        );
+        let diagnostics = param_default_diagnostics(&template, &RejectedParamDefaults::default());
         assert_eq!(
             diagnostics.len(),
             0,
@@ -3661,19 +3642,7 @@ mod tests {
             is_priv: false,
         });
 
-        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
-        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        check_param_default_conformance(
-            &template,
-            ConformanceRegistries {
-                templates: &template_registry,
-                traits: &trait_registry,
-                enum_defs: &[],
-            },
-            &HashSet::new(),
-            &mut diagnostics,
-        );
+        let diagnostics = param_default_diagnostics(&template, &RejectedParamDefaults::default());
         assert_eq!(
             diagnostics.len(),
             1,
@@ -3689,12 +3658,8 @@ mod tests {
         );
     }
 
-    /// The `rejected_at_declaration` skip is per cell: of two equally mistaken
-    /// defaults in one template, only the one whose span is in the set is
-    /// skipped, and the other is still judged.
-    #[test]
-    fn rejected_at_declaration_skips_only_the_cell_with_that_span() {
-        let geometry_cell_with_scalar_default = |member: &str, span: SourceSpan| ValueCellDecl {
+    fn geometry_cell_with_scalar_default(member: &str, span: SourceSpan) -> ValueCellDecl {
+        ValueCellDecl {
             id: ValueCellId::new("Test", member),
             kind: ValueCellKind::Param,
             visibility: Visibility::Private,
@@ -3706,33 +3671,75 @@ mod tests {
             )),
             solver_hints: vec![],
             span,
-        };
-        let rejected_span = SourceSpan::new(10, 20);
-        let template = minimal_template(
-            "Test",
-            vec![
-                geometry_cell_with_scalar_default("rejected", rejected_span),
-                geometry_cell_with_scalar_default("judged", SourceSpan::new(30, 40)),
-            ],
-        );
+        }
+    }
 
+    fn param_default_diagnostics(
+        template: &TopologyTemplate,
+        rejected_at_declaration: &RejectedParamDefaults,
+    ) -> Vec<Diagnostic> {
         let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
         let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
         let mut diagnostics: Vec<Diagnostic> = vec![];
         check_param_default_conformance(
-            &template,
+            template,
             ConformanceRegistries {
                 templates: &template_registry,
                 traits: &trait_registry,
                 enum_defs: &[],
             },
-            &HashSet::from([rejected_span]),
+            rejected_at_declaration,
             &mut diagnostics,
         );
+        diagnostics
+    }
+
+    /// The `rejected_at_declaration` skip is per cell: of two equally mistaken
+    /// defaults in one template, only the recorded one is skipped, and the
+    /// other is still judged.
+    #[test]
+    fn rejected_at_declaration_skips_only_the_cell_with_that_span() {
+        let rejected_cell = geometry_cell_with_scalar_default("rejected", SourceSpan::new(10, 20));
+        let mut rejected = RejectedParamDefaults::default();
+        rejected.record(&rejected_cell);
+        let template = minimal_template(
+            "Test",
+            vec![
+                rejected_cell,
+                geometry_cell_with_scalar_default("judged", SourceSpan::new(30, 40)),
+            ],
+        );
+
+        let diagnostics = param_default_diagnostics(&template, &rejected);
         assert_eq!(diagnostics.len(), 1, "got: {diagnostics:?}");
         assert!(
             diagnostics[0].message.contains("'judged'"),
             "the cell outside the set must still be judged, got: {:?}",
+            diagnostics[0].message
+        );
+    }
+
+    /// A cell that shares only its span with a recorded rejection (a trait
+    /// default injected from another file) is still judged.
+    #[test]
+    fn rejected_at_declaration_does_not_skip_a_cell_that_only_shares_its_span() {
+        let shared_span = SourceSpan::new(10, 20);
+        let rejected_cell = geometry_cell_with_scalar_default("rejected", shared_span);
+        let mut rejected = RejectedParamDefaults::default();
+        rejected.record(&rejected_cell);
+        let template = minimal_template(
+            "Test",
+            vec![
+                rejected_cell,
+                geometry_cell_with_scalar_default("injected", shared_span),
+            ],
+        );
+
+        let diagnostics = param_default_diagnostics(&template, &rejected);
+        assert_eq!(diagnostics.len(), 1, "got: {diagnostics:?}");
+        assert!(
+            diagnostics[0].message.contains("'injected'"),
+            "the span-sharing cell must still be judged, got: {:?}",
             diagnostics[0].message
         );
     }
