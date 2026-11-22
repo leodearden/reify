@@ -51,6 +51,8 @@ scripts/flake-density-report.py    tests/infra/test_flake_density_report.sh
 # pair at the bottom of this file. Without this row a --scope branch diff
 # touching only the .py selects no infra test at all.
 tests/infra/test_flake_density_report.py    tests/infra/test_flake_density_report.sh
+# Task 10282: the helper-mint guard's assertions live in its .py; a .py-only diff selects the wrapper.
+tests/infra/test_no_shared_tmp_python_helpers.py    tests/infra/test_no_shared_tmp_python_helpers.sh
 # Task 8678: the adoption-ratchet data table and engine select its wrapper.
 tests/infra/adoption-ratchet.manifest    tests/infra/test_infra_adoption_ratchet.sh
 tests/infra/adoption_ratchet.py    tests/infra/test_infra_adoption_ratchet.sh
