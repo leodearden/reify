@@ -488,8 +488,9 @@ if ! python3 -c 'import yaml' 2>/dev/null; then
 else
     echo "--- (I-A) structural + value-drift assertions via PyYAML ---"
 
-    _FLD_PARSE_PY="$(mktemp /tmp/fleet_load_detector_config_parse_XXXXXX.py)"
-    _TMPDIRS+=("$_FLD_PARSE_PY")
+    _FLD_PARSE_DIR="$(mktemp -d /tmp/fleet_load_detector_config_parse_XXXXXX)"
+    _TMPDIRS+=("$_FLD_PARSE_DIR")
+    _FLD_PARSE_PY="$_FLD_PARSE_DIR/fleet_load_detector_config_parse.py"
 
     cat > "$_FLD_PARSE_PY" << 'PYEOF'
 """Validate dark-factory-orchestrator.yaml cpu_governance.fleet_load_detector block (task 5135).

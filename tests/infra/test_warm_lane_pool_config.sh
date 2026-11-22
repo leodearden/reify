@@ -75,8 +75,9 @@ else
     echo "--- (A) structural assertions via PyYAML ---"
 
     # Write a Python helper to a temp file so assert() can invoke it as a command.
-    _PARSE_PY="$(mktemp /tmp/warm_lane_pool_config_parse_XXXXXX.py)"
-    trap 'rm -f "$_PARSE_PY"' EXIT
+    _PARSE_DIR="$(mktemp -d /tmp/warm_lane_pool_config_parse_XXXXXX)"
+    trap 'rm -rf "$_PARSE_DIR"' EXIT
+    _PARSE_PY="$_PARSE_DIR/warm_lane_pool_config_parse.py"
 
     cat > "$_PARSE_PY" << 'PYEOF'
 """Validate dark-factory-orchestrator.yaml warm_lane_pool block.
