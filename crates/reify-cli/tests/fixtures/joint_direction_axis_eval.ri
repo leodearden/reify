@@ -1,0 +1,10 @@
+// joint_direction_axis_eval.ri — CLI eval fixture for direction-typing ζ-a
+// (#9640): a Direction-typed axis builds the joint, and joint_axis returns that
+// stored Direction.
+
+module joint_direction_axis_eval
+
+structure def JointDirectionAxis {
+    let j = prismatic(dir(0, 1, 0), 0mm .. 10mm)
+    let a = joint_axis(j)
+}

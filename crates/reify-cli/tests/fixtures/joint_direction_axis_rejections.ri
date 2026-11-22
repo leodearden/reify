@@ -1,0 +1,26 @@
+// joint_direction_axis_rejections.ri — CLI check fixture for direction-typing
+// ζ-a (#9640): a joint or flexure axis is a Direction, so each structure below
+// draws one ArgTypeMismatch naming Direction from `reify check`.
+
+module joint_direction_axis_rejections
+
+structure def PrismaticVectorAxis {
+    let j = prismatic(vec3(0, 1, 0), 0mm .. 10mm)
+}
+
+structure def RevoluteStringAxis {
+    let j = revolute("up", 0rad .. 1rad)
+}
+
+structure def CantileverVectorAxis {
+    let m = Steel_AISI_1045()
+    let j = prb_cantilever_beam(20mm, 5mm, 0.5mm, m, point3(0mm, 0mm, 0mm), vec3(0, 1, 0))
+}
+
+structure def RevoluteCtorVectorAxis {
+    let j = Revolute(axis: vec3(0, 1, 0))
+}
+
+structure def RevoluteCtorStringAxis {
+    let j = Revolute(axis: "up")
+}
