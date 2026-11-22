@@ -64,6 +64,10 @@ def never_probed():
     raise AssertionError("reachability was computed for a row that does not need it")
 
 
+def never_read_host():
+    raise AssertionError("host.toml was read for a row that does not need it")
+
+
 class HostConfig(unittest.TestCase):
     def setUp(self):
         self.tmp = scratch(self)
@@ -147,14 +151,20 @@ class DecideMode(unittest.TestCase):
     CANON = "/opt/reify-canon/ws"
     REACHABLE = (canon_run.Route.BOUND, canon_run.Route.NAMESPACE)
 
-    def decide(self, *, stamp=None, built_in=False, enabled=False, route=None):
+    def decide(self, *, stamp=None, built_in=False, enabled=None, route=None):
+        """`None` for enabled or route pins that the row never reads it."""
         state = canon_run.BuildDirState(stamp=stamp, built_in=built_in)
+        if enabled is None:
+            host_enabled = never_read_host
+        else:
+            def host_enabled():
+                return enabled
         if route is None:
             reachability = never_probed
         else:
             def reachability():
                 return canon_run.Reachability(route, f"probe says {route.name}")
-        return canon_run.decide_mode(state, self.CANON, enabled, reachability)
+        return canon_run.decide_mode(state, self.CANON, host_enabled, reachability)
 
     def test_stamped_canon_reachable_is_canon(self):
         for route in self.REACHABLE:
@@ -168,18 +178,16 @@ class DecideMode(unittest.TestCase):
         self.assertIn("probe says NONE", decision.reason)
 
     def test_stamped_other_text_refuses_quoting_it(self):
-        decision = self.decide(stamp="/somewhere/else", enabled=True)
+        decision = self.decide(stamp="/somewhere/else")
         self.assertIs(decision.mode, canon_run.Mode.REFUSED)
         self.assertIn("/somewhere/else", decision.reason)
 
-    def test_unstamped_built_in_is_real_path(self):
-        for enabled in (False, True):
-            with self.subTest(enabled=enabled):
-                decision = self.decide(built_in=True, enabled=enabled)
-                self.assertIs(decision.mode, canon_run.Mode.REAL_PATH)
+    def test_unstamped_built_in_is_real_path_without_reading_host_or_probing(self):
+        decision = self.decide(built_in=True)
+        self.assertIs(decision.mode, canon_run.Mode.REAL_PATH)
 
     def test_fresh_on_disabled_host_is_real_path(self):
-        self.assertIs(self.decide().mode, canon_run.Mode.REAL_PATH)
+        self.assertIs(self.decide(enabled=False).mode, canon_run.Mode.REAL_PATH)
 
     def test_fresh_enabled_unreachable_is_real_path(self):
         decision = self.decide(enabled=True, route=canon_run.Route.NONE)
