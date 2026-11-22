@@ -2,7 +2,9 @@
 # tests/infra/test_cpu_load_governance_deflake.sh — meta-test for PRD T7 (task 4846).
 #
 # Proves that every live cgroup-governance cycle of test_cpu_load_governance.sh
-# SKIPs under the REIFY_CPU_GOVERN_DISABLE=1 break-glass.
+# SKIPs under the REIFY_CPU_GOVERN_DISABLE=1 break-glass, in two halves: each
+# registered cycle's gate SKIPs (A4, driven), and each cycle's if-head consults
+# that gate, with no other path to host_supports_governance (A7, source lint).
 #
 # Assertions:
 #   A2  the armed gates-only drive exits 0 under the `timeout 120` anti-hang guard.
@@ -11,10 +13,13 @@
 #   A5  the drive short-circuited at the seam: the SUT printed no `Results:` line.
 #   A6  GATES_ONLY without the REIFY_GOVTEST_TEST_MODE arming key is refused
 #       loudly, and the suite runs on to Cycle SELF.
+#   A7  each live cycle is headed `if [!] live_cycle_gate NAME; then`, and only
+#       live_cycle_gate calls host_supports_governance; fixtures prove it flags.
 #
 # Technique: the armed REIFY_CPU_GOV_TEST_GATES_ONLY=1 seam consults each live
 # cycle's host gate and exits before any cycle runs, so the drive is sub-second
-# and the guard never decides the verdict. The SUT's always-on body is its own
+# and the guard never decides the verdict. The drive never reaches a cycle's
+# own if-head, which is why A7 exists. The SUT's always-on body is its own
 # run_all member's job, not this one's.
 # Auto-discovered by tests/infra/run_all.sh (glob test_*.sh).
 
@@ -23,6 +28,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SUT="$SCRIPT_DIR/test_cpu_load_governance.sh"
 INSTRUMENT="$SCRIPT_DIR/cpu_gov_instrument.py"
+LIVE_CYCLES=(FIXTURE-6 ROW1-2 ROW1-1 ROW2_3 CONFINE-APPLIED ROW4)
 
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || {
     echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh" >&2
@@ -101,7 +107,7 @@ assert "A2: SUT exits 0 under the armed gates-only drive" \
 
 _sut_skipped_every_live_cycle() {
     local name missing=()
-    for name in FIXTURE-6 ROW1-2 ROW1-1 ROW2_3 CONFINE-APPLIED ROW4; do
+    for name in "${LIVE_CYCLES[@]}"; do
         grep -qF -- "SKIP $name: host does not support cgroup governance" "$_SUT_OUT" \
             || missing+=("$name")
     done
@@ -163,6 +169,67 @@ _gates_only_refused_without_arming() {
 assert "A6: GATES_ONLY without REIFY_GOVTEST_TEST_MODE is refused loudly and the suite runs on" \
     _gates_only_refused_without_arming
 
+# ── A7 — every live cycle's if-head consults its gate ─────────────────────────
+echo ""
+echo "--- A7: live-cycle -> live_cycle_gate wiring (source lint + fixtures) ---"
+
+# _gate_wiring_violations FILE — prints one line per violation; returns 1 if any.
+_gate_wiring_violations() {
+    local file="$1" name bypasses rc=0
+    for name in "${LIVE_CYCLES[@]}"; do
+        grep -Eq "^[[:space:]]*(if|elif)[[:space:]]+(![[:space:]]+)?live_cycle_gate[[:space:]]+${name}[[:space:]]*;[[:space:]]*then([[:space:]]|\$)" "$file" && continue
+        echo "$name: no cycle headed 'if [!] live_cycle_gate $name; then'"
+        rc=1
+    done
+    bypasses="$(awk '
+        /^[A-Za-z_][A-Za-z0-9_]*\(\)[[:space:]]*\{/ { fn = $1; sub(/\(\).*/, "", fn); next }
+        /^\}/ { fn = "" }
+        /^[[:space:]]*#/ { next }
+        /(^|[^A-Za-z0-9_])host_supports_governance([^A-Za-z0-9_]|$)/ && fn != "live_cycle_gate" {
+            print "line " NR " (" (fn == "" ? "top level" : fn) "): calls host_supports_governance outside live_cycle_gate"
+        }
+    ' "$file")"
+    if [ -n "$bypasses" ]; then
+        echo "$bypasses"
+        rc=1
+    fi
+    return "$rc"
+}
+
+_FIXTURE_DIR="$(mktemp -d)"
+
+# _wiring_lint_rejects FIXTURE NEEDLE — 0 when the lint rejects FIXTURE naming NEEDLE.
+_wiring_lint_rejects() {
+    local out rc=0
+    if cmp -s "$1" "$SUT"; then
+        echo "fixture $1 is identical to the SUT — its mutation no longer applies"
+        return 1
+    fi
+    out="$(_gate_wiring_violations "$1")" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "lint accepted a fixture it must reject (want a violation naming '$2')"
+        return 1
+    fi
+    if ! grep -qF -- "$2" <<<"$out"; then
+        echo "lint rejected the fixture without naming '$2':"
+        echo "$out"
+        return 1
+    fi
+    return 0
+}
+
+assert "A7a: every live cycle of the SUT is headed by its live_cycle_gate, and nothing else calls host_supports_governance" \
+    _gate_wiring_violations "$SUT"
+
+sed -E 's/live_cycle_gate[[:space:]]+ROW4([[:space:]]*;)/false\1/' "$SUT" > "$_FIXTURE_DIR/dropped-gate.sh"
+assert "A7b: the lint rejects a SUT whose ROW4 if-head no longer consults live_cycle_gate" \
+    _wiring_lint_rejects "$_FIXTURE_DIR/dropped-gate.sh" "ROW4:"
+
+{ cat "$SUT"; echo 'if host_supports_governance; then :; fi'; } > "$_FIXTURE_DIR/bypass-gate.sh"
+assert "A7c: the lint rejects a SUT with a direct host_supports_governance caller" \
+    _wiring_lint_rejects "$_FIXTURE_DIR/bypass-gate.sh" "calls host_supports_governance outside live_cycle_gate"
+
+rm -rf "$_FIXTURE_DIR"
 rm -f "$_SUT_OUT" "$_DISARM_OUT"
 
 # ── Final summary ──────────────────────────────────────────────────────────────
