@@ -927,8 +927,9 @@ if ! python3 -c 'import yaml' 2>/dev/null; then
 elif [ ! -f "$G_YAML" ]; then
     echo "SKIP: $G_YAML not found — skipping the yaml cross-check (G7-G9)"
 else
-    _G_PARSE_PY="$(mktemp "$_TMPBASE/test-agent-cache-yaml-XXXXXX.py")"
-    _TMPDIRS+=("$_G_PARSE_PY")
+    _G_PARSE_DIR="$(mktemp -d "$_TMPBASE/test-agent-cache-yaml-XXXXXX")"
+    _TMPDIRS+=("$_G_PARSE_DIR")
+    _G_PARSE_PY="$_G_PARSE_DIR/test_agent_cache_yaml.py"
     cat > "$_G_PARSE_PY" << 'PYEOF'
 """Read dark-factory-orchestrator.yaml's landlock cache-redirect contract.
 
