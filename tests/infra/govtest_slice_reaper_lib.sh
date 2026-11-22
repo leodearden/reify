@@ -41,8 +41,10 @@
 #
 # Knobs:
 #   REIFY_GOVTEST_TEST_MODE             set to 1 to ARM the test seams below.
-#                                       Nothing else in the repo sets it, so
-#                                       the seams are inert on every real run.
+#                                       Only infra test drivers set it; no
+#                                       production path or verify_env passes
+#                                       it, so the seams are inert on every
+#                                       real run.
 #   REIFY_GOVTEST_REAP_FAKE_ALIVE_PIDS  space-separated pid list that replaces
 #                                       the `kill -0` liveness oracle (test
 #                                       seam; mirrors the REIFY_CPU_GOV_TEST_*

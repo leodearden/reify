@@ -187,9 +187,12 @@ in bash without the Arm 2 port. The member is 4,174 lines (1,613 code lines,
   wrapper running the same-stem `.py`, manifest row `host-exclusive`. Its
   CLASSIFY cycle takes its name from `$BASH_SOURCE`; key it on the wrapper.
 - **The dialect** in "The Python dialect a port must emit" above.
-- **Stdout other suites grep.** `test_cpu_load_governance_deflake.sh` A1/A4
-  run it under `timeout 120` and grep its `SKIP ROW4:` and `SKIP ROW2_3:`
-  lines ending `host does not support cgroup governance`.
+- **Stdout other suites grep.** `test_cpu_load_governance_deflake.sh` drives
+  it under `REIFY_CPU_GOV_TEST_GATES_ONLY` (armed by
+  `REIFY_GOVTEST_TEST_MODE`) under `timeout 120` and greps the six
+  `SKIP <NAME>: host does not support cgroup governance` lines (FIXTURE-6,
+  ROW1-2, ROW1-1, ROW2_3, CONFINE-APPLIED, ROW4), `GATES_ONLY=1 IGNORED` and
+  `Cycle SELF`. It needs no `Results:` line on the seam path.
   `test_govtest_slice_reaper.sh` Block F drives it under
   `REIFY_CPU_GOV_TEST_LIFECYCLE_ONLY` (armed by `REIFY_GOVTEST_TEST_MODE`) and
   greps `LIFECYCLE_ONLY=1 IGNORED` and `Cycle SELF`. It also needs no

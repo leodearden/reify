@@ -55,10 +55,11 @@
 # Knobs:
 #   REIFY_GOVTEST_TEST_MODE             ARMING KEY for the seam below (tasks
 #                                       5930/6386). It is refused unless this
-#                                       is 1. Nothing in the repo sets it except
-#                                       test_govtest_slice_reaper.sh, so the
-#                                       seam is inert on every real run no
-#                                       matter what else is exported.
+#                                       is 1. Only infra test drivers set it;
+#                                       no production path or verify_env
+#                                       passes it, so the seam is inert on
+#                                       every real run no matter what else is
+#                                       exported.
 #   REIFY_CPU_GOVEXEC_TEST_LIFECYCLE_ONLY
 #                                       with the arming key, exit 0 immediately
 #                                       after the startup sweeps, with the EXIT
@@ -215,10 +216,10 @@ govtest_reap_legacy reify-test-task.slice reify-test-merge.slice reify-test.slic
 # single stray export (a verify_env entry, an operator shell, a future harness
 # forwarding REIFY_* wholesale) would silently turn this gate into a no-op that
 # still reports success. So it is armed only in conjunction with
-# REIFY_GOVTEST_TEST_MODE=1, a marker nothing in the repo sets outside that
-# test's drive. Disarmed, the request is refused LOUDLY and the full suite runs
-# — the failure mode of a stray var is then a noisy real run, never a quiet
-# vacuous pass.
+# REIFY_GOVTEST_TEST_MODE=1, a marker only infra test drivers set and no
+# production path or verify_env passes. Disarmed, the request is refused LOUDLY
+# and the full suite runs — the failure mode of a stray var is then a noisy
+# real run, never a quiet vacuous pass.
 if [ "${REIFY_CPU_GOVEXEC_TEST_LIFECYCLE_ONLY:-0}" = "1" ]; then
     if [ "${REIFY_GOVTEST_TEST_MODE:-0}" = "1" ]; then
         echo "REIFY_CPU_GOVEXEC_TEST_LIFECYCLE_ONLY=1 — exiting after startup sweeps (slice-lifecycle drive only)"
