@@ -249,6 +249,17 @@ mod trig;
 ///
 /// Returns `Value::Undef` for unknown functions or wrong argument types/counts.
 pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
+    try_eval_builtin(name, args).unwrap_or(Value::Undef)
+}
+
+/// Evaluate a built-in stdlib function by name, or `None` when no family
+/// claims `name` for these arguments.
+///
+/// `Some(Value::Undef)` means a family recognised the name and answered Undef:
+/// either it refused the arguments, or the name is a stub whose real
+/// evaluation lives elsewhere (an `eval_expr` intercept, a compute
+/// trampoline). `None` means the stdlib has no evaluation for the call at all.
+pub fn try_eval_builtin(name: &str, args: &[Value]) -> Option<Value> {
     // Registry FIRST (PRD §7.3(3)): a name registered as a
     // `BindingKind::EvalBuiltin` row resolves here, ahead of the surviving
     // family dispatchers. `None` falls through exactly as any other family's
@@ -265,7 +276,8 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
     //   answered downstream:
     //   `try_dispatch_declines_every_name_the_registry_does_not_own`.
     // - At a NON-declared arity a seed name still reaches this fn's terminal
-    //   `Value::Undef` — `eval_builtin_yields_undef_at_a_non_declared_arity`.
+    //   `None` (`eval_builtin`'s `Value::Undef`) —
+    //   `eval_builtin_yields_undef_at_a_non_declared_arity`.
     //
     // That third one is the only evidence bearing on shadowing, and it is
     // PARTIAL: a later arm that claimed a seed name at a non-declared arity
@@ -276,81 +288,81 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
     // no-shadowing property; see the parity test's module doc for the same
     // ceiling stated at length.
     if let Some(v) = registry_dispatch::try_dispatch(name, args) {
-        return v;
+        return Some(v);
     }
     if let Some(v) = numeric::eval_numeric(name, args) {
-        return v;
+        return Some(v);
     }
     if let Some(v) = list::eval_list(name, args) {
-        return v;
+        return Some(v);
     }
     if let Some(v) = trig::eval_trig(name, args) {
-        return v;
+        return Some(v);
     }
     if let Some(v) = linalg::eval_linalg(name, args) {
-        return v;
+        return Some(v);
     }
     if let Some(v) = complex::eval_complex(name, args) {
-        return v;
+        return Some(v);
     }
     if let Some(v) = orientation::eval_orientation(name, args) {
-        return v;
+        return Some(v);
     }
     if let Some(v) = direction::eval_direction(name, args) {
-        return v;
+        return Some(v);
     }
     if let Some(v) = geometry::eval_geometry(name, args) {
-        return v;
+        return Some(v);
     }
     if let Some(v) = matrix::eval_matrix(name, args) {
-        return v;
+        return Some(v);
     }
     if let Some(v) = construct::eval_construct(name, args) {
-        return v;
+        return Some(v);
     }
     if let Some(v) = joints::eval_joints(name, args) {
-        return v;
+        return Some(v);
     }
     if let Some(v) = flexures::eval_flexures(name, args) {
-        return v;
+        return Some(v);
     }
     if let Some(v) = loads::eval_loads(name, args) {
-        return v;
+        return Some(v);
     }
     if let Some(v) = fea::eval_fea(name, args) {
-        return v;
+        return Some(v);
     }
     if let Some(v) = supports::eval_supports(name, args) {
-        return v;
+        return Some(v);
     }
     if let Some(v) = mechanism::eval_mechanism(name, args) {
-        return v;
+        return Some(v);
     }
     if let Some(v) = snapshot::eval_snapshot(name, args) {
-        return v;
+        return Some(v);
     }
     if let Some(v) = dynamics::eval::eval_dynamics(name, args) {
-        return v;
+        return Some(v);
     }
     if let Some(v) = stackup::eval_stackup(name, args) {
-        return v;
+        return Some(v);
     }
     if let Some(v) = dfm::eval_dfm(name, args) {
-        return v;
+        return Some(v);
     }
     if let Some(v) = tolerancing::eval_tolerancing(name, args) {
-        return v;
+        return Some(v);
     }
     if let Some(v) = sweep::eval_sweep(name, args) {
-        return v;
+        return Some(v);
     }
     if let Some(v) = trajectory::eval_trajectory(name, args) {
-        return v;
+        return Some(v);
     }
     if let Some(v) = tensegrity::eval_tensegrity(name, args) {
-        return v;
+        return Some(v);
     }
-    Value::Undef
+    None
 }
 
 /// Expose the registry-keyed eval dispatcher to the registry seam test without
@@ -414,5 +426,15 @@ mod tests {
     #[test]
     fn unknown_function_returns_undef() {
         assert!(eval_builtin("foo", &[Value::Real(1.0)]).is_undef());
+    }
+
+    #[test]
+    fn try_eval_builtin_separates_an_unclaimed_name_from_a_claimed_undef() {
+        let side = Value::length(1.0);
+        assert!(try_eval_builtin("box", &[side.clone(), side.clone(), side]).is_none());
+        assert!(matches!(
+            try_eval_builtin("sqrt", &[Value::Real(-1.0)]),
+            Some(Value::Undef)
+        ));
     }
 }

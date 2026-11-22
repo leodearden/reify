@@ -100,7 +100,7 @@ pub use geometry::{
     unsupported_dense_sdf_ingest,
 };
 pub use indeterminate::{
-    ComputeFailureKind, IndeterminateReason, StructuralReason, TransientReason,
+    ComputeFailureKind, IndeterminateReason, RefusedOperation, StructuralReason, TransientReason,
 };
 pub use kernel_validation::{
     BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE,
