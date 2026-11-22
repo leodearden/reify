@@ -379,15 +379,9 @@ WARN_PCT=90
 # 17593 across 30 module files + 391 external); bare main was already 17893,
 # 107 under the warn line. Its rule (a) split is #9503. #9400 moves the root to
 # harness_modules_ports/main.rs and must re-path this row in the same diff.
-#
-# harness_cli.rs measured 18137/20000 = 90% at task #9634 (root 225 + 17574
-# across 97 module files + 338 external); bare main was already 17989, 11 under
-# the warn line. Its rule (a) split is #10100. #9397 moves the root to
-# harness_cli/main.rs and must re-path this row in the same diff.
 _KLOC_WARN_KNOWN=(
     "crates/reify-syntax/tests/harness_syntax.rs"
     "crates/reify-compiler/tests/harness_modules_ports.rs"
-    "crates/reify-cli/tests/harness_cli.rs"
 )
 
 # The checked-in grandfather-baseline ratchet (resolved via the shared lib so

@@ -165,7 +165,9 @@ fn pinned_clean_files_emit_no_ctor_conformance_diagnostic() {
 /// `docs/prds/v0_6/dimension-checked-readers.md`'s, kept alongside the `#NNNN`
 /// cite so the attribution stays legible if those cluster tasks are re-split:
 /// γ1/ε/η are #6922, γ2/β/ζ are #6941. The `direction_typing_*` rows' δ/μ are
-/// `docs/prds/v0_6/direction-typing.md`'s: δ is #9637, μ is #9651.
+/// `docs/prds/v0_6/direction-typing.md`'s: δ is #9637, μ is #9651. The `s8_*`
+/// rows' η is S8-η #8898 of
+/// `docs/prds/v0_6/builtin-registry-migration-and-interception-classifier.md`.
 ///
 /// # Sibling of `CTOR_CONFORMANCE_MIGRATION_DEBT`, not a merge of it
 ///
@@ -278,6 +280,22 @@ pub(crate) const CTOR_CONFORMANCE_CORPUS_RESIDUAL: &[(&str, &str, &str, &str)] =
          rows (PRD §8: the ctor-conformance rejection table and probe-set rows for \
          B6/B8/B22) and retires or promotes this before-image",
     ),
+    (
+        "tests/prd-gate/fixtures/s8_geometry_ctor_conformance_inline.ri",
+        "len",
+        "#8898",
+        "S8 leaf η's §5 row 9 before-image \
+         (docs/prds/v0_6/builtin-registry-migration-and-interception-classifier.md); \
+         \"fixing\" the call site deletes η's recorded pre-state",
+    ),
+    (
+        "tests/prd-gate/fixtures/s8_geometry_ctor_conformance_inline.ri",
+        "name",
+        "#8898",
+        "S8 leaf η's §5 row 9 before-image \
+         (docs/prds/v0_6/builtin-registry-migration-and-interception-classifier.md); \
+         \"fixing\" the call site deletes η's recorded pre-state",
+    ),
 ];
 
 /// The repo-relative prefix of the `examples/` corpus.
@@ -374,10 +392,16 @@ fn names_a_ctor_argument(site: &SurveySite) -> bool {
 /// Named here because this table's soundness depends on it: without a probe, an
 /// entry is an unbacked declaration. Run by
 /// `tests/infra/test_prd_gate_struct_ctor_conformance.sh`.
+///
+/// The file is named for δ's struct-ctor PRD, whose §7 boundary rows were its
+/// first probes, but it backs every entry the table claims, whichever PRD or
+/// release note the fixture belongs to.
 const REJECTION_PROBE_SET_REL: &str = "tests/prd-gate/struct-ctor-conformance-probe-set.json";
 
-/// Sites whose ctor-conformance violation IS the deliverable: δ's (#5306)
-/// committed PRD §7 boundary-row rejection fixtures.
+/// Sites whose ctor-conformance violation IS the deliverable: committed
+/// rejection fixtures — δ's (#5306) struct-ctor PRD §7 boundary rows, other
+/// PRDs' rejection-observed fixtures, and release-note migration before-images —
+/// each asserted to reject by a `check` probe in [`REJECTION_PROBE_SET_REL`].
 ///
 /// Each entry is `(repo-relative file, param or `None`, why)`. The param is the
 /// one [`SurveySite::field`] recovers, taken off the generator's MEASURED panic
@@ -389,11 +413,11 @@ const REJECTION_PROBE_SET_REL: &str = "tests/prd-gate/struct-ctor-conformance-pr
 /// The other two tables carry a `#NNNN` owner because their entries are RETIRED
 /// by that task's diff, and [`is_canonical_task_cite`] keeps the cite
 /// liveness-checkable. Neither applies here: these fixtures are never retired —
-/// they are the PRD's G2 headline signal made repeatable, and deleting one reds
-/// `tests/infra/test_prd_gate_struct_ctor_conformance.sh`. Naming #5306 would
-/// orphan the cite the moment δ goes done on merge, and would tell a reader that
-/// someone owes work here. What retires this table is the survey's own
-/// retirement, already documented in the harness root — not a task.
+/// each is its own PRD's or release note's rejection signal made repeatable,
+/// and deleting one reds `tests/infra/test_prd_gate_struct_ctor_conformance.sh`.
+/// Naming #5306 would orphan the cite the moment δ goes done on merge, and would
+/// tell a reader that someone owes work here. What retires this table is the
+/// survey's own retirement, already documented in the harness root — not a task.
 ///
 /// # This is NOT `SKIP_SET`, and the guard that makes that true is not a comment
 ///
@@ -406,6 +430,32 @@ const REJECTION_PROBE_SET_REL: &str = "tests/prd-gate/struct-ctor-conformance-pr
 /// can be declared an intended rejection only while a committed gate
 /// independently asserts that it DOES reject.
 const CTOR_CONFORMANCE_REJECTION_FIXTURES: &[(&str, Option<&str>, &str)] = &[
+    (
+        "tests/prd-gate/fixtures/coordinate_target_fea_pose_rejected.ri",
+        Some("at"),
+        "the coordinate-target-fea PRD's BT14 \"rejection observed\" signal \
+         (docs/prds/v0_6/coordinate-target-fea.capability-manifest.md, bindings \
+         bt14-pose-at-at-rejected / bt14-pose-at-pointmass-rejected): a coordinate pose at a \
+         Point3<Length> field is rejected by the param type; asserted to exit 1 by the `check` \
+         probe for this file in tests/prd-gate/struct-ctor-conformance-probe-set.json",
+    ),
+    (
+        "tests/prd-gate/fixtures/migration_v0_2_ctor_field_type_before.ri",
+        Some("thickness"),
+        "the v0.2-alpha migration note's before-image for \"A constructor argument must match \
+         the field's type\"; the exact error line lives in docs/releases/v0.2-alpha.md, asserted \
+         by tests/infra/test_migration_note_v0_2.sh, so the `check` probe for this file in \
+         tests/prd-gate/struct-ctor-conformance-probe-set.json asserts only that it exits 1",
+    ),
+    (
+        "tests/prd-gate/fixtures/migration_v0_2_ctor_unknown_field_before.ri",
+        Some("thicknes"),
+        "the v0.2-alpha migration note's before-image for \"A misspelled constructor argument \
+         is an error\" (E_CTOR_UNKNOWN_FIELD); the exact error line lives in \
+         docs/releases/v0.2-alpha.md, asserted by tests/infra/test_migration_note_v0_2.sh, so \
+         the `check` probe for this file in tests/prd-gate/struct-ctor-conformance-probe-set.json \
+         asserts only that it exits 1",
+    ),
     (
         "tests/prd-gate/fixtures/struct_ctor_conformance_int_at_string_field.ri",
         Some("label"),
@@ -461,14 +511,15 @@ pub(crate) enum Disposition {
     /// to go fix three deliberate rejection fixtures whose violation IS their
     /// content.
     NotApplicable,
-    /// An in-scope site whose violation IS the deliverable: a committed PRD §7
-    /// boundary-row fixture that `reify check` is asserted to REJECT.
+    /// An in-scope site whose violation IS the deliverable: a committed rejection
+    /// fixture — a PRD's boundary row or rejection-observed signal, or a release
+    /// note's migration before-image — that `reify check` is asserted to REJECT.
     ///
     /// Distinct from [`Disposition::NotApplicable`] on scope — these sites ARE
     /// knob-governed and DO name a ctor argument — and from
     /// [`Disposition::Deferred`] on ownership: no task retires them, so there is
     /// no owner to carry. Folding either way told the artifact's reader to go
-    /// break δ's own CLI gate.
+    /// break the CLI gate that asserts the rejection.
     IntendedRejection,
     /// A knob-governed site that no table names: it is actionable, and nobody has
     /// claimed it.
@@ -547,8 +598,9 @@ impl Disposition {
 ///   ctor-conformance code but the knob's walk did not emit it; the work does
 ///   not exist.
 /// * [`Disposition::IntendedRejection`] — DO NOT TOUCH IT. In scope and
-///   genuinely violating, on purpose: the violation is a committed PRD §7
-///   signal, and removing it reds the CLI gate that asserts the rejection.
+///   genuinely violating, on purpose: the violation is a committed rejection
+///   fixture's signal, and removing it reds the CLI gate that asserts the
+///   rejection.
 ///
 /// Collapsing any pair sends the reader the opposite way from the right one.
 ///
@@ -785,7 +837,8 @@ pub(crate) fn assert_no_unwaived_ctor_conformance_sites(run: &SurveyRun) {
          Fix the site. Add a waiver ONLY if a LIVE task genuinely owns retiring it, \
          and then name that task and say what breaks if it is migrated here instead. \
          A THIRD, narrower option applies only to a committed rejection FIXTURE whose \
-         violation is itself a PRD §7 signal: add it to \
+         violation is itself its signal (a PRD's rejection row, or a release note's \
+         migration before-image): add it to \
          CTOR_CONFORMANCE_REJECTION_FIXTURES, which requires a probe in \
          tests/prd-gate/struct-ctor-conformance-probe-set.json already asserting that \
          the file rejects.\n\n\
@@ -801,8 +854,8 @@ pub(crate) fn assert_no_unwaived_ctor_conformance_sites(run: &SurveyRun) {
          actionable set for different reasons. Non-knob sites carry a \
          ctor-conformance code but were emitted by another PRD's path, so they name \
          no ctor argument and resolve to `n/a`. In-scope INTENDED REJECTIONS are \
-         knob-governed and genuinely violating, on purpose: they are committed PRD §7 \
-         boundary-row fixtures whose rejection a CLI probe asserts. Neither is waived \
+         knob-governed and genuinely violating, on purpose: they are committed \
+         rejection fixtures whose rejection a CLI probe asserts. Neither is waived \
          and neither is counted here.",
         unexplained.len(),
         stale.len(),
@@ -1248,6 +1301,12 @@ fn ctor_conformance_corpus_residual_is_disjoint_from_migration_debt() {
 // retire them (unlike `Deferred`). The four dispositions map one-to-one onto
 // four DIFFERENT reader actions, which is the property that makes the artifact
 // worth reading at all.
+//
+// δ's five were the table's FIRST members, not its only ones. Any committed
+// fixture whose violation is its own deliverable belongs here on the same terms
+// — another PRD's rejection-observed fixture, or a release note's migration
+// before-image — and each is backed the same way, by a `check` probe in the
+// same probe-set.
 
 /// The first [`CTOR_CONFORMANCE_REJECTION_FIXTURES`] entry that carries a param,
 /// or `None` when the table holds none.

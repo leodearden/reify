@@ -189,7 +189,8 @@ in bash without the Arm 2 port. The member is 4,174 lines (1,613 code lines,
 - **The dialect** in "The Python dialect a port must emit" above.
 - **Stdout other suites grep.** `test_cpu_load_governance_deflake.sh` drives
   it under `REIFY_CPU_GOV_TEST_GATES_ONLY` (armed by
-  `REIFY_GOVTEST_TEST_MODE`) under `timeout 120` and greps the six
+  `REIFY_GOVTEST_TEST_MODE`) under a 120 s output-silence stall guard
+  (`_run_with_stall_guard "$_SUT_STALL_S"`) and greps the six
   `SKIP <NAME>: host does not support cgroup governance` lines (FIXTURE-6,
   ROW1-2, ROW1-1, ROW2_3, CONFINE-APPLIED, ROW4), `GATES_ONLY=1 IGNORED` and
   `Cycle SELF`. It needs no `Results:` line on the seam path.

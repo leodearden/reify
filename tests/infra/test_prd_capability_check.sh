@@ -20,8 +20,8 @@
 # the SAME preflight through scripts/prd-gate-substrate-guard.sh, and neither
 # early-exits either: an unusable substrate drops only their GRAMMAR-kind rows
 # and their check-kind rows still run and are still asserted, behind a loud
-# banner naming what was dropped.  Here the preflight goes one step further and
-# is purely INFORMATIONAL — it gates nothing at all — because exactly ONE of
+# banner naming what was dropped.  Here the preflight goes one step further:
+# its exit code gates nothing at all, because exactly ONE of
 # this suite's unit tests needs the grammar substrate and every other one is
 # hermetic (count left unstated on purpose — it moves), so the suite self-skips
 # that single test from the inside.  Same house rule in all three, at three
@@ -35,7 +35,9 @@
 # runs at most one real tree-sitter parse, a time-bounded one
 # (_SUBSTRATE_PROBE_TIMEOUT_S in prd-capability-check.py), so a tree-sitter
 # wedged on its own grammar lock reports unusable instead of hanging this run.
-# The SKIP line below names whichever cause applied.
+# The suite's own grammar-e2e guard makes the same prepare_grammar_substrate()
+# check, generation included, so whether the preflight ran never changes whether
+# the e2e runs; the SKIP line below only names, in this log, the cause that applied.
 
 set -euo pipefail
 

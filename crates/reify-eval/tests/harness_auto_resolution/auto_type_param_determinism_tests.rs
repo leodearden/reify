@@ -193,7 +193,7 @@ const SKIP_SET: &[(&str, SkipKind, &str)] = &[
          unresolved-type Error — check_source_with_stdlib panics on compile errors. \
          The two-way symmetric behaviour (both --cfg target=linux and --cfg target=wasm \
          exit 0, each resolving the platform-correct Platform variant) is exercised \
-         end-to-end by crates/reify-cli/tests/harness_cli/cli_check_cfg_example.rs. \
+         end-to-end by crates/reify-cli/tests/harness_cli_check/cli_check_cfg_example.rs. \
          The siblings (platform_linux.ri, platform_wasm.ri) compile clean single-file \
          and are intentionally NOT skipped. \
          Mirrored from examples_smoke.rs::SKIP_SET (task 3995 ε).",

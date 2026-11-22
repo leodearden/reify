@@ -13,7 +13,7 @@ use reify_compiler::import_headers::{
     GatedOffImports, ImportPlan, NameRole, NameUse, PlacementDefect, RequiredImport,
     cfg_satisfied_imports, cfg_unsatisfied_imports, derive_std_imports, insert_imports,
 };
-use reify_core::{DiagnosticCode, ModulePath, Severity, panic_payload_to_string};
+use reify_core::{DiagnosticCode, ModulePath, Severity, panic_payload_str};
 
 const SUBJECT_PATH: &str = "subject";
 
@@ -530,7 +530,9 @@ fn refusal_message(plan: &ImportPlan, given: &ParsedModule) -> String {
     }));
     match outcome {
         Ok(residual) => panic!("expected a refusal, but the plan judged the module: {residual:?}"),
-        Err(payload) => panic_payload_to_string(payload.as_ref()),
+        Err(payload) => panic_payload_str(payload.as_ref())
+            .expect("panic payload is a string")
+            .to_owned(),
     }
 }
 

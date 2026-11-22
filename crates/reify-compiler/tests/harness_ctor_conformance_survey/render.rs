@@ -416,12 +416,12 @@ pub(crate) fn render_survey(run: &SurveyRun, inline: &SurveyRun, stamp: &SurveyS
         owner because it needs none, and reading it as unclaimed work would send you to\n\
         delete another PRD’s signal.\n\
         - **`intended rejection`** is an in-scope site whose violation IS the\n\
-        deliverable: a committed PRD §7 boundary-row fixture that `reify check` is\n\
+        deliverable: a committed rejection fixture that `reify check` is\n\
         asserted to REJECT by a probe in\n\
         `tests/prd-gate/struct-ctor-conformance-probe-set.json`. It differs from `n/a` on\n\
         scope — the knob's ctor-argument walk really is what emitted it — and from\n\
         `deferred` on ownership: no task retires it, so it names none. **Leave it alone**;\n\
-        migrating the site deletes δ's own signal and reds that CLI gate.\n\
+        migrating the site deletes the fixture's own signal and reds that CLI gate.\n\
         - **`unattributed`** is an in-scope site claimed by nobody: that is the\n\
         actionable state, and after γ the tracked `.ri` corpus holds none.\n\
         - **`census`** is every row from the **inline** half — a Reify snippet embedded\n\

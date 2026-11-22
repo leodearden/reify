@@ -1675,8 +1675,8 @@ _SUBSTRATE_PROBE_FIXTURE = "tests/prd-gate/fixtures/arrow_type.ri"
 # with no parser.c there is no reify language to load, so `tree-sitter parse`
 # reports a load failure carrying no permission marker — which is exactly the
 # shape grammar_substrate_usable()'s narrowness contract deliberately leaves
-# LOUD (a corrupt grammar must reach HARNESS_ERROR, never a skip).  A caller
-# asking "can a grammar probe run here?" therefore checks this first.
+# LOUD (a corrupt grammar must reach HARNESS_ERROR, never a skip).
+# prepare_grammar_substrate() therefore checks this before any probe.
 _GRAMMAR_PARSER_C_RELPATH = os.path.join("tree-sitter-reify", "src", "parser.c")
 
 
@@ -1759,9 +1759,9 @@ def grammar_substrate_usable(
     PRECONDITION, not checked here: that the grammar was generated at all.  An
     absent parser.c produces a load failure with no permission marker, which
     this function reports USABLE by design — the narrowness contract keeps a
-    missing or corrupt grammar loud rather than skippable.  Callers wanting the
-    whole question answered pair this with grammar_generated(), which is what
-    --grammar-substrate-status and the test harness's skip-guard both do.
+    missing or corrupt grammar loud rather than skippable.
+    prepare_grammar_substrate() answers the whole question, running this after
+    ensure_grammar_current() and grammar_generated().
 
     Callers use the result to SKIP rather than to alter a verdict — a probe that
     could not run still reports HARNESS_ERROR / exit 70.
@@ -1818,6 +1818,35 @@ def grammar_substrate_usable(
     # A load failure with no denial is a missing or corrupt grammar: loud at
     # HARNESS_ERROR, never a skip (grammar_load_failure's narrowness contract).
     return (True, "")
+
+
+def prepare_grammar_substrate(
+    ctx: ProbeContext, runner: ProbeRunner = run_probe
+) -> tuple:
+    """Return (ready, reason): whether a grammar probe can run here, after preparing for one.
+
+    The single definition of "can a grammar probe run here?", shared by
+    --grammar-substrate-status and the test harness's grammar-e2e skip guard.
+    It RUNS ctx.grammar_generator (ensure_grammar_current()), which writes src/;
+    then checks for a parser.c (grammar_generated()); then spends at most one
+    bounded substrate probe through `runner` (grammar_substrate_usable()).
+
+    Ordered and short-circuiting: a grammar that cannot be brought current is
+    never probed, so a src/ older than grammar.js is never reported ready, and
+    an ungenerated grammar, which the substrate probe reports usable by design,
+    is refused before the probe.
+
+    Returns:
+        (True, "") when a grammar probe can run; (False, reason) otherwise,
+        where reason is one operator-facing line.
+    """
+    current, reason = ensure_grammar_current(ctx)
+    if not current:
+        return (False, reason)
+    generated, parser_c = grammar_generated(ctx)
+    if not generated:
+        return (False, _grammar_not_generated_reason(ctx, parser_c))
+    return grammar_substrate_usable(ctx, runner=runner)
 
 
 # ---------------------------------------------------------------------------
@@ -2076,10 +2105,9 @@ def main(argv: List[str], runner: ProbeRunner = run_probe, ctx: Optional[ProbeCo
 
     --grammar-substrate-status is a separate mode: it reports whether a grammar
     probe could run here at all, so a shell caller can print a clean SKIP
-    instead of reporting an unrunnable probe as a gate FAIL.  It answers in three
-    ordered parts — ensure_grammar_current() (bring src/ up to date with
-    grammar.js), grammar_generated() (is there a parser.c to load?) and then,
-    only if both hold, ONE substrate probe through the same runner seam (with
+    instead of reporting an unrunnable probe as a gate FAIL.  It answers with
+    prepare_grammar_substrate(), which brings src/ up to date with grammar.js
+    and spends at most ONE substrate probe through the same runner seam (with
     the real runner, a `tree-sitter parse` subprocess bounded by
     ctx.substrate_timeout_s).  It evaluates no probe
     set, so it cannot affect any verdict.  --json does not apply to it: the finding is carried by
@@ -2159,26 +2187,8 @@ def main(argv: List[str], runner: ProbeRunner = run_probe, ctx: Optional[ProbeCo
 
     # --- Substrate status mode: report and return, without running probes ---
     if args.grammar_substrate_status:
-        # Ordered, not merged.  A grammar that cannot be brought up to date is
-        # never probed, so a src/ older than grammar.js is never reported
-        # usable.  An ungenerated grammar is a precondition failure that
-        # grammar_substrate_usable() reports usable by design (see its
-        # docstring); without that check the shell caller is told "usable" and
-        # then still collects exit 70 from the probe run — the one answer this
-        # mode exists to spare it.
-        current, reason = ensure_grammar_current(ctx)
-        if not current:
-            sys.stdout.write(f"grammar substrate: unusable: {reason}\n")
-            return 75  # EX_TEMPFAIL — a missing CLI or a held lock is environmental
-        generated, parser_c = grammar_generated(ctx)
-        if not generated:
-            sys.stdout.write(
-                "grammar substrate: unusable: "
-                f"{_grammar_not_generated_reason(ctx, parser_c)}\n"
-            )
-            return 75  # EX_TEMPFAIL — same SKIP contract as an unusable substrate
-        usable, reason = grammar_substrate_usable(ctx, runner=runner)
-        if usable:
+        ready, reason = prepare_grammar_substrate(ctx, runner=runner)
+        if ready:
             sys.stdout.write("grammar substrate: usable\n")
             return 0
         sys.stdout.write(f"grammar substrate: unusable: {reason}\n")

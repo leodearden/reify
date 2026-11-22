@@ -1293,7 +1293,7 @@ impl<'a> Lowering<'a> {
     /// **Pre-ν loudness is per-POSITION, not blanket** — pinned end-to-end
     /// (the exit status a user observes AND the diagnostic text) by the
     /// `reify check` regression cases in
-    /// `crates/reify-cli/tests/harness_cli/cli_check_qualified_ref_positions.rs`
+    /// `crates/reify-cli/tests/harness_cli_check/cli_check_qualified_ref_positions.rs`
     /// (task #6499). Read those before softening either diagnostic here:
     ///
     /// - TYPE position is loud on its own: `param p : obj.width` answers

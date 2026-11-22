@@ -4461,10 +4461,11 @@ printf 'some avg10=99.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0
 #
 # 120s is generous, not a tuned guess: the real merge bypass was MEASURED at
 # 713 ms on a loadavg-~190/32-core box, so 120s is ~170x the observed cost.
-# It also mirrors the budget tests/infra/test_cpu_load_governance_deflake.sh:115
-# already grants to an ENTIRE run of this SUT. ROW4-BYPASS-VACUITY-2d pins
-# that this floor stays generous enough to never discriminate; -2c pins that
-# the guard still fires on a genuine hang regardless of how generous it is.
+# It also matches the 120s of output silence tests/infra/
+# test_cpu_load_governance_deflake.sh (_SUT_STALL_S) allows this SUT before
+# TERMing it as hung. ROW4-BYPASS-VACUITY-2d pins that this floor stays
+# generous enough to never discriminate; -2c pins that the guard still fires
+# on a genuine hang regardless of how generous it is.
 _ROW4_BYPASS_TIMEOUT_S="${REIFY_CPU_GOV_TEST_ROW4_BYPASS_TIMEOUT_S:-120}"
 
 # ROW4-2: DF_VERIFY_ROLE=merge bypasses PSI → cpu-admit admit exits 0 fast.

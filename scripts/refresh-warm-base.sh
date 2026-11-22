@@ -55,6 +55,13 @@
 #      here: reflinked extents stay shared with the advancing source until
 #      that drops them too.
 #      Executable spec: tests/infra/test_refresh_warm_base.sh Block LIVE.
+#   2c.Evict build-script runs the advancing worktree's cargo would rerun: one
+#      call to the sibling scripts/evict-dirty-target-units.py --build-root
+#      <advancing worktree> on <base_dir>.gen.<N>.partial, which deletes each
+#      such run's `output` freshness reference from the staging copy only. A
+#      failure, or a missing sibling, aborts the refresh before the
+#      partial→gen rename. Rule: that script's header and PRD §9.5 inv.14.
+#      Executable spec: tests/infra/test_evict_dirty_target_units.py RefreshStep.
 #   3. Bootstrap (first refresh): if <base_dir> is a pre-existing real dir,
 #      rename it to a retired gen dir first (never rename-over-populated).
 #   4. Write per-gen authoritative landed-commit stamp: <base_dir>.gen.<N>.basecommit
@@ -485,6 +492,11 @@ ok "Reflink copy complete (gen ${_next_gen})."
 # the partial.
 "$_SCRIPT_DIR/prune-unconsulted-target.sh" --window-days 7 --prune-dead-unit-records \
     --atime-probe "$ADVANCING_DIR" "${_new_gen_partial}/debug"
+
+# Step 3c: evict build-script runs the advancing worktree's cargo would rerun
+# (header item 2c). Called plainly, like Step 3b, so set -e aborts on any
+# failure (a missing sibling included) before the rename below.
+"$_SCRIPT_DIR/evict-dirty-target-units.py" --build-root "$_prov_wt" "$_new_gen_partial"
 
 # Step 4: rename staging dir to the final gen dir (dir→new-name rename, safe).
 info "Finalizing: $_new_gen_partial -> $_new_gen_dir"

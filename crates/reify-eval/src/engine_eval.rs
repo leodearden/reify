@@ -12077,18 +12077,14 @@ mod invariant_tests {
     #[test]
     #[allow(clippy::single_element_loop)]
     fn panics_on_unrepresentable_cell_types() {
-        use std::panic;
         {
             let ty = Type::TypeParam("T".into());
             let mut graph = EvaluationGraph::default();
             let (id, node) = bad_node(ty);
             graph.value_cells.insert(id, node);
-            let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-                super::assert_value_cell_types_representable(&graph);
-            }));
-            assert!(result.is_err(), "expected panic but helper returned Ok");
-            let err = result.unwrap_err();
-            let msg = reify_core::panic_payload_to_string(err.as_ref());
+            let msg = reify_test_support::panic_message_of(|| {
+                super::assert_value_cell_types_representable(&graph)
+            });
             assert!(
                 msg.starts_with(&format!("{}:", super::ASSERT_MSG_PREFIX)),
                 "panic message did not start with {:?} followed by colon: {msg}",

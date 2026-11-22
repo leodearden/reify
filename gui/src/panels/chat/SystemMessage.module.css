@@ -16,7 +16,8 @@
   background: color-mix(in srgb, var(--reify-error, #e55) 8%, var(--reify-surface0));
 }
 
-.systemMessage[data-error-type='rate-limit'] {
+.systemMessage[data-error-type='rate-limit'],
+.systemMessage[data-error-type='sandbox'] {
   border-left-color: #e8a735;
   background: color-mix(in srgb, #e8a735 8%, var(--reify-surface0));
 }

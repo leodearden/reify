@@ -12,14 +12,15 @@ tests/infra/test_prd_capability_check.sh.
 import io
 import json
 import os
-import shlex
 import tempfile
 import unittest
 import unittest.mock
 
 from _pcc_test_support import (
     pcc,
-    _write_ts_stub,
+    _generator_stub_fails,
+    _generator_stub_succeeds,
+    _generator_stub_writes_nothing,
     make_fixture_repo,
     probe_context,
     recording_runner,
@@ -27,36 +28,6 @@ from _pcc_test_support import (
 
 _GRAMMAR_FIXTURE = "tests/prd-gate/fixtures/arrow_type.ri"
 _CHECK_FIXTURE = "tests/prd-gate/fixtures/revolute_silent_accept.ri"
-
-
-def _generator_stub_succeeds(tmpdir, repo_root, marker):
-    """A generator that records its run in `marker`, writes parser.c and reports on stdout."""
-    src = os.path.join(repo_root, "tree-sitter-reify", "src")
-    return _write_ts_stub(tmpdir, "generate_succeeds", f"""\
-        echo run >> {shlex.quote(marker)}
-        mkdir -p {shlex.quote(src)}
-        : > {shlex.quote(os.path.join(src, "parser.c"))}
-        echo "tree-sitter: generated parser files"
-        exit 0
-    """)
-
-
-def _generator_stub_fails(tmpdir, marker):
-    """A generator that records its run in `marker` and fails as a lane without the CLI does."""
-    return _write_ts_stub(tmpdir, "generate_fails", f"""\
-        echo run >> {shlex.quote(marker)}
-        echo "ERROR: tree-sitter CLI not found on PATH." >&2
-        echo "Install via: cargo install tree-sitter-cli" >&2
-        exit 1
-    """)
-
-
-def _generator_stub_writes_nothing(tmpdir, marker):
-    """A generator that records its run in `marker` and exits 0 without writing parser.c."""
-    return _write_ts_stub(tmpdir, "generate_writes_nothing", f"""\
-        echo run >> {shlex.quote(marker)}
-        exit 0
-    """)
 
 
 def _marker_lines(marker):

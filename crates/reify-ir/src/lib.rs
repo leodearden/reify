@@ -64,7 +64,8 @@ pub use direction::{DirectionFault, UnitVec3};
 pub use direction_decode::{DecodeDirectionError, decode_direction, frame_basis};
 pub use boundary_attachment::{BoundaryAssociation, NodeAttachment};
 pub use constraint::{
-    AutoParam, ComputeDispatch, ConstraintChecker, ConstraintDiagnostics, ConstraintDomain,
+    AutoParam, ComputeDispatch, ComputeDispatchFailure, ComputeDispatchOutcome,
+    ConstraintChecker, ConstraintDiagnostics, ConstraintDomain,
     ConstraintInput, ConstraintResult, ConstraintSolver, DimensionIncoherence,
     ObjectiveCombination, ObjectiveProvenance, ObjectiveSense, ObjectiveSet, ObjectiveTerm,
     OptimizedImpl, OptimizedImplInput, OptimizedImplOutput, ResolutionProblem, SolveResult,
@@ -98,7 +99,9 @@ pub use geometry::{
     TopologyAttribute, TopologyAttributeTable, VolumeConnectivity, VolumeMesh, VoxelResolution, debug_assert_query_many_invariant,
     unsupported_dense_sdf_ingest,
 };
-pub use indeterminate::{IndeterminateReason, StructuralReason, TransientReason};
+pub use indeterminate::{
+    ComputeFailureKind, IndeterminateReason, StructuralReason, TransientReason,
+};
 pub use kernel_validation::{
     BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE,
     check_length_field, non_length_kernel_field_message, non_numeric_kernel_field_message,

@@ -70,8 +70,8 @@ Verified at `f8e47e232c`: `tauri-cli 2.10.1` on the host and the bundle config w
 | `docs/prds/v0_6/dimensioned-construction-strictness.md` | consumes | δ₁ #5646, δ₂ #5762, ε #5763 land the hard errors the v0.2 note documents | other-prd | wired (ρ1 ← ζ ← #5646/#5762/#5763) |
 | `docs/prds/v0_6/fea-load-support-selector-migration.md` | consumes | Bmig2 #5312 (string selector forms become errors) | other-prd | wired (ζ ← #5312 ← #8102) |
 | `docs/prds/v0_6/eradicate-silent-undef.md` | consumes | #5404 burns the check error-exit allowlist | other-prd | wired (ζ ← #5404) |
-| `docs/prds/v0_6/direction-typing.md` | consumes | ν #9652 (PRD close; scalar builtin forms retired) | other-prd | wired (ζ2 ← #9652) |
-| `docs/prds/v0_6/stdlib-namespace.md` | consumes | κ #5503 strict visibility, λ #5504 corpus migration + `fix --imports` | other-prd | wired (ζ2 ← #5503, #5504) |
+| `docs/prds/v0_6/direction-typing.md` | consumes | ν #9652 (PRD close; scalar builtin forms retired) | other-prd | wired (ζ2 ← #9652); ι-a #9646 ← ρ1, #10224 (D1, D7) |
+| `docs/prds/v0_6/stdlib-namespace.md` | consumes | κ #5503 strict visibility, λ #5504 corpus migration + `fix --imports` | other-prd | wired (ζ2 ← #5503, #5504); κ #5503 ← ρ1, #10224; λ #5504 ← κ (D1, D7) |
 | `docs/prds/v0_6/resolution-unification.md`, S15 trampoline-decode, compiler-declaration-passes α | transitive | closure of the v0.3 leaves above | other-prd | wired by their own edges |
 | GUI PRDs S25/S26 (`gui-backend-engine-modules-events-tool-contract.md`, `gui-frontend-wire-bindings-bridge-port.md`), `gui-purpose-surface.md` | produces | Start view + edges overlay in `gui/src`, three new commands in `main.rs` | this-prd | parked behind Ω; their later refactors move these like any other command |
 | review-all program `plans/review-all-program-reify-20261012.md` and human gate #8612 | parked | dependency on Ω | this-prd | wired at decompose (D2) |
