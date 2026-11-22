@@ -1417,6 +1417,8 @@ if ! command -v taskset >/dev/null 2>&1; then
     echo "  SKIP FIXTURE-PIN: taskset unavailable — cannot observe per-worker pinning"
 elif [ -z "${_ROW4_CONFINE_CPUS:-}" ]; then
     echo "  SKIP FIXTURE-PIN: own Cpus_allowed_list unreadable — no confined pin list to pass"
+elif ! command -v setpriv >/dev/null 2>&1; then
+    echo "  SKIP FIXTURE-PIN: setpriv unavailable — cannot launch a burn with no clock (cpu_load_fixture.sh duration 0)"
 else
     # The placement the fixture must produce: the pin list repeated
     # round-robin to one entry per worker, the same way ROW4 hands it to both
@@ -1438,9 +1440,11 @@ else
         test "$_fixture_pin_reader_got" = "$_fixture_pin_reader_expected"
 
     # ── (1)-(3) pinned launch: reports ready, lists one pid per worker, and
-    # every worker is pinned to its round-robin CPU.
+    # every worker is pinned to its round-robin CPU.  Duration 0: the burn has no
+    # clock and ends only on the explicit TERM below, so what is observed cannot
+    # outlast the observation.
     _fixture_pin_ready="$WORK/fixture-pin-ready"
-    bash "$FIXTURE" "$_ROW4_CONFINE_W" 5 --pin-cpus "$_ROW4_CONFINE_CPUS" \
+    bash "$FIXTURE" "$_ROW4_CONFINE_W" 0 --pin-cpus "$_ROW4_CONFINE_CPUS" \
         --ready-file "$_fixture_pin_ready" >/dev/null 2>&1 &
     _fixture_pin_pid=$!
 
@@ -1471,7 +1475,7 @@ else
         echo "  SKIP FIXTURE-PIN-4: pin list '${_ROW4_CONFINE_CPUS}' is a single CPU — set-pinning and per-worker pinning coincide"
     else
         _fixture_pin_ready_inherited="$WORK/fixture-pin-ready-inherited"
-        taskset -c "$_ROW4_CONFINE_CPUS" bash "$FIXTURE" "$_ROW4_CONFINE_W" 5 \
+        taskset -c "$_ROW4_CONFINE_CPUS" bash "$FIXTURE" "$_ROW4_CONFINE_W" 0 \
             --ready-file "$_fixture_pin_ready_inherited" >/dev/null 2>&1 &
         _fixture_pin_inherited_pid=$!
 
