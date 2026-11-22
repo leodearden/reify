@@ -451,6 +451,13 @@ impl TypeAliasRegistry {
     /// walk follows a member's body only when that body will be read here (an
     /// unresolved member that carries no scope of its own). The visited map
     /// ends the walk on an alias cycle.
+    ///
+    /// Members are deliberately not filtered on `is_pub`. The scope is what
+    /// the body means here, and a body can reach a private alias through a
+    /// member the walk follows. Rejecting a pub parametric alias that names a
+    /// non-pub one (`validate_pub_parametric_alias_def_site` case (c)) is a
+    /// visibility policy on its direct body names, not what makes this scope
+    /// resolve.
     fn defining_scope(&self, entry: &TypeAliasEntry) -> Vec<CompiledTypeAlias> {
         let mut members: BTreeMap<&str, &TypeAliasEntry> = BTreeMap::new();
         let mut pending = vec![entry];
@@ -4914,11 +4921,13 @@ pub(crate) fn check_applied_type_arg_bounds(
 ///
 /// In the same walk, a name that is an alias this module declares without
 /// `pub` gets a def-site `DiagnosticCode::NonPubAliasInPubAlias` Error at
-/// `entry.span`: no importer can see that alias, so the pub alias would fail
-/// in every importer. An alias seeded into the module (stdlib or import) is
-/// pub where it is declared, and the exported body scope carries it, so it is
-/// allowed. So is an alias named like a builtin type, which the body's name
-/// never resolves to (the builtin takes precedence).
+/// `entry.span`. This is a visibility policy, not a guard against a failure:
+/// the exported body scope carries the non-pub alias, so an importer would
+/// resolve the body correctly, but a pub alias's meaning must not depend on a
+/// name its importers cannot see. An alias seeded into the module (stdlib or
+/// import) is pub where it is declared, so it is allowed. So is an alias
+/// named like a builtin type, which the body's name never resolves to (the
+/// builtin takes precedence).
 ///
 /// # Case (b) — param-bound check (step-4)
 ///
@@ -5004,8 +5013,9 @@ pub(crate) fn validate_pub_parametric_alias_def_site(
             {
                 diagnostics.push(
                     Diagnostic::error(format!(
-                        "pub type alias '{}' names non-pub type alias '{}'; an importer \
-                         cannot see it — mark '{}' pub or make '{}' non-pub",
+                        "pub type alias '{}' names non-pub type alias '{}'; a pub alias \
+                         must not depend on a name its importers cannot see — mark '{}' \
+                         pub or make '{}' non-pub",
                         entry.name, name, name, entry.name
                     ))
                     .with_code(DiagnosticCode::NonPubAliasInPubAlias)

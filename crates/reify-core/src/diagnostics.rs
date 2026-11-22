@@ -2612,14 +2612,17 @@ pub enum DiagnosticCode {
     ///
     /// Emitted as a `Severity::Error` at the definition of a `pub` parametric
     /// type alias whose body names a type alias the same module declares
-    /// without `pub`. No importer can see that alias, so every instantiation
-    /// outside the module would fail (task 10297). Aliases seeded into the
-    /// module from the stdlib or an import are pub where they are declared and
-    /// are allowed.
+    /// without `pub` (task 10297). This is a visibility policy: a pub alias's
+    /// meaning must not depend on a name its importers cannot see or name. It
+    /// does not prevent a resolution failure, since the exported body scope
+    /// carries the non-pub alias and an importer would resolve the body
+    /// correctly. Aliases seeded into the module from the stdlib or an import
+    /// are pub where they are declared and are allowed.
     ///
     /// Canonical message form:
-    ///   `"pub type alias '<pub>' names non-pub type alias '<name>'; an
-    ///    importer cannot see it — mark '<name>' pub or make '<pub>' non-pub"`
+    ///   `"pub type alias '<pub>' names non-pub type alias '<name>'; a pub
+    ///    alias must not depend on a name its importers cannot see — mark
+    ///    '<name>' pub or make '<pub>' non-pub"`
     /// with a label at the pub alias's span.
     ///
     /// Distinct from [`UnresolvedType`], which fires when a name is unknown;

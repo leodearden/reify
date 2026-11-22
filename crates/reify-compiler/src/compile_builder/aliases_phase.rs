@@ -156,7 +156,8 @@ pub(crate) fn phase_aliases(
 /// parametric type alias at its definition site.
 ///
 /// Among its rules: such an alias may not name a non-pub alias the module
-/// declares, because no importer could see it (#10297).
+/// declares, because a pub alias's meaning must not depend on a name its
+/// importers cannot see (#10297).
 ///
 /// Iterates `ctx.alias_registry.iter()` (user-declared aliases only, excluding
 /// prelude-seeded entries), filters to `is_pub && !type_params.is_empty()`,
