@@ -1231,6 +1231,73 @@ assert "ROW4-READY-VACUITY-4: file written by a background subshell AFTER the po
     test "$_row4_ready_vacuity4_rc" -eq 0
 
 # ----------------------------------------------------------------------------
+# ROW4-VANISH-VACUITY: the vanished-burn condition-poll.  The counterpart of
+# ROW4-READY-VACUITY for a burn that is ended on purpose: _row4_await_vanished
+# holds only once EVERY pid listed in EVERY named file has gone, so a caller
+# that killed a burn can assert that the kill reached each process.
+# ----------------------------------------------------------------------------
+echo ""
+echo "--- ROW4-VANISH-VACUITY: vanished-burn condition-poll (always-on) ---"
+
+_row4_vanish_dir="$(mktemp -d -p "$WORK" row4-vanish.XXXXXX)"
+
+# A pid that has been reaped (the FIXTURE-PIN-READER-1 idiom): its /proc entry is
+# gone, so _row4_worker_affinities reads it as "unavailable".
+( : ) &
+_row4_vanish_dead_pid=$!
+wait "$_row4_vanish_dead_pid" 2>/dev/null || true
+printf '%s\n' "$_row4_vanish_dead_pid" > "$_row4_vanish_dir/dead"
+printf '%s\n' "$$" > "$_row4_vanish_dir/live"
+
+# (1) Every pid listed has vanished => vanished.
+_row4_vanish1_rc=0
+_row4_await_vanished 0 "$_row4_vanish_dir/dead" || _row4_vanish1_rc=$?
+assert "ROW4-VANISH-VACUITY-1: a pid file listing a reaped pid, at deadline 0 => rc 0 (got ${_row4_vanish1_rc})" \
+    test "$_row4_vanish1_rc" -eq 0
+
+# (2) NON-VACUITY CRUX: a live pid is never reported vanished.  A helper that
+# always says "vanished" would let a caller bless a kill that reached nothing.
+# Asserts the EXACT rc 1 (deadline expired with the pid still there).
+_row4_vanish2_rc=0
+_row4_await_vanished 0 "$_row4_vanish_dir/live" || _row4_vanish2_rc=$?
+assert "ROW4-VANISH-VACUITY-2: NON-VACUITY CRUX -- live pid $$ at deadline 0 => rc EXACTLY 1 (got ${_row4_vanish2_rc}); a live pid is never reported vanished" \
+    test "$_row4_vanish2_rc" -eq 1
+
+# (3) EVERY listed pid in EVERY file must have vanished: one dead file does not
+# vouch for a live one.
+_row4_vanish3_rc=0
+_row4_await_vanished 0 "$_row4_vanish_dir/dead" "$_row4_vanish_dir/live" \
+    || _row4_vanish3_rc=$?
+assert "ROW4-VANISH-VACUITY-3: one file listing a reaped pid, the other listing live pid $$, at deadline 0 => rc EXACTLY 1 (got ${_row4_vanish3_rc}); every pid in every file must have vanished" \
+    test "$_row4_vanish3_rc" -eq 1
+
+# (4) An unreadable or empty observation is never "all vanished": with no pid
+# listed there is nothing that vanished.
+_row4_vanish4_rc=0
+_row4_await_vanished 0 "$_row4_vanish_dir/never-created" || _row4_vanish4_rc=$?
+assert "ROW4-VANISH-VACUITY-4: a pid file that does not exist, at deadline 0 => rc EXACTLY 1 (got ${_row4_vanish4_rc}); an unreadable observation is not 'all vanished'" \
+    test "$_row4_vanish4_rc" -eq 1
+
+: > "$_row4_vanish_dir/empty"
+_row4_vanish4b_rc=0
+_row4_await_vanished 0 "$_row4_vanish_dir/empty" || _row4_vanish4b_rc=$?
+assert "ROW4-VANISH-VACUITY-4b: a zero-byte pid file, at deadline 0 => rc EXACTLY 1 (got ${_row4_vanish4b_rc}); an empty observation is not 'all vanished'" \
+    test "$_row4_vanish4b_rc" -eq 1
+
+# (5) The helper POLLS rather than checking once: the listed pid is alive when
+# the poll starts and ends 0.3 s later, so a single-shot check at t=0 returns 1.
+# The generous deadline is an anti-hang guard only and is deliberately not
+# asserted on.
+( sleep 0.3 ) &
+_row4_vanish_late_pid=$!
+printf '%s\n' "$_row4_vanish_late_pid" > "$_row4_vanish_dir/ends-late"
+_row4_vanish5_rc=0
+_row4_await_vanished 30 "$_row4_vanish_dir/ends-late" || _row4_vanish5_rc=$?
+wait "$_row4_vanish_late_pid" 2>/dev/null || true
+assert "ROW4-VANISH-VACUITY-5: pid of a background subshell that ENDS after the poll started => rc 0 (got ${_row4_vanish5_rc}); the helper polls, a single-shot check at t=0 would return 1" \
+    test "$_row4_vanish5_rc" -eq 0
+
+# ----------------------------------------------------------------------------
 # ROW4-PIN-VACUITY: the per-CPU co-residency predicate.  Each argument is a
 # newline-separated list of per-worker Cpus_allowed_list strings; the predicate
 # holds iff both lists are non-empty, every entry is ONE cpu id, and the two
