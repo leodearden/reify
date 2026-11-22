@@ -7602,32 +7602,24 @@ fn extract_joints_from_mechanism_skips_non_map_at_value() {
     );
 }
 
-#[test]
-fn extract_joints_from_mechanism_handles_malformed_axis_length() {
-    // Step 8 RED: hand-construct a mechanism with a prismatic joint whose
-    // "axis" Vector has length 2 (malformed — extract_axis requires length 3).
-    // The descriptor must still be produced (kind=="prismatic", dimension=="length")
-    // but axis must be None.
+/// A hand-built mechanism Map with one body whose `"at"` joint is a
+/// prismatic carrying `axis` as its `"axis"` field, run through
+/// `extract_joints_from_mechanism`; returns the single joint descriptor.
+fn sole_prismatic_descriptor_with_axis(axis: reify_ir::Value) -> crate::types::JointDescriptor {
     use crate::engine::extract_joints_from_mechanism;
     use reify_ir::Value;
     use std::collections::BTreeMap;
 
-    // Build the joint map with a 2-element axis vector.
     let mut joint_map: BTreeMap<Value, Value> = BTreeMap::new();
     joint_map.insert(
         Value::String("kind".to_string()),
         Value::String("prismatic".to_string()),
     );
-    joint_map.insert(
-        Value::String("axis".to_string()),
-        Value::Vector(vec![Value::Real(1.0), Value::Real(0.0)]), // length 2 — malformed
-    );
+    joint_map.insert(Value::String("axis".to_string()), axis);
 
-    // Build the body map referencing the joint.
     let mut body_map: BTreeMap<Value, Value> = BTreeMap::new();
     body_map.insert(Value::String("at".to_string()), Value::Map(joint_map));
 
-    // Build the mechanism map.
     let mut mech_map: BTreeMap<Value, Value> = BTreeMap::new();
     mech_map.insert(
         Value::String("kind".to_string()),
@@ -7638,15 +7630,14 @@ fn extract_joints_from_mechanism_handles_malformed_axis_length() {
         Value::List(vec![Value::Map(body_map)]),
     );
 
-    let (joints, _seen_joints) = extract_joints_from_mechanism(&mech_map);
-
+    let (mut joints, _seen_joints) = extract_joints_from_mechanism(&mech_map);
     assert_eq!(
         joints.len(),
         1,
         "expected 1 joint descriptor; got {:?}",
         joints
     );
-    let jd = &joints[0];
+    let jd = joints.remove(0);
     assert_eq!(
         jd.kind, "prismatic",
         "kind should be prismatic; got {}",
@@ -7657,11 +7648,75 @@ fn extract_joints_from_mechanism_handles_malformed_axis_length() {
         "dimension should be length; got {}",
         jd.dimension
     );
+    jd
+}
+
+#[test]
+fn extract_joints_from_mechanism_handles_malformed_axis_length() {
+    // An "axis" that is not a Direction (here a 2-element Vector) still yields
+    // the descriptor, with axis == None.
+    use reify_ir::Value;
+    let jd = sole_prismatic_descriptor_with_axis(Value::Vector(vec![
+        Value::Real(1.0),
+        Value::Real(0.0),
+    ]));
     assert!(
         jd.axis.is_none(),
-        "malformed axis (length!=3) must produce axis==None; got {:?}",
+        "an axis that is not a Direction must produce axis==None; got {:?}",
         jd.axis
     );
+}
+
+#[test]
+fn extract_joints_from_mechanism_reads_a_direction_axis() {
+    let jd = sole_prismatic_descriptor_with_axis(reify_test_support::direction_val(0.0, 1.0, 0.0));
+    assert_eq!(jd.axis, Some([0.0, 1.0, 0.0]));
+}
+
+#[test]
+fn extract_joints_from_mechanism_rejects_a_vector_axis() {
+    // A well-formed 3-component Vector is not a direction: nothing downstream
+    // may read it as one.
+    use reify_ir::Value;
+    let jd = sole_prismatic_descriptor_with_axis(Value::Vector(vec![
+        Value::Real(0.0),
+        Value::Real(1.0),
+        Value::Real(0.0),
+    ]));
+    assert!(
+        jd.axis.is_none(),
+        "a Vector axis must produce axis==None; got {:?}",
+        jd.axis
+    );
+}
+
+/// One prismatic joint with a `dir(…)` axis, mounted in a one-body mechanism.
+const DIRECTION_AXIS_MECHANISM_SOURCE: &str = r#"
+structure Kinematic {
+    let slide = prismatic(dir(1, 0, 0), 0mm .. 200mm)
+    let m0    = mechanism()
+    let m1    = body(m0, "carriage", slide)
+}
+"#;
+
+#[test]
+fn get_mechanism_descriptors_reads_a_dir_literal_joint_axis() {
+    let mut session = make_session();
+    session
+        .load_from_source(DIRECTION_AXIS_MECHANISM_SOURCE, "kinematic")
+        .expect("load kinematic");
+
+    let descriptors = session.get_mechanism_descriptors();
+    let m1_desc = descriptors
+        .iter()
+        .find(|d| d.bodies_count == 1)
+        .unwrap_or_else(|| panic!("expected the one-body mechanism; got {descriptors:?}"));
+    let slide = m1_desc
+        .joints
+        .iter()
+        .find(|j| j.kind == "prismatic")
+        .unwrap_or_else(|| panic!("expected a prismatic joint; got {:?}", m1_desc.joints));
+    assert_eq!(slide.axis, Some([1.0, 0.0, 0.0]));
 }
 
 #[test]
