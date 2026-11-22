@@ -21,7 +21,9 @@ The B7 proof gate (task 10079): the release runs the clean-container proof
 armed over exactly the one .deb and one .AppImage it publishes, and a red proof
 leaves no tag, release or closed issue, on a re-run too. ProofArmChain drives
 the REAL proof with the same arm env and a failing stub docker, so a renamed arm
-variable reds instead of shipping behind an all-skipped green.
+variable reds instead of shipping behind an all-skipped green, and a docker that
+answers `info` but cannot create a container fails the armed proof before any
+container (task 10181).
 
 The tag invariant (task 10104): a tag that already exists must name the HEAD the
 release built and proved, in preflight and again just before the push. TagAtPush
@@ -46,7 +48,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RELEASE_SCRIPT = REPO_ROOT / "scripts" / "release-alpha.sh"
 BUILD_BUNDLE = REPO_ROOT / "scripts" / "build-bundle.sh"
-PROOF = "tests/infra/test_bundle_clean_install.py"
+DOCKER_CREATE_PROBE = REPO_ROOT / "scripts" / "docker-create-probe.sh"
+PROOF ="tests/infra/test_bundle_clean_install.py"
 
 PROOF_ARM_ENV = {"REIFY_RUN_BUNDLE_CLEAN_INSTALL": "1"}
 PROOF_KNOBS = ("REIFY_RUN_BUNDLE_CLEAN_INSTALL", "REIFY_BUNDLE_DEB", "REIFY_BUNDLE_APPIMAGE")
@@ -132,18 +135,25 @@ printf '%s\\n' "$*" >> "@LOG@"
 exit 1
 '''
 
+DOCKER_CREATE_HANGS_STUB = '''#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "@LOG@"
+case "$1" in info) exit 0 ;; create) exec sleep 60 ;; *) exit 1 ;; esac
+'''
+
 BUILD_BUNDLE_USAGE = "usage: scripts/build-bundle.sh [--version <semver>]"
 TAURI_CONF_VERSION = "4.5.6"
 
 # One stub for every tool build-bundle.sh runs; it dispatches on the name it was
 # invoked under and logs [name, *argv]. The tauri calls leave the files the
 # script checks for, bundle_closure.py stages one library and names it in the
-# overlay, and dpkg-deb extracts the members the post-check requires and reports
-# the control Version the fixture chose.
+# overlay, dpkg-deb extracts the members the post-check requires and reports
+# the control Version the fixture chose, and docker create hangs when the
+# fixture asks.
 BUNDLE_TOOL_STUB = r'''#!@PYTHON@
 import json
 import shutil
 import sys
+import time
 from pathlib import Path
 
 name = Path(sys.argv[0]).name
@@ -174,6 +184,8 @@ if name == "cargo":
     elif args[:2] == ["tauri", "bundle"]:
         make(target / "release" / "bundle" / "deb" / "Reify_amd64.deb")
         make(target / "release" / "bundle" / "appimage" / "Reify_amd64.AppImage")
+elif name == "docker" and args[:1] == ["create"] and (state / "docker-create-hangs").exists():
+    time.sleep(60)
 elif name == "bundle_closure.py":
     libs = Path(flag("--stage")) / "lib"
     make(libs / "libstub.so.1", b"staged library")
@@ -512,7 +524,8 @@ class BuildBundleFixture:
     runs is BUNDLE_TOOL_STUB: cargo in $HOME/.cargo/bin, and docker, npm and
     dpkg-deb in $HOME/.local/bin, both of which the script's own PATH prefix
     puts first; the tree's check-manifold-deps.sh, build-sidecar.sh and
-    bundle_closure.py run it too."""
+    bundle_closure.py run it too, and the tree also carries the real
+    docker-create-probe.sh."""
 
     def __init__(self, root):
         self.repo = root / "repo"
@@ -538,12 +551,17 @@ class BuildBundleFixture:
             (self.repo / script).write_text(
                 f'exec "{tool.parent / name}" "$@"\n', encoding="utf-8")
         shutil.copy2(BUILD_BUNDLE, self.repo / "scripts" / "build-bundle.sh")
+        shutil.copy2(DOCKER_CREATE_PROBE, self.repo / "scripts" / "docker-create-probe.sh")
         (self.repo / "gui" / "src-tauri" / "tauri.conf.json").write_text(
             json.dumps({"version": TAURI_CONF_VERSION}), encoding="utf-8")
         self.env = {**os.environ, "HOME": str(home), "TMPDIR": str(root / "tmp")}
 
     def deb_reports_version(self, version):
         (self.state / "deb-version").write_text(version + "\n", encoding="utf-8")
+
+    def docker_create_hangs(self):
+        (self.state / "docker-create-hangs").write_text("", encoding="utf-8")
+        self.env["REIFY_DOCKER_CREATE_PROBE_SECS"] = "1"
 
     def run(self, *argv):
         return subprocess.run(
@@ -622,6 +640,29 @@ class BuildBundleVersion(unittest.TestCase):
         self.assertIn(f"expected {TAURI_CONF_VERSION}", refused.stderr)
 
 
+class BuildBundleDockerPreflight(unittest.TestCase):
+    """A docker that answers `info` but cannot create a container is refused
+    in preflight, before the cold build (task 10181)."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.fx = BuildBundleFixture(Path(tmp.name))
+
+    def test_a_stalled_docker_create_refuses_before_any_build_step(self):
+        self.fx.docker_create_hangs()
+        proc = self.fx.run()
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertEqual(proc.stdout, "")
+        self.assertIn("docker create", proc.stderr)
+        self.assertIn("waiting for writeback completion", proc.stderr)
+        calls = self.fx.calls()
+        self.assertEqual([c[1] for c in calls if c[0] == "docker"], ["info", "create"])
+        self.assertEqual([c for c in calls if c[0] == "npm"], [])
+        self.assertEqual([c for c in calls if c[:3] == ["cargo", "tauri", "build"]
+                          or c[:2] == ["cargo", "build"]], [])
+
+
 class TagAtPush(ReleaseCase):
     """The tag pushed and released is re-checked against the HEAD that was
     built and proved immediately before the push, not only in preflight."""
@@ -664,22 +705,16 @@ class RealTree(unittest.TestCase):
 class ProofArmChain(unittest.TestCase):
     """The env the release sets arms the real B7 proof, not an all-skipped green."""
 
-    def test_the_release_arm_env_arms_the_real_proof(self):
-        """PROOF_ARM_ENV arms the real proof rather than an all-skipped green.
-
-        Second link of the chain whose first is
-        Release.test_the_proof_runs_once_armed_over_the_built_assets: unittest
-        exits 0 when every test skips, so a renamed arm variable on either
-        side would otherwise publish behind a vacuous proof. A failing stub
-        docker stops the armed proof at `docker info`, before any build or
-        container."""
+    def _proof_runner(self, docker_stub):
+        """A runner of the real proof over dummy reused assets, with
+        `docker_stub` first on PATH, and the stub's argv log."""
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         root = Path(tmp.name)
         (root / "bin").mkdir()
         docker_log = root / "docker.log"
         docker = root / "bin" / "docker"
-        docker.write_text(DOCKER_STUB.replace("@LOG@", str(docker_log)), encoding="utf-8")
+        docker.write_text(docker_stub.replace("@LOG@", str(docker_log)), encoding="utf-8")
         docker.chmod(0o755)
         deb, appimage = root / "a.deb", root / "a.AppImage"
         deb.write_bytes(b"deb")
@@ -697,6 +732,19 @@ class ProofArmChain(unittest.TestCase):
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
             )
 
+        return run_proof, docker_log
+
+    def test_the_release_arm_env_arms_the_real_proof(self):
+        """PROOF_ARM_ENV arms the real proof rather than an all-skipped green.
+
+        Second link of the chain whose first is
+        Release.test_the_proof_runs_once_armed_over_the_built_assets: unittest
+        exits 0 when every test skips, so a renamed arm variable on either
+        side would otherwise publish behind a vacuous proof. A failing stub
+        docker stops the armed proof at `docker info`, before any build or
+        container."""
+        run_proof, docker_log = self._proof_runner(DOCKER_STUB)
+
         unarmed = run_proof({})
         self.assertIn("skipped", unarmed.stderr)
         self.assertFalse(docker_log.exists(), "the unarmed proof called docker")
@@ -704,6 +752,14 @@ class ProofArmChain(unittest.TestCase):
         armed = run_proof(PROOF_ARM_ENV)
         self.assertNotEqual(armed.returncode, 0, armed.stderr)
         self.assertIn("info", docker_log.read_text(encoding="utf-8").split())
+
+    def test_an_armed_proof_whose_docker_cannot_create_fails_before_any_container(self):
+        run_proof, docker_log = self._proof_runner(DOCKER_CREATE_HANGS_STUB)
+        armed = run_proof({**PROOF_ARM_ENV, "REIFY_DOCKER_CREATE_PROBE_SECS": "1"})
+        self.assertNotEqual(armed.returncode, 0, armed.stderr)
+        self.assertIn("docker create", armed.stderr)
+        calls = docker_log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual([c for c in calls if c.startswith("run")], [], calls)
 
 
 if __name__ == "__main__":
