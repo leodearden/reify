@@ -140,8 +140,8 @@ fn classify_undef(expr: &CompiledExpr, ctx: &reify_expr::EvalContext) -> Transie
 ///
 /// Walks down from `expr` into the first `Undef` child of each BinOp, UnOp or
 /// builtin FunctionCall until it reaches the node whose operands are all
-/// defined. That node refused iff every operand is plain data and, for a
-/// builtin, so is its static result type. Any other node kind is unproven.
+/// defined, and reports it when [`refused_its_operands`] holds. Any other node
+/// kind is unproven.
 fn refused_operation(
     expr: &CompiledExpr,
     ctx: &reify_expr::EvalContext,
@@ -169,13 +169,32 @@ fn refused_operation(
             node = children[first_undef];
             continue;
         }
-        let plain_result = !matches!(node.kind, CompiledExprKind::FunctionCall { .. })
-            || is_plain_data_type(&node.result_type);
-        let refused = plain_result && operands.iter().all(is_plain_data_value);
-        return refused.then(|| TransientReason::OperationRefused {
+        return refused_its_operands(node, &operands).then(|| TransientReason::OperationRefused {
             operation,
             operands: operands.iter().map(value_kind_label).collect(),
         });
+    }
+}
+
+/// Whether `node`, whose operands are all defined, itself refused them.
+///
+/// An operator over plain data refuses on its own. A builtin refuses only when
+/// its static type is plain data and a stdlib family claims the call and
+/// answers Undef; a name no family claims (a geometry constructor, a selector
+/// ctor) is a call `eval_expr` cannot realize, not a refusal.
+fn refused_its_operands(node: &CompiledExpr, operands: &[Value]) -> bool {
+    if !operands.iter().all(is_plain_data_value) {
+        return false;
+    }
+    match &node.kind {
+        CompiledExprKind::FunctionCall { function, .. } => {
+            is_plain_data_type(&node.result_type)
+                && matches!(
+                    reify_stdlib::try_eval_builtin(&function.name, operands),
+                    Some(Value::Undef)
+                )
+        }
+        _ => true,
     }
 }
 
@@ -907,7 +926,11 @@ mod tests {
         let side = || CompiledExpr::literal(mm(10.0), Type::length());
         let result = check_single(
             cnid("Root", 0),
-            &builtin_gt_zero("box", vec![side(), side(), side()], Type::dimensionless_scalar()),
+            &builtin_gt_zero(
+                "box",
+                vec![side(), side(), side()],
+                Type::dimensionless_scalar(),
+            ),
             &ValueMap::new(),
         );
         assert_eq!(result.satisfaction, Satisfaction::Indeterminate);
