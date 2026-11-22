@@ -18,10 +18,10 @@
 //!
 //! # B1 invariant
 //!
-//! This module uses only `crate::{Type, DimensionVector}` — no `reify-*`
+//! This module uses only `crate::{Type, DimensionVector, Rational}` — no `reify-*`
 //! dependencies are introduced.
 
-use crate::{DimensionVector, Type};
+use crate::{DimensionVector, Rational, Type};
 
 /// The four differential operators supported on `Type::Field` values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,8 +33,8 @@ pub enum DifferentialOp {
 }
 
 // ---------------------------------------------------------------------------
-// Private dim helpers — moved verbatim from reify-expr/src/calculus.rs:19-94.
-// They operate purely on crate::{Type, DimensionVector} and require no edits.
+// Private dim helpers — they operate purely on crate::{Type, DimensionVector,
+// Rational}.
 // ---------------------------------------------------------------------------
 
 /// Unify scalar-quantity validation with dimension extraction.
@@ -74,38 +74,37 @@ fn domain_dimension(ty: &Type) -> Option<DimensionVector> {
 /// Compute the quotient Type for a differential operator result.
 ///
 /// Given optional codomain and domain dimensions and an exponent, returns:
-/// - `Scalar { dimension: cd / dd^exponent }` when both dimensions are present and
+/// - `Some(Scalar { dimension: cd / dd^exponent })` when both dimensions are present and
 ///   neither is DIMENSIONLESS and the resulting quotient is not DIMENSIONLESS.
-/// - `Type::dimensionless_scalar()` when both dimensions are present, neither is DIMENSIONLESS, but
-///   the quotient itself is DIMENSIONLESS.
-/// - `fallback` in all other cases (either dimension absent or DIMENSIONLESS).
+/// - `Some(Type::dimensionless_scalar())` when both dimensions are present, neither is
+///   DIMENSIONLESS, but the quotient itself is DIMENSIONLESS.
+/// - `Some(fallback)` in all other cases (either dimension absent or DIMENSIONLESS).
+/// - `None` when `dd^exponent`, or the quotient `cd / dd^exponent`, has an exponent that
+///   does not fit [`Rational`].
 ///
-/// The `domain_exponent` parameter is `i8` to match `DimensionVector::pow`. Only
-/// values 1 and 2 are used in practice (exponent=1 skips the `pow` call).
+/// `domain_exponent` is the integer power applied to the domain dimension: 1 for the
+/// first-order operators and 2 for the laplacian.
 fn dim_quotient_type(
     codomain_dim: Option<DimensionVector>,
     domain_dim: Option<DimensionVector>,
-    domain_exponent: i8,
+    domain_exponent: i16,
     fallback: Type,
-) -> Type {
+) -> Option<Type> {
     match (codomain_dim, domain_dim) {
         (Some(cd), Some(dd))
             if cd != DimensionVector::DIMENSIONLESS && dd != DimensionVector::DIMENSIONLESS =>
         {
-            let result_dim = if domain_exponent == 1 {
-                cd.div(&dd)
-            } else {
-                cd.div(&dd.pow(domain_exponent))
-            };
-            if result_dim != DimensionVector::DIMENSIONLESS {
+            let divisor = dd.checked_pow_rational(Rational::new(domain_exponent, 1))?;
+            let result_dim = cd.checked_div(&divisor)?;
+            Some(if result_dim != DimensionVector::DIMENSIONLESS {
                 Type::Scalar {
                     dimension: result_dim,
                 }
             } else {
                 Type::dimensionless_scalar()
-            }
+            })
         }
-        _ => fallback,
+        _ => Some(fallback),
     }
 }
 
@@ -155,7 +154,8 @@ fn dimensionless_fallback(ty: &Type) -> Type {
 /// | laplacian  | scalar/Point{n,sc}  | scalar                 | `dim_quotient(exp=2)`      |
 ///
 /// `None` is returned for any mismatch (wrong dimensionality, non-scalar quantity,
-/// vector length mismatch, etc.).
+/// vector length mismatch, etc.) and when the result dimension has an exponent that
+/// does not fit [`Rational`].
 pub fn differential_codomain(
     op: DifferentialOp,
     domain: &Type,
@@ -174,7 +174,7 @@ pub fn differential_codomain(
                 domain_dimension(domain),
                 1,
                 dimensionless_fallback(codomain),
-            );
+            )?;
             Some(if n == 1 {
                 gradient_quantity
             } else {
@@ -202,12 +202,12 @@ pub fn differential_codomain(
             if vec_n != n {
                 return None;
             }
-            Some(dim_quotient_type(
+            dim_quotient_type(
                 scalar_dimension(codomain_quantity),
                 domain_dimension(domain),
                 1,
                 dimensionless_fallback(codomain_quantity),
-            ))
+            )
         }
 
         DifferentialOp::Curl => {
@@ -228,7 +228,7 @@ pub fn differential_codomain(
                 domain_dimension(domain),
                 1,
                 dimensionless_fallback(codomain_quantity),
-            );
+            )?;
             Some(Type::vec3(result_component))
         }
 
@@ -241,12 +241,12 @@ pub fn differential_codomain(
             }
             // Codomain must be scalar.
             scalar_dimension(codomain)?;
-            Some(dim_quotient_type(
+            dim_quotient_type(
                 scalar_dimension(codomain),
                 domain_dimension(domain),
                 2,
                 dimensionless_fallback(codomain),
-            ))
+            )
         }
     }
 }
@@ -368,7 +368,7 @@ mod tests {
         assert_eq!(domain_dimension(&Type::Bool), None);
     }
 
-    // --- dim_quotient_type unit tests (ported verbatim from calculus.rs:1651-1737) ---
+    // --- dim_quotient_type unit tests ---
 
     #[test]
     fn dim_quotient_both_dimensional_exp1_returns_scalar() {
@@ -382,9 +382,9 @@ mod tests {
         );
         assert_eq!(
             result,
-            Type::Scalar {
+            Some(Type::Scalar {
                 dimension: expected_dim
-            }
+            })
         );
     }
 
@@ -397,19 +397,19 @@ mod tests {
             1,
             Type::Int,
         );
-        assert_eq!(result, Type::dimensionless_scalar());
+        assert_eq!(result, Some(Type::dimensionless_scalar()));
     }
 
     #[test]
     fn dim_quotient_codomain_none_returns_fallback() {
         let result = dim_quotient_type(None, Some(DimensionVector::LENGTH), 1, Type::Int);
-        assert_eq!(result, Type::Int);
+        assert_eq!(result, Some(Type::Int));
     }
 
     #[test]
     fn dim_quotient_domain_none_returns_fallback() {
         let result = dim_quotient_type(Some(DimensionVector::LENGTH), None, 1, Type::Int);
-        assert_eq!(result, Type::Int);
+        assert_eq!(result, Some(Type::Int));
     }
 
     #[test]
@@ -420,7 +420,7 @@ mod tests {
             1,
             Type::Int,
         );
-        assert_eq!(result, Type::Int);
+        assert_eq!(result, Some(Type::Int));
     }
 
     #[test]
@@ -431,7 +431,7 @@ mod tests {
             1,
             Type::Int,
         );
-        assert_eq!(result, Type::Int);
+        assert_eq!(result, Some(Type::Int));
     }
 
     #[test]
@@ -445,9 +445,9 @@ mod tests {
         );
         assert_eq!(
             result,
-            Type::Scalar {
+            Some(Type::Scalar {
                 dimension: DimensionVector::LENGTH
-            }
+            })
         );
     }
 
@@ -456,7 +456,103 @@ mod tests {
         // Both None → fallback returned as-is (using a non-trivial fallback)
         let fallback = Type::length();
         let result = dim_quotient_type(None, None, 1, fallback.clone());
-        assert_eq!(result, fallback);
+        assert_eq!(result, Some(fallback));
+    }
+
+    // --- differential_codomain: dimension-exponent overflow is declined (None) ---
+    // Fixtures use LENGTH to a rational power so that the result's exponent
+    // leaves Rational's i16/i16 range: L^(253/16002) / L^(1/125) reduces to
+    // L^(15623/2000250), and (L^20000)^2 is L^40000.
+
+    /// `Type::Scalar` whose LENGTH exponent is `num/den`, which must itself fit.
+    fn length_pow_scalar(num: i16, den: i16) -> Type {
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH
+                .checked_pow_rational(Rational::new(num, den))
+                .expect("fixture power fits"),
+        }
+    }
+
+    #[test]
+    fn differential_codomain_gradient_quotient_overflow_returns_none() {
+        assert_eq!(
+            differential_codomain(
+                DifferentialOp::Gradient,
+                &length_pow_scalar(1, 125),
+                &length_pow_scalar(253, 16002),
+            ),
+            None,
+            "gradient: L^(253/16002) / L^(1/125) has denominator 2000250, which must be declined"
+        );
+    }
+
+    #[test]
+    fn differential_codomain_divergence_quotient_overflow_returns_none() {
+        assert_eq!(
+            differential_codomain(
+                DifferentialOp::Divergence,
+                &Type::point3(length_pow_scalar(1, 125)),
+                &Type::vec3(length_pow_scalar(253, 16002)),
+            ),
+            None,
+            "divergence: L^(253/16002) / L^(1/125) has denominator 2000250, which must be declined"
+        );
+    }
+
+    #[test]
+    fn differential_codomain_curl_quotient_overflow_returns_none() {
+        assert_eq!(
+            differential_codomain(
+                DifferentialOp::Curl,
+                &Type::point3(length_pow_scalar(1, 125)),
+                &Type::vec3(length_pow_scalar(253, 16002)),
+            ),
+            None,
+            "curl: L^(253/16002) / L^(1/125) has denominator 2000250, which must be declined"
+        );
+    }
+
+    #[test]
+    fn differential_codomain_laplacian_squared_domain_overflow_returns_none() {
+        assert_eq!(
+            differential_codomain(
+                DifferentialOp::Laplacian,
+                &Type::point3(length_pow_scalar(20000, 1)),
+                &Type::Scalar {
+                    dimension: DimensionVector::TEMPERATURE,
+                },
+            ),
+            None,
+            "laplacian: (L^20000)^2 is L^40000, which must be declined"
+        );
+    }
+
+    #[test]
+    fn differential_codomain_laplacian_quotient_by_squared_domain_overflow_returns_none() {
+        // (L^(1/250))^2 is L^(1/125), which fits; the quotient by it does not.
+        assert_eq!(
+            differential_codomain(
+                DifferentialOp::Laplacian,
+                &Type::point3(length_pow_scalar(1, 250)),
+                &length_pow_scalar(253, 16002),
+            ),
+            None,
+            "laplacian: L^(253/16002) / (L^(1/250))^2 has denominator 2000250, which must be declined"
+        );
+    }
+
+    #[test]
+    fn differential_codomain_laplacian_fractional_exponents_that_fit_still_type() {
+        // L^(1/127) / (L^(1/250))^2 = L^(-2/15875), which fits: no over-eager decline.
+        assert_eq!(
+            differential_codomain(
+                DifferentialOp::Laplacian,
+                &Type::point3(length_pow_scalar(1, 250)),
+                &length_pow_scalar(1, 127),
+            ),
+            Some(length_pow_scalar(-2, 15875)),
+            "laplacian: L^(1/127) / (L^(1/250))^2 fits Rational and must still type"
+        );
     }
 
     // --- dimensionless_fallback unit tests (ported verbatim from calculus.rs:2102-2123) ---
