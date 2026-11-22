@@ -1006,3 +1006,12 @@ scripts/test_prd_decompose_verify_bind.py    tests/infra/test_prd_decompose_veri
 scripts/test_prd_decompose_verify_mjs.py    tests/infra/test_prd_decompose_verify.sh
 scripts/test_prd_decompose_verify_schema.py    tests/infra/test_prd_decompose_verify.sh
 scripts/test_prd_decompose_verify_synthesize.py    tests/infra/test_prd_decompose_verify.sh
+# Task 10341: modules the two wrappers' partitions load or scan; pdv loads α in-process and α's partitions import _pdv_test_support.
+scripts/prd-capability-check.py    tests/infra/test_prd_decompose_verify.sh
+scripts/prd-decompose-verify.py    tests/infra/test_prd_decompose_verify.sh
+scripts/prd-decompose-verify.py    tests/infra/test_prd_capability_check.sh
+scripts/_pcc_test_support.py    tests/infra/test_prd_capability_check.sh
+scripts/_pdv_test_support.py    tests/infra/test_prd_capability_check.sh
+scripts/_pdv_test_support.py    tests/infra/test_prd_decompose_verify.sh
+scripts/_schema_test_support.py    tests/infra/test_prd_capability_check.sh
+scripts/_schema_test_support.py    tests/infra/test_prd_decompose_verify.sh
