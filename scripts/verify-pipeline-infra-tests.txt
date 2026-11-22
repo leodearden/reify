@@ -983,13 +983,13 @@ scripts/reify_verify/diagnostics.py    tests/infra/test_verify_*.sh
 scripts/reify_verify/diagnostics.py    tests/infra/test_verify_policy.sh
 # The plan-model member compares nextest_config_path's lines with the generator's own stderr.
 scripts/gen-nextest-config.sh    tests/infra/test_verify_plan_model.sh
-# Task 10341: the PRD-gate substrate guard is sourced by three wrappers and tested by a fourth.
+# Task 10341: the PRD-gate substrate guard is sourced by two wrappers and tested directly by a third.
 scripts/prd-gate-substrate-guard.sh    tests/infra/test_prd_gate_substrate_guard.sh
 scripts/prd-gate-substrate-guard.sh    tests/infra/test_prd_gate_corpus.sh
 scripts/prd-gate-substrate-guard.sh    tests/infra/test_prd_gate_compiler_type_hygiene.sh
-scripts/prd-gate-substrate-guard.sh    tests/infra/test_prd_capability_check.sh
-# Task 10341: unittest files discovered by the prd-capability-check and prd-decompose-verify wrappers.
+# Task 10341: the decompose workflow script, which the decompose wrapper syntax-checks and its _mjs partition drives.
 scripts/prd-decompose-verify.mjs    tests/infra/test_prd_decompose_verify.sh
+# Task 10341: the unittest partitions the prd-capability-check and prd-decompose-verify wrappers discover.
 scripts/test_pcc_grammar_cache.py    tests/infra/test_prd_capability_check.sh
 scripts/test_pcc_grammar_generate.py    tests/infra/test_prd_capability_check.sh
 scripts/test_pcc_grammar_substrate.py    tests/infra/test_prd_capability_check.sh
