@@ -126,6 +126,7 @@ fn type_alias(name: &str, is_pub: bool) -> CompiledTypeAlias {
         resolved_type: Some(Type::length()),
         type_params: vec![],
         type_expr: None,
+        body_scope: None,
         is_pub,
         span: SourceSpan::new(0, 0),
         content_hash: ContentHash::of_str(name),

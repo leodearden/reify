@@ -23,6 +23,7 @@ fn compiled_type_alias_fields_exist() {
         }),
         type_params: vec![],
         type_expr: None,
+        body_scope: None,
         is_pub: true,
         span: dummy_span,
         content_hash: hash,

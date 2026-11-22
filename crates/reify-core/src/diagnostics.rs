@@ -2607,6 +2607,28 @@ pub enum DiagnosticCode {
     /// See `docs/prds/type-args-and-assoc-type-projection.md` §4.2, §9.
     TypeArgBound,
     /// Origin: `crates/reify-compiler/src/type_resolution.rs`
+    /// (`validate_pub_parametric_alias_def_site` case (c), called from
+    /// `phase_validate_pub_parametric_alias_defs` in `aliases_phase.rs`).
+    ///
+    /// Emitted as a `Severity::Error` at the definition of a `pub` parametric
+    /// type alias whose body names a type alias the same module declares
+    /// without `pub` (task 10297). This is a visibility policy: a pub alias's
+    /// meaning must not depend on a name its importers cannot see or name. It
+    /// does not prevent a resolution failure, since the exported body scope
+    /// carries the non-pub alias and an importer would resolve the body
+    /// correctly. Aliases seeded into the module from the stdlib or an import
+    /// are pub where they are declared and are allowed.
+    ///
+    /// Canonical message form:
+    ///   `"pub type alias '<pub>' names non-pub type alias '<name>'; a pub
+    ///    alias must not depend on a name its importers cannot see — mark
+    ///    '<name>' pub or make '<pub>' non-pub"`
+    /// with a label at the pub alias's span.
+    ///
+    /// Distinct from [`UnresolvedType`], which fires when a name is unknown;
+    /// here the name resolves, but only inside its own module.
+    NonPubAliasInPubAlias,
+    /// Origin: `crates/reify-compiler/src/type_resolution.rs`
     /// (`resolve_type_expr_with_aliases_kinded`, the trait-with-args
     /// intercept arm placed immediately after the 4603 structure-with-args
     /// arm and before simple-name resolution).
@@ -7550,6 +7572,30 @@ mod tests {
     fn diagnostic_code_type_arg_bound_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::TypeArgBound).unwrap();
         assert_eq!(s, "\"TypeArgBound\"");
+    }
+
+    // --- NonPubAliasInPubAlias tests (task 10297) ---
+    // Pairs with `validate_pub_parametric_alias_def_site` case (c) in
+    // `crates/reify-compiler/src/type_resolution.rs`.
+
+    /// `DiagnosticCode::NonPubAliasInPubAlias` round-trips through
+    /// `Diagnostic::error(...).with_code(...)`.
+    #[test]
+    fn diagnostic_code_non_pub_alias_in_pub_alias_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::error("pub type alias names non-pub type alias")
+            .with_code(DiagnosticCode::NonPubAliasInPubAlias);
+        assert_eq!(d.code, Some(DiagnosticCode::NonPubAliasInPubAlias));
+        assert_eq!(d.severity, Severity::Error);
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::NonPubAliasInPubAlias`
+    /// serializes as `"NonPubAliasInPubAlias"` (PascalCase).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_non_pub_alias_in_pub_alias_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::NonPubAliasInPubAlias).unwrap();
+        assert_eq!(s, "\"NonPubAliasInPubAlias\"");
     }
 
     // --- TypeArgOnTrait tests (task 5049 α — E_TYPE_ARG_ON_TRAIT) ---

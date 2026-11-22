@@ -41,6 +41,15 @@ load-bearing assertion that the new aliases resolve).
   (`prelude_context.rs:141` → `lib.rs:440` → `aliases_phase.rs:79`). There is **no**
   user-module-to-user-module alias import (only `.type_aliases` from prelude modules
   is seeded). "Module A → module B" in this PRD means "prelude module → user module".
+
+  > **Correction (2026-11-21, task #10297): this bullet was wrong when written.**
+  > User-module imports reach the compiler AS prelude modules (`program.rs` /
+  > `module_dag.rs` → `lib.rs::compile_with_stdlib_and_imports_checked` →
+  > `PreludeContext::extended(user_imports)`). `ModuleDag` already compiled every
+  > module with its direct imports as the prelude slice at task 2750's commit
+  > `5c164bd54d`, so non-parametric pub aliases were importable user-to-user from
+  > then on. Task A below (task 4792, commit `9105282ec4`, "un-skip parametric
+  > prelude seed") made parametric ones importable too.
 - `aliases_phase.rs:82` **skips** any prelude alias with non-empty `type_params` and
   records its name (`mark_skipped_parametric_prelude`).
 - Root cause is one dropped field: the internal `TypeAliasEntry` carries
@@ -137,7 +146,7 @@ substituted at the call site).
 | # | Decision | Resolution |
 |---|---|---|
 | D1 | Representation of the alias body across the boundary | Raw `reify_ast::TypeExpr` (option a). Only fully-general form (dimensional-op-over-param), reuses existing resolver, no new dep/serialization. |
-| D2 | Scope | **Prelude-only**. The shared-environment argument makes it sound by construction (any alias a prelude body references is itself seeded into the consumer). |
+| D2 | Scope | **Prelude-only**. The shared-environment argument makes it sound by construction (any alias a prelude body references is itself seeded into the consumer). **Superseded 2026-11-21 (#10297):** the argument fails for user imports. An importer's own alias shadows the seed, a non-pub alias is never seeded, and an alias the defining module imported is not seeded into its importer. The fix: each exported parametric alias carries its defining module's alias bindings (`CompiledTypeAlias.body_scope`), non-pub ones included, which is what makes an importer resolve its body correctly. Separately, as a visibility policy, a pub parametric alias that names a non-pub alias is rejected at its definition (`DiagnosticCode::NonPubAliasInPubAlias`): a pub alias's meaning must not depend on a name its importers cannot see. |
 | D3 | Definition-site validation | **Strict, with bound enforcement.** Resolve body in the defining module against the exported env with type-params bound to declared bounds (reuse `check_type_param_bounds`); error at the def site on non-exported-name reference or bound violation. |
 | D4 | Real consumers | **Both** `Vec3<Q: Dimension>` (builtin-arg path, fdm/constitutive/ports migration) **and** `Rate<Q: Dimension>` (dimensional-op-over-param path, units.ri). |
 | D5 | Content hash | No change — `CompiledTypeAlias.content_hash` already derives from the full declaration source text. |
@@ -151,6 +160,9 @@ substituted at the call site).
   pending flip) — "general cross-module alias import" — gated on a real consumer,
   with a one-paragraph forward-stub PRD referenced from the bookmark. Owner: this
   project, when a consumer appears.
+  *Superseded 2026-11-21: the path already existed (see the Background
+  correction), the name-capture hazard was live, and #10297 fixed it. #10297
+  superseded the bookmark, #4797, which was cancelled on 2026-11-19.*
 - **FEA `traction` / `force_density` field migration.** `fea_multi_case.ri:430,459`
   mark `Real` placeholders for `Vector3<Pressure>` / `Vector3<ForceDensity>`. Those
   field changes are owned by the **FEA Load/Support follow-on PRD** (task 4092 area),
@@ -161,7 +173,7 @@ substituted at the call site).
 | Seam | Owner | Status |
 |---|---|---|
 | Parametric-alias boundary mechanism + the two stdlib aliases | **this PRD (#4687)** | active |
-| General user-module alias import | this project, deferred bookmark | out of scope; bookmark filed at decompose |
+| General user-module alias import | this project, deferred bookmark | out of scope; bookmark filed at decompose. *Superseded 2026-11-21: fixed by #10297 (bookmark #4797 cancelled).* |
 | FEA `traction`/`force_density` → `Vec3<…>` field migration | FEA Load/Support follow-on PRD (4092 area) | out of scope; consumes this PRD's `Vec3<Q>` |
 | Bound-checking substrate (`check_type_param_bounds`) | task 4603 γ (landed) | reused, not modified |
 
@@ -218,6 +230,8 @@ for all (no novel syntax).
 - **Bookmark (deferred, not flipped to pending) — general cross-module alias import.**
   Filed `planning_mode=True`, excluded from the pending flip; references a
   one-paragraph forward-stub PRD; gated on a real consumer. (G4 seam deliverable.)
+  *Superseded 2026-11-21: filed as #4797 and cancelled on 2026-11-19 as
+  superseded by #10297.*
 
 ## Open (tactical) questions — deferred to implementation
 
