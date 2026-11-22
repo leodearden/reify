@@ -1045,6 +1045,43 @@ _row4_worker_affinities() {
     done < "$ready_file"
 }
 
+# _row4_await_vanished <deadline_s> <pid_file>...
+#   Returns 0 as soon as EVERY named file is non-empty AND every pid it lists
+#   reads "unavailable" through _row4_worker_affinities (the one definition of a
+#   vanished pid); 1 when the deadline passes first.  Technique T
+#   (docs/prds/infra-test-wallclock-deflake.md): <deadline_s> only keeps a pid
+#   that never ends from hanging the suite — it never discriminates, so callers
+#   size it generously and never assert on how long the poll took.  A missing or
+#   empty file lists nothing, and nothing listed is not "all vanished".
+#   Vanishing is checked BEFORE the deadline, so a 0-second deadline still
+#   answers on the current state.  A zombie keeps its /proc entry until its
+#   parent reaps it, which is why this polls.
+#   The reader's output is captured into a variable rather than piped into an
+#   early-closing reader: this file runs under `set -o pipefail`.
+_row4_await_vanished() {
+    local deadline=$(( SECONDS + $1 ))
+    shift
+    local f affinities all_vanished
+    while true; do
+        all_vanished=1
+        for f in "$@"; do
+            [ -s "$f" ] || { all_vanished=0; break; }
+            affinities="$(_row4_worker_affinities "$f" 2>/dev/null || true)"
+            if [ "$(printf '%s\n' "$affinities" | sort -u)" != "unavailable" ]; then
+                all_vanished=0
+                break
+            fi
+        done
+        if [ "$all_vanished" -eq 1 ]; then
+            return 0
+        fi
+        if [ "$SECONDS" -ge "$deadline" ]; then
+            return 1
+        fi
+        sleep 0.1
+    done
+}
+
 # _row4_collect_spinners <deadline_s> <ready_file> <out_file>
 #   Records in <out_file>, one pid per line, the busy-spin child of every worker
 #   listed in a fixture --ready-file.  A ready file names the worker HANDLES
