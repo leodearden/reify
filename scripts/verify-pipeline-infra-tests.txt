@@ -1006,7 +1006,7 @@ scripts/test_prd_decompose_verify_bind.py    tests/infra/test_prd_decompose_veri
 scripts/test_prd_decompose_verify_mjs.py    tests/infra/test_prd_decompose_verify.sh
 scripts/test_prd_decompose_verify_schema.py    tests/infra/test_prd_decompose_verify.sh
 scripts/test_prd_decompose_verify_synthesize.py    tests/infra/test_prd_decompose_verify.sh
-# Task 10341: modules the two wrappers' partitions load or scan; pdv loads α in-process and α's partitions import _pdv_test_support.
+# Task 10341: modules the two wrappers' partitions load or scan; prd-decompose-verify.py loads prd-capability-check.py in-process, and the prd-capability-check partitions import _pdv_test_support.
 scripts/prd-capability-check.py    tests/infra/test_prd_decompose_verify.sh
 scripts/prd-decompose-verify.py    tests/infra/test_prd_decompose_verify.sh
 scripts/prd-decompose-verify.py    tests/infra/test_prd_capability_check.sh
@@ -1015,3 +1015,9 @@ scripts/_pdv_test_support.py    tests/infra/test_prd_capability_check.sh
 scripts/_pdv_test_support.py    tests/infra/test_prd_decompose_verify.sh
 scripts/_schema_test_support.py    tests/infra/test_prd_capability_check.sh
 scripts/_schema_test_support.py    tests/infra/test_prd_decompose_verify.sh
+# Task 10341: the prd-capability-check seam ratchet (test_pcc_seam_ratchet.py) scans the prd-decompose-verify partitions as source.
+scripts/test_prd_decompose_verify.py    tests/infra/test_prd_capability_check.sh
+scripts/test_prd_decompose_verify_bind.py    tests/infra/test_prd_capability_check.sh
+scripts/test_prd_decompose_verify_mjs.py    tests/infra/test_prd_capability_check.sh
+scripts/test_prd_decompose_verify_schema.py    tests/infra/test_prd_capability_check.sh
+scripts/test_prd_decompose_verify_synthesize.py    tests/infra/test_prd_capability_check.sh
