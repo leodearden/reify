@@ -661,7 +661,7 @@ async fn lsp_lane_is_panic_isolated_and_survives() {
         .expect_err("a panicking LSP-lane job must reach its awaiter")
         .into_panic();
     assert_eq!(
-        reify_core::panic_payload_to_string(&*payload),
+        reify_core::panic_payload_str(&*payload).expect("panic payload is a string"),
         "lsp boom",
         "the awaiter must receive the JOB's original payload, not a substitute"
     );
@@ -821,7 +821,7 @@ async fn lane_dispatch_propagates_the_original_job_panic() {
     );
     let payload = err.into_panic();
     assert_eq!(
-        reify_core::panic_payload_to_string(&*payload),
+        reify_core::panic_payload_str(&*payload).expect("panic payload is a string"),
         "async boom",
         "the awaiter must receive the JOB's original payload, not a substitute"
     );
@@ -961,7 +961,8 @@ async fn submitting_to_your_own_lane_from_a_future_panics_loudly_instead_of_wedg
         err.is_panic(),
         "the awaiting task must have PANICKED, not been cancelled: {err:?}"
     );
-    let message = reify_core::panic_payload_to_string(&*err.into_panic());
+    let payload = err.into_panic();
+    let message = reify_core::panic_payload_str(&*payload).expect("panic payload is a string");
     assert!(
         message.contains("re-entrant submission"),
         "the panic must name the reentrancy rather than surface as a generic \
@@ -1235,7 +1236,7 @@ async fn a_pool_lane_is_panic_isolated_and_keeps_all_its_consumers() {
         .expect_err("a panicking pool job must reach its awaiter")
         .into_panic();
     assert_eq!(
-        reify_core::panic_payload_to_string(&*payload),
+        reify_core::panic_payload_str(&*payload).expect("panic payload is a string"),
         "pool boom",
         "the awaiter must receive the JOB's original payload, not a substitute"
     );
@@ -1275,7 +1276,8 @@ async fn submitting_to_your_own_pool_panics_loudly_instead_of_wedging_it() {
         err.is_panic(),
         "the awaiting task must have PANICKED, not been cancelled: {err:?}"
     );
-    let message = reify_core::panic_payload_to_string(&*err.into_panic());
+    let payload = err.into_panic();
+    let message = reify_core::panic_payload_str(&*payload).expect("panic payload is a string");
     assert!(
         message.contains("re-entrant submission"),
         "the panic must name the reentrancy rather than surface as a generic \

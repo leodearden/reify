@@ -3422,7 +3422,9 @@ mod tests {
                 "expected lockstep panic for (faces={nfaces}, edges={nedges}) but none fired"
             );
             let payload = call_result.unwrap_err();
-            let msg = reify_core::panic_payload_to_string(payload.as_ref());
+            let msg = reify_core::panic_payload_str(payload.as_ref()).unwrap_or_else(|| {
+                panic!("non-string panic payload for (faces={nfaces}, edges={nedges})")
+            });
             assert!(
                 msg.contains("loft section face/edge slice families must be built in lockstep"),
                 "wrong panic for (faces={nfaces}, edges={nedges}): {msg:?}"

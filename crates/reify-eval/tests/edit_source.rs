@@ -3713,8 +3713,7 @@ fn edit_source_role_flip_probe_memoised_across_multiple_groups() {
 #[allow(clippy::single_element_loop)]
 fn edit_source_panics_on_unrepresentable_cell_type() {
     use reify_core::{ModulePath, Type};
-    use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
-    use std::panic;
+    use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, panic_message_of};
 
     {
         let ty = Type::TypeParam("T".into());
@@ -3736,15 +3735,9 @@ fn edit_source_panics_on_unrepresentable_cell_type() {
             )
             .build();
 
-        let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        let msg = panic_message_of(|| {
             let _ = engine.edit_source(&bad_module);
-        }));
-        assert!(
-            result.is_err(),
-            "expected edit_source to panic on unrepresentable cell_type but it returned normally",
-        );
-        let err = result.unwrap_err();
-        let msg = reify_core::panic_payload_to_string(err.as_ref());
+        });
         assert!(
             msg.contains(reify_eval::ASSERT_MSG_PREFIX),
             "panic message did not contain expected substring {:?}: {msg}",
