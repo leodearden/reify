@@ -8,12 +8,14 @@ WHAT RUNS THIS: run_all.sh discovers `test_*.sh` only, so the discovered
 member is the thin wrapper tests/infra/test_docker_create_probe.sh, which
 invokes this file.
 
-Hermetic: no docker daemon. docker appears only as a fake on PATH whose `info`
-and `create` each answer, refuse or hang as the test asks. The probe's
-consumers are tested beside their other tests in tests/infra/test_release_alpha.py.
+Hermetic: no docker daemon. docker appears only as a fake on PATH whose `info`,
+`create` and `rm` each answer, refuse or hang as the test asks, or no docker is
+on PATH at all. The probe's consumers are tested beside their other tests in
+tests/infra/test_release_alpha.py.
 """
 
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -30,13 +32,14 @@ behave() {
         ok) [ "$2" = create ] && echo fake-container-id; exit 0 ;;
         fail) echo "fake-docker: $2 refused" >&2; exit 1 ;;
         hang) exec sleep 60 ;;
+        hang-ignoring-sigterm) trap '' TERM; exec sleep 60 ;;
     esac
     exit 1
 }
 case "$1" in
     info) behave "$FAKE_DOCKER_INFO" info ;;
     create) behave "$FAKE_DOCKER_CREATE" create ;;
-    rm) exit 0 ;;
+    rm) behave "$FAKE_DOCKER_RM" rm ;;
     *) exit 1 ;;
 esac
 """
@@ -46,7 +49,7 @@ class ProbeVerdicts(unittest.TestCase):
     def setUp(self):
         scratch = tempfile.TemporaryDirectory()
         self.addCleanup(scratch.cleanup)
-        root = Path(scratch.name)
+        root = self.root = Path(scratch.name)
         bin_dir = root / "bin"
         bin_dir.mkdir()
         fake = bin_dir / "docker"
@@ -57,8 +60,9 @@ class ProbeVerdicts(unittest.TestCase):
         self.env["PATH"] = f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"
         self.env["FAKE_DOCKER_LOG"] = str(self.log)
 
-    def _probe(self, *args, info="ok", create="ok", secs=None):
-        env = dict(self.env, FAKE_DOCKER_INFO=info, FAKE_DOCKER_CREATE=create)
+    def _probe(self, *args, info="ok", create="ok", rm="ok", secs=None):
+        env = dict(self.env, FAKE_DOCKER_INFO=info, FAKE_DOCKER_CREATE=create,
+                   FAKE_DOCKER_RM=rm)
         if secs is not None:
             env[BOUND_KNOB] = secs
         return subprocess.run(
@@ -129,6 +133,35 @@ class ProbeVerdicts(unittest.TestCase):
         self.assertIn("1s", proc.stderr)
         self.assertIn(name, proc.stderr)
         self.assertIn("waiting for writeback completion", proc.stderr)
+
+    def test_a_create_that_outlives_sigterm_is_killed_and_still_a_stall(self):
+        proc = self._probe(create="hang-ignoring-sigterm", secs="1")
+        self.assertEqual(proc.returncode, 3, proc.stderr)
+        self.assertIn("docker create", proc.stderr)
+        self.assertIn(self._name_of(self._call("create")), proc.stderr)
+
+    def test_a_failed_rm_still_passes_and_names_the_leftover_container(self):
+        proc = self._probe(rm="fail")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self._subcommands(), ["info", "create", "rm"])
+        self.assertIn(self._name_of(self._call("create")), proc.stderr)
+
+    def test_no_docker_on_path_fails_at_info(self):
+        bin_dir = self.root / "no-docker-bin"
+        bin_dir.mkdir()
+        for tool in ("timeout", "tail"):
+            (bin_dir / tool).symlink_to(shutil.which(tool))
+        proc = subprocess.run(
+            [shutil.which("bash"), str(PROBE)],
+            env=dict(self.env, PATH=str(bin_dir)),
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertIn("docker info", proc.stderr)
+        self.assertEqual(self._calls(), [])
 
     def test_a_stalled_info_fails_before_any_create(self):
         proc = self._probe(info="hang", secs="1")

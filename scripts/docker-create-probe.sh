@@ -4,7 +4,8 @@
 # the 2026-11-17/18 stalls while `docker create` did not return (task 10181).
 #
 # IMAGE defaults to ubuntu:24.04. Bound: REIFY_DOCKER_CREATE_PROBE_SECS
-# (default 120), applied to each docker step.
+# (default 120), applied to each docker step: a step still running then gets
+# SIGTERM, and SIGKILL 10s later if it ignores that.
 #
 # Exit: 0 usable; 1 a docker step exited non-zero (its output is relayed);
 # 2 usage error; 3 a docker step did not return within the bound.
@@ -25,9 +26,15 @@ if [ "$#" -gt 1 ]; then
 fi
 image="${1:-ubuntu:24.04}"
 
-out=$(timeout "$secs" docker info 2>&1)
+kill_grace_secs=10
+bounded() { timeout -k "$kill_grace_secs" "$secs" "$@"; }
+# timeout exits 124 when the step died of SIGTERM at the bound, and 137 when it
+# outlived SIGTERM and was killed kill_grace_secs later.
+stalled() { [ "$1" -eq 124 ] || [ "$1" -eq 137 ]; }
+
+out=$(bounded docker info 2>&1)
 rc=$?
-if [ "$rc" -eq 124 ]; then
+if stalled "$rc"; then
     say "\`docker info\` did not return within ${secs}s"
     exit 3
 elif [ "$rc" -ne 0 ]; then
@@ -37,10 +44,10 @@ elif [ "$rc" -ne 0 ]; then
 fi
 
 name="reify-docker-create-probe-$$-$RANDOM"
-out=$(timeout "$secs" docker create --name "$name" --label reify.docker-create-probe=1 "$image" true 2>&1)
+out=$(bounded docker create --name "$name" --label reify.docker-create-probe=1 "$image" true 2>&1)
 rc=$?
-if [ "$rc" -eq 124 ]; then
-    say "\`docker create\` of $image did not return within ${secs}s"
+if stalled "$rc"; then
+    say "\`docker create\` of $image did not return within ${secs}s (the bound also covers pulling $image when it is not present locally)"
     say "a create the daemon finishes later leaves container $name in state Created; remove it with: docker rm $name"
     say "host check: journalctl -k | grep 'waiting for writeback completion'"
     exit 3
@@ -50,7 +57,7 @@ elif [ "$rc" -ne 0 ]; then
     exit 1
 fi
 
-if ! timeout "$secs" docker rm -f "$name" >/dev/null 2>&1; then
+if ! bounded docker rm -f "$name" >/dev/null 2>&1; then
     say "warning: could not remove probe container $name; remove it with: docker rm -f $name"
 fi
 exit 0
