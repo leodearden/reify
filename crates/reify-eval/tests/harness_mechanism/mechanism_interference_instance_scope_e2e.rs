@@ -34,7 +34,7 @@ structure def Child {
     let collide_ab = interferes_with(s, id_a, id_b)
     let clearance_ab = min_clearance(s, id_a, id_b)
 
-    let j = prismatic(vec3(1, 0, 0), 0mm .. 300mm)
+    let j = prismatic(dir(1, 0, 0), 0mm .. 300mm)
     let n1 = body(mechanism(), "cube_a", j)
     let n2 = body(n1, "cube_b", fixed())
     let ida = body_id_of(n2, "cube_a")

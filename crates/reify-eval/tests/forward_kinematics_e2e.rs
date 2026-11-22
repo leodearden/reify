@@ -47,8 +47,8 @@ fn get_value<'a>(values: &'a ValueMap, name: &str) -> &'a Value {
 ///   `com = ((0 + √2)/2, (0 + √2)/2, 0) = (√2/2, √2/2, 0)`
 const HAPPY_SOURCE: &str = r#"
 structure def Kinematic {
-    let j_rev  = revolute(vec3(0, 0, 1), 0rad .. 3.141592653589793rad)
-    let j_pris = prismatic(vec3(1, 0, 0), 0mm .. 2000mm)
+    let j_rev  = revolute(dir(0, 0, 1), 0rad .. 3.141592653589793rad)
+    let j_pris = prismatic(dir(1, 0, 0), 0mm .. 2000mm)
 
     let m0 = mechanism()
     let m1 = body(m0, "a", j_rev)
@@ -223,8 +223,8 @@ fn forward_kinematics_two_link_chain_e2e() {
 /// short-circuit to Undef through the full parse → compile → eval pipeline.
 const ERRORED_SOURCE: &str = r#"
 structure def KinematicErrored {
-    let j_a = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
-    let j_b = prismatic(vec3(0, 1, 0), 0mm .. 1000mm)
+    let j_a = prismatic(dir(1, 0, 0), 0mm .. 1000mm)
+    let j_b = prismatic(dir(0, 1, 0), 0mm .. 1000mm)
 
     let m0 = mechanism()
     let m1 = body(m0, "a", j_a)

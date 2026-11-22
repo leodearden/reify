@@ -302,7 +302,7 @@ structure def FkPosed {
     let cube_a = box(20mm, 20mm, 20mm)
     let cube_b = box(20mm, 20mm, 20mm)
 
-    let j = prismatic(vec3(1, 0, 0), 0mm .. 100mm)
+    let j = prismatic(dir(1, 0, 0), 0mm .. 100mm)
 
     let m0 = mechanism()
     let m1 = body(m0, "cube_a", fixed())
@@ -381,7 +381,7 @@ structure def SweptClearance {
     let head = box(20mm, 20mm, 20mm)
     let dock = translate(box(200mm, 20mm, 20mm), 200mm, 0mm, 0mm)
 
-    let j = prismatic(vec3(1, 0, 0), 0mm .. 300mm)
+    let j = prismatic(dir(1, 0, 0), 0mm .. 300mm)
 
     let m0 = mechanism()
     let m1 = body(m0, "head", j)

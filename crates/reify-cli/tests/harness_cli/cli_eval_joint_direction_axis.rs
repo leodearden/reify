@@ -82,7 +82,7 @@ fn carriage_a_values(stdout: &str) -> Vec<f64> {
         .lines()
         .find_map(|line| line.strip_prefix("CoreXY.carriage_a = "))
         .unwrap_or_else(|| panic!("stdout must carry CoreXY.carriage_a\nstdout: {stdout}"));
-    line.trim_matches(|c| c == '[' || c == ']')
+    line.trim_matches(['[', ']'])
         .split(',')
         .map(|n| {
             n.trim()

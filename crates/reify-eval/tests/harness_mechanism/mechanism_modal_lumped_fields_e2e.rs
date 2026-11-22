@@ -31,7 +31,7 @@ const SOURCE: &str = r#"
 structure def MechanismLumpedFieldsProbe {
     let steel = Steel_AISI_1045()
     let z_carriage_mass = 0.5kg
-    let z_flexure = prb_parallelogram_flexure(20mm, 5mm, 0.5mm, 10mm, steel, vec3(0, 0, 1), point3(0mm, 0mm, 0mm))
+    let z_flexure = prb_parallelogram_flexure(20mm, 5mm, 0.5mm, 10mm, steel, dir(0, 0, 1), point3(0mm, 0mm, 0mm))
     let z_effective_stiffness = flexure_compliance(z_flexure).effective_stiffness
     let m0 = mechanism()
     let carriage = body(m0, point_mass(z_carriage_mass), z_flexure)

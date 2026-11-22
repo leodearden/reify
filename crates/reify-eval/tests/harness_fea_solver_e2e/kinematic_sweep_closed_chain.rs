@@ -81,9 +81,9 @@ fn get_value<'a>(values: &'a ValueMap, name: &str) -> &'a Value {
 /// sweep produces.
 const CLOSED_CHAIN_SOURCE: &str = r#"
 structure def Kinematic {
-    let j_a = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
-    let j_x = prismatic(vec3(1, 0, 0), 0mm .. 500mm)
-    let j_b = prismatic(vec3(1, 0, 0), 0mm .. 2000mm)
+    let j_a = prismatic(dir(1, 0, 0), 0mm .. 1000mm)
+    let j_x = prismatic(dir(1, 0, 0), 0mm .. 500mm)
+    let j_b = prismatic(dir(1, 0, 0), 0mm .. 2000mm)
     let m0  = mechanism()
     let m1  = body(m0, "solid_a", j_a)
     let m2  = body(m1, "solid_b", j_x, j_a)
@@ -102,7 +102,7 @@ structure def Kinematic {
 /// snapshot as a no-op fast path.
 const OPEN_CHAIN_SOURCE: &str = r#"
 structure def Kinematic {
-    let j = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
+    let j = prismatic(dir(1, 0, 0), 0mm .. 1000mm)
     let m = body(mechanism(), "a", j)
 
     let snaps = sweep(m, j, 0mm .. 1000mm, 11)

@@ -27,7 +27,7 @@ use reify_test_support::{
 /// finds it.
 const NONDRIVING_BIND_SOURCE: &str = r#"
 structure def NondrivingBind {
-    let j = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
+    let j = prismatic(dir(1, 0, 0), 0mm .. 1000mm)
     let c = couple(j, -1.0)
     let b = bind(c, 5mm)
 }
@@ -38,7 +38,7 @@ structure def NondrivingBind {
 /// `bind(j, 5mm)` must NOT trigger `E_MECHANISM_NONDRIVING_JOINT`.
 const DRIVING_BIND_SOURCE: &str = r#"
 structure def DrivingBind {
-    let j = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
+    let j = prismatic(dir(1, 0, 0), 0mm .. 1000mm)
     let b = bind(j, 5mm)
 }
 "#;
@@ -50,7 +50,7 @@ structure def DrivingBind {
 /// let-bound so the δ seam's top-level cell scan finds it.
 const NONDRIVING_DIM_SOURCE: &str = r#"
 structure def NondrivingDim {
-    let j = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
+    let j = prismatic(dir(1, 0, 0), 0mm .. 1000mm)
     let c = couple(j, 2.0)
     let d = dim(c, 0mm .. 1000mm, 5)
 }
@@ -66,7 +66,7 @@ structure def NondrivingDim {
 /// top-level cell scan finds it.
 const NONDRIVING_SWEEP_SOURCE: &str = r#"
 structure def NondrivingSweep {
-    let j = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
+    let j = prismatic(dir(1, 0, 0), 0mm .. 1000mm)
     let m = body(mechanism(), "a", j)
     let c = couple(j, 2.0)
     let s = sweep(m, c, 0mm .. 1000mm, 5)

@@ -486,7 +486,7 @@ fn compliance_accessor_source() -> &'static str {
 structure def ComplianceAccessorProbe {
     let steel = Steel_AISI_1045()
     let pivot_flexure = prb_cantilever_beam(
-        2mm, 5mm, 0.05mm, steel, point3(0mm, 0mm, 0mm), vec3(0, 1, 0), 0deg, 10deg)
+        2mm, 5mm, 0.05mm, steel, point3(0mm, 0mm, 0mm), dir(0, 1, 0), 0deg, 10deg)
     let fc = flexure_compliance(pivot_flexure)
 }
 "#
@@ -645,9 +645,9 @@ fn multi_ctor_session_source() -> &'static str {
     r#"
 structure def MultiFlexureSession {
     let steel = Steel_AISI_1045()
-    let a = prb_cantilever_beam(20mm, 5mm, 0.5mm, steel, point3(0mm, 0mm, 0mm), vec3(0, 1, 0))
-    let b = prb_parallelogram_flexure(20mm, 5mm, 0.5mm, 10mm, steel, vec3(1, 0, 0), point3(0mm, 0mm, 0mm))
-    let c = prb_living_hinge(20mm, 5mm, 0.5mm, steel, point3(0mm, 0mm, 0mm), vec3(0, 1, 0))
+    let a = prb_cantilever_beam(20mm, 5mm, 0.5mm, steel, point3(0mm, 0mm, 0mm), dir(0, 1, 0))
+    let b = prb_parallelogram_flexure(20mm, 5mm, 0.5mm, 10mm, steel, dir(1, 0, 0), point3(0mm, 0mm, 0mm))
+    let c = prb_living_hinge(20mm, 5mm, 0.5mm, steel, point3(0mm, 0mm, 0mm), dir(0, 1, 0))
 }
 "#
 }

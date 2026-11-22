@@ -19,8 +19,8 @@ use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 /// `forward_kinematics_e2e.rs`).
 const DUPLICATE_SOLID_SOURCE: &str = r#"
 structure def DuplicateSolid {
-    let j_a = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
-    let j_b = prismatic(vec3(0, 1, 0), 0mm .. 1000mm)
+    let j_a = prismatic(dir(1, 0, 0), 0mm .. 1000mm)
+    let j_b = prismatic(dir(0, 1, 0), 0mm .. 1000mm)
 
     let m0 = mechanism()
     let m1 = body(m0, "a", j_a)
@@ -74,9 +74,9 @@ fn eval_emits_mechanism_duplicate_solid_error_diagnostic() {
 /// collapse the two copies to a SINGLE diagnostic.
 const PROPAGATED_ERROR_SOURCE: &str = r#"
 structure def PropagatedDuplicateSolid {
-    let j_a = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
-    let j_b = prismatic(vec3(0, 1, 0), 0mm .. 1000mm)
-    let j_c = prismatic(vec3(0, 0, 1), 0mm .. 1000mm)
+    let j_a = prismatic(dir(1, 0, 0), 0mm .. 1000mm)
+    let j_b = prismatic(dir(0, 1, 0), 0mm .. 1000mm)
+    let j_c = prismatic(dir(0, 0, 1), 0mm .. 1000mm)
 
     let m0 = mechanism()
     let m1 = body(m0, "a", j_a)
@@ -129,8 +129,8 @@ fn eval_deduplicates_propagated_mechanism_error() {
 /// recorded solid "b"), so dedup must retain BOTH and emit two diagnostics.
 const TWO_INDEPENDENT_ERRORS_SOURCE: &str = r#"
 structure def TwoIndependentDuplicates {
-    let j_a = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
-    let j_b = prismatic(vec3(0, 1, 0), 0mm .. 1000mm)
+    let j_a = prismatic(dir(1, 0, 0), 0mm .. 1000mm)
+    let j_b = prismatic(dir(0, 1, 0), 0mm .. 1000mm)
 
     // Mechanism A: duplicate solid "a"
     let ma0 = mechanism()
