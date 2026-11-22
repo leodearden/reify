@@ -21,6 +21,7 @@ that need landlock.
 import json
 import os
 import shlex
+import shutil
 import sys
 import tempfile
 import unittest
@@ -115,6 +116,19 @@ class NamespaceRows(HostCase):
             any(entry.name.startswith("fixture_reader-") for entry in incremental.iterdir()),
             sorted(entry.name for entry in incremental.iterdir()),
         )
+
+    def test_cargo_through_an_installed_trampoline_copy_builds_at_canon(self):
+        installed = Path(self.tmp, "installed-canon-bin")
+        installed.mkdir()
+        shutil.copy2(fx.TRAMPOLINE, installed / "cargo")
+        self.env["PATH"] = (
+            f"{installed}:{self.tree}/scripts/canon-bin:{self.env['HOME']}/.cargo/bin:/usr/bin:/bin"
+        )
+        self.with_caller_cache_variables()
+        result = fx.run([str(installed / "cargo"), *fx.CARGO_TEST], cwd=self.tree, env=self.env)
+        self.assert_passed_at(result, self.canon)
+        self.assertEqual(self.stamp.read_text(), self.canon + "\n")
+        self.assertEqual(self.wrapper_calls(), [])
 
     def test_nested_cargo_gets_the_policy_and_the_exports(self):
         dump_path = Path(self.tmp, "dump.json")

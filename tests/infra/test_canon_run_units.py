@@ -5,8 +5,9 @@ no mount namespace (canonical-build-path PRD, dark-factory
 plans/canonical-build-path-shared-cache-prd.md: C1's mode table, C2, C3's bound
 check, C4's `incremental` row, C7's trampoline; boundary rows 1-4, 9 and 11).
 
-CANON is unprovisioned or the host disabled in every case, so no bwrap probe
-runs and the suite is deterministic.
+No case probes or enters a mount namespace, so the suite is deterministic.
+One CanonCargo case fills CANON with a copy of the tree, and only
+canon_invocation sees it.
 
 WHAT RUNS THIS: run_all.sh discovers `test_*.sh` only, so the discovered member
 is the thin wrapper tests/infra/test_canon_run_units.sh.
@@ -469,9 +470,24 @@ class ResolveRealCargo(CliCase):
         Path(plain, "cargo").write_text("#!/bin/sh\n")
         self.assertEqual(self.resolve(self.tree_bin, plain, self.fake), self.fake_cargo)
 
+    def test_falls_back_to_an_unmarked_cargo_before_the_first_trampoline(self):
+        self.assertEqual(self.resolve(self.fake, self.tree_bin), self.fake_cargo)
+        self.assertEqual(
+            self.resolve(self.fake, self.tree_bin, self.other_trampolines), self.fake_cargo
+        )
+
     def test_none_without_an_unmarked_cargo(self):
         self.assertIsNone(self.resolve(self.tree_bin, self.other_trampolines))
         self.assertIsNone(self.resolve())
+
+    def test_trampoline_after_the_real_cargo_runs_it(self):
+        self.env["PATH"] = os.pathsep.join((self.fake, self.tree_bin))
+        plain = os.path.join(self.tmp, "plain")
+        os.mkdir(plain)
+        for cwd in (self.sub, plain):
+            with self.subTest(cwd=cwd):
+                Path(self.fake, "calls.jsonl").unlink(missing_ok=True)
+                self.assert_one_untouched_call(self.cargo("build", cwd=cwd), ["build"], cwd=cwd)
 
     def test_two_trampolines_on_path_do_not_loop(self):
         self.env["PATH"] = os.pathsep.join((self.tree_bin, self.other_trampolines, self.fake))
@@ -677,6 +693,50 @@ class CachePolicy(CanonInvocationCase):
                     self.assertNotIn("\n", message)
                     for needle in (f"'{policy}'", 'policy = "incremental"', str(self.host.path)):
                         self.assertIn(needle, message)
+
+
+class CanonCargo(CanonInvocationCase):
+    """C4: the real cargo at CANON is the first non-trampoline cargo on the composed PATH,
+    wherever trampolines sit."""
+
+    def setUp(self):
+        super().setUp()
+        cargo_dir = Path(self.environ["HOME"], ".cargo")
+        cargo_dir.mkdir()
+        self.cargo_home = fx.fake_cargo_dir(cargo_dir, "bin")
+        self.installed = os.path.join(self.tmp, "installed-canon-bin")
+        os.mkdir(self.installed)
+        shutil.copy2(fx.TRAMPOLINE, os.path.join(self.installed, "cargo"))
+        self.system = fx.fake_cargo_dir(self.tmp, "system-bin")
+        self.tree_bin = f"{self.real}/scripts/canon-bin"
+
+    def invoke_on_path(self, *entries, **environ):
+        path = os.pathsep.join(entries)
+        return self.invoke(["build"], environ=dict(self.environ, PATH=path, **environ))
+
+    def test_cargo_home_wins_over_a_second_trampoline_copy(self):
+        expected = os.path.join(self.cargo_home, "cargo")
+        for entries in (
+            (self.installed, self.tree_bin, self.cargo_home, self.system),
+            (self.tree_bin, self.cargo_home, self.installed, self.system),
+            (self.installed, self.cargo_home, self.system),
+            (self.installed, self.tree_bin, self.cargo_home),
+        ):
+            with self.subTest(path=entries):
+                self.assertEqual(self.invoke_on_path(*entries).argv[0], expected)
+
+    def test_inside_and_outside_the_namespace_give_the_same_cargo(self):
+        expected = os.path.join(self.cargo_home, "cargo")
+        entries = (self.installed, self.tree_bin, self.cargo_home, self.system)
+        self.assertEqual(self.invoke_on_path(*entries).argv[0], expected)
+        shutil.copytree(self.real, self.canon, symlinks=True)
+        self.assertEqual(self.invoke_on_path(*entries).argv[0], expected)
+
+    def test_only_trampolines_raise_command_not_found(self):
+        empty_home = os.path.join(self.tmp, "empty-home")
+        os.mkdir(empty_home)
+        with self.assertRaises(canon_run.CommandNotFound):
+            self.invoke_on_path(self.installed, self.tree_bin, HOME=empty_home)
 
 
 class EnsureStamp(unittest.TestCase):
