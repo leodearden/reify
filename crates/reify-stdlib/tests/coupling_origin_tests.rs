@@ -26,7 +26,7 @@ fn len_point3(x_m: f64, y_m: f64, z_m: f64) -> Value {
 }
 
 fn axis(x: f64, y: f64, z: f64) -> Value {
-    Value::Vector(vec![Value::Real(x), Value::Real(y), Value::Real(z)])
+    reify_test_support::direction_val(x, y, z)
 }
 
 fn closed_range(lower: Value, upper: Value) -> Value {
@@ -41,7 +41,10 @@ fn closed_range(lower: Value, upper: Value) -> Value {
 fn r_z(theta: f64) -> Value {
     eval_builtin(
         "orient_axis_angle",
-        &[axis(0.0, 0.0, 1.0), Value::angle(theta)],
+        &[
+            Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]),
+            Value::angle(theta),
+        ],
     )
 }
 

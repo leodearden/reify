@@ -6618,7 +6618,7 @@ mod tests {
     /// Table-driven validation surface for the cylindrical constructor.
     ///
     /// Every row should produce `Value::Undef`. Covers wrong arg counts, axis
-    /// validation failures (reuses `validate_axis`'s contracts), translation_range
+    /// values that are not a Direction (`axis_components`), translation_range
     /// validation failures (LENGTH-typed bounded `Range`), and rotation_range
     /// validation failures (ANGLE-typed bounded `Range`). Mirrors the structure
     /// of `planar_invalid_args_returns_undef` and `spherical_invalid_args_returns_undef`.

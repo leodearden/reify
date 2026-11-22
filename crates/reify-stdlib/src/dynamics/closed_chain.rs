@@ -483,9 +483,7 @@ mod tests {
         };
         use reify_ir::Value;
 
-        let unit = |x: f64, y: f64, z: f64| {
-            Value::Vector(vec![Value::Real(x), Value::Real(y), Value::Real(z)])
-        };
+        let unit = reify_test_support::direction_val;
         let len_range = |up: f64| Value::Range {
             lower: Some(Box::new(Value::length(0.0))),
             upper: Some(Box::new(Value::length(up))),

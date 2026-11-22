@@ -1812,11 +1812,11 @@ mod tests {
     use reify_ir::Value;
 
     fn axis_x() -> Value {
-        Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)])
+        reify_test_support::direction_val(1.0, 0.0, 0.0)
     }
 
     fn axis_z() -> Value {
-        Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)])
+        reify_test_support::direction_val(0.0, 0.0, 1.0)
     }
 
     fn length_range(lo: f64, up: f64) -> Value {
@@ -2249,7 +2249,7 @@ mod tests {
         );
         bad_joint_map.insert(
             Value::String("axis".to_string()),
-            Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]),
+            reify_test_support::direction_val(0.0, 0.0, 1.0),
         );
         // No "range" key.
         let bad_joint = Value::Map(bad_joint_map);
@@ -2381,7 +2381,7 @@ mod tests {
         let j_b = eval_builtin(
             "prismatic",
             &[
-                Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]),
+                reify_test_support::direction_val(0.0, 1.0, 0.0),
                 length_range(0.0, 1.0),
             ],
         );
@@ -3050,7 +3050,7 @@ mod tests {
     // until step-12 widens the solver signatures.
 
     fn axis_y() -> Value {
-        Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)])
+        reify_test_support::direction_val(0.0, 1.0, 0.0)
     }
 
     fn planar_xy_joint_wide() -> Value {
