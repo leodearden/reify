@@ -1519,6 +1519,171 @@ else
 fi
 
 # ----------------------------------------------------------------------------
+# FIXTURE-HOLD: the clock-free burn — cpu_load_fixture.sh with duration 0 runs
+# until it is stopped — and the parent-death anchoring that keeps an unbounded
+# burn from outliving its launcher.  Not a live cycle: the fixture is driven
+# directly, outside any governed scope, so nothing here consults cgroup
+# governance.  The KILL cases need the preconditions FIXTURE-PIN has, plus
+# setpriv(1); the refusal case needs nothing and always runs.
+#
+# The anchor is proven by SIGKILL, which runs no trap: only a parent-death signal
+# still ends the burn then.  A process counts as ended once it has vanished (see
+# _row4_await_vanished), and the pids to watch are recorded BEFORE the kill — a
+# handle killed without warning orphans its spinner, which can then only be found
+# from a list taken earlier.
+# ----------------------------------------------------------------------------
+echo ""
+echo "--- FIXTURE-HOLD: clock-free burn (duration 0) and its parent-death anchoring ---"
+
+# ── (a) An unbounded burn is refused, never launched without its anchor: with
+# setpriv absent from PATH, duration 0 exits EX_UNAVAILABLE before any worker
+# is forked (the same shape as FIXTURE-PIN-6).
+_fixture_hold_empty_path="$(mktemp -d -p "$WORK" fixture-hold-nopath.XXXXXX)"
+_fixture_hold_ready_nosetpriv="$WORK/fixture-hold-ready-nosetpriv"
+_fixture_hold_nosetpriv_rc=0
+PATH="$_fixture_hold_empty_path" "$BASH" "$FIXTURE" 1 0 \
+    --ready-file "$_fixture_hold_ready_nosetpriv" >/dev/null 2>&1 \
+    || _fixture_hold_nosetpriv_rc=$?
+assert "FIXTURE-HOLD-NOSETPRIV: duration 0 with setpriv absent from PATH => exit EXACTLY 69 (got ${_fixture_hold_nosetpriv_rc}); an unbounded burn is refused, never launched without its anchor" \
+    test "$_fixture_hold_nosetpriv_rc" -eq 69
+assert "FIXTURE-HOLD-NOSETPRIV: the refused run wrote no ready file (no worker was forked)" \
+    test ! -e "$_fixture_hold_ready_nosetpriv"
+
+if ! command -v taskset >/dev/null 2>&1; then
+    echo "  SKIP FIXTURE-HOLD: taskset unavailable — cannot observe per-worker pinning"
+elif [ -z "${_ROW4_CONFINE_CPUS:-}" ]; then
+    echo "  SKIP FIXTURE-HOLD: own Cpus_allowed_list unreadable — no confined pin list to pass"
+elif ! command -v setpriv >/dev/null 2>&1; then
+    echo "  SKIP FIXTURE-HOLD: setpriv unavailable — cannot anchor a burn with no clock"
+else
+    # The placement the fixture must produce, built exactly as FIXTURE-PIN builds it.
+    _fixture_hold_expected="$(printf '%s\n' "$_ROW4_CONFINE_CPUS" \
+        | tr ',' '\n' \
+        | awk -v w="$_ROW4_CONFINE_W" '{ cpu[n++] = $0 } END { for (i = 0; i < w; i++) print cpu[i % n] }')"
+
+    # _fixture_hold_reap <victim_pid> <pid_file>...
+    #   Unconditional cleanup after a group: TERM and reap the victim (the fixture
+    #   or the launcher above it), then SIGKILL every pid still recorded.  A failing
+    #   or mutated anchor must never leave an unbounded spinner on the confine CPUs.
+    #   Every error is ignored: most of these pids are gone already.
+    _fixture_hold_reap() {
+        local victim_pid="$1" pid_file recorded
+        shift
+        kill -TERM "$victim_pid" 2>/dev/null || true
+        wait "$victim_pid" 2>/dev/null || true
+        for pid_file in "$@"; do
+            [ -r "$pid_file" ] || continue
+            while IFS= read -r recorded; do
+                if [ -n "$recorded" ]; then
+                    kill -KILL "$recorded" 2>/dev/null || true
+                fi
+            done < "$pid_file"
+        done
+    }
+
+    # ── group 2: SIGKILL of the fixture itself.  It runs no EXIT trap, yet every
+    # worker handle must end through its own parent-death signal, and each handle
+    # forwards TERM to its spinner.
+    _fixture_hold_ready1="$WORK/fixture-hold-ready-1"
+    _fixture_hold_spinners1="$WORK/fixture-hold-spinners-1"
+    bash "$FIXTURE" "$_ROW4_CONFINE_W" 0 --pin-cpus "$_ROW4_CONFINE_CPUS" \
+        --ready-file "$_fixture_hold_ready1" >/dev/null 2>&1 &
+    _fixture_hold_pid=$!
+
+    _fixture_hold1_rc=0
+    _row4_await_ready 30 "$_fixture_hold_ready1" || _fixture_hold1_rc=$?
+    assert "FIXTURE-HOLD-1: duration 0 is accepted and the burn reports ready (rc ${_fixture_hold1_rc}; the 30 s deadline is an anti-hang guard only)" \
+        test "$_fixture_hold1_rc" -eq 0
+
+    if [ "$_fixture_hold1_rc" -ne 0 ]; then
+        assert "FIXTURE-HOLD-2: burn never reported ready (HOLD-1 rc ${_fixture_hold1_rc}) -- KILL cases not run" \
+            false
+    else
+        # (2a) Precondition: every worker is live and on its round-robin CPU, so
+        # that -2c's "vanished" means the KILL ended them.
+        _fixture_hold_affinities1="$(_row4_worker_affinities "$_fixture_hold_ready1" 2>/dev/null || true)"
+        assert "FIXTURE-HOLD-2a: before the KILL every worker is live and pinned (workers=${_fixture_hold_affinities1//$'\n'/,}, expected=${_fixture_hold_expected//$'\n'/,})" \
+            _row4_pin_coresident "$_fixture_hold_affinities1" "$_fixture_hold_expected"
+
+        # (2b) The spinners are what burn, and are found from their handles only
+        # while the handles live.
+        _fixture_hold2b_rc=0
+        _row4_collect_spinners 30 "$_fixture_hold_ready1" "$_fixture_hold_spinners1" \
+            || _fixture_hold2b_rc=$?
+        assert "FIXTURE-HOLD-2b: every worker handle has a spinner child before the KILL (rc ${_fixture_hold2b_rc}; spinners=$(tr '\n' ',' < "$_fixture_hold_spinners1" 2>/dev/null || true))" \
+            test "$_fixture_hold2b_rc" -eq 0
+
+        kill -KILL "$_fixture_hold_pid" 2>/dev/null || true
+        wait "$_fixture_hold_pid" 2>/dev/null || true
+
+        # (2c) Nothing of the burn survives its launcher's SIGKILL.
+        if [ "$_fixture_hold2b_rc" -ne 0 ]; then
+            assert "FIXTURE-HOLD-2c: spinners were never found (HOLD-2b rc ${_fixture_hold2b_rc}) -- vanish check not run" \
+                false
+        else
+            _fixture_hold2c_rc=0
+            _row4_await_vanished 30 "$_fixture_hold_ready1" "$_fixture_hold_spinners1" \
+                || _fixture_hold2c_rc=$?
+            assert "FIXTURE-HOLD-2c: after SIGKILL of the fixture every worker handle and spinner has vanished (rc ${_fixture_hold2c_rc}; the 30 s deadline is an anti-hang guard only)" \
+                test "$_fixture_hold2c_rc" -eq 0
+        fi
+    fi
+    _fixture_hold_reap "$_fixture_hold_pid" "$_fixture_hold_ready1" "$_fixture_hold_spinners1"
+
+    # ── group 3: SIGKILL of the launcher above the fixture.  The fixture's own
+    # parent-death signal TERMs it, its EXIT trap reaps the handles, and the
+    # handles take the spinners.  The launcher records the fixture's pid itself:
+    # the test cannot see a grandchild's `$!`.
+    _fixture_hold_ready3="$WORK/fixture-hold-ready-3"
+    _fixture_hold_fixture_pid3="$WORK/fixture-hold-fixture-pid-3"
+    _fixture_hold_spinners3="$WORK/fixture-hold-spinners-3"
+    bash -c 'bash "$1" "$2" 0 --pin-cpus "$3" --ready-file "$4" >/dev/null 2>&1 &
+             printf "%s\n" "$!" > "$5"
+             wait' \
+        _ "$FIXTURE" "$_ROW4_CONFINE_W" "$_ROW4_CONFINE_CPUS" \
+        "$_fixture_hold_ready3" "$_fixture_hold_fixture_pid3" &
+    _fixture_hold_launcher_pid=$!
+
+    _fixture_hold3a_rc=0
+    _row4_await_ready 30 "$_fixture_hold_ready3" "$_fixture_hold_fixture_pid3" \
+        || _fixture_hold3a_rc=$?
+    assert "FIXTURE-HOLD-3a: duration 0 behind a launcher reports ready and records the fixture pid (rc ${_fixture_hold3a_rc}; the 30 s deadline is an anti-hang guard only)" \
+        test "$_fixture_hold3a_rc" -eq 0
+
+    if [ "$_fixture_hold3a_rc" -ne 0 ]; then
+        assert "FIXTURE-HOLD-3: burn never reported ready (HOLD-3a rc ${_fixture_hold3a_rc}) -- KILL cases not run" \
+            false
+    else
+        # (3b) The workers are live and pinned, and the spinners are on record.
+        _fixture_hold_affinities3="$(_row4_worker_affinities "$_fixture_hold_ready3" 2>/dev/null || true)"
+        assert "FIXTURE-HOLD-3b: before the KILL every worker is live and pinned (workers=${_fixture_hold_affinities3//$'\n'/,}, expected=${_fixture_hold_expected//$'\n'/,})" \
+            _row4_pin_coresident "$_fixture_hold_affinities3" "$_fixture_hold_expected"
+
+        _fixture_hold3b_rc=0
+        _row4_collect_spinners 30 "$_fixture_hold_ready3" "$_fixture_hold_spinners3" \
+            || _fixture_hold3b_rc=$?
+        assert "FIXTURE-HOLD-3b: every worker handle has a spinner child before the KILL (rc ${_fixture_hold3b_rc}; spinners=$(tr '\n' ',' < "$_fixture_hold_spinners3" 2>/dev/null || true))" \
+            test "$_fixture_hold3b_rc" -eq 0
+
+        kill -KILL "$_fixture_hold_launcher_pid" 2>/dev/null || true
+        wait "$_fixture_hold_launcher_pid" 2>/dev/null || true
+
+        # (3c) Nothing of the burn survives its launcher's SIGKILL.
+        if [ "$_fixture_hold3b_rc" -ne 0 ]; then
+            assert "FIXTURE-HOLD-3c: spinners were never found (HOLD-3b rc ${_fixture_hold3b_rc}) -- vanish check not run" \
+                false
+        else
+            _fixture_hold3c_rc=0
+            _row4_await_vanished 30 "$_fixture_hold_fixture_pid3" "$_fixture_hold_ready3" "$_fixture_hold_spinners3" \
+                || _fixture_hold3c_rc=$?
+            assert "FIXTURE-HOLD-3c: after SIGKILL of the launcher the fixture, every worker handle and every spinner has vanished (rc ${_fixture_hold3c_rc}; the 30 s deadline is an anti-hang guard only)" \
+                test "$_fixture_hold3c_rc" -eq 0
+        fi
+    fi
+    _fixture_hold_reap "$_fixture_hold_launcher_pid" "$_fixture_hold_fixture_pid3" "$_fixture_hold_ready3" "$_fixture_hold_spinners3"
+fi
+
+# ----------------------------------------------------------------------------
 # ROW4-LAUNCH-VACUITY: the launch/stop seam ROW4 starts and ends its burns
 # through.  `_row4_launch_role_burn` takes the governed-exec wrapper as a
 # parameter, so this block hands it a pass-through stub: the REAL fixture and
