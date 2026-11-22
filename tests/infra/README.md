@@ -375,6 +375,40 @@ plus a `--scope staged` selector) does not apply.
 Premise, detection cases and the all-clear's liveness controls:
 `test_fd_probe_self_reference.py`.
 
+## Python helper scripts live in a private directory
+
+`python3 <file>.py` puts the file's directory first on `sys.path`, and
+Python's `FileFinder` re-lists a `sys.path` directory whenever its mtime has
+changed. A helper minted as `mktemp /tmp/x_XXXXXX.py` therefore makes every
+`import` re-list the shared `/tmp` (~275K entries, touched constantly by other
+agents): seconds per helper run, which pushed `test_cpu_governance_config.sh`
+past its 1200s `run_all.sh` budget (task #10282, esc-9886-1). A world-writable
+directory on `sys.path` also lets any module planted beside the helper (a
+`yaml.py`, say) shadow its imports.
+
+Mint a private directory and give the helper a fixed name inside it, one that
+is not an importable module's name:
+
+```bash
+_PARSE_DIR="$(mktemp -d /tmp/foo_parse_XXXXXX)"
+trap 'rm -rf "$_PARSE_DIR"' EXIT    # or: _TMPDIRS+=("$_PARSE_DIR")
+_PARSE_PY="$_PARSE_DIR/foo_parse.py"
+```
+
+`test_no_shared_tmp_python_helpers.sh` flags a non-comment `mktemp` that
+mints a `.py` file (a template ending `.py`, or `--suffix=.py`) without `-d`,
+whatever its base directory. The corpus is `git ls-files -- '*.sh' 'hooks/*'`,
+the same pathspec the guards above scan (each spells out its own copy).
+
+**Scope, honestly.** It reads one line at a time, so a `mktemp` call split
+across lines is missed, and it sees only `mktemp`: a fixed-name write such as
+`cat > /tmp/x.py` and Python-side `tempfile` use are not flagged. A call's
+arguments end at the first `)`, so a template holding its own `$(...)`, as in
+`mktemp "$(dirname "$x")/h_XXXXXX.py"`, is cut short and missed.
+
+Premise, detection cases and the all-clear's liveness controls:
+`test_no_shared_tmp_python_helpers.py`.
+
 ## Cited test-path resolution (`cited-test-path-baseline.manifest`)
 
 `test_cited_test_paths_resolve.sh` guards a single contract: **prose that
@@ -797,6 +831,8 @@ runs every adopting member with an empty `CARGO_HOME` and
 | `test_cited_test_paths_resolve.sh` | Regression guard: prose citing a `crates/*/tests/**.rs` path that no longer resolves |
 | `test_fd_probe_self_reference.sh` | Regression guard: a /proc probe of the current process's fd 1 inside a command substitution (reads the capture pipe) |
 | `test_fd_probe_self_reference.py` | Its stdlib-unittest body, driving `scripts/check-fd-probe-self-reference.py` |
+| `test_no_shared_tmp_python_helpers.sh` | Regression guard: a helper `.py` minted as a bare mktemp file (puts a shared temp dir on sys.path) |
+| `test_no_shared_tmp_python_helpers.py` | Its stdlib-unittest body |
 | `test_flock_detached_fork_guard.sh` | Regression guard: a locally-opened flock FD held across a detached `&` fork with no `flock -u` release |
 | `test_no_new_wallclock_upper_bounds.sh` | Regression guard: static-grep for new wall-clock upper-bound asserts |
 | `test_npm_ci_hardening.sh` | Tests npm ci guard conventions in dark-factory-orchestrator.yaml |

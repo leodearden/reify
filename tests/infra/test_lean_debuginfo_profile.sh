@@ -42,8 +42,9 @@ BENCH_DOC="$REPO_ROOT/docs/notes/lean-debuginfo-bench.md"
 # EFFECTIVE dev/test debuginfo posture, honoring profile inheritance:
 #   - split = profile.test.split-debuginfo OR profile.dev.split-debuginfo OR "off"
 #   - debug = profile.test.debug OR profile.dev.debug OR 2
-_PARSE_PY="$(mktemp /tmp/debuginfo_profile_parse_XXXXXX.py)"
-trap 'rm -f "$_PARSE_PY"' EXIT
+_PARSE_DIR="$(mktemp -d /tmp/debuginfo_profile_parse_XXXXXX)"
+trap 'rm -rf "$_PARSE_DIR"' EXIT
+_PARSE_PY="$_PARSE_DIR/debuginfo_profile_parse.py"
 
 cat > "$_PARSE_PY" << 'PYEOF'
 """Validate Cargo.toml lean-debuginfo-profile contract.

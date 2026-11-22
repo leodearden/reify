@@ -49,6 +49,8 @@ cleanup() {
     for d in "${_TMPDIRS[@]+${_TMPDIRS[@]}}"; do rm -rf "$d"; done
 }
 trap cleanup EXIT
+_PY_HELPER_DIR="$(mktemp -d /tmp/test-warm-lane-audit-py-XXXXXX)"
+_TMPDIRS+=("$_PY_HELPER_DIR")
 
 ERR_FILE="$(mktemp /tmp/test-warm-lane-audit-err-XXXXXX)"
 _TMPDIRS+=("$ERR_FILE")
@@ -701,8 +703,7 @@ make_lane "$H_MOUNT/_lane-h2"
 
 # Small python3 checker scripts (avoids nested-quoting hazards of inlining a
 # multi-line python one-liner inside a single-quoted bash -c inside assert).
-H_PY_KEYS="$(mktemp /tmp/test-warm-lane-audit-h-keys-XXXXXX.py)"
-_TMPDIRS+=("$H_PY_KEYS")
+H_PY_KEYS="$_PY_HELPER_DIR/h-keys.py"
 cat > "$H_PY_KEYS" << 'PYEOF'
 import json, sys
 data = json.load(sys.stdin)
@@ -717,8 +718,7 @@ names = {obj["lane"] for obj in lanes}
 assert names == {"_lane-h1", "_lane-h2"}, names
 PYEOF
 
-H_PY_HEADROOM="$(mktemp /tmp/test-warm-lane-audit-h-headroom-XXXXXX.py)"
-_TMPDIRS+=("$H_PY_HEADROOM")
+H_PY_HEADROOM="$_PY_HELPER_DIR/h-headroom.py"
 cat > "$H_PY_HEADROOM" << 'PYEOF'
 import json, sys
 data = json.load(sys.stdin)
@@ -1019,8 +1019,7 @@ assert "K4: HEADROOM reports live=1" \
 assert "K5: the retired value 'assigned=FREE' appears nowhere in the output" \
     bash -c '! printf "%s\n" "$1" | grep -q "assigned=FREE"' _ "$OUT"
 
-K_PY_LIVE="$(mktemp /tmp/test-warm-lane-audit-k-live-XXXXXX.py)"
-_TMPDIRS+=("$K_PY_LIVE")
+K_PY_LIVE="$_PY_HELPER_DIR/k-live.py"
 cat > "$K_PY_LIVE" << 'PYEOF'
 import json, sys
 data = json.load(sys.stdin)
@@ -1189,8 +1188,7 @@ done
 # column or interpolated the wrong variable would satisfy every table-side
 # assertion above plus H6's key-set check. `assigned` is the column this whole
 # change exists to add; its JSON values must be pinned, not merely present.
-L_PY_ASSIGNED="$(mktemp /tmp/test-warm-lane-audit-l-assigned-XXXXXX.py)"
-_TMPDIRS+=("$L_PY_ASSIGNED")
+L_PY_ASSIGNED="$_PY_HELPER_DIR/l-assigned.py"
 cat > "$L_PY_ASSIGNED" << 'PYEOF'
 import json, sys
 data = json.load(sys.stdin)
@@ -1384,8 +1382,7 @@ assert "M5: a LIVE lane is not pinned (pin=-)" \
 assert "M6: a RELEASED lane is not pinned (pin=-)" \
     bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-pin-released .*pin=-( |\$)"' _ "$OUT"
 
-M_PY_PIN="$(mktemp /tmp/test-warm-lane-audit-m-pin-XXXXXX.py)"
-_TMPDIRS+=("$M_PY_PIN")
+M_PY_PIN="$_PY_HELPER_DIR/m-pin.py"
 cat > "$M_PY_PIN" << 'PYEOF'
 import json, sys
 data = json.load(sys.stdin)
@@ -1593,8 +1590,7 @@ assert "N5c: the fixture covers both the live and idle UNKNOWN cells" \
     bash -c '[ "$1" -gt 0 ] && [ "$2" -gt 0 ]' _ \
     "${#n_exp_live_unknown_lanes[@]}" "${#n_exp_idle_unknown_lanes[@]}"
 
-N_PY_HEADROOM="$(mktemp /tmp/test-warm-lane-audit-n-headroom-XXXXXX.py)"
-_TMPDIRS+=("$N_PY_HEADROOM")
+N_PY_HEADROOM="$_PY_HELPER_DIR/n-headroom.py"
 cat > "$N_PY_HEADROOM" << 'PYEOF'
 import json, sys
 data = json.load(sys.stdin)
@@ -1738,8 +1734,7 @@ assert "O7b: PINNED line still emitted, all buckets zero" \
     _ "$OUT"
 
 # ── O8: the JSON counterpart ─────────────────────────────────────────────────
-O_PY_PINNED="$(mktemp /tmp/test-warm-lane-audit-o-pinned-XXXXXX.py)"
-_TMPDIRS+=("$O_PY_PINNED")
+O_PY_PINNED="$_PY_HELPER_DIR/o-pinned.py"
 cat > "$O_PY_PINNED" << 'PYEOF'
 import json, sys
 data = json.load(sys.stdin)
@@ -2667,8 +2662,7 @@ assert "R13c: the new counters come AFTER budget_gib on the HEADROOM line" \
 # Validated by PARSING the document (python3 heredoc + native assert), the
 # established pattern for JSON-mode cases here (Blocks H/I/L/N/O): a grep would
 # pass just as happily against a malformed emission.
-R14_PY="$(mktemp /tmp/test-warm-lane-audit-r14-XXXXXX.py)"
-_TMPDIRS+=("$R14_PY")
+R14_PY="$_PY_HELPER_DIR/r14.py"
 cat > "$R14_PY" << 'PYEOF'
 import json, sys
 
@@ -3026,8 +3020,7 @@ assert "S6: HEADROOM keeps its field order with stash_entries then stash_unknown
     bash -c 'printf "%s\n" "$1" | grep -qE "^HEADROOM resident=[0-9]+ live=[0-9]+ pinned=[0-9]+ quarantined=[0-9]+ free=[0-9]+ assigned=[0-9]+ state_unknown=[0-9]+ reclaimable=[0-9]+ leaked=[0-9]+ leak_unknown=[0-9]+ divergent_gib=[0-9]+ free_gib=[0-9]+ budget_gib=[0-9]+ plan_stranded=[0-9]+ plan_unknown=[0-9]+ plan_rewritten=[0-9]+ plan_mismatch=[0-9]+ stash_entries=[0-9]+ stash_unknown=[0-9]+$"' _ "$OUT"
 
 # -- S5 (e): JSON parity -------------------------------------------------------
-S_PY_JSON="$(mktemp /tmp/test-warm-lane-audit-s-json-XXXXXX.py)"
-_TMPDIRS+=("$S_PY_JSON")
+S_PY_JSON="$_PY_HELPER_DIR/s-json.py"
 cat > "$S_PY_JSON" << 'PYEOF'
 import json, sys
 data = json.load(sys.stdin)
@@ -3087,8 +3080,7 @@ assert "S7: the STASH line reads total=0 unknown=1 for a non-git stash repo" \
     bash -c 'printf "%s\n" "$1" | grep -qE "^STASH total=0 unknown=1$"' _ "$OUT"
 assert "S7: a stderr note names stash_unknown and the queried non-git path" \
     bash -c 'printf "%s\n" "$1" | grep "stash_unknown" | grep -qF -- "$2"' _ "$ERR_OUT" "$S_NOTGIT"
-S_PY_JSON_UNKNOWN="$(mktemp /tmp/test-warm-lane-audit-s-json-unknown-XXXXXX.py)"
-_TMPDIRS+=("$S_PY_JSON_UNKNOWN")
+S_PY_JSON_UNKNOWN="$_PY_HELPER_DIR/s-json-unknown.py"
 cat > "$S_PY_JSON_UNKNOWN" << 'PYEOF'
 import json, sys
 data = json.load(sys.stdin)

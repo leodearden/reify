@@ -73,7 +73,8 @@ else
     echo "--- (A) structural assertions via PyYAML ---"
 
     # Write a Python helper to a temp file so assert() can invoke it as a command.
-    _PARSE_PY="$(mktemp /tmp/cpu_gov_config_parse_XXXXXX.py)"
+    _PARSE_DIR="$(mktemp -d /tmp/cpu_gov_config_parse_XXXXXX)"
+    _PARSE_PY="$_PARSE_DIR/cpu_gov_config_parse.py"
     # _FIXTURE_FILES accumulates every negative-fixture path minted by
     # _mutate_fixture (defined in the (C) section below) so this ONE trap
     # covers all of them dynamically — no call site needs to re-declare the
@@ -81,7 +82,7 @@ else
     # so the trap body's "${_FIXTURE_FILES[@]}" is always a defined array
     # under `set -u`, on every path that reaches this point.
     _FIXTURE_FILES=()
-    trap 'rm -f "$_PARSE_PY" "${_FIXTURE_FILES[@]}"' EXIT
+    trap 'rm -rf "$_PARSE_DIR" "${_FIXTURE_FILES[@]}"' EXIT
 
     cat > "$_PARSE_PY" << 'PYEOF'
 """Validate dark-factory-orchestrator.yaml cpu_governance block.

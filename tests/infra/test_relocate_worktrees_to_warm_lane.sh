@@ -471,8 +471,9 @@ EXPECTED_BASE_TARGET_DIR="/home/leo/src/warm-lanes/base/target"
 if ! python3 -c 'import yaml' 2>/dev/null; then
     echo "  SKIP: python3 'yaml' (PyYAML) not available; skipping YAML assertions"
 else
-    _H_PARSE_PY="$(mktemp /tmp/relocate_config_check_XXXXXX.py)"
-    _TMPDIRS+=("$_H_PARSE_PY")
+    _H_PARSE_DIR="$(mktemp -d /tmp/relocate_config_check_XXXXXX)"
+    _TMPDIRS+=("$_H_PARSE_DIR")
+    _H_PARSE_PY="$_H_PARSE_DIR/relocate_config_check.py"
 
     cat > "$_H_PARSE_PY" << 'PYEOF'
 """Validate dark-factory-orchestrator.yaml for task 4696 (warm-lane R3).
