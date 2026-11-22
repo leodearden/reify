@@ -105,6 +105,46 @@ fn importer_local_alias_cannot_capture_an_imported_parametric_alias_body() {
     assert_eq!(cell_type(bound.entry(), "App", "x"), &LENGTH);
 }
 
+fn wrapping_importer4(stem: &str, initializer: &str) -> String {
+    format!(
+        "module {stem}\n\
+import prod4\n\
+type InnerPubZz = Time\n\
+type Wrap<Q: Dimension> = PerInnerPubZz<Q>\n\
+structure def App {{\n\
+\x20   param x : Wrap<Force> = {initializer}\n\
+}}\n"
+    )
+}
+
+/// The same capture reached through a NESTED instantiation: the importer's own
+/// `Wrap<Q>` names the imported `PerInnerPubZz<Q>`, whose body still resolves
+/// `InnerPubZz` in prod4, not as the importer's `Time`.
+#[test]
+fn importer_local_wrapper_cannot_capture_a_nested_imported_parametric_alias_body() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(dir.path(), "prod4.ri", PROD4);
+
+    let captured = compile(
+        dir.path(),
+        "imp4wa",
+        &wrapping_importer4("imp4wa", "3N / 1s"),
+    );
+    assert!(
+        has_error_code(captured.entry(), DiagnosticCode::ParamDefaultTypeMismatch),
+        "`3N / 1s` is not a Length, so it must be rejected; got {:?}",
+        captured.entry().diagnostics
+    );
+
+    let bound = compile(dir.path(), "imp4wb", &wrapping_importer4("imp4wb", "3mm"));
+    assert!(
+        errors(bound.entry()).is_empty(),
+        "`3mm` is a Length and must be accepted; got {:?}",
+        errors(bound.entry())
+    );
+    assert_eq!(cell_type(bound.entry(), "App", "x"), &LENGTH);
+}
+
 /// A parametric body resolves a name its defining module itself imported: the
 /// entry never imports prod6, yet `Per7`'s `Stiff6` is prod6's.
 #[test]
@@ -134,13 +174,93 @@ fn imported_parametric_alias_body_resolves_names_its_defining_module_imported() 
     assert_eq!(cell_type(program.entry(), "App", "x"), &LENGTH);
 }
 
+/// A parametric body naming a parametric alias its defining module imported:
+/// `Outer7<Q>` is prod7's spelling of prod6's `Per6<Q>`, and `Per6`'s body
+/// resolves `Stiff6` in prod6, two modules away from the entry.
+#[test]
+fn nested_parametric_alias_imported_by_the_defining_module_resolves_in_its_own_module() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(
+        dir.path(),
+        "prod6.ri",
+        "module prod6\n\
+pub type Stiff6 = Force / Length\n\
+pub type Per6<Q: Dimension> = Q / Stiff6\n",
+    );
+    write(
+        dir.path(),
+        "prod7.ri",
+        "module prod7\nimport prod6\npub type Outer7<Q: Dimension> = Per6<Q>\n",
+    );
+
+    let program = compile(
+        dir.path(),
+        "imp7",
+        "module imp7\nimport prod7\nstructure def App {\n    param x : Outer7<Force> = 3mm\n}\n",
+    );
+    assert!(
+        errors(program.entry()).is_empty(),
+        "`Outer7<Force>` is a Length; got {:?}",
+        errors(program.entry())
+    );
+    assert_eq!(cell_type(program.entry(), "App", "x"), &LENGTH);
+}
+
+fn entity_importer10(stem: &str, local_alias: &str) -> String {
+    format!(
+        "module {stem}\n\
+import prod10\n\
+{local_alias}\n\
+structure def App {{\n\
+\x20   param m : O10<Real>\n\
+}}\n"
+    )
+}
+
+/// An imported parametric body's ENTITY name is not an alias where the body is
+/// defined, so an importer's alias of that name is not consulted either:
+/// `O10<Real>` means the same with or without the importer's `type E10 = Length`.
+/// The non-parametric counterpart is still captured by such an alias (#10354).
+#[test]
+fn importer_local_alias_named_like_an_imported_parametric_body_entity_is_not_consulted() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(
+        dir.path(),
+        "prod10.ri",
+        "module prod10\npub enum E10 { A, B }\npub type O10<T> = Option<E10>\n",
+    );
+
+    let plain = compile(dir.path(), "imp10a", &entity_importer10("imp10a", ""));
+    assert!(
+        errors(plain.entry()).is_empty(),
+        "got {:?}",
+        errors(plain.entry())
+    );
+    let meant = cell_type(plain.entry(), "App", "m");
+    assert!(!meant.is_error(), "`O10<Real>` must resolve; got {meant:?}");
+
+    let shadowed = compile(
+        dir.path(),
+        "imp10b",
+        &entity_importer10("imp10b", "type E10 = Length"),
+    );
+    assert!(
+        errors(shadowed.entry()).is_empty(),
+        "got {:?}",
+        errors(shadowed.entry())
+    );
+    assert_eq!(cell_type(shadowed.entry(), "App", "m"), meant);
+}
+
 const PROD2: &str = "module prod2\n\
 type InnerZz = Force / Length\n\
 type HiddenZz = Length\n\
 pub type OuterZz = InnerZz / Time\n";
 
-/// A plain (non-parametric) pub alias is resolved where it is defined, so an
-/// importer's local `InnerZz` does not touch it.
+/// A plain (non-parametric) pub alias whose body names no entity is resolved
+/// where it is defined, so an importer's local `InnerZz` does not touch it.
+/// One whose body names an entity resolves at each use site instead, and an
+/// importer's alias can still capture it (#10354).
 #[test]
 fn plain_pub_alias_is_immune_to_an_importer_local_of_the_same_name() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -239,9 +359,9 @@ const PROD3: &str = "module prod3\n\
 type InnerZz = Force / Length\n\
 pub type PerInnerZz<Q: Dimension> = Q / InnerZz\n";
 
-/// A pub parametric alias whose body names a non-pub alias cannot be used by
-/// any importer, so `reify check` on its own module rejects it, at the pub
-/// alias rather than at the non-pub one.
+/// A pub parametric alias's meaning may not depend on an alias its importers
+/// cannot see, so `reify check` on its own module rejects one whose body names
+/// a non-pub alias, at the pub alias rather than at the non-pub one.
 #[test]
 fn pub_parametric_alias_naming_a_non_pub_alias_is_rejected_where_it_is_defined() {
     let dir = tempfile::tempdir().expect("tempdir");

@@ -357,8 +357,9 @@ fn compile_source(source: &str) -> reify_compiler::CompiledModule {
     compile_with_stdlib(&parsed)
 }
 
-/// No importer can see `Hidden`, so a pub parametric alias naming it is
-/// rejected where it is defined.
+/// A pub alias's meaning may not depend on an alias its importers cannot see,
+/// so a pub parametric alias naming the non-pub `Hidden` is rejected where it
+/// is defined.
 #[test]
 fn pub_parametric_alias_naming_a_non_pub_alias_rejected_at_def_site() {
     let module = compile_source("type Hidden = Length\npub type P<Q: Dimension> = Q / Hidden\n");
@@ -401,10 +402,5 @@ fn non_pub_parametric_alias_naming_a_non_pub_alias_accepted() {
 fn pub_parametric_alias_naming_a_builtin_shadowed_by_a_non_pub_alias_accepted() {
     let module = compile_source("type Time = Length\npub type P<Q: Dimension> = Q / Time\n");
     let errors = error_diagnostics(&module);
-    assert!(
-        !errors
-            .iter()
-            .any(|d| d.code == Some(DiagnosticCode::NonPubAliasInPubAlias)),
-        "got {errors:?}"
-    );
+    assert!(errors.is_empty(), "got {errors:?}");
 }
