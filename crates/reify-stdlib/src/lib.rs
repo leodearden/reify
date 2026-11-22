@@ -415,4 +415,14 @@ mod tests {
     fn unknown_function_returns_undef() {
         assert!(eval_builtin("foo", &[Value::Real(1.0)]).is_undef());
     }
+
+    #[test]
+    fn try_eval_builtin_separates_an_unclaimed_name_from_a_claimed_undef() {
+        let side = Value::length(1.0);
+        assert!(try_eval_builtin("box", &[side.clone(), side.clone(), side]).is_none());
+        assert!(matches!(
+            try_eval_builtin("sqrt", &[Value::Real(-1.0)]),
+            Some(Value::Undef)
+        ));
+    }
 }

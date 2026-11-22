@@ -72,6 +72,15 @@ structure def Part {
 }
 "#;
 
+/// A well-formed distance between two inline geometry constructors: no stdlib
+/// family claims `box` or `sphere`, so their kernel-less Undef is not a refusal.
+const INLINE_GEOMETRY_DISTANCE: &str = r#"
+structure def Part {
+    param w : Length = 10mm
+    constraint distance(box(w, w, w), sphere(w)) >= 0mm
+}
+"#;
+
 /// The same Real division by zero as `PURE_REFUSALS`, behind a user function:
 /// the boundary a refusal is not traced across.
 const USER_FUNCTION_REFUSAL: &str = r#"
@@ -314,6 +323,7 @@ fn unproven_undefs_stay_tolerated() {
         ("dic_inert_connect", DIC_INERT_CONNECT),
         ("volume_gated", VOLUME_GATED),
         ("inline_volume_query", INLINE_VOLUME_QUERY),
+        ("inline_geometry_distance", INLINE_GEOMETRY_DISTANCE),
         ("user_function_refusal", USER_FUNCTION_REFUSAL),
     ] {
         let result = check_kernel_less(source);

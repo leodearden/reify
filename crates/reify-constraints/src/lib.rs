@@ -795,21 +795,26 @@ mod tests {
         CompiledExpr::binop(BinOp::Gt, reciprocal, real(0.0), Type::Bool)
     }
 
-    /// `sqrt(-1.0) > 0.0`, with the builtin call typed `result_type`; the
-    /// evaluator dispatches a builtin by name, so the call is Undef either way.
-    fn sqrt_of_minus_one_gt_zero(result_type: Type) -> CompiledExpr {
+    /// `<name>(<args>) > 0.0`, with the builtin call typed `result_type`; the
+    /// evaluator dispatches a builtin by name, so its value ignores `result_type`.
+    fn builtin_gt_zero(name: &str, args: Vec<CompiledExpr>, result_type: Type) -> CompiledExpr {
         let call = CompiledExpr {
-            content_hash: reify_core::ContentHash::of(format!("sqrt_{result_type:?}").as_bytes()),
+            content_hash: reify_core::ContentHash::of(format!("{name}_{result_type:?}").as_bytes()),
             result_type,
             kind: reify_ir::CompiledExprKind::FunctionCall {
                 function: reify_ir::ResolvedFunction {
-                    name: "sqrt".to_string(),
-                    qualified_name: "std::sqrt".to_string(),
+                    name: name.to_string(),
+                    qualified_name: format!("std::{name}"),
                 },
-                args: vec![real(-1.0)],
+                args,
             },
         };
         CompiledExpr::binop(BinOp::Gt, call, real(0.0), Type::Bool)
+    }
+
+    /// `sqrt(-1.0) > 0.0`.
+    fn sqrt_of_minus_one_gt_zero(result_type: Type) -> CompiledExpr {
+        builtin_gt_zero("sqrt", vec![real(-1.0)], result_type)
     }
 
     #[test]
@@ -893,6 +898,24 @@ mod tests {
             non_plain.diagnostics.messages[0].severity,
             Severity::Warning
         );
+    }
+
+    /// No stdlib family claims `box`: its Undef means the evaluator cannot
+    /// realize the call, not that it refused, whatever the static type says.
+    #[test]
+    fn an_unclaimed_builtin_is_not_a_refusal() {
+        let side = || CompiledExpr::literal(mm(10.0), Type::length());
+        let result = check_single(
+            cnid("Root", 0),
+            &builtin_gt_zero("box", vec![side(), side(), side()], Type::dimensionless_scalar()),
+            &ValueMap::new(),
+        );
+        assert_eq!(result.satisfaction, Satisfaction::Indeterminate);
+        assert_eq!(
+            result.indeterminate_reason,
+            transient(TransientReason::OperatorUndefinedForKinds { kinds: vec![] })
+        );
+        assert_eq!(result.diagnostics.messages[0].severity, Severity::Warning);
     }
 
     #[test]
