@@ -24,9 +24,10 @@
 # Process liveness is driven through the REIFY_GOVTEST_REAP_FAKE_ALIVE_PIDS
 # seam rather than real host PIDs, so the result does not depend on what else
 # is running on the box.  That seam — and the lifecycle-only seam Block F uses
-# — are both armed by REIFY_GOVTEST_TEST_MODE=1, which this file is the only
-# thing in the repo to set; C7/C8 and F5 pin that the arming key is genuinely
-# required, so a stray var on a production run cannot engage either one.
+# — are both armed by REIFY_GOVTEST_TEST_MODE=1, which only infra test drivers
+# set and no production path or verify_env passes; C7/C8 and F5 pin that the
+# arming key is genuinely required, so a stray var on a production run cannot
+# engage either one.
 #
 # Auto-discovered by tests/infra/run_all.sh (glob test_*.sh).
 

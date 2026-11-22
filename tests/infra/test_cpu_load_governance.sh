@@ -233,11 +233,11 @@
 #                                       at runtime as the LAST confine-cores CPUs of
 #                                       this process's own Cpus_allowed_list;
 #                                       esc-4926-3 ruling)
-#   REIFY_GOVTEST_TEST_MODE             ARMING KEY for the two seams below (task
-#                                       5930). Both are refused unless this is 1.
-#                                       Nothing in the repo sets it except
-#                                       test_govtest_slice_reaper.sh, so both
-#                                       seams are inert on every real run no
+#   REIFY_GOVTEST_TEST_MODE             ARMING KEY for the three seams below (task
+#                                       5930). All are refused unless this is 1.
+#                                       Only infra test drivers set it; no
+#                                       production path or verify_env does, so
+#                                       the seams are inert on every real run no
 #                                       matter what else is exported.
 #   REIFY_CPU_GOV_TEST_LIFECYCLE_ONLY   with the arming key, exit 0 immediately
 #                                       after the startup stale-slice sweep, with
@@ -254,6 +254,19 @@
 #                                       judges a member by exit code alone. Set
 #                                       WITHOUT the arming key it is refused loudly
 #                                       and the full suite runs.
+#   REIFY_CPU_GOV_TEST_GATES_ONLY       with the arming key, consult every live
+#                                       cycle's host gate (live_cycle_gate, over
+#                                       _LIVE_GOVERNANCE_CYCLES) right after the
+#                                       startup sweep, then exit 0 before any cycle
+#                                       (task 10370). Exists so
+#                                       test_cpu_load_governance_deflake.sh can
+#                                       prove every live cycle SKIPs under
+#                                       REIFY_CPU_GOVERN_DISABLE=1 with a
+#                                       sub-second drive. NEVER set in a normal
+#                                       run, for the same reason as
+#                                       LIFECYCLE_ONLY; set WITHOUT the arming key
+#                                       it is refused loudly and the full suite
+#                                       runs.
 #   REIFY_GOVTEST_REAP_FAKE_ALIVE_PIDS  with the arming key, a space-separated pid
 #                                       list that replaces the `kill -0` liveness
 #                                       oracle used by the startup sweep (task
@@ -357,6 +370,22 @@ host_supports_governance() {
     )
 }
 
+_LIVE_GOVERNANCE_CYCLES=(FIXTURE-6 ROW1-2 ROW1-1 ROW2_3 CONFINE-APPLIED ROW4)
+
+# live_cycle_gate NAME — the host gate of registered live cycle NAME: 0 if it runs, else prints its SKIP and returns 1.
+live_cycle_gate() {
+    case " ${_LIVE_GOVERNANCE_CYCLES[*]} " in
+        *" $1 "*) ;;
+        *)
+            echo "ERROR: live_cycle_gate: '$1' is not in _LIVE_GOVERNANCE_CYCLES (${_LIVE_GOVERNANCE_CYCLES[*]})" >&2
+            exit 64
+            ;;
+    esac
+    host_supports_governance && return 0
+    echo "  SKIP $1: host does not support cgroup governance"
+    return 1
+}
+
 # ---------------------------------------------------------------------------
 # Hermetic workdir — cleaned up on EXIT.
 # ---------------------------------------------------------------------------
@@ -438,31 +467,48 @@ trap '_cleanup_all' EXIT
 # one shared per-user systemd session.
 govtest_reap_stale "$$"
 
+# _govtest_seam_armed SEAM_VAR — 0 when REIFY_GOVTEST_TEST_MODE=1 arms the
+# exit-early seam SEAM_VAR; otherwise refuses it loudly and returns 1.
+#
+# TWO KEYS, NOT A COMMENT.  The two seams below (LIFECYCLE_ONLY, GATES_ONLY)
+# are the only knobs in this file that can make the suite exit GREEN having
+# run zero rows, and run_all.sh judges a member by EXIT CODE alone — it parses
+# no "Results:" line — so a single stray export (a verify_env entry, an
+# operator shell, a future harness that forwards REIFY_* wholesale) would
+# silently turn a host-exclusive governance gate into a no-op that still
+# reports success.  Every other REIFY_CPU_GOV_TEST_* seam redirects a read to
+# a fixture and can at worst make one row measure the wrong thing; these two
+# delete the whole suite.  So each is armed only in conjunction with
+# REIFY_GOVTEST_TEST_MODE=1, a marker only infra test drivers set and no
+# production path or verify_env passes.  Disarmed, the request is refused
+# LOUDLY and the full suite runs — the failure mode of a stray var is then a
+# noisy real run, never a quiet vacuous pass.
+_govtest_seam_armed() {
+    [ "${REIFY_GOVTEST_TEST_MODE:-0}" = "1" ] && return 0
+    echo "WARNING: ${1}=1 IGNORED — REIFY_GOVTEST_TEST_MODE=1 is not set." >&2
+    echo "WARNING: that seam would exit 0 having run zero governance rows, so it is refused unless" >&2
+    echo "WARNING: explicitly armed.  Running the FULL suite.  If this is a real run, unset the var." >&2
+    return 1
+}
+
 # Lifecycle-only seam (task 5930): exit HERE, after the trap is installed and
 # the sweep has run, so tests/infra/test_govtest_slice_reaper.sh can prove the
 # slice lifecycle is wired by driving this script for real without paying for
 # a full ~22s suite.
-#
-# TWO KEYS, NOT A COMMENT.  This is the only knob in this file that can make
-# the suite exit GREEN having run zero rows, and run_all.sh judges a member by
-# EXIT CODE alone — it parses no "Results:" line — so a single stray export
-# (a verify_env entry, an operator shell, a future harness that forwards
-# REIFY_* wholesale) would silently turn a host-exclusive governance gate into
-# a no-op that still reports success.  Every other REIFY_CPU_GOV_TEST_* seam
-# redirects a read to a fixture and can at worst make one row measure the
-# wrong thing; this one deletes the whole suite.  So it is armed only in
-# conjunction with REIFY_GOVTEST_TEST_MODE=1, a marker nothing in the repo
-# sets outside test_govtest_slice_reaper.sh's Block F drive.  Disarmed, the
-# request is refused LOUDLY and the full suite runs — the failure mode of a
-# stray var is then a noisy real run, never a quiet vacuous pass.
-if [ "${REIFY_CPU_GOV_TEST_LIFECYCLE_ONLY:-0}" = "1" ]; then
-    if [ "${REIFY_GOVTEST_TEST_MODE:-0}" = "1" ]; then
-        echo "REIFY_CPU_GOV_TEST_LIFECYCLE_ONLY=1 — exiting after startup sweep (slice-lifecycle drive only)"
-        exit 0
-    fi
-    echo "WARNING: REIFY_CPU_GOV_TEST_LIFECYCLE_ONLY=1 IGNORED — REIFY_GOVTEST_TEST_MODE=1 is not set." >&2
-    echo "WARNING: that seam would exit 0 having run zero governance rows, so it is refused unless" >&2
-    echo "WARNING: explicitly armed.  Running the FULL suite.  If this is a real run, unset the var." >&2
+if [ "${REIFY_CPU_GOV_TEST_LIFECYCLE_ONLY:-0}" = "1" ] && _govtest_seam_armed REIFY_CPU_GOV_TEST_LIFECYCLE_ONLY; then
+    echo "REIFY_CPU_GOV_TEST_LIFECYCLE_ONLY=1 — exiting after startup sweep (slice-lifecycle drive only)"
+    exit 0
+fi
+
+# Gates-only seam (task 10370): consult every live cycle's host gate, then
+# exit, so tests/infra/test_cpu_load_governance_deflake.sh can prove each one
+# SKIPs under the break-glass without paying for the always-on body.
+if [ "${REIFY_CPU_GOV_TEST_GATES_ONLY:-0}" = "1" ] && _govtest_seam_armed REIFY_CPU_GOV_TEST_GATES_ONLY; then
+    echo "REIFY_CPU_GOV_TEST_GATES_ONLY=1 — consulting every live cycle's host gate, then exiting (gate drive only)"
+    for _cycle in "${_LIVE_GOVERNANCE_CYCLES[@]}"; do
+        live_cycle_gate "$_cycle" || true
+    done
+    exit 0
 fi
 
 # ============================================================================
@@ -745,15 +791,13 @@ else
         test "$FIXTURE_5_RC" -eq 0
 
     # FIXTURE-6: (host-gated) placed scope's cpu.max first field == "max".
-    if host_supports_governance; then
+    if live_cycle_gate FIXTURE-6; then
         SCOPE_MAX="$(timeout 10 bash "$CPU_GOV_EXEC" --role task -- \
             bash -c 'rel=$(sed "s/^0:://" /proc/self/cgroup); cat /sys/fs/cgroup"$rel"/cpu.max 2>/dev/null || echo "unavailable"' \
             2>/dev/null || echo "unavailable")"
         SCOPE_MAX_FIRST="${SCOPE_MAX%% *}"
         assert "FIXTURE-6: governed scope cpu.max first field == max (got '${SCOPE_MAX_FIRST}')" \
             test "${SCOPE_MAX_FIRST}" = "max"
-    else
-        echo "  SKIP FIXTURE-6: host does not support cgroup governance"
     fi
 fi
 
@@ -1506,9 +1550,7 @@ echo "--- Cycle ROW1: §8 Row 1 (lone governed source, box idle) ---"
 # ROW1-1 below (still quiet-gated pending its own confined conversion), it
 # never SKIPs under concurrent pool load and never touches PSI/python3.
 # ----------------------------------------------------------------------------
-if ! host_supports_governance; then
-    echo "  SKIP ROW1-2: host does not support cgroup governance"
-else
+if live_cycle_gate ROW1-2; then
     # cpu.max probe — run a tiny probe inside the scope to capture the first
     # field of cpu.max while the scope is live.  Uses a temp script to avoid
     # shell quoting complexity.
@@ -2453,8 +2495,8 @@ _row3_flv6="$(_row3_foreign_load 1 0 0.85 2>/dev/null || true)"
 assert "ROW3-1-FOREIGN-LOAD-VACUITY-6: BOUNDARY -- contended=1 avg10_rc=0 usage_fraction=0.85 (== floor) => '0' (got '${_row3_flv6}')" \
     test "$_row3_flv6" = "0"
 
-if ! host_supports_governance; then
-    echo "  SKIP ROW1-1: host does not support cgroup governance"
+if ! live_cycle_gate ROW1-1; then
+    :
 elif ! command -v taskset >/dev/null 2>&1; then
     # Measurement-integrity skip (esc-4926-3): without affinity pinning the
     # confined saturation measurement is unreliable — never fall back to
@@ -3041,8 +3083,8 @@ _row23_mix_timing 30 15 8 2 > /dev/null || _row23_timing5_rc=$?
 assert "ROW23-TIMING-VACUITY-5: rc EXACTLY 0 (got ${_row23_timing5_rc}); the live cycle assigns the capture bare, so a failure would abort it under set -e" \
     test "$_row23_timing5_rc" -eq 0
 
-if ! host_supports_governance; then
-    echo "  SKIP ROW2_3: host does not support cgroup governance"
+if ! live_cycle_gate ROW2_3; then
+    :
 elif [ "$_PSI_AVAILABLE" -eq 0 ] || [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
     echo "  SKIP ROW2_3: PSI or python3 unavailable"
 elif ! command -v taskset >/dev/null 2>&1; then
@@ -3732,9 +3774,7 @@ fi
 echo ""
 echo "--- ROW4-CONFINE-APPLIED: quota lands on parent, scope stays uncapped ---"
 
-if ! host_supports_governance; then
-    echo "  SKIP CONFINE-APPLIED: host does not support cgroup governance"
-else
+if live_cycle_gate CONFINE-APPLIED; then
     # Apply the confined quota to the shared parent BEFORE probing (S4/task
     # 4926 live wiring) — without this the parent reads uncapped ("max")
     # against the expected quota_usec and CONFINE-APPLIED-1 stays RED.
@@ -4037,8 +4077,8 @@ else
         _row4_share_inconclusive 10367459 5945387 300 100 0.10 "$_row4_sampled_hot" 20
 fi
 
-if ! host_supports_governance; then
-    echo "  SKIP ROW4: host does not support cgroup governance"
+if ! live_cycle_gate ROW4; then
+    :
 elif [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
     echo "  SKIP ROW4: python3 unavailable"
 elif ! command -v taskset >/dev/null 2>&1; then
