@@ -1826,6 +1826,7 @@ mod tests {
     };
     use reify_core::DimensionVector;
     use reify_ir::Value;
+    use reify_test_support::direction_val;
 
     // ── prismatic constructor: happy path ────────────────────────────────────
 
@@ -2796,24 +2797,24 @@ mod tests {
 
     #[test]
     fn joint_axis_prismatic_returns_stored_axis() {
-        let axis = axis_x_unit();
-        let joint = eval_builtin("prismatic", &[axis.clone(), length_range_0_to_1m()]);
-        assert_eq!(
-            eval_builtin("joint_axis", &[joint]),
-            axis,
-            "joint_axis(prismatic) should return stored axis"
+        let joint = eval_builtin(
+            "prismatic",
+            &[direction_val(0.0, 1.0, 0.0), length_range_0_to_1m()],
         );
+        let axis = eval_builtin("joint_axis", &[joint]);
+        assert_eq!(axis, direction_val(0.0, 1.0, 0.0));
+        assert_eq!(format!("{axis}"), "dir(0, 1, 0)");
     }
 
     #[test]
     fn joint_axis_revolute_returns_stored_axis() {
-        let axis = axis_z_unit();
-        let joint = eval_builtin("revolute", &[axis.clone(), angle_range_0_to_pi()]);
-        assert_eq!(
-            eval_builtin("joint_axis", &[joint]),
-            axis,
-            "joint_axis(revolute) should return stored axis"
+        let joint = eval_builtin(
+            "revolute",
+            &[direction_val(0.0, 0.0, 1.0), angle_range_0_to_pi()],
         );
+        let axis = eval_builtin("joint_axis", &[joint]);
+        assert_eq!(axis, direction_val(0.0, 0.0, 1.0));
+        assert_eq!(format!("{axis}"), "dir(0, 0, 1)");
     }
 
     #[test]
@@ -2838,6 +2839,231 @@ mod tests {
         assert!(
             eval_builtin("joint_axis", &[joint, Value::Real(0.0)]).is_undef(),
             "joint_axis with 2 args should return Undef"
+        );
+    }
+
+    // ── axes are Directions (direction-typing ζ-a) ───────────────────────────
+
+    fn origin_point() -> Value {
+        Value::Point(vec![
+            Value::length(0.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ])
+    }
+
+    fn map_field(joint: &Value, key: &str) -> Value {
+        match joint {
+            Value::Map(m) => m
+                .get(&Value::String(key.to_string()))
+                .cloned()
+                .unwrap_or(Value::Undef),
+            other => panic!("expected a joint Map, got {other:?}"),
+        }
+    }
+
+    /// Every axial ctor form, built around the given axis (`axis_y` is the
+    /// planar second axis, perpendicular to `axis`).
+    fn axial_joint_calls(axis: &Value, axis_y: &Value) -> Vec<(&'static str, Vec<Value>)> {
+        vec![
+            ("prismatic", vec![axis.clone(), length_range_0_to_1m()]),
+            (
+                "prismatic",
+                vec![axis.clone(), length_range_0_to_1m(), origin_point()],
+            ),
+            ("revolute", vec![axis.clone(), angle_range_0_to_pi()]),
+            (
+                "revolute",
+                vec![axis.clone(), angle_range_0_to_pi(), origin_point()],
+            ),
+            (
+                "cylindrical",
+                vec![axis.clone(), length_range_0_to_1m(), angle_range_0_to_pi()],
+            ),
+            (
+                "planar",
+                vec![
+                    axis.clone(),
+                    axis_y.clone(),
+                    length_range_0_to_1m(),
+                    length_range_0_to_1m(),
+                    angle_range_0_to_pi(),
+                ],
+            ),
+        ]
+    }
+
+    #[test]
+    fn axial_ctors_store_the_direction_axis_unchanged() {
+        let axis = direction_val(1.0, 1.0, 0.0);
+        let axis_y = direction_val(1.0, -1.0, 0.0);
+        for (name, args) in axial_joint_calls(&axis, &axis_y) {
+            let joint = eval_builtin(name, &args);
+            let key = if name == "planar" { "axis_x" } else { "axis" };
+            assert_eq!(map_field(&joint, key), axis, "{name}/{}", args.len());
+            if name == "planar" {
+                assert_eq!(map_field(&joint, "axis_y"), axis_y, "planar axis_y");
+            }
+        }
+    }
+
+    #[test]
+    fn axial_ctors_reject_the_vector_shapes_the_old_validator_accepted() {
+        let comps = || vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)];
+        let perpendicular = direction_val(1.0, 0.0, 0.0);
+        for vector_like in [
+            Value::Vector(comps()),
+            Value::Tensor(comps()),
+            Value::Point(comps()),
+        ] {
+            for (name, args) in axial_joint_calls(&vector_like, &perpendicular) {
+                assert!(
+                    eval_builtin(name, &args).is_undef(),
+                    "{name}/{} with a {vector_like:?} axis must be Undef",
+                    args.len()
+                );
+            }
+        }
+        let planar_vector_y = eval_builtin(
+            "planar",
+            &[
+                perpendicular,
+                Value::Vector(comps()),
+                length_range_0_to_1m(),
+                length_range_0_to_1m(),
+                angle_range_0_to_pi(),
+            ],
+        );
+        assert!(planar_vector_y.is_undef(), "a Vector axis_y must be Undef");
+    }
+
+    fn translation_bits(transform: &Value) -> [u64; 3] {
+        let Value::Transform { translation, .. } = transform else {
+            panic!("expected a Transform, got {transform:?}");
+        };
+        let Value::Vector(comps) = translation.as_ref() else {
+            panic!("expected a Vector translation, got {translation:?}");
+        };
+        std::array::from_fn(|i| comps[i].as_f64().expect("numeric component").to_bits())
+    }
+
+    #[test]
+    fn prismatic_translation_is_the_direction_components_times_the_distance() {
+        let axis = direction_val(1.0, 1.0, 0.0);
+        let Value::Direction(unit) = axis else {
+            unreachable!()
+        };
+        let joint = eval_builtin("prismatic", &[axis, length_range_0_to_1m()]);
+        let transform = eval_builtin("transform_at", &[joint, Value::length(0.2)]);
+        let expected = unit.components().map(|c| (0.2 * c).to_bits());
+        assert_eq!(
+            translation_bits(&transform),
+            expected,
+            "one normalisation: the stored unit components scale the distance exactly"
+        );
+    }
+
+    #[test]
+    fn basis_direction_axes_give_bitwise_identical_transforms() {
+        let joint = eval_builtin(
+            "prismatic",
+            &[direction_val(0.0, 0.0, 1.0), length_range_0_to_1m()],
+        );
+        let transform = eval_builtin("transform_at", &[joint, Value::length(-2.0)]);
+        assert_eq!(
+            translation_bits(&transform),
+            [0.0f64.to_bits(), 0.0f64.to_bits(), (-2.0f64).to_bits()]
+        );
+
+        let joint = eval_builtin(
+            "revolute",
+            &[direction_val(0.0, 0.0, 1.0), angle_range_0_to_pi()],
+        );
+        let half_pi = std::f64::consts::FRAC_PI_2;
+        let transform = eval_builtin("transform_at", &[joint, Value::angle(half_pi)]);
+        let Value::Transform { rotation, .. } = &transform else {
+            panic!("expected a Transform, got {transform:?}");
+        };
+        assert_eq!(
+            **rotation,
+            super::axis_angle_quaternion(0.0, 0.0, 1.0, half_pi),
+            "a signed-basis Direction feeds the rotation unchanged"
+        );
+    }
+
+    #[test]
+    fn planar_rejects_non_perpendicular_directions() {
+        let joint = eval_builtin(
+            "planar",
+            &[
+                direction_val(1.0, 0.0, 0.0),
+                direction_val(1.0, 1.0, 0.0),
+                length_range_0_to_1m(),
+                length_range_0_to_1m(),
+                angle_range_0_to_pi(),
+            ],
+        );
+        assert!(joint.is_undef(), "non-perpendicular axes must be Undef");
+    }
+
+    #[test]
+    fn hand_built_maps_with_a_vector_axis_are_undef_at_use() {
+        let vector = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let with_vector = |joint: Value, key: &str| -> Value {
+            let Value::Map(mut m) = joint else {
+                panic!("expected a joint Map");
+            };
+            m.insert(Value::String(key.to_string()), vector.clone());
+            Value::Map(m)
+        };
+        let prismatic = with_vector(
+            eval_builtin(
+                "prismatic",
+                &[direction_val(1.0, 0.0, 0.0), length_range_0_to_1m()],
+            ),
+            "axis",
+        );
+        let revolute = with_vector(
+            eval_builtin(
+                "revolute",
+                &[direction_val(1.0, 0.0, 0.0), angle_range_0_to_pi()],
+            ),
+            "axis",
+        );
+        let planar = with_vector(
+            eval_builtin(
+                "planar",
+                &[
+                    direction_val(1.0, 0.0, 0.0),
+                    direction_val(0.0, 1.0, 0.0),
+                    length_range_0_to_1m(),
+                    length_range_0_to_1m(),
+                    angle_range_0_to_pi(),
+                ],
+            ),
+            "axis_x",
+        );
+        for (label, joint, motion) in [
+            ("prismatic", prismatic, Value::length(0.1)),
+            ("revolute", revolute, Value::angle(0.1)),
+        ] {
+            assert!(
+                eval_builtin("transform_at", &[joint.clone(), motion.clone()]).is_undef(),
+                "{label}: transform_at"
+            );
+            assert!(
+                eval_builtin("joint_jacobian", &[joint, motion]).is_undef(),
+                "{label}: joint_jacobian"
+            );
+        }
+        let planar_motion = Value::List(vec![
+            Value::length(0.1),
+            Value::length(0.1),
+            Value::angle(0.1),
+        ]);
+        assert!(
+            eval_builtin("transform_at", &[planar, planar_motion]).is_undef(),
+            "planar: transform_at"
         );
     }
 
