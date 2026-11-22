@@ -558,9 +558,12 @@ assert "D: two same-basename candidates yield an ambiguous:2 record listing both
 #     the payload and repointing it would destroy the finding. Its exclusion
 #     rests on a MEASURED property of the file's content, not a structural
 #     guarantee — see the RE-AUDIT TRIGGER in the lib's exclusion block.
+#   - docs/notes/agent-build-settings-bench-census.jsonl, structurally. It is
+#     task 10169's written-once event log of historical agent tool calls, so
+#     every test path in it is recorded payload, not a reference.
 #
-# Both assertions pair the exclusion with docs/elsewhere.md citing the SAME
-# stale path, so neither can pass by the scan simply finding nothing. The
+# Every assertion pairs the exclusion with docs/elsewhere.md citing the SAME
+# stale path, so none can pass by the scan simply finding nothing. The
 # exclusion list is defined ONCE in the lib so the gate and the generator
 # cannot drift apart.
 # ===========================================================================
@@ -610,6 +613,20 @@ _fixture_commit "$FIX_CODEBOOK"
 
 assert "E: the same stale citation is ignored inside the confusion codebook and reported everywhere else" \
     _expect_scan "$FIX_CODEBOOK" \
+    "$(_rec docs/elsewhere.md crates/mycrate/tests/moved_test.rs stale crates/mycrate/tests/harness_sub/moved_test.rs)"
+
+# A census row records a past agent event, so its path is the record of that
+# event, not a reference to follow.
+FIX_CENSUS="$(_mktmpd)/repo"
+_fixture_init "$FIX_CENSUS"
+_fixture_write "$FIX_CENSUS" crates/mycrate/tests/harness_sub/moved_test.rs '// moved here'
+_fixture_write "$FIX_CENSUS" docs/notes/agent-build-settings-bench-census.jsonl \
+    '{"row":"edit","task":1,"ts":"2026-01-01T00:00:00Z","file":"crates/mycrate/tests/moved_test.rs"}'
+_fixture_write "$FIX_CENSUS" docs/elsewhere.md 'see crates/mycrate/tests/moved_test.rs'
+_fixture_commit "$FIX_CENSUS"
+
+assert "E: the same stale citation is ignored inside the task-10169 census event log and reported everywhere else" \
+    _expect_scan "$FIX_CENSUS" \
     "$(_rec docs/elsewhere.md crates/mycrate/tests/moved_test.rs stale crates/mycrate/tests/harness_sub/moved_test.rs)"
 
 # ===========================================================================
