@@ -10,6 +10,7 @@ tests/infra/test_no_shared_tmp_python_helpers.sh (run_all.sh globs
 "Python helper scripts live in a private directory".
 """
 
+import os
 import re
 import subprocess
 import sys
@@ -21,9 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 MKTEMP = re.compile(r"\bmktemp\b(?P<args>[^)|;&`]*)")
 DIR_FLAG = re.compile(r"(?:^|\s)(?:-[a-zA-Z]*d[a-zA-Z]*|--directory)(?=\s|$)")
-PY_FILE = re.compile(
-    r"""(?:\.py["']?(?=\s|$)|--suffix[= ]["']?\.py["']?(?=\s|$))"""
-)
+PY_FILE = re.compile(r"""\.py["']?(?=\s|$)""")
 
 
 def offenders(text):
@@ -55,6 +54,11 @@ def tracked_shell_corpus():
 class PythonPremiseTest(unittest.TestCase):
     """Characterises Python, not repo code: a script's directory shadows imports."""
 
+    @staticmethod
+    def default_path_env():
+        """Ambient env without PYTHONSAFEPATH (which hides the script's dir)."""
+        return {k: v for k, v in os.environ.items() if k != "PYTHONSAFEPATH"}
+
     def test_module_beside_script_shadows_its_import(self):
         with tempfile.TemporaryDirectory() as script_dir, \
                 tempfile.TemporaryDirectory() as elsewhere:
@@ -68,6 +72,7 @@ class PythonPremiseTest(unittest.TestCase):
                 capture_output=True,
                 text=True,
                 cwd=elsewhere,
+                env=self.default_path_env(),
             )
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout.strip(), "True")
@@ -79,10 +84,15 @@ class PredicateTest(unittest.TestCase):
         'X="$(mktemp "${TMPDIR:-/tmp}/foo-XXXXXX.py")"',
         'X="$(mktemp "$_TMPBASE/foo-yaml-XXXXXX.py")"',
         "X=$(mktemp --suffix=.py)",
+        "X=$(mktemp --suffix .py)",
         "X=$(mktemp -t foo.XXXXXX.py)",
     )
     CLEARED = (
         'D="$(mktemp -d /tmp/foo_parse_XXXXXX)"',
+        'D="$(mktemp -d /tmp/foo_parse_XXXXXX.py)"',
+        'D="$(mktemp -dt foo.XXXXXX.py)"',
+        'D="$(mktemp -td foo.XXXXXX.py)"',
+        'D="$(mktemp --directory /tmp/foo.XXXXXX.py)"',
         'X="$D/foo_parse.py"',
         'F="$(mktemp /tmp/fixture_XXXXXX.yaml)"',
         "# was: mktemp /tmp/foo_XXXXXX.py",

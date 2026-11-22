@@ -398,11 +398,13 @@ _PARSE_PY="$_PARSE_DIR/foo_parse.py"
 `test_no_shared_tmp_python_helpers.sh` flags a non-comment `mktemp` that
 mints a `.py` file (a template ending `.py`, or `--suffix=.py`) without `-d`,
 whatever its base directory. The corpus is `git ls-files -- '*.sh' 'hooks/*'`,
-shared with the guards above.
+the same pathspec the guards above scan (each spells out its own copy).
 
 **Scope, honestly.** It reads one line at a time, so a `mktemp` call split
 across lines is missed, and it sees only `mktemp`: a fixed-name write such as
-`cat > /tmp/x.py` and Python-side `tempfile` use are not flagged.
+`cat > /tmp/x.py` and Python-side `tempfile` use are not flagged. A call's
+arguments end at the first `)`, so a template holding its own `$(...)`, as in
+`mktemp "$(dirname "$x")/h_XXXXXX.py"`, is cut short and missed.
 
 Premise, detection cases and the all-clear's liveness controls:
 `test_no_shared_tmp_python_helpers.py`.
