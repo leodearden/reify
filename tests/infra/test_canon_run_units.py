@@ -14,6 +14,7 @@ is the thin wrapper tests/infra/test_canon_run_units.sh.
 
 import json
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -290,6 +291,214 @@ class Status(unittest.TestCase):
         lines = result.stderr.splitlines()
         self.assertEqual(len(lines), 1, result.stderr)
         self.assertTrue(lines[0].startswith("canon_run: "), lines[0])
+
+
+class CliCase(unittest.TestCase):
+    """A scratch tree, a recording fake cargo and a PATH routing cargo through the tree's trampoline."""
+
+    def setUp(self):
+        self.tmp = scratch(self)
+        self.tree = fx.make_tree(self.tmp, "tree")
+        self.trampoline = os.path.join(self.tree, "scripts", "canon-bin", "cargo")
+        self.fake = fx.fake_cargo_dir(self.tmp)
+        self.fake_cargo = os.path.join(self.fake, "cargo")
+        self.sub = os.path.join(self.tree, "sub")
+        os.mkdir(self.sub)
+        self.env = fx.scratch_env(
+            self.tmp, PATH=f"{self.tree}/scripts/canon-bin:{self.fake}:/usr/bin:/bin"
+        )
+        self.target = os.path.join(self.tree, "target")
+
+    def cargo(self, *args, cwd=None):
+        return fx.run([self.trampoline, *args], cwd=cwd or self.sub, env=self.env)
+
+    def assert_one_untouched_call(self, result, args, *, cwd=None, argv0=None):
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = fx.read_calls(self.fake)
+        self.assertEqual(len(calls), 1, calls)
+        self.assertEqual(calls[0]["argv"], [argv0 or self.fake_cargo, *args])
+        self.assertEqual(calls[0]["cwd"], cwd or self.sub)
+        self.assertEqual(calls[0]["env"], self.env)
+
+    def assert_refused(self, result, *needles):
+        self.assertEqual(result.returncode, 126, result.stderr)
+        lines = result.stderr.splitlines()
+        self.assertEqual(len(lines), 1, result.stderr)
+        self.assertTrue(lines[0].startswith("canon_run: "), lines[0])
+        for needle in needles:
+            self.assertIn(needle, lines[0])
+        self.assertEqual(fx.read_calls(self.fake), [])
+
+
+class RealPathIsUntouched(CliCase):
+    """Boundary row 9 at unit level, and C1's last row: the command gets the caller's exact env."""
+
+    def test_trampoline_on_disabled_host_runs_real_cargo_untouched(self):
+        result = self.cargo("build", "--offline")
+        self.assert_one_untouched_call(result, ["build", "--offline"])
+        self.assertFalse(os.path.exists(os.path.join(self.target, ".reify-build-root")))
+
+    def test_exec_on_disabled_host_runs_command_untouched(self):
+        result = fx.run_canon(self.tree, self.sub, "exec", "--", self.fake_cargo, "x", env=self.env)
+        self.assert_one_untouched_call(result, ["x"])
+        self.assertFalse(os.path.exists(os.path.join(self.target, ".reify-build-root")))
+
+    def test_build_dir_outside_the_tree_is_real_path(self):
+        stamp(self.target, "/somewhere/else")
+        self.env["CARGO_TARGET_DIR"] = os.path.join(self.tmp, "elsewhere")
+        result = fx.run_canon(self.tree, self.sub, "exec", "--", self.fake_cargo, "x", env=self.env)
+        self.assert_one_untouched_call(result, ["x"])
+
+    def test_trampoline_outside_any_tree_runs_real_cargo_untouched(self):
+        plain = os.path.join(self.tmp, "plain")
+        os.mkdir(plain)
+        result = self.cargo("build", "-p", "x", cwd=plain)
+        self.assert_one_untouched_call(result, ["build", "-p", "x"], cwd=plain)
+
+
+class CargoPassesThrough(unittest.TestCase):
+    """Decision 10's pass-through list (boundary row 2), pure."""
+
+    def setUp(self):
+        self.tree = scratch(self)
+
+    def passes(self, args, **environ):
+        return canon_run.cargo_passes_through(args, environ, self.tree, Path(self.tree))
+
+    def test_pass_through(self):
+        for args in (
+            ["metadata"],
+            ["+1.96.0", "--offline", "metadata"],
+            ["--config", "k=v", "tree"],
+            ["-Zfoo", "fetch"],
+            ["--version"],
+            [],
+            ["install", "ripgrep"],
+        ):
+            with self.subTest(args=args):
+                self.assertTrue(self.passes(args))
+
+    def test_not_pass_through(self):
+        for args in (
+            ["install", "--path", "."],
+            ["install", "--path=."],
+            ["install", "--target-dir", f"{self.tree}/t2", "x"],
+            ["t"],
+            ["frobnicate"],
+            ["build"],
+        ):
+            with self.subTest(args=args):
+                self.assertFalse(self.passes(args))
+
+    def test_install_with_in_tree_target_dir_env_is_not_pass_through(self):
+        for name in ("CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR"):
+            with self.subTest(name=name):
+                self.assertFalse(self.passes(["install", "x"], **{name: f"{self.tree}/t3"}))
+
+
+class PassThroughBehaviour(CliCase):
+    """Boundary row 2: in a tree stamped for an unreachable CANON, only the list reaches cargo."""
+
+    def setUp(self):
+        super().setUp()
+        stamp(self.target, self.env["REIFY_CANON_ROOT"])
+
+    def test_listed_subcommands_reach_real_cargo_untouched(self):
+        for args in (["metadata"], ["install", "ripgrep"]):
+            with self.subTest(args=args):
+                Path(self.fake, "calls.jsonl").unlink(missing_ok=True)
+                self.assert_one_untouched_call(self.cargo(*args), args)
+
+    def test_other_subcommands_are_refused(self):
+        for args in (["t"], ["install", "--path", "."], ["frobnicate"]):
+            with self.subTest(args=args):
+                self.assert_refused(self.cargo(*args))
+
+
+class Refusals(CliCase):
+    """C1: a stamp naming another path, or CANON where it cannot be provided, exits 126."""
+
+    def assert_exec_refused(self):
+        marker = os.path.join(self.tmp, "marker")
+        result = fx.run_canon(self.tree, self.sub, "exec", "--", "touch", marker, env=self.env)
+        self.assert_refused(result, self.target)
+        self.assertFalse(os.path.exists(marker))
+
+    def test_stamp_naming_another_path(self):
+        stamp(self.target, "/somewhere/else")
+        self.assert_exec_refused()
+
+    def test_stamp_naming_unprovisioned_canon(self):
+        stamp(self.target, self.env["REIFY_CANON_ROOT"])
+        self.assert_exec_refused()
+
+
+class ResolveRealCargo(CliCase):
+    def setUp(self):
+        super().setUp()
+        self.other_trampolines = os.path.join(self.tmp, "installed-canon-bin")
+        os.mkdir(self.other_trampolines)
+        shutil.copy2(fx.TRAMPOLINE, os.path.join(self.other_trampolines, "cargo"))
+        self.second_fake = fx.fake_cargo_dir(self.tmp, "second-fake-bin")
+        self.tree_bin = os.path.join(self.tree, "scripts", "canon-bin")
+
+    def resolve(self, *entries):
+        return canon_run.resolve_real_cargo(os.pathsep.join(entries))
+
+    def test_first_unmarked_after_the_first_trampoline(self):
+        self.assertEqual(self.resolve(self.tree_bin, self.fake, self.second_fake), self.fake_cargo)
+        self.assertEqual(
+            self.resolve(self.fake, self.tree_bin, self.second_fake),
+            os.path.join(self.second_fake, "cargo"),
+        )
+
+    def test_every_trampoline_is_skipped(self):
+        self.assertEqual(
+            self.resolve(self.tree_bin, self.other_trampolines, self.fake), self.fake_cargo
+        )
+
+    def test_first_cargo_when_none_is_marked(self):
+        self.assertEqual(self.resolve(self.fake, self.second_fake), self.fake_cargo)
+
+    def test_non_executable_cargo_is_skipped(self):
+        plain = os.path.join(self.tmp, "not-executable")
+        os.mkdir(plain)
+        Path(plain, "cargo").write_text("#!/bin/sh\n")
+        self.assertEqual(self.resolve(self.tree_bin, plain, self.fake), self.fake_cargo)
+
+    def test_none_without_an_unmarked_cargo(self):
+        self.assertIsNone(self.resolve(self.tree_bin, self.other_trampolines))
+        self.assertIsNone(self.resolve())
+
+    def test_two_trampolines_on_path_do_not_loop(self):
+        self.env["PATH"] = os.pathsep.join((self.tree_bin, self.other_trampolines, self.fake))
+        self.env["FAKE_CARGO_EXIT"] = "7"
+        plain = os.path.join(self.tmp, "plain")
+        os.mkdir(plain)
+        for cwd in (self.sub, plain):
+            with self.subTest(cwd=cwd):
+                Path(self.fake, "calls.jsonl").unlink(missing_ok=True)
+                result = self.cargo("build", cwd=cwd)
+                self.assertEqual(result.returncode, 7, result.stderr)
+                self.assertEqual(len(fx.read_calls(self.fake)), 1)
+
+    def test_no_real_cargo_exits_127_with_one_line(self):
+        self.env["PATH"] = os.pathsep.join((self.tree_bin, self.other_trampolines))
+        plain = os.path.join(self.tmp, "plain")
+        os.mkdir(plain)
+        for cwd in (self.sub, plain):
+            with self.subTest(cwd=cwd):
+                result = self.cargo("build", cwd=cwd)
+                self.assertEqual(result.returncode, 127, result.stderr)
+                self.assertEqual(len(result.stderr.splitlines()), 1, result.stderr)
+
+
+class Usage(CliCase):
+    def test_usage_errors_exit_2(self):
+        for args in ([], ["exec", "true"], ["exec", "--"], ["frobnicate"]):
+            with self.subTest(args=args):
+                result = fx.run_canon(self.tree, self.sub, *args, env=self.env)
+                self.assertEqual(result.returncode, 2, result.stderr)
 
 
 if __name__ == "__main__":

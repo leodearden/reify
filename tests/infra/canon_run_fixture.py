@@ -1,13 +1,15 @@
 """
 canon_run_fixture.py — shared builders for the scripts/canon_run.py suites
 (test_canon_run_units.py, test_canon_run_host.py): scratch trees, the
-host.toml writer, minimal environments and the CLI runner.
+host.toml writer, minimal environments, the CLI runner and a recording fake
+cargo.
 
 Not a test module itself (no `test_` prefix): run_all.sh never discovers it,
 and the suites import it via the sys.path idiom.
 """
 
 import importlib.util
+import json
 import os
 import shutil
 import subprocess
@@ -69,11 +71,46 @@ def scratch_env(tmp, **overrides):
 def run_canon(tree, cwd, *args, env):
     """Run <tree>/scripts/canon_run.py <args> from cwd; no timeout (no wall-clock bound)."""
     script = Path(tree, "scripts", "canon_run.py")
-    return subprocess.run(
-        [PYTHON, "-I", str(script), *args],
-        cwd=cwd,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    return run([PYTHON, "-I", str(script), *args], cwd=cwd, env=env)
+
+
+def run(argv, *, cwd, env):
+    return subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True, check=False)
+
+
+# Records each call beside itself. A shebang script never sees the argv[0] it
+# was exec'd with (the kernel substitutes the script path), so a call's argv[0]
+# is the path that ran. Exits with FAKE_CARGO_EXIT, default 0.
+FAKE_CARGO = r'''#!/usr/bin/python3 -I
+import json
+import os
+import sys
+
+environ = {}
+with open("/proc/self/environ", "rb") as environ_file:
+    for entry in environ_file.read().split(b"\0"):
+        name, separator, value = entry.partition(b"=")
+        if separator:
+            environ[os.fsdecode(name)] = os.fsdecode(value)
+call = {"argv": sys.argv, "cwd": os.getcwd(), "env": environ}
+with open(os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "calls.jsonl"), "a") as log:
+    log.write(json.dumps(call) + "\n")
+sys.exit(int(environ.get("FAKE_CARGO_EXIT", "0")))
+'''
+
+
+def fake_cargo_dir(parent, name="fake-bin"):
+    """A directory holding an unmarked recording `cargo`; returns its real path."""
+    directory = Path(parent, name)
+    directory.mkdir()
+    cargo = directory / "cargo"
+    cargo.write_text(FAKE_CARGO)
+    cargo.chmod(0o755)
+    return os.path.realpath(directory)
+
+
+def read_calls(directory):
+    log = Path(directory, "calls.jsonl")
+    if not log.exists():
+        return []
+    return [json.loads(line) for line in log.read_text().splitlines()]
