@@ -4,7 +4,7 @@
 #
 # Verifies that scripts/prd-capability-check.py returns PASS for every row in
 # tests/prd-gate/struct-ctor-conformance-probe-set.json — confirming, on ONE
-# commit, that the five §7 boundary rows δ promotes (1 pose-at-selector,
+# commit, that the §7 boundary rows δ promotes (1 pose-at-selector,
 # 2 int-at-String, 3 string-at-selector, 11 unknown named argument, 12
 # over-arity) all REJECT at the CLI surface: `reify check` exits 1 and prints
 # the structured diagnostic.
@@ -13,6 +13,12 @@
 # CTOR_FIELD_CONFORMANCE_SEVERITY every one of these fixtures exited 0 with
 # "All constraints satisfied." — the exit code reads Error severity only
 # (crates/reify-cli/src/main.rs:794), so a Warning is invisible there.
+#
+# The same probe-set also backs the other CTOR_CONFORMANCE_REJECTION_FIXTURES
+# files (crates/reify-compiler/tests/harness_ctor_conformance_survey/
+# disposition.rs) — other PRDs' rejection-observed fixtures and release-note
+# migration before-images — so a PASS here is what keeps each of that table's
+# entries backed.
 #
 # Modelled on tests/infra/test_prd_gate_compiler_type_hygiene.sh (task 5070 λ),
 # minus its grammar-substrate machinery: δ's probe-set is all `probe_kind:
@@ -111,7 +117,7 @@ for r in results:
     if v != "PASS":
         errors.append(
             f"verdict {v!r} for {r['capability']!r} — expected PASS "
-            f"(the §7 boundary row must reject at the CLI surface post-δ)"
+            f"(each rejection fixture must reject at the CLI surface)"
         )
 
 # (b) completeness: count derived from probe-set — catches silent drops or extras
