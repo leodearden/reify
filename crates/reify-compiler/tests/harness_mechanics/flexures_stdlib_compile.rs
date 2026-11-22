@@ -1138,7 +1138,7 @@ structure def PrbCellType {
 ///
 /// This is the library half of PRD §7.3 BT1; the user-observable half (the
 /// exit-code flip) is
-/// `reify-cli/tests/harness_cli/cli_check.rs::check_flexure_compliance_non_joint_exits_failure`.
+/// `reify-cli/tests/harness_cli_check/cli_check.rs::check_flexure_compliance_non_joint_exits_failure`.
 ///
 /// The split is forced, not stylistic: `DiagnosticCode` has no `Display`,
 /// `code_str()` or `as_str()` anywhere in the workspace — the `E_*`/`W_*`

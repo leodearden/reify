@@ -114,7 +114,7 @@ const SKIP_SET: &[(&str, &str)] = &[
          compile_with_stdlib bulk smoke path cannot follow gated imports, so `Platform` is an \
          unresolved-type Error there. The two-way symmetric behaviour (both --cfg target=linux \
          and --cfg target=wasm exit 0, each resolving the platform-correct Platform variant) \
-         is exercised end-to-end by crates/reify-cli/tests/harness_cli/cli_check_cfg_example.rs. \
+         is exercised end-to-end by crates/reify-cli/tests/harness_cli_check/cli_check_cfg_example.rs. \
          The siblings (platform_linux.ri, platform_wasm.ri) define their own types, compile \
          clean single-file, and are intentionally NOT skipped.",
     ),

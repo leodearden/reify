@@ -170,7 +170,7 @@ fn doc_parse_error_exits_one_with_stderr() {
         Some(1),
         "parse errors must exit 1.\nstdout: {stdout}\nstderr: {stderr}"
     );
-    crate::cli_check::assert_parse_error_reports_fault_position(fixture, &stderr);
+    common::assert_parse_error_reports_fault_position(fixture, &stderr);
     assert_not_usage_error(&stderr);
     // No doc body should reach stdout when parsing fails.
     assert!(
