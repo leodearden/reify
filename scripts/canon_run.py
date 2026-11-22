@@ -10,6 +10,7 @@ at CANON, the one path every stamped build directory is built at.
 from __future__ import annotations
 
 import functools
+import importlib.util
 import json
 import os
 import pwd
@@ -22,6 +23,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum, StrEnum
 from pathlib import Path
+from typing import NoReturn
 
 CANON_DEFAULT = "/opt/reify-canon/ws"
 STAMP_NAME = ".reify-build-root"
@@ -80,6 +82,10 @@ class Refusal(Exception):
     """A one-line reason this invocation must not run."""
 
 
+class CommandNotFound(Exception):
+    """A one-line reason the command to run could not be found or started."""
+
+
 @dataclass(frozen=True)
 class HostConfig:
     path: Path
@@ -114,6 +120,23 @@ class Tree:
 
     def contains(self, path: str | Path) -> bool:
         return is_inside(path, self.root) or is_inside(path, self.real_root)
+
+
+@dataclass(frozen=True)
+class ActiveTree:
+    """REIFY_CANON_ACTIVE: the tree a CANON invocation bound, read back by nested ones."""
+
+    dev: int
+    ino: int
+    real_root: str
+    canon: str
+
+
+@dataclass(frozen=True)
+class Invocation:
+    argv: tuple[str, ...]
+    env: Mapping[str, str]
+    cwd: str
 
 
 def caller_environ() -> dict[str, str]:
@@ -171,13 +194,42 @@ def is_real_dir(path: str | Path) -> bool:
         return False
 
 
+def format_active(tree: Tree, canon: str) -> str:
+    record = {"dev": tree.dev, "ino": tree.ino, "real_root": str(tree.real_root), "canon": canon}
+    return json.dumps(record, sort_keys=True)
+
+
+def parse_active(value: str | None) -> ActiveTree | None:
+    try:
+        record = json.loads(value or "")
+    except ValueError:
+        return None
+    if not isinstance(record, dict):
+        return None
+    dev, ino, real_root, canon = (record.get(key) for key in ("dev", "ino", "real_root", "canon"))
+    if type(dev) is not int or type(ino) is not int:
+        return None
+    if not isinstance(real_root, str) or not isinstance(canon, str):
+        return None
+    return ActiveTree(dev, ino, real_root, canon)
+
+
 def find_tree(cwd: str, environ: Mapping[str, str]) -> Tree | None:
-    """The first directory at or above cwd holding Cargo.lock and scripts/canon_run.py."""
+    """The first directory at or above cwd holding Cargo.lock and scripts/canon_run.py.
+
+    Its real root is REIFY_CANON_ACTIVE's when that record names this directory.
+    """
     start = Path(cwd)
     for root in (start, *start.parents):
         if os.path.isfile(root / "Cargo.lock") and os.path.isfile(root / "scripts" / "canon_run.py"):
             root_stat = os.stat(root)
-            return Tree(root, root, root_stat.st_dev, root_stat.st_ino)
+            active = parse_active(environ.get("REIFY_CANON_ACTIVE"))
+            names_root = active is not None and (active.dev, active.ino) == (
+                root_stat.st_dev,
+                root_stat.st_ino,
+            )
+            real_root = Path(active.real_root) if names_root else root
+            return Tree(root, real_root, root_stat.st_dev, root_stat.st_ino)
     return None
 
 
@@ -354,7 +406,7 @@ def is_trampoline(path: str) -> bool:
 
 
 def resolve_real_cargo(path_value: str) -> str | None:
-    """The first unmarked cargo after the first trampoline on PATH; the first cargo if none is marked."""
+    """The first unmarked cargo after the first trampoline on PATH, else the first cargo."""
     cargos = [
         cargo
         for cargo in (os.path.join(entry, "cargo") for entry in path_value.split(os.pathsep) if entry)
@@ -417,33 +469,135 @@ def cargo_passes_through(
     )
 
 
+def rebase(value: str, tree: Tree, canon: str) -> str:
+    """An absolute path in the tree, under either spelling, re-rooted at canon; else value."""
+    if not os.path.isabs(value):
+        return value
+    for root in (tree.real_root, tree.root):
+        if is_inside(value, root):
+            relative = os.path.relpath(os.path.normpath(value), os.path.normpath(root))
+            return canon if relative == "." else os.path.join(canon, relative)
+    return value
+
+
+def rebase_argument(argument: str, tree: Tree, canon: str) -> str:
+    if argument.startswith("-") and "=" in argument:
+        name, _, value = argument.partition("=")
+        return f"{name}={rebase(value, tree, canon)}"
+    return rebase(argument, tree, canon)
+
+
+def canon_search_path(path_value: str, tree: Tree, canon: str, home: str | None) -> str:
+    """C4: CANON's trampoline, then $HOME/.cargo/bin, then the caller's other entries."""
+    front = []
+    if os.path.isfile(tree.root / "scripts" / "canon-bin" / "cargo"):
+        front.append(os.path.join(canon, "scripts", "canon-bin"))
+    if home:
+        front.append(os.path.join(home, ".cargo", "bin"))
+    tree_bins = (tree.real_root / "scripts" / "canon-bin", tree.root / "scripts" / "canon-bin")
+    dropped = {os.path.normpath(entry) for entry in (*front, *tree_bins)}
+    rest = [
+        entry
+        for entry in (path_value.split(os.pathsep) if path_value else [])
+        if not entry or os.path.normpath(entry) not in dropped
+    ]
+    return os.pathsep.join([*front, *rest])
+
+
+def grammar_cache_dir(real_root: Path) -> str | None:
+    """REIFY_TS_CACHE_HOME for real_root, derived by that tree's own prd-capability-check.py."""
+    pcc_path = Path(real_root, "scripts", "prd-capability-check.py")
+    if not pcc_path.is_file():
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("prd_capability_check", pcc_path)
+        pcc = importlib.util.module_from_spec(spec)
+        sys.modules["prd_capability_check"] = pcc
+        spec.loader.exec_module(pcc)
+        context = pcc.ProbeContext(
+            repo_root=str(real_root),
+            reify_bin=None,
+            reify_bin_refusal="not used: canon_run derives the grammar cache dir only",
+            tree_sitter_bin="tree-sitter",
+        )
+        return pcc.grammar_cache_home(context)
+    except Exception as exc:  # an optional export must never block a build
+        warning = f"canon_run: warning: REIFY_TS_CACHE_HOME not exported: {flatten(exc)}"
+        print(warning, file=sys.stderr)
+        return None
+
+
+def apply_incremental_policy(env: dict[str, str]) -> None:
+    """C4's `incremental` row: no sccache in any form, incremental compilation on."""
+    for name in list(env):
+        if name in ("RUSTC_WRAPPER", "CARGO_BUILD_RUSTC_WRAPPER") or name.startswith("SCCACHE_"):
+            del env[name]
+    env["CARGO_INCREMENTAL"] = "1"
+
+
+def canon_invocation(
+    command: list[str],
+    environ: Mapping[str, str],
+    tree: Tree,
+    canon: str,
+    cwd: str,
+    host: HostConfig,
+    *,
+    cargo: bool,
+) -> Invocation:
+    """What the command gets at CANON (C3, C4); for cargo, command is cargo's arguments."""
+    if host.policy is not Policy.INCREMENTAL:
+        raise Refusal(
+            f"host policy '{host.policy}' needs the sccache server, which this canon_run.py"
+            f' does not provide; set policy = "incremental" or enabled = false in {host.path}'
+        )
+    argv = [rebase_argument(argument, tree, canon) for argument in command]
+    env = dict(environ)
+    for name, value in environ.items():
+        if name.startswith("CARGO_"):
+            env[name] = rebase(value, tree, canon)
+    env["PWD"] = rebase(cwd, tree, canon)
+    env["PATH"] = canon_search_path(environ.get("PATH", ""), tree, canon, environ.get("HOME"))
+    env["REIFY_CANON_ACTIVE"] = format_active(tree, canon)
+    env["REIFY_VERIFY_LEDGER_LANE_DIR"] = str(tree.real_root)
+    cache_home = grammar_cache_dir(tree.real_root)
+    if cache_home is None:
+        env.pop("REIFY_TS_CACHE_HOME", None)
+    else:
+        env["REIFY_TS_CACHE_HOME"] = cache_home
+    if cargo:
+        apply_incremental_policy(env)
+        real_cargo = resolve_real_cargo(env["PATH"])
+        if real_cargo is None:
+            raise CommandNotFound("no cargo on the CANON PATH other than reify-canon trampolines")
+        argv = [real_cargo, *argv]
+    return Invocation(tuple(argv), env, env["PWD"])
+
+
 def flatten(message: object) -> str:
     return " ".join(str(message).splitlines())
 
 
-def execute(file: str, argv: list[str], env: Mapping[str, str], *, search: bool) -> int:
+def execute(file: str, argv: list[str], env: Mapping[str, str], *, search: bool) -> NoReturn:
+    exec_call = os.execvpe if search else os.execve
     try:
-        if search:
-            os.execvpe(file, argv, env)
-        os.execve(file, argv, env)
+        exec_call(file, argv, env)
     except OSError as exc:
-        print(f"canon_run: cannot run {file}: {flatten(exc)}", file=sys.stderr)
-    return EXIT_NOT_FOUND
+        raise CommandNotFound(f"cannot run {file}: {exc}") from exc
 
 
-def exec_untouched(command: list[str], *, cargo: bool, environ: Mapping[str, str]) -> int:
+def exec_untouched(command: list[str], *, cargo: bool, environ: Mapping[str, str]) -> NoReturn:
     """C2's real-path mode: the command with the caller's exact environment and cwd."""
     if not cargo:
         return execute(command[0], command, environ, search=True)
     real_cargo = resolve_real_cargo(environ.get("PATH", ""))
     if real_cargo is None:
-        print("canon_run: no cargo on PATH other than reify-canon trampolines", file=sys.stderr)
-        return EXIT_NOT_FOUND
+        raise CommandNotFound("no cargo on PATH other than reify-canon trampolines")
     return execute(real_cargo, ["cargo", *command], environ, search=False)
 
 
-def enter_canon(build_dir: Path) -> int:
-    raise Refusal(f"build directory {build_dir} builds at CANON, which this canon_run.py cannot enter yet")
+def enter_canon(build_dir: Path) -> NoReturn:
+    raise Refusal(f"build directory {build_dir} builds at CANON, which cannot be entered yet")
 
 
 def run(command: list[str], *, cargo: bool, environ: Mapping[str, str]) -> int:
@@ -484,6 +638,9 @@ def main(argv: list[str]) -> int:
     except Refusal as refusal:
         print(f"canon_run: {flatten(refusal)}", file=sys.stderr)
         return EXIT_REFUSED
+    except CommandNotFound as not_found:
+        print(f"canon_run: {flatten(not_found)}", file=sys.stderr)
+        return EXIT_NOT_FOUND
     print(USAGE, file=sys.stderr)
     return EXIT_USAGE
 
