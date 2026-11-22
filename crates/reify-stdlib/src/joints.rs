@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use reify_core::DimensionVector;
-use reify_ir::{Value, quaternion_is_finite};
+use reify_ir::{Value, decode_direction, quaternion_is_finite};
 
 use crate::dynamics::spatial::SpatialVector6;
 use crate::helpers::trig_input;
@@ -19,15 +19,14 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             if args.len() != 2 && args.len() != 3 {
                 return Some(Value::Undef);
             }
-            if validate_axis(&args[0]).is_none() {
+            if axis_components(&args[0]).is_none() {
                 return Some(Value::Undef);
             }
             if validate_range(&args[1], DimensionVector::LENGTH).is_none() {
                 return Some(Value::Undef);
             }
-            // The axis is stored as the raw (potentially unnormalized) input.
-            // `transform_at` normalizes it to unit length at evaluation time.
-            // `joint_axis` returns this raw value — see its doc-comment.
+            // The stored axis is the unit Direction itself; `joint_axis`
+            // returns it unchanged.
             let origin = if args.len() == 3 {
                 match pivot_to_origin(&args[2]) {
                     Some(o) => Some(o),
@@ -44,15 +43,14 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             if args.len() != 2 && args.len() != 3 {
                 return Some(Value::Undef);
             }
-            if validate_axis(&args[0]).is_none() {
+            if axis_components(&args[0]).is_none() {
                 return Some(Value::Undef);
             }
             if validate_range(&args[1], DimensionVector::ANGLE).is_none() {
                 return Some(Value::Undef);
             }
-            // The axis is stored as the raw (potentially unnormalized) input.
-            // `transform_at` normalizes it to unit length at evaluation time.
-            // `joint_axis` returns this raw value — see its doc-comment.
+            // The stored axis is the unit Direction itself; `joint_axis`
+            // returns it unchanged.
             let origin = if args.len() == 3 {
                 match pivot_to_origin(&args[2]) {
                     Some(o) => Some(o),
@@ -68,30 +66,25 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
         // §"Decomposition plan" task 6.
         //
         // Signature: planar(axis_x, axis_y, range_x, range_y, range_theta)
-        // where axis_x ⊥ axis_y (both dimensionless Vector3, finite, non-zero),
-        // range_x / range_y are LENGTH ranges, range_theta is an ANGLE range.
-        // The raw (unnormalised) axes are stored in the Map; normalisation happens
-        // at `transform_at` time — matching the prismatic/revolute precedent.
+        // where axis_x ⊥ axis_y (both Directions), range_x / range_y are LENGTH
+        // ranges, range_theta is an ANGLE range. The two unit Directions are
+        // stored in the Map unchanged.
         "planar" => {
             if args.len() != 5 {
                 return Some(Value::Undef);
             }
-            // Validate axis_x: dimensionless Vector3, finite, non-zero.
-            let comps_x = match validate_axis(&args[0]) {
+            let unit_x = match axis_components(&args[0]) {
                 Some(c) => c,
                 None => return Some(Value::Undef),
             };
-            // Validate axis_y: dimensionless Vector3, finite, non-zero.
-            let comps_y = match validate_axis(&args[1]) {
+            let unit_y = match axis_components(&args[1]) {
                 Some(c) => c,
                 None => return Some(Value::Undef),
             };
-            // Perpendicularity check: `|dot(unit_x, unit_y)| < 1e-9`.  Normalise
-            // each axis first so the dot product is in cos-angle units.  Rationale
-            // and FP-tolerance discussion live on `unit_axes_xy_from_planar_map`
+            // Perpendicularity check: `|dot(unit_x, unit_y)| < 1e-9`, in
+            // cos-angle units because both axes are unit.  Rationale and
+            // FP-tolerance discussion live on `unit_axes_xy_from_planar_map`
             // (single source of truth; see also docs/prds/v0_2/per-purpose-tolerance.md).
-            let unit_x = unit_normalize(comps_x);
-            let unit_y = unit_normalize(comps_y);
             let dot = unit_x[0] * unit_y[0] + unit_x[1] * unit_y[1] + unit_x[2] * unit_y[2];
             if dot.abs() >= 1e-9 {
                 return Some(Value::Undef);
@@ -142,17 +135,14 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
         // task 5.
         //
         // Signature: cylindrical(axis, translation_range, rotation_range)
-        // where axis is a dimensionless Vector3 (finite, non-zero), translation_range
-        // is a LENGTH range (bounded), and rotation_range is an ANGLE range (bounded).
-        // The raw (unnormalised) axis is stored; normalisation happens at
-        // `transform_at` and `joint_jacobian` time — matching the prismatic /
-        // revolute / planar precedent.
+        // where axis is a Direction, translation_range is a LENGTH range
+        // (bounded), and rotation_range is an ANGLE range (bounded). The unit
+        // Direction is stored unchanged.
         "cylindrical" => {
             if args.len() != 3 {
                 return Some(Value::Undef);
             }
-            // Validate axis: dimensionless Vector3, finite, non-zero.
-            if validate_axis(&args[0]).is_none() {
+            if axis_components(&args[0]).is_none() {
                 return Some(Value::Undef);
             }
             // Validate translation_range: bounded, LENGTH-dimensioned.
@@ -677,11 +667,8 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             if args.len() != 1 {
                 return Some(Value::Undef);
             }
-            // Returns the axis as stored at construction — the raw, potentially
-            // unnormalized input vector.  `transform_at` normalizes to unit
-            // length when computing the resulting Transform; this accessor
-            // preserves the original value so callers can inspect what was
-            // passed to `prismatic`/`revolute`.
+            // Returns the axis as stored at construction: the joint's unit
+            // Direction, exactly as passed to `prismatic`/`revolute`.
             match &args[0] {
                 Value::Map(m) => m
                     .get(&Value::String("axis".to_string()))
@@ -1226,22 +1213,11 @@ fn cylindrical_motion_vars(value: &Value) -> Option<(f64, f64)> {
     Some((dist, theta))
 }
 
-/// Unit-normalise a 3-component array.
-///
-/// The caller must have already validated the input via [`validate_axis`],
-/// which guarantees non-zero, finite magnitude — so the division is safe.
-/// Shared by the `"planar"` constructor (perpendicularity check), by
-/// [`unit_axes_xy_from_planar_map`], and by [`unit_axis_from_map`], so the
-/// normalisation formula lives in exactly one place.
-fn unit_normalize(comps: [f64; 3]) -> [f64; 3] {
-    let mag = (comps[0] * comps[0] + comps[1] * comps[1] + comps[2] * comps[2]).sqrt();
-    [comps[0] / mag, comps[1] / mag, comps[2] / mag]
-}
-
-/// Extract and unit-normalise both `"axis_x"` and `"axis_y"` from a planar joint Map.
+/// Extract the unit components of both `"axis_x"` and `"axis_y"` from a planar
+/// joint Map.
 ///
 /// Returns `Some((unit_x, unit_y))` on success, `None` if either field is
-/// missing, fails [`validate_axis`] validation, or the two axes are not
+/// missing or not a Direction ([`axis_components`]), or the two axes are not
 /// perpendicular (`|dot(unit_x, unit_y)| >= 1e-9`).
 ///
 /// The perpendicularity predicate uses the same tolerance (1e-9) and formula as
@@ -1278,10 +1254,8 @@ fn unit_normalize(comps: [f64; 3]) -> [f64; 3] {
 fn unit_axes_xy_from_planar_map(map: &BTreeMap<Value, Value>) -> Option<([f64; 3], [f64; 3])> {
     let axis_x_val = map.get(&Value::String("axis_x".to_string()))?;
     let axis_y_val = map.get(&Value::String("axis_y".to_string()))?;
-    let cx = validate_axis(axis_x_val)?;
-    let cy = validate_axis(axis_y_val)?;
-    let unit_x = unit_normalize(cx);
-    let unit_y = unit_normalize(cy);
+    let unit_x = axis_components(axis_x_val)?;
+    let unit_y = axis_components(axis_y_val)?;
     // Perpendicularity guard — mirrors the constructor check at joints.rs:67-76.
     // Parallel or anti-parallel axes produce a zero cross product, which would
     // yield a degenerate (all-zero) rotation axis in the `transform_at` planar
@@ -1294,31 +1268,16 @@ fn unit_axes_xy_from_planar_map(map: &BTreeMap<Value, Value>) -> Option<([f64; 3
     Some((unit_x, unit_y))
 }
 
-/// Look up the `"axis"` field in a joint map, validate it via [`validate_axis`],
-/// and return the unit-normalized `[x, y, z]` components.
-///
-/// Returns `None` if the field is absent or validation fails.
-/// Both the `"prismatic"` and `"revolute"` arms of `transform_at` call this
-/// helper to avoid duplicating the axis lookup and normalization logic.
+/// Look up the `"axis"` field in a joint map and return its unit `[x, y, z]`
+/// components, or `None` if the field is absent or not a Direction.
 fn unit_axis_from_map(map: &BTreeMap<Value, Value>) -> Option<[f64; 3]> {
-    let axis_val = map.get(&Value::String("axis".to_string()))?;
-    let comps = validate_axis(axis_val)?;
-    Some(unit_normalize(comps))
+    axis_components(map.get(&Value::String("axis".to_string()))?)
 }
 
-/// Validate an axis value: must be a Vector3 of dimensionless components,
-/// all finite, with non-zero magnitude.
-///
-/// Returns `Some([x, y, z])` (the raw components, not normalized) on success,
-/// `None` on any failure.
-///
-/// Delegates to [`crate::helpers::validate_dimensionless_unit_axis_vec3`], the
-/// shared helper that unifies axis-validation across the joints, supports, and
-/// loads modules. The wrapper is preserved (rather than replacing every call
-/// site) so the existing rustdoc cross-references in this file (e.g. on
-/// `unit_axes_xy_from_planar_map` and `unit_axis_from_map`) remain valid.
-fn validate_axis(value: &Value) -> Option<[f64; 3]> {
-    crate::helpers::validate_dimensionless_unit_axis_vec3(value)
+/// The unit components of a Direction axis; `None` for any other value (a
+/// Vector is not a direction).
+fn axis_components(value: &Value) -> Option<[f64; 3]> {
+    decode_direction(value).ok().map(|unit| unit.components())
 }
 
 /// Validate a range value: must be `Value::Range` with both lower and upper
@@ -1502,9 +1461,8 @@ fn make_coupling(parent: Value, ratio: Value, offset: Value) -> Value {
 /// Build a planar joint `Value::Map` with the six-key layout:
 /// `"axis_x"`, `"axis_y"`, `"kind"`, `"range_theta"`, `"range_x"`, `"range_y"`.
 ///
-/// Keys are in BTreeMap alphabetical order.  Raw (potentially unnormalised) axes
-/// are stored — normalisation happens at `transform_at` time, matching the
-/// prismatic/revolute `make_joint` precedent.
+/// Keys are in BTreeMap alphabetical order.  The axes are the caller's unit
+/// Directions, stored unchanged, as in `make_joint`.
 fn make_planar(
     axis_x: Value,
     axis_y: Value,
@@ -1547,9 +1505,8 @@ fn make_spherical(range_angle: Value) -> Value {
 /// `"axis"`, `"kind"`, `"rotation_range"`, `"translation_range"`.
 ///
 /// Keys are in `BTreeMap` alphabetical order, mirroring `make_joint` /
-/// `make_planar` / `make_spherical`.  The raw (unnormalised) axis is
-/// stored; normalisation happens at `transform_at` / `joint_jacobian`
-/// time, matching the prismatic / revolute precedent.
+/// `make_planar` / `make_spherical`.  The axis is the caller's unit
+/// Direction, stored unchanged.
 ///
 /// Design intent (PRD task 5): the cylindrical joint is the flat composite
 /// of prismatic ⊕ revolute on a single shared axis.  Storing translation_range
@@ -2136,7 +2093,7 @@ mod tests {
     }
 
     fn prismatic_y_joint() -> Value {
-        let axis = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let axis = direction_val(0.0, 1.0, 0.0);
         let range = Value::Range {
             lower: Some(Box::new(Value::length(0.0))),
             upper: Some(Box::new(Value::length(5.0))),
@@ -2147,7 +2104,7 @@ mod tests {
     }
 
     fn prismatic_z_joint() -> Value {
-        let axis = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        let axis = direction_val(0.0, 0.0, 1.0);
         let range = Value::Range {
             lower: Some(Box::new(Value::length(-5.0))),
             upper: Some(Box::new(Value::length(5.0))),
@@ -2330,11 +2287,7 @@ mod tests {
     fn prismatic_transform_at_diagonal_axis() {
         // axis = [1,1,0]/√2, value = √2 m → translation = [1m, 1m, 0m]
         let sq2 = std::f64::consts::SQRT_2;
-        let axis = Value::Vector(vec![
-            Value::Real(1.0 / sq2),
-            Value::Real(1.0 / sq2),
-            Value::Real(0.0),
-        ]);
+        let axis = direction_val(1.0 / sq2, 1.0 / sq2, 0.0);
         let range = Value::Range {
             lower: Some(Box::new(Value::length(0.0))),
             upper: Some(Box::new(Value::length(10.0))),
@@ -2355,7 +2308,7 @@ mod tests {
     #[test]
     fn prismatic_transform_at_unnormalized_axis() {
         // axis = [2, 0, 0] (magnitude 2), value = 1m → normalized axis [1,0,0] → translation = [1m, 0, 0]
-        let axis = Value::Vector(vec![Value::Real(2.0), Value::Real(0.0), Value::Real(0.0)]);
+        let axis = direction_val(2.0, 0.0, 0.0);
         let range = Value::Range {
             lower: Some(Box::new(Value::length(0.0))),
             upper: Some(Box::new(Value::length(5.0))),
@@ -2394,7 +2347,7 @@ mod tests {
     }
 
     fn revolute_x_joint() -> Value {
-        let axis = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let axis = direction_val(1.0, 0.0, 0.0);
         let range = Value::Range {
             lower: Some(Box::new(Value::angle(0.0))),
             upper: Some(Box::new(Value::angle(std::f64::consts::PI))),
@@ -2405,7 +2358,7 @@ mod tests {
     }
 
     fn revolute_y_joint() -> Value {
-        let axis = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let axis = direction_val(0.0, 1.0, 0.0);
         let range = Value::Range {
             lower: Some(Box::new(Value::angle(0.0))),
             upper: Some(Box::new(Value::angle(std::f64::consts::PI))),
@@ -2501,7 +2454,7 @@ mod tests {
     fn revolute_transform_at_unnormalized_axis() {
         // axis [0, 0, 2] (magnitude 2) with π/2 → same rotation as [0,0,1] with π/2
         let pi = std::f64::consts::PI;
-        let axis = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(2.0)]);
+        let axis = direction_val(0.0, 0.0, 2.0);
         let range = Value::Range {
             lower: Some(Box::new(Value::angle(0.0))),
             upper: Some(Box::new(Value::angle(pi))),
@@ -2972,7 +2925,8 @@ mod tests {
         let transform = eval_builtin("transform_at", &[joint, Value::length(-2.0)]);
         assert_eq!(
             translation_bits(&transform),
-            [0.0f64.to_bits(), 0.0f64.to_bits(), (-2.0f64).to_bits()]
+            [0.0, 0.0, 1.0].map(|c: f64| (-2.0 * c).to_bits()),
+            "a signed-basis Direction scales the distance exactly as the vec3 basis did"
         );
 
         let joint = eval_builtin(
@@ -3923,7 +3877,7 @@ mod tests {
     #[test]
     fn joint_jacobian_prismatic_unnormalized_axis() {
         // (c) prismatic with axis [2,0,0] (magnitude 2) is normalized to [1,0,0] in linear.
-        let axis = Value::Vector(vec![Value::Real(2.0), Value::Real(0.0), Value::Real(0.0)]);
+        let axis = direction_val(2.0, 0.0, 0.0);
         let range = length_range_0_to_1m();
         let joint = eval_builtin("prismatic", &[axis, range]);
         let result = eval_builtin("joint_jacobian", &[joint]);
@@ -3946,7 +3900,7 @@ mod tests {
     #[test]
     fn joint_jacobian_revolute_unnormalized_axis() {
         // Mirror of (c) for revolute: axis [0,0,2] → angular=[0,0,1].
-        let axis = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(2.0)]);
+        let axis = direction_val(0.0, 0.0, 2.0);
         let range = angle_range_0_to_pi();
         let joint = eval_builtin("revolute", &[axis, range]);
         let result = eval_builtin("joint_jacobian", &[joint]);
@@ -5212,8 +5166,8 @@ mod tests {
         // motion = [1m, 0m, 0rad]
         // → translation = 1 * unit_axis_x = [1/√2, 1/√2, 0], identity rotation
         let s2 = std::f64::consts::FRAC_1_SQRT_2; // 1/√2
-        let ax = Value::Vector(vec![Value::Real(s2), Value::Real(s2), Value::Real(0.0)]);
-        let ay = Value::Vector(vec![Value::Real(-s2), Value::Real(s2), Value::Real(0.0)]);
+        let ax = direction_val(s2, s2, 0.0);
+        let ay = direction_val(-s2, s2, 0.0);
         let joint = eval_builtin(
             "planar",
             &[
@@ -5259,8 +5213,8 @@ mod tests {
         //   = (cos(π/8), 0·sin(π/8), -1·sin(π/8), 0·sin(π/8))
         //   = (cos(π/8), 0, -sin(π/8), 0)
         let pi = std::f64::consts::PI;
-        let ax = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
-        let ay = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        let ax = direction_val(1.0, 0.0, 0.0);
+        let ay = direction_val(0.0, 0.0, 1.0);
         let joint = eval_builtin(
             "planar",
             &[
@@ -5506,11 +5460,7 @@ mod tests {
     #[test]
     fn joint_jacobian_planar_non_axis_aligned_uses_cross_product_plane_normal() {
         let inv_sqrt2 = 1.0 / std::f64::consts::SQRT_2;
-        let axis_y = Value::Vector(vec![
-            Value::Real(0.0),
-            Value::Real(inv_sqrt2),
-            Value::Real(inv_sqrt2),
-        ]);
+        let axis_y = direction_val(0.0, inv_sqrt2, inv_sqrt2);
         let pj = eval_builtin(
             "planar",
             &[
@@ -5609,7 +5559,7 @@ mod tests {
             Value::Real(0.0),
         ]);
         // Non-perpendicular: axis_y = [1,1,0] — dot with [1,0,0] = 1/√2 ≠ 0
-        let non_perp_y = Value::Vector(vec![Value::Real(1.0), Value::Real(1.0), Value::Real(0.0)]);
+        let non_perp_y = direction_val(1.0, 1.0, 0.0);
         // Parallel: axis_y = axis_x = [1,0,0]
         let parallel_y = axis_x_unit();
         // Angle-dimensioned range where LENGTH expected
@@ -6194,10 +6144,8 @@ mod tests {
         use crate::loop_closure_value::JointValue;
 
         let theta = std::f64::consts::FRAC_PI_4;
-        let q = eval_builtin(
-            "orient_axis_angle",
-            &[axis_z_unit(), Value::angle(theta)],
-        );
+        let z_vector = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        let q = eval_builtin("orient_axis_angle", &[z_vector, Value::angle(theta)]);
         let (qw, qx, qy, qz) = match q {
             Value::Orientation { w, x, y, z } => (w, x, y, z),
             other => panic!("orient_axis_angle returned non-Orientation: {:?}", other),
@@ -6426,7 +6374,7 @@ mod tests {
 
         // (b) unnormalised axis [2, 0, 0] → unit X; [d=1.0m, θ=π/2] → translation [1,0,0],
         //     rotation about +X by π/2 = (cos(π/4), sin(π/4), 0, 0).
-        let axis_2x = Value::Vector(vec![Value::Real(2.0), Value::Real(0.0), Value::Real(0.0)]);
+        let axis_2x = direction_val(2.0, 0.0, 0.0);
         let cyl_2x = eval_builtin(
             "cylindrical",
             &[axis_2x, length_range_0_to_1m(), angle_range_0_to_pi()],
@@ -6445,7 +6393,7 @@ mod tests {
 
         // (c) diagonal axis [1,1,0]/√2 unit; [d=√2 m, θ=0] → translation [1,1,0], identity rotation.
         let s2 = std::f64::consts::FRAC_1_SQRT_2;
-        let axis_diag = Value::Vector(vec![Value::Real(s2), Value::Real(s2), Value::Real(0.0)]);
+        let axis_diag = direction_val(s2, s2, 0.0);
         let cyl_diag = eval_builtin(
             "cylindrical",
             &[axis_diag, length_range_0_to_1m(), angle_range_0_to_pi()],
@@ -6493,7 +6441,7 @@ mod tests {
         assert_jacobian_list_two_columns(&result_x, [1.0, 0.0, 0.0], "cyl X unit");
 
         // (c) unnormalised axis [3, 4, 0] (magnitude 5) → unit [0.6, 0.8, 0]
-        let axis_345 = Value::Vector(vec![Value::Real(3.0), Value::Real(4.0), Value::Real(0.0)]);
+        let axis_345 = direction_val(3.0, 4.0, 0.0);
         let cyl_345 = eval_builtin(
             "cylindrical",
             &[axis_345, length_range_0_to_1m(), angle_range_0_to_pi()],
@@ -7004,7 +6952,7 @@ mod tests {
     /// Both cylindrical columns share the same unit-normalized direction.
     #[test]
     fn motion_subspace_columns_cylindrical_unnormalized_axis_normalizes_both_columns() {
-        let axis = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(2.0)]);
+        let axis = direction_val(0.0, 0.0, 2.0);
         let joint = eval_builtin("cylindrical", &[axis, length_range_0_to_1m(), angle_range_0_to_pi()]);
         let cols = super::motion_subspace_columns(&joint)
             .expect("motion_subspace_columns on cylindrical joint should return Some");
@@ -7027,7 +6975,7 @@ mod tests {
     /// still returns column `[0,0,1, 0,0,0]`.
     #[test]
     fn motion_subspace_columns_revolute_unnormalized_axis_normalizes() {
-        let axis = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(2.0)]);
+        let axis = direction_val(0.0, 0.0, 2.0);
         let joint = eval_builtin("revolute", &[axis, angle_range_0_to_pi()]);
         let cols = super::motion_subspace_columns(&joint)
             .expect("motion_subspace_columns on revolute joint should return Some");
@@ -7048,7 +6996,7 @@ mod tests {
     /// still returns column `[0,0,0, 1,0,0]`.
     #[test]
     fn motion_subspace_columns_prismatic_unnormalized_axis_normalizes() {
-        let axis = Value::Vector(vec![Value::Real(2.0), Value::Real(0.0), Value::Real(0.0)]);
+        let axis = direction_val(2.0, 0.0, 0.0);
         let joint = eval_builtin("prismatic", &[axis, length_range_0_to_1m()]);
         let cols = super::motion_subspace_columns(&joint)
             .expect("motion_subspace_columns on prismatic joint should return Some");
@@ -8116,63 +8064,40 @@ mod tests {
         }
     }
 
-    // ── task 5848: the decl/runtime divergence the retype corrects ───────────
+    // ── the five joint direction params require a Direction ──────────────────
 
-    /// Re-tag a dimensionless axis `Value::Vector` as LENGTH, keeping every
-    /// component number bit-identical. The two legs of the pin below then
-    /// differ ONLY in the dimension tag, so nothing else can explain a
-    /// rejection.
-    fn as_length_axis(axis: &Value) -> Value {
+    /// Re-spell a Direction axis as a dimensionless `Value::Vector` with
+    /// bit-identical components, so the two legs of the pin below differ ONLY
+    /// in the value's shape.
+    fn as_vector_axis(axis: &Value) -> Value {
         match axis {
-            Value::Vector(comps) => Value::Vector(
-                comps
-                    .iter()
-                    .map(|c| match c {
-                        Value::Real(r) => Value::length(*r),
-                        other => {
-                            panic!("as_length_axis: expected a Real component, got {other:?}")
-                        }
-                    })
-                    .collect(),
-            ),
-            other => panic!("as_length_axis: expected Value::Vector, got {other:?}"),
+            Value::Direction(unit) => {
+                Value::Vector(unit.components().map(Value::Real).to_vec())
+            }
+            other => panic!("as_vector_axis: expected Value::Direction, got {other:?}"),
         }
     }
 
-    /// Characterization pin for task 5848's ruling that stdlib direction fields
-    /// are DIMENSIONLESS: across ALL FIVE of the joint direction params the
-    /// evaluator ALREADY required a dimensionless axis and evaluated a
-    /// `Length`-dimensioned one to `Undef` — while `kinematic.ri` declared
-    /// `Vec3<Length>`.
-    ///
-    /// That is what makes the retype a CORRECTION rather than a risk. The old
-    /// declaration was not merely "observationally irrelevant"; it was actively
-    /// contradicted by `validate_dimensionless_unit_axis_vec3` (helpers.rs) at
-    /// every constructor guard, so `revolute(vec3(0mm, 0mm, 1mm), …)` was
-    /// already dead on arrival. Steps 1-2 made the declaration honest; they did
-    /// not change what the evaluator accepts.
+    /// The set of params the evaluator requires to be a Direction is exactly
+    /// the set kinematic.ri declares `Direction`, with no member unmatched on
+    /// either side. It isolates the value shape as the sole variable by
+    /// deriving the rejected vector axis from the accepted Direction.
     ///
     /// NOT a copy of the per-constructor validation surfaces
     /// (`prismatic_length_dimensioned_axis_returns_undef`,
     /// `revolute_length_dimensioned_axis_returns_undef`,
     /// `cylindrical_constructor_validation_table`,
-    /// `planar_invalid_args_returns_undef`). Each of those enumerates ONE
-    /// constructor's rejection set, mixing the dimension case in with arity,
-    /// arity-of-vector, zero, NaN and range cases. The claim here is the
-    /// cross-cutting one none of them states: the set of params the evaluator
-    /// requires dimensionless is exactly the set kinematic.ri now declares
-    /// dimensionless, with no member unmatched on either side — and it isolates
-    /// the dimension tag as the sole variable by deriving the rejected axis
-    /// from the accepted one.
+    /// `planar_invalid_args_returns_undef`), each of which enumerates ONE
+    /// constructor's rejection set.
     #[test]
-    fn every_retyped_joint_direction_param_requires_a_dimensionless_axis() {
+    fn every_joint_direction_param_requires_a_direction() {
         let lr = length_range_0_to_1m();
         let ar = angle_range_0_to_pi();
 
         // (kinematic.ri field, builtin — which is also the Map's "kind",
-        //  full arg list with every axis dimensionless, index of THIS field's
-        //  axis slot). The five entries are exactly the five params retyped in
-        //  kinematic.ri; Planar contributes two rows because it has two axes.
+        //  full arg list with every axis a Direction, index of THIS field's
+        //  axis slot). The five entries are exactly the five Direction params
+        //  of kinematic.ri; Planar contributes two rows because it has two axes.
         let cases: Vec<(&str, &str, Vec<Value>, usize)> = vec![
             (
                 "Prismatic.axis",
@@ -8219,27 +8144,26 @@ mod tests {
         ];
 
         for (field, builtin, args, axis_slot) in &cases {
-            // Leg 1 — dimensionless (what kinematic.ri now declares): the
+            // Leg 1 — a Direction (what kinematic.ri declares): the
             // constructor yields a well-formed joint Map.
             match eval_builtin(builtin, args) {
                 Value::Map(m) => assert_eq!(
                     m.get(&Value::String("kind".to_string())),
                     Some(&Value::String((*builtin).to_string())),
-                    "{field}: a dimensionless axis must construct a {builtin} joint Map"
+                    "{field}: a Direction axis must construct a {builtin} joint Map"
                 ),
                 other => panic!(
-                    "{field}: a dimensionless axis must construct a joint Map, got {other:?}"
+                    "{field}: a Direction axis must construct a joint Map, got {other:?}"
                 ),
             }
 
-            // Leg 2 — identical numbers, LENGTH tag (what kinematic.ri used to
-            // declare): rejected outright.
-            let mut dimensioned = args.clone();
-            dimensioned[*axis_slot] = as_length_axis(&args[*axis_slot]);
+            // Leg 2 — identical numbers as a dimensionless vector (what
+            // kinematic.ri used to declare): rejected outright.
+            let mut vector = args.clone();
+            vector[*axis_slot] = as_vector_axis(&args[*axis_slot]);
             assert!(
-                eval_builtin(builtin, &dimensioned).is_undef(),
-                "{field}: an axis carrying the SAME components with a LENGTH tag must \
-                 evaluate to Undef — this is the divergence task 5848's retype closes"
+                eval_builtin(builtin, &vector).is_undef(),
+                "{field}: a vector carrying the SAME components must evaluate to Undef"
             );
         }
     }
