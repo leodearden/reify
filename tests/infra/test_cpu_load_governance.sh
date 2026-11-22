@@ -1760,19 +1760,28 @@ else
     # pid and only then execs the real setpriv.  The shim acts only on the call
     # it is aimed at — the fixture's own re-exec (group 4: its pid is the
     # recorded fixture pid) or a worker's (group 5: its parent is the recorded
-    # fixture pid) — and passes every other call straight through.
+    # fixture pid) — and only while its parent is still the one it was aimed at
+    # (group 4: the launcher's pid, handed down in GOVTEST_SHIM_EXPECTED_PARENT).
+    # Every other call, including one made after the test already ended the
+    # parent and the caller was re-parented, passes straight through: the shim
+    # never signals a process it was not aimed at.
     _fixture_hold_shim_dir="$(mktemp -d -p "$WORK" fixture-hold-shim.XXXXXX)"
     cat > "$_fixture_hold_shim_dir/setpriv" << 'EOF_SETPRIV_SHIM'
 #!/bin/sh
-while [ ! -s "$GOVTEST_SHIM_FIXTURE_PID_FILE" ]; do sleep 0.01; done
-fixture_pid="$(cat "$GOVTEST_SHIM_FIXTURE_PID_FILE")"
+current_ppid() { awk '/^PPid:/ { print $2 }' /proc/$$/status; }
+while [ ! -s "$GOVTEST_SHIM_FIXTURE_PID_FILE" ] && [ "$(current_ppid)" = "$PPID" ]; do
+    sleep 0.01
+done
+fixture_pid="$(cat "$GOVTEST_SHIM_FIXTURE_PID_FILE" 2>/dev/null || true)"
 case "$GOVTEST_SHIM_AIM" in
-    fixture) aimed=$$ ;;
-    worker) aimed=$PPID ;;
+    fixture) aimed=$$ expected_parent="${GOVTEST_SHIM_EXPECTED_PARENT:-}" ;;
+    worker) aimed=$PPID expected_parent="$fixture_pid" ;;
 esac
-if [ "$aimed" = "$fixture_pid" ] && rm "$GOVTEST_SHIM_TRIGGER" 2>/dev/null; then
+if [ -n "$fixture_pid" ] && [ "$aimed" = "$fixture_pid" ] \
+    && [ "$(current_ppid)" = "$expected_parent" ] \
+    && rm "$GOVTEST_SHIM_TRIGGER" 2>/dev/null; then
     kill -KILL "$PPID"
-    while [ "$(awk '/^PPid:/ { print $2 }' /proc/$$/status)" = "$PPID" ]; do sleep 0.01; done
+    while [ "$(current_ppid)" = "$PPID" ]; do sleep 0.01; done
     printf '%s\n' "$$" > "$GOVTEST_SHIM_VICTIM_FILE"
 fi
 exec "$GOVTEST_SHIM_REAL" "$@"
@@ -1805,7 +1814,7 @@ EOF_SETPRIV_SHIM
     GOVTEST_SHIM_TRIGGER="$WORK/fixture-hold-trigger-4" \
     GOVTEST_SHIM_VICTIM_FILE="$_fixture_hold_victim4" \
     PATH="$_fixture_hold_shim_dir:$PATH" \
-        bash -c 'bash "$1" 1 0 --ready-file "$2" >/dev/null 2>&1 &
+        bash -c 'GOVTEST_SHIM_EXPECTED_PARENT=$$ bash "$1" 1 0 --ready-file "$2" >/dev/null 2>&1 &
                  printf "%s\n" "$!" > "$3"
                  wait' \
         _ "$FIXTURE" "$_fixture_hold_ready4" "$_fixture_hold_fixture_pid4" &
@@ -1815,9 +1824,13 @@ EOF_SETPRIV_SHIM
     # fires.  Bound the wait on the shim's own report (technique T), then end the
     # launcher explicitly before reaping it: a shim that never fired must be a
     # named FAIL below, not a hang.  Killing a launcher the shim already killed is
-    # harmless.
+    # harmless.  When the shim never fired, the fixture (a pending shim, by pid)
+    # is ended first, so it is never orphaned by the launcher's kill.
     _fixture_hold4a_rc=0
     _row4_await_ready 30 "$_fixture_hold_victim4" || _fixture_hold4a_rc=$?
+    if [ "$_fixture_hold4a_rc" -ne 0 ]; then
+        _fixture_hold_reap_tree "$_fixture_hold_fixture_pid4"
+    fi
     kill -KILL "$_fixture_hold_launcher_pid4" 2>/dev/null || true
     wait "$_fixture_hold_launcher_pid4" 2>/dev/null || true
     assert "FIXTURE-HOLD-4a: the shim killed the launcher before the fixture's anchor was armed (rc ${_fixture_hold4a_rc}); precondition of -4b" \
