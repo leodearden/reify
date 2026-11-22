@@ -413,7 +413,8 @@ A file is excluded from the scan when the citation shape appears in it as the
 gate's own *subject matter* rather than as a reference a reader is meant to
 follow — repointing a mention falsifies the record carrying it, so a finding
 against one is never actionable.  The list lives in
-`cited_test_path_exclusions()` and has two kinds of member.
+`cited_test_path_exclusions()` and has two kinds of member: structural and
+contingent.
 
 The gate's own three artifacts (the baseline, the lib, the gate) are excluded
 **structurally** — the baseline is ~300 rows each ending in a stale cited path,
@@ -429,6 +430,14 @@ includes remediation-shaped `fix` / `fix_where` fields — unpopulated today, bu
 they *would* carry live references.  If either starts being written, revisit
 the exclusion.  The vacuity floor cannot signal this for you: the codebook is
 ~0.83% of the citation corpus, far below anything the floor's bounds resolve.
+
+`docs/notes/agent-build-settings-bench-census.jsonl` is excluded
+**structurally**.  It is task 10169's census of agent cargo builds, an event log
+written once from archived agent transcripts.  Each row records a past edit or
+build event, so every test path in it is recorded payload: mention, not use.
+Repointing a row would falsify the history it records, and the finding would
+recur on every later test move, so it is never actionable.  Ruling: Leo,
+2026-11-22, esc-10169-3.
 
 ### Fingerprint grammar
 
