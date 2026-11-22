@@ -355,11 +355,10 @@ fn eval_context<'a>(
         Some(det) => ctx.with_determinacy(det),
         None => ctx,
     };
-    let ctx = match dispatch {
+    match dispatch {
         Some(d) => ctx.with_compute_dispatch(d),
         None => ctx,
-    };
-    ctx
+    }
 }
 
 /// The verdict for a constraint that evaluated to `Undef`, whose cause
