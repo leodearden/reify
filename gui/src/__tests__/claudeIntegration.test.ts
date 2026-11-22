@@ -393,7 +393,7 @@ describe('claude bridge integration', () => {
     expect(inFlight!.complete).toBe(false); // not terminated
     expect(inFlight!.error).toBeUndefined(); // not errored
     expect(store.state.sessionStatus).not.toBe('idle'); // session still active
-    // No system message added — host's notice handler does NOT addSystemMessage
+    // No system message added — a diagnostic notice code (degraded_turn_boundary) stays out of the transcript
     const systemMsgs = store.state.messages.filter((m) => m.role === 'system');
     expect(systemMsgs).toHaveLength(0);
 

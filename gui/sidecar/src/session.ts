@@ -433,7 +433,7 @@ export class SidecarSession {
    * startup probe (config.landlockAvailable, settled by probeLandlockAsync() in index.ts)
    * says the kernel supports it, otherwise a direct spawn. When a sandbox was requested
    * but is unavailable, emits a one-shot sandbox_unavailable notice for invocation `id`
-   * so the frontend can surface a toast once per session rather than every turn.
+   * so the frontend shows it in the chat once per session rather than every turn.
    */
   private sandboxedCommand(id: string, args: string[]): { cmd: string; args: string[] } {
     const landlockOk = this.config.landlockAvailable ?? false;

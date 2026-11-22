@@ -76,6 +76,9 @@ export interface ClaudeStoreOptions {
   onPermissionDecision: (decision: { requestId: string } & PermissionDecision) => void;
 }
 
+// The sidecar decides how often a notice fires; this table decides which notice codes reach the transcript, and with which SystemMessage errorType.
+const USER_FACING_NOTICE_TYPES: ReadonlyMap<string, string> = new Map([['sandbox_unavailable', 'sandbox']]);
+
 let messageCounter = 0;
 function generateId(): string {
   return `msg-${Date.now()}-${++messageCounter}`;
@@ -230,15 +233,13 @@ export function createClaudeStore(options: ClaudeStoreOptions) {
       }
 
       case 'notice': {
-        // Non-terminal diagnostic from the sidecar. Logs to console.warn for operator
-        // visibility (dev-tools / production logs) but does NOT cancel/flush the
-        // pending RAF, does NOT mutate sessionStatus, does NOT touch the in-flight
-        // assistant message, and does NOT add a SystemMessage to the chat transcript.
-        // The pre-regression behavior was stderr-only invisibility on the sidecar
-        // side; this upgrades to host-operator visibility while preserving the
-        // graceful-degradation lifecycle for the in-flight turn.
+        // Every notice is non-terminal: it logs to console.warn and leaves the
+        // in-flight turn (RAF buffers, sessionStatus, assistant message) alone.
+        // Codes listed in USER_FACING_NOTICE_TYPES also append a SystemMessage.
         // eslint-disable-next-line no-console
         console.warn(`[claudeStore] sidecar notice: code=${msg.code} id=${msg.id} message=${msg.message}`);
+        const errorType = USER_FACING_NOTICE_TYPES.get(msg.code);
+        if (errorType !== undefined) addSystemMessage(errorType, msg.message);
         break;
       }
 
