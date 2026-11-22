@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
 
 use reify_core::{
     ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, DimensionVector, SourceSpan, Type,
@@ -244,20 +245,43 @@ pub(crate) struct TypeAliasEntry {
     pub(crate) type_params: Vec<reify_ir::TypeParam>,
     /// The original type expression, stored for parameterized alias substitution.
     pub(crate) type_expr: Option<reify_ast::TypeExpr>,
+    /// The defining module's alias bindings for `type_expr`, captured when the
+    /// alias was exported (task 10297). See [`Self::body_registry`].
+    pub(crate) body_scope: Option<Arc<TypeAliasRegistry>>,
     pub(crate) is_pub: bool,
     pub(crate) span: SourceSpan,
     pub(crate) content_hash: ContentHash,
 }
 
 impl TypeAliasEntry {
+    /// The registry this entry's body resolves its ALIAS names against: the
+    /// defining module's captured scope when the entry carries one, otherwise
+    /// `found_in`, the registry the entry was looked up in.
+    ///
+    /// This is what keeps an importer's own alias from capturing a name in an
+    /// imported parametric body (task 10297). Entity names in the body still
+    /// resolve at the use site, through [`AliasBodyUseSite`].
+    pub(crate) fn body_registry<'a>(
+        &'a self,
+        found_in: &'a TypeAliasRegistry,
+    ) -> &'a TypeAliasRegistry {
+        self.body_scope.as_deref().unwrap_or(found_in)
+    }
+
     /// Convert to the public `CompiledTypeAlias` representation, carrying the `type_expr`
-    /// body across the module boundary for parameterized alias instantiation.
+    /// body across the module boundary for parameterized alias instantiation,
+    /// together with the scope the entry was itself imported with, if any.
     pub(crate) fn into_compiled(self) -> CompiledTypeAlias {
+        let body_scope = self
+            .body_scope
+            .as_deref()
+            .map(TypeAliasRegistry::scope_members);
         CompiledTypeAlias {
             name: self.name,
             resolved_type: self.resolved_type,
             type_params: self.type_params,
             type_expr: self.type_expr,
+            body_scope,
             is_pub: self.is_pub,
             span: self.span,
             content_hash: self.content_hash,
@@ -301,6 +325,10 @@ impl TypeAliasEntry {
             } else {
                 cta.type_expr.clone()
             },
+            body_scope: cta
+                .body_scope
+                .as_deref()
+                .map(|scope| Arc::new(TypeAliasRegistry::from_scope(scope))),
             is_pub: cta.is_pub,
             span: cta.span,
             content_hash: cta.content_hash,
@@ -312,7 +340,7 @@ impl TypeAliasEntry {
 /// Built during the pre-pass so type resolution can check aliases.
 /// Entries iterate in ascending name order, so `CompiledModule.type_aliases`
 /// and the `iter()`-driven diagnostics are deterministic across builds.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub(crate) struct TypeAliasRegistry {
     entries: BTreeMap<String, TypeAliasEntry>,
     /// Names of entries seeded from prelude modules (not user-declared).
@@ -388,11 +416,77 @@ impl TypeAliasRegistry {
     /// Excludes prelude-seeded entries (registered via `register_as_prelude_seed`) so
     /// the user module's exported `type_aliases` only contains its own declarations —
     /// prelude aliases are visible for resolution but are not re-exported.
+    ///
+    /// Every parametric alias is exported with its [`Self::defining_scope`], so
+    /// an importer instantiates its body against this module's bindings.
     pub(crate) fn into_compiled(self) -> Vec<CompiledTypeAlias> {
+        let mut scopes: HashMap<String, Vec<CompiledTypeAlias>> = self
+            .iter()
+            .filter(|e| !e.type_params.is_empty())
+            .map(|e| (e.name.clone(), self.defining_scope(e)))
+            .collect();
         self.entries
             .into_iter()
             .filter(|(name, _)| !self.seeded_names.contains(name))
-            .map(|(_, e)| e.into_compiled())
+            .map(|(name, e)| CompiledTypeAlias {
+                body_scope: scopes.remove(&name),
+                ..e.into_compiled()
+            })
+            .collect()
+    }
+
+    /// The alias bindings `entry`'s body names, transitively, as this module
+    /// sees them: its own declarations and the aliases seeded into it, keyed by
+    /// name. A name with no binding here is an entity or builtin name, which
+    /// resolves at the use site. A member keeps the scope it was itself
+    /// imported with; one without a scope resolves inside this one, so the
+    /// walk follows a member's body only when that body will be read here (an
+    /// unresolved member that carries no scope of its own). The visited map
+    /// ends the walk on an alias cycle.
+    fn defining_scope(&self, entry: &TypeAliasEntry) -> Vec<CompiledTypeAlias> {
+        let mut members: BTreeMap<&str, &TypeAliasEntry> = BTreeMap::new();
+        let mut pending = vec![entry];
+        while let Some(owner) = pending.pop() {
+            let Some(body) = owner.type_expr.as_ref() else {
+                continue;
+            };
+            for name in collect_type_expr_names(body) {
+                if owner.type_params.iter().any(|tp| tp.name == name) {
+                    continue;
+                }
+                let Some((key, member)) = self.entries.get_key_value(&name) else {
+                    continue;
+                };
+                if members.insert(key, member).is_none()
+                    && member.resolved_type.is_none()
+                    && member.body_scope.is_none()
+                {
+                    pending.push(member);
+                }
+            }
+        }
+        members
+            .into_values()
+            .cloned()
+            .map(TypeAliasEntry::into_compiled)
+            .collect()
+    }
+
+    /// A body scope's registry: every member registered as a plain entry.
+    fn from_scope(scope: &[CompiledTypeAlias]) -> TypeAliasRegistry {
+        let mut registry = TypeAliasRegistry::new();
+        for member in scope {
+            let _ = registry.register(TypeAliasEntry::from_compiled_for_prelude(member));
+        }
+        registry
+    }
+
+    /// The inverse of [`Self::from_scope`].
+    fn scope_members(&self) -> Vec<CompiledTypeAlias> {
+        self.entries
+            .values()
+            .cloned()
+            .map(TypeAliasEntry::into_compiled)
             .collect()
     }
 }
@@ -2754,7 +2848,7 @@ pub(crate) fn resolve_parameterized_alias(
     // than in the (possibly PRELUDE) source the body was written in.
     resolve_type_alias_expr_with_subst(
         body,
-        alias_registry,
+        alias_entry.body_registry(alias_registry),
         &subst,
         diagnostics,
         depth + 1,
@@ -3601,7 +3695,7 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
                 let body = alias_entry.type_expr.as_ref()?;
                 return resolve_type_alias_expr_with_subst(
                     body,
-                    alias_registry,
+                    alias_entry.body_registry(alias_registry),
                     &inner_subst,
                     diagnostics,
                     depth + 1,
@@ -3627,6 +3721,10 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
             // through the same path the direct spelling takes, at the same use
             // site, including under shadowing. `parametric_alias_entity_body_\
             // use_site` and `parametric_alias_body_shadow_parity` pin it.
+            // That rule covers the ENTITY namespaces only: the body's ALIAS
+            // names resolve in `alias_registry`, which for an imported
+            // parametric alias is the defining module's captured
+            // `body_registry` (#10297).
             //
             // The alias-DFS pre-pass passes empty sets and so is unaffected;
             // the emptiness there is a deferral, not a gap.
@@ -4470,6 +4568,7 @@ pub(crate) fn resolve_alias_dfs(
             resolved_type: None,
             type_params,
             type_expr: Some(decl.type_expr.clone()),
+            body_scope: None,
             is_pub: decl.is_pub,
             span: decl.span,
             content_hash: decl.content_hash,
@@ -4507,6 +4606,7 @@ pub(crate) fn resolve_alias_dfs(
         resolved_type: resolved,
         type_params,
         type_expr: Some(decl.type_expr.clone()),
+        body_scope: None,
         is_pub: decl.is_pub,
         span: decl.span,
         content_hash: decl.content_hash,
@@ -5487,6 +5587,7 @@ mod tests {
             resolved_type: Some(Type::Scalar { dimension: dim }),
             type_params: vec![],
             type_expr: None,
+            body_scope: None,
             is_pub: true,
             span: reify_core::SourceSpan::new(0, 0),
             content_hash: reify_core::ContentHash::of_str(name),

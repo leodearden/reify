@@ -207,3 +207,30 @@ fn alias_is_not_visible_without_an_import_line() {
     );
     assert_unresolved(&program, "OuterZz");
 }
+
+/// Capturing the body scope of mutually recursive parametric aliases ends, and
+/// using one still reports the recursion instead of hanging.
+#[test]
+fn mutually_recursive_imported_parametric_aliases_still_report_recursion() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(
+        dir.path(),
+        "rec.ri",
+        "module rec\n\
+pub type LoopA<Q: Dimension> = LoopB<Q>\n\
+pub type LoopB<Q: Dimension> = LoopA<Q>\n",
+    );
+
+    let program = compile(
+        dir.path(),
+        "imprec",
+        "module imprec\nimport rec\nstructure def App {\n    param x : LoopA<Length>\n}\n",
+    );
+    assert!(
+        errors(program.entry())
+            .iter()
+            .any(|d| d.message.contains("maximum instantiation depth")),
+        "got {:?}",
+        program.entry().diagnostics
+    );
+}
