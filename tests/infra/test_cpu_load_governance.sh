@@ -1334,6 +1334,55 @@ wait "$_row4_vanish_late_pid" 2>/dev/null || true
 assert "ROW4-VANISH-VACUITY-5: pid of a background subshell that ENDS after the poll started => rc 0 (got ${_row4_vanish5_rc}); the helper polls, a single-shot check at t=0 would return 1" \
     test "$_row4_vanish5_rc" -eq 0
 
+# (6) A process that has EXITED but was NOT REAPED (a zombie) counts as vanished.
+# It keeps its /proc entry, and its Cpus_allowed_list, until its parent waits for
+# it; an orphan's reaper is a third party whose latency no caller may depend on,
+# and an exited process burns nothing.  The fixture is a zombie whose parent never
+# reaps it and never ends on a clock: the child exits only once its parent has
+# exec'd into `tail -f --pid=<this shell>`, because before that exec bash's own
+# SIGCHLD handler would reap it (a bare `true & exec sleep N` loses that race most
+# of the time under load).  tail never waits for children, so the child stays in
+# state Z; --pid ties the parent to this shell, so an interrupted run leaks nothing.
+bash -c '( while read -r _c < "/proc/$$/comm" && [ "$_c" != tail ]; do sleep 0.05; done ) &
+         printf "%s\n" "$!" > "$1"
+         exec tail -f --pid="$2" /dev/null' _ "$_row4_vanish_dir/zombie" "$$" &
+_row4_vanish_zombie_parent=$!
+_row4_vanish_zombie_pid=""
+_row4_vanish_zombie_state=""
+_row4_vanish_zombie_ready_rc=0
+_row4_await_ready 30 "$_row4_vanish_dir/zombie" || _row4_vanish_zombie_ready_rc=$?
+if [ "$_row4_vanish_zombie_ready_rc" -eq 0 ]; then
+    IFS= read -r _row4_vanish_zombie_pid < "$_row4_vanish_dir/zombie" || true
+fi
+# Wait for the child to have exited.  The deadline is anti-hang only and is
+# deliberately not asserted on.
+_row4_vanish_zombie_deadline=$(( SECONDS + 30 ))
+while [ -n "$_row4_vanish_zombie_pid" ]; do
+    _row4_vanish_zombie_state="$(awk '/^State:/ { print $2 }' "/proc/${_row4_vanish_zombie_pid}/status" 2>/dev/null || true)"
+    [ "$_row4_vanish_zombie_state" != "Z" ] || break
+    [ "$SECONDS" -lt "$_row4_vanish_zombie_deadline" ] || break
+    sleep 0.1
+done
+assert "ROW4-VANISH-VACUITY-6a: the listed pid is an exited process its parent has not reaped (pid '${_row4_vanish_zombie_pid}', State '${_row4_vanish_zombie_state}', expected Z)" \
+    test "$_row4_vanish_zombie_state" = "Z"
+if [ "$_row4_vanish_zombie_state" = "Z" ]; then
+    _row4_vanish6_rc=0
+    _row4_await_vanished 0 "$_row4_vanish_dir/zombie" || _row4_vanish6_rc=$?
+    assert "ROW4-VANISH-VACUITY-6: an exited-but-unreaped pid, at deadline 0 => rc 0 (got ${_row4_vanish6_rc}); an exited process burns nothing and its eventual reaper may be a third party" \
+        test "$_row4_vanish6_rc" -eq 0
+
+    _row4_vanish6b_got="$(_row4_worker_affinities "$_row4_vanish_dir/zombie" 2>/dev/null || true)"
+    assert "ROW4-VANISH-VACUITY-6b: _row4_worker_affinities reads an exited-but-unreaped pid as exactly 'unavailable' (got '${_row4_vanish6b_got//$'\n'/,}'); that reader is the one definition of a vanished pid" \
+        test "$_row4_vanish6b_got" = "unavailable"
+
+    # NON-VACUITY CRUX: the process was still unreaped when -6 answered, so -6's
+    # rc 0 came from its exited state and not from a reap.
+    assert "ROW4-VANISH-VACUITY-6c: NON-VACUITY CRUX -- /proc/${_row4_vanish_zombie_pid} still exists after -6 answered; -6's rc 0 came from the exited state, not from a reap" \
+        test -d "/proc/${_row4_vanish_zombie_pid}"
+fi
+kill "$_row4_vanish_zombie_parent" 2>/dev/null || true
+wait "$_row4_vanish_zombie_parent" 2>/dev/null || true
+
 # ----------------------------------------------------------------------------
 # ROW4-PIN-VACUITY: the per-CPU co-residency predicate.  Each argument is a
 # newline-separated list of per-worker Cpus_allowed_list strings; the predicate
