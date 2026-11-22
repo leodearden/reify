@@ -110,6 +110,15 @@ CITED_TEST_PATH_REGEX='crates/[a-z0-9-]+/tests/[A-Za-z0-9_./-]+\.rs'
 # (plinecite-baseline-gen --write), so a finding against the row is never
 # actionable.
 #
+# ROW 6 IS STRUCTURAL, like rows 1-3. docs/notes/agent-build-settings-bench-census.jsonl
+# is task 10169's census, written once from archived agent transcripts. Each
+# row records a past tool call (an edit, a test run, a cargo invocation), so
+# every test path in it is the path as it was at that event: mention, not use,
+# and repointing one falsifies the history it records. It needs no re-audit
+# trigger, because the file is a closed historical record and no row is a
+# reference a reader is meant to follow. Human-facing statement:
+# tests/infra/README.md "What is excluded".
+#
 # Defined ONCE here so the gate and the generator cannot drift apart — the
 # `:(exclude)` pathspec idiom tests/infra/test_orchestrator_config_canonical_path.sh
 # uses to exclude itself.
@@ -124,7 +133,8 @@ cited_test_path_exclusions() {
         ':(exclude)tests/infra/cited-test-path-lib.sh' \
         ':(exclude)tests/infra/test_cited_test_paths_resolve.sh' \
         ':(exclude)docs/legibility/confusion-codebook.yaml' \
-        ':(exclude)crates/reify-audit/plinecite-baseline.txt'
+        ':(exclude)crates/reify-audit/plinecite-baseline.txt' \
+        ':(exclude)docs/notes/agent-build-settings-bench-census.jsonl'
 }
 
 # ---------------------------------------------------------------------------
