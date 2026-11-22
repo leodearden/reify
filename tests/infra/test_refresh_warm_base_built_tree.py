@@ -12,34 +12,30 @@ another tree under the landed commit's name.
 WHAT RUNS THIS: run_all.sh discovers `test_*.sh` only, so the discovered member
 is the thin wrapper tests/infra/test_refresh_warm_base_built_tree.sh.
 
-HERMETIC: the refresh script runs from a temp scripts/ dir beside a no-op
-prune-unconsulted-target.sh, `cp` is a PATH stub that drops --reflink=always,
-and the lane is a temp git repository on main with an untracked target/.
+HERMETIC: refresh_warm_base_harness stages the refresh script beside no-op
+stubs of every sibling it calls and a `cp` PATH stub that drops
+--reflink=always; the lane is a temp git repository on main with an untracked
+target/.
 WriterParity also reads verify.sh's merge-role --print-plan (a dry run that
 executes no plan line) and replays only its attempt-0 stamp line in the lane.
 """
 
 import os
-import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-REFRESH = REPO_ROOT / "scripts" / "refresh-warm-base.sh"
+INFRA_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(INFRA_DIR))
+import refresh_warm_base_harness as refresh_harness  # noqa: E402
+from refresh_warm_base_harness import env_without  # noqa: E402
+
+REPO_ROOT = INFRA_DIR.parents[1]
 VERIFY = REPO_ROOT / "scripts" / "verify.sh"
 SIDECAR = "reify-verify-attempt.json"
 ABSENT_OID = "0123456789abcdef0123456789abcdef01234567"
-
-
-def write_executable(path, body):
-    path.write_text(body)
-    path.chmod(0o755)
-
-
-def env_without(*prefixes):
-    return {k: v for k, v in os.environ.items() if not k.startswith(prefixes)}
 
 
 def merge_attempt0_plan():
@@ -66,22 +62,10 @@ class BuiltTreeHarness(unittest.TestCase):
         self.tmp = Path(tmp.name)
         self.stub_dir = self.tmp / "stub-bin"
         self.stub_dir.mkdir()
-        write_executable(self.stub_dir / "cp", f"""#!/usr/bin/env bash
-args=()
-for a in "$@"; do
-    [ "$a" = "--reflink=always" ] && continue
-    args+=("$a")
-done
-exec {shutil.which("cp")} "${{args[@]}}"
-""")
-        scripts_dir = self.tmp / "scripts"
-        scripts_dir.mkdir()
-        self.refresh = scripts_dir / REFRESH.name
-        shutil.copy2(REFRESH, self.refresh)
-        write_executable(scripts_dir / "prune-unconsulted-target.sh", "#!/bin/sh\nexit 0\n")
+        refresh_harness.install_cp_stub(self.stub_dir)
+        self.refresh = refresh_harness.stage_refresh(self.tmp / "scripts")
         self.lane = self.tmp / "lane"
-        self.lane.mkdir()
-        self.git("init", "-q", "-b", "main")
+        refresh_harness.init_lane(self.lane)
         (self.lane / "unchanged.txt").write_text("unchanged\n")
         self.a = self.commit_units("v1")
         self.target = self.lane / "target"
@@ -91,13 +75,10 @@ exec {shutil.which("cp")} "${{args[@]}}"
         self.base = self.tmp / "base"
 
     def git(self, *args):
-        return subprocess.run(["git", "-C", str(self.lane), *args], env=env_without("GIT_"),
-                              check=True, capture_output=True, text=True).stdout.strip()
+        return refresh_harness.git(self.lane, *args)
 
     def commit(self, *args):
-        self.git("-c", "user.email=warm-lane-test@localhost", "-c", "user.name=Warm Lane Test",
-                 "-c", "commit.gpgsign=false", "commit", "-q", "--no-verify", *args)
-        return self.git("rev-parse", "HEAD")
+        return refresh_harness.commit(self.lane, *args)
 
     def commit_units(self, text):
         (self.lane / "units.md").write_text(f"{text}\n")
@@ -124,11 +105,8 @@ exec {shutil.which("cp")} "${{args[@]}}"
         (self.target / SIDECAR).write_text(body)
 
     def run_refresh(self, landed, base=None):
-        run_env = env_without("GIT_")
-        run_env["PATH"] = f"{self.stub_dir}{os.pathsep}{run_env.get('PATH', '')}"
-        return subprocess.run(["bash", str(self.refresh), str(self.target),
-                               str(base or self.base), "--landed-commit", landed],
-                              capture_output=True, text=True, env=run_env, check=False)
+        return refresh_harness.run_refresh(self.refresh, self.stub_dir, self.target,
+                                           base or self.base, landed)
 
     def gen_entries(self, base=None):
         name = (base or self.base).name
