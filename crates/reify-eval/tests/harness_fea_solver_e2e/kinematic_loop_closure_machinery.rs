@@ -36,8 +36,8 @@ use reify_test_support::{
 /// solver path with multi-DOF chain participation.
 const PLANAR_LOOP_SOURCE: &str = r#"
 structure def CounterMassBalance {
-    let joint_a = revolute(vec3(0, 0, 1), 0rad .. 6.283185307179586rad)
-    let joint_b = planar(vec3(1, 0, 0), vec3(0, 1, 0),
+    let joint_a = revolute(dir(0, 0, 1), 0rad .. 6.283185307179586rad)
+    let joint_b = planar(dir(1, 0, 0), dir(0, 1, 0),
                          -100mm .. 100mm, -100mm .. 100mm,
                          -0.7853981633974483rad .. 0.7853981633974483rad)
 }
@@ -56,8 +56,8 @@ fn get_value_from<'a>(values: &'a ValueMap, structure: &str, name: &str) -> &'a 
 /// `solve_loop_closure` to drive a single-loop closure problem.
 const SOURCE: &str = r#"
 structure def Kinematic {
-    let joint_a = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
-    let joint_b = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
+    let joint_a = prismatic(dir(1, 0, 0), 0mm .. 1000mm)
+    let joint_b = prismatic(dir(1, 0, 0), 0mm .. 1000mm)
 }
 "#;
 

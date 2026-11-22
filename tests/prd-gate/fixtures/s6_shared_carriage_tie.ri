@@ -6,9 +6,9 @@ module s6_shared_carriage_tie
 // UNBOUND ancestor joint j0 (a moving carriage). Both branches hang off the carriage.
 // Loop: j0 + j1 == j0 + j2  (all prismatic along x)  =>  j2 must equal j1.
 structure def SharedAncestor {
-    let j0 = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)   // carriage on the ground
-    let j1 = prismatic(vec3(1, 0, 0), 0mm .. 1001mm)   // branch 1 on the carriage
-    let j2 = prismatic(vec3(1, 0, 0), 0mm .. 1002mm)   // branch 2 on the carriage
+    let j0 = prismatic(dir(1, 0, 0), 0mm .. 1000mm)   // carriage on the ground
+    let j1 = prismatic(dir(1, 0, 0), 0mm .. 1001mm)   // branch 1 on the carriage
+    let j2 = prismatic(dir(1, 0, 0), 0mm .. 1002mm)   // branch 2 on the carriage
     let m0 = mechanism()
     let m1 = body(m0, "carriage", j0, world())
     let m2 = body(m1, "armA", j1, j0)

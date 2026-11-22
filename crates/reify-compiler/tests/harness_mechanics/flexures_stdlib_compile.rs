@@ -1100,8 +1100,8 @@ module prb_cell_type_probe
 
 structure def PrbCellType {
     let steel = Steel_AISI_1045()
-    let j_notch = prb_notch_circular(1mm, 0.2mm, 5mm, steel, point3(0mm, 0mm, 0mm), vec3(0, 1, 0))
-    let j_compound = prb_parallelogram_flexure(20mm, 5mm, 0.5mm, 10mm, steel, point3(0mm, 0mm, 0mm), vec3(0, 1, 0))
+    let j_notch = prb_notch_circular(1mm, 0.2mm, 5mm, steel, point3(0mm, 0mm, 0mm), dir(0, 1, 0))
+    let j_compound = prb_parallelogram_flexure(20mm, 5mm, 0.5mm, 10mm, steel, dir(0, 1, 0), point3(0mm, 0mm, 0mm))
 }
 "#;
 

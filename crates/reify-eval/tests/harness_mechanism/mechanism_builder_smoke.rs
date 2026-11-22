@@ -37,16 +37,16 @@ fn get_value<'a>(values: &'a ValueMap, name: &str) -> &'a Value {
 /// stdlib builtins.
 ///
 /// Bindings:
-///   `j_a`   = `prismatic(vec3(1,0,0), 0mm..1000mm)`
-///   `j_b`   = `revolute(vec3(0,0,1), 0rad..3.14rad)`
+///   `j_a`   = `prismatic(dir(1,0,0), 0mm..1000mm)`
+///   `j_b`   = `revolute(dir(0,0,1), 0rad..3.14rad)`
 ///   `m0`    = `mechanism()` — empty Mechanism Map
 ///   `m1`    = `body(m0, "solid_a", j_a)` — append body 0 at j_a (parent=world)
 ///   `m2`    = `body(m1, "solid_b", j_b, j_a)` — append body 1 at j_b (parent=j_a)
 ///   `id_a`  = `body_id_of(m2, "solid_a")` — must be Int(0)
 const HAPPY_SOURCE: &str = r#"
 structure def Kinematic {
-    let j_a = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
-    let j_b = revolute(vec3(0, 0, 1), 0rad .. 3.14rad)
+    let j_a = prismatic(dir(1, 0, 0), 0mm .. 1000mm)
+    let j_b = revolute(dir(0, 0, 1), 0rad .. 3.14rad)
     let m0  = mechanism()
     let m1  = body(m0, "solid_a", j_a)
     let m2  = body(m1, "solid_b", j_b, j_a)
@@ -111,17 +111,17 @@ fn mechanism_builder_happy_path_e2e() {
 /// the Mechanism Map carries a `loop_closures` entry instead of an error.
 ///
 /// Bindings:
-///   `j_a` = `prismatic(vec3(1,0,0), 0mm..1000mm)` — X-axis translation
-///   `j_b` = `prismatic(vec3(0,1,0), 0mm..1000mm)` — Y-axis translation
-///   `j_x` = `revolute(vec3(0,0,1), 0rad..3.14rad)` — Z-axis rotation
+///   `j_a` = `prismatic(dir(1,0,0), 0mm..1000mm)` — X-axis translation
+///   `j_b` = `prismatic(dir(0,1,0), 0mm..1000mm)` — Y-axis translation
+///   `j_x` = `revolute(dir(0,0,1), 0rad..3.14rad)` — Z-axis rotation
 ///   `m0`  = `mechanism()`
 ///   `m1`  = `body(m0, "solid_a", j_x, j_a)` — records j_x → j_a
 ///   `m2`  = `body(m1, "solid_b", j_x, j_b)` — closing edge: j_x already → j_a
 const CLOSED_CHAIN_SOURCE: &str = r#"
 structure def Kinematic {
-    let j_a = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
-    let j_b = prismatic(vec3(0, 1, 0), 0mm .. 1000mm)
-    let j_x = revolute(vec3(0, 0, 1), 0rad .. 3.14rad)
+    let j_a = prismatic(dir(1, 0, 0), 0mm .. 1000mm)
+    let j_b = prismatic(dir(0, 1, 0), 0mm .. 1000mm)
+    let j_x = revolute(dir(0, 0, 1), 0rad .. 3.14rad)
     let m0  = mechanism()
     let m1  = body(m0, "solid_a", j_x, j_a)
     let m2  = body(m1, "solid_b", j_x, j_b)

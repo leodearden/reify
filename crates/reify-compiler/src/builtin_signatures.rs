@@ -58,15 +58,18 @@
 //!   `orient_to_euler`. SO(3) builtins, not geometry; like `generate` they host
 //!   here only because the mechanism is name-keyed and generic. They are the
 //!   table's only `ExpectedArg::Enum` slots.
-//! - The first `ExpectedArg::Direction` slots, `frame_at`'s `x`/`z`
-//!   (direction-typing σ), built by [`direction_arg`]; later leaves add rows on
-//!   the same constructor.
+//! - The `ExpectedArg::Direction` slots, all built by [`direction_arg`]:
+//!   `frame_at`'s `x`/`z` (direction-typing σ), and the axis of the four axial
+//!   joint ctors and the 13 PRB flexure ctors (direction-typing ζ-a); later
+//!   leaves add rows on the same constructor.
 //!
 //! The RULES that decide whether a position inside a covered family gets a
 //! slot — each one is why some argument sitting right next to a slotted one is
 //! deliberately bare:
 //!
-//! - **arg0 is never checked.** A geometry handle is ε=4358's territory.
+//! - **arg0 of a geometry builtin is never checked.** A geometry handle is
+//!   ε=4358's territory. A builtin whose arg0 is not a handle (`orient_euler`,
+//!   the joint ctors' axis) may slot it.
 //! - **ORIGIN vs DIRECTION.** A point in space (`half_space`'s `px`/`py`/`pz`,
 //!   `revolve`'s `ox`/`oy`/`oz`, `rotate_around`'s pivot, `translate`'s
 //!   displacement) IS a LENGTH — a bare component is silently read as SI
@@ -1175,6 +1178,37 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         // Single-form, so arity-agnostic.
         "frame_at" => const { &[direction_arg(1, "x"), direction_arg(2, "z")] },
 
+        // ── joint ctors: axis → Direction (direction-typing ζ-a) ─────────────
+        // arg0: the joint axis. prismatic/revolute accept 2 or 3 args (the 3rd
+        // is the pivot) and cylindrical 3; the axis is arg0 at every one, so
+        // the arm is arity-agnostic. The ranges and pivot stay unslotted.
+        "prismatic" | "revolute" | "cylindrical" => const { &[direction_arg(0, "axis")] },
+        // planar(axis_x, axis_y, range_x, range_y, range_theta): single-form.
+        "planar" => const { &[direction_arg(0, "axis_x"), direction_arg(1, "axis_y")] },
+
+        // ── PRB flexure ctors: axis → Direction (direction-typing ζ-a) ───────
+        // Indices per the parse fns in reify-stdlib/src/flexures/*. Each
+        // ctor's axis sits at the same index at every accepted arity (the
+        // trailing neutral / declared-range args are optional), so the arms
+        // are arity-agnostic.
+        // (length|r, width|t, thickness|b, material, pivot, axis[, neutral[, range]])
+        "prb_cantilever_beam"
+        | "prb_fixed_fixed_beam"
+        | "prb_notch_circular"
+        | "prb_notch_elliptical"
+        | "prb_notch_right_circular"
+        | "prb_living_hinge"
+        | "prb_cross_spring_pivot"
+        | "prb_prismatic_blade"
+        | "prb_two_axis_pivot" => const { &[direction_arg(5, "axis")] },
+        // (length, width, thickness, blade_spacing, material, motion_axis, pivot[, range])
+        "prb_parallelogram_flexure" | "prb_double_parallelogram_flexure" => {
+            const { &[direction_arg(5, "motion_axis")] }
+        }
+        // prb_let_joint: (length, width, thickness, n_blades, material, pivot, axis, ..);
+        // prb_cartwheel_flexure: (blade_count, length, width, thickness, material, pivot, axis, ..).
+        "prb_let_joint" | "prb_cartwheel_flexure" => const { &[direction_arg(6, "axis")] },
+
         // All other names: empty (no argument to check).
         _ => &[],
     }
@@ -1688,6 +1722,26 @@ mod tests {
         "draft",
         // direction-typing σ (#9636) — datum constructor, Direction slots.
         "frame_at",
+        // direction-typing ζ-a — joint and PRB flexure ctors, Direction axis
+        // slots. JOINT_TYPED_FN_NAMES / FLEXURE_CTOR_FN_NAMES members, not
+        // topology selectors.
+        "prismatic",
+        "revolute",
+        "cylindrical",
+        "planar",
+        "prb_cantilever_beam",
+        "prb_fixed_fixed_beam",
+        "prb_notch_circular",
+        "prb_notch_elliptical",
+        "prb_notch_right_circular",
+        "prb_living_hinge",
+        "prb_cross_spring_pivot",
+        "prb_prismatic_blade",
+        "prb_two_axis_pivot",
+        "prb_parallelogram_flexure",
+        "prb_double_parallelogram_flexure",
+        "prb_let_joint",
+        "prb_cartwheel_flexure",
     ];
 
     // ── builtin_arg_slots table contract (step-1) ────────────────────────────
@@ -4427,6 +4481,29 @@ mod tests {
         // that a 1-arg call is Undef, and stays green if a 2- or 4-arg
         // overload lands.
         "frame_at",
+        // direction-typing ζ-a's joint and PRB flexure ctors: pure eval
+        // builtins with no lowering arity diagnostic, measured by the probe
+        // (the full-window signature, like `frame_at`). Their arms are
+        // UNGUARDED because the axis keeps one index at every accepted arity;
+        // an overload that moves the axis must add an `if arg_count ==` guard
+        // in the same change, since this ledger cannot observe one.
+        "prismatic",
+        "revolute",
+        "cylindrical",
+        "planar",
+        "prb_cantilever_beam",
+        "prb_fixed_fixed_beam",
+        "prb_notch_circular",
+        "prb_notch_elliptical",
+        "prb_notch_right_circular",
+        "prb_living_hinge",
+        "prb_cross_spring_pivot",
+        "prb_prismatic_blade",
+        "prb_two_axis_pivot",
+        "prb_parallelogram_flexure",
+        "prb_double_parallelogram_flexure",
+        "prb_let_joint",
+        "prb_cartwheel_flexure",
     ];
 
     /// Names that legitimately accept MORE THAN ONE arity while being served by

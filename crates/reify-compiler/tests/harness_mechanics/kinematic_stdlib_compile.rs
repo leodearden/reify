@@ -224,12 +224,12 @@ fn conforming_joints_have_driving_joint_bound() {
 //
 // Catch regressions that delete a field or change its type to another
 // still-resolvable type (e.g. Vec3→Int, dropping one of Planar's two axes).
-// Vec3<Q> is `Vector3<Q>` (task #4794); axis fields take Q = Dimensionless
-// (direction, task 5848). JointValue is still
-// a `Real` alias (trajectory.ri :: JointValue) and resolves to Type::dimensionless_scalar().
+// Joint axis fields are `Direction` (task #9640; directions since task 5848).
+// JointValue is still a `Real` alias (trajectory.ri :: JointValue) and resolves
+// to Type::dimensionless_scalar().
 
 /// Cylindrical's constrained-DOF compliance groups (task 7163) are APPENDED
-/// after `axis`, so a positional `Cylindrical(vec3(…))` still binds `axis`. The
+/// after `axis`, so a positional `Cylindrical(dir(…))` still binds `axis`. The
 /// groups' types and defaults are pinned by `joint_constrained_dof_compliance`.
 #[test]
 fn cylindrical_params_are_axis_then_compliance_groups() {
@@ -243,16 +243,14 @@ fn cylindrical_params_are_axis_then_compliance_groups() {
     );
     assert_eq!(
         params[0].cell_type,
-        Type::vec3(Type::Scalar {
-            dimension: DimensionVector::DIMENSIONLESS
-        }),
-        "Cylindrical.axis should be Type::vec3(Dimensionless) (direction field, task 5848)"
+        Type::Direction,
+        "Cylindrical.axis should be Type::Direction"
     );
 }
 
 // ─── task 3849 step-5: flexure field shape tests ──────────────────────────────
 
-/// Revolute's params, in declaration order: axis (Vec3<Dimensionless>, task 5848),
+/// Revolute's params, in declaration order: axis (Direction, task #9640),
 /// spring_rate (Option<RotationalStiffness>), damping (Option<RotationalDamping>),
 /// neutral (Option<Angle>), then the constrained-DOF compliance groups APPENDED by
 /// task 7163 (translational before rotational), so positional calls keep binding.
@@ -278,14 +276,12 @@ fn revolute_params_keep_positional_order_with_correct_types() {
          axial_stiffness, radial_stiffness, tilt_stiffness) in that order"
     );
 
-    // axis: Vec3<Dimensionless> — a direction, not a length (task 5848).
-    // Full five-slot coverage lives in joint_direction_params_are_dimensionless_vec3.
+    // axis: Direction — a unit direction, not a length or a vector.
+    // Full five-slot coverage lives in joint_direction_params_are_direction.
     assert_eq!(
         params[0].cell_type,
-        Type::vec3(Type::Scalar {
-            dimension: DimensionVector::DIMENSIONLESS
-        }),
-        "Revolute.axis should be Type::vec3(Dimensionless) (direction field, task 5848)"
+        Type::Direction,
+        "Revolute.axis should be Type::Direction"
     );
 
     // spring_rate: Option<RotationalStiffness>
@@ -329,7 +325,7 @@ fn revolute_params_keep_positional_order_with_correct_types() {
     }
 }
 
-/// Prismatic's params, in declaration order: axis (Vec3<Dimensionless>, task 5848),
+/// Prismatic's params, in declaration order: axis (Direction, task #9640),
 /// spring_rate (Option<TranslationalStiffness>), damping (Option<TranslationalDamping>),
 /// neutral (Option<Length>), then the constrained-DOF compliance groups APPENDED by
 /// task 7163 (translational before rotational), so positional calls keep binding.
@@ -355,14 +351,12 @@ fn prismatic_params_keep_positional_order_with_correct_types() {
          radial_stiffness, tilt_stiffness, torsional_stiffness) in that order"
     );
 
-    // axis: Vec3<Dimensionless> — a direction, not a length (task 5848).
-    // Full five-slot coverage lives in joint_direction_params_are_dimensionless_vec3.
+    // axis: Direction — a unit direction, not a length or a vector.
+    // Full five-slot coverage lives in joint_direction_params_are_direction.
     assert_eq!(
         params[0].cell_type,
-        Type::vec3(Type::Scalar {
-            dimension: DimensionVector::DIMENSIONLESS
-        }),
-        "Prismatic.axis should be Type::vec3(Dimensionless) (direction field, task 5848)"
+        Type::Direction,
+        "Prismatic.axis should be Type::Direction"
     );
 
     // spring_rate: Option<TranslationalStiffness>
@@ -407,10 +401,10 @@ fn prismatic_params_keep_positional_order_with_correct_types() {
 }
 
 /// Planar's constrained-DOF compliance groups (task 7163) are APPENDED after its
-/// two axes, so a positional `Planar(vec3(…), vec3(…))` still binds them. The
+/// two axes, so a positional `Planar(dir(…), dir(…))` still binds them. The
 /// groups' types and defaults are pinned by `joint_constrained_dof_compliance`.
 #[test]
-fn planar_params_are_two_vec3_axes_then_compliance_groups() {
+fn planar_params_are_two_direction_axes_then_compliance_groups() {
     let template = find_structure("Planar");
     let params = param_cells(template);
     let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
@@ -423,10 +417,8 @@ fn planar_params_are_two_vec3_axes_then_compliance_groups() {
     for p in &params[..2] {
         assert_eq!(
             p.cell_type,
-            Type::vec3(Type::Scalar {
-                dimension: DimensionVector::DIMENSIONLESS
-            }),
-            "Planar.{} should be Type::vec3(Dimensionless) (direction field, task 5848)",
+            Type::Direction,
+            "Planar.{} should be Type::Direction",
             p.id.member
         );
     }
@@ -1135,27 +1127,16 @@ fn coupling_is_generic_with_driving_joint_and_has_motion_bound() {
     );
 }
 
-// ─── task 5848: joint direction params are DIMENSIONLESS ──────────────────────
+// ─── joint direction params are Direction ─────────────────────────────────────
 
 /// The five joint direction params — `Prismatic.axis`, `Revolute.axis`,
-/// `Cylindrical.axis`, `Planar.axis_x`, `Planar.axis_y` — resolve to a
-/// DIMENSIONLESS 3-vector, not `Vec3<Length>`.
+/// `Cylindrical.axis`, `Planar.axis_x`, `Planar.axis_y` — resolve to
+/// `Type::Direction` (PRD `docs/prds/v0_6/direction-typing.md` C3, task #9640),
+/// the type the evaluator decodes through `reify_ir::decode_direction`.
 ///
-/// Asserts on the RESOLVED `Type`, never on the source spelling, so it is
-/// immune to whether the field is written `Vec3<Dimensionless>` or
-/// `Vector3<Dimensionless>` (both resolve to the same internal type).
-///
-/// This is a correction of a live decl/runtime divergence, not a cosmetic
-/// change: `reify-stdlib/src/helpers.rs validate_dimensionless_unit_axis_vec3`
-/// REJECTS a non-dimensionless axis outright, and gates the joint constructors
-/// in joints.rs — so `revolute(vec3(0mm,0mm,1mm), …)` already evaluated to
-/// `Value::Undef` while kinematic.ri declared `Vec3<Length>`.
+/// Asserts on the RESOLVED `Type`, never on the source spelling.
 #[test]
-fn joint_direction_params_are_dimensionless_vec3() {
-    let dimensionless_vec3 = Type::vec3(Type::Scalar {
-        dimension: DimensionVector::DIMENSIONLESS,
-    });
-
+fn joint_direction_params_are_direction() {
     for (structure_name, field) in [
         ("Prismatic", "axis"),
         ("Revolute", "axis"),
@@ -1170,18 +1151,18 @@ fn joint_direction_params_are_dimensionless_vec3() {
             .find(|p| p.id.member == field)
             .unwrap_or_else(|| panic!("{structure_name}.{field} param must exist"));
         assert_eq!(
-            p.cell_type, dimensionless_vec3,
-            "{structure_name}.{field} denotes a DIRECTION, so its quantity slot must be \
-             dimensionless (task 5848); got: {:?}",
+            p.cell_type,
+            Type::Direction,
+            "{structure_name}.{field} denotes a DIRECTION; got: {:?}",
             p.cell_type
         )
     }
 }
 
-/// FENCE for `joint_direction_params_are_dimensionless_vec3`: the retype must
-/// touch ONLY the direction slots. The compliant-joint fields carry genuine
-/// physical dimensions and must keep them — proving dimensionlessness was not
-/// smeared across the whole structure.
+/// FENCE for `joint_direction_params_are_direction`: the retype must touch ONLY
+/// the direction slots. The compliant-joint fields carry genuine physical
+/// dimensions and must keep them — proving the Direction retype was not smeared
+/// across the whole structure.
 #[test]
 fn compliant_joint_fields_keep_their_dimensions() {
     let prismatic = param_cells(find_structure("Prismatic"));

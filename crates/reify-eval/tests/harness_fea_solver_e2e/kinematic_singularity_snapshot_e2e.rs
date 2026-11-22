@@ -57,7 +57,7 @@ fn get_value<'a>(values: &'a ValueMap, name: &str) -> &'a Value {
 /// rank-deficient `chain_b` must surface `is_singular` plus the diagnostic.
 ///
 /// `j_x`/`j_a`/`j_b` use three DIFFERENT ranges (rather than three identical
-/// `prismatic(vec3(1,0,0), 0mm .. 1000mm)` calls) for two reasons:
+/// `prismatic(dir(1,0,0), 0mm .. 1000mm)` calls) for two reasons:
 ///   1. **Distinct `Value`s.** Identical-range joints would be byte-identical
 ///      `Value::Map`s that alias in `joint_parents`, collapsing the intended
 ///      2-free-joint/1-loop-closure topology into a spurious second closure
@@ -76,9 +76,9 @@ fn get_value<'a>(values: &'a ValueMap, name: &str) -> &'a Value {
 /// from the same mechanism so both surfacing paths share one fixture.
 const SINGULAR_SOURCE: &str = r#"
 structure def Kinematic {
-    let j_x = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
-    let j_a = prismatic(vec3(1, 0, 0), 0mm .. 2100mm)
-    let j_b = prismatic(vec3(1, 0, 0), 0mm .. 2500mm)
+    let j_x = prismatic(dir(1, 0, 0), 0mm .. 1000mm)
+    let j_a = prismatic(dir(1, 0, 0), 0mm .. 2100mm)
+    let j_b = prismatic(dir(1, 0, 0), 0mm .. 2500mm)
 
     let m0 = mechanism()
     let m1 = body(m0, "solidA", j_x)
@@ -98,8 +98,8 @@ structure def Kinematic {
 /// `KinematicSingularity` diagnostic NOR any Error-severity diagnostic.
 const NON_SINGULAR_SOURCE: &str = r#"
 structure def Kinematic {
-    let j_a = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
-    let j_b = prismatic(vec3(1, 0, 0), 0mm .. 2000mm)
+    let j_a = prismatic(dir(1, 0, 0), 0mm .. 1000mm)
+    let j_b = prismatic(dir(1, 0, 0), 0mm .. 2000mm)
     let m0  = mechanism()
     let m1  = body(m0, "solid_a", j_a)
     let m2  = body(m1, "solid_b", j_b)

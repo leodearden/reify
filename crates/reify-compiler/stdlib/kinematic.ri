@@ -11,16 +11,16 @@
 // Surface:
 //   - trait Joint                      (root marker — every joint kind conforms)
 //   - trait DrivingJoint : Joint       (marker — independent-motion-variable joints)
-//   - structure def Prismatic          : DrivingJoint (axis : Vec3,
+//   - structure def Prismatic          : DrivingJoint (axis : Direction,
 //                                        spring_rate : Option<TranslationalStiffness> = none,
 //                                        damping     : Option<TranslationalDamping>  = none,
 //                                        neutral     : Option<Length>                = none)
-//   - structure def Revolute           : DrivingJoint (axis : Vec3,
+//   - structure def Revolute           : DrivingJoint (axis : Direction,
 //                                        spring_rate : Option<RotationalStiffness>   = none,
 //                                        damping     : Option<RotationalDamping>     = none,
 //                                        neutral     : Option<Angle>                 = none)
-//   - structure def Cylindrical        : DrivingJoint (axis : Vec3)
-//   - structure def Planar             : DrivingJoint (axis_x : Vec3, axis_y : Vec3)
+//   - structure def Cylindrical        : DrivingJoint (axis : Direction)
+//   - structure def Planar             : DrivingJoint (axis_x : Direction, axis_y : Direction)
 //   - structure def Spherical          : DrivingJoint (axis-isotropic; no axis field)
 //   - structure def Coupling  : Joint  (derived motion — no independent motion var)
 //   - structure def Fixed     : Joint  (0-DOF sub-assembly grouping)
@@ -58,8 +58,8 @@
 //      joint-promotion.
 //   4. `Vec3<Q>` (= `Vector3<Q>`, parametric since task #4794) resolves because
 //      kinematic.ri is registered after std.trajectory. `JointValue` (= Real alias)
-//      likewise. The joint axis fields instantiate it at `Dimensionless` — see the
-//      direction-field ruling above the joint structures (task 5848).
+//      likewise. The joint axis fields are `Direction`, not `Vec3` — see the
+//      direction-field note above the joint structures.
 
 module std.kinematic
 
@@ -119,22 +119,11 @@ trait HasMotion {
 
 // ── Conforming joint kinds ────────────────────────────────────────────────────
 
-// Joint direction fields (task 5848 ruling) ───────────────────────────────────
-// Every `axis` / `axis_x` / `axis_y` param below denotes a DIRECTION, so its
-// quantity slot is DIMENSIONLESS — a unit vector is genuinely dimensionless.
-// (Fields denoting a position or displacement keep Length; see `neutral`.)
-//
-// This is a correction, not a convention change: the evaluator already REQUIRED
-// dimensionless here. `reify-stdlib/src/helpers.rs
-// validate_dimensionless_unit_axis_vec3` rejects a non-dimensionless axis and
-// gates the joint constructors in joints.rs, so `revolute(vec3(0mm,0mm,1mm), …)`
-// evaluated to `Value::Undef` while these fields still declared `Vec3<Length>`.
-// The retype removes that decl/runtime divergence.
-//
-// Magnitude is separately unread — the eval layer normalizes: the `"prismatic"`
-// arm of `eval_joints` in reify-stdlib/src/joints.rs (`transform_at` normalizes
-// the stored raw axis) and that function's `"planar"` arm (`unit_normalize` for
-// the Planar pair) — so the retype is behaviour-preserving.
+// Joint direction fields ──────────────────────────────────────────────────────
+// Every `axis` / `axis_x` / `axis_y` param below is a unit, signed `Direction`,
+// written `dir(x, y, z)` (or projected, e.g. `axis_z(o).dir`); a vector is
+// rejected. The evaluator reads it through `reify_ir::decode_direction`.
+// PRD: docs/prds/v0_6/direction-typing.md C3.
 
 // Constrained-DOF compliance (task 7163) ──────────────────────────────────────
 // PRD: docs/prds/v0_6/assembly-modal-connection-graph.md §7 C2.
@@ -170,7 +159,7 @@ trait HasMotion {
 //                          range midpoint). Cannot be a literal default because the
 //                          KCC-ζ Prismatic has no `range` field.
 structure def Prismatic : DrivingJoint + HasMotion {
-    param axis : Vec3<Dimensionless> // the joint translation direction in parent body frame
+    param axis : Direction // the joint translation direction in parent body frame
     param spring_rate : Option<TranslationalStiffness> = none // N/m; none = free, not rigid
     param damping     : Option<TranslationalDamping>   = none // N·s/m; none = undamped
     param neutral     : Option<Length>                 = none // m; None → task ι default
@@ -192,7 +181,7 @@ structure def Prismatic : DrivingJoint + HasMotion {
 //   damping     : N·m·s/rad² — rotational damping coefficient; none = undamped.
 //   neutral     : rad        — rest angle; None = consumer-applied (task ι/RBD default: 0).
 structure def Revolute : DrivingJoint + HasMotion {
-    param axis : Vec3<Dimensionless> // the joint rotation axis in parent body frame
+    param axis : Direction // the joint rotation axis in parent body frame
     param spring_rate : Option<RotationalStiffness> = none // N·m/rad²; none = free, not rigid
     param damping     : Option<RotationalDamping>   = none // N·m·s/rad²; none = undamped
     param neutral     : Option<Angle>               = none // rad; None → task ι default: 0
@@ -205,7 +194,7 @@ structure def Revolute : DrivingJoint + HasMotion {
 // Cylindrical — combined sliding + rotation joint (2 DOF: 1 translational + 1 rotational).
 // Both DOF share the same `axis` direction in the parent body frame.
 structure def Cylindrical : DrivingJoint {
-    param axis : Vec3<Dimensionless> // shared translation+rotation direction in parent body frame
+    param axis : Direction // shared translation+rotation direction in parent body frame
     param radial_stiffness : Option<TranslationalStiffness> = none
     param tilt_stiffness   : Option<RotationalStiffness>    = none
 }
@@ -214,8 +203,8 @@ structure def Cylindrical : DrivingJoint {
 // `axis_x` and `axis_y` span the plane in the parent body frame; the normal is
 // their cross-product.
 structure def Planar : DrivingJoint {
-    param axis_x : Vec3<Dimensionless> // first spanning axis of the constraint plane
-    param axis_y : Vec3<Dimensionless> // second spanning axis of the constraint plane
+    param axis_x : Direction // first spanning axis of the constraint plane
+    param axis_y : Direction // second spanning axis of the constraint plane
     param normal_stiffness : Option<TranslationalStiffness> = none
     param tilt_stiffness   : Option<RotationalStiffness>    = none
 }

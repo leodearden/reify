@@ -71,6 +71,8 @@ mod fn_body_prelude_resolution_tests;
 mod frame_at_direction_slot_tests;
 #[path = "harness_type_checking/implies_type_check_tests.rs"]
 mod implies_type_check_tests;
+#[path = "harness_type_checking/joint_flexure_direction_slot_tests.rs"]
+mod joint_flexure_direction_slot_tests;
 #[path = "harness_type_checking/mul_div_dimension_overflow_compile_tests.rs"]
 mod mul_div_dimension_overflow_compile_tests;
 #[path = "harness_type_checking/mul_div_operand_guard_tests.rs"]

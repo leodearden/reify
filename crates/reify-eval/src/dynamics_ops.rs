@@ -2297,7 +2297,7 @@ mod inverse_dynamics_trampoline_tests {
     fn pendulum_mechanism() -> Value {
         use std::f64::consts::PI;
         let mp = mass_properties(1.0, [0.0, 0.0, -0.1], [[0.0; 3]; 3]);
-        let axis_y = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let axis_y = reify_test_support::direction_val(0.0, 1.0, 0.0);
         let range = Value::Range {
             lower: Some(Box::new(Value::angle(-PI))),
             upper: Some(Box::new(Value::angle(PI))),

@@ -641,7 +641,7 @@ fn motive_port_trait_surface() {
 /// max_speed]):
 ///   max_speed  : Scalar<ANGULAR_VELOCITY>
 ///   max_torque : Scalar<Torque = Force·Length/Angle>  (renamed from torque_capacity)
-///   axis       : Vector3<Dimensionless>
+///   axis       : Direction
 ///
 /// The Torque dimension (Force·Length/Angle) is distinct from Energy
 /// (kg·m²·s⁻²) via the Angle⁻¹ slot — a regression to Energy is caught here.
@@ -704,9 +704,8 @@ fn rotary_port_trait_surface() {
 
     assert_eq!(
         param_type("std/ports/mechanical", "RotaryPort", "axis"),
-        Type::vec3(Type::dimensionless_scalar()),
-        "RotaryPort.axis denotes a DIRECTION, so it must be Vector3<Dimensionless> \
-         (task 5848 ruling)"
+        Type::Direction,
+        "RotaryPort.axis denotes a DIRECTION, so it must be Direction"
     );
 
     // Regression guard: torque_capacity was renamed to max_torque.
@@ -745,7 +744,7 @@ structure def RotaryConformer : RotaryPort {
     )
     param max_speed : AngularVelocity = 1rad / 1s
     param max_torque : Torque = 1N * 1m / 1rad
-    param axis : Vector3<Dimensionless> = vec3(0, 0, 1)
+    param axis : Direction = dir(0, 0, 1)
 }
 "#;
     let compiled = compile_source_with_stdlib(source);
@@ -794,7 +793,7 @@ structure def RotaryConformerMissingTorque : RotaryPort {
         z_axis: vec3(0, 0, 1),
     )
     param max_speed : AngularVelocity = 1rad / 1s
-    param axis : Vector3<Dimensionless> = vec3(0, 0, 1)
+    param axis : Direction = dir(0, 0, 1)
 }
 "#;
     let compiled = compile_source_with_stdlib(source);
@@ -815,16 +814,15 @@ structure def RotaryConformerMissingTorque : RotaryPort {
     );
 }
 
-/// Behavioural (conformance): a RotaryPort conformer that declares its `axis` in
-/// a `Length` quantity slot is REJECTED, because `RotaryPort.axis` is a
-/// dimensionless DIRECTION.
+/// Behavioural (conformance): a RotaryPort conformer that declares its `axis` as
+/// a `Vector3<Length>` is REJECTED, because `RotaryPort.axis` is a `Direction`.
 ///
 /// Negative counterpart to `rotary_port_concrete_conformer_compiles`: the two
 /// conformers differ only in the `axis` member, so the positive one compiling
-/// clean and this one failing on `axis` alone pins that conformance tells the
-/// two quantity slots apart. If conformance ever accepted a `Vector3<Length>`
-/// member for a `Vector3<Dimensionless>` requirement, this conformer would
-/// compile clean and the assertion would fail.
+/// clean and this one failing on `axis` alone pins that conformance tells a
+/// vector from a direction. If conformance ever accepted a `Vector3<Length>`
+/// member for a `Direction` requirement, this conformer would compile clean and
+/// the assertion would fail.
 #[test]
 fn rotary_port_conformer_length_typed_axis_is_rejected() {
     let source = r#"
@@ -870,7 +868,7 @@ structure def RotaryConformerLengthAxis : RotaryPort {
 ///               `pub type Velocity` in units.ri resolves to the same dimension)
 ///   max_force : Scalar<FORCE>
 ///   stroke    : Scalar<LENGTH>
-///   axis      : Vector3<Dimensionless>
+///   axis      : Direction
 ///
 /// RED: LinearPort is absent → find_trait panics.
 #[test]
@@ -931,9 +929,8 @@ fn linear_port_trait_surface() {
     );
     assert_eq!(
         param_type("std/ports/mechanical", "LinearPort", "axis"),
-        Type::vec3(Type::dimensionless_scalar()),
-        "LinearPort.axis denotes a DIRECTION, so it must be Vector3<Dimensionless> \
-         (task 5848 ruling)"
+        Type::Direction,
+        "LinearPort.axis denotes a DIRECTION, so it must be Direction"
     );
 }
 

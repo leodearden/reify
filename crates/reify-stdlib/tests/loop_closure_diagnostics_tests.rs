@@ -30,15 +30,15 @@ use reify_stdlib::{
 // ── Test fixtures (mirrors the inline helpers in loop_closure.rs) ──────
 
 fn axis_x() -> Value {
-    Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)])
+    reify_test_support::direction_val(1.0, 0.0, 0.0)
 }
 
 fn axis_y() -> Value {
-    Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)])
+    reify_test_support::direction_val(0.0, 1.0, 0.0)
 }
 
 fn axis_z() -> Value {
-    Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)])
+    reify_test_support::direction_val(0.0, 0.0, 1.0)
 }
 
 fn length_range(lo: f64, up: f64) -> Value {

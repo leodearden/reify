@@ -84,7 +84,7 @@ const fn rotational(field: &'static str, dofs: u32) -> Group {
 const PARTITION: &[JointKind] = &[
     JointKind {
         name: "Prismatic",
-        required_args: "axis: vec3(1.0, 0.0, 0.0)",
+        required_args: "axis: dir(1.0, 0.0, 0.0)",
         free_rot: 0,
         free_trans: 1,
         groups: &[
@@ -95,7 +95,7 @@ const PARTITION: &[JointKind] = &[
     },
     JointKind {
         name: "Revolute",
-        required_args: "axis: vec3(0.0, 0.0, 1.0)",
+        required_args: "axis: dir(0.0, 0.0, 1.0)",
         free_rot: 1,
         free_trans: 0,
         groups: &[
@@ -106,7 +106,7 @@ const PARTITION: &[JointKind] = &[
     },
     JointKind {
         name: "Cylindrical",
-        required_args: "axis: vec3(0.0, 0.0, 1.0)",
+        required_args: "axis: dir(0.0, 0.0, 1.0)",
         free_rot: 1,
         free_trans: 1,
         groups: &[
@@ -116,7 +116,7 @@ const PARTITION: &[JointKind] = &[
     },
     JointKind {
         name: "Planar",
-        required_args: "axis_x: vec3(1.0, 0.0, 0.0), axis_y: vec3(0.0, 1.0, 0.0)",
+        required_args: "axis_x: dir(1.0, 0.0, 0.0), axis_y: dir(0.0, 1.0, 0.0)",
         free_rot: 1,
         free_trans: 2,
         groups: &[

@@ -43,7 +43,7 @@ fn bind_couple_emits_mechanism_nondriving_joint_naming_coupling() {
     let module = compile_source_with_stdlib(
         r#"
 structure def Test {
-    let b = bind(couple(prismatic(1.0), -1.0), 5mm)
+    let b = bind(couple(prismatic(dir(1, 0, 0)), -1.0), 5mm)
 }
 "#,
     );
@@ -101,7 +101,7 @@ structure def Test {
     );
 }
 
-/// Positive guard: `bind(prismatic(1.0), 5mm)` — arg0 is a FunctionCall
+/// Positive guard: `bind(prismatic(dir(1, 0, 0)), 5mm)` — arg0 is a FunctionCall
 /// named "prismatic" → Path-B → "Prismatic" → satisfies DrivingJoint →
 /// zero MechanismNonDrivingJoint diagnostics.
 ///
@@ -113,7 +113,7 @@ fn bind_prismatic_emits_no_mechanism_nondriving_joint() {
     let module = compile_source_with_stdlib(
         r#"
 structure def Test {
-    let b = bind(prismatic(1.0), 5mm)
+    let b = bind(prismatic(dir(1, 0, 0)), 5mm)
 }
 "#,
     );
@@ -132,7 +132,7 @@ structure def Test {
 
 // ── dim path ─────────────────────────────────────────────────────────────────
 
-/// `dim(couple(prismatic(1.0), -1.0), 0mm..1m, 11)` — arg0 of `dim` is a
+/// `dim(couple(prismatic(dir(1, 0, 0)), -1.0), 0mm..1m, 11)` — arg0 of `dim` is a
 /// FunctionCall named "couple" → Path-B resolution → "Coupling" → does not
 /// satisfy DrivingJoint → MechanismNonDrivingJoint naming "Coupling".
 ///
@@ -143,7 +143,7 @@ fn dim_couple_emits_mechanism_nondriving_joint_naming_coupling() {
     let module = compile_source_with_stdlib(
         r#"
 structure def Test {
-    let d = dim(couple(prismatic(1.0), -1.0), 0mm..1m, 11)
+    let d = dim(couple(prismatic(dir(1, 0, 0)), -1.0), 0mm..1m, 11)
 }
 "#,
     );
@@ -167,7 +167,7 @@ structure def Test {
     );
 }
 
-/// Positive guard: `dim(prismatic(1.0), 0mm..1m, 11)` — arg0 is a
+/// Positive guard: `dim(prismatic(dir(1, 0, 0)), 0mm..1m, 11)` — arg0 is a
 /// FunctionCall named "prismatic" → Path-B → "Prismatic" → satisfies
 /// DrivingJoint → zero MechanismNonDrivingJoint diagnostics.
 ///
@@ -178,7 +178,7 @@ fn dim_prismatic_emits_no_mechanism_nondriving_joint() {
     let module = compile_source_with_stdlib(
         r#"
 structure def Test {
-    let d = dim(prismatic(1.0), 0mm..1m, 11)
+    let d = dim(prismatic(dir(1, 0, 0)), 0mm..1m, 11)
 }
 "#,
     );
@@ -197,7 +197,7 @@ structure def Test {
 
 // ── sweep path ────────────────────────────────────────────────────────────────
 
-/// Kinematic `sweep(mechanism(), couple(prismatic(1.0), -1.0), 0mm..1m, 11)`
+/// Kinematic `sweep(mechanism(), couple(prismatic(dir(1, 0, 0)), -1.0), 0mm..1m, 11)`
 /// (arity 4) — arg1 of `sweep` is a FunctionCall named "couple" → Path-B
 /// → "Coupling" → does not satisfy DrivingJoint →
 /// MechanismNonDrivingJoint naming "Coupling".
@@ -209,7 +209,7 @@ fn sweep_arity4_couple_emits_mechanism_nondriving_joint_naming_coupling() {
     let module = compile_source_with_stdlib(
         r#"
 structure def Test {
-    let s = sweep(mechanism(), couple(prismatic(1.0), -1.0), 0mm..1m, 11)
+    let s = sweep(mechanism(), couple(prismatic(dir(1, 0, 0)), -1.0), 0mm..1m, 11)
 }
 "#,
     );
@@ -233,7 +233,7 @@ structure def Test {
     );
 }
 
-/// Positive guard: kinematic `sweep(mechanism(), prismatic(1.0), 0mm..1m, 11)`
+/// Positive guard: kinematic `sweep(mechanism(), prismatic(dir(1, 0, 0)), 0mm..1m, 11)`
 /// (arity 4) — arg1 is "prismatic" → Path-B → "Prismatic" → satisfies
 /// DrivingJoint → zero MechanismNonDrivingJoint diagnostics.
 ///
@@ -243,7 +243,7 @@ fn sweep_arity4_prismatic_emits_no_mechanism_nondriving_joint() {
     let module = compile_source_with_stdlib(
         r#"
 structure def Test {
-    let s = sweep(mechanism(), prismatic(1.0), 0mm..1m, 11)
+    let s = sweep(mechanism(), prismatic(dir(1, 0, 0)), 0mm..1m, 11)
 }
 "#,
     );
@@ -302,14 +302,14 @@ structure def Test {
 // filter is strict (MechanismNonDrivingJoint only), so incidental arity /
 // type-mismatch diagnostics from the builtin evaluation do not affect the count.
 
-/// `bind(gear(revolute(1.0), 10, 20), 5mm)` — gear wraps a revolute parent into
+/// `bind(gear(revolute(dir(0, 0, 1)), 10, 20), 5mm)` — gear wraps a revolute parent into
 /// a Coupling → Path-B resolution → "Coupling" → MechanismNonDrivingJoint.
 #[test]
 fn bind_gear_emits_mechanism_nondriving_joint_naming_coupling() {
     let module = compile_source_with_stdlib(
         r#"
 structure def Test {
-    let b = bind(gear(revolute(1.0), 10, 20), 5mm)
+    let b = bind(gear(revolute(dir(0, 0, 1)), 10, 20), 5mm)
 }
 "#,
     );
@@ -333,14 +333,14 @@ structure def Test {
     );
 }
 
-/// `bind(screw(prismatic(1.0), 1mm), 5mm)` — screw wraps a prismatic parent
+/// `bind(screw(prismatic(dir(1, 0, 0)), 1mm), 5mm)` — screw wraps a prismatic parent
 /// into a Coupling → Path-B resolution → "Coupling" → MechanismNonDrivingJoint.
 #[test]
 fn bind_screw_emits_mechanism_nondriving_joint_naming_coupling() {
     let module = compile_source_with_stdlib(
         r#"
 structure def Test {
-    let b = bind(screw(prismatic(1.0), 1mm), 5mm)
+    let b = bind(screw(prismatic(dir(1, 0, 0)), 1mm), 5mm)
 }
 "#,
     );
@@ -364,7 +364,7 @@ structure def Test {
     );
 }
 
-/// `bind(rack_and_pinion(prismatic(1.0), 5mm), 10mm)` — rack_and_pinion wraps
+/// `bind(rack_and_pinion(prismatic(dir(1, 0, 0)), 5mm), 10mm)` — rack_and_pinion wraps
 /// a prismatic parent into a Coupling → Path-B → "Coupling" →
 /// MechanismNonDrivingJoint.
 #[test]
@@ -372,7 +372,7 @@ fn bind_rack_and_pinion_emits_mechanism_nondriving_joint_naming_coupling() {
     let module = compile_source_with_stdlib(
         r#"
 structure def Test {
-    let b = bind(rack_and_pinion(prismatic(1.0), 5mm), 10mm)
+    let b = bind(rack_and_pinion(prismatic(dir(1, 0, 0)), 5mm), 10mm)
 }
 "#,
     );

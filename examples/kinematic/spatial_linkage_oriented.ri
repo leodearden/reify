@@ -33,7 +33,7 @@ structure def SpatialLinkageOriented {
     // The frame3 origin is the zero point; the basis R_z(90°) rotates the mount
     // frame so local +X motion maps to world +Y.
     let slider = prismatic(
-        vec3(1, 0, 0),
+        dir(1, 0, 0),
         0m .. 1m,
         frame3(
             point3(0mm, 0mm, 0mm),
@@ -48,7 +48,7 @@ structure def SpatialLinkageOriented {
     // The frame3 origin places the joint 100mm along world +X from the parent.
     // The basis R_x(90°) tilts the joint's rotation axis into the XZ plane.
     let hinge = revolute(
-        vec3(0, 0, 1),
+        dir(0, 0, 1),
         0rad .. 3.141592653589793rad,
         frame3(
             point3(100mm, 0mm, 0mm),

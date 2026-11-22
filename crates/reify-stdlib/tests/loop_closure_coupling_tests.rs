@@ -18,7 +18,7 @@ use reify_stdlib::loop_closure_value::JointValue;
 const SOLVE_TOL: f64 = 1e-6;
 
 fn axis(x: f64, y: f64, z: f64) -> Value {
-    Value::Vector(vec![Value::Real(x), Value::Real(y), Value::Real(z)])
+    reify_test_support::direction_val(x, y, z)
 }
 
 fn closed_range(lower: Value, upper: Value) -> Value {

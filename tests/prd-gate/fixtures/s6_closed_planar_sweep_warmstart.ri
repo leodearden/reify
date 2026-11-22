@@ -5,9 +5,9 @@ module s6_closed_planar_sweep_warmstart
 // Probe (seat L, S6): closed chain whose closing-side free joint is PLANAR.
 // Topology mirrors kinematic_sweep_closed_chain.rs CLOSED_CHAIN_SOURCE with j_b -> planar.
 structure def Kinematic {
-    let j_a = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
-    let j_x = prismatic(vec3(1, 0, 0), 0mm .. 500mm)
-    let j_b = planar(vec3(1, 0, 0), vec3(0, 1, 0),
+    let j_a = prismatic(dir(1, 0, 0), 0mm .. 1000mm)
+    let j_x = prismatic(dir(1, 0, 0), 0mm .. 500mm)
+    let j_b = planar(dir(1, 0, 0), dir(0, 1, 0),
                      0mm .. 2000mm, -100mm .. 100mm,
                      -0.5rad .. 0.5rad)
     let m0  = mechanism()

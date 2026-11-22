@@ -20,7 +20,7 @@ structure def CantileverBeamPrb {
 
     // The compliant revolute joint. Pivot at the origin; rotation about +Y.
     let pivot_flexure = prb_cantilever_beam(
-        20mm, 5mm, 0.5mm, steel, point3(0mm, 0mm, 0mm), vec3(0, 1, 0))
+        20mm, 5mm, 0.5mm, steel, point3(0mm, 0mm, 0mm), dir(0, 1, 0))
 
     // "It is just a Revolute": drive a rigid rotor through the flexure with the
     // ordinary mechanism / body / snapshot API surface (mirrors

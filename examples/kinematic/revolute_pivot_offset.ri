@@ -21,7 +21,7 @@ structure def RevolutePivotOffset {
     //   axis  = unit +Z (rotation about Z)
     //   range = 0 rad .. π rad
     //   pivot = point3(40mm, 0mm, 0mm)  →  "origin" frame offset
-    let j = revolute(vec3(0, 0, 1), 0rad .. 3.141592653589793rad, point3(40mm, 0mm, 0mm))
+    let j = revolute(dir(0, 0, 1), 0rad .. 3.141592653589793rad, point3(40mm, 0mm, 0mm))
 
     // transform_at at θ = 0 rad: translation reflects the pivot (0.04, 0, 0) m,
     // rotation is identity.

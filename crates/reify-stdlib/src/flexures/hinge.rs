@@ -10,7 +10,7 @@
 //! (W_Flexure*/E_Flexure* emission is λ/task-3821's responsibility).
 
 use reify_core::DimensionVector;
-use reify_ir::Value;
+use reify_ir::{Value, decode_direction};
 
 use super::common::{
     attach_compliance, cantilever_sigma_at, length_si, make_compliance_record, make_flexure_joint,
@@ -72,7 +72,7 @@ struct BendingHingeInputs<'a> {
 ///
 /// Returns `None` (⇒ `Value::Undef`) on: arity ∉ {6, 7, 8}; non-positive or
 /// non-finite geometry; thickness ≥ length; missing or non-positive
-/// `youngs_modulus`; or an invalid axis.
+/// `youngs_modulus`; or an axis that is not a Direction.
 fn parse_bending_hinge_inputs(args: &[Value]) -> Option<BendingHingeInputs<'_>> {
     if args.len() < 6 || args.len() > 8 {
         return None;
@@ -89,7 +89,7 @@ fn parse_bending_hinge_inputs(args: &[Value]) -> Option<BendingHingeInputs<'_>> 
         return None;
     }
     let axis = &args[5];
-    crate::helpers::validate_dimensionless_unit_axis_vec3(axis)?;
+    decode_direction(axis).ok()?;
     Some(BendingHingeInputs {
         length,
         thickness,
@@ -214,7 +214,8 @@ struct LetInputs<'a> {
 ///
 /// Returns `None` on: arity ∉ {7, 8, 9}; non-positive or non-finite geometry;
 /// thickness ≥ length; n_blades < 1 or non-integer; missing/non-positive
-/// `youngs_modulus`; missing `poisson_ratio` or ν ∉ [0, 0.5); invalid axis.
+/// `youngs_modulus`; missing `poisson_ratio` or ν ∉ [0, 0.5); an axis that is
+/// not a Direction.
 fn parse_let_inputs(args: &[Value]) -> Option<LetInputs<'_>> {
     if args.len() < 7 || args.len() > 9 {
         return None;
@@ -242,7 +243,7 @@ fn parse_let_inputs(args: &[Value]) -> Option<LetInputs<'_>> {
     }
     let g = e / (2.0 * (1.0 + nu));
     let axis = &args[6];
-    crate::helpers::validate_dimensionless_unit_axis_vec3(axis)?;
+    decode_direction(axis).ok()?;
     Some(LetInputs {
         length,
         thickness,

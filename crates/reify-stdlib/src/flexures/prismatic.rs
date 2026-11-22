@@ -17,7 +17,7 @@
 //! Dispatch via [`eval_prismatic`], mirroring the sibling modules.
 
 use reify_core::DimensionVector;
-use reify_ir::Value;
+use reify_ir::{Value, decode_direction};
 
 use std::collections::BTreeMap;
 
@@ -65,7 +65,7 @@ struct PrismaticInputs<'a> {
     i: f64,
     /// Material yield stress (Pa), if the material carries one.
     yield_si: Option<f64>,
-    /// The raw axis argument, stored verbatim on 1-DOF joint Maps.
+    /// The axis argument, a Direction stored unchanged on 1-DOF joint Maps.
     axis: &'a Value,
     /// The raw pivot argument.
     pivot: &'a Value,
@@ -84,7 +84,7 @@ struct PrismaticInputs<'a> {
 ///
 /// Returns `None` (⇒ `Value::Undef`) on: arity ∉ {6, 7, 8}; non-positive or
 /// non-finite geometry; thickness ≥ length; missing or non-positive
-/// `youngs_modulus`; or an invalid axis.
+/// `youngs_modulus`; or an axis that is not a Direction.
 fn parse_prismatic_inputs(args: &[Value]) -> Option<PrismaticInputs<'_>> {
     if args.len() < 6 || args.len() > 8 {
         return None;
@@ -101,7 +101,7 @@ fn parse_prismatic_inputs(args: &[Value]) -> Option<PrismaticInputs<'_>> {
         return None;
     }
     let axis = &args[5];
-    crate::helpers::validate_dimensionless_unit_axis_vec3(axis)?;
+    decode_direction(axis).ok()?;
     Some(PrismaticInputs {
         length,
         thickness,
@@ -238,7 +238,7 @@ fn prb_prismatic_blade(args: &[Value]) -> Value {
 /// dispatcher branches on it. This is an intentional design decision, not an
 /// oversight.
 ///
-/// The `axis` argument is validated (finite, non-zero, dimensionless 3-vector)
+/// The `axis` argument is validated (it must be a Direction)
 /// for parser symmetry with the 1-DOF constructors but is NOT stored in the map
 /// — the spherical joint is axis-isotropic and the canonical spherical Map has
 /// no `axis` key.

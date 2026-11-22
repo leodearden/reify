@@ -431,7 +431,7 @@ pub fn mounted_joint_cell(
     // Walking the full list (not short-circuiting at the first match) lets us emit
     // a diagnostic when more than one cell references the same sub.
     //
-    // B9 back-compat: a literal-axis joint `revolute(vec3(0,0,1), range)` has no
+    // B9 back-compat: a literal-axis joint `revolute(dir(0,0,1), range)` has no
     // IndexAccess arg, so decode_operand returns None for every arg → no match →
     // not included in `matches` → no origin written.
     let matches: Vec<_> = template
@@ -1852,8 +1852,8 @@ mod tests_mounted_joint_cell {
     //! Compiles a small structure that has:
     //!   - `sub base : Base` (grounded anchor)
     //!   - `sub link : Link` (no `at auto` / no relate block — not needed by `mounted_joint_cell`)
-    //!   - `let j = revolute(link.hub_point, 0rad..2.094rad)` — first arg is a `link` sub datum (DD1 match)
-    //!   - `let k = revolute(vec3(0, 0, 1), 0rad..2.094rad)` — literal vec3 arg (B9: no match)
+    //!   - `let j = revolute(link.hub_dir, 0rad..2.094rad)` — first arg is a `link` sub datum (DD1 match)
+    //!   - `let k = revolute(dir(0, 0, 1), 0rad..2.094rad)` — literal dir arg (B9: no match)
     //!
     //! Assertions:
     //!   (a) `mounted_joint_cell("Mech", "link", &module) == Some(ValueCellId::new("Mech", "j"))` — RED until impl
@@ -1869,7 +1869,7 @@ mod tests_mounted_joint_cell {
     /// The test fixture: a Mech structure with a relate-mounted link sub and two
     /// revolute joints — `j` (axis refs `link`, should match) and `k` (literal
     /// axis, should NOT match).
-    // Kernel-free fixture: uses only `point3` (a plain multi-component constructor the
+    // Kernel-free fixture: uses only `point3` and `dir` (plain constructors the
     // compiler types without geometry) — avoids `axis_z` whose return type the compiler
     // doesn't register statically (axis_z is a runtime geometry builtin). The relate
     // block is omitted because `mounted_joint_cell` scans `template.value_cells`, not
@@ -1880,17 +1880,17 @@ structure Base {
 }
 
 structure Link {
-    let hub_point : Point = point3(0mm, 0mm, 0mm)
+    let hub_dir : Direction = dir(0, 0, 1)
 }
 
 structure Mech {
     sub base : Base
     sub link : Link
-    // j: first arg is `link.hub_point` — a cross-sub IndexAccess (OperandRef sub="link")
+    // j: first arg is `link.hub_dir` — a cross-sub IndexAccess (OperandRef sub="link")
     // → DD1 match: mounted_joint_cell("Mech", "link") must return Some(cell_id("Mech","j"))
-    let j = revolute(link.hub_point, 0rad..2.094rad)
-    // k: literal vec3 arg — no sub datum reference → B9 non-match → None for sub="link"
-    let k = revolute(vec3(0, 0, 1), 0rad..2.094rad)
+    let j = revolute(link.hub_dir, 0rad..2.094rad)
+    // k: literal dir arg — no sub datum reference → B9 non-match → None for sub="link"
+    let k = revolute(dir(0, 0, 1), 0rad..2.094rad)
 }
 "#;
 
@@ -1899,7 +1899,7 @@ structure Mech {
     }
 
     /// (a) RED test — mounted_joint_cell returns the joint cell that references the
-    /// mounted sub (the `j` cell whose first operand is `link.hub_point`).
+    /// mounted sub (the `j` cell whose first operand is `link.hub_dir`).
     ///
     /// RED: the stub returns `None` for every pair; this will fail until step-2
     /// implements the operand-reference scan.
@@ -1955,13 +1955,13 @@ structure Mech {
     fn mounted_joint_cell_first_match_returns_declaration_order_first() {
         const MULTI_JOINT_SOURCE: &str = r#"
 structure Link2 {
-    let hub_point : Point = point3(0mm, 0mm, 0mm)
+    let hub_dir : Direction = dir(0, 0, 1)
 }
 
 structure Mech2 {
     sub link : Link2
-    let j  = revolute(link.hub_point, 0rad..1rad)
-    let j2 = revolute(link.hub_point, 0rad..2rad)
+    let j  = revolute(link.hub_dir, 0rad..1rad)
+    let j2 = revolute(link.hub_dir, 0rad..2rad)
 }
 "#;
         let module = parse_and_compile_with_stdlib(MULTI_JOINT_SOURCE);
@@ -2065,12 +2065,13 @@ structure Mech2 {
     /// datum by construction; `mounted_joint_cell` always returns `None` for fixed
     /// joints (verified in the sub-test at the end).
     ///
-    /// **Compiler leniency**: joint-constructor builtins return
-    /// `Type::StructureRef(...)` regardless of arg types (name-only dispatch in
-    /// `joint_ctor_result_type`). The fixtures intentionally use `hub_point : Point`
-    /// for all constructor arg positions — even where a Vector or Range is expected
-    /// at runtime — because this test targets the static association scan (not
-    /// runtime evaluation). The compiler accepts these without Error diagnostics.
+    /// **Arg types**: joint-constructor builtins return `Type::StructureRef(...)`
+    /// by name-only dispatch in `joint_ctor_result_type`, and the static scan is
+    /// type-agnostic, so the fixtures reference the sub through whatever member
+    /// checks clean. A joint axis is a checked Direction slot (#9640), so every
+    /// axis position uses `hub_dir : Direction`; spherical's range position is
+    /// unslotted and keeps `hub_point : Point`, which is wrong at runtime but
+    /// accepted without Error diagnostics.
     #[test]
     fn mounted_joint_cell_matches_each_driving_joint_kind() {
         /// Compile a structure with `sub link : Hub` and one joint of the given
@@ -2085,6 +2086,7 @@ structure Mech2 {
                 r#"
 structure Hub{kind_label} {{
     let hub_point : Point = point3(0mm, 0mm, 0mm)
+    let hub_dir : Direction = dir(0, 0, 1)
 }}
 structure {mech_name} {{
     sub link : Hub{kind_label}
@@ -2105,15 +2107,15 @@ structure {mech_name} {{
         }
 
         // ── Revolute (2-arg): already covered by other tests, included for completeness.
-        check_kind("revolute(link.hub_point, 0rad..1rad)", "Revolute");
+        check_kind("revolute(link.hub_dir, 0rad..1rad)", "Revolute");
         // ── Prismatic (2-arg: axis, length_range).
-        check_kind("prismatic(link.hub_point, 0mm..100mm)", "Prismatic");
+        check_kind("prismatic(link.hub_dir, 0mm..100mm)", "Prismatic");
         // ── Cylindrical (3-arg: axis, translation_range, rotation_range).
-        check_kind("cylindrical(link.hub_point, 0mm..100mm, 0rad..1rad)", "Cylindrical");
+        check_kind("cylindrical(link.hub_dir, 0mm..100mm, 0rad..1rad)", "Cylindrical");
         // ── Planar (5-arg: axis_x, axis_y, range_x, range_y, range_theta).
-        // Uses hub_point for both axis args; DD1 matches on the first arg.
+        // Uses hub_dir for both axis args; DD1 matches on the first arg.
         check_kind(
-            "planar(link.hub_point, link.hub_point, 0mm..100mm, 0mm..100mm, 0rad..1rad)",
+            "planar(link.hub_dir, link.hub_dir, 0mm..100mm, 0mm..100mm, 0rad..1rad)",
             "Planar",
         );
         // ── Spherical (1-arg: angle_range). Spherical takes only a range arg

@@ -1339,7 +1339,7 @@ mod tests {
     #[test]
     fn per_joint_jacobian_local_prismatic_unnormalized_axis() {
         // axis [3, 4, 0] has magnitude 5; normalized → [0.6, 0.8, 0]
-        let axis = Value::Vector(vec![Value::Real(3.0), Value::Real(4.0), Value::Real(0.0)]);
+        let axis = reify_test_support::direction_val(3.0, 4.0, 0.0);
         let j = eval_builtin("prismatic", &[axis, length_range_0_to_1m()]);
         let col = super::per_joint_jacobian_local(&j).expect("col");
         assert!(col[0].abs() < 1e-12);

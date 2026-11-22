@@ -1946,7 +1946,7 @@ mod tests {
         // Revolute about +y. The range only needs to be a bounded ANGLE range
         // (validated at construction); `transform_at` does not clamp the bound
         // value, so a symmetric [−π, π] range admits θ = −30°.
-        let axis_y = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let axis_y = reify_test_support::direction_val(0.0, 1.0, 0.0);
         let range = Value::Range {
             lower: Some(Box::new(Value::angle(-PI))),
             upper: Some(Box::new(Value::angle(PI))),
@@ -2003,7 +2003,7 @@ mod tests {
         use crate::eval_builtin;
         use std::f64::consts::PI;
         let mp = mass_properties_fixture(1.0, [0.0, 0.0, -0.1], [[0.0; 3]; 3]);
-        let axis_y = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let axis_y = reify_test_support::direction_val(0.0, 1.0, 0.0);
         let range = Value::Range {
             lower: Some(Box::new(Value::angle(-PI))),
             upper: Some(Box::new(Value::angle(PI))),
@@ -2225,9 +2225,9 @@ mod tests {
     /// to the `error` key rather than to an incidental shape failure.
     #[test]
     fn closed_chain_inverse_dynamics_rejects_errored_mechanism() {
-        let axis_x = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
-        let axis_y = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
-        let axis_z = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        let axis_x = reify_test_support::direction_val(1.0, 0.0, 0.0);
+        let axis_y = reify_test_support::direction_val(0.0, 1.0, 0.0);
+        let axis_z = reify_test_support::direction_val(0.0, 0.0, 1.0);
         let range_0_1m = || Value::Range {
             lower: Some(Box::new(Value::length(0.0))),
             upper: Some(Box::new(Value::length(1.0))),
@@ -2714,7 +2714,7 @@ mod tests {
             [[0.05, 0.0, 0.0], [0.0, 0.05, 0.0], [0.0, 0.0, 0.05]],
         );
 
-        let axis_x = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let axis_x = reify_test_support::direction_val(1.0, 0.0, 0.0);
         let range_1m = Value::Range {
             lower: Some(Box::new(Value::length(0.0))),
             upper: Some(Box::new(Value::length(1.0))),
@@ -2900,9 +2900,7 @@ mod tests {
             extract_loop_closure_chains, loop_residual_jacobian_by_joint, loop_residual_twist,
         };
 
-        let unit = |x: f64, y: f64, z: f64| {
-            Value::Vector(vec![Value::Real(x), Value::Real(y), Value::Real(z)])
-        };
+        let unit = reify_test_support::direction_val;
         let len_range = |up: f64| Value::Range {
             lower: Some(Box::new(Value::length(0.0))),
             upper: Some(Box::new(Value::length(up))),
@@ -3167,8 +3165,8 @@ mod tests {
     fn snapshot_for_sample_with_coupled_body_does_not_regress() {
         use crate::eval_builtin;
 
-        let axis_x = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
-        let axis_y = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let axis_x = reify_test_support::direction_val(1.0, 0.0, 0.0);
+        let axis_y = reify_test_support::direction_val(0.0, 1.0, 0.0);
         let range_0_1m = || Value::Range {
             lower: Some(Box::new(Value::length(0.0))),
             upper: Some(Box::new(Value::length(1.0))),
@@ -3297,7 +3295,7 @@ mod tests {
     fn joint_compliance_plain_joint_returns_none() {
         use crate::eval_builtin;
         use std::f64::consts::PI;
-        let axis_y = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let axis_y = reify_test_support::direction_val(0.0, 1.0, 0.0);
         let range = Value::Range {
             lower: Some(Box::new(Value::angle(-PI))),
             upper: Some(Box::new(Value::angle(PI))),
@@ -3589,9 +3587,7 @@ mod tests {
     /// them its `spring_rate`/`damping` would be dropped silently.
     #[test]
     fn every_one_dof_joint_kind_has_compliance_specs() {
-        let axis = |x: f64, y: f64, z: f64| {
-            Value::Vector(vec![Value::Real(x), Value::Real(y), Value::Real(z)])
-        };
+        let axis = reify_test_support::direction_val;
         for &kind in crate::joints::JOINT_KINDS {
             let joint = joint_map(
                 kind,
@@ -3679,8 +3675,7 @@ mod tests {
     ) -> Value {
         use crate::eval_builtin;
         use std::f64::consts::PI;
-        let axis_y =
-            Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let axis_y = reify_test_support::direction_val(0.0, 1.0, 0.0);
         let range = Value::Range {
             lower: Some(Box::new(Value::angle(-PI))),
             upper: Some(Box::new(Value::angle(PI))),
@@ -3986,8 +3981,7 @@ mod tests {
         use std::f64::consts::PI;
 
         // Build a standard 2-DOF cylindrical joint (translation + rotation along +z).
-        let axis_z =
-            Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        let axis_z = reify_test_support::direction_val(0.0, 0.0, 1.0);
         let length_range = Value::Range {
             lower: Some(Box::new(Value::length(-1.0))),
             upper: Some(Box::new(Value::length(1.0))),
@@ -4658,7 +4652,7 @@ mod tests {
 
         let mp = mass_properties_fixture(1.0, [0.0, 0.0, -0.1], [[0.0; 3]; 3]);
 
-        let axis_y = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let axis_y = reify_test_support::direction_val(0.0, 1.0, 0.0);
         let range = Value::Range {
             lower: Some(Box::new(Value::angle(-PI))),
             upper: Some(Box::new(Value::angle(PI))),
@@ -4723,7 +4717,7 @@ mod tests {
     fn body_with_solid(solid: Value) -> Value {
         use crate::eval_builtin;
         use std::f64::consts::PI;
-        let axis_y = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let axis_y = reify_test_support::direction_val(0.0, 1.0, 0.0);
         let range = Value::Range {
             lower: Some(Box::new(Value::angle(-PI))),
             upper: Some(Box::new(Value::angle(PI))),
@@ -4821,7 +4815,7 @@ mod tests {
     fn revolute_mechanism_with_solid(solid: Value) -> Value {
         use crate::eval_builtin;
         use std::f64::consts::PI;
-        let axis_y = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let axis_y = reify_test_support::direction_val(0.0, 1.0, 0.0);
         let range = Value::Range {
             lower: Some(Box::new(Value::angle(-PI))),
             upper: Some(Box::new(Value::angle(PI))),

@@ -45,6 +45,6 @@ structure def DcrYieldStressDimensionSilent {
     let wrong   = Steel_AISI_1045(yield_stress: some(310mm))
     let correct = Steel_AISI_1045()
 
-    let j_wrong = prb_cantilever_beam(20mm, 5mm, 0.5mm, wrong, point3(0mm, 0mm, 0mm), vec3(0.0, 1.0, 0.0))
-    let j_ok    = prb_cantilever_beam(20mm, 5mm, 0.5mm, correct, point3(0mm, 0mm, 0mm), vec3(0.0, 1.0, 0.0))
+    let j_wrong = prb_cantilever_beam(20mm, 5mm, 0.5mm, wrong, point3(0mm, 0mm, 0mm), dir(0.0, 1.0, 0.0))
+    let j_ok    = prb_cantilever_beam(20mm, 5mm, 0.5mm, correct, point3(0mm, 0mm, 0mm), dir(0.0, 1.0, 0.0))
 }

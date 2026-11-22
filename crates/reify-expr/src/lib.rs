@@ -9262,9 +9262,9 @@ mod tests {
     // RED until step-8 wires emit_snapshot_diagnostics immediately after
     // emit_dfm_diagnostics in the FunctionCall post-process.
 
-    /// Build an axis_x unit vector (1,0,0) for test snapshots.
+    /// Build the +X joint axis direction for test snapshots.
     fn snap_axis_x() -> Value {
-        Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)])
+        reify_test_support::direction_val(1.0, 0.0, 0.0)
     }
 
     /// Build a two-body snapshot where body 0 has `solid0` placed at world

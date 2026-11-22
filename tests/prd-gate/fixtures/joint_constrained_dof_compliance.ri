@@ -24,16 +24,16 @@ structure def Carriage {
 
 structure def JointConstrainedDofCompliance {
     // Torsional group omitted: reads back as `none`, i.e. ideal-rigid.
-    let air_bearing = Prismatic(axis: vec3(1.0, 0.0, 0.0), radial_stiffness: some(210N/um), tilt_stiffness: some(5100N*m/rad^2))
-    let spindle = Revolute(axis: vec3(0.0, 0.0, 1.0), axial_stiffness: some(220N/um), radial_stiffness: some(230N/um), tilt_stiffness: some(5200N*m/rad^2))
-    let quill = Cylindrical(axis: vec3(0.0, 0.0, 1.0), radial_stiffness: some(240N/um), tilt_stiffness: some(5300N*m/rad^2))
-    let puck = Planar(axis_x: vec3(1.0, 0.0, 0.0), axis_y: vec3(0.0, 1.0, 0.0), normal_stiffness: some(250N/um), tilt_stiffness: some(5400N*m/rad^2))
+    let air_bearing = Prismatic(axis: dir(1.0, 0.0, 0.0), radial_stiffness: some(210N/um), tilt_stiffness: some(5100N*m/rad^2))
+    let spindle = Revolute(axis: dir(0.0, 0.0, 1.0), axial_stiffness: some(220N/um), radial_stiffness: some(230N/um), tilt_stiffness: some(5200N*m/rad^2))
+    let quill = Cylindrical(axis: dir(0.0, 0.0, 1.0), radial_stiffness: some(240N/um), tilt_stiffness: some(5300N*m/rad^2))
+    let puck = Planar(axis_x: dir(1.0, 0.0, 0.0), axis_y: dir(0.0, 1.0, 0.0), normal_stiffness: some(250N/um), tilt_stiffness: some(5400N*m/rad^2))
     let ball = Spherical(translational_stiffness: some(260N/um))
     let foot = Fixed(translational_stiffness: some(270N/um), rotational_stiffness: some(5500N*m/rad^2))
     // No compliance declared anywhere: every constrained group is ideal-rigid.
-    let ideal = Prismatic(axis: vec3(1.0, 0.0, 0.0))
+    let ideal = Prismatic(axis: dir(1.0, 0.0, 0.0))
 
     sub rail = Rail()
     sub carriage = Carriage()
-    connect carriage.bore -> rail.guide : Prismatic { axis = vec3(1.0, 0.0, 0.0), radial_stiffness = some(280N/um), tilt_stiffness = some(5600N*m/rad^2) }
+    connect carriage.bore -> rail.guide : Prismatic { axis = dir(1.0, 0.0, 0.0), radial_stiffness = some(280N/um), tilt_stiffness = some(5600N*m/rad^2) }
 }

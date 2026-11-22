@@ -1,16 +1,17 @@
 use crate::eval_builtin;
 use reify_ir::Value;
+use reify_test_support::direction_val;
 
 pub(crate) fn axis_x_unit() -> Value {
-    Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)])
+    direction_val(1.0, 0.0, 0.0)
 }
 
 pub(crate) fn axis_y_unit() -> Value {
-    Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)])
+    direction_val(0.0, 1.0, 0.0)
 }
 
 pub(crate) fn axis_z_unit() -> Value {
-    Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)])
+    direction_val(0.0, 0.0, 1.0)
 }
 
 pub(crate) fn length_range_0_to_1m() -> Value {

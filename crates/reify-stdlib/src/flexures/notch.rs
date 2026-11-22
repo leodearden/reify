@@ -10,7 +10,7 @@
 use std::f64::consts::PI;
 
 use reify_core::DimensionVector;
-use reify_ir::Value;
+use reify_ir::{Value, decode_direction};
 
 use super::common::{
     attach_compliance, length_si, make_compliance_record, make_flexure_joint, material_field_si,
@@ -80,7 +80,7 @@ struct NotchInputs<'a> {
     e: f64,
     /// Material yield stress (Pa), if the material carries one.
     yield_si: Option<f64>,
-    /// The raw axis argument, stored verbatim on the joint Map.
+    /// The axis argument, a Direction stored unchanged on the joint Map.
     axis: &'a Value,
     /// The raw pivot argument, stored verbatim on the joint Map.
     pivot: &'a Value,
@@ -102,7 +102,7 @@ struct NotchInputs<'a> {
 /// (t ≥ 2·r — web at least as thick as the notch diameter, the
 /// E_FlexureGeometryInvalid regime whose diagnostic λ owns); a material that
 /// is not a `Value::StructureInstance` with a finite `youngs_modulus` > 0; or
-/// an axis that is not a finite, non-zero, dimensionless 3-vector.
+/// an axis that is not a Direction.
 ///
 /// δ emits NO diagnostics and returns Value::Undef on invalid input
 /// (W_Flexure* emission is λ's responsibility).
@@ -126,7 +126,7 @@ fn parse_notch_inputs(args: &[Value]) -> Option<NotchInputs<'_>> {
         return None;
     }
     let axis = &args[5];
-    crate::helpers::validate_dimensionless_unit_axis_vec3(axis)?;
+    decode_direction(axis).ok()?;
     Some(NotchInputs {
         r,
         t,

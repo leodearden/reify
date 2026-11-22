@@ -37,7 +37,7 @@ structure def YieldWarning {
     // The compliant revolute joint with a FORCED ±10° declared operating range.
     // Pivot at the origin; rotation about +Y; neutral angle 0°.
     let pivot_flexure = prb_cantilever_beam(
-        2mm, 5mm, 0.05mm, steel, point3(0mm, 0mm, 0mm), vec3(0, 1, 0), 0deg, 10deg)
+        2mm, 5mm, 0.05mm, steel, point3(0mm, 0mm, 0mm), dir(0, 1, 0), 0deg, 10deg)
 
     // "It is just a Revolute": drive a rigid rotor through the flexure with the
     // ordinary mechanism / body / snapshot API surface — no flexure-specific

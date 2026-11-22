@@ -2942,7 +2942,7 @@ pub structure ToolDock {
     )
 
     // ── mech_y: the plunge/extract segment (+y from engaged) ─────────────
-    let j_y = prismatic(vec3(0, 1, 0), 0mm .. 94mm)
+    let j_y = prismatic(dir(0, 1, 0), 0mm .. 94mm)
     let my1 = body(mechanism(), "carrier_y", j_y)
     let my2 = body(my1, "lintel", fixed())
     let my3 = body(my2, "parked", fixed())
@@ -2996,7 +2996,7 @@ pub structure ToolDock {
     let clr_y8 = min_clearance(sy8, id_car, id_park)
 
     // ── mech_x: the traverse at y_safe over the full X travel ────────────
-    let j_x = prismatic(vec3(1, 0, 0), 0mm .. 500mm)
+    let j_x = prismatic(dir(1, 0, 0), 0mm .. 500mm)
     let mx1 = body(mechanism(), "head_x", j_x)
     let mx2 = body(mx1, "lintel", fixed())
     let mx3 = body(mx2, "parked", fixed())
@@ -3279,11 +3279,11 @@ pub structure EZBed {
     // Joint value = carriage height above the park datum. NOTE the geometry
     // cell below is named bed_solid, not body — `body(...)` is also the
     // mechanism-builder builtin and a let of that name would shadow it.
-    let j_a = prismatic(vec3(0, 0, 1), 0mm .. 700mm,
+    let j_a = prismatic(dir(0, 0, 1), 0mm .. 700mm,
         point3(col_pair_x_l, sup_y_pair, slab_top_m))
-    let j_b = prismatic(vec3(0, 0, 1), 0mm .. 700mm,
+    let j_b = prismatic(dir(0, 0, 1), 0mm .. 700mm,
         point3(col_pair_x_r, sup_y_pair, slab_top_m))
-    let j_s = prismatic(vec3(0, 0, 1), 0mm .. 700mm,
+    let j_s = prismatic(dir(0, 0, 1), 0mm .. 700mm,
         point3(col_single_x, col_single_y, slab_top_m))
     let mech = body(body(body(mechanism(), "car_a", j_a), "car_b", j_b), "car_s", j_s)
     let lift_now = travel - drop              // carriage height above park datum
