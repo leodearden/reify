@@ -398,6 +398,14 @@ impl TypeAliasRegistry {
         self.entries.get(name)
     }
 
+    /// Look up a type alias this module declares itself, excluding the
+    /// prelude-seeded entries.
+    pub(crate) fn lookup_declared(&self, name: &str) -> Option<&TypeAliasEntry> {
+        self.entries
+            .get(name)
+            .filter(|e| !self.seeded_names.contains(&e.name))
+    }
+
     /// Iterate over user-declared alias entries (excluding prelude-seeded entries),
     /// in ascending name order.
     ///
@@ -4902,6 +4910,16 @@ pub(crate) fn check_applied_type_arg_bounds(
 /// avoids false-positives on valid `Rate<Q>=Q/Time` (Q is a free param; the
 /// DimensionalOp arm defers inner diagnostics for free params — task 4792/S2).
 ///
+/// # Case (c) — pub-names-non-pub check (task 10297)
+///
+/// In the same walk, a name that is an alias this module declares without
+/// `pub` gets a def-site `DiagnosticCode::NonPubAliasInPubAlias` Error at
+/// `entry.span`: no importer can see that alias, so the pub alias would fail
+/// in every importer. An alias seeded into the module (stdlib or import) is
+/// pub where it is declared, and the exported body scope carries it, so it is
+/// allowed. So is an alias named like a builtin type, which the body's name
+/// never resolves to (the builtin takes precedence).
+///
 /// # Case (b) — param-bound check (step-4)
 ///
 /// Resolve the alias body to a `Type` (keeping alias params free as
@@ -4977,6 +4995,23 @@ pub(crate) fn validate_pub_parametric_alias_def_site(
                     .with_label(DiagnosticLabel::new(
                         entry.span,
                         format!("'{}' is not defined in this scope", name),
+                    )),
+                );
+            } else if resolve_type_name(&name).is_none()
+                && alias_registry
+                    .lookup_declared(&name)
+                    .is_some_and(|named| !named.is_pub)
+            {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "pub type alias '{}' names non-pub type alias '{}'; an importer \
+                         cannot see it — mark '{}' pub or make '{}' non-pub",
+                        entry.name, name, name, entry.name
+                    ))
+                    .with_code(DiagnosticCode::NonPubAliasInPubAlias)
+                    .with_label(DiagnosticLabel::new(
+                        entry.span,
+                        format!("'{}' is not pub", name),
                     )),
                 );
             }

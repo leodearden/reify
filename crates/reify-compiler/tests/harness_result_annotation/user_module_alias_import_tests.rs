@@ -261,7 +261,7 @@ fn pub_parametric_alias_naming_a_non_pub_alias_is_rejected_where_it_is_defined()
     let line_end = line_start + PROD3[line_start..].find('\n').expect("line end");
     let span = rejection.labels.first().expect("a label").span;
     assert!(
-        line_start <= span.start && span.end <= line_end,
+        line_start <= span.start as usize && span.end as usize <= line_end,
         "the label must sit on the `pub type PerInnerZz` line \
          ({line_start}..{line_end}); got {span:?}"
     );

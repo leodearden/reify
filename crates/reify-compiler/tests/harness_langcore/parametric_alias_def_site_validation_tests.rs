@@ -394,3 +394,17 @@ fn non_pub_parametric_alias_naming_a_non_pub_alias_accepted() {
     let errors = error_diagnostics(&module);
     assert!(errors.is_empty(), "got {errors:?}");
 }
+
+/// A non-pub alias named like a builtin is not what the body's `Time` means:
+/// the builtin takes precedence, so nothing invisible to an importer is named.
+#[test]
+fn pub_parametric_alias_naming_a_builtin_shadowed_by_a_non_pub_alias_accepted() {
+    let module = compile_source("type Time = Length\npub type P<Q: Dimension> = Q / Time\n");
+    let errors = error_diagnostics(&module);
+    assert!(
+        !errors
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::NonPubAliasInPubAlias)),
+        "got {errors:?}"
+    );
+}
