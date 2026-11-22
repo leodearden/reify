@@ -338,6 +338,36 @@ fn read_published_pid(pidfile: &Path) -> i32 {
     panic!("stub never published a parseable pid to {}", pidfile.display());
 }
 
+/// An already-cancelled request returns `Cancelled` after exactly one poll and
+/// never spawns the slicer.
+///
+/// `bin` is a path that does not exist, so any spawn attempt fails synchronously
+/// with `NotFound` and yields `Failed`. `Cancelled` is therefore only reachable
+/// if `run_slicer` checks `cancel_poll` before spawning.
+#[test]
+fn run_slicer_precancelled_returns_cancelled_without_spawning() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let absent = dir.path().join("never-spawned-slicer");
+    let polls = std::cell::Cell::new(0usize);
+    let cancel = || {
+        polls.set(polls.get() + 1);
+        true
+    };
+
+    let outcome = run_slicer(&absent, &[], &cancel, Duration::from_millis(200));
+
+    assert!(
+        matches!(outcome, SliceRunOutcome::Cancelled),
+        "a pre-cancelled run must return Cancelled without spawning (a spawn attempt \
+         on the absent path would have yielded Failed), got {outcome:?}"
+    );
+    assert_eq!(
+        polls.get(),
+        1,
+        "a pre-cancelled run must return after exactly one cancel poll"
+    );
+}
+
 /// (a) A long-running slicer cancelled the instant it is up: `run_slicer` returns
 /// `Cancelled` promptly (≪ the 30 s sleep) and the spawned child is reaped — no
 /// orphan, no zombie.
@@ -345,9 +375,10 @@ fn read_published_pid(pidfile: &Path) -> i32 {
 /// The stub publishes its own pid ($$) atomically (write to `.tmp` then rename),
 /// then `exec`s `sleep 30`. `exec` preserves the pid, so the published pid is
 /// exactly the process `run_slicer` must reap. The cancel poll is gated on the
-/// pidfile existing — this is "pre-cancel" in spirit (cancellation fires as soon
-/// as the child is alive) while the atomic publish removes the write-vs-kill race
-/// a bare `|| true` would introduce.
+/// pidfile existing, which is false until the child is up. That gate is what
+/// carries `run_slicer` past its pre-spawn poll, so it cancels a running child.
+/// A bare `|| true` would return `Cancelled` before spawning and never exercise
+/// SIGTERM→reap.
 #[cfg(unix)]
 #[test]
 fn run_slicer_cancel_reaps_child_promptly() {
