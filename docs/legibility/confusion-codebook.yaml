@@ -4998,6 +4998,13 @@ entries:
     manifested_phase: ops
     note: The identical watcher-rearm.sh wait (--level 1 --timeout 3600) was re-issued after the first run hit its own CEILING (exit 124), and then re-issued again with the same arguments at turn 88.
     evidence_quote: 'Bash x4 (2 designed-outcome results: [exit 124] [watcher-rearm-declared]): {"command": "cd $DARK_FACTORY_ROOT && scripts/watcher-rearm.sh --queue-dir /home/leo/src/reify/data/escalations --level 1 --timeout 3600"'
+  - date: '2026-11-21'
+    project: reify
+    session: 8e2c88b6-101d-407e-9a8b-054fa4370969
+    origin_phase: ops
+    manifested_phase: ops
+    note: 'The same bounded watcher-rearm wait (--timeout 3600, Bash timeout 3660000) is re-issued unchanged after each WATCHER_REARM_OUTCOME: CEILING exit=124, at turns 119, 161, and 200. The digest''s Retry Loops section records Bash x6, but only three designed-outcome results are listed.'
+    evidence_quote: 'WATCHER_REARM_OUTCOME: CEILING exit=124'
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261030
@@ -9399,6 +9406,13 @@ entries:
     manifested_phase: unknown
     note: A chained sleep+tail poll on a background task's output file was blocked by the anti-chaining guard.
     evidence_quote: 'Blocked: sleep 90 followed by: tail -5 /tmp/claude-1000/-home-leo-src-warm-lanes-worktrees--lane-29/0414a58e-b12b-408b-92dd-930b1064a8bb/tasks/bwr5lfap7.output'
+  - date: '2026-11-21'
+    project: reify
+    session: 1e155443-c216-43f1-b9db-de44a674fcab
+    origin_phase: unknown
+    manifested_phase: verify
+    note: A Bash call chained a sleep 90 with a tail of a test log to wait for output, and the anti-chaining guard blocked it. This is the chained sleep+poll pattern the entry names.
+    evidence_quote: 'Blocked: sleep 90 followed by: tail -60 /tmp/review-10036-tests.log.'
   last_seen_runs:
   - census-reify-20261022
 - id: entry-cand-20260719-7
@@ -11241,6 +11255,13 @@ entries:
     manifested_phase: unknown
     note: A deferred tool was called with a wrong parameter name (task_id instead of the declared id) while its schema was not loaded into the prompt, and the call was rejected with unknown_argument. The digest's own text says the schema was not in the prompt at call time.
     evidence_quote: This tool's input schema was not in your prompt when you called it.
+  - date: '2026-11-21'
+    project: reify
+    session: 6e816669-829b-429e-8192-1b3c2063d521
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'The digest shows a deferred tool called before its schema was loaded: the harness states the schema was not in the prompt at call time, and the call was made with empty arguments. The error is missing_required_argument rather than the wrong-parameter InputValidationError the title names, so this match is partial.'
+    evidence_quote: This tool's input schema was not in your prompt when you called it.
   filed_tickets:
   - ticket: null
     project_root: /home/leo/src/reify
@@ -12794,6 +12815,13 @@ entries:
     origin_phase: implement
     manifested_phase: implement
     note: The agent chained `ls tree-sitter-reify/tests/common 2>/dev/null` onto other probes. The directory does not exist, so with stderr suppressed it surfaced only as a bare exit 2, even though the earlier listing and the count of 17 were valid.
+  - date: '2026-11-21'
+    project: reify
+    session: ee7ffcaf-ea12-41b9-bdde-31e9c433cb5f
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: A nonexistent path probed with stderr suppressed (2>/dev/null) surfaced only as a bare exit 2. The probe targets a plan.json and a .task directory rather than the scripts subdirectory named in the title, so the match rests on the shared mechanism.
+    evidence_quote: ls /home/leo/src/warm-lanes/worktrees/*/.task/plan.json 2>/dev/null | head -50 | xargs -r grep -l '10037' 2>/dev/null | head; ls /home/leo/src/reify/.worktrees/10037/.task 2>/dev/null" ... ) -> [exit 2] Exit code 2
   filed_tickets:
   - ticket: null
     project_root: /home/leo/src/reify
@@ -33382,6 +33410,19 @@ candidates:
     origin_phase: architect
     manifested_phase: architect
     evidence_quote: the task suggests a child could find its project slice as the "nearest df-\*.slice ancestor". Dark-factory's contract (`docs/cgroup-slice-topology.md`) now says that's wrong. The governed sub-slices also match `df-*.slice`, so "nearest" would return `df-reify-governed-agents.slice` itself.
+- id: cand-20261121-1
+  title: Orchestrated-task agent's Bash log-inspection commands denied under don't-ask permission mode, leaving verify-failure diagnosis without a sanctioned read path
+  cause: In orchestrated-task sessions running in don't-ask permission mode, Bash is denied, so the agent cannot inspect verify-log artifacts (ls of review dirs, tail of summary JSON, grep of test logs) and retries with a variant grep instead of a different read path.
+  area: permissions
+  first_seen: '2026-11-21'
+  disposition: pending
+  sightings:
+  - date: '2026-11-21'
+    project: reify
+    session: 12c29f1c-7329-4a44-a1de-a766772229c0
+    origin_phase: unknown
+    manifested_phase: verify
+    evidence_quote: Permission to use Bash has been denied because Claude Code is running in don't ask mode.
 historical_backfill:
   run_id: census-reify-20261022
   unmatched_task_ids:
