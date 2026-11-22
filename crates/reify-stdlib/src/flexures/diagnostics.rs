@@ -850,4 +850,98 @@ mod tests {
              reach this ctor guard"
         );
     }
+
+    /// One known-valid call per PRB ctor with `axis` at its axis slot, as
+    /// `(name, args, axis_index)`. The geometry and material mirror each
+    /// family module's own valid fixture; the rows follow
+    /// [`EXPECTED_PRB_CTOR_NAMES`] order.
+    fn prb_ctor_calls_with_axis(axis: &Value) -> Vec<(&'static str, Vec<Value>, usize)> {
+        let blade = vec![
+            Value::length(0.02),
+            Value::length(0.005),
+            Value::length(0.0005),
+            steel(),
+            origin(),
+            axis.clone(),
+        ];
+        let notch = vec![
+            Value::length(1e-3),
+            Value::length(2e-4),
+            Value::length(5e-3),
+            steel(),
+            origin(),
+            axis.clone(),
+        ];
+        let let_joint = vec![
+            Value::length(0.02),
+            Value::length(0.005),
+            Value::length(0.0005),
+            Value::Int(2),
+            steel(),
+            origin(),
+            axis.clone(),
+        ];
+        let compound = vec![
+            Value::length(0.02),
+            Value::length(0.005),
+            Value::length(0.0005),
+            Value::length(0.010),
+            steel(),
+            axis.clone(),
+            origin(),
+        ];
+        let cartwheel = vec![
+            Value::Int(4),
+            Value::length(0.02),
+            Value::length(0.005),
+            Value::length(0.0005),
+            steel(),
+            origin(),
+            axis.clone(),
+        ];
+        vec![
+            ("prb_cantilever_beam", blade.clone(), 5),
+            ("prb_fixed_fixed_beam", blade.clone(), 5),
+            ("prb_notch_circular", notch.clone(), 5),
+            ("prb_notch_elliptical", notch.clone(), 5),
+            ("prb_notch_right_circular", notch, 5),
+            ("prb_living_hinge", blade.clone(), 5),
+            ("prb_cross_spring_pivot", blade.clone(), 5),
+            ("prb_let_joint", let_joint, 6),
+            ("prb_prismatic_blade", blade.clone(), 5),
+            ("prb_two_axis_pivot", blade, 5),
+            ("prb_parallelogram_flexure", compound.clone(), 5),
+            ("prb_double_parallelogram_flexure", compound, 5),
+            ("prb_cartwheel_flexure", cartwheel, 6),
+        ]
+    }
+
+    /// Every PRB ctor takes its axis as a Direction and stores it unchanged as
+    /// the joint's `"axis"`; the same components spelled as a dimensionless
+    /// `Value::Vector` evaluate to `Undef`.
+    #[test]
+    fn every_prb_ctor_takes_its_axis_as_a_direction() {
+        let direction = reify_test_support::direction_val(0.0, 1.0, 0.0);
+        let vector = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let calls = prb_ctor_calls_with_axis(&direction);
+        let names: Vec<&str> = calls.iter().map(|(name, ..)| *name).collect();
+        assert_eq!(names, EXPECTED_PRB_CTOR_NAMES, "one row per PRB ctor");
+
+        for (name, args, axis_index) in &calls {
+            assert_eq!(args[*axis_index], direction, "{name}: axis slot");
+            let joint = crate::eval_builtin(name, args);
+            assert_eq!(
+                map_get(&joint, "axis"),
+                Some(&direction),
+                "{name}: a Direction axis must build a joint storing it, got {joint:?}"
+            );
+
+            let mut with_vector = args.clone();
+            with_vector[*axis_index] = vector.clone();
+            assert!(
+                crate::eval_builtin(name, &with_vector).is_undef(),
+                "{name}: a Vector axis must evaluate to Undef"
+            );
+        }
+    }
 }

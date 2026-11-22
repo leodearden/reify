@@ -156,6 +156,7 @@ mod tests {
     use crate::test_macros::make_scalar_vec3;
     use reify_core::DimensionVector;
     use reify_ir::Value;
+    use reify_test_support::direction_val;
     use std::collections::BTreeMap;
 
     /// Build a simple opaque selector stub (Map with kind="point_stub").
@@ -336,10 +337,7 @@ mod tests {
     #[test]
     fn roller_support_returns_map_with_correct_fields() {
         let target = point_selector_stub();
-        // Non-unit input to exercise the un-normalized contract: a regression that
-        // silently normalized the normal would shrink magnitude 2.5 → 1.0 and fail
-        // the round-trip assertion below.
-        let normal = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(2.5)]);
+        let normal = direction_val(0.0, 0.0, 1.0);
 
         let result = eval_builtin("RollerSupport", &[target.clone(), normal.clone()]);
 
@@ -361,48 +359,16 @@ mod tests {
         assert_eq!(
             map.get(&Value::String("normal".to_string())),
             Some(&normal),
-            "normal field should round-trip the raw input vector un-normalized"
+            "normal field should store the Direction unchanged"
         );
     }
 
     #[test]
-    fn roller_support_preserves_raw_magnitude() {
-        // Explicit guard against silent normalization of the stored normal.
-        // RollerSupport's contract is to preserve magnitude at consume time;
-        // this test fails immediately if a future change re-normalizes input.
-        let target = point_selector_stub();
-        let normal = Value::Vector(vec![Value::Real(3.0), Value::Real(4.0), Value::Real(0.0)]);
-
-        let result = eval_builtin("RollerSupport", &[target, normal]);
-
-        let map = match result {
-            Value::Map(m) => m,
-            other => panic!("expected Value::Map, got {:?}", other),
-        };
-
-        let stored = match map.get(&Value::String("normal".to_string())) {
-            Some(Value::Vector(v)) => v.clone(),
-            other => panic!("expected Value::Vector for normal, got {:?}", other),
-        };
-
-        let mag_sq: f64 = stored
-            .iter()
-            .map(|c| match c {
-                Value::Real(r) => r * r,
-                other => panic!("expected Value::Real component, got {:?}", other),
-            })
-            .sum();
-        let mag = mag_sq.sqrt();
-
-        assert!(
-            (mag - 5.0).abs() < 1e-12,
-            "stored normal magnitude should be 5.0 (raw 3-4-0 input), got {}",
-            mag
-        );
-        assert!(
-            (mag - 1.0).abs() > 1e-9,
-            "stored normal must NOT be unit-length — that would indicate silent normalization"
-        );
+    fn roller_support_rejects_a_vector_normal() {
+        // The same components as the happy-path Direction, spelled as a
+        // dimensionless Vector: a Vector is not a direction.
+        let normal = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        assert!(eval_builtin("RollerSupport", &[point_selector_stub(), normal]).is_undef());
     }
 
     // ── RollerSupport constructor: failure modes ──────────────────────────────
@@ -419,7 +385,7 @@ mod tests {
 
     #[test]
     fn roller_support_three_args_returns_undef() {
-        let normal = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        let normal = direction_val(0.0, 0.0, 1.0);
         assert!(
             eval_builtin(
                 "RollerSupport",
@@ -431,7 +397,7 @@ mod tests {
 
     #[test]
     fn roller_support_invalid_target_returns_undef() {
-        let normal = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+        let normal = direction_val(0.0, 0.0, 1.0);
         assert!(eval_builtin("RollerSupport", &[Value::Real(1.0), normal]).is_undef());
     }
 
