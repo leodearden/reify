@@ -46,8 +46,14 @@
 //! SAME path as non-parametric ones — `from_compiled_for_prelude` carries
 //! the raw `TypeExpr` body across the module boundary so use-site
 //! instantiation via `resolve_parameterized_alias` can substitute concrete
-//! type args at compile time.  This is PRELUDE-ONLY: general user-module →
-//! user-module alias import is the deferred bookmark (#4687 out-of-scope).
+//! type args at compile time.
+//!
+//! A module's direct user imports arrive through this same `prelude_aliases`
+//! slice (`PreludeContext::extended`), so user-module → user-module import of
+//! pub aliases is live. A parametric body resolves its ALIAS names against
+//! the `body_scope` its defining module captured on export (#10297), so an
+//! importer's own alias cannot capture them, and its ENTITY names resolve at
+//! the use site.
 //!
 //! Prelude-vs-prelude alias collisions are bound by [`crate::name_env`] when
 //! the `PreludeContext` is built, so the `prelude_aliases` slice holds one
@@ -73,10 +79,12 @@ use crate::types::{CompiledModule, CompiledTrait, CompiledTypeAlias, TopologyTem
 /// 1. Seed `ctx.alias_registry` with pub entries from `prelude_aliases`
 ///    (skipping any name already declared by the user module, so user aliases
 ///    always shadow prelude aliases without producing a "duplicate type alias"
-///    diagnostic).  Parametric prelude aliases (non-empty `type_params`) are
+///    diagnostic).  Prelude aliases include those of the module's direct user
+///    imports.  Parametric prelude aliases (non-empty `type_params`) are
 ///    seeded via the same path — their raw `TypeExpr` body (carried by
 ///    `CompiledTypeAlias.type_expr` since task 4792) enables use-site
-///    instantiation via `resolve_parameterized_alias`.
+///    instantiation via `resolve_parameterized_alias`, against the alias
+///    bindings in `CompiledTypeAlias.body_scope` (#10297).
 /// 2. Build a name → decl lookup map over user `alias_refs`, emitting
 ///    duplicate-alias diagnostics (keyed on `span` so both declared-here
 ///    locations are pointed at).
@@ -146,6 +154,9 @@ pub(crate) fn phase_aliases(
 
 /// Post-entity-phase validation hook: validate every user-declared `pub`
 /// parametric type alias at its definition site.
+///
+/// Among its rules: such an alias may not name a non-pub alias the module
+/// declares, because no importer could see it (#10297).
 ///
 /// Iterates `ctx.alias_registry.iter()` (user-declared aliases only, excluding
 /// prelude-seeded entries), filters to `is_pub && !type_params.is_empty()`,
