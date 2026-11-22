@@ -1030,32 +1030,36 @@ _row4_pin_coresident() {
 
 # _row4_worker_affinities <ready_file>
 #   Prints one Cpus_allowed_list per pid line of a cpu_load_fixture.sh
-#   --ready-file, in file order, or the literal "unavailable" for a pid whose
-#   /proc/<pid>/status cannot be read (the worker is gone).  "unavailable" is
-#   not a cpu id, so _row4_pin_coresident rejects it: a vanished worker is never
-#   co-resident.  Callers capture it as `$(... || true)`: an unreadable ready
-#   file makes this return non-zero, and the empty capture then fails the
-#   predicate on its own.
+#   --ready-file, in file order, or the literal "unavailable" for a pid that is
+#   no longer running: it was reaped (its /proc/<pid>/status cannot be read) OR
+#   it has exited and awaits its parent's reap (State: Z or X).  An exited
+#   process burns nothing, and an orphan's reaper is a third party (systemd
+#   --user adopts orphans here) whose latency no caller may depend on.
+#   "unavailable" is not a cpu id, so _row4_pin_coresident rejects it: a
+#   vanished worker is never co-resident.  Callers capture it as
+#   `$(... || true)`: an unreadable ready file makes this return non-zero, and
+#   the empty capture then fails the predicate on its own.
 _row4_worker_affinities() {
     local ready_file="$1" pid mask
     while IFS= read -r pid; do
         [ -n "$pid" ] || continue
-        mask="$(awk '/^Cpus_allowed_list:/ { print $2 }' "/proc/${pid}/status" 2>/dev/null || true)"
+        mask="$(awk '/^State:/ { state = $2 } /^Cpus_allowed_list:/ { mask = $2 } END { if (state != "Z" && state != "X") print mask }' "/proc/${pid}/status" 2>/dev/null || true)"
         printf '%s\n' "${mask:-unavailable}"
     done < "$ready_file"
 }
 
 # _row4_await_vanished <deadline_s> <pid_file>...
 #   Returns 0 as soon as EVERY named file is non-empty AND every pid it lists
-#   reads "unavailable" through _row4_worker_affinities (the one definition of a
-#   vanished pid); 1 when the deadline passes first.  Technique T
+#   reads "unavailable" through _row4_worker_affinities (the one definition of
+#   "vanished": no longer running, so an exited-but-unreaped pid counts); 1 when
+#   the deadline passes first.  It polls because a signalled process takes time
+#   to exit.  Technique T
 #   (docs/prds/infra-test-wallclock-deflake.md): <deadline_s> only keeps a pid
 #   that never ends from hanging the suite — it never discriminates, so callers
 #   size it generously and never assert on how long the poll took.  A missing or
 #   empty file lists nothing, and nothing listed is not "all vanished".
 #   Vanishing is checked BEFORE the deadline, so a 0-second deadline still
-#   answers on the current state.  A zombie keeps its /proc entry until its
-#   parent reaps it, which is why this polls.
+#   answers on the current state.
 #   The reader's output is captured into a variable rather than piped into an
 #   early-closing reader: this file runs under `set -o pipefail`.
 _row4_await_vanished() {
