@@ -51,14 +51,16 @@ def is_trampoline(path):
 
 
 def resolve_real_cargo(path_value):
+    candidates = (os.path.join(entry, "cargo") for entry in path_value.split(os.pathsep) if entry)
     cargos = [
-        cargo
-        for cargo in (os.path.join(entry, "cargo") for entry in path_value.split(os.pathsep) if entry)
+        (cargo, is_trampoline(cargo))
+        for cargo in candidates
         if os.path.isfile(cargo) and os.access(cargo, os.X_OK)
     ]
-    marked = [is_trampoline(cargo) for cargo in cargos]
-    start = marked.index(True) + 1 if True in marked else 0
-    return next((cargo for cargo, mark in zip(cargos[start:], marked[start:]) if not mark), None)
+    first_trampoline = next((index for index, (_, mark) in enumerate(cargos) if mark), len(cargos))
+    after_first = [cargo for cargo, mark in cargos[first_trampoline:] if not mark]
+    anywhere = [cargo for cargo, mark in cargos if not mark]
+    return next(iter(after_first or anywhere), None)
 
 
 def main():

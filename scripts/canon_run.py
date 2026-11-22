@@ -407,16 +407,32 @@ def is_trampoline(path: str) -> bool:
         return False
 
 
+def executable_cargos(path_value: str) -> list[str]:
+    """Every `<entry>/cargo` on path_value that is an executable regular file, in PATH order."""
+    candidates = (os.path.join(entry, "cargo") for entry in path_value.split(os.pathsep) if entry)
+    return [cargo for cargo in candidates if os.path.isfile(cargo) and os.access(cargo, os.X_OK)]
+
+
 def resolve_real_cargo(path_value: str) -> str | None:
-    """The first unmarked cargo after the first trampoline on PATH, else the first cargo."""
-    cargos = [
-        cargo
-        for cargo in (os.path.join(entry, "cargo") for entry in path_value.split(os.pathsep) if entry)
-        if os.path.isfile(cargo) and os.access(cargo, os.X_OK)
-    ]
-    marked = [is_trampoline(cargo) for cargo in cargos]
-    start = marked.index(True) + 1 if True in marked else 0
-    return next((cargo for cargo, mark in zip(cargos[start:], marked[start:]) if not mark), None)
+    """The caller-order rule: the first unmarked cargo after the first trampoline on PATH.
+
+    When no unmarked cargo follows a trampoline, or nothing is marked, the first
+    unmarked cargo anywhere on PATH; else None.
+    """
+    cargos = [(cargo, is_trampoline(cargo)) for cargo in executable_cargos(path_value)]
+    first_trampoline = next((index for index, (_, mark) in enumerate(cargos) if mark), len(cargos))
+    after_first = [cargo for cargo, mark in cargos[first_trampoline:] if not mark]
+    anywhere = [cargo for cargo, mark in cargos if not mark]
+    return next(iter(after_first or anywhere), None)
+
+
+def resolve_canon_cargo(path_value: str) -> str | None:
+    """The first unmarked cargo on path_value.
+
+    C4's composed PATH starts with the tree's own trampoline, so every cargo on it
+    follows the first trampoline whether or not that entry is visible from here.
+    """
+    return next((cargo for cargo in executable_cargos(path_value) if not is_trampoline(cargo)), None)
 
 
 def cargo_subcommand_index(args: list[str]) -> int | None:
@@ -569,7 +585,7 @@ def canon_invocation(
         env["REIFY_TS_CACHE_HOME"] = cache_home
     if cargo:
         apply_incremental_policy(env)
-        real_cargo = resolve_real_cargo(env["PATH"])
+        real_cargo = resolve_canon_cargo(env["PATH"])
         if real_cargo is None:
             raise CommandNotFound("no cargo on the CANON PATH other than reify-canon trampolines")
         argv = [real_cargo, *argv]
