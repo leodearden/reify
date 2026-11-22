@@ -9,7 +9,8 @@ invokes this file.
 
 ARMED ONLY: every test skips unless REIFY_RUN_BUNDLE_CLEAN_INSTALL=1, because
 the proof is a cold bundle build plus two docker containers. Once armed, a
-missing docker is a FAIL, not a skip.
+docker that cannot create a container within scripts/docker-create-probe.sh's
+bound is a FAIL, not a skip.
 
 What it proves, each in a fresh stock ubuntu:24.04 container whose premises are
 asserted first (no /opt/reify-deps, only the stock apt sources):
@@ -53,6 +54,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BUILD_BUNDLE = REPO_ROOT / "scripts" / "build-bundle.sh"
+DOCKER_CREATE_PROBE = REPO_ROOT / "scripts" / "docker-create-probe.sh"
 
 ARM_VAR = "REIFY_RUN_BUNDLE_CLEAN_INSTALL"
 BASE_IMAGE = "ubuntu:24.04"
@@ -306,9 +308,15 @@ class BundleCleanInstall(unittest.TestCase):
     def setUpClass(cls):
         if os.environ.get(ARM_VAR) != "1":
             raise unittest.SkipTest(f"armed only: set {ARM_VAR}=1 (docker + a cold bundle build)")
-        docker = _docker("info")
-        if docker.returncode != 0:
-            raise AssertionError(f"armed, but docker is unusable:\n{docker.stdout[-2000:]}")
+        create_check = subprocess.run(
+            ["bash", str(DOCKER_CREATE_PROBE), BASE_IMAGE],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False,
+        )
+        if create_check.returncode != 0:
+            raise AssertionError(
+                "armed, but docker cannot create a container "
+                f"(scripts/docker-create-probe.sh exit {create_check.returncode}):\n"
+                f"{create_check.stdout[-2000:]}")
         reused = (os.environ.get("REIFY_BUNDLE_DEB"), os.environ.get("REIFY_BUNDLE_APPIMAGE"))
         if all(reused):
             cls.build = None

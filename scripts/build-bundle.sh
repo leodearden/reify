@@ -57,7 +57,7 @@ step "preflight"
 # header, THE SILENT-VACUITY RULE), which must never become a release asset.
 bash scripts/check-manifold-deps.sh || fail "native deps preflight failed (scripts/check-manifold-deps.sh)"
 cargo tauri --version >/dev/null 2>&1 || fail "cargo tauri (tauri-cli) is not on PATH"
-docker info >/dev/null 2>&1 || fail "docker is unusable; scripts/bundle_closure.py probes a reference container"
+bash scripts/docker-create-probe.sh || fail "docker cannot create a container (scripts/docker-create-probe.sh above); scripts/bundle_closure.py probes a reference container"
 for tool in npm python3 dpkg-deb tar cmp; do
     command -v "$tool" >/dev/null || fail "$tool is not on PATH"
 done
