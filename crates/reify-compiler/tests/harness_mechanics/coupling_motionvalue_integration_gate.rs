@@ -196,7 +196,7 @@ fn let_bound_coupling_in_bind_emits_nondriving_joint_error() {
     // prismatic() and couple() resolve through the real joint-constructor family.
     let source = r#"
 structure def NondrivingBindLetBound {
-    let j = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
+    let j = prismatic(dir(1, 0, 0), 0mm .. 1000mm)
     let c = couple(j, -1.0)
     let b = bind(c, 5mm)
 }
