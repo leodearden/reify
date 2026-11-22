@@ -5,7 +5,8 @@
 //! source: `docs/prds/v0_6/declared-intent-consumption-accounting.md` §4.3.
 //!
 //! - [`TransientReason`]: the verdict may resolve on another run or another
-//!   evaluation surface (an input becomes defined, a kernel measures).
+//!   evaluation surface (an input becomes defined, a kernel measures), or
+//!   only once the inputs change (an operation refused the operands it met).
 //! - [`StructuralReason`]: the verdict is provably run-invariant (R2:
 //!   never-false-Inert). Anything unproven is `Transient`.
 

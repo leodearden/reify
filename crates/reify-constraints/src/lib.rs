@@ -142,6 +142,11 @@ fn classify_undef(expr: &CompiledExpr, ctx: &reify_expr::EvalContext) -> Transie
 /// builtin FunctionCall until it reaches the node whose operands are all
 /// defined, and reports it when [`refused_its_operands`] holds. Any other node
 /// kind is unproven.
+///
+/// Cost, paid only on the Undef path: each level evaluates its node's children
+/// up to the first Undef one, so the subtree `d` levels down is evaluated `d`
+/// more times, and a builtin origin once more by [`refused_its_operands`]. A
+/// user call would make that a repeated solve, so its presence declines the walk.
 fn refused_operation(
     expr: &CompiledExpr,
     ctx: &reify_expr::EvalContext,
@@ -159,14 +164,17 @@ fn refused_operation(
             }
             _ => return None,
         };
-        let mut children = Vec::new();
-        node.for_each_child(&mut |child| children.push(child));
-        let operands: Vec<Value> = children
-            .iter()
-            .map(|child| reify_expr::eval_expr(child, ctx))
-            .collect();
-        if let Some(first_undef) = operands.iter().position(Value::is_undef) {
-            node = children[first_undef];
+        let mut operands = Vec::new();
+        let first_undef_child = node.try_for_each_child(&mut |child| {
+            let value = reify_expr::eval_expr(child, ctx);
+            if value.is_undef() {
+                return ControlFlow::Break(child);
+            }
+            operands.push(value);
+            ControlFlow::Continue(())
+        });
+        if let ControlFlow::Break(child) = first_undef_child {
+            node = child;
             continue;
         }
         return refused_its_operands(node, &operands).then(|| TransientReason::OperationRefused {
@@ -181,7 +189,10 @@ fn refused_operation(
 /// An operator over plain data refuses on its own. A builtin refuses only when
 /// its static type is plain data and a stdlib family claims the call and
 /// answers Undef; a name no family claims (a geometry constructor, a selector
-/// ctor) is a call `eval_expr` cannot realize, not a refusal.
+/// ctor) is a call `eval_expr` cannot realize, not a refusal. A claimed
+/// recognised-name stub also answers Undef (see
+/// [`reify_stdlib::try_eval_builtin`]); the plain-data checks are what keep
+/// one out.
 fn refused_its_operands(node: &CompiledExpr, operands: &[Value]) -> bool {
     if !operands.iter().all(is_plain_data_value) {
         return false;
@@ -350,7 +361,7 @@ mod tests {
     use super::*;
     use reify_core::{ConstraintNodeId, DiagnosticCode, DimensionVector, Severity, Type, ValueCellId};
     use reify_ir::{
-        BinOp, CompiledExpr, IndeterminateReason, RefusedOperation, TransientReason, Value,
+        BinOp, CompiledExpr, IndeterminateReason, RefusedOperation, TransientReason, UnOp, Value,
         ValueMap,
     };
 
@@ -937,6 +948,80 @@ mod tests {
         assert_eq!(
             result.indeterminate_reason,
             transient(TransientReason::OperatorUndefinedForKinds { kinds: vec![] })
+        );
+        assert_eq!(result.diagnostics.messages[0].severity, Severity::Warning);
+    }
+
+    #[test]
+    fn a_unary_operator_over_plain_data_is_an_unexpected_refusal() {
+        let s = vcid("Root", "s");
+        let n = vcid("Root", "n");
+        let mut values = ValueMap::new();
+        values.insert(s.clone(), Value::String("abc".to_string()));
+        values.insert(n.clone(), Value::Int(3));
+        let negated_string_gt_zero = CompiledExpr::binop(
+            BinOp::Gt,
+            CompiledExpr::unop(
+                UnOp::Neg,
+                CompiledExpr::value_ref(s, Type::String),
+                Type::dimensionless_scalar(),
+            ),
+            real(0.0),
+            Type::Bool,
+        );
+        let not_an_int =
+            CompiledExpr::unop(UnOp::Not, CompiledExpr::value_ref(n, Type::Int), Type::Bool);
+
+        for (expr, operation, operand) in [
+            (&negated_string_gt_zero, UnOp::Neg, "String"),
+            (&not_an_int, UnOp::Not, "Int"),
+        ] {
+            let result = check_single(cnid("Root", 0), expr, &values);
+
+            assert_eq!(result.satisfaction, Satisfaction::Indeterminate);
+            assert_eq!(
+                result.indeterminate_reason,
+                refused(RefusedOperation::Unary(operation), &[operand])
+            );
+            assert_eq!(result.diagnostics.messages[0].severity, Severity::Error);
+        }
+    }
+
+    /// `(if c then 1.0 / x else 0.0) > 0.0` at `x = 0.0`: the division refuses,
+    /// but its Undef reaches the root through a Conditional, which is not a
+    /// pure operation, so the descent stops there unproven.
+    #[test]
+    fn an_undef_beneath_an_ineligible_node_stays_tolerated() {
+        let c = vcid("Root", "c");
+        let x = vcid("Root", "x");
+        let mut values = ValueMap::new();
+        values.insert(c.clone(), Value::Bool(true));
+        values.insert(x.clone(), Value::Real(0.0));
+        let reciprocal = CompiledExpr::binop(
+            BinOp::Div,
+            real(1.0),
+            CompiledExpr::value_ref(x, Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
+        );
+        let conditional = CompiledExpr {
+            content_hash: reify_core::ContentHash::of(b"if c then 1.0 / x else 0.0"),
+            result_type: Type::dimensionless_scalar(),
+            kind: CompiledExprKind::Conditional {
+                condition: Box::new(CompiledExpr::value_ref(c, Type::Bool)),
+                then_branch: Box::new(reciprocal),
+                else_branch: Box::new(real(0.0)),
+            },
+        };
+        let expr = CompiledExpr::binop(BinOp::Gt, conditional, real(0.0), Type::Bool);
+
+        let result = check_single(cnid("Root", 0), &expr, &values);
+
+        assert_eq!(result.satisfaction, Satisfaction::Indeterminate);
+        assert_eq!(
+            result.indeterminate_reason,
+            transient(TransientReason::OperatorUndefinedForKinds {
+                kinds: vec!["Bool".to_string(), "Real".to_string()],
+            })
         );
         assert_eq!(result.diagnostics.messages[0].severity, Severity::Warning);
     }

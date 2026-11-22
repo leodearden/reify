@@ -255,8 +255,10 @@ pub fn eval_builtin(name: &str, args: &[Value]) -> Value {
 /// Evaluate a built-in stdlib function by name, or `None` when no family
 /// claims `name` for these arguments.
 ///
-/// `Some(Value::Undef)` means a family answered and refused the arguments;
-/// `None` means the stdlib has no evaluation for the call at all.
+/// `Some(Value::Undef)` means a family recognised the name and answered Undef:
+/// either it refused the arguments, or the name is a stub whose real
+/// evaluation lives elsewhere (an `eval_expr` intercept, a compute
+/// trampoline). `None` means the stdlib has no evaluation for the call at all.
 pub fn try_eval_builtin(name: &str, args: &[Value]) -> Option<Value> {
     // Registry FIRST (PRD §7.3(3)): a name registered as a
     // `BindingKind::EvalBuiltin` row resolves here, ahead of the surviving
