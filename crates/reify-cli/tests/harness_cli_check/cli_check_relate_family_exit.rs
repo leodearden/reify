@@ -2,9 +2,11 @@
 //! general `Severity::Error` gate (docs/legibility/design-invariants.md INV-SF-2;
 //! PRD docs/prds/v0_6/placement-relations-belt.md task ε / boundary B3).
 //!
-//! These pins add no relate-specific exit logic. The allowlist guard lives in
-//! crates/reify-cli/src/check_verdict/check_error_gate_tests.rs, because the allowlist
-//! is private to the binary.
+//! These pins add no relate-specific exit logic. The unit-level guard lives in
+//! crates/reify-cli/src/check_verdict/check_error_gate_tests.rs
+//! (`relate_family_errors_are_never_excused`,
+//! `check_gating_error_agrees_with_has_error_diagnostic`), because the gate
+//! helpers are private to the binary.
 
 use crate::common;
 
@@ -102,9 +104,8 @@ fn check_exits_nonzero_on_engine_phase_static_relate_violation() {
     );
 }
 
-/// This Error is CODE-LESS — the only relate shape a `MessageContains`
-/// allowlist entry could swallow — so this end-to-end pin is the allowlist
-/// guard for code-less relate Errors.
+/// This Error is CODE-LESS — a message-text excuse is the only way it could
+/// be swallowed — so this end-to-end pin guards code-less relate Errors.
 #[test]
 fn check_exits_nonzero_on_engine_phase_relate_conflict() {
     assert_check_rejects(

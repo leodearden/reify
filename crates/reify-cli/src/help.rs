@@ -289,7 +289,8 @@ const SUBCOMMANDS: &[SubcommandHelp] = &[
         details: &[
             HelpSection::Prose(
                 "Refuses to write a file whose derived imports would leave a diagnostic the\n\
-                full standard library does not. A `#cfg`-gated import counts only when the\n\
+                full standard library does not, or where an added import would not stand\n\
+                alone where it is written. A `#cfg`-gated import counts only when the\n\
                 active cfg satisfies it.",
             ),
             HelpSection::Flags(&[

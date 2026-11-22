@@ -117,7 +117,7 @@ tasks:
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: 'CHECK_ERROR_EXIT_ALLOWLIST'
+      pattern: 'fn check_gating_error\('
       paths:
       - crates/reify-cli/src
       expect: present

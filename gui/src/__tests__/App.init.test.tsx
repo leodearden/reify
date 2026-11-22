@@ -20,6 +20,7 @@ import * as bridge from '../bridge';
 import { listen } from '@tauri-apps/api/event';
 import { initDebugBridge } from '../debug/bridge';
 import { initDebugBridge as mockedInitDebugBridge } from '../debug';
+import './appHarness/harness';
 import { renderAndWaitForReady } from './appHarness/harness';
 
 describe('App initial state loading', () => {

@@ -57,8 +57,9 @@ echo "=== govtest slice reaper tests (task 5930) ==="
 #
 # This is the single chokepoint that decides whether a unit name is eligible
 # to be stopped at all, so its NEGATIVES matter more than its positives: the
-# production slices (reify-governed-{agents,merge}.slice) live in the same
-# per-user systemd session and must never be selectable by any code path here.
+# production role slices (scripts/lib_cgroup.sh::cgroup_role_slice) and the
+# LEGACY pre-9998 reify-governed-* names live in the same per-user systemd
+# session, and neither may be selectable by any code path here.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Block A: govtest_slice_pid name grammar ---"
@@ -81,11 +82,14 @@ assert "A2: child reify-govtest1285669-agents.slice => 1285669" \
 assert "A3: child reify-govtest1285669-merge.slice => 1285669" \
     _expect_pid "reify-govtest1285669-merge.slice" "1285669"
 
-# The production slice is the most important negative: it is what a
-# too-loose prefix match would sweep away mid-run on a live host.
-assert "A4: production reify-governed-agents.slice => EMPTY (never selectable)" \
+# The legacy pre-9998 production names are the sharpest negatives: they share
+# the `reify-` stem with every profile, so a too-loose prefix match would
+# sweep them away on a long-lived host where their idle units persist. The
+# current cgroup_role_slice slices start `df-`, so they sit outside both the
+# enumeration glob and the anchored grammar.
+assert "A4: legacy production reify-governed-agents.slice => EMPTY (never selectable)" \
     _expect_pid "reify-governed-agents.slice" ""
-assert "A5: production reify-governed-merge.slice => EMPTY (never selectable)" \
+assert "A5: legacy production reify-governed-merge.slice => EMPTY (never selectable)" \
     _expect_pid "reify-governed-merge.slice" ""
 assert "A6: reify-govtest.slice (no digits) => EMPTY" \
     _expect_pid "reify-govtest.slice" ""
@@ -228,8 +232,8 @@ assert "C3: caller's own self_pid => NOTHING even when it reads dead via the sea
     _expect_stale 555 "444" "$(_listing_triple 555)" ""
 
 # C4 — everything at once, including the two names that must never be
-# selectable: the production slice carrying real agent placement, and
-# dark-factory's own unit namespace.
+# selectable: a legacy production slice name, and dark-factory's own unit
+# namespace.
 _C4_LISTING="$(_listing_triple 111)
 $(_listing_triple 222)
 $(_listing_triple 333)
@@ -237,7 +241,7 @@ reify-governed-agents.slice     loaded active active Slice /reify/governed/agent
 df-verify-abc-def.scope         loaded active running /usr/bin/env
 
 "
-assert "C4: mixed listing (dead + live + self + production + df-verify + blank) => only the dead parent" \
+assert "C4: mixed listing (dead + live + self + legacy production + df-verify + blank) => only the dead parent" \
     _expect_stale 333 "222" "$_C4_LISTING" "reify-govtest111.slice"
 
 # C5 — several leaked runs reap independently, one parent line each, in
@@ -476,7 +480,7 @@ assert "D1: dead predecessor => exactly one stop, of the PARENT slice" \
 _D2_LISTING="$(_listing_triple 111)
 $(_listing_triple 222)
 reify-governed-agents.slice     loaded active active Slice /reify/governed/agents"
-assert "D2: live pid, own pid (via default \$\$) and production slice all skipped; only the dead parent stopped" \
+assert "D2: live pid, own pid (via default \$\$) and legacy production slice all skipped; only the dead parent stopped" \
     _expect_reap_stops "$_STUB_ROOT/bin-ok" "222" 1 "$_D2_LISTING" \
         "reify-govtest111.slice"
 
@@ -888,14 +892,16 @@ assert "F5: LIFECYCLE_ONLY without REIFY_GOVTEST_TEST_MODE is refused loudly and
 # validated profile and everything else is shared.
 #
 # THE SETTER IS A SAFETY BOUNDARY, NOT A CONVENIENCE.  govtest_slice_pid's
-# anchored grammar is the single chokepoint that makes the production
+# anchored grammar is the single chokepoint that makes the production role
+# slices (scripts/lib_cgroup.sh::cgroup_role_slice) and the legacy
 # reify-governed-*.slice units unreachable from every stop path in this
 # library, and the profile is interpolated UNQUOTED into that regex (quoted,
 # it would match literally and the grammar would never fire at all).  The
 # charset validation asserted in G8/G9 is therefore the thing standing between
 # a caller and a widened blast radius: a prefix of `reify-.*` would make
-# `reify.slice` a match, and that is the shared implicit ROOT of the LIVE
-# orchestrator hierarchy — stopping it cascades into real agent placement.
+# `reify.slice` a match, and that is the shared implicit ROOT of every
+# profile's run slices and of the legacy reify-governed-* names — stopping it
+# cascades into every concurrent run's slices.
 #
 # From G1 on, this FILE runs under the reify-test profile; Blocks H, I and J
 # all target that namespace.  Blocks A-F above are deliberately left untouched
@@ -962,11 +968,12 @@ _expect_pid_all_empty() {
 }
 
 # G6 is the assertion this whole design turns on.  reify.slice is the shared
-# implicit root of BOTH hierarchies — the production reify-governed.slice and
-# reify-governed-agents.slice nest under it and carry live orchestrator agent
-# placement — so a grammar that matched it would hand every stop path in this
-# library the ability to cascade-kill the running fleet.
-assert "G6: reify.slice and the production reify-governed-* slices => EMPTY (never selectable)" \
+# implicit root of every profile's run slices (reify-govtest<pid>,
+# reify-test<pid>) and of the legacy pre-9998 reify-governed.slice /
+# reify-governed-agents.slice names, which idle units on a long-lived host may
+# still carry — so a grammar that matched it would hand every stop path in
+# this library the ability to cascade into every concurrent run's slices.
+assert "G6: reify.slice and the legacy production reify-governed-* slices => EMPTY (never selectable)" \
     _expect_pid_all_empty \
         "reify.slice" \
         "reify-governed.slice" \
@@ -1365,9 +1372,9 @@ assert "H4: a concurrent run's reify-test<pid>.slice units do NOT block the lega
 # (e) THE REFUSALS — the safety core.  Each of these is passed EXPLICITLY as a
 # legacy arg AND is present in the listing, so only the prefix re-check can
 # keep it out.  reify.slice is the one that matters: it is the shared implicit
-# root of BOTH hierarchies, the production reify-governed.slice /
-# reify-governed-agents.slice nest under it carrying live orchestrator agent
-# placement, and stopping it would cascade into the running fleet.  It is also
+# root of every profile's run slices and of the legacy reify-governed.slice /
+# reify-governed-agents.slice names, so stopping it would cascade into every
+# concurrent run's slices and any legacy units still idling there.  It is also
 # exactly the name a careless "strip the last dash segment and stop the
 # parent" design would arrive at from reify-test.slice, which is why it is
 # asserted rather than assumed.
@@ -1376,7 +1383,7 @@ reify-governed.slice        loaded active active Slice /reify/governed
 reify-governed-agents.slice loaded active active Slice /reify/governed/agents
 reify-govtest999.slice      loaded active active Slice /reify/govtest999
 ../reify.slice              loaded active active Slice /reify"
-assert "H5: reify.slice, the production slices, the other profile and a traversal string are NEVER emitted" \
+assert "H5: reify.slice, the legacy production slices, the other profile and a traversal string are NEVER emitted" \
     _expect_legacy_stale "$_H_E_LISTING" "" \
         "reify.slice" "reify-governed.slice" "reify-governed-agents.slice" \
         "reify-govtest999.slice" "../reify.slice"
@@ -1637,16 +1644,17 @@ _expect_legacy_survives_failing_systemctl() {
 assert "I7: systemctl failing every call => still exit 0 (fail-soft)" \
     _expect_legacy_survives_failing_systemctl
 
-# (g) — the assertion that stands between a bug in this actuator and killing
-# live orchestrator agent placement. reify.slice is the shared implicit root
-# of BOTH hierarchies; reify-governed-agents.slice carries real agent
-# placement. Both are present in the listing AND passed explicitly as legacy
-# args here, so only govtest_legacy_stale's prefix re-check keeps them out.
+# (g) — the assertion that stands between a bug in this actuator and stopping
+# reify.slice, the shared implicit root of every concurrent run's slices and
+# of the legacy reify-governed-* names; reify-governed-agents.slice is one of
+# those legacy production names, not live placement. Both are present in the
+# listing AND passed explicitly as legacy args here, so only
+# govtest_legacy_stale's prefix re-check keeps them out.
 _I_PROD_LISTING="reify.slice                 loaded active active Slice /reify
 reify-governed.slice        loaded active active Slice /reify/governed
 reify-governed-agents.slice loaded active active Slice /reify/governed/agents
 $_I_HOST_LISTING"
-assert "I8: reify.slice and reify-governed-agents.slice are never stopped, even when passed as legacy args" \
+assert "I8: reify.slice and legacy reify-governed-agents.slice are never stopped, even when passed as legacy args" \
     _expect_legacy_stops "$_STUB_ROOT/bin-ok" "$_I_PROD_LISTING" "$_I_WANT" \
         "reify.slice" "reify-governed.slice" "reify-governed-agents.slice" \
         "reify-test-task.slice" "reify-test-merge.slice" "reify-test.slice"
@@ -1962,22 +1970,24 @@ assert "J5: the legacy sweep is wired — the two leaves stopped, their still-pa
     _j_legacy_reaped
 
 # J6 — the assertion that stands between a bug anywhere in this wiring and
-# killing live orchestrator agent placement. Both names are in the listing the
-# child's sweeps actually saw (see the fixture note above), so only the
-# grammar and prefix re-checks keep them out.
-_j_production_untouched() {
+# stopping reify.slice, the shared implicit root of every concurrent run's
+# slices and of the legacy reify-governed-* names (reify-governed-agents.slice
+# is one of them). Both names are in the listing the child's sweeps actually
+# saw (see the fixture note above), so only the grammar and prefix re-checks
+# keep them out.
+_j_root_and_legacy_untouched() {
     local unit
     for unit in reify.slice reify-governed-agents.slice; do
         if _j_word_present "$unit"; then
-            printf 'STOPPED %s — this would cascade into live orchestrator agent placement:\n' "$unit"
+            printf 'STOPPED %s — reify.slice and the legacy governed slices are outside every profile namespace:\n' "$unit"
             cat "$_J_LOG" 2>/dev/null || true
             return 1
         fi
     done
     return 0
 }
-assert "J6: reify.slice and reify-governed-agents.slice were never stopped by any code path in the drive" \
-    _j_production_untouched
+assert "J6: reify.slice and legacy reify-governed-agents.slice were never stopped by any code path in the drive" \
+    _j_root_and_legacy_untouched
 
 # J7 — pins the seam itself, and with it this block's pool cost. A full run
 # ends by printing test_helpers.sh's "Results: N passed, M failed"; the

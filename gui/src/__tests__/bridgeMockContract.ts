@@ -2,8 +2,8 @@
  * Pure helpers for the bridge-mock coverage guard: which bridge.ts runtime
  * exports the shared App factory neither mocks nor allowlists, which
  * allowlist entries have rotted, and which App-rendering test files do not
- * import the App harness. The invariant they enforce, and why a gap in it
- * fails silently, are documented once in the consumer —
+ * import the App harness for its side effect. The invariant they enforce, and
+ * why a gap in it fails silently, are documented once in the consumer —
  * `bridgeMockCoverage.test.ts`. Not restated here.
  *
  * This file has no `.test.` segment, so vitest does not collect it as a suite
@@ -56,7 +56,7 @@ export interface TestSource {
 
 const DEFAULT_APP_IMPORT = /^import App\b[^;]*from '(\.\.\/)+App'/m;
 
-/** The membership criterion: a default import of App. A named-only import renders nothing. */
+/** One half of the membership criterion: a default import of App. A named-only import renders nothing. */
 export function defaultImportsApp(source: string): boolean {
   return DEFAULT_APP_IMPORT.test(source);
 }
@@ -66,17 +66,38 @@ function importSpecifier(fromFile: string, module: string): string {
   return specifier.startsWith('.') ? specifier : `./${specifier}`;
 }
 
+const sourceLines = (source: string) => source.split('\n').map((line) => line.trimEnd());
+
+/** The bare side-effect import on a line of its own: the one import form a TS transform never drops. */
+function sideEffectImports(lines: readonly string[], specifier: string): boolean {
+  return lines.includes(`import '${specifier}';`);
+}
+
 /**
- * Paths of the files that default-import App but import nothing from
- * `harnessModule` (an absolute path without extension), by a named or a bare
- * import. Sorted.
+ * A line ending in a `from` clause that names `specifier`: the close of a named,
+ * multi-line, namespace or type-only import. Errs toward inclusion, since a
+ * file missed here fails silently: either quote style, semicolon optional.
+ * Accepted blind spot: a specifier on a line apart from its `from`, or one
+ * followed by a trailing comment, is not seen.
+ */
+function hasFromClause(lines: readonly string[], specifier: string): boolean {
+  const clauses = [`'${specifier}'`, `"${specifier}"`].flatMap((quoted) => [`from ${quoted}`, `from ${quoted};`]);
+  return lines.some((line) => clauses.some((clause) => line.endsWith(clause)));
+}
+
+/**
+ * Paths of the files that default-import App or import anything from
+ * `harnessModule` (an absolute path without extension), yet lack the bare
+ * `import '<specifier>';` line. Sorted. Why only the bare form counts is
+ * documented in `bridgeMockCoverage.test.ts`.
  */
 export function harnessOffenders(files: readonly TestSource[], harnessModule: string): string[] {
   return files
     .filter(({ path, source }) => {
-      if (!defaultImportsApp(source)) return false;
       const specifier = importSpecifier(path, harnessModule);
-      return !source.includes(`from '${specifier}'`) && !source.includes(`import '${specifier}'`);
+      const lines = sourceLines(source);
+      const isMember = defaultImportsApp(source) || hasFromClause(lines, specifier);
+      return isMember && !sideEffectImports(lines, specifier);
     })
     .map(({ path }) => path)
     .sort();

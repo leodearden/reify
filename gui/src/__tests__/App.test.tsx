@@ -19,6 +19,7 @@ import App from '../App';
 import * as bridge from '../bridge';
 import { STORAGE_KEY } from '../hooks/useLayoutPersistence';
 import { VIEWPORT_DISPLAY_STORAGE_KEY } from '../stores/viewportDisplayStore';
+import './appHarness/harness';
 import { renderAndWaitForReady, oneFileState } from './appHarness/harness';
 import {
   capturedDualViewportProps,

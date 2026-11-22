@@ -1,12 +1,47 @@
-//! Renders a compiler Diagnostic as one `path:line:col: severity: message` line, positioned by its first label.
+//! Renders one `path:line:col: severity: message` line, the GNU shape, for a compiler Diagnostic
+//! (positioned by its first label) or for a parse error (positioned by its parser).
 
-use reify_core::{Diagnostic, byte_offset_to_line_col};
+use reify_core::{Diagnostic, Severity, byte_offset_to_line_col};
+
+/// The label on every parse-error line the CLI writes: after the severity in
+/// [`render_parse_error_line`]'s GNU lines, and leading the line in main.rs's single-file
+/// `report_parse_errors`.
+pub(crate) const PARSE_ERROR_LABEL: &str = "Parse error";
 
 /// `path:line:col: severity: message`, or `path: severity: message` when the diagnostic's first
 /// label is missing or does not start inside `source`.
 pub(crate) fn render_diagnostic_line(path: &str, source: &str, diagnostic: &Diagnostic) -> String {
-    let (severity, message) = (diagnostic.severity, &diagnostic.message);
-    match primary_position(source, diagnostic) {
+    render_line(
+        path,
+        primary_position(source, diagnostic),
+        diagnostic.severity,
+        &diagnostic.message,
+    )
+}
+
+/// `path:line:col: error: Parse error: message`, the shape strict problem matchers such as
+/// VS Code's `$gcc` accept, for a parse error at the 1-based `position`.
+pub(crate) fn render_parse_error_line(
+    path: &str,
+    position: (usize, usize),
+    message: &str,
+) -> String {
+    render_line(
+        path,
+        Some(position),
+        Severity::Error,
+        &format!("{PARSE_ERROR_LABEL}: {message}"),
+    )
+}
+
+/// `path:line:col: severity: message`, or `path: severity: message` without a position.
+fn render_line(
+    path: &str,
+    position: Option<(usize, usize)>,
+    severity: Severity,
+    message: &str,
+) -> String {
+    match position {
         Some((line, col)) => format!("{path}:{line}:{col}: {severity}: {message}"),
         None => format!("{path}: {severity}: {message}"),
     }
@@ -24,7 +59,7 @@ fn primary_position(source: &str, diagnostic: &Diagnostic) -> Option<(usize, usi
 mod tests {
     use reify_core::{Diagnostic, DiagnosticLabel, SourceSpan};
 
-    use super::render_diagnostic_line;
+    use super::{render_diagnostic_line, render_parse_error_line};
 
     fn labelled_at(start: usize, message: &str) -> Diagnostic {
         let start = u32::try_from(start).expect("offset fits u32");
@@ -106,6 +141,26 @@ mod tests {
         assert_eq!(
             render_diagnostic_line("s.ri", source, &at_the_end),
             "s.ri:3:1: error: m"
+        );
+    }
+
+    #[test]
+    fn a_parse_error_line_carries_the_error_severity_after_its_position() {
+        assert_eq!(
+            render_parse_error_line("s.ri", (3, 20), "missing ';'"),
+            "s.ri:3:20: error: Parse error: missing ';'"
+        );
+    }
+
+    #[test]
+    fn a_parse_error_line_has_the_shape_of_a_located_error_diagnostic() {
+        let source = "a\nb\nccc\n";
+        let offset = source.find("cc").expect("fixture has cc") + 1;
+        let (line, col) = reify_core::byte_offset_to_line_col(source, offset);
+
+        assert_eq!(
+            render_parse_error_line("s.ri", (line, col), "m"),
+            render_diagnostic_line("s.ri", source, &labelled_at(offset, "Parse error: m"))
         );
     }
 }

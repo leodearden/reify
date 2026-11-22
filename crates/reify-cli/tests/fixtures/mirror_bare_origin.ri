@@ -45,10 +45,10 @@ module mirror_bare_origin
 // β (D1 geometry routing + D2 build-diagnostic merge) is what makes it truthful,
 // and D2's accumulating dedup is what pins the 'ox' line at exactly one
 // occurrence.  `check` exits non-zero because `check_gating_error` gates on
-// any non-allowlisted Severity::Error in the merged set (#5403), and no
-// CHECK_ERROR_EXIT_ALLOWLIST entry covers the plane_yz producer rejection or
-// the geometry-compile family — deliberately: they are genuine design errors,
-// as `reify eval` agrees.  Asserted by
+// every Severity::Error in the merged set (#5403), and nothing excuses the
+// plane_yz producer rejection or the geometry-compile family — deliberately:
+// they are genuine design errors, as `reify eval` agrees.  All of this is
+// asserted by
 // cli_check.rs::check_surfaces_geometry_compile_error_from_discarded_build.
 
 structure MirrorBareOrigin {

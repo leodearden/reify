@@ -32,8 +32,8 @@ use crate::{configured_check_build_engine, parse_and_compile_program_entry};
 /// **`error:` lines.** Every `Severity::Error` diagnostic makes `check` exit
 /// non-zero through [`check_gating_error`]; nothing excuses one.  The residual
 /// shapes across `examples/**/*.ri` are inventoried in #7308 (with the sweep
-/// command that measures them), which owns triaging them — never by adding
-/// allowlist entries.
+/// command that measures them), which owns triaging them — never by excusing
+/// them at the gate.
 pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
     let (cfg, rest) = match split_cfg_args_or_usage(args, CHECK_USAGE) {
         Ok(v) => v,

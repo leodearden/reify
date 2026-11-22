@@ -54,11 +54,17 @@ source "$SCRIPT_DIR/ts_outputs_manifest_lib.sh"
 [ -f "$SCRIPT_DIR/cargo_inputs_lib.sh" ] || { echo "ERROR: cargo_inputs_lib.sh not found at $SCRIPT_DIR/cargo_inputs_lib.sh"; exit 1; }
 source "$SCRIPT_DIR/cargo_inputs_lib.sh"
 
+# TS_INFRA_RC — "no verdict" at every layer of this suite: run_guarded_cargo_check
+# returns it, each case propagates it, run_tests and ts_require_cargo_inputs exit
+# with it. EX_TEMPFAIL, neither PASS nor FAIL: tests/infra/README.md, "Cargo
+# registry inputs: a verdict never depends on the cache".
+TS_INFRA_RC=75
+
 # ts_require_cargo_inputs — put the workspace's locked inputs for this host in
 # CARGO_HOME before the first test. The workspace's Cargo.lock pins the cc the
-# fixture crates then resolve offline. Ends the suite itself: exit 75 with the
-# INFRASTRUCTURE verdict when the registry cannot be reached, exit 1 when the fetch
-# refuses for any other reason. The verdict line is test_helpers.sh's
+# fixture crates then resolve offline. Ends the suite itself: exit TS_INFRA_RC with
+# the INFRASTRUCTURE verdict when the registry cannot be reached, exit 1 when the
+# fetch refuses for any other reason. The verdict line is test_helpers.sh's
 # test_summary_infra_unavailable shape; this suite cannot source that file, because
 # run_tests would discover its test_summary* functions as cases.
 ts_require_cargo_inputs() {
@@ -72,8 +78,8 @@ ts_require_cargo_inputs() {
     case "$rc" in
         0) ;;
         "$CARGO_INPUTS_UNAVAILABLE_RC")
-            echo "INFRASTRUCTURE: the registry holds the workspace's locked inputs for $host (cargo fetch --locked) — no test ran (exit $CARGO_INPUTS_UNAVAILABLE_RC, EX_TEMPFAIL: neither PASS nor FAIL)"
-            exit "$CARGO_INPUTS_UNAVAILABLE_RC"
+            echo "INFRASTRUCTURE: the registry holds the workspace's locked inputs for $host (cargo fetch --locked) — no test ran (exit $TS_INFRA_RC, EX_TEMPFAIL: neither PASS nor FAIL)"
+            exit "$TS_INFRA_RC"
             ;;
         *)
             echo "  ASSERTION FAILED: cargo fetch --locked --target $host --manifest-path $REPO_ROOT/Cargo.toml refused (rc $rc): a defect in the tree"
@@ -97,19 +103,17 @@ FRESHNESS_SCRIPT="$REPO_ROOT/scripts/tree-sitter-freshness.sh"
 # of the freshness block below own that seam from this side.
 SEMAPHORE_E2E_SUITE="$SCRIPT_DIR/test_verify_semaphore_e2e.sh"
 
-# --- Counters ---
-PASS_COUNT=0
-FAIL_COUNT=0
-
 # --- Colors ---
 if [[ -t 1 ]]; then
     GREEN='\033[0;32m'
     RED='\033[0;31m'
+    YELLOW='\033[0;33m'
     BOLD='\033[1m'
     RESET='\033[0m'
 else
     GREEN=''
     RED=''
+    YELLOW=''
     BOLD=''
     RESET=''
 fi
@@ -191,6 +195,16 @@ assert_file_nonempty() {
     fi
 }
 
+ts_print_captured() {
+    # Usage: ts_print_captured <label> <file>
+    # A capture's lines, each behind "  | ", so a captured
+    # @@REIFY_INFRA_UNAVAILABLE@@ marker is never re-emitted at column 0, where
+    # a runner would take it for this suite's own verdict.
+    echo "  --- $1 ---"
+    sed 's/^/  | /' "$2"
+    echo "  --- end $1 ---"
+}
+
 require_tree_sitter_cli() {
     # Usage: require_tree_sitter_cli || return 0
     # SKIPs (not fails) when the tree-sitter CLI is not on PATH. The CLI is
@@ -256,10 +270,22 @@ provision_fixture_headers() {
 # --- Guard Helper ---
 # run_guarded_cargo_check <out_file> <cmd...>
 # Runs <cmd...>, capturing combined stdout+stderr to <out_file>.
-# Returns a tri-state code safe under `set -euo pipefail`:
-#   0 — success              (caller continues to parser.c existence checks)
-#   1 — hard fail            (diagnostic already printed; caller returns 1)
-#   2 — timeout              (SKIP message printed; caller returns 0 to skip asserts)
+# Returns a code safe under `set -euo pipefail`:
+#   0            — success     (caller continues to parser.c existence checks)
+#   1            — hard fail   (diagnostic already printed; caller returns 1)
+#   TS_INFRA_RC  — <cmd...> was killed by its timeout (exit 124): no verdict.
+#                  Callers propagate it (`return "$TS_INFRA_RC"`) and run_tests ends
+#                  the suite with it; mapping it to a pass would claim a verdict
+#                  nothing reached.
+#
+# A killed build proves nothing about the code under test, so it is neither a SKIP
+# (a vacuous pass) nor a FAIL: a cold sccache or target dir, or a wait on the
+# build-directory lock, can push it past its bound (tests/infra/README.md, "Cargo
+# registry inputs: a verdict never depends on the cache"). The guard gives the
+# verdict itself, whole on stderr, so a caller that discards only the stdout chatter
+# of the FAIL it expects still shows it: the column-0 marker, a line naming the
+# command, and the tail of its output behind "  | ", so a lock wait can be told from
+# a hang.
 #
 # Uses `|| rc=$?` to capture cmd's GENUINE exit code, shielding it from
 # `set -e` (the established codebase idiom; see test_portable_timeout.sh:212).
@@ -276,8 +302,13 @@ run_guarded_cargo_check() {
     if [ "$rc" -eq 0 ]; then
         return 0
     elif [ "$rc" -eq 124 ]; then
-        echo "  SKIP: cargo check timed out after 300 s (cold/contended-cache environment)"
-        return 2
+        {
+            echo ""   # ends the case's still-open `RUN  name ... ` line: the marker is column 0
+            echo "@@REIFY_INFRA_UNAVAILABLE@@ kind=cargo_timeout rc=124 cmd=$*"
+            echo "  INFRA: $* timed out (exit 124): no verdict"
+            tail -n 20 "$out_file" | sed 's/^/  | /'
+        } >&2
+        return "$TS_INFRA_RC"
     else
         echo ""
         echo "  ASSERTION FAILED: cargo check failed (exit $rc)"
@@ -612,10 +643,11 @@ ts_reference_parser() {
 # ts_cargo_build_fixture <fixture> <out_file>
 #
 # One offline `cargo build` of a mk_ts_build_fixture crate, through
-# run_guarded_cargo_check's tri-state: 0 built, 1 failed (diagnostic printed),
-# 2 timed out (SKIP printed). Callers map 2 to `return 0`. CARGO_TARGET_DIR is
-# pinned to <fixture>/target, where ts_fixture_out_dir looks, so an ambient one
-# can neither hide the build nor make fixtures share a target dir.
+# run_guarded_cargo_check's codes: 0 built, 1 failed (diagnostic printed),
+# TS_INFRA_RC timed out (verdict printed). Callers propagate TS_INFRA_RC.
+# CARGO_TARGET_DIR is pinned to <fixture>/target, where ts_fixture_out_dir looks,
+# so an ambient one can neither hide the build nor make fixtures share a target
+# dir.
 ts_cargo_build_fixture() {
     run_guarded_cargo_check "$2" timeout 300 \
         env CARGO_TARGET_DIR="$1/target" \
@@ -807,29 +839,116 @@ ts_assert_fills_only_given_dir() {
 }
 
 # --- Runner ---
-run_tests() {
-    local tests
-    tests=$(declare -F | awk '/test_/{print $3}')
+# A case has three outcomes: PASS (rc 0), INFRA (rc TS_INFRA_RC: it reached no
+# verdict, which is neither PASS nor FAIL) and FAIL (any other rc).
 
-    for t in $tests; do
-        CLEANUP_ACTIONS=()
-        printf "${BOLD}RUN${RESET}  %s ... " "$t"
-        if "$t"; then
-            printf "${GREEN}PASS${RESET}\n"
-            (( PASS_COUNT++ )) || true
-        else
-            printf "${RED}FAIL${RESET}\n"
-            (( FAIL_COUNT++ )) || true
-        fi
-        cleanup
-    done
+ts_discover_cases() {
+    # The cases run_tests runs when it is given none: every function whose
+    # `declare -F` line contains test_, so a helper carrying that substring would
+    # be run as a case.
+    declare -F | awk '/test_/{print $3}'
+}
 
+# ts_run_verdict <passed> <failed> <infra-case> <not-run>
+#
+# Prints the run's summary and returns its verdict. A recorded FAIL wins (1), as in
+# test_helpers.sh's test_summary_infra_unavailable. Otherwise <infra-case>, the case
+# that ended the run by reaching no verdict (empty when none did), makes the run
+# INFRASTRUCTURE: TS_INFRA_RC. Otherwise 0.
+ts_run_verdict() {
+    local passed="$1" failed="$2" infra_case="$3" not_run="$4"
     echo ""
     echo "========================================="
-    printf "Results: ${GREEN}%d passed${RESET}, ${RED}%d failed${RESET}\n" "$PASS_COUNT" "$FAIL_COUNT"
+    printf "Results: ${GREEN}%d passed${RESET}, ${RED}%d failed${RESET}" "$passed" "$failed"
+    if [ -n "$infra_case" ]; then
+        printf ", ${YELLOW}1 infra${RESET}, %d not run" "$not_run"
+    fi
+    echo ""
     echo "========================================="
+    if [ "$failed" -gt 0 ]; then
+        return 1
+    fi
+    if [ -n "$infra_case" ]; then
+        echo "INFRASTRUCTURE: $infra_case reached no verdict; $not_run later case(s) did not run (exit $TS_INFRA_RC, EX_TEMPFAIL: neither PASS nor FAIL)"
+        return "$TS_INFRA_RC"
+    fi
+    return 0
+}
 
-    [[ "$FAIL_COUNT" -eq 0 ]]
+# run_tests [case...]
+#
+# Runs the named cases, or every discovered one when none is named. Each case runs
+# under `||`, which turns errexit off inside it, and is followed by cleanup. The
+# run stops at the first INFRA case: a host that just lost a build to its timeout
+# would lose the next one the same way, and the wall around this suite in
+# scripts/verify.sh would then kill it before it could report.
+run_tests() {
+    if [ "$#" -eq 0 ]; then
+        set -- $(ts_discover_cases)
+    fi
+    local total=$# t rc ran=0 passed=0 failed=0 infra_case=""
+
+    for t in "$@"; do
+        ran=$((ran + 1))
+        CLEANUP_ACTIONS=()
+        printf "${BOLD}RUN${RESET}  %s ... " "$t"
+        rc=0
+        "$t" || rc=$?
+        case "$rc" in
+            0)
+                printf "${GREEN}PASS${RESET}\n"
+                passed=$((passed + 1))
+                ;;
+            "$TS_INFRA_RC")
+                printf "${YELLOW}INFRA${RESET}\n"
+                infra_case="$t"
+                ;;
+            *)
+                printf "${RED}FAIL${RESET}\n"
+                failed=$((failed + 1))
+                ;;
+        esac
+        cleanup
+        if [ -n "$infra_case" ]; then
+            break
+        fi
+    done
+
+    ts_run_verdict "$passed" "$failed" "$infra_case" "$((total - ran))"
+}
+
+ts_unset_cases_except() {
+    # Usage: ts_unset_cases_except [case]
+    # Unsets every suite case but <case> (all of them when it is omitted). For the
+    # subshell in which a test drives run_tests: a run_tests that ignored its
+    # arguments would rediscover the suite there and rerun the driving test, which
+    # drives run_tests in another subshell, and so on without bound. With only
+    # <case> left it runs that one, and the tests of run_tests' own contract are
+    # what fail.
+    local keep="${1:-}" f
+    for f in $(ts_discover_cases); do
+        [ "$f" = "$keep" ] || unset -f "$f"
+    done
+}
+
+ts_run_stub_cases() {
+    # Usage: ts_run_stub_cases <dir> <case...>
+    # run_tests over the named stub cases, output to <dir>/run.log, status
+    # run_tests'. A subshell, so run_tests' counters and cleanup list stay out of
+    # the suite's. It holds no suite case (ts_unset_cases_except), so a runner that
+    # ignored <case...> finds nothing to run.
+    # Stubs: ts_case_passes (0), ts_case_fails (1), ts_case_reaches_no_verdict
+    # ($TS_INFRA_RC), ts_case_must_not_run (creates <dir>/must-not-run).
+    local stub_dir="$1"
+    shift
+    (
+        ts_unset_cases_except
+        ts_case_passes() { return 0; }
+        ts_case_fails() { return 1; }
+        ts_case_reaches_no_verdict() { return "$TS_INFRA_RC"; }
+        ts_case_must_not_run() { : >"$stub_dir/must-not-run"; }
+        run_tests "$@"
+    ) >"$stub_dir/run.log" 2>&1
 }
 
 # --- Test Cases ---
@@ -1084,18 +1203,114 @@ test_print_plan_capture_retries_on_truncation() {
     fi
 }
 
-test_timeout_guard_skips_on_exit_124() {
-    # Regression guard: confirms run_guarded_cargo_check returns tri-state 2
-    # (SKIP) when the command exits 124 (timeout kill). Uses `timeout 0.1 sleep 5`
-    # as a deterministic stub for exit 124.
-    local out rc
-    out=$(mktemp)
-    CLEANUP_ACTIONS+=("rm -f '$out'")
-    rc=0
-    run_guarded_cargo_check "$out" timeout 0.1 sleep 5 || rc=$?
-    if [ "$rc" -ne 2 ]; then
+test_runner_stops_with_infrastructure_at_a_case_that_reaches_no_verdict() {
+    # A case that returns TS_INFRA_RC reached no verdict, which is neither PASS nor
+    # FAIL: the run ends there and exits 75 (EX_TEMPFAIL, the literal the
+    # orchestrator reads) with the INFRASTRUCTURE line. The case after it never
+    # runs, so its stub leaves no marker.
+    local dir rc=0
+    dir=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$dir'")
+    ts_run_stub_cases "$dir" \
+        ts_case_passes ts_case_reaches_no_verdict ts_case_must_not_run || rc=$?
+    if [ "$rc" -ne 75 ]; then
         echo ""
-        echo "  ASSERTION FAILED: expected run_guarded_cargo_check to return 2 (SKIP) on exit 124, got $rc"
+        echo "  ASSERTION FAILED: run_tests must exit 75 at a case that reaches no verdict, got $rc"
+        ts_print_captured "run_tests output" "$dir/run.log"
+        return 1
+    fi
+    if [ -e "$dir/must-not-run" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: run_tests ran a case after one that reached no verdict"
+        ts_print_captured "run_tests output" "$dir/run.log"
+        return 1
+    fi
+    if ! grep -q '^INFRASTRUCTURE: ' "$dir/run.log"; then
+        echo ""
+        echo "  ASSERTION FAILED: run_tests exited 75 without an INFRASTRUCTURE: verdict line"
+        ts_print_captured "run_tests output" "$dir/run.log"
+        return 1
+    fi
+}
+
+test_runner_lets_a_recorded_fail_outrank_infrastructure() {
+    # An assertion that already FAILed wins over a later case that reached no
+    # verdict (test_helpers.sh test_summary_infra_unavailable's rule): exit 1, and
+    # no INFRASTRUCTURE verdict. A run of passing cases still exits 0.
+    local dir rc=0
+    dir=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$dir'")
+    ts_run_stub_cases "$dir" ts_case_fails ts_case_reaches_no_verdict || rc=$?
+    if [ "$rc" -ne 1 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: a recorded FAIL must win over a later case with no verdict (exit 1), got $rc"
+        ts_print_captured "run_tests output" "$dir/run.log"
+        return 1
+    fi
+    if grep -q '^INFRASTRUCTURE: ' "$dir/run.log"; then
+        echo ""
+        echo "  ASSERTION FAILED: a run that exited 1 for a recorded FAIL also printed an INFRASTRUCTURE: verdict"
+        ts_print_captured "run_tests output" "$dir/run.log"
+        return 1
+    fi
+    rc=0
+    ts_run_stub_cases "$dir" ts_case_passes || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: a run of passing cases must exit 0, got $rc"
+        ts_print_captured "run_tests output" "$dir/run.log"
+        return 1
+    fi
+}
+
+test_timeout_guard_reports_infrastructure_on_exit_124() {
+    # A build killed by its timeout (exit 124) reached no verdict: the guard returns
+    # TS_INFRA_RC, never a pass, and writes the cargo_timeout marker to stderr at
+    # column 0. Both streams are captured, so the marker never reaches the suite's
+    # own. Uses `timeout 0.1 sleep 5` as a deterministic stub for exit 124.
+    local dir rc=0
+    dir=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$dir'")
+    run_guarded_cargo_check "$dir/build.out" timeout 0.1 sleep 5 \
+        >"$dir/guard.stdout" 2>"$dir/guard.stderr" || rc=$?
+    if [ "$rc" -ne "$TS_INFRA_RC" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: expected run_guarded_cargo_check to return $TS_INFRA_RC (no verdict) on exit 124, got $rc"
+        ts_print_captured "guard stdout" "$dir/guard.stdout"
+        ts_print_captured "guard stderr" "$dir/guard.stderr"
+        return 1
+    fi
+    if ! grep -q '^@@REIFY_INFRA_UNAVAILABLE@@ kind=cargo_timeout rc=124 ' "$dir/guard.stderr"; then
+        echo ""
+        echo "  ASSERTION FAILED: the guard returned $TS_INFRA_RC but wrote no cargo_timeout marker line to stderr"
+        ts_print_captured "guard stdout" "$dir/guard.stdout"
+        ts_print_captured "guard stderr" "$dir/guard.stderr"
+        return 1
+    fi
+}
+
+test_timeout_guard_shows_the_tail_of_a_killed_commands_output() {
+    # What a killed build last said tells a wait on the build-directory lock from a
+    # hang, so the guard shows it. Behind "  | ": a line of it that looks like a
+    # marker must not be re-emitted at column 0, where it would pass for a verdict.
+    # The guard's own marker is the only one.
+    local dir
+    dir=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$dir'")
+    run_guarded_cargo_check "$dir/build.out" bash -c \
+        'echo "Blocking waiting for file lock on build directory"; echo "@@REIFY_INFRA_UNAVAILABLE@@ kind=forged"; exit 124' \
+        >"$dir/guard.stdout" 2>"$dir/guard.stderr" || true
+    cat "$dir/guard.stdout" "$dir/guard.stderr" >"$dir/guard.both"
+    if ! grep -qxF '  | Blocking waiting for file lock on build directory' "$dir/guard.both"; then
+        echo ""
+        echo "  ASSERTION FAILED: the guard did not show the killed command's output behind '  | '"
+        ts_print_captured "guard output" "$dir/guard.both"
+        return 1
+    fi
+    if [ "$(grep -c '^@@REIFY_INFRA_UNAVAILABLE@@' "$dir/guard.both")" -ne 1 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: expected exactly one column-0 marker line (the guard's own)"
+        ts_print_captured "guard output" "$dir/guard.both"
         return 1
     fi
 }
@@ -1147,6 +1362,42 @@ test_timeout_guard_fails_on_unresolved() {
         echo ""
         echo "  ASSERTION FAILED: expected 1 (FAIL) for an unresolved-dependency"
         echo "  diagnostic, got $rc"
+        return 1
+    fi
+}
+
+test_a_fixture_build_timeout_ends_the_suite_with_infrastructure() {
+    # The chain from a killed build to the suite's verdict, every link real but the
+    # clock: a `timeout` shim that exits 124 stands in for a build killed at 300 s,
+    # so ts_cargo_build_fixture's guard sees the kill, the caller must pass
+    # TS_INFRA_RC up, and run_tests must end the suite with it, the marker
+    # included. test_fixture_build_fails_on_a_cold_registry is the one build caller
+    # that needs no tree-sitter CLI, so this runs on every host.
+    local target=test_fixture_build_fails_on_a_cold_registry shim log rc=0
+    shim=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$shim'")
+    log=$(mktemp) || return 1
+    CLEANUP_ACTIONS+=("rm -f '$log'")
+    cat > "$shim/timeout" <<'SH'
+#!/bin/sh
+exit 124
+SH
+    chmod +x "$shim/timeout" || return 1
+    (
+        PATH="$shim:$PATH"
+        ts_unset_cases_except "$target"
+        run_tests "$target"
+    ) >"$log" 2>&1 || rc=$?
+    if [ "$rc" -ne 75 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: a fixture build killed by its timeout must end the suite with exit 75, got $rc"
+        ts_print_captured "suite output" "$log"
+        return 1
+    fi
+    if ! grep -q '^@@REIFY_INFRA_UNAVAILABLE@@ kind=cargo_timeout rc=124 ' "$log"; then
+        echo ""
+        echo "  ASSERTION FAILED: the suite ended with 75 but its output carries no cargo_timeout marker line"
+        ts_print_captured "suite output" "$log"
         return 1
     fi
 }
@@ -2444,7 +2695,7 @@ test_build_rs_watches_all_compiled_inputs() {
     local guard_rc=0
     run_guarded_cargo_check "$cargo_out" timeout 300 cargo check -p tree-sitter-reify \
         --manifest-path "$REPO_ROOT/Cargo.toml" || guard_rc=$?
-    if [ "$guard_rc" -eq 2 ]; then return 0; fi
+    if [ "$guard_rc" -eq "$TS_INFRA_RC" ]; then return "$TS_INFRA_RC"; fi
     if [ "$guard_rc" -ne 0 ]; then return 1; fi
 
     local run_dir
@@ -2584,7 +2835,7 @@ test_build_rs_stamps_a_real_manifest_on_a_shasum_only_host() {
     local guard_rc=0
     run_guarded_cargo_check "$cargo_out" env PATH="$mask" timeout 300 cargo check \
         -p tree-sitter-reify --manifest-path "$REPO_ROOT/Cargo.toml" || guard_rc=$?
-    if [ "$guard_rc" -eq 2 ]; then return 0; fi
+    if [ "$guard_rc" -eq "$TS_INFRA_RC" ]; then return "$TS_INFRA_RC"; fi
     if [ "$guard_rc" -ne 0 ]; then return 1; fi
 
     local run_dir
@@ -3590,7 +3841,10 @@ test_fixture_build_fails_on_a_cold_registry() {
     mk_ts_build_fixture "$fix" "$va" || return 1
     home=$(mktemp -d); CLEANUP_ACTIONS+=("rm -rf '$home'")
     cargo_out=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
-    CARGO_HOME="$home" ts_cargo_build_fixture "$fix" "$cargo_out" >/dev/null 2>&1 || guard_rc=$?
+    # Only stdout is discarded, the guard's chatter for the FAIL expected here: a
+    # timeout's verdict is written to stderr and must reach the suite's stream.
+    CARGO_HOME="$home" ts_cargo_build_fixture "$fix" "$cargo_out" >/dev/null || guard_rc=$?
+    if [ "$guard_rc" -eq "$TS_INFRA_RC" ]; then return "$TS_INFRA_RC"; fi
     if [ "$guard_rc" -ne 1 ]; then
         echo ""
         echo "  ASSERTION FAILED: a fixture build on an empty CARGO_HOME must FAIL (1), got $guard_rc"
@@ -3618,7 +3872,7 @@ test_build_rs_generates_into_out_dir_and_leaves_src_untouched() {
     mk_ts_build_fixture "$fix" "$va" || return 1
     cargo_out=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
     ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
-    case "$guard_rc" in 0) ;; 2) return 0 ;; *) return 1 ;; esac
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
 
     local out f
     local -a missing=()
@@ -3662,7 +3916,7 @@ test_build_rs_never_reruns_for_or_compiles_src_generated_files() {
     mk_ts_build_fixture "$fix" "$va" || return 1
     cargo_out=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
     ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
-    case "$guard_rc" in 0) ;; 2) return 0 ;; *) return 1 ;; esac
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
 
     local out marker archive_mtime
     out=$(ts_fixture_out_dir "$fix") || return 1
@@ -3672,7 +3926,7 @@ test_build_rs_never_reruns_for_or_compiles_src_generated_files() {
     # 1. Nothing changed: a regeneration costs zero extra runs.
     guard_rc=0
     ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
-    case "$guard_rc" in 0) ;; 2) return 0 ;; *) return 1 ;; esac
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
     if [ "$(ts_fixture_marker "$fix")" != "$marker" ] \
         || [ "$(stat -c %y "$out/libtree_sitter_reify.a")" != "$archive_mtime" ]; then
         echo ""
@@ -3687,7 +3941,7 @@ test_build_rs_never_reruns_for_or_compiles_src_generated_files() {
     ts_poison_src_cli_path_files "$fix/src" || return 1
     guard_rc=0
     ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
-    case "$guard_rc" in 0) ;; 2) return 0 ;; *) return 1 ;; esac
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
     if [ "$(ts_fixture_marker "$fix")" != "$marker" ]; then
         echo ""
         echo "  ASSERTION FAILED: files the CLI path wrote into src/ reran the build script."
@@ -3698,7 +3952,7 @@ test_build_rs_never_reruns_for_or_compiles_src_generated_files() {
     ts_remove_src_cli_path_files "$fix/src"
     guard_rc=0
     ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
-    case "$guard_rc" in 0) ;; 2) return 0 ;; *) return 1 ;; esac
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
     if [ "$(ts_fixture_marker "$fix")" != "$marker" ]; then
         echo ""
         echo "  ASSERTION FAILED: deleting src/'s generated files reran the build script."
@@ -3714,7 +3968,7 @@ test_build_rs_never_reruns_for_or_compiles_src_generated_files() {
     touch "$fix/grammar.js"
     guard_rc=0
     ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
-    case "$guard_rc" in 0) ;; 2) return 0 ;; *)
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *)
         echo "  (a build that compiles anything from the poisoned src/ fails with #error)"
         return 1 ;;
     esac
@@ -3755,7 +4009,7 @@ test_build_rs_reruns_cleanly_when_src_scanner_c_is_read_only() {
 
     cargo_out=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
     ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
-    case "$guard_rc" in 0) ;; 2) return 0 ;; *) return 1 ;; esac
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
 
     local out marker
     out=$(ts_fixture_out_dir "$fix") || return 1
@@ -3765,7 +4019,7 @@ test_build_rs_reruns_cleanly_when_src_scanner_c_is_read_only() {
     touch "$fix/grammar.js" || return 1
     guard_rc=0
     ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
-    case "$guard_rc" in 0) ;; 2) return 0 ;; *)
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *)
         echo "  (the rerun over the first run's copy of a 0444 src/scanner.c failed)"
         return 1 ;;
     esac
@@ -3795,7 +4049,7 @@ test_build_rs_regenerates_a_deleted_or_modified_out_dir_output() {
     mk_ts_build_fixture "$fix" "$va" || return 1
     cargo_out=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
     ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
-    case "$guard_rc" in 0) ;; 2) return 0 ;; *) return 1 ;; esac
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
 
     local out hash_a hash_b parser_b
     out=$(ts_fixture_out_dir "$fix") || return 1
@@ -3840,7 +4094,7 @@ test_build_rs_regenerates_a_deleted_or_modified_out_dir_output() {
 
         guard_rc=0
         ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
-        case "$guard_rc" in 0) ;; 2) return 0 ;; *)
+        case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *)
             echo "  (the build that failed followed the victim $victim)"
             return 1 ;;
         esac
@@ -3877,7 +4131,7 @@ test_build_rs_regenerates_a_deleted_or_modified_out_dir_output() {
     cp "$vb" "$fix/grammar.js" || return 1
     guard_rc=0
     ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
-    case "$guard_rc" in 0) ;; 2) return 0 ;; *) return 1 ;; esac
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
     after=$(ts_sha256 "$out/src/parser.c" 2>/dev/null) || after=""
     if [ "$after" != "$hash_b" ]; then
         echo ""
@@ -3911,7 +4165,7 @@ test_build_rs_watches_the_cli_and_regenerates_on_a_version_change() {
     mk_ts_build_fixture "$fix" "$va" || return 1
     cargo_out=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
     ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
-    case "$guard_rc" in 0) ;; 2) return 0 ;; *) return 1 ;; esac
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
 
     local out real shim parser_mtime marker
     out=$(ts_fixture_out_dir "$fix") || return 1
@@ -3932,7 +4186,7 @@ SH
     touch "$fix/grammar.js"
     guard_rc=0
     PATH="$shim:$PATH" ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
-    case "$guard_rc" in 0) ;; 2) return 0 ;; *) return 1 ;; esac
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
     if [ "$(stat -c %y "$out/src/parser.c")" = "$parser_mtime" ]; then
         echo ""
         echo "  ASSERTION FAILED: a CLI reporting another version did not regenerate"
@@ -3951,7 +4205,7 @@ SH
     touch "$shim/tree-sitter"
     guard_rc=0
     PATH="$shim:$PATH" ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
-    case "$guard_rc" in 0) ;; 2) return 0 ;; *) return 1 ;; esac
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
     if [ "$(ts_fixture_marker "$fix")" = "$marker" ]; then
         echo ""
         echo "  ASSERTION FAILED: touching the resolved CLI alone did not rerun the build script"
@@ -3961,7 +4215,7 @@ SH
     marker=$(ts_fixture_marker "$fix") || return 1
     guard_rc=0
     PATH="$shim:$PATH" ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
-    case "$guard_rc" in 0) ;; 2) return 0 ;; *) return 1 ;; esac
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
     if [ "$(ts_fixture_marker "$fix")" != "$marker" ]; then
         echo ""
         echo "  ASSERTION FAILED: a build with nothing changed reran the build script"
@@ -3986,7 +4240,7 @@ test_freshness_detects_and_repairs_a_stale_archive() {
     mk_ts_build_fixture "$fix" "$va" || return 1
     cargo_out=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
     ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
-    case "$guard_rc" in 0) ;; 2) return 0 ;; *) return 1 ;; esac
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
 
     local out dir_name parser_b
     out=$(ts_fixture_out_dir "$fix") || return 1
@@ -4012,7 +4266,7 @@ test_freshness_detects_and_repairs_a_stale_archive() {
     marker=$(ts_fixture_marker "$fix") || return 1
     guard_rc=0
     ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
-    case "$guard_rc" in 0) ;; 2) return 0 ;; *) return 1 ;; esac
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
     if [ "$(ts_fixture_marker "$fix")" != "$marker" ]; then
         echo ""
         echo "  ASSERTION FAILED: the rewound grammar.js reran the build script, so no"
@@ -4046,7 +4300,7 @@ test_freshness_detects_and_repairs_a_stale_archive() {
 
     guard_rc=0
     ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
-    case "$guard_rc" in 0) ;; 2) return 0 ;; *) return 1 ;; esac
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
     local after
     after=$(ts_sha256 "$out/src/parser.c" 2>/dev/null) || after=""
     if [ "$after" != "$(ts_sha256 "$parser_b")" ]; then

@@ -11,7 +11,7 @@ use reify_compiler::import_headers::{self, GatedOffImports, RequiredImport};
 use reify_core::{Diagnostic, ModulePath};
 
 use crate::args::split_cfg_args_or_usage;
-use crate::diagnostic_line::render_diagnostic_line;
+use crate::diagnostic_line::{render_diagnostic_line, render_parse_error_line};
 use crate::help::FIX_USAGE;
 
 struct FixArgs<'a> {
@@ -58,7 +58,8 @@ pub(crate) fn cmd_fix(args: &[String]) -> ExitCode {
 /// Whether `path` ends up importing every std module it needs, a `#cfg`-gated
 /// import counting only when `cfg` satisfies it: true once the missing imports
 /// are written, false when they are only reported, when the derived imports
-/// would leave a new diagnostic, or on any read, parse or write failure.
+/// would leave a new diagnostic, when an added import would not stand where it
+/// is written, or on any read, parse or write failure.
 fn fix_imports(path: &str, check_only: bool, cfg: &CfgSet) -> bool {
     let source = match std::fs::read_to_string(path) {
         Ok(source) => source,
@@ -69,8 +70,8 @@ fn fix_imports(path: &str, check_only: bool, cfg: &CfgSet) -> bool {
     };
     let parsed = reify_compiler::parse_with_stdlib(&source, crate::module_path_for_file(path));
     if !parsed.errors.is_empty() {
-        for line in parsed.render_errors_in(path, crate::PARSE_ERROR_LABEL, &source) {
-            eprintln!("{line}");
+        for (position, message) in parsed.error_positions(&source) {
+            eprintln!("{}", render_parse_error_line(path, position, message));
         }
         return false;
     }
@@ -108,7 +109,13 @@ fn fix_imports(path: &str, check_only: bool, cfg: &CfgSet) -> bool {
         .iter()
         .map(|required| required.module.clone())
         .collect();
-    let fixed = import_headers::insert_imports(&source, &parsed, cfg, &modules);
+    let fixed = match import_headers::insert_imports(&source, &parsed, cfg, &modules) {
+        Ok(fixed) => fixed,
+        Err(defect) => {
+            eprintln!("{path}: {defect}; not writing");
+            return false;
+        }
+    };
     if let Err(e) = replace_atomically(Path::new(path), &fixed) {
         eprintln!("Error writing {path}: {e}");
         return false;

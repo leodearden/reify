@@ -51,19 +51,11 @@ trait Defaultable {
     );
 
     // The namespaced function must appear in the module's function table.
-    let found = compiled
-        .functions
-        .iter()
-        .any(|f| f.name == "Defaultable::make_default" && f.params.is_empty());
+    let make_default = get_function_in(&compiled, "Defaultable::make_default");
     assert!(
-        found,
-        "expected 'Defaultable::make_default' (0 params) in module functions; \
-         functions present: {:?}",
-        compiled
-            .functions
-            .iter()
-            .map(|f| &f.name)
-            .collect::<Vec<_>>()
+        make_default.params.is_empty(),
+        "expected 'Defaultable::make_default' to take 0 params; got: {:?}",
+        make_default.params
     );
 }
 
@@ -544,11 +536,7 @@ fn an_earlier_trait_static_fn_body_cannot_call_a_later_one() {
         "the error should name `A::make`; got: {:?}",
         errors[0].message
     );
-    assert!(
-        module.functions.iter().any(|f| f.name == "A::make"),
-        "`A::make` must still be registered; found functions: {:?}",
-        module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
-    );
+    let _a_make_still_registered = get_function_in(&module, "A::make");
 }
 
 /// A local trait-static fn shadows the prelude's static fn of the same key, for

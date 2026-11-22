@@ -63,6 +63,7 @@ fn headed_source(module: &DerivedModule) -> String {
         &CfgSet::host_default(),
         &module.plan.modules(),
     )
+    .unwrap_or_else(|defect| panic!("insert_imports refused {}: {defect}", module.name))
 }
 
 fn plan_of(name: &str) -> Vec<String> {

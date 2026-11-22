@@ -728,6 +728,11 @@ pub(crate) async fn init_and_open(bridge: &crate::lsp_bridge::LspBridge, uri: &s
     .expect("didOpen");
 }
 
+// ── Unparseable source, shared by the commands and engine tests ──────────────
+
+/// A source that fails to parse.
+pub(crate) const UNPARSEABLE_SRC: &str = "this is not valid {{{}}}";
+
 // ── Task 6190: η RepresentationWithin export-refusal fixture ─────────────────
 
 /// `reify_test_support::bracket_source` plus a non-circular checker structure

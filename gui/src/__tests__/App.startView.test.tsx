@@ -21,6 +21,7 @@ import App from '../App';
 import * as bridge from '../bridge';
 import * as sidecarPersistence from '../stores/sidecarPersistence';
 import { initDebugBridge as mockedInitDebugBridge } from '../debug';
+import './appHarness/harness';
 import { renderAndWaitForReady, oneFileState } from './appHarness/harness';
 import {
   capturedDualViewportProps,
