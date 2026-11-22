@@ -1015,6 +1015,8 @@ scripts/_pdv_test_support.py    tests/infra/test_prd_capability_check.sh
 scripts/_pdv_test_support.py    tests/infra/test_prd_decompose_verify.sh
 scripts/_schema_test_support.py    tests/infra/test_prd_capability_check.sh
 scripts/_schema_test_support.py    tests/infra/test_prd_decompose_verify.sh
+# Task 10341: test_prd_gate_substrate_guard.sh's filtered-probe-set check loads the real prd-capability-check.py and calls load_probe_set on it.
+scripts/prd-capability-check.py    tests/infra/test_prd_gate_substrate_guard.sh
 # Task 10341: the prd-capability-check seam ratchet (test_pcc_seam_ratchet.py) scans the prd-decompose-verify partitions as source.
 scripts/test_prd_decompose_verify.py    tests/infra/test_prd_capability_check.sh
 scripts/test_prd_decompose_verify_bind.py    tests/infra/test_prd_capability_check.sh
