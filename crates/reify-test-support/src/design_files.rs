@@ -48,6 +48,7 @@ mod tests {
     use std::path::Path;
 
     use super::{ALL, read_design_file};
+    use crate::panic_capture::panic_message_of;
 
     /// A design-file path absent from the real tree, written only into the
     /// re-exec fixture workspace.
@@ -113,10 +114,7 @@ mod tests {
     /// pass vacuously.
     #[test]
     fn read_design_file_names_the_resolved_path_when_the_file_is_absent() {
-        let payload = std::panic::catch_unwind(|| read_design_file(ABSENT_REL))
-            .expect_err("reading an absent design file must panic");
-        let message =
-            reify_core::panic_payload_str(payload.as_ref()).expect("panic payload is a string");
+        let message = panic_message_of(|| read_design_file(ABSENT_REL));
 
         let resolved = crate::workspace_root::workspace_root()
             .join(ABSENT_REL)
