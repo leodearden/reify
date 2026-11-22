@@ -314,7 +314,7 @@ class BundleCleanInstall(unittest.TestCase):
         )
         if create_check.returncode != 0:
             raise AssertionError(
-                "armed, but docker cannot create a container "
+                "armed, but the docker preflight failed "
                 f"(scripts/docker-create-probe.sh exit {create_check.returncode}):\n"
                 f"{create_check.stdout[-2000:]}")
         reused = (os.environ.get("REIFY_BUNDLE_DEB"), os.environ.get("REIFY_BUNDLE_APPIMAGE"))

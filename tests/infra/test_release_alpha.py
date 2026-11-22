@@ -49,7 +49,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 RELEASE_SCRIPT = REPO_ROOT / "scripts" / "release-alpha.sh"
 BUILD_BUNDLE = REPO_ROOT / "scripts" / "build-bundle.sh"
 DOCKER_CREATE_PROBE = REPO_ROOT / "scripts" / "docker-create-probe.sh"
-PROOF ="tests/infra/test_bundle_clean_install.py"
+PROOF = "tests/infra/test_bundle_clean_install.py"
 
 PROOF_ARM_ENV = {"REIFY_RUN_BUNDLE_CLEAN_INSTALL": "1"}
 PROOF_KNOBS = ("REIFY_RUN_BUNDLE_CLEAN_INSTALL", "REIFY_BUNDLE_DEB", "REIFY_BUNDLE_APPIMAGE")
@@ -561,7 +561,7 @@ class BuildBundleFixture:
 
     def docker_create_hangs(self):
         (self.state / "docker-create-hangs").write_text("", encoding="utf-8")
-        self.env["REIFY_DOCKER_CREATE_PROBE_SECS"] = "1"
+        self.env["REIFY_DOCKER_CREATE_PROBE_SECS"] = "5"
 
     def run(self, *argv):
         return subprocess.run(
@@ -654,8 +654,10 @@ class BuildBundleDockerPreflight(unittest.TestCase):
         proc = self.fx.run()
         self.assertEqual(proc.returncode, 2, proc.stderr)
         self.assertEqual(proc.stdout, "")
-        self.assertIn("docker create", proc.stderr)
-        self.assertIn("waiting for writeback completion", proc.stderr)
+        probe_verdicts = [line for line in proc.stderr.splitlines()
+                          if line.startswith("docker-create-probe:")]
+        self.assertTrue(any("docker create" in line for line in probe_verdicts), proc.stderr)
+        self.assertIn("docker preflight failed", proc.stderr)
         calls = self.fx.calls()
         self.assertEqual([c[1] for c in calls if c[0] == "docker"], ["info", "create"])
         self.assertEqual([c for c in calls if c[0] == "npm"], [])
