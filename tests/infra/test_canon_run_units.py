@@ -12,6 +12,7 @@ WHAT RUNS THIS: run_all.sh discovers `test_*.sh` only, so the discovered member
 is the thin wrapper tests/infra/test_canon_run_units.sh.
 """
 
+import importlib.util
 import json
 import os
 import shutil
@@ -19,9 +20,11 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import canon_run_fixture as fx  # noqa: E402  (imported after sys.path manipulation)
+from verify_ledger_env import hermetic_env  # noqa: E402
 
 canon_run = fx.load_canon_run()
 
@@ -499,6 +502,213 @@ class Usage(CliCase):
             with self.subTest(args=args):
                 result = fx.run_canon(self.tree, self.sub, *args, env=self.env)
                 self.assertEqual(result.returncode, 2, result.stderr)
+
+
+def load_pcc():
+    path = fx.REPO_ROOT / "scripts" / "prd-capability-check.py"
+    spec = importlib.util.spec_from_file_location("pcc_reference", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["pcc_reference"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+class CanonInvocationCase(unittest.TestCase):
+    """C3/C4 composition of what a command gets at CANON, without entering a namespace."""
+
+    CACHE_VARIABLES = {
+        "RUSTC_WRAPPER": "sccache",
+        "CARGO_BUILD_RUSTC_WRAPPER": "sccache",
+        "CARGO_INCREMENTAL": "0",
+        "SCCACHE_DIR": "/x",
+        "SCCACHE_SERVER_PORT": "4226",
+    }
+
+    def setUp(self):
+        self.tmp = scratch(self)
+        self.real = fx.make_tree(self.tmp, "tree")
+        self.tree = canon_run.find_tree(self.real, {})
+        self.canon = os.path.join(self.tmp, "canon")
+        self.fake = fx.fake_cargo_dir(self.tmp)
+        self.environ = fx.scratch_env(
+            self.tmp, PATH=f"{self.real}/scripts/canon-bin:{self.fake}:/usr/bin:/bin"
+        )
+        self.host = canon_run.HostConfig(
+            Path(self.environ["REIFY_CANON_HOST_CONFIG"]), True, canon_run.Policy.INCREMENTAL
+        )
+
+    def invoke(self, command, *, cargo=True, environ=None, tree=None, cwd=None, host=None):
+        return canon_run.canon_invocation(
+            command,
+            self.environ if environ is None else environ,
+            tree or self.tree,
+            self.canon,
+            cwd or self.real,
+            host or self.host,
+            cargo=cargo,
+        )
+
+
+class Rewriting(CanonInvocationCase):
+    """Boundary row 3: absolute paths into the tree move to CANON; nothing else does."""
+
+    def test_tree_paths_in_arguments_move_to_canon(self):
+        for command, expected in (
+            (["--manifest-path", f"{self.real}/Cargo.toml"], ["--manifest-path", f"{self.canon}/Cargo.toml"]),
+            ([f"--manifest-path={self.real}/Cargo.toml"], [f"--manifest-path={self.canon}/Cargo.toml"]),
+            (["--target-dir", f"{self.real}/target"], ["--target-dir", f"{self.canon}/target"]),
+            ([self.real], [self.canon]),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(list(self.invoke(command).argv[1:]), expected)
+
+    def test_other_arguments_are_unchanged(self):
+        command = [f"{self.real}-sibling/x", "/elsewhere/x", "relative/x", f"--x={self.real}-sibling"]
+        self.assertEqual(list(self.invoke(command).argv[1:]), command)
+
+    def test_exec_kind_rewrites_the_full_command(self):
+        invocation = self.invoke(["/bin/ls", f"{self.real}/sub"], cargo=False)
+        self.assertEqual(list(invocation.argv), ["/bin/ls", f"{self.canon}/sub"])
+
+    def test_cargo_variables_move_to_canon_and_others_do_not(self):
+        environ = dict(self.environ, CARGO_TARGET_DIR=f"{self.real}/target", FOO_DIR=f"{self.real}/x")
+        env = self.invoke(["build"], environ=environ).env
+        self.assertEqual(env["CARGO_TARGET_DIR"], f"{self.canon}/target")
+        self.assertEqual(env["FOO_DIR"], f"{self.real}/x")
+
+    def test_either_spelling_of_the_tree_moves_to_canon(self):
+        alias = os.path.join(self.tmp, "alias")
+        os.symlink(self.real, alias)
+        tree = canon_run.Tree(Path(alias), Path(self.real), self.tree.dev, self.tree.ino)
+        invocation = self.invoke([f"{alias}/a", f"{self.real}/b"], tree=tree, cwd=alias)
+        self.assertEqual(list(invocation.argv[1:]), [f"{self.canon}/a", f"{self.canon}/b"])
+
+    def test_cwd_and_pwd_move_to_canon(self):
+        invocation = self.invoke(["build"], cwd=f"{self.real}/sub")
+        self.assertEqual(invocation.cwd, f"{self.canon}/sub")
+        self.assertEqual(invocation.env["PWD"], f"{self.canon}/sub")
+
+
+class Exports(CanonInvocationCase):
+    def test_active_record_names_the_tree(self):
+        record = json.loads(self.invoke(["build"]).env["REIFY_CANON_ACTIVE"])
+        self.assertEqual(
+            record,
+            {"dev": self.tree.dev, "ino": self.tree.ino, "real_root": self.real, "canon": self.canon},
+        )
+
+    def test_ledger_lane_is_the_real_root(self):
+        environ = dict(self.environ, REIFY_VERIFY_LEDGER_LANE_DIR="/some/other/lane")
+        env = self.invoke(["build"], environ=environ).env
+        self.assertEqual(env["REIFY_VERIFY_LEDGER_LANE_DIR"], self.real)
+
+    def test_path_puts_canon_trampoline_then_cargo_home_first(self):
+        cargo_bin = os.path.join(self.environ["HOME"], ".cargo", "bin")
+        environ = dict(
+            self.environ,
+            PATH=f"{self.real}/scripts/canon-bin:{cargo_bin}:{self.fake}:/usr/bin:/bin",
+        )
+        expected = [f"{self.canon}/scripts/canon-bin", cargo_bin, self.fake, "/usr/bin", "/bin"]
+        env = self.invoke(["build"], environ=environ).env
+        self.assertEqual(env["PATH"].split(os.pathsep), expected)
+        nested = self.invoke(["build"], environ=env).env
+        self.assertEqual(nested["PATH"].split(os.pathsep), expected)
+
+    def test_grammar_cache_home_is_pcc_derived_for_the_real_root(self):
+        pcc = load_pcc()
+
+        def derived(root):
+            return pcc.grammar_cache_home(
+                pcc.ProbeContext(
+                    repo_root=str(root),
+                    reify_bin=None,
+                    reify_bin_refusal="not used by this test",
+                    tree_sitter_bin="tree-sitter",
+                )
+            )
+
+        repo_tree = canon_run.find_tree(str(fx.REPO_ROOT), {})
+        env = self.invoke(["build"], tree=repo_tree, cwd=str(fx.REPO_ROOT)).env
+        at_canon = derived(self.canon)
+        self.addCleanup(shutil.rmtree, at_canon, ignore_errors=True)
+        self.assertEqual(env["REIFY_TS_CACHE_HOME"], derived(fx.REPO_ROOT))
+        self.assertNotEqual(env["REIFY_TS_CACHE_HOME"], at_canon)
+
+    def test_grammar_cache_home_is_dropped_for_a_tree_without_pcc(self):
+        environ = dict(self.environ, REIFY_TS_CACHE_HOME="/tmp/caller-chosen")
+        self.assertNotIn("REIFY_TS_CACHE_HOME", self.invoke(["build"], environ=environ).env)
+
+    def test_infra_suites_do_not_inherit_the_primitive_variables(self):
+        composed = self.invoke(["build"]).env
+        names = {name for name in composed if name.startswith("REIFY_CANON_")}
+        names |= {"REIFY_CANON_ROOT", "REIFY_CANON_HOST_CONFIG"}
+        with mock.patch.dict(os.environ, {name: "ambient" for name in names}):
+            self.assertEqual(names & set(hermetic_env()), set())
+
+
+class CachePolicy(CanonInvocationCase):
+    """C4's `incremental` row (boundary row 4); shared and mixed need beta2's server."""
+
+    def test_incremental_cargo_drops_sccache_and_turns_incremental_on(self):
+        environ = dict(self.environ, FOO="1", **self.CACHE_VARIABLES)
+        invocation = self.invoke(["build"], environ=environ)
+        env = invocation.env
+        for name in ("RUSTC_WRAPPER", "CARGO_BUILD_RUSTC_WRAPPER"):
+            self.assertNotIn(name, env)
+        self.assertEqual([name for name in env if name.startswith("SCCACHE_")], [])
+        self.assertEqual(env["CARGO_INCREMENTAL"], "1")
+        self.assertEqual(env["FOO"], "1")
+        self.assertEqual(invocation.argv[0], os.path.join(self.fake, "cargo"))
+
+    def test_exec_kind_leaves_cache_variables_as_inherited(self):
+        environ = dict(self.environ, **self.CACHE_VARIABLES)
+        env = self.invoke(["/bin/true"], cargo=False, environ=environ).env
+        for name, value in self.CACHE_VARIABLES.items():
+            self.assertEqual(env[name], value)
+
+    def test_shared_and_mixed_refuse(self):
+        for policy in (canon_run.Policy.SHARED, canon_run.Policy.MIXED):
+            host = canon_run.HostConfig(self.host.path, True, policy)
+            for cargo in (True, False):
+                with self.subTest(policy=policy, cargo=cargo):
+                    with self.assertRaises(canon_run.Refusal) as caught:
+                        self.invoke(["build"], cargo=cargo, host=host)
+                    message = str(caught.exception)
+                    self.assertNotIn("\n", message)
+                    for needle in (f"'{policy}'", 'policy = "incremental"', str(self.host.path)):
+                        self.assertIn(needle, message)
+
+
+class ActiveRecord(unittest.TestCase):
+    """A nested invocation at CANON takes the real root from REIFY_CANON_ACTIVE."""
+
+    def setUp(self):
+        tmp = scratch(self)
+        self.root = fx.make_tree(tmp, "tree")
+        self.root_stat = os.stat(self.root)
+
+    def real_root_with(self, value):
+        return canon_run.find_tree(self.root, {"REIFY_CANON_ACTIVE": value}).real_root
+
+    def record(self, **changes):
+        fields = {
+            "dev": self.root_stat.st_dev,
+            "ino": self.root_stat.st_ino,
+            "real_root": "/the/real/tree",
+            "canon": "/opt/reify-canon/ws",
+        }
+        return json.dumps(dict(fields, **changes))
+
+    def test_matching_record_supplies_the_real_root(self):
+        self.assertEqual(self.real_root_with(self.record()), Path("/the/real/tree"))
+
+    def test_record_for_another_inode_is_ignored(self):
+        self.assertEqual(self.real_root_with(self.record(ino=self.root_stat.st_ino + 1)), Path(self.root))
+
+    def test_malformed_record_is_ignored(self):
+        for value in ("{not json", self.record(dev="1"), "[]"):
+            with self.subTest(value=value):
+                self.assertEqual(self.real_root_with(value), Path(self.root))
 
 
 if __name__ == "__main__":
