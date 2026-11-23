@@ -643,9 +643,10 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `W_STDLIB_NAME_SHADOWED`.
     StdlibNameShadowed,
     /// Origin: `crates/reify-compiler/src/name_env.rs` (`collision_warning`),
-    /// raised by the compiler's prelude-units seed loop
-    /// (`compile_builder/units_phase.rs`) and by the evaluator's resolution
-    /// environment collision report (`reify_eval::DefEnv`).
+    /// raised by the compiler's prelude seeds of units
+    /// (`compile_builder/units_phase.rs`) and pub type aliases
+    /// (`PreludeContext`), and by the evaluator's resolution environment
+    /// collision report (`reify_eval::DefEnv`).
     /// Emitted as a `Warning` when two modules a compile or program sees define
     /// one name in one kind: the first in precedence order binds and the other
     /// is shadowed (resolution-unification I6/D-6, stdlib-namespace NS-P1).

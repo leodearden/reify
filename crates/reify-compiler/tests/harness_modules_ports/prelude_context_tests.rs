@@ -647,9 +647,10 @@ fn extended_matches_new_over_concatenated_prelude() {
 
     let collision_warnings: Vec<&DiagKey> = via_extended
         .iter()
-        .filter(|(severity, _, message)| {
+        .filter(|(severity, code, message)| {
             *severity == reify_core::Severity::Warning
-                && message.contains("prelude pub alias 'Shared' declared in both")
+                && *code == Some(reify_core::DiagnosticCode::DefinitionCollision)
+                && message.starts_with("type alias 'Shared' declared in both")
         })
         .collect();
     assert_eq!(

@@ -350,14 +350,18 @@ pub struct Shadowing<'a, D: Definition> {
 
 /// The one wording of a first-wins collision: the kind, the name, the
 /// winner's origin first, then the shadowed one. Each origin is a dotted
-/// module path, `local_module` standing for [`Origin::Local`].
+/// module path; [`Origin::Local`] is `local_module`, the module whose bind
+/// produced `shadowing`, which is `None` for a bind with no local scope.
 pub fn collision_warning<D: Definition>(
     shadowing: &Shadowing<'_, D>,
-    local_module: &str,
+    local_module: Option<&ModulePath>,
 ) -> Diagnostic {
-    let label = |origin: Origin<'_>| match origin {
-        Origin::Local => local_module.to_string(),
-        Origin::Module(path) => path.0.join("."),
+    let label = |origin: Origin<'_>| {
+        origin
+            .module()
+            .or(local_module)
+            .expect("a bind with no local scope has no local candidate")
+            .to_dotted()
     };
     let definition = shadowing.winner.definition;
     let winner = label(shadowing.winner.origin);

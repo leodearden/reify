@@ -42,7 +42,7 @@ pub fn seed_prelude_units(
         .shadowings()
         .iter()
         .filter(|shadowing| shadowing.winner.origin != shadowing.shadowed.origin)
-        .map(|shadowing| name_env::collision_warning(shadowing, ""))
+        .map(|shadowing| name_env::collision_warning(shadowing, None))
         .collect()
 }
 

@@ -165,7 +165,7 @@ impl<'p> DefEnv<'p> {
     }
 
     fn import_tier_collisions<D: ProgramDefinition>(&self) -> Vec<Diagnostic> {
-        let entry_key = self.program.entry().path.to_dotted();
+        let entry = &self.program.entry().path;
         program_scope::bind_program::<D>(self.program, self.prelude)
             .shadowings()
             .iter()
@@ -173,7 +173,7 @@ impl<'p> DefEnv<'p> {
                 shadowing.shadowed.origin.tier() == Tier::Import
                     && shadowing.winner.origin != shadowing.shadowed.origin
             })
-            .map(|shadowing| name_env::collision_warning(shadowing, &entry_key))
+            .map(|shadowing| name_env::collision_warning(shadowing, Some(entry)))
             .collect()
     }
 }

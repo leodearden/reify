@@ -11,14 +11,16 @@
 use std::collections::HashSet;
 
 use reify_compiler::name_env::{
-    Bindings, Definition, FunctionSignature, Origin, Surface, Tier, bind, bind_scopes, resolve,
-    resolve_in_scopes, surface_of,
+    Bindings, Definition, FunctionSignature, Origin, Shadowing, Surface, Tier, bind, bind_scopes,
+    collision_warning, resolve, resolve_in_scopes, surface_of,
 };
 use reify_compiler::{
     CompiledConstraintDef, CompiledModule, CompiledPurpose, CompiledTrait, CompiledTypeAlias,
-    TopologyTemplate,
+    EntityKind, TopologyTemplate,
 };
-use reify_core::{ContentHash, ModulePath, SourceSpan, Type, ValueCellId};
+use reify_core::{
+    ContentHash, DiagnosticCode, ModulePath, Severity, SourceSpan, Type, ValueCellId,
+};
 use reify_ir::{CompiledExpr, CompiledFnBody, CompiledFunction, EnumDef};
 use reify_test_support::{
     CompiledModuleBuilder, CompiledPurposeBuilder, CompiledTraitBuilder, TopologyTemplateBuilder,
@@ -952,4 +954,75 @@ fn bind_is_bind_scopes_without_direct_imports_for_every_kind() {
     assert_bind_is_bind_scopes_without_direct_imports("type alias", &fx.aliases, p);
     assert_bind_is_bind_scopes_without_direct_imports("constraint def", &fx.constraint_defs, p);
     assert_bind_is_bind_scopes_without_direct_imports("purpose", &fx.purposes, p);
+}
+
+// ─── collision_warning: the one wording of a first-wins collision ─────────
+
+/// The shadowing of `name` whose loser comes from `shadowed`.
+fn shadowing_of<'b, 'a, D: Definition>(
+    bindings: &'b Bindings<'a, D>,
+    name: &str,
+    shadowed: &str,
+) -> &'b Shadowing<'a, D> {
+    bindings
+        .shadowings()
+        .iter()
+        .find(|s| {
+            s.shadowed.definition.name() == name && origin_label(s.shadowed.origin) == shadowed
+        })
+        .unwrap_or_else(|| panic!("{name} from {shadowed} is shadowed"))
+}
+
+/// A `DefinitionCollision` Warning reading `expected_message`.
+fn assert_collision_warning(warning: &reify_core::Diagnostic, expected_message: &str) {
+    assert_eq!(warning.severity, Severity::Warning, "{warning:?}");
+    assert_eq!(
+        warning.code,
+        Some(DiagnosticCode::DefinitionCollision),
+        "{warning:?}"
+    );
+    assert_eq!(warning.message, expected_message);
+}
+
+#[test]
+fn a_collision_warning_names_a_local_winner_by_the_binding_module() {
+    let fx = fixture();
+    let bindings = bind(&fx.aliases, &fx.prelude);
+    let shadowing = shadowing_of(&bindings, "LocalImport", "b");
+    assert_eq!(shadowing.winner.origin, Origin::Local, "precondition");
+    assert_collision_warning(
+        &collision_warning(shadowing, Some(&module_path("user.main"))),
+        "type alias 'LocalImport' declared in both 'user.main' and 'b'; \
+         first-wins: 'user.main' binds",
+    );
+}
+
+#[test]
+fn a_collision_warning_from_a_bind_without_local_scope_names_modules_by_dotted_path() {
+    let fx = fixture();
+    let bindings = bind::<CompiledTrait, _>(&[], &fx.prelude);
+    let shadowing = shadowing_of(&bindings, "StdOnly", "std.p2");
+    assert_collision_warning(
+        &collision_warning(shadowing, None),
+        "trait 'StdOnly' declared in both 'std.p1' and 'std.p2'; first-wins: 'std.p1' binds",
+    );
+}
+
+#[test]
+fn a_template_collision_warning_names_the_winners_entity_kind() {
+    let fx = fixture();
+    let mut occurrence = template("LocalImport");
+    occurrence.entity_kind = EntityKind::Occurrence;
+    let local = [occurrence];
+    let bindings = bind(&local, &fx.prelude);
+    let shadowing = shadowing_of(&bindings, "LocalImport", "b");
+    assert_eq!(
+        shadowing.shadowed.definition.entity_kind,
+        EntityKind::Structure,
+        "precondition: the shadowed template is a structure"
+    );
+    assert_collision_warning(
+        &collision_warning(shadowing, Some(&module_path("main"))),
+        "occurrence 'LocalImport' declared in both 'main' and 'b'; first-wins: 'main' binds",
+    );
 }
