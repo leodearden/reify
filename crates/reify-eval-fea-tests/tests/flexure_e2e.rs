@@ -1090,7 +1090,7 @@ module dcr_material_dimension_correct_inline
 
 structure def DcrMaterialDimensionCorrect {
     let m = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
-    let j = prb_cantilever_beam(20mm, 5mm, 0.5mm, m, point3(0mm, 0mm, 0mm), vec3(0.0, 1.0, 0.0))
+    let j = prb_cantilever_beam(20mm, 5mm, 0.5mm, m, point3(0mm, 0mm, 0mm), dir(0.0, 1.0, 0.0))
 }
 "#;
 
@@ -1098,10 +1098,10 @@ structure def DcrMaterialDimensionCorrect {
 module steel_yield_floors
 
 structure def SteelYieldFloors {
-    let with_yield = prb_cantilever_beam(20mm, 5mm, 0.5mm, Steel_AISI_1045(), point3(0mm, 0mm, 0mm), vec3(0.0, 1.0, 0.0))
-    let no_yield = prb_cantilever_beam(20mm, 5mm, 0.5mm, Steel_AISI_1045(yield_stress: none), point3(0mm, 0mm, 0mm), vec3(0.0, 1.0, 0.0))
-    let yield_binds = prb_cantilever_beam(5mm, 5mm, 1mm, Steel_AISI_1045(), point3(0mm, 0mm, 0mm), vec3(0.0, 1.0, 0.0))
-    let yield_binds_without_yield = prb_cantilever_beam(5mm, 5mm, 1mm, Steel_AISI_1045(yield_stress: none), point3(0mm, 0mm, 0mm), vec3(0.0, 1.0, 0.0))
+    let with_yield = prb_cantilever_beam(20mm, 5mm, 0.5mm, Steel_AISI_1045(), point3(0mm, 0mm, 0mm), dir(0.0, 1.0, 0.0))
+    let no_yield = prb_cantilever_beam(20mm, 5mm, 0.5mm, Steel_AISI_1045(yield_stress: none), point3(0mm, 0mm, 0mm), dir(0.0, 1.0, 0.0))
+    let yield_binds = prb_cantilever_beam(5mm, 5mm, 1mm, Steel_AISI_1045(), point3(0mm, 0mm, 0mm), dir(0.0, 1.0, 0.0))
+    let yield_binds_without_yield = prb_cantilever_beam(5mm, 5mm, 1mm, Steel_AISI_1045(yield_stress: none), point3(0mm, 0mm, 0mm), dir(0.0, 1.0, 0.0))
 }
 "#;
 
