@@ -404,6 +404,34 @@ fn imported_circular_plain_aliases_still_terminate() {
     );
 }
 
+/// An imported alias naming itself twice still ends, and using it still reports it.
+#[test]
+fn imported_circular_alias_naming_itself_twice_still_terminates() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(
+        dir.path(),
+        "cyc2.ri",
+        "module cyc2\n\
+pub structure def S2<A, B> {\n\
+\x20   param k : Length\n\
+}\n\
+pub type C2x = S2<C2x, C2x>\n",
+    );
+
+    let program = compile(
+        dir.path(),
+        "impcyc2",
+        "module impcyc2\nimport cyc2\nstructure def App {\n    param p : C2x\n}\n",
+    );
+    assert!(
+        errors(program.entry())
+            .iter()
+            .any(|d| d.message.contains("C2x")),
+        "got {:?}",
+        program.entry().diagnostics
+    );
+}
+
 /// A declared-type position whose enum namespace is private to it, so an
 /// alias reaches the enum there only by walking the alias chain to its name.
 #[derive(Clone, Copy, Debug)]
