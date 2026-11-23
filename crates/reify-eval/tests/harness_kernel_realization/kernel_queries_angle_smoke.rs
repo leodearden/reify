@@ -1,19 +1,20 @@
-//! End-to-end smoke test for the `angle(Vec3, Vec3) -> Angle` eval-side
-//! dispatch arm (task 3614, PRD `docs/prds/v0_3/kernel-geometry-queries.md`
-//! §9 KGQ-ε).
+//! End-to-end smoke test for the `angle(Direction, Direction) -> Angle`
+//! eval-side dispatch arm (task 3614, PRD
+//! `docs/prds/v0_3/kernel-geometry-queries.md` §9 KGQ-ε; Direction operands
+//! since direction-typing θ-b, task 9645).
 //!
 //! The fixture `examples/kernel_queries/angle_smoke.ri` contains:
 //!
 //! ```ri
 //! structure def AngleSmoke {
-//!     let a = vec3(1.0, 0.0, 0.0)
-//!     let b = vec3(0.0, 1.0, 0.0)
+//!     let a = dir(1, 0, 0)
+//!     let b = dir(0, 1, 0)
 //!     let angle_ab = angle(a, b)
 //! }
 //! ```
 //!
-//! The user-observable signal: `angle_ab` evaluates to `Angle(90 deg)`
-//! (`Value::angle(FRAC_PI_2)`). No kernel call is required — `angle` is
+//! The user-observable signal: `angle_ab` evaluates to exactly
+//! `Value::angle(FRAC_PI_2)`. No kernel call is required — `angle` is
 //! pure-math.
 //!
 //! Modelled on `block_inertia_evals_moment_of_inertia_to_tensor` in
@@ -33,8 +34,10 @@ fn angle_smoke_path() -> std::path::PathBuf {
     reify_test_support::examples_corpus::examples_dir().join("kernel_queries/angle_smoke.ri")
 }
 
-/// Pins the user-observable signal for KGQ-ε: `angle(vec3(1,0,0), vec3(0,1,0))`
-/// must evaluate to `Value::angle(FRAC_PI_2)` (90 degrees / π/2 radians).
+/// Pins the user-observable signal for KGQ-ε: `angle(dir(1,0,0), dir(0,1,0))`
+/// must evaluate to exactly `Value::angle(FRAC_PI_2)` (1.5707963267948966 rad).
+/// The unit operands' dot product is exactly 0.0 and `acos(0.0)` is the
+/// correctly rounded π/2, so no epsilon is needed.
 ///
 /// A bare `MockGeometryKernel::new()` is sufficient because `angle` never
 /// queries the kernel — it is pure-math.
@@ -51,27 +54,9 @@ fn angle_smoke_evals_to_ninety_degrees() {
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let cell = ValueCellId::new("AngleSmoke", "angle_ab");
-    let actual = result.values.get(&cell);
-
-    // Allow a small floating-point epsilon on the si_value (acos can drift
-    // by ~1 ULP on some platforms) while requiring exact ANGLE dimension.
-    match actual {
-        Some(Value::Scalar {
-            si_value,
-            dimension,
-        }) if *dimension == reify_core::DimensionVector::ANGLE => {
-            let expected = std::f64::consts::FRAC_PI_2;
-            let epsilon = 1e-12;
-            assert!(
-                (si_value - expected).abs() < epsilon,
-                "AngleSmoke.angle_ab si_value should be FRAC_PI_2 (≈{expected:.15}), \
-                 got {si_value:.15} (delta {delta:.3e})",
-                delta = (si_value - expected).abs()
-            );
-        }
-        other => panic!(
-            "AngleSmoke.angle_ab should be Value::angle(FRAC_PI_2), got: {:?}",
-            other
-        ),
-    }
+    assert_eq!(
+        result.values.get(&cell),
+        Some(&Value::angle(std::f64::consts::FRAC_PI_2)),
+        "AngleSmoke.angle_ab must be exactly Value::angle(FRAC_PI_2)"
+    );
 }

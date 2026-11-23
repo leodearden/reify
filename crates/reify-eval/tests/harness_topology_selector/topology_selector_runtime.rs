@@ -298,10 +298,9 @@ fn angle_between_surfaces_with_literal_int_arg_falls_through_to_undef() {
 // `engine.build`, and assert the cell value the post-process patches in.
 //
 // Test-fixture convention: non-trivial args use let-bound intermediates
-// (e.g. `let dir = vec3(0,0,1); let tol = 1deg; let top = faces_by_normal(body, dir, tol)`)
-// so the dispatcher resolves them via the ValueRef path — inline FunctionCall
-// args (e.g. `vec3(0,0,1)` written inline) fall through to None per the
-// literal-args contract in the dispatcher.
+// (e.g. `let up = dir(0,0,1); let tol = 1deg; let top = faces_by_normal(body, up, tol)`)
+// so the dispatcher resolves them via the ValueRef path; the inline forms are
+// pinned separately (e.g. `faces_by_normal_inline_dir_constructs_by_normal_selector`).
 
 /// `let es = edges(body)` on a structure containing `let body = box(10mm, 10mm, 10mm)`
 /// must construct a typed `Value::Selector(Edge)` whose leaf is `All` over the
@@ -597,18 +596,19 @@ fn faces_by_area_let_constructs_typed_face_by_area_selector() {
     );
 }
 
-/// `let fs = faces_by_normal(body, dir, tol)` with `let dir = vec3(0.0, 0.0, 1.0)`
+/// `let fs = faces_by_normal(body, up, tol)` with `let up = dir(0, 0, 1)`
 /// and `let tol = 1deg` must construct a typed `Value::Selector(Face)` whose
 /// leaf is `ByNormal { dir: +z, tol: 1° }` over the parent box handle (task
-/// 4118 γ) — NOT an eagerly-filtered `Value::List`. Construction is kernel-FREE
-/// (UNSTAGED mock kernel, K2/BT7).
+/// 4118 γ) — NOT an eagerly-filtered `Value::List`. The direction operand is a
+/// `Direction` (direction-typing θ-b). Construction is kernel-FREE (UNSTAGED
+/// mock kernel, K2/BT7).
 #[test]
 fn faces_by_normal_let_constructs_typed_face_by_normal_selector() {
     let source = "structure def Bracket {\n    \
         let body = box(10mm, 10mm, 10mm)\n    \
-        let dir = vec3(0.0, 0.0, 1.0)\n    \
+        let up = dir(0, 0, 1)\n    \
         let tol = 1deg\n    \
-        let fs = faces_by_normal(body, dir, tol)\n}";
+        let fs = faces_by_normal(body, up, tol)\n}";
     let compiled = compile_no_errors(source);
     let mut engine = engine_with_mock_kernel(|k| k);
 
@@ -633,22 +633,18 @@ fn faces_by_normal_let_constructs_typed_face_by_normal_selector() {
     );
 }
 
-/// Task ε (evaluate-then-accept): the INLINE direction form
-/// `faces_by_normal(body, vec3(0.0, 0.0, 1.0), 5deg)` — with the direction
-/// argument written as an inline `vec3(...)` constructor call (a
-/// `CompiledExprKind::FunctionCall`, NOT a `let`-bound `ValueRef → Value::Vector`)
-/// instead of a `let`-bound cell — must construct the same `ByNormal { dir: +z,
-/// tol: 5° }` leaf. Before ε the inline `vec3(...)` FunctionCall hit
-/// `resolve_vec3_arg`'s `_ => None` arm → the whole selector fell through → the
-/// cell stayed `Value::Undef` → RED. After ε the resolver evaluates the
-/// `vec3(...)` call (via `reify_stdlib::eval_builtin`) to a
-/// `Value::Vector([0,0,1])` → GREEN. Construction is kernel-FREE (UNSTAGED mock
-/// kernel, K2/BT7).
+/// The INLINE direction form `faces_by_normal(body, dir(0, 0, 1), 5deg)` — the
+/// direction argument written as an inline `dir(...)` constructor call (a
+/// `CompiledExprKind::FunctionCall`, NOT a `let`-bound `ValueRef`) — must
+/// construct the same `ByNormal { dir: +z, tol: 5° }` leaf: the reader
+/// evaluates the call to a `Value::Direction` (task ε evaluate-then-accept,
+/// direction-typing θ-b). Construction is kernel-FREE (UNSTAGED mock kernel,
+/// K2/BT7).
 #[test]
-fn faces_by_normal_inline_vec3_constructs_by_normal_selector() {
+fn faces_by_normal_inline_dir_constructs_by_normal_selector() {
     let source = "structure def Bracket {\n    \
         let body = box(10mm, 10mm, 10mm)\n    \
-        let fs = faces_by_normal(body, vec3(0.0, 0.0, 1.0), 5deg)\n}";
+        let fs = faces_by_normal(body, dir(0, 0, 1), 5deg)\n}";
     let compiled = compile_no_errors(source);
     let mut engine = engine_with_mock_kernel(|k| k);
 
@@ -679,16 +675,17 @@ fn faces_by_normal_inline_vec3_constructs_by_normal_selector() {
     );
 }
 
-/// `let es = edges_parallel_to(body, axis, tol)` with `let axis = vec3(0.0, 0.0, 1.0)`
+/// `let es = edges_parallel_to(body, axis, tol)` with `let axis = dir(0, 0, 1)`
 /// and `let tol = 1deg` must construct a typed `Value::Selector(Edge)` whose
 /// leaf is `ByParallel { axis: +z, tol: 1° }` over the parent box handle (task
-/// 4118 γ) — NOT an eagerly-filtered `Value::List`. Construction is kernel-FREE
-/// (UNSTAGED mock kernel, K2/BT7).
+/// 4118 γ) — NOT an eagerly-filtered `Value::List`. The axis operand is a
+/// `Direction` (direction-typing θ-b). Construction is kernel-FREE (UNSTAGED
+/// mock kernel, K2/BT7).
 #[test]
 fn edges_parallel_to_let_constructs_typed_edge_by_parallel_selector() {
     let source = "structure def Bracket {\n    \
         let body = box(10mm, 10mm, 10mm)\n    \
-        let axis = vec3(0.0, 0.0, 1.0)\n    \
+        let axis = dir(0, 0, 1)\n    \
         let tol = 1deg\n    \
         let es = edges_parallel_to(body, axis, tol)\n}";
     let compiled = compile_no_errors(source);
@@ -713,6 +710,52 @@ fn edges_parallel_to_let_constructs_typed_edge_by_parallel_selector() {
             other => panic!("edges_parallel_to → ByParallel leaf, got {other:?}"),
         },
     );
+}
+
+/// `{callee}(body, axis, tol)` with `let axis = dir(0, 0, 1)` and `let tol =
+/// 1deg` constructs a typed `Value::Selector` of the constructor's kind whose
+/// leaf is `ByPerpendicular { axis: +z, tol: 1° }` over the parent box handle.
+/// The axis operand is a `Direction` (direction-typing θ-b).
+fn assert_perpendicular_selector_constructs(callee: &str, kind: SelectorKind) {
+    let source = format!(
+        "structure def Bracket {{\n    \
+         let body = box(10mm, 10mm, 10mm)\n    \
+         let axis = dir(0, 0, 1)\n    \
+         let tol = 1deg\n    \
+         let sel = {callee}(body, axis, tol)\n}}"
+    );
+    let compiled = compile_no_errors(&source);
+    let mut engine = engine_with_mock_kernel(|k| k);
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let cell = ValueCellId::new("Bracket", "sel");
+    assert_selector_leaf_targeting(
+        result.values.get(&cell),
+        "Bracket.sel",
+        kind,
+        Some(GeometryHandleId(1)),
+        |q| match q {
+            LeafQuery::ByPerpendicular { axis, tol_rad } => {
+                assert_eq!(*axis, [0.0, 0.0, 1.0], "{callee}: axis must be +z");
+                assert!(
+                    (*tol_rad - 1f64.to_radians()).abs() < 1e-9,
+                    "{callee}: tol_rad must be 1°, got {tol_rad}"
+                );
+            }
+            other => panic!("{callee} → ByPerpendicular leaf, got {other:?}"),
+        },
+    );
+}
+
+#[test]
+fn faces_perpendicular_to_let_constructs_typed_face_by_perpendicular_selector() {
+    assert_perpendicular_selector_constructs("faces_perpendicular_to", SelectorKind::Face);
+}
+
+#[test]
+fn edges_perpendicular_to_let_constructs_typed_edge_by_perpendicular_selector() {
+    assert_perpendicular_selector_constructs("edges_perpendicular_to", SelectorKind::Edge);
 }
 
 /// `let es = edges_at_height(body, z, tol)` with `let z = 0mm` and

@@ -15990,172 +15990,135 @@
 
     // ── try_eval_topology_selector: angle dispatch (task 3614, KGQ-ε) ────────
     //
-    // These tests pin the pure-math `angle(Vec3, Vec3) -> Angle` dispatch arm.
-    // No kernel calls — acos(clamp(dot/(|a||b|), -1, 1)).  Modelled on the
-    // `try_eval_topology_selector_angle_between_surfaces_*` tests above.
+    // These tests pin the pure-math `angle(Direction, Direction) -> Angle`
+    // dispatch arm (direction-typing θ-b). No kernel calls: both operands are
+    // unit by construction, so the result is acos(clamp(dot(a, b), -1, 1)).
 
-    #[test]
-    fn try_eval_topology_selector_angle_two_vec3_value_refs_returns_angle_scalar() {
+    /// Evaluate `angle(T.a, T.b)` through the build-path seam with `a` / `b` in
+    /// the `values` map (`None` leaves the cell absent, so the arg evaluates to
+    /// `Undef`).
+    fn angle_of_value_refs(
+        a: Option<reify_ir::Value>,
+        b: Option<reify_ir::Value>,
+    ) -> (Option<reify_ir::Value>, Vec<Diagnostic>) {
         use reify_test_support::mocks::MockGeometryKernel;
         let mut kernel = MockGeometryKernel::new();
-
         let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
         let mut values = reify_ir::ValueMap::new();
-        values.insert(
-            reify_core::ValueCellId::new("AngleSmoke", "a"),
-            vec3_value(1.0, 0.0, 0.0),
-        );
-        values.insert(
-            reify_core::ValueCellId::new("AngleSmoke", "b"),
-            vec3_value(0.0, 1.0, 0.0),
-        );
-
+        for (member, value) in [("a", a), ("b", b)] {
+            if let Some(value) = value {
+                values.insert(reify_core::ValueCellId::new("T", member), value);
+            }
+        }
         let expr = topology_selector_call_two_value_refs(
             "angle",
-            "AngleSmoke",
+            "T",
             "a",
-            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+            reify_core::Type::Direction,
             "b",
-            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+            reify_core::Type::Direction,
             reify_core::Type::angle(),
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
-
         let result = super::try_eval_topology_selector(
             &expr,
             &named_steps,
             &values,
             &mut kernel,
             &mut diagnostics,
+        );
+        (result, diagnostics)
+    }
+
+    /// dir(1,0,0) · dir(0,1,0) is exactly 0.0, and acos(0.0) is the correctly
+    /// rounded π/2, so the comparison is exact.
+    #[test]
+    fn try_eval_topology_selector_angle_two_direction_value_refs_returns_exact_right_angle() {
+        let (result, diagnostics) = angle_of_value_refs(
+            Some(unit_dir(1.0, 0.0, 0.0)),
+            Some(unit_dir(0.0, 1.0, 0.0)),
         );
 
         assert_eq!(
             result,
             Some(reify_ir::Value::angle(std::f64::consts::FRAC_PI_2)),
-            "angle(vec3(1,0,0), vec3(0,1,0)) must return Some(Value::angle(PI/2)); got {:?}",
-            result
+            "angle(dir(1,0,0), dir(0,1,0)) must be exactly π/2"
         );
         assert!(
             diagnostics.is_empty(),
-            "perpendicular vectors must NOT emit diagnostics, got: {:?}",
-            diagnostics
+            "perpendicular directions must NOT emit diagnostics, got: {diagnostics:?}"
         );
     }
 
     #[test]
-    fn try_eval_topology_selector_angle_parallel_vectors_returns_zero_angle() {
-        // vec3(1,0,0) · vec3(2,0,0): cos=1.0 → clamp → acos(1.0) = 0.0.
-        // Proves the acos-domain upper-bound clamp for parallel vectors.
-        use reify_test_support::mocks::MockGeometryKernel;
-        let mut kernel = MockGeometryKernel::new();
+    fn try_eval_topology_selector_angle_parallel_and_antiparallel_directions() {
+        for (b, expected) in [
+            (unit_dir(1.0, 0.0, 0.0), 0.0),
+            (unit_dir(-1.0, 0.0, 0.0), std::f64::consts::PI),
+        ] {
+            let (result, diagnostics) =
+                angle_of_value_refs(Some(unit_dir(1.0, 0.0, 0.0)), Some(b.clone()));
 
-        let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
-        let mut values = reify_ir::ValueMap::new();
-        values.insert(
-            reify_core::ValueCellId::new("AngleSmoke", "a"),
-            vec3_value(1.0, 0.0, 0.0),
-        );
-        values.insert(
-            reify_core::ValueCellId::new("AngleSmoke", "b"),
-            vec3_value(2.0, 0.0, 0.0),
-        );
+            assert_eq!(
+                result,
+                Some(reify_ir::Value::angle(expected)),
+                "angle(dir(1,0,0), {b:?}) must be {expected} rad"
+            );
+            assert!(
+                diagnostics.is_empty(),
+                "(anti)parallel directions must NOT emit diagnostics, got: {diagnostics:?}"
+            );
+        }
+    }
 
-        let expr = topology_selector_call_two_value_refs(
-            "angle",
-            "AngleSmoke",
-            "a",
-            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
-            "b",
-            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
-            reify_core::Type::angle(),
-        );
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-
-        let result = super::try_eval_topology_selector(
-            &expr,
-            &named_steps,
-            &values,
-            &mut kernel,
-            &mut diagnostics,
+    /// A raw `Value::Vector` operand is not a direction: no angle, and exactly
+    /// one Warning ending with the migration hint.
+    #[test]
+    fn try_eval_topology_selector_angle_vector_operand_returns_none_with_one_direction_warning() {
+        let (result, diagnostics) = angle_of_value_refs(
+            Some(vec3_value(1.0, 0.0, 0.0)),
+            Some(unit_dir(0.0, 1.0, 0.0)),
         );
 
+        assert!(result.is_none(), "a Vector operand must not yield an angle; got {result:?}");
         assert_eq!(
-            result,
-            Some(reify_ir::Value::angle(0.0)),
-            "angle(vec3(1,0,0), vec3(2,0,0)) (parallel) must return Some(Value::angle(0.0)); \
-             got {:?}",
-            result
+            diagnostics.len(),
+            1,
+            "a Vector operand must emit exactly one diagnostic; got: {diagnostics:?}"
+        );
+        let diag = &diagnostics[0];
+        assert_eq!(diag.severity, reify_core::Severity::Warning);
+        assert!(
+            diag.message.contains("angle"),
+            "warning must name `angle`; got: {:?}",
+            diag.message
         );
         assert!(
-            diagnostics.is_empty(),
-            "parallel vectors must NOT emit diagnostics, got: {:?}",
-            diagnostics
+            diag.message.ends_with("write dir(x, y, z)"),
+            "warning must end with the migration hint; got: {:?}",
+            diag.message
         );
     }
 
+    /// An `Undef` operand (what `dir(0, 0, 0)` evaluates to, its degenerate
+    /// diagnostic already reported upstream) yields no angle and no diagnostic.
     #[test]
-    fn try_eval_topology_selector_angle_antiparallel_vectors_returns_pi() {
-        // vec3(1,0,0) · vec3(-1,0,0): cos=-1.0 → clamp → acos(-1.0) = π.
-        // Proves the acos-domain lower-bound clamp for antiparallel vectors.
-        use reify_test_support::mocks::MockGeometryKernel;
-        let mut kernel = MockGeometryKernel::new();
+    fn try_eval_topology_selector_angle_undef_operand_returns_none_quietly() {
+        let (result, diagnostics) = angle_of_value_refs(None, Some(unit_dir(0.0, 1.0, 0.0)));
 
-        let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
-        let mut values = reify_ir::ValueMap::new();
-        values.insert(
-            reify_core::ValueCellId::new("AngleSmoke", "a"),
-            vec3_value(1.0, 0.0, 0.0),
-        );
-        values.insert(
-            reify_core::ValueCellId::new("AngleSmoke", "b"),
-            vec3_value(-1.0, 0.0, 0.0),
-        );
-
-        let expr = topology_selector_call_two_value_refs(
-            "angle",
-            "AngleSmoke",
-            "a",
-            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
-            "b",
-            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
-            reify_core::Type::angle(),
-        );
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-
-        let result = super::try_eval_topology_selector(
-            &expr,
-            &named_steps,
-            &values,
-            &mut kernel,
-            &mut diagnostics,
-        );
-
-        assert_eq!(
-            result,
-            Some(reify_ir::Value::angle(std::f64::consts::PI)),
-            "angle(vec3(1,0,0), vec3(-1,0,0)) (antiparallel) must return \
-             Some(Value::angle(PI)); got {:?}",
-            result
-        );
+        assert!(result.is_none(), "an Undef operand must not yield an angle; got {result:?}");
         assert!(
             diagnostics.is_empty(),
-            "antiparallel vectors must NOT emit diagnostics, got: {:?}",
-            diagnostics
+            "an Undef operand must emit no diagnostics; got: {diagnostics:?}"
         );
     }
 
     #[test]
     fn try_eval_topology_selector_angle_nonvec3_scalar_literal_args_falls_through_to_none() {
         // angle(<literal_real>, <literal_real>) — scalar Real literals evaluate
-        // (task ε) to Value::Real, which resolve_vec3_arg rejects as
-        // defined-but-wrong: it pushes a Warning and returns None for args[0],
-        // so the `?` short-circuits and the dispatcher returns None WITHOUT
-        // consulting the kernel.  Note: an inline expr that EVALUATES to a
-        // Value::Vector (e.g. a vec3(...) constructor or a Value::Vector literal)
-        // DOES resolve and compute an angle — see
-        // `try_eval_topology_selector_angle_literal_vec3_args_resolves_and_returns_angle`.
-        // This test pins the non-Vec3 scalar literal case (result None; kernel
-        // untouched).
+        // (task ε) to Value::Real, which is not a Direction: the reader pushes a
+        // Warning and returns None for args[0], so the `?` short-circuits and
+        // the dispatcher returns None WITHOUT consulting the kernel.
         use reify_test_support::mocks::CountingMockKernel;
         let inner = reify_test_support::mocks::MockGeometryKernel::new();
         let mut kernel = CountingMockKernel::new(inner);
@@ -16187,27 +16150,21 @@
     }
 
     #[test]
-    fn try_eval_topology_selector_angle_literal_vec3_args_resolves_and_returns_angle() {
-        // angle(Literal(vec3(1,0,0)), Literal(vec3(0,1,0))) — resolve_vec3_arg
-        // EVALUATES the arg (task ε); a Literal(Value::Vector) evaluates to that
-        // Value::Vector and is accepted, so literal vec3 args DO resolve and
-        // produce an angle, unlike the scalar-literal case above.  Pins the
-        // actually-distinct contract for literal-typed Vec3 args.
+    fn try_eval_topology_selector_angle_literal_direction_args_resolves_and_returns_angle() {
+        // angle(Literal(dir(1,0,0)), Literal(dir(0,1,0))) — the reader
+        // EVALUATES the arg (task ε); a Literal(Value::Direction) evaluates to
+        // that Direction and is accepted, so literal Direction args resolve
+        // and produce an angle, unlike the scalar-literal case above.
         use reify_test_support::mocks::MockGeometryKernel;
         let mut kernel = MockGeometryKernel::new();
 
         let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
         let values = reify_ir::ValueMap::new(); // empty — args come from literals
 
-        // Build angle(Literal(vec3(1,0,0)), Literal(vec3(0,1,0))).
-        let arg_a = reify_ir::CompiledExpr::literal(
-            vec3_value(1.0, 0.0, 0.0),
-            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
-        );
-        let arg_b = reify_ir::CompiledExpr::literal(
-            vec3_value(0.0, 1.0, 0.0),
-            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
-        );
+        let arg_a =
+            reify_ir::CompiledExpr::literal(unit_dir(1.0, 0.0, 0.0), reify_core::Type::Direction);
+        let arg_b =
+            reify_ir::CompiledExpr::literal(unit_dir(0.0, 1.0, 0.0), reify_core::Type::Direction);
         let mut ch = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
             .combine(reify_core::ContentHash::of_str("angle"));
         ch = ch.combine(arg_a.content_hash).combine(arg_b.content_hash);
@@ -16235,80 +16192,14 @@
         assert_eq!(
             result,
             Some(reify_ir::Value::angle(std::f64::consts::FRAC_PI_2)),
-            "angle(literal vec3(1,0,0), literal vec3(0,1,0)) must resolve to \
+            "angle(literal dir(1,0,0), literal dir(0,1,0)) must resolve to \
              Some(Value::angle(π/2)); got {:?}",
             result
         );
         assert!(
             diagnostics.is_empty(),
-            "orthogonal literal vec3 args must NOT emit diagnostics, got: {:?}",
+            "orthogonal literal Direction args must NOT emit diagnostics, got: {:?}",
             diagnostics
-        );
-    }
-
-    #[test]
-    fn try_eval_topology_selector_angle_zero_length_vector_returns_undef() {
-        // Degenerate input: zero-length vec3(0,0,0) causes |a|=0, division by
-        // zero → the dispatcher must emit exactly one Warning and return
-        // Some(Value::Undef) rather than propagating NaN.
-        use reify_test_support::mocks::MockGeometryKernel;
-        let mut kernel = MockGeometryKernel::new();
-
-        let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
-        let mut values = reify_ir::ValueMap::new();
-        values.insert(
-            reify_core::ValueCellId::new("AngleSmoke", "a"),
-            vec3_value(0.0, 0.0, 0.0),
-        );
-        values.insert(
-            reify_core::ValueCellId::new("AngleSmoke", "b"),
-            vec3_value(0.0, 1.0, 0.0),
-        );
-
-        let expr = topology_selector_call_two_value_refs(
-            "angle",
-            "AngleSmoke",
-            "a",
-            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
-            "b",
-            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
-            reify_core::Type::angle(),
-        );
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-
-        let result = super::try_eval_topology_selector(
-            &expr,
-            &named_steps,
-            &values,
-            &mut kernel,
-            &mut diagnostics,
-        );
-
-        assert_eq!(
-            result,
-            Some(reify_ir::Value::Undef),
-            "angle(vec3(0,0,0), ...) with zero-length input must return \
-             Some(Value::Undef); got {:?}",
-            result
-        );
-        assert_eq!(
-            diagnostics.len(),
-            1,
-            "zero-length vector must emit exactly one Warning, got {} diagnostics: {:?}",
-            diagnostics.len(),
-            diagnostics
-        );
-        let diag = &diagnostics[0];
-        assert_eq!(
-            diag.severity,
-            reify_core::Severity::Warning,
-            "diagnostic severity must be Warning, got {:?}",
-            diag.severity
-        );
-        assert!(
-            diag.message.contains("angle"),
-            "diagnostic must mention the helper name 'angle', got: {}",
-            diag.message
         );
     }
 
@@ -21080,6 +20971,127 @@
             "must fall through to None when parent is not a hydrated Value::GeometryHandle; \
              got {:?}",
             result
+        );
+    }
+
+    /// Evaluate `faces_by_normal(b, dir, tol)` through the build-path seam with
+    /// a hydrated parent box, a 1° tolerance and `dir_value` in the `dir` cell
+    /// (`None` leaves the cell absent, so the arg evaluates to `Undef`).
+    fn faces_by_normal_with_dir_value(
+        dir_value: Option<reify_ir::Value>,
+    ) -> (Option<reify_ir::Value>, Vec<Diagnostic>) {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{DimensionVector, Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let mut kernel = MockGeometryKernel::new();
+        let named_steps = HashMap::new();
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("Directional", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new("Directional", 0),
+                upstream_values_hash: [0xAA; 32],
+                kernel_handle: Some(GeometryHandleId(1)),
+            },
+        );
+        if let Some(dir_value) = dir_value {
+            values.insert(ValueCellId::new("Directional", "dir"), dir_value);
+        }
+        values.insert(
+            ValueCellId::new("Directional", "tol"),
+            reify_ir::Value::Scalar {
+                si_value: std::f64::consts::PI / 180.0,
+                dimension: DimensionVector::ANGLE,
+            },
+        );
+        let expr = topology_selector_call_three_value_refs(
+            "faces_by_normal",
+            "Directional",
+            "b",
+            Type::Geometry,
+            "dir",
+            Type::Direction,
+            "tol",
+            Type::angle(),
+            Type::Geometry,
+        );
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+        (result, diagnostics)
+    }
+
+    /// direction-typing θ-b: `faces_by_normal`'s `dir` is read as a Direction.
+    /// A `Value::Direction` constructs the `ByNormal` leaf with no diagnostics.
+    #[test]
+    fn faces_by_normal_direction_dir_arg_constructs_by_normal_leaf() {
+        let (result, diagnostics) = faces_by_normal_with_dir_value(Some(unit_dir(0.0, 0.0, 1.0)));
+
+        let Some(reify_ir::Value::Selector(sv)) = result else {
+            panic!("Direction dir must construct a Selector; got {result:?}; diags: {diagnostics:?}");
+        };
+        assert_eq!(sv.kind, reify_core::ty::SelectorKind::Face);
+        match &sv.node {
+            reify_ir::value::SelectorNode::Leaf { query, .. } => assert_eq!(
+                *query,
+                reify_ir::value::LeafQuery::ByNormal {
+                    dir: [0.0, 0.0, 1.0],
+                    tol_rad: std::f64::consts::PI / 180.0,
+                }
+            ),
+            other => panic!("faces_by_normal must be a Leaf selector node, got {other:?}"),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "a Direction dir must emit no diagnostics; got: {diagnostics:?}"
+        );
+    }
+
+    /// direction-typing θ-b: a raw `Value::Vector` is not a direction. The
+    /// selector is not built and exactly one Warning names the builtin, the arg
+    /// and `Direction`, ending with the migration hint.
+    #[test]
+    fn faces_by_normal_vector_dir_arg_returns_none_with_one_direction_warning() {
+        let (result, diagnostics) = faces_by_normal_with_dir_value(Some(vec3_value(0.0, 0.0, 1.0)));
+
+        assert!(result.is_none(), "a Vector dir must not build a selector; got {result:?}");
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "a Vector dir must emit exactly one diagnostic; got: {diagnostics:?}"
+        );
+        let diag = &diagnostics[0];
+        assert_eq!(diag.severity, reify_core::Severity::Warning);
+        for needle in ["faces_by_normal", "dir", "Direction"] {
+            assert!(
+                diag.message.contains(needle),
+                "warning must name `{needle}`; got: {:?}",
+                diag.message
+            );
+        }
+        assert!(
+            diag.message.ends_with("write dir(x, y, z)"),
+            "warning must end with the migration hint; got: {:?}",
+            diag.message
+        );
+    }
+
+    /// direction-typing θ-b: an `Undef` dir (here an absent cell) degrades
+    /// quietly; whoever produced the `Undef` already reported it.
+    #[test]
+    fn faces_by_normal_undef_dir_arg_returns_none_quietly() {
+        let (result, diagnostics) = faces_by_normal_with_dir_value(None);
+
+        assert!(result.is_none(), "an Undef dir must not build a selector; got {result:?}");
+        assert!(
+            diagnostics.is_empty(),
+            "an Undef dir must emit no diagnostics; got: {diagnostics:?}"
         );
     }
 
