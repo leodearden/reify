@@ -1624,8 +1624,8 @@ pub enum ModifyKind {
     OffsetSurface,
     /// Planar/spatial curve offset `offset_curve(curve, distance[, reference|direction])`
     /// (ι, task 4193). Produces a fresh Wire offset from the target curve by
-    /// `distance`. The optional 3rd arg — a reference Surface or a direction
-    /// Vector3 — is disambiguated at eval time on its `Value` variant. Collapses
+    /// `distance`. The optional 3rd arg — a reference Surface or a `Direction`
+    /// — is disambiguated at eval time on its `Value` variant. Collapses
     /// to `Operation::ModifyOffsetCurve` (BRep kernel capability).
     OffsetCurve,
 }

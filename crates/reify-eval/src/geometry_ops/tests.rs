@@ -7915,68 +7915,6 @@
         }
     }
 
-    /// A zero-magnitude offset_curve direction is rejected at the eval boundary
-    /// with an error naming the builtin, rather than reaching the kernel.
-    #[test]
-    fn compile_geometry_op_offset_curve_zero_direction_is_rejected() {
-        let (result, _) = compile_offset_curve_with_vector(0.0, 0.0, 0.0);
-        match result {
-            Err(msg) => {
-                assert!(
-                    msg.contains("offset_curve"),
-                    "error must name offset_curve: {msg}"
-                );
-                assert!(
-                    msg.contains("zero-magnitude"),
-                    "error must attribute the failure to the direction: {msg}"
-                );
-            }
-            Ok(op) => panic!("expected Err for a zero direction, got Ok({op:?})"),
-        }
-    }
-
-    /// Assert `result` lowered to an `OffsetCurve` with no reference and a
-    /// direction within 1e-12 of `expected` in every component.
-    fn assert_offset_curve_direction(
-        result: Result<reify_ir::GeometryOp, String>,
-        expected: [f64; 3],
-    ) {
-        match result {
-            Ok(reify_ir::GeometryOp::OffsetCurve {
-                reference,
-                direction: Some(d),
-                ..
-            }) => {
-                assert_eq!(reference, None, "a vec3 3rd arg is NOT a reference");
-                for (axis, (got, want)) in d.iter().zip(expected).enumerate() {
-                    assert!(
-                        (got - want).abs() < 1e-12,
-                        "direction component {axis}: got {got}, want {want} (full {d:?})"
-                    );
-                }
-            }
-            other => panic!("expected Ok(OffsetCurve) with a direction, got {other:?}"),
-        }
-    }
-
-    /// A non-unit offset_curve direction is lowered as its unit vector, so the
-    /// IR is canonical for every magnitude of the same direction.
-    #[test]
-    fn compile_geometry_op_offset_curve_non_unit_direction_is_normalised() {
-        let (result, _) = compile_offset_curve_with_vector(3.0, 0.0, 4.0);
-        assert_offset_curve_direction(result, [0.6, 0.0, 0.8]);
-    }
-
-    /// A tiny but non-zero direction is a direction, not a degenerate one: it is
-    /// normalised, like an axis or plane direction. Its magnitude (1e-9) sits
-    /// above `GEOMETRY_EPSILON` but below the kernel's 1e-7 length tolerance,
-    /// which is the wrong kind of bound for a dimensionless vector.
-    #[test]
-    fn compile_geometry_op_offset_curve_tiny_direction_is_normalised_not_rejected() {
-        let (result, _) = compile_offset_curve_with_vector(1e-9, 0.0, 0.0);
-        assert_offset_curve_direction(result, [1.0, 0.0, 0.0]);
-    }
-
     // ── Fillet eval-arm: anti-zero-edges + 2-arg back-compat (task 3205 step-9/10) ──
 
     /// Build a `CompiledExpr` literal that evaluates to an empty `Value::List`
@@ -26418,7 +26356,7 @@
     // |-----------------------|-----------------------|--------------------------------------------|
     // | `decode_plane`        | plane NORMAL          | a `Value::Direction`, read by `decode_direction` (ε, task 9638) |
     // | `decode_axis`         | axis DIRECTION        | a `Value::Direction`, read by `decode_direction` (ε, task 9638) |
-    // | `modify_offset_curve` | `third` → `direction` | its own production diagnostic already calls it "a direction vec3" |
+    // | `modify_offset_curve` | `third` → `direction` | a `Value::Direction`, read by `decode_direction` (θ-b, task 9645) |
 
     /// SCOPE LOCK (a) — `offset_curve`'s 3rd argument.
     ///
@@ -26484,33 +26422,6 @@
             "neither decoder may say anything about a dimensionless Direction; \
              got: {:?}",
             diagnostics
-        );
-    }
-
-    /// SCOPE LOCK (c) — `point3_components` SURVIVES δ, and still accepts a bare
-    /// `Real` triple. GREEN by construction.
-    ///
-    /// δ's capability manifest carries `delivered_check: expect: present` for
-    /// `fn point3_components` precisely because the obvious misreading of this
-    /// task is "the gate replaces the bare decoder, so delete it". It does not:
-    /// the helper remains the CORRECT decoder for `offset_curve`'s direction, its
-    /// one dimensionless caller now that plane normals and axis directions read
-    /// through `decode_direction` (ε, task 9638), and `accept_length_point3`
-    /// mirrors its shape check rather than subsuming it.
-    #[test]
-    fn delta_scope_lock_point3_components_survives_and_accepts_bare_reals() {
-        assert_eq!(
-            point3_components(&bare_real_vector3(0.0, 0.0, 1.0)),
-            Some([0.0, 0.0, 1.0]),
-            "the bare decoder is not dead code — it is what reads \
-             `offset_curve`'s un-gated direction"
-        );
-        // And it still reads a dimensioned Point identically, which is why the
-        // gated positions could migrate without any numeric change: both helpers
-        // surface the same `si_value`.
-        assert_eq!(
-            point3_components(&length_point3(0.01, 0.02, 0.03)),
-            Some([0.01, 0.02, 0.03])
         );
     }
 

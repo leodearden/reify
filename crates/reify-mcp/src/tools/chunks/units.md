@@ -194,7 +194,12 @@ of `docs/prds/v0_6/check-diagnostic-truthfulness.md`.
     crates/reify-cli/tests/harness_cli_check/cli_check_bare_length_exit.rs::check_exits_1_after_its_verdict_on_a_bare_eval_checked_length
   a unit in a DIMENSIONLESS slot is not reported — UNPINNED, prose only. Measured 2026-08-30:
     scale(g, 2mm) accepted, dimensioned axis direction in mirror and linear_pattern accepted.
-    Re-verify before relying on it. -->
+    Re-verify before relying on it.
+  a vec3(..) in a DIRECTION-typed slot IS reported, dimensioned or not (direction-typing θ-b) —
+    at check for the four directional selectors and arity-2 angle, PINNED by
+    crates/reify-compiler/tests/harness_type_checking/selector_angle_direction_slot_tests.rs;
+    at eval for offset_curve's direction, PINNED by
+    crates/reify-eval/src/geometry_ops/tests.rs::compile_geometry_op_offset_curve_3arg_vector_is_rejected_with_the_dir_hint -->
 
 **What legitimately stays bare.** Not every geometry argument is a length. Unit-vector and
 axis-direction components, repeat counts, NURBS weights, knot values, polynomial degrees, `scale`
@@ -205,6 +210,9 @@ That half is an **authoring rule you uphold, not one the compiler enforces** —
 direction only. Measured 2026-08-30: `scale(g, 2mm)` is accepted, as is a dimensioned axis direction
 in `mirror` or `linear_pattern`. So a unit in a dimensionless slot will not be reported; write these
 bare because it is what you mean, not because you will be told.
+A `Direction`-typed argument is the exception: the four directional selectors, `angle`'s operands
+and `offset_curve`'s direction take a typed operand, so a `vec3(…)` there, dimensioned or not, is
+rejected (at check for the selectors and `angle`, at eval for `offset_curve`); write `dir(x, y, z)`.
 
 <!-- LENGTH-ARGS-XREF -->
 **Which argument of which constructor is length-semantic** is catalogued per position in the

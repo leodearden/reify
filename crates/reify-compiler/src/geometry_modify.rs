@@ -117,8 +117,8 @@ pub(crate) fn compile_modify_op(
         ),
         // offset_curve(curve, distance)            — 2-arg planar offset (overload 1)
         // offset_curve(curve, distance, reference) — 3-arg reference Surface (overload 2)
-        // offset_curve(curve, distance, direction) — 3-arg direction Vector3 (overload 3)
-        // The 3rd arg's role (reference Surface vs direction Vector3) is
+        // offset_curve(curve, distance, direction) — 3-arg Direction (overload 3)
+        // The 3rd arg's role (reference Surface vs Direction) is
         // disambiguated at EVAL time on its Value variant, so the compiler stashes
         // it under the neutral name "third" and validates only the 2-or-3 arity here.
         "offset_curve" => match compiled_args.len() {
@@ -1550,8 +1550,8 @@ mod tests {
 
     /// 3-arg `offset_curve(curve, distance, third)` is recognised by
     /// `compile_modify_op` and lowered to named args `[target, distance, third]`.
-    /// The 3rd arg is the overload-2 reference Surface OR the overload-3 direction
-    /// Vector3 — disambiguated at EVAL time on its `Value` variant, so the compiler
+    /// The 3rd arg is the overload-2 reference Surface OR the overload-3
+    /// Direction — disambiguated at EVAL time on its `Value` variant, so the compiler
     /// just stashes it under the neutral name `"third"`.
     ///
     /// RED until step-12 adds `ModifyKind::OffsetCurve` and the `offset_curve`

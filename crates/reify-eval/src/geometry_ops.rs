@@ -300,8 +300,8 @@ pub(crate) enum LengthArg {
 /// spacing can never scatter instances 1000× too far, and a bare `translate`
 /// component can never displace a part by a kilometre. Same hazard and
 /// discipline as `joints::read_length3` (the canonical "reject bare Real to
-/// avoid silent 40 m vs 40 mm" precedent), `point3_components`, and
-/// `resolve_length_scalar_arg`; the dimension classification + diagnostic
+/// avoid silent 40 m vs 40 mm" precedent) and `resolve_length_scalar_arg`;
+/// the dimension classification + diagnostic
 /// wording are delegated to `arg_acceptance::{accept_arg, length_spec}`.
 ///
 /// | evaluated arg value                        | return                 | diagnostic pushed?      |
@@ -1223,8 +1223,7 @@ fn accept_variadic_length_args(
 /// A wrong SHAPE is deliberately NOT a units rejection: it hands the caller's
 /// `shape_err` the diagnostic sink and returns its `String` VERBATIM, minting
 /// nothing of its own — so the wording of a shape message, label prefix
-/// included, is entirely the caller's. This helper replaces
-/// [`point3_components`]' ACCEPTANCE policy, not its shape check.
+/// included, is entirely the caller's.
 ///
 /// `shape_err` takes the sink so that ONE closure owns BOTH halves of a shape
 /// rejection — the `Diagnostic` a caller wants the user to see AND the `Err`
@@ -1241,7 +1240,7 @@ fn accept_variadic_length_args(
 /// Every `to_string()` sits inside a rejection branch, so the clean path renders
 /// nothing.
 ///
-/// # Per-argument triage for every [`point3_components`] position
+/// # Per-argument triage for every [`accept_length_point3`] position
 ///
 /// Written down HERE, in one place, for the reason
 /// [`accept_variadic_length_args`]' table is: task 5752's closure-guard
@@ -1253,15 +1252,11 @@ fn accept_variadic_length_args(
 /// | [`decode_plane`]                       | plane ORIGIN              | **LENGTH**    | yes — a point in space |
 /// | [`decode_axis`]                        | axis ORIGIN               | **LENGTH**    | yes — a point in space |
 /// | `compile_geometry_op` `SurfaceKind::Nurbs` | control-point grid    | **LENGTH**    | yes — pole POSITIONS, the SURFACE sibling of the curve poles task 5658 gated |
-/// | `modify_offset_curve`                  | `third` → `direction`     | dimensionless | no — its own production diagnostic already calls it "a direction vec3" |
 ///
-/// The DIRECTION row is the D3 adversary finding's ORIGIN-vs-DIRECTION split
-/// (2026-07-28, BINDING): gating it would reject correct `.ri` code, since a
-/// unit vector legitimately has bare components. [`point3_components`]
-/// therefore SURVIVES δ as the un-gated decoder for that position — it is not
-/// dead, and must not be deleted or renamed. The plane NORMAL and the axis
-/// DIRECTION are no longer rows: since ε (task 9638) both are
-/// `Value::Direction`s read through [`reify_ir::decode_direction`].
+/// DIRECTIONS are not rows — the D3 adversary finding's ORIGIN-vs-DIRECTION
+/// split (2026-07-28, BINDING). The plane NORMAL, the axis DIRECTION (ε, task
+/// 9638) and `offset_curve`'s direction (θ-b, task 9645) are each a
+/// `Value::Direction` read through [`reify_ir::decode_direction`].
 fn accept_length_point3<N: std::fmt::Display + Copy>(
     value: &reify_ir::Value,
     names: [N; 3],
@@ -1269,9 +1264,9 @@ fn accept_length_point3<N: std::fmt::Display + Copy>(
     shape_err: impl FnOnce(&mut Vec<Diagnostic>) -> String,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<[f64; 3], String> {
-    // SHAPE check, mirroring `point3_components` exactly — same variants, same
-    // arity. A mismatch returns the caller's `shape_err` text and mints nothing
-    // here: whatever that closure pushes is the whole of it.
+    // SHAPE check: a 3-component `Point` or `Vector`. A mismatch returns the
+    // caller's `shape_err` text and mints nothing here: whatever that closure
+    // pushes is the whole of it.
     let comps = match value {
         reify_ir::Value::Point(c) | reify_ir::Value::Vector(c) if c.len() == 3 => c,
         _ => return Err(shape_err(diagnostics)),
@@ -1978,48 +1973,6 @@ fn required_positive_profile_dimensions<const N: usize>(
     Ok(si.map(reify_ir::Value::length))
 }
 
-/// Extract three SI-valued `f64` components from a [`reify_ir::Value::Point`]
-/// or [`reify_ir::Value::Vector`] with exactly 3 numeric, finite components.
-///
-/// Returns `None` if:
-/// - the value is not a `Point` or `Vector`;
-/// - it does not have exactly 3 components;
-/// - any component does not yield a finite `f64` via [`reify_ir::Value::as_f64`].
-///
-/// Both `Point` (with LENGTH-dimensioned `Scalar` components — SI metres) and
-/// `Vector` (with dimensionless `Real` components) pass through correctly
-/// because `Value::as_f64` extracts `si_value` from `Scalar` and the raw
-/// float from `Real`.
-fn point3_components(value: &reify_ir::Value) -> Option<[f64; 3]> {
-    let comps = match value {
-        reify_ir::Value::Point(c) | reify_ir::Value::Vector(c) if c.len() == 3 => c,
-        _ => return None,
-    };
-    let a = comps[0].as_f64().filter(|v| v.is_finite())?;
-    let b = comps[1].as_f64().filter(|v| v.is_finite())?;
-    let c = comps[2].as_f64().filter(|v| v.is_finite())?;
-    Some([a, b, c])
-}
-
-/// Normalize a 3-component direction vector to unit length.
-///
-/// Returns `Err` when the vector magnitude is below [`GEOMETRY_EPSILON`]
-/// (zero or near-zero), preventing a degenerate `[0,0,0]` normal from
-/// propagating silently to the kernel.  The caller maps `Err(String)` to a
-/// `Diagnostic::error` via the standard `Err(String)` → diagnostic idiom
-/// (see `engine_build.rs`).
-fn unit_vector3(v: [f64; 3]) -> Result<[f64; 3], String> {
-    let mag = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-    if mag < GEOMETRY_EPSILON {
-        return Err(format!(
-            "zero-magnitude vector [{:.6e}, {:.6e}, {:.6e}] cannot be normalized \
-             to a unit direction",
-            v[0], v[1], v[2]
-        ));
-    }
-    Ok([v[0] / mag, v[1] / mag, v[2] / mag])
-}
-
 /// A decoder's OWN failure (wrong variant, wrong shape, degenerate vector), led
 /// by the label of the builtin it decodes for: `mirror: expected a Plane value,
 /// got …`.
@@ -2071,7 +2024,7 @@ fn labelled(kind_label: impl std::fmt::Display, failure: impl std::fmt::Display)
 ///     `ArgRejection` and there is nothing to hang a dimension code on; its
 ///     promotion is tracked as task 6157's severity residual rather than
 ///     smuggled in here. δ DID move this input's behaviour — pre-δ
-///     [`point3_components`] filtered non-finite through `as_f64` and it landed
+///     `point3_components` filtered non-finite through `as_f64` and it landed
 ///     on the SHAPE message below with no diagnostic at all, whereas it now
 ///     reads "missing or non-Length argument 'ox' for {kind}" beside that one
 ///     Warning (pinned by
@@ -3689,22 +3642,18 @@ fn modify_offset_curve(
                     expr,
                     &eval_ctx_with_meta(values, functions, meta_map),
                 );
-                match point3_components(&v) {
-                    Some(dir) => {
-                        let unit_dir = unit_vector3(dir)
-                            .map_err(|e| format!("{kind}: degenerate direction: {e}"))?;
-                        (None, Some(unit_dir))
-                    }
-                    None => {
-                        diagnostics.push(Diagnostic::warning(
-                            "offset_curve: 3rd argument is neither a reference \
-                             Surface (bound geometry handle) nor a direction \
-                             vec3 — building a planar offset and ignoring it"
-                                .to_string(),
-                        ));
-                        (None, None)
-                    }
+                if matches!(v, reify_ir::Value::Undef) {
+                    return Err(unresolved_arg_message("third", kind));
                 }
+                let unit = decode_direction(&v).map_err(|e| {
+                    labelled(
+                        kind,
+                        format_args!(
+                            "3rd argument is neither a reference Surface nor a Direction: {e}"
+                        ),
+                    )
+                })?;
+                (None, Some(unit.components()))
             }
         }
     };

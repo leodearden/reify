@@ -5095,7 +5095,6 @@ impl reify_expr::ContainmentQuery for Engine {
             _ => return None,
         };
         // Extract 3 finite f64 coordinates from a Point3<Length>.
-        // Mirrors `geometry_ops::point3_components` (private to geometry_ops).
         let [px, py, pz] = match point {
             Value::Point(c) if c.len() == 3 => {
                 let a = c[0].as_f64().filter(|v| v.is_finite())?;

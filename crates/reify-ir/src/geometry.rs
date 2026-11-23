@@ -1009,9 +1009,8 @@ pub enum GeometryOp {
     /// - `reference: Some(face)` → offset on a reference Surface (a `faces()`
     ///   sub-handle, resolved to an OCCT face via `get_shape` at execute time);
     /// - `direction: Some([dx,dy,dz])` → planar offset, then displaced by
-    ///   `distance` along this dimensionless UNIT vector. Its magnitude never
-    ///   scales the displacement, and a zero-magnitude vector is rejected, so
-    ///   `vec3(0,0,2)` and `vec3(0,0,1)` lower to identical IR.
+    ///   `distance` along this UNIT vector: the components of the `Direction`
+    ///   (`dir(x, y, z)`) the author passed, unit by construction.
     ///
     /// A positive `distance` grows the curve outward (e.g. radius 10mm → 12mm).
     /// Produces fresh `BRepKind::Wire` geometry via the normal single-output
