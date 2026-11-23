@@ -2795,24 +2795,23 @@ test_build_rs_watches_all_compiled_inputs() {
     # the script (#9896). Nothing the script writes may be in it: cargo stamps
     # the script's `output` at invocation, so a watched output reruns the script
     # on the next build, which is the tree-sitter cascade #9896 removes.
+    #
+    # It runs on a fixture crate in its own target dir, so the lane's
+    # tree-sitter-reify/ and target/ are never touched (#10144).
     require_tree_sitter_cli || return 0
-    touch "$TS_DIR/grammar.js"
 
-    local cargo_out
-    cargo_out=$(mktemp)
-    CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
-    local guard_rc=0
-    run_guarded_cargo_check "$cargo_out" timeout 300 cargo check -p tree-sitter-reify \
-        --manifest-path "$REPO_ROOT/Cargo.toml" || guard_rc=$?
-    if [ "$guard_rc" -eq "$TS_INFRA_RC" ]; then return "$TS_INFRA_RC"; fi
-    if [ "$guard_rc" -ne 0 ]; then return 1; fi
+    local va fix cargo_out guard_rc=0
+    va=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$va'")
+    ts_write_grammar_variant "$va" a
+    fix=$(mktemp -d); CLEANUP_ACTIONS+=("rm -rf '$fix'")
+    mk_ts_build_fixture "$fix" "$va" || return 1
+    cargo_out=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
+    ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
 
-    local run_dir
-    run_dir=$(ts_freshest_run_dir)
-    if [ -z "$run_dir" ]; then
-        echo "  SKIP: no target/*/build/tree-sitter-reify-*/output found"
-        return 0
-    fi
+    local out run_dir
+    out=$(ts_fixture_out_dir "$fix") || return 1
+    run_dir=$(dirname "$out")
 
     local watched expected missing extra
     watched=$(sed -n -E 's/^cargo::?rerun-if-changed=//p' "$run_dir/output" | LC_ALL=C sort -u)
@@ -2833,13 +2832,13 @@ test_build_rs_watches_all_compiled_inputs() {
     # ATTESTATION: the stamp must sit beside the archive it describes, and must be
     # byte-identical to what the shell computes. If these two manifests can drift,
     # every `check` verdict is meaningless.
-    local archive="$run_dir/out/libtree_sitter_reify.a"
-    local stamp="$run_dir/out/tree_sitter_inputs.stamp"
+    local archive="$out/libtree_sitter_reify.a"
+    local stamp="$out/tree_sitter_inputs.stamp"
     assert_file_exists "$archive" || return 1
     assert_file_exists "$stamp" || return 1
 
     local fp
-    fp=$(bash "$FRESHNESS_SCRIPT" --print-fingerprint)
+    fp=$(REIFY_TS_FRESHNESS_TS_DIR="$fix" bash "$FRESHNESS_SCRIPT" --print-fingerprint)
     if [ "$(cat "$stamp")" != "$fp" ]; then
         echo ""
         echo "  ASSERTION FAILED: build.rs's stamp != scripts/tree-sitter-freshness.sh --print-fingerprint"
