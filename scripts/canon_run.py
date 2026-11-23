@@ -1000,7 +1000,10 @@ def supervise_real_path(call: Call, host: HostConfig, reason: canon_cache.Reason
 
 
 def run(command: list[str], *, cargo: bool, environ: Mapping[str, str]) -> int:
-    """`exec` (command is the full command) or `cargo` (command is cargo's arguments)."""
+    """`exec` (command is the full command) or `cargo` (command is cargo's arguments).
+
+    Returns the command's returncode as subprocess gives it; the exec paths never return.
+    """
     active = parse_active(environ.get("REIFY_CANON_ACTIVE"))
     try:
         cwd = os.getcwd()
@@ -1038,9 +1041,9 @@ def main(argv: list[str]) -> int:
                 print(json.dumps(status_report(environ, os.getcwd())))
                 return 0
             case ["exec", "--", *command] if command:
-                return run(command, cargo=False, environ=environ)
+                return canon_cache.exit_like(run(command, cargo=False, environ=environ))
             case ["cargo", *args]:
-                return run(args, cargo=True, environ=environ)
+                return canon_cache.exit_like(run(args, cargo=True, environ=environ))
     except Refusal as refusal:
         print(f"canon_run: {flatten(refusal)}", file=sys.stderr)
         return EXIT_REFUSED

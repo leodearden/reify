@@ -27,6 +27,7 @@ import signal
 import socket
 import struct
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -1013,6 +1014,11 @@ class RecordBase:
 SUPERVISED_SIGNALS = (signal.SIGTERM, signal.SIGHUP, signal.SIGINT, signal.SIGQUIT)
 
 
+def forwarded_signals() -> frozenset[int]:
+    """The supervised signals this process does not ignore now: the ones the caller hears of."""
+    return frozenset(number for number in SUPERVISED_SIGNALS if signal.getsignal(number) != signal.SIG_IGN)
+
+
 def resolve_command(command: str, env: Mapping[str, str], cwd: str) -> str:
     if "/" not in command:
         found = shutil.which(command, path=env.get("PATH", ""))
@@ -1035,9 +1041,7 @@ class SignalForwarder:
 
     def __init__(self) -> None:
         self._caller = {number: signal.getsignal(number) for number in SUPERVISED_SIGNALS}
-        self.forwarded = frozenset(
-            number for number, handler in self._caller.items() if handler != signal.SIG_IGN
-        )
+        self.forwarded = forwarded_signals()
         self._send: Callable[[int], None] | None = None
         self._held: list[int] = []
 
@@ -1069,6 +1073,30 @@ def exit_status(returncode: int) -> int:
     return 128 - returncode if returncode < 0 else returncode
 
 
+def without_core_dumps() -> None:
+    """RLIMIT_CORE at 1, not 0: a piped core_pattern dumps whatever the limit, except at exactly 1."""
+    hard = resource.getrlimit(resource.RLIMIT_CORE)[1]
+    resource.setrlimit(resource.RLIMIT_CORE, (0 if hard == 0 else 1, hard))
+
+
+def exit_like(returncode: int) -> int:
+    """End this process as a command with subprocess returncode ended: by its signal, else its exit_status.
+
+    Only a supervised signal this process does not ignore is re-raised, so a caller that
+    ignores it sees 128+N, as from real-path mode. The re-raise dumps no core of its own.
+    """
+    signum = -returncode
+    if signum in forwarded_signals():
+        for stream in (sys.stdout, sys.stderr):
+            with contextlib.suppress(OSError, ValueError):
+                stream.flush()
+        without_core_dumps()
+        signal.signal(signum, signal.SIG_DFL)
+        signal.pthread_sigmask(signal.SIG_UNBLOCK, {signum})
+        os.kill(os.getpid(), signum)
+    return exit_status(returncode)
+
+
 def run_command(
     executable: str,
     argv: list[str],
@@ -1077,7 +1105,7 @@ def run_command(
     session: CacheSession | None,
     forwarder: SignalForwarder,
 ) -> tuple[int, float]:
-    """Spawn from this thread and wait, forwarding signals to it; its exit_status and the wall time."""
+    """Spawn from this thread and wait, forwarding signals to it; its returncode and the wall time."""
     started = time.monotonic()
     try:
         process = subprocess.Popen(
@@ -1089,7 +1117,7 @@ def run_command(
     if session is not None and session.watchdog is not None:
         session.watchdog.start()
     returncode = process.wait()
-    return exit_status(returncode), time.monotonic() - started
+    return returncode, time.monotonic() - started
 
 
 def drain_line_count(path: str) -> int:
@@ -1120,7 +1148,8 @@ def supervise(
 ) -> int:
     """Run argv to completion around session, then close it and write its build_cache record.
 
-    Returns the command's status, or 128+N when signal N killed it. A command that
+    Returns the command's returncode as subprocess gives it, -N when signal N killed it;
+    exit_like ends a process the same way. It never ends the calling process. A command that
     cannot be found raises CommandNotFound after the session is closed, with no record.
     Signals are forwarded until the record is written, so a second copy of one that
     already ended the command cannot cut the teardown short.
@@ -1128,13 +1157,13 @@ def supervise(
     cpu_before = children_cpu_secs()
     with SignalForwarder() as forwarder:
         try:
-            status, wall = run_command(resolve_command(argv[0], env, cwd), argv, env, cwd, session, forwarder)
+            returncode, wall = run_command(resolve_command(argv[0], env, cwd), argv, env, cwd, session, forwarder)
         finally:
             outcome = None if session is None else session.close()
         cpu = children_cpu_secs() - cpu_before
         uncached = 0 if session is None else drain_line_count(session.environment.server.uncached_log)
         write_record(build_record(record_base, outcome, uncached, wall, cpu), subcommand, channel, journal)
-    return status
+    return returncode
 
 
 def build_record(
