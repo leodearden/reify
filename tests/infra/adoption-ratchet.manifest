@@ -78,6 +78,6 @@ auditcontext-struct-literal | AuditContext [{] | crates/reify-audit/**/*.rs | 1 
 # scripts/seed-warm-lane.sh's _ENV_PATH_MACRO_RE. Remedy: read the path at run
 # time with reify_test_support::test_package::{manifest_dir, bin_exe} or
 # workspace_root::workspace_root(). Lower a ceiling with each conversion.
-test-path-baked-at-compile-time | ^ *([^/ ].*|/([^/].*)?)?env!\("(CARGO_MANIFEST_DIR|OUT_DIR|CARGO_TARGET_TMPDIR|CARGO_BIN_EXE_[A-Za-z0-9_-]+)"\) | crates/*/tests/**/*.rs | 310 | #10170
+test-path-baked-at-compile-time | ^ *([^/ ].*|/([^/].*)?)?env!\("(CARGO_MANIFEST_DIR|OUT_DIR|CARGO_TARGET_TMPDIR|CARGO_BIN_EXE_[A-Za-z0-9_-]+)"\) | crates/*/tests/**/*.rs | 237 | #10170
 test-path-baked-at-compile-time-gui | ^ *([^/ ].*|/([^/].*)?)?env!\("(CARGO_MANIFEST_DIR|OUT_DIR|CARGO_TARGET_TMPDIR|CARGO_BIN_EXE_[A-Za-z0-9_-]+)"\) | gui/src-tauri/**/tests/**/*.rs | 17 | #10170
 test-path-baked-at-compile-time-tree-sitter | ^ *([^/ ].*|/([^/].*)?)?env!\("(CARGO_MANIFEST_DIR|OUT_DIR|CARGO_TARGET_TMPDIR|CARGO_BIN_EXE_[A-Za-z0-9_-]+)"\) | tree-sitter-reify/tests/**/*.rs | 4 | #10170

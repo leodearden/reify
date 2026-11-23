@@ -20,10 +20,13 @@
 # (exit 124) — so it is barred here too.
 #
 # REMEDY (the only one that eliminates the class by construction): put the test
-# in `crates/reify-cli/tests/harness_cli/` and spawn `env!("CARGO_BIN_EXE_reify")`.
-# Cargo guarantees a package's `[[bin]]` targets are built before that package's
-# own integration tests run, so the binary is fresh by construction — no env
-# var, no sidecar, no mtime heuristic, no fail-open/fail-closed dilemma.
+# in `crates/reify-cli/tests/harness_cli/` and spawn
+# `reify_test_support::test_package::bin_exe("reify")`. Cargo guarantees a
+# package's `[[bin]]` targets are built before that package's own integration
+# tests run, and sets `CARGO_BIN_EXE_reify` for those tests only, so the binary
+# is fresh by construction — no sidecar, no mtime heuristic, no
+# fail-open/fail-closed dilemma. Outside reify-cli the variable is unset and
+# `bin_exe` panics naming it.
 #
 # SCOPE. This is a structural grep over source WIRING — the `.join("reify")`
 # idiom and the `cargo`-spawn arg vectors that actually cause the bug. It
@@ -125,7 +128,8 @@ _report_and_fail() {
     printf '%s\n' "$hits" | sed 's/^/  /'
     echo ""
     echo "REMEDY: relocate the test into crates/reify-cli/tests/harness_cli/ and use"
-    echo "        env!(\"CARGO_BIN_EXE_reify\"), so cargo guarantees a freshly built binary."
+    echo "        reify_test_support::test_package::bin_exe(\"reify\"), so cargo guarantees"
+    echo "        a freshly built binary."
     echo ""
     echo "NOT the reify binary (e.g. an XDG config/cache dir named \"reify\")? Opt the"
     echo "line out explicitly: append \`// reify-bin-spawn:allow — <reason>\` to it."
@@ -241,24 +245,24 @@ assert "positive control: a \`reify-bin-spawn:allow\` line is NOT reported" \
 
 # ==============================================================================
 # Check 5: the exemption is real, not vacuous — crates/reify-cli/ genuinely
-# contains CARGO_BIN_EXE_reify spawns. If this ever goes empty, the exemption
+# contains bin_exe("reify") spawns. If this ever goes empty, the exemption
 # has stopped carrying any traffic and checks 2-3 would be guarding nothing.
 # ==============================================================================
 echo ""
-echo "--- Check 5: ${EXEMPT_PREFIX} is the sanctioned home (CARGO_BIN_EXE_reify spawns live there) ---"
+echo "--- Check 5: ${EXEMPT_PREFIX} is the sanctioned home (bin_exe(\"reify\") spawns live there) ---"
 
 _exempt_prefix_carries_spawns() {
     local n
     n="$(git -C "$REPO_ROOT" ls-files "${EXEMPT_PREFIX}*.rs" \
         | while IFS= read -r f; do
               [ -f "$REPO_ROOT/$f" ] || continue
-              grep -lE 'CARGO_BIN_EXE_reify' "$REPO_ROOT/$f" 2>/dev/null || true
+              grep -lE 'bin_exe\("reify"\)' "$REPO_ROOT/$f" 2>/dev/null || true
           done | wc -l)"
-    echo "found $n file(s) under $EXEMPT_PREFIX using CARGO_BIN_EXE_reify"
+    echo "found $n file(s) under $EXEMPT_PREFIX using bin_exe(\"reify\")"
     [ "$n" -gt 0 ]
 }
 
-assert "crates/reify-cli/ contains at least one env!(\"CARGO_BIN_EXE_reify\") spawn" \
+assert "crates/reify-cli/ contains at least one bin_exe(\"reify\") spawn" \
     _exempt_prefix_carries_spawns
 
 test_summary
