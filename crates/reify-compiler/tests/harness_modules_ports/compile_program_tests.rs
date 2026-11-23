@@ -158,7 +158,7 @@ const IMPORT_FREE_EXAMPLES: &[&str] = &[
 ];
 
 fn examples_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples")
+    reify_test_support::examples_corpus::examples_dir().to_path_buf()
 }
 
 fn has_import_decl(source: &str) -> bool {

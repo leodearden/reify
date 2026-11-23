@@ -62,12 +62,9 @@ fn std_fields_loads_clean() {
 /// contains "Scalar".
 #[test]
 fn example_fields_ri_compiles_clean_with_imported_module() {
-    const EXAMPLE_PATH: &str = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/stdlib/fields.ri"
-    );
+    let example_path = reify_test_support::examples_corpus::examples_dir().join("stdlib/fields.ri");
 
-    let src = std::fs::read_to_string(EXAMPLE_PATH).expect(
+    let src = std::fs::read_to_string(&example_path).expect(
         "failed to read examples/stdlib/fields.ri — \
          check CARGO_MANIFEST_DIR resolution and that the file exists",
     );

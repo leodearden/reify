@@ -41,17 +41,19 @@ use reify_core::Severity;
 /// diagnostics, the expected top-level structure template is present, and every
 /// `required_construct` appears in the source text.
 fn assert_robustness_example_compiles(
-    path: &str,
+    path: &std::path::Path,
     module_name: &str,
     template_name: &str,
     required_constructs: &[&str],
 ) {
     let src = std::fs::read_to_string(path).unwrap_or_else(|e| {
         panic!(
-            "failed to read {path}: {e} — check CARGO_MANIFEST_DIR resolution \
-             and that the example file exists"
+            "failed to read {}: {e} — check CARGO_MANIFEST_DIR resolution \
+             and that the example file exists",
+            path.display()
         )
     });
+    let path = path.display();
 
     // ── Parse (prelude-aware so SplineKind.* disambiguates as EnumAccess) ────────
     let parsed =
@@ -94,12 +96,10 @@ fn assert_robustness_example_compiles(
 /// structure template, and reference both `ZVDShaper` and `input_shape`.
 #[test]
 fn zvd_robustness_example_compiles_under_stdlib_with_zero_errors() {
-    const EXAMPLE_PATH: &str = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/trajectory/zvd_robustness.ri"
-    );
+    let example_path =
+        reify_test_support::examples_corpus::examples_dir().join("trajectory/zvd_robustness.ri");
     assert_robustness_example_compiles(
-        EXAMPLE_PATH,
+        &example_path,
         "zvd_robustness",
         "ZvdRobustness",
         &["ZVDShaper", "input_shape"],
@@ -111,12 +111,10 @@ fn zvd_robustness_example_compiles_under_stdlib_with_zero_errors() {
 /// structure template, and reference both `EIShaper` and `input_shape`.
 #[test]
 fn ei_robustness_example_compiles_under_stdlib_with_zero_errors() {
-    const EXAMPLE_PATH: &str = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/trajectory/ei_robustness.ri"
-    );
+    let example_path =
+        reify_test_support::examples_corpus::examples_dir().join("trajectory/ei_robustness.ri");
     assert_robustness_example_compiles(
-        EXAMPLE_PATH,
+        &example_path,
         "ei_robustness",
         "EiRobustness",
         &["EIShaper", "input_shape"],

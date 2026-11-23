@@ -712,13 +712,13 @@ fn multi_case_buckling_result_struct_has_cases_field() {
 // ─── task 5496 (stdlib-namespace β): BucklingMode rename, boundary #1 + #4 ───
 
 /// Load the fixture that pins modal `Mode` and buckling `BucklingMode`
-/// coexisting in one user file. Path is resolved from `CARGO_MANIFEST_DIR`
-/// (idiom: `crates/reify-eval/tests/no_stale_undef_invariant_gate.rs`) so the
-/// committed fixture is the single source of truth for both this test and the
-/// PRD §7 boundary it stands for — no inline copy to drift out of sync.
+/// coexisting in one user file. Path is resolved under the running checkout's
+/// workspace root so the committed fixture is the single source of truth for
+/// both this test and the PRD §7 boundary it stands for — no inline copy to
+/// drift out of sync.
 fn coexist_fixture_source() -> String {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/prd-gate/fixtures/stdlib_ns_buckling_mode_coexist.ri");
+    let path = reify_test_support::workspace_root::workspace_root()
+        .join("tests/prd-gate/fixtures/stdlib_ns_buckling_mode_coexist.ri");
     std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read fixture {}: {}", path.display(), e))
 }

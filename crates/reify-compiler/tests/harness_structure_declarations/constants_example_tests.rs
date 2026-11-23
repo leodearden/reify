@@ -34,12 +34,10 @@ use reify_test_support::make_simple_engine;
 ///
 /// Mirrors the `compiled_ri` helper in `crates/reify-eval/tests/m8_3_stdlib_integration.rs`.
 fn load_constants_example() -> (String, CompiledModule) {
-    const EXAMPLE_PATH: &str = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/stdlib/constants.ri"
-    );
+    let example_path =
+        reify_test_support::examples_corpus::examples_dir().join("stdlib/constants.ri");
 
-    let src = std::fs::read_to_string(EXAMPLE_PATH).expect(
+    let src = std::fs::read_to_string(&example_path).expect(
         "failed to read examples/stdlib/constants.ri — \
          check CARGO_MANIFEST_DIR resolution and that the file exists",
     );

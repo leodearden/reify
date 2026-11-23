@@ -302,11 +302,9 @@ const BOLTFLANGE_MIRROR_SOURCE: &str = r#"
 /// trait-bound changes, etc.).
 #[test]
 fn boltflange_mirror_source_matches_example_file() {
-    const EXAMPLE_PATH: &str = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/m5_geometry_flange.ri"
-    );
-    let example_src = std::fs::read_to_string(EXAMPLE_PATH).expect(
+    let example_path =
+        reify_test_support::examples_corpus::examples_dir().join("m5_geometry_flange.ri");
+    let example_src = std::fs::read_to_string(&example_path).expect(
         "failed to read examples/m5_geometry_flange.ri — check CARGO_MANIFEST_DIR resolution",
     );
 

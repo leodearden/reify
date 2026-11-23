@@ -36,12 +36,10 @@ use reify_core::{DimensionVector, ModulePath, Severity, Type};
 /// Path resolution uses `CARGO_MANIFEST_DIR` so it works in any worktree.
 #[test]
 fn multi_load_bracket_example_compiles_under_stdlib_with_zero_errors() {
-    const EXAMPLE_PATH: &str = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/multi_load_bracket.ri"
-    );
+    let example_path =
+        reify_test_support::examples_corpus::examples_dir().join("multi_load_bracket.ri");
 
-    let src = std::fs::read_to_string(EXAMPLE_PATH).expect(
+    let src = std::fs::read_to_string(&example_path).expect(
         "failed to read examples/multi_load_bracket.ri — check CARGO_MANIFEST_DIR resolution",
     );
 

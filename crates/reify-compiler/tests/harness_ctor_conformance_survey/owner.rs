@@ -92,7 +92,9 @@ impl Owner {
 
 /// Absolute path to the stdlib directory whose FEA modules define the
 /// do-not-touch partition.
-const STDLIB_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/stdlib");
+fn stdlib_dir() -> std::path::PathBuf {
+    reify_test_support::test_package::manifest_dir().join("stdlib")
+}
 
 /// The FEA stdlib module FILE STEMS, as PRD §4 D9 itself enumerates them
 /// ("`fea_multi_case.ri`, `fea.ri`, `solver_*.ri`, …"), reconciled against the
@@ -161,7 +163,7 @@ fn is_fea_family_shaped(stem: &str) -> bool {
 
 #[test]
 fn every_fea_family_shaped_stdlib_module_is_classified() {
-    let dir = std::path::Path::new(STDLIB_DIR);
+    let dir = &stdlib_dir();
     let entries = std::fs::read_dir(dir)
         .unwrap_or_else(|e| panic!("cannot read the stdlib dir {}: {e}", dir.display()));
 
@@ -315,7 +317,7 @@ pub(crate) fn collect_structure_defs_into(source: &str, defs: &mut std::collecti
 /// # Panics
 ///
 /// On ANY I/O failure — an unreadable directory entry, or a `*.ri` under
-/// [`STDLIB_DIR`] that cannot be read. Same loud-failure contract as
+/// [`stdlib_dir`] that cannot be read. Same loud-failure contract as
 /// [`scan_structure_defs`], and for the same reason: a silently-shrunk known-def
 /// set does not fail visibly, it DEMOTES real ctor sites to
 /// [`Owner::UnresolvedDef`] with no signal anywhere in the artifact. An earlier
@@ -335,7 +337,7 @@ pub(crate) fn stdlib_structure_defs() -> &'static std::collections::BTreeSet<Str
 /// The uncached scan behind [`stdlib_structure_defs`].
 fn scan_stdlib_structure_defs() -> std::collections::BTreeSet<String> {
     let mut defs = std::collections::BTreeSet::new();
-    let dir = std::path::Path::new(STDLIB_DIR);
+    let dir = &stdlib_dir();
     let entries = std::fs::read_dir(dir).unwrap_or_else(|e| {
         panic!(
             "harness_ctor_conformance_survey::owner: cannot read the stdlib dir {}: {e}",
@@ -373,7 +375,7 @@ fn scan_stdlib_structure_defs() -> std::collections::BTreeSet<String> {
 pub(crate) fn fea_owned_defs() -> &'static std::collections::BTreeSet<String> {
     static DEFS: std::sync::OnceLock<std::collections::BTreeSet<String>> =
         std::sync::OnceLock::new();
-    DEFS.get_or_init(|| scan_structure_defs(std::path::Path::new(STDLIB_DIR), FEA_STDLIB_MODULES))
+    DEFS.get_or_init(|| scan_structure_defs(&stdlib_dir(), FEA_STDLIB_MODULES))
 }
 
 /// The D9 fix-forward class governing a site whose structure def is `def`.

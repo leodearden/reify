@@ -14,15 +14,14 @@
 /// crate's manifest directory (two levels up to workspace root, then into
 /// `examples/`).  Mirrors the pattern in
 /// `crates/reify-eval/tests/m11_field_calculus.rs`.
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/m11_annotations.ri"
-);
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("m11_annotations.ri")
+}
 
 #[test]
 fn m11_annotations_exercises_solver_hint_collection_payloads() {
     let source =
-        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m11_annotations.ri should exist");
+        std::fs::read_to_string(example_path()).expect("examples/m11_annotations.ri should exist");
 
     // Compile with the stdlib prelude so `standard_bolt_lengths` and
     // `standard_sheet_thicknesses` resolve against `std.stock`.
