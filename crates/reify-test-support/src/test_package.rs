@@ -122,6 +122,32 @@ mod tests {
     }
 
     #[test]
+    fn empty_values_panic_naming_the_variable_child() {
+        in_child(|_| {
+            let manifest = panic_message_of(manifest_dir);
+            assert!(
+                manifest.contains("CARGO_MANIFEST_DIR"),
+                "panic does not name the variable: {manifest}"
+            );
+            let bin = panic_message_of(|| bin_exe(FIXTURE_BIN));
+            assert!(
+                bin.contains(&format!("CARGO_BIN_EXE_{FIXTURE_BIN}")),
+                "panic does not name the variable: {bin}"
+            );
+        });
+    }
+
+    #[test]
+    fn empty_values_panic_naming_the_variable() {
+        let fixture = fixture_workspace("test-package-empty-values-");
+        run_child(
+            "test_package::tests::empty_values_panic_naming_the_variable_child",
+            fixture.path(),
+            Launch::EmptyEnv(FIXTURE_BIN),
+        );
+    }
+
+    #[test]
     fn bin_exe_unset_names_the_variable() {
         let message = panic_message_of(|| bin_exe("no-such-bin-for-test-package"));
         assert!(

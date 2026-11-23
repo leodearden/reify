@@ -116,6 +116,9 @@ pub(crate) mod reexec {
         /// As [`Launch::ManifestDirEnv`], plus `CARGO_BIN_EXE_<name>` naming
         /// `<name>` inside the fixture consumer.
         BinExeEnv(&'static str),
+        /// `CARGO_MANIFEST_DIR` and `CARGO_BIN_EXE_<name>` are both set to the
+        /// empty string; the cwd stays the parent's real crate dir.
+        EmptyEnv(&'static str),
     }
 
     /// A minimal workspace: the root marker plus an empty
@@ -162,6 +165,10 @@ pub(crate) mod reexec {
             Launch::BinExeEnv(name) => {
                 cmd.env("CARGO_MANIFEST_DIR", &consumer)
                     .env(format!("CARGO_BIN_EXE_{name}"), consumer.join(name));
+            }
+            Launch::EmptyEnv(name) => {
+                cmd.env("CARGO_MANIFEST_DIR", "")
+                    .env(format!("CARGO_BIN_EXE_{name}"), "");
             }
         }
         let out = cmd
