@@ -2711,34 +2711,37 @@ pub(crate) fn resolve_type_expr_with_aliases_kinded(
 ///   cases at today's behaviour — which is also what the DIRECT spelling does
 ///   there, so parity still holds (pinned by the direct-baseline assertions in
 ///   `alias_to_entity_type_private_enum_namespaces`).
+/// * Each hop looks the next name up in the hopped entry's
+///   [`TypeAliasEntry::body_registry`], the scope that defined the alias it
+///   leaves, so an importer's own alias cannot capture a link of an imported
+///   chain (#10354).
 /// * Carries a `visited` set so `type C1 = C2` / `type C2 = C1` terminates
 ///   instead of looping. This is the SAME cycle hazard [`AliasDeferScope`]
 ///   guards for the deferred arm, in a second place — mandatory, not defensive:
 ///   a circular alias leaves BOTH entries in exactly the shape this walk
-///   follows. A local `HashSet` is used rather than the shared
-///   [`ALIAS_DEFER_IN_PROGRESS`] thread-local because this walk is a plain loop
-///   with no re-entrancy into the resolver, so it needs no ambient state and
-///   must not disturb an enclosing deferral in progress.
+///   follows. It is keyed on [`AliasEntryId`] rather than the name, for the
+///   same false-cycle reason as [`ALIAS_DEFER_IN_PROGRESS`]. A local `HashSet`
+///   is used rather than that shared thread-local because this walk is a plain
+///   loop with no re-entrancy into the resolver, so it needs no ambient state
+///   and must not disturb an enclosing deferral in progress.
 /// * Returns the TERMINAL name — the first body name that is not itself an
-///   unresolved non-parametric alias. That name may still be unknown to the
-///   caller's namespace, in which case the caller's existing unresolved
-///   handling runs unchanged.
+///   unresolved non-parametric alias. The caller resolves it against its own,
+///   use-site entity namespace. That name may still be unknown there, in which
+///   case the caller's existing unresolved handling runs unchanged.
 pub(crate) fn unresolved_alias_body_name(name: &str, reg: &TypeAliasRegistry) -> Option<String> {
-    let mut visited: HashSet<&str> = HashSet::new();
+    let mut visited: HashSet<AliasEntryId> = HashSet::new();
+    let mut scope = reg;
     let mut current = name;
     let mut hopped: Option<&str> = None;
 
-    loop {
-        if !visited.insert(current) {
+    while let Some(entry) = scope.lookup(current) {
+        if !visited.insert(entry.identity()) {
             // Cycle (`type C1 = C2` / `type C2 = C1`): the chain has no terminal
             // body name, so yield `None`. The caller then keeps its raw name and
             // runs its existing unresolved handling, which leaves the
             // definition-site `circular type alias` diagnostic as the only report.
             return None;
         }
-        let Some(entry) = reg.lookup(current) else {
-            break;
-        };
         if entry.resolved_type.is_some() || !entry.type_params.is_empty() {
             break;
         }
@@ -2757,6 +2760,7 @@ pub(crate) fn unresolved_alias_body_name(name: &str, reg: &TypeAliasRegistry) ->
         }
         hopped = Some(body_name.as_str());
         current = body_name.as_str();
+        scope = entry.body_registry(scope);
     }
 
     hopped.map(str::to_string)
