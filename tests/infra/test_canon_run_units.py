@@ -413,6 +413,14 @@ class CliCase(unittest.TestCase):
         self.assertEqual(fx.read_calls(self.fake), [])
 
 
+STARTUP_IGNORED = {signal.SIGPIPE, signal.SIGXFSZ}
+
+
+def sigign_probe(out):
+    """A command writing its SigIgn line to out, for fx.ignored_signals."""
+    return ("/bin/sh", "-c", 'grep SigIgn /proc/self/status > "$0"', out)
+
+
 class RealPathIsUntouched(CliCase):
     """Boundary row 9 at unit level, and C1's last row: the command gets the caller's exact env."""
 
@@ -425,6 +433,13 @@ class RealPathIsUntouched(CliCase):
         result = fx.run_canon(self.tree, self.sub, "exec", "--", self.fake_cargo, "x", env=self.env)
         self.assert_one_untouched_call(result, ["x"])
         self.assertFalse(os.path.exists(os.path.join(self.target, ".reify-build-root")))
+
+    def test_exec_hands_the_command_sigpipe_and_sigxfsz_at_their_defaults(self):
+        """CPython ignores both at startup; the command must not inherit that."""
+        out = os.path.join(self.tmp, "sigign")
+        result = fx.run_canon(self.tree, self.sub, "exec", "--", *sigign_probe(out), env=self.env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(STARTUP_IGNORED & fx.ignored_signals(out), set())
 
     def test_build_dir_outside_the_tree_is_real_path(self):
         stamp(self.target, "/somewhere/else")
@@ -694,6 +709,17 @@ class BoundRoute(CliCase):
         stdout, stderr = caller.communicate()
         self.assertEqual(caller.returncode, 0, stderr)
         self.assertIn("CONTINUED rc=130", stdout)
+
+    def test_every_canon_route_hands_the_command_sigpipe_and_sigxfsz_at_their_defaults(self):
+        """Only these two: a pool member may legitimately inherit INT/QUIT ignored."""
+        for route in ("outermost", "nested"):
+            with self.subTest(route=route):
+                if route == "nested":
+                    self.nest_under_a_canon_supervisor()
+                out = os.path.join(self.tmp, f"sigign-{route}")
+                result = self.bound("exec", "--", *sigign_probe(out))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(STARTUP_IGNORED & fx.ignored_signals(out), set())
 
     def test_sharing_without_a_real_sccache_is_refused_before_anything_runs(self):
         if shutil.which("sccache", path="/usr/bin:/bin"):
