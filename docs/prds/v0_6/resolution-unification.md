@@ -424,14 +424,24 @@ runs against P1's landed net)
   acceptance: construction/type/match, non-pub invisible), #12 (unit/alias/trait).
   Deps: ι. (#5391 gate 3, first half.)
   *Amended 2026-11-23 (task #10453, esc-5522-6):* λ BUILDS #11's non-pub-invisible
-  half; it does not only observe it. θ's D-9 resolves an imported `E.V` against the
-  compile env, which binds a direct import's enums with ambient visibility, so a
-  non-pub enum's value compiles to a literal before eval's D-5-filtered DefEnv is
-  consulted; ι's eval-side migration cannot close that. λ therefore narrows
-  compile-side enum visibility, at `E.V` and at enum type positions, to a direct
-  import's `pub` surface (D-5), so reify-compiler joins λ's modules. In the same diff
-  λ inverts `imported_non_pub_enum_variant_access_still_compiles`
+  half; it does not only observe it. The cause is not enum-specific: `compile_program`
+  hands the entry's direct imports to its compile as ambient prelude, so every
+  `name_env::bind` caller there sees them as `Surface::Ambient` and D-5's
+  `Surface::DirectImport` filter never applies. Units, type aliases, constraint defs
+  and purposes filter `pub` in `Definition::exported_by` anyway; enums, traits,
+  functions and templates do not. For enums, θ's D-9 resolves an imported `E.V`
+  against that env, so a non-pub enum's value compiles to a literal before eval's
+  D-5-filtered DefEnv is consulted; ι's eval-side migration cannot close that. λ
+  therefore narrows compile-side enum visibility, at `E.V` and at enum type positions,
+  to a direct import's `pub` surface (D-5), so reify-compiler joins λ's modules; row
+  11's acceptance is the enum kind. Routing direct imports through
+  `Surface::DirectImport` once at that seam narrows every `name_env::bind` caller;
+  `is_pub` filters at enum sites narrow enums alone. In the same diff λ inverts
+  `imported_non_pub_enum_variant_access_still_compiles`
   (`crates/reify-compiler/tests/harness_modules_ports/compile_program_tests.rs`).
+  Traits, functions and templates have no owner in this PRD, and whether a non-pub
+  one is reachable from an importer is unmeasured; task #10453 filed follow-up
+  ticket `tkt_0RXAZ2VBKR240CFP0BGSA9H3XE` to measure that and assign an owner.
 
 **P3 — exposure policy**
 
