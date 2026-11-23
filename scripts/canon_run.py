@@ -38,6 +38,7 @@ import canon_cache  # noqa: E402  (imported after sys.path manipulation)
 CANON_DEFAULT = "/opt/reify-canon/ws"
 STAMP_NAME = ".reify-build-root"
 BWRAP = "/usr/bin/bwrap"
+ENV = "/usr/bin/env"
 MOUNTINFO = "/proc/self/mountinfo"
 EXIT_REFUSED = 126
 EXIT_NOT_FOUND = 127
@@ -156,8 +157,6 @@ class ActiveTree:
     """REIFY_CANON_ACTIVE: the tree an outer invocation runs, read back by nested ones.
 
     supervisor is None from the process that enters a mount namespace, which supervises nothing.
-    caller_ignored is set only by that process: the supervised signals its own caller ignored,
-    since every supervised signal reaches the re-run ignored (see run_in_namespace).
     """
 
     dev: int
@@ -165,7 +164,6 @@ class ActiveTree:
     real_root: str
     canon: str
     supervisor: Supervisor | None = None
-    caller_ignored: frozenset[int] | None = None
 
 
 @dataclass(frozen=True)
@@ -246,28 +244,13 @@ def is_real_dir(path: str | Path) -> bool:
         return False
 
 
-def format_active(
-    tree: Tree,
-    canon: str,
-    supervisor: Supervisor | None = None,
-    caller_ignored: frozenset[int] | None = None,
-) -> str:
+def format_active(tree: Tree, canon: str, supervisor: Supervisor | None = None) -> str:
     record: dict[str, object] = {
         "dev": tree.dev, "ino": tree.ino, "real_root": str(tree.real_root), "canon": canon
     }
     if supervisor is not None:
         record["supervisor"] = supervisor.to_record()
-    if caller_ignored is not None:
-        record["caller_ignored"] = sorted(signal.Signals(number).name for number in caller_ignored)
     return json.dumps(record, sort_keys=True)
-
-
-def parse_caller_ignored(value: object) -> frozenset[int] | None:
-    """The supervised signals a record names; None when absent or naming anything else."""
-    names = {number.name: number for number in canon_cache.SUPERVISED_SIGNALS}
-    if not isinstance(value, list) or not all(isinstance(name, str) and name in names for name in value):
-        return None
-    return frozenset(names[name] for name in value)
 
 
 def parse_active(value: str | None) -> ActiveTree | None:
@@ -282,14 +265,7 @@ def parse_active(value: str | None) -> ActiveTree | None:
         return None
     if not isinstance(real_root, str) or not isinstance(canon, str):
         return None
-    return ActiveTree(
-        dev,
-        ino,
-        real_root,
-        canon,
-        Supervisor.from_record(record.get("supervisor")),
-        parse_caller_ignored(record.get("caller_ignored")),
-    )
+    return ActiveTree(dev, ino, real_root, canon, Supervisor.from_record(record.get("supervisor")))
 
 
 def is_nested(active: ActiveTree | None, tree: Tree, decision: Decision) -> bool:
@@ -795,34 +771,30 @@ class Call:
         )
 
 
-def reentry_argv(
-    tree: Tree, canon: str, cwd: str, arguments: list[str], *, info_fd: int | None = None
-) -> list[str]:
-    """bwrap binding the tree's real root at canon, re-running this same script there."""
-    info = [] if info_fd is None else ["--info-fd", str(info_fd)]
+def reentry_bwrap(tree: Tree, canon: str, cwd: str, info_fd: int) -> list[str]:
+    """bwrap binding the tree's real root at canon, writing the re-run's pid to info_fd."""
     return [
         BWRAP, "--dev-bind", "/", "/", "--bind", str(tree.real_root), canon,
-        "--chdir", rebase(cwd, tree, canon), "--die-with-parent", *info, "--",
-        sys.executable, "-I", os.path.join(canon, "scripts", "canon_run.py"), *arguments,
+        "--chdir", rebase(cwd, tree, canon), "--die-with-parent", "--info-fd", str(info_fd),
     ]
 
 
-def reentry_env(
-    environ: Mapping[str, str], tree: Tree, canon: str, caller_ignored: frozenset[int] = frozenset()
-) -> dict[str, str]:
+def reentry_command(canon: str, arguments: list[str]) -> list[str]:
+    """This same script, re-run at canon with this invocation's arguments."""
+    return [sys.executable, "-I", os.path.join(canon, "scripts", "canon_run.py"), *arguments]
+
+
+def reentry_env(environ: Mapping[str, str], tree: Tree, canon: str) -> dict[str, str]:
     """The caller's environment plus the tree record, so the re-run finds the real root."""
-    return dict(environ, REIFY_CANON_ACTIVE=format_active(tree, canon, caller_ignored=caller_ignored))
+    return dict(environ, REIFY_CANON_ACTIVE=format_active(tree, canon))
 
 
-def restore_caller_signals(caller_ignored: frozenset[int]) -> None:
-    """In the namespace re-run: the dispositions the outer invocation's caller gave it."""
-    for number in canon_cache.SUPERVISED_SIGNALS:
-        if number in caller_ignored:
-            signal.signal(number, signal.SIG_IGN)
-        elif number == signal.SIGINT:
-            signal.signal(number, signal.default_int_handler)
-        else:
-            signal.signal(number, signal.SIG_DFL)
+def namespace_argv(bwrap: list[str], command: list[str], restored: frozenset[int]) -> list[str]:
+    """bwrap running command through env, which gives the restored signals back their defaults."""
+    if not restored:
+        return [*bwrap, "--", *command]
+    names = ",".join(signal.Signals(number).name.removeprefix("SIG") for number in sorted(restored))
+    return [*bwrap, "--", ENV, f"--default-signal={names}", "--", *command]
 
 
 def read_child_pid(info_read: int) -> int | None:
@@ -836,9 +808,8 @@ def read_child_pid(info_read: int) -> int | None:
     return pid if type(pid) is int else None
 
 
-def ignore_supervised_signals() -> None:
-    """bwrap's preexec_fn: it starts ignoring every supervised signal, and this process keeps forwarding."""
-    for number in canon_cache.SUPERVISED_SIGNALS:
+def ignore(numbers: frozenset[int]) -> None:
+    for number in numbers:
         signal.signal(number, signal.SIG_IGN)
 
 
@@ -851,22 +822,30 @@ def sender_to(pid: int) -> Callable[[int], None]:
 
 
 def run_in_namespace(
-    argv_for: Callable[[int], list[str]], env: Mapping[str, str], forwarder: canon_cache.SignalForwarder
+    bwrap_for: Callable[[int], list[str]],
+    command: list[str],
+    env: Mapping[str, str],
+    forwarder: canon_cache.SignalForwarder,
 ) -> int:
-    """Spawn bwrap ignoring every supervised signal, then forward under the supervisor's rule.
+    """Spawn bwrap around command ignoring the forwarded signals, then forward under the supervisor's rule.
 
     bwrap handles no signal, and --die-with-parent SIGKILLs the re-run when bwrap dies, which
-    would lose the re-run's teardown and record. So bwrap starts with them all ignored, the
-    re-run restores its caller's dispositions from REIFY_CANON_ACTIVE, and this process stands
-    in for the caller: what is sent to it goes to the re-run, whose pid bwrap writes to the
-    info fd, and the re-run forwards it to its command.
+    would lose the re-run's teardown and record. So bwrap starts with the forwarded signals
+    ignored, env inside the namespace gives them back their defaults before command starts,
+    and this process stands in for the caller, forwarding what is sent to it to command, whose
+    pid bwrap writes to the info fd.
     """
     info_read, info_write = os.pipe()
     os.set_inheritable(info_write, True)
     with forwarder:
         try:
-            argv = canon_cache.with_parent_death_signal(argv_for(info_write), "KILL")
-            bwrap = subprocess.Popen(argv, env=env, close_fds=False, preexec_fn=ignore_supervised_signals)
+            argv = namespace_argv(bwrap_for(info_write), command, forwarder.forwarded)
+            bwrap = subprocess.Popen(
+                canon_cache.with_parent_death_signal(argv, "KILL"),
+                env=env,
+                close_fds=False,
+                preexec_fn=functools.partial(ignore, forwarder.forwarded),
+            )
         except OSError as exc:
             os.close(info_read)
             raise canon_cache.CommandNotFound(f"cannot run {BWRAP}: {exc}") from exc
@@ -893,11 +872,11 @@ def enter_namespace(call: Call, host: HostConfig) -> int:
     """The NAMESPACE route: validate, stamp, then re-run this invocation where CANON is bound."""
     validated_canon_path(call, host)
     ensure_stamp(call.build_dir, call.canon)
-    forwarder = canon_cache.SignalForwarder()
     return run_in_namespace(
-        lambda info_fd: reentry_argv(call.tree, call.canon, call.cwd, call.arguments, info_fd=info_fd),
-        reentry_env(call.environ, call.tree, call.canon, forwarder.caller_ignored),
-        forwarder,
+        lambda info_fd: reentry_bwrap(call.tree, call.canon, call.cwd, info_fd),
+        reentry_command(call.canon, call.arguments),
+        reentry_env(call.environ, call.tree, call.canon),
+        canon_cache.SignalForwarder(),
     )
 
 
@@ -976,8 +955,6 @@ def supervise_real_path(call: Call, host: HostConfig, reason: canon_cache.Reason
 def run(command: list[str], *, cargo: bool, environ: Mapping[str, str]) -> int:
     """`exec` (command is the full command) or `cargo` (command is cargo's arguments)."""
     active = parse_active(environ.get("REIFY_CANON_ACTIVE"))
-    if active is not None and active.caller_ignored is not None:
-        restore_caller_signals(active.caller_ignored)
     try:
         cwd = os.getcwd()
     except OSError:
