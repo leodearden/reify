@@ -803,7 +803,8 @@ def enter_namespace(call: Call, host: HostConfig) -> NoReturn:
 
 
 def exec_nested(call: Call, cache: canon_cache.CacheEnvironment) -> NoReturn:
-    """Under a CANON supervisor of this tree: its cache, no session and no record of our own."""
+    """Under a CANON supervisor of this tree: stamp, then its cache, no session and no record of our own."""
+    ensure_stamp(call.build_dir, call.canon)
     invocation = call.at_canon(cache)
     try:
         os.chdir(invocation.cwd)
