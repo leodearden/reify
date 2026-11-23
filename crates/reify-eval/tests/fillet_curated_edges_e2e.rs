@@ -214,10 +214,8 @@ fn bottom_deck_selectors_example_builds_clean_e2e() {
         return;
     }
 
-    // Resolved from CARGO_MANIFEST_DIR (crates/reify-eval) so the test is
-    // independent of the process CWD.
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples/topology_selectors/bottom_deck_selectors.ri");
+    let path = reify_test_support::examples_corpus::examples_dir()
+        .join("topology_selectors/bottom_deck_selectors.ri");
     let source = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
 
@@ -346,8 +344,8 @@ fn fillet_top_edges_example_builds_clean_e2e() {
         eprintln!("skipping fillet_top_edges_example_builds_clean_e2e: OCCT not available");
         return;
     }
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples/topology_selectors/fillet_top_edges.ri");
+    let path = reify_test_support::examples_corpus::examples_dir()
+        .join("topology_selectors/fillet_top_edges.ri");
     let source = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
     let compiled = compile_source_with_stdlib(&source);

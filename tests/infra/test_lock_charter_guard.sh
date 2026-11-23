@@ -514,7 +514,8 @@ cargo-audit-orphans
 pre-commit
 pre-merge-commit
 project-checks
-reference-transaction"
+reference-transaction
+sccache"
 
 run_list_extensionless
 assert "--list-extensionless exits 0" test "$GUARD_RC" -eq 0

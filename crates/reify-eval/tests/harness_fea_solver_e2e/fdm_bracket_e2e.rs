@@ -110,7 +110,7 @@ fn as_printed_deflects_more_than_homogeneous() {
         return;
     }
 
-    let path = format!("{}/../../examples/fdm_bracket.ri", env!("CARGO_MANIFEST_DIR"));
+    let path = reify_test_support::examples_corpus::examples_dir().join("fdm_bracket.ri");
     let source = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read examples/fdm_bracket.ri: {e}"));
 
@@ -256,7 +256,7 @@ fn ri_scalar_deflection_values_and_constraint() {
         return;
     }
 
-    let path = format!("{}/../../examples/fdm_bracket.ri", env!("CARGO_MANIFEST_DIR"));
+    let path = reify_test_support::examples_corpus::examples_dir().join("fdm_bracket.ri");
     let source = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read examples/fdm_bracket.ri: {e}"));
 
@@ -342,7 +342,7 @@ fn fdm_bracket_golden() {
         return;
     }
 
-    let path = format!("{}/../../examples/fdm_bracket.ri", env!("CARGO_MANIFEST_DIR"));
+    let path = reify_test_support::examples_corpus::examples_dir().join("fdm_bracket.ri");
     let source = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read examples/fdm_bracket.ri: {e}"));
 
@@ -413,22 +413,20 @@ fn fdm_bracket_golden() {
          defl_print > defl_solid = {defl_gt}\n"
     );
 
-    let golden_path = format!(
-        "{}/tests/golden/fdm_bracket.txt",
-        env!("CARGO_MANIFEST_DIR")
-    );
+    let golden_path = reify_test_support::test_package::manifest_dir().join("tests/golden/fdm_bracket.txt");
 
     if std::env::var("REIFY_UPDATE_GOLDEN").as_deref() == Ok("1") {
         std::fs::write(&golden_path, &actual)
-            .unwrap_or_else(|e| panic!("failed to write golden {golden_path}: {e}"));
-        eprintln!("updated golden: {golden_path}");
+            .unwrap_or_else(|e| panic!("failed to write golden {}: {e}", golden_path.display()));
+        eprintln!("updated golden: {}", golden_path.display());
         return;
     }
 
     let expected = std::fs::read_to_string(&golden_path)
         .unwrap_or_else(|e| panic!(
-            "golden file missing ({golden_path}): {e}\n\
-             Run with REIFY_UPDATE_GOLDEN=1 to create it."
+            "golden file missing ({}): {e}\n\
+             Run with REIFY_UPDATE_GOLDEN=1 to create it.",
+            golden_path.display()
         ));
 
     assert_eq!(

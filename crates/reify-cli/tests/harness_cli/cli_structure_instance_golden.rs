@@ -7,7 +7,7 @@
 //! Hosted in `reify-eval` it had NO cargo build edge on `reify-cli` and resolved
 //! `target/<profile>/reify` by path, so the golden — whose entire value is
 //! detecting output drift — was compared against a binary that could predate the
-//! change under test. `env!("CARGO_BIN_EXE_reify")` makes the binary fresh by
+//! change under test. `CARGO_BIN_EXE_reify` makes the binary fresh by
 //! construction: cargo builds this package's `[[bin]]` before its integration
 //! tests run.
 //!

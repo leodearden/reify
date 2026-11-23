@@ -184,12 +184,9 @@ fn point3_xyz(v: &Value) -> (f64, f64, f64) {
 /// RED today: `examples/generate_bolt_circle.ri` does not exist (step-12 creates it).
 #[test]
 fn generate_bolt_circle_example_golden() {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/generate_bolt_circle.ri"
-    );
-    let source = std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("example {} should exist (step-12): {}", path, e));
+    let path = reify_test_support::examples_corpus::examples_dir().join("generate_bolt_circle.ri");
+    let source = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("example {} should exist (step-12): {}", path.display(), e));
     let result = eval_source(&source);
 
     // (a) PRIMARY: count(positions) == Int(4), exact (FP-free).

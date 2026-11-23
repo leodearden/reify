@@ -35,13 +35,12 @@ use reify_eval::{ConstraintCheckEntry, Engine};
 use reify_ir::{ExportFormat, Satisfaction};
 use reify_test_support::{errors_only, make_simple_engine, parse_and_compile_with_stdlib};
 
-const STD_PROCESS_DFM_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/process/std_process_dfm.ri"
-);
+fn std_process_dfm_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("process/std_process_dfm.ri")
+}
 
 fn read_dfm_example() -> String {
-    std::fs::read_to_string(STD_PROCESS_DFM_PATH)
+    std::fs::read_to_string(std_process_dfm_path())
         .expect("examples/process/std_process_dfm.ri should exist (task 4275 step-2)")
 }
 

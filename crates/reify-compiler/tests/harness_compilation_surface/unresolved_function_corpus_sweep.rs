@@ -51,12 +51,13 @@ use reify_core::{DiagnosticCode, ModulePath, Severity};
 use reify_ir::Satisfaction;
 use reify_test_support::examples_corpus::discover_ri_files;
 use reify_test_support::mocks::MockConstraintChecker;
-
-/// Workspace root, resolved at compile time from this crate's manifest dir.
-const WORKSPACE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+use reify_test_support::test_package;
+use reify_test_support::workspace_root::workspace_root;
 
 /// The stdlib root every corpus file is compiled against.
-const STDLIB_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/stdlib");
+fn stdlib_root() -> PathBuf {
+    test_package::manifest_dir().join("stdlib")
+}
 
 /// The corpus roots, as workspace-relative paths.
 ///
@@ -163,7 +164,7 @@ fn callee_of(message: &str) -> String {
 
 /// Path relative to the workspace root, forward-slash separated.
 fn workspace_relative(path: &Path) -> String {
-    path.strip_prefix(WORKSPACE_ROOT)
+    path.strip_prefix(workspace_root())
         .unwrap_or(path)
         .to_string_lossy()
         .replace(std::path::MAIN_SEPARATOR, "/")
@@ -172,14 +173,14 @@ fn workspace_relative(path: &Path) -> String {
 /// Every `.ri` file across both corpus roots, sorted.
 ///
 /// Each root is walked by the shared `examples_corpus::discover_ri_files`,
-/// rooted at `WORKSPACE_ROOT` so every path keeps the lexical prefix
+/// rooted at [`workspace_root`] so every path keeps the lexical prefix
 /// [`workspace_relative`] strips. A missing or unreadable root panics, naming
 /// the directory. The final sort is global: each root's slice arrives sorted,
 /// but `CORPUS_ROOTS` order is not path order.
 fn discover_corpus() -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = CORPUS_ROOTS
         .iter()
-        .flat_map(|root| discover_ri_files(&Path::new(WORKSPACE_ROOT).join(root)))
+        .flat_map(|root| discover_ri_files(&workspace_root().join(root)))
         .collect();
     paths.sort();
     paths
@@ -231,7 +232,7 @@ fn program_for(path: &Path) -> Option<CompiledProgram> {
     // import is skipped because `load_stdlib()` already seeded the whole
     // stdlib — but is passed truthfully rather than as a sentinel so the
     // resolver is constructed identically to the CLI's.
-    let resolver = ModuleResolver::new(path.parent()?, Path::new(STDLIB_ROOT));
+    let resolver = ModuleResolver::new(path.parent()?, stdlib_root());
     Some(compile_program_with_parsed_entry(
         path,
         &source,
@@ -341,7 +342,7 @@ fn corpus_has_no_unresolved_function_calls() {
 #[test]
 fn every_corpus_root_exists_and_holds_ri_files() {
     for root in CORPUS_ROOTS {
-        let dir = Path::new(WORKSPACE_ROOT).join(root);
+        let dir = workspace_root().join(root);
         assert!(
             dir.is_dir(),
             "corpus root '{root}' does not exist at {} — CORPUS_ROOTS is stale",
@@ -394,7 +395,7 @@ fn the_sweep_actually_compiles_most_of_the_corpus() {
 #[test]
 fn deliberate_negatives_are_live_and_justified() {
     for (rel, reason) in DELIBERATE_NEGATIVES {
-        let path = Path::new(WORKSPACE_ROOT).join(rel);
+        let path = workspace_root().join(rel);
         assert!(
             path.is_file(),
             "DELIBERATE_NEGATIVES names '{rel}', which does not exist"

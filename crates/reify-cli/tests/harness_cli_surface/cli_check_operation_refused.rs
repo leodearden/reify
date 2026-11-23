@@ -13,7 +13,7 @@ fn check_module(stem: &str, body: &str, extra_args: &[&str]) -> Output {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let path = dir.path().join(format!("{stem}.ri"));
     std::fs::write(&path, format!("module {stem}\n\n{body}\n")).expect("failed to write module");
-    Command::new(env!("CARGO_BIN_EXE_reify"))
+    Command::new(reify_test_support::test_package::bin_exe("reify"))
         .arg("check")
         .arg(&path)
         .args(extra_args)

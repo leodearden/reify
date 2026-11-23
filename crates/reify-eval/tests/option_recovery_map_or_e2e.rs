@@ -8,8 +8,8 @@
 //!
 //! Model:
 //!   - `generic_stdlib_fn_e2e.rs` — Engine::eval + value-cell read.
-//!   - `compose_example_smoke.rs` — load the fixture from `examples/` at
-//!     compile time via `concat!(env!("CARGO_MANIFEST_DIR"), ...)`.
+//!   - `compose_example_smoke.rs` — load the fixture from `examples/` via
+//!     `reify_test_support::examples_corpus::examples_dir()`.
 //!
 //! RED before step-12: `examples/option_map_or.ri` does not exist yet, so the
 //! fixture read fails (panic) — the missing-example RED signal.
@@ -17,11 +17,10 @@
 use reify_core::{DimensionVector, Severity, ValueCellId};
 use reify_test_support::{collect_errors, parse_and_compile_with_stdlib};
 
-/// Absolute path to the example, resolved at compile time from the crate root.
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/option_map_or.ri"
-);
+/// Absolute path to the example.
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("option_map_or.ri")
+}
 
 /// A `Length` scalar of `mm` millimetres, in SI (metres).
 fn len_mm(mm: f64) -> reify_ir::Value {
@@ -43,7 +42,7 @@ fn len_mm(mm: f64) -> reify_ir::Value {
 #[test]
 fn option_map_or_example_evals_end_to_end() {
     let source =
-        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/option_map_or.ri should exist");
+        std::fs::read_to_string(example_path()).expect("examples/option_map_or.ri should exist");
 
     let compiled = parse_and_compile_with_stdlib(&source);
 

@@ -701,10 +701,9 @@ fn merged_cluster_unconstrained_objective_reports_unconsumed() {
 /// loudly if the example itself drifts.
 #[test]
 fn joint_drive_example_stays_quiet_because_its_auto_is_bound() {
-    let source = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/whole_model_joint_drive.ri"
-    ))
+    let source = std::fs::read_to_string(
+        reify_test_support::examples_corpus::examples_dir().join("whole_model_joint_drive.ri"),
+    )
     .expect("examples/whole_model_joint_drive.ri must be readable");
 
     let (engine, result) = eval_with_solver_keeping_engine(&source);

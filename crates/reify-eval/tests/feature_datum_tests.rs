@@ -496,10 +496,10 @@ fn degenerate_sweep_direction_is_no_datum_and_projects_a_coded_error() {
 // (scripts/occt-touching-crates.txt); see esc-4385-134.
 
 /// Absolute path to the B8 example, resolved from this crate's manifest dir.
-const FEATURE_DATUM_AXIS_EXAMPLE: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/geometric_relations/feature_datum_axis.ri"
-);
+fn feature_datum_axis_example() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir()
+        .join("geometric_relations/feature_datum_axis.ri")
+}
 
 /// B8: `cyl.axis` over the realized revolved-rectangle cylinder resolves to
 /// exactly one `Value::Axis` coaxial with the example's revolution axis (the
@@ -519,7 +519,7 @@ fn feature_datum_axis_example_resolves_to_single_revolution_axis() {
         return;
     }
 
-    let source = std::fs::read_to_string(FEATURE_DATUM_AXIS_EXAMPLE).expect(
+    let source = std::fs::read_to_string(feature_datum_axis_example()).expect(
         "failed to read examples/geometric_relations/feature_datum_axis.ri — \
          created by step-18",
     );

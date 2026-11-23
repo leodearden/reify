@@ -34,6 +34,8 @@
 //! `MassProperties` solid and needs no `GeometryKernel`, so a
 //! `MockGeometryKernel` suffices (mirrors `rigid_body_dynamics_e2e.rs`).
 
+use std::path::PathBuf;
+
 use reify_core::ValueCellId;
 use reify_ir::{ExportFormat, Value};
 use reify_stdlib::dynamics::closed_chain::loop_constraint_rows;
@@ -44,22 +46,20 @@ use reify_stdlib::loop_closure_solver::{
     NewtonConfig, NewtonOutcome, StartStrategy, solve_loop_closure,
 };
 use reify_stdlib::loop_closure_value::JointValue;
+use reify_test_support::examples_corpus;
 use reify_test_support::{
     MockGeometryKernel, collect_errors, errors_only, parse_and_compile_with_stdlib,
 };
 
-/// Absolute path to the closed 2-prismatic inverse-dynamics example fixture.
-/// Mirrors the CARGO_MANIFEST_DIR pattern from `rigid_body_dynamics_e2e.rs`.
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/dynamics/closed_2prismatic_idyn.ri"
-);
+/// Path to the closed 2-prismatic inverse-dynamics example fixture.
+fn example_path() -> PathBuf {
+    examples_corpus::examples_dir().join("dynamics/closed_2prismatic_idyn.ri")
+}
 
-/// Absolute path to the closed 4-bar inverse-dynamics example fixture (β1).
-const FOUR_BAR_EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/dynamics/closed_4bar_idyn.ri"
-);
+/// Path to the closed 4-bar inverse-dynamics example fixture (β1).
+fn four_bar_example_path() -> PathBuf {
+    examples_corpus::examples_dir().join("dynamics/closed_4bar_idyn.ri")
+}
 
 /// Read an `f64` out of a numeric value cell (`Real` / `Int` / dimensioned
 /// `Scalar`). Panics on a non-numeric cell so a shape regression fails loudly.
@@ -96,7 +96,7 @@ fn field<'a>(v: &'a Value, type_name: &str, member: &str) -> &'a Value {
 /// identity `Σ τ_i·q̇_i = (m_a+m_b)·v·(a+9.81) = 39.585 W` within 1 µW.
 #[test]
 fn closed_2prismatic_virtual_work_identity() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
+    let source = std::fs::read_to_string(example_path())
         .expect("examples/dynamics/closed_2prismatic_idyn.ri should exist (task 4146 fixture)");
 
     let compiled = parse_and_compile_with_stdlib(&source);
@@ -226,7 +226,7 @@ fn get_four_bar_joint<'a>(values: &'a reify_ir::ValueMap, name: &str) -> &'a Val
 /// machinery; they do NOT assert any inverse_dynamics `forces` value (that is β2).
 #[test]
 fn closed_4bar_live_loop_residual() {
-    let source = std::fs::read_to_string(FOUR_BAR_EXAMPLE_PATH)
+    let source = std::fs::read_to_string(four_bar_example_path())
         .expect("examples/dynamics/closed_4bar_idyn.ri should exist (task 4428 β1 fixture)");
 
     // (a) compile-clean gate
@@ -333,7 +333,7 @@ fn closed_4bar_live_loop_residual() {
 /// test's converged-config recheck pattern, kinematic_loop_closure_machinery.rs).
 #[test]
 fn closed_4bar_loop_closes_consistently() {
-    let source = std::fs::read_to_string(FOUR_BAR_EXAMPLE_PATH)
+    let source = std::fs::read_to_string(four_bar_example_path())
         .expect("examples/dynamics/closed_4bar_idyn.ri should exist (task 4428 β1 fixture)");
     let compiled = parse_and_compile_with_stdlib(&source);
     assert!(
@@ -512,7 +512,7 @@ fn closed_4bar_loop_closes_consistently() {
 /// is expected to pass on arrival (no .ri change required).
 #[test]
 fn closed_4bar_live_constraint_rank() {
-    let source = std::fs::read_to_string(FOUR_BAR_EXAMPLE_PATH)
+    let source = std::fs::read_to_string(four_bar_example_path())
         .expect("examples/dynamics/closed_4bar_idyn.ri should exist (task 4429 β2 fixture)");
     let compiled = parse_and_compile_with_stdlib(&source);
     assert!(
@@ -720,7 +720,7 @@ fn closed_4bar_live_constraint_rank() {
 /// (re-derive from the measured floor on that arch, do not silently bump the literal).
 #[test]
 fn closed_4bar_virtual_work_identity() {
-    let source = std::fs::read_to_string(FOUR_BAR_EXAMPLE_PATH)
+    let source = std::fs::read_to_string(four_bar_example_path())
         .expect("examples/dynamics/closed_4bar_idyn.ri should exist (task 4429 β2 fixture)");
     let compiled = parse_and_compile_with_stdlib(&source);
     assert!(

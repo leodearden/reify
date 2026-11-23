@@ -313,13 +313,10 @@ fn separated_twins_are_all_clean() {
 /// still accepts a user fn" to "the value it computes is still there".
 #[test]
 fn a_design_calling_a_user_fn_still_evaluates_its_cell() {
-    const PATH: &str = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/m5_user_function.ri"
-    );
+    let path = reify_test_support::examples_corpus::examples_dir().join("m5_user_function.ri");
 
     let source =
-        std::fs::read_to_string(PATH).unwrap_or_else(|e| panic!("{PATH} should exist: {e}"));
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{} should exist: {e}", path.display()));
 
     // `compile_source_with_stdlib` panics on any parse error, which is itself half the guard:
     // this example must continue to parse cleanly.
@@ -327,9 +324,10 @@ fn a_design_calling_a_user_fn_still_evaluates_its_cell() {
     let errors = error_diags(&compiled.diagnostics);
     assert!(
         errors.is_empty(),
-        "{PATH}: a checked-in example stopped compiling. Promoting parse errors to ERROR \
+        "{}: a checked-in example stopped compiling. Promoting parse errors to ERROR \
          severity may not break real designs.\n\
          errors: {errors:?}",
+        path.display()
     );
 
     // `Panel.surface_area = area(width, height)` with `width = 200`, `height = 100`. Both
@@ -338,8 +336,9 @@ fn a_design_calling_a_user_fn_still_evaluates_its_cell() {
     let value = cell_value(&eval_source(&source), "Panel", "surface_area");
     assert!(
         values_agree(&value, &Value::Int(20_000)),
-        "{PATH}: `Panel.surface_area` is computed by the user fn `area`, so a fn-body \
+        "{}: `Panel.surface_area` is computed by the user fn `area`, so a fn-body \
          regression shows up here as a changed or undefined value rather than as a \
          diagnostic. got: {value:?}",
+        path.display()
     );
 }

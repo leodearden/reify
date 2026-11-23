@@ -15,21 +15,20 @@ use reify_compiler::PatternKind;
 use reify_test_support::{assert_no_eval_errors, compile_source_named, errors_only, make_engine};
 
 /// Absolute path to the fixture file.
-const FIXTURE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/pattern_composition.ri"
-);
+fn fixture_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("pattern_composition.ri")
+}
 
 // ── Helper ────────────────────────────────────────────────────────────────────
 
 /// Load a .ri file, parse, compile (asserting no errors), and evaluate.
 /// Returns the full EvalResult for per-test assertions.
-fn eval_ri_file(path: &str, module_name: &str) -> reify_eval::EvalResult {
+fn eval_ri_file(path: &std::path::Path, module_name: &str) -> reify_eval::EvalResult {
     let source =
-        fs::read_to_string(path).unwrap_or_else(|e| panic!("{} should exist: {}", path, e));
+        fs::read_to_string(path).unwrap_or_else(|e| panic!("{} should exist: {}", path.display(), e));
     let compiled = compile_source_named(&source, module_name);
     let errs = errors_only(&compiled);
-    assert!(errs.is_empty(), "compile errors in {}: {:?}", path, errs);
+    assert!(errs.is_empty(), "compile errors in {}: {:?}", path.display(), errs);
     let mut engine = make_engine();
     let result = engine.eval(&compiled);
     // Note: assert_no_eval_errors omits the file path from the panic message;
@@ -39,9 +38,9 @@ fn eval_ri_file(path: &str, module_name: &str) -> reify_eval::EvalResult {
 }
 
 /// Compile the fixture without evaluating. Used for structural assertions.
-fn compile_ri_file(path: &str, module_name: &str) -> reify_compiler::CompiledModule {
+fn compile_ri_file(path: &std::path::Path, module_name: &str) -> reify_compiler::CompiledModule {
     let source =
-        fs::read_to_string(path).unwrap_or_else(|e| panic!("{} should exist: {}", path, e));
+        fs::read_to_string(path).unwrap_or_else(|e| panic!("{} should exist: {}", path.display(), e));
     compile_source_named(&source, module_name)
 }
 
@@ -50,7 +49,7 @@ fn compile_ri_file(path: &str, module_name: &str) -> reify_compiler::CompiledMod
 /// Load pattern_composition.ri, parse, compile, eval — no errors, non-empty values.
 #[test]
 fn smoke_compiles_and_evals() {
-    let result = eval_ri_file(FIXTURE_PATH, "pattern_composition");
+    let result = eval_ri_file(&fixture_path(), "pattern_composition");
     assert!(
         !result.values.is_empty(),
         "eval should produce non-empty values for pattern_composition.ri"
@@ -62,7 +61,7 @@ fn smoke_compiles_and_evals() {
 /// At least 7 expected structures present in compiled templates.
 #[test]
 fn has_expected_templates() {
-    let compiled = compile_ri_file(FIXTURE_PATH, "pattern_composition");
+    let compiled = compile_ri_file(&fixture_path(), "pattern_composition");
     let errors = errors_only(&compiled);
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 
@@ -101,7 +100,7 @@ fn has_expected_templates() {
 /// or zero-instance geometry, but must not ICE or emit errors).
 #[test]
 fn count_zero_compiles() {
-    let compiled = compile_ri_file(FIXTURE_PATH, "pattern_composition");
+    let compiled = compile_ri_file(&fixture_path(), "pattern_composition");
     let errors = errors_only(&compiled);
     assert!(
         errors.is_empty(),
@@ -120,7 +119,7 @@ fn count_zero_compiles() {
 /// PatternCountOne has exactly 1 realization with Linear2D pattern kind.
 #[test]
 fn count_one_single_instance() {
-    let compiled = compile_ri_file(FIXTURE_PATH, "pattern_composition");
+    let compiled = compile_ri_file(&fixture_path(), "pattern_composition");
     let template = compiled
         .templates
         .iter()
@@ -153,7 +152,7 @@ fn count_one_single_instance() {
 /// PatternGrid10x10 template has exactly 1 realization with Pattern2D kind.
 #[test]
 fn grid_10x10_compiles() {
-    let compiled = compile_ri_file(FIXTURE_PATH, "pattern_composition");
+    let compiled = compile_ri_file(&fixture_path(), "pattern_composition");
     let template = compiled
         .templates
         .iter()
@@ -183,7 +182,7 @@ fn grid_10x10_compiles() {
 /// arbitrary_pattern, each producing one realization in the compiled output).
 #[test]
 fn composed_patterns_eval() {
-    let compiled = compile_ri_file(FIXTURE_PATH, "pattern_composition");
+    let compiled = compile_ri_file(&fixture_path(), "pattern_composition");
     let template = compiled
         .templates
         .iter()
@@ -199,7 +198,7 @@ fn composed_patterns_eval() {
 /// BooleanFold template has at least one realization with Union operations.
 #[test]
 fn boolean_fold_eval() {
-    let compiled = compile_ri_file(FIXTURE_PATH, "pattern_composition");
+    let compiled = compile_ri_file(&fixture_path(), "pattern_composition");
     let template = compiled
         .templates
         .iter()

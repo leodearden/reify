@@ -26,20 +26,9 @@
 use reify_compiler::CompiledModule;
 use reify_core::{DiagnosticCode, Severity, Type};
 use reify_ir::{CompiledExprKind, Value};
-use reify_test_support::{compile_source_with_stdlib, get_let_expr_in};
+use reify_test_support::{compile_source_with_stdlib, error_codes, get_let_expr_in};
 
 // ── helpers (mirror enum_generic_construction_inference_tests.rs) ──────────
-
-/// Collect the codes of `module`'s Error-severity diagnostics (used to render
-/// a helpful message when a `has_error_code` assertion fails).
-fn error_codes(module: &CompiledModule) -> Vec<Option<DiagnosticCode>> {
-    module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .map(|d| d.code)
-        .collect()
-}
 
 /// True if `module` carries at least one Error-severity diagnostic carrying
 /// `code`.

@@ -63,7 +63,7 @@ const BROKEN: &str = "structure def Broken {
 ";
 
 fn run_reify(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_reify"))
+    Command::new(reify_test_support::test_package::bin_exe("reify"))
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

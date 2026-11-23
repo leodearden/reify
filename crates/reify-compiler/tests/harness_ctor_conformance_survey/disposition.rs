@@ -8,7 +8,7 @@ use crate::survey_site::{
     ARG_PREFIX, CTOR_ARITY_PREFIX, SurveySite, synth_inline_site, synth_site,
 };
 use crate::sweep::{SurveyRun, host_line_of, survey_corpus, survey_inline_corpus};
-use crate::workspace_git::WORKSPACE_ROOT;
+use reify_test_support::workspace_root::workspace_root;
 
 // ─── γ (task #5305): the files γ migrated to ctor-conformance clean ──────────
 
@@ -65,7 +65,7 @@ fn pinned_clean_files_emit_no_ctor_conformance_diagnostic() {
         .iter()
         .map(|p| (*p).to_owned())
         .collect();
-    let run = survey_corpus(std::path::Path::new(WORKSPACE_ROOT), &corpus);
+    let run = survey_corpus(workspace_root(), &corpus);
 
     assert!(
         run.not_surveyed.is_empty(),
@@ -1194,11 +1194,12 @@ fn ctor_conformance_corpus_residual_entries_name_existing_ri_files() {
             "CTOR_CONFORMANCE_CORPUS_RESIDUAL entry '{path}' (param '{param}', owner \
              {owner}) is not a `.ri` path"
         );
-        let full = std::path::Path::new(WORKSPACE_ROOT).join(path);
+        let full = workspace_root().join(path);
         assert!(
             full.exists(),
             "CTOR_CONFORMANCE_CORPUS_RESIDUAL entry '{path}' (param '{param}', owner \
-             {owner}) does not exist under {WORKSPACE_ROOT}"
+             {owner}) does not exist under {root}",
+            root = workspace_root().display()
         );
     }
 }
@@ -1482,11 +1483,12 @@ fn ctor_conformance_rejection_fixtures_name_existing_ri_files() {
             "CTOR_CONFORMANCE_REJECTION_FIXTURES entry '{path}' (param {param:?}) is not a \
              `.ri` path"
         );
-        let full = std::path::Path::new(WORKSPACE_ROOT).join(path);
+        let full = workspace_root().join(path);
         assert!(
             full.exists(),
             "CTOR_CONFORMANCE_REJECTION_FIXTURES entry '{path}' (param {param:?}) does not \
-             exist under {WORKSPACE_ROOT}"
+             exist under {root}",
+            root = workspace_root().display()
         );
     }
 }
@@ -1540,7 +1542,7 @@ fn ctor_conformance_rejection_fixtures_are_disjoint_from_both_waiver_tables() {
 /// `tests/infra/test_prd_gate_struct_ctor_conformance.sh`'s half of the chain.
 #[test]
 fn every_rejection_fixture_is_asserted_by_a_committed_cli_probe() {
-    let probe_set = std::path::Path::new(WORKSPACE_ROOT).join(REJECTION_PROBE_SET_REL);
+    let probe_set = workspace_root().join(REJECTION_PROBE_SET_REL);
     let text = std::fs::read_to_string(&probe_set).unwrap_or_else(|e| {
         panic!(
             "CTOR_CONFORMANCE_REJECTION_FIXTURES is only sound while its probe-set exists: \
@@ -1627,7 +1629,7 @@ fn ctor_conformance_corpus_residual_entries_are_all_live() {
         .map(|(path, _, _, _)| (*path).to_owned())
         .collect();
     corpus.dedup();
-    let run = survey_corpus(std::path::Path::new(WORKSPACE_ROOT), &corpus);
+    let run = survey_corpus(workspace_root(), &corpus);
 
     assert!(
         run.not_surveyed.is_empty(),

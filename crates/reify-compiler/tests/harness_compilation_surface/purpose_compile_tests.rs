@@ -787,8 +787,8 @@ purpose lightweight(subject : Structure) {
 /// m5_purpose.ri still hit the catch-all "member access not yet supported".
 #[test]
 fn m5_purpose_example_compiles_under_stdlib_with_zero_errors() {
-    const M5_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/m5_purpose.ri");
-    let src = std::fs::read_to_string(M5_PATH)
+    let m5_path = reify_test_support::examples_corpus::examples_dir().join("m5_purpose.ri");
+    let src = std::fs::read_to_string(&m5_path)
         .expect("failed to read examples/m5_purpose.ri — check CARGO_MANIFEST_DIR resolution");
 
     let parsed = reify_syntax::parse(&src, ModulePath::single("m5_purpose"));

@@ -2943,10 +2943,7 @@ mod mirror_gate {
     use std::collections::BTreeSet;
 
     /// The stdlib module whose declared names the lineage files must not shadow.
-    const STDLIB_TOLERANCING: &str = include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/stdlib/tolerancing.ri"
-    ));
+    const STDLIB_TOLERANCING: &str = include_str!("../../stdlib/tolerancing.ri");
 
     /// Every template + enum name declared by `source`, compiled as a module named
     /// `module_name`.

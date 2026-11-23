@@ -44,11 +44,9 @@ fn occt_engine() -> reify_eval::Engine {
 }
 
 fn example_source() -> String {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/kinematic/relate_mounted_revolute.ri"
-    );
-    std::fs::read_to_string(path)
+    let path = reify_test_support::examples_corpus::examples_dir()
+        .join("kinematic/relate_mounted_revolute.ri");
+    std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("read relate_mounted_revolute.ri: {e}"))
 }
 
@@ -268,11 +266,8 @@ fn relate_mounted_revolute_fk_poses_at_mount_with_bind_angle() {
 // ── B7 closed-loop (step-7) ────────────────────────────────────────────────
 
 fn fourbar_example_source() -> String {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/kinematic/relate_mounted_fourbar.ri"
-    );
-    std::fs::read_to_string(path)
+    let path = reify_test_support::examples_corpus::examples_dir().join("kinematic/relate_mounted_fourbar.ri");
+    std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("read relate_mounted_fourbar.ri: {e}"))
 }
 

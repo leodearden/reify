@@ -21,8 +21,6 @@
 //! from PATH/disk the test prints a note to stderr and returns without
 //! failing.  The shared helper is `reify_test_support::run_orphan_audit`.
 
-use std::path::Path;
-
 use reify_test_support::run_orphan_audit;
 
 /// How many orphan candidates the live count may drift from the doc's declared
@@ -59,13 +57,7 @@ fn baseline_report_counts_are_fresh() {
         .expect("allowed_count field present in JSON output") as i64;
 
     // --- 2. Resolve the doc path ---
-    // CARGO_MANIFEST_DIR = crates/reify-audit → two .parent() → repo root
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let doc_path = Path::new(manifest_dir)
-        .parent()
-        .expect("crates/reify-audit has a parent (crates/)")
-        .parent()
-        .expect("crates/ has a parent (repo root)")
+    let doc_path = reify_test_support::workspace_root::workspace_root()
         .join("docs/architecture-audit/g-tool-baseline-report.md");
 
     let doc = std::fs::read_to_string(&doc_path).unwrap_or_else(|e| {

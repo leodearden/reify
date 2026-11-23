@@ -25,16 +25,15 @@ use reify_core::{DiagnosticCode, Severity};
 use reify_ir::Satisfaction;
 use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
 
-/// Absolute path to the fixture, resolved at compile time from the crate root.
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/fields/from_samples.ri"
-);
+/// Absolute path to the fixture.
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("fields/from_samples.ri")
+}
 
 /// Read the fixture and compile it with the stdlib, asserting no error
 /// diagnostics.  Returns the compiled program for further use.
 fn compile_from_samples_fixture() -> CompiledModule {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
+    let source = std::fs::read_to_string(example_path())
         .expect("examples/fields/from_samples.ri should exist");
 
     let compiled = parse_and_compile_with_stdlib(&source);

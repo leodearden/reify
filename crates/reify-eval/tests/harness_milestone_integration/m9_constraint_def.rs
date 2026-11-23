@@ -8,11 +8,10 @@ use reify_core::{ModulePath, ValueCellId};
 use reify_ir::Satisfaction;
 use reify_test_support::{check_source, make_simple_engine, parse_and_compile};
 
-/// Absolute path to the example file, resolved at compile time from the crate root.
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/m9_constraint_def.ri"
-);
+/// Absolute path to the example file.
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("m9_constraint_def.ri")
+}
 
 // ── Test 1: file parses without errors ──────────────────────────────────────
 
@@ -20,7 +19,7 @@ const EXAMPLE_PATH: &str = concat!(
 #[test]
 fn constraint_def_ri_parses() {
     let source =
-        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_constraint_def.ri should exist");
+        std::fs::read_to_string(example_path()).expect("examples/m9_constraint_def.ri should exist");
 
     let parsed = reify_syntax::parse(&source, ModulePath::single("test"));
     assert!(
@@ -37,7 +36,7 @@ fn constraint_def_ri_parses() {
 #[test]
 fn constraint_def_ri_compiles_no_errors() {
     let source =
-        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_constraint_def.ri should exist");
+        std::fs::read_to_string(example_path()).expect("examples/m9_constraint_def.ri should exist");
 
     let compiled = parse_and_compile(&source);
 
@@ -54,7 +53,7 @@ fn constraint_def_ri_compiles_no_errors() {
 #[test]
 fn constraint_def_all_constraints_satisfied() {
     let source =
-        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_constraint_def.ri should exist");
+        std::fs::read_to_string(example_path()).expect("examples/m9_constraint_def.ri should exist");
 
     let check_result = check_source(&source);
 
@@ -82,7 +81,7 @@ fn constraint_def_all_constraints_satisfied() {
 #[test]
 fn single_predicate_values() {
     let source =
-        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_constraint_def.ri should exist");
+        std::fs::read_to_string(example_path()).expect("examples/m9_constraint_def.ri should exist");
 
     let check_result = check_source(&source);
 
@@ -133,7 +132,7 @@ fn single_predicate_values() {
 #[test]
 fn multi_param_bounded_values() {
     let source =
-        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_constraint_def.ri should exist");
+        std::fs::read_to_string(example_path()).expect("examples/m9_constraint_def.ri should exist");
 
     let check_result = check_source(&source);
 
@@ -181,7 +180,7 @@ fn multi_param_bounded_values() {
 #[test]
 fn conjunction_predicate_labels() {
     let source =
-        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_constraint_def.ri should exist");
+        std::fs::read_to_string(example_path()).expect("examples/m9_constraint_def.ri should exist");
 
     let compiled = parse_and_compile(&source);
     let mut engine = make_simple_engine();
@@ -219,7 +218,7 @@ fn conjunction_predicate_labels() {
 #[test]
 fn reused_def_both_structures() {
     let source =
-        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_constraint_def.ri should exist");
+        std::fs::read_to_string(example_path()).expect("examples/m9_constraint_def.ri should exist");
 
     let compiled = parse_and_compile(&source);
     let mut engine = make_simple_engine();
@@ -254,7 +253,7 @@ fn reused_def_both_structures() {
 #[test]
 fn named_args_order_independent() {
     let source =
-        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_constraint_def.ri should exist");
+        std::fs::read_to_string(example_path()).expect("examples/m9_constraint_def.ri should exist");
 
     let compiled = parse_and_compile(&source);
     let mut engine = make_simple_engine();
@@ -292,7 +291,7 @@ fn named_args_order_independent() {
 #[test]
 fn total_constraint_count() {
     let source =
-        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_constraint_def.ri should exist");
+        std::fs::read_to_string(example_path()).expect("examples/m9_constraint_def.ri should exist");
 
     let check_result = check_source(&source);
 
@@ -320,7 +319,7 @@ fn total_constraint_count() {
 #[test]
 fn guarded_constraint_inactive() {
     let source =
-        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_constraint_def.ri should exist");
+        std::fs::read_to_string(example_path()).expect("examples/m9_constraint_def.ri should exist");
 
     let compiled = parse_and_compile(&source);
     let mut engine = make_simple_engine();
@@ -354,7 +353,7 @@ fn guarded_constraint_inactive() {
 #[test]
 fn guarded_constraint_active_is_checked_and_satisfied() {
     let source =
-        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_constraint_def.ri should exist");
+        std::fs::read_to_string(example_path()).expect("examples/m9_constraint_def.ri should exist");
 
     let compiled = parse_and_compile(&source);
     let mut engine = make_simple_engine();

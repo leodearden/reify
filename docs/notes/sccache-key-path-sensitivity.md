@@ -14,7 +14,8 @@ The full study (method, per-seat evidence, an independent critique, raw data) is
 
 - the working directory of the compile, unmodified;
 - every `CARGO_*` environment variable except `CARGO_MAKEFLAGS`, `CARGO_REGISTRIES_*` and
-  `CARGO_BUILD_JOBS`;
+  `CARGO_BUILD_JOBS` (the canonical-build-path guard, below, removes `CARGO_INCREMENTAL`, `CARGO_TERM_*`
+  and `CARGO_LOG` before sccache sees them);
 - the value of every environment variable rustc lists in its dep-info output, that is, everything the
   crate reads with `env!` or `option_env!`;
 - the whole contents of every `--extern` rlib or rmeta;
@@ -73,7 +74,22 @@ hashes the member names. Most of the workspace depends on one of those three.
   and writes outputs itself, so it has to run inside the same namespace; servers in different namespaces
   cannot share a local disk cache live, because each only knows the entries present when it started plus
   its own. From the host, a namespaced process's working directory reads as the canonical path, so
-  anything that identifies a lane's processes by path has to change first. Not adopted.
+  anything that identifies a lane's processes by path has to change first.
+
+  The repository now does this. The contract is dark-factory
+  `plans/canonical-build-path-shared-cache-prd.md`; in brief:
+  - `scripts/canon_run.py` and `scripts/canon_cache.py` run a build at the canonical path under the host
+    policy (`shared`, `mixed` or `incremental`). Under `shared` and `mixed` each outermost invocation
+    starts a private sccache server on a unix socket in its build directory, reaching the WebDAV store
+    through a loopback relay, or a local fallback cache when the store is unreachable.
+  - The guard `scripts/canon-bin/guard/sccache` sends `-march`/`-mtune`/`-mcpu=native` and
+    `target-cpu=native` compiles around the cache. It also hides `CARGO_INCREMENTAL`, `CARGO_TERM_*` and
+    `CARGO_LOG` from sccache's key, so registry crates key the same under `shared` and `mixed`. cargo
+    gets the incremental setting from the environment because a `cargo --config` is not forwarded to
+    external subcommands such as nextest.
+  - `CARGO_HOME` is pinned to `/tmp/reify-agent-cargo-home` in every policy.
+  - Every outermost invocation writes a `build_cache` record to `REIFY_VERIFY_EVENT_LOG` (when set) and to
+    `<build dir>/.reify-canon-journal.jsonl`.
 
 ## Soundness
 

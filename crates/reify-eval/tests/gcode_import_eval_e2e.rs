@@ -26,10 +26,9 @@ use reify_test_support::{
 
 // ── Path constant ──────────────────────────────────────────────────────────────
 
-const SMOKE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/trajectory/gcode_import_smoke.ri"
-);
+fn smoke_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("trajectory/gcode_import_smoke.ri")
+}
 
 // ── Cached source + compile helpers ───────────────────────────────────────────
 
@@ -37,8 +36,8 @@ const SMOKE_PATH: &str = concat!(
 fn smoke_source() -> &'static str {
     static S: OnceLock<String> = OnceLock::new();
     S.get_or_init(|| {
-        std::fs::read_to_string(SMOKE_PATH)
-            .unwrap_or_else(|e| panic!("{SMOKE_PATH} should exist: {e}"))
+        std::fs::read_to_string(smoke_path())
+            .unwrap_or_else(|e| panic!("{} should exist: {e}", smoke_path().display()))
     })
     .as_str()
 }

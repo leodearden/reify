@@ -15,12 +15,11 @@
 use reify_compiler::{compile_with_stdlib, parse_with_stdlib};
 use reify_core::{ModulePath, Severity};
 
-/// Path to the integration example, resolved at compile time via
-/// `CARGO_MANIFEST_DIR` so it works in any worktree.
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/numeric_and_range_literals.ri"
-);
+/// Path to the integration example under the running checkout's workspace
+/// root, so it works in any worktree.
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("numeric_and_range_literals.ri")
+}
 
 /// `examples/numeric_and_range_literals.ri` must:
 ///   (a) parse with zero errors, and
@@ -33,7 +32,7 @@ const EXAMPLE_PATH: &str = concat!(
 /// to this one file, while the bulk harness provides breadth coverage.
 #[test]
 fn numeric_and_range_literals_example_parses_and_compiles_with_zero_errors() {
-    let src = std::fs::read_to_string(EXAMPLE_PATH).unwrap_or_else(|e| {
+    let src = std::fs::read_to_string(example_path()).unwrap_or_else(|e| {
         panic!(
             "failed to read examples/numeric_and_range_literals.ri — \
              check that the file exists: {}",

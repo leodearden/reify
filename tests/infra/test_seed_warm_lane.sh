@@ -1923,6 +1923,32 @@ fn plain() {
     assert_eq!(1 + 1, 2);
 }
 RS_EOF
+# comment_only / concat_continuation / trailing_comment pin which lines the
+# relink ERE skips: only a line whose first non-blank characters are `//`
+# (`//`, `///`, `//!`, any indent), which can never bake a path.  A code line
+# is never skipped, even when its macro sits in a trailing comment (fail-safe).
+cat > "$N_LANE/crates/foo/tests/comment_only.rs" <<'RS_EOF'
+//! env!("OUT_DIR")
+// env!("CARGO_MANIFEST_DIR")
+#[test]
+fn comment_only() {
+    /// env!("CARGO_BIN_EXE_my-tool")
+	// env!("CARGO_TARGET_TMPDIR")
+    assert_eq!(1 + 1, 2);
+}
+RS_EOF
+cat > "$N_LANE/crates/foo/tests/concat_continuation.rs" <<'RS_EOF'
+const P: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/x"
+);
+RS_EOF
+cat > "$N_LANE/crates/foo/tests/trailing_comment.rs" <<'RS_EOF'
+#[test]
+fn trailing_comment() {
+    let _ = 1; // env!("CARGO_MANIFEST_DIR")
+}
+RS_EOF
 cat > "$N_LANE/crates/foo/src/lib.rs" <<'RS_EOF'
 pub const MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
 RS_EOF
@@ -1968,6 +1994,21 @@ assert "N4: src/lib.rs mtime == 2020 epoch (src/ pruned -> no lib rlib cascade)"
 # N5: byte content of the relinked file is IDENTICAL (mtime-only touch, git stays clean)
 assert "N5: tests/env_probe.rs byte content unchanged (mtime-only touch)" \
     cmp -s "$N_SNAPSHOT" "$N_LANE/crates/foo/tests/env_probe.rs"
+
+# N10: macros named only on `//`-led lines (any indent, incl. a tab) -> untouched
+N10_MTIME="$(stat -c '%Y' "$N_LANE/crates/foo/tests/comment_only.rs")"
+assert "N10: tests/comment_only.rs mtime == 2020 epoch (\`//\`-led mentions only -> untouched)" \
+    test "$N10_MTIME" -eq "$EPOCH_2020"
+
+# N11: a concat! continuation line that opens with env!( is relinked
+N11_MTIME="$(stat -c '%Y' "$N_LANE/crates/foo/tests/concat_continuation.rs")"
+assert "N11: tests/concat_continuation.rs mtime > 2020 epoch (line-start env!( continuation relinked)" \
+    test "$N11_MTIME" -gt "$EPOCH_2020"
+
+# N12: a code line is never skipped, even when the macro is in its trailing comment
+N12_MTIME="$(stat -c '%Y' "$N_LANE/crates/foo/tests/trailing_comment.rs")"
+assert "N12: tests/trailing_comment.rs mtime > 2020 epoch (code line with trailing comment relinked; fail-safe)" \
+    test "$N12_MTIME" -gt "$EPOCH_2020"
 
 # N: EQUAL fixture — recorded .buildroot content == realpath(consuming lane),
 # so the relink must be SKIPPED (base was already built under this lane's own
@@ -2035,6 +2076,39 @@ assert "N8: absent-buildroot seed exits 0" test "$RC" -eq 0
 N9_MTIME="$(stat -c '%Y' "$N_ABS_LANE/crates/foo/tests/env_probe.rs")"
 assert "N9: tests/env_probe.rs mtime > 2020 epoch (buildroot absent -> fail-safe relink)" \
     test "$N9_MTIME" -gt "$EPOCH_2020"
+
+# N13: the test-path-baked-at-compile-time* rows of
+# tests/infra/adoption-ratchet.manifest count what this relink touches, so each
+# row's ERE must be the seed's _ENV_PATH_MACRO_RE in the ratchet engine's
+# portable dialect, which has no [:class:]: [[:space:]] alone is ' ', and
+# [:space:] inside a bracket is ' '. A macro added to the seed alone would let
+# new bakes of it regrow the relink list with no ratchet red. The rows are read
+# through the engine's own parser.
+N13_SEED_ERE="$(sed -n "s/^ *_ENV_PATH_MACRO_RE='\(.*\)'$/\1/p" "$SCRIPT")"
+N13_WANT="${N13_SEED_ERE//'[[:space:]]'/ }"
+N13_WANT="${N13_WANT//'[:space:]'/ }"
+N13_ROWS_RC=0
+N13_ROWS="$(python3 -B - "$SCRIPT_DIR" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+from adoption_ratchet import DEFAULT_MANIFEST, load_manifest
+for row in load_manifest(DEFAULT_MANIFEST):
+    if row.pattern_id.startswith("test-path-baked-at-compile-time"):
+        print(f"{row.pattern_id}\t{row.pattern.pattern}")
+PY
+)" || N13_ROWS_RC=$?
+assert "N13a: seed's _ENV_PATH_MACRO_RE extracted" test -n "$N13_SEED_ERE"
+assert "N13b: adoption-ratchet manifest parsed (rc=$N13_ROWS_RC)" test "$N13_ROWS_RC" -eq 0
+assert "N13c: adoption-ratchet manifest holds a test-path-baked-at-compile-time row" \
+    test -n "$N13_ROWS"
+while IFS=$'\t' read -r N13_ID N13_ERE; do
+    if [ "$N13_ERE" != "$N13_WANT" ]; then
+        echo "  N13d: row '$N13_ID' ERE:        $N13_ERE"
+        echo "  N13d: seed ERE, portable form: $N13_WANT"
+    fi
+    assert "N13d: adoption-ratchet row '$N13_ID' restates the seed's relink ERE" \
+        test "$N13_ERE" = "$N13_WANT"
+done <<< "$N13_ROWS"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block O — base-absent vs reflink-unsupported discrimination (task 4989,

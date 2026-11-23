@@ -32,6 +32,7 @@ pub mod stdlib_prelude;
 pub mod stl_bytes;
 pub mod temp_dirs;
 pub mod tensegrity_fixtures;
+pub mod test_package;
 pub mod tolerance_fixtures;
 pub mod tracing_hygiene;
 pub mod tracing_support;
@@ -54,6 +55,7 @@ pub mod workspace_sweep;
 // - `selector_fixtures`
 // - `stdlib_prelude`
 // - `stl_bytes`
+// - `test_package`
 // - `workspace_root`
 pub use builders::*;
 pub use ctor_conformance::*;

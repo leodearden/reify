@@ -143,7 +143,7 @@
 //! jcodemunch infra tests confirm the boundary: `test_jcodemunch_index_reify.sh`
 //! and `test_with_jcodemunch_serve.sh` are both `pool` and both deliberately
 //! hermetic. Two further reasons: the capstone must invoke the `reify-audit`
-//! BINARY, which `env!("CARGO_BIN_EXE_reify-audit")` hands a cargo test for
+//! BINARY, which `CARGO_BIN_EXE_reify-audit` hands a cargo test for
 //! free and a shell test would have to build itself; and
 //! `jcodemunch_session_live.rs` (#6106) already established the
 //! `#[ignore]` + hard-fail live-test pattern in this same crate.
@@ -237,8 +237,8 @@ mod task_json;
 ///
 /// An exit code of `None` means the binary was killed by a signal.
 fn run_reify_audit(args: &[&str]) -> (Option<i32>, Vec<serde_json::Value>, String) {
-    let bin = env!("CARGO_BIN_EXE_reify-audit");
-    let out = std::process::Command::new(bin)
+    let bin = reify_test_support::test_package::bin_exe("reify-audit");
+    let out = std::process::Command::new(&bin)
         .args(args)
         .output()
         .unwrap_or_else(|e| panic!("failed to invoke reify-audit: {e}"));
@@ -339,15 +339,13 @@ fn write_synthetic_done_task(
 /// β, the SINGLE `watch --once` index primitive
 /// (`scripts/jcodemunch-index-reify.sh`, task 6107).
 ///
-/// Resolved from `CARGO_MANIFEST_DIR` (`crates/reify-audit` → two parents →
-/// repo root) so the capstone finds β from whatever checkout it was compiled
-/// in. `the_index_script_this_capstone_names_actually_exists` asserts this
-/// path resolves — the antidote to `L-SMOKE` naming a script that never
-/// existed (PRD §2.4).
-const JC_INDEX_SCRIPT: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../scripts/jcodemunch-index-reify.sh"
-);
+/// Resolved under the running checkout's workspace root.
+/// `the_index_script_this_capstone_names_actually_exists` asserts this path
+/// resolves — the antidote to `L-SMOKE` naming a script that never existed
+/// (PRD §2.4).
+fn jc_index_script() -> std::path::PathBuf {
+    reify_test_support::workspace_root::workspace_root().join("scripts/jcodemunch-index-reify.sh")
+}
 
 /// Folder-file cap handed to β for the throwaway corpus.
 ///
@@ -388,7 +386,7 @@ fn index_pass_command(
     index_dir: &std::path::Path,
 ) -> std::process::Command {
     let mut cmd = std::process::Command::new("bash");
-    cmd.arg(JC_INDEX_SCRIPT)
+    cmd.arg(jc_index_script())
         .arg("--project-root")
         .arg(corpus)
         .env("CODE_INDEX_PATH", index_dir)
@@ -410,7 +408,7 @@ fn index_pass_command(
 fn run_index_pass(corpus: &std::path::Path, index_dir: &std::path::Path) -> String {
     let out = index_pass_command(corpus, index_dir)
         .output()
-        .unwrap_or_else(|e| panic!("failed to invoke {JC_INDEX_SCRIPT}: {e}"));
+        .unwrap_or_else(|e| panic!("failed to invoke {}: {e}", jc_index_script().display()));
 
     let combined = format!(
         "--- stdout ---\n{}--- stderr ---\n{}",
@@ -1479,12 +1477,13 @@ mod index_invocation {
     /// capstone.
     #[test]
     fn the_index_script_this_capstone_names_actually_exists() {
-        let script = std::path::Path::new(JC_INDEX_SCRIPT);
+        let script = jc_index_script();
         assert!(
             script.is_file(),
-            "{JC_INDEX_SCRIPT} does not exist. This capstone consumes β's index \
+            "{} does not exist. This capstone consumes β's index \
              primitive and its INDEX-OK / E_JC_INDEX_* verdict; if β moved, \
-             repoint JC_INDEX_SCRIPT — do not re-derive the verdict here."
+             repoint jc_index_script() — do not re-derive the verdict here.",
+            script.display()
         );
     }
 

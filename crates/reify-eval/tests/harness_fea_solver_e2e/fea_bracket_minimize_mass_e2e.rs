@@ -84,12 +84,11 @@ use reify_core::{ConstraintNodeId, ValueCellId};
 use reify_ir::Satisfaction;
 use reify_test_support::{collect_errors, compile_source_with_stdlib, scalar_si};
 
-/// The shipped example under test, resolved from `CARGO_MANIFEST_DIR` so it works
-/// in any worktree.
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/fea_bracket_minimize_mass.ri"
-);
+/// The shipped example under test, resolved at run time so it works in any
+/// worktree.
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("fea_bracket_minimize_mass.ri")
+}
 
 const TEMPLATE_NAME: &str = "FeaBracketMinimizeMass";
 
@@ -109,7 +108,7 @@ const STEEL_DENSITY_SI: f64 = 7850.0;
 
 #[test]
 fn fea_bracket_minimize_mass_example_converges_to_an_interior_thickness() {
-    let src = std::fs::read_to_string(EXAMPLE_PATH)
+    let src = std::fs::read_to_string(example_path())
         .expect("failed to read examples/fea_bracket_minimize_mass.ri");
 
     // ── (a) Cheap precondition: the example compiles clean ───────────────────

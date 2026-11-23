@@ -40,7 +40,7 @@
 # Keystone for H2 (reads intra-run-serial), H3/H9 (read host-exclusive), and
 # H5-H7 (reclassify entries as they rescue/split host-exclusive files).
 
-# --- intra-run-serial (9) ----------------------------------------------------
+# --- intra-run-serial (10) ---------------------------------------------------
 # test_reify_audit_pdiag.sh (task #5405) drives `reify_audit_guard ...
 # rebuild-budget-safe`, which forks `cargo build --release -p reify-audit` on a
 # stale binary and so mutates the lane-shared CoW target/ — the identical reason
@@ -70,6 +70,10 @@ test_live_refs_namespace.sh intra-run-serial
 # test_canon_run_host.sh (task #10229) enters mount namespaces with /usr/bin/bwrap
 # and compiles a scratch crate; PRD §6 classifies such members intra-run-serial.
 test_canon_run_host.sh intra-run-serial
+# test_canon_cache_host.sh (task #10232) enters mount namespaces with /usr/bin/bwrap,
+# runs real sccache servers and a private rclone store, and compiles scratch
+# workspaces at a per-test CANON; PRD §6 classifies such members intra-run-serial.
+test_canon_cache_host.sh intra-run-serial
 
 # --- host-exclusive (5) ------------------------------------------------------
 # test_bundle_clean_install.sh (task #9732) is default-SKIPPING: armed only by
@@ -100,6 +104,7 @@ test_amendment_rounds_default_restored.sh pool
 test_audit_orphan_producers.sh pool
 test_await_merge_landing.sh pool
 test_bundle_closure.sh pool
+test_canon_cache_units.sh pool
 test_canon_run_units.sh pool
 test_cargo_incremental_lane_decision.sh pool
 test_cargo_inputs_lib.sh pool

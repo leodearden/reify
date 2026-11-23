@@ -951,10 +951,10 @@ fn prd_gate_damped_material_fixtures_compile_clean() {
     // re-derives the coupled set, so this spelling is what makes the two
     // fixtures visible to the drift guard at all.
     for rel in [
-        "../../tests/prd-gate/fixtures/damped_material_mixin_conformance.ri",
-        "../../tests/prd-gate/fixtures/damped_material_preset_conformance.ri",
+        "tests/prd-gate/fixtures/damped_material_mixin_conformance.ri",
+        "tests/prd-gate/fixtures/damped_material_preset_conformance.ri",
     ] {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
+        let path = reify_test_support::workspace_root::workspace_root().join(rel);
         let src = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("failed to read fixture {}: {}", path.display(), e));
 

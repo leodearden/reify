@@ -6,20 +6,27 @@
 //! hand-built prelude. The hand-built `PreludeContext` seed is the subject of
 //! `cross_module_alias_propagation_tests.rs`.
 //!
-//! The rule under test: an imported pub PARAMETRIC alias resolves the alias
-//! names its body mentions in the module that defined it, so an importer's own
-//! alias of the same name cannot change its meaning, and a name the defining
-//! module itself imported still resolves.
+//! The rule under test: an imported pub alias whose body is read at a use site
+//! resolves the alias names its body mentions in the module that defined it.
+//! That is a PARAMETRIC alias (#10297), or a plain one the defining module
+//! left unresolved, typically because its body names an entity (#10354). An
+//! importer's own alias of the same name therefore cannot change its meaning,
+//! and a name the defining module itself imported still resolves. Entity names
+//! in the body still resolve at the use site.
+//!
+//! An alias is identified by its scope and its name, so an importer alias and
+//! a defining-module alias that share a name are distinct: a chain running
+//! through both is not a cycle, while a genuine cycle still terminates.
 
 use std::fs;
 use std::path::Path;
 
-use reify_compiler::CompiledModule;
 use reify_compiler::cfg::CfgSet;
 use reify_compiler::module_dag::ModuleResolver;
 use reify_compiler::program::{CompiledProgram, compile_program};
+use reify_compiler::{CompiledModule, RequirementKind};
 use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, Severity, Type};
-use reify_ir::Satisfaction;
+use reify_ir::{Satisfaction, VariantPayload};
 use reify_test_support::mocks::MockConstraintChecker;
 
 fn write(dir: &Path, name: &str, source: &str) {
@@ -220,7 +227,8 @@ structure def App {{\n\
 /// An imported parametric body's ENTITY name is not an alias where the body is
 /// defined, so an importer's alias of that name is not consulted either:
 /// `O10<Real>` means the same with or without the importer's `type E10 = Length`.
-/// The non-parametric counterpart is still captured by such an alias (#10354).
+/// The non-parametric counterpart holds too (#10354), pinned by
+/// `importer_local_alias_named_like_an_imported_plain_alias_body_entity_is_not_consulted`.
 #[test]
 fn importer_local_alias_named_like_an_imported_parametric_body_entity_is_not_consulted() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -252,6 +260,315 @@ fn importer_local_alias_named_like_an_imported_parametric_body_entity_is_not_con
     assert_eq!(cell_type(shadowed.entry(), "App", "m"), meant);
 }
 
+fn plain_entity_importer8(stem: &str, local_alias: &str) -> String {
+    format!(
+        "module {stem}\n\
+import prod8\n\
+{local_alias}\n\
+structure def App {{\n\
+\x20   param m : F8\n\
+}}\n"
+    )
+}
+
+/// The non-parametric counterpart: `F8` names prod8's enum `E8`, and an
+/// importer's `type E8 = Length` does not turn it into a Length.
+#[test]
+fn importer_local_alias_named_like_an_imported_plain_alias_body_entity_is_not_consulted() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(
+        dir.path(),
+        "prod8.ri",
+        "module prod8\npub enum E8 { A, B }\npub type F8 = E8\n",
+    );
+
+    let plain = compile(dir.path(), "imp8a", &plain_entity_importer8("imp8a", ""));
+    assert!(
+        errors(plain.entry()).is_empty(),
+        "got {:?}",
+        errors(plain.entry())
+    );
+    let meant = cell_type(plain.entry(), "App", "m");
+    assert!(!meant.is_error(), "`F8` must resolve; got {meant:?}");
+
+    let shadowed = compile(
+        dir.path(),
+        "imp8b",
+        &plain_entity_importer8("imp8b", "type E8 = Length"),
+    );
+    assert!(
+        errors(shadowed.entry()).is_empty(),
+        "got {:?}",
+        errors(shadowed.entry())
+    );
+    assert_eq!(cell_type(shadowed.entry(), "App", "m"), meant);
+}
+
+const PROD8_MIXED: &str = "module prod8\n\
+pub enum E8 { A, B }\n\
+type In8 = Length\n\
+pub type F8 = Map<In8, E8>\n";
+
+fn mixed_importer8(stem: &str, local_alias: &str) -> String {
+    format!(
+        "module {stem}\n\
+import prod8\n\
+{local_alias}\n\
+structure def App {{\n\
+\x20   param m : F8\n\
+\x20   param d : Map<Length, E8>\n\
+}}\n"
+    )
+}
+
+/// A plain pub alias whose body names both an entity and a non-pub alias is
+/// accepted where it is defined, and in every importer its alias name `In8`
+/// is prod8's `Length`, whatever the importer calls `In8`.
+#[test]
+fn imported_plain_alias_body_binds_its_defining_modules_alias_names() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(dir.path(), "prod8.ri", PROD8_MIXED);
+
+    let defining = compile(dir.path(), "prod8", PROD8_MIXED);
+    assert!(
+        errors(defining.entry()).is_empty(),
+        "a pub plain alias may name a non-pub alias; got {:?}",
+        errors(defining.entry())
+    );
+
+    for (stem, local_alias) in [("imp8m", ""), ("imp8n", "type In8 = Time")] {
+        let program = compile(dir.path(), stem, &mixed_importer8(stem, local_alias));
+        let entry = program.entry();
+        assert!(
+            errors(entry).is_empty(),
+            "with `{local_alias}`: got {:?}",
+            errors(entry)
+        );
+        let aliased = cell_type(entry, "App", "m");
+        assert!(
+            !aliased.is_error(),
+            "with `{local_alias}`: `F8` must resolve; got {aliased:?}"
+        );
+        assert_eq!(
+            aliased,
+            cell_type(entry, "App", "d"),
+            "with `{local_alias}`: `F8` must mean prod8's `Map<Length, E8>`"
+        );
+    }
+}
+
+const PROD11: &str = "module prod11\n\
+pub enum E11 { A, B }\n\
+type Inner11 = E11\n\
+pub type Outer11 = Inner11\n";
+
+/// The importer's `Inner11` and prod11's `Inner11` are different aliases, so
+/// resolving the first through `Outer11` into the second is not a cycle.
+#[test]
+fn imported_plain_alias_chain_through_a_same_named_importer_alias_is_not_a_cycle() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(dir.path(), "prod11.ri", PROD11);
+
+    let program = compile(
+        dir.path(),
+        "imp11",
+        "module imp11\n\
+import prod11\n\
+type Inner11 = Outer11\n\
+structure def App {\n\
+\x20   param m : Inner11\n\
+\x20   param d : E11\n\
+}\n",
+    );
+    let entry = program.entry();
+    assert!(errors(entry).is_empty(), "got {:?}", errors(entry));
+    let direct = cell_type(entry, "App", "d");
+    assert!(!direct.is_error(), "`E11` must resolve; got {direct:?}");
+    assert_eq!(cell_type(entry, "App", "m"), direct);
+}
+
+/// Circular imported plain aliases still end, and using one still reports it.
+#[test]
+fn imported_circular_plain_aliases_still_terminate() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(
+        dir.path(),
+        "cyc.ri",
+        "module cyc\npub type Cy1 = Cy2\npub type Cy2 = Cy1\n",
+    );
+
+    let program = compile(
+        dir.path(),
+        "impcyc",
+        "module impcyc\nimport cyc\nstructure def App {\n    param p : Cy1\n}\n",
+    );
+    assert!(
+        errors(program.entry())
+            .iter()
+            .any(|d| d.message.contains("Cy1")),
+        "got {:?}",
+        program.entry().diagnostics
+    );
+}
+
+/// An imported alias naming itself twice still ends, and using it still reports it.
+#[test]
+fn imported_circular_alias_naming_itself_twice_still_terminates() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(
+        dir.path(),
+        "cyc2.ri",
+        "module cyc2\n\
+pub structure def S2<A, B> {\n\
+\x20   param k : Length\n\
+}\n\
+pub type C2x = S2<C2x, C2x>\n",
+    );
+
+    let program = compile(
+        dir.path(),
+        "impcyc2",
+        "module impcyc2\nimport cyc2\nstructure def App {\n    param p : C2x\n}\n",
+    );
+    assert!(
+        errors(program.entry())
+            .iter()
+            .any(|d| d.message.contains("C2x")),
+        "got {:?}",
+        program.entry().diagnostics
+    );
+}
+
+/// A declared-type position whose enum namespace is private to it, so an
+/// alias reaches the enum there only by walking the alias chain to its name.
+#[derive(Clone, Copy, Debug)]
+enum PrivateEnumPosition {
+    TraitMemberParam,
+    EnumVariantPayload,
+}
+
+impl PrivateEnumPosition {
+    fn declaration(self, ty: &str) -> String {
+        match self {
+            Self::TraitMemberParam => format!("trait Tq {{\n    param g : {ty}\n}}\n"),
+            Self::EnumVariantPayload => format!("enum Wrap {{\n    W {{ v : {ty} }},\n    N\n}}\n"),
+        }
+    }
+
+    fn stored_type(self, module: &CompiledModule) -> Type {
+        match self {
+            Self::TraitMemberParam => trait_member_type(module, "Tq", "g"),
+            Self::EnumVariantPayload => variant_field_type(module, "Wrap", "W", "v"),
+        }
+    }
+}
+
+fn trait_member_type(module: &CompiledModule, trait_name: &str, member: &str) -> Type {
+    let requirement = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == trait_name)
+        .unwrap_or_else(|| panic!("trait `{trait_name}` not found"))
+        .required_members
+        .iter()
+        .find(|m| m.name == member)
+        .unwrap_or_else(|| panic!("trait member `{trait_name}.{member}` not found"));
+    match &requirement.kind {
+        RequirementKind::Param(ty) => ty.clone(),
+        other => panic!("`{trait_name}.{member}` is not a param requirement: {other:?}"),
+    }
+}
+
+fn variant_field_type(
+    module: &CompiledModule,
+    enum_name: &str,
+    variant: &str,
+    field: &str,
+) -> Type {
+    let payload = &module
+        .enum_defs
+        .iter()
+        .find(|e| e.name == enum_name)
+        .unwrap_or_else(|| panic!("enum `{enum_name}` not found"))
+        .variants
+        .iter()
+        .find(|v| v.name == variant)
+        .unwrap_or_else(|| panic!("variant `{enum_name}.{variant}` not found"))
+        .payload;
+    let VariantPayload::Named(fields) = payload else {
+        panic!("`{enum_name}.{variant}` has no named payload");
+    };
+    fields
+        .iter()
+        .find(|(name, _)| name == field)
+        .map(|(_, ty)| ty.clone())
+        .unwrap_or_else(|| panic!("field `{enum_name}.{variant}.{field}` not found"))
+}
+
+const PROD12: &str = "module prod12\n\
+pub enum E12 { A, B }\n\
+type Mid12 = E12\n\
+pub type F12 = Mid12\n";
+
+/// An imported alias chain reaches the same enum as the direct spelling in the
+/// positions with a private enum namespace: each hop resolves in the scope
+/// that defined the alias it leaves, whatever the importer calls `Mid12`, and
+/// a same-named importer alias on the way is not a cycle.
+#[test]
+fn imported_plain_alias_chain_resolves_in_private_enum_namespace_positions() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(dir.path(), "prod11.ri", PROD11);
+    write(dir.path(), "prod12.ri", PROD12);
+
+    let rows = [
+        ("prod12", "", "E12", "F12"),
+        ("prod12", "type Mid12 = Length", "E12", "F12"),
+        ("prod11", "type Inner11 = Outer11", "E11", "Inner11"),
+    ];
+    let positions = [
+        PrivateEnumPosition::TraitMemberParam,
+        PrivateEnumPosition::EnumVariantPayload,
+    ];
+
+    let mut compiles = 0;
+    let mut compile_at =
+        |producer: &str, preamble: &str, position: PrivateEnumPosition, ty: &str| {
+            compiles += 1;
+            let stem = format!("imppos{compiles}");
+            let source = format!(
+                "module {stem}\nimport {producer}\n{preamble}\n{}",
+                position.declaration(ty)
+            );
+            let program = compile(dir.path(), &stem, &source);
+            let entry = program.entry();
+            let messages: Vec<String> = errors(entry).iter().map(|d| d.message.clone()).collect();
+            (position.stored_type(entry), messages)
+        };
+
+    let mut failures = Vec::new();
+    for (producer, preamble, direct, alias) in rows {
+        for position in positions {
+            let label = format!("{position:?}, import {producer}, `{preamble}`");
+            let (direct_ty, direct_errors) = compile_at(producer, preamble, position, direct);
+            assert!(
+                direct_errors.is_empty() && !direct_ty.is_error(),
+                "[{label}] the direct `{direct}` must be clean and resolve for the \
+                 comparison to mean anything; got {direct_ty:?}, {direct_errors:?}"
+            );
+            let (alias_ty, alias_errors) = compile_at(producer, preamble, position, alias);
+            if !alias_errors.is_empty() {
+                failures.push(format!("[{label}] `{alias}` errors: {alias_errors:?}"));
+            }
+            if alias_ty != direct_ty {
+                failures.push(format!(
+                    "[{label}] `{alias}` stored {alias_ty:?}, `{direct}` stored {direct_ty:?}"
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "\n  {}", failures.join("\n  "));
+}
+
 const PROD2: &str = "module prod2\n\
 type InnerZz = Force / Length\n\
 type HiddenZz = Length\n\
@@ -259,8 +576,8 @@ pub type OuterZz = InnerZz / Time\n";
 
 /// A plain (non-parametric) pub alias whose body names no entity is resolved
 /// where it is defined, so an importer's local `InnerZz` does not touch it.
-/// One whose body names an entity resolves at each use site instead, and an
-/// importer's alias can still capture it (#10354).
+/// One whose body names an entity resolves at each use site, but its alias
+/// names still bind where it is defined (#10354).
 #[test]
 fn plain_pub_alias_is_immune_to_an_importer_local_of_the_same_name() {
     let dir = tempfile::tempdir().expect("tempdir");

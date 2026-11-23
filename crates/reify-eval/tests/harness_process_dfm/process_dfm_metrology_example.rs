@@ -52,12 +52,9 @@ fn make_occt_engine() -> reify_eval::Engine {
 }
 
 fn load_and_compile_example() -> reify_compiler::CompiledModule {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/process/std_process_dfm_metrology.ri"
-    );
-    let source = std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("failed to read example file {path}: {e}"));
+    let path = reify_test_support::examples_corpus::examples_dir().join("process/std_process_dfm_metrology.ri");
+    let source = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read example file {}: {e}", path.display()));
     reify_test_support::parse_and_compile_with_stdlib(&source)
 }
 

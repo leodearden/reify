@@ -25,13 +25,12 @@ use reify_core::{DimensionVector, ModulePath, Severity, Type};
 
 // ─── Helper: load + compile the example ──────────────────────────────────────
 
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/surface_finish_cost.ri"
-);
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("surface_finish_cost.ri")
+}
 
 fn load_surface_finish_cost_example() -> reify_compiler::CompiledModule {
-    let src = std::fs::read_to_string(EXAMPLE_PATH).expect(
+    let src = std::fs::read_to_string(example_path()).expect(
         "failed to read examples/surface_finish_cost.ri — check CARGO_MANIFEST_DIR resolution",
     );
 

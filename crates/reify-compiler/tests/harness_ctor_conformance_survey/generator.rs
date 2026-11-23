@@ -12,7 +12,8 @@ use crate::disposition::{Disposition, assert_no_unwaived_ctor_conformance_sites}
 use crate::render::{REGEN_COMMAND, parse_stamped_base_commit, render_survey};
 use crate::stamp::{FULL_SHA_LEN, survey_stamp};
 use crate::sweep::{survey_corpus, survey_inline_corpus};
-use crate::workspace_git::{WORKSPACE_ROOT, git_is_available, git_read, git_succeeds};
+use crate::workspace_git::{git_is_available, git_read, git_succeeds};
+use reify_test_support::workspace_root::workspace_root;
 
 // ─── step 13/14: output path + the generator entry point ─────────────────────
 
@@ -31,7 +32,7 @@ const ARTIFACT_REL: &str = "docs/prds/struct-ctor-field-type-conformance.survey.
 fn survey_output_path_for(override_value: Option<String>) -> PathBuf {
     match override_value {
         Some(v) if !v.trim().is_empty() => PathBuf::from(v),
-        _ => PathBuf::from(WORKSPACE_ROOT).join(ARTIFACT_REL),
+        _ => workspace_root().join(ARTIFACT_REL),
     }
 }
 
@@ -67,7 +68,7 @@ fn survey_output_path() -> PathBuf {
 #[test]
 #[ignore = "corpus survey generator over BOTH halves — every tracked .ri (~700 files) plus the Reify snippets embedded in every tracked .rs under crates/ (~1,870 files, ~3,300 admitted snippets), so several times the cost of the .ri walk alone; run explicitly with --ignored — see docs/prds/struct-ctor-field-type-conformance.survey.md"]
 fn generate_ctor_conformance_corpus_survey() {
-    let root = std::path::Path::new(WORKSPACE_ROOT);
+    let root = workspace_root();
     let corpus = tracked_ri_corpus();
     let hosts = tracked_rust_hosts();
 
@@ -129,7 +130,7 @@ fn survey_output_path_defaults_to_the_committed_artifact_location() {
     // gate-resident test that reads it reds for an operator doing exactly what
     // the artifact documents — no defect, pure false alarm.
     let path = survey_output_path_for(None);
-    let expected = std::path::Path::new(WORKSPACE_ROOT)
+    let expected = workspace_root()
         .join("docs/prds/struct-ctor-field-type-conformance.survey.md");
     assert_eq!(
         path, expected,
@@ -156,7 +157,7 @@ fn survey_output_path_honours_the_scratch_override() {
     // Both fallbacks are compared against the DEFAULT PATH ITSELF rather than
     // against `survey_output_path()`, so nothing here depends on the ambient
     // value of `REIFY_CTOR_SURVEY_OUT`.
-    let default_path = std::path::Path::new(WORKSPACE_ROOT).join(ARTIFACT_REL);
+    let default_path = workspace_root().join(ARTIFACT_REL);
     assert_eq!(
         survey_output_path_for(None),
         default_path,
@@ -214,7 +215,7 @@ fn survey_output_path_honours_the_scratch_override() {
 /// deleting a consumed census is its documented end of life, not a defect.
 #[test]
 fn committed_survey_renders_the_current_disposition_vocabulary() {
-    let artifact = std::path::Path::new(WORKSPACE_ROOT).join(ARTIFACT_REL);
+    let artifact = workspace_root().join(ARTIFACT_REL);
     if !artifact.is_file() {
         println!(
             "skipped: {ARTIFACT_REL} is not present — the survey snapshot has been \
@@ -277,7 +278,7 @@ fn committed_survey_stamps_a_commit_that_is_an_ancestor_of_head() {
     // What is NOT relaxed: if the file IS present, every assertion below is
     // hard. An artifact that exists while naming an unresolvable or orphaned
     // anchor is a real defect, and that is the case this guard was written for.
-    let artifact = std::path::Path::new(WORKSPACE_ROOT).join(ARTIFACT_REL);
+    let artifact = workspace_root().join(ARTIFACT_REL);
     if !artifact.is_file() {
         println!(
             "skipped: {ARTIFACT_REL} is not present — the survey snapshot has been \

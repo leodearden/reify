@@ -33,14 +33,14 @@ use reify_test_support::{MockGeometryKernel, collect_errors, compile_source_with
 /// The ε edit-path premise fixture: param-augmented sibling of the α/δ
 /// premise fixture `geometry_let_selector_consumer.ri`. See its header for
 /// the full rationale.
-const EDIT_FIXTURE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../tests/prd-gate/fixtures/geometry_let_selector_consumer_edit.ri"
-);
+fn edit_fixture_path() -> std::path::PathBuf {
+    reify_test_support::workspace_root::workspace_root()
+        .join("tests/prd-gate/fixtures/geometry_let_selector_consumer_edit.ri")
+}
 
 fn read_edit_fixture() -> String {
-    std::fs::read_to_string(EDIT_FIXTURE_PATH)
-        .unwrap_or_else(|e| panic!("reading {EDIT_FIXTURE_PATH}: {e}"))
+    std::fs::read_to_string(edit_fixture_path())
+        .unwrap_or_else(|e| panic!("reading {}: {e}", edit_fixture_path().display()))
 }
 
 /// Deliverable 2 + deliverable 1 core: an `edit_param` upstream of a

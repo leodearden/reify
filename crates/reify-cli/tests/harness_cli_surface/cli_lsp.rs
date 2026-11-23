@@ -7,7 +7,7 @@ fn lsp_command_is_recognized() {
     // compiles and the command is recognized by looking for the absence
     // of "Unknown command" in stderr.
     // We use a timeout approach: send nothing to stdin and check the exit.
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+    let output = Command::new(reify_test_support::test_package::bin_exe("reify"))
         .args(["lsp"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -25,7 +25,7 @@ fn lsp_command_is_recognized() {
 #[test]
 fn help_text_includes_lsp() {
     // Run with no args to get help text
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+    let output = Command::new(reify_test_support::test_package::bin_exe("reify"))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

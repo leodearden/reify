@@ -23,16 +23,16 @@ use reify_core::Severity;
 use reify_ir::Satisfaction;
 use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
 
-/// Absolute path to the fixture, resolved at compile time from the crate root.
-const FIXTURE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/fields/pointwise_field_combinators.ri"
-);
+/// Absolute path to the fixture.
+fn fixture_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir()
+        .join("fields/pointwise_field_combinators.ri")
+}
 
 /// Read the fixture and compile it with the stdlib, asserting no error
 /// diagnostics.  Returns the compiled program for further use.
 fn compile_pointwise_fixture() -> CompiledModule {
-    let source = std::fs::read_to_string(FIXTURE_PATH)
+    let source = std::fs::read_to_string(fixture_path())
         .expect("examples/fields/pointwise_field_combinators.ri should exist");
 
     let compiled = parse_and_compile_with_stdlib(&source);

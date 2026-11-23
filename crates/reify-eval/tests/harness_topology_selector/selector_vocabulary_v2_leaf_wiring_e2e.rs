@@ -33,10 +33,9 @@ use reify_ir::value::{GeometryHandleRef, LeafQuery, SelectorValue};
 use reify_ir::{EdgeCurveKind, ExportFormat, FaceSurfaceKind, GeometryOp, Value};
 use reify_test_support::{assert_selector_leaf, errors_only, parse_and_compile_with_stdlib};
 
-const FIXTURE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/selectors/selector_vocabulary_v2_leaves.ri"
-);
+fn fixture_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("selectors/selector_vocabulary_v2_leaves.ri")
+}
 
 /// 10×10×10 mm box, expressed in SI metres at the kernel boundary
 /// (matches `selector_vocabulary_v2_e2e.rs`).
@@ -59,7 +58,7 @@ const STRUCT: &str = "SelectorVocabularyV2Leaves";
 #[test]
 fn selector_vocabulary_v2_leaves_compile_and_mint_typed_selectors() {
     // ── Layer 1: fixture exists and compiles cleanly (unconditional) ──────────
-    let source = std::fs::read_to_string(FIXTURE_PATH)
+    let source = std::fs::read_to_string(fixture_path())
         .expect("examples/selectors/selector_vocabulary_v2_leaves.ri should exist (task 3523)");
     let compiled = parse_and_compile_with_stdlib(&source);
     assert!(

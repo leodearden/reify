@@ -14,7 +14,7 @@
 //!   whole workspace and blocks on the global cargo build-lock per invocation —
 //!   the documented cause of esc-4340-32 (exit 124).
 //!
-//! `env!("CARGO_BIN_EXE_reify")` fixes both at once: cargo builds this package's
+//! `CARGO_BIN_EXE_reify` fixes both at once: cargo builds this package's
 //! `[[bin]]` before its integration tests run, so the binary is fresh by
 //! construction with no per-invocation cargo overhead.
 //!

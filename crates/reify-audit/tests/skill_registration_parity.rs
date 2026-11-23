@@ -9,10 +9,10 @@ use reify_audit::{Pattern, pattern_flag};
 use serde::Deserialize;
 use serde::de::{self, Visitor};
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 fn skill_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.claude/skills/audit")
+    reify_test_support::workspace_root::workspace_root().join(".claude/skills/audit")
 }
 
 enum Scope {

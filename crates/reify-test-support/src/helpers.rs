@@ -429,6 +429,11 @@ pub fn errors_only(module: &reify_compiler::CompiledModule) -> Vec<&Diagnostic> 
     collect_errors(&module.diagnostics)
 }
 
+/// The codes of the module's `Severity::Error` diagnostics, in order.
+pub fn error_codes(module: &reify_compiler::CompiledModule) -> Vec<Option<DiagnosticCode>> {
+    errors_only(module).iter().map(|d| d.code).collect()
+}
+
 /// Return only the `Severity::Warning` diagnostics from a compiled module.
 pub fn warnings_only(module: &reify_compiler::CompiledModule) -> Vec<&Diagnostic> {
     module
@@ -1877,6 +1882,29 @@ mod tests {
         assert!(
             !errors.is_empty(),
             "errors_only should return error diagnostics for invalid source"
+        );
+    }
+
+    #[test]
+    fn error_codes_returns_only_error_codes() {
+        let source = r#"structure Mixed {
+            let x = unknown_variable
+            let y = nosuch_fn(1.0)
+        }"#;
+        let compiled = super::compile_source(source);
+        assert!(
+            compiled
+                .diagnostics
+                .iter()
+                .any(|d| d.severity == Severity::Warning
+                    && d.code == Some(DiagnosticCode::UnresolvedFunction)),
+            "precondition: the fixture must draw an UnresolvedFunction warning so the \
+             severity filter is exercised; got {:?}",
+            compiled.diagnostics
+        );
+        assert_eq!(
+            super::error_codes(&compiled),
+            vec![Some(DiagnosticCode::UnresolvedName)]
         );
     }
 

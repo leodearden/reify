@@ -53,13 +53,9 @@ use std::path::{Path, PathBuf};
 /// from the scan, and the home of the probe that keeps that exclusion honest.
 const SPEC_CONFORMANCE_FIXTURES: &str = "crates/reify-spec-conformance/fixtures";
 
-/// Resolve the workspace root from CARGO_MANIFEST_DIR.
-///
-/// `reify-cli` lives at `<root>/crates/reify-cli`, so the workspace root is
-/// two levels up.
+/// The running checkout's workspace root, canonicalized.
 fn workspace_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
+    reify_test_support::workspace_root::workspace_root()
         .canonicalize()
         .expect("workspace root must be accessible")
 }

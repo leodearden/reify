@@ -28,7 +28,9 @@ use reify_test_support::{assert_no_eval_errors, make_engine, parse_and_compile_w
 
 // ── Path constant ─────────────────────────────────────────────────────────────
 
-const EXAMPLE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/kleene_e2e.ri");
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("kleene_e2e.ri")
+}
 
 // ── Cached helpers ────────────────────────────────────────────────────────────
 
@@ -36,8 +38,8 @@ const EXAMPLE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/
 fn source() -> &'static str {
     static S: OnceLock<String> = OnceLock::new();
     S.get_or_init(|| {
-        std::fs::read_to_string(EXAMPLE_PATH)
-            .unwrap_or_else(|e| panic!("{EXAMPLE_PATH} should exist: {e}"))
+        std::fs::read_to_string(example_path())
+            .unwrap_or_else(|e| panic!("{} should exist: {e}", example_path().display()))
     })
     .as_str()
 }

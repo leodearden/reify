@@ -17,10 +17,9 @@
 use reify_compiler::CompiledModule;
 use reify_core::Severity;
 
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/anisotropic_bar.ri"
-);
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("anisotropic_bar.ri")
+}
 
 /// Read, parse (asserting zero parse errors), and compile (asserting zero
 /// Error-severity diagnostics) `examples/anisotropic_bar.ri`.
@@ -28,7 +27,7 @@ const EXAMPLE_PATH: &str = concat!(
 /// Returns `(src, module)` so callers can inspect both the raw source and the
 /// compiled result without repeating the parse/compile pipeline.
 fn compile_example() -> (String, CompiledModule) {
-    let src = std::fs::read_to_string(EXAMPLE_PATH).expect(
+    let src = std::fs::read_to_string(example_path()).expect(
         "failed to read examples/anisotropic_bar.ri — \
          check CARGO_MANIFEST_DIR resolution and that the file exists",
     );

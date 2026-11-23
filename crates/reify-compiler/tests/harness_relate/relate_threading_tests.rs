@@ -26,14 +26,11 @@ use reify_test_support::compile_source_with_stdlib;
 
 /// Read the committed §1 worked example so step-1 and the step-17/18 e2e build
 /// exercise the SAME source — no drift between the threading test and the example.
-/// `CARGO_MANIFEST_DIR` is `crates/reify-compiler`; `../../examples/...` is the
-/// workspace-root example dir.
 fn bolt_plate_source() -> String {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/geometric_relations/bolt_plate.ri"
-    );
-    std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read §1 example {path}: {e}"))
+    let path = reify_test_support::examples_corpus::examples_dir()
+        .join("geometric_relations/bolt_plate.ri");
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("read §1 example {}: {e}", path.display()))
 }
 
 /// A cross-home variant: an inline `sub … at auto where { … }` relation declared

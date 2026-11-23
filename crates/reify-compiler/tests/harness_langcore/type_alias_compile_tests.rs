@@ -1544,11 +1544,12 @@ mod alias_to_entity_type_parity {
 
     // ── Regression locks ────────────────────────────────────────────────────
     //
-    // Both PASS on `main` today. They are the safety net for the deferred
-    // use-site resolution added by task #6259: the first pins that the deferral
-    // terminates on a cycle instead of recursing forever, the second pins that
-    // re-resolving an alias body at each use site does not re-emit the
-    // definition-site diagnostic for that body.
+    // All PASS on `main` today. They are the safety net for the deferred
+    // use-site resolution added by task #6259: the first two pin that the
+    // deferral terminates on a cycle instead of recursing forever, the second
+    // of them that the guard holds its marker across a repeated
+    // self-reference; the last pins that re-resolving an alias body at each
+    // use site does not re-emit the definition-site diagnostic for that body.
 
     #[test]
     fn circular_alias_still_terminates_and_reports_a_cycle() {
@@ -1564,6 +1565,21 @@ mod alias_to_entity_type_parity {
         assert!(
             errs.iter().any(|d| d.message.contains("circular type alias")),
             "a circular alias must still report the cycle; got: {:?}",
+            errs.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn circular_alias_naming_itself_twice_terminates_and_reports_a_cycle() {
+        let source = "structure def S<A, B> {\n    param k : Length\n}\n\
+                      type C1 = S<C1, C1>\n\
+                      structure def D {\n    param p : C1\n}\n";
+        let module = compile_source_with_stdlib(source);
+        let errs = errors_only(&module);
+        assert!(
+            errs.iter()
+                .any(|d| d.message.contains("circular type alias 'C1'")),
+            "an alias naming itself twice must still report the cycle; got: {:?}",
             errs.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     }

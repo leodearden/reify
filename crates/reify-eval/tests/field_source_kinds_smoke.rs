@@ -19,11 +19,10 @@ use reify_core::{FIELD_ENTITY_PREFIX, ModulePath, Severity, ValueCellId};
 use reify_ir::{FieldSourceKind, Satisfaction, Value};
 use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
 
-/// Absolute path to the fixture, resolved at compile time from the crate root.
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/fields/composed_stiffness.ri"
-);
+/// Absolute path to the fixture.
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("fields/composed_stiffness.ri")
+}
 
 /// Read `examples/fields/composed_stiffness.ri` and verify it parses without errors.
 ///
@@ -34,7 +33,7 @@ const EXAMPLE_PATH: &str = concat!(
 /// regression is in the parser or downstream. See plan design decision #7.
 #[test]
 fn composed_stiffness_ri_parses() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
+    let source = std::fs::read_to_string(example_path())
         .expect("examples/fields/composed_stiffness.ri should exist");
 
     let parsed = reify_syntax::parse(&source, ModulePath::single("test"));
@@ -51,7 +50,7 @@ fn composed_stiffness_ri_parses() {
 /// without error-severity diagnostics (v0.1-clean).
 #[test]
 fn composed_stiffness_compiles_with_stdlib() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
+    let source = std::fs::read_to_string(example_path())
         .expect("examples/fields/composed_stiffness.ri should exist");
 
     let compiled = parse_and_compile_with_stdlib(&source);
@@ -94,7 +93,7 @@ fn composed_stiffness_compiles_with_stdlib() {
 /// See plan design decision #7.
 #[test]
 fn composed_stiffness_evals_with_two_field_source_kinds() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
+    let source = std::fs::read_to_string(example_path())
         .expect("examples/fields/composed_stiffness.ri should exist");
 
     let compiled = parse_and_compile_with_stdlib(&source);
@@ -150,7 +149,7 @@ fn composed_stiffness_evals_with_two_field_source_kinds() {
 /// If you add constraints to `composed_stiffness.ri`, update the exact count below.
 #[test]
 fn composed_stiffness_constraints_all_satisfied() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
+    let source = std::fs::read_to_string(example_path())
         .expect("examples/fields/composed_stiffness.ri should exist");
 
     let compiled = parse_and_compile_with_stdlib(&source);

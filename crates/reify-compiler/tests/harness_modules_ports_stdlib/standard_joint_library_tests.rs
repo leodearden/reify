@@ -55,9 +55,9 @@ fn joint_dof_errors(module: &reify_compiler::CompiledModule) -> Vec<&Diagnostic>
 /// `std::io::Error`. Step-2 (impl) creates the file and makes this green.
 #[test]
 fn standard_joint_library_compiles_clean() {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/stdlib/joints.ri");
-    let source = std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("cannot read stdlib/joints.ri at `{path}`: {e}"));
+    let path = reify_test_support::test_package::manifest_dir().join("stdlib/joints.ri");
+    let source = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("cannot read stdlib/joints.ri at `{}`: {e}", path.display()));
     let module = compile_source_with_stdlib(&source);
 
     let errors: Vec<&Diagnostic> = module
@@ -394,9 +394,9 @@ fn stdlib_spherical_over_declared_dof_is_diagnosed() {
     const DECLARED_DOF: &str = "with orientation: Orientation";
     const OVER_DECLARED_DOF: &str = "with { orientation: Orientation, extra: Angle }";
 
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/stdlib/joints.ri");
-    let source = std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("cannot read stdlib/joints.ri at `{path}`: {e}"));
+    let path = reify_test_support::test_package::manifest_dir().join("stdlib/joints.ri");
+    let source = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("cannot read stdlib/joints.ri at `{}`: {e}", path.display()));
 
     let decl_start = source.find(SPHERICAL_DECL).unwrap_or_else(|| {
         panic!("stdlib/joints.ri no longer declares `{SPHERICAL_DECL}…`; this test \

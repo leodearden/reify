@@ -17,7 +17,7 @@
 //! pure-math.
 //!
 //! Modelled on `block_inertia_evals_moment_of_inertia_to_tensor` in
-//! `topology_selector_smoke_tests.rs` (CARGO_MANIFEST_DIR path const +
+//! `topology_selector_smoke_tests.rs` (run-time example path fn +
 //! `fixture_scaffolding::read_and_compile_fixture` + `Engine::new` +
 //! `engine.build` + `result.values.get` assert pattern).
 
@@ -29,10 +29,9 @@ use reify_test_support::MockGeometryKernel;
 
 use super::fixture_scaffolding::read_and_compile_fixture;
 
-const ANGLE_SMOKE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/kernel_queries/angle_smoke.ri"
-);
+fn angle_smoke_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("kernel_queries/angle_smoke.ri")
+}
 
 /// Pins the user-observable signal for KGQ-ε: `angle(vec3(1,0,0), vec3(0,1,0))`
 /// must evaluate to `Value::angle(FRAC_PI_2)` (90 degrees / π/2 radians).
@@ -42,7 +41,7 @@ const ANGLE_SMOKE_PATH: &str = concat!(
 #[test]
 fn angle_smoke_evals_to_ninety_degrees() {
     let compiled = read_and_compile_fixture(
-        ANGLE_SMOKE_PATH,
+        &angle_smoke_path(),
         "examples/kernel_queries/angle_smoke.ri (task 3614 step-4)",
     );
 

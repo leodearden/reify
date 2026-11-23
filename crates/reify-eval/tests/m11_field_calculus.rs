@@ -11,17 +11,16 @@ use reify_core::{ModulePath, Severity};
 use reify_ir::Satisfaction;
 use reify_test_support::parse_and_compile_with_stdlib;
 
-/// Absolute path to the example file, resolved at compile time from the crate root.
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/m11_field_calculus.ri"
-);
+/// Absolute path to the example file.
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("m11_field_calculus.ri")
+}
 
 /// Read m11_field_calculus.ri and verify it parses without errors.
 #[test]
 fn field_calculus_ri_parses() {
     let source =
-        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m11_field_calculus.ri should exist");
+        std::fs::read_to_string(example_path()).expect("examples/m11_field_calculus.ri should exist");
 
     let parsed = reify_syntax::parse(&source, ModulePath::single("test"));
     assert!(
@@ -35,7 +34,7 @@ fn field_calculus_ri_parses() {
 #[test]
 fn field_calculus_compiles() {
     let source =
-        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m11_field_calculus.ri should exist");
+        std::fs::read_to_string(example_path()).expect("examples/m11_field_calculus.ri should exist");
 
     let compiled = parse_and_compile_with_stdlib(&source);
 
@@ -63,7 +62,7 @@ fn field_calculus_compiles() {
 #[test]
 fn field_calculus_all_constraints_satisfied() {
     let source =
-        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m11_field_calculus.ri should exist");
+        std::fs::read_to_string(example_path()).expect("examples/m11_field_calculus.ri should exist");
 
     let compiled = parse_and_compile_with_stdlib(&source);
 

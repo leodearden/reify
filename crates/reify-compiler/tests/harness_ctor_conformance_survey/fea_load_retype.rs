@@ -7,7 +7,7 @@
 //! bindings, so only the per-binding site set carries the signal.
 
 use crate::sweep::survey_corpus;
-use crate::workspace_git::WORKSPACE_ROOT;
+use reify_test_support::workspace_root::workspace_root;
 
 const FIXTURE: &str = "tests/prd-gate/fixtures/dcr_load_ctor_dimension_silent.ri";
 
@@ -22,7 +22,7 @@ fn binding_on_line(source: &str, line: u32) -> Option<&str> {
 
 #[test]
 fn dcr_load_ctor_sites_are_exactly_the_deliberately_bare_bindings() {
-    let root = std::path::Path::new(WORKSPACE_ROOT);
+    let root = workspace_root();
     let run = survey_corpus(root, &[FIXTURE.to_owned()]);
     assert!(
         run.not_surveyed.is_empty(),

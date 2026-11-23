@@ -24,15 +24,15 @@ use reify_compiler::{CompiledGeometryOp, CompiledModule, SweepKind, TopologyTemp
 use reify_core::{DimensionVector, Severity, Type};
 use reify_ir::{CompiledExpr, CompiledExprKind};
 
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/geometric_relations/feature_datum_axis.ri"
-);
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir()
+        .join("geometric_relations/feature_datum_axis.ri")
+}
 
 /// Read, parse (asserting zero parse errors), and compile under the stdlib
 /// prelude (asserting zero Error-severity diagnostics) the B8 example.
 fn compile_example() -> CompiledModule {
-    let src = std::fs::read_to_string(EXAMPLE_PATH).expect(
+    let src = std::fs::read_to_string(example_path()).expect(
         "failed to read examples/geometric_relations/feature_datum_axis.ri — \
          check CARGO_MANIFEST_DIR resolution and that the file exists (step-18)",
     );

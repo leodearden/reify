@@ -85,7 +85,7 @@ fn ptodo_command(repo: &Path, aux: &Path, require: bool) -> Command {
 fn pattern_command(pattern: &str, repo: &Path, aux: &Path, require: bool) -> Command {
     let tasks_file = write_empty_tasks_json(aux);
     let runs_db = write_empty_runs_db(aux);
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_reify-audit"));
+    let mut cmd = Command::new(reify_test_support::test_package::bin_exe("reify-audit"));
     cmd.args([
         "--pattern",
         pattern,

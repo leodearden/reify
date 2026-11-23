@@ -18,11 +18,10 @@ use reify_test_support::{
     check_source_with_stdlib as check_source, make_simple_engine, parse_and_compile_with_stdlib,
 };
 
-/// Absolute path to the example file, resolved at compile time from the crate root.
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/integration_full_v01.ri"
-);
+/// Absolute path to the example file.
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("integration_full_v01.ri")
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -31,7 +30,7 @@ const EXAMPLE_PATH: &str = concat!(
 fn source() -> &'static str {
     static S: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     S.get_or_init(|| {
-        std::fs::read_to_string(EXAMPLE_PATH)
+        std::fs::read_to_string(example_path())
             .expect("examples/integration_full_v01.ri should exist")
     })
     .as_str()

@@ -17,11 +17,10 @@ use reify_ir::{
 };
 use reify_test_support::{make_engine, parse_and_compile};
 
-/// Absolute path to the example file, resolved at compile time from the crate root.
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/m9_determinacy.ri"
-);
+/// Absolute path to the example file.
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("m9_determinacy.ri")
+}
 
 // -- Helper -------------------------------------------------------------------
 
@@ -593,7 +592,7 @@ fn determinacy_in_constraint() {
 #[test]
 fn determinacy_ri_parses_and_compiles() {
     let source =
-        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_determinacy.ri should exist");
+        std::fs::read_to_string(example_path()).expect("examples/m9_determinacy.ri should exist");
 
     let compiled = parse_and_compile(&source);
 
@@ -608,7 +607,7 @@ fn determinacy_ri_parses_and_compiles() {
 #[test]
 fn determinacy_ri_all_constraints_satisfied() {
     let source =
-        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_determinacy.ri should exist");
+        std::fs::read_to_string(example_path()).expect("examples/m9_determinacy.ri should exist");
 
     let compiled = parse_and_compile(&source);
 
@@ -644,7 +643,7 @@ fn determinacy_ri_constraints_satisfied_simple_checker() {
     use reify_constraints::SimpleConstraintChecker;
 
     let source =
-        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_determinacy.ri should exist");
+        std::fs::read_to_string(example_path()).expect("examples/m9_determinacy.ri should exist");
 
     let compiled = parse_and_compile(&source);
 

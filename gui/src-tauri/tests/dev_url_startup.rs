@@ -10,7 +10,7 @@ use std::process::{Command, Stdio};
 fn reify_gui_refuses_an_invalid_vite_port_before_opening_a_window() {
     let cache_home = tempfile::tempdir().expect("tempdir for XDG_CACHE_HOME");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_reify-gui"))
+    let output = Command::new(reify_test_support::test_package::bin_exe("reify-gui"))
         .env("REIFY_VITE_PORT", "not-a-port")
         .env_remove("DISPLAY")
         .env_remove("WAYLAND_DISPLAY")

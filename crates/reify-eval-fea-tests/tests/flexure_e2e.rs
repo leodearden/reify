@@ -701,12 +701,9 @@ fn multi_ctor_session_surfaces_exactly_one_fatigue_info() {
 
 // ─── placeholder-ratchet α: BT3 corpus + §3.6 defense-in-depth (task #5476) ──
 
-/// Absolute path to `examples/flexures/`. The crate lives at
-/// `<root>/crates/reify-eval-fea-tests`, so the corpus is two levels up —
-/// the same relative shape the `include_str!` helpers at the top of this file
-/// use, resolved at runtime instead of at compile time.
+/// Absolute path to `examples/flexures/`.
 fn flexures_example_dir() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/flexures")
+    reify_test_support::examples_corpus::examples_dir().join("flexures")
 }
 
 /// BT3 (PRD docs/prds/v0_6/placeholder-type-eradication-ratchet.md §7.3): the

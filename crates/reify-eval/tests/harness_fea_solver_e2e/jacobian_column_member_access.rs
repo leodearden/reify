@@ -36,11 +36,11 @@ use reify_test_support::{collect_errors, compile_source_with_stdlib, make_simple
 /// The structure declared by the fixture; also the `ValueCellId` entity name.
 const ENTITY: &str = "JacobianColumnMembers";
 
-/// Read the committed fixture. Path resolved from `CARGO_MANIFEST_DIR` so the
-/// test is location-independent.
+/// Read the committed fixture. Path resolved from the workspace root at run
+/// time so the test is location-independent.
 fn fixture_source() -> String {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/prd-gate/fixtures/jacobian_column_members.ri");
+    let path = reify_test_support::workspace_root::workspace_root()
+        .join("tests/prd-gate/fixtures/jacobian_column_members.ri");
     std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read fixture {}: {}", path.display(), e))
 }

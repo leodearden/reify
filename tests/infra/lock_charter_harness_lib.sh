@@ -135,6 +135,7 @@ pre-commit
 pre-merge-commit
 project-checks
 reference-transaction
+sccache
 EXTLESS_EOF
 }
 

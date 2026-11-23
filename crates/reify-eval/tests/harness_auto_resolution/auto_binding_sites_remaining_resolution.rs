@@ -511,10 +511,9 @@ structure E {
 /// Path to the ε-slice four-site integration example.
 ///
 /// RED until step-10 extends `examples/auto_binding_sites.ri` with all four sites.
-const AUTO_BINDING_SITES_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/auto_binding_sites.ri"
-);
+fn auto_binding_sites_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("auto_binding_sites.ri")
+}
 
 /// `examples/auto_binding_sites.ri` must compile, evaluate without errors, and
 /// have ALL FOUR delegated auto binding-site cells in `DeterminacyState::Determined`:
@@ -524,7 +523,7 @@ const AUTO_BINDING_SITES_PATH: &str = concat!(
 ///   - connect-param:  `AllFourSites.__connector_0.gain`
 #[test]
 fn example_auto_binding_sites_ri_all_four_resolve() {
-    let source = std::fs::read_to_string(AUTO_BINDING_SITES_PATH)
+    let source = std::fs::read_to_string(auto_binding_sites_path())
         .expect("examples/auto_binding_sites.ri should exist");
 
     let compiled = parse_and_compile_with_stdlib(&source);

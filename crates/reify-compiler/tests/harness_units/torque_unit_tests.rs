@@ -126,8 +126,8 @@ fn nm_equals_n_times_m_per_rad_and_is_not_energy() {
 /// Read-only input: this test must never edit the fixture file.
 #[test]
 fn prd_gate_fixture_unit_nm_torque_immediate_compiles_clean() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/prd-gate/fixtures/unit_nm_torque_immediate.ri");
+    let path = reify_test_support::workspace_root::workspace_root()
+        .join("tests/prd-gate/fixtures/unit_nm_torque_immediate.ri");
     let src = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read fixture {}: {}", path.display(), e));
 

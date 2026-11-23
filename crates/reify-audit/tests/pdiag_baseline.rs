@@ -96,25 +96,19 @@ use reify_audit::pdiag::{
     BASELINE_HEADER, is_swept_path, live_counts, parse_baseline, render_baseline,
 };
 use reify_audit::{AuditContext, MockJCodemunchOps, RealGitOps, Severity};
+use reify_test_support::test_package;
 use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// `crates/reify-audit/pdiag-baseline.txt`, resolved from the manifest dir so
-/// the test is worktree-independent.
+/// `crates/reify-audit/pdiag-baseline.txt`.
 fn baseline_path() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("pdiag-baseline.txt")
+    test_package::manifest_dir().join("pdiag-baseline.txt")
 }
 
-/// Repo root: `crates/reify-audit` → two `.parent()` hops.
 fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("crates/reify-audit has a parent (crates/)")
-        .parent()
-        .expect("crates/ has a parent (repo root)")
-        .to_path_buf()
+    reify_test_support::workspace_root::workspace_root().to_path_buf()
 }
 
 /// The canonical regeneration command, quoted in every failure message so
@@ -471,7 +465,7 @@ fn staged_fixture(files: &[(&str, String)]) -> tempfile::TempDir {
 /// program here is a reify binary that runs git internally, not git itself,
 /// which is the other-shape case `reify_git_env::sanitize` sanctions.
 fn run_generator(root: &Path, extra: &[&str]) -> std::process::Output {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_pdiag-baseline-gen"));
+    let mut cmd = Command::new(test_package::bin_exe("pdiag-baseline-gen"));
     cmd.arg("--project-root").arg(root).args(extra);
     reify_git_env::sanitize(&mut cmd);
     cmd.output().expect("pdiag-baseline-gen spawns")

@@ -84,8 +84,8 @@ const FIXTURE_BINDINGS: [(&str, &str); 3] = [
 /// folds parse errors into `module.diagnostics` as `Severity::Error` instead, so
 /// (i) genuinely covers the `Parse error: syntax error: ·m` shape it claims to.
 fn compile_fixture() -> reify_compiler::CompiledModule {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/prd-gate/fixtures/unit_middot_mul.ri");
+    let path = reify_test_support::workspace_root::workspace_root()
+        .join("tests/prd-gate/fixtures/unit_middot_mul.ri");
     let src = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read fixture {}: {}", path.display(), e));
     for (member, star_twin) in FIXTURE_BINDINGS {

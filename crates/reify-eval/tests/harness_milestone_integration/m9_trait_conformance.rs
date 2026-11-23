@@ -8,11 +8,10 @@ use reify_core::{ModulePath, ValueCellId};
 use reify_ir::Satisfaction;
 use reify_test_support::{assert_no_eval_errors, make_simple_engine, parse_and_compile};
 
-/// Absolute path to the example file, resolved at compile time from the crate root.
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/m9_trait_conformance.ri"
-);
+/// Absolute path to the example file.
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("m9_trait_conformance.ri")
+}
 
 // ── Local helper ────────────────────────────────────────────────────
 //
@@ -49,7 +48,7 @@ fn assert_scalar_si(result: &reify_eval::EvalResult, entity: &str, field: &str, 
 /// Read m9_trait_conformance.ri and verify it parses without errors.
 #[test]
 fn trait_conformance_ri_parses() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
+    let source = std::fs::read_to_string(example_path())
         .expect("examples/m9_trait_conformance.ri should exist");
 
     let parsed = reify_syntax::parse(&source, ModulePath::single("test"));
@@ -65,7 +64,7 @@ fn trait_conformance_ri_parses() {
 /// Compile the .ri file, eval, and verify all constraints are satisfied.
 #[test]
 fn trait_conformance_compiles_and_evals() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
+    let source = std::fs::read_to_string(example_path())
         .expect("examples/m9_trait_conformance.ri should exist");
 
     let compiled = parse_and_compile(&source);
@@ -100,7 +99,7 @@ fn trait_conformance_compiles_and_evals() {
 /// Verify basic trait values: Box.size=0.05 SI (50mm), Box.half_size=0.025 SI.
 #[test]
 fn basic_trait_values() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
+    let source = std::fs::read_to_string(example_path())
         .expect("examples/m9_trait_conformance.ri should exist");
 
     let compiled = parse_and_compile(&source);
@@ -122,7 +121,7 @@ fn basic_trait_values() {
 /// Panel declares no params — gets the default injected from the trait.
 #[test]
 fn default_injection_values() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
+    let source = std::fs::read_to_string(example_path())
         .expect("examples/m9_trait_conformance.ri should exist");
 
     let compiled = parse_and_compile(&source);
@@ -160,7 +159,7 @@ fn default_injection_values() {
 /// Verify multi-trait: Part : Measurable + Weighable provides both traits' params.
 #[test]
 fn multi_trait_values() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
+    let source = std::fs::read_to_string(example_path())
         .expect("examples/m9_trait_conformance.ri should exist");
 
     let compiled = parse_and_compile(&source);
@@ -206,7 +205,7 @@ fn multi_trait_values() {
 /// Component satisfies all transitive requirements.
 #[test]
 fn refinement_chain_values() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
+    let source = std::fs::read_to_string(example_path())
         .expect("examples/m9_trait_conformance.ri should exist");
 
     let compiled = parse_and_compile(&source);
@@ -280,7 +279,7 @@ fn refinement_chain_values() {
 /// Merged : Left + Right should have shared param x deduplicated.
 #[test]
 fn diamond_merging_values() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
+    let source = std::fs::read_to_string(example_path())
         .expect("examples/m9_trait_conformance.ri should exist");
 
     let compiled = parse_and_compile(&source);
@@ -324,7 +323,7 @@ fn diamond_merging_values() {
 /// This acts as the comprehensive assertion that all trait features contribute constraints.
 #[test]
 fn total_constraint_count() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
+    let source = std::fs::read_to_string(example_path())
         .expect("examples/m9_trait_conformance.ri should exist");
 
     let compiled = parse_and_compile(&source);
@@ -356,7 +355,7 @@ fn total_constraint_count() {
 /// including the Qualified structure with distinct params from Alpha + Beta traits.
 #[test]
 fn qualified_access_disambiguation() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
+    let source = std::fs::read_to_string(example_path())
         .expect("examples/m9_trait_conformance.ri should exist");
 
     let compiled = parse_and_compile(&source);

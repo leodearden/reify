@@ -12,8 +12,8 @@ use reify_test_support::compile_source_with_stdlib;
 /// `kc` gone (docs/notes/ctor-conformance-flip-leaf-signals.md §α).
 #[test]
 fn prd_gate_fixture_curvature_rad_literal_compiles_clean() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/prd-gate/fixtures/curvature_rad_literal.ri");
+    let path = reify_test_support::workspace_root::workspace_root()
+        .join("tests/prd-gate/fixtures/curvature_rad_literal.ri");
     let src = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read fixture {}: {}", path.display(), e));
 

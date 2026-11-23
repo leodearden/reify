@@ -256,16 +256,16 @@ structure def LoadCaseAccess {
 /// stdlib prelude AND its documented signal cells evaluate to the correct Value
 /// shapes.
 ///
-/// Path is CARGO_MANIFEST_DIR-anchored per the task-348 convention:
-/// `crates/reify-eval` → `../../examples/load_case.ri` (workspace root).
+/// The path resolves under `examples_corpus::examples_dir()`.
 ///
 /// Pins compile-cleanness AND that the example actually exercises the
 /// user-observable signal cells documented in the file's comments.
 #[test]
 fn load_case_example_evals_clean_and_exercises_signal_cells() {
-    const EXAMPLE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/load_case.ri");
-
-    let src = std::fs::read_to_string(EXAMPLE_PATH).expect("read examples/load_case.ri");
+    let src = std::fs::read_to_string(
+        reify_test_support::examples_corpus::examples_dir().join("load_case.ri"),
+    )
+    .expect("read examples/load_case.ri");
     let compiled = parse_and_compile_with_stdlib(&src);
 
     // Must compile with zero Error-severity diagnostics.

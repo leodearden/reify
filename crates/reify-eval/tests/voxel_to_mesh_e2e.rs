@@ -62,7 +62,7 @@ extern crate reify_kernel_openvdb as _;
 /// RED (before step-2 creates the example fixture): the runtime
 /// `std::fs::read_to_string` of `examples/multi_kernel/voxel_to_mesh.ri`
 /// fails with a clean test panic (not a compile error, since the source is
-/// read at runtime via `concat!(env!("CARGO_MANIFEST_DIR"), ...)`, not
+/// read at runtime under `examples_corpus::examples_dir()`, not through
 /// `include_str!`).
 #[cfg(has_openvdb)]
 #[test]
@@ -83,10 +83,9 @@ fn voxel_to_mesh_builds_honest_voxel_operand_and_mesh_terminal() {
     // Runtime read (NOT include_str!): a clean test-failure RED when the
     // example fixture does not exist yet (step-2 creates it), rather than a
     // compile error that would break the whole test binary.
-    let source = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/multi_kernel/voxel_to_mesh.ri"
-    ))
+    let source = std::fs::read_to_string(
+        reify_test_support::examples_corpus::examples_dir().join("multi_kernel/voxel_to_mesh.ri"),
+    )
     .expect(
         "examples/multi_kernel/voxel_to_mesh.ri must exist \
          (task 5002 step-2 creates this fixture)",

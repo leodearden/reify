@@ -21,20 +21,16 @@ mod strict_routing;
 use reify_core::Severity;
 use reify_test_support::{compile_source_with_stdlib, make_engine_with_mock_kernel};
 
-/// Path to the committed example, relative to this crate's manifest.
-///
-/// The crate lives at `<root>/crates/reify-eval`; the examples directory is
-/// two levels up. The path is evaluated at compile time via `env!`.
-const EXAMPLE_SRC: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/affine_tapered_spacer.ri"
-);
+/// Absolute path to the committed example under the workspace `examples/` dir.
+fn example_src() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("affine_tapered_spacer.ri")
+}
 
 /// Read and compile the committed example, panicking with a helpful message
 /// if the file is missing. Shared by the gate tests below to avoid repeating
 /// the read+compile boilerplate.
 fn compiled_example() -> reify_compiler::CompiledModule {
-    let source = std::fs::read_to_string(EXAMPLE_SRC)
+    let source = std::fs::read_to_string(example_src())
         .expect("examples/affine_tapered_spacer.ri must exist (created in step-2)");
     compile_source_with_stdlib(&source)
 }

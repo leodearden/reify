@@ -72,12 +72,9 @@ fn assert_dfm_diagnostic_count(result: &reify_eval::CheckResult, substr: &str, c
 /// RED until the example file is created (step-2): panics on `read_to_string`.
 #[cfg(has_openvdb)]
 fn load_and_compile_example() -> reify_compiler::CompiledModule {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/process/std_process_dfm_thickness.ri"
-    );
-    let source = std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("failed to read example file {path}: {e}"));
+    let path = reify_test_support::examples_corpus::examples_dir().join("process/std_process_dfm_thickness.ri");
+    let source = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read example file {}: {e}", path.display()));
     reify_test_support::parse_and_compile_with_stdlib(&source)
 }
 

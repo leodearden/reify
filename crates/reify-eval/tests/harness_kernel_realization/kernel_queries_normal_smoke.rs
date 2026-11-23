@@ -40,7 +40,7 @@
 //! the compile-type contract and OCCT FFI reachability.
 //!
 //! Modelled on `kernel_queries_contains.rs` (same Surface + Point3 arg shape)
-//! and `kernel_queries_angle_smoke.rs` (CARGO_MANIFEST_DIR path + type
+//! and `kernel_queries_angle_smoke.rs` (run-time example path + type
 //! assertion pattern).
 
 use reify_core::Type;
@@ -48,10 +48,9 @@ use reify_ir::{GeometryOp, GeometryQuery, Value};
 
 use super::fixture_scaffolding::read_and_compile_fixture;
 
-const NORMAL_SMOKE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/kernel_queries/normal_smoke.ri"
-);
+fn normal_smoke_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("kernel_queries/normal_smoke.ri")
+}
 
 /// Pins the user-observable signal for KGQ-ζ:
 ///
@@ -70,7 +69,7 @@ fn normal_smoke_compiles_as_vec3_real_and_face_normal_at_ffis() {
     // or type-system regression (e.g. `normal` signature change) should fail on
     // every runner, independent of OCCT.
     let compiled = read_and_compile_fixture(
-        NORMAL_SMOKE_PATH,
+        &normal_smoke_path(),
         "examples/kernel_queries/normal_smoke.ri (task 3615 step-8)",
     );
 

@@ -156,12 +156,9 @@ fn b3_kind_mismatch_travel_vs_rotational_residual() {
 /// RED: `examples/joint_dof_self_check.ri` does not exist yet, so the read fails.
 #[test]
 fn ci_example_compiles_clean() {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/joint_dof_self_check.ri"
-    );
-    let source = std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("cannot read CI example `{path}`: {e}"));
+    let path = reify_test_support::examples_corpus::examples_dir().join("joint_dof_self_check.ri");
+    let source = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("cannot read CI example `{}`: {e}", path.display()));
     let module = compile_source_with_stdlib(&source);
 
     let errors: Vec<&Diagnostic> = module

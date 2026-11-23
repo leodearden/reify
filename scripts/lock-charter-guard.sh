@@ -272,9 +272,11 @@ _EXTS="c cc cjs conf cpp css csv cts cxx diff envrc example example-systemd-conf
 # to RED against a basename that does not exist.  All three copies of the
 # command (here, Cycle 7's provenance comment, Cycle 9's executable form) are
 # kept identical on purpose.
-# reify-evidenced (7, all real tracked files):
+# reify-evidenced (8, all real tracked files):
 #   LICENSE cargo cargo-audit-orphans pre-commit pre-merge-commit
-#   project-checks reference-transaction
+#   project-checks reference-transaction sccache
+#   (sccache, added by #10232: scripts/canon-bin/guard/sccache, the compile
+#   guard, which must carry that exact name; see its header)
 # dark-factory-evidenced only (1): Dockerfile — kept because this is a SHARED
 #   α/γ vector, and omitting it would break the cross-source drift comparison
 #   dark_factory:3248 enables.
@@ -285,7 +287,9 @@ _EXTS="c cc cjs conf cpp css csv cts cxx diff envrc example example-systemd-conf
 # Bounded by measurement, not by heuristic: the same sweep found ZERO
 # directory-name collisions for any of the 8 names across ALL path components
 # (not just leaves) of either corpus — 177 distinct reify directory names, 97
-# dark-factory — so no real directory becomes declarable.
+# dark-factory — so no real directory becomes declarable.  The 9th, sccache,
+# re-measured 2026-11-23 (#10232): zero directory components named sccache in
+# either corpus.
 #
 # UNIVERSE OF THAT MEASUREMENT: TRACKED path components only.  That is the right
 # universe and not merely the convenient one — a lock charter declares paths in
@@ -305,7 +309,7 @@ _EXTS="c cc cjs conf cpp css csv cts cxx diff envrc example example-systemd-conf
 # lockstep; Cycle 9's live-corpus alarm goes RED if a new tracked extensionless
 # basename lands here without one.
 # ---------------------------------------------------------------------------
-_EXTLESS="Dockerfile LICENSE cargo cargo-audit-orphans pre-commit pre-merge-commit project-checks reference-transaction"
+_EXTLESS="Dockerfile LICENSE cargo cargo-audit-orphans pre-commit pre-merge-commit project-checks reference-transaction sccache"
 
 # ---------------------------------------------------------------------------
 # _is_file_path <path>

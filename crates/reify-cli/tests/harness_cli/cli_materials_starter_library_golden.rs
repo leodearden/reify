@@ -9,7 +9,7 @@
 //! branch at all, so in the merge gate's release pass it reached across profiles
 //! by construction, and in every pass it had NO cargo build edge on `reify-cli`
 //! — the binary could arbitrarily predate the change under test (#5618).
-//! `env!("CARGO_BIN_EXE_reify")` replaces both the `CARGO_TARGET_DIR` env probe
+//! `CARGO_BIN_EXE_reify` replaces both the `CARGO_TARGET_DIR` env probe
 //! and the hardcoded `debug` segment with a binary cargo guarantees is freshly
 //! built before this package's integration tests run.
 //!

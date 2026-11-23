@@ -55,12 +55,10 @@ fn production_session_realizes_isosurface_shell() {
         return;
     }
 
-    let fixture = format!(
-        "{}/../../examples/multi_kernel/voxel_to_mesh.ri",
-        super::gui_crate_manifest_dir()
-    );
-    let source = std::fs::read_to_string(&fixture)
-        .unwrap_or_else(|e| panic!("failed to read isosurface fixture {fixture}: {e}"));
+    let fixture = super::examples_path("multi_kernel/voxel_to_mesh.ri");
+    let source = std::fs::read_to_string(&fixture).unwrap_or_else(|e| {
+        panic!("failed to read isosurface fixture {}: {e}", fixture.display())
+    });
 
     let mut session = production_session();
     let state = session

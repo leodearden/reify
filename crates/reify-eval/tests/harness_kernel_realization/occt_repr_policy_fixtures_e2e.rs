@@ -23,7 +23,7 @@ const EXTRUDED_WIRE_FIXTURE: &str =
 
 /// Build the repo-relative `fixture` with real OCCT; `None` when OCCT is absent.
 fn build(fixture: &str) -> Option<reify_eval::BuildResult> {
-    let path = format!("{}/../../{fixture}", env!("CARGO_MANIFEST_DIR"));
+    let path = reify_test_support::workspace_root::workspace_root().join(fixture);
     compile_and_build_with_occt(&path, fixture)
 }
 

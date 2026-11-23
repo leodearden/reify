@@ -1,6 +1,5 @@
-//! The workspace root, and the only sanctioned way this survey reaches git.
+//! The only sanctioned way this survey reaches git: at the workspace root.
 
-use std::path::Path;
 use std::process::Command;
 
 // The workspace's SINGLE definition of the repo-redirect sanitizer, not a local
@@ -10,13 +9,10 @@ use std::process::Command;
 // (`crates/reify-git-env/src/lib.rs`.)
 use reify_git_env::{REPO_REDIRECT_VARS, removed_vars};
 
-/// Absolute path to the workspace root, resolved at compile time from this
-/// crate's manifest directory (two levels up).
-///
-/// Rooted at the workspace root rather than
-/// `reify_test_support::examples_corpus::examples_dir()`'s corpus
-/// subdirectory: β's whole point is that the sweep is NOT examples-scoped.
-pub(crate) const WORKSPACE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+// Every git call is rooted at the running checkout's workspace root rather
+// than `reify_test_support::examples_corpus::examples_dir()`'s corpus
+// subdirectory: β's whole point is that the sweep is NOT examples-scoped.
+use reify_test_support::workspace_root::workspace_root;
 
 // ─── step 21/22: one sanitized git constructor for every call site ───────────
 
@@ -34,9 +30,9 @@ pub(crate) const WORKSPACE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/..
 /// one carve-out is a bare `git --version` availability probe — which is
 /// exactly [`git_is_available`] below, and the ONLY spawn in this survey that
 /// does not come from here; every repo-targeting call site routes through this
-/// constructor, which is `reify_git_env::command` pinned to [`WORKSPACE_ROOT`].
+/// constructor, which is `reify_git_env::command` pinned to [`workspace_root`].
 pub(crate) fn git_at_workspace_root(args: &[&str]) -> Command {
-    let mut cmd = reify_git_env::command(Path::new(WORKSPACE_ROOT));
+    let mut cmd = reify_git_env::command(workspace_root());
     cmd.args(args);
     cmd
 }
@@ -112,14 +108,19 @@ fn git_at_workspace_root_targets_git_dash_c_at_the_workspace_root() {
         .collect();
     assert_eq!(
         args,
-        ["-C", WORKSPACE_ROOT, "rev-parse", "HEAD"],
+        [
+            "-C",
+            workspace_root().to_str().expect("UTF-8 workspace root"),
+            "rev-parse",
+            "HEAD"
+        ],
         "expected exactly `-C <workspace root>` followed by the caller's args, in that order"
     );
 }
 
 /// Run one git command at the workspace root and return its trimmed stdout.
 ///
-/// Every invocation is `-C WORKSPACE_ROOT` (the test process's own CWD is the
+/// Every invocation is `-C <workspace root>` (the test process's own CWD is the
 /// crate directory, not the repo root), and every one keeps the non-zero-exit
 /// assertion: a git read that silently failed would feed an empty string into
 /// `stamp_decision`, which is precisely the "looks clean" reading that must
@@ -129,16 +130,17 @@ pub(crate) fn git_read(args: &[&str]) -> String {
         .output()
         .unwrap_or_else(|e| {
             panic!(
-                "harness_ctor_conformance_survey::workspace_git: cannot run `git {}` in {WORKSPACE_ROOT}: {e}",
-                args.join(" ")
+                "harness_ctor_conformance_survey::workspace_git: cannot run `git {}` in {root}: {e}",
+                args.join(" "), root = workspace_root().display()
             )
         });
     assert!(
         out.status.success(),
-        "harness_ctor_conformance_survey::workspace_git: `git {}` in {WORKSPACE_ROOT} exited {:?}: {}",
+        "harness_ctor_conformance_survey::workspace_git: `git {}` in {root} exited {:?}: {}",
         args.join(" "),
         out.status.code(),
-        String::from_utf8_lossy(&out.stderr).trim()
+        String::from_utf8_lossy(&out.stderr).trim(),
+        root = workspace_root().display()
     );
     String::from_utf8_lossy(&out.stdout).trim().to_owned()
 }
@@ -154,8 +156,8 @@ pub(crate) fn git_succeeds(args: &[&str]) -> bool {
         .output()
         .unwrap_or_else(|e| {
             panic!(
-                "harness_ctor_conformance_survey::workspace_git: cannot run `git {}` in {WORKSPACE_ROOT}: {e}",
-                args.join(" ")
+                "harness_ctor_conformance_survey::workspace_git: cannot run `git {}` in {root}: {e}",
+                args.join(" "), root = workspace_root().display()
             )
         })
         .status

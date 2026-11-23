@@ -85,10 +85,9 @@ use super::fixture_scaffolding::{
     assert_bool_cell, assert_length_cell, build_source_with_occt, compile_and_build_with_occt,
 };
 
-const INTERSECTS_SMOKE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/kernel_queries/intersects_smoke.ri"
-);
+fn intersects_smoke_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("kernel_queries/intersects_smoke.ri")
+}
 
 /// `tolerance` argument to `assert_length_cell` selecting EXACT `f64` equality
 /// rather than a window. Named so a call site reads as a deliberate choice
@@ -139,7 +138,7 @@ structure def ContainmentPin {
 #[test]
 fn intersects_smoke_evals_expected_booleans() {
     let Some(result) = compile_and_build_with_occt(
-        INTERSECTS_SMOKE_PATH,
+        &intersects_smoke_path(),
         "examples/kernel_queries/intersects_smoke.ri",
     ) else {
         return;

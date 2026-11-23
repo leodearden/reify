@@ -14198,12 +14198,11 @@ structure def Mock : PhysicalMock {
 /// `holes` are construction geometry, listed in the outline but hidden until
 /// toggled; the terminal `geometry` is the part.
 ///
-/// Uses the `CARGO_MANIFEST_DIR`-relative idiom of
-/// `examples_multi_pane_viewport_realizes_section8_display_routing` (and
-/// `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`).
+/// Uses the run-time `examples_path` idiom of
+/// `examples_multi_pane_viewport_realizes_section8_display_routing`.
 #[test]
 fn examples_m5_geometry_flange_hides_consumed_intermediates() {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/m5_geometry_flange.ri");
+    let path = super::examples_path("m5_geometry_flange.ri");
     let contents =
         std::fs::read_to_string(path).expect("examples/m5_geometry_flange.ri must exist");
 
@@ -17624,8 +17623,8 @@ fn build_gui_state_display_appearance_empty_when_style_defaulted() {
 /// §8 (multi-pane viewport) routing contract (PRD-3, docs/prds/v0_6/multi-pane-viewport.md).
 ///
 /// Unlike the inline-source tests in the γ suite (which use synthetic strings),
-/// this test reads the COMMITTED example artifact via a `CARGO_MANIFEST_DIR`-
-/// relative path — the same idiom as `examples_smoke.rs` — and asserts the full
+/// this test reads the COMMITTED example artifact via a run-time `examples/`
+/// path — the same idiom as `examples_smoke.rs` — and asserts the full
 /// §8 shape through the REAL `collect_display_routing` producer:
 ///
 ///   da → pane 0   (explicit)
@@ -17648,10 +17647,9 @@ fn build_gui_state_display_appearance_empty_when_style_defaulted() {
 /// panics.  Goes GREEN in step-2 when the file is created.
 #[test]
 fn examples_multi_pane_viewport_realizes_section8_display_routing() {
-    // Read the committed example via CARGO_MANIFEST_DIR (= gui/src-tauri at test time).
-    // ../../examples resolves to the repo-root examples/ directory — same idiom as
-    // crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs (EXAMPLES_DIR).
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/multi_pane_viewport.ri");
+    // Read the committed example from the repo-root examples/ directory, resolved at
+    // run time.
+    let path = super::examples_path("multi_pane_viewport.ri");
     let contents = std::fs::read_to_string(path)
         .expect("examples/multi_pane_viewport.ri must exist (created in step-2)");
 
@@ -17925,7 +17923,7 @@ fn build_gui_state_appearance_from_material_vs_none_for_raw_box() {
 
 /// End-to-end deterministic backstop for `examples/appearance_viewport_egress.ri`.
 ///
-/// Reads the COMMITTED example via a `CARGO_MANIFEST_DIR`-relative path and
+/// Reads the COMMITTED example via a run-time `examples/` path and
 /// asserts the full §8 appearance-egress shape through the REAL producers:
 ///
 /// - B1: `AppearanceViewportEgress` geometry mesh → `appearance == Some(MeshAppearance{…})`
@@ -17961,10 +17959,7 @@ fn examples_appearance_viewport_egress_realizes_section8_appearance_contract() {
     use crate::types::MeshAppearance;
 
     // ── load ──────────────────────────────────────────────────────────────────
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/appearance_viewport_egress.ri"
-    );
+    let path = super::examples_path("appearance_viewport_egress.ri");
     let contents = std::fs::read_to_string(path)
         .expect("examples/appearance_viewport_egress.ri must exist (created in step-2)");
 
@@ -18194,10 +18189,7 @@ fn examples_appearance_viewport_egress_realizes_section8_appearance_contract() {
 /// `make_session()`).
 #[test]
 fn examples_appearance_viewport_egress_display_output_defaults_pane_and_raw_stays_visible() {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/appearance_viewport_egress.ri"
-    );
+    let path = super::examples_path("appearance_viewport_egress.ri");
     let contents =
         std::fs::read_to_string(path).expect("examples/appearance_viewport_egress.ri must exist");
 
@@ -19571,10 +19563,7 @@ fn build_gui_state_finish_process_without_material_resolves_none() {
 /// load/session/zero-Error boilerplate does not drift independently.
 #[cfg(test)]
 fn load_surface_finish_viewport_state() -> crate::types::GuiState {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/surface_finish_viewport.ri"
-    );
+    let path = super::examples_path("surface_finish_viewport.ri");
     let contents = std::fs::read_to_string(path)
         .expect("examples/surface_finish_viewport.ri must exist (created in step-2)");
 
@@ -19832,10 +19821,7 @@ fn examples_surface_finish_viewport_display_override_beats_functional() {
 /// in `crates/reify-eval/tests/sub_placement_assembly_gate.rs`.
 #[test]
 fn examples_affine_tapered_spacer_renders_deformed_solid() {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/affine_tapered_spacer.ri"
-    );
+    let path = super::examples_path("affine_tapered_spacer.ri");
     let contents = std::fs::read_to_string(path)
         .expect("examples/affine_tapered_spacer.ri must exist (created in task 3965 steps 2/4)");
 
@@ -19907,10 +19893,7 @@ fn examples_affine_tapered_spacer_renders_deformed_solid() {
 /// itself is covered by `gui/src/__tests__/MechanismPanel.test.tsx`.
 #[test]
 fn dock_pickup_mechanism_exposes_read_only_literal_bound_joint_smoke() {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/kinematic/dock_pickup.ri"
-    );
+    let path = super::examples_path("kinematic/dock_pickup.ri");
     let contents =
         std::fs::read_to_string(path).expect("examples/kinematic/dock_pickup.ri must exist");
 

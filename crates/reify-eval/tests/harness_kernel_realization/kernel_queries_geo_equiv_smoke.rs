@@ -27,10 +27,9 @@
 
 use super::fixture_scaffolding::{assert_bool_cell, compile_and_build_with_occt};
 
-const GEO_EQUIV_SMOKE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/kernel_queries/geo_equiv_smoke.ri"
-);
+fn geo_equiv_smoke_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("kernel_queries/geo_equiv_smoke.ri")
+}
 
 /// Pins the user-observable signal for KGQ-δ: `geo_equiv(left, right, tol)` on
 /// box/box-identical, box/box-within-tol, and box/cylinder must evaluate to
@@ -40,7 +39,7 @@ const GEO_EQUIV_SMOKE_PATH: &str = concat!(
 #[test]
 fn geo_equiv_smoke_evals_expected_booleans() {
     let Some(result) = compile_and_build_with_occt(
-        GEO_EQUIV_SMOKE_PATH,
+        &geo_equiv_smoke_path(),
         "examples/kernel_queries/geo_equiv_smoke.ri (task 3613 step-8)",
     ) else {
         return;

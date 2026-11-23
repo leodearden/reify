@@ -45,9 +45,10 @@ use reify_test_support::{
 };
 
 /// Path to the shipped example, resolved relative to this crate's manifest directory
-/// (mirrors `continuous_cost_min_example_e2e.rs::EXAMPLE_PATH`).
-const EXAMPLE_PATH: &str =
-    concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/cost_robustness_tradeoff.ri");
+/// (mirrors `continuous_cost_min_example_e2e.rs::example_path`).
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("cost_robustness_tradeoff.ri")
+}
 
 /// Absolute tolerance (metres) for the λ-anchor convergence checks in test (b).
 /// Mirrors `reify-constraints/tests/cost_robustness_tradeoff_blend.rs::ANCHOR_TOL_M`
@@ -196,10 +197,11 @@ fn tradeoff_scope_suppresses_floor_diagnostic_sibling_does_not() {
 /// test's compile check is a fast-fail precondition for the eval assertions below.
 #[test]
 fn example_lambda_sweep_cost_optimum_blend_centre() {
-    let src = std::fs::read_to_string(EXAMPLE_PATH).unwrap_or_else(|e| {
+    let src = std::fs::read_to_string(example_path()).unwrap_or_else(|e| {
         panic!(
             "Could not read {}: {} — run step-10 to create the example file",
-            EXAMPLE_PATH, e
+            example_path().display(),
+            e
         )
     });
 

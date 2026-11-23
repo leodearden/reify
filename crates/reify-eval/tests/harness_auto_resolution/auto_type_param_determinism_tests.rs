@@ -48,10 +48,9 @@ use reify_test_support::{
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 /// Absolute path to the bearing_auto_seal.ri fixture.
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/bearing_auto_seal.ri"
-);
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("bearing_auto_seal.ri")
+}
 
 /// Conservative absolute floor, chosen below current corpus size to leave
 /// headroom for ordinary SKIP_SET churn without flaking this guard. If the
@@ -234,7 +233,7 @@ const SKIP_SET: &[(&str, SkipKind, &str)] = &[
 fn source() -> &'static str {
     static S: OnceLock<String> = OnceLock::new();
     S.get_or_init(|| {
-        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/bearing_auto_seal.ri should exist")
+        std::fs::read_to_string(example_path()).expect("examples/bearing_auto_seal.ri should exist")
     })
     .as_str()
 }

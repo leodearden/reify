@@ -18,7 +18,7 @@
 //! must carry the measurement through to the user.
 //!
 //! Harness (`compile_source_with_stdlib` / `MockConstraintChecker` /
-//! `collect_errors` / a `CARGO_MANIFEST_DIR`-relative path const) mirrors
+//! `collect_errors` / an `examples_dir()`-relative path fn) mirrors
 //! `cost_robustness_tradeoff_example_e2e.rs`, so both γ eval-layer tests read
 //! the same way.
 
@@ -29,10 +29,9 @@ use reify_test_support::{MockConstraintChecker, collect_errors, compile_source_w
 
 /// The prd-gate fixture, resolved relative to this crate's manifest directory
 /// (mirrors `cost_robustness_tradeoff_example_e2e.rs::EXAMPLE_PATH`).
-const FIXTURE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../tests/prd-gate/fixtures/cost_robustness_tradeoff_form.ri"
-);
+fn fixture_path() -> std::path::PathBuf {
+    reify_test_support::workspace_root::workspace_root().join("tests/prd-gate/fixtures/cost_robustness_tradeoff_form.ri")
+}
 
 /// The clause naming the param the fixture leaves unbounded (as `ValueCellId`'s
 /// `Display` renders it, `entity.member`), the side no constraint bounds, and
@@ -60,14 +59,15 @@ const EXPECTED_CLAUSE: &str =
 /// as a resolved value, which is precisely why the message has to state it.)
 #[test]
 fn underdetermined_gamma_model_names_param_side_and_fallback_bound() {
-    let src = std::fs::read_to_string(FIXTURE_PATH)
-        .unwrap_or_else(|e| panic!("could not read {FIXTURE_PATH}: {e}"));
+    let src = std::fs::read_to_string(fixture_path())
+        .unwrap_or_else(|e| panic!("could not read {}: {e}", fixture_path().display()));
 
     let compiled = compile_source_with_stdlib(&src);
     let compile_errors = collect_errors(&compiled.diagnostics);
     assert!(
         compile_errors.is_empty(),
-        "{FIXTURE_PATH} should compile without errors: {compile_errors:#?}"
+        "{} should compile without errors: {compile_errors:#?}",
+        fixture_path().display()
     );
 
     let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)

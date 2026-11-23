@@ -23,13 +23,8 @@ use std::path::PathBuf;
 /// for trait-shape introspection tests that need the raw `CompiledTrait`
 /// structure (required_members / defaults).
 fn load_stdlib_module() -> CompiledModule {
-    let path: PathBuf = [
-        env!("CARGO_MANIFEST_DIR"),
-        "stdlib",
-        "materials_mechanical.ri",
-    ]
-    .iter()
-    .collect();
+    let path: PathBuf =
+        reify_test_support::test_package::manifest_dir().join("stdlib/materials_mechanical.ri");
     let source = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read {}: {}", path.display(), e));
     let parsed = reify_syntax::parse(&source, ModulePath::single("stdlib"));
