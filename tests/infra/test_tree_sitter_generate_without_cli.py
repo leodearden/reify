@@ -90,6 +90,16 @@ def _output(result: subprocess.CompletedProcess) -> str:
 
 
 class TreeSitterGenerateWithoutCliTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        masked_dir = Path(tempfile.mkdtemp(prefix="ts-generate-without-cli-path-"))
+        cls.addClassCleanup(shutil.rmtree, masked_dir, True)
+        cls.masked_path = _masked_path(masked_dir)
+        if shutil.which("tree-sitter", path=cls.masked_path) is not None:
+            raise AssertionError(
+                f"the masked PATH dir {cls.masked_path} still resolves a tree-sitter"
+            )
+
     def setUp(self) -> None:
         scratch = Path(tempfile.mkdtemp(prefix="ts-generate-without-cli-"))
         self.addCleanup(shutil.rmtree, scratch, True)
@@ -98,11 +108,6 @@ class TreeSitterGenerateWithoutCliTest(unittest.TestCase):
         self.marker = scratch / "stub-runs.log"
         stub_dir = scratch / "stub-bin"
         stub = _write_stub_cli(stub_dir, self.marker)
-        masked = _masked_path(scratch / "masked-bin")
-        self.assertIsNone(
-            shutil.which("tree-sitter", path=masked),
-            f"the masked PATH dir {masked} still resolves a tree-sitter",
-        )
 
         stub_env = dict(os.environ, PATH=f"{stub_dir}{os.pathsep}{os.environ['PATH']}")
         generated = _run(self.root, stub_env)
@@ -112,7 +117,7 @@ class TreeSitterGenerateWithoutCliTest(unittest.TestCase):
         self.assertIn("up to date", current.stdout, _output(current))
         self.assertEqual(self._stub_runs(), 1)
 
-        self.masked_env = dict(os.environ, PATH=masked, TREE_SITTER_BIN=str(stub))
+        self.masked_env = dict(os.environ, PATH=self.masked_path, TREE_SITTER_BIN=str(stub))
 
     def _stub_runs(self) -> int:
         return len(self.marker.read_text().splitlines())
