@@ -1923,6 +1923,32 @@ fn plain() {
     assert_eq!(1 + 1, 2);
 }
 RS_EOF
+# comment_only / concat_continuation / trailing_comment pin which lines the
+# relink ERE skips: only a line whose first non-blank characters are `//`
+# (`//`, `///`, `//!`, any indent), which can never bake a path.  A code line
+# is never skipped, even when its macro sits in a trailing comment (fail-safe).
+cat > "$N_LANE/crates/foo/tests/comment_only.rs" <<'RS_EOF'
+//! env!("OUT_DIR")
+// env!("CARGO_MANIFEST_DIR")
+#[test]
+fn comment_only() {
+    /// env!("CARGO_BIN_EXE_my-tool")
+	// env!("CARGO_TARGET_TMPDIR")
+    assert_eq!(1 + 1, 2);
+}
+RS_EOF
+cat > "$N_LANE/crates/foo/tests/concat_continuation.rs" <<'RS_EOF'
+const P: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/x"
+);
+RS_EOF
+cat > "$N_LANE/crates/foo/tests/trailing_comment.rs" <<'RS_EOF'
+#[test]
+fn trailing_comment() {
+    let _ = 1; // env!("CARGO_MANIFEST_DIR")
+}
+RS_EOF
 cat > "$N_LANE/crates/foo/src/lib.rs" <<'RS_EOF'
 pub const MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
 RS_EOF
@@ -1968,6 +1994,21 @@ assert "N4: src/lib.rs mtime == 2020 epoch (src/ pruned -> no lib rlib cascade)"
 # N5: byte content of the relinked file is IDENTICAL (mtime-only touch, git stays clean)
 assert "N5: tests/env_probe.rs byte content unchanged (mtime-only touch)" \
     cmp -s "$N_SNAPSHOT" "$N_LANE/crates/foo/tests/env_probe.rs"
+
+# N10: macros named only on `//`-led lines (any indent, incl. a tab) -> untouched
+N10_MTIME="$(stat -c '%Y' "$N_LANE/crates/foo/tests/comment_only.rs")"
+assert "N10: tests/comment_only.rs mtime == 2020 epoch (\`//\`-led mentions only -> untouched)" \
+    test "$N10_MTIME" -eq "$EPOCH_2020"
+
+# N11: a concat! continuation line that opens with env!( is relinked
+N11_MTIME="$(stat -c '%Y' "$N_LANE/crates/foo/tests/concat_continuation.rs")"
+assert "N11: tests/concat_continuation.rs mtime > 2020 epoch (line-start env!( continuation relinked)" \
+    test "$N11_MTIME" -gt "$EPOCH_2020"
+
+# N12: a code line is never skipped, even when the macro is in its trailing comment
+N12_MTIME="$(stat -c '%Y' "$N_LANE/crates/foo/tests/trailing_comment.rs")"
+assert "N12: tests/trailing_comment.rs mtime > 2020 epoch (code line with trailing comment relinked; fail-safe)" \
+    test "$N12_MTIME" -gt "$EPOCH_2020"
 
 # N: EQUAL fixture — recorded .buildroot content == realpath(consuming lane),
 # so the relink must be SKIPPED (base was already built under this lane's own
