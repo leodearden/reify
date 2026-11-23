@@ -22,7 +22,7 @@ use reify_compiler::{
     CompiledConstraintDef, CompiledModule, CompiledPurpose, CompiledTrait, CompiledTypeAlias,
     CompiledUnit, TopologyTemplate,
 };
-use reify_core::{Severity, Type};
+use reify_core::{Diagnostic, DiagnosticCode, Severity, Type};
 use reify_eval::DefEnv;
 use reify_ir::{CompiledFunction, EnumDef, Satisfaction};
 use reify_test_support::mocks::MockConstraintChecker;
@@ -658,4 +658,341 @@ fn function_resolution_matches_parameter_types_exactly() {
         "no `{}` takes one Bool",
         peer.name
     );
+}
+
+// ─── D-6 collision report and the §10 Q4 function composition ─────────────
+
+/// Whether `diagnostic` is the D-6 report of `kind` `name` bound by `winner`
+/// over `shadowed`: a coded Warning naming both origins, winner first, that
+/// says first-wins.
+fn reports_collision(
+    diagnostic: &Diagnostic,
+    kind: &str,
+    name: &str,
+    winner: &str,
+    shadowed: &str,
+) -> bool {
+    let message = &diagnostic.message;
+    let position = |origin: &str| message.find(&format!("'{origin}'"));
+    diagnostic.severity == Severity::Warning
+        && diagnostic.code == Some(DiagnosticCode::DefinitionCollision)
+        && message.starts_with(&format!("{kind} '{name}' "))
+        && message.contains("first-wins")
+        && matches!((position(winner), position(shadowed)), (Some(w), Some(s)) if w < s)
+}
+
+fn collisions_of_kind<'d>(warnings: &'d [Diagnostic], kind: &str) -> Vec<&'d Diagnostic> {
+    warnings
+        .iter()
+        .filter(|d| d.message.starts_with(&format!("{kind} '")))
+        .collect()
+}
+
+/// Per kind: one Warning per entry-vs-import and per import-vs-import
+/// shadowing, and none for `b`'s redeclaration of a stdlib name (an
+/// import-vs-std shadowing, which `b`'s own compile reports).
+fn assert_kind_collisions<D: Kind>(kind: &str) {
+    let row = row(kind);
+    let fx = KindsFixture::new();
+    let warnings = DefEnv::from_program(&fx.program).collision_warnings();
+    let [shared, peer, ..] = row.names;
+    let kind_word = named::<D>(fx.a(), shared).kind_word();
+    let expected: Vec<(&str, &str, &str)> = if row.entry_redeclares {
+        vec![
+            (shared, "main", "a"),
+            (shared, "main", "b"),
+            (peer, "a", "b"),
+        ]
+    } else {
+        vec![(shared, "a", "b"), (peer, "a", "b")]
+    };
+    let of_kind = collisions_of_kind(&warnings, kind_word);
+    for (name, winner, shadowed) in &expected {
+        let reports = of_kind
+            .iter()
+            .filter(|d| reports_collision(d, kind_word, name, winner, shadowed))
+            .count();
+        assert_eq!(
+            reports, 1,
+            "{kind}: one report of '{name}' ({winner} over {shadowed}), got {of_kind:#?}"
+        );
+    }
+    assert_eq!(
+        of_kind.len(),
+        expected.len(),
+        "{kind}: no other collision is reported, got {of_kind:#?}"
+    );
+}
+
+#[test]
+fn template_collisions_are_reported_once_per_import_tier_shadowing() {
+    assert_kind_collisions::<TopologyTemplate>("template");
+}
+
+#[test]
+fn function_collisions_are_reported_once_per_import_tier_shadowing() {
+    assert_kind_collisions::<CompiledFunction>("function");
+}
+
+#[test]
+fn enum_collisions_are_reported_once_per_import_tier_shadowing() {
+    assert_kind_collisions::<EnumDef>("enum");
+}
+
+#[test]
+fn unit_collisions_are_reported_once_per_import_tier_shadowing() {
+    assert_kind_collisions::<CompiledUnit>("unit");
+}
+
+#[test]
+fn type_alias_collisions_are_reported_once_per_import_tier_shadowing() {
+    assert_kind_collisions::<CompiledTypeAlias>("type alias");
+}
+
+#[test]
+fn trait_collisions_are_reported_once_per_import_tier_shadowing() {
+    assert_kind_collisions::<CompiledTrait>("trait");
+}
+
+#[test]
+fn constraint_def_collisions_are_reported_once_per_import_tier_shadowing() {
+    assert_kind_collisions::<CompiledConstraintDef>("constraint def");
+}
+
+#[test]
+fn purpose_collisions_are_reported_once_per_import_tier_shadowing() {
+    assert_kind_collisions::<CompiledPurpose>("purpose");
+}
+
+#[test]
+fn the_kinds_fixture_reports_exactly_the_import_tier_shadowings() {
+    let fx = KindsFixture::new();
+    let warnings = DefEnv::from_program(&fx.program).collision_warnings();
+    let expected: usize = rows()
+        .iter()
+        .map(|row| if row.entry_redeclares { 3 } else { 2 })
+        .sum();
+    assert_eq!(warnings.len(), expected, "got {warnings:#?}");
+}
+
+/// A shadowed STD definition is not DefEnv's to report: the entry's own
+/// compile reports entry-vs-std as `StdlibNameShadowed`, and the import's own
+/// compile reports import-vs-std the same way.
+#[test]
+fn a_shadowed_stdlib_definition_is_not_in_the_collision_report() {
+    const STD_NAME: &str = "Color";
+    stdlib_module_declaring(STD_NAME);
+    let dir = tempfile::tempdir().unwrap();
+    let declare =
+        |marker: u32| format!("structure def {STD_NAME} {{\n    param zz : Real = {marker}\n}}\n");
+    let program = compile_in(
+        dir.path(),
+        &[("a", &format!("module a\npub {}", declare(1)))],
+        &format!("module main\nimport a\n{}", declare(2)),
+    );
+    assert_eq!(
+        errors_of(&program),
+        Vec::<&str>::new(),
+        "precondition: no Error"
+    );
+    let is_shadow = |d: &&Diagnostic| {
+        d.code == Some(DiagnosticCode::StdlibNameShadowed) && d.message.contains(STD_NAME)
+    };
+    assert!(
+        program.entry_own_diagnostics().any(|d| is_shadow(&d)),
+        "the entry's own compile reports entry-vs-std, got {:#?}",
+        program.entry().diagnostics
+    );
+    assert!(
+        program.rehomed_from("a").any(|d| is_shadow(&d)),
+        "a's own compile reports import-vs-std"
+    );
+
+    let warnings = DefEnv::from_program(&program).collision_warnings();
+    assert_eq!(
+        warnings.len(),
+        1,
+        "only main-vs-a is DefEnv's, got {warnings:#?}"
+    );
+    assert!(reports_collision(
+        &warnings[0],
+        "structure",
+        STD_NAME,
+        "main",
+        "a"
+    ));
+}
+
+#[test]
+fn a_program_without_import_tier_shadowing_reports_no_collision() {
+    let dir = tempfile::tempdir().unwrap();
+    let program = compile_fixture(dir.path());
+    let warnings = DefEnv::from_program(&program).collision_warnings();
+    assert!(warnings.is_empty(), "got {warnings:#?}");
+}
+
+/// `a` and `b` both declare `twice(x: Real)`; the entry declares `scale(Real)`
+/// beside `a`'s `scale(Length)`.
+fn compile_function_fixture(dir: &Path) -> CompiledProgram {
+    let program = compile_in(
+        dir,
+        &[
+            (
+                "a",
+                "module a\n\
+                 pub fn twice(x: Real) -> Real { x * 2 }\n\
+                 pub fn scale(x: Length) -> Length { x }\n",
+            ),
+            ("b", "module b\npub fn twice(x: Real) -> Real { x + x }\n"),
+        ],
+        "module main\nimport a\nimport b\nfn scale(x: Real) -> Real { x }\n",
+    );
+    assert_eq!(
+        errors_of(&program),
+        Vec::<&str>::new(),
+        "precondition: no Error"
+    );
+    program
+}
+
+/// Functions gain the collision warning they never had.
+#[test]
+fn an_import_vs_import_function_collision_warns_and_the_first_import_binds() {
+    let dir = tempfile::tempdir().unwrap();
+    let program = compile_function_fixture(dir.path());
+    let env = DefEnv::from_program(&program);
+    let twice_in_a: &CompiledFunction = named(&program.imports[0].module, "twice");
+    assert!(same(
+        env.resolve_function("twice", &param_types(twice_in_a)),
+        twice_in_a
+    ));
+    let warnings = env.collision_warnings();
+    assert_eq!(warnings.len(), 1, "got {warnings:#?}");
+    assert!(reports_collision(
+        &warnings[0],
+        "function",
+        "twice",
+        "a",
+        "b"
+    ));
+}
+
+/// §10 Q4: distinct signatures under one name coexist as overloads.
+#[test]
+fn distinct_signatures_coexist_as_overloads_in_precedence_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let program = compile_function_fixture(dir.path());
+    let env = DefEnv::from_program(&program);
+    let own: &CompiledFunction = named(program.entry(), "scale");
+    let imported: &CompiledFunction = named(&program.imports[0].module, "scale");
+    let overloads = env.overloads("scale");
+    assert_eq!(overloads.len(), 2, "got {overloads:#?}");
+    assert!(
+        std::ptr::eq(overloads[0], own),
+        "the entry's overload first"
+    );
+    assert!(std::ptr::eq(overloads[1], imported));
+    assert!(
+        !env.collision_warnings()
+            .iter()
+            .any(|d| d.message.contains("'scale'")),
+        "overloads are not collisions"
+    );
+}
+
+/// A function's dispatch key: its name and parameter types.
+fn signature(function: &CompiledFunction) -> (&str, Vec<&Type>) {
+    (
+        function.name.as_str(),
+        function.params.iter().map(|(_, ty)| ty).collect(),
+    )
+}
+
+/// §10 Q4 against the `eval_is_idempotent_for_prelude_functions` source
+/// (tests/stdlib_prelude_tests.rs): the entry's `symmetric_tolerance` shadows
+/// the stdlib's, and `function_table()` dispatches exactly as the engine's
+/// table does, the entry's functions followed by every stdlib module's in load
+/// order, first match per signature.
+#[test]
+fn the_function_table_dispatches_as_the_engine_table_does() {
+    let source = "module main\n\
+         fn symmetric_tolerance(nominal: Length, deviation: Length) -> Length {\n\
+         \x20   nominal - deviation\n\
+         }\n\
+         \n\
+         structure S {\n\
+         \x20   let v : Length = symmetric_tolerance(5mm, 2mm)\n\
+         }\n";
+    let dir = tempfile::tempdir().unwrap();
+    let program = compile_in(dir.path(), &[], source);
+    assert_eq!(
+        errors_of(&program),
+        Vec::<&str>::new(),
+        "precondition: no Error"
+    );
+    let env = DefEnv::from_program(&program);
+    let own: &CompiledFunction = named(env.declared(), "symmetric_tolerance");
+    assert!(
+        load_stdlib()
+            .iter()
+            .flat_map(|m| m.functions.iter())
+            .any(|f| signature(f) == signature(own)),
+        "precondition: the stdlib declares symmetric_tolerance with the entry's signature"
+    );
+    assert!(same(
+        env.resolve_function("symmetric_tolerance", &param_types(own)),
+        own
+    ));
+
+    let table = env.function_table();
+    let reference: Vec<&CompiledFunction> = env
+        .declared()
+        .functions
+        .iter()
+        .chain(load_stdlib().iter().flat_map(|m| m.functions.iter()))
+        .collect();
+    let first_in_table = |function: &CompiledFunction| {
+        table
+            .iter()
+            .find(|f| signature(f) == signature(function))
+            .unwrap_or_else(|| panic!("the table dispatches {:?}", signature(function)))
+    };
+    let first_in_reference = |function: &CompiledFunction| {
+        *reference
+            .iter()
+            .find(|f| signature(f) == signature(function))
+            .expect("the function is in the reference order")
+    };
+    assert_eq!(
+        table
+            .iter()
+            .filter(|f| signature(f) == signature(own))
+            .count(),
+        1,
+        "the table holds one symmetric_tolerance(Length, Length)"
+    );
+    assert_eq!(first_in_table(own).content_hash, own.content_hash);
+    for function in &reference {
+        assert_eq!(
+            first_in_table(function).content_hash,
+            first_in_reference(function).content_hash,
+            "dispatch of {:?} differs from the engine's first match",
+            signature(function)
+        );
+    }
+    for (i, function) in table.iter().enumerate() {
+        assert_eq!(
+            function.content_hash,
+            first_in_reference(function).content_hash,
+            "the table entry {:?} is the engine's first match",
+            signature(function)
+        );
+        assert!(
+            table[..i]
+                .iter()
+                .all(|f| signature(f) != signature(function)),
+            "the table holds one entry per signature, {:?} twice",
+            signature(function)
+        );
+    }
 }
