@@ -113,22 +113,16 @@ class NamespaceRows(HostCase):
         self.assertEqual(report["policy"], "incremental")
         self.assertFalse(self.stamp.exists())
 
-    def test_status_reports_refused_where_the_default_policy_would_refuse(self):
-        """shared, the default when host.toml names no policy, needs beta2's sccache server."""
+    def test_status_reports_canon_under_the_default_shared_policy(self):
+        """shared, the default when host.toml names no policy, runs with the private server."""
         fx.write_host_config(self.env["REIFY_CANON_HOST_CONFIG"], enabled=True)
         result = fx.run_canon(self.tree, self.tree, "status", env=self.env)
         self.assertEqual(result.returncode, 0, result.stderr)
         report = json.loads(result.stdout)
         self.assertEqual(report["policy"], "shared")
-        self.assertEqual(report["build_dir_mode"], "refused", report["reason"])
-        self.assertIn("policy 'shared'", report["reason"])
+        self.assertEqual(report["build_dir_mode"], "canon", report["reason"])
+        self.assertIsNone(report["store_reachable"])
         self.assertEqual(report["canon_root"], self.canon)
-
-    def test_policy_refusal_comes_before_the_stamp(self):
-        fx.write_host_config(self.env["REIFY_CANON_HOST_CONFIG"], enabled=True, policy="shared")
-        result = fx.run([self.trampoline, *fx.CARGO_TEST], cwd=self.tree, env=self.env)
-        self.assert_refused(result, "policy 'shared'")
-        self.assertFalse(self.stamp.exists())
 
     def test_cargo_test_builds_at_canon_incrementally_without_the_wrapper(self):
         self.with_caller_cache_variables()

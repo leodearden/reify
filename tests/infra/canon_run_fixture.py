@@ -24,6 +24,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CANON_RUN = REPO_ROOT / "scripts" / "canon_run.py"
 TRAMPOLINE = REPO_ROOT / "scripts" / "canon-bin" / "cargo"
+GUARD = REPO_ROOT / "scripts" / "canon-bin" / "guard" / "sccache"
+CANON_RUN_SIBLINGS = ("canon_cache.py", "lib_event_log.sh")
 PYTHON = "/usr/bin/python3"
 BWRAP = "/usr/bin/bwrap"
 LANDLOCK_EXEC = REPO_ROOT / "gui" / "src-tauri" / "sandbox" / "landlock_exec.py"
@@ -41,15 +43,26 @@ def load_canon_run():
     return module
 
 
+def load_canon_cache():
+    """The canon_cache module canon_run imported, so enum identity holds across both."""
+    load_canon_run()
+    return sys.modules["canon_cache"]
+
+
 def make_tree(parent, name):
-    """A tree canon_run.py recognises: Cargo.lock beside scripts/canon_run.py."""
+    """A tree canon_run.py recognises: Cargo.lock beside scripts/canon_run.py and its siblings."""
     root = Path(parent, name)
     canon_bin = root / "scripts" / "canon-bin"
     canon_bin.mkdir(parents=True)
     (root / "Cargo.lock").write_text("version = 4\n")
     shutil.copy2(CANON_RUN, root / "scripts" / "canon_run.py")
+    for sibling in CANON_RUN_SIBLINGS:
+        shutil.copy2(REPO_ROOT / "scripts" / sibling, root / "scripts" / sibling)
     if TRAMPOLINE.exists():
         shutil.copy2(TRAMPOLINE, canon_bin / "cargo")
+    if GUARD.exists():
+        (canon_bin / "guard").mkdir()
+        shutil.copy2(GUARD, canon_bin / "guard" / "sccache")
     return os.path.realpath(root)
 
 

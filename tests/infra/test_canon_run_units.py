@@ -3,7 +3,8 @@
 test_canon_run_units.py — stdlib unittest for scripts/canon_run.py that needs
 no mount namespace (canonical-build-path PRD, dark-factory
 plans/canonical-build-path-shared-cache-prd.md: C1's mode table, C2, C3's bound
-check, C4's `incremental` row, C7's trampoline; boundary rows 1-4, 9 and 11).
+check, C4's policy table as composed at CANON, C7's trampoline; boundary rows
+1-4, 9 and 11).
 
 No case probes or enters a mount namespace, so the suite is deterministic.
 One CanonCargo case fills CANON with a copy of the tree, and only
@@ -17,6 +18,7 @@ import importlib.util
 import json
 import os
 import shutil
+import socket
 import sys
 import tempfile
 import unittest
@@ -28,6 +30,7 @@ import canon_run_fixture as fx  # noqa: E402  (imported after sys.path manipulat
 from verify_ledger_env import hermetic_env  # noqa: E402
 
 canon_run = fx.load_canon_run()
+canon_cache = fx.load_canon_cache()
 
 STATUS_KEYS = {
     "canon_root",
@@ -39,13 +42,21 @@ STATUS_KEYS = {
     "build_dir",
     "build_dir_mode",
     "reason",
+    "store_reachable",
 }
-BETA2_KEYS = (
-    'store_url = "https://store.invalid/reify"',
+CACHE_KEYS = (
+    'store_url = "http://store.invalid/reify"',
     'store_user = "reify"',
     'store_password = "hunter2"',
     'fallback_dir = "/var/cache/reify-canon"',
     'fallback_cap = "50G"',
+)
+SERVER = canon_cache.ServerAddress(
+    socket="/canon/target/.reify-sccache.1.sock",
+    sccache="/real/bin/sccache",
+    uncached_log="/canon/target/.reify-canon-uncached.1.log",
+    fallback_dir="/fallback",
+    fallback_cap="10G",
 )
 
 
@@ -89,19 +100,34 @@ class HostConfig(unittest.TestCase):
     def test_absent_file_is_disabled_shared(self):
         config = canon_run.load_host_config(self.path)
         self.assertFalse(config.enabled)
-        self.assertIs(config.policy, canon_run.Policy.SHARED)
+        self.assertIs(config.policy, canon_cache.Policy.SHARED)
+        self.assertEqual(config.cache, canon_cache.CacheSettings())
 
     def test_enabled_incremental(self):
         fx.write_host_config(self.path, enabled=True, policy="incremental")
         config = canon_run.load_host_config(self.path)
         self.assertTrue(config.enabled)
-        self.assertIs(config.policy, canon_run.Policy.INCREMENTAL)
+        self.assertIs(config.policy, canon_cache.Policy.INCREMENTAL)
 
-    def test_beta2_keys_are_accepted_and_ignored(self):
-        fx.write_host_config(self.path, enabled=True, policy="mixed", extra_lines=BETA2_KEYS)
+    def test_cache_keys_are_parsed(self):
+        fx.write_host_config(self.path, enabled=True, policy="mixed", extra_lines=CACHE_KEYS)
         config = canon_run.load_host_config(self.path)
         self.assertTrue(config.enabled)
-        self.assertIs(config.policy, canon_run.Policy.MIXED)
+        self.assertIs(config.policy, canon_cache.Policy.MIXED)
+        self.assertEqual(
+            config.cache,
+            canon_cache.CacheSettings(
+                store_url="http://store.invalid/reify",
+                store_user="reify",
+                store_password="hunter2",
+                fallback_dir="/var/cache/reify-canon",
+                fallback_cap="50G",
+            ),
+        )
+
+    def test_non_http_store_url_refuses(self):
+        fx.write_host_config(self.path, enabled=True, extra_lines=('store_url = "ftp://x"',))
+        self.assert_refusal_names("store_url", "ftp://x")
 
     def test_unknown_policy_refuses(self):
         fx.write_host_config(self.path, enabled=True, policy="fast")
@@ -289,6 +315,25 @@ class Status(unittest.TestCase):
         report = self.status(cwd=outside)
         self.assertIsNone(report["tree_root"])
         self.assertEqual(report["build_dir_mode"], "real_path")
+
+    def test_store_reachable_is_null_without_store_url(self):
+        fx.write_host_config(self.host, enabled=True)
+        self.assertIsNone(self.status()["store_reachable"])
+
+    def test_store_reachable_is_false_for_a_closed_loopback_port(self):
+        with socket.socket() as closed:
+            closed.bind(("127.0.0.1", 0))
+            port = closed.getsockname()[1]
+        fx.write_host_config(
+            self.host, enabled=True, extra_lines=(f'store_url = "http://127.0.0.1:{port}/reify"',)
+        )
+        self.assertIs(self.status()["store_reachable"], False)
+
+    def test_default_shared_host_is_not_refused_for_its_policy(self):
+        fx.write_host_config(self.host, enabled=True)
+        report = self.status()
+        self.assertEqual(report["policy"], "shared")
+        self.assertEqual(report["build_dir_mode"], "real_path", report["reason"])
 
     def test_malformed_host_config_refuses_with_one_line(self):
         Path(self.host).write_text("enabled = \n")
@@ -600,18 +645,16 @@ class CanonInvocationCase(unittest.TestCase):
         self.environ = fx.scratch_env(
             self.tmp, PATH=f"{self.real}/scripts/canon-bin:{self.fake}:/usr/bin:/bin"
         )
-        self.host = canon_run.HostConfig(
-            Path(self.environ["REIFY_CANON_HOST_CONFIG"]), True, canon_run.Policy.INCREMENTAL
-        )
+        self.cache = canon_cache.CacheEnvironment(canon_cache.Policy.INCREMENTAL, None)
 
-    def invoke(self, command, *, cargo=True, environ=None, tree=None, cwd=None, host=None):
+    def invoke(self, command, *, cargo=True, environ=None, tree=None, cwd=None, cache=None):
         return canon_run.canon_invocation(
             command,
             self.environ if environ is None else environ,
             tree or self.tree,
             self.canon,
             cwd or self.real,
-            host or self.host,
+            cache or self.cache,
             cargo=cargo,
         )
 
@@ -706,7 +749,9 @@ class Exports(CanonInvocationCase):
         self.assertNotIn("REIFY_TS_CACHE_HOME", self.invoke(["build"], environ=environ).env)
 
     def test_infra_suites_do_not_inherit_the_primitive_variables(self):
-        composed = self.invoke(["build"]).env
+        composed = self.invoke(
+            ["build"], cache=canon_cache.CacheEnvironment(canon_cache.Policy.SHARED, SERVER)
+        ).env
         names = {name for name in composed if name.startswith("REIFY_CANON_")}
         names |= {"REIFY_CANON_ROOT", "REIFY_CANON_HOST_CONFIG"}
         with mock.patch.dict(os.environ, {name: "ambient" for name in names}):
@@ -714,36 +759,126 @@ class Exports(CanonInvocationCase):
 
 
 class CachePolicy(CanonInvocationCase):
-    """C4's `incremental` row (boundary row 4); shared and mixed need beta2's server."""
+    """C4's table as canon_invocation applies it (boundary row 4 for `incremental`)."""
+
+    SHARING = (canon_cache.Policy.SHARED, canon_cache.Policy.MIXED)
+
+    def setUp(self):
+        super().setUp()
+        self.cargo_bin = os.path.join(self.environ["HOME"], ".cargo", "bin")
+        self.tree_guard = os.path.join(self.real, "scripts", "canon-bin", "guard")
+        os.makedirs(self.tree_guard, exist_ok=True)
+        guard = Path(self.tree_guard, "sccache")
+        guard.write_text("#!/bin/sh\n# reify-canon-guard\n")
+        guard.chmod(0o755)
+        self.environ = dict(
+            self.environ,
+            FOO="1",
+            PATH=f"{self.tree_guard}:{self.real}/scripts/canon-bin:{self.fake}:/usr/bin:/bin",
+            CARGO_HOME="/elsewhere",
+            **self.CACHE_VARIABLES,
+        )
+
+    def cache_for(self, policy):
+        server = None if policy is canon_cache.Policy.INCREMENTAL else SERVER
+        return canon_cache.CacheEnvironment(policy, server)
+
+    def test_sharing_cargo_env_is_for_cargo_of_the_composed_env(self):
+        for policy in self.SHARING:
+            with self.subTest(policy=policy):
+                cache = self.cache_for(policy)
+                composed = self.invoke(["/bin/true"], cargo=False, cache=cache).env
+                invocation = self.invoke(["build"], cache=cache)
+                self.assertEqual(invocation.env, cache.for_cargo(composed))
+                self.assertEqual(invocation.env["RUSTC_WRAPPER"], "sccache")
+                self.assertEqual(invocation.env["SCCACHE_SERVER_UDS"], SERVER.socket)
+                self.assertEqual(invocation.env["CARGO_HOME"], canon_cache.PINNED_CARGO_HOME)
+                self.assertEqual(invocation.argv[0], os.path.join(self.fake, "cargo"))
+
+    def test_sharing_path_puts_guard_trampoline_then_cargo_home_first(self):
+        expected = [
+            f"{self.canon}/scripts/canon-bin/guard",
+            f"{self.canon}/scripts/canon-bin",
+            self.cargo_bin,
+            self.fake,
+            "/usr/bin",
+            "/bin",
+        ]
+        for policy in self.SHARING:
+            for command, cargo in ((["build"], True), (["/bin/true"], False)):
+                with self.subTest(policy=policy, cargo=cargo):
+                    cache = self.cache_for(policy)
+                    env = self.invoke(command, cargo=cargo, cache=cache).env
+                    self.assertEqual(env["PATH"].split(os.pathsep), expected)
+                    nested = self.invoke(command, cargo=cargo, environ=env, cache=cache).env
+                    self.assertEqual(nested["PATH"], env["PATH"])
+
+    def test_sharing_exec_kind_gets_for_command(self):
+        for policy in self.SHARING:
+            with self.subTest(policy=policy):
+                cache = self.cache_for(policy)
+                env = self.invoke(["/bin/true"], cargo=False, cache=cache).env
+                for name in ("RUSTC_WRAPPER", "CARGO_BUILD_RUSTC_WRAPPER", "CARGO_INCREMENTAL"):
+                    self.assertEqual(env[name], self.CACHE_VARIABLES[name])
+                self.assertEqual(env["SCCACHE_SERVER_UDS"], SERVER.socket)
+                self.assertEqual(env["SCCACHE_DIR"], SERVER.fallback_dir)
+                self.assertNotIn("SCCACHE_SERVER_PORT", env)
+                self.assertEqual(env["CARGO_HOME"], canon_cache.PINNED_CARGO_HOME)
+                self.assertEqual(env, cache.for_command(env))
 
     def test_incremental_cargo_drops_sccache_and_turns_incremental_on(self):
-        environ = dict(self.environ, FOO="1", **self.CACHE_VARIABLES)
-        invocation = self.invoke(["build"], environ=environ)
+        invocation = self.invoke(["build"])
         env = invocation.env
         for name in ("RUSTC_WRAPPER", "CARGO_BUILD_RUSTC_WRAPPER"):
             self.assertNotIn(name, env)
         self.assertEqual([name for name in env if name.startswith("SCCACHE_")], [])
         self.assertEqual(env["CARGO_INCREMENTAL"], "1")
+        self.assertEqual(env["CARGO_HOME"], canon_cache.PINNED_CARGO_HOME)
         self.assertEqual(env["FOO"], "1")
         self.assertEqual(invocation.argv[0], os.path.join(self.fake, "cargo"))
+        path = env["PATH"].split(os.pathsep)
+        self.assertEqual(path[:2], [f"{self.canon}/scripts/canon-bin", self.cargo_bin])
+        self.assertEqual([entry for entry in path if entry.endswith("/guard")], [])
 
-    def test_exec_kind_leaves_cache_variables_as_inherited(self):
-        environ = dict(self.environ, **self.CACHE_VARIABLES)
-        env = self.invoke(["/bin/true"], cargo=False, environ=environ).env
+    def test_incremental_exec_kind_leaves_cache_variables_as_inherited(self):
+        env = self.invoke(["/bin/true"], cargo=False).env
         for name, value in self.CACHE_VARIABLES.items():
             self.assertEqual(env[name], value)
+        self.assertEqual(env["CARGO_HOME"], canon_cache.PINNED_CARGO_HOME)
 
-    def test_shared_and_mixed_refuse(self):
-        for policy in (canon_run.Policy.SHARED, canon_run.Policy.MIXED):
-            host = canon_run.HostConfig(self.host.path, True, policy)
-            for cargo in (True, False):
-                with self.subTest(policy=policy, cargo=cargo):
-                    with self.assertRaises(canon_run.Refusal) as caught:
-                        self.invoke(["build"], cargo=cargo, host=host)
-                    message = str(caught.exception)
-                    self.assertNotIn("\n", message)
-                    for needle in (f"'{policy}'", 'policy = "incremental"', str(self.host.path)):
-                        self.assertIn(needle, message)
+
+class CacheRefusal(unittest.TestCase):
+    """shared and mixed need a real sccache on the composed PATH; incremental needs none."""
+
+    def setUp(self):
+        self.tmp = scratch(self)
+        self.path = Path(self.tmp, "host.toml")
+        self.guard = os.path.join(self.tmp, "guard")
+        self.real = os.path.join(self.tmp, "real")
+        for directory, text in ((self.guard, "#!/bin/sh\n# reify-canon-guard\n"), (self.real, "#!/bin/sh\n")):
+            os.mkdir(directory)
+            Path(directory, "sccache").write_text(text)
+            Path(directory, "sccache").chmod(0o755)
+
+    def refusal(self, policy, *entries):
+        host = canon_run.HostConfig(self.path, True, policy, canon_cache.CacheSettings())
+        return canon_run.cache_refusal(host, os.pathsep.join(entries))
+
+    def test_sharing_without_a_real_sccache_names_policy_sccache_and_host_config(self):
+        for policy in (canon_cache.Policy.SHARED, canon_cache.Policy.MIXED):
+            with self.subTest(policy=policy):
+                message = self.refusal(policy, self.guard, "/nonexistent")
+                self.assertNotIn("\n", message)
+                for needle in (f"'{policy}'", "sccache", str(self.path)):
+                    self.assertIn(needle, message)
+
+    def test_sharing_with_a_real_sccache_after_the_guard_is_not_refused(self):
+        for policy in (canon_cache.Policy.SHARED, canon_cache.Policy.MIXED):
+            with self.subTest(policy=policy):
+                self.assertEqual(self.refusal(policy, self.guard, self.real), "")
+
+    def test_incremental_is_never_refused(self):
+        self.assertEqual(self.refusal(canon_cache.Policy.INCREMENTAL, self.guard), "")
 
 
 class CanonCargo(CanonInvocationCase):
