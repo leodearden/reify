@@ -6,10 +6,17 @@
 //! hand-built prelude. The hand-built `PreludeContext` seed is the subject of
 //! `cross_module_alias_propagation_tests.rs`.
 //!
-//! The rule under test: an imported pub PARAMETRIC alias resolves the alias
-//! names its body mentions in the module that defined it, so an importer's own
-//! alias of the same name cannot change its meaning, and a name the defining
-//! module itself imported still resolves.
+//! The rule under test: an imported pub alias whose body is read at a use site
+//! resolves the alias names its body mentions in the module that defined it.
+//! That is a PARAMETRIC alias (#10297), or a plain one the defining module
+//! left unresolved, typically because its body names an entity (#10354). An
+//! importer's own alias of the same name therefore cannot change its meaning,
+//! and a name the defining module itself imported still resolves. Entity names
+//! in the body still resolve at the use site.
+//!
+//! An alias is identified by its scope and its name, so an importer alias and
+//! a defining-module alias that share a name are distinct: a chain running
+//! through both is not a cycle, while a genuine cycle still terminates.
 
 use std::fs;
 use std::path::Path;

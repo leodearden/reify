@@ -1926,7 +1926,8 @@ pub struct CompiledTypeAlias {
     /// The defining module's alias bindings that `type_expr` resolves against
     /// wherever the alias is used. `Some` on every alias a module exports whose
     /// body is read at a use site: a parametric one, or a non-parametric one
-    /// whose body names an entity (#10354). `None` means resolve the body in
+    /// the alias DFS left unresolved, typically because its body names an
+    /// entity (#10354). `None` means resolve the body in
     /// whichever registry the alias was looked up in.
     pub body_scope: Option<Vec<CompiledTypeAlias>>,
     pub is_pub: bool,

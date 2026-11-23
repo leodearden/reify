@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::marker::PhantomData;
 use std::sync::Arc;
 
 use reify_core::{
@@ -220,21 +221,28 @@ thread_local! {
 /// pre-existing `circular type alias` + `unresolved type` output byte-for-byte.
 /// A guard must never exist for an insert it did not make, because its `Drop`
 /// removes the marker that the outer guard still holds.
-struct AliasDeferScope {
+///
+/// The guard borrows its entry for `'a`, so it cannot outlive the entry whose
+/// address it holds in the set.
+struct AliasDeferScope<'a> {
     entry: AliasEntryId,
+    _entry: PhantomData<&'a TypeAliasEntry>,
 }
 
-impl AliasDeferScope {
-    fn new(entry: &TypeAliasEntry) -> Option<Self> {
+impl<'a> AliasDeferScope<'a> {
+    fn new(entry: &'a TypeAliasEntry) -> Option<Self> {
         let entry = entry.identity();
         if !ALIAS_DEFER_IN_PROGRESS.with(|s| s.borrow_mut().insert(entry)) {
             return None;
         }
-        Some(AliasDeferScope { entry })
+        Some(AliasDeferScope {
+            entry,
+            _entry: PhantomData,
+        })
     }
 }
 
-impl Drop for AliasDeferScope {
+impl Drop for AliasDeferScope<'_> {
     fn drop(&mut self) {
         ALIAS_DEFER_IN_PROGRESS.with(|s| {
             s.borrow_mut().remove(&self.entry);
@@ -245,17 +253,18 @@ impl Drop for AliasDeferScope {
 /// A registry entry's identity for the alias cycle checks: its address.
 ///
 /// Since #10297/#10354 an alias is identified by its scope and its name, and
-/// the entry's address is exactly that pair. It is sound as a key because
-/// every registry is an immutable shared borrow (or an `Arc` held by such a
-/// borrow) for the whole resolution, so an entry stays put while any check
-/// that holds its identity is live. The address is never dereferenced.
+/// the entry's address is exactly that pair while the entry is borrowed:
+/// [`AliasDeferScope`] holds that borrow for its lifetime, and the hop walk's
+/// `visited` set lives inside one borrow of its registry. The address is
+/// never dereferenced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct AliasEntryId(*const TypeAliasEntry);
 
 /// Whether an alias's body is read where the alias is USED: a parametric alias
 /// is instantiated at each use site, and a non-parametric one the alias DFS
-/// left unresolved (its body names an entity, task 6259) is finished there by
-/// the deferred arm of [`resolve_type_expr_with_aliases_kinded`]. Exactly these
+/// left unresolved (typically because its body names an entity, task 6259)
+/// is finished there by the deferred arm of
+/// [`resolve_type_expr_with_aliases_kinded`]. Exactly these
 /// aliases carry their body, and the scope its alias names bind in, across a
 /// module boundary.
 fn body_read_at_use_site(
