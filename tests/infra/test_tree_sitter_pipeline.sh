@@ -415,63 +415,6 @@ ts_witness_value() {
     printf '%s' "$best"
 }
 
-# ts_freshest_run_dir
-#
-# Print the most recently modified cargo build-script RUN directory for
-# tree-sitter-reify — the one holding `output` (cargo's verbatim capture of
-# build-script stdout) and the sibling `out/` with libtree_sitter_reify.a.
-# Prints nothing when none exists.
-ts_freshest_run_dir() {
-    local d m best="" best_m=0
-    local had_nullglob=0
-    shopt -q nullglob && had_nullglob=1
-    shopt -s nullglob
-    for d in "$REPO_ROOT"/target/*/build/tree-sitter-reify-*/output \
-             "$REPO_ROOT"/target/*/*/build/tree-sitter-reify-*/output; do
-        m=$(ts_mtime "$d")
-        if [ "$m" -gt "$best_m" ]; then
-            best_m="$m"
-            best="$(dirname "$d")"
-        fi
-    done
-    [ "$had_nullglob" -eq 1 ] || shopt -u nullglob
-    printf '%s' "$best"
-}
-
-# ts_mirror_run_dir <dest_target_dir>
-#
-# Mirror the freshest built fingerprint dir's archive (and its stamp, if any)
-# into a temp target tree, preserving the dir NAME so a failure message still
-# names the real one. Prints the name; returns 1 if there is nothing to mirror.
-#
-# WHY MIRROR: a real checkout accumulates leftover fingerprint dirs (7 in this
-# lane) that cargo will never rebuild again and which therefore carry no
-# attestation. In an end-to-end test they would drown the one signal under test.
-# Nothing is weakened: the stamp mirrored here is the one build.rs genuinely
-# wrote next to the archive cargo genuinely just built.
-#
-# This is NOT compensating for `check` being unusable against a real target/ —
-# that was true when this helper was written, and is no longer (#5629 review
-# round 2). `check` now scopes its failing verdict to the LIVE fingerprint dir
-# and demotes those leftovers to informational lines, so a plain `check` against
-# the real tree is meaningful and is what verify.sh runs after the cargo wave.
-# The mirror is kept only to pin the assertion to one KNOWN dir, so the test
-# cannot be perturbed by whatever else has been built in the lane.
-ts_mirror_run_dir() {
-    local dest="$1" run_dir name out
-    run_dir=$(ts_freshest_run_dir)
-    [ -n "$run_dir" ] || return 1
-    name="$(basename "$run_dir")"
-    out="$dest/debug/build/$name/out"
-    rm -rf "$dest"
-    mkdir -p "$out"
-    cp "$run_dir/out/libtree_sitter_reify.a" "$out/" 2>/dev/null || return 1
-    if [ -f "$run_dir/out/tree_sitter_inputs.stamp" ]; then
-        cp "$run_dir/out/tree_sitter_inputs.stamp" "$out/"
-    fi
-    printf '%s' "$name"
-}
-
 # run_ts_freshness <mode> <target_dir> [ts_dir]
 # Sets TS_FRESHNESS_OUT (combined stdout+stderr) and TS_FRESHNESS_RC.
 run_ts_freshness() {
@@ -2882,8 +2825,9 @@ test_build_rs_stamps_a_real_manifest_on_a_shasum_only_host() {
     #
     # NON-VACUITY IS MEASURED BY MUTATION: build.rs reduced to sha256sum-only
     # writes the literal UNAVAILABLE (caught by assertion 1), and ("shasum", &[])
-    # — bare shasum, which is SHA-1 — writes 40-hex digests that fail assertions
-    # 2 and 3. That second mutation is precisely what the outgoing guard missed.
+    # — bare shasum, which is SHA-1 — leaves no stamp at all, which the stamp-
+    # nonempty check catches (measured on this fixture crate, #10144). That second
+    # mutation is precisely what the outgoing guard missed.
     #
     # scripts/lib_portable.sh stays deliberately OUT of
     # scripts/verify-pipeline-infra-tests.txt: routing it would pull this whole
@@ -2891,12 +2835,17 @@ test_build_rs_stamps_a_real_manifest_on_a_shasum_only_host() {
     # lib. The merge gate runs --include-infra, so this arm is always evaluated
     # there; the exposure is one task-scope run, not a coverage hole.
 
+    # It runs on a fixture crate in its own target dir, so the lane's
+    # tree-sitter-reify/ and target/ are never touched (#10144).
+
     # SKIP only on a PROVEN environment defect. `shasum` absent from the host
     # means the fallback under test cannot exist here at all.
     if ! command -v shasum >/dev/null 2>&1; then
         echo "  SKIP: shasum not on PATH — the shasum-only fallback cannot be exercised on this host"
         return 0
     fi
+    # The fixture's first build generates, so it needs the CLI (the mask links it).
+    require_tree_sitter_cli || return 0
 
     local mask
     mask=$(mktemp -d) || return 1
@@ -2933,34 +2882,17 @@ test_build_rs_stamps_a_real_manifest_on_a_shasum_only_host() {
         return 0
     fi
 
-    # Force a build-script re-run: grammar.js is watched, and touching it is
-    # mtime-only, so the worktree stays clean and the digests are unchanged.
-    touch "$TS_DIR/grammar.js"
+    local va fix cargo_out guard_rc=0
+    va=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$va'")
+    ts_write_grammar_variant "$va" a
+    fix=$(mktemp -d); CLEANUP_ACTIONS+=("rm -rf '$fix'")
+    mk_ts_build_fixture "$fix" "$va" || return 1
+    cargo_out=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
+    PATH="$mask" ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
 
-    local cargo_out
-    cargo_out=$(mktemp)
-    CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
-    local guard_rc=0
-    run_guarded_cargo_check "$cargo_out" env PATH="$mask" timeout 300 cargo check \
-        -p tree-sitter-reify --manifest-path "$REPO_ROOT/Cargo.toml" || guard_rc=$?
-    if [ "$guard_rc" -eq "$TS_INFRA_RC" ]; then return "$TS_INFRA_RC"; fi
-    if [ "$guard_rc" -ne 0 ]; then return 1; fi
-
-    local run_dir
-    run_dir=$(ts_freshest_run_dir)
-    if [ -z "$run_dir" ]; then
-        if [ -n "${CARGO_TARGET_DIR:-}" ]; then
-            echo "  SKIP: CARGO_TARGET_DIR=$CARGO_TARGET_DIR redirects build output away from"
-            echo "  $REPO_ROOT/target, so the freshly written stamp is not locatable here"
-            return 0
-        fi
-        echo ""
-        echo "  ASSERTION FAILED: cargo check succeeded but no"
-        echo "  $REPO_ROOT/target/*/build/tree-sitter-reify-*/output exists — build.rs"
-        echo "  cannot have run, so no stamp was written."
-        return 1
-    fi
-    local stamp="$run_dir/out/tree_sitter_inputs.stamp"
+    local stamp
+    stamp="$(ts_fixture_out_dir "$fix")/tree_sitter_inputs.stamp" || return 1
     assert_file_nonempty "$stamp" || return 1
 
     local content
@@ -3028,12 +2960,13 @@ test_build_rs_stamps_a_real_manifest_on_a_shasum_only_host() {
     # (3) The cross-hasher agreement contract in its strongest form: what shasum
     # wrote INSIDE the mask must be byte-identical to what sha256sum computes
     # OUTSIDE it. Anything else and every `check` verdict is meaningless.
-    if ! cmp -s "$stamp" <(bash "$FRESHNESS_SCRIPT" --print-fingerprint); then
+    if ! cmp -s "$stamp" <(REIFY_TS_FRESHNESS_TS_DIR="$fix" bash "$FRESHNESS_SCRIPT" --print-fingerprint); then
         echo ""
         echo "  ASSERTION FAILED: the shasum-written stamp is not byte-identical to"
         echo "  scripts/tree-sitter-freshness.sh --print-fingerprint (sha256sum)."
         echo "  --- stamp ($stamp) ---"; cat "$stamp"
-        echo "  --- shell fingerprint ---"; bash "$FRESHNESS_SCRIPT" --print-fingerprint
+        echo "  --- shell fingerprint ---"
+        REIFY_TS_FRESHNESS_TS_DIR="$fix" bash "$FRESHNESS_SCRIPT" --print-fingerprint
         return 1
     fi
 }
