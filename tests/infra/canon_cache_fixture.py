@@ -1,23 +1,36 @@
 """
 canon_cache_fixture.py — shared builders for the scripts/canon_cache.py suites
-(test_canon_cache_units.py, test_canon_cache_host.py): a fake WebDAV store
-whose behaviour switches at run time, and a fake sccache whose server follows a
-scripted plan.
+(test_canon_cache_units.py, test_canon_cache_host.py, and the BoundRoute
+cases of test_canon_run_units.py): a fake WebDAV store whose behaviour switches
+at run time, and a fake sccache whose server follows a scripted plan; for the
+host suite, a real `rclone serve webdav` store, a workspace with registry and C
+units, its host.toml, and journal and process readers.
 
 Not a test module itself (no `test_` prefix): run_all.sh never discovers it,
 and the suites import it via the sys.path idiom. Builds on canon_run_fixture.
 """
 
+import functools
 import http.server
+import itertools
 import json
 import os
+import secrets
+import shutil
 import socket
+import subprocess
 import sys
+import tempfile
 import threading
+import time
+import tomllib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import canon_run_fixture as fx  # noqa: E402,F401  (imported after sys.path manipulation)
+import canon_run_fixture as fx  # noqa: E402  (imported after sys.path manipulation)
+
+sys.path.insert(0, str(fx.REPO_ROOT / "scripts"))
+from verify_events_lib import read_events  # noqa: E402
 
 SLOW_PREFIX = "/slow"
 SLOW_HEAD = b"x" * 1024
@@ -381,3 +394,206 @@ def write_supervise_runner(directory):
     runner = Path(directory, "supervise_runner.py")
     runner.write_text(SUPERVISE_RUNNER)
     return str(runner)
+
+
+# --- host suite: a real store, a workspace with registry and C units --------
+
+STORE_USER = "reify-canon-test"
+STORE_PREFIX = "reify"
+HEX = "0123456789abcdef"
+READY_WAIT = 60.0
+JOURNAL = ".reify-canon-journal.jsonl"
+
+
+class RcloneStore:
+    """A private `rclone serve webdav` on loopback with basic auth, sccache's leaf directories pre-created."""
+
+    def __init__(self, parent, rclone):
+        self.directory = Path(parent, "store")
+        for a, b, c in itertools.product(HEX, HEX, HEX):
+            Path(self.directory, STORE_PREFIX, a, b, c).mkdir(parents=True, exist_ok=True)
+        self.password = secrets.token_hex(12)
+        self.port = closed_port()
+        self.url = f"http://127.0.0.1:{self.port}/{STORE_PREFIX}"
+        self.log = Path(parent, "rclone.log")
+        with open(self.log, "wb") as log:
+            self.process = subprocess.Popen(
+                [rclone, "serve", "webdav", str(self.directory), "--addr", f"127.0.0.1:{self.port}",
+                 "--user", STORE_USER, "--pass", self.password, "--dir-cache-time", "1s"],
+                env={"PATH": "/usr/bin:/bin", "HOME": str(parent), "RCLONE_CONFIG": "/dev/null"},
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=log,
+            )
+        self.wait_ready()
+
+    def settings_lines(self):
+        return (
+            f'store_url = "{self.url}"',
+            f'store_user = "{STORE_USER}"',
+            f'store_password = "{self.password}"',
+        )
+
+    def wait_ready(self):
+        """Until the store answers sccache's start-up GET; RuntimeError if rclone exits or never answers."""
+        canon_cache = fx.load_canon_cache()
+        settings = canon_cache.CacheSettings(store_url=self.url, store_user=STORE_USER, store_password=self.password)
+        deadline = time.monotonic() + READY_WAIT
+        while not canon_cache.probe_store(settings, canon_cache.SessionKnobs()):
+            if self.process.poll() is not None or time.monotonic() > deadline:
+                self.stop()
+                raise RuntimeError(f"rclone serve webdav did not come up: {self.log.read_text()[-2000:]}")
+            time.sleep(0.05)
+
+    def objects(self):
+        """Cache entries the store holds: every file under the prefix but sccache's start-up check."""
+        root = Path(self.directory, STORE_PREFIX)
+        return sorted(
+            path for path in root.rglob("*") if path.is_file() and path.name != ".sccache_check"
+        )
+
+    def stop(self):
+        if self.process.poll() is None:
+            self.process.terminate()
+        self.process.wait()
+
+
+CACHE_TREE_FILES = {
+    "Cargo.toml": '[workspace]\nmembers = ["fixture_reader", "c_unit"]\nresolver = "2"\n',
+    "fixture_reader/Cargo.toml": (
+        '[package]\nname = "fixture_reader"\nversion = "0.1.0"\nedition = "2021"\n\n'
+        '[dependencies]\nshlex = "1"\nc_unit = { path = "../c_unit" }\n'
+    ),
+    "fixture_reader/src/lib.rs": (
+        "pub fn words(line: &str) -> Vec<String> {\n"
+        "    shlex::split(line).unwrap_or_default()\n"
+        "}\n"
+    ),
+    "fixture_reader/fixtures/data.txt": fx.FIXTURE_DATA,
+    "c_unit/Cargo.toml": (
+        '[package]\nname = "c_unit"\nversion = "0.1.0"\nedition = "2021"\nbuild = "build.rs"\n\n'
+        '[build-dependencies]\ncc = "1"\n'
+    ),
+    "c_unit/build.rs": (
+        "fn main() {\n"
+        '    if let Some(fifo) = std::env::var_os("C_UNIT_BLOCK_FIFO") {\n'
+        "        let _ = std::fs::read(fifo);\n"
+        "    }\n"
+        '    println!("cargo:rerun-if-changed=src/unit.c");\n'
+        '    cc::Build::new().file("src/unit.c").compile("unit");\n'
+        "}\n"
+    ),
+    "c_unit/src/unit.c": "int c_unit_value(void) { return 42; }\n",
+    "c_unit/src/lib.rs": (
+        'extern "C" {\n    fn c_unit_value() -> i32;\n}\n\n'
+        "pub fn value() -> i32 {\n    unsafe { c_unit_value() }\n}\n"
+    ),
+}
+
+
+def fixture_test(marker):
+    """fixture_reader's test: reads its fixture by its baked manifest dir and prints that dir and marker."""
+    return (
+        "#[test]\n"
+        "fn reads_its_fixture() {\n"
+        '    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/data.txt");\n'
+        '    assert_eq!(std::fs::read_to_string(path).unwrap(), "fixture data\\n");\n'
+        '    assert_eq!(fixture_reader::words("a b"), vec!["a", "b"]);\n'
+        "    assert_eq!(c_unit::value(), 42);\n"
+        '    println!("MANIFEST_DIR={}", env!("CARGO_MANIFEST_DIR"));\n'
+        f'    println!("MARKER={marker}");\n'
+        "}\n"
+    )
+
+
+def write_workspace(root, marker):
+    for relative, text in {**CACHE_TREE_FILES, "fixture_reader/tests/fixture.rs": fixture_test(marker)}.items():
+        path = Path(root, relative)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+
+
+def real_cargo_env():
+    """Real rustup cargo under the pinned CARGO_HOME, run directly rather than through the primitive."""
+    home = fx.real_home()
+    toolchain = tomllib.loads((fx.REPO_ROOT / "rust-toolchain.toml").read_text())["toolchain"]
+    env = {
+        "HOME": home,
+        "RUSTUP_TOOLCHAIN": toolchain["channel"],
+        "CARGO_HOME": fx.load_canon_cache().PINNED_CARGO_HOME,
+        "PATH": f"{home}/.cargo/bin:/usr/bin:/bin",
+    }
+    if os.environ.get("RUSTUP_HOME"):
+        env["RUSTUP_HOME"] = os.environ["RUSTUP_HOME"]
+    return env
+
+
+@functools.cache
+def cache_lockfile():
+    """(Cargo.lock text, "") from `cargo generate-lockfile --offline`, or ("", why it failed)."""
+    with tempfile.TemporaryDirectory(prefix="canon-cache-lock-") as scratch:
+        write_workspace(scratch, "lock")
+        try:
+            result = fx.run(["cargo", "generate-lockfile", "--offline"], cwd=scratch, env=real_cargo_env())
+        except OSError as exc:
+            return "", f"cargo cannot run: {exc}"
+        if result.returncode != 0:
+            last = next(iter(reversed(result.stderr.strip().splitlines())), "no stderr")
+            return "", f"offline lock generation failed under the pinned CARGO_HOME (rc={result.returncode}): {last}"
+        return Path(scratch, "Cargo.lock").read_text(), ""
+
+
+def make_cache_tree(parent, name, marker):
+    """A canon_run tree holding the workspace; fixture_reader's test prints marker."""
+    root = fx.make_tree(parent, name)
+    write_workspace(root, marker)
+    lock, reason = cache_lockfile()
+    if reason:
+        raise RuntimeError(reason)
+    Path(root, "Cargo.lock").write_text(lock)
+    return root
+
+
+def host_env(tmp, tree):
+    """fx.cargo_env with the pinned CARGO_HOME; one CANON per test, shared by its trees."""
+    return fx.cargo_env(tmp, tree, CARGO_HOME=fx.load_canon_cache().PINNED_CARGO_HOME)
+
+
+def write_cache_host_config(path, *, policy, store, fallback_dir):
+    """An enabled host.toml naming the store (None: no store_url) and a fallback under the test's tmp."""
+    lines = (*(store.settings_lines() if store else ()), f'fallback_dir = "{fallback_dir}"')
+    fx.write_host_config(path, enabled=True, policy=policy, extra_lines=lines)
+
+
+def read_journal(build_dir):
+    events = read_events(os.path.join(build_dir, JOURNAL))
+    if events.skipped_lines:
+        raise AssertionError(f"{events.skipped_lines} unreadable journal lines in {build_dir}")
+    return list(events.records)
+
+
+def processes_naming(needle):
+    """pids of this user's processes whose environment holds needle (bytes)."""
+    found = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/environ", "rb") as environ:
+                if needle in environ.read():
+                    found.append(int(entry))
+        except OSError:
+            continue
+    return found
+
+
+def wait_until_none_name(needle, wait=READY_WAIT):
+    """A bounded liveness wait: the pids still naming needle when none do, or when the wait ends."""
+    deadline = time.monotonic() + wait
+    while (remaining := processes_naming(needle)) and time.monotonic() < deadline:
+        time.sleep(0.1)
+    return remaining
+
+
+def rclone_binary():
+    return shutil.which("rclone")

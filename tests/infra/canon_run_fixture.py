@@ -1,9 +1,9 @@
 """
 canon_run_fixture.py — shared builders for the scripts/canon_run.py suites
 (test_canon_run_units.py, test_canon_run_host.py): scratch trees, the
-host.toml writer, minimal environments, the CLI runner, a recording fake
-cargo, and for the host suite a buildable crate, real-cargo environments and
-the namespace/landlock probes.
+host.toml writer, minimal environments, the CLI runner and its BOUND-route
+variant, a recording fake cargo, and for the host suite a buildable crate,
+real-cargo environments and the namespace/landlock probes.
 
 Not a test module itself (no `test_` prefix): run_all.sh never discovers it,
 and the suites import it via the sys.path idiom.
@@ -99,6 +99,33 @@ def run_canon(tree, cwd, *args, env):
 
 def run(argv, *, cwd, env):
     return subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True, check=False)
+
+
+# Runs <scripts dir>/canon_run.py's main with one extra mountinfo line naming
+# CANON as a mount point. With REIFY_CANON_ROOT set to the tree's own path, C3's
+# bound check then holds (same directory, listed as a mount), so the BOUND route
+# runs where no mount namespace can be entered (argv: scripts dir, canon_run args).
+BOUND_RUNNER = r"""
+import sys
+
+sys.path.insert(0, sys.argv[1])
+import canon_run
+
+canon = canon_run.canon_root(canon_run.caller_environ())
+escaped = canon.replace("\\", "\\134").replace(" ", "\\040")
+bound = f"36 35 0:51 / {escaped} rw,relatime shared:1 - ext4 /dev/vda1 rw\n"
+host_mountinfo = canon_run.read_mountinfo
+canon_run.read_mountinfo = lambda: host_mountinfo() + bound
+sys.exit(canon_run.main(sys.argv[2:]))
+"""
+
+
+def run_bound(tree, cwd, *args, env, runner_dir):
+    """run_canon on the BOUND route: env's REIFY_CANON_ROOT must be the tree's own path."""
+    runner = Path(runner_dir, "bound_runner.py")
+    if not runner.exists():
+        runner.write_text(BOUND_RUNNER)
+    return run([PYTHON, "-I", str(runner), str(Path(tree, "scripts")), *args], cwd=cwd, env=env)
 
 
 # Records each call beside itself. A shebang script never sees the argv[0] it

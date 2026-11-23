@@ -3,12 +3,14 @@
 test_canon_run_units.py — stdlib unittest for scripts/canon_run.py that needs
 no mount namespace (canonical-build-path PRD, dark-factory
 plans/canonical-build-path-shared-cache-prd.md: C1's mode table, C2, C3's bound
-check, C4's policy table as composed at CANON, C7's trampoline; boundary rows
-1-4, 9 and 11).
+check, C4's policy table as composed at CANON, C6's records of real-path and
+CANON invocations, C7's trampoline; boundary rows 1-4, 9 and 11).
 
 No case probes or enters a mount namespace, so the suite is deterministic.
 One CanonCargo case fills CANON with a copy of the tree, and only
-canon_invocation sees it.
+canon_invocation sees it. The BoundRoute cases run the BOUND route with
+CANON set to the tree's own path and one extra mountinfo line (the fixture's
+BOUND_RUNNER), against a fake sccache.
 
 WHAT RUNS THIS: run_all.sh discovers `test_*.sh` only, so the discovered member
 is the thin wrapper tests/infra/test_canon_run_units.sh.
@@ -26,8 +28,12 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import canon_run_fixture as fx  # noqa: E402  (imported after sys.path manipulation)
+import canon_cache_fixture as cfx  # noqa: E402  (imported after sys.path manipulation)
+import canon_run_fixture as fx  # noqa: E402
 from verify_ledger_env import hermetic_env  # noqa: E402
+
+sys.path.insert(0, str(fx.REPO_ROOT / "scripts"))
+from verify_events_lib import read_events  # noqa: E402
 
 canon_run = fx.load_canon_run()
 canon_cache = fx.load_canon_cache()
@@ -231,6 +237,26 @@ class DecideMode(unittest.TestCase):
             with self.subTest(route=route):
                 self.assertIs(self.decide(enabled=True, route=route).mode, canon_run.Mode.CANON)
 
+    def test_the_two_reportable_real_path_rows_carry_their_cache_reason(self):
+        self.assertIs(self.decide(built_in=True).cache_reason, canon_cache.Reason.LEGACY_BUILD_DIR)
+        self.assertIs(
+            self.decide(enabled=True, route=canon_run.Route.NONE).cache_reason,
+            canon_cache.Reason.CANON_UNAVAILABLE,
+        )
+
+    def test_every_other_row_has_no_cache_reason(self):
+        for row in (
+            {"stamp": self.CANON, "route": canon_run.Route.BOUND},
+            {"stamp": self.CANON, "route": canon_run.Route.NAMESPACE},
+            {"stamp": self.CANON, "route": canon_run.Route.NONE},
+            {"stamp": "/somewhere/else"},
+            {"enabled": False},
+            {"enabled": True, "route": canon_run.Route.BOUND},
+            {"enabled": True, "route": canon_run.Route.NAMESPACE},
+        ):
+            with self.subTest(row=row):
+                self.assertIs(self.decide(**row).cache_reason, canon_cache.Reason.NONE)
+
 
 class CanonBoundTo(unittest.TestCase):
     def setUp(self):
@@ -405,6 +431,202 @@ class RealPathIsUntouched(CliCase):
         os.mkdir(plain)
         result = self.cargo("build", "-p", "x", cwd=plain)
         self.assert_one_untouched_call(result, ["build", "-p", "x"], cwd=plain)
+
+
+def journal_rows(build_dir):
+    events = read_events(os.path.join(build_dir, ".reify-canon-journal.jsonl"))
+    assert events.skipped_lines == 0, events
+    return list(events.records)
+
+
+class RealPathSupervision(CliCase):
+    """C6's real_path record: on an enabled host, a legacy or CANON-less build is measured, never changed.
+
+    CANON is unprovisioned here, so a fresh build directory is the canon_unavailable row.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.channel = os.path.join(self.tmp, "channel.jsonl")
+        self.host = self.env["REIFY_CANON_HOST_CONFIG"]
+        fx.write_host_config(self.host, enabled=True)
+
+    def built_in(self):
+        Path(self.target, "debug", ".fingerprint").mkdir(parents=True)
+
+    def assert_supervised_call(self, result, argv_tail, *, status=0):
+        """One call with the caller's env plus a real_path supervisor record naming the tree."""
+        self.assertEqual(result.returncode, status, result.stderr)
+        [call] = fx.read_calls(self.fake)
+        self.assertEqual(call["argv"], [self.fake_cargo, *argv_tail])
+        self.assertEqual(call["cwd"], self.sub)
+        active = canon_run.parse_active(call["env"].pop("REIFY_CANON_ACTIVE", None))
+        self.assertEqual(call["env"], self.env)
+        tree_stat = os.stat(self.tree)
+        self.assertEqual((active.dev, active.ino, active.real_root), (tree_stat.st_dev, tree_stat.st_ino, self.tree))
+        self.assertEqual(active.supervisor, canon_run.Supervisor(canon_run.Mode.REAL_PATH, None))
+
+    def assert_row(self, reason, subcommand="build"):
+        [row] = journal_rows(self.target)
+        expected = {
+            "mode": "real_path", "policy": "shared", "backend": "none", "reason": reason,
+            "subcommand": subcommand, "hits": 0, "misses": 0, "write_errors": 0, "store_attempts": 0,
+            "detached_server": 0, "uncached_machine_flags": 0,
+        }
+        self.assertEqual({name: row[name] for name in expected}, expected)
+        return row
+
+    def assert_no_record(self):
+        self.assertFalse(os.path.exists(os.path.join(self.target, ".reify-canon-journal.jsonl")))
+        self.assertFalse(os.path.exists(self.channel))
+
+    def test_fresh_target_with_canon_unavailable_is_supervised_and_recorded(self):
+        self.env["REIFY_VERIFY_EVENT_LOG"] = self.channel
+        self.assert_supervised_call(self.cargo("build", "--offline"), ["build", "--offline"])
+        self.assert_row("canon_unavailable")
+        journal = Path(self.target, ".reify-canon-journal.jsonl")
+        self.assertEqual(Path(self.channel).read_bytes(), journal.read_bytes())
+        self.assertFalse(os.path.exists(os.path.join(self.target, ".reify-build-root")))
+
+    def test_unstamped_built_in_target_is_recorded_as_a_legacy_build_dir(self):
+        self.built_in()
+        self.assert_supervised_call(self.cargo("build"), ["build"])
+        self.assert_row("legacy_build_dir")
+
+    def test_exec_kind_records_an_empty_subcommand(self):
+        result = fx.run_canon(self.tree, self.sub, "exec", "--", self.fake_cargo, "x", env=self.env)
+        self.assert_supervised_call(result, ["x"])
+        self.assert_row("canon_unavailable", subcommand="")
+
+    def test_command_status_passes_through(self):
+        self.env["FAKE_CARGO_EXIT"] = "5"
+        self.assert_supervised_call(self.cargo("build"), ["build"], status=5)
+        self.assert_row("canon_unavailable")
+
+    def test_disabled_host_keeps_the_env_byte_identical_with_no_record(self):
+        fx.write_host_config(self.host, enabled=False)
+        self.built_in()
+        self.env["REIFY_VERIFY_EVENT_LOG"] = self.channel
+        self.assert_one_untouched_call(self.cargo("build"), ["build"])
+        self.assert_no_record()
+
+    def test_build_dir_outside_the_tree_is_untouched_with_no_record(self):
+        elsewhere = os.path.join(self.tmp, "elsewhere")
+        self.env.update(CARGO_TARGET_DIR=elsewhere, REIFY_VERIFY_EVENT_LOG=self.channel)
+        self.assert_one_untouched_call(self.cargo("build"), ["build"])
+        self.assert_no_record()
+        self.assertFalse(os.path.exists(os.path.join(elsewhere, ".reify-canon-journal.jsonl")))
+
+    def test_nested_real_path_call_runs_untouched_with_no_second_row(self):
+        self.built_in()
+        tree = canon_run.find_tree(self.tree, {})
+        supervisor = canon_run.Supervisor(canon_run.Mode.REAL_PATH, None)
+        self.env.update(
+            REIFY_CANON_ACTIVE=canon_run.format_active(tree, self.env["REIFY_CANON_ROOT"], supervisor),
+            REIFY_VERIFY_EVENT_LOG=self.channel,
+        )
+        self.assert_one_untouched_call(self.cargo("build"), ["build"])
+        self.assert_no_record()
+
+
+class BoundRoute(CliCase):
+    """C4-C6 on the BOUND route, with CANON the tree itself (fx.BOUND_RUNNER) and a fake sccache."""
+
+    def setUp(self):
+        super().setUp()
+        self.sccache_dir = cfx.fake_sccache_dir(self.tmp)
+        self.env.update(
+            REIFY_CANON_ROOT=self.tree,
+            PATH=f"{self.tree}/scripts/canon-bin:{self.fake}:{self.sccache_dir}:/usr/bin:/bin",
+            FAKE_SCCACHE_STATS=json.dumps({"hits": {"Rust": 4}, "misses": {"C/C++": 1}, "write_errors": 0}),
+        )
+        self.host = self.env["REIFY_CANON_HOST_CONFIG"]
+        self.enable("shared")
+
+    def enable(self, policy):
+        fallback = os.path.join(self.tmp, "fallback")
+        fx.write_host_config(self.host, enabled=True, policy=policy, extra_lines=(f'fallback_dir = "{fallback}"',))
+
+    def bound(self, *args):
+        return fx.run_bound(self.tree, self.sub, *args, env=self.env, runner_dir=self.tmp)
+
+    def one_call(self, result, status=0):
+        self.assertEqual(result.returncode, status, result.stderr)
+        [call] = fx.read_calls(self.fake)
+        self.assertEqual(call["cwd"], self.sub)
+        return call
+
+    def leftovers(self):
+        return sorted(name for name in os.listdir(self.target) if name.startswith(".reify-sccache."))
+
+    def test_shared_cargo_runs_under_a_private_server_and_is_recorded(self):
+        call = self.one_call(self.bound("cargo", "build"))
+        env = call["env"]
+        self.assertEqual(call["argv"], [self.fake_cargo, "build"])
+        self.assertRegex(env["SCCACHE_SERVER_UDS"], rf"^{self.target}/\.reify-sccache\.[0-9]+\.sock$")
+        self.assertEqual((env["RUSTC_WRAPPER"], env["CARGO_INCREMENTAL"]), ("sccache", "0"))
+        self.assertEqual(env["CARGO_HOME"], canon_cache.PINNED_CARGO_HOME)
+        self.assertEqual(env["REIFY_CANON_SCCACHE"], os.path.join(self.sccache_dir, "sccache"))
+        supervisor = canon_run.parse_active(env["REIFY_CANON_ACTIVE"]).supervisor
+        self.assertEqual(supervisor.mode, canon_run.Mode.CANON)
+        self.assertEqual(supervisor.cache.policy, canon_cache.Policy.SHARED)
+        self.assertEqual(supervisor.cache.server.socket, env["SCCACHE_SERVER_UDS"])
+        self.assertEqual(len(cfx.servers(self.sccache_dir)), 1)
+        [row] = journal_rows(self.target)
+        expected = {
+            "mode": "canon", "policy": "shared", "backend": "local_fallback", "reason": "store_not_configured",
+            "hits": 4, "misses": 1, "subcommand": "build",
+        }
+        self.assertEqual({name: row[name] for name in expected}, expected)
+        self.assertEqual(Path(self.target, ".reify-build-root").read_text(), self.tree + "\n")
+        self.assertEqual(self.leftovers(), [])
+
+    def test_command_status_passes_through(self):
+        self.env["FAKE_CARGO_EXIT"] = "5"
+        self.one_call(self.bound("cargo", "build"), status=5)
+        self.assertEqual(len(journal_rows(self.target)), 1)
+
+    def test_exec_kind_gets_the_client_variables_and_an_empty_subcommand(self):
+        call = self.one_call(self.bound("exec", "--", self.fake_cargo, "x"))
+        self.assertEqual(call["argv"], [self.fake_cargo, "x"])
+        self.assertIn("SCCACHE_SERVER_UDS", call["env"])
+        self.assertNotIn("RUSTC_WRAPPER", call["env"])
+        [row] = journal_rows(self.target)
+        self.assertEqual((row["mode"], row["subcommand"]), ("canon", ""))
+
+    def test_incremental_runs_no_server(self):
+        self.enable("incremental")
+        env = self.one_call(self.bound("cargo", "build"))["env"]
+        self.assertEqual([name for name in env if name.startswith("SCCACHE_")], [])
+        self.assertEqual(cfx.servers(self.sccache_dir), [])
+        [row] = journal_rows(self.target)
+        self.assertEqual((row["mode"], row["policy"], row["backend"], row["reason"]), ("canon", "incremental", "none", ""))
+
+    def test_nested_call_uses_the_recorded_cache_and_opens_no_session(self):
+        recorded = canon_cache.ServerAddress(
+            socket=os.path.join(self.target, ".reify-sccache.1.sock"),
+            sccache=os.path.join(self.sccache_dir, "sccache"),
+            uncached_log=os.path.join(self.target, ".reify-canon-uncached.1.log"),
+            fallback_dir=os.path.join(self.tmp, "fallback"),
+            fallback_cap="10G",
+        )
+        cache = canon_cache.CacheEnvironment(canon_cache.Policy.MIXED, recorded)
+        tree = canon_run.find_tree(self.tree, {})
+        supervisor = canon_run.Supervisor(canon_run.Mode.CANON, cache)
+        self.env["REIFY_CANON_ACTIVE"] = canon_run.format_active(tree, self.tree, supervisor)
+        env = self.one_call(self.bound("cargo", "build"))["env"]
+        self.assertEqual(env["SCCACHE_SERVER_UDS"], recorded.socket)
+        self.assertEqual(env["CARGO_INCREMENTAL"], "1")
+        self.assertEqual(canon_run.parse_active(env["REIFY_CANON_ACTIVE"]).supervisor, supervisor)
+        self.assertEqual(cfx.read_sccache_calls(self.sccache_dir), [])
+        self.assertFalse(os.path.exists(os.path.join(self.target, ".reify-canon-journal.jsonl")))
+
+    def test_sharing_without_a_real_sccache_is_refused_before_anything_runs(self):
+        if shutil.which("sccache", path="/usr/bin:/bin"):
+            self.skipTest("a real sccache is installed in /usr/bin or /bin")
+        self.env["PATH"] = f"{self.tree}/scripts/canon-bin:{self.fake}:/usr/bin:/bin"
+        self.assert_refused(self.bound("cargo", "build"), "sccache")
+        self.assertFalse(os.path.exists(os.path.join(self.target, ".reify-build-root")))
 
 
 class CargoPassesThrough(unittest.TestCase):
@@ -700,11 +922,17 @@ class Rewriting(CanonInvocationCase):
 
 
 class Exports(CanonInvocationCase):
-    def test_active_record_names_the_tree(self):
+    def test_active_record_names_the_tree_and_its_canon_supervisor(self):
         record = json.loads(self.invoke(["build"]).env["REIFY_CANON_ACTIVE"])
         self.assertEqual(
             record,
-            {"dev": self.tree.dev, "ino": self.tree.ino, "real_root": self.real, "canon": self.canon},
+            {
+                "dev": self.tree.dev,
+                "ino": self.tree.ino,
+                "real_root": self.real,
+                "canon": self.canon,
+                "supervisor": {"mode": "canon", "cache": self.cache.to_record()},
+            },
         )
 
     def test_ledger_lane_is_the_real_root(self):
@@ -756,6 +984,64 @@ class Exports(CanonInvocationCase):
         names |= {"REIFY_CANON_ROOT", "REIFY_CANON_HOST_CONFIG"}
         with mock.patch.dict(os.environ, {name: "ambient" for name in names}):
             self.assertEqual(names & set(hermetic_env()), set())
+
+
+class NestedComposition(CanonInvocationCase):
+    """A nested cargo applies the supervisor record's CacheEnvironment, never re-reading host.toml."""
+
+    def test_nested_cargo_composes_exactly_like_the_outermost_cargo(self):
+        os.symlink(self.real, self.canon)
+        for cache in (
+            canon_cache.CacheEnvironment(canon_cache.Policy.SHARED, SERVER),
+            canon_cache.CacheEnvironment(canon_cache.Policy.MIXED, SERVER),
+            canon_cache.CacheEnvironment(canon_cache.Policy.INCREMENTAL, None),
+        ):
+            with self.subTest(policy=cache.policy):
+                outermost = self.invoke(["build"], cache=cache)
+                command = self.invoke(["/bin/sh"], cargo=False, cache=cache)
+                recorded = canon_run.parse_active(command.env["REIFY_CANON_ACTIVE"]).supervisor
+                self.assertEqual(recorded, canon_run.Supervisor(canon_run.Mode.CANON, cache))
+                nested_tree = canon_run.find_tree(self.canon, command.env)
+                self.assertEqual(nested_tree.real_root, Path(self.real))
+                nested = canon_run.canon_invocation(
+                    ["build"], command.env, nested_tree, self.canon, self.canon, recorded.cache, cargo=True
+                )
+                self.assertEqual(nested, outermost)
+
+
+class Reentry(CanonInvocationCase):
+    """The NAMESPACE route re-enters this same canon_run.py at CANON, so one supervisor shape serves both routes."""
+
+    ARGUMENTS = ["cargo", "test", "--offline", "--", "--nocapture"]
+
+    def expected_argv(self, cwd_at_canon):
+        return [
+            "/usr/bin/bwrap", "--dev-bind", "/", "/", "--bind", self.real, self.canon,
+            "--chdir", cwd_at_canon, "--die-with-parent", "--",
+            sys.executable, "-I", f"{self.canon}/scripts/canon_run.py", *self.ARGUMENTS,
+        ]
+
+    def test_argv_binds_the_real_root_and_reenters_canon_run_at_canon(self):
+        argv = canon_run.reentry_argv(self.tree, self.canon, f"{self.real}/sub", self.ARGUMENTS)
+        self.assertEqual(argv, self.expected_argv(f"{self.canon}/sub"))
+
+    def test_an_aliased_spelling_binds_the_real_root(self):
+        alias = os.path.join(self.tmp, "alias")
+        os.symlink(self.real, alias)
+        tree = canon_run.Tree(Path(alias), Path(self.real), self.tree.dev, self.tree.ino)
+        argv = canon_run.reentry_argv(tree, self.canon, alias, self.ARGUMENTS)
+        self.assertEqual(argv, self.expected_argv(self.canon))
+
+    def test_env_is_the_callers_plus_a_record_without_a_supervisor(self):
+        supervisor = canon_run.Supervisor(canon_run.Mode.REAL_PATH, None)
+        environ = dict(
+            self.environ,
+            REIFY_CANON_ACTIVE=canon_run.format_active(self.tree, self.canon, supervisor),
+            RUSTC_WRAPPER="caller",
+        )
+        env = canon_run.reentry_env(environ, self.tree, self.canon)
+        self.assertEqual(env, dict(environ, REIFY_CANON_ACTIVE=canon_run.format_active(self.tree, self.canon)))
+        self.assertIsNone(canon_run.parse_active(env["REIFY_CANON_ACTIVE"]).supervisor)
 
 
 class CachePolicy(CanonInvocationCase):
@@ -1000,6 +1286,82 @@ class ActiveRecord(unittest.TestCase):
         for value in ("{not json", self.record(dev="1"), "[]"):
             with self.subTest(value=value):
                 self.assertEqual(self.real_root_with(value), Path(self.root))
+
+    def test_supervisor_section_round_trips(self):
+        tree = canon_run.find_tree(self.root, {})
+        for supervisor in (
+            canon_run.Supervisor(canon_run.Mode.CANON, canon_cache.CacheEnvironment(canon_cache.Policy.SHARED, SERVER)),
+            canon_run.Supervisor(canon_run.Mode.CANON, canon_cache.CacheEnvironment(canon_cache.Policy.INCREMENTAL, None)),
+            canon_run.Supervisor(canon_run.Mode.REAL_PATH, None),
+        ):
+            with self.subTest(supervisor=supervisor):
+                value = canon_run.format_active(tree, "/opt/reify-canon/ws", supervisor)
+                self.assertEqual(
+                    canon_run.parse_active(value),
+                    canon_run.ActiveTree(
+                        self.root_stat.st_dev, self.root_stat.st_ino, self.root, "/opt/reify-canon/ws", supervisor
+                    ),
+                )
+
+    def test_record_without_a_supervisor_section_parses_with_none(self):
+        active = canon_run.parse_active(self.record())
+        self.assertEqual(active.real_root, "/the/real/tree")
+        self.assertIsNone(active.supervisor)
+
+    def test_malformed_supervisor_section_parses_as_none(self):
+        for section in (
+            "canon",
+            {"mode": "bogus", "cache": None},
+            {"mode": "canon", "cache": {"policy": "fast", "server": None}},
+            {"cache": None},
+        ):
+            with self.subTest(section=section):
+                active = canon_run.parse_active(self.record(supervisor=section))
+                self.assertEqual(active.real_root, "/the/real/tree")
+                self.assertIsNone(active.supervisor)
+
+
+class IsNested(unittest.TestCase):
+    """Nested means: the record names this tree, carries a supervisor, and that supervisor's mode is ours."""
+
+    CANON = "/opt/reify-canon/ws"
+    CACHE = canon_cache.CacheEnvironment(canon_cache.Policy.SHARED, SERVER)
+
+    def setUp(self):
+        root = fx.make_tree(scratch(self), "tree")
+        self.tree = canon_run.find_tree(root, {})
+
+    def nested(self, supervisor, decision, **changes):
+        fields = dict(dev=self.tree.dev, ino=self.tree.ino, real_root=str(self.tree.real_root), canon=self.CANON)
+        fields.update(changes)
+        active = canon_run.ActiveTree(supervisor=supervisor, **fields)
+        return canon_run.is_nested(active, self.tree, decision)
+
+    def test_rows(self):
+        canon = canon_run.Supervisor(canon_run.Mode.CANON, self.CACHE)
+        real_path = canon_run.Supervisor(canon_run.Mode.REAL_PATH, None)
+        bound = canon_run.Decision(canon_run.Mode.CANON, "", canon_run.Route.BOUND)
+        namespace = canon_run.Decision(canon_run.Mode.CANON, "", canon_run.Route.NAMESPACE)
+        legacy = canon_run.Decision(
+            canon_run.Mode.REAL_PATH, "", cache_reason=canon_cache.Reason.LEGACY_BUILD_DIR
+        )
+        for supervisor, decision, changes, expected in (
+            (canon, bound, {}, True),
+            (real_path, legacy, {}, True),
+            (canon, namespace, {}, False),
+            (real_path, bound, {}, False),
+            (canon, legacy, {}, False),
+            (None, bound, {}, False),
+            (None, legacy, {}, False),
+            (canon, bound, {"ino": self.tree.ino + 1}, False),
+            (real_path, legacy, {"dev": self.tree.dev + 1}, False),
+        ):
+            with self.subTest(supervisor=supervisor, decision=decision, changes=changes):
+                self.assertIs(self.nested(supervisor, decision, **changes), expected)
+
+    def test_no_record_is_not_nested(self):
+        decision = canon_run.Decision(canon_run.Mode.CANON, "", canon_run.Route.BOUND)
+        self.assertFalse(canon_run.is_nested(None, self.tree, decision))
 
 
 if __name__ == "__main__":
