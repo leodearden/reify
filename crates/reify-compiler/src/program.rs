@@ -181,7 +181,7 @@ impl CompiledProgram {
 /// compile-time value map is empty, so both paths return `Indeterminate` and no
 /// divergence is observable. The integration test
 /// `compile_program_import_uses_stub` pins this.
-// G-allow: PRD §3.1 canonical program entry; production consumers are P1 γ #5517 and δ #5518
+// G-allow: PRD §3.1 canonical program entry; first production consumer is the LSP AnalysisContext in #8778
 pub fn compile_program(
     entry_path: &Path,
     entry_source: &str,
