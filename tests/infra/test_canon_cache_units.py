@@ -1258,6 +1258,13 @@ class SignalForwarding(unittest.TestCase):
         self.assertEqual(signal.getsignal(signal.SIGQUIT), signal.SIG_IGN)
         self.assertEqual(signal.getsignal(signal.SIGINT), signal.default_int_handler)
 
+    def test_forwarded_is_the_supervised_signals_the_caller_does_not_ignore(self):
+        self.assertEqual(canon_cache.SignalForwarder().forwarded, frozenset(canon_cache.SUPERVISED_SIGNALS))
+        signal.signal(signal.SIGQUIT, signal.SIG_IGN)
+        self.assertEqual(
+            canon_cache.SignalForwarder().forwarded, frozenset({signal.SIGTERM, signal.SIGHUP, signal.SIGINT})
+        )
+
 
 class PolicyMembers(unittest.TestCase):
     def test_members(self):

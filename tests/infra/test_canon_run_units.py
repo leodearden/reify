@@ -1042,23 +1042,28 @@ class Reentry(CanonInvocationCase):
 
     ARGUMENTS = ["cargo", "test", "--offline", "--", "--nocapture"]
 
-    def expected_argv(self, cwd_at_canon):
+    def expected_bwrap(self, cwd_at_canon):
         return [
             "/usr/bin/bwrap", "--dev-bind", "/", "/", "--bind", self.real, self.canon,
-            "--chdir", cwd_at_canon, "--die-with-parent", "--",
-            sys.executable, "-I", f"{self.canon}/scripts/canon_run.py", *self.ARGUMENTS,
+            "--chdir", cwd_at_canon, "--die-with-parent", "--info-fd", "7",
         ]
 
-    def test_argv_binds_the_real_root_and_reenters_canon_run_at_canon(self):
-        argv = canon_run.reentry_argv(self.tree, self.canon, f"{self.real}/sub", self.ARGUMENTS)
-        self.assertEqual(argv, self.expected_argv(f"{self.canon}/sub"))
+    def test_bwrap_binds_the_real_root_at_canon_and_reports_to_the_info_fd(self):
+        bwrap = canon_run.reentry_bwrap(self.tree, self.canon, f"{self.real}/sub", 7)
+        self.assertEqual(bwrap, self.expected_bwrap(f"{self.canon}/sub"))
 
     def test_an_aliased_spelling_binds_the_real_root(self):
         alias = os.path.join(self.tmp, "alias")
         os.symlink(self.real, alias)
         tree = canon_run.Tree(Path(alias), Path(self.real), self.tree.dev, self.tree.ino)
-        argv = canon_run.reentry_argv(tree, self.canon, alias, self.ARGUMENTS)
-        self.assertEqual(argv, self.expected_argv(self.canon))
+        bwrap = canon_run.reentry_bwrap(tree, self.canon, alias, 7)
+        self.assertEqual(bwrap, self.expected_bwrap(self.canon))
+
+    def test_the_command_reenters_canon_run_at_canon(self):
+        self.assertEqual(
+            canon_run.reentry_command(self.canon, self.ARGUMENTS),
+            [sys.executable, "-I", f"{self.canon}/scripts/canon_run.py", *self.ARGUMENTS],
+        )
 
     def test_env_is_the_callers_plus_a_record_without_a_supervisor(self):
         supervisor = canon_run.Supervisor(canon_run.Mode.REAL_PATH, None)
@@ -1067,18 +1072,29 @@ class Reentry(CanonInvocationCase):
             REIFY_CANON_ACTIVE=canon_run.format_active(self.tree, self.canon, supervisor),
             RUSTC_WRAPPER="caller",
         )
-        ignored = frozenset({signal.SIGQUIT})
-        env = canon_run.reentry_env(environ, self.tree, self.canon, ignored)
-        record = canon_run.format_active(self.tree, self.canon, caller_ignored=ignored)
-        self.assertEqual(env, dict(environ, REIFY_CANON_ACTIVE=record))
-        active = canon_run.parse_active(env["REIFY_CANON_ACTIVE"])
-        self.assertIsNone(active.supervisor)
-        self.assertEqual(active.caller_ignored, ignored)
+        env = canon_run.reentry_env(environ, self.tree, self.canon)
+        self.assertEqual(env, dict(environ, REIFY_CANON_ACTIVE=canon_run.format_active(self.tree, self.canon)))
+        self.assertIsNone(canon_run.parse_active(env["REIFY_CANON_ACTIVE"]).supervisor)
 
-    def test_info_fd_goes_before_the_command(self):
-        argv = canon_run.reentry_argv(self.tree, self.canon, f"{self.real}/sub", self.ARGUMENTS, info_fd=7)
-        separator = argv.index("--")
-        self.assertEqual(argv[separator - 2:separator], ["--info-fd", "7"])
+
+class NamespaceArgv(unittest.TestCase):
+    """Ruling step 3 (esc-10418-3): env inside the namespace restores exactly the signals bwrap was made to ignore."""
+
+    BWRAP = ["/usr/bin/bwrap", "--dev-bind", "/", "/", "--info-fd", "7"]
+    COMMAND = ["/usr/bin/python3", "-I", "/canon/scripts/canon_run.py", "exec", "--", "true"]
+
+    def test_every_supervised_signal_is_restored_by_its_name_in_number_order(self):
+        argv = canon_run.namespace_argv(self.BWRAP, self.COMMAND, frozenset(canon_cache.SUPERVISED_SIGNALS))
+        env_layer = ["/usr/bin/env", "--default-signal=HUP,INT,QUIT,TERM", "--"]
+        self.assertEqual(argv, [*self.BWRAP, "--", *env_layer, *self.COMMAND])
+
+    def test_one_restored_signal_is_named_alone(self):
+        argv = canon_run.namespace_argv(self.BWRAP, self.COMMAND, frozenset({signal.SIGHUP}))
+        self.assertEqual(argv, [*self.BWRAP, "--", "/usr/bin/env", "--default-signal=HUP", "--", *self.COMMAND])
+
+    def test_nothing_to_restore_leaves_out_the_env_layer(self):
+        argv = canon_run.namespace_argv(self.BWRAP, self.COMMAND, frozenset())
+        self.assertEqual(argv, [*self.BWRAP, "--", *self.COMMAND])
 
 
 class NamespaceParent(unittest.TestCase):
