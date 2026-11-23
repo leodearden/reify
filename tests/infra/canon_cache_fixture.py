@@ -367,12 +367,15 @@ def process_gone(pid):
 SUPERVISE_RUNNER = r"""
 import dataclasses
 import os
+import signal
 import sys
 
 sys.path.insert(0, sys.argv[1])
 import canon_cache
 
-fake, build, lock, started = sys.argv[2:6]
+fake, build, lock, started, sleep_secs = sys.argv[2:7]
+signal.signal(signal.SIGINT, signal.default_int_handler)
+signal.signal(signal.SIGQUIT, signal.SIG_DFL)
 knobs = dataclasses.replace(canon_cache.SessionKnobs(), start_lock=lock, tmp_root=build)
 env = {"PATH": "/usr/bin:/bin"}
 settings = canon_cache.CacheSettings(fallback_dir=os.path.join(build, "fallback"))
@@ -381,7 +384,7 @@ session = canon_cache.open_session(
     sccache=os.path.join(fake, "sccache"), env=env, knobs=knobs,
 )
 sys.exit(canon_cache.supervise(
-    ["/bin/sh", "-c", 'touch "$0"; exec sleep 600', started],
+    ["/bin/sh", "-c", 'touch "$0"; exec sleep "$1"', started, sleep_secs],
     session.environment.for_command(env),
     build,
     session=session,

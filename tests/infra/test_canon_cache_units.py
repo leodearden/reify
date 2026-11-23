@@ -969,6 +969,20 @@ for name in os.listdir("/proc/self/fd"):
         pass
 json.dump(fds, open(sys.argv[1], "w"))
 """
+SIGIGN_PROBE = 'exec grep SigIgn /proc/self/status > "$0"'
+SUPERVISED_SIGNALS = (signal.SIGINT, signal.SIGQUIT, signal.SIGTERM, signal.SIGHUP)
+INTERACTIVE_CALLER = {
+    signal.SIGINT: signal.default_int_handler,
+    signal.SIGQUIT: signal.SIG_DFL,
+    signal.SIGTERM: signal.SIG_DFL,
+    signal.SIGHUP: signal.SIG_DFL,
+}
+
+
+def ignored_signals(path):
+    """The signal numbers set in the `SigIgn:` hex mask a command wrote to path."""
+    mask = int(Path(path).read_text().split(":", 1)[1], 16)
+    return {number for number in range(1, mask.bit_length() + 1) if mask >> (number - 1) & 1}
 
 
 class Supervise(SessionCase):
@@ -998,6 +1012,32 @@ class Supervise(SessionCase):
         events = read_events(self.journal)
         self.assertEqual((len(events.records), events.skipped_lines), (1, 0))
         return events.records[0]
+
+    def caller_dispositions(self, handlers):
+        """Install handlers as this process's own, restored at cleanup (the suite may inherit SIG_IGN)."""
+        for number, handler in handlers.items():
+            self.addCleanup(signal.signal, number, signal.signal(number, handler))
+
+    def supervised_ignored_signals(self):
+        out = os.path.join(self.tmp, "sigign")
+        self.supervise(["/bin/sh", "-c", SIGIGN_PROBE, out])
+        return {number for number in SUPERVISED_SIGNALS if number in ignored_signals(out)}
+
+    def start_supervise_runner(self, sleep_secs, **popen):
+        """A supervisor process around `sleep sleep_secs`, returned once the command has started."""
+        runner = cfx.write_supervise_runner(self.tmp)
+        started = os.path.join(self.tmp, "started")
+        cfx.set_plan(self.fake, "ok")
+        supervisor = subprocess.Popen(
+            [sys.executable, "-I", runner, str(fx.REPO_ROOT / "scripts"), self.fake, self.build, self.lock, started,
+             sleep_secs],
+            **popen,
+        )
+        self.addCleanup(supervisor.kill)
+        while not os.path.exists(started):
+            self.assertIsNone(supervisor.poll())
+            time.sleep(0.02)
+        return supervisor
 
     def test_status_counters_and_record(self):
         status = self.supervise(["/bin/sh", "-c", "exit 3"], channel=self.channel)
@@ -1080,20 +1120,36 @@ class Supervise(SessionCase):
         self.assertFalse(os.path.exists(self.journal))
 
     def test_sigterm_to_the_supervisor_is_forwarded_and_teardown_runs(self):
-        runner = cfx.write_supervise_runner(self.tmp)
-        started = os.path.join(self.tmp, "started")
-        cfx.set_plan(self.fake, "ok")
-        supervisor = subprocess.Popen(
-            [sys.executable, "-I", runner, str(fx.REPO_ROOT / "scripts"), self.fake, self.build, self.lock, started]
-        )
-        self.addCleanup(supervisor.kill)
-        while not os.path.exists(started):
-            self.assertIsNone(supervisor.poll())
-            time.sleep(0.02)
+        supervisor = self.start_supervise_runner("600")
         supervisor.send_signal(signal.SIGTERM)
         self.assertEqual(supervisor.wait(), 143)
         self.assertEqual(sorted(name for name in os.listdir(self.build) if name.startswith(".reify-sccache")), [])
         self.assertEqual(self.row()["subcommand"], "")
+
+    def test_command_starts_with_default_dispositions_when_the_caller_has_them(self):
+        self.caller_dispositions(INTERACTIVE_CALLER)
+        self.assertEqual(self.supervised_ignored_signals(), set())
+
+    def test_signals_the_caller_ignores_stay_ignored_in_the_command(self):
+        self.caller_dispositions({
+            signal.SIGINT: signal.SIG_IGN,
+            signal.SIGHUP: signal.SIG_IGN,
+            signal.SIGQUIT: signal.SIG_DFL,
+            signal.SIGTERM: signal.SIG_DFL,
+        })
+        self.assertEqual(self.supervised_ignored_signals(), {signal.SIGINT, signal.SIGHUP})
+
+    def test_dispositions_are_restored_after_the_command(self):
+        self.caller_dispositions(INTERACTIVE_CALLER)
+        self.supervised_ignored_signals()
+        self.assertEqual({number: signal.getsignal(number) for number in INTERACTIVE_CALLER}, INTERACTIVE_CALLER)
+
+    def test_group_sigint_ends_the_command_and_teardown_runs(self):
+        supervisor = self.start_supervise_runner("60", start_new_session=True)
+        os.killpg(supervisor.pid, signal.SIGINT)
+        self.assertEqual(supervisor.wait(), 130)
+        self.assertEqual(sorted(name for name in os.listdir(self.build) if name.startswith(".reify-sccache")), [])
+        self.row()
 
     def test_command_inherits_inheritable_fds_and_no_session_socket(self):
         marker = Path(self.tmp, "inherit-me")
