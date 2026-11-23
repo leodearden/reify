@@ -26,12 +26,14 @@ fn from_slice_borrows_same_addresses_and_matches_new() {
         variants: vec!["X1".into()],
         doc: None,
         type_params: vec![],
+        is_pub: true,
     };
     let enum_y = EnumDef {
         name: "EnumY".to_string(),
         variants: vec!["Y1".into(), "Y2".into()],
         doc: None,
         type_params: vec![],
+        is_pub: true,
     };
 
     let m1 = CompiledModuleBuilder::new(ModulePath::single("from_slice_m1"))
@@ -100,18 +102,21 @@ fn new_two_module_prelude_preserves_enum_order() {
         variants: vec!["A1".into(), "A2".into()],
         doc: None,
         type_params: vec![],
+        is_pub: true,
     };
     let enum_b = EnumDef {
         name: "EnumB".to_string(),
         variants: vec!["B1".into()],
         doc: None,
         type_params: vec![],
+        is_pub: true,
     };
     let enum_c = EnumDef {
         name: "EnumC".to_string(),
         variants: vec!["C1".into(), "C2".into(), "C3".into()],
         doc: None,
         type_params: vec![],
+        is_pub: true,
     };
 
     let m1 = CompiledModuleBuilder::new(ModulePath::single("prelude_m1"))
@@ -241,12 +246,14 @@ fn compile_with_prelude_context_parity_two_module_prelude_with_enum() {
         variants: vec!["Active".into(), "Inactive".into()],
         doc: None,
         type_params: vec![],
+        is_pub: true,
     };
     let enum_mode = EnumDef {
         name: "Mode".to_string(),
         variants: vec!["Fast".into(), "Slow".into()],
         doc: None,
         type_params: vec![],
+        is_pub: true,
     };
 
     // Build two synthetic prelude modules with enums.
@@ -347,12 +354,14 @@ fn compile_with_prelude_context_parity_no_prelude_pragma() {
         variants: vec!["Active".into(), "Inactive".into()],
         doc: None,
         type_params: vec![],
+        is_pub: true,
     };
     let enum_mode = EnumDef {
         name: "Mode".to_string(),
         variants: vec!["Fast".into(), "Slow".into()],
         doc: None,
         type_params: vec![],
+        is_pub: true,
     };
 
     let pm1 = CompiledModuleBuilder::new(ModulePath::single("no_prelude_pm1"))
@@ -677,6 +686,7 @@ fn tier_enum(variant: &str) -> EnumDef {
         variants: vec![variant.into()],
         doc: None,
         type_params: vec![],
+        is_pub: true,
     }
 }
 

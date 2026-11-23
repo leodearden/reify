@@ -5368,6 +5368,7 @@ mod tests {
             variants: vec!["In".into(), "Out".into()],
             doc: None,
             type_params: vec![],
+            is_pub: true,
         }];
         assert_eq!(
             resolve_enum_type("Direction", &enum_defs),
@@ -5382,6 +5383,7 @@ mod tests {
             variants: vec!["In".into(), "Out".into()],
             doc: None,
             type_params: vec![],
+            is_pub: true,
         }];
         assert_eq!(resolve_enum_type("Missing", &enum_defs), None);
     }

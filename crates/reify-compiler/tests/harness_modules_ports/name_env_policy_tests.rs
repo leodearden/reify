@@ -89,6 +89,7 @@ fn enum_def(name: &str) -> EnumDef {
         variants: vec!["V".into()],
         doc: None,
         type_params: vec![],
+        is_pub: true,
     }
 }
 

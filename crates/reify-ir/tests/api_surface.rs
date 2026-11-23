@@ -818,6 +818,7 @@ fn ir_gamma_widened_types_in_scope() {
         doc: None,
         // β: type_params reuses the IDENTICAL TypeParam struct as TraitDef (INV-1).
         type_params: vec![TypeParam { name: "T".into(), bounds: vec![], default: None }],
+        is_pub: true,
     };
     assert!(edef.contains_variant("Circle"));
     assert!(!edef.contains_variant("Triangle"));
