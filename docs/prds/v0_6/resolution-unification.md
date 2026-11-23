@@ -258,6 +258,15 @@ across a subsystem boundary is retired. `Engine::prelude`, `prelude_functions`, 
   last-wins collects, enum `prelude ++ local` inversion) plus the intra-stdlib
   collision=Error escalation live in `stdlib-namespace.md` N0 — scope fence: ι/κ here
   do not absorb those sites.
+  *Amended 2026-11-23 (θ #5522):* each collision has one reporter.
+  `DefEnv::collision_warnings` reports every entry-vs-import collision, and every
+  import-vs-import one except for units, type aliases and constraint defs: the entry's
+  own compile binds its imports as its prelude and its seeds of those three kinds
+  already report them. A shadowed stdlib definition is the shadowing module's own
+  compile's to report. The one remaining double is the I5 merge's code-less template
+  warning, which κ deletes with the merge. Pinned by
+  `each_import_tier_collision_has_exactly_one_reporter`
+  (`crates/reify-eval/tests/harness_engine/def_env.rs`).
 - **D-7 (`pub import` = re-export edge).** In `compile_program`'s frontier walk, a pub
   import in module M extends M's exported surface with the target's pub defs,
   transitively through pub edges (cycles already impossible: DAG check). Non-pub

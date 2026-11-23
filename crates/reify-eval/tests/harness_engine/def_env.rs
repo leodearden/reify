@@ -16,6 +16,7 @@ use std::path::Path;
 use reify_compiler::cfg::CfgSet;
 use reify_compiler::module_dag::ModuleResolver;
 use reify_compiler::program::{CompiledProgram, compile_program};
+use reify_compiler::name_env::Definition;
 use reify_compiler::program_scope::ProgramDefinition;
 use reify_compiler::stdlib_loader::load_stdlib;
 use reify_compiler::{
@@ -238,6 +239,17 @@ struct KindRow {
     /// Whether the entry redeclares `shared`. Not for units: that is a compile
     /// Error, pinned by its own test below.
     entry_redeclares: bool,
+    /// Who reports a collision between `a`'s and `b`'s definitions.
+    import_pairs: Reporter,
+}
+
+/// The one side that reports a collision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reporter {
+    /// `DefEnv::collision_warnings`.
+    DefEnv,
+    /// The entry's own compile, whose prelude-only bind sees `a` and `b`.
+    EntryCompile,
 }
 
 fn rows() -> Vec<KindRow> {
@@ -248,6 +260,7 @@ fn rows() -> Vec<KindRow> {
             declare: |n| format!("structure def {n} {{\n    param x : Real = 1\n}}\n"),
             std_name: Some("Color"),
             entry_redeclares: true,
+            import_pairs: Reporter::DefEnv,
         },
         KindRow {
             kind: "function",
@@ -259,6 +272,7 @@ fn rows() -> Vec<KindRow> {
             },
             std_name: Some("ramp_profile"),
             entry_redeclares: true,
+            import_pairs: Reporter::DefEnv,
         },
         KindRow {
             kind: "enum",
@@ -266,6 +280,7 @@ fn rows() -> Vec<KindRow> {
             declare: |n| format!("enum {n} {{ Foo, Bar }}\n"),
             std_name: Some("SignalKind"),
             entry_redeclares: true,
+            import_pairs: Reporter::DefEnv,
         },
         KindRow {
             kind: "unit",
@@ -273,6 +288,7 @@ fn rows() -> Vec<KindRow> {
             declare: |n| format!("unit {n} : Length = 1.0\n"),
             std_name: None,
             entry_redeclares: false,
+            import_pairs: Reporter::EntryCompile,
         },
         KindRow {
             kind: "type alias",
@@ -280,6 +296,7 @@ fn rows() -> Vec<KindRow> {
             declare: |n| format!("type {n} = Length\n"),
             std_name: Some("ArealCostRate"),
             entry_redeclares: true,
+            import_pairs: Reporter::EntryCompile,
         },
         KindRow {
             kind: "trait",
@@ -287,6 +304,7 @@ fn rows() -> Vec<KindRow> {
             declare: |n| format!("trait {n} {{\n    param k : Real\n}}\n"),
             std_name: Some("Rigid"),
             entry_redeclares: true,
+            import_pairs: Reporter::DefEnv,
         },
         KindRow {
             kind: "constraint def",
@@ -294,6 +312,7 @@ fn rows() -> Vec<KindRow> {
             declare: |n| format!("constraint def {n} {{\n    param t : Length\n    t > 0mm\n}}\n"),
             std_name: Some("Conforms"),
             entry_redeclares: true,
+            import_pairs: Reporter::EntryCompile,
         },
         KindRow {
             kind: "purpose",
@@ -311,6 +330,7 @@ fn rows() -> Vec<KindRow> {
             },
             std_name: Some("design_review"),
             entry_redeclares: true,
+            import_pairs: Reporter::DefEnv,
         },
     ]
 }
@@ -672,13 +692,9 @@ fn reports_collision(
     winner: &str,
     shadowed: &str,
 ) -> bool {
-    let message = &diagnostic.message;
-    let position = |origin: &str| message.find(&format!("'{origin}'"));
-    diagnostic.severity == Severity::Warning
+    names_collision(diagnostic, kind, name, winner, shadowed)
         && diagnostic.code == Some(DiagnosticCode::DefinitionCollision)
-        && message.starts_with(&format!("{kind} '{name}' "))
-        && message.contains("first-wins")
-        && matches!((position(winner), position(shadowed)), (Some(w), Some(s)) if w < s)
+        && diagnostic.message.contains("first-wins")
 }
 
 fn collisions_of_kind<'d>(warnings: &'d [Diagnostic], kind: &str) -> Vec<&'d Diagnostic> {
@@ -688,24 +704,39 @@ fn collisions_of_kind<'d>(warnings: &'d [Diagnostic], kind: &str) -> Vec<&'d Dia
         .collect()
 }
 
-/// Per kind: one Warning per entry-vs-import and per import-vs-import
-/// shadowing, and none for `b`'s redeclaration of a stdlib name (an
-/// import-vs-std shadowing, which `b`'s own compile reports).
+/// `(name, winner, shadowed, reporter)` of every collision a row's fixture
+/// makes whose loser is `a`'s or `b`'s. When the entry redeclares `shared`,
+/// the entry compile's prelude-only bind still sees `a`'s `shared` shadow
+/// `b`'s; the program's binding does not, since the entry shadows both.
+fn import_tier_collisions(
+    row: &KindRow,
+) -> Vec<(&'static str, &'static str, &'static str, Reporter)> {
+    let [shared, peer, ..] = row.names;
+    let mut expected = vec![(peer, "a", "b", row.import_pairs)];
+    if row.entry_redeclares {
+        expected.push((shared, "main", "a", Reporter::DefEnv));
+        expected.push((shared, "main", "b", Reporter::DefEnv));
+    }
+    if !row.entry_redeclares || row.import_pairs == Reporter::EntryCompile {
+        expected.push((shared, "a", "b", row.import_pairs));
+    }
+    expected
+}
+
+/// Per kind: one Warning per entry-vs-import shadowing, one per
+/// import-vs-import shadowing of a kind the entry's compile does not report,
+/// and none for `b`'s redeclaration of a stdlib name (an import-vs-std
+/// shadowing, which `b`'s own compile reports).
 fn assert_kind_collisions<D: Kind>(kind: &str) {
     let row = row(kind);
     let fx = KindsFixture::new();
     let warnings = DefEnv::from_program(&fx.program).collision_warnings();
-    let [shared, peer, ..] = row.names;
-    let kind_word = named::<D>(fx.a(), shared).kind_word();
-    let expected: Vec<(&str, &str, &str)> = if row.entry_redeclares {
-        vec![
-            (shared, "main", "a"),
-            (shared, "main", "b"),
-            (peer, "a", "b"),
-        ]
-    } else {
-        vec![(shared, "a", "b"), (peer, "a", "b")]
-    };
+    let kind_word = named::<D>(fx.a(), row.names[0]).kind_word();
+    let expected: Vec<(&str, &str, &str)> = import_tier_collisions(&row)
+        .into_iter()
+        .filter(|&(.., reporter)| reporter == Reporter::DefEnv)
+        .map(|(name, winner, shadowed, _)| (name, winner, shadowed))
+        .collect();
     let of_kind = collisions_of_kind(&warnings, kind_word);
     for (name, winner, shadowed) in &expected {
         let reports = of_kind
@@ -768,11 +799,69 @@ fn purpose_collisions_are_reported_once_per_import_tier_shadowing() {
 fn the_kinds_fixture_reports_exactly_the_import_tier_shadowings() {
     let fx = KindsFixture::new();
     let warnings = DefEnv::from_program(&fx.program).collision_warnings();
-    let expected: usize = rows()
+    let expected = rows()
         .iter()
-        .map(|row| if row.entry_redeclares { 3 } else { 2 })
-        .sum();
+        .flat_map(import_tier_collisions)
+        .filter(|&(.., reporter)| reporter == Reporter::DefEnv)
+        .count();
     assert_eq!(warnings.len(), expected, "got {warnings:#?}");
+}
+
+/// Whether `diagnostic` is a Warning reporting `kind` `name` bound by
+/// `winner` over `shadowed`, in any collision wording: the constraint-def
+/// prelude seed still has its own.
+fn names_collision(
+    diagnostic: &Diagnostic,
+    kind: &str,
+    name: &str,
+    winner: &str,
+    shadowed: &str,
+) -> bool {
+    let message = &diagnostic.message;
+    let position = |origin: &str| message.find(&format!("'{origin}'"));
+    diagnostic.severity == Severity::Warning
+        && message.starts_with(&format!("{kind} '{name}' "))
+        && matches!((position(winner), position(shadowed)), (Some(w), Some(s)) if w < s)
+}
+
+/// Every collision whose loser is a user import's definition has exactly one
+/// reporter, across the entry's own compile and DefEnv's report, and the
+/// reporter each kind's import-vs-import collisions go to is fixed: units,
+/// type aliases and constraint defs are the entry compile's prelude seeds',
+/// every other kind DefEnv's.
+#[test]
+fn each_import_tier_collision_has_exactly_one_reporter() {
+    let fx = KindsFixture::new();
+    let def_env = DefEnv::from_program(&fx.program).collision_warnings();
+    let entry_compile: Vec<&Diagnostic> = fx.program.entry_own_diagnostics().collect();
+    for row in rows() {
+        let kind_word = match row.kind {
+            "template" => named::<TopologyTemplate>(fx.a(), row.names[0]).kind_word(),
+            _ => row.kind,
+        };
+        for (name, winner, shadowed, reporter) in import_tier_collisions(&row) {
+            let reports = |diagnostics: &[&Diagnostic]| {
+                diagnostics
+                    .iter()
+                    .filter(|d| names_collision(d, kind_word, name, winner, shadowed))
+                    .count()
+            };
+            let counts = (
+                reports(&entry_compile),
+                reports(&def_env.iter().collect::<Vec<_>>()),
+            );
+            let expected = match reporter {
+                Reporter::EntryCompile => (1, 0),
+                Reporter::DefEnv => (0, 1),
+            };
+            assert_eq!(
+                counts, expected,
+                "{} '{name}' ({winner} over {shadowed}): (entry compile, DefEnv) report \
+                 counts, expected only {reporter:?}",
+                row.kind
+            );
+        }
+    }
 }
 
 /// A shadowed STD definition is not DefEnv's to report: the entry's own
