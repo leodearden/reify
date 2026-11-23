@@ -113,6 +113,9 @@ pub(crate) mod reexec {
         ManifestDirEnv,
         /// `CARGO_MANIFEST_DIR` is removed and the cwd is the fixture consumer.
         CwdOnly,
+        /// As [`Launch::ManifestDirEnv`], plus `CARGO_BIN_EXE_<name>` naming
+        /// `<name>` inside the fixture consumer.
+        BinExeEnv(&'static str),
     }
 
     /// A minimal workspace: the root marker plus an empty
@@ -155,6 +158,10 @@ pub(crate) mod reexec {
             }
             Launch::CwdOnly => {
                 cmd.env_remove("CARGO_MANIFEST_DIR").current_dir(&consumer);
+            }
+            Launch::BinExeEnv(name) => {
+                cmd.env("CARGO_MANIFEST_DIR", &consumer)
+                    .env(format!("CARGO_BIN_EXE_{name}"), consumer.join(name));
             }
         }
         let out = cmd
