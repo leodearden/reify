@@ -602,7 +602,8 @@ class BoundRoute(CliCase):
         [row] = journal_rows(self.target)
         self.assertEqual((row["mode"], row["policy"], row["backend"], row["reason"]), ("canon", "incremental", "none", ""))
 
-    def test_nested_call_uses_the_recorded_cache_and_opens_no_session(self):
+    def nest_under_a_canon_supervisor(self):
+        """REIFY_CANON_ACTIVE naming this tree and a CANON supervisor with a recorded mixed cache."""
         recorded = canon_cache.ServerAddress(
             socket=os.path.join(self.target, ".reify-sccache.1.sock"),
             sccache=os.path.join(self.sccache_dir, "sccache"),
@@ -614,12 +615,37 @@ class BoundRoute(CliCase):
         tree = canon_run.find_tree(self.tree, {})
         supervisor = canon_run.Supervisor(canon_run.Mode.CANON, cache)
         self.env["REIFY_CANON_ACTIVE"] = canon_run.format_active(tree, self.tree, supervisor)
+        return supervisor
+
+    def test_nested_call_uses_the_recorded_cache_and_opens_no_session(self):
+        supervisor = self.nest_under_a_canon_supervisor()
         env = self.one_call(self.bound("cargo", "build"))["env"]
-        self.assertEqual(env["SCCACHE_SERVER_UDS"], recorded.socket)
+        self.assertEqual(env["SCCACHE_SERVER_UDS"], supervisor.cache.server.socket)
         self.assertEqual(env["CARGO_INCREMENTAL"], "1")
         self.assertEqual(canon_run.parse_active(env["REIFY_CANON_ACTIVE"]).supervisor, supervisor)
         self.assertEqual(cfx.read_sccache_calls(self.sccache_dir), [])
         self.assertFalse(os.path.exists(canon_cache.journal_path(self.target)))
+
+    def test_nested_call_stamps_a_fresh_build_directory_and_opens_no_session(self):
+        self.nest_under_a_canon_supervisor()
+        by_env = os.path.join(self.target, "nested-env")
+        by_option = os.path.join(self.target, "nested-opt")
+        for build_dir, target_dir_env, args in (
+            (by_env, by_env, ("cargo", "build")),
+            (by_option, None, ("cargo", "build", "--target-dir", by_option)),
+        ):
+            with self.subTest(build_dir=build_dir):
+                Path(self.fake, "calls.jsonl").unlink(missing_ok=True)
+                self.env.pop("CARGO_TARGET_DIR", None)
+                if target_dir_env is not None:
+                    self.env["CARGO_TARGET_DIR"] = target_dir_env
+                self.one_call(self.bound(*args))
+                stamp_path = Path(build_dir, ".reify-build-root")
+                self.assertTrue(stamp_path.is_file(), f"{stamp_path} was not stamped")
+                self.assertEqual(stamp_path.read_text(), self.tree + "\n")
+                self.assertEqual(cfx.read_sccache_calls(self.sccache_dir), [])
+                for directory in (build_dir, self.target):
+                    self.assertFalse(os.path.exists(canon_cache.journal_path(directory)), directory)
 
     def test_sharing_without_a_real_sccache_is_refused_before_anything_runs(self):
         if shutil.which("sccache", path="/usr/bin:/bin"):
