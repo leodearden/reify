@@ -1678,6 +1678,13 @@ mod tests {
     ///   into `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` would route it through
     ///   `expr.rs`'s `topology_selector_result_type(name).expect(…)`, which has
     ///   no entry for it.
+    ///
+    /// - direction-typing θ-b's arity-2 `angle(a, b)`, a `units.rs`
+    ///   `GEOMETRY_QUERY_NAMES` member typed by `geometry_query_result_type`,
+    ///   not a topology selector. Moving it into
+    ///   `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` would route it through `expr.rs`'s
+    ///   `topology_selector_result_type(name).expect(…)`, which has no entry
+    ///   for it.
     pub(crate) const NON_SELECTOR_ARG_SLOT_KEYS: &[&str] = &[
         "generate",
         "linear_pattern",
@@ -1750,6 +1757,9 @@ mod tests {
         "prb_double_parallelogram_flexure",
         "prb_let_joint",
         "prb_cartwheel_flexure",
+        // direction-typing θ-b — arity-2 `angle(a, b)`, Direction slots. A
+        // GEOMETRY_QUERY_NAMES member, not a topology selector.
+        "angle",
     ];
 
     // ── builtin_arg_slots table contract (step-1) ────────────────────────────
@@ -1816,52 +1826,54 @@ mod tests {
         assert_eq!(slots[0], mass_density_slot(1, "density"));
     }
 
-    /// faces_by_normal → arg2 tol (ANGLE).
+    /// faces_by_normal → arg1 dir (Direction, θ-b) AND arg2 tol (ANGLE).
     #[test]
-    fn faces_by_normal_has_angle_slot() {
-        let slots = builtin_arg_slots("faces_by_normal", 3);
+    fn faces_by_normal_has_direction_and_angle_slots() {
         assert_eq!(
-            slots.len(),
-            1,
-            "faces_by_normal should have 1 slot, got: {:?}",
-            slots
+            builtin_arg_slots("faces_by_normal", 3),
+            [direction_slot(1, "dir"), angle_slot(2, "tol")]
         );
-        assert_eq!(slots[0], angle_slot(2, "tol"));
     }
 
-    /// edges_parallel_to → arg2 tol (ANGLE).
+    /// edges_parallel_to → arg1 axis (Direction, θ-b) AND arg2 tol (ANGLE).
     #[test]
-    fn edges_parallel_to_has_angle_slot() {
-        let slots = builtin_arg_slots("edges_parallel_to", 3);
+    fn edges_parallel_to_has_direction_and_angle_slots() {
         assert_eq!(
-            slots.len(),
-            1,
-            "edges_parallel_to should have 1 slot, got: {:?}",
-            slots
+            builtin_arg_slots("edges_parallel_to", 3),
+            [direction_slot(1, "axis"), angle_slot(2, "tol")]
         );
-        assert_eq!(slots[0], angle_slot(2, "tol"));
     }
 
-    /// Task 3523 (step-7 RED). The perpendicular selectors mirror
-    /// faces_by_normal/edges_parallel_to: arg2 `tol` is an ANGLE. Each must
-    /// expose exactly one checkable ANGLE slot at index 2. RED until step-8
-    /// joins them to the ANGLE-tol arm. (faces_by_surface_kind/edges_by_curve_kind
-    /// and the extremal ctors take string/length args — no ANGLE slot.)
+    /// Task 3523. The perpendicular selectors mirror
+    /// faces_by_normal/edges_parallel_to: arg1 `axis` is a Direction
+    /// (direction-typing θ-b) and arg2 `tol` is an ANGLE.
+    /// (faces_by_surface_kind/edges_by_curve_kind and the extremal ctors take
+    /// string/length args — no ANGLE slot.)
     #[test]
-    fn perpendicular_selectors_have_angle_slot() {
+    fn perpendicular_selectors_have_direction_and_angle_slots() {
         for name in ["faces_perpendicular_to", "edges_perpendicular_to"] {
-            // Canonical call arity: (solid, dir, tol).
-            let slots = builtin_arg_slots(name, 3);
+            // Canonical call arity: (solid, axis, tol).
             assert_eq!(
-                slots.len(),
-                1,
-                "{name} should have 1 slot, got: {:?}",
-                slots
+                builtin_arg_slots(name, 3),
+                [direction_slot(1, "axis"), angle_slot(2, "tol")],
+                "{name}: arg1 axis must be Direction, arg2 tol ANGLE"
             );
-            assert_eq!(
-                slots[0],
-                angle_slot(2, "tol"),
-                "{name} arg2 tol must be ANGLE"
+        }
+    }
+
+    /// Arity-2 `angle(a, b)` slots both operands as Direction (θ-b); arity 3 is
+    /// the relation verb `angle(x, y, metric)`, policed by
+    /// `relation_signatures`, and stays slot-free.
+    #[test]
+    fn angle_slots_its_two_directions_only_at_arity_two() {
+        assert_eq!(
+            builtin_arg_slots("angle", 2),
+            [direction_slot(0, "a"), direction_slot(1, "b")]
+        );
+        for arg_count in (0usize..=MAX_PROBED_ARITY).filter(|n| *n != 2) {
+            assert!(
+                builtin_arg_slots("angle", arg_count).is_empty(),
+                "angle at arity {arg_count} must carry no slot"
             );
         }
     }
@@ -2879,10 +2891,7 @@ mod tests {
     /// → 1 Error diagnostic naming "Angle".
     #[test]
     fn faces_by_normal_bool_arg2_gives_error_naming_angle() {
-        let dir_type = Type::Vector {
-            n: 3,
-            quantity: Box::new(Type::dimensionless_scalar()),
-        };
+        let dir_type = Type::Direction;
         let args = vec![
             arg_expr(Type::Geometry),
             arg_expr(dir_type),
@@ -2902,10 +2911,7 @@ mod tests {
     /// (e) WRONG-DIM scalar: faces_by_normal arg2 = Scalar{LENGTH} (not ANGLE) → 1 Error.
     #[test]
     fn faces_by_normal_length_tol_gives_error() {
-        let dir_type = Type::Vector {
-            n: 3,
-            quantity: Box::new(Type::dimensionless_scalar()),
-        };
+        let dir_type = Type::Direction;
         let args = vec![
             arg_expr(Type::Geometry),
             arg_expr(dir_type),
@@ -2922,10 +2928,7 @@ mod tests {
     /// (f) CORRECT: faces_by_normal arg2 = Scalar{ANGLE} → 0 diagnostics.
     #[test]
     fn faces_by_normal_correct_angle_gives_no_error() {
-        let dir_type = Type::Vector {
-            n: 3,
-            quantity: Box::new(Type::dimensionless_scalar()),
-        };
+        let dir_type = Type::Direction;
         let args = vec![
             arg_expr(Type::Geometry),
             arg_expr(dir_type),
@@ -4512,6 +4515,12 @@ mod tests {
         "prb_double_parallelogram_flexure",
         "prb_let_joint",
         "prb_cartwheel_flexure",
+        // direction-typing θ-b's arity-2 `angle(a, b)`. MEASURED: the probe
+        // reports the full {0..=14} window — no lowering arity diagnostic at
+        // any arity, like the Euler pair. Its arm carries an explicit
+        // `if arg_count == 2` guard (arity 3 is the slot-free relation verb),
+        // so it does not rely on this exemption for its safety.
+        "angle",
     ];
 
     /// Names that legitimately accept MORE THAN ONE arity while being served by

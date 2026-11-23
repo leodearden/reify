@@ -181,8 +181,8 @@ pub(crate) fn kinematic_query_result_type(name: &str) -> Option<reify_core::Type
 /// fn faces(solid: Solid) -> List<Geometry>
 /// fn edges_by_length(solid: Solid, range: Range<Length>) -> List<Geometry>
 /// fn faces_by_area(solid: Solid, range: Range<Area>) -> List<Geometry>
-/// fn faces_by_normal(solid: Solid, dir: Vec3, tol: Angle) -> List<Geometry>
-/// fn edges_parallel_to(solid: Solid, dir: Vec3, tol: Angle) -> List<Geometry>
+/// fn faces_by_normal(solid: Solid, dir: Direction, tol: Angle) -> List<Geometry>
+/// fn edges_parallel_to(solid: Solid, axis: Direction, tol: Angle) -> List<Geometry>
 /// fn edges_at_height(solid: Solid, h: Length, tol: Length) -> List<Geometry>
 /// fn adjacent_faces(solid: Solid, face: Geometry) -> List<Geometry>
 /// fn shared_edges(face1: Geometry, face2: Geometry) -> List<Geometry>
@@ -996,7 +996,7 @@ pub(crate) fn affine_map_algebra_result_type(
 /// fn contains(a: Geometry, b: Geometry) -> Bool
 /// fn intersects(a: Geometry, b: Geometry) -> Bool
 /// fn geo_equiv(a: Geometry, b: Geometry) -> Bool
-/// fn angle(a: Vec3, b: Vec3)            -> Scalar<Angle>
+/// fn angle(a: Direction, b: Direction)  -> Scalar<Angle>
 /// fn curvature(c: Curve, t: Real)       -> Scalar<Curvature>
 /// ```
 ///
