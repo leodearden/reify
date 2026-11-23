@@ -230,6 +230,19 @@ impl Drop for AliasDeferScope {
     }
 }
 
+/// Whether an alias's body is read where the alias is USED: a parametric alias
+/// is instantiated at each use site, and a non-parametric one the alias DFS
+/// left unresolved (its body names an entity, task 6259) is finished there by
+/// the deferred arm of [`resolve_type_expr_with_aliases_kinded`]. Exactly these
+/// aliases carry their body, and the scope its alias names bind in, across a
+/// module boundary.
+fn body_read_at_use_site(
+    type_params: &[reify_ir::TypeParam],
+    resolved_type: Option<&Type>,
+) -> bool {
+    !type_params.is_empty() || resolved_type.is_none()
+}
+
 /// Internal type alias entry — stored in the registry during compilation.
 ///
 /// For non-parameterized aliases, `resolved_type` holds the fully-resolved `Type`.
@@ -259,8 +272,9 @@ impl TypeAliasEntry {
     /// `found_in`, the registry the entry was looked up in.
     ///
     /// This is what keeps an importer's own alias from capturing a name in an
-    /// imported parametric body (task 10297). Entity names in the body still
-    /// resolve at the use site, through [`AliasBodyUseSite`].
+    /// imported body, parametric (task 10297) or entity-bodied (task 10354).
+    /// Entity names in the body still resolve at the use site; a parametric
+    /// body reaches them through [`AliasBodyUseSite`].
     pub(crate) fn body_registry<'a>(
         &'a self,
         found_in: &'a TypeAliasRegistry,
@@ -315,15 +329,10 @@ impl TypeAliasEntry {
             name: cta.name.clone(),
             resolved_type: cta.resolved_type.clone(),
             type_params: cta.type_params.clone(),
-            // Skip the clone ONLY for an already-resolved non-parametric alias:
-            // it resolves via `resolved_type` and nothing reads its body. A
-            // parametric alias needs the body for `resolve_parameterized_alias`;
-            // an unresolved non-parametric one needs it for the deferred
-            // use-site arm (task 6259).
-            type_expr: if cta.type_params.is_empty() && cta.resolved_type.is_some() {
-                None
-            } else {
+            type_expr: if body_read_at_use_site(&cta.type_params, cta.resolved_type.as_ref()) {
                 cta.type_expr.clone()
+            } else {
+                None
             },
             body_scope: cta
                 .body_scope
@@ -425,12 +434,13 @@ impl TypeAliasRegistry {
     /// the user module's exported `type_aliases` only contains its own declarations —
     /// prelude aliases are visible for resolution but are not re-exported.
     ///
-    /// Every parametric alias is exported with its [`Self::defining_scope`], so
-    /// an importer instantiates its body against this module's bindings.
+    /// Every alias whose body is read at a use site ([`body_read_at_use_site`])
+    /// is exported with its [`Self::defining_scope`], so an importer resolves
+    /// its body's alias names against this module's bindings.
     pub(crate) fn into_compiled(self) -> Vec<CompiledTypeAlias> {
         let mut scopes: HashMap<String, Vec<CompiledTypeAlias>> = self
             .iter()
-            .filter(|e| !e.type_params.is_empty())
+            .filter(|e| body_read_at_use_site(&e.type_params, e.resolved_type.as_ref()))
             .map(|e| (e.name.clone(), self.defining_scope(e)))
             .collect();
         self.entries
@@ -2525,12 +2535,18 @@ pub(crate) fn resolve_type_expr_with_aliases_kinded(
     //     `fn k<Q: Dimension>(..)` report `Q`, a name the alias's declaration
     //     scope never had. Do not "restore" the caller's scope believing it
     //     usefully threads context through.
+    //
+    //   * The body's ALIAS names resolve in the entry's `body_registry`, the
+    //     scope its defining module captured on export, not in the caller's
+    //     registry (#10354). Otherwise an importer's own alias named like one
+    //     the body mentions, or like the entity it names, captures it. Its
+    //     ENTITY names still resolve here, at the use site. Pinned by
+    //     `tests/harness_result_annotation/user_module_alias_import_tests.rs`.
     if type_args.is_empty()
         && let Some(alias_entry) = alias_registry.lookup(name)
         && alias_entry.resolved_type.is_none()
         && alias_entry.type_params.is_empty()
-        // Clone the body to release the `&alias_registry` borrow before recursing.
-        && let Some(body) = alias_entry.type_expr.clone()
+        && let Some(body) = alias_entry.type_expr.as_ref()
         && let Some(_guard) = AliasDeferScope::new(name)
     {
         let mut tmp_diags = Vec::new();
@@ -2538,10 +2554,10 @@ pub(crate) fn resolve_type_expr_with_aliases_kinded(
         // type nor a dimension parameter in scope (see the third bullet above).
         let no_params: HashSet<String> = HashSet::new();
         if let Some(ty) = resolve_type_expr_with_aliases_kinded(
-            &body,
+            body,
             &no_params,
             &no_params,
-            alias_registry,
+            alias_entry.body_registry(alias_registry),
             &mut tmp_diags,
             structure_names,
             trait_names,
