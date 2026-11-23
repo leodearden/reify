@@ -367,6 +367,33 @@ ts_watched_files() {
     printf '%s\n' "$1/grammar.js" "$1/src/scanner.c"
 }
 
+# ts_build_script_inputs <ts_dir>
+#
+# The tracked files whose mtime cargo compares to decide whether tree-sitter-reify's
+# build script is rebuilt or re-run: ts_watched_files plus build.rs and
+# build_support.rs (the script's own sources). Derived from ts_watched_files, so
+# the freshness input set keeps one home.
+ts_build_script_inputs() {
+    ts_watched_files "$1"
+    printf '%s\n' "$1/build.rs" "$1/build_support.rs"
+}
+
+# ts_build_input_mtimes <ts_dir>
+#
+# One `<mtime> <path>` line per ts_build_script_inputs path, or `absent <path>`
+# for a missing file. The mtime is stat's exact nanosecond %y, not ts_mtime's epoch
+# seconds: cargo compares at that precision, and a GNU mv round trip preserves it.
+ts_build_input_mtimes() {
+    local f
+    while IFS= read -r f; do
+        if [ -e "$f" ]; then
+            printf '%s %s\n' "$(stat -c %y "$f")" "$f"
+        else
+            printf 'absent %s\n' "$f"
+        fi
+    done < <(ts_build_script_inputs "$1")
+}
+
 # ts_witness_value <ts_dir>
 #
 # The value a real `ensure` writes to the ledger's mtime WITNESS file
@@ -386,63 +413,6 @@ ts_witness_value() {
         if [ "$m" -gt "$best" ]; then best="$m"; fi
     done < <(ts_watched_files "$d")
     printf '%s' "$best"
-}
-
-# ts_freshest_run_dir
-#
-# Print the most recently modified cargo build-script RUN directory for
-# tree-sitter-reify — the one holding `output` (cargo's verbatim capture of
-# build-script stdout) and the sibling `out/` with libtree_sitter_reify.a.
-# Prints nothing when none exists.
-ts_freshest_run_dir() {
-    local d m best="" best_m=0
-    local had_nullglob=0
-    shopt -q nullglob && had_nullglob=1
-    shopt -s nullglob
-    for d in "$REPO_ROOT"/target/*/build/tree-sitter-reify-*/output \
-             "$REPO_ROOT"/target/*/*/build/tree-sitter-reify-*/output; do
-        m=$(ts_mtime "$d")
-        if [ "$m" -gt "$best_m" ]; then
-            best_m="$m"
-            best="$(dirname "$d")"
-        fi
-    done
-    [ "$had_nullglob" -eq 1 ] || shopt -u nullglob
-    printf '%s' "$best"
-}
-
-# ts_mirror_run_dir <dest_target_dir>
-#
-# Mirror the freshest built fingerprint dir's archive (and its stamp, if any)
-# into a temp target tree, preserving the dir NAME so a failure message still
-# names the real one. Prints the name; returns 1 if there is nothing to mirror.
-#
-# WHY MIRROR: a real checkout accumulates leftover fingerprint dirs (7 in this
-# lane) that cargo will never rebuild again and which therefore carry no
-# attestation. In an end-to-end test they would drown the one signal under test.
-# Nothing is weakened: the stamp mirrored here is the one build.rs genuinely
-# wrote next to the archive cargo genuinely just built.
-#
-# This is NOT compensating for `check` being unusable against a real target/ —
-# that was true when this helper was written, and is no longer (#5629 review
-# round 2). `check` now scopes its failing verdict to the LIVE fingerprint dir
-# and demotes those leftovers to informational lines, so a plain `check` against
-# the real tree is meaningful and is what verify.sh runs after the cargo wave.
-# The mirror is kept only to pin the assertion to one KNOWN dir, so the test
-# cannot be perturbed by whatever else has been built in the lane.
-ts_mirror_run_dir() {
-    local dest="$1" run_dir name out
-    run_dir=$(ts_freshest_run_dir)
-    [ -n "$run_dir" ] || return 1
-    name="$(basename "$run_dir")"
-    out="$dest/debug/build/$name/out"
-    rm -rf "$dest"
-    mkdir -p "$out"
-    cp "$run_dir/out/libtree_sitter_reify.a" "$out/" 2>/dev/null || return 1
-    if [ -f "$run_dir/out/tree_sitter_inputs.stamp" ]; then
-        cp "$run_dir/out/tree_sitter_inputs.stamp" "$out/"
-    fi
-    printf '%s' "$name"
 }
 
 # run_ts_freshness <mode> <target_dir> [ts_dir]
@@ -849,6 +819,35 @@ ts_discover_cases() {
     declare -F | awk '/test_/{print $3}'
 }
 
+# ts_run_case <case>
+#
+# Runs <case> under `||` (which turns errexit off inside it) with a fresh cleanup
+# list, then its cleanup, and returns the case's status. Returns 1 instead when the
+# case left the mtime of any of the lane's tree-sitter-reify build-script inputs
+# changed (#10144): a moved mtime reruns that crate's build script and rebuilds its
+# dependents in the lane's next build, so a FAIL outranks the case's own PASS or
+# INFRA. The mtimes are read after the cleanup, so a case that moves a file aside
+# and restores it passes. The guard only detects; it never restores an mtime.
+ts_run_case() {
+    local case_name="$1" rc=0 before after
+    CLEANUP_ACTIONS=()
+    before=$(ts_build_input_mtimes "$TS_DIR")
+    "$case_name" || rc=$?
+    cleanup
+    after=$(ts_build_input_mtimes "$TS_DIR")
+    if [ "$after" != "$before" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: $case_name moved the mtime of this lane's tree-sitter-reify build inputs"
+        echo "  before:"
+        printf '%s\n' "$before" | sed 's/^/    /'
+        echo "  after:"
+        printf '%s\n' "$after" | sed 's/^/    /'
+        echo "  A moved mtime reruns tree-sitter-reify's build script and rebuilds its dependents in the lane's next build (#10144)."
+        return 1
+    fi
+    return "$rc"
+}
+
 # ts_run_verdict <passed> <failed> <infra-case> <not-run>
 #
 # Prints the run's summary and returns its verdict. A recorded FAIL wins (1), as in
@@ -878,8 +877,8 @@ ts_run_verdict() {
 # run_tests [case...]
 #
 # Runs the named cases, or every discovered one when none is named. Each case runs
-# under `||`, which turns errexit off inside it, and is followed by cleanup. The
-# run stops at the first INFRA case: a host that just lost a build to its timeout
+# through ts_run_case: under `||`, followed by its cleanup and the build-input
+# guard. The run stops at the first INFRA case: a host that just lost a build to its timeout
 # would lose the next one the same way, and the wall around this suite in
 # scripts/verify.sh would then kill it before it could report.
 run_tests() {
@@ -890,10 +889,9 @@ run_tests() {
 
     for t in "$@"; do
         ran=$((ran + 1))
-        CLEANUP_ACTIONS=()
         printf "${BOLD}RUN${RESET}  %s ... " "$t"
         rc=0
-        "$t" || rc=$?
+        ts_run_case "$t" || rc=$?
         case "$rc" in
             0)
                 printf "${GREEN}PASS${RESET}\n"
@@ -908,7 +906,6 @@ run_tests() {
                 failed=$((failed + 1))
                 ;;
         esac
-        cleanup
         if [ -n "$infra_case" ]; then
             break
         fi
@@ -938,7 +935,11 @@ ts_run_stub_cases() {
     # the suite's. It holds no suite case (ts_unset_cases_except), so a runner that
     # ignored <case...> finds nothing to run.
     # Stubs: ts_case_passes (0), ts_case_fails (1), ts_case_reaches_no_verdict
-    # ($TS_INFRA_RC), ts_case_must_not_run (creates <dir>/must-not-run).
+    # ($TS_INFRA_RC), ts_case_must_not_run (creates <dir>/must-not-run),
+    # ts_case_moves_a_build_input (touches $TS_DIR/grammar.js, returns 0),
+    # ts_case_restores_a_moved_build_input (moves $TS_DIR/grammar.js aside and
+    # registers the move back as cleanup, returns 0). The last two act on
+    # $TS_DIR, so a caller redirects TS_DIR to a temp copy.
     local stub_dir="$1"
     shift
     (
@@ -947,6 +948,11 @@ ts_run_stub_cases() {
         ts_case_fails() { return 1; }
         ts_case_reaches_no_verdict() { return "$TS_INFRA_RC"; }
         ts_case_must_not_run() { : >"$stub_dir/must-not-run"; }
+        ts_case_moves_a_build_input() { touch "$TS_DIR/grammar.js"; }
+        ts_case_restores_a_moved_build_input() {
+            mv "$TS_DIR/grammar.js" "$stub_dir/grammar.js.moved"
+            CLEANUP_ACTIONS+=("mv -f '$stub_dir/grammar.js.moved' '$TS_DIR/grammar.js'")
+        }
         run_tests "$@"
     ) >"$stub_dir/run.log" 2>&1
 }
@@ -1258,6 +1264,52 @@ test_runner_lets_a_recorded_fail_outrank_infrastructure() {
     if [ "$rc" -ne 0 ]; then
         echo ""
         echo "  ASSERTION FAILED: a run of passing cases must exit 0, got $rc"
+        ts_print_captured "run_tests output" "$dir/run.log"
+        return 1
+    fi
+}
+
+test_runner_fails_a_case_that_moves_a_lane_build_input() {
+    # A case that moves the mtime of a tree-sitter-reify build-script input reruns
+    # that crate's build script, and rebuilds its dependents, in the lane's next
+    # build (#10144): the runner FAILs it by name, whatever its own verdict was. The
+    # guard reads after the case's cleanup, so a case that moves a file aside and
+    # puts it back passes. Driven on stub cases against a temp copy: TS_DIR is
+    # redirected inside the stub subshell, so the lane's own tree is never touched.
+    local dir ts rc=0
+    dir=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$dir'")
+    ts="$dir/tree-sitter-reify"
+    mkdir -p "$ts/src"
+    local f
+    for f in grammar.js src/scanner.c build.rs build_support.rs; do
+        printf 'placeholder\n' > "$ts/$f"
+        touch -d '2020-01-01 00:00:00' "$ts/$f"
+    done
+    TS_DIR="$ts" ts_run_stub_cases "$dir" \
+        ts_case_moves_a_build_input ts_case_restores_a_moved_build_input \
+        ts_case_passes || rc=$?
+    if [ "$rc" -ne 1 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: run_tests must exit 1 when a case moved a build input's mtime, got $rc"
+        ts_print_captured "run_tests output" "$dir/run.log"
+        return 1
+    fi
+    if ! grep -qE 'Results: .*2 passed.*1 failed' "$dir/run.log"; then
+        echo ""
+        echo "  ASSERTION FAILED: expected exactly the mover to FAIL (Results: 2 passed, 1 failed)"
+        ts_print_captured "run_tests output" "$dir/run.log"
+        return 1
+    fi
+    if ! grep 'ts_case_moves_a_build_input' "$dir/run.log" | grep -q 'moved the mtime'; then
+        echo ""
+        echo "  ASSERTION FAILED: the guard's diagnostic must name the case that moved a build input"
+        ts_print_captured "run_tests output" "$dir/run.log"
+        return 1
+    fi
+    if ! grep -qF "$ts/grammar.js" "$dir/run.log"; then
+        echo ""
+        echo "  ASSERTION FAILED: the guard's diagnostic must name the file whose mtime moved: $ts/grammar.js"
         ts_print_captured "run_tests output" "$dir/run.log"
         return 1
     fi
@@ -2686,24 +2738,23 @@ test_build_rs_watches_all_compiled_inputs() {
     # the script (#9896). Nothing the script writes may be in it: cargo stamps
     # the script's `output` at invocation, so a watched output reruns the script
     # on the next build, which is the tree-sitter cascade #9896 removes.
+    #
+    # It runs on a fixture crate in its own target dir, so the lane's
+    # tree-sitter-reify/ and target/ are never touched (#10144).
     require_tree_sitter_cli || return 0
-    touch "$TS_DIR/grammar.js"
 
-    local cargo_out
-    cargo_out=$(mktemp)
-    CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
-    local guard_rc=0
-    run_guarded_cargo_check "$cargo_out" timeout 300 cargo check -p tree-sitter-reify \
-        --manifest-path "$REPO_ROOT/Cargo.toml" || guard_rc=$?
-    if [ "$guard_rc" -eq "$TS_INFRA_RC" ]; then return "$TS_INFRA_RC"; fi
-    if [ "$guard_rc" -ne 0 ]; then return 1; fi
+    local va fix cargo_out guard_rc=0
+    va=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$va'")
+    ts_write_grammar_variant "$va" a
+    fix=$(mktemp -d); CLEANUP_ACTIONS+=("rm -rf '$fix'")
+    mk_ts_build_fixture "$fix" "$va" || return 1
+    cargo_out=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
+    ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
 
-    local run_dir
-    run_dir=$(ts_freshest_run_dir)
-    if [ -z "$run_dir" ]; then
-        echo "  SKIP: no target/*/build/tree-sitter-reify-*/output found"
-        return 0
-    fi
+    local out run_dir
+    out=$(ts_fixture_out_dir "$fix") || return 1
+    run_dir=$(dirname "$out")
 
     local watched expected missing extra
     watched=$(sed -n -E 's/^cargo::?rerun-if-changed=//p' "$run_dir/output" | LC_ALL=C sort -u)
@@ -2724,13 +2775,13 @@ test_build_rs_watches_all_compiled_inputs() {
     # ATTESTATION: the stamp must sit beside the archive it describes, and must be
     # byte-identical to what the shell computes. If these two manifests can drift,
     # every `check` verdict is meaningless.
-    local archive="$run_dir/out/libtree_sitter_reify.a"
-    local stamp="$run_dir/out/tree_sitter_inputs.stamp"
+    local archive="$out/libtree_sitter_reify.a"
+    local stamp="$out/tree_sitter_inputs.stamp"
     assert_file_exists "$archive" || return 1
     assert_file_exists "$stamp" || return 1
 
     local fp
-    fp=$(bash "$FRESHNESS_SCRIPT" --print-fingerprint)
+    fp=$(REIFY_TS_FRESHNESS_TS_DIR="$fix" bash "$FRESHNESS_SCRIPT" --print-fingerprint)
     if [ "$(cat "$stamp")" != "$fp" ]; then
         echo ""
         echo "  ASSERTION FAILED: build.rs's stamp != scripts/tree-sitter-freshness.sh --print-fingerprint"
@@ -2774,8 +2825,9 @@ test_build_rs_stamps_a_real_manifest_on_a_shasum_only_host() {
     #
     # NON-VACUITY IS MEASURED BY MUTATION: build.rs reduced to sha256sum-only
     # writes the literal UNAVAILABLE (caught by assertion 1), and ("shasum", &[])
-    # — bare shasum, which is SHA-1 — writes 40-hex digests that fail assertions
-    # 2 and 3. That second mutation is precisely what the outgoing guard missed.
+    # — bare shasum, which is SHA-1 — leaves no stamp at all, which the stamp-
+    # nonempty check catches (measured on this fixture crate, #10144). That second
+    # mutation is precisely what the outgoing guard missed.
     #
     # scripts/lib_portable.sh stays deliberately OUT of
     # scripts/verify-pipeline-infra-tests.txt: routing it would pull this whole
@@ -2783,12 +2835,17 @@ test_build_rs_stamps_a_real_manifest_on_a_shasum_only_host() {
     # lib. The merge gate runs --include-infra, so this arm is always evaluated
     # there; the exposure is one task-scope run, not a coverage hole.
 
+    # It runs on a fixture crate in its own target dir, so the lane's
+    # tree-sitter-reify/ and target/ are never touched (#10144).
+
     # SKIP only on a PROVEN environment defect. `shasum` absent from the host
     # means the fallback under test cannot exist here at all.
     if ! command -v shasum >/dev/null 2>&1; then
         echo "  SKIP: shasum not on PATH — the shasum-only fallback cannot be exercised on this host"
         return 0
     fi
+    # The fixture's first build generates, so it needs the CLI (the mask links it).
+    require_tree_sitter_cli || return 0
 
     local mask
     mask=$(mktemp -d) || return 1
@@ -2825,34 +2882,17 @@ test_build_rs_stamps_a_real_manifest_on_a_shasum_only_host() {
         return 0
     fi
 
-    # Force a build-script re-run: grammar.js is watched, and touching it is
-    # mtime-only, so the worktree stays clean and the digests are unchanged.
-    touch "$TS_DIR/grammar.js"
+    local va fix cargo_out guard_rc=0
+    va=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$va'")
+    ts_write_grammar_variant "$va" a
+    fix=$(mktemp -d); CLEANUP_ACTIONS+=("rm -rf '$fix'")
+    mk_ts_build_fixture "$fix" "$va" || return 1
+    cargo_out=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
+    PATH="$mask" ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
 
-    local cargo_out
-    cargo_out=$(mktemp)
-    CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
-    local guard_rc=0
-    run_guarded_cargo_check "$cargo_out" env PATH="$mask" timeout 300 cargo check \
-        -p tree-sitter-reify --manifest-path "$REPO_ROOT/Cargo.toml" || guard_rc=$?
-    if [ "$guard_rc" -eq "$TS_INFRA_RC" ]; then return "$TS_INFRA_RC"; fi
-    if [ "$guard_rc" -ne 0 ]; then return 1; fi
-
-    local run_dir
-    run_dir=$(ts_freshest_run_dir)
-    if [ -z "$run_dir" ]; then
-        if [ -n "${CARGO_TARGET_DIR:-}" ]; then
-            echo "  SKIP: CARGO_TARGET_DIR=$CARGO_TARGET_DIR redirects build output away from"
-            echo "  $REPO_ROOT/target, so the freshly written stamp is not locatable here"
-            return 0
-        fi
-        echo ""
-        echo "  ASSERTION FAILED: cargo check succeeded but no"
-        echo "  $REPO_ROOT/target/*/build/tree-sitter-reify-*/output exists — build.rs"
-        echo "  cannot have run, so no stamp was written."
-        return 1
-    fi
-    local stamp="$run_dir/out/tree_sitter_inputs.stamp"
+    local stamp
+    stamp="$(ts_fixture_out_dir "$fix")/tree_sitter_inputs.stamp" || return 1
     assert_file_nonempty "$stamp" || return 1
 
     local content
@@ -2920,12 +2960,13 @@ test_build_rs_stamps_a_real_manifest_on_a_shasum_only_host() {
     # (3) The cross-hasher agreement contract in its strongest form: what shasum
     # wrote INSIDE the mask must be byte-identical to what sha256sum computes
     # OUTSIDE it. Anything else and every `check` verdict is meaningless.
-    if ! cmp -s "$stamp" <(bash "$FRESHNESS_SCRIPT" --print-fingerprint); then
+    if ! cmp -s "$stamp" <(REIFY_TS_FRESHNESS_TS_DIR="$fix" bash "$FRESHNESS_SCRIPT" --print-fingerprint); then
         echo ""
         echo "  ASSERTION FAILED: the shasum-written stamp is not byte-identical to"
         echo "  scripts/tree-sitter-freshness.sh --print-fingerprint (sha256sum)."
         echo "  --- stamp ($stamp) ---"; cat "$stamp"
-        echo "  --- shell fingerprint ---"; bash "$FRESHNESS_SCRIPT" --print-fingerprint
+        echo "  --- shell fingerprint ---"
+        REIFY_TS_FRESHNESS_TS_DIR="$fix" bash "$FRESHNESS_SCRIPT" --print-fingerprint
         return 1
     fi
 }
@@ -4374,4 +4415,4 @@ test_masked_path_dir_helper_allocates_no_temp_of_its_own() {
 }
 
 # --- Main ---
-run_tests
+run_tests "$@"
