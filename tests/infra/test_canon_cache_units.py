@@ -173,7 +173,7 @@ class ForCommand(CacheEnvironmentCase):
         self.assertFalse(self.environment(canon_cache.Policy.INCREMENTAL).uses_guard)
 
 
-class Record(CacheEnvironmentCase):
+class CacheEnvironmentRecord(CacheEnvironmentCase):
     def test_round_trips_through_json(self):
         for policy in canon_cache.Policy:
             with self.subTest(policy=policy):
@@ -891,7 +891,7 @@ def value_types(record):
     return {name: type(value).__name__ for name, value in record.items() if name not in ("ts_ns", "pid")}
 
 
-class Record(unittest.TestCase):
+class BuildCacheRecordWriter(unittest.TestCase):
     """C6 / boundary row 8: one record, written by the channel's one encoder to two sinks."""
 
     def setUp(self):
