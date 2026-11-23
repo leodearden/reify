@@ -995,9 +995,7 @@ class RecordBase:
     reason: Reason = Reason.NONE
 
 
-FORWARDED_SIGNALS = (signal.SIGTERM, signal.SIGHUP)
-ABSORBED_SIGNALS = (signal.SIGINT, signal.SIGQUIT)
-SUPERVISED_SIGNALS = (*FORWARDED_SIGNALS, *ABSORBED_SIGNALS)
+SUPERVISED_SIGNALS = (signal.SIGTERM, signal.SIGHUP, signal.SIGINT, signal.SIGQUIT)
 
 
 def resolve_command(command: str, env: Mapping[str, str], cwd: str) -> str:
@@ -1010,53 +1008,73 @@ def resolve_command(command: str, env: Mapping[str, str], cwd: str) -> str:
     return found
 
 
-def absorb(_signum: int, _frame: object) -> None:
-    """The supervisor survives the signal; the command, started at default, receives it through its group."""
+class SignalForwarder:
+    """PRD C3's one signal rule, for the supervisor and the namespace parent alike (esc-10418-3).
+
+    Build it while the caller's dispositions are current. Inside `with`, a supervised signal
+    the caller ignores stays ignored, and any other one sent to this process goes to the
+    target deliver_to names, held until it does; the caller's dispositions return at exit.
+    So a signal to this pid ends the command as it would in real-path mode. A signal to the
+    whole group reaches the command twice, which one at default dispositions dies of once.
+    """
+
+    def __init__(self) -> None:
+        self._caller = {number: signal.getsignal(number) for number in SUPERVISED_SIGNALS}
+        self.caller_ignored = frozenset(
+            number for number, handler in self._caller.items() if handler == signal.SIG_IGN
+        )
+        self._send: Callable[[int], None] | None = None
+        self._held: list[int] = []
+
+    def __enter__(self) -> SignalForwarder:
+        for number in SUPERVISED_SIGNALS:
+            signal.signal(number, signal.SIG_IGN if number in self.caller_ignored else self._forward)
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        for number, handler in self._caller.items():
+            signal.signal(number, handler)
+
+    def deliver_to(self, send: Callable[[int], None]) -> None:
+        """Send every signal from now on, and every one held so far, through send."""
+        self._send = send
+        held, self._held = self._held, []
+        for signum in held:
+            send(signum)
+
+    def _forward(self, signum: int, _frame: object) -> None:
+        if self._send is None:
+            self._held.append(signum)
+        else:
+            self._send(signum)
 
 
-SignalHandler = Callable[[int, object], None] | signal.Handlers
-
-
-def supervising_handlers(forward: SignalHandler) -> dict[int, SignalHandler]:
-    """Each supervised signal's handler while the command runs, from the caller's current disposition."""
-
-    def chosen(number: int) -> SignalHandler:
-        if signal.getsignal(number) == signal.SIG_IGN:
-            return signal.SIG_IGN
-        return forward if number in FORWARDED_SIGNALS else absorb
-
-    return {number: chosen(number) for number in SUPERVISED_SIGNALS}
+def exit_status(returncode: int) -> int:
+    """A child's status as a shell reports it: 128+N when signal N killed it."""
+    return 128 - returncode if returncode < 0 else returncode
 
 
 def run_command(
-    executable: str, argv: list[str], env: Mapping[str, str], cwd: str, session: CacheSession | None
+    executable: str,
+    argv: list[str],
+    env: Mapping[str, str],
+    cwd: str,
+    session: CacheSession | None,
+    forwarder: SignalForwarder,
 ) -> tuple[int, float]:
-    """Spawn from this thread; what the caller ignores stays ignored, else forward TERM/HUP, absorb INT/QUIT."""
-    process: subprocess.Popen | None = None
-
-    def forward(signum: int, _frame: object) -> None:
-        if process is not None:
-            process.send_signal(signum)
-
-    previous = {number: signal.getsignal(number) for number in SUPERVISED_SIGNALS}
-    for number, handler in supervising_handlers(forward).items():
-        signal.signal(number, handler)
+    """Spawn from this thread and wait, forwarding signals to it; its exit_status and the wall time."""
+    started = time.monotonic()
     try:
-        started = time.monotonic()
-        try:
-            process = subprocess.Popen(
-                with_parent_death_signal([executable, *argv[1:]], "KILL"), env=env, cwd=cwd, close_fds=False
-            )
-        except OSError as exc:
-            raise CommandNotFound(f"cannot run {argv[0]}: {exc}") from exc
-        if session is not None and session.watchdog is not None:
-            session.watchdog.start()
-        returncode = process.wait()
-        wall = time.monotonic() - started
-    finally:
-        for number, handler in previous.items():
-            signal.signal(number, handler)
-    return (128 - returncode if returncode < 0 else returncode), wall
+        process = subprocess.Popen(
+            with_parent_death_signal([executable, *argv[1:]], "KILL"), env=env, cwd=cwd, close_fds=False
+        )
+    except OSError as exc:
+        raise CommandNotFound(f"cannot run {argv[0]}: {exc}") from exc
+    forwarder.deliver_to(process.send_signal)
+    if session is not None and session.watchdog is not None:
+        session.watchdog.start()
+    returncode = process.wait()
+    return exit_status(returncode), time.monotonic() - started
 
 
 def drain_line_count(path: str) -> int:
@@ -1089,15 +1107,18 @@ def supervise(
 
     Returns the command's status, or 128+N when signal N killed it. A command that
     cannot be found raises CommandNotFound after the session is closed, with no record.
+    Signals are forwarded until the record is written, so a second copy of one that
+    already ended the command cannot cut the teardown short.
     """
     cpu_before = children_cpu_secs()
-    try:
-        status, wall = run_command(resolve_command(argv[0], env, cwd), argv, env, cwd, session)
-    finally:
-        outcome = None if session is None else session.close()
-    cpu = children_cpu_secs() - cpu_before
-    uncached = 0 if session is None else drain_line_count(session.environment.server.uncached_log)
-    write_record(build_record(record_base, outcome, uncached, wall, cpu), subcommand, channel, journal)
+    with SignalForwarder() as forwarder:
+        try:
+            status, wall = run_command(resolve_command(argv[0], env, cwd), argv, env, cwd, session, forwarder)
+        finally:
+            outcome = None if session is None else session.close()
+        cpu = children_cpu_secs() - cpu_before
+        uncached = 0 if session is None else drain_line_count(session.environment.server.uncached_log)
+        write_record(build_record(record_base, outcome, uncached, wall, cpu), subcommand, channel, journal)
     return status
 
 

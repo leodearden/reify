@@ -35,6 +35,9 @@ import canon_cache_fixture as cfx  # noqa: E402  (imported after sys.path manipu
 import canon_run_fixture as fx  # noqa: E402
 
 STAMP = ".reify-build-root"
+# A background `&` or a run_all pool starts this suite with INT and QUIT ignored,
+# which an invocation started from it would keep as its caller's dispositions.
+AT_DEFAULT_SIGNALS = ("/usr/bin/env", "--default-signal=INT,QUIT")
 MARKER = "shared-marker"
 BURST = 20
 
@@ -203,7 +206,7 @@ class Teardown(HostCacheCase):
         fifo = os.path.join(self.tmp, "block-int.fifo")
         os.mkfifo(fifo)
         build = subprocess.Popen(
-            [self.trampoline(tree), "build", "--offline"], cwd=tree,
+            [*AT_DEFAULT_SIGNALS, self.trampoline(tree), "build", "--offline"], cwd=tree,
             env=self.env_for(tree, C_UNIT_BLOCK_FIFO=fifo),
             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, start_new_session=True,
         )
@@ -213,6 +216,36 @@ class Teardown(HostCacheCase):
         os.killpg(build.pid, signal.SIGINT)
         _, stderr = build.communicate()
         self.assertNotEqual(build.returncode, 0, stderr)
+        leftovers = sorted(path.name for path in Path(self.target(tree)).glob(".reify-sccache.*"))
+        self.assertEqual(leftovers, [], stderr)
+        self.assertEqual(len(cfx.read_journal(self.target(tree))), 1, stderr)
+        self.assertEqual(cfx.wait_until_none_name(self.socket_prefix()), [])
+
+    def test_sigterm_to_the_namespace_routes_started_pid_alone_ends_the_command_and_records(self):
+        self.assert_a_signal_to_the_outer_pid_alone_tears_down(signal.SIGTERM, 143)
+
+    def test_sigint_to_the_namespace_routes_started_pid_alone_ends_the_command_and_records(self):
+        self.assert_a_signal_to_the_outer_pid_alone_tears_down(signal.SIGINT, 130)
+
+    def assert_a_signal_to_the_outer_pid_alone_tears_down(self, signum, status):
+        """PRD C3 (esc-10418-3): the outer process forwards to the re-run, the child pid bwrap's --info-fd names."""
+        tree = self.make_tree(f"tree-{signum.name.lower()}")
+        started = os.path.join(self.tmp, f"started-{signum.name}")
+        outer = subprocess.Popen(
+            [*AT_DEFAULT_SIGNALS, fx.PYTHON, "-I", os.path.join(tree, "scripts", "canon_run.py"), "exec", "--",
+             "/bin/sh", "-c", 'touch "$0"; exec sleep 60', started],
+            cwd=tree, env=self.env_for(tree),
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, start_new_session=True,
+        )
+        self.addCleanup(lambda: outer.poll() is None and os.killpg(outer.pid, signal.SIGKILL))
+        while not os.path.exists(started):
+            if outer.poll() is not None:
+                self.fail(f"the invocation ended (rc={outer.returncode}) before its command started:"
+                          f" {outer.stderr.read()}")
+            time.sleep(0.05)
+        os.kill(outer.pid, signum)
+        _, stderr = outer.communicate()
+        self.assertEqual(outer.returncode, status, stderr)
         leftovers = sorted(path.name for path in Path(self.target(tree)).glob(".reify-sccache.*"))
         self.assertEqual(leftovers, [], stderr)
         self.assertEqual(len(cfx.read_journal(self.target(tree))), 1, stderr)

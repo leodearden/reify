@@ -24,6 +24,7 @@ import socket
 import signal
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -1078,6 +1079,54 @@ class Reentry(CanonInvocationCase):
         argv = canon_run.reentry_argv(self.tree, self.canon, f"{self.real}/sub", self.ARGUMENTS, info_fd=7)
         separator = argv.index("--")
         self.assertEqual(argv[separator - 2:separator], ["--info-fd", "7"])
+
+
+class NamespaceParent(unittest.TestCase):
+    """PRD C3 (esc-10418-3): a signal to the NAMESPACE route's started pid ends the command as in real-path mode.
+
+    run_in_namespace runs around a fake bwrap (fixture NAMESPACE_PARENT_RUNNER), so no namespace is needed.
+    """
+
+    def setUp(self):
+        self.tmp = scratch(self)
+
+    def start(self, **kwargs):
+        parent = fx.start_namespace_parent(self.tmp, **kwargs)
+        self.addCleanup(lambda: parent.poll() is None and os.killpg(parent.pid, signal.SIGKILL))
+        return parent
+
+    def wait_for(self, name, parent):
+        while not os.path.exists(os.path.join(self.tmp, name)):
+            self.assertIsNone(parent.poll(), f"the parent ended before {name}")
+            time.sleep(0.02)
+
+    def assert_forwarded(self, signum, status):
+        parent = self.start()
+        self.wait_for("started", parent)
+        os.kill(parent.pid, signum)
+        self.assertEqual(parent.wait(), status)
+
+    def test_sigterm_to_the_parent_alone_reaches_the_command(self):
+        self.assert_forwarded(signal.SIGTERM, 143)
+
+    def test_sighup_to_the_parent_alone_reaches_the_command(self):
+        self.assert_forwarded(signal.SIGHUP, 129)
+
+    def test_sigint_to_the_parent_alone_reaches_the_command(self):
+        self.assert_forwarded(signal.SIGINT, 130)
+
+    def test_sigquit_to_the_parent_alone_reaches_the_command(self):
+        self.assert_forwarded(signal.SIGQUIT, 131)
+
+    def test_a_signal_before_the_command_pid_is_known_is_delivered_once_it_is(self):
+        parent = self.start(go=False)
+        self.wait_for("spawned", parent)
+        while not fx.catches(parent.pid, signal.SIGTERM):
+            self.assertIsNone(parent.poll())
+            time.sleep(0.02)
+        os.kill(parent.pid, signal.SIGTERM)
+        Path(self.tmp, "go").touch()
+        self.assertEqual(parent.wait(), 143)
 
 
 class CachePolicy(CanonInvocationCase):

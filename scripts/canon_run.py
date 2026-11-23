@@ -26,7 +26,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from enum import Enum, StrEnum
 from pathlib import Path
@@ -814,12 +814,6 @@ def reentry_env(
     return dict(environ, REIFY_CANON_ACTIVE=format_active(tree, canon, caller_ignored=caller_ignored))
 
 
-def ignored_now() -> frozenset[int]:
-    return frozenset(
-        number for number in canon_cache.SUPERVISED_SIGNALS if signal.getsignal(number) == signal.SIG_IGN
-    )
-
-
 def restore_caller_signals(caller_ignored: frozenset[int]) -> None:
     """In the namespace re-run: the dispositions the outer invocation's caller gave it."""
     for number in canon_cache.SUPERVISED_SIGNALS:
@@ -842,58 +836,54 @@ def read_child_pid(info_read: int) -> int | None:
     return pid if type(pid) is int else None
 
 
-def run_in_namespace(argv_for: Callable[[int], list[str]], env: Mapping[str, str]) -> int:
-    """Spawn bwrap with every supervised signal ignored, so a group signal cannot kill it.
+@contextlib.contextmanager
+def ignoring(numbers: tuple[int, ...]) -> Iterator[None]:
+    """These signals ignored for the block, so a child spawned in it starts ignoring them."""
+    previous = {number: signal.signal(number, signal.SIG_IGN) for number in numbers}
+    try:
+        yield
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+
+
+def sender_to(pid: int) -> Callable[[int], None]:
+    def send(signum: int) -> None:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(pid, signum)
+
+    return send
+
+
+def run_in_namespace(
+    argv_for: Callable[[int], list[str]], env: Mapping[str, str], forwarder: canon_cache.SignalForwarder
+) -> int:
+    """Spawn bwrap ignoring every supervised signal, then forward under the supervisor's rule.
 
     bwrap handles no signal, and --die-with-parent SIGKILLs the re-run when bwrap dies, which
-    would lose the re-run's teardown and record. So bwrap ignores them all, the re-run restores
-    its caller's dispositions from REIFY_CANON_ACTIVE, and this process stands in for the caller:
-    INT/QUIT are absorbed (a group signal reaches the re-run and its command directly), and
-    TERM/HUP sent to this pid are forwarded to the re-run, which forwards them to its command.
+    would lose the re-run's teardown and record. So bwrap starts with them all ignored, the
+    re-run restores its caller's dispositions from REIFY_CANON_ACTIVE, and this process stands
+    in for the caller: what is sent to it goes to the re-run, whose pid bwrap writes to the
+    info fd, and the re-run forwards it to its command.
     """
-    caller_ignored = ignored_now()
-    child_pid: int | None = None
-    pending: list[int] = []
-
-    def forward(signum: int, _frame: object) -> None:
-        if child_pid is None:
-            pending.append(signum)
-        else:
-            with contextlib.suppress(ProcessLookupError):
-                os.kill(child_pid, signum)
-
-    previous = {number: signal.getsignal(number) for number in canon_cache.SUPERVISED_SIGNALS}
     info_read, info_write = os.pipe()
-    try:
-        for number in canon_cache.SUPERVISED_SIGNALS:
-            signal.signal(number, signal.SIG_IGN)
+    with forwarder:
         try:
-            bwrap = subprocess.Popen(
-                canon_cache.with_parent_death_signal(argv_for(info_write), "KILL"),
-                env=env,
-                pass_fds=(info_write,),
-            )
+            with ignoring(canon_cache.SUPERVISED_SIGNALS):
+                bwrap = subprocess.Popen(
+                    canon_cache.with_parent_death_signal(argv_for(info_write), "KILL"),
+                    env=env,
+                    pass_fds=(info_write,),
+                )
         except OSError as exc:
             os.close(info_read)
             raise canon_cache.CommandNotFound(f"cannot run {BWRAP}: {exc}") from exc
         finally:
             os.close(info_write)
-        handlers = {
-            number: signal.SIG_IGN if number in caller_ignored
-            else forward if number in canon_cache.FORWARDED_SIGNALS
-            else canon_cache.absorb
-            for number in canon_cache.SUPERVISED_SIGNALS
-        }
-        for number, handler in handlers.items():
-            signal.signal(number, handler)
         child_pid = read_child_pid(info_read)
-        for signum in pending:
-            forward(signum, None)
-        returncode = bwrap.wait()
-    finally:
-        for number, handler in previous.items():
-            signal.signal(number, handler)
-    return 128 - returncode if returncode < 0 else returncode
+        if child_pid is not None:
+            forwarder.deliver_to(sender_to(child_pid))
+        return canon_cache.exit_status(bwrap.wait())
 
 
 def validated_canon_path(call: Call, host: HostConfig) -> str:
@@ -911,9 +901,11 @@ def enter_namespace(call: Call, host: HostConfig) -> int:
     """The NAMESPACE route: validate, stamp, then re-run this invocation where CANON is bound."""
     validated_canon_path(call, host)
     ensure_stamp(call.build_dir, call.canon)
+    forwarder = canon_cache.SignalForwarder()
     return run_in_namespace(
         lambda info_fd: reentry_argv(call.tree, call.canon, call.cwd, call.arguments, info_fd=info_fd),
-        reentry_env(call.environ, call.tree, call.canon, ignored_now()),
+        reentry_env(call.environ, call.tree, call.canon, forwarder.caller_ignored),
+        forwarder,
     )
 
 

@@ -1173,6 +1173,20 @@ class Supervise(SessionCase):
         self.assertEqual(sorted(name for name in os.listdir(self.build) if name.startswith(".reify-sccache")), [])
         self.assertEqual(self.row()["subcommand"], "")
 
+    def assert_ended_by_a_signal_to_the_supervisor_alone(self, signum, status):
+        """PRD C3 (esc-10418-3): a signal to the started pid ends the command as it would in real-path mode."""
+        supervisor = self.start_supervise_runner("60", start_new_session=True)
+        supervisor.send_signal(signum)
+        self.assertEqual(supervisor.wait(), status)
+        self.assertEqual(sorted(name for name in os.listdir(self.build) if name.startswith(".reify-sccache")), [])
+        self.row()
+
+    def test_sigint_to_the_supervisor_alone_reaches_the_command_and_teardown_runs(self):
+        self.assert_ended_by_a_signal_to_the_supervisor_alone(signal.SIGINT, 130)
+
+    def test_sigquit_to_the_supervisor_alone_reaches_the_command_and_teardown_runs(self):
+        self.assert_ended_by_a_signal_to_the_supervisor_alone(signal.SIGQUIT, 131)
+
     def test_command_starts_with_default_dispositions_when_the_caller_has_them(self):
         self.caller_dispositions(INTERACTIVE_CALLER)
         self.assertEqual(self.supervised_ignored_signals(), set())
@@ -1210,6 +1224,33 @@ class Supervise(SessionCase):
         self.assertEqual(fds.get(str(inherited)), str(marker))
         sockets = [fd for fd, target in fds.items() if int(fd) > 2 and target.startswith("socket:")]
         self.assertEqual(sockets, [])
+
+
+class SignalForwarding(unittest.TestCase):
+    """canon_cache.SignalForwarder, the one signal rule both of canon_run's routes use (PRD C3)."""
+
+    def setUp(self):
+        for number, handler in INTERACTIVE_CALLER.items():
+            self.addCleanup(signal.signal, number, signal.signal(number, handler))
+
+    def test_a_signal_before_the_target_is_known_is_held_then_delivered(self):
+        sent = []
+        with canon_cache.SignalForwarder() as forwarder:
+            signal.raise_signal(signal.SIGHUP)
+            self.assertEqual(sent, [])
+            forwarder.deliver_to(sent.append)
+            signal.raise_signal(signal.SIGINT)
+        self.assertEqual(sent, [signal.SIGHUP, signal.SIGINT])
+
+    def test_what_the_caller_ignores_stays_ignored_and_the_rest_comes_back_after(self):
+        signal.signal(signal.SIGQUIT, signal.SIG_IGN)
+        forwarder = canon_cache.SignalForwarder()
+        self.assertEqual(forwarder.caller_ignored, frozenset({signal.SIGQUIT}))
+        with forwarder:
+            self.assertEqual(signal.getsignal(signal.SIGQUIT), signal.SIG_IGN)
+            self.assertNotIn(signal.getsignal(signal.SIGINT), (signal.SIG_IGN, signal.default_int_handler))
+        self.assertEqual(signal.getsignal(signal.SIGQUIT), signal.SIG_IGN)
+        self.assertEqual(signal.getsignal(signal.SIGINT), signal.default_int_handler)
 
 
 class PolicyMembers(unittest.TestCase):
