@@ -1360,17 +1360,24 @@ class ExitLike(unittest.TestCase):
     def setUp(self):
         self.runner = cfx.write_exit_like_runner(scratch(self))
 
-    def argv(self, returncode, ignored=()):
+    def argv(self, returncode, ignored=(), closing=""):
         names = ",".join(signal.Signals(number).name for number in ignored)
-        return [*AT_DEFAULT_SIGNALS, sys.executable, "-I", self.runner, str(fx.REPO_ROOT / "scripts"),
+        closer = ["/bin/sh", "-c", f'exec "$@" {closing}', "sh"] if closing else []
+        return [*AT_DEFAULT_SIGNALS, *closer, sys.executable, "-I", self.runner, str(fx.REPO_ROOT / "scripts"),
                 str(returncode), names]
 
-    def assert_ends_with(self, returncode, expected, ignored=()):
-        result = subprocess.run(self.argv(returncode, ignored), capture_output=True, text=True, check=False)
+    def assert_ends_with(self, returncode, expected, ignored=(), closing=""):
+        result = subprocess.run(self.argv(returncode, ignored, closing=closing), capture_output=True, text=True,
+                                check=False)
         self.assertEqual(result.returncode, expected, result.stderr)
 
     def test_death_by_sigterm_kills_it_with_sigterm(self):
         self.assert_ends_with(-signal.SIGTERM, -signal.SIGTERM)
+
+    def test_death_by_sigterm_kills_it_with_sigterm_when_a_standard_stream_is_closed(self):
+        for closing in (">&-", "2>&-"):
+            with self.subTest(closing=closing):
+                self.assert_ends_with(-signal.SIGTERM, -signal.SIGTERM, closing=closing)
 
     def test_death_by_sigint_kills_it_with_sigint_despite_pythons_handler(self):
         self.assert_ends_with(-signal.SIGINT, -signal.SIGINT)
