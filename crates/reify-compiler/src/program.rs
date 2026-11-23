@@ -204,10 +204,9 @@ pub fn compile_program(
 /// The seam exists for callers that already hold the entry's parse (the CLI's
 /// `reify check` parses it for its own module-path gate first, and the GUI's
 /// file-backed reload parses it to route the compile and keeps the parse for
-/// source write-back), and for callers
-/// that must seed extra enum names into the parse — an import's enums, which
-/// `parse_with_stdlib` does not know — until task #5522 (θ) moves that fixup
-/// into the resolution phase.
+/// source write-back). A caller need not seed an import's enum names into the
+/// parse: an imported enum's `E.V` resolves in the compile phase
+/// (resolution-unification D-9).
 pub fn compile_program_with_parsed_entry(
     entry_path: &Path,
     entry_source: &str,

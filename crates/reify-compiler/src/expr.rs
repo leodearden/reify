@@ -1516,6 +1516,57 @@ pub(crate) fn compile_expr_guarded_with_expected(
 /// wrapper and is re-applied at every level because this body's recursive calls
 /// go back through it (via `compile_expr_guarded[_with_expected]`), never here.
 #[allow(clippy::too_many_arguments)]
+/// The enum `object` names when `object.member` is an enum access: the
+/// parser's own rule (an identifier naming a known enum, then `.V`), applied
+/// with the compile env's bound enum set. The parser knows only the enum names
+/// it was seeded with, so an imported enum's `E.V` arrives here as a member
+/// access (PRD resolution-unification D-9).
+fn enum_access_type_name<'e>(
+    object: &'e reify_ast::Expr,
+    enum_defs: &[reify_ir::EnumDef],
+) -> Option<&'e str> {
+    match &object.kind {
+        reify_ast::ExprKind::Ident(name) if enum_defs.iter().any(|e| e.name == *name) => Some(name),
+        _ => None,
+    }
+}
+
+/// Lower `type_name.variant`: the variant's value, an unknown-variant Error, or
+/// a poison for an unknown enum type.
+fn compile_enum_access(
+    type_name: &str,
+    variant: &str,
+    span: reify_core::SourceSpan,
+    enum_defs: &[reify_ir::EnumDef],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CompiledExpr {
+    // Look up the enum type in the registry
+    if let Some(enum_def) = enum_defs.iter().find(|e| e.name == type_name) {
+        if enum_def.contains_variant(variant) {
+            CompiledExpr::literal(
+                Value::enum_unit(type_name, variant),
+                Type::Enum(type_name.to_string()),
+            )
+        } else {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "unknown variant '{}' on enum '{}'",
+                    variant, type_name
+                ))
+                .with_label(DiagnosticLabel::new(span, "unknown variant")),
+            );
+            CompiledExpr::literal(Value::Undef, Type::Enum(type_name.to_string()))
+        }
+    } else {
+        // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
+        make_poison_literal(
+            diagnostics,
+            Diagnostic::error(format!("unknown enum type '{}'", type_name))
+                .with_label(DiagnosticLabel::new(span, "unknown enum")),
+        )
+    }
+}
+
 fn compile_expr_guarded_with_expected_inner(
     expr: &reify_ast::Expr,
     scope: &CompilationScope,
@@ -4255,6 +4306,9 @@ fn compile_expr_guarded_with_expected_inner(
             }
         }
         reify_ast::ExprKind::MemberAccess { object, member } => {
+            if let Some(type_name) = enum_access_type_name(object, enum_defs) {
+                return compile_enum_access(type_name, member, expr.span, enum_defs, diagnostics);
+            }
             // ── task #5385: constant-fold `<geometry-list let>.count` ──────────
             //
             // A geometry-list let (`let holes = generate(3, |i| cylinder(…))`)
@@ -5472,31 +5526,7 @@ fn compile_expr_guarded_with_expected_inner(
             CompiledExpr::index_access(compiled_obj, compiled_idx, result_type)
         }
         reify_ast::ExprKind::EnumAccess { type_name, variant } => {
-            // Look up the enum type in the registry
-            if let Some(enum_def) = enum_defs.iter().find(|e| e.name == *type_name) {
-                if enum_def.contains_variant(variant) {
-                    CompiledExpr::literal(
-                        Value::enum_unit(type_name.clone(), variant.clone()),
-                        Type::Enum(type_name.clone()),
-                    )
-                } else {
-                    diagnostics.push(
-                        Diagnostic::error(format!(
-                            "unknown variant '{}' on enum '{}'",
-                            variant, type_name
-                        ))
-                        .with_label(DiagnosticLabel::new(expr.span, "unknown variant")),
-                    );
-                    CompiledExpr::literal(Value::Undef, Type::Enum(type_name.clone()))
-                }
-            } else {
-                // Anti-cascade (task-448/task-1912/task-1921): poison to prevent follow-on cascade.
-                make_poison_literal(
-                    diagnostics,
-                    Diagnostic::error(format!("unknown enum type '{}'", type_name))
-                        .with_label(DiagnosticLabel::new(expr.span, "unknown enum")),
-                )
-            }
+            compile_enum_access(type_name, variant, expr.span, enum_defs, diagnostics)
         }
         reify_ast::ExprKind::Match { discriminant, arms } => {
             let compiled_discriminant = compile_expr_guarded(
