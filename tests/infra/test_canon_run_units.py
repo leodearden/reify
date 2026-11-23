@@ -456,9 +456,7 @@ class RealPathIsUntouched(CliCase):
 
 # A caller at default dispositions (a pool member may inherit INT/QUIT ignored)
 # that runs its arguments, then echoes CONTINUED with their status.
-BASH_CALLER = (
-    "/usr/bin/env", "--default-signal=HUP,INT,QUIT,TERM", "/bin/bash", "-c", '"$@"; echo "CONTINUED rc=$?"', "bash",
-)
+BASH_CALLER = (*fx.AT_DEFAULT_SUPERVISED_SIGNALS, "/bin/bash", "-c", '"$@"; echo "CONTINUED rc=$?"', "bash")
 
 
 def journal_rows(build_dir):
@@ -1188,23 +1186,23 @@ class NamespaceParent(unittest.TestCase):
             self.assertIsNone(parent.poll(), f"the parent ended before {name}")
             time.sleep(0.02)
 
-    def assert_forwarded(self, signum, status):
+    def assert_forwarded(self, signum):
         parent = self.start()
         self.wait_for("started", parent)
         os.kill(parent.pid, signum)
-        self.assertEqual(parent.wait(), status)
+        self.assertEqual(parent.wait(), fx.namespace_death_status(signum))
 
     def test_sigterm_to_the_parent_alone_reaches_the_command(self):
-        self.assert_forwarded(signal.SIGTERM, -signal.SIGTERM)
+        self.assert_forwarded(signal.SIGTERM)
 
     def test_sighup_to_the_parent_alone_reaches_the_command(self):
-        self.assert_forwarded(signal.SIGHUP, -signal.SIGHUP)
+        self.assert_forwarded(signal.SIGHUP)
 
     def test_sigint_to_the_parent_alone_reaches_the_command(self):
-        self.assert_forwarded(signal.SIGINT, -signal.SIGINT)
+        self.assert_forwarded(signal.SIGINT)
 
     def test_sigquit_to_the_parent_alone_reaches_the_command(self):
-        self.assert_forwarded(signal.SIGQUIT, -signal.SIGQUIT)
+        self.assert_forwarded(signal.SIGQUIT)
 
     def test_a_command_that_traps_the_signal_and_exits_130_leaves_the_parent_exiting_130(self):
         """bwrap reports 130 either way; only the pidfd's exit record tells a death from an exit."""
@@ -1221,11 +1219,11 @@ class NamespaceParent(unittest.TestCase):
             time.sleep(0.02)
         os.kill(parent.pid, signal.SIGTERM)
         Path(self.tmp, "go").touch()
-        self.assertEqual(parent.wait(), -signal.SIGTERM)
+        self.assertEqual(parent.wait(), fx.namespace_death_status(signal.SIGTERM))
 
     def test_a_signal_while_bwrap_is_being_started_reaches_the_command(self):
         parent = self.start(signal_during_start=True, command_secs="5")
-        self.assertEqual(parent.wait(), -signal.SIGTERM)
+        self.assertEqual(parent.wait(), fx.namespace_death_status(signal.SIGTERM))
 
     def test_a_descriptor_the_caller_passes_reaches_bwrap(self):
         read_end, write_end = os.pipe()
@@ -1236,7 +1234,7 @@ class NamespaceParent(unittest.TestCase):
         self.wait_for("started", parent)
         self.assertIn(write_end, json.loads(Path(self.tmp, "bwrap_fds.json").read_text()))
         os.kill(parent.pid, signal.SIGTERM)
-        self.assertEqual(parent.wait(), -signal.SIGTERM)
+        self.assertEqual(parent.wait(), fx.namespace_death_status(signal.SIGTERM))
 
     def test_a_signal_the_caller_ignores_stays_ignored_and_the_rest_are_restored(self):
         parent = self.start(ignore=(signal.SIGHUP,))
@@ -1244,7 +1242,7 @@ class NamespaceParent(unittest.TestCase):
         ignored = fx.ignored_signals(os.path.join(self.tmp, "sigign"))
         self.assertEqual(ignored & set(canon_cache.SUPERVISED_SIGNALS), {signal.SIGHUP})
         os.kill(parent.pid, signal.SIGTERM)
-        self.assertEqual(parent.wait(), -signal.SIGTERM)
+        self.assertEqual(parent.wait(), fx.namespace_death_status(signal.SIGTERM))
 
 
 def at_default_sigint():
@@ -1256,14 +1254,8 @@ class ExitedReturncode(unittest.TestCase):
     """canon_run.exited_returncode: the kernel's exit record for the process a pidfd names, in subprocess's terms."""
 
     def setUp(self):
-        child = subprocess.Popen(["true"])
-        pidfd = os.pidfd_open(child.pid)
-        child.wait()
-        try:
-            if canon_run.exited_returncode(pidfd) is None:
-                self.skipTest("this kernel keeps no pidfd exit record: PIDFD_INFO_EXIT needs Linux 6.15")
-        finally:
-            os.close(pidfd)
+        if not fx.pidfd_exit_record_available():
+            self.skipTest(fx.PIDFD_EXIT_RECORD_MISSING)
 
     def pidfd(self, pid):
         pidfd = os.pidfd_open(pid)

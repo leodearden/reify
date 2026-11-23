@@ -31,6 +31,9 @@ PYTHON = "/usr/bin/python3"
 BWRAP = "/usr/bin/bwrap"
 LANDLOCK_EXEC = REPO_ROOT / "gui" / "src-tauri" / "sandbox" / "landlock_exec.py"
 FIXTURE_DATA = "fixture data\n"
+# A caller prefix that starts its command with every supervised signal at default:
+# a run_all pool or a background `&` may start a suite with INT and QUIT ignored.
+AT_DEFAULT_SUPERVISED_SIGNALS = ("/usr/bin/env", "--default-signal=HUP,INT,QUIT,TERM")
 
 
 @functools.cache
@@ -239,6 +242,30 @@ def catches(pid, signum):
     return False
 
 
+@functools.cache
+def pidfd_exit_record_available():
+    """Whether this kernel keeps a reaped process's exit record behind its pidfd (PIDFD_INFO_EXIT, Linux 6.15)."""
+    child = subprocess.Popen(["true"])
+    pidfd = os.pidfd_open(child.pid)
+    try:
+        child.wait()
+        return load_canon_run().exited_returncode(pidfd) is not None
+    finally:
+        os.close(pidfd)
+
+
+PIDFD_EXIT_RECORD_MISSING = "this kernel keeps no pidfd exit record: PIDFD_INFO_EXIT needs Linux 6.15"
+
+
+def namespace_death_status(signum):
+    """The NAMESPACE route's status for a re-run that died of signum.
+
+    -signum where the pidfd exit record tells a death from an exit; otherwise bwrap's
+    128+signum, the documented degrade on an older kernel.
+    """
+    return -signum if pidfd_exit_record_available() else 128 + signum
+
+
 def ignored_signals(path):
     """The signal numbers set in the `SigIgn:` hex mask a command wrote to path."""
     mask = int(Path(path).read_text().split(":", 1)[1], 16)
@@ -253,7 +280,7 @@ def start_canon(tree, cwd, *args, env, pass_fds=()):
     """
     script = Path(tree, "scripts", "canon_run.py")
     return subprocess.Popen(
-        ["/usr/bin/env", "--default-signal=HUP,INT,QUIT,TERM", PYTHON, "-I", str(script), *args],
+        [*AT_DEFAULT_SUPERVISED_SIGNALS, PYTHON, "-I", str(script), *args],
         cwd=cwd,
         env=env,
         pass_fds=pass_fds,

@@ -345,6 +345,17 @@ class ChooseFallbackDir(unittest.TestCase):
         os.symlink(private, self.per_user())
         self.assert_per_user_refused()
 
+    def test_a_directory_closed_to_writes_is_refused_only_when_another_user_owns_it(self):
+        """0o755 passes the mode check, so ownership alone keeps out another user's planted entries."""
+        shared = Path(self.tmp, "shared")
+        shared.mkdir()
+        shared.chmod(0o755)
+        info, uid = os.lstat(shared), os.getuid()
+        self.assertEqual(canon_cache.private_dir_problem(info, uid), "")
+        problem = canon_cache.private_dir_problem(info, uid + 1)
+        self.assertIn(f"uid {uid}", problem)
+        self.assertIn(f"not {uid + 1}", problem)
+
     def test_an_existing_private_per_user_directory_is_used(self):
         os.mkdir(self.per_user())
         os.chmod(self.per_user(), 0o700)
@@ -1348,9 +1359,6 @@ class SignalForwarding(unittest.TestCase):
         )
 
 
-AT_DEFAULT_SIGNALS = ("/usr/bin/env", "--default-signal=HUP,INT,QUIT,TERM")
-
-
 class ExitLike(unittest.TestCase):
     """canon_cache.exit_like: a process ends as its command ended, through cfx.EXIT_LIKE_RUNNER.
 
@@ -1363,8 +1371,8 @@ class ExitLike(unittest.TestCase):
     def argv(self, returncode, ignored=(), closing=""):
         names = ",".join(signal.Signals(number).name for number in ignored)
         closer = ["/bin/sh", "-c", f'exec "$@" {closing}', "sh"] if closing else []
-        return [*AT_DEFAULT_SIGNALS, *closer, sys.executable, "-I", self.runner, str(fx.REPO_ROOT / "scripts"),
-                str(returncode), names]
+        return [*fx.AT_DEFAULT_SUPERVISED_SIGNALS, *closer, sys.executable, "-I", self.runner,
+                str(fx.REPO_ROOT / "scripts"), str(returncode), names]
 
     def assert_ends_with(self, returncode, expected, ignored=(), closing=""):
         result = subprocess.run(self.argv(returncode, ignored, closing=closing), capture_output=True, text=True,

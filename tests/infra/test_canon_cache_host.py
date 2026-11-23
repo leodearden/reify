@@ -35,9 +35,6 @@ import canon_cache_fixture as cfx  # noqa: E402  (imported after sys.path manipu
 import canon_run_fixture as fx  # noqa: E402
 
 STAMP = ".reify-build-root"
-# A background `&` or a run_all pool starts this suite with INT and QUIT ignored,
-# which an invocation started from it would keep as its caller's dispositions.
-AT_DEFAULT_SIGNALS = ("/usr/bin/env", "--default-signal=INT,QUIT")
 MARKER = "shared-marker"
 BURST = 20
 
@@ -206,7 +203,7 @@ class Teardown(HostCacheCase):
         fifo = os.path.join(self.tmp, "block-int.fifo")
         os.mkfifo(fifo)
         build = subprocess.Popen(
-            [*AT_DEFAULT_SIGNALS, self.trampoline(tree), "build", "--offline"], cwd=tree,
+            [*fx.AT_DEFAULT_SUPERVISED_SIGNALS, self.trampoline(tree), "build", "--offline"], cwd=tree,
             env=self.env_for(tree, C_UNIT_BLOCK_FIFO=fifo),
             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, start_new_session=True,
         )
@@ -222,18 +219,18 @@ class Teardown(HostCacheCase):
         self.assertEqual(cfx.wait_until_none_name(self.socket_prefix()), [])
 
     def test_sigterm_to_the_namespace_routes_started_pid_alone_ends_the_command_and_records(self):
-        self.assert_a_signal_to_the_outer_pid_alone_tears_down(signal.SIGTERM, -signal.SIGTERM)
+        self.assert_a_signal_to_the_outer_pid_alone_tears_down(signal.SIGTERM)
 
     def test_sigint_to_the_namespace_routes_started_pid_alone_ends_the_command_and_records(self):
-        self.assert_a_signal_to_the_outer_pid_alone_tears_down(signal.SIGINT, -signal.SIGINT)
+        self.assert_a_signal_to_the_outer_pid_alone_tears_down(signal.SIGINT)
 
-    def assert_a_signal_to_the_outer_pid_alone_tears_down(self, signum, status):
+    def assert_a_signal_to_the_outer_pid_alone_tears_down(self, signum):
         """PRD C3 (esc-10418-3): the outer process forwards to the re-run, the child pid bwrap's --info-fd names."""
         tree = self.make_tree(f"tree-{signum.name.lower()}")
         started = os.path.join(self.tmp, f"started-{signum.name}")
         outer = subprocess.Popen(
-            [*AT_DEFAULT_SIGNALS, fx.PYTHON, "-I", os.path.join(tree, "scripts", "canon_run.py"), "exec", "--",
-             "/bin/sh", "-c", 'touch "$0"; exec sleep 60', started],
+            [*fx.AT_DEFAULT_SUPERVISED_SIGNALS, fx.PYTHON, "-I", os.path.join(tree, "scripts", "canon_run.py"),
+             "exec", "--", "/bin/sh", "-c", 'touch "$0"; exec sleep 60', started],
             cwd=tree, env=self.env_for(tree),
             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, start_new_session=True,
         )
@@ -245,7 +242,7 @@ class Teardown(HostCacheCase):
             time.sleep(0.05)
         os.kill(outer.pid, signum)
         _, stderr = outer.communicate()
-        self.assertEqual(outer.returncode, status, stderr)
+        self.assertEqual(outer.returncode, fx.namespace_death_status(signum), stderr)
         leftovers = sorted(path.name for path in Path(self.target(tree)).glob(".reify-sccache.*"))
         self.assertEqual(leftovers, [], stderr)
         self.assertEqual(len(cfx.read_journal(self.target(tree))), 1, stderr)
@@ -253,10 +250,12 @@ class Teardown(HostCacheCase):
 
     def test_a_bash_caller_of_the_namespace_route_does_not_continue_after_a_terminal_interrupt(self):
         """The outer process dies of the SIGINT its re-run died of, so bash stops as in real-path mode."""
+        if not fx.pidfd_exit_record_available():
+            self.skipTest(fx.PIDFD_EXIT_RECORD_MISSING)
         tree = self.make_tree("tree-bash")
         started = os.path.join(self.tmp, "started-bash")
         caller = subprocess.Popen(
-            [*AT_DEFAULT_SIGNALS, "/bin/bash", "-c", '"$@"; echo "CONTINUED rc=$?"', "bash",
+            [*fx.AT_DEFAULT_SUPERVISED_SIGNALS, "/bin/bash", "-c", '"$@"; echo "CONTINUED rc=$?"', "bash",
              fx.PYTHON, "-I", os.path.join(tree, "scripts", "canon_run.py"), "exec", "--",
              "/bin/sh", "-c", 'touch "$0"; exec sleep 60', started],
             cwd=tree, env=self.env_for(tree),
