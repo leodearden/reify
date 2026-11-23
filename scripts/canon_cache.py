@@ -1127,7 +1127,7 @@ def exit_like(returncode: int) -> int:
     """
     signum = -returncode
     if signum in forwarded_signals():
-        for stream in (sys.stdout, sys.stderr):
+        for stream in filter(None, (sys.stdout, sys.stderr)):
             with contextlib.suppress(OSError, ValueError):
                 stream.flush()
         without_core_dumps()
