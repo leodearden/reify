@@ -15,7 +15,7 @@ use reify_compiler::program::{
 };
 use reify_compiler::{CompiledModule, check_module_path_decl, compile_with_stdlib_checked};
 use reify_core::{DiagnosticCode, DimensionVector, ModulePath, Severity, SourceSpan, Type};
-use reify_ir::Satisfaction;
+use reify_ir::{CompiledExpr, CompiledExprKind, Satisfaction, Value};
 use reify_test_support::mocks::MockConstraintChecker;
 
 fn write(dir: &Path, name: &str, source: &str) -> PathBuf {
@@ -1113,18 +1113,15 @@ fn compile_program_with_parsed_entry_matches_compile_program() {
     }
 }
 
-/// The seam compiles the caller's parse, not a re-parse: an entry parsed with
-/// an import's enum name seeded resolves that enum's variant cleanly.
+/// The seam compiles the caller's parse, not a re-parse: a declaration only
+/// the caller's parse carries reaches the entry's declared templates.
 #[test]
 fn compile_program_with_parsed_entry_compiles_the_callers_parse() {
     let dir = tempfile::tempdir().expect("tempdir");
-    write(dir.path(), "a.ri", "pub enum Pick { Left }\n");
-    let source = "import a\n\nstructure def Main {\n    let p = Pick.Left\n}\n";
-    let names: Vec<&str> = reify_compiler::stdlib_loader::load_stdlib_context()
-        .enum_names()
-        .chain(std::iter::once("Pick"))
-        .collect();
-    let parsed = reify_syntax::parse_with_prelude_enums(source, ModulePath::single("main"), &names);
+    let source = "structure def Main {\n    param k : Real = 1\n}\n";
+    let callers_text =
+        format!("{source}structure def OnlyInCallersParse {{\n    param z : Real = 2\n}}\n");
+    let parsed = reify_compiler::parse_with_stdlib(&callers_text, ModulePath::single("main"));
 
     let program = compile_parsed_entry(dir.path(), "main", source, &parsed);
 
@@ -1133,6 +1130,112 @@ fn compile_program_with_parsed_entry_compiles_the_callers_parse() {
         "the caller's parse must compile cleanly, got {:?}",
         program.entry().diagnostics
     );
+    assert_eq!(
+        declared_names(&program),
+        ["Main", "OnlyInCallersParse"],
+        "the seam must compile the caller's parse, not a re-parse of the text"
+    );
+}
+
+// ─── task 5522: imported-enum access resolves in the compile phase (D-9) ───
+
+/// `parse_with_stdlib` seeds only stdlib enum names, so an imported enum's
+/// `Pick.Left` reaches the compiler as a member access on `Pick`.
+const PICK_MODULE: &str = "pub enum Pick { Left }\n";
+
+fn pick_entry(variant: &str) -> String {
+    format!("import a\n\nstructure def Main {{\n    let p = Pick.{variant}\n}}\n")
+}
+
+fn let_default<'a>(module: &'a CompiledModule, template: &str, member: &str) -> &'a CompiledExpr {
+    module
+        .templates
+        .iter()
+        .find(|t| t.name == template)
+        .unwrap_or_else(|| panic!("template {template} compiled in {}", dotted(module)))
+        .value_cells
+        .iter()
+        .find(|cell| cell.id.member == member)
+        .and_then(|cell| cell.default_expr.as_ref())
+        .unwrap_or_else(|| panic!("{template}.{member} has a compiled default"))
+}
+
+fn assert_is_pick_left(expr: &CompiledExpr) {
+    assert!(
+        matches!(
+            &expr.kind,
+            CompiledExprKind::Literal(Value::Enum { type_name, variant, payload })
+                if type_name == "Pick" && variant == "Left" && payload.is_empty()
+        ),
+        "expected the enum value Pick.Left, got {expr:?}"
+    );
+    assert_eq!(expr.result_type, Type::Enum("Pick".to_string()));
+}
+
+#[test]
+fn imported_enum_variant_access_compiles_to_the_enum_value() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(dir.path(), "a.ri", PICK_MODULE);
+
+    let program = compile_entry(dir.path(), "main", &pick_entry("Left"), &CfgSet::default());
+
+    assert!(
+        errors(program.entry()).is_empty(),
+        "an imported enum's variant must resolve, got {:?}",
+        program.entry().diagnostics
+    );
+    assert_is_pick_left(let_default(program.entry(), "Main", "p"));
+}
+
+#[test]
+fn imported_enum_unknown_variant_is_reported_as_such() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(dir.path(), "a.ri", PICK_MODULE);
+
+    let program = compile_entry(dir.path(), "main", &pick_entry("Nope"), &CfgSet::default());
+
+    let errors = errors(program.entry());
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("unknown variant 'Nope' on enum 'Pick'")),
+        "expected the unknown-variant Error, got {errors:?}"
+    );
+    assert!(
+        errors.iter().all(|e| !e.contains("unresolved name: Pick")),
+        "an imported enum name must resolve, got {errors:?}"
+    );
+}
+
+/// D-9 applies inside every DAG unit, not just the entry: an import unit is
+/// parsed with stdlib enum names only, too.
+#[test]
+fn imported_enum_access_resolves_inside_a_transitive_import_unit() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(dir.path(), "a.ri", PICK_MODULE);
+    write(
+        dir.path(),
+        "b.ri",
+        "module b\nimport a\npub structure def UsesPick {\n    let q = Pick.Left\n}\n",
+    );
+    let entry = "import b\n\nstructure def Main {\n    sub u = UsesPick()\n}\n";
+
+    let program = compile_entry(dir.path(), "main", entry, &CfgSet::default());
+
+    let rehomed_errors: Vec<&reify_core::Diagnostic> = program
+        .rehomed_from("b")
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        rehomed_errors.is_empty(),
+        "b must compile its imported-enum access cleanly, got {rehomed_errors:?}"
+    );
+    let b_unit = program
+        .imports
+        .iter()
+        .find(|unit| unit.import_path == "b")
+        .expect("b is a compiled import unit");
+    assert_is_pick_left(let_default(&b_unit.module, "UsesPick", "q"));
 }
 
 // ─── task 5520: the routing predicate a driver asks before a program compile ─
