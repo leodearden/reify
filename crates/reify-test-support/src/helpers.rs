@@ -1880,6 +1880,29 @@ mod tests {
         );
     }
 
+    #[test]
+    fn error_codes_returns_only_error_codes() {
+        let source = r#"structure Mixed {
+            let x = unknown_variable
+            let y = nosuch_fn(1.0)
+        }"#;
+        let compiled = super::compile_source(source);
+        assert!(
+            compiled
+                .diagnostics
+                .iter()
+                .any(|d| d.severity == Severity::Warning
+                    && d.code == Some(DiagnosticCode::UnresolvedFunction)),
+            "precondition: the fixture must draw an UnresolvedFunction warning so the \
+             severity filter is exercised; got {:?}",
+            compiled.diagnostics
+        );
+        assert_eq!(
+            super::error_codes(&compiled),
+            vec![Some(DiagnosticCode::UnresolvedName)]
+        );
+    }
+
     /// error_diags should return only the `Severity::Error` entries from a
     /// mixed-severity slice, preserving referential identity.
     #[test]
