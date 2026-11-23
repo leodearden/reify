@@ -5,23 +5,29 @@ cache it runs with (dark-factory plans/canonical-build-path-shared-cache-prd.md
 C4-C6): the per-policy cargo and command environment and the CARGO_HOME pin,
 the host.toml store and fallback settings, which real sccache serves them, and
 the store link: the probe, the loopback relay sccache talks to the store
-through, and the watchdog that cuts that relay when the store stops answering.
+through, and the watchdog that cuts that relay when the store stops answering;
+and the private per-invocation server session over a unix socket.
 It knows nothing of trees, build-directory modes or mount namespaces, and
 imports nothing from canon_run.
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import http.client
+import json
 import os
+import random
 import selectors
 import socket
 import struct
+import subprocess
 import tempfile
 import threading
 import time
 import urllib.parse
 from base64 import b64encode
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import asdict, dataclass, field, fields
 from enum import StrEnum
 from pathlib import Path
@@ -511,3 +517,342 @@ class Watchdog:
                 self._relay.cut()
                 self.lost = True
                 return
+
+
+SETPRIV = "/usr/bin/setpriv"
+READ_ONLY_LINE = "storage write check failed"
+POLL_INTERVAL = 0.05
+
+
+class CacheSessionError(Exception):
+    """A one-line reason no private sccache server could be started."""
+
+
+@dataclass(frozen=True)
+class SessionOutcome:
+    backend: Backend
+    reason: Reason
+    hits: int
+    misses: int
+    write_errors: int
+    detached_server: int
+    store_attempts: int
+
+
+@dataclass(frozen=True)
+class SessionFiles:
+    """The supervisor's files in the build directory, named by its pid."""
+
+    socket: str
+    err: str
+    uncached_log: str
+
+    @classmethod
+    def in_build_dir(cls, build_dir: str, pid: int) -> SessionFiles:
+        def named(name: str) -> str:
+            return os.path.join(build_dir, name)
+
+        return cls(
+            named(f".reify-sccache.{pid}.sock"),
+            named(f".reify-sccache.{pid}.err"),
+            named(f".reify-canon-uncached.{pid}.log"),
+        )
+
+
+def with_parent_death_signal(argv: list[str], signal_name: str) -> list[str]:
+    """argv under setpriv --pdeathsig, so it dies with the thread that spawned it."""
+    if os.access(SETPRIV, os.X_OK):
+        return [SETPRIV, "--pdeathsig", signal_name, "--", *argv]
+    return argv
+
+
+def answers(socket_path: str) -> bool:
+    with socket.socket(socket.AF_UNIX) as probe:
+        try:
+            probe.connect(socket_path)
+        except OSError:
+            return False
+    return True
+
+
+def read_text(path: str) -> str:
+    try:
+        return Path(path).read_text(errors="replace")
+    except OSError:
+        return ""
+
+
+def unlink_quietly(path: str) -> None:
+    with contextlib.suppress(OSError):
+        os.unlink(path)
+
+
+def reap(process: subprocess.Popen, knobs: SessionKnobs) -> None:
+    """Wait for process, terminating and then killing it when it outlives socket_wait."""
+    for escalate in (None, process.terminate, process.kill):
+        if escalate is not None:
+            escalate()
+        try:
+            process.wait(knobs.socket_wait)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+    process.wait()
+
+
+def stop_now(process: subprocess.Popen, knobs: SessionKnobs) -> None:
+    if process.poll() is None:
+        process.terminate()
+    reap(process, knobs)
+
+
+@contextlib.contextmanager
+def start_lock(knobs: SessionKnobs, clock: Callable[[], float]) -> Iterator[None]:
+    """The host's server-start lock, waited for at most start_lock_wait; then start anyway."""
+    try:
+        lock = open(knobs.start_lock, "a")
+    except OSError:
+        yield
+        return
+    with lock:
+        deadline = clock() + knobs.start_lock_wait
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if clock() >= deadline:
+                    break
+                time.sleep(POLL_INTERVAL)
+        yield
+
+
+def server_env(
+    env: Mapping[str, str],
+    files: SessionFiles,
+    backend: Backend,
+    settings: CacheSettings,
+    fallback_dir: str,
+    relay: Relay | None,
+) -> dict[str, str]:
+    """C4's server environment: no inherited SCCACHE_*, a foreground server, then the backend."""
+    composed = dict(env)
+    drop_sccache_variables(composed)
+    composed.update(
+        SCCACHE_START_SERVER="1",
+        SCCACHE_NO_DAEMON="1",
+        SCCACHE_IDLE_TIMEOUT="0",
+        SCCACHE_SERVER_UDS=files.socket,
+    )
+    if backend is Backend.SHARED:
+        composed["SCCACHE_WEBDAV_ENDPOINT"] = relay.endpoint
+        composed["SCCACHE_WEBDAV_KEY_PREFIX"] = urllib.parse.urlsplit(settings.store_url).path.strip("/")
+        if settings.store_user is not None:
+            composed["SCCACHE_WEBDAV_USERNAME"] = settings.store_user
+        if settings.store_password is not None:
+            composed["SCCACHE_WEBDAV_PASSWORD"] = settings.store_password
+    else:
+        composed["SCCACHE_DIR"] = fallback_dir
+        composed["SCCACHE_CACHE_SIZE"] = settings.fallback_cap
+    return composed
+
+
+class StartFailure(StrEnum):
+    NONE = ""
+    EXITED = "exited"
+    READ_ONLY = "read_only"
+
+
+def start_server(
+    sccache: str, env: Mapping[str, str], files: SessionFiles, knobs: SessionKnobs, clock: Callable[[], float]
+) -> tuple[subprocess.Popen, StartFailure]:
+    """Spawn a foreground server under the start lock and check it: ready, and not read-only."""
+    with start_lock(knobs, clock):
+        unlink_quietly(files.socket)
+        with open(files.err, "wb") as err:
+            process = subprocess.Popen(
+                with_parent_death_signal([sccache], "TERM"),
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=err,
+                close_fds=True,
+            )
+        deadline = clock() + knobs.socket_wait
+        while not answers(files.socket):
+            if process.poll() is not None or clock() >= deadline:
+                return process, StartFailure.EXITED
+            time.sleep(POLL_INTERVAL)
+        if READ_ONLY_LINE in read_text(files.err):
+            return process, StartFailure.READ_ONLY
+        return process, StartFailure.NONE
+
+
+def summed_counters(stats_text: str) -> tuple[int, int, int]:
+    """(hits, misses, write_errors) from `--show-stats --stats-format json`, languages summed."""
+    try:
+        stats = json.loads(stats_text)["stats"]
+        return (
+            sum(stats["cache_hits"]["counts"].values()),
+            sum(stats["cache_misses"]["counts"].values()),
+            int(stats["cache_write_errors"]),
+        )
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return 0, 0, 0
+
+
+class CacheSession:
+    """A private sccache server for one outermost invocation, and how to tear it down (C4, C5)."""
+
+    def __init__(
+        self,
+        *,
+        environment: CacheEnvironment,
+        backend: Backend,
+        reason: Reason,
+        store_attempts: int,
+        process: subprocess.Popen,
+        relay: Relay | None,
+        watchdog: Watchdog | None,
+        files: SessionFiles,
+        client_env: Mapping[str, str],
+        knobs: SessionKnobs,
+    ):
+        self.environment = environment
+        self.backend = backend
+        self.reason = reason
+        self.store_attempts = store_attempts
+        self.watchdog = watchdog
+        self._process, self._relay, self._files = process, relay, files
+        self._client_env, self._knobs = client_env, knobs
+        self._outcome: SessionOutcome | None = None
+
+    def __enter__(self) -> CacheSession:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
+
+    def close(self) -> SessionOutcome:
+        """Watchdog, stats, stop, relay, files: in that order, once."""
+        if self._outcome is not None:
+            return self._outcome
+        counters, detached, read_only = (0, 0, 0), 0, False
+        try:
+            if self.watchdog is not None:
+                self.watchdog.stop()
+            detached = int(self._process.poll() is not None and answers(self._files.socket))
+            if answers(self._files.socket):
+                counters = summed_counters(self._client("--show-stats", "--stats-format", "json"))
+                self._client("--stop-server")
+            reap(self._process, self._knobs)
+            read_only = READ_ONLY_LINE in read_text(self._files.err)
+        finally:
+            if self._relay is not None:
+                self._relay.close()
+            unlink_quietly(self._files.socket)
+            unlink_quietly(self._files.err)
+        self._outcome = SessionOutcome(
+            self.backend, self._closing_reason(read_only), *counters, detached, self.store_attempts
+        )
+        return self._outcome
+
+    def _closing_reason(self, read_only: bool) -> Reason:
+        if self.watchdog is not None and self.watchdog.lost:
+            return Reason.STORE_LOST
+        if read_only and self.backend is Backend.SHARED:
+            return Reason.READ_ONLY_SERVER
+        return self.reason
+
+    def _client(self, *args: str) -> str:
+        """The real sccache as a client, with the command's environment, never the server's."""
+        if not answers(self._files.socket):
+            return ""
+        try:
+            completed = subprocess.run(
+                [self.environment.server.sccache, *args],
+                env=self._client_env,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=self._knobs.socket_wait,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+        return completed.stdout
+
+
+def open_session(
+    policy: Policy,
+    settings: CacheSettings,
+    *,
+    canon_build_dir: str,
+    sccache: str,
+    env: Mapping[str, str],
+    knobs: SessionKnobs = SessionKnobs(),
+    probe: Callable[[], bool] | None = None,
+    rng: random.Random | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> CacheSession:
+    """Start the private server for shared or mixed (C4): the store when it holds, else the fallback."""
+    if policy is Policy.INCREMENTAL:
+        raise ValueError("the incremental policy runs no sccache server")
+    rng = rng or random.Random()
+    probe = probe or (lambda: probe_store(settings, knobs))
+    os.makedirs(canon_build_dir, exist_ok=True)
+    files = SessionFiles.in_build_dir(canon_build_dir, os.getpid())
+    fallback_dir = choose_fallback_dir(settings, knobs.tmp_root)
+    backend, reason = choose_backend(settings, probe)
+    attempts, relay, process = 0, None, None
+    try:
+        if backend is Backend.SHARED:
+            store = urllib.parse.urlsplit(settings.store_url)
+            relay = Relay(store.hostname, store.port or 80)
+            relay.start()
+            shared_env = server_env(env, files, backend, settings, fallback_dir, relay)
+            failure = StartFailure.NONE
+            while attempts < knobs.start_attempts:
+                if attempts:
+                    sleep(rng.uniform(*knobs.retry_delay))
+                attempts += 1
+                process, failure = start_server(sccache, shared_env, files, knobs, clock)
+                if failure is StartFailure.NONE:
+                    break
+                stop_now(process, knobs)
+            if failure is not StartFailure.NONE:
+                relay.close()
+                relay = None
+                backend = Backend.LOCAL_FALLBACK
+                read_only = failure is StartFailure.READ_ONLY
+                reason = Reason.READ_ONLY_SERVER if read_only else Reason.STORE_UNREACHABLE
+        if backend is Backend.LOCAL_FALLBACK:
+            local_env = server_env(env, files, backend, settings, fallback_dir, None)
+            process, failure = start_server(sccache, local_env, files, knobs, clock)
+            if failure is not StartFailure.NONE:
+                stop_now(process, knobs)
+                first_line = next(iter(read_text(files.err).splitlines()), "no stderr")
+                raise CacheSessionError(f"the local-fallback sccache server did not start: {first_line}")
+    except BaseException:
+        if relay is not None:
+            relay.close()
+        if process is not None and process.poll() is None:
+            stop_now(process, knobs)
+        unlink_quietly(files.socket)
+        unlink_quietly(files.err)
+        raise
+    address = ServerAddress(files.socket, sccache, files.uncached_log, fallback_dir, settings.fallback_cap)
+    environment = CacheEnvironment(policy, address)
+    return CacheSession(
+        environment=environment,
+        backend=backend,
+        reason=reason,
+        store_attempts=attempts,
+        process=process,
+        relay=relay,
+        watchdog=None if relay is None else Watchdog(probe, relay, knobs, clock),
+        files=files,
+        client_env=environment.for_command(env),
+        knobs=knobs,
+    )
