@@ -678,12 +678,14 @@ Nothing read-only in `_merge-verify` shows which leaf ran.
 
 The fix (#10144): both cases now build a fixture crate in its own target dir,
 and the runner fails any case that moves the mtime of the lane's four build
-inputs. In the same lane the full suite took 5:13 before the two cases moved
-and 3:30 after, with every case passing and the four mtimes and the lane's
-`tree-sitter-reify-*` run dirs unchanged by the run. The fix stops new bumps.
-It does not reset `_merge-verify`'s current `grammar.js` mtime, so the run dirs
-invoked before it there (debug `b0bba017…` at 2026-11-22 18:34:43, release
-`327d47f8…` at 18:38:56) are expected to re-run once on the next build.
+inputs. In the same lane the full suite took 5:13 before the two cases were
+rehomed onto fixture crates and 3:30 after, with every case passing and the
+four mtimes and the lane's `tree-sitter-reify-*` run dirs unchanged by the run.
+The fix stops these two cases' bumps; whether the bumps in `_merge-verify` end
+is for its next verify to show. It does not reset `_merge-verify`'s current
+`grammar.js` mtime, so the run dirs invoked before it there (debug `b0bba017…`
+at 2026-11-22 18:34:43, release `327d47f8…` at 18:38:56) are expected to re-run
+once on the next build.
 
 Fresh lanes do not see it: the seed stamps `grammar.js` back to 2020-01-01,
 whatever mtime `_merge-verify` left, and probe (1) measured tree-sitter-reify's
@@ -1232,13 +1234,15 @@ kernels' accepted member-feature splits (Member features) still make a plain
   and again after a replay of `_merge-verify`'s reset in that lane: in both
   pairs the second identical run compiled 0 units, and tree-sitter-reify's
   build-script run stayed Fresh in each first run. A mid-verify trigger,
-  closed by #10144: two cases of `tests/infra/test_tree_sitter_pipeline.sh`
-  touched `grammar.js` and cargo-checked into the lane's `target/`, which
-  re-ran the build script and left other run dirs older than it, so the next
-  verify rebuilt the cascade. They now build a fixture crate in a private
-  target dir, and the suite's runner fails a case that moves a build input's
-  mtime. That stops new bumps and does not reset `_merge-verify`'s current
-  `grammar.js` mtime, so its older run dirs re-run once. The other trigger,
+  closed by #10144 for these two cases: they touched `grammar.js` and
+  cargo-checked into the lane's `target/`, which in a task lane re-ran the
+  build script (measured). That they made the `_merge-verify` bumps, and so
+  left other run dirs older than `grammar.js` for the next verify to rebuild,
+  is a hypothesis. They now build a fixture crate in a private target dir, and
+  the suite's runner fails a case that moves a build input's mtime. That stops
+  these cases' bumps and does not reset `_merge-verify`'s current `grammar.js`
+  mtime, so its older run dirs are expected to re-run once; the next
+  `_merge-verify` verify will show whether bumps there end. The other trigger,
   the freshness force after a seed, is owned by #10168.
   Details: Tree-sitter re-probe after #9896 (#10046).
 - **Feature selections.** A non-default selection such as
