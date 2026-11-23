@@ -109,6 +109,7 @@ impl StructureRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::persistent::PersistentMap;
     use reify_core::Type;
 
     fn sample_meta(name: &str, version: u32, bounds: &[&str]) -> StructureMeta {
@@ -197,5 +198,39 @@ mod tests {
         );
         // by_name must still resolve to the same stable id.
         assert_eq!(reg.id_for("Foo"), Some(id1));
+    }
+
+    fn instance(type_id: StructureTypeId, type_name: &str) -> StructureInstanceData {
+        StructureInstanceData {
+            type_id,
+            type_name: type_name.to_string(),
+            version: 1,
+            fields: PersistentMap::new(),
+        }
+    }
+
+    #[test]
+    fn meta_for_resolves_by_type_name_never_by_type_id() {
+        let mut reg = StructureRegistry::new();
+        let color = reg.intern("Color", sample_meta("Color", 1, &[]));
+        let probe = reg.intern("ProbeDirect", sample_meta("ProbeDirect", 1, &["Probe"]));
+        assert_eq!(color, StructureTypeId(0), "Color must hold id 0 for this trap");
+
+        let probe_bounds = vec!["Probe".to_string()];
+        let ctor_placeholder = instance(StructureTypeId(0), "ProbeDirect");
+        let resolved = reg.meta_for(&ctor_placeholder).expect("ProbeDirect is interned");
+        assert_eq!(resolved.name, "ProbeDirect");
+        assert_eq!(resolved.declared_trait_bounds, probe_bounds);
+
+        let minted = StructureInstanceData::registry_free("ProbeDirect", PersistentMap::new());
+        let resolved = reg.meta_for(&minted).expect("ProbeDirect is interned");
+        assert_eq!(resolved.name, "ProbeDirect");
+        assert_eq!(resolved.declared_trait_bounds, probe_bounds);
+
+        let real_id_wrong_name = instance(probe, "NotInterned");
+        assert!(
+            reg.meta_for(&real_id_wrong_name).is_none(),
+            "an in-range type_id must never substitute for an uninterned type_name"
+        );
     }
 }

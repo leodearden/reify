@@ -14141,6 +14141,24 @@ mod undef_cause_tests {
     }
 }
 
+#[cfg(test)]
+mod registry_free_constructor_tests {
+    use super::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
+
+    #[test]
+    fn registry_free_mints_the_registry_free_sentinel_at_version_one() {
+        let fields: PersistentMap<String, Value> =
+            [("area".to_string(), Value::Real(2.5))].into_iter().collect();
+        let data = StructureInstanceData::registry_free("MidSurfaceMesh", fields.clone());
+
+        assert_eq!(StructureTypeId::REGISTRY_FREE, StructureTypeId(u32::MAX));
+        assert_eq!(data.type_id, StructureTypeId::REGISTRY_FREE);
+        assert_eq!(data.type_name, "MidSurfaceMesh");
+        assert_eq!(data.version, 1);
+        assert_eq!(data.fields, fields);
+    }
+}
+
 // ── Materialized annotation overlay tests (task 3556 / annotation-args ε) ───
 //
 // RED: fails to COMPILE until MATERIALIZED_ANNOTATIONS_KEY, MaterializedAnnotation,
