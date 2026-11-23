@@ -17838,7 +17838,7 @@
     // ── try_eval_topology_selector — `normal` dispatch unit tests (task 3615, KGQ-ζ) ─────────
     //
     // Four contracts (mirrors the four `try_eval_topology_selector_contains_*` tests):
-    //   (a) HAPPY        — kernel reply `Value::String("{\"x\":0,\"y\":0,\"z\":1}")` → `Some(Value::Vector([Real(0), Real(0), Real(1)]))`
+    //   (a) HAPPY        — kernel reply `Value::String("{\"x\":0,\"y\":0,\"z\":1}")` → `Some(Value::Direction(dir(0, 0, 1)))`
     //   (b) FALL-THROUGH — non-ValueRef literal args → `None` with zero kernel calls
     //   (c) ERROR        — kernel `Err` → `Some(Value::Undef)` + exactly one Warning mentioning "normal" + "kernel query failed"
     //   (d) MALFORMED    — non-`Value::String` kernel reply → `Some(Value::Undef)` + exactly one Warning
@@ -17849,31 +17849,25 @@
     //
     // Depends on `MockGeometryKernel::with_face_normal_at_result` (pre-1, task 3615).
 
-    #[test]
-    fn try_eval_topology_selector_normal_kernel_reply_returns_vec3_real() {
+    /// Evaluate `normal(NormalSmoke.surface, NormalSmoke.pt)` against a mock
+    /// whose FaceNormalAt reply is the JSON `reply`. The point is (0, 0, 5mm).
+    fn eval_normal_with_kernel_reply(
+        reply: &str,
+    ) -> (Option<reify_ir::Value>, Vec<Diagnostic>) {
         use reify_test_support::mocks::MockGeometryKernel;
         let face_handle = reify_ir::GeometryHandleId(55);
-        // Stage the mock: point (0m, 0m, 0.005m) ≈ (0, 0, 5mm) in SI.
-        // The kernel wire format for FaceNormalAt is the same JSON-Point3 encoding
-        // as FaceNormal / surface_normal_at: {"x":_,"y":_,"z":_}.
         let mut kernel = MockGeometryKernel::new().with_face_normal_at_result(
             face_handle,
             [0.0, 0.0, 0.005],
-            reify_ir::Value::String("{\"x\":0,\"y\":0,\"z\":1}".to_string()),
+            reify_ir::Value::String(reply.to_string()),
         );
-
         let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
-        // args[0] = surface → resolved via named_steps by member name "surface"
         named_steps.insert("surface".to_string(), kh(face_handle));
-
         let mut values = reify_ir::ValueMap::new();
-        // args[1] = point3 → resolved via values by ValueCellId
         values.insert(
             reify_core::ValueCellId::new("NormalSmoke", "pt"),
             point3_length_value(0.0, 0.0, 0.005),
         );
-
-        // normal(surface_ref, point3_ref) — Surface=args[0], Point3=args[1]
         let expr = topology_selector_call_two_value_refs(
             "normal",
             "NormalSmoke",
@@ -17881,10 +17875,9 @@
             reify_core::Type::Geometry,
             "pt",
             reify_core::Type::point3(reify_core::Type::length()),
-            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+            reify_core::Type::Direction,
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
-
         let result = super::try_eval_topology_selector(
             &expr,
             &named_steps,
@@ -17892,22 +17885,39 @@
             &mut kernel,
             &mut diagnostics,
         );
+        (result, diagnostics)
+    }
 
-        assert_eq!(
-            result,
-            Some(reify_ir::Value::Vector(vec![
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(1.0),
-            ])),
-            "normal(surface, point3) with kernel reply {{x:0,y:0,z:1}} must produce \
-             Some(Value::Vector([Real(0),Real(0),Real(1)])); got {:?}",
-            result
-        );
+    /// The kernel's normal reply is minted into a unit `Value::Direction`
+    /// (direction-typing θ-b, C4); a non-unit reply is normalised by the mint.
+    #[test]
+    fn try_eval_topology_selector_normal_kernel_reply_returns_direction() {
+        for reply in ["{\"x\":0,\"y\":0,\"z\":1}", "{\"x\":0,\"y\":0,\"z\":2}"] {
+            let (result, diagnostics) = eval_normal_with_kernel_reply(reply);
+            assert_eq!(
+                result,
+                Some(unit_dir(0.0, 0.0, 1.0)),
+                "normal with kernel reply {reply} must be dir(0, 0, 1)"
+            );
+            assert!(
+                diagnostics.is_empty(),
+                "reply {reply}: a normal that mints must emit no diagnostic, got {diagnostics:?}"
+            );
+        }
+    }
+
+    /// A zero kernel normal cannot mint a Direction: the defensive downgrade is
+    /// `Some(Value::Undef)` plus one Warning naming `normal`.
+    #[test]
+    fn try_eval_topology_selector_normal_zero_kernel_reply_is_undef_with_warning() {
+        let (result, diagnostics) = eval_normal_with_kernel_reply("{\"x\":0,\"y\":0,\"z\":0}");
+        assert_eq!(result, Some(reify_ir::Value::Undef));
+        assert_eq!(diagnostics.len(), 1, "expected one Warning, got {diagnostics:?}");
+        assert_eq!(diagnostics[0].severity, reify_core::Severity::Warning);
         assert!(
-            diagnostics.is_empty(),
-            "happy-path normal must emit zero diagnostics; got: {:?}",
-            diagnostics
+            diagnostics[0].message.contains("normal"),
+            "the Warning must name `normal`: {:?}",
+            diagnostics[0].message
         );
     }
 
@@ -17998,7 +18008,7 @@
             reify_core::Type::Geometry,
             "pt",
             reify_core::Type::point3(reify_core::Type::length()),
-            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+            reify_core::Type::Direction,
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
@@ -18075,7 +18085,7 @@
             reify_core::Type::Geometry,
             "pt",
             reify_core::Type::point3(reify_core::Type::length()),
-            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+            reify_core::Type::Direction,
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
@@ -18149,7 +18159,7 @@
             reify_core::Type::Geometry,
             "pt",
             reify_core::Type::point3(reify_core::Type::length()),
-            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+            reify_core::Type::Direction,
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 

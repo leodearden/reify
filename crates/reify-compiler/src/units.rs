@@ -2609,21 +2609,14 @@ mod tests {
         );
     }
 
-    /// `geometry_query_result_type("normal")` must return
-    /// `Some(Type::vec3(Type::dimensionless_scalar()))` — a dimensionless 3D vector, i.e.
-    /// `Type::Vector { n: 3, quantity: Box::new(Type::dimensionless_scalar()) }`.
-    ///
-    /// This is the exact type that `Value::Vector(vec![Value::Real(_); 3]).infer_type()`
-    /// produces (verified: value.rs `try_infer_type` for Vector sets quantity =
-    /// first component's `try_infer_type()`, and `Value::Real → Type::dimensionless_scalar()`).
+    /// `geometry_query_result_type("normal")` is `Some(Type::Direction)`: the
+    /// at-point surface normal is a unit Direction (direction-typing θ-b, C4).
     #[test]
-    fn geometry_query_result_type_for_normal_is_vec3_real() {
+    fn geometry_query_result_type_for_normal_is_direction() {
         use reify_core::Type;
         assert_eq!(
             geometry_query_result_type("normal"),
-            Some(Type::vec3(Type::dimensionless_scalar())),
-            "geometry_query_result_type(\"normal\") must be Some(Type::vec3(Type::dimensionless_scalar())) \
-             after KGQ-ζ step-4 registration"
+            Some(Type::Direction)
         );
     }
 

@@ -1,5 +1,6 @@
-//! End-to-end smoke test for `normal(Surface, Point3<Length>) -> Vector3<Dimensionless>`
-//! (task 3615, PRD `docs/prds/v0_3/kernel-geometry-queries.md` §9 KGQ-ζ).
+//! End-to-end smoke test for `normal(Surface, Point3<Length>) -> Direction`
+//! (task 3615, PRD `docs/prds/v0_3/kernel-geometry-queries.md` §9 KGQ-ζ; typed a
+//! `Direction` by direction-typing θ-b, task 9645).
 //!
 //! The fixture `examples/kernel_queries/normal_smoke.ri` contains:
 //!
@@ -14,8 +15,8 @@
 //! Two assertions:
 //!
 //! 1. **COMPILE-LEVEL** (always) — `normal_smoke.ri` parses + typechecks and
-//!    the `NormalSmoke.n` cell's compile-time type is `Type::vec3(Type::dimensionless_scalar())`
-//!    (dimensionless Vector3), proving the `units.rs` GEOMETRY_QUERY_NAMES
+//!    the `NormalSmoke.n` cell's compile-time type is `Type::Direction`,
+//!    proving the `units.rs` GEOMETRY_QUERY_NAMES
 //!    registration and `geometry_query_result_type` arm wire the cell type
 //!    through the compiler.  At engine runtime the `solid` arg is a
 //!    `TopAbs_SOLID` handle — `resolve_geometry_handle_arg` resolves it but
@@ -54,7 +55,7 @@ fn normal_smoke_path() -> std::path::PathBuf {
 
 /// Pins the user-observable signal for KGQ-ζ:
 ///
-/// - `NormalSmoke.n` must have compile-time type `Type::vec3(Type::dimensionless_scalar())`,
+/// - `NormalSmoke.n` must have compile-time type `Type::Direction`,
 ///   verifying the `units.rs` registration wires the cell type correctly.
 /// - `GeometryQuery::FaceNormalAt` through the real OCCT kernel returns
 ///   `Ok(Value::String(_))`, confirming the `OcctKernel::query()` dispatch
@@ -62,8 +63,8 @@ fn normal_smoke_path() -> std::path::PathBuf {
 ///
 /// Skips the OCCT-backed assertion cleanly when OCCT is not available.
 #[test]
-fn normal_smoke_compiles_as_vec3_real_and_face_normal_at_ffis() {
-    // ── assertion 1: fixture exists, compiles, NormalSmoke.n typed Vec3<Real> ──
+fn normal_smoke_compiles_as_direction_and_face_normal_at_ffis() {
+    // ── assertion 1: fixture exists, compiles, NormalSmoke.n typed Direction ──
 
     // Read and compile the fixture unconditionally — a missing file or a grammar
     // or type-system regression (e.g. `normal` signature change) should fail on
@@ -80,9 +81,8 @@ fn normal_smoke_compiles_as_vec3_real_and_face_normal_at_ffis() {
         .find(|t| t.name == "NormalSmoke")
         .expect("NormalSmoke structure should exist in normal_smoke.ri");
 
-    // The `n = normal(solid, pt)` cell must typecheck as Vector3<Dimensionless>.
-    // Set by `geometry_query_result_type("normal") → Type::vec3(Type::dimensionless_scalar())` in
-    // crates/reify-compiler/src/units.rs (KGQ-ζ, task 3615 step-4).
+    // The `n = normal(solid, pt)` cell must typecheck as a Direction, set by
+    // `geometry_query_result_type("normal")` in crates/reify-compiler/src/units.rs.
     let n_cell = tmpl
         .value_cells
         .iter()
@@ -91,9 +91,8 @@ fn normal_smoke_compiles_as_vec3_real_and_face_normal_at_ffis() {
 
     assert_eq!(
         n_cell.cell_type,
-        Type::vec3(Type::dimensionless_scalar()),
-        "NormalSmoke.n should have type Type::vec3(Type::dimensionless_scalar()) \
-         (dimensionless Vector3, KGQ-ζ registration), got: {:?}",
+        Type::Direction,
+        "NormalSmoke.n should have type Type::Direction, got: {:?}",
         n_cell.cell_type
     );
 

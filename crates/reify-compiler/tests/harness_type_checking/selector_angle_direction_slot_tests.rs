@@ -1,10 +1,11 @@
 //! The directional selectors' direction and the arity-2 `angle(a, b)` operands
 //! are `Direction` slots: a vector, string or number there is a static
 //! `ArgTypeMismatch`, and a Direction-typed value checks clean (PRD
-//! `docs/prds/v0_6/direction-typing.md` B15 / B25, task θ-b #9645).
+//! `docs/prds/v0_6/direction-typing.md` B15 / B25, task θ-b #9645). The
+//! at-point `normal(surface, at)` is typed a `Direction` (B4).
 
-use reify_core::{Diagnostic, DiagnosticCode, Severity};
-use reify_test_support::{compile_source_with_stdlib, errors_only};
+use reify_core::{Diagnostic, DiagnosticCode, Severity, Type};
+use reify_test_support::{compile_source_with_stdlib, errors_only, get_let_expr_in};
 
 /// The user-visible fix hint, hard-coded on purpose: this file is the DRIFT
 /// PIN, so reading `DIRECTION_MIGRATION_HINT` here would make it a tautology.
@@ -26,8 +27,17 @@ fn box_source(lines: &[&str]) -> String {
         body.push_str(line);
         body.push('\n');
     }
-    format!("structure def SelectorDirections {{\n{body}}}\n")
+    format!("structure def {BOX_STRUCTURE} {{\n{body}}}\n")
 }
+
+const BOX_STRUCTURE: &str = "SelectorDirections";
+
+/// A face `top` of the box, a point `o`, and `n = normal(top, o)`.
+const NORMAL_LINES: &[&str] = &[
+    "let top = single(faces(b))",
+    "let o = point3(0mm, 0mm, 0mm)",
+    "let n = normal(top, o)",
+];
 
 fn errors_of(lines: &[&str]) -> Vec<Diagnostic> {
     let module = compile_source_with_stdlib(&box_source(lines));
@@ -176,5 +186,29 @@ fn the_arity_three_relation_angle_raises_no_direction_slot_mismatch() {
     assert!(
         mismatches.is_empty(),
         "the relation verb must raise no ArgTypeMismatch, got {mismatches:?}"
+    );
+}
+
+#[test]
+fn normal_at_a_point_is_typed_a_direction() {
+    let module = compile_source_with_stdlib(&box_source(NORMAL_LINES));
+    let errors = errors_only(&module);
+    assert!(errors.is_empty(), "the normal query must check clean, got {errors:?}");
+    assert_eq!(
+        get_let_expr_in(&module, BOX_STRUCTURE, "n").result_type,
+        Type::Direction
+    );
+}
+
+#[test]
+fn adding_two_normals_is_an_operand_kind_error_with_the_vector_hint() {
+    let mut lines = NORMAL_LINES.to_vec();
+    lines.push("let bad = n + n");
+    let errors = errors_of(&lines);
+    assert!(
+        errors.iter().any(|d| d.code == Some(DiagnosticCode::ArithOperandKind)
+            && d.message.ends_with("write vector(d)")),
+        "Direction + Direction must be an ArithOperandKind ending \"write vector(d)\", \
+         got {errors:?}"
     );
 }
