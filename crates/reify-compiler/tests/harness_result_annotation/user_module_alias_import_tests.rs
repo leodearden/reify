@@ -14,12 +14,12 @@
 use std::fs;
 use std::path::Path;
 
-use reify_compiler::CompiledModule;
 use reify_compiler::cfg::CfgSet;
 use reify_compiler::module_dag::ModuleResolver;
 use reify_compiler::program::{CompiledProgram, compile_program};
+use reify_compiler::{CompiledModule, RequirementKind};
 use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, Severity, Type};
-use reify_ir::Satisfaction;
+use reify_ir::{Satisfaction, VariantPayload};
 use reify_test_support::mocks::MockConstraintChecker;
 
 fn write(dir: &Path, name: &str, source: &str) {
@@ -402,6 +402,136 @@ fn imported_circular_plain_aliases_still_terminate() {
         "got {:?}",
         program.entry().diagnostics
     );
+}
+
+/// A declared-type position whose enum namespace is private to it, so an
+/// alias reaches the enum there only by walking the alias chain to its name.
+#[derive(Clone, Copy, Debug)]
+enum PrivateEnumPosition {
+    TraitMemberParam,
+    EnumVariantPayload,
+}
+
+impl PrivateEnumPosition {
+    fn declaration(self, ty: &str) -> String {
+        match self {
+            Self::TraitMemberParam => format!("trait Tq {{\n    param g : {ty}\n}}\n"),
+            Self::EnumVariantPayload => format!("enum Wrap {{\n    W {{ v : {ty} }},\n    N\n}}\n"),
+        }
+    }
+
+    fn stored_type(self, module: &CompiledModule) -> Type {
+        match self {
+            Self::TraitMemberParam => trait_member_type(module, "Tq", "g"),
+            Self::EnumVariantPayload => variant_field_type(module, "Wrap", "W", "v"),
+        }
+    }
+}
+
+fn trait_member_type(module: &CompiledModule, trait_name: &str, member: &str) -> Type {
+    let requirement = module
+        .trait_defs
+        .iter()
+        .find(|t| t.name == trait_name)
+        .unwrap_or_else(|| panic!("trait `{trait_name}` not found"))
+        .required_members
+        .iter()
+        .find(|m| m.name == member)
+        .unwrap_or_else(|| panic!("trait member `{trait_name}.{member}` not found"));
+    match &requirement.kind {
+        RequirementKind::Param(ty) => ty.clone(),
+        other => panic!("`{trait_name}.{member}` is not a param requirement: {other:?}"),
+    }
+}
+
+fn variant_field_type(
+    module: &CompiledModule,
+    enum_name: &str,
+    variant: &str,
+    field: &str,
+) -> Type {
+    let payload = &module
+        .enum_defs
+        .iter()
+        .find(|e| e.name == enum_name)
+        .unwrap_or_else(|| panic!("enum `{enum_name}` not found"))
+        .variants
+        .iter()
+        .find(|v| v.name == variant)
+        .unwrap_or_else(|| panic!("variant `{enum_name}.{variant}` not found"))
+        .payload;
+    let VariantPayload::Named(fields) = payload else {
+        panic!("`{enum_name}.{variant}` has no named payload");
+    };
+    fields
+        .iter()
+        .find(|(name, _)| name == field)
+        .map(|(_, ty)| ty.clone())
+        .unwrap_or_else(|| panic!("field `{enum_name}.{variant}.{field}` not found"))
+}
+
+const PROD12: &str = "module prod12\n\
+pub enum E12 { A, B }\n\
+type Mid12 = E12\n\
+pub type F12 = Mid12\n";
+
+/// An imported alias chain reaches the same enum as the direct spelling in the
+/// positions with a private enum namespace: each hop resolves in the scope
+/// that defined the alias it leaves, whatever the importer calls `Mid12`, and
+/// a same-named importer alias on the way is not a cycle.
+#[test]
+fn imported_plain_alias_chain_resolves_in_private_enum_namespace_positions() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(dir.path(), "prod11.ri", PROD11);
+    write(dir.path(), "prod12.ri", PROD12);
+
+    let rows = [
+        ("prod12", "", "E12", "F12"),
+        ("prod12", "type Mid12 = Length", "E12", "F12"),
+        ("prod11", "type Inner11 = Outer11", "E11", "Inner11"),
+    ];
+    let positions = [
+        PrivateEnumPosition::TraitMemberParam,
+        PrivateEnumPosition::EnumVariantPayload,
+    ];
+
+    let mut compiles = 0;
+    let mut compile_at =
+        |producer: &str, preamble: &str, position: PrivateEnumPosition, ty: &str| {
+            compiles += 1;
+            let stem = format!("imppos{compiles}");
+            let source = format!(
+                "module {stem}\nimport {producer}\n{preamble}\n{}",
+                position.declaration(ty)
+            );
+            let program = compile(dir.path(), &stem, &source);
+            let entry = program.entry();
+            let messages: Vec<String> = errors(entry).iter().map(|d| d.message.clone()).collect();
+            (position.stored_type(entry), messages)
+        };
+
+    let mut failures = Vec::new();
+    for (producer, preamble, direct, alias) in rows {
+        for position in positions {
+            let label = format!("{position:?}, import {producer}, `{preamble}`");
+            let (direct_ty, direct_errors) = compile_at(producer, preamble, position, direct);
+            assert!(
+                direct_errors.is_empty() && !direct_ty.is_error(),
+                "[{label}] the direct `{direct}` must be clean and resolve for the \
+                 comparison to mean anything; got {direct_ty:?}, {direct_errors:?}"
+            );
+            let (alias_ty, alias_errors) = compile_at(producer, preamble, position, alias);
+            if !alias_errors.is_empty() {
+                failures.push(format!("[{label}] `{alias}` errors: {alias_errors:?}"));
+            }
+            if alias_ty != direct_ty {
+                failures.push(format!(
+                    "[{label}] `{alias}` stored {alias_ty:?}, `{direct}` stored {direct_ty:?}"
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "\n  {}", failures.join("\n  "));
 }
 
 const PROD2: &str = "module prod2\n\
