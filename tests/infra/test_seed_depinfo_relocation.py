@@ -57,8 +57,7 @@ for arg in "$@"; do
         *) if [ -z "$src" ]; then src="$arg"; else dest="$arg"; fi ;;
     esac
 done
-[ -n "$src" ] && [ -n "$dest" ] && /bin/cp -a "$src" "$dest"
-exit 0
+exec /bin/cp -a "$src" "$dest"
 """
 
 # No env!() anywhere: the seed's env!() relink would touch this file and
@@ -208,17 +207,23 @@ class SeedRelocatesDepInfo(unittest.TestCase):
         return lane
 
     def build_embed(self, lane):
-        """(cargo's `fresh` verdict on the lane's `embed` test, what it embeds)."""
+        """(cargo's `fresh` verdict on the lane's `embed` test, what it embeds).
+        Every other unit must come back fresh, proving the seed left the lane
+        warm: a cold lane would rebuild `embed` too, for the wrong reason."""
         built = self.cargo(lane, "test", "--no-run", "--message-format=json")
         artifacts = [message for message in map(json.loads, built.stdout.splitlines())
-                     if message.get("reason") == "compiler-artifact"
-                     and message["target"]["name"] == "embed"]
-        self.assertEqual(len(artifacts), 1, built.stdout)
-        ran = run([artifacts[0]["executable"], "--nocapture"], lane, self.pool.env)
+                     if message.get("reason") == "compiler-artifact"]
+        embed = [artifact for artifact in artifacts if artifact["target"]["name"] == "embed"]
+        others = [artifact for artifact in artifacts if artifact["target"]["name"] != "embed"]
+        self.assertEqual(len(embed), 1, built.stdout)
+        self.assertNotEqual(others, [], built.stdout)
+        self.assertEqual([other["target"]["name"] for other in others if not other["fresh"]],
+                         [], "the seeded lane was not warm")
+        ran = run([embed[0]["executable"], "--nocapture"], lane, self.pool.env)
         self.assertEqual(ran.returncode, 0, ran.stderr)
         embedded = re.search(r"EMBED=(\S+)", ran.stdout)
         self.assertIsNotNone(embedded, ran.stdout)
-        return artifacts[0]["fresh"], embedded.group(1)
+        return embed[0]["fresh"], embedded.group(1)
 
     def test_unchanged_input_stays_fresh(self):
         lane = self.seeded_lane("_lane-1")
