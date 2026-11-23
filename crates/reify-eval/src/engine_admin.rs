@@ -5023,6 +5023,38 @@ mod tests {
         );
     }
 
+    /// The debug invariant keys on the value's `type_name`, so an uninterned
+    /// name diverges even when the placeholder id 0 is some other structure's.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "StructureInstance type mismatch")]
+    fn validate_param_override_debug_panics_when_type_name_is_not_interned_although_id_zero_is() {
+        use reify_ir::{
+            PersistentMap, StructureInstanceData, StructureMeta, StructureRegistry,
+            StructureTypeId, Value,
+        };
+        let mut registry = StructureRegistry::new();
+        let color = registry.intern(
+            "Color",
+            StructureMeta {
+                name: "Color".to_string(),
+                version: 1,
+                declared_trait_bounds: vec![],
+                source: None,
+                field_layout: vec![],
+            },
+        );
+        assert_eq!(color, StructureTypeId(0));
+        let v = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(0),
+            type_name: "RemovedStructure".to_string(),
+            version: 1,
+            fields: PersistentMap::new(),
+        }));
+        let ty = reify_core::Type::TraitObject("Probe".to_string());
+        let _ = super::validate_param_override(&v, &ty, &registry);
+    }
+
     // ── Suggestion 1 — no-false-panic regression guards ──────────────────────
     //
     // The debug invariant fires ONLY on (TraitObject + meta-missing).  These
