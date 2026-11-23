@@ -1319,8 +1319,10 @@ impl<'a> MaterializedAnnotation<'a> {
 }
 
 impl StructureInstanceData {
-    /// An instance no registry entry stands behind (an engine-synthesized
-    /// result), at version 1 and carrying [`StructureTypeId::REGISTRY_FREE`].
+    /// An instance minted without registry access, at version 1 and carrying
+    /// [`StructureTypeId::REGISTRY_FREE`]. Its id carries no identity: resolve
+    /// the structure by `type_name` through
+    /// [`StructureRegistry::meta_for`](crate::StructureRegistry::meta_for).
     pub fn registry_free(
         type_name: impl Into<String>,
         fields: PersistentMap<String, Value>,

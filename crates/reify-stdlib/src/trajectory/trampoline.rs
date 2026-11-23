@@ -33,7 +33,7 @@
 use std::ops::RangeInclusive;
 
 use reify_core::{ContentHash, DimensionVector};
-use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
+use reify_ir::{PersistentMap, StructureInstanceData, Value};
 
 use crate::dynamics::spatial::{Frame3, SpatialTransform6, SpatialVector6};
 use super::impulse_shaper::convolve_at;
@@ -785,17 +785,7 @@ pub fn input_shape_value(profile: &Value, shaper: &Value) -> Value {
     let n_out = n_intervals + 1;
     let step = span / n_intervals as f64;
 
-    // Waypoint template: reuse the input waypoints' registered identity so the
-    // shaped profile's waypoints bind like the originals; sentinel fallback when
-    // the input shape is unavailable.
-    let (wp_type_id, wp_type_name, wp_version) =
-        match profile_data.fields.get(&"waypoints".to_string()) {
-            Some(Value::List(wps)) => match wps.first() {
-                Some(Value::StructureInstance(d)) => (d.type_id, d.type_name.clone(), d.version),
-                _ => (StructureTypeId::REGISTRY_FREE, "Waypoint".to_string(), 1),
-            },
-            _ => (StructureTypeId::REGISTRY_FREE, "Waypoint".to_string(), 1),
-        };
+    let waypoint = waypoint_template(profile_data);
 
     let mut new_waypoints = Vec::with_capacity(n_out);
     for i in 0..n_out {
@@ -825,10 +815,8 @@ pub fn input_shape_value(profile: &Value, shaper: &Value) -> Value {
         .into_iter()
         .collect();
         new_waypoints.push(Value::StructureInstance(Box::new(StructureInstanceData {
-            type_id: wp_type_id,
-            type_name: wp_type_name.clone(),
-            version: wp_version,
             fields,
+            ..waypoint.clone()
         })));
     }
 
@@ -842,6 +830,24 @@ pub fn input_shape_value(profile: &Value, shaper: &Value) -> Value {
         version: profile_data.version,
         fields: new_fields,
     }))
+}
+
+/// The identity a shaped profile's waypoints carry, with empty fields: the
+/// input waypoints' own, so the shaped waypoints bind like the originals, or a
+/// registry-free `Waypoint` when the input shape is unavailable.
+fn waypoint_template(profile_data: &StructureInstanceData) -> StructureInstanceData {
+    match profile_data.fields.get(&"waypoints".to_string()) {
+        Some(Value::List(wps)) => match wps.first() {
+            Some(Value::StructureInstance(d)) => StructureInstanceData {
+                type_id: d.type_id,
+                type_name: d.type_name.clone(),
+                version: d.version,
+                fields: PersistentMap::new(),
+            },
+            _ => StructureInstanceData::registry_free("Waypoint", PersistentMap::new()),
+        },
+        _ => StructureInstanceData::registry_free("Waypoint", PersistentMap::new()),
+    }
 }
 
 /// Read numeric field `name` from a `StructureInstance`'s fields as `f64`,
@@ -1018,16 +1024,7 @@ fn tots_result_to_profile(
         })
         .collect();
 
-    // Waypoint identity reused from the input (sentinel fallback) — mirrors the
-    // impulse arm so the shaped profile binds like the original.
-    let (wp_type_id, wp_type_name, wp_version) =
-        match profile_data.fields.get(&"waypoints".to_string()) {
-            Some(Value::List(wps)) => match wps.first() {
-                Some(Value::StructureInstance(d)) => (d.type_id, d.type_name.clone(), d.version),
-                _ => (StructureTypeId::REGISTRY_FREE, "Waypoint".to_string(), 1),
-            },
-            _ => (StructureTypeId::REGISTRY_FREE, "Waypoint".to_string(), 1),
-        };
+    let waypoint = waypoint_template(profile_data);
 
     let mut new_waypoints = Vec::with_capacity(n_knots);
     for i in 0..n_knots {
@@ -1048,10 +1045,8 @@ fn tots_result_to_profile(
         .into_iter()
         .collect();
         new_waypoints.push(Value::StructureInstance(Box::new(StructureInstanceData {
-            type_id: wp_type_id,
-            type_name: wp_type_name.clone(),
-            version: wp_version,
             fields,
+            ..waypoint.clone()
         })));
     }
 

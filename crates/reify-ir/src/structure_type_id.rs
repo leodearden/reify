@@ -12,7 +12,8 @@
 pub struct StructureTypeId(pub u32);
 
 impl StructureTypeId {
-    /// The id carried by an instance no registry entry stands behind, minted
-    /// only via [`StructureInstanceData::registry_free`](crate::StructureInstanceData::registry_free).
+    /// The id of an instance minted without registry access. It carries no
+    /// identity: resolve the structure by name through
+    /// [`StructureRegistry::meta_for`](crate::StructureRegistry::meta_for).
     pub const REGISTRY_FREE: StructureTypeId = StructureTypeId(u32::MAX);
 }
