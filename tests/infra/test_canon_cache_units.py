@@ -15,6 +15,8 @@ is the thin wrapper tests/infra/test_canon_cache_units.sh.
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -30,6 +32,23 @@ ORCHESTRATOR_CONFIG = fx.REPO_ROOT / "dark-factory-orchestrator.yaml"
 CARGO_HOME_LINE = re.compile(r"^\s+CARGO_HOME:\s*(\S+)\s*$", re.MULTILINE)
 GUARD_LINE = "#!/bin/sh\n# reify-canon-guard\nexit 0\n"
 REAL_LINE = "#!/bin/sh\nexit 0\n"
+GUARD = fx.REPO_ROOT / "scripts" / "canon-bin" / "guard" / "sccache"
+
+# A stub compiler or sccache: records its own name, its arguments and the
+# CARGO_* names it was given, then exits 0.
+RECORDING_STUB = r'''#!/usr/bin/python3 -I
+import json
+import os
+import sys
+
+call = {
+    "prog": os.path.basename(sys.argv[0]),
+    "argv": sys.argv[1:],
+    "cargo": sorted(name for name in os.environ if name.startswith("CARGO_")),
+}
+with open(os.environ["GUARD_TEST_LOG"], "a") as log:
+    log.write(json.dumps(call) + "\n")
+'''
 
 
 def scratch(test):
@@ -271,6 +290,126 @@ class ChooseFallbackDir(unittest.TestCase):
         chosen = canon_cache.choose_fallback_dir(self.settings(str(parent / "fallback")), tmp_root=self.tmp)
         self.assertEqual(chosen, os.path.join(self.tmp, f"reify-canon-fallback-{os.getuid()}"))
         self.assertTrue(os.path.isdir(chosen))
+
+
+class Guard(unittest.TestCase):
+    """Boundary row 5: scripts/canon-bin/guard/sccache, the one choke point of every cached compile."""
+
+    PRESENTATION = ("CARGO_INCREMENTAL", "CARGO_LOG", "CARGO_TERM_COLOR", "CARGO_TERM_PROGRESS_WHEN")
+
+    def setUp(self):
+        self.tmp = scratch(self)
+        self.compilers = os.path.join(self.tmp, "compilers")
+        self.rustc = executable(self.compilers, "rustc", RECORDING_STUB)
+        self.cc = executable(self.compilers, "cc", RECORDING_STUB)
+        self.real_dir = os.path.join(self.tmp, "real")
+        self.real = executable(self.real_dir, "sccache", RECORDING_STUB)
+        self.log = os.path.join(self.tmp, "calls.jsonl")
+        self.uncached = os.path.join(self.tmp, "uncached.log")
+        self.bash_only = os.path.join(self.tmp, "bash-only")
+        os.mkdir(self.bash_only)
+        os.symlink(shutil.which("bash"), os.path.join(self.bash_only, "bash"))
+        self.env = {
+            "PATH": f"{self.compilers}:{self.bash_only}",
+            "GUARD_TEST_LOG": self.log,
+            "REIFY_CANON_SCCACHE": self.real,
+            "REIFY_CANON_UNCACHED_LOG": self.uncached,
+            "CARGO_INCREMENTAL": "0",
+            "CARGO_TERM_COLOR": "always",
+            "CARGO_TERM_PROGRESS_WHEN": "never",
+            "CARGO_LOG": "x",
+            "CARGO_HOME": "/h",
+        }
+
+    def guard(self, *args, guard=GUARD, **env):
+        merged = {name: value for name, value in dict(self.env, **env).items() if value is not None}
+        return subprocess.run(
+            [str(guard), *args], env=merged, capture_output=True, text=True, check=False
+        )
+
+    def calls(self):
+        if not os.path.exists(self.log):
+            return []
+        with open(self.log) as log:
+            return [json.loads(line) for line in log]
+
+    def uncached_lines(self):
+        if not os.path.exists(self.uncached):
+            return []
+        with open(self.uncached) as log:
+            return log.read().splitlines()
+
+    def test_target_cpu_native_runs_the_compiler_directly_and_is_counted(self):
+        result = self.guard(self.rustc, "--crate-name", "x", "-C", "target-cpu=native")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls()
+        self.assertEqual([call["prog"] for call in calls], ["rustc"])
+        self.assertEqual(calls[0]["argv"], ["--crate-name", "x", "-C", "target-cpu=native"])
+        self.assertIn("CARGO_INCREMENTAL", calls[0]["cargo"])
+        self.assertEqual(self.uncached_lines(), [self.rustc])
+
+    def test_every_machine_flag_spelling_bypasses_the_cache(self):
+        for argv in (
+            (self.rustc, "--crate-name", "x", "-Ctarget-cpu=native"),
+            (self.rustc, "--crate-name", "x", "--codegen", "target-cpu=native"),
+            (self.rustc, "--crate-name", "x", "--codegen=target-cpu=native"),
+            ("cc", "-march=native", "-c", "u.c"),
+            ("cc", "-mtune=native", "-c", "u.c"),
+            ("cc", "-mcpu=native", "-c", "u.c"),
+        ):
+            with self.subTest(argv=argv):
+                for path in (self.log, self.uncached):
+                    Path(path).unlink(missing_ok=True)
+                result = self.guard(*argv)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                calls = self.calls()
+                self.assertEqual([call["prog"] for call in calls], [os.path.basename(argv[0])])
+                self.assertEqual(calls[0]["argv"], list(argv[1:]))
+                self.assertEqual(self.uncached_lines(), [argv[0]])
+
+    def test_ordinary_compile_goes_to_the_real_sccache_without_presentation_variables(self):
+        argv = [self.rustc, "--crate-name", "x", "src/lib.rs"]
+        result = self.guard(*argv)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls()
+        self.assertEqual([call["prog"] for call in calls], ["sccache"])
+        self.assertEqual(calls[0]["argv"], argv)
+        self.assertEqual(calls[0]["cargo"], ["CARGO_HOME"])
+        self.assertEqual(self.uncached_lines(), [])
+
+    def test_sccache_options_pass_straight_through(self):
+        result = self.guard("--show-stats", "--stats-format", "json")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls()
+        self.assertEqual([call["prog"] for call in calls], ["sccache"])
+        self.assertEqual(calls[0]["argv"], ["--show-stats", "--stats-format", "json"])
+
+    def test_without_the_pointer_the_first_unmarked_sccache_on_path_is_used(self):
+        guard_copy = os.path.join(self.tmp, "guard-copy")
+        os.mkdir(guard_copy)
+        shutil.copy2(GUARD, os.path.join(guard_copy, "sccache"))
+        path = os.pathsep.join((guard_copy, str(GUARD.parent), self.real_dir, self.compilers, self.bash_only))
+        result = self.guard(self.rustc, "src/lib.rs", REIFY_CANON_SCCACHE=None, PATH=path)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([call["prog"] for call in self.calls()], ["sccache"])
+        self.assertEqual(self.calls()[0]["argv"], [self.rustc, "src/lib.rs"])
+
+    def test_no_real_sccache_exits_127_with_one_line(self):
+        path = os.pathsep.join((str(GUARD.parent), self.compilers, self.bash_only))
+        result = self.guard(self.rustc, "src/lib.rs", REIFY_CANON_SCCACHE=None, PATH=path)
+        self.assertEqual(result.returncode, 127, result.stderr)
+        self.assertEqual(len(result.stderr.splitlines()), 1, result.stderr)
+        self.assertEqual(self.calls(), [])
+
+    def test_flagged_compile_runs_without_the_uncached_log(self):
+        result = self.guard("cc", "-march=native", "-c", "u.c", REIFY_CANON_UNCACHED_LOG=None)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([call["prog"] for call in self.calls()], ["cc"])
+        self.assertFalse(os.path.exists(self.uncached))
+
+    def test_guard_carries_the_marker_canon_cache_skips(self):
+        self.assertTrue(canon_cache.is_guard(str(GUARD)))
+        self.assertEqual(sorted(os.listdir(GUARD.parent)), ["sccache"])
 
 
 class PolicyMembers(unittest.TestCase):
