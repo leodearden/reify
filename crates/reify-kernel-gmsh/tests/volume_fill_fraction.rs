@@ -245,7 +245,9 @@ const CYL_FINE: f64 = 0.13;
 /// Derived from the measured residual, not tuned to it. Measured
 /// `1 - surface_match_ratio` on this branch (n = 12 / 24 / 48 segments, so the
 /// residual is a function of the MESH size, essentially not of the fixture's
-/// tessellation density):
+/// tessellation density). This sweep predates the one-thread pin (task 10467),
+/// so it is a multi-threaded reading; the pinned n=24 readings are in the
+/// convergence comment of the curved-body test below:
 ///
 /// | mesh size | n=12     | n=24     | n=48     |
 /// |-----------|----------|----------|----------|
@@ -354,8 +356,9 @@ fn tessellated_cylinder_is_completely_tetrahedralized() {
 
     // 2. CONVERGENCE — what separates a chord residual from an under-fill.
     //    Measured 2.24e-2 -> 6.21e-3, a factor of 3.61 (one gmsh thread, libgmsh
-    //    4.15.2) for a mesh-size ratio of 1.92 (i.e. ~h^2). The bar is 2x, well inside that, but far outside the
-    //    flat-under-refinement behaviour of the #6200 defect itself.
+    //    4.15.2) for a mesh-size ratio of 1.92 (i.e. ~h^2). The bar is 2x, well
+    //    inside that, but far outside the flat-under-refinement behaviour of the
+    //    #6200 defect itself.
     let coarse_residual = (1.0 - coarse.surface_match_ratio(surface_volume)).abs();
     let fine_residual = (1.0 - fine_ratio).abs();
     assert!(
@@ -495,7 +498,9 @@ fn production_report_surfaces_the_fill_measurement() {
 /// mesh size, on the premise that a complete B-rep decomposition produces
 /// interior nodes and that #6154's "0 interior nodes of 80" was therefore
 /// diagnostic of #6200. **Measurement refutes that premise.** Sweeping mesh
-/// size with the fix in place, fill fraction is 1.000000 in every row:
+/// size with the fix in place, fill fraction is 1.000000 in every row (a
+/// multi-threaded sweep, taken before the one-thread pin of task 10467, so the
+/// node and tet counts are indicative, not reproducible):
 ///
 /// | body          | mesh size | nodes | tets | fill     | interior |
 /// |---------------|-----------|-------|------|----------|----------|
