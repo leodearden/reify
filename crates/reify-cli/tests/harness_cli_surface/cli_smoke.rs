@@ -1,8 +1,9 @@
+use reify_test_support::test_package;
 use std::process::Command;
 
 #[test]
 fn no_args_shows_help_with_all_commands() {
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+    let output = Command::new(test_package::bin_exe("reify"))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -41,7 +42,7 @@ fn no_args_shows_help_with_all_commands() {
 fn help_text_mentions_gui_debug_subcommand() {
     // `reify` with no args should mention the `gui-debug` subcommand alongside
     // the other commands.
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+    let output = Command::new(test_package::bin_exe("reify"))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -65,7 +66,7 @@ fn help_text_mentions_gui_debug_subcommand() {
 /// `compile_program` entry (#5516), not a resurrection of this subcommand.
 #[test]
 fn mcp_server_subcommand_is_rejected_as_unknown() {
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+    let output = Command::new(test_package::bin_exe("reify"))
         .args(["mcp-server"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -84,7 +85,7 @@ fn mcp_server_subcommand_is_rejected_as_unknown() {
         "reify mcp-server should be reported as an unknown command, got: {stderr}"
     );
 
-    let help = Command::new(env!("CARGO_BIN_EXE_reify"))
+    let help = Command::new(test_package::bin_exe("reify"))
         .args(["--help"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -107,7 +108,7 @@ fn mcp_server_subcommand_is_rejected_as_unknown() {
 
 #[test]
 fn check_no_file_shows_usage() {
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+    let output = Command::new(test_package::bin_exe("reify"))
         .args(["check"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -129,7 +130,7 @@ fn check_no_file_shows_usage() {
 
 #[test]
 fn build_no_file_shows_usage() {
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+    let output = Command::new(test_package::bin_exe("reify"))
         .args(["build"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())

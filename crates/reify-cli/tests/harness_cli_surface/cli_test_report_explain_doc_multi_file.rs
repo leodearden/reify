@@ -9,11 +9,14 @@ use std::process::{Command, Output, Stdio};
 const UNKNOWN_STRUCTURE: &str = "unknown structure";
 
 fn fixture(name: &str) -> String {
-    format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"))
+    format!(
+        "{}/tests/fixtures/{name}",
+        reify_test_support::test_package::manifest_dir().display()
+    )
 }
 
 fn reify(argv: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_reify"))
+    Command::new(reify_test_support::test_package::bin_exe("reify"))
         .args(argv)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

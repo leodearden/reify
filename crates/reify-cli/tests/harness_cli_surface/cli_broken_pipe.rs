@@ -32,7 +32,7 @@ unsafe fn point_stdout_at_a_pipe_without_reader() -> io::Result<()> {
 
 fn run_with_closed_stdout(args: &[&str]) -> Output {
     let cache_dir = tempfile::tempdir().expect("create hermetic REIFY_CACHE_DIR");
-    let mut command = Command::new(env!("CARGO_BIN_EXE_reify"));
+    let mut command = Command::new(reify_test_support::test_package::bin_exe("reify"));
     command
         .args(args)
         .env("REIFY_CACHE_DIR", cache_dir.path())
@@ -71,7 +71,8 @@ fn version_into_closed_stdout_is_terminated_by_sigpipe_without_panic() {
 /// discards write errors, so this pins the disposition well past the startup path.
 #[test]
 fn check_into_closed_stdout_is_terminated_by_sigpipe_without_panic() {
-    let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/bracket.ri");
-    let output = run_with_closed_stdout(&["check", fixture]);
+    let fixture =
+        reify_test_support::test_package::manifest_dir().join("tests/fixtures/bracket.ri");
+    let output = run_with_closed_stdout(&["check", fixture.to_str().expect("UTF-8 fixture path")]);
     assert_terminated_by_sigpipe_without_panic(&output, "reify check bracket.ri");
 }

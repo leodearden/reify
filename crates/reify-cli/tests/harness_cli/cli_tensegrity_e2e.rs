@@ -8,7 +8,7 @@
 //! They spawn the `reify` CLI. Hosted in `reify-eval` they had NO cargo build
 //! edge on `reify-cli` and resolved `target/<profile>/reify` by path, so they
 //! asserted against a binary that could predate the change under test — a
-//! false green (observed on #5618). `env!("CARGO_BIN_EXE_reify")` gives them a
+//! false green (observed on #5618). `CARGO_BIN_EXE_reify` gives them a
 //! real build edge: cargo builds this package's `[[bin]]` before running its
 //! integration tests.
 //!

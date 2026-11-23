@@ -150,7 +150,7 @@ fn compile_canonically(entry: &Path) -> CompiledProgram {
 /// Run the built `reify` on `entry` with a cache of its own, so no ambient cache reaches it.
 fn reify(argv: &[&str], entry: &Path) -> Output {
     let cache_dir = reify_test_support::prefixed_tempdir("reify-resolution-parity-cache-");
-    Command::new(env!("CARGO_BIN_EXE_reify"))
+    Command::new(reify_test_support::test_package::bin_exe("reify"))
         .args(argv)
         .arg(entry)
         .env("REIFY_CACHE_DIR", cache_dir.path())

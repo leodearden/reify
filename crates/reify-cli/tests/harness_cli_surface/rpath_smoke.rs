@@ -18,7 +18,7 @@ use std::process::Command;
 /// boundaries; the workspace binary needs its own build.rs emitter.
 #[test]
 fn reify_binary_embeds_runpath() {
-    let exe = env!("CARGO_BIN_EXE_reify");
+    let exe = &reify_exe();
     let Some(stdout) = readelf_d(exe) else {
         return;
     };
@@ -43,7 +43,7 @@ fn reify_binary_embeds_runpath() {
 /// stub-only build with OCCT undetected at build time).
 #[test]
 fn reify_binary_does_not_link_conda_occt_7_9() {
-    let exe = env!("CARGO_BIN_EXE_reify");
+    let exe = &reify_exe();
     let Some(stdout) = readelf_d(exe) else {
         return;
     };
@@ -171,11 +171,17 @@ fn ldd_resolved_dir(ldd_output: &str, soname: &str) -> Option<std::path::PathBuf
     Some(std::fs::canonicalize(dir).unwrap_or_else(|e| panic!("canonicalize {dir:?}: {e}")))
 }
 
-/// The repo root, derived from this crate's manifest dir
-/// (`crates/reify-cli/../..`).
+/// The cargo-built `reify` binary's path, as the `&str` the readelf/ldd helpers take.
+fn reify_exe() -> String {
+    reify_test_support::test_package::bin_exe("reify")
+        .into_os_string()
+        .into_string()
+        .expect("the reify binary path is UTF-8")
+}
+
+/// The running checkout's repo root, canonicalized.
 fn repo_root() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
+    reify_test_support::workspace_root::workspace_root()
         .canonicalize()
         .expect("repo root should canonicalize")
 }
@@ -186,7 +192,7 @@ fn repo_root() -> std::path::PathBuf {
 /// `lib/libtbb.so.12` -> `lib/libtbb.so.12.18`).
 #[test]
 fn reify_binary_ldd_resolves_libtbb_to_deps_lib() {
-    let exe = env!("CARGO_BIN_EXE_reify");
+    let exe = &reify_exe();
     if !tbb_pin_present() {
         eprintln!("{TBB_PIN_DIR}/libtbb.so.12 absent on this host; skipping");
         return;
@@ -226,7 +232,7 @@ fn reify_binary_ldd_resolves_libtbb_to_deps_lib() {
 /// this test.
 #[test]
 fn reify_binary_bare_launch_does_not_crash_on_occt_example() {
-    let exe = env!("CARGO_BIN_EXE_reify");
+    let exe = &reify_exe();
     if !tbb_pin_present() {
         eprintln!("{TBB_PIN_DIR}/libtbb.so.12 absent on this host; skipping bare-launch smoke");
         return;
@@ -274,7 +280,7 @@ fn reify_binary_bare_launch_does_not_crash_on_occt_example() {
 /// future NEEDED-graph changes.
 #[test]
 fn reify_binary_bare_launch_collateral_libs_do_not_shift_to_tbb_pin() {
-    let exe = env!("CARGO_BIN_EXE_reify");
+    let exe = &reify_exe();
     if !tbb_pin_present() {
         eprintln!("{TBB_PIN_DIR}/libtbb.so.12 absent on this host; skipping collateral guard");
         return;
@@ -316,7 +322,7 @@ fn reify_binary_bare_launch_collateral_libs_do_not_shift_to_tbb_pin() {
 /// `/opt/reify-deps/tbb-pin` must be the FIRST entry in its RUNPATH.
 #[test]
 fn reify_binary_has_direct_needed_libtbb_and_pin_first_in_runpath() {
-    let exe = env!("CARGO_BIN_EXE_reify");
+    let exe = &reify_exe();
     if !tbb_pin_present() {
         eprintln!("{TBB_PIN_DIR}/libtbb.so.12 absent on this host; skipping");
         return;
@@ -356,13 +362,19 @@ fn reify_binary_has_direct_needed_libtbb_and_pin_first_in_runpath() {
 /// libtbb.so.12 before `main` runs.
 #[test]
 fn reify_binary_binds_every_symbol_eagerly_against_pinned_tbb() {
-    let exe = env!("CARGO_BIN_EXE_reify");
+    let exe = &reify_exe();
     if !tbb_pin_present() {
         eprintln!("{TBB_PIN_DIR}/libtbb.so.12 absent on this host; skipping eager-binding guard");
         return;
     }
     let output = match Command::new("env")
-        .args(["-u", "LD_LIBRARY_PATH", "LD_BIND_NOW=1", exe, "--version"])
+        .args([
+            "-u",
+            "LD_LIBRARY_PATH",
+            "LD_BIND_NOW=1",
+            exe.as_str(),
+            "--version",
+        ])
         .output()
     {
         Ok(o) => o,
@@ -394,7 +406,7 @@ fn reify_binary_binds_every_symbol_eagerly_against_pinned_tbb() {
 /// preceding the deps prefix in RUNPATH.
 #[test]
 fn reify_binary_binds_the_cxx_runtime_outside_the_deps_prefix() {
-    let exe = env!("CARGO_BIN_EXE_reify");
+    let exe = &reify_exe();
     let Some(readelf) = readelf_d(exe) else {
         return;
     };
