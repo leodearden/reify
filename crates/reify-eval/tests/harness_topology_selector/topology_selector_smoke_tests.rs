@@ -216,7 +216,7 @@ fn fillet_top_edges_compiles_with_stdlib_no_errors() {
 /// kernel can produce a filleted solid.
 ///
 /// Expected dataflow:
-/// 1. `top = single(faces_by_normal(b, vec3(0,0,1), 1deg))` — extract the single
+/// 1. `top = single(faces_by_normal(b, dir(0, 0, 1), 1deg))` — extract the single
 ///    upward-facing face handle of the box via `faces_by_normal` + `single`.
 /// 2. `top_edges = flat_map(adjacent_faces(b, top), |f| shared_edges(top, f))` —
 ///    walk topology: for each face adjacent to `top`, collect the edges shared

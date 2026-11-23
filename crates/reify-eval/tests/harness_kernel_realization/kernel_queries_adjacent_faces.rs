@@ -7,8 +7,8 @@
 //! ```ri
 //! structure def AdjacentFaces {
 //!     let b         = box(10mm, 20mm, 30mm)
-//!     let zdir      = vec3(0.0, 0.0, 1.0)
-//!     let xdir      = vec3(1.0, 0.0, 0.0)
+//!     let zdir      = dir(0, 0, 1)
+//!     let xdir      = dir(1, 0, 0)
 //!     let tol       = 1deg
 //!     let top       = single(faces_by_normal(b, zdir, tol))
 //!     let side      = single(faces_by_normal(b, xdir, tol))

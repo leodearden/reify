@@ -72,11 +72,12 @@ number yields a warning and `undef`).
 > gets you a type error at best and `undef` at worst.
 
 **Analysis.** `distance(a, b) -> Scalar<Length>` (true minimum surface gap — the `geometry`
-chunk's interference/clearance section owns it), `normal(surface, at) -> Vector3<Dimensionless>`,
+chunk's interference/clearance section owns it), `normal(surface, at) -> Direction`,
 `curvature(curve, at) -> Scalar<Curvature>` (the surface overload is
 `curvature(surface, at) -> Matrix<2, 2, Curvature>`), `angle(a, b) -> Angle` — note `angle` takes two
-dimensionless **vectors**, not two surfaces; the surface form is `angle_between_surfaces` in the
-topology-selector family. `max_deviation(actual, nominal) -> Scalar<Length>` compares a realized
+**Directions** (`dir(x, y, z)` or a datum's `.dir` / `.normal`), not two surfaces, and a `vec3`
+operand is a check error; the surface form is `angle_between_surfaces` in the topology-selector
+family. `max_deviation(actual, nominal) -> Scalar<Length>` compares a realized
 geometry against a nominal one.
 
 **Provenance.** `feature(geometry) -> Feature` is the explicit projection from a realized handle to

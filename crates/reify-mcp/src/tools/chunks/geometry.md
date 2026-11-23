@@ -257,6 +257,9 @@ gate runs in one direction only: a bare number in a length slot is rejected, but
 dimensionless slot generally is not. Measured 2026-08-30: `scale(g, 2mm)` is accepted, as is a
 dimensioned axis direction in `mirror` or `linear_pattern`. Write those bare because it is what you
 mean — nothing will tell you otherwise.
+A `Direction`-typed argument is the exception: the four directional selectors, `angle`'s operands
+and `offset_curve`'s direction take a typed operand, so a `vec3(…)` there, dimensioned or not, is
+rejected (at check for the selectors and `angle`, at eval for `offset_curve`); write `dir(x, y, z)`.
 
 The rejected forms and their migrations are tabulated once, in the `units` chunk under "What it
 looks like when you get it wrong" — one row per form, each row executed by

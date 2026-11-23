@@ -126,7 +126,7 @@ structure def BottomDeck : Rigid {
     // boolean-compose lowering leaves seam edges in the rim-height faces and
     // every later `edges_at_height` fillet then fails in OCCT (round-3 finding,
     // 2026-09-03 — see dogfood-findings.md).
-    let up = vec3(0.0, 0.0, 1.0)
+    let up = dir(0, 0, 1)
     aux let outer_blank  = translate(box(outer_length, outer_width, wall_height), 0mm, 0mm, wall_height / 2)
     aux let outer        = fillet(outer_blank, edges_parallel_to(outer_blank, up, 1deg), corner_radius)
     aux let recess_blank = translate(box(recess_length, recess_width, recess_h), 0mm, 0mm, ledge_z + recess_h / 2)

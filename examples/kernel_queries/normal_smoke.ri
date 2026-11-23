@@ -1,5 +1,5 @@
-// Smoke fixture for normal(Surface, Point3<Length>) -> Vector3<Dimensionless>
-// (task 3615, KGQ-ζ)
+// Smoke fixture for normal(Surface, Point3<Length>) -> Direction
+// (task 3615, KGQ-ζ; a Direction since direction-typing θ-b, task 9645)
 // PRD: docs/prds/v0_3/kernel-geometry-queries.md §9
 //
 // User-observable signal:
@@ -14,7 +14,7 @@
 // Value::Undef typechecks against any cell type.
 //
 // The compile-time cell type IS pinned: `geometry_query_result_type("normal")`
-// returns `Type::vec3(Type::Real)` (units.rs KGQ-ζ registration), so the
+// returns `Type::Direction` (units.rs KGQ-ζ registration), so the
 // compiler assigns that type to the `n` cell regardless of arg runtime values.
 //
 // Arg-shape contract:
@@ -28,7 +28,7 @@
 //
 // Pinning tests:
 //   crates/reify-eval/tests/kernel_queries_normal_smoke.rs::
-//     normal_smoke_compiles_as_vec3_real_and_face_normal_at_ffis
+//     normal_smoke_compiles_as_direction_and_face_normal_at_ffis
 //     (compile-type assertion + OCCT FaceNormalAt FFI reachability)
 //   crates/reify-kernel-occt/tests/face_differential_integration.rs::
 //     geometry_query_face_normal_at_on_top_face_of_box_encodes_z_normal
@@ -42,7 +42,7 @@ structure def NormalSmoke {
     let pt    = point3(0mm, 0mm, 5mm)
 
     // Outward unit normal at `pt` on the nearest face of `solid`.
-    // Compile-type: Type::vec3(Type::Real) (dimensionless Vector3).
+    // Compile-type: Type::Direction (a unit direction).
     // Runtime: Value::Undef pre-Phase-3 (solid arg is TopAbs_SOLID; C++ FFI
     // rejects non-FACE; see notes above).
     let n     = normal(solid, pt)

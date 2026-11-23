@@ -54,7 +54,7 @@ use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
 /// - `pt`        — `point3(...)` → Point<Length>
 const CONSUMER_SRC: &str = r#"structure def ConsumerTest {
     let b        = box(10mm, 20mm, 30mm)
-    let zdir     = vec3(0.0, 0.0, 1.0)
+    let zdir     = dir(0, 0, 1)
     let tol      = 1deg
     let top_face = single(faces_by_normal(b, zdir, tol))
     let neighbors = adjacent_faces(b, top_face)
@@ -222,7 +222,7 @@ fn eval_cached_emits_eval_unresolved_parity_with_eval() {
 /// verifies the allow-list does not accidentally fire on construction sites.
 const CONSTRUCTION_ONLY_SRC: &str = r#"structure def ConstructionOnly {
     let b      = box(10mm, 20mm, 30mm)
-    let zdir   = vec3(0.0, 0.0, 1.0)
+    let zdir   = dir(0, 0, 1)
     let tol    = 1deg
     let top_face = single(faces_by_normal(b, zdir, tol))
     let all_f  = faces(b)

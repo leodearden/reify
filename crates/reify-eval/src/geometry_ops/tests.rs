@@ -1776,192 +1776,6 @@
         );
     }
 
-    /// Task ε (evaluate-then-accept): `resolve_vec3_arg` now EVALUATES the arg
-    /// expr (gaining a `diagnostics` sink + builtin/arg labels). An inline
-    /// `Literal(Value::Vector)` AND an inline `vec3(..)` FunctionCall both
-    /// resolve to `Some([..])` with 0 diagnostics; a defined-but-wrong value
-    /// (non-Vector, wrong length, or a dimensioned-Scalar component) is Rejected
-    /// with exactly one `Severity::Warning` naming the builtin, the arg, and the
-    /// expected `Vec3` type (byte-uniform wording with the density path).
-    ///
-    ///   (a) inline `Literal(Vector([Real,Real,Real]))` → `Some([..])`, 0 diags.
-    ///   (b) inline `vec3(0,0,1)` FunctionCall → `Some([0,0,1])`, 0 diags
-    ///       [RED before ε: the FunctionCall hit `resolve_vec3_arg`'s `_ => None`
-    ///       arm → silent fall-through].
-    ///   (c) inline `Literal(Real)` (non-Vector) → `None` + 1 Warning.
-    ///   (d) inline `Literal(Vector)` of length 2 (wrong length) → `None` + 1 Warning.
-    ///   (e) inline `Literal(Vector)` with a dimensioned-Scalar component → `None`
-    ///       + 1 Warning.
-    ///
-    /// Compile-RED until step-6 adds the `(builtin, arg, &mut diags)` signature.
-    #[test]
-    fn resolve_vec3_arg_eval_and_diagnostics() {
-        // (a) inline Literal(Vector([Real,Real,Real])) → Some([..]), 0 diags.
-        {
-            let expr = reify_ir::CompiledExpr::literal(
-                vec3_value(0.0, 0.0, 1.0),
-                reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
-            );
-            let values = reify_ir::ValueMap::new();
-            let mut diags: Vec<Diagnostic> = Vec::new();
-            let result =
-                super::resolve_vec3_arg(&expr, &values, "faces_by_normal", "dir", &mut diags);
-            assert_eq!(
-                result,
-                Some([0.0, 0.0, 1.0]),
-                "(a) inline vector literal must be Accepted"
-            );
-            assert!(
-                diags.is_empty(),
-                "(a) vector literal must produce no diags, got: {diags:?}"
-            );
-        }
-
-        // (b) inline vec3(0,0,1) FunctionCall → Some([0,0,1]), 0 diags.
-        {
-            let arg_x = literal_f64(0.0);
-            let arg_y = literal_f64(0.0);
-            let arg_z = literal_f64(1.0);
-            let mut ch = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
-                .combine(reify_core::ContentHash::of_str("vec3"));
-            ch = ch
-                .combine(arg_x.content_hash)
-                .combine(arg_y.content_hash)
-                .combine(arg_z.content_hash);
-            let expr = reify_ir::CompiledExpr {
-                kind: reify_ir::CompiledExprKind::FunctionCall {
-                    function: reify_ir::ResolvedFunction {
-                        name: "vec3".to_string(),
-                        qualified_name: "vec3".to_string(),
-                    },
-                    args: vec![arg_x, arg_y, arg_z],
-                },
-                result_type: reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
-                content_hash: ch,
-            };
-            let values = reify_ir::ValueMap::new();
-            let mut diags: Vec<Diagnostic> = Vec::new();
-            let result =
-                super::resolve_vec3_arg(&expr, &values, "faces_by_normal", "dir", &mut diags);
-            assert_eq!(
-                result,
-                Some([0.0, 0.0, 1.0]),
-                "(b) inline vec3(0,0,1) FunctionCall must evaluate + be Accepted"
-            );
-            assert!(
-                diags.is_empty(),
-                "(b) inline vec3 call must produce no diags, got: {diags:?}"
-            );
-        }
-
-        // (c) non-Vector (Value::Real) → None + 1 Warning naming builtin/arg/Vec3.
-        {
-            let expr = literal_f64(1.0);
-            let values = reify_ir::ValueMap::new();
-            let mut diags: Vec<Diagnostic> = Vec::new();
-            let result =
-                super::resolve_vec3_arg(&expr, &values, "faces_by_normal", "dir", &mut diags);
-            assert_eq!(result, None, "(c) non-Vector must return None");
-            assert_eq!(
-                diags.len(),
-                1,
-                "(c) non-Vector must push exactly 1 Warning, got: {diags:?}"
-            );
-            assert_eq!(diags[0].severity, reify_core::Severity::Warning);
-            let msg = diags[0].message.to_lowercase();
-            assert!(
-                msg.contains("faces_by_normal"),
-                "(c) names builtin, got: {:?}",
-                diags[0].message
-            );
-            assert!(
-                msg.contains("dir"),
-                "(c) names arg, got: {:?}",
-                diags[0].message
-            );
-            assert!(
-                msg.contains("vec3"),
-                "(c) names expected Vec3, got: {:?}",
-                diags[0].message
-            );
-            assert!(
-                msg.contains("got"),
-                "(c) names what it got, got: {:?}",
-                diags[0].message
-            );
-        }
-
-        // (d) wrong length (Vector of 2) → None + 1 Warning.
-        {
-            let expr = reify_ir::CompiledExpr::literal(
-                reify_ir::Value::Vector(vec![
-                    reify_ir::Value::Real(0.0),
-                    reify_ir::Value::Real(1.0),
-                ]),
-                reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
-            );
-            let values = reify_ir::ValueMap::new();
-            let mut diags: Vec<Diagnostic> = Vec::new();
-            let result =
-                super::resolve_vec3_arg(&expr, &values, "edges_parallel_to", "axis", &mut diags);
-            assert_eq!(result, None, "(d) wrong-length Vector must return None");
-            assert_eq!(
-                diags.len(),
-                1,
-                "(d) wrong-length Vector must push exactly 1 Warning, got: {diags:?}"
-            );
-            assert_eq!(diags[0].severity, reify_core::Severity::Warning);
-            let msg = diags[0].message.to_lowercase();
-            assert!(
-                msg.contains("edges_parallel_to"),
-                "(d) names builtin, got: {:?}",
-                diags[0].message
-            );
-            assert!(
-                msg.contains("axis"),
-                "(d) names arg, got: {:?}",
-                diags[0].message
-            );
-            assert!(
-                msg.contains("vec3"),
-                "(d) names expected Vec3, got: {:?}",
-                diags[0].message
-            );
-        }
-
-        // (e) dimensioned-Scalar component → None + 1 Warning.
-        {
-            let expr = reify_ir::CompiledExpr::literal(
-                reify_ir::Value::Vector(vec![
-                    reify_ir::Value::Scalar {
-                        si_value: 1.0,
-                        dimension: reify_core::DimensionVector::LENGTH,
-                    },
-                    reify_ir::Value::Real(0.0),
-                    reify_ir::Value::Real(0.0),
-                ]),
-                reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
-            );
-            let values = reify_ir::ValueMap::new();
-            let mut diags: Vec<Diagnostic> = Vec::new();
-            let result =
-                super::resolve_vec3_arg(&expr, &values, "faces_by_normal", "dir", &mut diags);
-            assert_eq!(result, None, "(e) dimensioned component must return None");
-            assert_eq!(
-                diags.len(),
-                1,
-                "(e) dimensioned component must push exactly 1 Warning, got: {diags:?}"
-            );
-            assert_eq!(diags[0].severity, reify_core::Severity::Warning);
-            let msg = diags[0].message.to_lowercase();
-            assert!(
-                msg.contains("vec3"),
-                "(e) names expected Vec3, got: {:?}",
-                diags[0].message
-            );
-        }
-    }
-
     /// Helper: build an inline `CompiledExpr` literal carrying a `Value::Range`
     /// with the given optional `(lower, upper)` SI bounds, each a
     /// `Value::Scalar` of `dim`. `None` bounds model a half-open range. The
@@ -7910,28 +7724,17 @@
         }
     }
 
-    /// Compile `offset_curve(curve, 2mm, vec3(x, y, z))` with a literal bare
-    /// direction, returning the eval-boundary result and its diagnostics.
-    ///
-    /// A Literal 3rd arg is not a ValueRef, so `resolve_parent_geometry_handle_arg`
-    /// returns None and the dispatch takes the direction-decode path.
-    fn compile_offset_curve_with_direction(
-        x: f64,
-        y: f64,
-        z: f64,
+    /// Compile `offset_curve(curve, 2mm, <third>)` over the curve at step 0,
+    /// returning the eval-boundary result and its diagnostics.
+    fn compile_offset_curve_with_third(
+        third: reify_ir::CompiledExpr,
     ) -> (Result<reify_ir::GeometryOp, String>, Vec<Diagnostic>) {
         let op = CompiledGeometryOp::Modify {
             kind: reify_compiler::ModifyKind::OffsetCurve,
             target: reify_compiler::GeomRef::Step(0),
             args: vec![
                 ("distance".into(), literal_length(0.002)),
-                (
-                    "third".into(),
-                    reify_ir::CompiledExpr::literal(
-                        bare_real_vector3(x, y, z),
-                        reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
-                    ),
-                ),
+                ("third".into(), third),
             ],
         };
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
@@ -7947,28 +7750,103 @@
         (result, diagnostics)
     }
 
-    /// (b) 3-arg `offset_curve(curve, distance, vec3(0,0,1))` — the 3rd arg is a
-    /// `Value::Vector` → `direction: Some([0,0,1])`, `reference: None` (overload 3).
-    ///
-    /// RED until step-14: the step-12 stub ignores the 3rd arg and always yields
-    /// `direction: None`.
+    /// `offset_curve(curve, 2mm, dir(x, y, z))` with a literal Direction 3rd
+    /// arg. A Literal 3rd arg is not a ValueRef, so
+    /// `resolve_parent_geometry_handle_arg` returns None and the dispatch takes
+    /// the direction-decode path.
+    fn compile_offset_curve_with_direction(
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> (Result<reify_ir::GeometryOp, String>, Vec<Diagnostic>) {
+        compile_offset_curve_with_third(reify_ir::CompiledExpr::literal(
+            unit_dir(x, y, z),
+            reify_core::Type::Direction,
+        ))
+    }
+
+    /// `offset_curve(curve, 2mm, vec3(x, y, z))` with a literal bare Vector 3rd
+    /// arg, which is not a Direction.
+    fn compile_offset_curve_with_vector(
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> (Result<reify_ir::GeometryOp, String>, Vec<Diagnostic>) {
+        compile_offset_curve_with_third(reify_ir::CompiledExpr::literal(
+            bare_real_vector3(x, y, z),
+            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+        ))
+    }
+
+    /// Assert `result` is an `Err` naming `offset_curve` and ending with the
+    /// Direction fix hint (hard-coded: this is the drift pin).
+    fn assert_offset_curve_rejects_with_dir_hint(
+        result: Result<reify_ir::GeometryOp, String>,
+        case: &str,
+    ) {
+        match result {
+            Err(msg) => {
+                assert!(msg.contains("offset_curve"), "{case}: must name offset_curve: {msg}");
+                assert!(
+                    msg.ends_with("write dir(x, y, z)"),
+                    "{case}: must end with the dir(...) fix hint: {msg}"
+                );
+            }
+            Ok(op) => panic!("{case}: expected Err, got Ok({op:?})"),
+        }
+    }
+
+    /// (b) 3-arg `offset_curve(curve, distance, dir(0,0,1))` — the 3rd arg is a
+    /// `Value::Direction` → `direction: Some([0,0,1])`, `reference: None`
+    /// (overload 3), with no diagnostic at all (direction-typing θ-b, C7).
     #[test]
-    fn compile_geometry_op_offset_curve_3arg_vector_is_direction() {
-        let (result, _) = compile_offset_curve_with_direction(0.0, 0.0, 1.0);
+    fn compile_geometry_op_offset_curve_3arg_direction_is_direction() {
+        let (result, diagnostics) = compile_offset_curve_with_direction(0.0, 0.0, 1.0);
         match result {
             Ok(reify_ir::GeometryOp::OffsetCurve {
                 reference,
                 direction,
                 ..
             }) => {
-                assert_eq!(reference, None, "a vec3 3rd arg is NOT a reference");
+                assert_eq!(reference, None, "a Direction 3rd arg is NOT a reference");
                 assert_eq!(
                     direction,
                     Some([0.0, 0.0, 1.0]),
-                    "a vec3 3rd arg becomes the direction"
+                    "a Direction 3rd arg becomes the direction"
                 );
             }
             other => panic!("expected Ok(OffsetCurve) with direction, got {:?}", other),
+        }
+        assert!(diagnostics.is_empty(), "got: {diagnostics:?}");
+    }
+
+    /// A bare `vec3(..)` 3rd arg is not a Direction: the build rejects it with
+    /// the `dir(...)` fix hint instead of reading it as one.
+    #[test]
+    fn compile_geometry_op_offset_curve_3arg_vector_is_rejected_with_the_dir_hint() {
+        let (result, _) = compile_offset_curve_with_vector(0.0, 0.0, 1.0);
+        assert_offset_curve_rejects_with_dir_hint(result, "vec3(0, 0, 1) third");
+    }
+
+    /// A Real 3rd arg is neither a reference Surface nor a Direction.
+    #[test]
+    fn compile_geometry_op_offset_curve_3arg_real_is_rejected_with_the_dir_hint() {
+        let (result, _) = compile_offset_curve_with_third(literal_f64(1.0));
+        assert_offset_curve_rejects_with_dir_hint(result, "Real third");
+    }
+
+    /// A 3rd arg that evaluates to Undef is an unresolved argument, never a
+    /// silent planar offset (direction-typing C3).
+    #[test]
+    fn compile_geometry_op_offset_curve_3arg_undef_is_unresolved_not_planar() {
+        let absent = reify_ir::CompiledExpr::value_ref(
+            reify_core::ValueCellId::new("E", "missing"),
+            reify_core::Type::Direction,
+        );
+        let (result, _) = compile_offset_curve_with_third(absent);
+        match result {
+            Err(msg) => assert!(msg.contains("unresolved"), "got: {msg}"),
+            Ok(op) => panic!("an Undef third must be Err, got Ok({op:?})"),
         }
     }
 
@@ -8037,66 +7915,56 @@
         }
     }
 
-    /// A zero-magnitude offset_curve direction is rejected at the eval boundary
-    /// with an error naming the builtin, rather than reaching the kernel.
+    /// A 3rd arg bound to an UNREALIZED `Value::GeometryHandle`
+    /// (`kernel_handle: None`) is a reference Surface the kernel never built,
+    /// not a malformed Direction: the error names the unrealized reference and
+    /// carries no `dir(...)` hint.
     #[test]
-    fn compile_geometry_op_offset_curve_zero_direction_is_rejected() {
-        let (result, _) = compile_offset_curve_with_direction(0.0, 0.0, 0.0);
+    fn compile_geometry_op_offset_curve_3arg_unrealized_handle_is_an_unrealized_reference() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+
+        let ref_cell = ValueCellId::new("E", "surf");
+        let mut values = ValueMap::new();
+        values.insert(
+            ref_cell.clone(),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new("E", 0),
+                upstream_values_hash: [0x11; 32],
+                kernel_handle: None,
+            },
+        );
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::OffsetCurve,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("distance".into(), literal_length(0.002)),
+                (
+                    "third".into(),
+                    reify_ir::CompiledExpr::value_ref(ref_cell, Type::Geometry),
+                ),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &[GeometryHandleId(10)],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
         match result {
             Err(msg) => {
-                assert!(
-                    msg.contains("offset_curve"),
-                    "error must name offset_curve: {msg}"
-                );
-                assert!(
-                    msg.contains("zero-magnitude"),
-                    "error must attribute the failure to the direction: {msg}"
+                assert_eq!(
+                    msg, "offset_curve: reference Surface (3rd argument) is not realized",
+                    "an unrealized reference must not be reported as a bad Direction"
                 );
             }
-            Ok(op) => panic!("expected Err for a zero direction, got Ok({op:?})"),
+            Ok(op) => panic!("an unrealized reference must be Err, got Ok({op:?})"),
         }
-    }
-
-    /// Assert `result` lowered to an `OffsetCurve` with no reference and a
-    /// direction within 1e-12 of `expected` in every component.
-    fn assert_offset_curve_direction(
-        result: Result<reify_ir::GeometryOp, String>,
-        expected: [f64; 3],
-    ) {
-        match result {
-            Ok(reify_ir::GeometryOp::OffsetCurve {
-                reference,
-                direction: Some(d),
-                ..
-            }) => {
-                assert_eq!(reference, None, "a vec3 3rd arg is NOT a reference");
-                for (axis, (got, want)) in d.iter().zip(expected).enumerate() {
-                    assert!(
-                        (got - want).abs() < 1e-12,
-                        "direction component {axis}: got {got}, want {want} (full {d:?})"
-                    );
-                }
-            }
-            other => panic!("expected Ok(OffsetCurve) with a direction, got {other:?}"),
-        }
-    }
-
-    /// A non-unit offset_curve direction is lowered as its unit vector, so the
-    /// IR is canonical for every magnitude of the same direction.
-    #[test]
-    fn compile_geometry_op_offset_curve_non_unit_direction_is_normalised() {
-        let (result, _) = compile_offset_curve_with_direction(3.0, 0.0, 4.0);
-        assert_offset_curve_direction(result, [0.6, 0.0, 0.8]);
-    }
-
-    /// A tiny but non-zero direction is a direction, not a degenerate one: it is
-    /// normalised, like an axis or plane direction. Its magnitude (1e-9) sits
-    /// above `GEOMETRY_EPSILON` but below the kernel's 1e-7 length tolerance,
-    /// which is the wrong kind of bound for a dimensionless vector.
-    #[test]
-    fn compile_geometry_op_offset_curve_tiny_direction_is_normalised_not_rejected() {
-        let (result, _) = compile_offset_curve_with_direction(1e-9, 0.0, 0.0);
-        assert_offset_curve_direction(result, [1.0, 0.0, 0.0]);
     }
 
     // ── Fillet eval-arm: anti-zero-edges + 2-arg back-compat (task 3205 step-9/10) ──
@@ -15990,172 +15858,135 @@
 
     // ── try_eval_topology_selector: angle dispatch (task 3614, KGQ-ε) ────────
     //
-    // These tests pin the pure-math `angle(Vec3, Vec3) -> Angle` dispatch arm.
-    // No kernel calls — acos(clamp(dot/(|a||b|), -1, 1)).  Modelled on the
-    // `try_eval_topology_selector_angle_between_surfaces_*` tests above.
+    // These tests pin the pure-math `angle(Direction, Direction) -> Angle`
+    // dispatch arm (direction-typing θ-b). No kernel calls: both operands are
+    // unit by construction, so the result is acos(clamp(dot(a, b), -1, 1)).
 
-    #[test]
-    fn try_eval_topology_selector_angle_two_vec3_value_refs_returns_angle_scalar() {
+    /// Evaluate `angle(T.a, T.b)` through the build-path seam with `a` / `b` in
+    /// the `values` map (`None` leaves the cell absent, so the arg evaluates to
+    /// `Undef`).
+    fn angle_of_value_refs(
+        a: Option<reify_ir::Value>,
+        b: Option<reify_ir::Value>,
+    ) -> (Option<reify_ir::Value>, Vec<Diagnostic>) {
         use reify_test_support::mocks::MockGeometryKernel;
         let mut kernel = MockGeometryKernel::new();
-
         let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
         let mut values = reify_ir::ValueMap::new();
-        values.insert(
-            reify_core::ValueCellId::new("AngleSmoke", "a"),
-            vec3_value(1.0, 0.0, 0.0),
-        );
-        values.insert(
-            reify_core::ValueCellId::new("AngleSmoke", "b"),
-            vec3_value(0.0, 1.0, 0.0),
-        );
-
+        for (member, value) in [("a", a), ("b", b)] {
+            if let Some(value) = value {
+                values.insert(reify_core::ValueCellId::new("T", member), value);
+            }
+        }
         let expr = topology_selector_call_two_value_refs(
             "angle",
-            "AngleSmoke",
+            "T",
             "a",
-            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+            reify_core::Type::Direction,
             "b",
-            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+            reify_core::Type::Direction,
             reify_core::Type::angle(),
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
-
         let result = super::try_eval_topology_selector(
             &expr,
             &named_steps,
             &values,
             &mut kernel,
             &mut diagnostics,
+        );
+        (result, diagnostics)
+    }
+
+    /// dir(1,0,0) · dir(0,1,0) is exactly 0.0, and acos(0.0) is the correctly
+    /// rounded π/2, so the comparison is exact.
+    #[test]
+    fn try_eval_topology_selector_angle_two_direction_value_refs_returns_exact_right_angle() {
+        let (result, diagnostics) = angle_of_value_refs(
+            Some(unit_dir(1.0, 0.0, 0.0)),
+            Some(unit_dir(0.0, 1.0, 0.0)),
         );
 
         assert_eq!(
             result,
             Some(reify_ir::Value::angle(std::f64::consts::FRAC_PI_2)),
-            "angle(vec3(1,0,0), vec3(0,1,0)) must return Some(Value::angle(PI/2)); got {:?}",
-            result
+            "angle(dir(1,0,0), dir(0,1,0)) must be exactly π/2"
         );
         assert!(
             diagnostics.is_empty(),
-            "perpendicular vectors must NOT emit diagnostics, got: {:?}",
-            diagnostics
+            "perpendicular directions must NOT emit diagnostics, got: {diagnostics:?}"
         );
     }
 
     #[test]
-    fn try_eval_topology_selector_angle_parallel_vectors_returns_zero_angle() {
-        // vec3(1,0,0) · vec3(2,0,0): cos=1.0 → clamp → acos(1.0) = 0.0.
-        // Proves the acos-domain upper-bound clamp for parallel vectors.
-        use reify_test_support::mocks::MockGeometryKernel;
-        let mut kernel = MockGeometryKernel::new();
+    fn try_eval_topology_selector_angle_parallel_and_antiparallel_directions() {
+        for (b, expected) in [
+            (unit_dir(1.0, 0.0, 0.0), 0.0),
+            (unit_dir(-1.0, 0.0, 0.0), std::f64::consts::PI),
+        ] {
+            let (result, diagnostics) =
+                angle_of_value_refs(Some(unit_dir(1.0, 0.0, 0.0)), Some(b.clone()));
 
-        let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
-        let mut values = reify_ir::ValueMap::new();
-        values.insert(
-            reify_core::ValueCellId::new("AngleSmoke", "a"),
-            vec3_value(1.0, 0.0, 0.0),
-        );
-        values.insert(
-            reify_core::ValueCellId::new("AngleSmoke", "b"),
-            vec3_value(2.0, 0.0, 0.0),
-        );
+            assert_eq!(
+                result,
+                Some(reify_ir::Value::angle(expected)),
+                "angle(dir(1,0,0), {b:?}) must be {expected} rad"
+            );
+            assert!(
+                diagnostics.is_empty(),
+                "(anti)parallel directions must NOT emit diagnostics, got: {diagnostics:?}"
+            );
+        }
+    }
 
-        let expr = topology_selector_call_two_value_refs(
-            "angle",
-            "AngleSmoke",
-            "a",
-            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
-            "b",
-            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
-            reify_core::Type::angle(),
-        );
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-
-        let result = super::try_eval_topology_selector(
-            &expr,
-            &named_steps,
-            &values,
-            &mut kernel,
-            &mut diagnostics,
+    /// A raw `Value::Vector` operand is not a direction: no angle, and exactly
+    /// one Warning ending with the migration hint.
+    #[test]
+    fn try_eval_topology_selector_angle_vector_operand_returns_none_with_one_direction_warning() {
+        let (result, diagnostics) = angle_of_value_refs(
+            Some(vec3_value(1.0, 0.0, 0.0)),
+            Some(unit_dir(0.0, 1.0, 0.0)),
         );
 
+        assert!(result.is_none(), "a Vector operand must not yield an angle; got {result:?}");
         assert_eq!(
-            result,
-            Some(reify_ir::Value::angle(0.0)),
-            "angle(vec3(1,0,0), vec3(2,0,0)) (parallel) must return Some(Value::angle(0.0)); \
-             got {:?}",
-            result
+            diagnostics.len(),
+            1,
+            "a Vector operand must emit exactly one diagnostic; got: {diagnostics:?}"
+        );
+        let diag = &diagnostics[0];
+        assert_eq!(diag.severity, reify_core::Severity::Warning);
+        assert!(
+            diag.message.contains("angle"),
+            "warning must name `angle`; got: {:?}",
+            diag.message
         );
         assert!(
-            diagnostics.is_empty(),
-            "parallel vectors must NOT emit diagnostics, got: {:?}",
-            diagnostics
+            diag.message.ends_with("write dir(x, y, z)"),
+            "warning must end with the migration hint; got: {:?}",
+            diag.message
         );
     }
 
+    /// An `Undef` operand (what `dir(0, 0, 0)` evaluates to, its degenerate
+    /// diagnostic already reported upstream) yields no angle and no diagnostic.
     #[test]
-    fn try_eval_topology_selector_angle_antiparallel_vectors_returns_pi() {
-        // vec3(1,0,0) · vec3(-1,0,0): cos=-1.0 → clamp → acos(-1.0) = π.
-        // Proves the acos-domain lower-bound clamp for antiparallel vectors.
-        use reify_test_support::mocks::MockGeometryKernel;
-        let mut kernel = MockGeometryKernel::new();
+    fn try_eval_topology_selector_angle_undef_operand_returns_none_quietly() {
+        let (result, diagnostics) = angle_of_value_refs(None, Some(unit_dir(0.0, 1.0, 0.0)));
 
-        let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
-        let mut values = reify_ir::ValueMap::new();
-        values.insert(
-            reify_core::ValueCellId::new("AngleSmoke", "a"),
-            vec3_value(1.0, 0.0, 0.0),
-        );
-        values.insert(
-            reify_core::ValueCellId::new("AngleSmoke", "b"),
-            vec3_value(-1.0, 0.0, 0.0),
-        );
-
-        let expr = topology_selector_call_two_value_refs(
-            "angle",
-            "AngleSmoke",
-            "a",
-            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
-            "b",
-            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
-            reify_core::Type::angle(),
-        );
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-
-        let result = super::try_eval_topology_selector(
-            &expr,
-            &named_steps,
-            &values,
-            &mut kernel,
-            &mut diagnostics,
-        );
-
-        assert_eq!(
-            result,
-            Some(reify_ir::Value::angle(std::f64::consts::PI)),
-            "angle(vec3(1,0,0), vec3(-1,0,0)) (antiparallel) must return \
-             Some(Value::angle(PI)); got {:?}",
-            result
-        );
+        assert!(result.is_none(), "an Undef operand must not yield an angle; got {result:?}");
         assert!(
             diagnostics.is_empty(),
-            "antiparallel vectors must NOT emit diagnostics, got: {:?}",
-            diagnostics
+            "an Undef operand must emit no diagnostics; got: {diagnostics:?}"
         );
     }
 
     #[test]
     fn try_eval_topology_selector_angle_nonvec3_scalar_literal_args_falls_through_to_none() {
         // angle(<literal_real>, <literal_real>) — scalar Real literals evaluate
-        // (task ε) to Value::Real, which resolve_vec3_arg rejects as
-        // defined-but-wrong: it pushes a Warning and returns None for args[0],
-        // so the `?` short-circuits and the dispatcher returns None WITHOUT
-        // consulting the kernel.  Note: an inline expr that EVALUATES to a
-        // Value::Vector (e.g. a vec3(...) constructor or a Value::Vector literal)
-        // DOES resolve and compute an angle — see
-        // `try_eval_topology_selector_angle_literal_vec3_args_resolves_and_returns_angle`.
-        // This test pins the non-Vec3 scalar literal case (result None; kernel
-        // untouched).
+        // (task ε) to Value::Real, which is not a Direction: the reader pushes a
+        // Warning and returns None for args[0], so the `?` short-circuits and
+        // the dispatcher returns None WITHOUT consulting the kernel.
         use reify_test_support::mocks::CountingMockKernel;
         let inner = reify_test_support::mocks::MockGeometryKernel::new();
         let mut kernel = CountingMockKernel::new(inner);
@@ -16187,27 +16018,21 @@
     }
 
     #[test]
-    fn try_eval_topology_selector_angle_literal_vec3_args_resolves_and_returns_angle() {
-        // angle(Literal(vec3(1,0,0)), Literal(vec3(0,1,0))) — resolve_vec3_arg
-        // EVALUATES the arg (task ε); a Literal(Value::Vector) evaluates to that
-        // Value::Vector and is accepted, so literal vec3 args DO resolve and
-        // produce an angle, unlike the scalar-literal case above.  Pins the
-        // actually-distinct contract for literal-typed Vec3 args.
+    fn try_eval_topology_selector_angle_literal_direction_args_resolves_and_returns_angle() {
+        // angle(Literal(dir(1,0,0)), Literal(dir(0,1,0))) — the reader
+        // EVALUATES the arg (task ε); a Literal(Value::Direction) evaluates to
+        // that Direction and is accepted, so literal Direction args resolve
+        // and produce an angle, unlike the scalar-literal case above.
         use reify_test_support::mocks::MockGeometryKernel;
         let mut kernel = MockGeometryKernel::new();
 
         let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
         let values = reify_ir::ValueMap::new(); // empty — args come from literals
 
-        // Build angle(Literal(vec3(1,0,0)), Literal(vec3(0,1,0))).
-        let arg_a = reify_ir::CompiledExpr::literal(
-            vec3_value(1.0, 0.0, 0.0),
-            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
-        );
-        let arg_b = reify_ir::CompiledExpr::literal(
-            vec3_value(0.0, 1.0, 0.0),
-            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
-        );
+        let arg_a =
+            reify_ir::CompiledExpr::literal(unit_dir(1.0, 0.0, 0.0), reify_core::Type::Direction);
+        let arg_b =
+            reify_ir::CompiledExpr::literal(unit_dir(0.0, 1.0, 0.0), reify_core::Type::Direction);
         let mut ch = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
             .combine(reify_core::ContentHash::of_str("angle"));
         ch = ch.combine(arg_a.content_hash).combine(arg_b.content_hash);
@@ -16235,143 +16060,15 @@
         assert_eq!(
             result,
             Some(reify_ir::Value::angle(std::f64::consts::FRAC_PI_2)),
-            "angle(literal vec3(1,0,0), literal vec3(0,1,0)) must resolve to \
+            "angle(literal dir(1,0,0), literal dir(0,1,0)) must resolve to \
              Some(Value::angle(π/2)); got {:?}",
             result
         );
         assert!(
             diagnostics.is_empty(),
-            "orthogonal literal vec3 args must NOT emit diagnostics, got: {:?}",
+            "orthogonal literal Direction args must NOT emit diagnostics, got: {:?}",
             diagnostics
         );
-    }
-
-    #[test]
-    fn try_eval_topology_selector_angle_zero_length_vector_returns_undef() {
-        // Degenerate input: zero-length vec3(0,0,0) causes |a|=0, division by
-        // zero → the dispatcher must emit exactly one Warning and return
-        // Some(Value::Undef) rather than propagating NaN.
-        use reify_test_support::mocks::MockGeometryKernel;
-        let mut kernel = MockGeometryKernel::new();
-
-        let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
-        let mut values = reify_ir::ValueMap::new();
-        values.insert(
-            reify_core::ValueCellId::new("AngleSmoke", "a"),
-            vec3_value(0.0, 0.0, 0.0),
-        );
-        values.insert(
-            reify_core::ValueCellId::new("AngleSmoke", "b"),
-            vec3_value(0.0, 1.0, 0.0),
-        );
-
-        let expr = topology_selector_call_two_value_refs(
-            "angle",
-            "AngleSmoke",
-            "a",
-            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
-            "b",
-            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
-            reify_core::Type::angle(),
-        );
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-
-        let result = super::try_eval_topology_selector(
-            &expr,
-            &named_steps,
-            &values,
-            &mut kernel,
-            &mut diagnostics,
-        );
-
-        assert_eq!(
-            result,
-            Some(reify_ir::Value::Undef),
-            "angle(vec3(0,0,0), ...) with zero-length input must return \
-             Some(Value::Undef); got {:?}",
-            result
-        );
-        assert_eq!(
-            diagnostics.len(),
-            1,
-            "zero-length vector must emit exactly one Warning, got {} diagnostics: {:?}",
-            diagnostics.len(),
-            diagnostics
-        );
-        let diag = &diagnostics[0];
-        assert_eq!(
-            diag.severity,
-            reify_core::Severity::Warning,
-            "diagnostic severity must be Warning, got {:?}",
-            diag.severity
-        );
-        assert!(
-            diag.message.contains("angle"),
-            "diagnostic must mention the helper name 'angle', got: {}",
-            diag.message
-        );
-    }
-
-    #[test]
-    fn try_eval_topology_selector_angle_nonfinite_vector_component_returns_undef() {
-        // Degenerate input: a vector with a NaN component causes na = NaN
-        // (NaN*NaN + 0 + 0 = NaN, sqrt(NaN) = NaN).  The primary guard
-        // `!na.is_finite()` at the dispatch arm must catch this and return
-        // Some(Value::Undef) with exactly one Warning — no panic, no NaN-poison.
-        // Also tested: f64::INFINITY component → na = inf → same guard fires.
-        use reify_test_support::mocks::MockGeometryKernel;
-
-        for (label, ax, ay, az) in [
-            ("NaN", f64::NAN, 0.0_f64, 0.0_f64),
-            ("INFINITY", f64::INFINITY, 0.0, 0.0),
-        ] {
-            let mut kernel = MockGeometryKernel::new();
-            let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
-            let mut values = reify_ir::ValueMap::new();
-            values.insert(
-                reify_core::ValueCellId::new("T", "a"),
-                vec3_value(ax, ay, az),
-            );
-            values.insert(
-                reify_core::ValueCellId::new("T", "b"),
-                vec3_value(0.0, 1.0, 0.0),
-            );
-            let expr = topology_selector_call_two_value_refs(
-                "angle",
-                "T",
-                "a",
-                reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
-                "b",
-                reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
-                reify_core::Type::angle(),
-            );
-            let mut diagnostics: Vec<Diagnostic> = Vec::new();
-            let result = super::try_eval_topology_selector(
-                &expr,
-                &named_steps,
-                &values,
-                &mut kernel,
-                &mut diagnostics,
-            );
-            assert_eq!(
-                result,
-                Some(reify_ir::Value::Undef),
-                "angle(vec3({label},...), ...) must return Some(Value::Undef); got {result:?}"
-            );
-            assert_eq!(
-                diagnostics.len(),
-                1,
-                "non-finite component must emit exactly one Warning \
-                 (label={label}), got {} diagnostics: {diagnostics:?}",
-                diagnostics.len()
-            );
-            assert_eq!(
-                diagnostics[0].severity,
-                reify_core::Severity::Warning,
-                "diagnostic severity must be Warning (label={label}), got {:?}",
-                diagnostics[0].severity
-            );
-        }
     }
 
     // ── try_eval_topology_selector `contains` unit tests (task 3611, KGQ-β) ────
@@ -18195,7 +17892,7 @@
     // ── try_eval_topology_selector — `normal` dispatch unit tests (task 3615, KGQ-ζ) ─────────
     //
     // Four contracts (mirrors the four `try_eval_topology_selector_contains_*` tests):
-    //   (a) HAPPY        — kernel reply `Value::String("{\"x\":0,\"y\":0,\"z\":1}")` → `Some(Value::Vector([Real(0), Real(0), Real(1)]))`
+    //   (a) HAPPY        — kernel reply `Value::String("{\"x\":0,\"y\":0,\"z\":1}")` → `Some(Value::Direction(dir(0, 0, 1)))`
     //   (b) FALL-THROUGH — non-ValueRef literal args → `None` with zero kernel calls
     //   (c) ERROR        — kernel `Err` → `Some(Value::Undef)` + exactly one Warning mentioning "normal" + "kernel query failed"
     //   (d) MALFORMED    — non-`Value::String` kernel reply → `Some(Value::Undef)` + exactly one Warning
@@ -18206,31 +17903,25 @@
     //
     // Depends on `MockGeometryKernel::with_face_normal_at_result` (pre-1, task 3615).
 
-    #[test]
-    fn try_eval_topology_selector_normal_kernel_reply_returns_vec3_real() {
+    /// Evaluate `normal(NormalSmoke.surface, NormalSmoke.pt)` against a mock
+    /// whose FaceNormalAt reply is the JSON `reply`. The point is (0, 0, 5mm).
+    fn eval_normal_with_kernel_reply(
+        reply: &str,
+    ) -> (Option<reify_ir::Value>, Vec<Diagnostic>) {
         use reify_test_support::mocks::MockGeometryKernel;
         let face_handle = reify_ir::GeometryHandleId(55);
-        // Stage the mock: point (0m, 0m, 0.005m) ≈ (0, 0, 5mm) in SI.
-        // The kernel wire format for FaceNormalAt is the same JSON-Point3 encoding
-        // as FaceNormal / surface_normal_at: {"x":_,"y":_,"z":_}.
         let mut kernel = MockGeometryKernel::new().with_face_normal_at_result(
             face_handle,
             [0.0, 0.0, 0.005],
-            reify_ir::Value::String("{\"x\":0,\"y\":0,\"z\":1}".to_string()),
+            reify_ir::Value::String(reply.to_string()),
         );
-
         let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
-        // args[0] = surface → resolved via named_steps by member name "surface"
         named_steps.insert("surface".to_string(), kh(face_handle));
-
         let mut values = reify_ir::ValueMap::new();
-        // args[1] = point3 → resolved via values by ValueCellId
         values.insert(
             reify_core::ValueCellId::new("NormalSmoke", "pt"),
             point3_length_value(0.0, 0.0, 0.005),
         );
-
-        // normal(surface_ref, point3_ref) — Surface=args[0], Point3=args[1]
         let expr = topology_selector_call_two_value_refs(
             "normal",
             "NormalSmoke",
@@ -18238,10 +17929,9 @@
             reify_core::Type::Geometry,
             "pt",
             reify_core::Type::point3(reify_core::Type::length()),
-            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+            reify_core::Type::Direction,
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
-
         let result = super::try_eval_topology_selector(
             &expr,
             &named_steps,
@@ -18249,22 +17939,39 @@
             &mut kernel,
             &mut diagnostics,
         );
+        (result, diagnostics)
+    }
 
-        assert_eq!(
-            result,
-            Some(reify_ir::Value::Vector(vec![
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(1.0),
-            ])),
-            "normal(surface, point3) with kernel reply {{x:0,y:0,z:1}} must produce \
-             Some(Value::Vector([Real(0),Real(0),Real(1)])); got {:?}",
-            result
-        );
+    /// The kernel's normal reply is minted into a unit `Value::Direction`
+    /// (direction-typing θ-b, C4); a non-unit reply is normalised by the mint.
+    #[test]
+    fn try_eval_topology_selector_normal_kernel_reply_returns_direction() {
+        for reply in ["{\"x\":0,\"y\":0,\"z\":1}", "{\"x\":0,\"y\":0,\"z\":2}"] {
+            let (result, diagnostics) = eval_normal_with_kernel_reply(reply);
+            assert_eq!(
+                result,
+                Some(unit_dir(0.0, 0.0, 1.0)),
+                "normal with kernel reply {reply} must be dir(0, 0, 1)"
+            );
+            assert!(
+                diagnostics.is_empty(),
+                "reply {reply}: a normal that mints must emit no diagnostic, got {diagnostics:?}"
+            );
+        }
+    }
+
+    /// A zero kernel normal cannot mint a Direction: the defensive downgrade is
+    /// `Some(Value::Undef)` plus one Warning naming `normal`.
+    #[test]
+    fn try_eval_topology_selector_normal_zero_kernel_reply_is_undef_with_warning() {
+        let (result, diagnostics) = eval_normal_with_kernel_reply("{\"x\":0,\"y\":0,\"z\":0}");
+        assert_eq!(result, Some(reify_ir::Value::Undef));
+        assert_eq!(diagnostics.len(), 1, "expected one Warning, got {diagnostics:?}");
+        assert_eq!(diagnostics[0].severity, reify_core::Severity::Warning);
         assert!(
-            diagnostics.is_empty(),
-            "happy-path normal must emit zero diagnostics; got: {:?}",
-            diagnostics
+            diagnostics[0].message.contains("normal"),
+            "the Warning must name `normal`: {:?}",
+            diagnostics[0].message
         );
     }
 
@@ -18355,7 +18062,7 @@
             reify_core::Type::Geometry,
             "pt",
             reify_core::Type::point3(reify_core::Type::length()),
-            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+            reify_core::Type::Direction,
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
@@ -18411,7 +18118,7 @@
         // No `with_face_normal_at_result` staging — MockGeometryKernel.query() falls
         // through to the generic handle-only map which also has no entry for this
         // handle, so it returns `Err(QueryError::QueryFailed(...))`.
-        // `dispatch_normal_vector3` must downgrade this to `Some(Value::Undef)`
+        // `dispatch_normal_direction` must downgrade this to `Some(Value::Undef)`
         // and emit exactly one Warning diagnostic naming "normal" + "kernel query failed".
         let face_handle = reify_ir::GeometryHandleId(55);
         let mut kernel = MockGeometryKernel::new();
@@ -18432,7 +18139,7 @@
             reify_core::Type::Geometry,
             "pt",
             reify_core::Type::point3(reify_core::Type::length()),
-            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+            reify_core::Type::Direction,
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
@@ -18480,7 +18187,7 @@
     fn try_eval_topology_selector_normal_malformed_kernel_reply_emits_warning_and_returns_undef() {
         use reify_test_support::mocks::MockGeometryKernel;
         // Stage a non-`Value::String` reply (Value::Real) — parse_xyz_value rejects
-        // non-String replies, so dispatch_normal_vector3 must produce
+        // non-String replies, so dispatch_normal_direction must produce
         // `Some(Value::Undef)` with a Warning diagnostic naming "normal".
         let face_handle = reify_ir::GeometryHandleId(55);
         let mut kernel = MockGeometryKernel::new().with_face_normal_at_result(
@@ -18506,7 +18213,7 @@
             reify_core::Type::Geometry,
             "pt",
             reify_core::Type::point3(reify_core::Type::length()),
-            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+            reify_core::Type::Direction,
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
@@ -20944,11 +20651,7 @@
         );
         values.insert(
             ValueCellId::new("Directional", "dir"),
-            reify_ir::Value::Vector(vec![
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(1.0),
-            ]),
+            unit_dir(0.0, 0.0, 1.0),
         );
         let tol_rad = std::f64::consts::PI / 180.0; // 1°
         values.insert(
@@ -20965,7 +20668,7 @@
             "b",
             Type::Geometry,
             "dir",
-            Type::vec3(Type::dimensionless_scalar()),
+            Type::Direction,
             "tol",
             Type::angle(),
             Type::List(Box::new(Type::Geometry)),
@@ -21040,11 +20743,7 @@
         let mut values = reify_ir::ValueMap::new();
         values.insert(
             ValueCellId::new("Directional", "dir"),
-            reify_ir::Value::Vector(vec![
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(1.0),
-            ]),
+            unit_dir(0.0, 0.0, 1.0),
         );
         values.insert(
             ValueCellId::new("Directional", "tol"),
@@ -21060,7 +20759,7 @@
             "b",
             Type::Geometry,
             "dir",
-            Type::vec3(Type::dimensionless_scalar()),
+            Type::Direction,
             "tol",
             Type::angle(),
             Type::List(Box::new(Type::Geometry)),
@@ -21080,6 +20779,127 @@
             "must fall through to None when parent is not a hydrated Value::GeometryHandle; \
              got {:?}",
             result
+        );
+    }
+
+    /// Evaluate `faces_by_normal(b, dir, tol)` through the build-path seam with
+    /// a hydrated parent box, a 1° tolerance and `dir_value` in the `dir` cell
+    /// (`None` leaves the cell absent, so the arg evaluates to `Undef`).
+    fn faces_by_normal_with_dir_value(
+        dir_value: Option<reify_ir::Value>,
+    ) -> (Option<reify_ir::Value>, Vec<Diagnostic>) {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{DimensionVector, Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let mut kernel = MockGeometryKernel::new();
+        let named_steps = HashMap::new();
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("Directional", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new("Directional", 0),
+                upstream_values_hash: [0xAA; 32],
+                kernel_handle: Some(GeometryHandleId(1)),
+            },
+        );
+        if let Some(dir_value) = dir_value {
+            values.insert(ValueCellId::new("Directional", "dir"), dir_value);
+        }
+        values.insert(
+            ValueCellId::new("Directional", "tol"),
+            reify_ir::Value::Scalar {
+                si_value: std::f64::consts::PI / 180.0,
+                dimension: DimensionVector::ANGLE,
+            },
+        );
+        let expr = topology_selector_call_three_value_refs(
+            "faces_by_normal",
+            "Directional",
+            "b",
+            Type::Geometry,
+            "dir",
+            Type::Direction,
+            "tol",
+            Type::angle(),
+            Type::Geometry,
+        );
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+        (result, diagnostics)
+    }
+
+    /// direction-typing θ-b: `faces_by_normal`'s `dir` is read as a Direction.
+    /// A `Value::Direction` constructs the `ByNormal` leaf with no diagnostics.
+    #[test]
+    fn faces_by_normal_direction_dir_arg_constructs_by_normal_leaf() {
+        let (result, diagnostics) = faces_by_normal_with_dir_value(Some(unit_dir(0.0, 0.0, 1.0)));
+
+        let Some(reify_ir::Value::Selector(sv)) = result else {
+            panic!("Direction dir must construct a Selector; got {result:?}; diags: {diagnostics:?}");
+        };
+        assert_eq!(sv.kind, reify_core::ty::SelectorKind::Face);
+        match &sv.node {
+            reify_ir::value::SelectorNode::Leaf { query, .. } => assert_eq!(
+                *query,
+                reify_ir::value::LeafQuery::ByNormal {
+                    dir: [0.0, 0.0, 1.0],
+                    tol_rad: std::f64::consts::PI / 180.0,
+                }
+            ),
+            other => panic!("faces_by_normal must be a Leaf selector node, got {other:?}"),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "a Direction dir must emit no diagnostics; got: {diagnostics:?}"
+        );
+    }
+
+    /// direction-typing θ-b: a raw `Value::Vector` is not a direction. The
+    /// selector is not built and exactly one Warning names the builtin, the arg
+    /// and `Direction`, ending with the migration hint.
+    #[test]
+    fn faces_by_normal_vector_dir_arg_returns_none_with_one_direction_warning() {
+        let (result, diagnostics) = faces_by_normal_with_dir_value(Some(vec3_value(0.0, 0.0, 1.0)));
+
+        assert!(result.is_none(), "a Vector dir must not build a selector; got {result:?}");
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "a Vector dir must emit exactly one diagnostic; got: {diagnostics:?}"
+        );
+        let diag = &diagnostics[0];
+        assert_eq!(diag.severity, reify_core::Severity::Warning);
+        for needle in ["faces_by_normal", "dir", "Direction"] {
+            assert!(
+                diag.message.contains(needle),
+                "warning must name `{needle}`; got: {:?}",
+                diag.message
+            );
+        }
+        assert!(
+            diag.message.ends_with("write dir(x, y, z)"),
+            "warning must end with the migration hint; got: {:?}",
+            diag.message
+        );
+    }
+
+    /// direction-typing θ-b: an `Undef` dir (here an absent cell) degrades
+    /// quietly; whoever produced the `Undef` already reported it.
+    #[test]
+    fn faces_by_normal_undef_dir_arg_returns_none_quietly() {
+        let (result, diagnostics) = faces_by_normal_with_dir_value(None);
+
+        assert!(result.is_none(), "an Undef dir must not build a selector; got {result:?}");
+        assert!(
+            diagnostics.is_empty(),
+            "an Undef dir must emit no diagnostics; got: {diagnostics:?}"
         );
     }
 
@@ -21137,11 +20957,7 @@
         );
         values.insert(
             ValueCellId::new("Directional", "axis"),
-            reify_ir::Value::Vector(vec![
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(1.0),
-            ]),
+            unit_dir(0.0, 0.0, 1.0),
         );
         let tol_rad = std::f64::consts::PI / 180.0; // 1°
         values.insert(
@@ -21158,7 +20974,7 @@
             "b",
             Type::Geometry,
             "axis",
-            Type::vec3(Type::dimensionless_scalar()),
+            Type::Direction,
             "tol",
             Type::angle(),
             Type::List(Box::new(Type::Geometry)),
@@ -26592,18 +26408,14 @@
     // |-----------------------|-----------------------|--------------------------------------------|
     // | `decode_plane`        | plane NORMAL          | a `Value::Direction`, read by `decode_direction` (ε, task 9638) |
     // | `decode_axis`         | axis DIRECTION        | a `Value::Direction`, read by `decode_direction` (ε, task 9638) |
-    // | `modify_offset_curve` | `third` → `direction` | its own production diagnostic already calls it "a direction vec3" |
+    // | `modify_offset_curve` | `third` → `direction` | a `Value::Direction`, read by `decode_direction` (θ-b, task 9645) |
 
-    /// SCOPE LOCK (a) — `offset_curve`'s 3rd argument. GREEN by construction.
+    /// SCOPE LOCK (a) — `offset_curve`'s 3rd argument.
     ///
-    /// A bare dimensionless `vec3(0, 0, 1)` in the `third` position must still
-    /// reach `GeometryOp::OffsetCurve { direction: Some([0,0,1]) }` with no units
-    /// complaint. The surrounding production diagnostic already calls this
-    /// argument "a direction vec3"; gating it would reject correct `.ri` code.
-    ///
-    /// This is the one `point3_components` caller that is neither a plane nor an
-    /// axis, so it is the one most likely to be swept up by a future edit that
-    /// reasons "this helper is the un-gated one, gate it everywhere".
+    /// A `dir(0, 0, 1)` in the `third` position must reach
+    /// `GeometryOp::OffsetCurve { direction: Some([0,0,1]) }` with no units
+    /// complaint: a Direction is dimensionless by construction, so gating it as
+    /// a Length would reject correct `.ri` code.
     #[test]
     fn delta_scope_lock_offset_curve_direction_stays_dimensionless() {
         let (result, diagnostics) = compile_offset_curve_with_direction(0.0, 0.0, 1.0);
@@ -26612,7 +26424,7 @@
                 assert_eq!(
                     direction,
                     Some([0.0, 0.0, 1.0]),
-                    "a bare vec3 direction must still be accepted verbatim"
+                    "a Direction must be accepted verbatim"
                 );
             }
             other => panic!("expected Ok(OffsetCurve), got {:?}", other),
@@ -26662,33 +26474,6 @@
             "neither decoder may say anything about a dimensionless Direction; \
              got: {:?}",
             diagnostics
-        );
-    }
-
-    /// SCOPE LOCK (c) — `point3_components` SURVIVES δ, and still accepts a bare
-    /// `Real` triple. GREEN by construction.
-    ///
-    /// δ's capability manifest carries `delivered_check: expect: present` for
-    /// `fn point3_components` precisely because the obvious misreading of this
-    /// task is "the gate replaces the bare decoder, so delete it". It does not:
-    /// the helper remains the CORRECT decoder for `offset_curve`'s direction, its
-    /// one dimensionless caller now that plane normals and axis directions read
-    /// through `decode_direction` (ε, task 9638), and `accept_length_point3`
-    /// mirrors its shape check rather than subsuming it.
-    #[test]
-    fn delta_scope_lock_point3_components_survives_and_accepts_bare_reals() {
-        assert_eq!(
-            point3_components(&bare_real_vector3(0.0, 0.0, 1.0)),
-            Some([0.0, 0.0, 1.0]),
-            "the bare decoder is not dead code — it is what reads \
-             `offset_curve`'s un-gated direction"
-        );
-        // And it still reads a dimensioned Point identically, which is why the
-        // gated positions could migrate without any numeric change: both helpers
-        // surface the same `si_value`.
-        assert_eq!(
-            point3_components(&length_point3(0.01, 0.02, 0.03)),
-            Some([0.01, 0.02, 0.03])
         );
     }
 
@@ -29188,14 +28973,10 @@
                 kernel_handle: None,
             },
         );
-        // Let-bound dir = vec3(0,0,1).
+        // Let-bound dir = dir(0,0,1).
         values.insert(
             ValueCellId::new("Widget", "dir"),
-            reify_ir::Value::Vector(vec![
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(1.0),
-            ]),
+            unit_dir(0.0, 0.0, 1.0),
         );
         // Let-bound tol = 1deg in radians.
         let tol_rad = std::f64::consts::PI / 180.0;
@@ -29213,7 +28994,7 @@
             "body",
             reify_core::Type::Geometry,
             "dir",
-            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+            reify_core::Type::Direction,
             "tol",
             reify_core::Type::angle(),
         );
@@ -29283,11 +29064,7 @@
         );
         values.insert(
             ValueCellId::new("Part", "axis"),
-            reify_ir::Value::Vector(vec![
-                reify_ir::Value::Real(1.0),
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(0.0),
-            ]),
+            unit_dir(1.0, 0.0, 0.0),
         );
         values.insert(
             ValueCellId::new("Part", "tol"),
@@ -29303,7 +29080,7 @@
             "body",
             reify_core::Type::Geometry,
             "axis",
-            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+            reify_core::Type::Direction,
             "tol",
             reify_core::Type::angle(),
         );
@@ -29393,7 +29170,7 @@
         // Directional arg dir = +Z, angular tol = 1°.
         values.insert(
             body("dir"),
-            Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]),
+            unit_dir(0.0, 0.0, 1.0),
         );
         values.insert(
             body("tol"),
@@ -29413,7 +29190,7 @@
         let dir = || {
             reify_ir::CompiledExpr::value_ref(
                 body("dir"),
-                reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+                reify_core::Type::Direction,
             )
         };
         let tol = || reify_ir::CompiledExpr::value_ref(body("tol"), reify_core::Type::angle());
@@ -29504,7 +29281,7 @@
         );
         let b = reify_ir::CompiledExpr::value_ref(
             ValueCellId::new("W", "dir"),
-            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+            reify_core::Type::Direction,
         );
         let expr = mk_symbolic_call_3523("faces_perpendicular_to", vec![a, b]);
         let values = reify_ir::ValueMap::new();
@@ -30135,7 +29912,7 @@
         let cell_top  = ValueCellId::new(entity, "top");
 
         let arg_body = reify_ir::CompiledExpr::value_ref(cell_body.clone(), reify_core::Type::Geometry);
-        let arg_dir  = reify_ir::CompiledExpr::value_ref(cell_dir.clone(), reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()));
+        let arg_dir  = reify_ir::CompiledExpr::value_ref(cell_dir.clone(), reify_core::Type::Direction);
         let arg_tol  = reify_ir::CompiledExpr::value_ref(
             cell_tol.clone(),
             reify_core::Type::Scalar { dimension: reify_core::DimensionVector::ANGLE },
@@ -30257,11 +30034,7 @@
             upstream_values_hash: uvh,
             kernel_handle: None,
         };
-        let dir_val = Value::Vector(vec![
-            Value::Real(0.0),
-            Value::Real(0.0),
-            Value::Real(1.0),
-        ]);
+        let dir_val = unit_dir(0.0, 0.0, 1.0);
         let tol_val = Value::Scalar {
             si_value: std::f64::consts::PI / 180.0, // 1 degree in radians
             dimension: DimensionVector::ANGLE,
@@ -30642,11 +30415,7 @@
         // Direction arg: +Z for faces_by_normal.
         values.insert(
             ValueCellId::new("GateBodyNormal", "dir"),
-            reify_ir::Value::Vector(vec![
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(1.0),
-            ]),
+            unit_dir(0.0, 0.0, 1.0),
         );
         // Angle-tolerance arg (1°): faces_by_normal is arity-3 (body, dir, tol).
         // The gate fires BEFORE the kernel call, so any valid tolerance works.
@@ -30666,7 +30435,7 @@
         );
         let arg_dir = reify_ir::CompiledExpr::value_ref(
             ValueCellId::new("GateBodyNormal", "dir"),
-            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+            reify_core::Type::Direction,
         );
         let arg_tol = reify_ir::CompiledExpr::value_ref(
             ValueCellId::new("GateBodyNormal", "tol"),
@@ -31098,19 +30867,11 @@
         let rr = insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0x5Cu8; 32]);
         values.insert(
             ValueCellId::new(entity, "up"),
-            reify_ir::Value::Vector(vec![
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(1.0),
-            ]),
+            unit_dir(0.0, 0.0, 1.0),
         );
         values.insert(
             ValueCellId::new(entity, "down"),
-            reify_ir::Value::Vector(vec![
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(-1.0),
-            ]),
+            unit_dir(0.0, 0.0, -1.0),
         );
         values.insert(
             ValueCellId::new(entity, "tol"),
@@ -31120,7 +30881,7 @@
             },
         );
 
-        let vec3_ty = reify_core::Type::vec3(reify_core::Type::dimensionless_scalar());
+        let direction_ty = reify_core::Type::Direction;
         let angle_ty = reify_core::Type::angle();
 
         let up_leaf = symbolic_selector_call_three_value_refs(
@@ -31129,7 +30890,7 @@
             "body",
             reify_core::Type::Geometry,
             "up",
-            vec3_ty.clone(),
+            direction_ty.clone(),
             "tol",
             angle_ty.clone(),
         );
@@ -31139,7 +30900,7 @@
             "body",
             reify_core::Type::Geometry,
             "down",
-            vec3_ty,
+            direction_ty,
             "tol",
             angle_ty,
         );
@@ -31212,19 +30973,11 @@
         insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0x5Du8; 32]);
         values.insert(
             ValueCellId::new(entity, "up"),
-            reify_ir::Value::Vector(vec![
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(1.0),
-            ]),
+            unit_dir(0.0, 0.0, 1.0),
         );
         values.insert(
             ValueCellId::new(entity, "down"),
-            reify_ir::Value::Vector(vec![
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(-1.0),
-            ]),
+            unit_dir(0.0, 0.0, -1.0),
         );
         values.insert(
             ValueCellId::new(entity, "tol"),
@@ -31234,7 +30987,7 @@
             },
         );
 
-        let vec3_ty = reify_core::Type::vec3(reify_core::Type::dimensionless_scalar());
+        let direction_ty = reify_core::Type::Direction;
         let angle_ty = reify_core::Type::angle();
 
         let up_leaf = symbolic_selector_call_three_value_refs(
@@ -31243,7 +30996,7 @@
             "body",
             reify_core::Type::Geometry,
             "up",
-            vec3_ty.clone(),
+            direction_ty.clone(),
             "tol",
             angle_ty.clone(),
         );
@@ -31253,7 +31006,7 @@
             "body",
             reify_core::Type::Geometry,
             "down",
-            vec3_ty,
+            direction_ty,
             "tol",
             angle_ty,
         );
@@ -31321,11 +31074,7 @@
         insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0x5Eu8; 32]);
         values.insert(
             ValueCellId::new(entity, "up"),
-            reify_ir::Value::Vector(vec![
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(1.0),
-            ]),
+            unit_dir(0.0, 0.0, 1.0),
         );
         values.insert(
             ValueCellId::new(entity, "tol"),
@@ -31348,7 +31097,7 @@
             "body",
             reify_core::Type::Geometry,
             "up",
-            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+            reify_core::Type::Direction,
             "tol",
             reify_core::Type::angle(),
         );

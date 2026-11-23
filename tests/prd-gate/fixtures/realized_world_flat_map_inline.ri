@@ -4,6 +4,6 @@ module realized_world_flat_map_inline
 
 structure P {
     let b = box(50mm, 30mm, 10mm)
-    let top = single(faces_by_normal(b, vec3(0.0, 0.0, 1.0), 1deg))
+    let top = single(faces_by_normal(b, dir(0, 0, 1), 1deg))
     let r = fillet(b, flat_map(adjacent_faces(b, top), |f| shared_edges(top, f)), 1mm)
 }

@@ -65,11 +65,11 @@ that argument.
 | `solid_body` | `solid_body(geometry, name)` | `Selector(Body)` | kernel-free mint (named leaf; `body` is the RBD mechanism ctor, not this) |
 | `faces_by_area` | `faces_by_area(solid, range)` | `Selector(Face)` | kernel-free mint |
 | `edges_by_length` | `edges_by_length(solid, range)` | `Selector(Edge)` | kernel-free mint |
-| `faces_by_normal` | `faces_by_normal(solid, direction, tol)` | `Selector(Face)` | kernel-free mint; `tol` is an **Angle** |
-| `edges_parallel_to` | `edges_parallel_to(solid, direction, tol)` | `Selector(Edge)` | kernel-free mint; `tol` is an **Angle** |
+| `faces_by_normal` | `faces_by_normal(solid, direction, tol)` | `Selector(Face)` | kernel-free mint; `direction` is a **Direction** (`dir(x, y, z)`, or a datum's `.dir` / `.normal`; a `vec3` there is a check error); `tol` is an **Angle** |
+| `edges_parallel_to` | `edges_parallel_to(solid, direction, tol)` | `Selector(Edge)` | kernel-free mint; `direction` is a **Direction** (`dir(x, y, z)`, or a datum's `.dir` / `.normal`; a `vec3` there is a check error); `tol` is an **Angle** |
 | `edges_at_height` | `edges_at_height(solid, height, tol)` | `Selector(Edge)` | kernel-free mint; both are **Length** |
-| `faces_perpendicular_to` | `faces_perpendicular_to(solid, direction, tol)` | `Selector(Face)` | kernel-free mint |
-| `edges_perpendicular_to` | `edges_perpendicular_to(solid, direction, tol)` | `Selector(Edge)` | kernel-free mint |
+| `faces_perpendicular_to` | `faces_perpendicular_to(solid, direction, tol)` | `Selector(Face)` | kernel-free mint; `direction` is a **Direction** (`dir(x, y, z)`, or a datum's `.dir` / `.normal`; a `vec3` there is a check error); `tol` is an **Angle** |
+| `edges_perpendicular_to` | `edges_perpendicular_to(solid, direction, tol)` | `Selector(Edge)` | kernel-free mint; `direction` is a **Direction** (`dir(x, y, z)`, or a datum's `.dir` / `.normal`; a `vec3` there is a check error); `tol` is an **Angle** |
 | `faces_by_surface_kind` | `faces_by_surface_kind(solid, kind)` | `Selector(Face)` | kernel-free mint |
 | `edges_by_curve_kind` | `edges_by_curve_kind(solid, kind)` | `Selector(Edge)` | kernel-free mint |
 | `extremal_by_bbox` | `extremal_by_bbox(solid, axis, sense, tol)` | `Selector(Face)` | kernel-free mint |

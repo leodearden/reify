@@ -46,7 +46,7 @@ structure def BottomDeckSelectors : Physical {
     let recess_length = outer_length - 2 * upper_wall
     let recess_width  = outer_width  - 2 * upper_wall
 
-    let up       = vec3(0.0, 0.0, 1.0)
+    let up       = dir(0, 0, 1)
     let recess_h = recess_depth + 20mm
 
     // (1) blank-box lets, corners filleted via edges_parallel_to on the same let.

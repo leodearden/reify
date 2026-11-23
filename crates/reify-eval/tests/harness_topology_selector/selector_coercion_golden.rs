@@ -6,10 +6,10 @@
 //! ```ri
 //! structure def SingleFaceByNormal {
 //!     let b   = box(10mm, 10mm, 10mm)
-//!     let dir = vec3(0.0, 0.0, 1.0)
+//!     let up = dir(0, 0, 1)
 //!     let tol = 1deg
-//!     let sel = faces_by_normal(b, dir, tol)
-//!     let top = single(faces_by_normal(b, dir, tol))
+//!     let sel = faces_by_normal(b, up, tol)
+//!     let top = single(faces_by_normal(b, up, tol))
 //! }
 //! ```
 //!

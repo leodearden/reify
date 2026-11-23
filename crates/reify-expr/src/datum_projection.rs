@@ -6,8 +6,7 @@ use reify_ir::{UnitVec3, Value, decode_direction, frame_basis};
 
 /// Extract three finite numeric components from a 3-component `Point` or
 /// `Vector` value. Returns `None` for any other shape or a non-finite
-/// component. Mirrors `reify_eval::geometry_ops::point3_components` (which is
-/// `pub(crate)` to reify-eval and so unreachable across the crate boundary).
+/// component.
 pub(crate) fn datum_vec3(v: &Value) -> Option<[f64; 3]> {
     let comps = match v {
         Value::Point(c) | Value::Vector(c) if c.len() == 3 => c,

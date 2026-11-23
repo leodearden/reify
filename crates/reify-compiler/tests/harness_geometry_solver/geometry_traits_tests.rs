@@ -330,12 +330,12 @@ fn task_2699_topology_selector_cells_typed_per_registry() {
         ),
         (
             "top_faces",
-            "faces_by_normal(body, vec3(0.0, 0.0, 1.0), 1deg)",
+            "faces_by_normal(body, dir(0, 0, 1), 1deg)",
             Type::Selector(SelectorKind::Face),
         ),
         (
             "vert_edges",
-            "edges_parallel_to(body, vec3(1.0, 0.0, 0.0), 1deg)",
+            "edges_parallel_to(body, dir(1, 0, 0), 1deg)",
             Type::Selector(SelectorKind::Edge),
         ),
         (

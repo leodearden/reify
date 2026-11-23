@@ -181,8 +181,8 @@ pub(crate) fn kinematic_query_result_type(name: &str) -> Option<reify_core::Type
 /// fn faces(solid: Solid) -> List<Geometry>
 /// fn edges_by_length(solid: Solid, range: Range<Length>) -> List<Geometry>
 /// fn faces_by_area(solid: Solid, range: Range<Area>) -> List<Geometry>
-/// fn faces_by_normal(solid: Solid, dir: Vec3, tol: Angle) -> List<Geometry>
-/// fn edges_parallel_to(solid: Solid, dir: Vec3, tol: Angle) -> List<Geometry>
+/// fn faces_by_normal(solid: Solid, dir: Direction, tol: Angle) -> List<Geometry>
+/// fn edges_parallel_to(solid: Solid, axis: Direction, tol: Angle) -> List<Geometry>
 /// fn edges_at_height(solid: Solid, h: Length, tol: Length) -> List<Geometry>
 /// fn adjacent_faces(solid: Solid, face: Geometry) -> List<Geometry>
 /// fn shared_edges(face1: Geometry, face2: Geometry) -> List<Geometry>
@@ -996,7 +996,7 @@ pub(crate) fn affine_map_algebra_result_type(
 /// fn contains(a: Geometry, b: Geometry) -> Bool
 /// fn intersects(a: Geometry, b: Geometry) -> Bool
 /// fn geo_equiv(a: Geometry, b: Geometry) -> Bool
-/// fn angle(a: Vec3, b: Vec3)            -> Scalar<Angle>
+/// fn angle(a: Direction, b: Direction)  -> Scalar<Angle>
 /// fn curvature(c: Curve, t: Real)       -> Scalar<Curvature>
 /// ```
 ///
@@ -1055,7 +1055,7 @@ pub const GEOMETRY_QUERY_NAMES: &[&str] = &[
     "angle",
     "curvature",
     // KGQ-ζ (task 3615, Phase 6): at-point surface normal.
-    // normal(surface: Surface, point: Point3<Length>) -> Vector3<Dimensionless>
+    // normal(surface: Surface, point: Point3<Length>) -> Direction
     // GHR-α (task 3603) registered the original 12 Phase-1 names above and
     // omitted `normal` (it fell through the gap between the two PRDs). KGQ-ζ
     // absorbs the registration since 3603 is already done.
@@ -1530,11 +1530,7 @@ pub(crate) fn field_op_result_type(
 ///   [`geometry_query_arg_aware_result_type`] — task 4315)
 ///
 /// KGQ-ζ Phase 6 addition (task 3615):
-/// - `normal(surface, point)` → `Vector3<Dimensionless>` (`Type::vec3(Type::dimensionless_scalar())`)
-///   The quantity is `Type::dimensionless_scalar()` (dimensionless), NOT a `Scalar` dimension,
-///   matching the `Value::Vector(vec![Value::Real(_); 3])` shape that
-///   `dispatch_normal_vector3` constructs and that `Value.infer_type()` maps
-///   back to `Type::Vector { n: 3, quantity: Box::new(Type::dimensionless_scalar()) }`.
+/// - `normal(surface, point)` → `Direction`, a unit direction (direction-typing C4).
 ///
 /// Returns `None` for any other name (caller falls through to its default
 /// type-inference path). Mirrors the contract of the sibling
@@ -1566,11 +1562,8 @@ pub fn geometry_query_result_type(name: &str) -> Option<reify_core::Type> {
         "curvature" => Type::Scalar {
             dimension: DimensionVector::CURVATURE,
         },
-        // KGQ-ζ (task 3615, Phase 6): at-point surface normal.
-        // Returns a dimensionless unit vector — Value::Vector([Real,Real,Real]).
-        // Type::dimensionless_scalar() (not a Scalar dimension) is the quantity so that the
-        // dispatched Value::Vector(vec![Value::Real(_);3]).infer_type() == this.
-        "normal" => Type::vec3(Type::dimensionless_scalar()),
+        // KGQ-ζ (task 3615, Phase 6): at-point surface normal, a unit Direction.
+        "normal" => Type::Direction,
         // ζ / C4 (task 4479): max deviation between actual and nominal.
         // max_deviation(actual: Geometry, nominal: Geometry) -> Scalar<Length>
         // Mirrors the `distance` arm: 2-arg geometry query, Length result.
@@ -2609,21 +2602,14 @@ mod tests {
         );
     }
 
-    /// `geometry_query_result_type("normal")` must return
-    /// `Some(Type::vec3(Type::dimensionless_scalar()))` — a dimensionless 3D vector, i.e.
-    /// `Type::Vector { n: 3, quantity: Box::new(Type::dimensionless_scalar()) }`.
-    ///
-    /// This is the exact type that `Value::Vector(vec![Value::Real(_); 3]).infer_type()`
-    /// produces (verified: value.rs `try_infer_type` for Vector sets quantity =
-    /// first component's `try_infer_type()`, and `Value::Real → Type::dimensionless_scalar()`).
+    /// `geometry_query_result_type("normal")` is `Some(Type::Direction)`: the
+    /// at-point surface normal is a unit Direction (direction-typing θ-b, C4).
     #[test]
-    fn geometry_query_result_type_for_normal_is_vec3_real() {
+    fn geometry_query_result_type_for_normal_is_direction() {
         use reify_core::Type;
         assert_eq!(
             geometry_query_result_type("normal"),
-            Some(Type::vec3(Type::dimensionless_scalar())),
-            "geometry_query_result_type(\"normal\") must be Some(Type::vec3(Type::dimensionless_scalar())) \
-             after KGQ-ζ step-4 registration"
+            Some(Type::Direction)
         );
     }
 

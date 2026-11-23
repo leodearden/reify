@@ -1141,14 +1141,6 @@ const ALLOWLIST: &[(&str, usize, std::ops::Range<usize>, Justification, &str)] =
         "nx/ny/nz — the plane normal, beside the gated ox/oy/oz origin",
     ),
     (
-        "offset_curve",
-        2,
-        1..2,
-        Justification::UnitVectorComponent,
-        "the third argument when it is not a reference Surface — its own \
-         production diagnostic calls it \"a direction vec3\"",
-    ),
-    (
         "revolve",
         7,
         3..6,
@@ -1290,6 +1282,15 @@ const ALLOWLIST: &[(&str, usize, std::ops::Range<usize>, Justification, &str)] =
         0..1,
         Justification::Index,
         "plane — a Plane datum, the short form of the six-argument call",
+    ),
+    (
+        "offset_curve",
+        2,
+        1..2,
+        Justification::Index,
+        "the third argument — a reference Surface handle or a Direction \
+         (dir(x, y, z)), never a bare number; decode_direction rejects a \
+         scalar filler",
     ),
     (
         "rotate",

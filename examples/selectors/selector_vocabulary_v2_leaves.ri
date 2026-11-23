@@ -10,9 +10,9 @@
 //
 // Analytic expectations over a 10mm box (pinned by the OCCT-gated count
 // assertions in selector_vocabulary_v2_leaf_wiring_e2e.rs):
-//   faces_perp = faces_perpendicular_to(b, dir, tol) → Selector(Face), ByPerpendicular{+Z,1deg}
+//   faces_perp = faces_perpendicular_to(b, up, tol) → Selector(Face), ByPerpendicular{+Z,1deg}
 //                                                       (4 faces ⊥ to +Z)
-//   edges_perp = edges_perpendicular_to(b, dir, tol) → Selector(Edge), ByPerpendicular{+Z,1deg}
+//   edges_perp = edges_perpendicular_to(b, up, tol) → Selector(Edge), ByPerpendicular{+Z,1deg}
 //                                                       (8 horizontal-ring edges ⊥ to +Z)
 //   faces_planar = faces_by_surface_kind(b, plane)   → Selector(Face), BySurfaceKind(Plane)
 //                                                       (6 planar faces)
@@ -28,18 +28,17 @@
 //                                                        centroid reaches max +Z;
 //                                                        sides sit at mid-height)
 //
-// Let-bound intermediates (dir, tol, plane, line, ax, sense, etol) are required
-// because the dispatcher resolves selector args via values.get(cell_id); inline
-// vec3()/deg/string literals compile as FunctionCall/Literal args which fall
-// through to None in the dispatcher (same arg-shape contract as
-// examples/selectors/single_face_by_normal.ri).
+// Let-bound intermediates (up, tol, plane, line, ax, sense, etol) keep the
+// selector args as named cells (same arg shape as
+// examples/selectors/single_face_by_normal.ri); `up` is a Direction,
+// `dir(0, 0, 1)`.
 //
 // Pinning test:
 //   crates/reify-eval/tests/selector_vocabulary_v2_leaf_wiring_e2e.rs
 
 structure def SelectorVocabularyV2Leaves {
     let b     = box(10mm, 10mm, 10mm)
-    let dir   = vec3(0.0, 0.0, 1.0)
+    let up    = dir(0, 0, 1)
     let tol   = 1deg
     let plane = "Plane"
     let line  = "Line"
@@ -48,8 +47,8 @@ structure def SelectorVocabularyV2Leaves {
     let etol  = 0.001mm
 
     // Perpendicular leaf ctors (kind-agnostic ByPerpendicular, resolved per kind).
-    let faces_perp = faces_perpendicular_to(b, dir, tol)
-    let edges_perp = edges_perpendicular_to(b, dir, tol)
+    let faces_perp = faces_perpendicular_to(b, up, tol)
+    let edges_perp = edges_perpendicular_to(b, up, tol)
 
     // Surface/curve-kind leaf ctors (string-literal kind arg).
     let faces_planar = faces_by_surface_kind(b, plane)

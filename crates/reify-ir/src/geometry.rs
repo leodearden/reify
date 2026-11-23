@@ -1009,9 +1009,8 @@ pub enum GeometryOp {
     /// - `reference: Some(face)` → offset on a reference Surface (a `faces()`
     ///   sub-handle, resolved to an OCCT face via `get_shape` at execute time);
     /// - `direction: Some([dx,dy,dz])` → planar offset, then displaced by
-    ///   `distance` along this dimensionless UNIT vector. Its magnitude never
-    ///   scales the displacement, and a zero-magnitude vector is rejected, so
-    ///   `vec3(0,0,2)` and `vec3(0,0,1)` lower to identical IR.
+    ///   `distance` along this UNIT vector: the components of the `Direction`
+    ///   (`dir(x, y, z)`) the author passed, unit by construction.
     ///
     /// A positive `distance` grows the curve outward (e.g. radius 10mm → 12mm).
     /// Produces fresh `BRepKind::Wire` geometry via the normal single-output
@@ -2063,11 +2062,10 @@ pub enum GeometryQuery {
     ///
     /// Returns `Value::String` with JSON encoding `{"x":_,"y":_,"z":_}` of
     /// the outward unit normal, identical to the `FaceNormal` wire format.
-    /// The eval-side dispatcher decodes this into
-    /// `Value::Vector(vec![Value::Real(x), Value::Real(y), Value::Real(z)])`.
+    /// The eval-side dispatcher mints this into a unit `Value::Direction`.
     ///
     /// Powers the v0.3 stdlib helper
-    /// `normal(surface: Surface, point: Point3<Length>) -> Vector3<Dimensionless>`
+    /// `normal(surface: Surface, point: Point3<Length>) -> Direction`
     /// (PRD `docs/prds/v0_3/kernel-geometry-queries.md` §9 KGQ-ζ).
     FaceNormalAt {
         handle: GeometryHandleId,

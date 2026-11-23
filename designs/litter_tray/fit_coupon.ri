@@ -67,7 +67,7 @@ structure def BottomCorner : Rigid {
     // rounded_box is a non-unified fuse whose coplanar seam edges break any
     // later edges_at_height fillet (lead's finding F-D). Same solid (volumes
     // agree to 1e-16), fillets cleanly.
-    let up = vec3(0.0, 0.0, 1.0)
+    let up = dir(0, 0, 1)
     aux let outer_blank  = translate(box(outer_length, outer_width, wall_height), 0mm, 0mm, wall_height / 2)
     aux let outer        = fillet(outer_blank, edges_parallel_to(outer_blank, up, 1deg), corner_radius)
     aux let recess_blank = translate(box(recess_length, recess_width, recess_h), 0mm, 0mm, ledge_z + recess_h / 2)
@@ -132,7 +132,7 @@ structure def TopCorner : Rigid {
     // Blank idiom (box + edges_parallel_to corner fillet), not rounded_box:
     // rounded_box is a non-unified fuse whose coplanar seam edges break any
     // later edges_at_height fillet (lead's finding F-D).
-    let up = vec3(0.0, 0.0, 1.0)
+    let up = dir(0, 0, 1)
     aux let outer_blank  = translate(box(outer_length, outer_width, deck_height), 0mm, 0mm, deck_height / 2)
     aux let outer        = fillet(outer_blank, edges_parallel_to(outer_blank, up, 1deg), corner_r)
     aux let cavity_blank = translate(box(inner_length, inner_width, deck_height), 0mm, 0mm, floor_t + deck_height / 2)

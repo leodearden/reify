@@ -141,10 +141,12 @@ fn angle_on_points_emits_datum_projection_unavailable() {
 /// boundary guard holds both before and after the relation arm is wired (the arm
 /// returns `None` for arity-2 `angle`/`distance`, falling through to
 /// geometry-query) — and the relation checker must be a no-op on these forms.
+/// Arity-2 `angle` reads two Directions (direction-typing θ-b), so its operands
+/// are `Direction` params: an `Axis` there is a Direction-slot mismatch.
 #[test]
 fn two_arg_angle_distance_stay_geometry_queries() {
     let module = compile_structure(
-        "    param a : Axis\n    param b : Axis\n    \
+        "    param a : Direction\n    param b : Direction\n    \
          param p1 : Point3<Length>\n    param p2 : Point3<Length>\n    \
          let ang = angle(a, b)\n    let dist = distance(p1, p2)\n",
     );

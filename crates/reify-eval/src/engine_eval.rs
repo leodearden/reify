@@ -5095,7 +5095,6 @@ impl reify_expr::ContainmentQuery for Engine {
             _ => return None,
         };
         // Extract 3 finite f64 coordinates from a Point3<Length>.
-        // Mirrors `geometry_ops::point3_components` (private to geometry_ops).
         let [px, py, pz] = match point {
             Value::Point(c) if c.len() == 3 => {
                 let a = c[0].as_f64().filter(|v| v.is_finite())?;
@@ -12594,9 +12593,9 @@ mod combined_param_let_graph_geometry_let_tests {
     param height : Length = 20mm
     param depth  : Length = 30mm
     let loc_box = box(width, height, depth)
-    let dir = vec3(0.0, 0.0, 1.0)
+    let up = dir(0, 0, 1)
     let tol = 1deg
-    let loc = faces_by_normal(loc_box, dir, tol)
+    let loc = faces_by_normal(loc_box, up, tol)
 }"#,
         );
         let template = &module.templates[0];

@@ -182,7 +182,7 @@ const SOURCE_ROW3_VALUE_CELL_OPTION_SELECTOR: &str = r#"module test.row3
 structure def PressureLoad { param face : Option<FaceSelector> }
 structure def Root {
     let b = box(10mm, 10mm, 10mm)
-    let pl = PressureLoad(face: faces_by_normal(b, [0, 0, 1], 1deg))
+    let pl = PressureLoad(face: faces_by_normal(b, dir(0, 0, 1), 1deg))
 }
 "#;
 
@@ -207,7 +207,7 @@ const SOURCE_ROW5_SUB_OPTION_SELECTOR: &str = r#"module test.row5
 structure def PressureLoad { param face : Option<FaceSelector> }
 structure def Root {
     let b = box(10mm, 10mm, 10mm)
-    sub p = PressureLoad(face: faces_by_normal(b, [0, 0, 1], 1deg))
+    sub p = PressureLoad(face: faces_by_normal(b, dir(0, 0, 1), 1deg))
 }
 "#;
 

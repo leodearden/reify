@@ -524,7 +524,7 @@ structure R3bSelectorOverloadProbe {{
     let result = modal_analysis(mi.material, length, width, height, opts)
 
     let beam = box(length, width, height)
-    let tip_dir = vec3(1.0, 0.0, 0.0)
+    let tip_dir = dir(1, 0, 0)
     let tip_tol = 1deg
     let tip_face = faces_by_normal(beam, tip_dir, tip_tol)
     let tip_push = StepForce(
