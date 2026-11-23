@@ -642,3 +642,21 @@ fn origin_tiers_classify_by_first_path_segment() {
         "only the FIRST segment decides the std tier"
     );
 }
+
+#[test]
+fn a_compiled_enum_records_whether_it_was_declared_pub() {
+    let module = reify_test_support::compile_source_named(
+        "pub enum Shown { A }\nenum Kept { B }\n",
+        "enum_visibility",
+    );
+    let visibility = |name: &str| {
+        module
+            .enum_defs
+            .iter()
+            .find(|e| e.name == name)
+            .unwrap_or_else(|| panic!("enum {name} compiled"))
+            .is_pub
+    };
+    assert!(visibility("Shown"), "`pub enum Shown` is pub");
+    assert!(!visibility("Kept"), "`enum Kept` is not pub");
+}
