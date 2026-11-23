@@ -192,6 +192,10 @@ mod stdlib_fn_in_user_fn_body_e2e;
 // `reify_compiler::program::compile_program`.
 #[path = "harness_engine/def_env.rs"]
 mod def_env;
+// Task #5522's `Engine::load` pins land here for the same reason: they drive the
+// engine's definition environment over a loaded `CompiledProgram`.
+#[path = "harness_engine/engine_load.rs"]
+mod engine_load;
 // Task #8102's instance-scope symbolic geometry/selector mint pins land here for
 // the same anti-re-accretion reason as #5196's and #5360's above. They are also
 // a topical fit: they drive `Engine::eval` over `sub` instantiations to pin
