@@ -30,7 +30,9 @@ LANDLOCK_EXEC = REPO_ROOT / "gui" / "src-tauri" / "sandbox" / "landlock_exec.py"
 FIXTURE_DATA = "fixture data\n"
 
 
+@functools.cache
 def load_canon_run():
+    """Loaded once, so every caller sees the same classes (canon_run.Refusal and the rest)."""
     spec = importlib.util.spec_from_file_location("canon_run", CANON_RUN)
     module = importlib.util.module_from_spec(spec)
     # Registered before exec_module so @dataclass resolves cls.__module__.
@@ -206,19 +208,17 @@ def _refusal(argv):
     return "" if probe.returncode == 0 else f"(rc={probe.returncode}): {probe.stderr.strip()}"
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def namespace_unavailable_reason():
-    if not os.access(BWRAP, os.X_OK):
-        return f"{BWRAP} absent"
+    """canon_run.py's own probe, binding one scratch directory at another."""
     with tempfile.TemporaryDirectory(prefix="canon-run-ns-probe-") as scratch:
         a, b = Path(scratch, "a"), Path(scratch, "b")
         a.mkdir()
         b.mkdir()
-        refusal = _refusal(bwrap_bind(a, b, "/bin/true"))
-    return f"bwrap cannot enter a mount namespace here {refusal}" if refusal else ""
+        return load_canon_run().namespace_refusal(a, str(b))
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def landlock_unavailable_reason():
     with tempfile.TemporaryDirectory(prefix="canon-run-landlock-probe-") as scratch:
         refusal = _refusal(landlock(scratch, "/bin/true"))
