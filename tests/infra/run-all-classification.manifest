@@ -255,6 +255,7 @@ test_rust_construct_ratchet.sh pool
 test_rust_production_view_lib.sh pool
 test_sandbox_cache_writability_seam.sh pool
 test_scope_boundary.sh pool
+test_seed_depinfo_relocation.sh pool
 test_seed_warm_base_initial.sh pool
 test_seed_warm_lane.sh pool
 test_setup_dev_no_ldconfig.sh pool
