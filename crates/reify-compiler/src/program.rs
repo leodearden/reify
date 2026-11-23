@@ -181,10 +181,7 @@ impl CompiledProgram {
 /// compile-time value map is empty, so both paths return `Indeterminate` and no
 /// divergence is observable. The integration test
 /// `compile_program_import_uses_stub` pins this.
-// G-allow: PRD §3.1 canonical program entry; first production consumer is
-// `AnalysisContext::from_parsed` in reify-lsp (#8778). If #8778 settles PRD §12 Q6
-// on the cached parse and calls `compile_program_with_parsed_entry` instead, it
-// must fold or delete this fn, or re-cite this G-allow, in the same change.
+// G-allow: PRD §3.1 canonical program entry; first production consumer is AnalysisContext::from_parsed in reify-lsp (#8778)
 pub fn compile_program(
     entry_path: &Path,
     entry_source: &str,
