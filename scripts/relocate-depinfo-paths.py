@@ -31,12 +31,15 @@ not the filesystem); deps/*.d makefile depfiles, which cargo's freshness check
 never reads; fingerprint JSON. Only a path that starts with `<foreign>/`
 changes, so a sibling root such as `<foreign>-2` does not match.
 
-FAILS CLOSED: a read or write failure exits 1. A record that names the
-foreign root but does not decode is left as it is and counted.
+FAILS CLOSED: a read, write or unlink failure exits 1. A record that names
+the foreign root but does not decode (unknown header or version, truncation, a
+bad tag, trailing bytes) is deleted, so cargo rebuilds that one unit: cold,
+never judged against the foreign root. A record that does not name the root is
+never decoded, so it is left as it is.
 
 Usage: relocate-depinfo-paths.py --from-root FOREIGN --to-root LANE TARGET_DIR
 Exit: 0 done (a missing TARGET_DIR holds no records); 1 I/O failure;
-2 usage. stdout stays empty; a summary goes to stderr.
+2 usage. stdout stays empty; each eviction and a summary go to stderr.
 """
 
 import argparse
@@ -69,7 +72,7 @@ class Outcome(enum.Enum):
     NO_FOREIGN_ROOT = "no foreign root"
     UNCHANGED = "unchanged"
     REWROTE = "rewrote"
-    UNDECODABLE = "undecodable"
+    EVICTED = "evicted"
 
 
 @dataclass(frozen=True)
@@ -192,8 +195,10 @@ def relocate_file(path, foreign_prefix, lane_prefix):
         return Outcome.NO_FOREIGN_ROOT
     try:
         info = decode(data)
-    except Undecodable:
-        return Outcome.UNDECODABLE
+    except Undecodable as undecodable:
+        os.unlink(path)
+        print(f"{PROG}: evicted {path}: {undecodable}", file=sys.stderr)
+        return Outcome.EVICTED
     rewritten = encode(relocated(info, foreign_prefix, lane_prefix))
     if rewritten == data:
         return Outcome.UNCHANGED
@@ -235,7 +240,7 @@ def main(argv=None):
         return 1
     print(f"{PROG}: rewrote {outcomes[Outcome.REWROTE]} dep-info file(s) from "
           f"{args.from_root} to {args.to_root}; "
-          f"undecodable={outcomes[Outcome.UNDECODABLE]}", file=sys.stderr)
+          f"evicted {outcomes[Outcome.EVICTED]} undecodable one(s)", file=sys.stderr)
     return 0
 
 
