@@ -17,12 +17,10 @@ use reify_kernel_occt::{
 
 const LOCATION_TOL: f64 = 1e-9;
 
-/// Runtime `CARGO_MANIFEST_DIR` first: the compile-time bake goes stale when a
-/// warm-lane `target/` is reused from another worktree (esc-4906-57).
 fn fixture(name: &str) -> PathBuf {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
-        .unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_string());
-    Path::new(&manifest_dir).join("tests/fixtures").join(name)
+    reify_test_support::test_package::manifest_dir()
+        .join("tests/fixtures")
+        .join(name)
 }
 
 fn read_fixture(name: &str) -> StepDocument {

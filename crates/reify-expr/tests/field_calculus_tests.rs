@@ -5467,9 +5467,10 @@ fn sphere_sdf_laplacian_sample_at_surface_point_approx_2_over_r() {
 /// the `"known bug:"` convention.
 #[test]
 fn ignore_reason_strings_have_no_stale_plan_pointers() {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/field_calculus_tests.rs");
-    let source = std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("failed to read {path} for meta-inspection: {e}"));
+    let path =
+        reify_test_support::test_package::manifest_dir().join("tests/field_calculus_tests.rs");
+    let source = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read {} for meta-inspection: {e}", path.display()));
     reify_test_support::ignore_hygiene::check_ignore_reasons(&source).unwrap_or_else(|msg| {
         panic!(
             "{msg}\nAffected tests in this file: \

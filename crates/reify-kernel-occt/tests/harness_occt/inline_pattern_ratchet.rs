@@ -533,7 +533,7 @@ fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
 
 /// `(crate-relative label, contents)` of every `src/**/*.rs`, sorted.
 fn crate_sources() -> Vec<(String, String)> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = reify_test_support::test_package::manifest_dir();
     let mut files = Vec::new();
     collect_rs_files(&root.join("src"), &mut files);
     files.sort();

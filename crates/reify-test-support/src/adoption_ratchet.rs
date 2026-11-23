@@ -8,7 +8,7 @@
 //! matches line by line, so it cannot skip `#[cfg(test)]` items or string contents.
 //!
 //! A host is one integration-test file per crate (`tests/adoption_ratchets.rs`).
-//! It holds a [`Host`] constant naming itself, a `RATCHETS: &[Ratchet]` table, and
+//! It builds a [`Host`] naming itself, holds a `RATCHETS: &[Ratchet]` table, and
 //! two `#[test]` fns: one calls [`assert_seeded_self_tests`] and the other
 //! [`assert_crate_tree_at_baselines`]. The measured tree leaves the host out, so
 //! its seeds and docs never count toward a row.
@@ -113,7 +113,7 @@ pub struct Ratchet {
 /// measured tree leaves out so its seeds and docs never count toward a row.
 #[derive(Clone, Copy)]
 pub struct Host {
-    /// The crate's root directory: `env!("CARGO_MANIFEST_DIR")`.
+    /// The crate's root directory: `test_package::manifest_dir()`.
     pub crate_root: &'static str,
     /// The host file as `file!()` names it; red messages tell the reader to edit it.
     pub file: &'static str,
@@ -128,7 +128,7 @@ impl Host {
         let mut problems = Vec::new();
         if !Path::new(self.file).ends_with(self.path_in_crate) {
             problems.push(format!(
-                "path_in_crate {:?} does not name the host file ({}): update the constant",
+                "path_in_crate {:?} does not name the host file ({}): update the host",
                 self.path_in_crate, self.file
             ));
         }

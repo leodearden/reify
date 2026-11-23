@@ -716,11 +716,10 @@ structure R3bUnmigratedRayleighCtorControl {
         probe_hits
     );
 
-    let fixture_path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/prd-gate/fixtures/r3b_displacement_at_selector_grammar.ri"
-    );
-    let fixture_source = std::fs::read_to_string(fixture_path)
+    let fixture_file = reify_test_support::workspace_root::workspace_root()
+        .join("tests/prd-gate/fixtures/r3b_displacement_at_selector_grammar.ri");
+    let fixture_path = fixture_file.display();
+    let fixture_source = std::fs::read_to_string(&fixture_file)
         .unwrap_or_else(|e| panic!("fixture {fixture_path} must be readable: {e}"));
     // Guard the guard: with no RayleighDamping ctor in the fixture the
     // assertion below would pass vacuously, which is exactly the silent-hole
