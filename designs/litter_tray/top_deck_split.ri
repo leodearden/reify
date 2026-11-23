@@ -119,7 +119,7 @@ structure def TopDeckHalf : Rigid {
     let slot_flat = slot_w - slot_h
     let scw = outer_width / 2 + 10mm                       // scarf cutter y reach
     let tab_y = inner_y - tab_t / 2
-    let up = vec3(0.0, 0.0, 1.0)
+    let up = dir(0, 0, 1)
 
     // Full shell + fillets (identical to top_deck.ri v2).
     aux let outer_blank = translate(box(outer_length, outer_width, deck_height), 0mm, 0mm, deck_height / 2)

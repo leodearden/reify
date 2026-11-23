@@ -841,7 +841,7 @@ fn edges_at_height_inline_scalar_expr_constructs_by_height_selector() {
 /// `dispatch_filtered_subhandles` (PRD §4 KGQ-κ, task 3619).
 ///
 /// NOTE: the natural fixture is
-/// `let top = single(faces_by_normal(body, vec3(0,0,1), 1deg)); adjacent_faces(body, top)`
+/// `let top = single(faces_by_normal(body, dir(0, 0, 1), 1deg)); adjacent_faces(body, top)`
 /// but the selector→list-helper→selector eval-chaining is out of scope
 /// (engine_build.rs:3942-3949). This test uses the artificial
 /// `adjacent_faces(body, body)` form: the mock stages `body` as its own sole

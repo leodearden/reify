@@ -7182,7 +7182,7 @@ fn try_build_kernel_free_leaf_selector(
         TopologySelectorHelper::FacesByNormal => {
             let target = resolve_symbolic_selector_target(&args[0], values)?;
             let dir =
-                resolve_vec3_arg(&args[1], values, function_name, "dir", diagnostics)?;
+                resolve_direction_arg(&args[1], values, function_name, "dir", diagnostics)?;
             let tol_rad =
                 resolve_angle_scalar_arg(&args[2], values, function_name, "tol", diagnostics)?;
             build_leaf_selector(
@@ -7196,7 +7196,7 @@ fn try_build_kernel_free_leaf_selector(
         TopologySelectorHelper::EdgesParallelTo => {
             let target = resolve_symbolic_selector_target(&args[0], values)?;
             let axis =
-                resolve_vec3_arg(&args[1], values, function_name, "axis", diagnostics)?;
+                resolve_direction_arg(&args[1], values, function_name, "axis", diagnostics)?;
             let tol_rad =
                 resolve_angle_scalar_arg(&args[2], values, function_name, "tol", diagnostics)?;
             build_leaf_selector(
@@ -7228,7 +7228,7 @@ fn try_build_kernel_free_leaf_selector(
         TopologySelectorHelper::FacesPerpendicularTo => {
             let target = resolve_symbolic_selector_target(&args[0], values)?;
             let axis =
-                resolve_vec3_arg(&args[1], values, function_name, "axis", diagnostics)?;
+                resolve_direction_arg(&args[1], values, function_name, "axis", diagnostics)?;
             let tol_rad =
                 resolve_angle_scalar_arg(&args[2], values, function_name, "tol", diagnostics)?;
             build_leaf_selector(
@@ -7242,7 +7242,7 @@ fn try_build_kernel_free_leaf_selector(
         TopologySelectorHelper::EdgesPerpendicularTo => {
             let target = resolve_symbolic_selector_target(&args[0], values)?;
             let axis =
-                resolve_vec3_arg(&args[1], values, function_name, "axis", diagnostics)?;
+                resolve_direction_arg(&args[1], values, function_name, "axis", diagnostics)?;
             let tol_rad =
                 resolve_angle_scalar_arg(&args[2], values, function_name, "tol", diagnostics)?;
             build_leaf_selector(
@@ -8954,45 +8954,13 @@ pub(crate) fn try_eval_topology_selector(
             dispatch_point_on_shape(kernel, &query, &function.name, diagnostics)
         }
         TopologySelectorHelper::Angle => {
-            // Both args: value-flow Vec3 ValueRefs → values map → [f64; 3].
-            // Pure-math: acos(clamp(dot(a,b)/(|a||b|), -1, 1)). No kernel call.
-            //
-            // The dot-product and L2-norm are hand-rolled on [f64; 3] rather than
-            // reusing `crates/reify-stdlib/src/linalg.rs` because that crate
-            // operates on `Value` tensors, not bare [f64; 3] slices.  If the
-            // degenerate-input semantics here ever diverge from linalg.rs's
-            // `magnitude`/`dot` handling, align them explicitly.  See also the
-            // unit tests for `angle` in this module (task 3614, KGQ-ε).
-            let a = resolve_vec3_arg(&args[0], values, &function.name, "a", diagnostics)?;
-            let b = resolve_vec3_arg(&args[1], values, &function.name, "b", diagnostics)?;
+            // `angle(Direction, Direction) -> Angle`, pure math with no kernel
+            // call. Both operands are unit by construction (direction-typing
+            // C2/C4), so the cosine is their dot product.
+            let a = resolve_direction_arg(&args[0], values, &function.name, "a", diagnostics)?;
+            let b = resolve_direction_arg(&args[1], values, &function.name, "b", diagnostics)?;
             let dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-            let na = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
-            let nb = (b[0] * b[0] + b[1] * b[1] + b[2] * b[2]).sqrt();
-            // Primary degenerate guard: zero-length or explicitly non-finite
-            // (NaN/inf component → NaN magnitude, overflow → inf magnitude).
-            if na == 0.0 || nb == 0.0 || !na.is_finite() || !nb.is_finite() {
-                diagnostics.push(Diagnostic::warning(format!(
-                    "angle: degenerate input — zero-length or non-finite vector \
-                     (|a|={na}, |b|={nb}); cell left at Undef"
-                )));
-                return Some(reify_ir::Value::Undef);
-            }
-            let cos_theta = (dot / (na * nb)).clamp(-1.0, 1.0);
-            // Secondary degenerate guard: catch NaN from subnormal magnitude
-            // underflow (na*nb underflows to 0.0 while both na and nb
-            // individually passed the guard above — a rare but possible case
-            // with extremely small component values).  clamp() propagates NaN
-            // unchanged in IEEE 754, so this must be tested after clamping.
-            if !cos_theta.is_finite() {
-                diagnostics.push(Diagnostic::warning(format!(
-                    "angle: computed cosine is non-finite \
-                     (|a|={na}, |b|={nb}, dot={dot}); \
-                     possible subnormal magnitude underflow; cell left at Undef"
-                )));
-                return Some(reify_ir::Value::Undef);
-            }
-            let theta = cos_theta.acos();
-            Some(reify_ir::Value::angle(theta))
+            Some(reify_ir::Value::angle(dot.clamp(-1.0, 1.0).acos()))
         }
         TopologySelectorHelper::Normal => {
             // `normal(surface, point) -> Vector3<Dimensionless>` (task 3615, KGQ-ζ).
@@ -9830,11 +9798,11 @@ enum TopologySelectorHelper {
     /// `faces_by_area(geometry, Range<Area>) -> List<Geometry>` — faces whose
     /// surface area falls in the range (task 3560).
     FacesByArea,
-    /// `faces_by_normal(geometry, Vec3, Angle) -> List<Geometry>` — faces
+    /// `faces_by_normal(geometry, Direction, Angle) -> List<Geometry>` — faces
     /// whose outward normal is within an angular tolerance of a target
     /// direction (task 3560).
     FacesByNormal,
-    /// `edges_parallel_to(geometry, Vec3, Angle) -> List<Geometry>` — edges
+    /// `edges_parallel_to(geometry, Direction, Angle) -> List<Geometry>` — edges
     /// whose midpoint tangent is (anti-)parallel to an axis within an
     /// angular tolerance (task 3560).
     EdgesParallelTo,
@@ -10017,11 +9985,11 @@ enum TopologySelectorHelper {
     /// `SelectorKind::Vertex`.  Zero kernel queries at construction time (K2/BT7).
     Vertex,
     // ── Task 3523: selector_vocabulary_v2 leaf-predicate ctors ───────────────
-    /// `faces_perpendicular_to(geometry, Vec3, Angle) -> Selector(Face)` — faces
+    /// `faces_perpendicular_to(geometry, Direction, Angle) -> Selector(Face)` — faces
     /// whose normal is within `tol` of perpendicular to the axis. Arity 3,
     /// kernel-FREE; builds `LeafQuery::ByPerpendicular` (Face kind).
     FacesPerpendicularTo,
-    /// `edges_perpendicular_to(geometry, Vec3, Angle) -> Selector(Edge)` — edges
+    /// `edges_perpendicular_to(geometry, Direction, Angle) -> Selector(Edge)` — edges
     /// whose tangent is within `tol` of perpendicular to the axis. Arity 3,
     /// kernel-FREE; builds `LeafQuery::ByPerpendicular` (Edge kind).
     EdgesPerpendicularTo,
@@ -10367,8 +10335,7 @@ fn resolve_density_arg(
 
 /// Read a single Vec3 component: a `Value::Real` or a dimensionless
 /// `Value::Scalar`. Returns `None` for any dimensioned Scalar or non-numeric
-/// payload — the direction/axis args of `faces_by_normal` / `edges_parallel_to`
-/// are pure unit-vector numerics in v0.1.
+/// payload — `scale`'s `factors` are pure dimensionless numerics.
 fn vec3_component_si(value: &reify_ir::Value) -> Option<f64> {
     match value {
         reify_ir::Value::Real(v) => Some(*v),
@@ -10380,89 +10347,43 @@ fn vec3_component_si(value: &reify_ir::Value) -> Option<f64> {
     }
 }
 
-/// Short human-readable label for a `Value` that failed Vec3 classification,
-/// used as the `got` field of the rejection diagnostic (task ε). Vec3-aware: a
-/// `Value::Vector` of the wrong arity or carrying a dimensioned / non-numeric
-/// component is distinguished from a plainly non-Vector value, so the Warning
-/// names what actually went wrong.
-fn vec3_got_label(value: &reify_ir::Value) -> String {
-    match value {
-        reify_ir::Value::Vector(items) if items.len() != 3 => {
-            format!("Vector of {} components", items.len())
-        }
-        reify_ir::Value::Vector(_) => {
-            "Vector with a dimensioned or non-numeric component".to_string()
-        }
-        reify_ir::Value::Real(_) => "Real".to_string(),
-        reify_ir::Value::Scalar { dimension, .. } => dimension.diagnostic_scalar_label(),
-        reify_ir::Value::Point(_) => "Point".to_string(),
-        reify_ir::Value::Bool(_) => "Bool".to_string(),
-        reify_ir::Value::Int(_) => "Int".to_string(),
-        _ => "non-Vec3 value".to_string(),
-    }
-}
-
-/// Resolve a 3-component vector arg to its `[f64; 3]` SI components, emitting a
-/// `Severity::Warning` when the caller passes a defined-but-wrong value.
+/// Read a direction arg (the `dir` / `axis` of the directional selectors and
+/// `angle`'s operands) as the unit components of a `Value::Direction`
+/// (direction-typing θ-b, PRD C3).
 ///
-/// Evaluate-then-accept (task ε): the arg expr is EVALUATED against `values`
-/// (via [`eval_arg_value`]) and the resulting `Value` classified. Inline
-/// `vec3(...)` constructor calls now WORK — `eval_expr` lowers the `vec3(...)`
-/// `FunctionCall` to a `Value::Vector` via `reify_stdlib::eval_builtin`, so the
-/// γ "Literal/`ValueRef` shape-match only → silent fall-through" behaviour is
-/// gone. Each component must still be a `Value::Real` or a dimensionless
-/// `Value::Scalar` (per [`vec3_component_si`]); the vector must have exactly
-/// three components — the direction/axis args of `faces_by_normal` /
-/// `edges_parallel_to` / `angle` are pure unit-vector numerics in v0.1.
+/// The arg expr is EVALUATED against `values` (via [`eval_arg_value`]) and the
+/// result read by [`reify_ir::decode_direction`], the one direction reader:
 ///
-/// | evaluated arg value                                | return       | diagnostic?     |
-/// |----------------------------------------------------|--------------|-----------------|
-/// | `Value::Undef` (missing/Undef cell, user-fn arg)   | `None`       | no — quiet      |
-/// | `Value::Vector` of 3 `Real`/dimensionless `Scalar` | `Some([..])` | no              |
-/// | non-Vector, wrong length, or dimensioned component | `None`       | yes — 1 Warning |
-fn resolve_vec3_arg(
+/// | evaluated arg value                              | return       | diagnostic?     |
+/// |--------------------------------------------------|--------------|-----------------|
+/// | `Value::Undef` (missing/Undef cell, user-fn arg) | `None`       | no — quiet      |
+/// | `Value::Direction`                               | `Some([..])` | no              |
+/// | anything else, a raw `Value::Vector` included    | `None`       | yes — 1 Warning |
+///
+/// The Warning carries `decode_direction`'s own message, so it ends with the
+/// migration hint "write dir(x, y, z)". It is a Warning, not an Error: the
+/// static `ArgTypeMismatch` slot is the loud path, and this arm is reached only
+/// through gradual types.
+fn resolve_direction_arg(
     expr: &reify_ir::CompiledExpr,
     values: &reify_ir::ValueMap,
     builtin: &str,
     arg_name: &str,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<[f64; 3]> {
-    use crate::arg_acceptance::ArgRejection;
-
     let value = eval_arg_value(expr, values);
-
-    // Quiet degradation: an Undef value (missing cell, or a user-fn/meta arg the
-    // local ctx can't evaluate) returns None with no diagnostic — behaviourally
-    // identical to the γ fall-through for missing cells.
     if matches!(value, reify_ir::Value::Undef) {
         return None;
     }
-
-    let as_vec3 = |v: &reify_ir::Value| -> Option<[f64; 3]> {
-        match v {
-            reify_ir::Value::Vector(items) if items.len() == 3 => Some([
-                vec3_component_si(&items[0])?,
-                vec3_component_si(&items[1])?,
-                vec3_component_si(&items[2])?,
-            ]),
-            _ => None,
+    match reify_ir::decode_direction(&value) {
+        Ok(direction) => Some(direction.components()),
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{builtin}: {arg_name} argument: {err}"
+            )));
+            None
         }
-    };
-    if let Some(components) = as_vec3(&value) {
-        return Some(components);
     }
-
-    // Defined-but-wrong: emit exactly one Warning naming builtin/arg/Vec3/got
-    // (byte-uniform wording with the density / scalar-bound paths).
-    diagnostics.push(Diagnostic::warning(
-        ArgRejection {
-            got: vec3_got_label(&value),
-            expected: "Vec3",
-            migration_hint: None,
-        }
-        .message(builtin, arg_name),
-    ));
-    None
 }
 
 /// Shared evaluate-then-accept core for the SCALAR-dimension owned args
@@ -10876,8 +10797,7 @@ fn dispatch_point3_length_reply(
 
 /// Issue a `FaceNormalAt` query and unwrap the kernel's JSON-Point3 reply
 /// (`{"x":_,"y":_,"z":_}`) into a dimensionless `Value::Vector([Real, Real,
-/// Real])` — the canonical unit normal representation (matches `vec3()` output
-/// and `resolve_vec3_arg` expectations).
+/// Real])` (matches `vec3()` output).
 ///
 /// Models the same defensive-downgrade contract as `dispatch_point3_length_reply`:
 /// - Kernel `Err` → one Warning ("`normal` kernel query failed: …") + `Some(Value::Undef)`

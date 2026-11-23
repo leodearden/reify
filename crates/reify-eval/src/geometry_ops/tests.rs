@@ -1776,192 +1776,6 @@
         );
     }
 
-    /// Task ε (evaluate-then-accept): `resolve_vec3_arg` now EVALUATES the arg
-    /// expr (gaining a `diagnostics` sink + builtin/arg labels). An inline
-    /// `Literal(Value::Vector)` AND an inline `vec3(..)` FunctionCall both
-    /// resolve to `Some([..])` with 0 diagnostics; a defined-but-wrong value
-    /// (non-Vector, wrong length, or a dimensioned-Scalar component) is Rejected
-    /// with exactly one `Severity::Warning` naming the builtin, the arg, and the
-    /// expected `Vec3` type (byte-uniform wording with the density path).
-    ///
-    ///   (a) inline `Literal(Vector([Real,Real,Real]))` → `Some([..])`, 0 diags.
-    ///   (b) inline `vec3(0,0,1)` FunctionCall → `Some([0,0,1])`, 0 diags
-    ///       [RED before ε: the FunctionCall hit `resolve_vec3_arg`'s `_ => None`
-    ///       arm → silent fall-through].
-    ///   (c) inline `Literal(Real)` (non-Vector) → `None` + 1 Warning.
-    ///   (d) inline `Literal(Vector)` of length 2 (wrong length) → `None` + 1 Warning.
-    ///   (e) inline `Literal(Vector)` with a dimensioned-Scalar component → `None`
-    ///       + 1 Warning.
-    ///
-    /// Compile-RED until step-6 adds the `(builtin, arg, &mut diags)` signature.
-    #[test]
-    fn resolve_vec3_arg_eval_and_diagnostics() {
-        // (a) inline Literal(Vector([Real,Real,Real])) → Some([..]), 0 diags.
-        {
-            let expr = reify_ir::CompiledExpr::literal(
-                vec3_value(0.0, 0.0, 1.0),
-                reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
-            );
-            let values = reify_ir::ValueMap::new();
-            let mut diags: Vec<Diagnostic> = Vec::new();
-            let result =
-                super::resolve_vec3_arg(&expr, &values, "faces_by_normal", "dir", &mut diags);
-            assert_eq!(
-                result,
-                Some([0.0, 0.0, 1.0]),
-                "(a) inline vector literal must be Accepted"
-            );
-            assert!(
-                diags.is_empty(),
-                "(a) vector literal must produce no diags, got: {diags:?}"
-            );
-        }
-
-        // (b) inline vec3(0,0,1) FunctionCall → Some([0,0,1]), 0 diags.
-        {
-            let arg_x = literal_f64(0.0);
-            let arg_y = literal_f64(0.0);
-            let arg_z = literal_f64(1.0);
-            let mut ch = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
-                .combine(reify_core::ContentHash::of_str("vec3"));
-            ch = ch
-                .combine(arg_x.content_hash)
-                .combine(arg_y.content_hash)
-                .combine(arg_z.content_hash);
-            let expr = reify_ir::CompiledExpr {
-                kind: reify_ir::CompiledExprKind::FunctionCall {
-                    function: reify_ir::ResolvedFunction {
-                        name: "vec3".to_string(),
-                        qualified_name: "vec3".to_string(),
-                    },
-                    args: vec![arg_x, arg_y, arg_z],
-                },
-                result_type: reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
-                content_hash: ch,
-            };
-            let values = reify_ir::ValueMap::new();
-            let mut diags: Vec<Diagnostic> = Vec::new();
-            let result =
-                super::resolve_vec3_arg(&expr, &values, "faces_by_normal", "dir", &mut diags);
-            assert_eq!(
-                result,
-                Some([0.0, 0.0, 1.0]),
-                "(b) inline vec3(0,0,1) FunctionCall must evaluate + be Accepted"
-            );
-            assert!(
-                diags.is_empty(),
-                "(b) inline vec3 call must produce no diags, got: {diags:?}"
-            );
-        }
-
-        // (c) non-Vector (Value::Real) → None + 1 Warning naming builtin/arg/Vec3.
-        {
-            let expr = literal_f64(1.0);
-            let values = reify_ir::ValueMap::new();
-            let mut diags: Vec<Diagnostic> = Vec::new();
-            let result =
-                super::resolve_vec3_arg(&expr, &values, "faces_by_normal", "dir", &mut diags);
-            assert_eq!(result, None, "(c) non-Vector must return None");
-            assert_eq!(
-                diags.len(),
-                1,
-                "(c) non-Vector must push exactly 1 Warning, got: {diags:?}"
-            );
-            assert_eq!(diags[0].severity, reify_core::Severity::Warning);
-            let msg = diags[0].message.to_lowercase();
-            assert!(
-                msg.contains("faces_by_normal"),
-                "(c) names builtin, got: {:?}",
-                diags[0].message
-            );
-            assert!(
-                msg.contains("dir"),
-                "(c) names arg, got: {:?}",
-                diags[0].message
-            );
-            assert!(
-                msg.contains("vec3"),
-                "(c) names expected Vec3, got: {:?}",
-                diags[0].message
-            );
-            assert!(
-                msg.contains("got"),
-                "(c) names what it got, got: {:?}",
-                diags[0].message
-            );
-        }
-
-        // (d) wrong length (Vector of 2) → None + 1 Warning.
-        {
-            let expr = reify_ir::CompiledExpr::literal(
-                reify_ir::Value::Vector(vec![
-                    reify_ir::Value::Real(0.0),
-                    reify_ir::Value::Real(1.0),
-                ]),
-                reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
-            );
-            let values = reify_ir::ValueMap::new();
-            let mut diags: Vec<Diagnostic> = Vec::new();
-            let result =
-                super::resolve_vec3_arg(&expr, &values, "edges_parallel_to", "axis", &mut diags);
-            assert_eq!(result, None, "(d) wrong-length Vector must return None");
-            assert_eq!(
-                diags.len(),
-                1,
-                "(d) wrong-length Vector must push exactly 1 Warning, got: {diags:?}"
-            );
-            assert_eq!(diags[0].severity, reify_core::Severity::Warning);
-            let msg = diags[0].message.to_lowercase();
-            assert!(
-                msg.contains("edges_parallel_to"),
-                "(d) names builtin, got: {:?}",
-                diags[0].message
-            );
-            assert!(
-                msg.contains("axis"),
-                "(d) names arg, got: {:?}",
-                diags[0].message
-            );
-            assert!(
-                msg.contains("vec3"),
-                "(d) names expected Vec3, got: {:?}",
-                diags[0].message
-            );
-        }
-
-        // (e) dimensioned-Scalar component → None + 1 Warning.
-        {
-            let expr = reify_ir::CompiledExpr::literal(
-                reify_ir::Value::Vector(vec![
-                    reify_ir::Value::Scalar {
-                        si_value: 1.0,
-                        dimension: reify_core::DimensionVector::LENGTH,
-                    },
-                    reify_ir::Value::Real(0.0),
-                    reify_ir::Value::Real(0.0),
-                ]),
-                reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
-            );
-            let values = reify_ir::ValueMap::new();
-            let mut diags: Vec<Diagnostic> = Vec::new();
-            let result =
-                super::resolve_vec3_arg(&expr, &values, "faces_by_normal", "dir", &mut diags);
-            assert_eq!(result, None, "(e) dimensioned component must return None");
-            assert_eq!(
-                diags.len(),
-                1,
-                "(e) dimensioned component must push exactly 1 Warning, got: {diags:?}"
-            );
-            assert_eq!(diags[0].severity, reify_core::Severity::Warning);
-            let msg = diags[0].message.to_lowercase();
-            assert!(
-                msg.contains("vec3"),
-                "(e) names expected Vec3, got: {:?}",
-                diags[0].message
-            );
-        }
-    }
-
     /// Helper: build an inline `CompiledExpr` literal carrying a `Value::Range`
     /// with the given optional `(lower, upper)` SI bounds, each a
     /// `Value::Scalar` of `dim`. `None` bounds model a half-open range. The
@@ -16203,68 +16017,6 @@
         );
     }
 
-    #[test]
-    fn try_eval_topology_selector_angle_nonfinite_vector_component_returns_undef() {
-        // Degenerate input: a vector with a NaN component causes na = NaN
-        // (NaN*NaN + 0 + 0 = NaN, sqrt(NaN) = NaN).  The primary guard
-        // `!na.is_finite()` at the dispatch arm must catch this and return
-        // Some(Value::Undef) with exactly one Warning — no panic, no NaN-poison.
-        // Also tested: f64::INFINITY component → na = inf → same guard fires.
-        use reify_test_support::mocks::MockGeometryKernel;
-
-        for (label, ax, ay, az) in [
-            ("NaN", f64::NAN, 0.0_f64, 0.0_f64),
-            ("INFINITY", f64::INFINITY, 0.0, 0.0),
-        ] {
-            let mut kernel = MockGeometryKernel::new();
-            let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
-            let mut values = reify_ir::ValueMap::new();
-            values.insert(
-                reify_core::ValueCellId::new("T", "a"),
-                vec3_value(ax, ay, az),
-            );
-            values.insert(
-                reify_core::ValueCellId::new("T", "b"),
-                vec3_value(0.0, 1.0, 0.0),
-            );
-            let expr = topology_selector_call_two_value_refs(
-                "angle",
-                "T",
-                "a",
-                reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
-                "b",
-                reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
-                reify_core::Type::angle(),
-            );
-            let mut diagnostics: Vec<Diagnostic> = Vec::new();
-            let result = super::try_eval_topology_selector(
-                &expr,
-                &named_steps,
-                &values,
-                &mut kernel,
-                &mut diagnostics,
-            );
-            assert_eq!(
-                result,
-                Some(reify_ir::Value::Undef),
-                "angle(vec3({label},...), ...) must return Some(Value::Undef); got {result:?}"
-            );
-            assert_eq!(
-                diagnostics.len(),
-                1,
-                "non-finite component must emit exactly one Warning \
-                 (label={label}), got {} diagnostics: {diagnostics:?}",
-                diagnostics.len()
-            );
-            assert_eq!(
-                diagnostics[0].severity,
-                reify_core::Severity::Warning,
-                "diagnostic severity must be Warning (label={label}), got {:?}",
-                diagnostics[0].severity
-            );
-        }
-    }
-
     // ── try_eval_topology_selector `contains` unit tests (task 3611, KGQ-β) ────
     //
     // These tests pin the `contains(solid, point) -> Bool` dispatch contract
@@ -20835,11 +20587,7 @@
         );
         values.insert(
             ValueCellId::new("Directional", "dir"),
-            reify_ir::Value::Vector(vec![
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(1.0),
-            ]),
+            unit_dir(0.0, 0.0, 1.0),
         );
         let tol_rad = std::f64::consts::PI / 180.0; // 1°
         values.insert(
@@ -20856,7 +20604,7 @@
             "b",
             Type::Geometry,
             "dir",
-            Type::vec3(Type::dimensionless_scalar()),
+            Type::Direction,
             "tol",
             Type::angle(),
             Type::List(Box::new(Type::Geometry)),
@@ -20931,11 +20679,7 @@
         let mut values = reify_ir::ValueMap::new();
         values.insert(
             ValueCellId::new("Directional", "dir"),
-            reify_ir::Value::Vector(vec![
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(1.0),
-            ]),
+            unit_dir(0.0, 0.0, 1.0),
         );
         values.insert(
             ValueCellId::new("Directional", "tol"),
@@ -20951,7 +20695,7 @@
             "b",
             Type::Geometry,
             "dir",
-            Type::vec3(Type::dimensionless_scalar()),
+            Type::Direction,
             "tol",
             Type::angle(),
             Type::List(Box::new(Type::Geometry)),
@@ -21149,11 +20893,7 @@
         );
         values.insert(
             ValueCellId::new("Directional", "axis"),
-            reify_ir::Value::Vector(vec![
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(1.0),
-            ]),
+            unit_dir(0.0, 0.0, 1.0),
         );
         let tol_rad = std::f64::consts::PI / 180.0; // 1°
         values.insert(
@@ -21170,7 +20910,7 @@
             "b",
             Type::Geometry,
             "axis",
-            Type::vec3(Type::dimensionless_scalar()),
+            Type::Direction,
             "tol",
             Type::angle(),
             Type::List(Box::new(Type::Geometry)),
@@ -29200,14 +28940,10 @@
                 kernel_handle: None,
             },
         );
-        // Let-bound dir = vec3(0,0,1).
+        // Let-bound dir = dir(0,0,1).
         values.insert(
             ValueCellId::new("Widget", "dir"),
-            reify_ir::Value::Vector(vec![
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(1.0),
-            ]),
+            unit_dir(0.0, 0.0, 1.0),
         );
         // Let-bound tol = 1deg in radians.
         let tol_rad = std::f64::consts::PI / 180.0;
@@ -29225,7 +28961,7 @@
             "body",
             reify_core::Type::Geometry,
             "dir",
-            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+            reify_core::Type::Direction,
             "tol",
             reify_core::Type::angle(),
         );
@@ -29295,11 +29031,7 @@
         );
         values.insert(
             ValueCellId::new("Part", "axis"),
-            reify_ir::Value::Vector(vec![
-                reify_ir::Value::Real(1.0),
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(0.0),
-            ]),
+            unit_dir(1.0, 0.0, 0.0),
         );
         values.insert(
             ValueCellId::new("Part", "tol"),
@@ -29315,7 +29047,7 @@
             "body",
             reify_core::Type::Geometry,
             "axis",
-            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+            reify_core::Type::Direction,
             "tol",
             reify_core::Type::angle(),
         );
@@ -29405,7 +29137,7 @@
         // Directional arg dir = +Z, angular tol = 1°.
         values.insert(
             body("dir"),
-            Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]),
+            unit_dir(0.0, 0.0, 1.0),
         );
         values.insert(
             body("tol"),
@@ -29425,7 +29157,7 @@
         let dir = || {
             reify_ir::CompiledExpr::value_ref(
                 body("dir"),
-                reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+                reify_core::Type::Direction,
             )
         };
         let tol = || reify_ir::CompiledExpr::value_ref(body("tol"), reify_core::Type::angle());
@@ -29516,7 +29248,7 @@
         );
         let b = reify_ir::CompiledExpr::value_ref(
             ValueCellId::new("W", "dir"),
-            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+            reify_core::Type::Direction,
         );
         let expr = mk_symbolic_call_3523("faces_perpendicular_to", vec![a, b]);
         let values = reify_ir::ValueMap::new();
@@ -30147,7 +29879,7 @@
         let cell_top  = ValueCellId::new(entity, "top");
 
         let arg_body = reify_ir::CompiledExpr::value_ref(cell_body.clone(), reify_core::Type::Geometry);
-        let arg_dir  = reify_ir::CompiledExpr::value_ref(cell_dir.clone(), reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()));
+        let arg_dir  = reify_ir::CompiledExpr::value_ref(cell_dir.clone(), reify_core::Type::Direction);
         let arg_tol  = reify_ir::CompiledExpr::value_ref(
             cell_tol.clone(),
             reify_core::Type::Scalar { dimension: reify_core::DimensionVector::ANGLE },
@@ -30269,11 +30001,7 @@
             upstream_values_hash: uvh,
             kernel_handle: None,
         };
-        let dir_val = Value::Vector(vec![
-            Value::Real(0.0),
-            Value::Real(0.0),
-            Value::Real(1.0),
-        ]);
+        let dir_val = unit_dir(0.0, 0.0, 1.0);
         let tol_val = Value::Scalar {
             si_value: std::f64::consts::PI / 180.0, // 1 degree in radians
             dimension: DimensionVector::ANGLE,
@@ -30654,11 +30382,7 @@
         // Direction arg: +Z for faces_by_normal.
         values.insert(
             ValueCellId::new("GateBodyNormal", "dir"),
-            reify_ir::Value::Vector(vec![
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(1.0),
-            ]),
+            unit_dir(0.0, 0.0, 1.0),
         );
         // Angle-tolerance arg (1°): faces_by_normal is arity-3 (body, dir, tol).
         // The gate fires BEFORE the kernel call, so any valid tolerance works.
@@ -30678,7 +30402,7 @@
         );
         let arg_dir = reify_ir::CompiledExpr::value_ref(
             ValueCellId::new("GateBodyNormal", "dir"),
-            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+            reify_core::Type::Direction,
         );
         let arg_tol = reify_ir::CompiledExpr::value_ref(
             ValueCellId::new("GateBodyNormal", "tol"),
@@ -31110,19 +30834,11 @@
         let rr = insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0x5Cu8; 32]);
         values.insert(
             ValueCellId::new(entity, "up"),
-            reify_ir::Value::Vector(vec![
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(1.0),
-            ]),
+            unit_dir(0.0, 0.0, 1.0),
         );
         values.insert(
             ValueCellId::new(entity, "down"),
-            reify_ir::Value::Vector(vec![
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(-1.0),
-            ]),
+            unit_dir(0.0, 0.0, -1.0),
         );
         values.insert(
             ValueCellId::new(entity, "tol"),
@@ -31132,7 +30848,7 @@
             },
         );
 
-        let vec3_ty = reify_core::Type::vec3(reify_core::Type::dimensionless_scalar());
+        let direction_ty = reify_core::Type::Direction;
         let angle_ty = reify_core::Type::angle();
 
         let up_leaf = symbolic_selector_call_three_value_refs(
@@ -31141,7 +30857,7 @@
             "body",
             reify_core::Type::Geometry,
             "up",
-            vec3_ty.clone(),
+            direction_ty.clone(),
             "tol",
             angle_ty.clone(),
         );
@@ -31151,7 +30867,7 @@
             "body",
             reify_core::Type::Geometry,
             "down",
-            vec3_ty,
+            direction_ty,
             "tol",
             angle_ty,
         );
@@ -31224,19 +30940,11 @@
         insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0x5Du8; 32]);
         values.insert(
             ValueCellId::new(entity, "up"),
-            reify_ir::Value::Vector(vec![
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(1.0),
-            ]),
+            unit_dir(0.0, 0.0, 1.0),
         );
         values.insert(
             ValueCellId::new(entity, "down"),
-            reify_ir::Value::Vector(vec![
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(-1.0),
-            ]),
+            unit_dir(0.0, 0.0, -1.0),
         );
         values.insert(
             ValueCellId::new(entity, "tol"),
@@ -31246,7 +30954,7 @@
             },
         );
 
-        let vec3_ty = reify_core::Type::vec3(reify_core::Type::dimensionless_scalar());
+        let direction_ty = reify_core::Type::Direction;
         let angle_ty = reify_core::Type::angle();
 
         let up_leaf = symbolic_selector_call_three_value_refs(
@@ -31255,7 +30963,7 @@
             "body",
             reify_core::Type::Geometry,
             "up",
-            vec3_ty.clone(),
+            direction_ty.clone(),
             "tol",
             angle_ty.clone(),
         );
@@ -31265,7 +30973,7 @@
             "body",
             reify_core::Type::Geometry,
             "down",
-            vec3_ty,
+            direction_ty,
             "tol",
             angle_ty,
         );
@@ -31333,11 +31041,7 @@
         insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0x5Eu8; 32]);
         values.insert(
             ValueCellId::new(entity, "up"),
-            reify_ir::Value::Vector(vec![
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(0.0),
-                reify_ir::Value::Real(1.0),
-            ]),
+            unit_dir(0.0, 0.0, 1.0),
         );
         values.insert(
             ValueCellId::new(entity, "tol"),
@@ -31360,7 +31064,7 @@
             "body",
             reify_core::Type::Geometry,
             "up",
-            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+            reify_core::Type::Direction,
             "tol",
             reify_core::Type::angle(),
         );

@@ -2314,9 +2314,9 @@ fn part_value_accepted_where_part_param_declared() {
     let source = r#"
 structure PartBoundarySmoke {
     let b   = box(10mm, 10mm, 10mm)
-    let dir = vec3(0.0, 0.0, 1.0)
+    let up = dir(0, 0, 1)
     let tol = 1deg
-    let face_sel = faces_by_normal(b, dir, tol)
+    let face_sel = faces_by_normal(b, up, tol)
     let step = StepForce(
         at: face_sel,
         direction: vec3(0.0, 0.0, 1.0),
@@ -2433,9 +2433,9 @@ fn string_arg_to_part_param_rejected() {
     let source = r#"
 structure PartLeniencySmoke {
     let b   = box(10mm, 10mm, 10mm)
-    let dir = vec3(0.0, 0.0, 1.0)
+    let up = dir(0, 0, 1)
     let tol = 1deg
-    let face_sel = faces_by_normal(b, dir, tol)
+    let face_sel = faces_by_normal(b, up, tol)
     let step = StepForce(
         at: face_sel,
         direction: vec3(0.0, 0.0, 1.0),
@@ -2578,7 +2578,7 @@ structure ScalarParamDefaults {
 /// diagnostics — the task's stated boundary "a StepForce.at selecting a face
 /// type-checks" (PRD §6/§8.4).
 ///
-/// Uses the bt7 kernel-free idiom: `faces_by_normal(b, dir, tol)` with
+/// Uses the bt7 kernel-free idiom: `faces_by_normal(b, up, tol)` with
 /// let-bound arguments so the selector stays kernel-free (never realized
 /// against a mesh). The force-location value is type-only at compile time;
 /// runtime Selector→mesh-node resolution is task 4122.
@@ -2595,9 +2595,9 @@ fn step_force_at_selector_compiles_with_zero_errors() {
     let source = r#"
 structure StepForceSelectorSmoke {
     let b   = box(10mm, 10mm, 10mm)
-    let dir = vec3(0.0, 0.0, 1.0)
+    let up = dir(0, 0, 1)
     let tol = 1deg
-    let face_sel = faces_by_normal(b, dir, tol)
+    let face_sel = faces_by_normal(b, up, tol)
     let step = StepForce(
         at: face_sel,
         direction: vec3(0.0, 0.0, 1.0),

@@ -9,7 +9,7 @@ import "vendor/container.step" as container
 
 structure def DoorBracket {
     param geometry : Solid = box(120mm, 40mm, 200mm)
-    let seat_plane = single(faces_by_normal(geometry, vec3(0.0, -1.0, 0.0), 1deg)).plane
+    let seat_plane = single(faces_by_normal(geometry, dir(0, -1, 0), 1deg)).plane
 }
 
 structure def Site {
@@ -23,7 +23,7 @@ structure def Site {
     }
 
     // scope-posed sub-member read (placement-relations-belt §7.1.5): already in Site's frame
-    let door_plane = single(faces_by_normal(stock.side_wall_1.panel_1.geometry, vec3(0.0, 1.0, 0.0), 1deg)).plane
+    let door_plane = single(faces_by_normal(stock.side_wall_1.panel_1.geometry, dir(0, 1, 0), 1deg)).plane
 
     sub bracket = DoorBracket() at auto
     relate { flush(bracket.seat_plane, door_plane) }

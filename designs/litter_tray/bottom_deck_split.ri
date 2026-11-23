@@ -123,7 +123,7 @@ structure def BottomDeckHalf : Rigid {
     let void_d = hood_d - hood_t
     let void_w = hood_w - 2 * hood_t
     let void_h = hood_h - hood_t
-    let up = vec3(0.0, 0.0, 1.0)
+    let up = dir(0, 0, 1)
 
     // Full tray shell (identical to bottom_deck.ri v3).
     aux let outer_blank  = translate(box(outer_length, outer_width, wall_height), 0mm, 0mm, wall_height / 2)

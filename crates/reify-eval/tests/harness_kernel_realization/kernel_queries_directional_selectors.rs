@@ -7,12 +7,12 @@
 //! ```ri
 //! structure def DirectionalSelectors {
 //!     let b1  = box(10mm, 10mm, 10mm)
-//!     let dir = vec3(0.0, 0.0, 1.0)
+//!     let up = dir(0, 0, 1)
 //!     let tol = 1deg
-//!     let top = faces_by_normal(b1, dir, tol)
+//!     let top = faces_by_normal(b1, up, tol)
 //!
 //!     let b2   = box(10mm, 20mm, 30mm)
-//!     let vert = edges_parallel_to(b2, dir, tol)
+//!     let vert = edges_parallel_to(b2, up, tol)
 //! }
 //! ```
 //!

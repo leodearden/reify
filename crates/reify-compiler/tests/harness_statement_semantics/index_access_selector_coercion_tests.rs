@@ -22,7 +22,7 @@ const SOURCE_INDEXED_FACE_SELECTORS: &str = r#"
 structure def IndexedFaceSelectors {
     let b = box(10mm, 10mm, 10mm)
     let f0 = faces(b)[0]
-    let n0 = faces_by_normal(b, [0, 0, 1], 1deg)[0]
+    let n0 = faces_by_normal(b, dir(0, 0, 1), 1deg)[0]
 }
 "#;
 

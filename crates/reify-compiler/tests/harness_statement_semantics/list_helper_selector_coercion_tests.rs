@@ -18,13 +18,13 @@ use reify_core::Type;
 use reify_ir::{CompiledExpr, CompiledExprKind};
 use reify_test_support::{compile_source_with_stdlib, errors_only};
 
-/// `single(faces_by_normal(b, [0,0,1], 1deg))` — a `Selector(Face)` arg fed to
+/// `single(faces_by_normal(b, dir(0, 0, 1), 1deg))` — a `Selector(Face)` arg fed to
 /// the `single` list-helper. After step-10 this compiles cleanly, the argument
 /// is wrapped in `ResolveSelector`, and the cell type collapses to `Geometry`.
 const SOURCE_SINGLE_FACE_SELECTOR: &str = r#"
 structure def SingleFaceByNormal {
     let b = box(10mm, 10mm, 10mm)
-    let top = single(faces_by_normal(b, [0, 0, 1], 1deg))
+    let top = single(faces_by_normal(b, dir(0, 0, 1), 1deg))
 }
 "#;
 

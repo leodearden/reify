@@ -54,7 +54,7 @@ structure def IntersectSameKind {
 const SOURCE_DIFFERENCE_SAME_KIND: &str = r#"
 structure def DifferenceSameKind {
     let b = box(10mm, 10mm, 10mm)
-    let sel = difference(faces(b), faces_by_normal(b, [0, 0, 1], 1deg))
+    let sel = difference(faces(b), faces_by_normal(b, dir(0, 0, 1), 1deg))
 }
 "#;
 

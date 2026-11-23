@@ -99,7 +99,7 @@ structure CantileverStepResponse {
     // it lands the modal force reader falls back to the fundamental-mode antinode
     // (the tip), exactly as the displacement_at("tip", …) query below does.
     let beam = box(length, width, height)
-    let tip_dir = vec3(1.0, 0.0, 0.0)
+    let tip_dir = dir(1, 0, 0)
     let tip_tol = 1deg
     let tip_face = faces_by_normal(beam, tip_dir, tip_tol)
     let tip_push = StepForce(

@@ -205,9 +205,9 @@ const SELECTOR_BOX_SRC: &str = r#"structure def Widget {
     param height : Length = 20mm
     param depth  : Length = 30mm
     param body   : Solid  = box(width, height, depth)
-    let dir = vec3(0.0, 0.0, 1.0)
+    let up = dir(0, 0, 1)
     let tol = 1deg
-    let top = faces_by_normal(body, dir, tol)
+    let top = faces_by_normal(body, up, tol)
 }"#;
 
 // ── P1/P2: Predicate selector resolves over BRep and Mesh ────────────────────
@@ -350,7 +350,7 @@ const BY_ROLE_OVER_MESH_SRC: &str = r#"structure def Fail {
 /// recognises.  The module-static demand pass overrides `body`'s demanded repr to
 /// `VolumeMesh`; `ensure_gmsh_kernel()` provides the Gmsh adapter.
 ///
-/// After the VolumeMesh realization, `single(faces_by_normal(body, dir, tol))`
+/// After the VolumeMesh realization, `single(faces_by_normal(body, up, tol))`
 /// triggers `resolve_selector_to_list`:
 ///   - `region_query_capability(ByNormal) = Some(BRepAndMesh)`
 ///   - `realized_reprs[body] = VolumeMesh`
@@ -367,9 +367,9 @@ fn gate_probe(g: Geometry) -> Int {
 
 structure def GateFail {
     let body = box(10mm, 10mm, 10mm)
-    let dir  = vec3(0.0, 0.0, 1.0)
+    let up   = dir(0, 0, 1)
     let tol  = 1deg
-    let top  = single(faces_by_normal(body, dir, tol))
+    let top  = single(faces_by_normal(body, up, tol))
     let probe = gate_probe(body)
 }"#;
 
@@ -489,9 +489,9 @@ const CONTENT_HASH_SRC: &str = r#"structure def Widget {
     param height : Length = 20mm
     param depth  : Length = 30mm
     param body   : Solid  = box(width, height, depth)
-    let dir = vec3(0.0, 0.0, 1.0)
+    let up = dir(0, 0, 1)
     let tol = 1deg
-    let top = faces_by_normal(body, dir, tol)
+    let top = faces_by_normal(body, up, tol)
 }"#;
 
 // ── P6a: Cross-run content-hash stability ────────────────────────────────────

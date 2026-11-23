@@ -12594,9 +12594,9 @@ mod combined_param_let_graph_geometry_let_tests {
     param height : Length = 20mm
     param depth  : Length = 30mm
     let loc_box = box(width, height, depth)
-    let dir = vec3(0.0, 0.0, 1.0)
+    let up = dir(0, 0, 1)
     let tol = 1deg
-    let loc = faces_by_normal(loc_box, dir, tol)
+    let loc = faces_by_normal(loc_box, up, tol)
 }"#,
         );
         let template = &module.templates[0];

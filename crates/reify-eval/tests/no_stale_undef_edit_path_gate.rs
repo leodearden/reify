@@ -186,7 +186,7 @@ fn edit_param_let_backed_selector_consumer_reresolves_and_invariant_green() {
 const EDIT_FIXTURE_SOURCE_MODIFIED: &str = r#"structure def GeometryLetSelectorConsumerEdit {
     param w : Length = 50mm
     let loc_box = box(w, 40mm, 10mm)
-    let loc = faces_by_normal(loc_box, vec3(0.0, 0.0, 1.0), 1deg)
+    let loc = faces_by_normal(loc_box, dir(0, 0, 1), 1deg)
     let probe = loc
 }"#;
 

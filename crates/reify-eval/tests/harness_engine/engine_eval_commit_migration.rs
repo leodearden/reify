@@ -1363,7 +1363,7 @@ fn eval_cached_param_reserve_commits_and_preserves() {
 /// carry into the `eval_cached` preserve-freshness re-serve.
 const UNDETERMINED_LET_SRC: &str = r#"structure def ConstructionOnly {
     let b        = box(10mm, 20mm, 30mm)
-    let zdir     = vec3(0.0, 0.0, 1.0)
+    let zdir     = dir(0, 0, 1)
     let tol      = 1deg
     let top_face = single(faces_by_normal(b, zdir, tol))
 }"#;
