@@ -81,11 +81,9 @@ impl AmbientDefaults {
     /// own map first and falls back to the file level on a miss; a `None`
     /// (file-scope) lookup consults only the file level.
     ///
-    pub(crate) fn resolve(
-        &self,
-        type_name: &str,
-        purpose: Option<&str>,
-    ) -> Option<&ResolvedAmbientDefault> {
+    /// Private: [`AmbientDefaults::synthesize_param_defaults`] owns the DD3
+    /// ladder this lookup sits at the bottom of.
+    fn resolve(&self, type_name: &str, purpose: Option<&str>) -> Option<&ResolvedAmbientDefault> {
         // Innermost-wins: from inside a purpose, consult that purpose's own map
         // first; on a miss (or at file scope) fall back to the file level.
         if let Some(purpose_name) = purpose
@@ -578,6 +576,31 @@ mod tests {
 
             let synthesized = material_ambient_table("ambient_steel").synthesize_param_defaults(
                 &[widget_req],
+                &[],
+                &no_members(),
+                None,
+            );
+
+            assert!(synthesized.is_empty(), "got {synthesized:?}");
+        }
+
+        /// DD1: only a `Param` requirement naming a structure type is a
+        /// candidate — not a `Let` of that type, nor a `Param` of another type.
+        #[test]
+        fn only_structure_typed_param_requirements_are_candidates() {
+            let material_let_req = TraitRequirement {
+                name: "m".to_string(),
+                kind: RequirementKind::Let(Type::StructureRef("Material".to_string())),
+                span: SourceSpan::empty(0),
+            };
+            let length_param_req = TraitRequirement {
+                name: "len".to_string(),
+                kind: RequirementKind::Param(Type::length()),
+                span: SourceSpan::empty(0),
+            };
+
+            let synthesized = material_ambient_table("ambient_steel").synthesize_param_defaults(
+                &[material_let_req, length_param_req],
                 &[],
                 &no_members(),
                 None,
