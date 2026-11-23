@@ -6,7 +6,8 @@ C4-C6): the per-policy cargo and command environment and the CARGO_HOME pin,
 the host.toml store and fallback settings, which real sccache serves them, and
 the store link: the probe, the loopback relay sccache talks to the store
 through, and the watchdog that cuts that relay when the store stops answering;
-and the private per-invocation server session over a unix socket.
+the private per-invocation server session over a unix socket; and the
+build_cache record, written by the event channel's one encoder.
 It knows nothing of trees, build-directory modes or mount namespaces, and
 imports nothing from canon_run.
 """
@@ -856,3 +857,58 @@ def open_session(
         client_env=environment.for_command(env),
         knobs=knobs,
     )
+
+
+EVENT_LIB = Path(__file__).with_name("lib_event_log.sh")
+
+
+@dataclass(frozen=True)
+class BuildCacheRecord:
+    """C6's record of one outermost invocation; mode is canon_run's mode value."""
+
+    mode: str
+    policy: Policy
+    backend: Backend
+    reason: Reason
+    hits: int
+    misses: int
+    write_errors: int
+    uncached_machine_flags: int
+    detached_server: int
+    store_attempts: int
+    wall_secs: float
+    cpu_secs: float
+
+
+def write_record(record: BuildCacheRecord, subcommand: str, channel: str | None, journal: str) -> None:
+    """One build_cache line to the channel (when given) and the journal, by lib_event_log.sh.
+
+    Never fatal, like the lib itself: a failed write is dropped.
+    """
+    arguments = [
+        str(record.mode),
+        record.policy.value,
+        record.backend.value,
+        record.reason.value,
+        *(str(count) for count in (
+            record.hits,
+            record.misses,
+            record.write_errors,
+            record.uncached_machine_flags,
+            record.detached_server,
+            record.store_attempts,
+        )),
+        f"{record.wall_secs:.3f}",
+        f"{record.cpu_secs:.3f}",
+        subcommand,
+    ]
+    env = {"PATH": "/usr/bin:/bin", "REIFY_VERIFY_EVENT_LOG": channel or "", "EVENT_LOG_COPY_TO": journal}
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        subprocess.run(
+            ["/bin/bash", "-c", 'source "$0" && event_log_emit_build_cache "$@"', str(EVENT_LIB), *arguments],
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )

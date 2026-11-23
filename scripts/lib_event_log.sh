@@ -24,9 +24,12 @@
 #   event_log_emit_member_finish MEMBER ATTEMPT RC VERDICT DURATION_MS QUEUED_NS STARTED_NS ENDED_NS PRE_OMITTED [DETAIL_LINE...]
 #   event_log_emit_phase_finish  PHASE STARTED_NS ENDED_NS
 #   event_log_emit_slot_timeout  REASON SLOTS WAITED DISPOSITION LOCK EMITTER
+#   event_log_emit_build_cache   MODE POLICY BACKEND REASON HITS MISSES WRITE_ERRORS UNCACHED_MACHINE_FLAGS DETACHED_SERVER STORE_ATTEMPTS WALL_SECS CPU_SECS SUBCOMMAND
 #   event_log_emit_run_finish    DISCOVERED FAILURES INTERRUPTED N_FAILED [name...] N_FLAKY [name...] N_SKIPPED [name...]
-# An int argument that is not an integer, and a bool that is not true/false,
-# encodes JSON null.
+# An int argument that is not an integer, a num argument that is not a plain
+# decimal, and a bool that is not true/false, encode JSON null.
+# build_cache is emitted by scripts/canon_cache.py, once per outermost
+# canon_run.py invocation, with its journal as the copy sink.
 #
 # Readers: scripts/verify_events_lib.py (the parser) and
 # tests/infra/verify_events.py (the CLI over it). Schema and writers:
@@ -89,6 +92,17 @@ _event_json_int() {
     printf -v "$1" '%s' "${_eji_v:+$_eji_sign}${_eji_v:-0}"
 }
 
+# _event_json_number OUT_VAR VALUE — VALUE as a JSON number when it is a plain
+# decimal (an optional '-', then 0 or a digit string without a leading zero,
+# then an optional '.' and digits), else null.
+_event_json_number() {
+    if [[ $2 =~ ^-?(0|[1-9][0-9]*)(\.[0-9]+)?$ ]]; then
+        printf -v "$1" '%s' "$2"
+    else
+        printf -v "$1" '%s' null
+    fi
+}
+
 # _event_json_bool OUT_VAR VALUE — true or false, else null.
 _event_json_bool() {
     case "$2" in
@@ -97,13 +111,14 @@ _event_json_bool() {
     esac
 }
 
-# _event_log_add LINE_VAR str|int|bool KEY VALUE — append ,"KEY":<VALUE> to
+# _event_log_add LINE_VAR str|int|num|bool KEY VALUE — append ,"KEY":<VALUE> to
 # the record text in LINE_VAR.
 _event_log_add() {
     local _ela_v
     case "$2" in
         str) event_json_string _ela_v "$4" ;;
         int) _event_json_int _ela_v "$4" ;;
+        num) _event_json_number _ela_v "$4" ;;
         bool) _event_json_bool _ela_v "$4" ;;
     esac
     printf -v "$1" '%s,"%s":%s' "${!1}" "$3" "$_ela_v"
@@ -297,6 +312,28 @@ event_log_emit_slot_timeout() {
     _event_log_add _line str lock "${5-}"
     _event_log_add _line str emitter "${6-}"
     _event_log_append "$_line}" slot_timeout
+    return 0
+}
+
+event_log_emit_build_cache() {
+    _event_log_no_sink && return 0
+    local LC_ALL=C
+    local _line
+    _event_log_head _line build_cache
+    _event_log_add _line str mode "${1-}"
+    _event_log_add _line str policy "${2-}"
+    _event_log_add _line str backend "${3-}"
+    _event_log_add _line str reason "${4-}"
+    _event_log_add _line int hits "${5-}"
+    _event_log_add _line int misses "${6-}"
+    _event_log_add _line int write_errors "${7-}"
+    _event_log_add _line int uncached_machine_flags "${8-}"
+    _event_log_add _line int detached_server "${9-}"
+    _event_log_add _line int store_attempts "${10-}"
+    _event_log_add _line num wall_secs "${11-}"
+    _event_log_add _line num cpu_secs "${12-}"
+    _event_log_add _line str subcommand "${13-}"
+    _event_log_append "$_line}" build_cache
     return 0
 }
 

@@ -1,0 +1,1 @@
+{"v":1,"ts_ns":1795421341209509000,"pid":466015,"event":"build_cache","mode":"canon","policy":"shared","backend":"shared","reason":"","hits":1150,"misses":0,"write_errors":0,"uncached_machine_flags":0,"detached_server":0,"store_attempts":1,"wall_secs":412.500,"cpu_secs":2964.250,"subcommand":"test"}
