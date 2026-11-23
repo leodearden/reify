@@ -350,6 +350,60 @@ fn imported_plain_alias_body_binds_its_defining_modules_alias_names() {
     }
 }
 
+const PROD11: &str = "module prod11\n\
+pub enum E11 { A, B }\n\
+type Inner11 = E11\n\
+pub type Outer11 = Inner11\n";
+
+/// The importer's `Inner11` and prod11's `Inner11` are different aliases, so
+/// resolving the first through `Outer11` into the second is not a cycle.
+#[test]
+fn imported_plain_alias_chain_through_a_same_named_importer_alias_is_not_a_cycle() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(dir.path(), "prod11.ri", PROD11);
+
+    let program = compile(
+        dir.path(),
+        "imp11",
+        "module imp11\n\
+import prod11\n\
+type Inner11 = Outer11\n\
+structure def App {\n\
+\x20   param m : Inner11\n\
+\x20   param d : E11\n\
+}\n",
+    );
+    let entry = program.entry();
+    assert!(errors(entry).is_empty(), "got {:?}", errors(entry));
+    let direct = cell_type(entry, "App", "d");
+    assert!(!direct.is_error(), "`E11` must resolve; got {direct:?}");
+    assert_eq!(cell_type(entry, "App", "m"), direct);
+}
+
+/// Circular imported plain aliases still end, and using one still reports it.
+#[test]
+fn imported_circular_plain_aliases_still_terminate() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(
+        dir.path(),
+        "cyc.ri",
+        "module cyc\npub type Cy1 = Cy2\npub type Cy2 = Cy1\n",
+    );
+
+    let program = compile(
+        dir.path(),
+        "impcyc",
+        "module impcyc\nimport cyc\nstructure def App {\n    param p : Cy1\n}\n",
+    );
+    assert!(
+        errors(program.entry())
+            .iter()
+            .any(|d| d.message.contains("Cy1")),
+        "got {:?}",
+        program.entry().diagnostics
+    );
+}
+
 const PROD2: &str = "module prod2\n\
 type InnerZz = Force / Length\n\
 type HiddenZz = Length\n\
