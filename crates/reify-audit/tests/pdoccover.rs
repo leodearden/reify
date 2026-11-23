@@ -39,11 +39,8 @@ fn write_file(root: &Path, path: &str, content: &str) {
     std::fs::write(&full, content).expect("write_file");
 }
 
-/// Repo root, resolved from `CARGO_MANIFEST_DIR` (= `crates/reify-audit`).
 fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
+    reify_test_support::workspace_root::workspace_root().to_path_buf()
 }
 
 /// Owns the mock seams so an [`AuditContext`] (which borrows all three) can be
@@ -2027,12 +2024,7 @@ const KNOWN_CATEGORIES: &[&str] = &[
 /// real defect.
 #[test]
 fn real_repo_smoke_findings_are_well_formed_and_deterministic() {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
-        .expect("CARGO_MANIFEST_DIR must be set by cargo test");
-    let repo_root = Path::new(&manifest_dir)
-        .join("../..")
-        .canonicalize()
-        .expect("canonicalize repo root");
+    let repo_root = repo_root().canonicalize().expect("canonicalize repo root");
 
     let git = reify_audit::RealGitOps::new(&repo_root);
     let conn = Connection::open_in_memory().expect("in-memory sqlite");

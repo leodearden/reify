@@ -12,6 +12,7 @@ use reify_audit::pdoccover_baseline::{
     BASELINE_HEADER, BASELINE_PATH, BaselineRow, parse_baseline, render_baseline,
 };
 use reify_audit::{AuditContext, MockJCodemunchOps, RealGitOps};
+use reify_test_support::test_package;
 use rusqlite::Connection;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -73,7 +74,7 @@ fn with_ctx<R>(root: &Path, f: impl FnOnce(&AuditContext<'_>) -> R) -> R {
 /// The real generator aimed at `root`. Sanitized directly: the program is a
 /// reify binary that runs git internally, not git itself.
 fn run_generator(root: &Path, extra: &[&str]) -> Output {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_pdoccover-baseline-gen"));
+    let mut cmd = Command::new(test_package::bin_exe("pdoccover-baseline-gen"));
     cmd.arg("--project-root").arg(root).args(extra);
     reify_git_env::sanitize(&mut cmd);
     cmd.output().expect("pdoccover-baseline-gen spawns")
@@ -247,8 +248,7 @@ fn live_checkout(check: &str) -> Option<PathBuf> {
     if !git_available(check) {
         return None;
     }
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
+    let root = reify_test_support::workspace_root::workspace_root()
         .canonicalize()
         .expect("canonicalize repo root");
     if !root.join(".git").exists() {

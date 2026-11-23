@@ -69,14 +69,8 @@ const SOURCE_FILES: &[&str] = &[
 /// The engine_seam_orphans_g_allow.rs test file (source of the PINS array).
 const PINS_FILE: &str = "crates/reify-audit/tests/engine_seam_orphans_g_allow.rs";
 
-/// Find the workspace root from CARGO_MANIFEST_DIR (crates/reify-audit).
 fn workspace_root() -> std::path::PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap() // crates/
-        .parent()
-        .unwrap() // workspace root
-        .to_path_buf()
+    reify_test_support::workspace_root::workspace_root().to_path_buf()
 }
 
 /// Scan `// G-allow:` lines in a single source file, returning

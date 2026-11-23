@@ -60,11 +60,11 @@ use reify_audit::ptodo::{STRUCTURAL_KINDS, is_allowlisted, is_swept_ext};
 use std::path::Path;
 use std::process::Command;
 
-/// Resolve the path to `ptodo-baseline.txt`:
-///   CARGO_MANIFEST_DIR = `crates/reify-audit` → `./ptodo-baseline.txt`
+use reify_test_support::test_package;
+
+/// `crates/reify-audit/ptodo-baseline.txt`.
 fn baseline_path() -> std::path::PathBuf {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    Path::new(manifest_dir).join("ptodo-baseline.txt")
+    test_package::manifest_dir().join("ptodo-baseline.txt")
 }
 
 /// A `REIFY_PTODO_TASKS_DB` override that can never resolve: no path beneath a
@@ -388,7 +388,7 @@ fn staged_fixture(files: &[(&str, String)]) -> tempfile::TempDir {
 /// git internally, not git itself, which is the other-shape case
 /// [`reify_git_env::sanitize`] sanctions.
 fn generator_cmd(root: &Path) -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_ptodo-baseline-gen"));
+    let mut cmd = Command::new(test_package::bin_exe("ptodo-baseline-gen"));
     cmd.arg("--project-root")
         .arg(root)
         .env_remove("REIFY_PTODO_TASKS_DB");

@@ -30,8 +30,7 @@ fn write_file(root: &Path, path: &str, content: &str) {
 }
 
 fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
+    reify_test_support::workspace_root::workspace_root()
         .canonicalize()
         .expect("canonicalize repo root")
 }
@@ -376,7 +375,7 @@ fn pattern_pcite_reports_a_fabricated_cite_and_exits_zero() {
         .execute_batch("CREATE TABLE events (task_id TEXT, event_type TEXT);")
         .expect("create events table");
 
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_reify-audit"));
+    let mut cmd = Command::new(reify_test_support::test_package::bin_exe("reify-audit"));
     cmd.args(["--pattern", "PCITE", "--no-jcodemunch", "--project-root"])
         .arg(repo.path())
         .arg("--tasks-file")
