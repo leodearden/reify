@@ -51,6 +51,7 @@ REBUILD_FIX = "delete the build directory to rebuild it at the real path"
 TRAMPOLINE_MARKER = b"reify-canon-trampoline"
 MARKER_WINDOW = 1024
 RESTORE_POLL_MS = 5
+STARTUP_IGNORED = (signal.SIGPIPE, signal.SIGXFSZ)  # CPython sets both to SIG_IGN at startup
 # Linux's PIDFD_GET_INFO (include/uapi/linux/pidfd.h, struct pidfd_info VER0, 6.15+).
 PIDFD_GET_INFO = 0xC040FF0B  # _IOWR(0xFF, 11, 64 bytes)
 PIDFD_INFO_EXIT = 1 << 3
@@ -694,6 +695,9 @@ def flatten(message: object) -> str:
 
 
 def execute(file: str, argv: list[str], env: Mapping[str, str], *, search: bool) -> NoReturn:
+    """Become the command, with the signals CPython ignores at default, as Popen's restore_signals gives."""
+    for number in STARTUP_IGNORED:
+        signal.signal(number, signal.SIG_DFL)
     exec_call = os.execvpe if search else os.execve
     try:
         exec_call(file, argv, env)
