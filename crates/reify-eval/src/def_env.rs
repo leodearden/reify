@@ -11,15 +11,16 @@
 //! over it.
 
 use std::borrow::Borrow;
+use std::sync::Arc;
 
-use reify_compiler::name_env::{self, Bindings, Definition};
+use reify_compiler::name_env::{self, Bindings, Definition, Tier};
 use reify_compiler::program::CompiledProgram;
 use reify_compiler::stdlib_loader::load_stdlib;
 use reify_compiler::{
     CompiledConstraintDef, CompiledModule, CompiledPurpose, CompiledTrait, CompiledTypeAlias,
     CompiledUnit, TopologyTemplate,
 };
-use reify_core::Type;
+use reify_core::{Diagnostic, Type};
 use reify_ir::{CompiledFunction, EnumDef};
 
 /// Every definition a [`CompiledProgram`] can name, resolved on demand over
@@ -83,6 +84,12 @@ impl<'p> DefEnv<'p> {
         name_env::bind_program(self.program, self.prelude)
     }
 
+    /// The bound functions in precedence order, one per signature (name and
+    /// parameter types): the program's dispatch table (§10 Q4).
+    pub fn function_table(&self) -> Arc<[CompiledFunction]> {
+        self.function_bindings().winners().cloned().collect()
+    }
+
     /// The function `name(param_types)` binds to: functions are keyed by name
     /// and parameter types.
     pub fn resolve_function(
@@ -124,5 +131,36 @@ impl<'p> DefEnv<'p> {
     /// The program's entry module.
     pub fn declared(&self) -> &'p CompiledModule {
         self.program.entry()
+    }
+
+    /// One Warning per first-wins collision whose loser is a user import's
+    /// definition (D-6): entry-vs-import and import-vs-import, every kind. A
+    /// shadowed stdlib definition is the shadowing module's own compile's to
+    /// report.
+    pub fn collision_warnings(&self) -> Vec<Diagnostic> {
+        [
+            self.import_tier_collisions::<TopologyTemplate>(),
+            self.import_tier_collisions::<CompiledFunction>(),
+            self.import_tier_collisions::<EnumDef>(),
+            self.import_tier_collisions::<CompiledUnit>(),
+            self.import_tier_collisions::<CompiledTypeAlias>(),
+            self.import_tier_collisions::<CompiledTrait>(),
+            self.import_tier_collisions::<CompiledConstraintDef>(),
+            self.import_tier_collisions::<CompiledPurpose>(),
+        ]
+        .concat()
+    }
+
+    fn import_tier_collisions<D: Definition>(&self) -> Vec<Diagnostic> {
+        let entry_key = self.program.entry().path.to_dotted();
+        name_env::bind_program::<D>(self.program, self.prelude)
+            .shadowings()
+            .iter()
+            .filter(|shadowing| {
+                shadowing.shadowed.origin.tier() == Tier::Import
+                    && shadowing.winner.origin != shadowing.shadowed.origin
+            })
+            .map(|shadowing| name_env::collision_warning(shadowing, &entry_key))
+            .collect()
     }
 }
