@@ -343,3 +343,41 @@ def process_gone(pid):
             return stat.read().rsplit(")", 1)[1].split()[0] == "X"
     except FileNotFoundError:
         return True
+
+
+# Opens a shared session on the fake sccache (argv: scripts dir, fake dir, build
+# dir, start-lock path, started marker) and supervises a command that touches
+# the marker and then sleeps, so a test can signal this supervisor mid-command.
+SUPERVISE_RUNNER = r"""
+import dataclasses
+import os
+import sys
+
+sys.path.insert(0, sys.argv[1])
+import canon_cache
+
+fake, build, lock, started = sys.argv[2:6]
+knobs = dataclasses.replace(canon_cache.SessionKnobs(), start_lock=lock, tmp_root=build)
+env = {"PATH": "/usr/bin:/bin"}
+settings = canon_cache.CacheSettings(fallback_dir=os.path.join(build, "fallback"))
+session = canon_cache.open_session(
+    canon_cache.Policy.SHARED, settings, canon_build_dir=build,
+    sccache=os.path.join(fake, "sccache"), env=env, knobs=knobs,
+)
+sys.exit(canon_cache.supervise(
+    ["/bin/sh", "-c", 'touch "$0"; exec sleep 600', started],
+    session.environment.for_command(env),
+    build,
+    session=session,
+    record_base=canon_cache.RecordBase("canon", canon_cache.Policy.SHARED),
+    subcommand="",
+    channel=None,
+    journal=os.path.join(build, ".reify-canon-journal.jsonl"),
+))
+"""
+
+
+def write_supervise_runner(directory):
+    runner = Path(directory, "supervise_runner.py")
+    runner.write_text(SUPERVISE_RUNNER)
+    return str(runner)

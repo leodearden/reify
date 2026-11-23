@@ -21,6 +21,7 @@ import os
 import random
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -948,6 +949,164 @@ class Record(unittest.TestCase):
         self.assertEqual(
             (sample.records[0]["mode"], sample.records[0]["policy"]), ("canon", "shared")
         )
+
+
+CPU_CHILD = """
+import os, sys, time
+while time.process_time() < 0.3:
+    pass
+fields = open("/proc/self/stat").read().rsplit(")", 1)[1].split()
+ticks = int(fields[11]) + int(fields[12])
+open(sys.argv[1], "w").write(str(ticks / os.sysconf("SC_CLK_TCK")))
+"""
+FD_DUMP = """
+import json, os, sys
+fds = {}
+for name in os.listdir("/proc/self/fd"):
+    try:
+        fds[name] = os.readlink(f"/proc/self/fd/{name}")
+    except OSError:
+        pass
+json.dump(fds, open(sys.argv[1], "w"))
+"""
+
+
+class Supervise(SessionCase):
+    """C6's measurement around one command, and the supervisor's signal and descriptor policy."""
+
+    def setUp(self):
+        super().setUp()
+        self.journal = os.path.join(self.build, ".reify-canon-journal.jsonl")
+        self.channel = os.path.join(self.tmp, "channel.jsonl")
+
+    def supervise(self, argv, *, session="open", record_base=None, channel=None, subcommand="build"):
+        if session == "open":
+            session = self.open("ok")
+        env = self.env if session is None else session.environment.for_command(self.env)
+        return canon_cache.supervise(
+            argv,
+            env,
+            self.tmp,
+            session=session,
+            record_base=record_base or canon_cache.RecordBase("canon", canon_cache.Policy.SHARED),
+            subcommand=subcommand,
+            channel=channel,
+            journal=self.journal,
+        )
+
+    def row(self):
+        events = read_events(self.journal)
+        self.assertEqual((len(events.records), events.skipped_lines), (1, 0))
+        return events.records[0]
+
+    def test_status_counters_and_record(self):
+        status = self.supervise(["/bin/sh", "-c", "exit 3"], channel=self.channel)
+        self.assertEqual(status, 3)
+        row = self.row()
+        expected = {
+            "mode": "canon", "policy": "shared", "backend": "shared", "reason": "",
+            "hits": 5, "misses": 2, "write_errors": 1, "store_attempts": 1, "subcommand": "build",
+            "detached_server": 0, "uncached_machine_flags": 0,
+        }
+        self.assertEqual({name: row[name] for name in expected}, expected)
+        self.assertGreaterEqual(row["wall_secs"], 0)
+        self.assertEqual(Path(self.channel).read_bytes(), Path(self.journal).read_bytes())
+        self.assertEqual(sorted(name for name in os.listdir(self.build) if name.startswith(".reify-sccache")), [])
+
+    def test_command_killed_by_a_signal_returns_128_plus_it(self):
+        self.assertEqual(self.supervise(["/bin/sh", "-c", "kill -TERM $$"]), 143)
+
+    def test_cpu_secs_covers_a_grandchild(self):
+        spent = os.path.join(self.tmp, "spent")
+        self.supervise(["/bin/sh", "-c", f'{sys.executable} -I -c "$0" "$1"', CPU_CHILD, spent])
+        self.assertGreaterEqual(self.row()["cpu_secs"], float(Path(spent).read_text()) - 0.001)
+
+    def test_uncached_compiles_are_counted_and_the_log_removed(self):
+        self.supervise(["/bin/sh", "-c", 'echo cc >> "$REIFY_CANON_UNCACHED_LOG"; echo rustc >> "$REIFY_CANON_UNCACHED_LOG"'])
+        self.assertEqual(self.row()["uncached_machine_flags"], 2)
+        self.assertEqual([name for name in os.listdir(self.build) if "uncached" in name], [])
+
+    def test_store_lost_while_the_command_runs(self):
+        lost = os.path.join(self.tmp, "lost")
+        calls = []
+
+        def probe():
+            """Reachable when the session opens; the watchdog's next two probes fail."""
+            calls.append(None)
+            if len(calls) == 3:
+                Path(lost).touch()
+            return len(calls) == 1
+
+        self.knobs = dataclasses.replace(self.knobs, watchdog_interval=0.01)
+        cfx.set_plan(self.fake, "ok")
+        session = canon_cache.open_session(
+            canon_cache.Policy.SHARED, self.settings, canon_build_dir=self.build, sccache=self.sccache,
+            knobs=self.knobs, env=self.env, probe=probe,
+        )
+        self.addCleanup(session.close)
+        status = self.supervise(
+            ["/bin/sh", "-c", 'while [ ! -e "$0" ]; do sleep 0.02; done; exit 3', lost], session=session
+        )
+        self.assertEqual(status, 3)
+        self.assertEqual(self.row()["reason"], "store_lost")
+
+    def test_incremental_starts_no_server(self):
+        base = canon_cache.RecordBase("canon", canon_cache.Policy.INCREMENTAL)
+        self.assertEqual(self.supervise(["/bin/true"], session=None, record_base=base), 0)
+        self.assertEqual(self.servers(), [])
+        row = self.row()
+        self.assertEqual(
+            (row["policy"], row["backend"], row["reason"], row["hits"]), ("incremental", "none", "", 0)
+        )
+
+    def test_real_path_record(self):
+        base = canon_cache.RecordBase(
+            "real_path", canon_cache.Policy.SHARED, canon_cache.Backend.NONE, canon_cache.Reason.LEGACY_BUILD_DIR
+        )
+        self.supervise(["/bin/true"], session=None, record_base=base)
+        row = self.row()
+        self.assertEqual(
+            {name: row[name] for name in ("mode", "backend", "reason", "hits", "misses", "store_attempts")},
+            {"mode": "real_path", "backend": "none", "reason": "legacy_build_dir", "hits": 0, "misses": 0,
+             "store_attempts": 0},
+        )
+
+    def test_missing_command_raises_after_closing_the_session(self):
+        session = self.open("ok")
+        with self.assertRaises(canon_cache.CommandNotFound):
+            self.supervise(["no-such-command-reify-canon"], session=session)
+        self.assertEqual(sorted(name for name in os.listdir(self.build) if name.startswith(".reify-sccache")), [])
+        self.assertTrue(cfx.process_gone(self.servers()[0]["pid"]))
+        self.assertFalse(os.path.exists(self.journal))
+
+    def test_sigterm_to_the_supervisor_is_forwarded_and_teardown_runs(self):
+        runner = cfx.write_supervise_runner(self.tmp)
+        started = os.path.join(self.tmp, "started")
+        cfx.set_plan(self.fake, "ok")
+        supervisor = subprocess.Popen(
+            [sys.executable, "-I", runner, str(fx.REPO_ROOT / "scripts"), self.fake, self.build, self.lock, started]
+        )
+        self.addCleanup(supervisor.kill)
+        while not os.path.exists(started):
+            self.assertIsNone(supervisor.poll())
+            time.sleep(0.02)
+        supervisor.send_signal(signal.SIGTERM)
+        self.assertEqual(supervisor.wait(), 143)
+        self.assertEqual(sorted(name for name in os.listdir(self.build) if name.startswith(".reify-sccache")), [])
+        self.assertEqual(self.row()["subcommand"], "")
+
+    def test_command_inherits_inheritable_fds_and_no_session_socket(self):
+        marker = Path(self.tmp, "inherit-me")
+        marker.touch()
+        inherited = os.open(marker, os.O_RDONLY)
+        self.addCleanup(os.close, inherited)
+        os.set_inheritable(inherited, True)
+        dump = os.path.join(self.tmp, "fds.json")
+        self.supervise([sys.executable, "-I", "-c", FD_DUMP, dump])
+        fds = json.loads(Path(dump).read_text())
+        self.assertEqual(fds.get(str(inherited)), str(marker))
+        sockets = [fd for fd, target in fds.items() if int(fd) > 2 and target.startswith("socket:")]
+        self.assertEqual(sockets, [])
 
 
 class PolicyMembers(unittest.TestCase):
