@@ -9,8 +9,8 @@
 //! [`EvaluationGraph::from_templates`]: super::EvaluationGraph::from_templates
 
 use reify_compiler::{
-    CompiledGuardedGroup, SubComponentDecl, TopologyTemplate, ValueCellDecl, ValueCellKind,
-    find_template,
+    CompiledGuardedGroup, GuardedGroupCell, SubComponentDecl, TopologyTemplate, ValueCellDecl,
+    ValueCellKind, find_template,
 };
 use reify_core::{Type, ValueCellId};
 use reify_ir::{CompiledExpr, CompiledExprKind, MemberKey, Value};
@@ -64,10 +64,22 @@ impl InstanceSlot<'_> {
         } = self;
         match self.index {
             SlotIndex::Single => format!("{parent}.{sub_name}"),
-            SlotIndex::Positional(i) => format!("{parent}.{sub_name}[{i}]"),
-            SlotIndex::Keyed(key) => format!("{parent}.{}", key.path_segment(sub_name)),
+            SlotIndex::Positional(i) => positional_slot_entity(parent, sub_name, i),
+            SlotIndex::Keyed(key) => keyed_slot_entity(parent, sub_name, key),
         }
     }
+}
+
+/// The scoped entity of collection sub `sub_name`'s `index`th instance under
+/// `parent`, `P.s[i]`.
+pub(crate) fn positional_slot_entity(parent: &str, sub_name: &str, index: i64) -> String {
+    format!("{parent}.{sub_name}[{index}]")
+}
+
+/// The scoped entity of keyed sub `sub_name`'s `key` instance under `parent`,
+/// `P.s["k"]`.
+pub(crate) fn keyed_slot_entity(parent: &str, sub_name: &str, key: &MemberKey) -> String {
+    format!("{parent}.{}", key.path_segment(sub_name))
 }
 
 impl<'a> ContributedCell<'a> {
@@ -130,7 +142,7 @@ impl<'a> ContributedCell<'a> {
 
 /// Every value cell `from_templates(templates)` inserts, in insertion order.
 /// Per template: its own cells, then each resolvable sub's instance cells,
-/// then each guarded group's guard cell, members and else-members.
+/// then each guarded group's [`CompiledGuardedGroup::owned_cells`].
 pub fn contributed_cells(
     templates: &[TopologyTemplate],
 ) -> impl Iterator<Item = ContributedCell<'_>> {
@@ -176,11 +188,11 @@ fn template_cells<'a>(
     instances: Instances,
 ) -> impl Iterator<Item = ContributedCell<'a>> {
     let own = template.value_cells.iter().map(declared_cell);
-    let guarded = template.guarded_groups.iter().flat_map(|group| {
-        std::iter::once(ContributedCell(Source::Guard(group)))
-            .chain(group.members.iter().map(declared_cell))
-            .chain(group.else_members.iter().map(declared_cell))
-    });
+    let guarded = template
+        .guarded_groups
+        .iter()
+        .flat_map(CompiledGuardedGroup::owned_cells)
+        .map(guarded_group_cell);
     own.chain(sub_instance_cells(templates, template, instances))
         .chain(guarded)
 }
@@ -189,11 +201,44 @@ fn declared_cell(decl: &ValueCellDecl) -> ContributedCell<'_> {
     ContributedCell(Source::Declared(decl))
 }
 
+fn guarded_group_cell(cell: GuardedGroupCell<'_>) -> ContributedCell<'_> {
+    match cell {
+        GuardedGroupCell::Guard(group) => ContributedCell(Source::Guard(group)),
+        GuardedGroupCell::Member(decl) => declared_cell(decl),
+    }
+}
+
+/// Every sub instance whose cells [`contributed_cells`] yields: its scoped
+/// entity (`P.s`, `P.s[i]`, `P.s["k"]`) and the name of the child template
+/// its cells are stamped from.
+pub(crate) fn sub_instances(
+    templates: &[TopologyTemplate],
+) -> impl Iterator<Item = (String, &str)> {
+    templates.iter().flat_map(move |parent| {
+        instance_slots(templates, parent, Instances::Every)
+            .map(|(slot, child)| (slot.scoped_entity(), child.name.as_str()))
+    })
+}
+
 fn sub_instance_cells<'a>(
     templates: &'a [TopologyTemplate],
     parent: &'a TopologyTemplate,
     instances: Instances,
 ) -> impl Iterator<Item = ContributedCell<'a>> {
+    instance_slots(templates, parent, instances).flat_map(|(slot, child)| {
+        child
+            .value_cells
+            .iter()
+            .map(move |decl| ContributedCell(Source::SubInstance { slot, decl }))
+    })
+}
+
+/// `parent`'s instance slots, each with the child template it is stamped from.
+fn instance_slots<'a>(
+    templates: &'a [TopologyTemplate],
+    parent: &'a TopologyTemplate,
+    instances: Instances,
+) -> impl Iterator<Item = (InstanceSlot<'a>, &'a TopologyTemplate)> {
     parent
         .sub_components
         .iter()
@@ -202,16 +247,13 @@ fn sub_instance_cells<'a>(
             let SubElaboration { sub, child, .. } = elab;
             elab.slot_indices()
                 .take(instances.limit())
-                .flat_map(move |index| {
+                .map(move |index| {
                     let slot = InstanceSlot {
                         parent: &parent.name,
                         sub_name: &sub.name,
                         index,
                     };
-                    child
-                        .value_cells
-                        .iter()
-                        .map(move |decl| ContributedCell(Source::SubInstance { slot, decl }))
+                    (slot, child)
                 })
         })
 }
@@ -331,17 +373,36 @@ fn literal_int(expr: &CompiledExpr) -> Option<i64> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod fixtures {
     use reify_compiler::CompiledModule;
     use reify_constraints::SimpleConstraintChecker;
     use reify_core::ModulePath;
 
-    use super::{contributed_cell_types, contributed_cells};
-
-    fn compile(src: &str) -> CompiledModule {
+    pub(crate) fn compile(src: &str) -> CompiledModule {
         let parsed = reify_compiler::parse_with_stdlib(src, ModulePath::single("test"));
         reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker)
     }
+
+    /// `Rig` stamps one instance slot of each kind from `Bolt`: `Rig.single`,
+    /// `Rig.rack[0]`, `Rig.rack[1]` and `Rig.keyed["a"]`.
+    pub(crate) fn rig_with_every_slot_kind() -> CompiledModule {
+        compile(
+            "structure def Bolt { param len : Real = 1.0 }\n\
+             structure Rig {\n    sub single = Bolt()\n    sub rack : List<Bolt>\n    \
+             constraint rack.count == 2\n    sub keyed : Keyed<Bolt> {\n        \
+             \"a\" => { len = 2.0 }\n    }\n}\n",
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use reify_compiler::CompiledModule;
+
+    use super::fixtures::{compile, rig_with_every_slot_kind};
+    use super::{Source, contributed_cell_types, contributed_cells, sub_instances};
 
     #[test]
     fn contributed_cell_types_does_not_grow_with_instance_count() {
@@ -366,6 +427,42 @@ mod tests {
             type_count(&few),
             "contributed_cell_types must collapse a collection's instances, so its \
              length is the same for 50 screws (left) as for 2 (right)",
+        );
+    }
+
+    #[test]
+    fn sub_instances_maps_every_instance_slot_with_cells_to_its_child_template() {
+        let module = rig_with_every_slot_kind();
+        let in_fixture = |entity: &String| entity.starts_with("Rig.");
+        let registry: BTreeMap<String, &str> = sub_instances(&module.templates)
+            .filter(|(entity, _)| in_fixture(entity))
+            .collect();
+
+        let mut stamped: BTreeMap<String, &str> = BTreeMap::new();
+        for cell in contributed_cells(&module.templates) {
+            if let Source::SubInstance { slot, decl } = cell.0
+                && in_fixture(&slot.scoped_entity())
+            {
+                stamped.insert(slot.scoped_entity(), decl.id.entity.as_str());
+            }
+        }
+
+        let expected_slots: BTreeSet<&str> = [
+            "Rig.single",
+            "Rig.rack[0]",
+            "Rig.rack[1]",
+            "Rig.keyed[\"a\"]",
+        ]
+        .into();
+        assert_eq!(
+            stamped.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+            expected_slots,
+            "anti-vacuity: the fixture must stamp a single, a positional and a keyed slot"
+        );
+        assert_eq!(
+            registry, stamped,
+            "sub_instances (left) must name every slot contributed_cells stamps, each \
+             mapped to the template its cells are declared in (right)"
         );
     }
 }

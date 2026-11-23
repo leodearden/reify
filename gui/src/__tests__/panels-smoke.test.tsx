@@ -26,7 +26,7 @@ describe('panels smoke integration', () => {
           onSetParameter={vi.fn()}
         />
         <ConstraintPanel constraints={{}} values={{}} />
-        <Toolbar onExport={vi.fn()} onFitToView={vi.fn()} />
+        <Toolbar onExport={vi.fn()} onFitToView={vi.fn()} edges={false} onToggleEdges={vi.fn()} />
         <StatusBar
           evalStatus={{ phase: 'idle' }}
           meshes={{}}

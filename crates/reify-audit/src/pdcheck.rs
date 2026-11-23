@@ -320,10 +320,10 @@ fn build_finding(id: i64, row: &DeliveredCheckRow, verdict: Verdict, dead: &[Dea
 /// breadcrumb naming the resolved path rather than an error exit. The exit
 /// class is untouched — 125 is reserved for genuine arg/IO misconfig.
 pub fn check(ctx: &crate::AuditContext) -> Vec<Finding> {
-    let tracked: HashSet<String> = ctx.git.ls_files().into_iter().collect();
-    let db_path = crate::ptodo::tasks_db_path(&ctx.project_root);
+    let tracked: HashSet<String> = ctx.git().ls_files().into_iter().collect();
+    let db_path = crate::ptodo::tasks_db_path(ctx.project_root());
     match crate::ptodo::open_tasks_db(&db_path).and_then(|conn| {
-        resolve_delivered_check_paths(&conn, ctx.git, &tracked, ctx.target_task_id.as_deref())
+        resolve_delivered_check_paths(&conn, ctx.git(), &tracked, ctx.target_task_id())
     }) {
         Ok(findings) => findings,
         Err(e) => {

@@ -1203,6 +1203,18 @@ pub(crate) fn scan(root: &Path, seed_names: &BTreeSet<String>) -> Vec<Site> {
 
 // ── the scanner's own fixture-driven pins ─────────────────────────
 
+/// `(name, kind)` of every site in `src`, sorted: [`classify_text`] run with no
+/// forwarders.
+fn fixture_sites(src: &str, names: &[&str]) -> Vec<(String, SiteKind)> {
+    let names: BTreeSet<String> = names.iter().map(|n| n.to_string()).collect();
+    let mut sites: Vec<(String, SiteKind)> = classify_text("fixture.rs", src, &[], &names)
+        .into_iter()
+        .map(|s| (s.name, s.kind))
+        .collect();
+    sites.sort();
+    sites
+}
+
 /// Pins the `#[cfg(test)]` exclusion documented in the module docs, against
 /// synthetic input rather than against whatever the tree happens to contain —
 /// so the exclusion cannot rot when the tree changes.
@@ -1232,33 +1244,15 @@ mod tests {
     }
 }
 "###;
-    let (mut code, lits) = strip_comments_and_collect_literals(src);
-    mask_cfg_test_blocks(&mut code, &lits);
-
-    let names: BTreeSet<String> = [
-        "von_mises",
-        "max_shear",
-        "safety_factor",
-        "principal_stresses",
-    ]
-    .into_iter()
-    .map(str::to_string)
-    .collect();
-
-    let lit_end_at = literal_start_index(code.len(), &lits);
-    let found: Vec<(String, SiteKind)> = lits
-        .iter()
-        .filter(|l| names.contains(&l.content) && code[l.start] == b'"')
-        .filter_map(|l| {
-            if match_arm_head(&code, &lit_end_at, l.end) == ArmHead::Arm {
-                Some((l.content.clone(), SiteKind::MatchArm))
-            } else if is_eval_call(&code, l.start) {
-                Some((l.content.clone(), SiteKind::EvalCall))
-            } else {
-                None
-            }
-        })
-        .collect();
+    let found = fixture_sites(
+        src,
+        &[
+            "von_mises",
+            "max_shear",
+            "safety_factor",
+            "principal_stresses",
+        ],
+    );
 
     assert_eq!(
         found,
@@ -1343,26 +1337,7 @@ fn only_for_tests(name: &str) -> u8 {
     }
 }
 "###;
-    let (mut code, lits) = strip_comments_and_collect_literals(src);
-    mask_cfg_test_blocks(&mut code, &lits);
-
-    let names: BTreeSet<String> = ["von_mises", "max_shear"]
-        .into_iter()
-        .map(str::to_string)
-        .collect();
-
-    let lit_end_at = literal_start_index(code.len(), &lits);
-    let found: Vec<(String, SiteKind)> = lits
-        .iter()
-        .filter(|l| names.contains(&l.content) && code[l.start] == b'"')
-        .filter_map(|l| {
-            if match_arm_head(&code, &lit_end_at, l.end) == ArmHead::Arm {
-                Some((l.content.clone(), SiteKind::MatchArm))
-            } else {
-                None
-            }
-        })
-        .collect();
+    let found = fixture_sites(src, &["von_mises", "max_shear"]);
 
     assert_eq!(
         found,
@@ -1426,23 +1401,7 @@ fn dispatch(name: &str) -> u8 {
     }
 }
 "###;
-    let (mut code, lits) = strip_comments_and_collect_literals(src);
-    mask_cfg_test_blocks(&mut code, &lits);
-
-    let names: BTreeSet<String> = ["von_mises"].into_iter().map(str::to_string).collect();
-
-    let lit_end_at = literal_start_index(code.len(), &lits);
-    let found: Vec<(String, SiteKind)> = lits
-        .iter()
-        .filter(|l| names.contains(&l.content) && code[l.start] == b'"')
-        .filter_map(|l| {
-            if match_arm_head(&code, &lit_end_at, l.end) == ArmHead::Arm {
-                Some((l.content.clone(), SiteKind::MatchArm))
-            } else {
-                None
-            }
-        })
-        .collect();
+    let found = fixture_sites(src, &["von_mises"]);
 
     assert_eq!(
         found,
@@ -1479,18 +1438,6 @@ fn dispatch(name: &str) -> u8 {
 /// the gate to failing open.
 #[test]
 fn a_brace_in_a_char_literal_is_not_a_brace() {
-    fn seed_match_arms(src: &str) -> Vec<String> {
-        let (mut code, lits) = strip_comments_and_collect_literals(src);
-        mask_cfg_test_blocks(&mut code, &lits);
-        let names: BTreeSet<String> = ["von_mises"].into_iter().map(str::to_string).collect();
-        let lit_end_at = literal_start_index(code.len(), &lits);
-        lits.iter()
-            .filter(|l| names.contains(&l.content) && code[l.start] == b'"')
-            .filter(|l| match_arm_head(&code, &lit_end_at, l.end) == ArmHead::Arm)
-            .map(|l| l.content.clone())
-            .collect()
-    }
-
     let unbalanced_open = r###"
 #[cfg(test)]
 fn opens(c: char) -> bool {
@@ -1505,8 +1452,8 @@ fn dispatch(name: &str) -> u8 {
 }
 "###;
     assert_eq!(
-        seed_match_arms(unbalanced_open),
-        vec!["von_mises".to_string()],
+        fixture_sites(unbalanced_open, &["von_mises"]),
+        vec![("von_mises".to_string(), SiteKind::MatchArm)],
         "a `'{{'` inside a test-gated item must not unbalance the mask — \
          letting it run to EOF hides every production site behind it and the \
          gate passes over an unscanned file"
@@ -1525,7 +1472,7 @@ fn closes(c: char, name: &str) -> u8 {
 }
 "###;
     assert!(
-        seed_match_arms(unbalanced_close).is_empty(),
+        fixture_sites(unbalanced_close, &["von_mises"]).is_empty(),
         "a `'}}'` inside a test-gated item must not end the mask early — the \
          arm it exposes is test code, and reporting it is a false violation"
     );
@@ -1549,34 +1496,15 @@ fn dispatch(name: &str, args: &[Value]) -> Value {
     }
 }
 "###;
-    let (mut code, lits) = strip_comments_and_collect_literals(src);
-    mask_cfg_test_blocks(&mut code, &lits);
-
-    let names: BTreeSet<String> = [
-        "von_mises",
-        "max_shear",
-        "principal_stresses",
-        "safety_factor",
-    ]
-    .into_iter()
-    .map(str::to_string)
-    .collect();
-
-    let lit_end_at = literal_start_index(code.len(), &lits);
-    let mut found: Vec<(String, SiteKind)> = lits
-        .iter()
-        .filter(|l| names.contains(&l.content) && code[l.start] == b'"')
-        .filter_map(|l| {
-            if match_arm_head(&code, &lit_end_at, l.end) == ArmHead::Arm {
-                Some((l.content.clone(), SiteKind::MatchArm))
-            } else if is_eval_call(&code, l.start) {
-                Some((l.content.clone(), SiteKind::EvalCall))
-            } else {
-                None
-            }
-        })
-        .collect();
-    found.sort();
+    let found = fixture_sites(
+        src,
+        &[
+            "von_mises",
+            "max_shear",
+            "principal_stresses",
+            "safety_factor",
+        ],
+    );
 
     let mut expected = vec![
         ("von_mises".to_string(), SiteKind::MatchArm),
@@ -1622,24 +1550,18 @@ fn ladder(name: &str, args: &[Value]) -> Value {
     dispatch(table, label)
 }
 "###;
-    let names: BTreeSet<String> = [
-        "von_mises",
-        "principal_stresses",
-        "max_shear",
-        "safety_factor",
-        "parse_length",
-        "parse_length_r",
-        "stress_invariants",
-    ]
-    .into_iter()
-    .map(str::to_string)
-    .collect();
-
-    let mut found: Vec<(String, SiteKind)> = classify_text("fixture.rs", src, &[], &names)
-        .into_iter()
-        .map(|s| (s.name, s.kind))
-        .collect();
-    found.sort();
+    let found = fixture_sites(
+        src,
+        &[
+            "von_mises",
+            "principal_stresses",
+            "max_shear",
+            "safety_factor",
+            "parse_length",
+            "parse_length_r",
+            "stress_invariants",
+        ],
+    );
 
     let mut expected = vec![
         // The slice's two elements — the `PARSE_FN_NAMES` shape α deleted.

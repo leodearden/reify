@@ -7,7 +7,7 @@
 //! stiffness, the validity range, and the joint kind.
 
 use reify_core::DimensionVector;
-use reify_ir::Value;
+use reify_ir::{Value, decode_direction};
 
 use super::common::{
     attach_compliance, cantilever_sigma_at, cantilever_theta_lim, declared_range,
@@ -58,7 +58,7 @@ struct BeamInputs<'a> {
     i: f64,
     /// Material yield stress (Pa), if the material carries one.
     yield_si: Option<f64>,
-    /// The raw axis argument, stored verbatim on the joint Map.
+    /// The axis argument, a Direction stored unchanged on the joint Map.
     axis: &'a Value,
     /// The raw pivot argument, stored verbatim on the joint Map.
     pivot: &'a Value,
@@ -78,8 +78,8 @@ struct BeamInputs<'a> {
 /// wrong dimension (a bare geometry length included). [`InputFault::Degenerate`]
 /// for thickness ≥ length ([`slender_beam`]). [`InputFault::Invalid`] on:
 /// arity ∉ {6, 7, 8}; non-positive or non-finite geometry; a material that is not a `Value::StructureInstance` with a finite
-/// `youngs_modulus` > 0; or an axis that is not a finite, non-zero,
-/// dimensionless 3-vector.
+/// `youngs_modulus` > 0; or an axis that is not a
+/// Direction.
 fn parse_beam_inputs(args: &[Value], kind: RangeKind) -> Result<BeamInputs<'_>, InputFault> {
     if args.len() < 6 || args.len() > 8 {
         return Err(InputFault::Invalid);
@@ -92,7 +92,7 @@ fn parse_beam_inputs(args: &[Value], kind: RangeKind) -> Result<BeamInputs<'_>, 
     let e = youngs_modulus(material)?;
     let yield_si = yield_stress(material)?;
     let axis = &args[5];
-    crate::helpers::validate_dimensionless_unit_axis_vec3(axis).ok_or(InputFault::Invalid)?;
+    decode_direction(axis).map_err(|_| InputFault::Invalid)?;
     Ok(BeamInputs {
         length,
         thickness,
@@ -302,7 +302,7 @@ mod tests {
     }
 
     fn axis_y() -> Value {
-        Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)])
+        reify_test_support::direction_val(0.0, 1.0, 0.0)
     }
 
     fn origin() -> Value {

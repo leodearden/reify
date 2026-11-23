@@ -386,6 +386,7 @@ pub struct CompiledModule {
     /// Compiled unit declarations from this module.
     pub units: Vec<CompiledUnit>,
     /// Compiled type alias declarations from this module.
+    /// In ascending name order (see `TypeAliasRegistry::into_compiled`).
     pub type_aliases: Vec<CompiledTypeAlias>,
     /// Constraint definitions declared in this module — both pub and non-pub.
     ///
@@ -1153,6 +1154,38 @@ pub struct CompiledGuardedGroup {
     pub parent_guard: Option<ValueCellId>,
 }
 
+/// A cell a guarded group owns: its synthetic guard cell, or a declared
+/// member of either branch.
+#[derive(Debug, Clone, Copy)]
+pub enum GuardedGroupCell<'a> {
+    Guard(&'a CompiledGuardedGroup),
+    Member(&'a ValueCellDecl),
+}
+
+impl<'a> GuardedGroupCell<'a> {
+    pub fn id(self) -> &'a ValueCellId {
+        match self {
+            GuardedGroupCell::Guard(group) => &group.guard_value_cell,
+            GuardedGroupCell::Member(decl) => &decl.id,
+        }
+    }
+}
+
+impl CompiledGuardedGroup {
+    /// The declared members of both branches: `members`, then `else_members`.
+    // G-allow: SPOT for the hand-written members+else_members chains in reify-compiler/reify-eval/reify-lsp; their migration is debt: ticket tkt_0RX6HCDSPKGE6ZSK86ZYBXY3GW
+    pub fn member_decls(&self) -> impl Iterator<Item = &ValueCellDecl> {
+        self.members.iter().chain(&self.else_members)
+    }
+
+    /// Every cell this group owns, in contribution order: the guard cell,
+    /// then [`Self::member_decls`].
+    pub fn owned_cells(&self) -> impl Iterator<Item = GuardedGroupCell<'_>> {
+        std::iter::once(GuardedGroupCell::Guard(self))
+            .chain(self.member_decls().map(GuardedGroupCell::Member))
+    }
+}
+
 /// A single arm of a match-block decl group (task 2372).
 ///
 /// Produced by desugaring `match head_type { Hex => sub head : HexHead }` at decl
@@ -1687,20 +1720,16 @@ impl PatternKind {
 /// nickname instead (`linear` for `linear_pattern`) names a symbol that appears
 /// nowhere in their source.
 ///
-/// Non-compliant today, and user-reachable on this same surface: `Circular`,
-/// `Arbitrary` — see #6874, which owns the flip, its call-site migration, and
-/// deleting this sentence.
-///
 /// Pinned by `pattern_kind_display` below — change a label there and here
 /// together, and migrate the call sites the change newly rejects (C6).
 impl std::fmt::Display for PatternKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             PatternKind::Linear => f.write_str("linear_pattern"),
-            PatternKind::Circular => f.write_str("circular"),
+            PatternKind::Circular => f.write_str("circular_pattern"),
             PatternKind::Mirror => f.write_str("mirror"),
             PatternKind::Linear2D => f.write_str("linear_pattern_2d"),
-            PatternKind::Arbitrary => f.write_str("arbitrary"),
+            PatternKind::Arbitrary => f.write_str("arbitrary_pattern"),
         }
     }
 }
@@ -1874,8 +1903,11 @@ pub struct CompiledUnit {
 /// A compiled type alias — the public output representation in `CompiledModule`.
 ///
 /// Carries the raw `reify_ast::TypeExpr` body across the module boundary so that
-/// parametric PRELUDE aliases (e.g. `Rate<Q: Dimension> = Q / Time`) can be
-/// instantiated in downstream user modules at use-site substitution time.
+/// a parametric alias (e.g. `Rate<Q: Dimension> = Q / Time`) can be
+/// instantiated in every importing module, stdlib prelude and user import
+/// alike, at use-site substitution time. The alias names that body mentions
+/// travel with it in `body_scope`, so they keep the meaning they had where the
+/// alias was defined.
 /// This mirrors the `constraint_defs[].predicates: Vec<reify_ast::Expr>` precedent
 /// (reify_ast types already cross the boundary) and introduces no new crate
 /// dependency. `CompiledModule` has no serde, so this is in-memory struct-field
@@ -1891,6 +1923,11 @@ pub struct CompiledTypeAlias {
     /// parameterized alias instantiation at use sites.  `None` for aliases that
     /// were constructed without a body (e.g. synthetic test fixtures).
     pub type_expr: Option<reify_ast::TypeExpr>,
+    /// The defining module's alias bindings that `type_expr` resolves against
+    /// wherever the alias is instantiated. `Some` on every parametric alias a
+    /// module exports; `None` means resolve the body in whichever registry the
+    /// alias was looked up in.
+    pub body_scope: Option<Vec<CompiledTypeAlias>>,
     pub is_pub: bool,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
@@ -2100,10 +2137,10 @@ mod kind_display_tests {
     fn pattern_kind_display() {
         check(&[
             (PatternKind::Linear, "linear_pattern"),
-            (PatternKind::Circular, "circular"),
+            (PatternKind::Circular, "circular_pattern"),
             (PatternKind::Mirror, "mirror"),
             (PatternKind::Linear2D, "linear_pattern_2d"),
-            (PatternKind::Arbitrary, "arbitrary"),
+            (PatternKind::Arbitrary, "arbitrary_pattern"),
         ]);
     }
 

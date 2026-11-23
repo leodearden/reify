@@ -58,12 +58,18 @@
 //!   `orient_to_euler`. SO(3) builtins, not geometry; like `generate` they host
 //!   here only because the mechanism is name-keyed and generic. They are the
 //!   table's only `ExpectedArg::Enum` slots.
+//! - The `ExpectedArg::Direction` slots, all built by [`direction_arg`]:
+//!   `frame_at`'s `x`/`z` (direction-typing σ), and the axis of the four axial
+//!   joint ctors and the 13 PRB flexure ctors (direction-typing ζ-a); later
+//!   leaves add rows on the same constructor.
 //!
 //! The RULES that decide whether a position inside a covered family gets a
 //! slot — each one is why some argument sitting right next to a slotted one is
 //! deliberately bare:
 //!
-//! - **arg0 is never checked.** A geometry handle is ε=4358's territory.
+//! - **arg0 of a geometry builtin is never checked.** A geometry handle is
+//!   ε=4358's territory. A builtin whose arg0 is not a handle (`orient_euler`,
+//!   the joint ctors' axis) may slot it.
 //! - **ORIGIN vs DIRECTION.** A point in space (`half_space`'s `px`/`py`/`pz`,
 //!   `revolve`'s `ox`/`oy`/`oz`, `rotate_around`'s pivot, `translate`'s
 //!   displacement) IS a LENGTH — a bare component is silently read as SI
@@ -76,7 +82,9 @@
 //!   split on their own arm — deliberately UNCOUNTED here, because a tally
 //!   stated away from the arms is exactly the second copy nothing
 //!   machine-checks that this section opens by warning against. It read
-//!   "three" until task 5662 added the fourth and fifth.
+//!   "three" until task 5662 added the fourth and fifth. The rule governs bare
+//!   scalar COMPONENT triples; a composite `Direction`-typed argument is
+//!   slotted by `ExpectedArg::Direction`.
 //! - **COUNTS, face INDICES and dimensionless RATIOS are never slots.** A
 //!   wrong `count`, `face_{i}` or `scale` factor is an arity or semantic
 //!   error, not a dimension one, and a LENGTH slot on a ratio would reject
@@ -102,7 +110,7 @@
 //!   layer reports for the desugared op — breaking the same-wording premise
 //!   the migration hint depends on (PRD decision D9). (`zone_annulus`' arg3
 //!   `length` is additionally DEAD: `geometry.rs` binds it to `_l`.)
-//! - **Names with no dimensioned-scalar argument have no arm at all**
+//! - **Names with no checkable argument have no arm at all**
 //!   (`split`, `face`, `edge`, `solid_body`, `volume`, `edges`, `faces`, …).
 //!
 //! # Contract C positions this table deliberately does NOT cover (task 5750)
@@ -247,6 +255,7 @@
 //! skipped here and still relies on the eval-layer gate.  Both layers are load-
 //! bearing; removing either leaves a hole.
 
+use reify_core::direction::DIRECTION_MIGRATION_HINT;
 use reify_core::units::{ANGLE_MIGRATION_HINT, DENSITY_MIGRATION_HINT, LENGTH_MIGRATION_HINT};
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, DimensionVector, SourceSpan, Type};
 use reify_ir::CompiledExpr;
@@ -287,8 +296,10 @@ pub(crate) enum ExpectedArg {
         /// `docs/prds/v0_6/units-length-gate-completion.md` decision D9).
         ///
         /// Non-optional: a dimensioned slot always has a literal spelling to
-        /// migrate TO, so a hint-less `Scalar` slot is unrepresentable. Only
-        /// [`ExpectedArg::Int`] and [`ExpectedArg::Enum`] render un-hinted.
+        /// migrate TO, so a hint-less `Scalar` slot is unrepresentable.
+        /// [`ExpectedArg::Int`] and [`ExpectedArg::Enum`] render un-hinted; an
+        /// [`ExpectedArg::Direction`] slot is hinted only for a `Vector3` (see
+        /// [`direction_mismatch_hint`]).
         ///
         /// NOT [`crate::conformance::dimensioned_scalar_migration_hint`], and
         /// deliberately so. That generator serves the DIMENSIONED struct-ctor /
@@ -339,6 +350,12 @@ pub(crate) enum ExpectedArg {
         /// as `enum_name`).
         type_name: &'static str,
     },
+    /// Exactly `Type::Direction` (direction-typing PRD D8 / C7), with no
+    /// coercion from `Vector3`, `Axis` or `Plane` (D2).
+    ///
+    /// Fieldless: the displayed name is `Type::Direction`'s own, so it cannot
+    /// drift from what the arm accepts.
+    Direction,
 }
 
 /// Build one LENGTH slot — the shape every Contract C length position shares.
@@ -391,12 +408,22 @@ const fn angle_arg(index: usize, name: &'static str) -> CheckableArg {
     }
 }
 
-/// Return the checkable dimensioned-scalar argument slots for a named builtin
-/// call of a given arity.
+/// Build one DIRECTION slot; callers need the `const { &[…] }` block, as for
+/// [`angle_arg`].
+const fn direction_arg(index: usize, name: &'static str) -> CheckableArg {
+    CheckableArg {
+        index,
+        name,
+        expected: ExpectedArg::Direction,
+    }
+}
+
+/// Return the checkable argument slots for a named builtin call of a given
+/// arity.
 ///
 /// Returns an empty slice for:
 /// - Unrecognized names.
-/// - Names with no checked dimensioned-scalar arg (e.g. `split`, `face`, `edge`,
+/// - Names with no checked argument (e.g. `split`, `face`, `edge`,
 ///   `solid_body`, `volume`, `edges`, `faces`, …).
 /// - A recognized *overloaded* name called at an arity whose positional layout
 ///   has no checked slot (see "Arity awareness" below).
@@ -661,26 +688,24 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         // Same load-bearing guard: index 1 is `ox` at arity 9 but `axis` at
         // arity 4.
         //
-        // MEASURED PREFIX DIVERGENCE. This layer is keyed on the CALL, so it
-        // reports the SURFACE name `circular_pattern:`, while the eval layer
-        // renders its `{builtin}` from `PatternKind::Circular`'s `Display` — its
-        // `kind_label` — which is `"circular"` (the `PatternKind::Circular` arm
-        // of its `Display` impl in `types.rs`). That is the same class as the
-        // `box_centered`-vs-`box` divergence already recorded under
-        // `check_builtin_arg_types`' "# Message format", and it holds this way
-        // deliberately: reporting the name the author actually typed beats
-        // reporting a lowering detail they never wrote. `mirror` does NOT
-        // diverge — `PatternKind::Mirror` displays as `"mirror"` (the
-        // `PatternKind::Mirror` arm of the same `Display` impl) — so the two
-        // layers agree byte-for-byte there. Both halves are pinned by
-        // `circular_pattern_slot_names_the_surface_builtin_not_the_lowered_kind`
-        // in `tests/builtin_arg_signature_tests.rs`.
+        // PREFIX AGREEMENT. This layer is keyed on the CALL, so it reports the
+        // SURFACE name. The eval layer's `kind_label` (`PatternKind`'s
+        // `Display`) renders that same name, so for `circular_pattern:` and
+        // `mirror:` the two layers agree byte-for-byte.
+        // Only the `_centered` aliases still diverge; see
+        // `check_builtin_arg_types`' "# Message format". This layer's half is
+        // pinned by `circular_pattern_bare_origin_is_rejected_naming_the_origin_components`
+        // and `mirror_bare_origin_is_rejected_naming_the_origin_components` in
+        // `tests/harness_type_checking/builtin_arg_signature_tests.rs`; the eval
+        // half by reify-eval's `expected_length_rejection("circular_pattern", …)`
+        // assertions in `src/geometry_ops/tests.rs`, e.g.
+        // `compile_geometry_op_circular_pattern_origin_rejection_label_agrees_across_forms`.
         //
         // These two arms make `reify check` a REAL gate for these positions, not
         // merely `reify eval`: `cmd_check` returns `ExitCode::FAILURE` on any
         // compile `Severity::Error` and short-circuits BEFORE constraint checking
-        // and before `build()`. Pinned at the CLI seam by
-        // `check_rejects_bare_scalar_mirror_origin_before_reaching_build`.
+        // and before `build()`. Pinned at the CLI seam, for `mirror`, by its row in
+        // `reify-cli/tests/harness_cli_check/cli_check_bare_length_exit.rs`'s `ROWS`.
         //
         // STRUCTURAL EXCLUSION OF THE DECODED-VALUE ROUTE — the AUTHORITATIVE
         // statement, kept here beside the code it describes per this module's
@@ -1147,7 +1172,44 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
             },
         }],
 
-        // All other names: empty (no dimensioned-scalar arg to check).
+        // ── frame_at(o, x: Direction, z: Direction) ──────────────────────────
+        // arg0: the origin, unchecked (arg0 is never a slot).
+        // args1-2: x / z → Direction, names per units.rs's frame_at row.
+        // Single-form, so arity-agnostic.
+        "frame_at" => const { &[direction_arg(1, "x"), direction_arg(2, "z")] },
+
+        // ── joint ctors: axis → Direction (direction-typing ζ-a) ─────────────
+        // arg0: the joint axis. prismatic/revolute accept 2 or 3 args (the 3rd
+        // is the pivot) and cylindrical 3; the axis is arg0 at every one, so
+        // the arm is arity-agnostic. The ranges and pivot stay unslotted.
+        "prismatic" | "revolute" | "cylindrical" => const { &[direction_arg(0, "axis")] },
+        // planar(axis_x, axis_y, range_x, range_y, range_theta): single-form.
+        "planar" => const { &[direction_arg(0, "axis_x"), direction_arg(1, "axis_y")] },
+
+        // ── PRB flexure ctors: axis → Direction (direction-typing ζ-a) ───────
+        // Indices per the parse fns in reify-stdlib/src/flexures/*. Each
+        // ctor's axis sits at the same index at every accepted arity (the
+        // trailing neutral / declared-range args are optional), so the arms
+        // are arity-agnostic.
+        // (length|r, width|t, thickness|b, material, pivot, axis[, neutral[, range]])
+        "prb_cantilever_beam"
+        | "prb_fixed_fixed_beam"
+        | "prb_notch_circular"
+        | "prb_notch_elliptical"
+        | "prb_notch_right_circular"
+        | "prb_living_hinge"
+        | "prb_cross_spring_pivot"
+        | "prb_prismatic_blade"
+        | "prb_two_axis_pivot" => const { &[direction_arg(5, "axis")] },
+        // (length, width, thickness, blade_spacing, material, motion_axis, pivot[, range])
+        "prb_parallelogram_flexure" | "prb_double_parallelogram_flexure" => {
+            const { &[direction_arg(5, "motion_axis")] }
+        }
+        // prb_let_joint: (length, width, thickness, n_blades, material, pivot, axis, ..);
+        // prb_cartwheel_flexure: (blade_count, length, width, thickness, material, pivot, axis, ..).
+        "prb_let_joint" | "prb_cartwheel_flexure" => const { &[direction_arg(6, "axis")] },
+
+        // All other names: empty (no argument to check).
         _ => &[],
     }
 }
@@ -1159,16 +1221,16 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
 /// # Gradualism (PRD decision 6)
 ///
 /// The check fires only when a definite concrete type is available:
-/// - `Type::Error` — poison sentinel; silently skipped at BOTH arms (avoids
+/// - `Type::Error` — poison sentinel; silently skipped at EVERY arm (avoids
 ///   cascading diagnostics off an unrelated root-cause error).
-/// - `Type::TypeParam(_)` — unresolved type variable; silently skipped at BOTH
-///   arms (constraint-aware / auto-type-param resolution is out of scope for ζ).
+/// - `Type::TypeParam(_)` — unresolved type variable; silently skipped at EVERY
+///   arm (constraint-aware / auto-type-param resolution is out of scope for ζ).
 /// - `Type::ScalarParam(_)` — unresolved DIMENSION placeholder (`Scalar<Q>`);
 ///   silently skipped at the [`ExpectedArg::Scalar`] arm ONLY, and still
-///   REJECTED at the [`ExpectedArg::Int`] arm (task 6862). The scope is
-///   per-arm, not global, because the defer is a DIMENSION-comparison argument
-///   and an `Int` count slot is not a dimension slot; each arm states its own
-///   half of the reasoning below.
+///   REJECTED at the [`ExpectedArg::Int`] arm (task 6862) and every other.
+///   The scope is per-arm, not global, because the defer is a
+///   DIMENSION-comparison argument and an `Int` count slot is not a dimension
+///   slot; each arm states its own half of the reasoning below.
 /// - Any other variant — a concrete known type; compared against the slot's
 ///   expected dimension.
 ///
@@ -1194,9 +1256,10 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
 /// `"box: size_x argument expects Length, got Int; pass a dimensioned length such as `5mm`"`
 ///
 /// Every dimension renders this hinted form — LENGTH, ANGLE and DENSITY alike —
-/// because the field is non-optional. Only [`ExpectedArg::Int`] and
-/// [`ExpectedArg::Enum`] render un-hinted, and for them there is nothing to
-/// migrate TO.
+/// because the field is non-optional. [`ExpectedArg::Int`] and
+/// [`ExpectedArg::Enum`] render un-hinted, for there is nothing to migrate TO;
+/// an [`ExpectedArg::Direction`] slot is hinted only for a `Vector3` (see
+/// [`direction_mismatch_hint`]).
 ///
 /// `{builtin}` is the SURFACE call name — the identifier the author actually
 /// typed. The eval layer instead renders its prefix from the LOWERED kind
@@ -1404,6 +1467,23 @@ pub(crate) fn check_builtin_arg_types(
                     );
                 }
             },
+
+            ExpectedArg::Direction => match &arg.result_type {
+                // Gradualism: poison + unresolved pass silently. `ScalarParam`
+                // is rejected, as at the Int arm: a `Scalar<Q>` is never a
+                // Direction for any `Q`.
+                Type::Error | Type::TypeParam(_) => continue,
+                Type::Direction => continue,
+                other => emit_mismatch(
+                    name,
+                    slot.name,
+                    &Type::Direction.to_string(),
+                    other,
+                    direction_mismatch_hint(other),
+                    call_span,
+                    diagnostics,
+                ),
+            },
         }
     }
 }
@@ -1473,15 +1553,17 @@ fn emit_mismatch(
     );
 }
 
+/// A `Vector3` where a Direction is required gets the `dir(…)` fix hint; any
+/// other kind renders un-hinted (direction-typing C7).
+fn direction_mismatch_hint(actual: &Type) -> Option<&'static str> {
+    matches!(actual, Type::Vector { n: 3, .. }).then_some(DIRECTION_MIGRATION_HINT)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::units::{
-        AFFINE_MAP_CONSTRUCTOR_NAMES, DYNAMICS_CONSTRUCTOR_NAMES, DYNAMICS_QUERY_NAMES,
-        FEA_ENVELOPE_NAMES, FIELD_OP_NAMES, GEOMETRY_FUNCTION_NAMES,
-        GEOMETRY_KINEMATIC_QUERY_NAMES, GEOMETRY_QUERY_HELPER_NAMES, GEOMETRY_QUERY_NAMES,
-        GEOMETRY_TOPOLOGY_SELECTOR_NAMES, TOLERANCING_MARKER_NAMES,
-    };
+    use crate::units::{GEOMETRY_FUNCTION_NAMES, GEOMETRY_TOPOLOGY_SELECTOR_NAMES};
+    use reify_core::direction::DIRECTION_MIGRATION_HINT;
     use reify_core::{DimensionVector, Severity, SourceSpan, Type, identity::ValueCellId};
     use reify_ir::CompiledExpr;
     use std::collections::{BTreeMap, BTreeSet};
@@ -1494,45 +1576,6 @@ mod tests {
     /// arm cannot hide from a sweep by sitting just above the bound. Raise it if a
     /// future arm guards on a higher arity.
     const MAX_PROBED_ARITY: usize = 14;
-
-    /// Every units.rs builtin-name family slice, so a slice-derived sweep reaches
-    /// any name that could plausibly gain an arg slot — not just the two families
-    /// that happen to host keys today.
-    const BUILTIN_NAME_FAMILIES: &[&[&str]] = &[
-        GEOMETRY_FUNCTION_NAMES,
-        GEOMETRY_QUERY_HELPER_NAMES,
-        GEOMETRY_KINEMATIC_QUERY_NAMES,
-        GEOMETRY_TOPOLOGY_SELECTOR_NAMES,
-        AFFINE_MAP_CONSTRUCTOR_NAMES,
-        TOLERANCING_MARKER_NAMES,
-        GEOMETRY_QUERY_NAMES,
-        DYNAMICS_QUERY_NAMES,
-        DYNAMICS_CONSTRUCTOR_NAMES,
-        FEA_ENVELOPE_NAMES,
-        FIELD_OP_NAMES,
-    ];
-
-    /// [`builtin_arg_slots`] keys that belong to NO [`BUILTIN_NAME_FAMILIES`]
-    /// slice, and so cannot be reached by any slice-derived sweep — they must be
-    /// probed BY NAME or every sweep stays vacuous for them.
-    ///
-    /// `generate` (task 3994's list combinator, the table's lone `Int` count
-    /// slot) is exactly the name the predecessor invariant
-    /// `arg_slot_keys_are_subset_of_topology_selector_names` structurally could
-    /// not reach.
-    ///
-    /// ONE list, two consumers — [`arg_slot_keys_are_registered_builtin_names`]
-    /// and [`slotted_builtin_names`] — because a comment-enforced "kept in
-    /// lockstep" pair is exactly the drift the FINDING-2 completeness arm exists
-    /// to close: a key added to one copy and not the other would make
-    /// [`every_slotted_name_is_ledgered_or_recorded_unobservable`] vacuous for
-    /// precisely that key, a silent false GREEN.
-    ///
-    /// Task #6082 added the two Euler builtins for the same structural reason:
-    /// `orient_*` belongs to no units.rs family slice either, so without these
-    /// entries the completeness arm would stay silently vacuous for their
-    /// `convention` slots.
-    const NON_FAMILY_SLOT_KEYS: &[&str] = &["generate", "orient_euler", "orient_to_euler"];
 
     /// The curated exemption list for [`builtin_arg_slots`] keys that are NOT
     /// members of `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` (task 5652).
@@ -1563,12 +1606,11 @@ mod tests {
     ///   Neither pattern name has an entry in `topology_selector_result_type`, so
     ///   slice membership alone would turn every `linear_pattern(…)` call into a
     ///   panic on that `expect` — the names would never reach the CSG arm at all.
-    ///   That overlap is not otherwise pinned: units.rs's
-    ///   `builtin_name_families_are_pairwise_disjoint` tests iterate `GEOMETRY_QUERY_NAMES`
-    ///   and the other sibling families, but none iterates
-    ///   `GEOMETRY_FUNCTION_NAMES` or `GEOMETRY_TOPOLOGY_SELECTOR_NAMES`, so
-    ///   assertion (b) of [`arg_slot_keys_are_registered_builtin_names`] is what
-    ///   holds this line.
+    ///   `unresolved_function::tests::builtin_name_families_are_pairwise_disjoint`
+    ///   pins that `GEOMETRY_FUNCTION_NAMES` and
+    ///   `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` share no name, and assertion (b) of
+    ///   [`arg_slot_keys_are_registered_builtin_names`] pins the producers'
+    ///   `GEOMETRY_FUNCTION_NAMES` membership.
     /// - The task-5750 PRIMITIVE and PROFILE producers — `box`, `box_centered`,
     ///   `cylinder`, `cylinder_centered`, `sphere`, `tube`, `cone`, `wedge`,
     ///   `torus`, `half_space`, `rectangle`, `circle`, `ellipse`. Every one is a
@@ -1621,13 +1663,19 @@ mod tests {
     ///   `topology_selector_result_type(name).expect(...)` has no entry for
     ///   them and would panic. `circular_pattern` ALSO holds an ANGLE slot at
     ///   both of its forms from PRD 3 leaf ζ.
+    ///
+    /// - The direction-typing σ datum constructor `frame_at`, a member of
+    ///   `units.rs`'s `DATUM_CONSTRUCTOR_NAMES` typed by
+    ///   `datum_constructor_result_type`, not a topology selector. Moving it
+    ///   into `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` would route it through
+    ///   `expr.rs`'s `topology_selector_result_type(name).expect(…)`, which has
+    ///   no entry for it.
     pub(crate) const NON_SELECTOR_ARG_SLOT_KEYS: &[&str] = &[
         "generate",
         "linear_pattern",
         "linear_pattern_2d",
-        // Task #6082 — SO(3) builtins, not topology selectors, and members of
-        // no units.rs family slice; their `convention` slot is the table's
-        // only ExpectedArg::Enum.
+        // Task #6082 — SO(3) builtins, not topology selectors; their
+        // `convention` slot is the table's only ExpectedArg::Enum.
         "orient_euler",
         "orient_to_euler",
         // Task 5750 — primitives.
@@ -1672,6 +1720,28 @@ mod tests {
         "rotate",
         "arc",
         "draft",
+        // direction-typing σ (#9636) — datum constructor, Direction slots.
+        "frame_at",
+        // direction-typing ζ-a — joint and PRB flexure ctors, Direction axis
+        // slots. JOINT_TYPED_FN_NAMES / FLEXURE_CTOR_FN_NAMES members, not
+        // topology selectors.
+        "prismatic",
+        "revolute",
+        "cylindrical",
+        "planar",
+        "prb_cantilever_beam",
+        "prb_fixed_fixed_beam",
+        "prb_notch_circular",
+        "prb_notch_elliptical",
+        "prb_notch_right_circular",
+        "prb_living_hinge",
+        "prb_cross_spring_pivot",
+        "prb_prismatic_blade",
+        "prb_two_axis_pivot",
+        "prb_parallelogram_flexure",
+        "prb_double_parallelogram_flexure",
+        "prb_let_joint",
+        "prb_cartwheel_flexure",
     ];
 
     // ── builtin_arg_slots table contract (step-1) ────────────────────────────
@@ -2537,29 +2607,19 @@ mod tests {
     /// widen the selector slice; why widening would be actively wrong is on
     /// [`NON_SELECTOR_ARG_SLOT_KEYS`].
     ///
-    /// The probe set is EVERY units.rs builtin-name family
-    /// ([`BUILTIN_NAME_FAMILIES`]) + `non_family_keys` + the typo/non-geometry
-    /// list, swept across arities up to [`MAX_PROBED_ARITY`] so neither a new key
-    /// from an unrelated family (say a MASS_DENSITY slot on `mass_properties`)
-    /// nor an arity-guarded arm can hide from the invariant.
+    /// The probe set is the closed-world family table (via
+    /// [`slot_probe_names`]) + the typo/non-geometry list, swept across arities
+    /// up to [`MAX_PROBED_ARITY`] so neither a new key from an unrelated family
+    /// (say a MASS_DENSITY slot on `mass_properties`) nor an arity-guarded arm
+    /// can hide from the invariant.
     #[test]
     fn arg_slot_keys_are_registered_builtin_names() {
-        // Keys that belong to NO units.rs family slice and so cannot be reached
-        // by any slice-derived sweep — see `NON_FAMILY_SLOT_KEYS`, which is
-        // shared with `slotted_builtin_names` so the two sweeps cannot drift.
-        // Listing `generate` there is what actually closes the predecessor
-        // test's hole (removing it from NON_SELECTOR_ARG_SLOT_KEYS now fails
-        // the assertion below, whereas before it would have gone unnoticed).
-        let non_family_keys: &[&str] = NON_FAMILY_SLOT_KEYS;
-
         // Extra non-selector names that must never map to non-empty slots.
         // `"box"` and `"cylinder"` used to head this list. Task 5750
         // (units-length η) gave both LENGTH slots, so they must move out of a
         // must-stay-empty list; they are exempted via NON_SELECTOR_ARG_SLOT_KEYS
         // instead. `union` / `difference` replace them so the list still NAMES a
-        // registered CSG producer that carries no dimensioned arg — both are
-        // additionally reached by the BUILTIN_NAME_FAMILIES sweep, so the
-        // replacement preserves the list's readability, not its reach.
+        // registered CSG producer that carries no dimensioned arg.
         let extra_non_selector: &[&str] = &[
             "union",
             "difference",
@@ -2591,11 +2651,9 @@ mod tests {
         ];
 
         let mut any_nonempty = false;
-        for &name in BUILTIN_NAME_FAMILIES
-            .iter()
-            .flat_map(|family| family.iter())
-            .chain(non_family_keys.iter())
-            .chain(extra_non_selector.iter())
+        for name in slot_probe_names()
+            .into_iter()
+            .chain(extra_non_selector.iter().copied())
         {
             // Swept across arities so an arity-guarded arm cannot hide from
             // the invariant by being empty at the one arity probed.
@@ -3080,6 +3138,112 @@ mod tests {
             diags.is_empty(),
             "absent count arg → no diagnostic, got: {:?}",
             diags
+        );
+    }
+
+    // ── frame_at Direction slots (direction-typing σ) ────────────────────────
+
+    fn direction_slot(index: usize, name: &'static str) -> CheckableArg {
+        CheckableArg {
+            index,
+            name,
+            expected: ExpectedArg::Direction,
+        }
+    }
+
+    fn frame_at_args(x: Type, z: Type) -> Vec<CompiledExpr> {
+        let origin = Type::Point {
+            n: 3,
+            quantity: Box::new(Type::length()),
+        };
+        vec![arg_expr(origin), arg_expr(x), arg_expr(z)]
+    }
+
+    fn frame_at_diagnostics(x: Type, z: Type) -> Vec<Diagnostic> {
+        let mut diags = Vec::new();
+        check_builtin_arg_types("frame_at", &frame_at_args(x, z), dummy_span(), &mut diags);
+        diags
+    }
+
+    #[test]
+    fn frame_at_slots_x_and_z_as_direction_but_never_the_origin() {
+        assert_slots_at_every_arity(
+            "frame_at",
+            &[direction_slot(1, "x"), direction_slot(2, "z")],
+        );
+    }
+
+    #[test]
+    fn direction_slot_accepts_direction_and_defers_error_and_type_param() {
+        for (x, z) in [
+            (Type::Direction, Type::Direction),
+            (Type::Error, Type::TypeParam("T".to_string())),
+        ] {
+            let diags = frame_at_diagnostics(x.clone(), z.clone());
+            assert!(
+                diags.is_empty(),
+                "({x}, {z}) must pass silently, got: {diags:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn direction_slot_rejects_every_non_vector3_kind_without_hint() {
+        for ty in [
+            Type::String,
+            Type::Int,
+            Type::length(),
+            Type::ScalarParam("Q".into()),
+            Type::Axis,
+            Type::Plane,
+            Type::Vector {
+                n: 2,
+                quantity: Box::new(Type::Int),
+            },
+            Type::Point {
+                n: 3,
+                quantity: Box::new(Type::length()),
+            },
+        ] {
+            let diags = frame_at_diagnostics(ty.clone(), Type::Direction);
+            assert_eq!(
+                diags.len(),
+                1,
+                "{ty} at x: expected 1 diagnostic, got: {diags:?}"
+            );
+            assert_eq!(diags[0].code, Some(DiagnosticCode::ArgTypeMismatch));
+            assert_eq!(diags[0].severity, Severity::Error);
+            assert_eq!(
+                diags[0].message,
+                format!("frame_at: x argument expects Direction, got {ty}")
+            );
+        }
+    }
+
+    #[test]
+    fn direction_slot_rejects_vector3_with_dir_hint() {
+        let int_vector = Type::Vector {
+            n: 3,
+            quantity: Box::new(Type::Int),
+        };
+        let length_vector = Type::Vector {
+            n: 3,
+            quantity: Box::new(Type::length()),
+        };
+        let diags = frame_at_diagnostics(int_vector, length_vector.clone());
+        let messages: Vec<&str> = diags.iter().map(|d| d.message.as_str()).collect();
+        assert_eq!(
+            messages,
+            [
+                format!(
+                    "frame_at: x argument expects Direction, got Vector3<Int>; \
+                     {DIRECTION_MIGRATION_HINT}"
+                ),
+                format!(
+                    "frame_at: z argument expects Direction, got {length_vector}; \
+                     {DIRECTION_MIGRATION_HINT}"
+                ),
+            ]
         );
     }
 
@@ -3929,51 +4093,42 @@ mod tests {
         crate::compile_with_stdlib(&parsed)
     }
 
+    /// The name universe the slot-key sweeps probe: the closed-world family
+    /// table flattened, plus [`NON_SELECTOR_ARG_SLOT_KEYS`], before the "does it
+    /// yield slots" filter. Derived, never a hand copy:
+    /// [`slot_probe_names_reach_every_closed_world_family_name`] pins that.
+    fn slot_probe_names() -> BTreeSet<&'static str> {
+        crate::unresolved_function::BUILTIN_NAME_FAMILIES
+            .iter()
+            .flat_map(|&(_, slice)| slice.iter())
+            .chain(NON_SELECTOR_ARG_SLOT_KEYS)
+            .copied()
+            .collect()
+    }
+
     /// Every name [`builtin_arg_slots`] actually serves, derived MECHANICALLY
     /// rather than listed by hand.
     ///
-    /// Sweeps EVERY curated registry that can name a slot key — [`BUILTIN_NAME_FAMILIES`]
-    /// (flattened), [`NON_FAMILY_SLOT_KEYS`] and [`NON_SELECTOR_ARG_SLOT_KEYS`] —
-    /// across `0..=MAX_PROBED_ARITY`, and keeps every name yielding a non-empty
-    /// slot list at some arity. Same technique
+    /// Filters [`slot_probe_names`] — the closed-world family table plus
+    /// [`NON_SELECTOR_ARG_SLOT_KEYS`] — to the names yielding a non-empty slot
+    /// list at some arity in `0..=MAX_PROBED_ARITY`. Same technique
     /// [`arg_slot_keys_are_registered_builtin_names`] uses, and what makes the
     /// ledger guard self-maintaining: a name added to the table in a future leaf
     /// is picked up here automatically instead of quietly escaping the guard.
     ///
-    /// # Why THREE registries and not one (reviewer amendment)
-    ///
     /// This function is the sole input to
     /// [`every_slotted_name_is_ledgered_or_recorded_unobservable`], so a slot key
-    /// it cannot NAME is a key that escapes the ledger, escapes the coupling rule,
-    /// and leaves that guard GREEN — the silent false GREEN
-    /// [`NON_FAMILY_SLOT_KEYS`] exists to close. Reaching the key through any ONE
-    /// of the three curated lists is enough, so the hand-maintained
-    /// [`NON_FAMILY_SLOT_KEYS`] is no longer the single point of failure it was:
-    /// the 5662 `mirror` / `circular_pattern` catch worked only because those two
-    /// names happen to sit in a family slice.
+    /// it cannot NAME escapes the ledger and the coupling rule and leaves that
+    /// guard GREEN.
     ///
-    /// MEASURED, so the widening is not mistaken for a fix to a live hole: it
-    /// admits NO name today. Of the [`NON_SELECTOR_ARG_SLOT_KEYS`] entries,
-    /// `generate` is the only one unreachable from the family slices, and it is
-    /// already a [`NON_FAMILY_SLOT_KEYS`] entry. The chain is future-proofing —
-    /// a NEW non-selector key added to that curated list is now swept even if
-    /// whoever adds it never touches [`NON_FAMILY_SLOT_KEYS`].
-    ///
-    /// `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` — the third list the slot table draws
-    /// on — needs no chain of its own: it IS a [`BUILTIN_NAME_FAMILIES`] member,
-    /// asserted rather than asserted-in-prose by
-    /// [`slotted_name_sweep_reaches_every_curated_slot_registry`].
-    ///
-    /// Nothing spurious is admitted by widening: every candidate passes the
-    /// `!builtin_arg_slots(..).is_empty()` filter below, and both extra lists
-    /// carry their own no-dead-entry assertions.
+    /// The [`NON_SELECTOR_ARG_SLOT_KEYS`] chain in [`slot_probe_names`] keeps a
+    /// slot key swept if its family row is later discharged into the registry.
+    /// The selectors have no chain of their own: they are swept only through the
+    /// `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` row, which
+    /// [`slotted_name_sweep_reaches_every_curated_slot_registry`] asserts.
     fn slotted_builtin_names() -> BTreeSet<&'static str> {
-        BUILTIN_NAME_FAMILIES
-            .iter()
-            .flat_map(|family| family.iter())
-            .chain(NON_FAMILY_SLOT_KEYS.iter())
-            .chain(NON_SELECTOR_ARG_SLOT_KEYS.iter())
-            .copied()
+        slot_probe_names()
+            .into_iter()
             .filter(|name| {
                 (0usize..=MAX_PROBED_ARITY).any(|k| !builtin_arg_slots(name, k).is_empty())
             })
@@ -3981,50 +4136,76 @@ mod tests {
     }
 
     /// The completeness sweep reaches a slot key through ANY curated registry,
-    /// not just through the one hand-maintained list.
+    /// not just through the closed-world family table.
     ///
     /// Pins the two claims [`slotted_builtin_names`]'s doc makes, so neither can
     /// rot into a comment that is merely believed:
     ///
-    /// 1. Every [`NON_FAMILY_SLOT_KEYS`] and every [`NON_SELECTOR_ARG_SLOT_KEYS`]
-    ///    entry comes back from the sweep. (Both lists already reject dead
-    ///    entries elsewhere, so each name here does yield slots.) This pins the
-    ///    OUTCOME — "every curated key is swept" — not any one chain: MEASURED
-    ///    today, the two explicit chains are mutually redundant, since `generate`
-    ///    is the only family-unreachable key and it sits in BOTH lists, so
-    ///    dropping either `.chain(..)` alone leaves this green and dropping both
-    ///    turns it RED. The redundancy is the point of the widening; the
-    ///    assertion becomes chain-specific the moment a curated key is added to
-    ///    only one list.
+    /// 1. Every [`NON_SELECTOR_ARG_SLOT_KEYS`] entry comes back from the sweep.
+    ///    (The list already rejects dead entries elsewhere, so each name here
+    ///    does yield slots.)
     ///
-    /// 2. `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` is a [`BUILTIN_NAME_FAMILIES`]
-    ///    member, which is WHY it needs no chain of its own. If a future edit
-    ///    drops it from that array, this fails loudly instead of silently
-    ///    shrinking the sweep — the selectors are 9 of the ledger's
+    /// 2. `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` is a closed-world family row, which
+    ///    is WHY it needs no chain of its own. If a registry migration
+    ///    discharges that row, this fails loudly instead of silently shrinking
+    ///    the sweep — the selectors are 9 of the ledger's
     ///    [`ARITY_UNOBSERVABLE_SLOT_KEYS`] entries, so losing them would hollow
     ///    out that arm rather than break it.
     #[test]
     fn slotted_name_sweep_reaches_every_curated_slot_registry() {
         let swept = slotted_builtin_names();
 
-        for &name in NON_FAMILY_SLOT_KEYS
-            .iter()
-            .chain(NON_SELECTOR_ARG_SLOT_KEYS)
-        {
+        for &name in NON_SELECTOR_ARG_SLOT_KEYS {
             assert!(
                 swept.contains(name),
-                "{name:?} is a curated slot-table key but the slotted-name sweep does \
-                 not reach it, so it would escape \
+                "{name:?} is a curated slot-table key reachable through no registry \
+                 that slot_probe_names() probes, so it would escape \
                  every_slotted_name_is_ledgered_or_recorded_unobservable entirely. \
-                 Restore the .chain(..) that names its registry in slotted_builtin_names()."
+                 Make slot_probe_names() reach it."
             );
         }
 
         assert!(
-            BUILTIN_NAME_FAMILIES.contains(&GEOMETRY_TOPOLOGY_SELECTOR_NAMES),
-            "GEOMETRY_TOPOLOGY_SELECTOR_NAMES is swept only because it is a \
-             BUILTIN_NAME_FAMILIES member; it is no longer, so slotted_builtin_names() \
-             must chain it explicitly."
+            crate::unresolved_function::BUILTIN_NAME_FAMILIES
+                .iter()
+                .any(|&(_, slice)| slice == GEOMETRY_TOPOLOGY_SELECTOR_NAMES),
+            "GEOMETRY_TOPOLOGY_SELECTOR_NAMES is swept only through its row in \
+             unresolved_function::BUILTIN_NAME_FAMILIES; that row is gone, so a \
+             registry migration that discharged it must chain the selectors into \
+             slot_probe_names() explicitly."
+        );
+    }
+
+    /// Fork-guard on [`slot_probe_names`]: the universe reaches every name of
+    /// every closed-world family row, so a family added to
+    /// `unresolved_function::BUILTIN_NAME_FAMILIES` is swept for slot keys with
+    /// no list edit in this module, and a hand-kept or filtered copy that drifts
+    /// from the table reds here.
+    ///
+    /// Misses are collected per family label before asserting, so one failure
+    /// names every family the universe drifted from.
+    #[test]
+    fn slot_probe_names_reach_every_closed_world_family_name() {
+        let probed = slot_probe_names();
+        let mut misses: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for &(family, slice) in crate::unresolved_function::BUILTIN_NAME_FAMILIES {
+            for &name in slice {
+                if !probed.contains(name) {
+                    misses.entry(family).or_default().push(name);
+                }
+            }
+        }
+
+        let report: String = misses
+            .iter()
+            .map(|(family, names)| format!("\n  {family}: {}", names.join(", ")))
+            .collect();
+        assert!(
+            misses.is_empty(),
+            "slot_probe_names() misses closed-world family names, so the slot-key \
+             sweeps cannot reach them. The sweeps must derive their universe from \
+             unresolved_function::BUILTIN_NAME_FAMILIES, not from a hand-kept copy \
+             of it. Missed, by family:{report}"
         );
     }
 
@@ -4253,21 +4434,24 @@ mod tests {
     /// The FINDING-2 guard therefore covers the geometry-LOWERING families —
     /// task 5750's subject, and the 26 arity-agnostic arms that motivated the
     /// finding — and NOT task 4493/3994's selector family, nor task #6082's two
-    /// Euler builtins. Nobody should read the guard as broader than that. The
-    /// nine selectors plus `generate` are also the names least exposed to the
-    /// hazard: none is overloaded today, and a value-form overload is a
-    /// producer-side notion (task 5351).
+    /// Euler builtins, nor direction-typing σ's `frame_at`. Nobody should read
+    /// the guard as broader than that. The nine selectors plus `generate` are
+    /// also the names least exposed to the hazard: none is overloaded today,
+    /// and a value-form overload is a producer-side notion (task 5351).
     ///
-    /// The two Euler builtins are unobservable for a DIFFERENT reason worth
-    /// stating, because it is not the selectors': they have no lowering arm at
-    /// all. Both are pure eval-builtins dispatched through
+    /// The two Euler builtins and `frame_at` are unobservable for a DIFFERENT
+    /// reason worth stating, because it is not the selectors': they have no
+    /// lowering arm at all. All three are pure eval-builtins dispatched through
     /// `reify_stdlib::eval_builtin`, which answers a wrong-arity call with
     /// `Value::Undef` at EVAL time rather than a compile diagnostic — so there
-    /// is no arity check for the probe to observe. They are also the one pair
-    /// here that does NOT rely on this exemption for its safety: both arms carry
-    /// an explicit `if arg_count ==` guard (4 and 2), which is the stronger fix
-    /// the agnostic-arm rule asks for, so their slot indices cannot fire on the
-    /// wrong argument even if a future overload appears.
+    /// is no arity check for the probe to observe. The Euler pair is the one
+    /// pair here that does NOT rely on this exemption for its safety: both arms
+    /// carry an explicit `if arg_count ==` guard (4 and 2), which is the
+    /// stronger fix the agnostic-arm rule asks for, so their slot indices cannot
+    /// fire on the wrong argument even if a future overload appears. `frame_at`
+    /// is the unguarded eval-only entry: single-form, so its arm carries no
+    /// guard, and it DOES rely on this exemption — an overload must add the
+    /// guard in the same change.
     const ARITY_UNOBSERVABLE_SLOT_KEYS: &[&str] = &[
         // The nine geometry topology selectors (task 4493).
         "center_of_mass",
@@ -4288,6 +4472,38 @@ mod tests {
         // and unlike a ledgered name such as `fillet` ({2, 3}).
         "orient_euler",
         "orient_to_euler",
+        // direction-typing σ's `frame_at`: a pure eval builtin with no lowering
+        // arm, so the probe sees the same full-window signature as the Euler
+        // pair. Unlike that pair its arm is UNGUARDED (single-form); a future
+        // overload must land an `if arg_count ==` guard in the same change,
+        // since this ledger cannot observe one. Nothing pins the single form:
+        // reify-stdlib geometry.rs's `frame_at_wrong_arity_undef` checks only
+        // that a 1-arg call is Undef, and stays green if a 2- or 4-arg
+        // overload lands.
+        "frame_at",
+        // direction-typing ζ-a's joint and PRB flexure ctors: pure eval
+        // builtins with no lowering arity diagnostic, measured by the probe
+        // (the full-window signature, like `frame_at`). Their arms are
+        // UNGUARDED because the axis keeps one index at every accepted arity;
+        // an overload that moves the axis must add an `if arg_count ==` guard
+        // in the same change, since this ledger cannot observe one.
+        "prismatic",
+        "revolute",
+        "cylindrical",
+        "planar",
+        "prb_cantilever_beam",
+        "prb_fixed_fixed_beam",
+        "prb_notch_circular",
+        "prb_notch_elliptical",
+        "prb_notch_right_circular",
+        "prb_living_hinge",
+        "prb_cross_spring_pivot",
+        "prb_prismatic_blade",
+        "prb_two_axis_pivot",
+        "prb_parallelogram_flexure",
+        "prb_double_parallelogram_flexure",
+        "prb_let_joint",
+        "prb_cartwheel_flexure",
     ];
 
     /// Names that legitimately accept MORE THAN ONE arity while being served by

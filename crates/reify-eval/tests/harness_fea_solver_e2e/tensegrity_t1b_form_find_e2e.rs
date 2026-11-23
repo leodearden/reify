@@ -48,8 +48,8 @@ fn call_form_find_free(value_inputs: &[Value]) -> ComputeOutcome {
 ///   - `member_forces` has 12 entries: struts (indices 0–2) compressive (< 0),
 ///     cables (indices 3–11) tensile (> 0)
 ///   - `force_densities` has 12 entries: struts ≈ −√3 (1e-6), horizontals = 1
-///     (1e-12), verticals ≈ +√3 (1e-6) — backed by the landed kernel test
-///     `group_ratios_search_recovers_closed_form_prism_relative_q`
+///     (1e-12), verticals ≈ +√3 (1e-6) — backed by the kernel golden
+///     `crates/reify-solver-elastic/tests/tensegrity_t1b_form_find_free.rs::group_ratios_form_finds_published_triplex_prism_equilibrium`
 ///
 /// Does NOT assert `converged` — callers should check that themselves before
 /// invoking this helper (the trampoline test reads it from the Completed result;
@@ -135,9 +135,6 @@ fn assert_triplex_form_find_result(fields: &PersistentMap<String, Value>) {
 /// / reference_group Values, runs the adaptive GroupRatios search, and returns
 /// `Completed` with a `FormFindResult` satisfying the canonical triplex prism
 /// contract (see `assert_triplex_form_find_result`).
-///
-/// Numeric bounds are backed by the landed kernel test
-/// `group_ratios_search_recovers_closed_form_prism_relative_q`.
 #[test]
 fn trampoline_happy_path_solves_triplex_prism() {
     let value_inputs = vec![

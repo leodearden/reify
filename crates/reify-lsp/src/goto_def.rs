@@ -1,4 +1,4 @@
-use reify_ast::ImportKind;
+use reify_ast::{ImportBinding, ImportKind};
 use reify_core::{ModulePath, SourceSpan};
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
@@ -22,7 +22,7 @@ pub fn compute_goto_definition(source: &str, uri: &Url, position: Position) -> O
     compute_goto_definition_with_parsed(&parsed, source, uri, position)
 }
 
-/// Compute go-to-definition using a pre-built [`ParsedModule`].
+/// Compute go-to-definition using a pre-built [`reify_ast::ParsedModule`].
 ///
 /// This is the injectable core shared by the per-request wrapper
 /// [`compute_goto_definition`] (which parses internally) and the server's
@@ -244,7 +244,7 @@ pub fn compute_goto_definition_cross_file(
     compute_goto_definition_cross_file_with_parsed(&parsed, source, uri, position, resolve_import)
 }
 
-/// Compute cross-file go-to-definition using a pre-built [`ParsedModule`].
+/// Compute cross-file go-to-definition using a pre-built [`reify_ast::ParsedModule`].
 ///
 /// Like [`compute_goto_definition_cross_file`] but takes the primary
 /// document's parse instead of parsing internally — the server supplies the
@@ -272,7 +272,9 @@ pub fn compute_goto_definition_cross_file_with_parsed(
             && offset_u32 < import.span.end
             && let Some((target_uri, target_source)) = resolve_import(&import.path)
         {
-            // Determine what entity to look for in the target
+            // Chosen by the written form, not by `ImportKind::binding`: a
+            // single-entity import names its entity wherever the cursor sits on
+            // it, a destructured one only through the name under the cursor.
             let entity_name = match &import.kind {
                 ImportKind::Entity(name) => Some(name.as_str()),
                 ImportKind::EntityAliased { entity, .. } => Some(entity.as_str()),
@@ -310,16 +312,12 @@ pub fn compute_goto_definition_cross_file_with_parsed(
     // Check if the word matches an imported name.
     for decl in &parsed.declarations {
         if let reify_ast::Declaration::Import(import) = decl {
-            let target_name = match &import.kind {
-                ImportKind::Entity(name) if name == word => Some(name.as_str()),
-                ImportKind::EntityAliased { entity, alias } if alias == word => {
-                    Some(entity.as_str())
-                }
-                ImportKind::Destructured(names) => names
-                    .iter()
-                    .find(|n| n.as_str() == word)
-                    .map(|n| n.as_str()),
-                _ => None,
+            let target_name = match import.kind.binding() {
+                ImportBinding::Entities(entities) => entities
+                    .into_iter()
+                    .find(|b| b.local_name() == word)
+                    .map(|b| b.entity),
+                ImportBinding::Namespace { .. } => None,
             };
 
             if let Some(target_entity) = target_name
@@ -1175,18 +1173,15 @@ mod tests {
         // as unanswered. The compiler already answers it:
         //
         // - `pre_pass.rs`'s `Declaration::Purpose` arm registers every
-        //   `p.structures` entry through
-        //   `ctx.record_or_report_duplicate(&s.name, s.span, "structure")`, so
-        //   the name occupies the MODULE-LEVEL structure namespace and collides
+        //   `p.structures` entry through `ctx.record_or_report_duplicate(&s.name,
+        //   s.span, EntityNameKind::Template(EntityKind::Structure))`, so the
+        //   name occupies the MODULE-LEVEL structure namespace and collides
         //   with a same-named top-level `structure`.
         // - `entities_phase.rs`'s matching arm compiles it into the same
         //   `ctx.templates` as a top-level structure. The only thing scoped to
         //   the purpose is AMBIENT-DEFAULT resolution, via `Some(p.name)`
-        //   (DD6 innermost-wins).
-        // - The one documented limitation (pre_pass.rs, same arm) is that
-        //   `structure_refs` omits them, so `phase_functions` builds no
-        //   signature skeleton. That is a SKELETON gap, not a name-visibility
-        //   rule.
+        //   (DD6 innermost-wins). A fn uses it exactly like a top-level
+        //   structure, under the same declared-above rule.
         //
         // A module-level name is file-wide navigable, so goto-def resolves it
         // from anywhere in the file — and navigation is read-only, where a
@@ -1799,6 +1794,57 @@ mod tests {
             "module import should navigate to file start"
         );
         assert_eq!(loc.range.start.character, 0);
+    }
+
+    /// `parts.ri` with `Bolt` declared off the file start, so a jump to
+    /// `Bolt` and a jump to the file start are distinguishable.
+    const WASHER_THEN_BOLT: &str = "structure Washer {\n    param t: Length = 1mm\n}\nstructure Bolt {\n    param length: Length = 20mm\n}";
+
+    fn washer_then_bolt_resolver() -> impl Fn(&str) -> Option<(Url, String)> {
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            "parts".to_string(),
+            (parts_uri(), WASHER_THEN_BOLT.to_string()),
+        );
+        mock_resolver(map)
+    }
+
+    #[test]
+    fn cross_file_cursor_on_aliased_entity_import_path_navigates_to_the_entity() {
+        let source = "import parts.Bolt as StdBolt\nstructure Assembly {\n    sub b = StdBolt()\n}";
+        // Cursor on 'parts' in 'import parts.Bolt as StdBolt' (line 0, col 8)
+        let loc = compute_goto_definition_cross_file(
+            source,
+            &test_uri(),
+            Position::new(0, 8),
+            &washer_then_bolt_resolver(),
+        )
+        .expect("cursor on an entity import's path should navigate to its entity");
+        assert_eq!(loc.uri, parts_uri());
+        assert_eq!(
+            loc.range.start,
+            Position::new(3, 10),
+            "should point to the `Bolt` token of `structure Bolt`"
+        );
+    }
+
+    #[test]
+    fn cross_file_cursor_on_destructured_import_path_navigates_to_file_start() {
+        let source = "import parts.{Bolt}\nstructure Assembly {\n    sub b = Bolt()\n}";
+        // Cursor on 'parts' in 'import parts.{Bolt}' (line 0, col 8)
+        let loc = compute_goto_definition_cross_file(
+            source,
+            &test_uri(),
+            Position::new(0, 8),
+            &washer_then_bolt_resolver(),
+        )
+        .expect("cursor on a destructured import's path should navigate to the target");
+        assert_eq!(loc.uri, parts_uri());
+        assert_eq!(
+            loc.range,
+            Range::default(),
+            "no destructured name is under the cursor, so navigate to file start"
+        );
     }
 
     // --- verification / regression tests ---

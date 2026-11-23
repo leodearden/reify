@@ -12,6 +12,7 @@ from enum import Enum
 from types import MappingProxyType
 
 from reify_verify import knobs
+from reify_verify.diagnostics import WARNING
 
 
 class Role(Enum):
@@ -24,9 +25,7 @@ class Role(Enum):
 class UnknownRoleError(ValueError):
     def __init__(self, raw: str):
         wanted = "|".join(role.value for role in Role)
-        super().__init__(
-            f"verify.sh: ERROR — unknown DF_VERIFY_ROLE '{raw}' (want {wanted})"
-        )
+        super().__init__(f"unknown DF_VERIFY_ROLE '{raw}' (want {wanted})")
 
 
 def parse_role(raw: str | None) -> Role:
@@ -98,6 +97,17 @@ MERGE_PRIO = PrioClass("merge", "nice -n 5 ", "nice -n 5 ", False)
 IDLE_PRIO = PrioClass("idle", "nice -n 19 ionice -c3 ", "nice -n 19 ", True)
 
 
+def refuse_fail_fast_recording(owner: str, records: bool, fail_fast: bool) -> None:
+    """A fail-fast pass stops at its first failure and exits as a full failing run does, so
+    its manifest would name one failing id as if it were all of them (bash's B11 write
+    gate, which D3 splits over two fields)."""
+    if records and fail_fast:
+        raise ValueError(
+            f"{owner}: a run that records a confirm manifest runs --no-fail-fast "
+            f"(records={records}, fail_fast={fail_fast})"
+        )
+
+
 @dataclass(frozen=True)
 class RolePolicy:
     default_profile: ProfileSelection
@@ -122,6 +132,7 @@ class RolePolicy:
                 f"RolePolicy.release_wall_default {self.release_wall_default!r} "
                 "is not a duration"
             )
+        refuse_fail_fast_recording("RolePolicy", self.records_confirm_manifest, self.fail_fast)
 
 
 @dataclass(frozen=True)
@@ -262,11 +273,11 @@ def resolve_prio(
     if has_nice:
         return PrioResolution(
             prio.nice_only_prefix,
-            f"verify.sh: WARNING — ionice not found; {role_label} role using nice only (no IO throttle)",
+            f"{WARNING}ionice not found; {role_label} role using nice only (no IO throttle)",
         )
     missing = "nice/ionice" if prio.uses_ionice else "nice"
     return PrioResolution(
-        "", f"verify.sh: WARNING — {missing} not found; {role_label} role running at normal priority"
+        "", f"{WARNING}{missing} not found; {role_label} role running at normal priority"
     )
 
 

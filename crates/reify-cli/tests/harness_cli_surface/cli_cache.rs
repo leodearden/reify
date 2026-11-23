@@ -9,8 +9,9 @@
 use std::io::{Cursor, Read, Write};
 use std::process::{Command, Stdio};
 
+use reify_compute_contract::ElasticResult;
 use reify_eval::persistent_cache::{
-    CacheEntryHeader, ENGINE_VERSION_HASH, ENTRY_FORMAT_VERSION, ElasticResult, STALE_TEMPFILE_AGE,
+    CacheEntryHeader, ENGINE_VERSION_HASH, ENTRY_FORMAT_VERSION, STALE_TEMPFILE_AGE,
     WithDiagnostics, read_entry, shard_dir, write_entry,
 };
 use tempfile::tempdir;

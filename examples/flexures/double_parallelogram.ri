@@ -25,5 +25,5 @@ structure def DoubleParallelogramPrb {
 
     // The compliant prismatic joint (two stages in series). Pivot at origin; motion along +X.
     let stage_flexure = prb_double_parallelogram_flexure(
-        20mm, 5mm, 0.5mm, 10mm, steel, vec3(1, 0, 0), point3(0mm, 0mm, 0mm))
+        20mm, 5mm, 0.5mm, 10mm, steel, dir(1, 0, 0), point3(0mm, 0mm, 0mm))
 }

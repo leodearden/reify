@@ -420,11 +420,20 @@ tasks:
       constraint defs.'
     verdict: PASS
     delivered_check:
-      kind: grep
-      pattern: int_literal_for_length_param_no_constraint_arg_type_mismatch
-      paths:
-      - crates/reify-compiler/tests/harness_statement_semantics/constraint_def_compile_tests.rs
-      expect: present
+      kind: manual
+      reason: RETIRED by task 10029, which removed the Int-for-Length tolerance
+        this check protected (task 5762 deferred that tolerance to 10029). 10029
+        inverted the deliberate pin under a new name,
+        int_literal_for_length_param_is_constraint_arg_type_mismatch, so the old
+        test fn no longer exists. Its name survives only as a predecessor mention
+        in the new test's doc comment, so an expect=present grep for it would pass
+        by accident rather than because the pin is live, and would fail once that
+        section leaves constraint_def_compile_tests.rs (task 10031 splits that
+        file). The binding above is as-authored history. The ruling is restated in
+        the new test's doc comment (PRD
+        docs/prds/v0_6/dimensioned-construction-strictness.md §0.3, §13 Open
+        question 1), not deleted. This row mirrors
+        metadata.retired_delivered_checks on task 5762.
 - label: ε
   task_id: 5763
   title: 'dimensioned-construction ε: pin the recovered constraint verdict; file the

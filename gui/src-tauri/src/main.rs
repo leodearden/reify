@@ -21,6 +21,7 @@ use tauri::{Emitter, Manager};
 use reify_constraints::SimpleConstraintChecker;
 use reify_eval::SolverProgressSink;
 use reify_gui::commands::AppState;
+use reify_gui::debug_server_slot::DebugServerSlot;
 use reify_gui::diff::{StateDelta, delta_to_events};
 use reify_gui::engine::{
     AutoResolveEmitter, EngineSession, FeaCaseEmitter, FeaConvergenceEmitter,
@@ -30,7 +31,9 @@ use reify_gui::eval_queue::{
     EditOrder, EvalActivity, EvalObserver, EvalQueue, EvalRequest, PublishedState,
 };
 use reify_gui::event_bus::emit_typed;
+use reify_gui::launch_mode::{Mode, ModeState, SetModeError};
 use reify_gui::lsp_bridge::LspBridge;
+use reify_gui::recent_files::RecentEntry;
 use reify_gui::types::{EvalGeneration, EvaluationStatus};
 use reify_gui::watcher::{FileEvent, FileWatcher};
 use reify_lsp::server::{LogLine, NotificationSink};
@@ -342,7 +345,9 @@ fn watch_file(app: &tauri::AppHandle, state: &AppState, file: &Path) {
 // Engine-touching commands are async: each submits a request to the evaluation
 // queue and awaits its reply, so no thread — the GTK main thread least of all —
 // blocks on engine work, and the queue publishes deltas and evaluation status.
-// The remaining commands never touch the engine, so they stay sync.
+// The remaining commands never touch the engine, so they stay sync — unless they
+// run compiler work, as create_new_file's template check does; those await a
+// large-stack thread (`large_stack::run_on_large_stack`).
 
 /// Run `call` against the engine as an ordered request that publishes nothing.
 async fn engine_call<T: Send + 'static>(
@@ -465,6 +470,54 @@ fn save_file(path: String, content: String) -> Result<(), String> {
 #[tauri::command]
 fn open_file(path: String) -> Result<reify_gui::types::FileData, String> {
     reify_gui::commands::open_file_impl(&path)
+}
+
+#[tauri::command]
+async fn create_new_file(path: String) -> Result<reify_gui::types::FileData, String> {
+    reify_gui::commands::create_new_file_on_large_stack(path).await
+}
+
+/// The Recent list's store: `recent-files.json` in the app-data dir.
+fn recent_files_store(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|dir| dir.join("recent-files.json"))
+        .map_err(|e| format!("no app-data directory for the recent files list: {e}"))
+}
+
+#[tauri::command]
+fn list_recent(app: tauri::AppHandle) -> Vec<RecentEntry> {
+    match recent_files_store(&app) {
+        Ok(store) => reify_gui::recent_files::list_recent(&store),
+        Err(e) => {
+            warn!("{e}; listing no recent files");
+            Vec::new()
+        }
+    }
+}
+
+/// Put `path` at the front of the Recent list, opened now.
+fn record_recent_now(app: &tauri::AppHandle, path: &str) -> Result<Vec<RecentEntry>, String> {
+    let store = recent_files_store(app)?;
+    let opened_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| {
+            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+        });
+    reify_gui::recent_files::record_recent(&store, path, opened_at)
+}
+
+#[tauri::command]
+fn record_recent(app: tauri::AppHandle, path: String) -> Result<Vec<RecentEntry>, String> {
+    record_recent_now(&app, &path)
+}
+
+/// Why the argv launch file failed to load, handed out once.
+#[tauri::command]
+fn take_initial_file_load_failure(
+    slot: tauri::State<'_, Arc<reify_gui::commands::InitialFileLoadFailureSlot>>,
+) -> Option<reify_gui::commands::InitialFileLoadFailure> {
+    slot.take()
 }
 
 #[tauri::command]
@@ -654,15 +707,23 @@ async fn lsp_request(
 
 // --- Debug commands ---
 
-/// Wrapper for REIFY_DEBUG=1 state, managed by Tauri.
-struct DebugEnabled(bool);
-
-/// `Some(url)` only when THIS process bound the reify-debug listener.
-struct DebugMcpEndpoint(Option<String>);
+/// Whether the reify-debug server is live in this process (REIFY_DEBUG=1 at
+/// launch, or Debug mode selected since).
+#[tauri::command]
+fn is_debug_enabled(debug_server: tauri::State<'_, DebugServerSlot>) -> bool {
+    debug_server.live_port().is_some()
+}
 
 #[tauri::command]
-fn is_debug_enabled(state: tauri::State<'_, DebugEnabled>) -> bool {
-    state.0
+fn set_mode(
+    debug_server: tauri::State<'_, DebugServerSlot>,
+    mode: Mode,
+) -> Result<ModeState, SetModeError> {
+    reify_gui::launch_mode::set_mode_impl(
+        mode,
+        &debug_server,
+        reify_gui::debug_server::resolve_debug_port(),
+    )
 }
 
 #[tauri::command]
@@ -691,20 +752,17 @@ fn debug_response(
 async fn claude_send_message(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
-    debug_mcp: tauri::State<'_, DebugMcpEndpoint>,
+    debug_server: tauri::State<'_, DebugServerSlot>,
     text: String,
     context: Option<reify_gui::claude_bridge::MessageContext>,
 ) -> Result<String, String> {
-    // Resolve the sidecar binary path. Tauri's externalBin (declared in
-    // tauri.conf.json) copies the sidecar binary to `<resource_dir>/<basename>`
-    // in both dev (`target/<profile>/reify-sidecar`) and bundled builds —
-    // it does NOT place it in a `sidecar/` subdirectory of resource_dir,
-    // despite the source layout being `gui/src-tauri/sidecar/...`.
-    let sidecar_path = app
-        .path()
-        .resource_dir()
-        .map(|p| p.join("reify-sidecar"))
-        .unwrap_or_else(|_| std::path::PathBuf::from("reify-sidecar"));
+    let gui_exe = tauri::utils::platform::current_exe().map_err(|e| {
+        format!(
+            "cannot resolve reify-gui's own executable to locate {}: {e}",
+            reify_gui::claude_bridge::SIDECAR_EXECUTABLE
+        )
+    })?;
+    let sidecar_path = reify_gui::claude_bridge::sidecar_executable_beside(&gui_exe)?;
 
     // Resolve the writable workspace directory for the landlock sandbox.
     let initial_file_opt: Option<std::path::PathBuf> =
@@ -726,7 +784,8 @@ async fn claude_send_message(
         .filter(|p| p.exists());
 
     let app_for_events = app.clone();
-    let debug_mcp_url = debug_mcp.0.clone();
+    // A sidecar spawned before the debug server went live keeps the environment it got.
+    let debug_mcp_url = debug_server.endpoint_url();
 
     // Lazily spawn the sidecar (if not running) and wait for it to become ready.
     reify_gui::claude_bridge::ensure_sidecar_ready(
@@ -738,14 +797,18 @@ async fn claude_send_message(
             let le = landlock_exec_path;
             let url = debug_mcp_url;
             async move {
-                reify_gui::claude_bridge::spawn_sidecar_impl(
-                    &path,
-                    move |name, payload| {
-                        app_c.emit(&name, payload).ok();
-                    },
-                    &ws,
-                    le.as_deref(),
-                    url.as_deref(),
+                let path_var = std::env::var_os("PATH");
+                reify_gui::sidecar_runtime::spawn_if_interpreter_found(
+                    path_var.as_deref(),
+                    reify_gui::claude_bridge::spawn_sidecar_impl(
+                        &path,
+                        move |name, payload| {
+                            app_c.emit(&name, payload).ok();
+                        },
+                        &ws,
+                        le.as_deref(),
+                        url.as_deref(),
+                    ),
                 )
                 .await
             }
@@ -860,6 +923,15 @@ async fn set_active_fea_case(
 }
 
 fn main() {
+    // SAFETY: the first statement of main, before any thread exists.
+    unsafe { reify_gui::webkit_env::apply_process_defaults() }
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|arg| arg == reify_gui::webkit_env::PRINT_ENV_FLAG)
+    {
+        print!("{}", reify_gui::webkit_env::process_env_report());
+        return;
+    }
     let mut context = tauri::generate_context!();
     if let Err(e) =
         reify_gui::dev_url::retarget_to_vite_port_from_env(&mut context.config_mut().build)
@@ -910,22 +982,10 @@ fn main() {
         pending_solve_cancel: Arc::clone(&solve_cancel_slot),
     };
 
-    let debug_listener = reify_gui::debug_server::bind_debug_listener(
-        debug_enabled,
-        reify_gui::debug_server::resolve_debug_port(),
-    );
-    let debug_mcp_endpoint = DebugMcpEndpoint(
-        debug_listener
-            .as_ref()
-            .map(reify_gui::debug_server::BoundDebugListener::endpoint_url),
-    );
-
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .manage(app_state)
-        .manage(DebugEnabled(debug_enabled))
-        .manage(debug_mcp_endpoint)
         .setup(move |app| {
             // Create LspBridge with TauriNotificationSink now that AppHandle is available
             let sink = Arc::new(TauriNotificationSink {
@@ -1026,19 +1086,31 @@ fn main() {
                 }),
             );
             app.manage(Arc::clone(&evals));
+            // Managed with or without an argv, so its command always resolves.
+            let initial_file_load_failure_slot =
+                Arc::new(reify_gui::commands::InitialFileLoadFailureSlot::default());
+            app.manage(Arc::clone(&initial_file_load_failure_slot));
 
             // The main loop dispatches no invoke until setup() returns, so the
             // frontend's first get_initial_state queues behind this load, and
             // the window paints while it runs.
-            if let Some((file, load)) =
-                reify_gui::commands::begin_initial_file_load(&evals, Arc::clone(&engine_arc), &argv)
-            {
+            if let Some((file, load)) = reify_gui::commands::begin_initial_file_load(
+                &evals,
+                Arc::clone(&engine_arc),
+                initial_file_load_failure_slot,
+                &argv,
+            ) {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     match load.await {
                         Ok(_) => {
                             let state: tauri::State<'_, AppState> = handle.state();
                             watch_file(&handle, &state, &file);
+                            // A launch argument (a double-clicked .ri included)
+                            // is an open like any other, so it joins Recent.
+                            if let Err(e) = record_recent_now(&handle, &file.to_string_lossy()) {
+                                warn!("{e}; the launch file is not in the Recent list");
+                            }
                             if let Ok(mut initial_file) = state.initial_file.lock() {
                                 *initial_file = Some(file);
                             }
@@ -1056,31 +1128,44 @@ fn main() {
             let debug_bridge = Arc::new(reify_gui::debug::DebugBridge::new(app.handle().clone()));
             app.manage(debug_bridge.clone());
 
-            // Serve the debug HTTP/MCP server on the listener bound above (REIFY_DEBUG=1)
-            if let Some(listener) = debug_listener {
-                eprintln!(
-                    "REIFY_DEBUG=1: debug server starting on {}",
-                    listener.endpoint_url()
-                );
-                let engine_for_debug = Arc::clone(&engine_arc);
-                let selection_for_debug = Arc::clone(&selection_arc);
-                let last_state_for_debug = Arc::clone(&last_state_arc);
-                let evals_for_debug = Arc::clone(&evals);
-                tauri::async_runtime::spawn(async move {
-                    if let Err(e) = reify_gui::debug_server::spawn_debug_server(
+            // The one debug server: started here under REIFY_DEBUG=1, or later by
+            // set_mode("debug"). Bound in setup() because its deps only exist here;
+            // no command dispatches before setup() returns, so nothing sees the gap.
+            let debug_server = {
+                let engine = Arc::clone(&engine_arc);
+                let selection = Arc::clone(&selection_arc);
+                let last_state = Arc::clone(&last_state_arc);
+                let evals = Arc::clone(&evals);
+                DebugServerSlot::new(move |listener| {
+                    let serve = reify_gui::debug_server::spawn_debug_server(
                         listener,
-                        engine_for_debug,
-                        selection_for_debug,
-                        debug_bridge,
-                        last_state_for_debug,
-                        evals_for_debug,
-                    )
-                    .await
-                    {
-                        eprintln!("Debug server failed: {e}");
-                    }
-                });
+                        Arc::clone(&engine),
+                        Arc::clone(&selection),
+                        Arc::clone(&debug_bridge),
+                        Arc::clone(&last_state),
+                        Arc::clone(&evals),
+                    );
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(e) = serve.await {
+                            eprintln!("Debug server failed: {e}");
+                        }
+                    });
+                })
+            };
+            if debug_enabled {
+                let port = reify_gui::debug_server::resolve_debug_port();
+                match debug_server.ensure_live(port) {
+                    Ok(port) => eprintln!(
+                        "REIFY_DEBUG=1: debug server starting on {}",
+                        reify_gui::debug_server::debug_endpoint_url(port)
+                    ),
+                    Err(e) => eprintln!(
+                        "REIFY_DEBUG=1 but the debug server is NOT live on port {port} ({e}); \
+                         the in-app assistant will get no reify-debug tools"
+                    ),
+                }
             }
+            app.manage(debug_server);
 
             // Notify the frontend of the kernel availability at startup.
             app.handle().emit("kernel-status", &kernel_status).ok();
@@ -1095,6 +1180,10 @@ fn main() {
             update_source,
             save_file,
             open_file,
+            create_new_file,
+            list_recent,
+            record_recent,
+            take_initial_file_load_failure,
             open_file_engine,
             export,
             get_source_location,
@@ -1113,6 +1202,7 @@ fn main() {
             claude_clear_session,
             claude_permission_decision,
             is_debug_enabled,
+            set_mode,
             debug_response,
             get_kernel_status,
             get_unit_ladders,

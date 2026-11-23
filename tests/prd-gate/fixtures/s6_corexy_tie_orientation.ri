@@ -6,10 +6,10 @@
 module s6_corexy_tie_orientation
 
 structure def CoreXY {
-    let jy = prismatic(vec3(0, 1, 0), -500mm .. 500mm)
-    let jx = prismatic(vec3(1, 0, 0), -500mm .. 501mm)
-    let ju = prismatic(vec3(1, 1, 0), -700mm .. 700mm)
-    let jv = prismatic(vec3(1, -1, 0), -700mm .. 701mm)
+    let jy = prismatic(dir(0, 1, 0), -500mm .. 500mm)
+    let jx = prismatic(dir(1, 0, 0), -500mm .. 501mm)
+    let ju = prismatic(dir(1, 1, 0), -700mm .. 700mm)
+    let jv = prismatic(dir(1, -1, 0), -700mm .. 701mm)
     let base = body(body(body(mechanism(), "gantry_y", jy, world()), "carriage", jx, jy), "belt_u", ju, world())
     let m_a = body(body(base, "belt_v", jv, ju), "tie_a", jv, jx)
     let m_b = body(body(base, "belt_v", jv, ju), "tie_b", jx, jv)

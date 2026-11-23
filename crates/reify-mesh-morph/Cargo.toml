@@ -19,6 +19,7 @@ testing = []
 reify-build-utils.workspace = true
 
 [dependencies]
+workspace-feature-union.workspace = true
 reify-core.workspace = true
 reify-ir.workspace = true
 reify-eval.workspace = true

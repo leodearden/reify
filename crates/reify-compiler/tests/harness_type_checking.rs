@@ -59,12 +59,22 @@ mod builtin_arg_signature_tests;
 mod chained_comparison_tests;
 #[path = "harness_type_checking/comparison_operand_guard_tests.rs"]
 mod comparison_operand_guard_tests;
+#[path = "harness_type_checking/direction_operator_table_tests.rs"]
+mod direction_operator_table_tests;
 #[path = "harness_type_checking/expr_error_sentinel_tests.rs"]
 mod expr_error_sentinel_tests;
 #[path = "harness_type_checking/field_op_typing_tests.rs"]
 mod field_op_typing_tests;
+#[path = "harness_type_checking/fn_body_prelude_resolution_tests.rs"]
+mod fn_body_prelude_resolution_tests;
+#[path = "harness_type_checking/frame_at_direction_slot_tests.rs"]
+mod frame_at_direction_slot_tests;
 #[path = "harness_type_checking/implies_type_check_tests.rs"]
 mod implies_type_check_tests;
+#[path = "harness_type_checking/joint_flexure_direction_slot_tests.rs"]
+mod joint_flexure_direction_slot_tests;
+#[path = "harness_type_checking/mul_div_dimension_overflow_compile_tests.rs"]
+mod mul_div_dimension_overflow_compile_tests;
 #[path = "harness_type_checking/mul_div_operand_guard_tests.rs"]
 mod mul_div_operand_guard_tests;
 #[path = "harness_type_checking/mul_div_static_runtime_parity.rs"]

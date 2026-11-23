@@ -26,6 +26,7 @@ from reify_path_attribution import PathFacts, Tree, attribute
 from reify_verify import bashcall, gitcall
 from reify_verify.bashcall import BashCall, DataFile, DataFileUnreadable
 from reify_verify.childproc import CallResult
+from reify_verify.diagnostics import WARNING
 from reify_verify.invocation import Invocation, Scope
 from reify_verify.policy import ROLE_TABLE
 
@@ -41,7 +42,7 @@ GUI_PINS = DataFile("gui/src/__tests__/reifyGrammarCorpus.expected-clean.json")
 
 MERGE_HEAD_NOTICE = "verify.sh: MERGE_HEAD present — forcing --scope all (merge in progress)"
 MERGE_BASE_WARNING = (
-    "verify.sh: WARNING — --scope branch could not resolve 'git merge-base main HEAD' "
+    f"{WARNING}--scope branch could not resolve 'git merge-base main HEAD' "
     "(detached HEAD / missing local main ref / merge-base failure) — failing WIDE to "
     "--scope all (contract C5)"
 )
@@ -71,7 +72,7 @@ def resolve_scope(invocation: Invocation, repo_root: Path, env: Mapping[str, str
     mode = invocation.scope
     widened = None
     notices = []
-    if mode is not Scope.ALL and _merge_in_progress(repo_root, env):
+    if mode is not Scope.ALL and merge_in_progress(repo_root, env):
         notices.append(MERGE_HEAD_NOTICE)
         mode, widened = Scope.ALL, Widening.MERGE_IN_PROGRESS
     if mode is not Scope.ALL and ROLE_TABLE[invocation.role].force_scope_all:
@@ -91,7 +92,7 @@ def resolve_scope(invocation: Invocation, repo_root: Path, env: Mapping[str, str
     return ResolvedScope(mode, merge_base, widened, tuple(notices))
 
 
-def _merge_in_progress(repo_root: Path, env: Mapping[str, str]) -> bool:
+def merge_in_progress(repo_root: Path, env: Mapping[str, str]) -> bool:
     """A MERGE_HEAD file exists; a relative git path is resolved against repo_root, never the cwd."""
     found = gitcall.run(repo_root, env, "rev-parse", "--git-path", "MERGE_HEAD")
     if found.returncode != 0 or not found.lines:
@@ -215,7 +216,7 @@ def _fail_wide(mode: Scope, what: str, found: CallResult) -> GatherFailure:
     return GatherFailure(
         (
             *found.stderr_lines,
-            f"verify.sh: WARNING — --scope {mode.value} {what} failed — failing WIDE to "
+            f"{WARNING}--scope {mode.value} {what} failed — failing WIDE to "
             "--scope all (contract C5)",
         )
     )
@@ -270,7 +271,7 @@ def _rust_coupled(
     if found.returncode != 0:
         command = " ".join(("git grep", *source, f"-E '{FIXTURE_REFERENCE.pattern}' -- '*.rs'"))
         return CoupledSet(frozenset(), everything=True), (
-            f"verify.sh: WARNING — {found.exit_summary(command)} — every prd-gate fixture "
+            f"{WARNING}{found.exit_summary(command)} — every prd-gate fixture "
             "counts as Rust-coupled (fail wide, contract C5)",
         )
     return CoupledSet(
@@ -291,7 +292,7 @@ def _gui_pinned(
         pins = _pins(mode, repo_root, env)
     except DataFileUnreadable as err:
         return CoupledSet(frozenset(), everything=True), (
-            f"verify.sh: WARNING — {err} — every prd-gate fixture counts as GUI-pinned "
+            f"{WARNING}{err} — every prd-gate fixture counts as GUI-pinned "
             "(fail wide, contract C5)",
         )
     return CoupledSet(frozenset(_basename(pin) for pin in pins if pin.startswith(FIXTURES_DIR))), ()

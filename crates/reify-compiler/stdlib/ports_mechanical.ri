@@ -9,10 +9,13 @@
 //   1. Traits are NOT `pub`, matching the io.ri/process.ri convention.
 //   2. No `#no_prelude` pragma. std.ports.mechanical refines LocatedPort from
 //      std.ports (inter-stdlib dependency; MechanicalPort : LocatedPort : Port),
-//      so the growing-prelude sequence in stdlib_loader.rs must include
-//      std.ports before this module. Adding `#no_prelude` would break both the
-//      refinement resolution and the stdlib_loader_tests bidirectional invariant
-//      test.
+//      imported below. Adding `#no_prelude` would hide that import, breaking
+//      both the refinement resolution and the stdlib_loader_tests bidirectional
+//      invariant test.
+
+module std.ports.mechanical
+
+import std.ports
 
 // ── Torque ────────────────────────────────────────────────────────────────────
 
@@ -125,10 +128,8 @@ trait MotivePort : MechanicalPort {}
 //   max_speed  : AngularVelocity — maximum continuous rotational speed (rad/s).
 //   max_torque : Torque          — maximum continuous torque (the built-in
 //                Torque dimension, Force·Length/Angle).
-//   axis       : Vector3<Dimensionless> — rotation axis. A DIRECTION, so the
-//                quantity slot is dimensionless (task 5848; the ruling lives on
-//                the `Vec3<Q>` alias in trajectory.ri). A vector because the
-//                geometry Axis value type is unconstructible at stdlib scope.
+//   axis       : Direction       — rotation axis, a unit signed direction
+//                written `dir(x, y, z)` (PRD docs/prds/v0_6/direction-typing.md C3).
 // `max_torque` (required Torque) re-declares MechanicalPort's optional
 // `max_torque : Option<Torque> = none`; a required member and an optional default
 // of the same name never collide (trait_requirements.rs conflicts only
@@ -137,7 +138,7 @@ trait MotivePort : MechanicalPort {}
 trait RotaryPort : MotivePort {
     param max_speed : AngularVelocity
     param max_torque : Torque
-    param axis : Vector3<Dimensionless>
+    param axis : Direction
 }
 
 // Linear actuator port — delivers thrust along an axis over a finite stroke.
@@ -145,13 +146,12 @@ trait RotaryPort : MotivePort {
 //               NAMED_DIMENSIONS builtin; back-compat `pub type Velocity` in units.ri).
 //   max_force : Force           — maximum continuous thrust.
 //   stroke    : Length          — usable travel range.
-//   axis      : Vector3<Dimensionless> — travel axis; a DIRECTION, typed as
-//               RotaryPort.axis is and for the same reasons.
+//   axis      : Direction       — travel axis, typed as RotaryPort.axis is.
 trait LinearPort : MotivePort {
     param max_speed : Velocity
     param max_force : Force
     param stroke : Length
-    param axis : Vector3<Dimensionless>
+    param axis : Direction
 }
 
 // ── Parameterised threaded port ───────────────────────────────────────────────

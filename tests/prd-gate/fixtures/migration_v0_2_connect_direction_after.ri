@@ -1,0 +1,12 @@
+trait Flow { param diameter : Length }
+
+occurrence def Pipe {
+    port inlet : in Flow { param diameter : Length = 25mm }
+    port outlet : out Flow { param diameter : Length = 25mm }
+}
+
+structure def Line {
+    sub a = Pipe()
+    sub b = Pipe()
+    connect a.outlet -> b.inlet
+}

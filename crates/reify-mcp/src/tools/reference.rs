@@ -12,7 +12,7 @@ pub fn register(registry: &mut ToolRegistry) {
             "properties": {
                 "topic": {
                     "type": "string",
-                    "description": "The language feature or topic to look up (e.g., 'syntax', 'constraints', 'parameters')."
+                    "description": "The language feature or topic to look up (e.g., 'syntax', 'constraints', 'parameters', 'solving' — letting the solver choose a value)."
                 }
             }
         }),

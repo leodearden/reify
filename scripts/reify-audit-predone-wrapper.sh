@@ -106,7 +106,6 @@ Required flags (passed through to reify-audit):
   --pre-done         Run P5 pre-done check only
 
 Optional flags (passed through to reify-audit; each overrides its default):
-  --since <date>     Window sweep from ISO date
   --pattern P1|P2|P5 Restrict to one detector
   --fused-memory-url <url> Override the MCP endpoint (default: reify-audit's own;
                      see reify-audit --help)

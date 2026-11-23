@@ -2,6 +2,8 @@
 
 use std::process::ExitCode;
 
+use crate::help::GUI_USAGE;
+
 pub(crate) fn cmd_gui(args: &[String]) -> ExitCode {
     // Parse `--debug` / `--mcp` flags (both set the same `debug` boolean) and
     // strip them from the positional args before extracting the file path.
@@ -14,7 +16,7 @@ pub(crate) fn cmd_gui(args: &[String]) -> ExitCode {
             "--debug" | "--mcp" => debug = true,
             flag if flag.starts_with("--") => {
                 eprintln!("Error: unknown flag for `gui`: {}", flag);
-                eprintln!("Usage: reify gui [--debug] <file>");
+                eprintln!("{GUI_USAGE}");
                 return ExitCode::FAILURE;
             }
             _ => positional.push(a),
@@ -22,7 +24,7 @@ pub(crate) fn cmd_gui(args: &[String]) -> ExitCode {
     }
 
     if positional.is_empty() {
-        eprintln!("Usage: reify gui [--debug] <file>");
+        eprintln!("{GUI_USAGE}");
         return ExitCode::FAILURE;
     }
 

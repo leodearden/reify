@@ -375,6 +375,40 @@ plus a `--scope staged` selector) does not apply.
 Premise, detection cases and the all-clear's liveness controls:
 `test_fd_probe_self_reference.py`.
 
+## Python helper scripts live in a private directory
+
+`python3 <file>.py` puts the file's directory first on `sys.path`, and
+Python's `FileFinder` re-lists a `sys.path` directory whenever its mtime has
+changed. A helper minted as `mktemp /tmp/x_XXXXXX.py` therefore makes every
+`import` re-list the shared `/tmp` (~275K entries, touched constantly by other
+agents): seconds per helper run, which pushed `test_cpu_governance_config.sh`
+past its 1200s `run_all.sh` budget (task #10282, esc-9886-1). A world-writable
+directory on `sys.path` also lets any module planted beside the helper (a
+`yaml.py`, say) shadow its imports.
+
+Mint a private directory and give the helper a fixed name inside it, one that
+is not an importable module's name:
+
+```bash
+_PARSE_DIR="$(mktemp -d /tmp/foo_parse_XXXXXX)"
+trap 'rm -rf "$_PARSE_DIR"' EXIT    # or: _TMPDIRS+=("$_PARSE_DIR")
+_PARSE_PY="$_PARSE_DIR/foo_parse.py"
+```
+
+`test_no_shared_tmp_python_helpers.sh` flags a non-comment `mktemp` that
+mints a `.py` file (a template ending `.py`, or `--suffix=.py`) without `-d`,
+whatever its base directory. The corpus is `git ls-files -- '*.sh' 'hooks/*'`,
+the same pathspec the guards above scan (each spells out its own copy).
+
+**Scope, honestly.** It reads one line at a time, so a `mktemp` call split
+across lines is missed, and it sees only `mktemp`: a fixed-name write such as
+`cat > /tmp/x.py` and Python-side `tempfile` use are not flagged. A call's
+arguments end at the first `)`, so a template holding its own `$(...)`, as in
+`mktemp "$(dirname "$x")/h_XXXXXX.py"`, is cut short and missed.
+
+Premise, detection cases and the all-clear's liveness controls:
+`test_no_shared_tmp_python_helpers.py`.
+
 ## Cited test-path resolution (`cited-test-path-baseline.manifest`)
 
 `test_cited_test_paths_resolve.sh` guards a single contract: **prose that
@@ -413,7 +447,8 @@ A file is excluded from the scan when the citation shape appears in it as the
 gate's own *subject matter* rather than as a reference a reader is meant to
 follow — repointing a mention falsifies the record carrying it, so a finding
 against one is never actionable.  The list lives in
-`cited_test_path_exclusions()` and has two kinds of member.
+`cited_test_path_exclusions()` and has two kinds of member: structural and
+contingent.
 
 The gate's own three artifacts (the baseline, the lib, the gate) are excluded
 **structurally** — the baseline is ~300 rows each ending in a stale cited path,
@@ -429,6 +464,14 @@ includes remediation-shaped `fix` / `fix_where` fields — unpopulated today, bu
 they *would* carry live references.  If either starts being written, revisit
 the exclusion.  The vacuity floor cannot signal this for you: the codebook is
 ~0.83% of the citation corpus, far below anything the floor's bounds resolve.
+
+`docs/notes/agent-build-settings-bench-census.jsonl` is excluded
+**structurally**.  It is task 10169's census of agent cargo builds, an event log
+written once from archived agent transcripts.  Each row records a past edit or
+build event, so every test path in it is recorded payload: mention, not use.
+Repointing a row would falsify the history it records, and the finding would
+recur on every later test move, so it is never actionable.  Ruling: Leo,
+2026-11-22, esc-10169-3.
 
 ### Fingerprint grammar
 
@@ -683,6 +726,87 @@ cannot undo a disposition the suite inherited. To background a sweep, use the
 harness's own backgrounding or `( setsid cmd ) &`; a bare `setsid cmd &` still
 ignores INT and QUIT (measured `SigIgn` `…06`).
 
+## Cargo registry inputs: a verdict never depends on the cache
+
+The rule (Leo, 2026-11-09): a verifying test passes or fails on the merits of
+what it tests, whatever state the cache is in. A cache only makes things
+faster; it is never part of correctness. A member that reads cargo with
+`--offline`/`--frozen` therefore obtains those inputs itself, before its first
+assertion, scoped like the read it feeds:
+
+```bash
+source "$SCRIPT_DIR/test_helpers.sh"
+source "$SCRIPT_DIR/cargo_inputs_lib.sh"
+
+_suite_fetch_cargo_inputs() {
+    cargo_inputs_fetch --target "$host" --manifest-path "$REPO_ROOT/gui/src-tauri/Cargo.toml"
+}
+assert_infra_input "the registry holds the locked inputs" \
+    "$CARGO_INPUTS_UNAVAILABLE_RC" _suite_fetch_cargo_inputs
+```
+
+Pass `--target <triple>` only when the read filters to one platform
+(`--filter-platform`, `cargo tree --target`); an unfiltered `cargo metadata`
+needs every target's crates and still fails after a host-only fetch.
+
+**Classification.** `cargo_inputs_fetch` runs `cargo fetch --locked` and
+parses cargo's output once, at the boundary:
+
+- rc 0: the inputs are present (silent).
+- cargo's output matches a known network/offline signature (`unable to update
+  registry`, `download of … failed`, `offline mode (via`, …): the registry
+  could not be reached. It prints a column-0
+  `@@REIFY_INFRA_UNAVAILABLE@@ kind=cargo_fetch` line on stderr and returns
+  `$CARGO_INPUTS_UNAVAILABLE_RC` (75).
+- anything else, such as a stale lock (`cannot update the lock file … because
+  --locked was passed`): a defect in the tree. It returns 1 and
+  `assert_infra_input` records a FAIL. Unrecognised output defaults to FAIL so
+  a tree defect is never hidden as infrastructure.
+
+**The infrastructure verdict.** On 75, `assert_infra_input` ends the member
+through `test_summary_infra_unavailable`: an assertion that already FAILed
+wins (exit 1); otherwise it prints an `INFRASTRUCTURE:` line and exits 75
+(EX_TEMPFAIL), with no FAIL line. Never a skip and never a FAIL.
+
+**A cargo build killed by its own timeout.** A build a member bounds with
+`timeout` and that is killed (exit 124) reached no verdict: a cold sccache or
+target dir, or a wait on the build-directory lock, can push it past the bound.
+That is the same infrastructure verdict: a column-0
+`@@REIFY_INFRA_UNAVAILABLE@@ kind=cargo_timeout` line on stderr, then exit 75.
+It is never a SKIP (a vacuous pass) and never a FAIL.
+`test_tree_sitter_pipeline.sh`'s `run_guarded_cargo_check` is the first user.
+That suite stops at the first such case, because each timeout spends 300s of
+its 10m selective-infra wall, and an assertion that already FAILed still wins.
+A build that hangs on a real defect also reads as 75, on every run: the guard
+prints the tail of cargo's output so a lock wait can be told from a hang.
+
+**Why network is not a gate constraint.** `verify_env` sets no
+`CARGO_NET_OFFLINE`, and the gate's own `cargo check` / clippy / nextest run
+online and download on a cold registry, so a host with no network and a cold
+registry already fails the gate's Rust steps. The member's job is to report
+that case honestly.
+
+**The cold pins need network on every run, even on a warm host.** The
+in-suite cold pins (`test_run_gui_scripts.sh` Test 43 and
+`test_affected_crates_lib.sh`'s cold-registry pin) each fetch from crates.io
+into an empty private `CARGO_HOME`: ~432MB (host target) plus ~1.3GB (all
+targets), about 1.7GB per run, paid again when run_all's serial retry reruns a
+failed member. Before task 9993 neither member needed network once the shared
+registry was warm. Now a host with no network and a WARM registry, or a
+crates.io outage, ends each of them with exit 75 at its pin.
+`test_affected_crates_lib.sh`'s pin sits mid-suite, so its later sections do
+not run.
+
+**run_all.sh still counts exit 75 as FAIL.** So until follow-up #10002 lands
+(`RESULT:` and the event schema dark-factory reads), a network blip during a
+cold pin reads as a gate FAIL rather than as INFRASTRUCTURE.
+
+**Cost.** A warm `cargo fetch --locked` needs no network and takes 0.6-2s.
+Measured cold (cargo 1.96): host target only, ~432MB and 18-38s; all targets,
+~1.3GB and ~26s. `test_cargo_inputs_lib.py` pins the lib's classification and
+runs every adopting member with an empty `CARGO_HOME` and
+`CARGO_NET_OFFLINE=true`: each must stop at its fetch with exit 75.
+
 ## Files
 
 | File | Purpose |
@@ -698,12 +822,17 @@ ignores INT and QUIT (measured `SigIgn` `…06`).
 | `compiler-namespace-ratchet-baseline.txt` | Exact counts for the compiler namespace ratchet |
 | `test_compiler_namespace_ratchet.sh` | Regression guard: reify-compiler glob re-exports and glob imports match their exact baseline |
 | `test_compiler_namespace_ratchet.py` | Its stdlib-unittest body, driving `source_count_ratchet.py` |
-| `test_helpers.sh` | Shared library: `assert()` and `test_summary()` |
+| `test_helpers.sh` | Shared library: `assert()` and `test_summary()`, plus the infrastructure verdict `assert_infra_input()` / `test_summary_infra_unavailable()` |
+| `cargo_inputs_lib.sh` | Shared library: `cargo_inputs_fetch`, a suite's locked cargo inputs classified as present, unavailable (75) or a tree defect |
+| `test_cargo_inputs_lib.sh` | Tests `cargo_inputs_lib.sh` and that every member sourcing it stops at its fetch on a cold, offline registry |
+| `test_cargo_inputs_lib.py` | Its stdlib-unittest body |
 | `cited-test-path-lib.sh` | Shared library: cited-test-path scan, resolve and fingerprint derivation |
 | `cited-test-path-baseline.manifest` | Grandfather baseline for the cited-test-path ratchet |
 | `test_cited_test_paths_resolve.sh` | Regression guard: prose citing a `crates/*/tests/**.rs` path that no longer resolves |
 | `test_fd_probe_self_reference.sh` | Regression guard: a /proc probe of the current process's fd 1 inside a command substitution (reads the capture pipe) |
 | `test_fd_probe_self_reference.py` | Its stdlib-unittest body, driving `scripts/check-fd-probe-self-reference.py` |
+| `test_no_shared_tmp_python_helpers.sh` | Regression guard: a helper `.py` minted as a bare mktemp file (puts a shared temp dir on sys.path) |
+| `test_no_shared_tmp_python_helpers.py` | Its stdlib-unittest body |
 | `test_flock_detached_fork_guard.sh` | Regression guard: a locally-opened flock FD held across a detached `&` fork with no `flock -u` release |
 | `test_no_new_wallclock_upper_bounds.sh` | Regression guard: static-grep for new wall-clock upper-bound asserts |
 | `test_npm_ci_hardening.sh` | Tests npm ci guard conventions in dark-factory-orchestrator.yaml |

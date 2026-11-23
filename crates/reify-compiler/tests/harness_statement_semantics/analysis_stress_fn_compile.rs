@@ -178,7 +178,8 @@ fn safety_factor_cell_type_is_real() {
 
 /// Return the `std/analysis` CompiledModule from the production stdlib loader.
 /// Exercises the exact same code path as production: embedded source,
-/// sequential compilation with growing prelude, `OnceLock` caching.
+/// each stdlib module compiled against its declared imports (strict build),
+/// `OnceLock` caching.
 fn analysis_module() -> &'static reify_compiler::CompiledModule {
     stdlib_loader::load_stdlib()
         .iter()

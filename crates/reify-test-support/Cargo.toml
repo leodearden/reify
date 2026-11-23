@@ -10,6 +10,7 @@ description = "Test builders, fixtures, and mock implementations for Reify"
 # EXCLUDE_CRATES rests on that.
 
 [dependencies]
+workspace-feature-union.workspace = true
 reify-ast.workspace = true
 reify-core.workspace = true
 # Needed by the library body (not just this crate's tests): `mocks.rs`'s shared

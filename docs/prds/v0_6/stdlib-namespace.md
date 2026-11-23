@@ -440,6 +440,11 @@ decompose (its β/θ carry the interim-seeding + units-flip-compile-side clauses
 4. **Build-time stdlib precompilation trigger.** If startup profiling ever attributes
    user-noticeable latency to the per-process stdlib compile, revisit D-5's rejection
    (two-stage build + IR serialization). Requires a measurement first.
-5. **ε tool packaging.** xtask vs `reify` subcommand vs standalone script — λ needs it
-   user-facing (`fix --imports`), which suggests a `reify` subcommand backed by a shared
-   lib fn. Decide in ε.
+5. **ε tool packaging.** *Decided in ε (#5497):* a `reify fix --imports [--check]
+   <file>...` subcommand (`crates/reify-cli/src/cmd/fix.rs`) backed by the library module
+   `reify_compiler::import_headers`. ζ and λ consume the same functions —
+   `derive_std_imports`, whose `ImportPlan::residual_diagnostics` judges an import set
+   against the universe the plan was derived over, and `insert_imports` — or run the CLI.
+   *Decided in #9831:* `fix --imports` takes repeated `--cfg <key=value|flag>` like `check`
+   (target host-defaulted, `conditional-compilation.md` D-2), and counts a `#cfg`-gated
+   import as covering only when that active cfg satisfies it.

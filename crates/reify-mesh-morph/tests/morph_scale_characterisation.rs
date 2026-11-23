@@ -32,9 +32,9 @@
 //! #2953's premise is unmet rather than inverted; at 10K the morph wins under
 //! the release profile. Before that fix the morph was more than an order of
 //! magnitude slower at 100K. Every figure behind these sentences is in the
-//! note — its "After the Dirichlet fix" section is the current measurement —
-//! and deliberately nowhere else: a number repeated here is a number that can
-//! go stale here.
+//! note — its "After the extractor collapse" section is the current
+//! measurement — and deliberately nowhere else: a number repeated here is a
+//! number that can go stale here.
 //!
 //! ## How to run
 //!
@@ -50,8 +50,9 @@
 //! - [`bracket_fixture_reaches_the_10k_and_100k_tet_calibration_scales`] —
 //!   pure fixture generation; pins the two scale bands.
 //! - [`bracket_boundary_surface_is_closed_outward_wound_and_fully_referenced`] —
-//!   the tet -> boundary-surface extractor that feeds the gmsh arm, swept
-//!   over every resolution the driver uses.
+//!   the boundary surface the gmsh arm is fed
+//!   (`reify_solver_elastic::boundary_surface_mesh`, as the harness feeds
+//!   it), swept over every resolution the driver uses.
 //! - [`morph_once_times_a_connectivity_preserving_fillet_perturbation`] —
 //!   the timed morph helper, at n=4.
 //! - [`gmsh_tetrahedralise_produces_tets_at_a_requested_mesh_size`] — the
@@ -83,8 +84,6 @@
 //! never land on the same tet count, so a ratio is only as meaningful as its
 //! mismatch is small. The driver prints that mismatch next to every ratio.
 
-#[path = "calibration/boundary.rs"]
-mod boundary;
 #[path = "calibration/fixtures.rs"]
 mod fixtures;
 
@@ -136,6 +135,21 @@ const N_10K: usize = 8;
 /// (`tets(17) = 91,800` is the rung below, which is why the test's band is
 /// wide enough to admit either.)
 const N_100K: usize = 18;
+
+/// The source bracket at resolution `n` and the boundary surface the gmsh arm
+/// meshes from it — the single definition of both, which is why the contract
+/// test calls this rather than re-deriving the surface itself.
+fn bracket_with_boundary(n: usize) -> (VolumeMesh, reify_ir::Mesh) {
+    let (mesh, _surface_indices) = fixtures::bracket(ARM_LENGTH, THICKNESS, FILLET_BASE, n);
+    let surface = reify_solver_elastic::boundary_surface_mesh(&mesh).unwrap_or_else(|error| {
+        panic!(
+            "boundary_surface_mesh(bracket(n={n})) failed: {error}. A conforming P1 \
+             bracket cannot legitimately fail extraction, so this is a fixture or \
+             extractor regression"
+        )
+    });
+    (mesh, surface)
+}
 
 /// The `bracket` fixture must actually reach both calibration bands this
 /// whole harness rests on: ~10K tets and ~100K tets, at P1 order, with a
@@ -189,10 +203,12 @@ fn bracket_fixture_reaches_the_10k_and_100k_tet_calibration_scales() {
     }
 }
 
-/// The tet -> boundary-surface extractor that feeds the gmsh arm must emit
-/// exactly the once-occurring tet faces, wound outward, compacted onto only
-/// the vertices it actually references — at every resolution the harness
-/// itself uses, not merely at the cheap one.
+/// The surface [`bracket_with_boundary`] returns — the
+/// `reify_solver_elastic::boundary_surface_mesh` extraction of the source
+/// bracket, i.e. exactly what the gmsh arm is fed — must be the
+/// once-occurring tet faces, wound outward, compacted onto only the vertices
+/// it actually references — at every resolution the harness itself uses, not
+/// merely at the cheap one.
 ///
 /// The primary assertion target is `Mesh::validate` (in
 /// `crates/reify-ir/src/geometry.rs`; cited by symbol rather than by line,
@@ -226,14 +242,13 @@ fn bracket_boundary_surface_is_closed_outward_wound_and_fully_referenced() {
     use std::collections::{HashMap, HashSet};
 
     for n in [1, 2, 3, 4, N_10K, N_100K] {
-        let (mesh, _surface_indices) = fixtures::bracket(ARM_LENGTH, THICKNESS, FILLET_BASE, n);
-        let surface = boundary::boundary_surface(&mesh);
+        let (mesh, surface) = bracket_with_boundary(n);
 
         // (1) The full mesh contract. Naming the Err variant means a contract
         // violation reports which obligation failed rather than "assert failed".
         if let Err(violation) = surface.validate(1e-6) {
             panic!(
-                "boundary_surface(bracket(n={n})) violates the mesh contract, so \
+                "boundary_surface_mesh(bracket(n={n})) violates the mesh contract, so \
                  gmsh's preflight would reject it: {violation:?}"
             );
         }
@@ -241,7 +256,7 @@ fn bracket_boundary_surface_is_closed_outward_wound_and_fully_referenced() {
         assert_eq!(
             surface.indices.len() % 3,
             0,
-            "boundary_surface(n={n}) must emit whole triangles; got {} indices",
+            "boundary_surface_mesh(n={n}) must emit whole triangles; got {} indices",
             surface.indices.len()
         );
 
@@ -274,7 +289,7 @@ fn bracket_boundary_surface_is_closed_outward_wound_and_fully_referenced() {
         let irregular = edge_degree.values().filter(|&&d| d != 2).count();
         assert_eq!(
             irregular, 0,
-            "boundary_surface(n={n}) emitted {irregular} edges of degree != 2 out \
+            "boundary_surface_mesh(n={n}) emitted {irregular} edges of degree != 2 out \
              of {}; the surface is not a closed manifold, and gmsh's HXT backend \
              fails on an open input in a way that poisons every later rung",
             edge_degree.len()
@@ -283,7 +298,7 @@ fn bracket_boundary_surface_is_closed_outward_wound_and_fully_referenced() {
         assert_eq!(
             verts as i64 - edges as i64 + tris as i64,
             2,
-            "boundary_surface(n={n}) has V-E+F = {}-{}+{} != 2; a closed genus-0 \
+            "boundary_surface_mesh(n={n}) has V-E+F = {}-{}+{} != 2; a closed genus-0 \
              surface is what the bracket's three aligned blocks are supposed to \
              bound",
             verts,
@@ -292,15 +307,20 @@ fn bracket_boundary_surface_is_closed_outward_wound_and_fully_referenced() {
         );
 
         // (2b) At n=4 the three counts are pinned to the figures recorded
-        // independently in `fixtures::bracket`'s "## Conformity" paragraph, so
-        // the docstring and the extractor cannot drift apart unnoticed.
+        // under #6638 by the harness-local extractor this one replaced. V, E
+        // and F are properties of the triangle set, so the pin is consistent
+        // with the collapse onto the library extractor preserving the
+        // surface — matching counts are necessary for that, not sufficient.
+        // The set-equality evidence is the position-space comparison recorded
+        // in the "After the extractor collapse" section of
+        // docs/notes/morph-vs-remesh-scale-characterisation.md.
         if n == 4 {
             assert_eq!(
                 (verts, edges, tris),
                 (248, 738, 492),
-                "boundary_surface(bracket(n=4)) must reproduce the surface recorded \
-                 in `fixtures::bracket`'s conformity paragraph (248 vertices / 738 \
-                 edges / 492 triangles); got {verts} / {edges} / {tris}"
+                "boundary_surface_mesh(bracket(n=4)) must reproduce the surface \
+                 recorded under #6638 (248 vertices / 738 edges / 492 triangles); \
+                 got {verts} / {edges} / {tris}"
             );
         }
 
@@ -310,7 +330,7 @@ fn bracket_boundary_surface_is_closed_outward_wound_and_fully_referenced() {
         assert_eq!(
             used.len(),
             verts,
-            "boundary_surface(n={n}) must carry only referenced vertices; {verts} \
+            "boundary_surface_mesh(n={n}) must carry only referenced vertices; {verts} \
              emitted but only {} referenced (interior nodes would be handed to \
              gmsh for nothing)",
             used.len()
@@ -319,7 +339,7 @@ fn bracket_boundary_surface_is_closed_outward_wound_and_fully_referenced() {
         // (4) Compaction is a strict narrowing of the volume mesh's vertex table.
         assert!(
             verts <= mesh.vertices.len() / 3,
-            "boundary_surface(n={n}) emitted {verts} vertices from a {}-vertex \
+            "boundary_surface_mesh(n={n}) emitted {verts} vertices from a {}-vertex \
              volume mesh",
             mesh.vertices.len() / 3
         );
@@ -330,37 +350,30 @@ fn bracket_boundary_surface_is_closed_outward_wound_and_fully_referenced() {
         // exactly once: that is orientABILITY, and a globally INVERTED closed
         // surface satisfies it just as happily as an outward one. Nothing
         // downstream catches the difference either — gmsh meshes the inverted
-        // surface without complaint — so `orient_outward` could silently flip
-        // and every other assertion in this file would stay green.
+        // surface without complaint — so every other assertion in this file
+        // would stay green on an inverted surface.
         //
-        // The divergence theorem pins the sign in O(tris) with no new
-        // dependency: summing the signed volume of the tetrahedron each triangle
-        // spans with the origin, `dot(v0, cross(v1, v2)) / 6`, totals +V for an
-        // outward-wound closed surface and -V for an inward-wound one.
-        let vertex = |i: u32| -> [f64; 3] {
-            let base = i as usize * 3;
-            [
-                surface.vertices[base] as f64,
-                surface.vertices[base + 1] as f64,
-                surface.vertices[base + 2] as f64,
-            ]
-        };
-        let mut signed_volume = 0.0_f64;
-        for tri in surface.indices.chunks_exact(3) {
-            let (a, b, c) = (vertex(tri[0]), vertex(tri[1]), vertex(tri[2]));
-            let cross = [
-                b[1] * c[2] - b[2] * c[1],
-                b[2] * c[0] - b[0] * c[2],
-                b[0] * c[1] - b[1] * c[0],
-            ];
-            signed_volume += (a[0] * cross[0] + a[1] * cross[1] + a[2] * cross[2]) / 6.0;
-        }
+        // This is the harness-scale check that the surface the bracket yields
+        // is outward. The extractor's own winding is pinned by the
+        // `boundary_surface_mesh` tests in reify-solver-elastic's
+        // volume_refine.rs.
+        //
+        // The divergence theorem pins the sign in O(tris):
+        // `enclosed_volume_of_surface` sums the signed volume of the
+        // tetrahedron each triangle spans with the origin, which totals +V for
+        // an outward-wound closed surface and -V for an inward-wound one.
+        let signed_volume = reify_kernel_gmsh::fill_metrics::enclosed_volume_of_surface(&surface)
+            .unwrap_or_else(|| {
+                panic!(
+                    "boundary_surface_mesh(n={n}) is not measurable as a triangle soup \
+                     (partial triangle, partial vertex or out-of-range index)"
+                )
+            });
         assert!(
             signed_volume > 0.0,
-            "boundary_surface(n={n}) emitted an INWARD-wound surface (signed volume \
-             {signed_volume}); `Mesh::validate` cannot see this, so this assertion \
-             is the only thing standing between a sign flip in `orient_outward` \
-             and a silently inverted gmsh input"
+            "boundary_surface_mesh(n={n}) emitted an INWARD-wound surface (signed \
+             volume {signed_volume}); `Mesh::validate` cannot see this, and gmsh \
+             would mesh the inverted surface without complaint"
         );
 
         // ...and loosely, the right magnitude. The bracket's analytic volume is
@@ -377,7 +390,7 @@ fn bracket_boundary_surface_is_closed_outward_wound_and_fully_referenced() {
         const ANALYTIC_VOLUME: f64 = 0.071_893;
         assert!(
             (0.85 * ANALYTIC_VOLUME..=1.15 * ANALYTIC_VOLUME).contains(&signed_volume),
-            "boundary_surface(n={n}) enclosed {signed_volume}, outside +/-15% of \
+            "boundary_surface_mesh(n={n}) enclosed {signed_volume}, outside +/-15% of \
              the bracket's analytic volume {ANALYTIC_VOLUME} — the surface is \
              closed and outward-wound but does not bound the solid it came from"
         );
@@ -705,8 +718,8 @@ struct GmshMeasurement {
 ///   as 0 tets rather than as an error. In a binary that sweeps a whole
 ///   ladder through one process, one poisoned rung would silently zero every
 ///   rung after it, so every surface handed to this function comes from
-///   [`boundary::boundary_surface`], whose closedness is pinned by an
-///   always-on test.
+///   [`bracket_with_boundary`], whose closedness is pinned by an always-on
+///   test.
 #[cfg(has_gmsh)]
 fn gmsh_tetrahedralise(surface: &reify_ir::Mesh, mesh_size: f64) -> GmshMeasurement {
     use reify_ir::ElementOrderTag;
@@ -749,8 +762,8 @@ fn gmsh_tetrahedralise(surface: &reify_ir::Mesh, mesh_size: f64) -> GmshMeasurem
 /// of tets rather than for a calibration rung. The 10K and 100K rungs belong
 /// to the `#[ignore]`d driver.
 ///
-/// The surface handed to gmsh is [`boundary::boundary_surface`]'s output,
-/// which the sibling test above pins as closed and consistently wound — that
+/// The surface handed to gmsh is [`bracket_with_boundary`]'s output, which
+/// the sibling test above pins as closed and consistently wound — that
 /// ordering matters, because an open surface would not merely fail here, it
 /// would poison the rest of the binary (see [`gmsh_tetrahedralise`]).
 #[cfg(has_gmsh)]
@@ -758,8 +771,7 @@ fn gmsh_tetrahedralise(surface: &reify_ir::Mesh, mesh_size: f64) -> GmshMeasurem
 fn gmsh_tetrahedralise_produces_tets_at_a_requested_mesh_size() {
     use reify_ir::ElementOrderTag;
 
-    let (mesh, _surface_indices) = fixtures::bracket(ARM_LENGTH, THICKNESS, FILLET_BASE, 4);
-    let surface = boundary::boundary_surface(&mesh);
+    let (_mesh, surface) = bracket_with_boundary(4);
 
     let measurement = gmsh_tetrahedralise(&surface, 0.06);
 
@@ -1064,8 +1076,7 @@ fn gmsh_from_scratch_vs_morph_wall_clock_at_10k_and_100k() {
     // ── 1. the surfaces both scales are read off ─────────────────────────────
     let mut surfaces = Vec::new();
     for n in [N_10K, N_100K] {
-        let (mesh, _surface_indices) = fixtures::bracket(ARM_LENGTH, THICKNESS, FILLET_BASE, n);
-        let surface = boundary::boundary_surface(&mesh);
+        let (mesh, surface) = bracket_with_boundary(n);
         eprintln!(
             "[task-6638] surface n={n:<3} volume_tets={:<7} surface_tris={:<7} surface_verts={}",
             mesh.tet_indices().map_or(0, |t| t.len() / 4),

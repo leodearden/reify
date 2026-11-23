@@ -25,8 +25,10 @@ pub(crate) mod containment_graph;
 pub use containment_graph::sub_component_forward_adjacency;
 mod builtin_registry;
 mod builtin_signatures;
+mod call_table;
 mod datum_projection;
 mod diagnostics;
+mod direction_operators;
 mod entity;
 mod expr;
 mod flexure_signatures;
@@ -44,10 +46,12 @@ mod geometry_transform;
 mod guards;
 mod hoist_nested_selectors;
 mod ice;
+pub mod import_headers;
 mod joint_self_check;
 mod joint_signatures;
 mod list_helpers;
 mod math_signatures;
+mod member_cell_decls;
 mod member_path;
 // `pub` so reify-lsp can reach `is_relation_typed_fn` / `relation_contract_for_call`
 // to surface the relation ΔDOF contract on hover (geometric-relations γ, task 4383).
@@ -57,7 +61,9 @@ pub mod name_env;
 mod orientation_signatures;
 mod port_path;
 pub mod prelude_context;
+pub mod program;
 pub(crate) mod recursion_guard;
+mod rejected_param_defaults;
 pub mod relation_signatures;
 mod scc;
 mod scope;
@@ -67,6 +73,7 @@ pub(crate) mod stdlib_topo;
 mod termination;
 mod trait_requirements;
 mod traits;
+mod trajectory_signatures;
 mod type_acceptance;
 mod type_compat;
 mod type_resolution;
@@ -179,6 +186,10 @@ pub fn __validate_annotations_for_parity_test(
 /// Expose `infer_mul_div_result` to the static-vs-runtime Mul/Div parity
 /// integration test without widening the compiler's public API.
 ///
+/// `None` means no static result type, which a runtime `Undef` mirrors for
+/// both refusals: unsupported operand kinds, and a combined dimension whose
+/// exponent overflows `Rational`.
+///
 /// # Stability
 ///
 /// This function is intentionally named with `__` prefix to signal that it is
@@ -195,7 +206,7 @@ pub fn __infer_mul_div_result_for_parity_test(
     left: &reify_core::Type,
     right: &reify_core::Type,
 ) -> Option<reify_core::Type> {
-    type_compat::infer_mul_div_result(op, left, right)
+    type_compat::infer_mul_div_result(op, left, right).ok()
 }
 
 /// Test-visible mirror of the `pub(crate)` `OverloadResolution` discriminants.
@@ -364,6 +375,27 @@ pub fn compile_with_stdlib_checked(
     compile_with_prelude_context_checked(parsed, stdlib_loader::load_stdlib_context(), checker)
 }
 
+/// Compile a user module against the full stdlib plus its direct user imports.
+///
+/// The single home of "user module against stdlib + direct imports", shared by
+/// the program entry and its import units. An import-free module compiles
+/// against the cached stdlib context itself, exactly the call
+/// [`compile_with_stdlib_checked`] makes; a module with imports compiles
+/// against a context [`PreludeContext::extended`] from it, so the stdlib is
+/// never re-loaded per unit.
+pub(crate) fn compile_with_stdlib_and_imports_checked(
+    parsed: &reify_ast::ParsedModule,
+    user_imports: &[&CompiledModule],
+    checker: &dyn ConstraintChecker,
+) -> CompiledModule {
+    let stdlib: &PreludeContext<'_> = stdlib_loader::load_stdlib_context();
+    if user_imports.is_empty() {
+        compile_with_prelude_context_checked(parsed, stdlib, checker)
+    } else {
+        compile_with_prelude_context_checked(parsed, &stdlib.extended(user_imports), checker)
+    }
+}
+
 /// Parse a source string with the stdlib's prelude enum names pre-seeded
 /// into the parser's `EnumAccess` disambiguation set.
 ///
@@ -473,15 +505,11 @@ pub fn merge_prelude_functions(
 /// Only `is_pub` purposes are merged; private prelude purposes remain scoped to
 /// their declaring module.
 ///
-/// `std.determinacy.purposes` is registered LAST in `stdlib_loader::load_stdlib`.
-/// `merge_prelude_purposes` runs for every compile including each intra-stdlib
-/// module compile, but no-ops for all earlier stdlib modules because none of them
-/// declare pub purposes. `std.determinacy.purposes` is the only stdlib module with
-/// pub purposes, and being last it has no successor during `load_stdlib()` — so no
-/// other stdlib module ever sees it as a prelude and inherits its standard purposes.
-/// Stdlib-internal `compiled_purposes` counts and content hashes therefore stay
-/// byte-stable. Only user modules (compiled against the full stdlib) gain the
-/// standard purposes. (task-4016 ζ)
+/// A stdlib module inherits pub purposes only from the modules it imports, and
+/// no stdlib module imports `std.determinacy.purposes`, the only stdlib module
+/// with pub purposes. So only user modules (compiled against the full stdlib)
+/// gain the standard purposes: a prelude for users, not for sibling stdlib
+/// modules. (task-4016 ζ)
 ///
 /// **Hash contract:** the merged purposes are included in `compute_module_hash`,
 /// so a user module's `content_hash` incorporates the full set of available
@@ -619,7 +647,7 @@ pub fn compile_with_prelude_context_checked_with_config(
     // tests/harness_langcore/enum_ctor_param_binding_tests.rs.
     //
     // WHOLE-MODULE RAII binding, deliberately not per-phase. Every phase below that
-    // lowers a declared type name must agree on what `Fit` means: `phase_functions`
+    // lowers a declared type name must agree on what `Fit` means: `phase_fn_signatures`
     // and `phase_traits` run BEFORE `phase_entities`, so scoping this to
     // `phase_entities` alone made a trait requirement / fn signature param keep
     // `Type::StructureRef("Fit")` while the conforming structure's param became
@@ -681,7 +709,7 @@ pub fn compile_with_prelude_context_checked_with_config(
     // `resolve_enum_variant_payloads` reads `ctx.resolution_structure_names` /
     // `ctx.resolution_trait_names`. `build_resolution_names` has no dependency
     // on `resolution_enums`, so running it ahead of the enum clone is
-    // order-safe (its consumers — phase_functions/phase_traits — run later).
+    // order-safe (its consumers — phase_fn_signatures/phase_traits — run later).
     compile_builder::names_phase::build_resolution_names(
         &mut compile_ctx,
         prelude_refs,
@@ -705,11 +733,22 @@ pub fn compile_with_prelude_context_checked_with_config(
 
     compile_builder::enums_phase::bind_resolution_enums(&mut compile_ctx, prelude_refs);
 
-    compile_builder::functions_phase::phase_functions(
+    // Resolve fn SIGNATURES first, then every param default that needs no
+    // same-module template (task 5494 / PRD stdlib-namespace.md D-8). Neither
+    // needs a structure template; together they seed `ctx.resolution_functions`
+    // with signature stubs carrying those defaults for the phases that follow.
+    //
+    // Phase order from here: signatures → template-free param defaults →
+    // traits → fields → constraint_defs → **entities + fn bodies (one unified
+    // pass, source order)** → post-passes. Fn bodies, and defaults that need a
+    // same-module template, are compiled by `phase_entities`, interleaved with
+    // entity templates in declaration order, so a fn body constructing a
+    // same-module structure gets that structure's AUTHORITATIVE template.
+    compile_builder::functions_phase::phase_fn_signatures(&mut compile_ctx, &decl_refs.fn_refs);
+    compile_builder::functions_phase::phase_fn_param_defaults(
         &mut compile_ctx,
         prelude_refs,
         &decl_refs.fn_refs,
-        &decl_refs.structure_refs,
     );
 
     let trait_names = compile_builder::traits_phase::phase_traits(
@@ -731,7 +770,7 @@ pub fn compile_with_prelude_context_checked_with_config(
         &trait_names,
     );
 
-    compile_builder::entities_phase::phase_entities(
+    let rejected_param_defaults = compile_builder::entities_phase::phase_entities(
         &mut compile_ctx,
         parsed,
         &trait_names,
@@ -784,7 +823,11 @@ pub fn compile_with_prelude_context_checked_with_config(
     // param against its arg via check_fn_arg_conformance. See the
     // phase_fn_arg_conformance / for_each_template_root_expr doc-comments for the
     // exact root set and the documented residual (connections, compiled_purposes).
-    compile_builder::entities_phase::phase_fn_arg_conformance(&mut compile_ctx, prelude_refs);
+    compile_builder::entities_phase::phase_fn_arg_conformance(
+        &mut compile_ctx,
+        prelude_refs,
+        &rejected_param_defaults,
+    );
 
     // Compile-time existence check: every sub's structure_name must resolve in
     // (local templates ∪ prelude).  Runs after all entity/auto/bound phases so

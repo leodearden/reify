@@ -2,27 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createRoot } from 'solid-js';
 import type { MeshData, ValueData, ConstraintData, EntityTreeNode } from '../types';
 
-// Mock the bridge module. engineStore imports several event subscribers plus the
-// new `syncObservedDemand` invoke wrapper; all must be present on the mock.
-vi.mock('../bridge', () => ({
-  onMeshUpdate: vi.fn(() => Promise.resolve(() => {})),
-  onValueUpdate: vi.fn(() => Promise.resolve(() => {})),
-  onConstraintUpdate: vi.fn(() => Promise.resolve(() => {})),
-  onEvaluationStatus: vi.fn(() => Promise.resolve(() => {})),
-  onMeshRemoved: vi.fn(() => Promise.resolve(() => {})),
-  onValueRemoved: vi.fn(() => Promise.resolve(() => {})),
-  onConstraintRemoved: vi.fn(() => Promise.resolve(() => {})),
-  onTessellationDiagnostics: vi.fn(() => Promise.resolve(() => {})),
-  onCompileDiagnostics: vi.fn(() => Promise.resolve(() => {})),
-  onFeaDiagnosticsChanged: vi.fn(() => Promise.resolve(() => {})),
-  onAutoResolveStart: vi.fn(() => Promise.resolve(() => {})),
-  onAutoResolveIteration: vi.fn(() => Promise.resolve(() => {})),
-  onAutoResolveComplete: vi.fn(() => Promise.resolve(() => {})),
-  onSolverProgress: vi.fn(() => Promise.resolve(() => {})),
-  cancelSolve: vi.fn(() => Promise.resolve()),
-  // Selective-demand precondition (task 4532): passive observed-demand sync.
-  syncObservedDemand: vi.fn(() => Promise.resolve()),
-}));
+vi.mock('../bridge', async () => (await import('./engineStoreBridgeMockFactory')).engineStoreBridgeMock());
 
 import { syncObservedDemand as bridgeSyncObservedDemand } from '../bridge';
 import { createEngineStore } from '../stores/engineStore';

@@ -33,8 +33,8 @@ structure AnisotropicBar {
     // Shared loads / supports: 1000 N tip load, fixed root support.
     // Both arms use the identical load / support so the deflection delta is
     // attributable solely to the constitutive law.
-    let tip_load = PointLoad(point: "tip", force: 1000.0N)
-    let mount    = FixedSupport(target: "root")
+    let tip_load = PointLoad(point: vertex(body, "tip"), force: 1000.0N)
+    let mount    = FixedSupport(target: face(body, "root"))
 
     // ── Isotropic baseline ────────────────────────────────────────────────────
     // AISI 1045 medium-carbon steel (E = 205 GPa, ν = 0.29 — isotropic).
@@ -91,4 +91,5 @@ structure AnisotropicBar {
     // Peak von Mises stress for the TI arm — materially larger than iso_peak_von_mises
     // because the weak axial direction is aligned with the bending-loaded axis.
     let ti_peak_von_mises = ti_result.max_von_mises
+    let body = box(length, width, height)
 }

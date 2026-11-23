@@ -35,8 +35,9 @@ BENCH_DOC="$REPO_ROOT/docs/notes/cargo-incremental-persistent-lane-bench.md"
 # Write a Python helper to a temp file so each assert() call can invoke it
 # directly (assert only accepts a command + args, not heredocs).
 # Uses tomllib (stdlib >=3.11) to parse .cargo/config.toml robustly.
-_PARSE_PY="$(mktemp /tmp/incremental_config_parse_XXXXXX.py)"
-trap 'rm -f "$_PARSE_PY"' EXIT
+_PARSE_DIR="$(mktemp -d /tmp/incremental_config_parse_XXXXXX)"
+trap 'rm -rf "$_PARSE_DIR"' EXIT
+_PARSE_PY="$_PARSE_DIR/incremental_config_parse.py"
 
 cat > "$_PARSE_PY" << 'PYEOF'
 """Validate .cargo/config.toml for CARGO_INCREMENTAL global-forbid contract.

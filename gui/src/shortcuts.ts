@@ -57,6 +57,14 @@ export interface ShortcutDef {
   disabled?: boolean;
   /** Structured binding for event matching. Absent when there is no keyboard shortcut. */
   bind?: KeyBinding;
+  /** When true, the action flips a state on and off, so a held key fires it once, not on every auto-repeat. */
+  toggle?: boolean;
+  /** When true, the shortcut also fires while no document is open (the Start view is up); every other shortcut acts on the layout the Start view covers, so it is suppressed then. */
+  worksWithoutDocument?: boolean;
+  /** When true, the shortcut also fires while focus is in a typing context (see useKeyboardShortcuts); every other shortcut leaves those keys to the focused element. */
+  worksInTypingContext?: boolean;
+  /** When true, the command palette does not list this action; set on the palette's own openers, which would otherwise list themselves. */
+  hiddenFromPalette?: boolean;
 }
 
 // Private definition uses `as const satisfies` to validate shape against ShortcutDef
@@ -67,8 +75,8 @@ const _SHORTCUTS_DEF = [
   // shift: false on Ctrl-only bindings prevents them from firing on Ctrl+Shift+<letter>,
   // which produces an uppercase key that the case-insensitive comparison would otherwise
   // accept. This restores the behavior of the original per-key equality checks.
-  { id: 'new',        key: 'Ctrl+N',       description: 'New file',             bind: { key: 'n', ctrl: true, shift: false } },
-  { id: 'open',       key: 'Ctrl+O',       description: 'Open file',            bind: { key: 'o', ctrl: true, shift: false } },
+  { id: 'new',        key: 'Ctrl+N',       description: 'New file',             bind: { key: 'n', ctrl: true, shift: false }, worksWithoutDocument: true },
+  { id: 'open',       key: 'Ctrl+O',       description: 'Open file',            bind: { key: 'o', ctrl: true, shift: false }, worksWithoutDocument: true },
   { id: 'save',       key: 'Ctrl+S',       description: 'Save file',            bind: { key: 's', ctrl: true, shift: false } },
   { id: 'export',     key: 'Ctrl+E',       description: 'Export',               bind: { key: 'e', ctrl: true, shift: false } },
   // shift: false makes the undo intent explicit and prevents it from shadowing redo
@@ -77,9 +85,9 @@ const _SHORTCUTS_DEF = [
   { id: 'redo',       key: 'Ctrl+Shift+Z', description: 'Redo',                 disabled: true, bind: { key: 'z', ctrl: true, shift: true } },
   { id: 'reEvaluate', key: 'F5',           description: 'Re-evaluate',          bind: { key: 'F5' } },
   { id: 'fitToView',  key: '',             description: 'Fit to view' },
-  { id: 'toggleChat', key: 'Ctrl+J',       description: 'Toggle chat panel',    bind: { key: 'j', ctrl: true, shift: false } },
+  { id: 'toggleChat', key: 'Ctrl+J',       description: 'Toggle chat panel',    bind: { key: 'j', ctrl: true, shift: false }, toggle: true },
   { id: 'reload',     key: 'Ctrl+Shift+R', description: 'Reload changed files', bind: { key: 'r', ctrl: true, shift: true } },
-  { id: 'help',       key: '?',            description: 'Toggle this help',     bind: { key: '?', ctrl: false, alt: false } },
+  { id: 'help',       key: '?',            description: 'Toggle this help',     bind: { key: '?', ctrl: false, alt: false }, toggle: true },
   // Display-only entry for the 1–9 view-switch shortcut.  No `bind` field: the "1-9" key
   // is a descriptive range shown in the help dialog, not a literal binding matched by
   // matchesEvent.  Actual dispatch is a special-case block in useKeyboardShortcuts
@@ -111,11 +119,10 @@ const _SHORTCUTS_DEF = [
   { id: 'rename',         key: 'F2',    description: 'Rename symbol',    category: 'Editor' },
   // Display-only: dispatch owned by the Shift-F12 keymap in Editor.tsx (β, task 4202).
   { id: 'findUses',       key: 'Shift+F12', description: 'Find all uses (references)', category: 'Editor' },
-  // Command palette and symbol-jump — global actions exempt from the typing-context
-  // guard in useKeyboardShortcuts so they open from any focus state (including the CM editor).
-  { id: 'commandPalette',     key: 'Ctrl+Shift+P', description: 'Command palette',         category: 'View', bind: { key: 'p', ctrl: true, shift: true } },
-  { id: 'symbolJump',         key: 'Ctrl+Shift+O', description: 'Go to symbol',             category: 'View', bind: { key: 'o', ctrl: true, shift: true } },
-  { id: 'toggleDiagnostics',  key: 'Ctrl+Shift+M', description: 'Toggle diagnostics panel', category: 'View', bind: { key: 'm', ctrl: true, shift: true } },
+  { id: 'commandPalette',     key: 'Ctrl+Shift+P', description: 'Command palette',         category: 'View', bind: { key: 'p', ctrl: true, shift: true }, worksInTypingContext: true, hiddenFromPalette: true },
+  { id: 'symbolJump',         key: 'Ctrl+Shift+O', description: 'Go to symbol',             category: 'View', bind: { key: 'o', ctrl: true, shift: true }, worksInTypingContext: true, hiddenFromPalette: true },
+  { id: 'toggleDiagnostics',  key: 'Ctrl+Shift+M', description: 'Toggle diagnostics panel', category: 'View', bind: { key: 'm', ctrl: true, shift: true }, toggle: true },
+  { id: 'toggleEdges',        key: 'E',            description: 'Toggle edges-in-black view', category: 'View', bind: { key: 'e', ctrl: false, shift: false, alt: false, meta: false }, toggle: true },
 ] as const satisfies readonly ShortcutDef[];
 
 /**

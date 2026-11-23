@@ -6,22 +6,22 @@ use reify_constraints::SimpleConstraintChecker;
 use reify_core::Severity;
 use reify_ir::ExportFormat;
 
+use crate::args::split_cfg_args_or_usage;
 use crate::artifact_triangles::{stl_triangle_count, threemf_triangle_count};
 use crate::check_verdict::{ConstraintOutcome, build_is_success, has_error_diagnostic};
 use crate::constraint_report::report_eval_output;
+use crate::help::BUILD_USAGE;
 use crate::module_capabilities::module_has_isosurface;
-use crate::{configured_check_build_engine, parse_and_compile};
+use crate::{configured_check_build_engine, parse_and_compile_program_entry};
 
 pub(crate) fn cmd_build(args: &[String]) -> ExitCode {
-    // Shared usage text for the empty-args and no-positional-file guards.
-    const USAGE: &str = "Usage: reify build <file.ri> [-o <output>] [--out-dir <dir>] [--verbose]\n  \
-        With -o:    write a single file in that format (imperative).\n  \
-        Without -o: every `: Output` occurrence in the design drives its own file\n              \
-        (declarative); each relative path resolves against the .ri file's\n              \
-        directory, or against --out-dir when given.";
-
+    let (cfg, rest) = match split_cfg_args_or_usage(args, BUILD_USAGE) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    let args = rest.as_slice();
     if args.is_empty() {
-        eprintln!("{USAGE}");
+        eprintln!("{BUILD_USAGE}");
         return ExitCode::FAILURE;
     }
 
@@ -68,7 +68,7 @@ pub(crate) fn cmd_build(args: &[String]) -> ExitCode {
     }) {
         Some((_, f)) => f,
         None => {
-            eprintln!("{USAGE}");
+            eprintln!("{BUILD_USAGE}");
             return ExitCode::FAILURE;
         }
     };
@@ -97,7 +97,7 @@ pub(crate) fn cmd_build(args: &[String]) -> ExitCode {
         }
     }
 
-    let compiled = match parse_and_compile(file) {
+    let compiled = match parse_and_compile_program_entry(file, &cfg) {
         Ok(c) => c,
         Err(code) => return code,
     };

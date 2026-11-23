@@ -19,7 +19,7 @@
 //!
 //! Both tests are **RED** until step-2 adds:
 //!   1. `@optimized("solver::buckling_multi_case")` to `solve_buckling_load_cases`
-//!      in `solver_buckling_fns.ri`;
+//!      (now at `solver_buckling.ri :: solve_buckling_load_cases`);
 //!   2. `crates/reify-eval/src/compute_targets/buckling_multi_case.rs` with
 //!      `pub fn solve_buckling_multi_case_trampoline(...)`;
 //!   3. Registration in `compute_targets::register_compute_fns`.
@@ -47,17 +47,18 @@ const TWO_CASE_SOURCE: &str = r#"
 structure def BucklingMultiCaseFixture {
     let lc1 = LoadCase(
         name:     "operating",
-        loads:    [PointLoad(point: "top", force: 1000.0N)],
-        supports: [FixedSupport(target: "base")],
+        loads:    [PointLoad(point: vertex(body, "top"), force: 1000.0N)],
+        supports: [FixedSupport(target: face(body, "base"))],
     )
     let lc2 = LoadCase(
         name:     "overload",
-        loads:    [PointLoad(point: "top", force: 2000.0N)],
-        supports: [FixedSupport(target: "base")],
+        loads:    [PointLoad(point: vertex(body, "top"), force: 2000.0N)],
+        supports: [FixedSupport(target: face(body, "base"))],
     )
     let result = solve_buckling_load_cases(
         Steel_AISI_1045(), 800mm, 20mm, 20mm, [lc1, lc2]
     )
+    let body = box(800mm, 20mm, 20mm)
 }
 "#;
 

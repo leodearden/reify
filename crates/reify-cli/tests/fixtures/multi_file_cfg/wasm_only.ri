@@ -1,0 +1,8 @@
+module wasm_only
+
+#cfg(target = "wasm")
+import platform_wasm
+
+structure def Rig {
+    sub housing = Housing()
+}

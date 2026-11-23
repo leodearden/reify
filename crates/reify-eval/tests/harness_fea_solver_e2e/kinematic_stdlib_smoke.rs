@@ -47,7 +47,7 @@ use reify_test_support::{collect_errors, make_simple_engine, parse_and_compile_w
 ///   `fixed_xform`    = `transform_at(fixed_joint, 0)` → identity Transform (2-arg chain-machinery path)
 ///   `fixed_xform_1arg` = `transform_at(fixed_joint)` → identity Transform (1-arg ergonomic form, task 2688)
 ///   `fixed_jac`      = `joint_jacobian(fixed_joint)` → zero-twist Map
-///   `planar_joint`   = `planar(vec3(1,0,0), vec3(0,1,0), 0mm..1m, 0mm..1m, 0rad..6.283185rad)`
+///   `planar_joint`   = `planar(dir(1,0,0), dir(0,1,0), 0mm..1m, 0mm..1m, 0rad..6.283185rad)`
 ///                     → Map { kind="planar", axis_x, axis_y, range_x, range_y, range_theta } (6 keys)
 ///   `planar_xform`   = `transform_at(planar_joint, [0.5m, 0.3m, 0.5rad])`
 ///                     → Transform { translation=[0.5m, 0.3m, 0], rotation=quat(+Z, 0.5rad) }
@@ -60,7 +60,7 @@ use reify_test_support::{collect_errors, make_simple_engine, parse_and_compile_w
 ///   `sj_xform_euler` = `transform_at(sj, q_euler_in)` → Transform { rotation=q_euler_in, translation=0 }
 ///   `sj_euler_back`  = `orient_to_euler(q_euler_in, EulerConvention.XYZ)` → List of 3 angle scalars (round-trips to 0.1, 0.2, 0.3)
 ///   `sj_aa_back`     = `orient_to_axis_angle(q_euler_in)` → Map { angle, axis } (axis-angle facade)
-///   `cyl`            = `cylindrical(vec3(0,0,1), 0mm..1mm, 0rad..pi rad)`
+///   `cyl`            = `cylindrical(dir(0,0,1), 0mm..1mm, 0rad..pi rad)`
 ///                     → Map { kind="cylindrical", axis, translation_range, rotation_range } (4 keys)
 ///   `cyl_xform`      = `transform_at(cyl, [1mm, π/2rad])`
 ///                     → Transform { rotation=(cos(π/4),0,0,sin(π/4)), translation=[0,0,1mm] }
@@ -93,8 +93,8 @@ structure def Kinematic {
     let twist      = transform_log(t_unit_x)
     let t_round    = transform_exp(twist)
 
-    let prism      = prismatic(vec3(1, 0, 0), 0mm .. 1mm)
-    let rev        = revolute(vec3(0, 0, 1), 0rad .. 3.141592653589793rad)
+    let prism      = prismatic(dir(1, 0, 0), 0mm .. 1mm)
+    let rev        = revolute(dir(0, 0, 1), 0rad .. 3.141592653589793rad)
     let prism_jac  = joint_jacobian(prism)
     let rev_jac    = joint_jacobian(rev)
 
@@ -103,7 +103,7 @@ structure def Kinematic {
     let fixed_xform_1arg = transform_at(fixed_joint)
     let fixed_jac       = joint_jacobian(fixed_joint)
 
-    let planar_joint = planar(vec3(1, 0, 0), vec3(0, 1, 0), 0mm .. 1m, 0mm .. 1m, 0rad .. 6.283185rad)
+    let planar_joint = planar(dir(1, 0, 0), dir(0, 1, 0), 0mm .. 1m, 0mm .. 1m, 0rad .. 6.283185rad)
     let planar_xform = transform_at(planar_joint, [0.5m, 0.3m, 0.5rad])
     let planar_jac   = joint_jacobian(planar_joint)
 
@@ -116,7 +116,7 @@ structure def Kinematic {
     let sj_euler_back  = orient_to_euler(q_euler_in, EulerConvention.XYZ)
     let sj_aa_back     = orient_to_axis_angle(q_euler_in)
 
-    let cyl       = cylindrical(vec3(0, 0, 1), 0mm .. 1mm, 0rad .. 3.141592653589793rad)
+    let cyl       = cylindrical(dir(0, 0, 1), 0mm .. 1mm, 0rad .. 3.141592653589793rad)
     let cyl_xform = transform_at(cyl, [1mm, 1.5707963267948966rad])
     let cyl_jac   = joint_jacobian(cyl)
 
@@ -503,7 +503,7 @@ fn kinematic_stdlib_smoke_e2e() {
     );
 
     // ── planar joint (3-DOF: two prismatic + one revolute, all in-plane) ─
-    // planar_joint = planar(vec3(1,0,0), vec3(0,1,0), 0mm..1m, 0mm..1m, 0rad..6.283185rad)
+    // planar_joint = planar(dir(1,0,0), dir(0,1,0), 0mm..1m, 0mm..1m, 0rad..6.283185rad)
     // → Map { kind="planar", axis_x, axis_y, range_x, range_y, range_theta } (6 keys)
     let planar_joint = get_value(v, "planar_joint");
     let pj_map = match planar_joint {
@@ -851,7 +851,7 @@ fn kinematic_stdlib_smoke_e2e() {
     );
 
     // ── cylindrical joint (2-DOF: prismatic ⊕ revolute on a shared axis) ─
-    // cyl = cylindrical(vec3(0, 0, 1), 0mm..1mm, 0rad..π) → flat Map with the
+    // cyl = cylindrical(dir(0, 0, 1), 0mm..1mm, 0rad..π) → flat Map with the
     // four keys { kind, axis, translation_range, rotation_range }, mirroring
     // the prismatic/revolute flat-Map convention. PRD v0.2 kinematic task 5.
     let cyl = get_value(v, "cyl");

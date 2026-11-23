@@ -29,7 +29,7 @@
 use std::collections::BTreeMap;
 
 use reify_core::DimensionVector;
-use reify_ir::Value;
+use reify_ir::{Value, decode_direction};
 
 use super::common::{
     attach_compliance, cantilever_sigma_at, cantilever_theta_lim, declared_range,
@@ -55,7 +55,7 @@ struct CompoundInputs<'a> {
     i: f64,
     /// Material yield stress σ_y (Pa), if the material carries one.
     yield_si: Option<f64>,
-    /// The raw motion-axis argument (stored verbatim on the joint Map).
+    /// The motion-axis argument, a Direction stored unchanged on the joint Map.
     axis: &'a Value,
     /// The raw pivot argument (stored verbatim on the joint Map).
     pivot: &'a Value,
@@ -74,8 +74,8 @@ struct CompoundInputs<'a> {
 /// ([`slender_beam`]); [`InputFault::Invalid`] on: arity ∉ {7, 8}; non-positive
 /// or non-finite geometry (including `blade_spacing`); a
 /// material that is not a `Value::StructureInstance` with a finite positive
-/// `youngs_modulus`; or a motion_axis that is not a finite, non-zero,
-/// dimensionless 3-vector. The optional 8th slot is the declared operating range.
+/// `youngs_modulus`; or a motion_axis that is not a
+/// Direction. The optional 8th slot is the declared operating range.
 fn parse_compound_inputs(args: &[Value]) -> Result<CompoundInputs<'_>, InputFault> {
     if args.len() != 7 && args.len() != 8 {
         return Err(InputFault::Invalid);
@@ -95,7 +95,7 @@ fn parse_compound_inputs(args: &[Value]) -> Result<CompoundInputs<'_>, InputFaul
     let e = youngs_modulus(material)?;
     let yield_si = yield_stress(material)?;
     let axis = &args[5];
-    crate::helpers::validate_dimensionless_unit_axis_vec3(axis).ok_or(InputFault::Invalid)?;
+    decode_direction(axis).map_err(|_| InputFault::Invalid)?;
     Ok(CompoundInputs {
         length,
         width,
@@ -272,7 +272,7 @@ struct CartwheelInputs<'a> {
     e: f64,
     /// Material yield stress σ_y (Pa), if the material carries one.
     yield_si: Option<f64>,
-    /// The raw axis argument (stored verbatim on the joint Map).
+    /// The axis argument, a Direction stored unchanged on the joint Map.
     axis: &'a Value,
     /// The raw pivot argument (stored verbatim on the joint Map).
     pivot: &'a Value,
@@ -294,8 +294,8 @@ struct CartwheelInputs<'a> {
 /// not an integer-valued finite number ≥ 1 (i.e. `Int` ≥ 1, or a whole finite
 /// `Real` ≥ 1.0 — non-integers and values < 1 are rejected); non-positive or
 /// non-finite geometry; a material without a finite
-/// positive `youngs_modulus`; or an axis that is not a finite, non-zero,
-/// dimensionless 3-vector. The optional 9th slot is the declared operating range.
+/// positive `youngs_modulus`; or an axis that is not a
+/// Direction. The optional 9th slot is the declared operating range.
 fn parse_cartwheel_inputs(args: &[Value]) -> Result<CartwheelInputs<'_>, InputFault> {
     if args.len() < 7 || args.len() > 9 {
         return Err(InputFault::Invalid);
@@ -314,7 +314,7 @@ fn parse_cartwheel_inputs(args: &[Value]) -> Result<CartwheelInputs<'_>, InputFa
     let material = &args[4];
     let e = youngs_modulus(material)?;
     let yield_si = yield_stress(material)?;
-    crate::helpers::validate_dimensionless_unit_axis_vec3(&args[6]).ok_or(InputFault::Invalid)?;
+    decode_direction(&args[6]).map_err(|_| InputFault::Invalid)?;
     Ok(CartwheelInputs {
         blade_count,
         length,

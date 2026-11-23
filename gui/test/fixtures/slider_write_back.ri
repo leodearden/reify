@@ -17,7 +17,7 @@ structure SliderWriteBack {
 
     let plate = box(width, 20mm, 5mm)
 
-    let slide = prismatic(vec3(1, 0, 0), 0mm .. 200mm)
+    let slide = prismatic(dir(1, 0, 0), 0mm .. 200mm)
     let m0 = mechanism()
     let m1 = body(m0, "carriage", slide)
     let snap = snapshot(m1, [bind(slide, width)])

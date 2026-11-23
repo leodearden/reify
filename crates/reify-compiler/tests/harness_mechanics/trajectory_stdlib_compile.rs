@@ -16,7 +16,7 @@
 //! `PiecewisePolynomialProfile` is declared at the structure-def level.
 //!
 //! All tests use the production-path `load_stdlib_module()` helper that
-//! exercises the same embedded + sequential-prelude compilation path as
+//! exercises the same embedded + strict (declared-imports) compilation path as
 //! production. This mirrors the helper trio in `buckling_stdlib_compile.rs`.
 
 use reify_compiler::*;
@@ -30,7 +30,8 @@ use reify_test_support::{
 
 /// Return the `std/trajectory` CompiledModule from the production stdlib
 /// loader. Exercises the exact same code path as production: embedded source,
-/// sequential compilation with growing prelude, OnceLock caching.
+/// each stdlib module compiled against its declared imports (strict build),
+/// OnceLock caching.
 ///
 /// Panics if the module is not found — which is the expected failure mode
 /// until step-2 lands the .ri file and loader registration.
@@ -817,8 +818,9 @@ fn piecewise_polynomial_profile_constrains_waypoints_nonempty() {
 
     // RHS must be the literal `0`. Accept either `Int(0)` or `Real(0.0)`,
     // mirroring the future-proofing rationale established in
-    // `buckling_stdlib_compile.rs:357-358` /
-    // `solver_elastic_tests.rs:567-579`: `waypoints.count` is `Type::Int`
+    // `buckling_options_constrains_positivity_invariants` in
+    // buckling_stdlib_compile.rs / `elastic_options_constrains_positivity_invariants`
+    // in solver_elastic_tests.rs: `waypoints.count` is `Type::Int`
     // today so the `0` literal stays `Int`, but accepting `Real(0.0)` keeps
     // this test robust against a future literal-coercion change and
     // consistent with the precedent it explicitly cites.
@@ -843,7 +845,7 @@ fn piecewise_polynomial_profile_constrains_waypoints_nonempty() {
 ///
 /// `p : Profile` resolves to `Type::TraitObject("Profile")` — the same
 /// trait-typed param resolution verified by `fn_signature_resolves_stdlib_trait_name`
-/// in `fn_signature_type_resolution_tests.rs:60-86` (using `MaterialSpec`).
+/// in `fn_signature_type_resolution_tests.rs` (using `MaterialSpec`).
 /// `t : Time` resolves to `Type::Scalar { dimension: DimensionVector::TIME }` —
 /// already in use for `Waypoint.t` (trajectory_stdlib_compile.rs, step-9).
 /// Return type `List<JointValue>` = `List<Real>` via the module-level alias
@@ -897,7 +899,7 @@ fn evaluate_profile_ddot_fn_signature() {
 
 /// Look up the named param cell on `template` and return its `default_expr`.
 /// Panics with a clear message if the cell or its default is missing.
-/// Mirrors `require_default` in `modal_options_validation_tests.rs:97-106`.
+/// Mirrors `require_default` in `modal_options_validation_tests.rs`.
 fn require_default<'a>(template: &'a TopologyTemplate, member: &str) -> &'a CompiledExpr {
     let cell = template
         .value_cells
@@ -925,7 +927,7 @@ fn require_default<'a>(template: &'a TopologyTemplate, member: &str) -> &'a Comp
 /// `p : Profile` resolves to `Type::TraitObject("Profile")` (same as steps
 /// 21/23/25). `is_pub == true` for the same downstream-consumer reason.
 /// Single-param assertion mirrors `STANDARD_GRAVITY` (zero-param precedent)
-/// in `standard_gravity_tests.rs:22-50`.
+/// in `standard_gravity_function_present_in_std_units` (standard_gravity_tests.rs).
 #[test]
 fn profile_duration_fn_signature() {
     let module = load_stdlib_module();
@@ -965,6 +967,67 @@ fn profile_duration_fn_signature() {
         },
         "profile_duration return type should be Scalar<TIME>; got: {:?}",
         func.return_type
+    );
+}
+
+// ─── task 8119: scalar accessor bodies type as their declared returns ───────
+
+/// `profile_duration` and `peak_deviation` are one-call wrappers over the
+/// `profile_duration_at` / `peak_deviation_at` intrinsics. Each wrapper body
+/// must type as the wrapper's declared scalar return, so std/trajectory
+/// carries no `FnReturnTypeMismatch` — the precondition for #7007 raising
+/// that diagnostic to Error, which `build_stdlib_modules` refuses to load.
+#[test]
+fn scalar_accessor_bodies_type_as_their_declared_returns() {
+    let module = load_stdlib_module();
+    let cases = [
+        (
+            "profile_duration",
+            "profile_duration_at",
+            Type::Scalar {
+                dimension: DimensionVector::TIME,
+            },
+        ),
+        (
+            "peak_deviation",
+            "peak_deviation_at",
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
+        ),
+    ];
+
+    for (wrapper, delegate, expected) in cases {
+        let func = get_function_in(module, wrapper);
+        assert_eq!(
+            func.return_type, expected,
+            "{wrapper} should declare return {expected:?}"
+        );
+
+        let body = &func.body.result_expr;
+        match &body.kind {
+            CompiledExprKind::FunctionCall { function, .. } => assert_eq!(
+                function.name, delegate,
+                "{wrapper}'s body should call {delegate}"
+            ),
+            other => panic!("{wrapper}'s body should be a call to {delegate}; got: {other:?}"),
+        }
+
+        assert_eq!(
+            body.result_type, expected,
+            "{wrapper}'s body `{delegate}(..)` types as {:?}, but {wrapper} declares {expected:?}",
+            body.result_type
+        );
+    }
+
+    let mismatches: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::FnReturnTypeMismatch))
+        .collect();
+    assert!(
+        mismatches.is_empty(),
+        "std/trajectory should carry no FnReturnTypeMismatch; got: {mismatches:?}"
     );
 }
 
@@ -1555,9 +1618,9 @@ fn revolute_tots_half() -> TotsShaperHalf {
 ///       ([`per_joint_kind_dimension_vectors_are_distinct`] pins the latter),
 ///       (d) is also what stops the halves collapsing onto one spelling.
 ///
-/// `Mode` resolves via the growing-prelude cross-module mechanism —
-/// std.modal.analysis is loaded at slot 16 BEFORE std.trajectory at slot 17
-/// (stdlib_loader.rs:110-116). Type encoding: `Type::List(Box::new(
+/// `Mode` resolves through std.trajectory's `import std.modal.analysis`
+/// (the strict build orders std.modal.analysis BEFORE std.trajectory from that
+/// import). Type encoding: `Type::List(Box::new(
 /// Type::StructureRef("Mode")))` — identical to ModalResult.modes.
 ///
 /// `Type::StructureRef("Mode")` carries only the name, which is unambiguous:
@@ -2089,10 +2152,11 @@ structure def TotsKinematicLimitReadProbe {{
 /// and dim-incompatible with Frequency).
 ///
 /// Uses the HarmonicForce Frequency-constraint pattern
-/// (modal_options_validation_tests.rs:1296-1348) and the TOTSShaper
-/// trait-bounds + param-shape assertion style (step-35).
+/// (`harmonic_force_constrains_amplitude_and_frequency_positive` in
+/// modal_options_validation_tests.rs) and the TOTSShaper trait-bounds +
+/// param-shape assertion style ([`assert_tots_shaper_param_shape`], step-35).
 ///
-/// Landed alongside the structure_def in trajectory.ri:513-518.
+/// Landed alongside the structure_def in `trajectory.ri :: ZVShaper`.
 #[test]
 fn zv_shaper_struct_has_correct_param_shape_and_constraint() {
     // step-41
@@ -2240,7 +2304,7 @@ fn zv_shaper_struct_has_correct_param_shape_and_constraint() {
 ///
 /// Key distinction from ZVShaper: BOTH params have `default_expr.is_none()`.
 ///
-/// Landed alongside the structure_def in trajectory.ri:536-541.
+/// Landed alongside the structure_def in `trajectory.ri :: ZVDShaper`.
 #[test]
 fn zvd_shaper_struct_has_correct_param_shape_and_constraint() {
     // step-43
@@ -2374,9 +2438,10 @@ fn zvd_shaper_struct_has_correct_param_shape_and_constraint() {
 ///   (c) `vibration_tolerance <= 1`      — BinOp::Le, RHS Int(1)/Real(1.0)
 ///
 /// The vibration_tolerance ∈ (0,1] interval splits into two scalar predicates
-/// (same discipline as TOTSShaper, step-39 at line 1391-1477).
+/// (same discipline as TOTSShaper's step-39 body,
+/// [`assert_tots_shaper_constrains_design_param_invariants`]).
 ///
-/// Landed alongside the structure_def in trajectory.ri:570-578.
+/// Landed alongside the structure_def in `trajectory.ri :: EIShaper`.
 #[test]
 fn ei_shaper_struct_has_correct_param_shape_and_constraints() {
     // step-45
@@ -2572,7 +2637,7 @@ fn ei_shaper_struct_has_correct_param_shape_and_constraints() {
 /// `Type::List(TraitObject(...))` assertion shape
 /// (modal_options_validation_tests.rs).
 ///
-/// Landed alongside the structure_def in trajectory.ri:600-602.
+/// Landed alongside the structure_def in `trajectory.ri :: CascadedShaper`.
 #[test]
 fn cascaded_shaper_struct_has_correct_param_shape() {
     // step-47
@@ -2675,7 +2740,9 @@ fn end_effector_track_struct_has_correct_param_shape() {
     // ModalResult lives in std/modal.analysis (not std/trajectory), so we
     // search across all stdlib modules. A string-equality StructureRef assertion
     // alone would pass even if the referenced name did not exist.
-    // (ModalResult shape is also fully verified by modal_options_validation_tests.rs:446.)
+    // (ModalResult shape is also fully verified by
+    // `modal_result_struct_has_correct_param_shape` in
+    // modal_options_validation_tests.rs.)
     assert!(
         stdlib_loader::load_stdlib()
             .iter()

@@ -20,11 +20,11 @@
 //! - **MITC3+** (Lee, Lee & Bathe 2014) — [`Mitc3Plus::interpolate_assumed_shear_mitc3_plus`]
 //!   re-interpolates covariant shears sampled at the six *interior* tying points
 //!   A–F (Eq. 9). Consumed by [`crate::shell_element_stiffness_mitc3_plus`]; it is
-//!   the genuine flat-facet shear-locking cure (a softer field than bare Eq. 5).
+//!   MITC3+'s assumed-shear field, distinct from bare Eq. 5.
 //!
 //! The "+" rotation bubble `f_b(ξ,η) = ξ·η·(1−ξ−η)` enriches the **bending**
 //! field. On a flat, constant-Jacobian facet it is inert in transverse shear
-//! (`K_NB^shear ≡ 0`; esc-3392, DD#2 retracted) — so the flat-facet shear cure
+//! (`K_NB^shear ≡ 0`; esc-3392, DD#2 retracted) — so MITC3+'s flat-facet shear
 //! is the nodal interior-tying assumed field above, not the bubble, which
 //! becomes live only on the curved director substrate (task 4068).
 
@@ -116,11 +116,12 @@ const TYING_OFFSET_D: f64 = 1.0 / 10000.0;
 /// Static array of the six MITC3+ *interior* transverse-shear tying points
 /// (Lee, Lee & Bathe 2014, Table 1), in canonical order A, B, C, D, E, F.
 ///
-/// The bare three-node (DISP3) covariant transverse shear is **sampled** at
-/// these six points and re-interpolated via the assumed-strain field
+/// The three-node (DISP3) covariant transverse shear
+/// ([`crate::shell_kinematics::ShellKinematics::covariant_shear_b`]) is
+/// **sampled** at these six points and re-interpolated via the assumed-strain field
 /// [`Mitc3Plus::interpolate_assumed_shear_mitc3_plus`] (Eq. 9). This nodal
-/// assumed field — distinct from bare-MITC3's edge-midpoint Eq. 5 — is the
-/// MITC3+ shear-locking cure on a flat facet.
+/// assumed field is MITC3+'s assumed shear on a flat facet, distinct from bare
+/// MITC3's edge-midpoint Eq. 5.
 ///
 /// Two distinct symmetric orbits:
 /// - **A, B, C** — the `(1/6, 1/6, 2/3)` barycentric orbit (`f₄ = 1/2`).
@@ -306,12 +307,11 @@ impl Mitc3Plus {
     /// The return type is `&'static [TyingPoint]` — the slice points to a
     /// compile-time constant, so no allocation occurs.
     ///
-    /// These differ fundamentally from [`Mitc3Plus::tying_points`] (the three
-    /// edge midpoints A/B/C of the bare-MITC3 baseline): the bare DISP3 covariant
-    /// shear is sampled at these six interior points and re-interpolated via
-    /// Eq. 9, giving a softer nodal assumed field than bare MITC3's Eq. 5 — the
-    /// flat-facet shear-locking cure. (The cubic bubble is inert in shear on a
-    /// flat facet; see [`INTERIOR_TYING_POINTS`].)
+    /// These differ from [`Mitc3Plus::tying_points`] (the three edge midpoints
+    /// A/B/C of bare MITC3): the DISP3 covariant shear is sampled at these six
+    /// interior points and re-interpolated via Eq. 9 into MITC3+'s assumed-shear
+    /// field, distinct from bare MITC3's Eq. 5. (The cubic bubble is inert in
+    /// shear on a flat facet; see [`INTERIOR_TYING_POINTS`].)
     pub fn interior_tying_points(&self) -> &'static [TyingPoint] {
         INTERIOR_TYING_POINTS
     }
@@ -335,9 +335,10 @@ impl Mitc3Plus {
     /// This is a tying-**collocation** re-interpolation: it samples the
     /// covariant shear at the six discrete interior points and re-interpolates,
     /// rather than forming a Galerkin / L2 projection. The samples are taken from
-    /// the bare three-node (DISP3) covariant shear
-    /// ([`Mitc3Plus::covariant_shear_b_nodal`]); on a flat facet the cubic bubble
-    /// does not enter (it is inert in shear there — see [`INTERIOR_TYING_POINTS`]).
+    /// the three-node (DISP3) covariant shear
+    /// ([`crate::shell_kinematics::ShellKinematics::covariant_shear_b`]); on a
+    /// flat facet the cubic bubble does not enter (it is inert in shear there —
+    /// see [`INTERIOR_TYING_POINTS`]).
     ///
     /// Properties:
     /// - **Three-parameter field, linear in `(r, s)`** — two constants plus the
@@ -376,61 +377,6 @@ impl Mitc3Plus {
                 + common
                 + (1.0 / 3.0) * chat * (1.0 - 3.0 * r),
         }
-    }
-
-    /// **Covariant** transverse-shear strain B-matrix of the bare three-node
-    /// (DISP3) displacement field at `coord`, with shape `[2][18]`: rows are the
-    /// covariant components `(γ_ξζ, γ_ηζ)`; columns are the 18 nodal DOFs.
-    ///
-    /// # Construction (covariant, geometry-free)
-    ///
-    /// Both the transverse displacement and the section rotation use the plain
-    /// three-node shape functions `h_i` (`shape_at`):
-    ///
-    /// ```text
-    /// γ_ξζ = Σ_i (∂h_i/∂ξ · u_z_i + h_i · θ_y_i)
-    /// γ_ηζ = Σ_i (∂h_i/∂η · u_z_i − h_i · θ_x_i)
-    /// ```
-    ///
-    /// where `∂h_i/∂ξ` are the constant reference-coordinate shape gradients
-    /// (`shape_grad_at`). This is identical to the covariant shear B built by
-    /// [`crate::shell_kinematics`] for the bare-MITC3 edge-midpoint scheme;
-    /// exposing it per-coordinate lets the MITC3+ assembly sample it at the six
-    /// interior tying points.
-    ///
-    /// # Why the bubble does NOT appear here (flat facet)
-    ///
-    /// On a flat, constant-Jacobian facet the cubic rotation bubble is **inert**
-    /// in transverse shear: its nodal↔bubble shear coupling `K_NB^shear ≡ 0`
-    /// (the divergence-theorem result first proved for the bending bubble in task
-    /// 3349, re-derived for the flat-facet shear field in the esc-3392 corrected
-    /// resolution). The genuine MITC3+ shear-locking cure on a flat facet lives
-    /// **entirely in the nodal assumed field**: these corner covariant shears are
-    /// sampled at the six interior tying points A–F and re-interpolated via
-    /// [`Mitc3Plus::interpolate_assumed_shear_mitc3_plus`] (Eq. 9), which is a
-    /// softer field than bare MITC3's edge-midpoint Eq. 5. The cubic bubble
-    /// enriches **bending** only and becomes live in transverse shear only on the
-    /// curved director substrate (task 4068) — hence this B-matrix carries no
-    /// bubble columns.
-    pub fn covariant_shear_b_nodal(
-        &self,
-        coord: ShellReferenceCoord,
-    ) -> [[f64; Self::N_DOFS]; 2] {
-        let dn_ref = self.shape_grad_at(coord);
-        let h = self.shape_at(coord); // plain corner functions (DISP3)
-        let mut b = [[0.0_f64; Self::N_DOFS]; 2];
-        for node in 0..Self::N_NODES {
-            let dof_uz = Self::N_DOFS_PER_NODE * node + 2;
-            let dof_tx = Self::N_DOFS_PER_NODE * node + 3;
-            let dof_ty = Self::N_DOFS_PER_NODE * node + 4;
-            // γ_ξζ: ∂h/∂ξ · u_z + h_i · θ_y
-            b[0][dof_uz] += dn_ref[node][0];
-            b[0][dof_ty] += h[node];
-            // γ_ηζ: ∂h/∂η · u_z − h_i · θ_x
-            b[1][dof_uz] += dn_ref[node][1];
-            b[1][dof_tx] -= h[node];
-        }
-        b
     }
 
     /// Number of Lagrangian nodes.
@@ -776,83 +722,6 @@ mod tests {
             out.gamma_xi_zeta,
             probe.xi,
         );
-    }
-
-    #[test]
-    fn covariant_shear_b_nodal_is_the_plain_corner_covariant_shear() {
-        // CORRECTED (esc-3392, DD#2 retracted): on a flat facet the shear-locking
-        // cure lives in the NODAL assumed field; the cubic bubble is inert in
-        // shear. So the per-point covariant shear B uses the PLAIN corner
-        // functions h_i (not the modified f_i = h_i − f₄/3) and carries NO bubble
-        // columns: it is exactly the bare DISP3 covariant transverse shear.
-        let probe = ShellReferenceCoord::new(0.25, 0.35);
-        let h = Mitc3Plus.shape_at(probe);
-        let dn_ref = Mitc3Plus.shape_grad_at(probe);
-        let b = Mitc3Plus.covariant_shear_b_nodal(probe);
-        for node in 0..Mitc3Plus::N_NODES {
-            let uz = Mitc3Plus::N_DOFS_PER_NODE * node + 2;
-            let tx = Mitc3Plus::N_DOFS_PER_NODE * node + 3;
-            let ty = Mitc3Plus::N_DOFS_PER_NODE * node + 4;
-            // γ_ξζ: u_z → ∂h/∂ξ, θ_y → +h_i, θ_x → 0
-            assert!((b[0][uz] - dn_ref[node][0]).abs() < TOL);
-            assert!((b[0][ty] - h[node]).abs() < TOL);
-            assert!(b[0][tx].abs() < TOL);
-            // γ_ηζ: u_z → ∂h/∂η, θ_x → −h_i, θ_y → 0
-            assert!((b[1][uz] - dn_ref[node][1]).abs() < TOL);
-            assert!((b[1][tx] + h[node]).abs() < TOL);
-            assert!(b[1][ty].abs() < TOL);
-            // In-plane (u_x, u_y) and drilling (θ_z) columns are identically zero.
-            for loc in [0_usize, 1, 5] {
-                let c = Mitc3Plus::N_DOFS_PER_NODE * node + loc;
-                assert!(
-                    b[0][c].abs() < TOL && b[1][c].abs() < TOL,
-                    "non-shear DOF column {c} must be 0",
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn covariant_shear_b_nodal_plus_eq9_reproduces_constant_shear_state() {
-        // Patch-safety prerequisite (the property the value-coupled bubble broke):
-        // a uniform θ_y = α with w = 0 is a CONSTANT covariant shear state
-        // (e_rt = α, e_st = 0). Sampling the corner covariant shear at the six
-        // interior tying points and re-interpolating via Eq. 9 must return the
-        // SAME constant (α, 0) at any probe.
-        let alpha = 0.7_f64;
-        let tps = Mitc3Plus.interior_tying_points();
-        let mut samples = [ShearStrain { gamma_xi_zeta: 0.0, gamma_eta_zeta: 0.0 }; 6];
-        for (k, tp) in tps.iter().enumerate() {
-            let b = Mitc3Plus.covariant_shear_b_nodal(tp.coord);
-            // Contract the corner B with the uniform-θ_y DOF vector (θ_y = α at
-            // every node, all other DOFs zero).
-            let mut e_rt = 0.0;
-            let mut e_st = 0.0;
-            for node in 0..Mitc3Plus::N_NODES {
-                let ty = Mitc3Plus::N_DOFS_PER_NODE * node + 4;
-                e_rt += b[0][ty] * alpha;
-                e_st += b[1][ty] * alpha;
-            }
-            samples[k] = ShearStrain { gamma_xi_zeta: e_rt, gamma_eta_zeta: e_st };
-        }
-        for p in [
-            ShellReferenceCoord::new(1.0 / 3.0, 1.0 / 3.0),
-            ShellReferenceCoord::new(0.2, 0.3),
-        ] {
-            let out = Mitc3Plus.interpolate_assumed_shear_mitc3_plus(&samples, p);
-            assert!(
-                (out.gamma_xi_zeta - alpha).abs() < TOL,
-                "constant e_rt at {:?}: {} expected {alpha}",
-                p,
-                out.gamma_xi_zeta,
-            );
-            assert!(
-                out.gamma_eta_zeta.abs() < TOL,
-                "constant e_st at {:?}: {} expected 0",
-                p,
-                out.gamma_eta_zeta,
-            );
-        }
     }
 
     #[test]

@@ -1,0 +1,8 @@
+module main
+
+import parts
+
+structure def Rig {
+    sub p = Pulley()
+    constraint p.diameter > 10mm
+}

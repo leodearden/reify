@@ -22,10 +22,10 @@ structure FeaUnderConstrainedSupport {
     let material = Steel_AISI_1045()
 
     // Tip load, same as the smoke test.
-    let tip_load = PointLoad(point: "tip", force: 1000.0N)
+    let tip_load = PointLoad(point: vertex(body, "tip"), force: 1000.0N)
 
     // Present support, but targeting "tip" instead of the auto-clamped "root".
-    let mount = FixedSupport(target: "tip")
+    let mount = FixedSupport(target: face(body, "tip"))
 
     let result = solve_elastic_static(
         material, length, width, height, [tip_load], [mount], ElasticOptions()

@@ -6,16 +6,30 @@
 
 use reify_constraints::relate_solve::{
     FrameUnknown, Operand, Pose, RelationInstance, max_relation_exceedance, partition_driving_set,
-    pose_from_frame, solve_frame, solve_frame_traced, solve_scaling,
+    pose_from_frame, solve_frame_outcome, solve_scaling,
 };
 use reify_constraints::scaling::{
     RelateTolerance, ResidualUnit, Rung, SolveScaling, ToleranceLadderError, ToleranceRungs,
     UnknownKind,
 };
+use reify_constraints::trust_region::SolveBudget;
 use reify_core::scalar_tolerance::{ANGULAR_REFERENCE_RADIUS_M, LENGTH_FLOOR_M, scalars_equal};
-use reify_core::{DimensionVector, ValueCellId};
+use reify_core::{DiagnosticCode, DimensionVector, ValueCellId};
 use reify_ir::{SolveResult, Value};
-use reify_test_support::{axis_val, meters, plane_val, point3, vec3_dimensionless};
+use reify_test_support::{axis_val, direction_val, meters, plane_val, point3};
+
+/// The Frame solve within the default budget, read through the
+/// [`SolveResult`] contract
+/// ([`FrameSolveOutcome::into_solve_result`](reify_constraints::relate_solve::FrameSolveOutcome::into_solve_result)).
+fn solve_frame_result(
+    driving: &[RelationInstance],
+    unknown: &FrameUnknown,
+    seed: &Pose,
+    scaling: &SolveScaling,
+) -> SolveResult {
+    solve_frame_outcome(driving, unknown, seed, scaling, SolveBudget::default())
+        .into_solve_result(unknown)
+}
 
 // ── The tolerance ladder ─────────────────────────────────────────────────────
 
@@ -432,15 +446,11 @@ fn rel(name: &str, operands: Vec<Operand>) -> RelationInstance {
 }
 
 fn z_axis_at(x: f64, y: f64, z: f64) -> Value {
-    axis_val(point3(x, y, z), vec3_dimensionless(0.0, 0.0, 1.0))
+    axis_val(point3(x, y, z), direction_val(0.0, 0.0, 1.0))
 }
 
 fn z_plane_at(x: f64, y: f64, z: f64) -> Value {
-    plane_val(point3(x, y, z), vec3_dimensionless(0.0, 0.0, 1.0))
-}
-
-fn direction(x: f64, y: f64, z: f64) -> Value {
-    Value::Direction { x, y, z }
+    plane_val(point3(x, y, z), direction_val(0.0, 0.0, 1.0))
 }
 
 fn translated(translation: [f64; 3]) -> Pose {
@@ -581,8 +591,8 @@ fn direction_only_relation_sets_floor_at_kernel_local() {
     let relations = [rel(
         "parallel",
         vec![
-            moving(direction(0.0, 0.0, 1.0)),
-            anchor(direction(0.0, 0.0, 1.0)),
+            moving(direction_val(0.0, 0.0, 1.0)),
+            anchor(direction_val(0.0, 0.0, 1.0)),
         ],
     )];
     assert_eq!(
@@ -668,12 +678,32 @@ fn scaling_for(
     solve_scaling(relations, unknown, seed, RelateTolerance::kernel_default())
 }
 
+/// `"infeasible"` means CERTIFIED: every solve failure rides `Infeasible`, so the
+/// verdict reads the `SolverInfeasible` code, not the variant.
 fn verdict(result: &SolveResult) -> &'static str {
     match result {
         SolveResult::Solved { .. } => "solved",
-        SolveResult::Infeasible { .. } => "infeasible",
+        SolveResult::Infeasible { diagnostics }
+            if diagnostics
+                .iter()
+                .any(|d| d.code == Some(DiagnosticCode::SolverInfeasible)) =>
+        {
+            "infeasible"
+        }
         _ => "other",
     }
+}
+
+/// A default-budget solve's `SolveResult` and its trial-step count.
+fn solve_counted(
+    relations: &[RelationInstance],
+    unknown: &FrameUnknown,
+    seed: &Pose,
+    scaling: &SolveScaling,
+) -> (SolveResult, u32) {
+    let outcome = solve_frame_outcome(relations, unknown, seed, scaling, SolveBudget::default());
+    let iterations = outcome.iterations;
+    (outcome.into_solve_result(unknown), iterations)
 }
 
 /// The solved pose and `unique` flag of a `Solved` result.
@@ -708,23 +738,23 @@ fn b15_precondition_both_instances_are_above_the_crossover() {
 fn b15_convergence_verdict_and_iteration_count_are_scale_invariant() {
     let run = |k: f64| {
         let (relations, unknown, seed) = b15_fixture(k);
-        solve_frame_traced(
+        solve_counted(
             &relations,
             &unknown,
             &seed,
             &scaling_for(&relations, &unknown, &seed),
         )
     };
-    let (base, base_trace) = run(1.0);
-    let (large, large_trace) = run(K);
+    let (base, base_iterations) = run(1.0);
+    let (large, large_iterations) = run(K);
 
     let (base_pose, base_unique) = solved(&base);
     let (large_pose, large_unique) = solved(&large);
     assert_eq!(base_unique, large_unique);
-    assert_eq!(base_trace.iterations, large_trace.iterations);
+    assert_eq!(base_iterations, large_iterations);
     assert!(
-        base_trace.iterations >= 2,
-        "the stop test must fire mid-sequence, not at the seed: {base_trace:?}"
+        base_iterations >= 2,
+        "the stop test must fire mid-sequence, not at the seed: {base_iterations}"
     );
     assert_eq!(large_pose.rotation, base_pose.rotation);
     for i in 0..3 {
@@ -745,11 +775,11 @@ fn b15_fixture_detects_a_scale_leak() {
     let (relations, unknown, seed) = b15_fixture(K);
     let own_scaling = scaling_for(&relations, &unknown, &seed);
 
-    let (scaled, scaled_trace) = solve_frame_traced(&relations, &unknown, &seed, &own_scaling);
-    let (leaky, leaky_trace) = solve_frame_traced(&relations, &unknown, &seed, &base_scaling);
+    let (scaled, scaled_iterations) = solve_counted(&relations, &unknown, &seed, &own_scaling);
+    let (leaky, leaky_iterations) = solve_counted(&relations, &unknown, &seed, &base_scaling);
     assert_ne!(
-        (verdict(&leaky), leaky_trace.iterations),
-        (verdict(&scaled), scaled_trace.iterations),
+        (verdict(&leaky), leaky_iterations),
+        (verdict(&scaled), scaled_iterations),
         "an absolute bar must change the stop iterate, or the B15 fixture cannot see a leak"
     );
 }
@@ -780,13 +810,13 @@ fn b15_infeasible_verdict_is_scale_invariant() {
         };
         let scaling = scaling_for(&relations, &unknown, &seed);
         assert!(scaling.characteristic_length() >= 1e-3, "k = {k}");
-        solve_frame_traced(&relations, &unknown, &seed, &scaling)
+        solve_counted(&relations, &unknown, &seed, &scaling)
     };
-    let (base, base_trace) = run(1.0);
-    let (large, large_trace) = run(K);
+    let (base, base_iterations) = run(1.0);
+    let (large, large_iterations) = run(K);
     assert_eq!(verdict(&base), "infeasible");
     assert_eq!(verdict(&large), "infeasible");
-    assert_eq!(base_trace.iterations, large_trace.iterations);
+    assert_eq!(base_iterations, large_iterations);
 }
 
 #[test]
@@ -831,8 +861,8 @@ fn sub_millimetre_scope_converges_as_fast_as_above_the_crossover() {
     let run = |k: f64| {
         let (relations, unknown, seed) = b15_fixture(k);
         let scaling = scaling_for(&relations, &unknown, &seed);
-        let (result, trace) = solve_frame_traced(&relations, &unknown, &seed, &scaling);
-        (relations, unknown, scaling, result, trace)
+        let (result, iterations) = solve_counted(&relations, &unknown, &seed, &scaling);
+        (relations, unknown, scaling, result, iterations)
     };
     let (.., above) = run(1.0);
     let (relations, unknown, scaling, result, below) = run(1.0 / 16.0);
@@ -850,8 +880,8 @@ fn sub_millimetre_scope_converges_as_fast_as_above_the_crossover() {
         max_relation_exceedance(&relations, &unknown, &pose, |u| scaling.row_tolerance(u));
     assert!(exceedance <= 1.0, "max|r̃| = {exceedance}");
     assert!(
-        below.iterations <= above.iterations,
-        "sub-mm {below:?} vs above the crossover {above:?}"
+        below <= above,
+        "sub-mm {below} iterations vs above the crossover {above}"
     );
 }
 
@@ -862,7 +892,7 @@ fn solved_pose_meets_every_row_tolerance() {
     for k in [1.0, K] {
         let (relations, unknown, seed) = b15_fixture(k);
         let scaling = scaling_for(&relations, &unknown, &seed);
-        let (pose, _) = solved(&solve_frame(&relations, &unknown, &seed, &scaling));
+        let (pose, _) = solved(&solve_frame_result(&relations, &unknown, &seed, &scaling));
         let exceedance =
             max_relation_exceedance(&relations, &unknown, &pose, |u| scaling.row_tolerance(u));
         assert!(exceedance <= 1.0, "k = {k}: max|r̃| = {exceedance}");
@@ -899,7 +929,7 @@ fn redundant_metre_row_is_judged_against_the_scaled_assertion_rung() {
     let tilt = 5e-5_f64;
     let tilted = offset_by(plane_val(
         point3(0.0, 0.0, 20.0),
-        vec3_dimensionless(tilt.sin(), 0.0, tilt.cos()),
+        direction_val(tilt.sin(), 0.0, tilt.cos()),
     ));
     assert!(exceedance(tilted, SolveScaling::new(20.0, tol)) > 1.0);
 }

@@ -180,8 +180,8 @@ fn relate_solve_chain_writes_solved_frame_origin_into_joint() {
     assert_eq!(solution.redundant, 0, "§1 has 0 redundant relations");
 
     // 4. Construct a bare revolute joint (no origin), apply set_mount_origin.
-    // Axis: unit +Z vector (the standard revolute axis in the test fixtures).
-    let axis = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+    // Axis: unit +Z Direction (the standard revolute axis in the test fixtures).
+    let axis = reify_test_support::direction_val(0.0, 0.0, 1.0);
     // Range: [0, π] angle range.
     let range = Value::Range {
         lower: Some(Box::new(Value::angle(0.0))),
@@ -280,7 +280,7 @@ structure Plate {
 }
 
 structure BoltPlateWithJoint {
-    let arm_joint = revolute(vec3(0, 0, 1), 0rad .. 3.14rad)
+    let arm_joint = revolute(dir(0, 0, 1), 0rad .. 3.14rad)
     sub bolt : Bolt at auto
     sub plate : Plate
     relate {
@@ -361,7 +361,7 @@ fn pure_mechanism_module_joint_has_no_origin() {
 
     let source = r#"
 structure PureMechanism {
-    let j = revolute(vec3(0, 0, 1), 0rad .. 3.14rad)
+    let j = revolute(dir(0, 0, 1), 0rad .. 3.14rad)
 }
 "#;
 

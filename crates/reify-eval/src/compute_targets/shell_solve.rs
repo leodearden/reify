@@ -33,7 +33,7 @@ use reify_ir::{InterpolationKind, SampledField, SampledGridKind, Value};
 use reify_solver_elastic::IsotropicElastic;
 
 use super::sampled_stress_field;
-use crate::persistent_cache::ShellChannels;
+use reify_compute_contract::ShellChannels;
 
 /// Tri-state shell-formulation control — the Rust mirror of the stdlib
 /// `ShellForce` enum (`crates/reify-compiler/stdlib/solver_elastic.ri:70`,
@@ -424,7 +424,7 @@ pub(crate) fn solve_shell_static(
 mod tests {
     use super::*;
     use crate::compute_targets::elastic_static::shell_channels_to_value;
-    use crate::persistent_cache::ShellChannels;
+    use reify_compute_contract::ShellChannels;
     use reify_ir::{FieldSourceKind, SampledGridKind, Value};
 
     /// RED (task δ step-5): pin the shell-classification routing policy.

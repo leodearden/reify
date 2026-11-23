@@ -1,0 +1,11 @@
+// realized-world-evaluation PRD (docs/prds/v0_6/realized-world-evaluation.md) baseline, main dd2a97059a 2026-11-17.
+// Row B7. Works today through ladder rung (d); it must keep working when rung (b) and #5208's pre-resolve go.
+module realized_world_single_relational_edge
+
+structure P {
+    let b = box(50mm, 30mm, 10mm)
+    let top = single(faces_by_normal(b, vec3(0.0, 0.0, 1.0), 1deg))
+    let side = single(faces_by_normal(b, vec3(1.0, 0.0, 0.0), 1deg))
+    let e = single(shared_edges(top, side))
+    let r = fillet(b, [e], 1mm)
+}

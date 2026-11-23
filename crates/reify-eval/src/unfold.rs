@@ -3,7 +3,9 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
-use reify_compiler::{CompiledModule, TopologyTemplate, ValueCellKind};
+use reify_compiler::{
+    CompiledGuardedGroup, CompiledModule, GuardedGroupCell, TopologyTemplate, ValueCellKind,
+};
 use reify_core::{Diagnostic, ValueCellId, VersionId};
 use reify_expr::ContainmentQuery;
 use reify_ir::{CompiledFunction, DeterminacyState, PersistentMap, Value, ValueMap};
@@ -14,6 +16,9 @@ use crate::cell_eval_ctx::cell_eval_ctx;
 use crate::deps::{DependencyTrace, extract_dependency_trace, take_trace};
 use crate::dirty::topological_sort;
 use crate::eval_ctx_with_meta;
+use crate::geometry_ops::symbolic_cell_mint::{
+    RealizationSource, SymbolicMintScope, mint_template_keyed_instance_cell,
+};
 use crate::journal::{EventJournal, TraceSource};
 use crate::snapshot::Snapshot;
 
@@ -449,15 +454,16 @@ pub(crate) fn elaborate_child_instance<'t>(
 /// own `let` cells and its plain nested subs form ONE dependency-ordered walk
 /// ([`build_phase15_nodes`] + [`phase15_node_traces`] + [`topological_sort`]).
 /// A nested sub's constructor arg is compiled in `child_template`'s scope, so it
-/// may read anything that scope offers — a param (already in phase 1's
-/// `child_values`), a `let` of the child, or a sibling sub's member via
-/// `self.<sub>.<member>`. Only the param case needs no ordering; the other two
-/// must be produced *before* the consuming sub's args are evaluated, or the read
-/// falls through to the TEMPLATE-scope entry in the global map and silently
-/// substitutes the template default for this instance's value.
+/// may read anything that scope offers — a param or a guarded-group cell (both
+/// already in phase 1's `child_values`), a `let` of the child, or a sibling sub's
+/// member via `self.<sub>.<member>`. Only the first case needs no ordering; the
+/// other two must be produced *before* the consuming sub's args are evaluated,
+/// or the read falls through to the TEMPLATE-scope entry in the global map and
+/// silently substitutes the template default for this instance's value.
 ///
 /// The walk therefore threads a running `overlay` (template-scoped keys, seeded
-/// with phase 1's params): a LET node evaluates into it as a SCRATCH value, and
+/// with phase 1's params and the template's guarded-group cells at their
+/// template values): a LET node evaluates into it as a SCRATCH value, and
 /// a SUB node pre-evaluates its args against it, recurses, then projects its
 /// freshly-committed cells back into it for later nodes. Ordering by dependency
 /// rather than by declaration also makes the result order-insensitive: a sub
@@ -668,10 +674,11 @@ fn elaborate_child_instance_nested<'t, 'f>(
     }
 
     // The running overlay: template-scoped keys visible to this instance's
-    // nested-arg evaluation, seeded with phase 1's params and extended as the
-    // walk goes. None of these SCRATCH LET values reach `child_values` — phase 2
-    // must recompute its lets against its own BFS-enriched map, and seeding it
-    // with them would mask a phase-2 regression. (The collapsed instance values
+    // nested-arg evaluation, seeded with phase 1's params and guarded-group
+    // cells and extended as the walk goes. None of these SCRATCH LET values
+    // reach `child_values` — phase 2 must recompute its lets against its own
+    // BFS-enriched map, and seeding it with them would mask a phase-2
+    // regression. (The collapsed instance values
     // gathered into `collapsed` are the one deliberate exception; the hand-off
     // below says why they are not the same thing.)
     let mut overlay = child_values.clone();
@@ -1282,7 +1289,9 @@ fn eval_child_expr(
 /// A scratch value must equal what phase 2 commits, so an `@optimized` let is
 /// resolved through the same [`resolve_optimized_instance_cell`] gate phase 2
 /// uses (task #6662). Body-inlining instead would hand every reader the `.ri`
-/// sentinel while the committed cell held the dispatched value.
+/// sentinel while the committed cell held the dispatched value. For the same
+/// parity reason an `Undef` scratch value is minted exactly as phase 2's let
+/// site mints it (see [`crate::geometry_ops::symbolic_cell_mint`]).
 ///
 /// Silent: phase 2 sees the same cell and owns the decline report, so reporting
 /// here would double every warning. Phase 1.5's overlay reaches phase 2's
@@ -1317,16 +1326,39 @@ fn eval_scratch_let(
     ) {
         OptimizedInstanceResolution::Reuse(v) => v,
         OptimizedInstanceResolution::NotOptimized
-        | OptimizedInstanceResolution::Unreusable { .. } => eval_child_expr(
-            scope,
+        | OptimizedInstanceResolution::Unreusable { .. } => mint_template_keyed_instance_cell(
+            eval_child_expr(
+                scope,
+                expr,
+                functions,
+                meta_map,
+                determinacy,
+                runtime_sink,
+                &NoContainment,
+            ),
+            ValueCellKind::Let,
+            key,
             expr,
-            functions,
-            meta_map,
-            determinacy,
-            runtime_sink,
-            &NoContainment,
+            &SymbolicMintScope {
+                realizations: RealizationSource::Template(child_template),
+                values: scope,
+                functions,
+                meta_map,
+            },
         ),
     }
+}
+
+/// Every cell the template's guarded groups own
+/// ([`CompiledGuardedGroup::owned_cells`]). No sub instance is stamped with one,
+/// because cell_contributions stamps an instance from the child's value_cells
+/// only.
+fn guarded_group_cells(template: &TopologyTemplate) -> impl Iterator<Item = &ValueCellId> {
+    template
+        .guarded_groups
+        .iter()
+        .flat_map(CompiledGuardedGroup::owned_cells)
+        .map(GuardedGroupCell::id)
 }
 
 /// Phase 1: Evaluate and store only the param cells for a child instance.
@@ -1336,7 +1368,10 @@ fn eval_scratch_let(
 /// in scope. A let a default reads is evaluated as a scratch value only: it is
 /// never committed or returned here, and phase 2 commits it.
 ///
-/// Returns the template-scoped child_values map (params only) for use in phase 2.
+/// Returns the template-scoped child_values map for use in phase 2: the params,
+/// plus the template's guarded-group cells at their template values. An instance
+/// holds no cell of its own for a guarded-group cell, so its read resolves at
+/// the template's value.
 /// All param values are also written to the global `values`, `snapshot`, journal, and cache.
 #[allow(clippy::too_many_arguments)]
 fn elaborate_child_params_only<'f>(
@@ -1353,10 +1388,15 @@ fn elaborate_child_params_only<'f>(
     diagnostics: &mut Vec<Diagnostic>,
     optimized_names: &OptimizedNameIndex<'f>,
 ) -> ValueMap {
-    // What defaults are evaluated against: the params so far plus the scratch
-    // lets. The scratch lets are removed before return, so the caller gets
-    // params only and phase 2 stays the sole committer of every let.
+    // What defaults are evaluated against: the guarded-group seeds, the params
+    // so far and the scratch lets. The scratch lets are removed before return,
+    // so phase 2 stays the sole committer of every let.
     let mut scope = ValueMap::new();
+    for id in guarded_group_cells(child_template) {
+        if let Some(value) = values.get(id) {
+            scope.insert(id.clone(), value.clone());
+        }
+    }
     let mut scratch_lets: Vec<&ValueCellId> = Vec::new();
     // runtime_sink is required by `cell_eval_ctx`; its contents are
     // discarded rather than surfaced — pre-migration this path never surfaced
@@ -1499,15 +1539,29 @@ fn elaborate_child_params_only<'f>(
             match resolution {
                 OptimizedInstanceResolution::Reuse(v) => v,
                 OptimizedInstanceResolution::NotOptimized
-                | OptimizedInstanceResolution::Unreusable { .. } => eval_child_expr(
-                    &scope,
-                    default_expr,
-                    functions,
-                    meta_map,
-                    &snapshot.values,
-                    &runtime_sink,
-                    &containment,
-                ),
+                | OptimizedInstanceResolution::Unreusable { .. } => {
+                    let evaluated = eval_child_expr(
+                        &scope,
+                        default_expr,
+                        functions,
+                        meta_map,
+                        &snapshot.values,
+                        &runtime_sink,
+                        &containment,
+                    );
+                    mint_template_keyed_instance_cell(
+                        evaluated,
+                        cell.kind,
+                        &cell.id,
+                        default_expr,
+                        &SymbolicMintScope {
+                            realizations: RealizationSource::Template(child_template),
+                            values: &scope,
+                            functions,
+                            meta_map,
+                        },
+                    )
+                }
             }
         } else {
             Value::Undef
@@ -1544,7 +1598,8 @@ fn elaborate_child_params_only<'f>(
 
 /// Phase 2: Evaluate and store the let-binding cells for a child instance.
 ///
-/// `child_values` should contain the template-scoped params from phase 1.
+/// `child_values` should contain the template-scoped params from phase 1, and
+/// its guarded-group seeds at their template values.
 /// Before evaluating lets, this function enriches `child_values` with sub-component
 /// values projected from the global `values` map — this enables cross-level let
 /// expressions like `let total = if n > 0 then n + S.child.total else n` to see
@@ -1813,15 +1868,29 @@ fn elaborate_child_lets_only<'t, 'f>(
             // Unreusable falls through to body-inlining, unchanged from
             // pre-#6662 behaviour — only the silence is removed.
             OptimizedInstanceResolution::NotOptimized
-            | OptimizedInstanceResolution::Unreusable { .. } => eval_child_expr(
-                &child_values,
-                expr,
-                functions,
-                meta_map,
-                &snapshot.values,
-                &runtime_sink,
-                &containment,
-            ),
+            | OptimizedInstanceResolution::Unreusable { .. } => {
+                let evaluated = eval_child_expr(
+                    &child_values,
+                    expr,
+                    functions,
+                    meta_map,
+                    &snapshot.values,
+                    &runtime_sink,
+                    &containment,
+                );
+                mint_template_keyed_instance_cell(
+                    evaluated,
+                    ValueCellKind::Let,
+                    child_cell_id,
+                    expr,
+                    &SymbolicMintScope {
+                        realizations: RealizationSource::Template(child_template),
+                        values: &child_values,
+                        functions,
+                        meta_map,
+                    },
+                )
+            }
         };
         child_values.insert(child_cell_id.clone(), val.clone());
 

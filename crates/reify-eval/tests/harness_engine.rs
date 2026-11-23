@@ -145,6 +145,11 @@ mod polymorphic_zero_trait_eval;
 // layout and stays a grandfathered top-level standalone.
 #[path = "harness_engine/instance_scope_param_default_order.rs"]
 mod instance_scope_param_default_order;
+// Task #10015's cold instance-scope guarded-template-let pins land here for the
+// same anti-re-accretion reason as #5196's and #5360's above, beside #7418's
+// `unfold.rs` instance-scope pins.
+#[path = "harness_engine/instance_scope_guarded_template_let.rs"]
+mod instance_scope_guarded_template_let;
 // Task #5417's DIC γ runtime-half e2e lands here for the same anti-re-accretion
 // reason as #5196's and #5360's above.
 #[path = "harness_engine/objective_consumption_e2e.rs"]
@@ -173,3 +178,35 @@ mod viewport_unmeasured_attribution;
 // anti-re-accretion reason as #5196's and #5360's above.
 #[path = "harness_engine/first_class_frame_datum_eval.rs"]
 mod first_class_frame_datum_eval;
+// Task #9572's stdlib-preset density pins land here for the same
+// anti-re-accretion reason as #5196's and #5360's above.
+#[path = "harness_engine/stdlib_material_preset_density_e2e.rs"]
+mod stdlib_material_preset_density_e2e;
+// Task #8393's stdlib-fn-in-user-fn-body e2e lands here for the same
+// anti-re-accretion reason as #5196's and #5360's above.
+#[path = "harness_engine/stdlib_fn_in_user_fn_body_e2e.rs"]
+mod stdlib_fn_in_user_fn_body_e2e;
+// Task #5516's DefEnv skeleton pins land here for the same anti-re-accretion
+// reason as #5196's and #5360's above. They drive the read-only definition
+// environment the engine migrates onto in θ (#5522), over programs built by
+// `reify_compiler::program::compile_program`.
+#[path = "harness_engine/def_env_skeleton.rs"]
+mod def_env_skeleton;
+// Task #8102's instance-scope symbolic geometry/selector mint pins land here for
+// the same anti-re-accretion reason as #5196's and #5360's above. They are also
+// a topical fit: they drive `Engine::eval` over `sub` instantiations to pin
+// what `unfold.rs` commits for geometry and selector cells.
+#[path = "harness_engine/instance_scope_symbolic_mint.rs"]
+mod instance_scope_symbolic_mint;
+// Task #5763's dimensioned-construction ε constraint-verdict pins land here for
+// the same anti-re-accretion reason as #5196's and #5360's above.
+#[path = "harness_engine/dimensioned_param_default_constraint_verdicts.rs"]
+mod dimensioned_param_default_constraint_verdicts;
+// Task #10033's checker-side `@optimized` dispatch pins land here for the same
+// anti-re-accretion reason as #5196's and #5360's above.
+#[path = "harness_engine/constraint_check_optimized_dispatch.rs"]
+mod constraint_check_optimized_dispatch;
+// Task #9869's relate-failure carrier pin lands here for the same
+// anti-re-accretion reason as #5196's and #5360's above.
+#[path = "harness_engine/relate_failure_carrier_e2e.rs"]
+mod relate_failure_carrier_e2e;

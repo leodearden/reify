@@ -2,11 +2,14 @@
 
 Each seam is a typed record: a BashCall for a library function, a BashExport
 for a variable a library exports, a DataFile for a data file, a SourcedFile
-for a shell file sourced for what it exports. Each module declares the
-constants it uses, so a later --print-gates (PRD D15) can collect them from
-the modules. run, read_export and source_delta each fork ONE `bash -c` per
-call. Paths, the function name and its arguments travel as argv
-and are never interpolated into the script text.
+for a shell file sourced for what it exports, a ScriptCall for a repo script
+run as a program. Each module declares the constants it uses, so a later
+--print-gates (PRD D15) can collect them from the modules. run, ask,
+read_export and source_delta each fork ONE `bash -c` per call; run_script
+forks the script itself. Paths, the function name and its arguments travel as argv
+and are never interpolated into the script text. A lib is sourced and called
+under the nounset and pipefail a `$(...)` inherits from verify.sh's options.
+ask reports a function that never ran as a NotCalled, never as a status.
 
 A data file that cannot be read raises DataFileUnreadable whatever the cause.
 Each reader turns that into its own conservative value and a stderr warning.
@@ -20,8 +23,16 @@ from pathlib import Path
 from reify_verify import childproc
 from reify_verify.childproc import CallResult
 
-_SOURCE_AND_CALL = 'source "$1" || exit; shift; "$@"'
-_SOURCE_AND_PRINT = 'source "$1" || exit; printenv -- "$2" || exit 0'
+_VERIFY_LIB_OPTIONS = "set -uo pipefail; "
+_CALLING_RECORD = "@@bashcall:calling@@"
+_SOURCE_AND_CALL = (
+    _VERIFY_LIB_OPTIONS
+    + 'source "$1" || exit; '
+    + 'builtin declare -F -- "$2" >/dev/null '
+    + '|| { builtin printf "%s: not a function of %s\\n" "$2" "$1" >&2; exit 127; }; '
+    + f'builtin printf "\\0{_CALLING_RECORD}\\0" >&2; shift; "$@"'
+)
+_SOURCE_AND_PRINT = _VERIFY_LIB_OPTIONS + 'source "$1" || exit; printenv -- "$2" || exit 0'
 _ENV_AROUND_SOURCE_END = "@@source_delta:end@@"
 _ENV_AROUND_SOURCE = (
     f'env -0 || exit; printf "\\0"; . "$1" >&2 || exit; env -0 || exit; printf "{_ENV_AROUND_SOURCE_END}\\0"'
@@ -70,6 +81,16 @@ class DataFile:
 
 
 @dataclass(frozen=True)
+class ScriptCall:
+    """A repo script run as a program, the path relative to the repo root."""
+
+    path: str
+
+    def __str__(self) -> str:
+        return self.path
+
+
+@dataclass(frozen=True)
 class SourcedFile:
     """A shell file sourced for the environment it exports, relative to $HOME.
 
@@ -99,6 +120,16 @@ class EnvDelta:
         return adopted
 
 
+@dataclass(frozen=True)
+class NotCalled:
+    """The function never ran: bash did not start, its lib did not finish sourcing, or the lib does not define it.
+
+    `result` is the shell's status and stderr, never the function's answer.
+    """
+
+    result: CallResult
+
+
 class DataFileUnreadable(Exception):
     def __init__(self, file: DataFile, reason: str):
         super().__init__(f"{file.path} is unreadable ({reason})")
@@ -118,20 +149,48 @@ class BashCallError(Exception):
 
 
 def run(call: BashCall, args: Sequence[str], repo_root: Path, env: Mapping[str, str]) -> CallResult:
-    """The call's stdout and stderr lines; a non-zero exit raises BashCallError, as does bash
-    itself failing to start.
+    """The call's stdout and stderr lines; a non-zero exit raises BashCallError, as does a
+    function that never ran.
 
     cwd is repo_root, as under verify.sh's `cd "$REPO_ROOT"`, and stderr is
     captured so the caller returns it in bash's stderr order.
     """
+    answer = ask(call, args, repo_root, env)
+    if isinstance(answer, NotCalled):
+        raise BashCallError(call, answer.result, "the function never ran")
+    if answer.returncode != 0:
+        raise BashCallError(call, answer)
+    return answer
+
+
+def ask(call: BashCall, args: Sequence[str], repo_root: Path, env: Mapping[str, str]) -> CallResult | NotCalled:
+    """The function's result, whatever its status: for a function whose exit status is its answer.
+
+    Once the lib is sourced and defines the function, the shell writes a
+    NUL-wrapped record to stderr and calls it. Without that record the
+    function never ran, which is a NotCalled, so a returned CallResult's
+    status is the function's own. The record is removed, so the stderr is
+    the lib's and the function's, byte for byte. A lib that redirects the
+    shell's stderr while it loads, or defines a function named `builtin`,
+    loses the record: its function reads as a NotCalled even when it ran.
+    """
     result = childproc.run(
         ["bash", "-c", _SOURCE_AND_CALL, "bashcall", str(repo_root / call.lib), call.function, *args],
         repo_root,
-        {name: value for name, value in env.items() if name not in _DROPPED_ENV},
+        _seam_env(env),
     )
-    if result.returncode != 0:
-        raise BashCallError(call, result)
-    return result
+    before, calling, after = result.stderr.partition(f"\0{_CALLING_RECORD}\0")
+    if not calling:
+        return NotCalled(result)
+    return CallResult(result.returncode, result.stdout, before + after)
+
+
+def run_script(call: ScriptCall, args: Sequence[str], repo_root: Path, env: Mapping[str, str]) -> CallResult:
+    """The script's result, whatever its status: what a non-zero status means is the caller's.
+
+    cwd is repo_root and stderr is captured, as for run.
+    """
+    return childproc.run([str(repo_root / call.path), *args], repo_root, _seam_env(env))
 
 
 def read_export(export: BashExport, repo_root: Path, env: Mapping[str, str]) -> str:
@@ -143,7 +202,7 @@ def read_export(export: BashExport, repo_root: Path, env: Mapping[str, str]) -> 
     result = childproc.run(
         ["bash", "-c", _SOURCE_AND_PRINT, "bashcall", str(repo_root / export.lib), export.name],
         repo_root,
-        {name: value for name, value in env.items() if name not in _DROPPED_ENV},
+        _seam_env(env),
     )
     if result.returncode != 0:
         raise BashCallError(export, result)
@@ -164,7 +223,7 @@ def source_delta(file: SourcedFile, repo_root: Path, env: Mapping[str, str]) -> 
     result = childproc.run(
         ["bash", "-c", _ENV_AROUND_SOURCE, "bashcall", file.path(env)],
         repo_root,
-        {name: value for name, value in env.items() if name not in _DROPPED_ENV},
+        _seam_env(env),
     )
     if result.returncode != 0:
         raise BashCallError(file, result)
@@ -183,3 +242,8 @@ def source_delta(file: SourcedFile, repo_root: Path, env: Mapping[str, str]) -> 
 
 def _environ(records: list[str]) -> dict[str, str]:
     return {name: value for name, _, value in (record.partition("=") for record in records if record)}
+
+
+def _seam_env(env: Mapping[str, str]) -> dict[str, str]:
+    """`env` without the names that make a non-interactive bash source a file first."""
+    return {name: value for name, value in env.items() if name not in _DROPPED_ENV}

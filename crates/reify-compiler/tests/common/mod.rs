@@ -12,6 +12,7 @@
 //!   (typed `param` or untyped `let`) and return the cell's (si_value, dimension)
 //! - `units_module` / `assert_simple_unit` — read a named unit's dimension/factor/offset from
 //!   the cached `std/units` module
+//! - `stdlib_build_panic_message` — the panic message of a stdlib build that must fail
 //! - `assert_eq_rel` / `UNIT_EPSILON` — relative-tolerance float comparison and its default epsilon
 //! - `assert_trait_constraint_binop` — assert a trait's constraint default has an expected `BinOp` shape
 
@@ -132,6 +133,20 @@ pub fn units_module() -> &'static CompiledModule {
         .iter()
         .find(|m| format!("{}", m.path) == "std/units")
         .expect("std/units module not found")
+}
+
+/// Drive the production stdlib build, `stdlib_loader::build_stdlib_modules`,
+/// on `sources` and return its panic message.
+///
+/// Panics (failing the test) if the build did NOT panic, or if the payload is
+/// neither `String` nor `&'static str`. Callers assert on the message CONTENT,
+/// so an unrelated build failure cannot satisfy them.
+#[allow(dead_code)] // used by some, but not all, test binaries that include this module
+#[track_caller]
+pub fn stdlib_build_panic_message(sources: &[(&str, &str)]) -> String {
+    reify_test_support::panic_message_of(|| {
+        stdlib_loader::build_stdlib_modules(sources);
+    })
 }
 
 /// Assert `a ≈ b` within `max(|a|, |b|) * rel_tol`.

@@ -1,0 +1,166 @@
+//! Renders one `path:line:col: severity: message` line, the GNU shape, for a compiler Diagnostic
+//! (positioned by its first label) or for a parse error (positioned by its parser).
+
+use reify_core::{Diagnostic, Severity, byte_offset_to_line_col};
+
+/// The label on every parse-error line the CLI writes: after the severity in
+/// [`render_parse_error_line`]'s GNU lines, and leading the line in main.rs's single-file
+/// `report_parse_errors`.
+pub(crate) const PARSE_ERROR_LABEL: &str = "Parse error";
+
+/// `path:line:col: severity: message`, or `path: severity: message` when the diagnostic's first
+/// label is missing or does not start inside `source`.
+pub(crate) fn render_diagnostic_line(path: &str, source: &str, diagnostic: &Diagnostic) -> String {
+    render_line(
+        path,
+        primary_position(source, diagnostic),
+        diagnostic.severity,
+        &diagnostic.message,
+    )
+}
+
+/// `path:line:col: error: Parse error: message`, the shape strict problem matchers such as
+/// VS Code's `$gcc` accept, for a parse error at the 1-based `position`.
+pub(crate) fn render_parse_error_line(
+    path: &str,
+    position: (usize, usize),
+    message: &str,
+) -> String {
+    render_line(
+        path,
+        Some(position),
+        Severity::Error,
+        &format!("{PARSE_ERROR_LABEL}: {message}"),
+    )
+}
+
+/// `path:line:col: severity: message`, or `path: severity: message` without a position.
+fn render_line(
+    path: &str,
+    position: Option<(usize, usize)>,
+    severity: Severity,
+    message: &str,
+) -> String {
+    match position {
+        Some((line, col)) => format!("{path}:{line}:{col}: {severity}: {message}"),
+        None => format!("{path}: {severity}: {message}"),
+    }
+}
+
+/// The 1-based (line, codepoint column) where the first label starts. `None` without a label, for
+/// the prelude sentinel, or when that start does not index `source`.
+fn primary_position(source: &str, diagnostic: &Diagnostic) -> Option<(usize, usize)> {
+    let span = &diagnostic.labels.first()?.span;
+    let start = span.start as usize;
+    (!span.is_prelude() && start <= source.len()).then(|| byte_offset_to_line_col(source, start))
+}
+
+#[cfg(test)]
+mod tests {
+    use reify_core::{Diagnostic, DiagnosticLabel, SourceSpan};
+
+    use super::{render_diagnostic_line, render_parse_error_line};
+
+    fn labelled_at(start: usize, message: &str) -> Diagnostic {
+        let start = u32::try_from(start).expect("offset fits u32");
+        Diagnostic::error(message)
+            .with_label(DiagnosticLabel::new(SourceSpan::new(start, start), "here"))
+    }
+
+    #[test]
+    fn a_labelled_diagnostic_leads_with_its_file_line_and_column() {
+        let source = "structure def S {\n    param α : Nope\n}\n";
+        let start = source.find("Nope").expect("fixture names Nope");
+        let diagnostic = labelled_at(start, "unresolved type: Nope");
+
+        assert_eq!(
+            render_diagnostic_line("s.ri", source, &diagnostic),
+            "s.ri:2:15: error: unresolved type: Nope"
+        );
+    }
+
+    #[test]
+    fn the_first_label_positions_the_line() {
+        let source = "a\nb\nc\n";
+        let on_line_3 = u32::try_from(source.find('c').expect("fixture has c")).expect("fits u32");
+        let diagnostic = Diagnostic::error("m")
+            .with_label(DiagnosticLabel::new(
+                SourceSpan::new(on_line_3, on_line_3 + 1),
+                "first",
+            ))
+            .with_label(DiagnosticLabel::new(SourceSpan::new(0, 1), "second"));
+
+        assert_eq!(
+            render_diagnostic_line("s.ri", source, &diagnostic),
+            "s.ri:3:1: error: m"
+        );
+    }
+
+    #[test]
+    fn a_later_label_does_not_position_the_line_when_the_first_cannot() {
+        let source = "a\nb\n";
+        let past_the_end = u32::try_from(source.len() + 1).expect("fits u32");
+        let diagnostic = Diagnostic::error("m")
+            .with_label(DiagnosticLabel::new(
+                SourceSpan::new(past_the_end, past_the_end),
+                "first",
+            ))
+            .with_label(DiagnosticLabel::new(SourceSpan::new(0, 1), "second"));
+
+        assert_eq!(
+            render_diagnostic_line("s.ri", source, &diagnostic),
+            "s.ri: error: m"
+        );
+    }
+
+    #[test]
+    fn a_diagnostic_without_a_label_names_only_its_file() {
+        assert_eq!(
+            render_diagnostic_line("s.ri", "a\n", &Diagnostic::warning("w")),
+            "s.ri: warning: w"
+        );
+    }
+
+    #[test]
+    fn a_label_outside_the_source_names_only_its_file() {
+        let source = "a\nb\n";
+
+        let past_the_end = labelled_at(source.len() + 1, "m");
+        assert_eq!(
+            render_diagnostic_line("s.ri", source, &past_the_end),
+            "s.ri: error: m"
+        );
+
+        let prelude = labelled_at(SourceSpan::PRELUDE_SENTINEL_OFFSET, "m");
+        assert_eq!(
+            render_diagnostic_line("s.ri", source, &prelude),
+            "s.ri: error: m"
+        );
+
+        let at_the_end = labelled_at(source.len(), "m");
+        assert_eq!(
+            render_diagnostic_line("s.ri", source, &at_the_end),
+            "s.ri:3:1: error: m"
+        );
+    }
+
+    #[test]
+    fn a_parse_error_line_carries_the_error_severity_after_its_position() {
+        assert_eq!(
+            render_parse_error_line("s.ri", (3, 20), "missing ';'"),
+            "s.ri:3:20: error: Parse error: missing ';'"
+        );
+    }
+
+    #[test]
+    fn a_parse_error_line_has_the_shape_of_a_located_error_diagnostic() {
+        let source = "a\nb\nccc\n";
+        let offset = source.find("cc").expect("fixture has cc") + 1;
+        let (line, col) = reify_core::byte_offset_to_line_col(source, offset);
+
+        assert_eq!(
+            render_parse_error_line("s.ri", (line, col), "m"),
+            render_diagnostic_line("s.ri", source, &labelled_at(offset, "Parse error: m"))
+        );
+    }
+}

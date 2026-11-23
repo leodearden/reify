@@ -21,30 +21,8 @@ import { createRoot } from 'solid-js';
 import { render, fireEvent } from '@solidjs/testing-library';
 
 // Mock the bridge wholesale — engineStore subscribes to every channel on
-// creation. Copied from ./engineStore.test.ts:21-43, the established harness.
-vi.mock('../bridge', () => ({
-  onMeshUpdate: vi.fn(),
-  onValueUpdate: vi.fn(),
-  onConstraintUpdate: vi.fn(),
-  onEvaluationStatus: vi.fn(),
-  onMeshRemoved: vi.fn(),
-  onValueRemoved: vi.fn(),
-  onConstraintRemoved: vi.fn(),
-  onTessellationDiagnostics: vi.fn(),
-  onCompileDiagnostics: vi.fn(),
-  onKernelStatus: vi.fn(),
-  onAutoResolveStart: vi.fn(),
-  onAutoResolveIteration: vi.fn(),
-  onAutoResolveComplete: vi.fn(),
-  onSolverProgress: vi.fn(() => Promise.resolve(() => {})),
-  cancelSolve: vi.fn(() => Promise.resolve()),
-  onFeaDiagnosticsChanged: vi.fn(() => Promise.resolve(() => {})),
-  onFeaConvergenceChanged: vi.fn(() => Promise.resolve(() => {})),
-  onTensegrityWiresUpdate: vi.fn(() => Promise.resolve(() => {})),
-  onTensegritySurfacesUpdate: vi.fn(() => Promise.resolve(() => {})),
-  onDisplayPanesUpdate: vi.fn(() => Promise.resolve(() => {})),
-  onDisplayAppearanceUpdate: vi.fn(() => Promise.resolve(() => {})),
-}));
+// creation.
+vi.mock('../bridge', async () => (await import('./engineStoreBridgeMockFactory')).engineStoreBridgeMock());
 
 import { convertRawGuiState, CONSTRAINT_STATUSES } from '../types';
 import type { ConstraintData, RawGuiState } from '../types';

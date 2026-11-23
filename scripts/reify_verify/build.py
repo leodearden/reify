@@ -9,14 +9,14 @@ plan_invocation joins the diagnostics in stage order:
 - start: bash's load-time checks, run after argv is parsed (a D8 listed
   divergence): the libs verify.sh sources must exist and the heavy filterset
   must be non-empty; then each timeout knob and the priority, with warnings;
-- decide: the scope and the step environment, the test-region refusal, then
-  the selection and the narrowing;
+- decide: the scope and the step environment, then the selection, the
+  narrowing, the release-sensitive crate list and the release-delta skip,
+  which bash reads and decides at load for every action;
 - probe: nextest availability, under the planning env, as bash's probe runs;
-- compose: the plan's inputs, header and steps.
-
-γ1 plans every action whose plan has no test region. A test or all plan that
-runs the Rust families has one (bash's _plan_has_test_passes); it is refused
-until γ2 ports the region, because a plan printed without it would lie.
+- compose: the plan's inputs (the test region among them, when the plan runs
+  the test family over the Rust crates), header and steps. A nextest config
+  execute mode generated for the region is removed again if composing fails
+  after it.
 
 The steps come from EMITTERS, in bash's phase order. Each emitter declares
 the gate paths its steps may name, and build_steps refuses a step whose
@@ -31,20 +31,31 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from reify_verify import bashcall, childproc, environment, knobs, narrowing, scope, selection
-from reify_verify.bashcall import BashCall, BashExport, DataFile
+from reify_verify import (
+    bashcall,
+    environment,
+    knobs,
+    narrowing,
+    releasescope,
+    retry,
+    scope,
+    selection,
+    testregion,
+)
+from reify_verify.bashcall import BashCall, BashExport
+from reify_verify.diagnostics import ERROR, WARNING, error_prefix
 from reify_verify.environment import (
     NextestAvailable,
     NextestBroken,
     ProbeSleepFailed,
     StepEnvironment,
 )
+from reify_verify.gatepaths import COMPILE_GATE, GUI_CRATE_GUARD, RUN_ALL
 from reify_verify.invocation import Action, Invocation
 from reify_verify.narrowing import Narrowing
 from reify_verify.plan import (
     ArtifactAssertion,
     Cargo,
-    Chain,
     Guarded,
     HeadStamp,
     InfraLeafLoop,
@@ -55,7 +66,7 @@ from reify_verify.plan import (
     Phase,
     Plan,
     PlanHeader,
-    RetryMarker,
+    Refused,
     Script,
     Selector,
     Step,
@@ -71,27 +82,68 @@ from reify_verify.policy import (
     resolve_prio,
     test_wall,
 )
+from reify_verify.retry import NO_NEXTEST_SUBSETS
 from reify_verify.scope import ScopeDecision
 from reify_verify.selection import Selection
+from reify_verify.testregion import PassWalls, RegionInputs, TestRegion
 
-ERROR = "verify.sh: ERROR — "
-CUTOVER = "the S18 cutover (docs/prds/v0_6/verify-structured-plan-and-role-table.md)"
 GIT_ENV_SCRUB_PREFIX = BashCall("scripts/lib_git_env_scrub.sh", "reify_git_env_scrub_prefix")
-RUN_ALL = DataFile("tests/infra/run_all.sh")
 HEAVY_FILTER = BashExport("scripts/heavy-test-filter-lib.sh", "REIFY_HEAVY_NEXTEST_FILTER")
-# The libs verify.sh sources at load, in its order; the first missing one refuses the run.
-LOAD_TIME_LIBS = tuple(
-    f"scripts/{name}"
-    for name in (
-        "occt-scope-lib.sh",
-        "release-scope-lib.sh",
-        "affected-crates-lib.sh",
-        "lib_test_semaphore.sh",
-        "cpu-admit.sh",
-        "lib_proc_reaper.sh",
-        "heavy-test-filter-lib.sh",
-        "lib_git_env_scrub.sh",
-    )
+
+
+@dataclass(frozen=True)
+class NotFoundNextTo:
+    """A bash guard that names the missing lib by its repo-relative path."""
+
+    script: str
+    exit_code: int = 1
+
+    def line(self, path: str, repo_root: Path) -> str:
+        return f"{error_prefix(self.script)}{path} not found next to {self.script}"
+
+
+@dataclass(frozen=True)
+class RequiredLibNotFound:
+    """A bash guard that names the missing lib by its absolute path."""
+
+    script: str
+    exit_code: int = 1
+
+    def line(self, path: str, repo_root: Path) -> str:
+        return f"{self.script}: required lib not found next to script: {repo_root / path}"
+
+
+VERIFY_SH = NotFoundNextTo("verify.sh")
+RELEASE_SCOPE_LIB = NotFoundNextTo("release-scope-lib.sh", exit_code=2)
+LIB_TEST_SEMAPHORE = NotFoundNextTo("lib_test_semaphore.sh")
+LIB_SLOT_ACQUIRE = RequiredLibNotFound("lib_slot_acquire.sh")
+
+
+@dataclass(frozen=True)
+class LoadTimeLib:
+    """A file verify.sh's load needs, and the bash guard that finds it missing first."""
+
+    path: str
+    guard: NotFoundNextTo | RequiredLibNotFound = VERIFY_SH
+
+    def refusal(self, repo_root: Path) -> Refused:
+        return Refused((self.guard.line(self.path, repo_root),), self.guard.exit_code)
+
+
+# Every file verify.sh's load-time source chain needs, transitive ones included, in the order bash checks
+# them; the first one missing refuses the run as the bash guard that finds it does.
+LOAD_TIME_LIBS = (
+    LoadTimeLib("scripts/occt-scope-lib.sh"),
+    LoadTimeLib("scripts/release-scope-lib.sh"),
+    LoadTimeLib("scripts/affected-crates-lib.sh", RELEASE_SCOPE_LIB),
+    LoadTimeLib("scripts/lib_test_semaphore.sh"),
+    LoadTimeLib("scripts/lib_slot_acquire.sh", LIB_TEST_SEMAPHORE),
+    LoadTimeLib("scripts/lib_clock_stop.sh", LIB_SLOT_ACQUIRE),
+    LoadTimeLib("scripts/lib_event_log.sh", LIB_SLOT_ACQUIRE),
+    LoadTimeLib("scripts/cpu-admit.sh"),
+    LoadTimeLib("scripts/lib_proc_reaper.sh"),
+    LoadTimeLib("scripts/heavy-test-filter-lib.sh"),
+    LoadTimeLib("scripts/lib_git_env_scrub.sh"),
 )
 EMPTY_HEAVY_FILTER = (
     f"{ERROR}{HEAVY_FILTER.name} empty after sourcing {Path(HEAVY_FILTER.lib).name}"
@@ -102,12 +154,6 @@ EMPTY_HEAVY_FILTER = (
 class Planned:
     plan: Plan
     diagnostics: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class Refused:
-    lines: tuple[str, ...]
-    exit_code: int
 
 
 def plan_invocation(
@@ -121,12 +167,14 @@ def plan_invocation(
         return started
     decided = _decide(invocation, action, started.role_policy, env, repo_root)
     if isinstance(decided, Refused):
-        return decided
+        return Refused((*started.diagnostics, *decided.lines), decided.exit_code)
     diagnostics = (*started.diagnostics, *decided.diagnostics)
     nextest = _probe(decided.step_env.planning, repo_root)
     if isinstance(nextest, Refused):
         return Refused((*diagnostics, *nextest.lines), nextest.exit_code)
-    composed = _compose(invocation, action, started, decided, nextest, repo_root)
+    composed = _compose(invocation, action, started, decided, nextest, env, repo_root)
+    if isinstance(composed, Refused):
+        return Refused((*diagnostics, *composed.lines), composed.exit_code)
     return Planned(composed.plan, (*diagnostics, *composed.diagnostics))
 
 
@@ -150,14 +198,16 @@ class Decided:
     step_env: StepEnvironment
     selection: Selection
     narrowing: Narrowing
+    release_declared: tuple[str, ...]
+    release_delta_skips: bool
     diagnostics: tuple[str, ...]
 
 
 def _start(invocation: Invocation, env: Mapping[str, str], repo_root: Path) -> Started | Refused:
     """bash's load-time checks, then the timeout knobs and the priority, under the raw env."""
     for lib in LOAD_TIME_LIBS:
-        if not os.path.isfile(repo_root / lib):
-            return Refused((f"{ERROR}{lib} not found next to verify.sh",), 1)
+        if not os.path.isfile(repo_root / lib.path):
+            return lib.refusal(repo_root)
     heavy_filter = bashcall.read_export(HEAVY_FILTER, repo_root, env)
     if not heavy_filter:
         return Refused((EMPTY_HEAVY_FILTER,), 1)
@@ -182,32 +232,29 @@ def _decide(
     repo_root: Path,
 ) -> Decided | Refused:
     """The scope (MERGE_HEAD and the merge base under the raw env), then everything else under
-    the planning env. A plan with a test region is refused before selection and narrowing run,
-    and a refused run prints only its refusal."""
+    the planning env. A refusal keeps the diagnostics printed before it."""
     resolved = scope.resolve_scope(invocation, repo_root, env)
     step_env = environment.build(invocation.role, role_policy, env, repo_root)
     planning = step_env.planning
     decision, gather_warnings = scope.decide_resolved(resolved, repo_root, planning)
-    families = Families.of(action)
-    if _has_test_region(families, decision):
-        return _test_region_refusal(action)
     selected, selection_warnings = selection.select_infra(decision, repo_root, planning)
     narrowed, narrowing_warnings = narrowing.narrow(
         decision, invocation.narrow, repo_root, planning
     )
+    diagnostics = (
+        *resolved.notices,
+        *step_env.warnings,
+        *gather_warnings,
+        *selection_warnings,
+        *narrowing_warnings,
+    )
+    declared = releasescope.release_declared(repo_root, planning)
+    if isinstance(declared, Refused):
+        return Refused((*diagnostics, *declared.lines), declared.exit_code)
+    skips, delta_diagnostics = releasescope.decide_release_delta(role_policy, repo_root, planning)
     return Decided(
-        families,
-        decision,
-        step_env,
-        selected,
-        narrowed,
-        (
-            *resolved.notices,
-            *step_env.warnings,
-            *gather_warnings,
-            *selection_warnings,
-            *narrowing_warnings,
-        ),
+        Families.of(action), decision, step_env, selected, narrowed, declared, skips,
+        (*diagnostics, *delta_diagnostics),
     )
 
 
@@ -228,12 +275,53 @@ def _compose(
     started: Started,
     decided: Decided,
     nextest: bool,
+    env: Mapping[str, str],
     repo_root: Path,
-) -> Planned:
-    """The plan; its diagnostics are the warnings composing its steps prints."""
+) -> Planned | Refused:
+    """The plan; its diagnostics are the warnings composing its steps prints.
+
+    The test region refuses an unrenderable knob value, and execute mode
+    refuses when the nextest config cannot be generated. Once the region holds
+    a generated config, any failure composing the rest removes the file: no
+    plan will name it, so no executor will.
+    """
     planning = decided.step_env.planning
     families, role_policy = decided.families, started.role_policy
     vitest, vitest_warnings = VitestArm.of(families, decided.narrowing, planning)
+    header = PlanHeader(
+        action=action,
+        profile_selection=invocation.profile_arg or role_policy.default_profile,
+        scope=decided.decision.mode,
+        include_infra=invocation.include_infra,
+        nextest=nextest,
+        role=invocation.role,
+    )
+    region = None
+    if _has_test_region(families, decided.decision):
+        region = testregion.resolve(_region_inputs(invocation, header, started, decided, env, repo_root))
+        if isinstance(region, Refused):
+            return Refused((*vitest_warnings, *region.lines), region.exit_code)
+    try:
+        plan = _assemble(invocation, header, started, decided, vitest, region, repo_root)
+    except BaseException:
+        if region is not None:
+            region.discard_config()
+        raise
+    return Planned(plan, (*vitest_warnings, *(region.diagnostics if region else ())))
+
+
+def _assemble(
+    invocation: Invocation,
+    header: PlanHeader,
+    started: Started,
+    decided: Decided,
+    vitest: "VitestArm | None",
+    region: TestRegion | None,
+    repo_root: Path,
+) -> Plan:
+    """The plan's inputs, retry marker and steps around the region already resolved."""
+    planning = decided.step_env.planning
+    families, role_policy = decided.families, started.role_policy
     node_lane = NodeLane.compose(families, decided.decision, vitest)
     infra_suite_active = knobs.resolve(knobs.INFRA_SUITE_ACTIVE, planning).value
     runs_selective = _runs_selective_infra(
@@ -252,27 +340,24 @@ def _compose(
         node_lane=node_lane,
         infra_suite_active=infra_suite_active,
         git_env_scrub_prefix=_git_env_scrub_prefix(repo_root, planning) if runs_selective else None,
+        test_region=region,
     )
-    header = PlanHeader(
-        action=action,
-        profile_selection=invocation.profile_arg or role_policy.default_profile,
-        scope=decided.decision.mode,
-        include_infra=invocation.include_infra,
-        nextest=nextest,
-        role=invocation.role,
-    )
-    plan = Plan(
-        retry_marker=_retry_marker(node_lane, TEST_REGION_UNPLANNED, planning, repo_root),
+    return Plan(
+        retry_marker=retry.marker(
+            region.retry_applied if region else NO_NEXTEST_SUBSETS,
+            node_lane.gui_specs_applied if node_lane else 0,
+            planning,
+            repo_root,
+        ),
         header=header,
         selective_infra_note=invocation.include_infra
         and role_policy.infra_tier is InfraTier.SELECTIVE,
         scope=decided.decision,
         narrowing=decided.narrowing,
-        heavy_partition=None,
+        heavy_partition=region.heavy_header if region else None,
         environment=decided.step_env.lines,
         steps=build_steps(inputs),
     )
-    return Planned(plan, vitest_warnings)
 
 
 def _has_test_region(families: "Families", decision: ScopeDecision) -> bool:
@@ -280,74 +365,37 @@ def _has_test_region(families: "Families", decision: ScopeDecision) -> bool:
     return families.test and decision.run_rust
 
 
-def _test_region_refusal(action: Action) -> Refused:
-    return Refused(
-        (
-            f"{ERROR}scripts/verify.py does not plan the test region of action "
-            f"'{action.value}' yet (RUN_RUST=1); scripts/verify.sh remains the gate until "
-            f"{CUTOVER}",
-        ),
-        os.EX_UNAVAILABLE,
-    )
+def _selector(narrowed: Narrowing) -> Selector:
+    """The narrowed packages, or the workspace when the run does not narrow."""
+    return Packages(narrowed.packages) if narrowed.packages else Workspace()
 
 
-@dataclass(frozen=True)
-class NextestSubsetsApplied:
-    """The within-ceiling nextest subset sizes the test region applied, per profile."""
-
-    debug: int
-    release: int
-
-
-TEST_REGION_UNPLANNED = NextestSubsetsApplied(debug=0, release=0)
-RETRY_SCOPE_NARROWED = "failed_only"
-RUN_ALL_SUBSET_MATCHED = re.compile(r"@@REIFY_RUN_ALL_SUBSET_MATCHED=([0-9]+)@@")
-IFS_WORDS = re.compile(r"[^ \t\n]+")
-
-
-def _retry_marker(
-    node_lane: "NodeLane | None",
-    nextest: NextestSubsetsApplied,
+def _region_inputs(
+    invocation: Invocation,
+    header: PlanHeader,
+    started: Started,
+    decided: Decided,
     env: Mapping[str, str],
     repo_root: Path,
-) -> RetryMarker | None:
-    """The failed_only retry's applied subset sizes; None unless at least one suite really narrowed.
-
-    `nextest` comes from the test region, which γ2 (#9099) ports; until then
-    it is TEST_REGION_UNPLANNED.
-    """
-    if knobs.resolve(knobs.RETRY_SCOPE, env).value != RETRY_SCOPE_NARROWED:
-        return None
-    marker = RetryMarker(
-        nextest_debug=nextest.debug,
-        nextest_release=nextest.release,
-        run_all=_run_all_subset_size(env, repo_root),
-        gui=node_lane.gui_specs_applied if node_lane else 0,
+) -> RegionInputs:
+    walls, narrowed = started.walls, decided.narrowing
+    return RegionInputs(
+        role_policy=started.role_policy,
+        profiles=header.profiles,
+        debug_selector=_selector(narrowed),
+        release_declared=decided.release_declared,
+        release_delta_skips=decided.release_delta_skips,
+        reaches_gui=narrowing.closure_reaches_reify_gui(decided.decision.mode, narrowed.closure),
+        walls=PassWalls(walls.test, walls.test_release, walls.gui_feature_test),
+        prio=started.prio.prefix,
+        test_threads=invocation.test_threads,
+        heavy_filter=started.heavy_filter,
+        nextest=header.nextest,
+        executing=invocation.plan_format is None,
+        raw_env=env,
+        planning_env=decided.step_env.planning,
+        repo_root=repo_root,
     )
-    narrowed = (marker.nextest_debug, marker.nextest_release, marker.run_all, marker.gui)
-    return marker if any(narrowed) else None
-
-
-def _run_all_subset_size(env: Mapping[str, str], repo_root: Path) -> int:
-    """How many REIFY_RUN_ALL_MEMBER_SUBSET members run_all.sh's count-only probe matches.
-
-    run_all.sh owns the member-skip predicate, so its count is the truth. Its
-    stderr is dropped. Without the script, or without the count in its
-    stdout, the subset's word count stands in; the words are never globbed.
-    """
-    subset = knobs.resolve(knobs.RUN_ALL_MEMBER_SUBSET, env).value
-    if not subset:
-        return 0
-    if RUN_ALL.is_file(repo_root):
-        probe = childproc.run(
-            ["bash", RUN_ALL.path],
-            repo_root,
-            {**env, "REIFY_RUN_ALL_SUBSET_COUNT_ONLY": "1", knobs.RUN_ALL_MEMBER_SUBSET.name: subset},
-        )
-        matched = RUN_ALL_SUBSET_MATCHED.search(probe.stdout)
-        if matched:
-            return int(matched.group(1))
-    return len(IFS_WORDS.findall(subset))
 
 
 def _git_env_scrub_prefix(repo_root: Path, env: Mapping[str, str]) -> str:
@@ -405,7 +453,7 @@ class Walls:
 GUI_VITEST_RUN = "scripts/gui-vitest-run.sh"
 VITEST_SPEC_CHARS = re.compile(r"[A-Za-z0-9._/ -]+", re.ASCII)
 GUI_SPECS_REJECTED = (
-    f"verify.sh: WARNING — {knobs.GUI_RETRY_SPECS.name} contains characters outside "
+    f"{WARNING}{knobs.GUI_RETRY_SPECS.name} contains characters outside "
     "[A-Za-z0-9._/ -] or a token beginning with '-'; ignoring the subset and running the full gui suite"
 )
 
@@ -519,6 +567,7 @@ class PlanInputs:
     node_lane: NodeLane | None
     infra_suite_active: bool
     git_env_scrub_prefix: str | None
+    test_region: TestRegion | None
 
     def __post_init__(self):
         runs = _runs_selective_infra(
@@ -529,11 +578,18 @@ class PlanInputs:
                 "PlanInputs: the git-env scrub prefix is held exactly when selective infra runs "
                 f"(runs={runs}, git_env_scrub_prefix={self.git_env_scrub_prefix!r})"
             )
+        has_region = _has_test_region(self.families, self.decision)
+        if has_region != (self.test_region is not None):
+            held = "None" if self.test_region is None else "a TestRegion"
+            plan = "has a test region" if has_region else "has no test region"
+            raise ValueError(
+                "PlanInputs: a test region is held exactly when the plan runs the test family "
+                f"over RUN_RUST (the plan {plan}; test_region={held})"
+            )
 
     @property
     def selector(self) -> Selector:
-        packages = self.narrowing.packages
-        return Packages(packages) if packages else Workspace()
+        return _selector(self.narrowing)
 
     @property
     def lints_rust(self) -> bool:
@@ -558,10 +614,7 @@ STATIC_GATES = (
     Script("scripts/tree-sitter-generate.sh"),
     Script("scripts/tree-sitter-freshness.sh", ("ensure",)),
 )
-COMPILE_GATE = Script("scripts/verify.sh", ("compile-gate",))
 FRESHNESS_CHECK = Script("scripts/tree-sitter-freshness.sh", ("check",))
-GUI_SIDECAR_PLACEHOLDER = "scripts/ensure-gui-sidecar-placeholder.sh"
-GUI_CRATE_MANIFEST = "gui/src-tauri/Cargo.toml"
 TEST_INFRA_CHECKS = (("tests/sync_comments_test.sh", "10m"),)
 LINT_INFRA_CHECKS = (
     ("scripts/test_pm_standardization.sh", "10m"),
@@ -631,14 +684,14 @@ def _gui_feature_check(inputs: PlanInputs) -> tuple[Step, ...]:
     if not inputs.lints_rust:
         return ()
     check = Cargo(
-        "check", Packages(("reify-gui",)), ("--features", "gui", "--tests"),
+        "check", Packages((narrowing.GUI_CRATE,)), ("--features", "gui", "--tests"),
         inputs.walls.clippy, inputs.cargo_prio,
     )
-    command = Guarded("-f", GUI_CRATE_MANIFEST, Chain((Script(GUI_SIDECAR_PLACEHOLDER), check)))
+    guard = GUI_CRATE_GUARD
     return (
         Step(
-            StepKind.CARGO, Phase.GUI_FEATURE_CHECK, command, GUI_SIDECAR_PLACEHOLDER,
-            GUI_CRATE_MANIFEST,
+            StepKind.CARGO, Phase.GUI_FEATURE_CHECK, guard.around(check), guard.setup.path,
+            guard.manifest,
         ),
     )
 
@@ -738,8 +791,9 @@ def _selective_infra(inputs: PlanInputs) -> tuple[Step, ...]:
 
 
 def _test_region(inputs: PlanInputs) -> tuple[Step, ...]:
-    """γ2's slot (#9099): the nextest passes and their semaphore region. γ1 refuses a plan that has them."""
-    return ()
+    """The nextest passes and their semaphore region; PlanInputs holds one exactly when the plan has it."""
+    region = inputs.test_region
+    return () if region is None else testregion.steps(region)
 
 
 def _freshness_check(inputs: PlanInputs) -> tuple[Step, ...]:
@@ -755,14 +809,14 @@ EMITTERS = (
     Emitter("cargo check", (), _cargo_check),
     Emitter("node lane start", (GUI_VITEST_RUN,), _node_lane_start),
     Emitter("clippy", (), _clippy),
-    Emitter("gui feature check", (GUI_SIDECAR_PLACEHOLDER,), _gui_feature_check),
+    Emitter("gui feature check", (GUI_CRATE_GUARD.setup.path,), _gui_feature_check),
     Emitter("node lane join", (), _node_lane_join),
     Emitter("node lane, plain", (GUI_VITEST_RUN,), _node_lane_plain),
     Emitter("test infra checks", tuple(path for path, _ in TEST_INFRA_CHECKS), _test_infra_checks),
     Emitter("lint infra checks", tuple(path for path, _ in LINT_INFRA_CHECKS), _lint_infra_checks),
     Emitter("infra pool", (RUN_ALL.path,), _infra_pool),
     Emitter("selective infra", (), _selective_infra),
-    Emitter("test region", (), _test_region),
+    Emitter("test region", testregion.GATE_PATHS, _test_region),
     Emitter("freshness check", (FRESHNESS_CHECK.path,), _freshness_check),
 )
 

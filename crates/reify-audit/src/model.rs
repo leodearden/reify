@@ -4,7 +4,8 @@ use crate::git_ops::GitOps;
 use crate::jcodemunch_ops::JCodemunchOps;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 // -----------------------------------------------------------------------
 // Public surface — finding shape
@@ -419,7 +420,7 @@ pub struct TaskMetadata {
     /// for such tasks. Per `f-infra-design.md` §5 P1 false-positive guards.
     pub audit_foundation: Option<bool>,
     /// Epoch-seconds timestamp of the task's done-flip. P1's grace-window
-    /// math compares `ctx.now - done_at` against the 14-day window. `None`
+    /// math compares `ctx.now() - done_at` against the 14-day window. `None`
     /// for non-`done` tasks (P1 skips them). The T-4 CLI converts the ISO
     /// timestamp once at the boundary. Per `f-infra-design.md` §5 P1.
     pub done_at: Option<i64>,
@@ -435,57 +436,102 @@ pub struct DoneProvenance {
     pub note: Option<String>,
 }
 
-/// Optional time window for narrowing detector scope (e.g. "audit only the
-/// last N hours"). Reserved for the periodic `/audit` sweep; the D-1
-/// pre-done hook path leaves this `None` and lets `target_task_id` do the
-/// scoping. Per `f-infra-design.md` §10.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TimeWindow {
-    /// ISO-8601 `since` bound (inclusive). `None` = unbounded.
-    pub since: Option<String>,
-    /// ISO-8601 `until` bound (exclusive). `None` = unbounded.
-    pub until: Option<String>,
-}
-
 /// Read-only execution context threaded into each detector's `check(...)`.
 ///
 /// Borrowed from caller (D-1 hook path or periodic `/audit` sweep) so the
-/// crate never owns a connection or spawns processes itself.
+/// crate never owns a connection or spawns processes itself. Built only
+/// through [`AuditContext::new`] and its builders.
 pub struct AuditContext<'a> {
-    pub project_root: PathBuf,
-    pub conn: &'a rusqlite::Connection,
-    pub git: &'a dyn GitOps,
+    project_root: PathBuf,
+    conn: &'a rusqlite::Connection,
+    git: &'a dyn GitOps,
+    jcodemunch: &'a dyn JCodemunchOps,
+    task_metadata: HashMap<String, TaskMetadata>,
+    target_task_id: Option<String>,
+    now: i64,
+}
+
+impl<'a> AuditContext<'a> {
+    /// A context over `project_root` with no tasks, no target, and the run
+    /// clock read from the system clock now.
+    pub fn new(
+        project_root: impl Into<PathBuf>,
+        conn: &'a rusqlite::Connection,
+        git: &'a dyn GitOps,
+        jcodemunch: &'a dyn JCodemunchOps,
+    ) -> Self {
+        AuditContext {
+            project_root: project_root.into(),
+            conn,
+            git,
+            jcodemunch,
+            task_metadata: HashMap::new(),
+            target_task_id: None,
+            now: system_clock_epoch_seconds(),
+        }
+    }
+
+    /// The task corpus the detectors examine.
+    pub fn with_tasks(mut self, task_metadata: HashMap<String, TaskMetadata>) -> Self {
+        self.task_metadata = task_metadata;
+        self
+    }
+
+    /// Restricts the sweep entry points to the single task `task_id`.
+    pub fn targeting(mut self, task_id: impl Into<String>) -> Self {
+        self.target_task_id = Some(task_id.into());
+        self
+    }
+
+    // G-allow: test-support synthetic clock for deterministic grace-window tests; production uses the clock read at construction
+    pub fn at_time(mut self, epoch_seconds: i64) -> Self {
+        self.now = epoch_seconds;
+        self
+    }
+
+    pub fn project_root(&self) -> &Path {
+        &self.project_root
+    }
+
+    pub fn conn(&self) -> &'a rusqlite::Connection {
+        self.conn
+    }
+
+    pub fn git(&self) -> &'a dyn GitOps {
+        self.git
+    }
+
     /// Source-introspection seam for P1 (changed-symbol / reference queries).
     /// Required and object-safe, mirroring [`git`](Self::git): production
     /// supplies a real jcodemunch-MCP-backed impl; tests use
     /// [`MockJCodemunchOps`](crate::MockJCodemunchOps). Per `f-infra-design.md` §3 (pure-logic) and §5
     /// P1 (source-introspection behind a mockable seam).
-    pub jcodemunch: &'a dyn JCodemunchOps,
-    pub task_metadata: HashMap<String, TaskMetadata>,
+    pub fn jcodemunch(&self) -> &'a dyn JCodemunchOps {
+        self.jcodemunch
+    }
+
+    pub fn task_metadata(&self) -> &HashMap<String, TaskMetadata> {
+        &self.task_metadata
+    }
+
     /// When `Some`, the periodic-sweep [`p5_phantom_done::check`](crate::p5_phantom_done::check) entry point
     /// restricts its work to that single task. Honored by periodic-sweep
     /// callers; intentionally ignored by [`p5_phantom_done::check_pre_done`](crate::p5_phantom_done::check_pre_done),
     /// which takes `task_id` as an explicit argument for O(1) HashMap lookup
     /// on the D-1 hot path (setting both would be confusing and the explicit
     /// parameter is unambiguous).
-    pub target_task_id: Option<String>,
-    /// Reserved for periodic-sweep scoping. None of the slice-1 detector
-    /// paths consume this yet — see [`TimeWindow`].
-    pub window: Option<TimeWindow>,
-    /// Synthetic clock (epoch-seconds) for P1's grace-window math. `None`
-    /// falls back to `SystemTime::now()`; tests pass `Some(e)` so grace-window
-    /// boundaries are deterministic. Epoch-seconds keeps the crate's dep-set
-    /// minimal (no chrono/time) per `f-infra-design.md` §12.
-    pub now: Option<i64>,
-    /// Reserved for future sweep CLI use (T-4 #3672). P1 no longer reads this
-    /// field — it now resolves symbols via `done_provenance.commit` (commit-range
-    /// `{commit}^1..{commit}`) rather than a branch+timestamp query. Kept pub
-    /// because ~50 construction sites set it to `None`; removing it is outside
-    /// the scope of L-TRAIT and deferred to a later cleanup pass.
-    pub producer_branch: Option<String>,
-}
+    pub fn target_task_id(&self) -> Option<&str> {
+        self.target_task_id.as_deref()
+    }
 
-impl AuditContext<'_> {
+    /// The run clock in epoch seconds, for P1's grace-window math: read once
+    /// at construction, or fixed by [`at_time`](Self::at_time) so tests get
+    /// deterministic grace-window boundaries. Epoch-seconds keeps the crate's
+    /// dep-set minimal (no chrono/time) per `f-infra-design.md` §12.
+    pub fn now(&self) -> i64 {
+        self.now
+    }
+
     /// Contents of tracked file `path` (root-relative), or `None` when it
     /// cannot be read.
     ///
@@ -503,6 +549,13 @@ impl AuditContext<'_> {
     pub(crate) fn read_relative(&self, path: &str) -> Option<String> {
         std::fs::read_to_string(self.project_root.join(path)).ok()
     }
+}
+
+fn system_clock_epoch_seconds() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock is after UNIX_EPOCH")
+        .as_secs() as i64
 }
 
 #[cfg(test)]
@@ -524,7 +577,6 @@ mod tests {
         use crate::git_ops::MockGitOps;
         use crate::jcodemunch_ops::MockJCodemunchOps;
         use rusqlite::Connection;
-        use std::collections::HashMap;
 
         let root = tempfile::tempdir().expect("tempdir");
         std::fs::create_dir_all(root.path().join("crates/x/src")).expect("mkdir src");
@@ -534,17 +586,7 @@ mod tests {
         let conn = Connection::open_in_memory().expect("in-memory db");
         let git = MockGitOps::new();
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: root.path().to_path_buf(),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata: HashMap::new(),
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(root.path().to_path_buf(), &conn, &git, &jc);
 
         assert_eq!(
             ctx.read_relative("crates/x/src/a.rs").as_deref(),
@@ -569,5 +611,75 @@ mod tests {
             None,
             "a non-UTF-8 file is skipped fail-safe, not a panic",
         );
+    }
+
+    fn epoch_seconds_now() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock is after the epoch")
+            .as_secs() as i64
+    }
+
+    #[test]
+    fn new_starts_with_no_tasks_no_target_and_the_construction_time_clock() {
+        use super::AuditContext;
+        use crate::git_ops::MockGitOps;
+        use crate::jcodemunch_ops::MockJCodemunchOps;
+        use rusqlite::Connection;
+        use std::path::Path;
+
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        let git = MockGitOps::new();
+        let jc = MockJCodemunchOps::new();
+
+        let before = epoch_seconds_now();
+        let ctx = AuditContext::new("/tmp/fake-project", &conn, &git, &jc);
+        let after = epoch_seconds_now();
+
+        assert_eq!(ctx.project_root(), Path::new("/tmp/fake-project"));
+        assert!(
+            ctx.task_metadata().is_empty(),
+            "a new context holds no tasks"
+        );
+        assert_eq!(ctx.target_task_id(), None, "a new context targets no task");
+        assert!(
+            before <= ctx.now() && ctx.now() <= after,
+            "the clock is read at construction: {before} <= {} <= {after}",
+            ctx.now(),
+        );
+    }
+
+    #[test]
+    fn builders_set_the_corpus_the_target_and_the_clock() {
+        use super::{AuditContext, TaskMetadata};
+        use crate::git_ops::MockGitOps;
+        use crate::jcodemunch_ops::MockJCodemunchOps;
+        use rusqlite::Connection;
+        use std::collections::HashMap;
+
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        let git = MockGitOps::new();
+        let jc = MockJCodemunchOps::new();
+        let task = TaskMetadata {
+            task_id: "7".to_string(),
+            status: "done".to_string(),
+            files: vec![],
+            done_provenance: None,
+            title: "a task".to_string(),
+            prd: None,
+            consumer_ref: None,
+            audit_foundation: None,
+            done_at: None,
+        };
+
+        let ctx = AuditContext::new("/tmp/fake-project", &conn, &git, &jc)
+            .with_tasks(HashMap::from([("7".to_string(), task)]))
+            .targeting("7")
+            .at_time(1_700_000_000);
+
+        let keys: Vec<&str> = ctx.task_metadata().keys().map(String::as_str).collect();
+        assert_eq!(keys, ["7"], "with_tasks installs exactly the given corpus");
+        assert_eq!(ctx.target_task_id(), Some("7"));
+        assert_eq!(ctx.now(), 1_700_000_000);
     }
 }

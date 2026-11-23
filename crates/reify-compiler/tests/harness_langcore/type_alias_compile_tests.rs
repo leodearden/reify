@@ -6,7 +6,9 @@
 
 use reify_compiler::CompiledTypeAlias;
 use reify_core::{ContentHash, Diagnostic, SourceSpan, Type};
-use reify_test_support::{compile_source, compile_source_named, errors_only};
+use reify_test_support::{
+    compile_source, compile_source_named, compile_source_with_prelude, errors_only,
+};
 
 // ─── step-1: CompiledTypeAlias data structures ──────────────────────────────
 
@@ -21,6 +23,7 @@ fn compiled_type_alias_fields_exist() {
         }),
         type_params: vec![],
         type_expr: None,
+        body_scope: None,
         is_pub: true,
         span: dummy_span,
         content_hash: hash,
@@ -1077,25 +1080,6 @@ fn assert_sole_arity_error_covers(errs: &[&Diagnostic], source: &str, counts: &s
     );
 }
 
-/// Compile `consumer_source` as a module that sees `prelude_source`'s `pub`
-/// declarations, returning the consumer's compiled module alone.
-fn compile_against_prelude(
-    prelude_source: &str,
-    consumer_source: &str,
-) -> reify_compiler::CompiledModule {
-    let prelude = compile_source_named(prelude_source, "arity_prelude");
-    let parsed = reify_syntax::parse(
-        consumer_source,
-        reify_core::ModulePath::single("arity_consumer"),
-    );
-    assert!(
-        parsed.errors.is_empty(),
-        "consumer parse errors: {:?}",
-        parsed.errors
-    );
-    reify_compiler::compile_with_prelude(&parsed, std::slice::from_ref(&prelude))
-}
-
 #[test]
 fn nested_parametric_alias_arity_mismatch_names_inner_alias() {
     let source = r#"
@@ -1144,9 +1128,12 @@ fn alias_dfs_nested_arity_mismatch_is_reported_once_at_the_body_use() {
 #[test]
 fn prelude_nested_alias_arity_mismatch_is_anchored_in_the_consumer_source() {
     let consumer_source = "structure def S { param q : Q<Int> = [1] }";
-    let compiled = compile_against_prelude(
-        "pub type P<T> = List<T>\npub type Q<X> = P<X, X>\n",
+    let compiled = compile_source_with_prelude(
         consumer_source,
+        &[compile_source_named(
+            "pub type P<T> = List<T>\npub type Q<X> = P<X, X>\n",
+            "arity_prelude",
+        )],
     );
     assert_sole_arity_error_covers(
         &errors_only(&compiled),
@@ -1202,7 +1189,13 @@ fn alias_dfs_direct_arity_mismatch_is_reported_once_at_the_body_use() {
 #[test]
 fn prelude_direct_alias_arity_mismatch_is_anchored_in_the_consumer_source() {
     let consumer_source = "structure def S { param q : P<Int, Int> = undef }";
-    let compiled = compile_against_prelude("pub type P<T> = List<T>\n", consumer_source);
+    let compiled = compile_source_with_prelude(
+        consumer_source,
+        &[compile_source_named(
+            "pub type P<T> = List<T>\n",
+            "arity_prelude",
+        )],
+    );
     assert_sole_arity_error_covers(
         &errors_only(&compiled),
         consumer_source,
@@ -1848,10 +1841,12 @@ mod alias_to_entity_type_other_emit_sites {
 // regression lock.
 //
 // The revert-detectors are ABSOLUTE-value locks living elsewhere — the task-6416
-// sections of `tests/constraint_def_compile_tests.rs` (def-side `ty` values) and
-// `tests/constraint_inst_tests.rs` (instantiation-site diagnostic counts). Named
-// by section rather than by test, because nothing keeps a cross-file test name
-// honest.
+// sections of
+// `crates/reify-compiler/tests/harness_statement_semantics/constraint_def_compile_tests.rs`
+// (def-side `ty` values) and
+// `crates/reify-compiler/tests/harness_statement_semantics/constraint_arg_conformance_tests.rs`
+// (instantiation-site diagnostic counts). Named by section rather than by test,
+// because nothing keeps a cross-file test name honest.
 //
 // Do NOT weaken those to parity comparisons, and do not delete them as
 // duplicating this module — they are the only thing that fails if the scope
@@ -3428,7 +3423,7 @@ mod parametric_alias_population_regression {
     /// Each is asserted against a direct-spelling ORACLE that stdlib already
     /// provides, not a frozen `Type` literal:
     ///   * `Rate<Length>` (stdlib/units.ri:132)      vs `Velocity`
-    ///   * `Vec3<Length>` (stdlib/trajectory.ri:118) vs `Vector3<Length>`
+    ///   * `Vec3<Length>` (trajectory.ri :: Vec3) vs `Vector3<Length>`
     ///
     /// This uses the REAL stdlib across the real prelude boundary. The
     /// synthetic `parametric_prelude_dimensional_alias_resolves_cross_module`
@@ -3441,7 +3436,7 @@ mod parametric_alias_population_regression {
         for (label, alias_body, oracle_body) in [
             ("Rate<Length> (stdlib/units.ri:132)", "Rate<Length>", "Velocity"),
             (
-                "Vec3<Length> (stdlib/trajectory.ri:118)",
+                "Vec3<Length> (trajectory.ri :: Vec3)",
                 "Vec3<Length>",
                 "Vector3<Length>",
             ),

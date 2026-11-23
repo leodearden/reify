@@ -485,6 +485,12 @@ impl Engine {
     /// logging, metrics, impls that share mutable state — are reproducible
     /// from run to run.
     ///
+    /// Every language-level check goes through [`Self::check_language_level`],
+    /// so an `@optimized` function call inside a checked constraint is
+    /// dispatched to the engine's compute registry, as the solver cost loop's
+    /// is since #4880: the post-solve verdict is computed from the trampoline
+    /// result, not from body-eval `Undef` (task 10033).
+    ///
     /// ## RepresentationWithin interception (task-4199 γ)
     ///
     /// `RepresentationWithin(subject, bound)` entries are peeled off the batch
@@ -495,8 +501,8 @@ impl Engine {
     /// language-level paths.  All results are woven back in caller (input)
     /// order via a slot vector so that neither path needs to know about the
     /// other.  The fast-path early-return (no registered impls, no
-    /// RepresentationWithin) is preserved so non-assertion modules incur zero
-    /// overhead (C2).
+    /// RepresentationWithin) is preserved so non-assertion modules skip the
+    /// interception pre-pass entirely (C2).
     ///
     /// ## Surfaces that do not measure (task-6169 ζ, C-SURFACE 1)
     ///
@@ -575,7 +581,7 @@ impl Engine {
                 functions,
                 determinacy,
             };
-            return (self.constraint_checker.check(&input), Vec::new());
+            return (self.check_language_level(&input), Vec::new());
         }
 
         // ── RepresentationWithin interception ─────────────────────────────────
@@ -739,7 +745,7 @@ impl Engine {
                 functions,
                 determinacy,
             };
-            return (self.constraint_checker.check(&input), Vec::new());
+            return (self.check_language_level(&input), Vec::new());
         }
 
         // Mixed batch (some RepresentationWithin + some pass-through) or
@@ -763,7 +769,7 @@ impl Engine {
                 functions,
                 determinacy,
             };
-            let fallback_results = self.constraint_checker.check(&input);
+            let fallback_results = self.check_language_level(&input);
             assert_eq!(
                 fallback_results.len(),
                 indices.len(),
@@ -845,7 +851,7 @@ impl Engine {
                     functions,
                     determinacy,
                 };
-                let fallback_results = self.constraint_checker.check(&fallback_input);
+                let fallback_results = self.check_language_level(&fallback_input);
                 // INVARIANT ASSERT — intentional panic: `self.constraint_checker` is
                 // code we own (the language-level evaluator). A count mismatch from it
                 // is a *logic bug in our own code* and must fail loudly so it is caught
@@ -883,7 +889,7 @@ impl Engine {
                 functions,
                 determinacy,
             };
-            let fallback_results = self.constraint_checker.check(&input);
+            let fallback_results = self.check_language_level(&input);
             // Same invariant assert as in the OptimizedImpl-fallback branch above —
             // see the comment there for the full rationale. Short form: this is our
             // own code; a wrong count is a logic bug that must panic, not be handled
@@ -905,6 +911,27 @@ impl Engine {
             .map(|r| r.expect("dispatch_constraints: every slot must be filled"))
             .collect();
         (constraint_results, dispatch_diagnostics)
+    }
+
+    /// Run the language-level checker with the engine's `@optimized` compute
+    /// registry attached, so a constraint that calls an `@optimized` function
+    /// is decided from its trampoline result.
+    ///
+    /// Only a call to a function carrying an `optimized_target` can dispatch,
+    /// so a batch whose `functions` carry none is checked without snapshotting
+    /// the registry.
+    fn check_language_level(&self, input: &ConstraintInput<'_>) -> Vec<ConstraintResult> {
+        let dispatcher = input
+            .functions
+            .iter()
+            .any(|f| f.optimized_target.is_some())
+            .then(|| crate::OptimizedComputeDispatcher::from_engine(self));
+        self.constraint_checker.check_with_dispatch(
+            input,
+            dispatcher
+                .as_ref()
+                .map(|d| d as &dyn reify_ir::ComputeDispatch),
+        )
     }
 
     /// The engine facts that select [`unmeasured_reason`]'s remedy.

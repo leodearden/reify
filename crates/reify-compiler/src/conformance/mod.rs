@@ -10,7 +10,9 @@ pub(crate) use sub_component_validation::check_sub_structure_existence;
 use super::*;
 use crate::ambient_defaults::AmbientDefaults;
 use crate::geometry_traits_inference::{GeometryTrait, infer_traits_for_expr_in_env};
+use crate::rejected_param_defaults::RejectedParamDefaults;
 use crate::type_acceptance::{ArgVerdict, ParamFamily, conformance_accepts};
+use reify_core::direction::DIRECTION_MIGRATION_HINT;
 
 /// Severity of struct-constructor field-conformance diagnostics: **`Error`**.
 ///
@@ -104,7 +106,7 @@ pub(crate) fn check_trait_conformance(
     constraints: &mut Vec<CompiledConstraint>,
     constraint_index: &mut u32,
     enum_defs: &[reify_ir::EnumDef],
-    functions: &[CompiledFunction],
+    calls: crate::call_table::CallTable<'_>,
     alias_registry: &TypeAliasRegistry,
     // task 4497 (ambient-default-material B): the ambient-default table resolved
     // for this structure's scope. Top-level structures are fed the file-level
@@ -213,6 +215,7 @@ pub(crate) fn check_trait_conformance(
     // `Some(purpose_name)` for innermost-wins resolution (task 4639).
     check_phase_inject_ambient_defaults(&mut ctx, ambient, &structure_all_members, purpose);
 
+    let functions = calls.functions;
     let pre = check_phase_pre_register_default_types(
         &ctx,
         &structure_all_members,
@@ -271,7 +274,7 @@ pub(crate) fn check_trait_conformance(
         structure,
         &conformer_member_names,
         enum_defs,
-        functions,
+        calls,
         alias_registry,
         structure_names,
         trait_names,
@@ -454,8 +457,10 @@ pub(crate) fn check_fn_arg_conformance(
 /// worth knowing is against the sibling `check_param_default_type` (`entity.rs`),
 /// which IS gated on `param.type_expr.is_some()` at both its call sites and so
 /// stays silent on the same source (`untyped_port_member_param_with_enum_default_does_not_error`).
-/// The two checks are complementary, not alike-gated; what holds both SITES to
-/// one answer is `port_unannotated_param_default_takes_real_fallback_like_top_level`.
+/// The two checks are complementary, not alike-gated: where both would judge an
+/// annotated default, a rejection by `check_param_default_type` wins and this
+/// pass skips the cell (see [`check_param_default_conformance`]). What holds both
+/// SITES to one answer is `port_unannotated_param_default_takes_real_fallback_like_top_level`.
 ///
 /// Whether an inference fallback should be judged AT ALL is a live question, and
 /// δ (task #5306) made it a loud one: the flip turned this diagnostic into a
@@ -491,14 +496,28 @@ fn param_default_cells(template: &TopologyTemplate) -> impl Iterator<Item = &Val
 ///   (GHR-γ), so plain `type_compatible(Geometry, result_type)` would falsely reject
 ///   them.  Handled inline by the `Type::Geometry` arm below (no separate helper).
 ///
-/// All other cell types (Real, Int, List, …) are out of scope for this pass.
+/// - **Every other cell type** (Real, Int, String, List, …): the general
+///   concrete-leaf arm routes the default through [`walk_param_against_arg`],
+///   as described at that arm.
+///
+/// A cell in `rejected_at_declaration` is skipped: its default was already
+/// rejected by the declaration-site `check_param_default_type`, and one mistake
+/// gets one diagnostic (PRD D4-4). The skip keys on the cell that check rejected
+/// (its identity plus its span), not on the cell type, because trait-injected
+/// cells (`checker.rs` `check_phase_inject_defaults`) and unannotated fallback
+/// cells reach only this pass and share their cell types with the ones the
+/// declaration check judges.
 pub(crate) fn check_param_default_conformance(
     template: &TopologyTemplate,
     registries: ConformanceRegistries<'_>,
+    rejected_at_declaration: &RejectedParamDefaults,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     for vc in param_default_cells(template) {
         if vc.kind != ValueCellKind::Param {
+            continue;
+        }
+        if rejected_at_declaration.contains(vc) {
             continue;
         }
         let Some(default) = &vc.default_expr else {
@@ -1120,30 +1139,22 @@ fn emit_selector_mismatch(param_type: &Type, arg_type: &Type, ctx: &mut WalkCtx<
 /// Message shape mirrors the 4598 selector wording (`emit_selector_mismatch`):
 /// `"argument 'X' has type 'A' but param 'X' requires type 'B'"`. Reused for any
 /// non-wrapper / non-trait / non-selector / non-vector / non-structure leaf whose
-/// arg type is not `type_compatible` with the declared param type (String←Int,
-/// Bool←String, dimensioned-scalar mismatch, …). No new diagnostic code is minted
-/// — `ArgTypeMismatch` already exists.
+/// arg the leaf relation ([`conformance_accepts`]) rejects for a family
+/// [`emit_rejection`] routes here (String←Int, Bool←String, dimensioned-scalar
+/// mismatch, a datum slot given another type, …). No new diagnostic code is
+/// minted — `ArgTypeMismatch` already exists.
 ///
-/// A rejection at a DIMENSIONED `Scalar` param additionally carries the D4-6
-/// migration hint (see [`dimensioned_scalar_migration_hint`]); every other
-/// family's message is byte-identical to what it was before task 5627.
+/// Two rejections append a fix hint after `"; "` (see [`arg_type_mismatch_hint`]):
+/// one at a DIMENSIONED `Scalar` param, and a `Vector3` at a `Direction` param.
+/// The label never carries a hint.
 fn emit_arg_type_mismatch(param_type: &Type, arg_ty: &Type, ctx: &mut WalkCtx<'_>) {
     let mut message = format!(
         "argument '{}' has type '{}' but param '{}' requires type '{}'",
         ctx.arg_name, arg_ty, ctx.arg_name, param_type,
     );
-    // Gated on the param being a DIMENSIONED scalar, not applied unconditionally:
-    // this emitter is shared with the `Bool` / `Int` / `String` / dimensionless
-    // `Real` families task 5465 promoted, where the clause would be nonsense
-    // ("pass a dimensioned Bool literal") and would silently reword four
-    // already-shipped diagnostics.
-    let dimensioned = match param_type {
-        Type::Scalar { dimension } if !dimension.is_dimensionless() => Some(dimension),
-        _ => None,
-    };
-    if let Some(dimension) = dimensioned {
+    if let Some(hint) = arg_type_mismatch_hint(param_type, arg_ty) {
         message.push_str("; ");
-        message.push_str(&dimensioned_scalar_migration_hint(dimension));
+        message.push_str(&hint);
     }
     ctx.diagnostics.push(
         diag_at(ctx.severity, message)
@@ -1153,6 +1164,26 @@ fn emit_arg_type_mismatch(param_type: &Type, arg_ty: &Type, ctx: &mut WalkCtx<'_
                 format!("expected '{}', got '{}'", param_type, arg_ty),
             )),
     );
+}
+
+/// The fix hint an [`emit_arg_type_mismatch`] rejection appends, if any.
+///
+/// Gated per family, never appended unconditionally: the emitter is shared with
+/// the `Bool` / `Int` / `String` / dimensionless `Real` families task 5465
+/// promoted, where "pass a dimensioned Bool literal" would be nonsense.
+/// - a DIMENSIONED `Scalar` param: the D4-6 literal hint;
+/// - a `Direction` param given a `Vector3` of any quantity: `dir(...)`
+///   (docs/prds/v0_6/direction-typing.md C7). The builtin-slot gate,
+///   `builtin_signatures::direction_mismatch_hint`, must agree; the test
+///   `ctor_and_builtin_direction_slots_agree_on_the_dir_hint` holds them together.
+fn arg_type_mismatch_hint(param_type: &Type, arg_ty: &Type) -> Option<String> {
+    match (param_type, arg_ty) {
+        (Type::Scalar { dimension }, _) if !dimension.is_dimensionless() => {
+            Some(dimensioned_scalar_migration_hint(dimension))
+        }
+        (Type::Direction, Type::Vector { n: 3, .. }) => Some(DIRECTION_MIGRATION_HINT.to_owned()),
+        _ => None,
+    }
 }
 
 /// An example unit literal for `dimension`: `"1m"`, `"1m/s^2"`, `"1kg/m^3"`,
@@ -1305,7 +1336,8 @@ fn emit_rejection(family: ParamFamily, param_type: &Type, arg_ty: &Type, ctx: &m
         | ParamFamily::MatrixTensor
         | ParamFamily::Field
         | ParamFamily::Enum
-        | ParamFamily::ScalarFamily => emit_arg_type_mismatch(param_type, arg_ty, ctx),
+        | ParamFamily::ScalarFamily
+        | ParamFamily::Datum => emit_arg_type_mismatch(param_type, arg_ty, ctx),
     }
 }
 
@@ -1742,7 +1774,7 @@ mod tests {
             &mut constraints,
             &mut constraint_index,
             enum_defs,
-            functions,
+            crate::call_table::CallTable::complete(functions),
             &alias_registry,
             // task 4497: empty table — these conformance unit tests exercise
             // trait-default behavior, not ambient injection.
@@ -1837,9 +1869,13 @@ mod tests {
         bind_resolution_enums(&mut ctx, &[]);
         let trait_names = phase_traits(&mut ctx, &[], &decl_refs.trait_refs);
 
-        let mut conformers = decl_refs
-            .structure_refs
+        let mut conformers = parsed
+            .declarations
             .iter()
+            .filter_map(|d| match d {
+                reify_ast::Declaration::Structure(s) => Some(s),
+                _ => None,
+            })
             .filter(|s| !s.trait_bounds.is_empty());
         let conformer = conformers
             .next()
@@ -3546,18 +3582,7 @@ mod tests {
             span: SourceSpan::empty(0),
         };
         let template = minimal_template("Test", vec![param_cell]);
-        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
-        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        check_param_default_conformance(
-            &template,
-            ConformanceRegistries {
-                templates: &template_registry,
-                traits: &trait_registry,
-                enum_defs: &[],
-            },
-            &mut diagnostics,
-        );
+        let diagnostics = param_default_diagnostics(&template, &RejectedParamDefaults::default());
         assert_eq!(
             diagnostics.len(),
             0,
@@ -3617,18 +3642,7 @@ mod tests {
             is_priv: false,
         });
 
-        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
-        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        check_param_default_conformance(
-            &template,
-            ConformanceRegistries {
-                templates: &template_registry,
-                traits: &trait_registry,
-                enum_defs: &[],
-            },
-            &mut diagnostics,
-        );
+        let diagnostics = param_default_diagnostics(&template, &RejectedParamDefaults::default());
         assert_eq!(
             diagnostics.len(),
             1,
@@ -3640,6 +3654,92 @@ mod tests {
         assert!(
             diagnostics[0].message.contains("mount.region"),
             "message must name the composite port-member param 'mount.region', got: {:?}",
+            diagnostics[0].message
+        );
+    }
+
+    fn geometry_cell_with_scalar_default(member: &str, span: SourceSpan) -> ValueCellDecl {
+        ValueCellDecl {
+            id: ValueCellId::new("Test", member),
+            kind: ValueCellKind::Param,
+            visibility: Visibility::Private,
+            is_aux: false,
+            cell_type: Type::Geometry,
+            default_expr: Some(CompiledExpr::literal(
+                reify_ir::Value::Real(5.0),
+                Type::dimensionless_scalar(),
+            )),
+            solver_hints: vec![],
+            span,
+        }
+    }
+
+    fn param_default_diagnostics(
+        template: &TopologyTemplate,
+        rejected_at_declaration: &RejectedParamDefaults,
+    ) -> Vec<Diagnostic> {
+        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_param_default_conformance(
+            template,
+            ConformanceRegistries {
+                templates: &template_registry,
+                traits: &trait_registry,
+                enum_defs: &[],
+            },
+            rejected_at_declaration,
+            &mut diagnostics,
+        );
+        diagnostics
+    }
+
+    /// The `rejected_at_declaration` skip is per cell: of two equally mistaken
+    /// defaults in one template, only the recorded one is skipped, and the
+    /// other is still judged.
+    #[test]
+    fn rejected_at_declaration_skips_only_the_cell_with_that_span() {
+        let rejected_cell = geometry_cell_with_scalar_default("rejected", SourceSpan::new(10, 20));
+        let mut rejected = RejectedParamDefaults::default();
+        rejected.record(&rejected_cell);
+        let template = minimal_template(
+            "Test",
+            vec![
+                rejected_cell,
+                geometry_cell_with_scalar_default("judged", SourceSpan::new(30, 40)),
+            ],
+        );
+
+        let diagnostics = param_default_diagnostics(&template, &rejected);
+        assert_eq!(diagnostics.len(), 1, "got: {diagnostics:?}");
+        assert!(
+            diagnostics[0].message.contains("'judged'"),
+            "the cell outside the set must still be judged, got: {:?}",
+            diagnostics[0].message
+        );
+    }
+
+    /// A cell that shares only its span with a recorded rejection (a trait
+    /// default injected from another file) is still judged.
+    #[test]
+    fn rejected_at_declaration_does_not_skip_a_cell_that_only_shares_its_span() {
+        let shared_span = SourceSpan::new(10, 20);
+        let rejected_cell = geometry_cell_with_scalar_default("rejected", shared_span);
+        let mut rejected = RejectedParamDefaults::default();
+        rejected.record(&rejected_cell);
+        let template = minimal_template(
+            "Test",
+            vec![
+                rejected_cell,
+                geometry_cell_with_scalar_default("injected", shared_span),
+            ],
+        );
+
+        let diagnostics = param_default_diagnostics(&template, &rejected);
+        assert_eq!(diagnostics.len(), 1, "got: {diagnostics:?}");
+        assert!(
+            diagnostics[0].message.contains("'injected'"),
+            "the span-sharing cell must still be judged, got: {:?}",
             diagnostics[0].message
         );
     }

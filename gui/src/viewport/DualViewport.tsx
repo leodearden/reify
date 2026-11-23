@@ -15,7 +15,7 @@ interface EngineLike {
   state: { meshes: Record<string, any>; tensegrityWires: any[]; tensegritySurfaces: any[] };
 }
 
-/** Passthrough props forwarded to the design Viewport instance. */
+/** Passthrough props forwarded to the design Viewport instance (showEdges reaches def-preview too). */
 type PassthroughProps = Pick<
   ViewportProps,
   | 'onSelect'
@@ -26,6 +26,7 @@ type PassthroughProps = Pick<
   | 'evalStatus'
   | 'entityVisibility'
   | 'displayAppearance'
+  | 'showEdges'
   | 'feaModeStore'
   | 'feaDiagnostics'
   | 'feaConvergence'
@@ -193,6 +194,7 @@ export function DualViewport(props: DualViewportProps) {
               viewportId="def-preview"
               viewportStore={props.viewportStore}
               meshes={props.defPreviewStore.state.meshes}
+              showEdges={props.showEdges}
             />
           </div>
         </Show>
@@ -246,6 +248,7 @@ export function DualViewport(props: DualViewportProps) {
               }}
               entityVisibility={props.entityVisibility}
               displayAppearance={props.displayAppearance}
+              showEdges={props.showEdges}
               feaDiagnostics={props.feaDiagnostics}
               feaConvergence={props.feaConvergence}
               feaModeStore={props.feaModeStore}

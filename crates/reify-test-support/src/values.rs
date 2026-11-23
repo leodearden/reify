@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use reify_core::{ConstraintNodeId, Type, ValueCellId};
 use reify_core::dimension::{DimensionVector, FORCE};
-use reify_ir::{DeterminacyState, Value};
+use reify_ir::{CompiledExpr, DeterminacyState, UnitVec3, Value};
 
 // --- Range value constructors ---
 
@@ -59,6 +59,26 @@ pub fn mm(v: f64) -> Value {
         si_value: v * 0.001,
         dimension: DimensionVector::LENGTH,
     }
+}
+
+/// `CompiledExpr` literal of a LENGTH-dimensioned scalar given in millimetres.
+pub fn mm_literal(v: f64) -> CompiledExpr {
+    CompiledExpr::literal(mm(v), Type::length())
+}
+
+/// `CompiledExpr` literal of a LENGTH-dimensioned scalar given in SI metres.
+pub fn length_literal(meters: f64) -> CompiledExpr {
+    CompiledExpr::literal(Value::length(meters), Type::length())
+}
+
+/// `CompiledExpr` literal of an ANGLE-dimensioned scalar given in SI radians.
+pub fn angle_literal(radians: f64) -> CompiledExpr {
+    CompiledExpr::literal(Value::angle(radians), Type::angle())
+}
+
+/// `CompiledExpr` literal of a dimensionless real scalar.
+pub fn real_literal(v: f64) -> CompiledExpr {
+    CompiledExpr::literal(Value::Real(v), Type::dimensionless_scalar())
 }
 
 /// Create a Scalar with ANGLE dimension from degrees.
@@ -448,6 +468,39 @@ pub fn matrix3x3(
     ])
 }
 
+/// Uniaxial stress magnitude σ, in SI pascals.
+pub const UNIAXIAL_STRESS_PA: f64 = 100e6;
+
+/// Row-major components of the uniaxial stress tensor: [`UNIAXIAL_STRESS_PA`]
+/// at `[0][0]`, zero elsewhere. Flatten it for the `&[f64]` analysis kernels.
+pub const UNIAXIAL_STRESS_ROWS: [[f64; 3]; 3] =
+    [[UNIAXIAL_STRESS_PA, 0.0, 0.0], [0.0; 3], [0.0; 3]];
+
+/// Create a 3×3 `Value::Tensor` of `Value::Tensor` rows of `Value::Scalar`s,
+/// every element carrying `dimension` — the nested shape the analysis kernels
+/// read. Contrast [`matrix3x3`], which builds a `Value::Matrix` of bare `Real`s.
+pub fn dimensioned_tensor3x3(rows: &[[f64; 3]; 3], dimension: DimensionVector) -> Value {
+    Value::Tensor(
+        rows.iter()
+            .map(|row| {
+                Value::Tensor(
+                    row.iter()
+                        .map(|&si_value| Value::Scalar {
+                            si_value,
+                            dimension,
+                        })
+                        .collect(),
+                )
+            })
+            .collect(),
+    )
+}
+
+/// The uniaxial stress tensor: [`UNIAXIAL_STRESS_ROWS`] in PRESSURE.
+pub fn uniaxial_stress_tensor() -> Value {
+    dimensioned_tensor3x3(&UNIAXIAL_STRESS_ROWS, DimensionVector::PRESSURE)
+}
+
 // --- Complex value constructors ---
 
 /// Create a Value::Int.
@@ -566,7 +619,7 @@ pub fn transform_val(rotation: Value, translation: Value) -> Value {
     }
 }
 
-/// Create a `Value::Plane` with the given origin (Point) and normal (Vector).
+/// Create a `Value::Plane` with the given origin (Point) and normal (Direction).
 pub fn plane_val(origin: Value, normal: Value) -> Value {
     Value::Plane {
         origin: Box::new(origin),
@@ -574,12 +627,20 @@ pub fn plane_val(origin: Value, normal: Value) -> Value {
     }
 }
 
-/// Create a `Value::Axis` with the given origin (Point) and direction (Vector).
+/// Create a `Value::Axis` with the given origin (Point) and direction (Direction).
 pub fn axis_val(origin: Value, direction: Value) -> Value {
     Value::Axis {
         origin: Box::new(origin),
         direction: Box::new(direction),
     }
+}
+
+/// Create a `Value::Direction` from `[x, y, z]`, normalised by `UnitVec3::from_vector`.
+/// Panics on a zero or non-finite input.
+pub fn direction_val(x: f64, y: f64, z: f64) -> Value {
+    Value::Direction(
+        UnitVec3::from_vector([x, y, z]).expect("direction_val: a non-degenerate finite vector"),
+    )
 }
 
 /// Create a `Value::BoundingBox` with the given min and max corner points.
@@ -700,7 +761,7 @@ pub fn multi_case_result_value(cases: &[(&str, Value)]) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_ir::{DeterminacyState, Value};
+    use reify_ir::{CompiledExprKind, DeterminacyState, Value};
     use std::collections::HashMap;
 
     // step-1: failing tests for range value constructors
@@ -889,6 +950,62 @@ mod tests {
             }
             _ => panic!("expected Value::Scalar"),
         }
+    }
+
+    fn literal_value(expr: &CompiledExpr) -> &Value {
+        match &expr.kind {
+            CompiledExprKind::Literal(v) => v,
+            other => panic!("expected CompiledExprKind::Literal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mm_literal_carries_si_length_and_length_type() {
+        let expr = mm_literal(5.0);
+        match literal_value(&expr) {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert!((si_value - 0.005).abs() < 1e-12, "5 mm should be 0.005 m");
+                assert_eq!(*dimension, DimensionVector::LENGTH);
+            }
+            other => panic!("expected Value::Scalar, got {other:?}"),
+        }
+        assert_eq!(expr.result_type, Type::length());
+    }
+
+    #[test]
+    fn length_literal_carries_si_length_and_length_type() {
+        let expr = length_literal(0.25);
+        assert_eq!(
+            *literal_value(&expr),
+            Value::Scalar {
+                si_value: 0.25,
+                dimension: DimensionVector::LENGTH,
+            }
+        );
+        assert_eq!(expr.result_type, Type::length());
+    }
+
+    #[test]
+    fn angle_literal_carries_si_angle_and_angle_type() {
+        let expr = angle_literal(1.5);
+        assert_eq!(
+            *literal_value(&expr),
+            Value::Scalar {
+                si_value: 1.5,
+                dimension: DimensionVector::ANGLE,
+            }
+        );
+        assert_eq!(expr.result_type, Type::angle());
+    }
+
+    #[test]
+    fn real_literal_carries_real_and_dimensionless_type() {
+        let expr = real_literal(2.5);
+        assert_eq!(*literal_value(&expr), Value::Real(2.5));
+        assert_eq!(expr.result_type, Type::dimensionless_scalar());
     }
 
     // step-19: failing tests for SnapshotValuesBuilder
@@ -1667,6 +1784,14 @@ mod tests {
     }
 
     #[test]
+    fn direction_val_produces_a_unit_direction() {
+        assert_eq!(
+            direction_val(0.0, 0.0, 2.0),
+            Value::Direction(UnitVec3::from_vector([0.0, 0.0, 1.0]).unwrap())
+        );
+    }
+
+    #[test]
     fn axis_val_produces_axis() {
         let origin = point3(0.0, 0.0, 0.0);
         let direction = vec3_dimensionless(1.0, 0.0, 0.0);
@@ -1694,6 +1819,61 @@ mod tests {
                 assert!(matches!(vals[0], Value::Real(1.0)));
             }
             _ => panic!("expected Value::Tensor"),
+        }
+    }
+
+    // --- dimensioned 3×3 tensor / uniaxial stress fixture tests ---
+
+    /// The `(si_value, dimension)` of each component of a 3×3 `Value::Tensor`
+    /// of `Value::Tensor` rows of `Value::Scalar`s, panicking on any other
+    /// shape.
+    fn tensor3x3_components(v: &Value) -> [[(f64, DimensionVector); 3]; 3] {
+        let Value::Tensor(rows) = v else {
+            panic!("expected an outer Value::Tensor (not matrix3x3's Value::Matrix), got {v:?}");
+        };
+        assert_eq!(rows.len(), 3, "three rows");
+        std::array::from_fn(|r| {
+            let Value::Tensor(cols) = &rows[r] else {
+                panic!("row {r}: expected a Value::Tensor, got {:?}", rows[r]);
+            };
+            assert_eq!(cols.len(), 3, "row {r} has three columns");
+            std::array::from_fn(|c| match &cols[c] {
+                Value::Scalar {
+                    si_value,
+                    dimension,
+                } => (*si_value, *dimension),
+                other => panic!("[{r}][{c}]: expected a Value::Scalar, got {other:?}"),
+            })
+        })
+    }
+
+    #[test]
+    fn dimensioned_tensor3x3_nests_three_rows_of_dimensioned_scalars() {
+        let input = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
+        let v = dimensioned_tensor3x3(&input, DimensionVector::LENGTH);
+        for (r, row) in tensor3x3_components(&v).iter().enumerate() {
+            for (c, &(si_value, dimension)) in row.iter().enumerate() {
+                assert_eq!(si_value, input[r][c], "[{r}][{c}]");
+                assert_eq!(dimension, DimensionVector::LENGTH, "[{r}][{c}]");
+            }
+        }
+    }
+
+    #[test]
+    fn uniaxial_stress_tensor_loads_only_the_00_component_in_pressure() {
+        for (r, row) in tensor3x3_components(&uniaxial_stress_tensor())
+            .iter()
+            .enumerate()
+        {
+            for (c, &(si_value, dimension)) in row.iter().enumerate() {
+                let expected = if (r, c) == (0, 0) {
+                    UNIAXIAL_STRESS_PA
+                } else {
+                    0.0
+                };
+                assert_eq!(si_value, expected, "[{r}][{c}]");
+                assert_eq!(dimension, DimensionVector::PRESSURE, "[{r}][{c}]");
+            }
         }
     }
 

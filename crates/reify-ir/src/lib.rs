@@ -28,6 +28,8 @@ pub mod color;
 pub mod completeness;
 pub mod constraint;
 pub mod dense_sdf;
+pub mod direction;
+pub mod direction_decode;
 pub mod expr;
 pub mod geometry;
 mod geometry_id;
@@ -41,7 +43,10 @@ pub mod ranked;
 pub mod resolution_profile;
 pub mod ri_literal;
 pub mod sampled;
+pub mod solve_termination;
 pub mod structure_registry;
+#[cfg(test)]
+mod test_rng;
 pub mod traits;
 pub mod value;
 pub mod warm;
@@ -55,15 +60,22 @@ pub mod warm_registry;
 pub use annotation::{Annotation, AnnotationArg, AnnotationArgValue, has_test_annotation};
 pub use color::Rgb8;
 pub use dense_sdf::{DenseSdfGrid, ImplicitGridError, ImplicitOptions};
+pub use direction::{DirectionFault, UnitVec3};
+pub use direction_decode::{DecodeDirectionError, decode_direction, frame_basis};
 pub use boundary_attachment::{BoundaryAssociation, NodeAttachment};
 pub use constraint::{
-    AutoParam, ComputeDispatch, ConstraintChecker, ConstraintDiagnostics, ConstraintDomain,
+    AutoParam, ComputeDispatch, ComputeDispatchFailure, ComputeDispatchOutcome,
+    ConstraintChecker, ConstraintDiagnostics, ConstraintDomain,
     ConstraintInput, ConstraintResult, ConstraintSolver, DimensionIncoherence,
     ObjectiveCombination, ObjectiveProvenance, ObjectiveSense, ObjectiveSet, ObjectiveTerm,
     OptimizedImpl, OptimizedImplInput, OptimizedImplOutput, ResolutionProblem, SolveResult,
     TermContribution, dimension_of, objective_terms_coherent,
 };
 pub use resolution_profile::{IterationBudget, ResolutionProfile, StalenessPolicy};
+pub use solve_termination::{
+    BudgetExhaustion, InfeasibilityCertificate, NonFiniteEntry, NonFiniteEvaluation,
+    ResidualSource, RowBlame, SolveFailureCause, SolveStall,
+};
 pub use expr::{
     BinOp, CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction, CompiledMatchArm,
     CompiledPattern, DeterminacyPredicateKind, ResolvedFunction, SelectorKind, TAG_AD_HOC_SELECTOR,
@@ -87,7 +99,9 @@ pub use geometry::{
     TopologyAttribute, TopologyAttributeTable, VolumeConnectivity, VolumeMesh, VoxelResolution, debug_assert_query_many_invariant,
     unsupported_dense_sdf_ingest,
 };
-pub use indeterminate::{IndeterminateReason, StructuralReason, TransientReason};
+pub use indeterminate::{
+    ComputeFailureKind, IndeterminateReason, RefusedOperation, StructuralReason, TransientReason,
+};
 pub use kernel_validation::{
     BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE,
     check_length_field, non_length_kernel_field_message, non_numeric_kernel_field_message,

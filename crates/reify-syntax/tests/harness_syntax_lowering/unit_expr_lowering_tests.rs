@@ -59,8 +59,11 @@ fn bare_unit_5mm_lowers_to_unit_mm() {
 fn bare(name: &str) -> UnitExpr {
     UnitExpr::Unit(name.to_string())
 }
-fn pow(base: UnitExpr, exp: i32) -> UnitExpr {
-    UnitExpr::Pow(Box::new(base), exp)
+fn pow(base: UnitExpr, exp: i16) -> UnitExpr {
+    UnitExpr::Pow(Box::new(base), reify_core::Rational::new(exp, 1))
+}
+fn pow_r(base: UnitExpr, num: i16, den: i16) -> UnitExpr {
+    UnitExpr::Pow(Box::new(base), reify_core::Rational::new(num, den))
 }
 fn mul(a: UnitExpr, b: UnitExpr) -> UnitExpr {
     UnitExpr::Mul(Box::new(a), Box::new(b))
@@ -131,7 +134,7 @@ fn paren_group_raised_to_power() {
 
 #[test]
 fn signed_negative_exponent() {
-    // 1m/s^-2 → Div(m, Pow(s, -2)) — grammar's signed_integer is `-?\d+`
+    // 1m/s^-2 → Div(m, Pow(s, -2)) — the grammar's `unit_exponent` carries the sign
     assert_eq!(unit_of("1m/s^-2"), div(bare("m"), pow(bare("s"), -2)));
 }
 
@@ -852,6 +855,110 @@ fn detached_unit_hint_needs_a_number_directly_before_the_word_on_the_same_line()
                 .all(|(message, _)| !message.contains(HINT_MARK)),
             "`{source}` is not a detached unit suffix and must carry no remedy hint; \
              got {errors:?}"
+        );
+    }
+}
+
+// ── Rational unit exponents (task #9236) ─────────────────────────────────────
+//
+// Rules: PRD docs/prds/unit-expressions.md §3.2. Every contiguous `^…/…`
+// spelling must be the correct rational exponent or a LOCATED parse error,
+// with the binding still recovered as a member (INV-SF-7).
+
+#[test]
+fn rational_exponents_lower_to_rational_pow() {
+    assert_eq!(unit_of("1m^1/2"), pow_r(bare("m"), 1, 2));
+    assert_eq!(unit_of("1m^-1/2"), pow_r(bare("m"), -1, 2));
+    assert_eq!(
+        unit_of("50MPa*m^1/2"),
+        mul(bare("MPa"), pow_r(bare("m"), 1, 2))
+    );
+    // The `.ri` emitter's FractureToughness spelling.
+    assert_eq!(
+        unit_of("1kg/m^1/2/s^2"),
+        div(div(bare("kg"), pow_r(bare("m"), 1, 2)), pow(bare("s"), 2))
+    );
+}
+
+/// The exact `Display for DimensionVector` spelling of FractureToughness
+/// lowers like its `*` twin.
+#[test]
+fn display_spelling_of_fracture_toughness_lowers_like_its_star_twin() {
+    let expected = mul(mul(bare("kg"), pow_r(bare("m"), -1, 2)), pow(bare("s"), -2));
+    assert_eq!(unit_of("1kg·m^-1/2·s^-2"), expected);
+    assert_eq!(unit_of("1kg*m^-1/2*s^-2"), expected);
+}
+
+/// `structure def S { let x = <expr> }`.
+fn let_source(expr: &str) -> String {
+    format!("structure def S {{ let x = {expr} }}")
+}
+
+/// `expr` yields exactly one diagnostic starting with `prefix`, whose span
+/// starts at `needle`'s byte plus `skip`, and the binding survives as a member.
+#[track_caller]
+fn assert_located_error(expr: &str, prefix: &str, needle: &str, skip: usize) {
+    let source = let_source(expr);
+    let (decls, members, errors) = parse_shape_spanned(&source);
+    let (message, span) = only_error_starting_with(&errors, prefix);
+    assert_eq!(
+        span.start,
+        byte_of(&source, needle, skip),
+        "`{expr}`: the diagnostic must point at `{needle}`+{skip}; got {message:?}"
+    );
+    assert_eq!(decls, 1, "`{expr}`: expected exactly one declaration");
+    assert_eq!(
+        members, 1,
+        "`{expr}`: the binding must be RECOVERED as a member carrying the error, \
+         not dropped — got {members} members with {errors:?}"
+    );
+}
+
+const UNIT_EXPONENT_ERROR: &str = "unit exponent";
+const AMBIGUOUS_SLASH_ERROR: &str = "`/` directly after the unit exponent";
+
+/// A rational exponent must be in lowest terms with denominator ≥ 2. The
+/// legacy reading of `1m^2/2` was 0.5 m², so a silent reread as `m^1` would be
+/// a wrong value; each is a located error at the exponent.
+#[test]
+fn non_canonical_rational_exponents_are_located_errors() {
+    for expr in ["1m^2/4", "1m^2/2", "1m^2/1", "1m^0/2", "1m^1/0"] {
+        assert_located_error(expr, UNIT_EXPONENT_ERROR, "^", 1);
+    }
+}
+
+/// An exponent `Rational`'s i16 cannot represent is a located error.
+#[test]
+fn unrepresentable_unit_exponent_is_a_located_error() {
+    assert_located_error("1m^99999", UNIT_EXPONENT_ERROR, "^", 1);
+}
+
+/// Spellings the token cannot absorb would otherwise still be a silent value
+/// division; a `/` touching a unit exponent is a located error at the `/`.
+#[test]
+fn slash_touching_a_unit_exponent_is_a_located_error() {
+    assert_located_error("1m^1/ 2", AMBIGUOUS_SLASH_ERROR, "/ 2", 0);
+    assert_located_error("1m^1/-2", AMBIGUOUS_SLASH_ERROR, "/-2", 0);
+    assert_located_error("1m^1/2/3", AMBIGUOUS_SLASH_ERROR, "/3", 0);
+}
+
+/// Value division that does NOT touch a unit exponent keeps its meaning and
+/// stays diagnostic-free.
+#[test]
+fn value_division_not_touching_an_exponent_stays_a_clean_binop() {
+    for expr in ["1m^2 / 2", "(1m^1)/2", "25USD/1kg"] {
+        let source = let_source(expr);
+        let (decls, members, errors) = parse_shape_spanned(&source);
+        assert!(
+            errors.is_empty(),
+            "`{expr}` must lower without diagnostics; got {errors:?}"
+        );
+        assert_eq!((decls, members), (1, 1), "`{expr}`: member must survive");
+        let kind =
+            parse_param_default_kind(&format!("structure S {{ param x : Length = {expr} }}"));
+        assert!(
+            matches!(&kind, ExprKind::BinOp { op, .. } if op == "/"),
+            "`{expr}` must lower to BinOp(\"/\"); got {kind:?}"
         );
     }
 }

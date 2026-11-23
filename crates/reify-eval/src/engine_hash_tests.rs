@@ -111,12 +111,7 @@ fn engine_version_hash_for_panics_naming_the_first_missing_contributor() {
     let first = contributor_paths()
         .next()
         .expect("WORKSPACE_CRATE_COVERAGE hashes at least one path");
-    let payload = std::panic::catch_unwind(|| engine_version_hash_for(tmp.path()))
-        .err()
-        .expect("a manifest dir with no contributors must panic");
-    let message = payload
-        .downcast_ref::<String>()
-        .expect("the panic carries a formatted message");
+    let message = reify_test_support::panic_message_of(|| engine_version_hash_for(tmp.path()));
     let expected = format!("ENGINE_VERSION_HASH contributor not found: {first} (");
     assert!(
         message.contains(&expected),

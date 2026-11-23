@@ -6,20 +6,16 @@
 //! stub at `expr.rs:997` is the designated `Type::Error` producer that these
 //! tests exercise (see step-12).
 
+use std::ops::ControlFlow;
+
 use reify_ast::QuantifierKind;
 use reify_core::{Severity, Type, ValueCellId};
 use reify_ir::{CompiledExpr, CompiledExprKind, CompiledMatchArm, SelectorKind, Value};
 use reify_test_support::{compile_source, get_let_expr};
 
-/// Walk a `CompiledExpr` tree and return the first node whose `result_type`
-/// satisfies the predicate, if any. Used to search for a `Type::Error`-typed
+/// The first pre-order node satisfying `pred`, over
+/// `CompiledExpr::try_for_each_child`. Used to search for a `Type::Error`-typed
 /// node inside a compiled let binding.
-///
-/// The match is intentionally exhaustive with **no `_` wildcard**, so the
-/// compiler will flag any new `CompiledExprKind` variant added to the enum at
-/// this helper — preventing silent `None` fallthrough for future variants
-/// (task-1920 / task-1912 S4 follow-up). The traversal shape mirrors
-/// `CompiledExpr::walk` in `crates/reify-types/src/expr.rs`.
 fn find_node<'a>(
     expr: &'a CompiledExpr,
     pred: &impl Fn(&CompiledExpr) -> bool,
@@ -27,78 +23,11 @@ fn find_node<'a>(
     if pred(expr) {
         return Some(expr);
     }
-    match &expr.kind {
-        // Leaf variants — no subexpressions to recurse into.
-        CompiledExprKind::Literal(_) => None,
-        CompiledExprKind::ValueRef(_) => None,
-        // CrossSubGeometryRef is a leaf (consumed by entity.rs before eval).
-        CompiledExprKind::CrossSubGeometryRef(_) => None,
-        CompiledExprKind::OptionNone => None,
-        CompiledExprKind::MetaAccess { .. } => None,
-        CompiledExprKind::DeterminacyPredicate { .. } => None,
-
-        // Compound variants — recurse into every child subexpression.
-        CompiledExprKind::BinOp { left, right, .. } => {
-            find_node(left, pred).or_else(|| find_node(right, pred))
-        }
-        CompiledExprKind::UnOp { operand, .. } => find_node(operand, pred),
-        CompiledExprKind::FunctionCall { args, .. } => args.iter().find_map(|a| find_node(a, pred)),
-        CompiledExprKind::Conditional {
-            condition,
-            then_branch,
-            else_branch,
-        } => find_node(condition, pred)
-            .or_else(|| find_node(then_branch, pred))
-            .or_else(|| find_node(else_branch, pred)),
-        CompiledExprKind::Match { discriminant, arms } => find_node(discriminant, pred)
-            .or_else(|| arms.iter().find_map(|arm| find_node(&arm.body, pred))),
-        CompiledExprKind::UserFunctionCall { args, .. } => {
-            args.iter().find_map(|a| find_node(a, pred))
-        }
-        CompiledExprKind::Lambda { body, .. } => find_node(body, pred),
-        CompiledExprKind::ListLiteral(elements) => elements.iter().find_map(|e| find_node(e, pred)),
-        CompiledExprKind::ReflectiveCellList(elements) => {
-            elements.iter().find_map(|e| find_node(e, pred))
-        }
-        CompiledExprKind::SetLiteral(elements) => elements.iter().find_map(|e| find_node(e, pred)),
-        CompiledExprKind::MapLiteral(entries) => entries
-            .iter()
-            .find_map(|(k, v)| find_node(k, pred).or_else(|| find_node(v, pred))),
-        CompiledExprKind::IndexAccess { object, index } => {
-            find_node(object, pred).or_else(|| find_node(index, pred))
-        }
-        CompiledExprKind::MethodCall { object, args, .. } => {
-            find_node(object, pred).or_else(|| args.iter().find_map(|a| find_node(a, pred)))
-        }
-        CompiledExprKind::Quantifier {
-            collection,
-            predicate,
-            ..
-        } => find_node(collection, pred).or_else(|| find_node(predicate, pred)),
-        CompiledExprKind::OptionSome(inner) => find_node(inner, pred),
-        CompiledExprKind::RangeConstructor { lower, upper, .. } => lower
-            .as_deref()
-            .and_then(|lo| find_node(lo, pred))
-            .or_else(|| upper.as_deref().and_then(|hi| find_node(hi, pred))),
-        CompiledExprKind::AdHocSelector { base, args, .. } => {
-            find_node(base, pred).or_else(|| args.iter().find_map(|a| find_node(a, pred)))
-        }
-        // Reflective-aggregation placeholder is a leaf — no children to walk.
-        CompiledExprKind::PurposeReflectiveAggregation { .. } => None,
-        // task 3540 (SIR-α): exhaustiveness-forced adapter arm for the new
-        // shared-enum variant (step-16). Recurse into supplied args + captured
-        // defaults — same posture as FunctionCall/UserFunctionCall.
-        CompiledExprKind::StructureInstanceCtor {
-            ordered_args,
-            defaults,
-            ..
-        } => ordered_args
-            .iter()
-            .find_map(|(_, a)| find_node(a, pred))
-            .or_else(|| defaults.iter().find_map(|(_, d)| find_node(d, pred))),
-        // task 4118 (γ): recurse into the wrapped selector.
-        CompiledExprKind::ResolveSelector { selector } => find_node(selector, pred),
-    }
+    expr.try_for_each_child(&mut |child| match find_node(child, pred) {
+        Some(hit) => ControlFlow::Break(hit),
+        None => ControlFlow::Continue(()),
+    })
+    .break_value()
 }
 
 // ── step-5: member aggregation on error-typed object ────────────────────────
@@ -334,12 +263,8 @@ structure S {
 #[test]
 fn find_node_compound_variant_coverage() {
     // Table-driven coverage: one case per compound CompiledExprKind variant
-    // (or per child position), embedding a Type::Error leaf in exactly the
-    // slot that find_node claims to recurse into. This complements the
-    // structural guarantee provided by the exhaustive match (no `_` wildcard)
-    // with semantic verification that each arm visits the correct children —
-    // a typo like visiting only `base` without `args` compiles fine but would
-    // silently miss error nodes, and only a test like this would catch it.
+    // (or per child position), embedding a Type::Error leaf in exactly one
+    // child slot, so the table checks that find_node reaches each child slot.
 
     let error_leaf = || CompiledExpr::literal(Value::Bool(false), Type::Error);
     let bool_leaf = || CompiledExpr::literal(Value::Bool(true), Type::Bool);

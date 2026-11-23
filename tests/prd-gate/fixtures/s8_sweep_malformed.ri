@@ -8,7 +8,7 @@ module s8_sweep_malformed
 // form; the 2-argument sweep(profile, path) is the unrelated geometry sweep.
 
 structure def S8SweepMalformed {
-    let j_x = prismatic(vec3(1, 0, 0), 0mm .. 500mm)
+    let j_x = prismatic(dir(1, 0, 0), 0mm .. 500mm)
     let m0 = mechanism()
     let m1 = body(m0, "head", j_x)
 

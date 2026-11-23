@@ -59,9 +59,10 @@ module dcr_load_ctor_dimension_silent
 //   `corpus_has_no_bare_fea_load_magnitude` excepts exactly them.
 
 structure def DcrLoadCtorDimensionSilent {
-    let dimensioned_point = PointLoad(point: "tip", force: 5000N)
-    let bare_point        = PointLoad(point: "tip", force: 5000.0)
+    let body              = box(1m, 0.1m, 0.1m)
+    let dimensioned_point = PointLoad(point: vertex(body, "tip"), force: 5000N)
+    let bare_point        = PointLoad(point: vertex(body, "tip"), force: 5000.0)
     let bare_pressure     = PressureLoad(magnitude: 1000000.0)
-    let traction          = TractionLoad(face: "top", traction: 5000000Pa)
-    let body_force        = BodyForce(body: "all", force_density: -77000.0)
+    let traction          = TractionLoad(face: face(body, "top"), traction: 5000000Pa)
+    let body_force        = BodyForce(body: solid_body(body, "all"), force_density: -77000.0)
 }

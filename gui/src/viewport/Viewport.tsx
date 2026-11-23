@@ -89,6 +89,11 @@ export interface ViewportProps {
    */
   displayAppearance?: Record<string, DisplayStyleData>;
   /**
+   * When true, meshManager draws the black edges-in-black overlay over every
+   * shown mesh; absent = off.
+   */
+  showEdges?: boolean;
+  /**
    * FEA diagnostic data (rigid-body modes, problem elements, unresolved selectors).
    * When provided, the diagnostic overlay is synced reactively. When absent or [],
    * no overlay geometry is rendered.
@@ -481,6 +486,11 @@ export function Viewport(props: ViewportProps) {
     // Sync display_appearance overrides (layer-3) into meshManager — mirrors entityVisibility.
     createEffect(() => {
       meshManager.setDisplayAppearance(props.displayAppearance ?? {});
+      requestRender();
+    });
+
+    createEffect(() => {
+      meshManager.setEdges(props.showEdges ?? false);
       requestRender();
     });
 

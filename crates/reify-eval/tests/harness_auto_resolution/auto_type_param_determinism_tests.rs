@@ -188,12 +188,12 @@ const SKIP_SET: &[(&str, SkipKind, &str)] = &[
         SkipKind::CompileError,
         "Multi-file cfg-gated entry: `param p : Platform` in type position resolves only \
          through the #cfg(target)-gated import (platform_linux or platform_wasm), using the \
-         reify check cfg DAG (compile_entry_with_stdlib_cfg_checked). The single-file \
+         reify check cfg DAG (program::compile_program_with_parsed_entry). The single-file \
          check_source_with_stdlib path cannot follow gated imports, so `Platform` is an \
          unresolved-type Error — check_source_with_stdlib panics on compile errors. \
          The two-way symmetric behaviour (both --cfg target=linux and --cfg target=wasm \
          exit 0, each resolving the platform-correct Platform variant) is exercised \
-         end-to-end by crates/reify-cli/tests/harness_cli/cli_check_cfg_example.rs. \
+         end-to-end by crates/reify-cli/tests/harness_cli_check/cli_check_cfg_example.rs. \
          The siblings (platform_linux.ri, platform_wasm.ri) compile clean single-file \
          and are intentionally NOT skipped. \
          Mirrored from examples_smoke.rs::SKIP_SET (task 3995 ε).",

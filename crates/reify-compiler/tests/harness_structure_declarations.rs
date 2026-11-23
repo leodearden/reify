@@ -47,6 +47,8 @@ mod constant_compile_tests;
 mod constants_example_tests;
 #[path = "harness_structure_declarations/constructor_hash_tests.rs"]
 mod constructor_hash_tests;
+#[path = "harness_structure_declarations/datum_slot_conformance_tests.rs"]
+mod datum_slot_conformance_tests;
 #[path = "harness_structure_declarations/field_compile_tests.rs"]
 mod field_compile_tests;
 #[path = "harness_structure_declarations/fields_stdlib_compile.rs"]

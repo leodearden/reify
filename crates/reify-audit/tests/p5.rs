@@ -68,17 +68,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p5_phantom_done::check(&ctx);
         assert!(
@@ -297,17 +288,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p5_phantom_done::check(&ctx);
         assert_eq!(
@@ -381,17 +363,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p5_phantom_done::check(&ctx);
         assert_eq!(
@@ -480,17 +453,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p5_phantom_done::check(&ctx);
         assert_eq!(
@@ -575,17 +539,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p5_phantom_done::check(&ctx);
         assert_eq!(
@@ -745,17 +700,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p5_phantom_done::check(&ctx);
         assert_eq!(
@@ -832,17 +778,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p5_phantom_done::check(&ctx);
         assert_eq!(
@@ -933,17 +870,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         // Sanity: full check returns the single phantom finding.
         let all = p5_phantom_done::check(&ctx);
@@ -985,7 +913,7 @@ mod tests {
     /// This test passes today (before/after the refactor) because both call sites
     /// already implement equivalent logic; it future-proofs against drift if one
     /// site grows a new pass that the other forgets. It also fills a real coverage
-    /// gap: no existing test exercises `target_task_id: Some(...)`.
+    /// gap: no existing test exercises a context built with `.targeting(..)`.
     #[test]
     fn check_pre_done_equivalent_to_scoped_check() {
         let conn = seed_db();
@@ -1054,30 +982,13 @@ mod tests {
         let jc = MockJCodemunchOps::new();
 
         // ctx_a: no target filter — passed to check_pre_done with explicit task_id.
-        let ctx_a = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata: task_metadata.clone(),
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx_a = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata.clone());
 
         // ctx_b: scoped to task 5000 — passed to check (the periodic-sweep entry point).
-        let ctx_b = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: Some("5000".to_string()),
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx_b = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata)
+            .targeting("5000");
 
         let pre_done_findings = p5_phantom_done::check_pre_done(&ctx_a, "5000");
         let scoped_findings = p5_phantom_done::check(&ctx_b);
@@ -1158,17 +1069,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p5_phantom_done::check_pre_done(&ctx, "6345G");
 
@@ -1223,17 +1125,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p5_phantom_done::check_pre_done(&ctx, "6345GALL");
 
@@ -1311,17 +1204,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p5_phantom_done::check(&ctx);
         assert!(
@@ -1436,17 +1320,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p5_phantom_done::check(&ctx);
 
@@ -1553,17 +1428,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         // (a) must PASS the gate.
         let findings = p5_phantom_done::check_pre_done(&ctx, "6345D");
@@ -1699,17 +1565,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p5_phantom_done::check_pre_done(&ctx, "6345DIR");
         assert!(
@@ -1764,17 +1621,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p5_phantom_done::check_pre_done(&ctx, "6345INFRA");
         assert_eq!(
@@ -1842,17 +1690,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p5_phantom_done::check_pre_done(&ctx, "6345LSERR");
         assert_eq!(
@@ -1925,17 +1764,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p5_phantom_done::check_pre_done(&ctx, "6345LGERR");
         assert_eq!(findings.len(), 1, "expected one finding; got {:?}", findings);
@@ -2014,17 +1844,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p5_phantom_done::check_pre_done(&ctx, "6345GIERR");
         assert_eq!(
@@ -2087,17 +1908,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p5_phantom_done::check_pre_done(&ctx, "6345GINONE");
         assert!(
@@ -2162,17 +1974,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p5_phantom_done::check_pre_done(&ctx, "6345GIMIX");
         assert_eq!(findings.len(), 1, "expected one refusal; got {:?}", findings);
@@ -2236,17 +2039,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p5_phantom_done::check_pre_done(&ctx, "6345PRIME");
         assert!(
@@ -2295,17 +2089,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p5_phantom_done::check_pre_done(&ctx, "6345CAP");
         assert_eq!(findings.len(), 1, "expected one finding; got {:?}", findings);
@@ -2368,17 +2153,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p5_phantom_done::check_pre_done(&ctx, "6200");
         assert!(
@@ -2438,17 +2214,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p5_phantom_done::check(&ctx);
         assert_eq!(
@@ -2530,17 +2297,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p5_phantom_done::check(&ctx);
         assert_eq!(
@@ -2645,17 +2403,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p5_phantom_done::check(&ctx);
         // Find findings for each task.
@@ -2729,17 +2478,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p5_phantom_done::check(&ctx);
         assert_eq!(
@@ -2827,17 +2567,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         p5_phantom_done::check(&ctx)
             .into_iter()
@@ -2975,17 +2706,8 @@ mod tests {
             },
         );
         let jc = InertJc;
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         for (caller, findings) in [
             ("check", p5_phantom_done::check(&ctx)),
@@ -3070,17 +2792,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p5_phantom_done::check(&ctx);
         let h1_findings: Vec<_> = findings
@@ -3183,17 +2896,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p5_phantom_done::check(&ctx);
         let h1_findings: Vec<_> = findings
@@ -3274,17 +2978,8 @@ mod tests {
         // No callers returned → stranded.
         // (set_find_references not called → defaults to empty vec)
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p5_phantom_done::check(&ctx);
         let h2_findings: Vec<_> = findings
@@ -3391,17 +3086,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p5_phantom_done::check(&ctx);
         let h1_findings: Vec<_> = findings
@@ -3481,17 +3167,8 @@ mod tests {
             }],
         );
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p5_phantom_done::check(&ctx);
         let h2_findings: Vec<_> = findings
@@ -3564,17 +3241,8 @@ mod tests {
         );
         // No callers set → empty.
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p5_phantom_done::check(&ctx);
         let h2_findings: Vec<_> = findings
@@ -3648,17 +3316,8 @@ mod tests {
         );
         // No callers.
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p5_phantom_done::check(&ctx);
         let h2_findings: Vec<_> = findings
@@ -3748,17 +3407,8 @@ mod tests {
         );
         // No callers for either — nothing is rescued by find_references.
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p5_phantom_done::check(&ctx);
         let h2_findings: Vec<_> = findings
@@ -3837,17 +3487,8 @@ mod tests {
             "read body: timed out reading response",
         );
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p5_phantom_done::check(&ctx);
         assert!(
@@ -3954,17 +3595,8 @@ mod tests {
         );
         jc.set_find_references("crates/reify-compiler/src/compile.rs", "beta", vec![]);
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p5_phantom_done::check(&ctx);
         let stranded: Vec<_> = findings
@@ -4231,17 +3863,8 @@ mod tests {
             }],
         );
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         // REGR1: must produce at least one new-pattern finding.
         let all_findings = p5_phantom_done::check(&ctx);
@@ -4391,17 +4014,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p5_phantom_done::check(&ctx);
         assert_eq!(
@@ -4485,17 +4099,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p5_phantom_done::check(&ctx);
         assert_eq!(
@@ -4579,17 +4184,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p5_phantom_done::check(&ctx);
         assert_eq!(

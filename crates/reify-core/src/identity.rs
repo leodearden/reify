@@ -66,6 +66,14 @@ impl ModulePath {
         }
         Ok(Self::new(dotted.split('.').map(String::from).collect()))
     }
+
+    /// The dot-separated spelling `import` and `module` declarations use
+    /// (`["std", "units"]` → `"std.units"`); the inverse of [`Self::from_dotted`]
+    /// over the paths it accepts (non-empty, no segment empty or containing `.`).
+    /// `Display` is slash-separated instead.
+    pub fn to_dotted(&self) -> String {
+        self.0.join(".")
+    }
 }
 
 impl fmt::Display for ModulePath {
@@ -717,6 +725,32 @@ mod tests {
                 input: "trailing.".into()
             })
         );
+    }
+
+    // ── ModulePath::to_dotted ─────────────────────────────────────────
+
+    #[test]
+    fn to_dotted_round_trips_from_dotted() {
+        for s in ["foo", "std.units", "a.b.c"] {
+            assert_eq!(
+                ModulePath::from_dotted(s).unwrap().to_dotted(),
+                s,
+                "round-trip of {s:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn to_dotted_joins_segments_with_dots_not_slashes() {
+        let path = ModulePath::new(vec!["std".to_string(), "units".to_string()]);
+        assert_eq!(path.to_dotted(), "std.units");
+        assert_eq!(path.to_string(), "std/units");
+    }
+
+    #[test]
+    fn to_dotted_output_parses_back_to_the_same_path() {
+        let path = ModulePath::new(vec!["std".to_string(), "units".to_string()]);
+        assert_eq!(ModulePath::from_dotted(&path.to_dotted()), Ok(path));
     }
 
     #[test]

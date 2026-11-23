@@ -1,0 +1,525 @@
+//! Program assembly: the single program-level compile entry point.
+//!
+//! [`compile_program`] compiles an entry module against the full stdlib plus
+//! its `#cfg`-satisfied user-import DAG and returns a [`CompiledProgram`]: the
+//! entry (with the direct imports' pub templates merged in), the direct import
+//! units, and the source of every compiled user module (PRD
+//! docs/prds/v0_6/resolution-unification.md §3.1). It upholds I1 (an
+//! import-free entry compiles exactly as the single-file stdlib compile does),
+//! I2 (a broken import surfaces as a diagnostic on the entry, never as a
+//! dropped compile), I3 (a gated-out import is inert), I4 (`std.*` is never
+//! walked through the DAG) and I5 (the entry's template list is the 1-hop pub
+//! merge).
+
+use std::path::{Path, PathBuf};
+
+use reify_core::{Diagnostic, ModulePath, Severity, SourceSpan, byte_offset_to_line_col};
+use reify_ir::ConstraintChecker;
+
+use crate::CompiledModule;
+use crate::cfg::CfgSet;
+use crate::compile_builder::pre_pass::{ExpectedPathOrigin, attach_module_path_diag};
+use crate::module_dag::{
+    ModuleDag, ModuleResolver, ModuleSource, entry_module_name, merge_imported_pub_templates,
+};
+
+/// One direct import of a program's entry, compiled.
+#[derive(Debug, Clone)]
+pub struct CompiledImportUnit {
+    /// The dotted path the entry imported it by.
+    pub import_path: String,
+    /// The compiled module.
+    pub module: CompiledModule,
+    /// The file it was compiled from; `None` for an embedded-stdlib module.
+    pub origin: Option<PathBuf>,
+}
+
+/// A compiled program: an entry module plus everything it was compiled with.
+#[derive(Debug, Clone)]
+pub struct CompiledProgram {
+    /// See [`Self::entry`].
+    entry: CompiledModule,
+    /// The entry's followed, successfully compiled direct imports, in
+    /// declaration order, one per distinct import path.
+    pub imports: Vec<CompiledImportUnit>,
+    /// The source of every user module compiled into the program, in
+    /// topological order (dependencies first), entry last.
+    pub sources: Vec<ModuleSource>,
+    /// Where among [`Self::entry`]'s diagnostics the re-homed copies of the
+    /// compiled user modules' own diagnostics sit.
+    rehomed: RehomedBlock,
+    /// How many of `entry.templates`, from the front, the entry's own compile
+    /// produced: a prefix of that list, which the I5 merge only appends to.
+    declared_templates: usize,
+}
+
+/// The entry's re-homed copies: one contiguous run of its diagnostics, the
+/// copy at `start + i` raised compiling the user module `module_keys[i]`.
+#[derive(Debug, Clone)]
+struct RehomedBlock {
+    start: usize,
+    /// Dotted module keys, one per copy, in diagnostics order.
+    module_keys: Vec<String>,
+}
+
+impl RehomedBlock {
+    /// The run's index range in `diagnostics`, which must contain it.
+    fn range_in(&self, diagnostics: &[Diagnostic]) -> std::ops::Range<usize> {
+        let range = self.start..self.start + self.module_keys.len();
+        assert!(
+            range.end <= diagnostics.len(),
+            "CompiledProgram invariant: the re-homed copies {range:?} must lie within the \
+             entry's {} diagnostics",
+            diagnostics.len(),
+        );
+        range
+    }
+}
+
+impl CompiledProgram {
+    /// Assemble a program, checking each of its invariants once up front; the
+    /// accessors check them again where they rely on them.
+    fn new(
+        entry: CompiledModule,
+        imports: Vec<CompiledImportUnit>,
+        sources: Vec<ModuleSource>,
+        rehomed: RehomedBlock,
+        declared_templates: usize,
+    ) -> Self {
+        let program = Self {
+            entry,
+            imports,
+            sources,
+            rehomed,
+            declared_templates,
+        };
+        let _ = program.rehomed.range_in(&program.entry.diagnostics);
+        let _ = program.entry_declared_templates();
+        program
+    }
+
+    /// The entry module, with the direct imports' pub templates merged into its
+    /// template list and every import failure attached to its diagnostics.
+    pub fn entry(&self) -> &CompiledModule {
+        &self.entry
+    }
+
+    /// The same module as [`Self::entry`], handed back by value.
+    pub fn into_entry(self) -> CompiledModule {
+        self.entry
+    }
+
+    /// The entry's diagnostics re-homed from the user module `module_key` (a
+    /// direct or transitive import), in the order they were raised.
+    // G-allow: P1 skeleton API for per-file diagnostics; consumer is GUI ο #5529
+    pub fn rehomed_from(&self, module_key: &str) -> impl Iterator<Item = &Diagnostic> {
+        let copies = &self.entry.diagnostics[self.rehomed.range_in(&self.entry.diagnostics)];
+        self.rehomed
+            .module_keys
+            .iter()
+            .zip(copies)
+            .filter(move |(key, _)| key.as_str() == module_key)
+            .map(|(_, diag)| diag)
+    }
+
+    /// The entry's diagnostics that are not re-homed copies: those raised
+    /// compiling the entry itself, and the failures of its imports.
+    // G-allow: P1 skeleton API for per-file diagnostics; consumer is GUI ο #5529
+    pub fn entry_own_diagnostics(&self) -> impl Iterator<Item = &Diagnostic> {
+        let diagnostics = &self.entry.diagnostics;
+        let range = self.rehomed.range_in(diagnostics);
+        diagnostics[..range.start]
+            .iter()
+            .chain(&diagnostics[range.end..])
+    }
+
+    /// The templates the entry's own compile produced, excluding the I5 interim
+    /// pub-template merge. Their spans index the entry's source, except an
+    /// `auto:` monomorph of a stdlib or imported generic, which keeps that
+    /// generic's spans.
+    pub fn entry_declared_templates(&self) -> &[crate::TopologyTemplate] {
+        let templates = &self.entry.templates;
+        assert!(
+            self.declared_templates <= templates.len(),
+            "CompiledProgram invariant: the entry's {} declared templates must be a prefix of \
+             its {} templates",
+            self.declared_templates,
+            templates.len(),
+        );
+        &templates[..self.declared_templates]
+    }
+}
+
+/// Compile the program rooted at `entry_path`, taking the entry's text from
+/// `entry_source` (an editor's dirty buffer works: `entry_path` need not exist
+/// on disk, and only its file stem names the entry module).
+///
+/// The full stdlib prelude is always seeded. User imports resolve from disk via
+/// `resolver`; imports whose `#cfg(...)` predicates `cfg` does not satisfy are
+/// skipped entirely (not resolved, not compiled, not in any prelude), and
+/// `std.*` imports are skipped because the stdlib is already present.
+///
+/// **Diagnostics-embedded contract.** Nothing short-circuits. An entry parse
+/// error reaches the diagnostics of [`CompiledProgram::entry`] through the
+/// compiler's own parse-error forwarding, and a followed import that is missing
+/// or broken surfaces as `Error` diagnostics on the entry while the entry
+/// itself still compiles, so a caller's "any Error diagnostic, exit non-zero"
+/// policy handles every failure uniformly. Every Error and Warning a compiled
+/// user module carries — transitive modules included — is re-homed onto the
+/// entry too, attributed to its file (see `rehome_imported`);
+/// [`CompiledProgram::rehomed_from`] and
+/// [`CompiledProgram::entry_own_diagnostics`] tell those copies apart from the
+/// entry's own diagnostics.
+///
+/// **Entry/import checker asymmetry.** Only the entry's compile receives
+/// `checker`; import units are compiled with the compile-time stub checker,
+/// which bounds the blast radius of compile-time `auto:` feasibility checks.
+/// The boundary is visible for constant-foldable constraints (e.g.
+/// `constraint 0 > 1`): such a module has its `auto:` candidates rejected when
+/// compiled as the entry under a real checker, but accepted when compiled as an
+/// import (stub, `Indeterminate`). For cell-dependent constraints the
+/// compile-time value map is empty, so both paths return `Indeterminate` and no
+/// divergence is observable. The integration test
+/// `compile_program_import_uses_stub` pins this.
+// G-allow: PRD §3.1 canonical program entry; production consumers are P1 γ #5517 and δ #5518
+pub fn compile_program(
+    entry_path: &Path,
+    entry_source: &str,
+    resolver: &ModuleResolver,
+    cfg: &CfgSet,
+    checker: &dyn ConstraintChecker,
+) -> CompiledProgram {
+    let parsed = crate::parse_with_stdlib(
+        entry_source,
+        ModulePath::single(entry_module_name(entry_path)),
+    );
+    compile_program_with_parsed_entry(entry_path, entry_source, &parsed, resolver, cfg, checker)
+}
+
+/// [`compile_program`] over an entry the caller has already parsed.
+///
+/// Precondition: `parsed` is the parse of `entry_source`. The entry's module
+/// key is `parsed.path`, dotted.
+///
+/// The seam exists for callers that already hold the entry's parse (the CLI's
+/// `reify check` parses it for its own module-path gate first, and the GUI's
+/// file-backed reload parses it to route the compile and keeps the parse for
+/// source write-back), and for callers
+/// that must seed extra enum names into the parse — an import's enums, which
+/// `parse_with_stdlib` does not know — until task #5522 (θ) moves that fixup
+/// into the resolution phase.
+pub fn compile_program_with_parsed_entry(
+    entry_path: &Path,
+    entry_source: &str,
+    parsed: &reify_ast::ParsedModule,
+    resolver: &ModuleResolver,
+    cfg: &CfgSet,
+    checker: &dyn ConstraintChecker,
+) -> CompiledProgram {
+    // Ambient stdlib visibility: every unit is parsed and compiled against the
+    // full cached stdlib, and no `std.*` import is walked at any depth.
+    let mut dag = ModuleDag::with_ambient_stdlib(cfg.clone());
+
+    // Computed once and shared by the compile loop, the prelude, the merge and
+    // the returned units, so they cannot drift.
+    let followed: Vec<&str> = followed_direct_imports(parsed, &dag)
+        .into_iter()
+        .map(|import| import.path.as_str())
+        .collect();
+
+    // Collect, never early-return on, import failures: a broken import still
+    // lets the entry compile, with the failure attached below.
+    let mut import_error_diags: Vec<Diagnostic> = Vec::new();
+    for import_path in &followed {
+        if let Err(diags) = dag.compile_module(import_path, resolver) {
+            push_unreported(&mut import_error_diags, diags);
+        }
+    }
+
+    // A satisfied-but-failed import is absent from `dag.modules`; `filter_map`
+    // skips it (its failure is already collected).
+    let compiled_imports: Vec<(&str, &CompiledModule)> = followed
+        .iter()
+        .filter_map(|path| dag.modules.get(*path).map(|module| (*path, module)))
+        .collect();
+    let import_refs: Vec<&CompiledModule> =
+        compiled_imports.iter().map(|(_, module)| *module).collect();
+    let mut entry = crate::compile_with_stdlib_and_imports_checked(parsed, &import_refs, checker);
+
+    attach_module_path_diag(&mut entry, parsed, ExpectedPathOrigin::FileLocation);
+    entry.diagnostics.extend(import_error_diags);
+    let rehomed = rehome_unit_diagnostics(&dag, &mut entry.diagnostics);
+    let entry_origin = entry.path.0.join(".");
+    let declared_templates = entry.templates.len();
+    merge_imported_pub_templates(&mut entry, &entry_origin, &compiled_imports);
+
+    let mut sources: Vec<ModuleSource> = dag
+        .topo_order
+        .iter()
+        .filter_map(|key| dag.source(key).cloned())
+        .collect();
+    sources.push(ModuleSource {
+        module_key: parsed.path.0.join("."),
+        path: entry_path.to_path_buf(),
+        source: entry_source.to_string(),
+    });
+
+    let imports: Vec<CompiledImportUnit> = followed
+        .iter()
+        .filter_map(|path| {
+            let origin = dag.source(path).map(|s| s.path.clone());
+            dag.modules.remove(*path).map(|module| CompiledImportUnit {
+                import_path: path.to_string(),
+                module,
+                origin,
+            })
+        })
+        .collect();
+
+    CompiledProgram::new(entry, imports, sources, rehomed, declared_templates)
+}
+
+/// True iff compiling `parsed` as a program entry under `cfg` follows at least
+/// one import. An entry that follows none compiles as the single-file stdlib
+/// compile does, plus the module-header check (I1).
+pub fn entry_follows_imports(parsed: &reify_ast::ParsedModule, cfg: &CfgSet) -> bool {
+    !followed_imports(parsed, cfg).is_empty()
+}
+
+/// The entry imports [`compile_program`] follows under `cfg` (cfg-satisfied,
+/// not `std.*`), in declaration order, one per path.
+pub fn followed_imports<'p>(
+    parsed: &'p reify_ast::ParsedModule,
+    cfg: &CfgSet,
+) -> Vec<&'p reify_ast::ImportDecl> {
+    followed_direct_imports(parsed, &ModuleDag::with_ambient_stdlib(cfg.clone()))
+}
+
+/// The resolver a program compile of the entry file `entry_path` takes: user
+/// imports resolve from the entry's directory. Its stdlib root,
+/// `<dir>/crates/reify-compiler/stdlib`, is never read, because a program
+/// compile never walks `std.*` (I4).
+pub fn entry_dir_resolver(entry_path: &Path) -> ModuleResolver {
+    let dir = entry_path.parent().unwrap_or_else(|| Path::new("."));
+    ModuleResolver::new(dir, dir.join("crates/reify-compiler/stdlib"))
+}
+
+/// Append each of `diags` that `reported` does not already hold.
+///
+/// A DAG does not remember a module that failed (a retry re-reads it), so a
+/// broken module shared by two direct imports fails once per importer, with the
+/// same diagnostics each time; the entry reports each failure once.
+fn push_unreported(reported: &mut Vec<Diagnostic>, diags: Vec<Diagnostic>) {
+    for diag in diags {
+        let already = reported.iter().any(|seen| {
+            seen.severity == diag.severity && seen.code == diag.code && seen.message == diag.message
+        });
+        if !already {
+            reported.push(diag);
+        }
+    }
+}
+
+/// The entry's followed direct imports, in declaration order, one per path:
+/// those `dag` follows, through the same gate it applies inside every unit.
+fn followed_direct_imports<'p>(
+    parsed: &'p reify_ast::ParsedModule,
+    dag: &ModuleDag,
+) -> Vec<&'p reify_ast::ImportDecl> {
+    let mut followed: Vec<&reify_ast::ImportDecl> = Vec::new();
+    for import in parsed.declarations.iter().filter_map(|decl| match decl {
+        reify_ast::Declaration::Import(import) => Some(import),
+        _ => None,
+    }) {
+        let already = followed.iter().any(|seen| seen.path == import.path);
+        if dag.follows_import(import) && !already {
+            followed.push(import);
+        }
+    }
+    followed
+}
+
+/// Append to the entry's `diagnostics`, as one contiguous run, a re-homed copy
+/// of every Error and Warning carried by a unit `dag` compiled, and return
+/// where that run sits. Walks the topological order, not just the direct
+/// imports, so a transitive unit's diagnostic is not swallowed one level down.
+fn rehome_unit_diagnostics(dag: &ModuleDag, diagnostics: &mut Vec<Diagnostic>) -> RehomedBlock {
+    let start = diagnostics.len();
+    let mut module_keys = Vec::new();
+    for key in &dag.topo_order {
+        let Some(module) = dag.modules.get(key) else {
+            continue;
+        };
+        for diag in module
+            .diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, Severity::Error | Severity::Warning))
+        {
+            module_keys.push(key.clone());
+            diagnostics.push(rehome_imported(diag, key, dag.source(key)));
+        }
+    }
+    RehomedBlock { start, module_keys }
+}
+
+/// A copy of `diag`, raised while compiling the imported module `module_key`,
+/// fit to live on the entry.
+///
+/// `Diagnostic` carries no file, so the file travels in the message: it is
+/// prefixed `in imported module '<key>' (<path>:<line>:<col>)`, located by the
+/// first label that indexes the imported file, or `(<path>)` when none does,
+/// or `(embedded stdlib)` when the module has no source. Every label span is
+/// moved to the prelude sentinel, because it indexes the imported file and
+/// would otherwise mark a wrong offset in the entry. Severity, code and
+/// candidates are kept, so an exit policy keyed on them treats the copy exactly
+/// like the original.
+fn rehome_imported(
+    diag: &Diagnostic,
+    module_key: &str,
+    origin: Option<&ModuleSource>,
+) -> Diagnostic {
+    let location = match origin {
+        None => "embedded stdlib".to_string(),
+        Some(origin) => {
+            let path = origin.path.display();
+            let in_file = diag.labels.iter().find(|label| {
+                !label.span.is_prelude() && (label.span.start as usize) <= origin.source.len()
+            });
+            match in_file {
+                Some(label) => {
+                    let (line, col) =
+                        byte_offset_to_line_col(&origin.source, label.span.start as usize);
+                    format!("{path}:{line}:{col}")
+                }
+                None => path.to_string(),
+            }
+        }
+    };
+    let mut rehomed = diag.clone();
+    rehomed.message = format!(
+        "in imported module '{module_key}' ({location}): {}",
+        diag.message
+    );
+    for label in &mut rehomed.labels {
+        label.span = SourceSpan::prelude();
+    }
+    rehomed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reify_core::{DiagnosticCode, DiagnosticLabel};
+
+    /// While I4 holds only `std.*` resolves embedded, so `compile_program` never
+    /// reaches the no-source branch; this pins it directly.
+    #[test]
+    fn rehome_without_source_names_the_embedded_stdlib() {
+        let original = Diagnostic::warning("something odd")
+            .with_code(DiagnosticCode::ImportedModuleParseError)
+            .with_label(DiagnosticLabel::new(SourceSpan::new(3, 7), "here"));
+
+        let rehomed = rehome_imported(&original, "std.units", None);
+
+        assert_eq!(
+            rehomed.message,
+            "in imported module 'std.units' (embedded stdlib): something odd"
+        );
+        assert_eq!(rehomed.severity, original.severity);
+        assert_eq!(rehomed.code, original.code);
+        assert_eq!(rehomed.labels.len(), 1);
+        assert_eq!(rehomed.labels[0].span, SourceSpan::prelude());
+        assert_eq!(rehomed.labels[0].message, "here");
+    }
+
+    /// `module main` declaring one template, `Rig`, and importing nothing.
+    fn compile_one_template_entry() -> CompiledProgram {
+        let dir = tempfile::tempdir().expect("tempdir");
+        compile_program(
+            &dir.path().join("main.ri"),
+            "module main\nstructure def Rig {\n    param x : Length = 1mm\n}\n",
+            &ModuleResolver::new(dir.path(), dir.path().join("stdlib")),
+            &CfgSet::default(),
+            &crate::compile_builder::auto_type_param_phase::CompileTimeIndeterminateChecker,
+        )
+    }
+
+    fn rehomed_block(start: usize, module_keys: &[&str]) -> RehomedBlock {
+        RehomedBlock {
+            start,
+            module_keys: module_keys.iter().map(|key| key.to_string()).collect(),
+        }
+    }
+
+    fn warnings(count: usize) -> Vec<Diagnostic> {
+        (0..count)
+            .map(|i| Diagnostic::warning(format!("warning {i}")))
+            .collect()
+    }
+
+    #[test]
+    fn rehomed_block_range_is_its_run_of_copies() {
+        let diagnostics = warnings(4);
+
+        assert_eq!(rehomed_block(1, &["a", "b"]).range_in(&diagnostics), 1..3);
+        assert_eq!(rehomed_block(2, &["a", "b"]).range_in(&diagnostics), 2..4);
+        assert_eq!(rehomed_block(4, &[]).range_in(&diagnostics), 4..4);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "CompiledProgram invariant: the re-homed copies 1..3 must lie within \
+                    the entry's 2 diagnostics"
+    )]
+    fn rehomed_block_outside_the_diagnostics_names_the_invariant() {
+        let _ = rehomed_block(1, &["a", "b"]).range_in(&warnings(2));
+    }
+
+    /// The invariants are checked where a program is built, not only where it
+    /// is read.
+    #[test]
+    #[should_panic(expected = "CompiledProgram invariant: the re-homed copies")]
+    fn compiled_program_new_rejects_a_rehomed_block_past_the_diagnostics() {
+        let program = compile_one_template_entry();
+        let len = program.entry.diagnostics.len();
+
+        let _ = CompiledProgram::new(
+            program.entry,
+            Vec::new(),
+            Vec::new(),
+            rehomed_block(len + 1, &["a"]),
+            1,
+        );
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "CompiledProgram invariant: the entry's 2 declared templates must be \
+                    a prefix of its 1 templates"
+    )]
+    fn compiled_program_new_rejects_a_declared_prefix_longer_than_the_templates() {
+        let program = compile_one_template_entry();
+
+        let _ = CompiledProgram::new(
+            program.entry,
+            Vec::new(),
+            Vec::new(),
+            rehomed_block(0, &[]),
+            2,
+        );
+    }
+
+    /// A shrunk `entry.templates` below the declared prefix gets a panic naming
+    /// the invariant and both counts, not a bare slice-index panic.
+    #[test]
+    #[should_panic(
+        expected = "CompiledProgram invariant: the entry's 1 declared templates must be \
+                    a prefix of its 0 templates"
+    )]
+    fn entry_declared_templates_names_a_shrunk_template_list() {
+        let mut program = compile_one_template_entry();
+        program.entry.templates.clear();
+
+        let _ = program.entry_declared_templates();
+    }
+}

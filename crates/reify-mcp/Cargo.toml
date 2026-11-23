@@ -6,6 +6,7 @@ license.workspace = true
 description = "MCP (Model Context Protocol) server for Reify"
 
 [dependencies]
+workspace-feature-union.workspace = true
 reify-core = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

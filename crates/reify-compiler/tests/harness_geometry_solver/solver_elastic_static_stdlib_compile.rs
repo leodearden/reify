@@ -14,7 +14,8 @@ use reify_core::{DiagnosticCode, DimensionVector, Severity, Type};
 
 /// Return the `std/solver/elastic` CompiledModule from the production stdlib
 /// loader. Exercises the exact same code path as production: embedded source,
-/// sequential compilation with growing prelude, OnceLock caching.
+/// each stdlib module compiled against its declared imports (strict build),
+/// OnceLock caching.
 ///
 /// Panics with a helpful message (listing available paths) if the module is not
 /// found — the expected failure mode before step-2 lands the declaration.
@@ -174,10 +175,11 @@ fn solve_elastic_static_direct_point_load_compiles_clean() {
 structure FEACantileverTest {
     let result = solve_elastic_static(
         Steel_AISI_1045(), 1000mm, 100mm, 100mm,
-        [PointLoad(point: "tip", force: 1000.0N)],
-        [FixedSupport(target: "root")],
+        [PointLoad(point: vertex(body, "tip"), force: 1000.0N)],
+        [FixedSupport(target: face(body, "root"))],
         ElasticOptions()
     )
+    let body = box(1000mm, 100mm, 100mm)
 }
 "#;
     let module = reify_test_support::compile_source_with_stdlib(src);
@@ -206,7 +208,7 @@ structure FEAPressureTest {
     let result = solve_elastic_static(
         Steel_AISI_1045(), 1000mm, 100mm, 100mm,
         [PressureLoad(magnitude: 1000000.0Pa, face: face(body, "x_max"), direction: "normal")],
-        [FixedSupport(target: "root")],
+        [FixedSupport(target: face(body, "root"))],
         ElasticOptions()
     )
 }
@@ -238,9 +240,10 @@ structure FEABadLoads {
     let result = solve_elastic_static(
         Steel_AISI_1045(), 1000mm, 100mm, 100mm,
         [Steel_AISI_1045()],
-        [FixedSupport(target: "root")],
+        [FixedSupport(target: face(body, "root"))],
         ElasticOptions()
     )
+    let body = box(1000mm, 100mm, 100mm)
 }
 "#;
     let module = reify_test_support::compile_source_with_stdlib(src);
@@ -271,11 +274,12 @@ structure FEAMultiCaseTest {
         Steel_AISI_1045(), 1000mm, 100mm, 100mm,
         [LoadCase(
             name: "c",
-            loads: [PointLoad(point: "tip", force: 1000.0N)],
-            supports: [FixedSupport(target: "root")]
+            loads: [PointLoad(point: vertex(body, "tip"), force: 1000.0N)],
+            supports: [FixedSupport(target: face(body, "root"))]
         )],
         ElasticOptions()
     )
+    let body = box(1000mm, 100mm, 100mm)
 }
 "#;
     let module = reify_test_support::compile_source_with_stdlib(src);
@@ -346,10 +350,11 @@ fn constitutive_law_input_struct_is_retired() {
 structure DirectPassRegression {
     let result = solve_elastic_static(
         Steel_AISI_1045(), 1000mm, 100mm, 100mm,
-        [PointLoad(point: "tip", force: 1000.0N)],
-        [FixedSupport(target: "root")],
+        [PointLoad(point: vertex(body, "tip"), force: 1000.0N)],
+        [FixedSupport(target: face(body, "root"))],
         ElasticOptions()
     )
+    let body = box(1000mm, 100mm, 100mm)
 }
 "#;
     let module2 = reify_test_support::compile_source_with_stdlib(good_src);
@@ -492,8 +497,8 @@ structure FEABodyCantilever {
     let result = solve_elastic_static(
         Steel_AISI_1045(),
         body,
-        [PointLoad(point: "tip", force: 1000.0N)],
-        [FixedSupport(target: "root")],
+        [PointLoad(point: vertex(body, "tip"), force: 1000.0N)],
+        [FixedSupport(target: face(body, "root"))],
         ElasticOptions()
     )
 }
@@ -538,13 +543,14 @@ structure StressPredicateProbe {
     param yield_limit : Pressure = 250MPa
     let r = solve_elastic_static(
         Steel_AISI_1045(), 1000mm, 100mm, 100mm,
-        [PointLoad(point: "tip", force: 1000.0N)],
-        [FixedSupport(target: "root")],
+        [PointLoad(point: vertex(body, "tip"), force: 1000.0N)],
+        [FixedSupport(target: face(body, "root"))],
         ElasticOptions()
     )
     let vm = von_mises(r.stress)
     let peak = max(von_mises(r.stress))
     constraint max(von_mises(r.stress)) < yield_limit
+    let body = box(1000mm, 100mm, 100mm)
 }
 "#;
     let module = reify_test_support::compile_source_with_stdlib(src);
@@ -605,5 +611,127 @@ structure StressPredicateProbe {
         },
         "max(von_mises(r.stress)) must reduce the field codomain to Scalar<Pressure>, got {:?}",
         peak.result_type
+    );
+}
+
+// ─── Bmig2 (#5312): FEA selector field typing ────────────────────────────────
+//
+// The FEA load/support target fields are typed selectors (PRD
+// docs/prds/v0_6/fea-load-support-selector-migration.md D8/D10). The
+// struct-ctor conformance chokepoint supplies every reject signal: a bare
+// String is an ArgTypeMismatch, a wrong-kind selector a SelectorKindMismatch.
+
+/// Wrap one `let x = <ctor>` in a structure owning a `body` geometry cell, so a
+/// named-leaf selector ctor such as `face(body, "top")` has a target.
+fn in_body_structure(ctor: &str) -> String {
+    format!("structure S {{\n    let body = box(1m, 0.1m, 0.1m)\n    let x = {ctor}\n}}\n")
+}
+
+/// The Error-severity diagnostics of compiling `ctor` inside
+/// [`in_body_structure`] with the stdlib.
+fn selector_field_errors(ctor: &str) -> Vec<reify_core::Diagnostic> {
+    reify_test_support::compile_source_with_stdlib(&in_body_structure(ctor))
+        .diagnostics
+        .into_iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect()
+}
+
+fn assert_no_errors(ctor: &str) {
+    let errors = selector_field_errors(ctor);
+    assert!(
+        errors.is_empty(),
+        "`{ctor}` must compile clean, got {errors:?}"
+    );
+}
+
+/// `ctor` yields exactly one Error, with `code`, whose message names every one
+/// of `fragments`.
+fn assert_single_error(ctor: &str, code: DiagnosticCode, fragments: &[&str]) {
+    let errors = selector_field_errors(ctor);
+    assert_eq!(
+        errors.len(),
+        1,
+        "`{ctor}` must yield exactly one Error, got {errors:?}"
+    );
+    let error = &errors[0];
+    assert_eq!(error.code, Some(code), "`{ctor}`: wrong code in {error:?}");
+    for fragment in fragments {
+        assert!(
+            error.message.contains(fragment),
+            "`{ctor}`: message must name {fragment:?}, got {:?}",
+            error.message
+        );
+    }
+}
+
+#[test]
+fn traction_load_face_is_a_face_selector() {
+    assert_no_errors(r#"TractionLoad(face: face(body, "top"), traction: 5.0Pa)"#);
+    assert_single_error(
+        r#"TractionLoad(face: "top", traction: 5.0Pa)"#,
+        DiagnosticCode::ArgTypeMismatch,
+        &["face", "FaceSelector", "String"],
+    );
+    assert_single_error(
+        r#"TractionLoad(face: edge(body, "e"), traction: 5.0Pa)"#,
+        DiagnosticCode::SelectorKindMismatch,
+        &["FaceSelector", "EdgeSelector"],
+    );
+}
+
+#[test]
+fn body_force_body_is_a_body_selector() {
+    assert_no_errors(r#"BodyForce(body: solid_body(body, "all"), force_density: -77000.0N/m^3)"#);
+    assert_single_error(
+        r#"BodyForce(body: "all", force_density: -77000.0N/m^3)"#,
+        DiagnosticCode::ArgTypeMismatch,
+        &["body", "BodySelector", "String"],
+    );
+    assert_single_error(
+        r#"BodyForce(body: face(body, "f"), force_density: -77000.0N/m^3)"#,
+        DiagnosticCode::SelectorKindMismatch,
+        &["BodySelector", "FaceSelector"],
+    );
+}
+
+/// FixedSupport/PinnedSupport.target is the kind-agnostic `Selector` (D3/A2,
+/// `Type::AnySelector`): every selector kind is accepted, a non-selector is not.
+#[test]
+fn fixed_and_pinned_support_target_is_kind_agnostic() {
+    for support in ["FixedSupport", "PinnedSupport"] {
+        for target in [
+            r#"face(body, "root")"#,
+            r#"edge(body, "e")"#,
+            r#"vertex(body, "v")"#,
+            r#"solid_body(body, "all")"#,
+        ] {
+            assert_no_errors(&format!("{support}(target: {target})"));
+        }
+        assert_single_error(
+            &format!(r#"{support}(target: "root")"#),
+            DiagnosticCode::ArgTypeMismatch,
+            &["target", "Selector", "String"],
+        );
+        assert_single_error(
+            &format!("{support}(target: 1.0)"),
+            DiagnosticCode::ArgTypeMismatch,
+            &["target", "Real"],
+        );
+    }
+}
+
+#[test]
+fn point_load_point_is_a_vertex_selector() {
+    assert_no_errors(r#"PointLoad(point: vertex(body, "tip"), force: 1000N)"#);
+    assert_single_error(
+        r#"PointLoad(point: "tip", force: 1000N)"#,
+        DiagnosticCode::ArgTypeMismatch,
+        &["point", "VertexSelector", "String"],
+    );
+    assert_single_error(
+        r#"PointLoad(point: faces(body), force: 1000N)"#,
+        DiagnosticCode::SelectorKindMismatch,
+        &["VertexSelector", "FaceSelector"],
     );
 }

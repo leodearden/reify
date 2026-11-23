@@ -12,7 +12,11 @@
 //! that the join is now reported instead of being silently picked. See
 //! `crates/reify-syntax/src/member_continuation.rs` for the normative rule.
 
+use crate::common::tracked_corpus::{
+    INERT_PROBE_RI, swept_ri_paths, tracked_fixture_repo, workspace_root,
+};
 use reify_core::ModulePath;
+use std::path::Path;
 // The "is this a member-continuation diagnostic?" question is answered by the
 // rule's own exported discriminator, never by a substring predicate restated
 // here: the recogniser lives next to the message it recognises, so a reword
@@ -309,51 +313,6 @@ fn a_guarded_block_closing_brace_at_the_member_column_is_clean() {
 
 // ── (e) repo-wide sweep: the standing guard ──────────────────────────────────
 
-/// The workspace root, resolved from this crate's manifest dir
-/// (`<root>/crates/reify-syntax` → up two).
-fn workspace_root() -> std::path::PathBuf {
-    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    manifest
-        .parent()
-        .and_then(|p| p.parent())
-        .expect("CARGO_MANIFEST_DIR must be <workspace>/crates/reify-syntax")
-        .to_path_buf()
-}
-
-/// Every `*.ri` file TRACKED by git under `root`, as absolute paths.
-///
-/// Asked of git rather than derived by walking the filesystem: the guard below
-/// makes a claim about this repository's SOURCE, and a filesystem walk cannot
-/// tell source from a scratch design a developer is mid-way through authoring
-/// (the reify-design workflow writes `.ri` files in-tree) or from a fixture
-/// some aborted run left behind. Either would turn this suite red while
-/// asserting, wrongly, that tracked source is ambiguous.
-///
-/// Built through `reify_git_env::command`, so an ambient `GIT_DIR`/
-/// `GIT_WORK_TREE` cannot point this `git -C <root>` at a different repository.
-fn tracked_ri_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
-    let output = reify_git_env::command(root)
-        .args(["ls-files", "-z", "--", "*.ri"])
-        .output()
-        .unwrap_or_else(|e| panic!("cannot run `git ls-files` in {}: {e}", root.display()));
-    assert!(
-        output.status.success(),
-        "`git ls-files` failed in {} ({}): {}",
-        root.display(),
-        output.status,
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let listing = String::from_utf8(output.stdout).expect("git ls-files output must be UTF-8");
-    let mut out: Vec<_> = listing
-        .split('\0')
-        .filter(|entry| !entry.is_empty())
-        .map(|entry| root.join(entry))
-        .collect();
-    out.sort();
-    out
-}
-
 /// Byte offset → 1-based (line, column), for actionable failure reporting.
 fn line_col(source: &str, offset: u32) -> (usize, usize) {
     let offset = offset as usize;
@@ -363,8 +322,8 @@ fn line_col(source: &str, offset: u32) -> (usize, usize) {
     (line, col)
 }
 
-/// THE STANDING GUARD: no TRACKED `.ri` source in this repository may trip
-/// the member-continuation check.
+/// THE STANDING GUARD: no tracked `.ri`, save a path verify's scope classifier
+/// marks inert, may trip the member-continuation check.
 ///
 /// A hit here is a genuine finding, and it has exactly two dispositions: the
 /// rule is wrong (fix `member_continuation.rs`), or the source really is
@@ -373,34 +332,101 @@ fn line_col(source: &str, offset: u32) -> (usize, usize) {
 #[test]
 fn no_tracked_ri_source_trips_the_member_continuation_check() {
     let root = workspace_root();
-    let files = tracked_ri_files(&root);
+    let sweep = member_continuation_sweep(&root);
     assert!(
-        files.len() > 100,
+        sweep.swept > 100,
         "sweep found only {} tracked .ri files under {} — the listing is broken, \
          not the repo",
-        files.len(),
+        sweep.swept,
         root.display()
     );
 
-    let mut hits: Vec<String> = Vec::new();
-    for path in &files {
-        let Ok(source) = std::fs::read_to_string(path) else {
-            continue;
+    assert!(
+        sweep.hits.is_empty(),
+        "{} tracked .ri source location(s) trip the member-continuation check \
+         (swept {} tracked files):\n{}",
+        sweep.hits.len(),
+        sweep.swept,
+        sweep.hits.join("\n")
+    );
+}
+
+/// What one member-continuation sweep read, and what it found there.
+struct ContinuationSweep {
+    swept: usize,
+    hits: Vec<String>,
+}
+
+/// Sweep the tracked `.ri` corpus under `root`, collecting every
+/// member-continuation hit as `rel:line:col: message`, and every file it
+/// cannot read as `rel: unreadable: error`.
+///
+/// It takes only `root` and picks its listing itself, so a test over a fixture
+/// repository pins WHICH listing the standing guard reads.
+fn member_continuation_sweep(root: &Path) -> ContinuationSweep {
+    let mut sweep = ContinuationSweep {
+        swept: 0,
+        hits: Vec::new(),
+    };
+    for rel in swept_ri_paths(root) {
+        sweep.swept += 1;
+        let source = match std::fs::read_to_string(root.join(&rel)) {
+            Ok(source) => source,
+            Err(e) => {
+                sweep.hits.push(format!("{rel}: unreadable: {e}"));
+                continue;
+            }
         };
         for (start, _end, message) in member_continuation_errors(&source) {
             let (line, col) = line_col(&source, start);
-            let rel = path.strip_prefix(&root).unwrap_or(path);
-            hits.push(format!("{}:{}:{}: {}", rel.display(), line, col, message));
+            sweep.hits.push(format!("{rel}:{line}:{col}: {message}"));
         }
     }
+    sweep
+}
 
+/// The sweep reads the shared listing, so it never reads a `.ri` verify's
+/// scope classifier marks inert. The listing's own tests pin that it follows
+/// the classifier; this pins that the sweep reads that listing.
+#[test]
+fn member_continuation_sweep_skips_what_the_scope_classifier_marks_inert() {
+    let dir = tracked_fixture_repo(&[
+        (INERT_PROBE_RI, REPRO_ONE),
+        ("examples/zz_kept.ri", REPRO_ONE),
+    ]);
+
+    let sweep = member_continuation_sweep(dir.path());
+
+    let hit_paths: Vec<&str> = sweep
+        .hits
+        .iter()
+        .map(|hit| hit.split(':').next().unwrap_or(hit))
+        .collect();
+    assert_eq!(
+        hit_paths,
+        ["examples/zz_kept.ri"],
+        "hits: {:#?}",
+        sweep.hits
+    );
+    assert_eq!(sweep.swept, 1, "hits: {:#?}", sweep.hits);
+}
+
+/// A tracked file the sweep cannot read is a hit, as the parse guard reports
+/// it, never a silent skip.
+#[test]
+fn member_continuation_sweep_reports_an_unreadable_tracked_file() {
+    let gone = "examples/zz_gone.ri";
+    let dir = tracked_fixture_repo(&[(gone, REPRO_ONE)]);
+    std::fs::remove_file(dir.path().join(gone))
+        .unwrap_or_else(|e| panic!("cannot remove {gone} from the work tree: {e}"));
+
+    let sweep = member_continuation_sweep(dir.path());
+
+    assert_eq!(sweep.swept, 1, "hits: {:#?}", sweep.hits);
     assert!(
-        hits.is_empty(),
-        "{} tracked .ri source location(s) trip the member-continuation check \
-         (swept {} tracked files):\n{}",
-        hits.len(),
-        files.len(),
-        hits.join("\n")
+        matches!(sweep.hits.as_slice(), [hit] if hit.starts_with(&format!("{gone}: unreadable: "))),
+        "an indexed file missing from the work tree must be one unreadable hit: {:#?}",
+        sweep.hits
     );
 }
 

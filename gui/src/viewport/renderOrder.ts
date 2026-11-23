@@ -8,15 +8,27 @@
  *
  *   -1      undeformed-geometry underlay        (this module — UNDERLAY_RENDER_ORDER)
  *    0      model meshes                        (three.js default)
- *    1..9   scene-content overlays              (this module — OVERLAY_RENDER_ORDER)
+ *    1..9   scene-content overlays:
+ *      1      FEA diagnostic overlay Group      (this module — OVERLAY_RENDER_ORDER)
+ *      2      black edges overlay               (this module — EDGES_OVERLAY_RENDER_ORDER)
+ *      3      selection outline                 (this module — SELECTION_OUTLINE_RENDER_ORDER)
  *   10..12  viewport helper tier                (this module — the constants below)
+ *
+ * three.js sorts a render list by `groupOrder` BEFORE `renderOrder`, and a
+ * Group's `renderOrder` becomes the `groupOrder` of every descendant
+ * (`WebGLRenderLists` painterSortStable / `WebGLRenderer.projectObject`). So the
+ * edges and selection-outline tiers are set on the individual LineSegments (the
+ * edges Group stays at 0), while a tier set on a Group — the FEA overlay — draws
+ * after every object that is not under an ordered Group.
  *
  * ## What this module owns
  *
  * Every tier this codebase controls is defined here — the mesh tier at 0 is
  * three.js's default, not one of ours — and each is imported at its use site:
- * `meshManager.ts` imports `UNDERLAY_RENDER_ORDER` and `feaDiagnosticOverlay.ts`
- * imports `OVERLAY_RENDER_ORDER`, so this module is the single source of truth
+ * `meshManager.ts` imports `UNDERLAY_RENDER_ORDER`, `feaDiagnosticOverlay.ts`
+ * imports `OVERLAY_RENDER_ORDER`, `edgesOverlay.ts` imports
+ * `EDGES_OVERLAY_RENDER_ORDER` and `selection.ts` imports
+ * `SELECTION_OUTLINE_RENDER_ORDER`, so this module is the single source of truth
  * for every renderOrder the viewport sets — `renderOrder.test.ts` asserts
  * directly against the real symbols, not a scan of the modules that use them.
  *
@@ -50,6 +62,12 @@ export const UNDERLAY_RENDER_ORDER = -1;
 
 /** FEA diagnostic overlay Group — above the default mesh layer (renderOrder 0). */
 export const OVERLAY_RENDER_ORDER = 1;
+
+/** Black edges-in-black overlay lines — above the model meshes, below the selection outline. */
+export const EDGES_OVERLAY_RENDER_ORDER = 2;
+
+/** Orange selection outline — always drawn over the black edges overlay. */
+export const SELECTION_OUTLINE_RENDER_ORDER = 3;
 
 /** Ground-plane GridHelper — first in the helper tier, after all model geometry. */
 export const GRID_RENDER_ORDER = 10;

@@ -6,6 +6,7 @@ license.workspace = true
 description = "Pure-data documentation model types for the reify doc tool"
 
 [dependencies]
+workspace-feature-union.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 

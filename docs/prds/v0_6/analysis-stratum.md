@@ -82,7 +82,7 @@ The finding records in `plans/review-all-reify-20261010.json` carry the full mea
   - `StructuredComputeDetail::Fea(reify_solver_elastic::FeaDiagnosticDetail)`. That is a 3-variant enum with no serde; its persisted form is a reify-eval mirror in `persistent_cache/diagnostics_wire.rs`.
   - From `elastic_result.rs`: `BudgetReason`, `ConvergenceStatus` (the public field type of `AposterioriEstimate.convergence_status`) and `progressive::PartialElasticResult`.
   - `elastic_result.rs` is 2,563 of the crate's 2,883 lines.
-  - The orphan rule ties `ElasticResult` only to `reify_core::PersistentlyCacheable`.
+  - The orphan rule ties `ElasticResult` only to `reify_core::persistent_cache::PersistentlyCacheable`.
   - `reify-eval` is the contract's only consumer crate.
 - **Per-target behaviour is string-keyed in 11 production sites (fk-34bddf1fcbce, fk-7d4f2be7b634).**
   - `run_compute_dispatch`'s two shell-extract fold sites, one in the persistent-HIT arm and one in the Completed arm. A prose NOTE asks future paths to mirror them.
@@ -463,7 +463,7 @@ A family move is one diff that does all of the following.
 ## 8. Pre-conditions (G3, verified on main 2026-10-13)
 
 **Present at main.** No grammar change is needed, so `grammar_confirmed: true` holds on every leaf.
-- `reify_core::PersistentlyCacheable`.
+- `reify_core::persistent_cache::PersistentlyCacheable`.
 - `reify_ir::{TopologyAttributeTable, TopologyAttribute, SelectorValue}`.
 - `CompiledFunction.optimized_target`.
 - `Engine::{set_active_solve_cancel, set_solver_progress_sink}`.

@@ -38,53 +38,11 @@ pub const DEFAULT_SLICER_NAMES: &[&str] = &[
     "prusaslicer",
 ];
 
-/// Discover a PrusaSlicer binary on the `$PATH`-style `path_var` string.
-///
-/// Splits `path_var` on the platform path separator (`:` on unix, `;` on
-/// Windows) via [`std::env::split_paths`], then for each non-empty directory
-/// tries each `candidates` name in order, returning the first `dir/name` that
-/// exists and is an executable regular file. Returns `None` when no candidate is
-/// found — the W_FDM_SLICER_UNAVAILABLE trigger (PRD open Q4).
-///
-/// Iteration is **directory-major**: every candidate is tried in `$PATH`
-/// directory order, so an earlier `$PATH` entry wins over a later one
-/// regardless of candidate priority (standard `$PATH` lookup semantics).
-///
-/// On unix "executable" means a regular file with at least one of the three
-/// execute bits set (`mode & 0o111 != 0`); on other platforms it means any
-/// existing regular file (the execute bit has no unix-style meaning there).
+/// The first of `candidates` found on the `$PATH`-style `path_var` string.
+/// `None` is the W_FDM_SLICER_UNAVAILABLE trigger (PRD open Q4). The lookup
+/// policy is [`reify_exec_lookup::find_executable_on_path`]'s.
 pub fn discover_slicer(path_var: &str, candidates: &[&str]) -> Option<PathBuf> {
-    for dir in std::env::split_paths(path_var) {
-        if dir.as_os_str().is_empty() {
-            // An empty `$PATH` component (e.g. `""` or a `::`) conventionally
-            // means "the current directory"; we deliberately skip it so a bare
-            // candidate name can never be resolved relative to the CWD.
-            continue;
-        }
-        for &name in candidates {
-            let candidate = dir.join(name);
-            if is_executable_file(&candidate) {
-                return Some(candidate);
-            }
-        }
-    }
-    None
-}
-
-/// `true` iff `path` is an existing regular file that is executable.
-#[cfg(unix)]
-fn is_executable_file(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    match std::fs::metadata(path) {
-        Ok(m) => m.is_file() && (m.permissions().mode() & 0o111 != 0),
-        Err(_) => false,
-    }
-}
-
-/// `true` iff `path` is an existing regular file (non-unix: no execute bit).
-#[cfg(not(unix))]
-fn is_executable_file(path: &Path) -> bool {
-    path.is_file()
+    reify_exec_lookup::find_executable_on_path(candidates, Some(std::ffi::OsStr::new(path_var)))
 }
 
 // ── Settings → CLI args ────────────────────────────────────────────────────────
@@ -181,7 +139,8 @@ pub enum SliceRunOutcome {
         /// The produced G-code source, verbatim.
         gcode: String,
     },
-    /// The run was cancelled via `cancel_poll` (the child was reaped — no orphan).
+    /// The run was cancelled via `cancel_poll` (any spawned child was reaped; a
+    /// run cancelled before spawn starts none).
     Cancelled,
     /// The slicer could not be spawned, exited non-zero, or produced no output.
     Failed {
@@ -199,9 +158,12 @@ const RUN_POLL_INTERVAL: Duration = Duration::from_millis(20);
 /// On normal exit: a zero status reads the G-code from the `-o` output path the
 /// `args` carry → [`SliceRunOutcome::Completed`]; a non-zero status or missing
 /// output → [`SliceRunOutcome::Failed`]. A spawn error (e.g.
-/// [`std::io::ErrorKind::NotFound`]) is also `Failed`. When `cancel_poll()`
-/// becomes true the run is cancelled with a bounded SIGTERM→`grace`→SIGKILL
-/// escalation that reaps the child (no orphan/zombie) — see [`cancel_child`].
+/// [`std::io::ErrorKind::NotFound`]) is also `Failed`. `cancel_poll` is
+/// consulted once before spawning: an already-cancelled request returns
+/// [`SliceRunOutcome::Cancelled`] without spawning. When `cancel_poll()`
+/// becomes true mid-run the run is cancelled with a bounded
+/// SIGTERM→`grace`→SIGKILL escalation that reaps the child (no orphan/zombie) —
+/// see [`cancel_child`].
 ///
 /// `cancel_poll` is a plain `Fn() -> bool` closure rather than a
 /// `reify_eval::CancellationHandle` so this crate stays free of the reverse
@@ -213,6 +175,10 @@ pub fn run_slicer(
     cancel_poll: &dyn Fn() -> bool,
     grace: Duration,
 ) -> SliceRunOutcome {
+    if cancel_poll() {
+        return SliceRunOutcome::Cancelled;
+    }
+
     // stdout/stderr → null: the G-code is read from the `-o` file, and draining
     // pipes inside the poll loop would risk a fill-buffer deadlock on a chatty
     // slicer. Keeping them unpiped sidesteps that entirely.
@@ -354,7 +320,8 @@ pub enum SliceError {
     /// turns this into a degraded (empty) Toolpath + an `Info` diagnostic, never
     /// a hard error.
     SlicerUnavailable,
-    /// The run was cancelled cooperatively via `cancel_poll` (child reaped).
+    /// The run was cancelled cooperatively via `cancel_poll` (any spawned child
+    /// was reaped; a run cancelled before spawn starts none).
     Cancelled,
     /// The slicer failed to spawn, exited non-zero, or produced no G-code.
     Run(String),

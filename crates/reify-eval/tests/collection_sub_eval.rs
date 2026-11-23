@@ -846,6 +846,36 @@ fn edit_param_phase4_invalidates_cache_for_shrunk_and_regrown_collection_instanc
     );
 }
 
+/// A cell planted at `Parent.bolts[3]` around the sub-instance registry (the
+/// hazard of a stamping site writing `graph.value_cells` directly) becomes
+/// the first unregistered slot once `edit_param` grows the collection to 3,
+/// and the post-resize check must refuse it.
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "sub-instance registry disagrees with value_cells")]
+fn edit_param_resize_asserts_a_slot_stamped_around_the_registry() {
+    let (module, mut engine) = make_bolt_parent_engine(Some(2));
+    engine.eval(&module);
+    let stray_id = ValueCellId::new("Parent.bolts[3]", "diameter");
+    engine
+        .snapshot_mut()
+        .expect("snapshot after eval")
+        .graph
+        .value_cells
+        .insert(
+            stray_id.clone(),
+            reify_eval::graph::ValueCellNode {
+                id: stray_id,
+                kind: reify_compiler::ValueCellKind::Param,
+                cell_type: Type::length(),
+                default_expr: None,
+                content_hash: ContentHash::of_str("stray"),
+            },
+        );
+
+    let _ = engine.edit_param(ValueCellId::new("Parent", "n"), Value::Int(3));
+}
+
 // ─── Task 4530 step-1: grown instances track upstream param edits ───────────
 
 /// Task 4530 (step-1): Pins that collection instances grown by an `edit_param`

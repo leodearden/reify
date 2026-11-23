@@ -59,6 +59,7 @@ import {
   observeThenExtras,
 } from './railLengtheningGate.mjs';
 import { makeDebugRpc } from './rpcEnvelope.mjs';
+import { debugUrlForPort, resolveDebugPort, waitForServer } from './debugServerEndpoint.mjs';
 import { describeRpcFailure, openFileWithRetry } from './smokeDriverGuards.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -88,20 +89,8 @@ const IDLE_TIMEOUT_MS = 120_000;
 const WATCHER_DEBOUNCE_MS = 100;
 const WATCHER_DEBOUNCE_MARGIN = 10;
 
-// ─── Port resolution (mirrors endpoint.ts / lib_portable.sh logic) ────────────
-// Inline rather than imported: a bare-`node` driver cannot load endpoint.ts.
-
-function resolveDebugPort(env = process.env) {
-  const raw = env['REIFY_DEBUG_PORT'];
-  if (raw === undefined) return 3939;
-  if (!/^\d+$/.test(raw)) return 3939;
-  const parsed = parseInt(raw, 10);
-  if (parsed < 1 || parsed > 65535) return 3939;
-  return parsed;
-}
-
-const PORT = resolveDebugPort();
-const DEBUG_URL = `http://127.0.0.1:${PORT}/mcp`;
+const PORT = resolveDebugPort(process.env);
+const DEBUG_URL = debugUrlForPort(PORT);
 
 // TWO FAILURE DIALECTS, one normalised shape — the fold that unifies them and
 // the `tools/call` request shape both live in ./rpcEnvelope.mjs (CI-covered by
@@ -136,18 +125,6 @@ function fail(msg) {
 }
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
-}
-
-async function waitForServer(timeoutMs = 60_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const r = await rpc('health');
-      if (r !== null) return;
-    } catch {}
-    await sleep(500);
-  }
-  fail(`Debug server not ready on port ${PORT} after ${timeoutMs}ms`);
 }
 
 /**
@@ -360,7 +337,7 @@ async function main() {
   console.log(`smoke_rail_lengthening_e2e: targeting debug server at ${DEBUG_URL}`);
 
   log('Waiting for debug server…');
-  await waitForServer(60_000);
+  await waitForServer(rpc, PORT, { fail });
   console.log('  OK: server ready');
 
   const { work, subject } = copySubject();

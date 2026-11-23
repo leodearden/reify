@@ -1,0 +1,4 @@
+structure def Spun {
+    let b = box(10mm, 10mm, 10mm)
+    let spun = rotate(b, 0, 0, 1, 0.5rad)
+}

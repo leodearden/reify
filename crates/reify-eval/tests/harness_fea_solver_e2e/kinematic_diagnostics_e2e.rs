@@ -31,13 +31,13 @@ use reify_test_support::{collect_errors, make_simple_engine, parse_and_compile_w
 /// the closure-residual Jacobian is rank-1 → `NewtonOutcome::Singular`.
 const SOURCE: &str = r#"
 structure def Kinematic {
-    let joint_a = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
-    let joint_0 = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
-    let joint_1 = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
-    let joint_2 = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
-    let joint_3 = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
-    let joint_4 = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
-    let joint_5 = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
+    let joint_a = prismatic(dir(1, 0, 0), 0mm .. 1000mm)
+    let joint_0 = prismatic(dir(1, 0, 0), 0mm .. 1000mm)
+    let joint_1 = prismatic(dir(1, 0, 0), 0mm .. 1000mm)
+    let joint_2 = prismatic(dir(1, 0, 0), 0mm .. 1000mm)
+    let joint_3 = prismatic(dir(1, 0, 0), 0mm .. 1000mm)
+    let joint_4 = prismatic(dir(1, 0, 0), 0mm .. 1000mm)
+    let joint_5 = prismatic(dir(1, 0, 0), 0mm .. 1000mm)
 }
 "#;
 

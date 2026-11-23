@@ -1,0 +1,275 @@
+#!/usr/bin/env python3
+"""
+test_refresh_warm_base_built_tree.py — stdlib unittest for the BUILT-TREE arm of
+scripts/refresh-warm-base.sh's inv.9 provenance guard (task 9765).
+
+A merge-role verify stamps target/reify-verify-attempt.json with the tree the
+target was built FROM. The refresh must not label a gen with --landed-commit
+unless that recorded tree is the landed commit's tree: a _merge-verify reset to
+a landed commit without a rebuild otherwise promotes artifacts built from
+another tree under the landed commit's name.
+
+WHAT RUNS THIS: run_all.sh discovers `test_*.sh` only, so the discovered member
+is the thin wrapper tests/infra/test_refresh_warm_base_built_tree.sh.
+
+HERMETIC: refresh_warm_base_harness stages the refresh script beside no-op
+stubs of every sibling it calls and a `cp` PATH stub that drops
+--reflink=always; the lane is a temp git repository on main with an untracked
+target/.
+WriterParity also reads verify.sh's merge-role --print-plan (a dry run that
+executes no plan line) and replays only its attempt-0 stamp line in the lane.
+"""
+
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+INFRA_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(INFRA_DIR))
+import refresh_warm_base_harness as refresh_harness  # noqa: E402
+from refresh_warm_base_harness import env_without  # noqa: E402
+
+REPO_ROOT = INFRA_DIR.parents[1]
+VERIFY = REPO_ROOT / "scripts" / "verify.sh"
+SIDECAR = "reify-verify-attempt.json"
+ABSENT_OID = "0123456789abcdef0123456789abcdef01234567"
+
+
+def merge_attempt0_plan():
+    env = env_without("GIT_", "DF_", "REIFY_VERIFY_")
+    env["DF_VERIFY_ROLE"] = "merge"
+    return subprocess.run(["bash", str(VERIFY), "test", "--profile", "debug", "--scope", "all",
+                           "--print-plan"],
+                          cwd=REPO_ROOT, env=env, capture_output=True, text=True, check=False)
+
+
+def sidecar_body(tree_oid):
+    """The shape of verify.sh's attempt-0 stamp; WriterParity runs the writer itself."""
+    return (f'{{"tree_oid":"{tree_oid}","profiles":"debug release",'
+            f'"timestamp":"2026-11-01T06:20:01Z"}}\n')
+
+
+class BuiltTreeHarness(unittest.TestCase):
+    """Commit A tracks units.md ("v1") and unchanged.txt; commit_units() adds a
+    commit changing only units.md. lane/target/ is the advancing dir."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory(prefix="test-refresh-built-tree-")
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(tmp.name)
+        self.stub_dir = self.tmp / "stub-bin"
+        self.stub_dir.mkdir()
+        refresh_harness.install_cp_stub(self.stub_dir)
+        self.refresh = refresh_harness.stage_refresh(self.tmp / "scripts")
+        self.lane = self.tmp / "lane"
+        refresh_harness.init_lane(self.lane)
+        (self.lane / "unchanged.txt").write_text("unchanged\n")
+        self.a = self.commit_units("v1")
+        self.target = self.lane / "target"
+        self.artifact = Path("debug") / "libplaceholder.rlib"
+        (self.target / self.artifact).parent.mkdir(parents=True)
+        (self.target / self.artifact).write_text("placeholder artifact\n")
+        self.base = self.tmp / "base"
+
+    def git(self, *args):
+        return refresh_harness.git(self.lane, *args)
+
+    def commit(self, *args):
+        return refresh_harness.commit(self.lane, *args)
+
+    def commit_units(self, text):
+        (self.lane / "units.md").write_text(f"{text}\n")
+        self.git("add", "--", "units.md", "unchanged.txt")
+        return self.commit("-m", f"fixture: units {text}")
+
+    def commit_paths(self, names):
+        for name in names:
+            (self.lane / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.lane / name).write_text(f"{name}\n")
+        self.git("add", "--", *names)
+        return self.commit("-m", f"fixture: {len(names)} new paths")
+
+    def commit_same_tree(self):
+        return self.commit("--allow-empty", "-m", "fixture: same tree, new commit")
+
+    def tree_of(self, rev):
+        return self.git("rev-parse", f"{rev}^{{tree}}")
+
+    def write_sidecar(self, tree_oid):
+        self.write_sidecar_body(sidecar_body(tree_oid))
+
+    def write_sidecar_body(self, body):
+        (self.target / SIDECAR).write_text(body)
+
+    def run_refresh(self, landed, base=None):
+        return refresh_harness.run_refresh(self.refresh, self.stub_dir, self.target,
+                                           base or self.base, landed)
+
+    def gen_entries(self, base=None):
+        name = (base or self.base).name
+        return sorted(self.tmp.glob(f"{name}.gen.*"))
+
+    def live_gen(self):
+        self.assertTrue(self.base.is_symlink(), f"{self.base} is not a symlink")
+        return Path(os.readlink(self.base))
+
+    def basecommit_of(self, gen):
+        return Path(f"{gen}.basecommit").read_text()
+
+
+class Refusal(BuiltTreeHarness):
+    def setUp(self):
+        super().setUp()
+        self.b = self.commit_units("v2")
+        self.write_sidecar(self.tree_of(self.a))
+
+    def test_a_target_built_from_another_tree_does_not_advance_the_base(self):
+        result = self.run_refresh(self.b)
+
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(os.path.lexists(self.base), "the base advanced over a foreign build")
+        self.assertEqual(self.gen_entries(), [])
+        self.assertIn(self.tree_of(self.a), result.stderr)
+        self.assertIn(self.tree_of(self.b), result.stderr)
+
+    def test_the_refusal_lists_the_paths_the_seed_would_miss(self):
+        result = self.run_refresh(self.b)
+
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertIn("units.md", result.stderr)
+        self.assertNotIn("unchanged.txt", result.stderr)
+
+
+class LongPathListing(BuiltTreeHarness):
+    def test_the_listing_stops_at_twenty_paths_and_counts_the_rest(self):
+        names = [f"many/path-{index:02d}.txt" for index in range(23)]
+        landed = self.commit_paths(names)
+        self.write_sidecar(self.tree_of(self.a))
+
+        result = self.run_refresh(landed)
+
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        listed = [line for line in result.stderr.splitlines() if "many/path-" in line]
+        self.assertEqual(len(listed), 20, result.stderr)
+        self.assertRegex(result.stderr, r"(?m)\.\.\. and 3 more$")
+
+
+class IncidentSequence(BuiltTreeHarness):
+    def test_a_refusal_leaves_the_current_gen_and_its_stamp_untouched(self):
+        self.write_sidecar(self.tree_of(self.a))
+        first = self.run_refresh(self.a)
+        self.assertEqual(first.returncode, 0, first.stderr)
+        gen = self.live_gen()
+        self.assertEqual(self.basecommit_of(gen), self.a)
+        entries_before = self.gen_entries()
+
+        b = self.commit_units("v2")
+        second = self.run_refresh(b)
+
+        self.assertNotEqual(second.returncode, 0, second.stderr)
+        self.assertEqual(self.live_gen(), gen)
+        self.assertEqual(self.basecommit_of(gen), self.a)
+        self.assertTrue(gen.is_dir(), f"{gen} was removed")
+        self.assertEqual(self.gen_entries(), entries_before)
+
+
+class Promotion(BuiltTreeHarness):
+    def test_a_target_built_from_the_landed_tree_advances_the_base(self):
+        b = self.commit_units("v2")
+        self.write_sidecar(self.tree_of(b))
+
+        result = self.run_refresh(b)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        gen = self.live_gen()
+        self.assertEqual(self.basecommit_of(gen), b)
+        self.assertTrue((gen / self.artifact).is_file(), f"{self.artifact} missing from {gen}")
+
+    def test_the_check_compares_trees_not_commits(self):
+        b = self.commit_units("v2")
+        c = self.commit_same_tree()
+        self.assertNotEqual(b, c)
+        self.write_sidecar(self.tree_of(b))
+
+        result = self.run_refresh(c)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.basecommit_of(self.live_gen()), c)
+
+    def test_a_target_with_no_sidecar_advances_with_a_warning(self):
+        b = self.commit_units("v2")
+
+        result = self.run_refresh(b)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.basecommit_of(self.live_gen()), b)
+        self.assertEqual(result.stdout, "")
+        warnings = [line for line in result.stderr.splitlines()
+                    if "[warn]" in line and SIDECAR in line]
+        self.assertNotEqual(warnings, [], result.stderr)
+
+
+class WriterParity(BuiltTreeHarness):
+    """The sidecar verify.sh's merge-role attempt-0 writes, at the path and in the
+    bytes it really writes, is the one the guard reads."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.plan = merge_attempt0_plan()
+
+    def stamp_like_verify_sh(self):
+        stamps = [line for line in self.plan.stdout.splitlines()
+                  if "tree_oid" in line and not line.lstrip().startswith("#")]
+        self.assertEqual(len(stamps), 1,
+                         f"rc={self.plan.returncode}\n{self.plan.stdout}\n{self.plan.stderr}")
+        subprocess.run(["bash", "-c", stamps[0]], cwd=self.lane, env=env_without("GIT_"),
+                       check=True, capture_output=True, text=True)
+        self.assertTrue((self.target / SIDECAR).is_file(),
+                        f"verify.sh's attempt-0 stamp did not write target/{SIDECAR}: {stamps[0]}")
+
+    def test_the_writers_stamp_of_the_landed_tree_advances_the_base(self):
+        landed = self.commit_units("v2")
+        self.stamp_like_verify_sh()
+
+        result = self.run_refresh(landed)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.basecommit_of(self.live_gen()), landed)
+        self.assertNotIn("[warn]", result.stderr)
+
+    def test_the_writers_stamp_of_another_tree_is_refused(self):
+        self.stamp_like_verify_sh()
+        landed = self.commit_units("v2")
+
+        result = self.run_refresh(landed)
+
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(os.path.lexists(self.base), "the base advanced over a foreign build")
+        self.assertIn(self.tree_of(self.a), result.stderr)
+
+
+class UnusableClaim(BuiltTreeHarness):
+    def test_a_sidecar_naming_no_usable_tree_is_refused(self):
+        bodies = {
+            "unknown": sidecar_body("unknown"),
+            "no tree_oid key": '{"profiles":"debug"}\n',
+            "empty file": "",
+            "absent oid": sidecar_body(ABSENT_OID),
+        }
+        for index, (label, body) in enumerate(bodies.items()):
+            with self.subTest(label):
+                base = self.tmp / f"base-{index}"
+                self.write_sidecar_body(body)
+
+                result = self.run_refresh(self.a, base=base)
+
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+                self.assertFalse(os.path.lexists(base), f"{label}: the base advanced")
+                self.assertEqual(self.gen_entries(base), [])
+
+
+if __name__ == "__main__":
+    unittest.main()

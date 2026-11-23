@@ -1,6 +1,10 @@
-//! Phase-11 entities: compile every `structure` / `occurrence` declaration
-//! and forward `import` declarations into `ctx.imports`; other decl arms are
-//! passthroughs (already compiled in earlier phases).
+//! Phase-11, the unified source-order pass (PRD `stdlib-namespace.md` D-8):
+//! compiles `structure` / `occurrence` templates AND free-fn bodies (plus any
+//! param defaults `phase_fn_param_defaults` left pending) interleaved in
+//! declaration order, so each sees the authoritative output of everything
+//! declared above it. Also forwards `import` declarations into `ctx.imports`
+//! and runs the joint self-check; the remaining decl arms are passthroughs
+//! (already compiled in earlier phases).
 //!
 //! ## Import warning policy (task 2226)
 //!
@@ -30,9 +34,11 @@ use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan, Type};
 use reify_ir::{CompiledExpr, CompiledExprKind, CompiledFunction, EnumDef};
 
 use crate::CompiledModule;
-use crate::ambient_defaults::{AmbientDefaults, ResolvedAmbientDefault};
+use crate::ambient_defaults::{AmbientDefaults, AmbientValue, ResolvedAmbientDefault};
+use crate::call_table::CallTable;
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::compile_builder::defs_phase::build_constraint_def_registry;
+use crate::compile_builder::functions_phase::{ResolutionTable, SourceOrderFnEnv};
 use crate::compile_builder::traits_phase::build_trait_registry;
 use crate::conformance::{
     ConformanceRegistries, check_expr_mechanism_joint_bound, check_fn_arg_conformance,
@@ -45,6 +51,7 @@ use crate::entity::{
 };
 use crate::expr::compile_expr;
 use crate::name_env;
+use crate::rejected_param_defaults::RejectedParamDefaults;
 use crate::scope::CompilationScope;
 use crate::type_compat::{
     OverloadResolution, resolve_function_overload, type_carries_trait_object,
@@ -62,21 +69,27 @@ use crate::types::{
 use crate::units::UnitRegistry;
 use reify_core::ValueCellId;
 
-/// Run phase-11 (entity compile) over `parsed.declarations`.
+/// Run phase-11, the unified source-order pass, over `parsed.declarations`.
 ///
 /// Constructs phase-local registries (`trait_registry`, `field_registry`,
-/// `constraint_def_registry`) and dispatches each declaration to its
-/// handler. Structure / Occurrence arms call `compile_entity` and push
-/// onto `ctx.templates`. Import arm appends to `ctx.imports` unconditionally;
-/// a "not resolved" warning is emitted only when the import path is absent from
-/// `prelude` (see import warning policy in the module-level doc). Other arms
-/// are passthroughs — they were already handled in earlier phases.
+/// `constraint_def_registry`) and dispatches each declaration, in source order,
+/// to its handler. Structure / Occurrence arms call `compile_entity` and push
+/// onto `ctx.templates`. The Function arm is the ONLY site that compiles a free
+/// fn's body (and its pending defaults), against the templates built so far,
+/// then swaps the real fn into the call table for later declarations. Import
+/// arm appends to `ctx.imports` unconditionally; a "not resolved" warning is
+/// emitted only when the import path is absent from `prelude` (see import
+/// warning policy in the module-level doc). Joint arm runs the DOF self-check.
+/// The remaining arms are passthroughs — handled in earlier phases.
+///
+/// Returns the param defaults `compile_entity` rejected at their declaration,
+/// for `phase_fn_arg_conformance` to skip.
 pub(crate) fn phase_entities(
     ctx: &mut CompilationCtx,
     parsed: &ParsedModule,
     trait_names: &HashSet<String>,
     prelude: &[&CompiledModule],
-) {
+) -> RejectedParamDefaults {
     // Rebuild the trait registry fresh: prelude first, then local overrides.
     let trait_registry = build_trait_registry(&ctx.trait_defs, prelude);
 
@@ -97,7 +110,7 @@ pub(crate) fn phase_entities(
     // The module-local `enum N` shadowing rule that reinterprets a name in this
     // set as `Type::Enum` (task #5429) is NOT installed here: it is installed once
     // for the whole phase sequence in `compile_with_prelude_context_checked_with_config`,
-    // because `phase_functions`/`phase_traits` run earlier and must agree with this
+    // because `phase_fn_signatures`/`phase_traits` run earlier and must agree with this
     // phase on what the name means (esc-5429-1). See
     // `enums_phase::build_local_enum_shadow_set`.
     //
@@ -105,12 +118,7 @@ pub(crate) fn phase_entities(
     // (local ∪ prelude) its own consumers want, but sub-target resolution needs
     // to know which names the module OWNS — see `PreludeRegistries::
     // local_entity_names` and property 1 of `find_template_with_prelude`.
-    let local_entity_names: HashSet<String> = ctx
-        .seen_entity_names
-        .iter()
-        .filter(|(_, (_, kind))| *kind == "structure" || *kind == "occurrence")
-        .map(|(name, _)| name.clone())
-        .collect();
+    let local_entity_names: HashSet<String> = ctx.local_entity_names();
     let structure_names: HashSet<String> = local_entity_names
         .iter()
         .cloned()
@@ -145,20 +153,12 @@ pub(crate) fn phase_entities(
             .map(|t| (t.name.clone(), t))
             .collect();
 
-    // task 3540 (SIR-α): prelude `structure def` templates, keyed by name, so
-    // the expression-lowering site can recognise `Foo()` as a structure
-    // constructor (esc-3540-177 RULING 1). `compile_entity` merges in local
-    // already-compiled structure-defs. Occurrences are excluded — only
-    // structure-defs are constructible via the ctor path.
-    //
-    // DERIVED from the unfiltered map above rather than re-walking `prelude`:
-    // a prelude occurrence that wins a name under NS-P1 (`name_env`) must not
-    // let a lower-precedence `structure def` of that name into the ctor view.
-    let prelude_template_registry: HashMap<String, &TopologyTemplate> = prelude_sub_target_registry
-        .iter()
-        .filter(|(_, t)| t.entity_kind == EntityKind::Structure)
-        .map(|(k, v)| (k.clone(), *v))
-        .collect();
+    // task 3540 (SIR-α): the prelude ctor view, so the expression-lowering site
+    // can recognise `Foo()` as a structure constructor (esc-3540-177 RULING 1);
+    // `compile_entity` overlays the templates declared above it via
+    // `name_env::overlay_local_templates`. Rule: `name_env::prelude_ctor_view`.
+    let prelude_template_registry: HashMap<String, &TopologyTemplate> =
+        name_env::prelude_ctor_view(prelude);
 
     // One bundle for the entity-compile recursion, so the two same-typed maps
     // cannot be transposed at a call site (they are read by field name).
@@ -173,18 +173,65 @@ pub(crate) fn phase_entities(
     // (defaults apply file-wide and may appear lexically after the structures
     // they fill). This pass also emits the per-scope duplicate (DD5) and
     // declaration-site type-mismatch (DD4) diagnostics. The table is threaded
-    // into each top-level structure's conformance check below (DD6: file-scope
-    // injection → top-level structures only; `purpose = None`).
+    // into each structure's conformance check below: top-level structures
+    // resolve at file scope (`purpose = None`), purpose-nested ones at their
+    // purpose (task 4639).
     let ambient_defaults = collect_ambient_defaults(
         parsed,
         &prelude_template_registry,
         &structure_names,
         trait_names,
         &ctx.resolution_enums,
-        &ctx.resolution_functions,
+        CallTable::with_pending(&ctx.resolution_functions, &ctx.fns_with_pending_defaults),
         &ctx.unit_registry,
         &ctx.alias_registry,
         &mut ctx.diagnostics,
+    );
+
+    // ── Pass-local function resolution table (task 5494) ──
+    //
+    // This pass is the UNIFIED source-order pass: it compiles fn param defaults
+    // and bodies interleaved with entity templates, in declaration order, so each
+    // side sees the authoritative output of everything declared above it.  That
+    // requires mutating the function table mid-loop: a structure declared after
+    // `fn run(...)` must pad an omitted defaulted arg from `run`'s REAL
+    // `param_defaults`, which its signature stub lacks when a default constructs
+    // a same-module structure (`FnParamDefaults::NeedLocalTemplates`, PRD
+    // stdlib-namespace D-8).
+    //
+    // The table is pass-LOCAL rather than a `ctx` field because `compile_entity_decl`
+    // already takes 20 split `ctx` borrows (rationale at the bottom of this file); a
+    // `&mut` on a `ctx` field aliased by those borrows would not compile.  Written
+    // back into `ctx.resolution_functions` at the end of the pass.
+    //
+    // Entries `0..ctx.fn_signatures.len()` are the signature stubs seeded by
+    // `phase_fn_param_defaults` (and preserved by `phase_traits`' rebuild), in
+    // declaration order — so a fn's declaration index indexes this table directly.
+    // `pending` travels with it: a fn leaves it when its real fn replaces its stub.
+    let mut resolution_functions: Vec<CompiledFunction> =
+        std::mem::take(&mut ctx.resolution_functions);
+    let mut pending = std::mem::take(&mut ctx.fns_with_pending_defaults);
+    // What fn BODIES' calls resolve against: the fns above plus the prelude.
+    // Built at the first fn, so a module with none clones no prelude fn here;
+    // from then on it owns the pass's user fns until the epilogue.
+    let mut fn_body_calls: Option<ResolutionTable> = None;
+    // Declaration index of the next `Declaration::Function` — parallel to
+    // `decl_refs.fn_refs` and hence to `ctx.fn_signatures`, because
+    // `pre_pass::collect_decl_refs` pushes every `Declaration::Function` in source
+    // order with no filtering.
+    let mut fn_decl_index: usize = 0;
+    let mut rejected_param_defaults = RejectedParamDefaults::default();
+    // What every fn body compiles against besides the fns and templates above
+    // it. Built once; its borrows of `ctx` fields are disjoint from the `&mut`
+    // field borrows the loop takes.
+    let fn_env = SourceOrderFnEnv::new(
+        &ctx.resolution_enums,
+        &prelude_template_registry,
+        crate::functions::declared_callable_names(
+            &ctx.declared_fn_names,
+            &ctx.resolution_structure_names,
+        ),
+        ctx.local_structure_def_names(),
     );
 
     for decl in &parsed.declarations {
@@ -195,7 +242,7 @@ pub(crate) fn phase_entities(
                         EntityDefRef::from(structure),
                         EntityKind::Structure,
                         &ctx.resolution_enums,
-                        &ctx.resolution_functions,
+                        CallTable::with_pending(&resolution_functions, &pending),
                         &trait_registry,
                         &structure_names,
                         trait_names,
@@ -211,6 +258,7 @@ pub(crate) fn phase_entities(
                         &mut ctx.pending_connect_auto_params,
                         &mut ctx.diagnostics,
                         &mut ctx.templates,
+                        &mut rejected_param_defaults,
                         &prelude_registries,
                     );
                 }
@@ -247,8 +295,53 @@ pub(crate) fn phase_entities(
                     );
                 }
             }
-            reify_ast::Declaration::Function(_) => {
-                // Already compiled by functions_phase::phase_functions.
+            reify_ast::Declaration::Function(fn_def) => {
+                // task 5494 (PRD `stdlib-namespace.md` D-8): a fn's param defaults
+                // and body compile HERE, in source order, against the AUTHORITATIVE
+                // structure templates built so far — never against a mirror.
+                let idx = fn_decl_index;
+                fn_decl_index += 1;
+                let records = ctx
+                    .fn_signatures
+                    .get(idx)
+                    .zip(ctx.fn_param_defaults.get(idx));
+                let Some((sig, defaults)) = records.filter(|(sig, _)| sig.name == fn_def.name)
+                else {
+                    ctx.diagnostics.push(fn_tables_misaligned(
+                        fn_def,
+                        idx,
+                        "its signature record; its body was not compiled",
+                    ));
+                    continue;
+                };
+                let calls_above = fn_body_calls.get_or_insert_with(|| {
+                    ResolutionTable::new(std::mem::take(&mut ctx.functions), prelude)
+                });
+                if let Some(f) = fn_env.compile_function_decl(
+                    fn_def,
+                    sig,
+                    defaults,
+                    calls_above,
+                    &ctx.templates,
+                    &mut ctx.diagnostics,
+                ) {
+                    // Replace this fn's signature stub with the real
+                    // `CompiledFunction` so a LATER structure calling it pads an
+                    // omitted defaulted arg from real `param_defaults`
+                    // (`try_default_padding`), not from the stub's empty ones.
+                    match resolution_functions.get_mut(idx) {
+                        Some(slot) if slot.name == f.name && slot.params == f.params => {
+                            *slot = f.clone();
+                            pending.resolve(&f);
+                        }
+                        _ => ctx.diagnostics.push(fn_tables_misaligned(
+                            fn_def,
+                            idx,
+                            "its call-table slot; later declarations resolve against its stub",
+                        )),
+                    }
+                    calls_above.push_user(f);
+                }
             }
             reify_ast::Declaration::Trait(_) => {
                 // Already compiled by traits_phase::phase_traits.
@@ -259,7 +352,7 @@ pub(crate) fn phase_entities(
                         EntityDefRef::from(occurrence),
                         EntityKind::Occurrence,
                         &ctx.resolution_enums,
-                        &ctx.resolution_functions,
+                        CallTable::with_pending(&resolution_functions, &pending),
                         &trait_registry,
                         &structure_names,
                         trait_names,
@@ -275,6 +368,7 @@ pub(crate) fn phase_entities(
                         &mut ctx.pending_connect_auto_params,
                         &mut ctx.diagnostics,
                         &mut ctx.templates,
+                        &mut rejected_param_defaults,
                         &prelude_registries,
                     );
                 }
@@ -304,7 +398,7 @@ pub(crate) fn phase_entities(
                             EntityDefRef::from(s),
                             EntityKind::Structure,
                             &ctx.resolution_enums,
-                            &ctx.resolution_functions,
+                            CallTable::with_pending(&resolution_functions, &pending),
                             &trait_registry,
                             &structure_names,
                             trait_names,
@@ -320,6 +414,7 @@ pub(crate) fn phase_entities(
                             &mut ctx.pending_connect_auto_params,
                             &mut ctx.diagnostics,
                             &mut ctx.templates,
+                            &mut rejected_param_defaults,
                             &prelude_registries,
                         );
                     }
@@ -356,12 +451,47 @@ pub(crate) fn phase_entities(
                     trait_names,
                     &ctx.alias_registry,
                     &ctx.resolution_enums,
-                    &ctx.resolution_functions,
+                    CallTable::with_pending(&resolution_functions, &pending),
                     &mut ctx.diagnostics,
                 );
             }
         }
     }
+
+    // ── Unified-pass epilogue (task 5494) ──
+    //
+    // Append the trait-static fns buffered by `phase_traits` AFTER the user fns,
+    // reproducing the pre-5494 observable order `[user fns in source order …,
+    // trait-static fns …]` that `compute_module_hash` folds and
+    // `CompiledModule::functions` first-match dispatch depends on.
+    let mut trait_static_fns = std::mem::take(&mut ctx.trait_static_fns);
+    if let Some(table) = fn_body_calls {
+        ctx.functions = table.into_user_functions();
+    }
+    ctx.functions.append(&mut trait_static_fns);
+
+    // Publish the pass-local table (real `CompiledFunction`s in place of the
+    // signature stubs) for the post-passes that read `ctx.resolution_functions`,
+    // and the stubs still pending in it.
+    ctx.resolution_functions = resolution_functions;
+    ctx.fns_with_pending_defaults = pending;
+    rejected_param_defaults
+}
+
+/// The unified pass's per-fn records — `ctx.fn_signatures`,
+/// `ctx.fn_param_defaults` and the signature-stub prefix of the call table —
+/// are indexed by declaration order and must describe `fn_def`. A mismatch is
+/// a compiler bug: reported, never skipped silently.
+fn fn_tables_misaligned(fn_def: &reify_ast::FnDef, idx: usize, mismatch: &str) -> Diagnostic {
+    Diagnostic::error(format!(
+        "internal compiler error: fn '{}' (fn declaration #{idx}) does not match {mismatch}",
+        fn_def.name
+    ))
+    .with_code(DiagnosticCode::FnDeclTablesMisaligned)
+    .with_label(DiagnosticLabel::new(
+        fn_def.span,
+        "ICE: source-order fn tables misaligned",
+    ))
 }
 
 /// Ambient-default collection — file scope AND purpose scope (task B).
@@ -374,19 +504,21 @@ pub(crate) fn phase_entities(
 /// loop — because file defaults apply file-wide and may appear lexically after
 /// the structures they fill.
 ///
-/// Duplicate detection is keyed by resolved type name within file scope: the
-/// FIRST well-typed declaration of a type is retained as the table entry, and
-/// each later declaration of the same type emits one `dup_ambient_default_error`
-/// (DD5). A type-mismatched value (DD4) draws its declaration-site error and is
-/// NOT inserted, so a later top-level structure is never injected with an
-/// ill-typed value (no cascade past the single declaration-site error).
+/// Duplicate detection is keyed by resolved type name within each scope and
+/// counts accepted declarations only: the FIRST accepted declaration of a type
+/// is retained as the table entry, and each later accepted declaration of the
+/// same type emits one `dup_ambient_default_error` (DD5). A rejected
+/// declaration (an Error value, or a DD4 mismatch) has already drawn its
+/// declaration-site diagnostic and goes into the table as
+/// [`AmbientValue::Rejected`]: it fills a consumer's member with no default
+/// expression, and holds the slot only until an accepted declaration of the
+/// type arrives. So no consumer is injected with an ill-typed value, and none
+/// reports the member missing.
 ///
 /// Purpose-nested defaults (`PurposeDef.defaults`) are collected into the
-/// purpose-level map with the SAME per-scope duplicate (DD5) and declaration-site
-/// type (DD4) checks, keyed under their purpose name (duplicate detection is
-/// per-purpose). Per DD6 they are NEVER injected into a structure (structures
-/// cannot nest in a purpose) — the purpose-level map is purely the
-/// forward-compatible seam a later task layers structure-in-purpose overrides on.
+/// purpose-level map with the SAME per-scope checks, keyed under their purpose
+/// name (duplicate detection is per purpose body). Structures nested in that
+/// purpose resolve against it first (task 4639).
 #[allow(clippy::too_many_arguments)]
 fn collect_ambient_defaults(
     parsed: &ParsedModule,
@@ -394,11 +526,12 @@ fn collect_ambient_defaults(
     structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
     enum_defs: &[EnumDef],
-    functions: &[CompiledFunction],
+    calls: CallTable<'_>,
     unit_registry: &UnitRegistry,
     alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> AmbientDefaults {
+    let functions = calls.functions;
     // A non-entity file scope carrying the unit registry (so `5mm` / `200GPa`
     // unit literals resolve) and the prelude template registry (so a
     // `Material(...)` constructor lowers to a `StructureInstanceCtor` with a
@@ -407,6 +540,7 @@ fn collect_ambient_defaults(
     let mut scope = CompilationScope::new("<file>");
     scope.set_unit_registry(unit_registry);
     scope.set_template_registry(prelude_template_registry);
+    scope.mark_pending_stubs(calls);
 
     let mut table = AmbientDefaults::default();
     // First-seen declaration span per type name within FILE scope, for same-scope
@@ -429,23 +563,14 @@ fn collect_ambient_defaults(
                 ) else {
                     continue;
                 };
-                match file_first_seen.get(&type_name) {
-                    Some(&first_span) => {
-                        // Same type already declared at file scope — ambiguity (DD5).
-                        diagnostics.push(crate::diagnostics::dup_ambient_default_error(
-                            &type_name, first_span, decl.span,
-                        ));
-                    }
-                    None => {
-                        file_first_seen.insert(type_name.clone(), decl.span);
-                        table.insert_file_level(type_name, entry);
-                    }
+                if admit_ambient_entry(&mut file_first_seen, &type_name, &entry, diagnostics) {
+                    table.insert_file_level(type_name, entry);
                 }
             }
             // ── Purpose scope: `default`s nested directly in a purpose body. ──
-            // DD6: same per-scope dup (DD5) + decl-site type (DD4) checks, keyed
-            // under the purpose name, but NEVER injected into a structure.
-            // Duplicate detection is per-purpose — a fresh first-seen map per body.
+            // Same per-scope dup (DD5) + decl-site type (DD4) checks, keyed under
+            // the purpose name. Duplicate detection is per-purpose — a fresh
+            // first-seen map per body.
             // The value expr is compiled at the shared file scope: the v1 surface
             // is literal `Material(...)` ctors, which need no purpose-param scope.
             reify_ast::Declaration::Purpose(p) => {
@@ -463,17 +588,9 @@ fn collect_ambient_defaults(
                     ) else {
                         continue;
                     };
-                    match purpose_first_seen.get(&type_name) {
-                        Some(&first_span) => {
-                            // Same type twice in THIS purpose body — ambiguity (DD5).
-                            diagnostics.push(crate::diagnostics::dup_ambient_default_error(
-                                &type_name, first_span, d.span,
-                            ));
-                        }
-                        None => {
-                            purpose_first_seen.insert(type_name.clone(), d.span);
-                            table.insert_purpose_level(p.name.clone(), type_name, entry);
-                        }
+                    if admit_ambient_entry(&mut purpose_first_seen, &type_name, &entry, diagnostics)
+                    {
+                        table.insert_purpose_level(p.name.clone(), type_name, entry);
                     }
                 }
             }
@@ -484,23 +601,54 @@ fn collect_ambient_defaults(
     table
 }
 
+/// DD5 within one scope: whether `entry` goes into the table. A rejected entry
+/// always does, uncounted (the table keeps it only in a vacant slot). The first
+/// accepted declaration of a type is recorded in `first_seen`; each later one
+/// draws a duplicate error and is skipped.
+fn admit_ambient_entry(
+    first_seen: &mut HashMap<String, SourceSpan>,
+    type_name: &str,
+    entry: &ResolvedAmbientDefault,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> bool {
+    if matches!(entry.value, AmbientValue::Rejected) {
+        return true;
+    }
+    match first_seen.get(type_name) {
+        Some(&first_span) => {
+            diagnostics.push(crate::diagnostics::dup_ambient_default_error(
+                type_name, first_span, entry.span,
+            ));
+            false
+        }
+        None => {
+            first_seen.insert(type_name.to_string(), entry.span);
+            true
+        }
+    }
+}
+
 /// Resolve, compile, and declaration-site type-check a single ambient-default
-/// declaration (DD4). Returns `Some((type_name, entry))` for a well-typed
-/// default ready to be inserted into an [`AmbientDefaults`] table.
+/// declaration (DD4). Returns `Some((type_name, entry))` ready to be inserted
+/// into an [`AmbientDefaults`] table.
 ///
-/// Returns `None` (caller skips the declaration) when:
-///   * the declared type is unresolved — the resolver already emitted a
-///     diagnostic, so we stay silent (anti-cascade); or
-///   * the value's type does not `implicitly_converts_to` the declared type —
-///     the `E_AMBIENT_DEFAULT_TYPE_MISMATCH` diagnostic is pushed here and the
-///     entry dropped, so no structure is later filled with an ill-typed value.
+/// Returns `None` (caller skips the declaration) only when the declared type is
+/// unresolved or `Type::Error`: the resolver already emitted a diagnostic, and
+/// there is no type to fill a member with (anti-cascade).
+///
+/// The entry's value is [`AmbientValue::Rejected`] when the value compiles to
+/// `Type::Error` (it already drew its own diagnostic) or does not
+/// `implicitly_converts_to` the declared type (the
+/// `E_AMBIENT_DEFAULT_TYPE_MISMATCH` diagnostic is pushed here). A rejected
+/// entry fills consumers' members with the declared type and no default
+/// expression, so the value is never recompiled.
 ///
 /// The table key + diagnostic type name is the resolved `StructureRef` name (so
 /// it matches the conformance-phase injection lookup key, DD1), falling back to
 /// the written type name for non-`StructureRef` declared types.
 ///
-/// Shared seam for file-scope collection and (later) purpose-scope collection;
-/// the caller owns scope-specific duplicate detection + table insertion.
+/// Shared by both scope arms of [`collect_ambient_defaults`]; the caller owns
+/// scope-specific duplicate detection + table insertion.
 #[allow(clippy::too_many_arguments)]
 fn resolve_ambient_default(
     decl: &reify_ast::DefaultDecl,
@@ -542,19 +690,19 @@ fn resolve_ambient_default(
     // (2) Compile the value expression at this scope and apply the
     //     declaration-site type check (DD4). A poisoned value (`Type::Error`)
     //     already drew its own diagnostic — skip the conversion check
-    //     (anti-cascade) and drop the entry.
+    //     (anti-cascade) and reject the entry.
     //
     //     This compile is TYPE-CHECK-ONLY: the resulting `CompiledExpr` is
-    //     discarded (only `decl.value`'s AST is stored), and every real
-    //     injection site recompiles the value via `check_phase_inject_defaults`
-    //     (checker.rs). A default consumed by N structures therefore compiles
-    //     its value N+1 times. To keep a NON-error diagnostic of the value
-    //     (e.g. a lossy/precision warning) from being double-reported — once
-    //     here and once per consuming structure — scope this throwaway compile's
-    //     diagnostics into a temp buffer and forward only genuine
-    //     `Severity::Error`s. Those errors drop the entry (it is never injected),
-    //     so the pre-pass is their sole report site; non-error diagnostics
-    //     re-surface at the injection site where the value is actually used.
+    //     discarded (only `decl.value`'s AST is stored). Its diagnostics are
+    //     scoped into a temp buffer and forwarded by the two-way rule below,
+    //     so each is reported exactly once:
+    //       * a REJECTED value is never recompiled, so this is its only report
+    //         site — forward ALL of its diagnostics, warnings included;
+    //       * an ACCEPTED value is recompiled at every injection site via
+    //         `check_phase_inject_defaults` (checker.rs), where its non-error
+    //         diagnostics (e.g. a lossy/precision warning) re-surface —
+    //         forward only its `Severity::Error`s, or each warning would be
+    //         reported once here and once per consuming structure.
     let mut value_diagnostics = Vec::new();
     let value_type = compile_expr(
         &decl.value,
@@ -564,25 +712,33 @@ fn resolve_ambient_default(
         &mut value_diagnostics,
     )
     .result_type;
-    diagnostics.extend(
-        value_diagnostics
-            .into_iter()
-            .filter(|d| d.severity == reify_core::Severity::Error),
-    );
-    if value_type == Type::Error {
-        return None;
+    let mismatched =
+        value_type != Type::Error && !crate::implicitly_converts_to(&value_type, &declared_type);
+    let rejected = value_type == Type::Error || mismatched;
+    if rejected {
+        diagnostics.extend(value_diagnostics);
+    } else {
+        diagnostics.extend(
+            value_diagnostics
+                .into_iter()
+                .filter(|d| d.severity == reify_core::Severity::Error),
+        );
     }
-    if !crate::implicitly_converts_to(&value_type, &declared_type) {
+    if mismatched {
         diagnostics.push(crate::diagnostics::ambient_default_type_mismatch_error(
             &type_name, decl.span,
         ));
-        return None;
     }
 
+    let value = if rejected {
+        AmbientValue::Rejected
+    } else {
+        AmbientValue::Accepted(decl.value.clone())
+    };
     Some((
         type_name,
         ResolvedAmbientDefault {
-            value: decl.value.clone(),
+            value,
             declared_type,
             span: decl.span,
         },
@@ -615,9 +771,10 @@ fn compile_joint_self_check(
     trait_names: &HashSet<String>,
     alias_registry: &TypeAliasRegistry,
     enum_defs: &[EnumDef],
-    functions: &[CompiledFunction],
+    calls: CallTable<'_>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
+    let functions = calls.functions;
     // Type-param names in scope (e.g. `joint j<T>(...)`); empty for the common
     // monomorphic joint. Threaded into the resolver so a datum/DOF type that
     // names a joint type-param resolves rather than erroring.
@@ -626,6 +783,7 @@ fn compile_joint_self_check(
 
     // (1) Build the datum-param scope.
     let mut scope = CompilationScope::new(&joint.name);
+    scope.mark_pending_stubs(calls);
     for param in &joint.params {
         let ty = resolve_type_expr_with_aliases(
             &param.type_expr,
@@ -740,7 +898,7 @@ fn compile_entity_decl(
     entity_ref: EntityDefRef<'_>,
     kind: EntityKind,
     resolution_enums: &[EnumDef],
-    resolution_functions: &[CompiledFunction],
+    calls: CallTable<'_>,
     trait_registry: &HashMap<String, &CompiledTrait>,
     structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
@@ -763,16 +921,17 @@ fn compile_entity_decl(
     pending_connect_auto_params: &mut Vec<PendingConnectAutoParam>,
     diagnostics: &mut Vec<Diagnostic>,
     templates: &mut Vec<TopologyTemplate>,
+    rejected_param_defaults: &mut RejectedParamDefaults,
     // task 5867: the prelude-derived lookup tables, bundled — see
     // `types::PreludeRegistries` for why they travel as one named-field value
     // rather than as adjacent same-typed positional parameters.
     prelude_registries: &PreludeRegistries<'_, '_>,
 ) {
-    let template = compile_entity(
+    let (template, rejected) = compile_entity(
         &entity_ref,
         kind,
         resolution_enums,
-        resolution_functions,
+        calls,
         trait_registry,
         structure_names,
         trait_names,
@@ -791,6 +950,7 @@ fn compile_entity_decl(
         prelude_registries,
     );
     templates.push(template);
+    rejected_param_defaults.absorb(rejected);
 }
 
 /// Post-compilation pass: drain `ctx.pending_bound_checks` now that all
@@ -1284,7 +1444,11 @@ pub(crate) fn phase_connect_auto_params(ctx: &mut CompilationCtx, prelude: &[&Co
 /// `resolve_function_overload` filters by name on a `&[CompiledFunction]` slice, so
 /// an index would require changing that shared signature; deferred pending
 /// profiling that warrants it (esc-4081 amend, reviewer_comprehensive performance).
-pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&CompiledModule]) {
+pub(crate) fn phase_fn_arg_conformance(
+    ctx: &mut CompilationCtx,
+    prelude: &[&CompiledModule],
+    rejected_at_declaration: &RejectedParamDefaults,
+) {
     // Build template registry (same composition as phase_pending_bound_checks).
     let template_registry: HashMap<String, &TopologyTemplate> =
         name_env::ctor_template_registry(&ctx.templates, prelude);
@@ -1365,7 +1529,12 @@ pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&Com
         // declared cell_type (e.g. `param part : Part = "x"` → rejects String).
         // Geometry/Solid defaults are handled by the Type::Geometry arm of
         // check_param_default_conformance (no separate helper).
-        check_param_default_conformance(template, registries, &mut new_diagnostics);
+        check_param_default_conformance(
+            template,
+            registries,
+            rejected_at_declaration,
+            &mut new_diagnostics,
+        );
     }
 
     // Walk function bodies: param defaults, let-bindings, result expr.
@@ -1783,3 +1952,9 @@ fn for_each_template_root_expr(
         }
     }
 }
+
+#[cfg(test)]
+mod ctor_view_tests;
+
+#[cfg(test)]
+mod fn_tables_misaligned_tests;

@@ -30,15 +30,21 @@ could only hold well-formed programs would test half the spec: every "the
 compiler must reject X" clause needs a committed X. So nothing in this tree is
 required to parse, to type-check, or to pass `reify check`.
 
-## The one repo-wide walker, and its exclusion arm
+## Repo-wide walkers, and their exclusion arms
 
-Every zero-Error / corpus walker in the repo is *explicit-inclusion* (the Lezer
+Most zero-Error / corpus walkers in the repo are *explicit-inclusion* (the Lezer
 grammar ledger's `CORPUS_ROOTS`, `examples_smoke`, the eval-side corpus gates),
-so each is blind to this tree by construction. The one exception is
-`crates/reify-cli/tests/harness_cli/corpus_no_bare_scalar.rs`, which walks
-`crates/**/*.ri` and therefore carries a **registered exclusion arm** for this
-directory: bare-`Scalar` rejection is itself a spec clause this suite must be
-free to test with a violating fixture.
+so each is blind to this tree by construction. A walker that does reach this
+tree carries a **registered exclusion arm** for this directory, stating its
+reason. Among them:
+
+- `crates/reify-cli/tests/harness_cli/corpus_no_bare_scalar.rs` walks
+  `crates/**/*.ri`: bare-`Scalar` rejection is itself a spec clause this suite
+  must be free to test with a violating fixture.
+- `crates/reify-syntax/tests/harness_syntax/tracked_ri_parse_guard.rs` sweeps
+  every tracked `.ri`. Its `UNSWEPT_RI_TREES` row for this tree skips the
+  tree's UNDECLARED members unread, because nothing here is required to parse.
+  A member declared in its `MUST_ERROR_RI_FIXTURES` is still read and checked.
 
 ## `_placement-probe/` — the one non-section resident
 
@@ -49,7 +55,8 @@ with the code in `../src/lib.rs`, Obligation 2.
 
 `_placement-probe/placement_probe.ri` is the only such resident today. It is a
 **sentinel**: unparseable, and carrying a real bare `Scalar` annotation, so it
-is a live violator sitting under the exclusion arm above. The guard's own
+is a live violator sitting under `corpus_no_bare_scalar.rs`'s exclusion arm
+above. The guard's own
 `spec_conformance_placement_probe_is_a_live_violator` test, beside the arm, reds
 if it stops violating, which is what keeps the arm from going vacuous. Delete
 the arm, narrow its path, or move this tree, and `corpus_has_zero_bare_scalar`
@@ -57,6 +64,9 @@ reds naming the probe. If that guard is ever retired (it becomes
 compiler-redundant once γ adds `E_BARE_SCALAR`), retire the probe with it.
 The walker survey and seeded-mutation evidence behind this arrangement are in
 the #6759 commit history.
+`placement_probe.ri` is also a declared `CstFault` entry of the tracked-`.ri`
+parse guard's `MUST_ERROR_RI_FIXTURES`, so a change that makes it parse cleanly
+reds `cargo test -p reify-syntax` until the entry is removed.
 
 ## Not yet present at β
 

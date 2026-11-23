@@ -62,6 +62,7 @@ import {
   sliderSelector,
 } from './sliderWriteBackGate.mjs';
 import { makeDebugRpc } from './rpcEnvelope.mjs';
+import { debugUrlForPort, resolveDebugPort, waitForServer } from './debugServerEndpoint.mjs';
 import { describeRpcFailure, openFileWithRetry } from './smokeDriverGuards.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -73,20 +74,8 @@ const IDLE_TIMEOUT_MS = 60_000;
 const POLL_TIMEOUT_MS = 15_000;
 const POLL_INTERVAL_MS = 100;
 
-// ─── Port resolution (mirrors endpoint.ts / lib_portable.sh logic) ────────────
-// Inline rather than imported: a bare-`node` driver cannot load endpoint.ts.
-
-function resolveDebugPort(env = process.env) {
-  const raw = env['REIFY_DEBUG_PORT'];
-  if (raw === undefined) return 3939;
-  if (!/^\d+$/.test(raw)) return 3939;
-  const parsed = parseInt(raw, 10);
-  if (parsed < 1 || parsed > 65535) return 3939;
-  return parsed;
-}
-
-const PORT = resolveDebugPort();
-const DEBUG_URL = `http://127.0.0.1:${PORT}/mcp`;
+const PORT = resolveDebugPort(process.env);
+const DEBUG_URL = debugUrlForPort(PORT);
 const rpc = makeDebugRpc(DEBUG_URL);
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -109,18 +98,6 @@ function fail(msg) {
 }
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
-}
-
-async function waitForServer(timeoutMs = 60_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const r = await rpc('health');
-      if (r !== null) return;
-    } catch {}
-    await sleep(500);
-  }
-  fail(`Debug server not ready on port ${PORT} after ${timeoutMs}ms`);
 }
 
 /** Wait for the engine to stop evaluating, and ASSERT the verdict. */
@@ -243,7 +220,7 @@ async function main() {
   console.log(`smoke_slider_write_back_e2e: targeting debug server at ${DEBUG_URL}`);
 
   log('Waiting for debug server…');
-  await waitForServer(60_000);
+  await waitForServer(rpc, PORT, { fail });
   console.log('  OK: server ready');
 
   const { work, subject } = copySubject();

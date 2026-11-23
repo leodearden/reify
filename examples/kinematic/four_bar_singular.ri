@@ -27,7 +27,7 @@
 // re-homed.
 //
 // j_x/j_a/j_b use three DIFFERENT ranges (rather than three identical
-// prismatic(vec3(1,0,0), 0mm .. 1000mm) calls) so that:
+// prismatic(dir(1,0,0), 0mm .. 1000mm) calls) so that:
 //   1. Their Values are structurally distinct — identical-range joints
 //      would be byte-identical Value::Maps that alias in joint_parents,
 //      collapsing the intended 2-free-joint/1-loop-closure topology into a
@@ -60,9 +60,9 @@
 //
 // PRD ref: docs/prds/v0_3/kinematic-constraints-completion.md (KCC-iota, task 3848)
 structure def FourBarSingular {
-    let j_x = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
-    let j_a = prismatic(vec3(1, 0, 0), 0mm .. 2100mm)
-    let j_b = prismatic(vec3(1, 0, 0), 0mm .. 2500mm)
+    let j_x = prismatic(dir(1, 0, 0), 0mm .. 1000mm)
+    let j_a = prismatic(dir(1, 0, 0), 0mm .. 2100mm)
+    let j_b = prismatic(dir(1, 0, 0), 0mm .. 2500mm)
 
     let m0 = mechanism()
     let m1 = body(m0, "solidA", j_x)

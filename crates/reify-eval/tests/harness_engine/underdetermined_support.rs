@@ -25,7 +25,9 @@
 
 use reify_core::{Severity, ValueCellId};
 use reify_eval::{Engine, EvalResult};
-use reify_test_support::{MockConstraintChecker, collect_errors, compile_source_with_stdlib};
+use reify_test_support::{
+    MockConstraintChecker, collect_errors, compile_source_with_stdlib, panic_message_of,
+};
 
 /// Workspace root, two levels above `crates/reify-eval` — where the modules
 /// that read a PRD fixture from disk resolve its repo-relative path.
@@ -136,15 +138,6 @@ pub fn underdetermined(result: &EvalResult) -> Vec<&reify_core::Diagnostic> {
     reify_test_support::underdetermined_diags(&result.diagnostics)
 }
 
-/// Run `f` and return the message it panicked with. `#[should_panic]` matches
-/// ONE substring, and the test below asserts several per panic.
-fn panic_message(f: impl FnOnce()) -> String {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
-        Ok(()) => panic!("expected a panic, but the call returned normally"),
-        Err(payload) => reify_core::panic_payload_to_string(payload.as_ref()),
-    }
-}
-
 /// `scalar_si`'s two failure modes stay distinguishable, and BOTH name the
 /// cell.
 ///
@@ -171,7 +164,7 @@ structure Probe {
     // are those cells' and not an empty map's.
     let _ = scalar_si(&result, &ValueCellId::new("Probe", "bore"), "probe");
 
-    let absent = panic_message(|| {
+    let absent = panic_message_of(|| {
         scalar_si(&result, &ValueCellId::new("Probe", "typo"), "probe");
     });
     assert!(absent.contains("typo"), "must name the cell: {absent}");
@@ -181,7 +174,7 @@ structure Probe {
          unsolved one: {absent}",
     );
 
-    let unresolved = panic_message(|| {
+    let unresolved = panic_message_of(|| {
         scalar_si(&result, &ValueCellId::new("Probe", "gap"), "probe");
     });
     assert!(

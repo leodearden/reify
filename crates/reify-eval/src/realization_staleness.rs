@@ -139,7 +139,7 @@ pub(crate) fn stale_realization_entities<'a>(
     realization_cone: &HashSet<NodeId>,
 ) -> HashSet<String> {
     let entity = |rid: &RealizationNodeId| rid.entity.clone();
-    realizations_in(seeds, realization_cone)
+    stale_realizations(seeds, realization_cone)
         .map(entity)
         .chain(removed.into_iter().map(entity))
         .collect()
@@ -174,7 +174,7 @@ pub(crate) fn hash_gate_verdict(
     let seeds = realization_cone_seeds(moved, false, graph);
     let cone =
         crate::dirty::compute_dirty_cone_with_realizations(&HashSet::new(), &seeds, index, graph);
-    let stale: HashSet<RealizationNodeId> = realizations_in(&seeds, &cone).cloned().collect();
+    let stale: HashSet<RealizationNodeId> = stale_realizations(&seeds, &cone).cloned().collect();
     let reruns: HashSet<RealizationNodeId> = stale.intersection(demanded).cloned().collect();
     let must_run = with_sub_producers(&reruns, graph);
     HashGateVerdict {
@@ -211,9 +211,9 @@ fn with_sub_producers(
     visited
 }
 
-/// The seeds of a realization dirty cone followed by the cone's own
-/// realization members (the walk never puts its seeds in its result).
-fn realizations_in<'a>(
+/// The realizations an edit made stale, per id: the cone's seeds, then its
+/// realization members, since the walk never puts its seeds in its result.
+pub(crate) fn stale_realizations<'a>(
     seeds: &'a HashSet<RealizationNodeId>,
     cone: &'a HashSet<NodeId>,
 ) -> impl Iterator<Item = &'a RealizationNodeId> {
@@ -296,7 +296,7 @@ mod tests {
     };
     use reify_ir::{CompiledExpr, PersistentMap, Value, ValueMap};
 
-    use super::{realization_cone_seeds, stale_realization_entities};
+    use super::{realization_cone_seeds, stale_realization_entities, stale_realizations};
     use crate::cache::NodeId;
     use crate::graph::EvaluationGraph;
 
@@ -687,6 +687,25 @@ mod tests {
         let stale = stale_realization_entities(&seeds, [], &cone);
 
         assert_eq!(stale, entities(&["PartA", "Asm"]));
+    }
+
+    /// The realization projection store is keyed per `RealizationNodeId`, so
+    /// the stale set must keep two realizations of ONE entity apart, which no
+    /// entity-name assertion can see.
+    #[test]
+    fn stale_realizations_are_the_seeds_and_the_cones_realization_members_by_id() {
+        let seeds = HashSet::from([RealizationNodeId::new("E", 0)]);
+        let cone = HashSet::from([
+            NodeId::Realization(RealizationNodeId::new("E", 1)),
+            NodeId::Value(ValueCellId::new("E", "w")),
+            NodeId::Compute(ComputeNodeId::new("Fea", 0)),
+            NodeId::Constraint(ConstraintNodeId::new("E", 0)),
+        ]);
+
+        let stale: HashSet<RealizationNodeId> =
+            stale_realizations(&seeds, &cone).cloned().collect();
+
+        assert_eq!(stale, rids(&[("E", 0), ("E", 1)]));
     }
 
     /// A removed realization (collection shrink, recompile removal) leaves

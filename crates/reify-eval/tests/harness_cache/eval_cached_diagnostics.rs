@@ -1388,8 +1388,8 @@ fn eval_and_eval_cached_emit_byte_identical_solver_no_progress_warning() {
 fn eval_cached_emits_mechanism_duplicate_solid_error_diagnostic() {
     const DUPLICATE_SOLID_SOURCE: &str = r#"
 structure def DuplicateSolid {
-    let j_a = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
-    let j_b = prismatic(vec3(0, 1, 0), 0mm .. 1000mm)
+    let j_a = prismatic(dir(1, 0, 0), 0mm .. 1000mm)
+    let j_b = prismatic(dir(0, 1, 0), 0mm .. 1000mm)
 
     let m0 = mechanism()
     let m1 = body(m0, "a", j_a)

@@ -56,9 +56,8 @@
 //! new member. Indentation past `c0` is the author's signal that the line is a
 //! deliberate continuation, and stays legal — that shape is real, tracked
 //! reify source (`designs/litter_tray/bottom_deck.ri:65`,
-//! `prj/printer_v01/printer.ri`,
-//! `docs/prds/v0_6/fixtures/discrete_balance_*.ri`). The standing sweep, not a
-//! count written here, is what keeps that constituency intact.
+//! `prj/printer_v01/printer.ri`). The standing sweep, not a count written
+//! here, is what keeps that constituency intact.
 //!
 //! Clause 3's inspect-then-apply order decides the two cases that matter:
 //!

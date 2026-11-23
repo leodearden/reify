@@ -4,7 +4,7 @@
 //! Post-β the real stdlib has no same-kind collision, so first-wins among
 //! peers has no live stdlib witness: it is pinned here instead. Every
 //! fixture prelude is ordered `[std.p1, std.p2, a, b]` — the `stdlib ++
-//! imports` shape `compile_entry_with_stdlib_cfg` builds — so the tiering
+//! imports` shape `program::compile_program` builds — so the tiering
 //! (local, then imports in slice order, then std modules in slice order) is
 //! observable rather than an accident of slice order.
 
@@ -126,6 +126,7 @@ fn type_alias(name: &str, is_pub: bool) -> CompiledTypeAlias {
         resolved_type: Some(Type::length()),
         type_params: vec![],
         type_expr: None,
+        body_scope: None,
         is_pub,
         span: SourceSpan::new(0, 0),
         content_hash: ContentHash::of_str(name),

@@ -1,0 +1,9 @@
+// S6 PRD evidence (docs/prds/v0_6/kinematics-typed-kinds-and-mechanism-record.md): leaf η #8834 — the stdlib JointPosition (C4) constructs from bare heads with NO local enum, and `reify eval` prints each variant's named payload fields
+module s6_joint_position_display
+
+structure def P {
+    let rev = RevolutePosition { angle: 45deg }
+    let planar = PlanarPosition { x: 1mm, y: 2mm, angle: 0.5rad }
+    let planar_reordered = PlanarPosition { angle: 0.5rad, y: 2mm, x: 1mm }
+    let unit_variant = EulerConvention.XYZ
+}

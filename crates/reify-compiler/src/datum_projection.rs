@@ -182,7 +182,7 @@ mod tests {
     use reify_expr::{EvalContext, eval_expr};
     use reify_ir::{CompiledExpr, Value, ValueMap};
     use reify_test_support::{
-        axis_val, frame_val, orientation_val, plane_val, point3, vec3_dimensionless,
+        axis_val, direction_val, frame_val, orientation_val, plane_val, point3,
     };
     use strum::IntoEnumIterator;
 
@@ -367,10 +367,10 @@ mod tests {
     /// panics, so a new codomain must extend this helper.
     fn has_codomain_kind(v: &Value, codomain: &Type) -> bool {
         match codomain {
-            Type::Direction => matches!(v, Value::Direction { .. }),
+            Type::Direction => matches!(v, Value::Direction(_)),
             Type::Plane => matches!(
                 v,
-                Value::Plane { normal, .. } if matches!(&**normal, Value::Vector(c) if c.len() == 3)
+                Value::Plane { normal, .. } if matches!(&**normal, Value::Direction(_))
             ),
             Type::Frame(_) => matches!(v, Value::Frame { .. }),
             t if *t == point3_length() => matches!(v, Value::Point(c) if c.len() == 3),
@@ -408,19 +408,15 @@ mod tests {
         let literal = |value: Value, ty: Type| Pure(CompiledExpr::literal(value, ty));
         match d {
             D::Axis => literal(
-                axis_val(point3(1.0, 2.0, 3.0), vec3_dimensionless(1.0, 0.0, 0.0)),
+                axis_val(point3(1.0, 2.0, 3.0), direction_val(1.0, 0.0, 0.0)),
                 Type::Axis,
             ),
             D::Plane => literal(
-                plane_val(point3(0.0, 0.0, 0.0), vec3_dimensionless(0.0, 0.0, 1.0)),
+                plane_val(point3(0.0, 0.0, 0.0), direction_val(0.0, 0.0, 1.0)),
                 Type::Plane,
             ),
             D::Direction => literal(
-                Value::Direction {
-                    x: 1.0,
-                    y: 0.0,
-                    z: 0.0,
-                },
+                Value::Direction(reify_ir::UnitVec3::from_vector([1.0, 0.0, 0.0]).unwrap()),
                 Type::Direction,
             ),
             // 120° about (1,1,1): frame x/y/z = world y/z/x.

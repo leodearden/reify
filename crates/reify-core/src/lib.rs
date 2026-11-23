@@ -18,7 +18,9 @@
 // structurally identical for downstream reasoning.
 #![allow(clippy::mutable_key_type)]
 
+pub mod diagnostic_identity;
 pub mod diagnostics;
+pub mod direction;
 pub mod dimension;
 pub mod display_units;
 pub mod field_calculus;
@@ -40,6 +42,7 @@ pub mod units;
 // the moved modules' internal `use crate::SourceSpan;` (spanned_ident.rs),
 // `crate::SourceSpan::PRELUDE_SENTINEL_OFFSET` (source_location.rs), and
 // `use crate::ContentHash;` (dimension.rs) compiling without per-file edits.
+pub use diagnostic_identity::DiagnosticIdentity;
 pub use diagnostics::{
     Diagnostic, DiagnosticCode, DiagnosticInfo, DiagnosticLabel, DiagnosticRef, Severity,
     SourceSpan,
@@ -65,12 +68,11 @@ pub use overload::{
     slot_matches_head_tier, slot_matches_wildcard_tier, type_carries_dim_param,
     type_carries_trait_object, type_carries_type_param,
 };
-pub use panic_payload::panic_payload_to_string;
-pub use persistent_cache::PersistentlyCacheable;
+pub use panic_payload::{panic_payload_str, panic_payload_to_string};
 pub use spanned_ident::SpannedIdent;
 pub use ty::Type;
 pub use kernel::KernelId;
 pub use units::{
     BUILTIN_UNITS, RI_COMPOUND_BASE_SYMBOLS, RI_NAMED_DERIVED_SYMBOLS, ri_compound_unit_expr,
-    ri_emittable_units, unit_symbol_to_si,
+    ri_emittable_units, unit_exponent_in_range, unit_symbol_to_si,
 };

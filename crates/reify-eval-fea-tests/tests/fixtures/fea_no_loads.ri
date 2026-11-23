@@ -14,7 +14,7 @@ structure FeaNoLoads {
     let material = Steel_AISI_1045()
 
     // No loads applied.
-    let mount = FixedSupport(target: "root")
+    let mount = FixedSupport(target: face(body, "root"))
 
     let result = solve_elastic_static(
         material, length, width, height, [], [mount], ElasticOptions()

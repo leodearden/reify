@@ -28,7 +28,6 @@ use std::task::{Context, Poll};
 use serde::{Deserialize, Serialize};
 
 use crate::diff::{StateDelta, advance_baseline};
-use crate::large_stack::panic_payload_message;
 use crate::types::GuiState;
 
 /// Where the frontend stamped an edit: `seq` increases with every edit of one
@@ -382,8 +381,12 @@ fn deliver<T>(sender: ReplySender<T>, reply: Result<T, String>) {
 
 /// Run `job`, turning its panic into the `Err` message its reply carries.
 fn run_catching_panic<R>(job: impl FnOnce() -> R) -> Result<R, String> {
-    std::panic::catch_unwind(AssertUnwindSafe(job))
-        .map_err(|payload| format!("panic in evaluation: {}", panic_payload_message(&*payload)))
+    std::panic::catch_unwind(AssertUnwindSafe(job)).map_err(|payload| {
+        format!(
+            "panic in evaluation: {}",
+            reify_core::panic_payload_to_string(&*payload)
+        )
+    })
 }
 
 /// A request's job and its ticket's sender, with the reply type erased so one
@@ -731,7 +734,7 @@ impl EvalQueue {
         if let Err(payload) = ran {
             tracing::warn!(
                 "publishing an evaluation panicked: {}",
-                panic_payload_message(&*payload)
+                reify_core::panic_payload_to_string(&*payload)
             );
         }
         if generation.is_some() {
@@ -760,7 +763,10 @@ impl EvalQueue {
     fn notify(&self, what: &str, call: impl FnOnce(&dyn EvalObserver)) {
         let notified = std::panic::catch_unwind(AssertUnwindSafe(|| call(&*self.observer)));
         if let Err(payload) = notified {
-            tracing::warn!("{what} panicked: {}", panic_payload_message(&*payload));
+            tracing::warn!(
+                "{what} panicked: {}",
+                reify_core::panic_payload_to_string(&*payload)
+            );
         }
     }
 

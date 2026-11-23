@@ -920,3 +920,54 @@ fn circular_pattern_value_form_dimensioned_axis_origin_builds_unchanged() {
         other => panic!("expected GeometryOp::CircularPattern, got {:?}", other),
     }
 }
+
+/// The stdlib-minted datum half of direction-typing B17: an `axis_through` /
+/// `plane_through` datum feeds `circular_pattern` / `mirror` end to end, and the
+/// op carries the unit direction / normal. Pinned across the producer switch
+/// from a bare `Vector` to a `Direction` (task 9638).
+#[test]
+fn circular_pattern_and_mirror_accept_axis_through_and_plane_through_datums() {
+    let errors_of = |diagnostics: &[reify_core::Diagnostic]| -> Vec<reify_core::Diagnostic> {
+        diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .cloned()
+            .collect()
+    };
+    let assert_unit_z = |v: &[f64; 3], what: &str| {
+        for (i, expected) in [0.0_f64, 0.0, 1.0].into_iter().enumerate() {
+            assert!(
+                (v[i] - expected).abs() < 1e-12,
+                "{what} must be the unit [0,0,1]; got {v:?}"
+            );
+        }
+    };
+
+    let (diagnostics, circular_ops) = build_circular(
+        r#"
+        structure def ThroughAxisRing {
+            let b = box(2mm, 2mm, 2mm)
+            let p = circular_pattern(b, axis_through(point3(0mm, 0mm, 0mm), point3(0mm, 0mm, 10mm)), 4, 90deg)
+        }
+        "#,
+    );
+    assert!(errors_of(&diagnostics).is_empty(), "got: {diagnostics:?}");
+    match circular_ops.as_slice() {
+        [GeometryOp::CircularPattern { axis_dir, .. }] => assert_unit_z(axis_dir, "axis_dir"),
+        other => panic!("expected exactly one CircularPattern op, got {other:?}"),
+    }
+
+    let (diagnostics, mirror_ops) = build_mirror(
+        r#"
+        structure def ThroughPlaneMirror {
+            let b = box(10mm, 10mm, 10mm)
+            let m = mirror(b, plane_through(point3(0mm, 0mm, 0mm), point3(10mm, 0mm, 0mm), point3(0mm, 10mm, 0mm)))
+        }
+        "#,
+    );
+    assert!(errors_of(&diagnostics).is_empty(), "got: {diagnostics:?}");
+    match mirror_ops.as_slice() {
+        [GeometryOp::Mirror { plane_normal, .. }] => assert_unit_z(plane_normal, "plane_normal"),
+        other => panic!("expected exactly one Mirror op, got {other:?}"),
+    }
+}

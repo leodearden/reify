@@ -29,14 +29,14 @@ module jacobian_column_members
 structure def JacobianColumnMembers {
     // Revolute about +Z: the column is pure rotation — angular = [0,0,1] (rad/rad),
     // linear = [0,0,0] (m/rad, zero because the axis passes through the origin).
-    let rev       = revolute(vec3(0.0, 0.0, 1.0), 0deg .. 120deg)
+    let rev       = revolute(dir(0.0, 0.0, 1.0), 0deg .. 120deg)
     let rev_col   = joint_jacobian(rev)
     let rev_ang   = rev_col.angular
     let rev_lin   = rev_col.linear
 
     // Prismatic along +X: the column is pure translation — angular = [0,0,0]
     // (rad/m), linear = [1,0,0] (m/m).
-    let prism     = prismatic(vec3(1.0, 0.0, 0.0), 0mm .. 10mm)
+    let prism     = prismatic(dir(1.0, 0.0, 0.0), 0mm .. 10mm)
     let prism_col = joint_jacobian(prism)
     let prism_lin = prism_col.linear
 }

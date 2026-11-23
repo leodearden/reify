@@ -17,6 +17,10 @@
 //   3. Provenance is declared before all trait blocks so that `Input.provenance :
 //      Provenance` resolves through the structure-name set built in the pre-pass.
 
+module std.io
+
+import std.materials.appearance
+
 // ── Enumerations ─────────────────────────────────────────────────────────────
 
 // Why a part was removed from the design scope.
@@ -139,8 +143,7 @@ trait Massive {
 enum STEPVersion { AP203, AP214, AP242 }
 
 // Visual presentation parameters for a display output occurrence.
-// Color/Finish resolve through the growing prelude (materials_appearance compiles
-// before io per stdlib_loader.rs ordering — no `import` needed).
+// Color/Finish come from `import std.materials.appearance`.
 structure def DisplayStyle {
     param color : Color = Color()
     param finish : Finish = Finish.Satin

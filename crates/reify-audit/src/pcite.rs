@@ -65,7 +65,7 @@ const PROSE_SUFFIX: &str = ".md";
 /// Every phantom cite and malformed allow marker in the tracked manifests,
 /// sorted by `(category, name, path)`.
 pub fn check(ctx: &AuditContext<'_>) -> Vec<Finding> {
-    let tracked = ctx.git.ls_files();
+    let tracked = ctx.git().ls_files();
     let sources: Vec<(String, String)> = tracked
         .iter()
         .filter(|path| !path.starts_with(PROSE_ROOT) && !path.ends_with(PROSE_SUFFIX))

@@ -1,6 +1,12 @@
 use super::*;
 use crate::compile_builder::hash::hash_pragma;
 use crate::compile_builder::sketch_unsupported;
+use crate::member_cell_decls::{
+    build_auto_let_value_cell_decl, build_param_value_cell_decl, fixup_option_none_for_let,
+    fixup_option_none_for_param, priv_flag_to_visibility, reject_keyed_value_position,
+    resolve_auto_let_cell_type,
+};
+use crate::rejected_param_defaults::RejectedParamDefaults;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashSet;
@@ -295,7 +301,8 @@ fn rewrite_free_idents<'e>(
 //
 // A whole-handle geometry query (`volume`/`area`/`centroid`/`bounding_box`)
 // whose arg[0] is an INLINE geometry call — `let v = volume(torus(20mm,5mm))`,
-// with no intermediate geometry let — evaluates to `Value::Undef`: eval's
+// with no intermediate geometry let, or the same query in a `constraint`
+// predicate (task 10033) — evaluates to `Value::Undef`: eval's
 // `resolve_geometry_handle_arg` only maps a `ValueRef` (a named geometry
 // let/param) to a `named_steps` kernel handle, never an inline `FunctionCall`
 // arg. This desugar rewrites the entity member list ONCE, upstream of every
@@ -660,7 +667,7 @@ fn expr_has_hoistable_query(expr: &reify_ast::Expr, functions: &[CompiledFunctio
 /// member list where a lambda param / quantifier variable / match-pattern binder
 /// would be unbound. [`expr_has_hoistable_query`] carries the same guard — keep
 /// the two in lockstep. Note this is scoped at BOTH levels: only top-level
-/// `Let`/`Param` members are descended (see
+/// `Let` values, `Param` defaults and `Constraint` predicates are descended (see
 /// [`desugar_inline_geometry_query_args`]), and within those, only binder-free
 /// sub-expressions.
 fn hoist_queries_in_expr(
@@ -725,21 +732,34 @@ fn make_synthetic_geometry_let(
     })
 }
 
-/// The value/default expression of a value-cell member (`Let` value / `Param`
-/// default), or `None` for non-value members.
-fn member_value_expr(member: &reify_ast::MemberDecl) -> Option<&reify_ast::Expr> {
+/// The expression of `member` the inline geometry-query hoist descends (`Let`
+/// value / `Param` default / `Constraint` predicate), or `None` for any other
+/// member. [`hoist_scan_expr_mut`] is its mutable twin: the two name the same
+/// members.
+fn hoist_scan_expr(member: &reify_ast::MemberDecl) -> Option<&reify_ast::Expr> {
     match member {
         reify_ast::MemberDecl::Let(l) => Some(&l.value),
         reify_ast::MemberDecl::Param(p) => p.default.as_ref(),
+        reify_ast::MemberDecl::Constraint(c) => Some(&c.expr),
+        _ => None,
+    }
+}
+
+/// Mutable twin of [`hoist_scan_expr`].
+fn hoist_scan_expr_mut(member: &mut reify_ast::MemberDecl) -> Option<&mut reify_ast::Expr> {
+    match member {
+        reify_ast::MemberDecl::Let(l) => Some(&mut l.value),
+        reify_ast::MemberDecl::Param(p) => p.default.as_mut(),
+        reify_ast::MemberDecl::Constraint(c) => Some(&mut c.expr),
         _ => None,
     }
 }
 
 /// Desugar inline geometry-query arguments into synthetic geometry lets
-/// (task 5345). For each top-level value-cell member (`Let` value / `Param`
-/// default) whose expression contains a hoistable whole-handle query, mint the
-/// `__geoq_<N>` geometry let(s) immediately BEFORE the consuming member and
-/// rewrite the query arg[0] to reference them. Synthetic names are minted from
+/// (task 5345). For each top-level member whose [`hoist_scan_expr`] (`Let`
+/// value / `Param` default / `Constraint` predicate) contains a hoistable
+/// whole-handle query, mint the `__geoq_<N>` geometry let(s) immediately BEFORE
+/// the consuming member and rewrite the query arg[0] to reference them. Synthetic names are minted from
 /// a single structure-scoped counter in source+post-order.
 ///
 /// Returns `None` — and allocates nothing — when no member carries an inline
@@ -751,9 +771,14 @@ fn member_value_expr(member: &reify_ast::MemberDecl) -> Option<&reify_ast::Expr>
 /// keeps ordinary product-geometry semantics.
 ///
 /// The rewritten member list becomes the single source consumed by all downstream
-/// `structure.members` walks in [`compile_entity`]. Only top-level `Let`/`Param`
-/// members are descended (guarded-group / match-cluster members are out of
-/// scope, consistent with the whole-handle-query acceptance surface).
+/// `structure.members` walks in [`compile_entity`]. Only top-level `Let`/`Param`/
+/// `Constraint` members are descended (guarded-group / match-cluster members are
+/// out of scope, consistent with the whole-handle-query acceptance surface). A
+/// `where` guard is not consulted, for a `Constraint` as for a `Let`.
+/// The synthetic realization is therefore unguarded: a known gap, not a
+/// contract, pinned by
+/// `known_gap_constraint_where_guard_does_not_gate_its_hoisted_realization`
+/// (`tests/harness_geometry_solver/geometry_query_inline_arg_tests.rs`).
 ///
 /// The scope is bounded at TWO levels, both because a hoisted arg[0] is lifted
 /// verbatim to the STRUCTURE member list: at the member level as above, and
@@ -766,7 +791,7 @@ fn desugar_inline_geometry_query_args(
 ) -> Option<(Vec<reify_ast::MemberDecl>, HashSet<String>)> {
     let has_any = members
         .iter()
-        .any(|m| member_value_expr(m).is_some_and(|e| expr_has_hoistable_query(e, functions)));
+        .any(|m| hoist_scan_expr(m).is_some_and(|e| expr_has_hoistable_query(e, functions)));
     if !has_any {
         return None;
     }
@@ -775,34 +800,13 @@ fn desugar_inline_geometry_query_args(
     let mut minted: HashSet<String> = HashSet::new();
     let mut counter: usize = 0;
     for member in members {
-        match member {
-            reify_ast::MemberDecl::Let(let_decl)
-                if expr_has_hoistable_query(&let_decl.value, functions) =>
-            {
-                let mut new_let = let_decl.clone();
-                hoist_queries_in_expr(
-                    &mut new_let.value,
-                    &mut counter,
-                    functions,
-                    &mut out,
-                    &mut minted,
-                );
-                out.push(reify_ast::MemberDecl::Let(new_let));
-            }
-            reify_ast::MemberDecl::Param(param)
-                if param
-                    .default
-                    .as_ref()
-                    .is_some_and(|e| expr_has_hoistable_query(e, functions)) =>
-            {
-                let mut new_param = param.clone();
-                if let Some(def) = new_param.default.as_mut() {
-                    hoist_queries_in_expr(def, &mut counter, functions, &mut out, &mut minted);
-                }
-                out.push(reify_ast::MemberDecl::Param(new_param));
-            }
-            other => out.push(other.clone()),
+        let mut member = member.clone();
+        if let Some(expr) = hoist_scan_expr_mut(&mut member)
+            && expr_has_hoistable_query(expr, functions)
+        {
+            hoist_queries_in_expr(expr, &mut counter, functions, &mut out, &mut minted);
         }
+        out.push(member);
     }
     Some((out, minted))
 }
@@ -894,29 +898,14 @@ fn emit_outside_match_collision(
     collisions.insert(name.to_string());
 }
 
-/// Returns `true` if the expression is a bare numeric literal **or** a negated numeric
-/// literal (e.g. `-5.0`, which the compiler lowers to `UnOp { Neg, Literal(5.0) }`).
-///
-/// Used by `check_param_default_type` to recognise the numeric-default idiom for
-/// dimensioned Scalar params (`param x : Length = 5.0`, `= -5.0`, `= 0`, etc.) while
-/// still letting compound expressions (e.g. `1.0/1m`) fall through to `type_compatible`.
-fn is_numeric_literal_expr(expr: &CompiledExpr) -> bool {
-    match &expr.kind {
-        CompiledExprKind::Literal(Value::Int(_) | Value::Real(_)) => true,
-        CompiledExprKind::UnOp {
-            op: UnOp::Neg,
-            operand,
-        } => {
-            matches!(
-                operand.kind,
-                CompiledExprKind::Literal(Value::Int(_) | Value::Real(_))
-            )
-        }
-        _ => false,
-    }
-}
-
 /// Cross-check a structure `param`'s declared type against its initializer's inferred type.
+///
+/// An explicitly annotated `Int` / `Scalar` param default must be `type_compatible`
+/// with the annotation, with no literal exemption: `param t : Length = 1.0` is
+/// rejected like any dimensionless initializer (reversal history: PRD
+/// dimensioned-construction-strictness §0.3). The conformance param-default entry
+/// defers to this check: a `true` verdict means the caller records the cell in a
+/// [`RejectedParamDefaults`], which that entry skips.
 ///
 /// Mirrors the analogous trait-let cross-check at `conformance/checker.rs:1813-1824`.
 /// Uses `type_compatible` (bidirectional; Int→Real widening; `Type::Error` anti-cascade)
@@ -924,8 +913,7 @@ fn is_numeric_literal_expr(expr: &CompiledExpr) -> bool {
 /// to avoid false positives on geometry/trait/structure-ref params.
 ///
 /// Called at the two authoritative param-with-default sites (top-level structure-param
-/// arm and port-member param arm).  NOT called at the ctor-lowering mirror pass
-/// (~entity.rs:4129-4161) which writes into `throwaway_diags` by design.
+/// arm and port-member param arm).
 ///
 /// `has_explicit_type` must be `param.type_expr.is_some()` at the call site.
 /// For an untyped param the compiler assigns a dimensionless-scalar inference
@@ -936,6 +924,7 @@ fn is_numeric_literal_expr(expr: &CompiledExpr) -> bool {
 /// declared-vs-initializer contract exists ONLY when the user actually wrote a
 /// type annotation; for an untyped param the cell type IS conceptually the
 /// initializer's type so there is nothing to validate.
+#[must_use]
 fn check_param_default_type(
     name: &str,
     declared: &Type,
@@ -943,17 +932,17 @@ fn check_param_default_type(
     default_expr: Option<&CompiledExpr>,
     span: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
-) {
+) -> bool {
     // Gate: only cross-check when the user wrote an explicit `: Type` annotation.
     // For untyped params declared is only a dimensionless-scalar inference fallback
     // (not a user contract), so checking it would produce false positives.
     if !has_explicit_type {
-        return;
+        return false;
     }
     // Anti-cascade: if the declared type failed to resolve, a root-cause
     // diagnostic was already emitted; skip to avoid a confusing secondary one.
     if declared.is_error() {
-        return;
+        return false;
     }
     // Restrict to scalar-comparable types only.
     // Complex declared types (Geometry, TraitObject, Vector, Tensor, StructureRef,
@@ -963,53 +952,28 @@ fn check_param_default_type(
     // dimensionless `Type::Scalar { dimension }`, so it is already covered by the
     // `Type::Scalar { .. }` arm (there is no separate `Type::Real` variant).
     if !matches!(declared, Type::Int | Type::Scalar { .. }) {
-        return;
+        return false;
     }
     // No initializer — nothing to check.
     let Some(default) = default_expr else {
-        return;
+        return false;
     };
-    // `param x : Length = 1`, `= 0.5`, or `= -5.0` — whole-number, fractional, or
-    // negated numeric literal idiom.  A *numeric literal* (or negated literal) that is
-    // either an `Int` or a dimensionless scalar (a bare `Real`-typed literal, which under
-    // the real-dimensionless unification IS a dimensionless `Type::Scalar`) is accepted
-    // for any dimensioned Scalar param.
-    // This mirrors the Int→dimensionless-scalar widening that type_compatible already
-    // provides, extended one dimension further (any dimensionless literal accepted for
-    // a dimensioned Scalar):
-    //   - `param x : Length = 0`    → Int literal, accepted (whole-number idiom).
-    //   - `param x : Length = 0.5`  → dimensionless literal, accepted (fractional idiom).
-    //   - `param x : Length = -5.0` → negated literal (`UnOp::Neg` + `Literal`), accepted.
-    // Rejecting `= 0.5` while accepting `= 0` would be a surprising footgun since
-    // users routinely write fractional dimensionless defaults for dimensioned params.
-    //
-    // The guard is intentionally restricted to literal nodes (bare or negated; see
-    // `is_numeric_literal_expr`) so that compound expressions whose result_type happens
-    // to be dimensionless (e.g. `ratio * 2.0`, a BinOp Mul that infers dimensionless
-    // Scalar) still fall through to `type_compatible` and are correctly flagged.
-    // Note: `1.0/1m` is a BinOp Div that correctly infers `Scalar[1/m]` — it is not
-    // a literal and is flagged regardless of this guard.
-    if matches!(declared, Type::Scalar { .. })
-        && is_numeric_literal_expr(default)
-        && (matches!(default.result_type, Type::Int)
-            || matches!(&default.result_type, Type::Scalar { dimension } if dimension.is_dimensionless()))
-    {
-        return;
+    if type_compatible(declared, &default.result_type) {
+        return false;
     }
-    if !type_compatible(declared, &default.result_type) {
-        diagnostics.push(
-            Diagnostic::error(format!(
-                "parameter '{}' declared `{}` but its initializer evaluates to `{}`; \
-                 declared type and initializer dimension must agree",
-                name, declared, default.result_type
-            ))
-            .with_code(DiagnosticCode::ParamDefaultTypeMismatch)
-            .with_label(DiagnosticLabel::new(
-                span,
-                "initializer dimension does not match declared type",
-            )),
-        );
-    }
+    diagnostics.push(
+        Diagnostic::error(format!(
+            "parameter '{}' declared `{}` but its initializer evaluates to `{}`; \
+             declared type and initializer dimension must agree",
+            name, declared, default.result_type
+        ))
+        .with_code(DiagnosticCode::ParamDefaultTypeMismatch)
+        .with_label(DiagnosticLabel::new(
+            span,
+            "initializer dimension does not match declared type",
+        )),
+    );
+    true
 }
 
 /// Cross-check a structure `let` binding's declared type against its initializer's
@@ -1023,15 +987,14 @@ fn check_param_default_type(
 /// - `declared` is `Type::Int` or `Type::Scalar { .. }` (scalar-comparable restriction)
 /// - `declared` is NOT `Type::Error` (anti-cascade)
 /// - `rhs_is_collection_literal` is false (β owns the literal path)
-/// - RHS is NOT a numeric literal for a dimensioned Scalar (numeric-idiom guard)
-/// - `type_compatible(declared, &rhs.result_type)` returns false
+/// - `type_compatible(declared, &rhs.result_type)` returns false, with no literal
+///   exemption (PRD dimensioned-construction-strictness §0.3)
 ///
 /// Called at the two unchecked structure let sites:
 /// 1. structure-body let (entity.rs ~1916, after `fixup_option_none_for_let`)
 /// 2. port-member let (entity.rs ~2810, after `fixup_option_none_for_let`)
 ///
-/// NOT called at the skeleton/ctor-lowering let (`throwaway_diags`) or at
-/// trait-default-injected lets (those use `TypeMismatchForTraitMember`).
+/// NOT called at trait-default-injected lets (those use `TypeMismatchForTraitMember`).
 ///
 /// Engaged only when the let annotation resolves successfully (`expected_ty = Some`),
 /// so unresolved annotations (`let a : Bogus = 5`) remain silently tolerated.
@@ -1068,18 +1031,6 @@ fn check_let_annotation_type(
     if !matches!(declared, Type::Int | Type::Scalar { .. }) {
         return;
     }
-    // Numeric-literal idiom guard (mirrors check_param_default_type exactly):
-    // `let x : Length = 5`, `= 0.5`, or `= -5.0` — a bare/negated numeric literal
-    // that is an Int or a dimensionless scalar is accepted for any dimensioned Scalar
-    // declared type. Compound expressions (e.g. `ratio * 2.0`) are NOT literals and
-    // fall through to `type_compatible`.
-    if matches!(declared, Type::Scalar { .. })
-        && is_numeric_literal_expr(rhs)
-        && (matches!(rhs.result_type, Type::Int)
-            || matches!(&rhs.result_type, Type::Scalar { dimension } if dimension.is_dimensionless()))
-    {
-        return;
-    }
     if !type_compatible(declared, &rhs.result_type) {
         diagnostics.push(
             Diagnostic::error(format!(
@@ -1109,47 +1060,6 @@ fn expr_is_collection_literal(kind: &reify_ast::ExprKind) -> bool {
             | reify_ast::ExprKind::SetLiteral(_)
             | reify_ast::ExprKind::MapLiteral(_)
     )
-}
-
-/// Reject `Keyed<T>` in a value/param position (β escalation esc-3930-295, task 3931 γ).
-///
-/// `Keyed<T>` is a *sub-only* collection kind: it has no `Value::Keyed` form and is
-/// elaborated as one child entity per author-assigned key via a `SubComponentDecl`.
-/// Using it as the type of a `param`/`let` value cell is meaningless. If the resolved
-/// `cell_type` is `Type::Keyed(_)`, emit a clear compile-time Error at cell construction
-/// and poison the type to `Type::Error` (anti-cascade) so no Keyed value cell ever
-/// reaches the eval graph. This upgrades the eval-layer
-/// `is_representable_cell_type(Type::Keyed) == false` backstop (engine_eval.rs,
-/// `is_representable_cell_type_rejects_keyed`) to an actionable diagnostic.
-///
-/// The low-level type *resolver* stays position-blind by design — the guard is layered
-/// above it at this cell-construction site (see type_resolution.rs anchor test
-/// `resolve_parameterized_keyed_is_position_blind_value_guard_deferred`). Subs lower to
-/// `SubComponentDecl` (not value cells), so this cannot misfire on `sub x : Keyed<T>`.
-///
-/// Returns `true` and mutates `cell_type` to `Type::Error` when it fired.
-fn reject_keyed_value_position(
-    cell_type: &mut Type,
-    name: &str,
-    span: SourceSpan,
-    diagnostics: &mut Vec<Diagnostic>,
-) -> bool {
-    if matches!(cell_type, Type::Keyed(_)) {
-        diagnostics.push(
-            Diagnostic::error(format!(
-                "`Keyed<T>` is a sub-only collection kind; it cannot be used as the type \
-                 of value `{name}` — declare it as `sub {name} : Keyed<T>` instead"
-            ))
-            .with_label(DiagnosticLabel::new(
-                span,
-                "Keyed<T> in a value/param position",
-            )),
-        );
-        *cell_type = Type::Error;
-        true
-    } else {
-        false
-    }
 }
 
 /// Detect the E_OBJECTIVE_CONFLICT case (PRD §3.3/§6.3, task 4010).
@@ -1364,22 +1274,6 @@ fn dimension_display_name(dim: DimensionVector) -> String {
     }
 }
 
-/// Maps a param's `is_priv` flag to the compiled cell's `Visibility`:
-/// `priv param` → `Visibility::Private` (hidden from external dot-access,
-/// task #3978 δ); otherwise `Visibility::Public`. Shared by every
-/// `ValueCellDecl` construction site that lowers a param's visibility —
-/// top-level structure-param, port-member, guarded-block (`guards.rs`), and
-/// the structure-def skeleton pass — so the mapping can't drift between
-/// sites. `pub(crate)` so `guards.rs` can call it unqualified via the
-/// `pub(crate) use entity::*;` re-export in `lib.rs`.
-pub(crate) fn priv_flag_to_visibility(is_priv: bool) -> Visibility {
-    if is_priv {
-        Visibility::Private
-    } else {
-        Visibility::Public
-    }
-}
-
 /// # Shadowing
 ///
 /// `CompilationScope::register` (`scope.rs`) uses `HashMap::insert`, so a
@@ -1397,7 +1291,7 @@ pub(crate) fn compile_entity(
     structure: &EntityDefRef<'_>,
     entity_kind: EntityKind,
     enum_defs: &[reify_ir::EnumDef],
-    functions: &[CompiledFunction],
+    calls: crate::call_table::CallTable<'_>,
     trait_registry: &HashMap<String, &CompiledTrait>,
     structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
@@ -1425,7 +1319,8 @@ pub(crate) fn compile_entity(
     // travel bundled so the two same-typed maps cannot be transposed here; see
     // `types::PreludeRegistries` for the full contract.
     prelude: &PreludeRegistries<'_, '_>,
-) -> TopologyTemplate {
+) -> (TopologyTemplate, RejectedParamDefaults) {
+    let functions = calls.functions;
     // task 5345: desugar inline geometry-query arguments into synthetic geometry
     // lets BEFORE any `structure.members` walk (pass-1 registration, realization
     // emission, value-cell compilation all read the shadowed list). Needs
@@ -1460,28 +1355,17 @@ pub(crate) fn compile_entity(
     };
 
     let entity_name = structure.name;
-    // task 3540 (SIR-α): make `structure def` templates reachable at the
-    // expression-lowering site so `Foo()` can lower to a
-    // `StructureInstanceCtor` (esc-3540-177 RULING 1). Composition: prelude
-    // structure-defs first, then local already-compiled structure-defs
-    // (later entries shadow earlier — local definitions shadow prelude,
-    // matching Reify scoping). Declared BEFORE `scope` so it outlives the
-    // scope's borrow (drop order is reverse-declaration).
-    let entity_template_registry: HashMap<String, &TopologyTemplate> = prelude
-        .ctor
-        .iter()
-        .map(|(k, v)| (k.clone(), *v))
-        .chain(
-            compiled_templates
-                .iter()
-                .filter(|t| t.entity_kind == EntityKind::Structure)
-                .map(|t| (t.name.clone(), t)),
-        )
-        .collect();
+    // task 3540 (SIR-α): the ctor view `Foo()` lowers against
+    // (esc-3540-177 RULING 1), by the rule fn bodies use too:
+    // `name_env::overlay_local_templates`. Declared BEFORE `scope` so it
+    // outlives the scope's borrow (drop order is reverse-declaration).
+    let entity_template_registry: HashMap<String, &TopologyTemplate> =
+        crate::name_env::overlay_local_templates(prelude.ctor, compiled_templates);
     let mut scope = CompilationScope::new(entity_name);
     scope.set_unit_registry(unit_registry);
     scope.is_entity_scope = true;
     scope.set_template_registry(&entity_template_registry);
+    scope.mark_pending_stubs(calls);
 
     // Collect the set of trait names actually referenced by this structure's
     // type-param bounds.  Only these traits need a (member_name → Type) map;
@@ -2618,7 +2502,7 @@ pub(crate) fn compile_entity(
             &mut constraints,
             &mut constraint_index,
             enum_defs,
-            functions,
+            calls,
             alias_registry,
             // task 4497: the real file-level ambient-default table threaded from
             // entities_phase. Top-level structures resolve at file scope (DD6 →
@@ -2732,6 +2616,7 @@ pub(crate) fn compile_entity(
     // merged order is true source order — the "newest member" (last) is the most
     // recently declared, which ζ's conflict attribution flags as primary.
     let mut relations: Vec<CompiledExpr> = Vec::new();
+    let mut rejected_param_defaults = RejectedParamDefaults::default();
     for member in structure.members {
         match member {
             // Member-level `relate {}` enforcement (E_RELATE_EXPECTS_RELATION,
@@ -2786,6 +2671,7 @@ pub(crate) fn compile_entity(
                 validate_solver_hint_collections(&solver_hints, &scope, functions, diagnostics);
 
                 let visibility = priv_flag_to_visibility(param.is_priv);
+                let mut default_rejected = false;
                 let decl = build_param_value_cell_decl(
                     id,
                     auto_free,
@@ -2818,7 +2704,7 @@ pub(crate) fn compile_entity(
                         // Site 1: top-level structure-param declared-vs-initializer check.
                         // Pass `param.type_expr.is_some()` to suppress the check for
                         // untyped params whose cell_type is only a dimensionless-scalar fallback.
-                        check_param_default_type(
+                        default_rejected = check_param_default_type(
                             &param.name,
                             ct,
                             param.type_expr.is_some(),
@@ -2830,6 +2716,9 @@ pub(crate) fn compile_entity(
                         default_expr
                     },
                 );
+                if default_rejected {
+                    rejected_param_defaults.record(&decl);
+                }
 
                 if let Some(wc) = &param.where_clause {
                     compile_per_decl_guard(
@@ -4110,6 +3999,7 @@ pub(crate) fn compile_entity(
                             // so thread `param.is_priv` through instead of hardcoding
                             // Public — mirrors Site 1 (#5161).
                             let visibility = priv_flag_to_visibility(param.is_priv);
+                            let mut default_rejected = false;
                             let decl = build_param_value_cell_decl(
                                 id,
                                 auto_free,
@@ -4137,7 +4027,7 @@ pub(crate) fn compile_entity(
                                     // Site 2: port-member param declared-vs-initializer check.
                                     // Pass `param.type_expr.is_some()` to suppress the check for
                                     // untyped params whose cell_type is only a dimensionless-scalar fallback.
-                                    check_param_default_type(
+                                    default_rejected = check_param_default_type(
                                         &param.name,
                                         ct,
                                         param.type_expr.is_some(),
@@ -4149,6 +4039,9 @@ pub(crate) fn compile_entity(
                                     default_expr
                                 },
                             );
+                            if default_rejected {
+                                rejected_param_defaults.record(&decl);
+                            }
                             port_members.push(decl);
                         }
                         reify_ast::MemberDecl::Let(let_decl) => {
@@ -5141,7 +5034,7 @@ pub(crate) fn compile_entity(
         Some(obj_set)
     };
 
-    TopologyTemplate {
+    let template = TopologyTemplate {
         name: entity_name.to_string(),
         doc: structure.doc.clone(),
         entity_kind,
@@ -5184,7 +5077,8 @@ pub(crate) fn compile_entity(
         // is keyed by (trait_name, type_name) with the structure-provided or
         // trait-default resolved Type.
         assoc_types: structure_assoc_types,
-    }
+    };
+    (template, rejected_param_defaults)
 }
 
 /// Build the `member_name → Type` map for a child `TopologyTemplate`.
@@ -6594,230 +6488,6 @@ pub(crate) fn trait_satisfies(
 }
 
 // ---------------------------------------------------------------------------
-// OptionNone fixup helpers (shared with guards.rs via `pub(crate) use entity::*`)
-// ---------------------------------------------------------------------------
-
-/// Fix up a compiled default expression for a param member.
-///
-/// When the expression is `none` and the declared param type is `Option<T>`,
-/// the parser produces a fallback `Option<Real>` type. This helper overrides
-/// that type with the correct `Option<T>` declared by the annotation.
-///
-/// Used in three places: top-level entity params (entity.rs), port member
-/// params (entity.rs), and guarded member params (guards.rs).
-pub(crate) fn fixup_option_none_for_param(compiled: &mut CompiledExpr, cell_type: &Type) {
-    if matches!(&compiled.kind, CompiledExprKind::OptionNone)
-        && matches!(cell_type, Type::Option(_))
-    {
-        *compiled = CompiledExpr::option_none(cell_type.clone());
-    }
-}
-
-/// Fix up a compiled value expression for a let member.
-///
-/// When the expression is `none` and the let has a typed annotation like
-/// `Option<T>`, the parser produces a fallback `Option<Real>` type. This
-/// helper resolves the annotation and overrides the type with the correct
-/// `Option<T>`.
-///
-/// Used in three places: top-level entity lets (entity.rs), port member
-/// lets (entity.rs), and guarded member lets (guards.rs).
-pub(crate) fn fixup_option_none_for_let(
-    compiled_expr: &mut CompiledExpr,
-    type_expr: Option<&reify_ast::TypeExpr>,
-    type_param_names: &HashSet<String>,
-    alias_registry: &TypeAliasRegistry,
-    structure_names: &HashSet<String>,
-    trait_names: &HashSet<String>,
-    diagnostics: &mut Vec<Diagnostic>,
-) {
-    if matches!(&compiled_expr.kind, CompiledExprKind::OptionNone)
-        && let Some(te) = type_expr
-        && let Some(resolved) = resolve_type_expr_with_aliases(
-            te,
-            type_param_names,
-            alias_registry,
-            diagnostics,
-            structure_names,
-            trait_names,
-        )
-        && matches!(&resolved, Type::Option(_))
-    {
-        *compiled_expr = CompiledExpr::option_none(resolved);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Param value-cell decl construction (shared auto_free/param decl-building
-// block, task ζ #5058, PRD compiler-type-hygiene.md §2 dup (e) / §3 decision
-// 10). Single home for the `ValueCellDecl` construction previously
-// copy-pasted at three sites: top-level structure params (entity.rs),
-// port-member params (entity.rs), and guarded-member params (guards.rs,
-// reached via `pub(crate) use entity::*`).
-// ---------------------------------------------------------------------------
-
-/// Build the `ValueCellDecl` for a `param` member, shared by all three
-/// param-decl sites (top-level structure params, port-member params, and
-/// guarded-member params).
-///
-/// Fixes the fields identical across all three sites (`is_aux: false`, the
-/// `Auto`-vs-`Param` branch shape keyed on `auto_free`) and parameterizes the
-/// three axes that differ (`visibility`, `solver_hints`, and default-value
-/// compilation via `compile_default`).
-///
-/// On the auto branch (`auto_free = Some(free)`) `compile_default` is NOT
-/// invoked — `default_expr` is unconditionally `None` — matching the
-/// original duplicated code at all three sites, none of which ever compiled
-/// a default expression for an auto param. On the non-auto branch
-/// (`auto_free = None`), `compile_default` is invoked exactly once with a
-/// `&Type` view of `cell_type` (passed by reference so the caller's
-/// compile/fixup/type-check logic can use it before `cell_type` is moved
-/// into the returned decl) and its return value becomes `default_expr`
-/// verbatim.
-///
-/// `compile_default` encapsulates each call site's own compile-expr variant
-/// (`compile_expr_with_expected` at the two entity.rs sites vs.
-/// `compile_expr_guarded` at the guards.rs site), the `fixup_option_none_for_param`
-/// call, and — at the two entity.rs sites only — the `check_param_default_type`
-/// cross-check. `guards.rs`'s guarded param never calls `check_param_default_type`
-/// today, so keeping that check inside the closure (rather than hoisting it into
-/// this helper) preserves each site's exact diagnostic surface.
-pub(crate) fn build_param_value_cell_decl(
-    id: ValueCellId,
-    auto_free: Option<bool>,
-    cell_type: Type,
-    visibility: Visibility,
-    solver_hints: Vec<SolverHint>,
-    span: SourceSpan,
-    compile_default: impl FnOnce(&Type) -> Option<CompiledExpr>,
-) -> ValueCellDecl {
-    if let Some(free) = auto_free {
-        ValueCellDecl {
-            id,
-            kind: ValueCellKind::Auto { free },
-            visibility,
-            is_aux: false,
-            cell_type,
-            default_expr: None,
-            solver_hints,
-            span,
-        }
-    } else {
-        let default_expr = compile_default(&cell_type);
-        ValueCellDecl {
-            id,
-            kind: ValueCellKind::Param,
-            visibility,
-            is_aux: false,
-            cell_type,
-            default_expr,
-            solver_hints,
-            span,
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Auto-let value-cell lowering, shared by every `let x = auto` binding site:
-// the top-level `MemberDecl::Let` auto branch in this file and the guarded one
-// in guards.rs. Type resolution is its own step because guards.rs's
-// name-registration prepass needs the declared type without the decl.
-// ---------------------------------------------------------------------------
-
-/// Resolve the declared type of an `auto` let binding.
-///
-/// An auto let is a solver cell, so its type must come from the declared
-/// annotation — there is no initializer to infer one from. `None` means no
-/// cell should be minted: either there is no annotation (the
-/// mandatory-annotation error is emitted here) or the resolver could not
-/// resolve it.
-///
-/// A `Keyed<T>` annotation is poisoned to `Type::Error` rather than suppressed,
-/// so the cell is still minted and no Keyed value reaches the eval graph.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn resolve_auto_let_cell_type(
-    name: &str,
-    type_expr: Option<&reify_ast::TypeExpr>,
-    span: SourceSpan,
-    type_param_names: &HashSet<String>,
-    alias_registry: &TypeAliasRegistry,
-    structure_names: &HashSet<String>,
-    trait_names: &HashSet<String>,
-    diagnostics: &mut Vec<Diagnostic>,
-) -> Option<Type> {
-    let Some(type_expr) = type_expr else {
-        diagnostics.push(
-            Diagnostic::error(
-                "auto let binding requires a type annotation: \
-                 use `let <name> : <Type> = auto`",
-            )
-            .with_label(DiagnosticLabel::new(
-                span,
-                "missing type annotation for auto let",
-            )),
-        );
-        return None;
-    };
-
-    let mut cell_type = resolve_type_expr_with_aliases(
-        type_expr,
-        type_param_names,
-        alias_registry,
-        diagnostics,
-        structure_names,
-        trait_names,
-    )?;
-
-    // Reject `Keyed<T>` in a let value position (esc-3930-295, task 3931 γ):
-    // poisoned to `Type::Error` so no Keyed value cell reaches the eval graph.
-    reject_keyed_value_position(&mut cell_type, name, span, diagnostics);
-
-    Some(cell_type)
-}
-
-/// Build the `ValueCellDecl` for an `auto` let whose type
-/// `resolve_auto_let_cell_type` has already resolved: an `Auto { free }`
-/// solver cell with no default expression, carrying the let's visibility,
-/// `aux` flag and validated solver hints. Where the decl goes is the caller's
-/// decision.
-pub(crate) fn build_auto_let_value_cell_decl(
-    entity_name: &str,
-    let_decl: &reify_ast::LetDecl,
-    free: bool,
-    cell_type: Type,
-    scope: &CompilationScope,
-    functions: &[CompiledFunction],
-    diagnostics: &mut Vec<Diagnostic>,
-) -> ValueCellDecl {
-    let visibility = if let_decl.is_pub {
-        Visibility::Public
-    } else {
-        Visibility::Private
-    };
-
-    let lowered_annotations = lower_annotations(&let_decl.annotations, diagnostics);
-    validate_annotations(&lowered_annotations, "let", diagnostics);
-    crate::annotations::display::validate_display_dimension(
-        &lowered_annotations,
-        &cell_type,
-        diagnostics,
-    );
-    let solver_hints = extract_solver_hints(&lowered_annotations, diagnostics);
-    validate_solver_hint_collections(&solver_hints, scope, functions, diagnostics);
-
-    ValueCellDecl {
-        id: ValueCellId::new(entity_name, &let_decl.name),
-        kind: ValueCellKind::Auto { free },
-        visibility,
-        is_aux: let_decl.is_aux,
-        cell_type,
-        default_expr: None,
-        solver_hints,
-        span: let_decl.span,
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Constraint-instantiation expansion (shared by `MemberDecl::ConstraintInst`
 // and the `forall` `ConstraintBody::Instantiation` branch in
 // `forall_elaborate.rs`)
@@ -6832,6 +6502,8 @@ pub(crate) fn build_auto_let_value_cell_decl(
 ///     emit a single error diagnostic and return.
 ///   * Validate named-argument set against the def's params (unknown args,
 ///     missing required args). Validation errors short-circuit emission.
+///   * Type-check each explicit arg (`constraint_arg_type_conforms`); a
+///     rejection also short-circuits emission.
 ///   * Allocate one shared `inst_idx` for this instantiation by bumping the
 ///     `constraint_inst_counts` entry for `ci.name`, so all predicates from
 ///     this call share the same inst_idx and differ only by `pred_idx`.
@@ -6924,20 +6596,6 @@ pub(crate) fn expand_constraint_inst(
         return;
     }
 
-    // Allocate this instantiation's inst_idx before the per-predicate loop
-    // so all predicates from one `constraint MinWall(...)` share the same
-    // inst_idx — predicates differ only by pred_idx. Uses a get_mut/insert
-    // split to avoid cloning `ci.name` on the common case where the entry
-    // already exists.
-    let inst_idx = if let Some(entry) = constraint_inst_counts.get_mut(&ci.name) {
-        let idx = *entry;
-        *entry += 1;
-        idx
-    } else {
-        constraint_inst_counts.insert(ci.name.clone(), 1);
-        0
-    };
-
     // η/4480: capture the EXPLICIT call-site argument bindings, attached to
     // every CompiledConstraint emitted for this instantiation. The presence of
     // a binding (e.g. `"actual"`) is how the GD&T conformance pass detects a
@@ -6964,89 +6622,72 @@ pub(crate) fn expand_constraint_inst(
     // oracle, so the notion of reference (including every binder's shadowing)
     // can never drift from the substitution path used just below.
     let mut arg_bindings: Vec<(String, CompiledExpr)> = Vec::with_capacity(ci.args.len());
-    {
-        let mut throwaway_diag_sink = Vec::new();
-        for (name, expr) in &ci.args {
-            // Probe map for this single param — depends only on the param name,
-            // so it is built once per arg (not once per arg×predicate).
-            let mut probe = HashMap::new();
-            probe.insert(
-                name.clone(),
-                reify_ast::Expr {
-                    kind: reify_ast::ExprKind::Undef,
-                    span: expr.span,
-                },
-            );
-            // If substituting this param changes a predicate, the param's arg
-            // expr is inlined into that predicate and compiled (with real
-            // diagnostics) below — so route this binding compile to the
-            // throwaway sink. Otherwise it is compiled ONLY here.
-            let referenced_by_predicate = def
-                .predicates
-                .iter()
-                .any(|predicate| substitute_expr(predicate, &probe) != *predicate);
-            let compiled = if referenced_by_predicate {
-                compile_expr(expr, scope, enum_defs, functions, &mut throwaway_diag_sink)
-            } else {
-                compile_expr(expr, scope, enum_defs, functions, diagnostics)
-            };
-            arg_bindings.push((name.clone(), compiled));
-        }
+    let mut throwaway_diag_sink = Vec::new();
+    for (name, expr) in &ci.args {
+        // Probe map for this single param — depends only on the param name,
+        // so it is built once per arg (not once per arg×predicate).
+        let mut probe = HashMap::new();
+        probe.insert(
+            name.clone(),
+            reify_ast::Expr {
+                kind: reify_ast::ExprKind::Undef,
+                span: expr.span,
+            },
+        );
+        // If substituting this param changes a predicate, the param's arg
+        // expr is inlined into that predicate and compiled (with real
+        // diagnostics) below — so route this binding compile to the
+        // throwaway sink. Otherwise it is compiled ONLY here.
+        let referenced_by_predicate = def
+            .predicates
+            .iter()
+            .any(|predicate| substitute_expr(predicate, &probe) != *predicate);
+        let compiled = if referenced_by_predicate {
+            compile_expr(expr, scope, enum_defs, functions, &mut throwaway_diag_sink)
+        } else {
+            compile_expr(expr, scope, enum_defs, functions, diagnostics)
+        };
+        arg_bindings.push((name.clone(), compiled));
     }
 
     // Task 4546: param-level argument type conformance check.
     //
-    // Run AFTER the arg_bindings block (which compiles all explicit args into
+    // Run AFTER the arg_bindings loop (which compiles all explicit args into
     // CompiledExprs with result_type) and BEFORE the per-predicate loop (which
     // std::mem::take's arg_bindings). This is the earliest point where both the
     // compiled arg types AND the declared param types (now stored on
     // CompiledConstraintParam.ty) are available simultaneously.
     //
-    // Uses `constraint_arg_type_conforms` (type_compat.rs) which applies a
-    // narrow cross-category check: rejects Bool/String/Enum vs numeric mismatches
-    // while tolerating Int-for-Length and other numeric-for-dimensioned cases
-    // (dimensional strictness within predicates is task 4490's responsibility).
-    //
-    // Note: for comparison-predicate cases (e.g. `w > 0mm` with `w: true`),
-    // task 4490's emit_comparison_operand_diagnostics also fires for the
-    // substituted predicate. Both diagnostics are accepted (they fire at
-    // distinct seams — binding site vs. predicate body).
-    {
-        // Build a name→arg-expr-span map so the diagnostic label can point at
-        // the argument expression, not the whole constraint instantiation.
-        let arg_spans: HashMap<&str, SourceSpan> = ci
-            .args
-            .iter()
-            .map(|(name, expr)| (name.as_str(), expr.span))
-            .collect();
-        for (arg_name, compiled_arg) in &arg_bindings {
-            // Look up the matching declared param.
-            // Unknown arg names are already diagnosed by the validation above;
-            // skip names that have no matching param to avoid double-reporting.
-            let Some(param) = def.params.iter().find(|p| p.name == *arg_name) else {
-                continue;
-            };
-            // Skip params with no resolved type (unannotated or resolution failed).
-            let Some(ref param_ty) = param.ty else {
-                continue;
-            };
-            if !constraint_arg_type_conforms(param_ty, &compiled_arg.result_type) {
-                let arg_span = arg_spans.get(arg_name.as_str()).copied().unwrap_or(ci.span);
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "type mismatch: argument '{}' for constraint '{}' \
-                         has type {} but parameter expects {}",
-                        arg_name, ci.name, compiled_arg.result_type, param_ty,
-                    ))
-                    .with_code(DiagnosticCode::ConstraintArgTypeMismatch)
-                    .with_label(DiagnosticLabel::new(
-                        arg_span,
-                        format!("expected {}, got {}", param_ty, compiled_arg.result_type),
-                    )),
-                );
-            }
+    // A rejected binding short-circuits emission like a missing argument, so the
+    // mistake is reported once, at the argument, instead of again from inside the
+    // def body. Predicate compilation and the guard group will no longer run, so
+    // the diagnostics they were going to report are reported here instead: the
+    // throwaway sink is flushed and the `where` condition is compiled for its
+    // diagnostics alone. Pinned by
+    // crates/reify-compiler/tests/harness_statement_semantics/constraint_arg_conformance_tests.rs's
+    // rejected_constraint_arg_is_reported_once_at_the_binding_site and its two
+    // does_not_swallow siblings.
+    if emit_constraint_arg_type_mismatches(ci, def, &arg_bindings, diagnostics) {
+        diagnostics.append(&mut throwaway_diag_sink);
+        if let Some(wc) = &ci.where_clause {
+            compile_expr(&wc.condition, scope, enum_defs, functions, diagnostics);
         }
+        return;
     }
+
+    // Allocate this instantiation's inst_idx before the per-predicate loop
+    // so all predicates from one `constraint MinWall(...)` share the same
+    // inst_idx — predicates differ only by pred_idx. Uses a get_mut/insert
+    // split to avoid cloning `ci.name` on the common case where the entry
+    // already exists.
+    let inst_idx = if let Some(entry) = constraint_inst_counts.get_mut(&ci.name) {
+        let idx = *entry;
+        *entry += 1;
+        idx
+    } else {
+        constraint_inst_counts.insert(ci.name.clone(), 1);
+        0
+    };
 
     // For each predicate in the constraint def, substitute params with args
     // and compile the resulting expression in the calling entity's scope.
@@ -7102,560 +6743,53 @@ pub(crate) fn expand_constraint_inst(
     }
 }
 
-/// Lower a nested `priv`-aware `Param` (declared inside a `port { }` block or a
-/// block-form `where { }` guarded group) to a lightweight skeleton value cell.
-///
-/// [`build_structure_def_skeleton`] populates the transient template's `ports`
-/// and `guarded_groups` with just enough shape for the function-body priv gate
-/// to fire (`template_member_is_priv` / `port_member_is_priv` in `expr.rs`),
-/// which read only `id.member`, `kind == Param`, and `visibility`. `cell_type`
-/// gets the same resolved-or-dimensionless fallback as the top-level param loop;
-/// `default_expr` is omitted — the gate never evaluates these nested defaults
-/// during fn-body member access. `member_name` is the composite `"<port>.<param>"`
-/// for a port member (matching `port_member_is_priv`'s composite lookup) and the
-/// bare param name for a guarded-block member (matching `template_member_is_priv`'s
-/// `guarded_groups` scan).
-#[allow(clippy::too_many_arguments)]
-fn skeleton_nested_param_cell(
-    entity_name: &str,
-    member_name: &str,
-    param: &reify_ast::ParamDecl,
-    type_param_names: &HashSet<String>,
-    alias_registry: &TypeAliasRegistry,
-    structure_names: &HashSet<String>,
-    trait_names: &HashSet<String>,
+/// Emit one `ConstraintArgTypeMismatch` per explicit arg whose compiled type
+/// does not conform (`constraint_arg_type_conforms`) to its declared param
+/// type; returns whether any was emitted.
+fn emit_constraint_arg_type_mismatches(
+    ci: &reify_ast::ConstraintInstDecl,
+    def: &CompiledConstraintDef,
+    arg_bindings: &[(String, CompiledExpr)],
     diagnostics: &mut Vec<Diagnostic>,
-) -> ValueCellDecl {
-    let cell_type = param
-        .type_expr
-        .as_ref()
-        .and_then(|te| {
-            resolve_type_expr_with_aliases(
-                te,
-                type_param_names,
-                alias_registry,
-                diagnostics,
-                structure_names,
-                trait_names,
-            )
-        })
-        .unwrap_or(Type::dimensionless_scalar());
-    ValueCellDecl {
-        id: ValueCellId::new(entity_name, member_name),
-        kind: ValueCellKind::Param,
-        visibility: priv_flag_to_visibility(param.is_priv),
-        is_aux: false,
-        cell_type,
-        default_expr: None,
-        solver_hints: vec![],
-        span: param.span,
-    }
-}
-
-/// Build a skeleton [`TopologyTemplate`] for a `structure_def` that appears in
-/// the same module as a compiled function.
-///
-/// The skeleton is transient — it is never stored in the [`CompiledModule`].
-/// Its sole purpose is to make `Foo()` ctor expressions inside same-module
-/// fn bodies lower to [`CompiledExprKind::StructureInstanceCtor`] via the
-/// `prelude_template_registry` path in [`crate::functions::compile_function`].
-///
-/// Only three things are consumed by the
-/// [`CompiledExprKind::StructureInstanceCtor`] lowering site
-/// (`expr.rs:1070-1103`):
-///
-/// * `entity_kind == EntityKind::Structure`
-/// * the `Param`-kind `value_cells` (member name + `default_expr`)
-/// * `template.version()` (from annotations)
-///
-/// All other fields are empty / zero — `content_hash` is 0, no constraints,
-/// sub-components, ports, etc.
-///
-/// Default expressions are compiled in a **neutral scope** (no sibling params
-/// registered) with the unit registry set so quantity literals like `0Pa`
-/// resolve.  [`fixup_option_none_for_param`] is applied so `Option<T> = none`
-/// defaults match the authoritative template shape.  Diagnostics from skeleton
-/// compilation are discarded into a throwaway buffer —
-/// `entities_phase::phase_entities` later re-compiles the same `structure_def`s
-/// and emits the authoritative diagnostics, avoiding double-emission and
-/// spurious neutral-scope errors.
-///
-/// **Limitation — silent-divergence hazard** (accepted per task 3895 design
-/// decision #3): a param default that references a sibling param or a
-/// same-module function will not resolve in the neutral scope; `compile_expr`
-/// returns a poison expression and its diagnostic is swallowed by the throwaway
-/// buffer.  That poison default is then baked verbatim into the
-/// `StructureInstanceCtor.defaults` map at the fn-body lowering site in
-/// `expr.rs`.  `phase_entities` re-compiles the same `structure_def`
-/// authoritatively (siblings resolve there), but it emits NO diagnostic for the
-/// fn-body ctor.  Net result: a same-module fn body calling `Foo()` that relies
-/// on such a default silently evaluates the poison value at runtime, while
-/// direct entity instantiation of `Foo` gets the correct default — a
-/// diagnostic-free divergence.  A follow-up task should either detect skeleton
-/// poison defaults and emit a diagnostic at the ctor call site, or omit the
-/// default from the skeleton so the existing "missing default" path reports it.
-/// Acceptable for now because `std/flexures` and the acceptance test
-/// (`same_module_structure_ctor_compile.rs`) use only literal defaults.
-pub(crate) fn build_structure_def_skeleton(
-    structure: &reify_ast::StructureDef,
-    enum_defs: &[reify_ir::EnumDef],
-    functions: &[CompiledFunction],
-    alias_registry: &TypeAliasRegistry,
-    structure_names: &HashSet<String>,
-    trait_names: &HashSet<String>,
-    unit_registry: &UnitRegistry,
-) -> TopologyTemplate {
-    // Throwaway diagnostics — phase_entities re-compiles authoritatively.
-    let mut throwaway_diags: Vec<Diagnostic> = Vec::new();
-
-    // `alias_registry` is read-only during skeleton resolution — all mutations
-    // (register/seed) happen before `build_structure_def_skeleton` is called.
-    // Use the registry directly (no clone needed).
-
-    // Compilation scope: unit registry set so quantity literals resolve.
-    // Params are registered incrementally in the first pass (see first-pass
-    // loop below), so that Let members compiled in the second pass can resolve
-    // sibling-param references without producing poison exprs.
-    //
-    // NOTE: `set_template_registry` is intentionally NOT called here.  The
-    // skeleton runs in `phase_functions`, before the full template registry is
-    // available (templates are built IN this same phase from the skeletons).
-    // As a consequence, a derived let whose RHS constructs another structure
-    // (e.g. `let h = InnerStruct(...)`) will compile to a generic FunctionCall
-    // rather than a StructureInstanceCtor, and will therefore NOT carry
-    // InnerStruct's own lets — introducing a narrow sub-consistency gap for
-    // nested-ctor-in-let cases on the fn-returned path.  The current test suite
-    // only exercises scalar / geometry derived lets in fn-returned structs
-    // (make_dt / make_g / make_h) so this gap is latent but untested.
-    // Future fix: pass the partially-built registry once all skeletons have been
-    // collected (a two-sub-pass split of phase_functions).  Until then, the
-    // limitation is documented here so a future regression is visible.
-    let mut scope = CompilationScope::new(&structure.name);
-    scope.set_unit_registry(unit_registry);
-
-    // Type params from the structure declaration (needed by resolve_type_expr_with_aliases).
-    let type_param_names: HashSet<String> = structure
-        .type_params
+) -> bool {
+    // Build a name→arg-expr-span map so the diagnostic label can point at
+    // the argument expression, not the whole constraint instantiation.
+    let arg_spans: HashMap<&str, SourceSpan> = ci
+        .args
         .iter()
-        .map(|tp| tp.name.clone())
+        .map(|(name, expr)| (name.as_str(), expr.span))
         .collect();
-
-    let visibility = if structure.is_pub {
-        Visibility::Public
-    } else {
-        Visibility::Private
-    };
-
-    // Lower annotations so template.version() reflects @version(N) correctly.
-    let annotations = lower_annotations(&structure.annotations, &mut throwaway_diags);
-
-    // Build value_cells for Param members; register each in scope so that Let
-    // members compiled in the second pass below can resolve sibling params
-    // without producing poison exprs (task-4342: skeleton now carries Let cells).
-    let mut value_cells: Vec<ValueCellDecl> = Vec::new();
-
-    // Mirror the authoritative path's incremental geometry-let classification
-    // (entity.rs:623, 853-856).  `known_geometry_lets` tracks names that resolve
-    // to geometry — either a direct geometry function call, or an Ident/branch
-    // alias to an already-known geometry let or geometry param.  `is_geometry_let`
-    // consults this set for its Ident/Conditional/Match branches (geometry.rs),
-    // so it MUST be populated incrementally as the walk proceeds — otherwise an
-    // aliased geometry let (e.g. `let base = box(w,w,w); let shifted = base`) is
-    // skipped on the authoritative/sub path but NOT here, leaking a spurious
-    // Undef `shifted` field into the ctor `lets` and breaking the cross-path
-    // consistency this task exists to guarantee.  Geometry params are seeded in
-    // the first pass below (authoritative: entity.rs:822-831); geometry lets are
-    // accumulated in the second pass.
-    let mut known_geometry_lets: HashSet<&str> = HashSet::new();
-    // Parallel selector-let accumulator — mirrors the authoritative pre-pass
-    // (entity.rs:~631). Populated in the Let arm's else branch when
-    // is_selector_expr is true, enabling all-ident selector compositions to
-    // route correctly. (task 4527)
-    let mut known_selector_lets: HashSet<&str> = HashSet::new();
-
-    for member in &structure.members {
-        if let reify_ast::MemberDecl::Param(param) = member {
-            // Resolve cell_type; fall back to Real on None / unresolvable.
-            // cell_type is needed only by fixup_option_none_for_param to
-            // detect Type::Option; the ctor lowering itself does not use it.
-            //
-            // Intentionally keeps `dimensionless_scalar()` (not `Type::Error`) for the
-            // unresolvable fallback: this is the ctor-lowering MIRROR pass that writes
-            // into `throwaway_diags` and is never checked authoritative (see the pass
-            // docstring at ~:402-403). The fallback feeds only `fixup_option_none_for_param`'s
-            // `Type::Option` detection, where `Error` vs `dimensionless_scalar()` is
-            // indifferent — but silently changing it could perturb Option detection if
-            // `fixup_option_none_for_param` ever tightens its Error-passthrough contract.
-            // The authoritative registration fallbacks were migrated to `Type::Error` in
-            // the pass-1 block above (task #4645); this mirror-pass line is a deliberate
-            // exception, not an accidental miss.
-            let cell_type = param
-                .type_expr
-                .as_ref()
-                .and_then(|te| {
-                    resolve_type_expr_with_aliases(
-                        te,
-                        &type_param_names,
-                        alias_registry,
-                        &mut throwaway_diags,
-                        structure_names,
-                        trait_names,
-                    )
-                })
-                .unwrap_or(Type::dimensionless_scalar());
-
-            let default_expr = param.default.as_ref().map(|expr| {
-                let mut compiled =
-                    compile_expr(expr, &scope, enum_defs, functions, &mut throwaway_diags);
-                fixup_option_none_for_param(&mut compiled, &cell_type);
-                compiled
-            });
-
-            let id = ValueCellId::new(&structure.name, &param.name);
-            // Seed `known_geometry_lets` with geometry-typed params whose default
-            // is a geometry expression, so a later let aliasing this param (e.g.
-            // `let shifted = base_solid`) is classified as geometry and routed out
-            // of value_cells.  Mirrors the authoritative path (entity.rs:822-831).
-            if cell_type == Type::Geometry
-                && param
-                    .default
-                    .as_ref()
-                    .map(|e| {
-                        is_geometry_let(e, functions, &known_geometry_lets, &known_selector_lets)
-                    })
-                    .unwrap_or(false)
-            {
-                known_geometry_lets.insert(param.name.as_str());
-            }
-            // Register in scope so subsequent Let exprs can reference this param.
-            scope.register(&param.name, cell_type.clone());
-            value_cells.push(ValueCellDecl {
-                id,
-                kind: ValueCellKind::Param,
-                // The skeleton template is the one consulted during function-body
-                // member access (functions_phase merged_registry), so this
-                // TOP-LEVEL param site MUST mirror the authoritative compile_entity
-                // param site (via priv_flag_to_visibility) or a `priv` member leaks
-                // through a function body. Nested `priv` members are carried the
-                // same way by the skeleton's `ports`/`guarded_groups` passes below,
-                // so they are priv-gated on function-body access too (`m.g`;
-                // `m.secret.main` paired with the expr.rs receiver-resolution branch).
-                visibility: priv_flag_to_visibility(param.is_priv),
-                is_aux: false,
-                cell_type,
-                default_expr,
-                solver_hints: vec![],
-                span: param.span,
-            });
-        }
-    }
-
-    // Second pass: compile Let members against the scope that now has all params
-    // registered.  Two let categories are ROUTED OUT (excluded from value_cells),
-    // matching the authoritative path's routing:
-    //
-    //   1. Geometry-typed lets — skipped as on the authoritative path (is_geometry_let).
-    //   2. Per-decl GUARDED lets (where_clause.is_some()) — routed out here to match
-    //      the authoritative path (entity.rs:1457-1472), which diverts guarded lets into
-    //      guarded_groups and never into value_cells.  If a guarded let were included in
-    //      value_cells here, the ctor-lets collection at expr.rs:1425-1440 would harvest
-    //      it and `materialize_template_lets` would evaluate it eagerly, bypassing its
-    //      guard — while the same structure reached via sub or entity-scope ctor-in-let
-    //      (authoritative template) would NOT evaluate it.  That asymmetry breaks the
-    //      sub-consistency property this task exists to guarantee.  Excluding it here
-    //      (one `continue`) makes the skeleton's value_cells contents — and therefore the
-    //      ctor `lets` — identical across all arrival paths.  The skeleton is transient
-    //      and guarded_groups is vec![] anyway; guarded lets simply do not participate
-    //      in eager materialization on the fn-returned path.
-    //
-    // Solver-hints/annotation lowering and per-decl guard machinery
-    // (compile_per_decl_guard / guarded_groups population) are intentionally NOT
-    // replicated here — they require the full diagnostic machinery (alias registry,
-    // structure_names, trait_names) and are compiler-internal; the skeleton is transient
-    // and never participates in constraint solving.
-    //
-    // Amendment (task-4342 suggestion 1):
-    //   • `fixup_option_none_for_let` is called so that `let x: Option<T> = none`
-    //     gets the correct typed-none expr on both skeleton and authoritative paths.
-    //   • Visibility respects `let_decl.is_pub` (authoritative: entity.rs:1434) so
-    //     downstream callers (e.g. the ctor-lets lowering filter at expr.rs:1413) see
-    //     identical metadata on both paths.
-    for member in &structure.members {
-        if let reify_ast::MemberDecl::Let(let_decl) = member {
-            if is_geometry_let(
-                &let_decl.value,
-                functions,
-                &known_geometry_lets,
-                &known_selector_lets,
-            ) {
-                // Accumulate this geometry let's name so subsequent lets that
-                // alias it (Ident/branch references) are also classified as
-                // geometry — matching the authoritative path (entity.rs:853-856).
-                known_geometry_lets.insert(let_decl.name.as_str());
-                continue;
-            }
-            // Geometry-LIST lets (task #5385) route out here too: the skeleton
-            // carries `realizations: vec![]` unconditionally, so a
-            // `List<Geometry>` cell here would be a promise nothing hydrates.
-            //
-            // This does NOT put skeleton and authoritative `value_cells` in
-            // agreement, and the earlier claim that it did was wrong (review
-            // esc-5385-7). Unlike a single-geometry let — which emits no value
-            // cell on EITHER path — the authoritative pass DOES push a
-            // `List<Geometry>` `ValueCellDecl` for an accepted geometry-list let
-            // (see the `known_geometry_list_lets` arm above). The skeleton
-            // deliberately omits it: its `value_cells` feed `ctor.lets`, and a
-            // cell whose Value only becomes authoritative after
-            // `post_process_geometry_handle_cells` regroups realization handles
-            // has nothing to regroup on a skeleton that emits no realizations.
-            // The accepted asymmetry is therefore that the cell is present via
-            // the `sub` arrival path and absent via the ctor / fn-returned /
-            // param-held ones.
-            //
-            // The two `diagnose_unsupported_geometry_list` rejection shapes (a
-            // non-literal `generate` count, a mixed-kind list literal) are
-            // deliberately NOT routed out here, so they do get an ordinary value
-            // cell on this pass while the authoritative pass skips them. That is
-            // unobservable: both shapes push an Error on the authoritative pass,
-            // so compilation fails before the skeleton's cells are used — and
-            // mirroring the routing would mean calling the diagnostic-EMITTING
-            // `diagnose_unsupported_geometry_list` a second time, double-reporting
-            // every such let.
-            if classify_geometry_list_let(
-                &let_decl.value,
-                functions,
-                &known_geometry_lets,
-                &known_selector_lets,
-            )
-            .is_some()
-            {
-                continue;
-            }
-            // Track selector lets BEFORE the where_clause guard — mirrors the authoritative
-            // pre-pass (entity.rs:857-875) which populates known_selector_lets regardless
-            // of where_clause.  Without this, a per-decl-guarded selector let followed by
-            // a non-guarded all-ident composition (`let u = union(s, other)` where `s`
-            // has a where_clause) would have `u` mis-classified as CSG on this skeleton
-            // pass even though the authoritative pass correctly routes it to the selector
-            // path.  Mirrors the `known_geometry_lets` population above (which also
-            // precedes the where_clause continue). (task 4527 amendment)
-            if is_selector_expr(&let_decl.value, functions, &known_selector_lets) {
-                known_selector_lets.insert(let_decl.name.as_str());
-            }
-            // Per-decl guarded lets belong in guarded_groups on the authoritative path;
-            // exclude them here so value_cells (and thus ctor `lets`) are path-consistent.
-            //
-            // SUB-CONSISTENCY GAP (accepted, out-of-scope for task-4342):
-            // A guarded member (e.g. `let active_limit = nominal - dev where active`) is
-            // present in the authoritative template's `guarded_groups` and is materialised
-            // via `elaborate_child_lets_only` on the `sub` path when its guard evaluates to
-            // true.  On the ctor / fn-returned / param-held paths the member is simply
-            // absent from `ctor.lets`, so `instance.active_limit` yields Undef regardless
-            // of the guard condition.  This is intentional for task-4342 — the eager
-            // materialisation strategy does not carry the guard expression, so evaluating it
-            // conditionally would require a different IR representation.  A follow-up task
-            // should either (a) extend the `lets` vec to carry `(name, expr, Option<guard>)`
-            // and conditionally evaluate guarded lets in `materialize_template_lets`, or
-            // (b) accept the gap and document it as "guarded members are sub-only".
-            if let_decl.where_clause.is_some() {
-                continue;
-            }
-            let mut compiled_expr = compile_expr(
-                &let_decl.value,
-                &scope,
-                enum_defs,
-                functions,
-                &mut throwaway_diags,
+    let mut any_emitted = false;
+    for (arg_name, compiled_arg) in arg_bindings {
+        // Look up the matching declared param.
+        // Unknown arg names are already diagnosed by `expand_constraint_inst`'s
+        // validation; skip names that have no matching param to avoid
+        // double-reporting.
+        let Some(param) = def.params.iter().find(|p| p.name == *arg_name) else {
+            continue;
+        };
+        // Skip params with no resolved type (unannotated or resolution failed).
+        let Some(ref param_ty) = param.ty else {
+            continue;
+        };
+        if !constraint_arg_type_conforms(param_ty, &compiled_arg.result_type) {
+            let arg_span = arg_spans.get(arg_name.as_str()).copied().unwrap_or(ci.span);
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "type mismatch: argument '{}' for constraint '{}' \
+                     has type {} but parameter expects {}",
+                    arg_name, ci.name, compiled_arg.result_type, param_ty,
+                ))
+                .with_code(DiagnosticCode::ConstraintArgTypeMismatch)
+                .with_label(DiagnosticLabel::new(
+                    arg_span,
+                    format!("expected {}, got {}", param_ty, compiled_arg.result_type),
+                )),
             );
-            // Mirror the authoritative path's fixup so `Option<T>` typed lets get the
-            // correct none type, not the parser's `Option<Real>` fallback.
-            fixup_option_none_for_let(
-                &mut compiled_expr,
-                let_decl.type_expr.as_ref(),
-                &type_param_names,
-                alias_registry,
-                structure_names,
-                trait_names,
-                &mut throwaway_diags,
-            );
-            let cell_type = compiled_expr.result_type.clone();
-            let id = ValueCellId::new(&structure.name, &let_decl.name);
-            // Register in scope so later lets can reference earlier lets.
-            scope.register(&let_decl.name, cell_type.clone());
-            // Respect is_pub, matching the authoritative path (entity.rs:1434).
-            let let_visibility = if let_decl.is_pub {
-                Visibility::Public
-            } else {
-                Visibility::Private
-            };
-            value_cells.push(ValueCellDecl {
-                id,
-                kind: ValueCellKind::Let,
-                visibility: let_visibility,
-                is_aux: let_decl.is_aux,
-                cell_type,
-                default_expr: Some(compiled_expr),
-                solver_hints: vec![],
-                span: let_decl.span,
-            });
+            any_emitted = true;
         }
     }
-
-    // ── Lightweight port-member population (function-body priv gate) ──
-    // Mirror the guarded-block population below, for `port { }` members: a fn body
-    // reading a `priv` port member (`m.secret.main`) is priv-gated via the expr.rs
-    // `<sub>.<port>.<member>` branch, which calls `port_member_is_priv` on the
-    // receiver structure's template. That helper matches the composite
-    // `"<port>.<member>"` ValueCellId the authoritative port-member compilation
-    // uses (entity.rs port arm), so build the skeleton members with the SAME
-    // composite name. Only the priv-gate-relevant fields are set; direction /
-    // type_name / constraints / frame_expr get defaults (the gate never reads
-    // them). Unlike the guarded case, ports also need the expr.rs receiver-
-    // resolution change to fire for fn-body receivers. One-level nesting only.
-    let mut ports: Vec<CompiledPort> = Vec::new();
-    for member in &structure.members {
-        if let reify_ast::MemberDecl::Port(port_decl) = member {
-            let mut members: Vec<ValueCellDecl> = Vec::new();
-            for pm in &port_decl.members {
-                if let reify_ast::MemberDecl::Param(param) = pm {
-                    members.push(skeleton_nested_param_cell(
-                        &structure.name,
-                        &format!("{}.{}", port_decl.name, param.name),
-                        param,
-                        &type_param_names,
-                        alias_registry,
-                        structure_names,
-                        trait_names,
-                        &mut throwaway_diags,
-                    ));
-                }
-            }
-            ports.push(CompiledPort {
-                name: port_decl.name.clone(),
-                direction: port_decl
-                    .direction
-                    .unwrap_or(reify_core::PortDirection::Bidi),
-                type_name: port_decl.type_name.clone(),
-                members,
-                constraints: vec![],
-                frame_expr: None,
-                is_priv: port_decl.is_priv,
-            });
-        }
-    }
-
-    // ── Lightweight guarded-block member population (function-body priv gate) ──
-    // The skeleton is the template consulted while type-checking function BODIES
-    // (phase_functions merged_registry). Populate `guarded_groups` with each
-    // block-form `where { }` group's `priv`-aware members so a fn body reading a
-    // `priv` guarded member (`m.g`) is priv-gated: the SIR-α StructureRef
-    // member-access block's E_PRIV gate (`template_member_is_priv`, expr.rs) scans
-    // `guarded_groups[].members` and is deliberately ordered BEFORE the
-    // member-not-found check — so populating this vec is sufficient, with no
-    // expr.rs change for the guarded case. Only the priv-gate-relevant fields are
-    // built (see `skeleton_nested_param_cell`); the authoritative guard compilation
-    // (guards.rs) — which needs the alias registry / trait names / diagnostic
-    // machinery that phase_functions runs without — is intentionally NOT invoked.
-    // One-level nesting only: guards-in-guards (and ports-in-guards) stay a
-    // documented lightweight-skeleton limitation, covering the test fixtures and
-    // task #5171's external coverage (all one level deep).
-    let mut guarded_groups: Vec<CompiledGuardedGroup> = Vec::new();
-    for member in &structure.members {
-        if let reify_ast::MemberDecl::GuardedGroup(group) = member {
-            let mut members: Vec<ValueCellDecl> = Vec::new();
-            for gm in &group.members {
-                if let reify_ast::MemberDecl::Param(param) = gm {
-                    members.push(skeleton_nested_param_cell(
-                        &structure.name,
-                        &param.name,
-                        param,
-                        &type_param_names,
-                        alias_registry,
-                        structure_names,
-                        trait_names,
-                        &mut throwaway_diags,
-                    ));
-                }
-            }
-            // `else_members` is carried for shape-parity with the authoritative
-            // CompiledGuardedGroup (which populates them too); it is NOT read by
-            // the priv gate. `template_member_is_priv` (expr.rs) scans only
-            // `members`, never `else_members` — so a `priv param` declared in a
-            // `where cond { } else { … }` else-branch is NOT fn-body priv-gated,
-            // exactly as it is NOT gated on the external-access path (the
-            // real-template gate ignores `else_members` too). Closing that
-            // symmetric gap would span both the external and fn-body paths and is
-            // out of scope here.
-            let mut else_members: Vec<ValueCellDecl> = Vec::new();
-            for gm in &group.else_members {
-                if let reify_ast::MemberDecl::Param(param) = gm {
-                    else_members.push(skeleton_nested_param_cell(
-                        &structure.name,
-                        &param.name,
-                        param,
-                        &type_param_names,
-                        alias_registry,
-                        structure_names,
-                        trait_names,
-                        &mut throwaway_diags,
-                    ));
-                }
-            }
-            guarded_groups.push(CompiledGuardedGroup {
-                // The priv gate reads only `members` / `else_members`; guard_expr,
-                // guard_value_cell, and constraints are throwaway placeholders
-                // (mirrors the idiomatic skeleton guard literal used elsewhere).
-                guard_expr: CompiledExpr::literal(Value::Bool(true), Type::Bool),
-                guard_value_cell: ValueCellId::new(&structure.name, "__skeleton_guard"),
-                members,
-                constraints: vec![],
-                else_members,
-                else_constraints: vec![],
-                parent_guard: None,
-            });
-        }
-    }
-
-    TopologyTemplate {
-        name: structure.name.to_string(),
-        doc: structure.doc.clone(),
-        entity_kind: EntityKind::Structure,
-        visibility,
-        // Skeleton does not carry type_params or trait_bounds —
-        // the ctor lowering path does not read them.
-        type_params: vec![],
-        trait_bounds: vec![],
-        value_cells,
-        constraints: vec![],
-        realizations: vec![],
-        sub_components: vec![],
-        relations: vec![],
-        // Port members ARE carried (see the port pass above), so a function body
-        // reading a `priv` port member (`m.secret.main`) is priv-gated. Ports are
-        // absent from `value_cells`, so `m.secret` never types as a `StructureRef`
-        // and the outer `.main` is caught only by the expr.rs `<sub>.<port>.<member>`
-        // AST-pattern branch — which this task also extends to resolve a fn-body
-        // `StructureRef` receiver, completing the port half of the gap.
-        ports,
-        connections: vec![],
-        // Guarded-block members ARE carried (see the population pass above), so a
-        // function body reading a `priv` guarded member (`m.g`) is priv-gated via
-        // the SIR-α `StructureRef` E_PRIV gate — closing the guarded half of the
-        // function-body gap left by task #5171's external-only enforcement.
-        guarded_groups,
-        structure_controlling: HashSet::new(),
-        objective: None,
-        meta: HashMap::new(),
-        // Skeleton is transient; content_hash=0 signals "not a real template".
-        content_hash: ContentHash(0),
-        is_recursive: false,
-        annotations,
-        pragmas: structure.pragmas.to_vec(),
-        match_arm_groups: vec![],
-        forall_templates: vec![],
-        assoc_fns: vec![],
-        assoc_types: vec![],
-    }
+    any_emitted
 }
 
 #[cfg(test)]
@@ -8044,138 +7178,50 @@ structure def Manifold {
         );
     }
 
-    // ── build_param_value_cell_decl tests (task ζ #5058) ──
-    // Exercise the helper's contracts directly (see its doc comment above its
-    // definition for the full invariants). Full-pipeline diagnostic coverage
-    // (that check_param_default_type still fires at Sites 1/2 after routing
-    // through the helper) lives in param_default_type_mismatch_tests.rs.
-
-    /// Shared assertions for the fields that pass straight through
-    /// `build_param_value_cell_decl` from its inputs to the returned decl on
-    /// both branches (`id`, `span`, `visibility`, `is_aux`, `cell_type`,
-    /// `solver_hints`) — factored out so each test below only spells out the
-    /// contract unique to it (auto-vs-param `kind`/`default_expr` behavior,
-    /// `compile_default` invocation, or cell_type identity).
-    fn assert_param_decl_passthrough_fields(
-        decl: &ValueCellDecl,
-        id: &ValueCellId,
-        span: SourceSpan,
-        visibility: Visibility,
-        cell_type: &Type,
-        solver_hints: &[SolverHint],
-    ) {
-        assert_eq!(&decl.id, id);
-        assert_eq!(decl.span, span);
-        assert_eq!(decl.visibility, visibility);
-        assert!(!decl.is_aux);
-        assert_eq!(&decl.cell_type, cell_type);
-        assert_eq!(decl.solver_hints, solver_hints);
-    }
-
-    /// Auto branch (`auto_free = Some(free)`): `compile_default` must not be
-    /// invoked, and the decl must carry `Auto { free }`, `default_expr: None`,
-    /// and every other field verbatim from the inputs.
+    /// `check_param_default_type` reports a rejection exactly when it emits a
+    /// `ParamDefaultTypeMismatch`, which the conformance skip relies on.
     #[test]
-    fn build_param_value_cell_decl_auto_branch_skips_compile_default() {
-        for free in [true, false] {
-            let id = ValueCellId::new("TestEntity", "x");
-            let cell_type = Type::dimensionless_scalar();
-            let span = SourceSpan::new(3, 7);
-            let solver_hints = vec![SolverHint {
-                kind: SolverHintKind::PreferStock,
-                collection: "stock_lengths".to_string(),
-                span,
-            }];
-            let invoked = std::cell::Cell::new(false);
-
-            let decl = build_param_value_cell_decl(
-                id.clone(),
-                Some(free),
-                cell_type.clone(),
-                Visibility::Private,
-                solver_hints.clone(),
-                span,
-                |_ct: &Type| {
-                    invoked.set(true);
-                    None
-                },
+    fn check_param_default_type_reports_rejected_exactly_when_it_emits() {
+        let length = Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        };
+        let dimensionless = CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
+        let length_valued = CompiledExpr::literal(Value::Real(1.0), length.clone());
+        for (declared, has_explicit_type, default, expected_count) in [
+            (&length, true, Some(&dimensionless), 1),
+            (&length, true, Some(&length_valued), 0),
+            (&length, false, Some(&dimensionless), 0),
+            (&Type::Error, true, Some(&dimensionless), 0),
+            (&Type::Geometry, true, Some(&dimensionless), 0),
+            (&length, true, None, 0),
+        ] {
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let rejected = check_param_default_type(
+                "t",
+                declared,
+                has_explicit_type,
+                default,
+                SourceSpan::new(10, 40),
+                &mut diagnostics,
             );
-
-            assert!(
-                !invoked.get(),
-                "compile_default must not be invoked on the auto branch (free={free})"
+            let emitted = diagnostics
+                .iter()
+                .filter(|d| d.code == Some(DiagnosticCode::ParamDefaultTypeMismatch))
+                .count();
+            let row = format!(
+                "{declared:?}, explicit={has_explicit_type}, has_default={}",
+                default.is_some()
             );
-            assert_eq!(decl.kind, ValueCellKind::Auto { free });
-            assert!(decl.default_expr.is_none());
-            assert_param_decl_passthrough_fields(
-                &decl,
-                &id,
-                span,
-                Visibility::Private,
-                &cell_type,
-                &solver_hints,
-            );
-        }
-    }
-
-    /// Non-auto branch (`auto_free = None`): `compile_default` is invoked once
-    /// with `&cell_type`, and `default_expr` equals its return value;
-    /// `cell_type` and `solver_hints` flow through unchanged. `CompiledExpr`
-    /// has no `PartialEq`, so equality here is pinned via `content_hash`.
-    #[test]
-    fn build_param_value_cell_decl_param_branch_returns_compile_default_result() {
-        for yields_default in [true, false] {
-            let id = ValueCellId::new("TestEntity", "y");
-            // Non-dimensionless, so cell_type equality below isn't trivially
-            // satisfied by every dimensionless scalar comparing equal.
-            let cell_type = Type::length();
-            let span = SourceSpan::new(11, 19);
-            let solver_hints = vec![SolverHint {
-                kind: SolverHintKind::DiscreteSet,
-                collection: "y_values".to_string(),
-                span,
-            }];
-            let synthetic = CompiledExpr::literal(Value::Real(42.0), Type::dimensionless_scalar());
-            let expected_hash = synthetic.content_hash;
-
-            let decl = build_param_value_cell_decl(
-                id.clone(),
-                None,
-                cell_type.clone(),
-                Visibility::Public,
-                solver_hints.clone(),
-                span,
-                |ct: &Type| {
-                    assert_eq!(
-                        ct, &cell_type,
-                        "compile_default must receive cell_type by reference"
-                    );
-                    if yields_default {
-                        Some(synthetic)
-                    } else {
-                        None
-                    }
-                },
-            );
-
-            assert_eq!(decl.kind, ValueCellKind::Param);
+            assert_eq!(emitted, expected_count, "{row}: got {diagnostics:?}");
             assert_eq!(
-                &decl.cell_type, &cell_type,
-                "cell_type must flow through the helper unchanged"
+                diagnostics.len(),
+                expected_count,
+                "{row}: got {diagnostics:?}"
             );
             assert_eq!(
-                decl.solver_hints, solver_hints,
-                "solver_hints must flow through the helper unchanged on the non-auto branch \
-                 (not otherwise pinned end-to-end — every @solver_hint fixture decorates auto)"
-            );
-            assert_eq!(
-                decl.default_expr.map(|e| e.content_hash),
-                if yields_default {
-                    Some(expected_hash)
-                } else {
-                    None
-                },
-                "default_expr must equal whatever compile_default returned (yields_default={yields_default})"
+                rejected,
+                emitted == 1,
+                "{row}: verdict disagrees with diagnostics"
             );
         }
     }

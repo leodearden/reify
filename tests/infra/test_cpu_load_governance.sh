@@ -8,7 +8,7 @@
 #
 # §8 boundary-table rows covered:
 #   Row 1  lone governed source, confined+pinned → cpu.stat usage_usec
-#           saturates confine-cores*measure_s budget, cpu.max == max
+#           saturates confine-cores*measured window, cpu.max == max
 #           (no quota throttle on the child scope)                    host-gated
 #   Row 2  heavy mix → after warm-up avg10 < AGENT_THRESHOLD (in-band  host-gated
 #          avg10 SKIPs as inconclusive or hard FAILs — three-band note below)
@@ -88,7 +88,10 @@
 #   Row 4: private hermetic slices via REIFY_CPU_GOVERN_SLICE_TASK/MERGE overrides.
 #
 # KNOBS:
-#   REIFY_CPU_GOV_TEST_WARMUP_S         ROW2_3 warm-up window seconds (default 8)
+#   REIFY_CPU_GOV_TEST_WARMUP_S         ROW2_3 warm-up seconds, counted from EVERY mix
+#                                       source reporting ready (default 8).  Nominal:
+#                                       ROW2-1 divides by the read-to-read window
+#                                       actually measured
 #   REIFY_CPU_GOV_TEST_MIXFACTOR        UNUSED as of H5/task 4926 — ROW2_3's mix
 #                                       width is confine-cores-scaled (CONFINE_CORES
 #                                       below), never nproc-derived (anti-#4901);
@@ -115,11 +118,14 @@
 #                                       at any ceiling (ROW4-1-CORRIDOR-VACUITY-1,
 #                                       and -3/-3b pin that edge to one microsecond).
 #                                       ROW1/ROW2_3 do not read it
-#   REIFY_CPU_GOV_TEST_ROW1_WARMUP_S    ROW1-1 steady-state ramp before sampling
+#   REIFY_CPU_GOV_TEST_ROW1_WARMUP_S    ROW1-1 steady-state ramp before sampling,
+#                                       counted from the burn reporting ready
 #                                       (default 1)
-#   REIFY_CPU_GOV_TEST_ROW1_MEASURE_S   ROW1-1 steady-state delta window (default 3)
+#   REIFY_CPU_GOV_TEST_ROW1_MEASURE_S   ROW1-1 steady-state delta window (default 3).
+#                                       Nominal: the saturation divides by the
+#                                       read-to-read window actually measured
 #   REIFY_CPU_GOV_TEST_ROW1_SATURATION_FLOOR  ROW1-1 saturation floor as a fraction
-#                                       of the confine-cores*measure_s budget
+#                                       of confine-cores * the measured window
 #                                       (default 0.85; empirically calibrated, H5).
 #                                       Reused (read inverted) as the ROW2-1
 #                                       band's starvation floor (task 4970):
@@ -157,10 +163,35 @@
 #                                       ~200+ load-avg host, stall_fraction=0.001).
 #   REIFY_CPU_GOV_TEST_PROC_PATH        synthetic-PSI injection seam (testability seam —
 #                                       mirrors REIFY_CPU_ADMIT_PROC_PATH used in ROW4-BYPASS)
-#   REIFY_CPU_GOV_TEST_BURN_S           per-fixture burn duration seconds (default 4;
-#                                       ROW4 default warmup+measure+4 if unset)
-#   REIFY_CPU_GOV_TEST_ROW4_WARMUP_S    ROW4 steady-state ramp before sampling (default 3)
+#   REIFY_CPU_GOV_TEST_BURN_S           per-fixture burn duration seconds (default 4).
+#                                       ROW1 and ROW4 clamp it UP to the deadline-
+#                                       derived cap (ready-deadline + warmup +
+#                                       measure + 2, and + 4 for ROW4), which is
+#                                       also their default when unset; both stop
+#                                       their burns explicitly after the AFTER
+#                                       sample, so the cap never lengthens a run
+#   REIFY_CPU_GOV_TEST_ROW4_WARMUP_S    ROW4 steady-state ramp, counted from both
+#                                       burns reporting ready, before sampling
+#                                       (default 3)
 #   REIFY_CPU_GOV_TEST_ROW4_MEASURE_S   ROW4 steady-state delta window (default 8)
+#   REIFY_CPU_GOV_TEST_ROW4_READY_DEADLINE_S  ROW4 anti-hang bound on waiting for BOTH
+#                                       burns to report ready through the fixture's
+#                                       --ready-file (default 30; task 9698).  ROW1-1
+#                                       waits on its one burn under the same bound.
+#                                       ROW2_3 waits on every mix source under the
+#                                       smaller of this and ROW2-2's fixed 15 s launch
+#                                       slack (_ROW23_LAUNCH_SLACK_S), so raising the
+#                                       knob never loosens ROW2-2.
+#                                       Technique T (docs/prds/infra-test-wallclock-
+#                                       deflake.md): it only keeps a burn that never
+#                                       reports from hanging the suite and NEVER
+#                                       discriminates pass from fail — when it
+#                                       expires ROW1-1 / ROW2-1 / ROW3-1 / ROW4-1
+#                                       SKIP, there being no window to measure.
+#                                       Generous by an order of magnitude over a
+#                                       governed launch, and the base of the ROW1
+#                                       and ROW4 burn caps and, as the smaller value
+#                                       above, of the ROW2_3 burn cap
 #   REIFY_CPU_GOV_TEST_ROW4_BYPASS_SLOW_S  ROW4-BYPASS-VACUITY-2 slow-but-
 #                                       correct stub sleep seconds (default 6;
 #                                       strictly ABOVE the retired 5 s bound,
@@ -192,15 +223,21 @@
 #                                       anti-#4901); bounds the ROW4 parent-slice quota,
 #                                       the confined per-role worker count, and the
 #                                       confined pin-list size (CONFINE_CPUS below)
-#   REIFY_CPU_GOV_TEST_CONFINE_CPUS     explicit taskset -c pin list override for the
-#                                       ROW4 confined burns (default: derived at runtime
-#                                       as the LAST confine-cores CPUs of this process's
-#                                       own Cpus_allowed_list; esc-4926-3 ruling)
-#   REIFY_GOVTEST_TEST_MODE             ARMING KEY for the two seams below (task
-#                                       5930). Both are refused unless this is 1.
-#                                       Nothing in the repo sets it except
-#                                       test_govtest_slice_reaper.sh, so both
-#                                       seams are inert on every real run no
+#   REIFY_CPU_GOV_TEST_CONFINE_CPUS     explicit pin list override for the ROW4
+#                                       confined burns: CPU ids and ascending N-M
+#                                       ranges, comma-separated ("30,31" or "30-31").
+#                                       Expanded to single ids, since each worker is
+#                                       pinned to ONE CPU (cpu_load_fixture.sh
+#                                       --pin-cpus); anything else (a stride, a
+#                                       typo) exits 64 at startup.  (default: derived
+#                                       at runtime as the LAST confine-cores CPUs of
+#                                       this process's own Cpus_allowed_list;
+#                                       esc-4926-3 ruling)
+#   REIFY_GOVTEST_TEST_MODE             ARMING KEY for the three seams below (task
+#                                       5930). All are refused unless this is 1.
+#                                       Only infra test drivers set it; no
+#                                       production path or verify_env does, so
+#                                       the seams are inert on every real run no
 #                                       matter what else is exported.
 #   REIFY_CPU_GOV_TEST_LIFECYCLE_ONLY   with the arming key, exit 0 immediately
 #                                       after the startup stale-slice sweep, with
@@ -217,6 +254,19 @@
 #                                       judges a member by exit code alone. Set
 #                                       WITHOUT the arming key it is refused loudly
 #                                       and the full suite runs.
+#   REIFY_CPU_GOV_TEST_GATES_ONLY       with the arming key, consult every live
+#                                       cycle's host gate (live_cycle_gate, over
+#                                       _LIVE_GOVERNANCE_CYCLES) right after the
+#                                       startup sweep, then exit 0 before any cycle
+#                                       (task 10370). Exists so
+#                                       test_cpu_load_governance_deflake.sh can
+#                                       prove every live cycle SKIPs under
+#                                       REIFY_CPU_GOVERN_DISABLE=1 with a
+#                                       sub-second drive. NEVER set in a normal
+#                                       run, for the same reason as
+#                                       LIFECYCLE_ONLY; set WITHOUT the arming key
+#                                       it is refused loudly and the full suite
+#                                       runs.
 #   REIFY_GOVTEST_REAP_FAKE_ALIVE_PIDS  with the arming key, a space-separated pid
 #                                       list that replaces the `kill -0` liveness
 #                                       oracle used by the startup sweep (task
@@ -320,6 +370,22 @@ host_supports_governance() {
     )
 }
 
+_LIVE_GOVERNANCE_CYCLES=(FIXTURE-6 ROW1-2 ROW1-1 ROW2_3 CONFINE-APPLIED ROW4)
+
+# live_cycle_gate NAME — the host gate of registered live cycle NAME: 0 if it runs, else prints its SKIP and returns 1.
+live_cycle_gate() {
+    case " ${_LIVE_GOVERNANCE_CYCLES[*]} " in
+        *" $1 "*) ;;
+        *)
+            echo "ERROR: live_cycle_gate: '$1' is not in _LIVE_GOVERNANCE_CYCLES (${_LIVE_GOVERNANCE_CYCLES[*]})" >&2
+            exit 64
+            ;;
+    esac
+    host_supports_governance && return 0
+    echo "  SKIP $1: host does not support cgroup governance"
+    return 1
+}
+
 # ---------------------------------------------------------------------------
 # Hermetic workdir — cleaned up on EXIT.
 # ---------------------------------------------------------------------------
@@ -332,6 +398,9 @@ WORK="$(mktemp -d)"
 # nothing to record.  See govtest_slice_teardown in govtest_slice_reaper_lib.sh
 # for why the flags were removed rather than repaired.
 _ALL_MIX_PIDS=""
+# Wrapper pids of ROW4 burns not yet stopped (task 9698); see
+# _row4_launch_role_burn / _row4_stop_burns.
+_ROW4_BURN_PIDS=""
 
 # ---------------------------------------------------------------------------
 # Hermeticity: neutralize default-ON memory gating (task 4911) for the live-PSI
@@ -352,9 +421,21 @@ printf 'some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.
 export REIFY_CPU_ADMIT_MEM_PROC_PATH="$_MEM_PSI_QUIET"
 
 _cleanup_all() {
+    # Acts only in the shell that installed the EXIT trap: a launch clone TERMed before exec runs it too (task 10124).
+    # Keep this a [[ ]] or-list: [ ] and if-forms run the body anyway in some clones; see Cycle CLEANUP-CLONE.
+    [[ "${BASHPID:-$$}" == "$$" ]] || return 0
     # Kill any lingering ROW2_3 mix background processes (crash-path reap).
     if [ -n "${_ALL_MIX_PIDS:-}" ]; then
         for _cpid in ${_ALL_MIX_PIDS}; do
+            kill "$_cpid" 2>/dev/null || true
+        done
+    fi
+    # Likewise any ROW4 burn this run was cut short before it could stop
+    # (task 9698).  The hermetic-guard burns run in this script's own cgroup,
+    # outside the govtest slices, so govtest_slice_teardown below cannot reach
+    # them.
+    if [ -n "${_ROW4_BURN_PIDS:-}" ]; then
+        for _cpid in ${_ROW4_BURN_PIDS}; do
             kill "$_cpid" 2>/dev/null || true
         done
     fi
@@ -386,31 +467,48 @@ trap '_cleanup_all' EXIT
 # one shared per-user systemd session.
 govtest_reap_stale "$$"
 
+# _govtest_seam_armed SEAM_VAR — 0 when REIFY_GOVTEST_TEST_MODE=1 arms the
+# exit-early seam SEAM_VAR; otherwise refuses it loudly and returns 1.
+#
+# TWO KEYS, NOT A COMMENT.  The two seams below (LIFECYCLE_ONLY, GATES_ONLY)
+# are the only knobs in this file that can make the suite exit GREEN having
+# run zero rows, and run_all.sh judges a member by EXIT CODE alone — it parses
+# no "Results:" line — so a single stray export (a verify_env entry, an
+# operator shell, a future harness that forwards REIFY_* wholesale) would
+# silently turn a host-exclusive governance gate into a no-op that still
+# reports success.  Every other REIFY_CPU_GOV_TEST_* seam redirects a read to
+# a fixture and can at worst make one row measure the wrong thing; these two
+# delete the whole suite.  So each is armed only in conjunction with
+# REIFY_GOVTEST_TEST_MODE=1, a marker only infra test drivers set and no
+# production path or verify_env passes.  Disarmed, the request is refused
+# LOUDLY and the full suite runs — the failure mode of a stray var is then a
+# noisy real run, never a quiet vacuous pass.
+_govtest_seam_armed() {
+    [ "${REIFY_GOVTEST_TEST_MODE:-0}" = "1" ] && return 0
+    echo "WARNING: ${1}=1 IGNORED — REIFY_GOVTEST_TEST_MODE=1 is not set." >&2
+    echo "WARNING: that seam would exit 0 having run zero governance rows, so it is refused unless" >&2
+    echo "WARNING: explicitly armed.  Running the FULL suite.  If this is a real run, unset the var." >&2
+    return 1
+}
+
 # Lifecycle-only seam (task 5930): exit HERE, after the trap is installed and
 # the sweep has run, so tests/infra/test_govtest_slice_reaper.sh can prove the
 # slice lifecycle is wired by driving this script for real without paying for
 # a full ~22s suite.
-#
-# TWO KEYS, NOT A COMMENT.  This is the only knob in this file that can make
-# the suite exit GREEN having run zero rows, and run_all.sh judges a member by
-# EXIT CODE alone — it parses no "Results:" line — so a single stray export
-# (a verify_env entry, an operator shell, a future harness that forwards
-# REIFY_* wholesale) would silently turn a host-exclusive governance gate into
-# a no-op that still reports success.  Every other REIFY_CPU_GOV_TEST_* seam
-# redirects a read to a fixture and can at worst make one row measure the
-# wrong thing; this one deletes the whole suite.  So it is armed only in
-# conjunction with REIFY_GOVTEST_TEST_MODE=1, a marker nothing in the repo
-# sets outside test_govtest_slice_reaper.sh's Block F drive.  Disarmed, the
-# request is refused LOUDLY and the full suite runs — the failure mode of a
-# stray var is then a noisy real run, never a quiet vacuous pass.
-if [ "${REIFY_CPU_GOV_TEST_LIFECYCLE_ONLY:-0}" = "1" ]; then
-    if [ "${REIFY_GOVTEST_TEST_MODE:-0}" = "1" ]; then
-        echo "REIFY_CPU_GOV_TEST_LIFECYCLE_ONLY=1 — exiting after startup sweep (slice-lifecycle drive only)"
-        exit 0
-    fi
-    echo "WARNING: REIFY_CPU_GOV_TEST_LIFECYCLE_ONLY=1 IGNORED — REIFY_GOVTEST_TEST_MODE=1 is not set." >&2
-    echo "WARNING: that seam would exit 0 having run zero governance rows, so it is refused unless" >&2
-    echo "WARNING: explicitly armed.  Running the FULL suite.  If this is a real run, unset the var." >&2
+if [ "${REIFY_CPU_GOV_TEST_LIFECYCLE_ONLY:-0}" = "1" ] && _govtest_seam_armed REIFY_CPU_GOV_TEST_LIFECYCLE_ONLY; then
+    echo "REIFY_CPU_GOV_TEST_LIFECYCLE_ONLY=1 — exiting after startup sweep (slice-lifecycle drive only)"
+    exit 0
+fi
+
+# Gates-only seam (task 10370): consult every live cycle's host gate, then
+# exit, so tests/infra/test_cpu_load_governance_deflake.sh can prove each one
+# SKIPs under the break-glass without paying for the always-on body.
+if [ "${REIFY_CPU_GOV_TEST_GATES_ONLY:-0}" = "1" ] && _govtest_seam_armed REIFY_CPU_GOV_TEST_GATES_ONLY; then
+    echo "REIFY_CPU_GOV_TEST_GATES_ONLY=1 — consulting every live cycle's host gate, then exiting (gate drive only)"
+    for _cycle in "${_LIVE_GOVERNANCE_CYCLES[@]}"; do
+        live_cycle_gate "$_cycle" || true
+    done
+    exit 0
 fi
 
 # ============================================================================
@@ -497,6 +595,149 @@ else
             out=$(python3 "$1" psi-some-total "$2" 2>/dev/null)
             [ "$out" = "unavailable" ]
         ' _ "$INSTRUMENT" "$_SELF6_MALFORMED_FIXTURE"
+
+    # SELF-7 (task 10023): cgroup-usage-stamped prints the cpu.stat usage_usec
+    # AND a CLOCK_MONOTONIC stamp taken in the SAME process right after the
+    # read, so ROW1-1 measures its window read-to-read instead of trusting
+    # the nominal sleep.  Contract: one stdout line "<usage_usec> <monotonic_usec>"
+    # or the literal "unavailable", exit 0 either way (same as cgroup-usage).
+    # The fixture path ends in cpu.stat, which read_cgroup_cpu_usage takes verbatim.
+    _SELF7_DIR="$(mktemp -d -p "$WORK" self7.XXXXXX)"
+    printf 'usage_usec 424242\nuser_usec 1\nsystem_usec 2\n' > "$_SELF7_DIR/cpu.stat"
+    assert "SELF-7a: cpu_gov_instrument.py cgroup-usage-stamped <synthetic cpu.stat usage_usec=424242> == '424242 <monotonic_usec>' (exactly two integer fields, exit 0)" \
+        bash -c '
+            out=$(python3 "$1" cgroup-usage-stamped "$2" 2>/dev/null) || exit 1
+            [[ "$out" =~ ^424242\ [0-9]+$ ]]
+        ' _ "$INSTRUMENT" "$_SELF7_DIR/cpu.stat"
+
+    assert "SELF-7b: cpu_gov_instrument.py cgroup-usage-stamped <non-existent cpu.stat> == unavailable (exit 0)" \
+        bash -c '
+            out=$(python3 "$1" cgroup-usage-stamped "$2" 2>/dev/null) || exit 1
+            [ "$out" = "unavailable" ]
+        ' _ "$INSTRUMENT" "$_SELF7_DIR/absent/cpu.stat"
+
+    # Ordering only, no elapsed bound: two successive calls cannot stamp the
+    # same instant, so a constant stamp (or the usage echoed back) fails here.
+    assert "SELF-7c: cpu_gov_instrument.py cgroup-usage-stamped stamps a clock that advances — the second call's stamp is greater than the first's" \
+        bash -c '
+            re="^[0-9]+ ([0-9]+)\$"
+            first=$(python3 "$1" cgroup-usage-stamped "$2" 2>/dev/null) || exit 1
+            second=$(python3 "$1" cgroup-usage-stamped "$2" 2>/dev/null) || exit 1
+            [[ "$first" =~ $re ]] || exit 1
+            first_stamp="${BASH_REMATCH[1]}"
+            [[ "$second" =~ $re ]] || exit 1
+            [ "${BASH_REMATCH[1]}" -gt "$first_stamp" ]
+        ' _ "$INSTRUMENT" "$_SELF7_DIR/cpu.stat"
+fi
+
+# ============================================================================
+# Cycle CLEANUP-CLONE — _cleanup_all is inert outside the shell that installed
+# it.  Always runs: it sandboxes _cleanup_all, so it needs no PSI, python3 or
+# cgroup substrate.
+#
+# Task 10124: a launch clone TERMed before exec runs this script's EXIT trap,
+# so _cleanup_all must act only when BASHPID == $$.
+#   Case 1 pins that for any non-owning caller, deterministically.
+#   Case 2 reproduces the real fork-before-exec TERM, because case 1 passes
+#   guards that fail in a real clone (bash 5.2.21).  In a clone forked while an
+#   earlier background job is in the job table it inherits (the merge burn, the
+#   later ROW2_3 sources), `[ ... ] || return 0` runs the body anyway, and so
+#   does `if [ ... ]; then return 0; fi`, which also does in a clone forked
+#   right after a TERMed `wait`.  `[[ ... ]] || return 0` holds in both.  So
+#   case 2 forks clones in both contexts, and its trap string is exactly
+#   production's, `_cleanup_all`.
+#   Case 2 is gated by a liveness control and SKIPs, never FAILs, where no TERM
+#   lands before exec.
+# No assertion bounds an elapsed time (technique T).  Every scratch dir lives
+# under $WORK, so the real _cleanup_all removes it at exit.
+# ============================================================================
+echo ""
+echo "--- Cycle CLEANUP-CLONE: _cleanup_all is inert outside the shell that installed it (always-on) ---"
+
+# _clone_probe_box: prints a fresh dir holding work/, the WORK a sandboxed _cleanup_all may delete.
+_clone_probe_box() {
+    local box
+    box="$(mktemp -d -p "$WORK" cleanup-clone.XXXXXX)"
+    mkdir "$box/work"
+    printf '%s\n' "$box"
+}
+
+# _clone_probe_run <box> <cmd>...: runs <cmd> in a subshell whose WORK is <box>/work, whose pid lists
+#   are empty and whose govtest_slice_teardown only writes <box>/work.teardown-called, so not even a
+#   broken _cleanup_all can reach this run's real WORK, burns or slices.  stderr is dropped: a TERMed
+#   clone prints bash's own `wait_for: No record of process` line.
+_clone_probe_run() {
+    local box="$1"
+    shift
+    (
+        WORK="$box/work"
+        _ALL_MIX_PIDS=""
+        _ROW4_BURN_PIDS=""
+        govtest_slice_teardown() { : > "${WORK}.teardown-called"; }
+        "$@"
+    ) 2>/dev/null || true
+}
+
+# _clone_probe_terms <trap_cmd> <rounds> <launches>: installs <trap_cmd> as the EXIT trap, then <rounds> times
+#   backgrounds env-prefixed external commands and TERMs them at once (the launch/stop shape of
+#   _row4_launch_role_burn + _row4_stop_burns at a 0 s ready deadline), so most TERMs land in clones that have
+#   not exec'd yet.  Each round forks them in both contexts a `[ ]`-based guard fails in: ONE launch, whose
+#   TERMed wait leaves a non-zero $? for the next fork, then <launches> launches back to back, where every
+#   clone after the first inherits an earlier launch in its job table.  errexit is off for the helper alone
+#   (`local -`) because that non-zero $? must survive until the next fork.
+#   The payload is short because only a clone that absorbs its TERM, or gets it late, runs it to the end,
+#   and the probe waits that out.
+#   Clears the trap before returning, so only the clones, never the probing shell, can run it.
+_clone_probe_terms() {
+    local - trap_cmd="$1" rounds="$2" launches="$3" round launch pid pids
+    set +e
+    trap "$trap_cmd" EXIT
+    for (( round = 0; round < rounds; round++ )); do
+        GOVTEST_CLONE_PROBE=1 sleep 0.2 &
+        pid=$!
+        kill -TERM "$pid" 2>/dev/null
+        wait "$pid" 2>/dev/null
+        pids=""
+        for (( launch = 0; launch < launches; launch++ )); do
+            GOVTEST_CLONE_PROBE=1 sleep 0.2 &
+            pids="$pids $!"
+        done
+        for pid in $pids; do kill -TERM "$pid" 2>/dev/null; done
+        for pid in $pids; do wait "$pid" 2>/dev/null; done
+    done
+    trap - EXIT
+}
+
+# The probe's size, in one place: <rounds> and <launches> of _clone_probe_terms.
+_clone_probe_rounds=20
+_clone_probe_launches=3
+
+# _clone_probe_unguarded_cleanup: the liveness control's trap, i.e. what an unguarded _cleanup_all does to WORK.
+_clone_probe_unguarded_cleanup() { rm -rf "$WORK"; }
+
+# (1) Called from a subshell (BASHPID != $$), _cleanup_all leaves WORK and every slice alone.
+_cleanup_clone1_box="$(_clone_probe_box)"
+_clone_probe_run "$_cleanup_clone1_box" _cleanup_all
+assert "CLEANUP-CLONE-1a: _cleanup_all called in a subshell (BASHPID != \$\$) leaves WORK in place" \
+    test -d "$_cleanup_clone1_box/work"
+assert "CLEANUP-CLONE-1b: _cleanup_all called in a subshell (BASHPID != \$\$) stops no slice (no govtest_slice_teardown call)" \
+    test ! -e "$_cleanup_clone1_box/work.teardown-called"
+
+# (2) The same under a real fork-before-exec TERM.  The control runs first: it must lose its WORK,
+#     or no TERM landed in a pre-exec clone and the probe would pass vacuously.
+_cleanup_clone_ctl_box="$(_clone_probe_box)"
+_clone_probe_run "$_cleanup_clone_ctl_box" _clone_probe_terms _clone_probe_unguarded_cleanup \
+    "$_clone_probe_rounds" "$_clone_probe_launches"
+if [ -d "$_cleanup_clone_ctl_box/work" ]; then
+    echo "  SKIP CLEANUP-CLONE-2: no TERM landed in a pre-exec clone in ${_clone_probe_rounds} rounds on this host — the clone probe is inconclusive"
+else
+    _cleanup_clone2_box="$(_clone_probe_box)"
+    _clone_probe_run "$_cleanup_clone2_box" _clone_probe_terms _cleanup_all \
+        "$_clone_probe_rounds" "$_clone_probe_launches"
+    assert "CLEANUP-CLONE-2a: back-to-back launch clones TERMed before exec, with _cleanup_all as their inherited EXIT trap, leave WORK in place" \
+        test -d "$_cleanup_clone2_box/work"
+    assert "CLEANUP-CLONE-2b: back-to-back launch clones TERMed before exec, with _cleanup_all as their inherited EXIT trap, stop no slice" \
+        test ! -e "$_cleanup_clone2_box/work.teardown-called"
 fi
 
 # ============================================================================
@@ -550,15 +791,13 @@ else
         test "$FIXTURE_5_RC" -eq 0
 
     # FIXTURE-6: (host-gated) placed scope's cpu.max first field == "max".
-    if host_supports_governance; then
+    if live_cycle_gate FIXTURE-6; then
         SCOPE_MAX="$(timeout 10 bash "$CPU_GOV_EXEC" --role task -- \
             bash -c 'rel=$(sed "s/^0:://" /proc/self/cgroup); cat /sys/fs/cgroup"$rel"/cpu.max 2>/dev/null || echo "unavailable"' \
             2>/dev/null || echo "unavailable")"
         SCOPE_MAX_FIRST="${SCOPE_MAX%% *}"
         assert "FIXTURE-6: governed scope cpu.max first field == max (got '${SCOPE_MAX_FIRST}')" \
             test "${SCOPE_MAX_FIRST}" = "max"
-    else
-        echo "  SKIP FIXTURE-6: host does not support cgroup governance"
     fi
 fi
 
@@ -577,18 +816,24 @@ fi
 # instead bounds the whole subtree's CPU footprint for the pool while leaving
 # each child scope's cpu.max=max.
 #
-# MECHANISM (PRD §1 G6 #3 as REVISED by the esc-4926-3 ruling): the quota
-# alone does NOT reproduce the weight ratio — CPUQuota is an aggregate
-# TIME-budget throttle that never forces sibling threads onto shared per-CPU
-# runqueues, and cpu.weight only arbitrates between siblings CO-RESIDENT on a
-# runqueue.  With 2×confine-cores runnable threads spread across a large idle
-# box, weight never bites and the shared quota drains ~FCFS → ~50/50
-# (empirical false-RED, esc-4926-3).  `taskset -c` affinity pinning of the
-# burns to confine-cores CPUs (CONFINE_CPUS below) is what CREATES the
-# per-CPU co-residency weight arbitration requires; the parent quota stays as
-# the aggregate footprint bound.  Pinned, the ratio is host-load-independent:
-# foreign load and concurrent pool runs on the same CPUs only deepen
-# co-residency and empirically IMPROVE convergence toward W_merge/(W+W).
+# MECHANISM (PRD §1 G6 #3 as REVISED by the esc-4926-3 ruling, refined by task
+# 9698): the quota alone does NOT reproduce the weight ratio — CPUQuota is an
+# aggregate TIME-budget throttle that never forces sibling threads onto shared
+# per-CPU runqueues, and cpu.weight only arbitrates between siblings
+# CO-RESIDENT on a runqueue.  With 2×confine-cores runnable threads spread
+# across a large idle box, weight never bites and the shared quota drains ~FCFS
+# → ~50/50 (empirical false-RED, esc-4926-3).  Confining the burns to
+# confine-cores CPUs (CONFINE_CPUS below) makes co-residency POSSIBLE, but a
+# set-mask does not make it HAPPEN: with every spinner free to run on any
+# listed CPU, where the load balancer puts each one decides the split (one
+# merge and one task spinner per CPU gives 0.75, both merge spinners on one CPU
+# gives 0.50).  Co-residency therefore comes from per-WORKER pinning:
+# cpu_load_fixture.sh --pin-cpus pins worker i of a role to CPUS[i mod n],
+# identically for both roles, so every listed CPU hosts one merge and one task
+# worker whatever the balancer does (_row4_pin_coresident checks it on the live
+# workers).  The parent quota stays as the aggregate footprint bound.  Foreign
+# load on those CPUs shrinks the parent's time there, but it can no longer
+# re-place a spinner onto a CPU the other role does not share.
 #
 # _row4_confine_cores/_row4_confine_quota/_row4_confine_workers are pure (no
 # I/O beyond the fixed knob read, never nproc) so CONFINE-2's
@@ -613,9 +858,32 @@ _row4_confine_workers() {
     # oversubscription idiom, scaled down to the confined budget).
     _row4_confine_cores
 }
+# _row4_expand_cpu_list <list>
+#   Expands a CPU list of ids and N-M ranges ("0-3,7,9-10") into one decimal id
+#   per line.  Returns 1 for anything else — an empty or non-numeric entry, a
+#   descending range, a stride — with whatever it had expanded so far on stdout,
+#   so a caller must discard the output when it fails.
+_row4_expand_cpu_list() {
+    awk -v list="$1" 'BEGIN {
+        n = split(list, entry, ",")
+        for (i = 1; i <= n; i++) {
+            if (entry[i] ~ /^[0-9]+$/) { print entry[i] + 0; continue }
+            if (split(entry[i], bound, "-") == 2 &&
+                    bound[1] ~ /^[0-9]+$/ && bound[2] ~ /^[0-9]+$/ &&
+                    bound[1] + 0 <= bound[2] + 0) {
+                for (cpu = bound[1] + 0; cpu <= bound[2] + 0; cpu++) print cpu
+                continue
+            }
+            malformed = 1
+        }
+        exit malformed
+    }'
+}
 _row4_confine_cpus() {
     # Confined burn pin list (esc-4926-3 ruling): the LAST confine-cores CPUs
-    # of this process's OWN allowed set, comma-joined for `taskset -c`.
+    # of this process's OWN allowed set, comma-joined as SINGLE ids — every
+    # worker is pinned to one of them (cpu_load_fixture.sh --pin-cpus takes ids
+    # and commas only), and the same list serves `taskset -c` for the launcher.
     # SHARED, not per-run: concurrent pool runs deliberately derive the SAME
     # list — cross-run contention on the pair deepens per-CPU co-residency
     # and empirically improves ratio convergence (0.74 shared vs 0.69
@@ -626,17 +894,25 @@ _row4_confine_cpus() {
     # guaranteed ~50/50 false-RED).  The LAST CPUs (not the first) avoid
     # cpu0-adjacent housekeeping/IRQ bias.
     if [ -n "${REIFY_CPU_GOV_TEST_CONFINE_CPUS:-}" ]; then
-        echo "$REIFY_CPU_GOV_TEST_CONFINE_CPUS"
+        # The override is an operator's value, so it is expanded to single ids
+        # here and refused if it is not a CPU list at all: handed on as it
+        # stands, a range or a typo only surfaces as a fixture that never
+        # reports ready.  Exit 64 aborts the suite (set -e) at the hoisted
+        # _ROW4_CONFINE_CPUS assignment, before any guard that uses the list.
+        local override_ids
+        if ! override_ids="$(_row4_expand_cpu_list "$REIFY_CPU_GOV_TEST_CONFINE_CPUS")"; then
+            echo "ERROR: REIFY_CPU_GOV_TEST_CONFINE_CPUS must list CPU ids and ascending N-M ranges, e.g. 30,31 or 30-31 (got '${REIFY_CPU_GOV_TEST_CONFINE_CPUS}')" >&2
+            return 64
+        fi
+        echo "${override_ids//$'\n'/,}"
         return 0
     fi
     local want mask
     want="$(_row4_confine_cores)"
     mask="$(awk '/^Cpus_allowed_list/{print $2}' /proc/self/status 2>/dev/null)"
     [ -z "$mask" ] && return 0
-    # Expand "0-3,7,9-10" → one id per line; keep the last $want; comma-join.
-    printf '%s\n' "$mask" | tr ',' '\n' | while IFS=- read -r lo hi; do
-        if [ -n "$hi" ]; then seq "$lo" "$hi"; else echo "$lo"; fi
-    done | tail -n "$want" | paste -sd, -
+    # Keep the last $want ids of the expanded mask; comma-join.
+    _row4_expand_cpu_list "$mask" | tail -n "$want" | paste -sd, -
 }
 # _row4_confine_apply_quota <parent_slice> <quota>
 #   Best-effort: vivify the parent slice (systemctl --user start) then set
@@ -655,9 +931,10 @@ _row4_confine_apply_quota() {
 # reify-govtest$$.slice ($$ = this script's PID).  Shared across Cycle ROW1 /
 # ROW2_3 / ROW4 so every confined+pinned burn in this run nests under the
 # SAME parent, bounding the whole script invocation's aggregate footprint to
-# ~confine-cores CPUs (not per-cycle).  Must differ from production slices
-# (reify-governed-{agents,merge}.slice) to isolate usage_usec deltas from
-# concurrent production agent placement (ζ).
+# ~confine-cores CPUs (not per-cycle).  Must differ from the production role
+# slices scripts/lib_cgroup.sh::cgroup_role_slice defaults to, to isolate
+# usage_usec deltas from concurrent production agent placement (ζ) — and from
+# the legacy pre-9998 reify-governed-* names older host listings still show.
 _ROW4_SLICE_TASK="reify-govtest$$-agents.slice"
 _ROW4_SLICE_MERGE="reify-govtest$$-merge.slice"
 
@@ -687,10 +964,1042 @@ _ROW4_CONFINE_CPUS="$(_row4_confine_cpus)"
 # independently-derived path (CONFINE-1).
 _ROW4_CONFINE_PARENT="$_row4_naming_parent_task"
 
+# ----------------------------------------------------------------------------
+# Per-worker pinning + readiness machinery (task 9698), REUSED by the always-on
+# guards below and by Cycles ROW1 and ROW4.  ROW4-1's 3:1 split is only as good
+# as the placement of its spinners and the moment its window opens, so ROW4 pins
+# each WORKER to one CPU, opens the window on a readiness report from both burns
+# rather than on a launch-anchored sleep, and checks both on the live workers;
+# ROW1-1 shares the pinning and the readiness-anchored window.
+# ----------------------------------------------------------------------------
+
+# _row4_await_ready <deadline_s> <file>...
+#   Returns 0 as soon as EVERY named file exists AND is non-empty; 1 when the
+#   deadline passes first.  Technique T (docs/prds/infra-test-wallclock-
+#   deflake.md): <deadline_s> only keeps a burn that never reports from hanging
+#   the suite — it never discriminates pass from fail, so callers size it
+#   generously and never assert on how long the poll took.  A file must be
+#   non-empty because a ready file is "PIDs, then an atomic rename": an empty
+#   one can only be a writer caught mid-flight.  Readiness is checked BEFORE the
+#   deadline, so files already present at a 0-second deadline still count.
+_row4_await_ready() {
+    local deadline=$(( SECONDS + $1 ))
+    shift
+    local f all_reported
+    while true; do
+        all_reported=1
+        for f in "$@"; do
+            [ -s "$f" ] || { all_reported=0; break; }
+        done
+        if [ "$all_reported" -eq 1 ]; then
+            return 0
+        fi
+        if [ "$SECONDS" -ge "$deadline" ]; then
+            return 1
+        fi
+        sleep 0.1
+    done
+}
+
+# _row4_pin_coresident <task_affinities> <merge_affinities>
+#   cpu.weight only arbitrates between groups that share a per-CPU runqueue, so
+#   ROW4's split is 3:1 by construction only while EVERY pinned CPU hosts
+#   equally many task and merge workers.  Each argument is a newline-separated
+#   list of per-worker Cpus_allowed_list strings (see _row4_worker_affinities).
+#   Returns 0 iff both lists are non-empty, every entry is ONE cpu id (a range
+#   such as "30-31" is a worker the load balancer can still move, and
+#   "unavailable" is a worker that vanished), and the two lists sorted
+#   numerically are identical.
+#   awk/sort only, so its guard stays always-on.  The sorted lists are captured
+#   into variables rather than piped into an early-closing reader: this file
+#   runs under `set -o pipefail`.
+_row4_pin_coresident() {
+    local task_cpus="$1" merge_cpus="$2"
+    [ -n "$task_cpus" ] && [ -n "$merge_cpus" ] || return 1
+
+    local all_single_cpu
+    all_single_cpu="$(printf '%s\n%s\n' "$task_cpus" "$merge_cpus" \
+        | awk 'BEGIN { ok = "yes" } $0 !~ /^[0-9]+$/ { ok = "no" } END { print ok }')"
+    [ "$all_single_cpu" = "yes" ] || return 1
+
+    local task_sorted merge_sorted
+    task_sorted="$(printf '%s\n' "$task_cpus" | sort -n)"
+    merge_sorted="$(printf '%s\n' "$merge_cpus" | sort -n)"
+    [ "$task_sorted" = "$merge_sorted" ]
+}
+
+# _row4_worker_affinities <ready_file>
+#   Prints one Cpus_allowed_list per pid line of a cpu_load_fixture.sh
+#   --ready-file, in file order, or the literal "unavailable" for a pid that is
+#   no longer running: it was reaped (its /proc/<pid>/status cannot be read) OR
+#   it has exited and awaits its parent's reap (State: Z or X).  An exited
+#   process burns nothing, and an orphan's reaper is a third party (systemd
+#   --user adopts orphans here) whose latency no caller may depend on.
+#   "unavailable" is not a cpu id, so _row4_pin_coresident rejects it: a
+#   vanished worker is never co-resident.  Callers capture it as
+#   `$(... || true)`: an unreadable ready file makes this return non-zero, and
+#   the empty capture then fails the predicate on its own.
+_row4_worker_affinities() {
+    local ready_file="$1" pid mask
+    while IFS= read -r pid; do
+        [ -n "$pid" ] || continue
+        mask="$(awk '/^State:/ { state = $2 } /^Cpus_allowed_list:/ { mask = $2 } END { if (state != "Z" && state != "X") print mask }' "/proc/${pid}/status" 2>/dev/null || true)"
+        printf '%s\n' "${mask:-unavailable}"
+    done < "$ready_file"
+}
+
+# _row4_await_vanished <deadline_s> <pid_file>...
+#   Returns 0 as soon as EVERY named file is non-empty AND every pid it lists
+#   reads "unavailable" through _row4_worker_affinities (the one definition of
+#   "vanished": no longer running, so an exited-but-unreaped pid counts); 1 when
+#   the deadline passes first.  It polls because a signalled process takes time
+#   to exit.  Technique T
+#   (docs/prds/infra-test-wallclock-deflake.md): <deadline_s> only keeps a pid
+#   that never ends from hanging the suite — it never discriminates, so callers
+#   size it generously and never assert on how long the poll took.  A missing or
+#   empty file lists nothing, and nothing listed is not "all vanished".
+#   Vanishing is checked BEFORE the deadline, so a 0-second deadline still
+#   answers on the current state.
+#   The reader's output is captured into a variable rather than piped into an
+#   early-closing reader: this file runs under `set -o pipefail`.
+_row4_await_vanished() {
+    local deadline=$(( SECONDS + $1 ))
+    shift
+    local f affinities all_vanished
+    while true; do
+        all_vanished=1
+        for f in "$@"; do
+            [ -s "$f" ] || { all_vanished=0; break; }
+            affinities="$(_row4_worker_affinities "$f" 2>/dev/null || true)"
+            if [ "$(printf '%s\n' "$affinities" | sort -u)" != "unavailable" ]; then
+                all_vanished=0
+                break
+            fi
+        done
+        if [ "$all_vanished" -eq 1 ]; then
+            return 0
+        fi
+        if [ "$SECONDS" -ge "$deadline" ]; then
+            return 1
+        fi
+        sleep 0.1
+    done
+}
+
+# _row4_collect_spinners <deadline_s> <ready_file> <out_file>
+#   Records in <out_file>, one pid per line, the busy-spin child of every worker
+#   listed in a fixture --ready-file.  A ready file names the worker HANDLES
+#   (taskset execs into timeout(1)); the spinner is timeout's child, forked
+#   after that report, so this polls until every worker has one.  Returns 0
+#   then, and 1 when <deadline_s> passes first (anti-hang only, technique T) or
+#   a worker's /proc entry is gone or has no children file (kernel without
+#   CONFIG_PROC_CHILDREN).  <out_file> always exists afterwards and holds
+#   whatever was found, so a caller can read it whatever the rc.
+#   Children are read from /proc/<pid>/task/<pid>/children with the `read`
+#   builtin, not pgrep(1): pgrep scans all of /proc, which cost 0.3-1.6 s a call
+#   on a loaded host.  Take the census BEFORE stopping the burn: a handle killed
+#   with SIGKILL cannot forward the signal, so its spinner is re-parented and is
+#   no longer found from the handle.
+_row4_collect_spinners() {
+    local deadline=$(( SECONDS + $1 )) ready_file="$2" out_file="$3"
+    local worker children_file children child found all_forked
+    : > "$out_file"
+    while true; do
+        found=""
+        all_forked=1
+        while IFS= read -r worker; do
+            [ -n "$worker" ] || continue
+            children_file="/proc/${worker}/task/${worker}/children"
+            [ -r "$children_file" ] || return 1
+            children=""
+            IFS= read -r children 2>/dev/null < "$children_file" || true
+            [ -n "$children" ] || all_forked=0
+            for child in $children; do
+                found+="${child}"$'\n'
+            done
+        done < "$ready_file"
+        printf '%s' "$found" > "$out_file"
+        if [ "$all_forked" -eq 1 ] && [ -n "$found" ]; then
+            return 0
+        fi
+        if [ "$SECONDS" -ge "$deadline" ]; then
+            return 1
+        fi
+        sleep 0.1
+    done
+}
+
+# _row4_launch_role_burn <gov_exec> <role> <cpus_csv> <workers> <burn_s> <ready_file>
+#   Backgrounds ONE role's burn and appends its wrapper pid to the global
+#   _ROW4_BURN_PIDS, for _row4_stop_burns (and _cleanup_all) to end.  The burn
+#   is the fixture run through <gov_exec> with per-WORKER pinning: both roles
+#   get the same worker count and the same <cpus_csv>, so every listed CPU
+#   hosts one worker of each role and cpu.weight arbitrates between them on a
+#   shared runqueue wherever the load balancer would have put them.  The
+#   launcher itself is also confined to <cpus_csv>, keeping the governed-exec
+#   subtree (its D-Bus clients included) off every other CPU.
+#   Both slice variables are set on every launch: cpu-governed-exec.sh picks
+#   one by --role, so there is no role branch here.  <gov_exec> is a parameter
+#   so the hermetic ROW4-LAUNCH-VACUITY block can pass a pass-through stub.
+#   The outer timeout is only a backstop for a burn that never ends; ROW4 stops
+#   its burns explicitly, long before it.
+#   Appends to a global, so call it in the CURRENT shell, never inside $(...).
+_row4_launch_role_burn() {
+    local gov_exec="$1" role="$2" cpus_csv="$3" workers="$4" burn_s="$5" ready_file="$6"
+    REIFY_CPU_GOVERN_SLICE_TASK="$_ROW4_SLICE_TASK" \
+    REIFY_CPU_GOVERN_SLICE_MERGE="$_ROW4_SLICE_MERGE" \
+    timeout $(( burn_s + 15 )) taskset -c "$cpus_csv" \
+        bash "$gov_exec" --role "$role" -- \
+        bash "$FIXTURE" "$workers" "$burn_s" --pin-cpus "$cpus_csv" --ready-file "$ready_file" \
+        >/dev/null 2>&1 &
+    _ROW4_BURN_PIDS="${_ROW4_BURN_PIDS}${_ROW4_BURN_PIDS:+ }$!"
+}
+
+# _row4_stop_burns
+#   SIGTERMs every recorded burn wrapper, waits for each, and clears the list.
+#   TERM rather than KILL: the fixture's EXIT trap reaps its workers on TERM,
+#   whereas killing a bare payload orphans its spinners into the next window.
+#   Every error is ignored (a burn may already have ended), so the call is total
+#   and safe to run bare under `set -e`.
+_row4_stop_burns() {
+    local pid
+    for pid in ${_ROW4_BURN_PIDS:-}; do
+        kill -TERM "$pid" 2>/dev/null || true
+    done
+    for pid in ${_ROW4_BURN_PIDS:-}; do
+        wait "$pid" 2>/dev/null || true
+    done
+    _ROW4_BURN_PIDS=""
+}
+
+# Readiness anti-hang bound (task 9698; technique T, docs/prds/infra-test-
+# wallclock-deflake.md).  Waiting for the burns to report ready is bounded
+# only so a burn that never reports cannot hang the suite; it never
+# discriminates pass from fail.  When it expires ROW1-1 / ROW4-1 SKIP as a
+# measurement-integrity failure: there is no window to measure.
+_ROW4_READY_DEADLINE_S="${REIFY_CPU_GOV_TEST_ROW4_READY_DEADLINE_S:-30}"
+
+# PSI source for ROW4 quiet-gate avg10 sampling (testability seam; mirrors
+# the existing REIFY_CPU_ADMIT_PROC_PATH fixture injection in ROW4-BYPASS).
+_ROW4_PROC_PATH="${REIFY_CPU_GOV_TEST_PROC_PATH:-/proc/pressure/cpu}"
+
+# _row4_sample_host_avg10 <proc_path>
+#   Echo the `some` line's avg10 field from a PSI-formatted file, or the
+#   literal "unavailable" when the path is missing/unreadable/malformed
+#   (task 5998).  Delegates to the instrument's psi-avg10 subcommand — the
+#   SAME sampler ROW2_3 uses at its own bracket — which already prints
+#   "unavailable" (exit 0) on any read/parse failure; the `|| echo` guard
+#   covers python3 itself failing to launch.
+#
+#   "unavailable" is the FAIL-SAFE direction, not a degenerate one: it feeds
+#   quiet_box_met's fail-open, so an unreadable PSI source reads as a quiet
+#   box and leaves ROW4-1's hard assert reachable.  Never substitute 0 here —
+#   a numeric 0 reads as a maximally quiet box for the same reason, but does
+#   so by ASSERTING quiet rather than by declining to measure, which is the
+#   distinction ROW4-1-SAMPLE-VACUITY-2 pins.
+_row4_sample_host_avg10() {
+    local proc_path="$1"
+    python3 "$INSTRUMENT" psi-avg10 "$proc_path" 2>/dev/null \
+        || echo "unavailable"
+}
+
+# ============================================================================
+# ROW4 per-worker pinning + readiness — always-on guards (task 9698).
+#
+# The helpers above these blocks are the machinery ROW4-1 stands on; each block
+# drives one of them with synthetic input, so none needs cgroup governance and
+# none can be vacuously green: every block carries a NON-VACUITY CRUX case that
+# a degenerate implementation (one that always says "ready" / "co-resident")
+# would fail.  Conventions shared by all of them:
+#   - rc capture is `_rc=0; helper ... || _rc=$?`, never a bare top-level call
+#     (`set -e` would abort the suite on the helper's meaningful rc 1, and an
+#     undefined helper would read as 127 — which the cases below assert as
+#     EXACT rcs, never `-ne 0`, so 127 is a FAIL and not a vacuous pass);
+#   - no assertion here bounds an elapsed time; a deadline passed to a helper
+#     is an anti-hang guard only (technique T, docs/prds/infra-test-wallclock-
+#     deflake.md), never what discriminates pass from fail.
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# ROW4-READY-VACUITY: the readiness condition-poll that opens ROW4's window.
+# ----------------------------------------------------------------------------
+echo ""
+echo "--- ROW4-READY-VACUITY: readiness condition-poll (always-on) ---"
+
+_row4_ready_dir="$(mktemp -d -p "$WORK" row4-ready.XXXXXX)"
+
+# (1) Every named file present and non-empty => ready.
+printf '1111\n' > "$_row4_ready_dir/reported-a"
+printf '2222\n' > "$_row4_ready_dir/reported-b"
+_row4_ready_vacuity1_rc=0
+_row4_await_ready 5 "$_row4_ready_dir/reported-a" "$_row4_ready_dir/reported-b" \
+    || _row4_ready_vacuity1_rc=$?
+assert "ROW4-READY-VACUITY-1: both ready files present and non-empty => rc 0 (got ${_row4_ready_vacuity1_rc})" \
+    test "$_row4_ready_vacuity1_rc" -eq 0
+
+# (2) NON-VACUITY CRUX: one burn has reported, the other never does.  The poll
+# must never declare ready a burn that has not reported — otherwise ROW4 would
+# open its window with one role still launching, which is the defect this
+# readiness gate exists to remove.  Asserts the EXACT rc 1 (deadline expired).
+_row4_ready_vacuity2_rc=0
+_row4_await_ready 1 "$_row4_ready_dir/reported-a" "$_row4_ready_dir/never-created" \
+    || _row4_ready_vacuity2_rc=$?
+assert "ROW4-READY-VACUITY-2: NON-VACUITY CRUX -- one file reported, the other never created => rc EXACTLY 1 (got ${_row4_ready_vacuity2_rc}); the poll never declares ready a burn that has not reported" \
+    test "$_row4_ready_vacuity2_rc" -eq 1
+
+# (3) A zero-byte file is not a report: the writer's contract is "PIDs, then an
+# atomic rename", so an empty file can only be a writer caught mid-flight.
+: > "$_row4_ready_dir/empty"
+_row4_ready_vacuity3_rc=0
+_row4_await_ready 1 "$_row4_ready_dir/empty" || _row4_ready_vacuity3_rc=$?
+assert "ROW4-READY-VACUITY-3: a zero-byte file => rc EXACTLY 1 (got ${_row4_ready_vacuity3_rc}); an empty file is not a report" \
+    test "$_row4_ready_vacuity3_rc" -eq 1
+
+# (4) The helper POLLS rather than checking once: the file appears 0.5 s AFTER
+# the poll starts, so a single-shot check at t=0 returns 1.  The generous
+# deadline is an anti-hang guard only and is deliberately not asserted on.
+_row4_ready_late="$_row4_ready_dir/appears-late"
+(
+    sleep 0.5
+    printf '3333\n' > "${_row4_ready_late}.tmp"
+    mv -f "${_row4_ready_late}.tmp" "$_row4_ready_late"
+) &
+_row4_ready_writer_pid=$!
+_row4_ready_vacuity4_rc=0
+_row4_await_ready 30 "$_row4_ready_late" || _row4_ready_vacuity4_rc=$?
+wait "$_row4_ready_writer_pid" 2>/dev/null || true
+assert "ROW4-READY-VACUITY-4: file written by a background subshell AFTER the poll started => rc 0 (got ${_row4_ready_vacuity4_rc}); the helper polls, a single-shot check at t=0 would return 1" \
+    test "$_row4_ready_vacuity4_rc" -eq 0
+
+# ----------------------------------------------------------------------------
+# ROW4-VANISH-VACUITY: the vanished-burn condition-poll.  The counterpart of
+# ROW4-READY-VACUITY for a burn that is ended on purpose: _row4_await_vanished
+# holds only once EVERY pid listed in EVERY named file has gone, so a caller
+# that killed a burn can assert that the kill reached each process.
+# ----------------------------------------------------------------------------
+echo ""
+echo "--- ROW4-VANISH-VACUITY: vanished-burn condition-poll (always-on) ---"
+
+_row4_vanish_dir="$(mktemp -d -p "$WORK" row4-vanish.XXXXXX)"
+
+# A pid that has been reaped (the FIXTURE-PIN-READER-1 idiom): its /proc entry is
+# gone, so _row4_worker_affinities reads it as "unavailable".
+( : ) &
+_row4_vanish_dead_pid=$!
+wait "$_row4_vanish_dead_pid" 2>/dev/null || true
+printf '%s\n' "$_row4_vanish_dead_pid" > "$_row4_vanish_dir/dead"
+printf '%s\n' "$$" > "$_row4_vanish_dir/live"
+
+# (1) Every pid listed has vanished => vanished.
+_row4_vanish1_rc=0
+_row4_await_vanished 0 "$_row4_vanish_dir/dead" || _row4_vanish1_rc=$?
+assert "ROW4-VANISH-VACUITY-1: a pid file listing a reaped pid, at deadline 0 => rc 0 (got ${_row4_vanish1_rc})" \
+    test "$_row4_vanish1_rc" -eq 0
+
+# (2) NON-VACUITY CRUX: a live pid is never reported vanished.  A helper that
+# always says "vanished" would let a caller bless a kill that reached nothing.
+# Asserts the EXACT rc 1 (deadline expired with the pid still there).
+_row4_vanish2_rc=0
+_row4_await_vanished 0 "$_row4_vanish_dir/live" || _row4_vanish2_rc=$?
+assert "ROW4-VANISH-VACUITY-2: NON-VACUITY CRUX -- live pid $$ at deadline 0 => rc EXACTLY 1 (got ${_row4_vanish2_rc}); a live pid is never reported vanished" \
+    test "$_row4_vanish2_rc" -eq 1
+
+# (3) EVERY listed pid in EVERY file must have vanished: one dead file does not
+# vouch for a live one.
+_row4_vanish3_rc=0
+_row4_await_vanished 0 "$_row4_vanish_dir/dead" "$_row4_vanish_dir/live" \
+    || _row4_vanish3_rc=$?
+assert "ROW4-VANISH-VACUITY-3: one file listing a reaped pid, the other listing live pid $$, at deadline 0 => rc EXACTLY 1 (got ${_row4_vanish3_rc}); every pid in every file must have vanished" \
+    test "$_row4_vanish3_rc" -eq 1
+
+# (4) An unreadable or empty observation is never "all vanished": with no pid
+# listed there is nothing that vanished.
+_row4_vanish4_rc=0
+_row4_await_vanished 0 "$_row4_vanish_dir/never-created" || _row4_vanish4_rc=$?
+assert "ROW4-VANISH-VACUITY-4: a pid file that does not exist, at deadline 0 => rc EXACTLY 1 (got ${_row4_vanish4_rc}); an unreadable observation is not 'all vanished'" \
+    test "$_row4_vanish4_rc" -eq 1
+
+: > "$_row4_vanish_dir/empty"
+_row4_vanish4b_rc=0
+_row4_await_vanished 0 "$_row4_vanish_dir/empty" || _row4_vanish4b_rc=$?
+assert "ROW4-VANISH-VACUITY-4b: a zero-byte pid file, at deadline 0 => rc EXACTLY 1 (got ${_row4_vanish4b_rc}); an empty observation is not 'all vanished'" \
+    test "$_row4_vanish4b_rc" -eq 1
+
+# (5) The helper POLLS rather than checking once: the listed pid is alive when
+# the poll starts and ends 0.3 s later, so a single-shot check at t=0 returns 1.
+# The generous deadline is an anti-hang guard only and is deliberately not
+# asserted on.
+( sleep 0.3 ) &
+_row4_vanish_late_pid=$!
+printf '%s\n' "$_row4_vanish_late_pid" > "$_row4_vanish_dir/ends-late"
+_row4_vanish5_rc=0
+_row4_await_vanished 30 "$_row4_vanish_dir/ends-late" || _row4_vanish5_rc=$?
+wait "$_row4_vanish_late_pid" 2>/dev/null || true
+assert "ROW4-VANISH-VACUITY-5: pid of a background subshell that ENDS after the poll started => rc 0 (got ${_row4_vanish5_rc}); the helper polls, a single-shot check at t=0 would return 1" \
+    test "$_row4_vanish5_rc" -eq 0
+
+# (6) A process that has EXITED but was NOT REAPED (a zombie) counts as vanished.
+# It keeps its /proc entry, and its Cpus_allowed_list, until its parent waits for
+# it; an orphan's reaper is a third party whose latency no caller may depend on,
+# and an exited process burns nothing.  The fixture is a zombie whose parent never
+# reaps it and never ends on a clock: the child exits only once its parent has
+# exec'd into `tail -f --pid=<this shell>`, because before that exec bash's own
+# SIGCHLD handler would reap it (a bare `true & exec sleep N` loses that race most
+# of the time under load).  tail never waits for children, so the child stays in
+# state Z; --pid ties the parent to this shell, so an interrupted run leaks nothing.
+bash -c '( while read -r _c < "/proc/$$/comm" && [ "$_c" != tail ]; do sleep 0.05; done ) &
+         printf "%s\n" "$!" > "$1"
+         exec tail -f --pid="$2" /dev/null' _ "$_row4_vanish_dir/zombie" "$$" &
+_row4_vanish_zombie_parent=$!
+_row4_vanish_zombie_pid=""
+_row4_vanish_zombie_state=""
+_row4_vanish_zombie_ready_rc=0
+_row4_await_ready 30 "$_row4_vanish_dir/zombie" || _row4_vanish_zombie_ready_rc=$?
+if [ "$_row4_vanish_zombie_ready_rc" -eq 0 ]; then
+    IFS= read -r _row4_vanish_zombie_pid < "$_row4_vanish_dir/zombie" || true
+fi
+# Wait for the child to have exited.  The deadline is anti-hang only and is
+# deliberately not asserted on.
+_row4_vanish_zombie_deadline=$(( SECONDS + 30 ))
+while [ -n "$_row4_vanish_zombie_pid" ]; do
+    _row4_vanish_zombie_state="$(awk '/^State:/ { print $2 }' "/proc/${_row4_vanish_zombie_pid}/status" 2>/dev/null || true)"
+    [ "$_row4_vanish_zombie_state" != "Z" ] || break
+    [ "$SECONDS" -lt "$_row4_vanish_zombie_deadline" ] || break
+    sleep 0.1
+done
+assert "ROW4-VANISH-VACUITY-6a: the listed pid is an exited process its parent has not reaped (pid '${_row4_vanish_zombie_pid}', State '${_row4_vanish_zombie_state}', expected Z)" \
+    test "$_row4_vanish_zombie_state" = "Z"
+if [ "$_row4_vanish_zombie_state" = "Z" ]; then
+    _row4_vanish6_rc=0
+    _row4_await_vanished 0 "$_row4_vanish_dir/zombie" || _row4_vanish6_rc=$?
+    assert "ROW4-VANISH-VACUITY-6: an exited-but-unreaped pid, at deadline 0 => rc 0 (got ${_row4_vanish6_rc}); an exited process burns nothing and its eventual reaper may be a third party" \
+        test "$_row4_vanish6_rc" -eq 0
+
+    _row4_vanish6b_got="$(_row4_worker_affinities "$_row4_vanish_dir/zombie" 2>/dev/null || true)"
+    assert "ROW4-VANISH-VACUITY-6b: _row4_worker_affinities reads an exited-but-unreaped pid as exactly 'unavailable' (got '${_row4_vanish6b_got//$'\n'/,}'); that reader is the one definition of a vanished pid" \
+        test "$_row4_vanish6b_got" = "unavailable"
+
+    # NON-VACUITY CRUX: the process was still unreaped when -6 answered, so -6's
+    # rc 0 came from its exited state and not from a reap.
+    assert "ROW4-VANISH-VACUITY-6c: NON-VACUITY CRUX -- /proc/${_row4_vanish_zombie_pid} still exists after -6 answered; -6's rc 0 came from the exited state, not from a reap" \
+        test -d "/proc/${_row4_vanish_zombie_pid}"
+fi
+kill "$_row4_vanish_zombie_parent" 2>/dev/null || true
+wait "$_row4_vanish_zombie_parent" 2>/dev/null || true
+
+# ----------------------------------------------------------------------------
+# ROW4-PIN-VACUITY: the per-CPU co-residency predicate.  Each argument is a
+# newline-separated list of per-worker Cpus_allowed_list strings; the predicate
+# holds iff both lists are non-empty, every entry is ONE cpu id, and the two
+# lists name the same multiset of CPUs (every pinned CPU hosts equally many task
+# and merge workers).
+# ----------------------------------------------------------------------------
+echo ""
+echo "--- ROW4-PIN-VACUITY: per-CPU co-residency predicate (always-on) ---"
+
+# (1) Each pinned CPU hosts one task and one merge worker; list order is
+# irrelevant (workers are listed in fork order, which differs per role).
+_row4_pin_vacuity1_rc=0
+_row4_pin_coresident "$(printf '%s\n%s' 30 31)" "$(printf '%s\n%s' 31 30)" \
+    || _row4_pin_vacuity1_rc=$?
+assert "ROW4-PIN-VACUITY-1: task {30,31} vs merge {31,30} => rc 0 (got ${_row4_pin_vacuity1_rc}); order-insensitive" \
+    test "$_row4_pin_vacuity1_rc" -eq 0
+
+# (2) NON-VACUITY CRUX: today's set-pinned shape.  Every worker of both roles
+# reports the whole mask "30-31": the two lists are identical, yet nothing is
+# pinned, so the load balancer is free to stack both merge workers on one CPU
+# (field merge shares 0.51-0.65).  Identical lists alone must NOT satisfy the
+# predicate, or it would bless exactly the placement it exists to forbid.
+_row4_pin_vacuity2_rc=0
+_row4_pin_coresident "$(printf '%s\n%s' 30-31 30-31)" "$(printf '%s\n%s' 30-31 30-31)" \
+    || _row4_pin_vacuity2_rc=$?
+assert "ROW4-PIN-VACUITY-2: NON-VACUITY CRUX -- both roles report the whole mask 30-31 (today's set-pinned shape) => rc EXACTLY 1 (got ${_row4_pin_vacuity2_rc}); identical lists of un-pinned workers are not co-residency" \
+    test "$_row4_pin_vacuity2_rc" -eq 1
+
+# (3) Unbalanced: CPU 31 hosts a merge worker and no task worker, so that
+# merge worker runs uncontended and inflates the share.
+_row4_pin_vacuity3_rc=0
+_row4_pin_coresident "$(printf '%s\n%s' 30 30)" "$(printf '%s\n%s' 30 31)" \
+    || _row4_pin_vacuity3_rc=$?
+assert "ROW4-PIN-VACUITY-3: task {30,30} vs merge {30,31} => rc EXACTLY 1 (got ${_row4_pin_vacuity3_rc}); CPU 31 has a merge worker but no task worker" \
+    test "$_row4_pin_vacuity3_rc" -eq 1
+
+# (4) FAIL-SAFE: a worker whose /proc entry could not be read is reported as
+# "unavailable", and a vanished worker is never co-resident.
+_row4_pin_vacuity4_rc=0
+_row4_pin_coresident "$(printf '%s\n%s' 30 unavailable)" "$(printf '%s\n%s' 30 31)" \
+    || _row4_pin_vacuity4_rc=$?
+assert "ROW4-PIN-VACUITY-4: task {30,unavailable} vs merge {30,31} => rc EXACTLY 1 (got ${_row4_pin_vacuity4_rc}); a vanished worker is never co-resident" \
+    test "$_row4_pin_vacuity4_rc" -eq 1
+
+# (4b) The same fail-safe where the two lists are IDENTICAL: case (4) alone
+# would pass for a predicate that only compares the lists, since there they
+# differ anyway.  When every worker of both roles has vanished (the burns ended
+# early), both lists read "unavailable" and compare equal — only the per-entry
+# validation keeps that from being reported as co-residency.
+_row4_pin_vacuity4b_rc=0
+_row4_pin_coresident "$(printf '%s\n%s' unavailable unavailable)" "$(printf '%s\n%s' unavailable unavailable)" \
+    || _row4_pin_vacuity4b_rc=$?
+assert "ROW4-PIN-VACUITY-4b: every worker of both roles unavailable (identical lists) => rc EXACTLY 1 (got ${_row4_pin_vacuity4b_rc}); equal lists of vanished workers are not co-residency" \
+    test "$_row4_pin_vacuity4b_rc" -eq 1
+
+# (5) Nothing was listed at all (e.g. an unreadable ready file).
+_row4_pin_vacuity5_rc=0
+_row4_pin_coresident "" "" || _row4_pin_vacuity5_rc=$?
+assert "ROW4-PIN-VACUITY-5: both lists empty => rc EXACTLY 1 (got ${_row4_pin_vacuity5_rc}); an empty observation is not co-residency" \
+    test "$_row4_pin_vacuity5_rc" -eq 1
+
+# (6) A one-CPU affinity mask with round-robin pinning puts every worker of
+# both roles on that one CPU: still co-resident, and the 3:1 split still holds.
+_row4_pin_vacuity6_rc=0
+_row4_pin_coresident "$(printf '%s\n%s' 5 5)" "$(printf '%s\n%s' 5 5)" \
+    || _row4_pin_vacuity6_rc=$?
+assert "ROW4-PIN-VACUITY-6: task {5,5} vs merge {5,5} => rc 0 (got ${_row4_pin_vacuity6_rc}); a one-CPU mask is still co-resident" \
+    test "$_row4_pin_vacuity6_rc" -eq 0
+
+# ----------------------------------------------------------------------------
+# FIXTURE-PIN: the cpu_load_fixture.sh `--pin-cpus` / `--ready-file` contract
+# and the `_row4_worker_affinities` reader that observes it.  Needs taskset and
+# a confined pin list (the same preconditions ROW4 itself has), not cgroup
+# governance: the fixture is driven directly, outside any governed scope.  The
+# cases that launch a burn with no clock (duration 0) also need setpriv(1).
+# ----------------------------------------------------------------------------
+echo ""
+echo "--- FIXTURE-PIN: --pin-cpus / --ready-file contract ---"
+
+if ! command -v taskset >/dev/null 2>&1; then
+    echo "  SKIP FIXTURE-PIN: taskset unavailable — cannot observe per-worker pinning"
+elif [ -z "${_ROW4_CONFINE_CPUS:-}" ]; then
+    echo "  SKIP FIXTURE-PIN: own Cpus_allowed_list unreadable — no confined pin list to pass"
+else
+    # The placement the fixture must produce: the pin list repeated
+    # round-robin to one entry per worker, the same way ROW4 hands it to both
+    # roles.  Derived from the file's own _ROW4_CONFINE_* values, never nproc.
+    _fixture_pin_expected="$(printf '%s\n' "$_ROW4_CONFINE_CPUS" \
+        | tr ',' '\n' \
+        | awk -v w="$_ROW4_CONFINE_W" '{ cpu[n++] = $0 } END { for (i = 0; i < w; i++) print cpu[i % n] }')"
+
+    # ── reader: a live pid reads its Cpus_allowed_list, a vanished one reads
+    # the literal "unavailable" (the sentinel _row4_pin_coresident rejects).
+    ( : ) &
+    _fixture_pin_dead_pid=$!
+    wait "$_fixture_pin_dead_pid" 2>/dev/null || true
+    printf '%s\n%s\n' "$$" "$_fixture_pin_dead_pid" > "$WORK/fixture-pin-reader-pids"
+    _fixture_pin_self_mask="$(awk '/^Cpus_allowed_list:/{print $2}' "/proc/$$/status")"
+    _fixture_pin_reader_expected="${_fixture_pin_self_mask}"$'\n'"unavailable"
+    _fixture_pin_reader_got="$(_row4_worker_affinities "$WORK/fixture-pin-reader-pids" 2>/dev/null || true)"
+    assert "FIXTURE-PIN-READER-1: ready file listing a live pid and a reaped one => its Cpus_allowed_list, then 'unavailable' (got '${_fixture_pin_reader_got//$'\n'/,}')" \
+        test "$_fixture_pin_reader_got" = "$_fixture_pin_reader_expected"
+
+    # ── (1)-(4) launch a duration-0 burn, which only setpriv(1) can anchor
+    # (cpu_load_fixture.sh refuses it without): the malformed-list and
+    # taskset-refusal contracts of (5) and (6) launch no such burn and stay on
+    # without it.
+    if ! command -v setpriv >/dev/null 2>&1; then
+        echo "  SKIP FIXTURE-PIN-1..4: setpriv unavailable — cannot launch a burn with no clock (cpu_load_fixture.sh duration 0)"
+    else
+        # ── (1)-(3) pinned launch: reports ready, lists one pid per worker, and
+        # every worker is pinned to its round-robin CPU.  Duration 0: the burn has no
+        # clock and ends only on the explicit TERM below, so what is observed cannot
+        # outlast the observation.
+        _fixture_pin_ready="$WORK/fixture-pin-ready"
+        bash "$FIXTURE" "$_ROW4_CONFINE_W" 0 --pin-cpus "$_ROW4_CONFINE_CPUS" \
+            --ready-file "$_fixture_pin_ready" >/dev/null 2>&1 &
+        _fixture_pin_pid=$!
+
+        _fixture_pin1_rc=0
+        _row4_await_ready 30 "$_fixture_pin_ready" || _fixture_pin1_rc=$?
+        assert "FIXTURE-PIN-1: --pin-cpus ${_ROW4_CONFINE_CPUS} --ready-file => the ready file appears (rc ${_fixture_pin1_rc}; the 30 s deadline is an anti-hang guard only)" \
+            test "$_fixture_pin1_rc" -eq 0
+
+        _fixture_pin_lines="$(awk '/^[0-9]+$/ { n++ } END { print n + 0, NR }' "$_fixture_pin_ready" 2>/dev/null || true)"
+        assert "FIXTURE-PIN-2: ready file is exactly ${_ROW4_CONFINE_W} pid lines and nothing else (got 'numeric-lines total-lines' = '${_fixture_pin_lines}')" \
+            test "$_fixture_pin_lines" = "${_ROW4_CONFINE_W} ${_ROW4_CONFINE_W}"
+
+        _fixture_pin_actual="$(_row4_worker_affinities "$_fixture_pin_ready" 2>/dev/null || true)"
+        assert "FIXTURE-PIN-3: every worker pinned to its round-robin CPU (workers=${_fixture_pin_actual//$'\n'/,}, expected=${_fixture_pin_expected//$'\n'/,})" \
+            _row4_pin_coresident "$_fixture_pin_actual" "$_fixture_pin_expected"
+
+        kill -TERM "$_fixture_pin_pid" 2>/dev/null || true
+        wait "$_fixture_pin_pid" 2>/dev/null || true
+
+        # ── (4) NON-VACUITY CRUX: today's ROW4 shape — the SAME fixture, no
+        # --pin-cpus, the whole role set-pinned from outside with taskset.  Its
+        # workers inherit the multi-CPU mask, so the predicate must reject them:
+        # the single-CPU affinity of (3) comes from the OPTION, not from inheriting
+        # the launcher's mask.  Needs a pin list of >=2 CPUs: with one CPU the
+        # inherited mask is already a single CPU and the two shapes coincide.
+        _fixture_pin_ncpus="$(printf '%s\n' "$_ROW4_CONFINE_CPUS" | tr ',' '\n' | awk 'END { print NR }')"
+        if [ "$_fixture_pin_ncpus" -lt 2 ]; then
+            echo "  SKIP FIXTURE-PIN-4: pin list '${_ROW4_CONFINE_CPUS}' is a single CPU — set-pinning and per-worker pinning coincide"
+        else
+            _fixture_pin_ready_inherited="$WORK/fixture-pin-ready-inherited"
+            taskset -c "$_ROW4_CONFINE_CPUS" bash "$FIXTURE" "$_ROW4_CONFINE_W" 0 \
+                --ready-file "$_fixture_pin_ready_inherited" >/dev/null 2>&1 &
+            _fixture_pin_inherited_pid=$!
+
+            # (4a) The fixture reported, so (4b)'s rc cannot be the vacuous rc 1 of
+            # an empty observation.
+            _fixture_pin4a_rc=0
+            _row4_await_ready 30 "$_fixture_pin_ready_inherited" || _fixture_pin4a_rc=$?
+            assert "FIXTURE-PIN-4a: unpinned fixture under 'taskset -c ${_ROW4_CONFINE_CPUS}' still reports ready (rc ${_fixture_pin4a_rc}); precondition of -4b" \
+                test "$_fixture_pin4a_rc" -eq 0
+
+            _fixture_pin_inherited="$(_row4_worker_affinities "$_fixture_pin_ready_inherited" 2>/dev/null || true)"
+            # (4a-LIVE) -4b's rc 1 must come from the inherited range, never from a
+            # worker that vanished before it was read: a vanished worker reads
+            # "unavailable", which the predicate also rejects.
+            _fixture_pin_inherited_live="$(awk -v w="$_ROW4_CONFINE_W" '$0 != "unavailable" && $0 != "" { n++ } END { print ((n == w && NR == w) ? "yes" : "no") }' <<< "$_fixture_pin_inherited")"
+            assert "FIXTURE-PIN-4a-LIVE: every worker of the unpinned burn is live when observed (workers=${_fixture_pin_inherited//$'\n'/,}); -4b's rc 1 must come from the inherited range, never from a vanished worker" \
+                test "$_fixture_pin_inherited_live" = yes
+
+            _fixture_pin4b_rc=0
+            _row4_pin_coresident "$_fixture_pin_inherited" "$_fixture_pin_expected" || _fixture_pin4b_rc=$?
+            assert "FIXTURE-PIN-4b: NON-VACUITY CRUX -- same fixture WITHOUT --pin-cpus (workers=${_fixture_pin_inherited//$'\n'/,}) => predicate rc EXACTLY 1 (got ${_fixture_pin4b_rc}); the single-CPU affinity of -3 comes from the option, not from inheritance" \
+                test "$_fixture_pin4b_rc" -eq 1
+
+            kill -TERM "$_fixture_pin_inherited_pid" 2>/dev/null || true
+            wait "$_fixture_pin_inherited_pid" 2>/dev/null || true
+        fi
+    fi
+
+    # ── (5) Malformed lists are rejected with the usage exit code before any
+    # worker exists: a ranged, non-numeric, empty-entry or trailing-comma list
+    # must never be half-honoured.  Each runs in the foreground — the fixture
+    # exits at once — and none may leave a ready file behind.
+    _fixture_pin_bad_ready="$WORK/fixture-pin-ready-bad"
+    for _fixture_pin_bad in "30-31" "a,b" "30,,31" "30,"; do
+        _fixture_pin5_rc=0
+        bash "$FIXTURE" 2 5 --pin-cpus "$_fixture_pin_bad" \
+            --ready-file "$_fixture_pin_bad_ready" >/dev/null 2>&1 || _fixture_pin5_rc=$?
+        assert "FIXTURE-PIN-5: malformed --pin-cpus '${_fixture_pin_bad}' => exit EXACTLY 64 (got ${_fixture_pin5_rc})" \
+            test "$_fixture_pin5_rc" -eq 64
+    done
+    assert "FIXTURE-PIN-5: no malformed --pin-cpus run wrote a ready file (no workers were forked)" \
+        test ! -e "$_fixture_pin_bad_ready"
+
+    # ── (6) Pinning is never silently dropped: with taskset absent from PATH
+    # the option is refused (EX_UNAVAILABLE) instead of running unpinned, which
+    # would be a ~50/50-prone measurement presented as a pinned one.
+    _fixture_pin_empty_path="$(mktemp -d -p "$WORK" fixture-pin-nopath.XXXXXX)"
+    _fixture_pin6_rc=0
+    PATH="$_fixture_pin_empty_path" "$BASH" "$FIXTURE" 1 1 --pin-cpus 0 >/dev/null 2>&1 \
+        || _fixture_pin6_rc=$?
+    assert "FIXTURE-PIN-6: --pin-cpus with taskset absent from PATH => exit EXACTLY 69 (got ${_fixture_pin6_rc}); pinning is refused, never silently dropped" \
+        test "$_fixture_pin6_rc" -eq 69
+fi
+
+# ----------------------------------------------------------------------------
+# FIXTURE-HOLD: the clock-free burn — cpu_load_fixture.sh with duration 0 runs
+# until it is stopped — and the parent-death anchoring that keeps an unbounded
+# burn from outliving its launcher.  Not a live cycle: the fixture is driven
+# directly, outside any governed scope, so nothing here consults cgroup
+# governance.  The KILL cases need the preconditions FIXTURE-PIN has, plus
+# setpriv(1); the refusal case needs nothing and always runs.
+#
+# The anchor is proven by SIGKILL, which runs no trap: only a parent-death signal
+# still ends the burn then.  A process counts as ended once it has vanished (see
+# _row4_await_vanished), and the pids to watch are recorded BEFORE the kill — a
+# handle killed without warning orphans its spinner, which can then only be found
+# from a list taken earlier.
+# ----------------------------------------------------------------------------
+echo ""
+echo "--- FIXTURE-HOLD: clock-free burn (duration 0) and its parent-death anchoring ---"
+
+# ── (a) An unbounded burn is refused, never launched without its anchor: with
+# setpriv absent from PATH, duration 0 exits EX_UNAVAILABLE before any worker
+# is forked (the same shape as FIXTURE-PIN-6).
+_fixture_hold_empty_path="$(mktemp -d -p "$WORK" fixture-hold-nopath.XXXXXX)"
+_fixture_hold_ready_nosetpriv="$WORK/fixture-hold-ready-nosetpriv"
+_fixture_hold_nosetpriv_rc=0
+PATH="$_fixture_hold_empty_path" "$BASH" "$FIXTURE" 1 0 \
+    --ready-file "$_fixture_hold_ready_nosetpriv" >/dev/null 2>&1 \
+    || _fixture_hold_nosetpriv_rc=$?
+assert "FIXTURE-HOLD-NOSETPRIV: duration 0 with setpriv absent from PATH => exit EXACTLY 69 (got ${_fixture_hold_nosetpriv_rc}); an unbounded burn is refused, never launched without its anchor" \
+    test "$_fixture_hold_nosetpriv_rc" -eq 69
+assert "FIXTURE-HOLD-NOSETPRIV: the refused run wrote no ready file (no worker was forked)" \
+    test ! -e "$_fixture_hold_ready_nosetpriv"
+
+if ! command -v taskset >/dev/null 2>&1; then
+    echo "  SKIP FIXTURE-HOLD: taskset unavailable — cannot observe per-worker pinning"
+elif [ -z "${_ROW4_CONFINE_CPUS:-}" ]; then
+    echo "  SKIP FIXTURE-HOLD: own Cpus_allowed_list unreadable — no confined pin list to pass"
+elif ! command -v setpriv >/dev/null 2>&1; then
+    echo "  SKIP FIXTURE-HOLD: setpriv unavailable — cannot anchor a burn with no clock"
+else
+    # The placement the fixture must produce, built exactly as FIXTURE-PIN builds it.
+    _fixture_hold_expected="$(printf '%s\n' "$_ROW4_CONFINE_CPUS" \
+        | tr ',' '\n' \
+        | awk -v w="$_ROW4_CONFINE_W" '{ cpu[n++] = $0 } END { for (i = 0; i < w; i++) print cpu[i % n] }')"
+
+    # _fixture_hold_reap <victim_pid> <pid_file>...
+    #   Unconditional cleanup after a group: TERM and reap the victim (the fixture
+    #   or the launcher above it), then SIGKILL every pid still recorded.  A failing
+    #   or mutated anchor must never leave an unbounded spinner on the confine CPUs.
+    #   Every error is ignored: most of these pids are gone already.
+    _fixture_hold_reap() {
+        local victim_pid="$1" pid_file recorded
+        shift
+        kill -TERM "$victim_pid" 2>/dev/null || true
+        wait "$victim_pid" 2>/dev/null || true
+        for pid_file in "$@"; do
+            [ -r "$pid_file" ] || continue
+            while IFS= read -r recorded; do
+                if [ -n "$recorded" ]; then
+                    kill -KILL "$recorded" 2>/dev/null || true
+                fi
+            done < "$pid_file"
+        done
+    }
+
+    # ── group 2: SIGKILL of the fixture itself.  It runs no EXIT trap, yet every
+    # worker handle must end through its own parent-death signal, and each handle
+    # forwards TERM to its spinner.
+    _fixture_hold_ready1="$WORK/fixture-hold-ready-1"
+    _fixture_hold_spinners1="$WORK/fixture-hold-spinners-1"
+    bash "$FIXTURE" "$_ROW4_CONFINE_W" 0 --pin-cpus "$_ROW4_CONFINE_CPUS" \
+        --ready-file "$_fixture_hold_ready1" >/dev/null 2>&1 &
+    _fixture_hold_pid=$!
+
+    _fixture_hold1_rc=0
+    _row4_await_ready 30 "$_fixture_hold_ready1" || _fixture_hold1_rc=$?
+    assert "FIXTURE-HOLD-1: duration 0 is accepted and the burn reports ready (rc ${_fixture_hold1_rc}; the 30 s deadline is an anti-hang guard only)" \
+        test "$_fixture_hold1_rc" -eq 0
+
+    if [ "$_fixture_hold1_rc" -ne 0 ]; then
+        assert "FIXTURE-HOLD-2: burn never reported ready (HOLD-1 rc ${_fixture_hold1_rc}) -- KILL cases not run" \
+            false
+    else
+        # (2a) Precondition: every worker is live and on its round-robin CPU, so
+        # that -2c's "vanished" means the KILL ended them.
+        _fixture_hold_affinities1="$(_row4_worker_affinities "$_fixture_hold_ready1" 2>/dev/null || true)"
+        assert "FIXTURE-HOLD-2a: before the KILL every worker is live and pinned (workers=${_fixture_hold_affinities1//$'\n'/,}, expected=${_fixture_hold_expected//$'\n'/,})" \
+            _row4_pin_coresident "$_fixture_hold_affinities1" "$_fixture_hold_expected"
+
+        # (2b) The spinners are what burn, and are found from their handles only
+        # while the handles live.
+        _fixture_hold2b_rc=0
+        _row4_collect_spinners 30 "$_fixture_hold_ready1" "$_fixture_hold_spinners1" \
+            || _fixture_hold2b_rc=$?
+        assert "FIXTURE-HOLD-2b: every worker handle has a spinner child before the KILL (rc ${_fixture_hold2b_rc}; spinners=$(tr '\n' ',' < "$_fixture_hold_spinners1" 2>/dev/null || true))" \
+            test "$_fixture_hold2b_rc" -eq 0
+
+        kill -KILL "$_fixture_hold_pid" 2>/dev/null || true
+        wait "$_fixture_hold_pid" 2>/dev/null || true
+
+        # (2c) Nothing of the burn survives its launcher's SIGKILL.
+        if [ "$_fixture_hold2b_rc" -ne 0 ]; then
+            assert "FIXTURE-HOLD-2c: spinners were never found (HOLD-2b rc ${_fixture_hold2b_rc}) -- vanish check not run" \
+                false
+        else
+            _fixture_hold2c_rc=0
+            _row4_await_vanished 30 "$_fixture_hold_ready1" "$_fixture_hold_spinners1" \
+                || _fixture_hold2c_rc=$?
+            assert "FIXTURE-HOLD-2c: after SIGKILL of the fixture every worker handle and spinner has vanished (rc ${_fixture_hold2c_rc}; the 30 s deadline is an anti-hang guard only)" \
+                test "$_fixture_hold2c_rc" -eq 0
+        fi
+    fi
+    _fixture_hold_reap "$_fixture_hold_pid" "$_fixture_hold_ready1" "$_fixture_hold_spinners1"
+
+    # ── group 3: SIGKILL of the launcher above the fixture.  The fixture's own
+    # parent-death signal TERMs it, its EXIT trap reaps the handles, and the
+    # handles take the spinners.  The launcher records the fixture's pid itself:
+    # the test cannot see a grandchild's `$!`.
+    _fixture_hold_ready3="$WORK/fixture-hold-ready-3"
+    _fixture_hold_fixture_pid3="$WORK/fixture-hold-fixture-pid-3"
+    _fixture_hold_spinners3="$WORK/fixture-hold-spinners-3"
+    bash -c 'bash "$1" "$2" 0 --pin-cpus "$3" --ready-file "$4" >/dev/null 2>&1 &
+             printf "%s\n" "$!" > "$5"
+             wait' \
+        _ "$FIXTURE" "$_ROW4_CONFINE_W" "$_ROW4_CONFINE_CPUS" \
+        "$_fixture_hold_ready3" "$_fixture_hold_fixture_pid3" &
+    _fixture_hold_launcher_pid=$!
+
+    _fixture_hold3a_rc=0
+    _row4_await_ready 30 "$_fixture_hold_ready3" "$_fixture_hold_fixture_pid3" \
+        || _fixture_hold3a_rc=$?
+    assert "FIXTURE-HOLD-3a: duration 0 behind a launcher reports ready and records the fixture pid (rc ${_fixture_hold3a_rc}; the 30 s deadline is an anti-hang guard only)" \
+        test "$_fixture_hold3a_rc" -eq 0
+
+    if [ "$_fixture_hold3a_rc" -ne 0 ]; then
+        assert "FIXTURE-HOLD-3: burn never reported ready (HOLD-3a rc ${_fixture_hold3a_rc}) -- KILL cases not run" \
+            false
+    else
+        # (3b) The workers are live and pinned, and the spinners are on record.
+        _fixture_hold_affinities3="$(_row4_worker_affinities "$_fixture_hold_ready3" 2>/dev/null || true)"
+        assert "FIXTURE-HOLD-3b: before the KILL every worker is live and pinned (workers=${_fixture_hold_affinities3//$'\n'/,}, expected=${_fixture_hold_expected//$'\n'/,})" \
+            _row4_pin_coresident "$_fixture_hold_affinities3" "$_fixture_hold_expected"
+
+        _fixture_hold3b_rc=0
+        _row4_collect_spinners 30 "$_fixture_hold_ready3" "$_fixture_hold_spinners3" \
+            || _fixture_hold3b_rc=$?
+        assert "FIXTURE-HOLD-3b: every worker handle has a spinner child before the KILL (rc ${_fixture_hold3b_rc}; spinners=$(tr '\n' ',' < "$_fixture_hold_spinners3" 2>/dev/null || true))" \
+            test "$_fixture_hold3b_rc" -eq 0
+
+        kill -KILL "$_fixture_hold_launcher_pid" 2>/dev/null || true
+        wait "$_fixture_hold_launcher_pid" 2>/dev/null || true
+
+        # (3c) Nothing of the burn survives its launcher's SIGKILL.
+        if [ "$_fixture_hold3b_rc" -ne 0 ]; then
+            assert "FIXTURE-HOLD-3c: spinners were never found (HOLD-3b rc ${_fixture_hold3b_rc}) -- vanish check not run" \
+                false
+        else
+            _fixture_hold3c_rc=0
+            _row4_await_vanished 30 "$_fixture_hold_fixture_pid3" "$_fixture_hold_ready3" "$_fixture_hold_spinners3" \
+                || _fixture_hold3c_rc=$?
+            assert "FIXTURE-HOLD-3c: after SIGKILL of the launcher the fixture, every worker handle and every spinner has vanished (rc ${_fixture_hold3c_rc}; the 30 s deadline is an anti-hang guard only)" \
+                test "$_fixture_hold3c_rc" -eq 0
+        fi
+    fi
+    _fixture_hold_reap "$_fixture_hold_launcher_pid" "$_fixture_hold_fixture_pid3" "$_fixture_hold_ready3" "$_fixture_hold_spinners3"
+
+    # ── groups 4 and 5: a parent that dies BEFORE a parent-death signal is armed.
+    # No signal reports that death, so these groups place it exactly in that
+    # window: a `setpriv` shim ahead of the real one on PATH SIGKILLs its caller's
+    # parent once, waits until the caller is re-parented, records the caller's
+    # pid and only then execs the real setpriv.  The shim acts only on the call
+    # it is aimed at — the fixture's own re-exec (group 4: its pid is the
+    # recorded fixture pid) or a worker's (group 5: its parent is the recorded
+    # fixture pid) — and only while its parent is still the one it was aimed at
+    # (group 4: the launcher's pid, handed down in GOVTEST_SHIM_EXPECTED_PARENT).
+    # Every other call, including one made after the test already ended the
+    # parent and the caller was re-parented, passes straight through: the shim
+    # never signals a process it was not aimed at.
+    _fixture_hold_shim_dir="$(mktemp -d -p "$WORK" fixture-hold-shim.XXXXXX)"
+    cat > "$_fixture_hold_shim_dir/setpriv" << 'EOF_SETPRIV_SHIM'
+#!/bin/sh
+current_ppid() { awk '/^PPid:/ { print $2 }' /proc/$$/status; }
+while [ ! -s "$GOVTEST_SHIM_FIXTURE_PID_FILE" ] && [ "$(current_ppid)" = "$PPID" ]; do
+    sleep 0.01
+done
+fixture_pid="$(cat "$GOVTEST_SHIM_FIXTURE_PID_FILE" 2>/dev/null || true)"
+case "$GOVTEST_SHIM_AIM" in
+    fixture) aimed=$$ expected_parent="${GOVTEST_SHIM_EXPECTED_PARENT:-}" ;;
+    worker) aimed=$PPID expected_parent="$fixture_pid" ;;
+esac
+if [ -n "$fixture_pid" ] && [ "$aimed" = "$fixture_pid" ] \
+    && [ "$(current_ppid)" = "$expected_parent" ] \
+    && rm "$GOVTEST_SHIM_TRIGGER" 2>/dev/null; then
+    kill -KILL "$PPID"
+    while [ "$(current_ppid)" = "$PPID" ]; do sleep 0.01; done
+    printf '%s\n' "$$" > "$GOVTEST_SHIM_VICTIM_FILE"
+fi
+exec "$GOVTEST_SHIM_REAL" "$@"
+EOF_SETPRIV_SHIM
+    chmod +x "$_fixture_hold_shim_dir/setpriv"
+    _fixture_hold_real_setpriv="$(command -v setpriv)"
+
+    # _fixture_hold_reap_tree <pid_file>
+    #   Unconditional cleanup for groups 4/5: SIGKILL every recorded pid and its
+    #   children (an unanchored burn's spinner is the recorded handle's child).
+    _fixture_hold_reap_tree() {
+        local recorded
+        [ -r "$1" ] || return 0
+        while IFS= read -r recorded; do
+            if [ -n "$recorded" ]; then
+                pkill -KILL -P "$recorded" 2>/dev/null || true
+                kill -KILL "$recorded" 2>/dev/null || true
+            fi
+        done < "$1"
+    }
+
+    # ── group 4: the launcher dies after the fixture has started but before the
+    # fixture's own parent-death signal is armed.  The fixture must not burn.
+    _fixture_hold_ready4="$WORK/fixture-hold-ready-4"
+    _fixture_hold_fixture_pid4="$WORK/fixture-hold-fixture-pid-4"
+    _fixture_hold_victim4="$WORK/fixture-hold-victim-4"
+    : > "$WORK/fixture-hold-trigger-4"
+    GOVTEST_SHIM_AIM=fixture GOVTEST_SHIM_REAL="$_fixture_hold_real_setpriv" \
+    GOVTEST_SHIM_FIXTURE_PID_FILE="$_fixture_hold_fixture_pid4" \
+    GOVTEST_SHIM_TRIGGER="$WORK/fixture-hold-trigger-4" \
+    GOVTEST_SHIM_VICTIM_FILE="$_fixture_hold_victim4" \
+    PATH="$_fixture_hold_shim_dir:$PATH" \
+        bash -c 'GOVTEST_SHIM_EXPECTED_PARENT=$$ bash "$1" 1 0 --ready-file "$2" >/dev/null 2>&1 &
+                 printf "%s\n" "$!" > "$3"
+                 wait' \
+        _ "$FIXTURE" "$_fixture_hold_ready4" "$_fixture_hold_fixture_pid4" &
+    _fixture_hold_launcher_pid4=$!
+
+    # The launcher waits for a burn that has no clock, so it ends only if the shim
+    # fires.  Bound the wait on the shim's own report (technique T), then end the
+    # launcher explicitly before reaping it: a shim that never fired must be a
+    # named FAIL below, not a hang.  Killing a launcher the shim already killed is
+    # harmless.  When the shim never fired, the fixture (a pending shim, by pid)
+    # is ended first, so it is never orphaned by the launcher's kill.
+    _fixture_hold4a_rc=0
+    _row4_await_ready 30 "$_fixture_hold_victim4" || _fixture_hold4a_rc=$?
+    if [ "$_fixture_hold4a_rc" -ne 0 ]; then
+        _fixture_hold_reap_tree "$_fixture_hold_fixture_pid4"
+    fi
+    kill -KILL "$_fixture_hold_launcher_pid4" 2>/dev/null || true
+    wait "$_fixture_hold_launcher_pid4" 2>/dev/null || true
+    assert "FIXTURE-HOLD-4a: the shim killed the launcher before the fixture's anchor was armed (rc ${_fixture_hold4a_rc}); precondition of -4b" \
+        test "$_fixture_hold4a_rc" -eq 0
+    _fixture_hold4b_rc=0
+    _row4_await_vanished 30 "$_fixture_hold_fixture_pid4" || _fixture_hold4b_rc=$?
+    assert "FIXTURE-HOLD-4b: a fixture whose launcher died before its anchor was armed has vanished (rc ${_fixture_hold4b_rc}; the 30 s deadline is an anti-hang guard only)" \
+        test "$_fixture_hold4b_rc" -eq 0
+    assert "FIXTURE-HOLD-4c: that fixture forked no worker (no ready file)" \
+        test ! -e "$_fixture_hold_ready4"
+    _fixture_hold_reap_tree "$_fixture_hold_ready4"
+    _fixture_hold_reap_tree "$_fixture_hold_fixture_pid4"
+
+    # ── group 5: an unpinned fixture is SIGKILLed after forking a worker but
+    # before that worker's parent-death signal is armed.  The worker must not
+    # burn.
+    _fixture_hold_ready5="$WORK/fixture-hold-ready-5"
+    _fixture_hold_fixture_pid5="$WORK/fixture-hold-fixture-pid-5"
+    _fixture_hold_victim5="$WORK/fixture-hold-victim-5"
+    : > "$WORK/fixture-hold-trigger-5"
+    GOVTEST_SHIM_AIM=worker GOVTEST_SHIM_REAL="$_fixture_hold_real_setpriv" \
+    GOVTEST_SHIM_FIXTURE_PID_FILE="$_fixture_hold_fixture_pid5" \
+    GOVTEST_SHIM_TRIGGER="$WORK/fixture-hold-trigger-5" \
+    GOVTEST_SHIM_VICTIM_FILE="$_fixture_hold_victim5" \
+    PATH="$_fixture_hold_shim_dir:$PATH" \
+        bash "$FIXTURE" 1 0 --ready-file "$_fixture_hold_ready5" >/dev/null 2>&1 &
+    _fixture_hold_pid5=$!
+    printf '%s\n' "$_fixture_hold_pid5" > "$_fixture_hold_fixture_pid5"
+
+    # As in group 4: the fixture has no clock, so bound the wait on the shim's own
+    # report and end the fixture explicitly before reaping it.
+    _fixture_hold5a_rc=0
+    _row4_await_ready 30 "$_fixture_hold_victim5" || _fixture_hold5a_rc=$?
+    kill -KILL "$_fixture_hold_pid5" 2>/dev/null || true
+    wait "$_fixture_hold_pid5" 2>/dev/null || true
+    assert "FIXTURE-HOLD-5a: the shim killed the fixture before its worker's anchor was armed (rc ${_fixture_hold5a_rc}); precondition of -5b" \
+        test "$_fixture_hold5a_rc" -eq 0
+    _fixture_hold5b_rc=0
+    _row4_await_vanished 30 "$_fixture_hold_victim5" || _fixture_hold5b_rc=$?
+    assert "FIXTURE-HOLD-5b: a worker whose fixture died before its anchor was armed has vanished (rc ${_fixture_hold5b_rc}; the 30 s deadline is an anti-hang guard only)" \
+        test "$_fixture_hold5b_rc" -eq 0
+    _fixture_hold_reap_tree "$_fixture_hold_victim5"
+    _fixture_hold_reap_tree "$_fixture_hold_ready5"
+fi
+
+# ----------------------------------------------------------------------------
+# ROW4-LAUNCH-VACUITY: the launch/stop seam ROW4 starts and ends its burns
+# through.  `_row4_launch_role_burn` takes the governed-exec wrapper as a
+# parameter, so this block hands it a pass-through stub: the REAL fixture and
+# its pinning run, with no cgroup governance at all — which is what keeps the
+# block always-on, including under the deflake meta-test's
+# REIFY_CPU_GOVERN_DISABLE=1.  Same preconditions as FIXTURE-PIN, plus a kernel
+# with /proc/<pid>/task/<tid>/children for the spinner census (-3b, -3c, -4d):
+# the stop is only proven to reap spinners by watching the spinners, so without
+# the census those cases FAIL rather than skip.
+# ----------------------------------------------------------------------------
+echo ""
+echo "--- ROW4-LAUNCH-VACUITY: launch/stop seam (always-on) ---"
+
+if ! command -v taskset >/dev/null 2>&1; then
+    echo "  SKIP ROW4-LAUNCH-VACUITY: taskset unavailable — cannot observe per-worker pinning"
+elif [ -z "${_ROW4_CONFINE_CPUS:-}" ]; then
+    echo "  SKIP ROW4-LAUNCH-VACUITY: own Cpus_allowed_list unreadable — no confined pin list to pass"
+else
+    # Stand-in for cpu-governed-exec.sh: drop `--role <r> --` and run the
+    # payload directly.  The seam picks the role's slice by env var and role,
+    # neither of which matters without governance.
+    _row4_launch_stub="$WORK/row4-launch-stub-gov-exec.sh"
+    cat > "$_row4_launch_stub" << 'EOF_LAUNCH_STUB'
+#!/usr/bin/env bash
+shift 2
+[ "${1:-}" = "--" ] && shift
+exec "$@"
+EOF_LAUNCH_STUB
+
+    # The burns only have to outlast the work between launch and stop, which
+    # the stop ends early: a generous bound costs a normal run nothing.
+    _row4_launch_burn_s=20
+    _row4_launch_ready_task="$WORK/row4-launch-ready-task"
+    _row4_launch_ready_merge="$WORK/row4-launch-ready-merge"
+    _row4_launch_rc=0
+    _row4_launch_role_burn "$_row4_launch_stub" task "$_ROW4_CONFINE_CPUS" "$_ROW4_CONFINE_W" \
+        "$_row4_launch_burn_s" "$_row4_launch_ready_task" || _row4_launch_rc=$?
+    _row4_launch_role_burn "$_row4_launch_stub" merge "$_ROW4_CONFINE_CPUS" "$_ROW4_CONFINE_W" \
+        "$_row4_launch_burn_s" "$_row4_launch_ready_merge" || _row4_launch_rc=$?
+
+    # (1) Both roles, launched through the seam, report ready.
+    _row4_launch1_rc=0
+    _row4_await_ready 30 "$_row4_launch_ready_task" "$_row4_launch_ready_merge" \
+        || _row4_launch1_rc=$?
+    assert "ROW4-LAUNCH-VACUITY-1: task and merge burns launched through the seam both report ready (rc ${_row4_launch1_rc}; the 30 s deadline is an anti-hang guard only)" \
+        test "$_row4_launch1_rc" -eq 0
+
+    # (2) The property the live ROW4-1 depends on: each pinned CPU hosts one
+    # task and one merge worker.
+    _row4_launch_task_cpus="$(_row4_worker_affinities "$_row4_launch_ready_task" 2>/dev/null || true)"
+    _row4_launch_merge_cpus="$(_row4_worker_affinities "$_row4_launch_ready_merge" 2>/dev/null || true)"
+    assert "ROW4-LAUNCH-VACUITY-2: each pinned CPU hosts one task and one merge worker (task=${_row4_launch_task_cpus//$'\n'/,}, merge=${_row4_launch_merge_cpus//$'\n'/,})" \
+        _row4_pin_coresident "$_row4_launch_task_cpus" "$_row4_launch_merge_cpus"
+
+    # (3) One recorded wrapper pid per launched role.
+    _row4_launch_pid_count="$(awk '{ print NF }' <<< "${_ROW4_BURN_PIDS:-}")"
+    assert "ROW4-LAUNCH-VACUITY-3: _ROW4_BURN_PIDS holds exactly 2 wrapper pids, one per role (got ${_row4_launch_pid_count}: '${_ROW4_BURN_PIDS:-}')" \
+        test "$_row4_launch_pid_count" -eq 2
+
+    # (3b) Census the SPINNERS before the stop.  The ready files above list the
+    # fixture's worker HANDLES, and a handle is not what burns: it is a
+    # timeout(1), and the busy-spin `sh` is its child.  A stop that SIGKILLed a
+    # handle would leave the handle reading 'unavailable' while the spinner,
+    # re-parented, kept burning its pinned CPU — so -4d watches the spinners,
+    # and they can only be found from their handles while the handles live.
+    # (The deadline is an anti-hang guard only, and so is not asserted on.)
+    _row4_launch_spinners_task="$WORK/row4-launch-spinners-task"
+    _row4_launch_spinners_merge="$WORK/row4-launch-spinners-merge"
+    _row4_launch3b_rc=0
+    _row4_collect_spinners 30 "$_row4_launch_ready_task" "$_row4_launch_spinners_task" \
+        || _row4_launch3b_rc=$?
+    _row4_collect_spinners 30 "$_row4_launch_ready_merge" "$_row4_launch_spinners_merge" \
+        || _row4_launch3b_rc=$?
+    assert "ROW4-LAUNCH-VACUITY-3b: every worker of both roles has forked its busy-spin child (rc ${_row4_launch3b_rc}; read from /proc/<pid>/task/<pid>/children, which needs CONFIG_PROC_CHILDREN; the 30 s deadline is an anti-hang guard only)" \
+        test "$_row4_launch3b_rc" -eq 0
+
+    # (3c) Those spinners are live and pinned, one task and one merge per CPU.
+    # That is the precondition that makes -4d's 'unavailable' mean REAPED, and
+    # it checks the claim ROW4-PIN-LIVE and FIXTURE-PIN-3 lean on: they read a
+    # handle's mask, which stands for its spinner's only because the spinner
+    # inherits it.
+    _row4_launch_spinner_task_cpus="$(_row4_worker_affinities "$_row4_launch_spinners_task" 2>/dev/null || true)"
+    _row4_launch_spinner_merge_cpus="$(_row4_worker_affinities "$_row4_launch_spinners_merge" 2>/dev/null || true)"
+    assert "ROW4-LAUNCH-VACUITY-3c: the spinners themselves are pinned, one task and one merge per CPU (task=${_row4_launch_spinner_task_cpus//$'\n'/,}, merge=${_row4_launch_spinner_merge_cpus//$'\n'/,})" \
+        _row4_pin_coresident "$_row4_launch_spinner_task_cpus" "$_row4_launch_spinner_merge_cpus"
+
+    # (4) NON-VACUITY CRUX for the stop: -2 proved the workers were alive and
+    # pinned, so "unavailable" afterwards can only mean the stop ended them.
+    # This covers the HANDLES; -4d covers what they spawned.
+    _row4_stop_rc=0
+    _row4_stop_burns || _row4_stop_rc=$?
+    _row4_launch_after="$({ _row4_worker_affinities "$_row4_launch_ready_task"
+                            _row4_worker_affinities "$_row4_launch_ready_merge"; } 2>/dev/null | sort -u || true)"
+    assert "ROW4-LAUNCH-VACUITY-4: after _row4_stop_burns every worker handle listed in both ready files reads 'unavailable' (got '${_row4_launch_after//$'\n'/,}'); the stop ends the workers" \
+        test "$_row4_launch_after" = "unavailable"
+    assert "ROW4-LAUNCH-VACUITY-4b: _ROW4_BURN_PIDS is empty after the stop (got '${_ROW4_BURN_PIDS:-}')" \
+        test -z "${_ROW4_BURN_PIDS:-}"
+    # ROW4 calls the stop bare, under `set -e`: a non-zero rc would abort the suite.
+    assert "ROW4-LAUNCH-VACUITY-4c: _row4_stop_burns returns 0 (got ${_row4_stop_rc}); it runs bare under set -e" \
+        test "$_row4_stop_rc" -eq 0
+
+    # (4d) NON-VACUITY CRUX for the stop, on the spinners: -3c proved each was
+    # live and pinned, so 'unavailable' afterwards can only mean the stop reaped
+    # it.  An orphaned spinner is what contaminated the next window when the
+    # burns were ended by killing a bare payload instead, and a handle that is
+    # gone says nothing about it: only the spinner's own entry does.
+    _row4_launch_spinners_after="$({ _row4_worker_affinities "$_row4_launch_spinners_task"
+                                     _row4_worker_affinities "$_row4_launch_spinners_merge"; } 2>/dev/null | sort -u || true)"
+    assert "ROW4-LAUNCH-VACUITY-4d: after _row4_stop_burns every busy-spin child of those workers reads 'unavailable' too (got '${_row4_launch_spinners_after//$'\n'/,}'); the stop reaps the spinners, never orphans them" \
+        test "$_row4_launch_spinners_after" = "unavailable"
+    # A spinner that outlived its stop has no timeout left behind it and would
+    # burn its pinned CPU through every later window, so a regression ends here
+    # rather than contaminating the rest of the run.
+    for _row4_launch_census in "$_row4_launch_spinners_task" "$_row4_launch_spinners_merge"; do
+        while IFS= read -r _row4_launch_leaked; do
+            [ ! -d "/proc/${_row4_launch_leaked}" ] || kill "$_row4_launch_leaked" 2>/dev/null || true
+        done < "$_row4_launch_census"
+    done
+fi
+
 # ============================================================================
 # Cycle ROW1 — §8 Row 1: lone governed source, box idle.
 # HOST-GATED (host_supports_governance + PSI + python3).
-# QUIET-BOX: pre-check avg10 < QUIET_CEILING; SKIP if box already hot.
 # ============================================================================
 echo ""
 echo "--- Cycle ROW1: §8 Row 1 (lone governed source, box idle) ---"
@@ -703,9 +2012,7 @@ echo "--- Cycle ROW1: §8 Row 1 (lone governed source, box idle) ---"
 # ROW1-1 below (still quiet-gated pending its own confined conversion), it
 # never SKIPs under concurrent pool load and never touches PSI/python3.
 # ----------------------------------------------------------------------------
-if ! host_supports_governance; then
-    echo "  SKIP ROW1-2: host does not support cgroup governance"
-else
+if live_cycle_gate ROW1-2; then
     # cpu.max probe — run a tiny probe inside the scope to capture the first
     # field of cpu.max while the scope is live.  Uses a temp script to avoid
     # shell quoting complexity.
@@ -742,7 +2049,11 @@ fi
 # ----------------------------------------------------------------------------
 _ROW1_CONFINE_WARMUP_S="${REIFY_CPU_GOV_TEST_ROW1_WARMUP_S:-1}"
 _ROW1_CONFINE_MEASURE_S="${REIFY_CPU_GOV_TEST_ROW1_MEASURE_S:-3}"
-_ROW1_CONFINE_BURN_MIN=$(( _ROW1_CONFINE_WARMUP_S + _ROW1_CONFINE_MEASURE_S + 2 ))
+# The window opens on the burn's readiness report, which can come as late as
+# the ready deadline after launch, so the burn must outlast deadline + warm-up +
+# measure + a settle margin (as _ROW4_BURN_MIN does).  The burn is stopped
+# explicitly right after the AFTER sample, so the larger cap adds no wall time.
+_ROW1_CONFINE_BURN_MIN=$(( _ROW4_READY_DEADLINE_S + _ROW1_CONFINE_WARMUP_S + _ROW1_CONFINE_MEASURE_S + 2 ))
 _ROW1_BURN_S="${REIFY_CPU_GOV_TEST_BURN_S:-$_ROW1_CONFINE_BURN_MIN}"
 [ "$_ROW1_BURN_S" -lt "$_ROW1_CONFINE_BURN_MIN" ] && _ROW1_BURN_S="$_ROW1_CONFINE_BURN_MIN"
 # Empirically-calibrated floor (basis: a reference solo confined+pinned run,
@@ -808,6 +2119,27 @@ _row1_measurement_inactive() {
         'BEGIN{ exit !((u+0) < (f+0) && (s+0) < (f+0)) }'
 }
 
+# _row1_measure_window <before_sample> <after_sample> <cores>
+#   Sample = a cgroup-usage-stamped line "<usage_usec> <stamp_us>" or "unavailable".
+#   Prints "<delta_usage_us> <window_us> <saturation>", the window being the interval
+#   MEASURED between the two stamps; a counter wrap clamps delta to 0.  Prints
+#   "unavailable" for a bad sample, non-positive cores, or a stamp that did not advance.
+_row1_measure_window() {
+    awk -v before="$1" -v after="$2" -v cores="$3" 'BEGIN {
+        stamped = "^[0-9]+ [0-9]+$"
+        split(before, b, " "); split(after, a, " ")
+        if (cores !~ /^[0-9]+$/ || cores + 0 <= 0 ||
+                before !~ stamped || after !~ stamped || a[2] + 0 <= b[2] + 0) {
+            print "unavailable"
+            exit
+        }
+        delta = a[1] - b[1]
+        if (delta < 0) delta = 0
+        window = a[2] - b[2]
+        printf "%d %d %.6f\n", delta, window, delta / (cores * window)
+    }'
+}
+
 # _row2_band_inconclusive <avg10> <threshold> <usage_fraction> <stall_before>
 #   <stall_after> <window_us>
 #   ROW2-1 band-decision predicate (task 4970, esc-4959-53): decides whether
@@ -848,31 +2180,14 @@ _row2_band_inconclusive() {
     _row1_stall_contended "$stall_before" "$stall_after" "$window_us"
 }
 
-# _row2_usage_fraction <usage_before> <usage_after> <budget_us>
-#   Pure usage-fraction helper for ROW2-1's band decision (task 4970 review-
-#   amendment, reviewer_comprehensive/test_masks_regression): computes the
-#   task slice's own usage delta as a fraction of budget_us, OR propagates
-#   the literal "unavailable" sentinel when EITHER bracket is unreadable —
-#   mirrors the _ROW1_STALL_FRACTION unavailable-guard idiom above (lines
-#   909-914). Extracted so the WIRED ROW2_3 caller can no longer collapse an
-#   unreadable usage_usec bracket to a numeric "0.000000" (which reads as
-#   maximally STARVED and, combined with an in-band avg10 + high windowed
-#   stall, would wrongly SKIP a genuine over-admission governance
-#   regression instead of hard-FAILing it — the review-found masking gap).
-#   _row2_band_inconclusive's own non-numeric guard
-#   (case ''|*[!0-9.]*) => return 1) then fails safe on the propagated
-#   sentinel exactly as it already does on a literal "unavailable" input.
-#   Guards counter-wrap (after < before -> delta 0) and non-positive budget
-#   (-> "0"), same degenerate-guard discipline as the ROW1-1 usage-fraction
-#   awk idiom (lines 897-903).
-_row2_usage_fraction() {
-    local before="$1" after="$2" budget="$3"
-    case "$before" in unavailable) echo unavailable; return 0 ;; esac
-    case "$after" in unavailable) echo unavailable; return 0 ;; esac
-    local delta=$(( after - before ))
-    [ "$delta" -lt 0 ] && delta=0  # guard counter wrap
-    awk -v d="$delta" -v b="$budget" \
-        'BEGIN{ if (b+0<=0) {print "0"} else {printf "%.6f", d/b} }'
+# _row2_band_window <before_sample> <after_sample> <cores>
+#   Samples as in _row1_measure_window.  Prints "<usage_fraction> <window_us>" from the
+#   MEASURED window, or exactly "unavailable unavailable"; returns 0 on every path.
+_row2_band_window() {
+    local measured
+    measured="$(_row1_measure_window "$1" "$2" "$3" || true)"
+    awk 'NF == 3 { print $3, $2; found = 1 }
+         END { if (!found) print "unavailable unavailable" }' <<< "$measured"
 }
 
 # _row3_sample_usable <value>
@@ -899,7 +2214,7 @@ _row3_sample_usable() {
 #   `[ -z "${_T_BASE}" ] || [ "${_T_BASE}" = "0" ] && _T_BASE="1"` — which
 #   reads as a legitimate 1.000000-second baseline and, divided into a real
 #   T_mix, manufactures an inflated slowdown ratio (the false RED this task
-#   fixes). Mirrors _row2_usage_fraction's sentinel-propagation shape above:
+#   fixes). Mirrors _row2_band_window's sentinel-propagation shape above:
 #   an unreadable/untrustworthy sample must propagate the literal
 #   "unavailable" sentinel rather than collapse to a numeric that reads as
 #   legitimate. Despite the historical name, this normalizer is probe-
@@ -1156,6 +2471,67 @@ _row1_measurement_inactive 0.001 unavailable 0.02 || _row1_inactive_vacuity4_rc=
 assert "ROW1-1-INACTIVE-VACUITY-4: unavailable stall sample (u=0.001 s=unavailable f=0.02) => NOT inactive (fails safe)" \
     test "$_row1_inactive_vacuity4_rc" -ne 0
 
+# ROW1-1-WINDOW-VACUITY (task 10023): ROW1-1 divides by the interval MEASURED
+# between its two cgroup-usage-stamped reads, never by the nominal MEASURE_S
+# sleep.  _row1_measure_window <before_sample> <after_sample> <cores> takes two
+# "<usage_usec> <stamp_us>" samples (or "unavailable") and prints
+# "<delta_usage_us> <window_us> <saturation>", or "unavailable".  Pure awk, no
+# python3, no cgroup: always-on.
+# Every capture is `$(helper ... || true)`, never `|| echo <sentinel>`: an
+# undefined helper must leave an EMPTY capture, which FAILs, rather than
+# manufacture the sentinel a case expects.  Outputs compare by exact string.
+_row1_window_vacuity1="$(_row1_measure_window "1000000 5000000" "7000000 8600000" 2 || true)"
+assert "ROW1-1-WINDOW-VACUITY-1: NON-VACUITY CRUX -- 6.0 CPU-s over a MEASURED 3.6 s window on 2 cores => '6000000 3600000 0.833333' (got '${_row1_window_vacuity1}'); a nominal 3 s budget would have read 1.000000 and hidden the deficit" \
+    test "$_row1_window_vacuity1" = "6000000 3600000 0.833333"
+
+_row1_window_vacuity2="$(_row1_measure_window "0 0" "6000000 3000000" 2 || true)"
+assert "ROW1-1-WINDOW-VACUITY-2: 6.0 CPU-s over a 3.0 s window on 2 cores => '6000000 3000000 1.000000' (got '${_row1_window_vacuity2}')" \
+    test "$_row1_window_vacuity2" = "6000000 3000000 1.000000"
+
+_row1_window_vacuity3="$(_row1_measure_window unavailable "6000000 3000000" 2 || true)"
+assert "ROW1-1-WINDOW-VACUITY-3: unavailable BEFORE sample => 'unavailable' (got '${_row1_window_vacuity3}')" \
+    test "$_row1_window_vacuity3" = "unavailable"
+
+_row1_window_vacuity4="$(_row1_measure_window "0 0" unavailable 2 || true)"
+assert "ROW1-1-WINDOW-VACUITY-4: unavailable AFTER sample => 'unavailable' (got '${_row1_window_vacuity4}')" \
+    test "$_row1_window_vacuity4" = "unavailable"
+
+_row1_window_vacuity5="$(_row1_measure_window "100 5000000" "200 5000000" 2 || true)"
+assert "ROW1-1-WINDOW-VACUITY-5: non-advancing stamp (before=after=5000000) => 'unavailable' (got '${_row1_window_vacuity5}'); never a divide-by-zero, never a nominal-window fallback" \
+    test "$_row1_window_vacuity5" = "unavailable"
+
+_row1_window_vacuity6="$(_row1_measure_window "9000000 1000000" "100 4000000" 2 || true)"
+assert "ROW1-1-WINDOW-VACUITY-6: counter wrap (after usage < before usage) => '0 3000000 0.000000' (got '${_row1_window_vacuity6}'); delta clamps to 0 so the live chain's delta<=0 SKIP still fires" \
+    test "$_row1_window_vacuity6" = "0 3000000 0.000000"
+
+_row1_window_vacuity7="$(_row1_measure_window 123 "6000000 3000000" 2 || true)"
+assert "ROW1-1-WINDOW-VACUITY-7: malformed one-field BEFORE sample => 'unavailable' (got '${_row1_window_vacuity7}')" \
+    test "$_row1_window_vacuity7" = "unavailable"
+
+_row1_window_vacuity7b="$(_row1_measure_window "abc 5000000" "6000000 8000000" 2 || true)"
+assert "ROW1-1-WINDOW-VACUITY-7b: non-numeric field in a two-field BEFORE sample => 'unavailable' (got '${_row1_window_vacuity7b}'); awk would otherwise coerce it to 0 and print a plausible number" \
+    test "$_row1_window_vacuity7b" = "unavailable"
+
+_row1_window_vacuity7c="$(_row1_measure_window "1000000 5000000" "abc 8600000" 2 || true)"
+assert "ROW1-1-WINDOW-VACUITY-7c: non-numeric field in the AFTER sample => 'unavailable' (got '${_row1_window_vacuity7c}'); both samples are held to the same format" \
+    test "$_row1_window_vacuity7c" = "unavailable"
+
+_row1_window_vacuity7d="$(_row1_measure_window "1000000 5000000 9" "7000000 8600000" 2 || true)"
+assert "ROW1-1-WINDOW-VACUITY-7d: three-field BEFORE sample => 'unavailable' (got '${_row1_window_vacuity7d}'); a sample is exactly two fields" \
+    test "$_row1_window_vacuity7d" = "unavailable"
+
+_row1_window_vacuity8="$(_row1_measure_window "1000000 5000000" "7000000 8600000" x || true)"
+assert "ROW1-1-WINDOW-VACUITY-8: non-numeric cores => 'unavailable' (got '${_row1_window_vacuity8}')" \
+    test "$_row1_window_vacuity8" = "unavailable"
+
+_row1_window_vacuity8c="$(_row1_measure_window "1000000 5000000" "7000000 8600000" 2x || true)"
+assert "ROW1-1-WINDOW-VACUITY-8c: cores with trailing garbage ('2x') => 'unavailable' (got '${_row1_window_vacuity8c}'); awk alone would coerce it to 2" \
+    test "$_row1_window_vacuity8c" = "unavailable"
+
+_row1_window_vacuity8b="$(_row1_measure_window "1000000 5000000" "7000000 8600000" 0 || true)"
+assert "ROW1-1-WINDOW-VACUITY-8b: zero cores => 'unavailable' (got '${_row1_window_vacuity8b}'); never a divide-by-zero" \
+    test "$_row1_window_vacuity8b" = "unavailable"
+
 # Non-vacuity guard for the NEW ROW2-1 band-decision predicate (task 4970,
 # esc-4959-53/esc-4959-57): closes the 50-90 avg10 gap in Cycle ROW2_3's
 # ROW2-1 assertion, where an in-band [AGENT_THRESHOLD, 90) avg10 sample falls
@@ -1221,63 +2597,70 @@ else
         test "$_row2_band_vacuity5_rc" -ne 0
 fi
 
-# Non-vacuity guard for the NEW ROW2-1 usage-fraction helper (task 4970
-# review-amendment, reviewer_comprehensive/test_masks_regression): the WIRED
-# ROW2_3 caller below used to collapse an unreadable usage_usec bracket to
-# _ROW23_USAGE_DELTA=0 => fraction "0.000000", which reads as maximally
-# STARVED and, combined with an in-band avg10 + high windowed stall, wrongly
-# SKIPped a genuine over-admission governance regression instead of
-# hard-FAILing it (ROW2-1-BAND-VACUITY-5 above only proved the PREDICATE
-# fails safe on a literal "unavailable" -- it never exercised the WIRED
-# computation that used to produce "0.000000" instead). _row2_usage_fraction
-# <usage_before> <usage_after> <budget_us> fixes this by PROPAGATING the
-# literal "unavailable" sentinel whenever either bracket is unreadable,
-# mirroring the _ROW1_STALL_FRACTION unavailable-guard idiom (lines 909-914)
-# so _row2_band_inconclusive's own non-numeric guard
-# (case ''|*[!0-9.]*) => return 1) fires on the WIRED path too.
-#
-# Pure shell+awk, NO python needed -- even case (5) below short-circuits
-# inside _row2_band_inconclusive's non-numeric guard before it would ever
-# reach _row1_stall_contended -- so this block is strictly always-on, wider
-# coverage than ROW2-1-BAND-VACUITY above (which is python-gated only
-# because ITS case 1 needs a real contended verdict).
-#
-# Capture idiom: "$(_row2_usage_fraction ... || true)" -- MUST be `|| true`,
-# NOT `|| echo unavailable`: an echo-unavailable fallback would make case (1)
-# pass even while the helper is undefined and would destroy the RED signal.
+# ROW2-1-BAND-WINDOW-VACUITY (task 10025): ROW2_3's ROW2-1 sizes its usage
+# fraction and its stall window from the interval MEASURED between two
+# cgroup-usage-stamped reads, never from a nominal warm-up budget.
+# _row2_band_window <before_sample> <after_sample> <cores> takes two
+# "<usage_usec> <stamp_us>" samples (or "unavailable") and prints
+# "<usage_fraction> <window_us>", or exactly "unavailable unavailable".
+# Cases 1-5 are pure awk: always-on.  Cases 6-8 feed the two fields into
+# _row2_band_inconclusive as the live cycle does, which reaches python3 through
+# _row1_stall_contended: gated on _PYTHON_AVAILABLE like ROW2-1-BAND-VACUITY.
+# Every capture is `$(helper ... || true)`, never `|| echo <sentinel>`: an
+# undefined helper must leave an EMPTY capture, which FAILs.  Outputs compare by
+# exact string and rcs by exact value, never `-ne 0`.
+_row2_band_window1="$(_row2_band_window "0 0" "14000000 10000000" 2 || true)"
+assert "ROW2-1-BAND-WINDOW-VACUITY-1: NON-VACUITY CRUX -- 14.0 CPU-s over a MEASURED 10 s window on 2 cores => '0.700000 10000000' (got '${_row2_band_window1}'); a nominal 8 s budget would have read 0.875000, i.e. saturating, and hidden the starvation" \
+    test "$_row2_band_window1" = "0.700000 10000000"
 
-# (1) REGRESSION CRUX: before-bracket unavailable => propagate the sentinel,
-# never collapse to a numeric (maximally-STARVED-looking) fraction -- the
-# exact reviewer-found masking bug.
-_row2_uf1="$(_row2_usage_fraction unavailable 500000 1000000 2>/dev/null || true)"
-assert "ROW2-1-USAGE-FRACTION-VACUITY-1: before-bracket unavailable => propagates 'unavailable' (never collapses to 0.000000)" \
-    test "$_row2_uf1" = "unavailable"
+_row2_band_window2="$(_row2_band_window unavailable "14000000 10000000" 2 || true)"
+assert "ROW2-1-BAND-WINDOW-VACUITY-2: unavailable BEFORE sample => 'unavailable unavailable' (got '${_row2_band_window2}')" \
+    test "$_row2_band_window2" = "unavailable unavailable"
 
-# (2) Symmetric: after-bracket unavailable => propagate.
-_row2_uf2="$(_row2_usage_fraction 1000 unavailable 1000000 2>/dev/null || true)"
-assert "ROW2-1-USAGE-FRACTION-VACUITY-2: after-bracket unavailable => propagates 'unavailable'" \
-    test "$_row2_uf2" = "unavailable"
+_row2_band_window3="$(_row2_band_window "0 0" unavailable 2 || true)"
+assert "ROW2-1-BAND-WINDOW-VACUITY-3: unavailable AFTER sample => 'unavailable unavailable' (got '${_row2_band_window3}')" \
+    test "$_row2_band_window3" = "unavailable unavailable"
 
-# (3) Both brackets numeric => a real fraction (Δ=300000/1000000 ≈ 0.30),
-# asserted numerically (locale-proof), not a string comparison.
-_row2_uf3="$(_row2_usage_fraction 100000 400000 1000000 2>/dev/null || true)"
-assert "ROW2-1-USAGE-FRACTION-VACUITY-3: both brackets numeric (Δ=300000/1000000) => ~0.30 (got ${_row2_uf3})" \
-    awk -v u="$_row2_uf3" 'BEGIN{ exit !((u+0) > 0.29 && (u+0) < 0.31) }'
+_row2_band_window4="$(_row2_band_window "100 5000000" "200 5000000" 2 || true)"
+assert "ROW2-1-BAND-WINDOW-VACUITY-4: non-advancing stamp (before=after=5000000) => 'unavailable unavailable' (got '${_row2_band_window4}'); never a divide-by-zero, never a nominal-window fallback" \
+    test "$_row2_band_window4" = "unavailable unavailable"
 
-# (4) Counter-wrap (after < before) => guarded to 0, not a negative fraction.
-_row2_uf4="$(_row2_usage_fraction 400000 100000 1000000 2>/dev/null || true)"
-assert "ROW2-1-USAGE-FRACTION-VACUITY-4: counter-wrap (after < before) => 0 (got ${_row2_uf4})" \
-    awk -v u="$_row2_uf4" 'BEGIN{ exit !((u+0) == 0) }'
+_row2_band_window5="$(_row2_band_window "9000000 1000000" "100 4000000" 2 || true)"
+assert "ROW2-1-BAND-WINDOW-VACUITY-5: counter wrap (after usage < before usage) => '0.000000 3000000' (got '${_row2_band_window5}'); delta clamps to 0, never a negative fraction" \
+    test "$_row2_band_window5" = "0.000000 3000000"
 
-# (5) END-TO-END FAIL-SAFE: drive the propagated 'unavailable' output through
-# _row2_band_inconclusive with an in-band avg10 + high windowed stall (the
-# exact esc-4959-53 masking shape) and prove the OUTCOME is NOT inconclusive
-# -- ROW2-1's hard assert stays reachable instead of being silently SKIPped.
-_row2_uf5="$(_row2_usage_fraction unavailable 500000 1000000 2>/dev/null || true)"
-_row2_uf_vacuity5_rc=0
-_row2_band_inconclusive 57 50 "$_row2_uf5" 0 900000 1000000 || _row2_uf_vacuity5_rc=$?
-assert "ROW2-1-USAGE-FRACTION-VACUITY-5: END-TO-END FAIL-SAFE -- propagated 'unavailable' usage_fraction (avg10=57 in-band, stall high) => NOT inconclusive (hard assert stays reachable, never masks a genuine regression)" \
-    test "$_row2_uf_vacuity5_rc" -ne 0
+# _row2_band_window_verdict_is <expected_capture> <expected_rc> <before_sample>
+#   <after_sample> <stall_after>
+#   Test-side composition of ROW2-1's band decision on 2 cores (avg10 57 against
+#   threshold 50, stall 0 -> <stall_after>).  Passes iff _row2_band_window's
+#   capture equals <expected_capture> AND _row2_band_inconclusive's rc equals
+#   <expected_rc>, both exactly, so an empty capture cannot pass by yielding rc 1.
+_row2_band_window_verdict_is() {
+    local expected_capture="$1" expected_rc="$2" before="$3" after="$4" stall_after="$5"
+    local capture usage_fraction window_us rc=0
+    capture="$(_row2_band_window "$before" "$after" 2 || true)"
+    if [ "$capture" != "$expected_capture" ]; then
+        echo "capture '${capture}' != expected '${expected_capture}'"
+        return 1
+    fi
+    read -r usage_fraction window_us <<< "$capture"
+    _row2_band_inconclusive 57 50 "$usage_fraction" 0 "$stall_after" "$window_us" || rc=$?
+    if [ "$rc" -ne "$expected_rc" ]; then
+        echo "band decision rc ${rc} != expected ${expected_rc}"
+        return 1
+    fi
+}
+
+if [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
+    echo "  SKIP ROW2-1-BAND-WINDOW-VACUITY-6..8: python3 not on PATH"
+else
+    assert "ROW2-1-BAND-WINDOW-VACUITY-6: USAGE CRUX -- measured usage 0.70 is starved (< floor 0.85) and stall 0->6000000 over the 10 s window is contended (0.6) => '0.700000 10000000' and inconclusive (rc 0); a nominal 8 s budget reads 0.875, saturating, and would leave the hard assert reachable" \
+        _row2_band_window_verdict_is "0.700000 10000000" 0 "0 0" "14000000 10000000" 6000000
+    assert "ROW2-1-BAND-WINDOW-VACUITY-7: STALL-WINDOW CRUX -- stall 0->4500000 over the MEASURED 10 s window is 0.45, not contended => '0.700000 10000000' and NOT inconclusive (rc 1, the hard assert stays reachable); a nominal 8 s window would read 0.5625 and SKIP" \
+        _row2_band_window_verdict_is "0.700000 10000000" 1 "0 0" "14000000 10000000" 4500000
+    assert "ROW2-1-BAND-WINDOW-VACUITY-8: END-TO-END FAIL-SAFE -- an unavailable sample (avg10=57 in-band, stall 0->6000000) => 'unavailable unavailable' and NOT inconclusive (rc 1, never masks a genuine regression)" \
+        _row2_band_window_verdict_is "unavailable unavailable" 1 unavailable "14000000 10000000" 6000000
+fi
 
 # Non-vacuity guard for the NEW ROW3-1 baseline-sample normalizer (task 5999,
 # #5999 false-RED): the live T_base capture used to collapse a timed-out or
@@ -1287,18 +2670,18 @@ assert "ROW2-1-USAGE-FRACTION-VACUITY-5: END-TO-END FAIL-SAFE -- propagated 'una
 # ratio -- the false RED. _row3_probe_sample <rc> <raw> takes the probe's EXIT
 # STATUS as an explicit parameter because stdout alone cannot discriminate an
 # errored probe that still printed a plausible number from a genuine
-# measurement (case 2 below). Mirrors _row2_usage_fraction's
+# measurement (case 2 below). Mirrors _row2_band_window's
 # "unavailable"-sentinel-propagation shape above -- same class of
 # defect (an unreadable/untrustworthy sample collapsing to a numeric that
 # reads as legitimate), same remedy.
 #
 # Pure shell+awk, NO python3 needed, so always-on -- same wider-coverage
-# rationale as ROW2-1-USAGE-FRACTION-VACUITY above.
+# rationale as ROW2-1-BAND-WINDOW-VACUITY-1..5 above.
 #
 # Capture idiom: "$(_row3_probe_sample ... || true)" -- MUST be `|| true`, NOT
 # `|| echo unavailable`: an echo-unavailable fallback would make every case
 # below pass even while the helper is undefined and would destroy the RED
-# signal (same prohibition as _row2_usage_fraction's Capture idiom above).
+# signal (same prohibition as ROW2-1-BAND-WINDOW-VACUITY's capture idiom above).
 
 # (1) REGRESSION CRUX / #5999 replay: probe timed out (rc=124, no stdout) =>
 # propagate "unavailable", never the old collapse to "1".
@@ -1330,9 +2713,8 @@ assert "ROW3-1-BASE-SAMPLE-VACUITY-5: rc=0 with non-numeric stdout ('abc') => 'u
     test "$_row3_bsv5" = "unavailable"
 
 # (6) NON-VACUITY CRUX: rc=0 with a genuine positive baseline passes through
-# verbatim, asserted NUMERICALLY via awk (locale-proof, mirrors
-# ROW2-1-USAGE-FRACTION-VACUITY-3) -- sentinelling a GOOD baseline would make
-# ROW3-1 SKIP unconditionally, which is vacuous.
+# verbatim, asserted NUMERICALLY via awk (locale-proof) -- sentinelling a GOOD
+# baseline would make ROW3-1 SKIP unconditionally, which is vacuous.
 _row3_bsv6="$(_row3_probe_sample 0 "2.750000" 2>/dev/null || true)"
 assert "ROW3-1-BASE-SAMPLE-VACUITY-6: NON-VACUITY CRUX -- rc=0 with genuine baseline ('2.750000') passes through (got ${_row3_bsv6})" \
     awk -v v="$_row3_bsv6" 'BEGIN{ exit !((v+0) > 2.74 && (v+0) < 2.76) }'
@@ -1373,8 +2755,7 @@ assert "ROW3-1-BASE-SAMPLE-VACUITY-8: rc='abc' (non-numeric) => 'unavailable' ev
 # preserve one.
 #
 # Pure shell+awk, NO python3 needed, so always-on -- same wider-coverage
-# rationale as ROW2-1-USAGE-FRACTION-VACUITY / ROW3-1-BASE-SAMPLE-VACUITY
-# above.
+# rationale as ROW3-1-BASE-SAMPLE-VACUITY above.
 
 # (1) THE GAP: t_base unavailable, t_mix usable => unusable (SKIP). No guard
 # at all exists for this direction today -- the #5999 defect.
@@ -1576,8 +2957,8 @@ _row3_flv6="$(_row3_foreign_load 1 0 0.85 2>/dev/null || true)"
 assert "ROW3-1-FOREIGN-LOAD-VACUITY-6: BOUNDARY -- contended=1 avg10_rc=0 usage_fraction=0.85 (== floor) => '0' (got '${_row3_flv6}')" \
     test "$_row3_flv6" = "0"
 
-if ! host_supports_governance; then
-    echo "  SKIP ROW1-1: host does not support cgroup governance"
+if ! live_cycle_gate ROW1-1; then
+    :
 elif ! command -v taskset >/dev/null 2>&1; then
     # Measurement-integrity skip (esc-4926-3): without affinity pinning the
     # confined saturation measurement is unreliable — never fall back to
@@ -1599,102 +2980,120 @@ else
         ' 2>/dev/null || echo ""
     )"
 
-    # Launch the lone-source confined+pinned burn: _ROW4_CONFINE_W workers
-    # (== confine-cores) pinned to _ROW4_CONFINE_CPUS, in the private task
-    # slice, for the full warmup+measure+margin window.
-    REIFY_CPU_GOVERN_SLICE_TASK="$_ROW4_SLICE_TASK" \
-    timeout $(( _ROW1_BURN_S + 15 )) taskset -c "$_ROW4_CONFINE_CPUS" \
-        bash "$CPU_GOV_EXEC" --role task -- \
-        bash "$FIXTURE" "$_ROW4_CONFINE_W" "$_ROW1_BURN_S" \
-        >/dev/null 2>&1 &
-    _ROW1_CONFINE_BG=$!
+    # Launch the lone-source confined+pinned burn in the private task slice:
+    # _ROW4_CONFINE_W workers (== confine-cores), each pinned to ONE of the
+    # _ROW4_CONFINE_CPUS (--pin-cpus, task 9698), reported through a ready file.
+    # A set-mask over the whole burn let the load balancer stack both workers on
+    # one CPU for part of the window.
+    _ROW1_READY_FILE="$WORK/row1-ready"
+    _row4_launch_role_burn "$CPU_GOV_EXEC" task "$_ROW4_CONFINE_CPUS" "$_ROW4_CONFINE_W" \
+        "$_ROW1_BURN_S" "$_ROW1_READY_FILE"
 
-    # Warm-up: let the burn ramp past scope-creation/process-spawn overhead
-    # before sampling (mirrors ROW4's steady-state design).
-    sleep "$_ROW1_CONFINE_WARMUP_S"
-
-    _ROW1_USAGE_BEFORE="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW1_TASK_SLICE_REL" \
-        2>/dev/null || echo "unavailable")"
-
-    # Contention probe (task 4967 / esc-4031-154): the task slice's OWN
-    # cpu.pressure `some.total` cumulative stall counter, sampled at the SAME
-    # two bracket points as the usage_usec delta below — a windowed delta,
-    # not a single post-hoc decayed avg10 read, so it cannot under-report
-    # contention accrued mid-window.  A lone source pinned to its own
-    # dedicated CPUs should show ~0 stall; a large delta indicates a FOREIGN
-    # process (e.g. a concurrent pool run sharing the same
-    # deterministically-derived pin list, esc-4926-3) co-resides on the
-    # pinned CPUs, diluting this measurement.
+    # Everything the window fills in starts as the "unavailable" sentinel, so a
+    # window that never opens leaves the chain below with nothing to judge (it
+    # SKIPs) rather than with a coerced number.
+    _ROW1_SAMPLE_BEFORE="unavailable"
+    _ROW1_SAMPLE_AFTER="unavailable"
     _ROW1_STALL_BEFORE="unavailable"
-    if [ -n "${_ROW1_TASK_SLICE_REL:-}" ]; then
-        _ROW1_STALL_BEFORE="$(python3 "$INSTRUMENT" psi-some-total \
-            "/sys/fs/cgroup${_ROW1_TASK_SLICE_REL}/cpu.pressure" 2>/dev/null || echo "unavailable")"
-    fi
-
-    sleep "$_ROW1_CONFINE_MEASURE_S"
-
-    _ROW1_USAGE_AFTER="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW1_TASK_SLICE_REL" \
-        2>/dev/null || echo "unavailable")"
-
     _ROW1_STALL_AFTER="unavailable"
-    if [ -n "${_ROW1_TASK_SLICE_REL:-}" ]; then
-        _ROW1_STALL_AFTER="$(python3 "$INSTRUMENT" psi-some-total \
-            "/sys/fs/cgroup${_ROW1_TASK_SLICE_REL}/cpu.pressure" 2>/dev/null || echo "unavailable")"
+    _ROW1_HOST_AVG10="unavailable"
+    _ROW1_WORKER_CPUS=""
+    _ROW1_READY=0
+
+    # Open the window on READINESS, not on launch: a governed launch makes
+    # several user-manager D-Bus round-trips before its fixture forks, so a
+    # launch-anchored sleep could open the window before both spinners burn and
+    # bank a deficit.  The deadline is an anti-hang bound only (technique T),
+    # never what discriminates; when it expires ROW1-1 SKIPs below.
+    if _row4_await_ready "$_ROW4_READY_DEADLINE_S" "$_ROW1_READY_FILE"; then
+        _ROW1_READY=1
+        _ROW1_WORKER_CPUS="$(_row4_worker_affinities "$_ROW1_READY_FILE" 2>/dev/null || true)"
+
+        # Warm-up, counted from readiness: let the spinners ramp before sampling.
+        sleep "$_ROW1_CONFINE_WARMUP_S"
+
+        # Each stamped read takes usage_usec AND the monotonic clock in one
+        # process, so the window is measured read-to-read and python startup
+        # latency cannot leak into it.
+        _ROW1_SAMPLE_BEFORE="$(python3 "$INSTRUMENT" cgroup-usage-stamped "$_ROW1_TASK_SLICE_REL" \
+            2>/dev/null || echo "unavailable")"
+
+        # Contention probe (task 4967 / esc-4031-154): the task slice's OWN
+        # cpu.pressure `some.total` cumulative stall counter, sampled at the SAME
+        # two bracket points as the usage_usec delta below — a windowed delta,
+        # not a single post-hoc decayed avg10 read, so it cannot under-report
+        # contention accrued mid-window.  A lone source pinned to its own
+        # dedicated CPUs should show ~0 stall; a large delta indicates a FOREIGN
+        # process (e.g. a concurrent pool run sharing the same
+        # deterministically-derived pin list, esc-4926-3) co-resides on the
+        # pinned CPUs, diluting this measurement.
+        if [ -n "${_ROW1_TASK_SLICE_REL:-}" ]; then
+            _ROW1_STALL_BEFORE="$(python3 "$INSTRUMENT" psi-some-total \
+                "/sys/fs/cgroup${_ROW1_TASK_SLICE_REL}/cpu.pressure" 2>/dev/null || echo "unavailable")"
+        fi
+
+        sleep "$_ROW1_CONFINE_MEASURE_S"
+
+        _ROW1_SAMPLE_AFTER="$(python3 "$INSTRUMENT" cgroup-usage-stamped "$_ROW1_TASK_SLICE_REL" \
+            2>/dev/null || echo "unavailable")"
+
+        if [ -n "${_ROW1_TASK_SLICE_REL:-}" ]; then
+            _ROW1_STALL_AFTER="$(python3 "$INSTRUMENT" psi-some-total \
+                "/sys/fs/cgroup${_ROW1_TASK_SLICE_REL}/cpu.pressure" 2>/dev/null || echo "unavailable")"
+        fi
+
+        # Host-wide PSI at the instant the window closes.  Label-only: it lets a
+        # residual deficit be attributed to foreign load from the log alone.
+        _ROW1_HOST_AVG10="$(_row4_sample_host_avg10 "$_ROW4_PROC_PATH")"
     fi
-    _ROW1_STALL_WINDOW_US=$(( _ROW1_CONFINE_MEASURE_S * 1000000 ))
 
-    wait "$_ROW1_CONFINE_BG" 2>/dev/null || true
+    # Stop the burn now that the AFTER sample is taken (or the window never opened).
+    _row4_stop_burns
 
-    _ROW1_USAGE_DELTA=0
-    if [ "$_ROW1_USAGE_BEFORE" != "unavailable" ] && \
-       [ "$_ROW1_USAGE_AFTER" != "unavailable" ]; then
-        _ROW1_USAGE_DELTA=$(( _ROW1_USAGE_AFTER - _ROW1_USAGE_BEFORE ))
-        [ "$_ROW1_USAGE_DELTA" -lt 0 ] && _ROW1_USAGE_DELTA=0  # guard counter wrap
-    fi
-    _ROW1_USAGE_BUDGET=$(( _ROW4_CONFINE_CORES * _ROW1_CONFINE_MEASURE_S * 1000000 ))
-
-    # Usage fraction (task 4967 follow-up / esc-4031-154 residual): feeds the
-    # INACTIVE SKIP predicate below, alongside the stall fraction — same
-    # degenerate-guard discipline as the final saturation calc (non-positive
-    # budget prints "0").
-    _ROW1_USAGE_FRACTION="$(awk -v d="$_ROW1_USAGE_DELTA" -v b="$_ROW1_USAGE_BUDGET" \
-        'BEGIN{ if (b+0<=0) {print "0"} else {printf "%.6f", d/b} }')"
+    _ROW1_WINDOW="$(_row1_measure_window "$_ROW1_SAMPLE_BEFORE" "$_ROW1_SAMPLE_AFTER" "$_ROW4_CONFINE_CORES" || true)"
+    read -r _ROW1_USAGE_DELTA _ROW1_WINDOW_US _ROW1_SATURATION <<< "${_ROW1_WINDOW:-unavailable}"
 
     # Windowed stall fraction (display-only; the decision itself is made by
-    # _row1_stall_contended below) — same degenerate-guard discipline as the
-    # usage delta above: non-positive window or counter-wrap prints "0".
+    # _row1_stall_contended below) over the SAME measured window as the usage
+    # delta, so it exists only once that window does.  Non-positive window or
+    # counter-wrap prints "0".
     _ROW1_STALL_FRACTION="unavailable"
-    if [ "$_ROW1_STALL_BEFORE" != "unavailable" ] && \
-       [ "$_ROW1_STALL_AFTER" != "unavailable" ]; then
-        _ROW1_STALL_FRACTION="$(awk -v b="$_ROW1_STALL_BEFORE" -v a="$_ROW1_STALL_AFTER" -v w="$_ROW1_STALL_WINDOW_US" \
-            'BEGIN{ if (w+0<=0 || (a+0)<(b+0)) {print "0"} else {printf "%.6f", (a-b)/w} }')"
-    fi
-
     _ROW1_CONTENDED=0
-    if _row1_stall_contended "$_ROW1_STALL_BEFORE" "$_ROW1_STALL_AFTER" "$_ROW1_STALL_WINDOW_US"; then
-        _ROW1_CONTENDED=1
+    if [[ "$_ROW1_WINDOW_US" =~ ^[0-9]+$ ]]; then
+        if [ "$_ROW1_STALL_BEFORE" != "unavailable" ] && \
+           [ "$_ROW1_STALL_AFTER" != "unavailable" ]; then
+            _ROW1_STALL_FRACTION="$(awk -v b="$_ROW1_STALL_BEFORE" -v a="$_ROW1_STALL_AFTER" -v w="$_ROW1_WINDOW_US" \
+                'BEGIN{ if (w+0<=0 || (a+0)<(b+0)) {print "0"} else {printf "%.6f", (a-b)/w} }')"
+        fi
+        if _row1_stall_contended "$_ROW1_STALL_BEFORE" "$_ROW1_STALL_AFTER" "$_ROW1_WINDOW_US"; then
+            _ROW1_CONTENDED=1
+        fi
     fi
 
     # Measurement-integrity SKIP (never a false-RED under concurrent load):
-    # empty slice rel-path, non-positive delta, detected foreign contention
-    # on the pinned CPUs (esc-4926-3, a WINDOWED some.total stall-fraction
-    # delta bracketed over the measure window rather than a single post-hoc
-    # decayed avg10 read), or a never-joined-scope measurement artifact
-    # (esc-4031-154 residual, task 4967 follow-up: under extreme load the
-    # burn can fail to join its governed scope within warmup+measure at all,
-    # showing neither meaningful usage nor meaningful stall — the opposite
+    # a burn that never reported ready (no window to measure), empty slice
+    # rel-path, an unreadable stamped sample, non-positive delta, detected
+    # foreign contention on the pinned CPUs (esc-4926-3, a WINDOWED some.total
+    # stall-fraction delta bracketed over the measure window rather than a
+    # single post-hoc decayed avg10 read), or a never-joined-scope measurement
+    # artifact (esc-4031-154 residual, task 4967 follow-up: under extreme load
+    # the burn can fail to join its governed scope within warmup+measure at
+    # all, showing neither meaningful usage nor meaningful stall — the opposite
     # shape from contention, so distinct from the stall-SKIP above).
-    if [ -z "${_ROW1_TASK_SLICE_REL:-}" ]; then
+    if [ "$_ROW1_READY" -eq 0 ]; then
+        echo "  SKIP ROW1-1: burn did not report ready within the ${_ROW4_READY_DEADLINE_S}s anti-hang bound — no window to measure"
+    elif [ -z "${_ROW1_TASK_SLICE_REL:-}" ]; then
         echo "  SKIP ROW1-1: slice rel-path discovery failed (empty) — cannot compute saturation"
+    elif [ "$_ROW1_USAGE_DELTA" = "unavailable" ]; then
+        echo "  SKIP ROW1-1: a stamped cpu.stat sample was unreadable, or its stamp did not advance — measurement inconclusive"
     elif [ "$_ROW1_USAGE_DELTA" -le 0 ]; then
         echo "  SKIP ROW1-1: cpu.stat usage_usec delta is zero — measurement inconclusive"
     elif [ "$_ROW1_CONTENDED" -eq 1 ]; then
         echo "  SKIP ROW1-1: foreign contention detected on pinned CPUs (task-slice windowed stall_fraction=${_ROW1_STALL_FRACTION} >= threshold=${REIFY_CPU_GOV_TEST_ROW1_STALL_SKIP_FRACTION:-0.5}) — inconclusive, not a governance failure"
-    elif _row1_measurement_inactive "$_ROW1_USAGE_FRACTION" "$_ROW1_STALL_FRACTION" "$_ROW1_INACTIVE_FRACTION"; then
-        echo "  SKIP ROW1-1: measurement inactive — confined scope shows neither meaningful usage nor stall (usage_fraction=${_ROW1_USAGE_FRACTION}, stall_fraction=${_ROW1_STALL_FRACTION}, both < floor=${_ROW1_INACTIVE_FRACTION}) — burn likely never joined its governed scope within warmup+measure, not a governance failure"
+    elif _row1_measurement_inactive "$_ROW1_SATURATION" "$_ROW1_STALL_FRACTION" "$_ROW1_INACTIVE_FRACTION"; then
+        echo "  SKIP ROW1-1: measurement inactive — confined scope shows neither meaningful usage nor stall (usage_fraction=${_ROW1_SATURATION}, stall_fraction=${_ROW1_STALL_FRACTION}, both < floor=${_ROW1_INACTIVE_FRACTION}) — burn likely never joined its governed scope within warmup+measure, not a governance failure"
     else
-        _ROW1_SATURATION="$(awk -v d="$_ROW1_USAGE_DELTA" -v b="$_ROW1_USAGE_BUDGET" 'BEGIN{ if (b+0<=0){print "0"} else {printf "%.6f", d/b} }')"
-        assert "ROW1-1: lone confined+pinned source saturates >= ${_ROW1_SATURATION_FLOOR}·budget (Δusage=${_ROW1_USAGE_DELTA}usec, budget=${_ROW1_USAGE_BUDGET}usec, saturation=${_ROW1_SATURATION})" \
+        assert "ROW1-1: lone confined+pinned source saturates >= ${_ROW1_SATURATION_FLOOR} of cores×measured window (Δusage=${_ROW1_USAGE_DELTA}usec, window=${_ROW1_WINDOW_US}usec, cores=${_ROW4_CONFINE_CORES}, saturation=${_ROW1_SATURATION}, stall_fraction=${_ROW1_STALL_FRACTION}, host_avg10=${_ROW1_HOST_AVG10}, worker_cpus=${_ROW1_WORKER_CPUS//$'\n'/,})" \
             bash -c '
                 awk -v s="$1" -v f="$2" "BEGIN{ exit !(s+0 >= f+0) }"
             ' _ "$_ROW1_SATURATION" "$_ROW1_SATURATION_FLOOR"
@@ -1721,8 +3120,10 @@ fi
 #      cpu.pressure (REIFY_CPU_ADMIT_PROC_PATH) so admission throttling is
 #      subtree-relative, never global.
 #   3. Concurrently run the timed CONFINED+PINNED governed probe → T_mix.
-#   4. Warm-up window, then sample the task slice's OWN cpu.pressure avg10
-#      (per-cgroup, not global).
+#   4. The window opens once EVERY mix source has reported ready through its
+#      own fixture --ready-file (not at launch); warm up, then sample the task
+#      slice's OWN cpu.pressure avg10 (per-cgroup, not global).  When every
+#      source reported ready, the mix is stopped right after T_mix.
 #
 # §8 Row 2 assertions: subtree avg10 < REIFY_CPU_ADMIT_AGENT_THRESHOLD; all
 #   confined+pinned sources completed.
@@ -1746,11 +3147,406 @@ _SLOWDOWN_K="${REIFY_CPU_GOV_TEST_SLOWDOWN_K:-4}"
 _ROW23_WARMUP_S="${REIFY_CPU_GOV_TEST_WARMUP_S:-8}"
 _ROW23_PROBE_S=2           # fixed work quantum for T_base/T_mix probe
 _ADMIT_THRESHOLD="${REIFY_CPU_ADMIT_AGENT_THRESHOLD:-50}"
-# Mix burn duration: must cover WARMUP_S + PROBE_S + settling.
-_ROW23_MIX_BURN_S=$(( _ROW23_WARMUP_S + _ROW23_PROBE_S + 4 ))
 
-if ! host_supports_governance; then
-    echo "  SKIP ROW2_3: host does not support cgroup governance"
+# _row23_mix_timing <ready_deadline_s> <launch_slack_s> <warmup_s> <probe_s>
+#   Prints "<await_deadline_s> <burn_s> <outer_timeout_s>".  The await never exceeds the slack and
+#   outer minus burn equals the slack, so the slack alone bounds how long ROW2-2 lets a source start.
+_row23_mix_timing() {
+    local ready_deadline="$1" launch_slack="$2" warmup="$3" probe="$4"
+    local settling=4
+    local await_deadline=$(( ready_deadline < launch_slack ? ready_deadline : launch_slack ))
+    local burn=$(( await_deadline + warmup + probe + settling ))
+    echo "$await_deadline $burn $(( burn + launch_slack ))"
+    return 0
+}
+
+# ROW2-2's starvation bound: a source whose burn has not started this many seconds after launch
+# is killed by its outer timeout before its done marker.  Fixed, never a knob.
+_ROW23_LAUNCH_SLACK_S=15
+_ROW23_MIX_TIMING="$(_row23_mix_timing "$_ROW4_READY_DEADLINE_S" "$_ROW23_LAUNCH_SLACK_S" "$_ROW23_WARMUP_S" "$_ROW23_PROBE_S")"
+read -r _ROW23_READY_DEADLINE_S _ROW23_MIX_BURN_S _ROW23_MIX_TIMEOUT_S <<< "$_ROW23_MIX_TIMING"
+
+# _row23_write_stub_cargo <bin_dir> <fixture> <burn_s> <marker_dir>
+#   Writes the executable stub "real cargo" <bin_dir>/cargo: it burns <burn_s> s through <fixture>,
+#   reporting the worker pid to $GOVTEST_MIX_READY_FILE (required, `:?`), then touches <marker_dir>/done_<own pid>.
+_row23_write_stub_cargo() {
+    local bin_dir="$1" fixture="$2" burn_s="$3" marker_dir="$4"
+    cat > "$bin_dir/cargo" << STUB_CARGO_EOF
+#!/usr/bin/env bash
+# Stub real-cargo for ROW2_3 mix (replaces real cargo after shim PATH-strip).
+# Runs a CPU-burn fixture for the mix duration and writes a done-marker.
+bash "${fixture}" 1 ${burn_s} --ready-file "\${GOVTEST_MIX_READY_FILE:?}" >/dev/null 2>&1 || true
+touch "${marker_dir}/done_\$\$"
+STUB_CARGO_EOF
+    chmod +x "$bin_dir/cargo"
+}
+
+# _row23_stop_mix <ready_file>...
+#   TERMs each pid listed in every ready file that exists: the fixture's worker handles, so the
+#   fixture exits 0 and its stub still writes its done marker.  Total: errors ignored, rc 0.
+_row23_stop_mix() {
+    local ready_file pid
+    for ready_file in "$@"; do
+        [ -r "$ready_file" ] || continue
+        while IFS= read -r pid; do
+            [[ "$pid" =~ ^[1-9][0-9]*$ ]] || continue
+            kill -TERM "$pid" 2>/dev/null || true
+        done < "$ready_file"
+    done
+    return 0
+}
+
+# _row23_sample_window <deadline_s> <warmup_s> <usage_source> <pressure_path> <ready_file>...
+#   Sets _ROW23_READY (0|1), _ROW23_SAMPLE_BEFORE/_AFTER (stamped usage), _ROW23_STALL_BEFORE/_AFTER,
+#   _ROW23_AVG10 and _ROW23_AVG10_RC; returns 0.  Order: await ready, BEFORE, warm-up, avg10, AFTER.
+#   Not ready within <deadline_s>: only avg10 is read, every other sample stays "unavailable".
+_row23_sample_window() {
+    local deadline="$1" warmup="$2" usage_source="$3" pressure_path="$4"
+    shift 4
+    _ROW23_READY=0
+    _ROW23_SAMPLE_BEFORE=unavailable
+    _ROW23_SAMPLE_AFTER=unavailable
+    _ROW23_STALL_BEFORE=unavailable
+    _ROW23_STALL_AFTER=unavailable
+    if _row4_await_ready "$deadline" "$@"; then
+        _ROW23_READY=1
+        _ROW23_SAMPLE_BEFORE="$(python3 "$INSTRUMENT" cgroup-usage-stamped "$usage_source" 2>/dev/null || echo unavailable)"
+        _ROW23_STALL_BEFORE="$(python3 "$INSTRUMENT" psi-some-total "$pressure_path" 2>/dev/null || echo unavailable)"
+        sleep "$warmup"
+    fi
+    _ROW23_AVG10_RC=0
+    _ROW23_AVG10="$(python3 "$INSTRUMENT" psi-avg10 "$pressure_path" 2>/dev/null)" || _ROW23_AVG10_RC=$?
+    # Rescue on RC, not emptiness: a read that fails AFTER printing a plausible
+    # partial value must not keep that value.
+    if [ "$_ROW23_AVG10_RC" -ne 0 ]; then
+        _ROW23_AVG10=99
+    fi
+    if [ "$_ROW23_READY" -eq 1 ]; then
+        _ROW23_SAMPLE_AFTER="$(python3 "$INSTRUMENT" cgroup-usage-stamped "$usage_source" 2>/dev/null || echo unavailable)"
+        _ROW23_STALL_AFTER="$(python3 "$INSTRUMENT" psi-some-total "$pressure_path" 2>/dev/null || echo unavailable)"
+    fi
+    return 0
+}
+
+# ROW23-STUB-VACUITY (task 10025): the mix stub's ready-file seam and
+# _row23_stop_mix.  ROW2_3 opens its window once every mix source has reported
+# ready through its own fixture --ready-file, and ends the mix by TERMing the
+# fixture workers those files list.  The stub is run directly, with no shim,
+# taskset or cgroup, so the block is always-on.  The 30 s bounds below are
+# anti-hang only (technique T): no assertion bounds an elapsed time.
+# Captures are `|| true` or `|| _rc=$?`, never a sentinel fallback, so an
+# undefined helper leaves an empty capture or rc 127, and FAILs.
+
+# _row23_stub_new_dir: prints a fresh scratch dir holding bin/ and markers/.
+_row23_stub_new_dir() {
+    local dir
+    dir="$(mktemp -d -p "$WORK" row23-stub.XXXXXX)"
+    mkdir "$dir/bin" "$dir/markers"
+    printf '%s\n' "$dir"
+}
+
+# _row23_stub_markers <marker_dir>: the done markers in it, one name per line.
+_row23_stub_markers() {
+    find "$1" -maxdepth 1 -name 'done_*' -printf '%f\n' | sort
+}
+
+# _row23_stub_refuses_without_ready_file <stub_dir>
+#   Passes iff <stub_dir>/bin/cargo exists and, run with GOVTEST_MIX_READY_FILE
+#   unset, dies non-zero ON THAT VARIABLE and leaves no done marker and no ready
+#   file.  A failing check prints why.  The absence checks only count for a stub
+#   that ran and died there, so a missing stub cannot satisfy them vacuously.
+_row23_stub_refuses_without_ready_file() {
+    local stub_dir="$1" rc=0
+    [ -x "$stub_dir/bin/cargo" ] || { echo "no executable stub at ${stub_dir}/bin/cargo"; return 1; }
+    env -u GOVTEST_MIX_READY_FILE bash "$stub_dir/bin/cargo" test >/dev/null 2>"$stub_dir/stderr" || rc=$?
+    [ "$rc" -ne 0 ] || { echo "the stub exited 0 without GOVTEST_MIX_READY_FILE"; return 1; }
+    grep -q 'GOVTEST_MIX_READY_FILE' "$stub_dir/stderr" \
+        || { echo "the stub exited ${rc}, but not on the unset variable: $(cat "$stub_dir/stderr")"; return 1; }
+    [ -z "$(_row23_stub_markers "$stub_dir/markers")" ] || { echo "the stub left a done marker"; return 1; }
+    [ -z "$(find "$stub_dir" -name 'ready*')" ] || { echo "the stub left a ready file"; return 1; }
+}
+
+# (1) Given a ready path the stub reports through its fixture, exits 0 and writes
+# ONE done marker named for its own pid: `$$` is expanded when the stub RUNS, so
+# every mix source gets a marker of its own.
+_row23_stub1_dir="$(_row23_stub_new_dir)"
+_row23_stub1_gen_rc=0
+_row23_write_stub_cargo "$_row23_stub1_dir/bin" "$FIXTURE" 1 "$_row23_stub1_dir/markers" \
+    || _row23_stub1_gen_rc=$?
+GOVTEST_MIX_READY_FILE="$_row23_stub1_dir/ready" bash "$_row23_stub1_dir/bin/cargo" test \
+    >/dev/null 2>&1 &
+_row23_stub1_pid=$!
+_row23_stub1_ready_rc=0
+_row4_await_ready 30 "$_row23_stub1_dir/ready" || _row23_stub1_ready_rc=$?
+_row23_stub1_exit_rc=0
+wait "$_row23_stub1_pid" 2>/dev/null || _row23_stub1_exit_rc=$?
+_row23_stub1_lines="$(awk '/^[0-9]+$/ { n++ } END { print n + 0, NR }' "$_row23_stub1_dir/ready" 2>/dev/null || true)"
+_row23_stub1_markers="$(_row23_stub_markers "$_row23_stub1_dir/markers" || true)"
+
+assert "ROW23-STUB-VACUITY-1a: _row23_write_stub_cargo => rc EXACTLY 0 (got ${_row23_stub1_gen_rc})" \
+    test "$_row23_stub1_gen_rc" -eq 0
+assert "ROW23-STUB-VACUITY-1b: the generated <bin>/cargo is executable: the agent shim finds the stub through PATH, which needs the exec bit" \
+    test -x "$_row23_stub1_dir/bin/cargo"
+assert "ROW23-STUB-VACUITY-1c: the stub given GOVTEST_MIX_READY_FILE reports ready through its fixture => _row4_await_ready rc EXACTLY 0 (got ${_row23_stub1_ready_rc}; the 30 s deadline is an anti-hang guard only)" \
+    test "$_row23_stub1_ready_rc" -eq 0
+assert "ROW23-STUB-VACUITY-1d: the ready file is exactly one numeric pid line, the fixture's one worker, and nothing else (got 'numeric-lines total-lines' = '${_row23_stub1_lines}')" \
+    test "$_row23_stub1_lines" = "1 1"
+assert "ROW23-STUB-VACUITY-1e: the stub exits 0 (got ${_row23_stub1_exit_rc})" \
+    test "$_row23_stub1_exit_rc" -eq 0
+assert "ROW23-STUB-VACUITY-1f: exactly one done marker, named for the stub's own pid => 'done_${_row23_stub1_pid}' (got '${_row23_stub1_markers//$'\n'/,}'); \$\$ is expanded when the stub runs, so every mix source writes a marker of its own" \
+    test "$_row23_stub1_markers" = "done_${_row23_stub1_pid}"
+
+# (2) NON-VACUITY CRUX: the same stub WITHOUT a ready path refuses to run.
+# `${GOVTEST_MIX_READY_FILE:?}` aborts it before the fixture and before the done
+# marker.  Without it the fixture's own argument error (exit 64) would be
+# swallowed by `|| true` and the marker still written, so a launch that forgot the
+# ready path would satisfy ROW2-2 while ROW2_3's window never opened.
+_row23_stub2_dir="$(_row23_stub_new_dir)"
+_row23_write_stub_cargo "$_row23_stub2_dir/bin" "$FIXTURE" 1 "$_row23_stub2_dir/markers" || true
+assert "ROW23-STUB-VACUITY-2: NON-VACUITY CRUX -- the stub run WITHOUT GOVTEST_MIX_READY_FILE dies non-zero on that variable and leaves no done marker and no ready file" \
+    _row23_stub_refuses_without_ready_file "$_row23_stub2_dir"
+
+# (3) STOP CRUX: a 120 s burn that has reported ready is ended by _row23_stop_mix
+# alone, and ends as a COMPLETED source: TERMing the fixture worker lets the
+# fixture exit 0, so the stub still writes its done marker and ROW2-2 counts it.
+# Only the stop can end a 120 s burn inside the 30 s exit poll.
+_row23_stub3_dir="$(_row23_stub_new_dir)"
+_row23_write_stub_cargo "$_row23_stub3_dir/bin" "$FIXTURE" 120 "$_row23_stub3_dir/markers" || true
+GOVTEST_MIX_READY_FILE="$_row23_stub3_dir/ready" bash "$_row23_stub3_dir/bin/cargo" test \
+    >/dev/null 2>&1 &
+_row23_stub3_pid=$!
+_row23_stub3_ready_rc=0
+_row4_await_ready 30 "$_row23_stub3_dir/ready" || _row23_stub3_ready_rc=$?
+_row23_stub3_stop_rc=0
+_row23_stop_mix "$_row23_stub3_dir/ready" || _row23_stub3_stop_rc=$?
+_row23_stub3_deadline=$(( SECONDS + 30 ))
+while kill -0 "$_row23_stub3_pid" 2>/dev/null && [ "$SECONDS" -lt "$_row23_stub3_deadline" ]; do
+    sleep 0.1
+done
+_row23_stub3_exit="hung"
+if ! kill -0 "$_row23_stub3_pid" 2>/dev/null; then
+    _row23_stub3_exit=0
+    wait "$_row23_stub3_pid" 2>/dev/null || _row23_stub3_exit=$?
+fi
+_row23_stub3_workers="$(_row4_worker_affinities "$_row23_stub3_dir/ready" 2>/dev/null || true)"
+
+assert "ROW23-STUB-VACUITY-3a: the 120 s burn reports ready => _row4_await_ready rc EXACTLY 0 (got ${_row23_stub3_ready_rc}; the 30 s deadline is an anti-hang guard only)" \
+    test "$_row23_stub3_ready_rc" -eq 0
+assert "ROW23-STUB-VACUITY-3b: _row23_stop_mix on that ready file => rc EXACTLY 0 (got ${_row23_stub3_stop_rc})" \
+    test "$_row23_stub3_stop_rc" -eq 0
+assert "ROW23-STUB-VACUITY-3c: STOP CRUX -- after the stop the stub exits 0 inside the anti-hang bound (got '${_row23_stub3_exit}'); nothing else ends a 120 s burn that soon" \
+    test "$_row23_stub3_exit" = "0"
+assert "ROW23-STUB-VACUITY-3d: the stopped source still counts as completed => its done marker 'done_${_row23_stub3_pid}' exists (ROW2-2 counts these)" \
+    test -e "$_row23_stub3_dir/markers/done_${_row23_stub3_pid}"
+assert "ROW23-STUB-VACUITY-3e: the fixture worker is gone => _row4_worker_affinities reads 'unavailable' (got '${_row23_stub3_workers//$'\n'/,}'); the stop ended the worker, not just the stub" \
+    test "$_row23_stub3_workers" = "unavailable"
+
+# Failure path: end whatever the stop left running, so no burn outlives this
+# block.  Workers first: killing the stub alone would orphan its fixture.
+if [ -r "$_row23_stub3_dir/ready" ]; then
+    while IFS= read -r _row23_stub3_worker; do
+        kill -TERM "$_row23_stub3_worker" 2>/dev/null || true
+    done < "$_row23_stub3_dir/ready"
+fi
+kill -TERM "$_row23_stub3_pid" 2>/dev/null || true
+wait "$_row23_stub3_pid" 2>/dev/null || true
+
+# (4) Total: a ready file that does not exist is no error, so the live cycle can
+# call the stop bare under `set -e` on a path where a source never reported.
+_row23_stop4_rc=0
+_row23_stop_mix "$WORK/row23-never-reported" || _row23_stop4_rc=$?
+assert "ROW23-STUB-VACUITY-4: _row23_stop_mix on a ready file that does not exist => rc EXACTLY 0 (got ${_row23_stop4_rc}); total, so safe bare under set -e" \
+    test "$_row23_stop4_rc" -eq 0
+
+# ROW23-WINDOW-VACUITY (task 10025): _row23_sample_window opens ROW2_3's
+# measurement window on the mix's readiness, not on its launch.  It is called in
+# the CURRENT shell (it sets _ROW23_* globals) and reads through
+# cpu_gov_instrument.py, here against synthetic cpu.stat and cpu.pressure
+# files: python3 is needed, a cgroup is not.  Every global is poisoned before a
+# call, so an unset one cannot trip `set -u` and a stale one cannot pass for a
+# result.
+
+# _row23_window_poison: gives each global _row23_sample_window must set a value no real sample takes.
+_row23_window_poison() {
+    local name
+    for name in _ROW23_READY _ROW23_SAMPLE_BEFORE _ROW23_SAMPLE_AFTER \
+                _ROW23_STALL_BEFORE _ROW23_STALL_AFTER _ROW23_AVG10 _ROW23_AVG10_RC; do
+        printf -v "$name" '%s' poison
+    done
+}
+
+# _row23_window_fixture <dir> <usage_usec>: writes <dir>/cpu.stat and <dir>/cpu.pressure (avg10 12.50, some total 100).
+_row23_window_fixture() {
+    printf 'usage_usec %s\n' "$2" > "$1/cpu.stat"
+    printf 'some avg10=12.50 avg60=0.00 avg300=0.00 total=100\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
+        > "$1/cpu.pressure"
+}
+
+# _row23_window_advanced <before_sample> <after_sample>: both are stamped samples and the stamp advanced.
+_row23_window_advanced() {
+    local window_re='^[0-9.]+ [0-9]+$'
+    [[ "$(_row2_band_window "$1" "$2" 1 || true)" =~ $window_re ]]
+}
+
+if [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
+    echo "  SKIP ROW23-WINDOW-VACUITY: python3 not on PATH"
+else
+    # (W1) READINESS-ANCHORED CRUX: usage reads 0 until the sampler has found no
+    # ready file and begins to wait; only then is cpu.stat rewritten and the
+    # ready file published, in that order.  BEFORE must hold the later value; a
+    # sampler that reads first, or anchors on the launch, sees 0.  The
+    # publication is driven by the first poll `sleep` the sampler makes (a stub
+    # on PATH), not by a timer, so a slow host cannot let a premature read land
+    # after the publication and pass for an anchored one.
+    _row23_win1_dir="$(mktemp -d -p "$WORK" row23-window.XXXXXX)"
+    _row23_window_fixture "$_row23_win1_dir" 0
+    mkdir "$_row23_win1_dir/fakebin"
+    cat > "$_row23_win1_dir/fakebin/sleep" << 'PUBLISH_ON_FIRST_SLEEP_EOF'
+#!/bin/sh
+if [ ! -e "$WIN_DIR/published" ]; then
+    : > "$WIN_DIR/published"
+    printf 'usage_usec 7000000\n' > "$WIN_DIR/cpu.stat.tmp"
+    mv -f "$WIN_DIR/cpu.stat.tmp" "$WIN_DIR/cpu.stat"
+    printf '4242\n' > "$WIN_DIR/ready.tmp"
+    mv -f "$WIN_DIR/ready.tmp" "$WIN_DIR/ready"
+fi
+exec "$REAL_SLEEP" "$@"
+PUBLISH_ON_FIRST_SLEEP_EOF
+    chmod +x "$_row23_win1_dir/fakebin/sleep"
+    _row23_win1_real_sleep="$(command -v sleep)"
+    _row23_window_poison
+    _row23_win1_rc=0
+    WIN_DIR="$_row23_win1_dir" REAL_SLEEP="$_row23_win1_real_sleep" PATH="$_row23_win1_dir/fakebin:$PATH" \
+        _row23_sample_window 30 0 "$_row23_win1_dir/cpu.stat" "$_row23_win1_dir/cpu.pressure" \
+        "$_row23_win1_dir/ready" || _row23_win1_rc=$?
+
+    assert "ROW23-WINDOW-VACUITY-W1a: rc EXACTLY 0 (got ${_row23_win1_rc})" \
+        test "$_row23_win1_rc" -eq 0
+    assert "ROW23-WINDOW-VACUITY-W1b: the source reported => _ROW23_READY=1 (got '${_ROW23_READY}')" \
+        test "$_ROW23_READY" = "1"
+    assert "ROW23-WINDOW-VACUITY-W1c: READINESS-ANCHORED CRUX -- BEFORE is taken after the ready report, so it holds the 7000000 written before the report, not the 0 a sampler that read first would see (got '${_ROW23_SAMPLE_BEFORE}')" \
+        awk -v s="$_ROW23_SAMPLE_BEFORE" 'BEGIN { exit !(s ~ /^7000000 [0-9]+$/) }'
+    assert "ROW23-WINDOW-VACUITY-W1d: AFTER is a stamped sample whose stamp is later than BEFORE's (BEFORE='${_ROW23_SAMPLE_BEFORE}', AFTER='${_ROW23_SAMPLE_AFTER}')" \
+        _row23_window_advanced "$_ROW23_SAMPLE_BEFORE" "$_ROW23_SAMPLE_AFTER"
+    assert "ROW23-WINDOW-VACUITY-W1e: both stall reads hold the fixture's some total (got '${_ROW23_STALL_BEFORE} ${_ROW23_STALL_AFTER}', expected '100 100')" \
+        test "${_ROW23_STALL_BEFORE} ${_ROW23_STALL_AFTER}" = "100 100"
+    assert "ROW23-WINDOW-VACUITY-W1f: avg10 is read: rc 0 and numerically 12.5 (got '${_ROW23_AVG10}', rc '${_ROW23_AVG10_RC}')" \
+        awk -v v="$_ROW23_AVG10" -v rc="$_ROW23_AVG10_RC" 'BEGIN { exit !(rc == "0" && v ~ /^[0-9.]+$/ && v + 0 == 12.5) }'
+
+    # (W2) NOT READY: nothing ever reports.  No window opens, so every sample is
+    # 'unavailable', but avg10 is STILL read: ROW2-2's contended hatch needs it.
+    _row23_win2_dir="$(mktemp -d -p "$WORK" row23-window.XXXXXX)"
+    _row23_window_fixture "$_row23_win2_dir" 5000
+    _row23_window_poison
+    _row23_win2_rc=0
+    _row23_sample_window 0 0 "$_row23_win2_dir/cpu.stat" "$_row23_win2_dir/cpu.pressure" \
+        "$_row23_win2_dir/never-ready" || _row23_win2_rc=$?
+
+    assert "ROW23-WINDOW-VACUITY-W2a: rc EXACTLY 0 (got ${_row23_win2_rc})" \
+        test "$_row23_win2_rc" -eq 0
+    assert "ROW23-WINDOW-VACUITY-W2b: no ready report => _ROW23_READY=0 (got '${_ROW23_READY}')" \
+        test "$_ROW23_READY" = "0"
+    assert "ROW23-WINDOW-VACUITY-W2c: both usage samples and both stall reads are exactly 'unavailable' (got '${_ROW23_SAMPLE_BEFORE}' '${_ROW23_SAMPLE_AFTER}' '${_ROW23_STALL_BEFORE}' '${_ROW23_STALL_AFTER}')" \
+        test "${_ROW23_SAMPLE_BEFORE} ${_ROW23_SAMPLE_AFTER} ${_ROW23_STALL_BEFORE} ${_ROW23_STALL_AFTER}" = "unavailable unavailable unavailable unavailable"
+    assert "ROW23-WINDOW-VACUITY-W2d: avg10 is still read: rc 0 and numerically 12.5 (got '${_ROW23_AVG10}', rc '${_ROW23_AVG10_RC}'); ROW2-2's contended hatch keeps its input" \
+        awk -v v="$_ROW23_AVG10" -v rc="$_ROW23_AVG10_RC" 'BEGIN { exit !(rc == "0" && v ~ /^[0-9.]+$/ && v + 0 == 12.5) }'
+
+    # (W3) The source reported, but the pressure path does not exist.  psi-avg10
+    # and psi-some-total exit 0 on a read failure and print 'unavailable', so
+    # ROW2-1's non-numeric SKIP branch owns this case, not the '99' rescue (W4).
+    _row23_win3_dir="$(mktemp -d -p "$WORK" row23-window.XXXXXX)"
+    _row23_window_fixture "$_row23_win3_dir" 5000
+    printf '4242\n' > "$_row23_win3_dir/ready"
+    _row23_window_poison
+    _row23_win3_rc=0
+    _row23_sample_window 30 0 "$_row23_win3_dir/cpu.stat" "$_row23_win3_dir/no-such-cpu.pressure" \
+        "$_row23_win3_dir/ready" || _row23_win3_rc=$?
+
+    assert "ROW23-WINDOW-VACUITY-W3a: rc EXACTLY 0 (got ${_row23_win3_rc})" \
+        test "$_row23_win3_rc" -eq 0
+    assert "ROW23-WINDOW-VACUITY-W3b: ready => _ROW23_READY=1 (got '${_ROW23_READY}')" \
+        test "$_ROW23_READY" = "1"
+    assert "ROW23-WINDOW-VACUITY-W3c: both stall reads are exactly 'unavailable' (got '${_ROW23_STALL_BEFORE}' '${_ROW23_STALL_AFTER}')" \
+        test "${_ROW23_STALL_BEFORE} ${_ROW23_STALL_AFTER}" = "unavailable unavailable"
+    assert "ROW23-WINDOW-VACUITY-W3d: avg10 is the instrument's own 'unavailable' with rc EXACTLY 0 (got '${_ROW23_AVG10}', rc '${_ROW23_AVG10_RC}'), not the '99' rescue" \
+        test "${_ROW23_AVG10} ${_ROW23_AVG10_RC}" = "unavailable 0"
+    assert "ROW23-WINDOW-VACUITY-W3e: both usage samples stay stamped (got '${_ROW23_SAMPLE_BEFORE}' '${_ROW23_SAMPLE_AFTER}')" \
+        _row23_window_advanced "$_ROW23_SAMPLE_BEFORE" "$_ROW23_SAMPLE_AFTER"
+
+    # (W4) python3 ITSELF fails: the avg10 read is rescued to '99' on its RC, not
+    # on emptiness (the stub prints a plausible 0.0 BEFORE failing, which must
+    # not be kept), and the RC is carried so ROW3-1's foreign-load hedge can tell
+    # a defaulted 99 from a real one.  Every other read falls back to
+    # 'unavailable'.
+    _row23_win4_dir="$(mktemp -d -p "$WORK" row23-window.XXXXXX)"
+    _row23_window_fixture "$_row23_win4_dir" 5000
+    printf '4242\n' > "$_row23_win4_dir/ready"
+    mkdir "$_row23_win4_dir/fakebin"
+    printf '#!/bin/sh\n[ "$2" = psi-avg10 ] && echo 0.0\nexit 3\n' > "$_row23_win4_dir/fakebin/python3"
+    chmod +x "$_row23_win4_dir/fakebin/python3"
+    _row23_window_poison
+    _row23_win4_rc=0
+    PATH="$_row23_win4_dir/fakebin:$PATH" _row23_sample_window 30 0 "$_row23_win4_dir/cpu.stat" \
+        "$_row23_win4_dir/cpu.pressure" "$_row23_win4_dir/ready" || _row23_win4_rc=$?
+
+    assert "ROW23-WINDOW-VACUITY-W4a: rc EXACTLY 0 (got ${_row23_win4_rc})" \
+        test "$_row23_win4_rc" -eq 0
+    assert "ROW23-WINDOW-VACUITY-W4b: ready => _ROW23_READY=1 (got '${_ROW23_READY}')" \
+        test "$_ROW23_READY" = "1"
+    assert "ROW23-WINDOW-VACUITY-W4c: both usage samples and both stall reads fall back to exactly 'unavailable' (got '${_ROW23_SAMPLE_BEFORE}' '${_ROW23_SAMPLE_AFTER}' '${_ROW23_STALL_BEFORE}' '${_ROW23_STALL_AFTER}')" \
+        test "${_ROW23_SAMPLE_BEFORE} ${_ROW23_SAMPLE_AFTER} ${_ROW23_STALL_BEFORE} ${_ROW23_STALL_AFTER}" = "unavailable unavailable unavailable unavailable"
+    assert "ROW23-WINDOW-VACUITY-W4d: avg10 is rescued to '99' and its rc 3 is carried (got '${_ROW23_AVG10}', rc '${_ROW23_AVG10_RC}')" \
+        test "${_ROW23_AVG10} ${_ROW23_AVG10_RC}" = "99 3"
+fi
+
+# ROW23-TIMING-VACUITY (task 10025): _row23_mix_timing <ready_deadline_s>
+# <launch_slack_s> <warmup_s> <probe_s> prints "<await_deadline_s> <burn_s>
+# <outer_timeout_s>": how long ROW2_3 waits for the mix to report ready, how long
+# each source burns, and its outer timeout.  Pure bash arithmetic, so always-on.
+# Captures are `|| true`, never `|| echo <sentinel>`: an undefined helper must
+# leave an EMPTY capture, which FAILs.  Outputs compare by exact string.
+_row23_timing1="$(_row23_mix_timing 30 15 8 2 || true)"
+assert "ROW23-TIMING-VACUITY-1: CRUX -- the default 30 s ready deadline is capped at ROW2-2's 15 s launch slack => '15 29 44' (got '${_row23_timing1}'); awaiting the full 30 s let the post-T_mix stop rescue a source that was held 15-30 s" \
+    test "$_row23_timing1" = "15 29 44"
+
+_row23_timing2="$(_row23_mix_timing 10 15 8 2 || true)"
+assert "ROW23-TIMING-VACUITY-2: a ready deadline below the slack is honoured => '10 24 39' (got '${_row23_timing2}'); the outer timeout is still burn + slack" \
+    test "$_row23_timing2" = "10 24 39"
+
+_row23_timing3="$(_row23_mix_timing 30 5 0 0 || true)"
+assert "ROW23-TIMING-VACUITY-3: SLACK IS A PARAMETER -- slack 5 s, no warm-up, no probe => '5 9 14' (got '${_row23_timing3}'); the helper cannot hard-wire 15" \
+    test "$_row23_timing3" = "5 9 14"
+
+# _row23_timing_holds_bound <ready_deadline_s> <launch_slack_s> <warmup_s> <probe_s> <capture>
+#   Passes iff <capture> is exactly three non-negative integers "await burn outer" with
+#   await <= slack, await <= deadline, outer - burn == slack and burn >= await + warmup + probe.
+_row23_timing_holds_bound() {
+    awk -v deadline="$1" -v slack="$2" -v warmup="$3" -v probe="$4" -v capture="$5" 'BEGIN {
+        if (capture !~ /^[0-9]+ [0-9]+ [0-9]+$/) { print "capture is not three non-negative integers: [" capture "]"; exit 1 }
+        split(capture, t, " ")
+        if (t[1] + 0 > slack + 0)             { print "await " t[1] " exceeds the launch slack " slack; exit 1 }
+        if (t[1] + 0 > deadline + 0)          { print "await " t[1] " exceeds the ready deadline " deadline; exit 1 }
+        if (t[3] - t[2] != slack + 0)         { print "outer - burn = " (t[3] - t[2]) ", not the launch slack " slack; exit 1 }
+        if (t[2] + 0 < t[1] + warmup + probe) { print "burn " t[2] " ends before await + warm-up + probe"; exit 1 }
+    }'
+}
+
+# (4) PROPERTY over the knob's range: whatever the ready deadline, ROW2-2's
+# starvation bound stays the slack, and a source reporting ready at the await
+# deadline still burns through the warm-up and the probe quantum.
+for _row23_timing_d in 0 1 14 15 16 30 120; do
+    _row23_timing4="$(_row23_mix_timing "$_row23_timing_d" 15 8 2 || true)"
+    assert "ROW23-TIMING-VACUITY-4[d=${_row23_timing_d}]: PROPERTY -- ready deadline ${_row23_timing_d} s, slack 15 s => await <= min(deadline, 15), outer - burn == 15, burn >= await + 8 + 2 (got '${_row23_timing4}')" \
+        _row23_timing_holds_bound "$_row23_timing_d" 15 8 2 "$_row23_timing4"
+done
+
+_row23_timing5_rc=0
+_row23_mix_timing 30 15 8 2 > /dev/null || _row23_timing5_rc=$?
+assert "ROW23-TIMING-VACUITY-5: rc EXACTLY 0 (got ${_row23_timing5_rc}); the live cycle assigns the capture bare, so a failure would abort it under set -e" \
+    test "$_row23_timing5_rc" -eq 0
+
+if ! live_cycle_gate ROW2_3; then
+    :
 elif [ "$_PSI_AVAILABLE" -eq 0 ] || [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
     echo "  SKIP ROW2_3: PSI or python3 unavailable"
 elif ! command -v taskset >/dev/null 2>&1; then
@@ -1783,7 +3579,8 @@ else
     )"
     _ROW23_TASK_PRESSURE_PATH="/sys/fs/cgroup${_ROW23_TASK_SLICE_REL}/cpu.pressure"
 
-    # Marker dir: each stub-cargo source writes done_<PID> here.
+    # Marker dir: each stub-cargo source writes done_<PID> here, and the ready
+    # file of its fixture (ready_*) is named here too.
     _ROW23_MARKER_DIR="$WORK/row23_markers"
     mkdir -p "$_ROW23_MARKER_DIR"
     # Stub-cargo-bin: the stub "real cargo" that burns CPU + writes done-marker.
@@ -1791,14 +3588,7 @@ else
     # The shim strips agent-bin → finds stub-cargo-bin/cargo as "real cargo".
     _STUB_CARGO_BIN="$WORK/stub-cargo-bin"
     mkdir -p "$_STUB_CARGO_BIN"
-    cat > "$_STUB_CARGO_BIN/cargo" << STUB_CARGO_EOF
-#!/usr/bin/env bash
-# Stub real-cargo for ROW2_3 mix (replaces real cargo after shim PATH-strip).
-# Runs a CPU-burn fixture for the mix duration and writes a done-marker.
-bash "${FIXTURE}" 1 ${_ROW23_MIX_BURN_S} >/dev/null 2>&1 || true
-touch "${_ROW23_MARKER_DIR}/done_\$\$"
-STUB_CARGO_EOF
-    chmod +x "$_STUB_CARGO_BIN/cargo"
+    _row23_write_stub_cargo "$_STUB_CARGO_BIN" "$FIXTURE" "$_ROW23_MIX_BURN_S" "$_ROW23_MARKER_DIR"
     # PATH for mix invocations: shim (agent-bin) first, stub second.
     _MIX_PATH="$REPO_ROOT/scripts/agent-bin:$_STUB_CARGO_BIN:/usr/bin:/bin"
     _SHIM="$REPO_ROOT/scripts/agent-bin/cargo"
@@ -1829,7 +3619,7 @@ PROBE_PY
     #     `|| echo <sentinel>` fallback appears in this capture at all, which
     #     is strictly stronger than swapping the old numeric fallback for a
     #     string one and sidesteps the fallback class this file prohibits
-    #     (see _row2_usage_fraction's Capture idiom comment above).
+    #     (see ROW2-1-BAND-WINDOW-VACUITY's capture-idiom comment above).
     #     _row3_probe_sample turns (rc, raw) into either the literal
     #     "unavailable" or the genuine measurement — never a manufactured
     #     "1" that reads as a legitimate 1-second baseline.
@@ -1847,23 +3637,30 @@ PROBE_PY
     #     confine-cores CPUs.  cpu-admit is redirected to the task slice's
     #     OWN cpu.pressure so admission throttling is subtree-relative
     #     (reuses the ROW4-BYPASS REIFY_CPU_ADMIT_PROC_PATH seam) — never
-    #     global PSI.  Record PIDs for cleanup.
+    #     global PSI.  Record PIDs for cleanup.  Each source's stub reports its
+    #     fixture workers to its own GOVTEST_MIX_READY_FILE (stub contract:
+    #     _row23_write_stub_cargo).
     _MIX_PIDS=""
+    _ROW23_READY_FILES=""
     _mi=0
     while [ "$_mi" -lt "$_MIX_N" ]; do
+        _ROW23_READY_FILES="${_ROW23_READY_FILES}${_ROW23_READY_FILES:+ }$_ROW23_MARKER_DIR/ready_task_${_mi}"
         PATH="$_MIX_PATH" \
+        GOVTEST_MIX_READY_FILE="$_ROW23_MARKER_DIR/ready_task_${_mi}" \
         REIFY_CPU_GOVERN_SLICE_TASK="$_ROW4_SLICE_TASK" \
         REIFY_CPU_ADMIT_PROC_PATH="$_ROW23_TASK_PRESSURE_PATH" \
-        timeout $(( _ROW23_MIX_BURN_S + 15 )) taskset -c "$_ROW4_CONFINE_CPUS" \
+        timeout "$_ROW23_MIX_TIMEOUT_S" taskset -c "$_ROW4_CONFINE_CPUS" \
             bash "$CPU_GOV_EXEC" --role task -- bash "$_SHIM" test \
             >/dev/null 2>&1 &
         _MIX_PIDS="${_MIX_PIDS}${_MIX_PIDS:+ }$!"
         _mi=$(( _mi + 1 ))
     done
     # 1 merge-role source (DF_VERIFY_ROLE=merge bypasses cpu-admit, per C-A3).
+    _ROW23_READY_FILES="${_ROW23_READY_FILES}${_ROW23_READY_FILES:+ }$_ROW23_MARKER_DIR/ready_merge"
     PATH="$_MIX_PATH" DF_VERIFY_ROLE=merge \
+    GOVTEST_MIX_READY_FILE="$_ROW23_MARKER_DIR/ready_merge" \
     REIFY_CPU_GOVERN_SLICE_MERGE="$_ROW4_SLICE_MERGE" \
-    timeout $(( _ROW23_MIX_BURN_S + 15 )) taskset -c "$_ROW4_CONFINE_CPUS" \
+    timeout "$_ROW23_MIX_TIMEOUT_S" taskset -c "$_ROW4_CONFINE_CPUS" \
         bash "$CPU_GOV_EXEC" --role merge -- bash "$_SHIM" test \
         >/dev/null 2>&1 &
     _MIX_PIDS="${_MIX_PIDS}${_MIX_PIDS:+ }$!"
@@ -1871,48 +3668,23 @@ PROBE_PY
     # Register all mix PIDs in the EXIT-trap list for crash-path cleanup.
     _ALL_MIX_PIDS="$_MIX_PIDS"
 
-    # ROW2-1 band-decision brackets (task 4970, esc-4959-53): sample the task
-    # slice's OWN usage_usec and cpu.pressure some.total BEFORE the warm-up
-    # sleep, bracketing the SAME window the avg10 read below uses — reuses
-    # the ROW1-1 usage-fraction sampling idiom (cgroup-usage / psi-some-total,
-    # guarded with "unavailable" on failure) so ROW2-1's in-band SKIP branch
-    # can distinguish a starved (foreign-load) slice from a saturating
-    # (genuine-regression) one.
-    _ROW23_USAGE_BEFORE="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW23_TASK_SLICE_REL" \
-        2>/dev/null || echo "unavailable")"
-    _ROW23_STALL_BEFORE="$(python3 "$INSTRUMENT" psi-some-total "$_ROW23_TASK_PRESSURE_PATH" \
-        2>/dev/null || echo "unavailable")"
+    # (c) ROW2-1 band-decision window (task 4970, esc-4959-53): opens once every
+    #     mix source has reported ready, warms up, then samples the TASK
+    #     SLICE's OWN usage_usec, cpu.pressure some.total and avg10 (Row 2 PSI
+    #     measurement — per-cgroup, H5).  Sample order and the globals it sets:
+    #     _row23_sample_window.  _ROW23_AVG10_RC lets the ROW3-1 hedge
+    #     (_row3_foreign_load below) tell a genuine 99+ reading apart from a
+    #     defaulted-because-unreadable one (task 5999 review-amendment).
+    _row23_sample_window "$_ROW23_READY_DEADLINE_S" "$_ROW23_WARMUP_S" \
+        "$_ROW23_TASK_SLICE_REL" "$_ROW23_TASK_PRESSURE_PATH" $_ROW23_READY_FILES
 
-    # (c) Warm-up window then sample the TASK SLICE's OWN cpu.pressure
-    #     avg10 (Row 2 PSI measurement — per-cgroup, H5).
-    sleep "$_ROW23_WARMUP_S"
-    # Captures the read's exit status alongside the existing "99" fallback
-    # (task 5999 review-amendment, reviewer_comprehensive/robustness):
-    # _ROW23_AVG10 keeps its EXACT pre-existing value/semantics in every case
-    # (ROW2-1/ROW2-2 below are unaffected), but _ROW23_AVG10_RC now lets the
-    # ROW3-1 hedge (_row3_foreign_load below) tell a genuine 99+ reading
-    # apart from a defaulted-because-unreadable one.
-    _ROW23_AVG10_RC=0
-    _ROW23_AVG10="$(python3 "$INSTRUMENT" psi-avg10 "$_ROW23_TASK_PRESSURE_PATH" 2>/dev/null)" || _ROW23_AVG10_RC=$?
-    # Rescue on RC, not emptiness: a read that fails AFTER printing a
-    # plausible partial value must not keep that value, same "stdout alone
-    # cannot discriminate" principle as the T_base capture above.
-    [ "$_ROW23_AVG10_RC" -ne 0 ] && _ROW23_AVG10="99"
-
-    # AFTER bracket, same point the avg10 sample above is taken.
-    _ROW23_USAGE_AFTER="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW23_TASK_SLICE_REL" \
-        2>/dev/null || echo "unavailable")"
-    _ROW23_STALL_AFTER="$(python3 "$INSTRUMENT" psi-some-total "$_ROW23_TASK_PRESSURE_PATH" \
-        2>/dev/null || echo "unavailable")"
-    _ROW23_STALL_WINDOW_US=$(( _ROW23_WARMUP_S * 1000000 ))
-
-    # Usage fraction over the warm-up window (task 4970 review-amendment):
-    # delegates to _row2_usage_fraction, which PROPAGATES the "unavailable"
-    # sentinel when either bracket is unreadable instead of collapsing to a
-    # numeric "0.000000" — an unreadable bracket must never read as
-    # maximally STARVED and mask a genuine over-admission regression.
-    _ROW23_USAGE_BUDGET=$(( _ROW4_CONFINE_CORES * _ROW23_WARMUP_S * 1000000 ))
-    _ROW23_USAGE_FRACTION="$(_row2_usage_fraction "$_ROW23_USAGE_BEFORE" "$_ROW23_USAGE_AFTER" "$_ROW23_USAGE_BUDGET")"
+    # Usage fraction and stall window over the MEASURED read-to-read window
+    # (task 4970 review-amendment): _row2_band_window PROPAGATES the
+    # "unavailable" sentinel when either bracket is unreadable instead of
+    # collapsing to a numeric "0.000000" — an unreadable bracket must never
+    # read as maximally STARVED and mask a genuine over-admission regression.
+    read -r _ROW23_USAGE_FRACTION _ROW23_WINDOW_US <<< "$(_row2_band_window \
+        "$_ROW23_SAMPLE_BEFORE" "$_ROW23_SAMPLE_AFTER" "$_ROW4_CONFINE_CORES")"
 
     # (d) Timed work-based probe under the mix, CONFINED+PINNED → T_mix
     #     (Row 3 slowdown). Mirrors the T_base capture above (task 5999
@@ -1924,15 +3696,25 @@ PROBE_PY
     #     through the SAME _row3_probe_sample normalizer so both probes share
     #     one usability rule; _row3_measurement_unusable already handles the
     #     "unavailable" sentinel on either arm, so no other change is needed.
-    _T_MIX_RC=0
-    _T_MIX_RAW="$(
-        REIFY_CPU_GOVERN_SLICE_TASK="$_ROW4_SLICE_TASK" \
-        timeout 60 taskset -c "$_ROW4_CONFINE_CPUS" bash "$CPU_GOV_EXEC" --role task -- \
-        python3 "$WORK/row23_probe.py" "$_PROBE_ITERS" 2>/dev/null
-    )" || _T_MIX_RC=$?
-    _T_MIX="$(_row3_probe_sample "$_T_MIX_RC" "$_T_MIX_RAW")"
+    #     Not run when the mix never reported ready: there is no mix to probe
+    #     under, and T_mix stays "unavailable".
+    _T_MIX="unavailable"
+    if [ "$_ROW23_READY" -eq 1 ]; then
+        _T_MIX_RC=0
+        _T_MIX_RAW="$(
+            REIFY_CPU_GOVERN_SLICE_TASK="$_ROW4_SLICE_TASK" \
+            timeout 60 taskset -c "$_ROW4_CONFINE_CPUS" bash "$CPU_GOV_EXEC" --role task -- \
+            python3 "$WORK/row23_probe.py" "$_PROBE_ITERS" 2>/dev/null
+        )" || _T_MIX_RC=$?
+        _T_MIX="$(_row3_probe_sample "$_T_MIX_RC" "$_T_MIX_RAW")"
+    fi
 
-    # (e) Wait for mix to finish (natural completion or timeout).
+    # (e) Stop the mix only when every source reported ready (a stopped source still exits 0 and
+    #     writes its done marker); otherwise each source runs to its burn's end or its outer
+    #     timeout.  Then wait for the mix to finish.
+    if [ "$_ROW23_READY" -eq 1 ]; then
+        _row23_stop_mix $_ROW23_READY_FILES
+    fi
     for _mpid in $_MIX_PIDS; do
         wait "$_mpid" 2>/dev/null || true
     done
@@ -1974,15 +3756,18 @@ PROBE_PY
     # the subtree's cpu.pressure is transiently unreadable mid-run), so a
     # non-numeric sample SKIPs rather than raising a confusing python
     # ValueError.  A numeric-but-far-beyond-ceiling sample SKIPs too
-    # (contention-inflated, not a governance failure).
-    if ! python3 -c "float('${_ROW23_AVG10}')" 2>/dev/null; then
+    # (contention-inflated, not a governance failure).  No window to measure
+    # when the mix never reported ready: SKIP before looking at the sample.
+    if [ "$_ROW23_READY" -eq 0 ]; then
+        echo "  SKIP ROW2-1: mix did not report ready within ROW2_3's ${_ROW23_READY_DEADLINE_S}s readiness bound — no window to measure"
+    elif ! python3 -c "float('${_ROW23_AVG10}')" 2>/dev/null; then
         echo "  SKIP ROW2-1: avg10 sample non-numeric (${_ROW23_AVG10}) — PSI transiently unreadable mid-run"
     elif [ "$_ROW23_CONTENDED" -eq 1 ]; then
         echo "  SKIP ROW2-1: contention-inflated avg10 (${_ROW23_AVG10} >= 90 on the task slice's own cpu.pressure) — likely foreign load on the pinned CPUs, inconclusive"
-    elif _row2_band_inconclusive "$_ROW23_AVG10" "$_ADMIT_THRESHOLD" "$_ROW23_USAGE_FRACTION" "$_ROW23_STALL_BEFORE" "$_ROW23_STALL_AFTER" "$_ROW23_STALL_WINDOW_US"; then
+    elif _row2_band_inconclusive "$_ROW23_AVG10" "$_ADMIT_THRESHOLD" "$_ROW23_USAGE_FRACTION" "$_ROW23_STALL_BEFORE" "$_ROW23_STALL_AFTER" "$_ROW23_WINDOW_US"; then
         echo "  SKIP ROW2-1: inconclusive — foreign load on the pinned CPUs (avg10=${_ROW23_AVG10} in the [${_ADMIT_THRESHOLD},90) band, slice starved: usage_fraction=${_ROW23_USAGE_FRACTION} < floor=${REIFY_CPU_GOV_TEST_ROW1_SATURATION_FLOOR:-0.85} + windowed stall contended) — not a governance failure"
     else
-        assert "ROW2-1: avg10 after warm-up < AGENT_THRESHOLD=${_ADMIT_THRESHOLD} (avg10=${_ROW23_AVG10}, subtree-relative)" \
+        assert "ROW2-1: avg10 after warm-up < AGENT_THRESHOLD=${_ADMIT_THRESHOLD} (avg10=${_ROW23_AVG10}, subtree-relative; usage_fraction=${_ROW23_USAGE_FRACTION}, window=${_ROW23_WINDOW_US}us)" \
             python3 -c "
 import sys
 v = float('${_ROW23_AVG10}')
@@ -1995,10 +3780,13 @@ sys.exit(0 if v < t else 1)
     # under oversubscription can SIGTERM the slowest sources before their outer timeout,
     # making strict equality unreliable even when governance is correct.  SKIP (not
     # FAIL) when sub-90% AND foreign contention was detected — inconclusive.
+    # A source not started _ROW23_LAUNCH_SLACK_S after launch is killed by its outer timeout
+    # before its marker.  The post-T_mix stop runs only when every source reported within the
+    # readiness bound, which never exceeds that slack, so the stop never rescues a starved source.
     if [ "$_ROW23_ALL_PROGRESSED" -eq 0 ] && [ "$_ROW23_CONTENDED" -eq 1 ]; then
         echo "  SKIP ROW2-2: sub-90% completion (${_ROW23_DONE_COUNT}/${_ACTIVE_SOURCES}) under detected foreign load on the pinned CPUs — inconclusive, not a governance failure"
     else
-        assert "ROW2-2: >= 90% (${_ROW23_THRESHOLD}/${_ACTIVE_SOURCES}) confined+pinned sources completed — none starved (done=${_ROW23_DONE_COUNT})" \
+        assert "ROW2-2: >= 90% (${_ROW23_THRESHOLD}/${_ACTIVE_SOURCES}) confined+pinned sources completed — none starved (done=${_ROW23_DONE_COUNT}; launch slack ${_ROW23_LAUNCH_SLACK_S}s)" \
             test "${_ROW23_ALL_PROGRESSED}" -eq 1
     fi
 
@@ -2028,7 +3816,9 @@ sys.exit(0 if v < t else 1)
     # below, never a governance failure (mirrors fair_share_floor's own
     # docstring: below-floor is "physically impossible" for the model, i.e.
     # a modeling/measurement mismatch, not evidence of broken governance).
-    if _row3_measurement_unusable "${_T_BASE}" "${_T_MIX}"; then
+    if [ "$_ROW23_READY" -eq 0 ]; then
+        echo "  SKIP ROW3-1: mix did not report ready within ROW2_3's ${_ROW23_READY_DEADLINE_S}s readiness bound — no mix to probe under"
+    elif _row3_measurement_unusable "${_T_BASE}" "${_T_MIX}"; then
         echo "  SKIP ROW3-1: baseline or mix probe unusable (T_base=${_T_BASE}, T_mix=${_T_MIX}) — inconclusive"
     elif awk -v s="${_ROW3_SLOWDOWN:-0}" -v f="${_ROW3_FLOOR:-0}" 'BEGIN{exit !(s+0 < f+0)}'; then
         echo "  SKIP ROW3-1: slowdown=${_ROW3_SLOWDOWN} below fair-share floor=${_ROW3_FLOOR} — inconclusive (cpu-admit's own admission staggering at confined scale, not all active_sources concurrently contending; anti-runaway guarantee below is unaffected)"
@@ -2063,11 +3853,24 @@ fi
 #   Contention: 2×NWORKERS total workers (W merge + W task, 2W > nproc)
 #   ensures real CPU contention so cgroup weight scheduling fires.
 #
+#   Placement (task 9698): each WORKER is pinned to one CPU of the confined
+#   pin list, round-robin and identically for both roles (cpu_load_fixture.sh
+#   --pin-cpus), so every pinned CPU hosts one merge and one task worker and
+#   cpu.weight arbitrates between them on a shared runqueue — the 3:1 split no
+#   longer depends on where the load balancer puts the spinners.  ROW4-PIN-LIVE
+#   asserts that placement on the live workers, and it is re-checked at the
+#   window's close.
+#
 # §8 Row 4 assertion:
 #   merge_share = Δmerge / (Δmerge + Δtask)  ≥  W_merge/(W_merge+W_task) - tol
 #              = 0.75 − 0.10 = 0.65  (STATED proportional floor, not 0)
 #   Δ sampled over a steady-state window (warm-up + measure), not the whole
-#   burn, so the startup stagger does not bias the share (step-12 fix).
+#   burn.  The window opens WARMUP_S after BOTH burns report ready (each
+#   fixture's --ready-file), not WARMUP_S after launch: a governed launch makes
+#   several user-manager D-Bus round-trips before its fixture even starts, so a
+#   launch-anchored sleep let one role run alone, and bank uncontended CPU,
+#   while the other was still starting (step-12 fix, made structural by task
+#   9698).
 #
 # Merge-bypass smoke (Cycle ROW4-BYPASS, §8 row 9 echo):
 #   DF_VERIFY_ROLE=merge + avg10=99 PSI fixture → cpu-admit.sh admit exits 0
@@ -2089,24 +3892,28 @@ _ROW4_TOL="${REIFY_CPU_GOV_TEST_SHARE_TOL:-0.10}"
 # burn (including the asymmetric startup stagger — scope creation + worker
 # spawn for each role) let one role bank uncontended CPU before its sibling's
 # scope existed, biasing merge_share DOWN (observed 0.639 vs floor 0.65 — a
-# ~0.01 false-RED).  Fix: launch both burns, wait WARMUP_S for both to ramp,
-# THEN bracket the usage_usec delta over a MEASURE_S steady-state window while
-# both are still burning.  Mirrors the ROW2_3 warm-up design + PRD §11 Q5.
+# ~0.01 false-RED).  Fix: launch both burns, wait for BOTH to report ready,
+# let them ramp for WARMUP_S, THEN bracket the usage_usec delta over a
+# MEASURE_S steady-state window while both are still burning.  Mirrors the
+# ROW2_3 warm-up design + PRD §11 Q5.
 _ROW4_WARMUP_S="${REIFY_CPU_GOV_TEST_ROW4_WARMUP_S:-3}"
 _ROW4_MEASURE_S="${REIFY_CPU_GOV_TEST_ROW4_MEASURE_S:-8}"
-# Burn must outlast warm-up + measure window + a settle margin so the AFTER
-# sample lands while BOTH roles are still contending (never during teardown).
+# Burn must outlast readiness wait + warm-up + measure window + a settle margin
+# so the AFTER sample lands while BOTH roles are still contending (never during
+# teardown).  Derived from the readiness deadline so that holds by construction:
+# every burn starts at or after launch and the window opens no later than
+# launch + deadline, so however the two roles' start times stagger, the
+# earliest burn still ends after the window closes.  ROW4 stops its burns
+# explicitly right after the AFTER sample (_row4_stop_burns), so the larger cap
+# costs no wall time.
 # Clamp up if a shared BURN_S override (used by ROW1/ROW2_3 for speed) is too
 # small for ROW4's steady-state window — otherwise the AFTER sample would land
 # during teardown and re-introduce the stagger bias this fix removes.
-_ROW4_BURN_S="${REIFY_CPU_GOV_TEST_BURN_S:-$(( _ROW4_WARMUP_S + _ROW4_MEASURE_S + 4 ))}"
-_ROW4_BURN_MIN=$(( _ROW4_WARMUP_S + _ROW4_MEASURE_S + 4 ))
+_ROW4_BURN_MIN=$(( _ROW4_READY_DEADLINE_S + _ROW4_WARMUP_S + _ROW4_MEASURE_S + 4 ))
+_ROW4_BURN_S="${REIFY_CPU_GOV_TEST_BURN_S:-$_ROW4_BURN_MIN}"
 [ "$_ROW4_BURN_S" -lt "$_ROW4_BURN_MIN" ] && _ROW4_BURN_S="$_ROW4_BURN_MIN"
 # Quiet-box gate (mirrors ROW1/ROW2_3; reuses shared QUIET_CEILING knob).
 _ROW4_QUIET_CEILING="${REIFY_CPU_GOV_TEST_QUIET_CEILING:-20}"
-# PSI source for ROW4 quiet-gate avg10 sampling (testability seam; mirrors
-# the existing REIFY_CPU_ADMIT_PROC_PATH fixture injection in ROW4-BYPASS).
-_ROW4_PROC_PATH="${REIFY_CPU_GOV_TEST_PROC_PATH:-/proc/pressure/cpu}"
 
 # _row4_share_inconclusive <merge_delta> <task_delta> <w_merge> <w_task> <tol>
 #                          <host_avg10> <ceiling>
@@ -2250,26 +4057,6 @@ else:
     return 0
 }
 
-# _row4_sample_host_avg10 <proc_path>
-#   Echo the `some` line's avg10 field from a PSI-formatted file, or the
-#   literal "unavailable" when the path is missing/unreadable/malformed
-#   (task 5998).  Delegates to the instrument's psi-avg10 subcommand — the
-#   SAME sampler ROW2_3 uses at its own bracket — which already prints
-#   "unavailable" (exit 0) on any read/parse failure; the `|| echo` guard
-#   covers python3 itself failing to launch.
-#
-#   "unavailable" is the FAIL-SAFE direction, not a degenerate one: it feeds
-#   quiet_box_met's fail-open, so an unreadable PSI source reads as a quiet
-#   box and leaves ROW4-1's hard assert reachable.  Never substitute 0 here —
-#   a numeric 0 reads as a maximally quiet box for the same reason, but does
-#   so by ASSERTING quiet rather than by declining to measure, which is the
-#   distinction ROW4-1-SAMPLE-VACUITY-2 pins.
-_row4_sample_host_avg10() {
-    local proc_path="$1"
-    python3 "$INSTRUMENT" psi-avg10 "$proc_path" 2>/dev/null \
-        || echo "unavailable"
-}
-
 # _ROW4_SLICE_TASK/_MERGE, the naming derivation, the _row4_confine_* helper
 # functions, and _ROW4_CONFINE_CORES/QUOTA/W/CPUS/PARENT are now computed in
 # the hoisted "Confined-quota derivation" section ABOVE Cycle ROW1 (H5, task
@@ -2297,8 +4084,9 @@ assert "NAMING-3: task/merge slice names are distinct" \
 # ----------------------------------------------------------------------------
 # H5 (task 4926): confining the SHARED PARENT slice's CPUQuota (never the
 # child scope/slice itself, C-G1) makes the two ROW4 child slices split ONE
-# bounded budget, and pinning the burns to confine-cores CPUs (CONFINE_CPUS,
-# esc-4926-3 ruling) creates the per-CPU runqueue co-residency that
+# bounded budget, and pinning each burn WORKER to one of the confine-cores CPUs
+# (CONFINE_CPUS, esc-4926-3 ruling; per worker since task 9698 — see MECHANISM
+# above) creates the per-CPU runqueue co-residency that
 # cpu.weight arbitration requires — TOGETHER these make the proportional
 # ratio host-load-independent (PRD §1 G6 #3 as revised; quota alone drains
 # weight-blind ~FCFS → ~50/50 false-RED).
@@ -2380,6 +4168,38 @@ _confine_pin_nproc_hi="$(
 assert "CONFINE-PIN-2: pin list is byte-identical under faked nproc=4 vs nproc=64 ('${_confine_pin_nproc_lo}' == '${_confine_pin_nproc_hi}')" \
     test "$_confine_pin_nproc_lo" = "$_confine_pin_nproc_hi"
 
+# CONFINE-PIN-3: the REIFY_CPU_GOV_TEST_CONFINE_CPUS override reaches
+# cpu_load_fixture.sh --pin-cpus, which takes single CPU ids and commas only, so
+# _row4_confine_cpus must hand over single ids.  A range passed through verbatim
+# made every guard that runs the fixture wait out its readiness deadline and then
+# blame a missing ready file, and a malformed value did the same.
+_confine_pin_override_range="$(
+    REIFY_CPU_GOV_TEST_CONFINE_CPUS='5-7,30' _row4_confine_cpus 2>/dev/null || echo "rejected"
+)"
+assert "CONFINE-PIN-3a: a range override '5-7,30' is expanded to single ids (got '${_confine_pin_override_range}', want '5,6,7,30')" \
+    test "$_confine_pin_override_range" = "5,6,7,30"
+
+# The identity case: an override that is already single ids is handed over
+# untouched, so nobody who sets it today sees a change.
+_confine_pin_override_plain="$(
+    REIFY_CPU_GOV_TEST_CONFINE_CPUS='30,31' _row4_confine_cpus 2>/dev/null || echo "rejected"
+)"
+assert "CONFINE-PIN-3b: an override of single ids passes through unchanged (got '${_confine_pin_override_plain}', want '30,31')" \
+    test "$_confine_pin_override_plain" = "30,31"
+
+# NON-VACUITY CRUX: a value that is not a CPU list is refused up front with the
+# usage exit code and nothing on stdout, rather than handed to the fixture to
+# fail there.  Descending ranges are in the set: they expand to no CPU at all.
+for _confine_pin_override_bad in "a,b" "30-" "30,,31" "0-8:2" "31-30"; do
+    _confine_pin_override_bad_rc=0
+    _confine_pin_override_bad_out="$(
+        REIFY_CPU_GOV_TEST_CONFINE_CPUS="$_confine_pin_override_bad" _row4_confine_cpus 2>/dev/null
+    )" || _confine_pin_override_bad_rc=$?
+    _confine_pin_override_bad_got="rc ${_confine_pin_override_bad_rc}, stdout '${_confine_pin_override_bad_out}'"
+    assert "CONFINE-PIN-3c: malformed override '${_confine_pin_override_bad}' => rc EXACTLY 64 and empty stdout (got ${_confine_pin_override_bad_got})" \
+        test "$_confine_pin_override_bad_got" = "rc 64, stdout ''"
+done
+
 # CONFINE-VACUITY: pin non-vacuity of share_ge_proportional at ROW4-1's exact
 # weights (w_merge=300, w_task=100) + tol — an equal-usage (broken)
 # measurement MUST be rejected (observed 0.5 < floor 0.65) and a 3:1
@@ -2416,9 +4236,7 @@ fi
 echo ""
 echo "--- ROW4-CONFINE-APPLIED: quota lands on parent, scope stays uncapped ---"
 
-if ! host_supports_governance; then
-    echo "  SKIP CONFINE-APPLIED: host does not support cgroup governance"
-else
+if live_cycle_gate CONFINE-APPLIED; then
     # Apply the confined quota to the shared parent BEFORE probing (S4/task
     # 4926 live wiring) — without this the parent reads uncapped ("max")
     # against the expected quota_usec and CONFINE-APPLIED-1 stays RED.
@@ -2700,8 +4518,7 @@ else
         > "$_row4_psi_hot_fixture"
 
     # (a) Parses the `some` line's avg10 out of a synthetic HOT fixture.
-    # Compared numerically (locale-proof), mirroring
-    # ROW2-1-USAGE-FRACTION-VACUITY-3 rather than a string equality.
+    # Compared numerically (locale-proof), not by string equality.
     _row4_sampled_hot="$(_row4_sample_host_avg10 "$_row4_psi_hot_fixture" 2>/dev/null || true)"
     assert "ROW4-1-SAMPLE-VACUITY-1: synthetic HOT fixture (some avg10=99.00) => 99 (got '${_row4_sampled_hot}')" \
         awk -v a="$_row4_sampled_hot" 'BEGIN{ exit !(a+0 == 99) }'
@@ -2717,13 +4534,13 @@ else
     # predicate with the real measured false-RED deltas, proving sampler and
     # predicate compose through the REIFY_CPU_GOV_TEST_PROC_PATH seam that
     # step-12 wires into the live ROW4-1 branch. Mirrors
-    # ROW2-1-USAGE-FRACTION-VACUITY-5's END-TO-END idiom.
+    # ROW2-1-BAND-WINDOW-VACUITY-8's END-TO-END idiom.
     assert "ROW4-1-QUIET-VACUITY-8: END-TO-END -- avg10 sampled from a HOT fixture ('${_row4_sampled_hot}' >= ceiling=20) + the measured false-RED deltas => inconclusive (sampler and predicate compose)" \
         _row4_share_inconclusive 10367459 5945387 300 100 0.10 "$_row4_sampled_hot" 20
 fi
 
-if ! host_supports_governance; then
-    echo "  SKIP ROW4: host does not support cgroup governance"
+if ! live_cycle_gate ROW4; then
+    :
 elif [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
     echo "  SKIP ROW4: python3 unavailable"
 elif ! command -v taskset >/dev/null 2>&1; then
@@ -2736,10 +4553,11 @@ elif [ -z "${_ROW4_CONFINE_CPUS:-}" ]; then
 else
     # ── ROW4 ORCHESTRATION (step-10, confined H5/task 4926) ──────────────────
     # Confine the shared parent slice's CPUQuota BEFORE any measurement, and
-    # pin the burns to the confined CPU list (esc-4926-3): the quota bounds
-    # the subtree's aggregate footprint while the pinning creates the per-CPU
-    # runqueue co-residency cpu.weight arbitration requires — together they
-    # make the ratio host-load-independent (PRD §1 G6 #3 as revised), so the
+    # pin every burn WORKER to one CPU of the confined list (esc-4926-3; per
+    # worker since task 9698): the quota bounds the subtree's aggregate
+    # footprint while the pinning creates the per-CPU runqueue co-residency
+    # cpu.weight arbitration requires — together they make the ratio
+    # host-load-independent (PRD §1 G6 #3 as revised), so the
     # PRIMARY quiet-box pre/post gate that used to wrap this block is DROPPED
     # on this delegated path -- the row now runs unconditionally once
     # host_supports_governance is true (checked above) and can go RED under
@@ -2788,75 +4606,127 @@ else
     #     scale. Using nproc workers here (as the pre-H5 unconfined design
     #     did) against a small confined cap over-oversubscribes by nproc/
     #     confine-cores×, which empirically degrades weight-ratio convergence.
-    #     `taskset -c` pins both roles' burns to the SAME confine-cores CPUs
-    #     (esc-4926-3): affinity inherits through cpu-governed-exec's
-    #     `systemd-run --user --scope` (the payload stays a direct child), and
-    #     the co-residency it forces is what lets cpu.weight arbitrate at all
-    #     — unpinned, the 2W threads spread across the idle box and the quota
-    #     drains weight-blind ~FCFS → ~50/50 false-RED. Pinning is a TEST-
-    #     HARNESS mechanism only: production cpu-governed-exec stays unpinned
-    #     and work-conserving (C-G1 untouched).
+    #     Each WORKER is pinned to ONE of the confine-cores CPUs, round-robin
+    #     and identically for both roles (task 9698: _row4_launch_role_burn →
+    #     cpu_load_fixture.sh --pin-cpus; affinity still inherits through
+    #     cpu-governed-exec's `systemd-run --user --scope`, the payload staying
+    #     a direct child).  Every pinned CPU then hosts one merge and one task
+    #     worker, and that shared per-CPU runqueue is what lets cpu.weight
+    #     arbitrate at all.  A set-mask over all the workers (esc-4926-3's
+    #     first form) only made it possible: the load balancer then decided the
+    #     split.  Unpinned altogether, the 2W threads spread across the idle box
+    #     and the quota drains weight-blind ~FCFS → ~50/50 false-RED. Pinning is
+    #     a TEST-HARNESS mechanism only: production cpu-governed-exec stays
+    #     unpinned and work-conserving (C-G1 untouched).
     _ROW4_W="$_ROW4_CONFINE_W"  # W per role; 2W = 2*confine-cores → 2× oversubscription
+    _ROW4_READY_TASK="$WORK/row4-ready-task"
+    _ROW4_READY_MERGE="$WORK/row4-ready-merge"
+    _row4_launch_role_burn "$CPU_GOV_EXEC" task "$_ROW4_CONFINE_CPUS" "$_ROW4_W" \
+        "$_ROW4_BURN_S" "$_ROW4_READY_TASK"
+    _row4_launch_role_burn "$CPU_GOV_EXEC" merge "$_ROW4_CONFINE_CPUS" "$_ROW4_W" \
+        "$_ROW4_BURN_S" "$_ROW4_READY_MERGE"
 
-    REIFY_CPU_GOVERN_SLICE_TASK="$_ROW4_SLICE_TASK" \
-    timeout $(( _ROW4_BURN_S + 15 )) taskset -c "$_ROW4_CONFINE_CPUS" \
-        bash "$CPU_GOV_EXEC" --role task -- \
-        bash "$FIXTURE" "$_ROW4_W" "$_ROW4_BURN_S" \
-        >/dev/null 2>&1 &
-    _ROW4_TASK_BG=$!
+    # Everything the window fills in starts as the "unavailable" sentinel, so a
+    # window that never opens leaves the bracket below with nothing to judge
+    # (the ROW4-1 chain SKIPs it) rather than with a coerced number.
+    _ROW4_TASK_BEFORE="unavailable"
+    _ROW4_MERGE_BEFORE="unavailable"
+    _ROW4_TASK_AFTER="unavailable"
+    _ROW4_MERGE_AFTER="unavailable"
+    _ROW4_HOST_AVG10="unavailable"
+    _ROW4_READY=0
+    _ROW4_PIN_LIVE_RC=1
+    _ROW4_PIN_HELD=0
+    _ROW4_PIN_TASK_CPUS=""
+    _ROW4_PIN_MERGE_CPUS=""
+    _ROW4_PIN_TASK_CPUS_END=""
+    _ROW4_PIN_MERGE_CPUS_END=""
 
-    REIFY_CPU_GOVERN_SLICE_MERGE="$_ROW4_SLICE_MERGE" \
-    timeout $(( _ROW4_BURN_S + 15 )) taskset -c "$_ROW4_CONFINE_CPUS" \
-        bash "$CPU_GOV_EXEC" --role merge -- \
-        bash "$FIXTURE" "$_ROW4_W" "$_ROW4_BURN_S" \
-        >/dev/null 2>&1 &
-    _ROW4_MERGE_BG=$!
+    # (d) Open the window on READINESS, not on launch.  Each governed launch
+    #     makes several user-manager D-Bus round-trips before its fixture even
+    #     starts, so a launch-anchored sleep let one role run alone — banking
+    #     uncontended CPU — while the other was still starting.  A role reports
+    #     ready (its --ready-file) once all its workers are up and pinned; the
+    #     deadline is an anti-hang bound only (technique T), never what
+    #     discriminates, and when it expires ROW4-1 SKIPs below.
+    if _row4_await_ready "$_ROW4_READY_DEADLINE_S" "$_ROW4_READY_TASK" "$_ROW4_READY_MERGE"; then
+        _ROW4_READY=1
 
-    # (d) Warm-up: let BOTH burns ramp to full contention before sampling, so
-    #     the startup stagger (scope creation + worker spawn) is OUTSIDE the
-    #     measured window and cannot bank uncontended CPU into either delta.
-    sleep "$_ROW4_WARMUP_S"
+        # (d1) Co-residency, ASSERTED on the live workers: every pinned CPU
+        #      hosts one task and one merge worker, the property the 3:1 split
+        #      is only guaranteed under.  A violation here is a harness
+        #      regression (the pinning did not take), not load, so it is a FAIL
+        #      — and ROW4-1 then SKIPs below rather than double-report it.
+        _ROW4_PIN_TASK_CPUS="$(_row4_worker_affinities "$_ROW4_READY_TASK" 2>/dev/null || true)"
+        _ROW4_PIN_MERGE_CPUS="$(_row4_worker_affinities "$_ROW4_READY_MERGE" 2>/dev/null || true)"
+        _ROW4_PIN_LIVE_RC=0
+        _row4_pin_coresident "$_ROW4_PIN_TASK_CPUS" "$_ROW4_PIN_MERGE_CPUS" \
+            || _ROW4_PIN_LIVE_RC=$?
+        assert "ROW4-PIN-LIVE: each pinned CPU hosts one task and one merge worker (task=${_ROW4_PIN_TASK_CPUS//$'\n'/,}, merge=${_ROW4_PIN_MERGE_CPUS//$'\n'/,})" \
+            test "$_ROW4_PIN_LIVE_RC" -eq 0
 
-    # (e) Sample usage_usec at the START of the steady-state window.
-    #     Slices are persistent; usage_usec accumulates — must use before/after delta.
-    _ROW4_TASK_BEFORE="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW4_TASK_SLICE_REL" \
-        2>/dev/null || echo "unavailable")"
-    _ROW4_MERGE_BEFORE="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW4_MERGE_SLICE_REL" \
-        2>/dev/null || echo "unavailable")"
+        # (d2) Warm-up: let BOTH burns ramp to full contention before sampling,
+        #      so the residual startup stagger is OUTSIDE the measured window
+        #      and cannot bank uncontended CPU into either delta.
+        sleep "$_ROW4_WARMUP_S"
 
-    # (f) Hold the steady-state measurement window (both still burning).
-    sleep "$_ROW4_MEASURE_S"
+        # (e) Sample usage_usec at the START of the steady-state window.
+        #     Slices are persistent; usage_usec accumulates — must use before/after delta.
+        _ROW4_TASK_BEFORE="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW4_TASK_SLICE_REL" \
+            2>/dev/null || echo "unavailable")"
+        _ROW4_MERGE_BEFORE="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW4_MERGE_SLICE_REL" \
+            2>/dev/null || echo "unavailable")"
 
-    # (g) Sample usage_usec at the END of the steady-state window — taken WHILE
-    #     both roles are still contending (burn outlasts warmup+measure+margin),
-    #     so the delta reflects pure steady-state weight scheduling, not teardown.
-    _ROW4_TASK_AFTER="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW4_TASK_SLICE_REL" \
-        2>/dev/null || echo "unavailable")"
-    _ROW4_MERGE_AFTER="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW4_MERGE_SLICE_REL" \
-        2>/dev/null || echo "unavailable")"
+        # (f) Hold the steady-state measurement window (both still burning).
+        sleep "$_ROW4_MEASURE_S"
 
-    # (g2) Sample HOST-WIDE PSI at the same instant the window closes, before
-    #      the reap below — as close to the bracketed interval as possible, so
-    #      the sample describes the interval that was actually measured rather
-    #      than teardown.  Host-wide (not slice-relative) is deliberate: the
-    #      ROW4 parent is quota-capped, and a cgroup's `some` pressure counts
-    #      runnable-but-not-running time, which INCLUDES quota throttling — so
-    #      a quota-capped slice always shows high stall and slice-relative PSI
-    #      is useless as a foreign-load discriminator here.  What actually
-    #      breaks this measurement is other work contending for the pinned
-    #      CPUs, which is exactly what host-wide PSI measures.
-    _ROW4_HOST_AVG10="$(_row4_sample_host_avg10 "$_ROW4_PROC_PATH")"
+        # (g) Sample usage_usec at the END of the steady-state window — taken
+        #     WHILE both roles are still contending (the burn cap outlasts
+        #     ready-deadline+warmup+measure+margin), so the delta reflects pure
+        #     steady-state weight scheduling, not teardown.
+        _ROW4_TASK_AFTER="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW4_TASK_SLICE_REL" \
+            2>/dev/null || echo "unavailable")"
+        _ROW4_MERGE_AFTER="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW4_MERGE_SLICE_REL" \
+            2>/dev/null || echo "unavailable")"
 
-    # (h) Reap both burns (natural completion or timeout) before cleanup.
-    wait "$_ROW4_TASK_BG" 2>/dev/null || true
-    wait "$_ROW4_MERGE_BG" 2>/dev/null || true
+        # (g2) Sample HOST-WIDE PSI at the same instant the window closes,
+        #      before the stop below — as close to the bracketed interval as
+        #      possible, so the sample describes the interval that was actually
+        #      measured rather than teardown.  Host-wide (not slice-relative) is
+        #      deliberate: the ROW4 parent is quota-capped, and a cgroup's
+        #      `some` pressure counts runnable-but-not-running time, which
+        #      INCLUDES quota throttling — so a quota-capped slice always shows
+        #      high stall and slice-relative PSI is useless as a foreign-load
+        #      discriminator here.  What actually breaks this measurement is
+        #      other work contending for the pinned CPUs, which is exactly what
+        #      host-wide PSI measures.
+        _ROW4_HOST_AVG10="$(_row4_sample_host_avg10 "$_ROW4_PROC_PATH")"
+
+        # (g3) Re-check co-residency at the window's close, while both burns are
+        #      still alive: the same predicate on the same workers, as the
+        #      invariant's second enforcement point.  A worker that vanished
+        #      inside the window reads "unavailable", which can never be
+        #      co-resident — a loss of measurement integrity (the ROW4-1 chain
+        #      SKIPs it), not a governance verdict.
+        _ROW4_PIN_TASK_CPUS_END="$(_row4_worker_affinities "$_ROW4_READY_TASK" 2>/dev/null || true)"
+        _ROW4_PIN_MERGE_CPUS_END="$(_row4_worker_affinities "$_ROW4_READY_MERGE" 2>/dev/null || true)"
+        if _row4_pin_coresident "$_ROW4_PIN_TASK_CPUS_END" "$_ROW4_PIN_MERGE_CPUS_END"; then
+            _ROW4_PIN_HELD=1
+        fi
+    fi
+
+    # (h) Stop both burns now that the AFTER sample is taken (or the window never
+    #     opened).  Explicit, rather than waiting out the burn cap — which is
+    #     sized to outlive even a slow-to-ready window, so a typical run ends
+    #     well before it.
+    _row4_stop_burns
 
     # An unreadable endpoint stays OUT of the numeric coercion (task 5998
     # amendment).  Initializing the deltas to 0 instead made a FAILED cpu.stat
     # read byte-indistinguishable from a genuinely STARVED merge slice: both
     # arrive as Δmerge=0, but the first is a measurement failure that must SKIP
     # and the second is a real governance break that must go RED.  Propagating
-    # the sentinel — the same shape _row2_usage_fraction adopted for the same
+    # the sentinel — the same shape _row2_band_window adopted for the same
     # reason — lets the guard chain below tell them apart, and makes
     # _row4_share_inconclusive's string guard (ROW4-1-QUIET-VACUITY-6/7) a real
     # second line of defence on the wired path rather than a contract on an
@@ -2877,8 +4747,9 @@ else
 
     # ROW4-1: merge_share >= W_merge/(W_merge+W_task) - tol.
     # Asserts the C-G2 proportional cpu.weight enforcement under contention,
-    # measured INSIDE the confined parent-slice budget with the burns pinned
-    # to the confined CPUs (H5 + esc-4926-3).
+    # measured INSIDE the confined parent-slice budget with every burn worker
+    # pinned to one of the confined CPUs (H5 + esc-4926-3; per worker since
+    # task 9698).
     #
     # SCOPE OF THE CONFINEMENT (task 5998 — corrects the earlier claim that
     # pinning makes this bound host-load-independent, and the "foreign load
@@ -2899,12 +4770,21 @@ else
     # Overridable via REIFY_CPU_GOV_TEST_SHARE_TOL. INHERITED VERBATIM (G6) --
     # no new number, tol untouched (re-tightening reopens the #4656 flake class).
     #
+    # Skip when no window was measured at all (task 9698): the burns never
+    # reported ready within the anti-hang bound, or ROW4-PIN-LIVE already failed
+    # — that FAIL reds the suite on its own, so the share of a mis-placed burn is
+    # not reported a second time.
+    #
     # Skip if slice discovery failed (empty rel-path — probe timed out/errored) or
     # both deltas are zero (measurement inconclusive).  Without this guard an empty
     # rel-path causes cgroup-usage to read the root cgroup, both roles get the same
     # usage_usec, merge_share ≈ 0.5 which is below the 0.65 floor — a false-RED.
     # These are measurement-integrity guards (not load-based) and are retained.
-    if [ -z "${_ROW4_TASK_SLICE_REL:-}" ] || [ -z "${_ROW4_MERGE_SLICE_REL:-}" ]; then
+    if [ "$_ROW4_READY" -eq 0 ]; then
+        echo "  SKIP ROW4-1: burns did not report ready within the ${_ROW4_READY_DEADLINE_S}s anti-hang bound — no window to measure"
+    elif [ "$_ROW4_PIN_LIVE_RC" -ne 0 ]; then
+        echo "  SKIP ROW4-1: ROW4-PIN-LIVE failed (task=${_ROW4_PIN_TASK_CPUS//$'\n'/,}, merge=${_ROW4_PIN_MERGE_CPUS//$'\n'/,}) — that FAIL already reds the suite; the share of a mis-placed burn is not a governance verdict"
+    elif [ -z "${_ROW4_TASK_SLICE_REL:-}" ] || [ -z "${_ROW4_MERGE_SLICE_REL:-}" ]; then
         echo "  SKIP ROW4-1: slice rel-path discovery failed (empty) — cannot compute share"
     elif [ "$_ROW4_TASK_DELTA" = "unavailable" ] || \
          [ "$_ROW4_MERGE_DELTA" = "unavailable" ]; then
@@ -2916,6 +4796,13 @@ else
         echo "  SKIP ROW4-1: cpu.stat read failed (Δmerge=${_ROW4_MERGE_DELTA},Δtask=${_ROW4_TASK_DELTA}) — no measurement to judge"
     elif [ "$_ROW4_TASK_DELTA" -le 0 ] && [ "$_ROW4_MERGE_DELTA" -le 0 ]; then
         echo "  SKIP ROW4-1: both cpu.stat deltas are zero — measurement inconclusive"
+    elif [ "$_ROW4_PIN_HELD" -eq 0 ]; then
+        # Co-residency held when the window opened (ROW4-PIN-LIVE) but not when
+        # it closed: a worker exited inside the window — the burn ended early or
+        # was reaped — so part of it ran with one role short and the split is
+        # not the steady-state one this row judges.  Measurement integrity, like
+        # the arms above, and deliberately NOT load-based.
+        echo "  SKIP ROW4-1: a pinned worker exited inside the measured window (co-residency not held at window close: task=${_ROW4_PIN_TASK_CPUS_END//$'\n'/,}, merge=${_ROW4_PIN_MERGE_CPUS_END//$'\n'/,}) — teardown contaminates the split"
     elif _row4_share_inconclusive "$_ROW4_MERGE_DELTA" "$_ROW4_TASK_DELTA" \
             "$_ROW4_W_MERGE" "$_ROW4_W_TASK" "$_ROW4_TOL" \
             "$_ROW4_HOST_AVG10" "$_ROW4_QUIET_CEILING"; then
@@ -2935,7 +4822,7 @@ else
         # REIFY_CPU_GOV_TEST_QUIET_CEILING.
         echo "  SKIP ROW4-1: inconclusive — sub-floor merge_share (Δmerge=${_ROW4_MERGE_DELTA},Δtask=${_ROW4_TASK_DELTA},W=${_ROW4_W_MERGE}/${_ROW4_W_TASK},tol=${_ROW4_TOL}) measured on a NON-QUIET box (host avg10=${_ROW4_HOST_AVG10} >= ceiling=${_ROW4_QUIET_CEILING}) — foreign load on the pinned CPUs dilutes cpu.weight proportionality, not a governance failure"
     else
-        assert "ROW4-1: merge_share >= W_merge/(W_merge+W_task)-tol=${_ROW4_TOL} (Δmerge=${_ROW4_MERGE_DELTA},Δtask=${_ROW4_TASK_DELTA},W=${_ROW4_W_MERGE}/${_ROW4_W_TASK})" \
+        assert "ROW4-1: merge_share >= W_merge/(W_merge+W_task)-tol=${_ROW4_TOL} (Δmerge=${_ROW4_MERGE_DELTA},Δtask=${_ROW4_TASK_DELTA},W=${_ROW4_W_MERGE}/${_ROW4_W_TASK},host avg10=${_ROW4_HOST_AVG10})" \
             python3 -c "
 import sys
 sys.path.insert(0, '${SCRIPT_DIR}')
@@ -3036,10 +4923,11 @@ printf 'some avg10=99.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0
 #
 # 120s is generous, not a tuned guess: the real merge bypass was MEASURED at
 # 713 ms on a loadavg-~190/32-core box, so 120s is ~170x the observed cost.
-# It also mirrors the budget tests/infra/test_cpu_load_governance_deflake.sh:115
-# already grants to an ENTIRE run of this SUT. ROW4-BYPASS-VACUITY-2d pins
-# that this floor stays generous enough to never discriminate; -2c pins that
-# the guard still fires on a genuine hang regardless of how generous it is.
+# It also matches the 120s of output silence tests/infra/
+# test_cpu_load_governance_deflake.sh (_SUT_STALL_S) allows this SUT before
+# TERMing it as hung. ROW4-BYPASS-VACUITY-2d pins that this floor stays
+# generous enough to never discriminate; -2c pins that the guard still fires
+# on a genuine hang regardless of how generous it is.
 _ROW4_BYPASS_TIMEOUT_S="${REIFY_CPU_GOV_TEST_ROW4_BYPASS_TIMEOUT_S:-120}"
 
 # ROW4-2: DF_VERIFY_ROLE=merge bypasses PSI → cpu-admit admit exits 0 fast.

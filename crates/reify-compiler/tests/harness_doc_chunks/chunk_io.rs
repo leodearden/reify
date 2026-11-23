@@ -57,7 +57,7 @@ pub(crate) const CONSTRAINTS_CHUNK_PATH: &str = concat!(chunks_dir!(), "/constra
 /// named `chunk_file_count_is_exact_not_slack`, so a diff that legitimately
 /// adds a chunk gets a message telling it to re-measure rather than a vacuity
 /// warning describing a bug that did not happen.
-pub(crate) const CHUNK_FILE_COUNT: usize = 19;
+pub(crate) const CHUNK_FILE_COUNT: usize = 20;
 
 /// Repo root, derived from this crate's manifest dir
 /// (`<repo>/crates/reify-compiler`) — what every repo-relative path in this

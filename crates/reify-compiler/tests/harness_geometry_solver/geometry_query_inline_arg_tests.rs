@@ -23,7 +23,7 @@ use reify_compiler::{
     CompiledGeometryOp, GEOMETRY_QUERY_NAMES, PrimitiveKind, WHOLE_HANDLE_GEOMETRY_QUERY_NAMES,
     compile,
 };
-use reify_core::{Severity, ValueCellId};
+use reify_core::{ConstraintNodeId, Severity, ValueCellId};
 use reify_ir::CompiledExprKind;
 
 /// `let v = volume(torus(20mm,5mm))` — the inline whole-handle-query form. The
@@ -380,4 +380,161 @@ fn binder_opacity_does_not_suppress_top_level_hoist() {
     let vs = flat_map(sizes, |s| [volume(box(s, s, s))])
 }"#;
     assert_hoist_scope("mixed member-level + lambda-scoped", source, 1);
+}
+
+// ---------------------------------------------------------------------------
+// Constraint predicates (task 10033)
+//
+// A whole-handle query over an inline geometry ctor inside a top-level
+// `constraint` hoists exactly like one inside a `let`, so the constraint takes
+// the let-bound realized-handle path. Without the hoist the query arg stays a
+// `FunctionCall` eval cannot map to a handle, and the constraint is
+// permanently Indeterminate. The RHS avoids `mm^3` per the HARNESS NOTE above.
+// ---------------------------------------------------------------------------
+
+/// Compile `source`, asserting it parses and compiles with no error-severity
+/// diagnostic.
+fn compile_clean(source: &str) -> reify_compiler::CompiledModule {
+    let parsed = reify_syntax::parse(
+        source,
+        reify_core::ModulePath::single("test_geoq_constraint"),
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let compiled = compile(&parsed);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    compiled
+}
+
+/// `(name, is_query_only)` of every top-level realization of `template`.
+fn realization_names(template: &reify_compiler::TopologyTemplate) -> Vec<(Option<&str>, bool)> {
+    template
+        .realizations
+        .iter()
+        .map(|r| (r.name.as_deref(), r.is_query_only))
+        .collect()
+}
+
+/// Whether `expr` is `volume(<ValueRef>) <op> ..` — a whole-handle query that
+/// reads a hoisted let rather than an inline geometry call.
+fn is_volume_of_value_ref(expr: &reify_ir::CompiledExpr) -> bool {
+    let CompiledExprKind::BinOp { left, .. } = &expr.kind else {
+        return false;
+    };
+    let CompiledExprKind::FunctionCall { function, args } = &left.kind else {
+        return false;
+    };
+    function.name == "volume"
+        && matches!(args.as_slice(), [arg] if matches!(arg.kind, CompiledExprKind::ValueRef(_)))
+}
+
+/// The inline `box(..)` in a constraint hoists into one query-only realization,
+/// the constraint's query reads it by `ValueRef`, and the synthetic let does
+/// not shift source-order constraint numbering: the hoisted constraint keeps
+/// index 1 between its plain neighbours 0 and 2.
+#[test]
+fn constraint_inline_query_arg_hoists_into_query_only_realization() {
+    let compiled = compile_clean(
+        r#"structure def Part2 {
+    param w : Length = 10mm
+    constraint w > 1mm
+    constraint volume(box(w, w, w)) > w * w * w * 0.5
+    constraint w < 100mm
+}"#,
+    );
+    let template = &compiled.templates[0];
+    assert_eq!(
+        realization_names(template),
+        [(Some("__geoq_0"), true)],
+        "expected exactly the query-only synthetic realization"
+    );
+    assert!(
+        template.realizations[0]
+            .operations
+            .iter()
+            .any(|op| matches!(
+                op,
+                CompiledGeometryOp::Primitive {
+                    kind: PrimitiveKind::Box,
+                    ..
+                }
+            )),
+        "expected a Primitive(Box) op, got {:?}",
+        template.realizations[0].operations
+    );
+
+    let numbered: Vec<(ConstraintNodeId, bool)> = template
+        .constraints
+        .iter()
+        .map(|c| (c.id.clone(), is_volume_of_value_ref(&c.expr)))
+        .collect();
+    assert_eq!(
+        numbered,
+        [
+            (ConstraintNodeId::new("Part2", 0), false),
+            (ConstraintNodeId::new("Part2", 1), true),
+            (ConstraintNodeId::new("Part2", 2), false),
+        ],
+        "only the hoisted constraint reads `volume(<ValueRef>)`, at its source index"
+    );
+}
+
+/// KNOWN-GAP characterization pin, not a design contract. A `where`-guarded
+/// constraint lands in a guarded group, while the `__geoq_0` its query hoists
+/// is an unguarded top-level realization, as for a guarded geometry `let`.
+///
+/// Known gap until #8450 lands guard-gated realization and carries the
+/// constraint's guard onto `__geoq_0`, inverting this pin.
+#[test]
+fn known_gap_constraint_where_guard_does_not_gate_its_hoisted_realization() {
+    let compiled = compile_clean(
+        r#"structure def Guarded {
+    param w : Length = 10mm
+    param h : Length = 0mm
+    constraint volume(box(w, w, h)) > w * w * h * 0.5 where h > 0mm
+}"#,
+    );
+    let template = &compiled.templates[0];
+    assert_eq!(
+        realization_names(template),
+        [(Some("__geoq_0"), true)],
+        "known gap: the hoisted realization is currently top-level, unguarded"
+    );
+    assert!(
+        template.constraints.is_empty(),
+        "the guarded constraint must not be unconditional: {:?}",
+        template.constraints
+    );
+    let guarded: Vec<bool> = template
+        .guarded_groups
+        .iter()
+        .flat_map(|g| &g.constraints)
+        .map(|c| is_volume_of_value_ref(&c.expr))
+        .collect();
+    assert_eq!(
+        guarded,
+        [true],
+        "the guarded group holds the constraint, reading the hoisted let"
+    );
+}
+
+/// Binder opacity holds inside a constraint: the quantifier-scoped `box(s, s, s)`
+/// stays put (hoisting it would leak an unbound `s`), while the binder-free
+/// conjunct beside it hoists.
+#[test]
+fn constraint_binder_scoped_query_is_not_hoisted_but_its_sibling_is() {
+    let source = r#"structure def CQ {
+    param w : Length = 10mm
+    param sizes: List<Length> = [1mm, 2mm]
+    constraint volume(box(w, w, w)) > w * w * w * 0.5 and (forall s in sizes: volume(box(s, s, s)) > s * s * s * 0.5)
+}"#;
+    assert_hoist_scope("constraint with a quantifier-scoped conjunct", source, 1);
 }

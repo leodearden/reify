@@ -3,9 +3,12 @@
 //! Tests for compiling where-clauses and guarded blocks into
 //! CompiledGuardedGroup entries in TopologyTemplate.
 
+use reify_compiler::{CompiledGuardedGroup, GuardedGroupCell};
 use reify_core::*;
 use reify_ir::*;
-use reify_test_support::{assert_no_diagnostics, compile_first_template};
+use reify_test_support::{
+    assert_no_diagnostics, compile_first_template, try_get_value_cell_in_template,
+};
 
 /// Characterization test: `Chain` inside a `where {}` block is silently ignored
 /// by `compile_guarded_members` — no diagnostic of any severity is emitted.
@@ -105,16 +108,13 @@ structure S {
 
     // x should NOT be in top-level value_cells (it's guarded)
     assert!(
-        !template.value_cells.iter().any(|vc| vc.id.member == "x"),
+        try_get_value_cell_in_template(&template, "x").is_none(),
         "guarded param x should not be in top-level value_cells"
     );
 
     // active should be in top-level value_cells
     assert!(
-        template
-            .value_cells
-            .iter()
-            .any(|vc| vc.id.member == "active"),
+        try_get_value_cell_in_template(&template, "active").is_some(),
         "unguarded param active should be in top-level value_cells"
     );
 
@@ -164,20 +164,17 @@ structure S {
 
     // active should be in top-level value_cells
     assert!(
-        template
-            .value_cells
-            .iter()
-            .any(|vc| vc.id.member == "active"),
+        try_get_value_cell_in_template(&template, "active").is_some(),
         "unguarded param active should be in top-level value_cells"
     );
 
     // x, y should NOT be in top-level value_cells
     assert!(
-        !template.value_cells.iter().any(|vc| vc.id.member == "x"),
+        try_get_value_cell_in_template(&template, "x").is_none(),
         "guarded param x should not be in top-level value_cells"
     );
     assert!(
-        !template.value_cells.iter().any(|vc| vc.id.member == "y"),
+        try_get_value_cell_in_template(&template, "y").is_none(),
         "guarded param y should not be in top-level value_cells"
     );
 
@@ -243,9 +240,9 @@ structure S {
     assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
     // a, b in top-level; x should not be
-    assert!(template.value_cells.iter().any(|vc| vc.id.member == "a"));
-    assert!(template.value_cells.iter().any(|vc| vc.id.member == "b"));
-    assert!(!template.value_cells.iter().any(|vc| vc.id.member == "x"));
+    assert!(try_get_value_cell_in_template(&template, "a").is_some());
+    assert!(try_get_value_cell_in_template(&template, "b").is_some());
+    assert!(try_get_value_cell_in_template(&template, "x").is_none());
 
     // Should have 2 guarded groups (one per nesting level)
     assert_eq!(
@@ -320,6 +317,83 @@ structure S {
             .structure_controlling
             .contains(&group.guard_value_cell)
     );
+}
+
+#[test]
+fn owned_cells_yields_the_guard_then_members_then_else_members() {
+    let source = r#"
+structure S {
+    param cond : Bool = true
+    where cond {
+        param a : Length = 1mm
+        param c : Length = 3mm
+    } else {
+        param b : Length = 2mm
+    }
+}
+"#;
+
+    let (template, diagnostics) = compile_first_template(source);
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    assert_eq!(template.guarded_groups.len(), 1);
+    let group = &template.guarded_groups[0];
+
+    let labelled: Vec<(&str, &str)> = group
+        .owned_cells()
+        .map(|cell| match cell {
+            GuardedGroupCell::Guard(g) => ("guard", g.guard_value_cell.member.as_str()),
+            GuardedGroupCell::Member(decl) => ("member", decl.id.member.as_str()),
+        })
+        .collect();
+    assert_eq!(
+        labelled,
+        [
+            ("guard", group.guard_value_cell.member.as_str()),
+            ("member", "a"),
+            ("member", "c"),
+            ("member", "b"),
+        ]
+    );
+
+    let owned_ids: Vec<ValueCellId> = group
+        .owned_cells()
+        .map(GuardedGroupCell::id)
+        .cloned()
+        .collect();
+    assert_eq!(
+        owned_ids,
+        [
+            group.guard_value_cell.clone(),
+            group.members[0].id.clone(),
+            group.members[1].id.clone(),
+            group.else_members[0].id.clone(),
+        ]
+    );
+
+    let member_ids: Vec<ValueCellId> = group.member_decls().map(|d| d.id.clone()).collect();
+    assert_eq!(
+        member_ids,
+        [
+            ValueCellId::new("S", "a"),
+            ValueCellId::new("S", "c"),
+            ValueCellId::new("S", "b"),
+        ]
+    );
+
+    let guard_payloads: Vec<&CompiledGuardedGroup> = group
+        .owned_cells()
+        .filter_map(|cell| match cell {
+            GuardedGroupCell::Guard(g) => Some(g),
+            GuardedGroupCell::Member(_) => None,
+        })
+        .collect();
+    assert_eq!(guard_payloads.len(), 1);
+    assert!(std::ptr::eq(guard_payloads[0], group));
 }
 
 /// Reference safety: unguarded `let y = x` referencing guarded `param x` should

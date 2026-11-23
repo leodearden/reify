@@ -1,3 +1,4 @@
+module std.result
 #no_prelude
 // Stdlib: Result<T, E> (task B-α #4035 — PRD docs/prds/v0_6/result-and-fallback.md
 // §4.3/§8.B)
@@ -17,15 +18,12 @@
 // γ #4031's `compile_variant_construct`, threaded via `ctx.resolution_enums` =
 // prelude ++ local) — this module adds no Rust logic of its own.
 //
-// Registration: stdlib_loader.rs::stdlib_sources() inserts this module
-// adjacent to std.option_recovery and BEFORE std.determinacy.purposes (which
-// must remain LAST). No `import` edges → compile_modules_topo keeps the
-// identity order.
+// Registration: declares no `import` (`#no_prelude`, builtins only).
 //
 // result-fallback Layer-B γ (task #4037): six generic recovery combinators
 // declared below, co-located with the enum so `Result<T,E>` resolves as a
-// same-module LOCAL enum type (std.option_recovery loads BEFORE std.result,
-// so it cannot see Result). All bodies are TYPECHECK-ONLY placeholders —
+// same-module LOCAL enum type (std.option_recovery does not import
+// std.result, so it cannot see Result). All bodies are TYPECHECK-ONLY placeholders —
 // result_type is derived from generic-signature substitution at the call
 // site (expr.rs resolve_function_overload → type_compat::unify →
 // substitute_type_params), independent of the body, exactly as in
@@ -98,12 +96,11 @@ pub fn map_err<T, E, F>(r: Result<T, E>, f: (E) -> F) -> Result<T, F> { r }
 /// propagation).
 ///
 /// Placeholder body returns `err` directly (NOT `Err { error: err }`):
-/// variant-construction payload fields must be compile-time literals
-/// (variant_construct.rs's v1 non-constant-payload restriction), and `err` is
-/// a runtime param reference, so constructing `Err { error: err }` here draws
-/// an Error diagnostic ("non-constant payload value for field 'error'").
 /// result_type is derived from call-site signature substitution independent
 /// of the body (exactly as every other combinator above), so a bare param
 /// reference is a safe, minimal placeholder — the real Option→Result bridge
-/// runs in eval (option_recovery.rs's eval_ok_or, step 4).
+/// runs in eval (option_recovery.rs's eval_ok_or, step 4). Constructing
+/// `Err { error: err }` is compilable now that a non-literal payload lowers to
+/// a runtime `VariantCtor` (introduced by #7456); switching the body to it is
+/// #7744's.
 pub fn ok_or<T, E>(o: Option<T>, err: E) -> Result<T, E> { err }

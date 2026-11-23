@@ -71,7 +71,7 @@ const OPS_REACH_FLOOR: usize = 200;
 /// error, or a fresh `Engine::build` panic swallowed by `catch_unwind` — and row 20's
 /// claim would shrink with them while this gate stayed green. So the skip SET is pinned
 /// exactly, in the shape
-/// `eval_invariant_corpus_sweep::residual_exemptions_and_failure_policy_stay_per_invariant`
+/// `eval_invariant_corpus_sweep::residual_lists_and_bypass_keys_stay_per_invariant`
 /// already uses for its residual exemptions: a new skip reds naming the file and its
 /// cause, and a member that starts building again reds so its dead entry is deleted.
 ///
@@ -192,18 +192,9 @@ fn sweep_source(rel: &str, source: &str) -> FileOutcome {
         Ok(outcome) => FileOutcome::Swept(outcome),
         Err(payload) => FileOutcome::Skipped(Skip {
             cause: SkipCause::BuildPanic,
-            detail: panic_text(&payload),
+            detail: reify_core::panic_payload_to_string(payload.as_ref()),
         }),
     }
-}
-
-/// The payload of a caught panic, as text, so a skip line says WHY rather than just that.
-fn panic_text(payload: &Box<dyn std::any::Any + Send>) -> String {
-    payload
-        .downcast_ref::<&str>()
-        .map(|s| (*s).to_string())
-        .or_else(|| payload.downcast_ref::<String>().cloned())
-        .unwrap_or_else(|| "<non-string panic payload>".to_string())
 }
 
 /// Realize `compiled` against a mock kernel and collect what this gate reads off it.

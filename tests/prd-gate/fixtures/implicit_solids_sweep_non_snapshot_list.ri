@@ -1,6 +1,6 @@
 // kappa negative: a non-snapshot list element -> coded misuse diagnostic.
 structure def SweepBadList {
-    let j_x = prismatic(vec3(1, 0, 0), 0mm .. 100mm)
+    let j_x = prismatic(dir(1, 0, 0), 0mm .. 100mm)
     let m0 = mechanism()
     let m1 = body(m0, "head", j_x)
     let id_head = body_id_of(m1, "head")

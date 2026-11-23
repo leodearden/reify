@@ -12,9 +12,14 @@
 //! There is no third outcome. A "close enough" literal would silently corrupt
 //! a user's design file, which is strictly worse than refusing to edit it.
 //!
-//! # The three qualifications on that sentence
+//! A `Value::Direction` is written as `dir(x, y, z)`; its same-bits guarantee
+//! rests on `UnitVec3::from_vector` being a bit-level fixed point
+//! (docs/prds/v0_6/direction-typing.md C2), so re-parsing re-normalises to
+//! the identical unit vector — subject to qualification 4 below.
 //!
-//! All three are load-bearing for a caller deciding whether a splice is safe,
+//! # The four qualifications on that sentence
+//!
+//! All four are load-bearing for a caller deciding whether a splice is safe,
 //! so they are stated here rather than left in an inline comment.
 //!
 //! **1. One documented variant change.** A *dimensionless* `Value::Scalar` has
@@ -83,6 +88,22 @@
 //! factor-1.0 atoms structurally avoids (see
 //! `reify_core::units::ri_compound_unit_expr`). A hint may change WHICH exact
 //! literal is written for a bare dimension; it may never reach a compound one.
+//!
+//! **4. A precondition on the target module's function namespace.** Every
+//! other emitted form is a pure literal; `dir(x, y, z)` is a CALL, so its
+//! round trip depends on the name `dir` reaching the builtin. The compiler
+//! consults builtins only when no user function of that name is in scope (the
+//! `NoUserFunctions` arm of reify-compiler's `expr.rs` overload ladder), so a
+//! user `fn dir` either redirects the spliced default to itself or answers
+//! `NoMatchingOverload`. So the guarantee for a `Value::Direction` reads in
+//! full:
+//!
+//! > …provided the target module does not declare its own `fn dir` (or
+//! > otherwise bring a user `fn dir` into scope).
+//!
+//! As with a user-shadowed unit symbol, nothing in this crate can see that
+//! declaration, so a caller splicing into arbitrary user source should treat a
+//! user `fn dir` as outside the guarantee.
 //!
 //! # Why not `Display for Value`
 //!
@@ -281,11 +302,13 @@ pub enum UnitScope {
 /// Equivalent to [`value_to_ri_literal_with_unit`] with no unit preference.
 ///
 /// Re-parsing an `Ok` result yields the same variant, dimension and f64 bits,
-/// subject to the module-level doc's two qualifications: a *dimensionless*
-/// `Value::Scalar` comes back as a `Value::Real` (same dimension, same bits,
-/// different variant — an un-suffixed `.ri` number literal has no other
-/// reading), and the bit-exactness holds unless the target module's
-/// `UnitRegistry` shadows the emitted symbol with a different factor.
+/// subject to the module-level doc's qualifications 1, 2 and 4: a
+/// *dimensionless* `Value::Scalar` comes back as a `Value::Real` (same
+/// dimension, same bits, different variant — an un-suffixed `.ri` number
+/// literal has no other reading), the bit-exactness holds unless the target
+/// module's `UnitRegistry` shadows the emitted symbol with a different factor,
+/// and a `Value::Direction` round-trips only while no user `fn dir` is in
+/// scope.
 pub fn value_to_ri_literal(value: &Value) -> Result<String, RiLiteralError> {
     value_to_ri_literal_with_unit(value, None)
 }
@@ -440,6 +463,13 @@ pub fn value_to_ri_literal_in_scope(
             Err(RiLiteralError::UnrepresentableDimension {
                 dimension: *dimension,
             })
+        }
+        // Every component is finite by `UnitVec3`'s invariant, and an integral
+        // one re-parses as an exact `Int`. A direction has no unit, so the
+        // scope and hint are irrelevant.
+        Value::Direction(u) => {
+            let [x, y, z] = u.components().map(|c| format_f64_shortest(c, false));
+            Ok(format!("dir({x}, {y}, {z})"))
         }
         other => Err(RiLiteralError::UnsupportedValueKind {
             kind: other.kind_name(),
@@ -755,7 +785,7 @@ mod tests {
     /// and must NOT embed a `{value:?}` dump (a `SampledField` payload could
     /// be enormous).
     ///
-    /// `Complex`, `Direction`, `Range` and `Orientation` are here deliberately:
+    /// `Complex`, `Range` and `Orientation` are here deliberately:
     /// they are the variants an earlier `_ => "Unsupported"` catch-all
     /// collapsed into one uninformative name, and a datum-ish param is exactly
     /// what an agent is most likely to try to edit. Covering only the variants
@@ -775,14 +805,6 @@ mod tests {
                     dimension: DimensionVector::DIMENSIONLESS,
                 },
                 "Complex",
-            ),
-            (
-                Value::Direction {
-                    x: 0.0,
-                    y: 0.0,
-                    z: 1.0,
-                },
-                "Direction",
             ),
             (
                 Value::Range {
@@ -912,6 +934,15 @@ mod tests {
 
     fn lit(v: &Value) -> String {
         value_to_ri_literal(v).unwrap_or_else(|e| panic!("expected Ok for {v:?}, got {e:?}"))
+    }
+
+    #[test]
+    fn direction_is_written_as_a_dir_call() {
+        let direction =
+            |v: [f64; 3]| Value::Direction(crate::direction::UnitVec3::from_vector(v).unwrap());
+        assert_eq!(lit(&direction([0.0, 0.0, 1.0])), "dir(0, 0, 1)");
+        assert_eq!(lit(&direction([0.0, 0.0, -1.0])), "dir(0, 0, -1)");
+        assert_eq!(lit(&direction([0.6, 0.8, 0.0])), "dir(0.6, 0.8, 0)");
     }
 
     #[test]
@@ -1173,20 +1204,32 @@ mod tests {
         }
     }
 
-    /// (c) REJECTIONS THAT SURVIVE THE UNLOCK. Each is a case where emitting
-    /// something would produce a literal that does not re-parse.
+    /// (b2) RATIONAL EXPONENTS are written in `Rational`'s `p/q` spelling,
+    /// which the unit grammar reads back (task #9236).
     #[test]
-    fn the_unlock_does_not_widen_to_what_still_cannot_be_written() {
-        // A fractional exponent has no integral `UnitExpr::Pow` spelling.
-        assert!(matches!(
+    fn rational_exponent_dimensions_emit_their_p_over_q_spelling() {
+        assert_eq!(
             value_to_ri_literal_in_scope(
                 &compound(1.5, DimensionVector::LENGTH.root(2)),
                 None,
                 UnitScope::SiBaseUnitsSeeded
             ),
-            Err(RiLiteralError::UnrepresentableDimension { .. })
-        ));
+            Ok("1.5m^1/2".to_string())
+        );
+        assert_eq!(
+            value_to_ri_literal_in_scope(
+                &compound(5e7, DimensionVector::FRACTURE_TOUGHNESS),
+                None,
+                UnitScope::SiBaseUnitsSeeded
+            ),
+            Ok("50000000kg/m^1/2/s^2".to_string())
+        );
+    }
 
+    /// (c) REJECTIONS THAT SURVIVE THE UNLOCK. Each is a case where emitting
+    /// something would produce a literal that does not re-parse.
+    #[test]
+    fn the_unlock_does_not_widen_to_what_still_cannot_be_written() {
         // Finiteness is checked BEFORE any formatting, so a non-finite
         // compound value is `NonFiniteNumber` — never a partially-formed
         // `NaNm^2`.

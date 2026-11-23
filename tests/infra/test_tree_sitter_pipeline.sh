@@ -2,13 +2,21 @@
 #
 # Tree-sitter Pipeline Infrastructure Tests
 #
-# Validates the tree-sitter parser auto-generation pipeline:
-#   1. build.rs auto-generation — deletes parser.c and verifies cargo check
-#      regenerates it via the needs_generate -> run_tree_sitter_generate path.
-#   2. scripts/tree-sitter-generate.sh — positive and negative tests for the
-#      standalone generation script.
-#   3. Infrastructure checks — .gitignore, git tracking, orchestrator config,
-#      hooks, and install guidance.
+# Validates the tree-sitter parser pipeline:
+#   1. build.rs generation into $OUT_DIR/src (#9896) — on a hermetic fixture
+#      crate running the real build.rs/build_support.rs, CLI and cargo: what it
+#      writes, reads and watches, that damage to OUT_DIR or a grammar/CLI
+#      change regenerates, and that nothing in tree-sitter-reify/src reruns or
+#      feeds the build.
+#   2. scripts/tree-sitter-freshness.sh — the out-of-build attestation of
+#      grammar.js and src/scanner.c, its check/ensure verdicts and its verify.sh
+#      placement around the cargo wave.
+#   3. scripts/tree-sitter-generate.sh — positive and negative tests for the
+#      script that writes tree-sitter-reify/src for the `tree-sitter parse` CLI.
+#   4. Infrastructure checks — .gitignore, git tracking, orchestrator config,
+#      hooks, routing, and install guidance.
+#   5. The suite's own fixture helpers — each fills the empty dir its caller
+#      made and registered for cleanup, and allocates nothing of its own (#10044).
 #
 # Assert helpers capture full stdout/stderr on failure for diagnostics.
 # File state is managed via backup/restore with trap-based cleanup.
@@ -38,6 +46,49 @@ source "$SCRIPT_DIR/plan_capture_lib.sh"
 [ -f "$SCRIPT_DIR/ts_outputs_manifest_lib.sh" ] || { echo "ERROR: ts_outputs_manifest_lib.sh not found at $SCRIPT_DIR/ts_outputs_manifest_lib.sh"; exit 1; }
 source "$SCRIPT_DIR/ts_outputs_manifest_lib.sh"
 
+# cargo_inputs_lib.sh — cargo_inputs_fetch, for ts_require_cargo_inputs below. The
+# mk_ts_build_fixture crates build --offline with `cc = "1"` and no Cargo.lock, so
+# they resolve against CARGO_HOME. It defines no `test_` name, so run_tests'
+# discovery is unaffected. Rationale: tests/infra/README.md, "Cargo registry
+# inputs: a verdict never depends on the cache".
+[ -f "$SCRIPT_DIR/cargo_inputs_lib.sh" ] || { echo "ERROR: cargo_inputs_lib.sh not found at $SCRIPT_DIR/cargo_inputs_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/cargo_inputs_lib.sh"
+
+# TS_INFRA_RC — "no verdict" at every layer of this suite: run_guarded_cargo_check
+# returns it, each case propagates it, run_tests and ts_require_cargo_inputs exit
+# with it. EX_TEMPFAIL, neither PASS nor FAIL: tests/infra/README.md, "Cargo
+# registry inputs: a verdict never depends on the cache".
+TS_INFRA_RC=75
+
+# ts_require_cargo_inputs — put the workspace's locked inputs for this host in
+# CARGO_HOME before the first test. The workspace's Cargo.lock pins the cc the
+# fixture crates then resolve offline. Ends the suite itself: exit TS_INFRA_RC with
+# the INFRASTRUCTURE verdict when the registry cannot be reached, exit 1 when the
+# fetch refuses for any other reason. The verdict line is test_helpers.sh's
+# test_summary_infra_unavailable shape; this suite cannot source that file, because
+# run_tests would discover its test_summary* functions as cases.
+ts_require_cargo_inputs() {
+    local host rc=0
+    host=$(rustc -vV 2>/dev/null | sed -n 's/^host: //p') || host=""
+    if [ -z "$host" ]; then
+        echo "  ASSERTION FAILED: could not read the host triple from rustc -vV"
+        exit 1
+    fi
+    cargo_inputs_fetch --target "$host" --manifest-path "$REPO_ROOT/Cargo.toml" || rc=$?
+    case "$rc" in
+        0) ;;
+        "$CARGO_INPUTS_UNAVAILABLE_RC")
+            echo "INFRASTRUCTURE: the registry holds the workspace's locked inputs for $host (cargo fetch --locked) — no test ran (exit $TS_INFRA_RC, EX_TEMPFAIL: neither PASS nor FAIL)"
+            exit "$TS_INFRA_RC"
+            ;;
+        *)
+            echo "  ASSERTION FAILED: cargo fetch --locked --target $host --manifest-path $REPO_ROOT/Cargo.toml refused (rc $rc): a defect in the tree"
+            exit 1
+            ;;
+    esac
+}
+ts_require_cargo_inputs
+
 TS_DIR="$REPO_ROOT/tree-sitter-reify"
 
 # The out-of-build freshness guard (task #5629 / esc-5392-1).  A build script that
@@ -52,19 +103,17 @@ FRESHNESS_SCRIPT="$REPO_ROOT/scripts/tree-sitter-freshness.sh"
 # of the freshness block below own that seam from this side.
 SEMAPHORE_E2E_SUITE="$SCRIPT_DIR/test_verify_semaphore_e2e.sh"
 
-# --- Counters ---
-PASS_COUNT=0
-FAIL_COUNT=0
-
 # --- Colors ---
 if [[ -t 1 ]]; then
     GREEN='\033[0;32m'
     RED='\033[0;31m'
+    YELLOW='\033[0;33m'
     BOLD='\033[1m'
     RESET='\033[0m'
 else
     GREEN=''
     RED=''
+    YELLOW=''
     BOLD=''
     RESET=''
 fi
@@ -146,13 +195,23 @@ assert_file_nonempty() {
     fi
 }
 
+ts_print_captured() {
+    # Usage: ts_print_captured <label> <file>
+    # A capture's lines, each behind "  | ", so a captured
+    # @@REIFY_INFRA_UNAVAILABLE@@ marker is never re-emitted at column 0, where
+    # a runner would take it for this suite's own verdict.
+    echo "  --- $1 ---"
+    sed 's/^/  | /' "$2"
+    echo "  --- end $1 ---"
+}
+
 require_tree_sitter_cli() {
     # Usage: require_tree_sitter_cli || return 0
     # SKIPs (not fails) when the tree-sitter CLI is not on PATH. The CLI is
     # an optional dev dependency (cargo install tree-sitter-cli); tests that
     # need to invoke it directly must degrade gracefully rather than report
-    # a false FAIL for an environment gap. Shared by
-    # test_auto_generation_rebuilds_parser and test_generate_script_succeeds_normally.
+    # a false FAIL for an environment gap. Shared by every test that runs the
+    # CLI, directly or through a build script.
     if ! command -v tree-sitter >/dev/null 2>&1; then
         echo "  SKIP: tree-sitter CLI not on PATH (install via: cargo install tree-sitter-cli)"
         return 1
@@ -169,9 +228,8 @@ provision_fixture_parser_c() {
     # generate at plan line 16, this file's pole at line 31 on a task-scope
     # plan) — but a STANDALONE run of this file has no such guarantee, and a
     # bare `cp` of it then dies with `cp: cannot stat`. That is the same
-    # standalone-crash class task #6361 fixed for
-    # test_auto_generation_rebuilds_parser; this is its hermetic-fixture
-    # counterpart.
+    # standalone-crash class task #6361 fixed for a real-tree regeneration
+    # test; this is its hermetic-fixture counterpart.
     #
     # The callers below build a fixture tree that is only ever FINGERPRINTED —
     # hashed and mtime-stamped, never compiled — so parser.c's CONTENT is
@@ -188,50 +246,69 @@ provision_fixture_parser_c() {
     fi
 }
 
+provision_fixture_headers() {
+    # Usage: provision_fixture_headers <dest-dir> || return 1
+    #
+    # provision_fixture_parser_c's sibling, for the same reason: since #9741
+    # src/tree_sitter/*.h are untracked generate outputs, absent in a fresh lane
+    # until something generates them, and these fixtures are fingerprinted,
+    # never compiled.
+    local dest="$1" h copied=0
+    mkdir -p "$dest" || return 1
+    for h in "$TS_DIR"/src/tree_sitter/*.h; do
+        [ -f "$h" ] || continue
+        cp "$h" "$dest/" || return 1
+        copied=1
+    done
+    [ "$copied" -eq 0 ] || return 0
+    for h in alloc.h array.h parser.h; do
+        printf '/* placeholder %s — fixture is fingerprinted, never compiled */\n' "$h" \
+            > "$dest/$h" || return 1
+    done
+}
+
 # --- Guard Helper ---
-# run_guarded_cargo_check [--skip-on-unresolved] <out_file> <cmd...>
+# run_guarded_cargo_check <out_file> <cmd...>
 # Runs <cmd...>, capturing combined stdout+stderr to <out_file>.
-# Returns a tri-state code safe under `set -euo pipefail`:
-#   0 — success              (caller continues to parser.c existence checks)
-#   1 — hard fail            (diagnostic already printed; caller returns 1)
-#   2 — timeout / env gap    (SKIP message printed; caller returns 0 to skip asserts)
+# Returns a code safe under `set -euo pipefail`:
+#   0            — success     (caller continues to parser.c existence checks)
+#   1            — hard fail   (diagnostic already printed; caller returns 1)
+#   TS_INFRA_RC  — <cmd...> was killed by its timeout (exit 124): no verdict.
+#                  Callers propagate it (`return "$TS_INFRA_RC"`) and run_tests ends
+#                  the suite with it; mapping it to a pass would claim a verdict
+#                  nothing reached.
+#
+# A killed build proves nothing about the code under test, so it is neither a SKIP
+# (a vacuous pass) nor a FAIL: a cold sccache or target dir, or a wait on the
+# build-directory lock, can push it past its bound (tests/infra/README.md, "Cargo
+# registry inputs: a verdict never depends on the cache"). The guard gives the
+# verdict itself, whole on stderr, so a caller that discards only the stdout chatter
+# of the FAIL it expects still shows it: the column-0 marker, a line naming the
+# command, and the tail of its output behind "  | ", so a lock wait can be told from
+# a hang.
 #
 # Uses `|| rc=$?` to capture cmd's GENUINE exit code, shielding it from
 # `set -e` (the established codebase idiom; see test_portable_timeout.sh:212).
 #
-# --skip-on-unresolved IS OPT-IN, AND MUST STAY THAT WAY (#6992 amendment pass).
-# It adds one arm: a cargo resolver/registry diagnostic maps to SKIP rather than
-# FAIL. That is right ONLY for the mk_ts_build_fixture callers, which write a
-# standalone crate outside the workspace, with no Cargo.lock and `cc = "1"` as a
-# build-dependency, and build it --offline — so resolution succeeds only if the
-# host's shared registry cache already holds a compatible cc 1.x, and a host
-# without it has an environment gap, not a defect (the inconsistency
-# require_tree_sitter_cli and the `SKIP: no hasher` arms exist to avoid).
-#
-# It is WRONG for the callers that run against the REAL workspace
-# (`-p tree-sitter-reify --manifest-path $REPO_ROOT/Cargo.toml`), which have a
-# committed Cargo.lock and no --offline: there, `no matching package` / `failed
-# to select a version` mean a genuinely broken manifest or lockfile, and a
-# blanket arm would print SKIP and return 0 over exactly the breakage those
-# tests exist to catch. Hence the flag rather than a shared arm — the default
-# stays the pre-existing 0/1/124 tri-state.
+# Any other non-zero exit, a cargo resolver or registry diagnostic included, is a
+# FAIL for every caller: the real-workspace checks have a committed Cargo.lock, and
+# the mk_ts_build_fixture crates resolve against the inputs ts_require_cargo_inputs
+# fetched before any test ran (#10001; tests/infra/README.md, "Cargo registry
+# inputs: a verdict never depends on the cache").
 run_guarded_cargo_check() {
-    local skip_on_unresolved=false
-    if [ "${1:-}" = "--skip-on-unresolved" ]; then
-        skip_on_unresolved=true
-        shift
-    fi
     local out_file="$1"; shift
     local rc=0
     "$@" >"$out_file" 2>&1 || rc=$?
     if [ "$rc" -eq 0 ]; then
         return 0
     elif [ "$rc" -eq 124 ]; then
-        echo "  SKIP: cargo check timed out after 300 s (cold/contended-cache environment)"
-        return 2
-    elif [ "$skip_on_unresolved" = true ] && grep -qE 'no matching package|failed to select a version|registry index was not found|not found in registry|failed to download|attempting to make an HTTP request' "$out_file"; then
-        echo "  SKIP: cargo could not resolve dependencies offline (host registry cache lacks them)"
-        return 2
+        {
+            echo ""   # ends the case's still-open `RUN  name ... ` line: the marker is column 0
+            echo "@@REIFY_INFRA_UNAVAILABLE@@ kind=cargo_timeout rc=124 cmd=$*"
+            echo "  INFRA: $* timed out (exit 124): no verdict"
+            tail -n 20 "$out_file" | sed 's/^/  | /'
+        } >&2
+        return "$TS_INFRA_RC"
     else
         echo ""
         echo "  ASSERTION FAILED: cargo check failed (exit $rc)"
@@ -282,19 +359,12 @@ ts_mtime() {
 
 # ts_watched_files <ts_dir>
 #
-# The EXACT set `ensure` is allowed to touch: grammar.js + src/scanner.c +
-# src/tree_sitter/*.h — i.e. what build.rs declares via rerun-if-changed.
-# src/parser.c is deliberately excluded, and stays excluded after `#6992` made
-# build.rs WATCH it: this models what `ensure` may force-TOUCH, which is a
-# narrower set than what cargo watches (see ts_watched_inputs in
-# scripts/tree-sitter-freshness.sh for why a build-script output must not enter
-# a force set).
+# The EXACT set `ensure` is allowed to touch: grammar.js + src/scanner.c. Since
+# #9896 the force set equals the fingerprint's input set, and both are the
+# tracked files build.rs watches; nothing under src/ that tree-sitter-generate.sh
+# writes is in either.
 ts_watched_files() {
-    local ts="$1" h
-    printf '%s\n' "$ts/grammar.js" "$ts/src/scanner.c"
-    for h in "$ts"/src/tree_sitter/*.h; do
-        [ -f "$h" ] && printf '%s\n' "$h"
-    done
+    printf '%s\n' "$1/grammar.js" "$1/src/scanner.c"
 }
 
 # ts_witness_value <ts_dir>
@@ -390,14 +460,13 @@ run_ts_freshness() {
     fi
 }
 
-# ts_masked_path_dir <name-to-mask>
+# ts_masked_path_dir <dir> <name-to-mask>
 #
-# Print a shim directory holding symlinks to every executable currently
-# resolvable on PATH EXCEPT <name-to-mask>, so `PATH=$shim` reproduces this
-# host minus exactly one binary. PATH dirs are walked in order and the first
-# occurrence of a basename wins (`[ -e "$shim/$b" ] && continue`), so
-# resolution order is preserved exactly. Registers its own cleanup through
-# CLEANUP_ACTIONS.
+# Fill the empty <dir>, which the caller created and registered for cleanup,
+# with symlinks to every executable currently resolvable on PATH EXCEPT
+# <name-to-mask>, so `PATH=<dir>` reproduces this host minus exactly one binary.
+# PATH dirs are walked in order and the first occurrence of a basename wins
+# (`[ -e "$shim/$b" ] && continue`), so resolution order is preserved exactly.
 #
 # MASKING BY OMISSION, NOT BY SHADOWING — load-bearing. The obvious shim
 # (a `sha256sum` stub that exits 1, placed first on PATH) drives a DIFFERENT
@@ -424,14 +493,11 @@ run_ts_freshness() {
 #
 # Deliberately NOT named test_* (see the block header above).
 ts_masked_path_dir() {
-    local mask="${1:-}"
-    if [ -z "$mask" ]; then
-        echo "  ts_masked_path_dir: usage: ts_masked_path_dir <name-to-mask>" >&2
+    local shim="${1:-}" mask="${2:-}"
+    if [ -z "$shim" ] || [ -z "$mask" ]; then
+        echo "  ts_masked_path_dir: usage: ts_masked_path_dir <dir> <name-to-mask>" >&2
         return 1
     fi
-    local shim
-    shim=$(mktemp -d) || return 1
-    CLEANUP_ACTIONS+=("rm -rf '$shim'")
 
     local -a dirs=()
     IFS=':' read -r -a dirs <<< "$PATH"
@@ -455,29 +521,28 @@ ts_masked_path_dir() {
         done
     done
     [ "$had_nullglob" -eq 1 ] || shopt -u nullglob
-
-    printf '%s' "$shim"
+    return 0
 }
 
-# mk_ts_generate_fixture
+# mk_ts_generate_fixture <dir>
 #
-# A throwaway root holding a copy of scripts/ and a minimal tree-sitter-reify/,
-# so the REAL scripts/tree-sitter-generate.sh can be driven end to end without
-# ever mutating the lane's own tree. The script resolves its target as
+# Fill the empty <dir>, which the caller created and registered for cleanup,
+# with a copy of scripts/ and a minimal tree-sitter-reify/, so the REAL
+# scripts/tree-sitter-generate.sh can be driven end to end without ever mutating
+# the lane's own tree. The script resolves its target as
 # "$SCRIPT_DIR/../tree-sitter-reify", so the two must be copied together.
 #
 # Only grammar.js and package.json are copied in: `tree-sitter generate` needs
 # nothing else, and everything under src/ is an OUTPUT this fixture exists to
-# observe. Prints the root; registers its own cleanup.
+# observe.
 mk_ts_generate_fixture() {
-    local dir
-    dir="$(mktemp -d)" || return 1
-    CLEANUP_ACTIONS+=("rm -rf '$dir'")
+    local dir="$1"
     cp -r "$REPO_ROOT/scripts" "$dir/scripts" || return 1
     mkdir -p "$dir/tree-sitter-reify/src" || return 1
     cp "$TS_DIR/grammar.js" "$dir/tree-sitter-reify/grammar.js" || return 1
-    [ -f "$TS_DIR/package.json" ] && cp "$TS_DIR/package.json" "$dir/tree-sitter-reify/"
-    printf '%s' "$dir"
+    if [ -f "$TS_DIR/package.json" ]; then
+        cp "$TS_DIR/package.json" "$dir/tree-sitter-reify/" || return 1
+    fi
 }
 
 # ts_generate_outputs_stamp <fixture-root> — path to the new sibling stamp.
@@ -514,44 +579,38 @@ ts_assert_outputs_manifest_matches_disk() {
     esac
 }
 
-# mk_ts_build_fixture <grammar-variant-file> [crate-subdir]
+# mk_ts_build_fixture <dir> <grammar-variant-file>
 #
-# A STANDALONE cargo crate that runs the REAL build.rs and build_support.rs
-# against a tiny throwaway grammar, so a genuine `cargo build` can be driven end
-# to end without touching the lane's tree or paying 5.8 MB of parser.c
-# compilation. Prints the crate root; registers its own cleanup.
-#
-# With [crate-subdir], the crate is placed at <tmp>/<crate-subdir> instead of at
-# <tmp> itself. Passing `tree-sitter-reify` reproduces the repo layout
-# scripts/tree-sitter-generate.sh resolves against (it derives TS_DIR as
-# "$SCRIPT_DIR/../tree-sitter-reify"), so a caller that also drops scripts/ in
-# beside it can drive BOTH halves of the stamp contract over one tree — see
-# test_shell_written_manifest_satisfies_build_rs.
+# Write into the empty <dir> a STANDALONE cargo crate that runs the REAL
+# build.rs and build_support.rs against a tiny throwaway grammar, so a genuine
+# `cargo build` can be driven end to end without touching the lane's tree or
+# paying 5.8 MB of parser.c compilation. The caller creates <dir> and registers
+# its cleanup: a CLEANUP_ACTIONS entry added inside `$(...)` is lost with the
+# subshell, which leaked every fixture and its target/.
 #
 # The grammar is deliberately NOT reify's. What is under test is build.rs's
-# staleness logic, which is grammar-agnostic — and a two-rule grammar compiles in
-# about a second where reify's takes a minute per build, with four builds here.
+# generation and staleness logic, which is grammar-agnostic, and a two-rule
+# grammar compiles in about a second where reify's takes a minute per build.
 # The real build.rs, the real build_support.rs, the real tree-sitter CLI, real
 # cargo and real mtimes are all in play; only the grammar's SIZE changes.
 #
 # Detached from any parent workspace via an empty [workspace] table, and built
-# --offline against the shared registry (cc is already vendored for the real
-# workspace).
+# --offline against the inputs ts_require_cargo_inputs fetched at the top of this
+# file (cc, and the libc reify-exec-lookup needs, are both in the workspace's
+# Cargo.lock). The real build.rs calls reify-exec-lookup, so the fixture
+# build-depends on this checkout's copy by path.
 mk_ts_build_fixture() {
-    local variant="$1" subdir="${2:-}" root dir
-    root="$(mktemp -d)" || return 1
-    CLEANUP_ACTIONS+=("rm -rf '$root'")
-    dir="$root${subdir:+/$subdir}"
+    local dir="$1" variant="$2"
     mkdir -p "$dir/src" || return 1
     cp "$TS_DIR/build.rs" "$dir/build.rs" || return 1
     cp "$TS_DIR/build_support.rs" "$dir/build_support.rs" || return 1
     cp "$variant" "$dir/grammar.js" || return 1
-    # build.rs hands src/scanner.c to cc unconditionally. The fixture grammar
-    # declares no externals, so parser.c references no scanner symbols and an
-    # empty translation unit links fine.
-    printf '/* fixture: no external scanner */\n' > "$dir/src/scanner.c" || return 1
+    # The fixture grammar declares no externals, so parser.c references no
+    # scanner symbols. The scanner carries the real one's include line, so where
+    # that quote include resolves is part of what a build exercises.
+    printf '#include "tree_sitter/parser.h"\n' > "$dir/src/scanner.c" || return 1
     printf '//! tree-sitter build-pipeline fixture crate.\n' > "$dir/src/lib.rs" || return 1
-    cat > "$dir/Cargo.toml" <<'TOML'
+    cat > "$dir/Cargo.toml" <<TOML
 [package]
 name = "tree-sitter-reify"
 version = "0.0.0"
@@ -560,10 +619,98 @@ build = "build.rs"
 
 [build-dependencies]
 cc = "1"
+reify-exec-lookup = { path = "$REPO_ROOT/crates/reify-exec-lookup" }
 
 [workspace]
 TOML
-    printf '%s' "$dir"
+}
+
+# ts_reference_parser <grammar-file> <dir>
+#
+# Generate <grammar-file> into <dir>/src with the real CLI, invoked as build.rs
+# invokes it, so <dir>/src/parser.c holds the bytes a build of that grammar
+# compiles. Never runs inside a fixture, so it cannot repair anything under
+# test.
+ts_reference_parser() {
+    cp "$1" "$2/grammar.js" || return 1
+    if ! ( cd "$2" && tree-sitter generate grammar.js --abi 14 -o "$2/src" ) >/dev/null 2>&1; then
+        echo ""
+        echo "  ASSERTION FAILED: tree-sitter generate failed on $1"
+        return 1
+    fi
+}
+
+# ts_cargo_build_fixture <fixture> <out_file>
+#
+# One offline `cargo build` of a mk_ts_build_fixture crate, through
+# run_guarded_cargo_check's codes: 0 built, 1 failed (diagnostic printed),
+# TS_INFRA_RC timed out (verdict printed). Callers propagate TS_INFRA_RC.
+# CARGO_TARGET_DIR is pinned to <fixture>/target, where ts_fixture_out_dir looks,
+# so an ambient one can neither hide the build nor make fixtures share a target
+# dir.
+ts_cargo_build_fixture() {
+    run_guarded_cargo_check "$2" timeout 300 \
+        env CARGO_TARGET_DIR="$1/target" \
+        cargo build --offline --manifest-path "$1/Cargo.toml"
+}
+
+# ts_fixture_out_dir <fixture>
+#
+# The fixture's build-script OUT_DIR: the one
+# target/debug/build/tree-sitter-reify-*/out holding libtree_sitter_reify.a.
+# Fails naming the glob unless there is exactly one.
+ts_fixture_out_dir() {
+    local -a found=()
+    local a
+    for a in "$1"/target/debug/build/tree-sitter-reify-*/out/libtree_sitter_reify.a; do
+        [ -f "$a" ] && found+=("$(dirname "$a")")
+    done
+    if [ "${#found[@]}" -ne 1 ]; then
+        echo "" >&2
+        echo "  ASSERTION FAILED: expected exactly one $1/target/debug/build/tree-sitter-reify-*/out/libtree_sitter_reify.a, found ${#found[@]}" >&2
+        return 1
+    fi
+    printf '%s' "${found[0]}"
+}
+
+# ts_fixture_marker <fixture>
+#
+# `stat -c %y` of the build-script run dir's `output`, which cargo rewrites each
+# time it runs the script. Nanosecond precision, so two runs in one second
+# still differ.
+ts_fixture_marker() {
+    local out
+    out=$(ts_fixture_out_dir "$1") || return 1
+    stat -c %y "$(dirname "$out")/output"
+}
+
+# The files scripts/tree-sitter-generate.sh's CLI path leaves in
+# tree-sitter-reify/src, none of which the build may read or watch.
+TS_SRC_CLI_PATH_FILES=(
+    parser.c grammar.json node-types.json
+    tree_sitter/alloc.h tree_sitter/array.h tree_sitter/parser.h
+    .grammar_hash.stamp .generated_outputs.stamp
+)
+
+# ts_poison_src_cli_path_files <src_dir>
+#
+# Write every TS_SRC_CLI_PATH_FILES entry into <src_dir>, mtime now, as a line
+# that fails any compile that includes it.
+ts_poison_src_cli_path_files() {
+    local f
+    mkdir -p "$1/tree_sitter" || return 1
+    for f in "${TS_SRC_CLI_PATH_FILES[@]}"; do
+        printf '#error poisoned: the build read tree-sitter-reify/src\n' > "$1/$f" || return 1
+    done
+}
+
+# ts_remove_src_cli_path_files <src_dir> — what the acquire's git clean does.
+ts_remove_src_cli_path_files() {
+    local f
+    for f in "${TS_SRC_CLI_PATH_FILES[@]}"; do
+        rm -f "$1/$f"
+    done
+    rmdir "$1/tree_sitter" 2>/dev/null || true
 }
 
 # ts_write_grammar_variant <dest> <variant: a|b>
@@ -613,142 +760,198 @@ ts_normalize_lane_mtimes() {
         | xargs -0 -r touch -d '2020-01-01 00:00:00'
 }
 
-# mk_verify_fixture
+# mk_verify_fixture <dir>
 #
-# A throwaway git repo holding a copy of scripts/ and .config/, enough for
+# Fill the empty <dir>, which the caller created and registered for cleanup,
+# with a throwaway git repo holding a copy of scripts/ and .config/, enough for
 # `verify.sh ... --print-plan` to classify scope from a staged file list without
-# touching the real worktree's index. Prints the directory; registers cleanup.
+# touching the real worktree's index.
 #
 # Copies the WHOLE scripts/ dir (1.8 MB) rather than enumerating verify.sh's
 # source closure the way test_verify_scope.sh's make_fixture does: that file
 # needs the explicit list because it also asserts on it, whereas here a missing
 # lib would only ever produce a confusing failure. Wholesale copy cannot drift.
 mk_verify_fixture() {
-    local dir
-    dir="$(mktemp -d)"
-    CLEANUP_ACTIONS+=("rm -rf '$dir'")
+    local dir="$1"
     cp -r "$REPO_ROOT/scripts" "$dir/scripts" || return 1
-    [ -d "$REPO_ROOT/.config" ] && cp -r "$REPO_ROOT/.config" "$dir/.config"
+    if [ -d "$REPO_ROOT/.config" ]; then
+        cp -r "$REPO_ROOT/.config" "$dir/.config" || return 1
+    fi
     mkdir -p "$dir/docs"
     git -C "$dir" init -q || return 1
     git -C "$dir" config user.email "test@test.com"
     git -C "$dir" config user.name "Test"
-    printf '%s' "$dir"
+}
+
+# mk_ts_dir_with_cli_outputs <dir>
+#
+# A tree-sitter-reify-shaped dir for the freshness script: the real grammar.js
+# and src/scanner.c, plus the files tree-sitter-generate.sh's CLI path writes
+# into src/ (parser.c, grammar.json and four headers, one of them non-standard).
+# Only the first two are inputs; the rest are there to be ignored.
+mk_ts_dir_with_cli_outputs() {
+    local d="$1" f
+    mkdir -p "$d/src/tree_sitter" || return 1
+    cp "$TS_DIR/grammar.js" "$d/grammar.js" || return 1
+    cp "$TS_DIR/src/scanner.c" "$d/src/scanner.c" || return 1
+    for f in parser.c grammar.json tree_sitter/alloc.h tree_sitter/array.h \
+             tree_sitter/parser.h tree_sitter/zz_extra.h; do
+        printf '/* fixture: CLI-path output */\n' > "$d/src/$f" || return 1
+    done
+}
+
+# ts_run_with_tmpdir <tmpdir> <cmd> [args...]
+#
+# Run <cmd> in a subshell whose TMPDIR is <tmpdir>: whatever it mktemps lands
+# there, and the caller's own TMPDIR and shell state stay untouched. <cmd> may be
+# a shell function, which `env TMPDIR=... <cmd>` cannot run.
+ts_run_with_tmpdir() {
+    ( export TMPDIR="$1"; shift; "$@" )
+}
+
+# ts_assert_fills_only_given_dir <target> <cmd> [args...]
+#
+# Assert that <cmd> — a fixture helper handed the caller-created <target> —
+# allocates no temp storage of its own: it runs with TMPDIR pointed at a private,
+# empty directory, which must still be empty afterwards. What <target> must end
+# up holding is the caller's to assert: it is what tells a helper that built
+# nothing apart from one that built the right thing.
+#
+# Call it directly, never through `$(...)`: the cleanup it registers would die
+# with the subshell. Deliberately NOT named test_* (see the block header above).
+ts_assert_fills_only_given_dir() {
+    local target="$1"; shift
+    local private leaked
+    private=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$private'")
+
+    assert_cmd_success "$1 runs to completion under a private TMPDIR" \
+        ts_run_with_tmpdir "$private" "$@" || return 1
+
+    leaked=$(ls -A "$private")
+    if [ -n "$leaked" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: $* allocated temp storage of its own"
+        echo "  instead of filling only $target. Left in its TMPDIR:"
+        printf '%s\n' "$leaked" | sed 's/^/    /'
+        return 1
+    fi
 }
 
 # --- Runner ---
-run_tests() {
-    local tests
-    tests=$(declare -F | awk '/test_/{print $3}')
+# A case has three outcomes: PASS (rc 0), INFRA (rc TS_INFRA_RC: it reached no
+# verdict, which is neither PASS nor FAIL) and FAIL (any other rc).
 
-    for t in $tests; do
-        CLEANUP_ACTIONS=()
-        printf "${BOLD}RUN${RESET}  %s ... " "$t"
-        if "$t"; then
-            printf "${GREEN}PASS${RESET}\n"
-            (( PASS_COUNT++ )) || true
-        else
-            printf "${RED}FAIL${RESET}\n"
-            (( FAIL_COUNT++ )) || true
-        fi
-        cleanup
-    done
+ts_discover_cases() {
+    # The cases run_tests runs when it is given none: every function whose
+    # `declare -F` line contains test_, so a helper carrying that substring would
+    # be run as a case.
+    declare -F | awk '/test_/{print $3}'
+}
 
+# ts_run_verdict <passed> <failed> <infra-case> <not-run>
+#
+# Prints the run's summary and returns its verdict. A recorded FAIL wins (1), as in
+# test_helpers.sh's test_summary_infra_unavailable. Otherwise <infra-case>, the case
+# that ended the run by reaching no verdict (empty when none did), makes the run
+# INFRASTRUCTURE: TS_INFRA_RC. Otherwise 0.
+ts_run_verdict() {
+    local passed="$1" failed="$2" infra_case="$3" not_run="$4"
     echo ""
     echo "========================================="
-    printf "Results: ${GREEN}%d passed${RESET}, ${RED}%d failed${RESET}\n" "$PASS_COUNT" "$FAIL_COUNT"
+    printf "Results: ${GREEN}%d passed${RESET}, ${RED}%d failed${RESET}" "$passed" "$failed"
+    if [ -n "$infra_case" ]; then
+        printf ", ${YELLOW}1 infra${RESET}, %d not run" "$not_run"
+    fi
+    echo ""
     echo "========================================="
+    if [ "$failed" -gt 0 ]; then
+        return 1
+    fi
+    if [ -n "$infra_case" ]; then
+        echo "INFRASTRUCTURE: $infra_case reached no verdict; $not_run later case(s) did not run (exit $TS_INFRA_RC, EX_TEMPFAIL: neither PASS nor FAIL)"
+        return "$TS_INFRA_RC"
+    fi
+    return 0
+}
 
-    [[ "$FAIL_COUNT" -eq 0 ]]
+# run_tests [case...]
+#
+# Runs the named cases, or every discovered one when none is named. Each case runs
+# under `||`, which turns errexit off inside it, and is followed by cleanup. The
+# run stops at the first INFRA case: a host that just lost a build to its timeout
+# would lose the next one the same way, and the wall around this suite in
+# scripts/verify.sh would then kill it before it could report.
+run_tests() {
+    if [ "$#" -eq 0 ]; then
+        set -- $(ts_discover_cases)
+    fi
+    local total=$# t rc ran=0 passed=0 failed=0 infra_case=""
+
+    for t in "$@"; do
+        ran=$((ran + 1))
+        CLEANUP_ACTIONS=()
+        printf "${BOLD}RUN${RESET}  %s ... " "$t"
+        rc=0
+        "$t" || rc=$?
+        case "$rc" in
+            0)
+                printf "${GREEN}PASS${RESET}\n"
+                passed=$((passed + 1))
+                ;;
+            "$TS_INFRA_RC")
+                printf "${YELLOW}INFRA${RESET}\n"
+                infra_case="$t"
+                ;;
+            *)
+                printf "${RED}FAIL${RESET}\n"
+                failed=$((failed + 1))
+                ;;
+        esac
+        cleanup
+        if [ -n "$infra_case" ]; then
+            break
+        fi
+    done
+
+    ts_run_verdict "$passed" "$failed" "$infra_case" "$((total - ran))"
+}
+
+ts_unset_cases_except() {
+    # Usage: ts_unset_cases_except [case]
+    # Unsets every suite case but <case> (all of them when it is omitted). For the
+    # subshell in which a test drives run_tests: a run_tests that ignored its
+    # arguments would rediscover the suite there and rerun the driving test, which
+    # drives run_tests in another subshell, and so on without bound. With only
+    # <case> left it runs that one, and the tests of run_tests' own contract are
+    # what fail.
+    local keep="${1:-}" f
+    for f in $(ts_discover_cases); do
+        [ "$f" = "$keep" ] || unset -f "$f"
+    done
+}
+
+ts_run_stub_cases() {
+    # Usage: ts_run_stub_cases <dir> <case...>
+    # run_tests over the named stub cases, output to <dir>/run.log, status
+    # run_tests'. A subshell, so run_tests' counters and cleanup list stay out of
+    # the suite's. It holds no suite case (ts_unset_cases_except), so a runner that
+    # ignored <case...> finds nothing to run.
+    # Stubs: ts_case_passes (0), ts_case_fails (1), ts_case_reaches_no_verdict
+    # ($TS_INFRA_RC), ts_case_must_not_run (creates <dir>/must-not-run).
+    local stub_dir="$1"
+    shift
+    (
+        ts_unset_cases_except
+        ts_case_passes() { return 0; }
+        ts_case_fails() { return 1; }
+        ts_case_reaches_no_verdict() { return "$TS_INFRA_RC"; }
+        ts_case_must_not_run() { : >"$stub_dir/must-not-run"; }
+        run_tests "$@"
+    ) >"$stub_dir/run.log" 2>&1
 }
 
 # --- Test Cases ---
-
-test_auto_generation_rebuilds_parser() {
-    # Validates that build.rs auto-regenerates parser.c when it is missing.
-    # This exercises the needs_generate -> run_tree_sitter_generate path.
-    local parser="$TS_DIR/src/parser.c"
-
-    # This test deletes parser.c below and relies on `cargo check` to
-    # regenerate it; build.rs's run_tree_sitter_generate() spawns the
-    # 'tree-sitter' binary directly and panics if it's missing, which
-    # run_guarded_cargo_check reports as a hard FAIL rather than a SKIP. That
-    # applies whether or not parser.c happens to exist right now (e.g. left
-    # over from a prior run), so check for the CLI first, unconditionally,
-    # rather than only in the self-provisioning branch below.
-    require_tree_sitter_cli || return 0
-
-    # parser.c is a gitignored generated artifact. In a freshly-seeded warm
-    # lane (tracked-files-only + git clean -xfd) it does not exist until
-    # something generates it — under scripts/verify.sh that's always the
-    # tree-sitter-generate.sh plan leaf running first, but a standalone
-    # invocation of this test file has no such guarantee. Self-provision it
-    # here rather than assume it, so the failure mode (if any) is a legible
-    # assertion instead of a bare `cp: cannot stat`.
-    if [ ! -f "$parser" ]; then
-        local gen_out
-        gen_out=$(mktemp)
-        CLEANUP_ACTIONS+=("rm -f '$gen_out'")
-        "$REPO_ROOT/scripts/tree-sitter-generate.sh" >"$gen_out" 2>&1 || true
-        if [ ! -f "$parser" ]; then
-            echo ""
-            echo "  ASSERTION FAILED: parser.c does not exist and scripts/tree-sitter-generate.sh did not produce it"
-            echo "  --- captured output ---"
-            cat "$gen_out"
-            echo "  --- end output ---"
-            return 1
-        fi
-    fi
-
-    # The backup lives OUTSIDE the tracked source tree, for the same reason as
-    # test_freshness_detects_and_repairs_stale_archive. tree-sitter-reify/.gitignore
-    # covers src/parser.c but NOT src/*.bak (`git check-ignore -v
-    # tree-sitter-reify/src/parser.c.bak` exits 1), so an in-tree backup leaves
-    # `git status --short` reporting an untracked file for this test's whole
-    # duration. The lane cleanliness guards, the lane audit and scripts/land.sh all
-    # read that as a dirty worktree.
-    local bakdir backup
-    bakdir=$(mktemp -d) || return 1
-    backup="$bakdir/parser.c.orig"
-    # Registered BEFORE the copy so an interrupt in the gap leaks nothing, and
-    # AHEAD of the `rm -rf` since cleanup replays in insertion order. `mv -f` is
-    # atomic and self-consuming: a failed restore cannot go on to destroy the only
-    # copy (CLEANUP_ACTIONS entries run under `eval ... || true`).
-    CLEANUP_ACTIONS+=("mv -f '$backup' '$parser'")
-    CLEANUP_ACTIONS+=("rm -rf '$bakdir'")
-    # `|| return 1`: set -e is disabled inside test bodies (the runner invokes them
-    # as `if "$t"; then`), so an unchecked cp would fail silently and the `rm -f`
-    # below would then delete parser.c with no usable copy to restore from.
-    cp "$parser" "$backup" || return 1
-
-    # Delete parser.c to trigger auto-regeneration
-    rm -f "$parser"
-
-    # Remove any stamp files from target dirs so staleness check triggers
-    find "$REPO_ROOT/target" -name "grammar_hash.stamp" -delete 2>/dev/null || true
-
-    # Touch grammar.js to ensure cargo re-runs build.rs (it uses rerun-if-changed=grammar.js).
-    # Without this, cargo may skip build.rs entirely from cache even with parser.c missing.
-    touch "$TS_DIR/grammar.js"
-
-    # Run cargo check — build.rs should detect missing parser.c and regenerate.
-    # Bound to 300 s to avoid consuming the entire 20-min run_all.sh budget on a
-    # cold cache.  parser.c is ~5 MB; C compilation can take several minutes when
-    # sccache is cold.  On a warm cache this completes in seconds.  Skip
-    # gracefully on timeout (exit 124) so the rest of the suite still runs.
-    local cargo_out
-    cargo_out=$(mktemp)
-    CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
-    local guard_rc=0
-    run_guarded_cargo_check "$cargo_out" timeout 300 cargo check -p tree-sitter-reify \
-            --manifest-path "$REPO_ROOT/Cargo.toml" || guard_rc=$?
-    if [ "$guard_rc" -eq 2 ]; then return 0; fi   # timed out — SKIP (message already printed)
-    if [ "$guard_rc" -ne 0 ]; then return 1; fi    # hard fail — message already printed
-
-    # Verify parser.c was recreated
-    assert_file_exists "$parser" || return 1
-    assert_file_nonempty "$parser" || return 1
-}
 
 test_generate_script_exists_and_executable() {
     # Validates the generation script exists and has execute permission.
@@ -765,11 +968,9 @@ test_generate_script_fails_without_grammar() {
     # grammar.js is missing, with a clear error message.
     local grammar="$TS_DIR/grammar.js"
 
-    # The backup lives OUTSIDE the tracked source tree, for the same reason as
-    # test_auto_generation_rebuilds_parser and
-    # test_freshness_detects_and_repairs_stale_archive. This site is the WORST of
-    # the three: grammar.js is TRACKED (unlike the gitignored src/parser.c), so
-    # while this test runs `git status --short` reported BOTH ` D
+    # The backup lives OUTSIDE the tracked source tree. grammar.js is TRACKED
+    # (unlike the gitignored src/parser.c), so with an in-tree backup, while
+    # this test ran `git status --short` reported BOTH ` D
     # tree-sitter-reify/grammar.js` — a tracked-file deletion — and an untracked
     # tree-sitter-reify/grammar.js.bak (`git check-ignore` exits 1 on it; the
     # .gitignore covers src/parser.c and *.o, not *.bak). The lane cleanliness
@@ -832,6 +1033,60 @@ test_generated_files_not_tracked() {
             return 1
         fi
     done
+}
+
+test_generate_outputs_are_untracked_and_ignored() {
+    # Every file the real script and CLI write under src/ must be untracked AND
+    # ignored, or a generate dirties the checkout. The set is whatever a real
+    # generate wrote into an empty src/, so a header a future CLI adds is covered.
+    require_tree_sitter_cli || return 0
+
+    local fix
+    fix=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$fix'")
+    mk_ts_generate_fixture "$fix" || return 1
+    assert_cmd_success "generate" \
+        bash "$fix/scripts/tree-sitter-generate.sh" --force || return 1
+
+    local src="$fix/tree-sitter-reify/src"
+    local -a written=()
+    local f
+    while IFS= read -r f; do
+        written+=("${f#"$src"/}")
+    done < <(find "$src" -type f | LC_ALL=C sort)
+
+    local saw_parser=0 saw_header=0
+    for f in "${written[@]}"; do
+        case "$f" in
+            parser.c) saw_parser=1 ;;
+            tree_sitter/*.h) saw_header=1 ;;
+        esac
+    done
+    if [ "$saw_parser" -eq 0 ] || [ "$saw_header" -eq 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: generate wrote no parser.c or no tree_sitter/*.h, so this"
+        echo "  test would be vacuous. Written: ${written[*]}"
+        return 1
+    fi
+
+    local rel tracked=() unignored=()
+    for f in "${written[@]}"; do
+        rel="tree-sitter-reify/src/$f"
+        if git -C "$REPO_ROOT" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1; then
+            tracked+=("$rel")
+        fi
+        if ! git -C "$REPO_ROOT" check-ignore -q -- "$rel"; then
+            unignored+=("$rel")
+        fi
+    done
+    if [ "${#tracked[@]}" -gt 0 ] || [ "${#unignored[@]}" -gt 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: tree-sitter generate writes files git owns, so it dirties"
+        echo "  the checkout whenever the CLI's bytes differ from the committed ones."
+        [ "${#tracked[@]}" -eq 0 ] || echo "  tracked:     ${tracked[*]}"
+        [ "${#unignored[@]}" -eq 0 ] || echo "  not ignored: ${unignored[*]}"
+        return 1
+    fi
 }
 
 test_orchestrator_includes_generation() {
@@ -948,18 +1203,114 @@ test_print_plan_capture_retries_on_truncation() {
     fi
 }
 
-test_timeout_guard_skips_on_exit_124() {
-    # Regression guard: confirms run_guarded_cargo_check returns tri-state 2
-    # (SKIP) when the command exits 124 (timeout kill). Uses `timeout 0.1 sleep 5`
-    # as a deterministic stub for exit 124.
-    local out rc
-    out=$(mktemp)
-    CLEANUP_ACTIONS+=("rm -f '$out'")
-    rc=0
-    run_guarded_cargo_check "$out" timeout 0.1 sleep 5 || rc=$?
-    if [ "$rc" -ne 2 ]; then
+test_runner_stops_with_infrastructure_at_a_case_that_reaches_no_verdict() {
+    # A case that returns TS_INFRA_RC reached no verdict, which is neither PASS nor
+    # FAIL: the run ends there and exits 75 (EX_TEMPFAIL, the literal the
+    # orchestrator reads) with the INFRASTRUCTURE line. The case after it never
+    # runs, so its stub leaves no marker.
+    local dir rc=0
+    dir=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$dir'")
+    ts_run_stub_cases "$dir" \
+        ts_case_passes ts_case_reaches_no_verdict ts_case_must_not_run || rc=$?
+    if [ "$rc" -ne 75 ]; then
         echo ""
-        echo "  ASSERTION FAILED: expected run_guarded_cargo_check to return 2 (SKIP) on exit 124, got $rc"
+        echo "  ASSERTION FAILED: run_tests must exit 75 at a case that reaches no verdict, got $rc"
+        ts_print_captured "run_tests output" "$dir/run.log"
+        return 1
+    fi
+    if [ -e "$dir/must-not-run" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: run_tests ran a case after one that reached no verdict"
+        ts_print_captured "run_tests output" "$dir/run.log"
+        return 1
+    fi
+    if ! grep -q '^INFRASTRUCTURE: ' "$dir/run.log"; then
+        echo ""
+        echo "  ASSERTION FAILED: run_tests exited 75 without an INFRASTRUCTURE: verdict line"
+        ts_print_captured "run_tests output" "$dir/run.log"
+        return 1
+    fi
+}
+
+test_runner_lets_a_recorded_fail_outrank_infrastructure() {
+    # An assertion that already FAILed wins over a later case that reached no
+    # verdict (test_helpers.sh test_summary_infra_unavailable's rule): exit 1, and
+    # no INFRASTRUCTURE verdict. A run of passing cases still exits 0.
+    local dir rc=0
+    dir=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$dir'")
+    ts_run_stub_cases "$dir" ts_case_fails ts_case_reaches_no_verdict || rc=$?
+    if [ "$rc" -ne 1 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: a recorded FAIL must win over a later case with no verdict (exit 1), got $rc"
+        ts_print_captured "run_tests output" "$dir/run.log"
+        return 1
+    fi
+    if grep -q '^INFRASTRUCTURE: ' "$dir/run.log"; then
+        echo ""
+        echo "  ASSERTION FAILED: a run that exited 1 for a recorded FAIL also printed an INFRASTRUCTURE: verdict"
+        ts_print_captured "run_tests output" "$dir/run.log"
+        return 1
+    fi
+    rc=0
+    ts_run_stub_cases "$dir" ts_case_passes || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: a run of passing cases must exit 0, got $rc"
+        ts_print_captured "run_tests output" "$dir/run.log"
+        return 1
+    fi
+}
+
+test_timeout_guard_reports_infrastructure_on_exit_124() {
+    # A build killed by its timeout (exit 124) reached no verdict: the guard returns
+    # TS_INFRA_RC, never a pass, and writes the cargo_timeout marker to stderr at
+    # column 0. Both streams are captured, so the marker never reaches the suite's
+    # own. Uses `timeout 0.1 sleep 5` as a deterministic stub for exit 124.
+    local dir rc=0
+    dir=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$dir'")
+    run_guarded_cargo_check "$dir/build.out" timeout 0.1 sleep 5 \
+        >"$dir/guard.stdout" 2>"$dir/guard.stderr" || rc=$?
+    if [ "$rc" -ne "$TS_INFRA_RC" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: expected run_guarded_cargo_check to return $TS_INFRA_RC (no verdict) on exit 124, got $rc"
+        ts_print_captured "guard stdout" "$dir/guard.stdout"
+        ts_print_captured "guard stderr" "$dir/guard.stderr"
+        return 1
+    fi
+    if ! grep -q '^@@REIFY_INFRA_UNAVAILABLE@@ kind=cargo_timeout rc=124 ' "$dir/guard.stderr"; then
+        echo ""
+        echo "  ASSERTION FAILED: the guard returned $TS_INFRA_RC but wrote no cargo_timeout marker line to stderr"
+        ts_print_captured "guard stdout" "$dir/guard.stdout"
+        ts_print_captured "guard stderr" "$dir/guard.stderr"
+        return 1
+    fi
+}
+
+test_timeout_guard_shows_the_tail_of_a_killed_commands_output() {
+    # What a killed build last said tells a wait on the build-directory lock from a
+    # hang, so the guard shows it. Behind "  | ": a line of it that looks like a
+    # marker must not be re-emitted at column 0, where it would pass for a verdict.
+    # The guard's own marker is the only one.
+    local dir
+    dir=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$dir'")
+    run_guarded_cargo_check "$dir/build.out" bash -c \
+        'echo "Blocking waiting for file lock on build directory"; echo "@@REIFY_INFRA_UNAVAILABLE@@ kind=forged"; exit 124' \
+        >"$dir/guard.stdout" 2>"$dir/guard.stderr" || true
+    cat "$dir/guard.stdout" "$dir/guard.stderr" >"$dir/guard.both"
+    if ! grep -qxF '  | Blocking waiting for file lock on build directory' "$dir/guard.both"; then
+        echo ""
+        echo "  ASSERTION FAILED: the guard did not show the killed command's output behind '  | '"
+        ts_print_captured "guard output" "$dir/guard.both"
+        return 1
+    fi
+    if [ "$(grep -c '^@@REIFY_INFRA_UNAVAILABLE@@' "$dir/guard.both")" -ne 1 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: expected exactly one column-0 marker line (the guard's own)"
+        ts_print_captured "guard output" "$dir/guard.both"
         return 1
     fi
 }
@@ -997,14 +1348,9 @@ test_timeout_guard_passes_on_exit_0() {
     fi
 }
 
-test_timeout_guard_fails_on_unresolved_without_optin() {
-    # Regression guard (`#6992` amendment pass): a cargo resolver diagnostic is a
-    # hard FAIL by DEFAULT. The real-workspace callers here
-    # (`-p tree-sitter-reify --manifest-path $REPO_ROOT/Cargo.toml`) have a
-    # committed Cargo.lock and no --offline, so `no matching package` there means
-    # a broken manifest or lockfile — the very breakage those tests exist to
-    # catch. If this case ever goes green at 2, that breakage now reports SKIP
-    # and returns 0.
+test_timeout_guard_fails_on_unresolved() {
+    # A cargo resolver diagnostic is a hard FAIL from run_guarded_cargo_check,
+    # whatever the caller.
     local out rc
     out=$(mktemp)
     CLEANUP_ACTIONS+=("rm -f '$out'")
@@ -1015,27 +1361,43 @@ test_timeout_guard_fails_on_unresolved_without_optin() {
     if [ "$rc" -ne 1 ]; then
         echo ""
         echo "  ASSERTION FAILED: expected 1 (FAIL) for an unresolved-dependency"
-        echo "  diagnostic with no --skip-on-unresolved opt-in, got $rc"
+        echo "  diagnostic, got $rc"
         return 1
     fi
 }
 
-test_timeout_guard_skips_on_unresolved_when_opted_in() {
-    # The other half: WITH the opt-in, the same output is an environment gap.
-    # Only the mk_ts_build_fixture callers pass the flag — they build a
-    # standalone crate --offline with no Cargo.lock, so resolution depends on
-    # what the host's shared registry cache happens to hold.
-    local out rc
-    out=$(mktemp)
-    CLEANUP_ACTIONS+=("rm -f '$out'")
-    rc=0
-    run_guarded_cargo_check --skip-on-unresolved "$out" \
-        bash -c 'echo "error: no matching package named \`cc\` found" >&2; exit 101' \
-        >/dev/null 2>&1 || rc=$?
-    if [ "$rc" -ne 2 ]; then
+test_a_fixture_build_timeout_ends_the_suite_with_infrastructure() {
+    # The chain from a killed build to the suite's verdict, every link real but the
+    # clock: a `timeout` shim that exits 124 stands in for a build killed at 300 s,
+    # so ts_cargo_build_fixture's guard sees the kill, the caller must pass
+    # TS_INFRA_RC up, and run_tests must end the suite with it, the marker
+    # included. test_fixture_build_fails_on_a_cold_registry is the one build caller
+    # that needs no tree-sitter CLI, so this runs on every host.
+    local target=test_fixture_build_fails_on_a_cold_registry shim log rc=0
+    shim=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$shim'")
+    log=$(mktemp) || return 1
+    CLEANUP_ACTIONS+=("rm -f '$log'")
+    cat > "$shim/timeout" <<'SH'
+#!/bin/sh
+exit 124
+SH
+    chmod +x "$shim/timeout" || return 1
+    (
+        PATH="$shim:$PATH"
+        ts_unset_cases_except "$target"
+        run_tests "$target"
+    ) >"$log" 2>&1 || rc=$?
+    if [ "$rc" -ne 75 ]; then
         echo ""
-        echo "  ASSERTION FAILED: expected 2 (SKIP) for an unresolved-dependency"
-        echo "  diagnostic under --skip-on-unresolved, got $rc"
+        echo "  ASSERTION FAILED: a fixture build killed by its timeout must end the suite with exit 75, got $rc"
+        ts_print_captured "suite output" "$log"
+        return 1
+    fi
+    if ! grep -q '^@@REIFY_INFRA_UNAVAILABLE@@ kind=cargo_timeout rc=124 ' "$log"; then
+        echo ""
+        echo "  ASSERTION FAILED: the suite ended with 75 but its output carries no cargo_timeout marker line"
+        ts_print_captured "suite output" "$log"
         return 1
     fi
 }
@@ -1069,22 +1431,25 @@ test_freshness_script_exists_and_executable() {
 }
 
 test_freshness_script_lists_all_compiled_inputs() {
-    # `--list-inputs` is the single source of truth for the C-compilation input set
-    # (everything build.rs hands to cc::Build, plus the headers they include).
-    #
-    # The expectation is DERIVED from `git ls-files` rather than restated inline, so
-    # that adding a fourth header — or a second .c to c_config — without wiring it
-    # into the freshness input set fails loudly HERE instead of silently
-    # under-covering.  That silent under-coverage is precisely how this defect class
-    # (src/scanner.c watched by nothing) came to exist in the first place.
+    # `--list-inputs` is the single source of truth for the fingerprint's input
+    # set: the tracked files whose bytes determine the archive, which build.rs
+    # watches (build_support.rs's ATTESTED_INPUTS). Since #9896 the generated
+    # sources live in $OUT_DIR/src, so the CLI-path files this TS dir also holds
+    # under src/ are not compiled inputs and must not be listed.
     assert_file_exists "$FRESHNESS_SCRIPT" || return 1
+
+    local ts
+    ts=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$ts'")
+    mk_ts_dir_with_cli_outputs "$ts" || return 1
 
     # Run from a directory that is NOT the repo root: the script must resolve its
     # own paths from ${BASH_SOURCE[0]}, never from $PWD.  verify.sh invokes plan
     # leaves from the repo root, but the infra tests and a human debugging a merge
     # lane do not.
     local out rc=0
-    out=$(cd /tmp && bash "$FRESHNESS_SCRIPT" --list-inputs 2>&1) || rc=$?
+    out=$(cd /tmp && REIFY_TS_FRESHNESS_TS_DIR="$ts" \
+        bash "$FRESHNESS_SCRIPT" --list-inputs 2>&1) || rc=$?
     if [ "$rc" -ne 0 ]; then
         echo ""
         echo "  ASSERTION FAILED: '--list-inputs' exited $rc (expected 0) when run from /tmp"
@@ -1094,24 +1459,11 @@ test_freshness_script_lists_all_compiled_inputs() {
         return 1
     fi
 
-    local headers expected
-    headers=$(cd "$REPO_ROOT" && git ls-files 'tree-sitter-reify/src/tree_sitter/*.h' \
-        | sed 's|^tree-sitter-reify/||' | LC_ALL=C sort)
-    if [ -z "$headers" ]; then
-        echo ""
-        echo "  ASSERTION FAILED: git ls-files found no tracked tree-sitter-reify/src/tree_sitter/*.h"
-        echo "  The expectation is derived from git; an empty derivation would make this"
-        echo "  test vacuous, so it is a hard failure rather than a skip."
-        return 1
-    fi
-    # src/parser.c is generated+gitignored (hence not from git ls-files) but IS
-    # compiled by c_config, so it belongs in the fingerprint even though it is
-    # deliberately NOT in the rerun-if-changed watch set.
-    expected=$(printf 'src/parser.c\nsrc/scanner.c\n%s\n' "$headers")
-
+    local expected
+    expected=$(printf '%s\n' grammar.js src/scanner.c)
     if [ "$out" != "$expected" ]; then
         echo ""
-        echo "  ASSERTION FAILED: '--list-inputs' does not match the compiled input set"
+        echo "  ASSERTION FAILED: '--list-inputs' does not match the attested input set"
         echo "  --- expected ---"
         echo "$expected"
         echo "  --- actual ---"
@@ -1149,6 +1501,50 @@ test_freshness_script_lists_all_compiled_inputs() {
         echo ""
         echo "  ASSERTION FAILED: '--list-inputs' emitted duplicate paths ($total lines, $uniq unique)"
         echo "$out"
+        return 1
+    fi
+}
+
+test_freshness_ignores_src_generated_files() {
+    # The CLI path rewrites src/parser.c and the headers whenever
+    # tree-sitter-generate.sh runs. The build never reads them (#9896), so a
+    # fingerprint over them would call a correctly built archive STALE.
+    assert_file_exists "$FRESHNESS_SCRIPT" || return 1
+    if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
+        echo "  SKIP: no sha256sum/shasum on PATH — the guard degrades to UNAVAILABLE here"
+        return 0
+    fi
+
+    local tmp
+    tmp=$(mktemp -d)
+    CLEANUP_ACTIONS+=("rm -rf '$tmp'")
+    local ts="$tmp/ts"
+    mk_ts_dir_with_cli_outputs "$ts" || return 1
+    local fp
+    fp=$(REIFY_TS_FRESHNESS_TS_DIR="$ts" bash "$FRESHNESS_SCRIPT" --print-fingerprint) || {
+        echo ""; echo "  ASSERTION FAILED: --print-fingerprint failed on the fixture"; return 1
+    }
+    mk_ts_fixture "$tmp/target" "tree-sitter-reify-deadbeef0a" "$fp"
+
+    printf '/* regenerated by the CLI path */\n' > "$ts/src/parser.c" || return 1
+    printf '/* regenerated by the CLI path */\n' > "$ts/src/tree_sitter/parser.h" || return 1
+    run_ts_freshness check "$tmp/target" "$ts"
+    if [ "$TS_FRESHNESS_RC" -ne 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: rewriting src/parser.c and a header made check exit"
+        echo "  $TS_FRESHNESS_RC (expected 0, FRESH): they are not compiled inputs"
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+
+    printf 'x' >> "$ts/grammar.js" || return 1
+    run_ts_freshness check "$tmp/target" "$ts"
+    if [ "$TS_FRESHNESS_RC" -ne 1 ] \
+        || [[ "$TS_FRESHNESS_OUT" != *"first differing input: grammar.js"* ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: a one-byte grammar.js change must read STALE naming"
+        echo "  'first differing input: grammar.js' (exit $TS_FRESHNESS_RC)"
+        echo "$TS_FRESHNESS_OUT"
         return 1
     fi
 }
@@ -1574,11 +1970,9 @@ test_freshness_ensure_forces_and_is_idempotent() {
     CLEANUP_ACTIONS+=("rm -rf '$tmp'")
 
     local ts="$tmp/ts"
-    mkdir -p "$ts/src/tree_sitter"
+    mkdir -p "$ts/src"
     cp "$TS_DIR/grammar.js"    "$ts/grammar.js"
-    provision_fixture_parser_c "$ts/src/parser.c" || return 1
     cp "$TS_DIR/src/scanner.c" "$ts/src/scanner.c"
-    cp "$TS_DIR"/src/tree_sitter/*.h "$ts/src/tree_sitter/"
 
     # Model the warm-lane bulk stamp: seed-warm-lane.sh sets every non-target/,
     # non-.git file to 2020-01-01T00:00:00 (measured by task #5630), which is what
@@ -1588,7 +1982,6 @@ test_freshness_ensure_forces_and_is_idempotent() {
     stamp_at() {
         local d="$1" when="$2" x
         while IFS= read -r x; do touch -d "$when" "$x"; done < <(ts_watched_files "$d")
-        touch -d "$when" "$d/src/parser.c"
     }
     stamp_old() { stamp_at "$1" "$OLD"; }
     stamp_old "$ts"
@@ -1963,25 +2356,24 @@ test_freshness_ensure_forces_and_is_idempotent() {
     # ledger in this fresh target dir => the force is unconditionally due.
     mk_ts_fixture "$tmp/target_unrepairable" "tree-sitter-reify-2222222222222222" "$altered5"
 
-    # (12a) a watched input that is GONE. grammar.js is watched but is not part of
-    # the fingerprint (it is an input to generation, not to compilation), so the
-    # scan still computes a verdict and the failure lands squarely in ts_force_touch.
+    # (12a) a watched input that is GONE. Since #9896 the force set IS the
+    # fingerprint's input set, so the fingerprint fails first, and must fail
+    # closed naming the file rather than reach a verdict over what is left.
     rm -f "$broken/grammar.js"
     run_ts_freshness ensure "$tmp/target_unrepairable" "$broken"
     if [ "$TS_FRESHNESS_RC" -ne 1 ]; then
         echo ""
-        echo "  ASSERTION FAILED: ensure exited $TS_FRESHNESS_RC (expected 1) with a stale"
-        echo "  archive it could NOT repair — a watched input was missing, so the force"
-        echo "  cannot have taken. Continuing green here reports success against a parser"
-        echo "  the gate never compiled."
+        echo "  ASSERTION FAILED: ensure exited $TS_FRESHNESS_RC (expected 1) with a watched"
+        echo "  input missing, so no force can have taken. Continuing green here reports"
+        echo "  success against a parser the gate never compiled."
         echo "$TS_FRESHNESS_OUT"
         return 1
     fi
-    if [[ "$TS_FRESHNESS_OUT" != *"DETECTED BUT UNREPAIRABLE"* ]]; then
+    if [[ "$TS_FRESHNESS_OUT" != *"freshness input is missing: $broken/grammar.js"* ]]; then
         echo ""
-        echo "  ASSERTION FAILED: the unrepairable exit is not greppable — no"
-        echo "  'DETECTED BUT UNREPAIRABLE' line. A bare non-zero exit from a mid-plan leaf"
-        echo "  leaves the operator no way to tell this apart from a crash."
+        echo "  ASSERTION FAILED: the failing ensure does not name the missing grammar.js."
+        echo "  A bare non-zero exit from a mid-plan leaf leaves the operator no way to"
+        echo "  tell this apart from a crash."
         echo "$TS_FRESHNESS_OUT"
         return 1
     fi
@@ -2015,6 +2407,66 @@ test_freshness_ensure_forces_and_is_idempotent() {
         fi
     else
         echo "  (skipped 12b: no unwritable regular file available here — running as root?)"
+    fi
+}
+
+test_freshness_ensure_never_touches_generate_outputs() {
+    # ensure may force-touch only the tracked inputs. src/parser.c and
+    # src/tree_sitter/*.h are tree-sitter-generate.sh's CLI-path outputs, which
+    # the build never reads (#9896); touching them would move the ledger's mtime
+    # witness for nothing.
+    assert_file_exists "$FRESHNESS_SCRIPT" || return 1
+
+    if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
+        echo "  SKIP: no sha256sum/shasum on PATH — the guard degrades to UNAVAILABLE here"
+        return 0
+    fi
+
+    local tmp
+    tmp=$(mktemp -d)
+    CLEANUP_ACTIONS+=("rm -rf '$tmp'")
+
+    local ts="$tmp/ts"
+    mkdir -p "$ts/src" || return 1
+    cp "$TS_DIR/grammar.js"    "$ts/grammar.js" || return 1
+    cp "$TS_DIR/src/scanner.c" "$ts/src/scanner.c" || return 1
+    provision_fixture_parser_c "$ts/src/parser.c" || return 1
+    provision_fixture_headers "$ts/src/tree_sitter" || return 1
+
+    local OLD='2020-01-01T00:00:00' f
+    find "$ts" -type f -exec touch -d "$OLD" {} + || return 1
+    local old_epoch
+    old_epoch=$(ts_mtime "$ts/grammar.js")
+
+    local fp altered
+    fp=$(REIFY_TS_FRESHNESS_TS_DIR="$ts" bash "$FRESHNESS_SCRIPT" --print-fingerprint)
+    if [ "${fp:0:1}" = "0" ]; then altered="1${fp:1}"; else altered="0${fp:1}"; fi
+    mk_ts_fixture "$tmp/target" "tree-sitter-reify-deadbeef09" "$altered"
+
+    run_ts_freshness ensure "$tmp/target" "$ts"
+    if [ "$TS_FRESHNESS_RC" -ne 0 ] || [[ "$TS_FRESHNESS_OUT" != *"forcing rebuild"* ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: ensure on a STALE fixture must force (rc=$TS_FRESHNESS_RC)"
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+    if [ $(( $(date +%s) - $(ts_mtime "$ts/grammar.js") )) -gt 300 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: grammar.js was not touched, so no force happened and the"
+        echo "  check below would be vacuous."
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+
+    local -a touched=()
+    for f in "$ts"/src/parser.c "$ts"/src/tree_sitter/*.h; do
+        [ "$(ts_mtime "$f")" = "$old_epoch" ] || touched+=("${f#"$ts"/}")
+    done
+    if [ "${#touched[@]}" -gt 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: ensure force-touched generate outputs: ${touched[*]}"
+        echo "$TS_FRESHNESS_OUT"
+        return 1
     fi
 }
 
@@ -2229,11 +2681,12 @@ test_build_rs_watches_all_compiled_inputs() {
     # A source grep would pass on a directive that is written but never emitted;
     # this is the real runtime contract.
     #
-    # Measured on this lane before the fix: that file carried exactly ONE
-    # rerun-if-changed line, `grammar.js`. src/scanner.c and all three headers
-    # were watched by nothing, so an edit confined to them gave cargo no reason
-    # to re-run the build script — the archive was never recompiled and the
-    # change was never under test, while the gate reported GREEN.
+    # The watch set is EXACTLY the tracked inputs, build_support.rs (include!d,
+    # so cargo cannot infer it) and the resolved CLI, whose upgrade must rerun
+    # the script (#9896). Nothing the script writes may be in it: cargo stamps
+    # the script's `output` at invocation, so a watched output reruns the script
+    # on the next build, which is the tree-sitter cascade #9896 removes.
+    require_tree_sitter_cli || return 0
     touch "$TS_DIR/grammar.js"
 
     local cargo_out
@@ -2242,7 +2695,7 @@ test_build_rs_watches_all_compiled_inputs() {
     local guard_rc=0
     run_guarded_cargo_check "$cargo_out" timeout 300 cargo check -p tree-sitter-reify \
         --manifest-path "$REPO_ROOT/Cargo.toml" || guard_rc=$?
-    if [ "$guard_rc" -eq 2 ]; then return 0; fi
+    if [ "$guard_rc" -eq "$TS_INFRA_RC" ]; then return "$TS_INFRA_RC"; fi
     if [ "$guard_rc" -ne 0 ]; then return 1; fi
 
     local run_dir
@@ -2252,71 +2705,19 @@ test_build_rs_watches_all_compiled_inputs() {
         return 0
     fi
 
-    local directives
-    directives=$(cat "$run_dir/output")
-
-    # Unchanged behaviour: the generation input stays watched.
-    if [[ "$directives" != *"cargo:rerun-if-changed=grammar.js"* ]]; then
+    local watched expected missing extra
+    watched=$(sed -n -E 's/^cargo::?rerun-if-changed=//p' "$run_dir/output" | LC_ALL=C sort -u)
+    expected=$(printf '%s\n' grammar.js src/scanner.c build_support.rs \
+        "$(command -v tree-sitter)" | LC_ALL=C sort -u)
+    missing=$(LC_ALL=C comm -23 <(printf '%s\n' "$expected") <(printf '%s\n' "$watched"))
+    extra=$(LC_ALL=C comm -13 <(printf '%s\n' "$expected") <(printf '%s\n' "$watched"))
+    if [ -n "$missing" ] || [ -n "$extra" ]; then
         echo ""
-        echo "  ASSERTION FAILED: no 'cargo:rerun-if-changed=grammar.js' in $run_dir/output"
-        return 1
-    fi
-
-    # The defect this task closes.
-    if [[ "$directives" != *"cargo:rerun-if-changed=src/scanner.c"* ]]; then
-        echo ""
-        echo "  ASSERTION FAILED: no 'cargo:rerun-if-changed=src/scanner.c' in $run_dir/output"
-        echo "  build.rs compiles src/scanner.c (c_config.file(\"src/scanner.c\")) and the cc"
-        echo "  crate emits no rerun-if-changed directives of its own, so without this line"
-        echo "  a scanner.c-only edit is never recompiled and never under test."
-        return 1
-    fi
-
-    # Every TRACKED header, derived from git rather than hardcoded so a new
-    # header cannot silently escape the watch set.
-    local h rel
-    while IFS= read -r h; do
-        [ -n "$h" ] || continue
-        rel="${h#tree-sitter-reify/}"
-        if [[ "$directives" != *"cargo:rerun-if-changed=$rel"* ]]; then
-            echo ""
-            echo "  ASSERTION FAILED: no 'cargo:rerun-if-changed=$rel' in $run_dir/output"
-            echo "  The header set must be enumerated by glob on both sides, not hardcoded."
-            return 1
-        fi
-    done < <(cd "$REPO_ROOT" && git ls-files 'tree-sitter-reify/src/tree_sitter/*.h')
-
-    # src/parser.c MUST be watched, since task #6992 — the exact inverse of the
-    # pin this block used to carry. build.rs writes it, and the old exclusion
-    # cited "double execution"; that cost is bounded and convergent (one extra
-    # build-script run after a genuine regeneration, which then finds both shell
-    # stamps current and writes nothing). What the exclusion cost was the reverse
-    # direction: cargo narrows the watch set to EXACTLY the emitted list, so an
-    # unwatched parser.c could be deleted by the `git clean -xfd -e target` every
-    # lane acquire runs, or CoW-replaced from a different base, with grammar.js
-    # untouched — and cargo had no reason to re-run the build script at all. The
-    # stale libtree_sitter_reify.a stayed linked and the change was never tested.
-    if [[ "$directives" != *"cargo:rerun-if-changed=src/parser.c"* ]]; then
-        echo ""
-        echo "  ASSERTION FAILED: no 'cargo:rerun-if-changed=src/parser.c' in $run_dir/output"
-        echo "  parser.c is compiled into the archive and is a build-script OUTPUT, so a"
-        echo "  deleted or CoW-mismatched copy must be able to re-trigger the build script."
-        return 1
-    fi
-
-    # build_support.rs, since #6992. It holds the staleness predicates and is
-    # include!d rather than depended on as a crate, so cargo does not learn about
-    # it from the module graph — this directive is the ONLY thing that makes an
-    # edit to `needs_generate` / `shell_stamp_is_current` re-run them. Asserted
-    # HERE, on cargo's verbatim capture, rather than by grepping build.rs: a
-    # source scan is satisfied by a comment or a commented-out line, so a
-    # refactor that deletes the println! but keeps the explanatory comment above
-    # it passes green (#6992 amendment pass).
-    if [[ "$directives" != *"cargo:rerun-if-changed=build_support.rs"* ]]; then
-        echo ""
-        echo "  ASSERTION FAILED: no 'cargo:rerun-if-changed=build_support.rs' in $run_dir/output"
-        echo "  build_support.rs is include!d by build.rs, so cargo cannot infer the dependency."
-        echo "  Without this directive an edit to the staleness predicates never re-runs them."
+        echo "  ASSERTION FAILED: the build script's rerun-if-changed set is not exactly"
+        echo "  {grammar.js, src/scanner.c, build_support.rs, the tree-sitter CLI}"
+        echo "  (from $run_dir/output)"
+        [ -z "$missing" ] || { echo "  --- missing ---"; printf '%s\n' "$missing"; }
+        [ -z "$extra" ] || { echo "  --- extra ---"; printf '%s\n' "$extra"; }
         return 1
     fi
 
@@ -2390,7 +2791,9 @@ test_build_rs_stamps_a_real_manifest_on_a_shasum_only_host() {
     fi
 
     local mask
-    mask=$(ts_masked_path_dir sha256sum) || return 1
+    mask=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$mask'")
+    ts_masked_path_dir "$mask" sha256sum || return 1
 
     # POSITIVELY assert the mask took effect before concluding anything from the
     # run. Without this the test degrades into exactly the vacuity it replaces:
@@ -2432,7 +2835,7 @@ test_build_rs_stamps_a_real_manifest_on_a_shasum_only_host() {
     local guard_rc=0
     run_guarded_cargo_check "$cargo_out" env PATH="$mask" timeout 300 cargo check \
         -p tree-sitter-reify --manifest-path "$REPO_ROOT/Cargo.toml" || guard_rc=$?
-    if [ "$guard_rc" -eq 2 ]; then return 0; fi
+    if [ "$guard_rc" -eq "$TS_INFRA_RC" ]; then return "$TS_INFRA_RC"; fi
     if [ "$guard_rc" -ne 0 ]; then return 1; fi
 
     local run_dir
@@ -2527,237 +2930,6 @@ test_build_rs_stamps_a_real_manifest_on_a_shasum_only_host() {
     fi
 }
 
-test_freshness_detects_and_repairs_stale_archive() {
-    # End-to-end: reproduce "verified against a stale compiled parser" deterministically,
-    # then prove the force actually cures it.
-    #
-    # Only the GITIGNORED src/parser.c is ever content-mutated. Tracked files receive
-    # at most an mtime-level `touch` from `ensure`, so a concurrent `git status` in the
-    # lane (cleanliness guards, lane audit) can never observe a dirty tree — a far worse
-    # failure than the bug under test.
-    #
-    # Since `#6992` parser.c IS watched, so mutating it alone no longer reproduces
-    # the reported shape — cargo would re-run the build script, which would notice
-    # the content mismatch and regenerate, curing the very state under test. The
-    # probe below therefore REWINDS parser.c's mtime to its pre-probe value after
-    # mutating it. That is not a workaround: it is the warm-lane rewind signature
-    # this guard exists for (seed-warm-lane.sh stamps sources back to 2020 while
-    # CoW-cloning target/ intact), and it is the only way "fresh sources on disk,
-    # stale archive linked" is reachable at all now that content is checked.
-    local parser="$TS_DIR/src/parser.c"
-    assert_file_exists "$parser" || return 1
-
-    # The backup lives OUTSIDE the tracked source tree. tree-sitter-reify/.gitignore
-    # covers src/parser.c but NOT src/*.bak (`git check-ignore` exits 1 on one), so an
-    # in-tree backup leaves `git status --short` reporting an untracked file for this
-    # test's whole duration — up to 900 s across three serial cargo checks. The lane
-    # cleanliness guards, the lane audit and scripts/land.sh all read that as a dirty
-    # worktree: a worse, and far more confusing, failure than the bug under test.
-    local bakdir backup
-    bakdir=$(mktemp -d) || return 1
-    backup="$bakdir/parser.c.orig"
-    # Registered BEFORE the copy, so an interrupt in the gap leaks nothing. `mv -f` is
-    # atomic and self-consuming — unlike a cp+rm pair, a failed restore cannot go on to
-    # destroy the only copy (the CLEANUP_ACTIONS string is `;`-separated under
-    # `eval ... || true`, so every segment runs regardless of the previous one's rc).
-    # The restore is registered AHEAD of the `rm -rf`: cleanup replays in insertion
-    # order, so the backup dir must not be removable before it has been restored from.
-    # `mv` (not `cp -p`) also gives the restored file an mtime of now, matching the
-    # test_auto_generation_rebuilds_parser precedent.
-    #
-    # The trailing touch-sweep leaves the lane's target/ consistent with the restored
-    # tree whichever way this test exits EARLY (the SKIP returns on a busy/absent
-    # toolchain, or any assertion failure): those paths leave the real archive built
-    # from the PROBED parser.c, so once the original is restored that archive is
-    # genuinely stale and something must make cargo recompile it.
-    #
-    # On the SUCCESS path the restore-and-rebuild block at the end of this test does
-    # that job explicitly instead, and then ASSERTS the result. Relying on the sweep
-    # alone was an unverified bet (#5629 amendment pass): the sweep only queues a
-    # rebuild, and the dir this test's `cargo check -p tree-sitter-reify` advanced is
-    # IN this run's window (its marker moved after `ensure` stamped the epoch), so
-    # the plan's later `check` leaf hard-asserts on it. That stayed green only
-    # because the subsequent `cargo nextest run --workspace` waves happened to
-    # recompile the same fingerprint dir — an assumption about build-script
-    # fingerprint identity across two different cargo invocations that nothing here
-    # verified. If it ever stopped holding, this test would turn the merge gate RED
-    # for a reason unrelated to the change under test.
-    #
-    # It deliberately does NOT run `bash "$FRESHNESS_SCRIPT" ensure` against the real
-    # target/. `ts_mode_ensure` writes $TARGET_DIR/.tree-sitter-freshness.epoch
-    # unconditionally as its FIRST action, and this suite runs mid-plan (run_all.sh,
-    # well before the final `check` leaf). Re-stamping the epoch here would move the
-    # run window forward past every dir the earlier cargo leaves already rebuilt,
-    # demoting them to DORMANT `note:` lines and narrowing `check` back to the newest
-    # dir only — the exact multi-archive false GREEN the run window was added to close.
-    # Pointing `ensure` at a throwaway target dir is not a fix either: an empty target
-    # scans as `none` and returns before ts_force_touch, so the repair would silently
-    # not happen.
-    #
-    # So the repair is applied directly, as `ts_force_touch` would: bump the mtime
-    # (content untouched) of grammar.js plus every compiled input, which is what makes
-    # cargo re-run the build script. The set is DERIVED from `--list-inputs` rather
-    # than restated, so a new header or a second .c cannot drift out of it; grammar.js
-    # is added because it is an input to generation, not to compilation, and so is
-    # absent from that list. Tracked files are only ever mtime-touched, never
-    # content-mutated, so a concurrent `git status` still sees a clean tree.
-    CLEANUP_ACTIONS+=("mv -f '$backup' '$parser'; ( cd '$TS_DIR' && { printf 'grammar.js\n'; bash '$FRESHNESS_SCRIPT' --list-inputs; } | xargs -r touch ) || true")
-    CLEANUP_ACTIONS+=("rm -rf '$bakdir'")
-    # `|| return 1`: set -e is disabled inside test bodies (the runner invokes them as
-    # `if "$t"; then`), so an unchecked cp would fail silently and the probe append
-    # below would then mutate parser.c with no usable copy to restore from.
-    cp "$parser" "$backup" || return 1
-
-    local tmp cargo_out
-    tmp=$(mktemp -d);      CLEANUP_ACTIONS+=("rm -rf '$tmp'")
-    cargo_out=$(mktemp);   CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
-
-    # ---- baseline: a built, attested archive ----
-    local guard_rc=0
-    run_guarded_cargo_check "$cargo_out" timeout 300 cargo check -p tree-sitter-reify \
-        --manifest-path "$REPO_ROOT/Cargo.toml" || guard_rc=$?
-    if [ "$guard_rc" -eq 2 ]; then return 0; fi
-    if [ "$guard_rc" -ne 0 ]; then return 1; fi
-
-    local dir_name
-    dir_name=$(ts_mirror_run_dir "$tmp/t1") || {
-        echo "  SKIP: no built tree-sitter-reify archive to mirror"
-        return 0
-    }
-    run_ts_freshness check "$tmp/t1"
-    if [ "$TS_FRESHNESS_RC" -ne 0 ]; then
-        echo ""
-        echo "  ASSERTION FAILED: check on a freshly built archive exited $TS_FRESHNESS_RC (expected 0)"
-        echo "$TS_FRESHNESS_OUT"
-        return 1
-    fi
-
-    # ---- mutate the gitignored generated source; cargo will NOT recompile ----
-    # parser.c's OWN pre-probe mtime is captured into a witness first and restored
-    # immediately after the write, so cargo's watch on src/parser.c (added by
-    # `#6992`) sees the same mtime it compared against last build and declines to
-    # re-run the build script. Content changed, mtime rewound — the warm-lane
-    # signature, and now the only route to a stale linked archive.
-    #
-    # The witness is NOT $backup, and the difference is the whole test. `cp`
-    # without `-p` stamps the copy with the time of the copy, and that instant is
-    # LATER than the last real build-script run (an earlier case in this file,
-    # test_auto_generation_rebuilds_parser, already rebuilt the lane's archive, so
-    # the `output` file cargo compares against is older than this test's setup).
-    # Rewinding to $backup therefore moved parser.c FORWARD past cargo's
-    # reference: cargo re-ran the build script, the new content check regenerated
-    # parser.c, and the stale state under test cured itself before it could be
-    # observed. `touch -r` copies the reference's full-precision mtime, so the
-    # restore is exact rather than truncated to whole seconds by `stat`/`touch -d`.
-    local mtime_witness="$bakdir/parser.c.mtime"
-    : > "$mtime_witness" || return 1
-    touch -r "$parser" "$mtime_witness" || return 1
-    printf '\n/* task 5629 probe */\n' >> "$parser"
-    touch -r "$mtime_witness" "$parser" || return 1
-    guard_rc=0
-    run_guarded_cargo_check "$cargo_out" timeout 300 cargo check -p tree-sitter-reify \
-        --manifest-path "$REPO_ROOT/Cargo.toml" || guard_rc=$?
-    if [ "$guard_rc" -eq 2 ]; then return 0; fi
-    if [ "$guard_rc" -ne 0 ]; then return 1; fi
-
-    dir_name=$(ts_mirror_run_dir "$tmp/t2") || return 1
-    run_ts_freshness check "$tmp/t2"
-    if [ "$TS_FRESHNESS_RC" -ne 1 ]; then
-        echo ""
-        echo "  ASSERTION FAILED: check did not detect the stale archive (exit $TS_FRESHNESS_RC, expected 1)"
-        echo "  cargo reported success against an archive it never recompiled — the false GREEN."
-        echo "$TS_FRESHNESS_OUT"
-        return 1
-    fi
-    if [[ "$TS_FRESHNESS_OUT" != *"$dir_name"* ]]; then
-        echo ""
-        echo "  ASSERTION FAILED: stale verdict does not name the fingerprint dir '$dir_name'"
-        echo "$TS_FRESHNESS_OUT"
-        return 1
-    fi
-
-    # ---- ensure must force a real recompile ----
-    run_ts_freshness ensure "$tmp/t2"
-    if [ "$TS_FRESHNESS_RC" -ne 0 ]; then
-        echo ""
-        echo "  ASSERTION FAILED: ensure exited $TS_FRESHNESS_RC (expected 0)"
-        echo "$TS_FRESHNESS_OUT"
-        return 1
-    fi
-    if [[ "$TS_FRESHNESS_OUT" != *"forcing rebuild"* ]]; then
-        echo ""
-        echo "  ASSERTION FAILED: ensure did not report forcing a rebuild"
-        echo "$TS_FRESHNESS_OUT"
-        return 1
-    fi
-
-    guard_rc=0
-    run_guarded_cargo_check "$cargo_out" timeout 300 cargo check -p tree-sitter-reify \
-        --manifest-path "$REPO_ROOT/Cargo.toml" || guard_rc=$?
-    if [ "$guard_rc" -eq 2 ]; then return 0; fi
-    if [ "$guard_rc" -ne 0 ]; then return 1; fi
-
-    ts_mirror_run_dir "$tmp/t3" >/dev/null || return 1
-    run_ts_freshness check "$tmp/t3"
-    if [ "$TS_FRESHNESS_RC" -ne 0 ]; then
-        echo ""
-        echo "  ASSERTION FAILED: check still STALE after ensure + cargo check (exit $TS_FRESHNESS_RC)"
-        echo "  The force did not actually cause a recompile — which is the whole point."
-        echo "$TS_FRESHNESS_OUT"
-        return 1
-    fi
-
-    # ---- leave the real build tree PROVABLY fresh, and prove it ----
-    # At this point the lane's archive was compiled from the PROBED parser.c, which
-    # is about to stop existing. That dir's run marker advanced inside THIS verify
-    # run's window, so the plan's post-cargo `check` leaf hard-asserts on it — and
-    # leaving it stale here would fail the merge gate for a reason that has nothing
-    # to do with the change under test. Restoring in CLEANUP_ACTIONS only QUEUES a
-    # repair (a touch-sweep) and bets that a later nextest wave happens to recompile
-    # this same fingerprint dir. Do it here instead, and assert the outcome.
-    #
-    # `cp`, not `mv`: the backup must survive for the registered cleanup, which
-    # still runs and is now a no-op-equivalent re-restore. The sweep is applied the
-    # way ts_force_touch would (mtime only, content untouched) rather than via
-    # `ensure`, for the epoch reason spelled out at the top of this test.
-    #
-    # Non-vacuous: right now the archive attests the PROBED bytes, so restoring the
-    # original makes it stale again; only a genuine recompile can make the final
-    # check green.
-    cp -f "$backup" "$parser" || return 1
-    # The final check below is only meaningful if the bytes it attests are the ones
-    # that SURVIVE this test. Without this guard, dropping the restore above would
-    # leave the check comparing the probed archive against the probed source —
-    # green, vacuous, and the lane left stale the moment cleanup restores.
-    if ! cmp -s "$parser" "$backup"; then
-        echo ""
-        echo "  ASSERTION FAILED: src/parser.c was not restored before the final rebuild,"
-        echo "  so the archive about to be attested is not the one this test leaves behind."
-        return 1
-    fi
-    ( cd "$TS_DIR" && { printf 'grammar.js\n'; bash "$FRESHNESS_SCRIPT" --list-inputs; } \
-        | xargs -r touch ) || return 1
-
-    guard_rc=0
-    run_guarded_cargo_check "$cargo_out" timeout 300 cargo check -p tree-sitter-reify \
-        --manifest-path "$REPO_ROOT/Cargo.toml" || guard_rc=$?
-    if [ "$guard_rc" -eq 2 ]; then return 0; fi
-    if [ "$guard_rc" -ne 0 ]; then return 1; fi
-
-    ts_mirror_run_dir "$tmp/t4" >/dev/null || return 1
-    run_ts_freshness check "$tmp/t4"
-    if [ "$TS_FRESHNESS_RC" -ne 0 ]; then
-        echo ""
-        echo "  ASSERTION FAILED: this test left the lane's archive STALE on exit"
-        echo "  (check exit $TS_FRESHNESS_RC). The dir it rebuilt is inside this verify run's"
-        echo "  window, so the plan's later 'tree-sitter-freshness.sh check' leaf will"
-        echo "  hard-assert on it and turn the gate RED for a reason unrelated to the"
-        echo "  change under test."
-        echo "$TS_FRESHNESS_OUT"
-        return 1
-    fi
-}
-
 test_freshness_leaves_are_ld_scrubbed() {
     # Both freshness leaves must be emitted through verify.sh's SCRUBBED tool
     # emitter (add_tool), i.e. the plan line itself must literally begin with
@@ -2800,7 +2972,7 @@ test_freshness_leaves_are_ld_scrubbed() {
                   "lint --scope all --include-infra" \
                   "typecheck --scope all"; do
         # Retrying, completeness-guarded capture — same rationale/pattern as
-        # test_verify_plan_includes_freshness_after_generation. $action word-splits
+        # test_verify_plan_brackets_the_cargo_wave_with_freshness. $action word-splits
         # inside the inner bash -c (its unquoted $2), so no outer SC2086 exposure.
         capture_print_plan plan "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
             bash -c 'exec bash "$1" $2 --print-plan 2>/dev/null' _ "$verify" "$action" || true
@@ -2868,7 +3040,7 @@ test_freshness_leaves_are_ld_scrubbed() {
             echo "  ASSERTION FAILED: verify.sh '$action' plan has no freshness leaf to assert on"
             echo "  (matched 'ensure' lines: $n_ensure, 'check' lines: $n_check) — the scrub"
             echo "  assertion above would be vacuous. Both leaves are required on every"
-            echo "  RUN_RUST plan; see test_verify_plan_includes_freshness_after_generation."
+            echo "  RUN_RUST plan; see test_verify_plan_brackets_the_cargo_wave_with_freshness."
             return 1
         fi
         if [ "$n_control" -eq 0 ]; then
@@ -2881,14 +3053,15 @@ test_freshness_leaves_are_ld_scrubbed() {
     done
 }
 
-test_verify_plan_includes_freshness_after_generation() {
+test_verify_plan_brackets_the_cargo_wave_with_freshness() {
     # The guard is only worth anything if the gate RUNS it, and runs it in the
-    # right place. Two orderings are load-bearing and both are asserted here:
-    #   generate BEFORE freshness — src/parser.c must be current on disk before
-    #     it is fingerprinted, or the check compares against a stale input set;
-    #   freshness BEFORE the first cargo leaf — a force applied after the
-    #     compile repairs nothing (cargo has already linked the stale archive).
-    # Asserted on the emitted plan, not on verify.sh source text.
+    # right place: `ensure` BEFORE the first cargo leaf, since a force applied
+    # after the compile repairs nothing (cargo has already linked the stale
+    # archive), and `check` after the cargo wave. The generate leaf must still
+    # be present for the `tree-sitter parse` CLI consumers, but its position
+    # relative to freshness no longer matters: the fingerprint covers tracked
+    # files only (#9896). Asserted on the emitted plan, not on verify.sh source
+    # text.
     local verify="$REPO_ROOT/scripts/verify.sh"
     assert_file_exists "$verify" || return 1
 
@@ -2933,13 +3106,6 @@ test_verify_plan_includes_freshness_after_generation() {
         if [ "$i_gen" -lt 0 ]; then
             echo ""
             echo "  ASSERTION FAILED: verify.sh '$action' plan has no tree-sitter-generate leaf"
-            return 1
-        fi
-        if [ "$i_gen" -ge "$i_fresh" ]; then
-            echo ""
-            echo "  ASSERTION FAILED: verify.sh '$action' runs freshness BEFORE generate"
-            echo "  (generate step $i_gen, freshness step $i_fresh) —"
-            echo "  parser.c would be fingerprinted before it is regenerated."
             return 1
         fi
         if [ "$i_cargo" -lt 0 ]; then
@@ -3032,7 +3198,9 @@ test_verify_plan_includes_freshness_after_generation() {
     # cannot stage is a broken fixture, not a passing test: the staging failure
     # is fatal now, and the index is inspected before the plan is reasoned about.
     local fix add_out staged
-    fix=$(mk_verify_fixture) || return 1
+    fix=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$fix'")
+    mk_verify_fixture "$fix" || return 1
     add_out=$(mktemp)
     CLEANUP_ACTIONS+=("rm -f '$add_out'")
     printf 'docs\n' > "$fix/docs/note.md"
@@ -3146,7 +3314,10 @@ test_freshness_guard_is_routed_by_infra_test_map() {
 
     local want="tests/infra/test_tree_sitter_pipeline.sh"
     local artifact rc=0
+    # build_support.rs holds the generation and attestation predicates that
+    # build.rs include!s, so an edit to it alone must route here too.
     for artifact in "tree-sitter-reify/build.rs" \
+                    "tree-sitter-reify/build_support.rs" \
                     "tree-sitter-reify/src/scanner.c" \
                     "scripts/tree-sitter-generate.sh" \
                     "scripts/tree-sitter-freshness.sh"; do
@@ -3217,11 +3388,9 @@ test_freshness_refuses_partial_fingerprint_on_unhashable_input() {
     CLEANUP_ACTIONS+=("chmod -R u+rw '$tmp' 2>/dev/null; rm -rf '$tmp'")
 
     local ts="$tmp/ts" target="$tmp/target"
-    mkdir -p "$ts/src/tree_sitter" "$target"
+    mkdir -p "$ts/src" "$target"
     cp "$TS_DIR/grammar.js"    "$ts/grammar.js"
-    provision_fixture_parser_c "$ts/src/parser.c" || return 1
     cp "$TS_DIR/src/scanner.c" "$ts/src/scanner.c"
-    cp "$TS_DIR"/src/tree_sitter/*.h "$ts/src/tree_sitter/"
 
     # scanner.c is the sharpest choice: it is the hand-written input whose
     # staleness this task exists to close, so a false verdict about it is the
@@ -3312,7 +3481,9 @@ test_generate_writes_a_content_manifest_for_its_outputs() {
     require_tree_sitter_cli || return 0
 
     local fix
-    fix=$(mk_ts_generate_fixture) || return 1
+    fix=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$fix'")
+    mk_ts_generate_fixture "$fix" || return 1
     assert_cmd_success "generate script succeeds in a throwaway fixture" \
         bash "$fix/scripts/tree-sitter-generate.sh" --force || return 1
 
@@ -3331,7 +3502,9 @@ test_generate_keeps_the_grammar_stamp_format_intact() {
     require_tree_sitter_cli || return 0
 
     local fix
-    fix=$(mk_ts_generate_fixture) || return 1
+    fix=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$fix'")
+    mk_ts_generate_fixture "$fix" || return 1
     assert_cmd_success "generate script succeeds in a throwaway fixture" \
         bash "$fix/scripts/tree-sitter-generate.sh" --force || return 1
 
@@ -3368,7 +3541,9 @@ test_generate_regenerates_when_parser_c_is_corrupt() {
     require_tree_sitter_cli || return 0
 
     local fix
-    fix=$(mk_ts_generate_fixture) || return 1
+    fix=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$fix'")
+    mk_ts_generate_fixture "$fix" || return 1
     assert_cmd_success "baseline generate" \
         bash "$fix/scripts/tree-sitter-generate.sh" --force || return 1
 
@@ -3410,6 +3585,109 @@ test_generate_regenerates_when_parser_c_is_corrupt() {
     fi
 }
 
+test_generate_regenerates_when_a_header_is_missing() {
+    # The transition state #9741 creates: git deletes the formerly tracked
+    # src/tree_sitter/*.h on update while parser.c and both stamps survive and
+    # still attest. A run WITHOUT --force must regenerate, or scanner.c and
+    # parser.c fail to compile against the missing headers.
+    #
+    # The header set comes from what the real CLI wrote, not from the script's
+    # own list, so a CLI that adds a header the script does not know turns this red.
+    require_tree_sitter_cli || return 0
+
+    local fix
+    fix=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$fix'")
+    mk_ts_generate_fixture "$fix" || return 1
+    assert_cmd_success "baseline generate" \
+        bash "$fix/scripts/tree-sitter-generate.sh" --force || return 1
+
+    local hdr_dir="$fix/tree-sitter-reify/src/tree_sitter"
+    local -a headers=()
+    local h
+    for h in "$hdr_dir"/*.h; do
+        [ -f "$h" ] && headers+=("${h##*/}")
+    done
+    if [ "${#headers[@]}" -eq 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: the baseline generate wrote no src/tree_sitter/*.h"
+        return 1
+    fi
+
+    local victim out
+    for victim in "${headers[@]/#/$hdr_dir/}" "$hdr_dir"; do
+        rm -rf "$victim"
+        out=$(bash "$fix/scripts/tree-sitter-generate.sh" 2>&1) || {
+            echo ""
+            echo "  ASSERTION FAILED: re-run after removing ${victim#"$fix"/} exited non-zero"
+            echo "$out"
+            return 1
+        }
+        if grep -q "up to date" <<< "$out" || ! grep -q "generated parser files" <<< "$out"; then
+            echo ""
+            echo "  ASSERTION FAILED: script did not regenerate with ${victim#"$fix"/} missing"
+            echo "  Both stamps still attest grammar.js and the grammar outputs, so only an"
+            echo "  existence check on the generated headers can see this."
+            echo "$out"
+            return 1
+        fi
+        for h in "${headers[@]}"; do
+            if [ ! -f "$hdr_dir/$h" ]; then
+                echo ""
+                echo "  ASSERTION FAILED: src/tree_sitter/$h absent after the regeneration that"
+                echo "  followed removing ${victim#"$fix"/}"
+                return 1
+            fi
+        done
+    done
+}
+
+test_generate_refuses_to_stamp_when_the_cli_writes_no_header() {
+    # The post-generate check's header arm. A real CLI always writes the
+    # headers, so only a stub that exits 0 having written the three grammar
+    # outputs alone reaches it — the shape a CLI that stops writing a header
+    # would leave. Stamping that tree would report success and then regenerate
+    # on every later run, since the headers stay missing.
+    local fix
+    fix=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$fix'")
+    mk_ts_generate_fixture "$fix" || return 1
+
+    local stubdir
+    stubdir=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$stubdir'")
+    cat > "$stubdir/tree-sitter" <<'STUB'
+#!/bin/sh
+touch src/parser.c src/grammar.json src/node-types.json
+exit 0
+STUB
+    chmod +x "$stubdir/tree-sitter"
+
+    local err rc=0
+    err=$( export PATH="$stubdir:$PATH"
+           bash "$fix/scripts/tree-sitter-generate.sh" --force 2>&1 >/dev/null ) || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: generate script exited 0 though the CLI wrote no header"
+        return 1
+    fi
+    if ! grep -q "did not produce src/tree_sitter/" <<< "$err"; then
+        echo ""
+        echo "  ASSERTION FAILED: the failure does not name the missing src/tree_sitter/ header"
+        echo "$err"
+        return 1
+    fi
+
+    local st
+    for st in "$(ts_generate_grammar_stamp "$fix")" "$(ts_generate_outputs_stamp "$fix")"; do
+        if [ -f "$st" ]; then
+            echo ""
+            echo "  ASSERTION FAILED: $st written over a tree missing its headers"
+            return 1
+        fi
+    done
+}
+
 test_generate_failure_leaves_no_stamp_vouching_for_deleted_outputs() {
     # (d) A generate that fails must leave NEITHER stamp. _cleanup_partial_outputs
     # already deletes the three outputs on both error branches; a stamp surviving
@@ -3418,7 +3696,9 @@ test_generate_failure_leaves_no_stamp_vouching_for_deleted_outputs() {
     require_tree_sitter_cli || return 0
 
     local fix
-    fix=$(mk_ts_generate_fixture) || return 1
+    fix=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$fix'")
+    mk_ts_generate_fixture "$fix" || return 1
     assert_cmd_success "baseline generate" \
         bash "$fix/scripts/tree-sitter-generate.sh" --force || return 1
     assert_file_exists "$(ts_generate_grammar_stamp "$fix")" || return 1
@@ -3471,15 +3751,17 @@ test_generate_keeps_its_outputs_when_attestation_fails() {
     # ordinary spike; this pins what happens when even the retries lose.
     #
     # UNPROVEN is already the safe state. Outputs with no manifest beside them
-    # are read as STALE by _stamp_is_current here and by build.rs's
-    # needs_generate, so the next run regenerates unprompted. Deleting a good
-    # parser.c buys nothing that leaving it unstamped does not already buy.
-    # build_support.rs's write_shell_stamps makes the identical call ("Never
-    # fatal") for the identical condition.
+    # are read as STALE by tree-sitter-generate.sh's _stamp_is_current, so the
+    # next run regenerates unprompted. Deleting a good parser.c buys nothing
+    # that leaving it unstamped does not already buy. build_support.rs's
+    # write_generation_stamps makes the same never-fatal choice for build.rs's
+    # own copy in $OUT_DIR/src.
     require_tree_sitter_cli || return 0
 
     local fix
-    fix=$(mk_ts_generate_fixture) || return 1
+    fix=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$fix'")
+    mk_ts_generate_fixture "$fix" || return 1
 
     # A sha256sum that fails for parser.c ONLY, delegating every other file to
     # the real binary. Scoping it to one file is load-bearing: a hasher that
@@ -3546,367 +3828,549 @@ STUB
     fi
 }
 
-test_build_rs_repairs_a_parser_from_another_grammar() {
-    # THE END-TO-END REPRODUCTION, and the one shape shared logic cannot fake: a
-    # real cargo build, a real stale parser.c, in a warm-lane-shaped tree.
-    #
-    # MEASUREMENT 2's exact sequence. build.rs regenerates by shelling out to
-    # `tree-sitter generate` and never touches src/.grammar_hash.stamp, so
-    # parser.c(B) can end up beside a stamp still reading sha256(A). A merge that
-    # then restores grammar.js == A makes that stamp MATCH again — and it now
-    # actively vouches for a parser the current grammar never produced.
+test_fixture_build_fails_on_a_cold_registry() {
+    # A fixture crate whose cc cannot resolve is a FAIL, never a SKIP (#10001): the
+    # suite fetched the workspace's locked inputs before any test ran, so an
+    # unresolved fixture dependency means that fetch no longer covers what the
+    # fixture reads. Resolution fails before build.rs runs, so this needs neither
+    # network nor the tree-sitter CLI.
+    local va fix home cargo_out guard_rc=0
+    va=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$va'")
+    ts_write_grammar_variant "$va" a
+    fix=$(mktemp -d); CLEANUP_ACTIONS+=("rm -rf '$fix'")
+    mk_ts_build_fixture "$fix" "$va" || return 1
+    home=$(mktemp -d); CLEANUP_ACTIONS+=("rm -rf '$home'")
+    cargo_out=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
+    # Only stdout is discarded, the guard's chatter for the FAIL expected here: a
+    # timeout's verdict is written to stderr and must reach the suite's stream.
+    CARGO_HOME="$home" ts_cargo_build_fixture "$fix" "$cargo_out" >/dev/null || guard_rc=$?
+    if [ "$guard_rc" -eq "$TS_INFRA_RC" ]; then return "$TS_INFRA_RC"; fi
+    if [ "$guard_rc" -ne 1 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: a fixture build on an empty CARGO_HOME must FAIL (1), got $guard_rc"
+        echo "  --- captured output ---"; cat "$cargo_out"; echo "  --- end output ---"
+        return 1
+    fi
+    if ! grep -q 'no matching package' "$cargo_out"; then
+        echo ""
+        echo "  ASSERTION FAILED: the build failed for some reason other than an unresolved dependency"
+        echo "  --- captured output ---"; cat "$cargo_out"; echo "  --- end output ---"
+        return 1
+    fi
+}
+
+test_build_rs_generates_into_out_dir_and_leaves_src_untouched() {
+    # build.rs generates into $OUT_DIR/src and compiles from there (#9896), so
+    # the package's src/ holds only tracked files and the acquire's git clean
+    # has nothing of the build's to delete.
     require_tree_sitter_cli || return 0
 
-    local va vb
+    local va fix cargo_out guard_rc=0
+    va=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$va'")
+    ts_write_grammar_variant "$va" a
+    fix=$(mktemp -d); CLEANUP_ACTIONS+=("rm -rf '$fix'")
+    mk_ts_build_fixture "$fix" "$va" || return 1
+    cargo_out=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
+    ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
+
+    local out f
+    local -a missing=()
+    out=$(ts_fixture_out_dir "$fix") || return 1
+    for f in parser.c grammar.json node-types.json \
+             tree_sitter/alloc.h tree_sitter/array.h tree_sitter/parser.h scanner.c; do
+        [ -f "$out/src/$f" ] || missing+=("$f")
+    done
+    if [ "${#missing[@]}" -gt 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: \$OUT_DIR/src lacks: ${missing[*]}"
+        echo "  OUT_DIR: $out"
+        return 1
+    fi
+    ts_assert_outputs_manifest_matches_disk "$out/src" || return 1
+
+    local listing
+    listing=$(cd "$fix/src" && find . -mindepth 1 | LC_ALL=C sort)
+    if [ "$listing" != $'./lib.rs\n./scanner.c' ]; then
+        echo ""
+        echo "  ASSERTION FAILED: the build wrote into the package's src/, which must hold"
+        echo "  exactly lib.rs and scanner.c"
+        echo "  --- find src ---"
+        printf '%s\n' "$listing"
+        return 1
+    fi
+}
+
+test_build_rs_never_reruns_for_or_compiles_src_generated_files() {
+    # The cascade-free shape (#9896). The marker is the build-script run's
+    # `output`, which cargo rewrites on every run, so an unchanged marker means
+    # the script did not run. Nothing the CLI path leaves in src/, and nothing
+    # the acquire's git clean removes, may rerun it; and when something else
+    # does, src/ must not be what it compiles.
+    require_tree_sitter_cli || return 0
+
+    local va fix cargo_out guard_rc=0
+    va=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$va'")
+    ts_write_grammar_variant "$va" a
+    fix=$(mktemp -d); CLEANUP_ACTIONS+=("rm -rf '$fix'")
+    mk_ts_build_fixture "$fix" "$va" || return 1
+    cargo_out=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
+    ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
+
+    local out marker archive_mtime
+    out=$(ts_fixture_out_dir "$fix") || return 1
+    marker=$(ts_fixture_marker "$fix") || return 1
+    archive_mtime=$(stat -c %y "$out/libtree_sitter_reify.a") || return 1
+
+    # 1. Nothing changed: a regeneration costs zero extra runs.
+    guard_rc=0
+    ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
+    if [ "$(ts_fixture_marker "$fix")" != "$marker" ] \
+        || [ "$(stat -c %y "$out/libtree_sitter_reify.a")" != "$archive_mtime" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: the build after a regeneration reran the build script."
+        echo "  A watched build-script output is the 8-unit cascade #9896 removes."
+        echo "  marker before: $marker"
+        echo "  marker after:  $(ts_fixture_marker "$fix")"
+        return 1
+    fi
+
+    # 2. What tree-sitter-generate.sh's CLI path leaves in src/.
+    ts_poison_src_cli_path_files "$fix/src" || return 1
+    guard_rc=0
+    ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
+    if [ "$(ts_fixture_marker "$fix")" != "$marker" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: files the CLI path wrote into src/ reran the build script."
+        return 1
+    fi
+
+    # 3. The acquire's git clean removes them again.
+    ts_remove_src_cli_path_files "$fix/src"
+    guard_rc=0
+    ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
+    if [ "$(ts_fixture_marker "$fix")" != "$marker" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: deleting src/'s generated files reran the build script."
+        return 1
+    fi
+
+    # 4. Re-poison, then rerun the script with grammar.js's content unchanged. A
+    # successful build proves neither parser.c nor scanner.c's quote include
+    # resolved into src/.
+    ts_poison_src_cli_path_files "$fix/src" || return 1
+    local parser_mtime
+    parser_mtime=$(stat -c %y "$out/src/parser.c") || return 1
+    touch "$fix/grammar.js"
+    guard_rc=0
+    ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *)
+        echo "  (a build that compiles anything from the poisoned src/ fails with #error)"
+        return 1 ;;
+    esac
+    if [ "$(ts_fixture_marker "$fix")" = "$marker" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: touching grammar.js did not rerun the build script, so"
+        echo "  this step proved nothing about what a run compiles."
+        return 1
+    fi
+    if [ "$(stat -c %y "$out/src/parser.c")" != "$parser_mtime" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: a rerun with an unchanged grammar and CLI regenerated"
+        echo "  \$OUT_DIR/src/parser.c; a current key must skip generation."
+        return 1
+    fi
+}
+
+test_build_rs_reruns_cleanly_when_src_scanner_c_is_read_only() {
+    # fs::copy carries src/scanner.c's mode onto build.rs's $OUT_DIR copy, so a
+    # read-only checkout (0444) leaves a copy the next run cannot reopen for
+    # writing. The script removes and rewrites the copy instead (#9896); a rerun
+    # over a copy made from a 0444 scanner.c must still succeed.
+    require_tree_sitter_cli || return 0
+
+    local va fix cargo_out guard_rc=0
+    va=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$va'")
+    ts_write_grammar_variant "$va" a
+    fix=$(mktemp -d); CLEANUP_ACTIONS+=("rm -rf '$fix'")
+    mk_ts_build_fixture "$fix" "$va" || return 1
+
+    # Read-only before the FIRST build: chmod moves only ctime and cargo's
+    # rerun-if-changed compares mtimes, so a later chmod would rerun nothing.
+    chmod 0444 "$fix/src/scanner.c" || return 1
+    if [ -w "$fix/src/scanner.c" ]; then
+        echo "  SKIP: mode 0444 does not deny this user a write (running as root?), so no copy can block a rerun"
+        return 0
+    fi
+
+    cargo_out=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
+    ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
+
+    local out marker
+    out=$(ts_fixture_out_dir "$fix") || return 1
+    assert_file_exists "$out/src/scanner.c" || return 1
+    marker=$(ts_fixture_marker "$fix") || return 1
+
+    touch "$fix/grammar.js" || return 1
+    guard_rc=0
+    ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *)
+        echo "  (the rerun over the first run's copy of a 0444 src/scanner.c failed)"
+        return 1 ;;
+    esac
+    if [ "$(ts_fixture_marker "$fix")" = "$marker" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: touching grammar.js did not rerun the build script, so"
+        echo "  no run replaced an existing copy of the read-only scanner.c and this"
+        echo "  proved nothing."
+        return 1
+    fi
+}
+
+test_build_rs_regenerates_a_deleted_or_modified_out_dir_output() {
+    # build.rs watches nothing in OUT_DIR (#9896), so damage there is repaired
+    # whenever the script next runs. The `touch` of grammar.js, content
+    # unchanged, is that rerun: what ensure's force or a scanner.c edit
+    # supplies. Without it the script legitimately does not run. Covers the
+    # #6992 foreign-grammar parser and the #9741 header deletions.
+    require_tree_sitter_cli || return 0
+
+    local va vb fix cargo_out guard_rc=0
     va=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$va'")
     vb=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$vb'")
     ts_write_grammar_variant "$va" a
     ts_write_grammar_variant "$vb" b
-
-    local fix
-    fix=$(mk_ts_build_fixture "$va") || return 1
-
-    local cargo_out guard_rc=0
+    fix=$(mktemp -d); CLEANUP_ACTIONS+=("rm -rf '$fix'")
+    mk_ts_build_fixture "$fix" "$va" || return 1
     cargo_out=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
-    run_guarded_cargo_check --skip-on-unresolved "$cargo_out" timeout 300 \
-        cargo build --offline --manifest-path "$fix/Cargo.toml" || guard_rc=$?
-    if [ "$guard_rc" -eq 2 ]; then return 0; fi
-    if [ "$guard_rc" -ne 0 ]; then return 1; fi
-    assert_file_exists "$fix/src/parser.c" || return 1
+    ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
 
-    local hash_a hash_b
-    hash_a=$(ts_sha256 "$fix/src/parser.c") || { echo "  SKIP: no hasher"; return 0; }
-
-    # Generate from variant B, exactly as a build on the other branch would.
-    cp "$vb" "$fix/grammar.js" || return 1
-    ( cd "$fix" && tree-sitter generate ) >/dev/null 2>&1 || {
-        echo ""; echo "  ASSERTION FAILED: tree-sitter generate failed on variant B"; return 1
-    }
-    hash_b=$(ts_sha256 "$fix/src/parser.c")
+    local out hash_a hash_b parser_b
+    out=$(ts_fixture_out_dir "$fix") || return 1
+    assert_file_exists "$out/src/parser.c" || return 1
+    hash_a=$(ts_sha256 "$out/src/parser.c") || { echo "  SKIP: no hasher"; return 0; }
+    parser_b=$(mktemp -d); CLEANUP_ACTIONS+=("rm -rf '$parser_b'")
+    ts_reference_parser "$vb" "$parser_b" || return 1
+    parser_b="$parser_b/src/parser.c"
+    hash_b=$(ts_sha256 "$parser_b")
     if [ "$hash_a" = "$hash_b" ]; then
         echo ""
         echo "  ASSERTION FAILED: the two grammar variants produce identical parser.c,"
-        echo "  so this test could not tell a repaired parser from a stale one."
+        echo "  so this test could not tell a repaired parser from a foreign one."
         return 1
     fi
 
-    # The post-merge state: grammar.js back to A, .grammar_hash.stamp back to
-    # sha256(A) — both legitimately consistent — while parser.c is still B, and
-    # nothing attests the outputs.
-    cp "$va" "$fix/grammar.js" || return 1
-    printf '%s' "$(ts_sha256 "$fix/grammar.js")" > "$fix/src/.grammar_hash.stamp" || return 1
-    rm -f "$fix/src/.generated_outputs.stamp"
+    local -a headers=()
+    local h
+    for h in "$out"/src/tree_sitter/*.h; do
+        [ -f "$h" ] && headers+=("tree_sitter/${h##*/}")
+    done
+    if [ "${#headers[@]}" -eq 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: a successful build left no \$OUT_DIR/src/tree_sitter/*.h"
+        return 1
+    fi
 
-    # Warm-lane mtimes, then the merge's write to grammar.js — the one thing that
-    # gives cargo a reason to re-run the build script at all.
-    ts_normalize_lane_mtimes "$fix"
-    touch "$fix/grammar.js"
+    local -a victims=("rm:parser.c" "foreign:parser.c" "rm:grammar.json")
+    for h in "${headers[@]}"; do victims+=("rm:$h"); done
+    victims+=("rm:tree_sitter")
 
+    local victim marker after
+    local -a gone
+    for victim in "${victims[@]}"; do
+        case "$victim" in
+            rm:*)      rm -rf "$out/src/${victim#rm:}" ;;
+            foreign:*) cp "$parser_b" "$out/src/${victim#foreign:}" || return 1 ;;
+        esac
+        ts_normalize_lane_mtimes "$fix"
+        touch "$fix/grammar.js"
+        marker=$(ts_fixture_marker "$fix") || return 1
+
+        guard_rc=0
+        ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
+        case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *)
+            echo "  (the build that failed followed the victim $victim)"
+            return 1 ;;
+        esac
+
+        if [ "$(ts_fixture_marker "$fix")" = "$marker" ]; then
+            echo ""
+            echo "  ASSERTION FAILED: after $victim, touching grammar.js did not rerun the build script"
+            return 1
+        fi
+        after=$(ts_sha256 "$out/src/parser.c" 2>/dev/null) || after=""
+        if [ "$after" != "$hash_a" ]; then
+            echo ""
+            echo "  ASSERTION FAILED: after $victim, \$OUT_DIR/src/parser.c is not grammar A's"
+            echo "  expected: $hash_a"
+            echo "  actual:   ${after:-(absent)}"
+            return 1
+        fi
+        gone=()
+        for h in "${headers[@]}"; do
+            [ -f "$out/src/$h" ] || gone+=("$h")
+        done
+        if [ "${#gone[@]}" -gt 0 ]; then
+            echo ""
+            echo "  ASSERTION FAILED: after $victim the build succeeded with headers missing: ${gone[*]}"
+            return 1
+        fi
+        ts_assert_outputs_manifest_matches_disk "$out/src" || {
+            echo "  (after the victim $victim)"
+            return 1
+        }
+    done
+
+    # A grammar change reruns the script through cargo's own trigger.
+    cp "$vb" "$fix/grammar.js" || return 1
     guard_rc=0
-    run_guarded_cargo_check --skip-on-unresolved "$cargo_out" timeout 300 \
-        cargo build --offline --manifest-path "$fix/Cargo.toml" || guard_rc=$?
-    if [ "$guard_rc" -eq 2 ]; then return 0; fi
-    if [ "$guard_rc" -ne 0 ]; then return 1; fi
-
-    # Every arm of the two gating predicates lands here, which is why this one
-    # assertion carries the "no error path may skip generation" contract. `true`
-    # from shell_stamp_is_current — or `false` from needs_generate — means SKIP
-    # GENERATION, and that is the one verdict a branch that does not know must
-    # never give: the old condition 4 stat-ed the stamp and did
-    # `Err(_) => return true` under the comment "Can't stat stamp; assume it's
-    # fine", conceding in the direction that links a parser the grammar never
-    # produced. A regenerate costs seconds; this costs a silent false GREEN.
-    local after
-    after=$(ts_sha256 "$fix/src/parser.c")
-    if [ "$after" = "$hash_b" ]; then
+    ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
+    after=$(ts_sha256 "$out/src/parser.c" 2>/dev/null) || after=""
+    if [ "$after" != "$hash_b" ]; then
         echo ""
-        echo "  ASSERTION FAILED: the build left parser.c as variant B while grammar.js is A."
-        echo "  The .grammar_hash.stamp legitimately matches grammar.js, so only a check on"
-        echo "  the OUTPUTS' bytes can see this — and every mtime here is 2020-01-01, so the"
-        echo "  old 'output newer than stamp' heuristic cannot fire."
+        echo "  ASSERTION FAILED: after grammar.js became variant B, \$OUT_DIR/src/parser.c is not B's"
+        echo "  expected: $hash_b"
+        echo "  actual:   ${after:-(absent)}"
         return 1
     fi
-    if [ "$after" != "$hash_a" ]; then
+    local attested
+    attested=$(awk '$2 == "grammar.js" {print $1}' "$out/tree_sitter_inputs.stamp" 2>/dev/null || true)
+    if [ "$attested" != "$(ts_sha256 "$vb")" ]; then
         echo ""
-        echo "  ASSERTION FAILED: parser.c matches neither variant after the build"
-        echo "  expected (variant A): $hash_a"
-        echo "  actual:               $after"
-        return 1
-    fi
-
-    # --- RE-ATTESTATION (Hole B) ---
-    #
-    # Repairing parser.c is only half the contract. build.rs shells straight out
-    # to `tree-sitter generate`, which touches neither shell stamp — so before
-    # `#6992` a build could leave parser.c(B) beside a .grammar_hash.stamp still
-    # reading sha256(A), and a later merge restoring grammar.js == A made that
-    # stamp MATCH again and actively vouch for a parser the grammar never
-    # produced. Whatever regenerates must also re-attest.
-    #
-    # Asserted on the STAMPS THEMSELVES rather than on build.rs's source text.
-    # The source scan this replaces (`after_generate.contains("write_shell_stamps(")`)
-    # was satisfied by a comment or a commented-out line: deleting the real call
-    # while keeping its explanation passed green.
-    local grammar_sha stamp_content stamp_bytes
-    grammar_sha=$(ts_sha256 "$fix/grammar.js")
-    stamp_content=$(cat "$fix/src/.grammar_hash.stamp" 2>/dev/null || true)
-    # Byte count, not just the regex. `$(cat ...)` strips trailing newlines, so a
-    # writer that appended one would satisfy the pattern while emitting 65 bytes
-    # (measured: it did). build_support.rs documents these bytes as identical to
-    # what `echo -n "$GRAMMAR_HASH"` in scripts/tree-sitter-generate.sh writes;
-    # that is the claim being pinned.
-    stamp_bytes=$(wc -c < "$fix/src/.grammar_hash.stamp" 2>/dev/null || echo -1)
-    if ! [[ "$stamp_content" =~ ^[0-9a-f]{64}$ ]] || [ "$stamp_bytes" -ne 64 ]; then
-        echo ""
-        echo "  ASSERTION FAILED: .grammar_hash.stamp must stay exactly 64 hex bytes after a"
-        echo "  build.rs regeneration — three live consumers assert that shape"
-        echo "  (scripts/test_tree_sitter_generate.sh, tests/infra/test_verify_semaphore_e2e.sh x2)."
-        echo "  got ($stamp_bytes bytes): $stamp_content"
-        return 1
-    fi
-    if [ "$stamp_content" != "$grammar_sha" ]; then
-        echo ""
-        echo "  ASSERTION FAILED: .grammar_hash.stamp does not describe the grammar on disk"
-        echo "  expected sha256(grammar.js): $grammar_sha"
-        echo "  stamp:                       $stamp_content"
-        return 1
-    fi
-
-    # The manifest was DELETED before this build, so its presence here can only
-    # mean build.rs wrote it — and the shared verifier requires it to describe
-    # the REPAIRED bytes, not the ones it replaced.
-    ts_assert_outputs_manifest_matches_disk "$fix/src" || return 1
-
-    # --- CONVERGENCE ---
-    #
-    # build.rs now watches src/parser.c, a file it WRITES, so the regeneration
-    # above necessarily makes cargo re-run the build script once more. That cost
-    # is bounded and convergent, not a loop — but only because both gating
-    # predicates read the stamps this build just wrote. A predicate that
-    # regenerates unconditionally turns one extra run into an unbounded rebuild
-    # loop on every `cargo build` of this crate, which is why the property is
-    # pinned here rather than argued for in a comment.
-    local manifest_before manifest_after mtime_before mtime_after
-    manifest_before=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$manifest_before'")
-    cp "$fix/src/.generated_outputs.stamp" "$manifest_before" || return 1
-    mtime_before=$(ts_mtime "$fix/src/parser.c") || return 1
-
-    guard_rc=0
-    run_guarded_cargo_check --skip-on-unresolved "$cargo_out" timeout 300 \
-        cargo build --offline --manifest-path "$fix/Cargo.toml" || guard_rc=$?
-    if [ "$guard_rc" -eq 2 ]; then return 0; fi
-    if [ "$guard_rc" -ne 0 ]; then return 1; fi
-
-    mtime_after=$(ts_mtime "$fix/src/parser.c") || return 1
-    if [ "$mtime_after" != "$mtime_before" ]; then
-        echo ""
-        echo "  ASSERTION FAILED: the build after a repair regenerated parser.c again."
-        echo "  Watching a build-script output costs ONE extra run; the run after a"
-        echo "  regeneration must find both stamps current and write nothing. A moving"
-        echo "  mtime here means every cargo build of this crate now pays a full"
-        echo "  tree-sitter generate, forever."
-        echo "  mtime before: $mtime_before"
-        echo "  mtime after:  $mtime_after"
-        return 1
-    fi
-    manifest_after=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$manifest_after'")
-    cp "$fix/src/.generated_outputs.stamp" "$manifest_after" || return 1
-    if ! cmp -s "$manifest_before" "$manifest_after"; then
-        echo ""
-        echo "  ASSERTION FAILED: the settled build rewrote .generated_outputs.stamp"
-        echo "  --- before (cat -A) ---"; cat -A "$manifest_before"
-        echo "  --- after (cat -A) ---";  cat -A "$manifest_after"
-        return 1
-    fi
-
-    # One more build with `$OUT_DIR/grammar_hash.stamp` cleared — the CoW-seeding
-    # shape, a target/ cloned from one base beside a src/ from another. It
-    # isolates the SECOND gate: `needs_generate` can no longer short-circuit, so
-    # only `shell_stamp_is_current` reading the manifest stands between this
-    # build and a needless full regeneration.
-    #
-    # The `touch` is load-bearing, not decoration. Clearing a file inside target/
-    # gives cargo no reason to re-run the build script at all, and a build script
-    # that never runs trivially leaves parser.c's mtime alone — i.e. without it
-    # this whole block passes vacuously (measured: it did, under the mutation
-    # probe that should have red it). Touching grammar.js is the re-run trigger
-    # a merge supplies in the real sequence; its CONTENT is unchanged, so the
-    # grammar stamp still matches.
-    local out_stamp
-    out_stamp=$(find "$fix/target" -name grammar_hash.stamp -print -quit 2>/dev/null || true)
-    if [ -z "$out_stamp" ]; then
-        echo ""
-        echo "  ASSERTION FAILED: no \$OUT_DIR/grammar_hash.stamp under $fix/target —"
-        echo "  build.rs must write it whenever it takes the needs_generate branch."
-        return 1
-    fi
-    rm -f "$out_stamp"
-    touch "$fix/grammar.js"
-    mtime_before=$(ts_mtime "$fix/src/parser.c") || return 1
-
-    guard_rc=0
-    run_guarded_cargo_check --skip-on-unresolved "$cargo_out" timeout 300 \
-        cargo build --offline --manifest-path "$fix/Cargo.toml" || guard_rc=$?
-    if [ "$guard_rc" -eq 2 ]; then return 0; fi
-    if [ "$guard_rc" -ne 0 ]; then return 1; fi
-
-    # Non-vacuity: build.rs writes this stamp on every needs_generate branch, so
-    # its reappearance proves the build script really ran and really took that
-    # branch. Without this the mtime check below could pass on a build that did
-    # nothing at all.
-    if [ ! -f "$out_stamp" ]; then
-        echo ""
-        echo "  ASSERTION FAILED: the build did not re-run build.rs (no \$OUT_DIR stamp"
-        echo "  was rewritten), so the fast-path assertion below would be vacuous."
-        return 1
-    fi
-    mtime_after=$(ts_mtime "$fix/src/parser.c") || return 1
-    if [ "$mtime_after" != "$mtime_before" ]; then
-        echo ""
-        echo "  ASSERTION FAILED: with \$OUT_DIR/grammar_hash.stamp gone, the build"
-        echo "  regenerated rather than believing the shell stamps beside the outputs."
-        echo "  Every warm lane seeded from a foreign target/ would pay a full"
-        echo "  tree-sitter generate on its first build of this crate."
-        echo "  mtime before: $mtime_before"
-        echo "  mtime after:  $mtime_after"
+        echo "  ASSERTION FAILED: tree_sitter_inputs.stamp does not attest grammar B"
+        echo "  expected: $(ts_sha256 "$vb")"
+        echo "  stamp:    ${attested:-(no grammar.js line)}"
         return 1
     fi
 }
 
-test_shell_written_manifest_satisfies_build_rs() {
-    # CROSS-IMPLEMENTATION AGREEMENT (#6992 amendment pass). The generated-output
-    # manifest now has TWO independent renderers and TWO independent verifiers —
-    # `_render_outputs_manifest` in scripts/tree-sitter-generate.sh
-    # (`printf '%s  %s\n'` over $OUTPUTS) and `outputs_manifest_render` in
-    # build_support.rs — and until this case, nothing tested them against each
-    # other: the Rust tests round-trip Rust output, the shell tests re-hash shell
-    # output.
-    #
-    # A divergence (one space instead of two, unsorted order, CRLF, a trailing
-    # blank line) would fail NO test. It would not fail LOUDLY either: build.rs's
-    # shell_stamp_is_current would simply return false forever, so every cargo
-    # build of tree-sitter-reify would re-run `tree-sitter generate` — a silent
-    # ~60 s per-build regression on the merge gate, in the direction that looks
-    # like everything working.
-    #
-    # Asserted BEHAVIOURALLY rather than by comparing format strings: the shell
-    # script writes the manifest, then a real cargo build must take the fast path
-    # over it. parser.c's mtime is the signal — every file is stamped 2020-01-01
-    # first, so a regeneration necessarily bumps it to now, and an unchanged
-    # timestamp means build.rs read the shell's manifest and believed it.
+test_build_rs_watches_the_cli_and_regenerates_on_a_version_change() {
+    # The generation key holds the CLI's version line, and the resolved CLI is
+    # watched, so a `cargo install` upgrade reruns the script and regenerates
+    # (#9896). The shim reports another version and otherwise forwards every
+    # argument, `--abi 14 -o ...` included, to the real CLI.
     require_tree_sitter_cli || return 0
 
-    local va
+    local va fix cargo_out guard_rc=0
     va=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$va'")
     ts_write_grammar_variant "$va" a
+    fix=$(mktemp -d); CLEANUP_ACTIONS+=("rm -rf '$fix'")
+    mk_ts_build_fixture "$fix" "$va" || return 1
+    cargo_out=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
+    ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
 
-    # Repo-shaped layout: <root>/scripts + <root>/tree-sitter-reify, which is
-    # what tree-sitter-generate.sh resolves TS_DIR against.
-    local crate root
-    crate=$(mk_ts_build_fixture "$va" tree-sitter-reify) || return 1
-    root=$(dirname "$crate")
-    cp -r "$REPO_ROOT/scripts" "$root/scripts" || return 1
+    local out real shim parser_mtime marker
+    out=$(ts_fixture_out_dir "$fix") || return 1
+    assert_file_exists "$out/src/parser.c" || return 1
+    real=$(command -v tree-sitter)
+    shim=$(mktemp -d); CLEANUP_ACTIONS+=("rm -rf '$shim'")
+    cat > "$shim/tree-sitter" <<SH
+#!/usr/bin/env bash
+if [ "\${1:-}" = "--version" ]; then
+    echo 'tree-sitter 0.0.0-fixture'
+    exit 0
+fi
+exec '$real' "\$@"
+SH
+    chmod +x "$shim/tree-sitter" || return 1
 
-    # The SHELL half writes both stamps and all three outputs.
-    if ! bash "$root/scripts/tree-sitter-generate.sh" --force >/dev/null 2>&1; then
+    parser_mtime=$(stat -c %y "$out/src/parser.c") || return 1
+    touch "$fix/grammar.js"
+    guard_rc=0
+    PATH="$shim:$PATH" ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
+    if [ "$(stat -c %y "$out/src/parser.c")" = "$parser_mtime" ]; then
         echo ""
-        echo "  ASSERTION FAILED: scripts/tree-sitter-generate.sh --force failed in the fixture"
+        echo "  ASSERTION FAILED: a CLI reporting another version did not regenerate"
+        echo "  \$OUT_DIR/src/parser.c; the key must name the CLI that generated it."
         return 1
     fi
-    assert_file_exists "$crate/src/parser.c" || return 1
-    assert_file_exists "$(ts_generate_outputs_stamp "$root")" || return 1
-
-    # Keep the SHELL-rendered bytes: a build that regenerates overwrites the
-    # manifest with the Rust-rendered one, so the diagnostic below would
-    # otherwise print the very bytes that are not in dispute.
-    local shell_manifest
-    shell_manifest=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$shell_manifest'")
-    cp "$(ts_generate_outputs_stamp "$root")" "$shell_manifest" || return 1
-
-    # Warm-lane mtimes: nothing after this point can be decided by "newer than".
-    ts_normalize_lane_mtimes "$root"
-    local before_mtime
-    before_mtime=$(stat -c %Y "$crate/src/parser.c") || return 1
-
-    local cargo_out guard_rc=0
-    cargo_out=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
-    run_guarded_cargo_check --skip-on-unresolved "$cargo_out" timeout 300 \
-        cargo build --offline --manifest-path "$crate/Cargo.toml" || guard_rc=$?
-    if [ "$guard_rc" -eq 2 ]; then return 0; fi
-    if [ "$guard_rc" -ne 0 ]; then return 1; fi
-
-    local after_mtime
-    after_mtime=$(stat -c %Y "$crate/src/parser.c") || return 1
-    if [ "$after_mtime" != "$before_mtime" ]; then
+    if ! grep -qxF "cargo:rerun-if-changed=$shim/tree-sitter" "$(dirname "$out")/output"; then
         echo ""
-        echo "  ASSERTION FAILED: build.rs regenerated over a manifest the shell script had"
-        echo "  just written, so the two implementations of the manifest format disagree."
-        echo "  --- shell-rendered manifest, as written by tree-sitter-generate.sh (cat -A) ---"
-        cat -A "$shell_manifest"
-        echo "  --- Rust-rendered manifest, as left by the regenerating build (cat -A) ---"
-        cat -A "$(ts_generate_outputs_stamp "$root")" 2>/dev/null || echo "  (absent)"
-        echo "  --- end ---"
-        echo "  Nothing else can explain it: the grammar hash matches, all three outputs"
-        echo "  exist, and every mtime was 2020-01-01, so only outputs_manifest_matches()"
-        echo "  can have returned false. Each build now pays a full tree-sitter generate."
+        echo "  ASSERTION FAILED: the build script does not watch the CLI it resolved"
+        echo "  expected: cargo:rerun-if-changed=$shim/tree-sitter"
+        echo "  --- output ---"; grep rerun-if-changed "$(dirname "$out")/output" || true
+        return 1
+    fi
+
+    marker=$(ts_fixture_marker "$fix") || return 1
+    touch "$shim/tree-sitter"
+    guard_rc=0
+    PATH="$shim:$PATH" ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
+    if [ "$(ts_fixture_marker "$fix")" = "$marker" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: touching the resolved CLI alone did not rerun the build script"
+        return 1
+    fi
+
+    marker=$(ts_fixture_marker "$fix") || return 1
+    guard_rc=0
+    PATH="$shim:$PATH" ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
+    if [ "$(ts_fixture_marker "$fix")" != "$marker" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: a build with nothing changed reran the build script"
         return 1
     fi
 }
 
-test_build_rs_restores_a_deleted_parser_c() {
-    # HOLE E's companion. src/parser.c used to be excluded from the watch set on
-    # a double-execution argument, and cargo narrows a build script's watch set
-    # to EXACTLY the emitted rerun-if-changed list — so a deleted parser.c (the
-    # `git clean -xfd -e target` every lane acquire runs) gave cargo no reason to
-    # re-run the build script. The pre-built libtree_sitter_reify.a stayed linked
-    # and the build reported success over a source file that no longer existed.
+test_freshness_detects_and_repairs_a_stale_archive() {
+    # End to end on the hermetic fixture: grammar.js's content changes while its
+    # mtime is rewound, the warm-lane signature, so cargo links the stale
+    # archive. `check` must see it and `ensure` must cure it. The fixture is
+    # both TS_DIR and TARGET_DIR's parent, so the lane's tree and target/ are
+    # never read or written.
     require_tree_sitter_cli || return 0
 
-    local va
+    local va vb fix cargo_out guard_rc=0
     va=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$va'")
+    vb=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$vb'")
     ts_write_grammar_variant "$va" a
-
-    local fix
-    fix=$(mk_ts_build_fixture "$va") || return 1
-
-    local cargo_out guard_rc=0
+    ts_write_grammar_variant "$vb" b
+    fix=$(mktemp -d); CLEANUP_ACTIONS+=("rm -rf '$fix'")
+    mk_ts_build_fixture "$fix" "$va" || return 1
     cargo_out=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
-    run_guarded_cargo_check --skip-on-unresolved "$cargo_out" timeout 300 \
-        cargo build --offline --manifest-path "$fix/Cargo.toml" || guard_rc=$?
-    if [ "$guard_rc" -eq 2 ]; then return 0; fi
-    if [ "$guard_rc" -ne 0 ]; then return 1; fi
-    assert_file_exists "$fix/src/parser.c" || return 1
+    ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
 
-    local hash_a
-    hash_a=$(ts_sha256 "$fix/src/parser.c") || { echo "  SKIP: no hasher"; return 0; }
+    local out dir_name parser_b
+    out=$(ts_fixture_out_dir "$fix") || return 1
+    dir_name=$(basename "$(dirname "$out")")
+    parser_b=$(mktemp -d); CLEANUP_ACTIONS+=("rm -rf '$parser_b'")
+    ts_reference_parser "$vb" "$parser_b" || return 1
+    parser_b="$parser_b/src/parser.c"
 
-    # grammar.js untouched and still stamped 2020 — nothing about it changed.
-    # Only parser.c is gone.
-    ts_normalize_lane_mtimes "$fix"
-    rm -f "$fix/src/parser.c"
+    run_ts_freshness check "$fix/target" "$fix"
+    if [ "$TS_FRESHNESS_RC" -ne 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: check on a freshly built fixture exited $TS_FRESHNESS_RC (expected 0)"
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+
+    local witness marker
+    witness=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$witness'")
+    touch -r "$fix/grammar.js" "$witness" || return 1
+    cp "$vb" "$fix/grammar.js" || return 1
+    touch -r "$witness" "$fix/grammar.js" || return 1
+
+    marker=$(ts_fixture_marker "$fix") || return 1
+    guard_rc=0
+    ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
+    if [ "$(ts_fixture_marker "$fix")" != "$marker" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: the rewound grammar.js reran the build script, so no"
+        echo "  stale archive is linked and the rest of this test would be vacuous."
+        return 1
+    fi
+
+    run_ts_freshness check "$fix/target" "$fix"
+    if [ "$TS_FRESHNESS_RC" -ne 1 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: check did not detect the stale archive (exit $TS_FRESHNESS_RC, expected 1)"
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+    if [[ "$TS_FRESHNESS_OUT" != *"$dir_name"* ]] \
+        || [[ "$TS_FRESHNESS_OUT" != *"first differing input: grammar.js"* ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: the stale verdict must name '$dir_name' and"
+        echo "  'first differing input: grammar.js'"
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+
+    run_ts_freshness ensure "$fix/target" "$fix"
+    if [ "$TS_FRESHNESS_RC" -ne 0 ] || [[ "$TS_FRESHNESS_OUT" != *"forcing rebuild"* ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: ensure must exit 0 reporting 'forcing rebuild' (exit $TS_FRESHNESS_RC)"
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
 
     guard_rc=0
-    run_guarded_cargo_check --skip-on-unresolved "$cargo_out" timeout 300 \
-        cargo build --offline --manifest-path "$fix/Cargo.toml" || guard_rc=$?
-    if [ "$guard_rc" -eq 2 ]; then return 0; fi
-    if [ "$guard_rc" -ne 0 ]; then return 1; fi
-
-    if [ ! -f "$fix/src/parser.c" ]; then
-        echo ""
-        echo "  ASSERTION FAILED: the build reported success without restoring src/parser.c."
-        echo "  cargo linked the previously-built archive over a source that no longer exists —"
-        echo "  which is the false GREEN, not a build."
-        return 1
-    fi
+    ts_cargo_build_fixture "$fix" "$cargo_out" || guard_rc=$?
+    case "$guard_rc" in 0) ;; "$TS_INFRA_RC") return "$TS_INFRA_RC" ;; *) return 1 ;; esac
     local after
-    after=$(ts_sha256 "$fix/src/parser.c")
-    if [ "$after" != "$hash_a" ]; then
+    after=$(ts_sha256 "$out/src/parser.c" 2>/dev/null) || after=""
+    if [ "$after" != "$(ts_sha256 "$parser_b")" ]; then
         echo ""
-        echo "  ASSERTION FAILED: restored parser.c does not match the grammar on disk"
-        echo "  expected: $hash_a"
-        echo "  actual:   $after"
+        echo "  ASSERTION FAILED: after ensure and a build, \$OUT_DIR/src/parser.c is not grammar B's"
         return 1
     fi
+
+    run_ts_freshness check "$fix/target" "$fix"
+    if [ "$TS_FRESHNESS_RC" -ne 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: check still STALE after ensure and a build (exit $TS_FRESHNESS_RC)"
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+}
+
+test_generate_fixture_helper_allocates_no_temp_of_its_own() {
+    # A fixture helper fills the empty dir its caller made and registered for
+    # cleanup, and allocates nothing else. The old shape mktemp'd inside the
+    # helper and appended its `rm -rf` to CLEANUP_ACTIONS there; every caller ran
+    # it as `fix=$(helper)`, so that append died with the command-substitution
+    # subshell and each run leaked a full copy of scripts/ into /tmp (#10044).
+    # What a helper allocates is observable: it is whatever lands under TMPDIR.
+    local target
+    target=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$target'")
+
+    ts_assert_fills_only_given_dir "$target" mk_ts_generate_fixture "$target" || return 1
+    assert_file_exists "$target/scripts/tree-sitter-generate.sh" || return 1
+    assert_file_exists "$target/tree-sitter-reify/grammar.js" || return 1
+}
+
+test_verify_fixture_helper_allocates_no_temp_of_its_own() {
+    # The same contract as test_generate_fixture_helper_allocates_no_temp_of_its_own,
+    # for the verify fixture. Its dir must also come out a git repo with docs/:
+    # the cases that stage files into it need both.
+    local target
+    target=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$target'")
+
+    ts_assert_fills_only_given_dir "$target" mk_verify_fixture "$target" || return 1
+    assert_file_exists "$target/scripts/verify.sh" || return 1
+    if [ ! -d "$target/docs" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: the fixture has no docs/ directory: $target"
+        return 1
+    fi
+    assert_cmd_success "the fixture is a git repo" \
+        git -C "$target" rev-parse --git-dir || return 1
+}
+
+test_masked_path_dir_helper_allocates_no_temp_of_its_own() {
+    # The same contract as test_generate_fixture_helper_allocates_no_temp_of_its_own,
+    # for the PATH shim. Its dir must also be a faithful mask: the named binary
+    # gone, the rest of the toolchain still resolving.
+    local target
+    target=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$target'")
+
+    ts_assert_fills_only_given_dir "$target" ts_masked_path_dir "$target" sha256sum || return 1
+    if [ -z "$(ls -A "$target")" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: the masked PATH dir is empty: $target"
+        return 1
+    fi
+    assert_cmd_fails "sha256sum is masked out of the shim" \
+        env PATH="$target" bash -c 'command -v sha256sum' || return 1
+    assert_cmd_success "ls still resolves through the shim" \
+        env PATH="$target" bash -c 'command -v ls' || return 1
 }
 
 # --- Main ---

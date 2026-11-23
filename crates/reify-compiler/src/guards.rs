@@ -1,4 +1,26 @@
-use super::*;
+use std::collections::{HashMap, HashSet};
+
+use reify_core::{
+    ConstraintNodeId, Diagnostic, DiagnosticCode, DiagnosticLabel, Type, ValueCellId,
+};
+use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction};
+
+use crate::annotations::{
+    extract_solver_hints, lower_annotations, validate_annotations, validate_solver_hint_collections,
+};
+use crate::expr::{compile_expr, compile_expr_guarded, extract_auto_free};
+use crate::geometry::{is_geometry_let, is_selector_expr};
+use crate::ice::{UnresolvedKind, emit_ice_unresolved};
+use crate::member_cell_decls::{
+    build_auto_let_value_cell_decl, build_param_value_cell_decl, fixup_option_none_for_let,
+    fixup_option_none_for_param, priv_flag_to_visibility, resolve_auto_let_cell_type,
+};
+use crate::scope::CompilationScope;
+use crate::type_resolution::{TypeAliasRegistry, resolve_type_expr_with_aliases};
+use crate::types::{
+    CompiledConstraint, CompiledGuardedGroup, GuardedDeclArm, ValueCellDecl, ValueCellKind,
+    Visibility,
+};
 
 pub(crate) fn collect_body_refs(expr: &CompiledExpr) -> Vec<ValueCellId> {
     let mut refs = Vec::new();
@@ -11,41 +33,7 @@ pub(crate) fn collect_body_refs_inner(expr: &CompiledExpr, refs: &mut Vec<ValueC
         CompiledExprKind::ValueRef(id) | CompiledExprKind::CrossSubGeometryRef(id) => {
             refs.push(id.clone())
         }
-        CompiledExprKind::BinOp { left, right, .. } => {
-            collect_body_refs_inner(left, refs);
-            collect_body_refs_inner(right, refs);
-        }
-        CompiledExprKind::UnOp { operand, .. } => {
-            collect_body_refs_inner(operand, refs);
-        }
-        CompiledExprKind::FunctionCall { args, .. } => {
-            for arg in args {
-                collect_body_refs_inner(arg, refs);
-            }
-        }
-        CompiledExprKind::Conditional {
-            condition,
-            then_branch,
-            else_branch,
-        } => {
-            collect_body_refs_inner(condition, refs);
-            collect_body_refs_inner(then_branch, refs);
-            collect_body_refs_inner(else_branch, refs);
-        }
-        CompiledExprKind::Match { discriminant, arms } => {
-            collect_body_refs_inner(discriminant, refs);
-            for arm in arms {
-                collect_body_refs_inner(&arm.body, refs);
-            }
-        }
-        CompiledExprKind::UserFunctionCall { args, .. } => {
-            for arg in args {
-                collect_body_refs_inner(arg, refs);
-            }
-        }
-        CompiledExprKind::Lambda { body, .. } => {
-            collect_body_refs_inner(body, refs);
-        }
+        CompiledExprKind::DeterminacyPredicate { cell, .. } => refs.push(cell.clone()),
         CompiledExprKind::Quantifier {
             variable_id,
             collection,
@@ -63,82 +51,33 @@ pub(crate) fn collect_body_refs_inner(expr: &CompiledExpr, refs: &mut Vec<ValueC
                 }
             }
         }
-        CompiledExprKind::Literal(_) => {}
-        CompiledExprKind::ListLiteral(elements) => {
-            for elem in elements {
-                collect_body_refs_inner(elem, refs);
-            }
-        }
-        CompiledExprKind::ReflectiveCellList(elements) => {
-            for elem in elements {
-                collect_body_refs_inner(elem, refs);
-            }
-        }
-        CompiledExprKind::SetLiteral(elements) => {
-            for elem in elements {
-                collect_body_refs_inner(elem, refs);
-            }
-        }
-        CompiledExprKind::MapLiteral(entries) => {
-            for (key, val) in entries {
-                collect_body_refs_inner(key, refs);
-                collect_body_refs_inner(val, refs);
-            }
-        }
-        CompiledExprKind::IndexAccess { object, index } => {
-            collect_body_refs_inner(object, refs);
-            collect_body_refs_inner(index, refs);
-        }
-        CompiledExprKind::MethodCall { object, args, .. } => {
-            collect_body_refs_inner(object, refs);
-            for arg in args {
-                collect_body_refs_inner(arg, refs);
-            }
-        }
-        CompiledExprKind::OptionSome(inner) => {
-            collect_body_refs_inner(inner, refs);
-        }
-        CompiledExprKind::OptionNone => {}
-        CompiledExprKind::MetaAccess { .. } => {}
-        CompiledExprKind::DeterminacyPredicate { cell, .. } => {
-            refs.push(cell.clone());
-        }
-        CompiledExprKind::RangeConstructor { lower, upper, .. } => {
-            if let Some(lo) = lower {
-                collect_body_refs_inner(lo, refs);
-            }
-            if let Some(hi) = upper {
-                collect_body_refs_inner(hi, refs);
-            }
-        }
-        CompiledExprKind::AdHocSelector { base, args, .. } => {
-            collect_body_refs_inner(base, refs);
-            for arg in args {
-                collect_body_refs_inner(arg, refs);
-            }
-        }
-        // Reflective-aggregation placeholder (task-2289): carries no concrete
-        // ValueCellId — activation expands it before any dependency-tracking
-        // pass runs.
-        CompiledExprKind::PurposeReflectiveAggregation { .. } => {}
-        // task 3540: recurse into the ctor's supplied args + captured
-        // defaults so guarded-group ref collection stays complete.
-        CompiledExprKind::StructureInstanceCtor {
-            ordered_args,
-            defaults,
-            ..
-        } => {
-            for (_, arg) in ordered_args {
-                collect_body_refs_inner(arg, refs);
-            }
-            for (_, def) in defaults {
-                collect_body_refs_inner(def, refs);
-            }
-        }
-        // task 4118 (γ): recurse into the wrapped selector so guarded-group
-        // ref collection sees through the Selector→List<Geometry> coercion.
-        CompiledExprKind::ResolveSelector { selector } => {
-            collect_body_refs_inner(selector, refs);
+        // No ref of their own; collect their children's. Lambda is here on
+        // purpose: capture analysis looks through a nested lambda's body
+        // (unlike `CompiledExpr::collect_value_refs`, which stops at captures).
+        CompiledExprKind::Literal(_)
+        | CompiledExprKind::BinOp { .. }
+        | CompiledExprKind::UnOp { .. }
+        | CompiledExprKind::FunctionCall { .. }
+        | CompiledExprKind::Conditional { .. }
+        | CompiledExprKind::Match { .. }
+        | CompiledExprKind::UserFunctionCall { .. }
+        | CompiledExprKind::Lambda { .. }
+        | CompiledExprKind::ListLiteral(_)
+        | CompiledExprKind::SetLiteral(_)
+        | CompiledExprKind::MapLiteral(_)
+        | CompiledExprKind::IndexAccess { .. }
+        | CompiledExprKind::MethodCall { .. }
+        | CompiledExprKind::OptionSome(_)
+        | CompiledExprKind::OptionNone
+        | CompiledExprKind::MetaAccess { .. }
+        | CompiledExprKind::RangeConstructor { .. }
+        | CompiledExprKind::AdHocSelector { .. }
+        | CompiledExprKind::PurposeReflectiveAggregation { .. }
+        | CompiledExprKind::ReflectiveCellList(_)
+        | CompiledExprKind::StructureInstanceCtor { .. }
+        | CompiledExprKind::VariantCtor { .. }
+        | CompiledExprKind::ResolveSelector { .. } => {
+            expr.for_each_child(&mut |child| collect_body_refs_inner(child, refs))
         }
     }
 }
@@ -471,7 +410,7 @@ pub(crate) fn compile_guarded_members(
                         // Intentionally no `check_param_default_type` call in this
                         // closure: guarded params have never run that cross-check
                         // (see `build_param_value_cell_decl`'s doc comment in
-                        // entity.rs). Task #5058's dedup preserves that byte-for-byte
+                        // member_cell_decls.rs). Task #5058's dedup preserves that byte-for-byte
                         // — adding the call here would introduce a new diagnostic
                         // path for guarded params, not merely refactor an existing one.
                         param.default.as_ref().map(|expr| {
@@ -987,6 +926,9 @@ mod narrow_arms_under_guard_tests {
 #[cfg(test)]
 mod guarded_param_default_tests {
     use super::*;
+    use reify_core::Severity;
+
+    use crate::types::CompiledModule;
 
     /// Parse + compile `source` using this crate's own (in-build) `compile`,
     /// never `reify_test_support::compile_source`: that helper links against
@@ -1007,7 +949,7 @@ mod guarded_param_default_tests {
             "parse errors: {:?}",
             parsed.errors
         );
-        super::compile(&parsed)
+        crate::compile(&parsed)
     }
 
     /// A guarded-block param with a typed, dimensionally-correct default must

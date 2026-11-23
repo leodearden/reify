@@ -46,6 +46,13 @@ are deliberately unparseable or deliberately failing, because they are *probe* i
 whose expected observation is a rejection. Nothing in the repo compiles this directory
 wholesale.
 
+The tracked-`.ri` parse guard
+(`crates/reify-syntax/tests/harness_syntax/tracked_ri_parse_guard.rs`) skips this
+directory's undeclared fixtures unread, so adding a fixture stays inert. A fixture listed
+in its `MUST_ERROR_RI_FIXTURES` is read and must keep showing its declared fault; such a
+fixture is Rust-coupled, so it is registered in `scripts/verify.sh`'s
+`_RUST_COUPLED_RI_FIXTURES` like any other (PG-DRIFT reds otherwise).
+
 ## Committed-probe-set format (JSON)
 
 ```json
@@ -155,7 +162,7 @@ is still recorded.
 | 0 | All probes PASS |
 | 1 | ≥1 probe FAIL |
 | 2 | ≥1 probe UNPROVABLE, 0 FAIL |
-| 64 | Usage / argument error (`EX_USAGE`) |
+| 64 | Usage / argument error (`EX_USAGE`), or no trusted reify binary: no built profile binary is vouched for (`target/.reify-bin-sha` not naming HEAD), or none is built (a `reify` on PATH is never used) — set `REIFY_BIN` (the D3 workflow: `args.reify_bin`) |
 | 70 | Tool / runtime error (`EX_SOFTWARE`) — a `harness_failure`: missing binary, grammar load failure, … |
 
 ## Running the probe set
@@ -163,7 +170,13 @@ is still recorded.
 ```bash
 python3 scripts/prd-capability-check.py tests/prd-gate/example-probe-set.json
 python3 scripts/prd-capability-check.py --json tests/prd-gate/example-probe-set.json
+REIFY_BIN="$PWD/target/debug/reify" python3 scripts/prd-capability-check.py --json tests/prd-gate/example-probe-set.json
 ```
+
+The `REIFY_BIN` form is for when the runner will not choose a binary itself (exit
+64 above). Name a binary built from the commit under test: `REIFY_BIN` is taken
+verbatim, never refused. Binary trust is SHA identity, and
+`scripts/reify-bin-freshness.sh` holds that rule.
 
 Each `--json` record also carries the typed probe outcome: `fixture` (as written
 in the probe set), `fixture_present` and `harness_failure`. The record contract is
@@ -174,7 +187,7 @@ in the probe set), `fixture_present` and `harness_failure`. The record contract 
 | File | Probe kind | What it tests |
 |---|---|---|
 | `fixtures/arrow_type.ri` | grammar | No arrow-type grammar production (3979 class) — `param f : (Length) -> Length` → tree-sitter exits 1 |
-| `fixtures/revolute_silent_accept.ri` | check | §3 4575 silent-accept — `revolute("not-an-axis", …)` → `reify check` exits 0, no rejection diagnostic |
+| `fixtures/revolute_silent_accept.ri` | check | §3 4575 silent-accept — `revolute(dir(0, 0, 1), "not-a-range", …)` → `reify check` exits 0, no rejection diagnostic |
 | `fixtures/ir_clean_eval.ri` | ir | Clean eval baseline — `reify eval` exits 0 with no error |
 | `fixtures/value_clean_eval_cells.ri` | value | #6876 worked example and vacuity evidence — one exit-0 run printing `damping_ratio = 0.018` (in range → PRESENT), `degenerate_ratio = 0` (out of range → ABSENT), `undef_ratio = undef` (not a number → ABSENT). An `ir`/absent probe PASSes on all three. |
 | `fixtures/transform3_unresolved.ri` | check | 4577 — `param t : Transform3` → was exit 1, "unresolved type: Transform3"; **removed from corpus** (task 4577 landed Transform3 resolver — probe flipped PASS) |
@@ -195,7 +208,7 @@ in the probe set), `fixture_present` and `harness_failure`. The record contract 
 | `example-probe-set.json` | Example showing all four probe kinds (used in README and docs). Pinned one-row-per-kind against `ProbeKind`, so a new kind reds until the example covers it. |
 | `corpus-probe-set.json` | δ historical-false-premise regression corpus — 3 rows, all FAIL |
 | `compiler-type-hygiene-probe-set.json` | §8 boundary-table integration gate (task λ/5070) — 7 rows, **all PASS**: grammar (`SpecLike<Foo>` parses) + 3 flipped POST-state rejections (`E_TYPE_ARG_ON_TRAIT` / `is undefined for operand kinds` / `must be a comparable kind`) + 3 end-to-end integration-fixture rows. Gated by `tests/infra/test_prd_gate_compiler_type_hygiene.sh` (all-PASS, tree-sitter skip-guarded). |
-| `struct-ctor-conformance-probe-set.json` | §7 boundary-row CLI gate for the struct-ctor field-type-conformance PRD (task δ/5306) — 5 rows, **all PASS**, every one `probe_kind: check` with `exit_code: 1`. Rows 1/2/3 are the α type surface (pose-vs-set, Int→String, disallow-string), rows 11/12 the ε structural codes (`E_CTOR_UNKNOWN_FIELD`, `E_CTOR_ARITY`). Each `capability` states the PRE state (exit 0, "All constraints satisfied.") alongside the POST assertion. Gated by `tests/infra/test_prd_gate_struct_ctor_conformance.sh` (all-PASS, reify-binary skip-guarded; no grammar probe, so no tree-sitter substrate guard). C3's span-at-the-offending-argument is NOT assertable here — `reify check` prints neither label nor span nor code — and stays a Rust-level assertion in `struct_ctor_field_conformance_tests.rs`. |
+| `struct-ctor-conformance-probe-set.json` | §7 boundary-row CLI gate for the struct-ctor field-type-conformance PRD (task δ/5306), and the backing for every `CTOR_CONFORMANCE_REJECTION_FIXTURES` entry in `harness_ctor_conformance_survey/disposition.rs` — **all PASS**, every one `probe_kind: check` with `exit_code: 1`. δ's rows 1/2/3 are the α type surface (pose-vs-set, Int→String, disallow-string), rows 11/12 the ε structural codes (`E_CTOR_UNKNOWN_FIELD`, `E_CTOR_ARITY`); each of their `capability` strings states the PRE state (exit 0, "All constraints satisfied.") alongside the POST assertion. One further row asserts the coordinate-target-fea PRD's BT14 rejection (`coordinate_target_fea_pose_rejected.ri`, the ArgTypeMismatch naming `at`), and two exit-code-only rows back the v0.2-alpha migration note's constructor before-images, whose exact errors are `docs/releases/v0.2-alpha.md`'s. Gated by `tests/infra/test_prd_gate_struct_ctor_conformance.sh` (all-PASS, reify-binary skip-guarded; no grammar probe, so no tree-sitter substrate guard). C3's span-at-the-offending-argument is NOT assertable here — `reify check` prints neither label nor span nor code — and stays a Rust-level assertion in `struct_ctor_field_conformance_tests.rs`. |
 | `generic-enum-type-arg-retention-beta-probe-set.json` | PRD `docs/prds/v0_6/generic-enum-type-arg-retention.md` leaf β (#8014) — 1 row, POST state (FAIL before β): overload tier-3 wildcard narrowing, `getar_wildcard_headed_arg_silent.ri` must exit 1 with "no matching overload for fl(". The binder-form row lives in the delta set: it needs δ's placeholder-typed binder (Leo, esc-8014-3, 2026-10-01). |
 | `generic-enum-type-arg-retention-gamma-probe-set.json` | Same PRD leaf γ (#8015) — 1 row, POST state (FAIL today): args-aware enum-compat oracle, `getar_result_arg_mismatch_assign_silent.ri` exits 1 with "argument 'b' has type". Row-scoped so γ's delivered check does not depend on δ. |
 | `generic-enum-type-arg-retention-epsilon2-probe-set.json` | Same PRD leaf ε2 (#8016) — 2 rows: `getar_decl_match_applied_param_rejected.ri` POST exit 0 (FAIL today) + `getar_decl_match_let_construct_ok.ri` regression guard (PASS today, must stay). |

@@ -107,6 +107,7 @@ A value-eval resolver maps a symbolic selector → node-set/value against the **
 - **Face A (build-path scheduling)** — owned by the unified-build-dag family; this PRD must not duplicate or fork it.
 - **Kernel queries / realization in `eval_cached`** — explicitly preserved as out of scope; every rung stays kernel-free. A genuine *geometry-in-the-loop solver round* remains "a future PRD if demanded" (`design-option-a.md`).
 - **Inline-literal geometry-query args** (the `faces_by_normal(b, vec3(0,0,1), 1deg)`-with-inline-args → `None` fall-through noted in `examples/kernel_queries/directional_selectors.ri`) — a *related* face of the smell but a distinct dispatcher issue (let-bound-intermediate workaround exists); not folded here unless decompose finds it free.
+  - *Un-parked 2026-11-17.* `docs/prds/v0_6/realized-world-evaluation.md` owns the inline form for every realization-dependent member kind (ruling R5); geometry queries are its leaf γ #10156.
 - **Retargeting modal force `at : Selector`** (build-path, already fine per 4577) — unchanged.
 
 ---

@@ -231,6 +231,8 @@ use op_args::{
 
 #[cfg(has_occt)]
 use reify_ir::{BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, BRepKind, ExportError, ExportFormat, ExportOptions, ExportWarning, GeometryError, GeometryHandle, GeometryHandleId, GeometryOp, GeometryQuery, Mesh, OpaqueState, QueryError, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE, StepSchema, TessError, ThreeMfOptions, Value, WarmStartable, write_3mf, write_stl_binary};
+#[cfg(has_occt)]
+use reify_ir::UnitVec3;
 
 #[cfg(has_occt)]
 /// Encode a `Point3` as the JSON string `{"x":_,"y":_,"z":_}` used by centroid-style queries.
@@ -292,10 +294,10 @@ impl OcctKernel {
         }
     }
 
-    /// Return the [`BRepKind`] recorded for `id` when it was stored, or
-    /// `None` if `id` is unknown to this kernel.
+    /// Return the [`BRepKind`] `id` was stored under, or `None` iff `id` is
+    /// not resident (unknown, or freed by `reset`).
     pub fn repr_of(&self, id: GeometryHandleId) -> Option<BRepKind> {
-        self.store.repr_of(id)
+        self.store.repr_of(id).ok()
     }
 
     /// Number of native shapes currently resident in this kernel.
@@ -1141,21 +1143,13 @@ impl OcctKernel {
         // `fillet(translate(union(a, b)))` is rejected like `fillet(union(a, b))`.
         // Pinned by `repr_policy_table.rs`'s D5 block and
         // `occt_repr_policy_fixtures_e2e.rs`.
-        match self.repr_of(shape_id) {
-            Some(BRepKind::Solid) => {}
-            Some(other) => {
+        match self.store.repr_of(shape_id)? {
+            BRepKind::Solid => {}
+            other => {
                 return Err(GeometryError::OperationFailed(format!(
                     "local-feature operation requires a BRepKind::Solid input shape, got {other:?}"
                 )));
             }
-            // `repr_of` returns `None` iff `shape_id` is unknown to this kernel.
-            // The "repr-lost-but-shape-present" case is unreachable: `ShapeStore`
-            // records a shape and its kind together.
-            // Fall through to `ShapeStore::get` below, which returns
-            // `InvalidReference` for genuinely unknown handles rather than a false
-            // "requires Solid" rejection (esc-2655-26 suggestion #4 / task 2821
-            // amendment; comment aligned by task 2905 / esc-2821-61 #1).
-            None => {}
         }
         let (result_shape, records) = {
             let shape = self.store.get(shape_id)?;
@@ -2846,7 +2840,7 @@ impl OcctKernel {
                 // `sweep_guided_orientation_differs_from_plain_sweep`
                 // (`tests/harness_occt_measurement/sweep_guided_integration.rs`).
                 let shape = self.store.get(*id)?;
-                let pt = if self.repr_of(*id) == Some(BRepKind::Face) {
+                let pt = if self.store.repr_of(*id)? == BRepKind::Face {
                     ffi::ffi::query_face_centroid(shape)
                         .map_err(|e| QueryError::QueryFailed(e.to_string()))?
                 } else {
@@ -3368,19 +3362,16 @@ fn analytic_surface_datum_to_value(
         Value::length(d.origin.y),
         Value::length(d.origin.z),
     ]);
-    let dir = Value::Direction {
-        x: d.direction.x,
-        y: d.direction.y,
-        z: d.direction.z,
-    };
+    // Minted only inside the Plane/Axis arms: the Sphere arm's direction is zero.
+    let direction = || analytic_direction(&d.direction, d.kind, "face_analytic_datum");
     match d.kind {
         0 => Ok(Value::Plane {
             origin: Box::new(origin),
-            normal: Box::new(dir),
+            normal: Box::new(direction()?),
         }),
         1 | 2 => Ok(Value::Axis {
             origin: Box::new(origin),
-            direction: Box::new(dir),
+            direction: Box::new(direction()?),
         }),
         3 => Ok(origin),
         other => Err(QueryError::QueryFailed(format!(
@@ -3407,21 +3398,38 @@ fn analytic_curve_datum_to_value(
         Value::length(d.origin.y),
         Value::length(d.origin.z),
     ]);
-    let dir = Value::Direction {
-        x: d.direction.x,
-        y: d.direction.y,
-        z: d.direction.z,
-    };
     match d.kind {
         // Line (0) / Circle (1) / Ellipse (2) all project to an Axis datum.
         0..=2 => Ok(Value::Axis {
             origin: Box::new(origin),
-            direction: Box::new(dir),
+            direction: Box::new(analytic_direction(
+                &d.direction,
+                d.kind,
+                "edge_analytic_datum",
+            )?),
         }),
         other => Err(QueryError::QueryFailed(format!(
             "edge_analytic_datum: unknown curve-datum kind byte {other}"
         ))),
     }
+}
+
+/// The unit [`Value::Direction`] of an analytic datum record returned by the
+/// FFI `query`, or `QueryFailed` naming `query` and the `kind` byte when the
+/// direction is degenerate. Call it only for a kind that carries a direction.
+#[cfg(has_occt)]
+fn analytic_direction(
+    direction: &ffi::ffi::Point3,
+    kind: u8,
+    query: &str,
+) -> Result<Value, QueryError> {
+    UnitVec3::from_vector([direction.x, direction.y, direction.z])
+        .map(Value::Direction)
+        .map_err(|fault| {
+            QueryError::QueryFailed(format!(
+                "{query}: kind {kind} datum has no unit direction: {fault}"
+            ))
+        })
 }
 
 /// Stateless across warm starts: there is no state to capture or restore.
@@ -3858,7 +3866,7 @@ mod tests {
     fn corrupted_handles(kernel: &mut OcctKernel) -> Vec<(GeometryHandleId, String)> {
         let null_topology = kernel.store_null_topology_for_test();
         let null_pointer = GeometryHandleId(4000);
-        kernel.store.insert_null_for_test(null_pointer.0);
+        kernel.store.insert_null_for_test(null_pointer.0, BRepKind::Solid);
         [null_topology, null_pointer]
             .into_iter()
             .map(|h| (h, store_get_cause(kernel, h)))

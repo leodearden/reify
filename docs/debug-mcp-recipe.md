@@ -23,14 +23,16 @@ scripts/run-gui-dev.sh path/to/fixture.ri
 ```
 
 The debug server accepts MCP `tools/call` JSON-RPC on `http://127.0.0.1:${REIFY_DEBUG_PORT:-3939}/mcp`.
+It refuses with 403 any request whose `Host` is not `127.0.0.1` or `localhost` on that port, or that carries a foreign `Origin` (docs/debug-mcp-contract.md §7).
 
 The launcher now self-defends against a hostile environment, so the
 `env -u LD_LIBRARY_PATH WEBKIT_DISABLE_DMABUF_RENDERER=1 scripts/run-gui-dev.sh ...`
 prefix that used to be required is no longer needed: it preserves an inherited
 `LD_LIBRARY_PATH` but prepends `/opt/reify-deps/tbb-pin` ahead of it (the loader
 searches `LD_LIBRARY_PATH` before `DT_RUNPATH`, so an inherited `/usr/lib` path
-would otherwise bind system libtbb 12.11 over the deps 12.18), and it defaults
-`WEBKIT_DISABLE_DMABUF_RENDERER=1` itself. It also preflights the display and
+would otherwise bind system libtbb 12.11 over the deps 12.18), and reify-gui
+defaults `WEBKIT_DISABLE_DMABUF_RENDERER=1` itself (export `0` to opt out). The
+launcher also preflights the display and
 the vite port *before* the build, so a headless shell or a port another worktree
 already serves fails in milliseconds instead of after a multi-minute cargo
 build — set `REIFY_GUI_SKIP_PREFLIGHT=1` to bypass those two checks. An
@@ -120,7 +122,7 @@ gate *decides* is caught without a GUI — only the live *execution* needs one.
 
 | Tool | Args | Returns |
 |------|------|---------|
-| `store_state` | `{}` | Full Solid store snapshot (`engine`, `editor`, `selection`, …) |
+| `store_state` | `{}` | Full Solid store snapshot (`engine`, `editor`, `selection`, `claude`, `viewports` per-viewport `meshCount`, `viewport.edges` the edges-in-black toggle, `document` `{loaded, error, recent, pending}` — `loaded` is true once the editor has an open file, `error` the Start view's `{code, message}`, `pending` the requested path while an open or create is in flight, else `null` (the Start view's document actions are disabled and a second attempt is refused with `E_GUI_DOCUMENT_BUSY` naming that path; the Start view's Cancel, `start-document-cancel`, abandons the attempt and clears `pending`; it abandons the GUI's wait, not the engine's work: an `open_file_engine` already sent still evaluates, and the next open queues behind it, and a cancelled Create may already have written its file, which stays out of Recent and opens like any other) — and `mode` `{selected, debugPort, error}` the launch mode). `wait_for`'s store predicate addresses the same `document` and `mode` roots |
 | `get_window_state` | `{}` | `{devicePixelRatio, innerWidth, innerHeight, …}` |
 | `get_layout_metrics` | `{selector}` | `{exists, bounds, visible, hitTestable, scroll:{top,left,width,height}, client:{width,height}, overflow:{horizontal,vertical}}` — check `hitTestable` before click_at at the bounds centre (contract §3) |
 
@@ -205,7 +207,7 @@ when omitted, the first populated viewport is targeted.
 | `load_fixture` | `{name}` | `{ok}` — loads a named fixture from debug_server.rs catalogue |
 | `open_file` | `{path}` | `{ok}` — opens an arbitrary .ri path |
 | `inject_diagnostics` | `{diagnostics:[…], source}` | `{ok}` |
-| `reset_app_state` | `{}` | `{ok}` — clears openFiles + selection |
+| `reset_app_state` | `{}` | `{ok}` — clears openFiles + selection, resets the camera view, injected diagnostics and layout pane dimensions, turns the edges-in-black toggle off (persisted), and clears the Start view's document and mode errors (the Recent list and the mode stay, and so does an in-flight attempt's `pending` path) |
 | `element_screenshot` | `{testId, viewportId?}` | `{data}` — base64 PNG of a single element; `viewportId` picks which pane to crop. A call matching more than one element also returns `{viewportId, matchCount}` naming the pane it guessed — scoped or not, since a testId can repeat within one pane — delivered over MCP as a second `text` content block after the image |
 | `screenshot` / `screenshot_window` | `{}` | `{data}` — full viewport PNG |
 

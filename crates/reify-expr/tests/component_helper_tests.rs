@@ -5,6 +5,7 @@
 use reify_expr::{EvalContext, eval_expr};
 use reify_core::{DimensionVector, Type};
 use reify_ir::{BinOp, CompiledExpr, UnOp, Value, ValueMap};
+use reify_test_support::direction_val;
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -215,4 +216,53 @@ fn negate_tensor_with_int_min_component_returns_undef() {
     let ty = Type::tensor(1, 3, Type::dimensionless_scalar());
     let expr = CompiledExpr::unop(UnOp::Neg, lit(t, ty.clone()), ty);
     assert_eq!(eval(&expr), Value::Undef);
+}
+
+// ── Direction negation (direction-typing C6) ───────────────────────────────
+
+/// Evaluate `-v` for a `Value::Direction` literal.
+fn negate_direction(v: Value) -> Value {
+    let expr = CompiledExpr::unop(UnOp::Neg, lit(v, Type::Direction), Type::Direction);
+    eval(&expr)
+}
+
+/// The components of a `Value::Direction`; panics on any other variant.
+fn direction_components(v: &Value) -> [f64; 3] {
+    match v {
+        Value::Direction(u) => u.components(),
+        other => panic!("expected a Direction, got {other:?}"),
+    }
+}
+
+#[test]
+fn negate_direction_is_the_antiparallel_direction() {
+    let negated = negate_direction(direction_val(0.0, 0.0, 1.0));
+    assert_eq!(negated, direction_val(0.0, 0.0, -1.0));
+    assert_eq!(format!("{negated}"), "dir(0, 0, -1)");
+}
+
+#[test]
+fn negate_direction_canonicalises_negative_zero() {
+    let [x, y, _] = direction_components(&negate_direction(direction_val(0.0, 0.0, 1.0)));
+    assert_eq!(x.to_bits(), 0.0f64.to_bits(), "x must be +0.0, got {x:?}");
+    assert_eq!(y.to_bits(), 0.0f64.to_bits(), "y must be +0.0, got {y:?}");
+}
+
+#[test]
+fn negate_direction_is_exact_componentwise_negation() {
+    let input = direction_val(1.0, 2.0, 3.0);
+    let negated = negate_direction(input.clone());
+    let got = direction_components(&negated);
+    let want = direction_components(&input).map(|c| -c);
+    assert_eq!(got.map(f64::to_bits), want.map(f64::to_bits));
+}
+
+#[test]
+fn double_negation_of_a_direction_is_bit_identical() {
+    let input = direction_val(1.0, 2.0, 3.0);
+    let twice = negate_direction(negate_direction(input.clone()));
+    assert_eq!(
+        direction_components(&twice).map(f64::to_bits),
+        direction_components(&input).map(f64::to_bits)
+    );
 }

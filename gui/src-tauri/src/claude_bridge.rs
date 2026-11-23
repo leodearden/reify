@@ -729,6 +729,26 @@ pub fn apply_sidecar_env(
     }
 }
 
+/// File name of the Claude sidecar executable: the basename of
+/// `bundle.externalBin` in tauri.conf.json.
+pub const SIDECAR_EXECUTABLE: &str = "reify-sidecar";
+
+/// The sidecar executable beside `gui_exe`. Tauri installs `externalBin`
+/// next to the GUI executable (`target/<profile>/`, `/usr/bin/`,
+/// `<AppDir>/usr/bin/`), never in `resource_dir`.
+///
+/// Errs, naming `gui_exe`, unless it is absolute with a parent directory: a
+/// relative result would make `Command::new` search `PATH`.
+pub fn sidecar_executable_beside(gui_exe: &Path) -> Result<std::path::PathBuf, String> {
+    match gui_exe.parent() {
+        Some(dir) if gui_exe.is_absolute() => Ok(dir.join(SIDECAR_EXECUTABLE)),
+        _ => Err(format!(
+            "cannot locate {SIDECAR_EXECUTABLE} beside GUI executable {gui_exe:?}: \
+             not an absolute path with a parent directory"
+        )),
+    }
+}
+
 /// Spawn the Claude sidecar process and return a [`SidecarHandle`] in `Starting` state.
 ///
 /// Extracts stdin/stdout from the child, wraps stdout in a [`BufReader`], and

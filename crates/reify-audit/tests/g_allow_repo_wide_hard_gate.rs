@@ -26,7 +26,6 @@ mod common;
 use common::schema::seed_tasks_db_at;
 use reify_audit::{AuditContext, MockGitOps, MockJCodemunchOps, Severity};
 use rusqlite::Connection;
-use std::collections::HashMap;
 use std::path::Path;
 
 /// Write `content` to relative `path` inside `root`, creating parent dirs.
@@ -145,17 +144,7 @@ fn g_allow_repo_wide_hard_gate_hermetic() {
 
     let conn = Connection::open_in_memory().expect("in-memory sqlite");
     let jc = MockJCodemunchOps::new();
-    let ctx = AuditContext {
-        project_root: root.to_path_buf(),
-        conn: &conn,
-        git: &git,
-        jcodemunch: &jc,
-        task_metadata: HashMap::new(),
-        target_task_id: None,
-        window: None,
-        now: None,
-        producer_branch: None,
-    };
+    let ctx = AuditContext::new(root.to_path_buf(), &conn, &git, &jc);
 
     let findings = reify_audit::ptodo::check(&ctx);
 
@@ -248,7 +237,6 @@ fn g_allow_repo_wide_hard_gate_hermetic() {
 fn g_allow_repo_wide_hard_gate_live() {
     use reify_audit::{AuditContext, MockJCodemunchOps, RealGitOps};
     use rusqlite::Connection;
-    use std::collections::HashMap;
 
     // Resolve workspace root from CARGO_MANIFEST_DIR (crates/reify-audit).
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -264,17 +252,7 @@ fn g_allow_repo_wide_hard_gate_live() {
     let git = RealGitOps::new(ws_root.clone());
     let conn = Connection::open_in_memory().expect("in-memory sqlite");
     let jc = MockJCodemunchOps::new();
-    let ctx = AuditContext {
-        project_root: ws_root.clone(),
-        conn: &conn,
-        git: &git,
-        jcodemunch: &jc,
-        task_metadata: HashMap::new(),
-        target_task_id: None,
-        window: None,
-        now: None,
-        producer_branch: None,
-    };
+    let ctx = AuditContext::new(ws_root.clone(), &conn, &git, &jc);
 
     let (findings, stats) = reify_audit::ptodo::check_with_stats(&ctx);
 

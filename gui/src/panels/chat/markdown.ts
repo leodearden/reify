@@ -48,7 +48,7 @@ export function renderMarkdown(input: string): string {
   // Phase 2: Extract fenced code blocks before inline transforms
   // Replace fenced code blocks (``` ... ```) with placeholders
   const codeBlocks: string[] = [];
-  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_match, lang, code) => {
+  html = html.replace(/```([\w-]*)\n([\s\S]*?)```/g, (_match, lang, code) => {
     const idx = codeBlocks.length;
     const langAttr = lang ? ` class="language-${lang}"` : '';
     codeBlocks.push(`<pre><code${langAttr}>${code.replace(/\n$/, '')}</code></pre>`);

@@ -3900,7 +3900,7 @@ mod tests {
             eval_builtin(
                 "prismatic",
                 &[
-                    Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]),
+                    reify_test_support::direction_val(0.0, 0.0, 1.0),
                     Value::Range {
                         lower: Some(Box::new(Value::length(0.0))),
                         upper: Some(Box::new(Value::length(0.6))),

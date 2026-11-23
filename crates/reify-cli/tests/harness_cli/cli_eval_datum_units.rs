@@ -113,8 +113,8 @@ fn eval_bare_axis_origin_exits_nonzero_with_a_units_error() {
 /// the end-to-end proof of the two dimension claims the gate makes: the plane's
 /// single LENGTH offset MIRRORS into the whole origin triple (`0 m` in the two
 /// SYNTHESIZED slots, not a bare `0`), while the synthesized unit normal /
-/// direction stays dimensionless (`vec(0, 0, 1)` / `vec(1, 0, 0)`) — decision
-/// D3's scope lock.
+/// direction is a Direction, dimensionless by type (`dir(0, 0, 1)` /
+/// `dir(1, 0, 0)`) — decision D3's scope lock.
 ///
 /// The plane offset is NON-ZERO on purpose. `make_plane` writes the gated offset
 /// into `origin_si[offset_index]` and zeros the rest, so a zero offset yields
@@ -137,13 +137,13 @@ fn eval_dimensioned_datums_exit_0_and_print_length_origins() {
         "dimensioned datum constructors must still build;\nstdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
-        stdout.contains("plane(point(0 m, 0 m, 0.005 m), vec(0, 0, 1))"),
+        stdout.contains("plane(point(0 m, 0 m, 0.005 m), dir(0, 0, 1))"),
         "stdout should print the plane with the 5mm offset in the z slot, an \
-         all-LENGTH origin and a bare normal; got: {stdout}"
+         all-LENGTH origin and a Direction normal; got: {stdout}"
     );
     assert!(
-        stdout.contains("axis(point(0 m, 0 m, 0 m), vec(1, 0, 0))"),
-        "stdout should print the axis with an all-LENGTH origin and a bare direction; \
+        stdout.contains("axis(point(0 m, 0 m, 0 m), dir(1, 0, 0))"),
+        "stdout should print the axis with an all-LENGTH origin and a Direction; \
          got: {stdout}"
     );
 }
@@ -260,7 +260,7 @@ fn eval_deltas_consumer_gate_stays_reachable_through_frame3() {
 /// input spells.
 ///
 /// The rows also carry decision D3's scope lock end to end: all-LENGTH origins
-/// beside synthesized normals and directions that stay dimensionless, built by a
+/// beside synthesized normals and directions minted as Directions, built by a
 /// `frame_at` whose x/z are still bare `self.x` / `self.z` Directions.
 ///
 /// The printed forms were measured against the real `target/debug/reify` binary
@@ -277,16 +277,16 @@ fn eval_dimensioned_datum_constructors_exit_0_and_print_length_origins() {
          stdout: {stdout}\nstderr: {stderr}"
     );
     for expected in [
-        "axis(point(0.001 m, 0.002 m, 0.003 m), vec(0, 0, 1))",
-        "plane(point(0.001 m, 0.002 m, 0.003 m), vec(0, 0, 1))",
+        "axis(point(0.001 m, 0.002 m, 0.003 m), dir(0, 0, 1))",
+        "plane(point(0.001 m, 0.002 m, 0.003 m), dir(0, 0, 1))",
         "frame(point(0.004 m, 0.005 m, 0.006 m), [1, 0, 0, 0]q)",
-        "plane(point(0 m, 0 m, 0.008 m), vec(0, 0, 1))",
-        "plane(point(0 m, 0 m, 0.005 m), vec(0, 0, 1))",
+        "plane(point(0 m, 0 m, 0.008 m), dir(0, 0, 1))",
+        "plane(point(0 m, 0 m, 0.005 m), dir(0, 0, 1))",
     ] {
         assert!(
             stdout.contains(expected),
             "stdout should print `{expected}` — an all-LENGTH origin beside a \
-             bare normal/direction; got: {stdout}"
+             Direction normal/direction; got: {stdout}"
         );
     }
 }

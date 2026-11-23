@@ -4,6 +4,8 @@
 # Validates the contents and behavior of:
 #   - scripts/run-gui.sh       (release-mode wrapper, no debug)
 #   - scripts/run-gui-dev.sh   (debug-mode wrapper, REIFY_DEBUG=1 + vite)
+#   - gui/sidecar/build-sidecar.sh (node_modules preflight)
+#   - scripts/setup-dev.sh     (gui/sidecar install, structural)
 
 set -euo pipefail
 
@@ -17,8 +19,27 @@ source "$SCRIPT_DIR/test_helpers.sh"
 # _rgs_free_port below.
 # shellcheck source=scripts/lib_portable.sh
 source "$REPO_ROOT/scripts/lib_portable.sh"
+source "$SCRIPT_DIR/cargo_inputs_lib.sh"
+
+# reify-gui's locked registry inputs for this host, fetched before the first
+# assertion: Test 36 reads them with --offline --filter-platform <host>.
+_RGS_HOST=$(rustc -vV 2>/dev/null | sed -n 's/^host: //p') || _RGS_HOST=""
+_rgs_fetch_cargo_inputs() {
+    cargo_inputs_fetch --target "$_RGS_HOST" --manifest-path "$REPO_ROOT/gui/src-tauri/Cargo.toml"
+}
 
 RUN_GUI="$REPO_ROOT/scripts/run-gui.sh"
+BUILD_SIDECAR="$REPO_ROOT/gui/sidecar/build-sidecar.sh"
+
+# _rgs_code_lines <file> — <file> without its full-line comments, so an
+# assertion that a launcher RUNS a step cannot be satisfied by a comment that
+# names the step. Capture it once and grep the capture inside `bash -c`: as an
+# assert command, `_rgs_code_lines f | grep -q ...` runs under the suite's
+# pipefail, where grep -q's early exit can SIGPIPE the producer (141).
+_rgs_code_lines() { grep -Ev '^[[:space:]]*#' "$1"; }
+# The fallback keeps a missing launcher from aborting the suite under `set -e`
+# before Test 1 can report it.
+RUN_GUI_CODE=$(_rgs_code_lines "$RUN_GUI") || RUN_GUI_CODE=""
 
 # Shared launch-environment helpers sourced by BOTH launchers (#7254).
 LIB_GUI_LAUNCH="$REPO_ROOT/scripts/lib_gui_launch.sh"
@@ -45,6 +66,11 @@ unset WAYLAND_DISPLAY
 
 echo "=== run-gui.sh launcher tests ==="
 
+echo ""
+echo "--- Cargo inputs ---"
+assert_infra_input "the registry holds reify-gui's locked inputs for $_RGS_HOST (cargo fetch --locked)" \
+    "$CARGO_INPUTS_UNAVAILABLE_RC" _rgs_fetch_cargo_inputs
+
 # -- Test 1: file exists + is executable -------------------------------------
 echo ""
 echo "--- Test 1: scripts/run-gui.sh exists and is executable ---"
@@ -69,41 +95,41 @@ assert "scripts/run-gui.sh contains 'set -euo pipefail'" \
 echo ""
 echo "--- Test 3: build-sidecar.sh runs BEFORE cargo build ---"
 
-assert "scripts/run-gui.sh invokes 'gui/sidecar/build-sidecar.sh'" \
-    grep -q 'gui/sidecar/build-sidecar.sh' "$RUN_GUI"
+assert "scripts/run-gui.sh invokes 'gui/sidecar/build-sidecar.sh' on an uncommented line" \
+    bash -c 'grep -q "gui/sidecar/build-sidecar.sh" <<<"$1"' _ "$RUN_GUI_CODE"
 
-assert "scripts/run-gui.sh invokes 'cargo build -p reify-gui'" \
-    grep -q 'cargo build -p reify-gui' "$RUN_GUI"
+assert "scripts/run-gui.sh invokes 'cargo build -p reify-gui' on an uncommented line" \
+    bash -c 'grep -q "cargo build -p reify-gui" <<<"$1"' _ "$RUN_GUI_CODE"
 
 assert "scripts/run-gui.sh: build-sidecar line precedes cargo build line" \
-    bash -c "
-        sidecar_line=\$(grep -n 'gui/sidecar/build-sidecar.sh' '$RUN_GUI' | head -1 | cut -d: -f1)
-        cargo_line=\$(grep -n 'cargo build -p reify-gui' '$RUN_GUI' | head -1 | cut -d: -f1)
-        [ -n \"\$sidecar_line\" ] && [ -n \"\$cargo_line\" ] && [ \"\$sidecar_line\" -lt \"\$cargo_line\" ]
-    "
+    bash -c '
+        sidecar_line=$(grep -n "gui/sidecar/build-sidecar.sh" <<<"$1" | head -1 | cut -d: -f1)
+        cargo_line=$(grep -n "cargo build -p reify-gui" <<<"$1" | head -1 | cut -d: -f1)
+        [ -n "$sidecar_line" ] && [ -n "$cargo_line" ] && [ "$sidecar_line" -lt "$cargo_line" ]
+    ' _ "$RUN_GUI_CODE"
 
 # -- Test 4: npm install + npm run build for the gui frontend ----------------
 echo ""
 echo "--- Test 4: gui frontend dependency install + build ---"
 
-assert "scripts/run-gui.sh runs 'npm install' (or 'npm ci')" \
-    bash -c "grep -qE 'npm (install|ci)' '$RUN_GUI'"
+assert "scripts/run-gui.sh runs 'npm install' (or 'npm ci') on an uncommented line" \
+    bash -c 'grep -qE "npm (install|ci)" <<<"$1"' _ "$RUN_GUI_CODE"
 
-assert "scripts/run-gui.sh runs 'npm run build' to produce gui/dist" \
-    grep -q 'npm run build' "$RUN_GUI"
+assert "scripts/run-gui.sh runs 'npm run build' on an uncommented line, to produce gui/dist" \
+    bash -c 'grep -q "npm run build" <<<"$1"' _ "$RUN_GUI_CODE"
 
 # -- Test 5: cargo build uses --release + --features gui ----------------------
 echo ""
 echo "--- Test 5: cargo build flags ---"
 
 assert "scripts/run-gui.sh cargo build line includes '--features gui'" \
-    bash -c "grep 'cargo build -p reify-gui' '$RUN_GUI' | grep -q -- '--features gui'"
+    bash -c 'grep "cargo build -p reify-gui" <<<"$1" | grep -q -- "--features gui"' _ "$RUN_GUI_CODE"
 
 assert "scripts/run-gui.sh cargo build line includes '--release'" \
-    bash -c "grep 'cargo build -p reify-gui' '$RUN_GUI' | grep -q -- '--release'"
+    bash -c 'grep "cargo build -p reify-gui" <<<"$1" | grep -q -- "--release"' _ "$RUN_GUI_CODE"
 
 assert "scripts/run-gui.sh cargo build line includes '--bin reify-gui'" \
-    bash -c "grep 'cargo build -p reify-gui' '$RUN_GUI' | grep -q -- '--bin reify-gui'"
+    bash -c 'grep "cargo build -p reify-gui" <<<"$1" | grep -q -- "--bin reify-gui"' _ "$RUN_GUI_CODE"
 
 # -- Test 7: launches target/release/reify-gui --------------------------------
 echo ""
@@ -122,20 +148,8 @@ assert "scripts/run-gui.sh does NOT contain 'REIFY_DEBUG'" \
 assert "scripts/run-gui.sh does NOT contain 'npm run dev'" \
     bash -c "! grep -q 'npm run dev' '$RUN_GUI'"
 
-# -- Test 9: behavioral — no args -> usage + non-zero exit -------------------
-echo ""
-echo "--- Test 9: no-args invocation prints usage and exits non-zero ---"
-
-# Capture stderr+stdout combined; the usage message may go to either stream.
-no_args_out=$(bash "$RUN_GUI" 2>&1 || true)
-no_args_rc=0
-bash "$RUN_GUI" >/dev/null 2>&1 || no_args_rc=$?
-
-assert "run-gui.sh with no args exits non-zero" \
-    bash -c '[ "$1" -ne 0 ]' _ "$no_args_rc"
-
-assert "run-gui.sh with no args prints usage mentioning '<file>'" \
-    bash -c 'printf "%s\n" "$1" | grep -qE "[Uu]sage.*<file>|<file>"' _ "$no_args_out"
+# Test 9 (no file launches the Start view) needs the hermetic stubs defined
+# below, so it sits after Test 21, whose run shape it mirrors.
 
 # -- Test 10: behavioral — non-.ri file is rejected --------------------------
 echo ""
@@ -171,6 +185,7 @@ assert "run-gui.sh non-existent .ri error message mentions 'not found'" \
     bash -c 'printf "%s\n" "$1" | grep -qF "not found"' _ "$miss_out"
 
 RUN_GUI_DEV="$REPO_ROOT/scripts/run-gui-dev.sh"
+RUN_GUI_DEV_CODE=$(_rgs_code_lines "$RUN_GUI_DEV") || RUN_GUI_DEV_CODE=""
 
 echo ""
 echo "=== run-gui-dev.sh launcher tests ==="
@@ -199,8 +214,8 @@ assert "scripts/run-gui-dev.sh contains 'set -euo pipefail'" \
 echo ""
 echo "--- Test 13: dev script invokes gui/sidecar/build-sidecar.sh ---"
 
-assert "scripts/run-gui-dev.sh invokes 'gui/sidecar/build-sidecar.sh'" \
-    grep -q 'gui/sidecar/build-sidecar.sh' "$RUN_GUI_DEV"
+assert "scripts/run-gui-dev.sh invokes 'gui/sidecar/build-sidecar.sh' on an uncommented line" \
+    bash -c 'grep -q "gui/sidecar/build-sidecar.sh" <<<"$1"' _ "$RUN_GUI_DEV_CODE"
 
 # -- Test 14: starts vite as a background process ----------------------------
 echo ""
@@ -242,14 +257,14 @@ assert "scripts/run-gui-dev.sh trap references the vite PID variable" \
 echo ""
 echo "--- Test 17: cargo build line uses DEBUG profile (no --release) ---"
 
-assert "scripts/run-gui-dev.sh invokes 'cargo build -p reify-gui'" \
-    grep -q 'cargo build -p reify-gui' "$RUN_GUI_DEV"
+assert "scripts/run-gui-dev.sh invokes 'cargo build -p reify-gui' on an uncommented line" \
+    bash -c 'grep -q "cargo build -p reify-gui" <<<"$1"' _ "$RUN_GUI_DEV_CODE"
 
 assert "scripts/run-gui-dev.sh cargo build line includes '--features gui'" \
-    bash -c "grep 'cargo build -p reify-gui' '$RUN_GUI_DEV' | grep -q -- '--features gui'"
+    bash -c 'grep "cargo build -p reify-gui" <<<"$1" | grep -q -- "--features gui"' _ "$RUN_GUI_DEV_CODE"
 
 assert "scripts/run-gui-dev.sh cargo build line does NOT include '--release'" \
-    bash -c "! grep 'cargo build -p reify-gui' '$RUN_GUI_DEV' | grep -q -- '--release'"
+    bash -c '! grep "cargo build -p reify-gui" <<<"$1" | grep -q -- "--release"' _ "$RUN_GUI_DEV_CODE"
 
 # -- Test 18: REIFY_DEBUG=1 is set ------------------------------------------
 echo ""
@@ -284,19 +299,8 @@ assert "scripts/run-gui-dev.sh defaults REIFY_DEBUG_PORT to 3939 when unset" \
 assert "scripts/run-gui-dev.sh exports REIFY_DEBUG_PORT" \
     bash -c "grep -qE 'export REIFY_DEBUG_PORT' '$RUN_GUI_DEV'"
 
-# -- Test 21: behavioral — no args -> usage + non-zero ---------------------
-echo ""
-echo "--- Test 21: dev script no-args invocation prints usage + exits non-zero ---"
-
-dev_no_args_out=$(bash "$RUN_GUI_DEV" 2>&1 || true)
-dev_no_args_rc=0
-bash "$RUN_GUI_DEV" >/dev/null 2>&1 || dev_no_args_rc=$?
-
-assert "run-gui-dev.sh with no args exits non-zero" \
-    bash -c '[ "$1" -ne 0 ]' _ "$dev_no_args_rc"
-
-assert "run-gui-dev.sh with no args prints usage mentioning '<file>'" \
-    bash -c 'printf "%s\n" "$1" | grep -qE "[Uu]sage.*<file>|<file>"' _ "$dev_no_args_out"
+# Test 21 (no file launches the Start view) needs the hermetic stubs defined
+# below, so it sits after Test 33, whose run shape it shares.
 
 # -- Test 22: behavioral — non-.ri rejected --------------------------------
 echo ""
@@ -451,6 +455,19 @@ NPM_STUB
     chmod +x "$1/bin/npm"
 }
 
+# _rgs_stub_npx_marker <dir> — an npx that drops "$_RGS_NPX_MARKER" and fails,
+# standing in for a registry fetch: hermetic when reached, provably unreached
+# when the marker stays absent.
+_rgs_stub_npx_marker() {
+    cat > "$1/bin/npx" <<'NPX_STUB'
+#!/usr/bin/env bash
+: > "${_RGS_NPX_MARKER:?_RGS_NPX_MARKER must be set by the test}"
+echo "stub npx: would fetch from the registry" >&2
+exit 1
+NPX_STUB
+    chmod +x "$1/bin/npx"
+}
+
 # _rgs_stub_curl_stateful <dir> — a curl whose FIRST call reports the port FREE
 # and whose every later call reports it SERVED.
 #
@@ -478,9 +495,69 @@ CURL_STUB
 }
 
 # _rgs_stub_cargo <dir> [rc] — a cargo that short-circuits the real build.
+#
+# Opt-in: with "$_RGS_CARGO_ARGV" set, every call first appends its argv there
+# (one line per call), so a test can see what the launcher asked cargo for.
 _rgs_stub_cargo() {
-    printf '#!/usr/bin/env bash\nexit %s\n' "${2:-0}" > "$1/bin/cargo"
+    {
+        cat <<'CARGO_STUB'
+#!/usr/bin/env bash
+[ -z "${_RGS_CARGO_ARGV:-}" ] || printf '%s\n' "$*" >> "$_RGS_CARGO_ARGV"
+CARGO_STUB
+        printf 'exit %s\n' "${2:-0}"
+    } > "$1/bin/cargo"
     chmod +x "$1/bin/cargo"
+}
+
+# _rgs_cargo_build_features <argv-file> — the comma-joined --features/-F values
+# of the first recorded `build` of `-p reify-gui`, or "" if there is none.
+_rgs_cargo_build_features() {
+    local _line _i _is_gui _feats
+    local -a _a
+    [ -f "$1" ] || return 0
+    while IFS= read -r _line; do
+        read -r -a _a <<< "$_line"
+        [ "${_a[0]-}" = build ] || continue
+        _is_gui="" _feats=""
+        for ((_i = 1; _i < ${#_a[@]}; _i++)); do
+            case "${_a[_i]}" in
+                -p | --package)
+                    if [ "${_a[_i + 1]-}" = reify-gui ]; then _is_gui=1; fi ;;
+                --package=reify-gui) _is_gui=1 ;;
+                --features | -F) _feats+="${_feats:+,}${_a[_i + 1]-}" ;;
+                --features=*) _feats+="${_feats:+,}${_a[_i]#--features=}" ;;
+            esac
+        done
+        if [ -n "$_is_gui" ]; then
+            printf '%s\n' "$_feats"
+            return 0
+        fi
+    done < "$1"
+}
+
+# _rgs_tauri_features_under <scratch-dir> <features> — tauri's features, one per
+# line, as the REAL cargo resolves reify-gui under --features <features>.
+# <scratch-dir> must already be registered with _rgs_mktemp: this runs inside
+# $(...), where a registration would be lost. Silent and non-zero if cargo
+# cannot resolve. Its inputs are fetched at suite start for $_RGS_HOST only, and
+# --filter-platform matches that host-only fetch.
+_rgs_tauri_features_under() {
+    local _json="$1/cargo-metadata.json" _rc=0
+    [ -n "$_RGS_HOST" ] || return 1
+    ( cd "$REPO_ROOT" && cargo metadata --format-version 1 --locked --offline \
+        --filter-platform "$_RGS_HOST" \
+        --manifest-path "$REPO_ROOT/gui/src-tauri/Cargo.toml" \
+        --features "$2" ) > "$_json" 2>/dev/null || _rc=$?
+    [ "$_rc" -eq 0 ] || return 1
+    python3 -I -c '
+import json, sys
+with open(sys.argv[1]) as f:
+    meta = json.load(f)
+names = {p["id"]: p["name"] for p in meta["packages"]}
+for node in meta["resolve"]["nodes"]:
+    if names[node["id"]] == "tauri":
+        print("\n".join(node["features"]))
+' "$_json"
 }
 
 # _rgs_stub_npm_serving <dir> — an npm whose `run dev` stays alive so the
@@ -516,18 +593,22 @@ NPM_STUB
 }
 
 # _rgs_stub_gui_binary <dir> <relpath> — a stand-in for the built reify-gui
-# that records the environment the launcher handed it into "$_RGS_ENV_DUMP"
-# (one KEY=VALUE per line) and exits 0. Lets the tests observe LD_LIBRARY_PATH
-# ordering and the vite port it was told to load without launching anything
-# real.
+# that records the environment the launcher handed it, its argument count
+# (ARGC), its first argument (ARGV1) and whether that names a file from the
+# stub's OWN cwd (ARGV1_RESOLVES=yes|no) into "$_RGS_ENV_DUMP" (one KEY=VALUE
+# per line) and exits 0. Lets the tests observe LD_LIBRARY_PATH ordering, the
+# vite port it was told to load and the file it was told to open without
+# launching anything real.
 _rgs_stub_gui_binary() {
     mkdir -p "$(dirname "$1/$2")"
     cat > "$1/$2" <<'GUI_STUB'
 #!/usr/bin/env bash
 {
     printf 'LD_LIBRARY_PATH=%s\n' "${LD_LIBRARY_PATH:-}"
-    printf 'WEBKIT_DISABLE_DMABUF_RENDERER=%s\n' "${WEBKIT_DISABLE_DMABUF_RENDERER:-}"
     printf 'REIFY_VITE_PORT=%s\n' "${REIFY_VITE_PORT:-}"
+    printf 'ARGC=%s\n' "$#"
+    printf 'ARGV1=%s\n' "${1:-}"
+    if [ -f "${1:-}" ]; then echo ARGV1_RESOLVES=yes; else echo ARGV1_RESOLVES=no; fi
 } > "${_RGS_ENV_DUMP:?_RGS_ENV_DUMP must be set by the test}"
 exit 0
 GUI_STUB
@@ -702,6 +783,40 @@ DISPLAY=:99 REIFY_VITE_PORT="$_t26_port" \
 
 assert "run-gui-dev.sh: REIFY_GUI_SKIP_PREFLIGHT=1 bypasses the port gate" \
     test -e "$_t26_tmpdir/npm-invoked"
+
+# --- 26b: the relocate remedy relaunches the same file, however it is spelled ---
+# The launcher resolves FILE to an absolute path, so every ancestor directory
+# lands in the remedy. Past `scripts/run-gui-dev.sh`, the line must parse as
+# shell words into exactly the arguments this launch got.
+
+# _t26_relaunch_args [file] — run against the occupied port and set
+# _t26_hint (the remedy line) and _t26_relaunch (argc, then each argument the
+# shell would parse from the remedy's tail, one per line).
+_t26_relaunch_args() {
+    _t26_hint=$(DISPLAY=:99 REIFY_VITE_PORT="$_t26_port" \
+        _RGS_NPM_MARKER="$_t26_tmpdir/npm-invoked" \
+        PATH="$_t26_tmpdir/bin:$PATH" \
+        bash "$_t26_tmpdir/scripts/run-gui-dev.sh" "$@" 2>&1 \
+        | grep -F 'REIFY_VITE_PORT=<free port> scripts/run-gui-dev.sh' || true)
+    _t26_relaunch=$(bash -c 'eval "set -- ${1#*"scripts/run-gui-dev.sh"}"; printf "%s\n" "$#" "$@"' \
+        _ "$_t26_hint")
+}
+
+mkdir -p "$_t26_tmpdir/My Designs"
+: > "$_t26_tmpdir/My Designs/design.ri"
+_t26b_want="$(cd -P "$_t26_tmpdir/My Designs" && pwd -P)/design.ri"
+
+_t26_relaunch_args "$_t26_tmpdir/My Designs/design.ri"
+assert "control: the occupied-port refusal printed the relocate remedy (got '$_t26_hint')" \
+    test -n "$_t26_hint"
+assert "run-gui-dev.sh: relocate remedy for a file under 'My Designs' relaunches exactly that one file (got '$_t26_hint')" \
+    test "$_t26_relaunch" = "$(printf '1\n%s' "$_t26b_want")"
+
+_t26_relaunch_args
+assert "control: the no-file occupied-port refusal printed the relocate remedy (got '$_t26_hint')" \
+    test -n "$_t26_hint"
+assert "run-gui-dev.sh: relocate remedy for a no-file launch relaunches with no file (got '$_t26_hint')" \
+    test "$_t26_relaunch" = 0
 
 # -- Test 27: behavioral — display preflight fails fast, both launchers ------
 echo ""
@@ -933,83 +1048,6 @@ else
     echo "  SKIP: needs the deps tree (scripts/build-manifold-deps.sh); the text"
     echo "  SKIP: drift-guards above still ran."
 fi
-
-# -- Test 29: behavioral — WEBKIT_DISABLE_DMABUF_RENDERER defaults to 1 -------
-echo ""
-echo "--- Test 29: launchers default WEBKIT_DISABLE_DMABUF_RENDERER=1, caller may override ---"
-
-# On an NVIDIA host, Mesa's EGL cannot create a GBM screen on the NVIDIA GPU and
-# WebKitGTK aborts with `Could not create GBM EGL display: EGL_NOT_INITIALIZED`.
-# gui/test/visual/lib_e2e_smoke.sh §2b already carries the canonical
-# `${WEBKIT_DISABLE_DMABUF_RENDERER:-1}` stanza for exactly this; the launchers
-# do not. The `:-1` form matters as much as the value: a caller who knows DMABUF
-# works on their host must still be able to turn it back on.
-#
-# Unlike Test 28 this is host-independent — no deps-tree gate.
-
-# --- 29a: run-gui-dev.sh ---
-_rgs_mktemp _t29dev_tmpdir
-_t29dev_port=$(_rgs_free_port)
-_mk_rungui_dev_fixture "$_t29dev_tmpdir"
-_rgs_stub_npm_serving "$_t29dev_tmpdir"
-_rgs_stub_curl_stateful "$_t29dev_tmpdir"
-_rgs_stub_cargo "$_t29dev_tmpdir"
-_rgs_stub_gui_binary "$_t29dev_tmpdir" target/debug/reify-gui
-
-# _t29_run_dev <extra-env...> — reset the stateful-curl counter and the dump,
-# then run the dev launcher with WEBKIT_DISABLE_DMABUF_RENDERER unset.
-_t29_run_dev() {
-    rm -f "$_t29dev_tmpdir/curl-count" "$_t29dev_tmpdir/env-dump"
-    env -u WEBKIT_DISABLE_DMABUF_RENDERER \
-        DISPLAY=:99 \
-        REIFY_VITE_PORT="$_t29dev_port" \
-        _RGS_CURL_COUNTER="$_t29dev_tmpdir/curl-count" \
-        _RGS_ENV_DUMP="$_t29dev_tmpdir/env-dump" \
-        PATH="$_t29dev_tmpdir/bin:$PATH" \
-        "$@" \
-        bash "$_t29dev_tmpdir/scripts/run-gui-dev.sh" "$_t29dev_tmpdir/test.ri" >/dev/null 2>&1 || true
-}
-
-_t29_run_dev
-_t29dev_default=$(_rgs_env_dump_get "$_t29dev_tmpdir/env-dump" WEBKIT_DISABLE_DMABUF_RENDERER)
-
-assert "run-gui-dev.sh: launched binary sees WEBKIT_DISABLE_DMABUF_RENDERER=1 by default" \
-    bash -c '[ "$1" = 1 ]' _ "$_t29dev_default"
-
-_t29_run_dev WEBKIT_DISABLE_DMABUF_RENDERER=0
-_t29dev_override=$(_rgs_env_dump_get "$_t29dev_tmpdir/env-dump" WEBKIT_DISABLE_DMABUF_RENDERER)
-
-assert "run-gui-dev.sh: an explicit WEBKIT_DISABLE_DMABUF_RENDERER=0 is NOT clobbered" \
-    bash -c '[ "$1" = 0 ]' _ "$_t29dev_override"
-
-# --- 29b: run-gui.sh ---
-_rgs_mktemp _t29rel_tmpdir
-_mk_rungui_fixture "$_t29rel_tmpdir"
-_rgs_stub_npm_serving "$_t29rel_tmpdir"
-_rgs_stub_cargo "$_t29rel_tmpdir"
-_rgs_stub_gui_binary "$_t29rel_tmpdir" target/release/reify-gui
-
-_t29_run_rel() {
-    rm -f "$_t29rel_tmpdir/env-dump"
-    env -u WEBKIT_DISABLE_DMABUF_RENDERER \
-        DISPLAY=:99 \
-        _RGS_ENV_DUMP="$_t29rel_tmpdir/env-dump" \
-        PATH="$_t29rel_tmpdir/bin:$PATH" \
-        "$@" \
-        bash "$_t29rel_tmpdir/scripts/run-gui.sh" "$_t29rel_tmpdir/test.ri" >/dev/null 2>&1 || true
-}
-
-_t29_run_rel
-_t29rel_default=$(_rgs_env_dump_get "$_t29rel_tmpdir/env-dump" WEBKIT_DISABLE_DMABUF_RENDERER)
-
-assert "run-gui.sh: launched binary sees WEBKIT_DISABLE_DMABUF_RENDERER=1 by default" \
-    bash -c '[ "$1" = 1 ]' _ "$_t29rel_default"
-
-_t29_run_rel WEBKIT_DISABLE_DMABUF_RENDERER=0
-_t29rel_override=$(_rgs_env_dump_get "$_t29rel_tmpdir/env-dump" WEBKIT_DISABLE_DMABUF_RENDERER)
-
-assert "run-gui.sh: an explicit WEBKIT_DISABLE_DMABUF_RENDERER=0 is NOT clobbered" \
-    bash -c '[ "$1" = 0 ]' _ "$_t29rel_override"
 
 # -- Test 30: behavioral — a failed launch leaves no orphaned vite descendant -
 echo ""
@@ -1280,6 +1318,137 @@ assert "run-gui-dev.sh: with REIFY_VITE_PORT unset, vite is spawned on 1420" \
 assert "run-gui-dev.sh: with REIFY_VITE_PORT unset, reify-gui is handed REIFY_VITE_PORT=1420" \
     bash -c '[ "$1" = 1420 ]' _ "$_t33b_seen"
 
+# -- Test 21: behavioral — no file launches the Start view; a file is passed --
+echo ""
+echo "--- Test 21: run-gui-dev.sh launches reify-gui with no file, or with the one .ri given ---"
+
+# The file is optional (task 9730): with none, reify-gui opens on the launcher
+# Start view. Same stubs and run shape as Test 33.
+
+_rgs_mktemp _t21_tmpdir
+_mk_rungui_dev_fixture "$_t21_tmpdir"
+_rgs_stub_npm_serving "$_t21_tmpdir"
+_rgs_stub_curl_stateful "$_t21_tmpdir"
+_rgs_stub_cargo "$_t21_tmpdir"
+_rgs_stub_gui_binary "$_t21_tmpdir" target/debug/reify-gui
+
+# _t21_run_dev [file] — run the dev launcher with the given arguments (none,
+# or one file) and REIFY_VITE_PORT scrubbed; its exit status lands in _t21_rc.
+_t21_run_dev() {
+    rm -f "$_t21_tmpdir/curl-count" "$_t21_tmpdir/env-dump" "$_t21_tmpdir/npm-dev-args"
+    _t21_rc=0
+    env -u REIFY_VITE_PORT \
+        DISPLAY=:99 \
+        _RGS_CURL_COUNTER="$_t21_tmpdir/curl-count" \
+        _RGS_CURL_READY_FILE="$_t21_tmpdir/npm-dev-args" \
+        _RGS_ENV_DUMP="$_t21_tmpdir/env-dump" \
+        _RGS_NPM_DEV_ARGS="$_t21_tmpdir/npm-dev-args" \
+        PATH="$_t21_tmpdir/bin:$PATH" \
+        bash "$_t21_tmpdir/scripts/run-gui-dev.sh" "$@" >/dev/null 2>&1 || _t21_rc=$?
+}
+
+# --- 21a: no file ---
+_t21_run_dev
+_t21a_rc=$_t21_rc
+_t21a_argc=$(_rgs_env_dump_get "$_t21_tmpdir/env-dump" ARGC)
+
+assert "run-gui-dev.sh with no file exits 0" \
+    bash -c '[ "$1" -eq 0 ]' _ "$_t21a_rc"
+
+assert "run-gui-dev.sh with no file hands reify-gui zero arguments (the Start view)" \
+    bash -c '[ "$1" = 0 ]' _ "$_t21a_argc"
+
+# --- 21b: one .ri file ---
+_t21_run_dev "$_t21_tmpdir/test.ri"
+_t21b_rc=$_t21_rc
+_t21b_argc=$(_rgs_env_dump_get "$_t21_tmpdir/env-dump" ARGC)
+_t21b_argv1=$(_rgs_env_dump_get "$_t21_tmpdir/env-dump" ARGV1)
+
+assert "run-gui-dev.sh with a .ri file exits 0" \
+    bash -c '[ "$1" -eq 0 ]' _ "$_t21b_rc"
+
+assert "run-gui-dev.sh with a .ri file hands reify-gui exactly one argument" \
+    bash -c '[ "$1" = 1 ]' _ "$_t21b_argc"
+
+assert "run-gui-dev.sh hands reify-gui the absolute path of the .ri file it was given (got '$_t21b_argv1')" \
+    bash -c '[ "$1" = "$2" ]' _ "$_t21b_argv1" "$(cd -P "$_t21_tmpdir" && pwd -P)/test.ri"
+
+# -- Test 9: behavioral — no file launches the Start view; a file is passed --
+echo ""
+echo "--- Test 9: run-gui.sh launches reify-gui with no file, or with the one .ri given ---"
+
+# The file is optional (task 9821, the release twin of Test 21): with none,
+# reify-gui opens on the launcher Start view. Hermetic, because a no-arg run of
+# the real launcher would install, build --release and launch the real GUI.
+
+_rgs_mktemp _t9_tmpdir
+_mk_rungui_fixture "$_t9_tmpdir"
+_rgs_stub_npm_serving "$_t9_tmpdir"
+_rgs_stub_cargo "$_t9_tmpdir"
+_rgs_stub_gui_binary "$_t9_tmpdir" target/release/reify-gui
+
+# _t9_run_rel [arg...] — run the release launcher with the given arguments
+# (none, one file, or two); its exit status lands in _t9_rc and its combined
+# output in _t9_out. Call it directly, never inside $(...), so those land in
+# this shell.
+_t9_run_rel() {
+    rm -f "$_t9_tmpdir/env-dump" "$_t9_tmpdir/cargo-argv"
+    _t9_rc=0
+    _t9_out=$(env DISPLAY=:99 \
+        _RGS_ENV_DUMP="$_t9_tmpdir/env-dump" \
+        _RGS_CARGO_ARGV="$_t9_tmpdir/cargo-argv" \
+        PATH="$_t9_tmpdir/bin:$PATH" \
+        bash "$_t9_tmpdir/scripts/run-gui.sh" "$@" 2>&1) || _t9_rc=$?
+}
+
+# --- 9a: no file ---
+_t9_run_rel
+_t9a_rc=$_t9_rc
+_t9a_argc=$(_rgs_env_dump_get "$_t9_tmpdir/env-dump" ARGC)
+
+assert "run-gui.sh with no file exits 0 (rc $_t9a_rc)" \
+    bash -c '[ "$1" -eq 0 ]' _ "$_t9a_rc"
+
+assert "run-gui.sh with no file hands reify-gui zero arguments (the Start view)" \
+    bash -c '[ "$1" = 0 ]' _ "$_t9a_argc"
+
+# --- 9b: one .ri file ---
+_t9_run_rel "$_t9_tmpdir/test.ri"
+_t9b_rc=$_t9_rc
+_t9b_argc=$(_rgs_env_dump_get "$_t9_tmpdir/env-dump" ARGC)
+_t9b_argv1=$(_rgs_env_dump_get "$_t9_tmpdir/env-dump" ARGV1)
+
+assert "run-gui.sh with a .ri file exits 0" \
+    bash -c '[ "$1" -eq 0 ]' _ "$_t9b_rc"
+
+assert "run-gui.sh with a .ri file hands reify-gui exactly one argument" \
+    bash -c '[ "$1" = 1 ]' _ "$_t9b_argc"
+
+assert "run-gui.sh hands reify-gui the absolute path of the .ri file it was given (got '$_t9b_argv1')" \
+    bash -c '[ "$1" = "$2" ]' _ "$_t9b_argv1" "$(cd -P "$_t9_tmpdir" && pwd -P)/test.ri"
+
+# The control for 9c's no-cargo assert: a call that is let through does record
+# one, so that file's absence there can only mean the launcher never got that far.
+assert "run-gui.sh with a .ri file reaches the cargo build" \
+    test -e "$_t9_tmpdir/cargo-argv"
+
+# --- 9c: two arguments ---
+_t9_run_rel "$_t9_tmpdir/test.ri" "$_t9_tmpdir/test.ri"
+_t9c_rc=$_t9_rc
+_t9c_out=$_t9_out
+
+assert "run-gui.sh with two arguments exits non-zero" \
+    bash -c '[ "$1" -ne 0 ]' _ "$_t9c_rc"
+
+assert "run-gui.sh with two arguments prints usage" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "[Uu]sage"' _ "$_t9c_out"
+
+assert "run-gui.sh with two arguments is refused before any cargo call" \
+    bash -c '! [ -e "$1" ]' _ "$_t9_tmpdir/cargo-argv"
+
+assert "run-gui.sh with two arguments never launches reify-gui" \
+    bash -c '! [ -e "$1" ]' _ "$_t9_tmpdir/env-dump"
+
 # -- Test 34: behavioral — a malformed REIFY_VITE_PORT is refused up front ----
 echo ""
 echo "--- Test 34: run-gui-dev.sh rejects a malformed REIFY_VITE_PORT before any build ---"
@@ -1394,6 +1563,377 @@ printf "%s\n%s" "$first" "$LD_LIBRARY_PATH"'
 else
     echo "  SKIP: /opt/reify-deps/tbb-pin absent on this host — Test 35"
 fi
+
+# -- Test 36: behavioral — release embeds gui/dist, dev loads vite ------------
+echo ""
+echo "--- Test 36: run-gui.sh builds tauri with custom-protocol; run-gui-dev.sh does not ---"
+
+# Why custom-protocol decides what the window loads: see `embedded-frontend` in
+# gui/src-tauri/Cargo.toml. Each launcher's --features value goes to the REAL
+# cargo's feature resolver.
+
+# _t36_resolve <label> <tmpdir> — read the --features value the launcher run in
+# <tmpdir> handed cargo into _t36_features, and tauri's features under it into
+# _t36_tauri; asserts all three are real, so neither verdict on custom-protocol
+# can pass vacuously.
+_t36_resolve() {
+    local _rc=0
+    _t36_features=$(_rgs_cargo_build_features "$2/cargo-argv")
+    _t36_tauri=$(_rgs_tauri_features_under "$2" "$_t36_features") || _rc=$?
+
+    assert "$1: its cargo build of reify-gui passes a --features value" \
+        test -n "$_t36_features"
+
+    assert "$1: cargo resolves reify-gui under --features '$_t36_features' (rc $_rc)" \
+        test "$_rc" -eq 0
+
+    # Non-empty iff tauri is in the resolve: the workspace dep always enables devtools.
+    assert "$1: tauri is in cargo's resolve under --features '$_t36_features'" \
+        test -n "$_t36_tauri"
+}
+
+# --- 36a: run-gui.sh ---
+_rgs_mktemp _t36rel_tmpdir
+_mk_rungui_fixture "$_t36rel_tmpdir"
+_rgs_stub_npm_serving "$_t36rel_tmpdir"
+_rgs_stub_cargo "$_t36rel_tmpdir"
+_rgs_stub_gui_binary "$_t36rel_tmpdir" target/release/reify-gui
+
+env DISPLAY=:99 \
+    _RGS_ENV_DUMP="$_t36rel_tmpdir/env-dump" \
+    _RGS_CARGO_ARGV="$_t36rel_tmpdir/cargo-argv" \
+    PATH="$_t36rel_tmpdir/bin:$PATH" \
+    bash "$_t36rel_tmpdir/scripts/run-gui.sh" "$_t36rel_tmpdir/test.ri" >/dev/null 2>&1 || true
+
+_t36_resolve run-gui.sh "$_t36rel_tmpdir"
+_t36rel_features=$_t36_features _t36rel_tauri=$_t36_tauri
+
+assert "run-gui.sh: tauri resolves WITH custom-protocol under --features '$_t36_features', so the window serves gui/dist (tauri features: ${_t36_tauri//$'\n'/,})" \
+    bash -c 'grep -qxF custom-protocol <<< "$1"' _ "$_t36_tauri"
+
+# --- 36b: run-gui-dev.sh ---
+_rgs_mktemp _t36dev_tmpdir
+_t36dev_port=$(_rgs_free_port)
+_mk_rungui_dev_fixture "$_t36dev_tmpdir"
+_rgs_stub_npm_serving "$_t36dev_tmpdir"
+_rgs_stub_curl_stateful "$_t36dev_tmpdir"
+_rgs_stub_cargo "$_t36dev_tmpdir"
+_rgs_stub_gui_binary "$_t36dev_tmpdir" target/debug/reify-gui
+
+env DISPLAY=:99 \
+    REIFY_VITE_PORT="$_t36dev_port" \
+    _RGS_CURL_COUNTER="$_t36dev_tmpdir/curl-count" \
+    _RGS_ENV_DUMP="$_t36dev_tmpdir/env-dump" \
+    _RGS_CARGO_ARGV="$_t36dev_tmpdir/cargo-argv" \
+    PATH="$_t36dev_tmpdir/bin:$PATH" \
+    bash "$_t36dev_tmpdir/scripts/run-gui-dev.sh" "$_t36dev_tmpdir/test.ri" >/dev/null 2>&1 || true
+
+_t36_resolve run-gui-dev.sh "$_t36dev_tmpdir"
+_t36dev_features=$_t36_features _t36dev_tauri=$_t36_tauri
+
+assert "run-gui-dev.sh: tauri resolves WITHOUT custom-protocol under --features '$_t36_features', so the window keeps loading vite's devUrl (tauri features: ${_t36_tauri//$'\n'/,})" \
+    bash -c '! grep -qxF custom-protocol <<< "$1"' _ "$_t36_tauri"
+
+# -- Test 37: behavioral — build-sidecar.sh refuses without its node_modules --
+echo ""
+echo "--- Test 37: build-sidecar.sh refuses without gui/sidecar/node_modules (#9728) ---"
+
+_rgs_mktemp _t37_tmpdir
+mkdir -p "$_t37_tmpdir/gui/sidecar" "$_t37_tmpdir/bin"
+cp "$BUILD_SIDECAR" "$_t37_tmpdir/gui/sidecar/build-sidecar.sh"
+_rgs_stub_npx_marker "$_t37_tmpdir"
+
+# _t37_run — reset the npx marker, run the real script; sets _t37_err (stderr
+# only) and _t37_rc.
+_t37_run() {
+    rm -f "$_t37_tmpdir/npx-invoked"
+    _t37_rc=0
+    _t37_err=$(env _RGS_NPX_MARKER="$_t37_tmpdir/npx-invoked" \
+        PATH="$_t37_tmpdir/bin:$PATH" \
+        bash "$_t37_tmpdir/gui/sidecar/build-sidecar.sh" 2>&1 >/dev/null) || _t37_rc=$?
+}
+
+# _t37_assert_refused <label> — rc 1, one stderr line naming the remedy, no npx.
+_t37_assert_refused() {
+    assert "$1: exits 1 (rc $_t37_rc)" \
+        test "$_t37_rc" -eq 1
+    assert "$1: stderr is exactly one line" \
+        bash -c '[ "$(printf "%s\n" "$1" | wc -l)" -eq 1 ]' _ "$_t37_err"
+    assert "$1: stderr names the remedy 'cd gui/sidecar && npm ci' (got: $_t37_err)" \
+        bash -c 'printf "%s\n" "$1" | grep -qF "cd gui/sidecar && npm ci"' _ "$_t37_err"
+    assert "$1: npx is never reached" \
+        bash -c '! [ -e "$1" ]' _ "$_t37_tmpdir/npx-invoked"
+}
+
+# --- 37a: no node_modules ---
+_t37_run
+_t37_assert_refused "build-sidecar.sh, no node_modules"
+assert "build-sidecar.sh, no node_modules: writes no sidecar binary" \
+    bash -c 'shopt -s nullglob; f=("$1"/gui/src-tauri/sidecar/reify-sidecar-*); [ "${#f[@]}" -eq 0 ]' _ "$_t37_tmpdir"
+
+# --- 37b: a partial install (node_modules without .bin/tsup) ---
+mkdir "$_t37_tmpdir/gui/sidecar/node_modules"
+_t37_run
+_t37_assert_refused "build-sidecar.sh, node_modules without .bin/tsup"
+
+# --- 37c: sensitivity pair — the same fixture builds once tsup is installed ---
+mkdir -p "$_t37_tmpdir/gui/sidecar/node_modules/.bin"
+cat > "$_t37_tmpdir/gui/sidecar/node_modules/.bin/tsup" <<'TSUP_STUB'
+#!/usr/bin/env bash
+mkdir -p dist && printf '// t37 stub bundle argv: %s\n' "$*" > dist/cli.cjs
+TSUP_STUB
+chmod +x "$_t37_tmpdir/gui/sidecar/node_modules/.bin/tsup"
+_t37_run
+
+assert "build-sidecar.sh, tsup installed: exits 0 (rc $_t37_rc; stderr: $_t37_err)" \
+    test "$_t37_rc" -eq 0
+assert "build-sidecar.sh, tsup installed: npx is never reached" \
+    bash -c '! [ -e "$1" ]' _ "$_t37_tmpdir/npx-invoked"
+assert "build-sidecar.sh, tsup installed: writes exactly one reify-sidecar-* whose line 1 is the node shebang, bundling tsup's output for --config tsup.sidecar.ts" \
+    bash -c '
+        shopt -s nullglob
+        f=("$1"/gui/src-tauri/sidecar/reify-sidecar-*)
+        [ "${#f[@]}" -eq 1 ] || exit 1
+        [ "$(head -n1 "${f[0]}")" = "#!/usr/bin/env node" ] &&
+            grep -qF "t37 stub bundle" "${f[0]}" &&
+            grep -qF -- "--config tsup.sidecar.ts" "${f[0]}"
+    ' _ "$_t37_tmpdir"
+
+# -- Test 38: behavioral — run-gui.sh surfaces the sidecar refusal first -------
+echo ""
+echo "--- Test 38: run-gui.sh surfaces the sidecar refusal before any npm/cargo step ---"
+
+_rgs_mktemp _t38_tmpdir
+_mk_rungui_fixture "$_t38_tmpdir"
+cp "$BUILD_SIDECAR" "$_t38_tmpdir/gui/sidecar/build-sidecar.sh"
+_rgs_stub_npm_marker "$_t38_tmpdir"
+_rgs_stub_cargo "$_t38_tmpdir"
+_rgs_stub_npx_marker "$_t38_tmpdir"
+
+_t38_rc=0
+_t38_out=$(env DISPLAY=:99 \
+    _RGS_NPM_MARKER="$_t38_tmpdir/npm-invoked" \
+    _RGS_NPX_MARKER="$_t38_tmpdir/npx-invoked" \
+    _RGS_CARGO_ARGV="$_t38_tmpdir/cargo-argv" \
+    PATH="$_t38_tmpdir/bin:$PATH" \
+    bash "$_t38_tmpdir/scripts/run-gui.sh" "$_t38_tmpdir/test.ri" 2>&1) || _t38_rc=$?
+
+assert "run-gui.sh, no sidecar deps: exits non-zero" \
+    test "$_t38_rc" -ne 0
+assert "run-gui.sh, no sidecar deps: output names the remedy 'cd gui/sidecar && npm ci'" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "cd gui/sidecar && npm ci"' _ "$_t38_out"
+assert "run-gui.sh, no sidecar deps: refusal precedes npm install and the frontend build" \
+    bash -c '! [ -e "$1" ]' _ "$_t38_tmpdir/npm-invoked"
+assert "run-gui.sh, no sidecar deps: refusal precedes every cargo call" \
+    bash -c '! [ -e "$1" ]' _ "$_t38_tmpdir/cargo-argv"
+assert "run-gui.sh, no sidecar deps: npx is never reached" \
+    bash -c '! [ -e "$1" ]' _ "$_t38_tmpdir/npx-invoked"
+
+# -- Test 39: structural — setup-dev.sh provisions gui/sidecar ----------------
+echo ""
+echo "--- Test 39: setup-dev.sh installs gui/sidecar's node_modules (the precondition Tests 37/38 refuse without) ---"
+
+# setup-dev.sh cannot run hermetically (apt, sudo, systemd, .git hooks), so this
+# checks its UNCOMMENTED lines: a comment naming the step must not satisfy it.
+SETUP_DEV="$REPO_ROOT/scripts/setup-dev.sh"
+assert "setup-dev.sh: an uncommented line runs 'cd gui/sidecar && npm ci'" \
+    bash -c 'grep -qF "cd gui/sidecar && npm ci" <<<"$1"' _ "$(_rgs_code_lines "$SETUP_DEV")"
+
+# -- Test 40: gui_launch_resolve_file — the launchers' one [file.ri] policy ---
+echo ""
+echo "--- Test 40: gui_launch_resolve_file — the launchers' one optional [file.ri] policy ---"
+
+# Both launchers cd to REPO_ROOT before launching, so the file they hand
+# reify-gui must be absolute, resolved against the CALLER's cwd. The lib owns
+# that policy; this drives it through Test 35's sourced-child seam, under the
+# launchers' strict mode.
+
+_rgs_mktemp _t40_tmpdir
+mkdir -p "$_t40_tmpdir/caller/sub" "$_t40_tmpdir/decoy/sub" "$_t40_tmpdir/real/inner"
+: > "$_t40_tmpdir/caller/design.ri"
+: > "$_t40_tmpdir/caller/sub/design.ri"
+: > "$_t40_tmpdir/caller/notes.txt"
+: > "$_t40_tmpdir/real/a.ri"
+ln -s "$_t40_tmpdir/real/inner" "$_t40_tmpdir/caller/lnk"
+_t40_caller=$(cd -P "$_t40_tmpdir/caller" && pwd -P)
+_t40_real=$(cd -P "$_t40_tmpdir/real" && pwd -P)
+
+# _t40_resolve <arg> [VAR=value...] — run gui_launch_resolve_file <arg> from
+# the caller dir with the extra env; sets _t40_rc, _t40_out, _t40_err and
+# _t40_err_lines. Call it directly, never inside $(...), so those land here.
+_t40_resolve() {
+    local _arg="$1"
+    shift
+    _t40_rc=0
+    _t40_out=$(cd "$_t40_tmpdir/caller" && env "$@" \
+        bash -c 'set -euo pipefail; source "$1"; gui_launch_resolve_file "$2"' \
+        _ "$LIB_GUI_LAUNCH" "$_arg" 2>"$_t40_tmpdir/stderr") || _t40_rc=$?
+    _t40_err=$(cat "$_t40_tmpdir/stderr")
+    _t40_err_lines=$(grep -c '' "$_t40_tmpdir/stderr" || true)
+}
+
+# --- 40a: no file is the Start view ---
+_t40_resolve ''
+assert "gui_launch_resolve_file '': rc 0 (rc $_t40_rc)" \
+    test "$_t40_rc" -eq 0
+assert "gui_launch_resolve_file '': prints nothing (got '$_t40_out')" \
+    test -z "$_t40_out"
+
+# --- 40b: a non-.ri file is refused ---
+_t40_resolve notes.txt
+assert "gui_launch_resolve_file notes.txt: rc 1 (rc $_t40_rc)" \
+    test "$_t40_rc" -eq 1
+assert "gui_launch_resolve_file notes.txt: prints nothing on stdout (got '$_t40_out')" \
+    test -z "$_t40_out"
+assert "gui_launch_resolve_file notes.txt: ONE stderr line naming .ri and notes.txt (got $_t40_err_lines: '$_t40_err')" \
+    bash -c '[ "$1" -eq 1 ] && [[ "$2" == *.ri* && "$2" == *notes.txt* ]]' _ "$_t40_err_lines" "$_t40_err"
+
+# --- 40c: a missing .ri is refused ---
+_t40_resolve missing.ri
+assert "gui_launch_resolve_file missing.ri: rc 1 (rc $_t40_rc)" \
+    test "$_t40_rc" -eq 1
+assert "gui_launch_resolve_file missing.ri: prints nothing on stdout (got '$_t40_out')" \
+    test -z "$_t40_out"
+assert "gui_launch_resolve_file missing.ri: ONE stderr line saying missing.ri is 'not found' (got $_t40_err_lines: '$_t40_err')" \
+    bash -c '[ "$1" -eq 1 ] && [[ "$2" == *"not found"* && "$2" == *missing.ri* ]]' _ "$_t40_err_lines" "$_t40_err"
+
+# --- 40d: a bare relative name resolves against the caller's cwd ---
+_t40_resolve design.ri
+assert "gui_launch_resolve_file design.ri: rc 0 and prints <caller>/design.ri (rc $_t40_rc, got '$_t40_out')" \
+    test "$_t40_rc:$_t40_out" = "0:$_t40_caller/design.ri"
+
+# --- 40e: CDPATH cannot redirect a relative directory ---
+# Control: the decoy is live — an unguarded cd from the caller dir lands in it.
+_t40_decoy_cd=$(cd "$_t40_tmpdir/caller" && CDPATH="$_t40_tmpdir/decoy" \
+    bash -c 'cd -P -- sub >/dev/null && pwd -P') || _t40_decoy_cd=""
+assert "control: with CDPATH=<decoy>, a bare 'cd sub' from the caller dir lands in the decoy (got '$_t40_decoy_cd')" \
+    test "$_t40_decoy_cd" = "$(cd -P "$_t40_tmpdir/decoy/sub" && pwd -P)"
+
+_t40_resolve sub/design.ri CDPATH="$_t40_tmpdir/decoy"
+assert "gui_launch_resolve_file sub/design.ri under CDPATH=<decoy>: rc 0 and prints exactly <caller>/sub/design.ri (rc $_t40_rc, got '$_t40_out')" \
+    test "$_t40_rc:$_t40_out" = "0:$_t40_caller/sub/design.ri"
+
+# --- 40f: symlink/.. names the file the existence check saw ---
+assert "control: <caller>/a.ri does not exist, so a logical lnk/.. would name a missing file" \
+    bash -c '! [ -e "$1" ]' _ "$_t40_tmpdir/caller/a.ri"
+
+_t40_resolve lnk/../a.ri
+assert "gui_launch_resolve_file lnk/../a.ri: rc 0 and prints <real>/a.ri (rc $_t40_rc, got '$_t40_out')" \
+    test "$_t40_rc:$_t40_out" = "0:$_t40_real/a.ri"
+
+# --- 40g: an absolute path comes back unchanged ---
+_t40_resolve "$_t40_caller/design.ri"
+assert "gui_launch_resolve_file <abs>: rc 0 and prints the same path (rc $_t40_rc, got '$_t40_out')" \
+    test "$_t40_rc:$_t40_out" = "0:$_t40_caller/design.ri"
+
+# -- Test 41: structural — both launchers resolve FILE through the lib -------
+echo ""
+echo "--- Test 41: each launcher resolves its file argument through gui_launch_resolve_file ---"
+
+# Anchored on the executed assignment, so neither a comment nor a usage/echo
+# line naming the helper can satisfy it.
+for _t41_script in "$RUN_GUI_DEV" "$RUN_GUI"; do
+    _t41_name="$(basename "$_t41_script")"
+
+    assert "scripts/$_t41_name assigns FILE=\$(gui_launch_resolve_file ...)" \
+        grep -qE '^[[:space:]]*FILE=\$\(gui_launch_resolve_file[[:space:]]' "$_t41_script"
+done
+
+# -- Test 42: behavioral — a relative .ri from a foreign cwd still resolves ---
+echo ""
+echo "--- Test 42: a relative .ri from a cwd other than REPO_ROOT reaches reify-gui as a path that resolves ---"
+
+# Both launchers cd to REPO_ROOT before launching, so a relative path that was
+# checked from the caller's cwd names nothing for reify-gui unless it was made
+# absolute first. Each launcher runs from a foreign caller dir with
+# sub/design.ri; the stub reify-gui reports whether ARGV1 resolves from ITS cwd.
+
+_rgs_mktemp _t42_caller_raw
+mkdir -p "$_t42_caller_raw/sub"
+: > "$_t42_caller_raw/sub/design.ri"
+_t42_caller=$(cd -P "$_t42_caller_raw" && pwd -P)
+
+# _t42_check <launcher> <fixture> <rc> — what each launcher must hand reify-gui.
+_t42_check() {
+    local _name="$1" _dir="$2" _rc="$3" _argc _argv1 _resolves
+    _argc=$(_rgs_env_dump_get "$_dir/env-dump" ARGC)
+    _argv1=$(_rgs_env_dump_get "$_dir/env-dump" ARGV1)
+    _resolves=$(_rgs_env_dump_get "$_dir/env-dump" ARGV1_RESOLVES)
+
+    assert "control: $_name's REPO_ROOT has no sub/design.ri, so the relative spelling cannot resolve there by accident" \
+        bash -c '! [ -e "$1" ]' _ "$_dir/sub/design.ri"
+    assert "$_name from a foreign cwd with sub/design.ri exits 0 (rc $_rc)" \
+        test "$_rc" -eq 0
+    assert "$_name from a foreign cwd hands reify-gui exactly one argument (ARGC '$_argc')" \
+        test "$_argc" = 1
+    assert "$_name from a foreign cwd hands reify-gui a path that resolves from its cwd (ARGV1 '$_argv1')" \
+        test "$_resolves" = yes
+    assert "$_name from a foreign cwd hands reify-gui <caller>/sub/design.ri (got '$_argv1')" \
+        test "$_argv1" = "$_t42_caller/sub/design.ri"
+}
+
+# --- 42a: run-gui-dev.sh (Test 21's stubs and env) ---
+_rgs_mktemp _t42a_tmpdir
+_mk_rungui_dev_fixture "$_t42a_tmpdir"
+_rgs_stub_npm_serving "$_t42a_tmpdir"
+_rgs_stub_curl_stateful "$_t42a_tmpdir"
+_rgs_stub_cargo "$_t42a_tmpdir"
+_rgs_stub_gui_binary "$_t42a_tmpdir" target/debug/reify-gui
+
+_t42a_rc=0
+(cd "$_t42_caller_raw" && env -u REIFY_VITE_PORT \
+    DISPLAY=:99 \
+    _RGS_CURL_COUNTER="$_t42a_tmpdir/curl-count" \
+    _RGS_CURL_READY_FILE="$_t42a_tmpdir/npm-dev-args" \
+    _RGS_ENV_DUMP="$_t42a_tmpdir/env-dump" \
+    _RGS_NPM_DEV_ARGS="$_t42a_tmpdir/npm-dev-args" \
+    PATH="$_t42a_tmpdir/bin:$PATH" \
+    bash "$_t42a_tmpdir/scripts/run-gui-dev.sh" sub/design.ri) >/dev/null 2>&1 || _t42a_rc=$?
+_t42_check run-gui-dev.sh "$_t42a_tmpdir" "$_t42a_rc"
+
+# --- 42b: run-gui.sh (Test 9's stubs and env) ---
+_rgs_mktemp _t42b_tmpdir
+_mk_rungui_fixture "$_t42b_tmpdir"
+_rgs_stub_npm_serving "$_t42b_tmpdir"
+_rgs_stub_cargo "$_t42b_tmpdir"
+_rgs_stub_gui_binary "$_t42b_tmpdir" target/release/reify-gui
+
+_t42b_rc=0
+(cd "$_t42_caller_raw" && env DISPLAY=:99 \
+    _RGS_ENV_DUMP="$_t42b_tmpdir/env-dump" \
+    _RGS_CARGO_ARGV="$_t42b_tmpdir/cargo-argv" \
+    PATH="$_t42b_tmpdir/bin:$PATH" \
+    bash "$_t42b_tmpdir/scripts/run-gui.sh" sub/design.ri) >/dev/null 2>&1 || _t42b_rc=$?
+_t42_check run-gui.sh "$_t42b_tmpdir" "$_t42b_rc"
+
+# -- Test 43: Test 36's verdict does not depend on the registry cache --------
+echo ""
+echo "--- Test 43: Test 36's verdict does not depend on the registry cache (task 9993) ---"
+
+# An empty CARGO_HOME, once the suite's own fetch has run, must resolve exactly
+# Test 36's warm answers. The negative control proves the reads consult it.
+_rgs_mktemp _t43_home
+_rgs_mktemp _t43_scratch
+
+_t43_rc=0
+CARGO_HOME="$_t43_home" _rgs_tauri_features_under "$_t43_scratch" "$_t36rel_features" >/dev/null || _t43_rc=$?
+assert "an empty CARGO_HOME cannot resolve reify-gui before the fetch (rc $_t43_rc)" \
+    test "$_t43_rc" -ne 0
+
+CARGO_HOME="$_t43_home" assert_infra_input "the suite's cargo fetch fills an empty CARGO_HOME" \
+    "$CARGO_INPUTS_UNAVAILABLE_RC" _rgs_fetch_cargo_inputs
+
+# _t43_same_as_warm <label> <features> <warm-tauri>
+_t43_same_as_warm() {
+    local _cold _rc=0
+    _cold=$(CARGO_HOME="$_t43_home" _rgs_tauri_features_under "$_t43_scratch" "$2") || _rc=$?
+    assert "$1: the fetched empty CARGO_HOME resolves reify-gui under --features '$2' (rc $_rc)" \
+        test "$_rc" -eq 0
+    assert "$1: tauri's features there equal Test 36's warm ones (cold: ${_cold//$'\n'/,}; warm: ${3//$'\n'/,})" \
+        test "$_cold" = "$3"
+}
+_t43_same_as_warm run-gui.sh "$_t36rel_features" "$_t36rel_tauri"
+_t43_same_as_warm run-gui-dev.sh "$_t36dev_features" "$_t36dev_tauri"
 
 # -- Test 32: suite invariant — hermetic DISPLAY pin survives every test -----
 echo ""

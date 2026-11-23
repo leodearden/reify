@@ -42,9 +42,9 @@ RELEASE_SENSITIVE_CRATES_FILE="${RELEASE_SENSITIVE_CRATES_FILE:-$_RELEASE_SCOPE_
 # existence-guarded source of occt-scope-lib.sh; every library on this chain has a
 # source guard, so this is an idempotent no-op under verify.sh's dual sourcing and
 # under test_release_scoped_scope.sh (which also sources occt-scope-lib.sh directly).
-[ -f "$_RELEASE_SCOPE_LIB_DIR/affected-crates-lib.sh" ] || { echo "release-scope-lib.sh: ERROR — scripts/affected-crates-lib.sh not found next to release-scope-lib.sh" >&2; return 1; }
+[ -f "$_RELEASE_SCOPE_LIB_DIR/affected-crates-lib.sh" ] || { echo "release-scope-lib.sh: ERROR — scripts/affected-crates-lib.sh not found next to release-scope-lib.sh" >&2; return 2; }
 # shellcheck source=scripts/affected-crates-lib.sh
-source "$_RELEASE_SCOPE_LIB_DIR/affected-crates-lib.sh"
+source "$_RELEASE_SCOPE_LIB_DIR/affected-crates-lib.sh" || return 2
 
 # release_declared_set — print the declared release-sensitive crate list, one crate
 # per line, with comment lines (^\s*#) and blank lines removed and surrounding
@@ -147,18 +147,29 @@ release_sensitive_set() {
     done | sort -u
 }
 
+# _release_scope_absent <word> <lines> — true when <word> is not a whole line of <lines>,
+# matched literally as grep -xF would. A bash pattern match: no exec, no redirection, so
+# it has no failure status to misread.
+_release_scope_absent() {
+    [[ $'\n'"$2"$'\n' != *$'\n'"$1"$'\n'* ]]
+}
+
 # release_delta_requires_pass <changed-file>... — decide whether the merge-gate
 # RELEASE nextest pass must RUN for a given merge delta, or may be SKIPPED because
 # the delta touches no release-sensitive crate.
 #
 #   rc 0  REQUIRED   — the affected crate set intersects the declared
 #                      release-sensitive set, OR is the fail-wide ALL sentinel,
-#                      OR the declared set could not be read. Emit the release
-#                      pass exactly as today.
+#                      OR the affected set or the declared set could not be
+#                      captured. Emit the release pass exactly as today.
 #   rc 1  SKIPPABLE  — delta-clean: the affected crate set is non-ALL and disjoint
 #                      from the release-sensitive set (or empty). The caller may
 #                      omit the release pass and emit the frozen plan marker
 #                      `RELEASE-PASS: skipped (delta-clean)` in its place.
+#
+#   Sourcing this lib returns 2 when a dependency fails to load: a status
+#   disjoint from rc 0/1, so a caller reading the predicate's status cannot
+#   mistake a load failure for SKIPPABLE.
 #
 # Affected-crate-set resolution (reuse chain — NO second closure, K8):
 #   - REIFY_AFFECTED_CRATES_OVERRIDE set & non-empty => used verbatim. This is the
@@ -172,23 +183,21 @@ release_sensitive_set() {
 #     empty override / empty delta is hermetically delta-clean.
 #
 # Fail-wide/fail-open ladder (§5.1): the ALL sentinel (C4 global / C5 unmappable)
-# and an unreadable declared set both resolve to REQUIRED; only a provably
-# delta-clean affected set returns SKIPPABLE. Always safe under `set -euo pipefail`
-# (affected_crates always returns 0; grep non-matches are consumed by `if`).
+# and an affected set or a declared set whose capture fails (a non-zero status from
+# its helper, a killed subshell included) resolve to REQUIRED; only a provably
+# delta-clean affected set returns SKIPPABLE. Safe under `set -euo pipefail`: both
+# captures end in `|| return 0`, and membership is a bash pattern match over the
+# captured strings, with no exec, pipe or redirection, so a SIGPIPE (task 9911), an
+# exec failure or an unwritable here-string (task 10086) cannot turn into "absent".
 release_delta_requires_pass() {
     local affected
     if [ -n "${REIFY_AFFECTED_CRATES_OVERRIDE:-}" ]; then
         # Operator/testability override: verbatim whitespace/newline-separated set.
         affected="${REIFY_AFFECTED_CRATES_OVERRIDE}"
     else
-        # Real run: map the derived merge-delta files to the reverse-closed crate set.
-        affected="$(affected_crates "$@")"
-    fi
-
-    # Fail-wide: an ALL sentinel anywhere in the (word-split) affected set forces RUN.
-    # shellcheck disable=SC2086
-    if printf '%s\n' $affected | grep -qxF ALL; then
-        return 0
+        # Real run: map the derived merge-delta files to the reverse-closed crate set;
+        # fail-wide to RUN on any capture failure, as the declared read below does.
+        affected="$(affected_crates "$@")" || return 0
     fi
 
     # Read the declared release-sensitive set once (single source of truth,
@@ -196,13 +205,13 @@ release_delta_requires_pass() {
     local declared
     declared="$(release_declared_set)" || return 0
 
-    # Intersect: the first affected crate that is release-sensitive forces RUN.
     local _c
     # shellcheck disable=SC2086
     for _c in $affected; do
-        if printf '%s\n' "$declared" | grep -qxF "$_c"; then
-            return 0
-        fi
+        # Fail-wide: an ALL sentinel anywhere in the (word-split) affected set forces RUN.
+        [ "$_c" != ALL ] || return 0
+        # Intersect: the first affected crate that is release-sensitive forces RUN.
+        _release_scope_absent "$_c" "$declared" || return 0
     done
 
     # No release-sensitive crate affected (or empty affected set) => delta-clean => SKIP.

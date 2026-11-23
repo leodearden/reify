@@ -13,7 +13,7 @@ use reify_audit::pdoccover_baseline::{
 };
 use reify_audit::{AuditContext, MockJCodemunchOps, RealGitOps};
 use rusqlite::Connection;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -66,17 +66,7 @@ fn with_ctx<R>(root: &Path, f: impl FnOnce(&AuditContext<'_>) -> R) -> R {
     let git = RealGitOps::new(root.to_path_buf());
     let conn = Connection::open_in_memory().expect("in-memory sqlite");
     let jc = MockJCodemunchOps::new();
-    let ctx = AuditContext {
-        project_root: root.to_path_buf(),
-        conn: &conn,
-        git: &git,
-        jcodemunch: &jc,
-        task_metadata: HashMap::new(),
-        target_task_id: None,
-        window: None,
-        now: None,
-        producer_branch: None,
-    };
+    let ctx = AuditContext::new(root.to_path_buf(), &conn, &git, &jc);
     f(&ctx)
 }
 

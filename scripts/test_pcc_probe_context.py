@@ -1,0 +1,418 @@
+#!/usr/bin/env python3
+"""
+test_pcc_probe_context.py — scripts/prd-capability-check.py's ProbeContext: the
+one value that carries the repo root, the two binaries, the grammar-cache
+override and the substrate bound into every probe-running function.
+
+Every case reads the environment through the public seam
+ProbeContext.from_environment(environ=<dict>, repo_root=<fixture dir>) and never
+patches os.environ, so what is under test is the env-to-field mapping itself.
+Shared loader and helpers: scripts/_pcc_test_support.py; runner:
+tests/infra/test_prd_capability_check.sh.
+"""
+
+import dataclasses
+import os
+import shutil
+import subprocess
+import tempfile
+import unittest
+
+from _pcc_test_support import (
+    pcc,
+    _REPO_ROOT,
+    git,
+    make_fixture_repo,
+    make_git_fixture_repo,
+    probe_context,
+    trust_ctx,
+    trust_environ,
+    write_bin_sidecar,
+    write_profile_binary,
+)
+from _pdv_test_support import TRUST_HOME
+
+# TRUST_HOME's `resolve` exit when no profile binary is built, named as the home names it.
+REIFY_BIN_NOT_BUILT = 2
+
+
+class TestFromEnvironment(unittest.TestCase):
+    """from_environment() maps an environment mapping onto ProbeContext fields."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="pcc_ctx_")
+        self.root = make_fixture_repo(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _ctx(self, environ):
+        return pcc.ProbeContext.from_environment(environ=environ, repo_root=self.root)
+
+    def test_empty_environment_takes_every_default(self):
+        ctx = self._ctx({})
+        self.assertEqual(ctx.repo_root, self.root)
+        self.assertEqual(ctx.tree_sitter_bin, "tree-sitter")
+        self.assertIsNone(ctx.reify_bin)
+        self.assertIn("REIFY_BIN", ctx.reify_bin_refusal)
+        self.assertIsNone(ctx.cache_home_override)
+        self.assertGreater(ctx.substrate_timeout_s, 0)
+
+    def test_tree_sitter_bin_is_read_and_empty_counts_as_unset(self):
+        self.assertEqual(self._ctx({"TREE_SITTER_BIN": "/x/ts"}).tree_sitter_bin, "/x/ts")
+        self.assertEqual(self._ctx({"TREE_SITTER_BIN": ""}).tree_sitter_bin, "tree-sitter")
+
+    def test_reify_bin_is_taken_verbatim(self):
+        self.assertEqual(self._ctx({"REIFY_BIN": "/x/reify"}).reify_bin, "/x/reify")
+
+    def test_an_empty_reify_bin_counts_as_unset(self):
+        self.assertEqual(self._ctx({"REIFY_BIN": ""}), self._ctx({}))
+        self.assertIsNone(self._ctx({"REIFY_BIN": ""}).reify_bin)
+
+    def test_cache_home_override_is_read_and_empty_counts_as_unset(self):
+        # The operator-facing name, written as a literal: it is the documented
+        # contract in .claude/skills/prd/references/grammar-gate.md.
+        self.assertEqual(
+            self._ctx({"REIFY_TS_CACHE_HOME": "/x/cache"}).cache_home_override, "/x/cache"
+        )
+        self.assertIsNone(self._ctx({"REIFY_TS_CACHE_HOME": ""}).cache_home_override)
+
+    def test_a_non_executable_profile_binary_is_not_picked(self):
+        path = write_profile_binary(self.root, "target/release/reify", mode=0o644)
+        ctx = self._ctx({})
+        self.assertIsNone(ctx.reify_bin)
+        self.assertNotIn(path, ctx.reify_bin_refusal)
+
+    def test_repo_root_defaults_to_this_checkout(self):
+        ctx = pcc.ProbeContext.from_environment(environ={})
+        self.assertEqual(ctx.repo_root, _REPO_ROOT)
+        self.assertEqual(ctx.grammar_generator,
+                         os.path.join(_REPO_ROOT, "scripts", "tree-sitter-generate.sh"))
+
+    def test_grammar_generator_is_none_for_a_root_without_one(self):
+        self.assertIsNone(self._ctx({}).grammar_generator)
+
+    def test_grammar_generator_is_the_roots_generator_script(self):
+        generator = os.path.join(self.root, "scripts", "tree-sitter-generate.sh")
+        os.makedirs(os.path.dirname(generator))
+        open(generator, "w").close()
+        self.assertEqual(self._ctx({}).grammar_generator, generator)
+
+
+class TestProbeContextInvariants(unittest.TestCase):
+    """A ProbeContext that could mislead a probe is refused at construction."""
+
+    def test_each_bad_field_is_refused_naming_the_field_and_value(self):
+        cases = [
+            ("repo_root", "relative/root"),
+            ("tree_sitter_bin", ""),
+            ("reify_bin", ""),
+            ("cache_home_override", ""),
+            ("substrate_timeout_s", 0),
+            ("substrate_timeout_s", -1.0),
+            ("substrate_timeout_s", float("nan")),
+            ("grammar_generator", ""),
+            ("grammar_generator", "relative/tree-sitter-generate.sh"),
+        ]
+        for field_name, value in cases:
+            with self.subTest(field=field_name, value=value):
+                with self.assertRaises(ValueError) as cm:
+                    probe_context(**{field_name: value})
+                message = str(cm.exception)
+                self.assertIn(field_name, message)
+                self.assertIn(repr(value), message)
+
+    def test_hand_built_context_does_not_provision(self):
+        self.assertIsNone(probe_context().grammar_generator)
+
+    def test_a_built_context_is_frozen(self):
+        ctx = probe_context()
+        with self.assertRaises(dataclasses.FrozenInstanceError):
+            ctx.reify_bin = "/elsewhere/reify"
+
+
+
+class TestReifyBinaryTrust(unittest.TestCase):
+    """R14 M6: an auto-discovered binary is used only on a SHA identity; mtime never decides.
+
+    target/.reify-bin-sha is written after `cargo build --release -p reify-cli`,
+    and vouches only while it names HEAD.  scripts/reify-bin-freshness.sh is the
+    one home of that rule, so every case here drives the REAL script through
+    from_environment().  The root is a git repository, so the home's documented
+    fail-open for a non-git root never answers a trust case by accident.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="pcc_trust_")
+        self.root = self._tmp.name
+        self.head = make_git_fixture_repo(self.root)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _ctx(self, **extra):
+        return pcc.ProbeContext.from_environment(environ=trust_environ(**extra),
+                                                 repo_root=self.root)
+
+    def _both_binaries(self, newer):
+        release = write_profile_binary(self.root, "target/release/reify")
+        debug = write_profile_binary(self.root, "target/debug/reify")
+        old, new = 1_600_000_000, 1_700_000_000
+        os.utime(release, (new, new) if newer == "release" else (old, old))
+        os.utime(debug, (new, new) if newer == "debug" else (old, old))
+        return release, debug
+
+    def _sidecar(self, text):
+        write_bin_sidecar(self.root, text)
+
+    def test_two_unvouched_binaries_are_refused_whichever_is_newer(self):
+        for newer in ("debug", "release"):
+            with self.subTest(newer=newer):
+                release, debug = self._both_binaries(newer)
+                ctx = self._ctx()
+                self.assertIsNone(ctx.reify_bin)
+                self.assertIn(release, ctx.reify_bin_refusal)
+                self.assertIn(debug, ctx.reify_bin_refusal)
+                self.assertIn("REIFY_BIN", ctx.reify_bin_refusal)
+
+    def test_a_sidecar_naming_head_vouches_for_the_release_binary(self):
+        release, _ = self._both_binaries(newer="debug")
+        self._sidecar(self.head + "\n")
+        ctx = self._ctx()
+        self.assertEqual(ctx.reify_bin, release)
+        self.assertIsNone(ctx.reify_bin_refusal)
+
+    def test_an_ambient_git_dir_does_not_decide_whose_head_the_sidecar_names(self):
+        """Under a hook GIT_DIR is exported; HEAD must still be the fixture repo's.
+
+        Without the scrub, a GIT_DIR aimed at another repository answers with
+        that repository's HEAD, and a nonexistent one with no HEAD at all.
+        """
+        release, _ = self._both_binaries(newer="debug")
+        self._sidecar(self.head + "\n")
+        with tempfile.TemporaryDirectory(prefix="pcc_trust_other_") as other:
+            git(other, "init", "-q")
+            git(other, "commit", "-q", "--allow-empty", "-m", "another repository")
+            for label, git_dir in (("another repository", os.path.join(other, ".git")),
+                                   ("a nonexistent path", os.path.join(other, "no-such-git"))):
+                with self.subTest(git_dir=label):
+                    ctx = self._ctx(GIT_DIR=git_dir)
+                    self.assertEqual(ctx.reify_bin, release, ctx.reify_bin_refusal)
+
+    def test_a_stale_sidecar_is_refused_naming_both_shas(self):
+        self._both_binaries(newer="release")
+        stale = "0" * 40
+        self._sidecar(stale + "\n")
+        ctx = self._ctx()
+        self.assertIsNone(ctx.reify_bin)
+        self.assertIn(stale, ctx.reify_bin_refusal)
+        self.assertIn(self.head, ctx.reify_bin_refusal)
+
+    def test_outside_a_git_checkout_the_trust_home_fails_open(self):
+        """The home's documented fail-open: with no HEAD there is no tree to compare.
+
+        The ceiling bounds git's walk-up, so root is outside any checkout
+        wherever TMPDIR sits, and nesting it under one makes that bound
+        load-bearing on every run.
+        """
+        with tempfile.TemporaryDirectory(prefix="pcc_trust_nongit_") as outer:
+            make_git_fixture_repo(outer)
+            root = os.path.join(outer, "nongit")
+            release = write_profile_binary(root, "target/release/reify")
+            write_profile_binary(root, "target/debug/reify")
+            write_bin_sidecar(root, "0" * 40 + "\n")
+            environ = trust_environ(GIT_CEILING_DIRECTORIES=os.path.realpath(outer))
+            ctx = pcc.ProbeContext.from_environment(environ=environ, repo_root=root)
+            self.assertEqual(ctx.reify_bin, release, ctx.reify_bin_refusal)
+            self.assertIsNone(ctx.reify_bin_refusal)
+
+    def test_a_ceiling_cannot_hide_the_checkout_root_from_the_trust_home(self):
+        """A caller's ceiling bounds discovery above repo_root; it never makes a checkout fail open."""
+        self._both_binaries(newer="release")
+        stale = "0" * 40
+        self._sidecar(stale + "\n")
+        toplevel = os.path.realpath(self.root)
+        for ceiling in (toplevel, os.path.dirname(toplevel)):
+            with self.subTest(ceiling=ceiling):
+                ctx = self._ctx(GIT_CEILING_DIRECTORIES=ceiling)
+                self.assertIsNone(ctx.reify_bin)
+                self.assertIn(stale, ctx.reify_bin_refusal)
+                self.assertIn(self.head, ctx.reify_bin_refusal)
+
+    def test_a_checkout_whose_head_git_cannot_read_is_refused(self):
+        """Only git finding no repository at all fails open; every other git failure refuses.
+
+        A pruned linked worktree is the boundary case: git reports it as
+        "not a git repository" too, naming the gitdir it lost.
+        """
+        def unborn_head(tmp):
+            git(tmp, "init", "-q", "checkout")
+
+        def pruned_linked_worktree(tmp):
+            git(self.root, "worktree", "add", "-q", "--detach", os.path.join(tmp, "checkout"))
+            shutil.rmtree(os.path.join(self.root, ".git", "worktrees"))
+            write_bin_sidecar(os.path.join(tmp, "checkout"), self.head + "\n")
+
+        for make_checkout in (unborn_head, pruned_linked_worktree):
+            with self.subTest(checkout=make_checkout.__name__), \
+                    tempfile.TemporaryDirectory(prefix="pcc_trust_headless_") as tmp:
+                make_checkout(tmp)
+                root = os.path.join(tmp, "checkout")
+                path = write_profile_binary(root, "target/debug/reify")
+                ctx = pcc.ProbeContext.from_environment(environ=trust_environ(),
+                                                        repo_root=root)
+                self.assertIsNone(ctx.reify_bin)
+                self.assertIn(path, ctx.reify_bin_refusal)
+                self.assertIn("REIFY_BIN", ctx.reify_bin_refusal)
+
+    def test_a_caller_bash_env_does_not_reach_the_trust_home(self):
+        """bash runs BASH_ENV before the home, and what it prints would join the answer."""
+        debug = write_profile_binary(self.root, "target/debug/reify")
+        self._sidecar(self.head + "\n")
+        bash_env = os.path.join(self.root, "bash_env.sh")
+        with open(bash_env, "w") as fh:
+            fh.write("echo noise-from-bash-env\n")
+        ctx = self._ctx(BASH_ENV=bash_env)
+        self.assertEqual(ctx.reify_bin, debug, ctx.reify_bin_refusal)
+
+    def test_a_caller_shellopts_does_not_reach_the_trust_home(self):
+        """bash turns on every option SHELLOPTS names before the home runs."""
+        debug = write_profile_binary(self.root, "target/debug/reify")
+        self._sidecar(self.head + "\n")
+        for shellopts in ("keyword", "noexec"):
+            with self.subTest(SHELLOPTS=shellopts):
+                ctx = self._ctx(SHELLOPTS=shellopts)
+                self.assertEqual(ctx.reify_bin, debug, ctx.reify_bin_refusal)
+
+    def test_a_refusal_under_a_caller_errexit_still_names_its_reason(self):
+        self._both_binaries(newer="release")
+        stale = "0" * 40
+        self._sidecar(stale + "\n")
+        ctx = self._ctx(SHELLOPTS="errexit")
+        self.assertIsNone(ctx.reify_bin)
+        self.assertIn(stale, ctx.reify_bin_refusal)
+        self.assertIn(self.head, ctx.reify_bin_refusal)
+
+    def test_a_caller_exported_function_cannot_vouch_for_a_stale_binary(self):
+        """An exported BASH_FUNC_git%% shadows git inside the home, so it could forge HEAD."""
+        self._both_binaries(newer="debug")
+        stale = "0" * 40
+        self._sidecar(stale + "\n")
+        poison = {"BASH_FUNC_git%%": "() { echo %s; }" % stale}
+        shadowed_head = subprocess.run(
+            ["bash", "-c", 'git -C "$1" rev-parse HEAD', "_", self.root],
+            env=trust_environ(**poison), capture_output=True, text=True,
+        ).stdout.strip()
+        self.assertEqual(shadowed_head, stale)
+        ctx = self._ctx(**poison)
+        self.assertIsNone(ctx.reify_bin)
+        self.assertIn(stale, ctx.reify_bin_refusal)
+        self.assertIn(self.head, ctx.reify_bin_refusal)
+
+    def test_an_unconsultable_trust_home_refuses(self):
+        """No `bash` can launch on this PATH, so the trust answer is unprovable: refuse."""
+        write_profile_binary(self.root, "target/release/reify")
+        self._sidecar(self.head + "\n")
+        ctx = self._ctx(PATH="/nonexistent-9870")
+        self.assertIsNone(ctx.reify_bin)
+        self.assertIn("reify-bin-freshness.sh", ctx.reify_bin_refusal)
+        self.assertIn("REIFY_BIN", ctx.reify_bin_refusal)
+
+    def test_reify_bin_wins_over_two_unvouched_binaries(self):
+        self._both_binaries(newer="debug")
+        ctx = self._ctx(REIFY_BIN="/x/reify")
+        self.assertEqual(ctx.reify_bin, "/x/reify")
+        self.assertIsNone(ctx.reify_bin_refusal)
+
+    def test_an_empty_reify_bin_falls_through_to_a_vouched_binary(self):
+        debug = write_profile_binary(self.root, "target/debug/reify")
+        self._sidecar(self.head + "\n")
+        ctx = self._ctx(REIFY_BIN="")
+        self.assertEqual(ctx.reify_bin, debug, ctx.reify_bin_refusal)
+        self.assertIsNone(ctx.reify_bin_refusal)
+
+    def test_nothing_built_is_refused_relaying_the_trust_home_reason(self):
+        """A reify on PATH has no provenance, so nothing built refuses like an unvouched binary."""
+        home = subprocess.run(
+            ["bash", TRUST_HOME, "resolve", self.root],
+            env=trust_environ(), capture_output=True, text=True,
+        )
+        self.assertEqual(home.returncode, REIFY_BIN_NOT_BUILT, home.stdout + home.stderr)
+        reason = home.stdout.strip()
+        self.assertTrue(reason)
+        ctx = self._ctx()
+        self.assertIsNone(ctx.reify_bin)
+        self.assertIn(reason, ctx.reify_bin_refusal)
+        self.assertIn("REIFY_BIN", ctx.reify_bin_refusal)
+
+    def test_require_reify_bin_returns_the_path_or_raises_the_refusal(self):
+        self.assertEqual(probe_context(reify_bin="/x/reify").require_reify_bin(), "/x/reify")
+        refusing = probe_context(reify_bin=None, reify_bin_refusal="two binaries, no REIFY_BIN")
+        self.assertTrue(issubclass(pcc.ReifyBinaryRefused, ValueError))
+        with self.assertRaises(pcc.ReifyBinaryRefused) as cm:
+            refusing.require_reify_bin()
+        self.assertIn("two binaries, no REIFY_BIN", str(cm.exception))
+
+    def test_exactly_one_of_binary_and_refusal_is_set(self):
+        for fields in ({"reify_bin": "/x/reify", "reify_bin_refusal": "no"},
+                       {"reify_bin": None, "reify_bin_refusal": None}):
+            with self.subTest(**fields):
+                with self.assertRaises(ValueError) as cm:
+                    probe_context(**fields)
+                self.assertIn("reify_bin", str(cm.exception))
+                self.assertIn("reify_bin_refusal", str(cm.exception))
+
+
+class TestReifyBinaryTrustFreshRepo(unittest.TestCase):
+    """R14 M6 cases that each lay out their own fixture repo through trust_ctx().
+
+    The REAL trust home decides here too; these cases need no shared repo, so
+    the class has no setUp.
+    """
+
+    _PROFILE_BINARIES = ("target/release/reify", "target/debug/reify")
+
+    def _fresh_root(self):
+        return self.enterContext(tempfile.TemporaryDirectory(prefix="pcc_trust_fresh_"))
+
+    def test_a_lone_binary_the_sidecar_does_not_vouch_for_is_refused(self):
+        for relpath in self._PROFILE_BINARIES:
+            for sidecar in (None, "0" * 40):
+                with self.subTest(binary=relpath, sidecar=sidecar):
+                    path, ctx = trust_ctx(self._fresh_root(), relpath, lambda _head: sidecar)
+                    self.assertIsNone(ctx.reify_bin)
+                    self.assertIn(path, ctx.reify_bin_refusal)
+                    self.assertIn("REIFY_BIN", ctx.reify_bin_refusal)
+
+    def test_a_lone_binary_the_sidecar_vouches_for_is_used(self):
+        for relpath in self._PROFILE_BINARIES:
+            with self.subTest(binary=relpath):
+                path, ctx = trust_ctx(self._fresh_root(), relpath, lambda head: head + "\n")
+                self.assertEqual(ctx.reify_bin, path, ctx.reify_bin_refusal)
+                self.assertTrue(os.path.isabs(ctx.reify_bin))
+                self.assertIsNone(ctx.reify_bin_refusal)
+
+    def test_a_trusted_answer_that_is_not_one_absolute_path_is_refused(self):
+        """The home answers in one stdout line; a root holding a newline makes it two.
+
+        The one-line sibling is the control: the same vouched binary is trusted
+        there, so the newline alone turns trust into refusal.  "No readable
+        verdict" also names a home that exits outside its verdicts, so the
+        refusal must show the trusted exit and the two-line stdout it refused.
+        """
+        tmp = self._fresh_root()
+        release, control = trust_ctx(os.path.join(tmp, "one-line"), "target/release/reify",
+                                     lambda head: head + "\n")
+        self.assertEqual(control.reify_bin, release, control.reify_bin_refusal)
+        newline_release, ctx = trust_ctx(os.path.join(tmp, "two\nlines"), "target/release/reify",
+                                         lambda head: head + "\n")
+        self.assertIsNone(ctx.reify_bin)
+        self.assertIn("reify-bin-freshness.sh", ctx.reify_bin_refusal)
+        self.assertIn("REIFY_BIN", ctx.reify_bin_refusal)
+        self.assertIn("no readable verdict", ctx.reify_bin_refusal)
+        self.assertIn("(exit 0,", ctx.reify_bin_refusal)
+        self.assertIn(repr(newline_release + "\n"), ctx.reify_bin_refusal)
+
+
+if __name__ == "__main__":
+    unittest.main()

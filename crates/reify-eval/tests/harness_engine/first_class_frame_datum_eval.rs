@@ -69,7 +69,7 @@ fn assert_point(v: &Value, expected: [f64; 3], what: &str) {
 
 fn assert_direction(v: &Value, expected: [f64; 3], what: &str) {
     match v {
-        Value::Direction { x, y, z } => assert_close([*x, *y, *z], expected, what),
+        Value::Direction(u) => assert_close(u.components(), expected, what),
         other => panic!("{what}: expected a Direction, got {other:?}"),
     }
 }
@@ -81,11 +81,7 @@ fn assert_plane(v: &Value, origin: [f64; 3], normal: [f64; 3], what: &str) {
             normal: n,
         } => {
             assert_point(o, origin, &format!("{what} origin"));
-            assert!(
-                matches!(**n, Value::Vector(_)),
-                "{what}: the normal must be a Vector, got {n:?}"
-            );
-            assert_close(components(n, what), normal, &format!("{what} normal"));
+            assert_direction(n, normal, &format!("{what} normal"));
         }
         other => panic!("{what}: expected a Plane, got {other:?}"),
     }

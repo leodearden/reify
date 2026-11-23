@@ -15,6 +15,10 @@
 // enum-typed params in material traits. The chemical traits follow the same
 // syntax: `param field : EnumName`.
 
+module std.materials.chemical
+
+import std.materials.mechanical
+
 // ── CorrosionClass enum ───────────────────────────────────────────────────────
 
 // ISO 9223 corrosion category for atmospheric environments.

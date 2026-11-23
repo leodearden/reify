@@ -139,12 +139,12 @@ use reify_ir::geometry::{
 };
 
 // ── indeterminate (flat form) ────────────────────────────────────────────────
-use reify_ir::{IndeterminateReason, StructuralReason, TransientReason};
+use reify_ir::{IndeterminateReason, RefusedOperation, StructuralReason, TransientReason};
 
 // ── indeterminate (module-path form) ─────────────────────────────────────────
 use reify_ir::indeterminate::{
-    IndeterminateReason as IndeterminateReasonMod, StructuralReason as StructuralReasonMod,
-    TransientReason as TransientReasonMod,
+    IndeterminateReason as IndeterminateReasonMod, RefusedOperation as RefusedOperationMod,
+    StructuralReason as StructuralReasonMod, TransientReason as TransientReasonMod,
 };
 
 // ── kernel_validation (flat form) ────────────────────────────────────────────
@@ -588,9 +588,11 @@ fn indeterminate_types_in_scope() {
     let _: fn() -> Option<IndeterminateReason> = || None;
     let _: fn() -> Option<TransientReason> = || None;
     let _: fn() -> Option<StructuralReason> = || None;
+    let _: fn() -> Option<RefusedOperation> = || None;
     let _: fn() -> Option<IndeterminateReasonMod> = || None;
     let _: fn() -> Option<TransientReasonMod> = || None;
     let _: fn() -> Option<StructuralReasonMod> = || None;
+    let _: fn() -> Option<RefusedOperationMod> = || None;
 }
 
 #[test]

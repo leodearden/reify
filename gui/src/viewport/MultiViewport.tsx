@@ -24,6 +24,7 @@ type PanePassthroughProps = Pick<
   | 'fitToViewRef'
   | 'flyToEntityRef'
   | 'displayAppearance'
+  | 'showEdges'
   | 'feaModeStore'
   | 'feaDiagnostics'
   | 'feaConvergence'
@@ -185,6 +186,7 @@ export function MultiViewport(props: MultiViewportProps) {
                 fitToViewRef={pane.fitToViewRef}
                 flyToEntityRef={pane.flyToEntityRef}
                 displayAppearance={pane.displayAppearance}
+                showEdges={pane.showEdges}
                 feaModeStore={pane.feaModeStore}
                 feaDiagnostics={pane.feaDiagnostics}
                 feaConvergence={pane.feaConvergence}

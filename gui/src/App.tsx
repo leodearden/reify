@@ -22,6 +22,7 @@ import {
   SolverProgressOverlay,
   BucklingPanel,
   FeaDiagnosticsPanel,
+  StartView,
 } from './panels';
 import type { DiagnosticEntry } from './panels';
 import { referenceSourceLocation, type ReferenceResult } from './editor/references';
@@ -29,7 +30,9 @@ import { WarmPoolDebugPanel } from './debug/WarmPoolDebugPanel';
 import { registerDebugPanel } from './debug/types';
 import { Splitter } from './components/Splitter';
 import { alwaysMounted, mountedEntries, sidePanelTracks, type SidePanelEntry } from './app/sidePanel';
-import { createSubscriptionSet, type SubscriptionRow } from './app/subscriptionSet';
+import { createSubscriptionSet, type SubscriptionRow, type Unsubscribe } from './app/subscriptionSet';
+import { createLauncherActions, LaunchFailure } from './app/launcherActions';
+import { createDebugBridgeStarter } from './app/debugBridgeStarter';
 import { KeyboardHelp } from './components/KeyboardHelp';
 import { CommandPalette } from './components/CommandPalette';
 import { useKeyboardShortcuts, paletteCommands, runCommand } from './hooks/useKeyboardShortcuts';
@@ -40,6 +43,8 @@ import { createSelectionStore } from './stores/selectionStore';
 import { createClaudeStore } from './stores/claudeStore';
 import { createViewStateStore, type ViewStateStore } from './stores/viewStateStore';
 import { createLayoutStore } from './stores/layoutStore';
+import { createViewportDisplayStore } from './stores/viewportDisplayStore';
+import { createLauncherStore, initialFileLoadFailureInfo, isDocumentLoaded } from './stores/launcherStore';
 import { createViewportStore, type CameraState, type ViewportState, type ViewportStore } from './stores/viewportStore';
 import { createDefPreviewStore } from './stores/defPreviewStore';
 import { createFeaModeStoreRegistry, type FeaModeStoreRegistry } from './stores/feaModeStoreRegistry';
@@ -59,6 +64,11 @@ import {
   openFile as bridgeOpenFile,
   openFileEngine as bridgeOpenFileEngine,
   saveFile as bridgeSaveFile,
+  createNewFile as bridgeCreateNewFile,
+  listRecent as bridgeListRecent,
+  recordRecent as bridgeRecordRecent,
+  takeInitialFileLoadFailure as bridgeTakeInitialFileLoadFailure,
+  setMode as bridgeSetMode,
   onFileChanged,
   onFileRemoved,
   onSerializationError,
@@ -108,8 +118,6 @@ import { loadViewPersistence, createDebouncedSaver, type DebouncedSaver } from '
 import { findFuzzyCandidate } from './stores/fuzzyPathMatcher';
 import type { PersistentViewState, ViewportLayoutState } from './types';
 import styles from './App.module.css';
-
-export const NEW_FILE_TEMPLATE = '// New design\n';
 
 /** Type alias for a single pane's computed group (pane index + its realized meshes). */
 export interface PaneGroup {
@@ -417,6 +425,7 @@ const App: Component = () => {
 
   const viewStateStore = createViewStateStore();
   const viewportStore = createViewportStore();
+  const viewportDisplayStore = createViewportDisplayStore();
   const defPreviewStore = createDefPreviewStore();
   const mechanismStore = createMechanismStore({ getMechanismDescriptors: bridgeGetMechanismDescriptors });
   const bucklingStore = createBucklingStore();
@@ -466,6 +475,16 @@ const App: Component = () => {
     const sidecar = await loadSidecar(path);
     if (sidecar !== null) return sidecar;
     return loadViewPersistence(path);
+  }
+
+  /**
+   * An unreadable view sidecar opens the document with default views, as a
+   * wrong-version one does. By then open_file_engine has already moved the
+   * backend session to the new document, so the frontend must follow it.
+   */
+  function reportUnrestoredViews(err: unknown): null {
+    showToast(`Saved views not restored: ${errorMessage(err)}`, 'error');
+    return null;
   }
 
   // Debounced persistence of view state to localStorage.
@@ -798,6 +817,7 @@ const App: Component = () => {
         fitToViewRef: pane === 0 ? (fn: () => void) => { fitToViewFn = fn; } : undefined,
         flyToEntityRef: pane === 0 ? (fn: (path: string) => void) => { flyToEntityFn = fn; } : undefined,
         get displayAppearance() { return appearanceData().overrides; },
+        get showEdges() { return viewportDisplayStore.state.edges; },
       };
       return config;
     },
@@ -899,6 +919,7 @@ const App: Component = () => {
   }
 
   const layoutStore = createLayoutStore();
+  const launcherStore = createLauncherStore();
 
   // Init phase: loading → ready | error
   const [initPhase, setInitPhase] = createSignal<'loading' | 'ready' | 'error'>('loading');
@@ -1155,22 +1176,39 @@ const App: Component = () => {
    * Shared post-open load sequence: reads file content + engine state into
    * their stores and restores persisted view state atomically.
    *
-   * Called from both handleOpen (after picking a path) and handleNew (after
-   * writing the starter template).  Keeping this in one place ensures the
-   * batch() ordering invariant is never accidentally diverged between the two
-   * callers — the subtle race it prevents is documented in the batch() block
-   * below.
+   * This is the one open funnel behind `launcherActions.loadDocument`: the
+   * Start view, File→Open, File→New. A source the engine rejects is not a
+   * failure: open_file_engine resolves with the cold-start state, its buffer
+   * and diagnostics with no geometry, so the file opens for repair. It
+   * rejects when the file is unreadable or the engine fails, and only before
+   * its first store write, so a failure leaves the editor, the engine store
+   * and the current path on the previous document and reaches a caller that
+   * can still present it (the Start view stays up until the editor write
+   * dismisses it). Keeping
+   * this in one place also ensures the batch() ordering invariant is never
+   * accidentally diverged between callers — the subtle race it prevents is
+   * documented in the batch() block below. Once `signal` is aborted (an
+   * abandoned launcher attempt), it sends no further engine request and writes
+   * no further store. It rejects if it has not yet written a store and returns
+   * quietly otherwise, so an abandoned attempt never writes over a document
+   * opened since.
    */
-  async function loadPathIntoStores(path: string): Promise<void> {
-    const fileData = await bridgeOpenFile(path);
+  async function loadPathIntoStores(requestedPath: string, signal: AbortSignal): Promise<void> {
+    const fileData = await bridgeOpenFile(requestedPath);
+    signal.throwIfAborted();
+    // The canonical document key, not the spelling the user typed, keys the
+    // engine, the editor tab, view persistence and the save path alike.
+    const path = fileData.path;
+    const published = await bridgeOpenFileEngine(path);
+    signal.throwIfAborted();
     editorStore.openFile(fileData);
-    // Load into engine for evaluation (meshes, values, constraints)
-    engineStore.applyPublishedState(await bridgeOpenFileEngine(path));
+    engineStore.applyPublishedState(published);
 
     // Load persisted view state (sidecar > localStorage > null).
     // Apply BEFORE the entity tree triggers regenerateAutoViews so persisted
     // user views are in place when auto views are generated.
-    const persisted = await loadPersistedViews(path);
+    const persisted = await loadPersistedViews(path).catch(reportUnrestoredViews);
+    if (signal.aborted) return;
     // Wrap the three store writes in a single batch so the debounced-save
     // effect observes the path transition AND the new view/camera state
     // atomically.  Without batch(), a future refactor that reorders or
@@ -1208,33 +1246,36 @@ const App: Component = () => {
     return await bridgeAsk('You have unsaved changes. Discard them?');
   }
 
+  /** A File-menu failure's toast text: a LaunchFailure leads with its code. */
+  function launchFailureText(err: unknown): string {
+    return err instanceof LaunchFailure ? `${err.code}: ${err.message}` : errorMessage(err);
+  }
+
   async function handleOpen() {
-    if (!(await confirmDiscardIfDirty())) return;
     try {
+      launcherActions.refuseIfDocumentPending();
+      if (!(await confirmDiscardIfDirty())) return;
       const path = await pickOpenPath();
       if (!path) return;
-      await loadPathIntoStores(path);
+      await launcherActions.openDocument(path);
     } catch (err) {
-      const msg = errorMessage(err);
+      const msg = launchFailureText(err);
       console.error('Open file failed:', msg);
       showToast(`Open file failed: ${msg}`, 'error');
     }
   }
 
   async function handleNew() {
-    if (!(await confirmDiscardIfDirty())) return;
     try {
+      launcherActions.refuseIfDocumentPending();
+      if (!(await confirmDiscardIfDirty())) return;
       const path = await pickSavePath('untitled.ri', 'ri');
       if (!path) return;
-      await bridgeSaveFile(path, NEW_FILE_TEMPLATE);
-      // Partial-failure note: if bridgeSaveFile succeeds but loadPathIntoStores
-      // throws (e.g. the engine rejects the new file), the stub .ri template is
-      // left on disk at the user-chosen path.  This is intentional — the file is
-      // a valid .ri starting point and the error toast lets the user open it
-      // manually via File→Open once the underlying issue is resolved.
-      await loadPathIntoStores(path);
+      // A load failure after a successful create leaves the starter file on
+      // disk at the chosen path: a valid .ri the user can open via File→Open.
+      await launcherActions.createDocument(path);
     } catch (err) {
-      const msg = errorMessage(err);
+      const msg = launchFailureText(err);
       console.error('New file failed:', msg);
       showToast(`New file failed: ${msg}`, 'error');
     }
@@ -1319,8 +1360,10 @@ const App: Component = () => {
       setShowPalette(true);
     },
     onToggleDiagnostics: handleToggleDiagnostics,
+    onToggleEdges: () => viewportDisplayStore.toggleEdges(),
   };
-  useKeyboardShortcuts(shortcutCallbacks);
+  const documentLoaded = () => isDocumentLoaded(editorStore.state);
+  useKeyboardShortcuts(shortcutCallbacks, { documentLoaded });
 
   // Palette symbol fetch — uses the same URI normalisation as Editor.tsx:104-108
   // so the request URI matches the uri used at didOpen time.
@@ -1455,24 +1498,79 @@ const App: Component = () => {
       subscribe: () => subscribeModeShapeFrames(bucklingStore),
       onFailure: (err) => console.error('[buckling] subscribeModeShapeFrames failed:', err),
     },
-    // Debug bridge when REIFY_DEBUG=1 (dynamic import for tree-shaking).
+    // The reify-debug server is already live (REIFY_DEBUG=1 at launch), so the
+    // bridge starts without waiting on set_mode. A set_mode failure is notified
+    // and kept as the mode error; a bridge failure, the graver one, is toasted
+    // and replaces it as the mode error, as a Debug click presents it.
     {
       subscribe: async () => {
-        if (!(await isDebugEnabled())) return () => {};
-        setDebugEnabled(true);
-        const { initDebugBridge } = await import('./debug');
-        return initDebugBridge({
-          engine: engineStore,
-          editor: editorStore,
-          selection: selectionStore,
-          claude: claudeStore,
-          viewState: viewStateStore,
-          layout: layoutStore,
-        });
+        if (await isDebugEnabled()) await launcherActions.adoptLiveDebugServer();
+        return () => {};
       },
-      onFailure: (err) => console.error('[debug-bridge] init failed:', err),
+      onFailure: (err) => {
+        console.error('[debug-bridge] init failed:', err);
+        if (err instanceof LaunchFailure) {
+          launcherStore.failMode(err.toInfo());
+          showToast(`Debug bridge unavailable: ${err.message}`, 'error');
+        }
+      },
     },
   ];
+
+  /** The frontend half of the reify-debug server (dynamic import for tree-shaking). */
+  async function startDebugBridge(): Promise<Unsubscribe> {
+    const { initDebugBridge } = await import('./debug');
+    const stop = await initDebugBridge({
+      engine: engineStore,
+      editor: editorStore,
+      selection: selectionStore,
+      claude: claudeStore,
+      viewState: viewStateStore,
+      layout: layoutStore,
+      viewportDisplay: viewportDisplayStore,
+      launcher: launcherStore,
+    });
+    setDebugEnabled(true);
+    return () => {
+      setDebugEnabled(false);
+      stop();
+    };
+  }
+
+  const ensureDebugBridge = createDebugBridgeStarter({ subscriptions, start: startDebugBridge });
+
+  const launcherActions = createLauncherActions(launcherStore, {
+    loadDocument: loadPathIntoStores,
+    createNewFile: bridgeCreateNewFile,
+    recordRecent: bridgeRecordRecent,
+    listRecent: bridgeListRecent,
+    setMode: bridgeSetMode,
+    showAssistant: (open) => {
+      setChatOpen(open);
+      clampToContainer();
+    },
+    ensureDebugBridge,
+    notify: (message) => showToast(message, 'info'),
+  });
+
+  /**
+   * Show why the launch file failed to load. The backend records it before
+   * getInitialState replies, so it is read after that, and hands it out once.
+   * A source the engine rejects records no failure, because it opens: the
+   * editor presents the failing buffer with its diagnostics. Once a document
+   * is open, the Start view presents no launch failure at all.
+   */
+  async function presentInitialFileLoadFailure(): Promise<void> {
+    try {
+      const failure = await bridgeTakeInitialFileLoadFailure();
+      if (failure && alive && !documentLoaded()) {
+        launcherStore.failDocument(initialFileLoadFailureInfo(failure));
+      }
+    } catch (err) {
+      console.error('[launcher] launch file status unavailable:', err);
+      showToast(`Launch file status unavailable: ${errorMessage(err)}`, 'error');
+    }
+  }
 
   async function initApp() {
     subscriptions.disposeAll();
@@ -1492,6 +1590,9 @@ const App: Component = () => {
       return;
     }
 
+    if (!alive) return;
+
+    await presentInitialFileLoadFailure();
     if (!alive) return;
 
     // Fetch the per-dimension display-unit ladders (task #5199) in the
@@ -2082,7 +2183,12 @@ const App: Component = () => {
             onToggleChat={handleToggleChat}
             onHelp={() => setShowHelp((v) => !v)}
           />
-          <Toolbar onExport={handleExport} onFitToView={handleFitToView} />
+          <Toolbar
+            onExport={handleExport}
+            onFitToView={handleFitToView}
+            edges={viewportDisplayStore.state.edges}
+            onToggleEdges={() => viewportDisplayStore.toggleEdges()}
+          />
           <ReloadPrompt
             filePaths={Array.from(changedFiles())}
             hasDirtyFiles={confirmReload()}
@@ -2140,6 +2246,7 @@ const App: Component = () => {
                     fitToViewRef={(fn) => { fitToViewFn = fn; }}
                     entityVisibility={effectiveVisibility()}
                     displayAppearance={appearanceData().overrides}
+                    showEdges={viewportDisplayStore.state.edges}
                     feaDiagnostics={engineStore.state.feaDiagnostics}
                     feaConvergence={engineStore.state.feaConvergence}
                     feaModeStore={feaModeStores.get('design-main')}
@@ -2220,6 +2327,10 @@ const App: Component = () => {
             </For>
           </div>
         </div>
+        {/* Over the still-mounted layout, so its initPhase-keyed effects run unchanged. */}
+        <Show when={!documentLoaded()}>
+          <StartView launcher={launcherStore} actions={launcherActions} />
+        </Show>
       </Show>
     </>
   );

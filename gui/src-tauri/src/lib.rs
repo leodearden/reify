@@ -23,6 +23,8 @@ pub mod debug;
 #[cfg(feature = "gui")]
 pub mod debug_server;
 #[cfg(feature = "gui")]
+pub mod debug_server_slot;
+#[cfg(feature = "gui")]
 pub mod dev_url;
 #[cfg(feature = "gui")]
 pub mod event_bus;
@@ -36,12 +38,20 @@ pub mod eval_queue;
 pub mod gui_state_schema;
 pub mod kernel_status;
 pub mod large_stack;
+#[cfg(feature = "gui")]
+pub mod launch_mode;
+#[cfg(feature = "gui")]
+mod loopback_request_guard;
 pub mod lsp_bridge;
 pub mod mcp_context;
+pub mod new_file_template;
+pub mod recent_files;
 pub mod screenshot_save;
+pub mod sidecar_runtime;
 pub mod tcp_port;
 pub mod types;
 pub mod watcher;
+pub mod webkit_env;
 pub mod write_confinement;
 
 #[cfg(test)]

@@ -1212,6 +1212,7 @@ fn alias_with_no_body_renders_unresolved_not_parameterized() {
         resolved_type: None,
         type_params: vec![],
         type_expr: None,
+        body_scope: None,
         is_pub: true,
         span: SourceSpan::new(0, 0),
         content_hash: ContentHash::of_str("Bodyless"),

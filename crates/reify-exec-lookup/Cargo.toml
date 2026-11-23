@@ -1,0 +1,16 @@
+[package]
+name = "reify-exec-lookup"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The workspace's single PATH lookup for host executables, shared by build scripts and runtime tool discovery"
+
+# No workspace-feature-union dependency: this crate is a build-dependency of
+# tree-sitter-reify, so it is host-side and must not reach the union
+# (docs/notes/workspace-feature-union.md, "Coverage").
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile.workspace = true

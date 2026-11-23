@@ -138,13 +138,14 @@ pub struct EvalContext<'a> {
     ///
     /// When `Some`, `eval_user_function_call` probes `d.dispatch(target, args)` for any
     /// call whose resolved `CompiledFunction::optimized_target` is `Some(target)`, using
-    /// it in place of ordinary body-eval when it returns `Some(value)`. When `None` (the
-    /// default), or when the probe returns `None`, evaluation falls through to body-eval
-    /// unchanged — preserving legacy behaviour for every caller that does not attach a
-    /// dispatcher (the compiler, LSP, standalone eval, and all ad-hoc test contexts).
+    /// it in place of ordinary body-eval when it returns `Resolved(value)`. When `None`
+    /// (the default), or when the probe returns anything but `Resolved`, evaluation falls
+    /// through to body-eval unchanged — preserving legacy behaviour for every caller that
+    /// does not attach a dispatcher (the compiler, LSP, standalone eval, and all ad-hoc
+    /// test contexts).
     ///
-    /// Wired by `reify-eval`'s `Engine` via `OptimizedComputeDispatcher` at the handful of
-    /// call sites that invoke the constraint solver.
+    /// Wired by `reify-eval`'s `Engine` via `OptimizedComputeDispatcher` wherever it
+    /// invokes the constraint solver or the constraint checker.
     pub compute_dispatch: Option<&'a dyn reify_ir::ComputeDispatch>,
     /// Optional kernel-free selector-ctor capability (task #7875); see
     /// [`SymbolicSelectorCtorFn`] for the contract. When `None`, a selector ctor the
@@ -671,10 +672,10 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     // Post-Undef builtin diagnostics: when a stackup / multi-load-
                     // case (`linear_combine`) / AffineMap-constructor or
                     // transform_exp / inverse-dynamics / iso_it_tolerance /
-                    // orient_exp builtin returns `Value::Undef`, classify and emit
-                    // its specific diagnostic into the ctx sink.
-                    // The six name families are disjoint, so at most one diagnose
-                    // helper fires for a single Undef. Consolidated into one
+                    // orient_exp / dir builtin returns `Value::Undef`, classify and
+                    // emit its specific diagnostic into the ctx sink.
+                    // The classifiers' name families are disjoint, so at most one
+                    // diagnose helper fires for a single Undef. Consolidated into one
                     // `#[inline(never)]` helper so the owned `Diagnostic` locals
                     // live in that helper's frame, NOT on every recursive `eval_expr`
                     // frame — keeping the 3 MiB test-thread stack under
@@ -1138,6 +1139,12 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             ctx,
         ),
 
+        CompiledExprKind::VariantCtor {
+            type_name,
+            variant,
+            payload,
+        } => eval_variant_ctor(type_name, variant, payload, ctx),
+
         // task 4118 (γ): Selector→List<Geometry> coercion node. In the
         // registry-free evaluator this is a PASSTHROUGH — evaluate the inner
         // selector (yielding a `Value::Selector`) and return it unchanged.
@@ -1187,13 +1194,48 @@ fn eval_structure_instance_ctor(
     for (name, arg) in ordered_args {
         fields.insert(name.clone(), eval_expr(arg, ctx));
     }
+    // Defaults that reference a SIBLING param must be evaluated against a child
+    // scope keyed by `ValueCellId::new(type_name, member)` — exactly like
+    // `materialize_template_lets` below, and for exactly the same reason.  The
+    // compiler compiles a structure-def param default in a `CompilationScope`
+    // registering the structure's own members, so `param y : Real = x + 1.0`
+    // lowers to `ValueRef(ValueCellId{entity: type_name, member: "x"})`.  In the
+    // OUTER `ctx` that cell exists only when the caller's own value map happens
+    // to carry it, which is true when the enclosing entity materializes the
+    // instance itself but NOT when the instance arrives from a fn-returned ctor
+    // — there the ref missed and the field silently became `Undef` (task 5494,
+    // boundary #5: correct value at eval or a loud diagnostic, never silent
+    // divergence).  The same SCOPE INVARIANT documented on
+    // `materialize_template_lets` applies: `with_scope` REPLACES the value map,
+    // which is correct because a well-compiled default can only carry
+    // `type_name`-stamped refs, all of which are in `child`.
+    //
+    // The child map is built LAZILY: a literal default (the overwhelmingly
+    // common case) needs no scope at all, so ctors whose defaults are all
+    // constants and that carry no lets pay nothing.  Once built, every
+    // subsequent default is written into BOTH maps so a later default sees
+    // earlier ones, matching the left-to-right scoping the compiler enforces —
+    // which keeps the child equal to `member_scope(type_name, &fields)`, so the
+    // lets reuse it rather than building a second one.
+    let mut child: Option<ValueMap> = None;
     for (name, def) in defaults {
-        if !fields.contains_key(name) {
-            fields.insert(name.clone(), eval_expr(def, ctx));
+        if fields.contains_key(name) {
+            continue;
         }
+        let value = if matches!(def.kind, CompiledExprKind::Literal(_)) {
+            eval_expr(def, ctx)
+        } else {
+            let scope = child.get_or_insert_with(|| member_scope(type_name, &fields));
+            eval_expr(def, &ctx.with_scope(scope))
+        };
+        if let Some(scope) = child.as_mut() {
+            scope.insert(ValueCellId::new(type_name, name.as_str()), value.clone());
+        }
+        fields.insert(name.clone(), value);
     }
     if !lets.is_empty() {
-        materialize_template_lets(type_name, lets, &mut fields, ctx);
+        let child = child.unwrap_or_else(|| member_scope(type_name, &fields));
+        materialize_template_lets(type_name, lets, child, &mut fields, ctx);
     }
     Value::StructureInstance(Box::new(
         reify_ir::StructureInstanceData {
@@ -1206,6 +1248,48 @@ fn eval_structure_instance_ctor(
     ))
 }
 
+/// Build a `Value::Enum` for a runtime enum-variant constructor (task 7456),
+/// evaluating each payload expr in stored (declaration) order.
+///
+/// PRD data-carrying-enums D2: an `Undef` field value stays in its own slot
+/// and the enum is still constructed — the tag is determined, so a `match`
+/// selects the arm and only that binder is undef. `#[inline(never)]` for the
+/// reason given on [`eval_structure_instance_ctor`].
+#[inline(never)]
+fn eval_variant_ctor(
+    type_name: &str,
+    variant: &str,
+    payload: &[(String, CompiledExpr)],
+    ctx: &EvalContext,
+) -> Value {
+    Value::Enum {
+        type_name: type_name.to_string(),
+        variant: variant.to_string(),
+        payload: payload
+            .iter()
+            .map(|(name, field)| (name.clone(), eval_expr(field, ctx)))
+            .collect(),
+    }
+}
+
+/// A structure instance's members as a child value scope: each field keyed by
+/// `ValueCellId::new(type_name, member)`, the cell a structure-def default or
+/// let compiles a sibling reference to.
+///
+/// PERFORMANCE NOTE: an O(fields) deep-clone — one `value.clone()` per field.
+/// Both callers gate it on actual need (a non-literal default, or a non-empty
+/// `lets`), so ctors with neither pay nothing.  If profiling ever shows this
+/// on a hot path, consider an overlay/COW scope that borrows from `fields`
+/// directly rather than copying every entry (analogous to how
+/// `ctx.with_scope` borrows without cloning the full value map).
+fn member_scope(type_name: &str, fields: &PersistentMap<String, Value>) -> ValueMap {
+    let mut scope = ValueMap::new();
+    for (member, value) in fields.iter() {
+        scope.insert(ValueCellId::new(type_name, member.as_str()), value.clone());
+    }
+    scope
+}
+
 /// Eagerly materialize template `Let` cells into a just-built structure
 /// instance's `fields` map (task-4342, step-6).
 ///
@@ -1216,37 +1300,19 @@ fn eval_structure_instance_ctor(
 /// function is called only when `!lets.is_empty()`, so the deep user-fn path
 /// (no struct lets) never pays the extra frame.
 ///
-/// Algorithm: build a child `reify_ir::ValueMap` keyed by
-/// `ValueCellId::new(type_name, member)` from the already-populated `fields`,
-/// then iterate `lets` in declaration order.  For each let evaluate its
-/// compiled expr against `ctx.with_scope(&child)` (so earlier lets are visible
-/// to later ones), and write the result into BOTH the child map and `fields`.
+/// `child` must equal [`member_scope`]`(type_name, fields)`: the let exprs
+/// reference sibling params by their `ValueCellId` (entity == type_name).
+/// Iterate `lets` in declaration order; evaluate each against
+/// `ctx.with_scope(&child)` (so earlier lets are visible to later ones), and
+/// write the result into BOTH the child map and `fields`.
 #[inline(never)]
 fn materialize_template_lets(
     type_name: &str,
     lets: &[(String, CompiledExpr)],
+    mut child: ValueMap,
     fields: &mut PersistentMap<String, Value>,
     ctx: &EvalContext,
 ) {
-    // Build a child ValueMap keyed by ValueCellId::new(type_name, member)
-    // from the already-populated `fields` (params + defaults filled in by
-    // eval_structure_instance_ctor).  The child scope lets the let exprs
-    // reference sibling params by their ValueCellId (entity == type_name).
-    //
-    // PERFORMANCE NOTE: this loop performs an O(fields) deep-clone — one
-    // `value.clone()` per param/default in the struct.  For structures with
-    // many fields instantiated in hot loops this adds up.  In practice,
-    // tolerancing-style derives are cheap arithmetic and this path is gated on
-    // `!lets.is_empty()` in the caller, so structs with no derived lets pay
-    // nothing.  If profiling ever shows this on a hot path, consider an
-    // overlay/COW scope that borrows from `fields` directly rather than copying
-    // every entry (analogous to how `ctx.with_scope` borrows without cloning the
-    // full value map).
-    let mut child = ValueMap::new();
-    for (member, value) in fields.iter() {
-        child.insert(ValueCellId::new(type_name, member.as_str()), value.clone());
-    }
-
     // Evaluate lets in declaration order.  For each let:
     //   1. evaluate its compiled expr against ctx.with_scope(&child) — the
     //      temporary borrow is released after eval_expr returns, so
@@ -1610,9 +1676,10 @@ fn eval_user_function_call(function_name: &str, args: &[CompiledExpr], ctx: &Eva
         None => return Value::Undef, // no matching function
     };
 
-    // `@optimized` compute-dispatch hook (task #4880). See `try_compute_dispatch` doc
-    // for why this is a separate `#[inline(never)]` call rather than inline `if let`s.
-    if let Some(v) = try_compute_dispatch(func, &evaluated_args, ctx) {
+    // `@optimized` compute-dispatch hook (task #4880). See
+    // `try_compute_dispatch_reporting_fallback`'s doc for why this is a separate
+    // `#[inline(never)]` call rather than inline `if let`s.
+    if let Some(v) = try_compute_dispatch_reporting_fallback(func, &evaluated_args, ctx) {
         return v;
     }
 
@@ -1624,7 +1691,23 @@ fn eval_user_function_call(function_name: &str, args: &[CompiledExpr], ctx: &Eva
 /// when `func.optimized_target` names a registered ComputeNode AND `ctx` carries a
 /// dispatcher, return its result in place of body-eval. Returns `None` — meaning
 /// "fall through to body-eval unchanged" — when there is no `optimized_target`, no
-/// dispatcher is attached, or the dispatcher defers on this target.
+/// dispatcher is attached, or the dispatcher returns anything but `Resolved`.
+///
+/// The dual evaluator's probe: it evaluates the body its own way, so it reports no
+/// fallback. Plain evaluation uses [`try_compute_dispatch_reporting_fallback`].
+#[inline(never)]
+fn try_compute_dispatch(func: &CompiledFunction, args: &[Value], ctx: &EvalContext) -> Option<Value> {
+    let target = func.optimized_target.as_ref()?;
+    ctx.compute_dispatch?
+        .dispatch(target, args)
+        .resolved_value()
+}
+
+/// [`try_compute_dispatch`] for plain evaluation, which also tells the dispatcher how
+/// a `Failed` dispatch was recovered: the body is evaluated here and its value both
+/// returned and reported through `ComputeDispatch::fell_back_after_failure`, so a
+/// dispatcher can tell a failure that left `Undef` behind from one the body covered.
+/// `None` still means "evaluate the body" (no target, no dispatcher, `Unregistered`).
 ///
 /// Extracted to its own `#[inline(never)]` function, rather than inlined `if let`
 /// chains in `eval_user_function_call`, so its locals do not enlarge that function's
@@ -1632,11 +1715,25 @@ fn eval_user_function_call(function_name: &str, args: &[CompiledExpr], ctx: &Eva
 /// call chain, whose per-frame size is budgeted against the 3 MiB test-thread stack at
 /// `MAX_RECURSION_DEPTH` (256) levels — same rationale as `eval_variant_bind_arm` /
 /// `eval_structure_instance_ctor` / `eval_fn_field`; pinned by
-/// `eval_user_fn_recursion_depth_exceeded`.
+/// `eval_user_fn_recursion_depth_exceeded`. Only the `Failed` arm keeps this frame on
+/// that chain.
 #[inline(never)]
-fn try_compute_dispatch(func: &CompiledFunction, args: &[Value], ctx: &EvalContext) -> Option<Value> {
+fn try_compute_dispatch_reporting_fallback(
+    func: &CompiledFunction,
+    args: &[Value],
+    ctx: &EvalContext,
+) -> Option<Value> {
     let target = func.optimized_target.as_ref()?;
-    ctx.compute_dispatch?.dispatch(target, args)
+    let dispatch = ctx.compute_dispatch?;
+    match dispatch.dispatch(target, args) {
+        reify_ir::ComputeDispatchOutcome::Resolved(value) => Some(value),
+        reify_ir::ComputeDispatchOutcome::Unregistered => None,
+        reify_ir::ComputeDispatchOutcome::Failed(failure) => {
+            let fallback = eval_compiled_function_with_values(func, args, ctx);
+            dispatch.fell_back_after_failure(target, failure, &fallback);
+            Some(fallback)
+        }
+    }
 }
 
 /// Give the kernel-free selector-ctor capability (task #7875) a chance to build a
@@ -1980,8 +2077,9 @@ fn interp_render(value: &Value) -> String {
 /// Emit the post-`Undef` builtin diagnostics — stackup (§4.4), multi-load-case
 /// FEA (`linear_combine`, task #10), the geometry-builtin dimension family (see
 /// `geometry_diagnose`'s own doc for the name list), inverse-dynamics body
-/// mass, ISO tolerancing, and the `orient_exp` rotation-vector dimension gate
-/// (#6080) — for a builtin call whose `result` is `Value::Undef`.
+/// mass, ISO tolerancing, the `orient_exp` rotation-vector dimension gate
+/// (#6080), and the `dir` direction constructor (`direction_diagnose`) — for a
+/// builtin call whose `result` is `Value::Undef`.
 ///
 /// Extracted from `eval_expr`'s `FunctionCall` arm — and marked
 /// `#[inline(never)]` — for the same stack-frame-shrinking reason as
@@ -1992,10 +2090,10 @@ fn interp_render(value: &Value) -> String {
 /// levels of recursive user-fn evaluation (pinned by
 /// `eval_user_fn_recursion_depth_exceeded`).
 ///
-/// The six name families (stackup math builtins / `"linear_combine"` / the
-/// geometry-builtin family (`geometry_diagnose`) / dynamics /
-/// `"iso_it_tolerance"` / `"orient_exp"`) are disjoint, so at most one of the
-/// six classifiers returns `Some` for any single `Undef`; each returns `None`
+/// The classifiers' name families (stackup math builtins / `"linear_combine"` /
+/// the geometry-builtin family (`geometry_diagnose`) / dynamics /
+/// `"iso_it_tolerance"` / `"orient_exp"` / `"dir"`) are disjoint, so at most
+/// one classifier returns `Some` for any single `Undef`; each returns `None`
 /// for every other name or for valid input, making this a cheap no-op for
 /// ordinary builtins.
 ///
@@ -2032,6 +2130,9 @@ fn emit_undef_builtin_diagnostics(name: &str, args: &[Value], result: &Value, ct
         // spelling, so this Severity::Error is the migration mechanism for that
         // breaking change rather than a silent Undef.
         reify_stdlib::orientation_diagnose(name, args),
+        // `dir`: dimensioned component -> DimensionedArgRejected; zero or
+        // non-finite vector -> E_DegenerateDirection.
+        reify_stdlib::direction_diagnose(name, args),
     ];
     for diag in classified.into_iter().flatten() {
         record_classified_cause(ctx, result, &diag);
@@ -2528,18 +2629,9 @@ fn invoke_solve_elastic_static(args: &[Value], ctx: &EvalContext) -> Value {
     // loop in a single place).
     let result = eval_compiled_function_with_values(func, args, ctx);
     if result.is_undef() {
-        // The contract body `ElasticResult()` compiles as
-        // `CompiledExprKind::FunctionCall` (not `StructureInstanceCtor`) because
-        // `ElasticResult` is declared in the same module as `solve_elastic_static`,
-        // and `phase_functions` only builds the template registry from the prelude
-        // (modules *before* `solver_elastic.ri`) when compiling function bodies.
-        // `ElasticResult` is absent from that prelude registry, so the
-        // ctor-lowering path never fires and the call is emitted as `FunctionCall`,
-        // which `eval_builtin` does not recognise → Undef.
-        //
-        // Synthesise the intended `Value::StructureInstance` fallback so callers in
-        // non-trampoline contexts (e.g. `make_simple_engine()`) receive a non-Undef
-        // placeholder — consistent with the docstring's contract-body-fallback
+        // The contract body yielded Undef. Synthesise the intended
+        // `Value::StructureInstance` fallback so callers in non-trampoline
+        // contexts (e.g. `make_simple_engine()`) receive a non-Undef placeholder — consistent with the docstring's contract-body-fallback
         // description.  The real ElasticResult (with displacement, stress, etc.) is
         // produced by the `@optimized` trampoline in engine_eval.rs; the simple
         // StructureInstance here is only the stub path.
@@ -3736,6 +3828,16 @@ fn int_or_undef(checked: Option<i64>) -> Value {
     checked.map_or(Value::Undef, Value::Int)
 }
 
+/// A result whose dimension overflows `Rational` (a `None` from a checked
+/// dimension op) is `Undef`, never a panic.
+#[inline]
+fn dimensioned_or_undef(
+    dimension: Option<DimensionVector>,
+    build: impl FnOnce(DimensionVector) -> Value,
+) -> Value {
+    dimension.map_or(Value::Undef, build)
+}
+
 /// Negate a scalar (leaf) value: Int, Real, Scalar, or Complex.
 /// Returns `Value::Undef` for non-negatable types or Int overflow.
 fn neg_scalar(v: Value) -> Value {
@@ -3785,7 +3887,8 @@ fn negate_components(components: &[Value], wrap: fn(Vec<Value>) -> Value) -> Val
 }
 
 /// Recursively negate a value.  Handles all negatable variants: Int, Real,
-/// Scalar, Complex, Tensor, Vector, and Matrix (canonicalized to nested Tensor).
+/// Scalar, Complex, Tensor, Vector, Matrix (canonicalized to nested Tensor),
+/// and Direction (the antiparallel direction, direction-typing C6).
 /// Point negation is explicitly undefined (spec 3.3.1).
 pub(crate) fn negate_value(v: Value) -> Value {
     match v {
@@ -3795,6 +3898,7 @@ pub(crate) fn negate_value(v: Value) -> Value {
         Value::Tensor(components) => negate_components(&components, Value::Tensor),
         Value::Vector(components) => negate_components(&components, Value::Vector),
         Value::Matrix(rows) => negate_value(Value::Matrix(rows).canonicalize_matrix()),
+        Value::Direction(u) => Value::Direction(u.negated()),
         // Affine geometry: point negation is undefined (spec 3.3.1)
         Value::Point(_) => Value::Undef,
         _ => Value::Undef,
@@ -4192,11 +4296,11 @@ pub(crate) fn eval_mul(lv: &Value, rv: &Value) -> Value {
                 im: bi,
                 dimension: bd,
             },
-        ) => Value::Complex {
+        ) => dimensioned_or_undef(ad.checked_mul(bd), |dimension| Value::Complex {
             re: ar * br - ai * bi,
             im: ar * bi + ai * br,
-            dimension: ad.mul(bd),
-        },
+            dimension,
+        }),
         // Scalar * Scalar: multiply values, add dimension exponents
         (
             Value::Scalar {
@@ -4207,7 +4311,9 @@ pub(crate) fn eval_mul(lv: &Value, rv: &Value) -> Value {
                 si_value: b,
                 dimension: bd,
             },
-        ) => Value::from_real_scalar(a * b, ad.mul(bd)),
+        ) => dimensioned_or_undef(ad.checked_mul(bd), |dimension| {
+            Value::from_real_scalar(a * b, dimension)
+        }),
         // Scalar * dimensionless numeric
         (
             Value::Scalar {
@@ -4259,11 +4365,11 @@ pub(crate) fn eval_mul(lv: &Value, rv: &Value) -> Value {
                 im,
                 dimension: cd,
             },
-        ) => Value::Complex {
+        ) => dimensioned_or_undef(cd.checked_mul(sd), |dimension| Value::Complex {
             re: re * si_value,
             im: im * si_value,
-            dimension: cd.mul(sd),
-        },
+            dimension,
+        }),
         // Complex * Int | Int * Complex: dimensionless multiplier preserves dimension
         (Value::Complex { re, im, dimension }, Value::Int(n))
         | (Value::Int(n), Value::Complex { re, im, dimension }) => Value::Complex {
@@ -4277,6 +4383,19 @@ pub(crate) fn eval_mul(lv: &Value, rv: &Value) -> Value {
             re: re * r,
             im: im * r,
             dimension: *dimension,
+        },
+        // Direction * scalar or scalar * Direction: scale the unit components
+        // → Vector (direction-typing C6). Every other Direction pairing is
+        // Undef here, before the aggregate arms below can recurse a
+        // Direction into each component.
+        (Value::Direction(u), other) | (other, Value::Direction(u)) => match other {
+            Value::Int(_) | Value::Real(_) | Value::Scalar { .. } => scale_components(
+                &u.components().map(Value::Real),
+                other,
+                eval_mul,
+                Value::Vector,
+            ),
+            _ => Value::Undef,
         },
         // Scalar * Tensor or Tensor * Scalar: scale each component
         (Value::Tensor(components), scalar) | (scalar, Value::Tensor(components))
@@ -4478,10 +4597,11 @@ pub(crate) fn eval_div(lv: &Value, rv: &Value) -> Value {
                 dimension: bd,
             },
         ) => {
-            let result_dim = ad.div(bd);
             // Route through the value-layer chokepoint: a dimension-cancelling
             // quotient (e.g. L/L) collapses to Value::Real (Invariant V).
-            Value::from_real_scalar(a / b, result_dim)
+            dimensioned_or_undef(ad.checked_div(bd), |dimension| {
+                Value::from_real_scalar(a / b, dimension)
+            })
         }
         // Scalar / dimensionless
         (
@@ -4508,11 +4628,14 @@ pub(crate) fn eval_div(lv: &Value, rv: &Value) -> Value {
         // Scalar{DIMENSIONLESS}, is now Real. Routed through the chokepoint so a
         // fully-cancelling reciprocal still collapses to Real (Invariant V).
         (Value::Real(a), Value::Scalar { si_value, dimension }) => {
-            Value::from_real_scalar(a / si_value, DimensionVector::DIMENSIONLESS.div(dimension))
+            let recip_dim = DimensionVector::DIMENSIONLESS.checked_div(dimension);
+            dimensioned_or_undef(recip_dim, |d| Value::from_real_scalar(a / si_value, d))
         }
         (Value::Int(a), Value::Scalar { si_value, dimension }) => {
-            let recip_dim = DimensionVector::DIMENSIONLESS.div(dimension);
-            Value::from_real_scalar(*a as f64 / si_value, recip_dim)
+            let recip_dim = DimensionVector::DIMENSIONLESS.checked_div(dimension);
+            dimensioned_or_undef(recip_dim, |d| {
+                Value::from_real_scalar(*a as f64 / si_value, d)
+            })
         }
         // Complex / Complex: (a+bi)/(c+di) = ((ac+bd)+(bc-ad)i)/(c²+d²)
         // NOTE: No sanitize_value here — by design, matching eval_mul Complex*Complex (lib.rs:2185).
@@ -4535,11 +4658,11 @@ pub(crate) fn eval_div(lv: &Value, rv: &Value) -> Value {
             if denom == 0.0 {
                 Value::Undef
             } else {
-                Value::Complex {
+                dimensioned_or_undef(ad.checked_div(bd), |dimension| Value::Complex {
                     re: (ar * br + ai * bi) / denom,
                     im: (ai * br - ar * bi) / denom,
-                    dimension: ad.div(bd),
-                }
+                    dimension,
+                })
             }
         }
         // Complex / Scalar: divide re/im, combine dimensions
@@ -4553,11 +4676,11 @@ pub(crate) fn eval_div(lv: &Value, rv: &Value) -> Value {
                 si_value,
                 dimension: sd,
             },
-        ) => Value::Complex {
+        ) => dimensioned_or_undef(cd.checked_div(sd), |dimension| Value::Complex {
             re: re / si_value,
             im: im / si_value,
-            dimension: cd.div(sd),
-        },
+            dimension,
+        }),
         // Complex / Int: preserve dimension
         (Value::Complex { re, im, dimension }, Value::Int(n)) => Value::Complex {
             re: re / *n as f64,
@@ -4677,32 +4800,42 @@ pub(crate) fn eval_pow(lv: &Value, rv: &Value) -> Value {
     sanitize::sanitize_value(result)
 }
 
-/// The language's `==` verdict on two evaluated operands. Scalar and Real
-/// operands compare through [`reify_core::scalar_tolerance`]; public so the
-/// DimensionalSolver's equality-row acceptance calls this same function
-/// (#6653) instead of re-deriving the dimension and Int dispatch.
+/// The single dimension-comparability rule shared by `==`/`!=` and the order
+/// operators: two Scalars of different dimension, or a dimensioned Scalar
+/// against any non-Scalar, have no verdict. A dimensionless Scalar is a plain
+/// quantity: post-Invariant V (task 4374/β) no arithmetic op produces one, but
+/// literals, defaults, map values and deserialized state still can, so it
+/// compares numerically through `as_f64`.
+fn dimensions_incomparable(lv: &Value, rv: &Value) -> bool {
+    match (lv, rv) {
+        (Value::Scalar { dimension: da, .. }, Value::Scalar { dimension: db, .. }) => da != db,
+        (Value::Scalar { dimension, .. }, _) | (_, Value::Scalar { dimension, .. }) => {
+            !dimension.is_dimensionless()
+        }
+        _ => false,
+    }
+}
+
+/// The language's `==` verdict on two evaluated operands: `Undef` when
+/// [`dimensions_incomparable`] holds. Scalar and Real operands compare through
+/// [`reify_core::scalar_tolerance`]; public so the DimensionalSolver's
+/// equality-row acceptance calls this same function (#6653) instead of
+/// re-deriving the dimension and Int dispatch.
 pub fn eval_eq(lv: &Value, rv: &Value) -> Value {
+    if dimensions_incomparable(lv, rv) {
+        return Value::Undef;
+    }
     match (lv, rv) {
         (Value::Bool(a), Value::Bool(b)) => Value::Bool(a == b),
         (Value::Int(a), Value::Int(b)) => Value::Bool(a == b),
         (Value::String(a), Value::String(b)) => Value::Bool(a == b),
-        // Scalar-vs-Scalar: compare dimensions first
         (
             Value::Scalar {
                 si_value: a,
-                dimension: da,
+                dimension,
             },
-            Value::Scalar {
-                si_value: b,
-                dimension: db,
-            },
-        ) => {
-            if da != db {
-                Value::Bool(false)
-            } else {
-                Value::Bool(scalars_equal(*a, *b, *da))
-            }
-        }
+            Value::Scalar { si_value: b, .. },
+        ) => Value::Bool(scalars_equal(*a, *b, *dimension)),
         // Enum-vs-Enum equality: same type → compare variant, different type → false
         (
             Value::Enum {
@@ -4724,21 +4857,6 @@ pub fn eval_eq(lv: &Value, rv: &Value) -> Value {
         }
         // Enum vs non-Enum: always false
         (Value::Enum { .. }, _) | (_, Value::Enum { .. }) => Value::Bool(false),
-        // Scalar vs non-Scalar. A *dimensioned* Scalar (e.g. a Length) is never
-        // equal to a bare number, so this is `false`. A *dimensionless* Scalar
-        // is just a plain quantity, though: post-Invariant V (task 4374/β) no
-        // arithmetic op produces one (producers route through from_real_scalar),
-        // but eq operands also come from literals, struct/field defaults, map
-        // values, and deserialized state — non-arithmetic sources that can still
-        // carry a Scalar{DIMENSIONLESS}. So keep the `!dimension.is_dimensionless()`
-        // guard and let such a value fall through to the as_f64 numeric
-        // comparison below rather than silently flipping it to `false`.
-        // (Scalar-vs-Scalar is handled by the earlier arm.)
-        (Value::Scalar { dimension, .. }, _) | (_, Value::Scalar { dimension, .. })
-            if !dimension.is_dimensionless() =>
-        {
-            Value::Bool(false)
-        }
         _ => {
             // Int / Real / dimensionless Scalar numeric comparison via as_f64.
             match (lv.as_f64(), rv.as_f64()) {
@@ -4758,40 +4876,18 @@ pub(crate) fn eval_ne(lv: &Value, rv: &Value) -> Value {
     }
 }
 
+/// The language's order verdict on two evaluated operands: `Undef` when
+/// [`dimensions_incomparable`] holds, and for any Enum operand.
 pub(crate) fn eval_cmp(lv: &Value, rv: &Value, cmp: fn(f64, f64) -> bool) -> Value {
+    if dimensions_incomparable(lv, rv) {
+        return Value::Undef;
+    }
     match (lv, rv) {
-        // Scalar-vs-Scalar: compare dimensions first
-        (
-            Value::Scalar {
-                si_value: a,
-                dimension: da,
-            },
-            Value::Scalar {
-                si_value: b,
-                dimension: db,
-            },
-        ) => {
-            if da != db {
-                Value::Undef
-            } else {
-                Value::Bool(cmp(*a, *b))
-            }
+        (Value::Scalar { si_value: a, .. }, Value::Scalar { si_value: b, .. }) => {
+            Value::Bool(cmp(*a, *b))
         }
         // Enum comparison: no ordering on enums
         (Value::Enum { .. }, _) | (_, Value::Enum { .. }) => Value::Undef,
-        // Scalar vs non-Scalar. A *dimensioned* Scalar is incomparable to a bare
-        // number → Undef. A *dimensionless* Scalar is a plain quantity, though:
-        // post-Invariant V (task 4374/β) no arithmetic op produces one, but cmp
-        // operands also come from literals, struct/field defaults, map values,
-        // and deserialized state — non-arithmetic sources that can still carry a
-        // Scalar{DIMENSIONLESS}. So keep the `!dimension.is_dimensionless()`
-        // guard and let such a value fall through to the as_f64 numeric
-        // comparison below. (Scalar-vs-Scalar is handled by the earlier arm.)
-        (Value::Scalar { dimension, .. }, _) | (_, Value::Scalar { dimension, .. })
-            if !dimension.is_dimensionless() =>
-        {
-            Value::Undef
-        }
         // Fallback: Int / Real / dimensionless Scalar numeric comparison via as_f64.
         _ => match (lv.as_f64(), rv.as_f64()) {
             (Some(a), Some(b)) => Value::Bool(cmp(a, b)),
@@ -5715,8 +5811,8 @@ mod tests {
     }
 
     #[test]
-    fn eq_scalar_different_dimensions_is_false() {
-        // 0.005 LENGTH == 0.005 MASS should be false (different dimensions)
+    fn eq_scalar_different_dimensions_is_undef() {
+        // 0.005 LENGTH == 0.005 MASS is Undef (incomparable dimensions), like `<`
         let left = lit(
             Value::Scalar {
                 si_value: 0.005,
@@ -5735,10 +5831,7 @@ mod tests {
         );
         let expr = CompiledExpr::binop(BinOp::Eq, left, right, Type::Bool);
         let values = ValueMap::new();
-        match eval_expr(&expr, &EvalContext::simple(&values)) {
-            Value::Bool(false) => {}
-            other => panic!("expected Bool(false), got {:?}", other),
-        }
+        assert!(eval_expr(&expr, &EvalContext::simple(&values)).is_undef());
     }
 
     #[test]
@@ -5805,8 +5898,8 @@ mod tests {
     }
 
     #[test]
-    fn eq_dimensioned_scalar_vs_int_is_false() {
-        // Scalar{5.0, LENGTH} == Int(5) should be false
+    fn eq_dimensioned_scalar_vs_int_is_undef() {
+        // Scalar{5.0, LENGTH} == Int(5) is Undef: a Length is incomparable to a bare number
         let left = lit(
             Value::Scalar {
                 si_value: 5.0,
@@ -5817,15 +5910,12 @@ mod tests {
         let right = lit(Value::Int(5), Type::Int);
         let expr = CompiledExpr::binop(BinOp::Eq, left, right, Type::Bool);
         let values = ValueMap::new();
-        match eval_expr(&expr, &EvalContext::simple(&values)) {
-            Value::Bool(false) => {}
-            other => panic!("expected Bool(false), got {:?}", other),
-        }
+        assert!(eval_expr(&expr, &EvalContext::simple(&values)).is_undef());
     }
 
     #[test]
-    fn ne_scalar_different_dimensions_is_true() {
-        // 0.005 LENGTH != 0.005 MASS should be true
+    fn ne_scalar_different_dimensions_is_undef() {
+        // 0.005 LENGTH != 0.005 MASS is Undef (incomparable dimensions), like `<`
         let left = lit(
             Value::Scalar {
                 si_value: 0.005,
@@ -5844,17 +5934,15 @@ mod tests {
         );
         let expr = CompiledExpr::binop(BinOp::Ne, left, right, Type::Bool);
         let values = ValueMap::new();
-        match eval_expr(&expr, &EvalContext::simple(&values)) {
-            Value::Bool(true) => {}
-            other => panic!("expected Bool(true), got {:?}", other),
-        }
+        assert!(eval_expr(&expr, &EvalContext::simple(&values)).is_undef());
     }
 
     #[test]
-    fn eq_scalar_same_value_different_dimension_is_false() {
-        // Scalar{5.0, LENGTH} == Scalar{5.0, MASS} should be false
+    fn eq_scalar_same_value_different_dimension_is_undef() {
+        // Scalar{5.0, LENGTH} == Scalar{5.0, MASS} is Undef.
         // Regression guard for task 38: different dimensions must never compare equal,
         // even when the numeric si_value is identical (5mm == 5kg was silently true).
+        // That is now enforced as Undef, never Bool(true).
         let left = lit(
             Value::Scalar {
                 si_value: 5.0,
@@ -5873,10 +5961,43 @@ mod tests {
         );
         let expr = CompiledExpr::binop(BinOp::Eq, left, right, Type::Bool);
         let values = ValueMap::new();
-        match eval_expr(&expr, &EvalContext::simple(&values)) {
-            Value::Bool(false) => {}
-            other => panic!("expected Bool(false), got {:?}", other),
+        assert!(eval_expr(&expr, &EvalContext::simple(&values)).is_undef());
+    }
+
+    #[test]
+    fn eq_ne_and_cmp_agree_on_dimension_incomparable_operands() {
+        let mass = Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::MASS,
+        };
+        for (left, right) in [
+            (mm_val(3.0), Value::Real(3.0)),
+            (Value::Real(3.0), mm_val(3.0)),
+            (mm_val(3.0), Value::Int(3)),
+            (mm_val(3.0), Value::Bool(true)),
+            (mm_val(3.0), Value::String("3mm".to_string())),
+            (mm_val(3.0), Value::enum_unit("Fit", "Loose")),
+            (mm_val(1.0), mass),
+        ] {
+            assert_eq!(
+                eval_eq(&left, &right),
+                Value::Undef,
+                "{left:?} == {right:?}"
+            );
+            assert_eq!(
+                eval_ne(&left, &right),
+                Value::Undef,
+                "{left:?} != {right:?}"
+            );
+            assert_eq!(
+                eval_cmp(&left, &right, |a, b| a < b),
+                Value::Undef,
+                "{left:?} < {right:?}"
+            );
         }
+
+        assert_eq!(eval_eq(&mm_val(3.0), &mm_val(3.0)), Value::Bool(true));
+        assert_eq!(eval_ne(&mm_val(3.0), &mm_val(4.0)), Value::Bool(true));
     }
 
     // ── Enum eval tests ──────────────────────────────────
@@ -6432,6 +6553,44 @@ mod tests {
     // materialize derived members into `fields`.  RED until step-6 implements
     // `materialize_template_lets` (currently a stub that does nothing).
 
+    /// task 5494: a non-literal default that references a SIBLING param is
+    /// evaluated in the instance's own member scope, not the caller's — the
+    /// outer value map here is empty, so an outer-scope lookup would be Undef.
+    #[test]
+    fn ctor_default_referencing_a_sibling_param_sees_the_instance() {
+        let y_default = CompiledExpr::binop(
+            BinOp::Add,
+            vref("P", "x", Type::dimensionless_scalar()),
+            lit(Value::Real(1.0), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
+        );
+        let double_y = CompiledExpr::binop(
+            BinOp::Add,
+            vref("P", "y", Type::dimensionless_scalar()),
+            vref("P", "y", Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
+        );
+        let expr = sct_with_lets(
+            "P",
+            1,
+            vec![("x", lit(Value::Real(2.0), Type::dimensionless_scalar()))],
+            vec![("y", y_default)],
+            vec![("double_y", double_y)],
+        );
+        let values = ValueMap::new();
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
+            Value::StructureInstance(data) => {
+                assert_eq!(data.fields.get(&"y".to_string()), Some(&Value::Real(3.0)));
+                assert_eq!(
+                    data.fields.get(&"double_y".to_string()),
+                    Some(&Value::Real(6.0)),
+                    "a let reads the default the member scope was extended with"
+                );
+            }
+            other => panic!("expected StructureInstance, got {:?}", other),
+        }
+    }
+
     /// (a) single `let sum = a + b` over two Real params; (e) fields.len()
     /// counts params + materialized lets.
     ///
@@ -6938,7 +7097,8 @@ mod tests {
         // per-`eval_expr`-frame stack budget that the 15 doc comments in this file
         // quoting a "MiB test-thread stack" cite as the reason for their
         // `#[inline(never)]` / hoisted-locals discipline (`eval_variant_bind_arm`,
-        // `eval_structure_instance_ctor`, `eval_fn_field`, `try_compute_dispatch`, …).
+        // `eval_structure_instance_ctor`, `eval_fn_field`,
+        // `try_compute_dispatch_reporting_fallback`, …).
         // It can only serve as that pin while the stack it runs on is small enough that
         // a frame-size regression actually overflows it — so the size is an explicit,
         // MEASURED ratchet, and raising it to buy headroom silently retires every one of
@@ -8871,8 +9031,8 @@ mod tests {
         // comparable with a bare Real.
         assert_eq!(
             eval_eq(&mm_val(3.0), &Value::Real(3.0)),
-            Value::Bool(false),
-            "Length == Real must be false"
+            Value::Undef,
+            "Length == Real must be Undef, like Length < Real"
         );
         assert_eq!(
             eval_cmp(&mm_val(3.0), &Value::Real(3.0), |a, b| a < b),
@@ -9129,9 +9289,9 @@ mod tests {
     // RED until step-8 wires emit_snapshot_diagnostics immediately after
     // emit_dfm_diagnostics in the FunctionCall post-process.
 
-    /// Build an axis_x unit vector (1,0,0) for test snapshots.
+    /// Build the +X joint axis direction for test snapshots.
     fn snap_axis_x() -> Value {
-        Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)])
+        reify_test_support::direction_val(1.0, 0.0, 0.0)
     }
 
     /// Build a two-body snapshot where body 0 has `solid0` placed at world
@@ -9601,12 +9761,15 @@ mod tests {
     }
 
     /// A `ComputeDispatch` that resolves exactly one target (`"test::stress"`) to a
-    /// fixed non-`Undef` `Scalar`, and defers (returns `None`) for everything else.
+    /// fixed non-`Undef` `Scalar`, and is `Unregistered` for everything else.
     struct StubDispatch;
 
     impl reify_ir::ComputeDispatch for StubDispatch {
-        fn dispatch(&self, target: &str, _args: &[Value]) -> Option<Value> {
-            (target == "test::stress").then(|| Value::Scalar {
+        fn dispatch(&self, target: &str, _args: &[Value]) -> reify_ir::ComputeDispatchOutcome {
+            if target != "test::stress" {
+                return reify_ir::ComputeDispatchOutcome::Unregistered;
+            }
+            reify_ir::ComputeDispatchOutcome::Resolved(Value::Scalar {
                 si_value: 42.0,
                 dimension: DimensionVector::DIMENSIONLESS,
             })
@@ -9653,6 +9816,64 @@ mod tests {
             },
             "dispatch hook attached and resolves the target -> hook result wins over body-eval; got {:?}",
             result,
+        );
+    }
+
+    /// Fails `"test::stress"` (`Unregistered` for everything else) and records every
+    /// fallback reported back to it.
+    #[derive(Default)]
+    struct FailingStubDispatch {
+        reported: std::sync::Mutex<Vec<(String, Value)>>,
+    }
+
+    impl reify_ir::ComputeDispatch for FailingStubDispatch {
+        fn dispatch(&self, target: &str, _args: &[Value]) -> reify_ir::ComputeDispatchOutcome {
+            if target != "test::stress" {
+                return reify_ir::ComputeDispatchOutcome::Unregistered;
+            }
+            reify_ir::ComputeDispatchOutcome::Failed(reify_ir::ComputeDispatchFailure {
+                kind: reify_ir::ComputeFailureKind::Failed,
+                diagnostics: vec![Diagnostic::error("stiffness matrix is singular")],
+            })
+        }
+
+        fn fell_back_after_failure(
+            &self,
+            target: &str,
+            _failure: reify_ir::ComputeDispatchFailure,
+            fallback: &Value,
+        ) {
+            self.reported
+                .lock()
+                .unwrap()
+                .push((target.to_owned(), fallback.clone()));
+        }
+    }
+
+    /// A `Failed` dispatch falls back to body-eval exactly as `Unregistered` does, and
+    /// the body's value is reported back to the dispatcher that failed.
+    #[test]
+    fn a_failed_dispatch_falls_back_to_the_body_and_reports_its_value() {
+        let mut stress_fn = make_optimized_stub_fn();
+        stress_fn.body.result_expr = lit(Value::Real(7.0), Type::dimensionless_scalar());
+        stress_fn.content_hash = ContentHash::of(b"stress_optimized_defined_body");
+        let call_expr = make_stress_call_expr(b"call_stress_failing_hook");
+        let values = ValueMap::new();
+        let functions = [stress_fn];
+        let dispatch = FailingStubDispatch::default();
+        let ctx = EvalContext::new(&values, &functions).with_compute_dispatch(&dispatch);
+
+        let result = eval_expr(&call_expr, &ctx);
+
+        assert_eq!(
+            result,
+            Value::Real(7.0),
+            "the body's value stands in for the failed call"
+        );
+        assert_eq!(
+            *dispatch.reported.lock().unwrap(),
+            vec![("test::stress".to_string(), Value::Real(7.0))],
+            "the fallback is reported once, against the failed target"
         );
     }
 

@@ -1,6 +1,31 @@
-use super::*;
+use std::collections::{HashMap, HashSet};
 
+use reify_core::{
+    ConstraintNodeId, Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan, Type, ValueCellId,
+};
+use reify_ir::{
+    BinOp, CompiledExpr, CompiledFunction, ObjectiveCombination, ObjectiveSense, ObjectiveSet,
+    ObjectiveTerm, UnOp, Value,
+};
+
+use crate::annotations::{
+    deprecation_message, emit_deprecation_warning, lower_annotations, validate_annotations,
+    validate_pragmas,
+};
+use crate::expr::{compile_expr, determinacy_intrinsic_member};
 use crate::fn_return_check::require_bodyless_return_annotation;
+use crate::scope::CompilationScope;
+use crate::type_resolution::{
+    TypeAliasRegistry, convert_type_params, resolve_enum_type_with_args,
+    resolve_type_expr_with_aliases, unresolved_alias_body_name,
+};
+use crate::types::{
+    CompiledAssocFnSig, CompiledConstraint, CompiledPurpose, CompiledPurposeLet,
+    CompiledPurposeParam, CompiledTrait, DefaultKind, RequirementKind, ResolvedSchemaQuery,
+    TopologyTemplate, TraitDefault, TraitRequirement, ValueCellKind, is_geometric_param_type,
+    is_material_param_type,
+};
+use crate::units::UnitRegistry;
 
 /// Resolve a trait-member type annotation (`param x : T` or `let x : T = ...`).
 ///

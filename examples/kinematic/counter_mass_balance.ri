@@ -15,7 +15,7 @@
 //   origin within 1e-9 m.  This .ri file replays that scenario via sweep().
 structure def CounterMassBalance {
     // Joint: prismatic along +X, range 0..500 mm
-    let j_x = prismatic(vec3(1, 0, 0), 0mm .. 500mm)
+    let j_x = prismatic(dir(1, 0, 0), 0mm .. 500mm)
     // Couple: counter-mass moves -1× j_x (equal-and-opposite)
     let j_cm = couple(j_x, -1.0)
 

@@ -29,6 +29,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
+[ -f "$SCRIPT_DIR/gui_test_fixture_lib.sh" ] || { echo "ERROR: gui_test_fixture_lib.sh not found at $SCRIPT_DIR/gui_test_fixture_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/gui_test_fixture_lib.sh"
 
 VERIFY_SH="$REPO_ROOT/scripts/verify.sh"
 VITEST_CONFIG="$REPO_ROOT/gui/vitest.config.ts"
@@ -389,8 +391,11 @@ _V="$_VERIFY_CLASS" _R="$_RUNNER_CLASS" \
 assert "C5: verify.sh's spec allowlist is exactly the runner's plus a space" \
     bash -c '[ "${_V/ /}" = "$_R" ]'
 
+# C2 judges the calls a stubbed run of gui-test.sh records (gui_test_fixture_lib.sh),
+# so the runner's name in prose or the progress echo cannot satisfy it; the
+# no-runner pin in test_gui_test_script.sh Test 3 proves that sensitivity.
 assert "C2: scripts/gui-test.sh invokes the SAME runner" \
-    grep -q 'gui-vitest-run.sh' "$GUI_TEST_SH"
+    script_runs_runner "$GUI_TEST_SH"
 
 assert "C2: scripts/gui-test.sh has NO bare 'npm test' invocation left" \
     bash -c "! grep -E '^[[:space:]]*(npm test|.*[^-]npm test )' '$GUI_TEST_SH' | grep -qv '^[[:space:]]*#'"

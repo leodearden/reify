@@ -1,9 +1,10 @@
-//! Parsing of `reify` subcommand arguments into typed values, plus the usage
-//! banners those parsers print when the arguments are malformed.
+//! Parsing of `reify` subcommand arguments into typed values.
 
 use std::process::ExitCode;
 
 use reify_compiler::cfg::CfgSet;
+
+use crate::help::{CFG_SYNOPSIS, DOC_USAGE};
 
 /// One per-param binding parsed from a `--purpose` flag value.
 ///
@@ -142,7 +143,7 @@ fn parse_cfg_flag(value: &str) -> Result<CfgArg, String> {
 /// Per PRD §4 D-2, `target` is host-defaulted and overridable ONLY by an explicit
 /// `--cfg target=<v>`; bare flags and non-`target` key/values never clear it, so
 /// passing a feature flag cannot silently disable platform gating.
-pub(crate) fn build_cfg_set(values: &[String]) -> Result<CfgSet, String> {
+fn build_cfg_set(values: &[String]) -> Result<CfgSet, String> {
     let mut cfg = CfgSet::host_default();
     for value in values {
         match parse_cfg_flag(value)? {
@@ -160,11 +161,45 @@ pub(crate) fn build_cfg_set(values: &[String]) -> Result<CfgSet, String> {
     Ok(cfg)
 }
 
-/// Usage line printed to stderr for any `reify check` usage error.
-pub(crate) const CHECK_USAGE: &str = "Usage: reify check [--strict] [--verbose] [--purpose <name>=<binding>]... [--cfg <key=value|flag>]... <file>";
+/// The `--cfg` argv grammar: `--cfg` is repeatable, position-free, and always
+/// consumes the next token as its value. The inline `--cfg=<v>` spelling is
+/// refused rather than passed through, so no command can mistake it for an
+/// ignorable flag. Returns the active [`CfgSet`] and the remaining args in order.
+fn split_cfg_args(args: &[String]) -> Result<(CfgSet, Vec<String>), String> {
+    let mut values: Vec<String> = Vec::new();
+    let mut rest: Vec<String> = Vec::new();
+    let mut tokens = args.iter();
+    while let Some(token) = tokens.next() {
+        if token == "--cfg" {
+            let value = tokens.next().ok_or("--cfg requires a value")?;
+            values.push(value.clone());
+        } else if token.starts_with("--cfg=") {
+            return Err(format!(
+                "--cfg takes its value as the next argument (`{CFG_SYNOPSIS}`), got '{token}'"
+            ));
+        } else {
+            rest.push(token.clone());
+        }
+    }
+    let cfg = build_cfg_set(&values)?;
+    Ok((cfg, rest))
+}
 
-/// Usage line printed to stderr for any `reify explain` usage error.
-pub(crate) const EXPLAIN_USAGE: &str = "Usage: reify explain <file>";
+/// The single entry point to the `--cfg` argv grammar for every
+/// program-compiling subcommand: extracts the `--cfg` pairs via
+/// [`split_cfg_args`]. On a malformed `--cfg` it prints the `Error:` line and
+/// then `usage` to stderr and returns `Err(ExitCode::FAILURE)`, which callers
+/// `return` directly (the [`parse_single_file_arg`] contract).
+pub(crate) fn split_cfg_args_or_usage(
+    args: &[String],
+    usage: &str,
+) -> Result<(CfgSet, Vec<String>), ExitCode> {
+    split_cfg_args(args).map_err(|e| {
+        eprintln!("Error: {e}");
+        eprintln!("{usage}");
+        ExitCode::FAILURE
+    })
+}
 
 /// Parse a single required file-path positional, rejecting unknown `--`-prefixed flags
 /// and extra positionals.  Every error prints `usage` to stderr before returning
@@ -172,7 +207,7 @@ pub(crate) const EXPLAIN_USAGE: &str = "Usage: reify explain <file>";
 ///
 /// The path is returned as an owned [`String`] so it safely outlives the argument slice.
 ///
-/// Used by `cmd_explain` (and available for other no-flag subcommands).  Commands with
+/// For subcommands that take one file and no flags of their own.  Commands with
 /// their own optional flags (e.g. `cmd_eval` with `--explain-undef`) extract those flags
 /// first, then delegate the remainder to this helper or handle the tail themselves.
 pub(crate) fn parse_single_file_arg(args: &[String], cmd: &str, usage: &str) -> Result<String, ExitCode> {
@@ -202,9 +237,6 @@ pub(crate) fn parse_single_file_arg(args: &[String], cmd: &str, usage: &str) -> 
         }
     }
 }
-
-/// Usage line printed to stderr for any `reify doc` usage error.
-const DOC_USAGE: &str = "Usage: reify doc <input.ri> [-o <path>] [--format html|markdown|json] [--split] [--compact]\n       reify doc --stdlib --out <dir>";
 
 /// Report a `reify doc` usage error: the `Error:` line naming the guard, then
 /// the [`DOC_USAGE`] banner that tells it apart from a genuine exit-1 failure.
@@ -352,5 +384,115 @@ mod tests {
     fn build_cfg_set_rejects_malformed_value() {
         // A malformed `--cfg` value (empty key) propagates parse_cfg_flag's error.
         assert!(build_cfg_set(&["=bad".to_string()]).is_err());
+    }
+
+    fn strings(tokens: &[&str]) -> Vec<String> {
+        tokens.iter().map(|t| t.to_string()).collect()
+    }
+
+    #[test]
+    fn split_cfg_args_extracts_repeated_cfg_pairs_and_keeps_the_rest_in_order() {
+        let args = strings(&[
+            "--verbose",
+            "--cfg",
+            "target=wasm",
+            "f.ri",
+            "--cfg",
+            "feat",
+            "-o",
+            "out.step",
+        ]);
+        let (cfg, rest) = split_cfg_args(&args).expect("valid --cfg pairs");
+        assert_eq!(cfg.target.as_deref(), Some("wasm"));
+        assert!(cfg.flags.contains("feat"));
+        assert_eq!(rest, strings(&["--verbose", "f.ri", "-o", "out.step"]));
+    }
+
+    #[test]
+    fn split_cfg_args_without_cfg_is_host_default_and_identity() {
+        let args = strings(&["f.ri", "--strict"]);
+        let (cfg, rest) = split_cfg_args(&args).expect("no --cfg is valid");
+        assert_eq!(cfg, CfgSet::host_default());
+        assert_eq!(rest, args);
+    }
+
+    #[test]
+    fn split_cfg_args_rejects_a_trailing_cfg_without_value() {
+        let err = split_cfg_args(&strings(&["f.ri", "--cfg"])).expect_err("dangling --cfg");
+        assert!(err.contains("--cfg requires a value"), "got: {err}");
+    }
+
+    #[test]
+    fn split_cfg_args_propagates_a_malformed_value() {
+        let err = split_cfg_args(&strings(&["--cfg", "=bad", "f.ri"])).expect_err("empty key");
+        assert!(err.contains("empty key"), "got: {err}");
+    }
+
+    #[test]
+    fn split_cfg_args_takes_the_next_token_as_the_value_even_when_flag_shaped() {
+        let (cfg, rest) =
+            split_cfg_args(&strings(&["--cfg", "--strict", "f.ri"])).expect("flag-shaped value");
+        assert!(cfg.flags.contains("--strict"));
+        assert_eq!(rest, strings(&["f.ri"]));
+    }
+
+    #[test]
+    fn split_cfg_args_refuses_the_inline_equals_spelling() {
+        for token in ["--cfg=target=wasm", "--cfg="] {
+            let err = split_cfg_args(&strings(&[token, "f.ri"])).expect_err("inline --cfg=");
+            assert!(err.contains("next argument"), "{token}: got: {err}");
+            assert!(
+                err.contains(CFG_SYNOPSIS),
+                "{token}: the refusal must name the spelling `--help` documents, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn split_cfg_args_or_usage_maps_a_grammar_error_to_failure() {
+        assert_eq!(
+            split_cfg_args_or_usage(&strings(&["f.ri", "--cfg"]), "usage").err(),
+            Some(ExitCode::FAILURE),
+        );
+        let (cfg, rest) = split_cfg_args_or_usage(&strings(&["--cfg", "feat", "f.ri"]), "usage")
+            .expect("valid --cfg");
+        assert!(cfg.flags.contains("feat"));
+        assert_eq!(rest, strings(&["f.ri"]));
+    }
+
+    #[test]
+    fn parse_single_file_arg_returns_the_lone_positional() {
+        assert_eq!(
+            parse_single_file_arg(&strings(&["f.ri"]), "explain", "usage"),
+            Ok("f.ri".to_string()),
+        );
+    }
+
+    #[test]
+    fn parse_single_file_arg_rejects_an_unknown_double_dash_flag() {
+        // The flag is refused whether it comes before or after the file.
+        for argv in [["--strict", "f.ri"], ["f.ri", "--strict"]] {
+            assert_eq!(
+                parse_single_file_arg(&strings(&argv), "explain", "usage"),
+                Err(ExitCode::FAILURE),
+                "argv: {argv:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn parse_single_file_arg_rejects_an_extra_positional() {
+        assert_eq!(
+            parse_single_file_arg(&strings(&["a.ri", "b.ri"]), "explain", "usage"),
+            Err(ExitCode::FAILURE),
+        );
+    }
+
+    #[test]
+    fn parse_single_file_arg_rejects_a_missing_file() {
+        assert_eq!(
+            parse_single_file_arg(&strings(&[]), "explain", "usage"),
+            Err(ExitCode::FAILURE),
+        );
     }
 }

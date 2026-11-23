@@ -6,6 +6,7 @@ license.workspace = true
 description = "Compiler→doc-model lowering helpers for the reify doc tool"
 
 [dependencies]
+workspace-feature-union.workspace = true
 reify-ast.workspace = true
 reify-core.workspace = true
 reify-ir.workspace = true

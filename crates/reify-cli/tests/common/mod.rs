@@ -102,10 +102,10 @@ pub fn run_with_args(args: &[&str]) -> (ExitStatus, String, String) {
 /// Run `reify <args...>` with the child process's working directory pinned to
 /// `cwd`, returning `(status, stdout, stderr)`.
 ///
-/// The cwd-pinned twin of [`run_with_args`]. Every test module here compiles
-/// into the SAME `harness_cli` binary, so this is the module-shared place for a
-/// cwd-pinned spawn — a per-module copy would be duplication rather than
-/// isolation.
+/// The cwd-pinned twin of [`run_with_args`]. Every test module that consumes
+/// this file reaches it through its harness's single `mod common;`, so this is
+/// the module-shared place for a cwd-pinned spawn — a per-module copy would be
+/// duplication rather than isolation.
 ///
 /// Pinning matters whenever a test asserts on DESIGN-FILE-relative artifact
 /// paths (io-export B7): it keeps every artifact inside the caller's tempdir and
@@ -254,6 +254,60 @@ pub fn assert_or_regenerate_golden(stdout: &str, golden: &Path) -> bool {
          re-run with REIFY_REGENERATE_GOLDEN=1 to update",
     );
     false
+}
+
+/// Assert that every `Parse error: ` line on `stderr` reads `<line>:<col>: <message>`, and
+/// that one of them lands on the line of the `@@@` fault in `fixture`, the fixture the caller
+/// ran.
+///
+/// `report_parse_errors` in src/main.rs owns this format. Its unit test applies the same
+/// per-line rule to the rendered output; this checks the same rule end to end through the
+/// binary. The fault line comes from the fixture rather than being hard-coded, so the check
+/// follows the fixture if its layout changes.
+pub fn assert_parse_error_reports_fault_position(fixture: &str, stderr: &str) {
+    let source = std::fs::read_to_string(fixture_path(fixture))
+        .unwrap_or_else(|e| panic!("fixture {fixture} must be readable: {e}"));
+    let fault_offset = source.find("@@@").unwrap_or_else(|| {
+        panic!("fixture precondition: {fixture} must mark its parse fault with `@@@`")
+    });
+    let fault_line = source[..fault_offset].matches('\n').count() + 1;
+
+    let reported_lines: Vec<usize> = stderr
+        .lines()
+        .filter_map(reported_parse_error_line)
+        .collect();
+    assert!(
+        reported_lines.contains(&fault_line),
+        "stderr should contain `Parse error: {fault_line}:<col>: <message>` for {fixture}'s \
+         `@@@` fault on line {fault_line}; reported lines {reported_lines:?}, got: {stderr}"
+    );
+}
+
+/// The 1-based line of a `Parse error: <line>:<col>: <message>` stderr line, `None` for a
+/// stderr line that is not a parse-error report, and a panic for one that breaks the format.
+fn reported_parse_error_line(reported: &str) -> Option<usize> {
+    let located = reported.strip_prefix("Parse error: ")?;
+    let (line, rest) = located
+        .split_once(':')
+        .unwrap_or_else(|| panic!("expected `line:col: message`; got {reported:?}"));
+    let (col, message) = rest
+        .split_once(':')
+        .unwrap_or_else(|| panic!("expected a column after the line; got {reported:?}"));
+    let line: usize = line
+        .parse()
+        .unwrap_or_else(|_| panic!("the first field must be a line number; got {reported:?}"));
+    let col: usize = col
+        .parse()
+        .unwrap_or_else(|_| panic!("the second field must be a column number; got {reported:?}"));
+    assert!(
+        line >= 1 && col >= 1,
+        "line and column are 1-based; got {reported:?}"
+    );
+    assert!(
+        !message.trim().is_empty(),
+        "the position must be added to the parser's message, not replace it; got {reported:?}"
+    );
+    Some(line)
 }
 
 /// Captures the output of a `reify build` invocation.

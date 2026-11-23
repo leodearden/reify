@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use reify_core::diagnostics::Diagnostic;
 use crate::expr::{CompiledExpr, CompiledFunction};
-use crate::indeterminate::IndeterminateReason;
+use crate::indeterminate::{ComputeFailureKind, IndeterminateReason};
 use reify_core::dimension::DimensionVector;
 use reify_core::identity::{ConstraintNodeId, ValueCellId};
 use crate::persistent::PersistentMap;
@@ -332,9 +332,13 @@ pub enum SolveResult {
         /// `false` for auto(free) parameters where uniqueness is skipped.
         unique: bool,
     },
-    /// The constraints are infeasible — no solution exists.
+    /// The solve failed with coded diagnostics. This is the coded-failure
+    /// carrier: the diagnostics' codes name the cause, which is not always an
+    /// infeasibility proof (e.g. `ConstraintNonUnique`, `SolverBudgetExhausted`),
+    /// because [`Self::NoProgress`] carries no code (PRD
+    /// `docs/prds/v0_6/geometry-algebra-solver-unification.md` §7.5).
     Infeasible {
-        /// Diagnostics explaining why the constraints are infeasible.
+        /// Diagnostics explaining why the solve failed.
         diagnostics: Vec<Diagnostic>,
     },
     /// The solver made no progress (e.g., iteration limit reached).
@@ -439,6 +443,25 @@ pub trait ConstraintChecker: Send + Sync {
     /// place of any guess) and **MUST NOT** set it on a definite one.
     fn check(&self, input: &ConstraintInput) -> Vec<ConstraintResult>;
 
+    /// `check`, but with a compute-dispatch hook available to the evaluator for
+    /// `@optimized` function calls reached inside a checked constraint (task 10033).
+    ///
+    /// # Default implementation
+    ///
+    /// Checkers that do not override this method ignore `dispatch` entirely and
+    /// delegate unchanged to [`Self::check`] — back-compat for every existing
+    /// `ConstraintChecker` implementation and mock (`MockConstraintChecker`,
+    /// `CompileTimeIndeterminateChecker`, test checkers). Only an overriding checker
+    /// (e.g. `SimpleConstraintChecker`) threads `dispatch` down into its evaluator.
+    fn check_with_dispatch(
+        &self,
+        input: &ConstraintInput,
+        dispatch: Option<&dyn ComputeDispatch>,
+    ) -> Vec<ConstraintResult> {
+        let _ = dispatch;
+        self.check(input)
+    }
+
     /// Returns `true` if this checker is the compile-time indeterminate stub
     /// (`CompileTimeIndeterminateChecker` in `reify-compiler`), `false` for all
     /// real or test-injected checkers.
@@ -522,7 +545,8 @@ pub trait OptimizedImpl: Send + Sync {
 
 /// Callback for dispatching an `@optimized`-annotated function call to its
 /// registered ComputeNode implementation from *inside* the constraint solver's
-/// cost/constraint/objective evaluator (task #4880).
+/// cost/constraint/objective evaluator (task #4880) or the constraint checker's
+/// evaluator (task 10033).
 ///
 /// Lives in reify-ir (alongside [`ConstraintSolver`]) for the same dependency-inversion
 /// reason as [`OptimizedImpl`]: reify-constraints' `DimensionalSolver` threads an
@@ -536,14 +560,63 @@ pub trait OptimizedImpl: Send + Sync {
 /// Distinct from [`OptimizedImpl`], which dispatches *checker*-path `constraint def`
 /// constraints. `ComputeDispatch` dispatches *function-call* expressions (i.e.
 /// `CompiledFunction::optimized_target`) reached while evaluating a constraint,
-/// objective, or bound expression inside the solver's per-candidate cost loop.
+/// objective, or bound expression inside the solver's per-candidate cost loop, or
+/// a constraint expression inside the checker's post-solve verdict
+/// ([`ConstraintChecker::check_with_dispatch`]).
 pub trait ComputeDispatch: Send + Sync {
     /// Attempt to resolve `target` (a `CompiledFunction::optimized_target` string,
     /// e.g. `"solver::elastic_static"`) against `args` (the function's already-evaluated,
-    /// determined arguments). Returns `None` when `target` has no registered
-    /// implementation, or when the underlying dispatch failed/was cancelled — callers
-    /// fall back to ordinary body evaluation in either case.
-    fn dispatch(&self, target: &str, args: &[Value]) -> Option<Value>;
+    /// determined arguments).
+    ///
+    /// Callers that only need a value use [`ComputeDispatchOutcome::resolved_value`]
+    /// and fall back to ordinary body evaluation otherwise. A caller that reports
+    /// WHY a verdict is indeterminate (the constraint checker) reads the
+    /// [`ComputeDispatchOutcome::Failed`] arm.
+    fn dispatch(&self, target: &str, args: &[Value]) -> ComputeDispatchOutcome;
+
+    /// Told by the evaluator that the `failure` this dispatcher returned for
+    /// `target` was recovered by evaluating the function's own body, which
+    /// produced `fallback`. A `fallback` that is itself `Undef` means the
+    /// failure left an undefined value in the evaluation. The default ignores
+    /// the report.
+    fn fell_back_after_failure(
+        &self,
+        _target: &str,
+        _failure: ComputeDispatchFailure,
+        _fallback: &Value,
+    ) {
+    }
+}
+
+/// What one [`ComputeDispatch::dispatch`] call produced.
+#[derive(Debug, Clone)]
+pub enum ComputeDispatchOutcome {
+    /// The registered implementation completed with this value.
+    Resolved(Value),
+    /// No implementation is registered for `target`; the caller evaluates the
+    /// function body.
+    Unregistered,
+    /// The registered implementation ran and produced no value.
+    Failed(ComputeDispatchFailure),
+}
+
+/// Why a registered `@optimized` implementation produced no value, with the
+/// diagnostics it emitted (a caught panic's diagnostic included).
+#[derive(Debug, Clone)]
+pub struct ComputeDispatchFailure {
+    pub kind: ComputeFailureKind,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+impl ComputeDispatchOutcome {
+    /// The value of a [`Resolved`](Self::Resolved) outcome; `None` for every
+    /// other arm.
+    pub fn resolved_value(self) -> Option<Value> {
+        match self {
+            ComputeDispatchOutcome::Resolved(value) => Some(value),
+            ComputeDispatchOutcome::Unregistered | ComputeDispatchOutcome::Failed(_) => None,
+        }
+    }
 }
 
 /// Trait for constraint solving. Lives in reify-types for dependency inversion —
@@ -1262,9 +1335,27 @@ mod tests {
     struct NoopDispatch;
 
     impl ComputeDispatch for NoopDispatch {
-        fn dispatch(&self, _target: &str, _args: &[Value]) -> Option<Value> {
-            None
+        fn dispatch(&self, _target: &str, _args: &[Value]) -> ComputeDispatchOutcome {
+            ComputeDispatchOutcome::Unregistered
         }
+    }
+
+    #[test]
+    fn only_a_resolved_outcome_yields_a_value() {
+        let failure = ComputeDispatchFailure {
+            kind: ComputeFailureKind::Failed,
+            diagnostics: vec![Diagnostic::error("singular")],
+        };
+
+        assert_eq!(
+            ComputeDispatchOutcome::Resolved(Value::Int(7)).resolved_value(),
+            Some(Value::Int(7))
+        );
+        assert_eq!(ComputeDispatchOutcome::Unregistered.resolved_value(), None);
+        assert_eq!(
+            ComputeDispatchOutcome::Failed(failure).resolved_value(),
+            None
+        );
     }
 
     /// I1-style back-compat invariant (task #4880): adding the dispatch hook must not

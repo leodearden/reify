@@ -26,13 +26,13 @@
 //   - structure def EndEffectorTrack    (forward-pass simulator output, η; PRD §6.2)
 //   - fn end_effector_track / deviation_from_nominal / peak_deviation
 //                                       (lazy accessors over EndEffectorTrack, η; PRD §6.2)
+//   - fn simulate_trajectory            (forward-pass simulator, π; PRD §6.1)
 //
-// Module placement: registered last in `stdlib_loader.rs` — `std.trajectory`
-// has no compile-time dependency on any other stdlib module (every type it
-// references is a primitive, builtin parametric container, the `Time`
-// dimension from `std.units`, or a name declared in this file). The trailing
-// position keeps the v0.3 trajectory cluster visually grouped at the end of
-// the loader, ready for the planned `std.modal` / `std.dynamics` siblings.
+// Dependencies: it imports `std.modal.analysis` for `ModalResult` / `Mode`
+// (`EndEffectorTrack.modal_result`, the TOTS shapers' `modes`, and
+// `simulate_trajectory`'s `modal`). Every other type it references is a
+// primitive, a builtin type, the `Time` dimension from `std.units`, or a name
+// declared in this file.
 //
 // Encoding notes:
 //   1. `JointValue` is declared as a `pub type JointValue = Real` alias at
@@ -63,6 +63,12 @@
 //      path; R3b (4122) + R3c (4655) supply the runtime resolution in reify-stdlib.
 //      So the alias-collapse hazard is resolved for Pose3/Vec3 (both distinct from
 //      Real) and LocationId now carries its semantically correct type.
+
+module std.trajectory
+
+import std.modal.analysis
+import std.si_units
+import std.units
 
 // ── Type aliases ──────────────────────────────────────────────────────────
 
@@ -109,10 +115,10 @@ pub type Pose3 = Transform3
 // the dimensionless slot while `origin` KEEPS Length, because a position is
 // not a direction. Copying a neighbour's spelling is what produced both bugs.
 //
-// Two anchors make the ruling checkable rather than advisory:
-// `validate_dimensionless_unit_axis_vec3` (reify-stdlib/src/helpers.rs), the
-// evaluator guard that already REJECTED a dimensioned joint axis, and the
-// landed `ModalOptions.reference_direction : Vector3<Dimensionless>`
+// Two anchors make the ruling checkable rather than advisory: the joint axis
+// fields in kinematic.ri, which have since moved on to `Direction` and are read
+// by the evaluator through `reify_ir::decode_direction`, and the landed
+// `ModalOptions.reference_direction : Vector3<Dimensionless>`
 // (modal_analysis.ri).
 //
 // Vec3<Pressure> (and other non-Length instantiations) exercises the full
@@ -356,8 +362,9 @@ structure def PiecewisePolynomialProfile : Profile {
 // std.modal.analysis), tightened by task 4579 (family M). Cross-module
 // reference resolved via loader slot order (modal before trajectory),
 // mirroring `TOTSShaper.modes : List<Mode>` / `simulate_trajectory(modal:
-// ModalResult)`. The `EndEffectorTrack()` no-arg ctor in trajectory_fns.ri
-// is unaffected (ctor arg checking deferred; coercion shims handle runtime).
+// ModalResult)`. The `EndEffectorTrack()` no-arg ctor in
+// `simulate_trajectory`'s placeholder body below is unaffected (ctor arg
+// checking deferred; coercion shims handle runtime).
 structure def EndEffectorTrack {
     param mechanism        : Real
     param modal_result     : ModalResult
@@ -473,6 +480,37 @@ pub fn deviation_from_nominal(track: EndEffectorTrack, location: LocationId) -> 
 // Value::Undef location propagates Undef loudly (anti-silent-Undef per PRD);
 // see the section header above for the delegate dispatch path.
 pub fn peak_deviation(track: EndEffectorTrack, location: LocationId) -> Length { peak_deviation_at(track, location) }
+
+// ── simulate_trajectory ───────────────────────────────────────────────────────
+
+// `@optimized("trajectory::simulate")` causes the engine to insert a
+// ComputeNode with target == "trajectory::simulate" rather than body-inlining.
+// The trampoline lives at crates/reify-eval/src/trajectory_ops.rs (task π); it
+// marshals (profile, mech, modal) through the pure forward-pass simulator
+// (`reify-stdlib/src/trajectory/{trampoline,simulate}.rs`) and returns a real
+// `EndEffectorTrack` `Value`. The placeholder body below is NEVER evaluated on
+// the registered path — dispatch replaces the whole call with the ComputeNode.
+//
+// Signature deviation from PRD §6.1 `(profile, mechanism, modal_result)`:
+//   `mech : Real` — the kinematic `Mechanism` type lives in `std.kinematic`,
+//     which is loaded AFTER `std.trajectory` in the prelude sequence and
+//     so is unavailable here. Uses the bare `Real` placeholder, the uniform
+//     convention across this module (`PiecewisePolynomialProfile.mechanism :
+//     Real`, `EndEffectorTrack.mechanism : Real` — both above).
+//     TODO(mechanism-type): tighten to `Mechanism` once the kinematic- // ptodo:allow type-placeholder awaiting future type-system PRD
+//     completion PRD lands.
+//   `modal : ModalResult` — in-prelude (`std.modal.analysis` loads earlier).
+//
+// Unregistered-engine fallback: if the "trajectory::simulate" trampoline is not
+// registered, the engine body-inlines this placeholder (+ an Error diagnostic),
+// yielding an empty `EndEffectorTrack()`. Every test needing REAL dispatch must
+// call `reify_eval::compute_targets::register_compute_fns(&mut engine)` first
+// (plan design-decision-10).
+@optimized("trajectory::simulate")
+pub fn simulate_trajectory(p: Profile, mech: Real, modal: ModalResult) -> EndEffectorTrack {
+    EndEffectorTrack()
+}
+
 // ── Shaper marker trait (PRD §5) ──────────────────────────────────────────────
 
 // Shaper — marker trait for every input-shaper variant (PRD §5).
@@ -677,10 +715,7 @@ structure def RevoluteJointLimit : ActuatorLimit {
 //
 // Fields:
 //   - modes              : List<Mode>        — vibration modes resolved via
-//                                              the growing-prelude cross-module
-//                                              mechanism (std.modal.analysis
-//                                              loaded before std.trajectory per
-//                                              `stdlib_loader::stdlib_sources`).
+//                                              `import std.modal.analysis`.
 //   - actuator_limits    : List<JointLimit>  — per-joint force limits
 //                                              (JointLimit declared above).
 //   - velocity_limit     : Scalar<Velocity>  — RESOLVED(velocity-scalar): tightened

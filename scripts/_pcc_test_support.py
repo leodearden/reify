@@ -3,20 +3,28 @@ _pcc_test_support.py — shared, downward support for the scripts/test_pcc_*.py
 partitions of the scripts/prd-capability-check.py unittest suite.  It loads the
 hyphenated checker by path as `pcc` (the filename is not importable by name),
 and holds what more than one partition needs: the repo paths and value-cell
-constants, the grammar-e2e skip-guard (with the un-memoized status it wraps),
-the measured cache-denial signature and the shared TREE_SITTER_BIN stub
-factories.  A fixture only one partition uses lives in that partition.  It
-imports no test file and defines no TestCase.  Run the suite through tests/infra/test_prd_capability_check.sh, or
-one partition at a time with `python3 scripts/test_pcc_<area>.py`.
+constants, the committed example probe set parsed, the ProbeContext builders and
+the recording fake runner, the binary-trust fixtures (profile binaries, the
+sidecar, a hook-safe git repo, and the trust ctx built over them), the
+grammar-e2e and reify-e2e skip-guards (with the un-memoized grammar status it
+wraps; the reify-e2e policy itself lives in _pdv_test_support), the measured
+cache-denial signature, the shared TREE_SITTER_BIN stub factories and the
+grammar-generator stub factories.  A fixture only one partition uses lives in
+that partition.  It imports no test
+file and defines no TestCase.  Run the suite through
+tests/infra/test_prd_capability_check.sh, or one partition at a time with
+`python3 scripts/test_pcc_<area>.py`.
 """
 
 import functools
 import importlib.util
 import os
 import shlex
+import subprocess
 import sys
 import textwrap
-import unittest.mock
+
+from _pdv_test_support import require_reify_binary
 
 
 # ---------------------------------------------------------------------------
@@ -35,7 +43,7 @@ _spec.loader.exec_module(pcc)
 
 
 # ---------------------------------------------------------------------------
-# Locate the repo root for resolving committed probe-set paths
+# Repo root and the committed example probe set
 # ---------------------------------------------------------------------------
 
 _REPO_ROOT = os.path.dirname(_SCRIPTS_DIR)
@@ -53,32 +61,146 @@ _VALUE_CELLS_STDOUT = (
 )
 
 
+def example_probes():
+    """The committed example probe set, parsed by pcc.load_probe_set."""
+    with open(_EXAMPLE_PROBE_SET) as fh:
+        return pcc.load_probe_set(fh.read())
+
+
+# ---------------------------------------------------------------------------
+# ProbeContext builders — what a test hands α instead of an environment
+# ---------------------------------------------------------------------------
+
+def probe_context(**fields):
+    """A hermetic pcc.ProbeContext: this repo's root and bare PATH binary names.
+
+    Reads no environment variable, so a test's context never depends on what
+    the lane exported; **fields override any default, and every field not
+    named here keeps the class default.
+    """
+    defaults = {
+        "repo_root": _REPO_ROOT,
+        "reify_bin": "reify",
+        "tree_sitter_bin": "tree-sitter",
+    }
+    return pcc.ProbeContext(**{**defaults, **fields})
+
+
+def make_fixture_repo(tmpdir: str, *, parser_c: bool = False) -> str:
+    """Lay a fixture repo root out in `tmpdir` and return `tmpdir`.
+
+    Creates <tmpdir>/tree-sitter-reify/src/, plus an empty parser.c in it when
+    `parser_c`.  A test hands the result to ProbeContext as repo_root, since
+    α's own root discovery walks up from its file and no environment variable
+    redirects it.
+    """
+    src = os.path.join(tmpdir, "tree-sitter-reify", "src")
+    os.makedirs(src, exist_ok=True)
+    if parser_c:
+        open(os.path.join(src, "parser.c"), "w").close()
+    return tmpdir
+
+
+def write_profile_binary(root: str, relpath: str, mode: int = 0o755) -> str:
+    """Create a file at <root>/<relpath> with `mode` and return its absolute path."""
+    path = os.path.join(root, relpath)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write("#!/bin/sh\nexit 0\n")
+    os.chmod(path, mode)
+    return path
+
+
+def write_bin_sidecar(root: str, text: str) -> None:
+    """Write `text` to <root>/target/.reify-bin-sha, creating target/."""
+    target = os.path.join(root, "target")
+    os.makedirs(target, exist_ok=True)
+    with open(os.path.join(target, ".reify-bin-sha"), "w") as fh:
+        fh.write(text)
+
+
+def without_git_vars(environ):
+    """`environ` minus every GIT_* key.
+
+    Under a hook (pre-commit / pre-merge-commit) GIT_DIR is exported and would
+    aim a test's `git init` / `git commit` at the real repository.
+    """
+    return {k: v for k, v in environ.items() if not k.startswith("GIT_")}
+
+
+def trust_environ(**extra):
+    """os.environ minus every GIT_* key and REIFY_BIN, plus `extra`.
+
+    A lane-exported REIFY_BIN or a hook's GIT_DIR must never decide a
+    binary-trust test; `extra` names exactly what the test means to set.
+    """
+    environ = without_git_vars(os.environ)
+    environ.pop("REIFY_BIN", None)
+    return dict(environ, **extra)
+
+
+def git(root, *args):
+    """Run git in `root` with no GIT_* variable and no config write; return stdout."""
+    return subprocess.run(
+        ["git", "-C", root, "-c", "user.name=t", "-c", "user.email=t@t",
+         "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", *args],
+        env=without_git_vars(os.environ), capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+
+def make_git_fixture_repo(tmpdir: str) -> str:
+    """Make `tmpdir` a git repository with one empty commit; return its HEAD SHA."""
+    git(tmpdir, "init", "-q")
+    git(tmpdir, "commit", "-q", "--allow-empty", "-m", "x")
+    return git(tmpdir, "rev-parse", "HEAD")
+
+
+def trust_ctx(root, binary=None, sidecar_for_head=lambda _head: None):
+    """(binary path or None, ctx) over a fixture git repo in `root` holding only `binary`.
+
+    `binary` is the repo-relative profile binary to build, or None for none;
+    `sidecar_for_head(head)` is the sidecar text to write, or None for none.
+    The ctx comes from the public ProbeContext.from_environment(), so the REAL
+    trust home (scripts/reify-bin-freshness.sh) decides.  The caller owns
+    `root` and its lifetime.
+    """
+    root = make_fixture_repo(root)
+    head = make_git_fixture_repo(root)
+    path = None if binary is None else write_profile_binary(root, binary)
+    sidecar = sidecar_for_head(head)
+    if sidecar is not None:
+        write_bin_sidecar(root, sidecar)
+    return path, pcc.ProbeContext.from_environment(environ=trust_environ(), repo_root=root)
+
+
+def record_calls(runner):
+    """`runner` wrapped to record each call: (recorded, calls).
+
+    Each call appends (probe, ctx, timeout) to `calls`, so a test can assert
+    what was asked for, under which context and bound, as well as how often,
+    whatever `runner` answers.
+    """
+    calls = []
+
+    def recorded(probe, ctx, timeout=None):
+        calls.append((probe, ctx, timeout))
+        return runner(probe, ctx, timeout)
+    return recorded, calls
+
+
+def recording_runner(run=None):
+    """A fake ProbeRunner answering every probe with `run`, and its call list.
+
+    `run` defaults to a clean ProbeRun(0, "", "").  Calls are recorded as
+    record_calls does.
+    """
+    answer = pcc.ProbeRun(0, "", "") if run is None else run
+    return record_calls(lambda _probe, _ctx, _timeout=None: answer)
+
+
 # ---------------------------------------------------------------------------
 # Grammar-e2e skip-guard — can a grammar probe run in this lane?
 # ---------------------------------------------------------------------------
-
-# Helper: parser.c path for the skip-guard
-_TS_GRAMMAR_PARSER = os.path.join(_REPO_ROOT, "tree-sitter-reify", "src", "parser.c")
-
-
-def _patch_parser_c(exists: bool):
-    """Patch os.path.isfile so parser.c reports `exists`; other paths are real.
-
-    Keeps every case that depends on the generated grammar independent of
-    whether this lane happened to generate it, without blinding unrelated
-    isfile() calls.  Module-level because both the skip-guard tests and the
-    --grammar-substrate-status CLI tests now need it: the CLI checks the same
-    file, resolved through pcc._find_repo_root(), which agrees with _REPO_ROOT.
-    """
-    real_isfile = os.path.isfile
-
-    def fake_isfile(path):
-        if path == _TS_GRAMMAR_PARSER:
-            return exists
-        return real_isfile(path)
-
-    return unittest.mock.patch("os.path.isfile", side_effect=fake_isfile)
-
 
 # The grammar e2e needs tree-sitter to actually LOAD the reify grammar, which
 # isfile(parser.c) does not establish: in a sandboxed agent role the grammar is
@@ -86,11 +208,14 @@ def _patch_parser_c(exists: bool):
 # fails to load the language, observe() classifies it HARNESS_ERROR, and the
 # suite reported a spurious FAIL (exit 70) instead of a clean skip.
 #
-# Order matters.  isfile() runs first and short-circuits, so a lane that never
-# generated the grammar pays no subprocess; only when parser.c exists do we spend
-# one probe asking whether it can be loaded.
-def _compute_grammar_e2e_status() -> tuple:
-    """Return (available, reason) for the grammar e2e.  Never raises.
+# pcc.prepare_grammar_substrate is the definition this guard shares with main();
+# with ctx.grammar_generator None, as in the hermetic cases, nothing runs before
+# its parser.c check.
+def _compute_grammar_e2e_status(ctx=None, runner=None) -> tuple:
+    """Return (available, reason) for the grammar e2e under ctx.  Never raises.
+
+    ctx defaults to pcc.ProbeContext.from_environment() and runner to
+    pcc.run_probe; a test hands in a fixture-repo ctx and a fake runner.
 
     The bare `except Exception` is deliberate: the only sane failure mode here is
     "cannot confirm the substrate → skip the one test that needs it".  The
@@ -98,13 +223,13 @@ def _compute_grammar_e2e_status() -> tuple:
     It is defence-in-depth, not the fix — the trigger is fixed at source in
     run_probe(), which represents an unlaunchable binary rather than raising.
     """
-    if not os.path.isfile(_TS_GRAMMAR_PARSER):
-        return (False, f"{_TS_GRAMMAR_PARSER} not found — grammar never generated")
     try:
-        usable, reason = pcc.grammar_substrate_usable()
+        if ctx is None:
+            ctx = pcc.ProbeContext.from_environment()
+        ready, reason = pcc.prepare_grammar_substrate(ctx, runner=runner or pcc.run_probe)
     except Exception as exc:
         return (False, f"the grammar substrate could not be interrogated ({exc!r})")
-    return (bool(usable), reason)
+    return (bool(ready), reason)
 
 
 @functools.lru_cache(maxsize=1)
@@ -114,7 +239,8 @@ def _grammar_e2e_status() -> tuple:
     Deliberately not a module-level constant: the behavioural half spawns a real
     tree-sitter (on a cold cache, a cc compile of the grammar first), so as an
     import-time constant every importer paid it — including the ~140 hermetic
-    tests that need none of it.
+    tests that need none of it.  The first use also runs the grammar generator,
+    which the grammar e2e's own main() call would run anyway.
     """
     return _compute_grammar_e2e_status()
 
@@ -123,12 +249,21 @@ def _require_grammar_substrate(test) -> None:
     """skipTest unless a grammar probe can run here.  Call from a test body.
 
     Carries the MEASURED reason into the skip message: an unusable verdict caused
-    by tree-sitter exceeding _SUBSTRATE_PROBE_TIMEOUT_S on a loaded machine is a
+    by tree-sitter exceeding the substrate bound on a loaded machine is a
     coverage hole, not a real gap, and must be tellable from a genuine denial.
     """
     available, reason = _grammar_e2e_status()
     if not available:
         test.skipTest(f"grammar substrate unavailable — {reason}; skip grammar e2e")
+
+
+def _require_reify_binary(test):
+    """skipTest unless α would run a reify binary here; return the ctx it would use.
+
+    The policy lives once, in _pdv_test_support.require_reify_binary; this asks
+    it about the α instance these partitions load.
+    """
+    return require_reify_binary(test, pcc=pcc)
 
 
 # ---------------------------------------------------------------------------
@@ -211,10 +346,20 @@ def _ts_stub_hangs(tmpdir: str, name: str = "ts_stub_hangs", seconds: int = 5) -
     """Stub that never answers within the test's patched timeout.
 
     Models a tree-sitter wedged on ~/.cache/tree-sitter/lock/<grammar>.lock.
-    Tests pair it with a sub-second _SUBSTRATE_PROBE_TIMEOUT_S, so the sleep only
-    has to outlast that bound.
+    Tests pair it with a sub-second ProbeContext.substrate_timeout_s, so the sleep
+    only has to outlast that bound.
     """
     return _write_ts_stub(tmpdir, name, f"sleep {seconds}\n")
+
+
+def _argv_echo_stub(tmpdir: str, name: str = "argv_echo") -> str:
+    """Stub that prints the argv it was launched with, one element per line, $0 first.
+
+    Stands in for either binary.  What the child prints is the only outside
+    measurement of the command that really ran, so a test can compare it with
+    the command a ProbeRun or a --json record says ran.
+    """
+    return _write_ts_stub(tmpdir, name, """printf '%s\\n' "$0" "$@"\n""")
 
 
 def _ts_stub_not_executable(tmpdir: str, name: str = "ts_stub_not_exec") -> str:
@@ -227,3 +372,39 @@ def _ts_stub_not_executable(tmpdir: str, name: str = "ts_stub_not_exec") -> str:
     path = _write_ts_stub(tmpdir, name, "exit 0\n")
     os.chmod(path, 0o644)
     return path
+
+
+# ---------------------------------------------------------------------------
+# Grammar-generator stub factories used by more than one partition, so they all
+# share one definition of "what a succeeding / failing / no-op generator looks
+# like".  Each records its run in `marker`.
+# ---------------------------------------------------------------------------
+
+def _generator_stub_succeeds(tmpdir, repo_root, marker):
+    """A generator that records its run in `marker`, writes parser.c and reports on stdout."""
+    src = os.path.join(repo_root, "tree-sitter-reify", "src")
+    return _write_ts_stub(tmpdir, "generate_succeeds", f"""\
+        echo run >> {shlex.quote(marker)}
+        mkdir -p {shlex.quote(src)}
+        : > {shlex.quote(os.path.join(src, "parser.c"))}
+        echo "tree-sitter: generated parser files"
+        exit 0
+    """)
+
+
+def _generator_stub_fails(tmpdir, marker):
+    """A generator that records its run in `marker` and fails as a lane without the CLI does."""
+    return _write_ts_stub(tmpdir, "generate_fails", f"""\
+        echo run >> {shlex.quote(marker)}
+        echo "ERROR: tree-sitter CLI not found on PATH." >&2
+        echo "Install via: cargo install tree-sitter-cli" >&2
+        exit 1
+    """)
+
+
+def _generator_stub_writes_nothing(tmpdir, marker):
+    """A generator that records its run in `marker` and exits 0 without writing parser.c."""
+    return _write_ts_stub(tmpdir, "generate_writes_nothing", f"""\
+        echo run >> {shlex.quote(marker)}
+        exit 0
+    """)

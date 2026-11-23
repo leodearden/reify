@@ -10,6 +10,7 @@ build = "build.rs"
 reify-build-utils.workspace = true
 
 [dependencies]
+workspace-feature-union.workspace = true
 reify-ir.workspace = true
 reify-kernel-gmsh = { workspace = true }
 faer = { workspace = true }
@@ -20,6 +21,7 @@ tracing.workspace = true
 linear-solve-fault-injection = []
 
 [dev-dependencies]
+reify-core.workspace = true
 reify-ir.workspace = true
 reify-test-support.workspace = true
 # Test targets enable the inert linear_solve fault hook this way; release builds never do.

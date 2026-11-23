@@ -31,7 +31,9 @@ use crate::primitive_attribute_seed::{
     is_seedable_primitive, parse_bbox_xyz_min, record_solid_attribute,
     seed_primitive_attributes_for_handle,
 };
-use crate::realization_cache::{ConversionSlot, NO_OPTIONS, RealizationCache};
+use crate::realization_cache::{
+    ConversionSlot, NO_OPTIONS, RealizationCache, RealizationCacheEntry,
+};
 use crate::sub_instance_scope::{direct_sub_instances, instance_value_overlay};
 use crate::sweep_classifier::{
     SweptKind, SweptKindTable, classify_swept_body, swept_kind_to_sweep_params,
@@ -330,7 +332,7 @@ struct RealizationOpsInput<'a> {
     realization_name: Option<&'a str>,
     realization_span: SourceSpan,
     kernel_error_out: &'a mut Option<ErrorRef>,
-    realization_cache: &'a mut RealizationCache<KernelHandle>,
+    realization_cache: &'a mut RealizationCache<RealizationCacheEntry>,
     demanded_tol: Option<f64>,
     // Task 4050 step-8: the realization's requested terminal [`ReprKind`]
     // (υ-derived in build/build_snapshot; `ReprKind::BRep` everywhere else).
@@ -375,13 +377,14 @@ struct RealizationOpsInput<'a> {
     // the `DispatchTestState` pragma-agnostic tests pass `None`.
     prefer_kernel: Option<&'a str>,
     // Task 3437 (ζ): only the TERMINAL realization of an entity (the one
-    // with the highest index, i.e. `r_idx + 1 == template.realizations.len()`)
-    // should probe or insert into the `RealizationCache`. Intermediate
-    // realizations all share the same `entity` cache key; if we probe/insert
-    // for them we get false hits (realization N finds realization N-1's
-    // result for the same entity key) which violates the per-build
-    // reset invariant and produces wrong geometry (the intermediate let-
-    // binding gets the terminal's handle instead of its own).
+    // `terminal_realization_index` picks) should probe or insert into the
+    // `RealizationCache`. All of an entity's realizations share the same
+    // `entity` cache key; if a non-terminal probes/inserts we get false hits
+    // (one realization finds another's result for the same entity key) which
+    // violates the per-build reset invariant and produces wrong geometry (an
+    // intermediate let-binding gets the terminal's handle instead of its own).
+    // The same flag selects the one realization whose result the post-loop
+    // VolumeMesh conversion (morph, else remesh) converts.
     is_terminal_realization: bool,
     // Task 4744 β (step-16): bundled morph-dispatch inputs. When a producer
     // + prior source + new-BRep graph are all present, the VolumeMesh
@@ -446,7 +449,7 @@ impl<'a> RealizationOpsInput<'a> {
         realization_id: &'a RealizationNodeId,
         realization_span: SourceSpan,
         kernel_error_out: &'a mut Option<ErrorRef>,
-        realization_cache: &'a mut RealizationCache<KernelHandle>,
+        realization_cache: &'a mut RealizationCache<RealizationCacheEntry>,
         dispatch_count: &'a mut usize,
         dispatch_count_by_realization: &'a mut HashMap<RealizationNodeId, usize>,
     ) -> Self {
@@ -656,6 +659,85 @@ fn template_build_steps(
         }
     }
     steps
+}
+
+/// Every template's build walk (see [`template_build_steps`]), index-aligned with
+/// `templates`.
+///
+/// `demand_seed` is the selective-warm seed from
+/// [`Engine::demand_scoped_unified_pass`]; `None` (full scope, or
+/// LegacyMultiPass) keeps the uncovered-realization fallback append-all. Its
+/// realization ids are borrowed once here, not cloned per uncovered realization
+/// (β, task 4738 amend).
+fn template_build_walks(
+    templates: &[reify_compiler::TopologyTemplate],
+    schedule: Option<&[NodeId]>,
+    demand_seed: Option<&HashSet<NodeId>>,
+) -> Vec<Vec<BuildStep>> {
+    let demanded_rids: Option<HashSet<&RealizationNodeId>> = demand_seed.map(|seed| {
+        seed.iter()
+            .filter_map(|n| {
+                if let NodeId::Realization(r) = n {
+                    Some(r)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    });
+    templates
+        .iter()
+        .map(|template| template_build_steps(template, schedule, demanded_rids.as_ref()))
+        .collect()
+}
+
+/// The index of `template`'s terminal realization: the only one that may probe
+/// or fill the realization cache under the template's entity key.
+///
+/// It is the highest-declared realization that no sibling consumes through a
+/// bare (undotted) `GeomRef::Sub` name, or the highest-declared one when every
+/// realization is consumed (a realization cycle). It is a pure function of the
+/// template, so every build walk, full or demand-pruned, agrees on it. `None`
+/// for a template with no realizations.
+fn terminal_realization_index(template: &reify_compiler::TopologyTemplate) -> Option<usize> {
+    let last = template.realizations.len().checked_sub(1)?;
+    let consumed: HashSet<&str> = template
+        .realizations
+        .iter()
+        .flat_map(|realization| {
+            realization
+                .operations
+                .iter()
+                .flat_map(sub_refs_in_op)
+                .filter(move |name| {
+                    !name.contains('.') && realization.name.as_deref() != Some(*name)
+                })
+        })
+        .collect();
+    let unconsumed = template.realizations.iter().rposition(|r| {
+        r.name
+            .as_deref()
+            .is_none_or(|name| !consumed.contains(name))
+    });
+    Some(unconsumed.unwrap_or(last))
+}
+
+/// The realizations a build walk executes, in execution order.
+#[cfg(debug_assertions)]
+fn realization_exec_order(
+    templates: &[reify_compiler::TopologyTemplate],
+    template_steps: &[Vec<BuildStep>],
+) -> Vec<RealizationNodeId> {
+    templates
+        .iter()
+        .zip(template_steps)
+        .flat_map(|(template, steps)| {
+            steps.iter().filter_map(move |step| match step {
+                BuildStep::Realize(r_idx) => Some(template.realizations[*r_idx].id.clone()),
+                BuildStep::HydrateCell(_) => None,
+            })
+        })
+        .collect()
 }
 
 /// Everything [`Engine::hydrate_value_cell_in_loop`] reads to resolve one value
@@ -3257,6 +3339,40 @@ fn resolve_instance_color(
 /// (`build_with_geometry_output` and `build_snapshot`) and threaded through
 /// every call that loop makes.
 ///
+/// The redispatch-once signal lives here too, for the same reason: see
+/// [`RedispatchPassState::redispatched`], whose doc is the one statement of
+/// how it differs from the node's `realization_inputs`.
+///
+/// COST OF THAT SCOPE, stated as plainly as `failed_pretessellations`' cost is
+/// above. Build-scoping makes the redispatch UNCONDITIONAL PER BUILD: every
+/// compute node with a kernel-backed geometry arg is re-dispatched once on
+/// every `build_snapshot`, whether or not anything upstream moved.
+/// `run_compute_dispatch` has no in-memory result cache: its only
+/// short-circuit is the persistent lookup (`persistent_lookup`), and that is
+/// live in production, because reify-cli's `configured_eval_engine` attaches a
+/// persistent cache by default. The cost therefore has two shapes:
+///
+///   * No cache attached: an idle warm rebuild re-runs every
+///     geometry-consuming `@optimized` trampoline (an FEA solve, a mesh morph)
+///     from scratch, O(such nodes) per tick.
+///   * Cache attached: this pass dispatches every node under ONE shared
+///     persistent key (the `ContentHash(0)` at its `run_compute_dispatch`
+///     call). For a target in `PERSISTABLE_TARGETS` such as
+///     `solver::elastic_static`, the warm redispatch would hit the entry the
+///     cold build persisted and silently return the pre-tick result. This is
+///     reasoned from the code path, not measured.
+///
+/// Neither shape is a live regression: `build_snapshot` has no non-test
+/// callers today, and the shared key's cold-path hazard predates this scope.
+/// Before `build_snapshot` acquires a production caller, two things must
+/// happen, in order. First, the shared key is fixed, owned by #7052. Second,
+/// the per-build cost is paid down by a FRESHNESS gate, owned by #7576: skip
+/// when the output cell's cache freshness is `Final` and no realization in the
+/// node's `realization_inputs` moved on this tick. That record is a superset of
+/// what the node reads (see `redispatched`), so such a gate errs toward
+/// re-dispatching. It must NOT be built by widening `redispatched`'s lifetime:
+/// a signal that outlives the build closes later builds to the node.
+///
 /// COVERAGE, stated honestly. `failed_pretessellations` and
 /// `contentless_skips` are each pinned by a counterfactual test in
 /// `reify-eval/tests/harness_engine/redispatch_template_order_regression.rs`
@@ -3281,6 +3397,30 @@ struct RedispatchPassState {
     /// each dispatches to. Deduplicated by node id — a node skipped by three
     /// trailing templates is recorded once.
     contentless_skips: HashMap<reify_core::ComputeNodeId, String>,
+    /// Compute nodes this BUILD has already redispatched: the Phase-1 candidate
+    /// gate of [`Engine::redispatch_geometry_consuming_compute_nodes`], and the
+    /// only "already done" signal that pass reads. Build-lifetime by
+    /// construction, so the next build re-admits every node.
+    ///
+    /// The same write also extends the node's
+    /// `ComputeNodeData::realization_inputs`, which answers a different
+    /// question on a different lifetime. That field is the GRAPH-lifetime
+    /// DEPENDENCY RECORD: `deps.rs` builds reverse edge #10 (Realization →
+    /// Compute) from it, and `compute_cache_key` folds it into the key. Nothing
+    /// may read it as an "already done" flag. The graph outlives the build:
+    /// `edit_param` carries it forward, and `build_snapshot` reuses it without
+    /// calling `eval()`. Such a read would therefore close every later build to
+    /// the node.
+    ///
+    /// The record is a SUPERSET of what the node currently reads, not an exact
+    /// copy. The write unions rather than replaces, because a replacing write
+    /// would drop the edge of an arg that went symbolic on this build and
+    /// under-evict on a later edit. A realization that a value-selected arg
+    /// stopped reading therefore stays recorded: for example
+    /// `order_probe(if flag then a else b)` after `edit_param(flag)` keeps `a`.
+    /// That errs toward over-eviction, the safe direction. A reader that needs
+    /// exact consumption must not take it from that field.
+    redispatched: HashSet<reify_core::ComputeNodeId>,
 }
 
 impl RedispatchPassState {
@@ -3797,6 +3937,7 @@ impl Engine {
                     &module.templates,
                 );
                 let build_steps = template_build_steps(template, unified_schedule.as_deref(), None);
+                let terminal_idx = terminal_realization_index(template);
                 let realized_reprs_for_hydration =
                     Engine::realized_reprs_snapshot(&self.eval_state);
                 for build_step in &build_steps {
@@ -3898,7 +4039,7 @@ impl Engine {
                         // Task #3443: thread module-scope #kernel(...) pragma
                         // from the public entry point into the per-op dispatcher.
                         .with_prefer_kernel(module.kernel_pragma.as_deref())
-                        .with_is_terminal_realization(r_idx + 1 == template.realizations.len())
+                        .with_is_terminal_realization(Some(r_idx) == terminal_idx)
                         // Task 4744 β step-20: feed the real morph inputs
                         // (producer + prior-tick source + new BRep graph),
                         // bound to `morph_io` just above the call.
@@ -4106,7 +4247,7 @@ impl Engine {
             // content guard skipped and that no later template's pass rescued.
             // Emitted here — after the loop — so a node redispatched for real
             // during its own template is not reported.
-            self.emit_contentless_redispatch_warnings(&redispatch_pass_state, &mut diagnostics);
+            Self::emit_contentless_redispatch_warnings(&redispatch_pass_state, &mut diagnostics);
 
             if step_handles.is_empty() {
                 // Only emit the summary diagnostic when ops were actually declared
@@ -4329,19 +4470,6 @@ impl Engine {
         // build until the per-realization op loop, so the dispatch reset here
         // is byte-identical to the prior pre-`check()` placement.
         self.reset_per_build_state(BuildSurface::Build);
-        // Task 4355 β: capture declaration-order execution order for the
-        // assert_dag_complete gate.  Realizations are visited in the same
-        // order as the build loop below (templates × realizations in
-        // declaration order, which compile_builder/entities_phase guarantees
-        // is topological for non-recursive structures).  Captured here, once,
-        // before any kernel work, so the assert can fire even when the
-        // geometry block is skipped (no kernel registered).
-        #[cfg(debug_assertions)]
-        let exec_order: Vec<RealizationNodeId> = module
-            .templates
-            .iter()
-            .flat_map(|t| t.realizations.iter().map(|r| r.id.clone()))
-            .collect();
         // PLACEMENT: AFTER check() — task 3103 consolidated the lifecycle so
         // eval() preserves active_purpose_bindings across the call, making the
         // pre-check workaround obsolete. All four surfaces (build /
@@ -4488,6 +4616,24 @@ impl Engine {
         // LegacyMultiPass → (None, None), byte-unchanged.
         let (unified_pass, demand_seed_build) = self.demand_scoped_unified_pass(&HashSet::new());
 
+        // Each template's build walk (see `template_build_walks`), index-aligned
+        // with `module.templates`. Computed once so the realization loop below and
+        // the debug assert_dag_complete gate are driven by the SAME order. Under
+        // build() full_scope is always true → `demand_seed_build` is None → the
+        // fallback appends every uncovered realization (byte-identical, step-3(b)
+        // guard preserved); the defensive selective branch (`Some(seed)`) prunes
+        // hidden ones.
+        let template_steps = template_build_walks(
+            &module.templates,
+            unified_pass.as_ref().map(|p| p.schedule.as_slice()),
+            demand_seed_build.as_ref(),
+        );
+        // Task 4355 β: the assert_dag_complete gate checks the walk the loop below
+        // performs; computed outside the geometry block so it still fires with no
+        // kernel registered.
+        #[cfg(debug_assertions)]
+        let exec_order = realization_exec_order(&module.templates, &template_steps);
+
         // Task 4358 ε: the value cells read by ANY realization (the union of every
         // realization trace's `reads`). A selector cell in this set is consumed as
         // a curated fillet/chamfer/draft edge/face list, so
@@ -4566,26 +4712,6 @@ impl Engine {
             // (task 4358 ε step-8) so it survives to the post-geometry Constraint
             // re-check; it is still populated here by `snapshot_named_steps`.
 
-            // β (task 4738) amend: pre-extract demanded realization IDs as
-            // references to avoid a per-iteration `RealizationNodeId` clone in
-            // the uncovered-realization fallback.  Under build() full_scope is
-            // always true → `demand_seed_build` is None → `demanded_rids_build`
-            // is None → the fallback short-circuits via `is_none_or` and appends
-            // all (byte-identical, step-3(b) guard preserved).  The defensive
-            // selective branch is still covered without per-iteration alloc.
-            let demanded_rids_build: Option<HashSet<&RealizationNodeId>> =
-                demand_seed_build.as_ref().map(|seed| {
-                    seed.iter()
-                        .filter_map(|n| {
-                            if let NodeId::Realization(r) = n {
-                                Some(r)
-                            } else {
-                                None
-                            }
-                        })
-                        .collect()
-                });
-
             // GR-034: resolve once per eval-loop entry; threaded per-iteration.
             let long_chain_threshold = crate::dispatcher::long_chain_threshold_from_env();
             // Task #5105 δ (INV-GEO-1): same shape — snapshot the Engine's
@@ -4645,15 +4771,12 @@ impl Engine {
                     &mut diagnostics,
                     &module.templates,
                 );
-                // Task 4358 ε: order this template's realizations + selector/query
-                // value-cells for the build walk (see `template_build_steps`).
-                // Under build() full_scope is always true → demanded_rids_build
+                // Task 4358 ε: this template's realizations + selector/query
+                // value-cells in build-walk order (see `template_build_steps`).
+                // Under build() full_scope is always true → demand_seed_build
                 // is None → every uncovered realization is appended.
-                let build_steps = template_build_steps(
-                    template,
-                    unified_pass.as_ref().map(|p| p.schedule.as_slice()),
-                    demanded_rids_build.as_ref(),
-                );
+                let build_steps = &template_steps[t_idx];
+                let terminal_idx = terminal_realization_index(template);
                 // Fail-closed region gate (task #4812, P0β): build the repr
                 // snapshot once before the step loop. Reprs from bodies in PRIOR
                 // templates are already in eval_state at this point. Reprs
@@ -4665,7 +4788,7 @@ impl Engine {
                 // O(cells × realizations) per-HydrateCell rebuild.
                 let realized_reprs_for_hydration =
                     Engine::realized_reprs_snapshot(&self.eval_state);
-                for build_step in &build_steps {
+                for build_step in build_steps {
                     let (r_idx, realization) = match build_step {
                         BuildStep::Realize(r_idx) => (*r_idx, &template.realizations[*r_idx]),
                         BuildStep::HydrateCell(cell_id) => {
@@ -4765,7 +4888,7 @@ impl Engine {
                         // Task #3443: thread module-scope #kernel(...) pragma
                         // from the public entry point into the per-op dispatcher.
                         .with_prefer_kernel(module.kernel_pragma.as_deref())
-                        .with_is_terminal_realization(r_idx + 1 == template.realizations.len())
+                        .with_is_terminal_realization(Some(r_idx) == terminal_idx)
                         // Task 4744 β step-20: feed the real morph inputs
                         // (producer + prior-tick source + new BRep graph),
                         // bound to `morph_io` just above the call.
@@ -4981,7 +5104,7 @@ impl Engine {
             // content guard skipped and that no later template's pass rescued.
             // Emitted here — after the loop — so a node redispatched for real
             // during its own template is not reported.
-            self.emit_contentless_redispatch_warnings(&redispatch_pass_state, &mut diagnostics);
+            Self::emit_contentless_redispatch_warnings(&redispatch_pass_state, &mut diagnostics);
 
             if step_handles.is_empty() {
                 // No geometry handles available — nothing to export.
@@ -5058,14 +5181,16 @@ impl Engine {
         // No-op when eval_state is None (empty module or compile-only build).
         //
         // SKIP when the unified planner detected a CYCLE: cyclic (and downstream-
-        // stranded) nodes land in `unified_pass.residue` and are excluded from
-        // `exec_order`, so `check_dag_complete` would flag the cycle's unavoidable
-        // backward edge as a false "incomplete DAG" violation. A cycle is NOT a
-        // completeness bug — the executor diagnoses it via E_EVAL_CYCLE /
-        // unresolvable-Sub (appended just below). Post-γ (#4954) geometry lets carry
-        // value cells, so a mutual geometry `let` cycle (`a = translate(b)`,
-        // `b = rotate(a)`) now surfaces a value-cell/realization cycle here where
-        // pre-γ it had no value-cell trace (geometry_sibling_realization_cycle_*).
+        // stranded) nodes land in `unified_pass.residue`, which `schedule` omits;
+        // `template_build_steps`' fallback then appends their realizations after
+        // the scheduled ones, so they ARE in `exec_order` — and no order satisfies a
+        // cycle, so `check_dag_complete` would flag its unavoidable edge as a false
+        // `BackwardEdge`. A cycle is NOT a completeness bug — the executor
+        // diagnoses it via E_EVAL_CYCLE / unresolvable-Sub (appended just below).
+        // Post-γ (#4954) geometry lets carry value cells, so a mutual geometry
+        // `let` cycle (`a = translate(b)`, `b = rotate(a)`) now surfaces a
+        // value-cell/realization cycle here where pre-γ it had no value-cell trace
+        // (geometry_sibling_realization_cycle_*).
         #[cfg(debug_assertions)]
         if let Some(state) = self.eval_state.as_ref() {
             let cycle_detected = unified_pass
@@ -5789,6 +5914,7 @@ impl Engine {
                 &mut diagnostics,
                 &module.templates,
             );
+            let terminal_idx = terminal_realization_index(template);
             for (r_idx, realization) in template.realizations.iter().enumerate() {
                 let demanded_tol = demanded_tols
                     .get(t_idx)
@@ -5834,7 +5960,7 @@ impl Engine {
                     // Task #3443: the distance query path is outside the
                     // user's design pragma scope — pass None (lex-min default).
                     .with_prefer_kernel(None)
-                    .with_is_terminal_realization(r_idx + 1 == template.realizations.len())
+                    .with_is_terminal_realization(Some(r_idx) == terminal_idx)
                     // Task 4744 β step-16: distance query never demands
                     // VolumeMesh, so the morph arm never fires here.
                     .with_morph_io(crate::morph_producer::MorphDispatchIo::disabled())
@@ -6623,7 +6749,7 @@ impl Engine {
         meta_map: &HashMap<String, HashMap<String, String>>,
         topology_attribute_table: &mut TopologyAttributeTable,
         swept_kind_table: &mut SweptKindTable,
-        realization_cache: &mut RealizationCache<KernelHandle>,
+        realization_cache: &mut RealizationCache<RealizationCacheEntry>,
         volume_mesh_sources: &mut VolumeMeshSources,
         demanded_tols: &[Vec<Option<f64>>],
         tessellation_budgets: &[Vec<f64>],
@@ -6727,22 +6853,15 @@ impl Engine {
             .map(|t| vec![None; t.realizations.len()])
             .collect();
 
-        // β (task 4738) amend: pre-extract demanded realization IDs as references
-        // to avoid a per-iteration `RealizationNodeId` clone in the uncovered-
-        // realization fallback loop.  Under full scope (`demand_seed = None`)
-        // this is `None` → the fallback takes the `is_none_or` short-circuit
-        // and appends all, byte-identical to pre-β.
-        let demanded_rids: Option<HashSet<&RealizationNodeId>> = demand_seed.map(|seed| {
-            seed.iter()
-                .filter_map(|n| {
-                    if let NodeId::Realization(r) = n {
-                        Some(r)
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        });
+        // Each template's tessellate walk (see `template_build_walks`), index-
+        // aligned with `module.templates`. Under full scope (`demand_seed = None`)
+        // the fallback appends every uncovered realization, byte-identical to
+        // pre-β.
+        let template_steps = template_build_walks(
+            &module.templates,
+            unified_pass.map(|p| p.schedule.as_slice()),
+            demand_seed,
+        );
         // GR-034: resolve once per eval-loop entry; threaded per-iteration.
         let long_chain_threshold = crate::dispatcher::long_chain_threshold_from_env();
 
@@ -6776,20 +6895,17 @@ impl Engine {
                 diagnostics,
                 &module.templates,
             );
-            // θ (task 4361) step-6: order this template's realizations + selector/
-            // query value-cells for the tessellate walk — the same
+            // θ (task 4361) step-6: this template's realizations + selector/
+            // query value-cells in tessellate-walk order — the same
             // `template_build_steps` build() and build_snapshot() use.
-            let build_steps = template_build_steps(
-                template,
-                unified_pass.map(|p| p.schedule.as_slice()),
-                demanded_rids.as_ref(),
-            );
+            let build_steps = &template_steps[t_idx];
+            let terminal_idx = terminal_realization_index(template);
             // tessellate_from_values is a static fn without snapshot access, so
             // the hydration ladder gets an empty repr map (fail-open: the gate is
             // skipped for an unknown repr, preserving today's tessellation
             // behaviour).
             let realized_reprs_tess: HashMap<RealizationNodeId, ReprKind> = HashMap::new();
-            for build_step in &build_steps {
+            for build_step in build_steps {
                 let (r_idx, realization) = match build_step {
                     BuildStep::Realize(r_idx) => (*r_idx, &template.realizations[*r_idx]),
                     BuildStep::HydrateCell(cell_id) => {
@@ -6898,7 +7014,7 @@ impl Engine {
                     // Task #3443: thread module-scope #kernel(...) pragma
                     // from the tessellate entry point into the per-op dispatcher.
                     .with_prefer_kernel(module.kernel_pragma.as_deref())
-                    .with_is_terminal_realization(r_idx + 1 == template.realizations.len())
+                    .with_is_terminal_realization(Some(r_idx) == terminal_idx)
                     // Task 4744 β step-16: tessellate path never demands
                     // VolumeMesh, so the morph arm never fires here.
                     .with_morph_io(crate::morph_producer::MorphDispatchIo::disabled())
@@ -7113,7 +7229,7 @@ impl Engine {
     /// 1. **Probes ONLY when `is_terminal_realization && demanded_tol.is_some()
     ///    && realization_name.is_some()`.** A guard-fail (or a plain cache
     ///    miss) returns `false` with zero side effects on `outputs` — no
-    ///    push/insert on any output view, and the fail-closed
+    ///    push/insert on any output view (`swept_kind_table` included), and the fail-closed
     ///    `topology_attribute_table` debug_assert (invariant #4) never runs.
     ///    Pinned by
     ///    `probe_realization_cache_guard_requires_terminal_named_and_tol`.
@@ -7123,15 +7239,21 @@ impl Engine {
     ///    cache's tol partial order (`cached_tol ≤ requested_tol`
     ///    satisfies). Pinned by
     ///    `probe_realization_cache_falls_back_to_brep_and_honors_tol_partial_order`.
-    /// 3. **On a hit, the FULL cold-path side-effect set — and nothing
+    /// 3. **On a hit, the cold-path side-effect set — and nothing
     ///    else.** `step_handles` push, `named_steps` + `named_step_reprs`
     ///    insert, `produced_repr_out` write, the `debug_assert_eq!`
-    ///    consistency guard; dispatch counters are left at their entry
-    ///    values, and the function returns before the op loop ever runs.
-    ///    Pinned by
+    ///    consistency guard, and the entry's swept kind (if any) recorded into
+    ///    `swept_kind_table` under the cached handle's id; dispatch counters
+    ///    are left at their entry values, and the function returns before the
+    ///    op loop ever runs. One exception: a terminal that a post-loop
+    ///    VolumeMesh/Voxel edge replaced caches `swept_kind: None`, so the
+    ///    cold-only entry at the meshed-from body's id is not restored (the
+    ///    egress-body facet, owned by S2 κ #9263). Pinned by
     ///    `probe_realization_cache_primary_hit_applies_full_side_effect_set`
-    ///    (single hit) and, cold-vs-warm,
-    ///    `probe_realization_cache_cold_warm_side_effect_set_parity`.
+    ///    and `probe_realization_cache_hit_on_entry_without_swept_kind_records_none`
+    ///    (single hit), cold-vs-warm over a Box and a swept fixture by
+    ///    `probe_realization_cache_cold_warm_side_effect_set_parity`, and the
+    ///    exception by `voxel_replaced_terminal_caches_and_restores_no_swept_kind`.
     /// 4. **On a hit, the cache-served handle has NO `topology_attribute_table`
     ///    entry — enforced fail-closed.** After #4351's `KernelHandle`
     ///    re-key, cross-kernel collision at this table is impossible by
@@ -7155,7 +7277,7 @@ impl Engine {
     ///    evicted).
     #[allow(clippy::too_many_arguments)]
     fn probe_realization_cache(
-        realization_cache: &RealizationCache<KernelHandle>,
+        realization_cache: &RealizationCache<RealizationCacheEntry>,
         realization_id: &RealizationNodeId,
         realization_name: Option<&str>,
         demanded_repr: ReprKind,
@@ -7170,7 +7292,8 @@ impl Engine {
         // requires a name to write into the map), probe the per-engine
         // `RealizationCache` at `(entity_id, cache_repr, demanded_tol)`. On
         // hit we push the cached terminal handle, write
-        // `named_steps[name] = cached_handle`, and return `true` —
+        // `named_steps[name] = cached_handle`, record the entry's swept kind,
+        // and return `true` —
         // preserving the post-condition the success path establishes in the
         // caller, [`Self::execute_realization_ops`]. On miss (or when either
         // guard is `None`) we return `false`; the caller then falls through
@@ -7235,17 +7358,18 @@ impl Engine {
         {
             let cache_probe = realization_cache
                 .lookup(&realization_id.entity, cache_repr, tol, NO_OPTIONS)
-                .map(|&handle| (handle, cache_repr))
+                .map(|entry| (entry, cache_repr))
                 .or_else(|| {
                     if cache_repr != ReprKind::BRep {
                         realization_cache
                             .lookup(&realization_id.entity, ReprKind::BRep, tol, NO_OPTIONS)
-                            .map(|&handle| (handle, ReprKind::BRep))
+                            .map(|entry| (entry, ReprKind::BRep))
                     } else {
                         None
                     }
                 });
-            if let Some((cached_handle, resolved_repr)) = cache_probe {
+            if let Some((entry, resolved_repr)) = cache_probe {
+                let cached_handle = entry.handle;
                 // Fail-closed cross-kernel collision assert (task 4349,
                 // retired to this form by task θ / #5064): `TopologyAttributeTable`
                 // is keyed by the full `KernelHandle` (kernel + kernel-local
@@ -7293,6 +7417,9 @@ impl Engine {
                 // realization's cross-realization `GeomRef::Sub` parent must
                 // be resolved by name rather than by bare handle-id.
                 outputs.named_step_reprs.insert(name.to_string(), resolved_repr);
+                if let Some(kind) = &entry.swept_kind {
+                    outputs.swept_kind_table.record(cached_handle.id, kind.clone());
+                }
                 // Step-10 (task ε / 3436): the [`RealizationCache`] key includes
                 // the repr (see the post-success `realization_cache.insert` call
                 // at the bottom of this function), so the cached terminal handle
@@ -7389,8 +7516,8 @@ impl Engine {
     /// helper delegates to [`Self::probe_realization_cache`], which — on a
     /// hit — applies the realization's cold-path success side effects
     /// (`step_handles` push, `named_steps` + `named_step_reprs` insert,
-    /// `produced_repr_out` write, and the fail-closed
-    /// `topology_attribute_table` debug_assert) and returns early, before
+    /// `produced_repr_out` write, the cached swept-kind record, and the
+    /// fail-closed `topology_attribute_table` debug_assert) and returns early, before
     /// this helper's `RealizationOutputs` destructure ever runs. See that
     /// method's `# Invariants` doc (INV-BUILD-3) for the full
     /// guard/fallback/side-effect/assert contract and its pinning tests.
@@ -8198,7 +8325,7 @@ impl Engine {
                                         // `conversion_slot`).
                                         let slot = conversion_slot(pid, &realization_step_ids);
                                         let intermediate_key =
-                                            RealizationCache::<KernelHandle>::intermediate_key(
+                                            RealizationCache::<RealizationCacheEntry>::intermediate_key(
                                                 &realization_id.entity,
                                                 slot,
                                             );
@@ -8284,12 +8411,15 @@ impl Engine {
                                         // hit returns the previously-ingested
                                         // target-kernel handle (Copy); reuse its id
                                         // and skip the redundant production+ingest.
-                                        if let Some(&cached) = realization_cache.lookup(
-                                            &intermediate_key,
-                                            terminal_to,
-                                            per_stage_tol,
-                                            options_hash,
-                                        ) {
+                                        if let Some(cached) = realization_cache
+                                            .lookup(
+                                                &intermediate_key,
+                                                terminal_to,
+                                                per_stage_tol,
+                                                options_hash,
+                                            )
+                                            .map(|entry| entry.handle)
+                                        {
                                             // Task #4636 (LINK1): topology_attribute_table
                                             // is per-build, unlike realization_cache (which
                                             // persists the intermediate handle itself
@@ -8449,7 +8579,10 @@ impl Engine {
                                                     terminal_to,
                                                     per_stage_tol,
                                                     options_hash,
-                                                    intermediate_handle,
+                                                    RealizationCacheEntry {
+                                                        handle: intermediate_handle,
+                                                        swept_kind: None,
+                                                    },
                                                 );
                                                 intermediate_cache_inserts.push((
                                                     slot,
@@ -8956,7 +9089,9 @@ impl Engine {
             //    tolerance was threaded in. The bucket's partial-order rule
             //    may reject this insert if a tighter or equal entry is
             //    already cached; either way the post-condition "a satisfying
-            //    entry exists at `(entity, BRep, tol)`" holds.
+            //    entry exists at `(entity, BRep, tol)`" holds. The entry carries
+            //    the terminal's own swept kind from (1), and None when a
+            //    post-loop VolumeMesh/Voxel edge replaced that terminal.
             //
             //    **Symmetric insert↔lookup gate (task 3176)**: we only insert
             //    when BOTH `demanded_tol.is_some()` AND
@@ -8975,10 +9110,10 @@ impl Engine {
             //    Pinned by
             //    `anonymous_realization_does_not_populate_realization_cache_when_lookup_gate_requires_name`
             //    in tests/tolerance_wiring_e2e.rs.
-            if let Some(kind) = classify_swept_body(&realization_ops, &realization_step_ids)
-                && let Some(&last_id) = realization_step_ids.last()
-            {
-                swept_kind_table.record(last_id, kind);
+            let classified_terminal = classify_swept_body(&realization_ops, &realization_step_ids)
+                .zip(step_handles[handle_start..].last().copied());
+            if let Some((kind, terminal)) = &classified_terminal {
+                swept_kind_table.record(terminal.id, kind.clone());
             }
             // task #5196 L2 gate: the tie-scan below is about *selector-
             // resolution* stability, so it is vacuous work when this module
@@ -9639,12 +9774,18 @@ impl Engine {
                     // and cached new geometry. The conversion-intermediate insert
                     // (search `intermediate_cache_inserts`) uses the uncounted
                     // `insert_intermediate` and is deliberately NOT counted.
+                    let swept_kind = classified_terminal
+                        .filter(|(_, terminal)| *terminal == last)
+                        .map(|(kind, _)| kind);
                     realization_cache.insert_terminal(
                         &realization_id.entity,
                         resolved_repr,
                         tol,
                         NO_OPTIONS,
-                        last,
+                        RealizationCacheEntry {
+                            handle: last,
+                            swept_kind,
+                        },
                     );
                 }
                 // Step-14 (task ε / 3436): surface the terminal op's output
@@ -9939,23 +10080,27 @@ impl Engine {
     ///
     /// Called immediately AFTER `post_process_geometry_handle_cells` in both
     /// `build()` and `build_snapshot()`. Finds ComputeNodes in the snapshot
-    /// graph with EMPTY `realization_inputs` (because the body arg was `Undef`
-    /// at the original dispatch — geometry lets have no value cell until
-    /// `post_process_geometry_handle_cells` hydrates them) and whose re-evaluated
-    /// args now include at least one `Value::GeometryHandle`. For each such
-    /// node it:
+    /// graph not yet redispatched in this build
+    /// (`RedispatchPassState::redispatched`) whose re-evaluated args include at
+    /// least one kernel-backed `Value::GeometryHandle` (on a cold build the
+    /// body arg was `Undef` at the original dispatch — geometry lets have no
+    /// value cell until `post_process_geometry_handle_cells` hydrates them).
+    /// For each such node it:
     ///
     ///   1. Re-evaluates the arg_values from the cell's `default_expr`.
     ///   2. Re-builds `realization_inputs` via `build_compute_realization_inputs`.
-    ///   3. Updates the existing `ComputeNodeData.realization_inputs` in the
-    ///      snapshot graph (step-1 assertion: non-empty after build).
+    ///   3. Unions them into the existing `ComputeNodeData.realization_inputs`
+    ///      in the snapshot graph (step-1 assertion: non-empty after build).
     ///   4. Re-runs `run_compute_dispatch` and overwrites the cell value in both
     ///      `values` and `eval_state.snapshot.values` (step-3: non-degraded field).
     ///
-    /// Gate (narrow regression scope): only nodes with `realization_inputs.is_empty()`
-    /// AND at least one arg evaluating to a KERNEL-BACKED
+    /// Gate (narrow regression scope): only nodes this BUILD has not already
+    /// redispatched (`pass_state.redispatched`) AND with at least one arg
+    /// evaluating to a KERNEL-BACKED
     /// `Value::GeometryHandle { kernel_handle: Some(_), .. }` are re-dispatched.
     /// Non-geometry `@optimized` nodes (FEA scalar-dims, dynamics) are untouched.
+    /// The first half of that gate is build-scoped; see
+    /// [`RedispatchPassState::redispatched`].
     ///
     /// The `kernel_handle: Some(_)` requirement states the intent of task
     /// #5951's fix (A) at the gate. MEASURED, it is a REDUNDANT narrowing:
@@ -9966,7 +10111,8 @@ impl Engine {
     /// and caught by the `realization_inputs.is_empty()` bail, and a
     /// kernel-backed-but-contentless node is caught by the content guard. Keep
     /// it as the cheap early-out that names the invariant; do NOT rely on it as
-    /// the only thing standing between a symbolic handle and the latch. The
+    /// the only thing standing between a symbolic handle and a content-free
+    /// write. The
     /// half of fix (A) that IS independently load-bearing is the downgrade —
     /// see the `realization_probe_args` call below, pinned by
     /// `a_symbolic_sibling_arg_is_kept_out_of_realization_inputs`.
@@ -9977,14 +10123,14 @@ impl Engine {
     /// a geometry-consuming one, this runs while that consumer's body is still
     /// a SYMBOLIC `kernel_handle: None` placeholder (minted by
     /// `mint_symbolic_geometry_handles_into_values`). Accepting such a
-    /// placeholder as "hydrated" wrote a content-free `realization_inputs`,
-    /// which tripped the one-shot `realization_inputs.is_empty()` candidate
-    /// gate above and permanently stranded the node's degraded first-dispatch
-    /// result — silently, because the `ReprKind::BRep` arm of
+    /// placeholder as "hydrated" would write a content-free
+    /// `realization_inputs` and mark the node redispatched, stranding it on its
+    /// degraded first-dispatch result for the rest of the build. The strand
+    /// would be silent, because the `ReprKind::BRep` arm of
     /// `project_realization_read_handle` is identity-only by design (PRD §4 D1)
-    /// and emits no diagnostic. Skipping the candidate instead leaves
-    /// `realization_inputs` EMPTY, so the later post-hydration pass for the
-    /// consumer's own template still fires.
+    /// and emits no diagnostic. Skipping the candidate instead leaves the node
+    /// un-redispatched, so the later post-hydration pass for the consumer's own
+    /// template still fires.
     ///
     /// `pass_state` is the BUILD-scoped [`RedispatchPassState`] — created once
     /// before the per-template loop and threaded through every call it makes.
@@ -10030,9 +10176,8 @@ impl Engine {
 
             let mut cands: Vec<Candidate> = Vec::new();
             for (c_id, node_data) in state.snapshot.graph.compute_nodes.iter() {
-                // Only re-dispatch nodes that got EMPTY realization_inputs at
-                // the original dispatch (body was Undef → no handle).
-                if !node_data.realization_inputs.is_empty() {
+                // At most once per BUILD; see `RedispatchPassState::redispatched`.
+                if pass_state.redispatched.contains(c_id) {
                     continue;
                 }
                 if node_data.output_value_cells.is_empty() {
@@ -10102,10 +10247,11 @@ impl Engine {
             // placeholder minted by `mint_symbolic_geometry_handles_into_values`
             // for a body that has not realized yet — which is exactly what this
             // per-template pass sees for a consumer declared AFTER the template
-            // currently being built. Treating it as hydrated wrote a
-            // content-free `realization_inputs` and latched the Phase-1
-            // candidate gate, stranding the node forever. `continue`ing leaves
-            // that gate untripped so a later pass can do the real work.
+            // currently being built. Treating it as hydrated would write a
+            // content-free `realization_inputs` and mark the node
+            // redispatched, stranding it for the rest of the build.
+            // `continue`ing leaves it unmarked so a later pass can do the real
+            // work.
             //
             // This narrowing is DEFENCE IN DEPTH, not the load-bearing half of
             // the fix — see the fn doc for the measurement. It is kept because
@@ -10243,26 +10389,28 @@ impl Engine {
             // Task #5951: the second precondition on the write below, and the
             // durable invariant behind it.
             //
-            // Phase 1's `realization_inputs.is_empty()` candidate gate is a
-            // ONE-SHOT LATCH: the moment this pass records non-empty inputs,
-            // every later per-template call skips the node forever. So the
-            // latch must only ever be tripped by a write that actually carried
-            // realized content. If every rebuilt handle projects to `None`,
-            // this pass has nothing to deliver — Part A's pre-tessellation
-            // above could not populate the projection store, so the trampoline
-            // would run on an empty body exactly as it did at first dispatch.
-            // Writing anyway buys nothing and costs everything: the node is
-            // stranded on its degraded first-dispatch result (for the stdlib
-            // inline-fallback shape, a silently empty result), permanently and
-            // with NO diagnostic — the `ReprKind::BRep` arm of
+            // Phase 1's candidate gate is tripped by the write below and by
+            // nothing else, so that write ends this node's redispatch for the
+            // rest of the build. The invariant is therefore that the gate is
+            // ONLY EVER TRIPPED BY A WRITE THAT ACTUALLY CARRIED REALIZED
+            // CONTENT.
+            //
+            // If every rebuilt handle projects to `None`, this pass has nothing
+            // to deliver — Part A's pre-tessellation above could not populate
+            // the projection store, so the trampoline would run on an empty
+            // body exactly as it did at first dispatch. Writing anyway buys
+            // nothing and costs everything: the node is stranded on its
+            // degraded first-dispatch result for the rest of the build (for
+            // the stdlib inline-fallback shape, a silently empty result) with
+            // NO diagnostic — the `ReprKind::BRep` arm of
             // `project_realization_read_handle` is identity-only by design
             // (PRD §4 D1) and `degrade_projection`'s Warning is never reached.
             //
             // `continue`ing instead leaves the node a redispatch candidate, so
             // a later per-template call — or a later build tick — can still do
-            // the real work. That converts a permanent silent strand into a
-            // retried one, and it holds for ANY future path into this pass,
-            // not just the symbolic-handle door the gate above closes.
+            // the real work. That converts a silent strand into a retried one,
+            // and it holds for ANY future path into this pass, not just the
+            // symbolic-handle door the gate above closes.
             //
             // `proj_diags` are extended above and deliberately left alone: this
             // guard suppresses a WRITE, never a diagnostic the projection
@@ -10300,17 +10448,42 @@ impl Engine {
                 continue;
             }
 
-            // Step 1: update the snapshot ComputeNodeData's realization_inputs.
-            // This is the non-empty-realization_inputs gate (step-1 test).
+            // Record the dispatch on both lifetimes: the node's graph-lifetime
+            // dependency record, and this build's `redispatched` set (see
+            // `RedispatchPassState::redispatched` for why they are separate
+            // and why the record is a superset). Both sit AFTER the content
+            // guard above, so a contentless node stays a candidate for trailing
+            // templates. Both sit BEFORE `run_compute_dispatch` below, so a
+            // dispatch that fails in its `Err(_)` arm is not retried by a
+            // trailing template.
+            //
+            // The record is UNIONED, never replaced. The incoming set comes
+            // from `realization_probe_args`, which drops any arg whose handle
+            // is symbolic, so a replacing write would narrow a mixed-arg node's
+            // record from [A, B] to [A] on a build where B failed to realize.
+            // `deps.rs` builds reverse edge #10 from this field, so a later
+            // `edit_param` moving B would then under-evict this node.
+            //
+            // The union keeps no id the field did not already hold, so it adds
+            // no `compute_cache_key` lookup a write-once record would not have
+            // made. The `contains` check keeps the list duplicate-free, which
+            // that function's `debug_assert!` requires.
             if let Some(state) = self.eval_state.as_mut()
                 && let Some(node) = state.snapshot.graph.get_compute_node_mut(&cand.c_id)
             {
-                node.realization_inputs = realization_inputs;
+                for rid in realization_inputs {
+                    if !node.realization_inputs.contains(&rid) {
+                        node.realization_inputs.push(rid);
+                    }
+                }
+                pass_state.redispatched.insert(cand.c_id.clone());
             }
             // `state` mut-borrow dropped.
 
-            // Re-dispatch.  Use ContentHash(0) for the persistent-cache key:
-            // the cache dir is None in all current tests so the key is inert.
+            // Re-dispatch under this pass's shared `ContentHash(0)` persistent
+            // key. That key is NOT inert: reify-cli attaches a persistent cache
+            // by default. The fix is owned by #7052; see `RedispatchPassState`'s
+            // cost note.
             let cancel = crate::graph::CancellationHandle::new();
             match self.run_compute_dispatch(
                 &cand.c_id,
@@ -10356,9 +10529,15 @@ impl Engine {
     /// `build_with_geometry_output` and `build_snapshot` — not from inside the
     /// pass, which runs per template. A node skipped while an earlier template
     /// was building may well be redispatched for real during its own
-    /// template's call; only a node whose `realization_inputs` are STILL empty
-    /// at the end of the build is genuinely stranded, so only that node is
-    /// reported. One `Severity::Warning` per node, never per template call.
+    /// template's call, so the reported set is `contentless_skips` MINUS
+    /// `redispatched`: skipped in this build and never rescued in this build.
+    /// One `Severity::Warning` per node, never per template call.
+    ///
+    /// Both terms are build-scoped. The node's `realization_inputs` must not
+    /// stand in for either (see [`RedispatchPassState::redispatched`]): a node
+    /// that tessellated in an earlier build and projects nothing in this one
+    /// still carries the earlier record, yet is stranded for this whole build.
+    /// Pinned by `a_warm_rebuild_that_loses_tessellation_still_reports_the_strand`.
     ///
     /// Why this exists: the guard's stated intent is that the strand becomes
     /// *retried* rather than permanent. For a body that can never project
@@ -10374,27 +10553,16 @@ impl Engine {
     /// Emission order is sorted by `(entity, index)`: `compute_nodes` is an
     /// `im::HashMap`, whose iteration order is not stable across processes.
     fn emit_contentless_redispatch_warnings(
-        &self,
         pass_state: &RedispatchPassState,
         diagnostics: &mut Vec<Diagnostic>,
     ) {
         if pass_state.contentless_skips.is_empty() {
             return;
         }
-        let Some(state) = self.eval_state.as_ref() else {
-            return;
-        };
         let mut stranded: Vec<(&reify_core::ComputeNodeId, &String)> = pass_state
             .contentless_skips
             .iter()
-            .filter(|(c_id, _)| {
-                state
-                    .snapshot
-                    .graph
-                    .compute_nodes
-                    .get(*c_id)
-                    .is_some_and(|n| n.realization_inputs.is_empty())
-            })
+            .filter(|(c_id, _)| !pass_state.redispatched.contains(*c_id))
             .collect();
         stranded
             .sort_by(|(a, _), (b, _)| a.entity.cmp(&b.entity).then_with(|| a.index.cmp(&b.index)));
@@ -10671,12 +10839,9 @@ impl Engine {
     /// an in-walk symbolic `GeometryHandle` with a byte-identical
     /// `upstream_values_hash` (GHR-β invariant preserved).
     ///
-    /// The lookup key is `RealizationNodeData.geometry_cell`, set at
-    /// graph-construction time in `EvaluationGraph::from_templates`. It answers
-    /// only for a SCALAR `Type::Geometry` cell. A geometry-list cell is linked
-    /// N:1 (task #5385), and for length 1 that is indistinguishable from 1:1 by
-    /// link count; its value is never one element's handle, but is assembled by
-    /// the list regroup and by `tessellate_snapshot`'s baseline mint.
+    /// The cell's realization comes from
+    /// [`crate::graph::EvaluationGraph::scalar_geometry_cell_realization`], which
+    /// answers only for a scalar geometry cell.
     pub(crate) fn mint_symbolic_geometry_handle_for_cell_from_graph(
         cell_id: &reify_core::identity::ValueCellId,
         graph: &crate::graph::EvaluationGraph,
@@ -10693,24 +10858,13 @@ impl Engine {
         ) {
             return None;
         }
-        if graph
-            .value_cells
-            .get(cell_id)
-            .is_none_or(|cell| cell.cell_type != reify_core::Type::Geometry)
-        {
-            return None;
-        }
-        // Find the realization whose geometry_cell link points at this cell.
-        let (rid, rnode) = graph
-            .realizations
-            .iter()
-            .find(|(_, rnode)| rnode.geometry_cell.as_ref() == Some(cell_id))?;
+        let realization = graph.scalar_geometry_cell_realization(cell_id)?;
 
         let ctx = crate::eval_ctx_with_meta(values, functions, meta_map);
         let upstream_values_hash =
-            compute_realization_upstream_values_hash_from_ops(&rnode.operations, &ctx);
+            compute_realization_upstream_values_hash_from_ops(&realization.operations, &ctx);
         Some(Value::GeometryHandle {
-            realization_ref: rid.clone(),
+            realization_ref: realization.id.clone(),
             upstream_values_hash,
             kernel_handle: None,
         })
@@ -14052,6 +14206,9 @@ mod dispatch_volume_mesh_tests;
 #[cfg(test)]
 mod conversion_source_key_tests;
 
+#[cfg(test)]
+mod terminal_realization_index_tests;
+
 /// Produce an info-level diagnostic when a swept body is meshed with P1
 /// hex/wedge despite the user requesting `element_order = P2`.
 ///
@@ -14250,9 +14407,12 @@ mod reset_per_build_state_tests {
             ReprKind::BRep,
             1e-6,
             NO_OPTIONS,
-            KernelHandle {
-                kernel: KernelId::Occt,
-                id: GeometryHandleId(1),
+            RealizationCacheEntry {
+                handle: KernelHandle {
+                    kernel: KernelId::Occt,
+                    id: GeometryHandleId(1),
+                },
+                swept_kind: None,
             },
         );
         engine.next_snapshot_id = 42;

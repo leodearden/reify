@@ -7,7 +7,7 @@
 //! compiled module, and that parameter shapes and defaults match the spec.
 //!
 //! All tests use the production-path `load_stdlib_module()` helper that
-//! exercises the same embedded + sequential-prelude compilation path as
+//! exercises the same embedded + strict (declared-imports) compilation path as
 //! production. This mirrors the helper trio in `solver_elastic_tests.rs`.
 //!
 //! Accessor argument contract (pinned in `multi_load_case_stdlib_smoke_e2e`):
@@ -21,7 +21,8 @@ use reify_ir::*;
 
 /// Return the `std/fea/multi_case` CompiledModule from the production stdlib
 /// loader. Exercises the exact same code path as production: embedded source,
-/// sequential compilation with growing prelude, OnceLock caching.
+/// each stdlib module compiled against its declared imports (strict build),
+/// OnceLock caching.
 ///
 /// Panics if the module is not found — which is the expected failure mode
 /// until step-2 lands the .ri file and loader registration.
@@ -306,7 +307,8 @@ fn multi_case_result_struct_has_correct_param_shape() {
 fn loadcase_bare_numeric_in_loads_emits_type_not_conforming() {
     let source = r#"
 structure def NegativeLoadsFixture {
-    let c = LoadCase(name: "x", loads: [1, 2, 3], supports: [FixedSupport(target: "r")])
+    let c = LoadCase(name: "x", loads: [1, 2, 3], supports: [FixedSupport(target: face(body, "r"))])
+    let body = box(1000mm, 100mm, 100mm)
 }
 "#;
     let parsed = parse_with_stdlib(
@@ -341,7 +343,8 @@ structure def NegativeLoadsFixture {
 fn loadcase_bare_numeric_in_supports_emits_type_not_conforming() {
     let source = r#"
 structure def NegativeSupportsFixture {
-    let c = LoadCase(name: "x", loads: [PointLoad(point: "a", force: 1.0N)], supports: [4, 5, 6])
+    let body = box(1m, 0.1m, 0.1m)
+    let c = LoadCase(name: "x", loads: [PointLoad(point: vertex(body, "a"), force: 1.0N)], supports: [4, 5, 6])
 }
 "#;
     let parsed = parse_with_stdlib(
@@ -377,7 +380,8 @@ structure def NegativeSupportsFixture {
 fn loadcase_cross_trait_in_loads_emits_type_not_conforming() {
     let source = r#"
 structure def CrossTraitFixture {
-    let c = LoadCase(name: "x", loads: [FixedSupport(target: "r")], supports: [FixedSupport(target: "r")])
+    let c = LoadCase(name: "x", loads: [FixedSupport(target: face(body, "r"))], supports: [FixedSupport(target: face(body, "r"))])
+    let body = box(1000mm, 100mm, 100mm)
 }
 "#;
     let parsed = parse_with_stdlib(
@@ -414,9 +418,10 @@ fn loadcase_typed_conformers_emit_no_type_not_conforming() {
 structure def PositiveConformanceFixture {
     let c = LoadCase(
         name: "x",
-        loads: [PointLoad(point: "a", force: 1.0N), Gravity(magnitude: STANDARD_GRAVITY())],
-        supports: [FixedSupport(target: "r")]
+        loads: [PointLoad(point: vertex(body, "a"), force: 1.0N), Gravity(magnitude: STANDARD_GRAVITY())],
+        supports: [FixedSupport(target: face(body, "r"))]
     )
+    let body = box(1000mm, 100mm, 100mm)
 }
 "#;
     let parsed = parse_with_stdlib(
@@ -562,8 +567,8 @@ structure def FEABodyMultiCase {
         Steel_AISI_1045(),
         body,
         [
-            LoadCase(name: "operating", loads: [PointLoad(point: "tip", force: 1000.0N)], supports: [FixedSupport(target: "root")]),
-            LoadCase(name: "overload", loads: [PointLoad(point: "tip", force: 2000.0N)], supports: [FixedSupport(target: "root")])
+            LoadCase(name: "operating", loads: [PointLoad(point: vertex(body, "tip"), force: 1000.0N)], supports: [FixedSupport(target: face(body, "root"))]),
+            LoadCase(name: "overload", loads: [PointLoad(point: vertex(body, "tip"), force: 2000.0N)], supports: [FixedSupport(target: face(body, "root"))])
         ],
         ElasticOptions()
     )

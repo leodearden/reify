@@ -158,10 +158,14 @@ use crate::cell_eval_ctx::cell_eval_ctx;
 use crate::deps::{DependencyTrace, extract_dependency_trace};
 use crate::engine_admin::{ParamOverrideRejection, validate_param_override};
 use crate::engine_helpers::collect_member_list;
-use crate::graph::{ConstraintNodeData, EvaluationGraph, GuardedGroupInfo};
+use crate::geometry_ops::symbolic_cell_mint::{
+    InstanceMintOutcome, InstanceMintPath, InstanceMintScope, slot_commit_order,
+};
+use crate::graph::{CollectionSubInfo, ConstraintNodeData, EvaluationGraph, GuardedGroupInfo};
 use crate::journal::TraceSource;
 use crate::realization_staleness::{
     compute_changed_realizations, realization_cone_seeds, stale_realization_entities,
+    stale_realizations,
 };
 use crate::warm_pool::WarmStatePool;
 use crate::{
@@ -169,6 +173,10 @@ use crate::{
     OptimizedComputeDispatcher, build_meta_map, eval_ctx_with_meta, guard_state_fingerprint,
     merge_functions,
 };
+
+mod instance_mint_settle;
+
+use instance_mint_settle::{EditSourceWalkCtx, WalkCellValue};
 
 /// Deactivate a guarded-group member by writing `Undef` into both the working
 /// `values` map and the snapshot's `values` map — UNLESS the member is an
@@ -578,6 +586,26 @@ fn assert_realization_ids_unchanged<'a>(
 /// `None` for a node that carries none, so the non-Compute kinds cost one
 /// map lookup.
 ///
+/// # The memoized projection store is evicted too (#7332)
+///
+/// A fifth realization-keyed dependent kind lives outside the reverse index:
+/// `Engine::realization_projection_store`, the `(realization_ref,
+/// content_hash) -> RealizedContent` memo that
+/// `project_realization_read_handle` serves `@optimized` consumers from. Its
+/// second key is the STATIC `content_hash`, which never moves on a
+/// value-driven change (the same property [`compute_changed_realizations`]
+/// exists to work around), so a post-edit lookup re-hits the pre-edit entry
+/// verbatim — that is a stale read, not the unreachable entry the store's own
+/// doc used to claim. Dropping the cache entry alone does not fix it: the
+/// re-dispatch it forces projects through the store and gets the stale content
+/// back.
+///
+/// The evicted set is [`stale_realizations`]`(seeds, cone)`, the same set whose
+/// entities both callers hand to `RealizationCache::evict_family`, so the two
+/// caches drop the same realizations by construction. It includes the
+/// `GeomRef::Sub` consumers [`realization_cone_seeds`] adds, whose
+/// `content_hash` and `input_cone_hash` both stay put on a value edit.
+///
 /// # Which reverse index is used
 ///
 /// Edge #10 is registered by
@@ -631,6 +659,7 @@ fn assert_realization_ids_unchanged<'a>(
 fn invalidate_realization_dirty_cone(
     cache: &mut CacheStore,
     warm_pool: &mut WarmStatePool,
+    projection_store: &mut crate::realization_content::RealizationProjectionStore,
     graph: &EvaluationGraph,
     compiled_fields: &[reify_compiler::CompiledField],
     prebuilt_index: Option<&crate::deps::ReverseDependencyIndex>,
@@ -667,6 +696,9 @@ fn invalidate_realization_dirty_cone(
             warm_pool.donate_with_cost(node.clone(), state, cost);
         }
         cache.invalidate(node);
+    }
+    for rid in stale_realizations(seeds, &dirty) {
+        projection_store.evict(rid);
     }
     dirty
 }
@@ -925,10 +957,10 @@ fn donate_warm_state_and_invalidate<'a, I, T, F>(
 }
 
 /// Dedup key for [`dedup_diagnostics_preserve_order`]: the fields that
-/// jointly determine a [`Diagnostic`]'s rendered identity (see that
-/// function's doc comment for why `Diagnostic` itself can't derive
-/// `PartialEq`/`Hash`). Factored out of the function signature per
-/// `clippy::type_complexity`.
+/// jointly determine a [`Diagnostic`]'s rendered identity. That function's
+/// doc comment says why the key is hand-rolled and why it is stricter than
+/// `reify_core::DiagnosticIdentity`. Factored out of the function
+/// signature per `clippy::type_complexity`.
 type DiagnosticDedupKey = (
     Severity,
     Option<DiagnosticCode>,
@@ -960,11 +992,13 @@ type DiagnosticDedupKey = (
 /// (correctly, per the prior amendment) reopened this narrow
 /// duplicate-diagnostic edge case for both entry points.
 ///
-/// [`Diagnostic`] has no `PartialEq`/`Hash` derive (it lives in
-/// `reify-core`, outside this task's locked module), so this keys on the
+/// [`Diagnostic`] has no `PartialEq`/`Hash` derive, so this keys on the
 /// fields that jointly determine a diagnostic's rendered identity —
-/// severity, code, message, label `(span, message)` pairs, and candidates —
-/// rather than requiring an upstream derive change.
+/// severity, code, message, label `(span, message)` pairs, and candidates.
+/// Deliberately stricter than [`reify_core::DiagnosticIdentity`] (severity,
+/// code, message only): the same-cell duplicate agrees on labels and
+/// candidates too, but findings differing only by span or candidates are
+/// distinct and must both survive — so do not swap this key for that one.
 ///
 /// # Caller scope (amend, task ε #4957 review rounds 4-5)
 ///
@@ -1027,6 +1061,37 @@ fn dedup_diagnostics_preserve_order(diags: Vec<Diagnostic>) -> Vec<Diagnostic> {
         }
     }
     out
+}
+
+/// Tear down `col_sub`'s instance slots `slots` before a collection resize
+/// re-stamps them: their cells leave the snapshot's graph and values, the
+/// walk's `values`, and the cache.
+///
+/// The cache invalidation is task 2086 Fix 1 (edit_source), mirrored by task
+/// 2184 (edit_param): a later edit that re-adds a cell at the same (parent,
+/// sub, index, member) key must evaluate freshly instead of returning a stale
+/// `CachedResult` from a prior incarnation. When a count shrinks from n to m,
+/// the surviving indices 0..m keep an identical content_hash (same scoped id,
+/// same child default_expr), so edit_source's Step (9) `diff_value_cells`
+/// classifies them UNCHANGED and does not invalidate them; the create loop
+/// re-inserts them without `cache.record_evaluation`. Without this, the stale
+/// entry survives and a later edit that re-expands the sub short-circuits via
+/// `basis_version` to wrong cached values (pinned by the grow→shrink→regrow
+/// regression tests). Only members of `col_sub`'s current (surviving) shape
+/// are torn down here; in edit_source a member absent from the new shape is
+/// absent from the new graph, so Step (9) invalidates it as `removed`.
+fn tear_down_collection_slots(
+    snapshot: &mut crate::snapshot::Snapshot,
+    values: &mut ValueMap,
+    cache: &mut CacheStore,
+    col_sub: &CollectionSubInfo,
+    slots: std::ops::Range<i64>,
+) {
+    for scoped_id in snapshot.graph.remove_collection_slots(col_sub, slots) {
+        snapshot.values.remove(&scoped_id);
+        values.remove(&scoped_id);
+        cache.invalidate(&NodeId::Value(scoped_id));
+    }
 }
 
 impl Engine {
@@ -1307,47 +1372,63 @@ impl Engine {
                     ),
                 );
                 // R3d (#4900): if eval returned Undef, try the in-walk symbolic
-                // mint — geometry handle first (for solid params and lets with a
-                // graph realization node), then topology selector — so downstream
-                // consumer cells that reference this cell read the minted value
-                // at topo-order time rather than Undef.  Uses the graph's
-                // RealizationNodeData (same operations, same upstream_values_hash
-                // fold) because edit_param has no access to the CompiledModule.
-                // Note: `diagnostics` is declared later in this function; use
-                // `selector_mint_diagnostics` (declared above, alongside
-                // `runtime_sink`) here instead. This in-walk mint is the SOLE
-                // edit-path mint mechanism (γ, task 4954 — geometry-let cells
-                // ride the dirty cone and mint at their topo slot here);
-                // edit_param has no post-eval backstop mint pass. Diagnostics
-                // pushed by `try_eval_symbolic_topology_selector` (e.g. a
-                // selector kind-closure violation leaving the cell at `Undef`)
-                // are accumulated into `selector_mint_diagnostics` and drained
-                // into the function's `diagnostics` output below, matching
-                // edit_source's whole-module pass instead of dropping them.
-                let was_undef = matches!(val, Value::Undef);
-                let val = if was_undef {
-                    let geom = Engine::mint_symbolic_geometry_handle_for_cell_from_graph(
-                        vcid,
-                        &new_snapshot.graph,
-                        &values,
-                        &functions,
-                        &self.meta_map,
-                    );
-                    if let Some(v) = geom {
-                        v
-                    } else {
-                        let mut sel_diags: Vec<reify_core::Diagnostic> = Vec::new();
-                        let selector_val = crate::geometry_ops::try_eval_symbolic_topology_selector(
-                            expr,
+                // mint, so downstream consumer cells that reference this cell
+                // read the minted value at topo-order time rather than Undef.
+                // The walk is edit_param's only mint for the cells it visits
+                // (γ, task 4954: geometry-let cells ride the dirty cone and
+                // mint at their topo slot here); edit_param has no post-eval
+                // backstop mint pass.
+                //
+                // A sub-instance cell mints in its instance's scope through
+                // `symbolic_cell_mint::InstanceMintScope` (#8102), which also
+                // serves the resolution reseed, collection resize and
+                // grown-instance reseed below; its doc lists every site and
+                // the non-minting writers, and it owns the order and
+                // diagnostics policy. Only a cell its
+                // `InstanceMintScope::pass_through_or_mint` answers
+                // `InstanceMintPath::NotAnInstanceCell` for takes the inline
+                // template-scope arm, geometry handle first, then topology
+                // selector, over the graph's RealizationNodeData (same
+                // operations, same upstream_values_hash fold) because
+                // edit_param has no access to the CompiledModule. Folding that
+                // arm onto `symbolic_cell_mint` is #8209's. Its selector
+                // diagnostics (e.g. a kind-closure violation leaving the cell
+                // `Undef`) are accumulated into `selector_mint_diagnostics`,
+                // since `diagnostics` is declared later in this function, and
+                // drained into its output below.
+                let instance_scope = InstanceMintScope {
+                    graph: &new_snapshot.graph,
+                    values: &values,
+                    functions: &functions,
+                    meta_map: &self.meta_map,
+                };
+                let InstanceMintOutcome { value, path } =
+                    instance_scope.pass_through_or_mint(val, vcid, node.kind, expr);
+                let (val, was_undef) = match path {
+                    InstanceMintPath::PassedThrough => (value, false),
+                    InstanceMintPath::InstanceCell => (value, true),
+                    InstanceMintPath::NotAnInstanceCell => (
+                        Engine::mint_symbolic_geometry_handle_for_cell_from_graph(
+                            vcid,
+                            &new_snapshot.graph,
                             &values,
-                            &mut sel_diags,
+                            &functions,
+                            &self.meta_map,
                         )
-                        .unwrap_or(val);
-                        selector_mint_diagnostics.extend(sel_diags);
-                        selector_val
-                    }
-                } else {
-                    val
+                        .unwrap_or_else(|| {
+                            let mut sel_diags: Vec<reify_core::Diagnostic> = Vec::new();
+                            let selector_val =
+                                crate::geometry_ops::try_eval_symbolic_topology_selector(
+                                    expr,
+                                    &values,
+                                    &mut sel_diags,
+                                )
+                                .unwrap_or(value);
+                            selector_mint_diagnostics.extend(sel_diags);
+                            selector_val
+                        }),
+                        true,
+                    ),
                 };
                 // R3e (#4907): record cells the in-walk mint actually
                 // resolved, so the post-mint re-eval pass after this loop
@@ -1919,6 +2000,15 @@ impl Engine {
                                 self,
                             ),
                         );
+                        // #8102: a sub-instance cell mints in its instance's scope.
+                        let val = InstanceMintScope {
+                            graph,
+                            values: &values,
+                            functions: &functions,
+                            meta_map: &self.meta_map,
+                        }
+                        .pass_through_or_mint(val, vcid, node.kind, expr)
+                        .value;
 
                         // Commit via the cell-commit primitive (task δ #5056):
                         // atomically writes values/snapshot/cache/journal
@@ -2181,6 +2271,8 @@ impl Engine {
                                 // and this is a behavioural no-op today. If a future
                                 // edit-path solver ever advances new_snapshot.version,
                                 // the invariant is already upheld without a code change.
+                                //
+                                // No instance mint here: see `InstanceMintScope`'s doc.
                                 self.reeval_cone_cell(
                                     node,
                                     mid,
@@ -2298,21 +2390,13 @@ impl Engine {
                 if let Some(w) = old_warn {
                     diagnostics.push(w);
                 }
-                for i in 0..old_count {
-                    let scoped_entity =
-                        format!("{}.{}[{}]", col_sub.parent_entity, col_sub.sub_name, i);
-                    for (member, _, _, _) in &col_sub.child_value_cells {
-                        let scoped_id = ValueCellId::new(&scoped_entity, member);
-                        new_snapshot.graph.value_cells.remove(&scoped_id);
-                        new_snapshot.values.remove(&scoped_id);
-                        values.remove(&scoped_id);
-                        // Task 2184 (mirrors task 2086 Fix 1 in edit_source): invalidate cache
-                        // so a subsequent edit_param that re-grows this collection sub at the
-                        // same scoped index evaluates freshly instead of returning a stale
-                        // CachedResult from a prior incarnation.
-                        self.cache.invalidate(&NodeId::Value(scoped_id));
-                    }
-                }
+                tear_down_collection_slots(
+                    &mut new_snapshot,
+                    &mut values,
+                    &mut self.cache,
+                    col_sub,
+                    0..old_count,
+                );
 
                 // Create new instances based on new count
                 let (new_count, new_warn) = resolve_count(&new_count_val, "new");
@@ -2328,10 +2412,10 @@ impl Engine {
                 if old_count != new_count {
                     structural_mutation = true;
                 }
+                let slot_order = slot_commit_order(&new_snapshot.graph, col_sub);
                 for i in 0..new_count {
-                    let scoped_entity =
-                        format!("{}.{}[{}]", col_sub.parent_entity, col_sub.sub_name, i);
-                    for (member, kind, cell_type, default_expr) in &col_sub.child_value_cells {
+                    let scoped_entity = col_sub.slot_entity(i);
+                    for (member, kind, cell_type, default_expr) in slot_order.iter().copied() {
                         let scoped_id = ValueCellId::new(&scoped_entity, member);
                         let id_hash = ContentHash::of_str(&format!("{}", scoped_id));
                         let expr_hash = default_expr
@@ -2347,12 +2431,11 @@ impl Engine {
                         };
                         new_snapshot
                             .graph
-                            .value_cells
-                            .insert(scoped_id.clone(), node);
+                            .insert_sub_instance_cell(&col_sub.structure_name, node);
 
-                        // Evaluate the cell
+                        // Cells commit in dependency order so each mint sees the siblings it reads (#8102).
                         let val = if let Some(expr) = default_expr {
-                            reify_expr::eval_expr(
+                            let evaluated = reify_expr::eval_expr(
                                 expr,
                                 &cell_eval_ctx(
                                     &values,
@@ -2362,7 +2445,14 @@ impl Engine {
                                     &runtime_sink,
                                     self,
                                 ),
-                            )
+                            );
+                            InstanceMintScope {
+                                graph: &new_snapshot.graph,
+                                values: &values,
+                                functions: &functions,
+                                meta_map: &self.meta_map,
+                            }
+                            .mint_instance_cell_if_undef(evaluated, &scoped_id, *kind, expr)
                         } else {
                             Value::Undef
                         };
@@ -2705,6 +2795,9 @@ impl Engine {
         // the gap by re-evaluating grown instances within the same pass that
         // grows them.
         if structural_mutation {
+            new_snapshot
+                .graph
+                .debug_assert_sub_instance_registry_agrees();
             let compiled_fields = Arc::clone(&self.compiled_fields);
             let new_reverse_index =
                 crate::deps::ReverseDependencyIndex::build_from_graph_and_fields(
@@ -2769,7 +2862,7 @@ impl Engine {
                             && let Some(cell_node) = graph.value_cells.get(vcid)
                             && let Some(ref expr) = cell_node.default_expr
                         {
-                            let val = reify_expr::eval_expr(
+                            let evaluated = reify_expr::eval_expr(
                                 expr,
                                 &cell_eval_ctx(
                                     &values,
@@ -2779,6 +2872,20 @@ impl Engine {
                                     &runtime_sink,
                                     self,
                                 ),
+                            );
+                            // #8102: as final writer of a grown cell, mint a
+                            // grown sub-instance cell as the resize above did.
+                            let val = InstanceMintScope {
+                                graph,
+                                values: &values,
+                                functions: &functions,
+                                meta_map: &self.meta_map,
+                            }
+                            .mint_instance_cell_if_undef(
+                                evaluated,
+                                vcid,
+                                cell_node.kind,
+                                expr,
                             );
                             // Commit via the cell-commit primitive (task δ
                             // #5056): atomically writes values/snapshot/
@@ -2849,7 +2956,12 @@ impl Engine {
         //
         // `edit_param` does not rebuild the graph, so the persisting graph
         // is BOTH the prior and the new side of the comparison — the
-        // helper's `edit_param` contract.
+        // helper's `edit_param` contract. The persisting graph also carries
+        // each ComputeNode's `realization_inputs` forward, deliberately: it
+        // is a dependency record, not a redispatch flag (see
+        // `RedispatchPassState::redispatched` in `engine_build.rs`), and
+        // clearing it over the dirty cone would drop edge #10 and
+        // under-evict.
         {
             let ctx = crate::eval_ctx_with_meta(&values, &functions, &self.meta_map);
             let state = self.eval_state.as_ref().unwrap();
@@ -2900,6 +3012,7 @@ impl Engine {
             let cone = invalidate_realization_dirty_cone(
                 &mut self.cache,
                 &mut self.warm_pool,
+                &mut self.realization_projection_store,
                 graph,
                 &self.compiled_fields,
                 reusable_index,
@@ -3631,6 +3744,13 @@ impl Engine {
 
         let mut skipped: HashSet<NodeId> = HashSet::new();
         let mut actual_eval_set: Vec<NodeId> = Vec::with_capacity(eval_set.len());
+        let mut instance_mint_path_cells: Vec<ValueCellId> = Vec::new();
+        let walk_ctx = EditSourceWalkCtx {
+            graph: &new_snapshot.graph,
+            functions: &functions,
+            meta_map: &self.meta_map,
+            runtime_sink: &runtime_sink,
+        };
 
         // Walk the unified driver's Kahn schedule (θ2 #4713) — since ν (#5045) that
         // IS `eval_set`'s own order, because `compute_eval_set` delegates to the one
@@ -3649,12 +3769,13 @@ impl Engine {
             {
                 let start = Instant::now();
 
-                let val = reify_expr::eval_expr(
-                    expr,
-                    &eval_ctx_with_meta(&values, &functions, &self.meta_map)
-                        .with_determinacy(&new_snapshot.values)
-                        .with_runtime_diagnostics(&runtime_sink),
-                );
+                let WalkCellValue {
+                    value: val,
+                    took_instance_mint_path,
+                } = walk_ctx.eval_cell(&values, &new_snapshot.values, vcid, node.kind, expr);
+                if took_instance_mint_path {
+                    instance_mint_path_cells.push(vcid.clone());
+                }
 
                 // Commit via the cell-commit primitive (task #6998): atomically
                 // writes values/snapshot/cache/journal (INV-EVAL-1), recording
@@ -3714,6 +3835,24 @@ impl Engine {
             // Constraint / Realization nodes: tracked in eval_set but not
             // evaluated here (deferred to check() / build()), same as in
             // edit_param.
+        }
+
+        let settled = walk_ctx.settle_instance_mints(
+            &instance_mint_path_cells,
+            &eval_set,
+            &new_reverse_index,
+            CommitLegs {
+                values: &mut values,
+                snapshot_values: &mut new_snapshot.values,
+                cache: &mut self.cache,
+                journal: &mut self.journal,
+            },
+            VersionId(version_id),
+        );
+        for node_id in settled {
+            if skipped.remove(&node_id) {
+                actual_eval_set.push(node_id);
+            }
         }
 
         // (13) Restore Final freshness for nodes the early-cutoff path
@@ -4165,6 +4304,12 @@ impl Engine {
                 );
                 let wave2_eval =
                     crate::dirty::compute_eval_set(&wave2_dirty, &new_demand, &new_trace_map);
+                let wave2_ctx = EditSourceWalkCtx {
+                    graph: &new_snapshot.graph,
+                    functions: &functions,
+                    meta_map: &self.meta_map,
+                    runtime_sink: &runtime_sink,
+                };
 
                 for node_id in &wave2_eval {
                     if let NodeId::Value(vcid) = node_id
@@ -4172,18 +4317,17 @@ impl Engine {
                         && let Some(ref expr) = node.default_expr
                     {
                         let start = Instant::now();
-                        // Determinacy view now matches edit_param's wave2
-                        // twin (#7114). Containment stays out of reach here,
-                        // as at every edit_source eval site: cell_eval_ctx's
-                        // `containment: self` is E0502 while
+                        // Evaluated as the main walk evaluates a cell, so a
+                        // sub-instance cell mints in its instance's scope
+                        // (#8102); the determinacy view matches edit_param's
+                        // wave2 twin (#7114). Containment stays out of reach
+                        // here, as at every edit_source eval site:
+                        // cell_eval_ctx's `containment: self` is E0502 while
                         // `pending_warm_seeds` (step 4c) holds `&mut
                         // self.warm_pool` until the (14b) drain below.
-                        let val = reify_expr::eval_expr(
-                            expr,
-                            &eval_ctx_with_meta(&values, &functions, &self.meta_map)
-                                .with_determinacy(&new_snapshot.values)
-                                .with_runtime_diagnostics(&runtime_sink),
-                        );
+                        let val = wave2_ctx
+                            .eval_cell(&values, &new_snapshot.values, vcid, node.kind, expr)
+                            .value;
 
                         // Commit via the cell-commit primitive (task #6423):
                         // atomically writes values/snapshot/cache/journal
@@ -4195,7 +4339,7 @@ impl Engine {
                         //
                         // `commit_cell_result_at(start, ..)`, not the plain
                         // `commit_cell_result`: `start` is captured above,
-                        // before `reify_expr::eval_expr`, so the emitted
+                        // before `eval_cell`, so the emitted
                         // Started/Completed pair brackets the full
                         // resolution rather than just the commit itself —
                         // see `commit_cell_result_at`'s doc (#5238
@@ -4320,6 +4464,7 @@ impl Engine {
         // pre-edit snapshot, add/remove instances to match the new count.
         {
             let collection_subs = new_snapshot.graph.collection_subs.clone();
+            let mut resized = false;
             for col_sub in &collection_subs {
                 let new_count_val = values
                     .get(&col_sub.count_cell)
@@ -4335,6 +4480,7 @@ impl Engine {
                 if new_count_val == old_count_val {
                     continue;
                 }
+                resized = true;
 
                 // Helper closure: resolve a collection count value to an integer.
                 let resolve_count = |val: &Value, label: &str| -> (i64, Option<Diagnostic>) {
@@ -4356,54 +4502,23 @@ impl Engine {
                 if let Some(w) = old_warn {
                     diagnostics.push(w);
                 }
-                for i in 0..old_count {
-                    let scoped_entity =
-                        format!("{}.{}[{}]", col_sub.parent_entity, col_sub.sub_name, i);
-                    for (member, _, _, _) in &col_sub.child_value_cells {
-                        let scoped_id = ValueCellId::new(&scoped_entity, member);
-                        new_snapshot.graph.value_cells.remove(&scoped_id);
-                        new_snapshot.values.remove(&scoped_id);
-                        values.remove(&scoped_id);
-                        // Task 2086 Fix 1: invalidate cache so a subsequent edit
-                        // that re-adds a scoped cell at the same (parent, sub,
-                        // index, member) key evaluates freshly instead of returning
-                        // a stale CachedResult from a prior incarnation.
-                        // Scope: this loop iterates `0..old_count` using the NEW
-                        // `col_sub.child_value_cells` (the surviving shape), so it
-                        // only covers members present in the new shape.  Scoped cells
-                        // for members absent from the new shape are invalidated by
-                        // Step (9)'s `diff_value_cells.removed` path (those cells are
-                        // absent from `new_snapshot.graph.value_cells` and therefore
-                        // classified as `removed` by `diff_value_cells`).
-                        // Why Phase 4 still needs this despite Step (9): Step (9)
-                        // catches index-count reductions (old index absent from new
-                        // graph) and entirely-removed subs via `diff_value_cells`.
-                        // This Fix 1 path catches same-index re-incarnation: when
-                        // count shrinks from n to m, the surviving indices 0..m have
-                        // an identical content_hash in both old and new snapshots
-                        // (same scoped_id string + same default_expr from unchanged
-                        // child template), so `diff_value_cells` classifies them as
-                        // UNCHANGED and Step (9) does NOT invalidate them.  Phase 4's
-                        // remove loop tears them down and its create loop re-inserts
-                        // them without calling cache.record_evaluation; without this
-                        // explicit invalidation the stale cache entry at V_A would
-                        // survive and a later edit_source that re-expands the sub
-                        // would short-circuit via `basis_version` and return wrong
-                        // cached values (pinned by the grow→shrink→regrow regression
-                        // test).
-                        self.cache.invalidate(&NodeId::Value(scoped_id));
-                    }
-                }
+                tear_down_collection_slots(
+                    &mut new_snapshot,
+                    &mut values,
+                    &mut self.cache,
+                    col_sub,
+                    0..old_count,
+                );
 
                 // Create new instances based on new count
                 let (new_count, new_warn) = resolve_count(&new_count_val, "new");
                 if let Some(w) = new_warn {
                     diagnostics.push(w);
                 }
+                let slot_order = slot_commit_order(&new_snapshot.graph, col_sub);
                 for i in 0..new_count {
-                    let scoped_entity =
-                        format!("{}.{}[{}]", col_sub.parent_entity, col_sub.sub_name, i);
-                    for (member, kind, cell_type, default_expr) in &col_sub.child_value_cells {
+                    let scoped_entity = col_sub.slot_entity(i);
+                    for (member, kind, cell_type, default_expr) in slot_order.iter().copied() {
                         let scoped_id = ValueCellId::new(&scoped_entity, member);
                         let id_hash = ContentHash::of_str(&format!("{}", scoped_id));
                         let expr_hash = default_expr
@@ -4419,15 +4534,22 @@ impl Engine {
                         };
                         new_snapshot
                             .graph
-                            .value_cells
-                            .insert(scoped_id.clone(), node);
+                            .insert_sub_instance_cell(&col_sub.structure_name, node);
 
+                        // Cells commit in dependency order so each mint sees the siblings it reads (#8102).
                         let val = if let Some(expr) = default_expr {
-                            reify_expr::eval_expr(
+                            let evaluated = reify_expr::eval_expr(
                                 expr,
                                 &eval_ctx_with_meta(&values, &functions, &self.meta_map)
                                     .with_runtime_diagnostics(&runtime_sink),
-                            )
+                            );
+                            InstanceMintScope {
+                                graph: &new_snapshot.graph,
+                                values: &values,
+                                functions: &functions,
+                                meta_map: &self.meta_map,
+                            }
+                            .mint_instance_cell_if_undef(evaluated, &scoped_id, *kind, expr)
                         } else {
                             Value::Undef
                         };
@@ -4466,6 +4588,11 @@ impl Engine {
                     .graph
                     .topology_fingerprint()
                     .combine(count_state_hash);
+            }
+            if resized {
+                new_snapshot
+                    .graph
+                    .debug_assert_sub_instance_registry_agrees();
             }
         }
 
@@ -4696,6 +4823,7 @@ impl Engine {
             let cone = invalidate_realization_dirty_cone(
                 &mut self.cache,
                 &mut self.warm_pool,
+                &mut self.realization_projection_store,
                 &new_snapshot.graph,
                 &self.compiled_fields,
                 None,

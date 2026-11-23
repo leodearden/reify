@@ -102,9 +102,10 @@ module angle_crossings
 //   form of that argument and its durable owner. This is the WHY only — how to
 //   SPELL a torque literal is not taught here.
 //
-// HONEST ABOUT ENFORCEMENT — this is enforced at an ANNOTATED binding over an
-// EXPRESSION, not universally. A bare LITERAL still widens silently:
-//     param theta : Angle = 2.5      -> evaluates to `2.5`, dimension erased
+// HONEST ABOUT ENFORCEMENT — this is enforced at an ANNOTATED binding, not
+// universally. A bare LITERAL at an annotated binding is rejected too, but a
+// dimensionless trig argument is not:
+//     param theta : Angle = 2.5      -> rejected (ParamDefaultTypeMismatch)
 //     sin(<dimensionless 2.5>)       -> 0.5984721441039565, accepted
 // So the annotations below are load-bearing: each one is the assertion. See
 // "Enforcement honesty (D7)" in `docs/legibility/design-invariants.md` for what

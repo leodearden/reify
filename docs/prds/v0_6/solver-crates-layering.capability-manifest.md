@@ -14,8 +14,8 @@ Bindings use these evidence forms:
 - `producer:` — a task or leaf that delivers the capability;
 - `G6` — a numeric premise.
 
-Two verdicts are **OPEN**. In each case the binding is the leaf's own work product, so neither
-blocks queueing.
+Three verdicts are **OPEN**: ε no external readers, ζ empty-patch equivalence and ι conflicting-BC
+fixtures. In each case the binding is the leaf's own work product, so none blocks queueing.
 
 | leaf | capability | evidence | verdict | delivered check |
 |---|---|---|---|---|
@@ -33,7 +33,7 @@ blocks queueing.
 | δ | `AssemblyElement` fields private | grep: `pub connectivity: &'a [usize]`. After #8373 the `dofs_per_node()` derivation is single, but the checks are still asymmetric. | PASS | grep absent |
 | δ | callers moved first | producer: #8375 (upstream edge) | PASS | manual |
 | ε | `ElementStiffness` storage private | grep: `pub data: Vec<f64>`; 72 `.data[` sites | PASS | grep absent |
-| ε | no external readers | **corrected by R2 M4:** the original grep searched only `k_e.data`; one external reader exists, `crates/reify-eval/tests/harness_topology_selector/shell_mixed_region_validation.rs` (`ke.data` / `ke.n_dofs`, :330, :347). ε migrates it to `get()`/`n_dofs()` in the same diff (file added to ε's files); re-run the grep as `\.data\[\|\.n_dofs\b` over `crates/*/{src,tests}` outside reify-solver-elastic before closing | FAIL→corrected | manual |
+| ε | no external readers | **corrected by R2 M4:** the original grep searched only `k_e.data`; one external reader exists, `crates/reify-eval/tests/harness_topology_selector/shell_mixed_region_validation.rs` (`ke.data` / `ke.n_dofs`, :330, :347). ε migrates it to `get()`/`n_dofs()` in the same diff (file added to ε's files); re-run the grep as `\.data\[\|\.n_dofs\b` over `crates/*/{src,tests}` outside reify-solver-elastic before closing | OPEN | manual |
 | ζ | copied helpers gone | grep: `fn member_force_delta` in `tensegrity_load.rs` | PASS | grep absent |
 | ζ | thin call | `membrane_load_analysis(` is absent from `tensegrity_load.rs` | PASS | grep present |
 | ζ | types alias cleanly | read: the Options and Error types are identical; the Solve types differ by `member_slack` and the surface fields | PASS | manual |
@@ -68,8 +68,9 @@ blocks queueing.
 κ #8632 has no rows: it was cancelled on 2026-10-14 and subsumed by S10 β₁ #8935 (S10 R5 removes the
 gmsh-free build), so its checks were dead and left the twins under retro-critic ruling R2.
 
-One verdict is **FAIL→corrected** (ε, no external readers; R2 M4): the binding was false and the
-leaf's scope was widened to migrate the one external reader.
+The ε OPEN row (no external readers; R2 M4) differs from the other two: its authoring PASS was
+measured false, and the leaf's scope was widened to migrate the one external reader, so the row
+stays OPEN until ε lands.
 
 The adopted task #8528 (ShellStress, fk-824124d1e74e) is not a batch block: it was filed by the
 run and carries no manifest block of its own.

@@ -10,7 +10,7 @@
 use std::f64::consts::PI;
 
 use reify_core::DimensionVector;
-use reify_ir::Value;
+use reify_ir::{Value, decode_direction};
 
 use super::common::{
     attach_compliance, declared_range, length_arg, make_compliance_record, make_flexure_joint,
@@ -95,7 +95,7 @@ struct NotchInputs<'a> {
     e: f64,
     /// Material yield stress (Pa), if the material carries one.
     yield_si: Option<f64>,
-    /// The raw axis argument, stored verbatim on the joint Map.
+    /// The axis argument, a Direction stored unchanged on the joint Map.
     axis: &'a Value,
     /// The raw pivot argument, stored verbatim on the joint Map.
     pivot: &'a Value,
@@ -130,7 +130,7 @@ fn parse_notch_inputs(args: &[Value]) -> Result<NotchInputs<'_>, InputFault> {
     let e = youngs_modulus(material)?;
     let yield_si = yield_stress(material)?;
     let axis = &args[5];
-    crate::helpers::validate_dimensionless_unit_axis_vec3(axis).ok_or(InputFault::Invalid)?;
+    decode_direction(axis).map_err(|_| InputFault::Invalid)?;
     Ok(NotchInputs {
         r,
         t,

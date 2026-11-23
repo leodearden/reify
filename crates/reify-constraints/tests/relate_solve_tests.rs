@@ -28,11 +28,19 @@
 
 use reify_constraints::relate_solve::{
     FrameUnknown, Operand, Pose, RelationInstance, comparable_datum_operands,
-    max_relation_exceedance, partition_driving_set, pose_from_frame, solve_frame, solve_scaling,
+    max_relation_exceedance, partition_driving_set, pose_from_frame, solve_frame_outcome,
     static_relation_residuals,
 };
-use reify_constraints::scaling::{RelateTolerance, ResidualUnit, SolveScaling};
-use reify_ir::{SolveResult, Value};
+use reify_constraints::scaling::{RelateTolerance, ResidualUnit};
+use reify_constraints::trust_region::SolveBudget;
+use reify_ir::{SolveFailureCause, SolveResult, Value};
+
+mod common;
+
+use common::{
+    axis, b5_relations, bolt_unknown, datum, dir, fully_determined_relations, plane, point3,
+    relation, scaling_for, solve_frame_result, unknown,
+};
 
 /// The largest `|r_i|` over every row of `relations` at `pose`, blind to each row's
 /// unit. Only for the closed-form residual tests here, which compare against a
@@ -44,81 +52,6 @@ fn max_relation_residual(
     pose: &Pose,
 ) -> f64 {
     max_relation_exceedance(relations, unknown, pose, |_| 1.0)
-}
-
-/// The kernel-default scaling a scope partition or solve of `relations` from
-/// `witness` uses. Its rank cutoff acts on normalized scaled rows; an unconstrained
-/// DOF shows up as an exactly-zero column (equal residuals up to float noise), so
-/// the cutoff cleanly separates rank-5 from rank-6.
-fn scaling_for(
-    relations: &[RelationInstance],
-    unknown: &FrameUnknown,
-    witness: &Pose,
-) -> SolveScaling {
-    solve_scaling(
-        relations,
-        unknown,
-        witness,
-        RelateTolerance::kernel_default(),
-    )
-}
-
-// ── synthetic realized-datum builders ───────────────────────────────────────
-
-fn point3(x: f64, y: f64, z: f64) -> Value {
-    Value::Point(vec![Value::length(x), Value::length(y), Value::length(z)])
-}
-
-fn vec3(x: f64, y: f64, z: f64) -> Value {
-    Value::Vector(vec![Value::Real(x), Value::Real(y), Value::Real(z)])
-}
-
-/// A `Value::Axis` from an origin point (metres) + a direction vector.
-fn axis(o: (f64, f64, f64), d: (f64, f64, f64)) -> Value {
-    Value::Axis {
-        origin: Box::new(point3(o.0, o.1, o.2)),
-        direction: Box::new(vec3(d.0, d.1, d.2)),
-    }
-}
-
-/// A `Value::Plane` from an origin point (metres) + a unit normal vector.
-fn plane(o: (f64, f64, f64), n: (f64, f64, f64)) -> Value {
-    Value::Plane {
-        origin: Box::new(point3(o.0, o.1, o.2)),
-        normal: Box::new(vec3(n.0, n.1, n.2)),
-    }
-}
-
-/// A dimensionless `Value::Direction`.
-fn dir(x: f64, y: f64, z: f64) -> Value {
-    Value::Direction { x, y, z }
-}
-
-/// A datum operand belonging to sub `sub` (so the partition transforms it by the
-/// witness Frame iff `sub` is the auto unknown).
-fn datum(sub: &str, value: Value) -> Operand {
-    Operand {
-        sub: Some(sub.to_string()),
-        datum: value,
-    }
-}
-
-/// A relation instance: name, ordered operands, and the γ-published nominal ΔDOF
-/// (codimension) the partition cross-checks its measured per-relation rank against.
-fn relation(name: &str, operands: Vec<Operand>, nominal_delta_dof: u32) -> RelationInstance {
-    RelationInstance {
-        name: name.to_string(),
-        operands,
-        nominal_delta_dof: Some(nominal_delta_dof),
-    }
-}
-
-/// The auto Frame unknown for sub `"bolt"` (the §1 moving sub).
-fn bolt_unknown() -> FrameUnknown {
-    FrameUnknown {
-        sub: "bolt".to_string(),
-        free: false,
-    }
 }
 
 /// The §1 driving relations (B1): `concentric(bolt.shank, plate.hole)` +
@@ -364,9 +297,9 @@ fn partition_per_relation_delta_dof_cross_checks_gamma() {
     }
 }
 
-// ── step-9 RED: solve_frame drives the auto Frame to satisfy the driving set ──
+// ── step-9 RED: the Frame solve drives the auto Frame to satisfy the driving set ──
 //
-// `solve_frame(driving, frame_unknown, seed, scaling)` takes the partition's driving set
+// `solve_frame_result(driving, frame_unknown, seed, scaling)` takes the partition's driving set
 // over realized datums + the 6-DOF Frame unknown + a seed pose, and returns a
 // `SolveResult::Solved { values, unique }` whose solved Frame satisfies every driving
 // relation within the solver convergence tolerance. The synthetic §1 scenario starts
@@ -410,7 +343,7 @@ fn b1_solve_relations() -> Vec<RelationInstance> {
 fn solve_frame_b1_converges_within_solver_tol() {
     let relations = b1_solve_relations();
     let tol = RelateTolerance::kernel_default();
-    let result = solve_frame(
+    let result = solve_frame_result(
         &relations,
         &bolt_unknown(),
         &Pose::identity(),
@@ -447,7 +380,7 @@ fn solve_frame_b1_converges_within_solver_tol() {
 
 // ── step-11 RED: auto(free) + residual seeding + seed bias (B5) ───────────────
 //
-// The `free` flag on the Frame unknown + the seed `Pose` change how `solve_frame`
+// The `free` flag on the Frame unknown + the seed `Pose` change how the Frame solve
 // reports and seeds a residual DOF (PRD §7.1 step 3):
 //   * `auto(free)` waives the uniqueness check — even a fully-determined system
 //     returns `unique:false`; a residual DOF is seeded to a CONCRETE value (the
@@ -460,62 +393,12 @@ fn solve_frame_b1_converges_within_solver_tol() {
 // RED until step-12 adds the `free` field to `FrameUnknown` + the free/seed wiring
 // (the `unknown(sub, free)` helper references the not-yet-existing field).
 
-/// A Frame unknown for `sub` with the given `free` flag (`auto` vs `auto(free)`).
-fn unknown(sub: &str, free: bool) -> FrameUnknown {
-    FrameUnknown {
-        sub: sub.to_string(),
-        free,
-    }
-}
-
-/// A fully-determined (rank-6) synthetic scenario for the moving sub `"m"`:
-/// `coincident(point,point)` pins 3 translation DOF; `parallel(+z,+z)` pins 2 tilt
-/// DOF; `parallel(+x,+x)` pins the remaining spin — all 6 Frame DOF determined, all
-/// already satisfied at the identity witness.
-fn fully_determined_relations() -> Vec<RelationInstance> {
-    vec![
-        relation(
-            "coincident",
-            vec![
-                datum("m", point3(0.0, 0.0, 0.0)),
-                datum("a", point3(0.0, 0.0, 0.0)),
-            ],
-            3,
-        ),
-        relation(
-            "parallel",
-            vec![datum("m", dir(0.0, 0.0, 1.0)), datum("a", dir(0.0, 0.0, 1.0))],
-            2,
-        ),
-        relation(
-            "parallel",
-            vec![datum("m", dir(1.0, 0.0, 0.0)), datum("a", dir(1.0, 0.0, 0.0))],
-            2,
-        ),
-    ]
-}
-
-/// B5 — a single `concentric(axis,axis)` leaving a residual DOF. The moving bolt's
-/// LOCAL shank axis sits at the origin; the fixed plate hole axis is offset by
-/// `(0.10, 0.20)` in-plane, both `+z`. concentric pins {2 tilt, 2 perp-position} = 4
-/// DOF; the 2 residual DOF are slide-along-axis (`tz`) + spin-about-axis (`rot_z`).
-fn b5_relations() -> Vec<RelationInstance> {
-    vec![relation(
-        "concentric",
-        vec![
-            datum("bolt", axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
-            datum("plate", axis((0.10, 0.20, 0.0), (0.0, 0.0, 1.0))),
-        ],
-        4,
-    )]
-}
-
 /// The `free` flag waives uniqueness: a rank-6 system is `unique:true` under strict
 /// `auto` but `unique:false` under `auto(free)` (the perturbation check is skipped).
 #[test]
 fn solve_frame_free_flag_waives_uniqueness() {
     let relations = fully_determined_relations();
-    let strict = solve_frame(
+    let strict = solve_frame_result(
         &relations,
         &unknown("m", false),
         &Pose::identity(),
@@ -528,7 +411,7 @@ fn solve_frame_free_flag_waives_uniqueness() {
         other => panic!("expected Solved, got {other:?}"),
     }
 
-    let free = solve_frame(
+    let free = solve_frame_result(
         &relations,
         &unknown("m", true),
         &Pose::identity(),
@@ -548,7 +431,7 @@ fn solve_frame_free_flag_waives_uniqueness() {
 #[test]
 fn solve_frame_free_residual_is_fully_numeric() {
     let relations = b5_relations();
-    let result = solve_frame(
+    let result = solve_frame_result(
         &relations,
         &unknown("bolt", true),
         &Pose::identity(),
@@ -581,7 +464,7 @@ fn solve_frame_free_residual_is_fully_numeric() {
 #[test]
 fn solve_frame_strict_residual_signals_under_determined() {
     let relations = b5_relations();
-    let result = solve_frame(
+    let result = solve_frame_result(
         &relations,
         &unknown("bolt", false),
         &Pose::identity(),
@@ -615,7 +498,7 @@ fn solve_frame_seed_biases_residual_dof() {
         translation: [0.0, 0.0, 0.05],
         rotation: [0.0, 0.0, 0.3],
     };
-    let result = solve_frame(
+    let result = solve_frame_result(
         &relations,
         &unknown("bolt", true),
         &seed,
@@ -638,39 +521,174 @@ fn solve_frame_seed_biases_residual_dof() {
 // ── Residual-form robustness (amendments) ────────────────────────────────────
 //
 // `angle` and `distance` are not exercised by the B1/B2/B3/B5 partition/solve
-// scenarios above; these kernel-free units pin the two residual-form corrections a
-// review surfaced (a non-unit direction operand for `angle`; an axial-slide-coupled
-// origin distance for `distance` over axes). Both drive `max_relation_residual`
-// directly so the residual algebra is checked without a solver round-trip.
+// scenarios above; these kernel-free units pin a residual-form correction a review
+// surfaced (an axial-slide-coupled origin distance for `distance` over axes) by
+// driving `max_relation_residual` directly, so the residual algebra is checked
+// without a solver round-trip.
 
-/// `angle(a, b, θ)` must normalize its direction operands before comparing the dot
-/// product against `cos θ` — a NON-unit operand otherwise reads the residual zero at
-/// the wrong angle. Moving operand: a magnitude-2 `+x` direction; anchor: a unit 45°
-/// direction. The true angle is 45°, so an `angle(.., 45°)` relation is satisfied
-/// (residual ≈ 0) ONLY if the magnitude-2 operand is normalized first — a raw
-/// `dot(da, db) − cos 45°` would leave a spurious `2·cos45° − cos45° = cos45° ≈ 0.707`.
-#[test]
-fn angle_residual_normalizes_non_unit_direction_operands() {
-    let s = 1.0 / 2.0_f64.sqrt();
-    let rel = RelationInstance {
-        name: "angle".to_string(),
-        operands: vec![
-            datum("m", dir(2.0, 0.0, 0.0)),
-            datum("anchor", dir(s, s, 0.0)),
-            Operand {
-                sub: None,
-                datum: Value::Real(std::f64::consts::FRAC_PI_4),
-            },
-        ],
-        nominal_delta_dof: Some(1),
-    };
-    let resid =
-        max_relation_residual(std::slice::from_ref(&rel), &unknown("m", false), &Pose::identity());
+/// Solve `relations` for the moving sub `"m"` from `seed` and assert the solve ends
+/// in the NonFinite verdict — the shared body of the non-finite-pose guards. `what`
+/// names the case in the failure message only.
+fn assert_the_solve_from_seed_ends_non_finite(
+    relations: &[RelationInstance],
+    seed: &Pose,
+    what: &str,
+) {
+    let unknown = unknown("m", false);
+    let scaling = scaling_for(relations, &unknown, &Pose::identity());
+    let outcome = solve_frame_outcome(relations, &unknown, seed, &scaling, SolveBudget::default());
     assert!(
-        resid < 1e-9,
-        "angle residual must be ≈0 at the true 45° angle even for a NON-unit operand \
-         (normalized before the dot); got {resid}"
+        matches!(outcome.result, Err(SolveFailureCause::NonFinite(_))),
+        "{what} must reach the NonFinite verdict: {outcome:?}"
     );
+}
+
+/// The identity placement with a NaN rotation.
+fn nan_rotation() -> Pose {
+    Pose {
+        translation: [0.0; 3],
+        rotation: [f64::NAN, 0.0, 0.0],
+    }
+}
+
+/// The coordinates that place no datum finitely: NaN and both infinities.
+const NON_FINITE_COORDINATES: [f64; 3] = [f64::NAN, f64::INFINITY, f64::NEG_INFINITY];
+
+/// The identity rotation at translation `[x, 0, 0]`.
+fn translated_along_x(x: f64) -> Pose {
+    Pose {
+        translation: [x, 0.0, 0.0],
+        rotation: [0.0; 3],
+    }
+}
+
+/// A moving Direction under a NaN pose rotation must surface as a non-finite
+/// evaluation for every relation that reads a Direction, whatever residual form
+/// reads it — never be left unrotated, which would read the identity residual at
+/// every probe and converge at a pose carrying the NaN rotation. `coincident` is
+/// in the table because its form matches on the Direction shape alone, so a datum
+/// that changed shape under the rotation used to change its row count and panic
+/// the solve.
+#[test]
+fn a_direction_under_a_nan_rotation_is_a_non_finite_evaluation() {
+    // (relation, moving direction, anchor direction, nominal ΔDOF)
+    let cases = [
+        ("perpendicular", dir(0.0, 0.0, 1.0), dir(1.0, 0.0, 0.0), 1),
+        ("parallel", dir(0.0, 0.0, 1.0), dir(0.0, 0.0, 1.0), 2),
+        ("coincident", dir(0.0, 0.0, 1.0), dir(0.0, 0.0, 1.0), 2),
+    ];
+    for (name, moving, anchor, nominal_delta_dof) in cases {
+        let relations = vec![relation(
+            name,
+            vec![datum("m", moving), datum("a", anchor)],
+            nominal_delta_dof,
+        )];
+        assert_the_solve_from_seed_ends_non_finite(
+            &relations,
+            &nan_rotation(),
+            &format!("a NaN-rotated Direction under `{name}`"),
+        );
+    }
+}
+
+/// The Axis twin of `a_direction_under_a_nan_rotation_is_a_non_finite_evaluation`:
+/// a moving Axis under a NaN pose rotation reaches the NonFinite verdict rather
+/// than a converged pose carrying the NaN seed.
+#[test]
+fn an_axis_under_a_nan_rotation_is_a_non_finite_evaluation() {
+    let relations = vec![relation(
+        "concentric",
+        vec![
+            datum("m", axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            datum("a", axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+        ],
+        4,
+    )];
+    assert_the_solve_from_seed_ends_non_finite(&relations, &nan_rotation(), "a NaN-rotated Axis");
+}
+
+/// The Plane twin: a moving Plane under a NaN pose rotation reaches the NonFinite
+/// verdict.
+#[test]
+fn a_plane_under_a_nan_rotation_is_a_non_finite_evaluation() {
+    let relations = vec![relation(
+        "flush",
+        vec![
+            datum("m", plane((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            datum("a", plane((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+        ],
+        3,
+    )];
+    assert_the_solve_from_seed_ends_non_finite(&relations, &nan_rotation(), "a NaN-rotated Plane");
+}
+
+/// A seed whose translation is NaN or ±∞ places no datum, so a solve over a
+/// relation with residual rows must end NonFinite. `perpendicular` over Directions
+/// and `parallel` over Axes read only the moving datum's direction, so a translation
+/// never reaches their rows: without a pose-level check every residual and Jacobian
+/// entry stays finite and the run converges at the non-finite seed.
+#[test]
+fn a_non_finite_seed_translation_is_a_non_finite_evaluation() {
+    // (relation, moving datum, anchor datum, nominal ΔDOF)
+    let cases = [
+        ("perpendicular", dir(0.0, 0.0, 1.0), dir(1.0, 0.0, 0.0), 1),
+        (
+            "parallel",
+            axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0)),
+            axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0)),
+            2,
+        ),
+    ];
+    for (name, moving, anchor, nominal_delta_dof) in cases {
+        let relations = vec![relation(
+            name,
+            vec![datum("m", moving), datum("a", anchor)],
+            nominal_delta_dof,
+        )];
+        for x in NON_FINITE_COORDINATES {
+            assert_the_solve_from_seed_ends_non_finite(
+                &relations,
+                &translated_along_x(x),
+                &format!("a seed translated by {x} under `{name}`"),
+            );
+        }
+    }
+}
+
+/// `max_relation_exceedance` reads `≤ 1` iff every row is within its bar, so a pose
+/// that places no datum must not read as within it. `perpendicular` over two equal
+/// Directions is violated (the dot is 1) and reads only the moving Direction, so a
+/// translation never reaches its rows: the NaN comes from the pose-level check, and
+/// folding it with `f64::max` would swallow it into `0`, the reading of a satisfied
+/// relation.
+#[test]
+fn max_relation_exceedance_is_nan_at_a_non_finite_pose() {
+    let relations = vec![relation(
+        "perpendicular",
+        vec![
+            datum("m", dir(0.0, 0.0, 1.0)),
+            datum("a", dir(0.0, 0.0, 1.0)),
+        ],
+        1,
+    )];
+    let u = unknown("m", false);
+    let unit_bar = |_: ResidualUnit| 1.0;
+
+    let at_identity = max_relation_exceedance(&relations, &u, &Pose::identity(), unit_bar);
+    assert!(
+        at_identity > 0.5,
+        "the relation must be violated at a finite pose: {at_identity}"
+    );
+
+    let non_finite_poses =
+        std::iter::once(nan_rotation()).chain(NON_FINITE_COORDINATES.map(translated_along_x));
+    for pose in non_finite_poses {
+        let exceedance = max_relation_exceedance(&relations, &u, &pose, unit_bar);
+        assert!(
+            exceedance.is_nan(),
+            "{pose:?} places no datum, so its exceedance must be NaN, never within the bar: {exceedance}"
+        );
+    }
 }
 
 /// `parallel` / `antiparallel` / `coincident`-over-Direction must distinguish the two
@@ -901,7 +919,7 @@ fn fasten_solve_grounds_sub_to_identity() {
         rotation: [0.1, -0.05, 0.2],
     };
 
-    let result = solve_frame(
+    let result = solve_frame_result(
         std::slice::from_ref(&rel),
         &a_unknown(),
         &seed,
@@ -1975,47 +1993,42 @@ fn assertion_rungs_are_derived_per_unit_from_one_base_length() {
     );
 }
 
-/// A geometrically EXACT `perpendicular` measures zero however long its operands’
-/// direction vectors are.
+/// `perpendicular`'s one dimensionless row is the sine of the misalignment: an
+/// exact pair reads zero, and a pair 30° off perpendicular reads sin 30° = 0.5.
 ///
-/// The residual is `dot(a, b)`, which is the sine of the misalignment only for UNIT
-/// operands — and `dir_of` reads whatever direction vector realization produced.
-/// Unnormalized, the pair below reads `10 × 10 = 100`: six orders of magnitude past
-/// any assertion rung, on geometry that is exactly right. The solve path never
-/// noticed (its zero set is magnitude-invariant), but the static verifier compares
-/// the row against a fixed rung and fails the BUILD, so the scale sensitivity had
-/// to go. `angle` already normalized for the same reason.
+/// The residual is `dot(a, b)`, which is that sine only for UNIT operands — which
+/// every direction operand is, since a `Direction` is unit by construction. The
+/// static verifier compares this row against a fixed rung, so a scaled reading
+/// would fail the BUILD on geometry that is exactly right.
 #[test]
-fn perpendicular_residual_is_scale_free_in_its_operands() {
-    let exact = |da: (f64, f64, f64), db: (f64, f64, f64)| {
+fn perpendicular_residual_reads_the_sine_of_the_misalignment() {
+    let rows = |da: (f64, f64, f64), db: (f64, f64, f64)| {
         let rel = relation(
             "perpendicular",
-            vec![datum("m", vec3(da.0, da.1, da.2)), datum("a", vec3(db.0, db.1, db.2))],
+            vec![
+                datum("m", dir(da.0, da.1, da.2)),
+                datum("a", dir(db.0, db.1, db.2)),
+            ],
             1,
         );
         static_relation_residuals(&rel)
     };
 
-    let unit_rows = exact((1.0, 0.0, 0.0), (0.0, 0.0, 1.0));
-    let scaled_rows = exact((10.0, 0.0, 0.0), (0.0, 0.0, 10.0));
+    let exact = rows((1.0, 0.0, 0.0), (0.0, 0.0, 1.0));
     assert_eq!(
-        unit_rows.len(),
+        exact.len(),
         1,
-        "perpendicular contributes exactly one dimensionless row; got {unit_rows:?}"
+        "perpendicular contributes exactly one dimensionless row; got {exact:?}"
     );
     assert_eq!(
-        scaled_rows, unit_rows,
-        "scaling either operand must not move the residual — an exact \
-         perpendicular reads zero at every magnitude; got {scaled_rows:?}"
+        exact[0].value, 0.0,
+        "an exact perpendicular reads zero; got {exact:?}"
     );
 
-    // And a genuinely misaligned pair still reads its SINE, not a scaled one: 30°
-    // off perpendicular is sin 30° = 0.5 whatever the operand lengths.
-    let misaligned = exact((10.0, 0.0, 0.0), (5.0, 0.0, 8.660_254_037_844_387));
+    let misaligned = rows((1.0, 0.0, 0.0), (0.5, 0.0, 0.866_025_403_784_438_6));
     assert!(
         (misaligned[0].value - 0.5).abs() < 1e-12,
-        "a 30° misalignment reads sin 30° = 0.5 independently of operand scale; \
-         got {misaligned:?}"
+        "a 30° misalignment reads sin 30° = 0.5; got {misaligned:?}"
     );
 }
 

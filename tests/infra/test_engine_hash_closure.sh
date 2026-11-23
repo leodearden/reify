@@ -19,7 +19,8 @@
 #
 # Classified `pool` in run-all-classification.manifest: hermetic — `cargo tree
 # --frozen` is resolve-only (reads the committed Cargo.lock + shared registry
-# cache; no compile, no target/ mutation).
+# cache; no compile, no target/ mutation). The guard fetches those locked
+# inputs first, so a cold shared registry costs time, not the verdict.
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -33,10 +34,15 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
     exit 1
 }
 source "$SCRIPT_DIR/test_helpers.sh"
+source "$SCRIPT_DIR/cargo_inputs_lib.sh"
 
 MANIFEST="$REPO_ROOT/crates/reify-eval/engine_hash_closure.txt"
 
 echo "=== engine_hash_closure drift guard ==="
+
+assert_infra_input "cargo fetch --locked obtains the locked inputs compute_closure reads (x86_64-unknown-linux-gnu)" \
+    "$CARGO_INPUTS_UNAVAILABLE_RC" \
+    cargo_inputs_fetch --target x86_64-unknown-linux-gnu --manifest-path "$REPO_ROOT/Cargo.toml"
 
 # Canonical closure extraction — MUST stay byte-identical to the command in the
 # engine_hash_closure.txt header and the pre-1 authoring command.

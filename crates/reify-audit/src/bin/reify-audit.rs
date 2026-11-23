@@ -7,7 +7,8 @@
 //!
 //! - `reify-audit --task <id> --pre-done`  P5 only; exit non-zero on detection.
 //! - `reify-audit --task <id>`             Spot-check, all three detectors.
-//! - `reify-audit --since <iso-date>`      Window sweep, all three detectors.
+//! - `reify-audit --project-root <path>`  Whole-corpus sweep, every default-sweep
+//!   detector. An empty argv prints usage and exits 125.
 //! - `--pattern <token>[,<token>…]`  Restrict which detector(s) run; comma-separated for multi-detector union (e.g. `--pattern P1,P2,P5`). The token vocabulary is [`reify_audit::pattern_flag::TOKENS`].
 //!   `PDIAG` is the INV-SF-6 codes-mandatory ratchet — opt-in only, and one of
 //!   the restricted detectors that move the exit code (see
@@ -65,7 +66,7 @@ use std::process::ExitCode;
 // still carries its own (see that doc). The library's `MockJCodemunchOps`
 // remains test-only via the `test-support` feature.
 use reify_audit::{
-    AuditContext, Finding, RealGitOps, Severity, TaskMetadata, TimeWindow,
+    AuditContext, Finding, RealGitOps, Severity, TaskMetadata,
     fused_memory_client::FusedMemoryClient,
     jcodemunch_client::RealJCodemunchOps,
     jcodemunch_index,
@@ -85,7 +86,6 @@ fn print_usage(out: &mut dyn Write) {
     let _ = writeln!(out, "Options:");
     let _ = writeln!(out, "  --task <id>              Spot-check a single task (all detectors)");
     let _ = writeln!(out, "  --pre-done               With --task: run P5 pre-done check only");
-    let _ = writeln!(out, "  --since <iso-date>       Window sweep from ISO date (all detectors)");
     let _ = writeln!(
         out,
         "  --pattern {} Restrict to detector(s); comma-separated for union (e.g. --pattern P1,P2,P5)",
@@ -109,7 +109,7 @@ fn print_usage(out: &mut dyn Write) {
     let _ = writeln!(out, "  --help, -h               Show this help");
     let _ = writeln!(out, "  --version, -V            Print version");
     let _ = writeln!(out);
-    let _ = writeln!(out, "Conflicts: --pre-done cannot be combined with --pattern or --since.");
+    let _ = writeln!(out, "Conflicts: --pre-done cannot be combined with --pattern.");
     let _ = writeln!(out);
     let _ = writeln!(out, "--pre-done landing gate:");
     let _ = writeln!(out, "  Refuses the done-flip when a declared, non-gitignored metadata.files");
@@ -269,7 +269,6 @@ fn high_severity_exit_code(findings: &[Finding]) -> u8 {
 struct Args {
     task_id: Option<String>,
     pre_done: bool,
-    since: Option<String>,
     /// Validated comma-separated detector token list (e.g. `"P1,P2,P5"`).
     /// Each token is a member of [`pattern_flag::TOKENS`].
     /// `None` means no restriction — all default-sweep detectors run.
@@ -343,7 +342,6 @@ struct Args {
 fn parse_args(argv: &[String]) -> Result<Args, String> {
     let mut task_id = None;
     let mut pre_done = false;
-    let mut since = None;
     let mut pattern = None;
     let mut tasks_file: Option<String> = None;
     // Default uses `/mcp` (no trailing slash) — `/mcp/` triggers a 307
@@ -410,14 +408,6 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
             }
             "--pre-done" => {
                 pre_done = true;
-            }
-            "--since" => {
-                i += 1;
-                since = Some(
-                    argv.get(i)
-                        .ok_or("--since requires a value")?
-                        .clone(),
-                );
             }
             "--pattern" => {
                 i += 1;
@@ -511,7 +501,6 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
     Ok(Args {
         task_id,
         pre_done,
-        since,
         pattern,
         tasks_file,
         fused_memory_url,
@@ -814,7 +803,7 @@ struct DetectorRun {
 /// Run one detector. A detector that refuses an empty task corpus is not run
 /// on one: the breadcrumb marks its zero findings as unchecked.
 fn run_detector(detector: &Detector, ctx: &AuditContext<'_>) -> DetectorRun {
-    if detector.refuses_empty_task_corpus && ctx.task_metadata.is_empty() {
+    if detector.refuses_empty_task_corpus && ctx.task_metadata().is_empty() {
         eprintln!(
             "reify-audit: {} skipped — the task corpus is empty; \
              this is NOT a clean bill of health",
@@ -966,13 +955,9 @@ fn main() -> ExitCode {
         eprintln!("reify-audit: error: --pre-done requires --task");
         return ExitCode::from(ERROR_EXIT);
     }
-    // --pre-done cannot be combined with --pattern or --since.
+    // --pre-done cannot be combined with --pattern.
     if args.pre_done && args.pattern.is_some() {
         eprintln!("reify-audit: error: --pre-done cannot be combined with --pattern");
-        return ExitCode::from(ERROR_EXIT);
-    }
-    if args.pre_done && args.since.is_some() {
-        eprintln!("reify-audit: error: --pre-done cannot be combined with --since");
         return ExitCode::from(ERROR_EXIT);
     }
 
@@ -1063,22 +1048,11 @@ fn main() -> ExitCode {
         );
     }
 
-    // Build window (for --since).
-    let window = args.since.as_ref().map(|s| TimeWindow {
-        since: Some(s.clone()),
-        until: None,
-    });
-
-    let ctx = AuditContext {
-        project_root: PathBuf::from(&args.project_root),
-        conn: &conn,
-        git: &git,
-        jcodemunch: seam.ops(),
-        task_metadata,
-        target_task_id: args.task_id.clone(),
-        window,
-        now: None,
-        producer_branch: None,
+    let ctx = AuditContext::new(PathBuf::from(&args.project_root), &conn, &git, seam.ops())
+        .with_tasks(task_metadata);
+    let ctx = match args.task_id.as_deref() {
+        Some(id) => ctx.targeting(id),
+        None => ctx,
     };
 
     // Dispatch.
@@ -1087,13 +1061,13 @@ fn main() -> ExitCode {
         let task_id = args.task_id.as_deref().expect("pre_done requires task_id");
         reify_audit::p5_phantom_done::check_pre_done(&ctx, task_id)
     } else {
-        // Spot-check or window sweep: every detector this run selects.
+        // Spot-check or sweep: every detector this run selects.
         let mut findings = Vec::new();
         for detector in selected_detectors(args.pattern.as_deref()) {
             let run = run_detector(detector, &ctx);
             // Before any findings array is serialized, like the fast path.
             if tasks_db_requirement_unmet(&args, &run) {
-                let path = ptodo::tasks_db_path(&ctx.project_root);
+                let path = ptodo::tasks_db_path(ctx.project_root());
                 eprintln!(
                     "reify-audit: {}",
                     tasks_db_refusal(&path, "it opened, but the lanes degraded on it")
@@ -1209,7 +1183,6 @@ mod tests {
         let args = parse_args(&[]).unwrap_or_else(|e| panic!("empty argv must parse: {e}"));
         assert!(args.task_id.is_none());
         assert!(!args.pre_done);
-        assert!(args.since.is_none());
         assert!(args.pattern.is_none());
         assert!(args.tasks_file.is_none());
         assert_eq!(args.runs_db, "data/orchestrator/runs.db");
@@ -1242,13 +1215,26 @@ mod tests {
         );
     }
 
+    /// `--since` never narrowed any detector and is gone: the catch-all arm
+    /// rejects it like any other unknown token.
+    #[test]
+    fn parse_args_rejects_since_as_an_unknown_flag() {
+        let err = unwrap_err(parse_args(&[
+            "--since".to_string(),
+            "2026-01-01".to_string(),
+        ]));
+        assert!(
+            err.contains("unknown flag '--since'"),
+            "--since must be rejected as an unknown flag; got: {err}"
+        );
+    }
+
     #[test]
     fn parse_args_missing_value_after_each_flag_returns_err() {
         // Every flag that takes a value must report its name in the error
         // when the value is missing (final-position bare flag).
         for flag in [
             "--task",
-            "--since",
             "--pattern",
             "--tasks-file",
             "--runs-db",
@@ -1314,8 +1300,6 @@ mod tests {
             "--task",
             "3242",
             "--pre-done",
-            "--since",
-            "2026-05-01",
             "--pattern",
             "P5",
             "--tasks-file",
@@ -1336,7 +1320,6 @@ mod tests {
         let args = parse_args(&argv).unwrap_or_else(|e| panic!("happy-path argv must parse: {e}"));
         assert_eq!(args.task_id.as_deref(), Some("3242"));
         assert!(args.pre_done);
-        assert_eq!(args.since.as_deref(), Some("2026-05-01"));
         assert_eq!(args.pattern.as_deref(), Some("P5"));
         assert_eq!(args.tasks_file.as_deref(), Some("/tmp/tasks.json"));
         assert_eq!(args.runs_db, "/tmp/runs.db");
@@ -1414,7 +1397,6 @@ mod tests {
         Args {
             task_id: None,
             pre_done,
-            since: None,
             pattern: pattern.map(|s| s.to_string()),
             tasks_file: None,
             fused_memory_url: String::new(),

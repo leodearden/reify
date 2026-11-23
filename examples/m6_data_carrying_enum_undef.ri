@@ -4,7 +4,7 @@
 //! undef radius propagates — `area` is `undef` end-to-end.
 //!
 //! `reify eval` should report:
-//!   Widget.outline = Shape::Circle
+//!   Widget.outline = Shape::Circle { radius: undef }
 //!   Widget.area    = undef
 
 module m6_data_carrying_enum_undef

@@ -102,14 +102,15 @@ structure FeaDupCellSmoke {
     param height : Length = 100mm
 
     let material = Steel_AISI_1045()
-    let tip_load = PointLoad(point: "tip", force: 1000.0N)
-    let mount = FixedSupport(target: "root")
+    let tip_load = PointLoad(point: vertex(body, "tip"), force: 1000.0N)
+    let mount = FixedSupport(target: face(body, "root"))
 
     // `height` in BOTH the width and the height slot: the legal authoring
     // shape that task #6661 is about.
     let result = solve_elastic_static(
         material, length, height, height, [tip_load], [mount], ElasticOptions()
     )
+    let body = box(length, height, height)
 }
 "#;
 

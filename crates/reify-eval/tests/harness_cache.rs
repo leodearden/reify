@@ -51,6 +51,8 @@
 #[path = "common/differential.rs"]
 mod differential;
 
+#[path = "harness_cache/cache_hit_facets.rs"]
+mod cache_hit_facets;
 #[path = "harness_cache/compute_cache_key_population.rs"]
 mod compute_cache_key_population;
 #[path = "harness_cache/eval_cached_diagnostics.rs"]
@@ -91,6 +93,8 @@ mod selective_eviction_slider_drag_dispatch_e2e;
 mod selective_eviction_staleness_differential;
 #[path = "harness_cache/snapshot_cache_divergence_gate.rs"]
 mod snapshot_cache_divergence_gate;
+#[path = "harness_cache/terminal_realization_cache_slot.rs"]
+mod terminal_realization_cache_slot;
 #[path = "harness_cache/unified_dag_boundary_cases.rs"]
 mod unified_dag_boundary_cases;
 #[path = "harness_cache/unified_dag_cycle_contract.rs"]

@@ -71,7 +71,9 @@ _REIFY_LIB_TEST_SEMAPHORE_SH_SOURCED=1
 # Source the shared slot-acquire core (mechanism-only; contains slot_acquire
 # and slot_emit_event).  CWD-independent via BASH_SOURCE resolution so this
 # works whether sourced by verify.sh (from REPO_ROOT) or run directly.
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib_slot_acquire.sh"
+_TEST_SEMAPHORE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+[ -f "$_TEST_SEMAPHORE_LIB_DIR/lib_slot_acquire.sh" ] || { echo "lib_test_semaphore.sh: ERROR — scripts/lib_slot_acquire.sh not found next to lib_test_semaphore.sh" >&2; return 1 2>/dev/null || exit 1; }
+source "$_TEST_SEMAPHORE_LIB_DIR/lib_slot_acquire.sh"
 
 # Internal flag: set to 1 when a slot is successfully acquired.
 _REIFY_TEST_SEMAPHORE_HELD=0

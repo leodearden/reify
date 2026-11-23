@@ -13,7 +13,7 @@
 //! this file can be read in isolation. The file stem MUST match the source's `module`
 //! declaration: on a mismatch the CLI reports `E_MODULE_PATH_MISMATCH` and the test
 //! measures that instead of the units gate (the trap documented at
-//! `harness_cli/cli_check.rs:796-797`).
+//! `harness_cli_check/cli_check.rs::check_exits_nonzero_on_cross_file_private_structure_reference`).
 //!
 //! ROWS §6 NAMES THAT THIS FILE DELIBERATELY DOES NOT RE-ASSERT. Each already has a
 //! shipped, non-vacuous, gate-resident test; a second copy here would be duplication, not
@@ -28,8 +28,7 @@
 //! - Row 1's `DiagnosticCode` clause —
 //!   `harness_geometry/primitive_profile_length_units_e2e.rs::bare_box_dimensions_drop_the_op_with_a_coded_error`,
 //!   because the code is not observable here: `reify eval` has no structured-diagnostics
-//!   flag (`Usage: reify eval [--explain-undef] [--verbose] [--cache-dir <path>] <file>`)
-//!   and its renderer prints no code prefix for these errors.
+//!   flag (see `reify eval --help`) and its renderer prints no code prefix for these errors.
 
 use crate::common;
 use reify_core::units::LENGTH_MIGRATION_HINT;
@@ -513,30 +512,26 @@ structure def S {
     }
 }
 
-/// One row of the §6-18 table: a pattern source whose spacing is left `Undef`, the label
-/// its diagnostic MUST carry, and the internal nickname it must no longer carry.
+/// One row of the §6-18 table: a pattern source whose LENGTH argument is left `Undef`, the
+/// label its diagnostic MUST carry, and the internal nickname it must no longer carry.
 struct PatternLabelCase {
     fixture: RiSource,
     unresolved_arg: &'static str,
     builtin: &'static str,
-    pre_lambda_nickname: &'static str,
+    retired_nickname: &'static str,
 }
 
-/// §6 row 18 — D7: an unresolved pattern spacing names the builtin the `.ri` author
+/// §6 row 18 — D7: an unresolved pattern LENGTH argument names the builtin the `.ri` author
 /// actually TYPED, not the compiler's internal `PatternKind` nickname.
 ///
-/// The route is the REACHABLE one. A bare literal in the spacing position is caught
+/// The route is the REACHABLE one. A bare literal in a LENGTH-argument position is caught
 /// earlier by the compile slot and never reaches the `Undef` chokepoint that renders this
-/// label, so the source leaves the spacing genuinely unresolved — a `param s : Length`
-/// with no default. Each case asserts the typed name positively AND the nickname
-/// negatively: `contains("linear_pattern")` alone is satisfied by the nickname spelling
-/// too, so only the pair distinguishes the fix from the bug.
-///
-/// `PatternKind::Circular` and `Arbitrary` still render `circular` and `arbitrary` and are
-/// deliberately outside this row: finishing D7 for them is task #6874, which must land the
-/// call-site migration in the same diff.
+/// label, so the source leaves the argument genuinely unresolved — a `param : Length` with
+/// no default. Each case asserts the typed name positively AND the nickname negatively:
+/// `contains("linear_pattern")` alone is satisfied by the nickname spelling too, so only
+/// the pair distinguishes the fix from the bug.
 #[test]
-fn pattern_spacing_undef_names_the_builtin_the_author_typed() {
+fn pattern_undef_length_arg_names_the_builtin_the_author_typed() {
     let cases = [
         PatternLabelCase {
             fixture: RiSource {
@@ -553,7 +548,7 @@ structure def S {
             },
             unresolved_arg: "spacing",
             builtin: "linear_pattern",
-            pre_lambda_nickname: "for linear ",
+            retired_nickname: "for linear ",
         },
         PatternLabelCase {
             fixture: RiSource {
@@ -570,7 +565,41 @@ structure def S {
             },
             unresolved_arg: "spacing1",
             builtin: "linear_pattern_2d",
-            pre_lambda_nickname: "linear_2d",
+            retired_nickname: "linear_2d",
+        },
+        PatternLabelCase {
+            fixture: RiSource {
+                stem: "undef_origin_circular_pattern",
+                source: r#"module undef_origin_circular_pattern
+
+structure def S {
+    param o : Length
+    let b = box(10mm, 10mm, 10mm)
+    let p = circular_pattern(b, o, 0mm, 0mm, 0, 0, 1, 6, 60deg)
+    param geometry : Solid = p
+}
+"#,
+            },
+            unresolved_arg: "ox",
+            builtin: "circular_pattern",
+            retired_nickname: "for circular ",
+        },
+        PatternLabelCase {
+            fixture: RiSource {
+                stem: "undef_offset_arbitrary_pattern",
+                source: r#"module undef_offset_arbitrary_pattern
+
+structure def S {
+    param d : Length
+    let b = box(10mm, 10mm, 10mm)
+    let p = arbitrary_pattern(b, d, 0mm, 0mm)
+    param geometry : Solid = p
+}
+"#,
+            },
+            unresolved_arg: "t0_dx",
+            builtin: "arbitrary_pattern",
+            retired_nickname: "for arbitrary ",
         },
     ];
 
@@ -584,7 +613,7 @@ structure def S {
 
         assert!(
             !status.success(),
-            "an unresolved {builtin} spacing must exit nonzero;\nstdout: {stdout}\nstderr: {stderr}",
+            "an unresolved {builtin} LENGTH argument must exit nonzero;\nstdout: {stdout}\nstderr: {stderr}",
             builtin = case.builtin,
         );
         assert!(
@@ -592,10 +621,10 @@ structure def S {
             "stderr should carry `{expected}`; got: {stderr}"
         );
         assert!(
-            !stderr.contains(case.pre_lambda_nickname),
+            !stderr.contains(case.retired_nickname),
             "the diagnostic must not fall back to the internal nickname \
              `{nickname}`; got: {stderr}",
-            nickname = case.pre_lambda_nickname,
+            nickname = case.retired_nickname,
         );
     }
 }

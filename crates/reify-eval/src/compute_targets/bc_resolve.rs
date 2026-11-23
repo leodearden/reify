@@ -24,10 +24,10 @@
 use std::collections::HashSet;
 
 use reify_core::Diagnostic;
-use reify_ir::value::SelectorValue;
+use reify_ir::value::{LeafQuery, SelectorNode, SelectorValue};
 use reify_ir::{
     BoundaryAssociation, GeometryHandleId, GeometryKernel, GeometryQuery, NodeAttachment,
-    QueryError,
+    QueryError, Value,
 };
 
 /// Map a set of resolved face handles to the sorted, deduplicated node-index set
@@ -75,6 +75,26 @@ pub fn resolve_selector_faces(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
     crate::topology_selectors::resolve(selector, kernel, diagnostics)
+}
+
+/// Kernel-less interim read of a typed FEA load/support target: the name of
+/// its single `Named` leaf, unwrapping an `Option(Some(..))` field.
+///
+/// It feeds the existing six-named-box-face and `"root"` clamp trampolines
+/// unchanged. Any other value — a predicate or composed selector, an absent
+/// optional, and deliberately a bare `Value::String` (D8) — is no target.
+/// Interim: Bmig2-consume (#5313, PRD
+/// `docs/prds/v0_6/fea-load-support-selector-migration.md` D9) replaces name
+/// reads with real selector → FE node-set resolution.
+pub(crate) fn named_leaf_target(v: &Value) -> Option<&str> {
+    match v {
+        Value::Selector(SelectorValue {
+            node: SelectorNode::Leaf { query: LeafQuery::Named(name), .. },
+            ..
+        }) => Some(name.as_str()),
+        Value::Option(Some(inner)) => named_leaf_target(inner),
+        _ => None,
+    }
 }
 
 /// Assemble the `(face_handle, centroid)` anchor list for the attributed
@@ -296,5 +316,59 @@ mod tests {
             1,
             "the per-face Centroid failure must emit exactly one diagnostic, got {diags:?}"
         );
+    }
+
+    // ── named_leaf_target (Bmig2 #5312 interim typed-target read) ────────────
+
+    use super::named_leaf_target;
+    use reify_test_support::selector_fixtures::{leaf_selector, named_leaf_selector};
+
+    #[test]
+    fn named_leaf_target_reads_a_named_face_leaf() {
+        let v = named_leaf_selector(SelectorKind::Face, "root");
+        assert_eq!(named_leaf_target(&v), Some("root"));
+    }
+
+    #[test]
+    fn named_leaf_target_is_kind_agnostic() {
+        for kind in [SelectorKind::Vertex, SelectorKind::Edge] {
+            let v = named_leaf_selector(kind, "tip");
+            assert_eq!(named_leaf_target(&v), Some("tip"), "kind {kind:?}");
+        }
+    }
+
+    #[test]
+    fn named_leaf_target_unwraps_option_some() {
+        let v = Value::Option(Some(Box::new(named_leaf_selector(SelectorKind::Face, "x_max"))));
+        assert_eq!(named_leaf_target(&v), Some("x_max"));
+    }
+
+    #[test]
+    fn named_leaf_target_option_none_is_no_target() {
+        assert_eq!(named_leaf_target(&Value::Option(None)), None);
+    }
+
+    #[test]
+    fn named_leaf_target_never_accepts_a_bare_string() {
+        assert_eq!(named_leaf_target(&Value::String("root".into())), None);
+    }
+
+    #[test]
+    fn named_leaf_target_rejects_non_named_and_composed_selectors() {
+        let all = leaf_selector(SelectorKind::Face, LeafQuery::All);
+        assert_eq!(named_leaf_target(&all), None);
+
+        let leaf = |name: &str| match named_leaf_selector(SelectorKind::Face, name) {
+            Value::Selector(sv) => sv,
+            other => panic!("builder must mint a Selector, got {other:?}"),
+        };
+        let union = SelectorValue::union(vec![leaf("x_min"), leaf("x_max")])
+            .expect("same-kind union");
+        assert_eq!(named_leaf_target(&Value::Selector(union)), None);
+    }
+
+    #[test]
+    fn named_leaf_target_undef_is_no_target() {
+        assert_eq!(named_leaf_target(&Value::Undef), None);
     }
 }

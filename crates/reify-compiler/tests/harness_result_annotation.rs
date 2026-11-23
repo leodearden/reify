@@ -67,3 +67,5 @@ mod result_fallback_resolution_tests;
 mod result_match_binder_tests;
 #[path = "harness_result_annotation/result_prelude_enum_tests.rs"]
 mod result_prelude_enum_tests;
+#[path = "harness_result_annotation/user_module_alias_import_tests.rs"]
+mod user_module_alias_import_tests;

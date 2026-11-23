@@ -72,6 +72,7 @@ pub mod row;
 // `row_for(id)`.
 pub use registry::{
     BuiltinId, EvalBuiltinId, RelationKind, artifact_basis_rows, lookup, name_group, row_for, rows,
+    rows_bound_by,
 };
 pub use resolvers::scalar_or_real;
 pub use row::{Arity, ArgSlot, Basis, BindingKind, BuiltinRow, Family, ResultSpec};

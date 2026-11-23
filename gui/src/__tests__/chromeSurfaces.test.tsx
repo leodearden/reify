@@ -28,6 +28,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { initDebugBridge } from '../debug/bridge';
 import type { DebugStores } from '../debug/types';
 import { makeLayoutStore, makeViewStateStoreMock } from './debugBridgeTestHelpers';
+import { createViewportDisplayStore } from '../stores/viewportDisplayStore';
+import { createLauncherStore } from '../stores/launcherStore';
 import { MenuBar } from '../panels/MenuBar';
 import { FileTabs } from '../editor/FileTabs';
 import { DiagnosticsPanel } from '../panels/DiagnosticsPanel';
@@ -85,6 +87,8 @@ function makeStores(): DebugStores {
     },
     viewState: makeViewStateStoreMock(),
     layout: makeLayoutStore(),
+    viewportDisplay: createViewportDisplayStore(),
+    launcher: createLauncherStore(),
   };
 }
 

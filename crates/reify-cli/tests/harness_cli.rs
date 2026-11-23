@@ -9,23 +9,32 @@
 //! integration-test crate root, where a bare `mod <file>;` would resolve to the sibling
 //! `tests/<file>.rs`, not the `harness_cli/` subdir.
 //!
-//! Task #7365 carved the external-surface family out to the sibling
-//! `harness_cli_surface.rs` under rule (a) — the SPLIT remedy, never a CAP_LINES bump.
-//! The seam is `tests/common/`: a test that consumes the shared helpers stays here, one that
-//! consumes none of them went there — which is why this root keeps `mod common;` and that
-//! one has none. Both roots still share the `tests/fixtures/` `.ri` tree; a `.ri` file is
-//! not a seam signal and costs nothing under C2. Provenance and the pre-split measurement
-//! are stated once, in that root's header. No post-split line count is hand-copied here:
-//! `tests/infra/test_harness_kloc_cap.sh` measures both roots live on every run, which is
-//! the only figure that cannot go stale.
+//! Two sibling roots were carved out of this one under rule (a) — the SPLIT remedy, never a
+//! CAP_LINES bump. This header is the ONE home of the ordered placement rule for a new
+//! reify-cli integration test; the first rule that matches wins:
+//!   1. a test that consumes none of the shared `tests/common/` helpers goes to
+//!      `harness_cli_surface.rs` (task #7365);
+//!   2. else a test whose stem is `cli_check` or begins `cli_check_` goes to
+//!      `harness_cli_check.rs` (task #10100);
+//!   3. else it goes here.
+//!
+//! Nothing enforces these rules mechanically, and two older members here predate rule 1 and
+//! break it: `corpus_no_bare_scalar` and `units_length_boundary_ledger` consume no
+//! `tests/common/` helper. An existing member's placement is therefore not evidence of a rule.
+//!
+//! All three roots share the `tests/fixtures/` `.ri` tree; a `.ri` file is not a seam signal
+//! and costs nothing under C2. The #7365 provenance and pre-split measurement are stated
+//! once, in `harness_cli_surface.rs`'s header. No post-split line count is hand-copied here:
+//! `tests/infra/test_harness_kloc_cap.sh` measures every root live on every run, which is the
+//! only figure that cannot go stale.
 //!
 //! `mod common;` below is bare (no `#[path]`): crate-root directory-relative resolution
 //! finds the retained `tests/common/mod.rs` from here, so the shared CLI test helpers
 //! compile ONCE for the whole harness instead of once per former binary (the PRD §3
 //! "dedup common" bonus). Each moved file's own `mod common;` was rewritten to
-//! `use crate::common;`, leaving its `common::foo()` call sites unchanged. Keeping it to one
-//! root is what #7365's seam protects: the 312-line include is charged once under the C2 cap
-//! rather than being compiled — and counted — twice.
+//! `use crate::common;`, leaving its `common::foo()` call sites unchanged. The include is
+//! compiled into this unit and into `harness_cli_check`, each copy charged under the C2 cap,
+//! and never into `harness_cli_surface` — rule 1 is what keeps it out of that one.
 
 mod common;
 
@@ -53,32 +62,6 @@ mod cli_build_verbose;
 mod cli_build_voxel_to_mesh;
 #[path = "harness_cli/cli_cache_concurrent_writers.rs"]
 mod cli_cache_concurrent_writers;
-#[path = "harness_cli/cli_check.rs"]
-mod cli_check;
-#[path = "harness_cli/cli_check_cfg.rs"]
-mod cli_check_cfg;
-#[path = "harness_cli/cli_check_cfg_example.rs"]
-mod cli_check_cfg_example;
-#[path = "harness_cli/cli_check_connect_direction.rs"]
-mod cli_check_connect_direction;
-#[path = "harness_cli/cli_check_connect_undeclared_member.rs"]
-mod cli_check_connect_undeclared_member;
-#[path = "harness_cli/cli_check_driver_parity.rs"]
-mod cli_check_driver_parity;
-#[path = "harness_cli/cli_check_joint_dof_gates.rs"]
-mod cli_check_joint_dof_gates;
-#[path = "harness_cli/cli_check_parametric_rate.rs"]
-mod cli_check_parametric_rate;
-#[path = "harness_cli/cli_check_parametric_vec3.rs"]
-mod cli_check_parametric_vec3;
-#[path = "harness_cli/cli_check_qualified_ref_positions.rs"]
-mod cli_check_qualified_ref_positions;
-#[path = "harness_cli/cli_check_relate_family_exit.rs"]
-mod cli_check_relate_family_exit;
-#[path = "harness_cli/cli_check_result_prelude.rs"]
-mod cli_check_result_prelude;
-#[path = "harness_cli/cli_check_variant_construction.rs"]
-mod cli_check_variant_construction;
 #[path = "harness_cli/cli_curated_unit_labels_eval.rs"]
 mod cli_curated_unit_labels_eval;
 #[path = "harness_cli/cli_datum_projection_check.rs"]
@@ -97,16 +80,26 @@ mod cli_doc;
 mod cli_eval_annotation_after_valued_member;
 #[path = "harness_cli/cli_eval_auto_resolve.rs"]
 mod cli_eval_auto_resolve;
+#[path = "harness_cli/cli_eval_build_multi_file.rs"]
+mod cli_eval_build_multi_file;
 #[path = "harness_cli/cli_eval_data_carrying_enum.rs"]
 mod cli_eval_data_carrying_enum;
 #[path = "harness_cli/cli_eval_datum_units.rs"]
 mod cli_eval_datum_units;
+#[path = "harness_cli/cli_eval_dir_builtin.rs"]
+mod cli_eval_dir_builtin;
+#[path = "harness_cli/cli_eval_direction_display.rs"]
+mod cli_eval_direction_display;
 #[path = "harness_cli/cli_eval_fallback_recovery.rs"]
 mod cli_eval_fallback_recovery;
 #[path = "harness_cli/cli_eval_generic_enum.rs"]
 mod cli_eval_generic_enum;
 #[path = "harness_cli/cli_eval_geometry.rs"]
 mod cli_eval_geometry;
+#[path = "harness_cli/cli_eval_joint_direction_axis.rs"]
+mod cli_eval_joint_direction_axis;
+#[path = "harness_cli/cli_eval_joint_position_enum.rs"]
+mod cli_eval_joint_position_enum;
 #[path = "harness_cli/cli_eval_registry_determinism.rs"]
 mod cli_eval_registry_determinism;
 #[path = "harness_cli/cli_eval_result_fallback.rs"]

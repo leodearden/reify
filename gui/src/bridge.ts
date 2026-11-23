@@ -37,8 +37,20 @@ import type {
   TensegritySurfaceData,
   DisplayDirective,
   AppearanceDirective,
+  RecentEntry,
+  LaunchMode,
+  ModeState,
+  RawSetModeError,
+  InitialFileLoadFailure,
 } from './types';
-import { convertRawMesh, convertRawConstraint, convertRawGuiState, convertRawPublishedState } from './types';
+import {
+  convertRawMesh,
+  convertRawConstraint,
+  convertRawGuiState,
+  convertRawPublishedState,
+  DebugListenerBindFailure,
+  SET_MODE_ERROR_KINDS,
+} from './types';
 import type {
   OutboundMessage,
   TextDelta,
@@ -174,6 +186,30 @@ export async function openFile(path: string): Promise<FileData> {
 export async function openFileEngine(path: string): Promise<PublishedState> {
   const raw = await invoke<RawPublishedState>('open_file_engine', { path });
   return convertRawPublishedState(raw);
+}
+
+/**
+ * Create a new design at `path` (`.ri` appended when missing) holding the
+ * starter template, and read it back as `openFile` does. Rejects for an
+ * existing file rather than overwriting it.
+ */
+export async function createNewFile(path: string): Promise<FileData> {
+  return invoke<FileData>('create_new_file', { path });
+}
+
+/** The persisted Recent list, newest first. */
+export async function listRecent(): Promise<RecentEntry[]> {
+  return invoke<RecentEntry[]>('list_recent');
+}
+
+/** Put `path` at the front of the Recent list; resolves the list as stored. */
+export async function recordRecent(path: string): Promise<RecentEntry[]> {
+  return invoke<RecentEntry[]>('record_recent', { path });
+}
+
+/** Why the argv launch file failed to load: recorded before getInitialState replies, handed out once. */
+export async function takeInitialFileLoadFailure(): Promise<InitialFileLoadFailure | null> {
+  return invoke<InitialFileLoadFailure | null>('take_initial_file_load_failure');
 }
 
 /** Export geometry to a file in the specified format. */
@@ -373,9 +409,30 @@ export async function claudePermissionDecision({
 
 // ── Debug ───────────────────────────────────────────────────────────
 
-/** Check if REIFY_DEBUG=1 is set (debug server and bridge enabled). */
+/** Whether the reify-debug server is live in this process (REIFY_DEBUG=1 at launch or Debug mode). */
 export async function isDebugEnabled(): Promise<boolean> {
   return invoke<boolean>('is_debug_enabled');
+}
+
+function isRawSetModeError(err: unknown): err is RawSetModeError {
+  return (
+    isPlainObject(err) &&
+    err['kind'] === SET_MODE_ERROR_KINDS.debugListenerBind &&
+    typeof err['message'] === 'string'
+  );
+}
+
+/**
+ * Select a launch mode; `debug` makes the reify-debug server live (idempotent).
+ * Rejects with a DebugListenerBindFailure when the listener could not be bound;
+ * any other rejection is an IPC-level failure, passed through unchanged.
+ */
+export async function setMode(mode: LaunchMode): Promise<ModeState> {
+  try {
+    return await invoke<ModeState>('set_mode', { mode });
+  } catch (err) {
+    throw isRawSetModeError(err) ? new DebugListenerBindFailure(err.message) : err;
+  }
 }
 
 // ── Claude event subscription ───────────────────────────────────────

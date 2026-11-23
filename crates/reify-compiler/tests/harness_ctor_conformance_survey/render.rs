@@ -416,12 +416,12 @@ pub(crate) fn render_survey(run: &SurveyRun, inline: &SurveyRun, stamp: &SurveyS
         owner because it needs none, and reading it as unclaimed work would send you to\n\
         delete another PRD’s signal.\n\
         - **`intended rejection`** is an in-scope site whose violation IS the\n\
-        deliverable: a committed PRD §7 boundary-row fixture that `reify check` is\n\
+        deliverable: a committed rejection fixture that `reify check` is\n\
         asserted to REJECT by a probe in\n\
         `tests/prd-gate/struct-ctor-conformance-probe-set.json`. It differs from `n/a` on\n\
         scope — the knob's ctor-argument walk really is what emitted it — and from\n\
         `deferred` on ownership: no task retires it, so it names none. **Leave it alone**;\n\
-        migrating the site deletes δ's own signal and reds that CLI gate.\n\
+        migrating the site deletes the fixture's own signal and reds that CLI gate.\n\
         - **`unattributed`** is an in-scope site claimed by nobody: that is the\n\
         actionable state, and after γ the tracked `.ri` corpus holds none.\n\
         - **`census`** is every row from the **inline** half — a Reify snippet embedded\n\
@@ -542,7 +542,7 @@ pub(crate) fn render_survey(run: &SurveyRun, inline: &SurveyRun, stamp: &SurveyS
     push_inline_limitation(&mut md, inline);
     md.push_str(
         "2. **`compile_with_stdlib` is the SINGLE-FILE path.** `reify check` instead uses\n\
-           `module_dag::compile_entry_with_stdlib_cfg_checked`, which follows `#cfg`-gated\n\
+           `program::compile_program_with_parsed_entry`, which follows `#cfg`-gated\n\
            user imports and runs `SimpleConstraintChecker`. Multi-module corpus members\n\
            (the `examples/module_visibility/consumer.ri` class) therefore cannot resolve\n\
            standalone and appear above under *not surveyed* or *partially surveyed* with\n\

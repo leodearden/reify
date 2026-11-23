@@ -16,7 +16,8 @@
 //   Prover ‖ Adversary  — run concurrently:
 //     Prover:   receive premises inline; write to temp file; invoke
 //               `prd-decompose-verify.py bind` then `prd-capability-check.py
-//               --json`; return result records via RESULTS_SCHEMA
+//               --json` (REIFY_BIN-prefixed when args.reify_bin names a
+//               binary); return result records via RESULTS_SCHEMA
 //     Adversary: independent lens — hunt unlisted premises + falsifications;
 //               return its own α result records via RESULTS_SCHEMA
 //   Synthesize — agent receives combined records inline; writes to temp file;
@@ -178,7 +179,9 @@ harness discards any such record with no captured command+exit_code as an
 unexecuted promise, so an invented record wins you nothing.  HARNESS_ERROR is
 the ONE exception: it reports that the probe machinery itself could not run, so
 it blocks the batch whether or not it carries evidence.  Use it — never a bare
-FAIL — when a step of your own procedure died.`;
+FAIL — when a step of your own procedure died.  That record's stderr is the
+failed step's exit code and then its stderr VERBATIM, never a paraphrase, and
+it keeps the no-probe shape: command [], exit_code -1, fixture_present null.`;
 
 const RESULTS_SCHEMA = {
     type: "object",
@@ -239,26 +242,137 @@ const VERDICT_SCHEMA = {
 // ---------------------------------------------------------------------------
 
 function normalizeLeaves(rawArgs, warn) {
-    let value = rawArgs;
-    if (typeof rawArgs === "string") {
+    return leavesFrom(destringifyArgs(rawArgs), warn);
+}
+
+// The one place a stringified args is parsed, and the one place its record is
+// built: raw is the args as given; value is its JSON value (a non-JSON string
+// stays itself, with parseError set; a non-string passes through).
+function destringifyArgs(raw) {
+    let value = raw;
+    let parseError = null;
+    if (typeof raw === "string") {
         try {
-            const parsed = JSON.parse(rawArgs);
-            if (Array.isArray(parsed)) {
-                value = parsed; // stringified leaf array -> real array: fan-out restored
-            } else {
-                warn("normalizeLeaves: args arrived as a JSON string that parsed to a "
-                    + "non-array value; treating the whole string as ONE mega-leaf — "
-                    + "per-leaf fan-out is DEGRADED.");
-                // keep value = rawArgs (original single-leaf fallback)
-            }
+            value = JSON.parse(raw);
         } catch (e) {
-            warn("normalizeLeaves: args arrived as a non-JSON string; treating the "
-                + "whole string as ONE mega-leaf — per-leaf fan-out is DEGRADED. "
-                + "JSON.parse error: " + e.message);
-            // keep value = rawArgs (original single-leaf fallback)
+            parseError = e;
         }
     }
-    return Array.isArray(value) ? value : (value ? [value] : []);
+    return Object.freeze({ raw, value, parseError });
+}
+
+// A destringifyArgs record -> the leaf array.  A JSON string delivers what it
+// decodes to, the value isLeafBatch judged: a leaf array fans out and a leaf
+// object is that one leaf.  Only a string leaf is a mega-leaf, and says so.
+function leavesFrom({ value, parseError }, warn) {
+    if (Array.isArray(value)) return value;
+    if (parseError !== null) {
+        warn("normalizeLeaves: args arrived as a non-JSON string; treating the "
+            + "whole string as ONE mega-leaf — per-leaf fan-out is DEGRADED. "
+            + "JSON.parse error: " + parseError.message);
+    } else if (typeof value === "string") {
+        warn("normalizeLeaves: args arrived as a JSON string that decoded to a "
+            + "string; treating that string as ONE mega-leaf — per-leaf "
+            + "fan-out is DEGRADED.");
+    }
+    return value ? [value] : [];
+}
+
+// ---------------------------------------------------------------------------
+// batchArgs — the args envelope {leaves, reify_bin} (task #9772)
+//
+// The operator, never an agent, names the reify binary α probes with: binary
+// trust is SHA identity (#8649), and this script cannot read files or env
+// (PRD §3 M4), so args is the only channel.  A non-array object (or a JSON
+// string of one) owning an envelope key is an envelope; anything else must
+// itself be a leaf batch, by the same isLeafBatch rule as an envelope's
+// leaves, or it is refused (task #9946).  The rule judges a JSON string by its
+// decoded value, so "null" is refused like null (task #10063), and the batch
+// that runs is that same decoded value (task #10188).  Operator contract:
+// .claude/skills/prd/project.md, "Choosing the reify binary".
+// ---------------------------------------------------------------------------
+
+const BATCH_ENVELOPE_KEYS = ["leaves", "reify_bin"];
+
+function batchEnvelope(value) {
+    const isObject = value !== null && typeof value === "object" && !Array.isArray(value);
+    return isObject && BATCH_ENVELOPE_KEYS.some(
+        key => Object.prototype.hasOwnProperty.call(value, key)) ? value : null;
+}
+
+// The leaf batch rule, for the top-level args and an envelope's leaves alike:
+// an array (an explicit [] is the only empty batch), one leaf object, or a
+// non-blank string.  Anything else, a blank template slot rendered as ""
+// included, would become a vacuous zero-leaf PASS or a leaf made of a bare
+// scalar.  It is applied to the decoded value: a JSON string is held to what it
+// encodes (task #10063).
+function isLeafBatch(leaves) {
+    return (leaves !== null && typeof leaves === "object")
+        || (typeof leaves === "string" && leaves.trim() !== "");
+}
+
+// How a refusal names an offending value: its JSON text, except that a
+// non-finite number, which JSON would spell null, keeps its own name.
+function renderValue(value) {
+    return typeof value === "number" && !Number.isFinite(value)
+        ? String(value)
+        : JSON.stringify(value);
+}
+
+// Names the args as given and, when a JSON string was decoded, the value that
+// was actually judged.
+function leafBatchRefusal(subject, { raw, value, parseError }) {
+    if (isLeafBatch(value)) return null;
+    const decoding = typeof raw === "string" && parseError === null
+        ? `, which decodes to ${renderValue(value)}`
+        : "";
+    return `${subject} must be the leaf array, one leaf object, a non-blank string, `
+        + `or the JSON string of one of these; got ${renderValue(raw)}${decoding}`;
+}
+
+// The invariant a malformed envelope breaks, or null.  A malformed envelope is
+// an invocation error, so it throws before any agent is paid rather than
+// returning a verdict that would read as a premise falsification.  Whether the
+// binary exists is α's to report (a launch HARNESS_ERROR); this script cannot
+// stat it.
+function envelopeRefusal(envelope) {
+    const unknown = Object.keys(envelope).filter(key => !BATCH_ENVELOPE_KEYS.includes(key));
+    if (unknown.length > 0) {
+        return `the envelope accepts only ${BATCH_ENVELOPE_KEYS.join(", ")}; `
+            + `unknown key(s): ${JSON.stringify(unknown)}`;
+    }
+    const leavesRefusal = leafBatchRefusal("leaves", destringifyArgs(envelope.leaves));
+    if (leavesRefusal !== null) return leavesRefusal;
+    const bin = envelope.reify_bin;
+    if (bin != null && !(typeof bin === "string" && bin.startsWith("/"))) {
+        return "reify_bin must be the absolute path of the reify binary α probes with; "
+            + `got ${renderValue(bin)}`;
+    }
+    return null;
+}
+
+function batchArgs(rawArgs, warn) {
+    const destringified = destringifyArgs(rawArgs);
+    const envelope = batchEnvelope(destringified.value);
+    const refusal = envelope === null
+        ? leafBatchRefusal("args", destringified)
+        : envelopeRefusal(envelope);
+    if (refusal !== null) throw new Error(`prd-decompose-verify args: ${refusal}`);
+    if (envelope === null) {
+        return { leaves: leavesFrom(destringified, warn), reifyBin: null };
+    }
+    return { leaves: normalizeLeaves(envelope.leaves, warn), reifyBin: envelope.reify_bin ?? null };
+}
+
+function shellQuote(s) {
+    return "'" + s.replaceAll("'", "'\\''") + "'";
+}
+
+// The one home of the α command line the Prover and Adversary are told to run.
+const ALPHA_RUNNER = "python3 scripts/prd-capability-check.py --json";
+
+function alphaInvocation(reifyBin) {
+    return reifyBin === null ? ALPHA_RUNNER : `REIFY_BIN=${shellQuote(reifyBin)} ${ALPHA_RUNNER}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -362,7 +476,8 @@ const _wfResult = await (async function runWorkflow() {
 
     // `args` is injected by the Workflow harness. Normalize defensively: args
     // has been observed arriving JSON-stringified (task #4960 mega-leaf trap).
-    const leaves = normalizeLeaves(args, log); // eslint-disable-line no-undef
+    const { leaves, reifyBin } = batchArgs(args, log); // eslint-disable-line no-undef
+    const alphaCommand = alphaInvocation(reifyBin);
 
     if (leaves.length === 0) {
         log("No leaves provided — γ verification skipped."); // eslint-disable-line no-undef
@@ -511,7 +626,7 @@ Steps (use your own shell/file tools):
    Capture stdout (the probe-set JSON). If exit code != 0, return a HARNESS_ERROR record.
 3. Write the probe-set JSON to another temp file, e.g.:
      /tmp/pdv_probeset_${idx}.json
-4. Run: python3 scripts/prd-capability-check.py --json /tmp/pdv_probeset_${idx}.json
+4. Run: ${alphaCommand} /tmp/pdv_probeset_${idx}.json
    Capture the full stdout JSON. Parse the "results" array from it.
 5. Return {prover: [result_records...], adversary: []}.
 
@@ -523,7 +638,8 @@ If any step fails, return a single HARNESS_ERROR result record (this record is
 EXEMPT from the evidence rule above and DOES block — it is how "I could not run
 anything at all" reaches the caller):
   {capability: "${leafLabel}", probe_kind: "check", verdict: "HARNESS_ERROR",
-   command: [], exit_code: -1, fixture_present: null, stdout: "", stderr: "<error detail>"}`,
+   command: [], exit_code: -1, fixture_present: null, stdout: "",
+   stderr: "<as RECORD SHAPE above says>"}`,
                     { label: `prove:${idx}`, phase: "Prove", schema: RESULTS_SCHEMA, model: "sonnet", effort: "medium" }
                 ),
 
@@ -542,7 +658,8 @@ ${premisesJson}
 
 Instructions:
 1. Are there any premises NOT listed above that should hold? If so, bind them
-   to probes and run them via prd-capability-check.py --json using your own tools.
+   to probes and run them using your own tools, with exactly:
+     ${alphaCommand} <your probe-set file>
 2. Are any of the enumerated premises stated with the WRONG polarity (e.g., a
    rejection premise bound to observation="absent" instead of "present")?
    Flag these as FAIL records.

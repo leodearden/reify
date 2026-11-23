@@ -1,0 +1,16 @@
+// realized-world-evaluation PRD (docs/prds/v0_6/realized-world-evaluation.md) baseline, main dd2a97059a 2026-11-17.
+// Rows B22 and B23 (leaf beta, task #10136). Today, silently wrong: Outer.moved spans x in [-0.5, 20.5] mm
+// (the default instance's centroid) where a standalone size-80 Inner spans [-0.5, 160.5] mm.
+module realized_world_override_instance
+
+pub structure Inner {
+    param size : Length = 10mm
+    let ref_box = translate(box(2mm, 2mm, 2mm), size, 0mm, 0mm)
+    let c = centroid(ref_box)
+    let body = circular_pattern(box(1mm, 1mm, 1mm), axis_z(c), 4, 360deg)
+}
+
+pub structure Outer {
+    sub a = Inner(size: 80mm)
+    let moved = translate(self.a.body, 0mm, 0mm, 500mm)
+}

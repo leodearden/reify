@@ -139,7 +139,7 @@ Reify is a declarative DSL for parametric engineering design. Source files use t
 ### Member Kinds (inside structures)
 - \`param name: Type = default\` — user-tunable parameter with optional default
 - \`let name = expr\` — derived value, computed from params/other lets
-- \`auto name: Type\` — solver-determined value (resolved by constraint solver)
+- \`param name: Type = auto\` (also \`let name : Type = auto\`, a sub override \`sub x : Leaf { length = auto }\`, or a constructor argument \`Leaf(length: auto)\`) — the solver chooses the value; bound it from both sides with constraints
 - \`constraint expr\` — boolean constraint the solver must satisfy
 - \`sub name: OtherStructure\` — sub-component instance
 - \`connect sub1.port <-> sub2.port\` — port connections between sub-components

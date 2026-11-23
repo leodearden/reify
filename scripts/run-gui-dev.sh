@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Single-command dev-mode launcher for reify-gui (task 2228).
 #
-# Usage: scripts/run-gui-dev.sh <file.ri>
+# Usage: scripts/run-gui-dev.sh [file.ri]
+#
+# With no file, reify-gui opens on the launcher Start view (Open/New/Recent).
 #
 # Performs every build step needed to launch reify-gui in dev mode:
 #   1. Validate args, then PREFLIGHT: refuse a launch that is already known to
@@ -12,17 +14,17 @@
 #   4. Install gui/ npm deps (vite needs them).
 #   5. Start the vite dev server in its own PROCESS GROUP, with stdin detached
 #      from the terminal, and wait for :${REIFY_VITE_PORT:-1420}.
-#   6. Build the reify-gui cargo binary in DEBUG profile (with feature `gui`).
-#   7. Export REIFY_DEBUG=1, the OCCT/tbb LD_LIBRARY_PATH and the WebKit
-#      renderer default.
-#   8. Run target/debug/reify-gui <file.ri> as a backgrounded child and
+#   6. Build the reify-gui cargo binary in DEBUG profile (with feature `gui`;
+#      no `embedded-frontend`, so the window loads devUrl).
+#   7. Export REIFY_DEBUG=1 and the OCCT/tbb LD_LIBRARY_PATH.
+#   8. Run target/debug/reify-gui [file.ri] as a backgrounded child and
 #      `wait`, so SIGTERM/SIGINT to this script reach the trap which reaps
 #      both the vite process GROUP and reify-gui.
 #
 # ---------------------------------------------------------------------------
 # Environment contract
 # ---------------------------------------------------------------------------
-# The display preflight and the two env defaults below are IMPLEMENTED in
+# The display preflight and the LD_LIBRARY_PATH pin below are IMPLEMENTED in
 # scripts/lib_gui_launch.sh, sourced by this script and by run-gui.sh so the
 # two launchers cannot drift apart on them. This block is the contract; that
 # lib is the mechanism.
@@ -36,11 +38,7 @@
 #                  mechanism A''. A one-line notice is emitted only when a
 #                  non-empty value was actually inherited.
 #
-# WEBKIT_DISABLE_DMABUF_RENDERER
-#                  Defaults to 1 (mirrors gui/test/visual/lib_e2e_smoke.sh
-#                  §2b). Without it, WebKitGTK aborts on an NVIDIA host with
-#                  "Could not create GBM EGL display: EGL_NOT_INITIALIZED".
-#                  Export 0 to restore the DMABUF path where it works.
+# WebKit renderer defaults: reify-gui's own, gui/src-tauri/src/webkit_env.rs.
 #
 # REIFY_VITE_PORT  Defaults to 1420. The port vite serves on AND the page
 #                  reify-gui loads: the launched binary retargets
@@ -82,10 +80,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib_gui_launch.sh"
 
 # -- 1. Validate args ---------------------------------------------------------
-if [ "$#" -lt 1 ]; then
-    echo "Usage: scripts/run-gui-dev.sh <file>" >&2
+if [ "$#" -gt 1 ]; then
+    echo "Usage: scripts/run-gui-dev.sh [file.ri]" >&2
     echo "" >&2
-    echo "  <file>  path to a .ri source file" >&2
+    echo "  file.ri  path to a .ri source file; omit it to open the launcher Start view" >&2
     echo "" >&2
     echo "Launches reify-gui in dev mode (vite dev server on :\${REIFY_VITE_PORT:-1420}, devtools," >&2
     echo "MCP debug listener on :\${REIFY_DEBUG_PORT:-3939} via REIFY_DEBUG=1)." >&2
@@ -93,17 +91,10 @@ if [ "$#" -lt 1 ]; then
     exit 1
 fi
 
-FILE="$1"
-
-case "$FILE" in
-    *.ri) ;;
-    *)
-        echo "Error: file must have .ri extension: $FILE" >&2
-        exit 1
-        ;;
-esac
-
-[ -f "$FILE" ] || { echo "Error: file not found: $FILE" >&2; exit 1; }
+# FILE is the absolute path of the .ri reify-gui opens, or empty for the Start
+# view (policy: scripts/lib_gui_launch.sh). Resolved here, before the cd below,
+# so a relative path means the caller's cwd.
+FILE=$(gui_launch_resolve_file "${1:-}") || exit 1
 
 # Resolve repo root from this script's path so the script works from any cwd.
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -176,7 +167,9 @@ if [ "${REIFY_GUI_SKIP_PREFLIGHT:-}" != "1" ]; then
         else
             echo "  Free the port before retrying." >&2
         fi
-        echo "  Or relocate this launch: REIFY_VITE_PORT=<free port> scripts/run-gui-dev.sh $FILE" >&2
+        _preflight_file_arg=""
+        [ -z "$FILE" ] || printf -v _preflight_file_arg ' %q' "$FILE"
+        echo "  Or relocate this launch: REIFY_VITE_PORT=<free port> scripts/run-gui-dev.sh$_preflight_file_arg" >&2
         exit 1
     fi
 fi
@@ -342,8 +335,9 @@ if [ "$VITE_READY" -ne 1 ]; then
 fi
 
 # -- 6. Build reify-gui in DEBUG profile -------------------------------------
-# Debug profile is required so Tauri's runtime selects `devUrl` (vite) instead
-# of `frontendDist` — see tauri.conf.json. cfg!(debug_assertions) drives this.
+# Only `gui`, not `embedded-frontend` (see gui/src-tauri/Cargo.toml), so the
+# window loads devUrl, retargeted by gui/src-tauri/src/dev_url.rs; the debug
+# profile is for build time.
 echo "==> Building reify-gui (debug)..."
 cargo build -p reify-gui --bin reify-gui --features gui
 
@@ -352,8 +346,8 @@ cargo build -p reify-gui --bin reify-gui --features gui
 # (see gui/src-tauri/src/main.rs).
 export REIFY_DEBUG=1
 
-# The whole launch loader path and the WebKit renderer default, shared with
-# scripts/run-gui.sh: scripts/lib_gui_launch.sh.
+# The whole launch loader path, shared with scripts/run-gui.sh:
+# scripts/lib_gui_launch.sh.
 gui_launch_env_pin
 
 # -- 8. Run reify-gui as a backgrounded CHILD (not exec) ---------------------
@@ -365,8 +359,8 @@ gui_launch_env_pin
 #     children block bash's signal delivery until they exit).
 #   - The cleanup trap can kill GUI_PID explicitly when the script is
 #     killed externally, instead of orphaning the GUI window.
-echo "==> Launching target/debug/reify-gui $FILE (REIFY_DEBUG=1, port=$REIFY_DEBUG_PORT)"
-target/debug/reify-gui "$FILE" &
+echo "==> Launching target/debug/reify-gui ${FILE:-(no file: Start view)} (REIFY_DEBUG=1, port=$REIFY_DEBUG_PORT)"
+target/debug/reify-gui ${FILE:+"$FILE"} &
 GUI_PID=$!
 RC=0
 wait "$GUI_PID" || RC=$?

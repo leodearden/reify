@@ -21,7 +21,7 @@
 # rationale (docs/notes/native-dep-loader-path.md).
 #
 # ENTRY POINT:
-#   e2e_smoke_run --name <label> --fixture <repo-relative> --driver <repo-relative>
+#   e2e_smoke_run --name <label> (--fixture <repo-relative> | --no-fixture) --driver <repo-relative>
 #
 # The lifecycle, in order:
 #   1. Resolve REIFY_DEBUG_PORT and REIFY_VITE_PORT (each: env if valid 1..65535,
@@ -29,24 +29,26 @@
 #      no longer contend for :1420; reify-gui follows it via its startup devUrl
 #      retarget (gui/src-tauri/src/dev_url.rs).
 #   2. Set DISPLAY="${DISPLAY:-:0}" so the Tauri webview can instantiate.
-#  2b. gui_launch_env_pin (scripts/lib_gui_launch.sh): disable the WebKit
-#      GBM/DMABuf renderer unless the caller overrode it, and apply the whole
-#      launch loader path (the workspace-bin dirs, then the oneTBB pin first).
+#  2b. gui_launch_env_pin (scripts/lib_gui_launch.sh): apply the whole launch
+#      loader path (the workspace-bin dirs, then the oneTBB pin first).
 #   3. Install an EXIT/INT/TERM cleanup trap so the GUI is reaped even on early failure.
 #   4. (Unless REIFY_SMOKE_SKIP_PREBUILD=1) run synchronous pre-build steps —
 #      sidecar npm install, sidecar build, gui npm install, cargo build reify-gui —
 #      so the cold-build cost is paid OUTSIDE the readiness window.
 #   5. Background REIFY_SMOKE_LAUNCHER (default: scripts/run-gui-dev.sh) with the
-#      fixture + REIFY_DEBUG=1 / REIFY_DEBUG_PORT=$PORT / REIFY_VITE_PORT=$VITE_PORT.
+#      fixture (none under --no-fixture: reify-gui opens on the Start view) +
+#      REIFY_DEBUG=1 / REIFY_DEBUG_PORT=$PORT / REIFY_VITE_PORT=$VITE_PORT.
 #   6. Poll the debug health endpoint up to REIFY_SMOKE_WAIT_MS (default 180000ms)
 #      with a kill -0 liveness check on each iteration — abort early if the
 #      launcher dies rather than waiting the full budget.
 #   7. Run `node <driver>`.
-#      Note: each driver contains its own waitForServer(60_000) readiness loop —
-#      that loop passes instantly because step 6 already confirmed the server is
-#      ready.  Both readiness gates are intentional and serve distinct purposes:
+#      Note: each driver calls the shared waitForServer from
+#      debugServerEndpoint.mjs (timeout SERVER_READY_TIMEOUT_MS) — that poll
+#      passes instantly because step 6 already confirmed the server is ready.
+#      Both readiness gates are intentional and serve distinct purposes:
 #      step 6 polls with a kill -0 liveness check (bash-side, driver-agnostic);
-#      the driver's waitForServer is part of its own unchanged contract.
+#      the driver's waitForServer call is part of the driver's contract,
+#      independent of how it is launched.
 #      Do NOT remove one believing the other is dead code.
 #   8. SIGTERM the launcher so its trap reaps both vite and reify-gui, then exit
 #      with the driver's exit code.
@@ -75,7 +77,7 @@ source "$E2E_SMOKE_REPO_ROOT/scripts/lib_gui_launch.sh"
 # ---------------------------------------------------------------------------
 # 1. resolve_port <VAR> — the port named by env var <VAR> (REIFY_DEBUG_PORT or
 #    REIFY_VITE_PORT), else a freshly allocated free port.
-#    Same rule as endpoint.ts resolvePerRunPort (parsePort, else
+#    Same rule as perRunPort.ts resolvePerRunPort (parsePort, else
 #    allocateFreePort) and the setup-worktree-debug-port.sh contract:
 #    strict ^[0-9]+$ pattern, value 1..65535, no whitespace.
 # ---------------------------------------------------------------------------
@@ -121,19 +123,23 @@ _e2e_smoke_report_launcher_death() {
 }
 
 # ---------------------------------------------------------------------------
-# e2e_smoke_run --name <label> --fixture <repo-relative> --driver <repo-relative>
+# e2e_smoke_run --name <label> (--fixture <repo-relative> | --no-fixture) --driver <repo-relative>
 #
-#   --name     echo prefix, used on every log line this lifecycle emits.  MUST
-#              equal the runner's historical prefix so live-run expectations and
-#              the infra guards' output matching stay byte-compatible.
-#   --fixture  .ri file to open, repo-relative.
-#   --driver   node driver .mjs to run once the debug server is ready, repo-relative.
+#   --name        echo prefix, used on every log line this lifecycle emits.  MUST
+#                 equal the runner's historical prefix so live-run expectations
+#                 and the infra guards' output matching stay byte-compatible.
+#   --fixture     .ri file to open, repo-relative.
+#   --no-fixture  open no file: the launcher gets no file argument, so reify-gui
+#                 starts on the Start view.  Exactly one of --fixture and
+#                 --no-fixture is required.
+#   --driver      node driver .mjs to run once the debug server is ready, repo-relative.
 #
 # Exits the calling shell — this is a one-shot entry point, not a composable
 # helper.  A runner's last statement is its single e2e_smoke_run call.
 # ---------------------------------------------------------------------------
 e2e_smoke_run() {
-    local name="" fixture_rel="" driver_rel=""
+    local name="" fixture_rel="" driver_rel="" no_fixture=0
+    local usage="usage: e2e_smoke_run --name <label> (--fixture <repo-relative> | --no-fixture) --driver <repo-relative>"
 
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -149,17 +155,31 @@ e2e_smoke_run() {
                 esac
                 shift 2
                 ;;
+            --no-fixture)
+                no_fixture=1
+                shift
+                ;;
             *)
                 echo "e2e_smoke_run: unknown argument: $1" >&2
-                echo "usage: e2e_smoke_run --name <label> --fixture <repo-relative> --driver <repo-relative>" >&2
+                echo "$usage" >&2
                 exit 2
                 ;;
         esac
     done
 
-    if [ -z "$name" ] || [ -z "$fixture_rel" ] || [ -z "$driver_rel" ]; then
-        echo "e2e_smoke_run: --name, --fixture and --driver are all required" >&2
-        echo "usage: e2e_smoke_run --name <label> --fixture <repo-relative> --driver <repo-relative>" >&2
+    if [ -z "$name" ] || [ -z "$driver_rel" ]; then
+        echo "e2e_smoke_run: --name and --driver are both required" >&2
+        echo "$usage" >&2
+        exit 2
+    fi
+    if [ -n "$fixture_rel" ] && [ "$no_fixture" = 1 ]; then
+        echo "e2e_smoke_run: --fixture and --no-fixture are mutually exclusive" >&2
+        echo "$usage" >&2
+        exit 2
+    fi
+    if [ -z "$fixture_rel" ] && [ "$no_fixture" = 0 ]; then
+        echo "e2e_smoke_run: one of --fixture or --no-fixture is required" >&2
+        echo "$usage" >&2
         exit 2
     fi
 
@@ -182,9 +202,8 @@ e2e_smoke_run() {
     export DISPLAY="${DISPLAY:-:0}"
 
     # -----------------------------------------------------------------------
-    # 2b. gui_launch_env_pin (scripts/lib_gui_launch.sh) applies the WebKit
-    #     default and the whole launch loader path: the workspace-bin dirs,
-    #     then the tbb pin first.
+    # 2b. gui_launch_env_pin (scripts/lib_gui_launch.sh) applies the whole
+    #     launch loader path: the workspace-bin dirs, then the tbb pin first.
     # -----------------------------------------------------------------------
     gui_launch_env_pin
 
@@ -227,11 +246,12 @@ e2e_smoke_run() {
     #    The launcher (run-gui-dev.sh) owns reaping of vite+reify-gui via its trap.
     # -----------------------------------------------------------------------
     local LAUNCHER="${REIFY_SMOKE_LAUNCHER:-$REPO_ROOT/scripts/run-gui-dev.sh}"
-    local FIXTURE="$REPO_ROOT/$fixture_rel"
+    # FIXTURE stays empty under --no-fixture, so the launcher gets no file.
+    local FIXTURE="${fixture_rel:+$REPO_ROOT/$fixture_rel}"
     local DRIVER="$REPO_ROOT/$driver_rel"
-    echo "${name}: launching GUI with fixture: $FIXTURE"
+    echo "${name}: launching GUI with fixture: ${FIXTURE:-(none: Start view)}"
     REIFY_DEBUG=1 REIFY_DEBUG_PORT="$PORT" REIFY_VITE_PORT="$VITE_PORT" \
-        bash "$LAUNCHER" "$FIXTURE" &
+        bash "$LAUNCHER" ${FIXTURE:+"$FIXTURE"} &
     GUI_LAUNCHER_PID=$!
     echo "${name}: launcher PID=$GUI_LAUNCHER_PID"
 
@@ -287,7 +307,7 @@ e2e_smoke_run() {
 
     # -----------------------------------------------------------------------
     # 7. Run the smoke driver.
-    #    The driver's own waitForServer passes instantly (server already ready).
+    #    The driver's shared waitForServer passes instantly (server already ready).
     # -----------------------------------------------------------------------
     echo "${name}: running smoke driver…"
     local DRIVER_RC=0

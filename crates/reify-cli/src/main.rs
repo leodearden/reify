@@ -35,95 +35,28 @@ mod check_verdict;
 mod cmd;
 mod constraint_report;
 mod dev;
+mod diagnostic_line;
+mod help;
 mod module_capabilities;
 mod sigpipe;
+use diagnostic_line::PARSE_ERROR_LABEL;
+use help::Command;
 use reify_core::ModulePath;
-
-fn print_usage(out: &mut dyn std::io::Write) {
-    let _ = writeln!(out, "Usage: reify <command> [options]");
-    let _ = writeln!(out, "Commands:");
-    let _ = writeln!(out, "  check <file>              Check constraints");
-    let _ = writeln!(
-        out,
-        "  test <file>               Run @test-annotated structures"
-    );
-    let _ = writeln!(
-        out,
-        "  build <file> -o <output>   Build geometry and export"
-    );
-    let _ = writeln!(
-        out,
-        "  run <file>                Alias for eval (flagship: reify run <shell.ri>)"
-    );
-    let _ = writeln!(
-        out,
-        "  eval <file>               Evaluate and print every top-level value cell"
-    );
-    let _ = writeln!(
-        out,
-        "  report --bom <file>       Roll up a BOM / cost / waste / provenance report"
-    );
-    let _ = writeln!(
-        out,
-        "  lsp                        Start language server (stdin/stdout)"
-    );
-    let _ = writeln!(
-        out,
-        "  gui [--debug] <file>       Open file in GUI (--debug enables MCP debug listener)"
-    );
-    let _ = writeln!(
-        out,
-        "  gui-debug <file>           Open file in GUI with debug MCP listener (alias for `gui --debug`)"
-    );
-    let _ = writeln!(
-        out,
-        "  doc <file> [-o <path>] [--format html|markdown|json] [--split] [--compact]  Generate documentation"
-    );
-    let _ = writeln!(
-        out,
-        "  cache export <hash>        Write a single cache entry to stdout as a tarball"
-    );
-    let _ = writeln!(
-        out,
-        "  cache import               Read a cache tarball from stdin into the local cache"
-    );
-    let _ = writeln!(
-        out,
-        "  cache stats                Print cache directory, entry count, total size, and top-N largest entries"
-    );
-    let _ = writeln!(
-        out,
-        "  cache clear [--engine-version <hash>] --yes  Empty the cache (or one engine-version subdir); --yes required"
-    );
-    let _ = writeln!(
-        out,
-        "  cache gc                   Force LRU eviction down to the configured cache cap (live engine version only)"
-    );
-    let _ = writeln!(
-        out,
-        "  explain <file>             Print per-cell objective provenance (B9 triple)"
-    );
-    let _ = writeln!(
-        out,
-        "  dev inspect-node <node-id> Print node kind, traits, priority, policy, and overrides"
-    );
-    let _ = writeln!(out, "  --version                  Print version");
-    let _ = writeln!(out, "  --help                     Show this list");
-}
 
 fn main() -> ExitCode {
     sigpipe::restore_default();
     let args: Vec<String> = std::env::args().collect();
 
     if args.len() < 2 {
-        print_usage(&mut std::io::stderr());
+        help::write_overview(&mut std::io::stderr());
         return ExitCode::FAILURE;
     }
 
-    // (a) Early-exit arms: --help / --version short-circuit before the sweep.
+    // (a) Early-exit arms: --help / --version, an unknown command, and
+    // `reify <cmd> --help` short-circuit before the sweep.
     match args[1].as_str() {
         "--help" | "-h" | "help" => {
-            print_usage(&mut std::io::stdout());
+            help::write_overview(&mut std::io::stdout());
             return ExitCode::SUCCESS;
         }
         "--version" | "-V" => {
@@ -131,6 +64,16 @@ fn main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
         _ => {}
+    }
+    let Some(subcommand) = help::lookup(&args[1]) else {
+        eprintln!("Unknown command: {}", args[1]);
+        help::write_overview(&mut std::io::stderr());
+        return ExitCode::FAILURE;
+    };
+    let subcommand_args = &args[2..];
+    if help::requests_help(subcommand_args) {
+        help::write_subcommand_help(subcommand, &mut std::io::stdout());
+        return ExitCode::SUCCESS;
     }
 
     // (b) Sweep stale tempfiles and orphan dirs from the persistent cache.
@@ -140,37 +83,35 @@ fn main() -> ExitCode {
     cache::run_startup_sweep();
 
     // (c) Command dispatcher.
-    match args[1].as_str() {
-        "check" => cmd::check::cmd_check(&args[2..]),
-        "test" => cmd::test::cmd_test(&args[2..]),
-        "build" => cmd::build::cmd_build(&args[2..]),
-        "run" | "eval" => cmd::eval::cmd_eval(&args[2..]),
-        "report" => cmd::report::cmd_report(&args[2..]),
-        "doc" => cmd::doc::cmd_doc(&args[2..]),
-        "lsp" => cmd::lsp::cmd_lsp(),
-        "gui" => cmd::gui::cmd_gui(&args[2..]),
-        "gui-debug" => {
+    match subcommand.command {
+        Command::Check => cmd::check::cmd_check(subcommand_args),
+        Command::Test => cmd::test::cmd_test(subcommand_args),
+        Command::Build => cmd::build::cmd_build(subcommand_args),
+        Command::Eval => cmd::eval::cmd_eval(subcommand_args),
+        Command::Report => cmd::report::cmd_report(subcommand_args),
+        Command::Doc => cmd::doc::cmd_doc(subcommand_args),
+        Command::Lsp => cmd::lsp::cmd_lsp(),
+        Command::Gui => cmd::gui::cmd_gui(subcommand_args),
+        Command::GuiDebug => {
             // `gui-debug` is sugar for `gui --debug`: prepend the flag and
             // route through the same code path as `cmd_gui` so the two entry
             // points share argument parsing and binary-launch logic.
-            let mut forwarded: Vec<String> = Vec::with_capacity(args.len() - 1);
+            let mut forwarded: Vec<String> = Vec::with_capacity(subcommand_args.len() + 1);
             forwarded.push("--debug".to_string());
-            forwarded.extend(args[2..].iter().cloned());
+            forwarded.extend(subcommand_args.iter().cloned());
             cmd::gui::cmd_gui(&forwarded)
         }
-        "explain" => cmd::explain::cmd_explain(&args[2..]),
-        "dev" => dev::cmd_dev(&args[2..]),
-        "cache" => cache::cmd_cache(&args[2..]),
-        other => {
-            eprintln!("Unknown command: {}", other);
-            print_usage(&mut std::io::stderr());
-            ExitCode::FAILURE
-        }
+        Command::Explain => cmd::explain::cmd_explain(subcommand_args),
+        Command::Fix => cmd::fix::cmd_fix(subcommand_args),
+        Command::Dev => dev::cmd_dev(subcommand_args),
+        Command::Cache => cache::cmd_cache(subcommand_args),
     }
 }
 
 /// Write already-rendered parse errors to `out` and yield the exit code a parse failure
-/// gets, so both entry points cannot drift apart on the prefix or the code.
+/// gets, so every program-compiling command writes the same prefix and exits the same way.
+/// The label in that prefix is `PARSE_ERROR_LABEL`; the GNU-shape sibling of this line, which
+/// `cmd::fix` writes, is `diagnostic_line::render_parse_error_line`.
 ///
 /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
 /// Takes the RENDERED `line:col: message` strings rather than the `ParsedModule` they came
@@ -187,73 +128,41 @@ fn main() -> ExitCode {
 /// position gone.
 fn report_parse_errors(rendered: Vec<String>, out: &mut impl std::io::Write) -> ExitCode {
     for error in rendered {
-        let _ = writeln!(out, "Parse error: {error}");
+        let _ = writeln!(out, "{PARSE_ERROR_LABEL}: {error}");
     }
     ExitCode::FAILURE
 }
 
-fn parse_and_compile(path: &str) -> Result<reify_compiler::CompiledModule, ExitCode> {
-    let source = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("Error reading {}: {}", path, e);
-            return Err(ExitCode::FAILURE);
-        }
-    };
-
-    // file_stem() strips only the last extension: "foo.ri" → "foo". Dotted stems
-    // like "v1.2" (from a file named "v1.2.ri") yield a single-segment ModulePath
-    // ["v1.2"], which will mismatch a `module v1.2` declaration (parsed as ["v1","2"]).
-    // This is a known limitation: Reify module names are expected to be bare identifiers.
+/// The module path a file's own name gives it: its stem as a single segment.
+///
+/// file_stem() strips only the last extension: "foo.ri" → "foo". Dotted stems
+/// like "v1.2" (from a file named "v1.2.ri") yield a single-segment ModulePath
+/// ["v1.2"], which will mismatch a `module v1.2` declaration (parsed as ["v1","2"]).
+/// This is a known limitation: Reify module names are expected to be bare identifiers.
+pub(crate) fn module_path_for_file(path: &str) -> ModulePath {
     let module_name = std::path::Path::new(path)
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("unnamed");
-
-    let parsed = reify_compiler::parse_with_stdlib(&source, ModulePath::single(module_name));
-
-    if !parsed.errors.is_empty() {
-        return Err(report_parse_errors(
-            parsed.render_errors(&source),
-            &mut std::io::stderr(),
-        ));
-    }
-
-    let mut compiled = reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
-
-    // Enforce module-path declaration (spec §7.1/§7.2, task γ).
-    // parsed.path == ModulePath::single(module_name) by construction (PRD D-6).
-    if let Some(diag) =
-        reify_compiler::check_module_path_decl(parsed.declared_module_path.as_ref(), &parsed.path)
-    {
-        compiled.diagnostics.push(diag);
-    }
-
-    for diag in &compiled.diagnostics {
-        eprintln!("{}: {}", diag.severity, diag.message);
-    }
-
-    Ok(compiled)
+    ModulePath::single(module_name)
 }
 
-/// Like [`parse_and_compile`], but seeds the active [`CfgSet`] and walks a
-/// `#cfg(...)`-gated user-import DAG via
-/// [`reify_compiler::module_dag::compile_entry_with_stdlib_cfg`].
+/// The program compile that program-aware subcommands share: the entry plus
+/// its `#cfg(...)`-satisfied user-import DAG under the active [`CfgSet`], via
+/// [`reify_compiler::program::compile_program_with_parsed_entry`].
 ///
-/// Used only by `reify check`. It preserves single-file behavior — the full
-/// stdlib prelude is still seeded, so every existing `reify check` input keeps
-/// resolving stdlib names — while additionally following the entry's
-/// cfg-satisfied user imports, so `--cfg target=...` selects which platform
-/// modules resolve (task δ's user-observable signal).
+/// It preserves single-file behavior — the full stdlib prelude is still
+/// seeded, so every single-file input keeps resolving stdlib names — while
+/// additionally following the entry's cfg-satisfied user imports, so
+/// `--cfg target=...` selects which platform modules resolve.
 ///
 /// The module-path declaration check (spec §7.1/§7.2, task γ) is performed
-/// *inside* `compile_entry_with_stdlib_cfg` (via `attach_module_path_diag`), so
-/// — unlike [`parse_and_compile`] — this function must NOT re-run it, else the
-/// diagnostic would be emitted twice.
-fn parse_and_compile_with_cfg(
+/// *inside* the program compile (via `attach_module_path_diag`), so this
+/// function must NOT re-run it, else the diagnostic would be emitted twice.
+fn parse_and_compile_program(
     path: &str,
     cfg: &CfgSet,
-) -> Result<reify_compiler::CompiledModule, ExitCode> {
+) -> Result<reify_compiler::program::CompiledProgram, ExitCode> {
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
@@ -262,14 +171,7 @@ fn parse_and_compile_with_cfg(
         }
     };
 
-    // file_stem() strips only the last extension — same module-name derivation
-    // as parse_and_compile (see its comment for the dotted-stem limitation).
-    let module_name = std::path::Path::new(path)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("unnamed");
-
-    let parsed = reify_compiler::parse_with_stdlib(&source, ModulePath::single(module_name));
+    let parsed = reify_compiler::parse_with_stdlib(&source, module_path_for_file(path));
 
     if !parsed.errors.is_empty() {
         return Err(report_parse_errors(
@@ -280,10 +182,10 @@ fn parse_and_compile_with_cfg(
 
     // Resolve sibling user imports relative to the entry file's parent dir.
     //
-    // `stdlib_root` is INERT on this code path: `compile_entry_with_stdlib_cfg`
-    // skips every `std.*` import (the full stdlib is seeded into the prelude via
-    // `load_stdlib()` instead), so the resolver's stdlib_root is never consulted
-    // for a `reify check`. We still pass the GUI/LSP-heuristic path
+    // `stdlib_root` is INERT on this code path: the program compile skips every
+    // `std.*` import (the full stdlib is seeded into the prelude via the cached
+    // stdlib context instead), so the resolver's stdlib_root is never
+    // consulted. We still pass the GUI/LSP-heuristic path
     // (parent/crates/reify-compiler/stdlib) rather than a bogus sentinel so the
     // resolver is constructed identically to that bridge; its value has no
     // observable effect here.
@@ -295,18 +197,29 @@ fn parse_and_compile_with_cfg(
         parent_dir.join("crates/reify-compiler/stdlib"),
     );
 
-    let compiled = reify_compiler::module_dag::compile_entry_with_stdlib_cfg_checked(
+    let program = reify_compiler::program::compile_program_with_parsed_entry(
+        std::path::Path::new(path),
+        &source,
         &parsed,
         &resolver,
         cfg,
         &SimpleConstraintChecker,
     );
 
-    for diag in &compiled.diagnostics {
+    for diag in &program.entry().diagnostics {
         eprintln!("{}: {}", diag.severity, diag.message);
     }
 
-    Ok(compiled)
+    Ok(program)
+}
+
+/// The entry module of [`parse_and_compile_program`], for a command that needs
+/// nothing else of the program. They differ only in what they return.
+fn parse_and_compile_program_entry(
+    path: &str,
+    cfg: &CfgSet,
+) -> Result<reify_compiler::CompiledModule, ExitCode> {
+    parse_and_compile_program(path, cfg).map(|program| program.into_entry())
 }
 
 /// CLI-local alias for

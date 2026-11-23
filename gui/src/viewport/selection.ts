@@ -23,6 +23,7 @@ import type { Scene, PerspectiveCamera, MeshStandardMaterial } from 'three';
 import { acceleratedRaycast } from 'three-mesh-bvh';
 import { THEME_TOKENS } from '../theme';
 import { fitCameraToBox } from './fitCamera';
+import { SELECTION_OUTLINE_RENDER_ORDER } from './renderOrder';
 
 // Patch Mesh prototype for BVH-accelerated raycasting
 Mesh.prototype.raycast = acceleratedRaycast;
@@ -202,6 +203,7 @@ export function createSelection(options: SelectionOptions): SelectionContext {
     const wireGeom = new EdgesGeometry(mesh.geometry);
     const wireMat = new LineBasicMaterial({ color: SELECTION_COLOR });
     const wf = new LineSegments(wireGeom, wireMat);
+    wf.renderOrder = SELECTION_OUTLINE_RENDER_ORDER;
     scene.add(wf);
     wireframes.set(path, wf);
   }

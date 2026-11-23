@@ -51,6 +51,8 @@ scripts/flake-density-report.py    tests/infra/test_flake_density_report.sh
 # pair at the bottom of this file. Without this row a --scope branch diff
 # touching only the .py selects no infra test at all.
 tests/infra/test_flake_density_report.py    tests/infra/test_flake_density_report.sh
+# Task 10282: the helper-mint guard's assertions live in its .py; a .py-only diff selects the wrapper.
+tests/infra/test_no_shared_tmp_python_helpers.py    tests/infra/test_no_shared_tmp_python_helpers.sh
 # Task 8678: the adoption-ratchet data table and engine select its wrapper.
 tests/infra/adoption-ratchet.manifest    tests/infra/test_infra_adoption_ratchet.sh
 tests/infra/adoption_ratchet.py    tests/infra/test_infra_adoption_ratchet.sh
@@ -58,6 +60,15 @@ tests/infra/adoption_ratchet.py    tests/infra/test_infra_adoption_ratchet.sh
 tests/infra/compiler-namespace-ratchet-baseline.txt    tests/infra/test_compiler_namespace_ratchet.sh
 tests/infra/source_count_ratchet.py    tests/infra/test_compiler_namespace_ratchet.sh
 tests/infra/test_compiler_namespace_ratchet.py    tests/infra/test_compiler_namespace_ratchet.sh
+# Task 8730: the construct-ratchet engine, its shared fixtures and its contract
+# suite select the engine's wrapper. The engine and fixtures also select every
+# member suite built on them, since an engine edit can move a member's live counts.
+tests/infra/rust_construct_ratchet.py    tests/infra/test_rust_construct_ratchet.sh
+tests/infra/rust_construct_ratchet_fixtures.py    tests/infra/test_rust_construct_ratchet.sh
+tests/infra/test_rust_construct_ratchet.py    tests/infra/test_rust_construct_ratchet.sh
+tests/infra/rust_construct_ratchet.py    tests/infra/test_compiler_decl_pass_ratchets.sh
+tests/infra/rust_construct_ratchet_fixtures.py    tests/infra/test_compiler_decl_pass_ratchets.sh
+tests/infra/test_compiler_decl_pass_ratchets.py    tests/infra/test_compiler_decl_pass_ratchets.sh
 # Task 8455: the E3 §7 analysis modules and their suite select its wrapper.
 docs/prds/v0_6/e3-granularity/analysis/e3_protocol.py    tests/infra/test_e3_analysis.sh
 docs/prds/v0_6/e3-granularity/analysis/e3_stats.py    tests/infra/test_e3_analysis.sh
@@ -109,6 +120,26 @@ tests/infra/test_prune_unconsulted_target.py  tests/infra/test_prune_unconsulted
 # ...and that suite's refresh-delegation class pins refresh-warm-base.sh's Step
 # 3b to that sibling (no second inline copy, no silent skip when it is missing).
 scripts/refresh-warm-base.sh         tests/infra/test_prune_unconsulted_target.sh
+# Task 9765: the built-tree arm of refresh-warm-base.sh's inv.9 guard, pinned by a .py suite.
+scripts/refresh-warm-base.sh         tests/infra/test_refresh_warm_base_built_tree.sh
+tests/infra/test_refresh_warm_base_built_tree.py  tests/infra/test_refresh_warm_base_built_tree.sh
+# Its WriterParity class replays verify.sh's own attempt-0 stamp line, so moving
+# or reshaping that sidecar reds here instead of disabling the guard fail-open.
+scripts/verify.sh                    tests/infra/test_refresh_warm_base_built_tree.sh
+# Task 10152: the promote-time eviction of build-script runs the build root's
+# cargo would rerun, pinned by a .py suite whose RefreshStep class also pins
+# refresh-warm-base.sh's Step 3c to that sibling (fail-closed when missing).
+scripts/evict-dirty-target-units.py  tests/infra/test_evict_dirty_target_units.sh
+tests/infra/test_evict_dirty_target_units.py  tests/infra/test_evict_dirty_target_units.sh
+scripts/refresh-warm-base.sh         tests/infra/test_evict_dirty_target_units.sh
+# The real evictor also runs in place inside test_refresh_warm_base.sh's
+# refreshes, as the prune sibling does, so an evictor edit selects that suite.
+scripts/evict-dirty-target-units.py  tests/infra/test_refresh_warm_base.sh
+# The suites that run a COPY of refresh-warm-base.sh stage it, with its
+# siblings, through one shared harness module, so an edit to it selects each.
+tests/infra/refresh_warm_base_harness.py  tests/infra/test_evict_dirty_target_units.sh
+tests/infra/refresh_warm_base_harness.py  tests/infra/test_prune_unconsulted_target.sh
+tests/infra/refresh_warm_base_harness.py  tests/infra/test_refresh_warm_base_built_tree.sh
 # Task 9246: the cron sweep of idle worktree targets exempts _merge-verify and
 # respects each worktree's lane lock, pinned by a .py suite behind a thin .sh
 # wrapper, same pair shape.
@@ -122,6 +153,12 @@ deploy/systemd/reify-merge-verify-trim.timer    tests/infra/test_merge_verify_tr
 tests/infra/test_merge_verify_trim_units.py    tests/infra/test_merge_verify_trim_units.sh
 scripts/prune-unconsulted-target.sh  tests/infra/test_merge_verify_trim_units.sh
 scripts/gc-worktree-targets.sh       tests/infra/test_merge_verify_trim_units.sh
+# Task 9871: the merge_verify_workspace knob in the yaml, and the merge-role
+# test_command premise it relies on, pinned by a .py suite behind a .sh wrapper.
+dark-factory-orchestrator.yaml       tests/infra/test_merge_verify_workspace_seam.sh
+tests/infra/test_merge_verify_workspace_seam.py    tests/infra/test_merge_verify_workspace_seam.sh
+# Its premise check plans verify.sh's merge role, which the test_verify_*.sh glob misses.
+scripts/verify.sh                    tests/infra/test_merge_verify_workspace_seam.sh
 scripts/warm-lane-preflight.sh       tests/infra/test_warm_lane_pool.sh
 scripts/warm-lane-preflight.sh       tests/infra/test_warm_lane_preflight.sh
 scripts/warm-lane-ref-check.sh       tests/infra/test_warm_lane_ref_visibility.sh
@@ -147,6 +184,12 @@ scripts/lib_live_refs.sh             tests/infra/test_warm_lane_gc_sweep.sh
 # target/, exactly as before the gate existed).
 scripts/thin-warm-lane.sh            tests/infra/test_thin_warm_lane.sh
 scripts/lib_live_refs.sh             tests/infra/test_thin_warm_lane.sh
+# Task 10228: the lib's own mount-namespace suite. Its scenarios execute only
+# where bwrap can create a mount namespace (unsandboxed task verify), so a
+# lib-only diff must select it there.
+scripts/lib_live_refs.sh             tests/infra/test_live_refs_namespace.sh
+# Same exact-path SELECTION hole as the test_lane_lock_probe.py row below.
+tests/infra/test_live_refs_namespace.py    tests/infra/test_live_refs_namespace.sh
 # Task 5672: scripts/lib_lane_x_flock.sh is a shared lock-acquire lib sourced
 # TRANSITIVELY by tests/infra/run_all.sh under --scope host-infra; without
 # this row a task-scope diff touching only the lib selects zero infra tests,
@@ -365,7 +408,7 @@ scripts/check-nan-safe-ordering.sh    tests/infra/test_nan_safe_ordering_guard_w
 # Task 6202: scripts/lib_rust_production_view.sh is the SINGLE copy of the Rust
 # literal/comment lexer, so it needs a row per CONSUMER — the
 # one-artifact-multiple-rows pattern scripts/lib_task_citation.sh uses below.
-# Its own unit suite plus all three consumers' suites, each of which
+# Its own unit suite plus every consumer's suite, each of which
 # load-bears the lib: a lib-only diff that selected only the unit suite would
 # leave both gates' verdicts and the orphan audit's cfg(test) masking unrun on
 # the very edit that can break them. The .py row is the task 7044 pair shape.
@@ -373,6 +416,8 @@ scripts/lib_rust_production_view.sh    tests/infra/test_rust_production_view_lib
 scripts/lib_rust_production_view.sh    tests/infra/test_nan_safe_ordering_guard_wired.sh
 scripts/lib_rust_production_view.sh    tests/infra/test_compute_trampoline_registration_wired.sh
 scripts/lib_rust_production_view.sh    tests/infra/test_audit_orphan_producers.sh
+scripts/lib_rust_production_view.sh    tests/infra/test_rust_construct_ratchet.sh
+scripts/lib_rust_production_view.sh    tests/infra/test_compiler_decl_pass_ratchets.sh
 tests/infra/test_rust_production_view_lib.py    tests/infra/test_rust_production_view_lib.sh
 
 # Task 6107 (β): the single `watch --once` index primitive. Its guard is
@@ -643,6 +688,18 @@ tree-sitter-reify/src/scanner.c      tests/infra/test_tree_sitter_pipeline.sh
 scripts/tree-sitter-generate.sh      tests/infra/test_tree_sitter_pipeline.sh
 scripts/tree-sitter-freshness.sh     tests/infra/test_tree_sitter_pipeline.sh
 
+# Task 9727 (issue #1): both generators must pass `--abi 14`, held by one
+# behavioural suite. The .py row mirrors test_flake_density_report.py above:
+# a diff touching only the .py otherwise selects no infra test at all.
+# build_support.rs is build.rs's `include!`d half: it owns run_with_timeout,
+# which hands the CLI that argv, and the staleness predicates, so it routes to
+# both suites that drive the real build.rs (the Task 5629 block above lacks it).
+tree-sitter-reify/build.rs           tests/infra/test_tree_sitter_abi_pin.sh
+tree-sitter-reify/build_support.rs   tests/infra/test_tree_sitter_abi_pin.sh
+tree-sitter-reify/build_support.rs   tests/infra/test_tree_sitter_pipeline.sh
+scripts/tree-sitter-generate.sh      tests/infra/test_tree_sitter_abi_pin.sh
+tests/infra/test_tree_sitter_abi_pin.py    tests/infra/test_tree_sitter_abi_pin.sh
+
 # Task 7139: the reify-audit binary-freshness guard library and the pre-done
 # hook wrapper that consumes it. NEITHER had a row here, so on the task role
 # (DF_VERIFY_ROLE != merge && != background) a diff touching only these two
@@ -881,19 +938,26 @@ tests/infra/harness-layout-lib.sh    tests/infra/test_verify_narrowing_selection
 scripts/verify-pipeline-infra-tests.txt    tests/infra/test_verify_narrowing_selection.sh
 
 # S18 γ1 (#9098; PRD verify-structured-plan-and-role-table D13, D14): B1, the plan-parity members.
-# The core member and its lint/typecheck grid shards share the harness and the clone, so the
-# shared modules select every member (the glob); each member's own .py selects its wrapper.
+# The core member, its per-action grid shards and the γ2 (#9099) test-region members share the
+# harness and the clone, so the shared modules select every member (the glob); each member's own
+# .py selects its wrapper.
 tests/infra/test_verify_plan_parity.py    tests/infra/test_verify_plan_parity.sh
 tests/infra/test_verify_plan_parity_lint.py    tests/infra/test_verify_plan_parity_lint.sh
 tests/infra/test_verify_plan_parity_typecheck.py    tests/infra/test_verify_plan_parity_typecheck.sh
+tests/infra/test_verify_plan_parity_test.py    tests/infra/test_verify_plan_parity_test.sh
+tests/infra/test_verify_plan_parity_all.py    tests/infra/test_verify_plan_parity_all.sh
+tests/infra/test_verify_plan_parity_region.py    tests/infra/test_verify_plan_parity_region.sh
+tests/infra/test_verify_plan_parity_retry.py    tests/infra/test_verify_plan_parity_retry.sh
 tests/infra/plan_parity_harness.py    tests/infra/test_verify_plan_parity*.sh
 tests/infra/scope_record_harness.py    tests/infra/test_verify_plan_parity*.sh
 tests/infra/tree_under_test.py    tests/infra/test_verify_plan_parity*.sh
 tests/infra/verify_ledger_env.py    tests/infra/test_verify_plan_parity*.sh
 scripts/verify-ledger.py    tests/infra/test_verify_plan_parity.sh
-# The plan-model unit member: its own .py and the env helper it imports select its wrapper; the
-# package modules select it through their tests/infra/test_verify_*.sh rows.
+# The plan-model unit member: its own .py and the helpers it imports, the clone harness included,
+# select its wrapper; the package modules select it through their tests/infra/test_verify_*.sh rows.
 tests/infra/test_verify_plan_model.py    tests/infra/test_verify_plan_model.sh
+tests/infra/scope_record_harness.py    tests/infra/test_verify_plan_model.sh
+tests/infra/tree_under_test.py    tests/infra/test_verify_plan_model.sh
 tests/infra/verify_ledger_env.py    tests/infra/test_verify_plan_model.sh
 scripts/reify_verify/plan.py    tests/infra/test_verify_*.sh
 scripts/reify_verify/plan.py    tests/infra/test_verify_policy.sh
@@ -905,3 +969,57 @@ scripts/reify_verify/environment.py    tests/infra/test_verify_*.sh
 scripts/reify_verify/environment.py    tests/infra/test_verify_policy.sh
 scripts/reify_verify/jsondata.py    tests/infra/test_verify_*.sh
 scripts/reify_verify/jsondata.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/nextest.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/nextest.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/retry.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/retry.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/testregion.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/testregion.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/releasescope.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/releasescope.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/gatepaths.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/gatepaths.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/diagnostics.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/diagnostics.py    tests/infra/test_verify_policy.sh
+# The plan-model member compares nextest_config_path's lines with the generator's own stderr.
+scripts/gen-nextest-config.sh    tests/infra/test_verify_plan_model.sh
+# Task 10341: the PRD-gate substrate guard is sourced by two wrappers and tested directly by a third.
+scripts/prd-gate-substrate-guard.sh    tests/infra/test_prd_gate_substrate_guard.sh
+scripts/prd-gate-substrate-guard.sh    tests/infra/test_prd_gate_corpus.sh
+scripts/prd-gate-substrate-guard.sh    tests/infra/test_prd_gate_compiler_type_hygiene.sh
+# Task 10341: the decompose workflow script, which the decompose wrapper syntax-checks and its _mjs partition drives.
+scripts/prd-decompose-verify.mjs    tests/infra/test_prd_decompose_verify.sh
+# Task 10341: the unittest partitions the prd-capability-check and prd-decompose-verify wrappers discover.
+scripts/test_pcc_grammar_cache.py    tests/infra/test_prd_capability_check.sh
+scripts/test_pcc_grammar_generate.py    tests/infra/test_prd_capability_check.sh
+scripts/test_pcc_grammar_substrate.py    tests/infra/test_prd_capability_check.sh
+scripts/test_pcc_main.py    tests/infra/test_prd_capability_check.sh
+scripts/test_pcc_outcome_ratchet.py    tests/infra/test_prd_capability_check.sh
+scripts/test_pcc_probe_context.py    tests/infra/test_prd_capability_check.sh
+scripts/test_pcc_probe_set.py    tests/infra/test_prd_capability_check.sh
+scripts/test_pcc_run_probe.py    tests/infra/test_prd_capability_check.sh
+scripts/test_pcc_schema.py    tests/infra/test_prd_capability_check.sh
+scripts/test_pcc_seam_ratchet.py    tests/infra/test_prd_capability_check.sh
+scripts/test_pcc_verdict.py    tests/infra/test_prd_capability_check.sh
+scripts/test_prd_decompose_verify.py    tests/infra/test_prd_decompose_verify.sh
+scripts/test_prd_decompose_verify_bind.py    tests/infra/test_prd_decompose_verify.sh
+scripts/test_prd_decompose_verify_mjs.py    tests/infra/test_prd_decompose_verify.sh
+scripts/test_prd_decompose_verify_schema.py    tests/infra/test_prd_decompose_verify.sh
+scripts/test_prd_decompose_verify_synthesize.py    tests/infra/test_prd_decompose_verify.sh
+# Task 10341: modules the two wrappers' partitions load or scan; prd-decompose-verify.py loads prd-capability-check.py in-process, and the prd-capability-check partitions import _pdv_test_support.
+scripts/prd-capability-check.py    tests/infra/test_prd_decompose_verify.sh
+scripts/prd-decompose-verify.py    tests/infra/test_prd_decompose_verify.sh
+scripts/prd-decompose-verify.py    tests/infra/test_prd_capability_check.sh
+scripts/_pcc_test_support.py    tests/infra/test_prd_capability_check.sh
+scripts/_pdv_test_support.py    tests/infra/test_prd_capability_check.sh
+scripts/_pdv_test_support.py    tests/infra/test_prd_decompose_verify.sh
+scripts/_schema_test_support.py    tests/infra/test_prd_capability_check.sh
+scripts/_schema_test_support.py    tests/infra/test_prd_decompose_verify.sh
+# Task 10341: test_prd_gate_substrate_guard.sh's filtered-probe-set check loads the real prd-capability-check.py and calls load_probe_set on it.
+scripts/prd-capability-check.py    tests/infra/test_prd_gate_substrate_guard.sh
+# Task 10341: the prd-capability-check seam ratchet (test_pcc_seam_ratchet.py) scans the prd-decompose-verify partitions as source.
+scripts/test_prd_decompose_verify.py    tests/infra/test_prd_capability_check.sh
+scripts/test_prd_decompose_verify_bind.py    tests/infra/test_prd_capability_check.sh
+scripts/test_prd_decompose_verify_mjs.py    tests/infra/test_prd_capability_check.sh
+scripts/test_prd_decompose_verify_schema.py    tests/infra/test_prd_capability_check.sh
+scripts/test_prd_decompose_verify_synthesize.py    tests/infra/test_prd_capability_check.sh

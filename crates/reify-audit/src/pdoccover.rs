@@ -1282,14 +1282,14 @@ fn is_chunk_path(path: &str) -> bool {
 
 /// Gather the inputs BOTH lanes need — deliberately not the oracle sources.
 ///
-/// Path membership comes from `ctx.git.ls_files()` — content from `std::fs`,
+/// Path membership comes from `ctx.git().ls_files()` — content from `std::fs`,
 /// mirroring `pdssentinel::check`. Only tracked files participate, so a stray
 /// untracked `units.rs.orig` or a scratch chunk never perturbs the census.
 ///
 /// The committed ledger is deliberately NOT an input: both lanes are blind to
 /// it, and only [`audit`] reads it, via [`committed_rows`].
 fn load_inputs(ctx: &AuditContext<'_>) -> Inputs {
-    let mut tracked: Vec<String> = ctx.git.ls_files();
+    let mut tracked: Vec<String> = ctx.git().ls_files();
     tracked.sort();
 
     let registries = if tracked.iter().any(|p| p == UNITS_PATH) {

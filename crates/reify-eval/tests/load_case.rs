@@ -52,9 +52,10 @@ fn load_case_ctor_round_trips_to_structure_instance() {
 structure def LoadCaseFixture {
     let case = LoadCase(
         name: "g",
-        loads: [PointLoad(point: "a", force: 10.0N), PointLoad(point: "b", force: 20.0N)],
-        supports: [FixedSupport(target: "r")]
+        loads: [PointLoad(point: vertex(body, "a"), force: 10.0N), PointLoad(point: vertex(body, "b"), force: 20.0N)],
+        supports: [FixedSupport(target: face(body, "r"))]
     )
+    let body = box(1000mm, 100mm, 100mm)
 }
 "#;
 
@@ -181,12 +182,13 @@ fn load_case_member_access_reads_name_loads_supports_through() {
 structure def LoadCaseAccess {
     let case          = LoadCase(
         name: "g",
-        loads: [PointLoad(point: "a", force: 10.0N), PointLoad(point: "b", force: 20.0N)],
-        supports: [FixedSupport(target: "r")]
+        loads: [PointLoad(point: vertex(body, "a"), force: 10.0N), PointLoad(point: vertex(body, "b"), force: 20.0N)],
+        supports: [FixedSupport(target: face(body, "r"))]
     )
     let case_name     = self.case.name
     let first_load    = self.case.loads[0]
     let first_support = self.case.supports[0]
+    let body = box(1000mm, 100mm, 100mm)
 }
 "#;
 

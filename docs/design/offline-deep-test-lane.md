@@ -177,7 +177,9 @@ tracking head:
   ever recompiles. It does **not** need the merge worker's artifacts after the one-time bootstrap.
 - **Reuse the event + shared sccache, not the artifacts.** The `on_post_merge` event (§5) is the
   trigger; sccache already shares dependency rlibs cross-worktree, so the first cold bootstrap is
-  cheap-ish and one-time (irrelevant for a background lane).
+  cheap-ish and one-time (irrelevant for a background lane). *Correction, 2026-11-18:* only about two
+  thirds of dependency rlibs hit at a new worktree path; see
+  `docs/notes/sccache-key-path-sensitivity.md`.
 - **Disk is the only real cost — bound it by scope.** The lane runs *only* the `heavy` filterset, so
   its build is the **dependency cone of `reify-solver-elastic` + `reify-eval`**, not the full
   workspace (no clippy-all-targets, no gui-check, no ~745-bin sweep). That `target/` is a *fraction*

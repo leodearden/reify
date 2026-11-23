@@ -42,17 +42,8 @@ mod p2_suppression {
     fn run_p2(git: &MockGitOps, task_metadata: HashMap<String, TaskMetadata>) -> Vec<Finding> {
         let conn = Connection::open_in_memory().expect("open in-memory sqlite");
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, git, &jc)
+            .with_tasks(task_metadata);
         p2_consumer_stub::check(&ctx)
     }
 

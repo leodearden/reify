@@ -15,7 +15,7 @@
  *   "5 kg/m" → same: space before 'k', scanner refuses
  *
  * The unit_expr rule uses token.immediate(...) for every internal token
- * (*,/,^,parens,unit_name,signed_integer) to enforce contiguity declaratively
+ * (*,/,^,parens,unit_name,unit_exponent) to enforce contiguity declaratively
  * inside the expression; this scanner only decides the entry point.
  */
 

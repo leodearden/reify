@@ -25,13 +25,18 @@ use std::collections::{HashMap, HashSet};
 
 use reify_compiler::{CompiledModule, TopologyTemplate};
 use reify_constraints::relate_solve::{
-    FrameUnknown, Operand, Pose, RelationInstance, comparable_datum_operands,
-    max_relation_exceedance, ResidualRow, partition_driving_set, pose_from_frame, solve_frame,
-    solve_scaling, static_relation_residuals,
+    FrameSolution, FrameUnknown, Operand, Pose, RelationInstance, RelationPartition, ResidualRow,
+    Twist, comparable_datum_operands, frame_failure_diagnostic, frame_value,
+    max_relation_exceedance, partition_driving_set, solve_frame_outcome, solve_scaling,
+    static_relation_residuals,
 };
 use reify_constraints::scaling::{RelateTolerance, ResidualUnit, SolveScaling};
+use reify_constraints::trust_region::SolveBudget;
 use reify_core::{Diagnostic, DiagnosticCode, Type, ValueCellId};
-use reify_ir::{CompiledExpr, CompiledExprKind, ExportFormat, SolveResult, Value, ValueMap};
+use reify_ir::{
+    CompiledExpr, CompiledExprKind, ExportFormat, InfeasibilityCertificate, NonFiniteEvaluation,
+    ResidualSource, SolveFailureCause, Value, ValueMap,
+};
 
 use crate::Engine;
 
@@ -426,7 +431,7 @@ pub fn mounted_joint_cell(
     // Walking the full list (not short-circuiting at the first match) lets us emit
     // a diagnostic when more than one cell references the same sub.
     //
-    // B9 back-compat: a literal-axis joint `revolute(vec3(0,0,1), range)` has no
+    // B9 back-compat: a literal-axis joint `revolute(dir(0,0,1), range)` has no
     // IndexAccess arg, so decode_operand returns None for every arg → no match →
     // not included in `matches` → no origin written.
     let matches: Vec<_> = template
@@ -507,22 +512,38 @@ pub struct RelateSolution {
     /// (e.g. `"bolt"`). Empty when the scope has no auto subs, or when the driving
     /// set was infeasible (no placement — see [`diagnostics`](Self::diagnostics)).
     pub poses: HashMap<String, Value>,
-    /// DOF spent by the driving set = its combined Jacobian rank (exact codimension).
+    /// DOF spent by the driving set = its combined Jacobian rank (exact codimension),
+    /// measured at the SOLVED placement when the solve converged and at the seed
+    /// witness otherwise.
     pub spent: u32,
     /// Residual DOF left free = `6 − spent` (the Frame freedoms the relations leave
-    /// open, e.g. spin about a shared axis).
+    /// open, e.g. spin about a shared axis). On a converged solve this equals
+    /// `free_twists.len()`: both come from the one factorization at the solution.
     pub free: u32,
     /// Number of relations in the driving set (the maximal independent subset that
-    /// was handed to the solver).
+    /// was handed to the solver). Unlike [`spent`](Self::spent), the partition is
+    /// read at the SEED witness: a relation whose rows all sit at a crest there
+    /// counts as redundant even when it would drive at the solution (#9716).
     pub driving: usize,
     /// Number of relations in the redundant remainder (verified post-solve as
-    /// geometry-backed assertions, never solved).
+    /// geometry-backed assertions, never solved). Read at the seed, like
+    /// [`driving`](Self::driving).
     pub redundant: usize,
     /// Verification diagnostics: a redundant-remainder relation violated at the
-    /// solved placement (step-14), or a driving-set conflict (the solver's
-    /// `Infeasible` report; step-16 refines it into a minimal conflict set). An
-    /// `Error` here fails the build.
+    /// solved placement (step-14), or a failed solve of the driving set (one
+    /// diagnostic coded by its [`failure`](Self::failure)'s cause; a certified
+    /// infeasibility is rendered as a minimal conflict set). An `Error` here fails
+    /// the build.
     pub diagnostics: Vec<Diagnostic>,
+    /// Why the driving-set solve failed, or `None` when it did not run or
+    /// converged — the typed value behind the failure diagnostic, so consumers
+    /// never parse its text.
+    pub failure: Option<SolveFailureCause>,
+    /// The Frame freedoms the relations leave open at the SOLVED placement, one
+    /// [`Twist`] per [`free`](Self::free) DOF (the null space of the solve's
+    /// Jacobian there) — the data #4388's DOF ledger names geometrically. Empty
+    /// when unsolved.
+    pub free_twists: Vec<Twist>,
     /// The per-relation consumption ledger of a ZERO-AUTO scope's static
     /// verification (DIC α, task 5415), or `None` when this solution came from the
     /// auto-ful solve path.
@@ -742,12 +763,13 @@ fn unconsumable_relation_diagnostic(source: usize) -> Diagnostic {
 ///    which datums MOVE with the auto Frame vs which are fixed anchors).
 /// 2. **Partition** at the seed witness into driving + redundant
 ///    ([`partition_driving_set`]); report `spent`/`free`.
-/// 3. **Solve** the driving set for the auto Frame ([`solve_frame`]). On
-///    [`SolveResult::Solved`] the solved Frame is recorded in `poses`; on
-///    [`SolveResult::Infeasible`] the driving set is inconsistent — a
-///    [`minimal_infeasible_subset`] is derived and rendered as a geometric
-///    [`conflict_diagnostic`] (minimal conflict set + conflicting magnitudes +
-///    newest-declared primary), never the solver's internal message (step-16).
+/// 3. **Solve** the driving set for the auto Frame ([`solve_frame_outcome`]). A
+///    solved Frame is recorded in `poses` with its free twists; a failed solve
+///    records its typed cause in `failure` and one diagnostic coded by it
+///    ([`failure_diagnostic`]). A certified infeasibility is rendered as the
+///    geometric conflict narrative of a [`minimal_infeasible_subset`] (minimal
+///    conflict set + conflicting magnitudes + newest-declared primary) with the
+///    solver's certificate and blamed relations (step-16).
 /// 4. **Verify** each redundant-remainder relation against the SOLVED placement
 ///    within the assertion tolerance — satisfied ⇒ silent (B2). A *violated*
 ///    remainder relation that shares a datum operand with a driving relation pins
@@ -764,6 +786,17 @@ fn unconsumable_relation_diagnostic(source: usize) -> Diagnostic {
 /// float grounding is η (#4387). This solves the single auto unknown against the
 /// fixed anchors. A scope with no auto unknown returns an empty solution.
 pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> RelateSolution {
+    solve_relate_scope_within(scope, realized, SolveBudget::default())
+}
+
+/// [`solve_relate_scope`] with the driving-set solve (and its conflict search)
+/// limited to `budget`.
+// G-allow: pub for the cross-crate B9 budget-exhaustion tests in tests/relate_solve_e2e.rs; the production caller, solve_relate_scope, is same-file, and the orphan audit counts only cross-file call sites
+pub fn solve_relate_scope_within(
+    scope: &RelateScope,
+    realized: &RealizedDatums,
+    budget: SolveBudget,
+) -> RelateSolution {
     // ζ scope: exactly one `at auto` unknown. No auto sub ⇒ nothing to solve.
     let Some(auto) = scope.auto_unknowns.first() else {
         return RelateSolution::default();
@@ -837,55 +870,43 @@ pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> Rel
     // 3. Solve ONLY the driving set for the auto Frame.
     let driving_rels: Vec<RelationInstance> =
         partition.driving.iter().map(|&i| instances[i].clone()).collect();
-    let result = solve_frame(&driving_rels, &frame_unknown, &seed, &scaling);
+    let outcome = solve_frame_outcome(&driving_rels, &frame_unknown, &seed, &scaling, budget);
 
-    let solved_pose = match result {
-        // The solver's `unique` flag is intentionally not consumed here. For strict
-        // `at auto` a residual non-gauge DOF surfaces as `unique:false` — the
-        // under-determined signal — but ζ does NOT fail the build on it: the §1 bolt
-        // leaves a residual spin DOF about the shank axis and must still build (the
-        // gauge DOF is seeded to a concrete value). ζ's contract is to PRODUCE the
-        // data — the residual DOF count is already carried in `solution.free` — and
+    let solved_pose = match outcome.result {
+        // The solution's rank is intentionally not judged here. For strict `at auto`
+        // a residual non-gauge DOF is under-determination, but ζ does NOT fail the
+        // build on it: the §1 bolt leaves a residual spin DOF about the shank axis
+        // and must still build (the gauge DOF is seeded to a concrete value). ζ's
+        // contract is to PRODUCE the data — `solution.free` and `free_twists` — and
         // θ (#4388) renders the `W_UNDERDETERMINED` ledger from it.
-        SolveResult::Solved { values, .. } => {
-            // Record each solved Frame as the auto sub's pose (keyed by sub-instance
-            // name); the build pass (step-18) writes these back for placement.
-            for (cell, frame) in &values {
-                solution.poses.insert(cell.entity.clone(), frame.clone());
-            }
+        Ok(frame) => {
+            // Record the solved Frame as the auto sub's pose (keyed by sub-instance
+            // name); the build pass (step-18) writes it back for placement.
             solution
                 .poses
-                .get(&frame_unknown.sub)
-                .and_then(pose_from_frame)
+                .insert(frame_unknown.sub.clone(), frame_value(&frame.pose));
+            // The DOF count has ONE home on a converged solve: the factorization at
+            // the solution that also yields the null space. The seed partition can
+            // read a relation at its crest as rank-deficient there.
+            solution.spent = frame.rank as u32;
+            solution.free = frame.null_space.len() as u32;
+            solution.free_twists = frame.null_space;
+            Some(frame.pose)
         }
-        SolveResult::Infeasible { .. } => {
-            // The driving set is geometrically inconsistent. Derive the MINIMAL
-            // inconsistent subset (the smallest set of driving relations that is
-            // still infeasible) and render a geometric conflict diagnostic — naming
-            // the conflict set, its conflicting magnitudes, and the newest-declared
-            // member as primary. The solver's own message is discarded: ζ speaks
-            // geometry, never libslvs internals. No placement, so the remainder is
-            // not verified.
-            let conflict = minimal_infeasible_subset(
-                instances,
-                &partition.driving,
-                &frame_unknown,
-                &seed,
-                &scaling,
-            );
-            solution.diagnostics.push(conflict_diagnostic(&conflict, &built, &frame_unknown.sub));
-            None
-        }
-        SolveResult::NoProgress { reason } => {
-            // `solve_frame` maps non-convergence to `Infeasible`, so this arm is
-            // defensive. Emit the geometric "seed too far" guidance (the wrong-root /
-            // under-determined `seed:` ledger is θ's surface, #4388).
-            solution.diagnostics.push(Diagnostic::error(format!(
-                "the relations on `{}` did not converge to a placement ({reason}); the \
-                 seed configuration may be too far from a solution — try an \
-                 `auto(seed = …)` nearer the intended placement",
-                frame_unknown.sub
-            )));
+        Err(cause) => {
+            // No placement, so the remainder is not verified.
+            let context = FailureContext {
+                built: &built,
+                partition: &partition,
+                unknown: &frame_unknown,
+                seed: &seed,
+                scaling: &scaling,
+                budget,
+            };
+            solution
+                .diagnostics
+                .push(failure_diagnostic(&cause, &context));
+            solution.failure = Some(cause);
             None
         }
     };
@@ -1424,8 +1445,8 @@ pub fn solve_scopes(
 struct ScopeInstances<'a> {
     /// The built instances, contiguous and in source order — the shape every
     /// `reify_constraints::relate_solve` entry point (`partition_driving_set`,
-    /// `solve_frame`, `max_relation_exceedance`, `minimal_infeasible_subset`) expects
-    /// and returns POSITIONS into.
+    /// `solve_frame_outcome`, `max_relation_exceedance`) and
+    /// `minimal_infeasible_subset` expect and return POSITIONS into.
     instances: Vec<RelationInstance>,
     /// `sources[i]` is the `scope.relations` index `instances[i]` was built from,
     /// strictly increasing in `i` — `build_relation_instances` debug-asserts both
@@ -1661,6 +1682,11 @@ fn describe_operands(rel: &CompiledExpr) -> String {
 /// geometry; θ #4388 renders the polished `reify explain` ledger / spans / badge from
 /// the same data).
 fn conflict_diagnostic(conflict: &[usize], built: &ScopeInstances, auto_sub: &str) -> Diagnostic {
+    Diagnostic::error(conflict_message(conflict, built, auto_sub))
+}
+
+/// The geometric explanation [`conflict_diagnostic`] renders for `conflict`.
+fn conflict_message(conflict: &[usize], built: &ScopeInstances, auto_sub: &str) -> String {
     // primary = newest-declared = greatest SOURCE index among the conflict set. Both
     // call sites guarantee `conflict` is non-empty: `minimal_infeasible_subset`
     // returns an infeasible pair or falls back to the non-empty driving set, and the
@@ -1692,38 +1718,129 @@ fn conflict_diagnostic(conflict: &[usize], built: &ScopeInstances, auto_sub: &st
         " — these cannot both be satisfied. `{primary_name}` is the newest-declared \
          relation, flagged as the primary conflict; remove or relax it."
     ));
+    msg
+}
 
-    Diagnostic::error(msg)
+/// What [`failure_diagnostic`] needs to render a failed driving-set solve in the
+/// scope's own terms.
+struct FailureContext<'s, 'a> {
+    built: &'s ScopeInstances<'a>,
+    partition: &'s RelationPartition,
+    unknown: &'s FrameUnknown,
+    seed: &'s Pose,
+    scaling: &'s SolveScaling,
+    budget: SolveBudget,
+}
+
+/// The one diagnostic of a failed driving-set solve, coded by its cause
+/// ([`SolveFailureCause::diagnostic`]). This adds only what the scope context
+/// can name:
+/// - a certified infeasibility — the geometric conflict narrative of the
+///   [`minimal_infeasible_subset`], the solver's certificate, and the driving
+///   relations whose rows remain violated;
+/// - a non-finite evaluation — the driving relation whose row it was, appended
+///   to the [`frame_failure_diagnostic`] sentence.
+///
+/// Every context-free cause (budget exhaustion with the seed guidance, a stall,
+/// any later cause) renders through [`frame_failure_diagnostic`].
+fn failure_diagnostic(cause: &SolveFailureCause, context: &FailureContext) -> Diagnostic {
+    let sub = &context.unknown.sub;
+    match cause {
+        SolveFailureCause::Infeasible(certificate) => {
+            let conflict = minimal_infeasible_subset(context);
+            cause.diagnostic(format!(
+                "{} The solver certified it: {cause}; violated: {}.",
+                conflict_message(&conflict, context.built, sub),
+                blamed_relations(certificate, context)
+            ))
+        }
+        SolveFailureCause::NonFinite(NonFiniteEvaluation {
+            source: ResidualSource::Relation(driving_position),
+            ..
+        }) => {
+            let mut diagnostic = frame_failure_diagnostic(cause, context.unknown);
+            diagnostic.message.push_str(&format!(
+                ", in {}",
+                driving_relation_label(*driving_position, context)
+            ));
+            diagnostic
+        }
+        _ => frame_failure_diagnostic(cause, context.unknown),
+    }
+}
+
+/// The driving relations `certificate` blames, most violated first, each named
+/// with its operands (e.g. `` `flush` (bolt.seat_plane and plate.wall_plane) ``).
+fn blamed_relations(certificate: &InfeasibilityCertificate, context: &FailureContext) -> String {
+    let mut blamed: Vec<usize> = Vec::new();
+    for blame in &certificate.blame {
+        let ResidualSource::Relation(driving_position) = blame.source else {
+            continue;
+        };
+        if !blamed.contains(&driving_position) {
+            blamed.push(driving_position);
+        }
+    }
+    blamed
+        .iter()
+        .map(|&position| driving_relation_label(position, context))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The driving relation at `driving_position` named with its operands (e.g.
+/// `` `flush` (bolt.seat_plane and plate.wall_plane) ``).
+fn driving_relation_label(driving_position: usize, context: &FailureContext) -> String {
+    let instance = context.partition.driving[driving_position];
+    format!(
+        "`{}` ({})",
+        context.built.instances[instance].name,
+        describe_operands(context.built.relation(instance))
+    )
 }
 
 /// Derive a MINIMAL inconsistent subset of the driving relations (ζ step-16).
 ///
-/// Tries each driving PAIR (the smallest non-trivial conflict) via a re-solve: the
-/// first pair that is still [`SolveResult::Infeasible`] on its own is returned as the
-/// minimal conflict set. If no pair is infeasible (a conflict that genuinely needs
-/// ≥3 relations), falls back to the whole driving set. Returns INSTANCE positions
-/// (into `instances`), the same shape [`conflict_diagnostic`] expects. Bounded by
-/// the driving-set size, which is `≤ 6` for a single Frame unknown — the pairwise
-/// search is cheap.
-fn minimal_infeasible_subset(
-    instances: &[RelationInstance],
+/// The smallest non-trivial conflict is a driving PAIR, re-solved within the
+/// scope's budget; [`first_certified_pair`] says which one counts. If no pair is
+/// certified (a conflict that genuinely needs ≥3 relations), falls back to the
+/// whole driving set. Returns INSTANCE positions (into `built.instances`), the
+/// shape [`conflict_message`] expects. Bounded by the driving-set size, which is
+/// `≤ 6` for a single Frame unknown — the pairwise search is cheap.
+fn minimal_infeasible_subset(context: &FailureContext) -> Vec<usize> {
+    let instances = &context.built.instances;
+    let solve_pair = |i: usize, j: usize| {
+        solve_frame_outcome(
+            &[instances[i].clone(), instances[j].clone()],
+            context.unknown,
+            context.seed,
+            context.scaling,
+            context.budget,
+        )
+        .result
+    };
+    match first_certified_pair(&context.partition.driving, solve_pair) {
+        Some(pair) => pair.to_vec(),
+        None => context.partition.driving.clone(),
+    }
+}
+
+/// The first pair of `driving`'s values, in i-before-j order, whose solve is
+/// CERTIFIED infeasible. A pair that converged, ran out of budget, stalled or met
+/// a non-finite value proves nothing and is skipped. With no certified pair it
+/// returns `None`.
+fn first_certified_pair(
     driving: &[usize],
-    unknown: &FrameUnknown,
-    seed: &Pose,
-    scaling: &SolveScaling,
-) -> Vec<usize> {
+    mut solve_pair: impl FnMut(usize, usize) -> Result<FrameSolution, SolveFailureCause>,
+) -> Option<[usize; 2]> {
     for (a, &i) in driving.iter().enumerate() {
         for &j in &driving[a + 1..] {
-            let pair = [instances[i].clone(), instances[j].clone()];
-            if matches!(
-                solve_frame(&pair, unknown, seed, scaling),
-                SolveResult::Infeasible { .. }
-            ) {
-                return vec![i, j];
+            if matches!(solve_pair(i, j), Err(SolveFailureCause::Infeasible(_))) {
+                return Some([i, j]);
             }
         }
     }
-    driving.to_vec()
+    None
 }
 
 // ── Unit tests for mounted_joint_cell (step-1, task #4399) ───────────────────
@@ -1735,8 +1852,8 @@ mod tests_mounted_joint_cell {
     //! Compiles a small structure that has:
     //!   - `sub base : Base` (grounded anchor)
     //!   - `sub link : Link` (no `at auto` / no relate block — not needed by `mounted_joint_cell`)
-    //!   - `let j = revolute(link.hub_point, 0rad..2.094rad)` — first arg is a `link` sub datum (DD1 match)
-    //!   - `let k = revolute(vec3(0, 0, 1), 0rad..2.094rad)` — literal vec3 arg (B9: no match)
+    //!   - `let j = revolute(link.hub_dir, 0rad..2.094rad)` — first arg is a `link` sub datum (DD1 match)
+    //!   - `let k = revolute(dir(0, 0, 1), 0rad..2.094rad)` — literal dir arg (B9: no match)
     //!
     //! Assertions:
     //!   (a) `mounted_joint_cell("Mech", "link", &module) == Some(ValueCellId::new("Mech", "j"))` — RED until impl
@@ -1745,14 +1862,14 @@ mod tests_mounted_joint_cell {
     //!   (d) `mounted_joint_cell("DoesNotExist", "link", &module) == None` — unknown scope → None
 
     use reify_core::ValueCellId;
-    use reify_test_support::compile_source_with_stdlib;
+    use reify_test_support::parse_and_compile_with_stdlib;
 
     use super::mounted_joint_cell;
 
     /// The test fixture: a Mech structure with a relate-mounted link sub and two
     /// revolute joints — `j` (axis refs `link`, should match) and `k` (literal
     /// axis, should NOT match).
-    // Kernel-free fixture: uses only `point3` (a plain multi-component constructor the
+    // Kernel-free fixture: uses only `point3` and `dir` (plain constructors the
     // compiler types without geometry) — avoids `axis_z` whose return type the compiler
     // doesn't register statically (axis_z is a runtime geometry builtin). The relate
     // block is omitted because `mounted_joint_cell` scans `template.value_cells`, not
@@ -1763,33 +1880,26 @@ structure Base {
 }
 
 structure Link {
-    let hub_point : Point = point3(0mm, 0mm, 0mm)
+    let hub_dir : Direction = dir(0, 0, 1)
 }
 
 structure Mech {
     sub base : Base
     sub link : Link
-    // j: first arg is `link.hub_point` — a cross-sub IndexAccess (OperandRef sub="link")
+    // j: first arg is `link.hub_dir` — a cross-sub IndexAccess (OperandRef sub="link")
     // → DD1 match: mounted_joint_cell("Mech", "link") must return Some(cell_id("Mech","j"))
-    let j = revolute(link.hub_point, 0rad..2.094rad)
-    // k: literal vec3 arg — no sub datum reference → B9 non-match → None for sub="link"
-    let k = revolute(vec3(0, 0, 1), 0rad..2.094rad)
+    let j = revolute(link.hub_dir, 0rad..2.094rad)
+    // k: literal dir arg — no sub datum reference → B9 non-match → None for sub="link"
+    let k = revolute(dir(0, 0, 1), 0rad..2.094rad)
 }
 "#;
 
     fn compiled_module() -> reify_compiler::CompiledModule {
-        let module = compile_source_with_stdlib(SOURCE);
-        // Sanity: must compile without errors.
-        assert!(
-            module.diagnostics.iter().all(|d| d.severity != reify_core::Severity::Error),
-            "test fixture must compile without errors; got: {:#?}",
-            module.diagnostics
-        );
-        module
+        parse_and_compile_with_stdlib(SOURCE)
     }
 
     /// (a) RED test — mounted_joint_cell returns the joint cell that references the
-    /// mounted sub (the `j` cell whose first operand is `link.hub_point`).
+    /// mounted sub (the `j` cell whose first operand is `link.hub_dir`).
     ///
     /// RED: the stub returns `None` for every pair; this will fail until step-2
     /// implements the operand-reference scan.
@@ -1845,21 +1955,16 @@ structure Mech {
     fn mounted_joint_cell_first_match_returns_declaration_order_first() {
         const MULTI_JOINT_SOURCE: &str = r#"
 structure Link2 {
-    let hub_point : Point = point3(0mm, 0mm, 0mm)
+    let hub_dir : Direction = dir(0, 0, 1)
 }
 
 structure Mech2 {
     sub link : Link2
-    let j  = revolute(link.hub_point, 0rad..1rad)
-    let j2 = revolute(link.hub_point, 0rad..2rad)
+    let j  = revolute(link.hub_dir, 0rad..1rad)
+    let j2 = revolute(link.hub_dir, 0rad..2rad)
 }
 "#;
-        let module = compile_source_with_stdlib(MULTI_JOINT_SOURCE);
-        assert!(
-            module.diagnostics.iter().all(|d| d.severity != reify_core::Severity::Error),
-            "multi-joint fixture must compile without errors; got: {:#?}",
-            module.diagnostics
-        );
+        let module = parse_and_compile_with_stdlib(MULTI_JOINT_SOURCE);
         let j_id = ValueCellId::new("Mech2", "j");
         let result = mounted_joint_cell("Mech2", "link", &module);
         assert_eq!(
@@ -1960,17 +2065,19 @@ structure Mech2 {
     /// datum by construction; `mounted_joint_cell` always returns `None` for fixed
     /// joints (verified in the sub-test at the end).
     ///
-    /// **Compiler leniency**: joint-constructor builtins return
-    /// `Type::StructureRef(...)` regardless of arg types (name-only dispatch in
-    /// `joint_ctor_result_type`). The fixtures intentionally use `hub_point : Point`
-    /// for all constructor arg positions — even where a Vector or Range is expected
-    /// at runtime — because this test targets the static association scan (not
-    /// runtime evaluation). The compiler accepts these without Error diagnostics.
+    /// **Arg types**: joint-constructor builtins return `Type::StructureRef(...)`
+    /// by name-only dispatch in `joint_ctor_result_type`, and the static scan is
+    /// type-agnostic, so the fixtures reference the sub through whatever member
+    /// checks clean. A joint axis is a checked Direction slot (#9640), so every
+    /// axis position uses `hub_dir : Direction`; spherical's range position is
+    /// unslotted and keeps `hub_point : Point`, which is wrong at runtime but
+    /// accepted without Error diagnostics.
     #[test]
     fn mounted_joint_cell_matches_each_driving_joint_kind() {
         /// Compile a structure with `sub link : Hub` and one joint of the given
         /// `ctor_call`, then assert `mounted_joint_cell("Mech", "link")` returns
         /// `Some(ValueCellId::new("Mech", "j"))`.
+        #[track_caller]
         fn check_kind(ctor_call: &str, kind_label: &str) {
             // Use a fresh structure name per kind to avoid name collisions when
             // all fixtures are compiled in the same module.
@@ -1979,6 +2086,7 @@ structure Mech2 {
                 r#"
 structure Hub{kind_label} {{
     let hub_point : Point = point3(0mm, 0mm, 0mm)
+    let hub_dir : Direction = dir(0, 0, 1)
 }}
 structure {mech_name} {{
     sub link : Hub{kind_label}
@@ -1986,12 +2094,7 @@ structure {mech_name} {{
 }}
 "#
             );
-            let module = compile_source_with_stdlib(&source);
-            assert!(
-                module.diagnostics.iter().all(|d| d.severity != reify_core::Severity::Error),
-                "fixture for {kind_label} must compile without Error diagnostics; got: {:#?}",
-                module.diagnostics
-            );
+            let module = parse_and_compile_with_stdlib(&source);
             let j_id = ValueCellId::new(&mech_name, "j");
             let result = mounted_joint_cell(&mech_name, "link", &module);
             assert_eq!(
@@ -2004,15 +2107,15 @@ structure {mech_name} {{
         }
 
         // ── Revolute (2-arg): already covered by other tests, included for completeness.
-        check_kind("revolute(link.hub_point, 0rad..1rad)", "Revolute");
+        check_kind("revolute(link.hub_dir, 0rad..1rad)", "Revolute");
         // ── Prismatic (2-arg: axis, length_range).
-        check_kind("prismatic(link.hub_point, 0mm..100mm)", "Prismatic");
+        check_kind("prismatic(link.hub_dir, 0mm..100mm)", "Prismatic");
         // ── Cylindrical (3-arg: axis, translation_range, rotation_range).
-        check_kind("cylindrical(link.hub_point, 0mm..100mm, 0rad..1rad)", "Cylindrical");
+        check_kind("cylindrical(link.hub_dir, 0mm..100mm, 0rad..1rad)", "Cylindrical");
         // ── Planar (5-arg: axis_x, axis_y, range_x, range_y, range_theta).
-        // Uses hub_point for both axis args; DD1 matches on the first arg.
+        // Uses hub_dir for both axis args; DD1 matches on the first arg.
         check_kind(
-            "planar(link.hub_point, link.hub_point, 0mm..100mm, 0mm..100mm, 0rad..1rad)",
+            "planar(link.hub_dir, link.hub_dir, 0mm..100mm, 0mm..100mm, 0rad..1rad)",
             "Planar",
         );
         // ── Spherical (1-arg: angle_range). Spherical takes only a range arg
@@ -2033,11 +2136,7 @@ structure MechFixed {
     let j = fixed()
 }
 "#;
-            let module = compile_source_with_stdlib(source);
-            assert!(
-                module.diagnostics.iter().all(|d| d.severity != reify_core::Severity::Error),
-                "fixed() fixture must compile without Error diagnostics"
-            );
+            let module = parse_and_compile_with_stdlib(source);
             let result = mounted_joint_cell("MechFixed", "link", &module);
             assert_eq!(
                 result,
@@ -2046,6 +2145,84 @@ structure MechFixed {
                  fixed joints cannot reference a sub datum by construction"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod test_fixtures {
+    use std::collections::HashMap;
+
+    use reify_ir::Value;
+    use reify_test_support::{direction_val, parse_and_compile_with_stdlib};
+
+    use super::{RealizedDatums, RelateScope, collect_relate_scope};
+
+    pub(super) fn point3v(x: f64, y: f64, z: f64) -> Value {
+        Value::Point(vec![Value::length(x), Value::length(y), Value::length(z)])
+    }
+
+    pub(super) fn axis_v(o: (f64, f64, f64), d: (f64, f64, f64)) -> Value {
+        Value::Axis {
+            origin: Box::new(point3v(o.0, o.1, o.2)),
+            direction: Box::new(direction_val(d.0, d.1, d.2)),
+        }
+    }
+
+    pub(super) fn plane_v(o: (f64, f64, f64), n: (f64, f64, f64)) -> Value {
+        Value::Plane {
+            origin: Box::new(point3v(o.0, o.1, o.2)),
+            normal: Box::new(direction_val(n.0, n.1, n.2)),
+        }
+    }
+
+    /// Hand-build a [`RealizedDatums`] — its map is crate-private, which is the
+    /// reason the tests using it live in-file rather than in `tests/`.
+    pub(super) fn realized(entries: &[(&str, &str, Value)]) -> RealizedDatums {
+        let mut operands = HashMap::new();
+        for (sub, member, v) in entries {
+            operands.insert(((*sub).to_string(), (*member).to_string()), v.clone());
+        }
+        RealizedDatums { operands }
+    }
+
+    /// Collect the scope of `source`'s template `name`, panicking with the
+    /// available template names on a miss so a fixture rename fails legibly
+    /// rather than as `unwrap` on `None`. A fixture that compiles with errors
+    /// panics first, with its diagnostics.
+    pub(super) fn relate_scope(source: &str, name: &str) -> RelateScope {
+        let module = parse_and_compile_with_stdlib(source);
+        let template = module
+            .templates
+            .iter()
+            .find(|t| t.name == name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "fixture has no template `{name}`; its templates are {:?}",
+                    module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
+                )
+            });
+        collect_relate_scope(template)
+    }
+
+    /// `Broken` parses and still compiles to its template, so the template lookup
+    /// alone would accept it; only a check of the compile diagnostics refuses it.
+    #[test]
+    #[should_panic(expected = "compile errors")]
+    fn relate_scope_refuses_a_fixture_that_compiles_with_errors() {
+        const BROKEN: &str = r#"
+structure Broken {
+    let x : Length = true
+}
+"#;
+        relate_scope(BROKEN, "Broken");
+    }
+
+    /// The fixture compiles cleanly but lacks the template asked for, as after a
+    /// rename: the panic names that template and lists those that exist.
+    #[test]
+    #[should_panic(expected = "has no template `Missing`; its templates are [\"Present\"]")]
+    fn relate_scope_names_a_missing_template_and_the_available_ones() {
+        relate_scope("structure Present {}", "Missing");
     }
 }
 
@@ -2061,16 +2238,11 @@ mod tests_static_verification {
     //! read structure off the resulting templates; no geometry kernel is
     //! involved.
 
-    use std::collections::HashMap;
-
     use reify_core::{DiagnosticCode, Severity};
     use reify_ir::Value;
-    use reify_test_support::compile_source_with_stdlib;
 
-    use super::{
-        RealizedDatums, RelateScope, StaticRelateFacts, collect_relate_scope,
-        verify_static_scope,
-    };
+    use super::test_fixtures::{axis_v, plane_v, point3v, realized, relate_scope};
+    use super::{RealizedDatums, RelateScope, StaticRelateFacts, verify_static_scope};
 
     /// Three scopes covering the whole `posed` classification:
     ///
@@ -2176,21 +2348,9 @@ structure PerpendicularScope {
 }
 "#;
 
-    /// Collect the named scope, panicking with the available template names on a
-    /// miss so a fixture rename fails legibly rather than as `unwrap` on `None`.
+    /// Collect the named scope from this module's `SOURCE`.
     fn scope(name: &str) -> RelateScope {
-        let module = compile_source_with_stdlib(SOURCE);
-        let template = module
-            .templates
-            .iter()
-            .find(|t| t.name == name)
-            .unwrap_or_else(|| {
-                panic!(
-                    "fixture template `{name}` must compile; got {:?}",
-                    module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
-                )
-            });
-        collect_relate_scope(template)
+        relate_scope(SOURCE, name)
     }
 
     /// A sub declared with a concrete `at <pose>` is recorded in `posed`, in
@@ -2278,28 +2438,6 @@ structure PerpendicularScope {
     // `dic_relate_static_violated` split (30, 20, 5 mm), so the kernel-free unit
     // and the OCCT e2e are pinning the same numbers.
 
-    fn point3v(x: f64, y: f64, z: f64) -> Value {
-        Value::Point(vec![Value::length(x), Value::length(y), Value::length(z)])
-    }
-
-    fn vec3v(x: f64, y: f64, z: f64) -> Value {
-        Value::Vector(vec![Value::Real(x), Value::Real(y), Value::Real(z)])
-    }
-
-    fn axis_v(o: (f64, f64, f64), d: (f64, f64, f64)) -> Value {
-        Value::Axis {
-            origin: Box::new(point3v(o.0, o.1, o.2)),
-            direction: Box::new(vec3v(d.0, d.1, d.2)),
-        }
-    }
-
-    fn plane_v(o: (f64, f64, f64), n: (f64, f64, f64)) -> Value {
-        Value::Plane {
-            origin: Box::new(point3v(o.0, o.1, o.2)),
-            normal: Box::new(vec3v(n.0, n.1, n.2)),
-        }
-    }
-
     /// A `Frame` at `o` whose basis is a rotation of `deg` about `+z`. The basis is
     /// a unit quaternion, which is the only shape `frame_coincidence_residual`
     /// reads; `deg = 0` is the identity orientation.
@@ -2314,16 +2452,6 @@ structure PerpendicularScope {
                 z: half.sin(),
             }),
         }
-    }
-
-    /// Hand-build a [`RealizedDatums`] — its map is crate-private, which is the
-    /// reason this module lives in-file rather than in `tests/`.
-    fn realized(entries: &[(&str, &str, Value)]) -> RealizedDatums {
-        let mut operands = HashMap::new();
-        for (sub, member, v) in entries {
-            operands.insert(((*sub).to_string(), (*member).to_string()), v.clone());
-        }
-        RealizedDatums { operands }
     }
 
     /// The `dic_relate_static_violated` split, in metres.
@@ -3006,5 +3134,459 @@ structure PerpendicularScope {
             "relations must be listed in SOURCE order (concentric is declared \
              first); got {m:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests_driving_set_failure {
+    //! Kernel-free unit tests of a failed driving-set solve's renderer
+    //! (`failure_diagnostic`) and conflict search: `first_certified_pair`, driven
+    //! by injected pair outcomes, and `minimal_infeasible_subset` end to end.
+    //!
+    //! In-file because those functions, `FailureContext` and `RealizedDatums`'
+    //! map are crate-private. The datums are hand-built via `super::test_fixtures`,
+    //! so no geometry kernel is involved.
+
+    use reify_constraints::relate_solve::{FrameSolution, FrameSolveOutcome};
+    use reify_core::{DiagnosticCode, Severity};
+    use reify_ir::{
+        BudgetExhaustion, InfeasibilityCertificate, NonFiniteEntry, NonFiniteEvaluation,
+        ResidualSource, SolveFailureCause, SolveResult, SolveStall,
+    };
+
+    use super::test_fixtures::{axis_v, plane_v, realized, relate_scope};
+    use super::{
+        FailureContext, FrameUnknown, Pose, RealizedDatums, RelateTolerance, RelationInstance,
+        RelationPartition, SolveBudget, build_relation_instances, failure_diagnostic,
+        first_certified_pair, minimal_infeasible_subset, partition_driving_set,
+        solve_frame_outcome, solve_relate_scope_within, solve_scaling,
+    };
+
+    const SOURCE: &str = r#"
+structure Peg {
+    let seat = rectangle(10mm, 10mm)
+    let seat_plane : Plane = seat.plane
+    let side = rectangle(10mm, 10mm)
+    let side_plane : Plane = side.plane
+    let rod = cylinder(1mm, 10mm)
+    let rod_axis : Axis = rod.axis
+}
+
+structure Block {
+    let top = rectangle(10mm, 10mm)
+    let top_plane : Plane = top.plane
+    let wall = rectangle(10mm, 10mm)
+    let wall_plane : Plane = wall.plane
+    let rail = cylinder(1mm, 10mm)
+    let rail_axis : Axis = rail.axis
+}
+
+structure PairSearchScope {
+    sub peg : Peg at auto
+    sub block : Block
+
+    relate {
+        flush(peg.seat_plane, block.top_plane)
+        flush(peg.side_plane, block.wall_plane)
+        concentric(peg.rod_axis, block.rail_axis)
+    }
+}
+"#;
+
+    /// The anchor offset, in metres.
+    const C: f64 = 0.002;
+
+    /// The budget the pair search runs under, which allows no trial step.
+    const STARVED_BUDGET: SolveBudget = SolveBudget { max_iterations: 0 };
+
+    /// The `PairSearchScope` datums.
+    ///
+    /// Every moving datum sits at the peg frame origin (the rotation centre) and
+    /// every normal or direction is aligned at the seed, so only the offset rows
+    /// are non-zero, and they are linear in translation: d0 wants `tz = +C`, d1
+    /// wants `tx = 0`, d2 wants `(ty, tz) = (0, −C)`. The identity seed is the
+    /// least-squares minimum of the full set and of pair (0, 2), so both are
+    /// certified there whatever the budget. Pair (0, 1) is feasible (`tz = C`)
+    /// but not stationary at the seed.
+    fn pair_search_datums() -> RealizedDatums {
+        let origin = (0.0, 0.0, 0.0);
+        let x = (1.0, 0.0, 0.0);
+        let z = (0.0, 0.0, 1.0);
+        realized(&[
+            ("peg", "seat_plane", plane_v(origin, z)),
+            ("block", "top_plane", plane_v((0.0, 0.0, C), z)),
+            ("peg", "side_plane", plane_v(origin, x)),
+            ("block", "wall_plane", plane_v(origin, x)),
+            ("peg", "rod_axis", axis_v(origin, x)),
+            ("block", "rail_axis", axis_v((0.0, 0.0, -C), x)),
+        ])
+    }
+
+    /// Run `f` over the `FailureContext` production builds for `PairSearchScope`
+    /// under `budget`: the scope's instances, its single auto Frame unknown at
+    /// the identity seed, one scaling over every instance, and the driving-set
+    /// partition at that seed.
+    fn with_failure_context<R>(budget: SolveBudget, f: impl FnOnce(&FailureContext) -> R) -> R {
+        let scope = relate_scope(SOURCE, "PairSearchScope");
+        let datums = pair_search_datums();
+        let built = build_relation_instances(&scope, &datums);
+        let auto = &scope.auto_unknowns[0];
+        let unknown = FrameUnknown {
+            sub: auto.sub.clone(),
+            free: auto.free,
+        };
+        let seed = Pose::identity();
+        let scaling = solve_scaling(
+            &built.instances,
+            &unknown,
+            &seed,
+            RelateTolerance::kernel_default(),
+        );
+        let partition = partition_driving_set(&built.instances, &unknown, &seed, &scaling);
+        let context = FailureContext {
+            built: &built,
+            partition: &partition,
+            unknown: &unknown,
+            seed: &seed,
+            scaling: &scaling,
+            budget,
+        };
+        f(&context)
+    }
+
+    /// Solve `relations` for the context's Frame unknown from its seed, under its
+    /// scaling and `budget`: the solve production runs over the driving set and,
+    /// per candidate pair, in the conflict search.
+    fn solve_in_context(
+        context: &FailureContext,
+        relations: &[RelationInstance],
+        budget: SolveBudget,
+    ) -> FrameSolveOutcome {
+        solve_frame_outcome(
+            relations,
+            context.unknown,
+            context.seed,
+            context.scaling,
+            budget,
+        )
+    }
+
+    // Hand-built pair-solve outcomes, one per way a solve can end.
+
+    fn certified() -> SolveFailureCause {
+        SolveFailureCause::Infeasible(InfeasibilityCertificate {
+            gradient_norm: 0.0,
+            range_cosine: 0.0,
+            max_scaled_residual: 2.0,
+            blame: vec![],
+        })
+    }
+
+    fn exhausted() -> SolveFailureCause {
+        SolveFailureCause::BudgetExhausted(BudgetExhaustion {
+            iterations: 0,
+            budget: 0,
+            step_norms: vec![],
+            max_scaled_residual: 2.0,
+        })
+    }
+
+    fn stalled() -> SolveFailureCause {
+        SolveFailureCause::Stalled(SolveStall {
+            iterations: 7,
+            step_norm: 1e-12,
+            range_cosine: 0.5,
+            max_scaled_residual: 40.0,
+        })
+    }
+
+    fn non_finite() -> SolveFailureCause {
+        SolveFailureCause::NonFinite(NonFiniteEvaluation {
+            iterations: 0,
+            source: ResidualSource::Relation(0),
+            row: 0,
+            entry: NonFiniteEntry::Residual,
+            value: f64::NAN,
+        })
+    }
+
+    fn converged() -> FrameSolution {
+        FrameSolution {
+            pose: Pose::identity(),
+            rank: 6,
+            null_space: vec![],
+        }
+    }
+
+    /// Run `first_certified_pair` over `driving`, answering each pair with
+    /// `outcome`: what it found, and the pairs it solved to get there, in order.
+    fn search(
+        driving: &[usize],
+        outcome: impl Fn(usize, usize) -> Result<FrameSolution, SolveFailureCause>,
+    ) -> (Option<[usize; 2]>, Vec<[usize; 2]>) {
+        let mut tried = Vec::new();
+        let found = first_certified_pair(driving, |i, j| {
+            tried.push([i, j]);
+            outcome(i, j)
+        });
+        (found, tried)
+    }
+
+    /// `with_failure_context` hands its callers the context
+    /// `solve_relate_scope_within` builds: production's driving-set solve fails
+    /// with the same cause, and production renders it to the same single message.
+    ///
+    /// Production runs under `STARVED_BUDGET` itself, not `context.budget`, so the
+    /// budget on its side of the comparison is not read back from the context
+    /// being checked.
+    #[test]
+    fn the_hand_built_failure_context_is_the_one_production_builds() {
+        with_failure_context(STARVED_BUDGET, |context| {
+            let driving: Vec<RelationInstance> = context
+                .partition
+                .driving
+                .iter()
+                .map(|&i| context.built.instances[i].clone())
+                .collect();
+            let outcome = solve_in_context(context, &driving, context.budget);
+            let Err(cause @ SolveFailureCause::Infeasible(_)) = &outcome.result else {
+                panic!(
+                    "a certified failure is required: only it is rendered through the \
+                     conflict search, which reads every context field: {outcome:?}"
+                );
+            };
+
+            let production = solve_relate_scope_within(
+                context.built.scope,
+                &pair_search_datums(),
+                STARVED_BUDGET,
+            );
+            assert_eq!(
+                production.failure.as_ref(),
+                Some(cause),
+                "production's own driving-set solve fails the same way: {production:?}"
+            );
+            let rendered = failure_diagnostic(cause, context);
+            let messages: Vec<&str> = production
+                .diagnostics
+                .iter()
+                .map(|d| d.message.as_str())
+                .collect();
+            assert_eq!(
+                messages,
+                [rendered.message.as_str()],
+                "production renders its failure from this same context"
+            );
+        });
+    }
+
+    /// A stall is rendered with the cause's own figures and coded by the cause,
+    /// never as a certified conflict.
+    #[test]
+    fn a_stalled_driving_set_is_coded_constraint_unsatisfiable() {
+        let cause = stalled();
+        let diagnostic = with_failure_context(SolveBudget::default(), |context| {
+            failure_diagnostic(&cause, context)
+        });
+        assert_eq!(diagnostic.severity, Severity::Error, "{diagnostic:?}");
+        assert_eq!(
+            diagnostic.code,
+            Some(DiagnosticCode::ConstraintUnsatisfiable),
+            "{diagnostic:?}"
+        );
+        assert!(
+            diagnostic.message.contains(&cause.to_string()),
+            "{diagnostic:?}"
+        );
+        assert!(diagnostic.message.contains("`peg`"), "{diagnostic:?}");
+    }
+
+    /// A non-finite evaluation names the driving relation whose row it was. The
+    /// label indexes the DRIVING slice, not the instance list: with instance 1
+    /// partitioned out, driving position 1 is instance 2.
+    #[test]
+    fn a_non_finite_evaluation_names_its_driving_relation() {
+        let cause = SolveFailureCause::NonFinite(NonFiniteEvaluation {
+            iterations: 0,
+            source: ResidualSource::Relation(1),
+            row: 4,
+            entry: NonFiniteEntry::Residual,
+            value: f64::NAN,
+        });
+        let diagnostic = with_failure_context(SolveBudget::default(), |context| {
+            // Only `driving` and `redundant` are coherent here: `spent`, `free` and
+            // `per_relation` still describe production's three-relation driving set.
+            let skipping = RelationPartition {
+                driving: vec![0, 2],
+                redundant: vec![1],
+                ..context.partition.clone()
+            };
+            let narrowed = FailureContext {
+                partition: &skipping,
+                ..*context
+            };
+            failure_diagnostic(&cause, &narrowed)
+        });
+        assert_eq!(diagnostic.severity, Severity::Error, "{diagnostic:?}");
+        assert_eq!(
+            diagnostic.code,
+            Some(DiagnosticCode::ConstraintUnsatisfiable),
+            "{diagnostic:?}"
+        );
+        assert!(
+            diagnostic.message.contains(&cause.to_string()),
+            "{diagnostic:?}"
+        );
+        assert!(
+            diagnostic
+                .message
+                .contains("`concentric` (peg.rod_axis and block.rail_axis)"),
+            "{diagnostic:?}"
+        );
+        assert!(!diagnostic.message.contains("side_plane"), "{diagnostic:?}");
+    }
+
+    /// The scope renderer and the `SolveResult` adapter agree on every cause: the
+    /// same code and Error severity, the same text wherever the scope adds nothing
+    /// (budget exhaustion keeps its seed guidance), the adapter's text extended by
+    /// a relation label for a non-finite evaluation, and the cause's own figures
+    /// where it adds the conflict set.
+    #[test]
+    fn the_scope_renderer_and_the_solve_result_adapter_agree() {
+        with_failure_context(SolveBudget::default(), |context| {
+            for cause in [certified(), exhausted(), stalled(), non_finite()] {
+                let live = failure_diagnostic(&cause, context);
+                let carried = match (FrameSolveOutcome {
+                    iterations: 0,
+                    result: Err(cause.clone()),
+                })
+                .into_solve_result(context.unknown)
+                {
+                    SolveResult::Infeasible { mut diagnostics } if diagnostics.len() == 1 => {
+                        diagnostics.remove(0)
+                    }
+                    other => panic!("expected Infeasible with one diagnostic, got {other:?}"),
+                };
+                assert_eq!(
+                    (live.severity, live.code),
+                    (carried.severity, carried.code),
+                    "{cause:?}"
+                );
+                assert_eq!(
+                    (live.severity, live.code),
+                    (Severity::Error, Some(cause.code())),
+                    "{cause:?}"
+                );
+                match cause {
+                    SolveFailureCause::BudgetExhausted(_) | SolveFailureCause::Stalled(_) => {
+                        assert_eq!(live.message, carried.message, "{cause:?}");
+                    }
+                    SolveFailureCause::NonFinite(_) => {
+                        let label = live.message.strip_prefix(carried.message.as_str());
+                        assert!(
+                            label.is_some_and(|label| label.starts_with(", in `")),
+                            "the scope renderer appends a relation label to the adapter's \
+                             sentence: {live:?} vs {carried:?}"
+                        );
+                    }
+                    _ => {
+                        for message in [&live.message, &carried.message] {
+                            assert!(message.contains(&cause.to_string()), "{message}");
+                        }
+                    }
+                }
+                if let SolveFailureCause::BudgetExhausted(_) = cause {
+                    assert!(live.message.contains("auto(seed"), "{}", live.message);
+                }
+            }
+        });
+    }
+
+    /// The search walks the driving set's pairs i-before-j, in INSTANCE positions
+    /// (`[3, 5, 8]`, not `[0, 1, 2]`), and stops at the first certified one.
+    #[test]
+    fn the_conflict_is_the_first_certified_pair_in_pairwise_order() {
+        let (conflict, tried) = search(&[3, 5, 8], |i, j| match [i, j] {
+            [3, 8] | [5, 8] => Err(certified()),
+            _ => Ok(converged()),
+        });
+        assert_eq!(conflict, Some([3, 8]));
+        assert_eq!(
+            tried,
+            [[3, 5], [3, 8]],
+            "the search stops at the first certified pair"
+        );
+    }
+
+    /// A pair that converged, ran out of budget, stalled or met a non-finite value
+    /// proves nothing: the search skips it and blames the next certified pair.
+    #[test]
+    fn only_a_certified_pair_is_the_conflict() {
+        let skipped = [
+            ("converged", Ok(converged())),
+            ("budget-exhausted", Err(exhausted())),
+            ("stalled", Err(stalled())),
+            ("non-finite", Err(non_finite())),
+        ];
+        for (label, first_pair) in skipped {
+            let (conflict, _) = search(&[3, 5, 8], |i, j| match [i, j] {
+                [3, 5] => first_pair.clone(),
+                _ => Err(certified()),
+            });
+            assert_eq!(
+                conflict,
+                Some([3, 8]),
+                "a {label} pair must be skipped, not blamed"
+            );
+        }
+    }
+
+    /// With no certified pair there is no pairwise conflict (the caller falls back
+    /// to the whole driving set); a lone driver has no pair to try.
+    #[test]
+    fn no_certified_pair_is_no_conflict() {
+        let (conflict, tried) = search(&[3, 5, 8], |i, j| match [i, j] {
+            [3, 5] => Err(exhausted()),
+            [3, 8] => Err(stalled()),
+            _ => Err(non_finite()),
+        });
+        assert_eq!(conflict, None);
+        assert_eq!(
+            tried,
+            [[3, 5], [3, 8], [5, 8]],
+            "every pair is tried before the search gives up"
+        );
+
+        let (conflict, tried) = search(&[4], |_, _| Err(certified()));
+        assert_eq!(conflict, None);
+        assert!(tried.is_empty(), "a lone driver has no pair: {tried:?}");
+    }
+
+    /// Real pair solves, through the context production builds, blame the one
+    /// inconsistent pair, (0, 2). Which pair outcomes the search skips is pinned
+    /// with injected outcomes, in the `first_certified_pair` tests.
+    #[test]
+    fn the_conflict_search_blames_the_first_certified_pair_end_to_end() {
+        with_failure_context(STARVED_BUDGET, |context| {
+            assert_eq!(
+                context.partition.driving,
+                vec![0, 1, 2],
+                "all three relations drive: {:?}",
+                context.partition
+            );
+
+            let full = solve_in_context(context, &context.built.instances, context.budget);
+            assert!(
+                matches!(full.result, Err(SolveFailureCause::Infeasible(_))),
+                "the full driving set is certified under this budget, so production \
+                 reaches the conflict search: {full:?}"
+            );
+
+            assert_eq!(
+                minimal_infeasible_subset(context),
+                vec![0, 2],
+                "the conflict is the first CERTIFIED pair in pairwise order"
+            );
+        });
     }
 }

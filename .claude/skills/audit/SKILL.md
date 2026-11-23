@@ -1,6 +1,6 @@
 ---
 name: audit
-description: "Periodic architecture-audit sweep for the Reify codebase. ALWAYS use this skill for: /audit commands, running the architecture-audit detector CLI against live task state, filing follow-up tasks for phantom-done or orphan-symbol findings, and producing per-run JSON artifacts under data/audit-runs/. Triggers on: '/audit', '/audit --task <id>', '/audit --since <date>', '/audit --pattern P1|P2|P5|PTODO|PDSSENTINEL|PDEAD|PUNTESTED|PLAYER|PDIAG|PDOCCOVER|PDCHECK|PCITE|PPRDSTATUS|PLINECITE', '/audit --format markdown', any request to run the F-infra audit sweep, or any mention of TODO-tracking invariant detection or PTODO. This is NOT for: editing audit findings or gap-register.md (that is manual curation), running tasks (/orchestrate), reviewing landed code (/review), unblocking tasks (/unblock)."
+description: "Periodic architecture-audit sweep for the Reify codebase. ALWAYS use this skill for: /audit commands, running the architecture-audit detector CLI against live task state, filing follow-up tasks for phantom-done or orphan-symbol findings, and producing per-run JSON artifacts under data/audit-runs/. Triggers on: '/audit', '/audit --task <id>', '/audit --pattern P1|P2|P5|PTODO|PDSSENTINEL|PDEAD|PUNTESTED|PLAYER|PDIAG|PDOCCOVER|PDCHECK|PCITE|PPRDSTATUS|PLINECITE', '/audit --format markdown', any request to run the F-infra audit sweep, or any mention of TODO-tracking invariant detection or PTODO. This is NOT for: editing audit findings or gap-register.md (that is manual curation), running tasks (/orchestrate), reviewing landed code (/review), unblocking tasks (/unblock)."
 ---
 
 # Architecture Audit Sweep (`/audit`)
@@ -15,9 +15,8 @@ Pick from the user's invocation and context:
 
 | Invocation | Behaviour | Detail |
 |---|---|---|
-| `/audit` (default) | Window sweep over the last 14 days — every default-sweep detector (`references/severity-routing.md` §0) | `references/modes.md` §1 |
+| `/audit` (default) | Whole-corpus sweep — every default-sweep detector (`references/severity-routing.md` §0) | `references/modes.md` §1 |
 | `/audit --task <id>` | Spot-check a single task — every default-sweep detector (`references/severity-routing.md` §0) | `references/modes.md` §2 |
-| `/audit --since <iso-date>` | Window sweep from a given date to now | `references/modes.md` §3 |
 | `/audit --pattern P1\|P2\|P5` | Restrict to one of the standard detectors | `references/modes.md` §4 |
 | `/audit --pattern PTODO` | Run only the TODO-tracking invariant detector (deterministic, no jcodemunch) | `references/modes.md` §4 |
 | `/audit --pattern PDSSENTINEL` | Run only the ds-sentinel reintroduction guard (deterministic, no jcodemunch) | `references/modes.md` §4 |
@@ -26,7 +25,7 @@ Pick from the user's invocation and context:
 | `/audit --pattern PPRDSTATUS` | PRD status-prose drift: all-leaves-terminal PRDs whose Status header is not terminal, plus cites whose status parenthetical contradicts the task (reads the loaded task corpus; opt-in; High) | `references/modes.md` §4 |
 | `/audit --format markdown` | Any mode + emit a fenced markdown report in addition to the JSON artifact | `references/modes.md` §5 |
 
-`--task`, `--since`, and `--pattern` compose. `--pre-done` is reserved for the dark-factory D-1 pre-done hook and is **not callable from this skill**. See `references/modes.md` §6 (Mode composition).
+`--task` and `--pattern` compose. A caller-supplied `--since <date>` (dark-factory /review Phase 2 still passes one; follow-up tkt_0RWFJ0Z5EKQ18KH7E9G392WP3Z) is dropped before invoking the CLI, which rejects it, because it never narrowed any detector. `--pre-done` is reserved for the dark-factory D-1 pre-done hook and is **not callable from this skill**. See `references/modes.md` §6 (Mode composition).
 
 **jcodemunch resilience — two arms, and they behave differently.**
 
@@ -109,7 +108,7 @@ Seven more deterministic detectors that, like PTODO, read the tracked tree and n
 | `PPRDSTATUS` | PRD status-prose drift: PRDs whose decomposition leaves are all terminal but whose Status header is not, and `#NNNN` cites whose status parenthetical contradicts the cited task. Reads the loaded task corpus |
 | `PLINECITE` | Hard line cites (`foo.rs:12` and the other lead-ins of `docs/prds/reify-audit-stale-line-cite-detector.md` §4) in source comments (stdlib `.ri`, `crates/*/src` `.rs`). Medium only (report-only) |
 
-PDCHECK honours `--task <id>`, checking only that task's rows; it ignores `--since`. The other six key their findings by repo path and ignore both `--task` and `--since`. Default-sweep membership: `references/severity-routing.md` §0. Kinds, severities, scopes, remedies and measured counts: `references/modes.md` §4.
+PDCHECK honours `--task <id>`, checking only that task's rows. The other six key their findings by repo path and ignore `--task`. Default-sweep membership: `references/severity-routing.md` §0. Kinds, severities, scopes, remedies and measured counts: `references/modes.md` §4.
 
 ## Severity ladder
 

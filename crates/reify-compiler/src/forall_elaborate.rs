@@ -72,8 +72,25 @@
 //! non-iterable-collection error and the deferred-path info diagnostics are
 //! emitted before it opens, each already exactly once.
 
-use super::*;
 use std::collections::HashMap;
+
+use reify_core::{ConstraintNodeId, Diagnostic, DiagnosticLabel, Type, ValueCellId};
+use reify_ir::{CompiledExpr, CompiledExprKind, CompiledFunction, Value};
+
+use crate::connect::{
+    ConnectAccumulator, ConnectContext, ConnectInput, PendingConnectAutoParam, chain_hops,
+    check_connect_endpoints, compile_connection,
+};
+use crate::entity::{expand_constraint_inst, substitute_expr};
+use crate::expr::compile_expr;
+use crate::guards::compile_per_decl_constraint_guard;
+use crate::port_path::PortPath;
+use crate::scope::CompilationScope;
+use crate::types::{
+    CompiledConnection, CompiledConstraint, CompiledConstraintDef, CompiledForallBody,
+    CompiledForallTemplate, CompiledGuardedGroup, CompiledPort, CompiledTrait, SubComponentDecl,
+    ValueCellDecl,
+};
 
 /// The info diagnostic for a deferred-count `forall` body that is not
 /// captured for runtime re-elaboration.
@@ -1054,6 +1071,7 @@ fn capture_deferred_connect(
 #[cfg(test)]
 mod forall_diagnostic_sink_tests {
     use super::*;
+    use reify_core::SourceSpan;
 
     fn direction_error(span: SourceSpan) -> Diagnostic {
         Diagnostic::error("incompatible port directions for connect: In -> In")

@@ -21,7 +21,7 @@ This is **sanctioned**, not a main-gate violation: `hooks/pre-commit` runs `proj
 
 Sequence — **flip first, commit the stamped sidecar once**:
 
-1. Write the artifacts as untracked files at their canonical paths.
+1. Write the artifacts as untracked files at their canonical paths, and validate the sidecar with the loader command in "Capability Manifest — reify evidence forms" (`commit_planning` stamps nothing from a sidecar that fails to load).
 2. File the batch (`planning_mode=True`), wire deps, then `commit_planning` — it stamps the on-disk sidecar **in place** and copies `delivered_checks` into producer metadata. Never land an unstamped sidecar and stamp afterwards.
 3. `git add <each exact file path>`.
 4. `git commit --only <same exact paths> -F <msgfile>`.
@@ -90,24 +90,24 @@ Reify's substrate verifier has four probe vectors, all empirically grounded in `
 
 1. **Grammar premises — `tree-sitter parse --quiet <fixture.ri>`** (the grammar gate). Full mechanics, fixture-extraction heuristics, the exact command, "what counts as novel syntax", and the documented C-06 grammar-fiction precedents are in **`references/grammar-gate.md`** (`feedback_prd_grammar_gate`). Run at author Stage 2 (fail-fast); re-run at decompose Step 1.
 
-2. **Semantic/behavioral premises — `reify check <fixture.ri>`**. Observes arg-vs-param rejection, type-name resolution, and member-access lowering. **Negative-assertion sentinel:** `reify check` exits 0 + `All constraints satisfied.` + no diagnostic where a rejection was asserted = silent-accept = FAIL (example: `revolute("not-an-axis", …)` — task 4575).
+2. **Semantic/behavioral premises — `reify check <fixture.ri>`**. Observes arg-vs-param rejection, type-name resolution, and member-access lowering. **Negative-assertion sentinel:** `reify check` exits 0 + `All constraints satisfied.` + no diagnostic where a rejection was asserted = silent-accept = FAIL (example: `revolute(dir(0, 0, 1), "not-a-range", …)` — task 4575).
 
 3. **Eval/IR probe (eval-error-signature)** — where `check` is insufficient. `CompiledExprKind::CrossSubGeometryRef` emission in `crates/reify-compiler/src/expr.rs` panics in `eval_expr`; authoring the scenario and running `reify eval` reveals the real IR shape via the panic signature (example: task 4358 — assumed IndexAccess, real shape betrayed by CrossSubGeometryRef panic). **This vector proves only "eval exits 0, clean" on its clean branch** — it answers ABSENT on exit 0 *before consulting the match predicate*, so it cannot see what was printed.
 
 4. **Value probe — `reify eval <fixture.ri>` plus a numeric predicate on the printed value.** Same command as vector 3; what differs is what is read off the result. A premise asserting the printed value is **finite / nonzero / in range / equals X** must use this vector, **not** vector 3: bound as `ir` such a premise verifies only that eval did not crash, and passes on a fixture that printed `0` or `undef` (task #6876). The premise's `match` must be `{"stdout_value": {"pattern": "<regex with a capture group>", "min"/"max"/"finite": …}}` with at least one constraint — a pattern alone is rejected at bind time. Aim the pattern at what `reify eval` actually prints: a pattern that locates nothing yields UNPROVABLE, not FAIL, because a mis-aimed probe is indistinguishable from an absent capability. Worked example and standing evidence: `tests/prd-gate/fixtures/value_clean_eval_cells.ri`.
 
 **Four semantic-substrate worked examples (PRD §3/§10):**
-- **4575 — arg-vs-param rejection (silent-accept):** `reify check` on `revolute("not-an-axis", …)` exits 0 + `All constraints satisfied.` + no rejection diagnostic. The negative-assertion sentinel fires — the compiler does **no** nominal arg-vs-param rejection for concrete params.
+- **4575 — arg-vs-param rejection (silent-accept):** `reify check` on `revolute(dir(0, 0, 1), "not-a-range", …)` exits 0 + `All constraints satisfied.` + no rejection diagnostic. The negative-assertion sentinel fires — the compiler does **no** nominal arg-vs-param rejection for concrete params.
 - **4577 — resolve_type_name:** `param t : Transform3` → `reify check` exits 1, diagnostic `error: unresolved type: Transform3`.
 - **4437 — member-access lowering-to-ValueRef:** member access on a TypeParam-typed param → poison literal (not ValueRef); surfaces as a diagnostic at `reify check` time.
 - **4358 — constraint-IR shape via eval-error proxy:** NOT reachable via `check`; `reify eval` surfaces the `CompiledExprKind::CrossSubGeometryRef` panic in `eval_expr` (`crates/reify-compiler/src/expr.rs`), betraying the real IR shape vs the assumed IndexAccess.
 
 ## Decompose mode — run the substrate-verification workflow
 
-At decompose time, invoke the D3 verification workflow **before finalising the leaf batch**:
+At decompose time, invoke the D3 verification workflow **before finalising the leaf batch**, with the leaves as `args`:
 
 ```
-Workflow({scriptPath: "scripts/prd-decompose-verify.mjs"})
+Workflow({scriptPath: "scripts/prd-decompose-verify.mjs", args: [<leaf>, …]})
 ```
 
 `scripts/prd-decompose-verify.mjs` is the **entry point** — a thin orchestration shell over `scripts/prd-decompose-verify.py`, the **deterministic harness** it shells out to. All load-bearing adjudication (premise binding, the evidence gate, record classification, the captured-output report) lives in the Python harness and is unit-tested there; the `.mjs` only drives agents and aggregates.
@@ -115,6 +115,17 @@ Workflow({scriptPath: "scripts/prd-decompose-verify.mjs"})
 Per leaf the workflow runs three roles: **Enumerator** → **Prover ‖ Adversary** → **Synthesize**. The Enumerator extracts every premise the leaf signal asserts and enforces the negative-assertion mandate (every "X is rejected" must become a probe that observes the rejection actually fires). Prover and Adversary run in parallel: the Prover authors a probe per premise and runs it through α (`scripts/prd-capability-check.py`); the Adversary independently hunts unlisted premises and falsifications. Synthesize aggregates results.
 
 **Blocks the batch** on any `FAIL`/`UNPROVABLE` with captured command output attached — instead of tabulating an unexecuted promise. (`UNPROVABLE` blocks the same as `FAIL`: "no probe vector can currently observe this" is as dangerous as "the premise is false".) `HARNESS_ERROR` blocks **with or without** captured output: it is the verdict that reports "the probe machinery could not run at all", so absent evidence is its message rather than a defect in its message.
+
+### Choosing the reify binary
+
+α refuses (exit 64, no JSON) when any built `target/{release,debug}/reify` is not vouched for, i.e. `target/.reify-bin-sha` does not name `HEAD`, a lone binary included. That is the usual state of a dev lane. It also refuses when neither is built: it never falls back to a `reify` on `PATH`, whose source commit is unknown. Every leaf then comes back `BLOCKS`, with a `HARNESS_ERROR` whose stderr is α's refusal naming every built binary, or saying that none is built. To pick the binary yourself, pass the envelope form of `args`:
+
+```
+Workflow({scriptPath: "scripts/prd-decompose-verify.mjs",
+          args: {leaves: [<leaf>, …], reify_bin: "<absolute path>"}})
+```
+
+Point `reify_bin` at a binary built from the commit whose premises are under test. Two examples: a `target/debug/reify` you have just built in this lane, or the warm-base debug binary whose `target.gen.<N>.basecommit` names that commit. α takes `REIFY_BIN` verbatim and does not refuse it, so a stale binary would answer every probe without a warning. The workflow then prefixes `REIFY_BIN` on every α call the Prover and Adversary make, so there is no longer any need to patch a scratch copy of the `.mjs`. A plain leaf array still works: α's command stays bare and inherits whatever `REIFY_BIN` the session exported. A malformed envelope is refused before any agent runs: an unknown key, no `leaves`, or a `reify_bin` that is not an absolute-path string. Whether the path exists is α's to report, as a launch `HARNESS_ERROR`. A top-level `args` that is not an envelope follows the same rule as the envelope's `leaves`: an omitted `args`, `null`, a boolean, a number, or a blank string such as an empty template slot is refused the same way, before any agent runs, instead of returning a `PASS` that verified nothing. The JSON string of any of these is refused too, at the top level and as an envelope's `leaves`: `"null"` or `'""'`, for example, which is how a harness that stringifies `args` delivers them. The refusal quotes the args as the script received them and, for a JSON string, the value it decodes to. To submit an empty batch, pass an explicit `[]`. The trust rule itself (SHA identity, never an mtime or profile tie-break) is in `scripts/reify-bin-freshness.sh`.
 
 ### Reading the result — `blocks: false` is not a pass
 
@@ -253,18 +264,36 @@ Mechanizes `gates.md` → *Capability Manifest — mechanizing G3 + G6 per leaf*
 - grammar / substrate: esc-2998-47 (ConvergenceStatus payload enum — resolved by **gating on the DCE cluster `3946`**, which adds named-field payload variants, rather than a C-style re-spec), the C-06 grammar-fiction precedents.
 - `bound≤floor`: esc-3821-44 (Duhamel `1e-9` ≪ `O((ΩΔt)²)≈2e-3` floor), esc-3453 buckling (`5%` < `9–10%` bending lock → 4066).
 
+**The `.yaml` sidecar's schema is strict — validate it before `commit_planning` and after every later hand edit.** In dark-factory's schema module `shared/src/shared/capability_manifest.py` (the models plus the `load_capability_manifest` loader) every model forbids extra keys (`extra='forbid'`), so ONE undeclared key fails the WHOLE document — the legibility-census sighting behind #9855 was `tasks.7.capabilities.0.note  Extra inputs are not permitted [type=extra_forbidden]`. Allowed keys, as of dark-factory `e7d86f7533` (2026-10-26) — **the loader wins over this list**:
+- the document, `CapabilityManifestDoc`: `prd`, `schema_version` (the literal `1`), `tasks`, `signal_leaves`;
+- a task block, `ManifestTask`: `label`, `task_id`, `external_task_id`, `title`, `note`, `capabilities`;
+- a capability, `ManifestCapability`: `name`, `binding`, `verdict`, `delivered_check` — **no `note` here** (it is task-level only), and no `status` at either level;
+- a `delivered_check`, `DeliveredCheck`: `kind`, `pattern`, `expect`, `paths`, `script`, `args`, `timeout_secs`, and `reason` (`kind: manual` only). Per-`kind` required fields are not restated here: the loader enforces them (`DeliveredCheck`'s docstring and validator are the complete statement, `kind: path` included), with authoring guidance in the shared skill's `references/decompose-mode.md` Step 2.5.
+
+`verdict` is a closed literal: exactly `PASS`, `FAIL` or `OPEN`, with nothing appended. Free-text caveats go in the capability's `binding` string, or — for block-level provenance (split, re-homed, subsumed) — in the task block's `note`. The `.md` twin's row-local verdict suffix (`PASS (pre-<leaf>; … — see section note)`) and its status words have **no `.yaml` counterpart**: the same correction in the sidecar is a dated clause appended to `binding`.
+
+Validate with the schema's own loader. No output and exit 0 means every sidecar given loads; an empty argument list (say a glob that matched nothing) fails on purpose, so it can never pass vacuously. Otherwise the `ValidationError` names the dotted key path (`tasks.<i>.capabilities.<j>.<key>`), not the file, and the run stops at the first failing file:
+
+```
+/home/leo/src/dark-factory/.venv/bin/python -I -c 'import sys; from shared.capability_manifest import load_capability_manifest as load; assert sys.argv[1:], "no sidecar given"; [load(p) for p in sys.argv[1:]]' <sidecar.yaml>...
+```
+
+Run it at both times. `commit_planning` is fail-soft on a sidecar that fails to load: it stamps no `task_id`, copies no `delivered_checks` and does not block the batch, so the batch's dispatch gate is disarmed unless you read the `manifest_stamping_action_required` list it attaches (present only when something needs repair; dark-factory `fused-memory/src/fused_memory/server/manifest_stamping.py`). Read that list after every `commit_planning`, loader pass or not: exit 0 proves only the sidecar's shape, while the stamper also lints each `grep`/`path` check's polarity (`shared.delivered_check_polarity` — a sound check fails on `main` before its producer lands and passes after) and refuses to copy one it rejects, naming it in that list. And no gate re-validates a sidecar's schema after it lands, so a hand edit during a later correction is where breakage goes unseen.
+
+**Measured 2026-11-07** (dated context, not a live claim): 5 of the 88 committed `*.capability-manifest.yaml` failed to load — four from a free-text annotation appended to `verdict`, one from an undeclared task-level `status` key.
+
 **Scoping an `expect: absent` check — bind it to the construct, not the bare token.**
 1. Scope an `absent` pattern to the CONSTRUCT that would carry the defect, never to the bare token. A bare-token grep cannot distinguish code from a comment, and it also forbids legitimate unrelated uses of the token elsewhere in the same file. The collision is likely, not exotic: the clearest way to document "we stopped depending on X" is to write X's name, so the fix and the check race each other.
 2. When you narrow, name the accepted gap inline in the manifest (a comment beside the descriptor) and say which behavioural test covers it. A narrowed pattern buys comment-immunity at the cost of missing indirection (e.g. aliasing the flag before the gate).
 3. Prefer asserting the POSITIVE delivered construct where one exists; `absent` is the weaker form — it can only say a shape is missing, never that the replacement is present and correct.
 4. A whole-file `absent` grep over a Rust source also scans that file's inline `#[cfg(test)]` modules. The `grep` kind is single-line `git grep -E` with no region exclusion, and a git pathspec cannot exclude part of a file. So when the defect construct is also a natural test-fixture shape (e.g. a `field: Vec::new()` struct-literal init), a test fixture keeps the check FAILED forever. Assert the positive production construct instead (rule 3) and name its behavioural cover (rule 2).
 
-Descriptor grammar (`kind`/`pattern`/`expect`/`paths`; pattern-anchored, never file:line) is normative in the shared skill — `~/.claude/skills/prd/references/decompose-mode.md` Step 2.5 — and is not restated here.
+Descriptor authoring guidance (`kind`/`pattern`/`expect`/`paths`; pattern-anchored, never file:line) lives in the shared skill — `~/.claude/skills/prd/references/decompose-mode.md` Step 2.5 — and is not restated here; where it and the loader (`DeliveredCheck`) differ on what a descriptor may contain, the loader wins.
 
 Worked case — **esc-6739-1** (2026-08-27, capability `mount-no-longer-gated-on-active`, task 6725, `docs/prds/v0_6/solver-legibility-telemetry.capability-manifest.yaml`):
 - Before: `pattern: autoResolve\.active`, `expect: absent`, `paths: [gui/src/App.tsx]` matched the implementer's own explanatory comment at `gui/src/App.tsx:786` (2026-08-27) and fired a critical DEP_CAPABILITY_NOT_DELIVERED escalation that blocked dependent task 6739 — even though the capability WAS delivered, data-gated at `gui/src/App.tsx:794` (2026-08-27).
 - After: `pattern: when=\{[^}]*autoResolve\.active` — still matches the historical `<Show when={engineStore.state.autoResolve.active}>` gate, and does not match the prose comment.
-- Accepted gap, recorded inline in the live manifest: misses a regression reintroduced via indirection (e.g. aliasing the flag before the `Show`); `gui/src/__tests__/App.test.tsx:6515` (2026-08-27, "AutoResolvePanel mounts on DATA and stays readable after the loop completes") is the behavioural cover.
+- Accepted gap, recorded inline in the live manifest: misses a regression reintroduced via indirection (e.g. aliasing the flag before the `Show`); `gui/src/__tests__/App.analysis.test.tsx`, test "AutoResolvePanel mounts on DATA and stays readable after the loop completes" in describe "App AutoResolvePanel integration" (2026-08-27), is the behavioural cover.
 - Positive alternative that existed here (rule 3): `pattern: autoResolve\.iterations\.length > 0`, `expect: present` — present at `gui/src/App.tsx:794` (2026-08-27).
 
 Worked case — **esc-5469-12** (2026-09-25, rule 4, capability `registry-threads-real-dependent-cells`, task 5467, `docs/prds/v0_6/discrete-cost-minimisation.capability-manifest.yaml`):
@@ -273,7 +302,7 @@ Worked case — **esc-5469-12** (2026-09-25, rule 4, capability `registry-thread
 - Accepted gap: proves the field init, not the fold contents; `crates/reify-constraints/tests/joint_drive_per_trial_recompute.rs` is the behavioural cover.
 - Corrected by #7739 with the three writes below: `.yaml` descriptor, `.md` twin row, task 5467 `metadata.delivered_checks`.
 
-**Correcting a landed check is THREE writes: .yaml, .md twin, producer task metadata.** The dispatch gate evaluates the DEPENDENCY TASK's `metadata.delivered_checks`, not the manifest file on disk — the evaluator is `Scheduler._compute_delivered_check_cache` in dark-factory `orchestrator/src/orchestrator/scheduler.py` (cite by symbol only; the file is ~7k lines and moves constantly). Editing the `.yaml` (or the `.md`) alone therefore does not change the running gate — the stamped task metadata must also be updated, via `update_task` on the producer task, and you must **resubmit the COMPLETE `delivered_checks` list**: the metadata merge is shallow last-write-wins, so a supplied list overwrites wholesale — a partial write silently drops the task's other checks, and since the descriptor digest hashes the whole list, the shrunken set re-evaluates as a clean cache MISS and reports DELIVERED, with no error and no diff on disk. Read the current list with `get_task` first. Keep the `.yaml` and `.md` manifest twins in sync with each other too: `commit_planning` stamps them together at landing (see "Landing PRD artifacts" above), but a later correction has no such mechanism and must update both by hand. A correction is therefore three writes: `.yaml` descriptor, `.md` twin row, producer task `metadata.delivered_checks` (the complete list).
+**Correcting a landed check is THREE writes: .yaml, .md twin, producer task metadata.** The dispatch gate evaluates the DEPENDENCY TASK's `metadata.delivered_checks`, not the manifest file on disk — the evaluator is `Scheduler._compute_delivered_check_cache` in dark-factory `orchestrator/src/orchestrator/scheduler.py` (cite by symbol only; the file is ~7k lines and moves constantly). Editing the `.yaml` (or the `.md`) alone therefore does not change the running gate — the stamped task metadata must also be updated, via `update_task` on the producer task, and you must **resubmit the COMPLETE `delivered_checks` list**: the metadata merge is shallow last-write-wins, so a supplied list overwrites wholesale — a partial write silently drops the task's other checks, and since the descriptor digest hashes the whole list, the shrunken set re-evaluates as a clean cache MISS and reports DELIVERED, with no error and no diff on disk. Read the current list with `get_task` first. Keep the `.yaml` and `.md` manifest twins in sync with each other too: `commit_planning` stamps them together at landing (see "Landing PRD artifacts" above), but a later correction has no such mechanism and must update both by hand. A correction is therefore three writes: `.yaml` descriptor, `.md` twin row, producer task `metadata.delivered_checks` (the complete list). Before committing the edited `.yaml`, re-run the loader command above — no gate re-validates a sidecar's schema after landing, and a correction is where the free-text-`verdict` breakage was introduced, so put the correction note in `binding`, never in `verdict`.
 
 Worked evidence: in esc-6739-1 the docs commit `021591e211` (2026-08-27) narrowed only the `.yaml`, leaving both the task metadata and the `.md` twin stale; without the metadata write the escalation would have re-fired within roughly 3 scheduler ticks. All three surfaces are consistent as of 2026-08-27 — `59097d9bc0` synced the `.md` twin, and task 6725's metadata now carries the narrowed pattern. Mechanism note, so nobody waits or asks for a restart: a corrected descriptor is picked up on the very NEXT scheduler tick — no restart, no waiting for main to advance. The delivered-check cache key folds in a `descriptor_digest` (`_delivered_checks_descriptor_digest`, same file), so a changed descriptor is a cache MISS by design (the esc-2911-1/2 self-heal).
 

@@ -69,6 +69,22 @@ Verdicts:
                     {0, 1}.  Emitted verbatim in both text and --json output;
                     always triggers exit 70.
 
+Binaries: REIFY_BIN, when set, is the reify binary, verbatim.  Otherwise an
+auto-discovered executable target/release/reify or target/debug/reify, lone or
+not, is used only when scripts/reify-bin-freshness.sh, the one home of the
+SHA-identity rule, vouches for it: target/.reify-bin-sha names the checkout's
+HEAD (outside a git checkout it fails open).  An unvouched binary and nothing
+built are both REFUSED, not warned about: every probe set needing reify exits
+64 naming REIFY_BIN, because an agent reading --json never sees a stderr
+warning.  A `reify` on PATH is never used: its source commit is unknown.  An
+mtime never decides.
+TREE_SITTER_BIN, when set, is the tree-sitter CLI a grammar probe parses with;
+otherwise "tree-sitter" on PATH.  It decides only the parse:
+scripts/tree-sitter-generate.sh, which ensure_grammar_current() runs before
+any grammar probe, always uses the "tree-sitter" on PATH, and fails without one
+even when src/ is already current.  ProbeContext.from_environment() is the one
+place all of this is read.
+
 Schemas: --print-schema prints published_schemas() — the JSON schemas of the
 probe-set file above and of one --json result record — and exits 0.
 
@@ -77,9 +93,10 @@ Harness exit codes:
     1   ≥1 FAIL
     2   ≥1 UNPROVABLE, 0 FAIL
     64  usage / argument error (sysexits EX_USAGE)
-    70  tool / runtime error (sysexits EX_SOFTWARE) — HARNESS_ERROR verdict
-    75  grammar substrate unavailable (grammar never generated, or tree-sitter
-        cannot load it) — callers should SKIP, not FAIL
+    70  tool / runtime error (sysexits EX_SOFTWARE) — HARNESS_ERROR verdict, or
+        the grammar a grammar probe needs could not be generated
+    75  grammar substrate unavailable (grammar could not be generated or never
+        was, or tree-sitter cannot load it) — callers should SKIP, not FAIL
         (sysexits EX_TEMPFAIL; only ever returned by --grammar-substrate-status,
         which runs at most one substrate probe but evaluates no probe set, and
         so can never affect a verdict)
@@ -100,8 +117,8 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field, replace
-from enum import StrEnum
-from typing import Any, Dict, FrozenSet, List, Optional, Tuple
+from enum import IntEnum, StrEnum
+from typing import Any, Dict, FrozenSet, List, Mapping, Optional, Protocol, Tuple
 
 
 # ---------------------------------------------------------------------------
@@ -229,36 +246,94 @@ def _find_repo_root() -> str:
     return candidate  # best-effort fallback
 
 
-def _resolve_reify_bin(repo_root: Optional[str] = None) -> str:
-    """Resolve the reify binary path.
+# The one home of the binary-trust rule (R14 M6).  Resolved next to this file,
+# not under repo_root: a fixture repo_root has no scripts/.
+_TRUST_HOME = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "reify-bin-freshness.sh")
 
-    Resolution order:
-        1. REIFY_BIN environment variable (if set and non-empty)
-        2. <repo_root>/target/release/reify   (pre-built release)
-        3. <repo_root>/target/debug/reify     (debug build)
-        4. "reify"                             (from PATH)
+
+class _TrustVerdict(IntEnum):
+    """The exit codes of `reify-bin-freshness.sh resolve`."""
+    TRUSTED = 0
+    UNVOUCHED = 1
+    NOT_BUILT = 2
+
+
+_BASH_STARTUP_ENV = frozenset({"BASH_ENV", "SHELLOPTS", "BASHOPTS"})
+_BASH_EXPORTED_FUNCTION_PREFIX = "BASH_FUNC_"
+
+
+def _without_bash_startup_state(environ: Mapping[str, str]) -> Dict[str, str]:
+    """`environ` minus the caller state bash takes in before a script's first line.
+
+    That is a BASH_ENV it sources, the options SHELLOPTS and BASHOPTS turn on,
+    and BASH_FUNC_<name>%% functions that shadow commands; none of it may
+    decide what a repo script run by this checker answers.
     """
-    env_bin = os.environ.get("REIFY_BIN")
+    return {name: value for name, value in environ.items()
+            if name not in _BASH_STARTUP_ENV
+            and not name.startswith(_BASH_EXPORTED_FUNCTION_PREFIX)}
+
+
+def _resolve_reify_bin(
+    repo_root: str, environ: Mapping[str, str]
+) -> Tuple[Optional[str], Optional[str]]:
+    """Return (reify binary, None), or (None, refusal) when no binary can be trusted.
+
+    REIFY_BIN (non-empty) is taken verbatim: whether it exists is a launch
+    error for the probe to report.  Otherwise scripts/reify-bin-freshness.sh
+    decides, and only a vouched-for profile binary is used: a built but
+    unvouched binary is refused, and so is nothing built, because a reify on
+    PATH carries no provenance.  A home that cannot be consulted refuses too:
+    an unprovable trust answer is never "trusted", and neither is a TRUSTED
+    answer that is not one absolute-path line.
+    The caller's bash startup state is withheld from the home (_without_bash_startup_state).
+    """
+    env_bin = environ.get("REIFY_BIN")
     if env_bin:
-        return env_bin
+        return env_bin, None
 
-    root = repo_root or _find_repo_root()
-    for rel in ("target/release/reify", "target/debug/reify"):
-        candidate = os.path.join(root, rel)
-        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-            return candidate
+    try:
+        proc = subprocess.run(
+            ["bash", _TRUST_HOME, "resolve", repo_root],
+            capture_output=True,
+            text=True,
+            env=_without_bash_startup_state(environ),
+            check=False,
+        )
+    except OSError as exc:
+        return None, _reify_bin_refusal(f"{_TRUST_HOME} could not be run ({exc})")
+    lines = proc.stdout.splitlines()
+    if (proc.returncode == _TrustVerdict.TRUSTED and len(lines) == 1
+            and os.path.isabs(lines[0])):
+        return lines[0], None
+    if proc.returncode in (_TrustVerdict.UNVOUCHED, _TrustVerdict.NOT_BUILT):
+        return None, _reify_bin_refusal(proc.stdout.strip())
+    return None, _reify_bin_refusal(
+        f"`{_TRUST_HOME} resolve` gave no readable verdict (exit {proc.returncode}, "
+        f"stdout {proc.stdout!r}, stderr {proc.stderr.strip()!r})"
+    )
 
-    return "reify"  # fallback: expect it on PATH
+
+def _reify_bin_refusal(reason: str) -> str:
+    return (
+        f"will not choose a reify binary: {reason}.  Set REIFY_BIN to the binary "
+        "to probe with (scripts/reify-bin-freshness.sh holds the SHA-identity rule)."
+    )
 
 
-def _resolve_tree_sitter_bin() -> str:
-    """Resolve the tree-sitter binary path.
+def _resolve_tree_sitter_bin(environ: Mapping[str, str]) -> str:
+    """TREE_SITTER_BIN in `environ` if set and non-empty, else "tree-sitter" (PATH)."""
+    return environ.get("TREE_SITTER_BIN") or "tree-sitter"
 
-    Resolution order:
-        1. TREE_SITTER_BIN environment variable (if set and non-empty)
-        2. "tree-sitter"                        (from PATH)
-    """
-    return os.environ.get("TREE_SITTER_BIN", "tree-sitter")
+
+_GRAMMAR_GENERATOR_RELPATH = os.path.join("scripts", "tree-sitter-generate.sh")
+
+
+def _resolve_grammar_generator(repo_root: str) -> Optional[str]:
+    """<repo_root>/scripts/tree-sitter-generate.sh if that file exists, else None."""
+    path = os.path.join(repo_root, _GRAMMAR_GENERATOR_RELPATH)
+    return path if os.path.isfile(path) else None
 
 
 # Operator/debug escape hatch: pin the grammar cache dir explicitly, e.g. to
@@ -266,27 +341,125 @@ def _resolve_tree_sitter_bin() -> str:
 # session, without having to reverse the derived hash.
 _CACHE_HOME_OVERRIDE_ENV = "REIFY_TS_CACHE_HOME"
 
+# Wall-clock bound on the substrate probe.  Generous by design: on a COLD cache
+# tree-sitter compiles the grammar with cc before it can parse, so a tight bound
+# would report a healthy substrate as unusable.  The bound exists only so that a
+# stuck ~/.cache/tree-sitter/lock/<grammar>.lock — the very resource
+# grammar_substrate_usable() interrogates — cannot hang the caller.
+_SUBSTRATE_PROBE_TIMEOUT_S = 30.0
 
-def _grammar_fingerprint(repo_root: str) -> str:
-    """Return a short CONTENT fingerprint of the generated grammar, or "".
+
+class ReifyBinaryRefused(ValueError):
+    """No reify binary could be trusted; the message says why and what to set."""
+
+
+@dataclass(frozen=True)
+class ProbeContext:
+    """Everything a probe run reads from outside the probe, resolved once.
+
+    repo_root roots every relative fixture, the grammar directory and the
+    grammar cache key; reify_bin and tree_sitter_bin are the binaries the argv
+    names; cache_home_override is the operator's REIFY_TS_CACHE_HOME, or None;
+    substrate_timeout_s bounds grammar_substrate_usable()'s one probe;
+    grammar_generator is the script that brings <repo_root>/tree-sitter-reify/src
+    up to date with grammar.js before a grammar probe, or None to probe src/ as
+    found; it generates with the "tree-sitter" on PATH, never tree_sitter_bin.
+    Exactly one of reify_bin and reify_bin_refusal is set: a refusal is data,
+    so a mode that never runs reify still works, and require_reify_bin() is
+    where it is enforced.
+    main() builds one per invocation with from_environment(); a test builds
+    one directly, so no probe-running function reads a setting from os.environ.
+    """
+    repo_root: str
+    reify_bin: Optional[str]
+    tree_sitter_bin: str
+    cache_home_override: Optional[str] = None
+    substrate_timeout_s: float = _SUBSTRATE_PROBE_TIMEOUT_S
+    reify_bin_refusal: Optional[str] = None
+    grammar_generator: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        def refuse(field_name: str, value: Any, requirement: str) -> None:
+            raise ValueError(
+                f"ProbeContext.{field_name} must be {requirement}, got {value!r}"
+            )
+
+        if not isinstance(self.repo_root, str) or not os.path.isabs(self.repo_root):
+            refuse("repo_root", self.repo_root, "an absolute path")
+        if (self.reify_bin is None) == (self.reify_bin_refusal is None):
+            raise ValueError(
+                "ProbeContext needs exactly one of reify_bin and reify_bin_refusal, "
+                f"got reify_bin={self.reify_bin!r}, "
+                f"reify_bin_refusal={self.reify_bin_refusal!r}"
+            )
+        for field_name in ("reify_bin", "reify_bin_refusal", "tree_sitter_bin"):
+            value = getattr(self, field_name)
+            if value is not None and (not isinstance(value, str) or not value):
+                refuse(field_name, value, "a non-empty str")
+        override = self.cache_home_override
+        if override is not None and (not isinstance(override, str) or not override):
+            refuse("cache_home_override", override, "None or a non-empty str")
+        timeout = self.substrate_timeout_s
+        if (not _is_number(timeout) or not math.isfinite(timeout)
+                or timeout <= 0):
+            refuse("substrate_timeout_s", timeout, "a finite number of seconds > 0")
+        generator = self.grammar_generator
+        if generator is not None and (not isinstance(generator, str)
+                                      or not os.path.isabs(generator)):
+            refuse("grammar_generator", generator, "None or an absolute path")
+
+    @classmethod
+    def from_environment(
+        cls,
+        environ: Optional[Mapping[str, str]] = None,
+        repo_root: Optional[str] = None,
+    ) -> "ProbeContext":
+        """Build the context from an environment mapping (default os.environ).
+
+        The only reader of REIFY_BIN, TREE_SITTER_BIN and REIFY_TS_CACHE_HOME;
+        an empty value counts as unset for all three.  repo_root defaults to
+        _find_repo_root().  Prints nothing: a reify binary that
+        scripts/reify-bin-freshness.sh does not vouch for, or no built binary
+        at all, is recorded as reify_bin_refusal (see _resolve_reify_bin).
+        A root without scripts/tree-sitter-generate.sh (a fixture root) gets
+        grammar_generator None.
+        """
+        env = os.environ if environ is None else environ
+        root = os.path.abspath(repo_root if repo_root is not None else _find_repo_root())
+        reify_bin, reify_bin_refusal = _resolve_reify_bin(root, env)
+        return cls(
+            repo_root=root,
+            reify_bin=reify_bin,
+            reify_bin_refusal=reify_bin_refusal,
+            tree_sitter_bin=_resolve_tree_sitter_bin(env),
+            cache_home_override=env.get(_CACHE_HOME_OVERRIDE_ENV) or None,
+            grammar_generator=_resolve_grammar_generator(root),
+        )
+
+    def require_reify_bin(self) -> str:
+        """The reify binary, or ReifyBinaryRefused carrying why none was picked."""
+        if self.reify_bin is None:
+            raise ReifyBinaryRefused(self.reify_bin_refusal)
+        return self.reify_bin
+
+
+def grammar_fingerprint(ctx: ProbeContext) -> str:
+    """Return a CONTENT fingerprint of ctx.repo_root's generated grammar, or "".
 
     Hashes the GENERATED ARTIFACT — tree-sitter-reify/src/grammar.json — and
     nothing else.  grammar.json is what `tree-sitter parse` actually compiles,
     and every generator rewrites it.
 
-    DELIBERATELY NOT src/.grammar_hash.stamp, which an earlier revision of this
-    function preferred for its cheaper 64-byte read.  That stamp is written ONLY
-    by scripts/tree-sitter-generate.sh.  tree-sitter-reify/build.rs regenerates
-    the grammar through its own run_tree_sitter_generate() — a direct
-    `tree-sitter generate` — and writes its staleness stamp to $OUT_DIR instead,
-    never refreshing src/.grammar_hash.stamp.  So the ordinary sequence
-    `edit grammar.js` -> `cargo build` -> run the PRD gate rewrites parser.c and
-    grammar.json while leaving a STALE stamp behind, which would leave the cache
-    key unchanged and hand this lane the reify.so compiled from the PREVIOUS
-    grammar.  That is precisely the stale hit this key exists to make impossible
-    — and it cannot be left to tree-sitter's own mtime backstop, since warm-lane
-    seeding stamps mtimes (see _grammar_cache_home).  Hashing the artifact
-    removes a branch rather than adding one.
+    DELIBERATELY NOT src/.grammar_hash.stamp: the stamp attests grammar.js only
+    when scripts/tree-sitter-generate.sh wrote src/.  Any other writer, such as
+    a bare `tree-sitter generate`, moves grammar.json under an unchanged stamp,
+    and with grammar_generator None this checker probes whatever src/ such a
+    writer left.  Before #9896 every cargo build was such a writer, because
+    tree-sitter-reify/build.rs regenerated src/ itself; since #9896 it writes
+    only $OUT_DIR/src.  Keyed on the stamp, the cache would hand this lane the
+    reify.so compiled from the PREVIOUS grammar, and tree-sitter's own mtime
+    backstop cannot catch that, since warm-lane seeding stamps mtimes (see
+    grammar_cache_home).
 
     Cost is a sha256 over ~170 KB (sub-millisecond), against a subprocess launch.
 
@@ -297,7 +470,7 @@ def _grammar_fingerprint(repo_root: str) -> str:
     exception costs the whole suite instead of one skip.  Only OSError is
     swallowed, so a genuine programming error still surfaces.
     """
-    src = os.path.join(repo_root, "tree-sitter-reify", "src")
+    src = os.path.join(ctx.repo_root, "tree-sitter-reify", "src")
 
     try:
         with open(os.path.join(src, "grammar.json"), "rb") as fh:
@@ -331,8 +504,8 @@ def _assert_cache_dir_trustworthy(path: str) -> None:
         bare raise there would wedge an existing lane's gate rather than protect
         it.
 
-    Applies to the DERIVED dir only.  A REIFY_TS_CACHE_HOME override is an
-    operator's deliberate choice of dir — possibly a shared one — and is left
+    Applies to the DERIVED dir only.  A cache_home_override (REIFY_TS_CACHE_HOME)
+    is an operator's deliberate choice of dir — possibly a shared one — and is left
     alone; the operator owns that decision.
 
     Raises OSError, which run_probe() represents as a SETUP harness failure
@@ -365,8 +538,8 @@ def _assert_cache_dir_trustworthy(path: str) -> None:
             )
 
 
-def _grammar_cache_home(repo_root: str) -> str:
-    """Return a private $XDG_CACHE_HOME for this repo's grammar probes.
+def grammar_cache_home(ctx: ProbeContext) -> str:
+    """Return a private $XDG_CACHE_HOME for ctx.repo_root's grammar probes.
 
     THE INVARIANT THIS BUYS.  `tree-sitter parse` compiles the grammar to
     $XDG_CACHE_HOME/tree-sitter/lib/<language-name>.so.  That artifact is keyed
@@ -412,8 +585,9 @@ def _grammar_cache_home(repo_root: str) -> str:
 
     THE TWO-TIER CONTRACT when that creation fails.  The two dispositions are
     deliberately different:
-      * a bad OVERRIDE (REIFY_TS_CACHE_HOME unwritable, or a typo whose parent
-        is a file) DEGRADES to the derived dir.  Isolation — the property this
+      * a bad OVERRIDE (ctx.cache_home_override, from REIFY_TS_CACHE_HOME,
+        unwritable, or a typo whose parent is a file) DEGRADES to the derived
+        dir.  Isolation — the property this
         function exists to guarantee — is preserved; only the operator's
         custom-dir intent is lost, which is the cheap half to lose.
       * an uncreatable DERIVED dir RAISES, and run_probe() represents it as a
@@ -428,7 +602,7 @@ def _grammar_cache_home(repo_root: str) -> str:
     see docs/prds/v0_6/angle-units-surface-convergence.capability-manifest.md C2
     — and it is the worst outcome precisely because it is silent and plausible.
     """
-    override = os.environ.get(_CACHE_HOME_OVERRIDE_ENV)
+    override = ctx.cache_home_override
     if override:
         try:
             os.makedirs(override, exist_ok=True)
@@ -442,7 +616,7 @@ def _grammar_cache_home(repo_root: str) -> str:
             pass
 
     key = hashlib.sha256(
-        "\0".join((os.path.abspath(repo_root), _grammar_fingerprint(repo_root)))
+        "\0".join((os.path.abspath(ctx.repo_root), grammar_fingerprint(ctx)))
         .encode("utf-8")
     ).hexdigest()[:16]
     path = os.path.join(tempfile.gettempdir(), f"reify-ts-cache-{key}")
@@ -458,14 +632,14 @@ def _grammar_cache_home(repo_root: str) -> str:
     return path
 
 
-def _grammar_probe_env(repo_root: str) -> Dict[str, str]:
+def _grammar_probe_env(ctx: ProbeContext) -> Dict[str, str]:
     """The ambient environment with XDG_CACHE_HOME redirected to a private dir.
 
     Everything else is inherited verbatim — PATH, TREE_SITTER_BIN and the rest
     of the caller's environment must still reach the probe.
     """
     env = dict(os.environ)
-    env["XDG_CACHE_HOME"] = _grammar_cache_home(repo_root)
+    env["XDG_CACHE_HOME"] = grammar_cache_home(ctx)
     return env
 
 
@@ -828,13 +1002,16 @@ class ProbeRun:
     stdout/stderr carry only what the tool printed.  harness_failure is set
     when the machinery failed; fixture_present records whether the probe's
     fixture existed when it was launched.  Both default to the fail-closed
-    reading: no failure, and a fixture that was there.
+    reading: no failure, and a fixture that was there.  command is the argv
+    this run launched, or attempted to launch when the launch itself failed —
+    the one home of the evidence command; () only for a run no runner built.
     """
     exit_code: int
     stdout: str
     stderr: str
     harness_failure: Optional[HarnessFailure] = None
     fixture_present: bool = True
+    command: Tuple[str, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -1176,10 +1353,10 @@ class Result:
 
     Fields:
         probe       — the original Probe object
-        command     — exact command argv that was run (list of strings)
         run         — the captured ProbeRun itself, held whole rather than
-                      copied field by field, so whatever a run records reaches
-                      the --json record and the text renderer
+                      copied field by field, so whatever a run records — the
+                      argv it ran included — reaches the --json record and the
+                      text renderer
         observation — the Observation
         verdict     — the Verdict (HARNESS_ERROR → exit 70)
         value_observation — value probes only: which token was captured and which
@@ -1188,7 +1365,6 @@ class Result:
                     the existing kinds' record shape is unchanged.
     """
     probe: Probe
-    command: List[str]
     run: ProbeRun
     observation: Observation
     verdict: Verdict
@@ -1206,75 +1382,88 @@ def _absolute_fixture(probe: Probe, repo_root: str) -> str:
     return os.path.join(repo_root, probe.fixture)
 
 
-def build_command(probe: Probe, repo_root: Optional[str] = None) -> List[str]:
+def _probe_binary(probe_kind: ProbeKind, ctx: ProbeContext) -> str:
+    """The binary a probe of `probe_kind` runs: the one kind→binary dispatch.
+
+    Raises ReifyBinaryRefused for a reify kind when ctx refused every binary.
+    """
+    if probe_kind == ProbeKind.GRAMMAR:
+        return ctx.tree_sitter_bin
+    return ctx.require_reify_bin()
+
+
+def build_command(probe: Probe, ctx: ProbeContext) -> List[str]:
     """Construct the exact command argv for a probe.
 
-    Binary resolution (used by run_probe; also injectable via env overrides):
-        grammar          → TREE_SITTER_BIN (default "tree-sitter")
-        check/ir/value   → REIFY_BIN (default "reify")
+    The binary comes from ctx (_probe_binary): tree_sitter_bin for grammar,
+    reify_bin for check/ir/value.
 
     Command shapes:
         grammar    → [tree-sitter, parse, --quiet, <abs-fixture>]
         check      → [reify, check, <abs-fixture>]
         ir, value  → [reify, eval, <abs-fixture>]  (_EVAL_PROBE_KINDS)
 
-    Fixture-path resolution: build_command() resolves probe.fixture to an
-    absolute path via _absolute_fixture() so that the path
-    survives any CWD change — in particular, grammar probes run with
-    CWD=<repo_root>/tree-sitter-reify/ and a relative fixture would resolve
-    incorrectly under that directory.  If probe.fixture is already absolute it
-    is used verbatim.  repo_root defaults to _find_repo_root() when None.
-
-    The same repo_root is passed to _resolve_reify_bin() so the binary and the
-    fixture are resolved consistently.  run_probe() calls build_command() with
-    the same repo_root it uses for CWD, so the recorded evidence command and
-    the executed argv are identical.
-
-    Args:
-        probe:     The probe to build a command for.
-        repo_root: Repo root directory for resolving relative fixture paths and
-                   locating the reify binary.  Defaults to _find_repo_root().
+    Fixture-path resolution: probe.fixture is resolved against ctx.repo_root by
+    _absolute_fixture() so that the path survives any CWD change — in
+    particular, grammar probes run with CWD=<repo_root>/tree-sitter-reify/ and
+    a relative fixture would resolve incorrectly under that directory.  If
+    probe.fixture is already absolute it is used verbatim.
 
     Returns:
         A list of strings — the exact argv to be passed to subprocess.run().
     """
-    root = repo_root if repo_root is not None else _find_repo_root()
-
-    # Resolve fixture to absolute path so it survives CWD changes.
-    fixture = _absolute_fixture(probe, root)
+    fixture = _absolute_fixture(probe, ctx.repo_root)
+    binary = _probe_binary(probe.probe_kind, ctx)
 
     if probe.probe_kind == ProbeKind.GRAMMAR:
-        ts_bin = _resolve_tree_sitter_bin()
-        return [ts_bin, "parse", "--quiet", fixture]
-
-    reify_bin = _resolve_reify_bin(repo_root=root)
+        return [binary, "parse", "--quiet", fixture]
 
     if probe.probe_kind == ProbeKind.CHECK:
-        return [reify_bin, "check", fixture]
+        return [binary, "check", fixture]
 
     if probe.probe_kind in _EVAL_PROBE_KINDS:
-        return [reify_bin, "eval", fixture]
+        return [binary, "eval", fixture]
 
     # Should not reach here after load_probe_set validation, but be defensive.
     raise ValueError(f"unknown probe_kind: {probe.probe_kind!r}")
+
+
+class ProbeRunner(Protocol):
+    """The runner contract: run one probe under ctx, representing every failure.
+
+    run_probe() is the real one.  timeout is None for a probe-set run, which
+    stays unbounded, and a bound in seconds only for the substrate probe.  The
+    returned ProbeRun carries the argv it launched in `command`.
+
+    Precondition: a reify-kind probe needs a ctx that picked a reify binary.
+    A ctx carrying reify_bin_refusal has no argv to launch or record for one,
+    so run_probe() raises ReifyBinaryRefused instead; main() refuses such a
+    probe set (exit 64) before any probe runs.  A grammar probe needs no reify
+    binary and never meets it.
+    """
+
+    def __call__(
+        self, probe: Probe, ctx: ProbeContext, timeout: Optional[float] = None
+    ) -> ProbeRun: ...
 
 
 # ---------------------------------------------------------------------------
 # run_probe() — the real subprocess runner
 # ---------------------------------------------------------------------------
 
-def run_probe(probe: Probe, timeout: Optional[float] = None) -> ProbeRun:
+def run_probe(
+    probe: Probe, ctx: ProbeContext, timeout: Optional[float] = None
+) -> ProbeRun:
     """Run a probe command in a subprocess and return captured output.
 
-    Delegates command construction to build_command(), which resolves
-    probe.fixture to an absolute path so it survives the CWD change.
-    Grammar probes run with CWD = <repo_root>/tree-sitter-reify/ so that
-    the tree-sitter parser can locate its grammar (src/parser.c must be
-    generated first).  build_command() uses the same repo_root so the
-    recorded fixture path and the executed path are identical.
+    The ProbeRunner contract's real implementation.  The argv is built once,
+    by build_command(probe, ctx), and is both what runs and what the returned
+    ProbeRun records as `command` on every return path.  Grammar probes run
+    with CWD = <ctx.repo_root>/tree-sitter-reify/ so that the tree-sitter
+    parser can locate its grammar (src/parser.c must be generated first).
 
     Grammar probes ALSO run under a private XDG_CACHE_HOME (see
-    _grammar_cache_home).  `tree-sitter parse` compiles the grammar to
+    grammar_cache_home).  `tree-sitter parse` compiles the grammar to
     $XDG_CACHE_HOME/tree-sitter/lib/<language-name>.so — keyed by LANGUAGE NAME,
     not by grammar path, and invalidated only on source mtime — so without the
     override every linked worktree of this store shares ONE reify.so and a
@@ -1291,7 +1480,9 @@ def run_probe(probe: Probe, timeout: Optional[float] = None) -> ProbeRun:
     This is the one place a HarnessFailure is built, and none is ever raised:
     callers run this at import time in the test harness, where a raise costs the
     whole suite instead of one skip.  stdout/stderr then stay "" and the errno
-    or tool text is the failure's detail.
+    or tool text is the failure's detail.  The one raise is the ProbeRunner
+    precondition, ReifyBinaryRefused, which that import-time caller cannot meet:
+    it runs only the grammar substrate probe.
       * SETUP (exit 127) — building the grammar env failed.  It CREATES the
         private cache dir, and an uncreatable one (a world-writable /tmp lets
         any uid pre-create the path as a file) must be represented, and
@@ -1313,15 +1504,21 @@ def run_probe(probe: Probe, timeout: Optional[float] = None) -> ProbeRun:
 
     Args:
         probe:   The Probe to run.
+        ctx:     The repo root and binaries to run it with.
         timeout: Seconds to wait before killing the probe, or None for no bound.
 
     Returns:
         A ProbeRun with exit_code, stdout, and stderr from the subprocess, its
-        harness_failure (or None), and fixture_present measured on the argv's
-        fixture just before launch.
+        harness_failure (or None), fixture_present measured on the argv's
+        fixture just before launch, and the argv as `command`.
+
+    Raises:
+        ReifyBinaryRefused: a check/ir/value probe on a ctx that refused every
+        reify binary (the ProbeRunner precondition); nothing is launched.
     """
-    repo_root = _find_repo_root()
-    cmd = build_command(probe, repo_root=repo_root)
+    repo_root = ctx.repo_root
+    cmd = build_command(probe, ctx)
+    command = tuple(cmd)
 
     # Measured on the very path the argv carries, immediately before launch.
     # The probe launches regardless, so its evidence is recorded either way.
@@ -1333,6 +1530,7 @@ def run_probe(probe: Probe, timeout: Optional[float] = None) -> ProbeRun:
             exit_code, "", "",
             harness_failure=HarnessFailure(kind, str(exc)),
             fixture_present=fixture_present,
+            command=command,
         )
 
     # Grammar probes must run with CWD inside tree-sitter-reify/ so that
@@ -1344,7 +1542,7 @@ def run_probe(probe: Probe, timeout: Optional[float] = None) -> ProbeRun:
         cwd = os.path.join(repo_root, "tree-sitter-reify")
         try:
             # ONE expression feeds both launch arms below, so they cannot drift.
-            env = _grammar_probe_env(repo_root)
+            env = _grammar_probe_env(ctx)
         except OSError as exc:
             return harness_failed(HarnessFailureKind.SETUP, 127, exc)
 
@@ -1370,6 +1568,7 @@ def run_probe(probe: Probe, timeout: Optional[float] = None) -> ProbeRun:
         stdout=proc.stdout,
         stderr=proc.stderr,
         fixture_present=fixture_present,
+        command=command,
     ))
 
 
@@ -1471,54 +1670,84 @@ def _kill_process_tree(proc: subprocess.Popen) -> None:
 # grammar, never whether this particular fixture parses.
 _SUBSTRATE_PROBE_FIXTURE = "tests/prd-gate/fixtures/arrow_type.ri"
 
-# Wall-clock bound on the substrate probe.  Generous by design: on a COLD cache
-# tree-sitter compiles the grammar with cc before it can parse, so a tight bound
-# would report a healthy substrate as unusable.  The bound exists only so that a
-# stuck ~/.cache/tree-sitter/lock/<grammar>.lock — the very resource this
-# function interrogates — cannot hang the caller.
-_SUBSTRATE_PROBE_TIMEOUT_S = 30.0
-
 # The generated parser, relative to the repo root.  Its absence is a
 # PRECONDITION failure, not a substrate one, and the two must not be conflated:
 # with no parser.c there is no reify language to load, so `tree-sitter parse`
 # reports a load failure carrying no permission marker — which is exactly the
 # shape grammar_substrate_usable()'s narrowness contract deliberately leaves
-# LOUD (a corrupt grammar must reach HARNESS_ERROR, never a skip).  A caller
-# asking "can a grammar probe run here?" therefore checks this first.
+# LOUD (a corrupt grammar must reach HARNESS_ERROR, never a skip).
+# prepare_grammar_substrate() therefore checks this before any probe.
 _GRAMMAR_PARSER_C_RELPATH = os.path.join("tree-sitter-reify", "src", "parser.c")
 
 
-def grammar_generated(repo_root: Optional[str] = None) -> tuple:
-    """Return (generated, parser_c_path) for the tree-sitter parser source.
+def grammar_generated(ctx: ProbeContext) -> tuple:
+    """Return (generated, parser_c_path) for ctx.repo_root's tree-sitter parser source.
 
     Cheap and side-effect-free — one isfile() — so callers can put it ahead of
     the subprocess grammar_substrate_usable() spends.
     """
-    root = _find_repo_root() if repo_root is None else repo_root
-    parser_c = os.path.join(root, _GRAMMAR_PARSER_C_RELPATH)
+    parser_c = os.path.join(ctx.repo_root, _GRAMMAR_PARSER_C_RELPATH)
     return (os.path.isfile(parser_c), parser_c)
 
 
-def _grammar_not_generated_reason(parser_c: str) -> str:
-    """Operator-facing reason for an ungenerated grammar; names the missing file."""
+def ensure_grammar_current(ctx: ProbeContext) -> tuple:
+    """Return (ok, reason) after bringing ctx's generated grammar up to date with grammar.js.
+
+    Runs ctx.grammar_generator, which is idempotent: on a current src/ it only
+    checks.  scripts/tree-sitter-generate.sh is the one definition of
+    "current".  With no generator nothing runs and the answer is (True, "").
+    A failure, including one to launch, is never raised: it comes back as one
+    operator-facing line naming the generator, its exit status and the tail of
+    its output.  The generator's stdout is captured, so it never joins --json.
+    """
+    if ctx.grammar_generator is None:
+        return (True, "")
+    command = f"`bash {ctx.grammar_generator}`"
+    try:
+        proc = subprocess.run(
+            ["bash", ctx.grammar_generator],
+            capture_output=True,
+            text=True,
+            env=_without_bash_startup_state(os.environ),
+            check=False,
+        )
+    except OSError as exc:
+        failure = f"{command} could not be run ({exc})"
+    else:
+        if proc.returncode == 0:
+            return (True, "")
+        output = proc.stderr.strip() or proc.stdout.strip()
+        failure = f"{command} exited {proc.returncode}: {output[-_HARNESS_ERROR_STDERR_CAP:]}"
+    return (False, "the reify tree-sitter grammar could not be brought up to date with "
+                   "grammar.js: " + " ".join(failure.splitlines()))
+
+
+def _grammar_not_generated_reason(ctx: ProbeContext, parser_c: str) -> str:
+    """Operator-facing reason for a missing parser.c; names it and why nothing wrote it."""
+    if ctx.grammar_generator is None:
+        missing_generator = os.path.join(ctx.repo_root, _GRAMMAR_GENERATOR_RELPATH)
+        why = f"there is no {missing_generator} to generate it"
+    else:
+        why = f"`bash {ctx.grammar_generator}` succeeded without writing it"
     return (
-        f"the reify tree-sitter grammar was never generated ({parser_c} is "
-        "missing), so no grammar probe can run here; generate it with "
-        "`tree-sitter generate` in tree-sitter-reify/"
+        f"the reify tree-sitter grammar is not generated ({parser_c} is missing, "
+        f"and {why}), so no grammar probe can run here"
     )
 
 
-def grammar_substrate_usable() -> tuple:
-    """Return (usable, reason) for the tree-sitter grammar toolchain.
+def grammar_substrate_usable(
+    ctx: ProbeContext, runner: ProbeRunner = run_probe
+) -> tuple:
+    """Return (usable, reason) for the tree-sitter grammar toolchain under ctx.
 
-    Runs one real grammar probe through the normal build_command()/run_probe()
-    path — so fixture resolution and the CWD=<repo_root>/tree-sitter-reify
-    requirement are honoured without being duplicated — and reports the substrate
-    unusable when the probe could not run *as a probe*: the cache/lock directory
-    is unwritable, the private grammar cache could not be set up, the probe
-    could not be launched, or it did not finish within
-    _SUBSTRATE_PROBE_TIMEOUT_S.  Each is one harness_failure kind, so each gets
-    its own reason.
+    Runs one grammar probe through `runner` (a ProbeRunner; run_probe by
+    default, so fixture resolution and the CWD=<repo_root>/tree-sitter-reify
+    requirement are honoured without being duplicated) with
+    timeout=ctx.substrate_timeout_s, and reports the substrate unusable when the
+    probe could not run *as a probe*: the cache/lock directory is unwritable,
+    the private grammar cache could not be set up, the probe could not be
+    launched, or it did not finish within the bound.  Each is one
+    harness_failure kind, so each gets its own reason.
 
     A BEHAVIOURAL check, deliberately not a path-existence one:
     ``isfile(tree-sitter-reify/src/parser.c)`` says the grammar was generated but
@@ -1530,14 +1759,14 @@ def grammar_substrate_usable() -> tuple:
     PRECONDITION, not checked here: that the grammar was generated at all.  An
     absent parser.c produces a load failure with no permission marker, which
     this function reports USABLE by design — the narrowness contract keeps a
-    missing or corrupt grammar loud rather than skippable.  Callers wanting the
-    whole question answered pair this with grammar_generated(), which is what
-    --grammar-substrate-status and the test harness's skip-guard both do.
+    missing or corrupt grammar loud rather than skippable.
+    prepare_grammar_substrate() answers the whole question, running this after
+    ensure_grammar_current() and grammar_generated().
 
     Callers use the result to SKIP rather than to alter a verdict — a probe that
     could not run still reports HARNESS_ERROR / exit 70.
 
-    Cost: one subprocess, bounded by _SUBSTRATE_PROBE_TIMEOUT_S, no side effects.
+    Cost: one subprocess, bounded by ctx.substrate_timeout_s, no side effects.
 
     Returns:
         (True, "") when a grammar probe can run; (False, reason) otherwise,
@@ -1550,14 +1779,14 @@ def grammar_substrate_usable() -> tuple:
         expected={"observation": Observation.PRESENT, "match": {}},
     )
 
-    failure = run_probe(probe, timeout=_SUBSTRATE_PROBE_TIMEOUT_S).harness_failure
+    failure = runner(probe, ctx, timeout=ctx.substrate_timeout_s).harness_failure
     if failure is None:
         return (True, "")
 
     if failure.kind is HarnessFailureKind.TIMEOUT:
         return (
             False,
-            f"tree-sitter did not respond within {_SUBSTRATE_PROBE_TIMEOUT_S:g}s, "
+            f"tree-sitter did not respond within {ctx.substrate_timeout_s:g}s, "
             "so it cannot be confirmed able to load the reify grammar; a stuck "
             "grammar cache/lock (typically ~/.cache/tree-sitter/lock/) is the "
             "usual cause",
@@ -1571,7 +1800,7 @@ def grammar_substrate_usable() -> tuple:
             False,
             f"the tree-sitter grammar probe could not be launched "
             f"({failure.detail}); either the tree-sitter CLI "
-            f"({_resolve_tree_sitter_bin()!r}) is missing or not executable, or "
+            f"({ctx.tree_sitter_bin!r}) is missing or not executable, or "
             "the grammar directory <repo_root>/tree-sitter-reify/ does not exist",
         )
 
@@ -1591,34 +1820,57 @@ def grammar_substrate_usable() -> tuple:
     return (True, "")
 
 
+def prepare_grammar_substrate(
+    ctx: ProbeContext, runner: ProbeRunner = run_probe
+) -> tuple:
+    """Return (ready, reason): whether a grammar probe can run here, after preparing for one.
+
+    The single definition of "can a grammar probe run here?", shared by
+    --grammar-substrate-status and the test harness's grammar-e2e skip guard.
+    It RUNS ctx.grammar_generator (ensure_grammar_current()), which writes src/;
+    then checks for a parser.c (grammar_generated()); then spends at most one
+    bounded substrate probe through `runner` (grammar_substrate_usable()).
+
+    Ordered and short-circuiting: a grammar that cannot be brought current is
+    never probed, so a src/ older than grammar.js is never reported ready, and
+    an ungenerated grammar, which the substrate probe reports usable by design,
+    is refused before the probe.
+
+    Returns:
+        (True, "") when a grammar probe can run; (False, reason) otherwise,
+        where reason is one operator-facing line.
+    """
+    current, reason = ensure_grammar_current(ctx)
+    if not current:
+        return (False, reason)
+    generated, parser_c = grammar_generated(ctx)
+    if not generated:
+        return (False, _grammar_not_generated_reason(ctx, parser_c))
+    return grammar_substrate_usable(ctx, runner=runner)
+
+
 # ---------------------------------------------------------------------------
 # evaluate() — wire run → observe → verdict → Result
 # ---------------------------------------------------------------------------
 
-def evaluate(probe: Probe, runner: Any = None) -> Result:
+def evaluate(
+    probe: Probe, ctx: ProbeContext, runner: ProbeRunner = run_probe
+) -> Result:
     """Evaluate a single probe and return a Result with mandatory evidence.
 
     Args:
         probe:  The probe to evaluate.
-        runner: A callable (probe) -> ProbeRun.  Defaults to the real
-                subprocess runner (run_probe), which is injected in step-10.
-                Tests pass synthetic runners for hermeticity.
+        ctx:    Handed to the runner unchanged.
+        runner: A ProbeRunner, called once with no timeout; run_probe by
+                default.  Tests pass synthetic runners for hermeticity.
 
     Returns:
-        A Result carrying the exact command, the captured run, the
-        observation, and the verdict.
+        A Result carrying the captured run (the argv it ran included), the
+        observation, and the verdict.  No second argv is built here.
     """
-    if runner is None:
-        runner = run_probe
-
-    # Build the command with the same repo_root that run_probe() uses, so the
-    # recorded evidence command matches the actually-executed command exactly.
-    repo_root = _find_repo_root()
-    cmd = build_command(probe, repo_root=repo_root)
-
-    # Run the probe and capture output.  Re-typed here because a runner need not
-    # be run_probe(): a bare ProbeRun of a load failure must still not observe.
-    run = _with_grammar_load_failure(probe.probe_kind, runner(probe))
+    # Re-typed here because a runner need not be run_probe(): a bare ProbeRun of
+    # a load failure must still not observe.
+    run = _with_grammar_load_failure(probe.probe_kind, runner(probe, ctx))
 
     # Determine observation, and — for a value probe that produced output — the
     # reading of stdout behind it.  One call, so the verdict and the evidence
@@ -1630,7 +1882,6 @@ def evaluate(probe: Probe, runner: Any = None) -> Result:
 
     return Result(
         probe=probe,
-        command=cmd,
         run=run,
         observation=obs,
         verdict=verdict(obs, probe.expected["observation"]),
@@ -1724,7 +1975,7 @@ def _json_record(r: Result) -> Dict[str, Any]:
         "capability": r.probe.capability,
         "probe_kind": r.probe.probe_kind,
         "verdict": r.verdict,
-        "command": r.command,
+        "command": list(run.command),
         "exit_code": run.exit_code,
         "stdout": run.stdout,
         "stderr": run.stderr,
@@ -1836,7 +2087,7 @@ def published_schemas() -> Dict[str, Dict[str, Any]]:
     }
 
 
-def main(argv: List[str]) -> int:
+def main(argv: List[str], runner: ProbeRunner = run_probe, ctx: Optional[ProbeContext] = None) -> int:
     """CLI entry-point.  Returns an exit code (0/1/2/64/70/75).
 
     Usage:
@@ -1845,15 +2096,20 @@ def main(argv: List[str]) -> int:
         prd-capability-check.py --print-schema
 
     Reads the committed probe-set JSON from PROBE_SET_JSON, evaluates every
-    probe with the real runner, prints per-probe evidence (or --json), and
-    returns harness_exit_code(results).
+    probe through `runner` (a ProbeRunner; run_probe by default), prints
+    per-probe evidence (or --json), and returns harness_exit_code(results).
+    A set holding a grammar probe first has its grammar brought up to date
+    (ensure_grammar_current()).
+    `ctx` defaults to ProbeContext.from_environment(), built once per
+    invocation; a test passes its own runner and ctx.
 
     --grammar-substrate-status is a separate mode: it reports whether a grammar
     probe could run here at all, so a shell caller can print a clean SKIP
     instead of reporting an unrunnable probe as a gate FAIL.  It answers with
-    both halves of that question — grammar_generated() (is there a parser.c to
-    load?) and then, only if so, ONE substrate probe (a real `tree-sitter parse`
-    subprocess, bounded by _SUBSTRATE_PROBE_TIMEOUT_S).  It evaluates no probe
+    prepare_grammar_substrate(), which brings src/ up to date with grammar.js
+    and spends at most ONE substrate probe through the same runner seam (with
+    the real runner, a `tree-sitter parse` subprocess bounded by
+    ctx.substrate_timeout_s).  It evaluates no probe
     set, so it cannot affect any verdict.  --json does not apply to it: the finding is carried by
     the exit code (0 / 75), with a one-line human reason on stdout.  A
     PROBE_SET_JSON passed alongside it is ignored for the same reason.
@@ -1866,9 +2122,12 @@ def main(argv: List[str]) -> int:
         0   all PASS  (or: grammar substrate usable)
         1   ≥1 FAIL
         2   ≥1 UNPROVABLE, 0 FAIL
-        64  usage / argument / IO error (EX_USAGE)
-        70  tool / runtime error — missing binary, grammar load failure (EX_SOFTWARE)
-        75  grammar substrate unavailable — SKIP, do not FAIL (EX_TEMPFAIL)
+        64  usage / argument / IO error, or no trusted reify binary for a probe
+            set that needs one (EX_USAGE)
+        70  tool / runtime error — missing binary, grammar load failure, or the
+            grammar could not be generated (EX_SOFTWARE)
+        75  grammar substrate unavailable, or the grammar could not be
+            generated — SKIP, do not FAIL (EX_TEMPFAIL)
     """
     parser = argparse.ArgumentParser(
         description="Run capability probes from a committed probe-set JSON file.",
@@ -1894,10 +2153,12 @@ def main(argv: List[str]) -> int:
         dest="grammar_substrate_status",
         help=(
             "Report whether tree-sitter can run a grammar probe here; "
-            "exit 0 if usable, 75 if not (grammar not generated, cache/lock "
-            "unwritable, CLI unlaunchable, or no answer within the bound).  "
-            "Runs at most one substrate probe (a real tree-sitter subprocess, "
-            "time-bounded); evaluates no probe set and affects no verdict.  "
+            "exit 0 if usable, 75 if not (grammar could not be generated, "
+            "cache/lock unwritable, CLI unlaunchable, or no answer within the "
+            "bound).  First brings the grammar up to date via "
+            "scripts/tree-sitter-generate.sh, then runs at most one substrate "
+            "probe (a real tree-sitter subprocess, time-bounded); evaluates no "
+            "probe set and affects no verdict.  "
             "Ignores --json and any PROBE_SET_JSON."
         ),
     )
@@ -1921,23 +2182,13 @@ def main(argv: List[str]) -> int:
         sys.stdout.write("\n")
         return 0
 
+    if ctx is None:
+        ctx = ProbeContext.from_environment()
+
     # --- Substrate status mode: report and return, without running probes ---
     if args.grammar_substrate_status:
-        # Ordered, not merged: an ungenerated grammar is a precondition failure
-        # that grammar_substrate_usable() reports usable by design (see its
-        # docstring).  Without this the shell caller is told "usable" and then
-        # still collects exit 70 from the probe run — the one answer this mode
-        # exists to spare it.  Cheap first, so a lane with no grammar pays no
-        # subprocess.
-        generated, parser_c = grammar_generated()
-        if not generated:
-            sys.stdout.write(
-                "grammar substrate: unusable: "
-                f"{_grammar_not_generated_reason(parser_c)}\n"
-            )
-            return 75  # EX_TEMPFAIL — same SKIP contract as an unusable substrate
-        usable, reason = grammar_substrate_usable()
-        if usable:
+        ready, reason = prepare_grammar_substrate(ctx, runner=runner)
+        if ready:
             sys.stdout.write("grammar substrate: usable\n")
             return 0
         sys.stdout.write(f"grammar substrate: unusable: {reason}\n")
@@ -1974,8 +2225,24 @@ def main(argv: List[str]) -> int:
         )
         return 64  # EX_USAGE — vacuous all-pass masks broken CI gates
 
-    # --- Evaluate each probe with the real runner ---
-    results = [evaluate(probe) for probe in probes]
+    # Refused before any probe runs, so no verdict comes from an untrusted reify.
+    try:
+        for kind in sorted({probe.probe_kind for probe in probes}):
+            _probe_binary(kind, ctx)
+    except ReifyBinaryRefused as exc:
+        sys.stderr.write(f"error: {exc}\n")
+        return 64  # EX_USAGE — REIFY_BIN must pick the binary
+
+    # Refused before any probe runs, so no verdict comes from a grammar that
+    # could not be brought current.
+    if any(probe.probe_kind is ProbeKind.GRAMMAR for probe in probes):
+        current, reason = ensure_grammar_current(ctx)
+        if not current:
+            sys.stderr.write(f"error: {reason}\n")
+            return 70  # EX_SOFTWARE
+
+    # --- Evaluate each probe through the runner seam ---
+    results = [evaluate(probe, ctx, runner) for probe in probes]
 
     # --- Emit output ---
     if args.emit_json:
@@ -1986,7 +2253,7 @@ def main(argv: List[str]) -> int:
         for r in results:
             run = r.run
             failure = run.harness_failure
-            cmd_str = " ".join(r.command)
+            cmd_str = " ".join(run.command)
             stdout_preview = run.stdout[:200] if run.stdout else "(empty)"
             # A HARNESS_ERROR means the probe could not run, so the tool's own
             # message is the operator's only lead — and the 200-char preview cuts

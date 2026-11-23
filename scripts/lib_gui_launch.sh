@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Shared launch-environment helpers for the reify-gui launchers (#7254).
+# Shared file-argument and launch-environment helpers for the reify-gui
+# launchers (#7254).
 # Designed to be sourced, not executed directly.
 #
 # Usage:  source "$(dirname "${BASH_SOURCE[0]}")/lib_gui_launch.sh"
@@ -7,11 +8,11 @@
 #
 # Sourced by scripts/run-gui.sh (release) and scripts/run-gui-dev.sh
 # (dev). The two launchers differ in build profile and in whether they run a
-# vite dev server, but they must agree EXACTLY on the environment they hand
-# the binary — and on the preflight that decides a launch is hopeless before
-# paying for a multi-minute build. Before this lib the inherited-
-# LD_LIBRARY_PATH snapshot, the display preflight and the oneTBB pin +
-# WebKit renderer default were duplicated near-verbatim across both files,
+# vite dev server, but they must agree EXACTLY on the file argument and the
+# environment they hand the binary — and on the preflight that decides a
+# launch is hopeless before paying for a multi-minute build. Before this lib
+# the inherited-LD_LIBRARY_PATH snapshot, the display preflight and the oneTBB
+# pin + WebKit renderer default were duplicated near-verbatim across both files,
 # down to byte-identical user-facing strings. That is the shape that lets two
 # copies drift silently: gui/test/visual/lib_e2e_smoke.sh's own header records
 # exactly that outcome for a six-way copy of the GUI-launch lifecycle (one
@@ -69,9 +70,10 @@ _GUI_LAUNCH_INHERITED_LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
 #
 # We deliberately do NOT probe EGL here. `eglinfo` (mesa-utils) is not in
 # scripts/setup-dev.sh's package set, so it cannot be hard-required, and
-# gui_launch_env_pin()'s WEBKIT_DISABLE_DMABUF_RENDERER=1 default already
-# neutralises the NVIDIA+Mesa GBM failure an EGL probe would flag — the probe
-# would be both undependable and a false alarm.
+# reify-gui's own WEBKIT_DISABLE_DMABUF_RENDERER=1 default
+# (gui/src-tauri/src/webkit_env.rs) already neutralises the NVIDIA+Mesa GBM
+# failure an EGL probe would flag — the probe would be both undependable and a
+# false alarm.
 #
 # Prints ONE error line to stderr and returns 1; never exits, so the caller
 # owns the exit code. Honouring REIFY_GUI_SKIP_PREFLIGHT is likewise the
@@ -82,6 +84,34 @@ gui_launch_preflight_display() {
     fi
     echo "Error: no display: DISPLAY and WAYLAND_DISPLAY are both unset — reify-gui needs an X11/Wayland display; export DISPLAY=:0 (or set REIFY_GUI_SKIP_PREFLIGHT=1 to bypass)" >&2
     return 1
+}
+
+# gui_launch_resolve_file <file>
+#
+# The launchers' optional [file.ri] argument. An empty <file> means the Start
+# view: prints nothing and returns 0. Otherwise <file> must end in .ri and
+# exist; a refusal prints ONE error line to stderr and returns 1, never exits.
+#
+# On success prints <file>'s absolute path, resolved against the CALLER's cwd,
+# so a launcher must call this before its `cd "$REPO_ROOT"`. The directory is
+# resolved physically with CDPATH cleared, so the printed path names the very
+# file the existence check saw (lnk/../x.ri included).
+gui_launch_resolve_file() {
+    local file="${1:-}" dir
+    [ -n "$file" ] || return 0
+    case "$file" in
+        *.ri) ;;
+        *) echo "Error: file must have .ri extension: $file" >&2; return 1 ;;
+    esac
+    case "$file" in
+        */*) dir="${file%/*}" ;;
+        *) dir=. ;;
+    esac
+    if ! [ -f "$file" ] || ! dir=$(CDPATH= cd -P -- "${dir:-/}" 2>/dev/null && pwd -P); then
+        echo "Error: file not found: $file" >&2
+        return 1
+    fi
+    printf '%s\n' "${dir%/}/${file##*/}"
 }
 
 # _gui_launch_env_already_pinned
@@ -104,7 +134,7 @@ _gui_launch_env_already_pinned() {
 
 # gui_launch_env_pin
 #
-# Set the two environment defaults every direct reify-gui invocation needs.
+# Pin the loader path every direct reify-gui invocation needs.
 #
 # ORDERING CONTRACT: this is the only LD_LIBRARY_PATH mutation a launcher
 # makes: the workspace-bin dirs (scripts/lib_native_ld_path.sh), then the tbb
@@ -118,15 +148,6 @@ _gui_launch_env_already_pinned() {
 # lib afresh); a second pass there would only duplicate the entries and repeat
 # the notice. A caller that leads with the pin ALONE still gets both prepends.
 gui_launch_env_pin() {
-    # Disable WebKit's GBM/DMABuf renderer by default. On systems where the
-    # NVIDIA driver exposes DRI fds but the Mesa EGL GBM backend cannot create
-    # a screen, WebKitGTK aborts with
-    # "Could not create GBM EGL display: EGL_NOT_INITIALIZED". =1 forces the
-    # GLX/xlib fallback path.
-    # The `:-1` form is deliberate: export WEBKIT_DISABLE_DMABUF_RENDERER=0 to
-    # restore the DMABUF path on a host where it works.
-    export WEBKIT_DISABLE_DMABUF_RENDERER="${WEBKIT_DISABLE_DMABUF_RENDERER:-1}"
-
     if _gui_launch_env_already_pinned; then
         return 0
     fi

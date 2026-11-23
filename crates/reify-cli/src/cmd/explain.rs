@@ -5,10 +5,13 @@ use std::process::ExitCode;
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::Severity;
 
-use crate::args::{EXPLAIN_USAGE, parse_single_file_arg};
-use crate::{configured_eval_engine, parse_and_compile};
+use crate::args::{parse_single_file_arg, split_cfg_args_or_usage};
+use crate::help::EXPLAIN_USAGE;
+use crate::{configured_eval_engine, parse_and_compile_program_entry};
 
-/// Print per-cell objective provenance for every auto parameter resolved by eval.
+/// Compile the entry as a program (its `#cfg`-satisfied imports resolved as
+/// under `reify check`, with repeated `--cfg` selecting them), then print
+/// per-cell objective provenance for every auto parameter resolved by eval.
 ///
 /// Always uses the plain `eval()` path (never `build()`) with the production
 /// solver wired via `configured_eval_engine` so that auto params resolve and
@@ -20,12 +23,16 @@ use crate::{configured_eval_engine, parse_and_compile};
 /// <entity>.<member>: objective=<N term(s)|none>, combination=<weighted-sum|lexicographic|none>, source=<explicit|synthetic-centrality>
 /// ```
 pub(crate) fn cmd_explain(args: &[String]) -> ExitCode {
-    let path = match parse_single_file_arg(args, "explain", EXPLAIN_USAGE) {
+    let (cfg, rest) = match split_cfg_args_or_usage(args, EXPLAIN_USAGE) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    let path = match parse_single_file_arg(&rest, "explain", EXPLAIN_USAGE) {
         Ok(p) => p,
         Err(code) => return code,
     };
 
-    let compiled = match parse_and_compile(&path) {
+    let compiled = match parse_and_compile_program_entry(&path, &cfg) {
         Ok(c) => c,
         Err(code) => return code,
     };

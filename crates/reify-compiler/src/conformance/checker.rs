@@ -892,7 +892,7 @@ pub(super) fn check_phase_resolve_assoc_fns(
     // desugar bare member refs in assoc-fn bodies to `self.member`.
     conformer_members: &HashSet<String>,
     enum_defs: &[reify_ir::EnumDef],
-    functions: &[CompiledFunction],
+    calls: crate::functions::CallTable<'_>,
     alias_registry: &TypeAliasRegistry,
     structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
@@ -963,7 +963,7 @@ pub(super) fn check_phase_resolve_assoc_fns(
             conformer,
             conformer_members,
             enum_defs,
-            functions,
+            calls,
             alias_registry,
             structure_names,
             trait_names,
@@ -1044,7 +1044,7 @@ pub(super) fn check_phase_resolve_assoc_fns(
             conformer,
             conformer_members,
             enum_defs,
-            functions,
+            calls,
             alias_registry,
             structure_names,
             trait_names,
@@ -1819,8 +1819,9 @@ fn report_phase_drift(
 /// ## Scope (DD6)
 ///
 /// `purpose` selects the innermost scope for resolution. Top-level structures
-/// (the only structures that exist) resolve at file scope (`purpose = None`);
-/// purpose-scoped defaults are never injected into a structure.
+/// resolve at file scope (`purpose = None`); structures nested in a purpose
+/// pass `Some(purpose)` (task 4639), so that purpose's defaults win over the
+/// file level's.
 pub(super) fn check_phase_inject_ambient_defaults(
     ctx: &mut MergeContext,
     ambient: &AmbientDefaults,
@@ -1855,8 +1856,9 @@ pub(super) fn check_phase_inject_ambient_defaults(
         };
         // Synthesize a Param default carrying the ambient value expr as its
         // `default`, so `check_phase_inject_defaults` compiles + injects it via
-        // `compile_expr` exactly like a real trait param default. Mirrors the
-        // synthetic-ParamDecl construction at conformance/mod.rs:2131.
+        // `compile_expr` exactly like a real trait param default. A Rejected
+        // entry yields a Param default with the declared type and no default
+        // expr: the member is filled and the value is never recompiled.
         synthesized.push(TraitDefault {
             name: Some(req.name.clone()),
             kind: DefaultKind::Param {
@@ -1866,7 +1868,7 @@ pub(super) fn check_phase_inject_ambient_defaults(
                     doc: None,
                     is_priv: false,
                     type_expr: None,
-                    default: Some(entry.value.clone()),
+                    default: entry.value.default_expr().cloned(),
                     where_clause: None,
                     annotations: vec![],
                     span: entry.span,
@@ -1882,20 +1884,30 @@ pub(super) fn check_phase_inject_ambient_defaults(
 #[cfg(test)]
 mod ambient_inject_tests {
     use super::*;
-    use crate::ambient_defaults::{AmbientDefaults, ResolvedAmbientDefault};
+    use crate::ambient_defaults::{AmbientDefaults, AmbientValue, ResolvedAmbientDefault};
 
     /// File-level ambient table with a single `Material` entry whose value expr
     /// is a recognizable `Ident(marker)`, so a synthesized default's carried
     /// value can be checked by identity (see [`synth_marker`]).
     fn material_ambient_table(marker: &str) -> AmbientDefaults {
+        material_table_with(AmbientValue::Accepted(reify_ast::Expr {
+            kind: reify_ast::ExprKind::Ident(marker.to_string()),
+            span: SourceSpan::empty(0),
+        }))
+    }
+
+    /// File-level ambient table whose single `Material` entry was rejected at
+    /// its declaration site.
+    fn rejected_material_table() -> AmbientDefaults {
+        material_table_with(AmbientValue::Rejected)
+    }
+
+    fn material_table_with(value: AmbientValue) -> AmbientDefaults {
         let mut table = AmbientDefaults::default();
         table.insert_file_level(
             "Material".to_string(),
             ResolvedAmbientDefault {
-                value: reify_ast::Expr {
-                    kind: reify_ast::ExprKind::Ident(marker.to_string()),
-                    span: SourceSpan::empty(0),
-                },
+                value,
                 declared_type: Type::StructureRef("Material".to_string()),
                 span: SourceSpan::empty(0),
             },
@@ -2079,6 +2091,44 @@ mod ambient_inject_tests {
             Some("ambient_steel"),
             "second Material param should be synthesized; got {:?}",
             ctx.defaults
+        );
+    }
+
+    /// A rejected entry still fills the requirement: a Param default with the
+    /// declared type and no default expression, so the value is never
+    /// recompiled at the injection site.
+    #[test]
+    fn rejected_entry_fills_param_with_declared_type_and_no_default() {
+        let mut ctx = MergeContext::new();
+        ctx.requirements.push(material_param_req("material"));
+        let structure_members: HashMap<String, Type> = HashMap::new();
+
+        check_phase_inject_ambient_defaults(
+            &mut ctx,
+            &rejected_material_table(),
+            &structure_members,
+            None,
+        );
+
+        let [default] = ctx.defaults.as_slice() else {
+            panic!(
+                "expected exactly one synthesized default; got {:?}",
+                ctx.defaults
+            );
+        };
+        assert_eq!(default.name.as_deref(), Some("material"));
+        let DefaultKind::Param {
+            cell_type,
+            default_decl,
+        } = &default.kind
+        else {
+            panic!("expected a Param default; got {:?}", default.kind);
+        };
+        assert_eq!(cell_type, &Type::StructureRef("Material".to_string()));
+        assert!(
+            default_decl.default.is_none(),
+            "a rejected entry must carry no default expr; got {:?}",
+            default_decl.default
         );
     }
 

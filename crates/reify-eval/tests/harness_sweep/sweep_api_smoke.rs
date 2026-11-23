@@ -41,7 +41,7 @@ fn get_value<'a>(values: &'a ValueMap, name: &str) -> &'a Value {
 ///   dim).  Body 0 world translation is `(0, 0, 0)` then `(1, 0, 0)`.
 const HAPPY_SOURCE: &str = r#"
 structure def Kinematic {
-    let j = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
+    let j = prismatic(dir(1, 0, 0), 0mm .. 1000mm)
     let m = body(mechanism(), "a", j)
 
     let snaps = sweep(m, j, 0mm .. 1000mm, 11)

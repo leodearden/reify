@@ -19,18 +19,16 @@ import unittest.mock
 from dataclasses import dataclass
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _pdv_test_support import REPO_ROOT, load_pcc, load_pdv, reify_missing_fixture_stderr
+from _pdv_test_support import (
+    REPO_ROOT, load_pcc, load_pdv, reify_missing_fixture_stderr, require_reify_binary,
+)
 
 pdv = load_pdv()
 pcc = load_pcc()
 
 # ---------------------------------------------------------------------------
-# Repo-root helpers for skip-guards
+# Committed leaf fixtures
 # ---------------------------------------------------------------------------
-
-_REIFY_RELEASE = os.path.join(REPO_ROOT, "target", "release", "reify")
-_REIFY_DEBUG = os.path.join(REPO_ROOT, "target", "debug", "reify")
-_REIFY_BUILT = os.path.isfile(_REIFY_RELEASE) or os.path.isfile(_REIFY_DEBUG)
 
 _LEAF_FALSE = os.path.join(REPO_ROOT, "tests", "prd-gate", "leaf-false-premise.json")
 _LEAF_TRUE = os.path.join(REPO_ROOT, "tests", "prd-gate", "leaf-true-premise.json")
@@ -460,7 +458,6 @@ class TestBoundaryE2e(unittest.TestCase):
             _, records = _alpha_json(probe_set_dict, tmpdir)
         return records
 
-    @unittest.skipUnless(_REIFY_BUILT, "reify binary not built; skip boundary e2e")
     def test_false_premise_leaf_blocks(self):
         """leaf-false-premise.json → bind → α evaluate → synthesize → blocks==True.
 
@@ -468,6 +465,7 @@ class TestBoundaryE2e(unittest.TestCase):
         The rejection probe expects exit_code:1 (rejection fires), but real reify
         exits 0 ('All constraints satisfied.') → ABSENT → expected present → FAIL.
         """
+        require_reify_binary(self)
         premises = self._load_premises_from_leaf(_LEAF_FALSE)
         self.assertGreater(len(premises), 0, "leaf-false-premise.json must have premises")
 
@@ -479,9 +477,9 @@ class TestBoundaryE2e(unittest.TestCase):
         self.assertTrue(bv.blocks,
                         "leaf-false-premise.json must BLOCK (4575 silent-accept leaf must fail)")
 
-    @unittest.skipUnless(_REIFY_BUILT, "reify binary not built; skip boundary e2e")
     def test_false_premise_report_contains_4575_evidence(self):
         """Blocking report contains captured 4575 evidence (exit_code 0, 'All constraints satisfied.')."""
+        require_reify_binary(self)
         premises = self._load_premises_from_leaf(_LEAF_FALSE)
         probe_set = pdv.bind_premises(premises)
         results = self._run_probes_with_alpha(probe_set)
@@ -492,9 +490,9 @@ class TestBoundaryE2e(unittest.TestCase):
         self.assertIn("All constraints satisfied.", bv.report,
                       "report must capture the 4575 evidence: 'All constraints satisfied.'")
 
-    @unittest.skipUnless(_REIFY_BUILT, "reify binary not built; skip boundary e2e")
     def test_true_premise_leaf_passes(self):
         """leaf-true-premise.json → bind → α evaluate → synthesize → blocks==False."""
+        require_reify_binary(self)
         premises = self._load_premises_from_leaf(_LEAF_TRUE)
         self.assertGreater(len(premises), 0, "leaf-true-premise.json must have premises")
 
@@ -507,13 +505,13 @@ class TestBoundaryE2e(unittest.TestCase):
                          f"leaf-true-premise.json must PASS; blocking: {bv.blocking}; "
                          f"report: {bv.report}")
 
-    @unittest.skipUnless(_REIFY_BUILT, "reify binary not built; skip boundary e2e")
     def test_real_alpha_missing_fixture_is_fixture_absent(self):
         """Real α + reify on a never-written fixture is fixture-absent, not blocking.
 
         Pins the fixture anchor against what α actually records, so #7257's
         false block cannot quietly return.
         """
+        require_reify_binary(self)
         with tempfile.TemporaryDirectory(prefix="pdv_e2e_absent_") as tmpdir:
             fixture = os.path.join(tmpdir, "never_written.ri")
             results = self._run_probes_with_alpha({"probes": [
@@ -547,8 +545,8 @@ class TestFixtureAbsentBoundary(unittest.TestCase):
                 "assertion_kind": "rejection", "fixture": self._fixture,
                 "match": {"exit_code": 1}}
 
-    @unittest.skipUnless(_REIFY_BUILT, "reify binary not built; skip boundary e2e")
     def test_b1_rejection_on_a_missing_fixture_is_fixture_absent(self):
+        require_reify_binary(self)
         run = _bind_probe_synthesize([self._rejection("B1 rejection")], self._tmpdir)
         [record] = run.records
         self.assertEqual(record["verdict"], pcc.Verdict.UNPROVABLE, record)
@@ -598,9 +596,9 @@ class TestFixtureAbsentBoundary(unittest.TestCase):
         self.assertEqual(run.verdict["blocking"], ["B3 rejection"])
         self.assertEqual(run.verdict["fixture_absent"], [])
 
-    @unittest.skipUnless(_REIFY_BUILT, "reify binary not built; skip boundary e2e")
     def test_m1_reproduction_is_fixture_absent_not_verified(self):
         """The two-premise set that read VERIFIED at PRD §3 M1."""
+        require_reify_binary(self)
         premises = [
             self._rejection("M1 rejection"),
             {"text": "M1 resolves", "capability": "M1 resolves",

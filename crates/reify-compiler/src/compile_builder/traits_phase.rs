@@ -11,12 +11,13 @@
 
 use std::collections::{HashMap, HashSet};
 
-use reify_ast::TraitDecl;
+use reify_ast::{FnDef, TraitDecl};
 
 use crate::CompiledModule;
 use crate::annotations::{deprecation_message, emit_deprecation_warning};
+use crate::call_table::CallTable;
 use crate::compile_builder::ctx::CompilationCtx;
-use crate::compile_builder::functions_phase::build_resolution_functions;
+use crate::compile_builder::functions_phase::ResolutionTable;
 use crate::expr::trait_static_fn_symbol;
 use crate::functions::compile_function;
 use crate::name_env;
@@ -46,26 +47,34 @@ pub(crate) fn build_trait_registry<'a>(
 /// downstream phases for `Type::TraitObject` resolution.
 ///
 /// The `trait_names` and `structure_names` sets are pre-computed by
-/// `names_phase::build_resolution_names` (which runs before `phase_functions`)
-/// and stored on `ctx`. This phase reads them from `ctx` rather than
-/// rebuilding, so both `phase_functions` and `phase_traits` consume the same
-/// shared sets.
+/// `names_phase::build_resolution_names` (which runs before
+/// `phase_fn_signatures`) and stored on `ctx`. This phase reads them from
+/// `ctx` rather than rebuilding, so both `phase_fn_signatures` and
+/// `phase_traits` consume the same shared sets.
+///
+/// Since task 5494's reorder this phase also precedes user fn-BODY
+/// compilation (bodies are compiled by the unified source-order pass in
+/// `entities_phase::phase_entities`) — which is why it buffers trait static
+/// fns into `ctx.trait_static_fns` rather than assuming any body has been
+/// compiled yet.
 ///
 /// Steps, in order:
 /// 1. Read `trait_names` and `structure_names` from `ctx` (pre-computed by
-///    `names_phase::build_resolution_names` before `phase_functions`).
+///    `names_phase::build_resolution_names` before `phase_fn_signatures`).
 /// 2. Compile each local trait via [`compile_trait`] and push into
 ///    `ctx.trait_defs`.
 /// 3. Build a phase-local `trait_registry` (prelude first, then local
 ///    override on name collision) and walk each local trait's `refinements`
 ///    emitting a deprecation warning when the parent carries `@deprecated`.
+/// 4. Register each local trait's body-carrying static fn via
+///    [`register_trait_static_fns`].
 pub(crate) fn phase_traits(
     ctx: &mut CompilationCtx,
     prelude: &[&CompiledModule],
     trait_refs: &[&TraitDecl],
 ) -> HashSet<String> {
     // 1. The trait_names and structure_names sets were pre-computed by
-    //    names_phase::build_resolution_names (which ran before phase_functions).
+    //    names_phase::build_resolution_names (which ran before phase_fn_signatures).
     //    Move trait_names out of ctx (no other phase reads resolution_trait_names
     //    after phase_traits, so cloning would be wasteful); borrow structure_names
     //    in place.
@@ -109,95 +118,71 @@ pub(crate) fn phase_traits(
         }
     }
 
-    // 4. Register namespaced trait-static functions into `ctx.functions`.
-    //
-    // For each locally-compiled trait's body-carrying static (no-`self`) assoc fn,
-    // compile the body in a neutral scope (same as a free fn) and register the result
-    // as a `CompiledFunction` named `"Trait::method"` in `ctx.functions`.
-    //
-    // This registration is what makes `TraitStaticCall { trait_name, method, args }`
-    // dispatch possible: the `compile_expr_guarded` arm for `TraitStaticCall` looks up
-    // the mangled name via `resolve_function_overload` against `ctx.resolution_functions`,
-    // so the fn must land in the function table before entity bodies are compiled.
-    //
-    // Filtering rules:
-    // - `DefaultKind::Fn` only (body-carrying assoc fns).
-    // - No `is_self` param (static; instance methods are task ζ=3941).
-    // - `body.is_some()` guard (bodyless required fns appear only in `required_members`,
-    //   not `defaults`, but guard anyway for safety).
-    //
-    // The neutral compile scope means a body referencing a trait member (e.g. `diameter`)
-    // produces `DiagnosticCode::UnresolvedName` naming the member — the PRD §4.4 negative
-    // signal — with no extra code needed.
-    //
-    // Name-drift guard: both producer (here) and consumer (expr.rs TraitStaticCall arm)
-    // call the shared `trait_static_fn_symbol` helper, so the mangled name is always
-    // byte-for-byte identical.
-    //
-    // Performance note: `ctx.resolution_functions` is only rebuilt when at least one
-    // static fn is actually registered. For modules that declare no traits or no
-    // body-carrying static assoc fns, resolution_functions is already correct from
-    // phase_functions and the O(prelude) clone+merge is skipped entirely.
-    // The module's declared callable vocabulary, merged ONCE for the phase and
-    // borrowed by every static-fn body scope below (task #5371). Rationale:
-    // `CompilationScope::declared_callable_names`.
+    // 4. Register namespaced trait-static functions.
+    register_trait_static_fns(ctx, prelude, &trait_names);
+
+    trait_names
+}
+
+/// Compile each local trait's body-carrying static fn under its
+/// [`trait_static_fn_symbol`] into `ctx.trait_static_fns`, which the unified
+/// pass appends after the user fns.
+///
+/// Each body resolves against one table of the signature stubs, the static fns
+/// compiled before it, and the prelude. A module with no such fn returns
+/// before building anything, so it clones no prelude fn. Otherwise the table is
+/// written back to `ctx.resolution_functions` for the unified pass, with the
+/// stubs still at `0..fn_signatures.len()`, where that pass replaces stub `i`
+/// by declaration index.
+fn register_trait_static_fns(
+    ctx: &mut CompilationCtx,
+    prelude: &[&CompiledModule],
+    trait_names: &HashSet<String>,
+) {
+    let mut static_fns = body_carrying_static_fns(&ctx.trait_defs).peekable();
+    if static_fns.peek().is_none() {
+        return;
+    }
     let declared_callables = crate::functions::declared_callable_names(
         &ctx.declared_fn_names,
         &ctx.resolution_structure_names,
     );
-    let mut any_static_fn_registered = false;
-    for compiled_trait in &ctx.trait_defs {
-        for default in &compiled_trait.defaults {
-            if let DefaultKind::Fn(fn_def) = &default.kind {
-                // Skip instance methods (has a self receiver).
-                if fn_def.params.iter().any(|p| p.is_self) {
-                    continue;
-                }
-                // Skip bodyless fns (should only appear in required_members, not defaults,
-                // but guard for safety).
-                if fn_def.body.is_none() {
-                    continue;
-                }
-                // Clone and rename to the namespaced symbol.
-                let mut namespaced_fn = fn_def.clone();
-                namespaced_fn.name = trait_static_fn_symbol(&compiled_trait.name, &fn_def.name);
-                // Compile the body. Borrows of ctx fields are disjoint here:
-                // - resolution_enums, functions, alias_registry, resolution_structure_names
-                //   are immutable borrows released when compile_function returns.
-                // - diagnostics is the mutable borrow taken by compile_function.
-                // - functions.push() runs after compile_function returns (NLL-safe).
-                let compiled_fn = compile_function(
-                    &namespaced_fn,
-                    &ctx.resolution_enums,
-                    &ctx.functions,
-                    &ctx.alias_registry,
-                    &ctx.resolution_structure_names,
-                    &trait_names,
-                    // Same vocabulary `phase_functions` used, merged once above:
-                    // the declared-name question has one answer per module
-                    // (task #5371).
-                    &declared_callables,
-                    None, // v1: no prelude template registry for static fn bodies
-                    &mut ctx.diagnostics,
-                );
-                if let Some(f) = compiled_fn {
-                    ctx.functions.push(f);
-                    any_static_fn_registered = true;
-                }
-            }
+    let mut calls_above = ResolutionTable::new(ctx.fn_signature_stubs(), prelude);
+    for (trait_name, fn_def) in static_fns {
+        let mut namespaced_fn = fn_def.clone();
+        namespaced_fn.name = trait_static_fn_symbol(trait_name, &fn_def.name);
+        if let Some(f) = compile_function(
+            &namespaced_fn,
+            &ctx.resolution_enums,
+            CallTable::with_pending(calls_above.functions(), &ctx.fns_with_pending_defaults),
+            &ctx.alias_registry,
+            &ctx.resolution_structure_names,
+            trait_names,
+            &declared_callables,
+            None, // v1: no prelude template registry for static fn bodies
+            &mut ctx.diagnostics,
+        ) {
+            calls_above.push_user(f.clone());
+            ctx.trait_static_fns.push(f);
         }
     }
+    ctx.resolution_functions = calls_above.into_functions();
+}
 
-    // Rebuild `ctx.resolution_functions` so entity bodies (compiled in phase_entities,
-    // which runs after phase_traits) can resolve `Trait::method` calls — the same
-    // helper phase_functions uses. Note: `ctx.functions` (user-only, includes newly registered static fns) flows
-    // to the final `CompiledModule.functions` (ctx.rs:181) used by the eval engine.
-    //
-    // Skipped entirely when no static fns were registered: resolution_functions is
-    // already correct from phase_functions and the O(prelude) clone+merge is redundant.
-    if any_static_fn_registered {
-        ctx.resolution_functions = build_resolution_functions(&ctx.functions, prelude);
-    }
-
-    trait_names
+/// Each trait's static (no-`self`) fn default that carries a body, with its
+/// trait's name, in trait order then default order.
+fn body_carrying_static_fns(traits: &[CompiledTrait]) -> impl Iterator<Item = (&str, &FnDef)> {
+    traits.iter().flat_map(|compiled_trait| {
+        compiled_trait
+            .defaults
+            .iter()
+            .filter_map(move |default| match &default.kind {
+                DefaultKind::Fn(fn_def)
+                    if fn_def.body.is_some() && !fn_def.params.iter().any(|p| p.is_self) =>
+                {
+                    Some((compiled_trait.name.as_str(), fn_def))
+                }
+                _ => None,
+            })
+    })
 }

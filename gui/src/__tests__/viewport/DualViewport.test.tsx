@@ -385,6 +385,29 @@ describe('DualViewport', () => {
     expect(Object.keys(capturedViewportPropsByid['design-main'].meshes)).not.toContain('preview/C');
   });
 
+  it('(edges) showEdges reaches both the design-main and the def-preview Viewport', async () => {
+    const { DualViewport } = await importDualViewport();
+    const engineStore = makeEngineStore(['design/A']);
+    const defPreviewStore = makeDefPreviewStore(['preview/B'], 'BoltFlange');
+    const viewportStore = makeViewportStore();
+
+    render(() => (
+      <DualViewport
+        engineStore={engineStore}
+        defPreviewStore={defPreviewStore}
+        viewportStore={viewportStore}
+        defPreviewActive={() => true}
+        designViewportActive={() => true}
+        defName={() => 'BoltFlange'}
+        onForceExpand={vi.fn()}
+        showEdges={true}
+      />
+    ));
+
+    expect(capturedViewportPropsByid['design-main'].showEdges).toBe(true);
+    expect(capturedViewportPropsByid['def-preview'].showEdges).toBe(true);
+  });
+
   // ── Ref forwarding tests ─────────────────────────────────────────────────────
 
   describe('ref forwarding', () => {
@@ -1011,8 +1034,9 @@ describe('DualViewport tensegritySurfaces threading (β)', () => {
 // broken_end_to_end_wiring + false_green_test).
 //
 // Verifies that DualViewport threads the feaDiagnostics prop to the design-main
-// Viewport. App.test.tsx only checks the App→DualViewport hand-off
-// (capturedDualViewportProps), since DualViewport is fully stubbed there; THIS
+// Viewport. The App.*.test.tsx files only check the App→DualViewport hand-off
+// (capturedDualViewportProps, recorded by appHarness/renderStubs.ts), since
+// DualViewport is fully stubbed there; THIS
 // test is the authoritative owner of the inner-Viewport forwarding assertion.
 //
 // RED until DualViewport.tsx adds feaDiagnostics to PassthroughProps and

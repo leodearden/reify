@@ -9,9 +9,7 @@
 //! `reify-*` deps) satisfies the orphan rule while keeping the 700-line impl
 //! block co-located with its struct in `reify-shell-extract`.
 //!
-//! A re-export shim `pub use reify_core::persistent_cache::PersistentlyCacheable;`
-//! lives at `reify_eval::persistent_cache` so every existing import path
-//! continues to resolve unchanged.
+//! Consumers import the trait from `reify_core::persistent_cache`.
 //!
 //! # B1 invariant
 //!

@@ -43,8 +43,9 @@ BENCH_DOC="$REPO_ROOT/docs/notes/linker-rustlld-vs-mold-bench.md"
 #     table (key 'manifold'), so .get('rustflags', []) on the x86_64 table
 #     never picks up manifold's rustc-link-lib/rustc-link-search directives
 #   - [build] is a top-level sibling — completely separate
-_PARSE_PY="$(mktemp /tmp/linker_config_parse_XXXXXX.py)"
-trap 'rm -f "$_PARSE_PY"' EXIT
+_PARSE_DIR="$(mktemp -d /tmp/linker_config_parse_XXXXXX)"
+trap 'rm -rf "$_PARSE_DIR"' EXIT
+_PARSE_PY="$_PARSE_DIR/linker_config_parse.py"
 
 cat > "$_PARSE_PY" << 'PYEOF'
 """Validate .cargo/config.toml linker-config contract.

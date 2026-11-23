@@ -16,7 +16,9 @@
 #                            that SHA is an ancestor of refs/heads/main.
 #                            Provenance guard (inv.9): refuses WIP lanes
 #                            (uncommitted tracked changes), mismatched HEADs
-#                            and unlanded commits.
+#                            and unlanded commits, and a target whose
+#                            reify-verify-attempt.json tree_oid is not
+#                            SHA^{tree} (built from another tree).
 #                            Not used by --check-frag.
 #   --check-frag             Read-only defrag check: print verdict token (ok |
 #                            reseed-due) + max per-file extent count to stdout;
@@ -36,7 +38,9 @@
 # Refresh mechanics:
 #   1. Provenance guard (inv.9): refuse if advancing worktree is dirty (uncommitted
 #      tracked changes), --landed-commit <sha> is absent / mismatched vs HEAD,
-#      or <sha> is not an ancestor of refs/heads/main.
+#      or <sha> is not an ancestor of refs/heads/main, or the advancing target's
+#      reify-verify-attempt.json records a built tree other than <sha>^{tree}
+#      (compared by tree, not commit; no sidecar = no check, with a [warn]).
 #      Fail-closed: no swap on refusal.
 #   2. Symlink-gen staging: build <base_dir>.gen.<N>.partial via
 #      cp -a --reflink=always (fail-closed — P2), rename to <base_dir>.gen.<N>.
@@ -51,6 +55,13 @@
 #      here: reflinked extents stay shared with the advancing source until
 #      that drops them too.
 #      Executable spec: tests/infra/test_refresh_warm_base.sh Block LIVE.
+#   2c.Evict build-script runs the advancing worktree's cargo would rerun: one
+#      call to the sibling scripts/evict-dirty-target-units.py --build-root
+#      <advancing worktree> on <base_dir>.gen.<N>.partial, which deletes each
+#      such run's `output` freshness reference from the staging copy only. A
+#      failure, or a missing sibling, aborts the refresh before the
+#      partial→gen rename. Rule: that script's header and PRD §9.5 inv.14.
+#      Executable spec: tests/infra/test_evict_dirty_target_units.py RefreshStep.
 #   3. Bootstrap (first refresh): if <base_dir> is a pre-existing real dir,
 #      rename it to a retired gen dir first (never rename-over-populated).
 #   4. Write per-gen authoritative landed-commit stamp: <base_dir>.gen.<N>.basecommit
@@ -99,6 +110,7 @@ _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ── log helpers (all write to stderr) ─────────────────────────────────────────
 info()  { printf '\033[1;34m[info]\033[0m  %s\n' "$*" >&2; }
 ok()    { printf '\033[1;32m[ok]\033[0m    %s\n' "$*" >&2; }
+warn()  { printf '\033[1;33m[warn]\033[0m  %s\n' "$*" >&2; }
 err()   { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; }
 
 # ── usage ──────────────────────────────────────────────────────────────────────
@@ -118,8 +130,10 @@ Usage: $(basename "$0") <advancing_target_dir> <base_dir> [OPTIONS]
     --landed-commit SHA      (Required for refresh) Assert advancing worktree
                              HEAD == SHA and that SHA has landed (is an ancestor
                              of ${LANDED_REF}); refuses WIP lanes (uncommitted
-                             tracked changes), head mismatches and unlanded
-                             commits. Not used by --check-frag.
+                             tracked changes), head mismatches, unlanded
+                             commits, and a target whose
+                             reify-verify-attempt.json tree_oid is not
+                             SHA^{tree}. Not used by --check-frag.
     --check-frag             Read-only: print "ok N" or "reseed-due N" (extent count).
     --frag-threshold N       Extent threshold for --check-frag (default: 64).
     --rustflags VALUE        RUSTFLAGS stamp written after swap (default: \${RUSTFLAGS:-}).
@@ -261,6 +275,9 @@ BASE_DIR="$(cd "$(dirname "$BASE_DIR")" && pwd)/$(basename "$BASE_DIR")"
 #   5. Refuse if git rev-parse HEAD != the asserted sha (head mismatch)
 #   6. Refuse if $LANDED_REF does not resolve, or the asserted sha is not an
 #      ancestor of it (committed-but-unlanded work)
+#   7. Refuse if <advancing>/reify-verify-attempt.json exists and its tree_oid is
+#      not byte-equal to <sha>^{tree} (target built from another tree); warn and
+#      proceed when it does not exist
 _prov_wt="$(dirname "$ADVANCING_DIR")"
 if ! git -C "$_prov_wt" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     err "Provenance guard: <advancing_target_dir> is not inside a git worktree: $ADVANCING_DIR"
@@ -332,6 +349,60 @@ if [ "$_prov_ancestry_rc" -eq 1 ]; then
     err "committed-but-unlanded lane work must not. Refusing to swap."
     exit 1
 fi
+
+# Guard step 7. The sidecar's writer and schema home is scripts/verify.sh
+# (add_test_passes' attempt-0 stamp); the extractor is that file's own reader.
+_assert_built_tree_is_landed_tree() {
+    local wt="$1" advancing="$2" landed="$3"
+    local sidecar="$advancing/reify-verify-attempt.json"
+    local landed_tree built
+    landed_tree="$(git -C "$wt" rev-parse --verify --quiet "${landed}^{tree}" 2>/dev/null || true)"
+    if [ -z "$landed_tree" ]; then
+        err "Provenance guard: --landed-commit does not resolve to a tree: $landed"
+        err "  Worktree: $wt"
+        err "The tree the advancing target was built from cannot be checked. Refusing to swap (fail-closed)."
+        exit 1
+    fi
+    if [ ! -e "$sidecar" ]; then
+        warn "Provenance guard: no build-provenance sidecar at $sidecar"
+        warn "  No merge-role verify stamped this target, so the tree it was built from"
+        warn "  cannot be checked against --landed-commit. Proceeding with the refresh."
+        return 0
+    fi
+    built="$(sed -n 's/.*"tree_oid"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$sidecar" 2>/dev/null || true)"
+    built="${built%%$'\n'*}"
+    [ "$built" = "$landed_tree" ] && return 0
+    err "Provenance guard: the advancing target was built from a different tree than --landed-commit (inv.9)."
+    err "  Sidecar:         $sidecar"
+    err "  built tree:      ${built:-<none recorded>}"
+    err "  landed tree:     $landed_tree"
+    err "  --landed-commit: $landed"
+    err "  Worktree:        $wt"
+    _err_paths_between_trees "$wt" "$built" "$landed_tree"
+    err "Rebuild the target at the landed commit with the merge gate, which re-stamps the sidecar:"
+    err "    DF_VERIFY_ROLE=merge scripts/verify.sh all --profile both --scope all"
+    err "then re-run this refresh. Refusing to swap."
+    exit 1
+}
+
+_err_paths_between_trees() {
+    local wt="$1" built="$2" landed_tree="$3" limit=20 path
+    local -a paths=()
+    if [ -z "$built" ] || ! git -C "$wt" cat-file -e "${built}^{tree}" 2>/dev/null; then
+        err "  The built tree is not in this repository, so the differing paths cannot be listed."
+        return 0
+    fi
+    mapfile -t paths < <(git -C "$wt" diff --name-only --no-renames "$built" "$landed_tree" 2>/dev/null || true)
+    err "  Paths that differ between the built and landed trees (a seed's delta-touch would miss them):"
+    for path in "${paths[@]:0:limit}"; do
+        err "    $path"
+    done
+    if [ "${#paths[@]}" -gt "$limit" ]; then
+        err "    ... and $(( ${#paths[@]} - limit )) more"
+    fi
+}
+
+_assert_built_tree_is_landed_tree "$_prov_wt" "$ADVANCING_DIR" "$LANDED_COMMIT"
 info "Provenance guard: OK (worktree clean, HEAD=$_prov_head, landed on $LANDED_REF)"
 
 # ── EXIT trap: clean up .gen.*.partial + restore prior base on failure ────────
@@ -421,6 +492,11 @@ ok "Reflink copy complete (gen ${_next_gen})."
 # the partial.
 "$_SCRIPT_DIR/prune-unconsulted-target.sh" --window-days 7 --prune-dead-unit-records \
     --atime-probe "$ADVANCING_DIR" "${_new_gen_partial}/debug"
+
+# Step 3c: evict build-script runs the advancing worktree's cargo would rerun
+# (header item 2c). Called plainly, like Step 3b, so set -e aborts on any
+# failure (a missing sibling included) before the rename below.
+"$_SCRIPT_DIR/evict-dirty-target-units.py" --build-root "$_prov_wt" "$_new_gen_partial"
 
 # Step 4: rename staging dir to the final gen dir (dir→new-name rename, safe).
 info "Finalizing: $_new_gen_partial -> $_new_gen_dir"

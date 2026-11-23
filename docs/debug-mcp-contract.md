@@ -9,7 +9,7 @@
 | Section | Guarding test |
 |---------|--------------|
 | §0 Shipped tool surface + parity | `debugParity.test.ts` — tool_defs↔buildHandlers parity |
-| §0 AI write tools: the sidecar reaches reify-debug only when it is live | `gui/src/__tests__/sidecarReifyDebugGating.test.ts` — MCP entry, tool grant and prompt section; host side: `debug_listener_tests.rs` (liveness is a bound listener), `sidecar_env_tests.rs` (`REIFY_DEBUG_MCP_URL` only when live) |
+| §0 AI write tools: the sidecar reaches reify-debug only when it is live | `gui/src/__tests__/sidecarReifyDebugGating.test.ts` — MCP entry, tool grant and prompt section; host side: `debug_server_slot_tests.rs` (liveness is a bound listener), `sidecar_env_tests.rs` (`REIFY_DEBUG_MCP_URL` only when live) |
 | §0 AI write tools: write targets confined to the design's directory | `write_confinement_tests.rs` — the rule; `debug_write_confinement_tests.rs` — both write seams enforce it, atomically |
 | §1 Tool-def → dispatch → handler wiring | [step-3] `debugContract.test.ts` — error-envelope + wiring |
 | §2 JSON error envelope | [step-3] same file |
@@ -19,6 +19,7 @@
 | §5 pick\_entity\_at ↔ raycast convention | [step-7] same file |
 | §5 The pick camera is the render camera | `debugCanvasInteraction.test.ts` — live-pose raycast (#6496) |
 | §6 Camera-state coherence | `debugBridge.test.tsx` (set\_camera `applied` read-back), `debugCanvasInteraction.test.ts` (set\_camera{up} → orbit\_camera), `viewport/orbitUpAxis.test.ts`, `debugContract.test.ts` (small-part framing + zoom), `viewport/controls.test.ts` + `viewport/fitCamera.test.ts` (floor policy), `viewport/selectionOrbitFloor.test.ts` (the shipped `fitToView` path). Live-only e2e, NOT verify-gated: the camera `VALUE_SCENARIOS` in `gui/test/visual/assertions.ts` (`npm run test:e2e`) |
+| §7 Request admission | `loopback_request_guard_tests.rs` — the rule; `debug_server_admission_tests.rs` — the served listener enforces it with its bound port, before any handler |
 
 The Rust transport seam (query\_frontend ↔ resolve round-trip) is validated
 separately by `gui/src-tauri/src/tests/debug_boundary_tests.rs` (steps 1–2).
@@ -176,18 +177,21 @@ Five tools carry the **reify-mcp tool identities**
 Claude sidecar reaches the reify-debug HTTP MCP server, not the reify-mcp
 registry.
 
-**The sidecar reaches this surface only in `REIFY_DEBUG=1` launches** (ruling
-esc-7049-7). `gui/src-tauri/src/main.rs` binds the reify-debug listener only
-under `REIFY_DEBUG=1` (`debug_server::bind_debug_listener`), and the host sets
-`REIFY_DEBUG_MCP_URL` for the sidecar only when that bind succeeded, removing
-any inherited value otherwise (`claude_bridge::compute_sidecar_env`). Only
+**The sidecar reaches this surface only when the host's own reify-debug server
+is live** (ruling esc-7049-7). The process has one debug server
+(`debug_server_slot::DebugServerSlot`), started at most once: by `REIFY_DEBUG=1`
+at launch, or by selecting Debug mode in the Start view (`set_mode("debug")`,
+task 9730). The host sets `REIFY_DEBUG_MCP_URL` for the sidecar only when that
+server is live at the sidecar's first spawn, removing any inherited value
+otherwise (`claude_bridge::compute_sidecar_env`); a sidecar spawned before Debug
+was selected keeps the environment it got. Only
 then does the sidecar register the `reify-debug` MCP entry, grant
 `mcp__reify-debug__*` and render the system prompt's reify-debug tool section
 (`gui/sidecar/src/tool-surface.ts`, `buildSystemPrompt`). It always passes `--strict-mcp-config`, so neither
 `~/.claude.json` nor a project `.mcp.json` can supply a reify-debug server of
-its own. A release launch (`scripts/run-gui.sh`, `reify gui`) neither
-advertises nor registers the surface, and neither does a `REIFY_DEBUG=1` launch
-whose bind failed, for instance because another GUI holds the port.
+its own. A release launch (`scripts/run-gui.sh`, `reify gui`) in which Debug
+mode is never selected neither advertises nor registers the surface, and neither
+does a launch whose bind failed, for instance because another GUI holds the port.
 
 | Tool | Writes disk? | Routes to |
 |------|--------------|-----------|
@@ -1187,3 +1191,64 @@ Per §0's rule, this section deliberately does **not** enumerate per-tool return
 
 *Provenance: `found_during:dogfood:printer_v01` (2026-08-23) and the litter-tray round-3
 probe (2026-09-03).*
+
+---
+
+## §7 Request admission (DNS-rebinding guard, task 9881)
+
+### The rule
+
+Every request to `/mcp` and `/debug/*` must carry a `Host` that names the bound
+listener: `127.0.0.1:<port>` or `localhost:<port>`, where `<port>` is the port the
+listener actually bound. Matching ignores ASCII case, and the port is required (a bare
+`localhost` is refused). At least one `Host` must be present, and every `Host` value
+must match.
+
+`Origin` is optional. When a request carries one, every `Origin` value must be
+`http://` followed by one of those two authorities. Anything else is refused, including
+`null`, an `https://` origin and an origin on another local port.
+
+### The refusal
+
+A refused request gets HTTP **403** with the same `{"error": string}` body that the
+REST handler uses for its other errors (the §2 shape). The message names the refused
+header and its value, or the missing `Host`, and lists the accepted authorities. The
+request never reaches a tool handler, and the server logs the refusal at `warn`.
+
+### Why
+
+The server is unauthenticated, and its tools write disk (`reify_save_file`,
+`reify_export`, `reify_set_parameter`) and drive the UI.
+
+Plain cross-origin CSRF was already blocked. A `text/plain` simple request fails the
+JSON extractor (415). An `application/json` request needs a CORS preflight, and the
+server has no `OPTIONS` route.
+
+A DNS-rebinding page gets past both. Once `http://attacker.example:<port>` rebinds its
+name to `127.0.0.1`, the browser treats the debug server as same-origin, so no preflight
+is sent. The browser still sends `Host: attacker.example:<port>`, and refusing a `Host`
+that does not name this listener is what stops it.
+
+The `Origin` check is defence in depth against a page served from another local port,
+for example `http://localhost:8080`.
+
+### What clients must do
+
+Address the server as `127.0.0.1` or `localhost`, with the bound port. An SSH tunnel or
+other port-forward must keep the same local port number, or the forwarded `Host` will
+not match.
+
+Non-browser clients send no `Origin` and are unaffected. That covers Node `fetch` (and
+so the MCP SDK's streamable-HTTP transport and the `gui/test/visual` drivers), the
+native `claude` CLI that the in-app assistant runs, and `curl`. The GUI webview never
+calls this server over HTTP: its debug bridge rides Tauri events.
+
+*Measured against a header-echo server: Node 22 `fetch` on 2026-11-07, and the
+`claude` CLI 2.1.325's MCP HTTP client on 2026-11-14. Both sent
+`Host: 127.0.0.1:<port>` and no `Origin`.*
+
+### Where it lives
+
+The rule is `ListenerAuthorities::check` in `gui/src-tauri/src/loopback_request_guard.rs`.
+`debug_server::serve_debug_routes` applies it with the listener's real `local_addr()`,
+and that function is the only place debug routes are served.

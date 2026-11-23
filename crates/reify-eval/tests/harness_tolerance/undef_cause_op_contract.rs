@@ -511,9 +511,9 @@ const FLEXURE_DIMENSION_SOURCE: &str = "structure def FakeMaterial {
 }
 
 structure def FlexDim {
-  let wrong_e = prb_cantilever_beam(20mm, 5mm, 0.5mm, FakeMaterial(), point3(0mm,0mm,0mm), vec3(0,1,0))
-  let bare_len = prb_cantilever_beam(0.02, 5mm, 0.5mm, Steel_AISI_1045(), point3(0mm,0mm,0mm), vec3(0,1,0))
-  let right = prb_cantilever_beam(20mm, 5mm, 0.5mm, Steel_AISI_1045(), point3(0mm,0mm,0mm), vec3(0,1,0))
+  let wrong_e = prb_cantilever_beam(20mm, 5mm, 0.5mm, FakeMaterial(), point3(0mm,0mm,0mm), dir(0,1,0))
+  let bare_len = prb_cantilever_beam(0.02, 5mm, 0.5mm, Steel_AISI_1045(), point3(0mm,0mm,0mm), dir(0,1,0))
+  let right = prb_cantilever_beam(20mm, 5mm, 0.5mm, Steel_AISI_1045(), point3(0mm,0mm,0mm), dir(0,1,0))
 }";
 
 /// A flexure ctor refusing a wrong-dimension material field or a bare geometry

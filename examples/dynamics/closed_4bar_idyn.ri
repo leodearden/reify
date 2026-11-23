@@ -106,7 +106,7 @@
 // (a List<List<JointForce>> of shape 2×5: two samples × 5 spanning-tree joints).
 structure def ClosedFourBarIdyn {
     // Rotation axis shared by all five revolute joints (planar linkage in XY).
-    let axis_z = vec3(0, 0, 1)
+    let axis_z = dir(0, 0, 1)
 
     // Generous angle range (0 .. 2π). Declared ranges are validated at joint
     // construction but NOT consulted by transform_at FK or the loop-closure

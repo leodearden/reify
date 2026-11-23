@@ -7,7 +7,7 @@
 //! seed a Final output VC via `cache_store_mut().put`, then drive
 //! `run_compute_dispatch` directly. The 5 modal `value_inputs` are built INLINE
 //! here (the `modal_ops` `cfg(test)` helpers are crate-internal and unavailable
-//! to this `tests/` crate), using only public `reify_ir`/`reify_core` types.
+//! to this `tests/` crate).
 //!
 //! Three observable signals from PRD §3.4 / the κ contract:
 //!
@@ -27,12 +27,14 @@
 //!   (geometry + material + element_order unchanged), and returns a valid
 //!   `ModalResult` — the warm-state round-trip drives no error.
 
+use reify_core::ty::SelectorKind;
 use reify_core::{ComputeNodeId, ContentHash, DimensionVector, ValueCellId, VersionId};
 use reify_eval::cache::{CachedResult, NodeCache, NodeId};
 use reify_eval::deps::DependencyTrace;
 use reify_eval::{CancellationHandle, ComputeFn, DispatchError};
 use reify_ir::{DeterminacyState, Freshness, StructureInstanceData, StructureTypeId, Value};
 use reify_test_support::make_simple_engine;
+use reify_test_support::selector_fixtures::named_leaf_selector;
 
 /// Steel density (kg/m³), mirroring the modal_ops `cfg(test)` fixture.
 const STEEL_DENSITY: f64 = 7850.0;
@@ -73,11 +75,13 @@ fn length_scalar(m: f64) -> Value {
 }
 
 /// A `FixedSupport { target }` instance — the runtime support shape the
-/// trampoline's BC realization reads to clamp a face by name.
+/// trampoline's BC realization reads to clamp a face by name. `target` is what
+/// `face(beam, "<target>")` evaluates to: a Face selector whose single Named
+/// leaf is `target`.
 fn fixed_support(target: &str) -> Value {
     struct_instance(
         "FixedSupport",
-        vec![("target".to_string(), Value::String(target.to_string()))],
+        vec![("target".to_string(), named_leaf_selector(SelectorKind::Face, target))],
     )
 }
 

@@ -142,7 +142,7 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "store_state",
-            description: "Snapshot of all Solid.js stores: engine (mesh keys, values, constraints, eval status), editor (open files, active file, cursor), selection, claude (session status, message count)",
+            description: "Snapshot of all Solid.js stores: engine (mesh keys, values, constraints, eval status), editor (open files, active file, cursor), selection, claude (session status, message count), viewports (per-viewport mesh count), viewport (edges: the edges-in-black toggle), document (loaded, error, recent, pending: the Start view's document state), mode (selected, debugPort, error: the launch mode)",
             input_schema: json!({"type": "object", "properties": {}}),
         },
         ToolDef {
@@ -390,7 +390,7 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "reset_app_state",
-            description: "Reset app-level store state: close all open files, clear the selection, reset the camera view, clear any injected diagnostics (compile and tessellation), and reset layout pane dimensions to their defaults. Does NOT reset the OCCT engine process. Frontend-mediated.",
+            description: "Reset app-level store state: close all open files, clear the selection, reset the camera view, clear any injected diagnostics (compile and tessellation), reset layout pane dimensions to their defaults, and turn the edges-in-black toggle off (persisted). Does NOT reset the OCCT engine process. Frontend-mediated.",
             input_schema: json!({
                 "type": "object",
                 "properties": {}
@@ -1809,12 +1809,14 @@ async fn open_path_into_engine(
 /// lock is released), then refreshes the delta baseline — see the
 /// INV-GUI-2 note above for why/how. Routes through
 /// `crate::commands::load_file_into_engine` and its returned
-/// `UnresolvedGuiState::resolve` — the same `EngineSession::load_file` and
-/// abs-path-rewrite pair the normal `open_file_engine_impl` command uses —
-/// so the debug bridge's open_file/load_fixture funnel ADOPTS the
-/// newly-opened file's identity (`FilePathUpdate::Set`) instead of preserving
-/// whatever file was previously loaded, which `update_source` would do (task
-/// #5193). `load_file` already routes through `post_engine_call_telemetry`
+/// `UnresolvedGuiState::resolve`. It shares the identity adoption and the
+/// abs-path rewrite with the normal `open_file_engine_impl` command, so the
+/// debug bridge's open_file/load_fixture funnel ADOPTS the newly-opened
+/// file's identity (`FilePathUpdate::Set`) instead of preserving whatever
+/// file was previously loaded, which `update_source` would do (task #5193).
+/// Unlike that GUI funnel, which opens a source the engine rejects as an
+/// uncompiled document, this one refuses it (`EngineSession::load_file`), so
+/// the MCP open tools report it as an error. `load_file` already routes through `post_engine_call_telemetry`
 /// (the L4 emission choke-point) by construction. The abs-path rewrite runs
 /// AFTER `run_on_engine` returns — i.e. once the engine mutex is released —
 /// so the lock is not held across `std::fs::canonicalize` filesystem I/O
@@ -2525,7 +2527,7 @@ async fn handle_reify_set_parameter(
 /// `FilePathUpdate::Preserve` (engine.rs, task 3370). That is right for the
 /// editor, which only ever edits the active buffer — but this surface takes
 /// `file_path` from an AI client, and on a multi-file project
-/// (`compile_entry_with_imports` is live) `reify_update_source(file_path =
+/// (the file-backed compile resolves imports) `reify_update_source(file_path =
 /// "…/lib.ri")` would silently overwrite the ACTIVE buffer with lib.ri's text
 /// and answer `success: true`. The damage compounds: the diagnostics filter
 /// then matches nothing, the pushed `file` member opens a tab whose content
@@ -3278,25 +3280,29 @@ impl BoundDebugListener {
     }
 }
 
-/// The bound listener when `debug_enabled` and the bind succeeds; `None` means
-/// the debug server is not live in this process.
-pub fn bind_debug_listener(debug_enabled: bool, port: u16) -> Option<BoundDebugListener> {
-    if !debug_enabled {
-        return None;
-    }
-    match BoundDebugListener::bind(port) {
-        Ok(listener) => Some(listener),
-        Err(e) => {
-            eprintln!(
-                "REIFY_DEBUG=1 but the debug server is NOT live on port {port} ({e}); \
-                 the in-app assistant will get no reify-debug tools"
-            );
-            None
-        }
-    }
-}
-
 // --- Server spawn ---
+
+/// Serve `routes` on `listener`, admitting only requests addressed to its bound
+/// loopback address (docs/debug-mcp-contract.md §7).
+pub(crate) async fn serve_debug_routes(
+    listener: BoundDebugListener,
+    routes: Router,
+) -> Result<(), String> {
+    let endpoint = listener.endpoint_url();
+    let bound = listener
+        .listener
+        .local_addr()
+        .map_err(|e| format!("failed to read debug listener address for {endpoint}: {e}"))?;
+    let app = crate::loopback_request_guard::admit_only_requests_addressed_to(routes, bound);
+    let listener = tokio::net::TcpListener::from_std(listener.listener)
+        .map_err(|e| format!("failed to register debug listener for {endpoint}: {e}"))?;
+
+    tracing::info!("Debug server listening on {endpoint}");
+
+    axum::serve(listener, app.into_make_service())
+        .await
+        .map_err(|e| format!("debug server error: {e}"))
+}
 
 pub async fn spawn_debug_server(
     listener: BoundDebugListener,
@@ -3324,15 +3330,7 @@ pub async fn spawn_debug_server(
         .route("/debug/{command}", post(handle_rest))
         .with_state(state);
 
-    let endpoint = listener.endpoint_url();
-    let listener = tokio::net::TcpListener::from_std(listener.listener)
-        .map_err(|e| format!("failed to register debug listener for {endpoint}: {e}"))?;
-
-    tracing::info!("Debug server listening on {endpoint}");
-
-    axum::serve(listener, app.into_make_service())
-        .await
-        .map_err(|e| format!("debug server error: {e}"))
+    serve_debug_routes(listener, app).await
 }
 
 #[cfg(test)]

@@ -18,7 +18,7 @@
 //!
 //! Two facts specific to THIS unit:
 //!   * It declares `common`, exactly once, here at the root (`#[path = "common/mod.rs"]`
-//!     — note no `../`: the root is a sibling of `tests/common/`). Its four
+//!     — note no `../`: the root is a sibling of `tests/common/`). Its
 //!     `common`-using members reach it as `crate::common`; a per-file `mod common;`
 //!     would load that source several times within this one compile unit, which
 //!     `clippy::duplicate_mod` rejects under `-D warnings`.
@@ -34,12 +34,18 @@ mod common;
 mod alias_dfs_diagnostic_tests;
 #[path = "harness_modules_ports/chain_desugar_tests.rs"]
 mod chain_desugar_tests;
+#[path = "harness_modules_ports/compile_program_tests.rs"]
+mod compile_program_tests;
 #[path = "harness_modules_ports/connect_compile_tests.rs"]
 mod connect_compile_tests;
 #[path = "harness_modules_ports/deprecated_use_tests.rs"]
 mod deprecated_use_tests;
 #[path = "harness_modules_ports/entity_overload_tests.rs"]
 mod entity_overload_tests;
+#[path = "harness_modules_ports/import_headers_stdlib_tests.rs"]
+mod import_headers_stdlib_tests;
+#[path = "harness_modules_ports/import_headers_tests.rs"]
+mod import_headers_tests;
 #[path = "harness_modules_ports/import_resolve_tests.rs"]
 mod import_resolve_tests;
 #[path = "harness_modules_ports/import_warning_tests.rs"]
@@ -68,6 +74,8 @@ mod reserved_name_lint_tests;
 mod standard_gravity_tests;
 #[path = "harness_modules_ports/stdlib_shadow_warning_tests.rs"]
 mod stdlib_shadow_warning_tests;
+#[path = "harness_modules_ports/stdlib_strict_build_tests.rs"]
+mod stdlib_strict_build_tests;
 #[path = "harness_modules_ports/sub_placement_lowering_tests.rs"]
 mod sub_placement_lowering_tests;
 #[path = "harness_modules_ports/sub_structure_existence_tests.rs"]

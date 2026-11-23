@@ -447,6 +447,44 @@ export interface FileData {
   content: string;
 }
 
+/** A Start-view Recent entry: its canonical document path, opened at (unix ms). */
+export interface RecentEntry {
+  path: string;
+  opened_at: number;
+}
+
+/** The Start view's launch modes; `set_mode`'s wire strings. */
+export type LaunchMode = 'design' | 'assistant' | 'debug';
+
+/** `set_mode`'s reply: the mode just selected and the debug server's live port, if any. */
+export interface ModeState {
+  mode: LaunchMode;
+  debug_port: number | null;
+}
+
+/** `set_mode`'s structured rejection kinds on the wire; mirrors launch_mode.rs::SetModeError's tags. */
+export const SET_MODE_ERROR_KINDS = Object.freeze({ debugListenerBind: 'debug_listener_bind' } as const);
+
+/** `set_mode`'s structured rejection on the wire; mirrors launch_mode.rs::SetModeError. */
+export interface RawSetModeError {
+  kind: typeof SET_MODE_ERROR_KINDS.debugListenerBind;
+  message: string;
+}
+
+/** `set_mode` failed binding the reify-debug listener, not at the IPC level. */
+export class DebugListenerBindFailure extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DebugListenerBindFailure';
+  }
+}
+
+/** take_initial_file_load_failure's reply: the argv launch file that failed to load, and why. */
+export interface InitialFileLoadFailure {
+  path: string;
+  error: string;
+}
+
 /**
  * A single tensegrity wire endpoint pair with member-type tag, as emitted by
  * the backend `build_tensegrity_wires` extractor (T0b). Mirrors the Rust

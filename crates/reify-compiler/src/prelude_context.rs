@@ -62,6 +62,11 @@ use crate::types::CompiledTypeAlias;
 ///     let compiled = compile_with_prelude_context(parsed, &ctx);
 /// }
 /// ```
+///
+/// [`extended`](Self::extended) derives a context from an existing one (e.g.
+/// the cached stdlib context plus a unit's direct imports) by re-binding its
+/// modules followed by the extra ones, without re-loading or re-compiling the
+/// base modules.
 pub struct PreludeContext<'a> {
     /// Borrowed references to the prelude modules.
     modules: Vec<&'a CompiledModule>,
@@ -105,6 +110,17 @@ impl<'a> PreludeContext<'a> {
             pub_aliases,
             collision_warnings,
         }
+    }
+
+    /// A new context whose modules are this context's followed by `extra`.
+    ///
+    /// One NS-P1 bind ([`crate::name_env`]) over the concatenation, so the
+    /// result is `PreludeContext::new(self.modules() ++ extra)`: a user-import
+    /// module in `extra` outranks a std module in the base. The base modules
+    /// are borrowed again, never re-loaded or re-compiled.
+    pub fn extended(&self, extra: &[&'a CompiledModule]) -> PreludeContext<'a> {
+        let modules: Vec<&'a CompiledModule> = self.modules.iter().chain(extra).copied().collect();
+        PreludeContext::new(&modules)
     }
 
     /// Ergonomic constructor from an owned slice of `CompiledModule` values.

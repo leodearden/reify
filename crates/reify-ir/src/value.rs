@@ -5,6 +5,7 @@ use std::sync::OnceLock;
 
 use reify_core::diagnostics::{DiagnosticCode, SourceSpan};
 use reify_core::dimension::DimensionVector;
+use crate::direction::UnitVec3;
 use crate::expr::CompiledExpr;
 use reify_core::hash::ContentHash;
 use reify_core::identity::ValueCellId;
@@ -1183,12 +1184,11 @@ pub enum Value {
         origin: Box<Value>,
         direction: Box<Value>,
     },
-    /// Dimensionless 3D unit vector; distinct from `Vector3<Length>` and Orientation.
-    ///
-    /// Stores three inline dimensionless components (assumed unit-normalized),
-    /// mirroring [`Value::Orientation`]'s inline-float layout. Produced by datum
-    /// projections (`axis.dir`, `plane.normal`, `frame.x/.y/.z`).
-    Direction { x: f64, y: f64, z: f64 },
+    /// Finite, dimensionless, unit, signed 3-vector. Unit length is enforced by
+    /// `UnitVec3`'s only constructor (direction-typing C2). Distinct from
+    /// `Vector3<Length>` and Orientation. Produced by datum projections
+    /// (`axis.dir`, `plane.normal`, `frame.x/.y/.z`).
+    Direction(UnitVec3),
     /// 3D axis-aligned bounding box: min and max corner Point3 values.
     BoundingBox {
         min: Box<Value>,
@@ -1501,6 +1501,20 @@ fn user_fields(data: &StructureInstanceData) -> impl Iterator<Item = (&String, &
     })
 }
 
+/// ` { name: value, … }` for an enum payload in stored order, or "" for a unit variant.
+/// Stored order is the variant's declaration order, kept on purpose: structure
+/// instances display their fields sorted by name instead.
+fn enum_payload_suffix(payload: &[(String, Value)], render: impl Fn(&Value) -> String) -> String {
+    if payload.is_empty() {
+        return String::new();
+    }
+    let fields: Vec<String> = payload
+        .iter()
+        .map(|(name, value)| format!("{name}: {}", render(value)))
+        .collect();
+    format!(" {{ {} }}", fields.join(", "))
+}
+
 /// Normalize range inclusivity flags: force `inclusive=false` when the
 /// corresponding bound is `None` (unbounded endpoint cannot be inclusive).
 fn normalize_range_flags<T>(
@@ -1665,7 +1679,7 @@ impl Value {
                 .unwrap_or(DimensionVector::DIMENSIONLESS),
             Value::Frame { .. } => DimensionVector::DIMENSIONLESS,
             // Direction is a dimensionless unit vector.
-            Value::Direction { .. } => DimensionVector::DIMENSIONLESS,
+            Value::Direction(_) => DimensionVector::DIMENSIONLESS,
             _ => DimensionVector::DIMENSIONLESS,
         }
     }
@@ -1925,22 +1939,14 @@ impl Value {
                     .combine(origin.content_hash())
                     .combine(direction.content_hash())
             }
-            Value::Direction { x, y, z } => {
-                // tag=30; NaN canonicalization for all 3 components (mirrors
-                // Orientation) → collapses NaN payload differences (see method doc
-                // invariant exception).
-                let canon = |v: &f64| -> u64 {
-                    if v.is_nan() {
-                        f64::NAN.to_bits()
-                    } else {
-                        v.to_bits()
-                    }
-                };
+            Value::Direction(u) => {
+                // tag=30; UnitVec3 holds no NaN, so plain bits suffice.
+                let [x, y, z] = u.components();
                 let mut buf = [0u8; 25];
                 buf[0] = 30;
-                buf[1..9].copy_from_slice(&canon(x).to_le_bytes());
-                buf[9..17].copy_from_slice(&canon(y).to_le_bytes());
-                buf[17..25].copy_from_slice(&canon(z).to_le_bytes());
+                buf[1..9].copy_from_slice(&x.to_bits().to_le_bytes());
+                buf[9..17].copy_from_slice(&y.to_bits().to_le_bytes());
+                buf[17..25].copy_from_slice(&z.to_bits().to_le_bytes());
                 ContentHash::of(&buf)
             }
             Value::BoundingBox { min, max } => {
@@ -2289,7 +2295,7 @@ impl Value {
             Value::Transform { .. } => None,
             Value::Plane { .. } => Some(Type::Plane),
             Value::Axis { .. } => Some(Type::Axis),
-            Value::Direction { .. } => Some(Type::Direction),
+            Value::Direction(_) => Some(Type::Direction),
             Value::BoundingBox { .. } => Some(Type::BoundingBox),
             Value::Range { lower, upper, .. } => {
                 let bound = lower.as_ref().or(upper.as_ref())?;
@@ -2373,7 +2379,7 @@ impl Value {
             Value::Transform { .. } => "Transform",
             Value::Plane { .. } => "Plane",
             Value::Axis { .. } => "Axis",
-            Value::Direction { .. } => "Direction",
+            Value::Direction(_) => "Direction",
             Value::BoundingBox { .. } => "BoundingBox",
             Value::Range { .. } => "Range",
             Value::Matrix(_) => "Matrix",
@@ -2426,7 +2432,14 @@ impl Value {
                     format!("{si_value} {unit}")
                 }
             }
-            Value::Enum { type_name, variant, .. } => format!("{type_name}::{variant}"),
+            Value::Enum {
+                type_name,
+                variant,
+                payload,
+            } => format!(
+                "{type_name}::{variant}{}",
+                enum_payload_suffix(payload, Value::format_hover)
+            ),
             Value::List(items) => {
                 let inner: Vec<String> = items.iter().map(Value::format_hover).collect();
                 format!("[{}]", inner.join(", "))
@@ -2524,7 +2537,8 @@ impl Value {
                     direction.format_hover()
                 )
             }
-            Value::Direction { x, y, z } => {
+            Value::Direction(u) => {
+                let [x, y, z] = u.components();
                 format!("Direction(x={x}, y={y}, z={z})")
             }
             Value::BoundingBox { min, max } => {
@@ -2604,7 +2618,12 @@ impl Value {
             Value::Real(r) => format_display_number(*r),
             Value::Bool(b) => b.to_string(),
             Value::String(s) => s.clone(),
-            Value::Enum { variant, .. } => variant.clone(),
+            Value::Enum {
+                variant, payload, ..
+            } => format!(
+                "{variant}{}",
+                enum_payload_suffix(payload, Value::format_display)
+            ),
             Value::List(items) => {
                 let strs: Vec<String> = items.iter().map(|v| v.format_display()).collect();
                 format!("[{}]", strs.join(", "))
@@ -2679,8 +2698,9 @@ impl Value {
                     direction.format_display()
                 )
             }
-            Value::Direction { x, y, z } => {
-                format!("direction({}, {}, {})", x, y, z)
+            Value::Direction(u) => {
+                let [x, y, z] = u.components();
+                format!("dir({}, {}, {})", x, y, z)
             }
             Value::BoundingBox { min, max } => {
                 format!("bbox({}, {})", min.format_display(), max.format_display())
@@ -3607,25 +3627,11 @@ impl PartialEq for Value {
             (Value::Selector(a), Value::Selector(b)) => {
                 a.content_hash() == b.content_hash() // task 4116 / α
             }
-            (
-                Value::Direction {
-                    x: ax,
-                    y: ay,
-                    z: az,
-                },
-                Value::Direction {
-                    x: bx,
-                    y: by,
-                    z: bz,
-                },
-            ) => {
-                // Bit-identity equality (mirrors Orientation): +0.0 != -0.0,
-                // NaN == NaN for identical bit patterns. Agrees with the cmp arm's
-                // total_cmp ordering. MANDATORY: without this arm equal Directions
-                // fall to `_ => false` below and compare UNEQUAL.
-                ax.to_bits() == bx.to_bits()
-                    && ay.to_bits() == by.to_bits()
-                    && az.to_bits() == bz.to_bits()
+            (Value::Direction(a), Value::Direction(b)) => {
+                // Bit-identity equality (mirrors Orientation). Agrees with the cmp
+                // arm's total_cmp ordering. MANDATORY: without this arm equal
+                // Directions fall to `_ => false` below and compare UNEQUAL.
+                a.components().map(f64::to_bits) == b.components().map(f64::to_bits)
             }
             (Value::Undef, Value::Undef) => true,
             // Feature: structural equality (FeatureId derives Eq; no float/NaN concern).
@@ -3692,7 +3698,7 @@ impl Ord for Value {
                 Value::GeometryHandle { .. } => 27,
                 Value::AffineMap { .. } => 28,
                 Value::Selector(_) => 29, // task 4116 / α
-                Value::Direction { .. } => 30, // β / task 4382
+                Value::Direction(_) => 30, // β / task 4382
                 Value::Feature(_) => 31, // task 4808 / P1 γ
             }
         }
@@ -3967,24 +3973,14 @@ impl Ord for Value {
             (Value::Selector(a), Value::Selector(b)) => {
                 a.content_hash().0.cmp(&b.content_hash().0) // task 4116 / α
             }
-            (
-                Value::Direction {
-                    x: ax,
-                    y: ay,
-                    z: az,
-                },
-                Value::Direction {
-                    x: bx,
-                    y: by,
-                    z: bz,
-                },
-            ) => {
+            (Value::Direction(a), Value::Direction(b)) => {
                 // Lexicographic: x → y → z (IEEE 754 total_cmp per component).
                 // Agrees with bit-identity PartialEq. MANDATORY: without this arm
                 // two distinct Directions fall to `_ => unreachable!` below and PANIC.
-                ax.total_cmp(bx)
-                    .then_with(|| ay.total_cmp(by))
-                    .then_with(|| az.total_cmp(bz))
+                let ([ax, ay, az], [bx, by, bz]) = (a.components(), b.components());
+                ax.total_cmp(&bx)
+                    .then_with(|| ay.total_cmp(&by))
+                    .then_with(|| az.total_cmp(&bz))
             }
             // Feature ordering: compare by content_hash_bytes (injective encoding keeps Eq/Ord consistent).
             // FeatureId has no Ord derive; ordering by bytes is the only sound option here.
@@ -4030,7 +4026,15 @@ impl std::fmt::Display for Value {
                     write!(f, "{} {}", si_value, unit)
                 }
             }
-            Value::Enum { type_name, variant, .. } => write!(f, "{}::{}", type_name, variant),
+            Value::Enum {
+                type_name,
+                variant,
+                payload,
+            } => write!(
+                f,
+                "{type_name}::{variant}{}",
+                enum_payload_suffix(payload, |v| v.to_string())
+            ),
             Value::List(items) => {
                 write!(f, "[")?;
                 for (i, item) in items.iter().enumerate() {
@@ -4169,16 +4173,12 @@ impl std::fmt::Display for Value {
             Value::Axis { origin, direction } => {
                 write!(f, "axis({}, {})", origin, direction)
             }
-            Value::Direction { x, y, z } => {
-                // Same whole-number convention as Real/Orientation (no trailing ".0").
-                let fmt_f64 = |v: f64| -> String {
-                    if v == v.trunc() && v.is_finite() {
-                        format!("{:.0}", v)
-                    } else {
-                        format!("{}", v)
-                    }
-                };
-                write!(f, "direction({}, {}, {})", fmt_f64(*x), fmt_f64(*y), fmt_f64(*z))
+            Value::Direction(u) => {
+                let [x, y, z] = u.components();
+                // The round-trip spelling (direction-typing C2): raw f64 `{}` is the
+                // shortest repr that parses back to the same bits, and already
+                // prints whole numbers without a trailing ".0".
+                write!(f, "dir({}, {}, {})", x, y, z)
             }
             Value::BoundingBox { min, max } => {
                 write!(f, "bbox({}, {})", min, max)
@@ -9932,32 +9932,30 @@ mod tests {
         assert_eq!(axis.dimension(), DimensionVector::DIMENSIONLESS);
     }
 
-    // ── Value::Direction tests (step-3) ───────────────────────────────────────
+    // ── Value::Direction tests ─────────────────────────────────────────────────
     //
-    // Value::Direction { x, y, z } is a dimensionless 3D unit vector (inline
-    // floats, mirroring Value::Orientation's layout). These tests pin the
-    // construction/round-trip, type inference, dimensionlessness, Display, and —
-    // critically — the same-type `eq` and `cmp` arms. The `eq` impl ends in
+    // Value::Direction(UnitVec3) is a dimensionless unit vector whose unit
+    // length is enforced by UnitVec3's only constructor (direction-typing C2).
+    // These tests pin Value's own arms for it: construction, type inference,
+    // dimensionlessness, the `dir(x, y, z)` round-trip Display, and the
+    // same-type `eq` / `cmp` / `content_hash` arms. The `eq` impl ends in
     // `_ => false` and the same-type `cmp` match ends in
     // `_ => unreachable!("same type tag but different variants")`, so a missing
-    // Direction arm would silently break equality / PANIC on ordering. (e)/(f)
-    // therefore fail at runtime until step-4 adds those explicit arms (and the
-    // whole block fails to compile until the variant exists).
+    // Direction arm would silently break equality / PANIC on ordering.
 
     fn make_direction(x: f64, y: f64, z: f64) -> Value {
-        Value::Direction { x, y, z }
+        Value::Direction(
+            crate::direction::UnitVec3::from_vector([x, y, z])
+                .expect("test direction is non-degenerate"),
+        )
     }
 
     #[test]
     fn value_direction_construction() {
-        // (a) construction + field round-trip
-        let d = make_direction(1.0, 0.0, 0.0);
-        match d {
-            Value::Direction { x, y, z } => {
-                assert_eq!(x, 1.0);
-                assert_eq!(y, 0.0);
-                assert_eq!(z, 0.0);
-            }
+        // (a) construction + component round-trip
+        let u = crate::direction::UnitVec3::from_vector([1.0, 0.0, 0.0]).unwrap();
+        match Value::Direction(u) {
+            Value::Direction(held) => assert_eq!(held.components(), u.components()),
             other => panic!("expected Value::Direction, got {:?}", other),
         }
     }
@@ -9978,19 +9976,57 @@ mod tests {
 
     #[test]
     fn value_direction_display() {
-        // (d) Display is stable and contains the components
+        // (d) Display is the round-trip spelling `dir(x, y, z)` (direction-typing
+        // C2), through BOTH renderers.
         let d = make_direction(1.0, 0.0, 0.0);
-        let s = format!("{}", d);
-        assert!(
-            s.starts_with("direction("),
-            "display should start with 'direction(', got: {}",
-            s
+        assert_eq!(format!("{d}"), "dir(1, 0, 0)");
+        assert_eq!(d.format_display(), "dir(1, 0, 0)");
+    }
+
+    #[test]
+    fn value_direction_display_round_trips_bits() {
+        // C2: the printed text parses back to the identical Direction — the
+        // contract the `dir(..)` literal serialiser relies on.
+        for v in [
+            [1.0, 1.0, 0.0],
+            [0.6, 0.8, 0.0],
+            [1.0, 2.0, 3.0],
+            [-0.3, 0.4, -0.866],
+        ] {
+            let d = make_direction(v[0], v[1], v[2]);
+            let text = format!("{d}");
+            let inner = text
+                .strip_prefix("dir(")
+                .and_then(|t| t.strip_suffix(')'))
+                .unwrap_or_else(|| panic!("not a dir(..) rendering: {text}"));
+            let parts: Vec<f64> = inner
+                .split(", ")
+                .map(|p| p.parse::<f64>().unwrap_or_else(|e| panic!("{p:?} in {text}: {e}")))
+                .collect();
+            let parsed: [f64; 3] = parts
+                .try_into()
+                .unwrap_or_else(|p| panic!("expected 3 components in {text}, got {p:?}"));
+            let back = Value::Direction(
+                crate::direction::UnitVec3::from_vector(parsed).expect("parsed direction"),
+            );
+            assert_eq!(back, d, "{text}");
+            assert_eq!(back.content_hash(), d.content_hash(), "{text}");
+        }
+    }
+
+    #[test]
+    fn value_direction_negation_matches_literal() {
+        // Negating +z yields exactly the `dir(0, 0, -1)` literal: no `-0` slot in
+        // the rendering, `==`, and an equal content hash.
+        let negated = Value::Direction(
+            crate::direction::UnitVec3::from_vector([0.0, 0.0, 1.0])
+                .unwrap()
+                .negated(),
         );
-        assert!(
-            s.contains('1'),
-            "display should contain the x component, got: {}",
-            s
-        );
+        assert_eq!(format!("{negated}"), "dir(0, 0, -1)");
+        let literal = make_direction(0.0, 0.0, -1.0);
+        assert_eq!(negated, literal);
+        assert_eq!(negated.content_hash(), literal.content_hash());
     }
 
     #[test]
@@ -10020,8 +10056,8 @@ mod tests {
         // panic. PINS the same-type `cmp` arm: the same-type match ends in
         // `_ => unreachable!("same type tag but different variants")`, so a missing
         // Direction arm would PANIC on any two distinct Directions. Lexicographic
-        // x→y→z: (0,0,0) < (1,0,0) because x differs first.
-        let a = make_direction(0.0, 0.0, 0.0);
+        // x→y→z: (-1,0,0) < (1,0,0) because x differs first.
+        let a = make_direction(-1.0, 0.0, 0.0);
         let b = make_direction(1.0, 0.0, 0.0);
         assert!(a < b);
         // Sorting must not panic and must be deterministic.
@@ -10042,6 +10078,18 @@ mod tests {
         assert!(dir > plane);
         assert!(dir > axis);
         assert!(dir > orientation);
+    }
+
+    #[test]
+    fn value_direction_content_hash_separates_distinct_directions() {
+        assert_eq!(
+            make_direction(1.0, 0.0, 0.0).content_hash(),
+            make_direction(1.0, 0.0, 0.0).content_hash()
+        );
+        assert_ne!(
+            make_direction(1.0, 0.0, 0.0).content_hash(),
+            make_direction(0.0, 1.0, 0.0).content_hash()
+        );
     }
 
     // ── Value::BoundingBox tests (pre-4) ──────────────────────────────────────
@@ -10547,7 +10595,7 @@ mod tests {
             Value::Transform { .. } => "Transform",
             Value::Plane { .. } => "Plane",
             Value::Axis { .. } => "Axis",
-            Value::Direction { .. } => "Direction",
+            Value::Direction(_) => "Direction",
             Value::BoundingBox { .. } => "BoundingBox",
             Value::Range { .. } => "Range",
             Value::Matrix(_) => "Matrix",
@@ -10636,11 +10684,7 @@ mod tests {
                 origin: Box::new(Value::Point(vec![])),
                 direction: Box::new(Value::Vector(vec![])),
             },
-            Value::Direction {
-                x: 0.0,
-                y: 0.0,
-                z: 1.0,
-            },
+            make_direction(0.0, 0.0, 1.0),
             Value::BoundingBox {
                 min: Box::new(Value::Point(vec![])),
                 max: Box::new(Value::Point(vec![])),
@@ -14374,3 +14418,6 @@ mod feature {
         }
     }
 }
+
+#[cfg(test)]
+mod enum_display_tests;

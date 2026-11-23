@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { RawGuiState, RawConstraintData, EvaluationStatus, MechanismDescriptor, PublishedState, RawPublishedState } from '../types';
-import { CONSTRAINT_STATUSES } from '../types';
+import { CONSTRAINT_STATUSES, DebugListenerBindFailure } from '../types';
 import { makeRawConstraint } from './constraintFixtures';
 
 // Mock Tauri API modules
@@ -1113,5 +1113,107 @@ describe('ask', () => {
       ipcError,
     );
     consoleSpy.mockRestore();
+  });
+});
+
+// --- Launcher commands (task 9730: Start view, Recent, mode) ---
+
+describe('bridge launcher commands', () => {
+  it('createNewFile invokes create_new_file with { path } and resolves the FileData', async () => {
+    const created = { path: '/t/x.ri', content: 'module x\n' };
+    mockInvoke.mockResolvedValue(created);
+
+    const result = await bridgeAll.createNewFile('/t/x.ri');
+
+    expect(mockInvoke).toHaveBeenCalledWith('create_new_file', { path: '/t/x.ri' });
+    expect(result).toEqual(created);
+  });
+
+  it('listRecent invokes list_recent and resolves the RecentEntry list', async () => {
+    const recent = [{ path: '/t/a.ri', opened_at: 2000 }, { path: '/t/b.ri', opened_at: 1000 }];
+    mockInvoke.mockResolvedValue(recent);
+
+    const result = await bridgeAll.listRecent();
+
+    expect(mockInvoke).toHaveBeenCalledWith('list_recent');
+    expect(result).toEqual(recent);
+  });
+
+  it('recordRecent invokes record_recent with { path } and resolves the returned list', async () => {
+    const recent = [{ path: '/t/x.ri', opened_at: 3000 }];
+    mockInvoke.mockResolvedValue(recent);
+
+    const result = await bridgeAll.recordRecent('/t/x.ri');
+
+    expect(mockInvoke).toHaveBeenCalledWith('record_recent', { path: '/t/x.ri' });
+    expect(result).toEqual(recent);
+  });
+
+  it('takeInitialFileLoadFailure invokes take_initial_file_load_failure and resolves the failure', async () => {
+    const failure = { path: '/t/broken.ri', error: 'Error reading /t/broken.ri: denied' };
+    mockInvoke.mockResolvedValue(failure);
+
+    const result = await bridgeAll.takeInitialFileLoadFailure();
+
+    expect(mockInvoke).toHaveBeenCalledWith('take_initial_file_load_failure');
+    expect(result).toEqual(failure);
+  });
+
+  it('takeInitialFileLoadFailure resolves null when the launch file loaded', async () => {
+    mockInvoke.mockResolvedValue(null);
+
+    const result = await bridgeAll.takeInitialFileLoadFailure();
+
+    expect(result).toBeNull();
+  });
+
+  it('setMode invokes set_mode with { mode } and resolves the ModeState', async () => {
+    const state = { mode: 'debug', debug_port: 3939 };
+    mockInvoke.mockResolvedValue(state);
+
+    const result = await bridgeAll.setMode('debug');
+
+    expect(mockInvoke).toHaveBeenCalledWith('set_mode', { mode: 'debug' });
+    expect(result).toEqual(state);
+  });
+
+  it('setMode rejects with a DebugListenerBindFailure when set_mode reports a debug_listener_bind error', async () => {
+    const message = 'failed to bind debug server on 127.0.0.1:3939: Address already in use (os error 98)';
+    mockInvoke.mockRejectedValue({ kind: 'debug_listener_bind', message });
+
+    const rejection = await bridgeAll.setMode('debug').then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+
+    expect(rejection).toBeInstanceOf(DebugListenerBindFailure);
+    expect(rejection).toHaveProperty('message', message);
+  });
+
+  it.each([
+    ['a plain-string IPC failure', 'IPC channel closed'],
+    ['an object of another kind', { kind: 'something_else', message: 'x' }],
+  ])('setMode passes %s through unchanged', async (_name, rejected) => {
+    mockInvoke.mockRejectedValue(rejected);
+
+    const rejection = await bridgeAll.setMode('debug').then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+
+    expect(rejection).toBe(rejected);
+    expect(rejection).not.toBeInstanceOf(DebugListenerBindFailure);
+  });
+
+  it.each([
+    ['createNewFile', () => bridgeAll.createNewFile('/t/x.ri')],
+    ['listRecent', () => bridgeAll.listRecent()],
+    ['recordRecent', () => bridgeAll.recordRecent('/t/x.ri')],
+    ['takeInitialFileLoadFailure', () => bridgeAll.takeInitialFileLoadFailure()],
+    ['setMode', () => bridgeAll.setMode('debug')],
+  ])('%s propagates a rejected invoke', async (_name, call) => {
+    mockInvoke.mockRejectedValue(new Error('backend said no'));
+
+    await expect(call()).rejects.toThrow('backend said no');
   });
 });

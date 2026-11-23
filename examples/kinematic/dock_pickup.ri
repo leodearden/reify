@@ -18,7 +18,7 @@
 // PRD ref:  docs/prds/kinematic-constraints.md §11.1 (KCC-epsilon, task 3844)
 structure def DockPickup {
     // Head X joint: horizontal reach axis, range 0..500 mm.
-    let j_x = prismatic(vec3(1, 0, 0), 0mm .. 500mm)
+    let j_x = prismatic(dir(1, 0, 0), 0mm .. 500mm)
 
     // Head solid: a 20×20×20mm cube at the source origin.  FK-posed by j_x.
     let head_solid = box(20mm, 20mm, 20mm)

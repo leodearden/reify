@@ -6,6 +6,7 @@ license.workspace = true
 description = "Expression evaluator for Reify compiled expressions"
 
 [dependencies]
+workspace-feature-union.workspace = true
 reify-ast.workspace = true
 reify-core.workspace = true
 reify-ir.workspace = true

@@ -37,6 +37,8 @@ members = [
     "crates/reify-git-env",
     "crates/reify-test-support",
     "crates/reify-builtins",
+    "crates/reify-exec-lookup",
+    "crates/workspace-feature-union",
     "tree-sitter-reify",
     "gui/src-tauri",
 ]
@@ -79,6 +81,9 @@ reify-build-utils = { path = "crates/reify-build-utils" }
 reify-git-env = { path = "crates/reify-git-env" }
 reify-test-support = { path = "crates/reify-test-support" }
 reify-builtins = { path = "crates/reify-builtins" }
+reify-exec-lookup = { path = "crates/reify-exec-lookup" }
+workspace-feature-union = { path = "crates/workspace-feature-union" }
+reify-gui = { path = "gui/src-tauri" }
 
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 strum = { version = "0.26", features = ["derive"] }
@@ -218,3 +223,9 @@ overflow-checks = false
 [profile.dev.package.reify-solver-elastic]
 opt-level = 2
 overflow-checks = false
+
+# Host units (build scripts, proc-macros and their dependencies) get an explicit debuginfo
+# level, so their profile, and with it every build script's metadata hash, cannot depend on
+# the cargo selection. Why: docs/notes/workspace-feature-union.md, "Host profiles".
+[profile.dev.build-override]
+debug = false

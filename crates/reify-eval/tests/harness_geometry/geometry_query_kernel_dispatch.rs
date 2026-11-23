@@ -341,6 +341,49 @@ fn volume_inline_equals_let_bound_cylinder() {
     );
 }
 
+// ── inline query arg inside a `constraint` (task 10033) ─────────────────────
+
+/// A whole-handle query over an inline ctor inside a `constraint` hoists like
+/// the `let` form above, so it is realized and folded before the check. The box
+/// volume is exactly 1e-6 m^3, three orders of magnitude from either bound.
+const CONSTRAINT_INLINE_SOURCE: &str = r#"
+structure def InlineVolOk {
+    param w : Length = 10mm
+    constraint volume(box(w, w, w)) > 1mm^3
+}
+structure def InlineVolBig {
+    param w : Length = 10mm
+    constraint volume(box(w, w, w)) > 1m^3
+}
+"#;
+
+/// `InlineVolOk` holds (1e-6 m^3 > 1e-9 m^3) and `InlineVolBig` does not
+/// (1e-6 m^3 > 1 m^3 is false). An `Indeterminate` is the pre-fix symptom: the
+/// inline `box(..)` was never realized, so `volume` had no handle to query.
+#[test]
+fn constraint_inline_query_arg_reaches_a_definite_verdict() {
+    let Some(result) = compile_and_build_occt(CONSTRAINT_INLINE_SOURCE) else {
+        return;
+    };
+
+    for (entity, expected) in [
+        ("InlineVolOk", reify_ir::Satisfaction::Satisfied),
+        ("InlineVolBig", reify_ir::Satisfaction::Violated),
+    ] {
+        let id = reify_core::ConstraintNodeId::new(entity, 0);
+        let entry = result
+            .constraint_results
+            .iter()
+            .find(|e| e.id == id)
+            .unwrap_or_else(|| panic!("no verdict for {id}: {:?}", result.constraint_results));
+        assert_eq!(
+            (entry.satisfaction, &entry.indeterminate_reason),
+            (expected, &None),
+            "{id}: the inline box must be realized and its volume folded before the check"
+        );
+    }
+}
+
 // ── mixed product geometry + inline query (task 5345 review round 3) ────────
 
 /// A structure carrying BOTH real product geometry and an inline geometry

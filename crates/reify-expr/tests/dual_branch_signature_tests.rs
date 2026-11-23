@@ -1247,15 +1247,15 @@ fn a_kink_builtin_with_an_undef_operand_refuses_before_kink_dispatch_and_records
 // `eval_dual_comparison` and `eval_dual_binop` call `crate::eval_eq` /
 // `eval_ne` / `eval_cmp` / the arithmetic helpers DIRECTLY, so neither ever
 // reaches that precheck.  For arithmetic the omission is benign only by
-// accident of the helpers' `_ => Undef` fall-through arms.  For EQUALITY it is
-// a live wrong value, because `eval_eq` has two arms that answer `Bool(false)`
-// without ever consulting the other operand:
+// accident of the helpers' `_ => Undef` fall-through arms.  For EQUALITY it was
+// a live wrong value, because `eval_eq` had two arms that answered
+// `Bool(false)` without ever consulting the other operand: an `Enum` against
+// anything, and a dimensioned `Scalar` against anything.  Since task 10027 the
+// second answers `Undef` (`dimensions_incomparable`); the `Enum` arm remains:
 //
-//     (Value::Enum { .. }, _) | (_, Value::Enum { .. })              lib.rs:5007
-//     (Value::Scalar { dimension, .. }, _) if !dimension.is_dimensionless()
-//                                                                    lib.rs:5018
+//     (Value::Enum { .. }, _) | (_, Value::Enum { .. }) => Value::Bool(false)
 //
-// `eval_binop` never reaches either for an `Undef` operand.  The dual path
+// `eval_binop` never reaches it for an `Undef` operand.  The dual path
 // does, and the damage lands in three places at once: a WRONG PRIMAL, a
 // RESOLVED `BranchChoice` where the evaluator had none (λ #6679 counts a
 // phantom alternation the moment the cell becomes determined), and a finite
@@ -1268,9 +1268,9 @@ fn mm5() -> Value {
 
 #[test]
 fn a_dimensioned_scalar_compared_to_undef_is_undef_on_both_paths() {
-    // The `!dimension.is_dimensionless()` arm short-circuits to `Bool(false)`
-    // without looking at the right operand, so the dual path answers "these
-    // are definitely different" about a value that is not known at all.
+    // `eval_eq` once answered `Bool(false)` for a dimensioned `Scalar` without
+    // looking at the right operand, so the dual path answered "these are
+    // definitely different" about a value that is not known at all.
     let expr = binop(BinOp::Eq, vref("w"), vref("u"));
     let (value, _t, _rec) = run(&expr, &[("w", mm5()), ("u", Value::Undef)], &["w"]);
     assert_eq!(value, Value::Undef, "a comparison against an undetermined cell has no answer");
@@ -1387,11 +1387,23 @@ fn comparisons_and_arithmetic_with_both_operands_determined_are_unchanged() {
         );
     }
 
-    // A dimensioned scalar compared to a DETERMINED operand keeps taking the
-    // `Bool(false)` arm — the precheck gates on `Undef`, not on dimension.
+    // A dimensioned scalar compared to a DETERMINED bare number passes the
+    // precheck and reaches `eval_eq`, which has no verdict for it, as `<` has
+    // none: the comparison kink is traversed and recorded unresolved.
     let expr = binop(BinOp::Eq, vref("w"), literal(Value::Real(5.0)));
-    let (v, _t, _rec) = run(&expr, &[("w", mm5())], &["w"]);
-    assert_eq!(v, Value::Bool(false), "a dimensioned Scalar is never equal to a bare number");
+    let (v, _t, rec) = run(&expr, &[("w", mm5())], &["w"]);
+    assert_eq!(
+        v,
+        Value::Undef,
+        "a dimensioned Scalar is incomparable to a bare number"
+    );
+    assert_single_entry(
+        &rec,
+        &[],
+        KinkKind::Comparison(BinOp::Eq),
+        BranchChoice::Unresolved,
+        "eq of a dimensioned Scalar and a bare number",
+    );
 
     for (op, expected) in [
         (BinOp::Add, 9.0),

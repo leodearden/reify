@@ -12,7 +12,7 @@ enum JointPosition {
 structure def P {
     let a = RevolutePosition { angle: 45deg }
     let b = PlanarPosition { x: 1mm, y: 2mm, angle: 0.5rad }
-    let j = revolute(vec3(0, 0, 1), 0rad .. 3rad)
+    let j = revolute(dir(0, 0, 1), 0rad .. 3rad)
     let mp = map{j => a}
     let got = mp[j]
     let ang = match got {

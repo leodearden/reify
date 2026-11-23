@@ -65,9 +65,12 @@ let clearance = match fit_type {
 - When discriminant is `undef`, result is `undef`
 
 A payload-carrying variant is constructed in brace form, naming **all** of its declared
-fields. A `match` arm binds the payload by naming each field: the binder introduces that
-name as a local in the arm's body, so `Circle { radius: r }` makes `r` available as the
-radius value.
+fields. Field values are ordinary expressions checked against the declared field type — a
+param reference, arithmetic or a negated literal, as in `Rect { width: w, height: w * 2.0 }`
+— so the payload tracks the parameters it reads. A field value that is undef leaves the
+variant selected: its `match` arm is taken and that binder receives undef. A `match` arm
+binds the payload by naming each field: the binder introduces that name as a local in the
+arm's body, so `Circle { radius: r }` makes `r` available as the radius value.
 ```reify-fragment
 param outline : Shape = Rect { width: 20mm, height: 10mm }
 
@@ -82,9 +85,6 @@ let area = match outline {
 
 Payloads shipped in v0.6; these bounds apply to the current surface.
 
-- **Construction payload values must be compile-time literals.** A param reference or other
-  non-literal value in a payload field is a hard error:
-  `non-constant payload value for field 'radius' of variant 'Circle' is not yet supported`.
 - **Payload fields are readable only through a `match` binder.** Dot access does not reach
   into a payload — `outline.width` reports `member access not yet supported: .width`.
 - **Payload construction names the variant unqualified.** Type qualification

@@ -1210,8 +1210,6 @@ fn std_module_fallback_adds_transitive_dependencies_to_dag() {
     let resolver = ModuleResolver::new(&dir, &stdlib_root);
     let mut dag = ModuleDag::new();
 
-    // std.materials.mechanical is preceded by std.units and std.si_units in the
-    // embedded stdlib slice (topological order); they are its transitive deps.
     let result = dag.compile_module("std.materials.mechanical", &resolver);
     assert!(
         result.is_ok(),
@@ -1226,17 +1224,36 @@ fn std_module_fallback_adds_transitive_dependencies_to_dag() {
         "dag.modules must contain \"std.materials.mechanical\" after delegation"
     );
 
-    // Transitive dependencies that std.materials.mechanical was compiled against
-    // must also appear in both modules and topo_order.
-    for dep in &["std.units", "std.si_units"] {
+    // Its declared-import closure, read from the compiled embedded stdlib, must
+    // also appear in both modules and topo_order.
+    let stdlib = stdlib_loader::load_stdlib();
+    let mut closure: Vec<String> = Vec::new();
+    let mut pending = vec!["std.materials.mechanical".to_string()];
+    while let Some(current) = pending.pop() {
+        let module = stdlib
+            .iter()
+            .find(|m| m.path.to_dotted() == current)
+            .unwrap_or_else(|| panic!("{current} is an embedded stdlib module"));
+        for import in &module.imports {
+            if !closure.contains(&import.path) {
+                closure.push(import.path.clone());
+                pending.push(import.path.clone());
+            }
+        }
+    }
+    assert!(
+        !closure.is_empty(),
+        "std.materials.mechanical declares at least one stdlib import"
+    );
+    for dep in &closure {
         assert!(
-            dag.modules.contains_key(*dep),
+            dag.modules.contains_key(dep.as_str()),
             "dag.modules must contain transitive dep \"{}\" after delegating \
              embedded stdlib for std.materials.mechanical",
             dep
         );
         assert!(
-            dag.topo_order.contains(&dep.to_string()),
+            dag.topo_order.contains(dep),
             "topo_order must contain transitive dep \"{}\"",
             dep
         );
@@ -2015,5 +2032,48 @@ fn dag_absent_module_decl_emits_warning() {
         missing[0].severity,
         Severity::Warning,
         "W_MODULE_DECL_MISSING should be Warning severity"
+    );
+}
+
+// ── task 5499 (stdlib-namespace ζ, NS-V3): std modules get the module-path check ──
+
+/// The diagnostics `compile_project` attaches to the filesystem std module
+/// `std.units`, for a stdlib dir holding only `units.ri` with `units_source`.
+fn fs_std_units_diagnostics(units_source: &str) -> Vec<reify_core::Diagnostic> {
+    let _tmp = tempfile::tempdir().unwrap();
+    let dir = _tmp.path().to_path_buf();
+    let stdlib_dir = dir.join("stdlib");
+    fs::create_dir_all(&stdlib_dir).unwrap();
+    fs::write(stdlib_dir.join("units.ri"), units_source).unwrap();
+    fs::write(dir.join("main.ri"), "module main\nimport std.units\n").unwrap();
+
+    let modules = reify_compiler::module_dag::compile_project(
+        &dir.join("main.ri"),
+        &ModuleResolver::new(&dir, &stdlib_dir),
+    )
+    .expect("compile_project returns Ok with per-module diagnostics");
+    modules
+        .into_iter()
+        .find(|m| m.path.to_dotted() == "std.units")
+        .expect("std.units is compiled from the filesystem stdlib")
+        .diagnostics
+}
+
+#[test]
+fn a_filesystem_std_module_with_the_wrong_module_path_is_diagnosed() {
+    let wrong = fs_std_units_diagnostics("module std.wrong\npub unit myunit : Length = 1.0\n");
+    assert!(
+        wrong.iter().any(|d| d.severity == Severity::Error
+            && d.message.contains("E_MODULE_PATH_MISMATCH")
+            && d.message.contains("std.units")),
+        "a std module declaring the wrong path must get E_MODULE_PATH_MISMATCH naming \
+         std.units, got: {wrong:?}"
+    );
+
+    let right = fs_std_units_diagnostics("module std.units\npub unit myunit : Length = 1.0\n");
+    assert!(
+        !right.iter().any(|d| d.message.contains("E_MODULE_PATH_MISMATCH")
+            || d.message.contains("W_MODULE_DECL_MISSING")),
+        "a std module declaring its own path gets no module-path diagnostic, got: {right:?}"
     );
 }

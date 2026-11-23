@@ -59,6 +59,40 @@
           "stderr_contains": "E_CTOR_ARITY: Widget() expects at most 1 argument, got 2"
         }
       }
+    },
+    {
+      "capability": "The coordinate-target-fea PRD's BT14 rejection (docs/prds/v0_6/coordinate-target-fea.md; capability-manifest bindings bt14-pose-at-at-rejected / bt14-pose-at-pointmass-rejected): a coordinate pose frame3(...) at the fixture's own ProbePointForce.at : Point3<Length> is rejected by the declared param type, so reify check exits 1 with the ArgTypeMismatch naming 'at'. Observed since the fixture was committed; the rejection IS this fixture's deliverable, which is why CTOR_CONFORMANCE_REJECTION_FIXTURES claims it",
+      "probe_kind": "check",
+      "fixture": "tests/prd-gate/fixtures/coordinate_target_fea_pose_rejected.ri",
+      "expected": {
+        "observation": "present",
+        "match": {
+          "exit_code": 1,
+          "stderr_contains": "argument 'at' has type 'Frame3' but param 'at' requires type 'Point3<Scalar[m]>'"
+        }
+      }
+    },
+    {
+      "capability": "v0.2-alpha migration before-image for 'A constructor argument must match the field's type': v0.1-alpha accepted this file; reify check now rejects it. The exact error line is docs/releases/v0.2-alpha.md's (its single home), asserted there by tests/infra/test_migration_note_v0_2.sh, so this probe asserts only the exit code — enough to back CTOR_CONFORMANCE_REJECTION_FIXTURES without a second copy of the expectation",
+      "probe_kind": "check",
+      "fixture": "tests/prd-gate/fixtures/migration_v0_2_ctor_field_type_before.ri",
+      "expected": {
+        "observation": "present",
+        "match": {
+          "exit_code": 1
+        }
+      }
+    },
+    {
+      "capability": "v0.2-alpha migration before-image for 'A misspelled constructor argument is an error' (E_CTOR_UNKNOWN_FIELD): v0.1-alpha accepted this file; reify check now rejects it. The exact error line is docs/releases/v0.2-alpha.md's (its single home), asserted there by tests/infra/test_migration_note_v0_2.sh, so this probe asserts only the exit code — enough to back CTOR_CONFORMANCE_REJECTION_FIXTURES without a second copy of the expectation",
+      "probe_kind": "check",
+      "fixture": "tests/prd-gate/fixtures/migration_v0_2_ctor_unknown_field_before.ri",
+      "expected": {
+        "observation": "present",
+        "match": {
+          "exit_code": 1
+        }
+      }
     }
   ]
 }

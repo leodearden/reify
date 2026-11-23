@@ -16,15 +16,38 @@ use std::collections::{HashMap, HashSet};
 use reify_ast::ParsedModule;
 use reify_core::{ContentHash, Diagnostic, DiagnosticLabel, SourceSpan};
 
+use crate::call_table::PendingDefaults;
 use crate::connect::PendingConnectAutoParam;
 use crate::entity::{AutoResolutionRequest, PendingBoundCheck, PendingSubOverrideAuto};
+use crate::functions::{FnParamDefaults, FnSignature};
 use crate::type_resolution::TypeAliasRegistry;
 use crate::types::{
     AutoTypeSubstitution, CompiledConstraintDef, CompiledField, CompiledImport, CompiledModule,
-    CompiledPurpose, CompiledTrait, CompiledUnit, TopologyTemplate,
+    CompiledPurpose, CompiledTrait, CompiledUnit, EntityKind, TopologyTemplate,
 };
 use crate::units::UnitRegistry;
 use reify_ir::CompiledFunction;
+
+/// The kind of declaration that claimed a name in the unified entity namespace
+/// tracked by [`CompilationCtx::seen_entity_names`]: a structure or occurrence
+/// (both compile to a [`TopologyTemplate`]), a field, or a constraint.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EntityNameKind {
+    Template(EntityKind),
+    Field,
+    Constraint,
+}
+
+impl EntityNameKind {
+    /// The kind's name as it appears in the duplicate-entity diagnostic.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            EntityNameKind::Template(kind) => kind.as_label(),
+            EntityNameKind::Field => "field",
+            EntityNameKind::Constraint => "constraint",
+        }
+    }
+}
 
 /// Durable mutable state threaded through every phase of
 /// [`crate::compile_with_prelude_refs`].
@@ -45,6 +68,34 @@ pub(crate) struct CompilationCtx {
     pub(crate) diagnostics: Vec<Diagnostic>,
     pub(crate) imports: Vec<CompiledImport>,
     pub(crate) functions: Vec<CompiledFunction>,
+    /// Resolved signatures of the module's own `fn` declarations, in source
+    /// order — the output of `functions_phase::phase_fn_signatures`.
+    ///
+    /// Written before any structure template exists; consumed by the unified
+    /// source-order pass in `phase_entities`, which compiles each fn's body
+    /// against the authoritative template registry.
+    /// Parallel to `decl_refs.fn_refs` (same length, same order), so a
+    /// declaration index indexes both.
+    pub(crate) fn_signatures: Vec<FnSignature>,
+    /// Each fn's param-default outcome, parallel to `fn_signatures` — the
+    /// output of `functions_phase::phase_fn_param_defaults`.
+    pub(crate) fn_param_defaults: Vec<FnParamDefaults>,
+    /// The fn overloads whose outcome is `FnParamDefaults::NeedLocalTemplates`,
+    /// with their defaulted params: the stubs of `resolution_functions` that
+    /// cannot pad yet. Written by `phase_fn_param_defaults`; the unified pass
+    /// takes each overload out as its real fn replaces its stub. See
+    /// [`crate::scope::CompilationScope::fns_with_pending_defaults`].
+    pub(crate) fns_with_pending_defaults: PendingDefaults,
+    /// Trait-static fns compiled by `phase_traits`, buffered here instead of
+    /// being pushed straight into `functions`.
+    ///
+    /// `phase_traits` now runs BEFORE user fn bodies are compiled, so appending
+    /// its output to `functions` directly would invert today's observable order
+    /// (`[user fns in source order …, trait-static fns …]`) — which
+    /// `compute_module_hash` folds and `CompiledModule::functions` first-match
+    /// dispatch depends on.  Buffering keeps that order byte-identical: the
+    /// unified pass appends this vec to `functions` after the user fns.
+    pub(crate) trait_static_fns: Vec<CompiledFunction>,
     pub(crate) fields: Vec<CompiledField>,
     pub(crate) templates: Vec<TopologyTemplate>,
     pub(crate) enum_defs: Vec<reify_ir::EnumDef>,
@@ -75,44 +126,43 @@ pub(crate) struct CompilationCtx {
     pub(crate) auto_type_substitution: AutoTypeSubstitution,
     /// Unified entity namespace tracker (spec §4.2.1): structures, occurrences,
     /// constraints, and fields all share the entity name space. Maps
-    /// name → (first_span, first_kind_label).
-    pub(crate) seen_entity_names: HashMap<String, (SourceSpan, &'static str)>,
+    /// name → (first_span, first_kind).
+    pub(crate) seen_entity_names: HashMap<String, (SourceSpan, EntityNameKind)>,
     pub(crate) unit_registry: UnitRegistry,
     pub(crate) alias_registry: TypeAliasRegistry,
     /// Enum defs available for resolution: prelude enum_defs chained with
     /// module-local `enum_defs`. Populated by `enums_phase::bind_resolution_enums`.
     pub(crate) resolution_enums: Vec<reify_ir::EnumDef>,
     /// Function table available for resolution: user functions merged with
-    /// prelude functions via [`crate::merge_prelude_functions`]. Populated by
-    /// `functions_phase::phase_functions`.
+    /// prelude functions via `functions_phase::build_resolution_functions`.
+    /// Seeded with signature stubs by `functions_phase::phase_fn_param_defaults`,
+    /// then rewritten with the fully-compiled functions (param defaults and
+    /// bodies) by the unified source-order pass in `entities_phase::phase_entities`.
     pub(crate) resolution_functions: Vec<CompiledFunction>,
     /// Trait names known at compile time: local trait declarations + prelude
     /// trait defs. Populated by `names_phase::build_resolution_names` BEFORE
-    /// `phase_functions` so fn-signature type resolution can resolve trait names
-    /// to `Type::TraitObject`. Consumed by both `phase_functions` (via
-    /// `compile_function`) and `phase_traits` (replacing its previously-local
-    /// construction).
+    /// `phase_fn_signatures` so fn-signature type resolution can resolve trait
+    /// names to `Type::TraitObject`. Consumed by `phase_fn_signatures` (via
+    /// `resolve_fn_signature`) and `phase_traits` (replacing its
+    /// previously-local construction).
     pub(crate) resolution_trait_names: HashSet<String>,
     /// Structure/occurrence names known at compile time: local structure and
     /// occurrence declarations + prelude templates. Populated by
-    /// `names_phase::build_resolution_names` BEFORE `phase_functions` so
+    /// `names_phase::build_resolution_names` BEFORE `phase_fn_signatures` so
     /// fn-signature type resolution can resolve structure names to
-    /// `Type::StructureRef`. Consumed by both `phase_functions` and `phase_traits`.
+    /// `Type::StructureRef`.
     pub(crate) resolution_structure_names: HashSet<String>,
     /// Names this module DECLARES as functions: every local `fn` declaration +
     /// every prelude function. Populated by `names_phase::build_resolution_names`
-    /// BEFORE `phase_functions`; consumed by both `phase_functions` and
-    /// `phase_traits` (task #5371).
+    /// BEFORE `phase_fn_signatures`; consumed by both the unified pass in
+    /// `phase_entities` and `phase_traits` (task #5371). Why a fn body needs it:
+    /// [`crate::scope::CompilationScope::declared_callable_names`].
     ///
     /// Deliberately NOT `resolution_functions`, and the difference is the whole
     /// reason this field exists. `resolution_functions` is a table of compiled
-    /// SIGNATURES and is only complete once `phase_functions` has finished, so a
-    /// fn body — which compiles DURING that phase, against the partially-grown
-    /// `ctx.functions` — cannot ask it whether a name exists. This set answers
-    /// the weaker question ("does the module declare this name at all?") and is
-    /// complete before the first body compiles, which is what lets the terminal
-    /// first-arg fallback in `expr.rs` tell "not a builtin, and nothing else
-    /// either" apart from "not a builtin, but declared right here".
+    /// SIGNATURES and is only complete once `phase_fn_param_defaults` has finished. This
+    /// set answers the weaker question ("does the module declare this name at
+    /// all?") and is complete before the first body compiles.
     ///
     /// Derived from the `fn_refs` DECLARATION list rather than from compiled
     /// output: a fn whose signature fails to compile is absent from
@@ -132,6 +182,10 @@ impl CompilationCtx {
             diagnostics: Vec::new(),
             imports: Vec::new(),
             functions: Vec::new(),
+            fn_signatures: Vec::new(),
+            fn_param_defaults: Vec::new(),
+            fns_with_pending_defaults: PendingDefaults::default(),
+            trait_static_fns: Vec::new(),
             fields: Vec::new(),
             templates: Vec::new(),
             enum_defs: Vec::new(),
@@ -152,6 +206,62 @@ impl CompilationCtx {
             resolution_structure_names: HashSet::new(),
             declared_fn_names: HashSet::new(),
         }
+    }
+
+    /// Build a signature-stub `CompiledFunction` table from `fn_signatures`.
+    ///
+    /// Each stub carries the real name/params/return_type/type_params/
+    /// annotations — everything `resolve_function_overload` reads — and an
+    /// empty body.  `compile_expr` never reads `CompiledFunction::body`, so a
+    /// stub is sufficient for compile-time overload dispatch.
+    ///
+    /// `param_defaults` are the fn's REAL defaults when
+    /// `phase_fn_param_defaults` compiled them (`FnParamDefaults::Compiled`), so
+    /// `try_default_padding` pads against a stub exactly as against the real
+    /// fn.  A fn whose defaults wait for a same-module template
+    /// (`NeedLocalTemplates`, or not yet decided) gets
+    /// `CompiledFunction::no_defaults_for`, and a call omitting one of those
+    /// defaults draws `FnDefaultNotYetAvailable` — PRD stdlib-namespace D-8.
+    ///
+    /// Same synthetic-stub idiom as `geometry.rs`'s and `annotations.rs`'s
+    /// `CompiledFunction` literals.
+    pub(crate) fn fn_signature_stubs(&self) -> Vec<CompiledFunction> {
+        self.fn_signatures
+            .iter()
+            .enumerate()
+            .map(|(i, sig)| signature_stub(sig, self.fn_param_defaults.get(i)))
+            .collect()
+    }
+
+    /// Every module-local name that can win a ctor-view slot: the module's own
+    /// structures (top-level and purpose-nested) and occurrences —
+    /// `name_env::ctor_template_registry` keeps every `Origin::Local` winner.
+    pub(crate) fn local_template_name_iter(&self) -> impl Iterator<Item = &str> + '_ {
+        self.local_names_where(|kind| matches!(kind, EntityNameKind::Template(_)))
+    }
+
+    /// Owned collect of [`Self::local_template_name_iter`].
+    pub(crate) fn local_entity_names(&self) -> HashSet<String> {
+        self.local_template_name_iter().map(str::to_owned).collect()
+    }
+
+    /// The module's own `structure def` names, top-level and purpose-nested,
+    /// first definition only, with no occurrence or prelude names: the key of
+    /// the fn-body declaration-order rule (task #5494).
+    pub(crate) fn local_structure_def_names(&self) -> HashSet<String> {
+        self.local_names_where(|kind| kind == EntityNameKind::Template(EntityKind::Structure))
+            .map(str::to_owned)
+            .collect()
+    }
+
+    fn local_names_where(
+        &self,
+        keep: fn(EntityNameKind) -> bool,
+    ) -> impl Iterator<Item = &str> + '_ {
+        self.seen_entity_names
+            .iter()
+            .filter(move |(_, (_, kind))| keep(*kind))
+            .map(|(name, _)| name.as_str())
     }
 
     /// Returns `true` when `name` is either absent from `seen_entity_names` or
@@ -179,7 +289,7 @@ impl CompilationCtx {
         &mut self,
         name: &str,
         span: SourceSpan,
-        kind: &'static str,
+        kind: EntityNameKind,
     ) -> bool {
         if self.is_first_entity_def(name, span) {
             self.seen_entity_names
@@ -192,10 +302,13 @@ impl CompilationCtx {
                 .expect("duplicate path implies prior entry");
             self.diagnostics.push(
                 Diagnostic::error(format!("duplicate entity definition '{}'", name))
-                    .with_label(DiagnosticLabel::new(span, format!("{} defined here", kind)))
+                    .with_label(DiagnosticLabel::new(
+                        span,
+                        format!("{} defined here", kind.label()),
+                    ))
                     .with_label(DiagnosticLabel::new(
                         first_span,
-                        format!("first defined as {} here", first_kind),
+                        format!("first defined as {} here", first_kind.label()),
                     )),
             );
             false
@@ -248,6 +361,38 @@ impl CompilationCtx {
     }
 }
 
+/// One signature stub; see [`CompilationCtx::fn_signature_stubs`].
+pub(crate) fn signature_stub(
+    sig: &FnSignature,
+    defaults: Option<&FnParamDefaults>,
+) -> CompiledFunction {
+    let param_defaults = match defaults {
+        Some(FnParamDefaults::Compiled(defaults)) => defaults.clone(),
+        Some(FnParamDefaults::NeedLocalTemplates) | None => {
+            CompiledFunction::no_defaults_for(&sig.params)
+        }
+    };
+    CompiledFunction {
+        name: sig.name.clone(),
+        doc: sig.doc.clone(),
+        is_pub: sig.is_pub,
+        param_defaults,
+        params: sig.params.clone(),
+        return_type: sig.return_type.clone(),
+        body: reify_ir::CompiledFnBody {
+            let_bindings: Vec::new(),
+            result_expr: reify_ir::CompiledExpr::literal(
+                reify_ir::Value::Real(0.0),
+                reify_core::Type::dimensionless_scalar(),
+            ),
+        },
+        content_hash: ContentHash::of_str(&sig.name),
+        annotations: sig.annotations.clone(),
+        optimized_target: sig.optimized_target.clone(),
+        type_params: sig.type_params.clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -272,8 +417,10 @@ mod tests {
         );
 
         // Seed the tracker as pre_pass would.
-        ctx.seen_entity_names
-            .insert("Widget".to_string(), (span_a, "structure"));
+        ctx.seen_entity_names.insert(
+            "Widget".to_string(),
+            (span_a, EntityNameKind::Template(EntityKind::Structure)),
+        );
 
         // (b) same span → still the first def (same definition revisited)
         assert!(
@@ -298,12 +445,16 @@ mod tests {
 
         // First insertion: new name → true, entry stored, no diagnostic.
         assert!(
-            ctx.record_or_report_duplicate("Widget", span_a, "structure"),
+            ctx.record_or_report_duplicate(
+                "Widget",
+                span_a,
+                EntityNameKind::Template(EntityKind::Structure)
+            ),
             "first insertion should succeed"
         );
         assert_eq!(
             ctx.seen_entity_names.get("Widget"),
-            Some(&(span_a, "structure")),
+            Some(&(span_a, EntityNameKind::Template(EntityKind::Structure))),
             "entry should be present after insertion"
         );
         assert!(
@@ -313,7 +464,11 @@ mod tests {
 
         // Same name + same span is idempotent → true, still no diagnostic.
         assert!(
-            ctx.record_or_report_duplicate("Widget", span_a, "structure"),
+            ctx.record_or_report_duplicate(
+                "Widget",
+                span_a,
+                EntityNameKind::Template(EntityKind::Structure)
+            ),
             "re-inserting with same span should return true"
         );
         assert!(
@@ -323,7 +478,11 @@ mod tests {
 
         // Same name + different span → false, duplicate diagnostic emitted.
         assert!(
-            !ctx.record_or_report_duplicate("Widget", span_b, "structure"),
+            !ctx.record_or_report_duplicate(
+                "Widget",
+                span_b,
+                EntityNameKind::Template(EntityKind::Structure)
+            ),
             "duplicate span should return false"
         );
         assert_eq!(
@@ -332,10 +491,10 @@ mod tests {
             "exactly one diagnostic on duplicate"
         );
 
-        // Anchor the shape of the duplicate diagnostic — label count, span
-        // ordering, and `{kind}` interpolation — so structural regressions
-        // (swapped label order, missing second label, un-interpolated `{kind}`)
-        // are caught at the unit level.
+        // Anchor the shape of the duplicate diagnostic — label count and span
+        // ordering — so structural regressions (swapped label order, missing
+        // second label) are caught at the unit level. Label text is pinned
+        // per kind by `duplicate_entity_diagnostic_labels_name_each_kind`.
         let diag = &ctx.diagnostics[0];
 
         // 1. Top-level message contains the stable substring.
@@ -353,28 +512,95 @@ mod tests {
             "duplicate diagnostic must have exactly two labels"
         );
 
-        // 3. labels[0] = duplicate site (span_b, "structure defined here").
+        // 3. labels[0] = duplicate site (span_b).
         assert_eq!(
             diag.labels[0].span, span_b,
             "labels[0] should point to the duplicate site (span_b)"
         );
-        assert!(
-            diag.labels[0].message.contains("structure defined here"),
-            "labels[0] message should interpolate the `{{kind}}` token into the '... defined here' template, got: {:?}",
-            diag.labels[0].message,
-        );
 
-        // 4. labels[1] = first-seen site (span_a, "first defined as structure here").
+        // 4. labels[1] = first-seen site (span_a).
         assert_eq!(
             diag.labels[1].span, span_a,
             "labels[1] should point to the first-seen site (span_a)"
         );
-        assert!(
-            diag.labels[1]
-                .message
-                .contains("first defined as structure"),
-            "labels[1] message should interpolate the `{{first_kind}}` token into the 'first defined as ... here' template, got: {:?}",
-            diag.labels[1].message,
+    }
+
+    /// Every entity kind's user-visible label reaches both sites of the
+    /// duplicate diagnostic verbatim.
+    #[test]
+    fn duplicate_entity_diagnostic_labels_name_each_kind() {
+        let span_a = SourceSpan::new(0, 10);
+        let span_b = SourceSpan::new(20, 30);
+        for (kind, label) in [
+            (EntityNameKind::Template(EntityKind::Structure), "structure"),
+            (
+                EntityNameKind::Template(EntityKind::Occurrence),
+                "occurrence",
+            ),
+            (EntityNameKind::Field, "field"),
+            (EntityNameKind::Constraint, "constraint"),
+        ] {
+            let mut ctx = CompilationCtx::new();
+            ctx.record_or_report_duplicate("Widget", span_a, kind);
+            ctx.record_or_report_duplicate("Widget", span_b, kind);
+
+            let labels = &ctx.diagnostics[0].labels;
+            assert_eq!(labels[0].message, format!("{label} defined here"));
+            assert_eq!(labels[1].message, format!("first defined as {label} here"));
+        }
+    }
+
+    /// When a name is redefined as a different kind, the first-seen site is
+    /// labelled with the stored first kind, not the duplicate's.
+    #[test]
+    fn duplicate_entity_diagnostic_reports_first_kind_on_first_label() {
+        let mut ctx = CompilationCtx::new();
+        ctx.record_or_report_duplicate("Widget", SourceSpan::new(0, 10), EntityNameKind::Field);
+        ctx.record_or_report_duplicate(
+            "Widget",
+            SourceSpan::new(20, 30),
+            EntityNameKind::Template(EntityKind::Structure),
+        );
+
+        let labels = &ctx.diagnostics[0].labels;
+        assert_eq!(labels[0].message, "structure defined here");
+        assert_eq!(labels[1].message, "first defined as field here");
+    }
+
+    /// Every kind-filter accessor over `seen_entity_names`: structures only
+    /// (`local_structure_def_names`), and the ctor-view names, structures plus
+    /// occurrences (`local_template_name_iter` / `local_entity_names`). None
+    /// admits a field or a constraint.
+    #[test]
+    fn local_name_accessors_filter_seen_entity_names_by_kind() {
+        let mut ctx = CompilationCtx::new();
+        let recorded = [
+            (
+                "TheStructure",
+                EntityNameKind::Template(EntityKind::Structure),
+            ),
+            (
+                "TheOccurrence",
+                EntityNameKind::Template(EntityKind::Occurrence),
+            ),
+            ("TheField", EntityNameKind::Field),
+            ("TheConstraint", EntityNameKind::Constraint),
+        ];
+        for (start, (name, kind)) in (0..).step_by(10).zip(recorded) {
+            assert!(ctx.record_or_report_duplicate(name, SourceSpan::new(start, start + 5), kind));
+        }
+
+        let names = |names: &[&str]| -> HashSet<String> {
+            names.iter().map(|name| name.to_string()).collect()
+        };
+        assert_eq!(ctx.local_structure_def_names(), names(&["TheStructure"]));
+        assert_eq!(
+            ctx.local_template_name_iter().collect::<HashSet<&str>>(),
+            HashSet::from(["TheStructure", "TheOccurrence"]),
+        );
+        assert_eq!(
+            ctx.local_entity_names(),
+            names(&["TheStructure", "TheOccurrence"])
         );
     }
 
@@ -388,6 +614,14 @@ mod tests {
         assert!(ctx.diagnostics.is_empty(), "diagnostics should be empty");
         assert!(ctx.imports.is_empty(), "imports should be empty");
         assert!(ctx.functions.is_empty(), "functions should be empty");
+        assert!(
+            ctx.fn_signatures.is_empty(),
+            "fn_signatures should be empty"
+        );
+        assert!(
+            ctx.trait_static_fns.is_empty(),
+            "trait_static_fns should be empty"
+        );
         assert!(ctx.fields.is_empty(), "fields should be empty");
         assert!(ctx.templates.is_empty(), "templates should be empty");
         assert!(ctx.enum_defs.is_empty(), "enum_defs should be empty");

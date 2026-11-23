@@ -8,22 +8,17 @@
 //   - `FlexureCompliance` structure_def (seven-field PRD §4.2 contract)
 //   - `flexure_compliance(joint) -> FlexureCompliance` accessor
 //
-// The structure_def and accessor live in the same module, enabled by the
-// skeleton pre-pass added in task 3895: `phase_functions` now builds
-// transient `TopologyTemplate` skeletons from parsed same-module
-// `structure_def`s so fn bodies can lower `Foo()` ctor expressions to
-// `CompiledExprKind::StructureInstanceCtor` without waiting for
-// `phase_entities` to run. This replaces the previous split into
-// `std.flexures.types` + `std.flexures` (esc-3851-32 workaround — now
-// retired).
+// The structure_def and accessor live in the same module: the structure_def
+// is declared ABOVE the accessor, so the fn body compiles against its
+// authoritative template and lowers `FlexureCompliance()` to
+// `CompiledExprKind::StructureInstanceCtor` (PRD stdlib-namespace D-8). This
+// replaced the earlier split into `std.flexures.types` + `std.flexures`
+// (esc-3851-32 workaround — retired).
 //
-// Module placement: registered in `stdlib_loader.rs` after `std.kinematic`
-// (task #5476 — `structure def FlexureJoint : DrivingJoint` names the
-// `DrivingJoint` trait, which is resolved through the loader's growing
-// sequential prelude, so registration order IS visibility order). Depends on
-// language primitives (Real, Pressure, Length, Bool) and the standard prelude
-// units (Pa, N, m, etc.) from `std.units` and `std.si_units`. Zero
-// cross-module dependencies on materials / structural / solver modules.
+// Dependencies, imported below: `std.kinematic` (task #5476 — `structure def
+// FlexureJoint : DrivingJoint` names its `DrivingJoint` trait) and the units
+// (Pa, N, m, etc.) of `std.units` and `std.si_units`. Nothing from the
+// materials / structural / solver modules.
 //
 // Joint parameter typing (placeholder ERADICATED — task #5476,
 // docs/prds/v0_6/placeholder-type-eradication-ratchet.md §3.2/§3.3):
@@ -49,6 +44,12 @@
 //   the cache-lookup logic (or wires Rust-side intrinsic dispatch). The
 //   reserved-name namespacing keeps the cache key discoverable and out of
 //   user-namespace collision.
+
+module std.flexures
+
+import std.kinematic
+import std.si_units
+import std.units
 
 // ── Type aliases ──────────────────────────────────────────────────────────
 
@@ -236,9 +237,9 @@ structure def FlexureJoint : DrivingJoint { }
 //
 // Stub semantics (β — this task):
 //   The body returns `FlexureCompliance()` — a bare ctor call relying on
-//   every param's sentinel-zero default. The same-module skeleton pre-pass
-//   (task 3895, functions_phase.rs) makes `FlexureCompliance` visible to
-//   this fn body without needing a separate prelude module. PRB ctors
+//   every param's sentinel-zero default. `structure def FlexureCompliance`
+//   is declared above this fn, so its template is visible to this fn body
+//   without needing a separate prelude module. PRB ctors
 //   override every field via named-field ctor syntax
 //   `FlexureCompliance(effective_stiffness: ..., max_stress: ..., ...)`,
 //   so the defaults never leak into populated records once γ / δ / ε / ζ /
@@ -271,7 +272,7 @@ structure def FlexureJoint : DrivingJoint { }
 // `StructureRef("FlexureJoint")` and emits a hard compile Error carrying
 // `DiagnosticCode::NoMatchingOverload` (PRD-prose mnemonic
 // `E_NO_MATCHING_OVERLOAD`). Boundary tests: PRD §7.3 BT1/BT2 —
-// `reify-cli/tests/harness_cli/cli_check.rs` (the user-observable exit-code
+// `reify-cli/tests/harness_cli_check/cli_check.rs` (the user-observable exit-code
 // flip) and `reify-compiler/tests/harness_mechanics/flexures_stdlib_compile.rs`
 // (the typed code).
 //

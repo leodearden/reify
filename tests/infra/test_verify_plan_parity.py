@@ -10,11 +10,14 @@ for byte. This module never imports reify_verify. Bash is the oracle until the
 cutover: a divergence reds, and its message names the module to edit and the
 port-window rule (PRD D13). The one exception is the harness's
 EXPECTED_DIVERGENCES (PRD D8's listed divergences), which
-TestExpectedDivergences asserts positively both ways.
+TestExpectedDivergences asserts positively both ways. One check plans nothing:
+every lib verify.sh's load-time `source` chain reaches has a missing-lib row.
 
 The runner, the scenario record and compare() live in
-tests/infra/plan_parity_harness.py. The lint and typecheck grids are the
-sibling shards test_verify_plan_parity_{lint,typecheck}.py.
+tests/infra/plan_parity_harness.py. The grids are the sibling shards
+test_verify_plan_parity_{lint,typecheck,test,all}.py; the test region's
+targeted scenarios are test_verify_plan_parity_region.py, and its failed_only
+retry test_verify_plan_parity_retry.py (S18 γ2, task 9099).
 
 run_all.sh discovers `test_*.sh` only; the gate runs this file through its
 thin wrapper tests/infra/test_verify_plan_parity.sh.
@@ -25,7 +28,6 @@ import json
 import os
 import re
 import shlex
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -36,7 +38,11 @@ from pathlib import Path
 INFRA_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(INFRA_DIR))
 from plan_parity_harness import (  # noqa: E402
+    CHANGED_PATH_FIXTURES,
     EXPECTED_DIVERGENCES,
+    NEXTEST_ABSENT_PROBE,
+    PATH_ATTRIBUTION,
+    PATH_ATTRIBUTION_INTERNAL_ERROR,
     PORT_WINDOW_RULE,
     Clone,
     InParityClone,
@@ -45,11 +51,15 @@ from plan_parity_harness import (  # noqa: E402
     check_divergence,
     compare,
     discard_clone,
+    nextest_env,
+    path_farm,
     plan_sections,
     run_both,
     run_many,
     shared_clone,
     shared_env,
+    stage_written,
+    toolchain_env,
 )
 
 PLAN_ACTIONS = ("lint", "typecheck")
@@ -78,11 +88,6 @@ PLAIN_GUI_PROJECT = f"{LD_SCRUB}if test -d gui; then (cd gui && "
 FULL_GUI_SUITE = "../scripts/gui-vitest-run.sh'); fi"
 VALID_GUI_SPECS = "src/__tests__/a.test.ts src/__tests__/b.test.ts"
 GUI_SPECS_REJECTED = "REIFY_GUI_RETRY_SPECS contains characters outside [A-Za-z0-9._/ -]"
-TEST_REGION_BEGIN = (
-    "# >>> test-run semaphore: ACQUIRE held slot — clock-stop region BEGINS "
-    "(TEST-EXECUTION gated, held in verify.sh)"
-)
-EX_UNAVAILABLE = 69
 FAILED_ONLY = {"REIFY_VERIFY_RETRY_SCOPE": "failed_only"}
 RETRY_MARKER = "@@REIFY_RETRY_SCOPE=failed_only@@ nextest_debug=0 nextest_release=0 "
 PLAN_HEADER = "# verify.sh plan — "
@@ -97,7 +102,6 @@ TIMEOUT_KNOBS = (
     "REIFY_VERIFY_GUI_FEATURE_TEST_TIMEOUT",
     "REIFY_VERIFY_CHECK_TIMEOUT",
 )
-SYSTEM_BIN_DIRS = (Path("/usr/bin"), Path("/bin"))
 NEXTEST_ABSENT = " nextest=0 "
 NEXTEST_PRESENT = " nextest=1 "
 # The present-but-failing stub prints these lines, then a blank one that $(…) strips.
@@ -107,7 +111,37 @@ PROBE_EXHAUSTED = (
     "failed persistently across 3/3 retries (4 probes total, including the initial attempt; "
     "last retry rc=101)"
 )
-REAPER_LIB = "scripts/lib_proc_reaper.sh"
+
+
+def not_found_next_to(lib, script="verify.sh", exit_code=1):
+    """The load-time guard `script` holds for `lib`: its exit code and its not-found line."""
+    return lib, exit_code, f"{script}: ERROR — {lib} not found next to {script}"
+
+
+def slot_acquire_refusal(lib):
+    """lib_slot_acquire.sh's guard: exit 1 and its line, which names the lib's absolute path."""
+    return lib, 1, f"lib_slot_acquire.sh: required lib not found next to script: {{root}}/{lib}"
+
+
+# The libs verify.sh's load-time source chain guards, transitive ones included, in the order bash checks
+# them: (deleted path, bash's exit code, bash's refusal line, with {root} the clone's physical root).
+MISSING_LIB_REFUSALS = (
+    not_found_next_to("scripts/occt-scope-lib.sh"),
+    not_found_next_to("scripts/release-scope-lib.sh"),
+    # release-scope-lib.sh sources it behind its own guard, which runs before verify.sh's (#10080).
+    not_found_next_to("scripts/affected-crates-lib.sh", "release-scope-lib.sh", exit_code=2),
+    not_found_next_to("scripts/lib_test_semaphore.sh"),
+    not_found_next_to("scripts/lib_slot_acquire.sh", "lib_test_semaphore.sh"),
+    slot_acquire_refusal("scripts/lib_clock_stop.sh"),
+    slot_acquire_refusal("scripts/lib_event_log.sh"),
+    not_found_next_to("scripts/cpu-admit.sh"),
+    not_found_next_to("scripts/lib_proc_reaper.sh"),
+    not_found_next_to("scripts/heavy-test-filter-lib.sh"),
+    not_found_next_to("scripts/lib_git_env_scrub.sh"),
+)
+COPY_LIST_PREFLIGHT_LIB = "tests/infra/copy_list_preflight_lib.sh"
+# verify.sh sources it inside a function, at run time, so a plan never reaches it.
+RUN_TIME_SOURCES = frozenset({"lib_main_checkout.sh"})
 HEAVY_FILTER_LIB = "scripts/heavy-test-filter-lib.sh"
 HEAVY_FILTER_EXPORT = re.compile(r"^export REIFY_HEAVY_NEXTEST_FILTER=.*$", re.MULTILINE)
 EMPTY_HEAVY_FILTER = (
@@ -125,34 +159,28 @@ JSON_CASES = (
     ("test gui-only staged, retry specs", GUI_CHANGE, ("test", "--scope", "staged"),
      {**FAILED_ONLY, "REIFY_GUI_RETRY_SPECS": VALID_GUI_SPECS}),
     ("lint docs-only, empty plan", DOCS_CHANGE, ("lint", "--scope", "staged"), {}),
+    ("all merge all, both profiles: a test region", None,
+     ("all", "--scope", "all", "--profile", "both"), {"DF_VERIFY_ROLE": "merge"}),
 )
-# The changed paths tests/infra/test_verify_scope.sh plans one at a time with
-# `plan_for staged` (S22 B14); each is written as 'x\n' and staged, as plan_for does.
-CHANGED_PATH_FIXTURES = (
-    "Cargo.lock",
-    "crates/reify-doc/src/lib.rs",
-    "crates/reify-eval/src/cache.rs",
-    "dark-factory-orchestrator.yaml",
-    "docs/gui-event-channels.md",
-    "docs/gui-event-channels/solver-progress.md",
-    "docs/note.md",
-    "docs/prds/v0_6/foo.md",
-    "examples/foo.ri",
-    "examples/foo/bar.ri",
-    "examples/auto/probe.ri",
-    "gui/src/editor/foo.ts",
-    "gui/src-tauri/src/main.rs",
-    "scripts/prd-capability-check.py",
-    "some_unrecognised_file",
-    "tests/prd-gate/corpus-probe-set.json",
-    "tests/prd-gate/fixtures/geometry_let_selector_consumer.ri",
-    "tests/prd-gate/fixtures/new_prd_fixture.ri",
-    "tests/prd-gate/fixtures/Probe.RI",
-)
+# The tokens bash's PLAN array holds for the semaphore sentinels, which verify-ledger.py's classify keys on.
+SENTINEL_RENDERS = ("@@SEMAPHORE_ACQUIRE@@", "@@SEMAPHORE_RELEASE@@")
 
 
 def tearDownModule():
     discard_clone()
+
+
+def source_closure(root: Path, entry: str) -> frozenset[str]:
+    """The .sh libs `entry`'s `source` lines reach transitively under root/scripts, by
+    copy_list_preflight_lib.sh's derive_source_closure."""
+    run = subprocess.run(
+        ["bash", "-c", 'source "$1" && derive_source_closure "$2" "$3"', "_",
+         str(root / COPY_LIST_PREFLIGHT_LIB), str(root / "scripts"), entry],
+        capture_output=True, text=True,
+    )
+    if run.returncode != 0:
+        raise AssertionError(f"derive_source_closure exited {run.returncode}: {run.stderr}")
+    return frozenset(run.stdout.split())
 
 
 def role_env(role):
@@ -161,16 +189,6 @@ def role_env(role):
 
 def host_boot_id() -> str:
     return BOOT_ID.read_text(encoding="utf-8").strip()
-
-
-def toolchain_env() -> dict:
-    """RUSTUP_HOME and CARGO_HOME as the real HOME resolves them, so a scratch HOME keeps cargo working."""
-    env = base_env()
-    home = env["HOME"]
-    return {
-        "RUSTUP_HOME": env.get("RUSTUP_HOME", f"{home}/.rustup"),
-        "CARGO_HOME": env.get("CARGO_HOME", f"{home}/.cargo"),
-    }
 
 
 def dead_pid() -> int:
@@ -320,13 +338,6 @@ class FullPlanParity(InParityClone):
 class TestPlanParityCommands(FullPlanParity):
     """Full stdout, stderr and exit code of lint and typecheck plans."""
 
-    def stage_written(self, path):
-        """plan_for's fixture: `path` holds exactly 'x\\n', staged."""
-        target = self.clone.root / path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text("x\n", encoding="utf-8")
-        self.clone.git("add", "--", path)
-
     def test_scope_all_under_each_role(self):
         for role in ROLES:
             self.check(f"--scope all role={role}", ("--scope", "all", "--include-infra"), role_env(role))
@@ -382,7 +393,7 @@ class TestPlanParityCommands(FullPlanParity):
     def test_changed_path_fixtures(self):
         for path in CHANGED_PATH_FIXTURES:
             self.clone.reset()
-            self.stage_written(path)
+            stage_written(self.clone, path)
             self.check(f"staged {path}", ("--scope", "staged", "--include-infra"), actions=("lint",))
 
 
@@ -537,46 +548,10 @@ class TestPlanParityStartup(InParityClone):
                 self.assert_parity(scenario, pair)
 
     def path_farm(self, *without: str) -> str:
-        """A PATH directory linking every /usr/bin and /bin entry except `without`."""
-        farm = self.scratch / "-".join(("farm-without", *without))
-        farm.mkdir()
-        for directory in SYSTEM_BIN_DIRS:
-            for entry in directory.iterdir():
-                link = farm / entry.name
-                if entry.name not in without and not os.path.lexists(link):
-                    link.symlink_to(entry)
-        for tool in without:
-            self.assertIsNone(shutil.which(tool, path=str(farm)), f"premise: {tool} is off the farm")
-        return str(farm)
+        return path_farm(self.scratch, *without)
 
     def nextest_env(self, name, nextest_probe, cargo_nextest=False) -> dict:
-        """A scratch HOME without ~/.cargo/env, and PATH = a stub cargo whose `nextest --version` runs
-        `nextest_probe` (every other cargo call execs the real one), then /usr/bin and /bin."""
-        stubs = self.scratch / name
-        stubs.mkdir()
-        real_cargo = shutil.which("cargo", path=base_env()["PATH"])
-        self.write_stub(
-            stubs / "cargo",
-            'if [ "$1" = nextest ] && [ "$2" = --version ]; then\n'
-            f"{nextest_probe}"
-            "fi\n"
-            f'exec "{real_cargo}" "$@"\n',
-        )
-        if cargo_nextest:
-            self.write_stub(stubs / "cargo-nextest", "exit 0\n")
-        path = os.pathsep.join((str(stubs), *map(str, SYSTEM_BIN_DIRS)))
-        self.assertEqual(
-            shutil.which("cargo-nextest", path=path) is not None, cargo_nextest,
-            "premise: cargo-nextest is on PATH iff the scenario stubs it",
-        )
-        home = self.scratch / f"{name}-home"
-        home.mkdir()
-        return {"HOME": str(home), "PATH": path, **toolchain_env()}
-
-    @staticmethod
-    def write_stub(path: Path, body: str):
-        path.write_text(f"#!/bin/sh\n{body}", encoding="utf-8")
-        path.chmod(0o755)
+        return nextest_env(self.scratch, name, nextest_probe, cargo_nextest)
 
     def test_bogus_timeout_knobs(self):
         expects = []
@@ -627,9 +602,7 @@ class TestPlanParityStartup(InParityClone):
         ))
 
     def test_nextest_probe(self):
-        absent = self.nextest_env(
-            "absent", "    echo 'error: no such command: `nextest`' >&2\n    exit 101\n"
-        )
+        absent = self.nextest_env("absent", NEXTEST_ABSENT_PROBE)
         failing = self.nextest_env(
             "failing", f"    printf '%s\\n' {shlex.join(STUB_PROBE_LINES)} '' >&2\n    exit 101\n",
             cargo_nextest=True,
@@ -657,11 +630,32 @@ class TestPlanParityStartup(InParityClone):
         )
 
     def test_missing_lib_is_refused(self):
-        (self.clone.root / REAPER_LIB).unlink()
-        self.check(Expect(
-            lint_all(f"{REAPER_LIB} deleted"), exit_code=1,
-            stderr=(f"verify.sh: ERROR — {REAPER_LIB} not found next to verify.sh",),
-        ))
+        root = self.clone.root.resolve()
+        for lib, exit_code, refusal in MISSING_LIB_REFUSALS:
+            self.clone.reset()
+            (self.clone.root / lib).unlink()
+            expect = Expect(lint_all(f"{lib} deleted"), exit_code=exit_code, stderr=(refusal.format(root=root),))
+            self.check(expect)
+
+    def test_every_load_time_source_has_a_refusal_row(self):
+        """A lib that verify.sh's load-time `source` chain reaches, derived mechanically, has a
+        MISSING_LIB_REFUSALS row, so a new one cannot be left out of the parity check."""
+        closure = source_closure(self.clone.root, "verify.sh")
+        self.assertLessEqual(RUN_TIME_SOURCES, closure, "premise: verify.sh still sources each run-time lib")
+        rows = {Path(lib).name for lib, _, _ in MISSING_LIB_REFUSALS}
+        self.assertEqual(closure - RUN_TIME_SOURCES - rows, frozenset(), "sourced at load time, but no row")
+
+    def test_internal_error_traceback_only_under_debug(self):
+        """PRD D8: an internal error prints its one line, after its traceback only when REIFY_VERIFY_DEBUG=1."""
+        (self.clone.root / PATH_ATTRIBUTION).unlink()
+        debug = self.clone.py(LINT_ALL, shared_env(self.clone, {"REIFY_VERIFY_DEBUG": "1"}))
+        self.assertEqual((debug.returncode, debug.stdout), (1, ""), debug.stderr)
+        self.assertTrue(debug.stderr.startswith("Traceback (most recent call last):"), debug.stderr)
+        self.assertEqual(debug.stderr.splitlines()[-1], PATH_ATTRIBUTION_INTERNAL_ERROR)
+        quiet = self.clone.py(LINT_ALL, shared_env(self.clone, {"REIFY_VERIFY_DEBUG": "0"}))
+        self.assertEqual(
+            (quiet.returncode, quiet.stdout, quiet.stderr), (1, "", f"{PATH_ATTRIBUTION_INTERNAL_ERROR}\n")
+        )
 
     def test_empty_heavy_filter_is_refused(self):
         lib = self.clone.root / HEAVY_FILTER_LIB
@@ -729,15 +723,21 @@ class TestJsonPlanParity(InParityClone):
         self.assertEqual(profiles, ["debug", "release"] if both else [tokens["profile"]])
 
     def check_steps(self, label, steps, text_commands):
+        """A sentinel's text is its annotation, so only the other steps' renders are text lines."""
         renders = [step["render"] for step in steps]
-        self.assertEqual(renders, [line for line in text_commands[1:] if not line.startswith("#")])
+        self.assertEqual(
+            [step["render"] for step in steps if step["kind"] != "sentinel"],
+            [line for line in text_commands[1:] if not line.startswith("#")],
+        )
         self.assertEqual([step["index"] for step in steps], list(range(len(steps))))
         self.assertEqual([step["phase"] for step in steps], self.classified_phases(renders))
+        sentinels = [step["render"] for step in steps if step["kind"] == "sentinel"]
+        self.assertIn(sentinels, ([], list(SENTINEL_RENDERS)), f"{label}: a region's sentinels, in order")
         for step in steps:
             self.assertIn("type", step["command"])
             self.assertEqual(step["scrub"], step["kind"] == "tool", step)
             self.assertEqual(step["render"].startswith(LD_SCRUB), step["scrub"], step)
-            executes = "structural" if step["kind"] == "main_shell" else "render"
+            executes = "structural" if step["kind"] in ("main_shell", "sentinel") else "render"
             self.assertEqual(step["executes"], executes, step)
         gate_paths = sorted({step["gate_path"] for step in steps if step["gate_path"] is not None})
         if gate_paths:
@@ -763,31 +763,6 @@ class TestExpectedDivergences(InParityClone):
                 failure = check_divergence(self.clone, expected)
                 if failure is not None:
                     self.fail(failure)
-
-
-class TestTestRegionNotYetPlanned(InParityClone):
-    """γ1 refuses a test or all plan that holds a test region, rather than print it without one.
-
-    γ2 (#9099) ports the region and deletes this class.
-    """
-
-    def test_a_test_region_plan_is_refused(self):
-        scenarios = [
-            Scenario(f"{action} --scope all role={role}", (action, "--scope", "all", "--print-plan"), role_env(role))
-            for action in TEST_ACTIONS
-            for role in ROLES
-        ]
-        for scenario, pair in run_many(self.clone, scenarios):
-            with self.subTest(scenario.label):
-                self.assert_bash_plans(scenario, pair)
-                self.assertIn(TEST_REGION_BEGIN, pair.bash.stdout.splitlines(), "premise: a test region")
-                self.assertEqual(pair.py.returncode, EX_UNAVAILABLE, pair.py.stderr)
-                self.assertEqual(pair.py.stdout, "")
-                lines = pair.py.stderr.splitlines()
-                self.assertEqual(len(lines), 1, pair.py.stderr)
-                self.assertTrue(lines[0].startswith("verify.sh: ERROR — "), lines[0])
-                self.assertIn("test region", lines[0])
-                self.assertIn("S18 cutover", lines[0])
 
 
 class TestPlanParitySelfTest(InParityClone):

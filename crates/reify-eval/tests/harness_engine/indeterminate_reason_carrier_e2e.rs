@@ -14,7 +14,8 @@ use reify_constraints::SimpleConstraintChecker;
 use reify_core::{Diagnostic, DiagnosticCode, Severity, ValueCellId};
 use reify_eval::{BuildScheduler, CheckResult, ConstraintCheckEntry, Engine};
 use reify_ir::{
-    ExportFormat, GeometryHandleId, IndeterminateReason, Satisfaction, TransientReason, Value,
+    BinOp, ExportFormat, GeometryHandleId, IndeterminateReason, RefusedOperation, Satisfaction,
+    TransientReason, Value,
 };
 use reify_test_support::{MockGeometryKernel, compile_source_with_stdlib};
 
@@ -48,6 +49,46 @@ const VOLUME_GATED: &str = r#"
 structure Widget {
     param part : Solid = box(10mm, 10mm, 10mm)
     constraint volume(part) <= 2000mm^3
+}
+"#;
+
+/// Two pure operations that refuse defined plain-data operands: a Real
+/// division by zero and the builtin `sqrt` of a negative Real.
+const PURE_REFUSALS: &str = r#"
+structure def Root {
+    param x : Real = 0.0
+    param y : Real = -1.0
+    constraint 1.0 / x > 0.0
+    constraint sqrt(y) > 0.0
+}
+"#;
+
+/// A constraint over an inline geometry query, which no kernel-less check can
+/// measure.
+const INLINE_VOLUME_QUERY: &str = r#"
+structure def Part {
+    param w : Length = 10mm
+    constraint volume(box(w, w, w)) > 1mm^3
+}
+"#;
+
+/// A well-formed distance between two inline geometry constructors: no stdlib
+/// family claims `box` or `sphere`, so their kernel-less Undef is not a refusal.
+const INLINE_GEOMETRY_DISTANCE: &str = r#"
+structure def Part {
+    param w : Length = 10mm
+    constraint distance(box(w, w, w), sphere(w)) >= 0mm
+}
+"#;
+
+/// The same Real division by zero as `PURE_REFUSALS`, behind a user function:
+/// the boundary a refusal is not traced across.
+const USER_FUNCTION_REFUSAL: &str = r#"
+fn inv(v: Real) -> Real { 1.0 / v }
+
+structure def Root {
+    param x : Real = 0.0
+    constraint inv(x) > 0.0
 }
 "#;
 
@@ -224,4 +265,96 @@ fn build_recheck_upgrade_clears_the_recorded_reason() {
         });
     assert_eq!(after.satisfaction, Satisfaction::Satisfied);
     assert_eq!(after.indeterminate_reason, None);
+}
+
+/// A pure operation refusing defined plain-data operands fails on every run,
+/// so the checker records the refusing operation and reports it as an error.
+#[test]
+fn pure_refusals_are_recorded_and_reported_as_errors() {
+    let result = check_kernel_less(PURE_REFUSALS);
+
+    for (name, operation, operands) in [
+        (
+            "Root#constraint[0]",
+            RefusedOperation::Binary(BinOp::Div),
+            vec!["Real", "Real"],
+        ),
+        (
+            "Root#constraint[1]",
+            RefusedOperation::Builtin("sqrt".to_string()),
+            vec!["Real"],
+        ),
+    ] {
+        let entry = entry_named(&result, name);
+        assert_eq!(entry.satisfaction, Satisfaction::Indeterminate, "{name}");
+        let reason = TransientReason::OperationRefused {
+            operation,
+            operands: operands.into_iter().map(String::from).collect(),
+        };
+        assert_eq!(
+            entry.indeterminate_reason,
+            transient(reason.clone()),
+            "{name}"
+        );
+
+        let expected = format!("constraint {name} indeterminate: {reason}");
+        let diagnostic = result
+            .diagnostics
+            .iter()
+            .find(|d| {
+                d.code == Some(DiagnosticCode::ConstraintIndeterminate) && d.message == expected
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected diagnostic {expected:?}; got {:#?}",
+                    result.diagnostics
+                )
+            });
+        assert_eq!(diagnostic.severity, Severity::Error, "{name}");
+    }
+}
+
+/// An Undef not proven to be a pure refusal stays a tolerated warning. Only
+/// that is asserted, not today's verdict or wording, so a later fix that
+/// decides one of these constraints stays green.
+#[test]
+fn unproven_undefs_stay_tolerated() {
+    for (source_name, source) in [
+        ("dic_inert_connect", DIC_INERT_CONNECT),
+        ("volume_gated", VOLUME_GATED),
+        ("inline_volume_query", INLINE_VOLUME_QUERY),
+        ("inline_geometry_distance", INLINE_GEOMETRY_DISTANCE),
+        ("user_function_refusal", USER_FUNCTION_REFUSAL),
+    ] {
+        let result = check_kernel_less(source);
+        assert!(
+            !result.constraint_results.is_empty(),
+            "anti-vacuity: {source_name} has no constraint entry"
+        );
+
+        let loud: Vec<&Diagnostic> = result
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.code == Some(DiagnosticCode::ConstraintIndeterminate)
+                    && d.severity == Severity::Error
+            })
+            .collect();
+        assert!(
+            loud.is_empty(),
+            "{source_name}: unproven Undef reported as an error: {loud:#?}"
+        );
+
+        for entry in &result.constraint_results {
+            assert!(
+                !entry
+                    .indeterminate_reason
+                    .as_ref()
+                    .is_some_and(IndeterminateReason::is_unexpected),
+                "{source_name}: {} recorded an unexpected reason: {:?}",
+                display_name(entry),
+                entry.indeterminate_reason
+            );
+        }
+    }
 }

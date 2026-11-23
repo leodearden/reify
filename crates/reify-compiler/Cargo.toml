@@ -13,6 +13,7 @@ description = "Name resolution and elaboration from ParsedModule to CompiledModu
 test-support = []
 
 [dependencies]
+workspace-feature-union.workspace = true
 reify-ast.workspace = true
 reify-builtins.workspace = true
 reify-core.workspace = true
@@ -36,6 +37,7 @@ reify-core.workspace = true
 reify-ir.workspace = true
 reify-test-support = { workspace = true, features = ["eval-helpers"] }
 reify-git-env = { workspace = true, features = ["test-utils"] }
+reify-constraints.workspace = true
 reify-eval.workspace = true
 reify-expr.workspace = true
 tempfile.workspace = true

@@ -321,6 +321,7 @@ fn kind_name(expr: &CompiledExpr) -> &'static str {
         CompiledExprKind::PurposeReflectiveAggregation { .. } => "PurposeReflectiveAggregation",
         CompiledExprKind::ReflectiveCellList(_) => "ReflectiveCellList",
         CompiledExprKind::StructureInstanceCtor { .. } => "StructureInstanceCtor",
+        CompiledExprKind::VariantCtor { .. } => "VariantCtor",
         _ => "unsupported expression kind",
     }
 }
@@ -335,7 +336,7 @@ fn value_kind_name(value: &Value) -> &'static str {
         Value::String(_) => "String",
         Value::Point(_) => "Point",
         Value::Vector(_) => "Vector",
-        Value::Direction { .. } => "Direction",
+        Value::Direction(_) => "Direction",
         Value::Frame { .. } => "Frame",
         Value::Complex { .. } => "Complex",
         Value::Matrix { .. } => "Matrix",
@@ -440,14 +441,13 @@ fn eval_dual_match(
     // The `VariantBind` arm below cracks the payload's VALUES into a child scope
     // and binds no tangents, so a binder resolves through `env.get` → `None` →
     // `Tangent::Zero` and the arm body returns a confident FLAT row.  That is
-    // right only while every payload is a compile-time constant — which it is
-    // today, because `reify-compiler`'s `variant_construct` refuses a
-    // non-constant payload value outright ("not yet supported") and lowers it to
-    // `Value::Undef`.  That restriction is marked a deferred follow-up there,
-    // i.e. it belongs to a module this one does not own, so it is CHECKED here
-    // rather than relied on.
+    // right only while the payload is constant.  A payload can be a runtime
+    // expression (a `VariantCtor` node), and `refuse_or_constant` does not
+    // differentiate `VariantCtor`: a seed-dependent one reaches this point as a
+    // discriminant whose tangent is `None`.  So the discriminant's tangent is
+    // the check that matters here.
     //
-    // `Tangent::None` gets the same treatment for a different reason: the
+    // `Tangent::None` must not be passed through to the arms: the
     // discriminant's refusal is already in the first-wins slot, and a confident
     // row from an arm body makes `jacobian_row` return `Ok` and DISCARD it
     // unread.
@@ -640,12 +640,11 @@ fn eval_dual_comparison(
     let ld = descend(left, 0, ctx, seeds, env, record, path);
     let rd = descend(right, 1, ctx, seeds, env, record, path);
 
-    // `eval_binop`'s strict-`Undef` precheck (lib.rs:3852-3855).  Here it is
-    // load-bearing rather than belt-and-braces: `eval_eq` has two arms that
-    // answer `Bool(false)` WITHOUT consulting the other operand — `Enum` vs
-    // anything (lib.rs:5007) and a dimensioned `Scalar` vs anything
-    // (lib.rs:5018) — so calling it directly turns "this cell is not known"
-    // into "these are definitely different".
+    // `eval_binop`'s strict-`Undef` precheck.  Here it is load-bearing rather
+    // than belt-and-braces: `eval_eq`'s `Enum` arm answers `Bool(false)` for
+    // an `Enum` against anything WITHOUT consulting the other operand, so
+    // calling it directly turns "this cell is not known" into "these are
+    // definitely different".
     //
     // The kink is still NOTED: one was genuinely traversed, and `Unresolved`
     // is the honest choice because the evaluator resolved nothing.  Recording

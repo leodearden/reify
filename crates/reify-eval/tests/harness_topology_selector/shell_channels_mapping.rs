@@ -12,8 +12,8 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
+use reify_compute_contract::ShellChannels;
 use reify_core::Type;
-use reify_eval::persistent_cache::ShellChannels;
 use reify_ir::{FieldSourceKind, InterpolationKind, SampledField, SampledGridKind, Value};
 use reify_solver_elastic::constitutive::IsotropicElastic;
 use reify_solver_elastic::build_shell_frame;

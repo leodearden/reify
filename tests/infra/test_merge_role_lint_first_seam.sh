@@ -50,8 +50,9 @@ if ! python3 -c 'import yaml' 2>/dev/null; then
 else
     echo "--- (A) structural assertions via PyYAML ---"
 
-    _PARSE_PY="$(mktemp /tmp/lint_first_seam_parse_XXXXXX.py)"
-    trap 'rm -f "$_PARSE_PY"' EXIT
+    _PARSE_DIR="$(mktemp -d /tmp/lint_first_seam_parse_XXXXXX)"
+    trap 'rm -rf "$_PARSE_DIR"' EXIT
+    _PARSE_PY="$_PARSE_DIR/lint_first_seam_parse.py"
 
     cat > "$_PARSE_PY" << 'PYEOF'
 """Validate dark-factory-orchestrator.yaml's sequential_lint_first (rider 1 / K1) contract.

@@ -50,6 +50,8 @@ Transparent — `Pressure` and `Force / Area` are the same type.
 
 Determinacy is tracked orthogonally, not baked into types. Parameter types are plain `Length`, `Force`, etc. Determinacy (`undef`/constrained/`auto`/determined) is a separate property tracked by the design system.
 
+An `auto` value ends a solve in one of two observable states. RESOLVED: it holds a concrete value of its declared type. UNRESOLVED: it stays `undef` and the cause is reported, either W_UNDERDETERMINED (no constraint touches it) or a failed solve (an error such as `proven infeasible`). See the `solving` chunk — topic `solving` of `reify_language_reference`.
+
 ## Limited Dependent Typing
 
 `Int` and `Bool` value parameters can appear in type-level positions (collection sizes, conditional presence gating, array dimensions).

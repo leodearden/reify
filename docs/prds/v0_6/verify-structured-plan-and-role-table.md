@@ -291,13 +291,18 @@ Byte-identical to today, except the one plan divergence recorded in §12 and the
 - **`--confirm-failed`**: stdout is the bare id list; the single refusal line `verify.sh: ERROR — confirm refused: …` goes to real stderr; everything else goes to the private log. DF's `_VERIFY_USAGE_MARKER_RE` rejects any `Usage:`/`Options:` line, so the usage text keeps those two header lines.
 - **Unchanged by construction**, because the bash libs still emit them: `@@REIFY_CLOCK_*@@`, `@@REIFY_SLOT_TIMEOUT@@`, `lib_test_semaphore.sh: …` and the `cpu_admit` lines.
 
-**Listed divergences** (critic K16, K17). Each is asserted positively in B1 or B2, and none is read by a consumer:
+**Listed divergences** (critic K16, K17). Each is asserted positively in B1, B2 or `test_verify_plan_model.py`, and none is read by a consumer:
 - A malformed timeout knob warns once, where offline today warns twice.
 - Knob warnings and missing-lib errors fire after argv parsing, so `--help` works with a bad knob.
 - In `--confirm-failed` mode, every diagnostic reaches the private log, including the knob warnings that today leak to the real stderr. The order that guarantees it (fold-verifier V11) is: parse argv; validate, with any refusal on the real stderr; `dup2` the private log over fd 2; then resolve knobs.
 - The five new query flags (`--print-plan=json`, `--print-scope`, `--print-role-policy`, `--print-knobs`, `--print-gates`) are accepted, where bash exits 64 on them (fold-verifier V12).
 - The holder's pid replaces verify's in `@@REIFY_CLOCK_STOP@@ pid=` and in `REIFY_SLOT_EVENT_LOG` rows.
 - The D11 usage text and the defect 4–6 fixes.
+- A path knob holding the double quote its step renders it inside (`REIFY_VERIFY_ATTEMPT_SIDECAR`, `REIFY_VERIFY_CONFIRM_JUNIT`, `REIFY_VERIFY_CONFIRM_MANIFEST_*`, `REIFY_VERIFY_CONFIRM_SIDECAR_*`) refuses the plan with `verify.sh: ERROR — <knob>=<value> holds a double quote, and the plan renders it inside double quotes; refusing to plan a broken command line` and exit 1. Bash prints the broken line and exits 0. B1 asserts the `REIFY_VERIFY_ATTEMPT_SIDECAR` case; the `REIFY_VERIFY_CONFIRM_*` cases have no B1 scenario and are pinned only in `test_verify_plan_model.py`.
+- A retry filter-file id holding a single quote refuses that profile's subset (`verify.sh: retry refused: unquotable id — <id> holds a single quote (profile=<p>, full verify)`), and the pass runs in full. Bash prints the broken `-E` expression.
+- A `REIFY_VERIFY_RETRY_MAX_SUBSET` that is not an integer prints `verify.sh: WARNING: invalid REIFY_VERIFY_RETRY_MAX_SUBSET=<v>; applying no subset ceiling`, where bash prints its shell error `[: <v>: integer expression expected`. Neither applies a ceiling.
+- A missing `scripts/reify_path_attribution.py`, which the package imports, is an internal error: verify prints `verify.sh: ERROR — internal: ModuleNotFoundError: No module named 'reify_path_attribution'` and exits 1, before argv parsing. Bash prints `occt-scope-lib.sh: ERROR — scripts/reify_path_attribution.py not found next to occt-scope-lib.sh` and exits 1. B1 asserts it.
+- A `scripts/release-scope-lib.sh` that ends the shell with status 0 while it is sourced, so that `release_declared_set` never runs, refuses the plan. It prints the lib's stderr, then `verify.sh: ERROR — scripts/release-scope-lib.sh::release_declared_set never ran (exited 0): refusing to plan without the release-sensitive crate list`, and exits 1. Bash's top-level `source` under `set -e` ends the run with 0 having planned nothing; after the cutover, that would be a gate that passes having verified nothing. A refusal never exits 0: `plan.Refused` rejects exit code 0 when it is built. No B1 scenario reaches this case, so it is pinned only in `test_verify_plan_model.py`.
 
 New lines must never start with `FAILED `, end in ` FAILED`, begin `error: could not find` or `flock:`, or contain `tree-sitter generate`. Those patterns re-route DF's failure classifier (C2, C7). An internal Python error prints one line, `verify.sh: ERROR — internal: <type>: <msg>`, and exits 1. The traceback goes to stderr only under `REIFY_VERIFY_DEBUG=1`, because a traceback is a STRONG failure marker in DF's excerpts.
 
@@ -400,7 +405,7 @@ New lines must never start with `FAILED `, end in ` FAILED`, begin `error: could
     - The `test_verify_scope.sh` changed-path fixtures. This is S22's B14.
     - `REIFY_GATE_EXCLUDE_HEAVY=1`, `REIFY_RELEASE_DELTA_SKIP=1` with an override, a `failed_only` retry with filter files, `REIFY_GUI_RETRY_SPECS` valid and invalid, `--test-threads`, `--narrow` and `REIFY_AFFECTED_CRATES_OVERRIDE`.
     - nextest absent (PATH farm) and nextest present-but-failing.
-  - It is a Python unittest member. Its expected divergences are exactly D8's listed divergences and §12's one plan divergence, each asserted positively; any other difference reds.
+  - It is a Python unittest member. Its expected divergences are exactly D8's listed divergences that its corpus reaches and §12's one plan divergence, each asserted positively; any other difference reds.
 - **Executor parity (B2).** Both implementations run on stub `cargo`/`npm` PATH farms, covering pass and fail at every step kind, holder contention, gate subcommands, TERM mid-step, `--confirm-failed` with stub JUnit, and the background ledger.
   - Compared: the projected stderr/stdout lines (pids and timestamps normalised) and the exit code.
   - The expected divergences are D10's fixes to defects 1–4 plus D8's executor-side listed divergences: confirm-mode diagnostics to the log, the single knob warning, the holder pid (normalised). Each is asserted positively (fold-verifier V17).

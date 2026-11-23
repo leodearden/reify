@@ -1167,56 +1167,6 @@ fn pattern_value_forms_give_no_arg_type_mismatch() {
     );
 }
 
-/// MEASURED DIVERGENCE — `circular_pattern`'s compile slot names the SURFACE
-/// builtin, while the eval layer names the LOWERED KIND; `mirror` does not
-/// diverge at all.
-///
-/// The twin of `centered_alias_slots_name_the_surface_builtin_not_the_lowered_kind`,
-/// and the second instance of that class. `circular_pattern` lowers to
-/// `PatternKind::Circular`, whose `Display` — the eval layer's `kind_label` — is
-/// `"circular"` (the `PatternKind::Circular` arm of its `Display` impl in
-/// `crates/reify-compiler/src/types.rs`), so eval says `circular:` where this
-/// layer says `circular_pattern:`. `PatternKind::Mirror` displays as `"mirror"`
-/// (the `PatternKind::Mirror` arm of the same `Display` impl), so for `mirror`
-/// the two layers agree byte-for-byte and decision D9's "byte-identical" wording
-/// holds unmodified.
-///
-/// Both halves are pinned — the divergence AND its absence — because a reader
-/// who saw only the divergence might "fix" it in the wrong direction, by
-/// teaching the compile layer to report the lowered kind for both.
-#[test]
-fn circular_pattern_slot_names_the_surface_builtin_not_the_lowered_kind() {
-    let compiled =
-        compile_struct_body("    let p = circular_pattern(b, 12, 0, 0, 0, 0, 1, 6, 60deg)\n");
-    let messages: Vec<&str> = arg_type_mismatch_errors(&compiled)
-        .iter()
-        .map(|d| d.message.as_str())
-        .collect();
-    for message in &messages {
-        assert!(
-            message.starts_with("circular_pattern: "),
-            "the compile slot must name the SURFACE call `circular_pattern`, not \
-             the lowered `circular` kind the eval layer reports; got {message:?}"
-        );
-    }
-    assert_eq!(messages.len(), 3, "expected the origin triple: {messages:#?}");
-
-    // The negative half: `mirror` is NOT an alias, so no prefix divergence.
-    let compiled = compile_struct_body("    let m = mirror(b, 0, 0, 0, 1, 0, 0)\n");
-    let messages: Vec<&str> = arg_type_mismatch_errors(&compiled)
-        .iter()
-        .map(|d| d.message.as_str())
-        .collect();
-    for message in &messages {
-        assert!(
-            message.starts_with("mirror: "),
-            "`PatternKind::Mirror` displays as \"mirror\", so the compile and eval \
-             layers must agree byte-for-byte here; got {message:?}"
-        );
-    }
-    assert_eq!(messages.len(), 3, "expected the origin triple: {messages:#?}");
-}
-
 // ── Task 6862: a dimension-kinded generic param at a LENGTH slot ─────────────
 
 /// The task-6862 regression fixture: `fn beam<Q: Dimension>(l: Scalar<Q>) -> Solid`

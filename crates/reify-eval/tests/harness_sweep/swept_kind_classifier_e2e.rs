@@ -10,14 +10,10 @@
 use reify_compiler::{
     CompiledGeometryOp, CurveKind, GeomRef, ModifyKind, PrimitiveKind, SweepKind,
 };
-use reify_core::Type;
 use reify_eval::SweptKind;
 use reify_ir::{ExportFormat, Value};
 use reify_test_support::*;
 
-#[path = "../common/angle_expr.rs"]
-mod angle_expr;
-use angle_expr::angle_literal;
 
 /// (a) Extrude-only realization populates the table with a single
 /// `SweptKind::Extrude` keyed by the realization's final handle.
@@ -32,7 +28,6 @@ use angle_expr::angle_literal;
 #[test]
 fn engine_swept_kind_table_records_extrude_realization() {
     let e = "TestSweptExtrude";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Op 0: Sphere — stand-in profile to produce a handle at step index 0.
     let sphere_op = CompiledGeometryOp::Primitive {
@@ -120,7 +115,6 @@ fn engine_swept_kind_table_records_extrude_realization() {
 #[test]
 fn engine_swept_kind_table_empty_for_realization_with_modify_after_extrude() {
     let e = "TestSweptModified";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     let sphere_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Sphere,
@@ -188,7 +182,6 @@ fn engine_swept_kind_table_empty_for_realization_with_modify_after_extrude() {
 /// so `is_empty()` returns false.
 #[test]
 fn engine_swept_kind_table_resets_between_builds() {
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // ── Module #1: extrude-only realization (populates the table) ────────
     let e1 = "TestSweptExtrude";
@@ -303,9 +296,6 @@ fn engine_swept_kind_table_resets_between_builds() {
 #[test]
 fn engine_swept_kind_table_records_revolve_realization() {
     let e = "TestSweptRevolve";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
-    let real_literal =
-        |v: f64| reify_ir::CompiledExpr::literal(Value::Real(v), Type::dimensionless_scalar());
 
     // Op 0: Sphere — stand-in profile to produce a handle at step index 0.
     // The classifier only inspects the *last* op, so any handle-producing op works.
@@ -422,7 +412,6 @@ fn engine_swept_kind_table_records_revolve_realization() {
 #[test]
 fn engine_swept_kind_table_records_sweep_along_line_segment_realization() {
     let e = "TestSweptSweepLine";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Op 0: Sphere — stand-in profile to produce a handle at step index 0.
     // The classifier only inspects the *last* op, so any handle-producing op works here.

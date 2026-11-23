@@ -54,7 +54,7 @@ sub motor : ElectricMotor { shaft_diameter = 8mm }
 sub vents : List<Vent>
 ```
 
-Parameters can be set in the curly-brace block. Omitted parameters get their default or remain `undef`.
+Parameters can be set in the curly-brace block. Omitted parameters get their default or remain `undef` — or set one to `auto` to let the solver choose it from the parent's constraints (see the `solving` chunk — topic `solving` of `reify_language_reference`, including its sub-instance caveat).
 
 ## Meta Blocks
 

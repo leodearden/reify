@@ -25,6 +25,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { initDebugBridge, RESOLVE_BY_TESTID_ERRORS } from '../debug/bridge';
 import type { DebugStores } from '../debug/types';
 import { makeLayoutStore } from './debugBridgeTestHelpers';
+import { createViewportDisplayStore, VIEWPORT_DISPLAY_STORAGE_KEY } from '../stores/viewportDisplayStore';
+import { createLauncherStore } from '../stores/launcherStore';
 import type { ViewStateStore } from '../stores/viewStateStore';
 
 type DebugRequestHandler = (event: { payload: { id: number; command: string; params: Record<string, unknown> } }) => Promise<void>;
@@ -77,6 +79,8 @@ function makeStores(phase: 'idle' | 'evaluating' | 'error' = 'idle'): DebugStore
     },
     viewState: { resetToDefaultView: vi.fn() } as unknown as ViewStateStore,
     layout: makeLayoutStore(),
+    viewportDisplay: createViewportDisplayStore(),
+    launcher: createLauncherStore(),
   };
 }
 
@@ -1002,6 +1006,71 @@ describe('wait_for: store kind', () => {
   });
 });
 
+describe('wait_for: store kind on viewport.edges', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+  let stores: DebugStores;
+
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    localStorage.removeItem(VIEWPORT_DISPLAY_STORAGE_KEY);
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+
+    stores = makeStores('idle');
+    await initDebugBridge(stores);
+    expect(capturedHandler).toBeDefined();
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  function waitForEdges(id: number, timeoutMs: number): Promise<void> {
+    vi.mocked(invoke).mockClear();
+    return capturedHandler!({
+      payload: {
+        id,
+        command: 'wait_for',
+        params: {
+          predicate: { kind: 'store', path: 'viewport.edges', equals: true },
+          timeout_ms: timeoutMs,
+        },
+      },
+    });
+  }
+
+  function response(): any {
+    const call = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'debug_response');
+    return call ? JSON.parse((call[1] as any).result) : undefined;
+  }
+
+  it('resolves {ok:true} once the edges toggle turns on', async () => {
+    const pending = waitForEdges(21, 5000);
+    await vi.advanceTimersByTimeAsync(32);
+    expect(response()).toBeUndefined();
+
+    stores.viewportDisplay.setEdges(true);
+    await vi.advanceTimersByTimeAsync(32);
+    await pending;
+
+    expect(response().ok).toBe(true);
+  });
+
+  it('times out while edges stay off', async () => {
+    const pending = waitForEdges(22, 100);
+    await vi.advanceTimersByTimeAsync(200);
+    await pending;
+
+    expect(response().error).toBe('timeout');
+  });
+});
+
 describe('wait_for: validation errors', () => {
   let capturedHandler: DebugRequestHandler | undefined;
 
@@ -1069,5 +1138,78 @@ describe('wait_for: validation errors', () => {
     }) as any;
     expect(result.error).toBeDefined();
     expect(typeof result.error).toBe('string');
+  });
+});
+
+describe('wait_for: store kind on the document and mode roots', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+  let stores: DebugStores;
+
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+
+    stores = makeStores('idle');
+    await initDebugBridge(stores);
+    expect(capturedHandler).toBeDefined();
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  function waitForStore(id: number, path: string, equals: unknown, timeoutMs = 5000): Promise<void> {
+    vi.mocked(invoke).mockClear();
+    return capturedHandler!({
+      payload: {
+        id,
+        command: 'wait_for',
+        params: { predicate: { kind: 'store', path, equals }, timeout_ms: timeoutMs },
+      },
+    });
+  }
+
+  function response(): any {
+    const call = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'debug_response');
+    return call ? JSON.parse((call[1] as any).result) : undefined;
+  }
+
+  it('resolves {ok:true} once a document is loaded', async () => {
+    const pending = waitForStore(31, 'document.loaded', true);
+    await vi.advanceTimersByTimeAsync(32);
+    expect(response()).toBeUndefined();
+
+    stores.editor.state.openFiles.push({ path: '/designs/bracket.ri', content: 'structure Bracket {}' });
+    await vi.advanceTimersByTimeAsync(32);
+    await pending;
+
+    expect(response().ok).toBe(true);
+  });
+
+  it('resolves {ok:true} once debug mode is selected', async () => {
+    const pending = waitForStore(32, 'mode.selected', 'debug');
+    await vi.advanceTimersByTimeAsync(32);
+    expect(response()).toBeUndefined();
+
+    stores.launcher.applyModeState({ mode: 'debug', debug_port: 3939 });
+    await vi.advanceTimersByTimeAsync(32);
+    await pending;
+
+    expect(response().ok).toBe(true);
+  });
+
+  it('lists document and mode among the addressable roots for an unknown root', async () => {
+    await waitForStore(33, 'launcherz.mode', 'debug');
+
+    const error: string = response().error;
+    expect(error).toMatch(/addressable roots: .*\bdocument\b/);
+    expect(error).toMatch(/addressable roots: .*\bmode\b/);
   });
 });

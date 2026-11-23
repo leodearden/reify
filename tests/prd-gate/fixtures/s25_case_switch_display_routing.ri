@@ -18,23 +18,23 @@ structure def CaseSwitchDisplayRouting {
     param geometry : Solid = box(length, width, height)
     let material   = Steel_AISI_1045()
 
-    let mount = FixedSupport(target: "root")
+    let mount = FixedSupport(target: face(geometry, "root"))
 
     let lc_operating = LoadCase(
         name:     "operating",
-        loads:    [PointLoad(point: "tip", force: 1000.0N)],
+        loads:    [PointLoad(point: vertex(geometry, "tip"), force: 1000.0N)],
         supports: [mount],
     )
 
     let lc_overload = LoadCase(
         name:     "overload",
-        loads:    [PointLoad(point: "tip", force: 2000.0N)],
+        loads:    [PointLoad(point: vertex(geometry, "tip"), force: 2000.0N)],
         supports: [mount],
     )
 
     let lc_transport = LoadCase(
         name:     "transport",
-        loads:    [PointLoad(point: "tip", force: 3000.0N)],
+        loads:    [PointLoad(point: vertex(geometry, "tip"), force: 3000.0N)],
         supports: [mount],
     )
 

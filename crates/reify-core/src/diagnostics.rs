@@ -287,6 +287,16 @@ pub enum DiagnosticCode {
     /// - `"constraints could not be satisfied (max absolute residual: …)"` (solver.rs, Severity::Error)
     /// - `"geometric constraints are inconsistent (<n> failed)"` (solvespace.rs, Severity::Error)
     /// - `"CpSatSolver: no satisfying assignment found for … auto params with … constraints"` (cpsat.rs, Severity::Error)
+    ///
+    /// Also the code of a trust-region STALL in the relate-solve
+    /// (`reify_ir::SolveFailureCause::Stalled`, rendered by
+    /// `crates/reify-constraints/src/relate_solve.rs::frame_failure_diagnostic`):
+    /// the step collapsed at a point that is neither a root nor certified
+    /// stationary — a search failure, not a proof. Likewise of a NON-FINITE
+    /// evaluation (`reify_ir::SolveFailureCause::NonFinite`, rendered with its
+    /// relation label by `crates/reify-eval/src/relate_solve.rs`): a residual row
+    /// or Jacobian entry was NaN or ±∞ where the solve stood, so it could judge
+    /// nothing there.
     ConstraintUnsatisfiable,
     /// Origin: three producers, all carrying the shared "not uniquely determined" phrase:
     /// - `crates/reify-constraints/src/solver.rs::verify_uniqueness`, perturbation re-solve
@@ -321,20 +331,50 @@ pub enum DiagnosticCode {
     /// Distinct from [`Self::ConstraintUnsatisfiable`], which reports a SEARCH
     /// failure rather than a proof (solution-set-completeness C3).
     ConstraintRefuted,
+    /// Origin: `crates/reify-constraints/src/trust_region.rs::solve` via
+    /// `reify_ir::SolveFailureCause::Infeasible` (task η #6675); rendered by
+    /// `crates/reify-constraints/src/relate_solve.rs::frame_failure_diagnostic`
+    /// (the `SolveResult` adapter's renderer) and
+    /// `crates/reify-eval/src/relate_solve.rs`. Severity::Error at the
+    /// construction site.
+    ///
+    /// The continuous solve stopped at a stationary point of `‖r̃‖²` that is not a
+    /// root and that no descent probe around it lowers: the range cosine
+    /// `‖P r̃‖ / ‖r̃‖` (`P` the orthogonal projector onto the range of `J̃`) is
+    /// within the solver's tolerance while some scaled row still exceeds its bar.
+    /// The message carries that certificate and blames the rows (and the
+    /// relations they came from) that remain violated.
+    ///
+    /// The PRD-prose mnemonic is `E_SOLVER_INFEASIBLE`
+    /// (`docs/prds/v0_6/geometry-algebra-solver-unification.md` §7.5).
+    SolverInfeasible,
+    /// Origin: `crates/reify-constraints/src/trust_region.rs::solve` via
+    /// `reify_ir::SolveFailureCause::BudgetExhausted` (task η #6675); rendered by
+    /// `crates/reify-constraints/src/relate_solve.rs::frame_failure_diagnostic`
+    /// (shared by the `SolveResult` adapter and reify-eval's relate pass).
+    /// Severity::Error at the construction site.
+    ///
+    /// The continuous solve used its whole iteration budget without converging
+    /// and without certifying infeasibility. The message states the iteration
+    /// count against the budget and the trend of the step norms, so a slow-but-
+    /// progressing solve reads differently from a stuck one.
+    ///
+    /// The PRD-prose mnemonic is `E_SOLVER_BUDGET_EXHAUSTED`
+    /// (`docs/prds/v0_6/geometry-algebra-solver-unification.md` §7.5).
+    SolverBudgetExhausted,
     /// Origin: `crates/reify-compiler/src/entity.rs::expand_constraint_inst`
     ///          (param-level argument type check, task 4546).
     ///
     /// Emitted when a constraint instantiation passes an argument whose
-    /// compile-time type is incompatible with the declared parameter type —
-    /// specifically, a cross-category mismatch (e.g. `Bool` passed where a
-    /// `Length` param is declared). Numeric-to-numeric mismatches (e.g. `Int`
-    /// for `Length`) are deliberately tolerated at the binding site; dimensional
-    /// strictness within comparison predicates is enforced by task 4490's
-    /// `E_CmpOperandKind` guard.
+    /// compile-time type does not conform to the declared parameter type. The
+    /// acceptance policy is the Rules list of
+    /// `crates/reify-compiler/src/type_compat.rs::constraint_arg_type_conforms`.
+    /// A rejection short-circuits the instantiation, so no predicate-body
+    /// comparison diagnostic doubles it.
     ///
     /// Canonical message form:
-    /// `"type mismatch: argument '<arg>' has type <actual> but parameter '<param>' \
-    ///   of constraint '<def>' expects <expected>"`.
+    /// `"type mismatch: argument '<arg>' for constraint '<def>' has type \
+    ///   <actual> but parameter expects <expected>"`.
     ///
     /// The PRD-prose mnemonic is `E_CONSTRAINT_ARG_TYPE`.
     ConstraintArgTypeMismatch,
@@ -509,8 +549,8 @@ pub enum DiagnosticCode {
     /// sees the offending declaration, not a downstream consumer.
     ///
     /// Fired at two sites: (1) structure-body let (entity.rs ~1916) and (2) port-member
-    /// let (entity.rs ~2810). NOT fired at the skeleton/ctor-lowering let (throwaway_diags)
-    /// or at trait-default-injected lets (those use `TypeMismatchForTraitMember`).
+    /// let (entity.rs ~2810). NOT fired at trait-default-injected lets (those use
+    /// `TypeMismatchForTraitMember`).
     ///
     /// The PRD-prose mnemonic for this code is `E_LET_ANNOTATION_TYPE_MISMATCH`.
     LetAnnotationTypeMismatch,
@@ -2567,6 +2607,28 @@ pub enum DiagnosticCode {
     /// See `docs/prds/type-args-and-assoc-type-projection.md` §4.2, §9.
     TypeArgBound,
     /// Origin: `crates/reify-compiler/src/type_resolution.rs`
+    /// (`validate_pub_parametric_alias_def_site` case (c), called from
+    /// `phase_validate_pub_parametric_alias_defs` in `aliases_phase.rs`).
+    ///
+    /// Emitted as a `Severity::Error` at the definition of a `pub` parametric
+    /// type alias whose body names a type alias the same module declares
+    /// without `pub` (task 10297). This is a visibility policy: a pub alias's
+    /// meaning must not depend on a name its importers cannot see or name. It
+    /// does not prevent a resolution failure, since the exported body scope
+    /// carries the non-pub alias and an importer would resolve the body
+    /// correctly. Aliases seeded into the module from the stdlib or an import
+    /// are pub where they are declared and are allowed.
+    ///
+    /// Canonical message form:
+    ///   `"pub type alias '<pub>' names non-pub type alias '<name>'; a pub
+    ///    alias must not depend on a name its importers cannot see — mark
+    ///    '<name>' pub or make '<pub>' non-pub"`
+    /// with a label at the pub alias's span.
+    ///
+    /// Distinct from [`UnresolvedType`], which fires when a name is unknown;
+    /// here the name resolves, but only inside its own module.
+    NonPubAliasInPubAlias,
+    /// Origin: `crates/reify-compiler/src/type_resolution.rs`
     /// (`resolve_type_expr_with_aliases_kinded`, the trait-with-args
     /// intercept arm placed immediately after the 4603 structure-with-args
     /// arm and before simple-name resolution).
@@ -2631,6 +2693,28 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_EXPONENT_OUT_OF_RANGE`
     /// (severity convention: `E_*` → Error).
     ExponentOutOfRange,
+    /// Origin: `crates/reify-compiler/src/expr.rs` (the `BinOp::Mul`/`BinOp::Div`
+    /// arm), via `type_compat::infer_mul_div_result` returning
+    /// `MulDivRefusal::DimensionOverflow`.
+    ///
+    /// Emitted as a `Severity::Error` when the combined dimension of a
+    /// value-level `*` or `/` has an exponent that does not fit `Rational`
+    /// (`i16/i16`). Example: `1m^1/31 * 1m^1/37 * 1m^1/41`, whose Length
+    /// exponent needs denominator 47027.
+    ///
+    /// Canonical message form:
+    ///   `"the combined dimension of `<left>` <op> `<right>` has an exponent out of range"`
+    /// with a label `"combined dimension out of range"` on the operator node.
+    ///
+    /// The result type is poisoned to `Type::Error` (anti-cascade); the runtime
+    /// `eval_mul`/`eval_div` arm yields `Undef`.
+    ///
+    /// Distinct from [`ExponentOutOfRange`], which is a WRITTEN `^` literal
+    /// outside `i8`; this code is a COMPUTED exponent outside `Rational`.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_DIMENSION_EXPONENT_OVERFLOW`
+    /// (severity convention: `E_*` → Error).
+    DimensionExponentOverflow,
     /// Origin: `crates/reify-compiler/src/expr.rs`
     /// (`ExprKind::FunctionCall` arm — semantic gate for VALUE-position `auto`).
     ///
@@ -4097,7 +4181,7 @@ pub enum DiagnosticCode {
     /// `visibility == Visibility::Private`, or a port with `is_priv == true`.
     /// The guard fires on the external member-access paths — the StructureRef /
     /// TraitObject dot-access branch, the function-body member-access path (via
-    /// the skeleton template), and the purpose-subject branch; `self.<member>`
+    /// the structure's authoritative template), and the purpose-subject branch; `self.<member>`
     /// and bare-name references inside the defining structure body are resolved
     /// by an earlier branch and are exempt.
     ///
@@ -4565,6 +4649,15 @@ pub enum DiagnosticCode {
     /// one-variant addition that serde round-trips automatically (same
     /// non-breaking argument as `ExpressionNestingTooDeep` above).
     DimensionedArgRejected,
+    /// Origin: the `dir(...)` builtin (docs/prds/v0_6/direction-typing.md
+    /// C4/C11) when `reify_ir::direction::UnitVec3::from_vector` returns a
+    /// `DirectionFault` — a zero, sub-floor or non-finite vector has no unit
+    /// Direction.
+    ///
+    /// Runtime `Severity::Error`; the message embeds the
+    /// `E_DegenerateDirection` mnemonic because the CLI does not print codes.
+    /// Distinct from `DimensionedArgRejected` (the wrong-units fault).
+    DegenerateDirection,
     /// Origin:
     /// `crates/reify-eval/src/tolerance_combine.rs::unenforced_representation_bound_diagnostic`
     /// — the single shared refusal builder, emitted from BOTH export surfaces:
@@ -4877,6 +4970,78 @@ pub enum DiagnosticCode {
     ///
     /// Severity: Error.
     GeometryListFoldMixedArgs,
+    /// Origin: `crates/reify-compiler/src/module_dag.rs::ModuleDag::compile_module`
+    /// (task #5516, PRD resolution-unification I2).
+    ///
+    /// Emitted when a DAG-walked (imported) module fails to parse; one per
+    /// parse error. The entry still compiles, so the failure surfaces on the
+    /// importing entry, attributed to the imported file.
+    ///
+    /// Canonical message: `"parse error in imported module '<key>' at
+    /// <path>:<line>:<col>: <message>"`.
+    ///
+    /// Severity: Error.
+    ImportedModuleParseError,
+    /// Origin: `crates/reify-compiler/src/expr.rs::later_declared_structure_error`
+    /// (task #5494, PRD stdlib-namespace D-8).
+    ///
+    /// Emitted at COMPILE time when a free fn's body or param default uses the
+    /// template of a module-local `structure def` that is declared BELOW the fn
+    /// — by constructing it (`Foo()`) or by member access on a param typed as it
+    /// (`m.x`). Fn bodies compile in source order, interleaved with structure
+    /// templates, so a fn may use a same-module structure's template only if the
+    /// `structure def` is declared above the fn. The fix-it is to move it.
+    ///
+    /// Canonical message: `"structure '<Name>' is declared after this function;
+    /// move `structure def <Name>` above it"`.
+    ///
+    /// Severity: Error.
+    StructureDeclaredAfterFunction,
+    /// Origin: `crates/reify-compiler/src/expr.rs::pending_default_error`
+    /// (task #5494, PRD stdlib-namespace D-8).
+    ///
+    /// Emitted at COMPILE time when a call omits a defaulted arg of a
+    /// same-module fn overload whose default uses a same-module structure, from
+    /// a site that compiles before that fn's slot in the source-order pass (a
+    /// field, a trait-static fn body, an ambient default, or a structure
+    /// declared above the fn). Such a default only exists once the structure's
+    /// template does, so only free fns and structures declared below the fn may
+    /// omit it; fields, trait-static fns and ambient defaults never can.
+    ///
+    /// Canonical message: `"function '<fn>' param '<param>' default is not
+    /// available here: it uses a same-module structure, so only free fns and
+    /// structures declared below `fn <fn>` may omit it; fields, trait-static
+    /// fns and ambient defaults must pass it explicitly"`.
+    ///
+    /// Severity: Error.
+    FnDefaultNotYetAvailable,
+    /// Origin: `crates/reify-compiler/src/compile_builder/entities_phase.rs::fn_tables_misaligned`
+    /// (task #5494).
+    ///
+    /// INTERNAL COMPILER ERROR. The unified source-order pass found a `fn`
+    /// declaration whose per-fn records (resolved signature, param-default
+    /// outcome, or call-table signature stub, all indexed by declaration order)
+    /// describe a different fn. Reported instead of silently skipping the fn's
+    /// body or swapping the wrong call-table slot.
+    ///
+    /// Canonical message: `"internal compiler error: fn '<fn>' (fn declaration
+    /// #<i>) does not match <record>; <consequence>"`.
+    ///
+    /// Severity: Error.
+    FnDeclTablesMisaligned,
+    /// Origin: `gui/src-tauri/src/engine.rs::unanchored_import_warning`, the GUI's
+    /// buffer-only compile (task #5519, PRD resolution-unification D-10).
+    ///
+    /// Emitted when a compile with no file anchor (GUI `load_from_source`, or
+    /// `update_source` before any `load_file`) contains imports a file-backed
+    /// compile would follow, which it therefore cannot resolve. One per buffer,
+    /// naming every such import, located at the first.
+    ///
+    /// Canonical message: `"import \"<a>\", \"<b>\" not resolved: imports
+    /// require a file-backed buffer — open the .ri file to resolve them"`.
+    ///
+    /// Severity: Warning.
+    ImportRequiresFileBackedBuffer,
 }
 
 /// A diagnostic message with location and optional labels.
@@ -5513,6 +5678,15 @@ mod tests {
     fn dimensioned_arg_rejected_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::DimensionedArgRejected).unwrap();
         assert_eq!(s, "\"DimensionedArgRejected\"");
+    }
+
+    // --- DegenerateDirection tests (direction-typing α) ---
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn degenerate_direction_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::DegenerateDirection).unwrap();
+        assert_eq!(s, "\"DegenerateDirection\"");
     }
 
     // --- GeometryUnbounded tests (geometry-traits task 2312) ---
@@ -7400,6 +7574,30 @@ mod tests {
         assert_eq!(s, "\"TypeArgBound\"");
     }
 
+    // --- NonPubAliasInPubAlias tests (task 10297) ---
+    // Pairs with `validate_pub_parametric_alias_def_site` case (c) in
+    // `crates/reify-compiler/src/type_resolution.rs`.
+
+    /// `DiagnosticCode::NonPubAliasInPubAlias` round-trips through
+    /// `Diagnostic::error(...).with_code(...)`.
+    #[test]
+    fn diagnostic_code_non_pub_alias_in_pub_alias_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::error("pub type alias names non-pub type alias")
+            .with_code(DiagnosticCode::NonPubAliasInPubAlias);
+        assert_eq!(d.code, Some(DiagnosticCode::NonPubAliasInPubAlias));
+        assert_eq!(d.severity, Severity::Error);
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::NonPubAliasInPubAlias`
+    /// serializes as `"NonPubAliasInPubAlias"` (PascalCase).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_non_pub_alias_in_pub_alias_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::NonPubAliasInPubAlias).unwrap();
+        assert_eq!(s, "\"NonPubAliasInPubAlias\"");
+    }
+
     // --- TypeArgOnTrait tests (task 5049 α — E_TYPE_ARG_ON_TRAIT) ---
     // Pairs with the trait-with-args intercept arm in
     // `crates/reify-compiler/src/type_resolution.rs`
@@ -8041,10 +8239,12 @@ pub struct DiagnosticInfo {
     /// Whether this diagnostic carries a real, line-tied source span.
     ///
     /// `true` means the `line`/`column`/`end_line`/`end_column` fields reflect an
-    /// actual span from the compiled source (non-empty `Diagnostic::labels`).
+    /// actual span from the compiled source (a first `Diagnostic::labels` entry
+    /// whose span is not [`SourceSpan::prelude`]).
     /// `false` means the positions are synthetic (hardcoded 1/1/1/1) and do NOT
     /// point at a meaningful source location — e.g. module-level hot-reload staleness
-    /// errors where no span is available.
+    /// errors where no span is available, or a diagnostic re-homed from an
+    /// imported module, whose spans index that module, not this source.
     ///
     /// Consumers (β span-less render, γ span-less refusal) use this flag to avoid
     /// navigating the editor to a fake line 1 for span-less diagnostics.

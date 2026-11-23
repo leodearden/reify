@@ -17,8 +17,9 @@ use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, gt, lit
 use crate::engine::{CompileFailure, CompileFailureKind, CoreState, EngineSession, MergedTraitDefs, build_constraints, build_template_node, module_key, parse_value_string, unit_hint_from_default_literal};
 use crate::mcp_context::TauriToolContext;
 use crate::tests::test_helpers::{
-    assert_rigid_mass_props_determined, bounded_bracket_source, find_moi_principal_constraint,
-    rigid_mass_props_fixture_path, rigid_mass_props_session, visible_realization_keys,
+    UNPARSEABLE_SRC, assert_rigid_mass_props_determined, bounded_bracket_source,
+    find_moi_principal_constraint, rigid_mass_props_fixture_path, rigid_mass_props_session,
+    visible_realization_keys,
 };
 use crate::types::EntityTreeNode;
 
@@ -219,8 +220,8 @@ fn preview_parameter_changes_width() {
 /// free functions, not method chaining).
 const HAPPY_MECHANISM_SOURCE: &str = r#"
 structure Kinematic {
-    let j_a = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
-    let j_b = revolute(vec3(0, 0, 1), 0rad .. 3.14rad)
+    let j_a = prismatic(dir(1, 0, 0), 0mm .. 1000mm)
+    let j_b = revolute(dir(0, 0, 1), 0rad .. 3.14rad)
     let m0  = mechanism()
     let m1  = body(m0, "solid_a", j_a)
     let m2  = body(m1, "solid_b", j_b, j_a)
@@ -234,7 +235,7 @@ structure Kinematic {
 /// j_f: fixed (no axis, no range)
 const COUPLING_FIXED_SOURCE: &str = r#"
 structure Kinematic {
-    let j_a = prismatic(vec3(1, 0, 0), 0mm .. 500mm)
+    let j_a = prismatic(dir(1, 0, 0), 0mm .. 500mm)
     let j_c = couple(j_a, -1.0)
     let j_f = fixed()
     let m0  = mechanism()
@@ -258,8 +259,8 @@ structure Kinematic {
 /// `error` key, and `get_mechanism_descriptors` must filter it out.
 const DUPLICATE_SOLID_SOURCE: &str = r#"
 structure Kinematic {
-    let j_a = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
-    let j_b = prismatic(vec3(0, 1, 0), 0mm .. 1000mm)
+    let j_a = prismatic(dir(1, 0, 0), 0mm .. 1000mm)
+    let j_b = prismatic(dir(0, 1, 0), 0mm .. 1000mm)
     let m0  = mechanism()
     let m1  = body(m0, "solid_a", j_a)
     let m2  = body(m1, "solid_a", j_b)
@@ -610,7 +611,7 @@ fn get_mechanism_descriptors_filters_intermediate_body_chain_cells() {
 const SNAPSHOT_PARAM_BIND_SOURCE: &str = r#"
 structure Kinematic {
     param y_pos: Length = 100mm
-    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let y_axis = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0     = mechanism()
     let m1     = body(m0, "solid_a", y_axis)
     let snap   = snapshot(m1, [bind(y_axis, y_pos)])
@@ -622,7 +623,7 @@ structure Kinematic {
 /// driving_param_cell_id must remain None.
 const SNAPSHOT_LITERAL_BIND_SOURCE: &str = r#"
 structure Kinematic {
-    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let y_axis = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0     = mechanism()
     let m1     = body(m0, "solid_a", y_axis)
     let snap   = snapshot(m1, [bind(y_axis, 50mm)])
@@ -767,7 +768,7 @@ fn get_mechanism_descriptors_current_value_si_updates_after_preview_parameter() 
 /// refuses a bare number at eval (#6941).
 const SNAPSHOT_NUMBER_LITERAL_BIND_SOURCE: &str = r#"
 structure Kinematic {
-    let y_axis = revolute(vec3(1, 0, 0), 0rad .. 1rad)
+    let y_axis = revolute(dir(1, 0, 0), 0rad .. 1rad)
     let m0     = mechanism()
     let m1     = body(m0, "solid_a", y_axis)
     let snap   = snapshot(m1, [bind(y_axis, 0.5)])
@@ -938,7 +939,7 @@ fn get_mechanism_descriptors_literal_bind_with_dimensionless_number_literal() {
 /// joint keeps the kind-based `LiteralBound` default with no literal value.
 const UNBOUND_PRISMATIC_SOURCE: &str = r#"
 structure Kinematic {
-    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let y_axis = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0     = mechanism()
     let m1     = body(m0, "solid_a", y_axis)
 }
@@ -1002,7 +1003,7 @@ const DOUBLE_BIND_SOURCE: &str = r#"
 structure Kinematic {
     param p1: Length = 100mm
     param p2: Length = 200mm
-    let j  = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let j  = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0 = mechanism()
     let m1 = body(m0, "solid_a", j)
     let snap1 = snapshot(m1, [bind(j, p1)])
@@ -1041,7 +1042,7 @@ fn get_mechanism_descriptors_double_bind_first_wins() {
 const LET_BIND_SOURCE: &str = r#"
 structure Kinematic {
     let q  = 100mm
-    let j  = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let j  = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0 = mechanism()
     let m1 = body(m0, "solid_a", j)
     let snap = snapshot(m1, [bind(j, q)])
@@ -1112,8 +1113,8 @@ const MULTI_SNAPSHOT_SOURCE: &str = r#"
 structure Kinematic {
     param p1: Length = 100mm
     param p2: Length = 200mm
-    let j1 = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
-    let j2 = prismatic(vec3(0, 1, 0), 0mm .. 600mm)
+    let j1 = prismatic(dir(1, 0, 0), 0mm .. 800mm)
+    let j2 = prismatic(dir(0, 1, 0), 0mm .. 600mm)
     let m0  = mechanism()
     let m1  = body(m0, "solid_a", j1)
     let m2  = body(m1, "solid_b", j2, j1)
@@ -1168,7 +1169,7 @@ fn get_mechanism_descriptors_multiple_snapshot_lets_resolve_both_params() {
 /// telemetry.
 const EMPTY_BIND_SNAPSHOT_SOURCE: &str = r#"
 structure Kinematic {
-    let j1 = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let j1 = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0 = mechanism()
     let m1 = body(m0, "solid_a", j1)
     let snap = snapshot(m1, [])
@@ -1225,7 +1226,7 @@ fn collect_snapshot_bind_pairs_stays_silent_for_empty_bind_list() {
 /// 1-arg call and panic on out-of-bounds indexing with no test catching it.
 const ONE_ARG_SNAPSHOT_SOURCE: &str = r#"
 structure Kinematic {
-    let j1 = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let j1 = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0 = mechanism()
     let m1 = body(m0, "solid_a", j1)
     let snap = snapshot(m1)
@@ -1288,7 +1289,7 @@ fn collect_snapshot_bind_pairs_stays_silent_for_one_arg_call() {
 /// directly via `reify_syntax` so the frontend check is bypassed.
 const NON_LIST_SNAPSHOT_ARG_SOURCE: &str = r#"
 structure Kinematic {
-    let j1 = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let j1 = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0 = mechanism()
     let m1 = body(m0, "solid_a", j1)
     let snap = snapshot(m1, j1)
@@ -1339,7 +1340,7 @@ fn collect_snapshot_bind_pairs_emits_debug_when_args1_not_listliteral() {
 /// `bind(Ident, Ident|Literal)` pair survives the filter — case (c).  Must emit DEBUG.
 const NON_BIND_LIST_SNAPSHOT_SOURCE: &str = r#"
 structure Kinematic {
-    let j1 = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let j1 = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0 = mechanism()
     let m1 = body(m0, "solid_a", j1)
     let snap = snapshot(m1, [bind(j1, 0mm + 1mm)])
@@ -1517,7 +1518,7 @@ fn update_source_with_invalid_source_returns_err() {
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load");
 
-    let result = session.update_source("bad.ri", "this is not valid {{{}}}");
+    let result = session.update_source("bad.ri", UNPARSEABLE_SRC);
     assert!(result.is_err(), "invalid source should return Err");
 }
 
@@ -1905,7 +1906,7 @@ fn get_source_location_correct_after_failed_update() {
         .expect("should find source location before failed update");
 
     // (3) Attempt invalid update — should fail
-    let result = session.update_source("bracket.ri", "this is not valid {{{}}}");
+    let result = session.update_source("bracket.ri", UNPARSEABLE_SRC);
     assert!(result.is_err(), "invalid source should return Err");
 
     // (4) get_source_location should return the SAME line/col as before the failed update
@@ -1942,7 +1943,7 @@ fn get_source_location_correct_after_failed_update() {
     // correctly indexed.  get_source_location still resolves against the last-good
     // compiled module — the split is intentional and tested separately.
     assert!(
-        state.files[0].content.contains("this is not valid"),
+        state.files[0].content.contains(UNPARSEABLE_SRC),
         "files[0].content must contain the failing buffer after task 4258 fix, got: {}",
         &state.files[0].content[..50.min(state.files[0].content.len())]
     );
@@ -7603,32 +7604,24 @@ fn extract_joints_from_mechanism_skips_non_map_at_value() {
     );
 }
 
-#[test]
-fn extract_joints_from_mechanism_handles_malformed_axis_length() {
-    // Step 8 RED: hand-construct a mechanism with a prismatic joint whose
-    // "axis" Vector has length 2 (malformed — extract_axis requires length 3).
-    // The descriptor must still be produced (kind=="prismatic", dimension=="length")
-    // but axis must be None.
+/// A hand-built mechanism Map with one body whose `"at"` joint is a
+/// prismatic carrying `axis` as its `"axis"` field, run through
+/// `extract_joints_from_mechanism`; returns the single joint descriptor.
+fn sole_prismatic_descriptor_with_axis(axis: reify_ir::Value) -> crate::types::JointDescriptor {
     use crate::engine::extract_joints_from_mechanism;
     use reify_ir::Value;
     use std::collections::BTreeMap;
 
-    // Build the joint map with a 2-element axis vector.
     let mut joint_map: BTreeMap<Value, Value> = BTreeMap::new();
     joint_map.insert(
         Value::String("kind".to_string()),
         Value::String("prismatic".to_string()),
     );
-    joint_map.insert(
-        Value::String("axis".to_string()),
-        Value::Vector(vec![Value::Real(1.0), Value::Real(0.0)]), // length 2 — malformed
-    );
+    joint_map.insert(Value::String("axis".to_string()), axis);
 
-    // Build the body map referencing the joint.
     let mut body_map: BTreeMap<Value, Value> = BTreeMap::new();
     body_map.insert(Value::String("at".to_string()), Value::Map(joint_map));
 
-    // Build the mechanism map.
     let mut mech_map: BTreeMap<Value, Value> = BTreeMap::new();
     mech_map.insert(
         Value::String("kind".to_string()),
@@ -7639,15 +7632,14 @@ fn extract_joints_from_mechanism_handles_malformed_axis_length() {
         Value::List(vec![Value::Map(body_map)]),
     );
 
-    let (joints, _seen_joints) = extract_joints_from_mechanism(&mech_map);
-
+    let (mut joints, _seen_joints) = extract_joints_from_mechanism(&mech_map);
     assert_eq!(
         joints.len(),
         1,
         "expected 1 joint descriptor; got {:?}",
         joints
     );
-    let jd = &joints[0];
+    let jd = joints.remove(0);
     assert_eq!(
         jd.kind, "prismatic",
         "kind should be prismatic; got {}",
@@ -7658,11 +7650,75 @@ fn extract_joints_from_mechanism_handles_malformed_axis_length() {
         "dimension should be length; got {}",
         jd.dimension
     );
+    jd
+}
+
+#[test]
+fn extract_joints_from_mechanism_handles_malformed_axis_length() {
+    // An "axis" that is not a Direction (here a 2-element Vector) still yields
+    // the descriptor, with axis == None.
+    use reify_ir::Value;
+    let jd = sole_prismatic_descriptor_with_axis(Value::Vector(vec![
+        Value::Real(1.0),
+        Value::Real(0.0),
+    ]));
     assert!(
         jd.axis.is_none(),
-        "malformed axis (length!=3) must produce axis==None; got {:?}",
+        "an axis that is not a Direction must produce axis==None; got {:?}",
         jd.axis
     );
+}
+
+#[test]
+fn extract_joints_from_mechanism_reads_a_direction_axis() {
+    let jd = sole_prismatic_descriptor_with_axis(reify_test_support::direction_val(0.0, 1.0, 0.0));
+    assert_eq!(jd.axis, Some([0.0, 1.0, 0.0]));
+}
+
+#[test]
+fn extract_joints_from_mechanism_rejects_a_vector_axis() {
+    // A well-formed 3-component Vector is not a direction: nothing downstream
+    // may read it as one.
+    use reify_ir::Value;
+    let jd = sole_prismatic_descriptor_with_axis(Value::Vector(vec![
+        Value::Real(0.0),
+        Value::Real(1.0),
+        Value::Real(0.0),
+    ]));
+    assert!(
+        jd.axis.is_none(),
+        "a Vector axis must produce axis==None; got {:?}",
+        jd.axis
+    );
+}
+
+/// One prismatic joint with a `dir(…)` axis, mounted in a one-body mechanism.
+const DIRECTION_AXIS_MECHANISM_SOURCE: &str = r#"
+structure Kinematic {
+    let slide = prismatic(dir(1, 0, 0), 0mm .. 200mm)
+    let m0    = mechanism()
+    let m1    = body(m0, "carriage", slide)
+}
+"#;
+
+#[test]
+fn get_mechanism_descriptors_reads_a_dir_literal_joint_axis() {
+    let mut session = make_session();
+    session
+        .load_from_source(DIRECTION_AXIS_MECHANISM_SOURCE, "kinematic")
+        .expect("load kinematic");
+
+    let descriptors = session.get_mechanism_descriptors();
+    let m1_desc = descriptors
+        .iter()
+        .find(|d| d.bodies_count == 1)
+        .unwrap_or_else(|| panic!("expected the one-body mechanism; got {descriptors:?}"));
+    let slide = m1_desc
+        .joints
+        .iter()
+        .find(|j| j.kind == "prismatic")
+        .unwrap_or_else(|| panic!("expected a prismatic joint; got {:?}", m1_desc.joints));
+    assert_eq!(slide.axis, Some([1.0, 0.0, 0.0]));
 }
 
 #[test]
@@ -7780,7 +7836,8 @@ fn compile_diagnostics_full_pipeline_engine_to_event() {
 /// `structure Top` has no direct params, so compiled.templates = [Top] with
 /// value_cells = [] → state.values is empty.
 ///
-/// Post-fix (compile_entry_with_imports): `ModuleResolver` resolves `helper`,
+/// Post-fix (task 3228; since task 5519 the program compile,
+/// `compile_entry_program`): the entry-directory resolver resolves `helper`,
 /// Helper's template is merged into compiled.templates, phase-1 eval produces
 /// `Helper.x = 10mm`, and build_values surfaces it as a ValueData entry.
 ///
@@ -7848,8 +7905,9 @@ fn load_file_with_user_import_resolves_imported_structure() {
     );
 }
 
-/// Regression: loading a standalone .ri file with no imports via the new
-/// compile_entry_with_imports path must work correctly — same as before.
+/// Regression: loading a standalone .ri file with no imports via the
+/// file-backed `load_file` path must work correctly — same as before (since
+/// task 5519 an import-free entry compiles single-file through `compile_buffer`).
 ///
 /// Guards against the new code path mishandling the no-imports case
 /// (e.g. wrong project_root resolution, double-counting stdlib, or the
@@ -7905,9 +7963,10 @@ fn load_file_solo_helper_no_imports_works() {
 ///
 /// Pre-fix (compile_with_stdlib path): the import is ignored, compile succeeds,
 /// load_file returns Ok with empty or useless engine state.
-/// Post-fix (compile_entry_with_imports): dag.compile_module returns an Err
-/// containing the resolver's "module 'nonexistent' not found: tried '...' and
-/// '...'" message, which load_file surfaces as Err.
+/// Post-fix (task 3228; since task 5519 the program compile,
+/// `compile_entry_program`): the missing import surfaces as an Error on the
+/// entry carrying the resolver's "module 'nonexistent' not found: tried '...'
+/// and '...'" message, which load_file surfaces as Err.
 #[test]
 fn load_file_unresolved_import_returns_clear_err() {
     let checker = SimpleConstraintChecker;
@@ -8005,8 +8064,9 @@ fn loaded_helper_session() -> (tempfile::TempDir, EngineSession, std::path::Path
 /// Pre-fix: `update_source` uses `compile_with_stdlib` (single-file, ignores
 /// `import helper`) → compile-error for unknown `Helper` template → returns
 /// `Err`.
-/// Post-fix: branches on `self.file_path.is_some()`, routes through
-/// `compile_entry_with_imports` → import resolved → returns `Ok` with
+/// Post-fix: branches on `self.file_path.is_some()`, routes through the
+/// file-backed program compile (`compile_entry_program` since task 5519) →
+/// import resolved → returns `Ok` with
 /// `Helper.x = 10mm` still present.
 #[test]
 fn update_source_after_load_file_preserves_multi_file_imports() {
@@ -8050,8 +8110,8 @@ fn update_source_after_load_file_preserves_multi_file_imports() {
 ///
 /// This is the core dirty-buffer regression scenario for task 3318: pre-fix
 /// `update_source` silently dropped all imports on every keystroke because it
-/// called `compile_with_stdlib` (single-file) instead of
-/// `compile_entry_with_imports` (multi-file).
+/// called `compile_with_stdlib` (single-file) instead of the multi-file
+/// compile (since task 5519 the program compile, `compile_entry_program`).
 #[test]
 fn update_source_after_load_file_dirty_buffer_edit_preserves_imports() {
     let (_dir, mut session, main_path, _main_content) = loaded_helper_session();
@@ -8629,11 +8689,10 @@ fn build_gui_state_surfaces_parse_error_after_failed_update_source_on_fresh_sess
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
-    let bad_source = "this is not valid {{{}}}";
     // Fresh session — no load_file or load_from_source, so self.file_path is None.
     // update_source takes the single-file branch (compile_single_file_with_stdlib).
     let err = session
-        .update_source("foo.ri", bad_source)
+        .update_source("foo.ri", UNPARSEABLE_SRC)
         .expect_err("invalid source should return Err");
     assert!(
         err.contains("Parse errors"),
@@ -8666,7 +8725,7 @@ fn build_gui_state_surfaces_parse_error_after_failed_update_source_on_fresh_sess
         "files[0].path must equal the module key derived from 'foo.ri'"
     );
     assert_eq!(
-        state.files[0].content, bad_source,
+        state.files[0].content, UNPARSEABLE_SRC,
         "files[0].content must equal the exact failing buffer"
     );
 
@@ -8923,9 +8982,9 @@ fn build_gui_state_returns_empty_tessellation_diagnostics_when_no_module_loaded(
 /// in `files[0]` so diagnostics line/col can be indexed against the actual text
 /// (task 4258).
 ///
-/// Pins step-5/step-6 of the task-3351 plan: `load_file` routes through
-/// `compile_entry_with_imports`, which must also populate
-/// `compile_failure` on failure once refactored in step-6.
+/// Pins step-5/step-6 of the task-3351 plan: `load_file`'s file-backed
+/// compile (since task 5519 `compile_buffer`, which rejects the parse error
+/// before routing) must also populate `compile_failure` on failure.
 /// Updated for task 4258: `files` is now non-empty (failing source is surfaced).
 #[test]
 fn build_gui_state_surfaces_parse_error_after_failed_load_file() {
@@ -9121,11 +9180,12 @@ fn build_gui_state_surfaces_live_compile_failure_after_failed_update_source_sing
 
 /// After a session already has a successful compile via `load_file` (`compiled` is
 /// `Some` AND `file_path` is `Some`), a subsequent failed `update_source` (multi-file
-/// path — `self.file_path` is `Some`, so `update_source` routes through
-/// `compile_entry_with_imports`) must surface the live compile failure in
+/// path — `self.file_path` is `Some`, so `update_source` compiles anchored at the
+/// entry through `compile_buffer`) must surface the live compile failure in
 /// `build_gui_state`'s `compile_diagnostics`.
 ///
-/// Exercises `update_source`'s multi-file branch (`compile_entry_with_imports`).
+/// Exercises `update_source`'s file-backed branch (task 3386's multi-file path;
+/// since task 5519 `compile_buffer` with the entry anchor).
 /// Pins the invariant introduced in task 3386: live compile failures on the multi-file
 /// path are stored as `CompileFailureKind::LiveEdit` and surfaced via `build_gui_state`.
 #[test]
@@ -9191,7 +9251,8 @@ fn build_gui_state_surfaces_live_compile_failure_after_failed_update_source_mult
 /// `Some`), a subsequent failed `load_file` (overwritten with broken source) must
 /// surface the live compile failure in `build_gui_state`'s `compile_diagnostics`.
 ///
-/// Exercises `load_file`'s failure path (`compile_entry_with_imports`).
+/// Exercises `load_file`'s failure path (task 3386's multi-file path; since
+/// task 5519 `compile_buffer` with the entry anchor).
 /// Pins the invariant introduced in task 3386: live compile failures via `load_file`
 /// are stored as `CompileFailureKind::LiveEdit` and surfaced via `build_gui_state`.
 #[test]
@@ -10972,7 +11033,7 @@ fn extract_joint_descriptor_assigns_kind_based_binding_defaults_revolute() {
 const RESERVED_PARAM_NAME_SOURCE: &str = r#"
 structure Kinematic {
     param __joint_y_axis_v: Length = 50mm
-    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let y_axis = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0     = mechanism()
     let m1     = body(m0, "solid_a", y_axis)
 }
@@ -11055,7 +11116,7 @@ fn get_mechanism_descriptors_does_not_warn_for_normally_named_params() {
 /// `literal_bind_resolves_the_builtin_unit_symbols_the_old_table_dropped`.
 const SNAPSHOT_UNSUPPORTED_UNIT_BIND_SOURCE: &str = r#"
 structure Kinematic {
-    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let y_axis = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0     = mechanism()
     let m1     = body(m0, "solid_a", y_axis)
     let snap   = snapshot(m1, [bind(y_axis, 50inch)])
@@ -11129,7 +11190,7 @@ fn get_mechanism_descriptors_literal_bind_with_unsupported_unit_yields_none_and_
 /// dropped.
 const SNAPSHOT_INCH_BIND_SOURCE: &str = r#"
 structure Kinematic {
-    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let y_axis = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0     = mechanism()
     let m1     = body(m0, "solid_a", y_axis)
     let snap   = snapshot(m1, [bind(y_axis, 3in)])
@@ -11140,7 +11201,7 @@ structure Kinematic {
 /// could not resolve at all.
 const SNAPSHOT_KILOGRAM_BIND_SOURCE: &str = r#"
 structure Kinematic {
-    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let y_axis = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0     = mechanism()
     let m1     = body(m0, "solid_a", y_axis)
     let snap   = snapshot(m1, [bind(y_axis, 2kg)])
@@ -11151,7 +11212,7 @@ structure Kinematic {
 /// only through `BUILTIN_UNITS`; no curated display ladder carries it.
 const SNAPSHOT_SECOND_BIND_SOURCE: &str = r#"
 structure Kinematic {
-    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let y_axis = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0     = mechanism()
     let m1     = body(m0, "solid_a", y_axis)
     let snap   = snapshot(m1, [bind(y_axis, 2s)])
@@ -11161,7 +11222,7 @@ structure Kinematic {
 /// `bind(y_axis, 5kg/m^3)` — a COMPOUND unit expression (`UnitExpr::Div`).
 const SNAPSHOT_COMPOUND_DIV_BIND_SOURCE: &str = r#"
 structure Kinematic {
-    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let y_axis = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0     = mechanism()
     let m1     = body(m0, "solid_a", y_axis)
     let snap   = snapshot(m1, [bind(y_axis, 5kg/m^3)])
@@ -11171,7 +11232,7 @@ structure Kinematic {
 /// `bind(y_axis, 5m^2)` — a COMPOUND unit expression (`UnitExpr::Pow`).
 const SNAPSHOT_COMPOUND_POW_BIND_SOURCE: &str = r#"
 structure Kinematic {
-    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let y_axis = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0     = mechanism()
     let m1     = body(m0, "solid_a", y_axis)
     let snap   = snapshot(m1, [bind(y_axis, 5m^2)])
@@ -11247,7 +11308,7 @@ fn literal_bind_still_defers_compound_unit_expressions_to_task_3803() {
 /// `k`/`M`/`G` prefixes), but NOT a `BUILTIN_UNITS` symbol.
 const SNAPSHOT_LADDER_ONLY_LABEL_BIND_SOURCE: &str = r#"
 structure Kinematic {
-    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let y_axis = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0     = mechanism()
     let m1     = body(m0, "solid_a", y_axis)
     let snap   = snapshot(m1, [bind(y_axis, 5MPa)])
@@ -11336,7 +11397,7 @@ fn literal_bind_universe_is_dsl_symbols_not_gui_display_labels() {
 const SNAPSHOT_LITERAL_THEN_PARAM_SOURCE: &str = r#"
 structure Kinematic {
     param y_pos: Length = 100mm
-    let y_axis = prismatic(vec3(1, 0, 0), 0mm .. 800mm)
+    let y_axis = prismatic(dir(1, 0, 0), 0mm .. 800mm)
     let m0     = mechanism()
     let m1     = body(m0, "solid_a", y_axis)
     let snap1  = snapshot(m1, [bind(y_axis, 50mm)])
@@ -15096,8 +15157,8 @@ fn build_gui_state_cold_start_failure_surfaces_failing_source() {
 /// project (entry + imported helper), a failing `update_source` must override
 /// ONLY the entry file's `files[].content` with the failing buffer.
 ///
-/// This exercises the LiveEdit override path via `compile_entry_with_imports`
-/// (the multi-file call site at engine.rs:1769) rather than the single-file
+/// This exercises the LiveEdit override path via the file-backed program
+/// compile (`compile_entry_program` since task 5519) rather than the single-file
 /// path used by the other added tests.  It also confirms that the single-entry
 /// source_map stores only the entry key ("main.ri"), not the imported key
 /// ("helper.ri"), so `build_gui_state` produces exactly one `files` entry
@@ -15116,7 +15177,7 @@ fn build_gui_state_live_edit_multi_file_entry_key_overridden() {
     );
 
     // Trigger a failing live edit on the entry file.  The import line is kept
-    // so compile_entry_with_imports is taken (multi-file path), and the bogus
+    // so the program compile, compile_entry_program, is taken, and the bogus
     // reference produces a compile-phase UnresolvedName error.
     let bad_main = "import helper\nstructure Top { sub h = Helper()\nlet broken = bogus_var }\n";
     let result = session.update_source(main_path.to_str().unwrap(), bad_main);
@@ -21733,13 +21794,13 @@ fn apply_param_to_source_writes_through_a_symlinked_design_rather_than_replacing
 
 #[test]
 fn apply_param_to_source_refuses_a_param_declared_in_an_imported_module() {
-    // `compile_entry_with_imports` MERGES a direct import's pub templates into
-    // `compiled.templates`, so an imported param passes the cell-existence gate
-    // — while its text never enters `parsed_cache` or `source_map`, so there is
-    // nothing here to splice. Without a dedicated arm that combination reads as
-    // "no default expression", which is not what happened: the default is right
-    // there in the other file, and δ would surface a reason that sends its
-    // caller looking in the wrong place.
+    // The program compile (`compile_entry_program`) MERGES a direct import's
+    // pub templates into `compiled.templates`, so an imported param passes the
+    // cell-existence gate — while its text never enters `parsed_cache` or
+    // `source_map`, so there is nothing here to splice. Without a dedicated arm
+    // that combination reads as "no default expression", which is not what
+    // happened: the default is right there in the other file, and δ would
+    // surface a reason that sends its caller looking in the wrong place.
     //
     // Two-file fixture mirroring `load_file_with_user_import_resolves_imported_structure`.
     let dir = tempfile::tempdir().expect("tempdir should be created");

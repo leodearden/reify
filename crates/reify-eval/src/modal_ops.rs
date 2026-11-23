@@ -46,6 +46,7 @@ use reify_stdlib::modal::transient::{
     sampled_force_at, solve_modal_response, step_force_at, uniform_time_grid,
 };
 
+use crate::compute_targets::bc_resolve::named_leaf_target;
 use crate::compute_targets::result_topology::carried_topology_from_result;
 use crate::topology_selectors::{nodes_for_faces, resolve_against_carried_topology};
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
@@ -3172,7 +3173,7 @@ pub fn solve_transient_response_trampoline(
 /// modal trampolines this returns a non-struct value: a `Value::List` of
 /// LENGTH-dimensioned `Value::Scalar`s in SI metres (PRD §5.2) — Length, not a
 /// bare Real, since #6094; WHY the reconstruction is metres is derived at the
-/// declaration, `reify-compiler/stdlib/modal_analysis_fns.ri` ::
+/// declaration, `reify-compiler/stdlib/modal_analysis.ri` ::
 /// `displacement_at`. No warm state is donated (ι owns fn+dispatch; caching is
 /// λ's job).
 pub fn displacement_at_trampoline(
@@ -3228,7 +3229,7 @@ pub fn displacement_at_trampoline(
 /// carrying a `Value::List` of LENGTH-dimensioned `Value::Scalar`s in SI metres
 /// (PRD §5.2) — the non-struct result shape unique to `displacement_at`, and the
 /// runtime counterpart of the `-> List<Length>` declaration at
-/// `stdlib/modal_analysis_fns.ri` (#6094). No warm state / diagnostics (ι donates
+/// `stdlib/modal_analysis.ri` (#6094). No warm state / diagnostics (ι donates
 /// neither).
 fn displacement_series_outcome(series: Vec<f64>) -> ComputeOutcome {
     ComputeOutcome::Completed {
@@ -3859,8 +3860,8 @@ fn build_dirichlet_bcs(
     //
     //   * A support whose target names NO recognized face constrains nothing
     //     (`per_face_bcs` skips it through this same [`face_bound`] predicate),
-    //     so it must not give another face company — otherwise a typo, or the
-    //     stdlib's own `param target : String = ""` default, flips a
+    //     so it must not give another face company — otherwise a typo'd name,
+    //     or a support carrying no target at all, flips a
     //     `PinnedSupport` on a beam end from a clamp to a lone simple support,
     //     turning a well-posed cantilever into a mechanism. Pinned by
     //     `build_dirichlet_bcs_ignores_supports_that_name_no_face`.
@@ -4026,7 +4027,7 @@ fn pinned_end_face_realization_diagnostics(
         }
         let message = if simply_supported {
             format!(
-                "I_ModalPinnedFaceRealization: PinnedSupport(\"{target}\") is realized as \
+                "I_ModalPinnedFaceRealization: PinnedSupport on face \"{target}\" is realized as \
                  {PINNED_BEAM_END_REALIZATION}, because BOTH beam-axis end faces are pinned; \
                  ONE axial (X) anchor is added at the x_min neutral-axis node so K_free is not \
                  singular. The same declaration clamps all 3 translational DOFs when it is the \
@@ -4034,14 +4035,14 @@ fn pinned_end_face_realization_diagnostics(
             )
         } else if let FaceCompany::WithAnotherFace(other) = company {
             format!(
-                "I_ModalPinnedFaceRealization: PinnedSupport(\"{target}\") is realized as \
+                "I_ModalPinnedFaceRealization: PinnedSupport on face \"{target}\" is realized as \
                  {PINNED_BEAM_END_REALIZATION}, because the model's supports also name \
                  \"{other}\". Were this the only face named, the SAME declaration would clamp \
                  all 3 translational DOFs instead and the fundamental would rise."
             )
         } else {
             format!(
-                "I_ModalPinnedFaceRealization: PinnedSupport(\"{target}\") clamps all 3 \
+                "I_ModalPinnedFaceRealization: PinnedSupport on face \"{target}\" clamps all 3 \
                  translational DOFs, because it is the only face the model's supports name (a \
                  lone simple support is a mechanism). Naming a second distinct face would \
                  re-realize this one as {PINNED_BEAM_END_REALIZATION}, and the fundamental \
@@ -4261,9 +4262,9 @@ fn nearest_node(nodes: &[[f64; 3]], target: [f64; 3]) -> usize {
 /// `StructureInstance.type_name` by [`support_targets`].
 ///
 /// `FixedSupport` and `PinnedSupport` are declared with IDENTICAL field shapes
-/// (`param target : String = ""`, crates/reify-compiler/stdlib/fea_multi_case.ri
-/// :355 and :380), so the `target` field alone cannot tell them apart — the kind
-/// has to be read off the instance's `type_name` (task 6663).
+/// (`param target : Selector`, crates/reify-compiler/stdlib/fea_multi_case.ri),
+/// so the `target` field alone cannot tell them apart — the kind has to be read
+/// off the instance's `type_name` (task 6663).
 ///
 /// **Deliberately NOT named `SupportKind`.** `reify_solver_elastic::SupportKind`
 /// (re-exported from that crate's `lib.rs`, and this module already imports
@@ -4331,8 +4332,8 @@ fn is_beam_axis_end_face(target: &str) -> bool {
 /// Keeping both on one predicate is what stops a support that can select NO
 /// node from silently changing another face's realization: before task 6663's
 /// amendment the decision read `targets.len()`, so `[Pinned("x_min"),
-/// Fixed("<typo>")]` — or the stdlib's own `param target : String = ""`
-/// default — counted as two supports and flipped `x_min` from a clamp
+/// Fixed("<typo>")]` — or a support naming the empty face — counted as two
+/// supports and flipped `x_min` from a clamp
 /// (a well-posed cantilever) to a Z-only pin (a 4-rigid-body-mode mechanism).
 ///
 /// The `(axis, is_max)` return is also what makes face identity independent of
@@ -4434,7 +4435,7 @@ fn face_company(target: &str, targets: &[(DeclaredSupport, String)]) -> FaceComp
 /// that used to return a real answer into ≈ 0 Hz mechanisms reported under a
 /// mere Warning:
 ///
-///   * `[PinnedSupport("x_min")]` alone — a LONE support is the model's only
+///   * `[PinnedSupport on x_min]` alone — a LONE support is the model's only
 ///     restraint, and a lone simple support is a mechanism by construction:
 ///     nothing restrains the X translation, the hinge rotation about the
 ///     face's own Y axis, or the rotation about the vertical axis through its
@@ -4442,7 +4443,7 @@ fn face_company(target: &str, targets: &[(DeclaredSupport, String)]) -> FaceComp
 ///     which is also what
 ///     `PinnedOnTetEquivalentToFixed` says a single pinned tet face means.
 ///     Clamping restores that.
-///   * `[PinnedSupport("y_min"), PinnedSupport("y_max")]` — neither face is a
+///   * `[PinnedSupport on y_min, PinnedSupport on y_max]` — neither face is a
 ///     beam end, so Z-pinning both leaves the beam free to slide axially.
 ///
 /// Both propped configurations the task cares about are unaffected: the
@@ -4476,8 +4477,15 @@ fn face_realization(kind: DeclaredSupport, target: &str, company: &FaceCompany) 
 }
 
 /// Collect the `(declared kind, target face name)` pairs from the options'
-/// `boundary_conditions` list. Non-StructureInstance entries and entries without
-/// a string `target` are skipped.
+/// `boundary_conditions` list. The face name is the `Named` leaf of the typed
+/// `target` selector (`face(beam, "x_min")` → `"x_min"`), read by
+/// [`named_leaf_target`]. Non-StructureInstance entries and entries without a
+/// target are skipped. An entry whose target is not a Named-leaf selector — a
+/// predicate or composed selector the kind-agnostic `Selector` field admits
+/// (`faces(beam)`, a union), or a bare `Value::String` (D8) — is skipped with a
+/// `tracing::warn!`, as `parse_pressure_spec` does for a dropped pressure load,
+/// because the solve then runs without that support. Interim name read;
+/// Bmig2-consume (#5313, PRD D9) replaces it with node-set resolution.
 ///
 /// The kind is read off `StructureInstance.type_name`: `"PinnedSupport"` maps to
 /// [`DeclaredSupport::Pinned`], and EVERY other type name to
@@ -4493,16 +4501,28 @@ fn support_targets(options: &Value) -> Vec<(DeclaredSupport, String)> {
         && let Some(Value::List(items)) = data.fields.get("boundary_conditions")
     {
         for item in items {
-            if let Value::StructureInstance(support) = item
-                && let Some(Value::String(target)) = support.fields.get("target")
-            {
-                let kind = if support.type_name == "PinnedSupport" {
-                    DeclaredSupport::Pinned
-                } else {
-                    DeclaredSupport::Fixed
-                };
-                targets.push((kind, target.clone()));
-            }
+            let Value::StructureInstance(support) = item else {
+                continue;
+            };
+            let Some(target_val) = support.fields.get("target") else {
+                continue;
+            };
+            let Some(target) = named_leaf_target(target_val) else {
+                tracing::warn!(
+                    support = %support.type_name,
+                    target = ?target_val,
+                    "{}.target is not a single Named-leaf selector; the modal solve \
+                     does not realize this support",
+                    support.type_name,
+                );
+                continue;
+            };
+            let kind = if support.type_name == "PinnedSupport" {
+                DeclaredSupport::Pinned
+            } else {
+                DeclaredSupport::Fixed
+            };
+            targets.push((kind, target.to_owned()));
         }
     }
     targets
@@ -4582,6 +4602,7 @@ mod tests {
         solve_generalized_eigen,
         solve_mechanism_modal_trampoline,
         solve_modal_analysis_trampoline, solve_modal_core, solve_transient_response_trampoline,
+        support_targets,
     };
     use crate::{CancellationHandle, ComputeOutcome};
     /// The 1-D Laplacian pencil and its closed form come from the solver crate's
@@ -6857,23 +6878,84 @@ mod tests {
         }))
     }
 
+    /// The `target` a support authored as `face(beam, "<target>")` evaluates
+    /// to: a Face selector whose single Named leaf is `target`.
+    fn face_target(target: &str) -> Value {
+        reify_test_support::selector_fixtures::named_leaf_selector(
+            reify_core::ty::SelectorKind::Face,
+            target,
+        )
+    }
+
     /// A `FixedSupport { target }` instance — the runtime support shape
     /// `support_targets` reads to discriminate the BC realization.
     fn fixed_support(target: &str) -> Value {
-        struct_instance(
-            "FixedSupport",
-            vec![("target".to_string(), Value::String(target.to_string()))],
-        )
+        struct_instance("FixedSupport", vec![("target".to_string(), face_target(target))])
     }
 
     /// A `PinnedSupport { target }` instance — same field shape as
     /// [`fixed_support`], differing ONLY in `type_name`, which is exactly why
     /// `support_targets` has to read the kind off `type_name` (task 6663).
     fn pinned_support(target: &str) -> Value {
+        struct_instance("PinnedSupport", vec![("target".to_string(), face_target(target))])
+    }
+
+    /// `ModalOptions { boundary_conditions: supports }`, the only field
+    /// `support_targets` reads.
+    fn modal_options_with_supports(supports: Vec<Value>) -> Value {
         struct_instance(
-            "PinnedSupport",
-            vec![("target".to_string(), Value::String(target.to_string()))],
+            "ModalOptions",
+            vec![("boundary_conditions".to_string(), Value::List(supports))],
         )
+    }
+
+    /// A typed `target` the interim name read cannot realize — here the
+    /// all-faces leaf `faces(beam)` mints — drops the support with a warning
+    /// naming it, never silently; a Named-leaf target stays quiet.
+    #[test]
+    fn support_targets_warns_when_it_drops_a_non_named_target() {
+        use reify_core::ty::SelectorKind;
+        use reify_ir::value::LeafQuery;
+        use reify_test_support::selector_fixtures::leaf_selector;
+        use reify_test_support::warn_capturing_subscriber;
+
+        let all_faces = leaf_selector(SelectorKind::Face, LeafQuery::All);
+        let unread = struct_instance("PinnedSupport", vec![("target".to_string(), all_faces)]);
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+        let targets = tracing::subscriber::with_default(subscriber, || {
+            support_targets(&modal_options_with_supports(vec![unread]))
+        });
+        assert!(
+            targets.is_empty(),
+            "a non-Named target is not read: {targets:?}"
+        );
+        capture.assert_count_and_any_message_contains(1, "PinnedSupport.target");
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+        tracing::subscriber::with_default(subscriber, || {
+            support_targets(&modal_options_with_supports(vec![fixed_support("x_min")]))
+        });
+        capture.assert_count(0);
+    }
+
+    /// Task 5312 (D8): the retired `target: "x_min"` String form is never read;
+    /// only the typed Named-leaf target names a face.
+    #[test]
+    fn support_targets_ignores_a_bare_string_target() {
+        let string_target = struct_instance(
+            "FixedSupport",
+            vec![("target".to_string(), Value::String("x_min".to_string()))],
+        );
+        assert!(
+            support_targets(&modal_options_with_supports(vec![string_target])).is_empty(),
+            "a bare String target must contribute no support target"
+        );
+        assert_eq!(
+            support_targets(&modal_options_with_supports(vec![fixed_support("x_min")])),
+            vec![(DeclaredSupport::Fixed, "x_min".to_string())],
+            "the typed Named-leaf target names its face"
+        );
     }
 
     /// A `RayleighDamping { alpha, beta }` instance — the damped shape
@@ -7336,7 +7418,7 @@ mod tests {
     ///
     /// Here the opposite is true and it is MEASURED, not assumed.
     /// `modal_analysis(material : ElasticMaterial, …)`
-    /// (`crates/reify-compiler/stdlib/modal_analysis_fns.ri`) does NOT require
+    /// (`crates/reify-compiler/stdlib/modal_analysis.ri`) does NOT require
     /// `Damped`, so a material with no `loss_factor` reaches the solver and the
     /// compiler cannot catch it — a probe `structure def PlainSteel :
     /// ElasticMaterial { … }` type-checks and evaluates clean today. The absence
@@ -7620,7 +7702,7 @@ mod tests {
     ///         Z-only) — the defect this task fixes: this input used to return
     ///         the bit-identical pin-pin set;
     ///   (iii) one `FixedSupport` on x_min → the cantilever, unchanged;
-    ///   (iv)  `[FixedSupport("x_min"), PinnedSupport("x_max")]` → a genuine
+    ///   (iv)  `[FixedSupport on x_min, PinnedSupport on x_max]` → a genuine
     ///         propped cantilever (x_min fully clamped, x_max a simple support:
     ///         Z on every node, no X, and Y only at its neutral-axis node).
     ///
@@ -7752,7 +7834,7 @@ mod tests {
             (0..f.n_nodes())
                 .filter(|&n| on_y_min(n))
                 .all(|n| clamped(&pin_pin_plus_side, n)),
-            "the FixedSupport(\"y_min\") must clamp all three DOFs on every \
+            "the FixedSupport on y_min must clamp all three DOFs on every \
              y_min node — the pin-pin special case must not discard it",
         );
         assert!(
@@ -7971,7 +8053,7 @@ mod tests {
     /// moved.
     ///
     /// Three realizations, three messages, and the pairing is what matters: the
-    /// same declaration `PinnedSupport("x_min")` reports "clamps all 3
+    /// same declaration, a `PinnedSupport` on x_min, reports "clamps all 3
     /// translational DOFs" alone and a "transverse (Z) pin" plus a "lateral (Y)"
     /// anchor once a second face is named — and all three notes name that same
     /// simple-support realization. `FixedSupport` stays silent (its
@@ -8093,11 +8175,11 @@ mod tests {
     /// Amendment (review suggestion 3): a support that names NO recognized face
     /// must not vote on another face's realization.
     ///
-    /// `support_targets` collects every `StructureInstance` carrying a *string*
-    /// `target`, including the stdlib's own `param target : String = ""` default
-    /// and any typo'd or static-path name (`"root"`). Before this amendment
-    /// `build_dirichlet_bcs` counted those into `n_supports`, so
-    /// `[Pinned("x_min"), Fixed("")]` reached `face_realization` as a
+    /// `support_targets` collects every `StructureInstance` carrying a
+    /// Named-leaf `target`, including any typo'd or static-path name
+    /// (`"root"`). Before this amendment `build_dirichlet_bcs` counted those
+    /// into `n_supports`, so `[Pinned("x_min"), Fixed("")]` (then the stdlib's
+    /// empty String default) reached `face_realization` as a
     /// TWO-support model and flipped x_min from a full clamp (a well-posed
     /// cantilever, the pre-6663 answer) to a transverse-only Z pin — four
     /// surviving rigid-body modes, reported under a mere Warning. That vote
@@ -8126,13 +8208,13 @@ mod tests {
             "the reference cantilever clamp must constrain something",
         );
 
-        // The stdlib default `target : String = ""` — the spelling an author
-        // gets by writing a bare `FixedSupport()`.
+        // A support carrying no `target` at all — what a bare `FixedSupport()`
+        // evaluates to until #7874 makes the required field a compile error.
         assert_eq!(
-            dof_set(vec![pinned_support("x_min"), fixed_support("")]),
+            dof_set(vec![pinned_support("x_min"), struct_instance("FixedSupport", vec![])]),
             cantilever,
-            "a support with the stdlib's empty default target selects no node, so it must \
-             not flip Pinned(x_min) from a clamp to a simple support",
+            "a support with no target selects no node, so it must not flip Pinned(x_min) \
+             from a clamp to a simple support",
         );
 
         // A typo / a static-path selector name that means nothing to the modal
@@ -8165,7 +8247,7 @@ mod tests {
     /// Amendment (review suggestion 1): a support DUPLICATING a face another
     /// support already names must not vote on that face's realization either.
     ///
-    /// `[PinnedSupport("x_min"), PinnedSupport("x_min")]` is the ordinary
+    /// `[PinnedSupport on x_min, PinnedSupport on x_min]` is the ordinary
     /// copy-paste authoring error, and it is the LAST input that could reach
     /// [`FaceRealization::PinTransverse`] as a mechanism. The count in
     /// [`build_dirichlet_bcs`] used to be over SUPPORTS, so the duplicate read as
@@ -9058,7 +9140,7 @@ mod tests {
     }
 
     /// Solve the shared #6878 CANTILEVER fixture (20 x 50 x 100 mm steel beam,
-    /// `FixedSupport(target: "x_min")`, `n_modes = 3`) built from a `Damped`
+    /// `FixedSupport(target: face(beam, "x_min"))`, `n_modes = 3`) built from a `Damped`
     /// material of loss factor `eta`, under `damping`, returning `(f, ζ)` per mode.
     ///
     /// Shared by the step-7 additive-composition twin and the step-15 near-zero-band
@@ -10705,10 +10787,10 @@ mod tests {
     /// Every entry of the emitted series must be a LENGTH-dimensioned
     /// `Value::Scalar`, not a bare `Value::Real` (#6094) — the runtime half of
     /// the `-> List<Length>` declaration whose derivation lives at
-    /// `reify-compiler/stdlib/modal_analysis_fns.ri` :: `displacement_at`.
+    /// `reify-compiler/stdlib/modal_analysis.ri` :: `displacement_at`.
     ///
     /// Why this cannot be folded into the compile-side pin
-    /// (`reify-compiler/tests/harness_mechanics/modal_analysis_fns_stdlib_compile.rs`): the `.ri`
+    /// (`reify-compiler/tests/harness_mechanics/modal_analysis_stdlib_compile.rs`): the `.ri`
     /// declared return type and the trampoline's emitted `Value` are checked
     /// NOWHERE against each other. `ComputeNodeData` carries no type slot,
     /// `ComputeOutcome::Completed` carries an untyped `Value`, and no
@@ -10772,7 +10854,7 @@ mod tests {
             else {
                 panic!(
                     "series[{j}] must be a Length-dimensioned Value::Scalar, not a bare \
-                     Real (#6094; derivation at stdlib/modal_analysis_fns.ri :: \
+                     Real (#6094; derivation at stdlib/modal_analysis.ri :: \
                      displacement_at); got {item:?}"
                 );
             };

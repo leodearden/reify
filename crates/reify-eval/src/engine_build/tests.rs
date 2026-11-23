@@ -1167,7 +1167,9 @@ structure Assembly {
     /// drive multiple sequential realizations against the same state (the
     /// `_shadows_previous` / `_failed_shadow_…` tests) call
     /// [`Self::reset_attribute_tables`] between calls, mirroring the per-build
-    /// reset in production.
+    /// reset in production. A test that needs a second build to start from
+    /// empty output views while the `realization_cache` stays warm (e.g. the
+    /// cold→warm parity tests) calls [`Self::reset_per_build_outputs`] instead.
     ///
     /// A future signature change to `Engine::execute_realization_ops` updates
     /// [`Self::run`] alone instead of every per-test call site.
@@ -1181,7 +1183,7 @@ structure Assembly {
         topology_attribute_table: TopologyAttributeTable,
         swept_kind_table: SweptKindTable,
         kernel_error_out: Option<ErrorRef>,
-        realization_cache: RealizationCache<KernelHandle>,
+        realization_cache: RealizationCache<RealizationCacheEntry>,
         dispatch_count: usize,
         // Task ε (4741): per-realization sibling of `dispatch_count`; threaded
         // into `execute_realization_ops` by `run` / `run_demand`. Not asserted
@@ -1192,8 +1194,8 @@ structure Assembly {
     }
 
     // Hand-written `Default` instead of `#[derive(Default)]`: the inner
-    // `RealizationCache<KernelHandle>` does not satisfy the derive bound
-    // (`V: Default`) — `KernelHandle` pairs a `KernelId` with a `NewType(u64)`
+    // `RealizationCache<RealizationCacheEntry>` does not satisfy the derive bound
+    // (`V: Default`) — the entry's `KernelHandle` pairs a `KernelId` with a `NewType(u64)`
     // and has no `Default` impl — but `RealizationCache::new()` constructs an empty cache
     // without that bound. Mirrors how production code initialises the field
     // (engine_admin.rs `Engine::with_prelude_and_kernels`).
@@ -1224,6 +1226,20 @@ structure Assembly {
         fn reset_attribute_tables(&mut self) {
             self.topology_attribute_table = TopologyAttributeTable::default();
             self.swept_kind_table = SweptKindTable::default();
+        }
+
+        /// Reset the realization outputs (the output views plus the
+        /// `produced_repr_out` and `kernel_error_out` out-params), mirroring
+        /// production's per-build reset. Leaves `realization_cache`,
+        /// `dispatch_count`, `dispatch_count_by_realization` and `diagnostics`
+        /// untouched, so the next call is a second build against a warm engine.
+        fn reset_per_build_outputs(&mut self) {
+            self.step_handles.clear();
+            self.named_steps.clear();
+            self.named_step_reprs.clear();
+            self.produced_repr_out = None;
+            self.kernel_error_out = None;
+            self.reset_attribute_tables();
         }
 
         /// Drive [`Engine::execute_realization_ops`] against this state with
@@ -4451,7 +4467,7 @@ structure Assembly {
             cached_0.is_some(),
             "intermediate for input step 0 must be cached at (Cross Step(0), Mesh, per_stage_tol)"
         );
-        let cached_0 = *cached_0.unwrap();
+        let cached_0 = cached_0.unwrap().handle;
         assert_eq!(
             cached_0.kernel,
             KernelId::Manifold,
@@ -4469,7 +4485,7 @@ structure Assembly {
             cached_1.is_some(),
             "intermediate for input step 1 must be cached at (Cross Step(1), Mesh, per_stage_tol)"
         );
-        let cached_1 = *cached_1.unwrap();
+        let cached_1 = cached_1.unwrap().handle;
         assert_eq!(cached_1.kernel, KernelId::Manifold);
         assert_eq!(cached_1.id, GeometryHandleId(1001));
 
@@ -4640,7 +4656,7 @@ structure Assembly {
 
     /// Amendment (reviewer_comprehensive test-coverage @ engine_build.rs:7437,
     /// task #4636): the intermediate-cache-hit branch of the `'convert:` loop
-    /// (the `if let Some(&cached) = realization_cache.lookup(...)` arm) must
+    /// (the `if let Some(cached) = realization_cache.lookup(...)` arm) must
     /// RE-forward the source solid's attribute onto the REUSED target handle
     /// every time — `topology_attribute_table` is reset per build while
     /// `realization_cache` persists the intermediate handle itself across
@@ -4778,15 +4794,9 @@ structure Assembly {
             "realization 1 must tessellate 2 inputs, ingest 2, run 1 union"
         );
 
-        // Reset only the per-build OUTPUT state, mirroring production's
-        // per-build reset — the shared `realization_cache` is left untouched,
-        // and `diagnostics` is cleared so the assertions below read ONLY
-        // realization 2's diagnostics.
-        state.step_handles.clear();
-        state.named_steps.clear();
-        state.named_step_reprs.clear();
-        state.produced_repr_out = None;
-        state.reset_attribute_tables();
+        state.reset_per_build_outputs();
+        // The reset leaves `diagnostics` alone: clear it so the assertions
+        // below read ONLY realization 2's diagnostics.
         state.diagnostics.clear();
 
         // ── Realization 2: same entity + ops + tol, ANONYMOUS (no name) so
@@ -8392,7 +8402,7 @@ structure Assembly {
         let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
         let mut topology_attribute_table = TopologyAttributeTable::default();
         let mut swept_kind_table = SweptKindTable::default();
-        let mut realization_cache: RealizationCache<KernelHandle> = RealizationCache::new();
+        let mut realization_cache: RealizationCache<RealizationCacheEntry> = RealizationCache::new();
 
         // `demanded_tols = &[]` is the OOB trigger: the producer would have
         // generated `&[vec![None]]` for a 1-template/1-realization module, but
@@ -8458,7 +8468,7 @@ structure Assembly {
         let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
         let mut topology_attribute_table = TopologyAttributeTable::default();
         let mut swept_kind_table = SweptKindTable::default();
-        let mut realization_cache: RealizationCache<KernelHandle> = RealizationCache::new();
+        let mut realization_cache: RealizationCache<RealizationCacheEntry> = RealizationCache::new();
 
         // `demanded_tols` is correctly shaped; `tessellation_budgets = &[]` is
         // the OOB trigger.  The Box primitive in module_with_one_box_realization
@@ -8797,6 +8807,24 @@ structure Assembly {
     // tests drive the helper directly — bypassing the op loop entirely — to
     // pin its contract (PRD §5.1 / INV-BUILD-3) as a reviewable unit.
 
+    /// A realization-cache entry for `handle` whose cold build classified no
+    /// swept kind.
+    fn entry_without_swept_kind(handle: KernelHandle) -> RealizationCacheEntry {
+        RealizationCacheEntry {
+            handle,
+            swept_kind: None,
+        }
+    }
+
+    /// The swept kind a cold build would classify for a 5mm +Z extrude.
+    fn seeded_extrude_kind() -> SweptKind {
+        SweptKind::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: reify_ir::Value::length(0.005),
+            profile: GeometryHandleId(3),
+        }
+    }
+
     /// step-1 (RED): a primary cache hit must apply the FULL side-effect set
     /// documented on `probe_realization_cache` — not just push a handle.
     ///
@@ -8804,7 +8832,8 @@ structure Assembly {
     /// handle, then probes at the SAME repr/tol with the terminal+named+tol
     /// guard satisfied. Asserts every write the cold path's success branch
     /// would have made: `step_handles`, `named_steps`, `named_step_reprs`,
-    /// and `produced_repr_out` — plus the `true` return itself.
+    /// `produced_repr_out` and the entry's swept kind in `swept_kind_table`
+    /// — plus the `true` return itself.
     #[test]
     fn probe_realization_cache_primary_hit_applies_full_side_effect_set() {
         let realization_id = RealizationNodeId::new("PrimaryHit", 0);
@@ -8814,13 +8843,16 @@ structure Assembly {
             id: GeometryHandleId(7),
         };
 
-        let mut cache = RealizationCache::<KernelHandle>::new();
+        let mut cache = RealizationCache::<RealizationCacheEntry>::new();
         cache.insert(
             &realization_id.entity,
             ReprKind::BRep,
             tol,
             NO_OPTIONS,
-            seeded,
+            RealizationCacheEntry {
+                handle: seeded,
+                swept_kind: Some(seeded_extrude_kind()),
+            },
         );
 
         let mut step_handles: Vec<KernelHandle> = Vec::new();
@@ -8874,6 +8906,73 @@ structure Assembly {
             Some(ReprKind::BRep),
             "produced_repr_out must surface the resolved repr"
         );
+        assert_eq!(
+            swept_kind_table.lookup(seeded.id),
+            Some(&seeded_extrude_kind()),
+            "the entry's swept kind must be recorded under the cached handle"
+        );
+        assert_eq!(
+            swept_kind_table.len(),
+            1,
+            "a hit records exactly the cached terminal's swept kind"
+        );
+    }
+
+    /// A primary hit on an entry whose cold build classified no swept kind
+    /// returns `true` and records nothing into `swept_kind_table`.
+    #[test]
+    fn probe_realization_cache_hit_on_entry_without_swept_kind_records_none() {
+        let realization_id = RealizationNodeId::new("UnsweptHit", 0);
+        let tol = 1e-4_f64;
+        let seeded = KernelHandle {
+            kernel: KernelId::Occt,
+            id: GeometryHandleId(8),
+        };
+        let mut cache = RealizationCache::<RealizationCacheEntry>::new();
+        cache.insert(
+            &realization_id.entity,
+            ReprKind::BRep,
+            tol,
+            NO_OPTIONS,
+            entry_without_swept_kind(seeded),
+        );
+
+        let mut step_handles: Vec<KernelHandle> = Vec::new();
+        let mut named_steps: HashMap<String, KernelHandle> = HashMap::new();
+        let mut named_step_reprs: HashMap<String, ReprKind> = HashMap::new();
+        let mut topology_attribute_table = TopologyAttributeTable::default();
+        let mut swept_kind_table = SweptKindTable::default();
+        let mut produced_repr_out: Option<ReprKind> = None;
+
+        let mut outputs = RealizationOutputs::new(
+            &mut step_handles,
+            &mut named_steps,
+            &mut named_step_reprs,
+            &mut topology_attribute_table,
+            &mut swept_kind_table,
+            &mut produced_repr_out,
+        );
+
+        let hit = Engine::probe_realization_cache(
+            &cache,
+            &realization_id,
+            Some("part"),
+            ReprKind::BRep,
+            Some(tol),
+            true,
+            &mut outputs,
+        );
+
+        assert!(hit, "a primary hit must return true");
+        assert_eq!(
+            step_handles,
+            vec![seeded],
+            "premise: the hit pushed the cached handle"
+        );
+        assert!(
+            swept_kind_table.is_empty(),
+            "an entry without a swept kind must leave swept_kind_table empty"
+        );
     }
 
     /// step-3: pin invariant #1 (probes ONLY when `is_terminal_realization &&
@@ -8905,13 +9004,16 @@ structure Assembly {
         ];
 
         for (is_terminal, name, tol_arg, label) in cases {
-            let mut cache = RealizationCache::<KernelHandle>::new();
+            let mut cache = RealizationCache::<RealizationCacheEntry>::new();
             cache.insert(
                 &realization_id.entity,
                 ReprKind::BRep,
                 tol,
                 NO_OPTIONS,
-                seeded,
+                RealizationCacheEntry {
+                    handle: seeded,
+                    swept_kind: Some(seeded_extrude_kind()),
+                },
             );
 
             let mut step_handles: Vec<KernelHandle> = Vec::new();
@@ -8968,6 +9070,10 @@ structure Assembly {
                 "guard case [{label}] must not write produced_repr_out"
             );
             assert!(
+                swept_kind_table.is_empty(),
+                "guard case [{label}] must not record the entry's swept kind"
+            );
+            assert!(
                 topology_attribute_table.lookup(seeded).is_some(),
                 "guard case [{label}] must NOT evict the pre-seeded \
                  topology_attribute_table entry (the hit body — the \
@@ -8998,7 +9104,7 @@ structure Assembly {
     fn probe_realization_cache_falls_back_to_brep_and_honors_tol_partial_order() {
         // Builds fresh output views, probes, and returns (hit, produced_repr_out)
         // — every case in this test needs its own untouched output set.
-        let probe = |cache: &RealizationCache<KernelHandle>,
+        let probe = |cache: &RealizationCache<RealizationCacheEntry>,
                      realization_id: &RealizationNodeId,
                      demanded_repr: ReprKind,
                      demanded_tol: f64|
@@ -9039,8 +9145,8 @@ structure Assembly {
                 kernel: KernelId::Occt,
                 id: GeometryHandleId(11),
             };
-            let mut cache = RealizationCache::<KernelHandle>::new();
-            cache.insert(&realization_id.entity, ReprKind::BRep, tol, NO_OPTIONS, seeded);
+            let mut cache = RealizationCache::<RealizationCacheEntry>::new();
+            cache.insert(&realization_id.entity, ReprKind::BRep, tol, NO_OPTIONS, entry_without_swept_kind(seeded));
 
             let (hit, produced_repr_out) = probe(&cache, &realization_id, ReprKind::Mesh, tol);
 
@@ -9065,8 +9171,8 @@ structure Assembly {
                 kernel: KernelId::Occt,
                 id: GeometryHandleId(12),
             };
-            let mut cache = RealizationCache::<KernelHandle>::new();
-            cache.insert(&realization_id.entity, ReprKind::Mesh, tol, NO_OPTIONS, seeded);
+            let mut cache = RealizationCache::<RealizationCacheEntry>::new();
+            cache.insert(&realization_id.entity, ReprKind::Mesh, tol, NO_OPTIONS, entry_without_swept_kind(seeded));
 
             let (hit, produced_repr_out) = probe(&cache, &realization_id, ReprKind::BRep, tol);
 
@@ -9085,8 +9191,8 @@ structure Assembly {
                 kernel: KernelId::Occt,
                 id: GeometryHandleId(13),
             };
-            let mut cache = RealizationCache::<KernelHandle>::new();
-            cache.insert(&realization_id.entity, ReprKind::BRep, 0.01, NO_OPTIONS, seeded);
+            let mut cache = RealizationCache::<RealizationCacheEntry>::new();
+            cache.insert(&realization_id.entity, ReprKind::BRep, 0.01, NO_OPTIONS, entry_without_swept_kind(seeded));
 
             let (hit, _) = probe(&cache, &realization_id, ReprKind::BRep, 0.1);
 
@@ -9104,8 +9210,8 @@ structure Assembly {
                 kernel: KernelId::Occt,
                 id: GeometryHandleId(14),
             };
-            let mut cache = RealizationCache::<KernelHandle>::new();
-            cache.insert(&realization_id.entity, ReprKind::BRep, 0.1, NO_OPTIONS, seeded);
+            let mut cache = RealizationCache::<RealizationCacheEntry>::new();
+            cache.insert(&realization_id.entity, ReprKind::BRep, 0.1, NO_OPTIONS, entry_without_swept_kind(seeded));
 
             let (hit, _) = probe(&cache, &realization_id, ReprKind::BRep, 0.001);
 
@@ -9118,28 +9224,28 @@ structure Assembly {
 
     /// step-6: pin INV-BUILD-3 — cold/warm side-effect-set parity.
     ///
-    /// Drives ONE `DispatchTestState` through a COLD pass (a real primitive
-    /// `Box` op dispatches through the op loop, populating
-    /// `realization_cache` and writing the full output side-effect set) and,
-    /// after resetting only the per-build OUTPUT state (mirroring the
+    /// Drives a COLD pass (the fixture's ops dispatch through the op loop,
+    /// populating `realization_cache` and writing the full output side-effect
+    /// set) and, after resetting only the per-build OUTPUT state (mirroring the
     /// production per-build reset) while KEEPING the shared
-    /// `realization_cache`, a WARM pass with the identical demand. Asserts
-    /// the warm pass's observable side-effect set — `step_handles`,
-    /// `named_steps`, `named_step_reprs`, `produced_repr_out` — is IDENTICAL
-    /// to the cold snapshot, and that `dispatch_count` does not increase
-    /// across the warm pass (the cache-hit short-circuit returns before the
-    /// op loop). This is INV-BUILD-3's contract directly: the short-circuit
-    /// produces "the same observable side-effect set as the path it
-    /// short-circuits."
+    /// `realization_cache`, a WARM pass with the identical demand. Asserts the
+    /// warm pass's observable side-effect set — the terminal in
+    /// `step_handles`, `named_steps`, `named_step_reprs`, `produced_repr_out`
+    /// and the terminal's `swept_kind_table` entry — equals the cold snapshot,
+    /// and that `dispatch_count` does not increase across the warm pass (the
+    /// cache-hit short-circuit returns before the op loop). This is
+    /// INV-BUILD-3's contract directly: the short-circuit produces "the same
+    /// observable side-effect set as the path it short-circuits."
+    ///
+    /// Two fixtures: a 1-op Box (no swept kind) and a Sphere + Extrude swept
+    /// body, whose cold pass classifies the terminal as an extrude (task 10153).
     #[test]
     fn probe_realization_cache_cold_warm_side_effect_set_parity() {
-        use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
         use reify_core::Type;
         use reify_ir::CompiledExpr;
-        use reify_test_support::mocks::MockGeometryKernel;
 
         let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
-        let ops = vec![CompiledGeometryOp::Primitive {
+        let box_ops = vec![CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
             args: vec![
                 ("size_x".into(), mm_lit(10.0)),
@@ -9147,22 +9253,47 @@ structure Assembly {
                 ("size_z".into(), mm_lit(5.0)),
             ],
         }];
+        assert_cold_warm_side_effect_set_parity("ColdWarmParity", &box_ops, |cold_step_handles, cold_swept| {
+            assert_eq!(cold_step_handles.len(), 1, "premise: the 1-op Box pushes one cold handle");
+            assert!(cold_swept.is_none(), "premise: a Box has no swept kind, got {cold_swept:?}");
+        });
+
+        let swept_ops = sphere_extrude_ops();
+        assert_cold_warm_side_effect_set_parity("ColdWarmParitySwept", &swept_ops, |_, cold_swept| {
+            assert!(
+                matches!(cold_swept, Some(SweptKind::Extrude { .. })),
+                "premise: the cold pass classifies the extrude terminal, got {cold_swept:?}"
+            );
+        });
+    }
+
+    /// The cold → per-build reset → warm cycle of
+    /// [`probe_realization_cache_cold_warm_side_effect_set_parity`] over one
+    /// fixture, with a fresh state and kernels. `cold_premise` sees the cold
+    /// `step_handles` and the cold terminal's swept kind before any warm
+    /// assertion runs.
+    fn assert_cold_warm_side_effect_set_parity(
+        entity: &str,
+        ops: &[CompiledGeometryOp],
+        cold_premise: impl FnOnce(&[KernelHandle], Option<&SweptKind>),
+    ) {
+        use reify_test_support::mocks::MockGeometryKernel;
 
         let desc = dispatch_test_descriptor_all_brep();
         let mut kernels = dispatch_test_kernels(Box::new(MockGeometryKernel::new()));
         let registry = dispatch_test_single_default_registry(&desc);
 
-        let realization_id = RealizationNodeId::new("ColdWarmParity", 0);
+        let realization_id = RealizationNodeId::new(entity, 0);
         let tol = 1e-3;
         let mut state = DispatchTestState::default();
 
-        // COLD pass: the op loop dispatches the primitive Box op, producing a
-        // terminal handle and populating realization_cache + the output views.
+        // COLD pass: the op loop dispatches every op, producing a terminal
+        // handle and populating realization_cache + the output views.
         state.run_demand(
             &mut kernels,
             &registry,
             "default",
-            &ops,
+            ops,
             &realization_id,
             Some("part"),
             SourceSpan::new(0, 0),
@@ -9172,33 +9303,31 @@ structure Assembly {
         );
         assert!(
             state.dispatch_count > 0,
-            "cold pass must dispatch through the op loop"
+            "{entity}: cold pass must dispatch through the op loop"
         );
 
         // Snapshot the cold side-effect set and the post-cold dispatch count.
-        let cold_step_handles = state.step_handles.clone();
+        let cold_terminal = *state
+            .step_handles
+            .last()
+            .expect("premise: the cold pass pushes a terminal handle");
+        let cold_swept = state.swept_kind_table.lookup(cold_terminal.id).cloned();
+        let cold_swept_len = state.swept_kind_table.len();
+        cold_premise(&state.step_handles, cold_swept.as_ref());
         let cold_named_steps = state.named_steps.clone();
         let cold_named_step_reprs = state.named_step_reprs.clone();
         let cold_produced_repr_out = state.produced_repr_out;
         let dispatch_count_after_cold = state.dispatch_count;
 
-        // Reset only the per-build OUTPUT state (mirroring the per-build reset
-        // in production: `build`/`build_snapshot` reset step_handles,
-        // named_steps, named_step_reprs, produced_repr_out, and the attribute
-        // tables before each build) — the shared `realization_cache` is left
-        // untouched, exactly like a real second build against a warm engine.
-        state.step_handles.clear();
-        state.named_steps.clear();
-        state.named_step_reprs.clear();
-        state.produced_repr_out = None;
-        state.reset_attribute_tables();
+        // The shared `realization_cache` stays warm, like a real second build.
+        state.reset_per_build_outputs();
 
         // WARM pass: identical demand — the cache-hit short-circuit must fire.
         state.run_demand(
             &mut kernels,
             &registry,
             "default",
-            &ops,
+            ops,
             &realization_id,
             Some("part"),
             SourceSpan::new(0, 0),
@@ -9207,26 +9336,149 @@ structure Assembly {
             None,
         );
 
+        // A hit pushes only the cached terminal; production reads only the
+        // terminal of a realization's `step_handles` range.
         assert_eq!(
-            state.step_handles, cold_step_handles,
-            "warm step_handles must be IDENTICAL to the cold snapshot"
+            state.step_handles,
+            vec![cold_terminal],
+            "{entity}: warm step_handles must be exactly the cold terminal"
         );
         assert_eq!(
             state.named_steps, cold_named_steps,
-            "warm named_steps must be IDENTICAL to the cold snapshot"
+            "{entity}: warm named_steps must be IDENTICAL to the cold snapshot"
         );
         assert_eq!(
             state.named_step_reprs, cold_named_step_reprs,
-            "warm named_step_reprs must be IDENTICAL to the cold snapshot"
+            "{entity}: warm named_step_reprs must be IDENTICAL to the cold snapshot"
         );
         assert_eq!(
             state.produced_repr_out, cold_produced_repr_out,
-            "warm produced_repr_out must be IDENTICAL to the cold snapshot"
+            "{entity}: warm produced_repr_out must be IDENTICAL to the cold snapshot"
         );
         assert_eq!(
             state.dispatch_count, dispatch_count_after_cold,
-            "dispatch_count must not increase across the warm pass — the \
+            "{entity}: dispatch_count must not increase across the warm pass — the \
              cache-hit short-circuit returns before the op loop"
+        );
+        assert_eq!(
+            state.swept_kind_table.lookup(cold_terminal.id).cloned(),
+            cold_swept,
+            "{entity}: a warm hit must restore the cold terminal's swept kind"
+        );
+        assert_eq!(
+            state.swept_kind_table.len(),
+            cold_swept_len,
+            "{entity}: a warm hit must write the same swept-kind entries as the cold pass"
+        );
+    }
+
+    /// A Sphere(5mm) followed by an Extrude of step 0 (profile 5mm, distance
+    /// 10mm): a two-op swept body whose cold pass classifies the terminal as an
+    /// extrude.
+    fn sphere_extrude_ops() -> Vec<CompiledGeometryOp> {
+        use reify_core::Type;
+        use reify_ir::CompiledExpr;
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+        vec![
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Sphere,
+                args: vec![("radius".into(), mm_lit(5.0))],
+            },
+            CompiledGeometryOp::Sweep {
+                kind: SweepKind::Extrude,
+                profiles: vec![GeomRef::Step(0)],
+                args: vec![
+                    ("profile".into(), mm_lit(5.0)),
+                    ("distance".into(), mm_lit(10.0)),
+                ],
+            },
+        ]
+    }
+
+    /// A terminal replaced by the post-loop Voxel edge caches no swept kind
+    /// (task 10153): the BRep extrude the op loop classified is not the cached
+    /// OpenVdb terminal, so a warm hit must not record the extrude's kind under
+    /// the OpenVdb handle's bare id, a key the cold pass never writes.
+    #[test]
+    fn voxel_replaced_terminal_caches_and_restores_no_swept_kind() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        use std::sync::{Arc, Mutex};
+
+        let swept_ops = sphere_extrude_ops();
+        let desc = dispatch_test_descriptor_all_brep();
+        let registry = dispatch_test_single_default_registry(&desc);
+        let mut kernels = dispatch_test_kernels(Box::new(MockGeometryKernel::new()));
+        kernels.insert(
+            KernelId::OpenVdb.as_registry_name().to_string(),
+            Box::new(CountingVoxelizerKernel {
+                inner: MockGeometryKernel::new(),
+                ingest_count: Arc::new(Mutex::new(0)),
+                execute_count: Arc::new(Mutex::new(0)),
+                next_ingest_id: 5000,
+            }),
+        );
+
+        let realization_id = RealizationNodeId::new("VoxelReplacedTerminal", 0);
+        let tol = 1e-3;
+        let mut state = DispatchTestState::default();
+        let mut run = |state: &mut DispatchTestState| {
+            state.run_demand(
+                &mut kernels,
+                &registry,
+                "default",
+                &swept_ops,
+                &realization_id,
+                Some("part"),
+                SourceSpan::new(0, 0),
+                ReprKind::Voxel,
+                Some(tol),
+                None,
+            )
+        };
+
+        run(&mut state);
+        let voxel_terminal = *state
+            .step_handles
+            .last()
+            .expect("premise: the cold pass pushes a terminal handle");
+        assert_eq!(
+            voxel_terminal.kernel,
+            KernelId::OpenVdb,
+            "premise: the post-loop Voxel edge replaced the terminal, got {:?}",
+            state.step_handles
+        );
+        let extrude_body = state.step_handles[state.step_handles.len() - 2];
+        assert!(
+            matches!(
+                state.swept_kind_table.lookup(extrude_body.id),
+                Some(SweptKind::Extrude { .. })
+            ),
+            "premise: the cold pass classifies the BRep extrude body"
+        );
+        let entry = state
+            .realization_cache
+            .lookup(&realization_id.entity, ReprKind::Voxel, tol, NO_OPTIONS)
+            .expect("premise: the cold pass caches the Voxel terminal");
+        assert_eq!(entry.handle, voxel_terminal);
+        assert_eq!(
+            entry.swept_kind, None,
+            "a Voxel-replaced terminal must cache no swept kind"
+        );
+
+        let dispatch_count_after_cold = state.dispatch_count;
+        state.reset_per_build_outputs();
+        run(&mut state);
+
+        assert_eq!(
+            state.dispatch_count, dispatch_count_after_cold,
+            "premise: the warm pass is a cache hit"
+        );
+        assert_eq!(state.step_handles, vec![voxel_terminal]);
+        assert!(
+            state.swept_kind_table.is_empty(),
+            "a warm hit on a Voxel-replaced terminal must record no swept kind, got {:?}",
+            state.swept_kind_table
         );
     }
 
@@ -9260,10 +9512,10 @@ structure Assembly {
             ReprKind::BRep,
             tol,
             NO_OPTIONS,
-            KernelHandle {
+            entry_without_swept_kind(KernelHandle {
                 kernel: KernelId::Occt,
                 id: GeometryHandleId(1),
-            },
+            }),
         );
 
         // Allow each test to pre-seed its specific table before the run.

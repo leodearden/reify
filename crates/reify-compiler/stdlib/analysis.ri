@@ -1,3 +1,4 @@
+module std.analysis
 #no_prelude
 // Stdlib: Stress Analysis Traits
 // Provides trait definitions for stress analysis results and analysis

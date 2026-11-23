@@ -6,6 +6,7 @@ license.workspace = true
 description = "SingleKernelHolder wrapping a single geometry kernel for tests; production uses Engine::with_registered_kernel"
 
 [dependencies]
+workspace-feature-union.workspace = true
 reify-core.workspace = true
 reify-ir.workspace = true
 

@@ -13,9 +13,8 @@
 //! also uses it — see `.task/plan.json` design_decisions for the full
 //! rationale.
 //!
-//! `reify-eval`'s `persistent_cache.rs` re-exports `ElasticResult`,
-//! `ShellChannels`, and `max_deflection_magnitude` at their original
-//! `crate::persistent_cache::` / `reify_eval::persistent_cache::` paths.
+//! Consumers import `ElasticResult`, `ShellChannels`, `AposterioriEstimate`
+//! and `max_deflection_magnitude` from `reify_compute_contract` directly.
 
 use std::io::{self, Read, Write};
 
@@ -37,7 +36,7 @@ use reify_solver_elastic::{BudgetReason, ConvergenceStatus};
 /// constant in the same commit; otherwise cache entries written under the
 /// previous version will silently decode as garbage. The same logic applies to
 /// any bump of `zstd` past the `0.13` pin (e.g. 0.13 → 0.14 or 0.x → 1.x).
-/// Cross-checked by `elastic_result_format_version_is_3_after_v3_bump`, which
+/// Cross-checked by `elastic_result_format_version_pinned`, which
 /// forces any FORMAT_VERSION bump to be deliberate. The `=1.3` pin blocks even
 /// minor bumps to `bincode`; `0.13` pins `zstd`'s 0.x line — both held in
 /// `Cargo.toml`.
@@ -617,12 +616,13 @@ impl ElasticResult {
 /// and [`ElasticResult`].
 ///
 /// The five shared fields (`displacement`, `stress`, `max_von_mises`, `converged`,
-/// `iterations`) are mapped by name with their exact types.  The two
-/// `ElasticResult`-only fields receive documented neutral defaults:
+/// `iterations`) are mapped by name with their exact types.  Every
+/// `ElasticResult`-only field receives a neutral default; the exhaustive struct
+/// literal below is the authoritative list of those fields.  The defaults
+/// below carry rationale that is not obvious from the literal:
 ///
 /// - `solve_time_ms: 0` — a mid-solve partial snapshot has no eviction-cost
-///   metric; the caller fills this in when it promotes a snapshot to a final
-///   cache entry.
+///   metric, so `0` is a placeholder rather than a measured cost.
 /// - `shell_channels: None` — the v0_3 progressive solver is tet-based; shell
 ///   channels are populated only by the v0_4 FEA trampoline (PRD task δ).
 ///
@@ -665,7 +665,7 @@ impl From<&reify_solver_elastic::progressive::PartialElasticResult> for ElasticR
 }
 
 /// By-value variant: moves `displacement` and `stress` instead of cloning them.
-/// Prefer this when the caller consumes the [`PartialElasticResult`] at promotion
+/// Prefer this when the caller consumes the [`PartialElasticResult`] at conversion
 /// time and does not need to retain it afterwards — avoids a potentially large
 /// double-allocation for refined meshes.  The by-ref impl above is appropriate
 /// when the snapshot must remain valid after conversion (e.g. for snapshot reuse).
@@ -2046,7 +2046,7 @@ mod tests {
     /// the 1.3.x line would still be caught here because the byte sequence is pinned
     /// explicitly. Bumping bincode past `=1.3` requires both updating this literal AND
     /// bumping `ELASTIC_RESULT_FORMAT_VERSION` (cross-checked by
-    /// `elastic_result_format_version_is_one`).
+    /// `elastic_result_format_version_pinned`).
     ///
     /// Fixture uses recognisable, non-zero field values so the LE byte order is
     /// visually verifiable at the test site (e.g. `EF BE AD DE BE BA FE CA` for
@@ -2156,6 +2156,29 @@ mod tests {
         assert_eq!(decoded.grid_count_z, header.grid_count_z);
     }
 
+    /// What both `From<PartialElasticResult>` impls must produce: the shared
+    /// fields mirrored, every `ElasticResult`-only field at its neutral default.
+    fn expected_conversion(
+        partial: &reify_solver_elastic::progressive::PartialElasticResult,
+    ) -> ElasticResult {
+        ElasticResult {
+            displacement: partial.displacement.clone(),
+            stress: partial.stress.clone(),
+            max_von_mises: partial.max_von_mises,
+            converged: partial.converged,
+            iterations: partial.iterations,
+            solve_time_ms: 0,
+            shell_channels: None,
+            grid_bounds_min: [0.0; 3],
+            grid_bounds_max: [0.0; 3],
+            grid_counts: [0; 3],
+            divergence: Vec::new(),
+            gradient: Vec::new(),
+            curl: Vec::new(),
+            aposteriori: None,
+        }
+    }
+
     #[test]
     fn partial_elastic_result_converts_to_elastic_result_field_for_field() {
         use reify_solver_elastic::progressive::PartialElasticResult;
@@ -2170,21 +2193,7 @@ mod tests {
 
         let full: ElasticResult = (&partial).into();
 
-        // Shared fields must mirror the partial exactly.
-        assert_eq!(full.displacement, vec![1.0, 2.0, 3.0]);
-        assert_eq!(full.stress, vec![4.0, 5.0]);
-        assert_eq!(full.max_von_mises, 123.5);
-        assert!(full.converged);
-        assert_eq!(full.iterations, 7);
-        // ElasticResult-only fields must use their documented neutral defaults.
-        assert_eq!(
-            full.solve_time_ms, 0,
-            "solve_time_ms must default to 0 for a partial snapshot"
-        );
-        assert!(
-            full.shell_channels.is_none(),
-            "shell_channels must default to None for tet-only solver"
-        );
+        assert_eq!(full, expected_conversion(&partial));
     }
 
     #[test]
@@ -2198,17 +2207,12 @@ mod tests {
             converged: false,
             iterations: 3,
         };
+        let expected = expected_conversion(&partial);
 
         // By-value conversion — moves displacement and stress without cloning.
         let full: ElasticResult = partial.into();
 
-        assert_eq!(full.displacement, vec![10.0, 20.0]);
-        assert_eq!(full.stress, vec![30.0, 40.0, 50.0]);
-        assert_eq!(full.max_von_mises, 99.0);
-        assert!(!full.converged);
-        assert_eq!(full.iterations, 3);
-        assert_eq!(full.solve_time_ms, 0);
-        assert!(full.shell_channels.is_none());
+        assert_eq!(full, expected);
     }
 
     /// step-3 RED (task #3428): `ElasticResult` with the new v3 fields (grid spec,
@@ -2255,9 +2259,53 @@ mod tests {
         assert_eq!(decoded, original, "v3 round-trip must preserve all new fields losslessly");
     }
 
+    /// Populates both the v3 grid/derivative slabs and a `Some(ShellChannels)`
+    /// tail. The tail is decoded after those slabs, so a misaligned slab read
+    /// would shift it.
     #[test]
-    fn elastic_result_format_version_is_3_after_v3_bump() {
-        assert_eq!(<ElasticResult as PersistentlyCacheable>::FORMAT_VERSION, 3);
+    fn elastic_result_with_shell_channels_and_grid_round_trips_and_reserializes_identically() {
+        fn scrambled(len: u64, mul: u64, xor: u64) -> Vec<f64> {
+            (0..len)
+                .map(|i| f64::from_bits(i.wrapping_mul(mul) ^ xor))
+                .collect()
+        }
+        // 1×1×1 element-count grid → 8 nodes.
+        let n_nodes: usize = 8;
+        let original = ElasticResult {
+            displacement: (0..n_nodes * 3).map(|i| i as f64 * 0.001).collect(),
+            stress: (0..n_nodes * 9).map(|i| i as f64 * 1e6).collect(),
+            max_von_mises: 250e6,
+            converged: true,
+            iterations: 17,
+            solve_time_ms: 4321,
+            shell_channels: Some(ShellChannels {
+                top: scrambled(9, 0x9E37_79B9_7F4A_7C15, 0xABAD_1DEA_0BAD_F00D),
+                bottom: scrambled(9, 0x6C62_272E_07BB_0142, 0xC0DE_FACE_DEAD_C0DE),
+                frame: scrambled(9, 0xD737_E5B5_2727_2727, 0x1234_5678_9ABC_DEF0),
+            }),
+            grid_bounds_min: [0.0, -1.0, 0.0],
+            grid_bounds_max: [1.0, 0.3, 0.1],
+            grid_counts: [1, 1, 1],
+            divergence: (0..n_nodes).map(|i| i as f64 * 1e-5).collect(),
+            gradient: (0..n_nodes * 9).map(|i| i as f64 * 1e-3).collect(),
+            curl: (0..n_nodes * 3).map(|i| i as f64 * 2e-4).collect(),
+            aposteriori: None,
+        };
+
+        let mut bytes_a: Vec<u8> = Vec::new();
+        original.serialize_to_writer(&mut bytes_a).unwrap();
+        let decoded = ElasticResult::deserialize_from_reader(&mut &bytes_a[..]).unwrap();
+        assert_eq!(
+            decoded, original,
+            "shell + grid round-trip must preserve every field"
+        );
+
+        let mut bytes_b: Vec<u8> = Vec::new();
+        decoded.serialize_to_writer(&mut bytes_b).unwrap();
+        assert_eq!(
+            bytes_a, bytes_b,
+            "re-serializing a decoded value must be byte-identical"
+        );
     }
 
     // ── task #4942: AposterioriEstimate probe-byte tail ──────────────────────

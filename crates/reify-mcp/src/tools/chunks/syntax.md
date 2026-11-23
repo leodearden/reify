@@ -34,7 +34,7 @@
 - Render rules: plain strings render bare (no quotes); dimensioned scalars render as `value unit` (`5mm` → `5 mm`); `undef` renders as the literal text `undef` and does not poison the string
 - An empty hole `{}` is a parse error
 
-**Special values:** `undef` (not yet decided), `auto` (solver decides), `some(v)`/`none` (Option)
+**Special values:** `undef` (not yet decided), `auto` (the solver chooses; see the `solving` chunk), `some(v)`/`none` (Option)
 
 ## Module Declaration
 

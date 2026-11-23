@@ -14,6 +14,10 @@
 //!   `docs/prds/v0_6/eval-cell-commit-substrate.md` §2.6 / §3 P3 / §7 B4), over
 //!   `examples/` only.
 //!
+//! Since task #7560 both invariants cover that whole union and share one
+//! stale-residual policy; only the residual lists and the break-glass key stay
+//! per-invariant.
+//!
 //! # One eval, two checkers
 //!
 //! The merge is sound because `Engine::check_no_stale_undef` (`invariants.rs`)
@@ -27,54 +31,27 @@
 //!
 //! Task 5060 is explicit that the snapshot↔cache divergence audit is a DISTINCT
 //! invariant and the checkers must NOT be merged. They are not: each invariant
-//! keeps its own adapter fn, its own corpus SCOPE, its own residual-exemption
-//! list and its own failure POLICY, all carried as data on a per-invariant
-//! descriptor. This unit shares the expensive part (compile + eval) and nothing
-//! else.
+//! keeps its own adapter fn, plus its own residual-exemption list and
+//! break-glass key carried as data on a per-invariant descriptor. This unit
+//! shares the expensive part (compile + eval) and nothing else.
 //!
 //! # Residual reconciliation against the production registration (task #7431)
 //!
 //! The INV-EVAL-4 residuals were root-caused while that sweep built its engine
-//! with the bare `register_compute_fns`. This sweep unified on
-//! `gate_engine(true)` (`register_production_compute_fns`), a strict SUPERSET —
-//! and `examples/fea_shell_too_thick_annotated.ri` is precisely the file
-//! `eval_gate_support::gate_engine`'s doc names as having been swept on a
-//! DEGRADED dispatch (`shell-extract::extract`: no registered compute
-//! trampoline), so its divergence might have been an ARTEFACT of that
-//! registration rather than a real eval-surface limitation.
+//! with the bare `register_compute_fns`; this sweep unified on
+//! `gate_engine(true)` (`register_production_compute_fns`), a strict SUPERSET.
+//! Measured under it, the superset registration did NOT resolve
+//! `examples/fea_shell_too_thick_annotated.ri`: its divergence is a genuine
+//! compute-dispatch residual of the same class as `fdm_bracket.ri`, not an
+//! artefact of the degraded `shell-extract::extract` dispatch that
+//! `eval_gate_support::gate_engine`'s doc names. Recorded so a future reader
+//! does not re-litigate it.
 //!
-//! MEASURED on this tree rather than assumed — all 24 shards run under the
-//! unified production registration, finding counts read from their own printed
-//! residual-skip lines:
-//!
-//! | residual | invariant | findings |
-//! |---|---|---|
-//! | `examples/integration_corner_cases.ri` | INV-EVAL-5 | 2 |
-//! | `crates/reify-eval/tests/fixtures/match_block_decls_bolt.ri` | INV-EVAL-5 | 1 |
-//! | `examples/multi_load_bracket.ri` | INV-EVAL-5 | 1 |
-//! | `examples/surface_finish_functional.ri` | INV-EVAL-5 | 1 |
-//! | `examples/fdm_bracket.ri` | INV-EVAL-4 | 1 |
-//! | `examples/fea_shell_too_thick_annotated.ri` | INV-EVAL-4 | 1 |
-//!
-//! OUTCOME: every one of the six still produces findings, so NO entry is
-//! deleted. In particular the superset registration did NOT resolve
-//! `fea_shell_too_thick_annotated.ri` — its divergence is a genuine
-//! compute-dispatch eval-surface limitation of the same class as
-//! `fdm_bracket.ri`, exactly as its reason string already claimed, and not an
-//! artefact of the degraded dispatch. Recorded here so a future reader does not
-//! re-litigate it. `fdm_bracket.ri` persisting was the expectation (its
-//! `@optimized solve_elastic_static` dispatch is registered under BOTH
-//! configurations) and is likewise confirmed rather than assumed.
-//!
-//! This is self-reporting from here on: INV-EVAL-4 declares
-//! `stale_residual_is_fatal`, so a residual of ITS that stops diverging reds the
-//! sweep and forces the dead entry's deletion. The sweep passing with zero stale
-//! residuals is what the table above rests on. INV-EVAL-5 keeps its
-//! pre-unification print-only policy, so its four entries are re-confirmed by the
-//! counts above rather than by a gate. Separately,
-//! `residual_exemptions_and_failure_policy_stay_per_invariant` asserts every one
-//! of the six still matches EXACTLY ONE live corpus file, so a renamed `.ri`
-//! cannot silently void an exemption.
+//! Every residual of every invariant is self-reporting: a declared residual with
+//! zero findings reds the sweep (`GateTally::record`), and
+//! `residual_lists_and_bypass_keys_stay_per_invariant` holds each entry to
+//! exactly one live corpus file, so a renamed `.ri` cannot silently void an
+//! exemption.
 //!
 //! # Anti-silent-accept guards
 //!
@@ -151,12 +128,9 @@ fn repo_relative(path: &std::path::Path, root: &std::path::Path) -> String {
 /// The `examples/` corpus root, as it appears at the head of a repo-relative
 /// shard key.
 ///
-/// Spelled once because three separate decisions read it: which root
-/// [`corpus_files`] walks, which files [`CorpusScope::ExamplesOnly`] covers, and
-/// the live-corpus count that
-/// `each_invariant_keeps_its_own_pre_unification_corpus_scope` holds that scope
-/// to. Three copies would be three chances for INV-EVAL-4's scope to drift away
-/// from the walk it is meant to reproduce exactly.
+/// Spelled once: [`corpus_files`] walks it, and the shard-keying tests build
+/// `examples/` keys from it, so the walked root and the keys they reason about
+/// cannot drift apart.
 const EXAMPLES_ROOT: &str = "examples/";
 
 /// The explicit #4946 R3f-bridge premise fixture — the one corpus member that is
@@ -172,9 +146,9 @@ const SELECTOR_CONSUMER_REL: &str = "tests/prd-gate/fixtures/geometry_let_select
 /// One corpus member: the absolute path used to READ the file, and the
 /// repo-relative shard key, carried together.
 ///
-/// The key travels with the path so no caller ever re-derives it — it is the
-/// shard key, the residual-exemption match target and the scope discriminator,
-/// and three independent derivations of one string is three chances to disagree.
+/// The key travels with the path so no caller ever re-derives it — it is both
+/// the shard key and the residual-exemption match target, and two independent
+/// derivations of one string are two chances to disagree.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct CorpusFile {
     path: std::path::PathBuf,
@@ -249,7 +223,7 @@ fn shard_files(shard_index: usize) -> Vec<CorpusFile> {
 ///
 /// Kept at 24, the count BOTH pre-unification sweeps used, and for their
 /// reason verbatim. The user-observable debug-gate signal is that every corpus
-/// `.ri` file produces zero findings for the invariants in its scope. Running
+/// `.ri` file produces zero findings for every invariant. Running
 /// that as ONE sequential test takes long enough — as the last test left
 /// running, with nothing to interleave its output with — to trip the verify
 /// pipeline's heartbeat-idle backstop despite every file passing (task 4952
@@ -258,24 +232,13 @@ fn shard_files(shard_index: usize) -> Vec<CorpusFile> {
 /// reporting its own PASS/SLOW line, so the worst-case silent gap is bounded by
 /// one shard's share of the corpus rather than the whole corpus.
 ///
-/// Unification leaves that rationale intact but does NOT lower a shard's wall
-/// time, and this task's own measurement refutes the claim that it would
-/// (`docs/notes/eval-slow-tail-profile-2026-09.md` §1, "Correction: shard size
-/// does NOT predict shard wall time"). What unification bought is CPU: 702.9s
-/// over 48 test processes became 352.1s over 24, a 50% cut. What it COST is the
-/// straggler, which rose from 160.2s to 184.9s and re-ran at 238.4s and 158.2s —
-/// treat 158-240s as the observed band, never a single run as a point value.
-///
-/// The reason is that per-file cost is strongly non-uniform: a handful of
-/// FEA/OCCT-bearing examples dominate, so a shard's wall time is set by WHICH
-/// expensive files it drew, not by how many it holds. `corpus_sweep_shard_02`
-/// holds the LARGEST slice at 23 files and finishes in ~62s.
-///
-/// 24 is nonetheless retained, because nothing measured forces a change: 240s
-/// clears the inherited `[profile.default]` slow-timeout in `.config/nextest.toml`
-/// (period 120s x terminate-after 10 = 1200s) five times over, so the regression
-/// is makespan, not a hard-kill risk. Re-tuning stays a separate change — one
-/// that should now be driven by the numbers above rather than by a projection.
+/// The SIZE follows one rule. Per-file cost is heavy-tailed, so a shard's wall
+/// time is set by the costliest file it drew, not by how many files it holds,
+/// and no count can push the straggler below that single costliest file. The
+/// count therefore only has to keep the heavy files in separate shards. Changing
+/// it reassigns every file's shard (see [`shard_of`]) and so invalidates every
+/// recorded shard reproduction: re-measure before re-sizing. Re-derived in task
+/// #7564; measurement and recipe in `docs/notes/eval-slow-tail-profile-2026-09.md` §5.
 const CORPUS_SHARD_COUNT: usize = 24;
 
 /// Which shard owns `rel_path` — keyed on a hash of the repo-relative path, NOT
@@ -476,7 +439,7 @@ fn shard_key_is_worktree_independent() {
 
 /// Hash keying is a sound REPLACEMENT for index keying, not merely a different
 /// one: it must still partition the corpus exhaustively, leave no shard idle,
-/// and stay balanced enough that no shard becomes the binary's straggler.
+/// and keep every shard's file COUNT within a bounded spread.
 ///
 /// # Why these bounds, and not a guess
 ///
@@ -489,9 +452,9 @@ fn shard_key_is_worktree_independent() {
 /// live 299-path corpus it partitions to min 6, max 23, mean 12.46: the very
 /// histogram this test prints below, recorded in full in
 /// `docs/notes/eval-slow-tail-profile-2026-09.md` §1 "Shard partition". That is
-/// a 3.8x spread where index keying gave a flat 12-13 per shard, and it is the
-/// mechanism behind the straggler regression [`CORPUS_SHARD_COUNT`] records —
-/// the price hash keying charges for insert-stability, stated rather than hidden.
+/// a 3.8x COUNT spread where index keying gave a flat 12-13 per shard — the
+/// price hash keying charges for insert-stability. Wall time is not set by count
+/// but by the costliest file a shard drew (see [`CORPUS_SHARD_COUNT`]).
 ///
 /// Whether a max of 23 is ordinary variance or a degenerate key is the question
 /// the bound has to separate, and that is what the reference distributions are
@@ -612,143 +575,77 @@ struct Finding {
     detail: String,
 }
 
-/// What one invariant made of one corpus file.
-///
-/// `OutOfScope` is a distinct variant rather than an empty finding list on
-/// purpose: "this invariant does not cover this file" and "this invariant
-/// covered this file and found nothing" are different facts, and collapsing them
-/// would let a silently narrowed scope read as a clean pass.
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum InvariantOutcome {
-    OutOfScope,
-    Checked(Vec<Finding>),
-}
-
 /// What one corpus file's single evaluation produced, per invariant.
 ///
-/// Every invariant in [`GATES`] appears here for EVERY file, in scope or not, so
-/// the shape is uniform across the corpus and a missing entry is unambiguously a
-/// defect rather than a scope decision.
+/// Every invariant in [`GATES`] appears here for EVERY file, so a missing entry
+/// is unambiguously a defect.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct FileOutcome {
     rel: String,
-    per_invariant: Vec<(InvariantId, InvariantOutcome)>,
+    per_invariant: Vec<(InvariantId, Vec<Finding>)>,
 }
 
 impl FileOutcome {
-    /// This file's findings for `id`. `None` means `id`'s scope does not cover
-    /// this file — the ONE fact callers may skip past. `Some(&[])` is the
-    /// materially different "checked, and clean".
+    /// This file's findings for `id`; empty means checked, and clean.
     ///
-    /// An `id` that is ABSENT from `per_invariant` is NOT folded into that
-    /// `None`. [`check_file`] populates an entry for every gate in [`GATES`], so
-    /// an absent id means the sweep lost an invariant — and `run_corpus_shard`
-    /// `continue`s silently past `None`, which would turn that loss into a green
-    /// shard. It panics naming the invariant instead, so the distinction
-    /// [`InvariantOutcome::OutOfScope`] exists to draw is enforced where it is
-    /// READ and not only where it is constructed.
-    fn findings(&self, id: InvariantId) -> Option<&[Finding]> {
+    /// An `id` ABSENT from `per_invariant` panics naming the invariant rather
+    /// than reading as an empty slice: [`check_file`] populates an entry for
+    /// every gate in [`GATES`], so an absent id means the sweep lost an
+    /// invariant, and a quiet empty answer would turn that loss into a green
+    /// shard.
+    fn findings(&self, id: InvariantId) -> &[Finding] {
         match self.per_invariant.iter().find(|(i, _)| *i == id) {
-            Some((_, InvariantOutcome::Checked(f))) => Some(f.as_slice()),
-            Some((_, InvariantOutcome::OutOfScope)) => None,
+            Some((_, findings)) => findings,
             None => panic!(
                 "{id:?} was not evaluated for {} — every gate in GATES must appear \
-                 in every FileOutcome, in scope or not",
+                 in every FileOutcome",
                 self.rel
             ),
         }
     }
 }
 
-/// Both of [`FileOutcome::findings`]'s no-findings answers, so the distinction
-/// it draws cannot be softened back into a `_ => None`.
+/// An invariant missing from a [`FileOutcome`] panics when read, rather than
+/// reading as a clean, empty finding list.
 #[test]
 #[should_panic(expected = "was not evaluated for")]
-fn a_vanished_invariant_is_loud_rather_than_an_out_of_scope_skip() {
+fn a_vanished_invariant_is_loud() {
     let outcome = FileOutcome {
         rel: "crates/reify-eval/tests/fixtures/synthetic.ri".to_string(),
-        per_invariant: vec![(InvariantId::StaleUndef, InvariantOutcome::OutOfScope)],
+        per_invariant: vec![(InvariantId::StaleUndef, vec![])],
     };
-    assert_eq!(
-        outcome.findings(InvariantId::StaleUndef),
-        None,
-        "a file outside an invariant's scope is a quiet None — the benign case"
+    assert!(
+        outcome.findings(InvariantId::StaleUndef).is_empty(),
+        "a present invariant with no findings is a clean read"
     );
     outcome.findings(InvariantId::SnapshotCacheDivergence);
 }
 
-/// Which corpus files an invariant covers.
-///
-/// Explicit, structured data rather than an implicit consequence of which file
-/// the sweep used to live in — before unification each sweep's scope was simply
-/// whatever directory walk its own `corpus_files()` happened to do, which is
-/// exactly the kind of fact that gets lost in a move.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CorpusScope {
-    /// The whole corpus: reify-eval's `tests/fixtures/`, `examples/`, and the
-    /// explicit prd-gate leaf. INV-EVAL-5's pre-unification scope.
-    Union,
-    /// `examples/` only.
-    ///
-    /// A FAITHFUL reproduction of INV-EVAL-4's pre-unification scope, NOT an
-    /// oversight to be helpfully "fixed": that sweep walked `examples/` and
-    /// nothing else. Widening it to the 34 reify-eval fixture files would be a
-    /// coverage CHANGE that could surface fresh residuals, which is outside a
-    /// zero-loss restructuring — named as a follow-up, deliberately not taken
-    /// here. Pinned by `each_invariant_keeps_its_own_pre_unification_corpus_scope`.
-    ExamplesOnly,
-}
-
-impl CorpusScope {
-    /// Whether this scope covers the corpus file keyed `rel`.
-    ///
-    /// Matches on the repo-relative key's leading component — which is precisely
-    /// why the key is normalised to a worktree-independent `/`-separated string
-    /// (see [`repo_relative`]): an absolute path would carry a per-checkout
-    /// prefix and `ExamplesOnly` would match nothing in any lane.
-    fn covers(self, rel: &str) -> bool {
-        match self {
-            CorpusScope::Union => true,
-            CorpusScope::ExamplesOnly => rel.starts_with(EXAMPLES_ROOT),
-        }
-    }
-}
-
 /// One invariant's declaration: what it is, what it is called in a report, which
-/// corpus files it covers, which of those are exempt, and what happens when it
-/// finds something.
+/// corpus files are exempt from it, and whether it has a break-glass key.
 ///
-/// The two invariants' residual lists and failure policies differ, and those
-/// differences are DATA here rather than two hand-copied code branches: one
-/// implementation reads these fields, so the policies cannot drift apart the way
-/// the two sweeps' engine constructors did (task 5578).
+/// The invariants share one stale-residual policy and differ only in their
+/// residual lists and bypass keys. Those differences are DATA here rather than
+/// two hand-copied code branches: one implementation reads these fields, so the
+/// gates cannot drift apart the way the two sweeps' engine constructors did
+/// (task 5578).
 #[derive(Debug, PartialEq, Eq)]
 struct InvariantGate {
     id: InvariantId,
     /// How this invariant names itself in sweep output, so a red says which
     /// invariant broke without the reader decoding an enum variant.
     label: &'static str,
-    scope: CorpusScope,
     /// `(repo-relative path SUFFIX, root-cause reason)` for files with a
     /// residual finding that is NOT a checker gap. Every entry is PRINTED with
     /// its reason and finding count when it is exempted — never silent — so
     /// bounded coverage can never read as full coverage.
     residuals: &'static [(&'static str, &'static str)],
-    /// Whether a declared residual that produces ZERO findings fails the sweep.
-    ///
-    /// INV-EVAL-4 shipped with this ON: a resolved residual is reported loud so
-    /// the dead exemption gets deleted rather than lingering as weight that
-    /// masks the now-recovered coverage. INV-EVAL-5 shipped with it OFF. That
-    /// asymmetry is PRESERVED, not harmonised — turning it on for INV-EVAL-5
-    /// would be a semantic change outside a zero-loss restructuring, and is
-    /// named as a follow-up.
-    stale_residual_is_fatal: bool,
     /// Break-glass env var that DOWNGRADES this invariant's failure to a warn.
     ///
     /// INV-EVAL-4 shipped with `REIFY_SNAPSHOT_CACHE_AUDIT_BYPASS`, mirroring
     /// `REIFY_MAIN_GATE_BYPASS`, so a future change that introduces a divergence
-    /// can never wedge the merge queue. INV-EVAL-5 shipped with none, and is not
-    /// granted one here — same preservation argument as above.
+    /// can never wedge the merge queue. INV-EVAL-5 declares none: the sanctioned
+    /// way to unwedge either invariant is a root-caused residual entry.
     bypass_env: Option<&'static str>,
 }
 
@@ -780,7 +677,7 @@ impl InvariantGate {
 /// `no_stale_undef_invariant_gate.rs`'s `KNOWN_RESIDUAL_SKIPS` by task #7431:
 /// the reasons are root-cause RECORDS, not prose, and are neither paraphrased
 /// nor merged with INV-EVAL-4's list. If a future engine change resolves one of
-/// these, its entry should be deleted rather than left as dead weight.
+/// these, the sweep reds until its entry is deleted.
 const STALE_UNDEF_RESIDUALS: &[(&str, &str)] = &[
     (
         "examples/integration_corner_cases.ri",
@@ -825,10 +722,12 @@ const STALE_UNDEF_RESIDUALS: &[(&str, &str)] = &[
 
 /// Files with a residual snapshot↔cache divergence that is a documented
 /// eval-surface limitation, NOT a checker gap fixable within
-/// `cache_divergence.rs`'s `(snapshot_values, cache, journal)` signature — each
-/// root-caused during the ι broad-sweep investigation (step-8). Carried here
-/// VERBATIM from `snapshot_cache_divergence_gate.rs`'s
-/// `KNOWN_RESIDUAL_DIVERGENCE_SKIPS` by task #7431.
+/// `cache_divergence.rs`'s `(snapshot_values, cache, journal)` signature. The
+/// two `examples/` entries were root-caused during the ι broad-sweep
+/// investigation (step-8) and carried here VERBATIM from
+/// `snapshot_cache_divergence_gate.rs`'s `KNOWN_RESIDUAL_DIVERGENCE_SKIPS` by
+/// task #7431; the reify-eval fixture entries surfaced when task #7560 widened
+/// INV-EVAL-4 to the whole corpus.
 ///
 /// A residual that traces to a genuine post-γ snapshot↔cache write bug (not a
 /// documented eval-surface limitation) is a design_concern to escalate, NOT a
@@ -858,9 +757,30 @@ const SNAPSHOT_CACHE_DIVERGENCE_RESIDUALS: &[(&str, &str)] = &[
          cell class from the sibling invariant). A documented eval-surface \
          limitation, not a post-γ snapshot↔cache write bug.",
     ),
+    (
+        "crates/reify-eval/tests/fixtures/fea_body_cantilever.ri",
+        "FeaBodyCantilever.result: an `@optimized` `solve_elastic_static(...)` FEA \
+         compute-dispatch result cell (the arity-5 `body : Solid` overload) — same \
+         class as fdm_bracket.ri above. MEASURED: snapshot `(Undef, Undetermined)` vs \
+         cache `(Undef, Determined)`, byte-identical content hashes to both entries \
+         above. Consistent with the `DispatchError::Failed` arm of the let-cell \
+         compute dispatch in `engine_eval.rs`, which caches `(Undef, Determined)` and \
+         `mark_failed`s outside `commit_cell_result` (task #5238). A documented \
+         eval-surface limitation, not a post-γ snapshot↔cache write bug.",
+    ),
+    (
+        "crates/reify-eval/tests/fixtures/fea_body_cantilever_adaptive.ri",
+        "FeaBodyCantileverAdaptive.result: same class and same measured pair as \
+         fea_body_cantilever.ri above.",
+    ),
+    (
+        "crates/reify-eval/tests/fixtures/fea_body_cantilever_adaptive_refined_vs_seed.ri",
+        "FeaBodyCantileverAdaptiveRefinedVsSeed.{seed,refined}: same class and same \
+         measured pair as fea_body_cantilever.ri above.",
+    ),
 ];
 
-/// Every invariant this sweep asserts, with its per-invariant scope.
+/// Every invariant this sweep asserts.
 ///
 /// Exactly two entries — pinned by
 /// `one_corpus_evaluation_feeds_both_invariant_checkers`, so dropping one reds
@@ -869,20 +789,25 @@ const GATES: &[InvariantGate] = &[
     InvariantGate {
         id: InvariantId::StaleUndef,
         label: "INV-EVAL-5 (no stale Undef)",
-        scope: CorpusScope::Union,
         residuals: STALE_UNDEF_RESIDUALS,
-        stale_residual_is_fatal: false,
         bypass_env: None,
     },
     InvariantGate {
         id: InvariantId::SnapshotCacheDivergence,
         label: "INV-EVAL-4 (snapshot↔cache divergence)",
-        scope: CorpusScope::ExamplesOnly,
         residuals: SNAPSHOT_CACHE_DIVERGENCE_RESIDUALS,
-        stale_residual_is_fatal: true,
         bypass_env: Some("REIFY_SNAPSHOT_CACHE_AUDIT_BYPASS"),
     },
 ];
+
+/// The gate declared for `id`. An undeclared `id` panics naming it, so a test
+/// reading a gate's declaration cannot silently read nothing.
+fn gate_for(id: InvariantId) -> &'static InvariantGate {
+    GATES
+        .iter()
+        .find(|g| g.id == id)
+        .unwrap_or_else(|| panic!("no gate declared for {id:?}"))
+}
 
 /// INV-EVAL-5's adapter: ONE `Engine` wrapper call, mapped to [`Finding`].
 ///
@@ -920,17 +845,11 @@ fn check_file(engine: &reify_eval::Engine, rel: &str) -> FileOutcome {
     let per_invariant = GATES
         .iter()
         .map(|gate| {
-            let outcome = if gate.scope.covers(rel) {
-                InvariantOutcome::Checked(match gate.id {
-                    InvariantId::StaleUndef => stale_undef_findings(engine),
-                    InvariantId::SnapshotCacheDivergence => {
-                        snapshot_cache_divergence_findings(engine)
-                    }
-                })
-            } else {
-                InvariantOutcome::OutOfScope
+            let findings = match gate.id {
+                InvariantId::StaleUndef => stale_undef_findings(engine),
+                InvariantId::SnapshotCacheDivergence => snapshot_cache_divergence_findings(engine),
             };
-            (gate.id, outcome)
+            (gate.id, findings)
         })
         .collect();
 
@@ -995,7 +914,6 @@ fn one_corpus_evaluation_feeds_both_invariant_checkers() {
     let cells = |id: InvariantId| -> Vec<reify_core::ValueCellId> {
         outcome
             .findings(id)
-            .expect("both invariants present per (a)")
             .iter()
             .map(|f| f.cell.clone())
             .collect()
@@ -1033,98 +951,50 @@ fn one_corpus_evaluation_feeds_both_invariant_checkers() {
     );
 }
 
-/// What makes this restructuring ZERO-LOSS rather than a coverage change: the
-/// two old sweeps did NOT cover the same corpus, and unification must not
-/// quietly widen either one.
+/// Every invariant checks the whole corpus, so INV-EVAL-4 also checks the
+/// reify-eval fixtures, not just `examples/`.
 ///
-/// INV-EVAL-5 swept the 299-file UNION (reify-eval's `tests/fixtures/` +
-/// `examples/` + the prd-gate leaf). INV-EVAL-4 swept `examples/` ONLY. Sharing
-/// the evaluation is free; sharing the SCOPE would not be — widening INV-EVAL-4
-/// to the 34 fixture files is a coverage CHANGE that could surface fresh
-/// residuals, which is outside a zero-loss restructuring. It is deliberately NOT
-/// done here and is named as a follow-up instead, so a future reader cannot
-/// mistake the narrower scope for an oversight.
+/// Coverage is structural: [`check_file`] evaluates every gate for every file,
+/// so a non-`examples/` file's outcome must carry an entry for each of them.
+/// This rests on no live divergence, so fixing the tracked compute-dispatch
+/// defect behind every INV-EVAL-4 residual cannot void it. That the INV-EVAL-4
+/// checker fires at all is
+/// `harness_cache::snapshot_cache_divergence_gate::seeded_divergence_is_reported`.
 #[test]
-fn each_invariant_keeps_its_own_pre_unification_corpus_scope() {
-    let scope = |id: InvariantId| {
-        GATES
-            .iter()
-            .find(|g| g.id == id)
-            .unwrap_or_else(|| panic!("no gate declared for {id:?}"))
-            .scope
-    };
-    let stale = scope(InvariantId::StaleUndef);
-    let divergence = scope(InvariantId::SnapshotCacheDivergence);
-
-    // (a) A reify-eval fixture: INV-EVAL-5 only.
-    let fixture = "crates/reify-eval/tests/fixtures/undef_trace.ri";
-    assert!(stale.covers(fixture), "{fixture} was in the INV-EVAL-5 corpus");
-    assert!(
-        !divergence.covers(fixture),
-        "{fixture} was NOT in the INV-EVAL-4 corpus (examples/ only) — covering it \
-         now would be a coverage change, not a restructuring"
-    );
-
-    // (b) The explicit #4946 prd-gate leaf: likewise INV-EVAL-5 only.
-    let leaf = SELECTOR_CONSUMER_REL;
-    assert!(stale.covers(leaf), "{leaf} was in the INV-EVAL-5 corpus");
-    assert!(!divergence.covers(leaf), "{leaf} was NOT in the INV-EVAL-4 corpus");
-
-    // (c) An examples/ member: BOTH, including a nested one.
-    for example in ["examples/fdm_bracket.ri", "examples/auto/bearing_constraint_select.ri"] {
-        assert!(stale.covers(example), "{example} was in the INV-EVAL-5 corpus");
-        assert!(divergence.covers(example), "{example} was in the INV-EVAL-4 corpus");
-    }
-
-    // (d) Counted over the LIVE corpus, so neither invariant can silently gain or
-    //     lose files as the corpus grows.
+fn snapshot_cache_divergence_checks_the_reify_eval_fixtures() {
+    let rel = "crates/reify-eval/tests/fixtures/realization_read_box.ri";
     let corpus = corpus_files();
-    let examples: Vec<&CorpusFile> = corpus
+    let file = corpus
         .iter()
-        .filter(|f| f.rel.starts_with(EXAMPLES_ROOT))
-        .collect();
-    assert!(
-        !examples.is_empty() && examples.len() < corpus.len(),
-        "non-vacuity: the corpus must hold both examples/ and non-examples/ members \
-         ({} of {}), or (d) cannot distinguish the two scopes",
-        examples.len(),
-        corpus.len()
-    );
+        .find(|f| f.rel == rel)
+        .unwrap_or_else(|| panic!("{rel} must be a corpus member"));
 
-    let covered = |s: CorpusScope| corpus.iter().filter(|f| s.covers(&f.rel)).count();
+    let FileSweep::Evaluated(outcome) = sweep_file(file) else {
+        panic!("{rel} must be EVALUATED, not skipped for a compile error");
+    };
+
+    let checked: Vec<InvariantId> = outcome.per_invariant.iter().map(|(id, _)| *id).collect();
     assert_eq!(
-        covered(stale),
-        corpus.len(),
-        "INV-EVAL-5 swept the whole union before unification and must still do so"
-    );
-    assert_eq!(
-        covered(divergence),
-        examples.len(),
-        "INV-EVAL-4 swept exactly the examples/ subset before unification and must \
-         still do so — no wider, no narrower"
+        checked,
+        vec![
+            InvariantId::StaleUndef,
+            InvariantId::SnapshotCacheDivergence
+        ],
+        "{rel} must be checked for every invariant, INV-EVAL-4 included"
     );
 }
 
-/// The second and third asymmetries the two old gates carry, pinned so
-/// unification cannot silently harmonise them.
+/// What stays per-invariant: each invariant's residual list and its break-glass
+/// key.
 ///
-/// Sharing the corpus EVALUATION is free. Sharing the residual list or the
-/// failure policy would not be: a single global exemption list would stop
-/// checking `examples/fdm_bracket.ri` for INV-EVAL-5, which it is NOT exempt
-/// from, and harmonising the policies would either strengthen INV-EVAL-5 to fail
-/// on a stale residual or weaken INV-EVAL-4's break-glass — each a semantic
-/// change outside a zero-loss restructuring, and each named as a follow-up
-/// instead of taken here.
+/// A single global exemption list would stop checking `examples/fdm_bracket.ri`
+/// for INV-EVAL-5, which it is NOT exempt from, and granting INV-EVAL-5
+/// INV-EVAL-4's bypass would let one knob silence an invariant that never
+/// declared it.
 #[test]
-fn residual_exemptions_and_failure_policy_stay_per_invariant() {
-    let gate = |id: InvariantId| {
-        GATES
-            .iter()
-            .find(|g| g.id == id)
-            .unwrap_or_else(|| panic!("no gate declared for {id:?}"))
-    };
-    let stale = gate(InvariantId::StaleUndef);
-    let divergence = gate(InvariantId::SnapshotCacheDivergence);
+fn residual_lists_and_bypass_keys_stay_per_invariant() {
+    let stale = gate_for(InvariantId::StaleUndef);
+    let divergence = gate_for(InvariantId::SnapshotCacheDivergence);
 
     // (a) The two residual lists are SEPARATE. Each of these files is exempt
     //     from ONE invariant and must still be CHECKED for the other — a single
@@ -1135,7 +1005,7 @@ fn residual_exemptions_and_failure_policy_stay_per_invariant() {
         "{fdm} is a declared INV-EVAL-4 residual"
     );
     assert!(
-        stale.residual_reason(fdm).is_none() && stale.scope.covers(fdm),
+        stale.residual_reason(fdm).is_none(),
         "{fdm} is NOT exempt from INV-EVAL-5 and must still be checked for it"
     );
 
@@ -1145,7 +1015,7 @@ fn residual_exemptions_and_failure_policy_stay_per_invariant() {
         "{multi_load} is a declared INV-EVAL-5 residual"
     );
     assert!(
-        divergence.residual_reason(multi_load).is_none() && divergence.scope.covers(multi_load),
+        divergence.residual_reason(multi_load).is_none(),
         "{multi_load} is NOT exempt from INV-EVAL-4 and must still be checked for it"
     );
 
@@ -1156,7 +1026,7 @@ fn residual_exemptions_and_failure_policy_stay_per_invariant() {
     //     matching several would exempt files nobody root-caused.
     let corpus = corpus_files();
     assert_eq!(stale.residuals.len(), 4, "INV-EVAL-5 declared 4 residuals");
-    assert_eq!(divergence.residuals.len(), 2, "INV-EVAL-4 declared 2 residuals");
+    assert_eq!(divergence.residuals.len(), 5, "INV-EVAL-4 declared 5 residuals");
     for g in GATES {
         for (suffix, reason) in g.residuals {
             let matched: Vec<&str> = corpus
@@ -1177,17 +1047,10 @@ fn residual_exemptions_and_failure_policy_stay_per_invariant() {
                 "{}: residual {suffix:?} must carry its root-cause reason",
                 g.label
             );
-            assert!(
-                g.scope.covers(matched[0]),
-                "{}: residual {suffix:?} exempts {} from an invariant that does not \
-                 even cover it — dead weight",
-                g.label,
-                matched[0]
-            );
         }
     }
 
-    // (c) The failure POLICY is per-invariant, read from the declared fields
+    // (c) The break-glass key is per-invariant, read from the declared fields
     //     rather than from the process environment (no env mutation: these tests
     //     run concurrently in-process with the shard tests).
     assert_eq!(
@@ -1195,21 +1058,88 @@ fn residual_exemptions_and_failure_policy_stay_per_invariant() {
         Some("REIFY_SNAPSHOT_CACHE_AUDIT_BYPASS"),
         "INV-EVAL-4 shipped with a break-glass warn-downgrade knob"
     );
-    assert!(
-        divergence.stale_residual_is_fatal,
-        "INV-EVAL-4 fails the sweep on a residual that no longer diverges, so the \
-         dead exemption gets deleted instead of masking recovered coverage"
-    );
     assert_eq!(
         stale.bypass_env, None,
-        "INV-EVAL-5 shipped with NO bypass knob — granting it one here would be a \
-         semantic change, not a restructuring"
+        "INV-EVAL-5 declares NO bypass knob — its sanctioned unwedge is a \
+         root-caused residual entry"
     );
-    assert!(
-        !stale.stale_residual_is_fatal,
-        "INV-EVAL-5 merely PRINTS its residuals; making them fatal here would be a \
-         semantic change, not a restructuring"
-    );
+}
+
+/// A declared residual that produces ZERO findings fails EVERY invariant, so a
+/// resolved residual's dead entry is deleted instead of masking the recovered
+/// coverage.
+///
+/// Driven through [`GateTally::record`] for each real gate in [`GATES`], with
+/// three controls per gate: a residual that still fires is a printed skip, an
+/// undeclared file with findings is an offender, and a clean undeclared file
+/// leaves the tally empty.
+#[test]
+fn a_declared_residual_without_findings_fails_every_gate() {
+    let finding = || Finding {
+        cell: reify_core::ValueCellId::new("Widget", "span"),
+        detail: "synthetic finding".to_string(),
+    };
+    let undeclared = "examples/not_a_declared_residual.ri";
+
+    for gate in GATES {
+        let (residual, _) = gate
+            .residuals
+            .first()
+            .unwrap_or_else(|| panic!("{} declares no residual to exercise", gate.label));
+
+        // (i) Stale: declared, zero findings.
+        let mut stale = GateTally::default();
+        stale.record(gate, residual, &[]);
+        assert_eq!(
+            stale.failure_sections(),
+            vec![FailureSection::StaleResiduals(vec![residual.to_string()])],
+            "{}: a declared residual with zero findings must fail the gate",
+            gate.label
+        );
+
+        // (ii) Control: a residual that still fires is a printed skip, not a failure.
+        let mut live = GateTally::default();
+        live.record(gate, residual, &[finding()]);
+        assert!(
+            live.failure_sections().is_empty(),
+            "{}: a live residual must not fail the gate",
+            gate.label
+        );
+        assert_eq!(
+            live.residual_skips.len(),
+            1,
+            "{}: a live residual must be a printed skip",
+            gate.label
+        );
+
+        // (iii) Control: an undeclared file with findings is an offender.
+        assert!(
+            gate.residual_reason(undeclared).is_none(),
+            "{}: {undeclared} must not be a declared residual",
+            gate.label
+        );
+        let mut offending = GateTally::default();
+        offending.record(gate, undeclared, &[finding()]);
+        let sections = offending.failure_sections();
+        assert!(
+            matches!(sections.as_slice(), [FailureSection::Offenders(_)]),
+            "{}: an undeclared file with findings must be an offender: {sections:#?}",
+            gate.label
+        );
+
+        // (iv) Control: a clean undeclared file — every clean corpus file's
+        //      path — records nothing at all.
+        let mut clean = GateTally::default();
+        clean.record(gate, undeclared, &[]);
+        assert!(
+            clean.failure_sections().is_empty()
+                && clean.residual_skips.is_empty()
+                && clean.offenders.is_empty()
+                && clean.stale_residuals.is_empty(),
+            "{}: a clean undeclared file must leave the tally empty",
+            gate.label
+        );
+    }
 }
 
 // ── The sweep body ───────────────────────────────────────────────────────────
@@ -1224,8 +1154,8 @@ enum FileSweep {
     Evaluated(FileOutcome),
 }
 
-/// Compile and evaluate ONE corpus file, then check every in-scope invariant
-/// against that single evaluation.
+/// Compile and evaluate ONE corpus file, then check every invariant against
+/// that single evaluation.
 ///
 /// The one `eval()` in this file. Both invariants read the snapshot it installs,
 /// which is the whole CPU saving — 299 evaluations where the two pre-unification
@@ -1261,23 +1191,38 @@ struct GateTally {
     /// Declared residuals that were exempted, with their reason and count. Always
     /// PRINTED, never silent, so bounded coverage cannot read as full coverage.
     residual_skips: Vec<(String, &'static str, usize)>,
-    /// Declared residuals that produced ZERO findings. Only populated for a gate
-    /// whose `stale_residual_is_fatal` is set — for the others a zero-finding
-    /// residual is just a printed skip, exactly as before unification.
+    /// Declared residuals that produced ZERO findings, for every gate — each one
+    /// fails the shard until its dead entry is deleted.
     stale_residuals: Vec<String>,
 }
 
 impl GateTally {
+    /// Classify `gate`'s `findings` for the corpus file keyed `rel`: a declared
+    /// residual is a printed skip while it still fires and stale once it does
+    /// not; an undeclared file with findings is an offender.
+    fn record(&mut self, gate: &InvariantGate, rel: &str, findings: &[Finding]) {
+        match gate.residual_reason(rel) {
+            Some(_) if findings.is_empty() => self.stale_residuals.push(rel.to_string()),
+            Some(reason) => self
+                .residual_skips
+                .push((rel.to_string(), reason, findings.len())),
+            None if !findings.is_empty() => {
+                self.offenders.push((rel.to_string(), findings.to_vec()));
+            }
+            None => {}
+        }
+    }
+
     /// Why this invariant fails the shard — EMPTY when it is clean. Structured
     /// sections rather than a joined `String`; see [`FailureSection`].
-    fn failure_sections(&self, gate: &InvariantGate) -> Vec<FailureSection> {
+    fn failure_sections(&self) -> Vec<FailureSection> {
         let mut sections = Vec::new();
 
         if !self.offenders.is_empty() {
             sections.push(FailureSection::Offenders(self.offenders.clone()));
         }
 
-        if gate.stale_residual_is_fatal && !self.stale_residuals.is_empty() {
+        if !self.stale_residuals.is_empty() {
             sections.push(FailureSection::StaleResiduals(self.stale_residuals.clone()));
         }
 
@@ -1289,18 +1234,17 @@ impl GateTally {
 /// not the sentence an operator reads.
 ///
 /// The two variants come from the two policies that can fire, and a section is
-/// present exactly when its policy did: `StaleResiduals` only ever appears for a
-/// gate declaring `stale_residual_is_fatal`. Which policies fired is a fact the
-/// sweep and its tests both read, and recovering it by substring-matching the
-/// operator-facing prose would make a cosmetic reword indistinguishable from a
-/// dispatch defect — so `report_routing_honours_each_gates_own_policy` asserts
-/// on the VARIANT set and the text below stays free to be reworded.
+/// present exactly when its policy did, for any gate. Which policies fired is a
+/// fact the sweep and its tests both read, and recovering it by
+/// substring-matching the operator-facing prose would make a cosmetic reword
+/// indistinguishable from a dispatch defect — so
+/// `report_routing_honours_each_gates_own_policy` asserts on the VARIANT set and
+/// the text below stays free to be reworded.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum FailureSection {
     /// Files with real, unexempted findings, carried with those findings.
     Offenders(Vec<(String, Vec<Finding>)>),
-    /// Declared residuals that produced ZERO findings, under a gate whose
-    /// `stale_residual_is_fatal` is set.
+    /// Declared residuals that produced ZERO findings.
     StaleResiduals(Vec<String>),
 }
 
@@ -1326,7 +1270,7 @@ impl FailureSection {
                     .collect::<Vec<_>>()
                     .join("\n");
                 format!(
-                    "{}: expected zero non-exempt findings across its corpus scope; \
+                    "{}: expected zero non-exempt findings across the corpus; \
                      offending file(s):\n{report}",
                     gate.label
                 )
@@ -1421,7 +1365,7 @@ fn route_reports<'g>(
     gates
         .iter()
         .filter_map(|gate| {
-            let sections = tally_of(tallies, gate.id).failure_sections(gate);
+            let sections = tally_of(tallies, gate.id).failure_sections();
             if sections.is_empty() {
                 return None;
             }
@@ -1460,16 +1404,16 @@ fn bypass_hint<'g>(gates: impl IntoIterator<Item = &'g InvariantGate>) -> String
 }
 
 /// The per-gate report routing, exercised as BEHAVIOUR rather than only as the
-/// declared field values `residual_exemptions_and_failure_policy_stay_per_invariant`
+/// declared field values `residual_lists_and_bypass_keys_stay_per_invariant`
 /// pins.
 ///
 /// Before unification the downgrade and the stale-residual branch were two
 /// hand-written pieces of code, one per sweep file, each exercised by its own
 /// sweep. They are now one data-driven dispatch BOTH invariants depend on, so a
-/// defect in it — a bypass silencing the gate that never declared one, or
-/// `stale_residual_is_fatal` read off the wrong gate — stays invisible for as
-/// long as the corpus is green. That is the same silent-drift class (task 5578)
-/// this unification exists to foreclose, so the dispatch is pinned here.
+/// defect in it — a bypass silencing the gate that never declared one, or one
+/// gate's tally reported under another — stays invisible for as long as the
+/// corpus is green. That is the same silent-drift class (task 5578) this
+/// unification exists to foreclose, so the dispatch is pinned here.
 ///
 /// Synthetic gates and tallies throughout: these are pure functions of data, so
 /// the test needs no corpus evaluation and, critically, no env mutation. Every
@@ -1477,12 +1421,10 @@ fn bypass_hint<'g>(gates: impl IntoIterator<Item = &'g InvariantGate>) -> String
 #[test]
 fn report_routing_honours_each_gates_own_policy() {
     const RESIDUAL: &[(&str, &str)] = &[("examples/residual.ri", "a declared residual")];
-    let gate = |id, label, stale_residual_is_fatal, bypass_env| InvariantGate {
+    let gate = |id, label, bypass_env| InvariantGate {
         id,
         label,
-        scope: CorpusScope::Union,
         residuals: RESIDUAL,
-        stale_residual_is_fatal,
         bypass_env,
     };
     let offender = || GateTally {
@@ -1501,48 +1443,54 @@ fn report_routing_honours_each_gates_own_policy() {
         tally
     };
 
-    // (c) A clean tally is not a failure at all.
-    let lenient = gate(InvariantId::StaleUndef, "LENIENT", false, None);
-    let strict = gate(
-        InvariantId::SnapshotCacheDivergence,
-        "STRICT",
-        true,
-        Some("SOME_BYPASS_KEY"),
-    );
-    assert!(GateTally::default().failure_sections(&lenient).is_empty());
-    assert!(GateTally::default().failure_sections(&strict).is_empty());
-
-    // (a) Offenders with `stale_residual_is_fatal` OFF: the offender section
-    //     only, even with a stale residual sitting in the very same tally.
-    let lenient_sections = with_stale().failure_sections(&lenient);
-    assert!(
-        matches!(lenient_sections.as_slice(), [FailureSection::Offenders(_)]),
-        "a gate with stale_residual_is_fatal OFF must not pick up the second \
-         section from a sibling's policy: {lenient_sections:#?}"
-    );
-
-    // (b) The SAME tally under `stale_residual_is_fatal` ON gains that section,
-    //     so the flag is read off the gate being reported and no other.
-    let strict_sections = with_stale().failure_sections(&strict);
-    assert!(
-        matches!(
-            strict_sections.as_slice(),
-            [FailureSection::Offenders(_), FailureSection::StaleResiduals(_)]
+    let gates = [
+        gate(InvariantId::StaleUndef, "UNBYPASSABLE", None),
+        gate(
+            InvariantId::SnapshotCacheDivergence,
+            "BYPASSABLE",
+            Some("SOME_BYPASS_KEY"),
         ),
-        "stale_residual_is_fatal must add the stale-residual section: {strict_sections:#?}"
-    );
+    ];
+
+    // (c) A clean tally is not a failure at all.
+    assert!(GateTally::default().failure_sections().is_empty());
+
+    // (a) Offenders AND a stale residual in one tally yield both sections, under
+    //     EITHER gate: there is one stale-residual policy, not one per gate.
+    let both_stale = [
+        (InvariantId::StaleUndef, with_stale()),
+        (InvariantId::SnapshotCacheDivergence, with_stale()),
+    ];
+    let stale_reports = route_reports(&gates, &both_stale, |_| false);
+    assert_eq!(stale_reports.len(), 2, "both gates had something to report");
+    for report in &stale_reports {
+        assert!(
+            matches!(
+                report.sections.as_slice(),
+                [
+                    FailureSection::Offenders(_),
+                    FailureSection::StaleResiduals(_)
+                ]
+            ),
+            "{}: a stale residual must add its own section: {:#?}",
+            report.gate.label,
+            report.sections
+        );
+    }
 
     // Rendering carries the section's structured values through — the reporting
     // gate's own label and the offending file. Its wording is presentation, and
-    // nothing above reads it.
-    let rendered = FailureSection::Offenders(offender().offenders).render(&strict);
+    // nothing above reads it. (`UNBYPASSABLE` contains `BYPASSABLE`, hence the
+    // negation.)
+    let rendered = FailureSection::Offenders(offender().offenders).render(&gates[1]);
     assert!(
-        rendered.contains("STRICT") && rendered.contains("examples/offender.ri"),
+        rendered.contains("BYPASSABLE")
+            && !rendered.contains("UNBYPASSABLE")
+            && rendered.contains("examples/offender.ri"),
         "{rendered}"
     );
 
     // (d) With only ONE gate bypassed, the other's report still FAILS the shard.
-    let gates = [lenient, strict];
     let tallies = [
         (InvariantId::StaleUndef, offender()),
         (InvariantId::SnapshotCacheDivergence, with_stale()),
@@ -1551,13 +1499,13 @@ fn report_routing_honours_each_gates_own_policy() {
     assert_eq!(routed.len(), 2, "both gates had something to report");
     assert_eq!(
         (routed[0].gate.label, routed[0].downgraded_by),
-        ("LENIENT", None),
-        "LENIENT declares no bypass key, so its report must reach the failures \
+        ("UNBYPASSABLE", None),
+        "UNBYPASSABLE declares no bypass key, so its report must reach the failures \
          even while its sibling is bypassed"
     );
     assert_eq!(
         (routed[1].gate.label, routed[1].downgraded_by),
-        ("STRICT", Some("SOME_BYPASS_KEY")),
+        ("BYPASSABLE", Some("SOME_BYPASS_KEY")),
         "a gate is downgraded by its OWN declared key"
     );
     assert!(
@@ -1568,8 +1516,8 @@ fn report_routing_honours_each_gates_own_policy() {
     );
 
     // (e) `tally_of`'s keyed pairing, asserted: shuffling the tallies must
-    //     change nothing. The positional zip it replaced would hand STRICT's
-    //     tally to LENIENT here.
+    //     change nothing. The positional zip it replaced would hand BYPASSABLE's
+    //     tally to UNBYPASSABLE here.
     let shuffled = [
         (InvariantId::SnapshotCacheDivergence, with_stale()),
         (InvariantId::StaleUndef, offender()),
@@ -1582,21 +1530,21 @@ fn report_routing_honours_each_gates_own_policy() {
 
     // The hint offers only the knobs that exist.
     let hint = bypass_hint(&gates);
-    assert!(hint.contains("SOME_BYPASS_KEY") && hint.contains("STRICT"), "{hint}");
+    assert!(hint.contains("SOME_BYPASS_KEY") && hint.contains("BYPASSABLE"), "{hint}");
     assert!(
-        !hint.contains("LENIENT"),
+        !hint.contains("UNBYPASSABLE"),
         "a gate with no bypass key must not be offered one: {hint}"
     );
     assert_eq!(bypass_hint(&gates[..1]), "", "no declared key, no hint");
 
-    // (f) …and only the knobs that could downgrade THIS red. STRICT is already
-    //     bypassed above, so the one gate still failing is LENIENT, which
-    //     declares none: the operator gets no hint rather than a knob that
+    // (f) …and only the knobs that could downgrade THIS red. BYPASSABLE is
+    //     already bypassed above, so the one gate still failing is UNBYPASSABLE,
+    //     which declares none: the operator gets no hint rather than a knob that
     //     cannot possibly clear what they are looking at. Same composition
     //     `run_corpus_shard` performs.
     let failing: Vec<&InvariantGate> =
         routed.iter().filter(|r| r.downgraded_by.is_none()).map(|r| r.gate).collect();
-    assert_eq!(failing.iter().map(|g| g.label).collect::<Vec<_>>(), vec!["LENIENT"]);
+    assert_eq!(failing.iter().map(|g| g.label).collect::<Vec<_>>(), vec!["UNBYPASSABLE"]);
     assert_eq!(
         bypass_hint(failing.iter().copied()),
         "",
@@ -1607,9 +1555,8 @@ fn report_routing_honours_each_gates_own_policy() {
 /// Sweep the corpus slice owned by `shard_index`, asserting EVERY invariant in
 /// [`GATES`] against ONE evaluation per file.
 ///
-/// Per-invariant semantics are identical to the two pre-unification sweeps: each
-/// invariant keeps its own scope, its own residual list and its own failure
-/// policy, and only the corpus evaluation is shared. A failure names its
+/// Every invariant checks every file and shares one stale-residual policy; each
+/// keeps its own residual list and break-glass key. A failure names its
 /// [`InvariantId`]'s label, so a red says WHICH invariant broke.
 fn run_corpus_shard(shard_index: usize) {
     let files = shard_files(shard_index);
@@ -1627,29 +1574,12 @@ fn run_corpus_shard(shard_index: usize) {
         };
 
         for gate in GATES {
-            let Some(findings) = outcome.findings(gate.id) else {
-                continue; // Out of this invariant's scope — deliberately unchecked.
-            };
-            let tally = tally_of_mut(&mut tallies, gate.id);
-
+            let findings = outcome.findings(gate.id);
             if gate.id == InvariantId::StaleUndef && file.rel == SELECTOR_CONSUMER_REL {
                 selector_consumer_findings = Some(findings.len());
             }
 
-            match gate.residual_reason(&file.rel) {
-                Some(_) if findings.is_empty() && gate.stale_residual_is_fatal => {
-                    tally.stale_residuals.push(file.rel.clone());
-                }
-                Some(reason) => {
-                    tally
-                        .residual_skips
-                        .push((file.rel.clone(), reason, findings.len()));
-                }
-                None if !findings.is_empty() => {
-                    tally.offenders.push((file.rel.clone(), findings.to_vec()));
-                }
-                None => {}
-            }
+            tally_of_mut(&mut tallies, gate.id).record(gate, &file.rel, findings);
         }
     }
 
@@ -1720,17 +1650,38 @@ fn run_corpus_shard(shard_index: usize) {
 #[ignore = "diagnostic timing harness; run explicitly with --ignored"]
 fn diag_per_file_timing() {
     let mut timings: Vec<(std::time::Duration, String)> = Vec::new();
+    let mut compile_skips: Vec<(std::time::Duration, String)> = Vec::new();
     for file in &corpus_files() {
         let t0 = std::time::Instant::now();
-        if matches!(sweep_file(file), FileSweep::CompileError) {
-            continue;
+        let swept = sweep_file(file);
+        let timed = (t0.elapsed(), file.rel.clone());
+        match swept {
+            FileSweep::CompileError => compile_skips.push(timed),
+            FileSweep::Evaluated(_) => timings.push(timed),
         }
-        timings.push((t0.elapsed(), file.rel.clone()));
     }
     timings.sort();
     timings.reverse();
     for (d, f) in timings.iter().take(40) {
-        eprintln!("DIAG {d:?} {f}");
+        eprintln!("DIAG {d:?} shard {:02} {f}", shard_of(f));
+    }
+    for (d, f) in &compile_skips {
+        eprintln!("DIAG-SKIP {d:?} shard {:02} {f}", shard_of(f));
+    }
+    let mut shard_cost = vec![std::time::Duration::ZERO; CORPUS_SHARD_COUNT];
+    for (d, f) in timings.iter().chain(&compile_skips) {
+        shard_cost[shard_of(f)] += *d;
+    }
+    let total: std::time::Duration = shard_cost.iter().sum();
+    eprintln!(
+        "DIAG-TOTAL {} file(s) evaluated, {} skipped (compile errors), {total:?}",
+        timings.len(),
+        compile_skips.len()
+    );
+    let mut ranked: Vec<_> = shard_cost.into_iter().enumerate().collect();
+    ranked.sort_by(|(_, a), (_, b)| b.cmp(a));
+    for (shard, sum) in ranked {
+        eprintln!("DIAG-SHARD {shard:02} {sum:?}");
     }
 }
 
@@ -1777,14 +1728,7 @@ fn selector_consumer_premise_fixture_is_swept_by_exactly_one_shard() {
 
     // (b) That shard genuinely evaluates it: no compile-error skip, no residual
     //     exemption, zero stale-Undef findings.
-    let stale = GATES
-        .iter()
-        .find(|g| g.id == InvariantId::StaleUndef)
-        .expect("INV-EVAL-5 gate declared");
-    assert!(
-        stale.scope.covers(rel),
-        "{rel} must be in INV-EVAL-5's scope, or the premise is unasserted"
-    );
+    let stale = gate_for(InvariantId::StaleUndef);
     assert!(
         stale.residual_reason(rel).is_none(),
         "{rel} must NOT be residual-exempt — the premise is that it is genuinely clean"
@@ -1796,9 +1740,8 @@ fn selector_consumer_premise_fixture_is_swept_by_exactly_one_shard() {
              make the #4946 premise silently vacuous"
         );
     };
-    assert_eq!(
-        outcome.findings(InvariantId::StaleUndef),
-        Some(&[][..]),
+    assert!(
+        outcome.findings(InvariantId::StaleUndef).is_empty(),
         "{rel} must report zero stale-Undef violations — the #4946 R3f-bridge premise"
     );
 }

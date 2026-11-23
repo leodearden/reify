@@ -79,9 +79,9 @@ fn std_dynamics_module_loads_with_no_errors() {
 /// MassProperties has exactly (mass, com, inertia, origin) with the expected
 /// types. `origin` is retargeted from the old `Real` placeholder to the real
 /// `Frame3` struct (declared in std.ports, shipped constructible by task 4254;
-/// std.ports was moved before std.dynamics in the loader by task 4547 pre-1 so
-/// Frame3 resolves in the growing prelude). A nominal struct param compiles to
-/// `Type::StructureRef` — cf. `analysis_stress_fn_compile.rs`'s `StressInvariants`.
+/// std.dynamics reaches it through its `import std.ports`). A nominal struct
+/// param compiles to `Type::StructureRef` — cf.
+/// `analysis_stress_fn_compile.rs`'s `StressInvariants`.
 #[test]
 fn mass_properties_has_four_params_with_correct_types() {
     let template = find_structure("MassProperties");

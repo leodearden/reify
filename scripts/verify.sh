@@ -1618,6 +1618,8 @@ is_occt_crate() {
 #     Engine::build by occt_repr_policy_fixtures_e2e.rs, task 8669)
 #     ssc_refuted_pair.ri (read via std::fs::read_to_string by
 #     harness_engine/interval_refutation_e2e.rs, task 6655)
+#     s6_joint_position_display.ri (`reify eval` by cli_eval_joint_position_enum.rs, task 8834)
+#     dce_runtime_payload.ri (`reify check`/`reify eval` by cli_eval_data_carrying_enum.rs, task 7456)
 #   compile-time embeds (include_str! bakes the bytes straight into the test
 #   binary — a tighter coupling than a runtime read, since the fixture is a
 #   build input of the target, not just a file it happens to open):
@@ -1648,29 +1650,45 @@ is_occt_crate() {
 #     driver_parity_auto_ctl.ri (the constant-pinned constructor auto that
 #     `reify check` and `reify build` must report Satisfied, run by
 #     cli_check_driver_parity.rs, task 6693)
-#   named by a WAIVER TABLE in a compiled test (task 5305): the six fixtures
-#     keyed by (file, param) in harness_ctor_conformance_survey/disposition.rs's
-#     CTOR_CONFORMANCE_CORPUS_RESIDUAL —
-#     dcr_load_ctor_dimension_silent.ri,
+#   named by a WAIVER TABLE in a compiled test (task 5305): the before-image
+#     fixtures keyed by (file, param) in
+#     harness_ctor_conformance_survey/disposition.rs's
+#     CTOR_CONFORMANCE_CORPUS_RESIDUAL — the dcr_* ones
+#     (dcr_load_ctor_dimension_silent.ri,
 #     dcr_material_dimension_silent.ri,
 #     dcr_reader_ctor_dimension_silent.ri,
 #     dcr_shaper_frequency_dimension_silent.ri,
 #     dcr_solver_load_dropped_dimensioned.ri,
-#     dcr_yield_stress_dimension_silent.ri.
+#     dcr_yield_stress_dimension_silent.ri), direction_typing_p1_bad_*.ri and
+#     s8_geometry_ctor_conformance_inline.ri.
 #     That target compiles the whole tracked corpus and cross-checks each entry
-#     against the warning it excuses, so an edit to one of these files makes its
-#     entry stale or its warning unexplained — two RED outcomes a docs-only
+#     against the warning it excuses, and its gate-resident liveness guard
+#     compiles each file the table names, so an edit to one of these files makes
+#     its entry stale or its warning unexplained — two RED outcomes a docs-only
 #     commit would otherwise carry to main ungated.
-#   named by the SAME target's rejection table (task 5306): the five
-#     struct_ctor_conformance_*.ri boundary-row fixtures keyed by (file, param)
-#     in CTOR_CONFORMANCE_REJECTION_FIXTURES, whose entries that target also
-#     cross-checks against the probe-set asserting each file is rejected.
+#   named by the SAME target's rejection table (task 5306): the
+#     struct_ctor_conformance_*.ri boundary-row fixtures, plus
+#     coordinate_target_fea_pose_rejected.ri and the
+#     migration_v0_2_ctor_*_before.ri migration-note before-images, keyed by
+#     (file, param) in CTOR_CONFORMANCE_REJECTION_FIXTURES, whose entries that
+#     target also cross-checks against the probe-set asserting each file is
+#     rejected.
 #   conservative, doc-comment mentions only today (listing a name is cheap, and
 #   a doc mention is usually the first trace of a read about to exist):
 #     compiler_type_hygiene_trait_args_silent_accept.ri, stdlib_ns_mode_member.ri,
 #     cost_robustness_tradeoff_form.ri (task 5711: reify-constraints'
 #     cost_robustness_tradeoff_blend.rs and solver.rs cite it as the .ri form
 #     the in-Rust blend fixtures mirror — no read today)
+#   named by the tracked-.ri parse guard's MUST_ERROR_RI_FIXTURES table in
+#     crates/reify-syntax/tests/harness_syntax/tracked_ri_parse_guard.rs (task
+#     9343): arrow_type.ri, every cmc_*.ri catalog-membership surface,
+#     decl_passes_purpose_body_sub_swallowed.ri, the CST-faulty slc_*.ri
+#     evidence fixtures and step_import_surface.ri. That guard READS each
+#     declared file and asserts its declared fault class, so an edit that makes
+#     one parse cleanly, or changes its fault class, reds
+#     `cargo test -p reify-syntax`. Undeclared fixtures in this directory stay
+#     inert: the guard's UNSWEPT row for the directory skips them unread, and
+#     that row carries the reviewed `pg-drift-dir:allow` marker.
 # Deliberately NO file:line citations: nothing validates them and they rot on
 # the first edit to those tests. Membership's SOURCE OF TRUTH is behavioural —
 # tests/infra/test_verify_scope.sh's PG-DRIFT scenario derives the referenced
@@ -1694,7 +1712,7 @@ is_occt_crate() {
 # (mirrors select_infra_tests/select_harness_kloc_guard) — required here
 # because one name is a strict prefix of another
 # (geometry_let_selector_consumer.ri vs …_consumer_edit.ri).
-_RUST_COUPLED_RI_FIXTURES=" adt_mirror_of_arm.ri adt_relation_verbs.ri compiler_type_hygiene_trait_args_silent_accept.ri cost_robustness_tradeoff_form.ri curvature_rad_literal.ri damped_material_mixin_conformance.ri damped_material_preset_conformance.ri dcr_load_ctor_dimension_silent.ri dcr_material_dimension_silent.ri dcr_reader_ctor_dimension_silent.ri dcr_shaper_frequency_dimension_silent.ri dcr_solver_load_dropped_dimensioned.ri dcr_yield_stress_dimension_silent.ri driver_parity_auto_ctl.ri driver_parity_one_sided_auto.ri driver_parity_one_sided_auto_free.ri driver_parity_two_sided_auto.ri geometry_let_selector_consumer.ri geometry_let_selector_consumer_edit.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_spec_arm_baseline.ri jacobian_column_members.ri joint_constrained_dof_compliance.ri occt_internals_centroid_translated_profile.ri occt_internals_fillet_extruded_wire.ri occt_internals_fillet_translated_disjoint_union.ri r3b_displacement_at_selector_grammar.ri shift_invert_modal_shifted.ri shift_invert_modal_unshifted.ri sketch_auto_seed_target.ri sketch_aux_let_premise.ri sketch_block_target.ri sketch_member_extrude_premise.ri ssc_refuted_pair.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri struct_ctor_conformance_int_at_string_field.ri struct_ctor_conformance_over_arity.ri struct_ctor_conformance_pose_at_selector_field.ri struct_ctor_conformance_string_at_selector_field.ri struct_ctor_conformance_unknown_field.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri "
+_RUST_COUPLED_RI_FIXTURES=" adt_mirror_of_arm.ri adt_relation_verbs.ri arrow_type.ri cmc_bolt_feasible.ri cmc_bolt_gap.ri cmc_bolt_two_fit.ri cmc_int_range.ri cmc_local_catalogs.ri cmc_membership_check.ri cmc_sugar_equivalence.ri cmc_unextractable.ri compiler_type_hygiene_trait_args_silent_accept.ri coordinate_target_fea_pose_rejected.ri cost_robustness_tradeoff_form.ri curvature_rad_literal.ri damped_material_mixin_conformance.ri damped_material_preset_conformance.ri dce_runtime_payload.ri dcr_load_ctor_dimension_silent.ri dcr_material_dimension_silent.ri dcr_reader_ctor_dimension_silent.ri dcr_shaper_frequency_dimension_silent.ri dcr_solver_load_dropped_dimensioned.ri dcr_yield_stress_dimension_silent.ri decl_passes_purpose_body_sub_swallowed.ri direction_typing_p1_bad_int.ri direction_typing_p1_bad_str.ri driver_parity_auto_ctl.ri driver_parity_one_sided_auto.ri driver_parity_one_sided_auto_free.ri driver_parity_two_sided_auto.ri geometry_let_selector_consumer.ri geometry_let_selector_consumer_edit.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_spec_arm_baseline.ri jacobian_column_members.ri joint_constrained_dof_compliance.ri migration_v0_2_ctor_field_type_before.ri migration_v0_2_ctor_unknown_field_before.ri occt_internals_centroid_translated_profile.ri occt_internals_fillet_extruded_wire.ri occt_internals_fillet_translated_disjoint_union.ri r3b_displacement_at_selector_grammar.ri s6_corexy_tie_orientation.ri s6_joint_position_display.ri s8_geometry_ctor_conformance_inline.ri shift_invert_modal_shifted.ri shift_invert_modal_unshifted.ri sketch_auto_seed_target.ri sketch_aux_let_premise.ri sketch_block_target.ri sketch_member_extrude_premise.ri slc_annotation_arg_fault.ri slc_field_analytical_fault.ri slc_field_imported_fault.ri slc_purpose_body_error.ri slc_purpose_param_missing.ri slc_root_error.ri slc_struct_header_fault.ri slc_trait_body_port.ri ssc_refuted_pair.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri step_import_surface.ri struct_ctor_conformance_int_at_string_field.ri struct_ctor_conformance_over_arity.ri struct_ctor_conformance_pose_at_selector_field.ri struct_ctor_conformance_string_at_selector_field.ri struct_ctor_conformance_unknown_field.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri "
 
 # GUI-COUPLED prd-gate fixtures (task 6435). Basenames PINNED in EXPECTED_CLEAN
 # in gui/src/__tests__/reifyGrammarCorpus.test.ts — the grammar drift ledger,
@@ -1737,12 +1755,16 @@ _RUST_COUPLED_RI_FIXTURES=" adt_mirror_of_arm.ri adt_relation_verbs.ri compiler_
 # Lezer-parseable yet, and extending the mirror is outside constrained-2d-sketch
 # α's scope. Nothing gates RUST_COUPLED ⊆ GUI_COUPLED (the ledger reports
 # unpinnedClean without gating it), so the exception is recorded here in prose.
+# SECOND EXCEPTION (task 9343): the tracked-.ri parse guard's must-error
+# fixtures (see the _RUST_COUPLED_RI_FIXTURES block above) are RUST-coupled but
+# never grammar-ledger EXPECTED_CLEAN pins, because pinning one clean would
+# assert the opposite of its purpose. They are not listed below.
 #
 # Deliberately unnumbered: nothing validates a count in prose (PG-DRIFT checks
 # MEMBERSHIP, PG-DRIFT-GUI checks the ledger), so a hard-coded size silently
 # rots on the next addition — this one already had, still reading 10 after the
 # list had grown past it, when task #5784 added unit_middot_mul.ri.
-_GUI_COUPLED_RI_FIXTURES=" adt_mirror_of_arm.ri adt_relation_verbs.ri adv_beta_undef_arith_control.ri adv_beta_v7_degraded_arith.ri adv_beta_v7_pm_is_real_zero.ri adv_ivf_undef_ctor_arg_check_silent.ri adv_ivf_undef_flow_constraint_indeterminate_exit0.ri angle_crossing_idiom.ri bare_angle_silently_accepted.ri collection_expr_index_resolves.ri collection_sub_at_placement_rejected.ri collection_sub_member_cell_consumable.ri collection_sub_per_member_cells.ri collection_sub_value_position_undef_baseline.ri compiler_type_hygiene_integration_gate.ri compiler_type_hygiene_mul_scale_guard_defeat.ri compiler_type_hygiene_mul_vec_silent_int.ri compiler_type_hygiene_trait_args_silent_accept.ri compose_fn_field_resolves.ri compose_middle_type_mismatch_rejected.ri compose_one_arg_rejected.ri cost_min_money_objective.ri cost_robustness_tradeoff_form.ri cross_sub_geometry_ref.ri curvature_rad_literal.ri damped_material_mixin_conformance.ri damped_material_preset_conformance.ri dce_runtime_payload.ri dcr_dimension_rejection_channel_fires.ri dcr_fn_force_param_already_rejects.ri dcr_langsurface_crossdim_silent.ri dcr_load_ctor_dimension_silent.ri dcr_load_retype_target_resolves.ri dcr_material_dimension_correct.ri dcr_material_dimension_silent.ri dcr_reader_ctor_dimension_silent.ri dcr_shaper_frequency_dimension_silent.ri dcr_solver_load_dropped_bare.ri dcr_solver_load_dropped_dimensioned.ri dcr_yield_stress_dimension_silent.ri driver_contract_allow_indeterminate.ri driver_contract_dfm_measurement_arm.ri driver_contract_eval_blind_to_violation.ri driver_contract_geometry_test_indeterminate.ri driver_contract_header_mismatch.ri driver_contract_report_blind_to_violation.ri driver_parity_auto_ctl.ri driver_parity_eq_plus_ineq.ri driver_parity_one_sided_auto.ri driver_parity_one_sided_auto_free.ri driver_parity_relate_conflict.ri driver_parity_two_sided_auto.ri dwr_cantilever_energy.ri dwr_cantilever_qoi.ri dwr_qoi_readback.ri dwr_qoi_without_adaptive.ri engine_build_hardening_kappa_mixed_kernel_selector.ri expected_type_pushdown_arg.ri expected_type_pushdown_let.ri faces_by_normal_symbolic_eval_silent.ri forall_collection_resolves.ri forall_range_domain_rejected.ri frame_to_frame_resolves.ri frame_to_frame_transform3_nomatch.ri geometry_let_selector_consumer_edit.ri geometry_let_selector_consumer.ri gui_purpose_surface.ri hand_placed_twin_two_subs_eval.ri indexed_sub_bare_member_resolves.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_oob_computed_silent_undef.ri indexed_sub_oob_literal_silent_undef.ri indexed_sub_self_member_misrouted.ri indexed_sub_self_member_nogeom_unsupported.ri indexed_sub_silent_undef_baseline.ri indexed_sub_spec_arm_baseline.ri instantiation_value_flow_probe.ri ir_clean_eval.ri ivf_override_violates_constraint.ri jacobian_column_members.ri joint_constrained_dof_compliance.ri numeric_floor_bare_baseline.ri numeric_floor_dimensioned_silent_accept.ri numeric_floor_two_arg_parses.ri numeric_sinh_bare_baseline.ri numeric_sinh_dimensioned_silent_accept.ri objective_inherit_ambiguous.ri orient_axis_angle_member_parses.ri orient_to_axis_angle_call_resolves.ri parse_length_match_resolves.ri pnrg_cost_split_sphere.ri pnrg_envelope_cone.ri pnrg_envelope_fillet_blend.ri pnrg_envelope_loft.ri pnrg_envelope_nurbs_surface.ri pnrg_envelope_pipe.ri pnrg_envelope_sphere.ri pnrg_envelope_spline.ri pnrg_envelope_sweep.ri pnrg_envelope_torus.ri posed_subs_distance_query_unresolvable.ri purpose_nested_structure.ri quantifier_expr_int_domain_resolves.ri quantifier_expr_member_access_rejected.ri quantifier_expr_range_domain_rejected.ri r3b_displacement_at_selector_grammar.ri raw_lambda_material_field_rejected.ri revolute_silent_accept.ri rotational_closure_prestate.ri scalar_codomain_mismatch.ri self_collection_count_redirect_rejected.ri shear_angles_component_deg_compare_pre.ri shear_angles_field_decl_pre.ri shift_invert_modal_shifted.ri shift_invert_modal_unshifted.ri single_sub_pose_resolves.ri sketch_auto_seed_target.ri sketch_aux_let_premise.ri sketch_block_target.ri solver_unification_ineq_eq_penalty_offset.ri solver_unification_ineq_eq_two_sided_control.ri solver_unification_tangent_silent_accept.ri spec_conformance_directive_block.ri ssc_ineq_bracketed_strict.ri ssc_refuted_pair.ri ssc_single_root_free.ri ssc_two_roots_free.ri ssc_two_roots_strict.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member_modal.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri stdlib_ns_std_nonexistent_import.ri stdlib_units_import_resolves.ri subbody_objective_ignored.ri transform3_unresolved.ri typeparam_member_access.ri uncons_box_no_error.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri unknown_fn_silent_accept_baseline.ri value_clean_eval_cells.ri "
+_GUI_COUPLED_RI_FIXTURES=" adt_mirror_of_arm.ri adt_relation_verbs.ri adv_beta_undef_arith_control.ri adv_beta_v7_degraded_arith.ri adv_beta_v7_pm_is_real_zero.ri adv_ivf_undef_ctor_arg_check_silent.ri adv_ivf_undef_flow_constraint_indeterminate_exit0.ri angle_crossing_idiom.ri bare_angle_silently_accepted.ri collection_expr_index_resolves.ri collection_sub_at_placement_rejected.ri collection_sub_member_cell_consumable.ri collection_sub_per_member_cells.ri collection_sub_value_position_undef_baseline.ri compiler_type_hygiene_integration_gate.ri compiler_type_hygiene_mul_scale_guard_defeat.ri compiler_type_hygiene_mul_vec_silent_int.ri compiler_type_hygiene_trait_args_silent_accept.ri compose_fn_field_resolves.ri compose_middle_type_mismatch_rejected.ri compose_one_arg_rejected.ri cost_min_money_objective.ri cost_robustness_tradeoff_form.ri cross_sub_geometry_ref.ri curvature_rad_literal.ri damped_material_mixin_conformance.ri damped_material_preset_conformance.ri dce_runtime_payload.ri dcr_dimension_rejection_channel_fires.ri dcr_fn_force_param_already_rejects.ri dcr_langsurface_crossdim_silent.ri dcr_load_ctor_dimension_silent.ri dcr_load_retype_target_resolves.ri dcr_material_dimension_correct.ri dcr_material_dimension_silent.ri dcr_reader_ctor_dimension_silent.ri dcr_shaper_frequency_dimension_silent.ri dcr_solver_load_dropped_bare.ri dcr_solver_load_dropped_dimensioned.ri dcr_yield_stress_dimension_silent.ri driver_contract_allow_indeterminate.ri driver_contract_dfm_measurement_arm.ri driver_contract_eval_blind_to_violation.ri driver_contract_geometry_test_indeterminate.ri driver_contract_header_mismatch.ri driver_contract_report_blind_to_violation.ri driver_parity_auto_ctl.ri driver_parity_eq_plus_ineq.ri driver_parity_one_sided_auto.ri driver_parity_one_sided_auto_free.ri driver_parity_relate_conflict.ri driver_parity_two_sided_auto.ri dwr_cantilever_energy.ri dwr_cantilever_qoi.ri dwr_qoi_readback.ri dwr_qoi_without_adaptive.ri engine_build_hardening_kappa_mixed_kernel_selector.ri expected_type_pushdown_arg.ri expected_type_pushdown_let.ri faces_by_normal_symbolic_eval_silent.ri forall_collection_resolves.ri forall_range_domain_rejected.ri frame_to_frame_resolves.ri frame_to_frame_transform3_nomatch.ri geometry_let_selector_consumer_edit.ri geometry_let_selector_consumer.ri gui_purpose_surface.ri hand_placed_twin_two_subs_eval.ri indexed_sub_bare_member_resolves.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_oob_computed_silent_undef.ri indexed_sub_oob_literal_silent_undef.ri indexed_sub_self_member_misrouted.ri indexed_sub_self_member_nogeom_unsupported.ri indexed_sub_silent_undef_baseline.ri indexed_sub_spec_arm_baseline.ri instantiation_value_flow_probe.ri ir_clean_eval.ri ivf_override_violates_constraint.ri jacobian_column_members.ri joint_constrained_dof_compliance.ri numeric_floor_bare_baseline.ri numeric_floor_dimensioned_silent_accept.ri numeric_floor_two_arg_parses.ri numeric_sinh_bare_baseline.ri numeric_sinh_dimensioned_silent_accept.ri objective_inherit_ambiguous.ri orient_axis_angle_member_parses.ri orient_to_axis_angle_call_resolves.ri parse_length_match_resolves.ri pnrg_cost_split_sphere.ri pnrg_envelope_cone.ri pnrg_envelope_fillet_blend.ri pnrg_envelope_loft.ri pnrg_envelope_nurbs_surface.ri pnrg_envelope_pipe.ri pnrg_envelope_sphere.ri pnrg_envelope_spline.ri pnrg_envelope_sweep.ri pnrg_envelope_torus.ri posed_subs_distance_query_unresolvable.ri purpose_nested_structure.ri quantifier_expr_int_domain_resolves.ri quantifier_expr_member_access_rejected.ri quantifier_expr_range_domain_rejected.ri r3b_displacement_at_selector_grammar.ri raw_lambda_material_field_rejected.ri revolute_silent_accept.ri rotational_closure_prestate.ri s6_joint_position_display.ri scalar_codomain_mismatch.ri self_collection_count_redirect_rejected.ri shear_angles_component_deg_compare_pre.ri shear_angles_field_decl_pre.ri shift_invert_modal_shifted.ri shift_invert_modal_unshifted.ri single_sub_pose_resolves.ri sketch_auto_seed_target.ri sketch_aux_let_premise.ri sketch_block_target.ri solver_unification_ineq_eq_penalty_offset.ri solver_unification_ineq_eq_two_sided_control.ri solver_unification_tangent_silent_accept.ri spec_conformance_directive_block.ri ssc_ineq_bracketed_strict.ri ssc_refuted_pair.ri ssc_single_root_free.ri ssc_two_roots_free.ri ssc_two_roots_strict.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member_modal.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri stdlib_ns_std_nonexistent_import.ri stdlib_units_import_resolves.ri subbody_objective_ignored.ri transform3_unresolved.ri typeparam_member_access.ri uncons_box_no_error.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri unknown_fn_silent_accept_baseline.ri value_clean_eval_cells.ri "
 
 decide_scope() {
     if [ "$SCOPE" = "all" ]; then
@@ -4035,29 +4057,28 @@ build_plan() {
         add_tool "./scripts/check-manifold-deps.sh"
     fi
 
-    # tree-sitter parser regeneration is a Rust-build prerequisite.
+    # tree-sitter-reify/src for the `tree-sitter parse` CLI consumers
+    # (scripts/prd-capability-check.py, scripts/prd-gate-substrate-guard.sh).
+    # The cargo build generates its own copy into OUT_DIR
+    # (tree-sitter-reify/build.rs) and never reads src/.
     if [ "$RUN_RUST" -eq 1 ]; then
         add_tool "./scripts/tree-sitter-generate.sh"
     fi
 
-    # tree-sitter COMPILED-parser freshness (task #5629, esc-5392-1). The leaf
-    # above refreshes tree-sitter-reify/src/ ON DISK but does not by itself make
-    # cargo recompile it: cargo re-runs a build script only for paths declared
-    # via rerun-if-changed, and cc emits none of its own. So without this leaf
-    # the gate can link a libtree_sitter_reify.a built from different bytes than
-    # the tree it is verifying — a false GREEN for an external-scanner change.
+    # tree-sitter COMPILED-parser freshness (task #5629, esc-5392-1). cargo
+    # re-runs a build script only for watched paths whose mtime moved, and
+    # warm-lane seeding rewinds source mtimes, so without this leaf the gate can
+    # link a libtree_sitter_reify.a built from different grammar.js or
+    # src/scanner.c bytes than the tree it is verifying — a false GREEN.
     # `ensure` repairs (bumps the watched inputs' mtime so cargo must rebuild)
     # rather than hard-failing; `check` is the assert-only mode for a checkpoint.
     #
-    # Placement is load-bearing, both halves:
-    #   AFTER tree-sitter-generate.sh  — src/parser.c must be current on disk
-    #     before it is fingerprinted, or the verdict describes a stale input set.
-    #   BEFORE `verify.sh compile-gate` and every cargo leaf — a force applied
-    #     after the compile repairs nothing.
+    # Placement is load-bearing: BEFORE `verify.sh compile-gate` and every cargo
+    # leaf, since a force applied after the compile repairs nothing.
     # Guarded on RUN_RUST exactly as the generate leaf is, so docs-only /
     # gui-src-only plans keep zero command leaves.
     # Pinned by tests/infra/test_tree_sitter_pipeline.sh's
-    # test_verify_plan_includes_freshness_after_generation.
+    # test_verify_plan_brackets_the_cargo_wave_with_freshness.
     if [ "$RUN_RUST" -eq 1 ]; then
         add_tool "./scripts/tree-sitter-freshness.sh ensure"
     fi
@@ -4632,7 +4653,7 @@ build_plan() {
     # untouched by this run stay dormant `note:` lines — a checkout carries 7-9 of
     # them, stale forever, so a whole-tree assertion would be permanently RED.
     # Pinned by tests/infra/test_tree_sitter_pipeline.sh's
-    # test_verify_plan_includes_freshness_after_generation.
+    # test_verify_plan_brackets_the_cargo_wave_with_freshness.
     if [ "$RUN_RUST" -eq 1 ] \
         && { [ "$DO_LINT" -eq 1 ] || [ "$DO_TYPECHECK" -eq 1 ] || [ "$DO_TEST" -eq 1 ]; }; then
         add_tool "./scripts/tree-sitter-freshness.sh check"

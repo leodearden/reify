@@ -34,10 +34,10 @@ structure FeaShellTooThickAnnotated {
     let material = Steel_AISI_1045()
 
     // Loads: 10 N point load applied at the block tip.
-    let tip_load = PointLoad(point: "tip", force: 10.0N)
+    let tip_load = PointLoad(point: vertex(body, "tip"), force: 10.0N)
 
     // Supports: fully clamped (fixed) at the block root.
-    let mount = FixedSupport(target: "root")
+    let mount = FixedSupport(target: face(body, "root"))
 
     // FEA solve: force the shell route (proxy for `@shell`) with ShellForce.On.
     // Direct list literals type-check against List<Load> / List<Support> (task 4093).

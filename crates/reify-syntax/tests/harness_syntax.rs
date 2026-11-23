@@ -19,15 +19,17 @@
 //! before/after for both units; the guard re-derives the live numbers on demand, so they are
 //! deliberately not restated here.
 //!
-//! `common` (the shared tree-sitter CST helper module under `tests/common/`) is declared
+//! `common` (the shared test helpers under `tests/common/`) is declared
 //! exactly once here, at the crate root, rather than once per dependent submodule. Ten of
 //! the modules below previously each carried their own `#[path = "../common/mod.rs"] mod
 //! common;` (correct when each was its own standalone binary/crate root); folded together
 //! as sibling submodules of one crate, those ten declarations all loaded the same physical
 //! file, which `clippy::duplicate_mod` (denied via `-D warnings`) rejects. Declaring it once
 //! here and having dependents `use crate::common::{...}` preserves the single shared
-//! implementation without a duplicate load; `common` carries no `#[test]` fns, so this does
-//! not affect any `<file>::<test>` module path.
+//! implementation without a duplicate load; `common`'s only `#[test]` fns test its own
+//! helpers and run as `common::tracked_corpus::*`, so declaring it here moved no
+//! `<file>::<test>` path. A second `mod common;` in another binary would run them again,
+//! including the one that spawns `scripts/reify_path_attribution.py`.
 //!
 //! The split did not change where `common` is charged, and must not: it is compiled into
 //! THIS binary and no other, and `harness_syntax_lowering.rs` declares no `mod common;`.
@@ -132,6 +134,8 @@ mod sub_decl_specialization_body_parser_tests;
 mod sub_decl_specialization_tests;
 #[path = "harness_syntax/sub_placement_spec_example_parses.rs"]
 mod sub_placement_spec_example_parses;
+#[path = "harness_syntax/tracked_ri_parse_guard.rs"]
+mod tracked_ri_parse_guard;
 #[path = "harness_syntax/trait_tests.rs"]
 mod trait_tests;
 #[path = "harness_syntax/type_alias_tests.rs"]

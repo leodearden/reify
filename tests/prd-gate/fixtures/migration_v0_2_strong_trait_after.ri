@@ -1,0 +1,5 @@
+structure def Steel : Strong {
+    param yield_strength : Pressure = 250MPa
+    param ultimate_tensile_strength : Pressure = 400MPa
+    param compressive_strength : Pressure = 250MPa
+}

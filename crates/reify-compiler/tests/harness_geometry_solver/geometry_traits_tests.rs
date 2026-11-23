@@ -19,7 +19,8 @@ use reify_test_support::{compile_source_with_stdlib, errors_only};
 
 /// Return the `std/geometry/traits` CompiledModule from the production
 /// stdlib loader. Exercises the exact same code path as production: embedded
-/// source, sequential compilation with growing prelude, OnceLock caching.
+/// source, each stdlib module compiled against its declared imports (strict
+/// build), OnceLock caching.
 fn load_stdlib_module() -> &'static CompiledModule {
     stdlib_loader::load_stdlib()
         .iter()

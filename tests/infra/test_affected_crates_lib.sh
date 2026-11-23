@@ -79,6 +79,10 @@
 #  23. (task 8662) GUARD: occt-scope-lib.sh and affected-crates-lib.sh each
 #      refuse to source without reify_path_attribution.py next to them,
 #      naming the module
+#  24. (task 9993) cold-registry pin: an empty CARGO_HOME cannot narrow
+#      reify-core's closure before the suite's own cargo fetch runs (negative
+#      control), and once that fetch has filled it, affected_crates and
+#      _workspace_member_dirs give exactly their warm answers
 
 set -euo pipefail
 
@@ -98,36 +102,22 @@ source "$REPO_ROOT/scripts/affected-crates-lib.sh"
 [ -f "$REPO_ROOT/scripts/occt-scope-lib.sh" ] || { echo "ERROR: occt-scope-lib.sh not found at $REPO_ROOT/scripts/occt-scope-lib.sh"; exit 1; }
 source "$REPO_ROOT/scripts/occt-scope-lib.sh"
 
+source "$SCRIPT_DIR/cargo_inputs_lib.sh"
+
 # The attribution module's CLI: the suite reads the module's values through it
 # rather than through any lib's internals.
 _ATTRIBUTION_CLI="$REPO_ROOT/scripts/reify_path_attribution.py"
 
 echo "=== affected-crates-lib drift tests ==="
 
-# ---------------------------------------------------------------------------
-# Preflight (review follow-up, task 6292): warm-registry-cache dependency.
-#
-# Every real-cargo closure assertion below (#4-#14) needs `cargo metadata
-# --format-version 1 --locked --offline` — the exact invocation
-# _reverse_closure makes — to SUCCEED. On a genuinely cold ~/.cargo (fresh
-# container, new host, a setup-dev.sh that never ran) it cannot, so
-# affected_crates fails wide to ALL and all ~10 of those assertions fail
-# pointing at the closure logic rather than at the missing cache. Assertion
-# #15 is the only one that EXPECTS ALL; it passes in that environment.
-#
-# Advisory, never fatal: this changes no pass/fail semantics, it only makes a
-# cold-cache environment emit one legible CAUSE line instead of ten
-# misleading SYMPTOMS. Re-emitted just before test_summary so the explanation
-# lands next to the FAIL tally rather than scrolled off the top. Costs one
-# extra `cargo metadata` (~2s warm) on top of a suite that already makes a
-# dozen.
-# ---------------------------------------------------------------------------
-_COLD_REGISTRY_PREFLIGHT=""
-if ! ( cd "$REPO_ROOT" && cargo metadata --format-version 1 --locked --offline ) >/dev/null 2>&1; then
-    _COLD_REGISTRY_PREFLIGHT="COLD REGISTRY CACHE: \`cargo metadata --locked --offline\` fails in $REPO_ROOT, so every real-cargo closure assertion below fails wide to ALL. This is an environment problem, not a closure-logic bug — warm it with \`cargo fetch --locked\` (or run scripts/setup-dev.sh) and re-run."
-    echo ""
-    echo "!!! $_COLD_REGISTRY_PREFLIGHT"
-fi
+# The workspace's locked registry inputs, for every target: _reverse_closure's
+# and _workspace_member_dirs' unfiltered `cargo metadata --offline` needs them all.
+_acl_fetch_cargo_inputs() { cargo_inputs_fetch --manifest-path "$REPO_ROOT/Cargo.toml"; }
+
+echo ""
+echo "--- Cargo inputs ---"
+assert_infra_input "cargo fetch --locked obtains the workspace's locked registry inputs (all targets)" \
+    "$CARGO_INPUTS_UNAVAILABLE_RC" _acl_fetch_cargo_inputs
 
 # ---------------------------------------------------------------------------
 # Step 1: C4 global-force — Cargo.lock forces ALL
@@ -487,7 +477,7 @@ echo "--- RI-CORPUS-DRIFT: every workspace member whose Rust sources read the ex
 # meaning "every member" the moment one is added outside `crates/`, which is how
 # this derivation first missed gui/src-tauri (reify-gui `include_str!`s a corpus
 # leaf at compile time) and then tree-sitter-reify. Empty output means
-# `cargo metadata` failed — see the cold-registry preflight above.
+# `cargo metadata` failed.
 _workspace_member_dirs() {
     local meta
     meta="$( cd "$REPO_ROOT" && cargo metadata --format-version 1 --locked --offline 2>/dev/null )" || return 0
@@ -670,10 +660,10 @@ _check_b13_corpus_not_vacuous() {
         && [ "$(_b13_route Cargo.lock)" = "ALL" ] \
         && _b13_route docs/x.md >/dev/null && [ -z "$(_b13_route docs/x.md)" ] \
         && [ "$(_b13_route gui/src-tauri/src/main.rs)" = "reify-gui" ] \
-        && [ "$(wc -w <<<"$bracket")" -eq 6 ] \
+        && [ "$(wc -w <<<"$bracket")" -eq 7 ] \
         && [ "$manifest_rows" -ge 1 ]
 }
-assert "B13 corpus is not vacuous: >= 4918 rows with an ALL, an empty, a reify-gui, the six-crate corpus and a manifest-union row" \
+assert "B13 corpus is not vacuous: >= 4918 rows with an ALL, an empty, a reify-gui, the seven-crate corpus and a manifest-union row" \
     _check_b13_corpus_not_vacuous
 
 # ---------------------------------------------------------------------------
@@ -1141,6 +1131,75 @@ assert "cold CARGO_HOME: emits the C5 fallback diagnostic on stderr" \
     _check_cold_cache_diagnostic
 
 # ---------------------------------------------------------------------------
+# Cold-registry pin (task 9993): the suite's own cargo fetch makes its real-cargo
+# reads independent of the registry cache. Real cargo, so like the block above
+# it precedes every cargo()-stub section. The home holds ~1.3GB once fetched.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cold-registry pin (task 9993): an empty CARGO_HOME, once the suite's fetch has run, gives the warm answers ---"
+
+_ACL_PIN_HOME="$(mktemp -d "${TMPDIR:-/tmp}/reify-acl-pin-cargo-home.XXXXXX")"
+trap 'rm -rf "$_ACL_PIN_HOME"' EXIT
+
+_acl_pin_closure() { ( cd "$REPO_ROOT" && affected_crates crates/reify-core/src/lib.rs 2>/dev/null ); }
+
+_ACL_WARM_CLOSURE="$(_acl_pin_closure)" || true
+_ACL_WARM_MEMBERS="$(_workspace_member_dirs)" || true
+_ACL_COLD_CLOSURE=""
+_ACL_COLD_MEMBERS=""
+
+_acl_pin_report() {
+    echo "warm closure: [$_ACL_WARM_CLOSURE]"
+    echo "cold closure: [$_ACL_COLD_CLOSURE]"
+    echo "warm members: [$_ACL_WARM_MEMBERS]"
+    echo "cold members: [$_ACL_COLD_MEMBERS]"
+}
+
+_check_acl_warm_closure_narrows() {
+    _acl_pin_report
+    [ -n "$_ACL_WARM_CLOSURE" ] && [ "$_ACL_WARM_CLOSURE" != "ALL" ]
+}
+assert "warm: reify-core's closure is a real narrowing, neither empty nor ALL" \
+    _check_acl_warm_closure_narrows
+
+_check_acl_warm_members_listed() {
+    _acl_pin_report
+    [ -n "$_ACL_WARM_MEMBERS" ]
+}
+assert "warm: _workspace_member_dirs lists the workspace members" \
+    _check_acl_warm_members_listed
+
+_ACL_COLD_CLOSURE="$(CARGO_HOME="$_ACL_PIN_HOME" _acl_pin_closure)" || true
+_check_acl_unfetched_home_is_ALL() {
+    _acl_pin_report
+    [ "$_ACL_COLD_CLOSURE" = "ALL" ]
+}
+assert "before the fetch, the empty CARGO_HOME can only fail wide to ALL (negative control)" \
+    _check_acl_unfetched_home_is_ALL
+
+CARGO_HOME="$_ACL_PIN_HOME" assert_infra_input "the suite's cargo fetch fills an empty CARGO_HOME" \
+    "$CARGO_INPUTS_UNAVAILABLE_RC" _acl_fetch_cargo_inputs
+
+_ACL_COLD_CLOSURE="$(CARGO_HOME="$_ACL_PIN_HOME" _acl_pin_closure)" || true
+_ACL_COLD_MEMBERS="$(CARGO_HOME="$_ACL_PIN_HOME" _workspace_member_dirs)" || true
+
+_check_acl_fetched_closure_is_warm() {
+    _acl_pin_report
+    [ "$_ACL_COLD_CLOSURE" = "$_ACL_WARM_CLOSURE" ]
+}
+assert "the fetched empty CARGO_HOME gives reify-core's warm closure" \
+    _check_acl_fetched_closure_is_warm
+
+_check_acl_fetched_members_are_warm() {
+    _acl_pin_report
+    [ "$_ACL_COLD_MEMBERS" = "$_ACL_WARM_MEMBERS" ]
+}
+assert "the fetched empty CARGO_HOME gives _workspace_member_dirs' warm list" \
+    _check_acl_fetched_members_are_warm
+
+rm -rf "$_ACL_PIN_HOME"
+
+# ---------------------------------------------------------------------------
 # PATH-FACTS (task 8662): the attribution module's public CLI contract.
 #
 # `reify_path_attribution.py attribute` reads paths on stdin and writes one
@@ -1592,14 +1651,5 @@ _check_cargo_invoked_with_offline() {
     esac
 }
 assert "_reverse_closure invokes cargo metadata with --offline" _check_cargo_invoked_with_offline
-
-# Re-emit the cold-cache cause line adjacent to the FAIL tally (see the
-# preflight near the top of this file for why). Deliberately an `if` and not
-# `[ -n "$x" ] && echo ...`: at top level under `set -e` the latter exits the
-# script with status 1 on the healthy path, where the test is false.
-if [ -n "$_COLD_REGISTRY_PREFLIGHT" ]; then
-    echo ""
-    echo "!!! $_COLD_REGISTRY_PREFLIGHT"
-fi
 
 test_summary

@@ -10,7 +10,7 @@
 //! (W_Flexure*/E_Flexure* emission is λ/task-3821's responsibility).
 
 use reify_core::DimensionVector;
-use reify_ir::Value;
+use reify_ir::{Value, decode_direction};
 
 use super::common::{
     attach_compliance, cantilever_sigma_at, declared_range, length_arg, make_compliance_record,
@@ -103,7 +103,7 @@ struct BendingHingeInputs<'a> {
 /// wrong dimension; [`InputFault::Degenerate`] for thickness ≥ length
 /// ([`slender_beam`]); [`InputFault::Invalid`] on: arity ∉ {6, 7, 8};
 /// non-positive or non-finite geometry; missing or non-positive
-/// `youngs_modulus`; or an invalid axis.
+/// `youngs_modulus`; or an axis that is not a Direction.
 fn parse_bending_hinge_inputs(args: &[Value]) -> Result<BendingHingeInputs<'_>, InputFault> {
     if args.len() < 6 || args.len() > 8 {
         return Err(InputFault::Invalid);
@@ -116,7 +116,7 @@ fn parse_bending_hinge_inputs(args: &[Value]) -> Result<BendingHingeInputs<'_>, 
     let e = youngs_modulus(material)?;
     let yield_si = yield_stress(material)?;
     let axis = &args[5];
-    crate::helpers::validate_dimensionless_unit_axis_vec3(axis).ok_or(InputFault::Invalid)?;
+    decode_direction(axis).map_err(|_| InputFault::Invalid)?;
     Ok(BendingHingeInputs {
         length,
         thickness,
@@ -238,7 +238,7 @@ struct LetInputs<'a> {
 /// [`InputFault::Invalid`] on: arity ∉ {7, 8, 9}; non-positive or non-finite
 /// geometry; n_blades < 1 or non-integer;
 /// missing/non-positive `youngs_modulus`; missing `poisson_ratio` or
-/// ν ∉ [0, 0.5); invalid axis.
+/// ν ∉ [0, 0.5); an axis that is not a Direction.
 fn parse_let_inputs(args: &[Value]) -> Result<LetInputs<'_>, InputFault> {
     if args.len() < 7 || args.len() > 9 {
         return Err(InputFault::Invalid);
@@ -259,7 +259,7 @@ fn parse_let_inputs(args: &[Value]) -> Result<LetInputs<'_>, InputFault> {
     let yield_si = yield_stress(material)?;
     let g = e / (2.0 * (1.0 + nu));
     let axis = &args[6];
-    crate::helpers::validate_dimensionless_unit_axis_vec3(axis).ok_or(InputFault::Invalid)?;
+    decode_direction(axis).map_err(|_| InputFault::Invalid)?;
     Ok(LetInputs {
         length,
         thickness,

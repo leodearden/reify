@@ -55,6 +55,8 @@ use crate::datum_projection::{
     datum_projection_result_type, datum_projection_unavailable_hint, DatumProjectionResolution,
     DATUM_PROJECTION_MEMBERS,
 };
+use crate::trajectory_signatures::trajectory_scalar_intrinsic_result_type;
+use crate::type_compat::MulDivRefusal;
 use reify_core::overload::slot_matches_wildcard_tier;
 
 /// Return a `CompiledExpr` poison literal (`Value::Undef, Type::Error`) for
@@ -172,8 +174,10 @@ fn make_poison_type(diagnostics: &mut Vec<Diagnostic>, diagnostic: Diagnostic) -
 }
 
 /// Emit the canonical `ArithOperandKind` diagnostic — "operator `{op}` is
-/// undefined for operand kinds `{left}` and `{right}`", labeled "unsupported
-/// operand kinds" — via [`make_poison_type`], poisoning to `Type::Error`.
+/// undefined for operand kinds `{left}` and `{right}`", plus "; write
+/// vector(d)" when either operand is a `Direction`
+/// ([`direction_operators::arith_operand_hint`]), labeled "unsupported operand
+/// kinds" — via [`make_poison_type`], poisoning to `Type::Error`.
 ///
 /// Shared by the Add/Sub dimensioned-Complex guard and the Mul/Div guard
 /// (task compiler-type-hygiene β2/5163) so the message/label form has one
@@ -186,13 +190,38 @@ fn poison_arith_operand_kind(
     right_ty: &Type,
     span: reify_core::SourceSpan,
 ) -> Type {
+    let hint = direction_operators::arith_operand_hint(left_ty, right_ty)
+        .map_or(String::new(), |hint| format!("; {hint}"));
     make_poison_type(
         diagnostics,
         Diagnostic::error(format!(
-            "operator `{op}` is undefined for operand kinds `{left_ty}` and `{right_ty}`",
+            "operator `{op}` is undefined for operand kinds `{left_ty}` and `{right_ty}`{hint}",
         ))
         .with_code(DiagnosticCode::ArithOperandKind)
         .with_label(DiagnosticLabel::new(span, "unsupported operand kinds")),
+    )
+}
+
+/// Emit the `DimensionExponentOverflow` diagnostic for a `*`/`/` whose
+/// combined dimension has an exponent that does not fit `Rational`, labeled on
+/// the operator node, via [`make_poison_type`], poisoning to `Type::Error`.
+fn poison_dimension_overflow(
+    diagnostics: &mut Vec<Diagnostic>,
+    op: &str,
+    left_ty: &Type,
+    right_ty: &Type,
+    span: reify_core::SourceSpan,
+) -> Type {
+    make_poison_type(
+        diagnostics,
+        Diagnostic::error(format!(
+            "the combined dimension of `{left_ty}` {op} `{right_ty}` has an exponent out of range",
+        ))
+        .with_code(DiagnosticCode::DimensionExponentOverflow)
+        .with_label(DiagnosticLabel::new(
+            span,
+            "combined dimension out of range",
+        )),
     )
 }
 
@@ -1814,16 +1843,15 @@ fn compile_expr_guarded_with_expected_inner(
                     }
 
                     // Mul/Div (task compiler-type-hygiene β2 amendment round 3): compute
-                    // `infer_mul_div_result` exactly ONCE here and reuse the `Option` both
+                    // `infer_mul_div_result` exactly ONCE here and reuse the `Result` both
                     // for `result_type` (via `type_compat::mul_div_result_or_placeholder`,
                     // the same fallback `infer_binop_type`'s own Mul/Div arm delegates to)
-                    // and for the operand-kind guard's poison decision further below.
-                    // Previously each site called `infer_mul_div_result` independently, so
-                    // the guard's `is_none()` check and this placeholder fallback had to be
-                    // kept in lockstep only by convention. `mul_div_inferred` is `Some(_)`
-                    // (outer) exactly when `bin_op` is `Mul`/`Div`; the guard's `if let
-                    // Some(None) = &mul_div_inferred` below relies on that to stay a no-op
-                    // for every other operator.
+                    // and for the guards' poison decisions further below. Previously each
+                    // site called `infer_mul_div_result` independently, so the guard's
+                    // refusal check and this placeholder fallback had to be kept in
+                    // lockstep only by convention. `mul_div_inferred` is `Some(_)` (outer)
+                    // exactly when `bin_op` is `Mul`/`Div`; the guards' `Some(Err(..))`
+                    // matches below rely on that to stay a no-op for every other operator.
                     let mul_div_inferred = matches!(bin_op, BinOp::Mul | BinOp::Div).then(|| {
                         type_compat::infer_mul_div_result(
                             bin_op,
@@ -2036,11 +2064,15 @@ fn compile_expr_guarded_with_expected_inner(
                     // pre-existing placeholder UNCHANGED for this pairing;
                     // this guard overrides `result_type` exactly like the
                     // Mul/Div guard overrides its own placeholder below.
+                    // A `Direction` operand is the same reject (direction C6).
                     if matches!(bin_op, BinOp::Add | BinOp::Sub)
-                        && type_compat::add_sub_dimensioned_complex_reject(
+                        && (type_compat::add_sub_dimensioned_complex_reject(
                             &compiled_left.result_type,
                             &compiled_right.result_type,
-                        )
+                        ) || direction_operators::add_sub_direction_reject(
+                            &compiled_left.result_type,
+                            &compiled_right.result_type,
+                        ))
                     {
                         result_type = poison_arith_operand_kind(
                             diagnostics,
@@ -2127,13 +2159,14 @@ fn compile_expr_guarded_with_expected_inner(
                     // INV-COMP-3, `E_ArithOperandKind`).
                     //
                     // `infer_binop_type`'s `Mul`/`Div` arm delegates to
-                    // `infer_mul_div_result`, which returns `None` for any operand-kind
-                    // pairing the runtime evaluator (`eval_mul`/`eval_div`) has no
-                    // intentional arm for — a structural, kind-level `Value::Undef`. See
-                    // `infer_mul_div_result`'s doc for the full supported/unsupported
-                    // partition, pinned against the β1 runtime truth table. The `None`
-                    // itself was already computed once, above, into `mul_div_inferred` —
-                    // reused here instead of calling `infer_mul_div_result` a second time.
+                    // `infer_mul_div_result`, which returns `Err(OperandKinds)` for any
+                    // operand-kind pairing the runtime evaluator (`eval_mul`/`eval_div`)
+                    // has no intentional arm for — a structural, kind-level
+                    // `Value::Undef`. See `infer_mul_div_result`'s doc for the full
+                    // supported/unsupported partition, pinned against the β1 runtime
+                    // truth table. The refusal itself was already computed once, above,
+                    // into `mul_div_inferred` — reused here instead of calling
+                    // `infer_mul_div_result` a second time.
                     //
                     // Gradualism: skip (no poison, no diagnostic) when either operand
                     // matches `type_compat::is_mul_div_gradualism_skip` — mirrors the
@@ -2151,11 +2184,24 @@ fn compile_expr_guarded_with_expected_inner(
                     // cascades on that value (mirrors the Pow/Mod poison precedent).
                     // Diagnostic emission is shared with the Add/Sub dimensioned-Complex
                     // guard above via `poison_arith_operand_kind`.
-                    if let Some(None) = &mul_div_inferred
+                    //
+                    // A supported pairing whose combined dimension overflows `Rational`
+                    // (`Err(DimensionOverflow)`) is poisoned with its own code,
+                    // `E_DIMENSION_EXPONENT_OVERFLOW`; no operand of that pairing is a
+                    // gradualism skip, since only concrete dimensions can overflow.
+                    if let Some(Err(MulDivRefusal::OperandKinds)) = &mul_div_inferred
                         && !type_compat::is_mul_div_gradualism_skip(&compiled_left.result_type)
                         && !type_compat::is_mul_div_gradualism_skip(&compiled_right.result_type)
                     {
                         result_type = poison_arith_operand_kind(
+                            diagnostics,
+                            op,
+                            &compiled_left.result_type,
+                            &compiled_right.result_type,
+                            expr.span,
+                        );
+                    } else if let Some(Err(MulDivRefusal::DimensionOverflow)) = &mul_div_inferred {
+                        result_type = poison_dimension_overflow(
                             diagnostics,
                             op,
                             &compiled_left.result_type,
@@ -2292,6 +2338,17 @@ fn compile_expr_guarded_with_expected_inner(
             )
         }
         reify_ast::ExprKind::FunctionCall { name, args, arg_names } => {
+            // ── task 5494: same-module structure declared BELOW this fn ─────
+            //
+            // Checked before ANY `scope.template_registry` read: a structure
+            // declared below is absent from the registry, so a later read would
+            // misclassify the ctor (the `auto`-arg gate below), or fall through
+            // to the zero-arg return-type fallback, which merely WARNS and
+            // lowers a generic `FunctionCall` returning `Real` instead of `Foo`.
+            if let Some(diagnostic) = later_declared_structure_error(scope, name, expr.span) {
+                return make_poison_literal(diagnostics, diagnostic);
+            }
+
             // ── task 3808 (δ): semantic gate — reject `auto` in function-call args ──
             // Named-arg `auto` (both strict `ExprKind::Auto { free: false }` and free
             // `ExprKind::Auto { free: true }`) is valid only at a BINDING SITE (sub
@@ -3179,9 +3236,7 @@ fn compile_expr_guarded_with_expected_inner(
                 //     emitted no cell at all, so this exclusion was vacuous — see the stale
                 //     comment this replaces). Eagerly materializing a geometry cell here would
                 //     shift `StructureInstanceCtor` cache identity beyond γ's ratified
-                //     value-cell shape change and diverge this (authoritative) phase from the
-                //     phase_functions skeleton builder, which still excludes geometry lets —
-                //     the exact cross-path ctor-lets inconsistency task 4342 exists to prevent.
+                //     value-cell shape change.
                 //     Mirrors β's `cell_type != Type::Geometry` compute-value_inputs exclusion
                 //     (engine_eval.rs:262).
                 let lets: Vec<(String, CompiledExpr)> = template
@@ -3305,6 +3360,13 @@ fn compile_expr_guarded_with_expected_inner(
                             })
                             .collect();
                         return build_user_function_call_expr(name, coerced_args, result_type);
+                    }
+                    // task 5494: the call would pad, but the callee's defaults
+                    // are not compiled yet — say so, by name.
+                    if let Some(diagnostic) =
+                        pending_default_error(scope, name, &named_candidates, &arg_types, expr.span)
+                    {
+                        return make_poison_literal(diagnostics, diagnostic);
                     }
                     // User functions with this name exist, but none match — error with candidates
                     let candidate_sigs: Vec<String> = named_candidates
@@ -3433,29 +3495,42 @@ fn compile_expr_guarded_with_expected_inner(
                     // **Internal-arm precedence (within `NoUserFunctions`).** The arms
                     // below are checked in order: `is_geometry_query_helper` →
                     // `is_geometry_kinematic_query` → `is_geometry_topology_selector` →
+                    // `relation_fn_result_type` → `datum_constructor_result_type` →
                     // `is_geometry_query` → `selector_composition_result_type` (task 4119 δ)
-                    // → `is_geometry_function` →
+                    // → `is_tolerancing_marker` → `is_geometry_function` →
                     // `infer_list_helper_return_type` → `is_dynamics_query` →
                     // `is_dynamics_constructor` → `is_affine_map_constructor` →
+                    // `affine_map_algebra_result_type` →
                     // `is_math_typed_fn` → `is_joint_typed_fn` →
                     // `is_flexure_typed_fn` (task #5476) →
+                    // `trajectory_scalar_intrinsic_result_type` (task #8119) →
                     // `registry_result_type` (the builtin-signature registry,
                     // task #6001 α — one arm replacing the former
                     // `is_analysis_typed_fn` and `is_parse_typed_fn` arms) →
                     // `fea_envelope_result_type` (#4629 W2) →
                     // `is_field_op` → `is_orientation_typed_fn` (task 5344) →
                     // `is_orientation_decomposer_fn` (tasks #6082/#6306) →
-                    // first-arg fallback. The five geometry-name families plus the
-                    // RBD-β `is_dynamics_query` family (task 3829), the task-4278
-                    // `is_dynamics_constructor` family, the std.fields α
-                    // `is_field_op` family (task 4219), the #4629 W2
-                    // `fea_envelope_result_type` family, and the task-#5476
-                    // `is_flexure_typed_fn` family are pinned disjoint in
-                    // `units.rs::tests::builtin_name_families_are_pairwise_disjoint`,
-                    // so within this arm the ordering is unobservable — no name can
-                    // satisfy two predicates. `selector_composition_result_type` is
-                    // arg-aware (returns None for CSG non-selector operands) so CSG
-                    // `union`/`difference` still reach `is_geometry_function`.
+                    // first-arg fallback. Every name family above is a
+                    // `BUILTIN_NAME_FAMILIES` row, and
+                    // `unresolved_function::tests::builtin_name_families_are_pairwise_disjoint`
+                    // pins the rows pairwise disjoint; the registry arm and the
+                    // relation arm's shared verbs `angle`/`distance` are pinned
+                    // disjoint from every row by
+                    // `registry_rows_and_shared_verbs_are_disjoint_from_every_family`.
+                    // So the ordering is unobservable unless an overlap those two
+                    // tests exempt lets an earlier arm shadow a later one. Such an
+                    // overlap is recorded either among the names allowlisted in
+                    // `unresolved_function::tests::INTENTIONAL_OVERLAPS` or in the
+                    // shared verbs' `GEOMETRY_QUERY_NAMES` exemption. There the
+                    // earlier arm either hands the shapes it declines on to the
+                    // later arm or wins by design, so check how the overlap is
+                    // resolved before reordering its arms: `INTENTIONAL_OVERLAPS`
+                    // records which applies to each of its names, and the shared
+                    // verbs ride the relation arm's arity gate (noted on that
+                    // arm). One worked example: `selector_composition_result_type`
+                    // is arg-aware (returns None for CSG non-selector operands) so
+                    // CSG `union`/`difference` still reach `is_geometry_function`.
+                    //
                     // task 4118 γ — list-helper selector coercion (insertion
                     // site #2). When `single(selector)` is called, wrap the
                     // `Selector(k)` argument in `ResolveSelector` so the helper
@@ -3504,6 +3579,12 @@ fn compile_expr_guarded_with_expected_inner(
                     // Task 6249: a third diagnostic-only check, with the same
                     // contract as the two above.
                     math_signatures::check_forward_trig_arg_dimensions(
+                        name,
+                        &compiled_args,
+                        expr.span,
+                        diagnostics,
+                    );
+                    direction_operators::check_math_direction_operands(
                         name,
                         &compiled_args,
                         expr.span,
@@ -3821,6 +3902,10 @@ fn compile_expr_guarded_with_expected_inner(
                         // position in the ladder is unobservable. The one hard
                         // requirement is that it precede the first-arg fallback.
                         flexure_joint_type()
+                    } else if let Some(t) = trajectory_scalar_intrinsic_result_type(name) {
+                        // `profile_duration_at` / `peak_deviation_at` — see
+                        // trajectory_signatures.rs.
+                        t
                     } else if registry_owns(name)
                         && let Some(t) = registry_result_type(
                             name,
@@ -3861,9 +3946,16 @@ fn compile_expr_guarded_with_expected_inner(
                         // 3), so arg TYPES cross the boundary, not
                         // `CompiledExpr`s.
                         //
-                        // `None` means "not a registry row", so unseeded names
-                        // fall through to the arms below exactly as before —
-                        // I-REG-3's pre-ω carve-out. The call stays a
+                        // The fall-through is the `registry_owns` miss: an
+                        // unregistered name, an arity-overload group or a
+                        // Relation row reaches the arms below exactly as
+                        // before — I-REG-3's pre-ω carve-out. Past the guard,
+                        // `None` would mean an `ArgAware` resolver declined;
+                        // none does today, pinned by `harness_builtin_registry`'s
+                        // `registry_result_type_is_total_over_every_name_registry_owns`.
+                        // That failed `let Some` is where τ-numeric wires
+                        // `E_BuiltinArgShape` (PRD §3 decision 5) instead of
+                        // falling through silently. The call stays a
                         // `FunctionCall`: eval is untouched.
                         t
                     } else if is_fea_envelope_query(name) {
@@ -7003,6 +7095,88 @@ fn member_access_aggregation_or_unsupported(
         )
     }
 }
+/// The fn-body declaration-order rule (task #5494, PRD stdlib-namespace D-8).
+///
+/// A free fn's body and param defaults compile in source order, interleaved
+/// with structure templates, so they may use a module-local `structure def`'s
+/// template — by constructor or by member access — only if it is declared
+/// ABOVE the fn. `Some` names the violation when `name` is in the scope's
+/// [`CompilationScope::unavailable_local_template_names`]; `None` for every
+/// other name, and always for scopes that do not set that field (entity,
+/// trait-static, assoc-fn).
+///
+/// Whether the message is true depends on the writer; see
+/// [`CompilationScope::unavailable_local_template_names`].
+fn later_declared_structure_error(
+    scope: &CompilationScope,
+    name: &str,
+    span: reify_core::SourceSpan,
+) -> Option<Diagnostic> {
+    let unavailable = scope
+        .unavailable_local_template_names
+        .is_some_and(|names| names.contains(name));
+    unavailable.then(|| {
+        Diagnostic::error(format!(
+            "structure '{name}' is declared after this function; \
+             move `structure def {name}` above it"
+        ))
+        .with_code(DiagnosticCode::StructureDeclaredAfterFunction)
+        .with_label(DiagnosticLabel::new(
+            span,
+            "structure declared later in the file",
+        ))
+    })
+}
+
+/// `FnDefaultNotYetAvailable` for a call to `name` that would pad (by the
+/// shared [`crate::type_compat::provided_prefix_admits_padding`]) if only a
+/// candidate's pending defaults were compiled: the candidate IS a pending
+/// overload's stub ([`CompilationScope::fns_with_pending_defaults`]), and every
+/// param the call omits is one of that overload's pending defaulted params.
+/// `None` otherwise — in particular when an omitted param declares no default
+/// at all, so `NoMatchingOverload` stands.
+fn pending_default_error(
+    scope: &CompilationScope,
+    name: &str,
+    named_candidates: &[&CompiledFunction],
+    arg_types: &[Type],
+    span: reify_core::SourceSpan,
+) -> Option<Diagnostic> {
+    let pending = scope.fns_with_pending_defaults?;
+    let provided = arg_types.len();
+    let param = named_candidates
+        .iter()
+        .filter(|cand| cand.params.len() == cand.param_defaults.len())
+        .filter(|cand| crate::type_compat::provided_prefix_admits_padding(cand, arg_types))
+        .find_map(|cand| {
+            let pending_params = pending.defaulted_params_of(cand)?;
+            let omitted: Vec<&String> = cand.params[provided..]
+                .iter()
+                .zip(&cand.param_defaults[provided..])
+                .filter(|(_, default)| default.is_none())
+                .map(|((param, _), _)| param)
+                .collect();
+            omitted
+                .iter()
+                .all(|param| pending_params.contains(*param))
+                .then(|| omitted.first().copied())
+                .flatten()
+        })?;
+    Some(
+        Diagnostic::error(format!(
+            "function '{name}' param '{param}' default is not available here: it uses a \
+             same-module structure, so only free fns and structures declared below \
+             `fn {name}` may omit it; fields, trait-static fns and ambient defaults must \
+             pass it explicitly"
+        ))
+        .with_code(DiagnosticCode::FnDefaultNotYetAvailable)
+        .with_label(DiagnosticLabel::new(
+            span,
+            "omitted default not available here",
+        )),
+    )
+}
+
 // ── compiler-type-hygiene ε1 step-4: named per-kind handlers ───────────────
 
 /// `<receiver>.<member>` where the receiver's static type is
@@ -7233,6 +7407,15 @@ fn member_access_on_structure_like(
         && let Type::StructureRef(struct_name) | Type::TraitObject(struct_name) =
             &compiled_obj.result_type
     {
+        // task 5494: a fn-body receiver typed as a same-module structure declared
+        // BELOW the fn has no template yet. Checked BEFORE the permissive
+        // registry-miss fallback and the datum/priv branches below, so a `priv`
+        // member of a later-declared structure is never silently readable.
+        if matches!(&compiled_obj.result_type, Type::StructureRef(_))
+            && let Some(diagnostic) = later_declared_structure_error(scope, struct_name, span)
+        {
+            return make_poison_literal(diagnostics, diagnostic);
+        }
         // Split the lookup so we can distinguish "member present", "struct unknown",
         // and "struct known but member absent" (ds-sentinel L4, task #4649).
         let template = scope
@@ -10699,5 +10882,152 @@ mod member_access_completeness_canary {
             TypeDiscriminants::COUNT,
             "the special classes + named poison tail must partition every Type discriminant",
         );
+    }
+}
+
+#[cfg(test)]
+mod source_order_helper_tests {
+    //! task 5494: the fn-body declaration-order and pending-default helpers.
+    use super::*;
+
+    fn sig_stub(name: &str, params: &[(&str, Type)]) -> CompiledFunction {
+        let params: Vec<(String, Type)> = params
+            .iter()
+            .map(|(n, t)| (n.to_string(), t.clone()))
+            .collect();
+        CompiledFunction {
+            name: name.to_string(),
+            doc: None,
+            is_pub: false,
+            param_defaults: CompiledFunction::no_defaults_for(&params),
+            params,
+            return_type: Type::dimensionless_scalar(),
+            body: reify_ir::CompiledFnBody {
+                let_bindings: Vec::new(),
+                result_expr: CompiledExpr::literal(Value::Real(0.0), Type::dimensionless_scalar()),
+            },
+            content_hash: ContentHash::of_str(name),
+            annotations: Vec::new(),
+            optimized_target: None,
+            type_params: Vec::new(),
+        }
+    }
+
+    fn solve_real_opts() -> CompiledFunction {
+        sig_stub(
+            "solve",
+            &[
+                ("x", Type::dimensionless_scalar()),
+                ("o", Type::StructureRef("Opts".to_string())),
+            ],
+        )
+    }
+
+    fn pending_solve() -> crate::call_table::PendingDefaults {
+        let mut pending = crate::call_table::PendingDefaults::default();
+        pending.insert(
+            "solve",
+            &solve_real_opts().params,
+            HashSet::from(["o".to_string()]),
+        );
+        pending
+    }
+
+    fn span() -> reify_core::SourceSpan {
+        reify_core::SourceSpan::new(0, 1)
+    }
+
+    #[test]
+    fn pending_default_error_names_the_omitted_pending_param() {
+        let pending = pending_solve();
+        let mut scope = CompilationScope::new("S");
+        scope.fns_with_pending_defaults = Some(&pending);
+        let solve = solve_real_opts();
+        let diag = pending_default_error(
+            &scope,
+            "solve",
+            &[&solve],
+            &[Type::dimensionless_scalar()],
+            span(),
+        )
+        .expect("omitting only `o`, which is pending, is FnDefaultNotYetAvailable");
+        assert_eq!(diag.code, Some(DiagnosticCode::FnDefaultNotYetAvailable));
+        assert!(
+            diag.message.contains("'solve'") && diag.message.contains("'o'"),
+            "{}",
+            diag.message
+        );
+    }
+
+    #[test]
+    fn pending_default_error_is_none_when_an_omitted_param_has_no_default() {
+        let pending = pending_solve();
+        let mut scope = CompilationScope::new("S");
+        scope.fns_with_pending_defaults = Some(&pending);
+        let solve = solve_real_opts();
+        assert!(pending_default_error(&scope, "solve", &[&solve], &[], span()).is_none());
+    }
+
+    #[test]
+    fn pending_default_error_ignores_a_same_name_overload_that_is_not_pending() {
+        let pending = pending_solve();
+        let mut scope = CompilationScope::new("S");
+        scope.fns_with_pending_defaults = Some(&pending);
+        let solve = solve_real_opts();
+        let string_overload = sig_stub(
+            "solve",
+            &[("x", Type::String), ("o", Type::dimensionless_scalar())],
+        );
+        assert!(
+            pending_default_error(
+                &scope,
+                "solve",
+                &[&solve, &string_overload],
+                &[Type::String],
+                span()
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn pending_default_error_is_none_without_a_pending_set() {
+        let scope = CompilationScope::new("S");
+        let solve = solve_real_opts();
+        assert!(
+            pending_default_error(
+                &scope,
+                "solve",
+                &[&solve],
+                &[Type::dimensionless_scalar()],
+                span()
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn later_declared_structure_error_fires_only_for_names_declared_later() {
+        let later = HashSet::from(["Later".to_string()]);
+        let mut scope = CompilationScope::new("f");
+        scope.set_unavailable_local_template_names(&later);
+        let diag = later_declared_structure_error(&scope, "Later", span())
+            .expect("a structure declared below the fn is a declaration-order error");
+        assert_eq!(
+            diag.code,
+            Some(DiagnosticCode::StructureDeclaredAfterFunction)
+        );
+        assert!(
+            diag.message.contains("structure def Later"),
+            "{}",
+            diag.message
+        );
+        assert!(later_declared_structure_error(&scope, "Above", span()).is_none());
+    }
+
+    #[test]
+    fn later_declared_structure_error_is_none_for_scopes_without_the_rule() {
+        let scope = CompilationScope::new("S");
+        assert!(later_declared_structure_error(&scope, "Later", span()).is_none());
     }
 }

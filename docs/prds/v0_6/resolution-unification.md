@@ -132,7 +132,7 @@ scope** (owned by the stdlib-namespace/shadowing PRD, §6).
 ### §3.1 `CompiledProgram` and `compile_program`
 
 ```rust
-// reify-compiler
+// reify-compiler (program.rs)
 pub struct CompiledImportUnit {
     pub import_path: String,        // as written: "parts", "lib.fasteners"
     pub module: CompiledModule,
@@ -140,9 +140,16 @@ pub struct CompiledImportUnit {
 }
 
 pub struct CompiledProgram {
-    pub entry: CompiledModule,      // diagnostics aggregated here (existing contract)
+    entry: CompiledModule,          // private: read via entry() / into_entry()
     pub imports: Vec<CompiledImportUnit>, // followed direct imports, declaration order
-    pub sources: Vec<(String /*module key*/, PathBuf, String /*source*/)>,
+    pub sources: Vec<ModuleSource>, // { module_key, path, source }; topological, entry last
+    /* private: the re-homed-diagnostics block, the entry-declared template count */
+}
+
+impl CompiledProgram {
+    pub fn entry(&self) -> &CompiledModule;   // diagnostics aggregated here (existing contract)
+    pub fn into_entry(self) -> CompiledModule;
+    // also: rehomed_from(module_key), entry_own_diagnostics(), entry_declared_templates()
 }
 
 pub fn compile_program(
@@ -153,6 +160,11 @@ pub fn compile_program(
     checker: &dyn ConstraintChecker,
 ) -> CompiledProgram
 ```
+
+*Amended 2026-11-20 (task 10212):* the sketch now shows the landed shape. `entry` is
+private, so no caller holds a `&mut` path to the entry's diagnostics or templates
+(task 9886). `sources` carries `module_dag::ModuleSource` (§10 Q3). The authority is
+`crates/reify-compiler/src/program.rs`, and where the two disagree, the code wins.
 
 Internals = today's `compile_entry_with_stdlib_cfg_checked` (parse via
 `parse_with_stdlib`, cfg-gated DAG walk, stdlib + user-import prelude, compile,
@@ -440,12 +452,31 @@ resolve #5387 relationship per its live status (§6 row 2).
 1. **`compile_entry_with_stdlib_cfg_checked` wrapper retirement.** Keep the deprecated
    wrapper through P1 or delete immediately and fix all in-tree callers in β?
    **Suggested:** delete in β if callers are few (they are: CLI + tests); decide in β.
+   *Resolved 2026-10-12 (β, task 5516):* **deleted in β.** Both
+   `compile_entry_with_stdlib_cfg` and `compile_entry_with_stdlib_cfg_checked` are
+   gone, and no deprecated wrapper was kept; their callers — the CLI's `reify check`
+   path and the tests — moved onto the program compile. `reify check` enters through
+   the seam `program::compile_program_with_parsed_entry`, handing over the parse it
+   already made for its INV-SF-7 gate, so the entry is parsed once; tests that
+   already hold the entry's parse use the seam too, and the rest call
+   `program::compile_program`, the parse-it-yourself wrapper over it.
 2. **`reify doc` on a multi-file project** — should it eventually emit per-module
    sections from `CompiledProgram.imports`? **Suggested:** follow-up task filed when a
    consumer asks; `declared()`-only for now (D-12). Decide post-P1.
 3. **`CompiledImportUnit.origin` for embedded-stdlib fallback resolutions** — `None` vs
    a synthetic `embedded:` path for diagnostics. **Suggested:** `None` + diagnostic
    text says "embedded stdlib". Decide in β.
+   *Resolved 2026-10-12 (β, task 5516):* **`None`.** A re-homed diagnostic from a
+   unit with no source reads `in imported module '<key>' (embedded stdlib): …`, via
+   `program.rs`'s re-homing helper; under I4 only `std.*` resolves embedded, so the
+   branch is pinned by an in-file unit test rather than through `compile_program`.
+   Two related β shape records: `CompiledProgram.sources` is
+   `Vec<module_dag::ModuleSource>` (a named `{ module_key, path, source }` struct,
+   also the DAG's own record) rather than the as-authored §3.1
+   `(String, PathBuf, String)` tuple (the sketch now shows the landed type); and
+   β's I2 aggregation already surfaces the import side's module-path
+   diagnostics (`W_MODULE_DECL_MISSING` / `E_MODULE_PATH_MISMATCH`) at their
+   existing severities, so ξ owns only their wording and severity policy.
 4. **DefEnv function overload precedence** — `resolve_function` must compose with the
    existing signature-based overload table (`merge_functions` shadowing rules). Exact
    merge of "first-wins across modules" with "signature match within module" decided

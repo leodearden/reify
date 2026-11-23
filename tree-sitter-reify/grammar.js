@@ -1956,22 +1956,25 @@ module.exports = grammar({
       // NOTE: `field('base', $.unit_expr)` technically allows another pow expression
       // as base (e.g. `m^2^3`), producing Pow(Pow(m,2),3) deterministically (left-to-
       // right, since token.immediate('^') greedy-matches the second ^ immediately after
-      // the integer exponent).  PRD §3.2 does not address nested-pow in unit_expr; this
+      // the exponent).  PRD §3.2 does not address nested-pow in unit_expr; this
       // grammar accepts it without ambiguity.  If future PRD revisions restrict pow-base
       // to atoms only, replace `$.unit_expr` here with a narrower hidden rule (_unit_atom:
       // alias(immediate_identifier, unit_name) | paren-unit_expr) and update corpus tests.
       prec(2, seq(
         field('base', $.unit_expr),
         field('op', token.immediate('^')),
-        field('exponent', $.signed_integer),
+        field('exponent', $.unit_exponent),
       )),
       seq(token.immediate('('), $.unit_expr, token.immediate(')')),
       alias($.immediate_identifier, $.unit_name),
     ),
 
-    // Integer exponent for unit_expr pow arm (e.g. ^2, ^-1).
-    // token.immediate enforces contiguity with the preceding ^ operator.
-    signed_integer: $ => token.immediate(/-?\d+/),
+    // Exponent for the unit_expr pow arm: an integer (^2, ^-1) or a rational
+    // (^1/2, ^-1/2). token.immediate enforces contiguity with the preceding ^.
+    // The token is only valid after the unit-pow ^, so its greedy match makes a
+    // contiguous ^p/q ONE rational exponent. The spelling rules this token does
+    // not express are PRD docs/prds/unit-expressions.md §3.2.
+    unit_exponent: $ => token.immediate(/-?\d+(\/\d+)?/),
 
     // An identifier that must immediately follow the previous token (no whitespace)
     immediate_identifier: $ => token.immediate(/[a-zA-Z_][a-zA-Z0-9_]*/),

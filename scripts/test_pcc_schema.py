@@ -22,6 +22,7 @@ from enum import StrEnum
 
 from _pcc_test_support import (
     _HARNESS_PATH, _REPO_ROOT, _VALUE_CELLS_FIXTURE, _VALUE_CELLS_STDOUT, pcc,
+    probe_context,
 )
 from _schema_test_support import assert_well_formed, schema_errors
 
@@ -157,8 +158,8 @@ class TestEmittedRecordsConform(unittest.TestCase):
     def setUp(self):
         self.schema = pcc.published_schemas()["result_record"]
 
-    def _emitted_records(self, probe_set, runner=None):
-        """main --json's records, by probe kind; runner=None runs the real run_probe."""
+    def _emitted_records(self, probe_set, ctx, runner=pcc.run_probe):
+        """main --json's records, by probe kind, run through `runner` under `ctx`."""
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "probe-set.json")
             with open(path, "w") as fh:
@@ -166,17 +167,16 @@ class TestEmittedRecordsConform(unittest.TestCase):
             out = io.StringIO()
             with unittest.mock.patch("sys.stdout", out), \
                  unittest.mock.patch("sys.stderr", io.StringIO()):
-                if runner is None:
-                    pcc.main(["--json", path])
-                else:
-                    with unittest.mock.patch.object(pcc, "run_probe", side_effect=runner):
-                        pcc.main(["--json", path])
+                pcc.main(["--json", path], runner=runner, ctx=ctx)
         return {record["probe_kind"]: record for record in json.loads(out.getvalue())["results"]}
 
     def _emitted_with_runs(self, **runs_by_kind):
         """The record of each row, run as _PASSING_RUNS overridden by `runs_by_kind`."""
         runs = dict(_PASSING_RUNS, **runs_by_kind)
-        return self._emitted_records(_ONE_PROBE_OF_EACH_KIND, lambda probe: runs[probe.probe_kind])
+        return self._emitted_records(
+            _ONE_PROBE_OF_EACH_KIND, probe_context(),
+            lambda probe, ctx, timeout=None: runs[probe.probe_kind],
+        )
 
     def _assert_conform(self, records):
         for kind, record in records.items():
@@ -232,8 +232,7 @@ class TestEmittedRecordsConform(unittest.TestCase):
         ]}
         with tempfile.TemporaryDirectory() as tmp:
             missing = os.path.join(tmp, "no-such-reify")
-            with unittest.mock.patch.dict(os.environ, {"REIFY_BIN": missing}):
-                records = self._emitted_records(probe_set)
+            records = self._emitted_records(probe_set, probe_context(reify_bin=missing))
         self.assertEqual({r["verdict"] for r in records.values()},
                          {pcc.Verdict.HARNESS_ERROR.value})
         self._assert_conform(records)

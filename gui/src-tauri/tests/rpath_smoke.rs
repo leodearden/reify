@@ -101,12 +101,50 @@ fn bare_ldd(path: &str) -> Option<String> {
 }
 
 /// Extract the resolved path from an `ldd` output line of the form
-/// `<soname> => <path> (0x...)`. `None` if `soname` has no such line.
+/// `<soname> => <path> (0x...)`. `None` if `soname` has no such line (e.g.
+/// not NEEDED by this binary at all). Panics on `<soname> => not found`: ldd
+/// still exits 0 for it, and a soname the loader cannot place is neither
+/// resolved nor absent, so no caller can handle it as either.
 fn ldd_resolved_path<'a>(ldd_output: &'a str, soname: &str) -> Option<&'a str> {
     let needle = format!("{soname} =>");
-    ldd_output
-        .lines()
-        .find_map(|line| line.trim().strip_prefix(needle.as_str())?.split_whitespace().next())
+    ldd_output.lines().map(str::trim).find_map(|line| {
+        let resolution = line.strip_prefix(needle.as_str())?.trim_start();
+        assert!(
+            !resolution.starts_with("not found"),
+            "ldd reports `{line}`: the loader cannot find {soname} via any RUNPATH entry, the \
+             ld.so cache or the default dirs (bare ldd runs without LD_LIBRARY_PATH).\n\n\
+             Full ldd output:\n{ldd_output}"
+        );
+        resolution.split_whitespace().next()
+    })
+}
+
+/// Bare `ldd` output measured for a cc-built exe whose NEEDED `libfoo.so.1`
+/// sits on no search path: ldd still exits 0 and prints `not found` where a
+/// path would go. Addresses are placeholders.
+const LDD_OUTPUT_WITH_LIBFOO_NOT_FOUND: &str = "\
+\tlinux-vdso.so.1 (0x00007ffd00000000)
+\tlibfoo.so.1 => not found
+\tlibc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x00007f0000000000)
+\t/lib64/ld-linux-x86-64.so.2 (0x00007f0000100000)
+";
+
+#[test]
+#[should_panic(expected = "libfoo.so.1 => not found")]
+fn ldd_resolved_path_panics_quoting_a_not_found_line() {
+    ldd_resolved_path(LDD_OUTPUT_WITH_LIBFOO_NOT_FOUND, "libfoo.so.1");
+}
+
+#[test]
+fn ldd_resolved_path_resolves_listed_and_skips_unlisted_sonames() {
+    assert_eq!(
+        ldd_resolved_path(LDD_OUTPUT_WITH_LIBFOO_NOT_FOUND, "libc.so.6"),
+        Some("/lib/x86_64-linux-gnu/libc.so.6")
+    );
+    assert_eq!(
+        ldd_resolved_path(LDD_OUTPUT_WITH_LIBFOO_NOT_FOUND, "libbar.so.2"),
+        None
+    );
 }
 
 /// (a) RUNTIME RESOLUTION (primary). `env -u LD_LIBRARY_PATH ldd

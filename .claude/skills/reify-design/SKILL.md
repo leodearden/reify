@@ -11,7 +11,7 @@ Help the user author parametric designs in `.ri` files. Be terse and focus on ge
 
 All paths below are relative to the Reify repo root (find it via the working directory or `git rev-parse --show-toplevel` if unsure).
 
-- **Language reference (authoritative):** `crates/reify-mcp/src/tools/chunks/*.md` — one file per topic: `structures`, `syntax`, `types`, `units`, `geometry`, `measurement`, `topology`, `traits`, `parameters`, `constraints`, `enums`, `fields`, `occurrences`, `connect`, `collections`, `functions`, `guards`, `purposes`, `stdlib`. Read the relevant chunk when unsure — these are the same chunks the in-GUI assistant exposes via `reify_language_reference`.
+- **Language reference (authoritative):** `crates/reify-mcp/src/tools/chunks/*.md` — one file per topic: `structures`, `syntax`, `types`, `units`, `geometry`, `measurement`, `topology`, `traits`, `parameters`, `constraints`, `enums`, `fields`, `occurrences`, `connect`, `collections`, `functions`, `guards`, `purposes`, `solving`, `stdlib`. Read the relevant chunk when unsure — these are the same chunks the in-GUI assistant exposes via `reify_language_reference`.
 - **Examples:** `examples/*.ri`. Canonical patterns:
   - `m5_geometry_flange.ri` — `structure def ... : Rigid`, params with units, `cylinder` / `circular_pattern` / `difference`
   - `m8_units.ri`, `m8_materials.ri`, `m8_tolerancing.ri` — units, materials, tolerances
@@ -124,10 +124,12 @@ When extending an existing `.ri` file:
 
 ### 2. Iterate visually
 
-Reify ships a GUI with a debug MCP for visual verification. Two launch scripts (both auto-set `LD_LIBRARY_PATH` for OCCT's bundled libs, prepend `/opt/reify-deps/tbb-pin` ahead of any inherited `LD_LIBRARY_PATH`, and default `WEBKIT_DISABLE_DMABUF_RENDERER=1`; both refuse fast with no display — `REIFY_GUI_SKIP_PREFLIGHT=1` bypasses):
+Reify ships a GUI with a debug MCP for visual verification. Two launch scripts (both auto-set `LD_LIBRARY_PATH` for OCCT's bundled libs, prepend `/opt/reify-deps/tbb-pin` ahead of any inherited `LD_LIBRARY_PATH`; `reify-gui` itself defaults `WEBKIT_DISABLE_DMABUF_RENDERER=1`, and exporting `0` opts out; both refuse fast with no display — `REIFY_GUI_SKIP_PREFLIGHT=1` bypasses):
 
-- **Dev (HMR + debug MCP):** `scripts/run-gui-dev.sh <file.ri>` — vite on `:${REIFY_VITE_PORT:-1420}`, debug MCP on `127.0.0.1:${REIFY_DEBUG_PORT:-3939}`. Set `REIFY_DEBUG_PORT` per worktree to avoid port collisions, and set `REIFY_VITE_PORT` to run a second dev session while :1420 is taken. Use this when iterating.
-- **Release:** `scripts/run-gui.sh <file.ri>` — what end users will see.
+- **Dev (HMR + debug MCP):** `scripts/run-gui-dev.sh [file.ri]` — vite on `:${REIFY_VITE_PORT:-1420}`, debug MCP on `127.0.0.1:${REIFY_DEBUG_PORT:-3939}`. Set `REIFY_DEBUG_PORT` per worktree to avoid port collisions, and set `REIFY_VITE_PORT` to run a second dev session while :1420 is taken. Use this when iterating.
+- **Release:** `scripts/run-gui.sh [file.ri]` — what end users will see.
+
+With no file, either script opens `reify-gui` on the launcher Start view (Open/New/Recent).
 
 If `reify` is built: `reify gui --debug <file.ri>` (alias `reify gui-debug <file.ri>`).
 

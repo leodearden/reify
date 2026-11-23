@@ -36,8 +36,8 @@ use reify_test_support::{
 /// solver path with multi-DOF chain participation.
 const PLANAR_LOOP_SOURCE: &str = r#"
 structure def CounterMassBalance {
-    let joint_a = revolute(vec3(0, 0, 1), 0rad .. 6.283185307179586rad)
-    let joint_b = planar(vec3(1, 0, 0), vec3(0, 1, 0),
+    let joint_a = revolute(dir(0, 0, 1), 0rad .. 6.283185307179586rad)
+    let joint_b = planar(dir(1, 0, 0), dir(0, 1, 0),
                          -100mm .. 100mm, -100mm .. 100mm,
                          -0.7853981633974483rad .. 0.7853981633974483rad)
 }
@@ -56,8 +56,8 @@ fn get_value_from<'a>(values: &'a ValueMap, structure: &str, name: &str) -> &'a 
 /// `solve_loop_closure` to drive a single-loop closure problem.
 const SOURCE: &str = r#"
 structure def Kinematic {
-    let joint_a = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
-    let joint_b = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
+    let joint_a = prismatic(dir(1, 0, 0), 0mm .. 1000mm)
+    let joint_b = prismatic(dir(1, 0, 0), 0mm .. 1000mm)
 }
 "#;
 
@@ -283,7 +283,7 @@ fn loop_closure_machinery_solves_planar_in_loop_e2e() {
 /// `examples/dynamics/closed_2prismatic_idyn.ri`'s closed loop.
 const PRISMATIC_LOOP_SOURCE: &str = r#"
 structure def PrismaticLoop {
-    let axis_z = vec3(0, 0, 1)
+    let axis_z = dir(0, 0, 1)
     let j_a = prismatic(axis_z, 0mm .. 1000mm)
     let j_b = prismatic(axis_z, 0mm .. 2000mm)
     let m = body(body(body(mechanism(), point_mass(2kg), j_a), point_mass(3kg), j_b), point_mass(1kg), j_b, j_a)
@@ -295,7 +295,7 @@ structure def PrismaticLoop {
 /// A two-revolute closed loop: the closing body rides `j_s` on `j_r`.
 const REVOLUTE_LOOP_SOURCE: &str = r#"
 structure def RevoluteLoop {
-    let axis_z = vec3(0, 0, 1)
+    let axis_z = dir(0, 0, 1)
     let j_r = revolute(axis_z, 0rad .. 3.141592653589793rad)
     let j_s = revolute(axis_z, -3.141592653589793rad .. 3.141592653589793rad)
     let m = body(body(body(mechanism(), point_mass(2kg), j_r), point_mass(3kg), j_s), point_mass(1kg), j_s, j_r)
@@ -376,7 +376,7 @@ fn a_length_bound_to_a_closed_loop_revolute_is_named() {
 fn inverse_dynamics_on_a_closed_prismatic_loop_still_reads_bare_samples() {
     let source = r#"
 structure def PrismaticLoopIdyn {
-    let axis_z = vec3(0, 0, 1)
+    let axis_z = dir(0, 0, 1)
     let j_a = prismatic(axis_z, 0mm .. 1000mm)
     let j_b = prismatic(axis_z, 0mm .. 2000mm)
     let m = body(body(body(mechanism(), point_mass(2kg), j_a), point_mass(3kg), j_b), point_mass(1kg), j_b, j_a)

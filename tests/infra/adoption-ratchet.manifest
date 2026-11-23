@@ -70,3 +70,6 @@ planner-fixture-name-literal | [A-Za-z0-9_]+[.]ri['"] | scripts/reify_verify/*.p
 # EngineSession::reload_compiled, so only the definition and that call spell
 # the check helper.
 gui-reload-pipeline | check_with_solve_slot\( | gui/src-tauri/src/engine.rs | 2 | ζ #8942
+# auditcontext-struct-literal: the constructor in crates/reify-audit/src/model.rs
+# is the only struct literal; detectors, bins and tests build through AuditContext::new.
+auditcontext-struct-literal | AuditContext [{] | crates/reify-audit/**/*.rs | 1 | β #8807

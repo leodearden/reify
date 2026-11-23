@@ -145,8 +145,14 @@ current main (`0d70ef1d5b`):
    corollary — kernel-less check is a healthy path, so Error severity is
    wrong there) is **already owned by #5311** (filed 2026-07-20 against
    cmd_check's own documented deferral); the seed entry cites it, and the
-   burn-down task depends on it. End state: empty allowlist pinned by the
-   ratchet; the mechanism remains as the guard against re-additions.
+   burn-down task depends on it. End state: empty allowlist, reached by
+   #5404. **[Amended 2026-11-19 by #10201, per Leo's ruling of 2026-11-18,
+   esc-10174-1]** The row machinery and its ratchet are deleted. The guard
+   against re-additions is now a behavioural pin,
+   `check_gating_error(d).is_some() == has_error_diagnostic(d)` over the gate
+   fixtures
+   (`crates/reify-cli/src/check_verdict/check_error_gate_tests.rs::check_gating_error_agrees_with_has_error_diagnostic`),
+   so a row-shaped excuse reds that pin.
 
 ### Leg C — diagnostic hygiene
 

@@ -38,14 +38,16 @@
 # Each gate previously carried two hand-rolled guards: an isfile() check on
 # tree-sitter-reify/src/parser.c, and a `command -v` check on the tree-sitter
 # CLI. `--grammar-substrate-status` covers both and more, in the right order:
-# prd-capability-check.py's main() calls grammar_generated() FIRST and returns
-# 75 with a parser.c-naming reason WITHOUT spending a subprocess ("Cheap first,
-# so a lane with no grammar pays no subprocess"), then grammar_substrate_usable()
-# covers the CLI being unlaunchable, the cache/lock being unwritable, and the
-# probe not answering within its bound. A grammar-less lane therefore pays
-# exactly what the old isfile() cost, and a lane WITH a grammar pays one
-# time-bounded tree-sitter subprocess to learn something isfile() could never
-# tell it: whether tree-sitter can actually LOAD that grammar.
+# prd-capability-check.py's main() first runs scripts/tree-sitter-generate.sh
+# (only an up-to-date check when src/ is current) and returns 75 if the grammar
+# cannot be brought up to date; then grammar_generated() returns 75 with a
+# parser.c-naming reason if there is still no parser.c; then
+# grammar_substrate_usable() covers the CLI being unlaunchable, the cache/lock
+# being unwritable, and the probe not answering within its bound. A grammar-less
+# lane therefore has its grammar generated rather than its grammar rows dropped,
+# and a lane whose grammar is current pays one time-bounded tree-sitter
+# subprocess to learn something isfile() could never tell it: whether
+# tree-sitter can actually LOAD that grammar.
 #
 # USAGE — the composed entrypoint is what gates should call
 # ----------------------------------------------------------

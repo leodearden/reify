@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 
 use reify_core::DimensionVector;
 use reify_ir::arg_acceptance::{Acceptance, ArgRejection, accept_arg, length_spec};
-use reify_ir::{Value, quaternion_is_finite};
+use reify_ir::direction_decode::decode_direction;
+use reify_ir::{UnitVec3, Value, quaternion_is_finite};
 
 use crate::helpers::tensor_components_f64;
 use crate::matrix::{mat3_det, matrix_components_f64};
@@ -1274,11 +1275,11 @@ fn construct_point_or_vector(args: &[Value], expected_n: usize, is_point: bool) 
 /// The offset is the only dimensioned input, so the whole origin triple
 /// consequently carries LENGTH: the two zeros are minted at the gated dimension,
 /// and `plane_xy(5mm)` has origin `(0m, 0m, 5mm)`. That mirroring is VERIFIED by
-/// `plane_xy_length_zero_mirrors_length_into_origin_and_keeps_normal_bare`
+/// `plane_xy_length_zero_mirrors_length_into_origin_and_mints_a_direction_normal`
 /// rather than argued here, which is why the origin is built from
 /// [`make_point3`] at LENGTH instead of from a closure that still carried a
 /// DIMENSIONLESS branch the gate has made unreachable. The synthesized normal
-/// stays DIMENSIONLESS: a unit vector legitimately has bare components
+/// is a `Value::Direction` minted by [`direction_value`], dimensionless by type
 /// (decision D3), and nothing in ε widens the gate to it.
 ///
 /// SCOPE. Every construction-datum constructor in this module now REQUIRES
@@ -1286,9 +1287,9 @@ fn construct_point_or_vector(args: &[Value], expected_n: usize, is_point: bool) 
 /// `plane_xz` / `plane_yz`, and [`make_axis`] beside it) by task ε, and the five
 /// siblings below — `midplane`, `axis_through`, `plane_through`, the arity-2
 /// `offset` and `frame_at` (task 4387 / η, gated by task 6591) — by their own
-/// per-builtin classifiers. Only DIRECTION and unit-vector operands stay bare:
-/// `frame_at`'s x/z axes and every synthesized or decoded plane NORMAL, because
-/// a unit vector legitimately has dimensionless components (decision D3).
+/// per-builtin classifiers. DIRECTION operands are not gated: `frame_at`'s x/z
+/// axes and every synthesized or decoded plane NORMAL are `Value::Direction`s,
+/// dimensionless by type (decision D3).
 ///
 /// `decode_plane`'s consumer-side `ox`/`oy`/`oz` gate (task δ / 5745) stays live
 /// and reachable from real `.ri` source, so R11 is still shut at BOTH ends
@@ -1323,14 +1324,12 @@ fn make_plane(args: &[Value], offset_index: usize, normal: [f64; 3]) -> Value {
     }
     let mut origin_si = [0.0; 3];
     origin_si[offset_index] = offset_f;
-    let normal_vec = Value::Vector(vec![
-        Value::Real(normal[0]),
-        Value::Real(normal[1]),
-        Value::Real(normal[2]),
-    ]);
+    let Some(normal) = direction_value(normal) else {
+        return Value::Undef;
+    };
     Value::Plane {
         origin: Box::new(make_point3(origin_si, DimensionVector::LENGTH)),
-        normal: Box::new(normal_vec),
+        normal: Box::new(normal),
     }
 }
 
@@ -1378,9 +1377,9 @@ fn make_plane(args: &[Value], offset_index: usize, normal: [f64; 3]) -> Value {
 ///
 /// The accepted origin is cloned VERBATIM so a `Point3<Length>` round-trips
 /// byte-identically (`decode_axis_producer_round_trip_*`). The synthesized
-/// direction stays DIMENSIONLESS: a unit vector legitimately has bare components
-/// (decision D3). See [`make_plane`]'s doc for the scope statement the two
-/// share.
+/// direction is a `Value::Direction` minted by [`direction_value`], dimensionless
+/// by type (decision D3). See [`make_plane`]'s doc for the scope statement the
+/// two share.
 fn make_axis(args: &[Value], direction: [f64; 3]) -> Value {
     if args.len() != 1 {
         return Value::Undef;
@@ -1392,14 +1391,12 @@ fn make_axis(args: &[Value], direction: [f64; 3]) -> Value {
         Some((_, dim)) if dim == DimensionVector::LENGTH => {}
         _ => return Value::Undef,
     }
-    let dir_vec = Value::Vector(vec![
-        Value::Real(direction[0]),
-        Value::Real(direction[1]),
-        Value::Real(direction[2]),
-    ]);
+    let Some(direction) = direction_value(direction) else {
+        return Value::Undef;
+    };
     Value::Axis {
         origin: Box::new(args[0].clone()),
-        direction: Box::new(dir_vec),
+        direction: Box::new(direction),
     }
 }
 
@@ -1418,6 +1415,13 @@ fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
         a[2] * b[0] - a[0] * b[2],
         a[0] * b[1] - a[1] * b[0],
     ]
+}
+
+/// Mint a datum direction or normal: the one path every construction datum in
+/// this module takes to a `Value::Direction`. `None` for a degenerate or
+/// non-finite vector, which each caller maps to the family's `Value::Undef`.
+fn direction_value(v: [f64; 3]) -> Option<Value> {
+    UnitVec3::from_vector(v).ok().map(Value::Direction)
 }
 
 /// Normalize a 3-vector to unit length; `None` for a zero-length or non-finite vector.
@@ -1466,36 +1470,19 @@ fn make_real_vec3(xyz: [f64; 3]) -> Value {
     ])
 }
 
-/// Decode a `Value::Plane` into (origin[3], origin_dim, normal[3]). `None` for any
-/// non-Plane / non-3D / mixed-dimension / non-finite input. Reuses the shared
-/// `decompose_point3` (origin) and `decompose_vec3` (normal) validators.
-fn decode_plane(v: &Value) -> Option<([f64; 3], DimensionVector, [f64; 3])> {
+/// Decode a `Value::Plane` into (origin[3], origin_dim, unit normal). `None` for
+/// any non-Plane / non-3D / mixed-dimension / non-finite origin, or a normal that
+/// is not a `Value::Direction`. The origin goes through the shared
+/// `decompose_point3` validator and the normal through
+/// [`reify_ir::decode_direction`], the one direction reader (ε, task 9638).
+fn decode_plane(v: &Value) -> Option<([f64; 3], DimensionVector, UnitVec3)> {
     let (origin, normal) = match v {
         Value::Plane { origin, normal } => (origin.as_ref(), normal.as_ref()),
         _ => return None,
     };
     let (o, o_dim) = decompose_point3(origin)?;
-    // A plane normal may be a dimensionless `Value::Vector` (synthetic, e.g. from
-    // `make_real_vec3` / `plane_xy`) OR a `Value::Direction` (how a kernel-realized
-    // feature→datum plane carries its normal). Accept both so the construction-datum
-    // constructors (`offset` / `midplane`) consume a REALIZED plane — the actual
-    // use case — not only a synthetic one.
-    let n = match decompose_vec3(normal) {
-        Some((n, _)) => n,
-        None => decode_direction(normal)?,
-    };
+    let n = decode_direction(normal).ok()?;
     Some((o, o_dim, n))
-}
-
-/// Decode a `Value::Direction` into [x,y,z]; `None` for any other value or a
-/// non-finite component.
-fn decode_direction(v: &Value) -> Option<[f64; 3]> {
-    match v {
-        Value::Direction { x, y, z } if x.is_finite() && y.is_finite() && z.is_finite() => {
-            Some([*x, *y, *z])
-        }
-        _ => None,
-    }
 }
 
 /// Why a construction-datum call cannot be built — the fault vocabulary of the
@@ -1574,25 +1561,22 @@ fn classify_datum_point(arg_name: &'static str, v: &Value) -> Result<[f64; 3], D
 }
 
 /// Classify a `Value::Plane` operand whose ORIGIN must be a `Point3<Length>`,
-/// returning its origin and normal components.
+/// returning its origin components and its unit normal.
 ///
 /// The whole SHAPE question — the `Plane` variant, the origin triple AND the
-/// dual `Vector`-or-`Direction` normal — is read through [`decode_plane`], the
-/// SAME decoder the eval gates have always used, and it is read BEFORE any
-/// dimension is judged. That ordering is what makes a malformed normal a
-/// `Shape` fault rather than a `NotLength` one: such a plane never reaches the
-/// LENGTH verdict, so its fault is never blamed on its origin's dimension.
+/// `Direction` normal — is read through [`decode_plane`], the SAME decoder the
+/// eval gates have always used, and it is read BEFORE any dimension is judged.
+/// That ordering is what makes a malformed normal a `Shape` fault rather than a
+/// `NotLength` one: such a plane never reaches the LENGTH verdict, so its fault
+/// is never blamed on its origin's dimension.
 ///
-/// Preserving `decode_plane`'s dual normal acceptance is load-bearing rather
-/// than conservative: the one real `.ri` call site of this family
-/// (`examples/geometric_relations/construction_datum.ri`) feeds a
-/// kernel-realized plane whose normal is a `Value::Direction`, so narrowing the
-/// normal decode would break the shipped example while the unit suite stayed
-/// green.
-fn classify_datum_plane(
-    arg_name: &'static str,
-    v: &Value,
-) -> Result<([f64; 3], [f64; 3]), DatumFault> {
+/// A normal that is not a `Value::Direction` — a raw `Vector` included — is
+/// such a `Shape` fault (ε, task 9638). Every plane this family is fed has a
+/// `Direction` normal: the stdlib datum constructors mint one, and so does the
+/// kernel for a realized plane such as the `top_plane` of
+/// `examples/geometric_relations/construction_datum.ri`, this family's one real
+/// `.ri` call site.
+fn classify_datum_plane(arg_name: &'static str, v: &Value) -> Result<PlaneParts, DatumFault> {
     let (_, _, normal) = decode_plane(v).ok_or(DatumFault::Shape)?;
     let Value::Plane { origin, .. } = v else {
         // Unreachable: `decode_plane` returns `None` for every non-`Plane` value.
@@ -1622,8 +1606,8 @@ fn classify_datum_delta(arg_name: &'static str, v: &Value) -> Result<f64, DatumF
     }
 }
 
-/// A decoded plane: its origin components and its normal components.
-type PlaneParts = ([f64; 3], [f64; 3]);
+/// A decoded plane: its origin components and its unit normal.
+type PlaneParts = ([f64; 3], UnitVec3);
 
 /// Three decoded `Point3<Length>` positions, in argument order — what
 /// [`classify_plane_through_args`] yields.
@@ -1708,8 +1692,12 @@ fn classify_frame_at_args(args: &[Value]) -> Result<FrameParts, DatumFault> {
         return Err(DatumFault::Shape);
     }
     let o = classify_datum_point("o", &args[0])?;
-    let x = decode_direction(&args[1]).ok_or(DatumFault::Shape)?;
-    let z = decode_direction(&args[2]).ok_or(DatumFault::Shape)?;
+    let x = decode_direction(&args[1])
+        .map_err(|_| DatumFault::Shape)?
+        .components();
+    let z = decode_direction(&args[2])
+        .map_err(|_| DatumFault::Shape)?
+        .components();
     Ok((o, x, z))
 }
 
@@ -1770,15 +1758,17 @@ fn classify_transform_operand_args(
 /// The verdict is reached through [`classify_midplane_args`], the SAME predicate
 /// [`diagnose`]'s `midplane` arm reads; the degeneracy guard is ordered AFTER
 /// it, so a bare-origin call is attributed to its dimension rather than to a
-/// degeneracy. The two NORMALS stay dimension-agnostic (decision D3), and the
-/// bisector's origin is minted at LENGTH because both inputs now are.
+/// degeneracy. The two input NORMALS are `Value::Direction`s, dimensionless by
+/// type (decision D3); the bisector's normal is a `Value::Direction` minted by
+/// [`direction_value`], and its origin is minted at LENGTH because both inputs
+/// now are.
 fn eval_midplane(args: &[Value]) -> Value {
     let Ok(((oa, na), (ob, nb))) = classify_midplane_args(args) else {
         return Value::Undef;
     };
-    let normal = match normalize3([na[0] + nb[0], na[1] + nb[1], na[2] + nb[2]]) {
-        Some(n) => n,
-        None => return Value::Undef,
+    let ([ax, ay, az], [bx, by, bz]) = (na.components(), nb.components());
+    let Some(normal) = direction_value([ax + bx, ay + by, az + bz]) else {
+        return Value::Undef;
     };
     let mid = [
         (oa[0] + ob[0]) / 2.0,
@@ -1787,7 +1777,7 @@ fn eval_midplane(args: &[Value]) -> Value {
     ];
     Value::Plane {
         origin: Box::new(make_point3(mid, DimensionVector::LENGTH)),
-        normal: Box::new(make_real_vec3(normal)),
+        normal: Box::new(normal),
     }
 }
 
@@ -1801,19 +1791,18 @@ fn eval_midplane(args: &[Value]) -> Value {
 /// [`diagnose`]'s arm share.
 ///
 /// The accepted origin is cloned VERBATIM so a `Point3<Length>` round-trips
-/// byte-identically; the synthesized direction stays DIMENSIONLESS, since a unit
-/// vector legitimately has bare components (decision D3).
+/// byte-identically; the synthesized direction is a `Value::Direction` minted by
+/// [`direction_value`], dimensionless by type (decision D3).
 fn eval_axis_through(args: &[Value]) -> Value {
     let Ok((pa, pb)) = classify_axis_through_args(args) else {
         return Value::Undef;
     };
-    let direction = match normalize3([pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]]) {
-        Some(d) => d,
-        None => return Value::Undef,
+    let Some(direction) = direction_value([pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]]) else {
+        return Value::Undef;
     };
     Value::Axis {
         origin: Box::new(args[0].clone()),
-        direction: Box::new(make_real_vec3(direction)),
+        direction: Box::new(direction),
     }
 }
 
@@ -1830,20 +1819,19 @@ fn eval_axis_through(args: &[Value]) -> Value {
 /// The parameters are `a`/`b`/`c` — the spelling
 /// `reify-compiler/src/units.rs`'s signature block and this family's
 /// diagnostics use. The accepted origin is cloned VERBATIM; the synthesized
-/// normal stays DIMENSIONLESS (decision D3).
+/// normal is a `Value::Direction` minted by [`direction_value`] (decision D3).
 fn eval_plane_through(args: &[Value]) -> Value {
     let Ok((a, b, c)) = classify_plane_through_args(args) else {
         return Value::Undef;
     };
     let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
     let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-    let normal = match normalize3(cross3(u, v)) {
-        Some(n) => n,
-        None => return Value::Undef,
+    let Some(normal) = direction_value(cross3(u, v)) else {
+        return Value::Undef;
     };
     Value::Plane {
         origin: Box::new(args[0].clone()),
-        normal: Box::new(make_real_vec3(normal)),
+        normal: Box::new(normal),
     }
 }
 
@@ -1852,7 +1840,8 @@ fn eval_plane_through(args: &[Value]) -> Value {
 ///
 /// BOTH operands are REQUIRED to carry LENGTH — `p`'s ORIGIN and `delta` itself
 /// (units-length η, task 6591). `Undef` on bad arity, a non-LENGTH or
-/// undecodable plane origin, a non-LENGTH delta, or a degenerate normal.
+/// undecodable plane origin, a normal that is not a `Value::Direction`, or a
+/// non-LENGTH delta.
 ///
 /// Gating `delta` closes an R12-class SILENT REINTERPRETATION, not merely a
 /// missing check: the rule this replaces compared `delta`'s dimension to the
@@ -1862,24 +1851,17 @@ fn eval_plane_through(args: &[Value]) -> Value {
 /// the new guard, and [`classify_offset_plane_args`] for the predicate this gate
 /// and [`diagnose`]'s arm share, which also fixes the `p`-before-`delta` order.
 ///
-/// The normal keeps its dimension-agnostic decode, including the
-/// `Value::Direction` form a kernel-realized plane carries (decision D3).
+/// The normal is decoded as a `Value::Direction` and re-minted unchanged, so
+/// `offset(p, d).normal` is bit-identical to `p.normal` (decision D3).
 fn eval_offset_plane(args: &[Value]) -> Value {
-    let Ok(((o, n), delta)) = classify_offset_plane_args(args) else {
+    let Ok(((o, n_hat), delta)) = classify_offset_plane_args(args) else {
         return Value::Undef;
     };
-    let n_hat = match normalize3(n) {
-        Some(nh) => nh,
-        None => return Value::Undef,
-    };
-    let new_o = [
-        o[0] + delta * n_hat[0],
-        o[1] + delta * n_hat[1],
-        o[2] + delta * n_hat[2],
-    ];
+    let [nx, ny, nz] = n_hat.components();
+    let new_o = [o[0] + delta * nx, o[1] + delta * ny, o[2] + delta * nz];
     Value::Plane {
         origin: Box::new(make_point3(new_o, DimensionVector::LENGTH)),
-        normal: Box::new(make_real_vec3(n_hat)),
+        normal: Box::new(Value::Direction(n_hat)),
     }
 }
 
@@ -2137,8 +2119,8 @@ fn classify_affine_map_args(args: &[Value]) -> Result<([[f64; 3]; 3], [f64; 3]),
 ///   several offend the FIRST in argument order is named, deterministically,
 ///   because the order lives in that one classifier (the
 ///   [`diagnose_bbox_corners`] `min`-before-`max` precedent). `frame_at`'s x/z
-///   and every plane NORMAL stay UNGATED and therefore never named: a unit
-///   vector legitimately has bare components (decision D3). The arity-3
+///   and every plane NORMAL are `Value::Direction`s, dimensionless by type
+///   (decision D3), so they stay UNGATED and are never named. The arity-3
 ///   `offset` — the γ RELATION — is never served, which its classifier enforces
 ///   rather than this list.
 /// - **`affine_from_transform`** / **`transform_inverse`** (exactly 1 arg) — a
@@ -2581,6 +2563,12 @@ mod tests {
     use crate::eval_builtin;
     use reify_core::DimensionVector;
     use reify_ir::Value;
+
+    fn unit_dir(x: f64, y: f64, z: f64) -> Value {
+        Value::Direction(
+            reify_ir::UnitVec3::from_vector([x, y, z]).expect("test direction is non-degenerate"),
+        )
+    }
 
     // --- Determinacy predicate stubs (step-7) ---
 
@@ -3547,15 +3535,7 @@ mod tests {
         let origin = make_point3_length();
         let result = eval_builtin("axis_z", &[origin]);
         match result {
-            Value::Axis { direction, .. } => match *direction {
-                Value::Vector(ref comps) => {
-                    assert_eq!(comps.len(), 3);
-                    assert_eq!(comps[0], Value::Real(0.0));
-                    assert_eq!(comps[1], Value::Real(0.0));
-                    assert_eq!(comps[2], Value::Real(1.0));
-                }
-                other => panic!("expected Vector, got {:?}", other),
-            },
+            Value::Axis { direction, .. } => assert_eq!(*direction, unit_dir(0.0, 0.0, 1.0)),
             other => panic!("expected Axis, got {:?}", other),
         }
     }
@@ -3592,14 +3572,7 @@ mod tests {
         let origin = make_point3_length();
         let result = eval_builtin("axis_x", &[origin]);
         match result {
-            Value::Axis { direction, .. } => match *direction {
-                Value::Vector(ref comps) => {
-                    assert_eq!(comps[0], Value::Real(1.0));
-                    assert_eq!(comps[1], Value::Real(0.0));
-                    assert_eq!(comps[2], Value::Real(0.0));
-                }
-                other => panic!("expected Vector, got {:?}", other),
-            },
+            Value::Axis { direction, .. } => assert_eq!(*direction, unit_dir(1.0, 0.0, 0.0)),
             other => panic!("expected Axis, got {:?}", other),
         }
     }
@@ -3609,14 +3582,7 @@ mod tests {
         let origin = make_point3_length();
         let result = eval_builtin("axis_y", &[origin]);
         match result {
-            Value::Axis { direction, .. } => match *direction {
-                Value::Vector(ref comps) => {
-                    assert_eq!(comps[0], Value::Real(0.0));
-                    assert_eq!(comps[1], Value::Real(1.0));
-                    assert_eq!(comps[2], Value::Real(0.0));
-                }
-                other => panic!("expected Vector, got {:?}", other),
-            },
+            Value::Axis { direction, .. } => assert_eq!(*direction, unit_dir(0.0, 1.0, 0.0)),
             other => panic!("expected Axis, got {:?}", other),
         }
     }
@@ -3705,10 +3671,9 @@ mod tests {
     /// The anti-vacuity partner of the rows above: a `Point3<Length>` origin
     /// still builds an `Axis`, carrying that point VERBATIM (the byte-identical
     /// round-trip `decode_axis_producer_round_trip_*` depends on), with a
-    /// DIMENSIONLESS direction — decision D3's scope lock, since a unit vector
-    /// legitimately has bare components.
+    /// `Direction` — dimensionless by type, decision D3's scope lock.
     #[test]
-    fn axis_x_length_origin_round_trips_and_keeps_direction_bare() {
+    fn axis_x_length_origin_round_trips_and_mints_a_direction() {
         let origin = make_point3_length();
         let result = eval_builtin("axis_x", std::slice::from_ref(&origin));
         let Value::Axis {
@@ -3721,8 +3686,8 @@ mod tests {
         assert_eq!(*o, origin, "a LENGTH origin must round-trip verbatim");
         assert_eq!(
             *direction,
-            Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]),
-            "the synthesized direction is a unit vector and stays dimensionless (D3)"
+            unit_dir(1.0, 0.0, 0.0),
+            "the synthesized direction is a Direction, dimensionless by type (D3)"
         );
     }
 
@@ -4121,14 +4086,7 @@ mod tests {
                     }
                     other => panic!("expected Point, got {:?}", other),
                 }
-                match *normal {
-                    Value::Vector(ref comps) => {
-                        assert_eq!(comps[0], Value::Real(0.0));
-                        assert_eq!(comps[1], Value::Real(1.0));
-                        assert_eq!(comps[2], Value::Real(0.0));
-                    }
-                    other => panic!("expected Vector, got {:?}", other),
-                }
+                assert_eq!(*normal, unit_dir(0.0, 1.0, 0.0));
             }
             other => panic!("expected Plane, got {:?}", other),
         }
@@ -4159,14 +4117,7 @@ mod tests {
                     }
                     other => panic!("expected Point, got {:?}", other),
                 }
-                match *normal {
-                    Value::Vector(ref comps) => {
-                        assert_eq!(comps[0], Value::Real(1.0));
-                        assert_eq!(comps[1], Value::Real(0.0));
-                        assert_eq!(comps[2], Value::Real(0.0));
-                    }
-                    other => panic!("expected Vector, got {:?}", other),
-                }
+                assert_eq!(*normal, unit_dir(1.0, 0.0, 0.0));
             }
             other => panic!("expected Plane, got {:?}", other),
         }
@@ -4232,15 +4183,7 @@ mod tests {
         let offset = Value::length(0.005);
         let result = eval_builtin("plane_xy", &[offset]);
         match result {
-            Value::Plane { normal, .. } => match *normal {
-                Value::Vector(ref comps) => {
-                    assert_eq!(comps.len(), 3, "normal should be 3D");
-                    assert_eq!(comps[0], Value::Real(0.0), "normal.x should be 0");
-                    assert_eq!(comps[1], Value::Real(0.0), "normal.y should be 0");
-                    assert_eq!(comps[2], Value::Real(1.0), "normal.z should be 1");
-                }
-                other => panic!("normal should be Vector, got {:?}", other),
-            },
+            Value::Plane { normal, .. } => assert_eq!(*normal, unit_dir(0.0, 0.0, 1.0)),
             other => panic!("expected Value::Plane, got {:?}", other),
         }
     }
@@ -4315,11 +4258,10 @@ mod tests {
     /// It also VERIFIES, rather than re-deriving from the code, the two dimension
     /// claims `make_plane`'s doc makes: the offset's dimension is MIRRORED into
     /// the whole origin triple (a zero offset yields three LENGTH zeros, never
-    /// bare `Real(0.0)`), while the synthesized normal stays DIMENSIONLESS —
-    /// decision D3's scope lock, since a unit vector legitimately has bare
-    /// components.
+    /// bare `Real(0.0)`), while the synthesized normal is a `Value::Direction`,
+    /// dimensionless by type — decision D3's scope lock.
     #[test]
-    fn plane_xy_length_zero_mirrors_length_into_origin_and_keeps_normal_bare() {
+    fn plane_xy_length_zero_mirrors_length_into_origin_and_mints_a_direction_normal() {
         let result = eval_builtin("plane_xy", &[Value::length(0.0)]);
         let Value::Plane { origin, normal } = result else {
             panic!("expected Value::Plane, got {result:?}");
@@ -4335,8 +4277,8 @@ mod tests {
         );
         assert_eq!(
             *normal,
-            Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]),
-            "the synthesized normal is a unit vector and stays dimensionless (D3)"
+            unit_dir(0.0, 0.0, 1.0),
+            "the synthesized normal is a Direction, dimensionless by type"
         );
     }
 
@@ -4359,6 +4301,15 @@ mod tests {
             comps[1].as_f64().unwrap(),
             comps[2].as_f64().unwrap(),
         ]
+    }
+
+    /// The components of a datum direction/normal, which every producer mints
+    /// as a `Value::Direction`; panics on any other shape.
+    fn dir_comps(v: &Value) -> [f64; 3] {
+        match v {
+            Value::Direction(u) => u.components(),
+            other => panic!("expected a Value::Direction, got {other:?}"),
+        }
     }
 
     /// Assert two 3-vectors agree component-wise within a tight tolerance.
@@ -4392,7 +4343,7 @@ mod tests {
         match result {
             Value::Plane { origin, normal } => {
                 approx3(comps3(&origin), [0.0, 0.0, 0.005]);
-                approx3(comps3(&normal), [0.0, 0.0, 1.0]);
+                approx3(dir_comps(&normal), [0.0, 0.0, 1.0]);
             }
             other => panic!("expected Value::Plane, got {:?}", other),
         }
@@ -4407,7 +4358,7 @@ mod tests {
         match result {
             Value::Axis { origin, direction } => {
                 approx3(comps3(&origin), [0.0, 0.0, 0.0]);
-                approx3(comps3(&direction), [0.0, 0.0, 1.0]);
+                approx3(dir_comps(&direction), [0.0, 0.0, 1.0]);
             }
             other => panic!("expected Value::Axis, got {:?}", other),
         }
@@ -4423,7 +4374,7 @@ mod tests {
         match result {
             Value::Plane { origin, normal } => {
                 approx3(comps3(&origin), [0.0, 0.0, 0.0]);
-                approx3(comps3(&normal), [0.0, 0.0, 1.0]);
+                approx3(dir_comps(&normal), [0.0, 0.0, 1.0]);
             }
             other => panic!("expected Value::Plane, got {:?}", other),
         }
@@ -4437,7 +4388,7 @@ mod tests {
         match result {
             Value::Plane { origin, normal } => {
                 approx3(comps3(&origin), [0.0, 0.0, 0.005]);
-                approx3(comps3(&normal), [0.0, 0.0, 1.0]);
+                approx3(dir_comps(&normal), [0.0, 0.0, 1.0]);
             }
             other => panic!("expected Value::Plane, got {:?}", other),
         }
@@ -4447,16 +4398,8 @@ mod tests {
     fn frame_at_with_x_and_z_returns_identity_frame() {
         // frame_at((0,0,0), dir(1,0,0), dir(0,0,1)) → Frame origin (0,0,0), identity basis
         let o = point3_len(0.0, 0.0, 0.0);
-        let xdir = Value::Direction {
-            x: 1.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        let zdir = Value::Direction {
-            x: 0.0,
-            y: 0.0,
-            z: 1.0,
-        };
+        let xdir = unit_dir(1.0, 0.0, 0.0);
+        let zdir = unit_dir(0.0, 0.0, 1.0);
         let result = eval_builtin("frame_at", &[o, xdir, zdir]);
         match result {
             Value::Frame { origin, basis } => {
@@ -4534,12 +4477,11 @@ mod tests {
     // datum and exited 0 — the same R11 hole ε shut at `plane_xy` / `axis_x`, one
     // family over (units-length η, task 6591).
     //
-    // DIRECTION / unit-vector operands are NOT gated: `frame_at`'s x/z arrive as
-    // `Value::Direction` (three plain f64 fields — no dimension to gate) and plane
-    // NORMALS keep their dimension-agnostic decode, because a unit vector
-    // legitimately has bare components (decision D3).
+    // DIRECTION operands are NOT gated: `frame_at`'s x/z and every plane NORMAL
+    // arrive as `Value::Direction` (three plain f64 fields — no dimension to
+    // gate), dimensionless by type (decision D3).
 
-    /// A `Value::Plane` whose ORIGIN carries `dim`, with the bare unit +z normal.
+    /// A `Value::Plane` whose ORIGIN carries `dim`, with the +z `Direction` normal.
     ///
     /// The unit-level equivalent of `frame3(point3(…), orient_identity()).xy_plane`
     /// — which, once this gate lands, is the only `.ri` route left to a
@@ -4548,25 +4490,14 @@ mod tests {
     fn plane_with_origin(xyz: [f64; 3], dim: DimensionVector) -> Value {
         Value::Plane {
             origin: Box::new(super::make_point3(xyz, dim)),
-            normal: Box::new(super::make_real_vec3([0.0, 0.0, 1.0])),
+            normal: Box::new(unit_dir(0.0, 0.0, 1.0)),
         }
     }
 
     /// The +x / +z `Value::Direction` pair every `frame_at` row below passes.
     /// Well-formed on purpose: the only thing under test is the ORIGIN.
     fn unit_x_z_directions() -> (Value, Value) {
-        (
-            Value::Direction {
-                x: 1.0,
-                y: 0.0,
-                z: 0.0,
-            },
-            Value::Direction {
-                x: 0.0,
-                y: 0.0,
-                z: 1.0,
-            },
-        )
+        (unit_dir(1.0, 0.0, 0.0), unit_dir(0.0, 0.0, 1.0))
     }
 
     /// FLIPPING THIS ROW IS THE FIX, NOT A REGRESSION — `midplane`'s half of η.
@@ -4757,34 +4688,53 @@ mod tests {
             Some(DimensionVector::LENGTH),
             "the shifted origin must stay LENGTH"
         );
-        approx3(comps3(&normal), [0.0, 0.0, 1.0]);
+        approx3(dir_comps(&normal), [0.0, 0.0, 1.0]);
     }
 
-    /// A plane whose NORMAL is a `Value::Direction` rather than a `Value::Vector`
-    /// is still ACCEPTED.
+    /// A plane whose NORMAL is a `Value::Direction` — the only normal shape
+    /// `decode_plane` accepts (ε, task 9638) — is ACCEPTED.
     ///
-    /// This is the regression guard for `examples/geometric_relations/`
+    /// This is also the regression guard for `examples/geometric_relations/`
     /// `construction_datum.ri`, the only real `.ri` call site of this builtin:
     /// its `top_plane` is kernel-realized and MEASURES as
-    /// `plane(point(… m), direction(0, 0, 1))`. Narrowing `decode_plane`'s dual
-    /// normal acceptance while adding the LENGTH gate would break the shipped
-    /// example and its OCCT-gated e2e test while the rest of this suite stayed
-    /// green.
+    /// `plane(point(… m), dir(0, 0, 1))`.
     #[test]
     fn offset_accepts_a_plane_whose_normal_is_a_direction() {
         let realized = Value::Plane {
             origin: Box::new(point3_len(0.0, 0.0, 0.005)),
-            normal: Box::new(Value::Direction {
-                x: 0.0,
-                y: 0.0,
-                z: 1.0,
-            }),
+            normal: Box::new(unit_dir(0.0, 0.0, 1.0)),
         };
         let result = eval_builtin("offset", &[realized, Value::length(0.003)]);
         let Value::Plane { origin, .. } = result else {
             panic!("expected Value::Plane for a Direction-normal plane, got {result:?}");
         };
         approx3(comps3(&origin), [0.0, 0.0, 0.008]);
+    }
+
+    /// A raw `Value::Vector` normal is not a direction: `midplane` and the
+    /// arity-2 `offset` reject a LENGTH-origin plane carrying one, and
+    /// [`super::diagnose`] stays silent because the fault is one of SHAPE, not
+    /// of units (ε, task 9638).
+    #[test]
+    fn datum_family_rejects_a_plane_whose_normal_is_a_vector() {
+        let vector_normal = Value::Plane {
+            origin: Box::new(point3_len(0.0, 0.0, 0.005)),
+            normal: Box::new(super::make_real_vec3([0.0, 0.0, 1.0])),
+        };
+        for (name, args) in [
+            ("midplane", vec![vector_normal.clone(), plane_at_z(0.010)]),
+            ("offset", vec![vector_normal, Value::length(0.003)]),
+        ] {
+            assert!(
+                eval_builtin(name, &args).is_undef(),
+                "{name}: a Vector-normal plane must be Undef"
+            );
+            assert!(
+                super::diagnose(name, &args).is_none(),
+                "{name}: a Vector normal is a shape fault, never a units one; got {:?}",
+                super::diagnose(name, &args)
+            );
+        }
     }
 
     /// The arity-3 `offset` is the γ RELATION and is UNTOUCHED by this gate: it
@@ -4823,14 +4773,14 @@ mod tests {
             Some(DimensionVector::LENGTH),
             "the bisecting plane's origin must stay LENGTH"
         );
-        approx3(comps3(&normal), [0.0, 0.0, 1.0]);
+        approx3(dir_comps(&normal), [0.0, 0.0, 1.0]);
     }
 
     /// A LENGTH `axis_through` still builds its Axis, carrying the first point
-    /// VERBATIM (the impl clones it) beside a DIMENSIONLESS direction — D3's
-    /// scope lock.
+    /// VERBATIM (the impl clones it) beside a `Direction` — dimensionless by
+    /// type, D3's scope lock.
     #[test]
-    fn axis_through_length_points_round_trip_origin_and_keep_direction_bare() {
+    fn axis_through_length_points_round_trip_origin_and_mint_a_direction() {
         let pa = point3_len(0.001, 0.002, 0.003);
         let pb = point3_len(0.001, 0.002, 0.007);
         let result = eval_builtin("axis_through", &[pa.clone(), pb]);
@@ -4840,15 +4790,15 @@ mod tests {
         assert_eq!(*origin, pa, "a LENGTH origin must round-trip verbatim");
         assert_eq!(
             *direction,
-            super::make_real_vec3([0.0, 0.0, 1.0]),
-            "the synthesized direction stays dimensionless (decision D3)"
+            unit_dir(0.0, 0.0, 1.0),
+            "the synthesized direction is a Direction, dimensionless by type (D3)"
         );
     }
 
     /// A LENGTH `plane_through` still builds its Plane, carrying `a` VERBATIM
-    /// beside a DIMENSIONLESS normal.
+    /// beside a `Direction` normal.
     #[test]
-    fn plane_through_length_points_round_trip_origin_and_keep_normal_bare() {
+    fn plane_through_length_points_round_trip_origin_and_mint_a_direction() {
         let a = point3_len(0.001, 0.002, 0.003);
         let b = point3_len(0.005, 0.002, 0.003);
         let c = point3_len(0.001, 0.006, 0.003);
@@ -4859,8 +4809,8 @@ mod tests {
         assert_eq!(*origin, a, "a LENGTH origin must round-trip verbatim");
         assert_eq!(
             *normal,
-            super::make_real_vec3([0.0, 0.0, 1.0]),
-            "the synthesized normal stays dimensionless (decision D3)"
+            unit_dir(0.0, 0.0, 1.0),
+            "the synthesized normal is a Direction, dimensionless by type (D3)"
         );
     }
 
@@ -9579,7 +9529,7 @@ mod tests {
             let point = Value::Point(vec![offender.clone(), offender.clone(), offender.clone()]);
             let plane = Value::Plane {
                 origin: Box::new(point.clone()),
-                normal: Box::new(super::make_real_vec3([0.0, 0.0, 1.0])),
+                normal: Box::new(unit_dir(0.0, 0.0, 1.0)),
             };
             let good_point = point3_len(0.001, 0.002, 0.003);
             let good_plane = plane_at_z(0.010);
@@ -9701,19 +9651,19 @@ mod tests {
         ]);
         let mixed_plane = Value::Plane {
             origin: Box::new(mixed.clone()),
-            normal: Box::new(super::make_real_vec3([0.0, 0.0, 1.0])),
+            normal: Box::new(unit_dir(0.0, 0.0, 1.0)),
         };
-        // A NORMAL that cannot be decoded at all, and one that decodes but is
-        // degenerate. Neither is a units fault, and neither may be blamed on the
-        // origin's dimension — the hazard a classifier reading only the origin
-        // would walk straight into.
+        // A NORMAL that cannot be decoded at all, and one that is a raw
+        // `Vector` rather than a `Direction`. Neither is a units fault, and
+        // neither may be blamed on the origin's dimension — the hazard a
+        // classifier reading only the origin would walk straight into.
         let bad_normal_plane = Value::Plane {
             origin: Box::new(good_point.clone()),
             normal: Box::new(Value::Real(1.0)),
         };
-        let degenerate_normal_plane = Value::Plane {
+        let vector_normal_plane = Value::Plane {
             origin: Box::new(good_point.clone()),
-            normal: Box::new(super::make_real_vec3([0.0, 0.0, 0.0])),
+            normal: Box::new(super::make_real_vec3([0.0, 0.0, 1.0])),
         };
 
         for (label, name, args) in [
@@ -9760,7 +9710,7 @@ mod tests {
                 "midplane",
                 vec![mixed_plane, good_plane.clone()],
             ),
-            // A malformed or degenerate plane NORMAL.
+            // A malformed plane NORMAL, or one that is not a `Direction`.
             (
                 "midplane undecodable normal",
                 "midplane",
@@ -9772,9 +9722,9 @@ mod tests {
                 vec![bad_normal_plane, Value::length(0.005)],
             ),
             (
-                "offset degenerate normal",
+                "offset Vector normal",
                 "offset",
-                vec![degenerate_normal_plane, Value::length(0.005)],
+                vec![vector_normal_plane, Value::length(0.005)],
             ),
             // `frame_at`'s x/z slots are NOT gated (decision D3), so a fault
             // confined to them is a shape fault and stays silent.

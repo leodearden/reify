@@ -28,29 +28,18 @@
 //! the fallback in `expr.rs` emits it.
 
 use reify_core::{DimensionVector, Severity, Type};
-use reify_test_support::{compile_source_with_stdlib, errors_only, get_let_expr_in, warnings_only};
-
-/// Every diagnostic in `module` carrying `code`, in source order.
-///
-/// Matches on the CODE, never on message text: the message is explicitly not a
-/// stable contract (`diagnostics.rs` says so for every coded diagnostic), and a
-/// text match would make this file break on rewording rather than on behaviour.
-fn diags_with_code(
-    module: &reify_compiler::CompiledModule,
-    code: reify_core::DiagnosticCode,
-) -> Vec<&reify_core::Diagnostic> {
-    module
-        .diagnostics
-        .iter()
-        .filter(|d| d.code == Some(code))
-        .collect()
-}
+use reify_test_support::{
+    compile_source_with_stdlib, diags_with_code, errors_only, get_let_expr_in, warnings_only,
+};
 
 /// Every `UnresolvedFunction`-coded diagnostic in `module`, in source order.
 fn unresolved_function_diags(
     module: &reify_compiler::CompiledModule,
 ) -> Vec<&reify_core::Diagnostic> {
-    diags_with_code(module, reify_core::DiagnosticCode::UnresolvedFunction)
+    diags_with_code(
+        &module.diagnostics,
+        reify_core::DiagnosticCode::UnresolvedFunction,
+    )
 }
 
 /// Every Error-severity diagnostic MESSAGE in `module`, in source order.
@@ -403,7 +392,7 @@ fn zero_arg_known_but_unregistered_callee_keeps_only_the_legacy_warning() {
 /// order.
 fn arg_shape_diags(module: &reify_compiler::CompiledModule) -> Vec<&reify_core::Diagnostic> {
     diags_with_code(
-        module,
+        &module.diagnostics,
         reify_core::DiagnosticCode::BuiltinArgShapeUnrecognized,
     )
 }
@@ -694,9 +683,9 @@ fn zero_arg_mis_shaped_known_builtin_is_not_double_diagnosed() {
 // a user `fn` is not a builtin. The fallback's defect is that it read that
 // `false` as "exists nowhere", which only holds when the caller's function
 // table was COMPLETE. It is not complete inside a `fn` body:
-// `compile_builder/functions_phase.rs` compiles each body against
-// `&ctx.functions`, the user-only table that GROWS as the loop walks source
-// order, and only builds the merged `ctx.resolution_functions` afterwards.
+// `compile_builder/functions_phase.rs` compiles each body against the user
+// fns compiled so far plus the prelude, a table that GROWS in source order,
+// and only builds the merged `ctx.resolution_functions` afterwards.
 // So a call to a later-declared sibling yields `OverloadResolution::
 // NoUserFunctions` and lands on the terminal fallback with a name that is
 // perfectly real. Entity bodies, compiled after that merge, never see this.
@@ -765,7 +754,7 @@ fn mutually_referential_fn_pair_is_not_unresolved() {
 /// for `compile_function`'s `prelude_template_registry` ("v1: no prelude
 /// template registry for static fn bodies"), so the constructor is never
 /// claimed and rides the fallback. Control (c) pins that the SAME call from a
-/// regular fn body is already clean, which is what confines this route to the
+/// regular fn body never rides it, which is what confines this route to the
 /// trait-static site.
 #[test]
 fn struct_constructor_in_a_trait_static_fn_body_is_not_unresolved() {
@@ -839,20 +828,27 @@ fn genuinely_undeclared_callee_in_a_fn_body_still_warns() {
     );
 }
 
-/// Control (c): a struct constructor from a REGULAR fn body is clean in BOTH
-/// declaration orders — `functions_phase` passes `Some(&merged_registry)`.
+/// Control (c): a struct constructor from a REGULAR fn body never rides the
+/// unresolved-function fallback, in EITHER declaration order — a free fn body
+/// compiles against the module's structure templates (task 5494).
+///
+/// Structure first, the constructor RESOLVES (a bad field still raises
+/// E_CTOR_UNKNOWN_FIELD). Fn first, the structure has no template yet, so the
+/// call draws the coded declaration-order Error instead — loud, and still not
+/// an unresolved-function warning.
 ///
 /// This is what confines route (3) to `traits_phase`'s `None`. A fix that
 /// needs to widen past that site has misdiagnosed the cause.
 #[test]
-fn struct_constructor_in_a_regular_fn_body_stays_clean_in_both_orders() {
-    for (order, source) in [
+fn struct_constructor_in_a_regular_fn_body_is_never_unresolved_in_either_order() {
+    for (order, source, expected_code) in [
         (
             "structure first",
             r#"
             structure Widget { let w: Length = 1mm }
             pub fn make() -> Real { let x = Widget(w: 2mm); 1.0 }
         "#,
+            reify_core::DiagnosticCode::CtorUnknownField,
         ),
         (
             "fn first",
@@ -860,30 +856,32 @@ fn struct_constructor_in_a_regular_fn_body_stays_clean_in_both_orders() {
             pub fn make() -> Real { let x = Widget(w: 2mm); 1.0 }
             structure Widget { let w: Length = 1mm }
         "#,
+            reify_core::DiagnosticCode::StructureDeclaredAfterFunction,
         ),
     ] {
         let module = compile_source_with_stdlib(source);
         assert_eq!(
             unresolved_function_diags(&module).len(),
             0,
-            "{order}: constructor calls from a regular fn body resolve via the \
-             merged template registry; got {:?}",
+            "{order}: constructor calls from a regular fn body never ride the \
+             unresolved fallback; got {:?}",
             unresolved_function_diags(&module)
                 .iter()
                 .map(|d| &d.message)
                 .collect::<Vec<_>>()
         );
 
-        // Silence is not enough: prove the constructor is RESOLVED here, not
-        // merely un-warned. A genuinely wrong field name must still be caught,
-        // which only a resolved `StructureInstanceCtor` can do.
+        // Silence is not enough: prove the constructor is CLAIMED here, not
+        // merely un-warned. Structure first, a genuinely wrong field name must
+        // still be caught, which only a resolved `StructureInstanceCtor` can do;
+        // fn first, the ordering rule is what claims it.
         let wrong_field = compile_source_with_stdlib(&source.replace("w: 2mm", "nope: 2mm"));
         assert!(
             wrong_field
                 .diagnostics
                 .iter()
-                .any(|d| d.code == Some(reify_core::DiagnosticCode::CtorUnknownField)),
-            "{order}: a bad field name must still raise E_CTOR_UNKNOWN_FIELD; got {:?}",
+                .any(|d| d.code == Some(expected_code)),
+            "{order}: expected {expected_code:?}; got {:?}",
             wrong_field
                 .diagnostics
                 .iter()
@@ -894,8 +892,8 @@ fn struct_constructor_in_a_regular_fn_body_stays_clean_in_both_orders() {
 }
 
 /// Control (d): a trait static fn calling a FORWARD-declared top-level `fn` is
-/// ALREADY clean — `traits_phase` runs after `functions_phase`, so by then
-/// `ctx.functions` is complete.
+/// ALREADY clean — `traits_phase` runs after `phase_fn_signatures`, so by then
+/// every declared fn is in the call table (as a signature stub).
 ///
 /// Written down because the obvious generalisation from route (3) is that this
 /// warns too. Measured: it does not. Pinning a bug that never existed would
@@ -912,7 +910,7 @@ fn trait_static_fn_calling_a_forward_declared_fn_stays_clean() {
     assert_eq!(
         unresolved_function_diags(&module).len(),
         0,
-        "`ctx.functions` is complete by the time traits_phase runs; got {:?}",
+        "every declared fn is in the call table by the time traits_phase runs; got {:?}",
         unresolved_function_diags(&module)
             .iter()
             .map(|d| &d.message)
@@ -1213,8 +1211,8 @@ fn genuinely_undeclared_callee_in_an_assoc_fn_body_still_warns() {
 }
 
 /// Control (j): an assoc-fn body calling a declared top-level `fn` is ALREADY
-/// clean — conformance runs after `phase_functions`, so `resolution_functions`
-/// is complete and the call RESOLVES rather than reaching the fallback.
+/// clean — conformance runs after `phase_fn_signatures`, so `resolution_functions`
+/// holds every declared fn and the call RESOLVES rather than reaching the fallback.
 ///
 /// This is the falsifiable half of route (4)'s fix: it populates only the
 /// STRUCTURE half of `declared_callable_names` at the assoc-fn sites, and this

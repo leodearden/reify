@@ -74,10 +74,11 @@ structure SmokeDirect {
         1000mm,
         100mm,
         100mm,
-        [PointLoad(point: "tip", force: 1000.0N)],
-        [FixedSupport(target: "root")],
+        [PointLoad(point: vertex(body, "tip"), force: 1000.0N)],
+        [FixedSupport(target: face(body, "root"))],
         ElasticOptions()
     )
+    let body = box(1000mm, 100mm, 100mm)
 }
 "#;
     let module = compile_source_with_stdlib(source);
@@ -133,10 +134,11 @@ structure BucklingPreserve {
         1000mm,
         100mm,
         100mm,
-        [PointLoad(point: "tip", force: 1000.0N)],
-        [FixedSupport(target: "root")],
+        [PointLoad(point: vertex(body, "tip"), force: 1000.0N)],
+        [FixedSupport(target: face(body, "root"))],
         BucklingOptions()
     )
+    let body = box(1000mm, 100mm, 100mm)
 }
 "#;
     let module = compile_source_with_stdlib(source);
@@ -173,10 +175,11 @@ structure NonConforming {
         1000mm,
         100mm,
         100mm,
-        [PointLoad(point: "tip", force: 1000.0N)],
-        [FixedSupport(target: "root")],
+        [PointLoad(point: vertex(body, "tip"), force: 1000.0N)],
+        [FixedSupport(target: face(body, "root"))],
         ElasticOptions()
     )
+    let body = box(1000mm, 100mm, 100mm)
 }
 "#;
     let module = compile_source_with_stdlib(source);
@@ -231,10 +234,11 @@ structure StructRefNonConforming {
         1000mm,
         100mm,
         100mm,
-        [PointLoad(point: "tip", force: 1000.0N)],
-        [FixedSupport(target: "root")],
+        [PointLoad(point: vertex(body, "tip"), force: 1000.0N)],
+        [FixedSupport(target: face(body, "root"))],
         ElasticOptions()
     )
+    let body = box(1000mm, 100mm, 100mm)
 }
 "#;
     let module = compile_source_with_stdlib(source);
@@ -303,10 +307,11 @@ structure DirectConformer {
         1000mm,
         100mm,
         100mm,
-        [PointLoad(point: "tip", force: 1000.0N)],
-        [FixedSupport(target: "root")],
+        [PointLoad(point: vertex(body, "tip"), force: 1000.0N)],
+        [FixedSupport(target: face(body, "root"))],
         ElasticOptions()
     )
+    let body = box(1000mm, 100mm, 100mm)
 }
 "#;
     let module = compile_source_with_stdlib(source);
