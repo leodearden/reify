@@ -938,7 +938,11 @@ ts_run_stub_cases() {
     # the suite's. It holds no suite case (ts_unset_cases_except), so a runner that
     # ignored <case...> finds nothing to run.
     # Stubs: ts_case_passes (0), ts_case_fails (1), ts_case_reaches_no_verdict
-    # ($TS_INFRA_RC), ts_case_must_not_run (creates <dir>/must-not-run).
+    # ($TS_INFRA_RC), ts_case_must_not_run (creates <dir>/must-not-run),
+    # ts_case_moves_a_build_input (touches $TS_DIR/grammar.js, returns 0),
+    # ts_case_restores_a_moved_build_input (moves $TS_DIR/grammar.js aside and
+    # registers the move back as cleanup, returns 0). The last two act on
+    # $TS_DIR, so a caller redirects TS_DIR to a temp copy.
     local stub_dir="$1"
     shift
     (
@@ -947,6 +951,11 @@ ts_run_stub_cases() {
         ts_case_fails() { return 1; }
         ts_case_reaches_no_verdict() { return "$TS_INFRA_RC"; }
         ts_case_must_not_run() { : >"$stub_dir/must-not-run"; }
+        ts_case_moves_a_build_input() { touch "$TS_DIR/grammar.js"; }
+        ts_case_restores_a_moved_build_input() {
+            mv "$TS_DIR/grammar.js" "$stub_dir/grammar.js.moved"
+            CLEANUP_ACTIONS+=("mv -f '$stub_dir/grammar.js.moved' '$TS_DIR/grammar.js'")
+        }
         run_tests "$@"
     ) >"$stub_dir/run.log" 2>&1
 }
@@ -1258,6 +1267,52 @@ test_runner_lets_a_recorded_fail_outrank_infrastructure() {
     if [ "$rc" -ne 0 ]; then
         echo ""
         echo "  ASSERTION FAILED: a run of passing cases must exit 0, got $rc"
+        ts_print_captured "run_tests output" "$dir/run.log"
+        return 1
+    fi
+}
+
+test_runner_fails_a_case_that_moves_a_lane_build_input() {
+    # A case that moves the mtime of a tree-sitter-reify build-script input reruns
+    # that crate's build script, and rebuilds its dependents, in the lane's next
+    # build (#10144): the runner FAILs it by name, whatever its own verdict was. The
+    # guard reads after the case's cleanup, so a case that moves a file aside and
+    # puts it back passes. Driven on stub cases against a temp copy: TS_DIR is
+    # redirected inside the stub subshell, so the lane's own tree is never touched.
+    local dir ts rc=0
+    dir=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$dir'")
+    ts="$dir/tree-sitter-reify"
+    mkdir -p "$ts/src"
+    local f
+    for f in grammar.js src/scanner.c build.rs build_support.rs; do
+        printf 'placeholder\n' > "$ts/$f"
+        touch -d '2020-01-01 00:00:00' "$ts/$f"
+    done
+    TS_DIR="$ts" ts_run_stub_cases "$dir" \
+        ts_case_moves_a_build_input ts_case_restores_a_moved_build_input \
+        ts_case_passes || rc=$?
+    if [ "$rc" -ne 1 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: run_tests must exit 1 when a case moved a build input's mtime, got $rc"
+        ts_print_captured "run_tests output" "$dir/run.log"
+        return 1
+    fi
+    if ! grep -qE 'Results: .*2 passed.*1 failed' "$dir/run.log"; then
+        echo ""
+        echo "  ASSERTION FAILED: expected exactly the mover to FAIL (Results: 2 passed, 1 failed)"
+        ts_print_captured "run_tests output" "$dir/run.log"
+        return 1
+    fi
+    if ! grep 'ts_case_moves_a_build_input' "$dir/run.log" | grep -q 'moved the mtime'; then
+        echo ""
+        echo "  ASSERTION FAILED: the guard's diagnostic must name the case that moved a build input"
+        ts_print_captured "run_tests output" "$dir/run.log"
+        return 1
+    fi
+    if ! grep -qF "$ts/grammar.js" "$dir/run.log"; then
+        echo ""
+        echo "  ASSERTION FAILED: the guard's diagnostic must name the file whose mtime moved: $ts/grammar.js"
         ts_print_captured "run_tests output" "$dir/run.log"
         return 1
     fi
@@ -4374,4 +4429,4 @@ test_masked_path_dir_helper_allocates_no_temp_of_its_own() {
 }
 
 # --- Main ---
-run_tests
+run_tests "$@"
