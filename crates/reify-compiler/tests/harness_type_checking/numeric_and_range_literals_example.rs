@@ -15,8 +15,8 @@
 use reify_compiler::{compile_with_stdlib, parse_with_stdlib};
 use reify_core::{ModulePath, Severity};
 
-/// Path to the integration example, resolved at compile time via
-/// `CARGO_MANIFEST_DIR` so it works in any worktree.
+/// Path to the integration example under the running checkout's workspace
+/// root, so it works in any worktree.
 fn example_path() -> std::path::PathBuf {
     reify_test_support::examples_corpus::examples_dir().join("numeric_and_range_literals.ri")
 }

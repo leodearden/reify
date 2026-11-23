@@ -17,7 +17,7 @@ use reify_core::{SnapshotId, ValueCellId};
 use reify_ir::{Satisfaction, SnapshotProvenance, Value};
 use reify_test_support::{kg, make_simple_engine, mm, parse_and_compile_with_stdlib, scalar_si};
 
-/// Absolute path to the example file, resolved at compile time from the crate root.
+/// Absolute path to the example file.
 fn example_path() -> std::path::PathBuf {
     reify_test_support::examples_corpus::examples_dir().join("integration_full_v01.ri")
 }

@@ -9,7 +9,7 @@ use reify_core::{ModulePath, Severity};
 use reify_ir::Satisfaction;
 use reify_test_support::parse_and_compile_with_stdlib;
 
-/// Absolute path to the example file, resolved at compile time from the crate root.
+/// Absolute path to the example file.
 fn example_path() -> std::path::PathBuf {
     reify_test_support::examples_corpus::examples_dir().join("m10_geometric_types.ri")
 }

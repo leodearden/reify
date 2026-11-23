@@ -23,7 +23,7 @@ use reify_core::{Diagnostic, DimensionVector, ModulePath, Severity, ValueCellId}
 use reify_ir::{ExportFormat, Satisfaction, Value};
 use reify_test_support::MockGeometryKernel;
 
-/// Absolute path to the example file, resolved at compile time from the crate root.
+/// Absolute path to the example file.
 fn example_path() -> std::path::PathBuf {
     reify_test_support::examples_corpus::examples_dir().join("integration_corner_cases.ri")
 }

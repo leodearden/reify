@@ -24,7 +24,7 @@ use reify_test_support::{
     collect_errors, compile_source_with_stdlib, errors_only, parse_and_compile_with_stdlib,
 };
 
-/// Absolute path to the fixture, resolved at compile time from the crate root.
+/// Absolute path to the fixture.
 fn example_path() -> std::path::PathBuf {
     reify_test_support::examples_corpus::examples_dir().join("fields/compose.ri")
 }

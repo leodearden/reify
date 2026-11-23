@@ -17,7 +17,7 @@
 use reify_core::{DimensionVector, Severity, ValueCellId};
 use reify_test_support::{collect_errors, parse_and_compile_with_stdlib};
 
-/// Absolute path to the example, resolved at compile time from the crate root.
+/// Absolute path to the example.
 fn example_path() -> std::path::PathBuf {
     reify_test_support::examples_corpus::examples_dir().join("option_map_or.ri")
 }

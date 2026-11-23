@@ -21,10 +21,7 @@
 use reify_core::Severity;
 use reify_test_support::{compile_source_with_stdlib, make_engine_with_mock_kernel, mesh_aabb};
 
-/// Path to the committed example, relative to this crate's manifest.
-///
-/// The crate lives at `<root>/crates/reify-eval`; the examples directory is
-/// two levels up.  The path is evaluated at compile time via `env!`.
+/// Absolute path to the committed example under the workspace `examples/` dir.
 fn example_src() -> std::path::PathBuf {
     reify_test_support::examples_corpus::examples_dir().join("sub_placement_assembly.ri")
 }

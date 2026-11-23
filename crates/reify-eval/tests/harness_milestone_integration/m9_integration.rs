@@ -16,7 +16,7 @@ use reify_core::{ModulePath, Severity, ValueCellId};
 use reify_ir::{Satisfaction, Value};
 use reify_test_support::{check_source, eval_source, make_simple_engine, parse_and_compile};
 
-/// Absolute path to the integration example file, resolved at compile time from crate root.
+/// Absolute path to the integration example file.
 fn example_path() -> std::path::PathBuf {
     reify_test_support::examples_corpus::examples_dir().join("m9_integration.ri")
 }

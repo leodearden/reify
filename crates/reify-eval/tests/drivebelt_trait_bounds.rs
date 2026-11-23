@@ -17,7 +17,7 @@ use reify_test_support::{
     assert_no_eval_errors, make_simple_engine, parse_and_compile_with_stdlib,
 };
 
-/// Absolute path to the example file, resolved at compile time from the crate root.
+/// Absolute path to the example file.
 fn example_path() -> std::path::PathBuf {
     reify_test_support::examples_corpus::examples_dir().join("drivebelt_trait_bounds.ri")
 }

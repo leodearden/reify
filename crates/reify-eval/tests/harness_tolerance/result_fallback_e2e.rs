@@ -20,7 +20,7 @@ use reify_core::Severity;
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{cell_value, collect_errors, mm, parse_and_compile_with_stdlib};
 
-/// Absolute path to the example, resolved at compile time from the crate root.
+/// Absolute path to the example.
 fn example_path() -> std::path::PathBuf {
     reify_test_support::examples_corpus::examples_dir().join("m6_result_fallback.ri")
 }

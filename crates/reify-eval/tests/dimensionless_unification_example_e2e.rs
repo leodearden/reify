@@ -25,7 +25,7 @@ use reify_core::{DimensionVector, Severity, Type, ValueCellId};
 use reify_ir::Value;
 use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
 
-/// Compile-time path to the example fixture, resolved from the crate root.
+/// Absolute path to the example fixture.
 fn example_path() -> std::path::PathBuf {
     reify_test_support::examples_corpus::examples_dir().join("dimensionless_unification.ri")
 }

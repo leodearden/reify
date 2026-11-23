@@ -23,7 +23,7 @@ use reify_core::Severity;
 use reify_ir::Satisfaction;
 use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
 
-/// Absolute path to the fixture, resolved at compile time from the crate root.
+/// Absolute path to the fixture.
 fn fixture_path() -> std::path::PathBuf {
     reify_test_support::examples_corpus::examples_dir()
         .join("fields/pointwise_field_combinators.ri")

@@ -17,7 +17,7 @@ use reify_core::{DiagnosticCode, DimensionVector, ModulePath, Severity, ValueCel
 use reify_ir::{CompiledExprKind, ExportFormat, Value};
 use reify_test_support::{make_simple_engine, members_of, parse_and_compile_with_stdlib};
 
-// ── File paths (resolved at compile time from this crate's root) ─────────────
+// ── File paths (under the workspace examples/ dir) ───────────────────────────
 
 fn path_materials() -> std::path::PathBuf {
     reify_test_support::examples_corpus::examples_dir().join("m8_materials.ri")

@@ -10,9 +10,7 @@
 //!   4. `BoltedPanel.sheet_thickness` carries a
 //!      `SolverHint { kind: PreferStock, collection: "standard_sheet_thicknesses" }`.
 
-/// Absolute path to the example file, resolved at compile time from this
-/// crate's manifest directory (two levels up to workspace root, then into
-/// `examples/`).  Mirrors the pattern in
+/// Absolute path to the example file.  Mirrors the pattern in
 /// `crates/reify-eval/tests/m11_field_calculus.rs`.
 fn example_path() -> std::path::PathBuf {
     reify_test_support::examples_corpus::examples_dir().join("m11_annotations.ri")

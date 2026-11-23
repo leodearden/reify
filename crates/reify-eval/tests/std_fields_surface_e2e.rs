@@ -32,7 +32,7 @@ use reify_core::{DiagnosticCode, Severity, ValueCellId};
 use reify_ir::{ExportFormat, Satisfaction, Value};
 use reify_test_support::parse_and_compile_with_stdlib;
 
-/// Absolute path to the integration fixture, resolved at compile time.
+/// Absolute path to the integration fixture.
 fn example_path() -> std::path::PathBuf {
     reify_test_support::examples_corpus::examples_dir().join("fields/std_fields_surface.ri")
 }

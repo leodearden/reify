@@ -8,7 +8,7 @@ use reify_core::{ModulePath, ValueCellId};
 use reify_ir::Satisfaction;
 use reify_test_support::{check_source, make_simple_engine, parse_and_compile};
 
-/// Absolute path to the example file, resolved at compile time from the crate root.
+/// Absolute path to the example file.
 fn example_path() -> std::path::PathBuf {
     reify_test_support::examples_corpus::examples_dir().join("m9_constraint_def.ri")
 }
