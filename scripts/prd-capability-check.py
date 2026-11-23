@@ -79,10 +79,8 @@ built are both REFUSED, not warned about: every probe set needing reify exits
 warning.  A `reify` on PATH is never used: its source commit is unknown.  An
 mtime never decides.
 TREE_SITTER_BIN, when set, is the tree-sitter CLI a grammar probe parses with;
-otherwise "tree-sitter" on PATH.  It decides only the parse:
-scripts/tree-sitter-generate.sh, which ensure_grammar_current() runs before
-any grammar probe, always uses the "tree-sitter" on PATH, and fails without one
-even when src/ is already current.  ProbeContext.from_environment() is the one
+otherwise "tree-sitter" on PATH.  What it does not decide is stated at
+ProbeContext.tree_sitter_bin.  ProbeContext.from_environment() is the one
 place all of this is read.
 
 Schemas: --print-schema prints published_schemas() — the JSON schemas of the
@@ -358,12 +356,15 @@ class ProbeContext:
     """Everything a probe run reads from outside the probe, resolved once.
 
     repo_root roots every relative fixture, the grammar directory and the
-    grammar cache key; reify_bin and tree_sitter_bin are the binaries the argv
-    names; cache_home_override is the operator's REIFY_TS_CACHE_HOME, or None;
+    grammar cache key; reify_bin is the reify binary the argv names;
+    tree_sitter_bin is the CLI a grammar probe's argv names, and decides nothing
+    else: grammar_generator resolves its own CLI, and needs none when src/ is
+    already current (tests/infra/test_tree_sitter_generate_without_cli.py);
+    cache_home_override is the operator's REIFY_TS_CACHE_HOME, or None;
     substrate_timeout_s bounds grammar_substrate_usable()'s one probe;
     grammar_generator is the script that brings <repo_root>/tree-sitter-reify/src
     up to date with grammar.js before a grammar probe, or None to probe src/ as
-    found; it generates with the "tree-sitter" on PATH, never tree_sitter_bin.
+    found.
     Exactly one of reify_bin and reify_bin_refusal is set: a refusal is data,
     so a mode that never runs reify still works, and require_reify_bin() is
     where it is enforced.
