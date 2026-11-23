@@ -95,13 +95,24 @@ def parse_cache_settings(table: Mapping[str, object], path: str | Path) -> Cache
             raise CacheConfigError(f"host config {path}: {key} {value!r} is not a string")
         values[key] = value
     store_url = values.get("store_url")
-    if store_url is not None:
-        parts = urllib.parse.urlsplit(store_url)
-        if parts.scheme != "http" or not parts.hostname:
-            raise CacheConfigError(f"host config {path}: store_url {store_url!r} is not an http:// URL")
+    problem = None if store_url is None else store_url_problem(store_url)
+    if problem:
+        raise CacheConfigError(f"host config {path}: store_url {store_url!r} {problem}")
     if "fallback_dir" in values:
         values["fallback_dir"] = os.path.expanduser(values["fallback_dir"])
     return CacheSettings(**values)
+
+
+def store_url_problem(store_url: str) -> str:
+    """Why store_url cannot name the store, or "" when it can."""
+    parts = urllib.parse.urlsplit(store_url)
+    if parts.scheme != "http" or not parts.hostname:
+        return "is not an http:// URL"
+    try:
+        parts.hostname.encode("idna")
+    except UnicodeError:
+        return "names a host that is not a valid DNS name"
+    return ""
 
 
 def is_writable_dir(directory: str) -> bool:
@@ -260,7 +271,7 @@ def probe_store(
         connection.request("GET", parts.path.rstrip("/") + "/.sccache_check", headers=basic_auth(settings))
         response = connection.getresponse()
         response.read()
-    except (OSError, http.client.HTTPException):
+    except (OSError, UnicodeError, http.client.HTTPException):
         return False
     finally:
         connection.close()
@@ -316,11 +327,14 @@ class Relay:
 
     One thread owns every socket. cut() resets every open connection and from then
     on resets each new one at once, keeping the port so nothing else can take it;
-    close() releases it.
+    close() releases it. The store is resolved once, at construction, which raises
+    OSError or UnicodeError when it cannot be. If the loop fails, its listener
+    closes (new connections are refused) and cut() and close() still return.
     """
 
     def __init__(self, store_host: str, store_port: int):
-        self._target = (store_host, store_port)
+        family, _, _, _, address = socket.getaddrinfo(store_host, store_port, type=socket.SOCK_STREAM)[0]
+        self._family, self._target = family, address
         self._listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._listener.bind(("127.0.0.1", 0))
         self.port = self._listener.getsockname()[1]
@@ -328,6 +342,7 @@ class Relay:
         self._lock = threading.Lock()
         self._requests: list[tuple[str, threading.Event]] = []
         self._is_cut = False
+        self._ended = False
         self._thread: threading.Thread | None = None
 
     @property
@@ -363,15 +378,31 @@ class Relay:
             return
         done = threading.Event()
         with self._lock:
+            if self._ended:
+                return
             self._requests.append((command, done))
-        self._wake_writer.send(b"\0")
+        with contextlib.suppress(OSError):
+            self._wake_writer.send(b"\0")
         done.wait()
 
     def _loop(self) -> None:
-        selector = selectors.DefaultSelector()
+        streams: dict[socket.socket, _Stream] = {}
+        failed = False
+        try:
+            with selectors.DefaultSelector() as selector:
+                self._select_until_closed(selector, streams)
+        except Exception:
+            failed = True
+        finally:
+            for stream in list(streams.values()):
+                self._drop(streams, stream)
+            self._end(failed)
+
+    def _select_until_closed(
+        self, selector: selectors.BaseSelector, streams: dict[socket.socket, _Stream]
+    ) -> None:
         selector.register(self._listener, selectors.EVENT_READ)
         selector.register(self._wake_reader, selectors.EVENT_READ)
-        streams: dict[socket.socket, _Stream] = {}
         registered: dict[socket.socket, int] = {}
         running = True
         while running:
@@ -383,7 +414,16 @@ class Relay:
                 elif key.fileobj in streams:
                     self._pump(streams, streams[key.fileobj], events)
             self._reregister(selector, streams, registered)
-        selector.close()
+
+    def _end(self, failed: bool) -> None:
+        """Refuse new connections first when the loop failed, then release every waiting request."""
+        if failed:
+            self._listener.close()
+        with self._lock:
+            self._ended = True
+            pending, self._requests = self._requests, []
+        for _, done in pending:
+            done.set()
 
     def _serve_requests(self, streams: dict[socket.socket, _Stream]) -> bool:
         self._wake_reader.recv(4096)
@@ -401,15 +441,22 @@ class Relay:
     def _accept(self, streams: dict[socket.socket, _Stream]) -> None:
         try:
             client, _ = self._listener.accept()
-        except (BlockingIOError, InterruptedError):
+        except OSError:
             return
         if self._is_cut:
             reset(client)
             return
-        client.setblocking(False)
-        upstream = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        upstream.setblocking(False)
-        upstream.connect_ex(self._target)
+        upstream = None
+        try:
+            client.setblocking(False)
+            upstream = socket.socket(self._family, socket.SOCK_STREAM)
+            upstream.setblocking(False)
+            upstream.connect_ex(self._target)
+        except OSError:
+            if upstream is not None:
+                upstream.close()
+            reset(client)
+            return
         near, far = _Stream(client), _Stream(upstream, connecting=True)
         near.peer, far.peer = far, near
         streams[client], streams[upstream] = near, far
@@ -788,6 +835,15 @@ class CacheSession:
         return completed.stdout
 
 
+def open_relay(settings: CacheSettings) -> Relay | None:
+    """The relay to store_url's host, or None when that host does not resolve."""
+    store = urllib.parse.urlsplit(settings.store_url)
+    try:
+        return Relay(store.hostname, store.port or 80)
+    except (OSError, UnicodeError):
+        return None
+
+
 def open_session(
     policy: Policy,
     settings: CacheSettings,
@@ -812,9 +868,10 @@ def open_session(
     backend, reason = choose_backend(settings, probe)
     attempts, relay, process = 0, None, None
     try:
-        if backend is Backend.SHARED:
-            store = urllib.parse.urlsplit(settings.store_url)
-            relay = Relay(store.hostname, store.port or 80)
+        relay = open_relay(settings) if backend is Backend.SHARED else None
+        if backend is Backend.SHARED and relay is None:
+            backend, reason = Backend.LOCAL_FALLBACK, Reason.STORE_UNREACHABLE
+        if relay is not None:
             relay.start()
             shared_env = server_env(env, files, backend, settings, fallback_dir, relay)
             failure = StartFailure.NONE
