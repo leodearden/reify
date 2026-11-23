@@ -11,7 +11,9 @@ run under test does. The role and release-skip knobs change the plan.
 REIFY_INFRA_SUITE_ACTIVE drops the infra pool. An inherited REIFY_VERIFY_RUN_ID
 marks the run nested, so it records nothing. The ledger, lane, timing,
 event-channel and /proc paths point it at the outer run's files. A new ledger
-knob belongs in AMBIENT_VERIFY_ENV, and every suite then scrubs it.
+knob belongs in AMBIENT_VERIFY_ENV, and every suite then scrubs it. The
+canonical-build-path primitive's variables (scripts/canon_run.py) belong here
+too.
 """
 
 import os
@@ -28,6 +30,9 @@ AMBIENT_VERIFY_ENV = frozenset(
         "REIFY_VERIFY_LEDGER_DIR",
         "REIFY_VERIFY_LEDGER_LANE_DIR",
         "REIFY_VERIFY_LEDGER_PROC_ROOT",
+        "REIFY_CANON_ACTIVE",
+        "REIFY_CANON_ROOT",
+        "REIFY_CANON_HOST_CONFIG",
     }
 )
 

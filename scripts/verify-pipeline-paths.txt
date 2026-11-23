@@ -28,6 +28,13 @@
 #   - scripts/verify-ledger.py: invoked (not sourced) by verify.sh's executor
 #     at run-begin, cargo step boundaries and _verify_cleanup, so neither the
 #     source-line nor the emitted-gate auto-derivation covers it.
+#   - scripts/canon_run.py: the canonical-build-path primitive (task 10229).
+#     It decides at which path a build runs, and the PRD's design routes verify
+#     legs and their cargo through it. Invoked, not sourced: no auto-derivation
+#     sees it.
+#   - scripts/canon-bin/cargo: its PATH trampoline, by which that design reaches
+#     every cargo run inside a tree. A file row, because requires-full-gate
+#     matches whole lines and a scripts/canon-bin/ row would never match.
 #
 # NOTE: The sourced libs (occt-scope-lib.sh, release-scope-lib.sh,
 # affected-crates-lib.sh, lib_test_semaphore.sh, cpu-admit.sh) are NOT listed
@@ -314,3 +321,5 @@ scripts/gui-vitest-run.sh
 #   verify.sh plan line, so neither auto-derivation clause covers it and a
 #   JSON-only diff would otherwise take the merge-worker config fast path.
 gui/src/__tests__/reifyGrammarCorpus.expected-clean.json
+scripts/canon_run.py
+scripts/canon-bin/cargo
