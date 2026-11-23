@@ -289,6 +289,7 @@ def choose_backend(settings: CacheSettings, probe: Callable[[], bool]) -> tuple[
 
 RELAY_CHUNK = 65536
 RELAY_BUFFER_LIMIT = 4 * RELAY_CHUNK
+RELAY_ACCEPT_BACKOFF = 0.1
 
 
 def reset(connection: socket.socket) -> None:
@@ -330,6 +331,9 @@ class Relay:
     close() releases it. The store is resolved once, at construction, which raises
     OSError or UnicodeError when it cannot be. If the loop fails, its listener
     closes (new connections are refused) and cut() and close() still return.
+    When accept() fails for want of a resource (EMFILE, ENFILE), the listener
+    leaves the selector for RELAY_ACCEPT_BACKOFF, so the queued connection does
+    not wake the loop again at once; it is accepted once one is free.
     """
 
     def __init__(self, store_host: str, store_port: int):
@@ -404,15 +408,22 @@ class Relay:
         selector.register(self._listener, selectors.EVENT_READ)
         selector.register(self._wake_reader, selectors.EVENT_READ)
         registered: dict[socket.socket, int] = {}
+        resume_accepting_at: float | None = None
         running = True
         while running:
-            for key, events in selector.select():
+            timeout = None if resume_accepting_at is None else max(0.0, resume_accepting_at - time.monotonic())
+            for key, events in selector.select(timeout):
                 if key.fileobj is self._listener:
-                    self._accept(streams)
+                    if not self._accept(streams):
+                        selector.unregister(self._listener)
+                        resume_accepting_at = time.monotonic() + RELAY_ACCEPT_BACKOFF
                 elif key.fileobj is self._wake_reader:
                     running = self._serve_requests(streams)
                 elif key.fileobj in streams:
                     self._pump(streams, streams[key.fileobj], events)
+            if resume_accepting_at is not None and time.monotonic() >= resume_accepting_at:
+                selector.register(self._listener, selectors.EVENT_READ)
+                resume_accepting_at = None
             self._reregister(selector, streams, registered)
 
     def _end(self, failed: bool) -> None:
@@ -438,14 +449,17 @@ class Relay:
             done.set()
         return running
 
-    def _accept(self, streams: dict[socket.socket, _Stream]) -> None:
+    def _accept(self, streams: dict[socket.socket, _Stream]) -> bool:
+        """False when accept() itself failed, leaving the connection queued."""
         try:
             client, _ = self._listener.accept()
+        except BlockingIOError:
+            return True
         except OSError:
-            return
+            return False
         if self._is_cut:
             reset(client)
-            return
+            return True
         upstream = None
         try:
             client.setblocking(False)
@@ -456,10 +470,11 @@ class Relay:
             if upstream is not None:
                 upstream.close()
             reset(client)
-            return
+            return True
         near, far = _Stream(client), _Stream(upstream, connecting=True)
         near.peer, far.peer = far, near
         streams[client], streams[upstream] = near, far
+        return True
 
     def _pump(self, streams: dict[socket.socket, _Stream], stream: _Stream, events: int) -> None:
         try:

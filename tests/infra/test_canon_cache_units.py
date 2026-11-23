@@ -596,6 +596,12 @@ class RelayOutOfDescriptors(StoreCase):
     def test_a_loop_that_cannot_start_still_lets_cut_and_close_return_and_refuses(self):
         self.assertEqual(self.run_case("loop"), {"cut": True, "refused": True, "closed": True})
 
+    def test_a_client_that_cannot_be_accepted_does_not_spin_the_relay_and_is_served_later(self):
+        """Processor time, not wall time: the relay thread backs off instead of re-selecting a readable listener."""
+        verdict = self.run_case("backoff")
+        self.assertLess(verdict.pop("cpu_secs"), 0.25)
+        self.assertEqual(verdict, {"served": 200, "closed": True})
+
 
 class FakeClock:
     def __init__(self):

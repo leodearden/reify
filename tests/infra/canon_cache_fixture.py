@@ -412,6 +412,10 @@ def write_supervise_runner(directory):
 #           upstream; then, with the limit restored, a fresh GET through it
 #   loop    no descriptor left when the relay's loop starts; then cut, a connect
 #           to its port, and close
+#   backoff no descriptor left while a client waits to be accepted: the process
+#           time this process spends over the next second (a spinning relay
+#           thread spends about all of it), then, with the limit restored, that
+#           client's GET
 RELAY_FD_RUNNER = r"""
 import json
 import os
@@ -463,11 +467,13 @@ def guarded_socket():
     return client
 
 
-def exchange(client, port):
+def exchange(client, port=None):
     # The HTTP status through the relay; "reset" for a reset or an empty answer, "timeout" at the guard.
+    # With no port the client is already connected.
     received = b""
     try:
-        client.connect(("127.0.0.1", port))
+        if port is not None:
+            client.connect(("127.0.0.1", port))
         client.sendall(REQUEST)
         while chunk := client.recv(65536):
             received += chunk
@@ -509,6 +515,20 @@ elif case == "loop":
     was_refused = refused(relay.port)
     relay.close()
     verdict = {"cut": True, "refused": was_refused, "closed": True}
+elif case == "backoff":
+    relay.start()
+    wait_for_the_relay_selector()
+    client = guarded_socket()
+    limit_open_files(lowest_free_fd())
+    client.connect(("127.0.0.1", relay.port))
+    before = time.process_time()
+    time.sleep(1.0)
+    spent = time.process_time() - before
+    limit_open_files(soft)
+    status = exchange(client)
+    relay.cut()
+    relay.close()
+    verdict = {"cpu_secs": round(spent, 3), "served": status, "closed": True}
 else:
     sys.exit(f"unknown case {case!r}")
 print(json.dumps(verdict))
