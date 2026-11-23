@@ -14,6 +14,7 @@ supervision itself (C4-C6), are the sibling module canon_cache.py's business.
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import functools
 import importlib.util
 import json
@@ -23,6 +24,7 @@ import re
 import select
 import signal
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -49,6 +51,11 @@ REBUILD_FIX = "delete the build directory to rebuild it at the real path"
 TRAMPOLINE_MARKER = b"reify-canon-trampoline"
 MARKER_WINDOW = 1024
 RESTORE_POLL_MS = 5
+# Linux's PIDFD_GET_INFO (include/uapi/linux/pidfd.h, struct pidfd_info VER0, 6.15+).
+PIDFD_GET_INFO = 0xC040FF0B  # _IOWR(0xFF, 11, 64 bytes)
+PIDFD_INFO_EXIT = 1 << 3
+PIDFD_INFO_SIZE = 64
+PIDFD_EXIT_CODE_OFFSET = 60  # s32 wait status
 VALUE_TAKING_GLOBALS = frozenset({"--color", "--config", "-Z", "-C"})
 PASS_THROUGH = frozenset(
     {
@@ -860,6 +867,25 @@ def send_through(pidfd: int, signum: int) -> None:
         signal.pidfd_send_signal(pidfd, signum)
 
 
+def exited_returncode(pidfd: int) -> int | None:
+    """The returncode, in subprocess's terms, of the reaped process pidfd names.
+
+    None while it runs, or on a kernel that keeps no exit record (before Linux 6.15).
+    """
+    info = bytearray(PIDFD_INFO_SIZE)
+    struct.pack_into("Q", info, 0, PIDFD_INFO_EXIT)
+    try:
+        fcntl.ioctl(pidfd, PIDFD_GET_INFO, info)
+    except OSError:
+        return None
+    if not struct.unpack_from("Q", info, 0)[0] & PIDFD_INFO_EXIT:
+        return None
+    try:
+        return os.waitstatus_to_exitcode(struct.unpack_from("i", info, PIDFD_EXIT_CODE_OFFSET)[0])
+    except ValueError:
+        return None
+
+
 def ignore(numbers: frozenset[int]) -> None:
     for number in numbers:
         signal.signal(number, signal.SIG_IGN)
@@ -879,7 +905,8 @@ def run_in_namespace(
     and this process stands in for the caller, forwarding what is sent to it to command, whose
     pid bwrap writes to the info fd. bwrap writes that pid before its child sets up, so signals
     stay held until the child has restored them, and go through a pidfd, never a bare pid.
-    The pidfd closes only after the forwarder has given back the caller's handlers.
+    bwrap reports its child's death by signal N as exit 128+N, so this returns bwrap's
+    returncode, except -N where that pidfd's exit record agrees the child died of N.
     """
     info_read, info_write = os.pipe()
     os.set_inheritable(info_write, True)
@@ -901,7 +928,10 @@ def run_in_namespace(
         if pidfd is not None:
             after_forwarding.callback(os.close, pidfd)
             forwarder.deliver_to(functools.partial(send_through, pidfd))
-        return canon_cache.exit_status(bwrap.wait())
+        status = bwrap.wait()
+        if pidfd is not None and status > 128 and exited_returncode(pidfd) == 128 - status:
+            return 128 - status
+        return status
 
 
 def validated_canon_path(call: Call, host: HostConfig) -> str:
