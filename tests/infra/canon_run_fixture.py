@@ -141,7 +141,8 @@ def run_bound(tree, cwd, *args, env, runner_dir):
 # With options' signal_during_start, the argv callback sends this process
 # SIGTERM, so the signal arrives while run_in_namespace is starting bwrap. The
 # command writes its SigIgn line to `sigign`, touches `started`, then sleeps
-# options' command_secs.
+# options' command_secs; with options' trap_exit it traps SIGINT and then exits
+# 130 itself. The runner ends through exit_like, as canon_run.main does.
 #
 # The fake bwrap behaves as bwrap 0.9.0 does: it keeps the dispositions it was
 # started with, starts what follows its `--` (run_in_namespace's env layer
@@ -161,10 +162,13 @@ import canon_run
 
 directory, options = sys.argv[2], json.loads(sys.argv[3])
 fake_bwrap = os.path.join(directory, "fake_bwrap.py")
-command = [
-    "/bin/sh", "-c", 'grep SigIgn /proc/self/status > "$0/sigign"; touch "$0/started"; exec sleep "$1"',
-    directory, options["command_secs"],
-]
+report = 'grep SigIgn /proc/self/status > "$0/sigign"; touch "$0/started"; '
+script = (
+    "trap 'kill $!; exit 130' INT; " + report + 'sleep "$1" & wait'
+    if options["trap_exit"]
+    else report + 'exec sleep "$1"'
+)
+command = ["/bin/sh", "-c", script, directory, options["command_secs"]]
 
 
 def bwrap_for(info_fd):
@@ -177,7 +181,9 @@ for number in canon_cache.SUPERVISED_SIGNALS:
     signal.signal(number, signal.default_int_handler if number == signal.SIGINT else signal.SIG_DFL)
 for name in options["ignore"]:
     signal.signal(signal.Signals[name], signal.SIG_IGN)
-sys.exit(canon_run.run_in_namespace(bwrap_for, command, {"PATH": "/usr/bin:/bin"}, canon_cache.SignalForwarder()))
+sys.exit(canon_cache.exit_like(
+    canon_run.run_in_namespace(bwrap_for, command, {"PATH": "/usr/bin:/bin"}, canon_cache.SignalForwarder())
+))
 """
 FAKE_BWRAP = r"""
 import json
@@ -203,7 +209,7 @@ sys.exit(128 - status if status < 0 else status)
 
 
 def start_namespace_parent(
-    directory, *, go=True, pass_fds=(), signal_during_start=False, command_secs="60", ignore=()
+    directory, *, go=True, pass_fds=(), signal_during_start=False, command_secs="60", ignore=(), trap_exit=False
 ):
     """The runner above as its own session's leader; `go` lets the fake bwrap start the command at once."""
     Path(directory, "fake_bwrap.py").write_text(FAKE_BWRAP)
@@ -215,6 +221,7 @@ def start_namespace_parent(
         "signal_during_start": signal_during_start,
         "command_secs": command_secs,
         "ignore": [signal.Signals(number).name for number in ignore],
+        "trap_exit": trap_exit,
     }
     return subprocess.Popen(
         [PYTHON, "-I", str(runner), str(REPO_ROOT / "scripts"), str(directory), json.dumps(options)],

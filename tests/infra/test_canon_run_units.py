@@ -1169,16 +1169,23 @@ class NamespaceParent(unittest.TestCase):
         self.assertEqual(parent.wait(), status)
 
     def test_sigterm_to_the_parent_alone_reaches_the_command(self):
-        self.assert_forwarded(signal.SIGTERM, 143)
+        self.assert_forwarded(signal.SIGTERM, -signal.SIGTERM)
 
     def test_sighup_to_the_parent_alone_reaches_the_command(self):
-        self.assert_forwarded(signal.SIGHUP, 129)
+        self.assert_forwarded(signal.SIGHUP, -signal.SIGHUP)
 
     def test_sigint_to_the_parent_alone_reaches_the_command(self):
-        self.assert_forwarded(signal.SIGINT, 130)
+        self.assert_forwarded(signal.SIGINT, -signal.SIGINT)
 
     def test_sigquit_to_the_parent_alone_reaches_the_command(self):
-        self.assert_forwarded(signal.SIGQUIT, 131)
+        self.assert_forwarded(signal.SIGQUIT, -signal.SIGQUIT)
+
+    def test_a_command_that_traps_the_signal_and_exits_130_leaves_the_parent_exiting_130(self):
+        """bwrap reports 130 either way; only the pidfd's exit record tells a death from an exit."""
+        parent = self.start(trap_exit=True)
+        self.wait_for("started", parent)
+        os.kill(parent.pid, signal.SIGINT)
+        self.assertEqual(parent.wait(), 130)
 
     def test_a_signal_before_the_command_pid_is_known_is_delivered_once_it_is(self):
         parent = self.start(go=False)
@@ -1188,11 +1195,11 @@ class NamespaceParent(unittest.TestCase):
             time.sleep(0.02)
         os.kill(parent.pid, signal.SIGTERM)
         Path(self.tmp, "go").touch()
-        self.assertEqual(parent.wait(), 143)
+        self.assertEqual(parent.wait(), -signal.SIGTERM)
 
     def test_a_signal_while_bwrap_is_being_started_reaches_the_command(self):
         parent = self.start(signal_during_start=True, command_secs="5")
-        self.assertEqual(parent.wait(), 143)
+        self.assertEqual(parent.wait(), -signal.SIGTERM)
 
     def test_a_descriptor_the_caller_passes_reaches_bwrap(self):
         read_end, write_end = os.pipe()
@@ -1203,7 +1210,7 @@ class NamespaceParent(unittest.TestCase):
         self.wait_for("started", parent)
         self.assertIn(write_end, json.loads(Path(self.tmp, "bwrap_fds.json").read_text()))
         os.kill(parent.pid, signal.SIGTERM)
-        self.assertEqual(parent.wait(), 143)
+        self.assertEqual(parent.wait(), -signal.SIGTERM)
 
     def test_a_signal_the_caller_ignores_stays_ignored_and_the_rest_are_restored(self):
         parent = self.start(ignore=(signal.SIGHUP,))
@@ -1211,7 +1218,68 @@ class NamespaceParent(unittest.TestCase):
         ignored = fx.ignored_signals(os.path.join(self.tmp, "sigign"))
         self.assertEqual(ignored & set(canon_cache.SUPERVISED_SIGNALS), {signal.SIGHUP})
         os.kill(parent.pid, signal.SIGTERM)
-        self.assertEqual(parent.wait(), 143)
+        self.assertEqual(parent.wait(), -signal.SIGTERM)
+
+
+def at_default_sigint():
+    """A child's preexec_fn: SIGINT at default, which a pool member may have inherited ignored."""
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+
+
+class ExitedReturncode(unittest.TestCase):
+    """canon_run.exited_returncode: the kernel's exit record for the process a pidfd names, in subprocess's terms."""
+
+    def setUp(self):
+        child = subprocess.Popen(["true"])
+        pidfd = os.pidfd_open(child.pid)
+        child.wait()
+        try:
+            if canon_run.exited_returncode(pidfd) is None:
+                self.skipTest("this kernel keeps no pidfd exit record: PIDFD_INFO_EXIT needs Linux 6.15")
+        finally:
+            os.close(pidfd)
+
+    def pidfd(self, pid):
+        pidfd = os.pidfd_open(pid)
+        self.addCleanup(os.close, pidfd)
+        return pidfd
+
+    def test_a_child_killed_by_sigint_gives_minus_sigint(self):
+        child = subprocess.Popen(["sleep", "30"], preexec_fn=at_default_sigint)
+        pidfd = self.pidfd(child.pid)
+        child.send_signal(signal.SIGINT)
+        child.wait()
+        self.assertEqual(canon_run.exited_returncode(pidfd), -signal.SIGINT)
+
+    def test_a_child_that_exited_130_gives_130(self):
+        child = subprocess.Popen(["/bin/sh", "-c", "exit 130"])
+        pidfd = self.pidfd(child.pid)
+        child.wait()
+        self.assertEqual(canon_run.exited_returncode(pidfd), 130)
+
+    def test_a_grandchild_its_own_parent_reaped_gives_how_it_died(self):
+        """The outer process -> bwrap -> re-run relation: the record outlives a reap by someone else.
+
+        sh starts `&` jobs with SIGINT ignored, so env gives the grandchild back its default first.
+        """
+        parent = subprocess.Popen(
+            ["/bin/sh", "-c", "/usr/bin/env --default-signal=INT sleep 30 & echo $!; wait $!"],
+            stdout=subprocess.PIPE, text=True,
+        )
+        self.addCleanup(parent.wait)
+        grandchild = int(parent.stdout.readline())
+        pidfd = self.pidfd(grandchild)
+        while Path(f"/proc/{grandchild}/comm").read_text() != "sleep\n":
+            time.sleep(0.01)
+        signal.pidfd_send_signal(pidfd, signal.SIGINT)
+        parent.communicate()
+        self.assertEqual(canon_run.exited_returncode(pidfd), -signal.SIGINT)
+
+    def test_a_running_process_gives_none(self):
+        child = subprocess.Popen(["sleep", "30"])
+        self.addCleanup(child.wait)
+        self.addCleanup(child.kill)
+        self.assertIsNone(canon_run.exited_returncode(self.pidfd(child.pid)))
 
 
 class ReadChildPid(unittest.TestCase):

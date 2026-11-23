@@ -222,10 +222,10 @@ class Teardown(HostCacheCase):
         self.assertEqual(cfx.wait_until_none_name(self.socket_prefix()), [])
 
     def test_sigterm_to_the_namespace_routes_started_pid_alone_ends_the_command_and_records(self):
-        self.assert_a_signal_to_the_outer_pid_alone_tears_down(signal.SIGTERM, 143)
+        self.assert_a_signal_to_the_outer_pid_alone_tears_down(signal.SIGTERM, -signal.SIGTERM)
 
     def test_sigint_to_the_namespace_routes_started_pid_alone_ends_the_command_and_records(self):
-        self.assert_a_signal_to_the_outer_pid_alone_tears_down(signal.SIGINT, 130)
+        self.assert_a_signal_to_the_outer_pid_alone_tears_down(signal.SIGINT, -signal.SIGINT)
 
     def assert_a_signal_to_the_outer_pid_alone_tears_down(self, signum, status):
         """PRD C3 (esc-10418-3): the outer process forwards to the re-run, the child pid bwrap's --info-fd names."""
@@ -246,6 +246,32 @@ class Teardown(HostCacheCase):
         os.kill(outer.pid, signum)
         _, stderr = outer.communicate()
         self.assertEqual(outer.returncode, status, stderr)
+        leftovers = sorted(path.name for path in Path(self.target(tree)).glob(".reify-sccache.*"))
+        self.assertEqual(leftovers, [], stderr)
+        self.assertEqual(len(cfx.read_journal(self.target(tree))), 1, stderr)
+        self.assertEqual(cfx.wait_until_none_name(self.socket_prefix()), [])
+
+    def test_a_bash_caller_of_the_namespace_route_does_not_continue_after_a_terminal_interrupt(self):
+        """The outer process dies of the SIGINT its re-run died of, so bash stops as in real-path mode."""
+        tree = self.make_tree("tree-bash")
+        started = os.path.join(self.tmp, "started-bash")
+        caller = subprocess.Popen(
+            [*AT_DEFAULT_SIGNALS, "/bin/bash", "-c", '"$@"; echo "CONTINUED rc=$?"', "bash",
+             fx.PYTHON, "-I", os.path.join(tree, "scripts", "canon_run.py"), "exec", "--",
+             "/bin/sh", "-c", 'touch "$0"; exec sleep 60', started],
+            cwd=tree, env=self.env_for(tree),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True,
+        )
+        self.addCleanup(lambda: caller.poll() is None and os.killpg(caller.pid, signal.SIGKILL))
+        while not os.path.exists(started):
+            if caller.poll() is not None:
+                self.fail(f"the caller ended (rc={caller.returncode}) before its command started:"
+                          f" {caller.stderr.read()}")
+            time.sleep(0.05)
+        os.killpg(caller.pid, signal.SIGINT)
+        stdout, stderr = caller.communicate()
+        self.assertEqual(caller.returncode, -signal.SIGINT, stderr)
+        self.assertNotIn("CONTINUED", stdout)
         leftovers = sorted(path.name for path in Path(self.target(tree)).glob(".reify-sccache.*"))
         self.assertEqual(leftovers, [], stderr)
         self.assertEqual(len(cfx.read_journal(self.target(tree))), 1, stderr)
