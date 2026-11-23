@@ -834,9 +834,9 @@ fn tots_refuses_a_length_joint_limit_max_force() {
 }
 
 /// (d) A profile joint no `JointLimit` covers is refused — `Failed` with the
-/// one Error naming `actuator_limits` and the joint, never solved against a
-/// substituted bound: with no `actuator_limits` field, with an empty list,
-/// and with a limit on a different joint only.
+/// one Error, coded `TotsJointUncovered`, never solved against a substituted
+/// bound: with no `actuator_limits` field, with an empty list, and with a
+/// limit on a different joint only.
 #[test]
 fn tots_refuses_a_joint_no_actuator_limit_covers() {
     for (what, shaper) in [
@@ -870,9 +870,8 @@ fn tots_refuses_a_joint_no_actuator_limit_covers() {
         };
         assert_eq!(error.severity, Severity::Error, "{what}");
         assert_eq!(
-            error.message,
-            "input_shape: actuator_limits has no entry for profile joint 0; a TOTS shaper \
-             solves only the joints an actuator limit bounds",
+            error.code,
+            Some(DiagnosticCode::TotsJointUncovered),
             "{what}"
         );
     }
