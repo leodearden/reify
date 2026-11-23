@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::marker::PhantomData;
 use std::sync::Arc;
 
 use reify_core::{
@@ -170,10 +171,10 @@ impl Drop for LocalEnumShadowScope {
 }
 
 thread_local! {
-    /// Alias names currently being re-resolved by the DEFERRED use-site arm of
-    /// [`resolve_type_expr_with_aliases_kinded`] (task 6259). Membership means
-    /// "this alias is already on the resolution stack" — re-entering it is a
-    /// cycle, and the arm bails out instead of recursing.
+    /// Alias registry entries currently being re-resolved by the DEFERRED
+    /// use-site arm of [`resolve_type_expr_with_aliases_kinded`] (task 6259).
+    /// Membership means "this entry is already on the resolution stack" —
+    /// re-entering it is a cycle, and the arm bails out instead of recursing.
     ///
     /// Why this is mandatory rather than defensive: `type C1 = C2` /
     /// `type C2 = C1` leaves BOTH registry entries with `resolved_type: None`
@@ -193,41 +194,84 @@ thread_local! {
     /// `circular type alias 'C1'` diagnostic instead of being replaced by a
     /// spurious depth-exceeded error.
     ///
+    /// The key is the ENTRY ([`AliasEntryId`]), not the alias name: one name
+    /// can denote different entries in an importer's registry and in a
+    /// `body_scope` registry, and a name key reports a false cycle when a
+    /// body reaches the defining module's own same-named alias (#10354).
+    /// Module-locally one registry holds one entry per name, so the two keys
+    /// agree there.
+    ///
     /// Termination needs no depth cap: each nested level consumes a distinct
-    /// name from the finite alias registry, and this set rejects repeats.
+    /// entry from the finite set reachable through the caller's registry and
+    /// the `body_scope` registries built once at seed time, and this set
+    /// rejects repeats.
     ///
     /// Type resolution is single-threaded per module and every entry is
     /// removed by its [`AliasDeferScope`] guard's `Drop`.
-    static ALIAS_DEFER_IN_PROGRESS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    static ALIAS_DEFER_IN_PROGRESS: RefCell<HashSet<AliasEntryId>> = RefCell::new(HashSet::new());
 }
 
-/// RAII guard marking one alias name as in-progress in
+/// RAII guard marking one alias entry as in-progress in
 /// [`ALIAS_DEFER_IN_PROGRESS`] for its lifetime (task 6259).
 ///
-/// [`AliasDeferScope::new`] returns `None` when `name` is ALREADY in progress —
-/// i.e. the deferred arm has looped back onto an alias it is still resolving.
-/// Callers must treat `None` as "cycle: do not recurse" and fall through to
-/// their existing unresolved handling, which preserves the pre-existing
-/// `circular type alias` + `unresolved type` output byte-for-byte.
-struct AliasDeferScope {
-    name: String,
+/// [`AliasDeferScope::new`] returns `None` when the entry is ALREADY in
+/// progress — i.e. the deferred arm has looped back onto an alias it is still
+/// resolving. Callers must treat `None` as "cycle: do not recurse" and fall
+/// through to their existing unresolved handling, which preserves the
+/// pre-existing `circular type alias` + `unresolved type` output byte-for-byte.
+/// A guard must never exist for an insert it did not make, because its `Drop`
+/// removes the marker that the outer guard still holds.
+///
+/// The guard borrows its entry for `'a`, so it cannot outlive the entry whose
+/// address it holds in the set.
+struct AliasDeferScope<'a> {
+    entry: AliasEntryId,
+    _entry: PhantomData<&'a TypeAliasEntry>,
 }
 
-impl AliasDeferScope {
-    fn new(name: &str) -> Option<Self> {
-        let inserted = ALIAS_DEFER_IN_PROGRESS.with(|s| s.borrow_mut().insert(name.to_string()));
-        inserted.then(|| AliasDeferScope {
-            name: name.to_string(),
+impl<'a> AliasDeferScope<'a> {
+    fn new(entry: &'a TypeAliasEntry) -> Option<Self> {
+        let entry = entry.identity();
+        if !ALIAS_DEFER_IN_PROGRESS.with(|s| s.borrow_mut().insert(entry)) {
+            return None;
+        }
+        Some(AliasDeferScope {
+            entry,
+            _entry: PhantomData,
         })
     }
 }
 
-impl Drop for AliasDeferScope {
+impl Drop for AliasDeferScope<'_> {
     fn drop(&mut self) {
         ALIAS_DEFER_IN_PROGRESS.with(|s| {
-            s.borrow_mut().remove(&self.name);
+            s.borrow_mut().remove(&self.entry);
         });
     }
+}
+
+/// A registry entry's identity for the alias cycle checks: its address.
+///
+/// Since #10297/#10354 an alias is identified by its scope and its name, and
+/// the entry's address is exactly that pair while the entry is borrowed:
+/// [`AliasDeferScope`] holds that borrow for its lifetime, and the hop walk's
+/// `visited` set lives inside one borrow of its registry. The address is
+/// never dereferenced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct AliasEntryId(*const TypeAliasEntry);
+
+/// Whether an alias's body is read where the alias is USED: a parametric alias
+/// is instantiated at each use site, and a non-parametric one the alias DFS
+/// left unresolved (typically because its body names an entity, task 6259)
+/// is finished there by the deferred arm of
+/// [`resolve_type_expr_with_aliases_kinded`]. Exactly these
+/// aliases carry their body, and the scope its alias names bind in, across a
+/// module boundary.
+fn body_read_at_use_site(
+    type_params: &[reify_ir::TypeParam],
+    resolved_type: Option<&Type>,
+) -> bool {
+    !type_params.is_empty() || resolved_type.is_none()
 }
 
 /// Internal type alias entry — stored in the registry during compilation.
@@ -259,13 +303,19 @@ impl TypeAliasEntry {
     /// `found_in`, the registry the entry was looked up in.
     ///
     /// This is what keeps an importer's own alias from capturing a name in an
-    /// imported parametric body (task 10297). Entity names in the body still
-    /// resolve at the use site, through [`AliasBodyUseSite`].
+    /// imported body, parametric (task 10297) or entity-bodied (task 10354).
+    /// Entity names in the body still resolve at the use site; a parametric
+    /// body reaches them through [`AliasBodyUseSite`].
     pub(crate) fn body_registry<'a>(
         &'a self,
         found_in: &'a TypeAliasRegistry,
     ) -> &'a TypeAliasRegistry {
         self.body_scope.as_deref().unwrap_or(found_in)
+    }
+
+    /// This entry's identity for the alias cycle checks.
+    fn identity(&self) -> AliasEntryId {
+        AliasEntryId(std::ptr::from_ref(self))
     }
 
     /// Convert to the public `CompiledTypeAlias` representation, carrying the `type_expr`
@@ -315,15 +365,10 @@ impl TypeAliasEntry {
             name: cta.name.clone(),
             resolved_type: cta.resolved_type.clone(),
             type_params: cta.type_params.clone(),
-            // Skip the clone ONLY for an already-resolved non-parametric alias:
-            // it resolves via `resolved_type` and nothing reads its body. A
-            // parametric alias needs the body for `resolve_parameterized_alias`;
-            // an unresolved non-parametric one needs it for the deferred
-            // use-site arm (task 6259).
-            type_expr: if cta.type_params.is_empty() && cta.resolved_type.is_some() {
-                None
-            } else {
+            type_expr: if body_read_at_use_site(&cta.type_params, cta.resolved_type.as_ref()) {
                 cta.type_expr.clone()
+            } else {
+                None
             },
             body_scope: cta
                 .body_scope
@@ -425,12 +470,13 @@ impl TypeAliasRegistry {
     /// the user module's exported `type_aliases` only contains its own declarations —
     /// prelude aliases are visible for resolution but are not re-exported.
     ///
-    /// Every parametric alias is exported with its [`Self::defining_scope`], so
-    /// an importer instantiates its body against this module's bindings.
+    /// Every alias whose body is read at a use site ([`body_read_at_use_site`])
+    /// is exported with its [`Self::defining_scope`], so an importer resolves
+    /// its body's alias names against this module's bindings.
     pub(crate) fn into_compiled(self) -> Vec<CompiledTypeAlias> {
         let mut scopes: HashMap<String, Vec<CompiledTypeAlias>> = self
             .iter()
-            .filter(|e| !e.type_params.is_empty())
+            .filter(|e| body_read_at_use_site(&e.type_params, e.resolved_type.as_ref()))
             .map(|e| (e.name.clone(), self.defining_scope(e)))
             .collect();
         self.entries
@@ -2525,23 +2571,29 @@ pub(crate) fn resolve_type_expr_with_aliases_kinded(
     //     `fn k<Q: Dimension>(..)` report `Q`, a name the alias's declaration
     //     scope never had. Do not "restore" the caller's scope believing it
     //     usefully threads context through.
+    //
+    //   * The body's ALIAS names resolve in the entry's `body_registry`, the
+    //     scope its defining module captured on export, not in the caller's
+    //     registry (#10354). Otherwise an importer's own alias named like one
+    //     the body mentions, or like the entity it names, captures it. Its
+    //     ENTITY names still resolve here, at the use site. Pinned by
+    //     `tests/harness_result_annotation/user_module_alias_import_tests.rs`.
     if type_args.is_empty()
         && let Some(alias_entry) = alias_registry.lookup(name)
         && alias_entry.resolved_type.is_none()
         && alias_entry.type_params.is_empty()
-        // Clone the body to release the `&alias_registry` borrow before recursing.
-        && let Some(body) = alias_entry.type_expr.clone()
-        && let Some(_guard) = AliasDeferScope::new(name)
+        && let Some(body) = alias_entry.type_expr.as_ref()
+        && let Some(_guard) = AliasDeferScope::new(alias_entry)
     {
         let mut tmp_diags = Vec::new();
         // The alias's own declaration scope — a top-level decl has neither a
         // type nor a dimension parameter in scope (see the third bullet above).
         let no_params: HashSet<String> = HashSet::new();
         if let Some(ty) = resolve_type_expr_with_aliases_kinded(
-            &body,
+            body,
             &no_params,
             &no_params,
-            alias_registry,
+            alias_entry.body_registry(alias_registry),
             &mut tmp_diags,
             structure_names,
             trait_names,
@@ -2672,34 +2724,37 @@ pub(crate) fn resolve_type_expr_with_aliases_kinded(
 ///   cases at today's behaviour — which is also what the DIRECT spelling does
 ///   there, so parity still holds (pinned by the direct-baseline assertions in
 ///   `alias_to_entity_type_private_enum_namespaces`).
+/// * Each hop looks the next name up in the hopped entry's
+///   [`TypeAliasEntry::body_registry`], the scope that defined the alias it
+///   leaves, so an importer's own alias cannot capture a link of an imported
+///   chain (#10354).
 /// * Carries a `visited` set so `type C1 = C2` / `type C2 = C1` terminates
 ///   instead of looping. This is the SAME cycle hazard [`AliasDeferScope`]
 ///   guards for the deferred arm, in a second place — mandatory, not defensive:
 ///   a circular alias leaves BOTH entries in exactly the shape this walk
-///   follows. A local `HashSet` is used rather than the shared
-///   [`ALIAS_DEFER_IN_PROGRESS`] thread-local because this walk is a plain loop
-///   with no re-entrancy into the resolver, so it needs no ambient state and
-///   must not disturb an enclosing deferral in progress.
+///   follows. It is keyed on [`AliasEntryId`] rather than the name, for the
+///   same false-cycle reason as [`ALIAS_DEFER_IN_PROGRESS`]. A local `HashSet`
+///   is used rather than that shared thread-local because this walk is a plain
+///   loop with no re-entrancy into the resolver, so it needs no ambient state
+///   and must not disturb an enclosing deferral in progress.
 /// * Returns the TERMINAL name — the first body name that is not itself an
-///   unresolved non-parametric alias. That name may still be unknown to the
-///   caller's namespace, in which case the caller's existing unresolved
-///   handling runs unchanged.
+///   unresolved non-parametric alias. The caller resolves it against its own,
+///   use-site entity namespace. That name may still be unknown there, in which
+///   case the caller's existing unresolved handling runs unchanged.
 pub(crate) fn unresolved_alias_body_name(name: &str, reg: &TypeAliasRegistry) -> Option<String> {
-    let mut visited: HashSet<&str> = HashSet::new();
+    let mut visited: HashSet<AliasEntryId> = HashSet::new();
+    let mut scope = reg;
     let mut current = name;
     let mut hopped: Option<&str> = None;
 
-    loop {
-        if !visited.insert(current) {
+    while let Some(entry) = scope.lookup(current) {
+        if !visited.insert(entry.identity()) {
             // Cycle (`type C1 = C2` / `type C2 = C1`): the chain has no terminal
             // body name, so yield `None`. The caller then keeps its raw name and
             // runs its existing unresolved handling, which leaves the
             // definition-site `circular type alias` diagnostic as the only report.
             return None;
         }
-        let Some(entry) = reg.lookup(current) else {
-            break;
-        };
         if entry.resolved_type.is_some() || !entry.type_params.is_empty() {
             break;
         }
@@ -2718,6 +2773,7 @@ pub(crate) fn unresolved_alias_body_name(name: &str, reg: &TypeAliasRegistry) ->
         }
         hopped = Some(body_name.as_str());
         current = body_name.as_str();
+        scope = entry.body_registry(scope);
     }
 
     hopped.map(str::to_string)

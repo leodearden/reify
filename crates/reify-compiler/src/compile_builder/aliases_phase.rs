@@ -50,10 +50,11 @@
 //!
 //! A module's direct user imports arrive through this same `prelude_aliases`
 //! slice (`PreludeContext::extended`), so user-module → user-module import of
-//! pub aliases is live. A parametric body resolves its ALIAS names against
-//! the `body_scope` its defining module captured on export (#10297), so an
-//! importer's own alias cannot capture them, and its ENTITY names resolve at
-//! the use site.
+//! pub aliases is live. A parametric body (#10297), and the body of a
+//! non-parametric alias that names an entity (#10354), resolves its ALIAS
+//! names against the `body_scope` its defining module captured on export, so
+//! an importer's own alias cannot capture them, and its ENTITY names resolve
+//! at the use site.
 //!
 //! Prelude-vs-prelude alias collisions are bound by [`crate::name_env`] when
 //! the `PreludeContext` is built, so the `prelude_aliases` slice holds one
