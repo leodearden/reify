@@ -1080,7 +1080,7 @@ mod dimension_checked_readers {
 
     // ── positive floors: the correct spellings are unchanged ────────────────
 
-    /// Inline copy of `tests/prd-gate/fixtures/dcr_material_dimension_correct.ri`
+    /// Inline copy of `tests/prd-gate/fixtures/dcr_material_dimension_correct.ri` // pg-drift:allow — an inline copy; no compiled target reads the fixture
     /// (that fixture is not in verify.sh's `_RUST_COUPLED_RI_FIXTURES`).
     const MATERIAL_DIMENSION_CORRECT: &str = r#"
 module dcr_material_dimension_correct_inline

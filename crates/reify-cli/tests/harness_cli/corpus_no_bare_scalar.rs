@@ -23,7 +23,7 @@
 //! once γ adds `E_BARE_SCALAR`, but protects the δ→γ window as a regression
 //! guard.
 //!
-//! A second guard over the same walk plus `tests/prd-gate/fixtures/`,
+//! A second guard over the same walk plus two named prd-gate fixtures,
 //! `corpus_has_no_bare_fea_load_magnitude` (dimension-checked-readers γ2,
 //! #6941), finds every stdlib FEA load ctor call whose magnitude field
 //! (`PointLoad.force`, `PressureLoad.magnitude`, `TractionLoad.traction`,
@@ -309,9 +309,19 @@ fn spec_conformance_placement_probe_is_a_live_violator() {
 
 // ── γ2 (#6941): no bare FEA load magnitude ─────────────────────────────────
 
-/// The committed prd-gate fixtures: read by the load-magnitude guard on top of
-/// [`corpus_files`], because the deliberate bare before-images live there.
-const PRD_GATE_FIXTURES: &str = "tests/prd-gate/fixtures";
+/// The prd-gate fixtures the load-magnitude guard reads on top of
+/// [`corpus_files`]: the one holding the deliberate bare before-images, and its
+/// dimensioned solver twin.
+///
+/// Named leaf by leaf, never by walking `tests/prd-gate/fixtures/`. verify.sh's
+/// no-heavy-checks carve-out for that directory rests on "nothing globs it"
+/// (`tests/infra/test_verify_scope.sh`, PG-DRIFT-DIR), and both leaves are in
+/// verify.sh's `_RUST_COUPLED_RI_FIXTURES`. Every other fixture spelling a bare
+/// magnitude is a compile-time ctor-conformance Error since γ2.
+const PRD_GATE_LOAD_FIXTURES: [&str; 2] = [
+    "tests/prd-gate/fixtures/dcr_load_ctor_dimension_silent.ri",
+    "tests/prd-gate/fixtures/dcr_solver_load_dropped_dimensioned.ri",
+];
 
 /// Each stdlib FEA load ctor and its magnitude field, typed `Force`,
 /// `Pressure`, `Pressure` and `ForceDensity` in
@@ -543,7 +553,7 @@ fn numeric_literal_len(value: &str) -> Option<usize> {
 fn corpus_has_no_bare_fea_load_magnitude() {
     let root = workspace_root();
     let mut files = corpus_files(&root);
-    collect_files(&root.join(PRD_GATE_FIXTURES), "ri", &mut files);
+    files.extend(PRD_GATE_LOAD_FIXTURES.iter().map(|rel| root.join(rel)));
 
     let mut bare: Vec<String> = Vec::new();
     let mut deliberate_hits = [0usize; DELIBERATE_BARE_LOAD_MAGNITUDES.len()];
