@@ -258,6 +258,15 @@ across a subsystem boundary is retired. `Engine::prelude`, `prelude_functions`, 
   last-wins collects, enum `prelude ++ local` inversion) plus the intra-stdlib
   collision=Error escalation live in `stdlib-namespace.md` N0 — scope fence: ι/κ here
   do not absorb those sites.
+  *Amended 2026-11-23 (θ #5522):* each collision has one reporter.
+  `DefEnv::collision_warnings` reports every entry-vs-import collision, and every
+  import-vs-import one except for units, type aliases and constraint defs: the entry's
+  own compile binds its imports as its prelude and its seeds of those three kinds
+  already report them. A shadowed stdlib definition is the shadowing module's own
+  compile's to report. The one remaining double is the I5 merge's code-less template
+  warning, which κ deletes with the merge. Pinned by
+  `each_import_tier_collision_has_exactly_one_reporter`
+  (`crates/reify-eval/tests/harness_engine/def_env.rs`).
 - **D-7 (`pub import` = re-export edge).** In `compile_program`'s frontier walk, a pub
   import in module M extends M's exported surface with the target's pub defs,
   transitively through pub edges (cycles already impossible: DAG check). Non-pub
@@ -481,6 +490,22 @@ resolve #5387 relationship per its live status (§6 row 2).
    existing signature-based overload table (`merge_functions` shadowing rules). Exact
    merge of "first-wins across modules" with "signature match within module" decided
    in θ against the existing `eval_is_idempotent_for_prelude_functions` pins.
+   *Resolved 2026-11-23 (θ, task 5522):* **first-wins per signature; distinct
+   signatures coexist.** A function binds by `name_env::FunctionSignature`: its name
+   and parameter types. Parameter names and the return type take no part. Across the
+   program's scopes the FIRST definition of a signature in I6 order wins: the entry,
+   then the imports in declaration order, then the stdlib. Distinct signatures under
+   one name coexist as overloads. `DefEnv::function_table()` is the composed dispatch
+   table, the bound functions in precedence order, and `resolve_function(name,
+   param_types)` and `overloads(name)` read the same binding. A shadowed import-tier
+   signature draws the D-6 `DefinitionCollision` Warning like every other kind. For
+   an import-free program the table dispatches exactly as `merge_functions` does
+   (entry functions, then every prelude module's in load order, first match per
+   signature): `merge_functions`' extra entries are the shadowed duplicates that
+   first-match never reaches. That equivalence is pinned against the
+   `eval_is_idempotent_for_prelude_functions` source in
+   `crates/reify-eval/tests/harness_engine/def_env.rs`. θ leaves the engine's eval
+   table unchanged: moving dispatch onto `function_table()` is κ #5524's.
 5. **α's sweep breadth** — whether any non-examples `.ri` (prj/, dogfood worktree)
    carries the mirror pattern worth cleaning in the same task. Decide in α via grep.
    *Resolved 2026-07-28 (α, task 5515):* **no non-examples `.ri` needed cleaning.**

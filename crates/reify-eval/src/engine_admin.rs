@@ -5,8 +5,8 @@ use crate::demand::DemandRegistry;
 use crate::journal::EventJournal;
 use crate::snapshot::Snapshot;
 use crate::solver_posture::SolveStage;
-use crate::{Engine, EvaluationState, SolverPosture};
-use reify_compiler::{CompiledModule, EntityKind, ValueCellKind};
+use crate::{DefEnv, Engine, EvaluationState, SolverPosture};
+use reify_compiler::{CompiledModule, EntityKind, ValueCellKind, program::CompiledProgram};
 use reify_core::{Diagnostic, SnapshotId, VersionId};
 use reify_ir::{
     CompiledFunction, ConstraintChecker, ConstraintSolver, GeometryKernel, OptimizedImpl,
@@ -126,7 +126,7 @@ pub(crate) fn validate_param_override(
         // Debug-build divergence: fire when a compiler-admitted
         // `StructureInstance` fails the runtime trait-conformance check because
         // the per-Engine `StructureRegistry` has no meta for the value's
-        // `type_id`.  That gap is the "registry-population bug" signature
+        // `type_name`.  That gap is the "registry-population bug" signature
         // (compiler proved the bound, but the side-table lost the
         // `StructureMeta`).  Scoped to `TraitObject + meta-missing` to avoid
         // false panics on legitimate rejections: a StructureRef nominal
@@ -150,14 +150,14 @@ pub(crate) fn validate_param_override(
         #[cfg(debug_assertions)]
         if let reify_ir::Value::StructureInstance(data) = value
             && matches!(cell_type, reify_core::Type::TraitObject(_))
-            && registry.meta(data.type_id).is_none()
+            && registry.meta_for(data).is_none()
         {
             panic!(
                 "StructureInstance type mismatch: value type_name={} \
-                 type_id={:?} has no StructureMeta in registry \
+                 has no StructureMeta in registry \
                  (registry-population bug or stale cross-cycle override) — \
                  expected ty={:?}",
-                data.type_name, data.type_id, cell_type,
+                data.type_name, cell_type,
             );
         }
         return Err(ParamOverrideRejection::TypeKindMismatch);
@@ -275,6 +275,7 @@ impl Engine {
             cache: CacheStore::new(),
             prelude,
             prelude_functions,
+            loaded_program: None,
             structure_registry,
             param_overrides: std::collections::HashMap::new(),
             eval_state: None,
@@ -1753,6 +1754,27 @@ impl Engine {
     /// Returns the compiled stdlib prelude modules stored by this engine.
     pub fn prelude(&self) -> &[CompiledModule] {
         self.prelude
+    }
+
+    /// Install `program`, whose [`DefEnv`] [`Self::def_env`] then returns, and
+    /// return its definition-collision report for the caller to surface. No
+    /// eval lookup consults it yet (ι #5523 migrates them onto it), and eval
+    /// state is untouched.
+    // G-allow: resolution-unification §3.2 Engine::load; first production consumer is ι #5523
+    pub fn load(&mut self, program: impl Into<Arc<CompiledProgram>>) -> Vec<Diagnostic> {
+        let program = program.into();
+        let warnings = DefEnv::with_prelude(&program, self.prelude).collision_warnings();
+        self.loaded_program = Some(program);
+        warnings
+    }
+
+    /// The loaded program's definition environment over this engine's
+    /// prelude; `None` before a load.
+    // G-allow: resolution-unification §3.2 Engine::load; first production consumer is ι #5523
+    pub fn def_env(&self) -> Option<DefEnv<'_>> {
+        self.loaded_program
+            .as_deref()
+            .map(|program| DefEnv::with_prelude(program, self.prelude))
     }
 
     /// Set the maximum depth for recursive sub-component unfolding.
@@ -4966,7 +4988,7 @@ mod tests {
     // by step-2:
     //
     //  (a) debug build  — should_panic: an empty registry has no meta for the
-    //      value's type_id, which is the registry-population-bug signature;
+    //      value's type_name, which is the registry-population-bug signature;
     //      the debug invariant must diverge.
     //  (b) release build — no panic: the same inputs return
     //      Err(TypeKindMismatch) gracefully so the value still flows via the
@@ -4978,7 +5000,7 @@ mod tests {
     /// Debug-build invariant: `validate_param_override` must panic with a
     /// message containing "StructureInstance type mismatch" when a
     /// `Value::StructureInstance` is validated against a `Type::TraitObject`
-    /// cell and the registry has no meta for the value's `type_id`
+    /// cell and the registry has no meta for the value's `type_name`
     /// (registry-population bug).
     #[cfg(debug_assertions)]
     #[test]
@@ -4994,7 +5016,7 @@ mod tests {
         }));
         let ty = reify_core::Type::TraitObject("ElasticMaterial".to_string());
         let empty_registry = reify_ir::StructureRegistry::new();
-        // With an empty registry type_id=0 has no meta → registry-population
+        // With an empty registry the type_name has no meta → registry-population
         // bug → debug build must diverge with "StructureInstance type mismatch".
         let _ = super::validate_param_override(&v, &ty, &empty_registry);
     }
@@ -5021,6 +5043,38 @@ mod tests {
             "expected Err(TypeKindMismatch), got {:?}",
             result,
         );
+    }
+
+    /// The debug invariant keys on the value's `type_name`, so an uninterned
+    /// name diverges even when the placeholder id 0 is some other structure's.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "StructureInstance type mismatch")]
+    fn validate_param_override_debug_panics_when_type_name_is_not_interned_although_id_zero_is() {
+        use reify_ir::{
+            PersistentMap, StructureInstanceData, StructureMeta, StructureRegistry,
+            StructureTypeId, Value,
+        };
+        let mut registry = StructureRegistry::new();
+        let color = registry.intern(
+            "Color",
+            StructureMeta {
+                name: "Color".to_string(),
+                version: 1,
+                declared_trait_bounds: vec![],
+                source: None,
+                field_layout: vec![],
+            },
+        );
+        assert_eq!(color, StructureTypeId(0));
+        let v = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(0),
+            type_name: "RemovedStructure".to_string(),
+            version: 1,
+            fields: PersistentMap::new(),
+        }));
+        let ty = reify_core::Type::TraitObject("Probe".to_string());
+        let _ = super::validate_param_override(&v, &ty, &registry);
     }
 
     // ── Suggestion 1 — no-false-panic regression guards ──────────────────────

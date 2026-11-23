@@ -81,6 +81,10 @@ pub struct EnumDef {
     /// enum-specific type).  Lowered from [`reify_ast::TypeParamDecl`] via
     /// `convert_type_params` in `pre_pass.rs`.
     pub type_params: Vec<TypeParam>,
+    /// The declaration's `pub` marker. The resolution environment's import
+    /// surface reads it: a direct import exposes only its `pub` enums (PRD
+    /// resolution-unification D-5). Synthetic and builtin enums are `true`.
+    pub is_pub: bool,
 }
 
 /// A reference to a trait, optionally with type arguments.

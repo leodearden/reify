@@ -612,8 +612,6 @@ crates/reify-solver-elastic/src/sweep.rs :: crates/reify-eval/src/kernel_registr
 crates/reify-solver-elastic/src/sweep.rs :: mesher.rs:46
 crates/reify-solver-elastic/src/sweep.rs :: shell_boundary.rs:542
 crates/reify-solver-elastic/src/volume_refine.rs :: crates/reify-solver-elastic/src/mesher.rs:535
-crates/reify-stdlib/src/analysis.rs :: crates/reify-eval/src/dynamics_ops.rs:41
-crates/reify-stdlib/src/analysis.rs :: crates/reify-stdlib/src/dynamics/eval.rs:51
 crates/reify-stdlib/src/dynamics/eval.rs :: eval.rs:403
 crates/reify-stdlib/src/dynamics/eval.rs :: eval.rs:862
 crates/reify-stdlib/src/dynamics/eval.rs :: joints.rs:1018
@@ -665,7 +663,6 @@ crates/reify-stdlib/src/snapshot.rs :: joints.rs:172
 crates/reify-stdlib/src/snapshot.rs :: lib.rs:475
 crates/reify-stdlib/src/snapshot.rs :: snapshot.rs:726
 crates/reify-stdlib/src/sweep.rs :: snapshot.rs:597
-crates/reify-stdlib/src/tensegrity.rs :: engine_eval.rs:1789
 crates/reify-stdlib/src/trajectory/impulse_shaper.rs :: gcode_import.rs:35
 crates/reify-stdlib/src/trajectory/impulse_shaper.rs :: spline.rs:14
 crates/reify-stdlib/src/trajectory/tots.rs :: kinematic.ri:145

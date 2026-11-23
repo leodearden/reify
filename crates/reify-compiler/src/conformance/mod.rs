@@ -4736,6 +4736,7 @@ mod tests {
                 variants: vec![],
                 doc: None,
                 type_params: vec![],
+                is_pub: true,
             })
             .collect()
     }

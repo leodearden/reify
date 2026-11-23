@@ -12,7 +12,6 @@
 
 use std::fs;
 
-use reify_ast::{Declaration, ParsedModule};
 use reify_compiler::CompiledModule;
 use reify_compiler::cfg::CfgSet;
 use reify_compiler::module_dag::ModuleResolver;
@@ -28,8 +27,9 @@ enum Setup {
     SingleFileWithStdlib,
     /// A tempdir project: `main.ri` plus `(module name, source)` siblings,
     /// compiled through `program::compile_program_with_parsed_entry` (prelude
-    /// = stdlib ++ followed imports); production `Engine`. See
-    /// [`parse_project_entry`] for how the entry is parsed.
+    /// = stdlib ++ followed imports); production `Engine`. The entry is parsed
+    /// by plain `parse_with_stdlib`, as `reify check` parses it: an imported
+    /// enum's `E.V` resolves in the compile phase (resolution-unification D-9).
     Project(&'static [(&'static str, &'static str)]),
     /// `(dotted module path, source)` modules each compiled standalone and
     /// used, in this order, as BOTH the compile prelude and the `Engine`
@@ -223,7 +223,7 @@ fn compile_project(row: &str, entry: &str, imports: &[(&str, &str)]) -> Compiled
     for (name, import_source) in imports {
         fs::write(dir.join(format!("{name}.ri")), import_source).expect("write import");
     }
-    let parsed = parse_project_entry(entry, imports);
+    let parsed = reify_compiler::parse_with_stdlib(entry, ModulePath::single("main"));
     assert!(
         parsed.errors.is_empty(),
         "[{row}] entry parse errors: {:?}",
@@ -239,25 +239,6 @@ fn compile_project(row: &str, entry: &str, imports: &[(&str, &str)]) -> Compiled
         &MockConstraintChecker::new().with_default(Satisfaction::Indeterminate),
     )
     .into_entry()
-}
-
-/// Parse a project entry knowing the enum names of the stdlib AND of its
-/// imports. Production entry parsing (`parse_with_stdlib`) knows only the
-/// stdlib's, so an imported enum's `Pick.Left` would not parse as an enum
-/// access at all — a parser gap orthogonal to which definition binds, which is
-/// what these rows probe.
-fn parse_project_entry(source: &str, imports: &[(&str, &str)]) -> ParsedModule {
-    let mut enum_names: Vec<&'static str> = reify_compiler::stdlib_loader::load_stdlib_context()
-        .enum_names()
-        .collect();
-    for (name, import_source) in imports {
-        let parsed = reify_syntax::parse(import_source, ModulePath::single(*name));
-        enum_names.extend(parsed.declarations.iter().filter_map(|decl| match decl {
-            Declaration::Enum(e) => Some(&*Box::leak(e.name.clone().into_boxed_str())),
-            _ => None,
-        }));
-    }
-    reify_syntax::parse_with_prelude_enums(source, ModulePath::single("main"), &enum_names)
 }
 
 /// Compile each module standalone under its own path. Leaked because

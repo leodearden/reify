@@ -35,6 +35,7 @@ use crate::dynamics::rnea::{
     RneaLink,
 };
 use crate::dynamics::spatial::{Frame3, SpatialTransform6, SpatialVector6};
+use crate::helpers::mint_registry_free_instance as mint_instance;
 use crate::joints::motion_subspace_columns;
 use crate::loop_closure::{
     DEFAULT_LOOP_JACOBIAN_FD_STEP, extract_loop_closure_chains, loop_residual_jacobian_by_joint,
@@ -43,20 +44,13 @@ use crate::loop_closure_value::JointValue;
 use crate::mechanism::is_world;
 use reify_core::diagnostics::{Diagnostic, DiagnosticCode};
 use reify_core::dimension::DimensionVector;
+use reify_ir::Value;
 use reify_ir::arg_acceptance::{
     ArgRejection, ArgSpec, FieldRejection, length_spec, mass_spec, moment_of_inertia_spec,
     read_arg_or_bare, read_entry_or_bare, rotational_damping_spec, rotational_stiffness_spec,
     translational_damping_spec, translational_stiffness_spec,
 };
-use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use std::collections::BTreeMap;
-
-/// Sentinel `StructureTypeId` for engine-assembled (registry-free) instances.
-/// The `eval_builtin` path has no `StructureRegistry`, so result instances are
-/// minted with the nominal `type_name` as the source of truth for downstream
-/// hooks — mirrors `dynamics_ops::assemble_mass_properties` /
-/// `modal_ops::degenerate_modal_result`.
-const REGISTRY_FREE_TYPE_ID: StructureTypeId = StructureTypeId(u32::MAX);
 
 /// Extract an `f64` from a numeric value cell (`Int` / `Real` / dimensioned
 /// `Scalar`); non-numeric cells yield `None`. The ONE dimension-erasing numeric
@@ -119,20 +113,6 @@ fn compliance_cell_f64(v: &Value) -> Option<f64> {
             if f.is_finite() { Some(f) } else { None }
         }
     }
-}
-
-/// Mint a registry-free `Value::StructureInstance` with the given nominal
-/// `type_name` and field map. Single assembler for every result type this
-/// module produces (`MotionTrajectory`, `TrajectorySample`, the `JointForce`
-/// family), mirroring `dynamics_ops::assemble_mass_properties`.
-fn mint_instance(type_name: &str, fields: Vec<(String, Value)>) -> Value {
-    let fields: PersistentMap<String, Value> = fields.into_iter().collect();
-    Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: REGISTRY_FREE_TYPE_ID,
-        type_name: type_name.to_string(),
-        version: 1,
-        fields,
-    }))
 }
 
 /// Mint the default zero-`Frame3` `Value::StructureInstance` used for

@@ -1777,13 +1777,14 @@ impl UnitRegistry {
         }
     }
 
-    /// Seed a prelude unit entry into the registry (overwrite semantics).
+    /// Seed a prelude unit entry into the registry.
     ///
     /// Used to pre-populate the registry with units from prelude modules
     /// before processing module-local declarations. Duplicate prelude entries
-    /// resolve by load order (last wins).
+    /// resolve first-wins, the `crate::name_env` rule: a later entry of an
+    /// already-seeded name is ignored.
     pub fn seed_prelude_unit(&mut self, entry: UnitEntry) {
-        self.entries.insert(entry.name.clone(), entry);
+        self.entries.entry(entry.name.clone()).or_insert(entry);
     }
 
     /// Look up a unit by name.

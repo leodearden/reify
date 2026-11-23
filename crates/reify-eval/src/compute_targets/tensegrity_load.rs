@@ -31,14 +31,13 @@
 //! message text, mirroring the form-find trampoline). The trampoline never
 //! panics and never returns a silently-wrong result.
 //!
-//! # StructureTypeId sentinel
+//! # Registry-free result
 //!
 //! The trampoline has no `StructureRegistry` access, so the returned
-//! `TensegrityLoadResult` uses `StructureTypeId(u32::MAX)` as a synthetic
-//! sentinel — the same convention as the form-find / elastic-static trampolines.
+//! `TensegrityLoadResult` is minted by `StructureInstanceData::registry_free`.
 
 use reify_core::{Diagnostic, DimensionVector};
-use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
+use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, Value};
 use reify_solver_elastic::{
     BarMember, BarSection, MemberKind, TensegrityLoadError, TensegrityLoadOptions,
     TensegrityLoadSolve, tensegrity_load_analysis,
@@ -276,12 +275,10 @@ fn build_result(solve: &TensegrityLoadSolve) -> Value {
     .into_iter()
     .collect();
 
-    Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: StructureTypeId(u32::MAX),
-        type_name: "TensegrityLoadResult".to_string(),
-        version: 1,
+    Value::StructureInstance(Box::new(StructureInstanceData::registry_free(
+        "TensegrityLoadResult",
         fields,
-    }))
+    )))
 }
 
 /// Human-readable cause for a kernel [`TensegrityLoadError`] (appended after the

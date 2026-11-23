@@ -26,7 +26,7 @@ use std::sync::Arc;
 
 use reify_core::dimension::DimensionVector;
 use reify_core::{ContentHash, Diagnostic, DiagnosticCode};
-use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
+use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, Value};
 use reify_stdlib::dynamics::eval::{
     cell_f64, default_frame3, inverse_dynamics_sample, motion_trajectory_samples,
 };
@@ -36,12 +36,6 @@ use reify_stdlib::dynamics::trampoline::{InverseDynamicsCacheKey, body_solid_has
 
 use crate::arg_acceptance::{Acceptance, accept_arg, density_spec};
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
-
-/// Sentinel `StructureTypeId` for engine-assembled (registry-free) instances.
-/// Mirrors `modal_ops::degenerate_modal_result`: the nominal `type_name` is the
-/// source of truth for downstream hooks (the MassProperties PSD validator keys
-/// on `type_name == "MassProperties"`, not on the id).
-const REGISTRY_FREE_TYPE_ID: StructureTypeId = StructureTypeId(u32::MAX);
 
 /// Read `body.material.density` as an `f64`, if the body is a StructureInstance
 /// whose `material` field is itself a StructureInstance carrying a numeric
@@ -212,12 +206,10 @@ fn assemble_mass_properties(mass: Value, com: Value, inertia: Value) -> Value {
     ]
     .into_iter()
     .collect();
-    Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: REGISTRY_FREE_TYPE_ID,
-        type_name: "MassProperties".to_string(),
-        version: 1,
+    Value::StructureInstance(Box::new(StructureInstanceData::registry_free(
+        "MassProperties",
         fields,
-    }))
+    )))
 }
 
 /// Pure eval core for `body_mass_props`: resolve the density (emitting

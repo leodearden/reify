@@ -22,7 +22,7 @@
 use reify_ir::boundary_attachment::{BoundaryAssociation, NodeAttachment};
 use reify_ir::geometry::GeometryHandleId;
 use reify_ir::value::GeometryHandleRef;
-use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
+use reify_ir::{PersistentMap, StructureInstanceData, Value};
 
 // ── Schema string constants ───────────────────────────────────────────────────
 //
@@ -180,12 +180,10 @@ impl CarriedTopology {
                     ]
                     .into_iter()
                     .collect();
-                    Value::StructureInstance(Box::new(StructureInstanceData {
-                        type_id: StructureTypeId(u32::MAX),
-                        type_name: TYPE_FACE_NORMAL.to_string(),
-                        version: 1,
+                    Value::StructureInstance(Box::new(StructureInstanceData::registry_free(
+                        TYPE_FACE_NORMAL,
                         fields,
-                    }))
+                    )))
                 })
                 .collect();
             Value::List(items)
@@ -210,12 +208,10 @@ impl CarriedTopology {
                     ]
                     .into_iter()
                     .collect();
-                    Value::StructureInstance(Box::new(StructureInstanceData {
-                        type_id: StructureTypeId(u32::MAX),
-                        type_name: TYPE_BOUNDARY_NODE.to_string(),
-                        version: 1,
+                    Value::StructureInstance(Box::new(StructureInstanceData::registry_free(
+                        TYPE_BOUNDARY_NODE,
                         fields,
-                    }))
+                    )))
                 })
                 .collect();
             Value::List(items)
@@ -231,12 +227,10 @@ impl CarriedTopology {
         .into_iter()
         .collect();
 
-        Value::StructureInstance(Box::new(StructureInstanceData {
-            type_id: StructureTypeId(u32::MAX),
-            type_name: TYPE_CARRIED_TOPOLOGY.to_string(),
-            version: 1,
+        Value::StructureInstance(Box::new(StructureInstanceData::registry_free(
+            TYPE_CARRIED_TOPOLOGY,
             fields,
-        }))
+        )))
     }
 
     /// Decode a `Value` previously produced by [`to_value`] back into a
@@ -441,6 +435,7 @@ pub fn carried_topology_from_result(result: &Value) -> Option<CarriedTopology> {
 #[cfg(test)]
 mod tests {
     use reify_core::identity::RealizationNodeId;
+    use reify_ir::StructureTypeId;
     use reify_ir::boundary_attachment::{BoundaryAssociation, NodeAttachment};
     use reify_ir::geometry::GeometryHandleId;
     use reify_ir::value::GeometryHandleRef;

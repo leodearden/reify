@@ -62,6 +62,7 @@ mod orientation_signatures;
 mod port_path;
 pub mod prelude_context;
 pub mod program;
+pub mod program_scope;
 pub(crate) mod recursion_guard;
 mod rejected_param_defaults;
 pub mod relation_signatures;
@@ -683,18 +684,9 @@ pub fn compile_with_prelude_context_checked_with_config(
         // Prelude-vs-prelude pub alias collisions, as `name_env` bound them when
         // the PreludeContext was built (`prelude_context` § "Cross-prelude
         // collision policy").
-        for (alias_name, first_module, second_module) in ctx.pub_alias_collision_warnings() {
-            compile_ctx.diagnostics.push(
-                Diagnostic::warning(format!(
-                    "prelude pub alias '{}' declared in both '{}' and '{}'; first-wins",
-                    alias_name, first_module, second_module
-                ))
-                .with_label(DiagnosticLabel::new(
-                    SourceSpan::prelude(),
-                    "cross-prelude collision",
-                )),
-            );
-        }
+        compile_ctx
+            .diagnostics
+            .extend_from_slice(ctx.pub_alias_collision_warnings());
         ctx.pub_aliases()
     };
     compile_builder::aliases_phase::phase_aliases(

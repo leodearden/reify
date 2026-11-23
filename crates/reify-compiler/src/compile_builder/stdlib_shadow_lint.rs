@@ -5,8 +5,8 @@
 //! [`name_env`] decides who wins; this pass only reports local wins over the
 //! stdlib tier. Definitions with no source declaration (monomorphs, registered
 //! associated functions) are synthesized, not written, and are not reported.
-//! Units keep their own duplicate-declaration Error until resolution-unification
-//! θ #5522 moves them onto `name_env`.
+//! Units keep their own duplicate-declaration Error; only their cross-prelude
+//! seeding binds by `name_env` (introduced by #5522).
 
 use std::collections::HashSet;
 
@@ -112,12 +112,8 @@ fn warning<D: Reportable>(
     ))
 }
 
-/// What the lint says about one kind of definition, and where it was written.
+/// Where one kind of definition was written.
 trait Reportable: Definition {
-    fn kind_word(&self) -> &'static str;
-
-    fn name(&self) -> &str;
-
     /// The span of this definition's top-level source declaration, if any.
     fn declaration(&self, parsed: &ParsedModule) -> Option<SourceSpan>;
 }
@@ -130,14 +126,6 @@ fn first_declaration(
 }
 
 impl Reportable for TopologyTemplate {
-    fn kind_word(&self) -> &'static str {
-        self.entity_kind.as_label()
-    }
-
-    fn name(&self) -> &str {
-        &self.name
-    }
-
     fn declaration(&self, parsed: &ParsedModule) -> Option<SourceSpan> {
         first_declaration(parsed, |decl| match decl {
             Declaration::Structure(d) if d.name == self.name => Some(d.span),
@@ -148,14 +136,6 @@ impl Reportable for TopologyTemplate {
 }
 
 impl Reportable for EnumDef {
-    fn kind_word(&self) -> &'static str {
-        "enum"
-    }
-
-    fn name(&self) -> &str {
-        &self.name
-    }
-
     fn declaration(&self, parsed: &ParsedModule) -> Option<SourceSpan> {
         first_declaration(parsed, |decl| match decl {
             Declaration::Enum(d) if d.name == self.name => Some(d.span),
@@ -165,14 +145,6 @@ impl Reportable for EnumDef {
 }
 
 impl Reportable for CompiledTrait {
-    fn kind_word(&self) -> &'static str {
-        "trait"
-    }
-
-    fn name(&self) -> &str {
-        &self.name
-    }
-
     fn declaration(&self, parsed: &ParsedModule) -> Option<SourceSpan> {
         first_declaration(parsed, |decl| match decl {
             Declaration::Trait(d) if d.name == self.name => Some(d.span),
@@ -182,14 +154,6 @@ impl Reportable for CompiledTrait {
 }
 
 impl Reportable for CompiledFunction {
-    fn kind_word(&self) -> &'static str {
-        "function"
-    }
-
-    fn name(&self) -> &str {
-        &self.name
-    }
-
     /// Overloads share a name: prefer the declaration whose parameter names
     /// match this signature's, else the first same-named one.
     fn declaration(&self, parsed: &ParsedModule) -> Option<SourceSpan> {
@@ -214,14 +178,6 @@ impl Reportable for CompiledFunction {
 }
 
 impl Reportable for CompiledTypeAlias {
-    fn kind_word(&self) -> &'static str {
-        "type alias"
-    }
-
-    fn name(&self) -> &str {
-        &self.name
-    }
-
     fn declaration(&self, parsed: &ParsedModule) -> Option<SourceSpan> {
         first_declaration(parsed, |decl| match decl {
             Declaration::TypeAlias(d) if d.name == self.name => Some(d.span),
@@ -231,14 +187,6 @@ impl Reportable for CompiledTypeAlias {
 }
 
 impl Reportable for CompiledConstraintDef {
-    fn kind_word(&self) -> &'static str {
-        "constraint def"
-    }
-
-    fn name(&self) -> &str {
-        &self.name
-    }
-
     fn declaration(&self, parsed: &ParsedModule) -> Option<SourceSpan> {
         first_declaration(parsed, |decl| match decl {
             Declaration::Constraint(d) if d.name == self.name => Some(d.span),
@@ -248,14 +196,6 @@ impl Reportable for CompiledConstraintDef {
 }
 
 impl Reportable for CompiledPurpose {
-    fn kind_word(&self) -> &'static str {
-        "purpose"
-    }
-
-    fn name(&self) -> &str {
-        &self.name
-    }
-
     fn declaration(&self, parsed: &ParsedModule) -> Option<SourceSpan> {
         first_declaration(parsed, |decl| match decl {
             Declaration::Purpose(d) if d.name == self.name => Some(d.span),

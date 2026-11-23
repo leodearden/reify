@@ -9823,6 +9823,20 @@ entries:
     manifested_phase: unknown
     note: The agent chained sleep 60 with a log tail to poll a background test batch, and the sandbox guard blocked the chain. This is the sleep+check polling-chain block the entry names.
     evidence_quote: 'Blocked: sleep 60 followed by: cat /tmp/rev9638_b.log tail -30. To wait for a condition, use Monitor with an until-loop'
+  - date: '2026-11-22'
+    project: reify
+    session: e011020f-147a-4fef-8454-1deaa9720d0b
+    origin_phase: ops
+    manifested_phase: ops
+    note: The sandbox guard blocked a sleep-then-check polling chain (sleep 90 followed by echo), which is the mechanism this entry names.
+    evidence_quote: 'Blocked: sleep 90 followed by: echo done. To wait for a condition, use Monitor with an until-loop'
+  - date: '2026-11-22'
+    project: reify
+    session: 63c781d5-8fd2-4d1c-9b9c-11c9b38179a1
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: The digest shows a `sleep 60; tail` polling chain blocked by the sandbox guard, which is the mechanism this entry's title names.
+    evidence_quote: '<tool_use_error>Blocked: sleep 60 followed by: tail -4 /tmp/rv_test_run_all.log.'
 - id: entry-cand-20260801-5
   title: Bash `rg` invocation fails — ripgrep binary absent from worktree environment
   severity: medium
@@ -13711,6 +13725,13 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: 'git grep was given `-A 12` after the pattern and before `--`. Git treated `-A` as a revision and exited 128 with ''unable to resolve revision: -A'', the same context-flag-placement failure this entry describes. Phase cannot be supported from the digest, so both phases are unknown.'
+  - date: '2026-11-22'
+    project: reify
+    session: e011020f-147a-4fef-8454-1deaa9720d0b/subagents/agent-ab615e0b5b99a0839
+    origin_phase: recon
+    manifested_phase: recon
+    note: 'A multi-command Bash call ran `git grep` with a context flag (-A12) placed where git read it as a revision, not an option. The command exited 128 with ''unable to resolve revision: -A12'', which matches the entry''s flag-misplacement and exit-128 mechanism. The full command is truncated in the digest, so the exact argument order is inferred from the error.'
+    evidence_quote: 'fatal: unable to resolve revision: -A12'
   filing: withheld
 - id: entry-cand-20261106-1
   title: Ratchet failure points to a --help diagnostic the agent cannot run under don't-ask permission mode

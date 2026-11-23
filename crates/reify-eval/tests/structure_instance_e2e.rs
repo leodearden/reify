@@ -850,3 +850,78 @@ structure def NamedArgFixture {
         }
     }
 }
+
+/// T10 (task 8686): a ctor-built conformer overrides a trait-typed param even
+/// though another structure holds registry id 0.
+///
+/// Every ctor-built instance carries the compiler placeholder
+/// `StructureTypeId(0)`, and id 0 is whichever structure the prelude interned
+/// first. The override is judged by `type_name`, so the placeholder must never
+/// stand in for the conformer's identity.
+#[test]
+fn ctor_built_conformer_overrides_trait_typed_param_while_another_structure_holds_id_zero() {
+    const SOURCE: &str = r#"
+trait Probe {
+    param k : Real
+}
+
+structure def ProbeDirect : Probe {
+    param k : Real = 1.0
+}
+
+structure def ProbeHolder {
+    param p : Probe = ProbeDirect()
+    let k_read = self.p.k
+}
+"#;
+    let compiled = compile_source_with_stdlib(SOURCE);
+    let errors = collect_errors(&compiled.diagnostics);
+    assert!(
+        errors.is_empty(),
+        "fixture must compile cleanly; got: {errors:?}"
+    );
+
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+    let p_cell = ValueCellId::new("ProbeHolder", "p");
+    let conformer = match result.values.get(&p_cell) {
+        Some(Value::StructureInstance(data)) => data.as_ref().clone(),
+        other => panic!("expected ProbeHolder.p to be a StructureInstance, got {other:?}"),
+    };
+
+    assert_eq!(conformer.type_name, "ProbeDirect");
+    assert_eq!(
+        conformer.type_id,
+        StructureTypeId(0),
+        "a ctor-built instance carries the compiler placeholder id"
+    );
+    let registry = engine.structure_registry();
+    let id_zero_name = registry
+        .name_for(StructureTypeId(0))
+        .expect("the prelude interns at least one structure");
+    assert_ne!(
+        id_zero_name, "ProbeDirect",
+        "the trap needs another structure to hold id 0"
+    );
+    let id_zero_bounds = registry
+        .declared_bounds(StructureTypeId(0))
+        .expect("id 0 is interned");
+    assert!(
+        !id_zero_bounds.iter().any(|b| b == "Probe"),
+        "the id-0 structure {id_zero_name} must not conform to Probe; bounds: {id_zero_bounds:?}"
+    );
+
+    let mut overridden = conformer;
+    overridden.fields.insert("k".to_string(), Value::Real(2.0));
+    let edited = engine
+        .edit_param(p_cell, Value::StructureInstance(Box::new(overridden)))
+        .unwrap_or_else(|e| panic!("a ProbeDirect conformer must be admitted for p: {e:?}"));
+
+    assert_eq!(
+        edited
+            .values
+            .get(&ValueCellId::new("ProbeHolder", "k_read")),
+        Some(&Value::Real(2.0)),
+        "the override must reach the member read"
+    );
+}

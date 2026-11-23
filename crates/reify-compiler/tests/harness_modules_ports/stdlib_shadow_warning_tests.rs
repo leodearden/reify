@@ -271,8 +271,8 @@ fn a_non_colliding_name_does_not_warn() {
     assert!(shadow_warnings(&module).is_empty());
 }
 
-/// Units keep their own duplicate-declaration Error until resolution-unification
-/// θ #5522 moves them onto the shared rule.
+/// Units keep their own duplicate-declaration Error; only their cross-prelude
+/// seeding binds by the shared rule (introduced by #5522).
 #[test]
 fn a_unit_duplicating_a_stdlib_unit_keeps_its_error_and_does_not_warn() {
     let module = reify_compiler::compile_with_stdlib(&parse("unit thou : Length = 0.0000254\n"));

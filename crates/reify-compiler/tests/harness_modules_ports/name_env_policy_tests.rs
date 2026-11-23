@@ -11,13 +11,17 @@
 use std::collections::HashSet;
 
 use reify_compiler::name_env::{
-    Bindings, Definition, FunctionSignature, Origin, Tier, bind, resolve,
+    Bindings, Definition, FunctionSignature, Origin, Shadowing, Surface, Tier, bind, bind_scopes,
+    bind_scopes_where, collision_warning, resolve, resolve_in_scopes, resolve_in_scopes_by,
+    surface_of,
 };
 use reify_compiler::{
     CompiledConstraintDef, CompiledModule, CompiledPurpose, CompiledTrait, CompiledTypeAlias,
-    TopologyTemplate,
+    EntityKind, TopologyTemplate,
 };
-use reify_core::{ContentHash, ModulePath, SourceSpan, Type, ValueCellId};
+use reify_core::{
+    ContentHash, DiagnosticCode, ModulePath, Severity, SourceSpan, Type, ValueCellId,
+};
 use reify_ir::{CompiledExpr, CompiledFnBody, CompiledFunction, EnumDef};
 use reify_test_support::{
     CompiledModuleBuilder, CompiledPurposeBuilder, CompiledTraitBuilder, TopologyTemplateBuilder,
@@ -89,6 +93,7 @@ fn enum_def(name: &str) -> EnumDef {
         variants: vec!["V".into()],
         doc: None,
         type_params: vec![],
+        is_pub: true,
     }
 }
 
@@ -640,5 +645,438 @@ fn origin_tiers_classify_by_first_path_segment() {
         Origin::Module(&import_path).tier(),
         Tier::Import,
         "only the FIRST segment decides the std tier"
+    );
+}
+
+#[test]
+fn a_compiled_enum_records_whether_it_was_declared_pub() {
+    let module = reify_test_support::compile_source_named(
+        "pub enum Shown { A }\nenum Kept { B }\n",
+        "enum_visibility",
+    );
+    let visibility = |name: &str| {
+        module
+            .enum_defs
+            .iter()
+            .find(|e| e.name == name)
+            .unwrap_or_else(|| panic!("enum {name} compiled"))
+            .is_pub
+    };
+    assert!(visibility("Shown"), "`pub enum Shown` is pub");
+    assert!(!visibility("Kept"), "`enum Kept` is not pub");
+}
+
+// ─── scope-level core: surface_of / bind_scopes / resolve_in_scopes ───────
+//
+// Three scopes: a `local` surface, direct imports `[a, b]` (import tier, `pub`
+// surface only), and the ambient prelude `[std.p1, c]` (`c` import tier). The
+// expected precedence is local > direct imports in order > import-tier prelude
+// modules > std, whatever the slice order.
+
+/// `(name, is_pub)` per scope module. `a`'s non-pub `Secret` must not bind
+/// through the direct-import tier; the ambient `c`'s does.
+const SCOPE_PLAN: &[(&str, &[(&str, bool)])] = &[
+    (
+        "a",
+        &[
+            ("Everywhere", true),
+            ("DirectPeer", true),
+            ("OverAmbient", true),
+            ("Secret", false),
+            ("Visible", true),
+        ],
+    ),
+    ("b", &[("Everywhere", true), ("DirectPeer", true)]),
+    (
+        "c",
+        &[
+            ("Everywhere", true),
+            ("OverAmbient", true),
+            ("Secret", false),
+            ("PreludeImport", true),
+        ],
+    ),
+    (
+        "std.p1",
+        &[
+            ("Everywhere", true),
+            ("OverAmbient", true),
+            ("PreludeImport", true),
+            ("StdOnly", true),
+            ("Secret", true),
+        ],
+    ),
+];
+const SCOPE_LOCAL: &[&str] = &["Everywhere", "Mine"];
+
+/// `(name, origin)` of every winner, in precedence order.
+const SCOPE_WINNERS: &[(&str, &str)] = &[
+    ("Everywhere", "local"),
+    ("Mine", "local"),
+    ("DirectPeer", "a"),
+    ("OverAmbient", "a"),
+    ("Visible", "a"),
+    ("Secret", "c"),
+    ("PreludeImport", "c"),
+    ("StdOnly", "std.p1"),
+];
+
+/// `(name, winner origin, shadowed origin)` for every losing definition.
+const SCOPE_SHADOWINGS: &[(&str, &str, &str)] = &[
+    ("DirectPeer", "a", "b"),
+    ("Everywhere", "local", "a"),
+    ("Everywhere", "local", "b"),
+    ("Everywhere", "local", "c"),
+    ("Everywhere", "local", "std.p1"),
+    ("OverAmbient", "a", "c"),
+    ("OverAmbient", "a", "std.p1"),
+    ("PreludeImport", "c", "std.p1"),
+    ("Secret", "c", "std.p1"),
+];
+
+fn scope_module(label: &str, declarations: &[(&str, bool)]) -> CompiledModule {
+    let mut builder = CompiledModuleBuilder::new(module_path(label));
+    for &(name, is_pub) in declarations {
+        builder = builder
+            .enum_def(EnumDef {
+                is_pub,
+                ..enum_def(name)
+            })
+            .function(CompiledFunction {
+                is_pub,
+                ..int_fn(name)
+            });
+    }
+    builder.build()
+}
+
+struct ScopesFixture {
+    modules: Vec<CompiledModule>,
+    enums: Vec<EnumDef>,
+    functions: Vec<CompiledFunction>,
+}
+
+impl ScopesFixture {
+    fn new() -> Self {
+        ScopesFixture {
+            modules: SCOPE_PLAN
+                .iter()
+                .map(|(label, declarations)| scope_module(label, declarations))
+                .collect(),
+            enums: SCOPE_LOCAL.iter().map(|n| enum_def(n)).collect(),
+            functions: SCOPE_LOCAL.iter().map(|n| int_fn(n)).collect(),
+        }
+    }
+
+    fn module(&self, label: &str) -> &CompiledModule {
+        self.modules
+            .iter()
+            .find(|m| origin_label(Origin::Module(&m.path)) == label)
+            .unwrap_or_else(|| panic!("scope fixture has no module {label}"))
+    }
+
+    fn direct_imports(&self) -> [&CompiledModule; 2] {
+        [self.module("a"), self.module("b")]
+    }
+
+    fn prelude(&self) -> [&CompiledModule; 2] {
+        [self.module("std.p1"), self.module("c")]
+    }
+}
+
+/// A kind the scope fixture declares in every module and locally.
+trait ScopeKind: Definition + Sized {
+    fn declared_in(module: &CompiledModule) -> &[Self];
+    fn local(fx: &ScopesFixture) -> &[Self];
+}
+
+impl ScopeKind for EnumDef {
+    fn declared_in(module: &CompiledModule) -> &[Self] {
+        &module.enum_defs
+    }
+    fn local(fx: &ScopesFixture) -> &[Self] {
+        &fx.enums
+    }
+}
+
+impl ScopeKind for CompiledFunction {
+    fn declared_in(module: &CompiledModule) -> &[Self] {
+        &module.functions
+    }
+    fn local(fx: &ScopesFixture) -> &[Self] {
+        &fx.functions
+    }
+}
+
+fn pointers<'a, D: 'a>(definitions: impl IntoIterator<Item = &'a D>) -> Vec<*const D> {
+    definitions.into_iter().map(|d| d as *const D).collect()
+}
+
+fn assert_surfaces<D: ScopeKind>(kind: &str) {
+    let fx = ScopesFixture::new();
+    let a = fx.module("a");
+    let pub_only: Vec<&D> = D::declared_in(a).iter().filter(|d| d.is_pub()).collect();
+    assert!(
+        pub_only.len() < D::declared_in(a).len(),
+        "precondition: a declares a non-pub {kind}"
+    );
+    assert_eq!(
+        pointers(surface_of::<D>(a, Surface::DirectImport)),
+        pointers(pub_only),
+        "{kind}: a direct import offers only its pub definitions"
+    );
+    assert_eq!(
+        pointers(surface_of::<D>(a, Surface::Ambient)),
+        pointers(D::exported_by(a)),
+        "{kind}: a prelude module offers everything it exports"
+    );
+}
+
+#[test]
+fn a_direct_import_offers_its_pub_surface_and_a_prelude_module_its_exports() {
+    assert_surfaces::<EnumDef>("enum");
+    assert_surfaces::<CompiledFunction>("function");
+}
+
+fn assert_scope_precedence<D: ScopeKind>(kind: &str) {
+    let fx = ScopesFixture::new();
+    let bindings = bind_scopes(D::local(&fx), fx.direct_imports(), fx.prelude());
+    let winners: Vec<(&str, String)> = bindings
+        .winning_candidates()
+        .iter()
+        .map(|c| (c.definition.name(), origin_label(c.origin)))
+        .collect();
+    let expected: Vec<(&str, String)> = SCOPE_WINNERS
+        .iter()
+        .map(|(name, origin)| (*name, origin.to_string()))
+        .collect();
+    assert_eq!(winners, expected, "{kind}: winners and their origins");
+
+    let mut shadowings: Vec<(&str, String, String)> = bindings
+        .shadowings()
+        .iter()
+        .map(|s| {
+            (
+                s.shadowed.definition.name(),
+                origin_label(s.winner.origin),
+                origin_label(s.shadowed.origin),
+            )
+        })
+        .collect();
+    shadowings.sort();
+    let expected: Vec<(&str, String, String)> = SCOPE_SHADOWINGS
+        .iter()
+        .map(|(n, w, s)| (*n, w.to_string(), s.to_string()))
+        .collect();
+    assert_eq!(shadowings, expected, "{kind}: shadowings");
+
+    let a_secret = D::declared_in(fx.module("a"))
+        .iter()
+        .find(|d| d.name() == "Secret")
+        .expect("a declares Secret");
+    assert!(
+        bindings
+            .winners()
+            .chain(bindings.shadowings().iter().map(|s| s.shadowed.definition))
+            .all(|d| !std::ptr::eq(d, a_secret)),
+        "{kind}: a's non-pub Secret is no candidate through the direct-import tier"
+    );
+}
+
+#[test]
+fn bind_scopes_ranks_local_then_direct_imports_then_prelude_imports_then_std() {
+    assert_scope_precedence::<EnumDef>("enum");
+    assert_scope_precedence::<CompiledFunction>("function");
+}
+
+fn assert_scope_lookup_agrees<'a, D: ScopeKind>(
+    kind: &str,
+    fx: &'a ScopesFixture,
+    absent: D::Key<'a>,
+) {
+    let local = D::local(fx);
+    let bindings = bind_scopes(local, fx.direct_imports(), fx.prelude());
+    for candidate in bindings.winning_candidates() {
+        let key = candidate.definition.key();
+        let resolved = resolve_in_scopes(local, fx.direct_imports(), fx.prelude(), &key)
+            .unwrap_or_else(|| panic!("{kind} {key:?} resolves"));
+        assert!(
+            bindings
+                .get(&key)
+                .is_some_and(|b| std::ptr::eq(b, resolved)),
+            "{kind} {key:?}: resolve_in_scopes and bind_scopes disagree"
+        );
+    }
+    assert!(
+        resolve_in_scopes(local, fx.direct_imports(), fx.prelude(), &absent).is_none(),
+        "{kind}: an absent key resolves to nothing"
+    );
+}
+
+#[test]
+fn resolve_in_scopes_agrees_with_bind_scopes_for_every_bound_key() {
+    let fx = ScopesFixture::new();
+    assert_scope_lookup_agrees::<EnumDef>("enum", &fx, "Absent");
+    let absent_fn = int_fn("Absent");
+    assert_scope_lookup_agrees::<CompiledFunction>("function", &fx, absent_fn.key());
+}
+
+/// `(key, winner origin, shadowed origin)` of every shadowing `keep` accepts
+/// the loser of.
+fn kept_shadowing_rows<'a, D: Definition>(
+    bindings: &Bindings<'a, D>,
+    mut keep: impl FnMut(&D) -> bool,
+) -> Vec<(D::Key<'a>, Origin<'a>, Origin<'a>)> {
+    bindings
+        .shadowings()
+        .iter()
+        .filter(|s| keep(s.shadowed.definition))
+        .map(|s| (s.key.clone(), s.winner.origin, s.shadowed.origin))
+        .collect()
+}
+
+/// A predicate accepting exactly one key's definitions finds that key's
+/// binding through `resolve_in_scopes_by`, and a predicate accepting whole
+/// keys binds and shadows them through `bind_scopes_where` exactly as
+/// `bind_scopes` does.
+fn assert_predicate_lookups_agree_with_bind_scopes<D: ScopeKind>(kind: &str) {
+    let fx = ScopesFixture::new();
+    let local = D::local(&fx);
+    let full = bind_scopes(local, fx.direct_imports(), fx.prelude());
+    for candidate in full.winning_candidates() {
+        let key = candidate.definition.key();
+        let found = resolve_in_scopes_by(local, fx.direct_imports(), fx.prelude(), |d: &D| {
+            d.key() == key
+        });
+        assert!(
+            found.is_some_and(|d| std::ptr::eq(d, candidate.definition)),
+            "{kind} {key:?}: resolve_in_scopes_by found {found:?}"
+        );
+    }
+
+    let kept = |d: &D| ["Everywhere", "OverAmbient", "Secret"].contains(&d.name());
+    let partial = bind_scopes_where(local, fx.direct_imports(), fx.prelude(), kept);
+    assert_eq!(
+        pointers(partial.winners()),
+        pointers(full.winners().filter(|d| kept(d))),
+        "{kind}: the kept keys' winners, in precedence order"
+    );
+    assert_eq!(
+        kept_shadowing_rows(&partial, |_| true),
+        kept_shadowing_rows(&full, kept),
+        "{kind}: the kept keys' shadowings"
+    );
+}
+
+#[test]
+fn predicate_lookups_agree_with_bind_scopes_on_the_keys_they_accept() {
+    assert_predicate_lookups_agree_with_bind_scopes::<EnumDef>("enum");
+    assert_predicate_lookups_agree_with_bind_scopes::<CompiledFunction>("function");
+}
+
+/// `bind` is `bind_scopes` with no direct imports: the same winners, by
+/// pointer and in order, and the same shadowings.
+fn assert_bind_is_bind_scopes_without_direct_imports<'a, D: Definition>(
+    kind: &str,
+    local: &'a [D],
+    prelude: &'a [CompiledModule],
+) {
+    let one = bind(local, prelude);
+    let scoped = bind_scopes(local, std::iter::empty::<&CompiledModule>(), prelude);
+    assert_eq!(
+        pointers(one.winners()),
+        pointers(scoped.winners()),
+        "{kind}: winners"
+    );
+    let rows = |b: &Bindings<'a, D>| -> Vec<(D::Key<'a>, Origin<'a>, Origin<'a>)> {
+        b.shadowings()
+            .iter()
+            .map(|s| (s.key.clone(), s.winner.origin, s.shadowed.origin))
+            .collect()
+    };
+    assert_eq!(rows(&one), rows(&scoped), "{kind}: shadowings");
+}
+
+#[test]
+fn bind_is_bind_scopes_without_direct_imports_for_every_kind() {
+    let fx = fixture();
+    let p = &fx.prelude;
+    assert_bind_is_bind_scopes_without_direct_imports("template", &fx.templates, p);
+    assert_bind_is_bind_scopes_without_direct_imports("enum", &fx.enums, p);
+    assert_bind_is_bind_scopes_without_direct_imports("trait", &fx.traits, p);
+    assert_bind_is_bind_scopes_without_direct_imports("function", &fx.functions, p);
+    assert_bind_is_bind_scopes_without_direct_imports("type alias", &fx.aliases, p);
+    assert_bind_is_bind_scopes_without_direct_imports("constraint def", &fx.constraint_defs, p);
+    assert_bind_is_bind_scopes_without_direct_imports("purpose", &fx.purposes, p);
+}
+
+// ─── collision_warning: the one wording of a first-wins collision ─────────
+
+/// The shadowing of `name` whose loser comes from `shadowed`.
+fn shadowing_of<'b, 'a, D: Definition>(
+    bindings: &'b Bindings<'a, D>,
+    name: &str,
+    shadowed: &str,
+) -> &'b Shadowing<'a, D> {
+    bindings
+        .shadowings()
+        .iter()
+        .find(|s| {
+            s.shadowed.definition.name() == name && origin_label(s.shadowed.origin) == shadowed
+        })
+        .unwrap_or_else(|| panic!("{name} from {shadowed} is shadowed"))
+}
+
+/// A `DefinitionCollision` Warning reading `expected_message`.
+fn assert_collision_warning(warning: &reify_core::Diagnostic, expected_message: &str) {
+    assert_eq!(warning.severity, Severity::Warning, "{warning:?}");
+    assert_eq!(
+        warning.code,
+        Some(DiagnosticCode::DefinitionCollision),
+        "{warning:?}"
+    );
+    assert_eq!(warning.message, expected_message);
+}
+
+#[test]
+fn a_collision_warning_names_a_local_winner_by_the_binding_module() {
+    let fx = fixture();
+    let bindings = bind(&fx.aliases, &fx.prelude);
+    let shadowing = shadowing_of(&bindings, "LocalImport", "b");
+    assert_eq!(shadowing.winner.origin, Origin::Local, "precondition");
+    assert_collision_warning(
+        &collision_warning(shadowing, Some(&module_path("user.main"))),
+        "type alias 'LocalImport' declared in both 'user.main' and 'b'; \
+         first-wins: 'user.main' binds",
+    );
+}
+
+#[test]
+fn a_collision_warning_from_a_bind_without_local_scope_names_modules_by_dotted_path() {
+    let fx = fixture();
+    let bindings = bind::<CompiledTrait, _>(&[], &fx.prelude);
+    let shadowing = shadowing_of(&bindings, "StdOnly", "std.p2");
+    assert_collision_warning(
+        &collision_warning(shadowing, None),
+        "trait 'StdOnly' declared in both 'std.p1' and 'std.p2'; first-wins: 'std.p1' binds",
+    );
+}
+
+#[test]
+fn a_template_collision_warning_names_the_winners_entity_kind() {
+    let fx = fixture();
+    let mut occurrence = template("LocalImport");
+    occurrence.entity_kind = EntityKind::Occurrence;
+    let local = [occurrence];
+    let bindings = bind(&local, &fx.prelude);
+    let shadowing = shadowing_of(&bindings, "LocalImport", "b");
+    assert_eq!(
+        shadowing.shadowed.definition.entity_kind,
+        EntityKind::Structure,
+        "precondition: the shadowed template is a structure"
+    );
+    assert_collision_warning(
+        &collision_warning(shadowing, Some(&module_path("main"))),
+        "occurrence 'LocalImport' declared in both 'main' and 'b'; first-wins: 'main' binds",
     );
 }
