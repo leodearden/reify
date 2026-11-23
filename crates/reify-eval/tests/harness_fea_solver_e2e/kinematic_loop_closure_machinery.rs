@@ -272,13 +272,15 @@ fn loop_closure_machinery_solves_planar_in_loop_e2e() {
     );
 }
 
-// ── PRD 5 leaf δ (task #6941): a wrong-dimension loop-closure bind is named ──
+// ── PRD 5 leaf δ (task #6941): a wrong-dimension joint motion value is named ──
 //
 // Boundary row B7: binding an angle to a prismatic (or a length to a revolute)
 // in a closed loop used to evaluate to undef with no diagnostic, the joint
 // silently freed to its range midpoint. It is now refused with one
 // `DimensionedArgRejected` Error naming `bindings[0].value`, and the capture
-// pass records that specific cause.
+// pass records that specific cause. A driven joint LENGTH position (a screw
+// lead, a prismatic `transform_at` displacement) that refuses a bare number is
+// named the same way.
 
 /// `examples/dynamics/closed_2prismatic_idyn.ri`'s closed loop.
 const PRISMATIC_LOOP_SOURCE: &str = r#"
@@ -304,7 +306,14 @@ structure def RevoluteLoop {
 }
 "#;
 
-fn assert_wrong_bind_is_named(source: &str, structure: &str, wrong: Value, spec: &reify_ir::arg_acceptance::ArgSpec) {
+fn assert_refused_arg_is_named(
+    source: &str,
+    structure: &str,
+    builtin: &str,
+    arg: &str,
+    wrong: Value,
+    spec: &reify_ir::arg_acceptance::ArgSpec,
+) {
     use reify_core::{DiagnosticCode, Severity};
     use reify_ir::UndefCause;
     use reify_ir::arg_acceptance::{Acceptance, accept_arg};
@@ -317,7 +326,7 @@ fn assert_wrong_bind_is_named(source: &str, structure: &str, wrong: Value, spec:
     let Acceptance::Rejected(rejection) = accept_arg(&wrong, spec) else {
         unreachable!("{wrong:?} must be rejected at {}", spec.type_name);
     };
-    let expected = rejection.message("snapshot", "bindings[0].value");
+    let expected = rejection.message(builtin, arg);
     let errors: Vec<_> = result
         .diagnostics
         .iter()
@@ -351,9 +360,11 @@ fn assert_wrong_bind_is_named(source: &str, structure: &str, wrong: Value, spec:
 
 #[test]
 fn an_angle_bound_to_a_closed_loop_prismatic_is_named() {
-    assert_wrong_bind_is_named(
+    assert_refused_arg_is_named(
         PRISMATIC_LOOP_SOURCE,
         "PrismaticLoop",
+        "snapshot",
+        "bindings[0].value",
         Value::angle(30f64.to_radians()),
         &reify_ir::arg_acceptance::length_spec(),
     );
@@ -361,11 +372,51 @@ fn an_angle_bound_to_a_closed_loop_prismatic_is_named() {
 
 #[test]
 fn a_length_bound_to_a_closed_loop_revolute_is_named() {
-    assert_wrong_bind_is_named(
+    assert_refused_arg_is_named(
         REVOLUTE_LOOP_SOURCE,
         "RevoluteLoop",
+        "snapshot",
+        "bindings[0].value",
         Value::length(0.3),
         &reify_ir::arg_acceptance::angle_spec(),
+    );
+}
+
+#[test]
+fn a_bare_screw_lead_is_named() {
+    let source = r#"
+structure def ScrewLead {
+    let lift = prismatic(dir(1, 0, 0), 0mm .. 100mm)
+    let wrong = screw(lift, 0.005)
+    let right = screw(lift, 5mm)
+}
+"#;
+    assert_refused_arg_is_named(
+        source,
+        "ScrewLead",
+        "screw",
+        "lead",
+        Value::Real(0.005),
+        &reify_ir::arg_acceptance::length_spec(),
+    );
+}
+
+#[test]
+fn a_bare_prismatic_drive_is_named() {
+    let source = r#"
+structure def PrismaticDrive {
+    let lift = prismatic(dir(1, 0, 0), 0mm .. 100mm)
+    let wrong = transform_at(lift, 0.3)
+    let right = transform_at(lift, 300mm)
+}
+"#;
+    assert_refused_arg_is_named(
+        source,
+        "PrismaticDrive",
+        "transform_at",
+        "v",
+        Value::Real(0.3),
+        &reify_ir::arg_acceptance::length_spec(),
     );
 }
 

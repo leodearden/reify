@@ -1763,13 +1763,13 @@ fn transform_at_simple_joint(kind: &str, map: &BTreeMap<Value, Value>, value: &V
 
 #[cfg(test)]
 mod tests {
-    use super::{JOINT_KINDS, is_joint_value};
+    use super::{JOINT_KINDS, diagnose, is_joint_value};
     use crate::eval_builtin;
     use crate::test_fixtures::{
         angle_range_0_to_pi, axis_x_unit, axis_y_unit, axis_z_unit, cylindrical_z_joint,
         length_range_0_to_1m, planar_xy_joint, spherical_joint,
     };
-    use reify_core::DimensionVector;
+    use reify_core::{DiagnosticCode, DimensionVector};
     use reify_ir::Value;
     use reify_test_support::direction_val;
 
@@ -2316,11 +2316,18 @@ mod tests {
 
     #[test]
     fn prismatic_transform_at_bare_value_refused() {
-        // A prismatic displacement is a LENGTH: a bare Real / Int is refused.
+        // A prismatic displacement is a LENGTH: a bare Real / Int is refused,
+        // and the refusal is named.
         for bare in [Value::Real(0.5), Value::Int(1)] {
+            let args = [prismatic_x_joint(), bare.clone()];
             assert!(
-                eval_builtin("transform_at", &[prismatic_x_joint(), bare.clone()]).is_undef(),
+                eval_builtin("transform_at", &args).is_undef(),
                 "bare {bare:?} displacement must be refused"
+            );
+            assert_eq!(
+                diagnose("transform_at", &args).and_then(|d| d.code),
+                Some(DiagnosticCode::DimensionedArgRejected),
+                "bare {bare:?} displacement refusal must be named"
             );
         }
     }
@@ -3344,10 +3351,15 @@ mod tests {
         // A prismatic offset is a LENGTH: a bare Int / Real would read as
         // metres (the 10-vs-10mm hazard), so length_input refuses both.
         for bare in [Value::Int(1), Value::Real(1.5)] {
+            let args = [prismatic_x_joint(), Value::Real(1.0), bare.clone()];
             assert!(
-                eval_builtin("couple", &[prismatic_x_joint(), Value::Real(1.0), bare.clone()])
-                    .is_undef(),
+                eval_builtin("couple", &args).is_undef(),
                 "bare {bare:?} prismatic offset must be refused"
+            );
+            assert_eq!(
+                diagnose("couple", &args).and_then(|d| d.code),
+                Some(DiagnosticCode::DimensionedArgRejected),
+                "bare {bare:?} prismatic offset refusal must be named"
             );
         }
         let result = eval_builtin(
@@ -3641,9 +3653,15 @@ mod tests {
 
     #[test]
     fn coupling_prismatic_bare_real_value_refused() {
-        // A prismatic coupling's input is a LENGTH: bare Real(0.5) is refused.
+        // A prismatic coupling's input is a LENGTH: bare Real(0.5) is refused,
+        // and the refusal is named.
         let c = eval_builtin("couple", &[prismatic_x_joint(), Value::Real(1.0)]);
-        assert!(eval_builtin("transform_at", &[c, Value::Real(0.5)]).is_undef());
+        let args = [c, Value::Real(0.5)];
+        assert!(eval_builtin("transform_at", &args).is_undef());
+        assert_eq!(
+            diagnose("transform_at", &args).and_then(|d| d.code),
+            Some(DiagnosticCode::DimensionedArgRejected)
+        );
     }
 
     #[test]
