@@ -197,6 +197,27 @@ class Teardown(HostCacheCase):
         build.wait()
         self.assertEqual(cfx.wait_until_none_name(self.socket_prefix()), [])
 
+    def test_a_terminal_interrupt_on_the_namespace_route_still_tears_down_and_records(self):
+        """Ctrl-C reaches the whole group, bwrap included; the re-run must still close and record."""
+        tree = self.make_tree("tree-i")
+        fifo = os.path.join(self.tmp, "block-int.fifo")
+        os.mkfifo(fifo)
+        build = subprocess.Popen(
+            [self.trampoline(tree), "build", "--offline"], cwd=tree,
+            env=self.env_for(tree, C_UNIT_BLOCK_FIFO=fifo),
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, start_new_session=True,
+        )
+        self.addCleanup(lambda: build.poll() is None and os.killpg(build.pid, signal.SIGKILL))
+        writer = self.open_when_read(fifo, build)
+        self.addCleanup(os.close, writer)
+        os.killpg(build.pid, signal.SIGINT)
+        _, stderr = build.communicate()
+        self.assertNotEqual(build.returncode, 0, stderr)
+        leftovers = sorted(path.name for path in Path(self.target(tree)).glob(".reify-sccache.*"))
+        self.assertEqual(leftovers, [], stderr)
+        self.assertEqual(len(cfx.read_journal(self.target(tree))), 1, stderr)
+        self.assertEqual(cfx.wait_until_none_name(self.socket_prefix()), [])
+
     def test_a_normal_exit_leaves_no_socket_and_no_process_naming_it(self):
         tree = self.make_tree("tree-n")
         self.assert_passed_at_canon(self.cargo_test(tree))

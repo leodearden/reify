@@ -21,6 +21,7 @@ import json
 import os
 import shutil
 import socket
+import signal
 import sys
 import tempfile
 import unittest
@@ -1065,9 +1066,18 @@ class Reentry(CanonInvocationCase):
             REIFY_CANON_ACTIVE=canon_run.format_active(self.tree, self.canon, supervisor),
             RUSTC_WRAPPER="caller",
         )
-        env = canon_run.reentry_env(environ, self.tree, self.canon)
-        self.assertEqual(env, dict(environ, REIFY_CANON_ACTIVE=canon_run.format_active(self.tree, self.canon)))
-        self.assertIsNone(canon_run.parse_active(env["REIFY_CANON_ACTIVE"]).supervisor)
+        ignored = frozenset({signal.SIGQUIT})
+        env = canon_run.reentry_env(environ, self.tree, self.canon, ignored)
+        record = canon_run.format_active(self.tree, self.canon, caller_ignored=ignored)
+        self.assertEqual(env, dict(environ, REIFY_CANON_ACTIVE=record))
+        active = canon_run.parse_active(env["REIFY_CANON_ACTIVE"])
+        self.assertIsNone(active.supervisor)
+        self.assertEqual(active.caller_ignored, ignored)
+
+    def test_info_fd_goes_before_the_command(self):
+        argv = canon_run.reentry_argv(self.tree, self.canon, f"{self.real}/sub", self.ARGUMENTS, info_fd=7)
+        separator = argv.index("--")
+        self.assertEqual(argv[separator - 2:separator], ["--info-fd", "7"])
 
 
 class CachePolicy(CanonInvocationCase):

@@ -20,6 +20,7 @@ import json
 import os
 import pwd
 import re
+import signal
 import stat
 import subprocess
 import sys
@@ -155,6 +156,8 @@ class ActiveTree:
     """REIFY_CANON_ACTIVE: the tree an outer invocation runs, read back by nested ones.
 
     supervisor is None from the process that enters a mount namespace, which supervises nothing.
+    caller_ignored is set only by that process: the supervised signals its own caller ignored,
+    since every supervised signal reaches the re-run ignored (see run_in_namespace).
     """
 
     dev: int
@@ -162,6 +165,7 @@ class ActiveTree:
     real_root: str
     canon: str
     supervisor: Supervisor | None = None
+    caller_ignored: frozenset[int] | None = None
 
 
 @dataclass(frozen=True)
@@ -242,13 +246,28 @@ def is_real_dir(path: str | Path) -> bool:
         return False
 
 
-def format_active(tree: Tree, canon: str, supervisor: Supervisor | None = None) -> str:
+def format_active(
+    tree: Tree,
+    canon: str,
+    supervisor: Supervisor | None = None,
+    caller_ignored: frozenset[int] | None = None,
+) -> str:
     record: dict[str, object] = {
         "dev": tree.dev, "ino": tree.ino, "real_root": str(tree.real_root), "canon": canon
     }
     if supervisor is not None:
         record["supervisor"] = supervisor.to_record()
+    if caller_ignored is not None:
+        record["caller_ignored"] = sorted(signal.Signals(number).name for number in caller_ignored)
     return json.dumps(record, sort_keys=True)
+
+
+def parse_caller_ignored(value: object) -> frozenset[int] | None:
+    """The supervised signals a record names; None when absent or naming anything else."""
+    names = {number.name: number for number in canon_cache.SUPERVISED_SIGNALS}
+    if not isinstance(value, list) or not all(isinstance(name, str) and name in names for name in value):
+        return None
+    return frozenset(names[name] for name in value)
 
 
 def parse_active(value: str | None) -> ActiveTree | None:
@@ -263,7 +282,14 @@ def parse_active(value: str | None) -> ActiveTree | None:
         return None
     if not isinstance(real_root, str) or not isinstance(canon, str):
         return None
-    return ActiveTree(dev, ino, real_root, canon, Supervisor.from_record(record.get("supervisor")))
+    return ActiveTree(
+        dev,
+        ino,
+        real_root,
+        canon,
+        Supervisor.from_record(record.get("supervisor")),
+        parse_caller_ignored(record.get("caller_ignored")),
+    )
 
 
 def is_nested(active: ActiveTree | None, tree: Tree, decision: Decision) -> bool:
@@ -769,18 +795,105 @@ class Call:
         )
 
 
-def reentry_argv(tree: Tree, canon: str, cwd: str, arguments: list[str]) -> list[str]:
+def reentry_argv(
+    tree: Tree, canon: str, cwd: str, arguments: list[str], *, info_fd: int | None = None
+) -> list[str]:
     """bwrap binding the tree's real root at canon, re-running this same script there."""
+    info = [] if info_fd is None else ["--info-fd", str(info_fd)]
     return [
         BWRAP, "--dev-bind", "/", "/", "--bind", str(tree.real_root), canon,
-        "--chdir", rebase(cwd, tree, canon), "--die-with-parent", "--",
+        "--chdir", rebase(cwd, tree, canon), "--die-with-parent", *info, "--",
         sys.executable, "-I", os.path.join(canon, "scripts", "canon_run.py"), *arguments,
     ]
 
 
-def reentry_env(environ: Mapping[str, str], tree: Tree, canon: str) -> dict[str, str]:
+def reentry_env(
+    environ: Mapping[str, str], tree: Tree, canon: str, caller_ignored: frozenset[int] = frozenset()
+) -> dict[str, str]:
     """The caller's environment plus the tree record, so the re-run finds the real root."""
-    return dict(environ, REIFY_CANON_ACTIVE=format_active(tree, canon))
+    return dict(environ, REIFY_CANON_ACTIVE=format_active(tree, canon, caller_ignored=caller_ignored))
+
+
+def ignored_now() -> frozenset[int]:
+    return frozenset(
+        number for number in canon_cache.SUPERVISED_SIGNALS if signal.getsignal(number) == signal.SIG_IGN
+    )
+
+
+def restore_caller_signals(caller_ignored: frozenset[int]) -> None:
+    """In the namespace re-run: the dispositions the outer invocation's caller gave it."""
+    for number in canon_cache.SUPERVISED_SIGNALS:
+        if number in caller_ignored:
+            signal.signal(number, signal.SIG_IGN)
+        elif number == signal.SIGINT:
+            signal.signal(number, signal.default_int_handler)
+        else:
+            signal.signal(number, signal.SIG_DFL)
+
+
+def read_child_pid(info_read: int) -> int | None:
+    """bwrap's --info-fd record: the re-run's pid (no pid namespace, so a host pid)."""
+    with os.fdopen(info_read, "rb") as info:
+        text = info.read()
+    try:
+        pid = json.loads(text).get("child-pid")
+    except (ValueError, AttributeError):
+        return None
+    return pid if type(pid) is int else None
+
+
+def run_in_namespace(argv_for: Callable[[int], list[str]], env: Mapping[str, str]) -> int:
+    """Spawn bwrap with every supervised signal ignored, so a group signal cannot kill it.
+
+    bwrap handles no signal, and --die-with-parent SIGKILLs the re-run when bwrap dies, which
+    would lose the re-run's teardown and record. So bwrap ignores them all, the re-run restores
+    its caller's dispositions from REIFY_CANON_ACTIVE, and this process stands in for the caller:
+    INT/QUIT are absorbed (a group signal reaches the re-run and its command directly), and
+    TERM/HUP sent to this pid are forwarded to the re-run, which forwards them to its command.
+    """
+    caller_ignored = ignored_now()
+    child_pid: int | None = None
+    pending: list[int] = []
+
+    def forward(signum: int, _frame: object) -> None:
+        if child_pid is None:
+            pending.append(signum)
+        else:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(child_pid, signum)
+
+    previous = {number: signal.getsignal(number) for number in canon_cache.SUPERVISED_SIGNALS}
+    info_read, info_write = os.pipe()
+    try:
+        for number in canon_cache.SUPERVISED_SIGNALS:
+            signal.signal(number, signal.SIG_IGN)
+        try:
+            bwrap = subprocess.Popen(
+                canon_cache.with_parent_death_signal(argv_for(info_write), "KILL"),
+                env=env,
+                pass_fds=(info_write,),
+            )
+        except OSError as exc:
+            os.close(info_read)
+            raise canon_cache.CommandNotFound(f"cannot run {BWRAP}: {exc}") from exc
+        finally:
+            os.close(info_write)
+        handlers = {
+            number: signal.SIG_IGN if number in caller_ignored
+            else forward if number in canon_cache.FORWARDED_SIGNALS
+            else canon_cache.absorb
+            for number in canon_cache.SUPERVISED_SIGNALS
+        }
+        for number, handler in handlers.items():
+            signal.signal(number, handler)
+        child_pid = read_child_pid(info_read)
+        for signum in pending:
+            forward(signum, None)
+        returncode = bwrap.wait()
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+    return 128 - returncode if returncode < 0 else returncode
 
 
 def validated_canon_path(call: Call, host: HostConfig) -> str:
@@ -794,12 +907,14 @@ def validated_canon_path(call: Call, host: HostConfig) -> str:
     return probe.env["PATH"]
 
 
-def enter_namespace(call: Call, host: HostConfig) -> NoReturn:
+def enter_namespace(call: Call, host: HostConfig) -> int:
     """The NAMESPACE route: validate, stamp, then re-run this invocation where CANON is bound."""
     validated_canon_path(call, host)
     ensure_stamp(call.build_dir, call.canon)
-    argv = reentry_argv(call.tree, call.canon, call.cwd, call.arguments)
-    execute(BWRAP, argv, reentry_env(call.environ, call.tree, call.canon), search=False)
+    return run_in_namespace(
+        lambda info_fd: reentry_argv(call.tree, call.canon, call.cwd, call.arguments, info_fd=info_fd),
+        reentry_env(call.environ, call.tree, call.canon, ignored_now()),
+    )
 
 
 def exec_nested(call: Call, cache: canon_cache.CacheEnvironment) -> NoReturn:
@@ -876,6 +991,9 @@ def supervise_real_path(call: Call, host: HostConfig, reason: canon_cache.Reason
 
 def run(command: list[str], *, cargo: bool, environ: Mapping[str, str]) -> int:
     """`exec` (command is the full command) or `cargo` (command is cargo's arguments)."""
+    active = parse_active(environ.get("REIFY_CANON_ACTIVE"))
+    if active is not None and active.caller_ignored is not None:
+        restore_caller_signals(active.caller_ignored)
     try:
         cwd = os.getcwd()
     except OSError:
@@ -888,7 +1006,6 @@ def run(command: list[str], *, cargo: bool, environ: Mapping[str, str]) -> int:
     canon = canon_root(environ)
     host = functools.cache(lambda: load_host_config(host_config_path(environ)))
     decision = build_dir_decision(tree, build_dir, canon, lambda: host().enabled)
-    active = parse_active(environ.get("REIFY_CANON_ACTIVE"))
     call = Call(tuple(command), cargo, environ, tree, canon, cwd, build_dir)
     if is_nested(active, tree, decision):
         if decision.mode is Mode.REAL_PATH:
