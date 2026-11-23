@@ -14,14 +14,18 @@ is the thin wrapper tests/infra/test_canon_cache_units.sh.
 
 import base64
 import dataclasses
+import fcntl
 import http.client
 import json
 import os
+import random
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -636,6 +640,224 @@ class StoreLost(RelayCase):
         self.assertEqual(probes, [False, False])
         self.store.release()
         self.assert_cut_short(response)
+
+
+STATS = {"hits": {"Rust": 3, "C/C++": 2}, "misses": {"Rust": 1, "C/C++": 1}, "write_errors": 1}
+DETACHED_STATS = {"hits": {"Rust": 40}, "misses": {"C/C++": 9}, "write_errors": 0}
+
+
+class SessionCase(unittest.TestCase):
+    """A fake sccache whose server follows a scripted plan, and a scratch build directory."""
+
+    def setUp(self):
+        self.tmp = scratch(self)
+        self.fake = cfx.fake_sccache_dir(self.tmp)
+        self.sccache = os.path.join(self.fake, "sccache")
+        self.build = os.path.join(self.tmp, "build")
+        os.mkdir(self.build)
+        self.lock = os.path.join(self.tmp, "start.lock")
+        self.knobs = dataclasses.replace(
+            canon_cache.SessionKnobs(), start_lock=self.lock, tmp_root=self.tmp, socket_wait=60.0
+        )
+        self.delays = []
+        self.socket = os.path.join(self.build, f".reify-sccache.{os.getpid()}.sock")
+        self.env = {
+            "PATH": "/usr/bin:/bin",
+            "HOME": self.tmp,
+            "FAKE_SCCACHE_LOCK": self.lock,
+            "FAKE_SCCACHE_STATS": json.dumps(STATS),
+            "SCCACHE_SERVER_PORT": "4226",
+            "SCCACHE_DIR": "/inherited",
+        }
+        self.settings = canon_cache.CacheSettings(
+            store_url="http://127.0.0.1:9/reify/cache",
+            store_user="u",
+            store_password="p",
+            fallback_dir=os.path.join(self.tmp, "fallback"),
+            fallback_cap="3G",
+        )
+
+    def open(self, plan, *, settings=None, reachable=True, policy=canon_cache.Policy.SHARED):
+        cfx.set_plan(self.fake, plan)
+        session = canon_cache.open_session(
+            policy,
+            settings or self.settings,
+            canon_build_dir=self.build,
+            sccache=self.sccache,
+            knobs=self.knobs,
+            env=self.env,
+            probe=lambda: reachable,
+            rng=random.Random(7),
+            sleep=self.delays.append,
+            clock=time.monotonic,
+        )
+        self.addCleanup(session.close)
+        return session
+
+    def servers(self):
+        return cfx.servers(self.fake)
+
+    def autostarts(self):
+        return [call for call in cfx.read_sccache_calls(self.fake) if call.get("autostart")]
+
+
+class OpenSession(SessionCase):
+    """C4's server start and C5's start-up check retry."""
+
+    def test_shared_server_environment(self):
+        inherited = os.open(os.devnull, os.O_RDONLY)
+        self.addCleanup(os.close, inherited)
+        os.set_inheritable(inherited, True)
+        session = self.open("ok")
+        [server] = self.servers()
+        env = server["env"]
+        for name, value in (
+            ("SCCACHE_START_SERVER", "1"),
+            ("SCCACHE_NO_DAEMON", "1"),
+            ("SCCACHE_IDLE_TIMEOUT", "0"),
+            ("SCCACHE_SERVER_UDS", self.socket),
+            ("SCCACHE_WEBDAV_KEY_PREFIX", "reify/cache"),
+            ("SCCACHE_WEBDAV_USERNAME", "u"),
+            ("SCCACHE_WEBDAV_PASSWORD", "p"),
+        ):
+            self.assertEqual(env.get(name), value, name)
+        self.assertRegex(env["SCCACHE_WEBDAV_ENDPOINT"], r"^http://127\.0\.0\.1:[0-9]+$")
+        self.assertNotIn("SCCACHE_SERVER_PORT", env)
+        self.assertNotIn("SCCACHE_DIR", env)
+        self.assertEqual(server["fds"], [0, 1, 2])
+        self.assertEqual(session.backend, canon_cache.Backend.SHARED)
+        self.assertEqual(session.reason, canon_cache.Reason.NONE)
+        self.assertEqual(session.store_attempts, 1)
+        self.assertEqual(session.environment.server.socket, self.socket)
+        self.assertEqual(session.environment.policy, canon_cache.Policy.SHARED)
+        self.assertIsNotNone(session.watchdog)
+
+    def test_one_failed_start_retries_once_after_a_drawn_delay(self):
+        for plan in ("exit,ok", "readonly,ok"):
+            with self.subTest(plan=plan):
+                Path(self.fake, "calls.jsonl").unlink(missing_ok=True)
+                self.delays.clear()
+                session = self.open(plan)
+                first, second = self.servers()
+                self.assertEqual(session.backend, canon_cache.Backend.SHARED)
+                self.assertEqual(session.store_attempts, 2)
+                self.assertEqual(len(self.delays), 1)
+                self.assertTrue(0.5 <= self.delays[0] <= 2.0, self.delays)
+                self.assertTrue(cfx.process_gone(first["pid"]))
+                self.assertFalse(cfx.process_gone(second["pid"]))
+                self.assertEqual(self.autostarts(), [])
+                session.close()
+
+    def test_three_failed_starts_fall_back_to_the_local_cache(self):
+        session = self.open("exit,exit,exit,ok")
+        self.assertEqual(session.backend, canon_cache.Backend.LOCAL_FALLBACK)
+        self.assertEqual(session.reason, canon_cache.Reason.STORE_UNREACHABLE)
+        self.assertEqual(session.store_attempts, 3)
+        self.assertIsNone(session.watchdog)
+        fallback = self.servers()[3]["env"]
+        self.assertEqual(fallback["SCCACHE_DIR"], self.settings.fallback_dir)
+        self.assertEqual(fallback["SCCACHE_CACHE_SIZE"], "3G")
+        self.assertEqual([name for name in fallback if name.startswith("SCCACHE_WEBDAV_")], [])
+
+    def test_three_read_only_starts_are_reported_as_read_only(self):
+        session = self.open("readonly,readonly,readonly,ok")
+        self.assertEqual(session.backend, canon_cache.Backend.LOCAL_FALLBACK)
+        self.assertEqual(session.reason, canon_cache.Reason.READ_ONLY_SERVER)
+        self.assertEqual(session.store_attempts, 3)
+
+    def test_unreachable_store_falls_back_without_attempts(self):
+        session = self.open("ok", reachable=False)
+        self.assertEqual(session.backend, canon_cache.Backend.LOCAL_FALLBACK)
+        self.assertEqual(session.reason, canon_cache.Reason.STORE_UNREACHABLE)
+        self.assertEqual(session.store_attempts, 0)
+
+    def test_no_store_url_falls_back_without_attempts(self):
+        settings = dataclasses.replace(self.settings, store_url=None)
+        session = self.open("ok", settings=settings)
+        self.assertEqual(session.backend, canon_cache.Backend.LOCAL_FALLBACK)
+        self.assertEqual(session.reason, canon_cache.Reason.STORE_NOT_CONFIGURED)
+        self.assertEqual(session.store_attempts, 0)
+
+    def test_start_lock_is_held_during_the_spawn_and_released_after(self):
+        self.open("ok")
+        self.assertIs(self.servers()[0]["lock_held"], True)
+        with open(self.lock, "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def test_server_starts_anyway_when_the_lock_wait_runs_out(self):
+        self.knobs = dataclasses.replace(self.knobs, start_lock_wait=0.05)
+        with open(self.lock, "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            session = self.open("ok")
+        self.assertEqual(session.backend, canon_cache.Backend.SHARED)
+        self.assertEqual(len(self.servers()), 1)
+
+    def test_incremental_is_refused(self):
+        with self.assertRaises(ValueError):
+            self.open("ok", policy=canon_cache.Policy.INCREMENTAL)
+        self.assertEqual(self.servers(), [])
+
+
+class CloseSession(SessionCase):
+    """C4's teardown: stats, then stop, then the relay; nothing left behind."""
+
+    def test_counters_are_summed_across_languages(self):
+        outcome = self.open("ok").close()
+        self.assertEqual((outcome.hits, outcome.misses, outcome.write_errors), (5, 2, 1))
+        self.assertEqual(outcome.detached_server, 0)
+        self.assertEqual((outcome.backend, outcome.reason, outcome.store_attempts), (
+            canon_cache.Backend.SHARED, canon_cache.Reason.NONE, 1))
+
+    def test_stats_then_stop_then_relay_close_and_nothing_left(self):
+        self.open("ok").close()
+        commands = [call for call in cfx.read_sccache_calls(self.fake) if "command" in call]
+        self.assertEqual([call["command"] for call in commands], ["stats", "stop"])
+        self.assertIs(commands[1]["relay_open"], True)
+        self.assertEqual(sorted(name for name in os.listdir(self.build) if name.startswith(".reify-sccache")), [])
+        self.assertTrue(cfx.process_gone(self.servers()[0]["pid"]))
+        self.assertEqual(self.autostarts(), [])
+
+    def test_close_is_idempotent(self):
+        session = self.open("ok")
+        self.assertEqual(session.close(), session.close())
+
+    def test_read_only_line_at_exit_is_reported(self):
+        outcome = self.open("late_readonly").close()
+        self.assertEqual(outcome.reason, canon_cache.Reason.READ_ONLY_SERVER)
+
+    def test_detached_server_on_the_socket_is_counted_and_stopped(self):
+        session = self.open("die")
+        Path(self.fake, "die-now").touch()
+        while self.answers(self.socket):
+            time.sleep(0.02)
+        os.unlink(self.socket)
+        detached = subprocess.Popen(
+            [self.sccache],
+            env=dict(
+                self.env,
+                SCCACHE_START_SERVER="1",
+                SCCACHE_SERVER_UDS=self.socket,
+                FAKE_SCCACHE_BEHAVIOUR="ok",
+                FAKE_SCCACHE_STATS=json.dumps(DETACHED_STATS),
+            ),
+            stdin=subprocess.DEVNULL,
+        )
+        self.addCleanup(detached.kill)
+        while not self.answers(self.socket):
+            time.sleep(0.02)
+        outcome = session.close()
+        self.assertEqual(outcome.detached_server, 1)
+        self.assertEqual((outcome.hits, outcome.misses, outcome.write_errors), (40, 9, 0))
+        self.assertEqual(detached.wait(), 0)
+
+    @staticmethod
+    def answers(path):
+        with socket.socket(socket.AF_UNIX) as probe:
+            try:
+                probe.connect(path)
+            except OSError:
+                return False
+        return True
 
 
 class PolicyMembers(unittest.TestCase):

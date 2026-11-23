@@ -1,13 +1,16 @@
 """
 canon_cache_fixture.py — shared builders for the scripts/canon_cache.py suites
 (test_canon_cache_units.py, test_canon_cache_host.py): a fake WebDAV store
-whose behaviour switches at run time.
+whose behaviour switches at run time, and a fake sccache whose server follows a
+scripted plan.
 
 Not a test module itself (no `test_` prefix): run_all.sh never discovers it,
 and the suites import it via the sys.path idiom. Builds on canon_run_fixture.
 """
 
 import http.server
+import json
+import os
 import socket
 import sys
 import threading
@@ -157,3 +160,186 @@ def raw_get(port, path):
         except (ConnectionResetError, BrokenPipeError):
             pass
     return received
+
+
+# A fake sccache. With SCCACHE_START_SERVER=1 it is a server: it logs itself to
+# calls.jsonl beside this file, takes its behaviour from FAKE_SCCACHE_BEHAVIOUR
+# or else the next entry of the comma-separated `plan` file beside it (default
+# ok), and serves `stats` and `stop` lines on SCCACHE_SERVER_UDS:
+#   exit           prints sccache's storage read failure and exits 2 before binding
+#   readonly       prints the write-check failure, then binds
+#   ok             binds
+#   late_readonly  binds, and prints the write-check failure when asked for stats
+#   die            binds, then exits leaving its socket file once `die-now` exists
+# Otherwise it is a client: --show-stats prints the server's stats in sccache
+# 0.14's JSON shape, --stop-server stops the server and waits for it to go, and
+# finding no listener is logged as `autostart`.
+FAKE_SCCACHE = r"""#!/usr/bin/python3 -I
+import fcntl
+import json
+import os
+import socket
+import sys
+
+HERE = os.path.dirname(os.path.abspath(sys.argv[0]))
+READ_ONLY = "sccache: warning: storage write check failed: Locked\n"
+LOGGED = ("SCCACHE_", "CARGO_", "REIFY_CANON_")
+
+
+def inherited_fds():
+    fds = []
+    for name in os.listdir("/proc/self/fd"):
+        try:
+            os.fstat(int(name))
+        except OSError:
+            continue
+        fds.append(int(name))
+    return sorted(fds)
+
+
+def log(**entry):
+    entry["pid"] = os.getpid()
+    with open(os.path.join(HERE, "calls.jsonl"), "a") as calls:
+        calls.write(json.dumps(entry) + "\n")
+
+
+def next_behaviour():
+    plan_path, counter_path = os.path.join(HERE, "plan"), os.path.join(HERE, "counter")
+    plan = open(plan_path).read().strip().split(",") if os.path.exists(plan_path) else []
+    index = int(open(counter_path).read()) if os.path.exists(counter_path) else 0
+    with open(counter_path, "w") as counter:
+        counter.write(str(index + 1))
+    return plan[index] if index < len(plan) else "ok"
+
+
+def lock_held():
+    path = os.environ.get("FAKE_SCCACHE_LOCK")
+    if not path:
+        return None
+    with open(path, "a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(lock, fcntl.LOCK_UN)
+    return False
+
+
+def endpoint_open(url):
+    if not url:
+        return None
+    host, port = url.removeprefix("http://").split("/")[0].split(":")
+    try:
+        socket.create_connection((host, int(port)), timeout=5).close()
+    except OSError:
+        return False
+    return True
+
+
+def stats_json():
+    given = json.loads(os.environ.get("FAKE_SCCACHE_STATS") or "{}")
+    return json.dumps({"stats": {
+        "cache_hits": {"counts": given.get("hits", {}), "adv_counts": {}},
+        "cache_misses": {"counts": given.get("misses", {}), "adv_counts": {}},
+        "cache_write_errors": given.get("write_errors", 0),
+    }})
+
+
+def serve():
+    fds = inherited_fds()
+    environ = {name: value for name, value in os.environ.items() if name.startswith(LOGGED)}
+    behaviour = os.environ.get("FAKE_SCCACHE_BEHAVIOUR") or next_behaviour()
+    log(role="server", behaviour=behaviour, env=environ, fds=fds, lock_held=lock_held())
+    if behaviour == "exit":
+        sys.stderr.write("sccache: error: Server startup failed: cache storage failed to read:"
+                         " Unexpected (permanent) at read => end of file\n")
+        sys.exit(2)
+    if behaviour == "readonly":
+        sys.stderr.write(READ_ONLY)
+        sys.stderr.flush()
+    path = os.environ["SCCACHE_SERVER_UDS"]
+    listener = socket.socket(socket.AF_UNIX)
+    listener.bind(path)
+    listener.listen(8)
+    if behaviour == "die":
+        listener.settimeout(0.02)
+    while True:
+        try:
+            connection, _ = listener.accept()
+        except TimeoutError:
+            if os.path.exists(os.path.join(HERE, "die-now")):
+                os._exit(0)
+            continue
+        with connection:
+            connection.settimeout(None)
+            command = connection.makefile().readline().strip()
+            if command == "stats":
+                if behaviour == "late_readonly":
+                    sys.stderr.write(READ_ONLY)
+                    sys.stderr.flush()
+                log(role="server", command="stats")
+                connection.sendall(stats_json().encode())
+            elif command == "stop":
+                log(role="server", command="stop",
+                    relay_open=endpoint_open(os.environ.get("SCCACHE_WEBDAV_ENDPOINT")))
+                connection.sendall(b"stopping\n")
+                listener.close()
+                sys.exit(0)
+
+
+def client(arguments):
+    command = "stats" if "--show-stats" in arguments else "stop" if "--stop-server" in arguments else ""
+    connection = socket.socket(socket.AF_UNIX)
+    try:
+        connection.connect(os.environ.get("SCCACHE_SERVER_UDS", ""))
+    except OSError:
+        log(role="client", argv=arguments, autostart=True)
+        sys.exit(2)
+    log(role="client", argv=arguments)
+    with connection:
+        connection.sendall(command.encode() + b"\n")
+        answer = connection.makefile().read()
+    if command == "stats":
+        print(answer)
+
+
+if os.environ.get("SCCACHE_START_SERVER") == "1":
+    serve()
+else:
+    client(sys.argv[1:])
+"""
+
+
+def fake_sccache_dir(parent, name="fake-sccache"):
+    """A directory holding the fake `sccache`; returns its real path."""
+    directory = Path(parent, name)
+    directory.mkdir()
+    sccache = directory / "sccache"
+    sccache.write_text(FAKE_SCCACHE)
+    sccache.chmod(0o755)
+    return os.path.realpath(directory)
+
+
+def set_plan(directory, plan):
+    Path(directory, "plan").write_text(plan)
+    Path(directory, "counter").unlink(missing_ok=True)
+
+
+def read_sccache_calls(directory):
+    log = Path(directory, "calls.jsonl")
+    if not log.exists():
+        return []
+    return [json.loads(line) for line in log.read_text().splitlines()]
+
+
+def servers(directory):
+    return [call for call in read_sccache_calls(directory) if call["role"] == "server" and "behaviour" in call]
+
+
+def process_gone(pid):
+    """True once pid is neither running nor an unreaped zombie."""
+    try:
+        with open(f"/proc/{pid}/stat") as stat:
+            return stat.read().rsplit(")", 1)[1].split()[0] == "X"
+    except FileNotFoundError:
+        return True
