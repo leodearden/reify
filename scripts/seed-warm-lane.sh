@@ -1458,8 +1458,14 @@ if [ -n "$FRESH_CHECKOUT" ]; then
 
     # Base build-worktree stamp (refresh-warm-base.sh Step 4b), shared by the
     # two relocation steps below and the env!()-relink gate further down.
+    # Each gate decides absent / equal / differs from _foreign_rp (the stamp's
+    # realpath, empty when the stamp is absent) against _lane_rp.
     _recorded_buildroot="$(_read_buildroot_stamp "$BASE_TARGET_DIR")"
     _lane_rp="$(realpath -m "$LANE_DIR")"
+    _foreign_rp=""
+    if [ -n "$_recorded_buildroot" ]; then
+        _foreign_rp="$(realpath -m "$_recorded_buildroot")"
+    fi
 
     # ── non-relocatable links-metadata/OUT_DIR path relocation (task 5126) ────
     # cxx/reify-kernel-occt/reify-kernel-openvdb/libsqlite3-sys/zstd-sys/etc. sit
@@ -1493,10 +1499,9 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     # broad one. MAINTENANCE: if cargo ever bakes a foreign-path-carrying
     # replay file under a NEW name (beyond `output`/`root-output`), add it to
     # the `-name` clause below rather than widening this into a content scan.
-    if [ -z "$_recorded_buildroot" ]; then
+    if [ -z "$_foreign_rp" ]; then
         warn "buildroot stamp absent (${BASE_TARGET_DIR}.buildroot not found) — cannot relocate baked links-metadata/OUT_DIR path(s); an empty search prefix would match every byte and corrupt files, so skipping rather than guessing. Re-run scripts/refresh-warm-base.sh to (re)write the stamp."
     else
-        _foreign_rp="$(realpath -m "$_recorded_buildroot")"
         if [ "$_foreign_rp" != "$_lane_rp" ]; then
             _relocate_search_esc="$(_sed_escape "$_foreign_rp")"
             _relocate_replace_esc="$(_sed_escape "$_lane_rp")"
@@ -1551,9 +1556,9 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     # ── recorded-input relocation (task 10167) ────────────────────────────────
     # §9.5 inv.15 — rule: relocate-depinfo-paths.py header. Same stamp gate as
     # the 5126 sweep above; a missing or failing helper aborts the seed.
-    if [ -z "$_recorded_buildroot" ]; then
+    if [ -z "$_foreign_rp" ]; then
         warn "buildroot stamp absent (${BASE_TARGET_DIR}.buildroot not found) — cannot relocate cargo dep-info input paths, so units recording inputs outside their package stay judged against the base's build root (§9.5 inv.15). Re-run scripts/refresh-warm-base.sh to (re)write the stamp."
-    elif [ "$(realpath -m "$_recorded_buildroot")" = "$_lane_rp" ]; then
+    elif [ "$_foreign_rp" = "$_lane_rp" ]; then
         info "Skipping dep-info input-path relocation: recorded buildroot matches this lane ($_lane_rp)"
     else
         _depinfo_helper="$_SCRIPT_DIR/relocate-depinfo-paths.py"
@@ -1562,7 +1567,7 @@ if [ -n "$FRESH_CHECKOUT" ]; then
             exit 1
         fi
         _depinfo_rc=0
-        python3 "$_depinfo_helper" --from-root "$(realpath -m "$_recorded_buildroot")" \
+        python3 "$_depinfo_helper" --from-root "$_foreign_rp" \
             --to-root "$_lane_rp" "$LANE_TARGET" >&2 || _depinfo_rc=$?
         if [ "$_depinfo_rc" -ne 0 ]; then
             err "relocate-depinfo-paths.py exited $_depinfo_rc — cargo dep-info input paths may still name the base's build root (§9.5 inv.15); seed aborted (cold rebuild forced)"
@@ -1611,9 +1616,9 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     # Step 4b write) fails safe and relinks too, since the baked path's
     # provenance is unknown. Only an EXACT match (the base was built under
     # this lane's own path) skips the relink as a genuine no-op.
-    # (_recorded_buildroot/_lane_rp already computed above, shared with the
-    # links-metadata/OUT_DIR relocation sweep.)
-    if [ -z "$_recorded_buildroot" ] || [ "$(realpath -m "$_recorded_buildroot")" != "$_lane_rp" ]; then
+    # (_foreign_rp/_lane_rp already computed above, shared with both relocation
+    # steps.)
+    if [ -z "$_foreign_rp" ] || [ "$_foreign_rp" != "$_lane_rp" ]; then
         _relinked_count=0
         while IFS= read -r -d '' _rs_file; do
             # grep -q exits 1 on no-match; under set -euo pipefail a bare/&&-
