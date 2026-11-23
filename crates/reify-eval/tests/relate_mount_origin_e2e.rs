@@ -48,11 +48,10 @@ fn occt_engine() -> reify_eval::Engine {
 /// Read the §1 bolt-plate example source (same file as `relate_solve_e2e.rs` uses),
 /// so the two test files exercise identical geometry without source drift.
 fn bolt_plate_source() -> String {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/geometric_relations/bolt_plate.ri"
-    );
-    std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read §1 example {path}: {e}"))
+    let path = reify_test_support::examples_corpus::examples_dir()
+        .join("geometric_relations/bolt_plate.ri");
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("read §1 example {}: {e}", path.display()))
 }
 
 /// An identity seed Frame for the bolt's `at auto` unknown.  Realization is

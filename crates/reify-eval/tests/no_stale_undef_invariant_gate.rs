@@ -595,10 +595,10 @@ fn seeded_composition_over_unresolved_cross_cell_operand_is_exempted_by_dependen
 fn seeded_kind_mismatch_composition_undef_is_unexempted_without_caller_discipline() {
     use reify_core::diagnostics::DiagnosticCode;
 
-    let source = std::fs::read_to_string(format!(
-        "{}/tests/fixtures/selectors/bt1_wrong_kind_union.ri",
-        env!("CARGO_MANIFEST_DIR")
-    ))
+    let source = std::fs::read_to_string(
+        reify_test_support::test_package::manifest_dir()
+            .join("tests/fixtures/selectors/bt1_wrong_kind_union.ri"),
+    )
     .expect("fixture bt1_wrong_kind_union.ri must exist");
     let compiled = reify_test_support::compile_source_with_stdlib(&source);
 
@@ -666,12 +666,10 @@ const DELIBERATELY_UNDEF_FIXTURES: &[&str] = &[
 #[test]
 fn deliberately_undef_fixtures_report_zero_violations() {
     for name in DELIBERATELY_UNDEF_FIXTURES {
-        let path = format!(
-            "{}/tests/fixtures/{name}.ri",
-            env!("CARGO_MANIFEST_DIR")
-        );
+        let path = reify_test_support::test_package::manifest_dir()
+            .join(format!("tests/fixtures/{name}.ri"));
         let source = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("reading fixture {name}.ri at {path}: {e}"));
+            .unwrap_or_else(|e| panic!("reading fixture {name}.ri at {}: {e}", path.display()));
 
         let compiled = reify_test_support::compile_source_with_stdlib(&source);
         let errors = reify_test_support::collect_errors(&compiled.diagnostics);
@@ -1815,7 +1813,7 @@ fn build_surface_survey_is_exhaustive() {
 /// solver call would stay green while the covering set kept crediting it with a
 /// target it no longer reaches.
 fn run_build_surface_sweep(label: &str, cases: &[BuildSurfaceCase]) {
-    let examples_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+    let examples_dir = reify_test_support::examples_corpus::examples_dir();
 
     eprintln!(
         "{label}: building {} case(s) — see \

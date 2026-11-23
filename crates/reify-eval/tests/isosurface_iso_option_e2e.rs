@@ -47,7 +47,7 @@
 //!   `snapshot()` terminal-by-index + `tessellate_realizations()`
 //!   terminal-mesh extraction: `crates/reify-eval/tests/voxel_to_mesh_e2e.rs`.
 //! - Runtime-read-fixture RED mechanism (`std::fs::read_to_string` of a
-//!   `CARGO_MANIFEST_DIR`-relative example path via `.expect(...)`, NOT
+//!   `examples_dir()`-relative example path via `.expect(...)`, NOT
 //!   `include_str!`, so a missing fixture is a clean test panic rather than
 //!   a compile error): `voxel_to_mesh_e2e.rs`'s
 //!   `voxel_to_mesh_builds_honest_voxel_operand_and_mesh_terminal`.
@@ -391,10 +391,10 @@ fn iso_example_fixture_surfaces_nonempty() {
         return;
     }
 
-    let source = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/multi_kernel/voxel_to_mesh_iso.ri"
-    ))
+    let source = std::fs::read_to_string(
+        reify_test_support::examples_corpus::examples_dir()
+            .join("multi_kernel/voxel_to_mesh_iso.ri"),
+    )
     .expect(
         "examples/multi_kernel/voxel_to_mesh_iso.ri must exist \
          (task 5003 step-2 creates this fixture)",

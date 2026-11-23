@@ -14,11 +14,10 @@ use reify_eval::{BomLine, BomReport};
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
 /// Absolute path to the canonical BOM-lifecycle example fixture (ε row).
-/// Mirrors the `CARGO_MANIFEST_DIR` pattern from `cost_aggregation_eval.rs`.
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/bom_lifecycle.ri"
-);
+/// Mirrors the examples-path pattern from `cost_aggregation_eval.rs`.
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("bom_lifecycle.ri")
+}
 
 /// Compile `source` with the stdlib prelude, eval it (asserting zero Error
 /// diagnostics), and roll up the BOM report. Shared by every test below.
@@ -351,7 +350,7 @@ structure def Widget {
 /// waste line naming Offcut/Recycle, and a provenance line naming incoming.step.
 #[test]
 fn bom_lifecycle_example_renders_all_three_sections() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
+    let source = std::fs::read_to_string(example_path())
         .unwrap_or_else(|e| panic!("failed to read examples/bom_lifecycle.ri: {e}"));
     let report = build_report(&source);
     let text = report.render();

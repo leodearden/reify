@@ -34,10 +34,10 @@ use reify_test_support::{MockGeometryKernel, parse_and_compile_with_stdlib};
 
 // ── Path constant ─────────────────────────────────────────────────────────────
 
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/ambient_default_material/ambient_default_surface.ri"
-);
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir()
+        .join("ambient_default_material/ambient_default_surface.ri")
+}
 
 // ── Box geometry constants (must match example file dims) ─────────────────────
 
@@ -99,7 +99,7 @@ fn assert_mass_scalar(actual: Option<&Value>, expected_si: f64, label: &str) {
 #[test]
 fn ci_example_compiles_clean_and_evaluates_steel() {
     // Read unconditionally: fixture presence is a CI contract independent of OCCT.
-    let source = std::fs::read_to_string(EXAMPLE_PATH).expect(
+    let source = std::fs::read_to_string(example_path()).expect(
         "examples/ambient_default_material/ambient_default_surface.ri must exist \
          (task #4499 step-4 creates it)",
     );
@@ -206,7 +206,7 @@ fn ci_example_compiles_clean_and_evaluates_steel() {
 /// **GREEN (step-6):** the helper is implemented.
 #[test]
 fn line_removed_errors_naming_mechanism() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH).expect(
+    let source = std::fs::read_to_string(example_path()).expect(
         "examples/ambient_default_material/ambient_default_surface.ri must exist \
          (task #4499 step-4 creates it)",
     );
@@ -393,9 +393,8 @@ structure def BmpNoAmbient {
 /// **GREEN (step-12):** the walker descent logic is fixed.
 #[test]
 fn row_8_water_default_symbol_absent_from_source() {
-    // Root is `crates/` (the parent of all crates), pointed to via CARGO_MANIFEST_DIR
-    // of the reify-eval crate (`crates/reify-eval/`).
-    let crates_root = concat!(env!("CARGO_MANIFEST_DIR"), "/../");
+    // Root is `crates/` (the parent of all crates).
+    let crates_root = &reify_test_support::workspace_root::workspace_root().join("crates");
 
     let (matches, files_scanned) = scan_rs_sources(
         crates_root,
@@ -442,11 +441,11 @@ fn row_8_water_default_symbol_absent_from_source() {
 ///
 /// Restricted to `src/` dirs: production source only; `tests/` and `benches/`
 /// are excluded so this test file cannot self-match its own needle strings.
-fn scan_rs_sources(crates_root: &str, needles: &[&str]) -> (Vec<String>, usize) {
+fn scan_rs_sources(crates_root: &std::path::Path, needles: &[&str]) -> (Vec<String>, usize) {
     let mut matches = Vec::new();
     let mut files_scanned = 0_usize;
     scan_dir(
-        std::path::Path::new(crates_root),
+        crates_root,
         needles,
         false,
         &mut matches,

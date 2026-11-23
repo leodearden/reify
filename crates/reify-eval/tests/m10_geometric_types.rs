@@ -10,17 +10,16 @@ use reify_ir::Satisfaction;
 use reify_test_support::parse_and_compile_with_stdlib;
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/m10_geometric_types.ri"
-);
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("m10_geometric_types.ri")
+}
 
 // ── Step 1: parse succeeds ──────────────────────────────────────────
 
 /// Read m10_geometric_types.ri and verify it parses without errors.
 #[test]
 fn geometric_types_ri_parses() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
+    let source = std::fs::read_to_string(example_path())
         .expect("examples/m10_geometric_types.ri should exist");
 
     let parsed = reify_syntax::parse(&source, ModulePath::single("test"));
@@ -36,7 +35,7 @@ fn geometric_types_ri_parses() {
 /// Compile the .ri file and verify no compile errors.
 #[test]
 fn geometric_types_compiles() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
+    let source = std::fs::read_to_string(example_path())
         .expect("examples/m10_geometric_types.ri should exist");
 
     let compiled = parse_and_compile_with_stdlib(&source);
@@ -66,7 +65,7 @@ fn geometric_types_compiles() {
 /// Compile, eval, and verify all constraints are Satisfied with SimpleConstraintChecker.
 #[test]
 fn geometric_types_all_constraints_satisfied() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
+    let source = std::fs::read_to_string(example_path())
         .expect("examples/m10_geometric_types.ri should exist");
 
     let compiled = parse_and_compile_with_stdlib(&source);

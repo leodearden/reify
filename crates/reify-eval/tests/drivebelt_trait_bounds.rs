@@ -18,10 +18,9 @@ use reify_test_support::{
 };
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/drivebelt_trait_bounds.ri"
-);
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("drivebelt_trait_bounds.ri")
+}
 
 // ── Helper ────────────────────────────────────────────────────────────────────
 
@@ -36,7 +35,7 @@ fn compile_and_eval() -> (
     reify_eval::Engine,
     reify_eval::EvalResult,
 ) {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
+    let source = std::fs::read_to_string(example_path())
         .unwrap_or_else(|e| panic!("examples/drivebelt_trait_bounds.ri should exist: {}", e));
 
     let compiled = parse_and_compile_with_stdlib(&source);

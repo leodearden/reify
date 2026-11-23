@@ -212,10 +212,9 @@ fn cost_subtree_aggregate_empty_is_money_typed_zero() {
 
 // ─── step-7: end-to-end example fixture (RED until step-8 creates the file) ─
 
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/cost_subtree_aggregate.ri"
-);
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("cost_subtree_aggregate.ri")
+}
 
 /// Reads `examples/cost_subtree_aggregate.ri`, compiles, and evaluates it.
 ///
@@ -236,7 +235,7 @@ const EXAMPLE_PATH: &str = concat!(
 /// `read_to_string` fails.
 #[test]
 fn example_cost_subtree_aggregate_ri_evals_expected_total() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH).unwrap_or_else(|e| {
+    let source = std::fs::read_to_string(example_path()).unwrap_or_else(|e| {
         panic!(
             "failed to read examples/cost_subtree_aggregate.ri (created by step-8): {}",
             e

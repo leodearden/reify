@@ -26,10 +26,9 @@ use reify_ir::Value;
 use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
 
 /// Compile-time path to the example fixture, resolved from the crate root.
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/dimensionless_unification.ri"
-);
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("dimensionless_unification.ri")
+}
 
 /// Absolute tolerance for SI-value comparisons.
 /// 2mm × 4.5 = 0.009000000000000001 (1 ULP above 0.009); actual error ~1.7e-18.
@@ -50,7 +49,7 @@ const STRUCT: &str = "DimensionlessUnification";
 /// mask failures in others. The integration gate is small enough that the
 /// duplicate compile cost is acceptable.
 fn eval_example() -> reify_eval::EvalResult {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
+    let source = std::fs::read_to_string(example_path())
         .expect("examples/dimensionless_unification.ri should exist");
 
     let compiled = parse_and_compile_with_stdlib(&source);

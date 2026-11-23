@@ -55,15 +55,14 @@ use reify_test_support::{compile_source_with_stdlib, make_simple_engine};
 
 // ── Path constants ────────────────────────────────────────────────────────────
 
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/trajectory/printer_print_envelope.ri"
-);
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("trajectory/printer_print_envelope.ri")
+}
 
-const FIXTURE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/trajectory/test_data/printer_print_envelope.gcode"
-);
+fn fixture_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir()
+        .join("trajectory/test_data/printer_print_envelope.gcode")
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -197,7 +196,7 @@ fn register_compute_fns_installs_trajectory_trampolines() {
 )]
 #[test]
 fn printer_print_envelope_eval_e2e() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
+    let source = std::fs::read_to_string(example_path())
         .expect("examples/trajectory/printer_print_envelope.ri should exist (authored by step-2)");
 
     // `compile_source_with_stdlib`, NOT `parse_and_compile_with_stdlib`: the latter
@@ -544,7 +543,7 @@ fn printer_print_envelope_eval_e2e() {
 /// MarlinDialect and assert the resulting `Value::List` has ≥ 2 elements.
 #[test]
 fn printer_print_envelope_fixture_multi_segment() {
-    let fixture_gcode = std::fs::read_to_string(FIXTURE_PATH).expect(
+    let fixture_gcode = std::fs::read_to_string(fixture_path()).expect(
         "examples/trajectory/test_data/printer_print_envelope.gcode should exist \
          (authored by step-6)",
     );

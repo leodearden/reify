@@ -20,12 +20,11 @@ use reify_ir::Value;
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
 /// Absolute path to the canonical two-aspect aggregation example fixture.
-/// Mirrors the CARGO_MANIFEST_DIR pattern from
+/// Mirrors the examples-path pattern from
 /// `crates/reify-eval/tests/cost_aggregation_eval.rs`.
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/aspect_massive.ri"
-);
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("aspect_massive.ri")
+}
 
 // ─── .sum dimension-preservation probe over Mass literals ───────────────────
 
@@ -101,7 +100,7 @@ structure def MassSumProbe {
 /// values are the raw 6.0 / 0.8.
 #[test]
 fn aspect_massive_example_evaluates_total_cost_and_total_mass_to_expected_values() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
+    let source = std::fs::read_to_string(example_path())
         .unwrap_or_else(|e| panic!("failed to read examples/aspect_massive.ri: {}", e));
 
     let compiled = parse_and_compile_with_stdlib(&source);

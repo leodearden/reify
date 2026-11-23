@@ -15,18 +15,17 @@ use reify_eval::EvalResult;
 use reify_ir::Value;
 use reify_test_support::{collect_errors, make_engine, parse_and_compile_with_stdlib};
 
-const FILE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/unit_expressions.ri"
-);
+fn file_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("unit_expressions.ri")
+}
 
 const EPSILON: f64 = 1e-9;
 
 fn file_source() -> &'static str {
     static S: OnceLock<String> = OnceLock::new();
     S.get_or_init(|| {
-        std::fs::read_to_string(FILE_PATH)
-            .unwrap_or_else(|e| panic!("{FILE_PATH} should exist: {e}"))
+        std::fs::read_to_string(file_path())
+            .unwrap_or_else(|e| panic!("{} should exist: {e}", file_path().display()))
     })
     .as_str()
 }

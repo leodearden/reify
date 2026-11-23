@@ -573,10 +573,9 @@ fn engine_build_emits_warning_on_unresolved_face_name() {
 /// Path to the user-observable `.ri` witness for task 3463.
 ///
 /// RED until step-10 creates `examples/ad_hoc_face_selector.ri`.
-const AD_HOC_FACE_SELECTOR_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/ad_hoc_face_selector.ri"
-);
+fn ad_hoc_face_selector_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("ad_hoc_face_selector.ri")
+}
 
 /// `examples/ad_hoc_face_selector.ri` must compile with no error-severity
 /// diagnostics AND the `top_frame` cell in `TopCapBracket` must evaluate
@@ -584,7 +583,7 @@ const AD_HOC_FACE_SELECTOR_PATH: &str = concat!(
 ///
 /// Pipeline under test (mirrors `engine_build_post_processes_ad_hoc_face_selector_to_frame`
 /// but reads a real `.ri` file compiled with stdlib, not an inline source string):
-///   1. `std::fs::read_to_string(AD_HOC_FACE_SELECTOR_PATH)` — reads the file.
+///   1. `std::fs::read_to_string(ad_hoc_face_selector_path)` — reads the file.
 ///   2. `parse_and_compile_with_stdlib(&source)` — compiles with stdlib so that
 ///      `cylinder`, `transform3`, `orient_identity`, `vec3` etc. are resolved.
 ///   3. `errors_only(&compiled).is_empty()` — no compile-time Error diagnostics.
@@ -602,7 +601,7 @@ const AD_HOC_FACE_SELECTOR_PATH: &str = concat!(
 /// RED until step-10 creates `examples/ad_hoc_face_selector.ri`.
 #[test]
 fn face_selector_ri_example_compiles_and_evaluates_to_frame() {
-    let source = std::fs::read_to_string(AD_HOC_FACE_SELECTOR_PATH)
+    let source = std::fs::read_to_string(ad_hoc_face_selector_path())
         .expect("examples/ad_hoc_face_selector.ri should exist (created by step-10)");
 
     // Compile with stdlib so cylinder, transform3, orient_identity, vec3 resolve.

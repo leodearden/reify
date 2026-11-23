@@ -21,10 +21,9 @@ use reify_ir::Value;
 use reify_test_support::{cell_value, collect_errors, mm, parse_and_compile_with_stdlib};
 
 /// Absolute path to the example, resolved at compile time from the crate root.
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/m6_fallback_recovery.ri"
-);
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("m6_fallback_recovery.ri")
+}
 
 /// `examples/m6_fallback_recovery.ri` must compile + eval with zero Error
 /// diagnostics, and the six value cells across `MountValid` (raw="12mm") and
@@ -41,7 +40,7 @@ const EXAMPLE_PATH: &str = concat!(
 /// signal at the rendered-stdout binary surface (§1).
 #[test]
 fn fallback_recovery_example_evals_end_to_end() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
+    let source = std::fs::read_to_string(example_path())
         .expect("examples/m6_fallback_recovery.ri should exist");
 
     let compiled = parse_and_compile_with_stdlib(&source);

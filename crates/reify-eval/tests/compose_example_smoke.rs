@@ -25,10 +25,9 @@ use reify_test_support::{
 };
 
 /// Absolute path to the fixture, resolved at compile time from the crate root.
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/fields/compose.ri"
-);
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("fields/compose.ri")
+}
 
 /// Read the fixture and compile it with the stdlib, asserting no error
 /// diagnostics.  Returns the compiled program for further use.
@@ -37,7 +36,7 @@ const EXAMPLE_PATH: &str = concat!(
 /// the two tests below.
 fn compile_compose_fixture() -> CompiledModule {
     let source =
-        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/fields/compose.ri should exist");
+        std::fs::read_to_string(example_path()).expect("examples/fields/compose.ri should exist");
 
     let compiled = parse_and_compile_with_stdlib(&source);
 

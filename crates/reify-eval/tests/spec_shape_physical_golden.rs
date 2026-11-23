@@ -139,7 +139,7 @@ fn spec_shape_physical_build_golden() {
         render_cell(&result, "centroid"),
     );
 
-    let golden_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    let golden_path = reify_test_support::test_package::manifest_dir()
         .join("tests/golden/spec_shape_physical.txt");
 
     if std::env::var("REIFY_REGENERATE_GOLDEN").is_ok() {
