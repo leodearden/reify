@@ -5,11 +5,15 @@ The canonical-build-path primitive (dark-factory
 plans/canonical-build-path-shared-cache-prd.md C1-C7): ``status`` reports
 the mode of the build directory under the current tree, and ``exec -- <cmd>``
 and ``cargo <args>`` run a command either untouched at the tree's real path or
-at CANON, the one path every stamped build directory is built at. What cache a
-command at CANON gets (C4-C6) is the sibling module canon_cache.py's business.
+at CANON, the one path every stamped build directory is built at. The outermost
+invocation at CANON supervises its command (a mount namespace is entered by
+re-running this script inside it); a real-path one on an enabled host is
+supervised only to record it. What cache a command at CANON gets, and the
+supervision itself (C4-C6), are the sibling module canon_cache.py's business.
 """
 from __future__ import annotations
 
+import contextlib
 import functools
 import importlib.util
 import json
@@ -82,10 +86,6 @@ class Refusal(Exception):
     """A one-line reason this invocation must not run."""
 
 
-class CommandNotFound(Exception):
-    """A one-line reason the command to run could not be found or started."""
-
-
 @dataclass(frozen=True)
 class HostConfig:
     path: Path
@@ -108,9 +108,12 @@ class Reachability:
 
 @dataclass(frozen=True)
 class Decision:
+    """C1's verdict; cache_reason is set on the two real-path rows a build_cache record reports."""
+
     mode: Mode
     reason: str
     route: Route = Route.NONE
+    cache_reason: canon_cache.Reason = canon_cache.Reason.NONE
 
 
 @dataclass(frozen=True)
@@ -125,13 +128,40 @@ class Tree:
 
 
 @dataclass(frozen=True)
+class Supervisor:
+    """The outermost invocation's mode and, at CANON, the cache every command under it uses."""
+
+    mode: Mode
+    cache: canon_cache.CacheEnvironment | None
+
+    def to_record(self) -> dict[str, object]:
+        return {"mode": self.mode.value, "cache": None if self.cache is None else self.cache.to_record()}
+
+    @classmethod
+    def from_record(cls, record: object) -> Supervisor | None:
+        """None unless a canon supervisor carries a cache and a real_path one carries none."""
+        if not isinstance(record, dict) or "cache" not in record:
+            return None
+        if record.get("mode") == Mode.REAL_PATH:
+            return cls(Mode.REAL_PATH, None) if record["cache"] is None else None
+        if record.get("mode") != Mode.CANON:
+            return None
+        cache = canon_cache.CacheEnvironment.from_record(record["cache"])
+        return None if cache is None else cls(Mode.CANON, cache)
+
+
+@dataclass(frozen=True)
 class ActiveTree:
-    """REIFY_CANON_ACTIVE: the tree a CANON invocation bound, read back by nested ones."""
+    """REIFY_CANON_ACTIVE: the tree an outer invocation runs, read back by nested ones.
+
+    supervisor is None from the process that enters a mount namespace, which supervises nothing.
+    """
 
     dev: int
     ino: int
     real_root: str
     canon: str
+    supervisor: Supervisor | None = None
 
 
 @dataclass(frozen=True)
@@ -212,8 +242,12 @@ def is_real_dir(path: str | Path) -> bool:
         return False
 
 
-def format_active(tree: Tree, canon: str) -> str:
-    record = {"dev": tree.dev, "ino": tree.ino, "real_root": str(tree.real_root), "canon": canon}
+def format_active(tree: Tree, canon: str, supervisor: Supervisor | None = None) -> str:
+    record: dict[str, object] = {
+        "dev": tree.dev, "ino": tree.ino, "real_root": str(tree.real_root), "canon": canon
+    }
+    if supervisor is not None:
+        record["supervisor"] = supervisor.to_record()
     return json.dumps(record, sort_keys=True)
 
 
@@ -229,7 +263,16 @@ def parse_active(value: str | None) -> ActiveTree | None:
         return None
     if not isinstance(real_root, str) or not isinstance(canon, str):
         return None
-    return ActiveTree(dev, ino, real_root, canon)
+    return ActiveTree(dev, ino, real_root, canon, Supervisor.from_record(record.get("supervisor")))
+
+
+def is_nested(active: ActiveTree | None, tree: Tree, decision: Decision) -> bool:
+    """Run under a supervisor of this same tree and mode, which already records and caches for it."""
+    if active is None or active.supervisor is None:
+        return False
+    if (active.dev, active.ino) != (tree.dev, tree.ino) or active.supervisor.mode is not decision.mode:
+        return False
+    return decision.mode is not Mode.CANON or decision.route is Route.BOUND
 
 
 def find_tree(cwd: str, environ: Mapping[str, str]) -> Tree | None:
@@ -381,12 +424,20 @@ def decide_mode(
             )
         return Decision(Mode.CANON, f"stamped for CANON {canon}; {reach.reason}", reach.route)
     if state.built_in:
-        return Decision(Mode.REAL_PATH, "unstamped and already built at its real path")
+        return Decision(
+            Mode.REAL_PATH,
+            "unstamped and already built at its real path",
+            cache_reason=canon_cache.Reason.LEGACY_BUILD_DIR,
+        )
     if not host_enabled():
         return Decision(Mode.REAL_PATH, "fresh, and canonical builds are disabled on this host")
     reach = reachability()
     if reach.route is Route.NONE:
-        return Decision(Mode.REAL_PATH, f"fresh, and CANON is unreachable: {reach.reason}")
+        return Decision(
+            Mode.REAL_PATH,
+            f"fresh, and CANON is unreachable: {reach.reason}",
+            cache_reason=canon_cache.Reason.CANON_UNAVAILABLE,
+        )
     return Decision(Mode.CANON, f"fresh on an enabled host; {reach.reason}", reach.route)
 
 
@@ -567,6 +618,7 @@ def canon_search_path(
     return os.pathsep.join([*front, *rest])
 
 
+@functools.cache
 def grammar_cache_dir(real_root: Path) -> str | None:
     """REIFY_TS_CACHE_HOME for real_root, derived by that tree's own prd-capability-check.py."""
     pcc_path = Path(real_root, "scripts", "prd-capability-check.py")
@@ -610,7 +662,7 @@ def canon_invocation(
     env["PATH"] = canon_search_path(
         environ.get("PATH", ""), tree, canon, environ.get("HOME"), guard=cache.uses_guard
     )
-    env["REIFY_CANON_ACTIVE"] = format_active(tree, canon)
+    env["REIFY_CANON_ACTIVE"] = format_active(tree, canon, Supervisor(Mode.CANON, cache))
     env["REIFY_VERIFY_LEDGER_LANE_DIR"] = str(tree.real_root)
     cache_home = grammar_cache_dir(tree.real_root)
     if cache_home is None:
@@ -621,7 +673,7 @@ def canon_invocation(
     if cargo:
         real_cargo = resolve_canon_cargo(env["PATH"])
         if real_cargo is None:
-            raise CommandNotFound("no cargo on the CANON PATH other than reify-canon trampolines")
+            raise canon_cache.CommandNotFound("no cargo on the CANON PATH other than reify-canon trampolines")
         argv = [real_cargo, *argv]
     return Invocation(tuple(argv), env, env["PWD"])
 
@@ -635,17 +687,25 @@ def execute(file: str, argv: list[str], env: Mapping[str, str], *, search: bool)
     try:
         exec_call(file, argv, env)
     except OSError as exc:
-        raise CommandNotFound(f"cannot run {file}: {exc}") from exc
+        raise canon_cache.CommandNotFound(f"cannot run {file}: {exc}") from exc
+
+
+def untouched_argv(command: list[str], *, cargo: bool, environ: Mapping[str, str]) -> list[str]:
+    """The command as given; for cargo, the real cargo (by the caller-order rule) and its arguments."""
+    if not cargo:
+        return list(command)
+    real_cargo = resolve_real_cargo(environ.get("PATH", ""))
+    if real_cargo is None:
+        raise canon_cache.CommandNotFound("no cargo on PATH other than reify-canon trampolines")
+    return [real_cargo, *command]
 
 
 def exec_untouched(command: list[str], *, cargo: bool, environ: Mapping[str, str]) -> NoReturn:
     """C2's real-path mode: the command with the caller's exact environment and cwd."""
+    argv = untouched_argv(command, cargo=cargo, environ=environ)
     if not cargo:
-        return execute(command[0], command, environ, search=True)
-    real_cargo = resolve_real_cargo(environ.get("PATH", ""))
-    if real_cargo is None:
-        raise CommandNotFound("no cargo on PATH other than reify-canon trampolines")
-    return execute(real_cargo, ["cargo", *command], environ, search=False)
+        return execute(argv[0], argv, environ, search=True)
+    return execute(argv[0], ["cargo", *argv[1:]], environ, search=False)
 
 
 def ensure_stamp(build_dir: Path, canon: str) -> None:
@@ -676,42 +736,144 @@ def ensure_stamp(build_dir: Path, canon: str) -> None:
         os.unlink(pending)
 
 
-def enter_canon(
-    command: list[str],
-    *,
-    cargo: bool,
-    environ: Mapping[str, str],
-    tree: Tree,
-    canon: str,
-    cwd: str,
-    build_dir: Path,
-    host: HostConfig,
-    route: Route,
-) -> NoReturn:
-    """Run the command at CANON: directly when CANON is already the tree, else under bwrap."""
-    cache = canon_cache.CacheEnvironment(host.policy, None)
-    invocation = canon_invocation(command, environ, tree, canon, cwd, cache, cargo=cargo)
-    refusal = cache_refusal(host, invocation.env["PATH"])
+@dataclass(frozen=True)
+class Call:
+    """One `exec` or `cargo` invocation inside a tree; command is cargo's arguments for cargo."""
+
+    command: tuple[str, ...]
+    cargo: bool
+    environ: Mapping[str, str]
+    tree: Tree
+    canon: str
+    cwd: str
+    build_dir: Path
+
+    @property
+    def arguments(self) -> list[str]:
+        """This invocation's own command line after the script name."""
+        return ["cargo", *self.command] if self.cargo else ["exec", "--", *self.command]
+
+    @property
+    def subcommand(self) -> str:
+        """C6's subcommand: cargo's, or empty for exec."""
+        index = cargo_subcommand_index(list(self.command)) if self.cargo else None
+        return "" if index is None else self.command[index]
+
+    @property
+    def channel(self) -> str | None:
+        return self.environ.get("REIFY_VERIFY_EVENT_LOG") or None
+
+    def at_canon(self, cache: canon_cache.CacheEnvironment) -> Invocation:
+        return canon_invocation(
+            list(self.command), self.environ, self.tree, self.canon, self.cwd, cache, cargo=self.cargo
+        )
+
+
+def reentry_argv(tree: Tree, canon: str, cwd: str, arguments: list[str]) -> list[str]:
+    """bwrap binding the tree's real root at canon, re-running this same script there."""
+    return [
+        BWRAP, "--dev-bind", "/", "/", "--bind", str(tree.real_root), canon,
+        "--chdir", rebase(cwd, tree, canon), "--die-with-parent", "--",
+        sys.executable, "-I", os.path.join(canon, "scripts", "canon_run.py"), *arguments,
+    ]
+
+
+def reentry_env(environ: Mapping[str, str], tree: Tree, canon: str) -> dict[str, str]:
+    """The caller's environment plus the tree record, so the re-run finds the real root."""
+    return dict(environ, REIFY_CANON_ACTIVE=format_active(tree, canon))
+
+
+def validated_canon_path(call: Call, host: HostConfig) -> str:
+    """The composed CANON PATH, once the command and, with sccache, a real sccache resolve on it."""
+    probe = call.at_canon(canon_cache.CacheEnvironment(host.policy, None))
+    refusal = cache_refusal(host, probe.env["PATH"])
     if refusal:
         raise Refusal(refusal)
-    ensure_stamp(build_dir, canon)
-    if route is Route.NAMESPACE:
-        file, search = BWRAP, False
-        argv = [
-            "bwrap", "--dev-bind", "/", "/", "--bind", str(tree.real_root), canon,
-            "--chdir", invocation.cwd, "--die-with-parent", "--", *invocation.argv,
-        ]
-    else:
-        try:
-            os.chdir(invocation.cwd)
-        except OSError as exc:
-            raise Refusal(f"cannot enter {invocation.cwd}: {exc}") from exc
-        file, search = invocation.argv[0], not cargo
-        argv = ["cargo", *invocation.argv[1:]] if cargo else list(invocation.argv)
-    execute(file, argv, invocation.env, search=search)
+    if not call.cargo:
+        canon_cache.resolve_command(call.command[0], call.environ, call.cwd)
+    return probe.env["PATH"]
 
 
-def run(command: list[str], *, cargo: bool, environ: Mapping[str, str]) -> NoReturn:
+def enter_namespace(call: Call, host: HostConfig) -> NoReturn:
+    """The NAMESPACE route: validate, stamp, then re-run this invocation where CANON is bound."""
+    validated_canon_path(call, host)
+    ensure_stamp(call.build_dir, call.canon)
+    argv = reentry_argv(call.tree, call.canon, call.cwd, call.arguments)
+    execute(BWRAP, argv, reentry_env(call.environ, call.tree, call.canon), search=False)
+
+
+def exec_nested(call: Call, cache: canon_cache.CacheEnvironment) -> NoReturn:
+    """Under a CANON supervisor of this tree: its cache, no session and no record of our own."""
+    invocation = call.at_canon(cache)
+    try:
+        os.chdir(invocation.cwd)
+    except OSError as exc:
+        raise Refusal(f"cannot enter {invocation.cwd}: {exc}") from exc
+    if call.cargo:
+        execute(invocation.argv[0], ["cargo", *invocation.argv[1:]], invocation.env, search=False)
+    execute(invocation.argv[0], list(invocation.argv), invocation.env, search=True)
+
+
+def open_canon_session(call: Call, host: HostConfig, search_path: str) -> canon_cache.CacheSession | None:
+    """The private server for shared or mixed; None under incremental."""
+    if host.policy is canon_cache.Policy.INCREMENTAL:
+        return None
+    try:
+        return canon_cache.open_session(
+            host.policy,
+            host.cache,
+            canon_build_dir=os.path.join(call.canon, "target"),
+            sccache=canon_cache.resolve_real_sccache(search_path),
+            env=call.environ,
+        )
+    except canon_cache.CacheSessionError as exc:
+        raise Refusal(str(exc)) from exc
+
+
+def supervise_at_canon(call: Call, host: HostConfig) -> int:
+    """The BOUND route: the command at CANON under the host policy, measured and recorded."""
+    search_path = validated_canon_path(call, host)
+    ensure_stamp(call.build_dir, call.canon)
+    session = open_canon_session(call, host, search_path)
+    try:
+        cache = canon_cache.CacheEnvironment(host.policy, None) if session is None else session.environment
+        invocation = call.at_canon(cache)
+    except BaseException:
+        if session is not None:
+            session.close()
+        raise
+    return canon_cache.supervise(
+        list(invocation.argv),
+        invocation.env,
+        invocation.cwd,
+        session=session,
+        record_base=canon_cache.RecordBase(Mode.CANON.value, host.policy),
+        subcommand=call.subcommand,
+        channel=call.channel,
+        journal=canon_cache.journal_path(rebase(str(call.build_dir), call.tree, call.canon)),
+    )
+
+
+def supervise_real_path(call: Call, host: HostConfig, reason: canon_cache.Reason) -> int:
+    """C6's real_path record: the untouched command, marked so nested invocations stay untouched."""
+    argv = untouched_argv(list(call.command), cargo=call.cargo, environ=call.environ)
+    supervisor = Supervisor(Mode.REAL_PATH, None)
+    env = dict(call.environ, REIFY_CANON_ACTIVE=format_active(call.tree, call.canon, supervisor))
+    with contextlib.suppress(OSError):
+        os.makedirs(call.build_dir, exist_ok=True)
+    return canon_cache.supervise(
+        argv,
+        env,
+        call.cwd,
+        session=None,
+        record_base=canon_cache.RecordBase(Mode.REAL_PATH.value, host.policy, canon_cache.Backend.NONE, reason),
+        subcommand=call.subcommand,
+        channel=call.channel,
+        journal=canon_cache.journal_path(call.build_dir),
+    )
+
+
+def run(command: list[str], *, cargo: bool, environ: Mapping[str, str]) -> int:
     """`exec` (command is the full command) or `cargo` (command is cargo's arguments)."""
     try:
         cwd = os.getcwd()
@@ -725,21 +887,21 @@ def run(command: list[str], *, cargo: bool, environ: Mapping[str, str]) -> NoRet
     canon = canon_root(environ)
     host = functools.cache(lambda: load_host_config(host_config_path(environ)))
     decision = build_dir_decision(tree, build_dir, canon, lambda: host().enabled)
-    if decision.mode is Mode.REAL_PATH:
-        return exec_untouched(command, cargo=cargo, environ=environ)
+    active = parse_active(environ.get("REIFY_CANON_ACTIVE"))
+    call = Call(tuple(command), cargo, environ, tree, canon, cwd, build_dir)
+    if is_nested(active, tree, decision):
+        if decision.mode is Mode.REAL_PATH:
+            return exec_untouched(command, cargo=cargo, environ=environ)
+        return exec_nested(call, active.supervisor.cache)
     if decision.mode is Mode.REFUSED:
         raise Refusal(f"build directory {build_dir}: {decision.reason}")
-    enter_canon(
-        command,
-        cargo=cargo,
-        environ=environ,
-        tree=tree,
-        canon=canon,
-        cwd=cwd,
-        build_dir=build_dir,
-        host=host(),
-        route=decision.route,
-    )
+    if decision.mode is Mode.REAL_PATH:
+        if decision.cache_reason and host().enabled:
+            return supervise_real_path(call, host(), decision.cache_reason)
+        return exec_untouched(command, cargo=cargo, environ=environ)
+    if decision.route is Route.NAMESPACE:
+        return enter_namespace(call, host())
+    return supervise_at_canon(call, host())
 
 
 def main(argv: list[str]) -> int:
@@ -756,7 +918,7 @@ def main(argv: list[str]) -> int:
     except Refusal as refusal:
         print(f"canon_run: {flatten(refusal)}", file=sys.stderr)
         return EXIT_REFUSED
-    except CommandNotFound as not_found:
+    except canon_cache.CommandNotFound as not_found:
         print(f"canon_run: {flatten(not_found)}", file=sys.stderr)
         return EXIT_NOT_FOUND
     print(USAGE, file=sys.stderr)

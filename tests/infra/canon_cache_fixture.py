@@ -402,7 +402,6 @@ STORE_USER = "reify-canon-test"
 STORE_PREFIX = "reify"
 HEX = "0123456789abcdef"
 READY_WAIT = 60.0
-JOURNAL = ".reify-canon-journal.jsonl"
 
 
 class RcloneStore:
@@ -566,7 +565,7 @@ def write_cache_host_config(path, *, policy, store, fallback_dir):
 
 
 def read_journal(build_dir):
-    events = read_events(os.path.join(build_dir, JOURNAL))
+    events = read_events(fx.load_canon_cache().journal_path(build_dir))
     if events.skipped_lines:
         raise AssertionError(f"{events.skipped_lines} unreadable journal lines in {build_dir}")
     return list(events.records)

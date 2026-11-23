@@ -864,6 +864,12 @@ def open_session(
 
 
 EVENT_LIB = Path(__file__).with_name("lib_event_log.sh")
+JOURNAL_NAME = ".reify-canon-journal.jsonl"
+
+
+def journal_path(build_dir: str | Path) -> str:
+    """The invocation journal: every supervised invocation's build_cache record, in its build directory."""
+    return os.path.join(build_dir, JOURNAL_NAME)
 
 
 @dataclass(frozen=True)
@@ -919,7 +925,7 @@ def write_record(record: BuildCacheRecord, subcommand: str, channel: str | None,
 
 
 class CommandNotFound(Exception):
-    """A one-line reason the command to supervise could not be found or started."""
+    """A one-line reason a command could not be found or started."""
 
 
 @dataclass(frozen=True)

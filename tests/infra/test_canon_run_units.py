@@ -434,7 +434,7 @@ class RealPathIsUntouched(CliCase):
 
 
 def journal_rows(build_dir):
-    events = read_events(os.path.join(build_dir, ".reify-canon-journal.jsonl"))
+    events = read_events(canon_cache.journal_path(build_dir))
     assert events.skipped_lines == 0, events
     return list(events.records)
 
@@ -477,14 +477,14 @@ class RealPathSupervision(CliCase):
         return row
 
     def assert_no_record(self):
-        self.assertFalse(os.path.exists(os.path.join(self.target, ".reify-canon-journal.jsonl")))
+        self.assertFalse(os.path.exists(canon_cache.journal_path(self.target)))
         self.assertFalse(os.path.exists(self.channel))
 
     def test_fresh_target_with_canon_unavailable_is_supervised_and_recorded(self):
         self.env["REIFY_VERIFY_EVENT_LOG"] = self.channel
         self.assert_supervised_call(self.cargo("build", "--offline"), ["build", "--offline"])
         self.assert_row("canon_unavailable")
-        journal = Path(self.target, ".reify-canon-journal.jsonl")
+        journal = Path(canon_cache.journal_path(self.target))
         self.assertEqual(Path(self.channel).read_bytes(), journal.read_bytes())
         self.assertFalse(os.path.exists(os.path.join(self.target, ".reify-build-root")))
 
@@ -515,7 +515,7 @@ class RealPathSupervision(CliCase):
         self.env.update(CARGO_TARGET_DIR=elsewhere, REIFY_VERIFY_EVENT_LOG=self.channel)
         self.assert_one_untouched_call(self.cargo("build"), ["build"])
         self.assert_no_record()
-        self.assertFalse(os.path.exists(os.path.join(elsewhere, ".reify-canon-journal.jsonl")))
+        self.assertFalse(os.path.exists(canon_cache.journal_path(elsewhere)))
 
     def test_nested_real_path_call_runs_untouched_with_no_second_row(self):
         self.built_in()
@@ -619,7 +619,7 @@ class BoundRoute(CliCase):
         self.assertEqual(env["CARGO_INCREMENTAL"], "1")
         self.assertEqual(canon_run.parse_active(env["REIFY_CANON_ACTIVE"]).supervisor, supervisor)
         self.assertEqual(cfx.read_sccache_calls(self.sccache_dir), [])
-        self.assertFalse(os.path.exists(os.path.join(self.target, ".reify-canon-journal.jsonl")))
+        self.assertFalse(os.path.exists(canon_cache.journal_path(self.target)))
 
     def test_sharing_without_a_real_sccache_is_refused_before_anything_runs(self):
         if shutil.which("sccache", path="/usr/bin:/bin"):
@@ -1207,12 +1207,12 @@ class CanonCargo(CanonInvocationCase):
     def test_only_trampolines_raise_command_not_found(self):
         empty_home = os.path.join(self.tmp, "empty-home")
         os.mkdir(empty_home)
-        with self.assertRaises(canon_run.CommandNotFound):
+        with self.assertRaises(canon_cache.CommandNotFound):
             self.invoke_on_path(self.installed, self.tree_bin, HOME=empty_home)
 
 
 class EnsureStamp(unittest.TestCase):
-    """C1's stamp as enter_canon writes it: created once, never over another CANON's."""
+    """C1's stamp as both CANON routes write it: created once, never over another CANON's."""
 
     CANON = "/opt/reify-canon/ws"
 
@@ -1313,6 +1313,8 @@ class ActiveRecord(unittest.TestCase):
             "canon",
             {"mode": "bogus", "cache": None},
             {"mode": "canon", "cache": {"policy": "fast", "server": None}},
+            {"mode": "canon", "cache": None},
+            {"mode": "real_path", "cache": {"policy": "incremental", "server": None}},
             {"cache": None},
         ):
             with self.subTest(section=section):
