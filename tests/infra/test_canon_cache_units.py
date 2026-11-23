@@ -1245,7 +1245,7 @@ class SignalForwarding(unittest.TestCase):
     def test_what_the_caller_ignores_stays_ignored_and_the_rest_comes_back_after(self):
         signal.signal(signal.SIGQUIT, signal.SIG_IGN)
         forwarder = canon_cache.SignalForwarder()
-        self.assertEqual(forwarder.caller_ignored, frozenset({signal.SIGQUIT}))
+        self.assertNotIn(signal.SIGQUIT, forwarder.forwarded)
         with forwarder:
             self.assertEqual(signal.getsignal(signal.SIGQUIT), signal.SIG_IGN)
             self.assertNotIn(signal.getsignal(signal.SIGINT), (signal.SIG_IGN, signal.default_int_handler))

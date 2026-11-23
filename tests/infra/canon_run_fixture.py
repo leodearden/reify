@@ -129,9 +129,6 @@ def run_bound(tree, cwd, *args, env, runner_dir):
     return run([PYTHON, "-I", str(runner), str(Path(tree, "scripts")), *args], cwd=cwd, env=env)
 
 
-# Records each call beside itself. A shebang script never sees the argv[0] it
-# was exec'd with (the kernel substitutes the script path), so a call's argv[0]
-# is the path that ran. Exits with FAKE_CARGO_EXIT, default 0.
 # The NAMESPACE route's outer process, canon_run.run_in_namespace, around a fake
 # bwrap instead of the real one, so its signal forwarding runs with no mount
 # namespace. argv: <scripts dir> <directory> <options JSON>. The runner starts
@@ -274,6 +271,9 @@ def descendants(pid):
     return found
 
 
+# Records each call beside itself. A shebang script never sees the argv[0] it
+# was exec'd with (the kernel substitutes the script path), so a call's argv[0]
+# is the path that ran. Exits with FAKE_CARGO_EXIT, default 0.
 FAKE_CARGO = r'''#!/usr/bin/python3 -I
 import json
 import os
