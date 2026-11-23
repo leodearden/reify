@@ -76,6 +76,19 @@ class CacheConfigError(ValueError):
     """A one-line reason host.toml's cache settings cannot be used."""
 
 
+class CacheSessionError(Exception):
+    """A one-line reason no private sccache server could be started."""
+
+
+@contextlib.contextmanager
+def refusing_os_errors(action: str) -> Iterator[None]:
+    """An OSError from the body as the one-line CacheSessionError `cannot <action>: <why>`."""
+    try:
+        yield
+    except OSError as exc:
+        raise CacheSessionError(f"cannot {action}: {exc.strerror or exc}") from exc
+
+
 @dataclass(frozen=True)
 class CacheSettings:
     """host.toml's store and fallback keys (C13)."""
@@ -618,19 +631,6 @@ READ_ONLY_LINE = "storage write check failed"
 POLL_INTERVAL = 0.05
 
 
-class CacheSessionError(Exception):
-    """A one-line reason no private sccache server could be started."""
-
-
-@contextlib.contextmanager
-def refusing_os_errors(action: str) -> Iterator[None]:
-    """An OSError from the body as the one-line CacheSessionError `cannot <action>: <why>`."""
-    try:
-        yield
-    except OSError as exc:
-        raise CacheSessionError(f"cannot {action}: {exc.strerror or exc}") from exc
-
-
 @dataclass(frozen=True)
 class SessionOutcome:
     backend: Backend
@@ -1064,7 +1064,7 @@ def resolve_command(command: str, env: Mapping[str, str], cwd: str) -> str:
         found = shutil.which(command, path=env.get("PATH", ""))
     else:
         found = os.path.join(cwd, command)
-    if found is None or not os.path.isfile(found) or not os.access(found, os.X_OK):
+    if found is None or not is_executable_file(found):
         raise CommandNotFound(f"cannot run {command}: not found or not executable")
     return found
 

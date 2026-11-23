@@ -510,7 +510,7 @@ def is_trampoline(path: str) -> bool:
 def executable_cargos(path_value: str) -> list[str]:
     """Every `<entry>/cargo` on path_value that is an executable regular file, in PATH order."""
     candidates = (os.path.join(entry, "cargo") for entry in path_value.split(os.pathsep) if entry)
-    return [cargo for cargo in candidates if os.path.isfile(cargo) and os.access(cargo, os.X_OK)]
+    return [cargo for cargo in candidates if canon_cache.is_executable_file(cargo)]
 
 
 def resolve_real_cargo(path_value: str) -> str | None:
