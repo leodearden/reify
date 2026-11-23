@@ -170,10 +170,10 @@ impl Drop for LocalEnumShadowScope {
 }
 
 thread_local! {
-    /// Alias names currently being re-resolved by the DEFERRED use-site arm of
-    /// [`resolve_type_expr_with_aliases_kinded`] (task 6259). Membership means
-    /// "this alias is already on the resolution stack" — re-entering it is a
-    /// cycle, and the arm bails out instead of recursing.
+    /// Alias registry entries currently being re-resolved by the DEFERRED
+    /// use-site arm of [`resolve_type_expr_with_aliases_kinded`] (task 6259).
+    /// Membership means "this entry is already on the resolution stack" —
+    /// re-entering it is a cycle, and the arm bails out instead of recursing.
     ///
     /// Why this is mandatory rather than defensive: `type C1 = C2` /
     /// `type C2 = C1` leaves BOTH registry entries with `resolved_type: None`
@@ -193,42 +193,60 @@ thread_local! {
     /// `circular type alias 'C1'` diagnostic instead of being replaced by a
     /// spurious depth-exceeded error.
     ///
+    /// The key is the ENTRY ([`AliasEntryId`]), not the alias name: one name
+    /// can denote different entries in an importer's registry and in a
+    /// `body_scope` registry, and a name key reports a false cycle when a
+    /// body reaches the defining module's own same-named alias (#10354).
+    /// Module-locally one registry holds one entry per name, so the two keys
+    /// agree there.
+    ///
     /// Termination needs no depth cap: each nested level consumes a distinct
-    /// name from the finite alias registry, and this set rejects repeats.
+    /// entry from the finite set reachable through the caller's registry and
+    /// the `body_scope` registries built once at seed time, and this set
+    /// rejects repeats.
     ///
     /// Type resolution is single-threaded per module and every entry is
     /// removed by its [`AliasDeferScope`] guard's `Drop`.
-    static ALIAS_DEFER_IN_PROGRESS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    static ALIAS_DEFER_IN_PROGRESS: RefCell<HashSet<AliasEntryId>> = RefCell::new(HashSet::new());
 }
 
-/// RAII guard marking one alias name as in-progress in
+/// RAII guard marking one alias entry as in-progress in
 /// [`ALIAS_DEFER_IN_PROGRESS`] for its lifetime (task 6259).
 ///
-/// [`AliasDeferScope::new`] returns `None` when `name` is ALREADY in progress —
-/// i.e. the deferred arm has looped back onto an alias it is still resolving.
-/// Callers must treat `None` as "cycle: do not recurse" and fall through to
-/// their existing unresolved handling, which preserves the pre-existing
-/// `circular type alias` + `unresolved type` output byte-for-byte.
+/// [`AliasDeferScope::new`] returns `None` when the entry is ALREADY in
+/// progress — i.e. the deferred arm has looped back onto an alias it is still
+/// resolving. Callers must treat `None` as "cycle: do not recurse" and fall
+/// through to their existing unresolved handling, which preserves the
+/// pre-existing `circular type alias` + `unresolved type` output byte-for-byte.
 struct AliasDeferScope {
-    name: String,
+    entry: AliasEntryId,
 }
 
 impl AliasDeferScope {
-    fn new(name: &str) -> Option<Self> {
-        let inserted = ALIAS_DEFER_IN_PROGRESS.with(|s| s.borrow_mut().insert(name.to_string()));
-        inserted.then(|| AliasDeferScope {
-            name: name.to_string(),
-        })
+    fn new(entry: &TypeAliasEntry) -> Option<Self> {
+        let entry = entry.identity();
+        let inserted = ALIAS_DEFER_IN_PROGRESS.with(|s| s.borrow_mut().insert(entry));
+        inserted.then_some(AliasDeferScope { entry })
     }
 }
 
 impl Drop for AliasDeferScope {
     fn drop(&mut self) {
         ALIAS_DEFER_IN_PROGRESS.with(|s| {
-            s.borrow_mut().remove(&self.name);
+            s.borrow_mut().remove(&self.entry);
         });
     }
 }
+
+/// A registry entry's identity for the alias cycle checks: its address.
+///
+/// Since #10297/#10354 an alias is identified by its scope and its name, and
+/// the entry's address is exactly that pair. It is sound as a key because
+/// every registry is an immutable shared borrow (or an `Arc` held by such a
+/// borrow) for the whole resolution, so an entry stays put while any check
+/// that holds its identity is live. The address is never dereferenced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct AliasEntryId(*const TypeAliasEntry);
 
 /// Whether an alias's body is read where the alias is USED: a parametric alias
 /// is instantiated at each use site, and a non-parametric one the alias DFS
@@ -280,6 +298,11 @@ impl TypeAliasEntry {
         found_in: &'a TypeAliasRegistry,
     ) -> &'a TypeAliasRegistry {
         self.body_scope.as_deref().unwrap_or(found_in)
+    }
+
+    /// This entry's identity for the alias cycle checks.
+    fn identity(&self) -> AliasEntryId {
+        AliasEntryId(std::ptr::from_ref(self))
     }
 
     /// Convert to the public `CompiledTypeAlias` representation, carrying the `type_expr`
@@ -2547,7 +2570,7 @@ pub(crate) fn resolve_type_expr_with_aliases_kinded(
         && alias_entry.resolved_type.is_none()
         && alias_entry.type_params.is_empty()
         && let Some(body) = alias_entry.type_expr.as_ref()
-        && let Some(_guard) = AliasDeferScope::new(name)
+        && let Some(_guard) = AliasDeferScope::new(alias_entry)
     {
         let mut tmp_diags = Vec::new();
         // The alias's own declaration scope — a top-level decl has neither a
