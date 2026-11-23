@@ -100,6 +100,7 @@ test_amendment_rounds_default_restored.sh pool
 test_audit_orphan_producers.sh pool
 test_await_merge_landing.sh pool
 test_bundle_closure.sh pool
+test_canon_cache_units.sh pool
 test_canon_run_units.sh pool
 test_cargo_incremental_lane_decision.sh pool
 test_cargo_inputs_lib.sh pool
