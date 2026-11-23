@@ -28,11 +28,12 @@
 #   - scripts/verify-ledger.py: invoked (not sourced) by verify.sh's executor
 #     at run-begin, cargo step boundaries and _verify_cleanup, so neither the
 #     source-line nor the emitted-gate auto-derivation covers it.
-#   - scripts/canon_run.py: the canonical-build-path primitive (task 10229);
-#     launch sites route verify legs and every cargo through it, so it decides
-#     where a verify build runs. Invoked, not sourced: no auto-derivation sees it.
-#   - scripts/canon-bin/cargo: its PATH trampoline; every cargo a verify leg
-#     runs inside a tree passes through it. A file row, because requires-full-gate
+#   - scripts/canon_run.py: the canonical-build-path primitive (task 10229).
+#     It decides at which path a build runs, and the PRD's design routes verify
+#     legs and their cargo through it. Invoked, not sourced: no auto-derivation
+#     sees it.
+#   - scripts/canon-bin/cargo: its PATH trampoline, by which that design reaches
+#     every cargo run inside a tree. A file row, because requires-full-gate
 #     matches whole lines and a scripts/canon-bin/ row would never match.
 #
 # NOTE: The sourced libs (occt-scope-lib.sh, release-scope-lib.sh,

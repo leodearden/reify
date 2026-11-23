@@ -40,7 +40,7 @@
 # Keystone for H2 (reads intra-run-serial), H3/H9 (read host-exclusive), and
 # H5-H7 (reclassify entries as they rescue/split host-exclusive files).
 
-# --- intra-run-serial (8) ----------------------------------------------------
+# --- intra-run-serial (9) ----------------------------------------------------
 # test_reify_audit_pdiag.sh (task #5405) drives `reify_audit_guard ...
 # rebuild-budget-safe`, which forks `cargo build --release -p reify-audit` on a
 # stale binary and so mutates the lane-shared CoW target/ — the identical reason
