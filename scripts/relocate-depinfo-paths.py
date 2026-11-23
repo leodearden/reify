@@ -37,9 +37,16 @@ bad tag, trailing bytes) is deleted, so cargo rebuilds that one unit: cold,
 never judged against the foreign root. A record that does not name the root is
 never decoded, so it is left as it is.
 
+WARNS, without failing, when records exist but none names FOREIGN: either the
+stamp and the paths cargo recorded disagree (one reached through a symlink,
+say), so every unit stays judged against the foreign root, or the target
+records no out-of-package input.
+
 Usage: relocate-depinfo-paths.py --from-root FOREIGN --to-root LANE TARGET_DIR
 Exit: 0 done (a missing TARGET_DIR holds no records); 1 I/O failure;
-2 usage. stdout stays empty; each eviction and a summary go to stderr.
+2 usage, including a root that is not absolute or ends in a slash (an empty
+root would otherwise match every absolute path). stdout stays empty; each
+eviction, the warning and a summary go to stderr.
 """
 
 import argparse
@@ -213,6 +220,10 @@ def discover(target):
     return sorted(found)
 
 
+def root_mismatch_suspected(outcomes):
+    return outcomes.total() > 0 and outcomes[Outcome.NO_FOREIGN_ROOT] == outcomes.total()
+
+
 def parse_args(argv):
     parser = argparse.ArgumentParser(prog=f"{PROG}.py", description=(
         "Rewrite cargo dep-info input paths under FOREIGN to the same paths under LANE."))
@@ -238,6 +249,11 @@ def main(argv=None):
     except OSError as error:
         print(f"{PROG}: {error}", file=sys.stderr)
         return 1
+    if root_mismatch_suspected(outcomes):
+        print(f"{PROG}: warning: none of {outcomes.total()} dep-info file(s) names "
+              f"{args.from_root}/ — the stamp and the paths cargo recorded may be "
+              f"canonicalized differently (a symlinked build root), in which case "
+              f"nothing was relocated", file=sys.stderr)
     print(f"{PROG}: rewrote {outcomes[Outcome.REWROTE]} dep-info file(s) from "
           f"{args.from_root} to {args.to_root}; "
           f"evicted {outcomes[Outcome.EVICTED]} undecodable one(s)", file=sys.stderr)

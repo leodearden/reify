@@ -313,6 +313,7 @@ FIXTURE_NS = 1_600_000_000 * 10 ** 9
 ODD_NS = FIXTURE_NS + 123_456_789
 DEP_RECORD = "debug/.fingerprint/alpha-0123456789abcdef/dep-test-integration-test-embed"
 VERSION_BYTE = 5
+MISMATCH_WARNING = "relocate-depinfo-paths: warning:"
 
 
 def snapshot(path):
@@ -338,9 +339,12 @@ class RelocatorCli(unittest.TestCase):
         os.utime(path, ns=(mtime_ns, mtime_ns))
         return path
 
+    def run_helper(self, from_root, to_root):
+        return run(["python3", HELPER, "--from-root", from_root, "--to-root", to_root,
+                    self.target], self.target.parent, dict(os.environ))
+
     def relocate(self):
-        result = run(["python3", HELPER, "--from-root", self.foreign, "--to-root", self.lane,
-                      self.target], self.target.parent, dict(os.environ))
+        result = self.run_helper(self.foreign, self.lane)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "")
         return result
@@ -452,6 +456,57 @@ class RelocatorCli(unittest.TestCase):
         self.relocate()
 
         self.assertEqual(snapshot(record), before)
+
+    def test_a_root_that_is_not_an_absolute_unslashed_path_is_refused(self):
+        bad_roots = {
+            "empty --from-root": ("", self.lane),
+            "filesystem-root --from-root": ("/", self.lane),
+            "relative --from-root": (BUILD_ROOT_NAME, self.lane),
+            "trailing-slash --from-root": (f"{self.foreign}/", self.lane),
+            "empty --to-root": (self.foreign, ""),
+            "relative --to-root": (self.foreign, "lanes/_lane-1"),
+            "trailing-slash --to-root": (self.foreign, f"{self.lane}/"),
+        }
+        for why, (from_root, to_root) in bad_roots.items():
+            with self.subTest(why):
+                record, _ = self.moved_record()
+                before = snapshot(record)
+
+                result = self.run_helper(from_root, to_root)
+
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertEqual(snapshot(record), before)
+
+    @unittest.skipIf(os.geteuid() == 0, "root writes through a read-only directory")
+    def test_a_record_it_cannot_replace_fails_closed(self):
+        record, _ = self.moved_record()
+        before = snapshot(record)
+        record.parent.chmod(0o555)
+        self.addCleanup(record.parent.chmod, 0o755)
+
+        result = self.run_helper(self.foreign, self.lane)
+
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(snapshot(record), before)
+
+    def test_records_none_of_which_name_the_foreign_root_warn(self):
+        self.write_record(DEP_RECORD, encode_depinfo([(1, "/elsewhere/examples/x.ri", None)]))
+
+        result = self.relocate()
+
+        self.assertIn(MISMATCH_WARNING, result.stderr)
+
+    def test_no_mismatch_warning_without_records_or_with_a_foreign_one(self):
+        with self.subTest("no records"):
+            self.assertNotIn(MISMATCH_WARNING, self.relocate().stderr)
+
+        with self.subTest("one record of two names the foreign root"):
+            self.moved_record()
+            self.write_record("debug/.fingerprint/u-0123456789abcdef/dep-lib-u",
+                              encode_depinfo([(1, "/elsewhere/examples/x.ri", None)]))
+
+            self.assertNotIn(MISMATCH_WARNING, self.relocate().stderr)
 
 
 if __name__ == "__main__":
