@@ -6,21 +6,7 @@
 //! and each kernel is reached through the exhaustive `EvalBuiltinId` match in
 //! `crate::registry_dispatch`.
 
-use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
-
-/// Sentinel `StructureTypeId` for engine-assembled (registry-free) instances.
-///
-/// The `eval_builtin` path has no `StructureRegistry`, so result instances
-/// are minted with the nominal `type_name` as the authoritative source of
-/// truth for downstream consumers.  This mirrors the identical constant in
-/// `crates/reify-eval/src/dynamics_ops.rs:41` and
-/// `crates/reify-stdlib/src/dynamics/eval.rs:51`.
-///
-/// **Single-source-of-truth note**: all four occurrences of this sentinel
-/// across the codebase use `StructureTypeId(u32::MAX)` directly.  A full
-/// cross-crate dedup (hoisting to `reify-ir` or a shared `reify-stdlib` helper)
-/// is deferred beyond task 2884's scope.
-const REGISTRY_FREE_TYPE_ID: StructureTypeId = StructureTypeId(u32::MAX);
+use reify_ir::{PersistentMap, StructureInstanceData, Value};
 
 use crate::helpers::{binary, sanitize_value, unary};
 use crate::matrix::matrix_components_f64;
@@ -513,12 +499,10 @@ pub(crate) fn stress_invariants(args: &[Value]) -> Value {
         .into_iter()
         .collect();
 
-        Value::StructureInstance(Box::new(StructureInstanceData {
-            type_id: REGISTRY_FREE_TYPE_ID,
-            type_name: "StressInvariants".to_string(),
-            version: 1,
+        Value::StructureInstance(Box::new(StructureInstanceData::registry_free(
+            "StressInvariants",
             fields,
-        }))
+        )))
     })
 }
 

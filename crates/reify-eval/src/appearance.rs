@@ -7,7 +7,7 @@
 //! PRD: `docs/prds/v0_6/appearance-substrate.md` §4.2/§7.3 (task β, #4761).
 
 use reify_core::{Diagnostic, DiagnosticCode};
-use reify_ir::{PersistentMap, Rgb8, StructureInstanceData, StructureTypeId, Value};
+use reify_ir::{PersistentMap, Rgb8, StructureInstanceData, Value};
 
 // ── private helpers ───────────────────────────────────────────────────────────
 
@@ -191,15 +191,6 @@ pub fn resolve_color(color: &Value, diagnostics: &mut Vec<Diagnostic>) -> Rgb8 {
     Rgb8 { r: clamp_round(r), g: clamp_round(g), b: clamp_round(b) }
 }
 
-/// Sentinel `StructureTypeId` for engine-assembled (registry-free) instances.
-///
-/// Intentional mirror of `dynamics_ops::REGISTRY_FREE_TYPE_ID = StructureTypeId(u32::MAX)`.
-/// Both constants agree on the sentinel value; downstream code keys on `type_name`, not
-/// `type_id`, so they cannot silently diverge in observable behaviour.  The duplication
-/// is small and self-contained; promoting to a shared constant would require a common
-/// reify-eval or reify-ir site and is deferred (noted in reviewer suggestion 4, #4761).
-const REGISTRY_FREE_TYPE_ID: StructureTypeId = StructureTypeId(u32::MAX);
-
 /// Hand-mint a neutral-grey `Appearance` `Value::StructureInstance` that mirrors the
 /// default `Appearance()` from `crates/reify-compiler/stdlib/materials_appearance.ri`.
 ///
@@ -229,12 +220,9 @@ fn make_color(named: &str, r: f64, g: f64, b: f64) -> Value {
     ]
     .into_iter()
     .collect();
-    Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: REGISTRY_FREE_TYPE_ID,
-        type_name: "Color".to_string(),
-        version: 1,
-        fields,
-    }))
+    Value::StructureInstance(Box::new(StructureInstanceData::registry_free(
+        "Color", fields,
+    )))
 }
 
 /// Construct an `Appearance` `Value::StructureInstance` from pre-built components.
@@ -249,12 +237,10 @@ fn make_appearance(color: Value, finish: &str, metalness: f64, roughness: f64) -
     ]
     .into_iter()
     .collect();
-    Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: REGISTRY_FREE_TYPE_ID,
-        type_name: "Appearance".to_string(),
-        version: 1,
+    Value::StructureInstance(Box::new(StructureInstanceData::registry_free(
+        "Appearance",
         fields,
-    }))
+    )))
 }
 
 // ── public functional producers ───────────────────────────────────────────────
@@ -485,15 +471,12 @@ pub fn resolve_appearance(body: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use reify_core::{Diagnostic, DiagnosticCode, Severity};
-    use reify_ir::{PersistentMap, Rgb8, StructureInstanceData, StructureTypeId, Value};
+    use reify_ir::{PersistentMap, Rgb8, StructureInstanceData, Value};
 
     use super::{
         clamp_round, coating_appearance, finish_modulation, resolve_appearance,
         resolve_appearance_opt, resolve_color,
     };
-
-    /// Sentinel type_id for hand-minted test Color instances (no registry lookup needed).
-    const TEST_TYPE_ID: StructureTypeId = StructureTypeId(u32::MAX);
 
     /// Build a `Color` `Value::StructureInstance` for test inputs.
     /// Mirrors the `Color` struct from `stdlib/materials_appearance.ri`:
@@ -507,12 +490,9 @@ mod tests {
         ]
         .into_iter()
         .collect();
-        Value::StructureInstance(Box::new(StructureInstanceData {
-            type_id: TEST_TYPE_ID,
-            type_name: "Color".to_string(),
-            version: 1,
-            fields,
-        }))
+        Value::StructureInstance(Box::new(StructureInstanceData::registry_free(
+            "Color", fields,
+        )))
     }
 
     // ── B3: hex exact + empty-named clamp_round ───────────────────────────────
@@ -688,12 +668,10 @@ mod tests {
         ]
         .into_iter()
         .collect();
-        Value::StructureInstance(Box::new(StructureInstanceData {
-            type_id: TEST_TYPE_ID,
-            type_name: "Appearance".to_string(),
-            version: 1,
+        Value::StructureInstance(Box::new(StructureInstanceData::registry_free(
+            "Appearance",
             fields,
-        }))
+        )))
     }
 
     /// Build a `Material` `Value::StructureInstance` carrying the given appearance.
@@ -704,24 +682,19 @@ mod tests {
         ]
         .into_iter()
         .collect();
-        Value::StructureInstance(Box::new(StructureInstanceData {
-            type_id: TEST_TYPE_ID,
-            type_name: "Material".to_string(),
-            version: 1,
-            fields,
-        }))
+        Value::StructureInstance(Box::new(StructureInstanceData::registry_free(
+            "Material", fields,
+        )))
     }
 
     /// Build a synthetic body `Value::StructureInstance` with a single `material` field.
     fn body_with_material(material: Value) -> Value {
         let fields: PersistentMap<String, Value> =
             [("material".to_string(), material)].into_iter().collect();
-        Value::StructureInstance(Box::new(StructureInstanceData {
-            type_id: TEST_TYPE_ID,
-            type_name: "SyntheticBody".to_string(),
-            version: 1,
+        Value::StructureInstance(Box::new(StructureInstanceData::registry_free(
+            "SyntheticBody",
             fields,
-        }))
+        )))
     }
 
     /// Round-trip: body → material → appearance → color = (0.4, 0.4, 0.42).
@@ -777,12 +750,10 @@ mod tests {
     /// Fails until S8.
     #[test]
     fn resolve_appearance_neutral_fallback_no_material_field() {
-        let body = Value::StructureInstance(Box::new(StructureInstanceData {
-            type_id: TEST_TYPE_ID,
-            type_name: "BodyNoMaterial".to_string(),
-            version: 1,
-            fields: PersistentMap::new(),
-        }));
+        let body = Value::StructureInstance(Box::new(StructureInstanceData::registry_free(
+            "BodyNoMaterial",
+            PersistentMap::new(),
+        )));
         let app = resolve_appearance(&body);
         match &app {
             Value::StructureInstance(data) => {
@@ -804,12 +775,13 @@ mod tests {
     /// Fails until S8.
     #[test]
     fn resolve_appearance_neutral_fallback_no_appearance_field() {
-        let material_no_app = Value::StructureInstance(Box::new(StructureInstanceData {
-            type_id: TEST_TYPE_ID,
-            type_name: "Material".to_string(),
-            version: 1,
-            fields: [("name".to_string(), Value::String("bare".to_string()))].into_iter().collect(),
-        }));
+        let material_no_app =
+            Value::StructureInstance(Box::new(StructureInstanceData::registry_free(
+                "Material",
+                [("name".to_string(), Value::String("bare".to_string()))]
+                    .into_iter()
+                    .collect(),
+            )));
         let body = body_with_material(material_no_app);
 
         let app = resolve_appearance(&body);
@@ -896,12 +868,10 @@ mod tests {
     /// Fails until S1 (β) introduces `resolve_appearance_opt`.
     #[test]
     fn resolve_appearance_opt_none_no_material_field() {
-        let body = Value::StructureInstance(Box::new(StructureInstanceData {
-            type_id: TEST_TYPE_ID,
-            type_name: "BodyNoMaterial".to_string(),
-            version: 1,
-            fields: PersistentMap::new(),
-        }));
+        let body = Value::StructureInstance(Box::new(StructureInstanceData::registry_free(
+            "BodyNoMaterial",
+            PersistentMap::new(),
+        )));
         let result = resolve_appearance_opt(&body);
         assert!(result.is_none(), "body with no material field must yield None; got {result:?}");
     }
@@ -923,12 +893,9 @@ mod tests {
         ]
         .into_iter()
         .collect();
-        Value::StructureInstance(Box::new(StructureInstanceData {
-            type_id: TEST_TYPE_ID,
-            type_name: "Coating".to_string(),
-            version: 1,
-            fields,
-        }))
+        Value::StructureInstance(Box::new(StructureInstanceData::registry_free(
+            "Coating", fields,
+        )))
     }
 
     /// Uncoated process → `coating_appearance` returns `None` (inert sentinel; back-compat B5).
@@ -1304,12 +1271,13 @@ mod tests {
     /// Fails until S1 (β) introduces `resolve_appearance_opt`.
     #[test]
     fn resolve_appearance_opt_none_material_without_appearance() {
-        let material_no_app = Value::StructureInstance(Box::new(StructureInstanceData {
-            type_id: TEST_TYPE_ID,
-            type_name: "Material".to_string(),
-            version: 1,
-            fields: [("name".to_string(), Value::String("bare".to_string()))].into_iter().collect(),
-        }));
+        let material_no_app =
+            Value::StructureInstance(Box::new(StructureInstanceData::registry_free(
+                "Material",
+                [("name".to_string(), Value::String("bare".to_string()))]
+                    .into_iter()
+                    .collect(),
+            )));
         let body = body_with_material(material_no_app);
         let result = resolve_appearance_opt(&body);
         assert!(
@@ -1327,12 +1295,9 @@ mod tests {
         // A Color struct with only `named=""` — no r, g, or b fields present.
         let fields: PersistentMap<String, Value> =
             [("named".to_string(), Value::String(String::new()))].into_iter().collect();
-        let color_only_named = Value::StructureInstance(Box::new(StructureInstanceData {
-            type_id: TEST_TYPE_ID,
-            type_name: "Color".to_string(),
-            version: 1,
-            fields,
-        }));
+        let color_only_named = Value::StructureInstance(Box::new(
+            StructureInstanceData::registry_free("Color", fields),
+        ));
         let mut diags: Vec<Diagnostic> = Vec::new();
         let result = resolve_color(&color_only_named, &mut diags);
         assert_eq!(
@@ -1369,12 +1334,10 @@ mod tests {
             ));
         }
         let fields: PersistentMap<String, Value> = fields_vec.into_iter().collect();
-        Value::StructureInstance(Box::new(StructureInstanceData {
-            type_id: TEST_TYPE_ID,
-            type_name: "SyntheticBody".to_string(),
-            version: 1,
+        Value::StructureInstance(Box::new(StructureInstanceData::registry_free(
+            "SyntheticBody",
             fields,
-        }))
+        )))
     }
 
     /// (a) Coating overrides material color: body{material(0.4,0.4,0.42), Anodize+RAL9005}.
@@ -1543,17 +1506,16 @@ mod tests {
     #[test]
     fn resolve_appearance_opt_malformed_coating_falls_through_to_material() {
         // Coating StructureInstance with no `process` field (malformed).
-        let malformed_coating = Value::StructureInstance(Box::new(StructureInstanceData {
-            type_id: TEST_TYPE_ID,
-            type_name: "Coating".to_string(),
-            version: 1,
-            fields: [
-                ("color".to_string(), color("", 0.0, 0.0, 0.0)),
-                // deliberately omit "process"
-            ]
-            .into_iter()
-            .collect(),
-        }));
+        let malformed_coating =
+            Value::StructureInstance(Box::new(StructureInstanceData::registry_free(
+                "Coating",
+                [
+                    ("color".to_string(), color("", 0.0, 0.0, 0.0)),
+                    // deliberately omit "process"
+                ]
+                .into_iter()
+                .collect(),
+            )));
 
         // coating_appearance should return None for the malformed coating.
         assert!(

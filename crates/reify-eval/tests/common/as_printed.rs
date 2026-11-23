@@ -3,13 +3,7 @@
 //! Shared FDM as-printed fixture builders for `reify-eval` integration tests.
 
 use reify_core::{DimensionVector, Type};
-use reify_ir::{
-    FieldSourceKind, Mesh, PersistentMap, StructureInstanceData, StructureTypeId, Value,
-};
-
-/// Registry-free placeholder type id for Rust-constructed StructureInstances
-/// (mirrors `reify_eval::dynamics_ops::REGISTRY_FREE_TYPE_ID`).
-pub const REGISTRY_FREE: StructureTypeId = StructureTypeId(u32::MAX);
+use reify_ir::{FieldSourceKind, Mesh, PersistentMap, StructureInstanceData, Value};
 
 // 40×40×10 mm box (SI metres); Z is the build axis.
 pub const BOX_MIN: [f64; 3] = [0.0, 0.0, 0.0];
@@ -18,12 +12,9 @@ pub const BOX_MAX: [f64; 3] = [0.040, 0.040, 0.010];
 pub fn structure(type_name: &str, fields: Vec<(&str, Value)>) -> Value {
     let fields: PersistentMap<String, Value> =
         fields.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
-    Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: REGISTRY_FREE,
-        type_name: type_name.to_string(),
-        version: 1,
-        fields,
-    }))
+    Value::StructureInstance(Box::new(StructureInstanceData::registry_free(
+        type_name, fields,
+    )))
 }
 
 /// `value` (a StructureInstance fixture) with its `key` field replaced.
@@ -268,12 +259,10 @@ pub fn elastic_options(deterministic: bool) -> Value {
     let fields: PersistentMap<String, Value> = [("deterministic".to_string(), Value::Bool(deterministic))]
         .into_iter()
         .collect();
-    Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: REGISTRY_FREE,
-        type_name: "ElasticOptions".to_string(),
-        version: 1,
+    Value::StructureInstance(Box::new(StructureInstanceData::registry_free(
+        "ElasticOptions",
         fields,
-    }))
+    )))
 }
 
 /// A single `PointLoad { force: Real(force_n) }` inside a `Value::List`, as
@@ -281,21 +270,15 @@ pub fn elastic_options(deterministic: bool) -> Value {
 pub fn point_load_list(force_n: f64) -> Value {
     let fields: PersistentMap<String, Value> =
         [("force".to_string(), Value::Real(force_n))].into_iter().collect();
-    Value::List(vec![Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: REGISTRY_FREE,
-        type_name: "PointLoad".to_string(),
-        version: 1,
-        fields,
-    }))])
+    Value::List(vec![Value::StructureInstance(Box::new(
+        StructureInstanceData::registry_free("PointLoad", fields),
+    ))])
 }
 
 /// A single `FixedSupport {}` inside a `Value::List`, as expected by
 /// `solve_elastic_static_trampoline`'s `value_inputs[5]`.
 pub fn support_list() -> Value {
-    Value::List(vec![Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: REGISTRY_FREE,
-        type_name: "FixedSupport".to_string(),
-        version: 1,
-        fields: [].into_iter().collect(),
-    }))])
+    Value::List(vec![Value::StructureInstance(Box::new(
+        StructureInstanceData::registry_free("FixedSupport", PersistentMap::new()),
+    ))])
 }

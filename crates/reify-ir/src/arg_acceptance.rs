@@ -1199,7 +1199,7 @@ mod tests {
 
     fn point_load(force: crate::value::Value) -> crate::value::StructureInstanceData {
         crate::value::StructureInstanceData {
-            type_id: crate::structure_registry::StructureTypeId(1),
+            type_id: crate::StructureTypeId(1),
             type_name: "PointLoad".to_string(),
             version: 1,
             fields: [("force".to_string(), force)].into_iter().collect(),
@@ -1480,7 +1480,7 @@ mod tests {
         fields: &[(&str, crate::value::Value)],
     ) -> crate::value::StructureInstanceData {
         crate::value::StructureInstanceData {
-            type_id: crate::structure_registry::StructureTypeId(1),
+            type_id: crate::StructureTypeId(1),
             type_name: "Steel_AISI_1045".to_string(),
             version: 1,
             fields: fields

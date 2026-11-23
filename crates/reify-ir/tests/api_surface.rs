@@ -193,8 +193,10 @@ use reify_ir::{StructureMeta, StructureRegistry, StructureTypeId};
 // ── structure_registry (module-path form) ────────────────────────────────────
 use reify_ir::structure_registry::{
     StructureMeta as StructureMetaMod, StructureRegistry as StructureRegistryMod,
-    StructureTypeId as StructureTypeIdMod,
 };
+
+// ── structure_type_id (module-path form) ─────────────────────────────────────
+use reify_ir::structure_type_id::StructureTypeId as StructureTypeIdMod;
 
 // ── traits (flat form) ───────────────────────────────────────────────────────
 use reify_ir::{EnumDef, EnumVariantDef, VariantPayload, TraitBound, TraitDef, TraitMember, TraitRef, TypeParam};
@@ -655,6 +657,12 @@ fn structure_registry_types_in_scope() {
     let _: fn() -> Option<StructureMetaMod> = || None;
     let _: fn() -> Option<StructureRegistryMod> = || None;
     let _: fn() -> Option<StructureTypeIdMod> = || None;
+
+    const _: StructureTypeId = StructureTypeId::REGISTRY_FREE;
+    let _: fn(&'static str, PersistentMap<String, Value>) -> StructureInstanceData =
+        StructureInstanceData::registry_free;
+    let _: for<'r> fn(&'r StructureRegistry, &StructureInstanceData) -> Option<&'r StructureMeta> =
+        StructureRegistry::meta_for;
 }
 
 #[test]

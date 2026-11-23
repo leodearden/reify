@@ -52,11 +52,10 @@
 //! set, out of scope here). The trampoline never panics and never returns a
 //! silently-wrong result.
 //!
-//! # StructureTypeId sentinel
+//! # Registry-free result
 //!
 //! The trampoline has no `StructureRegistry` access, so the returned
-//! `FormFindResult` uses `StructureTypeId(u32::MAX)` as a synthetic sentinel —
-//! the same convention as the elastic-static / buckling trampolines.
+//! `FormFindResult` is minted by `StructureInstanceData::registry_free`.
 //!
 //! # Placement rationale
 //!
@@ -65,7 +64,7 @@
 //! reify-stdlib` dep chain rules the latter out).
 
 use reify_core::{Diagnostic, DimensionVector};
-use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
+use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, Value};
 use reify_solver_elastic::{
     ForceDensityInputError, ForceDensitySpec, FormDefect, FormFindError, FormFindSolve,
     FreeFormError, GroupSpecDefect, MemberKind, RealInput, SpectrumError,
@@ -315,12 +314,10 @@ fn build_result(solve: &FormFindSolve) -> Value {
     .into_iter()
     .collect();
 
-    Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: StructureTypeId(u32::MAX),
-        type_name: "FormFindResult".to_string(),
-        version: 1,
+    Value::StructureInstance(Box::new(StructureInstanceData::registry_free(
+        "FormFindResult",
         fields,
-    }))
+    )))
 }
 
 /// The cause shared by [`describe`] and [`describe_free`] for a node index past
@@ -572,12 +569,10 @@ fn build_result_free(
     .into_iter()
     .collect();
 
-    Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: StructureTypeId(u32::MAX),
-        type_name: "FormFindResult".to_string(),
-        version: 1,
+    Value::StructureInstance(Box::new(StructureInstanceData::registry_free(
+        "FormFindResult",
         fields,
-    }))
+    )))
 }
 
 /// Human-readable cause for a kernel [`FreeFormError`] (appended after the
