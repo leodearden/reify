@@ -1,4 +1,5 @@
-//! Per-scope ambient-default table and innermost-wins resolver.
+//! Per-scope ambient-default table, its innermost-wins resolver, and the
+//! `Param` defaults it synthesizes to fill a conformer's unprovided members.
 //!
 //! Wires semantics onto the `default <TypeName> = <expr>` grammar produced by
 //! task A (4496). An ambient default declares a value that fills any unprovided
@@ -17,9 +18,11 @@
 //! slot, as [`AmbientValue::Rejected`], so a consumer's member is filled rather
 //! than reported missing; it never displaces an accepted value.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use reify_core::{SourceSpan, Type};
+use reify_core::{ContentHash, SourceSpan, Type};
+
+use crate::types::{DefaultKind, RequirementKind, TraitDefault, TraitRequirement};
 
 /// The value side of an ambient-default declaration.
 #[derive(Debug, Clone)]
@@ -113,6 +116,78 @@ impl AmbientDefaults {
             type_name,
             entry,
         );
+    }
+
+    /// The `Param` defaults the table supplies for a conformer's unprovided
+    /// `Param(StructureRef(T))` requirements, each carrying the ambient value
+    /// for `T` as its default expression. The caller appends them to the
+    /// trait defaults, so an ambient default rides the trait-default rails
+    /// exactly like a trait-declared param default (DD2).
+    ///
+    /// ## Type-keying (DD1)
+    ///
+    /// Any `Param(StructureRef(name))` requirement is a candidate, keyed by the
+    /// referenced type *name*; there is no trait- or member-path coupling.
+    ///
+    /// ## Resolution ladder (DD3): explicit member > trait-declared default > ambient
+    ///
+    /// A requirement named in `structure_members` or already covered by an
+    /// entry of `existing_defaults` gets nothing: the ambient default is never
+    /// created when a higher-priority source exists.
+    ///
+    /// ## Scope (DD6)
+    ///
+    /// `purpose` selects the innermost scope for [`AmbientDefaults::resolve`]:
+    /// `None` for a top-level structure, `Some(purpose)` for one nested in that
+    /// purpose, whose own defaults then win over the file level's.
+    ///
+    /// A Rejected entry yields a `Param` default with the declared type and no
+    /// default expression: the member is filled and the value never recompiled.
+    pub(crate) fn synthesize_param_defaults(
+        &self,
+        requirements: &[TraitRequirement],
+        existing_defaults: &[TraitDefault],
+        structure_members: &HashMap<String, Type>,
+        purpose: Option<&str>,
+    ) -> Vec<TraitDefault> {
+        let existing_default_names: HashSet<&str> = existing_defaults
+            .iter()
+            .filter_map(|d| d.name.as_deref())
+            .collect();
+
+        let mut synthesized = Vec::new();
+        for req in requirements {
+            let RequirementKind::Param(Type::StructureRef(type_name)) = &req.kind else {
+                continue;
+            };
+            if structure_members.contains_key(&req.name)
+                || existing_default_names.contains(req.name.as_str())
+            {
+                continue;
+            }
+            let Some(entry) = self.resolve(type_name, purpose) else {
+                continue;
+            };
+            synthesized.push(TraitDefault {
+                name: Some(req.name.clone()),
+                kind: DefaultKind::Param {
+                    cell_type: entry.declared_type.clone(),
+                    default_decl: reify_ast::ParamDecl {
+                        name: req.name.clone(),
+                        doc: None,
+                        is_priv: false,
+                        type_expr: None,
+                        default: entry.value.default_expr().cloned(),
+                        where_clause: None,
+                        annotations: vec![],
+                        span: entry.span,
+                        content_hash: ContentHash(0),
+                    },
+                },
+                span: entry.span,
+            });
+        }
+        synthesized
     }
 }
 
@@ -298,8 +373,6 @@ mod tests {
 
     mod synthesize_param_defaults {
         use super::*;
-        use crate::types::{DefaultKind, RequirementKind, TraitDefault, TraitRequirement};
-        use reify_core::ContentHash;
 
         fn ident_expr(marker: &str) -> reify_ast::Expr {
             reify_ast::Expr {

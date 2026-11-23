@@ -379,7 +379,7 @@ pub(crate) fn phase_entities(
             reify_ast::Declaration::Purpose(p) => {
                 // task 4639: compile structure definitions nested inside this
                 // purpose body as first-class entity templates. Pass
-                // `Some(p.name)` so `check_phase_inject_ambient_defaults`
+                // `Some(p.name)` so `AmbientDefaults::synthesize_param_defaults`
                 // calls `AmbientDefaults::resolve(type_name, Some(purpose))`
                 // — the DD6 innermost-wins resolver picks the purpose-level
                 // ambient default over any file-level default (step-8).
