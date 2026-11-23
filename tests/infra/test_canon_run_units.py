@@ -16,12 +16,16 @@ WHAT RUNS THIS: run_all.sh discovers `test_*.sh` only, so the discovered member
 is the thin wrapper tests/infra/test_canon_run_units.sh.
 """
 
+import errno
+import fcntl
 import importlib.util
 import json
 import os
+import resource
 import shutil
 import socket
 import signal
+import subprocess
 import sys
 import tempfile
 import time
@@ -1191,6 +1195,67 @@ class ReadChildPid(unittest.TestCase):
 
     def test_a_child_pid_that_is_not_an_integer_gives_none(self):
         self.assertIsNone(self.read(b'{"child-pid": "12"}'))
+
+
+class AwaitRestored(unittest.TestCase):
+    """The namespace parent's wait for bwrap's child to restore the forwarded signals, and the pidfd it holds."""
+
+    TERM = frozenset({signal.SIGTERM})
+    SELECT_CEILING = 1024
+
+    def exited_pidfd(self):
+        """A pidfd for a child that has exited and been reaped, so it reads as exited from now on."""
+        child = subprocess.Popen(["true"])
+        pidfd = os.pidfd_open(child.pid)
+        self.addCleanup(os.close, pidfd)
+        child.wait()
+        return pidfd
+
+    def stranger(self):
+        """A live process ignoring SIGTERM, standing in for one that reused the exited child's pid; it dies with us."""
+        stranger = subprocess.Popen(
+            canon_cache.with_parent_death_signal(["sleep", "infinity"], "KILL"),
+            preexec_fn=lambda: signal.signal(signal.SIGTERM, signal.SIG_IGN),
+        )
+        self.addCleanup(stranger.wait)
+        self.addCleanup(stranger.kill)
+        return stranger
+
+    def info(self, pid):
+        read_end, write_end = os.pipe()
+        with os.fdopen(write_end, "w") as writer:
+            json.dump({"child-pid": pid}, writer)
+        return read_end
+
+    def test_a_pidfd_reporting_exit_ends_the_wait_and_never_reaches_a_stranger_reusing_the_pid(self):
+        pidfd, stranger = self.exited_pidfd(), self.stranger()
+        canon_run.await_restored(pidfd, stranger.pid, self.TERM)
+        canon_run.send_through(pidfd, signal.SIGKILL)
+        self.assertIsNone(stranger.poll())
+
+    def test_a_pidfd_numbered_past_selects_ceiling_still_ends_the_wait(self):
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        if soft <= self.SELECT_CEILING:
+            if hard != resource.RLIM_INFINITY and hard <= self.SELECT_CEILING:
+                self.skipTest(f"RLIMIT_NOFILE hard limit {hard} allows no descriptor past {self.SELECT_CEILING}")
+            resource.setrlimit(resource.RLIMIT_NOFILE, (self.SELECT_CEILING + 1, hard))
+            self.addCleanup(resource.setrlimit, resource.RLIMIT_NOFILE, (soft, hard))
+        high = fcntl.fcntl(self.exited_pidfd(), fcntl.F_DUPFD_CLOEXEC, self.SELECT_CEILING)
+        self.addCleanup(os.close, high)
+        canon_run.await_restored(high, self.stranger().pid, self.TERM)
+
+    def test_a_child_already_gone_gives_no_pidfd(self):
+        child = subprocess.Popen(["true"])
+        child.wait()
+        self.assertIsNone(canon_run.open_restored_child(self.info(child.pid), self.TERM))
+
+    def test_a_pidfd_the_kernel_will_not_open_is_a_one_line_refusal(self):
+        unavailable = OSError(errno.ENOSYS, "Function not implemented")
+        with mock.patch.object(os, "pidfd_open", side_effect=unavailable):
+            with self.assertRaises(canon_run.Refusal) as refused:
+                canon_run.open_restored_child(self.info(os.getpid()), self.TERM)
+        self.assertIn(str(os.getpid()), str(refused.exception))
+        self.assertNotIn("\n", str(refused.exception))
 
 
 class CachePolicy(CanonInvocationCase):

@@ -48,7 +48,7 @@ USAGE = "usage: canon_run.py status | exec -- <command> [args...] | cargo [args.
 REBUILD_FIX = "delete the build directory to rebuild it at the real path"
 TRAMPOLINE_MARKER = b"reify-canon-trampoline"
 MARKER_WINDOW = 1024
-RESTORE_POLL_SECS = 0.005
+RESTORE_POLL_MS = 5
 VALUE_TAKING_GLOBALS = frozenset({"--color", "--config", "-Z", "-C"})
 PASS_THROUGH = frozenset(
     {
@@ -830,13 +830,18 @@ def await_restored(pidfd: int, pid: int, numbers: frozenset[int]) -> None:
     the wait early, and a signal then sent through the exited pidfd reaches no one.
     """
     wanted = sum(1 << (number - 1) for number in numbers)
+    exited = select.poll()
+    exited.register(pidfd, select.POLLIN)
     while ignored_mask(pid) & wanted:
-        if select.select([pidfd], [], [], RESTORE_POLL_SECS)[0]:
+        if exited.poll(RESTORE_POLL_MS):
             return
 
 
 def open_restored_child(info_read: int, restored: frozenset[int]) -> int | None:
-    """A pidfd for the child bwrap reports, once that child no longer ignores restored; None if there is none."""
+    """A pidfd for the child bwrap reports, once that child no longer ignores restored; None if there is none.
+
+    Without a pidfd no signal could reach the child, so a pidfd the kernel will not open is a refusal.
+    """
     pid = read_child_pid(info_read)
     if pid is None:
         return None
@@ -844,6 +849,8 @@ def open_restored_child(info_read: int, restored: frozenset[int]) -> int | None:
         pidfd = os.pidfd_open(pid)
     except ProcessLookupError:
         return None
+    except OSError as exc:
+        raise Refusal(f"cannot open a pidfd for the namespace's command (pid {pid}): {exc}") from exc
     await_restored(pidfd, pid, restored)
     return pidfd
 
