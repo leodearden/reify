@@ -93,7 +93,9 @@ class FakeStore:
         self._server.store = self
         self.port = self._server.server_address[1]
         self.url = f"http://127.0.0.1:{self.port}/reify"
-        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._thread = threading.Thread(
+            target=self._server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
+        )
         self._thread.start()
 
     def record(self, handler):

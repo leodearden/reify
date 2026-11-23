@@ -3,16 +3,25 @@
 scripts/canon_run.py decides where a command runs; this module decides what
 cache it runs with (dark-factory plans/canonical-build-path-shared-cache-prd.md
 C4-C6): the per-policy cargo and command environment and the CARGO_HOME pin,
-the host.toml store and fallback settings, and which real sccache serves them.
+the host.toml store and fallback settings, which real sccache serves them, and
+the store link: the probe, the loopback relay sccache talks to the store
+through, and the watchdog that cuts that relay when the store stops answering.
 It knows nothing of trees, build-directory modes or mount namespaces, and
 imports nothing from canon_run.
 """
 from __future__ import annotations
 
+import http.client
 import os
+import selectors
+import socket
+import struct
 import tempfile
+import threading
+import time
 import urllib.parse
-from collections.abc import Mapping
+from base64 import b64encode
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field, fields
 from enum import StrEnum
 from pathlib import Path
@@ -202,3 +211,303 @@ def resolve_real_sccache(path_value: str) -> str | None:
         if entry and os.path.isfile(candidate) and os.access(candidate, os.X_OK) and not is_guard(candidate):
             return candidate
     return None
+
+
+@dataclass(frozen=True)
+class SessionKnobs:
+    """Every tuning constant of a session in one place (tests replace them)."""
+
+    probe_timeout: float = 2.0
+    slow: float = 2.0
+    watchdog_interval: float = 15.0
+    watchdog_failures: int = 2
+    start_attempts: int = 3
+    retry_delay: tuple[float, float] = (0.5, 2.0)
+    socket_wait: float = 60.0
+    start_lock: str = "/tmp/reify-canon-sccache-start.lock"
+    start_lock_wait: float = 30.0
+    tmp_root: str = "/tmp"
+
+
+def basic_auth(settings: CacheSettings) -> dict[str, str]:
+    if settings.store_user is None:
+        return {}
+    credentials = f"{settings.store_user}:{settings.store_password or ''}".encode()
+    return {"Authorization": "Basic " + b64encode(credentials).decode()}
+
+
+def probe_store(
+    settings: CacheSettings, knobs: SessionKnobs, clock: Callable[[], float] = time.monotonic
+) -> bool:
+    """C5: GET <store_url>/.sccache_check (sccache's own start-up check) answers 200 or 404 in time."""
+    if settings.store_url is None:
+        return False
+    parts = urllib.parse.urlsplit(settings.store_url)
+    began = clock()
+    connection = http.client.HTTPConnection(parts.hostname, parts.port or 80, timeout=knobs.probe_timeout)
+    try:
+        connection.request("GET", parts.path.rstrip("/") + "/.sccache_check", headers=basic_auth(settings))
+        response = connection.getresponse()
+        response.read()
+    except (OSError, http.client.HTTPException):
+        return False
+    finally:
+        connection.close()
+    return response.status in (200, 404) and clock() - began <= knobs.slow
+
+
+def choose_backend(settings: CacheSettings, probe: Callable[[], bool]) -> tuple[Backend, Reason]:
+    """Boundary row 6: the backend a session starts with; probe runs only with a store_url."""
+    if settings.store_url is None:
+        return Backend.LOCAL_FALLBACK, Reason.STORE_NOT_CONFIGURED
+    if not probe():
+        return Backend.LOCAL_FALLBACK, Reason.STORE_UNREACHABLE
+    return Backend.SHARED, Reason.NONE
+
+
+RELAY_CHUNK = 65536
+RELAY_BUFFER_LIMIT = 4 * RELAY_CHUNK
+
+
+def reset(connection: socket.socket) -> None:
+    """Close with SO_LINGER 0, so the peer gets a reset rather than an orderly end."""
+    try:
+        connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+    except OSError:
+        pass
+    connection.close()
+
+
+class _Stream:
+    """One socket of a relayed pair: what is queued for it and whether its reading side ended."""
+
+    def __init__(self, sock: socket.socket, *, connecting: bool = False):
+        self.sock = sock
+        self.peer: _Stream | None = None
+        self.outgoing = bytearray()
+        self.connecting = connecting
+        self.read_done = False
+        self.write_done = False
+
+    def interest(self) -> int:
+        if self.connecting:
+            return selectors.EVENT_WRITE
+        events = 0
+        if not self.read_done and len(self.peer.outgoing) < RELAY_BUFFER_LIMIT:
+            events |= selectors.EVENT_READ
+        if self.outgoing:
+            events |= selectors.EVENT_WRITE
+        return events
+
+
+class Relay:
+    """C5's loopback byte relay from 127.0.0.1:<ephemeral> to the store.
+
+    One thread owns every socket. cut() resets every open connection and from then
+    on resets each new one at once, keeping the port so nothing else can take it;
+    close() releases it.
+    """
+
+    def __init__(self, store_host: str, store_port: int):
+        self._target = (store_host, store_port)
+        self._listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._listener.bind(("127.0.0.1", 0))
+        self.port = self._listener.getsockname()[1]
+        self._wake_reader, self._wake_writer = socket.socketpair()
+        self._lock = threading.Lock()
+        self._requests: list[tuple[str, threading.Event]] = []
+        self._is_cut = False
+        self._thread: threading.Thread | None = None
+
+    @property
+    def endpoint(self) -> str:
+        return f"http://127.0.0.1:{self.port}"
+
+    def start(self) -> None:
+        self._listener.listen(64)
+        self._listener.setblocking(False)
+        self._thread = threading.Thread(target=self._loop, name="reify-canon-relay", daemon=True)
+        self._thread.start()
+
+    def cut(self) -> None:
+        self._request("cut")
+
+    def close(self) -> None:
+        if self._thread is not None:
+            self._request("close")
+            self._thread.join()
+            self._thread = None
+        for owned in (self._listener, self._wake_reader, self._wake_writer):
+            owned.close()
+
+    def __enter__(self) -> Relay:
+        self.start()
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
+
+    def _request(self, command: str) -> None:
+        if self._thread is None:
+            return
+        done = threading.Event()
+        with self._lock:
+            self._requests.append((command, done))
+        self._wake_writer.send(b"\0")
+        done.wait()
+
+    def _loop(self) -> None:
+        selector = selectors.DefaultSelector()
+        selector.register(self._listener, selectors.EVENT_READ)
+        selector.register(self._wake_reader, selectors.EVENT_READ)
+        streams: dict[socket.socket, _Stream] = {}
+        registered: dict[socket.socket, int] = {}
+        running = True
+        while running:
+            for key, events in selector.select():
+                if key.fileobj is self._listener:
+                    self._accept(streams)
+                elif key.fileobj is self._wake_reader:
+                    running = self._serve_requests(streams)
+                elif key.fileobj in streams:
+                    self._pump(streams, streams[key.fileobj], events)
+            self._reregister(selector, streams, registered)
+        selector.close()
+
+    def _serve_requests(self, streams: dict[socket.socket, _Stream]) -> bool:
+        self._wake_reader.recv(4096)
+        with self._lock:
+            requests, self._requests = self._requests, []
+        running = True
+        for command, done in requests:
+            self._is_cut = self._is_cut or command == "cut"
+            running = running and command != "close"
+            for stream in list(streams.values()):
+                self._drop(streams, stream)
+            done.set()
+        return running
+
+    def _accept(self, streams: dict[socket.socket, _Stream]) -> None:
+        try:
+            client, _ = self._listener.accept()
+        except (BlockingIOError, InterruptedError):
+            return
+        if self._is_cut:
+            reset(client)
+            return
+        client.setblocking(False)
+        upstream = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        upstream.setblocking(False)
+        upstream.connect_ex(self._target)
+        near, far = _Stream(client), _Stream(upstream, connecting=True)
+        near.peer, far.peer = far, near
+        streams[client], streams[upstream] = near, far
+
+    def _pump(self, streams: dict[socket.socket, _Stream], stream: _Stream, events: int) -> None:
+        try:
+            if stream.connecting:
+                error = stream.sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
+                if error:
+                    raise ConnectionRefusedError(error, os.strerror(error))
+                stream.connecting = False
+                return
+            if events & selectors.EVENT_READ:
+                data = stream.sock.recv(RELAY_CHUNK)
+                if data:
+                    stream.peer.outgoing += data
+                else:
+                    stream.read_done = True
+            if events & selectors.EVENT_WRITE and stream.outgoing:
+                sent = stream.sock.send(stream.outgoing)
+                del stream.outgoing[:sent]
+            for end in (stream, stream.peer):
+                if end.peer.read_done and not end.outgoing and not end.write_done:
+                    end.sock.shutdown(socket.SHUT_WR)
+                    end.write_done = True
+        except (BlockingIOError, InterruptedError):
+            return
+        except OSError:
+            self._drop(streams, stream)
+            return
+        if stream.write_done and stream.peer.write_done:
+            for end in (stream, stream.peer):
+                streams.pop(end.sock, None)
+                end.sock.close()
+
+    @staticmethod
+    def _drop(streams: dict[socket.socket, _Stream], stream: _Stream) -> None:
+        for end in (stream, stream.peer):
+            if streams.pop(end.sock, None) is not None:
+                reset(end.sock)
+
+    @staticmethod
+    def _reregister(
+        selector: selectors.BaseSelector,
+        streams: dict[socket.socket, _Stream],
+        registered: dict[socket.socket, int],
+    ) -> None:
+        for sock in [sock for sock in registered if sock not in streams]:
+            del registered[sock]
+            selector.unregister(sock)
+        for sock, stream in streams.items():
+            wanted = stream.interest()
+            current = registered.get(sock, 0)
+            if wanted == current:
+                continue
+            if not wanted:
+                selector.unregister(sock)
+                del registered[sock]
+            elif current:
+                selector.modify(sock, wanted)
+                registered[sock] = wanted
+            else:
+                selector.register(sock, wanted)
+                registered[sock] = wanted
+
+
+def _wait_on(stopped: threading.Event, seconds: float) -> bool:
+    return stopped.wait(seconds)
+
+
+class Watchdog:
+    """C5 / boundary row 7: probe the store every interval; cut the relay after enough failures.
+
+    A probe fails when it says unreachable or takes longer than knobs.slow on clock.
+    wait(stopped, seconds) returns True once the watchdog should end.
+    """
+
+    def __init__(
+        self,
+        probe: Callable[[], bool],
+        relay: Relay,
+        knobs: SessionKnobs,
+        clock: Callable[[], float] = time.monotonic,
+        wait: Callable[[threading.Event, float], bool] = _wait_on,
+    ):
+        self._probe, self._relay, self._knobs = probe, relay, knobs
+        self._clock, self._wait = clock, wait
+        self._stopped = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="reify-canon-watchdog", daemon=True)
+        self.lost = False
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stopped.set()
+        self.join()
+
+    def join(self) -> None:
+        if self._thread.ident is not None:
+            self._thread.join()
+
+    def _run(self) -> None:
+        failures = 0
+        while not self._wait(self._stopped, self._knobs.watchdog_interval):
+            began = self._clock()
+            healthy = self._probe() and self._clock() - began <= self._knobs.slow
+            failures = 0 if healthy else failures + 1
+            if failures >= self._knobs.watchdog_failures:
+                self._relay.cut()
+                self.lost = True
+                return

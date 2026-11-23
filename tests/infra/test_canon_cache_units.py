@@ -528,7 +528,7 @@ class Relay(RelayCase):
 
     def test_get_through_the_relay_is_byte_for_byte_the_store_answer(self):
         direct = cfx.raw_get(self.store.port, "/reify/object")
-        self.assertTrue(direct.startswith(b"HTTP/1.0 200"), direct)
+        self.assertTrue(direct.startswith(b"HTTP/1.1 200"), direct)
         self.assertEqual(cfx.raw_get(self.relay_port, "/reify/object"), direct)
 
     def test_cut_resets_an_in_flight_transfer(self):

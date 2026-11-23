@@ -11,7 +11,6 @@ command at CANON gets (C4-C6) is the sibling module canon_cache.py's business.
 from __future__ import annotations
 
 import functools
-import http.client
 import importlib.util
 import json
 import os
@@ -22,8 +21,6 @@ import subprocess
 import sys
 import tempfile
 import tomllib
-import urllib.parse
-from base64 import b64encode
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum, StrEnum
@@ -200,26 +197,6 @@ def cache_refusal(host: HostConfig, search_path: str) -> str:
         f"host policy '{host.policy}' needs a real sccache, and none is on the CANON PATH;"
         f' install sccache, or set policy = "incremental" or enabled = false in {host.path}'
     )
-
-
-def store_reachable(settings: canon_cache.CacheSettings) -> bool | None:
-    """None without a store; else whether GET <store_url>/.sccache_check answers 200 or 404."""
-    if settings.store_url is None:
-        return None
-    parts = urllib.parse.urlsplit(settings.store_url)
-    headers = {}
-    if settings.store_user is not None:
-        credentials = f"{settings.store_user}:{settings.store_password or ''}".encode()
-        headers["Authorization"] = "Basic " + b64encode(credentials).decode()
-    connection = http.client.HTTPConnection(parts.hostname, parts.port or 80, timeout=2.0)
-    try:
-        connection.request("GET", parts.path.rstrip("/") + "/.sccache_check", headers=headers)
-        status = connection.getresponse().status
-    except (OSError, http.client.HTTPException):
-        return False
-    finally:
-        connection.close()
-    return status in (200, 404)
 
 
 def is_inside(path: str | Path, root: str | Path) -> bool:
@@ -451,7 +428,11 @@ def status_report(environ: Mapping[str, str], cwd: str) -> dict[str, object]:
             decision = Decision(Mode.REFUSED, refusal)
     report["build_dir_mode"] = decision.mode.value
     report["reason"] = decision.reason
-    report["store_reachable"] = store_reachable(host.cache)
+    report["store_reachable"] = (
+        None
+        if host.cache.store_url is None
+        else canon_cache.probe_store(host.cache, canon_cache.SessionKnobs())
+    )
     return report
 
 
