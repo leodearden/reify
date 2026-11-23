@@ -939,7 +939,8 @@ class RecordBase:
 
 
 FORWARDED_SIGNALS = (signal.SIGTERM, signal.SIGHUP)
-IGNORED_SIGNALS = (signal.SIGINT, signal.SIGQUIT)
+ABSORBED_SIGNALS = (signal.SIGINT, signal.SIGQUIT)
+SUPERVISED_SIGNALS = (*FORWARDED_SIGNALS, *ABSORBED_SIGNALS)
 
 
 def resolve_command(command: str, env: Mapping[str, str], cwd: str) -> str:
@@ -952,21 +953,37 @@ def resolve_command(command: str, env: Mapping[str, str], cwd: str) -> str:
     return found
 
 
+def absorb(_signum: int, _frame: object) -> None:
+    """The supervisor survives the signal; the command, started at default, receives it through its group."""
+
+
+SignalHandler = Callable[[int, object], None] | signal.Handlers
+
+
+def supervising_handlers(forward: SignalHandler) -> dict[int, SignalHandler]:
+    """Each supervised signal's handler while the command runs, from the caller's current disposition."""
+
+    def chosen(number: int) -> SignalHandler:
+        if signal.getsignal(number) == signal.SIG_IGN:
+            return signal.SIG_IGN
+        return forward if number in FORWARDED_SIGNALS else absorb
+
+    return {number: chosen(number) for number in SUPERVISED_SIGNALS}
+
+
 def run_command(
     executable: str, argv: list[str], env: Mapping[str, str], cwd: str, session: CacheSession | None
 ) -> tuple[int, float]:
-    """Spawn from this (main) thread, forward SIGTERM/SIGHUP, ignore SIGINT/SIGQUIT; (status, wall)."""
+    """Spawn from this thread; what the caller ignores stays ignored, else forward TERM/HUP, absorb INT/QUIT."""
     process: subprocess.Popen | None = None
 
     def forward(signum: int, _frame: object) -> None:
         if process is not None:
             process.send_signal(signum)
 
-    previous = {number: signal.getsignal(number) for number in (*FORWARDED_SIGNALS, *IGNORED_SIGNALS)}
-    for number in IGNORED_SIGNALS:
-        signal.signal(number, signal.SIG_IGN)
-    for number in FORWARDED_SIGNALS:
-        signal.signal(number, forward)
+    previous = {number: signal.getsignal(number) for number in SUPERVISED_SIGNALS}
+    for number, handler in supervising_handlers(forward).items():
+        signal.signal(number, handler)
     try:
         started = time.monotonic()
         try:
