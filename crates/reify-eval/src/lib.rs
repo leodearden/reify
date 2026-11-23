@@ -507,6 +507,10 @@ pub struct Engine {
     /// Note: this duplicates data already held in the static `prelude` slice,
     /// adding per-Engine memory proportional to the number of prelude functions.
     prelude_functions: Vec<CompiledFunction>,
+    /// The program installed by [`Engine::load`], whose [`DefEnv`] is the
+    /// resolution environment (PRD resolution-unification §3.2); `None` until
+    /// a load.
+    loaded_program: Option<Arc<reify_compiler::program::CompiledProgram>>,
     /// Per-Engine structure-definition side-table (task 3540 / SIR-α).
     ///
     /// Maps interned `StructureTypeId`s to `StructureMeta` (declared trait
