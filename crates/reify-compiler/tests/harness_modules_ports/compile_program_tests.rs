@@ -369,6 +369,59 @@ fn compile_program_keeps_cross_import_collision_warning() {
     );
 }
 
+/// Two imports declaring one pub unit: the FIRST import binds through the real
+/// `compile_program` path (resolution-unification D-6), and the entry's own
+/// compile reports the collision once, naming both modules.
+#[test]
+fn compile_program_unit_collision_between_imports_is_first_wins() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(
+        dir.path(),
+        "a.ri",
+        "module a\npub unit fortnight : Time = 1209600.0\n",
+    );
+    write(dir.path(), "b.ri", "module b\npub unit fortnight : Time = 2.0\n");
+    let main_src = "module main\nimport a\nimport b\nunit bar : Time = 1fortnight\n\
+                    structure def Top {\n    param x : Real = 1\n}\n";
+
+    let program = compile_entry(dir.path(), "main", main_src, &CfgSet::default());
+
+    let factor_of = |module: &CompiledModule, name: &str| {
+        module
+            .units
+            .iter()
+            .find(|u| u.name == name)
+            .unwrap_or_else(|| panic!("unit {name} compiled in {}", dotted(module)))
+            .factor
+    };
+    let a_unit = &program.imports[0];
+    assert_eq!(a_unit.import_path, "a", "precondition: a is the first import");
+    assert_eq!(
+        factor_of(program.entry(), "bar"),
+        factor_of(&a_unit.module, "fortnight"),
+        "bar must be measured in a's fortnight (first import wins)"
+    );
+
+    let is_collision = |d: &&reify_core::Diagnostic| {
+        d.severity == Severity::Warning
+            && d.code == Some(DiagnosticCode::DefinitionCollision)
+            && d.message.contains("'a'")
+            && d.message.contains("'b'")
+    };
+    let on_entry: Vec<_> = program.entry().diagnostics.iter().filter(is_collision).collect();
+    assert_eq!(
+        on_entry.len(),
+        1,
+        "exactly one DefinitionCollision warning naming a and b: {:?}",
+        program.entry().diagnostics
+    );
+    assert_eq!(
+        program.entry_own_diagnostics().filter(is_collision).count(),
+        1,
+        "the warning is raised by the entry's own compile, not re-homed"
+    );
+}
+
 fn errors(module: &CompiledModule) -> Vec<&str> {
     module
         .diagnostics
