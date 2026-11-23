@@ -176,16 +176,18 @@ class DecideMode(unittest.TestCase):
             with self.subTest(route=route):
                 self.assertIs(self.decide(stamp=self.CANON, route=route).mode, canon_run.Mode.CANON)
 
-    def test_stamped_canon_unreachable_refuses_naming_canon_and_reason(self):
+    def test_stamped_canon_unreachable_refuses_naming_canon_reason_and_both_fixes(self):
         decision = self.decide(stamp=self.CANON, route=canon_run.Route.NONE)
         self.assertIs(decision.mode, canon_run.Mode.REFUSED)
-        self.assertIn(self.CANON, decision.reason)
-        self.assertIn("probe says NONE", decision.reason)
+        for needle in (self.CANON, "probe says NONE", "mount namespace", "delete"):
+            self.assertIn(needle, decision.reason)
 
-    def test_stamped_other_text_refuses_quoting_it(self):
+    def test_stamped_other_text_refuses_quoting_it_and_names_only_the_delete_fix(self):
         decision = self.decide(stamp="/somewhere/else")
         self.assertIs(decision.mode, canon_run.Mode.REFUSED)
         self.assertIn("/somewhere/else", decision.reason)
+        self.assertIn("delete", decision.reason)
+        self.assertNotIn("namespace", decision.reason)
 
     def test_unstamped_built_in_is_real_path_without_reading_host_or_probing(self):
         decision = self.decide(built_in=True)
@@ -364,10 +366,16 @@ class CargoPassesThrough(unittest.TestCase):
     """Decision 10's pass-through list (boundary row 2), pure."""
 
     def setUp(self):
-        self.tree = scratch(self)
+        tmp = scratch(self)
+        self.tree = fx.make_tree(tmp, "tree")
+        self.alias = os.path.join(tmp, "alias")
+        os.symlink(self.tree, self.alias)
 
-    def passes(self, args, **environ):
-        return canon_run.cargo_passes_through(args, environ, self.tree, Path(self.tree))
+    def passes(self, args, *, root=None, **environ):
+        """root is the spelling cargo runs under (CANON at a nested call); the real root stays."""
+        found = canon_run.find_tree(self.tree, {})
+        tree = canon_run.Tree(Path(root or self.tree), Path(self.tree), found.dev, found.ino)
+        return canon_run.cargo_passes_through(args, environ, str(tree.root), tree)
 
     def test_pass_through(self):
         for args in (
@@ -399,6 +407,15 @@ class CargoPassesThrough(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertFalse(self.passes(["install", "x"], **{name: f"{self.tree}/t3"}))
 
+    def test_install_into_either_spelling_of_the_tree_is_not_pass_through(self):
+        """Inside the tree means what build_dir_decision means by it: Tree.contains."""
+        for spelling in (self.tree, self.alias):
+            with self.subTest(spelling=spelling):
+                target = f"{spelling}/t4"
+                self.assertFalse(self.passes(["install", "--target-dir", target, "x"], root=self.alias))
+                self.assertFalse(self.passes(["install", "x"], root=self.alias, CARGO_TARGET_DIR=target))
+                self.assertTrue(self.passes(["install", "x"], root=self.alias))
+
 
 class PassThroughBehaviour(CliCase):
     """Boundary row 2: in a tree stamped for an unreachable CANON, only the list reaches cargo."""
@@ -422,22 +439,26 @@ class PassThroughBehaviour(CliCase):
 class Refusals(CliCase):
     """C1: a stamp naming another path, or CANON where it cannot be provided, exits 126."""
 
-    def assert_exec_refused(self):
+    def assert_exec_refused(self, *needles):
         marker = os.path.join(self.tmp, "marker")
         result = fx.run_canon(self.tree, self.sub, "exec", "--", "touch", marker, env=self.env)
-        self.assert_refused(result, self.target)
+        self.assert_refused(result, self.target, *needles)
         self.assertFalse(os.path.exists(marker))
+        return result.stderr
 
-    def test_stamp_naming_another_path(self):
+    def test_stamp_naming_another_path_names_only_the_delete_fix(self):
         stamp(self.target, "/somewhere/else")
-        self.assert_exec_refused()
+        stderr = self.assert_exec_refused("delete the build directory")
+        self.assertNotIn("namespace", stderr)
 
-    def test_stamp_naming_unprovisioned_canon(self):
+    def test_stamp_naming_unprovisioned_canon_names_both_fixes(self):
         stamp(self.target, self.env["REIFY_CANON_ROOT"])
-        self.assert_exec_refused()
+        self.assert_exec_refused("mount namespace", "delete the build directory")
 
 
-class ResolveRealCargo(CliCase):
+class ResolveCase(CliCase):
+    """Adds a second recording fake, an installed trampoline copy and a directory outside any tree."""
+
     def setUp(self):
         super().setUp()
         self.other_trampolines = os.path.join(self.tmp, "installed-canon-bin")
@@ -445,9 +466,16 @@ class ResolveRealCargo(CliCase):
         shutil.copy2(fx.TRAMPOLINE, os.path.join(self.other_trampolines, "cargo"))
         self.second_fake = fx.fake_cargo_dir(self.tmp, "second-fake-bin")
         self.tree_bin = os.path.join(self.tree, "scripts", "canon-bin")
+        self.outside = os.path.join(self.tmp, "outside")
+        os.mkdir(self.outside)
 
-    def resolve(self, *entries):
-        return canon_run.resolve_real_cargo(os.pathsep.join(entries))
+
+class ResolveTable:
+    """The real-cargo rule's rows; `resolve(*entries)` is the cargo one copy of the rule picks.
+
+    C7 makes the trampoline carry its own copy of canon_run.py's rule, so every row runs
+    against both copies (one concrete class each) and a drift in either goes red.
+    """
 
     def test_first_unmarked_after_the_first_trampoline(self):
         self.assertEqual(self.resolve(self.tree_bin, self.fake, self.second_fake), self.fake_cargo)
@@ -480,11 +508,38 @@ class ResolveRealCargo(CliCase):
         self.assertIsNone(self.resolve(self.tree_bin, self.other_trampolines))
         self.assertIsNone(self.resolve())
 
+
+class ResolveRealCargo(ResolveTable, ResolveCase):
+    """canon_run.py's copy, called in-process."""
+
+    def resolve(self, *entries):
+        return canon_run.resolve_real_cargo(os.pathsep.join(entries))
+
+
+class TrampolineResolvesRealCargo(ResolveTable, ResolveCase):
+    """The trampoline's copy: run outside any tree, its pick is the fake that recorded the call."""
+
+    def resolve(self, *entries):
+        fakes = (self.fake, self.second_fake)
+        for fake in fakes:
+            Path(fake, "calls.jsonl").unlink(missing_ok=True)
+        env = dict(self.env, PATH=os.pathsep.join(entries))
+        result = fx.run([self.trampoline, "build"], cwd=self.outside, env=env)
+        calls = [call for fake in fakes for call in fx.read_calls(fake)]
+        if result.returncode == 127:
+            self.assertEqual(calls, [])
+            return None
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(calls), 1, calls)
+        return calls[0]["argv"][0]
+
+
+class TrampolineRouting(ResolveCase):
+    """The trampoline inside and outside a tree, with real and marked cargos in either order."""
+
     def test_trampoline_after_the_real_cargo_runs_it(self):
         self.env["PATH"] = os.pathsep.join((self.fake, self.tree_bin))
-        plain = os.path.join(self.tmp, "plain")
-        os.mkdir(plain)
-        for cwd in (self.sub, plain):
+        for cwd in (self.sub, self.outside):
             with self.subTest(cwd=cwd):
                 Path(self.fake, "calls.jsonl").unlink(missing_ok=True)
                 self.assert_one_untouched_call(self.cargo("build", cwd=cwd), ["build"], cwd=cwd)
@@ -492,9 +547,7 @@ class ResolveRealCargo(CliCase):
     def test_two_trampolines_on_path_do_not_loop(self):
         self.env["PATH"] = os.pathsep.join((self.tree_bin, self.other_trampolines, self.fake))
         self.env["FAKE_CARGO_EXIT"] = "7"
-        plain = os.path.join(self.tmp, "plain")
-        os.mkdir(plain)
-        for cwd in (self.sub, plain):
+        for cwd in (self.sub, self.outside):
             with self.subTest(cwd=cwd):
                 Path(self.fake, "calls.jsonl").unlink(missing_ok=True)
                 result = self.cargo("build", cwd=cwd)
@@ -503,9 +556,7 @@ class ResolveRealCargo(CliCase):
 
     def test_no_real_cargo_exits_127_with_one_line(self):
         self.env["PATH"] = os.pathsep.join((self.tree_bin, self.other_trampolines))
-        plain = os.path.join(self.tmp, "plain")
-        os.mkdir(plain)
-        for cwd in (self.sub, plain):
+        for cwd in (self.sub, self.outside):
             with self.subTest(cwd=cwd):
                 result = self.cargo("build", cwd=cwd)
                 self.assertEqual(result.returncode, 127, result.stderr)
@@ -758,6 +809,23 @@ class EnsureStamp(unittest.TestCase):
         stamp(self.build, self.CANON)
         canon_run.ensure_stamp(self.build, self.CANON)
         self.assertEqual(canon_run.read_build_dir_state(self.build).stamp, self.CANON)
+
+    def test_directory_already_stamped_for_canon_is_not_written(self):
+        stamp(self.build, self.CANON)
+        os.utime(self.build, ns=(0, 0))
+        before = (self.build / ".reify-build-root").read_bytes()
+        canon_run.ensure_stamp(self.build, self.CANON)
+        self.assertEqual(self.build.stat().st_mtime_ns, 0)
+        self.assertEqual(sorted(entry.name for entry in self.build.iterdir()), [".reify-build-root"])
+        self.assertEqual((self.build / ".reify-build-root").read_bytes(), before)
+
+    def test_read_only_directory_already_stamped_for_canon_is_accepted(self):
+        if os.geteuid() == 0:
+            self.skipTest("root writes into a read-only directory regardless of its mode")
+        stamp(self.build, self.CANON)
+        self.build.chmod(0o555)
+        self.addCleanup(self.build.chmod, 0o755)
+        canon_run.ensure_stamp(self.build, self.CANON)
 
     def test_existing_stamp_for_another_path_refuses(self):
         stamp(self.build, "/somewhere/else")

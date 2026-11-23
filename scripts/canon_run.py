@@ -34,6 +34,7 @@ EXIT_REFUSED = 126
 EXIT_NOT_FOUND = 127
 EXIT_USAGE = 2
 USAGE = "usage: canon_run.py status | exec -- <command> [args...] | cargo [args...]"
+REBUILD_FIX = "delete the build directory to rebuild it at the real path"
 TRAMPOLINE_MARKER = b"reify-canon-trampoline"
 MARKER_WINDOW = 1024
 VALUE_TAKING_GLOBALS = frozenset({"--color", "--config", "-Z", "-C"})
@@ -183,6 +184,16 @@ def load_host_config(path: Path) -> HostConfig:
     return HostConfig(path, enabled, Policy(policy))
 
 
+def policy_refusal(host: HostConfig) -> str:
+    """Empty when this canon_run.py can run at CANON under host's policy, else why not."""
+    if host.policy is Policy.INCREMENTAL:
+        return ""
+    return (
+        f"host policy '{host.policy}' needs the sccache server, which this canon_run.py"
+        f' does not provide; set policy = "incremental" or enabled = false in {host.path}'
+    )
+
+
 def is_inside(path: str | Path, root: str | Path) -> bool:
     """Lexical containment at a path boundary; no symlink is resolved."""
     path, root = os.path.normpath(path), os.path.normpath(root)
@@ -248,23 +259,25 @@ def build_dir_for(
     return Path(os.path.normpath(os.path.join(cwd, chosen)))
 
 
-def read_build_dir_state(build_dir: str | Path) -> BuildDirState:
-    build = Path(build_dir)
-    stamp_path = build / STAMP_NAME
+def read_stamp(build_dir: str | Path) -> str | None:
+    stamp_path = Path(build_dir, STAMP_NAME)
     try:
         stamp_text = stamp_path.read_text(encoding="utf-8", errors="surrogateescape")
     except (FileNotFoundError, NotADirectoryError):
-        stamp = None
+        return None
     except OSError as exc:
         raise Refusal(f"cannot read {stamp_path}: {exc}") from exc
-    else:
-        stamp = stamp_text.removesuffix("\n")
+    return stamp_text.removesuffix("\n")
+
+
+def read_build_dir_state(build_dir: str | Path) -> BuildDirState:
+    build = Path(build_dir)
     built_in = any(
         fingerprint.is_dir()
         for pattern in ("*/.fingerprint", "*/*/.fingerprint")
         for fingerprint in build.glob(pattern)
     )
-    return BuildDirState(stamp, built_in)
+    return BuildDirState(read_stamp(build), built_in)
 
 
 _MOUNTINFO_ESCAPE = re.compile(r"\\([0-7]{3})")
@@ -345,14 +358,21 @@ def decide_mode(
     host_enabled: Callable[[], bool],
     reachability: Callable[[], Reachability],
 ) -> Decision:
-    """C1's table; host_enabled and reachability are called only by the rows that need them."""
+    """C1's table; host_enabled and reachability are called only by the rows that need them.
+
+    A refusal's reason ends with the fix for that row.
+    """
     if state.stamp is not None:
         if state.stamp != canon:
-            return Decision(Mode.REFUSED, f"stamped for {state.stamp!r}, not for CANON {canon}")
+            return Decision(
+                Mode.REFUSED, f"stamped for {state.stamp!r}, not for CANON {canon}; {REBUILD_FIX}"
+            )
         reach = reachability()
         if reach.route is Route.NONE:
             return Decision(
-                Mode.REFUSED, f"stamped for CANON {canon}, which is unreachable: {reach.reason}"
+                Mode.REFUSED,
+                f"stamped for CANON {canon}, which is unreachable: {reach.reason};"
+                f" run where a mount namespace can be entered, or {REBUILD_FIX}",
             )
         return Decision(Mode.CANON, f"stamped for CANON {canon}; {reach.reason}", reach.route)
     if state.built_in:
@@ -394,6 +414,9 @@ def status_report(environ: Mapping[str, str], cwd: str) -> dict[str, object]:
         report["tree_root"] = str(tree.real_root)
         report["build_dir"] = str(build_dir)
         decision = build_dir_decision(tree, build_dir, canon, lambda: host.enabled)
+        refusal = policy_refusal(host)
+        if decision.mode is Mode.CANON and refusal:
+            decision = Decision(Mode.REFUSED, refusal)
     report["build_dir_mode"] = decision.mode.value
     report["reason"] = decision.reason
     return report
@@ -462,9 +485,7 @@ def option_value(args: list[str], name: str) -> str | None:
     return None
 
 
-def cargo_passes_through(
-    args: list[str], environ: Mapping[str, str], cwd: str, tree_root: str | Path
-) -> bool:
+def cargo_passes_through(args: list[str], environ: Mapping[str, str], cwd: str, tree: Tree) -> bool:
     """Decision 10: cargo invocations that build nothing in the tree run untouched."""
     index = cargo_subcommand_index(args)
     if index is None:
@@ -482,8 +503,7 @@ def cargo_passes_through(
         environ.get("CARGO_BUILD_TARGET_DIR"),
     )
     return not any(
-        target_dir and is_inside(os.path.join(cwd, target_dir), tree_root)
-        for target_dir in target_dirs
+        target_dir and tree.contains(os.path.join(cwd, target_dir)) for target_dir in target_dirs
     )
 
 
@@ -564,11 +584,9 @@ def canon_invocation(
     cargo: bool,
 ) -> Invocation:
     """What the command gets at CANON (C3, C4); for cargo, command is cargo's arguments."""
-    if host.policy is not Policy.INCREMENTAL:
-        raise Refusal(
-            f"host policy '{host.policy}' needs the sccache server, which this canon_run.py"
-            f' does not provide; set policy = "incremental" or enabled = false in {host.path}'
-        )
+    refusal = policy_refusal(host)
+    if refusal:
+        raise Refusal(refusal)
     argv = [rebase_argument(argument, tree, canon) for argument in command]
     env = dict(environ)
     for name, value in environ.items():
@@ -615,8 +633,13 @@ def exec_untouched(command: list[str], *, cargo: bool, environ: Mapping[str, str
 
 
 def ensure_stamp(build_dir: Path, canon: str) -> None:
-    """C1: mark build_dir as built at canon; a stamp already there must name canon."""
+    """C1: mark build_dir as built at canon; a stamp already there must name canon.
+
+    A build directory already stamped for canon is left untouched.
+    """
     stamp_path = build_dir / STAMP_NAME
+    if read_stamp(build_dir) == canon:
+        return
     try:
         os.makedirs(build_dir, exist_ok=True)
         descriptor, pending = tempfile.mkstemp(dir=build_dir, prefix=f"{STAMP_NAME}.")
@@ -628,7 +651,7 @@ def ensure_stamp(build_dir: Path, canon: str) -> None:
         os.chmod(pending, 0o644)
         os.link(pending, stamp_path)
     except FileExistsError:
-        existing = read_build_dir_state(build_dir).stamp
+        existing = read_stamp(build_dir)
         if existing != canon:
             raise Refusal(f"{stamp_path} holds {existing!r}, not CANON {canon}") from None
     except OSError as exc:
@@ -675,7 +698,7 @@ def run(command: list[str], *, cargo: bool, environ: Mapping[str, str]) -> NoRet
     except OSError:
         return exec_untouched(command, cargo=cargo, environ=environ)
     tree = find_tree(cwd, environ)
-    if tree is None or (cargo and cargo_passes_through(command, environ, cwd, tree.root)):
+    if tree is None or (cargo and cargo_passes_through(command, environ, cwd, tree)):
         return exec_untouched(command, cargo=cargo, environ=environ)
     target_dir = option_value(command, "--target-dir") if cargo else None
     build_dir = build_dir_for(tree, cwd, environ, target_dir)
@@ -685,10 +708,7 @@ def run(command: list[str], *, cargo: bool, environ: Mapping[str, str]) -> NoRet
     if decision.mode is Mode.REAL_PATH:
         return exec_untouched(command, cargo=cargo, environ=environ)
     if decision.mode is Mode.REFUSED:
-        raise Refusal(
-            f"build directory {build_dir}: {decision.reason}; run where a mount namespace"
-            f" can be entered, or delete {build_dir} to rebuild it at the real path"
-        )
+        raise Refusal(f"build directory {build_dir}: {decision.reason}")
     enter_canon(
         command,
         cargo=cargo,

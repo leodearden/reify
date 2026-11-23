@@ -68,6 +68,14 @@ class HostCase(unittest.TestCase):
     def wrapper_calls(self):
         return self.wrapper_log.read_text().splitlines() if self.wrapper_log.exists() else []
 
+    def assert_refused(self, result, *needles):
+        self.assertEqual(result.returncode, 126, result.stdout + result.stderr)
+        lines = result.stderr.splitlines()
+        self.assertEqual(len(lines), 1, result.stderr)
+        self.assertTrue(lines[0].startswith("canon_run: "), lines[0])
+        for needle in needles:
+            self.assertIn(needle, lines[0])
+
 
 class RealPathOnDisabledHost(HostCase):
     """Boundary row 9: with the host disabled, the trampoline is plain cargo."""
@@ -103,6 +111,23 @@ class NamespaceRows(HostCase):
         report = json.loads(result.stdout)
         self.assertEqual(report["build_dir_mode"], "canon", report["reason"])
         self.assertEqual(report["policy"], "incremental")
+        self.assertFalse(self.stamp.exists())
+
+    def test_status_reports_refused_where_the_default_policy_would_refuse(self):
+        """shared, the default when host.toml names no policy, needs beta2's sccache server."""
+        fx.write_host_config(self.env["REIFY_CANON_HOST_CONFIG"], enabled=True)
+        result = fx.run_canon(self.tree, self.tree, "status", env=self.env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["policy"], "shared")
+        self.assertEqual(report["build_dir_mode"], "refused", report["reason"])
+        self.assertIn("policy 'shared'", report["reason"])
+        self.assertEqual(report["canon_root"], self.canon)
+
+    def test_policy_refusal_comes_before_the_stamp(self):
+        fx.write_host_config(self.env["REIFY_CANON_HOST_CONFIG"], enabled=True, policy="shared")
+        result = fx.run([self.trampoline, *fx.CARGO_TEST], cwd=self.tree, env=self.env)
+        self.assert_refused(result, "policy 'shared'")
         self.assertFalse(self.stamp.exists())
 
     def test_cargo_test_builds_at_canon_incrementally_without_the_wrapper(self):
@@ -186,11 +211,7 @@ class LandlockRows(HostCase):
         self.stamp.write_text(self.canon + "\n")
         argv = fx.landlock(self.tmp, self.trampoline, *fx.CARGO_TEST)
         result = fx.run(argv, cwd=self.tree, env=self.env)
-        self.assertEqual(result.returncode, 126, result.stdout + result.stderr)
-        lines = result.stderr.splitlines()
-        self.assertEqual(len(lines), 1, result.stderr)
-        self.assertTrue(lines[0].startswith("canon_run: "), lines[0])
-        self.assertIn(str(target), lines[0])
+        self.assert_refused(result, str(target))
         self.assertFalse(Path(target, "debug", "deps").exists())
 
 
