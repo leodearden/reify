@@ -126,7 +126,7 @@ pub(crate) fn validate_param_override(
         // Debug-build divergence: fire when a compiler-admitted
         // `StructureInstance` fails the runtime trait-conformance check because
         // the per-Engine `StructureRegistry` has no meta for the value's
-        // `type_id`.  That gap is the "registry-population bug" signature
+        // `type_name`.  That gap is the "registry-population bug" signature
         // (compiler proved the bound, but the side-table lost the
         // `StructureMeta`).  Scoped to `TraitObject + meta-missing` to avoid
         // false panics on legitimate rejections: a StructureRef nominal
@@ -150,14 +150,14 @@ pub(crate) fn validate_param_override(
         #[cfg(debug_assertions)]
         if let reify_ir::Value::StructureInstance(data) = value
             && matches!(cell_type, reify_core::Type::TraitObject(_))
-            && registry.meta(data.type_id).is_none()
+            && registry.meta_for(data).is_none()
         {
             panic!(
                 "StructureInstance type mismatch: value type_name={} \
-                 type_id={:?} has no StructureMeta in registry \
+                 has no StructureMeta in registry \
                  (registry-population bug or stale cross-cycle override) — \
                  expected ty={:?}",
-                data.type_name, data.type_id, cell_type,
+                data.type_name, cell_type,
             );
         }
         return Err(ParamOverrideRejection::TypeKindMismatch);
@@ -4966,7 +4966,7 @@ mod tests {
     // by step-2:
     //
     //  (a) debug build  — should_panic: an empty registry has no meta for the
-    //      value's type_id, which is the registry-population-bug signature;
+    //      value's type_name, which is the registry-population-bug signature;
     //      the debug invariant must diverge.
     //  (b) release build — no panic: the same inputs return
     //      Err(TypeKindMismatch) gracefully so the value still flows via the
@@ -4978,7 +4978,7 @@ mod tests {
     /// Debug-build invariant: `validate_param_override` must panic with a
     /// message containing "StructureInstance type mismatch" when a
     /// `Value::StructureInstance` is validated against a `Type::TraitObject`
-    /// cell and the registry has no meta for the value's `type_id`
+    /// cell and the registry has no meta for the value's `type_name`
     /// (registry-population bug).
     #[cfg(debug_assertions)]
     #[test]
@@ -4994,7 +4994,7 @@ mod tests {
         }));
         let ty = reify_core::Type::TraitObject("ElasticMaterial".to_string());
         let empty_registry = reify_ir::StructureRegistry::new();
-        // With an empty registry type_id=0 has no meta → registry-population
+        // With an empty registry the type_name has no meta → registry-population
         // bug → debug build must diverge with "StructureInstance type mismatch".
         let _ = super::validate_param_override(&v, &ty, &empty_registry);
     }

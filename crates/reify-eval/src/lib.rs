@@ -388,8 +388,10 @@ fn value_type_kind_matches(
         // a `Value::StructureInstance` satisfies a `Type::StructureRef(n)` of
         // its own canonical name, or a `Type::TraitObject(b)` for any trait
         // bound it declares conformance to. Declared bounds live in the
-        // per-Engine `StructureRegistry` side-table, keyed by the opaque
-        // `type_id`. Without a registry the trait-bound lookup is unprovable
+        // per-Engine `StructureRegistry` side-table and are resolved by
+        // `type_name` via `StructureRegistry::meta_for`, because `type_id` is
+        // a placeholder (esc-3540-177 RULING 2). Bounds are the declared ones
+        // only. Without a registry the trait-bound lookup is unprovable
         // and conservatively returns `false` (the conformance is still proven
         // at compile time by the trait-typed-param machinery; this runtime
         // check is the defence-in-depth arm). Any non-structure target type
@@ -403,7 +405,7 @@ fn value_type_kind_matches(
             // compile-time only and carry no runtime payload.
             Type::Applied { name, .. } => name == &data.type_name,
             Type::TraitObject(bound) => registry
-                .and_then(|r| r.meta(data.type_id))
+                .and_then(|r| r.meta_for(data))
                 .map(|m| m.declared_trait_bounds.iter().any(|b| b == bound))
                 .unwrap_or(false),
             _ => false,
