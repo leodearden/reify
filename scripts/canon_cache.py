@@ -25,6 +25,7 @@ import selectors
 import shutil
 import signal
 import socket
+import stat
 import struct
 import subprocess
 import sys
@@ -128,13 +129,33 @@ def is_writable_dir(directory: str) -> bool:
     return True
 
 
+def private_dir_problem(info: os.stat_result, uid: int) -> str:
+    """Why lstat info is not uid's own directory closed to group and others, or "" when it is."""
+    if stat.S_ISLNK(info.st_mode):
+        return "is a symbolic link"
+    if not stat.S_ISDIR(info.st_mode):
+        return "is not a directory"
+    if info.st_uid != uid:
+        return f"is owned by uid {info.st_uid}, not {uid}"
+    if info.st_mode & 0o022:
+        return f"has mode {oct(stat.S_IMODE(info.st_mode))}: writable by group or others"
+    return ""
+
+
 def choose_fallback_dir(settings: CacheSettings, tmp_root: str = "/tmp") -> str:
-    """The configured fallback directory, else a per-user one under tmp_root (a landlocked agent)."""
+    """The configured fallback directory, else a per-user one under tmp_root (a landlocked agent).
+
+    Anyone can pre-create a path under a shared tmp_root, so the per-user one is used only
+    when it is this user's private directory.
+    """
     if is_writable_dir(settings.fallback_dir):
         return settings.fallback_dir
     per_user = os.path.join(tmp_root, f"reify-canon-fallback-{os.getuid()}")
     with refusing_os_errors(f"create the fallback directory {per_user}"):
         os.makedirs(per_user, mode=0o700, exist_ok=True)
+        problem = private_dir_problem(os.lstat(per_user), os.getuid())
+    if problem:
+        raise CacheSessionError(f"fallback directory {per_user} {problem}; remove it, or set fallback_dir in host.toml")
     return per_user
 
 
