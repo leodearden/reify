@@ -638,21 +638,52 @@ and the script's header says the ledger "is written only AFTER the touch", yet
 witness all still read 2026-11-16 17:11:41.
 
 `867156fd…` and `02cc16f2…` were invoked before that mtime. By cargo's
-`rerun-if-changed` mtime rule, the next `_merge-verify` build of those units is
+`rerun-if-changed` mtime rule, the next `_merge-verify` build of those units was
 therefore expected to re-run the script, recompile the archive and rebuild
-tree-sitter-reify's dependents there. That is an expectation: no verify had run
-there since to confirm it. Why those two dirs themselves reran without
-regenerating is not attributed. A watched input rewritten with unchanged bytes,
-a changed `src/scanner.c` or `build_support.rs`, a `rerun-if-env-changed`
-variable or a rebuilt build-script compile unit would each do it.
+tree-sitter-reify's dependents there. Read-only in `_merge-verify` on
+2026-11-23 (HEAD `cdc3588e74`), that re-run is confirmed: `867156fd…` was
+re-invoked at 2026-11-19 23:26:35 and `02cc16f2…` at 2026-11-20 00:10:35, both
+after the 12:09:25 bump. It is a confirmed re-run, not one attributed to the
+bump alone. Main also changed `tree-sitter-reify/` in that window (#9236's
+`grammar.js` content, 2026-11-17 17:32, and #10139's `build.rs`, 2026-11-19), and
+an `ensure` force touched `src/scanner.c` and the ledger at 2026-11-17 21:57:42.
+Each of those alone re-runs the script. Why those two dirs themselves reran
+without regenerating is not attributed. A watched input rewritten with
+unchanged bytes, a changed `src/scanner.c` or `build_support.rs`, a
+`rerun-if-env-changed` variable or a rebuilt build-script compile unit would
+each do it.
 
-Hypothesis: `tests/infra/test_tree_sitter_pipeline.sh` makes the bump. Its
-`TS_DIR` is the real `tree-sitter-reify/`, and two of its tests,
-`test_build_rs_watches_all_compiled_inputs` and
-`test_build_rs_stamps_a_real_manifest_on_a_shasum_only_host`, `touch` the real
-`grammar.js` and then run `cargo check -p tree-sitter-reify` into the lane's own
-`target/`. The 1.4 s gap fits that shape, but nothing read-only shows which leaf
-made the bump.
+The bump repeated on 2026-11-22 in `_merge-verify`. `grammar.js` read
+19:01:58.714 with a clean `git status`. Run dir `c09265fc…` was invoked at
+19:01:59.286, 0.57 s later, and its archive was rewritten at 19:02:00.434. Its
+`generation_key.stamp` still read 2026-11-20, so the script re-ran and
+recompiled without regenerating. `src/scanner.c`, the ledger and its mtime
+witness still read 2026-11-17 21:57:42, so no `ensure` force was involved.
+
+Which cases of `tests/infra/test_tree_sitter_pipeline.sh` move a watched input
+was measured in the `_lane-14` task lane on 2026-11-23. The runner's per-case
+guard (#10144) compares the exact mtimes of the lane's `grammar.js`,
+`src/scanner.c`, `build.rs` and `build_support.rs` before each case and after
+its cleanup. Over the full suite it failed exactly two cases, and only for
+`grammar.js`: `test_build_rs_stamps_a_real_manifest_on_a_shasum_only_host`
+(2020-01-01 to 07:43:23.756) and `test_build_rs_watches_all_compiled_inputs`
+(to 07:43:34.856). Each `touch`ed the real `grammar.js` and ran
+`cargo check -p tree-sitter-reify` into the lane's own `target/`, and the new
+run dir's `output` was written 0.40 s after the second touch.
+
+Hypothesis: the `_merge-verify` bumps of 2026-11-17 and 2026-11-22 were these
+two cases, run there by the `run_all.sh` leaf. The shape is the same: a bump
+with a clean `git status`, then a build-script run less than a second later.
+Nothing read-only in `_merge-verify` shows which leaf ran.
+
+The fix (#10144): both cases now build a fixture crate in its own target dir,
+and the runner fails any case that moves the mtime of the lane's four build
+inputs. In the same lane the full suite took 5:13 before the two cases moved
+and 3:30 after, with every case passing and the four mtimes and the lane's
+`tree-sitter-reify-*` run dirs unchanged by the run. The fix stops new bumps.
+It does not reset `_merge-verify`'s current `grammar.js` mtime, so the run dirs
+invoked before it there (debug `b0bba017…` at 2026-11-22 18:34:43, release
+`327d47f8…` at 18:38:56) are expected to re-run once on the next build.
 
 Fresh lanes do not see it: the seed stamps `grammar.js` back to 2020-01-01,
 whatever mtime `_merge-verify` left, and probe (1) measured tree-sitter-reify's
@@ -1200,11 +1231,15 @@ kernels' accepted member-feature splits (Member features) still make a plain
   in a lane freshly seeded from gen.643, the first base gen built after #9896,
   and again after a replay of `_merge-verify`'s reset in that lane: in both
   pairs the second identical run compiled 0 units, and tree-sitter-reify's
-  build-script run stayed Fresh in each first run. Open limit: in the real
-  `_merge-verify`, `grammar.js`'s mtime was bumped mid-verify with its bytes
-  unchanged, the build script re-ran, and two other run dirs are now older
-  than it, so the next verify there is expected to re-run the script and
-  rebuild the cascade. It is unresolved, and owned by #10144.
+  build-script run stayed Fresh in each first run. A mid-verify trigger,
+  closed by #10144: two cases of `tests/infra/test_tree_sitter_pipeline.sh`
+  touched `grammar.js` and cargo-checked into the lane's `target/`, which
+  re-ran the build script and left other run dirs older than it, so the next
+  verify rebuilt the cascade. They now build a fixture crate in a private
+  target dir, and the suite's runner fails a case that moves a build input's
+  mtime. That stops new bumps and does not reset `_merge-verify`'s current
+  `grammar.js` mtime, so its older run dirs re-run once. The other trigger,
+  the freshness force after a seed, is owned by #10168.
   Details: Tree-sitter re-probe after #9896 (#10046).
 - **Feature selections.** A non-default selection such as
   `-p reify-gui --features gui` is a resolution of its own, and the gate does
