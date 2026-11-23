@@ -380,8 +380,12 @@ fn compile_program_unit_collision_between_imports_is_first_wins() {
         "a.ri",
         "module a\npub unit fortnight : Time = 1209600.0\n",
     );
-    write(dir.path(), "b.ri", "module b\npub unit fortnight : Time = 2.0\n");
-    let main_src = "module main\nimport a\nimport b\nunit bar : Time = 1fortnight\n\
+    write(
+        dir.path(),
+        "b.ri",
+        "module b\npub unit fortnight : Time = 2.0\n",
+    );
+    let main_src = "module main\nimport a\nimport b\nunit sennight : Time = 1fortnight\n\
                     structure def Top {\n    param x : Real = 1\n}\n";
 
     let program = compile_entry(dir.path(), "main", main_src, &CfgSet::default());
@@ -391,15 +395,24 @@ fn compile_program_unit_collision_between_imports_is_first_wins() {
             .units
             .iter()
             .find(|u| u.name == name)
-            .unwrap_or_else(|| panic!("unit {name} compiled in {}", dotted(module)))
+            .unwrap_or_else(|| {
+                panic!(
+                    "unit {name} compiled in {}: {:?}",
+                    dotted(module),
+                    module.diagnostics
+                )
+            })
             .factor
     };
     let a_unit = &program.imports[0];
-    assert_eq!(a_unit.import_path, "a", "precondition: a is the first import");
     assert_eq!(
-        factor_of(program.entry(), "bar"),
+        a_unit.import_path, "a",
+        "precondition: a is the first import"
+    );
+    assert_eq!(
+        factor_of(program.entry(), "sennight"),
         factor_of(&a_unit.module, "fortnight"),
-        "bar must be measured in a's fortnight (first import wins)"
+        "sennight must be measured in a's fortnight (first import wins)"
     );
 
     let is_collision = |d: &&reify_core::Diagnostic| {
@@ -408,7 +421,12 @@ fn compile_program_unit_collision_between_imports_is_first_wins() {
             && d.message.contains("'a'")
             && d.message.contains("'b'")
     };
-    let on_entry: Vec<_> = program.entry().diagnostics.iter().filter(is_collision).collect();
+    let on_entry: Vec<_> = program
+        .entry()
+        .diagnostics
+        .iter()
+        .filter(is_collision)
+        .collect();
     assert_eq!(
         on_entry.len(),
         1,

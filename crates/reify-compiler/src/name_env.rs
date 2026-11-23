@@ -10,12 +10,12 @@ use std::collections::hash_map::Entry;
 use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 
-use reify_core::{ModulePath, Type};
+use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, ModulePath, SourceSpan, Type};
 use reify_ir::{CompiledFunction, EnumDef};
 
 use crate::types::{
     CompiledConstraintDef, CompiledModule, CompiledPurpose, CompiledTrait, CompiledTypeAlias,
-    EntityKind, TopologyTemplate,
+    CompiledUnit, EntityKind, TopologyTemplate,
 };
 
 /// Precedence tiers, highest first.
@@ -67,6 +67,11 @@ pub trait Definition: Debug + 'static {
 
     fn key(&self) -> Self::Key<'_>;
 
+    fn name(&self) -> &str;
+
+    /// How diagnostics name this kind, e.g. "enum" or "type alias".
+    fn kind_word(&self) -> &'static str;
+
     /// The definitions `module` makes visible to modules that have it in
     /// their prelude.
     fn exported_by(module: &CompiledModule) -> impl Iterator<Item = &Self>;
@@ -116,6 +121,14 @@ impl Definition for TopologyTemplate {
         &self.name
     }
 
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn kind_word(&self) -> &'static str {
+        self.entity_kind.as_label()
+    }
+
     fn exported_by(module: &CompiledModule) -> impl Iterator<Item = &Self> {
         module.templates.iter()
     }
@@ -126,6 +139,14 @@ impl Definition for EnumDef {
 
     fn key(&self) -> &str {
         &self.name
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn kind_word(&self) -> &'static str {
+        "enum"
     }
 
     fn exported_by(module: &CompiledModule) -> impl Iterator<Item = &Self> {
@@ -140,6 +161,14 @@ impl Definition for CompiledTrait {
         &self.name
     }
 
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn kind_word(&self) -> &'static str {
+        "trait"
+    }
+
     fn exported_by(module: &CompiledModule) -> impl Iterator<Item = &Self> {
         module.trait_defs.iter()
     }
@@ -150,6 +179,14 @@ impl Definition for CompiledFunction {
 
     fn key(&self) -> FunctionSignature<'_> {
         FunctionSignature::new(&self.name, &self.params)
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn kind_word(&self) -> &'static str {
+        "function"
     }
 
     fn exported_by(module: &CompiledModule) -> impl Iterator<Item = &Self> {
@@ -164,6 +201,14 @@ impl Definition for CompiledTypeAlias {
         &self.name
     }
 
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn kind_word(&self) -> &'static str {
+        "type alias"
+    }
+
     fn exported_by(module: &CompiledModule) -> impl Iterator<Item = &Self> {
         module.type_aliases.iter().filter(|a| a.is_pub)
     }
@@ -174,6 +219,14 @@ impl Definition for CompiledConstraintDef {
 
     fn key(&self) -> &str {
         &self.name
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn kind_word(&self) -> &'static str {
+        "constraint def"
     }
 
     fn exported_by(module: &CompiledModule) -> impl Iterator<Item = &Self> {
@@ -188,8 +241,36 @@ impl Definition for CompiledPurpose {
         &self.name
     }
 
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn kind_word(&self) -> &'static str {
+        "purpose"
+    }
+
     fn exported_by(module: &CompiledModule) -> impl Iterator<Item = &Self> {
         module.compiled_purposes.iter().filter(|p| p.is_pub)
+    }
+}
+
+impl Definition for CompiledUnit {
+    type Key<'k> = &'k str;
+
+    fn key(&self) -> &str {
+        &self.name
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn kind_word(&self) -> &'static str {
+        "unit"
+    }
+
+    fn exported_by(module: &CompiledModule) -> impl Iterator<Item = &Self> {
+        module.units.iter().filter(|u| u.is_pub)
     }
 }
 
@@ -214,6 +295,33 @@ pub struct Shadowing<'a, D: Definition> {
     pub key: D::Key<'a>,
     pub winner: Candidate<'a, D>,
     pub shadowed: Candidate<'a, D>,
+}
+
+/// The one wording of a first-wins collision: the kind, the name, the
+/// winner's origin first, then the shadowed one. Each origin is a dotted
+/// module path, `local_module` standing for [`Origin::Local`].
+pub fn collision_warning<D: Definition>(
+    shadowing: &Shadowing<'_, D>,
+    local_module: &str,
+) -> Diagnostic {
+    let label = |origin: Origin<'_>| match origin {
+        Origin::Local => local_module.to_string(),
+        Origin::Module(path) => path.0.join("."),
+    };
+    let definition = shadowing.winner.definition;
+    let winner = label(shadowing.winner.origin);
+    Diagnostic::warning(format!(
+        "{kind} '{name}' declared in both '{winner}' and '{shadowed}'; \
+         first-wins: '{winner}' binds",
+        kind = definition.kind_word(),
+        name = definition.name(),
+        shadowed = label(shadowing.shadowed.origin),
+    ))
+    .with_code(DiagnosticCode::DefinitionCollision)
+    .with_label(DiagnosticLabel::new(
+        SourceSpan::prelude(),
+        "definition collision",
+    ))
 }
 
 /// Every candidate of one kind, in precedence order: local definitions, then

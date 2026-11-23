@@ -642,6 +642,21 @@ pub enum DiagnosticCode {
     /// escalates it to `Error` (PRD `docs/prds/v0_6/stdlib-namespace.md` D-2).
     /// The PRD-prose mnemonic for this code is `W_STDLIB_NAME_SHADOWED`.
     StdlibNameShadowed,
+    /// Origin: `crates/reify-compiler/src/name_env.rs` (`collision_warning`),
+    /// raised by the compiler's prelude-units seed loop
+    /// (`compile_builder/units_phase.rs`) and by the evaluator's resolution
+    /// environment collision report (`reify_eval::DefEnv`).
+    /// Emitted as a `Warning` when two modules a compile or program sees define
+    /// one name in one kind: the first in precedence order binds and the other
+    /// is shadowed (resolution-unification I6/D-6, stdlib-namespace NS-P1).
+    ///
+    /// Canonical message form:
+    /// `"<kind> '<name>' declared in both '<winner module>' and '<shadowed module>'; first-wins: '<winner module>' binds"`.
+    ///
+    /// One label: the prelude sentinel span (`"definition collision"`).
+    ///
+    /// The PRD-prose mnemonic for this code is `W_DEFINITION_COLLISION`.
+    DefinitionCollision,
     /// Origin: `crates/reify-compiler/src/entity.rs` (trait_bound iteration).
     /// Canonical message form:
     /// `"geometry trait '<TraitName>' on '<EntityName>' is treated as a user assertion; runtime conformance check is suppressed"`.

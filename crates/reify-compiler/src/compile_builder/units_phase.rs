@@ -2,71 +2,48 @@
 //! module-local unit declaration.
 //!
 //! Prelude seeding ([`seed_prelude_units`]) runs first so module-local code
-//! can reference prelude units by name. Cross-prelude collisions produce a
-//! last-wins warning; the warning fires only for *genuine* cross-module
-//! pairs — intra-module duplicates are suppressed because `compile()` rejects
-//! them earlier. Module-local duplicates produce an error keyed on the
-//! original registration's provenance (stdlib / user-module / module-local).
-//!
-//! **Cross-phase note:** see `prelude_context` § "Cross-prelude collision
-//! policy" for a comparison of all three sibling-phase policies (units =
-//! last-wins/warns; aliases = first-wins/warns; functions =
-//! first-wins/silent).
+//! can reference prelude units by name. It binds by the `crate::name_env`
+//! first-wins rule and warns once per cross-module collision. Module-local
+//! duplicates produce an error keyed on the original registration's
+//! provenance (stdlib / user-module / module-local).
 
 use reify_ast::UnitDecl;
-use reify_core::{Diagnostic, DiagnosticLabel, SourceSpan};
+use reify_core::{Diagnostic, DiagnosticLabel};
 
 use crate::CompiledModule;
 use crate::compile_builder::ctx::CompilationCtx;
+use crate::name_env;
 use crate::type_resolution::compile_unit;
 use crate::types::CompiledUnit;
 use crate::units::{UnitEntry, UnitRegistry};
 
-/// Seed every `pub` unit of `prelude` into `registry`, returning the
-/// cross-prelude collision warnings.
+/// Seed the `pub` unit each name binds in `prelude` into `registry`,
+/// returning one collision warning per unit shadowed by another module's.
 ///
-/// Policy: last-wins — a later module's unit overwrites an earlier one's, with
-/// one warning per overwrite. The warning is suppressed when the earlier entry
-/// came from the same module, since `compile()` already rejects intra-module
-/// duplicates.
+/// Policy: the `crate::name_env` first-wins rule — import-tier modules before
+/// std modules, each tier in slice order. A duplicate within one module is not
+/// reported here, since `compile()` already rejects intra-module duplicates.
 pub fn seed_prelude_units(
     registry: &mut UnitRegistry,
     prelude: &[&CompiledModule],
 ) -> Vec<Diagnostic> {
-    let mut warnings = Vec::new();
-    for prelude_module in prelude {
-        let module_display = prelude_module.path.to_string();
-        for cu in &prelude_module.units {
-            if cu.is_pub {
-                // Detect cross-prelude collision before overwriting: if another
-                // prelude module already seeded this unit name, emit a warning.
-                // Guard: only warn for genuine cross-module pairs. Intra-module
-                // duplicates (same source_module as current) are rejected earlier
-                // by compile() and must not produce "declared in both 'X' and 'X'".
-                if let Some(existing) = registry.lookup(&cu.name)
-                    && existing.source_module.as_deref() != Some(&module_display[..])
-                {
-                    let first_module: &str =
-                        existing.source_module.as_deref().unwrap_or("<unknown>");
-                    warnings.push(
-                        Diagnostic::warning(format!(
-                            "prelude unit '{}' declared in both '{}' and '{}'; last-wins",
-                            cu.name, first_module, module_display
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            SourceSpan::prelude(),
-                            "cross-prelude collision",
-                        )),
-                    );
-                }
-                registry.seed_prelude_unit(UnitEntry::from_compiled_for_prelude(
-                    cu,
-                    module_display.clone(),
-                ));
-            }
-        }
+    let bindings = name_env::bind::<CompiledUnit, _>(&[], prelude.iter().copied());
+    for winner in bindings.winning_candidates() {
+        let module = winner
+            .origin
+            .module()
+            .expect("a prelude-only bind has no local candidates");
+        registry.seed_prelude_unit(UnitEntry::from_compiled_for_prelude(
+            winner.definition,
+            module.to_string(),
+        ));
     }
-    warnings
+    bindings
+        .shadowings()
+        .iter()
+        .filter(|shadowing| shadowing.winner.origin != shadowing.shadowed.origin)
+        .map(|shadowing| name_env::collision_warning(shadowing, ""))
+        .collect()
 }
 
 /// Run phase-4 (units).
