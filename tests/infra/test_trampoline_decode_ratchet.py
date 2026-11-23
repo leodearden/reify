@@ -44,6 +44,7 @@ CTOR_EQUIVALENT_PLACEHOLDERS = (
     "crates/reify-stdlib/src/flexures/common.rs",
 )
 EXCLUSIONS = IR_AND_CTOR_PATH + TEST_ONLY + CTOR_EQUIVALENT_PLACEHOLDERS
+GUI_TEST_ONLY = ("gui/src-tauri/src/tests/",)
 
 REGISTRY_FREE_LITERAL = re.compile(r"StructureTypeId\(\s*(?:u32::MAX|0)\s*\)")
 REGISTRY_META_BY_ID = re.compile(
@@ -79,6 +80,13 @@ def rows(root):
                 paths=CTOR_EQUIVALENT_PLACEHOLDERS,
                 baseline=5, target=5,
                 lowered_by="R5 M5 exempt ctor-equivalent; #7867 retires the field"),
+        rcr.Row(row_id="registry-free-gui",
+                construct=REGISTRY_FREE_LITERAL,
+                view=rcr.View.STARTS_IN_CODE,
+                paths=scan_set(root, (GUI_SOURCES,), GUI_TEST_ONLY),
+                baseline=2, target=2,
+                lowered_by="exempt gui display defaults; S25 splits engine.rs, "
+                           "#7867 retires the field"),
         rcr.Row(row_id="registry-meta-by-id",
                 construct=REGISTRY_META_BY_ID,
                 view=rcr.View.STARTS_IN_CODE,
@@ -90,17 +98,20 @@ def rows(root):
 FIXTURE_LINES = {
     "registry-free-literal": "    let id = StructureTypeId(u32::MAX);",
     "registry-free-placeholder": "    let id = StructureTypeId(0);",
+    "registry-free-gui": "    let id = StructureTypeId(u32::MAX);",
     "registry-meta-by-id": "    let m = registry.meta(data.type_id);",
 }
 
 PRODUCER = "crates/demo/src/producer.rs"
 GUI_FILE = "gui/src-tauri/src/demo.rs"
+GUI_TEST_FILE = "gui/src-tauri/src/tests/demo_tests.rs"
 EXCLUDED_FILE = "crates/reify-ir/src/v.rs"
 
 
 def sample_file(row_id):
     return {"registry-free-literal": PRODUCER,
             "registry-free-placeholder": CTOR_EQUIVALENT_PLACEHOLDERS[-1],
+            "registry-free-gui": GUI_FILE,
             "registry-meta-by-id": GUI_FILE}[row_id]
 
 
@@ -147,6 +158,13 @@ class ScanSet(TempRoot):
             self.write(rel, rust_fn())
         self.assertEqual(scan_set(self.root, (RUST_SOURCES,), EXCLUSIONS), tuple(sorted(kept)))
 
+    def test_gui_scan_keeps_production_and_drops_the_test_tree(self):
+        kept = ("gui/src-tauri/src/engine.rs", "gui/src-tauri/src/debug_server/tools.rs")
+        dropped = ("gui/src-tauri/src/tests/engine_tests.rs",)
+        for rel in kept + dropped:
+            self.write(rel, rust_fn())
+        self.assertEqual(scan_set(self.root, (GUI_SOURCES,), GUI_TEST_ONLY), tuple(sorted(kept)))
+
 
 class RowsFlagAndClear(TempRoot):
 
@@ -188,6 +206,8 @@ REGISTRY_FREE_NOT_COUNTED = (
 NOT_COUNTED = {
     "registry-free-literal": REGISTRY_FREE_NOT_COUNTED,
     "registry-free-placeholder": REGISTRY_FREE_NOT_COUNTED,
+    "registry-free-gui": REGISTRY_FREE_NOT_COUNTED + (
+        Case(rust_fn("    let id = StructureTypeId(0);"), rel=GUI_TEST_FILE),),
     "registry-meta-by-id": (
         Case(rust_fn("    let m = registry.meta(id);")),
         Case(rust_fn("    let m = registry.meta_for(data);")),
@@ -196,18 +216,22 @@ NOT_COUNTED = {
     ),
 }
 
-REGISTRY_FREE_COUNTED = (3, Case(rust_fn(
+REGISTRY_FREE_COUNTED = ((3, Case(rust_fn(
     "    let a = StructureTypeId(u32::MAX);",
     "    let b = StructureTypeId( 0 );",
-    "    let c = reify_ir::StructureTypeId(0);")))
+    "    let c = reify_ir::StructureTypeId(0);"))),)
 
 COUNTED = {
     "registry-free-literal": REGISTRY_FREE_COUNTED,
     "registry-free-placeholder": REGISTRY_FREE_COUNTED,
-    "registry-meta-by-id": (3, Case(rust_fn(
-        "    let a = registry.meta(data.type_id);",
-        "    let b = registry.declared_bounds(inst.type_id);",
-        "    let c = registry.meta(&self.data.type_id);"))),
+    "registry-free-gui": REGISTRY_FREE_COUNTED,
+    "registry-meta-by-id": (
+        (3, Case(rust_fn(
+            "    let a = registry.meta(data.type_id);",
+            "    let b = registry.declared_bounds(inst.type_id);",
+            "    let c = registry.meta(&self.data.type_id);"))),
+        (1, Case(rust_fn("    let m = registry.meta(data.type_id);"), rel=PRODUCER)),
+    ),
 }
 
 
@@ -228,16 +252,17 @@ class RowExclusions(TempRoot):
                     self.assertIsNone(result.violation, result.violation)
 
     def test_counted_spellings_count_every_occurrence(self):
-        for row_id, (added, case) in COUNTED.items():
-            with self.subTest(row_id, text=case.text):
-                result = self.evaluate_case(row_id, case)
-                self.assertEqual(result.count, result.row.baseline + added)
+        for row_id, cases in COUNTED.items():
+            for added, case in cases:
+                with self.subTest(row_id, text=case.text, rel=case.rel):
+                    result = self.evaluate_case(row_id, case)
+                    self.assertEqual(result.count, result.row.baseline + added)
 
 
 class LiveTree(unittest.TestCase):
 
     def test_every_exclusion_names_a_live_path(self):
-        for entry in EXCLUSIONS:
+        for entry in EXCLUSIONS + GUI_TEST_ONLY:
             with self.subTest(entry):
                 self.assertTrue((REPO_ROOT / entry).exists(), f"{entry} names no path")
 
