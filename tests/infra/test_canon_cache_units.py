@@ -35,8 +35,15 @@ import canon_run_fixture as fx  # noqa: E402
 
 sys.path.insert(0, str(fx.REPO_ROOT / "scripts"))
 import canon_cache  # noqa: E402
+from verify_events_lib import read_events  # noqa: E402
 
 ORCHESTRATOR_CONFIG = fx.REPO_ROOT / "dark-factory-orchestrator.yaml"
+EVENT_SAMPLE = Path(__file__).resolve().parent / "build_cache_event_sample.jsonl"
+C6_FIELDS = {
+    "mode", "policy", "backend", "reason", "hits", "misses", "write_errors",
+    "uncached_machine_flags", "detached_server", "wall_secs", "cpu_secs",
+}
+ENVELOPE = {"v", "ts_ns", "pid", "event"}
 CARGO_HOME_LINE = re.compile(r"^\s+CARGO_HOME:\s*(\S+)\s*$", re.MULTILINE)
 GUARD_LINE = "#!/bin/sh\n# reify-canon-guard\nexit 0\n"
 REAL_LINE = "#!/bin/sh\nexit 0\n"
@@ -858,6 +865,89 @@ class CloseSession(SessionCase):
             except OSError:
                 return False
         return True
+
+
+def sample_record(**changes):
+    fields = dict(
+        mode="canon",
+        policy=canon_cache.Policy.SHARED,
+        backend=canon_cache.Backend.SHARED,
+        reason=canon_cache.Reason.NONE,
+        hits=7,
+        misses=3,
+        write_errors=1,
+        uncached_machine_flags=2,
+        detached_server=0,
+        store_attempts=1,
+        wall_secs=12.3456,
+        cpu_secs=67.8,
+    )
+    fields.update(changes)
+    return canon_cache.BuildCacheRecord(**fields)
+
+
+def value_types(record):
+    return {name: type(value).__name__ for name, value in record.items() if name not in ("ts_ns", "pid")}
+
+
+class Record(unittest.TestCase):
+    """C6 / boundary row 8: one record, written by the channel's one encoder to two sinks."""
+
+    def setUp(self):
+        self.tmp = scratch(self)
+        self.channel = os.path.join(self.tmp, "channel.jsonl")
+        self.journal = os.path.join(self.tmp, "build", ".reify-canon-journal.jsonl")
+        os.mkdir(os.path.dirname(self.journal))
+
+    def write(self, record=None, channel="default"):
+        canon_cache.write_record(
+            record or sample_record(),
+            "build",
+            self.channel if channel == "default" else channel,
+            self.journal,
+        )
+
+    def test_channel_and_journal_get_one_byte_identical_line(self):
+        self.write()
+        channel, journal = Path(self.channel).read_bytes(), Path(self.journal).read_bytes()
+        self.assertEqual(channel.count(b"\n"), 1)
+        self.assertEqual(channel, journal)
+
+    def test_the_reader_sees_the_c6_record(self):
+        self.write()
+        for path in (self.channel, self.journal):
+            with self.subTest(path=path):
+                events = read_events(path)
+                self.assertEqual((len(events.records), events.skipped_lines), (1, 0))
+                (rec,) = events.records
+                self.assertEqual((rec["v"], rec["event"]), (1, "build_cache"))
+                self.assertEqual(set(rec), ENVELOPE | C6_FIELDS | {"store_attempts", "subcommand"})
+                self.assertEqual(
+                    {name: rec[name] for name in ("mode", "policy", "backend", "reason", "subcommand")},
+                    {"mode": "canon", "policy": "shared", "backend": "shared", "reason": "", "subcommand": "build"},
+                )
+                for name in ("hits", "misses", "write_errors", "uncached_machine_flags", "detached_server",
+                             "store_attempts"):
+                    self.assertIs(type(rec[name]), int, name)
+                self.assertEqual((rec["wall_secs"], rec["cpu_secs"]), (12.346, 67.8))
+
+    def test_without_a_channel_only_the_journal_is_written(self):
+        self.write(channel=None)
+        self.assertFalse(os.path.exists(self.channel))
+        self.assertEqual(len(read_events(self.journal).records), 1)
+
+    def test_an_unwritable_journal_raises_nothing(self):
+        canon_cache.write_record(sample_record(), "", None, os.path.join(self.tmp, "missing", "journal.jsonl"))
+
+    def test_the_committed_sample_matches_what_the_writer_produces(self):
+        sample = read_events(EVENT_SAMPLE)
+        self.assertEqual((len(sample.records), sample.skipped_lines), (1, 0))
+        self.write()
+        (written,) = read_events(self.journal).records
+        self.assertEqual(value_types(sample.records[0]), value_types(written))
+        self.assertEqual(
+            (sample.records[0]["mode"], sample.records[0]["policy"]), ("canon", "shared")
+        )
 
 
 class PolicyMembers(unittest.TestCase):

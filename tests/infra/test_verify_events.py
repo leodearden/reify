@@ -430,6 +430,25 @@ EMITTER_SHAPES = [
         },
     ),
     (
+        "build_cache",
+        ["canon", "shared", "shared", "", "7", "0", "1", "2", "0", "1", "12.345", "67.890", "build"],
+        {
+            "mode": "canon",
+            "policy": "shared",
+            "backend": "shared",
+            "reason": "",
+            "hits": 7,
+            "misses": 0,
+            "write_errors": 1,
+            "uncached_machine_flags": 2,
+            "detached_server": 0,
+            "store_attempts": 1,
+            "wall_secs": 12.345,
+            "cpu_secs": 67.89,
+            "subcommand": "build",
+        },
+    ),
+    (
         "run_finish",
         ["5", "2", "false", "2", "a.sh", "b.sh", "1", "c.sh", "0"],
         {
@@ -450,10 +469,12 @@ ALL_EMITTERS_ONCE = (
     "event_log_emit_member_finish m 1 0 PASS 1 - 1 2 0; "
     "event_log_emit_phase_finish p 1 2; "
     "event_log_emit_slot_timeout r 1 1 fatal /l e; "
+    "event_log_emit_build_cache canon shared shared '' 1 0 0 0 0 1 0.500 0.250 build; "
     "event_log_emit_run_finish 1 0 false 0 0 0"
 )
 ALL_EMITTER_NAMES = [
-    "run_start", "member_start", "member_finish", "phase_finish", "slot_timeout", "run_finish",
+    "run_start", "member_start", "member_finish", "phase_finish", "slot_timeout", "build_cache",
+    "run_finish",
 ]
 
 AWKWARD = 'sp ace "quote" back\\slash\nnew\rline\ttab\x01ctl\x1fus été del\x7f'
@@ -566,6 +587,28 @@ class EncoderTests(unittest.TestCase):
                 self.assertEqual((len(events.records), events.skipped_lines), (1, 0))
                 (rec,) = events.records
                 self.assertEqual({k: rec[k] for k in expected}, expected)
+
+    def test_a_non_number_in_a_seconds_position_encodes_null(self):
+        for value, expected in (
+            ("12s", None),
+            ("1.2.3", None),
+            ("", None),
+            ("01.5", None),
+            ("1.", None),
+            (".5", None),
+            ("-0.5", -0.5),
+            ("0", 0),
+            ("3.250", 3.25),
+        ):
+            with self.subTest(value=value):
+                self.channel.unlink(missing_ok=True)
+                args = ["canon", "shared", "shared", "", "0", "0", "0", "0", "0", "1", value, value, "build"]
+                result = emit("build_cache", *args, env=self.env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                events = self.read()
+                self.assertEqual((len(events.records), events.skipped_lines), (1, 0))
+                (rec,) = events.records
+                self.assertEqual((rec["wall_secs"], rec["cpu_secs"]), (expected, expected))
 
     def test_member_finish_keeps_the_newest_detail_within_the_line_cap(self):
         detail = [f"{i:02d}" + "x" * 898 for i in range(30)]
