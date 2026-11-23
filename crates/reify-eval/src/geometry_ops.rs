@@ -7,8 +7,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use reify_core::Diagnostic;
 use reify_ir::{
-    CompiledFunction, GeometryHandleId, GeometryKernel, KernelHandle, KernelId, ValueMap,
-    decode_direction,
+    CompiledFunction, GeometryHandleId, GeometryKernel, KernelHandle, KernelId, UnitVec3,
+    ValueMap, decode_direction,
 };
 use reify_solver_elastic::DEGENERATE_RING_AREA_TOLERANCE;
 
@@ -7137,7 +7137,10 @@ fn try_build_kernel_free_leaf_selector(
             build_leaf_selector(
                 reify_core::ty::SelectorKind::Face,
                 target,
-                reify_ir::value::LeafQuery::ByNormal { dir, tol_rad },
+                reify_ir::value::LeafQuery::ByNormal {
+                    dir: dir.components(),
+                    tol_rad,
+                },
                 function_name,
                 diagnostics,
             )
@@ -7151,7 +7154,10 @@ fn try_build_kernel_free_leaf_selector(
             build_leaf_selector(
                 reify_core::ty::SelectorKind::Edge,
                 target,
-                reify_ir::value::LeafQuery::ByParallel { axis, tol_rad },
+                reify_ir::value::LeafQuery::ByParallel {
+                    axis: axis.components(),
+                    tol_rad,
+                },
                 function_name,
                 diagnostics,
             )
@@ -7183,7 +7189,10 @@ fn try_build_kernel_free_leaf_selector(
             build_leaf_selector(
                 reify_core::ty::SelectorKind::Face,
                 target,
-                reify_ir::value::LeafQuery::ByPerpendicular { axis, tol_rad },
+                reify_ir::value::LeafQuery::ByPerpendicular {
+                    axis: axis.components(),
+                    tol_rad,
+                },
                 function_name,
                 diagnostics,
             )
@@ -7197,7 +7206,10 @@ fn try_build_kernel_free_leaf_selector(
             build_leaf_selector(
                 reify_core::ty::SelectorKind::Edge,
                 target,
-                reify_ir::value::LeafQuery::ByPerpendicular { axis, tol_rad },
+                reify_ir::value::LeafQuery::ByPerpendicular {
+                    axis: axis.components(),
+                    tol_rad,
+                },
                 function_name,
                 diagnostics,
             )
@@ -8904,12 +8916,10 @@ pub(crate) fn try_eval_topology_selector(
         }
         TopologySelectorHelper::Angle => {
             // `angle(Direction, Direction) -> Angle`, pure math with no kernel
-            // call. Both operands are unit by construction (direction-typing
-            // C2/C4), so the cosine is their dot product.
+            // call.
             let a = resolve_direction_arg(&args[0], values, &function.name, "a", diagnostics)?;
             let b = resolve_direction_arg(&args[1], values, &function.name, "b", diagnostics)?;
-            let dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-            Some(reify_ir::Value::angle(dot.clamp(-1.0, 1.0).acos()))
+            Some(reify_ir::Value::angle(angle_between(a, b)))
         }
         TopologySelectorHelper::Normal => {
             // `normal(surface, point) -> Direction` (task 3615, KGQ-ζ; θ-b).
@@ -10297,17 +10307,17 @@ fn vec3_component_si(value: &reify_ir::Value) -> Option<f64> {
 }
 
 /// Read a direction arg (the `dir` / `axis` of the directional selectors and
-/// `angle`'s operands) as the unit components of a `Value::Direction`
+/// `angle`'s operands) as the [`UnitVec3`] of a `Value::Direction`
 /// (direction-typing θ-b, PRD C3).
 ///
 /// The arg expr is EVALUATED against `values` (via [`eval_arg_value`]) and the
-/// result read by [`reify_ir::decode_direction`], the one direction reader:
+/// result read by [`decode_direction`], the one direction reader:
 ///
-/// | evaluated arg value                              | return       | diagnostic?     |
-/// |--------------------------------------------------|--------------|-----------------|
-/// | `Value::Undef` (missing/Undef cell, user-fn arg) | `None`       | no — quiet      |
-/// | `Value::Direction`                               | `Some([..])` | no              |
-/// | anything else, a raw `Value::Vector` included    | `None`       | yes — 1 Warning |
+/// | evaluated arg value                              | return           | diagnostic?     |
+/// |--------------------------------------------------|------------------|-----------------|
+/// | `Value::Undef` (missing/Undef cell, user-fn arg) | `None`           | no — quiet      |
+/// | `Value::Direction`                               | `Some(UnitVec3)` | no              |
+/// | anything else, a raw `Value::Vector` included    | `None`           | yes — 1 Warning |
 ///
 /// The Warning carries `decode_direction`'s own message, so it ends with the
 /// migration hint "write dir(x, y, z)". It is a Warning, not an Error: the
@@ -10319,13 +10329,13 @@ fn resolve_direction_arg(
     builtin: &str,
     arg_name: &str,
     diagnostics: &mut Vec<Diagnostic>,
-) -> Option<[f64; 3]> {
+) -> Option<UnitVec3> {
     let value = eval_arg_value(expr, values);
     if matches!(value, reify_ir::Value::Undef) {
         return None;
     }
-    match reify_ir::decode_direction(&value) {
-        Ok(direction) => Some(direction.components()),
+    match decode_direction(&value) {
+        Ok(direction) => Some(direction),
         Err(err) => {
             diagnostics.push(Diagnostic::warning(format!(
                 "{builtin}: {arg_name} argument: {err}"
@@ -10333,6 +10343,14 @@ fn resolve_direction_arg(
             None
         }
     }
+}
+
+/// The angle in radians, in `[0, π]`, between two unit directions: the cosine
+/// is their dot product, clamped against rounding past ±1.
+fn angle_between(a: UnitVec3, b: UnitVec3) -> f64 {
+    let [ax, ay, az] = a.components();
+    let [bx, by, bz] = b.components();
+    (ax * bx + ay * by + az * bz).clamp(-1.0, 1.0).acos()
 }
 
 /// Shared evaluate-then-accept core for the SCALAR-dimension owned args
