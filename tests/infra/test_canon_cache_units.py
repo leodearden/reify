@@ -12,6 +12,9 @@ WHAT RUNS THIS: run_all.sh discovers `test_*.sh` only, so the discovered member
 is the thin wrapper tests/infra/test_canon_cache_units.sh.
 """
 
+import base64
+import dataclasses
+import http.client
 import json
 import os
 import re
@@ -23,7 +26,8 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import canon_run_fixture as fx  # noqa: E402  (imported after sys.path manipulation)
+import canon_cache_fixture as cfx  # noqa: E402  (imported after sys.path manipulation)
+import canon_run_fixture as fx  # noqa: E402
 
 sys.path.insert(0, str(fx.REPO_ROOT / "scripts"))
 import canon_cache  # noqa: E402
@@ -410,6 +414,228 @@ class Guard(unittest.TestCase):
     def test_guard_carries_the_marker_canon_cache_skips(self):
         self.assertTrue(canon_cache.is_guard(str(GUARD)))
         self.assertEqual(sorted(os.listdir(GUARD.parent)), ["sccache"])
+
+
+FAST_KNOBS = dataclasses.replace(canon_cache.SessionKnobs(), probe_timeout=0.3)
+
+
+def store_settings(url, user="reify", password="hunter2"):
+    return canon_cache.CacheSettings(store_url=url, store_user=user, store_password=password)
+
+
+class StoreCase(unittest.TestCase):
+    def setUp(self):
+        self.store = cfx.FakeStore()
+        self.addCleanup(self.store.stop)
+        self.settings = store_settings(self.store.url)
+
+    def probe(self, settings=None, knobs=FAST_KNOBS, **kwargs):
+        return canon_cache.probe_store(settings or self.settings, knobs, **kwargs)
+
+
+class ProbeStore(StoreCase):
+    """C5's probe: GET <store_url>/.sccache_check, judged on the injected clock."""
+
+    def test_reachable_on_404_and_200(self):
+        for status in (404, 200):
+            with self.subTest(status=status):
+                self.store.check_status = status
+                self.assertTrue(self.probe())
+        self.assertEqual(self.store.requests[-1], ("GET", "/reify/.sccache_check"))
+
+    def test_sends_basic_auth(self):
+        self.probe()
+        expected = "Basic " + base64.b64encode(b"reify:hunter2").decode()
+        self.assertEqual(self.store.authorizations, [expected])
+
+    def test_unreachable_on_401(self):
+        self.store.set_mode("auth")
+        self.assertFalse(self.probe())
+
+    def test_unreachable_on_a_refused_port(self):
+        self.assertFalse(self.probe(store_settings(f"http://127.0.0.1:{cfx.closed_port()}/reify")))
+
+    def test_unreachable_when_the_store_never_answers(self):
+        self.store.set_mode("hang")
+        self.assertFalse(self.probe())
+
+    def test_unreachable_when_the_clock_says_the_answer_was_slow(self):
+        readings = iter((100.0, 100.0 + FAST_KNOBS.slow + 0.5))
+        self.assertFalse(self.probe(clock=lambda: next(readings)))
+
+    def test_reachable_when_the_clock_says_the_answer_was_quick(self):
+        readings = iter((100.0, 100.0 + FAST_KNOBS.slow - 0.5))
+        self.assertTrue(self.probe(clock=lambda: next(readings)))
+
+
+class ChooseBackend(unittest.TestCase):
+    """Boundary row 6: which backend a session starts with."""
+
+    def test_no_store_url_never_probes(self):
+        def never():
+            raise AssertionError("probed without a store_url")
+
+        self.assertEqual(
+            canon_cache.choose_backend(canon_cache.CacheSettings(), never),
+            (canon_cache.Backend.LOCAL_FALLBACK, canon_cache.Reason.STORE_NOT_CONFIGURED),
+        )
+
+    def test_refusing_store_falls_back(self):
+        self.assertEqual(
+            canon_cache.choose_backend(store_settings("http://s/r"), lambda: False),
+            (canon_cache.Backend.LOCAL_FALLBACK, canon_cache.Reason.STORE_UNREACHABLE),
+        )
+
+    def test_reachable_store_is_shared(self):
+        self.assertEqual(
+            canon_cache.choose_backend(store_settings("http://s/r"), lambda: True),
+            (canon_cache.Backend.SHARED, canon_cache.Reason.NONE),
+        )
+
+
+class RelayCase(StoreCase):
+    def setUp(self):
+        super().setUp()
+        self.relay = canon_cache.Relay("127.0.0.1", self.store.port)
+        self.relay.start()
+        self.addCleanup(self.relay.close)
+        self.relay_port = int(self.relay.endpoint.rsplit(":", 1)[1])
+
+    def start_slow_transfer(self):
+        """A GET through the relay that has received SLOW_HEAD and waits for the rest."""
+        connection = http.client.HTTPConnection("127.0.0.1", self.relay_port, timeout=30)
+        self.addCleanup(connection.close)
+        connection.request("GET", "/slow/object")
+        response = connection.getresponse()
+        self.assertEqual(response.read(len(cfx.SLOW_HEAD)), cfx.SLOW_HEAD)
+        return response
+
+    def assert_cut_short(self, response):
+        received = 0
+        try:
+            while chunk := response.read1(65536):
+                received += len(chunk)
+        except (ConnectionResetError, http.client.IncompleteRead):
+            pass
+        self.assertLess(len(cfx.SLOW_HEAD) + received, cfx.SLOW_LENGTH)
+
+
+class Relay(RelayCase):
+    """C5's loopback relay: owned, cuttable, and holding its port until closed."""
+
+    def test_endpoint_is_loopback(self):
+        self.assertEqual(self.relay.endpoint, f"http://127.0.0.1:{self.relay_port}")
+
+    def test_get_through_the_relay_is_byte_for_byte_the_store_answer(self):
+        direct = cfx.raw_get(self.store.port, "/reify/object")
+        self.assertTrue(direct.startswith(b"HTTP/1.0 200"), direct)
+        self.assertEqual(cfx.raw_get(self.relay_port, "/reify/object"), direct)
+
+    def test_cut_resets_an_in_flight_transfer(self):
+        response = self.start_slow_transfer()
+        self.relay.cut()
+        self.store.release()
+        self.assert_cut_short(response)
+
+    def test_after_cut_new_connections_get_no_answer_and_the_port_stays_bound(self):
+        self.relay.cut()
+        self.assertEqual(cfx.raw_get(self.relay_port, "/reify/object"), b"")
+        self.assertFalse(cfx.can_bind(self.relay_port))
+
+    def test_close_releases_the_port(self):
+        self.relay.cut()
+        self.relay.close()
+        self.assertTrue(cfx.can_bind(self.relay_port))
+
+
+class FakeClock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
+class ScriptedLink:
+    """A scripted probe ('ok', 'slow' or 'fail' per call), a recording relay, and an instant wait."""
+
+    def __init__(self, test, script):
+        self.clock = FakeClock()
+        self.script = list(script)
+        self.probes = 0
+        self.cuts = 0
+        self.watchdog = canon_cache.Watchdog(self.probe, self, test.knobs, self.clock, self.wait)
+
+    def probe(self):
+        outcome = self.script[self.probes]
+        self.probes += 1
+        if outcome == "slow":
+            self.clock.now += FAST_KNOBS.slow + 1.0
+        return outcome != "fail"
+
+    def wait(self, stopped, seconds):
+        if stopped.is_set() or self.probes == len(self.script):
+            return True
+        self.clock.now += seconds
+        return False
+
+    def cut(self):
+        self.cuts += 1
+
+    def run(self):
+        self.watchdog.start()
+        self.watchdog.join()
+        return self.watchdog
+
+
+class Watchdog(unittest.TestCase):
+    """Boundary row 7's trigger: two consecutive failed or slow probes cut the relay."""
+
+    knobs = FAST_KNOBS
+
+    def test_no_two_consecutive_failures_do_not_cut(self):
+        link = ScriptedLink(self, ["ok", "slow", "ok", "fail"])
+        self.assertFalse(link.run().lost)
+        self.assertEqual((link.probes, link.cuts), (4, 0))
+
+    def test_fail_then_slow_cuts_after_the_third_probe(self):
+        link = ScriptedLink(self, ["ok", "fail", "slow"])
+        self.assertTrue(link.run().lost)
+        self.assertEqual((link.probes, link.cuts), (3, 1))
+
+    def test_no_probe_after_the_cut(self):
+        link = ScriptedLink(self, ["fail", "fail", "ok", "ok"])
+        self.assertTrue(link.run().lost)
+        self.assertEqual((link.probes, link.cuts), (2, 1))
+
+    def test_stop_ends_the_thread_without_loss(self):
+        link = ScriptedLink(self, [])
+        watchdog = canon_cache.Watchdog(link.probe, link, self.knobs, link.clock)
+        watchdog.start()
+        watchdog.stop()
+        self.assertFalse(watchdog.lost)
+        self.assertEqual((link.probes, link.cuts), (0, 0))
+
+
+class StoreLost(RelayCase):
+    """Row 7 against the real relay: a store that stops answering mid-transfer is cut."""
+
+    def test_two_failed_probes_cut_the_relay_and_reset_the_transfer(self):
+        response = self.start_slow_transfer()
+        self.store.set_mode("hang")
+        probes = []
+
+        def probe():
+            probes.append(canon_cache.probe_store(self.settings, FAST_KNOBS))
+            return probes[-1]
+
+        watchdog = canon_cache.Watchdog(probe, self.relay, FAST_KNOBS, wait=lambda stopped, seconds: False)
+        watchdog.start()
+        watchdog.join()
+        self.assertTrue(watchdog.lost)
+        self.assertEqual(probes, [False, False])
+        self.store.release()
+        self.assert_cut_short(response)
 
 
 class PolicyMembers(unittest.TestCase):
