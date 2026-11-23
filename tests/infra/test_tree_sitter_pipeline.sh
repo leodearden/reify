@@ -367,6 +367,33 @@ ts_watched_files() {
     printf '%s\n' "$1/grammar.js" "$1/src/scanner.c"
 }
 
+# ts_build_script_inputs <ts_dir>
+#
+# The tracked files whose mtime cargo compares to decide whether tree-sitter-reify's
+# build script is rebuilt or re-run: ts_watched_files plus build.rs and
+# build_support.rs (the script's own sources). Derived from ts_watched_files, so
+# the freshness input set keeps one home.
+ts_build_script_inputs() {
+    ts_watched_files "$1"
+    printf '%s\n' "$1/build.rs" "$1/build_support.rs"
+}
+
+# ts_build_input_mtimes <ts_dir>
+#
+# One `<mtime> <path>` line per ts_build_script_inputs path, or `absent <path>`
+# for a missing file. The mtime is stat's exact nanosecond %y, not ts_mtime's epoch
+# seconds: cargo compares at that precision, and a GNU mv round trip preserves it.
+ts_build_input_mtimes() {
+    local f
+    while IFS= read -r f; do
+        if [ -e "$f" ]; then
+            printf '%s %s\n' "$(stat -c %y "$f")" "$f"
+        else
+            printf 'absent %s\n' "$f"
+        fi
+    done < <(ts_build_script_inputs "$1")
+}
+
 # ts_witness_value <ts_dir>
 #
 # The value a real `ensure` writes to the ledger's mtime WITNESS file
@@ -849,6 +876,35 @@ ts_discover_cases() {
     declare -F | awk '/test_/{print $3}'
 }
 
+# ts_run_case <case>
+#
+# Runs <case> under `||` (which turns errexit off inside it) with a fresh cleanup
+# list, then its cleanup, and returns the case's status. Returns 1 instead when the
+# case left the mtime of any of the lane's tree-sitter-reify build-script inputs
+# changed (#10144): a moved mtime reruns that crate's build script and rebuilds its
+# dependents in the lane's next build, so a FAIL outranks the case's own PASS or
+# INFRA. The mtimes are read after the cleanup, so a case that moves a file aside
+# and restores it passes. The guard only detects; it never restores an mtime.
+ts_run_case() {
+    local case_name="$1" rc=0 before after
+    CLEANUP_ACTIONS=()
+    before=$(ts_build_input_mtimes "$TS_DIR")
+    "$case_name" || rc=$?
+    cleanup
+    after=$(ts_build_input_mtimes "$TS_DIR")
+    if [ "$after" != "$before" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: $case_name moved the mtime of this lane's tree-sitter-reify build inputs"
+        echo "  before:"
+        printf '%s\n' "$before" | sed 's/^/    /'
+        echo "  after:"
+        printf '%s\n' "$after" | sed 's/^/    /'
+        echo "  A moved mtime reruns tree-sitter-reify's build script and rebuilds its dependents in the lane's next build (#10144)."
+        return 1
+    fi
+    return "$rc"
+}
+
 # ts_run_verdict <passed> <failed> <infra-case> <not-run>
 #
 # Prints the run's summary and returns its verdict. A recorded FAIL wins (1), as in
@@ -878,8 +934,8 @@ ts_run_verdict() {
 # run_tests [case...]
 #
 # Runs the named cases, or every discovered one when none is named. Each case runs
-# under `||`, which turns errexit off inside it, and is followed by cleanup. The
-# run stops at the first INFRA case: a host that just lost a build to its timeout
+# through ts_run_case: under `||`, followed by its cleanup and the build-input
+# guard. The run stops at the first INFRA case: a host that just lost a build to its timeout
 # would lose the next one the same way, and the wall around this suite in
 # scripts/verify.sh would then kill it before it could report.
 run_tests() {
@@ -890,10 +946,9 @@ run_tests() {
 
     for t in "$@"; do
         ran=$((ran + 1))
-        CLEANUP_ACTIONS=()
         printf "${BOLD}RUN${RESET}  %s ... " "$t"
         rc=0
-        "$t" || rc=$?
+        ts_run_case "$t" || rc=$?
         case "$rc" in
             0)
                 printf "${GREEN}PASS${RESET}\n"
@@ -908,7 +963,6 @@ run_tests() {
                 failed=$((failed + 1))
                 ;;
         esac
-        cleanup
         if [ -n "$infra_case" ]; then
             break
         fi
