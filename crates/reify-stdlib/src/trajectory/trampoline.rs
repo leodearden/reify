@@ -529,8 +529,7 @@ pub(crate) fn value_to_mechanism_model(
 
 /// Marshal an [`EndEffectorTrackData`] (the pure-Rust forward-pass output) into
 /// an `EndEffectorTrack` `Value::StructureInstance` — the η output boundary
-/// (PRD §6.2). Mirrors `modal_ops`'s `DisplacementTimeHistory` construction (a
-/// registry-free sentinel instance, `StructureTypeId(u32::MAX)`, version 1).
+/// (PRD §6.2), minted by `StructureInstanceData::registry_free`.
 ///
 /// Field mapping (the core's `[location][time]` indexing is preserved — outer =
 /// location, inner = time):
@@ -601,12 +600,10 @@ pub(crate) fn track_data_to_value(track: &EndEffectorTrackData) -> Value {
     .into_iter()
     .collect();
 
-    Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: StructureTypeId(u32::MAX),
-        type_name: "EndEffectorTrack".to_string(),
-        version: 1,
+    Value::StructureInstance(Box::new(StructureInstanceData::registry_free(
+        "EndEffectorTrack",
         fields,
-    }))
+    )))
 }
 
 // ── Value→Value composers ────────────────────────────────────────────────────
@@ -795,9 +792,9 @@ pub fn input_shape_value(profile: &Value, shaper: &Value) -> Value {
         match profile_data.fields.get(&"waypoints".to_string()) {
             Some(Value::List(wps)) => match wps.first() {
                 Some(Value::StructureInstance(d)) => (d.type_id, d.type_name.clone(), d.version),
-                _ => (StructureTypeId(u32::MAX), "Waypoint".to_string(), 1),
+                _ => (StructureTypeId::REGISTRY_FREE, "Waypoint".to_string(), 1),
             },
-            _ => (StructureTypeId(u32::MAX), "Waypoint".to_string(), 1),
+            _ => (StructureTypeId::REGISTRY_FREE, "Waypoint".to_string(), 1),
         };
 
     let mut new_waypoints = Vec::with_capacity(n_out);
@@ -1027,9 +1024,9 @@ fn tots_result_to_profile(
         match profile_data.fields.get(&"waypoints".to_string()) {
             Some(Value::List(wps)) => match wps.first() {
                 Some(Value::StructureInstance(d)) => (d.type_id, d.type_name.clone(), d.version),
-                _ => (StructureTypeId(u32::MAX), "Waypoint".to_string(), 1),
+                _ => (StructureTypeId::REGISTRY_FREE, "Waypoint".to_string(), 1),
             },
-            _ => (StructureTypeId(u32::MAX), "Waypoint".to_string(), 1),
+            _ => (StructureTypeId::REGISTRY_FREE, "Waypoint".to_string(), 1),
         };
 
     let mut new_waypoints = Vec::with_capacity(n_knots);

@@ -7,7 +7,7 @@
 //! PRD: `docs/prds/v0_6/appearance-substrate.md` §4.2/§7.3 (task β, #4761).
 
 use reify_core::{Diagnostic, DiagnosticCode};
-use reify_ir::{PersistentMap, Rgb8, StructureInstanceData, StructureTypeId, Value};
+use reify_ir::{PersistentMap, Rgb8, StructureInstanceData, Value};
 
 // ── private helpers ───────────────────────────────────────────────────────────
 
@@ -191,15 +191,6 @@ pub fn resolve_color(color: &Value, diagnostics: &mut Vec<Diagnostic>) -> Rgb8 {
     Rgb8 { r: clamp_round(r), g: clamp_round(g), b: clamp_round(b) }
 }
 
-/// Sentinel `StructureTypeId` for engine-assembled (registry-free) instances.
-///
-/// Intentional mirror of `dynamics_ops::REGISTRY_FREE_TYPE_ID = StructureTypeId(u32::MAX)`.
-/// Both constants agree on the sentinel value; downstream code keys on `type_name`, not
-/// `type_id`, so they cannot silently diverge in observable behaviour.  The duplication
-/// is small and self-contained; promoting to a shared constant would require a common
-/// reify-eval or reify-ir site and is deferred (noted in reviewer suggestion 4, #4761).
-const REGISTRY_FREE_TYPE_ID: StructureTypeId = StructureTypeId(u32::MAX);
-
 /// Hand-mint a neutral-grey `Appearance` `Value::StructureInstance` that mirrors the
 /// default `Appearance()` from `crates/reify-compiler/stdlib/materials_appearance.ri`.
 ///
@@ -229,12 +220,9 @@ fn make_color(named: &str, r: f64, g: f64, b: f64) -> Value {
     ]
     .into_iter()
     .collect();
-    Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: REGISTRY_FREE_TYPE_ID,
-        type_name: "Color".to_string(),
-        version: 1,
-        fields,
-    }))
+    Value::StructureInstance(Box::new(StructureInstanceData::registry_free(
+        "Color", fields,
+    )))
 }
 
 /// Construct an `Appearance` `Value::StructureInstance` from pre-built components.
@@ -249,12 +237,10 @@ fn make_appearance(color: Value, finish: &str, metalness: f64, roughness: f64) -
     ]
     .into_iter()
     .collect();
-    Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: REGISTRY_FREE_TYPE_ID,
-        type_name: "Appearance".to_string(),
-        version: 1,
+    Value::StructureInstance(Box::new(StructureInstanceData::registry_free(
+        "Appearance",
         fields,
-    }))
+    )))
 }
 
 // ── public functional producers ───────────────────────────────────────────────

@@ -12,7 +12,7 @@
 //!   DD4: T0a signal is CLI-only; no kernel line_segment emission here.
 //!   Reuse 4: silent-Undef discipline for all shape-guard failures.
 
-use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
+use reify_ir::{PersistentMap, StructureInstanceData, Value};
 
 /// Evaluate a tensegrity stdlib function by name.
 ///
@@ -41,8 +41,7 @@ fn extract_node_xyz(node: &Value) -> Option<(Value, Value, Value)> {
     }
 }
 
-/// Build a `TensegrityWire` `Value::StructureInstance` using `StructureTypeId(0)`
-/// as the placeholder type_id (SIR-α convention — `engine_eval.rs:1789`).
+/// Build a registry-free `TensegrityWire` `Value::StructureInstance`.
 fn build_wire(kind: &str, from: i64, to: i64, p_from: &(Value, Value, Value), p_to: &(Value, Value, Value)) -> Value {
     let fields: PersistentMap<String, Value> = [
         ("kind".to_string(),       Value::String(kind.to_string())),
@@ -58,12 +57,10 @@ fn build_wire(kind: &str, from: i64, to: i64, p_from: &(Value, Value, Value), p_
     .into_iter()
     .collect();
 
-    Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: StructureTypeId(0),
-        type_name: "TensegrityWire".to_string(),
-        version: 1,
+    Value::StructureInstance(Box::new(StructureInstanceData::registry_free(
+        "TensegrityWire",
         fields,
-    }))
+    )))
 }
 
 /// Shared accessor prologue: validate arity==1 and arg is a `Tensegrity`
@@ -205,8 +202,7 @@ fn tensegrity_wires(args: &[Value]) -> Value {
     Value::List(wires)
 }
 
-/// Build a `TensegritySurface` `Value::StructureInstance` using `StructureTypeId(0)`
-/// as the placeholder type_id (SIR-α convention — mirrors `build_wire`).
+/// Build a registry-free `TensegritySurface` `Value::StructureInstance`.
 fn build_surface(
     i0: i64, i1: i64, i2: i64,
     p0: &(Value, Value, Value),
@@ -231,12 +227,10 @@ fn build_surface(
     .into_iter()
     .collect();
 
-    Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: StructureTypeId(0),
-        type_name: "TensegritySurface".to_string(),
-        version: 1,
+    Value::StructureInstance(Box::new(StructureInstanceData::registry_free(
+        "TensegritySurface",
         fields,
-    }))
+    )))
 }
 
 /// `tensegrity_surfaces(t : Tensegrity) -> List<TensegritySurface>`
@@ -323,6 +317,7 @@ fn tensegrity_surfaces(args: &[Value]) -> Value {
 mod tests {
     use super::*;
     use reify_core::DimensionVector;
+    use reify_ir::StructureTypeId;
 
     fn length(m: f64) -> Value {
         Value::Scalar { si_value: m, dimension: DimensionVector::LENGTH }

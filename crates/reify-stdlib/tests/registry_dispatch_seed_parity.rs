@@ -62,17 +62,13 @@
 
 use reify_builtins::{BindingKind, BuiltinId, EvalBuiltinId, lookup, rows, rows_bound_by};
 use reify_core::DimensionVector;
-use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
+use reify_ir::{PersistentMap, StructureInstanceData, Value};
 use reify_stdlib::__registry_dispatch_for_test as dispatch;
 use reify_stdlib::__try_dispatch_for_test as try_dispatch;
 use reify_stdlib::{compute_eigenvalues_3x3, compute_max_shear_3x3, eval_builtin};
 use reify_test_support::values::{
     UNIAXIAL_STRESS_PA, UNIAXIAL_STRESS_ROWS, uniaxial_stress_tensor,
 };
-
-/// The `StructureTypeId` sentinel `analysis::stress_invariants` mints for
-/// registry-free instances (`crates/reify-stdlib/src/analysis.rs:20`).
-const REGISTRY_FREE_TYPE_ID: StructureTypeId = StructureTypeId(u32::MAX);
 
 /// Row-major 3×3 window of [`uniaxial_stress_tensor`], as the kernels see it.
 const UNIAXIAL_WINDOW: &[f64] = UNIAXIAL_STRESS_ROWS.as_flattened();
@@ -222,12 +218,10 @@ fn probes() -> Vec<Probe> {
             id: EvalBuiltinId::StressInvariants,
             name: "stress_invariants",
             args: vec![stress],
-            expected: Value::StructureInstance(Box::new(StructureInstanceData {
-                type_id: REGISTRY_FREE_TYPE_ID,
-                type_name: "StressInvariants".to_string(),
-                version: 1,
-                fields: invariant_fields,
-            })),
+            expected: Value::StructureInstance(Box::new(StructureInstanceData::registry_free(
+                "StressInvariants",
+                invariant_fields,
+            ))),
             what: "stress_invariants of a uniaxial window",
         },
     ]

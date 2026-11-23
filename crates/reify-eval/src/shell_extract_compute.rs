@@ -34,8 +34,7 @@ use reify_core::Diagnostic;
 use reify_core::persistent_cache::PersistentlyCacheable;
 use reify_ir::{
     FeatureId, GeometryHandleId, KernelHandle, KernelId, OpaqueState, PersistentMap, Role,
-    SampledField, StructureInstanceData, StructureTypeId, TopologyAttribute, TopologyAttributeTable,
-    Value,
+    SampledField, StructureInstanceData, TopologyAttribute, TopologyAttributeTable, Value,
 };
 use reify_shell_extract::{
     GridValidationError, MedialError, MedialOptions, MesherError, MesherOptions, MidSurfaceError,
@@ -104,12 +103,9 @@ pub(crate) fn shell_extraction_result_to_value(result: &reify_shell_extract::She
     mid_surface_fields.insert("vertices".to_string(), vertices_value);
     mid_surface_fields.insert("triangles".to_string(), triangles_value);
     mid_surface_fields.insert("thickness".to_string(), thickness_value);
-    let mid_surface_value = Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: StructureTypeId(0),
-        type_name: "MidSurfaceMesh".to_string(),
-        version: 1,
-        fields: mid_surface_fields,
-    }));
+    let mid_surface_value = Value::StructureInstance(Box::new(
+        StructureInstanceData::registry_free("MidSurfaceMesh", mid_surface_fields),
+    ));
 
     // ── segmentation ─────────────────────────────────────────────────────────
     // Iterate regions in index order to preserve determinism.
@@ -125,12 +121,10 @@ pub(crate) fn shell_extraction_result_to_value(result: &reify_shell_extract::She
                     Value::String(format!("{:?}", r.classification)),
                 );
                 rf.insert("voxel_count".to_string(), Value::Int(r.voxels.len() as i64));
-                Value::StructureInstance(Box::new(StructureInstanceData {
-                    type_id: StructureTypeId(0),
-                    type_name: "RegionInfo".to_string(),
-                    version: 1,
-                    fields: rf,
-                }))
+                Value::StructureInstance(Box::new(StructureInstanceData::registry_free(
+                    "RegionInfo",
+                    rf,
+                )))
             })
             .collect::<Vec<_>>(),
     );
@@ -154,12 +148,9 @@ pub(crate) fn shell_extraction_result_to_value(result: &reify_shell_extract::She
     seg_fields.insert("regions".to_string(), regions_value);
     seg_fields.insert("vertex_labels".to_string(), vertex_labels_value);
     seg_fields.insert("triangle_labels".to_string(), triangle_labels_value);
-    let segmentation_value = Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: StructureTypeId(0),
-        type_name: "SegmentationResult".to_string(),
-        version: 1,
-        fields: seg_fields,
-    }));
+    let segmentation_value = Value::StructureInstance(Box::new(
+        StructureInstanceData::registry_free("SegmentationResult", seg_fields),
+    ));
 
     // ── naming ───────────────────────────────────────────────────────────────
     // ζ task #3596 step-2: project full face_records and edges lists so the
@@ -188,12 +179,10 @@ pub(crate) fn shell_extraction_result_to_value(result: &reify_shell_extract::She
                     "local_index".to_string(),
                     Value::Int(attr.local_index as i64),
                 );
-                Value::StructureInstance(Box::new(StructureInstanceData {
-                    type_id: StructureTypeId(0),
-                    type_name: "MidSurfaceFaceRecord".to_string(),
-                    version: 1,
-                    fields: rf,
-                }))
+                Value::StructureInstance(Box::new(StructureInstanceData::registry_free(
+                    "MidSurfaceFaceRecord",
+                    rf,
+                )))
             })
             .collect::<Vec<_>>(),
     );
@@ -215,12 +204,10 @@ pub(crate) fn shell_extraction_result_to_value(result: &reify_shell_extract::She
                     "local_index".to_string(),
                     Value::Int(edge.attribute.local_index as i64),
                 );
-                Value::StructureInstance(Box::new(StructureInstanceData {
-                    type_id: StructureTypeId(0),
-                    type_name: "MidSurfaceEdgeRecord".to_string(),
-                    version: 1,
-                    fields: ef,
-                }))
+                Value::StructureInstance(Box::new(StructureInstanceData::registry_free(
+                    "MidSurfaceEdgeRecord",
+                    ef,
+                )))
             })
             .collect::<Vec<_>>(),
     );
@@ -230,12 +217,10 @@ pub(crate) fn shell_extraction_result_to_value(result: &reify_shell_extract::She
     naming_fields.insert("edge_count".to_string(), edge_count);
     naming_fields.insert("face_records".to_string(), face_records_value);
     naming_fields.insert("edges".to_string(), edges_value);
-    let naming_value = Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: StructureTypeId(0),
-        type_name: "MidSurfaceAttributes".to_string(),
-        version: 1,
-        fields: naming_fields,
-    }));
+    let naming_value = Value::StructureInstance(Box::new(StructureInstanceData::registry_free(
+        "MidSurfaceAttributes",
+        naming_fields,
+    )));
 
     // ── diagnostics list ─────────────────────────────────────────────────────
     // Arrival order preserved; empty on the success path.
@@ -261,12 +246,10 @@ pub(crate) fn shell_extraction_result_to_value(result: &reify_shell_extract::She
     fields.insert("solve_time_ms".to_string(), Value::Int(0));
     fields.insert("diagnostics".to_string(), diags_value);
 
-    Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: StructureTypeId(0),
-        type_name: "ShellExtractionResult".to_string(),
-        version: 1,
+    Value::StructureInstance(Box::new(StructureInstanceData::registry_free(
+        "ShellExtractionResult",
         fields,
-    }))
+    )))
 }
 
 // ── Value-decode helpers for value_to_shell_extraction_result ───────────────

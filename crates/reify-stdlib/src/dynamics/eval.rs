@@ -47,15 +47,8 @@ use reify_ir::arg_acceptance::{
     read_arg_or_bare, read_entry_or_bare, rotational_damping_spec, rotational_stiffness_spec,
     translational_damping_spec, translational_stiffness_spec,
 };
-use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
+use reify_ir::{PersistentMap, StructureInstanceData, Value};
 use std::collections::BTreeMap;
-
-/// Sentinel `StructureTypeId` for engine-assembled (registry-free) instances.
-/// The `eval_builtin` path has no `StructureRegistry`, so result instances are
-/// minted with the nominal `type_name` as the source of truth for downstream
-/// hooks — mirrors `dynamics_ops::assemble_mass_properties` /
-/// `modal_ops::degenerate_modal_result`.
-const REGISTRY_FREE_TYPE_ID: StructureTypeId = StructureTypeId(u32::MAX);
 
 /// Extract an `f64` from a numeric value cell (`Int` / `Real` / dimensioned
 /// `Scalar`); non-numeric cells yield `None`. The ONE dimension-erasing numeric
@@ -126,12 +119,9 @@ fn compliance_cell_f64(v: &Value) -> Option<f64> {
 /// family), mirroring `dynamics_ops::assemble_mass_properties`.
 fn mint_instance(type_name: &str, fields: Vec<(String, Value)>) -> Value {
     let fields: PersistentMap<String, Value> = fields.into_iter().collect();
-    Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: REGISTRY_FREE_TYPE_ID,
-        type_name: type_name.to_string(),
-        version: 1,
-        fields,
-    }))
+    Value::StructureInstance(Box::new(StructureInstanceData::registry_free(
+        type_name, fields,
+    )))
 }
 
 /// Mint the default zero-`Frame3` `Value::StructureInstance` used for

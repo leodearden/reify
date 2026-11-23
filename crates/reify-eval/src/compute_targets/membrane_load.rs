@@ -37,14 +37,13 @@
 //! message text, mirroring the `tensegrity_load` trampoline). The trampoline
 //! never panics and never returns a silently-wrong (`converged: false`) result.
 //!
-//! # StructureTypeId sentinel
+//! # Registry-free result
 //!
 //! The trampoline has no `StructureRegistry` access, so the returned
-//! `MembraneLoadResult` uses `StructureTypeId(u32::MAX)` as a synthetic sentinel —
-//! the same convention as the form-find / tensegrity-load trampolines.
+//! `MembraneLoadResult` is minted by `StructureInstanceData::registry_free`.
 
 use reify_core::{Diagnostic, DimensionVector};
-use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
+use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, Value};
 use reify_solver_elastic::{
     BarMember, BarSection, IsotropicElastic, MemberKind, MembraneLoadError, MembraneLoadOptions,
     MembraneLoadSolve, MembranePatch, membrane_load_analysis,
@@ -398,12 +397,10 @@ fn build_result(solve: &MembraneLoadSolve) -> Value {
     .into_iter()
     .collect();
 
-    Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: StructureTypeId(u32::MAX),
-        type_name: "MembraneLoadResult".to_string(),
-        version: 1,
+    Value::StructureInstance(Box::new(StructureInstanceData::registry_free(
+        "MembraneLoadResult",
         fields,
-    }))
+    )))
 }
 
 /// Human-readable cause for a kernel [`MembraneLoadError`] (appended after the
