@@ -20,6 +20,7 @@ import json
 import os
 import pwd
 import re
+import select
 import signal
 import stat
 import subprocess
@@ -47,6 +48,7 @@ USAGE = "usage: canon_run.py status | exec -- <command> [args...] | cargo [args.
 REBUILD_FIX = "delete the build directory to rebuild it at the real path"
 TRAMPOLINE_MARKER = b"reify-canon-trampoline"
 MARKER_WINDOW = 1024
+RESTORE_POLL_SECS = 0.005
 VALUE_TAKING_GLOBALS = frozenset({"--color", "--config", "-Z", "-C"})
 PASS_THROUGH = frozenset(
     {
@@ -808,17 +810,52 @@ def read_child_pid(info_read: int) -> int | None:
     return pid if type(pid) is int else None
 
 
+def ignored_mask(pid: int) -> int:
+    """The SigIgn mask in /proc/<pid>/status; 0 when it cannot be read."""
+    try:
+        with open(f"/proc/{pid}/status") as status:
+            for line in status:
+                name, _, value = line.partition(":")
+                if name == "SigIgn":
+                    return int(value, 16)
+    except (OSError, ValueError):
+        pass
+    return 0
+
+
+def await_restored(pidfd: int, pid: int, numbers: frozenset[int]) -> None:
+    """Until pid ignores none of numbers, or pidfd reports it exited.
+
+    The status is read before the pidfd is polled, so a stranger reusing pid can only end
+    the wait early, and a signal then sent through the exited pidfd reaches no one.
+    """
+    wanted = sum(1 << (number - 1) for number in numbers)
+    while ignored_mask(pid) & wanted:
+        if select.select([pidfd], [], [], RESTORE_POLL_SECS)[0]:
+            return
+
+
+def open_restored_child(info_read: int, restored: frozenset[int]) -> int | None:
+    """A pidfd for the child bwrap reports, once that child no longer ignores restored; None if there is none."""
+    pid = read_child_pid(info_read)
+    if pid is None:
+        return None
+    try:
+        pidfd = os.pidfd_open(pid)
+    except ProcessLookupError:
+        return None
+    await_restored(pidfd, pid, restored)
+    return pidfd
+
+
+def send_through(pidfd: int, signum: int) -> None:
+    with contextlib.suppress(ProcessLookupError):
+        signal.pidfd_send_signal(pidfd, signum)
+
+
 def ignore(numbers: frozenset[int]) -> None:
     for number in numbers:
         signal.signal(number, signal.SIG_IGN)
-
-
-def sender_to(pid: int) -> Callable[[int], None]:
-    def send(signum: int) -> None:
-        with contextlib.suppress(ProcessLookupError):
-            os.kill(pid, signum)
-
-    return send
 
 
 def run_in_namespace(
@@ -833,11 +870,13 @@ def run_in_namespace(
     would lose the re-run's teardown and record. So bwrap starts with the forwarded signals
     ignored, env inside the namespace gives them back their defaults before command starts,
     and this process stands in for the caller, forwarding what is sent to it to command, whose
-    pid bwrap writes to the info fd.
+    pid bwrap writes to the info fd. bwrap writes that pid before its child sets up, so signals
+    stay held until the child has restored them, and go through a pidfd, never a bare pid.
+    The pidfd closes only after the forwarder has given back the caller's handlers.
     """
     info_read, info_write = os.pipe()
     os.set_inheritable(info_write, True)
-    with forwarder:
+    with contextlib.ExitStack() as after_forwarding, forwarder:
         try:
             argv = namespace_argv(bwrap_for(info_write), command, forwarder.forwarded)
             bwrap = subprocess.Popen(
@@ -851,9 +890,10 @@ def run_in_namespace(
             raise canon_cache.CommandNotFound(f"cannot run {BWRAP}: {exc}") from exc
         finally:
             os.close(info_write)
-        child_pid = read_child_pid(info_read)
-        if child_pid is not None:
-            forwarder.deliver_to(sender_to(child_pid))
+        pidfd = open_restored_child(info_read, forwarder.forwarded)
+        if pidfd is not None:
+            after_forwarding.callback(os.close, pidfd)
+            forwarder.deliver_to(functools.partial(send_through, pidfd))
         return canon_cache.exit_status(bwrap.wait())
 
 
