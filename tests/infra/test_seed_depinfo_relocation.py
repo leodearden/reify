@@ -14,6 +14,9 @@ package, so cargo records that input as an absolute path under the build root.
 SeedWiringFailsClosed runs a COPY of the seed beside a failing or absent
 relocation helper.
 
+RelocatorCli drives scripts/relocate-depinfo-paths.py as a CLI over synthetic
+records written by encode_depinfo, a fixture writer of cargo 1.96's encoding.
+
 WHAT RUNS THIS: run_all.sh discovers `test_*.sh` only, so the discovered member
 is the thin wrapper tests/infra/test_seed_depinfo_relocation.sh.
 """
@@ -23,6 +26,7 @@ import os
 import re
 import shutil
 import stat
+import struct
 import subprocess
 import tempfile
 import tomllib
@@ -32,6 +36,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SEED = REPO_ROOT / "scripts" / "seed-warm-lane.sh"
 HELPER_NAME = "relocate-depinfo-paths.py"
+HELPER = REPO_ROOT / "scripts" / HELPER_NAME
 TOOLCHAIN_PIN = REPO_ROOT / "rust-toolchain.toml"
 SUBPROCESS_TIMEOUT_SECS = 600
 
@@ -276,6 +281,177 @@ class SeedWiringFailsClosed(unittest.TestCase):
 
     def test_a_missing_helper_aborts_the_seed(self):
         self.assert_seed_refused_naming_the_helper()
+
+
+def u32(value):
+    return struct.pack("<I", value)
+
+
+def sized(text):
+    data = text.encode()
+    return u32(len(data)) + data
+
+
+def encode_depinfo(files, env=()):
+    """cargo 1.96's dep-info bytes. `files` holds (path_type, path, checksum)
+    with checksum None or (file_length, digest); `env` holds (key, value or
+    None)."""
+    parts = [u32(1), b"\xff", b"\x01", u32(len(files))]
+    for path_type, path, checksum in files:
+        parts += [bytes([path_type]), sized(path)]
+        if checksum is None:
+            parts.append(b"\x00")
+        else:
+            parts += [b"\x01", struct.pack("<Q", checksum[0]), sized(checksum[1])]
+    parts.append(u32(len(env)))
+    for key, value in env:
+        parts += [sized(key), b"\x00" if value is None else b"\x01" + sized(value)]
+    return b"".join(parts)
+
+
+FIXTURE_NS = 1_600_000_000 * 10 ** 9
+ODD_NS = FIXTURE_NS + 123_456_789
+DEP_RECORD = "debug/.fingerprint/alpha-0123456789abcdef/dep-test-integration-test-embed"
+VERSION_BYTE = 5
+
+
+def snapshot(path):
+    return path.read_bytes(), path.stat().st_mtime_ns
+
+
+class RelocatorCli(unittest.TestCase):
+    """The helper over a synthetic lane target. Roots need not exist: the
+    helper only rewrites recorded bytes."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory(prefix="test-sdr-cli-")
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name).resolve()
+        self.foreign = f"{root}/{BUILD_ROOT_NAME}"
+        self.lane = f"{root}/lanes/_lane-1"
+        self.target = root / "lane-target"
+
+    def write_record(self, rel, data, mtime_ns=FIXTURE_NS):
+        path = self.target / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        os.utime(path, ns=(mtime_ns, mtime_ns))
+        return path
+
+    def relocate(self):
+        result = run(["python3", HELPER, "--from-root", self.foreign, "--to-root", self.lane,
+                      self.target], self.target.parent, dict(os.environ))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
+        return result
+
+    def moved_record(self, rel=DEP_RECORD):
+        """A record naming examples/x.ri under the foreign root, and what it
+        reads once relocated."""
+        def record(root):
+            return encode_depinfo([(1, f"{root}/examples/x.ri", None)])
+
+        return self.write_record(rel, record(self.foreign)), record(self.lane)
+
+    def test_only_paths_under_the_foreign_root_move(self):
+        record = self.write_record(DEP_RECORD, encode_depinfo([
+            (0, "tests/a.rs", None),
+            (1, f"{self.foreign}/examples/x.ri", None),
+            (1, f"{self.foreign}-sibling/y", None),
+        ]))
+
+        self.relocate()
+
+        self.assertEqual(record.read_bytes(), encode_depinfo([
+            (0, "tests/a.rs", None),
+            (1, f"{self.lane}/examples/x.ri", None),
+            (1, f"{self.foreign}-sibling/y", None),
+        ]))
+
+    def test_the_env_section_is_carried_verbatim(self):
+        env = [("CARGO_PKG_NAME", "alpha"), ("ROOT", f"{self.foreign}/examples"),
+               ("UNSET", None)]
+        record = self.write_record(DEP_RECORD, encode_depinfo(
+            [(1, f"{self.foreign}/examples/x.ri", None)], env))
+
+        self.relocate()
+
+        self.assertEqual(record.read_bytes(), encode_depinfo(
+            [(1, f"{self.lane}/examples/x.ri", None)], env))
+
+    def test_a_checksum_is_carried_with_its_moved_path(self):
+        checksum = (3, "sha256=" + "ab" * 32)
+        record = self.write_record(DEP_RECORD, encode_depinfo(
+            [(1, f"{self.foreign}/examples/x.ri", checksum)]))
+
+        self.relocate()
+
+        self.assertEqual(record.read_bytes(), encode_depinfo(
+            [(1, f"{self.lane}/examples/x.ri", checksum)]))
+
+    def test_a_relocated_record_keeps_its_mtime(self):
+        record, expected = self.moved_record()
+        os.utime(record, ns=(ODD_NS, ODD_NS))
+
+        self.relocate()
+
+        self.assertEqual(snapshot(record), (expected, ODD_NS))
+
+    def test_a_cross_compile_record_is_relocated(self):
+        record, expected = self.moved_record(
+            "x86_64-unknown-linux-gnu/debug/.fingerprint/u-0123456789abcdef/dep-lib-u")
+
+        self.relocate()
+
+        self.assertEqual(record.read_bytes(), expected)
+
+    def test_files_outside_fingerprint_records_are_untouched(self):
+        record, expected = self.moved_record()
+        depfile = self.write_record("debug/deps/alpha-0123456789abcdef.d",
+                                    f"{self.foreign}/examples/x.ri:\n".encode())
+        output = self.write_record("debug/build/p-0123456789abcdef/output",
+                                   f"cargo:rustc-env=X={self.foreign}/y\n".encode())
+        before = {path: snapshot(path) for path in (depfile, output)}
+
+        self.relocate()
+
+        self.assertEqual(record.read_bytes(), expected)
+        self.assertEqual({path: snapshot(path) for path in (depfile, output)}, before)
+
+    def test_an_undecodable_record_naming_the_foreign_root_is_evicted(self):
+        valid = encode_depinfo([(1, f"{self.foreign}/examples/x.ri", None)])
+        undecodable = {
+            "unknown version": valid[:VERSION_BYTE] + b"\x02" + valid[VERSION_BYTE + 1:],
+            "truncated": valid[:-3],
+            "trailing bytes": valid + b"\x00",
+        }
+        for why, data in undecodable.items():
+            with self.subTest(why):
+                record = self.write_record(DEP_RECORD, data)
+
+                result = self.relocate()
+
+                self.assertFalse(record.exists())
+                self.assertIn(str(record), result.stderr)
+
+    def test_an_undecodable_record_without_the_foreign_root_is_untouched(self):
+        valid = encode_depinfo([(1, "/elsewhere/examples/x.ri", None)])
+        record = self.write_record(
+            DEP_RECORD, valid[:VERSION_BYTE] + b"\x02" + valid[VERSION_BYTE + 1:])
+        before = snapshot(record)
+
+        self.relocate()
+
+        self.assertEqual(snapshot(record), before)
+
+    def test_a_record_without_the_foreign_root_is_untouched(self):
+        record = self.write_record(DEP_RECORD, encode_depinfo(
+            [(0, "tests/a.rs", None), (1, "/elsewhere/examples/x.ri", None)]))
+        before = snapshot(record)
+
+        self.relocate()
+
+        self.assertEqual(snapshot(record), before)
 
 
 if __name__ == "__main__":
