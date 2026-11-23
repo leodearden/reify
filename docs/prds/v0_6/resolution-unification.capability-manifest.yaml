@@ -273,7 +273,10 @@ tasks:
       by co-occurring unresolved-name). Verified: correct form checks clean standalone;
       imported FitClass.Clearance fails `unresolved name: FitClass`. λ subsumes #5387
       (dep edge 5387→λ wired at decompose), keeps its acceptance tests; non-pub invisibility
-      rejection built by θ/ι visibility-filtered DefEnv, observed by λ'
+      rejection built by θ/ι visibility-filtered DefEnv, observed by λ — corrected
+      2026-11-23, task #10453: compile side resolves E.V with ambient import visibility
+      before DefEnv''s D-5 filter, so λ builds and observes the non-pub rejection (PRD
+      §8 λ)'
     verdict: PASS
     delivered_check:
       kind: manual
