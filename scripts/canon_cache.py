@@ -6,8 +6,9 @@ C4-C6): the per-policy cargo and command environment and the CARGO_HOME pin,
 the host.toml store and fallback settings, which real sccache serves them, and
 the store link: the probe, the loopback relay sccache talks to the store
 through, and the watchdog that cuts that relay when the store stops answering;
-the private per-invocation server session over a unix socket; and the
-build_cache record, written by the event channel's one encoder.
+the private per-invocation server session over a unix socket; supervise(),
+which runs one command around a session and measures it; and the build_cache
+record, written by the event channel's one encoder.
 It knows nothing of trees, build-directory modes or mount namespaces, and
 imports nothing from canon_run.
 """
@@ -19,7 +20,10 @@ import http.client
 import json
 import os
 import random
+import resource
 import selectors
+import shutil
+import signal
 import socket
 import struct
 import subprocess
@@ -912,3 +916,129 @@ def write_record(record: BuildCacheRecord, subcommand: str, channel: str | None,
             stderr=subprocess.DEVNULL,
             check=False,
         )
+
+
+class CommandNotFound(Exception):
+    """A one-line reason the command to supervise could not be found or started."""
+
+
+@dataclass(frozen=True)
+class RecordBase:
+    """What the caller knows before the command runs; a session supplies the rest."""
+
+    mode: str
+    policy: Policy
+    backend: Backend = Backend.NONE
+    reason: Reason = Reason.NONE
+
+
+FORWARDED_SIGNALS = (signal.SIGTERM, signal.SIGHUP)
+IGNORED_SIGNALS = (signal.SIGINT, signal.SIGQUIT)
+
+
+def resolve_command(command: str, env: Mapping[str, str], cwd: str) -> str:
+    if "/" not in command:
+        found = shutil.which(command, path=env.get("PATH", ""))
+    else:
+        found = os.path.join(cwd, command)
+    if found is None or not os.path.isfile(found) or not os.access(found, os.X_OK):
+        raise CommandNotFound(f"cannot run {command}: not found or not executable")
+    return found
+
+
+def run_command(
+    executable: str, argv: list[str], env: Mapping[str, str], cwd: str, session: CacheSession | None
+) -> tuple[int, float]:
+    """Spawn from this (main) thread, forward SIGTERM/SIGHUP, ignore SIGINT/SIGQUIT; (status, wall)."""
+    process: subprocess.Popen | None = None
+
+    def forward(signum: int, _frame: object) -> None:
+        if process is not None:
+            process.send_signal(signum)
+
+    previous = {number: signal.getsignal(number) for number in (*FORWARDED_SIGNALS, *IGNORED_SIGNALS)}
+    for number in IGNORED_SIGNALS:
+        signal.signal(number, signal.SIG_IGN)
+    for number in FORWARDED_SIGNALS:
+        signal.signal(number, forward)
+    try:
+        started = time.monotonic()
+        try:
+            process = subprocess.Popen(
+                with_parent_death_signal([executable, *argv[1:]], "KILL"), env=env, cwd=cwd, close_fds=False
+            )
+        except OSError as exc:
+            raise CommandNotFound(f"cannot run {argv[0]}: {exc}") from exc
+        if session is not None and session.watchdog is not None:
+            session.watchdog.start()
+        returncode = process.wait()
+        wall = time.monotonic() - started
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+    return (128 - returncode if returncode < 0 else returncode), wall
+
+
+def drain_line_count(path: str) -> int:
+    try:
+        with open(path, "rb") as log:
+            count = sum(1 for _ in log)
+    except OSError:
+        return 0
+    unlink_quietly(path)
+    return count
+
+
+def children_cpu_secs() -> float:
+    usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+    return usage.ru_utime + usage.ru_stime
+
+
+def supervise(
+    argv: list[str],
+    env: Mapping[str, str],
+    cwd: str,
+    *,
+    session: CacheSession | None,
+    record_base: RecordBase,
+    subcommand: str,
+    channel: str | None,
+    journal: str,
+) -> int:
+    """Run argv to completion around session, then close it and write its build_cache record.
+
+    Returns the command's status, or 128+N when signal N killed it. A command that
+    cannot be found raises CommandNotFound after the session is closed, with no record.
+    """
+    cpu_before = children_cpu_secs()
+    try:
+        status, wall = run_command(resolve_command(argv[0], env, cwd), argv, env, cwd, session)
+    finally:
+        outcome = None if session is None else session.close()
+    cpu = children_cpu_secs() - cpu_before
+    uncached = 0 if session is None else drain_line_count(session.environment.server.uncached_log)
+    write_record(build_record(record_base, outcome, uncached, wall, cpu), subcommand, channel, journal)
+    return status
+
+
+def build_record(
+    base: RecordBase, outcome: SessionOutcome | None, uncached: int, wall: float, cpu: float
+) -> BuildCacheRecord:
+    if outcome is None:
+        return BuildCacheRecord(
+            base.mode, base.policy, base.backend, base.reason, 0, 0, 0, uncached, 0, 0, wall, cpu
+        )
+    return BuildCacheRecord(
+        base.mode,
+        base.policy,
+        outcome.backend,
+        outcome.reason,
+        outcome.hits,
+        outcome.misses,
+        outcome.write_errors,
+        uncached,
+        outcome.detached_server,
+        outcome.store_attempts,
+        wall,
+        cpu,
+    )
