@@ -588,7 +588,21 @@ or boolean field may be `null`; the lib header says when.
 | `member_finish` | `member`, `attempt`, `rc`, `verdict` (`PASS`/`FAIL`/`FLAKY_PASS`/`SKIP`), `duration_ms`, `queued_ns`, `started_ns`, `ended_ns`, `fail_detail` (list), `fail_detail_omitted` | `_ra_record_result`, once per member; `_ra_record_subset_skip` for `SKIP` |
 | `phase_finish` | `phase` (`pool`/`serial`/`retry` on the pool branch, `serial` on every serial branch), `started_ns`, `ended_ns` | `_ra_phase_finish`, once per phase, at its end |
 | `slot_timeout` | `reason`, `slots`, `waited`, `disposition` (`fatal`/`soft`), `lock`, `emitter` | `slot_emit_timeout` |
+| `build_cache` | `mode` (`canon`/`real_path`), `policy` (`shared`/`mixed`/`incremental`), `backend` (`shared`/`local_fallback`/`none`), `reason` (`""`, `store_unreachable`, `store_lost`, `store_not_configured`, `read_only_server`, `legacy_build_dir`, `canon_unavailable`), `hits`, `misses`, `write_errors`, `uncached_machine_flags`, `detached_server`, `store_attempts` (int), `wall_secs`, `cpu_secs` (number), `subcommand` (cargo's, or `""` for `exec`) | `scripts/canon_cache.py` through `event_log_emit_build_cache`, once per outermost `scripts/canon_run.py` invocation |
 | `run_finish` | `discovered`, `failures`, `failed`, `flaky`, `skipped` (lists), `interrupted`, `names_omitted` | `run_all.sh`, once per run: whichever of the normal path, `_ra_on_term` and the worktree-gone exit 99 comes first |
+
+The same `build_cache` line is appended to `<build dir>/.reify-canon-journal.jsonl`,
+the invocation journal, whether or not the channel is set.
+
+Two `build_cache` fields do not mean what their names suggest:
+
+- `pid` is the pid of the short-lived shell that wrote the record, not the
+  supervisor's, so nothing can be joined on it.
+- `cpu_secs` is the processor time of every descendant of the invocation.
+  When another tree's outermost invocation runs inside it (canonical-build-path
+  boundary row 14), that tree's whole build is included, and that tree writes
+  its own row too. A sum of `cpu_secs` over rows counts such a tree twice;
+  `hits` and `misses` are not affected.
 
 The `*_ns` fields are epoch nanoseconds on the `ts_ns` clock
 (`event_log_clock_ns`). A `member_finish` times the attempt it reports, so a

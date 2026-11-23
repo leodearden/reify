@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# reify-canon-guard
+#
+# The sccache the canonical-build-path primitive (scripts/canon_run.py and
+# scripts/canon_cache.py) puts first on PATH under the shared and mixed
+# policies: dark-factory plans/canonical-build-path-shared-cache-prd.md,
+# decision 20 and C7. It must be named sccache: RUSTC_WRAPPER=sccache resolves
+# through PATH, and cc's rustc_wrapper_fallback only routes C compiles through
+# a wrapper whose file stem is sccache.
+#
+# A compile carrying a machine flag (-march/-mtune/-mcpu=native or
+# target-cpu=native) builds for this CPU only, so it runs directly and is
+# counted in $REIFY_CANON_UNCACHED_LOG. Everything else reaches the real
+# sccache without CARGO_INCREMENTAL, CARGO_LOG or CARGO_TERM_*, which change
+# no output but would split its keys. The real sccache is $REIFY_CANON_SCCACHE,
+# else the first sccache on PATH without this file's marker line.
+set -u
+
+machine_flagged() {
+    local previous="" argument
+    for argument in "$@"; do
+        case "$argument" in
+            -march=native | -mtune=native | -mcpu=native | -Ctarget-cpu=native | --codegen=target-cpu=native)
+                return 0 ;;
+            target-cpu=native)
+                [[ $previous == -C || $previous == --codegen ]] && return 0 ;;
+        esac
+        previous=$argument
+    done
+    return 1
+}
+
+is_guard() {
+    local head=""
+    LC_ALL=C read -r -N 1024 head < "$1" 2>/dev/null
+    [[ $head == *reify-canon-guard* ]]
+}
+
+real_sccache() {
+    if [[ -n ${REIFY_CANON_SCCACHE:-} ]]; then
+        printf '%s\n' "$REIFY_CANON_SCCACHE"
+        return 0
+    fi
+    local entries entry
+    IFS=: read -r -a entries <<< "${PATH:-}"
+    for entry in "${entries[@]}"; do
+        if [[ -n $entry && -f $entry/sccache && -x $entry/sccache ]] && ! is_guard "$entry/sccache"; then
+            printf '%s\n' "$entry/sccache"
+            return 0
+        fi
+    done
+    return 1
+}
+
+if [[ $# -gt 0 && $1 != -* ]] && machine_flagged "${@:2}"; then
+    if [[ -n ${REIFY_CANON_UNCACHED_LOG:-} ]]; then
+        printf '%s\n' "$1" 2>/dev/null >> "$REIFY_CANON_UNCACHED_LOG"
+    fi
+    exec "$@"
+fi
+
+if ! real=$(real_sccache); then
+    echo "reify-canon guard: no real sccache: REIFY_CANON_SCCACHE is unset and every sccache on PATH is a guard" >&2
+    exit 127
+fi
+unset CARGO_INCREMENTAL CARGO_LOG "${!CARGO_TERM_@}"
+exec "$real" "$@"

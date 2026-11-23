@@ -1,9 +1,9 @@
 """
 canon_run_fixture.py — shared builders for the scripts/canon_run.py suites
 (test_canon_run_units.py, test_canon_run_host.py): scratch trees, the
-host.toml writer, minimal environments, the CLI runner, a recording fake
-cargo, and for the host suite a buildable crate, real-cargo environments and
-the namespace/landlock probes.
+host.toml writer, minimal environments, the CLI runner and its BOUND-route
+variant, a recording fake cargo, and for the host suite a buildable crate,
+real-cargo environments and the namespace/landlock probes.
 
 Not a test module itself (no `test_` prefix): run_all.sh never discovers it,
 and the suites import it via the sys.path idiom.
@@ -24,6 +24,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CANON_RUN = REPO_ROOT / "scripts" / "canon_run.py"
 TRAMPOLINE = REPO_ROOT / "scripts" / "canon-bin" / "cargo"
+GUARD = REPO_ROOT / "scripts" / "canon-bin" / "guard" / "sccache"
+CANON_RUN_SIBLINGS = ("canon_cache.py", "lib_event_log.sh")
 PYTHON = "/usr/bin/python3"
 BWRAP = "/usr/bin/bwrap"
 LANDLOCK_EXEC = REPO_ROOT / "gui" / "src-tauri" / "sandbox" / "landlock_exec.py"
@@ -41,15 +43,26 @@ def load_canon_run():
     return module
 
 
+def load_canon_cache():
+    """The canon_cache module canon_run imported, so enum identity holds across both."""
+    load_canon_run()
+    return sys.modules["canon_cache"]
+
+
 def make_tree(parent, name):
-    """A tree canon_run.py recognises: Cargo.lock beside scripts/canon_run.py."""
+    """A tree canon_run.py recognises: Cargo.lock beside scripts/canon_run.py and its siblings."""
     root = Path(parent, name)
     canon_bin = root / "scripts" / "canon-bin"
     canon_bin.mkdir(parents=True)
     (root / "Cargo.lock").write_text("version = 4\n")
     shutil.copy2(CANON_RUN, root / "scripts" / "canon_run.py")
+    for sibling in CANON_RUN_SIBLINGS:
+        shutil.copy2(REPO_ROOT / "scripts" / sibling, root / "scripts" / sibling)
     if TRAMPOLINE.exists():
         shutil.copy2(TRAMPOLINE, canon_bin / "cargo")
+    if GUARD.exists():
+        (canon_bin / "guard").mkdir()
+        shutil.copy2(GUARD, canon_bin / "guard" / "sccache")
     return os.path.realpath(root)
 
 
@@ -88,9 +101,104 @@ def run(argv, *, cwd, env):
     return subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True, check=False)
 
 
+# Runs <scripts dir>/canon_run.py's main with one extra mountinfo line naming
+# CANON as a mount point. With REIFY_CANON_ROOT set to the tree's own path, C3's
+# bound check then holds (same directory, listed as a mount), so the BOUND route
+# runs where no mount namespace can be entered (argv: scripts dir, canon_run args).
+BOUND_RUNNER = r"""
+import sys
+
+sys.path.insert(0, sys.argv[1])
+import canon_run
+
+canon = canon_run.canon_root(canon_run.caller_environ())
+escaped = canon.replace("\\", "\\134").replace(" ", "\\040")
+bound = f"36 35 0:51 / {escaped} rw,relatime shared:1 - ext4 /dev/vda1 rw\n"
+host_mountinfo = canon_run.read_mountinfo
+canon_run.read_mountinfo = lambda: host_mountinfo() + bound
+sys.exit(canon_run.main(sys.argv[2:]))
+"""
+
+
+def run_bound(tree, cwd, *args, env, runner_dir):
+    """run_canon on the BOUND route: env's REIFY_CANON_ROOT must be the tree's own path."""
+    runner = Path(runner_dir, "bound_runner.py")
+    if not runner.exists():
+        runner.write_text(BOUND_RUNNER)
+    return run([PYTHON, "-I", str(runner), str(Path(tree, "scripts")), *args], cwd=cwd, env=env)
+
+
 # Records each call beside itself. A shebang script never sees the argv[0] it
 # was exec'd with (the kernel substitutes the script path), so a call's argv[0]
 # is the path that ran. Exits with FAKE_CARGO_EXIT, default 0.
+# The NAMESPACE route's outer process, canon_run.run_in_namespace, around a fake
+# bwrap instead of the real one, so its signal forwarding runs with no mount
+# namespace. argv: <scripts dir> <directory>. In <directory>, the fake bwrap
+# touches `spawned` once it runs, waits for `go`, then starts the command
+# (`touch started; exec sleep 60`, at default dispositions), writes its pid to
+# the info fd as bwrap does, and exits with its status or 128+N.
+NAMESPACE_PARENT_RUNNER = r"""
+import os
+import signal
+import sys
+
+sys.path.insert(0, sys.argv[1])
+import canon_cache
+import canon_run
+
+directory = sys.argv[2]
+fake_bwrap = os.path.join(directory, "fake_bwrap.py")
+signal.signal(signal.SIGINT, signal.default_int_handler)
+signal.signal(signal.SIGQUIT, signal.SIG_DFL)
+sys.exit(canon_run.run_in_namespace(
+    lambda info_fd: [sys.executable, "-I", fake_bwrap, str(info_fd), directory],
+    {"PATH": "/usr/bin:/bin"},
+    canon_cache.SignalForwarder(),
+))
+"""
+FAKE_BWRAP = r"""
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+
+info_fd, directory = int(sys.argv[1]), sys.argv[2]
+open(os.path.join(directory, "spawned"), "w").close()
+for number in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT, signal.SIGQUIT):
+    signal.signal(number, signal.SIG_DFL)
+while not os.path.exists(os.path.join(directory, "go")):
+    time.sleep(0.02)
+command = subprocess.Popen(["/bin/sh", "-c", 'touch "$0"; exec sleep 60', os.path.join(directory, "started")])
+with os.fdopen(info_fd, "w") as info:
+    json.dump({"child-pid": command.pid}, info)
+status = command.wait()
+sys.exit(128 - status if status < 0 else status)
+"""
+
+
+def start_namespace_parent(directory, *, go=True):
+    """The runner above as its own session's leader; `go` lets the fake bwrap start the command at once."""
+    Path(directory, "fake_bwrap.py").write_text(FAKE_BWRAP)
+    runner = Path(directory, "namespace_parent_runner.py")
+    runner.write_text(NAMESPACE_PARENT_RUNNER)
+    if go:
+        Path(directory, "go").touch()
+    return subprocess.Popen(
+        [PYTHON, "-I", str(runner), str(REPO_ROOT / "scripts"), str(directory)], start_new_session=True
+    )
+
+
+def catches(pid, signum):
+    """Whether process pid has a handler installed for signum (its SigCgt mask)."""
+    with open(f"/proc/{pid}/status") as status:
+        for line in status:
+            if line.startswith("SigCgt:"):
+                return bool(int(line.split()[1], 16) >> (signum - 1) & 1)
+    return False
+
+
 FAKE_CARGO = r'''#!/usr/bin/python3 -I
 import json
 import os

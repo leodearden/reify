@@ -12,8 +12,9 @@ REIFY_INFRA_SUITE_ACTIVE drops the infra pool. An inherited REIFY_VERIFY_RUN_ID
 marks the run nested, so it records nothing. The ledger, lane, timing,
 event-channel and /proc paths point it at the outer run's files. A new ledger
 knob belongs in AMBIENT_VERIFY_ENV, and every suite then scrubs it. The
-canonical-build-path primitive's variables (scripts/canon_run.py) belong here
-too.
+canonical-build-path primitive's variables belong here too: scripts/canon_run.py's
+tree record and overrides, and the compile guard's pointers that
+scripts/canon_cache.py exports (dark-factory canonical-build-path PRD C4-C6).
 """
 
 import os
@@ -33,6 +34,8 @@ AMBIENT_VERIFY_ENV = frozenset(
         "REIFY_CANON_ACTIVE",
         "REIFY_CANON_ROOT",
         "REIFY_CANON_HOST_CONFIG",
+        "REIFY_CANON_SCCACHE",
+        "REIFY_CANON_UNCACHED_LOG",
     }
 )
 
