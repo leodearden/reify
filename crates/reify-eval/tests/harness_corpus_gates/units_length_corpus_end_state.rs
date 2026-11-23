@@ -258,9 +258,8 @@ fn realize(rel: &str, compiled: &reify_compiler::CompiledModule) -> SweepOutcome
 
 /// The `examples/` tree, and the workspace root its members are reported relative to.
 fn examples_corpus() -> (std::path::PathBuf, Vec<std::path::PathBuf>) {
-    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let root = manifest_dir.join("../..");
-    let root = root.canonicalize().unwrap_or(root);
+    let root = reify_test_support::workspace_root::workspace_root();
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
 
     let files = discover_ri_files(&root.join("examples"));
     (root, files)

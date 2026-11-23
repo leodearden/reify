@@ -10,7 +10,9 @@ use reify_ir::Satisfaction;
 use reify_test_support::{check_source, eval_source, parse_and_compile};
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
-const EXAMPLE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/m9_combined.ri");
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("m9_combined.ri")
+}
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -20,7 +22,7 @@ const EXAMPLE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/
 fn source() -> &'static str {
     static S: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     S.get_or_init(|| {
-        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_combined.ri should exist")
+        std::fs::read_to_string(example_path()).expect("examples/m9_combined.ri should exist")
     })
     .as_str()
 }

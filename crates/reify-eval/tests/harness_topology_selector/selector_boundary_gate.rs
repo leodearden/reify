@@ -53,12 +53,10 @@ use reify_test_support::{
 // ── Fixture path helper ──────────────────────────────────────────────────────
 
 /// Absolute path to a fixture file in `tests/fixtures/selectors/`.
-fn fixture_path(name: &str) -> String {
-    format!(
-        "{}/tests/fixtures/selectors/{}",
-        env!("CARGO_MANIFEST_DIR"),
-        name
-    )
+fn fixture_path(name: &str) -> std::path::PathBuf {
+    reify_test_support::test_package::manifest_dir()
+        .join("tests/fixtures/selectors")
+        .join(name)
 }
 
 // ── Staged box kernel ────────────────────────────────────────────────────────

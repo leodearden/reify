@@ -19,16 +19,18 @@ use reify_test_support::{make_simple_engine, members_of, parse_and_compile_with_
 
 // ── File paths (resolved at compile time from this crate's root) ─────────────
 
-const PATH_MATERIALS: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/m8_materials.ri"
-);
-const PATH_PORTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/m8_ports.ri");
-const PATH_TOLERANCING: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/m8_tolerancing.ri"
-);
-const PATH_UNITS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/m8_units.ri");
+fn path_materials() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("m8_materials.ri")
+}
+fn path_ports() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("m8_ports.ri")
+}
+fn path_tolerancing() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("m8_tolerancing.ri")
+}
+fn path_units() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("m8_units.ri")
+}
 
 // ── Expected SI constants for imperial units (from imperial_units_tests.rs) ──
 
@@ -43,9 +45,9 @@ const LB_SI: f64 = 0.45359237;
 /// Severity::Error diagnostics at each stage), eval with
 /// `SimpleConstraintChecker`, and assert no eval errors.
 /// Returns the full `EvalResult` for per-test assertions.
-fn eval_ri_file(path: &str, module_name: &str) -> reify_eval::EvalResult {
+fn eval_ri_file(path: &std::path::Path, module_name: &str) -> reify_eval::EvalResult {
     let source =
-        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{} should exist: {}", path, e));
+        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{} should exist: {}", path.display(), e));
 
     // Use prelude-aware parsing so `Type.Variant` references against stdlib
     // enums (e.g. `MaterialCondition.MMC`) resolve as `EnumAccess` nodes — see
@@ -59,7 +61,7 @@ fn eval_ri_file(path: &str, module_name: &str) -> reify_eval::EvalResult {
     assert!(
         parsed.errors.is_empty(),
         "parse errors in {}: {:?}",
-        path,
+        path.display(),
         parsed.errors
     );
 
@@ -72,7 +74,7 @@ fn eval_ri_file(path: &str, module_name: &str) -> reify_eval::EvalResult {
     assert!(
         compile_errors.is_empty(),
         "compile errors in {}: {:?}",
-        path,
+        path.display(),
         compile_errors
     );
 
@@ -87,7 +89,7 @@ fn eval_ri_file(path: &str, module_name: &str) -> reify_eval::EvalResult {
     assert!(
         eval_errors.is_empty(),
         "eval errors in {}: {:?}",
-        path,
+        path.display(),
         eval_errors
     );
 
@@ -97,9 +99,9 @@ fn eval_ri_file(path: &str, module_name: &str) -> reify_eval::EvalResult {
 /// Read a .ri fixture file, parse, and compile with stdlib.
 /// Panics if there are any Severity::Error diagnostics.
 /// Returns the CompiledModule for compile-level assertions.
-fn compiled_ri(path: &str) -> CompiledModule {
+fn compiled_ri(path: &std::path::Path) -> CompiledModule {
     let source =
-        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{} should exist: {}", path, e));
+        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{} should exist: {}", path.display(), e));
     parse_and_compile_with_stdlib(&source)
 }
 
@@ -180,14 +182,14 @@ fn material_density_si(result: &reify_eval::BuildResult, structure: &str) -> f64
 /// assert no *other* unexpected errors arise.
 #[test]
 fn m8_materials_smoke() {
-    let source = std::fs::read_to_string(PATH_MATERIALS)
-        .unwrap_or_else(|e| panic!("{} should exist: {}", PATH_MATERIALS, e));
+    let source = std::fs::read_to_string(path_materials())
+        .unwrap_or_else(|e| panic!("{} should exist: {}", path_materials().display(), e));
 
     let parsed = reify_syntax::parse(&source, ModulePath::single("m8_materials"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors in {}: {:?}",
-        PATH_MATERIALS,
+        path_materials().display(),
         parsed.errors
     );
 
@@ -200,7 +202,7 @@ fn m8_materials_smoke() {
     assert!(
         compile_errors.is_empty(),
         "compile errors in {}: {:?}",
-        PATH_MATERIALS,
+        path_materials().display(),
         compile_errors
     );
 
@@ -238,7 +240,7 @@ fn m8_materials_smoke() {
     assert!(
         unexpected_errors.is_empty(),
         "unexpected eval errors in {}: {:?}",
-        PATH_MATERIALS,
+        path_materials().display(),
         unexpected_errors
     );
 }
@@ -256,8 +258,8 @@ fn m8_materials_smoke() {
 /// OCCT is unavailable; CI must have `/opt/reify-deps` configured for this test to verify.
 #[test]
 fn materials_bracket_mass_computed() {
-    let source = std::fs::read_to_string(PATH_MATERIALS)
-        .unwrap_or_else(|e| panic!("{} should exist: {}", PATH_MATERIALS, e));
+    let source = std::fs::read_to_string(path_materials())
+        .unwrap_or_else(|e| panic!("{} should exist: {}", path_materials().display(), e));
     let Some(result) = compile_and_build_occt(&source) else {
         return;
     };
@@ -281,7 +283,7 @@ fn materials_bracket_mass_computed() {
 /// (Physical.volume > 0, Strong.ultimate_tensile_strength >= yield_strength).
 #[test]
 fn materials_trait_conformance_checks() {
-    let compiled: CompiledModule = compiled_ri(PATH_MATERIALS);
+    let compiled: CompiledModule = compiled_ri(&path_materials());
 
     let template = compiled
         .templates
@@ -322,7 +324,7 @@ fn materials_trait_conformance_checks() {
 /// and produces non-empty values.
 #[test]
 fn m8_ports_smoke() {
-    let result = eval_ri_file(PATH_PORTS, "m8_ports");
+    let result = eval_ri_file(&path_ports(), "m8_ports");
     assert!(
         !result.values.is_empty(),
         "m8_ports.ri eval should produce non-empty values"
@@ -338,7 +340,7 @@ fn m8_ports_smoke() {
 ///   - Gearbox template has an "input" port with type_name "RotaryPort"
 #[test]
 fn ports_rotary_connection_compiles() {
-    let compiled: CompiledModule = compiled_ri(PATH_PORTS);
+    let compiled: CompiledModule = compiled_ri(&path_ports());
 
     // --- DriveTrain assembly: connection motor.shaft → gearbox.input ---
     let drivetrain = compiled
@@ -416,7 +418,7 @@ fn ports_rotary_connection_compiles() {
 ///   - thread_pitch     : default_expr Literal(Scalar(0.00125 m, LENGTH)) = 1.25mm
 #[test]
 fn ports_threaded_m8_port_values() {
-    let compiled = compiled_ri(PATH_PORTS);
+    let compiled = compiled_ri(&path_ports());
 
     let motor = compiled
         .templates
@@ -505,7 +507,7 @@ fn ports_threaded_m8_port_values() {
 /// and produces non-empty values.
 #[test]
 fn m8_tolerancing_smoke() {
-    let result = eval_ri_file(PATH_TOLERANCING, "m8_tolerancing");
+    let result = eval_ri_file(&path_tolerancing(), "m8_tolerancing");
     assert!(
         !result.values.is_empty(),
         "m8_tolerancing.ri eval should produce non-empty values"
@@ -543,7 +545,7 @@ fn m8_tolerancing_smoke() {
 /// RED before the mirrors are stripped from examples/m8_tolerancing.ri.
 #[test]
 fn m8_tolerancing_resolves_stdlib_position_and_flatness() {
-    let result = eval_ri_file(PATH_TOLERANCING, "m8_tolerancing");
+    let result = eval_ri_file(&path_tolerancing(), "m8_tolerancing");
 
     // ── (i) Flange.pos.zone_shape = ZoneShape::Cylindrical ───────────────────
     let zone_shape = result
@@ -650,7 +652,7 @@ fn m8_tolerancing_resolves_stdlib_position_and_flatness() {
 ///     Tests both compile-level (template exists) and eval-level (values resolved).
 #[test]
 fn tolerancing_position_mmc_flatness_ra() {
-    let result = eval_ri_file(PATH_TOLERANCING, "m8_tolerancing");
+    let result = eval_ri_file(&path_tolerancing(), "m8_tolerancing");
 
     // ── Flange.pos.tolerance_value (0.1mm = 0.0001m, LENGTH) ─────────────────
     let pos_tol_id = ValueCellId::new("Flange.pos", "tolerance_value");
@@ -789,7 +791,7 @@ fn tolerancing_position_mmc_flatness_ra() {
 /// elaborated in child scope "Flange.dim_tol".
 #[test]
 fn tolerancing_dimensional_bounds_computed() {
-    let result = eval_ri_file(PATH_TOLERANCING, "m8_tolerancing");
+    let result = eval_ri_file(&path_tolerancing(), "m8_tolerancing");
 
     // ── upper_limit (50mm + 0.1mm = 0.0501m) ─────────────────────────────────
     let ul_id = ValueCellId::new("Flange.dim_tol", "upper_limit");
@@ -882,7 +884,7 @@ fn tolerancing_dimensional_bounds_computed() {
 /// and produces non-empty values.
 #[test]
 fn m8_units_smoke() {
-    let result = eval_ri_file(PATH_UNITS, "m8_units");
+    let result = eval_ri_file(&path_units(), "m8_units");
     assert!(
         !result.values.is_empty(),
         "m8_units.ri eval should produce non-empty values"
@@ -944,7 +946,7 @@ fn assert_scalar_cell(
 ///   1ns → 1e-9 s, 1us → 1e-6 s, 1ms → 1e-3 s, 1ks → 1e3 s
 #[test]
 fn units_si_prefix_coverage() {
-    let result = eval_ri_file(PATH_UNITS, "m8_units");
+    let result = eval_ri_file(&path_units(), "m8_units");
     let e = "UnitShowcase";
     let l = DimensionVector::LENGTH;
     let m = DimensionVector::MASS;
@@ -985,7 +987,7 @@ fn units_si_prefix_coverage() {
 /// Cross-checks with the exact factors from `crates/reify-compiler/stdlib/units.ri`.
 #[test]
 fn units_imperial_conversions() {
-    let result = eval_ri_file(PATH_UNITS, "m8_units");
+    let result = eval_ri_file(&path_units(), "m8_units");
     let e = "UnitShowcase";
     let l = DimensionVector::LENGTH;
     let m = DimensionVector::MASS;
@@ -1028,7 +1030,7 @@ fn units_imperial_conversions() {
 /// Exercises that dimension promotion is correct across the imperial/SI boundary.
 #[test]
 fn units_cross_system_arithmetic() {
-    let result = eval_ri_file(PATH_UNITS, "m8_units");
+    let result = eval_ri_file(&path_units(), "m8_units");
     let e = "UnitShowcase";
 
     // ── mixed_len: 1in + 25.4mm = 0.0508 m (LENGTH) ──────────────────────────

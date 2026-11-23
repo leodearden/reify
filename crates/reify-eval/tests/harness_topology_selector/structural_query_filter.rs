@@ -314,10 +314,9 @@ fn filter_nested_filter_resolves_bottom_up() {
 
 // ─── step-7: end-to-end example fixture (RED until step-8 creates the file) ───
 
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/structural_query_filter.ri"
-);
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("structural_query_filter.ri")
+}
 
 /// Reads `examples/structural_query_filter.ri`, parses, compiles, and
 /// evaluates it.  Asserts zero Error diagnostics at both stages and that
@@ -326,7 +325,7 @@ const EXAMPLE_PATH: &str = concat!(
 /// RED until step-8 creates the file (read_to_string fails / file missing).
 #[test]
 fn example_structural_query_filter_ri_evals_clean() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
+    let source = std::fs::read_to_string(example_path())
         .expect("examples/structural_query_filter.ri should exist (created by step-8)");
 
     let parsed = reify_syntax::parse(&source, ModulePath::single("structural_query_filter_example"));

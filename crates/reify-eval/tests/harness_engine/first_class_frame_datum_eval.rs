@@ -15,18 +15,17 @@ use reify_test_support::{
     MockConstraintChecker, collect_errors, compile_source_with_stdlib, make_engine,
 };
 
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/first_class_frame_datums.ri"
-);
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("first_class_frame_datums.ri")
+}
 
 const ENTITY: &str = "FirstClassFrameDatums";
 
 const EPS: f64 = 1e-12;
 
 fn compiled_example() -> reify_compiler::CompiledModule {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
-        .unwrap_or_else(|e| panic!("could not read {EXAMPLE_PATH}: {e}"));
+    let source = std::fs::read_to_string(example_path())
+        .unwrap_or_else(|e| panic!("could not read {}: {e}", example_path().display()));
     let module = compile_source_with_stdlib(&source);
     let errors = collect_errors(&module.diagnostics);
     assert!(

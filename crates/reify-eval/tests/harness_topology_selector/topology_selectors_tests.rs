@@ -45,15 +45,13 @@ use reify_ir::value::{LeafQuery, SelectorNode};
 use reify_ir::{ExportFormat, Freshness, Value};
 use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
 
-const BOX_EDGES_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/kernel_queries/box_edges.ri"
-);
+fn box_edges_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("kernel_queries/box_edges.ri")
+}
 
-const BOX_FACES_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/kernel_queries/box_faces.ri"
-);
+fn box_faces_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("kernel_queries/box_faces.ri")
+}
 
 /// Assert a selector cell holds a kernel-free `Value::Selector(kind)` whose node
 /// is an `All` leaf targeting the parent solid (task 4118 γ).
@@ -128,7 +126,7 @@ fn parent_realization_of(cell_value: Option<&Value>, label: &str) -> Realization
 #[test]
 fn box_edges_integration_test() {
     // Read and compile unconditionally — fixture-presence CI contract.
-    let source = std::fs::read_to_string(BOX_EDGES_PATH)
+    let source = std::fs::read_to_string(box_edges_path())
         .expect("examples/kernel_queries/box_edges.ri should exist (task 3616)");
     let compiled = parse_and_compile_with_stdlib(&source);
     assert!(
@@ -192,7 +190,7 @@ fn box_edges_integration_test() {
 #[test]
 fn box_faces_integration_test() {
     // Read and compile unconditionally — fixture-presence CI contract.
-    let source = std::fs::read_to_string(BOX_FACES_PATH)
+    let source = std::fs::read_to_string(box_faces_path())
         .expect("examples/kernel_queries/box_faces.ri should exist (task 3616)");
     let compiled = parse_and_compile_with_stdlib(&source);
     assert!(
@@ -257,7 +255,7 @@ fn box_faces_integration_test() {
 #[test]
 fn box_edges_freshness_cascade() {
     // Read and compile unconditionally — fixture-presence CI contract.
-    let source = std::fs::read_to_string(BOX_EDGES_PATH)
+    let source = std::fs::read_to_string(box_edges_path())
         .expect("examples/kernel_queries/box_edges.ri should exist (task 3616)");
     let compiled = parse_and_compile_with_stdlib(&source);
     assert!(

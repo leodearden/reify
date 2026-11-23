@@ -815,14 +815,7 @@ fn checkpoint_value_variant_coverage() {
 #[test]
 #[ignore = "slow subprocess; run explicitly with --include-ignored to verify test count floor"]
 fn test_count_floor() {
-    // Workspace root: CARGO_MANIFEST_DIR is the reify-eval crate directory at
-    // compile time; two parent steps reach the workspace root.
-    let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let workspace_root = crate_dir
-        .parent()
-        .expect("crates/ parent")
-        .parent()
-        .expect("workspace root");
+    let workspace_root = reify_test_support::workspace_root::workspace_root();
 
     // Use the cargo binary from the current build (set by cargo's test harness).
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());

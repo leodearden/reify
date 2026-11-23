@@ -28,41 +28,36 @@
 
 /// Absolute path to examples/auto/bearing_resolved_value.ri.
 /// Produced by task 4431 (α) + value-population wired by task 4435 (δ).
-const BEARING_RESOLVED_VALUE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/auto/bearing_resolved_value.ri"
-);
+fn bearing_resolved_value_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("auto/bearing_resolved_value.ri")
+}
 
 /// Absolute path to examples/auto/bearing_constraint_select.ri.
 /// Produced by task 4433 (β — per-candidate ValueMap + real-checker selection).
-const BEARING_CONSTRAINT_SELECT_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/auto/bearing_constraint_select.ri"
-);
+fn bearing_constraint_select_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("auto/bearing_constraint_select.ri")
+}
 
 /// Absolute path to examples/auto/bounded_fallback_unsound.ri.
 /// Produced by task 4434 (γ — BFS-fallback joint-recheck, BoundedInfeasible).
-const BOUNDED_FALLBACK_UNSOUND_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/auto/bounded_fallback_unsound.ri"
-);
+fn bounded_fallback_unsound_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("auto/bounded_fallback_unsound.ri")
+}
 
 /// Absolute path to examples/auto/bearing_unsat.ri.
 /// Produced by task 4437 (ζ — NoCandidate negative fixture, all candidates violated).
-const BEARING_UNSAT_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/auto/bearing_unsat.ri"
-);
+fn bearing_unsat_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("auto/bearing_unsat.ri")
+}
 
 /// Absolute path to examples/auto/bearing_computed_default_unevaluated.ri.
 /// Produced by task 4616 (Gap-C honesty diagnostic — W_AUTO_TYPE_PARAM_CONSTRAINT_UNEVALUATED).
 /// Mirrors bearing_constraint_select.ri but with a computed-default template cell
 /// (`clearance = bore_radius - 0.5mm`) and a constraint reading it
 /// (`constraint seal.thickness < clearance`).
-const BEARING_COMPUTED_DEFAULT_UNEVALUATED_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/auto/bearing_computed_default_unevaluated.ri"
-);
+fn bearing_computed_default_unevaluated_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("auto/bearing_computed_default_unevaluated.ri")
+}
 
 // ── Imports ───────────────────────────────────────────────────────────────────
 
@@ -78,9 +73,9 @@ use reify_test_support::{collect_errors, make_simple_engine};
 // ── Shared harness helpers ────────────────────────────────────────────────────
 
 /// Read a fixture file from disk, panicking with a clear error naming the file.
-fn read_fixture(path: &str) -> String {
+fn read_fixture(path: &std::path::Path) -> String {
     std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("read_fixture: failed to read '{}': {}", path, e))
+        .unwrap_or_else(|e| panic!("read_fixture: failed to read '{}': {}", path.display(), e))
 }
 
 /// Compile `src` under the REAL `SimpleConstraintChecker` — the exact entry
@@ -134,7 +129,7 @@ fn field<'a>(m: &'a PersistentMap<String, Value>, k: &str) -> Option<&'a Value> 
 /// GREEN after step-2; no production edits needed (α+δ already landed).
 #[test]
 fn resolved_value_eval_populates_gasketseal_2mm() {
-    let src = read_fixture(BEARING_RESOLVED_VALUE_PATH);
+    let src = read_fixture(&bearing_resolved_value_path());
     let compiled = compile_real(&src, "bearing_resolved_value");
 
     let errors = collect_errors(&compiled.diagnostics);
@@ -228,7 +223,7 @@ fn resolved_value_eval_populates_gasketseal_2mm() {
 /// GREEN binds already-landed α+β+δ; RED here is an integration regression.
 #[test]
 fn constraint_select_real_checker_selects_thinseal() {
-    let src = read_fixture(BEARING_CONSTRAINT_SELECT_PATH);
+    let src = read_fixture(&bearing_constraint_select_path());
     let compiled = compile_real(&src, "bearing_constraint_select");
 
     // (a) No Errors — real checker eliminates ThickSeal, selects ThinSeal.
@@ -327,7 +322,7 @@ fn constraint_select_real_checker_selects_thinseal() {
 /// GREEN binds the already-landed β-inject stub default.
 #[test]
 fn constraint_select_stub_is_ambiguous() {
-    let src = read_fixture(BEARING_CONSTRAINT_SELECT_PATH);
+    let src = read_fixture(&bearing_constraint_select_path());
     let compiled = compile_stub(&src, "bearing_constraint_select");
 
     assert!(
@@ -357,7 +352,7 @@ fn constraint_select_stub_is_ambiguous() {
 /// GREEN binds already-landed γ; RED here is an integration regression.
 #[test]
 fn bounded_fallback_unsound_emits_bounded_infeasible() {
-    let src = read_fixture(BOUNDED_FALLBACK_UNSOUND_PATH);
+    let src = read_fixture(&bounded_fallback_unsound_path());
     let compiled = compile_real(&src, "bounded_fallback_unsound");
 
     // (a) BoundedInfeasible Error must be present.
@@ -414,7 +409,7 @@ fn bounded_fallback_unsound_emits_bounded_infeasible() {
 /// .expect panics at runtime.  GREEN after step-7 authors the fixture.
 #[test]
 fn bearing_unsat_emits_no_candidate_naming_constraint() {
-    let src = read_fixture(BEARING_UNSAT_PATH);
+    let src = read_fixture(&bearing_unsat_path());
     let compiled = compile_real(&src, "bearing_unsat");
 
     // (a) NoCandidate Error must be present.
@@ -484,7 +479,7 @@ fn bearing_unsat_emits_no_candidate_naming_constraint() {
 ///     `AutoTypeParamConstraintUnevaluated` warning (negative control — `bore_radius`
 ///     is a literal default and is seeded; the constraint is not in the skip-set).
 ///
-/// **RED:** `BEARING_COMPUTED_DEFAULT_UNEVALUATED_PATH` does not exist yet →
+/// **RED:** `bearing_computed_default_unevaluated_path` does not exist yet →
 /// `read_fixture` panics at runtime.
 /// **GREEN** after step-10 creates `bearing_computed_default_unevaluated.ri` and
 /// adds it to the `examples_smoke` SKIP_SET.
@@ -492,7 +487,7 @@ fn bearing_unsat_emits_no_candidate_naming_constraint() {
 fn gap_c_computed_default_unevaluated_emits_warning_literal_does_not() {
     // ── (a) + (b): positive fixture under real checker ───────────────────────
 
-    let src = read_fixture(BEARING_COMPUTED_DEFAULT_UNEVALUATED_PATH);
+    let src = read_fixture(&bearing_computed_default_unevaluated_path());
     let compiled = compile_real(&src, "bearing_computed_default_unevaluated");
 
     // (a-i) AutoTypeParamConstraintUnevaluated Warning must be present.
@@ -553,7 +548,7 @@ fn gap_c_computed_default_unevaluated_emits_warning_literal_does_not() {
 
     // ── (c): negative control — literal threshold does NOT emit the warning ───
 
-    let src_literal = read_fixture(BEARING_CONSTRAINT_SELECT_PATH);
+    let src_literal = read_fixture(&bearing_constraint_select_path());
     let compiled_literal = compile_real(&src_literal, "bearing_constraint_select_neg_ctrl");
 
     assert!(

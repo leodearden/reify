@@ -3,7 +3,7 @@
 //! docs/prds/v0_6/result-and-fallback.md §1/§8.B task B-ε), the PRIMARY
 //! Layer-B user-observable leaf and B+H integration gate.
 //!
-//! Mirrors `result_fallback_e2e.rs` (task δ #4038)'s scaffold (EXAMPLE_PATH
+//! Mirrors `result_fallback_e2e.rs` (task δ #4038)'s scaffold (example_path
 //! const, `parse_and_compile_with_stdlib` + a fresh
 //! `Engine::new(MockConstraintChecker)`, `cell_value` helper), retargeted to
 //! `examples/m6_result_recovery.ri`.
@@ -31,10 +31,9 @@ use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{cell_value, collect_errors, mm, parse_and_compile_with_stdlib};
 
 /// Absolute path to the example, resolved at compile time from the crate root.
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/m6_result_recovery.ri"
-);
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("m6_result_recovery.ri")
+}
 
 /// `examples/m6_result_recovery.ri` must compile + eval with zero Error
 /// diagnostics, and the bore/bore_fb value cells across `MountValid`
@@ -50,7 +49,7 @@ const EXAMPLE_PATH: &str = concat!(
 /// at the rendered-stdout binary surface.
 #[test]
 fn result_recovery_example_evals_end_to_end() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
+    let source = std::fs::read_to_string(example_path())
         .expect("examples/m6_result_recovery.ri should exist");
 
     let compiled = parse_and_compile_with_stdlib(&source);

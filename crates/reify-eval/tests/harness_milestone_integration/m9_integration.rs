@@ -17,10 +17,9 @@ use reify_ir::{Satisfaction, Value};
 use reify_test_support::{check_source, eval_source, make_simple_engine, parse_and_compile};
 
 /// Absolute path to the integration example file, resolved at compile time from crate root.
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/m9_integration.ri"
-);
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("m9_integration.ri")
+}
 
 // ── Step 1: .ri file parses and compiles ─────────────────────────────────────
 
@@ -30,7 +29,7 @@ const EXAMPLE_PATH: &str = concat!(
 #[test]
 fn ri_file_parses_and_compiles() {
     let source =
-        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_integration.ri should exist");
+        std::fs::read_to_string(example_path()).expect("examples/m9_integration.ri should exist");
 
     // Step A: parse
     let parsed = reify_syntax::parse(&source, ModulePath::single("test"));
@@ -569,7 +568,7 @@ structure def RecursiveChain {
 #[test]
 fn full_pipeline_all_constraints_satisfied() {
     let source =
-        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_integration.ri should exist");
+        std::fs::read_to_string(example_path()).expect("examples/m9_integration.ri should exist");
 
     let compiled = parse_and_compile(&source);
     let mut engine = make_simple_engine();
@@ -606,7 +605,7 @@ fn full_pipeline_all_constraints_satisfied() {
 #[test]
 fn full_pipeline_cross_feature_values() {
     let source =
-        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/m9_integration.ri should exist");
+        std::fs::read_to_string(example_path()).expect("examples/m9_integration.ri should exist");
 
     let compiled = parse_and_compile(&source);
     let mut engine = make_simple_engine();

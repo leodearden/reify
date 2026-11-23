@@ -34,10 +34,9 @@ use reify_test_support::{MockConstraintChecker, collect_errors, compile_source_w
 
 /// Path to the shipped NEGATIVE example, resolved relative to this crate's
 /// manifest directory.
-const NEGATIVE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/multi_aspect_objective_mixed.ri"
-);
+fn negative_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("multi_aspect_objective_mixed.ri")
+}
 
 /// Integration gate (δ BT1 negative): `MixedObjective`'s two same-sense
 /// mixed-dimension `minimize` decls (Money `cost`, Mass `mass`) lower to a
@@ -46,10 +45,10 @@ const NEGATIVE_PATH: &str = concat!(
 /// `Severity::Error` naming both dimensions.
 #[test]
 fn multi_aspect_objective_mixed_negative_emits_e_objective_mixed_dimension() {
-    let src = std::fs::read_to_string(NEGATIVE_PATH).unwrap_or_else(|e| {
+    let src = std::fs::read_to_string(negative_path()).unwrap_or_else(|e| {
         panic!(
             "Could not read {}: {} — run the next impl step to create the example file",
-            NEGATIVE_PATH, e
+            negative_path().display(), e
         )
     });
 
@@ -92,10 +91,9 @@ fn multi_aspect_objective_mixed_negative_emits_e_objective_mixed_dimension() {
 
 /// Path to the shipped POSITIVE example, resolved relative to this crate's
 /// manifest directory.
-const POSITIVE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/multi_aspect_objective.ri"
-);
+fn positive_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("multi_aspect_objective.ri")
+}
 
 /// Integration gate (δ BT4 positive): `MultiAspectPart` combines a Money
 /// aspect (`unit_cost`) and a Mass aspect (`mass_per_mm`) into ONE normalised
@@ -109,10 +107,10 @@ const POSITIVE_PATH: &str = concat!(
 /// `examples/multi_aspect_objective.ri`.
 #[test]
 fn multi_aspect_objective_positive_resolves_and_is_dimension_coherent() {
-    let src = std::fs::read_to_string(POSITIVE_PATH).unwrap_or_else(|e| {
+    let src = std::fs::read_to_string(positive_path()).unwrap_or_else(|e| {
         panic!(
             "Could not read {}: {} — run the next impl step to create the example file",
-            POSITIVE_PATH, e
+            positive_path().display(), e
         )
     });
 

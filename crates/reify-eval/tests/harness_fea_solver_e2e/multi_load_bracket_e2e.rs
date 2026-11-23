@@ -29,10 +29,9 @@ use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
 // ── Path to the example file ──────────────────────────────────────────────────
 
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/multi_load_bracket.ri"
-);
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("multi_load_bracket.ri")
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -69,7 +68,7 @@ fn extract_max_von_mises_f64(result: &Value, case_name: &str) -> f64 {
 /// within_yield Bool.
 #[test]
 fn multi_load_bracket_e2e_real_solve_and_design_predicate() {
-    let src = std::fs::read_to_string(EXAMPLE_PATH).expect(
+    let src = std::fs::read_to_string(example_path()).expect(
         "failed to read examples/multi_load_bracket.ri — check CARGO_MANIFEST_DIR resolution",
     );
 

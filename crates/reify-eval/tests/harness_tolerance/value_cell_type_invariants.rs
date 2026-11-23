@@ -75,11 +75,10 @@ fn user_fixture_value_cells_are_representable() {
     // Pick a representative .ri example that exercises params + lets +
     // dimensional types across multiple structures. math_linalg.ri is a
     // solid canonical choice already used by m8_stdlib_integration.
-    // Use CARGO_MANIFEST_DIR so the path is robust to a non-manifest CWD
+    // Resolve from the run-time examples dir so the path is robust to a non-manifest CWD
     // (convention established by task 348; mirrors m10_combined.rs:18 et al.).
-    const PATH_MATH_LINALG: &str =
-        concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/math_linalg.ri");
-    let source = std::fs::read_to_string(PATH_MATH_LINALG).expect("math_linalg.ri fixture");
+    let path_math_linalg = reify_test_support::examples_corpus::examples_dir().join("math_linalg.ri");
+    let source = std::fs::read_to_string(&path_math_linalg).expect("math_linalg.ri fixture");
     let parsed = reify_syntax::parse(&source, ModulePath::single("math_linalg"));
     assert!(
         parsed.errors.is_empty(),
@@ -109,11 +108,8 @@ fn boltflange_value_cells_are_representable() {
     // BoltFlange conforms to `Rigid` and uses the stdlib `Material` struct, so
     // compile with full stdlib prelude (unlike math_linalg.ri which is
     // stdlib-independent).
-    const PATH_BOLTFLANGE: &str = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/m5_geometry_flange.ri"
-    );
-    let source = std::fs::read_to_string(PATH_BOLTFLANGE).expect("m5_geometry_flange.ri fixture");
+    let path_boltflange = reify_test_support::examples_corpus::examples_dir().join("m5_geometry_flange.ri");
+    let source = std::fs::read_to_string(&path_boltflange).expect("m5_geometry_flange.ri fixture");
     let parsed = reify_syntax::parse(&source, ModulePath::single("m5_geometry_flange"));
     assert!(
         parsed.errors.is_empty(),

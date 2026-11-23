@@ -30,14 +30,13 @@
 //! Gated on `reify_kernel_occt::OCCT_AVAILABLE` — skips cleanly on runners
 //! without OCCT.  Modelled on `kernel_queries_moment_of_inertia_smoke.rs` for
 //! the real-kernel harness (`SingleKernelHolder + OcctKernelHandle::spawn`)
-//! and on `kernel_queries_angle_smoke.rs` for the CARGO_MANIFEST_DIR path pattern.
+//! and on `kernel_queries_angle_smoke.rs` for the run-time example path pattern.
 
 use super::fixture_scaffolding::{assert_bool_cell, compile_and_build_with_occt};
 
-const CONTAINS_BOX_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/kernel_queries/contains_box.ri"
-);
+fn contains_box_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("kernel_queries/contains_box.ri")
+}
 
 /// Pins the user-observable signal for KGQ-β: `contains(solid, point)` on a
 /// 10 mm × 10 mm × 10 mm box must evaluate to `Value::Bool(true)` for a
@@ -49,7 +48,7 @@ const CONTAINS_BOX_PATH: &str = concat!(
 #[test]
 fn contains_box_evals_expected_booleans() {
     let Some(result) = compile_and_build_with_occt(
-        CONTAINS_BOX_PATH,
+        &contains_box_path(),
         "examples/kernel_queries/contains_box.ri (task 3611 step-8)",
     ) else {
         return;

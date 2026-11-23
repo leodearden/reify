@@ -46,10 +46,9 @@ use reify_ir::ExportFormat;
 use reify_ir::value::LeafQuery;
 use reify_test_support::{assert_selector_leaf, errors_only, parse_and_compile_with_stdlib};
 
-const FIXTURE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/kernel_queries/directional_selectors.ri"
-);
+fn fixture_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("kernel_queries/directional_selectors.ri")
+}
 
 /// End-to-end pin for KGQ-ι re-typed by task 4118 (γ): `faces_by_normal` and
 /// `edges_parallel_to` on a box both build a kernel-free `Value::Selector(kind)`
@@ -59,7 +58,7 @@ const FIXTURE_PATH: &str = concat!(
 fn directional_selectors_compile_and_return_geometry_handles() {
     // ── assertion 1: fixture exists and compiles cleanly (unconditional) ──────
 
-    let source = std::fs::read_to_string(FIXTURE_PATH)
+    let source = std::fs::read_to_string(fixture_path())
         .expect("examples/kernel_queries/directional_selectors.ri should exist (task 3618)");
     let compiled = parse_and_compile_with_stdlib(&source);
     assert!(

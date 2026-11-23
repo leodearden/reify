@@ -129,11 +129,14 @@ fn build_compiled_with_occt(
 /// `what` is the repo-relative fixture label used in failure messages, so an
 /// offender is reported portably rather than as an absolute build-machine path.
 #[track_caller]
-pub(crate) fn read_and_compile_fixture(path: &str, what: &str) -> reify_compiler::CompiledModule {
+pub(crate) fn read_and_compile_fixture(
+    path: &std::path::Path,
+    what: &str,
+) -> reify_compiler::CompiledModule {
     // Read the fixture unconditionally so a missing file is caught even on
     // OCCT-less runners — fixture presence is a CI contract independent of OCCT.
     let source = std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("{what} should exist at {path}: {e}"));
+        .unwrap_or_else(|e| panic!("{what} should exist at {}: {e}", path.display()));
 
     compile_source_fixture(&source, what)
 }
@@ -147,7 +150,7 @@ pub(crate) fn read_and_compile_fixture(path: &str, what: &str) -> reify_compiler
 /// silently under copy-paste.
 #[track_caller]
 pub(crate) fn compile_and_build_with_occt(
-    path: &str,
+    path: &std::path::Path,
     what: &str,
 ) -> Option<reify_eval::BuildResult> {
     let compiled = read_and_compile_fixture(path, what);

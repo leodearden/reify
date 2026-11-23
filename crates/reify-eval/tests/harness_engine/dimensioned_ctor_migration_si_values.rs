@@ -37,18 +37,16 @@ use reify_test_support::{assert_dimensioned, make_simple_engine, parse_and_compi
 
 // ── Path constants ────────────────────────────────────────────────────────────
 //
-// Same `CARGO_MANIFEST_DIR`-relative resolution as
-// `printer_print_envelope_e2e.rs:55`.
+// Resolved at run time from the workspace root, as in
+// `printer_print_envelope_e2e.rs`.
 
-const GUI_LARGE_ASSEMBLY_FIXTURE: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../gui/test/fixtures/large_assembly.ri"
-);
+fn gui_large_assembly_fixture() -> std::path::PathBuf {
+    reify_test_support::workspace_root::workspace_root().join("gui/test/fixtures/large_assembly.ri")
+}
 
-const TOTS_OPTIMAL_PTP_EXAMPLE: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/trajectory/tots_optimal_ptp.ri"
-);
+fn tots_optimal_ptp_example() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("trajectory/tots_optimal_ptp.ri")
+}
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -166,7 +164,7 @@ fn assert_compile_clean(compiled: &reify_compiler::CompiledModule, what: &str) {
 /// loudly if the migration changes a number.
 #[test]
 fn gui_large_assembly_fixture_materials_are_dimensioned() {
-    let source = std::fs::read_to_string(GUI_LARGE_ASSEMBLY_FIXTURE)
+    let source = std::fs::read_to_string(gui_large_assembly_fixture())
         .expect("gui/test/fixtures/large_assembly.ri should exist");
 
     let compiled = parse_and_compile_with_stdlib(&source);
@@ -255,7 +253,7 @@ fn gui_large_assembly_fixture_materials_are_dimensioned() {
 #[cfg_attr(debug_assertions, ignore = "heavy TOTS SQP solve; release-only")]
 #[test]
 fn tots_optimal_ptp_example_trajectory_limits_are_dimensioned() {
-    let source = std::fs::read_to_string(TOTS_OPTIMAL_PTP_EXAMPLE)
+    let source = std::fs::read_to_string(tots_optimal_ptp_example())
         .expect("examples/trajectory/tots_optimal_ptp.ri should exist");
 
     let compiled = parse_and_compile_with_stdlib(&source);

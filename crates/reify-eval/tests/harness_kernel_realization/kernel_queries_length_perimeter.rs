@@ -43,10 +43,9 @@ use reify_ir::{GeometryOp, GeometryQuery, Value};
 
 use super::fixture_scaffolding::read_and_compile_fixture;
 
-const LENGTH_PERIMETER_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/kernel_queries/length_perimeter.ri"
-);
+fn length_perimeter_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("kernel_queries/length_perimeter.ri")
+}
 
 /// Pins the user-observable signal for KGQ-ν:
 ///
@@ -64,7 +63,7 @@ fn length_perimeter_compiles_and_occt_queries_match_expected() {
     // Warnings from Undef eval are acceptable pre-Phase-3; only error-severity
     // diagnostics fail the compile.
     read_and_compile_fixture(
-        LENGTH_PERIMETER_PATH,
+        &length_perimeter_path(),
         "examples/kernel_queries/length_perimeter.ri (task 3622 step-6)",
     );
 

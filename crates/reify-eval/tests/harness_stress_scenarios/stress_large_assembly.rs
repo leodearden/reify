@@ -22,10 +22,9 @@ use reify_ir::{ExportFormat, Satisfaction, Value};
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
 /// Absolute path to the fixture file.
-const FIXTURE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/large_assembly.ri"
-);
+fn fixture_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("large_assembly.ri")
+}
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -33,8 +32,8 @@ const FIXTURE_PATH: &str = concat!(
 fn source() -> String {
     static S: OnceLock<String> = OnceLock::new();
     S.get_or_init(|| {
-        std::fs::read_to_string(FIXTURE_PATH)
-            .unwrap_or_else(|e| panic!("{} should exist: {}", FIXTURE_PATH, e))
+        std::fs::read_to_string(fixture_path())
+            .unwrap_or_else(|e| panic!("{} should exist: {}", fixture_path().display(), e))
     })
     .clone()
 }
@@ -442,8 +441,8 @@ fn eval_full_pipeline_benchmark() {
     // This test measures the full uncached pipeline cost: file I/O → parse →
     // compile_with_stdlib → eval. The threshold is generous (15s) to avoid
     // CI flakiness from CPU contention.
-    let source = std::fs::read_to_string(FIXTURE_PATH)
-        .unwrap_or_else(|e| panic!("{} should exist: {}", FIXTURE_PATH, e));
+    let source = std::fs::read_to_string(fixture_path())
+        .unwrap_or_else(|e| panic!("{} should exist: {}", fixture_path().display(), e));
     let parsed = reify_syntax::parse(&source, ModulePath::single("large_assembly"));
     assert!(
         parsed.errors.is_empty(),

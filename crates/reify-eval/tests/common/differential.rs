@@ -815,10 +815,9 @@ pub const SEED_CORPUS: &[CorpusCase] = &[
 // programs, not a hand-rolled paraphrase). Discharges the "+ tests/golden corpus"
 // clause of §8-ζ.
 //
-// `include_str!` resolves relative to THIS file, but the `#[path]`-include leaves
-// that ambiguous; `concat!(env!("CARGO_MANIFEST_DIR"), …)` pins the path to the
-// crate manifest dir (`crates/reify-eval`) unambiguously regardless of where the
-// module is textually included.
+// `include_str!` resolves relative to the file that holds the macro (this one,
+// `tests/common/`), even when the module is `#[path]`-included, and a wrong
+// path fails to compile.
 //
 // Every entry starts with an EMPTY allow-list: these are user-facing programs the
 // unified driver MUST reproduce byte-for-byte. A divergence that shows up here is
@@ -828,82 +827,52 @@ pub const SEED_CORPUS: &[CorpusCase] = &[
 /// `examples/structure-instance.ri` — SIR-α: flat + nested structure-instance
 /// construction (Steel/PointLoad/Beam/NestedAssembly). Pure value evaluation, no
 /// geometry. (golden: `tests/golden/structure_instance.txt`.)
-const SRC_STRUCTURE_INSTANCE: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/structure-instance.ri"
-));
+const SRC_STRUCTURE_INSTANCE: &str = include_str!("../../../../examples/structure-instance.ri");
 
 /// `examples/tensegrity_t_prism.ri` — T0a/T1b: a `Tensegrity` instance, an
 /// `@optimized` `form_find_free` ComputeNode, and `tensegrity_wires`. Exercises
 /// list values + the optimized-trampoline path. (golden:
 /// `tests/golden/tensegrity_t_prism.txt`.)
-const SRC_TENSEGRITY_T_PRISM: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/tensegrity_t_prism.ri"
-));
+const SRC_TENSEGRITY_T_PRISM: &str = include_str!("../../../../examples/tensegrity_t_prism.ri");
 
 /// `examples/tensegrity_membrane_patch.ri` — M0: a `Tensegrity` with a
 /// `surfaces` field, a `Membrane`, and `tensegrity_surfaces`. (golden:
 /// `tests/golden/tensegrity_membrane_patch.txt`.)
-const SRC_TENSEGRITY_MEMBRANE: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/tensegrity_membrane_patch.ri"
-));
+const SRC_TENSEGRITY_MEMBRANE: &str = include_str!("../../../../examples/tensegrity_membrane_patch.ri");
 
 /// `examples/materials_starter_library.ri` — SIR-β-mat: the three wave-2
 /// materials + member-access field reads. (golden:
 /// `tests/golden/materials_starter_library.txt`.)
-const SRC_MATERIALS_LIBRARY: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/materials_starter_library.ri"
-));
+const SRC_MATERIALS_LIBRARY: &str = include_str!("../../../../examples/materials_starter_library.ri");
 
 /// `examples/spec-shape-physical.ri` — GHR-ζ: a `Bracket : Physical` with a
 /// concrete `box(10mm,20mm,30mm)` geometry + a `Material`, whose `mass`/`centroid`
 /// derive from geometry queries. (golden: `tests/golden/spec_shape_physical.txt`.)
-const SRC_SPEC_SHAPE_PHYSICAL: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/spec-shape-physical.ri"
-));
+const SRC_SPEC_SHAPE_PHYSICAL: &str = include_str!("../../../../examples/spec-shape-physical.ri");
 
 /// `examples/pattern_composition.ri` — geometry breadth: `linear_pattern_2d`
 /// (degenerate/grid/composed), `arbitrary_pattern`, and a `union_all` boolean
 /// fold across multiple `box` primitives (multiple realizations per structure).
-const SRC_PATTERN_COMPOSITION: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/pattern_composition.ri"
-));
+const SRC_PATTERN_COMPOSITION: &str = include_str!("../../../../examples/pattern_composition.ri");
 
 /// `examples/m9_constraint_def.ri` — constraint breadth: `constraint def`s
 /// (single/multi-predicate, `pub`), structures consuming them, named args out of
 /// declaration order, and `where`-guarded active/inactive constraints.
-const SRC_M9_CONSTRAINT_DEF: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/m9_constraint_def.ri"
-));
+const SRC_M9_CONSTRAINT_DEF: &str = include_str!("../../../../examples/m9_constraint_def.ri");
 
 /// `examples/m5_guarded_enum.ri` — control-flow breadth: an `enum`, a
 /// `where`-guarded param group (`where shape == Shape.Round { … } else { … }`),
 /// and a `match` expression.
-const SRC_M5_GUARDED_ENUM: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/m5_guarded_enum.ri"
-));
+const SRC_M5_GUARDED_ENUM: &str = include_str!("../../../../examples/m5_guarded_enum.ri");
 
 /// `examples/m6_data_carrying_enum.ri` — data-carrying-enum breadth: named-field
 /// variant construction + payload-binding `match` arms (ζ integration gate, #3946).
-const SRC_M6_DATA_CARRYING_ENUM: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/m6_data_carrying_enum.ri"
-));
+const SRC_M6_DATA_CARRYING_ENUM: &str = include_str!("../../../../examples/m6_data_carrying_enum.ri");
 
 /// `examples/cost_aggregation.ri` — aggregation breadth: `Costed : Buy` line
 /// items and a dimension-preserving `[…].sum : Scalar<Money>` total over a
 /// two-`sub` BOM assembly.
-const SRC_COST_AGGREGATION: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/cost_aggregation.ri"
-));
+const SRC_COST_AGGREGATION: &str = include_str!("../../../../examples/cost_aggregation.ri");
 
 /// A FRESH [`MockGeometryKernel`] seeded so `examples/spec-shape-physical.ri`'s
 /// geometry QUERIES resolve identically under BOTH schedulers. `Bracket.geometry =

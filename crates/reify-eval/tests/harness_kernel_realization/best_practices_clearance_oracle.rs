@@ -20,10 +20,9 @@ use super::fixture_scaffolding::{
     assert_bool_cell, assert_length_cell, compile_and_build_with_occt, read_and_compile_fixture,
 };
 
-const CLEARANCE_ORACLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/best_practices/clearance_oracle.ri"
-);
+fn clearance_oracle_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("best_practices/clearance_oracle.ri")
+}
 
 /// Total constraints `clearance_oracle.ri` declares: `not fouls`,
 /// `gap > min_gap`, `bore_r > shaft_r`, `min_gap > 0mm`, `offset_x > bore_r`.
@@ -50,7 +49,7 @@ const EXPECTED_CONSTRAINT_COUNT: usize = 5;
 /// shared state or ordering dependency between the two tests below.
 fn check_surface_result() -> CheckResult {
     let compiled = read_and_compile_fixture(
-        CLEARANCE_ORACLE_PATH,
+        &clearance_oracle_path(),
         "examples/best_practices/clearance_oracle.ri",
     );
 
@@ -104,7 +103,7 @@ fn indeterminate_ids(result: &CheckResult) -> HashSet<ConstraintNodeId> {
 #[test]
 fn clearance_oracle_evals_expected_fouls_and_gap() {
     let Some(result) = compile_and_build_with_occt(
-        CLEARANCE_ORACLE_PATH,
+        &clearance_oracle_path(),
         "examples/best_practices/clearance_oracle.ri",
     ) else {
         return;

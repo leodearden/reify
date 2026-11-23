@@ -23,7 +23,7 @@
 //! ## Example smoke test
 //!
 //! Step 7 (RED): Adds `example_auto_binding_sites_ri_resolves` which reads
-//! `examples/auto_binding_sites.ri` via a compile-time path, parses + compiles
+//! `examples/auto_binding_sites.ri` via a run-time path, parses + compiles
 //! + evals it, and asserts no error-severity diagnostics plus that the
 //!   sub-override bore cell resolved to `Determined`.  RED until step 8 creates
 //!   the file.
@@ -325,17 +325,16 @@ fn sub_override_auto_free_non_unique_emits_warning() {
 /// Path to the γ-slice integration-gate example file.
 ///
 /// RED until step-8 creates `examples/auto_binding_sites.ri`.
-const AUTO_BINDING_SITES_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/auto_binding_sites.ri"
-);
+fn auto_binding_sites_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("auto_binding_sites.ri")
+}
 
 /// `examples/auto_binding_sites.ri` must compile with no error-severity
 /// diagnostics, evaluate without errors, and the sub-override `bore` cell
 /// must resolve to `DeterminacyState::Determined`.
 ///
 /// Pipeline:
-///   1. `std::fs::read_to_string(AUTO_BINDING_SITES_PATH)` — reads the file.
+///   1. `std::fs::read_to_string(auto_binding_sites_path)` — reads the file.
 ///   2. `parse_and_compile_with_stdlib(&source)` — compiles with stdlib.
 ///   3. No compile-time Error diagnostics.
 ///   4. `engine_with_solver().eval(&compiled)` — full eval with DimensionalSolver.
@@ -348,7 +347,7 @@ const AUTO_BINDING_SITES_PATH: &str = concat!(
 /// RED until step-8 creates `examples/auto_binding_sites.ri`.
 #[test]
 fn example_auto_binding_sites_ri_resolves() {
-    let source = std::fs::read_to_string(AUTO_BINDING_SITES_PATH)
+    let source = std::fs::read_to_string(auto_binding_sites_path())
         .expect("examples/auto_binding_sites.ri should exist (created by step-8)");
 
     let compiled = parse_and_compile_with_stdlib(&source);

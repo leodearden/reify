@@ -21,14 +21,17 @@ use reify_test_support::{make_simple_engine, members_of, parse_and_compile_with_
 
 // ── File paths (resolved at compile time from this crate's root) ─────────────
 
-const PATH_LINALG: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/linalg.ri");
+fn path_linalg() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("linalg.ri")
+}
 
-const PATH_FIELDS_ANALYSIS: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/fields_analysis.ri"
-);
+fn path_fields_analysis() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("fields_analysis.ri")
+}
 
-const PATH_IO_EXPORT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/io_export.ri");
+fn path_io_export() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("io_export.ri")
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -36,9 +39,9 @@ const PATH_IO_EXPORT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../example
 /// Severity::Error diagnostics at each stage), eval with
 /// `SimpleConstraintChecker`, and assert no eval errors.
 /// Returns the full `EvalResult` for per-test assertions.
-fn eval_ri_file(path: &str, module_name: &str) -> reify_eval::EvalResult {
+fn eval_ri_file(path: &std::path::Path, module_name: &str) -> reify_eval::EvalResult {
     let source =
-        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{} should exist: {}", path, e));
+        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{} should exist: {}", path.display(), e));
 
     // Use prelude-aware parsing so `Type.Variant` references against stdlib
     // enums (e.g. `MaterialCondition.RFS`) resolve as `EnumAccess` nodes — see
@@ -53,7 +56,7 @@ fn eval_ri_file(path: &str, module_name: &str) -> reify_eval::EvalResult {
     assert!(
         parsed.errors.is_empty(),
         "parse errors in {}: {:?}",
-        path,
+        path.display(),
         parsed.errors
     );
 
@@ -66,7 +69,7 @@ fn eval_ri_file(path: &str, module_name: &str) -> reify_eval::EvalResult {
     assert!(
         compile_errors.is_empty(),
         "compile errors in {}: {:?}",
-        path,
+        path.display(),
         compile_errors
     );
 
@@ -89,7 +92,7 @@ fn eval_ri_file(path: &str, module_name: &str) -> reify_eval::EvalResult {
     assert!(
         eval_errors.is_empty(),
         "unexpected eval errors in {}: {:?}",
-        path,
+        path.display(),
         eval_errors
     );
 
@@ -262,7 +265,7 @@ fn material_density_si(result: &reify_eval::BuildResult, structure: &str) -> f64
 /// and produces non-empty values.
 #[test]
 fn linalg_smoke() {
-    let result = eval_ri_file(PATH_LINALG, "linalg");
+    let result = eval_ri_file(&path_linalg(), "linalg");
     assert!(
         !result.values.is_empty(),
         "linalg.ri eval should produce non-empty values"
@@ -275,7 +278,7 @@ fn linalg_smoke() {
 /// R_z(90°) = [[0,-1,0],[1,0,0],[0,0,1]] has exact determinant 1.
 #[test]
 fn linalg_rotation_det_is_one() {
-    let result = eval_ri_file(PATH_LINALG, "linalg");
+    let result = eval_ri_file(&path_linalg(), "linalg");
 
     let det_id = ValueCellId::new("LinalgDemo", "det_rot");
     let det_val = result
@@ -301,7 +304,7 @@ fn linalg_rotation_det_is_one() {
 /// (Value::List of Value::Real).
 #[test]
 fn linalg_eigenvalues_of_diagonal() {
-    let result = eval_ri_file(PATH_LINALG, "linalg");
+    let result = eval_ri_file(&path_linalg(), "linalg");
 
     let eig_id = ValueCellId::new("LinalgDemo", "eig");
     let eig_val = result
@@ -348,7 +351,7 @@ fn linalg_eigenvalues_of_diagonal() {
 /// This verifies the orthogonal matrix property: R^{-1} = R^T.
 #[test]
 fn linalg_inverse_equals_transpose() {
-    let result = eval_ri_file(PATH_LINALG, "linalg");
+    let result = eval_ri_file(&path_linalg(), "linalg");
 
     let inv_id = ValueCellId::new("LinalgDemo", "inv_rot");
     let inv_val = result
@@ -416,7 +419,7 @@ fn linalg_inverse_equals_transpose() {
 /// since z = complex(3.0, 4.0) is dimensionless).
 #[test]
 fn linalg_complex_re_im() {
-    let result = eval_ri_file(PATH_LINALG, "linalg");
+    let result = eval_ri_file(&path_linalg(), "linalg");
 
     // re(z) → Value::Real(3.0) for dimensionless complex
     let re_id = ValueCellId::new("LinalgDemo", "z_re");
@@ -447,7 +450,7 @@ fn linalg_complex_re_im() {
 /// z = complex(3.0, 4.0) → |z| = sqrt(9+16) = 5.0.
 #[test]
 fn linalg_complex_magnitude() {
-    let result = eval_ri_file(PATH_LINALG, "linalg");
+    let result = eval_ri_file(&path_linalg(), "linalg");
 
     let mag_id = ValueCellId::new("LinalgDemo", "z_mag");
     let mag_val = result
@@ -473,7 +476,7 @@ fn linalg_complex_magnitude() {
 /// z = complex(3.0, 4.0) → conjugate flips the sign of the imaginary part.
 #[test]
 fn linalg_complex_conjugate() {
-    let result = eval_ri_file(PATH_LINALG, "linalg");
+    let result = eval_ri_file(&path_linalg(), "linalg");
     assert_complex(
         &result,
         "LinalgDemo",
@@ -491,7 +494,7 @@ fn linalg_complex_conjugate() {
 /// z = complex(3.0, 4.0) → phase = atan2(im, re) = atan2(4, 3).
 #[test]
 fn linalg_complex_phase() {
-    let result = eval_ri_file(PATH_LINALG, "linalg");
+    let result = eval_ri_file(&path_linalg(), "linalg");
     let expected = (4.0_f64).atan2(3.0);
     assert_scalar(
         &result,
@@ -509,7 +512,7 @@ fn linalg_complex_phase() {
 /// errors, and produces non-empty values.
 #[test]
 fn fields_analysis_smoke() {
-    let result = eval_ri_file(PATH_FIELDS_ANALYSIS, "fields_analysis");
+    let result = eval_ri_file(&path_fields_analysis(), "fields_analysis");
     assert!(
         !result.values.is_empty(),
         "fields_analysis.ri eval should produce non-empty values"
@@ -522,7 +525,7 @@ fn fields_analysis_smoke() {
 /// temperature(x) = x*x + 20.0, so temperature(5.0) = 25 + 20 = 45.0.
 #[test]
 fn fields_temperature_sample() {
-    let result = eval_ri_file(PATH_FIELDS_ANALYSIS, "fields_analysis");
+    let result = eval_ri_file(&path_fields_analysis(), "fields_analysis");
 
     let id = ValueCellId::new("FieldsAnalysisDemo", "temp_at_5");
     let val = result
@@ -544,7 +547,7 @@ fn fields_temperature_sample() {
 /// gradient(x*x+20) = 2*x, so at x=5: derivative ≈ 10.0 (central differences).
 #[test]
 fn fields_temperature_gradient() {
-    let result = eval_ri_file(PATH_FIELDS_ANALYSIS, "fields_analysis");
+    let result = eval_ri_file(&path_fields_analysis(), "fields_analysis");
 
     let id = ValueCellId::new("FieldsAnalysisDemo", "dtemp_at_5");
     let val = result
@@ -566,7 +569,7 @@ fn fields_temperature_gradient() {
 /// sigma = 100.0 * outer(e1, e1) is a uniaxial stress tensor; von Mises = σ.
 #[test]
 fn fields_von_mises_uniaxial() {
-    let result = eval_ri_file(PATH_FIELDS_ANALYSIS, "fields_analysis");
+    let result = eval_ri_file(&path_fields_analysis(), "fields_analysis");
 
     let id = ValueCellId::new("FieldsAnalysisDemo", "vm_stress");
     let val = result
@@ -588,7 +591,7 @@ fn fields_von_mises_uniaxial() {
 /// yield_strength=250, von_mises(sigma)=100 → SF = 250/100 = 2.5 (dimensionless Real).
 #[test]
 fn fields_safety_factor() {
-    let result = eval_ri_file(PATH_FIELDS_ANALYSIS, "fields_analysis");
+    let result = eval_ri_file(&path_fields_analysis(), "fields_analysis");
 
     let id = ValueCellId::new("FieldsAnalysisDemo", "sf");
     let val = result
@@ -612,7 +615,7 @@ fn fields_safety_factor() {
 /// asserts no *other* errors and that values are produced.
 #[test]
 fn io_export_smoke() {
-    let result = eval_ri_file(PATH_IO_EXPORT, "io_export");
+    let result = eval_ri_file(&path_io_export(), "io_export");
     assert!(
         !result.values.is_empty(),
         "io_export.ri eval should produce non-empty values"
@@ -632,8 +635,8 @@ fn io_export_smoke() {
 /// OCCT is unavailable; CI must have `/opt/reify-deps` configured for this test to verify.
 #[test]
 fn io_export_mass_computed() {
-    let source = std::fs::read_to_string(PATH_IO_EXPORT)
-        .unwrap_or_else(|e| panic!("{} should exist: {}", PATH_IO_EXPORT, e));
+    let source = std::fs::read_to_string(path_io_export())
+        .unwrap_or_else(|e| panic!("{} should exist: {}", path_io_export().display(), e));
     let Some(result) = compile_and_build_occt(&source) else {
         return;
     };
@@ -654,7 +657,7 @@ fn io_export_mass_computed() {
 /// upper_limit = nominal + upper_deviation = 0.100 + 0.00005 = 0.10005m.
 #[test]
 fn io_export_tolerance_upper_limit() {
-    let result = eval_ri_file(PATH_IO_EXPORT, "io_export");
+    let result = eval_ri_file(&path_io_export(), "io_export");
     assert_scalar(
         &result,
         "ExportPart.tol",
@@ -676,7 +679,7 @@ fn io_export_tolerance_upper_limit() {
 /// test carries only mirror-strip signal.
 #[test]
 fn io_export_tolerance_lower_limit() {
-    let result = eval_ri_file(PATH_IO_EXPORT, "io_export");
+    let result = eval_ri_file(&path_io_export(), "io_export");
     assert_scalar(
         &result,
         "ExportPart.tol",
@@ -694,7 +697,7 @@ fn io_export_tolerance_lower_limit() {
 /// tolerance_band = upper_deviation - lower_deviation = 0.05mm - (-0.05mm) = 0.1mm.
 #[test]
 fn io_export_tolerance_band() {
-    let result = eval_ri_file(PATH_IO_EXPORT, "io_export");
+    let result = eval_ri_file(&path_io_export(), "io_export");
     assert_scalar(
         &result,
         "ExportPart.tol",
@@ -711,7 +714,7 @@ fn io_export_tolerance_band() {
 /// Flatness sub: tolerance_value: 0.02mm → 2e-5 m.
 #[test]
 fn io_export_flatness_tolerance() {
-    let result = eval_ri_file(PATH_IO_EXPORT, "io_export");
+    let result = eval_ri_file(&path_io_export(), "io_export");
     assert_scalar(
         &result,
         "ExportPart.flat",
@@ -746,7 +749,7 @@ fn io_export_flatness_tolerance() {
 /// RED before the mirrors are stripped from examples/io_export.ri.
 #[test]
 fn io_export_flatness_resolves_stdlib_geometry_feature() {
-    let result = eval_ri_file(PATH_IO_EXPORT, "io_export");
+    let result = eval_ri_file(&path_io_export(), "io_export");
 
     // ── (i) nominal_zone from the GeometricTolerance trait `let` ─────────────
     let nominal_zone = result
@@ -805,7 +808,7 @@ fn io_export_flatness_resolves_stdlib_geometry_feature() {
 /// SurfaceFinish sub: value: 0.8um → 0.8e-6 m = 8e-7 m.
 #[test]
 fn io_export_surface_finish() {
-    let result = eval_ri_file(PATH_IO_EXPORT, "io_export");
+    let result = eval_ri_file(&path_io_export(), "io_export");
     assert_scalar(
         &result,
         "ExportPart.finish",
@@ -871,7 +874,7 @@ fn matrix_elem(v: &Value, row: usize, col: usize) -> f64 {
 /// det(m4) = 209 by recurrence D_n = 4·D_{n-1} − D_{n-2}, D_0=1,D_1=4.
 #[test]
 fn linalg_4x4_determinant() {
-    let result = eval_ri_file(PATH_LINALG, "linalg");
+    let result = eval_ri_file(&path_linalg(), "linalg");
 
     let det_id = ValueCellId::new("LinalgDemo", "det4");
     let det_val = result
@@ -900,7 +903,7 @@ fn linalg_4x4_determinant() {
 /// builtin's (re,im) sort order.
 #[test]
 fn linalg_complex_eigenvalues_rotation() {
-    let result = eval_ri_file(PATH_LINALG, "linalg");
+    let result = eval_ri_file(&path_linalg(), "linalg");
 
     let ceig_id = ValueCellId::new("LinalgDemo", "ceig");
     let ceig_val = result
@@ -957,7 +960,7 @@ fn linalg_complex_eigenvalues_rotation() {
 /// block spectra: top {2-1,2+1}={1,3}, bottom {5-3,5+3}={2,8}.
 #[test]
 fn linalg_4x4_symmetric_eigenvalues() {
-    let result = eval_ri_file(PATH_LINALG, "linalg");
+    let result = eval_ri_file(&path_linalg(), "linalg");
 
     let eig4_id = ValueCellId::new("LinalgDemo", "eig4");
     let eig4_val = result
@@ -1002,7 +1005,7 @@ fn linalg_4x4_symmetric_eigenvalues() {
 /// the product is computed in Rust (no matmul builtin exists in .ri).
 #[test]
 fn linalg_4x4_inverse_roundtrip() {
-    let result = eval_ri_file(PATH_LINALG, "linalg");
+    let result = eval_ri_file(&path_linalg(), "linalg");
 
     let m4_id = ValueCellId::new("LinalgDemo", "m4");
     let m4_val = result

@@ -972,10 +972,10 @@ impl std::fmt::Display for Residual {
 /// against the owner-cite marker comments that make them visible to the PTODO
 /// detector.
 ///
-/// Located from `CARGO_MANIFEST_DIR` rather than from the process's working
-/// directory, mirroring `version_id_discipline_gate.rs`.
+/// Located from the run-time package dir rather than from the process's
+/// working directory, mirroring `version_id_discipline_gate.rs`.
 fn this_file() -> String {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    let path = reify_test_support::test_package::manifest_dir()
         .join("tests/harness_geometry/units_length_closure_guard.rs");
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
 }
