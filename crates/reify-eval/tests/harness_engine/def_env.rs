@@ -15,7 +15,6 @@ use std::path::Path;
 
 use reify_compiler::cfg::CfgSet;
 use reify_compiler::module_dag::ModuleResolver;
-use reify_compiler::name_env::Definition;
 use reify_compiler::program::{CompiledProgram, compile_program};
 use reify_compiler::program_scope::ProgramDefinition;
 use reify_compiler::stdlib_loader::load_stdlib;

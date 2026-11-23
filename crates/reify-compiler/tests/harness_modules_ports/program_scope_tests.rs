@@ -87,8 +87,15 @@ fn compile_fixture(dir: &Path) -> CompiledProgram {
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(errors.is_empty(), "precondition: fixture compiles: {errors:?}");
-    let keys: Vec<&str> = program.imports.iter().map(|u| u.import_path.as_str()).collect();
+    assert!(
+        errors.is_empty(),
+        "precondition: fixture compiles: {errors:?}"
+    );
+    let keys: Vec<&str> = program
+        .imports
+        .iter()
+        .map(|u| u.import_path.as_str())
+        .collect();
     assert_eq!(keys, ["a", "b"], "precondition: a is imported before b");
     program
 }
@@ -158,16 +165,35 @@ fn templates_bind_entry_then_imports_in_order_then_std() {
     let p = &fx.program;
     let entry_own = p.entry_declared_templates();
     let t = |name| by_name::<TopologyTemplate>(p, name);
-    assert_binds(t("Shared"), named(entry_own, "Shared"), "entry beats import");
-    assert_binds(t("ImportPeer"), named(&fx.a().templates, "ImportPeer"), "a beats b");
-    assert_binds(t(STD_TEMPLATE), named(&fx.a().templates, STD_TEMPLATE), "import beats std");
+    assert_binds(
+        t("Shared"),
+        named(entry_own, "Shared"),
+        "entry beats import",
+    );
+    assert_binds(
+        t("ImportPeer"),
+        named(&fx.a().templates, "ImportPeer"),
+        "a beats b",
+    );
+    assert_binds(
+        t(STD_TEMPLATE),
+        named(&fx.a().templates, STD_TEMPLATE),
+        "import beats std",
+    );
     assert_binds(
         t(STD_ONLY_TEMPLATE),
         std_home::<TopologyTemplate>(STD_ONLY_TEMPLATE),
         "std-only resolves",
     );
-    assert!(t("HiddenT").is_none(), "a non-pub import template is invisible");
-    assert_binds(t("VisT"), named(&fx.a().templates, "VisT"), "pub sibling visible");
+    assert!(
+        t("HiddenT").is_none(),
+        "a non-pub import template is invisible"
+    );
+    assert_binds(
+        t("VisT"),
+        named(&fx.a().templates, "VisT"),
+        "pub sibling visible",
+    );
 }
 
 #[test]
@@ -187,25 +213,43 @@ fn functions_bind_by_signature_entry_then_imports_in_order_then_std() {
         bound.map_or(std::ptr::null(), |d| d as *const _)
     };
     let entry = p.entry();
-    assert_eq!(f(fx.a(), "shared_fn"), named(&entry.functions, "shared_fn") as *const _);
-    assert_eq!(f(fx.b(), "peer_fn"), named(&fx.a().functions, "peer_fn") as *const _);
+    assert_eq!(
+        f(fx.a(), "shared_fn"),
+        named(&entry.functions, "shared_fn") as *const _
+    );
+    assert_eq!(
+        f(fx.b(), "peer_fn"),
+        named(&fx.a().functions, "peer_fn") as *const _
+    );
     let std_fn = prelude()
         .iter()
         .flat_map(|m| m.functions.iter())
-        .find(|g| {
-            g.key() == named(&fx.a().functions, STD_FN).key()
-        });
-    assert!(std_fn.is_some(), "precondition: the stdlib declares {STD_FN} with a's signature");
-    assert_eq!(f(fx.a(), STD_FN), named(&fx.a().functions, STD_FN) as *const _);
+        .find(|g| g.key() == named(&fx.a().functions, STD_FN).key());
+    assert!(
+        std_fn.is_some(),
+        "precondition: the stdlib declares {STD_FN} with a's signature"
+    );
+    assert_eq!(
+        f(fx.a(), STD_FN),
+        named(&fx.a().functions, STD_FN) as *const _
+    );
     let std_only = prelude()
         .iter()
         .flat_map(|m| m.functions.iter())
-        .find(|g| ![STD_FN, "shared_fn", "peer_fn", "vis_fn", "hidden_fn"].contains(&g.name.as_str()))
+        .find(|g| {
+            ![STD_FN, "shared_fn", "peer_fn", "vis_fn", "hidden_fn"].contains(&g.name.as_str())
+        })
         .expect("precondition: the stdlib declares some function");
     let std_only_bound = resolve_in_program::<CompiledFunction, _>(p, prelude(), &std_only.key());
     assert_binds(std_only_bound, std_only, "std-only function resolves");
-    assert!(f(fx.a(), "hidden_fn").is_null(), "a non-pub import fn is invisible");
-    assert_eq!(f(fx.a(), "vis_fn"), named(&fx.a().functions, "vis_fn") as *const _);
+    assert!(
+        f(fx.a(), "hidden_fn").is_null(),
+        "a non-pub import fn is invisible"
+    );
+    assert_eq!(
+        f(fx.a(), "vis_fn"),
+        named(&fx.a().functions, "vis_fn") as *const _
+    );
 }
 
 #[test]
@@ -213,12 +257,28 @@ fn enums_bind_entry_then_imports_in_order_then_std() {
     let fx = Fixture::new();
     let p = &fx.program;
     let e = |name| by_name::<EnumDef>(p, name);
-    assert_binds(e("SharedE"), named(&p.entry().enum_defs, "SharedE"), "entry beats import");
+    assert_binds(
+        e("SharedE"),
+        named(&p.entry().enum_defs, "SharedE"),
+        "entry beats import",
+    );
     assert_binds(e("PeerE"), named(&fx.a().enum_defs, "PeerE"), "a beats b");
-    assert_binds(e(STD_ENUM), named(&fx.a().enum_defs, STD_ENUM), "import beats std");
-    assert_binds(e(STD_ONLY_ENUM), std_home::<EnumDef>(STD_ONLY_ENUM), "std-only resolves");
+    assert_binds(
+        e(STD_ENUM),
+        named(&fx.a().enum_defs, STD_ENUM),
+        "import beats std",
+    );
+    assert_binds(
+        e(STD_ONLY_ENUM),
+        std_home::<EnumDef>(STD_ONLY_ENUM),
+        "std-only resolves",
+    );
     assert!(e("HiddenE").is_none(), "a non-pub import enum is invisible");
-    assert_binds(e("VisE"), named(&fx.a().enum_defs, "VisE"), "pub sibling visible");
+    assert_binds(
+        e("VisE"),
+        named(&fx.a().enum_defs, "VisE"),
+        "pub sibling visible",
+    );
 }
 
 /// An entry re-declaring an import's unit, or an import re-declaring a std
@@ -230,9 +290,17 @@ fn units_bind_first_import_then_std() {
     let p = &fx.program;
     let u = |name| by_name::<CompiledUnit>(p, name);
     assert_binds(u("peeru"), named(&fx.a().units, "peeru"), "a beats b");
-    assert_binds(u(STD_ONLY_UNIT), std_home::<CompiledUnit>(STD_ONLY_UNIT), "std-only resolves");
+    assert_binds(
+        u(STD_ONLY_UNIT),
+        std_home::<CompiledUnit>(STD_ONLY_UNIT),
+        "std-only resolves",
+    );
     assert!(u("hiddenu").is_none(), "a non-pub import unit is invisible");
-    assert_binds(u("visu"), named(&fx.a().units, "visu"), "pub sibling visible");
+    assert_binds(
+        u("visu"),
+        named(&fx.a().units, "visu"),
+        "pub sibling visible",
+    );
 }
 
 /// The entry's own templates are `entry_declared_templates()`: a pub
@@ -244,16 +312,20 @@ fn the_entry_scope_excludes_templates_merged_from_imports() {
     let p = &fx.program;
     assert!(
         p.entry().templates.iter().any(|t| t.name == "VisT")
-            && !p.entry_declared_templates().iter().any(|t| t.name == "VisT"),
+            && !p
+                .entry_declared_templates()
+                .iter()
+                .any(|t| t.name == "VisT"),
         "precondition: VisT is an I5-merged copy, not an entry declaration"
     );
     let bindings = bind_program::<TopologyTemplate>(p, prelude());
-    assert_binds(bindings.get("VisT"), named(&fx.a().templates, "VisT"), "merged name");
+    assert_binds(
+        bindings.get("VisT"),
+        named(&fx.a().templates, "VisT"),
+        "merged name",
+    );
     assert!(
-        !bindings
-            .shadowings()
-            .iter()
-            .any(|s| s.key == "VisT"),
+        !bindings.shadowings().iter().any(|s| s.key == "VisT"),
         "a merged copy is not a second candidate for its own name"
     );
 }
@@ -296,7 +368,9 @@ fn resolve_in_program_agrees_with_bind_program_for_every_bound_key() {
             let key = candidate.definition.key();
             let resolved = resolve_in_program::<D, _>(program, prelude(), &key)
                 .unwrap_or_else(|| panic!("{key:?} resolves"));
-            let bound = bindings.get(&key).unwrap_or_else(|| panic!("{key:?} is bound"));
+            let bound = bindings
+                .get(&key)
+                .unwrap_or_else(|| panic!("{key:?} is bound"));
             assert!(
                 std::ptr::eq(resolved, bound) && std::ptr::eq(bound, candidate.definition),
                 "{key:?}: resolve_in_program and bind_program disagree"
@@ -333,15 +407,24 @@ fn module_surface_is_one_modules_surface_keyed_by_dotted_path() {
     };
 
     let a = surface("a");
-    assert!(holds(&a, named(&fx.a().templates, "VisT")), "an import exposes its pub VisT");
-    assert!(!holds_name(&a, "HiddenT"), "an import hides its non-pub HiddenT");
+    assert!(
+        holds(&a, named(&fx.a().templates, "VisT")),
+        "an import exposes its pub VisT"
+    );
+    assert!(
+        !holds_name(&a, "HiddenT"),
+        "an import hides its non-pub HiddenT"
+    );
 
     let main = surface("main");
     assert!(
         holds(&main, named(p.entry_declared_templates(), "Shared")),
         "the entry exposes its own Shared"
     );
-    assert!(!holds_name(&main, "VisT"), "the entry's surface excludes the I5-merged VisT");
+    assert!(
+        !holds_name(&main, "VisT"),
+        "the entry's surface excludes the I5-merged VisT"
+    );
 
     let std_key = prelude()
         .iter()
@@ -350,7 +433,10 @@ fn module_surface_is_one_modules_surface_keyed_by_dotted_path() {
         .path
         .to_dotted();
     assert!(
-        holds(&surface(&std_key), std_home::<TopologyTemplate>(STD_ONLY_TEMPLATE)),
+        holds(
+            &surface(&std_key),
+            std_home::<TopologyTemplate>(STD_ONLY_TEMPLATE)
+        ),
         "the std module `{std_key}` exposes {STD_ONLY_TEMPLATE}"
     );
 

@@ -7,14 +7,16 @@
 //! `(module_key, name)` (I7). The entry's own declarations exclude every copy
 //! merged into it: its templates are `entry_declared_templates()` and its
 //! purposes are those it declares. The rule itself lives in
-//! `reify_compiler::name_env`, which the compiler binds by too; this is a view
-//! over it.
+//! `reify_compiler::name_env`, which the compiler binds by too, and the
+//! program's scopes come from `reify_compiler::program_scope`; this is a view
+//! over them.
 
 use std::borrow::Borrow;
 use std::sync::Arc;
 
-use reify_compiler::name_env::{self, Bindings, Definition, Tier};
+use reify_compiler::name_env::{self, Bindings, Tier};
 use reify_compiler::program::CompiledProgram;
+use reify_compiler::program_scope::{self, ProgramDefinition};
 use reify_compiler::stdlib_loader::load_stdlib;
 use reify_compiler::{
     CompiledConstraintDef, CompiledModule, CompiledPurpose, CompiledTrait, CompiledTypeAlias,
@@ -45,10 +47,10 @@ impl<'p> DefEnv<'p> {
 
     fn resolve<D>(&self, name: &str) -> Option<&'p D>
     where
-        D: Definition,
+        D: ProgramDefinition,
         D::Key<'p>: Borrow<str>,
     {
-        name_env::resolve_in_program(self.program, self.prelude, name)
+        program_scope::resolve_in_program(self.program, self.prelude, name)
     }
 
     // G-allow: resolution-unification §3.2 DefEnv; in-crate consumer Engine::load, flat-slice lookup sites migrate onto it in ι #5523
@@ -81,7 +83,7 @@ impl<'p> DefEnv<'p> {
     }
 
     fn function_bindings(&self) -> Bindings<'p, CompiledFunction> {
-        name_env::bind_program(self.program, self.prelude)
+        program_scope::bind_program(self.program, self.prelude)
     }
 
     /// The bound functions in precedence order, one per signature (name and
@@ -114,8 +116,8 @@ impl<'p> DefEnv<'p> {
     /// The `D` named `name` as seen through module `module_key` alone: the
     /// entry's own declarations, a direct import's `pub` surface, or a prelude
     /// module's exports.
-    pub fn resolve_in<D: Definition>(&self, module_key: &str, name: &str) -> Option<&'p D> {
-        name_env::module_surface::<D>(self.program, self.prelude, module_key)?
+    pub fn resolve_in<D: ProgramDefinition>(&self, module_key: &str, name: &str) -> Option<&'p D> {
+        program_scope::module_surface::<D>(self.program, self.prelude, module_key)?
             .find(|definition| definition.name() == name)
     }
 
@@ -151,9 +153,9 @@ impl<'p> DefEnv<'p> {
         .concat()
     }
 
-    fn import_tier_collisions<D: Definition>(&self) -> Vec<Diagnostic> {
+    fn import_tier_collisions<D: ProgramDefinition>(&self) -> Vec<Diagnostic> {
         let entry_key = self.program.entry().path.to_dotted();
-        name_env::bind_program::<D>(self.program, self.prelude)
+        program_scope::bind_program::<D>(self.program, self.prelude)
             .shadowings()
             .iter()
             .filter(|shadowing| {

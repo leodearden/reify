@@ -886,16 +886,21 @@ fn bind_scopes_ranks_local_then_direct_imports_then_prelude_imports_then_std() {
     assert_scope_precedence::<CompiledFunction>("function");
 }
 
-fn assert_scope_lookup_agrees<D: ScopeKind>(kind: &str, absent: D::Key<'_>) {
-    let fx = ScopesFixture::new();
-    let local = D::local(&fx);
+fn assert_scope_lookup_agrees<'a, D: ScopeKind>(
+    kind: &str,
+    fx: &'a ScopesFixture,
+    absent: D::Key<'a>,
+) {
+    let local = D::local(fx);
     let bindings = bind_scopes(local, fx.direct_imports(), fx.prelude());
     for candidate in bindings.winning_candidates() {
         let key = candidate.definition.key();
         let resolved = resolve_in_scopes(local, fx.direct_imports(), fx.prelude(), &key)
             .unwrap_or_else(|| panic!("{kind} {key:?} resolves"));
         assert!(
-            bindings.get(&key).is_some_and(|b| std::ptr::eq(b, resolved)),
+            bindings
+                .get(&key)
+                .is_some_and(|b| std::ptr::eq(b, resolved)),
             "{kind} {key:?}: resolve_in_scopes and bind_scopes disagree"
         );
     }
@@ -907,9 +912,10 @@ fn assert_scope_lookup_agrees<D: ScopeKind>(kind: &str, absent: D::Key<'_>) {
 
 #[test]
 fn resolve_in_scopes_agrees_with_bind_scopes_for_every_bound_key() {
-    assert_scope_lookup_agrees::<EnumDef>("enum", "Absent");
+    let fx = ScopesFixture::new();
+    assert_scope_lookup_agrees::<EnumDef>("enum", &fx, "Absent");
     let absent_fn = int_fn("Absent");
-    assert_scope_lookup_agrees::<CompiledFunction>("function", absent_fn.key());
+    assert_scope_lookup_agrees::<CompiledFunction>("function", &fx, absent_fn.key());
 }
 
 /// `bind` is `bind_scopes` with no direct imports: the same winners, by
@@ -944,10 +950,6 @@ fn bind_is_bind_scopes_without_direct_imports_for_every_kind() {
     assert_bind_is_bind_scopes_without_direct_imports("trait", &fx.traits, p);
     assert_bind_is_bind_scopes_without_direct_imports("function", &fx.functions, p);
     assert_bind_is_bind_scopes_without_direct_imports("type alias", &fx.aliases, p);
-    assert_bind_is_bind_scopes_without_direct_imports(
-        "constraint def",
-        &fx.constraint_defs,
-        p,
-    );
+    assert_bind_is_bind_scopes_without_direct_imports("constraint def", &fx.constraint_defs, p);
     assert_bind_is_bind_scopes_without_direct_imports("purpose", &fx.purposes, p);
 }
