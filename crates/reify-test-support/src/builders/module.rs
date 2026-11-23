@@ -215,6 +215,7 @@ mod tests {
             variants: vec!["Red".into(), "Blue".into()],
             doc: None,
             type_params: vec![],
+            is_pub: true,
         };
         let module = CompiledModuleBuilder::new(module_path())
             .enum_def(e)

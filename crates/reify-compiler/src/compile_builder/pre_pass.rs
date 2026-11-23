@@ -221,6 +221,7 @@ pub(crate) fn collect_decl_refs<'a>(
                     // enums_phase builds its own type_param_names from the AST directly,
                     // so there is no cross-phase ordering dependency here.
                     type_params: convert_type_params(&e.type_params),
+                    is_pub: e.is_pub,
                 });
             }
             Declaration::Function(fn_def) => {

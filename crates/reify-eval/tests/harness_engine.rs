@@ -186,12 +186,16 @@ mod stdlib_material_preset_density_e2e;
 // anti-re-accretion reason as #5196's and #5360's above.
 #[path = "harness_engine/stdlib_fn_in_user_fn_body_e2e.rs"]
 mod stdlib_fn_in_user_fn_body_e2e;
-// Task #5516's DefEnv skeleton pins land here for the same anti-re-accretion
-// reason as #5196's and #5360's above. They drive the read-only definition
-// environment the engine migrates onto in θ (#5522), over programs built by
+// Task #5516's DefEnv pins land here for the same anti-re-accretion reason as
+// #5196's and #5360's above. They drive the authoritative definition
+// environment (made authoritative by #5522) over programs built by
 // `reify_compiler::program::compile_program`.
-#[path = "harness_engine/def_env_skeleton.rs"]
-mod def_env_skeleton;
+#[path = "harness_engine/def_env.rs"]
+mod def_env;
+// Task #5522's `Engine::load` pins land here for the same reason: they drive the
+// engine's definition environment over a loaded `CompiledProgram`.
+#[path = "harness_engine/engine_load.rs"]
+mod engine_load;
 // Task #8102's instance-scope symbolic geometry/selector mint pins land here for
 // the same anti-re-accretion reason as #5196's and #5360's above. They are also
 // a topical fit: they drive `Engine::eval` over `sub` instantiations to pin

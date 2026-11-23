@@ -3578,6 +3578,7 @@ impl Engine {
             cache: _,              // node cache (engine-scoped config)
             prelude: _,            // 'static compiled prelude
             prelude_functions: _,  // pre-flattened prelude fns
+            loaded_program: _,     // Engine::load's program (resolution environment)
             structure_registry: _, // SIR structure meta (eval state)
             param_overrides: _,    // set_param_and_invalidate overrides
             eval_state: _,         // consolidated eval state

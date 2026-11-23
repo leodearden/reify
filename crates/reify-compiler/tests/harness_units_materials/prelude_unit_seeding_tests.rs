@@ -7,7 +7,7 @@
 //! diagnostics as a value, and the seeded registry itself.
 
 use reify_compiler::{CompiledModule, UnitRegistry, seed_prelude_units};
-use reify_core::Severity;
+use reify_core::{DiagnosticCode, Severity};
 use reify_test_support::{compile_source_named, errors_only};
 
 fn compiled_prelude(source: &str, name: &str) -> CompiledModule {
@@ -21,7 +21,7 @@ fn compiled_prelude(source: &str, name: &str) -> CompiledModule {
 }
 
 #[test]
-fn seeding_is_pub_only_and_last_wins_with_one_collision_warning() {
+fn seeding_is_pub_only_and_first_wins_with_one_collision_warning() {
     let mod_a = compiled_prelude(
         "pub unit foo : Length = 1.0\nunit hidden : Length = 3.0",
         "mod_a",
@@ -34,7 +34,12 @@ fn seeding_is_pub_only_and_last_wins_with_one_collision_warning() {
     assert_eq!(diags.len(), 1, "exactly one collision warning: {diags:?}");
     let warning = &diags[0];
     assert_eq!(warning.severity, Severity::Warning, "{warning:?}");
-    for needle in ["'foo'", "mod_a", "mod_b", "last-wins"] {
+    assert_eq!(
+        warning.code,
+        Some(DiagnosticCode::DefinitionCollision),
+        "{warning:?}"
+    );
+    for needle in ["'foo'", "mod_a", "mod_b", "first-wins"] {
         assert!(
             warning.message.contains(needle),
             "collision warning must mention {needle}: {:?}",
@@ -45,8 +50,8 @@ fn seeding_is_pub_only_and_last_wins_with_one_collision_warning() {
     let foo = registry
         .lookup("foo")
         .expect("foo must be seeded from the prelude");
-    assert_eq!(foo.factor, 2.0, "the later module must win");
-    assert_eq!(foo.source_module.as_deref(), Some("mod_b"));
+    assert_eq!(foo.factor, 1.0, "the first module must win");
+    assert_eq!(foo.source_module.as_deref(), Some("mod_a"));
 
     assert!(
         registry.lookup("hidden").is_none(),

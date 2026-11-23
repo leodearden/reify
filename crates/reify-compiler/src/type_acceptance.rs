@@ -298,12 +298,14 @@ mod tests {
                     bounds: vec![],
                     default: None,
                 }],
+                is_pub: true,
             },
             EnumDef {
                 name: "Hue".to_string(),
                 variants: vec!["Red".into(), "Green".into()],
                 doc: None,
                 type_params: vec![],
+                is_pub: true,
             },
         ]
     }

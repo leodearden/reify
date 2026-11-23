@@ -1,8 +1,13 @@
 //! The one name-environment policy point (NS-P1/P3), shared by the compiler's
-//! registries and the evaluator's template lookup: per kind, a bare name binds
-//! the FIRST definition in tier order — local, then user imports in slice
-//! order, then std modules in slice order. Contract:
+//! registries and the evaluator's resolution environment: per kind, a bare
+//! name binds the FIRST definition in tier order — local, then user imports in
+//! slice order, then std modules in slice order. Contract:
 //! `docs/prds/v0_6/stdlib-namespace.md` §3.1.
+//!
+//! [`bind`]/[`resolve`] serve one module's compile: its own definitions over
+//! the ambient prelude. [`bind_scopes`]/[`resolve_in_scopes`] add a middle
+//! scope: local definitions, then each direct import's `pub` surface in order,
+//! then the ambient prelude (resolution-unification I6, D-5).
 
 use std::borrow::Borrow;
 use std::collections::HashMap;
@@ -10,12 +15,12 @@ use std::collections::hash_map::Entry;
 use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 
-use reify_core::{ModulePath, Type};
+use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, ModulePath, SourceSpan, Type};
 use reify_ir::{CompiledFunction, EnumDef};
 
 use crate::types::{
     CompiledConstraintDef, CompiledModule, CompiledPurpose, CompiledTrait, CompiledTypeAlias,
-    EntityKind, TopologyTemplate,
+    CompiledUnit, EntityKind, TopologyTemplate, Visibility,
 };
 
 /// Precedence tiers, highest first.
@@ -67,6 +72,14 @@ pub trait Definition: Debug + 'static {
 
     fn key(&self) -> Self::Key<'_>;
 
+    fn name(&self) -> &str;
+
+    /// How diagnostics name this kind, e.g. "enum" or "type alias".
+    fn kind_word(&self) -> &'static str;
+
+    /// Whether the declaration is `pub`: a direct import exposes only these.
+    fn is_pub(&self) -> bool;
+
     /// The definitions `module` makes visible to modules that have it in
     /// their prelude.
     fn exported_by(module: &CompiledModule) -> impl Iterator<Item = &Self>;
@@ -116,6 +129,18 @@ impl Definition for TopologyTemplate {
         &self.name
     }
 
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn kind_word(&self) -> &'static str {
+        self.entity_kind.as_label()
+    }
+
+    fn is_pub(&self) -> bool {
+        self.visibility == Visibility::Public
+    }
+
     fn exported_by(module: &CompiledModule) -> impl Iterator<Item = &Self> {
         module.templates.iter()
     }
@@ -126,6 +151,18 @@ impl Definition for EnumDef {
 
     fn key(&self) -> &str {
         &self.name
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn kind_word(&self) -> &'static str {
+        "enum"
+    }
+
+    fn is_pub(&self) -> bool {
+        self.is_pub
     }
 
     fn exported_by(module: &CompiledModule) -> impl Iterator<Item = &Self> {
@@ -140,6 +177,18 @@ impl Definition for CompiledTrait {
         &self.name
     }
 
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn kind_word(&self) -> &'static str {
+        "trait"
+    }
+
+    fn is_pub(&self) -> bool {
+        self.is_pub
+    }
+
     fn exported_by(module: &CompiledModule) -> impl Iterator<Item = &Self> {
         module.trait_defs.iter()
     }
@@ -150,6 +199,18 @@ impl Definition for CompiledFunction {
 
     fn key(&self) -> FunctionSignature<'_> {
         FunctionSignature::new(&self.name, &self.params)
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn kind_word(&self) -> &'static str {
+        "function"
+    }
+
+    fn is_pub(&self) -> bool {
+        self.is_pub
     }
 
     fn exported_by(module: &CompiledModule) -> impl Iterator<Item = &Self> {
@@ -164,6 +225,18 @@ impl Definition for CompiledTypeAlias {
         &self.name
     }
 
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn kind_word(&self) -> &'static str {
+        "type alias"
+    }
+
+    fn is_pub(&self) -> bool {
+        self.is_pub
+    }
+
     fn exported_by(module: &CompiledModule) -> impl Iterator<Item = &Self> {
         module.type_aliases.iter().filter(|a| a.is_pub)
     }
@@ -174,6 +247,18 @@ impl Definition for CompiledConstraintDef {
 
     fn key(&self) -> &str {
         &self.name
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn kind_word(&self) -> &'static str {
+        "constraint def"
+    }
+
+    fn is_pub(&self) -> bool {
+        self.is_pub
     }
 
     fn exported_by(module: &CompiledModule) -> impl Iterator<Item = &Self> {
@@ -188,8 +273,55 @@ impl Definition for CompiledPurpose {
         &self.name
     }
 
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn kind_word(&self) -> &'static str {
+        "purpose"
+    }
+
+    fn is_pub(&self) -> bool {
+        self.is_pub
+    }
+
     fn exported_by(module: &CompiledModule) -> impl Iterator<Item = &Self> {
-        module.compiled_purposes.iter().filter(|p| p.is_pub)
+        own_purposes(module).filter(|p| p.is_pub)
+    }
+}
+
+/// `module`'s purposes minus the copies `crate::merge_prelude_purposes` merged
+/// in from its prelude, which it marks with a prelude-sentinel declaration span.
+/// A module does not re-export what it merged; the originals stay reachable
+/// from their home modules.
+pub(crate) fn own_purposes(module: &CompiledModule) -> impl Iterator<Item = &CompiledPurpose> {
+    module
+        .compiled_purposes
+        .iter()
+        .filter(|p| !p.declaration_span.is_prelude())
+}
+
+impl Definition for CompiledUnit {
+    type Key<'k> = &'k str;
+
+    fn key(&self) -> &str {
+        &self.name
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn kind_word(&self) -> &'static str {
+        "unit"
+    }
+
+    fn is_pub(&self) -> bool {
+        self.is_pub
+    }
+
+    fn exported_by(module: &CompiledModule) -> impl Iterator<Item = &Self> {
+        module.units.iter().filter(|u| u.is_pub)
     }
 }
 
@@ -216,62 +348,123 @@ pub struct Shadowing<'a, D: Definition> {
     pub shadowed: Candidate<'a, D>,
 }
 
-/// Every candidate of one kind, in precedence order: local definitions, then
-/// the exports of each user-import module in slice order, then the exports of
-/// each std module in slice order.
-fn in_precedence_order<'a, D, P>(
-    local: &'a [D],
-    prelude: P,
+/// The one wording of a first-wins collision: the kind, the name, the
+/// winner's origin first, then the shadowed one. Each origin is a dotted
+/// module path; [`Origin::Local`] is `local_module`, the module whose bind
+/// produced `shadowing`, which is `None` for a bind with no local scope.
+pub fn collision_warning<D: Definition>(
+    shadowing: &Shadowing<'_, D>,
+    local_module: Option<&ModulePath>,
+) -> Diagnostic {
+    let label = |origin: Origin<'_>| {
+        origin
+            .module()
+            .or(local_module)
+            .expect("a bind with no local scope has no local candidate")
+            .to_dotted()
+    };
+    let definition = shadowing.winner.definition;
+    let winner = label(shadowing.winner.origin);
+    Diagnostic::warning(format!(
+        "{kind} '{name}' declared in both '{winner}' and '{shadowed}'; \
+         first-wins: '{winner}' binds",
+        kind = definition.kind_word(),
+        name = definition.name(),
+        shadowed = label(shadowing.shadowed.origin),
+    ))
+    .with_code(DiagnosticCode::DefinitionCollision)
+    .with_label(DiagnosticLabel::new(
+        SourceSpan::prelude(),
+        "definition collision",
+    ))
+}
+
+/// What a module offers the candidate stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Surface {
+    /// A prelude module: everything it exports.
+    Ambient,
+    /// A direct import: only its `pub` exports (resolution-unification D-5).
+    DirectImport,
+}
+
+/// The definitions `module` offers through `surface`.
+pub fn surface_of<D: Definition>(
+    module: &CompiledModule,
+    surface: Surface,
+) -> impl Iterator<Item = &D> {
+    D::exported_by(module)
+        .filter(move |definition| surface == Surface::Ambient || definition.is_pub())
+}
+
+/// Every candidate of one kind, in precedence order: `local` definitions, then
+/// the surface of each import-tier module in order, then the surface of each
+/// std module in order. The tier of a module is decided by its path;
+/// `modules` streams every non-local module with its surface, once per tier.
+fn in_precedence_order<'a, D, L, M, I>(
+    local: L,
+    modules: M,
 ) -> impl Iterator<Item = Candidate<'a, D>>
 where
     D: Definition,
-    P: IntoIterator<Item = &'a CompiledModule> + Clone,
+    L: IntoIterator<Item = &'a D>,
+    M: Fn() -> I,
+    I: Iterator<Item = (&'a CompiledModule, Surface)>,
 {
-    let exports_of_tier = move |tier: Tier| {
-        prelude
-            .clone()
-            .into_iter()
-            .filter(move |module| module_tier(&module.path) == tier)
-            .flat_map(|module| {
-                D::exported_by(module).map(move |definition| Candidate {
+    let surfaces_of_tier = |tier: Tier| {
+        modules()
+            .filter(move |(module, _)| module_tier(&module.path) == tier)
+            .flat_map(|(module, surface)| {
+                surface_of(module, surface).map(move |definition| Candidate {
                     origin: Origin::Module(&module.path),
                     definition,
                 })
             })
     };
     local
-        .iter()
+        .into_iter()
         .map(|definition| Candidate {
             origin: Origin::Local,
             definition,
         })
-        .chain(exports_of_tier(Tier::Import))
-        .chain(exports_of_tier(Tier::Stdlib))
+        .chain(surfaces_of_tier(Tier::Import))
+        .chain(surfaces_of_tier(Tier::Stdlib))
 }
 
-/// The definition `key` binds to, if any. Lazy and allocation-free.
-pub fn resolve<'a, D, P, Q>(local: &'a [D], prelude: P, key: &Q) -> Option<&'a D>
+/// Candidates across three scopes: `local`, each direct import's `pub`
+/// surface in order, then each ambient `prelude` module's exports.
+fn scope_candidates<'a, D, L, I, P>(
+    local: L,
+    direct_imports: I,
+    prelude: P,
+) -> impl Iterator<Item = Candidate<'a, D>>
 where
     D: Definition,
+    L: IntoIterator<Item = &'a D>,
+    I: IntoIterator<Item = &'a CompiledModule> + Clone,
     P: IntoIterator<Item = &'a CompiledModule> + Clone,
-    D::Key<'a>: Borrow<Q>,
-    Q: Eq + ?Sized,
 {
-    in_precedence_order(local, prelude)
-        .map(|candidate| candidate.definition)
-        .find(|definition| D::key(definition).borrow() == key)
+    in_precedence_order(local, move || {
+        let direct = direct_imports
+            .clone()
+            .into_iter()
+            .map(|module| (module, Surface::DirectImport));
+        let ambient = prelude
+            .clone()
+            .into_iter()
+            .map(|module| (module, Surface::Ambient));
+        direct.chain(ambient)
+    })
 }
 
-/// Every key's binding plus every shadowing, by the same rule as [`resolve`].
-pub fn bind<'a, D, P>(local: &'a [D], prelude: P) -> Bindings<'a, D>
-where
-    D: Definition,
-    P: IntoIterator<Item = &'a CompiledModule> + Clone,
-{
+/// Every key's first candidate, plus every later candidate it shadows.
+fn bind_candidates<'a, D: Definition>(
+    candidates: impl Iterator<Item = Candidate<'a, D>>,
+) -> Bindings<'a, D> {
     let mut winners: Vec<Candidate<'a, D>> = Vec::new();
     let mut index: HashMap<D::Key<'a>, usize> = HashMap::new();
     let mut shadowings: Vec<Shadowing<'a, D>> = Vec::new();
-    for candidate in in_precedence_order(local, prelude) {
+    for candidate in candidates {
         match index.entry(candidate.definition.key()) {
             Entry::Vacant(slot) => {
                 slot.insert(winners.len());
@@ -289,6 +482,102 @@ where
         index,
         shadowings,
     }
+}
+
+/// The definition `key` binds to, if any. Lazy and allocation-free.
+pub fn resolve<'a, D, P, Q>(local: &'a [D], prelude: P, key: &Q) -> Option<&'a D>
+where
+    D: Definition,
+    P: IntoIterator<Item = &'a CompiledModule> + Clone,
+    D::Key<'a>: Borrow<Q>,
+    Q: Eq + ?Sized,
+{
+    resolve_in_scopes(local, std::iter::empty(), prelude, key)
+}
+
+/// Every key's binding plus every shadowing, by the same rule as [`resolve`].
+pub fn bind<'a, D, P>(local: &'a [D], prelude: P) -> Bindings<'a, D>
+where
+    D: Definition,
+    P: IntoIterator<Item = &'a CompiledModule> + Clone,
+{
+    bind_scopes(local, std::iter::empty(), prelude)
+}
+
+/// The definition `key` binds to over `local`, the `pub` surface of each of
+/// `direct_imports`, then the ambient `prelude`. Lazy and allocation-free.
+pub fn resolve_in_scopes<'a, D, L, I, P, Q>(
+    local: L,
+    direct_imports: I,
+    prelude: P,
+    key: &Q,
+) -> Option<&'a D>
+where
+    D: Definition,
+    L: IntoIterator<Item = &'a D>,
+    I: IntoIterator<Item = &'a CompiledModule> + Clone,
+    P: IntoIterator<Item = &'a CompiledModule> + Clone,
+    D::Key<'a>: Borrow<Q>,
+    Q: Eq + ?Sized,
+{
+    resolve_in_scopes_by(local, direct_imports, prelude, |definition| {
+        D::key(definition).borrow() == key
+    })
+}
+
+/// The first definition `matches` accepts, in [`resolve_in_scopes`] order.
+/// When `matches` accepts exactly the definitions of one key, that is the
+/// key's binding, so this resolves a key the caller cannot build. Lazy and
+/// allocation-free.
+pub fn resolve_in_scopes_by<'a, D, L, I, P>(
+    local: L,
+    direct_imports: I,
+    prelude: P,
+    mut matches: impl FnMut(&'a D) -> bool,
+) -> Option<&'a D>
+where
+    D: Definition,
+    L: IntoIterator<Item = &'a D>,
+    I: IntoIterator<Item = &'a CompiledModule> + Clone,
+    P: IntoIterator<Item = &'a CompiledModule> + Clone,
+{
+    scope_candidates(local, direct_imports, prelude)
+        .map(|candidate| candidate.definition)
+        .find(|definition| matches(definition))
+}
+
+/// Every key's binding plus every shadowing, by the same rule as
+/// [`resolve_in_scopes`].
+pub fn bind_scopes<'a, D, L, I, P>(local: L, direct_imports: I, prelude: P) -> Bindings<'a, D>
+where
+    D: Definition,
+    L: IntoIterator<Item = &'a D>,
+    I: IntoIterator<Item = &'a CompiledModule> + Clone,
+    P: IntoIterator<Item = &'a CompiledModule> + Clone,
+{
+    bind_scopes_where(local, direct_imports, prelude, |_| true)
+}
+
+/// [`bind_scopes`] over only the definitions `keep` accepts. When `keep`
+/// accepts or rejects each key's definitions together, every kept key binds
+/// and shadows exactly as under [`bind_scopes`], and only the kept
+/// candidates are indexed.
+pub fn bind_scopes_where<'a, D, L, I, P>(
+    local: L,
+    direct_imports: I,
+    prelude: P,
+    mut keep: impl FnMut(&'a D) -> bool,
+) -> Bindings<'a, D>
+where
+    D: Definition,
+    L: IntoIterator<Item = &'a D>,
+    I: IntoIterator<Item = &'a CompiledModule> + Clone,
+    P: IntoIterator<Item = &'a CompiledModule> + Clone,
+{
+    bind_candidates(
+        scope_candidates(local, direct_imports, prelude)
+            .filter(|candidate| keep(candidate.definition)),
+    )
 }
 
 /// The outcome of [`bind`] for one kind.

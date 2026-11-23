@@ -5,8 +5,8 @@ use crate::demand::DemandRegistry;
 use crate::journal::EventJournal;
 use crate::snapshot::Snapshot;
 use crate::solver_posture::SolveStage;
-use crate::{Engine, EvaluationState, SolverPosture};
-use reify_compiler::{CompiledModule, EntityKind, ValueCellKind};
+use crate::{DefEnv, Engine, EvaluationState, SolverPosture};
+use reify_compiler::{CompiledModule, EntityKind, ValueCellKind, program::CompiledProgram};
 use reify_core::{Diagnostic, SnapshotId, VersionId};
 use reify_ir::{
     CompiledFunction, ConstraintChecker, ConstraintSolver, GeometryKernel, OptimizedImpl,
@@ -275,6 +275,7 @@ impl Engine {
             cache: CacheStore::new(),
             prelude,
             prelude_functions,
+            loaded_program: None,
             structure_registry,
             param_overrides: std::collections::HashMap::new(),
             eval_state: None,
@@ -1753,6 +1754,27 @@ impl Engine {
     /// Returns the compiled stdlib prelude modules stored by this engine.
     pub fn prelude(&self) -> &[CompiledModule] {
         self.prelude
+    }
+
+    /// Install `program`, whose [`DefEnv`] [`Self::def_env`] then returns, and
+    /// return its definition-collision report for the caller to surface. No
+    /// eval lookup consults it yet (ι #5523 migrates them onto it), and eval
+    /// state is untouched.
+    // G-allow: resolution-unification §3.2 Engine::load; first production consumer is ι #5523
+    pub fn load(&mut self, program: impl Into<Arc<CompiledProgram>>) -> Vec<Diagnostic> {
+        let program = program.into();
+        let warnings = DefEnv::with_prelude(&program, self.prelude).collision_warnings();
+        self.loaded_program = Some(program);
+        warnings
+    }
+
+    /// The loaded program's definition environment over this engine's
+    /// prelude; `None` before a load.
+    // G-allow: resolution-unification §3.2 Engine::load; first production consumer is ι #5523
+    pub fn def_env(&self) -> Option<DefEnv<'_>> {
+        self.loaded_program
+            .as_deref()
+            .map(|program| DefEnv::with_prelude(program, self.prelude))
     }
 
     /// Set the maximum depth for recursive sub-component unfolding.

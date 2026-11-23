@@ -1,115 +1,208 @@
-//! The definition environment: a read-only view of every template a compiled
-//! program can name.
+//! The definition environment: every definition, of every kind, a compiled
+//! program can name (PRD docs/prds/v0_6/resolution-unification.md §3.2).
 //!
-//! This is the P1 skeleton (PRD docs/prds/v0_6/resolution-unification.md §3.2,
-//! D-3); θ #5522 makes it authoritative for the engine. Resolution order is the
-//! entry, then its imports in declaration order, then the stdlib (I6), and every
-//! scope is keyed internally by `(module_key, name)` (I7) — the seam
-//! stdlib-namespace ν #5505 consumes for qualified lookup.
+//! Per kind, a bare name binds the entry's own declaration, then each direct
+//! import's `pub` surface in declaration order (D-5), then the ambient prelude
+//! (I6). A qualified lookup sees one module's surface alone, keyed by
+//! `(module_key, name)` (I7). The entry's own declarations exclude every copy
+//! merged into it: its templates are `entry_declared_templates()` and its
+//! purposes are those it declares. The rule itself lives in
+//! `reify_compiler::name_env`, which the compiler binds by too, and the
+//! program's scopes come from `reify_compiler::program_scope`; this is a view
+//! over them.
 
-use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::borrow::Borrow;
+use std::sync::Arc;
 
+use reify_compiler::name_env::{self, Origin, Tier};
 use reify_compiler::program::CompiledProgram;
+use reify_compiler::program_scope::{self, ProgramDefinition};
 use reify_compiler::stdlib_loader::load_stdlib;
-use reify_compiler::{CompiledModule, TopologyTemplate, Visibility};
+use reify_compiler::{
+    CompiledConstraintDef, CompiledModule, CompiledPurpose, CompiledTrait, CompiledTypeAlias,
+    CompiledUnit, TopologyTemplate,
+};
+use reify_core::{Diagnostic, Type};
+use reify_ir::{CompiledFunction, EnumDef};
 
-/// Every template a [`CompiledProgram`] can name, in precedence order.
-///
-/// The entry's scope holds its whole template list — in P1 the merged list,
-/// which already carries the direct imports' pub templates (interim I5 until
-/// κ #5524). Each import's scope holds its pub templates only; each stdlib
-/// module's scope holds all of its templates, as eval's prelude fallback does.
+/// Every definition a [`CompiledProgram`] can name, resolved on demand over
+/// the program and a prelude.
+#[derive(Debug, Clone, Copy)]
 pub struct DefEnv<'p> {
-    declared: &'p CompiledModule,
-    /// The entry's scope, then each import's.
-    program_scopes: Vec<ModuleScope<'p>>,
-    /// Each stdlib module's scope, shared by every environment.
-    stdlib_scopes: &'p [ModuleScope<'p>],
-}
-
-/// One module's visible templates, first declaration winning per name (the
-/// same first-match rule as `find_template`).
-struct ModuleScope<'p> {
-    module_key: String,
-    templates: HashMap<&'p str, &'p TopologyTemplate>,
-}
-
-impl<'p> ModuleScope<'p> {
-    fn new(module_key: String, templates: impl IntoIterator<Item = &'p TopologyTemplate>) -> Self {
-        let mut by_name = HashMap::new();
-        for template in templates {
-            by_name.entry(template.name.as_str()).or_insert(template);
-        }
-        Self {
-            module_key,
-            templates: by_name,
-        }
-    }
-}
-
-/// Every stdlib module's scope, in load order, built once over the static
-/// stdlib.
-fn stdlib_scopes() -> &'static [ModuleScope<'static>] {
-    static SCOPES: OnceLock<Vec<ModuleScope<'static>>> = OnceLock::new();
-    SCOPES.get_or_init(|| {
-        load_stdlib()
-            .iter()
-            .map(|module| ModuleScope::new(module.path.0.join("."), &module.templates))
-            .collect()
-    })
+    program: &'p CompiledProgram,
+    prelude: &'p [CompiledModule],
 }
 
 impl<'p> DefEnv<'p> {
-    /// Build the environment for `program`: the entry, then each import unit in
-    /// declaration order, then each stdlib module in load order.
-    // G-allow: P1 DefEnv skeleton (resolution-unification D-3); first production consumer is θ #5522
+    /// The environment of `program` over the stdlib.
+    // G-allow: resolution-unification §3.2 DefEnv; first production consumer is ι #5523
     pub fn from_program(program: &'p CompiledProgram) -> Self {
-        let entry = ModuleScope::new(program.entry().path.0.join("."), &program.entry().templates);
-        let imports = program.imports.iter().map(|unit| {
-            ModuleScope::new(
-                unit.import_path.clone(),
-                unit.module
-                    .templates
-                    .iter()
-                    .filter(|t| t.visibility == Visibility::Public),
-            )
-        });
-        Self {
-            declared: program.entry(),
-            program_scopes: std::iter::once(entry).chain(imports).collect(),
-            stdlib_scopes: stdlib_scopes(),
-        }
+        Self::with_prelude(program, load_stdlib())
     }
 
-    /// Every scope, in precedence order.
-    fn scopes(&self) -> impl Iterator<Item = &ModuleScope<'p>> {
-        self.program_scopes.iter().chain(self.stdlib_scopes)
+    /// The environment of `program` over `prelude`.
+    pub fn with_prelude(program: &'p CompiledProgram, prelude: &'p [CompiledModule]) -> Self {
+        Self { program, prelude }
     }
 
-    /// The template `name` resolves to: the first scope, in precedence order,
-    /// that declares it.
-    // G-allow: P1 DefEnv skeleton (resolution-unification D-3); first production consumer is θ #5522
+    fn resolve<D>(&self, name: &str) -> Option<&'p D>
+    where
+        D: ProgramDefinition,
+        D::Key<'p>: Borrow<str>,
+    {
+        program_scope::resolve_in_program(self.program, self.prelude, name)
+    }
+
+    // G-allow: resolution-unification §3.2 DefEnv; first production consumer is ι #5523
     pub fn resolve_template(&self, name: &str) -> Option<&'p TopologyTemplate> {
-        self.scopes()
-            .find_map(|scope| scope.templates.get(name).copied())
+        self.resolve(name)
     }
 
-    /// The template `name` as seen through module `module_key` alone (its pub
-    /// surface, for an import).
-    // G-allow: P1 DefEnv skeleton (resolution-unification D-3); first production consumer is θ #5522
+    // G-allow: resolution-unification §3.2 DefEnv; first production consumer is ι #5523
+    pub fn resolve_enum(&self, name: &str) -> Option<&'p EnumDef> {
+        self.resolve(name)
+    }
+
+    // G-allow: resolution-unification §3.2 DefEnv; first production consumer is ι #5523
+    pub fn resolve_unit(&self, name: &str) -> Option<&'p CompiledUnit> {
+        self.resolve(name)
+    }
+
+    // G-allow: resolution-unification §3.2 DefEnv; first production consumer is ι #5523
+    pub fn resolve_alias(&self, name: &str) -> Option<&'p CompiledTypeAlias> {
+        self.resolve(name)
+    }
+
+    // G-allow: resolution-unification §3.2 DefEnv; first production consumer is ι #5523
+    pub fn resolve_trait(&self, name: &str) -> Option<&'p CompiledTrait> {
+        self.resolve(name)
+    }
+
+    // G-allow: resolution-unification §3.2 DefEnv; first production consumer is ι #5523
+    pub fn resolve_constraint_def(&self, name: &str) -> Option<&'p CompiledConstraintDef> {
+        self.resolve(name)
+    }
+
+    // G-allow: resolution-unification §3.2 DefEnv; first production consumer is ι #5523
+    pub fn resolve_purpose(&self, name: &str) -> Option<&'p CompiledPurpose> {
+        self.resolve(name)
+    }
+
+    /// The bound functions in precedence order, one per signature (name and
+    /// parameter types): the program's dispatch table (§10 Q4).
+    // G-allow: resolution-unification §10 Q4 dispatch table; κ #5524 folds merge_functions into it
+    pub fn function_table(&self) -> Arc<[CompiledFunction]> {
+        program_scope::bind_program::<CompiledFunction>(self.program, self.prelude)
+            .winners()
+            .cloned()
+            .collect()
+    }
+
+    /// The function `name(param_types)` binds to: functions are keyed by name
+    /// and parameter types. Lazy and allocation-free.
+    // G-allow: resolution-unification §3.2 DefEnv; first production consumer is ι #5523
+    pub fn resolve_function(
+        &self,
+        name: &str,
+        param_types: &[Type],
+    ) -> Option<&'p CompiledFunction> {
+        program_scope::resolve_in_program_by(
+            self.program,
+            self.prelude,
+            |function: &CompiledFunction| {
+                function.name == name && function.params.iter().map(|(_, ty)| ty).eq(param_types)
+            },
+        )
+    }
+
+    /// The bound functions named `name`, one per signature, in precedence
+    /// order. Only `name`'s candidates are bound.
+    // G-allow: resolution-unification §3.2 DefEnv; first production consumer is ι #5523
+    pub fn overloads(&self, name: &str) -> Vec<&'p CompiledFunction> {
+        program_scope::bind_program_where(
+            self.program,
+            self.prelude,
+            |function: &CompiledFunction| function.name == name,
+        )
+        .winners()
+        .collect()
+    }
+
+    /// The `D` named `name` as seen through module `module_key` alone: the
+    /// entry's own declarations, a direct import's `pub` surface, or a prelude
+    /// module's exports. Matches by name alone, so for a function it is the
+    /// module's first overload of `name`; [`Self::resolve_function`] matches
+    /// a signature.
+    // G-allow: resolution-unification §3.2 DefEnv; first production consumer is ι #5523
+    pub fn resolve_in<D: ProgramDefinition>(&self, module_key: &str, name: &str) -> Option<&'p D> {
+        program_scope::module_surface::<D>(self.program, self.prelude, module_key)?
+            .find(|definition| definition.name() == name)
+    }
+
+    // G-allow: resolution-unification §3.2 DefEnv; first production consumer is ι #5523
     pub fn resolve_template_in(
         &self,
         module_key: &str,
         name: &str,
     ) -> Option<&'p TopologyTemplate> {
-        self.scopes()
-            .find(|scope| scope.module_key == module_key)
-            .and_then(|scope| scope.templates.get(name).copied())
+        self.resolve_in(module_key, name)
     }
 
-    /// The program's entry module.
+    /// The program's entry module. Its `templates` include the copies the I5
+    /// merge took from its imports; the entry's own are
+    /// `CompiledProgram::entry_declared_templates`.
+    // G-allow: resolution-unification §3.2 DefEnv; first production consumer is ι #5523
     pub fn declared(&self) -> &'p CompiledModule {
-        self.declared
+        self.program.entry()
     }
+
+    /// One Warning per first-wins collision whose loser is a user import's
+    /// definition (D-6) and that no module's own compile already reports, so
+    /// each collision has one reporter. Entry-vs-import is always reported
+    /// here. Import-vs-import is reported here too, except for units, type
+    /// aliases and constraint defs: the entry's compile binds its imports as
+    /// its prelude and reports those three kinds' collisions there. A shadowed
+    /// stdlib definition is the shadowing module's own compile's to report.
+    pub fn collision_warnings(&self) -> Vec<Diagnostic> {
+        use ImportPairs::{LeaveToEntryCompile, Report};
+        [
+            self.import_tier_collisions::<TopologyTemplate>(Report),
+            self.import_tier_collisions::<CompiledFunction>(Report),
+            self.import_tier_collisions::<EnumDef>(Report),
+            self.import_tier_collisions::<CompiledUnit>(LeaveToEntryCompile),
+            self.import_tier_collisions::<CompiledTypeAlias>(LeaveToEntryCompile),
+            self.import_tier_collisions::<CompiledTrait>(Report),
+            self.import_tier_collisions::<CompiledConstraintDef>(LeaveToEntryCompile),
+            self.import_tier_collisions::<CompiledPurpose>(Report),
+        ]
+        .concat()
+    }
+
+    fn import_tier_collisions<D: ProgramDefinition>(
+        &self,
+        import_pairs: ImportPairs,
+    ) -> Vec<Diagnostic> {
+        let entry = &self.program.entry().path;
+        program_scope::bind_program::<D>(self.program, self.prelude)
+            .shadowings()
+            .iter()
+            .filter(|shadowing| {
+                shadowing.shadowed.origin.tier() == Tier::Import
+                    && shadowing.winner.origin != shadowing.shadowed.origin
+                    && (shadowing.winner.origin == Origin::Local
+                        || import_pairs == ImportPairs::Report)
+            })
+            .map(|shadowing| name_env::collision_warning(shadowing, Some(entry)))
+            .collect()
+    }
+}
+
+/// Who reports a collision between two direct imports' definitions of one
+/// kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ImportPairs {
+    /// [`DefEnv::collision_warnings`] does.
+    Report,
+    /// The entry's own compile does: it binds its imports as its prelude.
+    LeaveToEntryCompile,
 }

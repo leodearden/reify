@@ -33,12 +33,12 @@
 //!
 //! # Cross-prelude collision policy
 //!
-//! Templates, enums, traits, functions, type aliases, constraint defs and
-//! purposes bind by [`crate::name_env`] (NS-P1/P3, PRD
-//! `docs/prds/v0_6/stdlib-namespace.md` §3.1). Units are the one remaining
-//! exception — last-wins with a Warning in `compile_builder::units_phase` —
-//! until resolution-unification θ #5522 moves them onto the same rule.
+//! Every kind, units included, binds by [`crate::name_env`] first-wins. The
+//! program-level resolution environment and its D-6 collision report are
+//! `reify_eval::DefEnv` (PRD `docs/prds/v0_6/resolution-unification.md` §3.2,
+//! D-6).
 
+use reify_core::Diagnostic;
 use reify_ir::EnumDef;
 
 use crate::CompiledModule;
@@ -74,11 +74,9 @@ pub struct PreludeContext<'a> {
     resolution_enums: Vec<EnumDef>,
     /// The prelude's own NS-P1 binding of pub type aliases, in precedence order.
     pub_aliases: Vec<CompiledTypeAlias>,
-    /// Cross-prelude pub alias name collisions detected at construction time:
-    /// one `(alias_name, winning_module_path, shadowed_module_path)` per pub
-    /// alias that lost its name, for diagnostic emission by
-    /// `compile_with_prelude_context`.
-    collision_warnings: Vec<(String, String, String)>,
+    /// One [`name_env::collision_warning`] per pub alias that lost its name
+    /// to another prelude module's.
+    pub_alias_collision_warnings: Vec<Diagnostic>,
 }
 
 impl<'a> PreludeContext<'a> {
@@ -91,24 +89,18 @@ impl<'a> PreludeContext<'a> {
     pub fn new(prelude: &[&'a CompiledModule]) -> Self {
         let resolution_enums = bind_prelude_enum_defs(prelude);
         // The prelude's own NS-P1 alias binding: winners are seeded, and every
-        // shadowed pub alias is recorded for a collision warning naming the
-        // winning module first.
+        // shadowed pub alias is kept for its collision warning.
         let alias_bindings = name_env::bind::<CompiledTypeAlias, _>(&[], prelude.iter().copied());
         let pub_aliases: Vec<CompiledTypeAlias> = alias_bindings.winners().cloned().collect();
-        let collision_warnings: Vec<(String, String, String)> = alias_bindings
-            .shadowings()
-            .iter()
-            .filter_map(|s| {
-                let winner = s.winner.origin.module()?;
-                let shadowed = s.shadowed.origin.module()?;
-                Some((s.key.to_string(), winner.to_string(), shadowed.to_string()))
-            })
-            .collect();
         Self {
             modules: prelude.to_vec(),
             resolution_enums,
             pub_aliases,
-            collision_warnings,
+            pub_alias_collision_warnings: alias_bindings
+                .shadowings()
+                .iter()
+                .map(|shadowing| name_env::collision_warning(shadowing, None))
+                .collect(),
         }
     }
 
@@ -152,14 +144,11 @@ impl<'a> PreludeContext<'a> {
         &self.pub_aliases
     }
 
-    /// Cross-prelude pub alias name collisions detected at construction time.
-    ///
-    /// Each element is `(alias_name, winning_module_path, shadowed_module_path)`.
-    /// Used by `compile_with_prelude_context` to emit `Severity::Warning`
-    /// diagnostics so stdlib reviewers are notified of accidental pub alias
-    /// name collisions across prelude modules.
-    pub(crate) fn pub_alias_collision_warnings(&self) -> &[(String, String, String)] {
-        &self.collision_warnings
+    /// One [`name_env::collision_warning`] per pub alias that lost its name
+    /// to another prelude module's, for `compile_with_prelude_context` to
+    /// report on every module compiled against this context.
+    pub(crate) fn pub_alias_collision_warnings(&self) -> &[Diagnostic] {
+        &self.pub_alias_collision_warnings
     }
 
     /// The names of every enum in the prelude, in [`resolution_enums`](Self::resolution_enums)

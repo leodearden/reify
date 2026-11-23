@@ -9,7 +9,7 @@ use reify_compiler::{
     AutoTypeSubstitution, UnitEntry, UnitRegistry, compile, compile_with_prelude,
     compile_with_stdlib,
 };
-use reify_core::{DimensionVector, ModulePath, SourceSpan};
+use reify_core::{DiagnosticCode, DimensionVector, ModulePath, SourceSpan};
 use reify_test_support::{
     compile_source, compile_source_allow_parse_errors, compile_source_with_stdlib,
     compile_source_with_stdlib_allow_parse_errors, errors_only,
@@ -107,7 +107,7 @@ fn seed_prelude_unit_inserts_and_lookups() {
 }
 
 #[test]
-fn seed_prelude_unit_overwrites_on_duplicate() {
+fn seed_prelude_unit_keeps_the_first_entry_on_duplicate() {
     let mut reg = UnitRegistry::new();
     let entry1 = UnitEntry {
         name: "mm".to_string(),
@@ -133,8 +133,8 @@ fn seed_prelude_unit_overwrites_on_duplicate() {
     reg.seed_prelude_unit(entry2);
     let found = reg.lookup("mm").unwrap();
     assert!(
-        (found.factor - 0.002).abs() < 1e-12,
-        "seed_prelude_unit should overwrite: expected 0.002, got {}",
+        (found.factor - 0.001).abs() < 1e-12,
+        "seed_prelude_unit is first-wins: expected the first entry's 0.001, got {}",
         found.factor
     );
 }
@@ -1770,22 +1770,22 @@ fn prelude_module(name: &str, factor: f64) -> reify_compiler::CompiledModule {
 }
 
 /// When two prelude modules export the same pub unit name, `compile_with_prelude`
-/// should emit exactly one `Severity::Warning` diagnostic whose message:
+/// should emit exactly one `Severity::Warning` diagnostic that:
 /// (a) mentions the unit name 'foo',
 /// (b) names both conflicting module paths ('mod_a' and 'mod_b'),
-/// (c) mentions 'prelude' (in message or label).
+/// (c) carries `DiagnosticCode::DefinitionCollision` and says first-wins.
 ///
-/// The compilation must still succeed (no Error diagnostics), and last-wins
-/// ordering is preserved: the later module's (mod_b's) factor 2.0 is used.
+/// The compilation must still succeed (no Error diagnostics), and the first
+/// module's (mod_a's) factor 1.0 binds (PRD resolution-unification D-6).
 #[test]
-fn prelude_module_unit_collision_emits_warning() {
+fn prelude_module_unit_collision_is_first_wins_with_one_warning() {
     // mod_a: pub unit foo with SI factor 1.0 m
     let mod_a = prelude_module("mod_a", 1.0);
 
     // mod_b: pub unit foo with SI factor 2.0 m — same name, different factor
     let mod_b = prelude_module("mod_b", 2.0);
 
-    // User module uses `foo` (which will resolve to mod_b's definition via last-wins).
+    // User module uses `foo` (which resolves to mod_a's definition: first-wins).
     // `unit bar : Length = 1foo` means bar's SI factor = 1 * foo's factor.
     let user_parsed = reify_syntax::parse(
         "unit bar : Length = 1foo",
@@ -1819,25 +1819,25 @@ fn prelude_module_unit_collision_emits_warning() {
     // (b) Warning names both conflicting module paths
     assert!(
         collision_warn.message.contains("mod_a"),
-        "warning must name first module 'mod_a', got: {:?}",
+        "warning must name winning module 'mod_a', got: {:?}",
         collision_warn.message
     );
     assert!(
         collision_warn.message.contains("mod_b"),
-        "warning must name winning module 'mod_b', got: {:?}",
+        "warning must name shadowed module 'mod_b', got: {:?}",
         collision_warn.message
     );
 
-    // (c) Warning mentions 'prelude' (in message or in a label)
-    let mentions_prelude = collision_warn.message.contains("prelude")
-        || collision_warn
-            .labels
-            .iter()
-            .any(|l| l.message.contains("prelude"));
+    // (c) Typed code, first-wins wording
+    assert_eq!(
+        collision_warn.code,
+        Some(DiagnosticCode::DefinitionCollision),
+        "{collision_warn:?}"
+    );
     assert!(
-        mentions_prelude,
-        "warning must mention 'prelude', got: {:?}",
-        collision_warn
+        collision_warn.message.contains("first-wins"),
+        "warning must say first-wins, got: {:?}",
+        collision_warn.message
     );
 
     // No Error-severity diagnostics — user compilation succeeds
@@ -1848,40 +1848,36 @@ fn prelude_module_unit_collision_emits_warning() {
         errors
     );
 
-    // Last-wins: mod_b's foo (factor 2.0 SI) wins, so bar's factor = 2.0
+    // First-wins: mod_a's foo (factor 1.0 SI) binds, so bar's factor = 1.0
     let bar = user_module.units.iter().find(|u| u.name == "bar");
     assert!(bar.is_some(), "'bar' should be compiled successfully");
     let bar = bar.unwrap();
     assert!(
-        (bar.factor - 2.0).abs() < common::UNIT_EPSILON,
-        "bar's SI factor should be 2.0 (mod_b's foo wins last-wins), got {}",
+        (bar.factor - 1.0).abs() < common::UNIT_EPSILON,
+        "bar's SI factor should be 1.0 (mod_a's foo wins first-wins), got {}",
         bar.factor
     );
 }
 
-// ── amendment (task-765): three-prelude collision — two chained warnings ───────
+// ── amendment (task-765): three-prelude collision — one warning per shadowed module ──
 
 /// When three prelude modules all export the same unit name, the seeding loop
-/// fires two warnings (one per collision), each naming the pair of modules
-/// involved at that moment (chained last-wins).
-///
-/// Specifically:
-///  - mod_a seeds first (no collision yet)
-///  - mod_b collides with mod_a → warning #1 names "mod_a" and "mod_b"
-///  - mod_c collides with mod_b → warning #2 names "mod_b" and "mod_c"
-///  - Final winner is mod_c (factor 3.0)
+/// fires two warnings, one per shadowed module, each naming the winner first:
+///  - mod_a binds (first-wins)
+///  - mod_b is shadowed by mod_a → a warning names "mod_a" and "mod_b"
+///  - mod_c is shadowed by mod_a → a warning names "mod_a" and "mod_c"
 #[test]
-fn three_prelude_collision_emits_two_chained_warnings() {
+fn three_prelude_collision_emits_one_warning_per_shadowed_module() {
     // mod_a: pub unit foo with SI factor 1.0 m
     let mod_a = prelude_module("mod_a", 1.0);
 
     // mod_b: pub unit foo with SI factor 2.0 m
     let mod_b = prelude_module("mod_b", 2.0);
 
-    // mod_c: pub unit foo with SI factor 3.0 m — final winner
+    // mod_c: pub unit foo with SI factor 3.0 m
     let mod_c = prelude_module("mod_c", 3.0);
 
-    // User module: references foo (resolved via last-wins to mod_c)
+    // User module: references foo (resolved first-wins to mod_a)
     let user_parsed = reify_syntax::parse(
         "unit bar : Length = 1foo",
         ModulePath::single("user_module"),
@@ -1907,7 +1903,7 @@ fn three_prelude_collision_emits_two_chained_warnings() {
         warnings
     );
 
-    // (b) Warning #1 names mod_a and mod_b (the first collision pair)
+    // (b) One warning names the winner mod_a with the shadowed mod_b
     let warn1 = warnings
         .iter()
         .find(|w| w.message.contains("mod_a") && w.message.contains("mod_b"));
@@ -1917,14 +1913,20 @@ fn three_prelude_collision_emits_two_chained_warnings() {
         warnings
     );
 
-    // (c) Warning #2 names mod_b and mod_c (the second collision pair)
+    // (c) The other names the winner mod_a with the shadowed mod_c
     let warn2 = warnings
         .iter()
-        .find(|w| w.message.contains("mod_b") && w.message.contains("mod_c"));
+        .find(|w| w.message.contains("mod_a") && w.message.contains("mod_c"));
     assert!(
         warn2.is_some(),
-        "expected a warning naming both 'mod_b' and 'mod_c', warnings: {:?}",
+        "expected a warning naming both 'mod_a' and 'mod_c', warnings: {:?}",
         warnings
+    );
+    assert!(
+        warnings
+            .iter()
+            .all(|w| w.code == Some(DiagnosticCode::DefinitionCollision)),
+        "every collision warning carries DefinitionCollision: {warnings:?}"
     );
 
     // No Error-severity diagnostics — user compilation succeeds
@@ -1935,13 +1937,13 @@ fn three_prelude_collision_emits_two_chained_warnings() {
         errors
     );
 
-    // (d) Last-wins: mod_c's foo (factor 3.0) is the final winner
+    // (d) First-wins: mod_a's foo (factor 1.0) binds
     let bar = user_module.units.iter().find(|u| u.name == "bar");
     assert!(bar.is_some(), "'bar' should be compiled successfully");
     let bar = bar.unwrap();
     assert!(
-        (bar.factor - 3.0).abs() < common::UNIT_EPSILON,
-        "bar's SI factor should be 3.0 (mod_c's foo wins last-wins), got {}",
+        (bar.factor - 1.0).abs() < common::UNIT_EPSILON,
+        "bar's SI factor should be 1.0 (mod_a's foo wins first-wins), got {}",
         bar.factor
     );
 }
@@ -1965,7 +1967,7 @@ fn intra_module_duplicate_prelude_units_suppresses_nonsense_collision_warning() 
 
     // Hand-construct a malformed prelude module with two CompiledUnit entries
     // both named 'foo' — bypassing compile() which would reject the duplicate.
-    // First entry: factor 1.0; second entry: factor 2.0 (last-wins in registry).
+    // First entry: factor 1.0 (first-wins binds it); second entry: factor 2.0.
     let malformed_mod = CompiledModule {
         path: ModulePath::single("mod_a"),
         imports: vec![],
@@ -2019,7 +2021,6 @@ fn intra_module_duplicate_prelude_units_suppresses_nonsense_collision_warning() 
     let user_module = compile_with_prelude(&user_parsed, &[malformed_mod]);
 
     // (a) No Warning diagnostic containing the nonsense substring "'mod_a' and 'mod_a'".
-    //     Current (unfixed) code emits: "prelude unit 'foo' declared in both 'mod_a' and 'mod_a'; last-wins"
     let nonsense_warnings: Vec<_> = user_module
         .diagnostics
         .iter()
@@ -2059,14 +2060,13 @@ fn intra_module_duplicate_prelude_units_suppresses_nonsense_collision_warning() 
         errors
     );
 
-    // (d) Last-wins semantics still apply in the registry — second 'foo' (factor 2.0) wins.
-    //     The fix changes only the diagnostic emission, not the registry overwrite.
+    // (d) First-wins applies within a module too — the first 'foo' (factor 1.0) binds.
     let bar = user_module.units.iter().find(|u| u.name == "bar");
     assert!(bar.is_some(), "'bar' should be compiled successfully");
     let bar = bar.unwrap();
     assert!(
-        (bar.factor - 2.0).abs() < common::UNIT_EPSILON,
-        "bar's SI factor should be 2.0 (last-wins: second foo wins), got {}",
+        (bar.factor - 1.0).abs() < common::UNIT_EPSILON,
+        "bar's SI factor should be 1.0 (first-wins: first foo binds), got {}",
         bar.factor
     );
 }
