@@ -90,6 +90,12 @@ class _Server(http.server.ThreadingHTTPServer):
     daemon_threads = True
     block_on_close = False
 
+    def handle_error(self, request, client_address):
+        """A transfer the relay cut is expected, so a green run prints no traceback for it."""
+        if isinstance(sys.exception(), (ConnectionResetError, BrokenPipeError)):
+            return
+        super().handle_error(request, client_address)
+
 
 class FakeStore:
     """A loopback HTTP store: 'ok', 'auth' (401), 'hang' (never answers) or 'closed'.
