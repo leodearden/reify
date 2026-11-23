@@ -143,6 +143,10 @@ scripts/evict-dirty-target-units.py  tests/infra/test_refresh_warm_base.sh
 tests/infra/refresh_warm_base_harness.py  tests/infra/test_evict_dirty_target_units.sh
 tests/infra/refresh_warm_base_harness.py  tests/infra/test_prune_unconsulted_target.sh
 tests/infra/refresh_warm_base_harness.py  tests/infra/test_refresh_warm_base_built_tree.sh
+# Task 10167: the seed-time relocation of cargo dep-info input paths, called by seed-warm-lane.sh.
+scripts/relocate-depinfo-paths.py  tests/infra/test_seed_depinfo_relocation.sh
+scripts/seed-warm-lane.sh    tests/infra/test_seed_depinfo_relocation.sh
+tests/infra/test_seed_depinfo_relocation.py  tests/infra/test_seed_depinfo_relocation.sh
 # Task 9246: the cron sweep of idle worktree targets exempts _merge-verify and
 # respects each worktree's lane lock, pinned by a .py suite behind a thin .sh
 # wrapper, same pair shape.

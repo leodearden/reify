@@ -186,8 +186,8 @@ set -euo pipefail
 
 # Resolved once so sibling scripts/ helpers can be invoked by absolute path
 # regardless of the caller's CWD (this script is run from dark-factory, from
-# tests/infra fixtures, and by hand). Used by the two delegations at the tail
-# of this file (the rerere disarm and the stash-guard liveness arm).
+# tests/infra fixtures, and by hand). Used by every sibling-helper delegation
+# below.
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Seed start, for the lane seed stamp written at the successful end of seed mode.
@@ -1454,7 +1454,7 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     info "Invalidated $_invalidated_count non-relocatable build-script output dir(s) so cargo re-bakes lane-correct paths"
 
     # Base build-worktree stamp (refresh-warm-base.sh Step 4b), shared by the
-    # relocation sweep below and the env!()-relink gate further down.
+    # two relocation steps below and the env!()-relink gate further down.
     _recorded_buildroot="$(_read_buildroot_stamp "$BASE_TARGET_DIR")"
     _lane_rp="$(realpath -m "$LANE_DIR")"
 
@@ -1542,6 +1542,28 @@ if [ -n "$FRESH_CHECKOUT" ]; then
             fi
         else
             info "Skipping links-metadata/OUT_DIR relocation: recorded buildroot matches this lane ($_lane_rp)"
+        fi
+    fi
+
+    # ── recorded-input relocation (task 10167) ────────────────────────────────
+    # §9.5 inv.15 — rule: relocate-depinfo-paths.py header. Same stamp gate as
+    # the 5126 sweep above; a missing or failing helper aborts the seed.
+    if [ -z "$_recorded_buildroot" ]; then
+        warn "buildroot stamp absent (${BASE_TARGET_DIR}.buildroot not found) — cannot relocate cargo dep-info input paths, so units recording inputs outside their package stay judged against the base's build root (§9.5 inv.15). Re-run scripts/refresh-warm-base.sh to (re)write the stamp."
+    elif [ "$(realpath -m "$_recorded_buildroot")" = "$_lane_rp" ]; then
+        info "Skipping dep-info input-path relocation: recorded buildroot matches this lane ($_lane_rp)"
+    else
+        _depinfo_helper="$_SCRIPT_DIR/relocate-depinfo-paths.py"
+        if [ ! -f "$_depinfo_helper" ]; then
+            err "relocate-depinfo-paths.py not found at $_depinfo_helper — cargo dep-info input paths stay under the base's build root, so lane edits to inputs outside a unit's package would be invisible (§9.5 inv.15); seed aborted (cold rebuild forced)"
+            exit 1
+        fi
+        _depinfo_rc=0
+        python3 "$_depinfo_helper" --from-root "$(realpath -m "$_recorded_buildroot")" \
+            --to-root "$_lane_rp" "$LANE_TARGET" >&2 || _depinfo_rc=$?
+        if [ "$_depinfo_rc" -ne 0 ]; then
+            err "relocate-depinfo-paths.py exited $_depinfo_rc — cargo dep-info input paths may still name the base's build root (§9.5 inv.15); seed aborted (cold rebuild forced)"
+            exit 1
         fi
     fi
 
