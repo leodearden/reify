@@ -162,9 +162,10 @@ fn arity_two_angle_over_directions_checks_clean() {
 }
 
 /// The arity-3 `angle` is the relation verb, policed by `relation_signatures`;
-/// it carries no builtin Direction slot.
+/// it carries no builtin Direction slot. Its operands are Axes, which a
+/// Direction slot would reject, so a slot leaking to arity 3 reds this.
 #[test]
-fn the_arity_three_relation_angle_raises_no_direction_slot_mismatch() {
+fn the_arity_three_relation_angle_over_axes_checks_clean() {
     let source = "structure Part {\n    \
                   let shank = cylinder(3mm, 20mm)\n    \
                   let shank_axis : Axis = shank.axis\n\
@@ -175,17 +176,14 @@ fn the_arity_three_relation_angle_raises_no_direction_slot_mismatch() {
                   sub b : Part\n\
                   \n    \
                   relate {\n        \
-                  angle(a.shank_axis.dir, b.shank_axis.dir, 90deg)\n    \
+                  angle(a.shank_axis, b.shank_axis, 90deg)\n    \
                   }\n\
                   }\n";
     let module = compile_source_with_stdlib(source);
-    let mismatches: Vec<&Diagnostic> = errors_only(&module)
-        .into_iter()
-        .filter(|d| d.code == Some(DiagnosticCode::ArgTypeMismatch))
-        .collect();
+    let errors = errors_only(&module);
     assert!(
-        mismatches.is_empty(),
-        "the relation verb must raise no ArgTypeMismatch, got {mismatches:?}"
+        errors.is_empty(),
+        "the relation verb over two Axes must check clean, got {errors:?}"
     );
 }
 
