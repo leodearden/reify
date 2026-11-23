@@ -20,6 +20,7 @@ import json
 import os
 import random
 import re
+import resource
 import shutil
 import signal
 import socket
@@ -1100,8 +1101,10 @@ class Supervise(SessionCase):
         self.assertEqual(Path(self.channel).read_bytes(), Path(self.journal).read_bytes())
         self.assertEqual(sorted(name for name in os.listdir(self.build) if name.startswith(".reify-sccache")), [])
 
-    def test_command_killed_by_a_signal_returns_128_plus_it(self):
-        self.assertEqual(self.supervise(["/bin/sh", "-c", "kill -TERM $$"]), 143)
+    def test_command_killed_by_a_signal_returns_minus_it_and_is_recorded(self):
+        self.caller_dispositions(INTERACTIVE_CALLER)
+        self.assertEqual(self.supervise(["/bin/sh", "-c", "kill -TERM $$"]), -signal.SIGTERM)
+        self.row()
 
     def test_cpu_secs_covers_a_grandchild(self):
         spent = os.path.join(self.tmp, "spent")
@@ -1169,7 +1172,7 @@ class Supervise(SessionCase):
     def test_sigterm_to_the_supervisor_is_forwarded_and_teardown_runs(self):
         supervisor = self.start_supervise_runner("600")
         supervisor.send_signal(signal.SIGTERM)
-        self.assertEqual(supervisor.wait(), 143)
+        self.assertEqual(supervisor.wait(), -signal.SIGTERM)
         self.assertEqual(sorted(name for name in os.listdir(self.build) if name.startswith(".reify-sccache")), [])
         self.assertEqual(self.row()["subcommand"], "")
 
@@ -1182,10 +1185,10 @@ class Supervise(SessionCase):
         self.row()
 
     def test_sigint_to_the_supervisor_alone_reaches_the_command_and_teardown_runs(self):
-        self.assert_ended_by_a_signal_to_the_supervisor_alone(signal.SIGINT, 130)
+        self.assert_ended_by_a_signal_to_the_supervisor_alone(signal.SIGINT, -signal.SIGINT)
 
     def test_sigquit_to_the_supervisor_alone_reaches_the_command_and_teardown_runs(self):
-        self.assert_ended_by_a_signal_to_the_supervisor_alone(signal.SIGQUIT, 131)
+        self.assert_ended_by_a_signal_to_the_supervisor_alone(signal.SIGQUIT, -signal.SIGQUIT)
 
     def test_command_starts_with_default_dispositions_when_the_caller_has_them(self):
         self.caller_dispositions(INTERACTIVE_CALLER)
@@ -1208,7 +1211,7 @@ class Supervise(SessionCase):
     def test_group_sigint_ends_the_command_and_teardown_runs(self):
         supervisor = self.start_supervise_runner("60", start_new_session=True)
         os.killpg(supervisor.pid, signal.SIGINT)
-        self.assertEqual(supervisor.wait(), 130)
+        self.assertEqual(supervisor.wait(), -signal.SIGINT)
         self.assertEqual(sorted(name for name in os.listdir(self.build) if name.startswith(".reify-sccache")), [])
         self.row()
 
@@ -1258,6 +1261,53 @@ class SignalForwarding(unittest.TestCase):
         self.assertEqual(
             canon_cache.SignalForwarder().forwarded, frozenset({signal.SIGTERM, signal.SIGHUP, signal.SIGINT})
         )
+
+
+AT_DEFAULT_SIGNALS = ("/usr/bin/env", "--default-signal=HUP,INT,QUIT,TERM")
+
+
+class ExitLike(unittest.TestCase):
+    """canon_cache.exit_like: a process ends as its command ended, through cfx.EXIT_LIKE_RUNNER.
+
+    The runner starts at default dispositions, since a pool member may inherit INT/QUIT ignored.
+    """
+
+    def setUp(self):
+        self.runner = cfx.write_exit_like_runner(scratch(self))
+
+    def argv(self, returncode, ignored=()):
+        names = ",".join(signal.Signals(number).name for number in ignored)
+        return [*AT_DEFAULT_SIGNALS, sys.executable, "-I", self.runner, str(fx.REPO_ROOT / "scripts"),
+                str(returncode), names]
+
+    def assert_ends_with(self, returncode, expected, ignored=()):
+        result = subprocess.run(self.argv(returncode, ignored), capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, expected, result.stderr)
+
+    def test_death_by_sigterm_kills_it_with_sigterm(self):
+        self.assert_ends_with(-signal.SIGTERM, -signal.SIGTERM)
+
+    def test_death_by_sigint_kills_it_with_sigint_despite_pythons_handler(self):
+        self.assert_ends_with(-signal.SIGINT, -signal.SIGINT)
+
+    def test_death_by_sigquit_kills_it_with_sigquit_and_dumps_no_core(self):
+        if resource.getrlimit(resource.RLIMIT_CORE)[1] == 0:
+            self.skipTest("RLIMIT_CORE's hard limit is 0 here: the runner cannot raise its own, so no core check")
+        argv = self.argv(-signal.SIGQUIT)
+        _, status = os.waitpid(os.posix_spawn(argv[0], argv, os.environ), 0)
+        signalled = os.WTERMSIG(status) if os.WIFSIGNALED(status) else None
+        self.assertEqual((signalled, os.WCOREDUMP(status)), (signal.SIGQUIT, False))
+
+    def test_a_signal_the_caller_ignores_exits_128_plus_it(self):
+        self.assert_ends_with(-signal.SIGTERM, 128 + signal.SIGTERM, ignored=(signal.SIGTERM,))
+
+    def test_an_unsupervised_signal_exits_128_plus_it(self):
+        self.assert_ends_with(-signal.SIGKILL, 128 + signal.SIGKILL)
+
+    def test_an_exit_status_is_the_exit_status(self):
+        for returncode in (3, 0):
+            with self.subTest(returncode=returncode):
+                self.assert_ends_with(returncode, returncode)
 
 
 class PolicyMembers(unittest.TestCase):

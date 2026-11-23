@@ -439,6 +439,13 @@ class RealPathIsUntouched(CliCase):
         self.assert_one_untouched_call(result, ["build", "-p", "x"], cwd=plain)
 
 
+# A caller at default dispositions (a pool member may inherit INT/QUIT ignored)
+# that runs its arguments, then echoes CONTINUED with their status.
+BASH_CALLER = (
+    "/usr/bin/env", "--default-signal=HUP,INT,QUIT,TERM", "/bin/bash", "-c", '"$@"; echo "CONTINUED rc=$?"', "bash",
+)
+
+
 def journal_rows(build_dir):
     events = read_events(canon_cache.journal_path(build_dir))
     assert events.skipped_lines == 0, events
@@ -652,6 +659,41 @@ class BoundRoute(CliCase):
                 self.assertEqual(cfx.read_sccache_calls(self.sccache_dir), [])
                 for directory in (build_dir, self.target):
                     self.assertFalse(os.path.exists(canon_cache.journal_path(directory)), directory)
+
+    def start_bash_caller(self, *command):
+        """bash running the BOUND route on command, then echoing CONTINUED; its own session, killed at cleanup."""
+        caller = subprocess.Popen(
+            [*BASH_CALLER, *fx.bound_argv(self.tree, "exec", "--", *command, runner_dir=self.tmp)],
+            cwd=self.sub, env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            start_new_session=True,
+        )
+        def end():
+            if caller.poll() is None:
+                os.killpg(caller.pid, signal.SIGKILL)
+            caller.communicate()
+
+        self.addCleanup(end)
+        return caller
+
+    def test_a_bash_caller_does_not_continue_after_a_terminal_interrupt(self):
+        started = os.path.join(self.tmp, "started")
+        caller = self.start_bash_caller("/bin/sh", "-c", 'touch "$0"; exec sleep 60', started)
+        while not os.path.exists(started):
+            if caller.poll() is not None:
+                self.fail(f"the caller ended before the command started: {caller.communicate()[1]}")
+            time.sleep(0.02)
+        os.killpg(caller.pid, signal.SIGINT)
+        stdout, stderr = caller.communicate()
+        self.assertEqual(caller.returncode, -signal.SIGINT, stderr)
+        self.assertNotIn("CONTINUED", stdout)
+        self.assertEqual(len(journal_rows(self.target)), 1)
+        self.assertEqual(self.leftovers(), [])
+
+    def test_a_command_that_exits_130_itself_lets_a_bash_caller_continue(self):
+        caller = self.start_bash_caller("/bin/sh", "-c", "exit 130")
+        stdout, stderr = caller.communicate()
+        self.assertEqual(caller.returncode, 0, stderr)
+        self.assertIn("CONTINUED rc=130", stdout)
 
     def test_sharing_without_a_real_sccache_is_refused_before_anything_runs(self):
         if shutil.which("sccache", path="/usr/bin:/bin"):

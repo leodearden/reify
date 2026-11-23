@@ -373,6 +373,7 @@ def process_gone(pid):
 # Opens a shared session on the fake sccache (argv: scripts dir, fake dir, build
 # dir, start-lock path, started marker) and supervises a command that touches
 # the marker and then sleeps, so a test can signal this supervisor mid-command.
+# It ends through exit_like, as canon_run.main does.
 SUPERVISE_RUNNER = r"""
 import dataclasses
 import os
@@ -392,7 +393,7 @@ session = canon_cache.open_session(
     canon_cache.Policy.SHARED, settings, canon_build_dir=build,
     sccache=os.path.join(fake, "sccache"), env=env, knobs=knobs,
 )
-sys.exit(canon_cache.supervise(
+sys.exit(canon_cache.exit_like(canon_cache.supervise(
     ["/bin/sh", "-c", 'touch "$0"; exec sleep "$1"', started, sleep_secs],
     session.environment.for_command(env),
     build,
@@ -401,13 +402,39 @@ sys.exit(canon_cache.supervise(
     subcommand="",
     channel=None,
     journal=os.path.join(build, ".reify-canon-journal.jsonl"),
-))
+)))
 """
 
 
 def write_supervise_runner(directory):
     runner = Path(directory, "supervise_runner.py")
     runner.write_text(SUPERVISE_RUNNER)
+    return str(runner)
+
+
+# Ends this process through canon_cache.exit_like(<returncode>) (argv: scripts
+# dir, returncode, comma-separated signal names to ignore first, may be empty).
+# Its RLIMIT_CORE soft limit is raised to the hard limit, so a core dump would
+# show unless exit_like suppresses it.
+EXIT_LIKE_RUNNER = r"""
+import resource
+import signal
+import sys
+
+sys.path.insert(0, sys.argv[1])
+import canon_cache
+
+returncode, ignored = int(sys.argv[2]), sys.argv[3]
+for name in filter(None, ignored.split(",")):
+    signal.signal(signal.Signals[name], signal.SIG_IGN)
+resource.setrlimit(resource.RLIMIT_CORE, (resource.getrlimit(resource.RLIMIT_CORE)[1],) * 2)
+sys.exit(canon_cache.exit_like(returncode))
+"""
+
+
+def write_exit_like_runner(directory):
+    runner = Path(directory, "exit_like_runner.py")
+    runner.write_text(EXIT_LIKE_RUNNER)
     return str(runner)
 
 

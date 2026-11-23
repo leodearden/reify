@@ -121,12 +121,17 @@ sys.exit(canon_run.main(sys.argv[2:]))
 """
 
 
-def run_bound(tree, cwd, *args, env, runner_dir):
-    """run_canon on the BOUND route: env's REIFY_CANON_ROOT must be the tree's own path."""
+def bound_argv(tree, *args, runner_dir):
+    """The BOUND runner's argv for canon_run args, writing the runner into runner_dir if absent."""
     runner = Path(runner_dir, "bound_runner.py")
     if not runner.exists():
         runner.write_text(BOUND_RUNNER)
-    return run([PYTHON, "-I", str(runner), str(Path(tree, "scripts")), *args], cwd=cwd, env=env)
+    return [PYTHON, "-I", str(runner), str(Path(tree, "scripts")), *args]
+
+
+def run_bound(tree, cwd, *args, env, runner_dir):
+    """run_canon on the BOUND route: env's REIFY_CANON_ROOT must be the tree's own path."""
+    return run(bound_argv(tree, *args, runner_dir=runner_dir), cwd=cwd, env=env)
 
 
 # The NAMESPACE route's outer process, canon_run.run_in_namespace, around a fake
