@@ -92,6 +92,23 @@ where
     )
 }
 
+/// The first definition across `program` that `matches` accepts, in
+/// [`resolve_in_program`] order: by [`name_env::resolve_in_scopes_by`], a
+/// key's binding when `matches` accepts exactly that key's definitions. Lazy
+/// and allocation-free.
+pub fn resolve_in_program_by<'a, D: ProgramDefinition>(
+    program: &'a CompiledProgram,
+    prelude: &'a [CompiledModule],
+    matches: impl FnMut(&'a D) -> bool,
+) -> Option<&'a D> {
+    name_env::resolve_in_scopes_by(
+        D::declared_by_entry(program),
+        direct_imports(program),
+        prelude,
+        matches,
+    )
+}
+
 /// Every key's binding plus every shadowing across `program`, by the same rule
 /// as [`resolve_in_program`].
 pub fn bind_program<'a, D: ProgramDefinition>(
@@ -102,6 +119,22 @@ pub fn bind_program<'a, D: ProgramDefinition>(
         D::declared_by_entry(program),
         direct_imports(program),
         prelude,
+    )
+}
+
+/// [`bind_program`] over only the definitions `keep` accepts, with
+/// [`name_env::bind_scopes_where`]'s guarantee: a kept key binds as under
+/// [`bind_program`] when `keep` accepts or rejects its definitions together.
+pub fn bind_program_where<'a, D: ProgramDefinition>(
+    program: &'a CompiledProgram,
+    prelude: &'a [CompiledModule],
+    keep: impl FnMut(&'a D) -> bool,
+) -> Bindings<'a, D> {
+    name_env::bind_scopes_where(
+        D::declared_by_entry(program),
+        direct_imports(program),
+        prelude,
+        keep,
     )
 }
 

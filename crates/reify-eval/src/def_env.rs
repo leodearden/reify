@@ -14,7 +14,7 @@
 use std::borrow::Borrow;
 use std::sync::Arc;
 
-use reify_compiler::name_env::{self, Bindings, Origin, Tier};
+use reify_compiler::name_env::{self, Origin, Tier};
 use reify_compiler::program::CompiledProgram;
 use reify_compiler::program_scope::{self, ProgramDefinition};
 use reify_compiler::stdlib_loader::load_stdlib;
@@ -88,38 +88,44 @@ impl<'p> DefEnv<'p> {
         self.resolve(name)
     }
 
-    fn function_bindings(&self) -> Bindings<'p, CompiledFunction> {
-        program_scope::bind_program(self.program, self.prelude)
-    }
-
     /// The bound functions in precedence order, one per signature (name and
     /// parameter types): the program's dispatch table (§10 Q4).
     // G-allow: resolution-unification §10 Q4 dispatch table; κ #5524 folds merge_functions into it
     pub fn function_table(&self) -> Arc<[CompiledFunction]> {
-        self.function_bindings().winners().cloned().collect()
+        program_scope::bind_program::<CompiledFunction>(self.program, self.prelude)
+            .winners()
+            .cloned()
+            .collect()
     }
 
     /// The function `name(param_types)` binds to: functions are keyed by name
-    /// and parameter types.
+    /// and parameter types. Lazy and allocation-free.
     // G-allow: resolution-unification §3.2 DefEnv; first production consumer is ι #5523
     pub fn resolve_function(
         &self,
         name: &str,
         param_types: &[Type],
     ) -> Option<&'p CompiledFunction> {
-        self.function_bindings().winners().find(|function| {
-            function.name == name && function.params.iter().map(|(_, ty)| ty).eq(param_types)
-        })
+        program_scope::resolve_in_program_by(
+            self.program,
+            self.prelude,
+            |function: &CompiledFunction| {
+                function.name == name && function.params.iter().map(|(_, ty)| ty).eq(param_types)
+            },
+        )
     }
 
     /// The bound functions named `name`, one per signature, in precedence
-    /// order.
+    /// order. Only `name`'s candidates are bound.
     // G-allow: resolution-unification §3.2 DefEnv; first production consumer is ι #5523
     pub fn overloads(&self, name: &str) -> Vec<&'p CompiledFunction> {
-        self.function_bindings()
-            .winners()
-            .filter(|function| function.name == name)
-            .collect()
+        program_scope::bind_program_where(
+            self.program,
+            self.prelude,
+            |function: &CompiledFunction| function.name == name,
+        )
+        .winners()
+        .collect()
     }
 
     /// The `D` named `name` as seen through module `module_key` alone: the

@@ -11,13 +11,17 @@ use std::path::Path;
 
 use reify_compiler::cfg::CfgSet;
 use reify_compiler::module_dag::ModuleResolver;
-use reify_compiler::name_env::{Definition, FunctionSignature};
+use reify_compiler::name_env::{Bindings, Definition, FunctionSignature, Origin};
 use reify_compiler::program::{CompiledProgram, compile_program};
 use reify_compiler::program_scope::{
-    ProgramDefinition, bind_program, module_surface, resolve_in_program,
+    ProgramDefinition, bind_program, bind_program_where, module_surface, resolve_in_program,
+    resolve_in_program_by,
 };
 use reify_compiler::stdlib_loader::load_stdlib;
-use reify_compiler::{CompiledModule, CompiledPurpose, CompiledUnit, TopologyTemplate};
+use reify_compiler::{
+    CompiledConstraintDef, CompiledModule, CompiledPurpose, CompiledTrait, CompiledTypeAlias,
+    CompiledUnit, TopologyTemplate,
+};
 use reify_core::Severity;
 use reify_ir::{CompiledFunction, EnumDef, Satisfaction};
 use reify_test_support::mocks::MockConstraintChecker;
@@ -32,6 +36,56 @@ const STD_ONLY_ENUM: &str = "JointPosition";
 /// A std function signature an import redeclares.
 const STD_FN: &str = "symmetric_tolerance";
 const STD_ONLY_UNIT: &str = "cm";
+
+/// `[shared, peer, std, hidden, visible]` for each name-keyed kind that
+/// carries a visibility filter: the entry, `a` and `b` declare `shared`; `a`
+/// and `b` declare `peer`; `a` alone redeclares the std name `std`, and
+/// declares a non-pub `hidden` and a pub `visible`.
+const ALIAS_NAMES: [&str; 5] = ["SharedA", "PeerA", "ArealCostRate", "HiddenA", "VisA"];
+const TRAIT_NAMES: [&str; 5] = ["SharedTr", "PeerTr", "Rigid", "HiddenTr", "VisTr"];
+const CONSTRAINT_DEF_NAMES: [&str; 5] = ["SharedC", "PeerC", "Conforms", "HiddenC", "VisC"];
+
+fn alias_decl(name: &str) -> String {
+    format!("type {name} = Length\n")
+}
+
+fn trait_decl(name: &str) -> String {
+    format!("trait {name} {{\n    param k : Real\n}}\n")
+}
+
+fn constraint_def_decl(name: &str) -> String {
+    format!("constraint def {name} {{\n    param t : Length\n    t > 0mm\n}}\n")
+}
+
+/// Declarations of the name-keyed kinds, one per `[shared, peer, std,
+/// hidden, visible]` slot `module` declares.
+fn name_keyed_decls(module: &str) -> String {
+    let kinds: [(fn(&str) -> String, [&str; 5]); 3] = [
+        (alias_decl, ALIAS_NAMES),
+        (trait_decl, TRAIT_NAMES),
+        (constraint_def_decl, CONSTRAINT_DEF_NAMES),
+    ];
+    let mut decls = String::new();
+    for (declare, [shared, peer, std_name, hidden, visible]) in kinds {
+        let slots: Vec<(&str, &str)> = match module {
+            "a" => vec![
+                ("pub ", shared),
+                ("pub ", peer),
+                ("pub ", std_name),
+                ("", hidden),
+                ("pub ", visible),
+            ],
+            "b" => vec![("pub ", shared), ("pub ", peer)],
+            "main" => vec![("", shared)],
+            other => panic!("no name-keyed declarations for {other}"),
+        };
+        for (visibility, name) in slots {
+            decls += visibility;
+            decls += &declare(name);
+        }
+    }
+    decls
+}
 
 fn a_source() -> String {
     format!(
@@ -53,30 +107,41 @@ fn a_source() -> String {
          pub enum VisE {{ V }}\n\
          pub unit peeru : Length = 1.0\n\
          unit hiddenu : Length = 1.0\n\
-         pub unit visu : Length = 1.0\n"
+         pub unit visu : Length = 1.0\n\
+         {}",
+        name_keyed_decls("a")
     )
 }
 
-const B_SOURCE: &str = "module b\n\
+fn b_source() -> String {
+    "module b\n\
      pub structure def Shared {\n    param y : Real = 2\n}\n\
      pub structure def ImportPeer {\n    param y : Real = 2\n}\n\
      pub fn peer_fn(x: Real) -> Real { x + 1 }\n\
      pub enum PeerE { B }\n\
-     pub unit peeru : Length = 2.0\n";
+     pub unit peeru : Length = 2.0\n"
+        .to_string()
+        + &name_keyed_decls("b")
+}
 
-const MAIN_SOURCE: &str = "module main\nimport a\nimport b\n\
+fn main_source() -> String {
+    "module main\nimport a\nimport b\n\
      structure def Shared {\n    param z : Real = 3\n}\n\
      fn shared_fn(x: Real) -> Real { x * 2 }\n\
-     enum SharedE { Z }\n";
+     enum SharedE { Z }\n"
+        .to_string()
+        + &name_keyed_decls("main")
+}
 
 fn compile_fixture(dir: &Path) -> CompiledProgram {
     fs::write(dir.join("a.ri"), a_source()).unwrap();
-    fs::write(dir.join("b.ri"), B_SOURCE).unwrap();
+    fs::write(dir.join("b.ri"), b_source()).unwrap();
     let entry_path = dir.join("main.ri");
-    fs::write(&entry_path, MAIN_SOURCE).unwrap();
+    let main_source = main_source();
+    fs::write(&entry_path, &main_source).unwrap();
     let program = compile_program(
         &entry_path,
-        MAIN_SOURCE,
+        &main_source,
         &ModuleResolver::new(dir, dir.join("stdlib")),
         &CfgSet::default(),
         &MockConstraintChecker::new().with_default(Satisfaction::Indeterminate),
@@ -303,6 +368,66 @@ fn units_bind_first_import_then_std() {
     );
 }
 
+/// One name-keyed kind with a visibility filter, over its
+/// `[shared, peer, std, hidden, visible]` fixture names.
+fn assert_name_keyed_precedence<D>(kind: &str, names: [&str; 5])
+where
+    D: ProgramDefinition,
+    for<'k> D::Key<'k>: std::borrow::Borrow<str>,
+{
+    let [shared, peer, std_name, hidden, visible] = names;
+    let fx = Fixture::new();
+    let p = &fx.program;
+    let bound = |name| by_name::<D>(p, name);
+    let in_a = |name| named(D::exported_by(fx.a()), name);
+    assert_binds(
+        bound(shared),
+        named(D::declared_by_entry(p), shared),
+        &format!("{kind}: entry beats import"),
+    );
+    assert_binds(bound(peer), in_a(peer), &format!("{kind}: a beats b"));
+    std_home::<D>(std_name);
+    assert_binds(
+        bound(std_name),
+        in_a(std_name),
+        &format!("{kind}: import beats std"),
+    );
+    let std_only = prelude()
+        .iter()
+        .flat_map(|m| D::exported_by(m))
+        .find(|d| !names.contains(&d.name()))
+        .unwrap_or_else(|| panic!("precondition: the stdlib exports some {kind}"));
+    assert_binds(
+        bound(std_only.name()),
+        std_only,
+        &format!("{kind}: std-only resolves"),
+    );
+    assert!(
+        bound(hidden).is_none(),
+        "{kind}: a non-pub import definition is invisible"
+    );
+    assert_binds(
+        bound(visible),
+        in_a(visible),
+        &format!("{kind}: pub sibling visible"),
+    );
+}
+
+#[test]
+fn type_aliases_bind_entry_then_imports_in_order_then_std() {
+    assert_name_keyed_precedence::<CompiledTypeAlias>("type alias", ALIAS_NAMES);
+}
+
+#[test]
+fn traits_bind_entry_then_imports_in_order_then_std() {
+    assert_name_keyed_precedence::<CompiledTrait>("trait", TRAIT_NAMES);
+}
+
+#[test]
+fn constraint_defs_bind_entry_then_imports_in_order_then_std() {
+    assert_name_keyed_precedence::<CompiledConstraintDef>("constraint def", CONSTRAINT_DEF_NAMES);
+}
+
 /// The entry's own templates are `entry_declared_templates()`: a pub
 /// template the I5 merge copied into `entry.templates` binds the IMPORT
 /// UNIT's template, and no Local-vs-Import shadowing is recorded for it.
@@ -358,31 +483,77 @@ fn merged_prelude_purposes_are_not_part_of_a_modules_surface() {
     );
 }
 
-/// `resolve_in_program` agrees with `bind_program(..).get(key)` for every
-/// name bound in the fixture, of every kind it declares.
+/// `(key, winner origin, shadowed origin)` of every shadowing `keep` accepts
+/// the loser of.
+fn shadowing_rows<'a, D: Definition>(
+    bindings: &Bindings<'a, D>,
+    keep: impl Fn(&D) -> bool,
+) -> Vec<(D::Key<'a>, Origin<'a>, Origin<'a>)> {
+    bindings
+        .shadowings()
+        .iter()
+        .filter(|s| keep(s.shadowed.definition))
+        .map(|s| (s.key.clone(), s.winner.origin, s.shadowed.origin))
+        .collect()
+}
+
+/// `resolve_in_program`, and `resolve_in_program_by` given a predicate for
+/// one key, agree with `bind_program(..).get(key)` for every name bound in
+/// the fixture, of every kind it declares. `bind_program_where` given a
+/// predicate over names binds the user modules' names exactly as
+/// `bind_program` does.
 #[test]
 fn resolve_in_program_agrees_with_bind_program_for_every_bound_key() {
-    fn agree<D: ProgramDefinition>(program: &CompiledProgram) {
+    fn agree<D: ProgramDefinition>(fx: &Fixture) {
+        let program = &fx.program;
         let bindings = bind_program::<D>(program, prelude());
         for candidate in bindings.winning_candidates() {
             let key = candidate.definition.key();
             let resolved = resolve_in_program::<D, _>(program, prelude(), &key)
                 .unwrap_or_else(|| panic!("{key:?} resolves"));
+            let resolved_by = resolve_in_program_by::<D>(program, prelude(), |d| d.key() == key)
+                .unwrap_or_else(|| panic!("{key:?} resolves by predicate"));
             let bound = bindings
                 .get(&key)
                 .unwrap_or_else(|| panic!("{key:?} is bound"));
             assert!(
-                std::ptr::eq(resolved, bound) && std::ptr::eq(bound, candidate.definition),
-                "{key:?}: resolve_in_program and bind_program disagree"
+                std::ptr::eq(resolved, bound)
+                    && std::ptr::eq(resolved_by, bound)
+                    && std::ptr::eq(bound, candidate.definition),
+                "{key:?}: resolve_in_program(_by) and bind_program disagree"
             );
         }
+
+        let user_names: Vec<&str> = [program.entry(), fx.a(), fx.b()]
+            .into_iter()
+            .flat_map(|m| D::exported_by(m).map(Definition::name))
+            .collect();
+        let kept = |d: &D| user_names.contains(&d.name());
+        let partial = bind_program_where::<D>(program, prelude(), kept);
+        assert_eq!(
+            partial.winners().map(|d| d as *const D).collect::<Vec<_>>(),
+            bindings
+                .winners()
+                .filter(|d| kept(d))
+                .map(|d| d as *const D)
+                .collect::<Vec<_>>(),
+            "bind_program_where keeps the kept names' winners in order"
+        );
+        assert_eq!(
+            shadowing_rows(&partial, |_| true),
+            shadowing_rows(&bindings, kept),
+            "bind_program_where keeps the kept names' shadowings"
+        );
     }
     let fx = Fixture::new();
-    agree::<TopologyTemplate>(&fx.program);
-    agree::<CompiledFunction>(&fx.program);
-    agree::<EnumDef>(&fx.program);
-    agree::<CompiledUnit>(&fx.program);
-    agree::<CompiledPurpose>(&fx.program);
+    agree::<TopologyTemplate>(&fx);
+    agree::<CompiledFunction>(&fx);
+    agree::<EnumDef>(&fx);
+    agree::<CompiledUnit>(&fx);
+    agree::<CompiledTypeAlias>(&fx);
+    agree::<CompiledTrait>(&fx);
+    agree::<CompiledConstraintDef>(&fx);
+    agree::<CompiledPurpose>(&fx);
 }
 
 fn holds(surface: &[&TopologyTemplate], expected: &TopologyTemplate) -> bool {

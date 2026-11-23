@@ -457,21 +457,6 @@ where
     })
 }
 
-/// The first candidate that `key` binds to.
-fn first_bound<'a, D, Q>(
-    mut candidates: impl Iterator<Item = Candidate<'a, D>>,
-    key: &Q,
-) -> Option<&'a D>
-where
-    D: Definition,
-    D::Key<'a>: Borrow<Q>,
-    Q: Eq + ?Sized,
-{
-    candidates
-        .find(|candidate| D::key(candidate.definition).borrow() == key)
-        .map(|candidate| candidate.definition)
-}
-
 /// Every key's first candidate, plus every later candidate it shadows.
 fn bind_candidates<'a, D: Definition>(
     candidates: impl Iterator<Item = Candidate<'a, D>>,
@@ -535,7 +520,30 @@ where
     D::Key<'a>: Borrow<Q>,
     Q: Eq + ?Sized,
 {
-    first_bound(scope_candidates(local, direct_imports, prelude), key)
+    resolve_in_scopes_by(local, direct_imports, prelude, |definition| {
+        D::key(definition).borrow() == key
+    })
+}
+
+/// The first definition `matches` accepts, in [`resolve_in_scopes`] order.
+/// When `matches` accepts exactly the definitions of one key, that is the
+/// key's binding, so this resolves a key the caller cannot build. Lazy and
+/// allocation-free.
+pub fn resolve_in_scopes_by<'a, D, L, I, P>(
+    local: L,
+    direct_imports: I,
+    prelude: P,
+    mut matches: impl FnMut(&'a D) -> bool,
+) -> Option<&'a D>
+where
+    D: Definition,
+    L: IntoIterator<Item = &'a D>,
+    I: IntoIterator<Item = &'a CompiledModule> + Clone,
+    P: IntoIterator<Item = &'a CompiledModule> + Clone,
+{
+    scope_candidates(local, direct_imports, prelude)
+        .map(|candidate| candidate.definition)
+        .find(|definition| matches(definition))
 }
 
 /// Every key's binding plus every shadowing, by the same rule as
@@ -547,7 +555,29 @@ where
     I: IntoIterator<Item = &'a CompiledModule> + Clone,
     P: IntoIterator<Item = &'a CompiledModule> + Clone,
 {
-    bind_candidates(scope_candidates(local, direct_imports, prelude))
+    bind_scopes_where(local, direct_imports, prelude, |_| true)
+}
+
+/// [`bind_scopes`] over only the definitions `keep` accepts. When `keep`
+/// accepts or rejects each key's definitions together, every kept key binds
+/// and shadows exactly as under [`bind_scopes`], and only the kept
+/// candidates are indexed.
+pub fn bind_scopes_where<'a, D, L, I, P>(
+    local: L,
+    direct_imports: I,
+    prelude: P,
+    mut keep: impl FnMut(&'a D) -> bool,
+) -> Bindings<'a, D>
+where
+    D: Definition,
+    L: IntoIterator<Item = &'a D>,
+    I: IntoIterator<Item = &'a CompiledModule> + Clone,
+    P: IntoIterator<Item = &'a CompiledModule> + Clone,
+{
+    bind_candidates(
+        scope_candidates(local, direct_imports, prelude)
+            .filter(|candidate| keep(candidate.definition)),
+    )
 }
 
 /// The outcome of [`bind`] for one kind.

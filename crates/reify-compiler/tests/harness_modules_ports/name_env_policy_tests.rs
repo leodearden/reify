@@ -12,7 +12,8 @@ use std::collections::HashSet;
 
 use reify_compiler::name_env::{
     Bindings, Definition, FunctionSignature, Origin, Shadowing, Surface, Tier, bind, bind_scopes,
-    collision_warning, resolve, resolve_in_scopes, surface_of,
+    bind_scopes_where, collision_warning, resolve, resolve_in_scopes, resolve_in_scopes_by,
+    surface_of,
 };
 use reify_compiler::{
     CompiledConstraintDef, CompiledModule, CompiledPurpose, CompiledTrait, CompiledTypeAlias,
@@ -918,6 +919,59 @@ fn resolve_in_scopes_agrees_with_bind_scopes_for_every_bound_key() {
     assert_scope_lookup_agrees::<EnumDef>("enum", &fx, "Absent");
     let absent_fn = int_fn("Absent");
     assert_scope_lookup_agrees::<CompiledFunction>("function", &fx, absent_fn.key());
+}
+
+/// `(key, winner origin, shadowed origin)` of every shadowing `keep` accepts
+/// the loser of.
+fn kept_shadowing_rows<'a, D: Definition>(
+    bindings: &Bindings<'a, D>,
+    mut keep: impl FnMut(&D) -> bool,
+) -> Vec<(D::Key<'a>, Origin<'a>, Origin<'a>)> {
+    bindings
+        .shadowings()
+        .iter()
+        .filter(|s| keep(s.shadowed.definition))
+        .map(|s| (s.key.clone(), s.winner.origin, s.shadowed.origin))
+        .collect()
+}
+
+/// A predicate accepting exactly one key's definitions finds that key's
+/// binding through `resolve_in_scopes_by`, and a predicate accepting whole
+/// keys binds and shadows them through `bind_scopes_where` exactly as
+/// `bind_scopes` does.
+fn assert_predicate_lookups_agree_with_bind_scopes<D: ScopeKind>(kind: &str) {
+    let fx = ScopesFixture::new();
+    let local = D::local(&fx);
+    let full = bind_scopes(local, fx.direct_imports(), fx.prelude());
+    for candidate in full.winning_candidates() {
+        let key = candidate.definition.key();
+        let found = resolve_in_scopes_by(local, fx.direct_imports(), fx.prelude(), |d: &D| {
+            d.key() == key
+        });
+        assert!(
+            found.is_some_and(|d| std::ptr::eq(d, candidate.definition)),
+            "{kind} {key:?}: resolve_in_scopes_by found {found:?}"
+        );
+    }
+
+    let kept = |d: &D| ["Everywhere", "OverAmbient", "Secret"].contains(&d.name());
+    let partial = bind_scopes_where(local, fx.direct_imports(), fx.prelude(), kept);
+    assert_eq!(
+        pointers(partial.winners()),
+        pointers(full.winners().filter(|d| kept(d))),
+        "{kind}: the kept keys' winners, in precedence order"
+    );
+    assert_eq!(
+        kept_shadowing_rows(&partial, |_| true),
+        kept_shadowing_rows(&full, kept),
+        "{kind}: the kept keys' shadowings"
+    );
+}
+
+#[test]
+fn predicate_lookups_agree_with_bind_scopes_on_the_keys_they_accept() {
+    assert_predicate_lookups_agree_with_bind_scopes::<EnumDef>("enum");
+    assert_predicate_lookups_agree_with_bind_scopes::<CompiledFunction>("function");
 }
 
 /// `bind` is `bind_scopes` with no direct imports: the same winners, by
