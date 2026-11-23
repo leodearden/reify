@@ -16,12 +16,16 @@ WHAT RUNS THIS: run_all.sh discovers `test_*.sh` only, so the discovered member
 is the thin wrapper tests/infra/test_canon_run_units.sh.
 """
 
+import errno
+import fcntl
 import importlib.util
 import json
 import os
+import resource
 import shutil
 import socket
 import signal
+import subprocess
 import sys
 import tempfile
 import time
@@ -1042,23 +1046,28 @@ class Reentry(CanonInvocationCase):
 
     ARGUMENTS = ["cargo", "test", "--offline", "--", "--nocapture"]
 
-    def expected_argv(self, cwd_at_canon):
+    def expected_bwrap(self, cwd_at_canon):
         return [
             "/usr/bin/bwrap", "--dev-bind", "/", "/", "--bind", self.real, self.canon,
-            "--chdir", cwd_at_canon, "--die-with-parent", "--",
-            sys.executable, "-I", f"{self.canon}/scripts/canon_run.py", *self.ARGUMENTS,
+            "--chdir", cwd_at_canon, "--die-with-parent", "--info-fd", "7",
         ]
 
-    def test_argv_binds_the_real_root_and_reenters_canon_run_at_canon(self):
-        argv = canon_run.reentry_argv(self.tree, self.canon, f"{self.real}/sub", self.ARGUMENTS)
-        self.assertEqual(argv, self.expected_argv(f"{self.canon}/sub"))
+    def test_bwrap_binds_the_real_root_at_canon_and_reports_to_the_info_fd(self):
+        bwrap = canon_run.reentry_bwrap(self.tree, self.canon, f"{self.real}/sub", 7)
+        self.assertEqual(bwrap, self.expected_bwrap(f"{self.canon}/sub"))
 
     def test_an_aliased_spelling_binds_the_real_root(self):
         alias = os.path.join(self.tmp, "alias")
         os.symlink(self.real, alias)
         tree = canon_run.Tree(Path(alias), Path(self.real), self.tree.dev, self.tree.ino)
-        argv = canon_run.reentry_argv(tree, self.canon, alias, self.ARGUMENTS)
-        self.assertEqual(argv, self.expected_argv(self.canon))
+        bwrap = canon_run.reentry_bwrap(tree, self.canon, alias, 7)
+        self.assertEqual(bwrap, self.expected_bwrap(self.canon))
+
+    def test_the_command_reenters_canon_run_at_canon(self):
+        self.assertEqual(
+            canon_run.reentry_command(self.canon, self.ARGUMENTS),
+            [sys.executable, "-I", f"{self.canon}/scripts/canon_run.py", *self.ARGUMENTS],
+        )
 
     def test_env_is_the_callers_plus_a_record_without_a_supervisor(self):
         supervisor = canon_run.Supervisor(canon_run.Mode.REAL_PATH, None)
@@ -1067,18 +1076,29 @@ class Reentry(CanonInvocationCase):
             REIFY_CANON_ACTIVE=canon_run.format_active(self.tree, self.canon, supervisor),
             RUSTC_WRAPPER="caller",
         )
-        ignored = frozenset({signal.SIGQUIT})
-        env = canon_run.reentry_env(environ, self.tree, self.canon, ignored)
-        record = canon_run.format_active(self.tree, self.canon, caller_ignored=ignored)
-        self.assertEqual(env, dict(environ, REIFY_CANON_ACTIVE=record))
-        active = canon_run.parse_active(env["REIFY_CANON_ACTIVE"])
-        self.assertIsNone(active.supervisor)
-        self.assertEqual(active.caller_ignored, ignored)
+        env = canon_run.reentry_env(environ, self.tree, self.canon)
+        self.assertEqual(env, dict(environ, REIFY_CANON_ACTIVE=canon_run.format_active(self.tree, self.canon)))
+        self.assertIsNone(canon_run.parse_active(env["REIFY_CANON_ACTIVE"]).supervisor)
 
-    def test_info_fd_goes_before_the_command(self):
-        argv = canon_run.reentry_argv(self.tree, self.canon, f"{self.real}/sub", self.ARGUMENTS, info_fd=7)
-        separator = argv.index("--")
-        self.assertEqual(argv[separator - 2:separator], ["--info-fd", "7"])
+
+class NamespaceArgv(unittest.TestCase):
+    """Ruling step 3 (esc-10418-3): env inside the namespace restores exactly the signals bwrap was made to ignore."""
+
+    BWRAP = ["/usr/bin/bwrap", "--dev-bind", "/", "/", "--info-fd", "7"]
+    COMMAND = ["/usr/bin/python3", "-I", "/canon/scripts/canon_run.py", "exec", "--", "true"]
+
+    def test_every_supervised_signal_is_restored_by_its_name_in_number_order(self):
+        argv = canon_run.namespace_argv(self.BWRAP, self.COMMAND, frozenset(canon_cache.SUPERVISED_SIGNALS))
+        env_layer = ["/usr/bin/env", "--default-signal=HUP,INT,QUIT,TERM", "--"]
+        self.assertEqual(argv, [*self.BWRAP, "--", *env_layer, *self.COMMAND])
+
+    def test_one_restored_signal_is_named_alone(self):
+        argv = canon_run.namespace_argv(self.BWRAP, self.COMMAND, frozenset({signal.SIGHUP}))
+        self.assertEqual(argv, [*self.BWRAP, "--", "/usr/bin/env", "--default-signal=HUP", "--", *self.COMMAND])
+
+    def test_nothing_to_restore_leaves_out_the_env_layer(self):
+        argv = canon_run.namespace_argv(self.BWRAP, self.COMMAND, frozenset())
+        self.assertEqual(argv, [*self.BWRAP, "--", *self.COMMAND])
 
 
 class NamespaceParent(unittest.TestCase):
@@ -1127,6 +1147,115 @@ class NamespaceParent(unittest.TestCase):
         os.kill(parent.pid, signal.SIGTERM)
         Path(self.tmp, "go").touch()
         self.assertEqual(parent.wait(), 143)
+
+    def test_a_signal_while_bwrap_is_being_started_reaches_the_command(self):
+        parent = self.start(signal_during_start=True, command_secs="5")
+        self.assertEqual(parent.wait(), 143)
+
+    def test_a_descriptor_the_caller_passes_reaches_bwrap(self):
+        read_end, write_end = os.pipe()
+        self.addCleanup(os.close, read_end)
+        self.addCleanup(os.close, write_end)
+        os.set_inheritable(write_end, True)
+        parent = self.start(pass_fds=(write_end,))
+        self.wait_for("started", parent)
+        self.assertIn(write_end, json.loads(Path(self.tmp, "bwrap_fds.json").read_text()))
+        os.kill(parent.pid, signal.SIGTERM)
+        self.assertEqual(parent.wait(), 143)
+
+    def test_a_signal_the_caller_ignores_stays_ignored_and_the_rest_are_restored(self):
+        parent = self.start(ignore=(signal.SIGHUP,))
+        self.wait_for("started", parent)
+        ignored = fx.ignored_signals(os.path.join(self.tmp, "sigign"))
+        self.assertEqual(ignored & set(canon_cache.SUPERVISED_SIGNALS), {signal.SIGHUP})
+        os.kill(parent.pid, signal.SIGTERM)
+        self.assertEqual(parent.wait(), 143)
+
+
+class ReadChildPid(unittest.TestCase):
+    """bwrap's --info-fd record, read to its end: the pid of the child it started, or None."""
+
+    def read(self, data):
+        read_end, write_end = os.pipe()
+        with os.fdopen(write_end, "wb") as writer:
+            writer.write(data)
+        return canon_run.read_child_pid(read_end)
+
+    def test_bwrap_0_9_0s_record_gives_the_child_pid(self):
+        self.assertEqual(self.read(b'{\n    "child-pid": 1269159,\n    "mnt-namespace": 4026536262\n}'), 1269159)
+
+    def test_nothing_written_before_bwrap_exited_gives_none(self):
+        self.assertIsNone(self.read(b""))
+
+    def test_text_that_is_not_json_gives_none(self):
+        self.assertIsNone(self.read(b"child-pid: 12"))
+
+    def test_a_json_list_gives_none(self):
+        self.assertIsNone(self.read(b"[12]"))
+
+    def test_a_child_pid_that_is_not_an_integer_gives_none(self):
+        self.assertIsNone(self.read(b'{"child-pid": "12"}'))
+
+
+class AwaitRestored(unittest.TestCase):
+    """The namespace parent's wait for bwrap's child to restore the forwarded signals, and the pidfd it holds."""
+
+    TERM = frozenset({signal.SIGTERM})
+    SELECT_CEILING = 1024
+
+    def exited_pidfd(self):
+        """A pidfd for a child that has exited and been reaped, so it reads as exited from now on."""
+        child = subprocess.Popen(["true"])
+        pidfd = os.pidfd_open(child.pid)
+        self.addCleanup(os.close, pidfd)
+        child.wait()
+        return pidfd
+
+    def stranger(self):
+        """A live process ignoring SIGTERM, standing in for one that reused the exited child's pid; it dies with us."""
+        stranger = subprocess.Popen(
+            canon_cache.with_parent_death_signal(["sleep", "infinity"], "KILL"),
+            preexec_fn=lambda: signal.signal(signal.SIGTERM, signal.SIG_IGN),
+        )
+        self.addCleanup(stranger.wait)
+        self.addCleanup(stranger.kill)
+        return stranger
+
+    def info(self, pid):
+        read_end, write_end = os.pipe()
+        with os.fdopen(write_end, "w") as writer:
+            json.dump({"child-pid": pid}, writer)
+        return read_end
+
+    def test_a_pidfd_reporting_exit_ends_the_wait_and_never_reaches_a_stranger_reusing_the_pid(self):
+        pidfd, stranger = self.exited_pidfd(), self.stranger()
+        canon_run.await_restored(pidfd, stranger.pid, self.TERM)
+        canon_run.send_through(pidfd, signal.SIGKILL)
+        self.assertIsNone(stranger.poll())
+
+    def test_a_pidfd_numbered_past_selects_ceiling_still_ends_the_wait(self):
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        if soft <= self.SELECT_CEILING:
+            if hard != resource.RLIM_INFINITY and hard <= self.SELECT_CEILING:
+                self.skipTest(f"RLIMIT_NOFILE hard limit {hard} allows no descriptor past {self.SELECT_CEILING}")
+            resource.setrlimit(resource.RLIMIT_NOFILE, (self.SELECT_CEILING + 1, hard))
+            self.addCleanup(resource.setrlimit, resource.RLIMIT_NOFILE, (soft, hard))
+        high = fcntl.fcntl(self.exited_pidfd(), fcntl.F_DUPFD_CLOEXEC, self.SELECT_CEILING)
+        self.addCleanup(os.close, high)
+        canon_run.await_restored(high, self.stranger().pid, self.TERM)
+
+    def test_a_child_already_gone_gives_no_pidfd(self):
+        child = subprocess.Popen(["true"])
+        child.wait()
+        self.assertIsNone(canon_run.open_restored_child(self.info(child.pid), self.TERM))
+
+    def test_a_pidfd_the_kernel_will_not_open_is_a_one_line_refusal(self):
+        unavailable = OSError(errno.ENOSYS, "Function not implemented")
+        with mock.patch.object(os, "pidfd_open", side_effect=unavailable):
+            with self.assertRaises(canon_run.Refusal) as refused:
+                canon_run.open_restored_child(self.info(os.getpid()), self.TERM)
+        self.assertIn(str(os.getpid()), str(refused.exception))
+        self.assertNotIn("\n", str(refused.exception))
 
 
 class CachePolicy(CanonInvocationCase):

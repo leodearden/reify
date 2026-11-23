@@ -1035,15 +1035,15 @@ class SignalForwarder:
 
     def __init__(self) -> None:
         self._caller = {number: signal.getsignal(number) for number in SUPERVISED_SIGNALS}
-        self.caller_ignored = frozenset(
-            number for number, handler in self._caller.items() if handler == signal.SIG_IGN
+        self.forwarded = frozenset(
+            number for number, handler in self._caller.items() if handler != signal.SIG_IGN
         )
         self._send: Callable[[int], None] | None = None
         self._held: list[int] = []
 
     def __enter__(self) -> SignalForwarder:
         for number in SUPERVISED_SIGNALS:
-            signal.signal(number, signal.SIG_IGN if number in self.caller_ignored else self._forward)
+            signal.signal(number, self._forward if number in self.forwarded else signal.SIG_IGN)
         return self
 
     def __exit__(self, *exc_info: object) -> None:

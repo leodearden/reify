@@ -1032,12 +1032,6 @@ INTERACTIVE_CALLER = {
 }
 
 
-def ignored_signals(path):
-    """The signal numbers set in the `SigIgn:` hex mask a command wrote to path."""
-    mask = int(Path(path).read_text().split(":", 1)[1], 16)
-    return {number for number in range(1, mask.bit_length() + 1) if mask >> (number - 1) & 1}
-
-
 class Supervise(SessionCase):
     """C6's measurement around one command, and the supervisor's signal and descriptor policy."""
 
@@ -1074,7 +1068,7 @@ class Supervise(SessionCase):
     def supervised_ignored_signals(self):
         out = os.path.join(self.tmp, "sigign")
         self.supervise(["/bin/sh", "-c", SIGIGN_PROBE, out])
-        return {number for number in SUPERVISED_SIGNALS if number in ignored_signals(out)}
+        return {number for number in SUPERVISED_SIGNALS if number in fx.ignored_signals(out)}
 
     def start_supervise_runner(self, sleep_secs, **popen):
         """A supervisor process around `sleep sleep_secs`, returned once the command has started."""
@@ -1251,12 +1245,19 @@ class SignalForwarding(unittest.TestCase):
     def test_what_the_caller_ignores_stays_ignored_and_the_rest_comes_back_after(self):
         signal.signal(signal.SIGQUIT, signal.SIG_IGN)
         forwarder = canon_cache.SignalForwarder()
-        self.assertEqual(forwarder.caller_ignored, frozenset({signal.SIGQUIT}))
+        self.assertNotIn(signal.SIGQUIT, forwarder.forwarded)
         with forwarder:
             self.assertEqual(signal.getsignal(signal.SIGQUIT), signal.SIG_IGN)
             self.assertNotIn(signal.getsignal(signal.SIGINT), (signal.SIG_IGN, signal.default_int_handler))
         self.assertEqual(signal.getsignal(signal.SIGQUIT), signal.SIG_IGN)
         self.assertEqual(signal.getsignal(signal.SIGINT), signal.default_int_handler)
+
+    def test_forwarded_is_the_supervised_signals_the_caller_does_not_ignore(self):
+        self.assertEqual(canon_cache.SignalForwarder().forwarded, frozenset(canon_cache.SUPERVISED_SIGNALS))
+        signal.signal(signal.SIGQUIT, signal.SIG_IGN)
+        self.assertEqual(
+            canon_cache.SignalForwarder().forwarded, frozenset({signal.SIGTERM, signal.SIGHUP, signal.SIGINT})
+        )
 
 
 class PolicyMembers(unittest.TestCase):
