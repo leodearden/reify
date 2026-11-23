@@ -2063,11 +2063,10 @@ pub enum GeometryQuery {
     ///
     /// Returns `Value::String` with JSON encoding `{"x":_,"y":_,"z":_}` of
     /// the outward unit normal, identical to the `FaceNormal` wire format.
-    /// The eval-side dispatcher decodes this into
-    /// `Value::Vector(vec![Value::Real(x), Value::Real(y), Value::Real(z)])`.
+    /// The eval-side dispatcher mints this into a unit `Value::Direction`.
     ///
     /// Powers the v0.3 stdlib helper
-    /// `normal(surface: Surface, point: Point3<Length>) -> Vector3<Dimensionless>`
+    /// `normal(surface: Surface, point: Point3<Length>) -> Direction`
     /// (PRD `docs/prds/v0_3/kernel-geometry-queries.md` §9 KGQ-ζ).
     FaceNormalAt {
         handle: GeometryHandleId,

@@ -18064,7 +18064,7 @@
         // No `with_face_normal_at_result` staging — MockGeometryKernel.query() falls
         // through to the generic handle-only map which also has no entry for this
         // handle, so it returns `Err(QueryError::QueryFailed(...))`.
-        // `dispatch_normal_vector3` must downgrade this to `Some(Value::Undef)`
+        // `dispatch_normal_direction` must downgrade this to `Some(Value::Undef)`
         // and emit exactly one Warning diagnostic naming "normal" + "kernel query failed".
         let face_handle = reify_ir::GeometryHandleId(55);
         let mut kernel = MockGeometryKernel::new();
@@ -18133,7 +18133,7 @@
     fn try_eval_topology_selector_normal_malformed_kernel_reply_emits_warning_and_returns_undef() {
         use reify_test_support::mocks::MockGeometryKernel;
         // Stage a non-`Value::String` reply (Value::Real) — parse_xyz_value rejects
-        // non-String replies, so dispatch_normal_vector3 must produce
+        // non-String replies, so dispatch_normal_direction must produce
         // `Some(Value::Undef)` with a Warning diagnostic naming "normal".
         let face_handle = reify_ir::GeometryHandleId(55);
         let mut kernel = MockGeometryKernel::new().with_face_normal_at_result(

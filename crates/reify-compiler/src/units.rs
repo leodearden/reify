@@ -1055,7 +1055,7 @@ pub const GEOMETRY_QUERY_NAMES: &[&str] = &[
     "angle",
     "curvature",
     // KGQ-ζ (task 3615, Phase 6): at-point surface normal.
-    // normal(surface: Surface, point: Point3<Length>) -> Vector3<Dimensionless>
+    // normal(surface: Surface, point: Point3<Length>) -> Direction
     // GHR-α (task 3603) registered the original 12 Phase-1 names above and
     // omitted `normal` (it fell through the gap between the two PRDs). KGQ-ζ
     // absorbs the registration since 3603 is already done.
@@ -1530,11 +1530,7 @@ pub(crate) fn field_op_result_type(
 ///   [`geometry_query_arg_aware_result_type`] — task 4315)
 ///
 /// KGQ-ζ Phase 6 addition (task 3615):
-/// - `normal(surface, point)` → `Vector3<Dimensionless>` (`Type::vec3(Type::dimensionless_scalar())`)
-///   The quantity is `Type::dimensionless_scalar()` (dimensionless), NOT a `Scalar` dimension,
-///   matching the `Value::Vector(vec![Value::Real(_); 3])` shape that
-///   `dispatch_normal_vector3` constructs and that `Value.infer_type()` maps
-///   back to `Type::Vector { n: 3, quantity: Box::new(Type::dimensionless_scalar()) }`.
+/// - `normal(surface, point)` → `Direction`, a unit direction (direction-typing C4).
 ///
 /// Returns `None` for any other name (caller falls through to its default
 /// type-inference path). Mirrors the contract of the sibling
@@ -1566,11 +1562,8 @@ pub fn geometry_query_result_type(name: &str) -> Option<reify_core::Type> {
         "curvature" => Type::Scalar {
             dimension: DimensionVector::CURVATURE,
         },
-        // KGQ-ζ (task 3615, Phase 6): at-point surface normal.
-        // Returns a dimensionless unit vector — Value::Vector([Real,Real,Real]).
-        // Type::dimensionless_scalar() (not a Scalar dimension) is the quantity so that the
-        // dispatched Value::Vector(vec![Value::Real(_);3]).infer_type() == this.
-        "normal" => Type::vec3(Type::dimensionless_scalar()),
+        // KGQ-ζ (task 3615, Phase 6): at-point surface normal, a unit Direction.
+        "normal" => Type::Direction,
         // ζ / C4 (task 4479): max deviation between actual and nominal.
         // max_deviation(actual: Geometry, nominal: Geometry) -> Scalar<Length>
         // Mirrors the `distance` arm: 2-arg geometry query, Length result.

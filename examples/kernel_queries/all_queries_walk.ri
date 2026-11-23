@@ -151,7 +151,7 @@ structure def AllQueriesWalk {
     let top_face = single(faces_by_normal(b, zdir, tol_ang))
     let side_face = single(faces_by_normal(b, va, tol_ang))
 
-    // 15. normal(Surface, Point3<Length>) → Vector3<Dimensionless>
+    // 15. normal(Surface, Point3<Length>) → Direction
     //     Outward unit normal at pt on a_face. Value::Undef at DSL eval
     //     (face sub-handle arg chaining not supported pre-Phase-3).
     let pt_norm   = point3(0mm, 0mm, 5mm)

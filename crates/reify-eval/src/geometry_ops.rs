@@ -8963,7 +8963,7 @@ pub(crate) fn try_eval_topology_selector(
             Some(reify_ir::Value::angle(dot.clamp(-1.0, 1.0).acos()))
         }
         TopologySelectorHelper::Normal => {
-            // `normal(surface, point) -> Vector3<Dimensionless>` (task 3615, KGQ-ζ).
+            // `normal(surface, point) -> Direction` (task 3615, KGQ-ζ; θ-b).
             // Arg order mirrors `contains`: Surface=args[0], Point3<Length>=args[1].
             // args[0]: surface geometry ValueRef → named_steps → GeometryHandleId.
             // args[1]: point ValueRef → values → Value::Point of three Length scalars → [f64;3] SI metres.
@@ -8976,7 +8976,7 @@ pub(crate) fn try_eval_topology_selector(
                 py: point[1],
                 pz: point[2],
             };
-            dispatch_normal_vector3(kernel, &query, &function.name, diagnostics)
+            dispatch_normal_direction(kernel, &query, &function.name, diagnostics)
         }
         TopologySelectorHelper::Curvature => {
             // `curvature(shape, point) -> Scalar<Curvature>|Matrix<2,2,Curvature>` (task 3621, KGQ-μ).
@@ -9851,7 +9851,7 @@ enum TopologySelectorHelper {
     /// FUTURE: `geo_equiv_strict(a, b, tol) -> Bool` — symmetric Hausdorff
     /// distance variant deferred to v0.4 (PRD §5.1, Open Question §10).
     GeoEquiv,
-    /// `normal(surface, point) -> Vector3<Dimensionless>` — at-point outward
+    /// `normal(surface, point) -> Direction` — at-point outward
     /// unit surface normal (task 3615, KGQ-ζ, PRD §9). Projects the Cartesian
     /// `point` onto the face's parametric surface via `ShapeAnalysis_Surface::
     /// ValueOfUV` then returns the orientation-aware outward normal at the
@@ -10795,17 +10795,19 @@ fn dispatch_point3_length_reply(
     }
 }
 
-/// Issue a `FaceNormalAt` query and unwrap the kernel's JSON-Point3 reply
-/// (`{"x":_,"y":_,"z":_}`) into a dimensionless `Value::Vector([Real, Real,
-/// Real])` (matches `vec3()` output).
+/// Issue a `FaceNormalAt` query and mint the kernel's JSON-Point3 reply
+/// (`{"x":_,"y":_,"z":_}`) into a unit `Value::Direction` through
+/// `UnitVec3::from_vector`, which normalises a non-unit reply.
 ///
 /// Models the same defensive-downgrade contract as `dispatch_point3_length_reply`:
-/// - Kernel `Err` → one Warning ("`normal` kernel query failed: …") + `Some(Value::Undef)`
-/// - Malformed reply (non-String or bad JSON) → one Warning ("`normal` kernel reply parse
-///   failed: …") + `Some(Value::Undef)`
+/// each failure is one Warning plus `Some(Value::Undef)`.
+/// - Kernel `Err` → "`normal` kernel query failed: …"
+/// - Malformed reply (non-String or bad JSON) → "`normal` kernel reply parse failed: …"
+/// - A zero or non-finite reply → "`normal` kernel reply is not a unit direction: …"
 ///
-/// Powers `TopologySelectorHelper::Normal` (task 3615, KGQ-ζ).
-fn dispatch_normal_vector3(
+/// Powers `TopologySelectorHelper::Normal` (task 3615, KGQ-ζ; a Direction since
+/// direction-typing θ-b).
+fn dispatch_normal_direction(
     kernel: &mut dyn reify_ir::GeometryKernel,
     query: &reify_ir::GeometryQuery,
     helper_name: &str,
@@ -10813,11 +10815,15 @@ fn dispatch_normal_vector3(
 ) -> Option<reify_ir::Value> {
     match kernel.query(query) {
         Ok(value) => match crate::topology_selectors::parse_xyz_value(&value, helper_name) {
-            Ok([x, y, z]) => Some(reify_ir::Value::Vector(vec![
-                reify_ir::Value::Real(x),
-                reify_ir::Value::Real(y),
-                reify_ir::Value::Real(z),
-            ])),
+            Ok(raw) => match reify_ir::UnitVec3::from_vector(raw) {
+                Ok(unit) => Some(reify_ir::Value::Direction(unit)),
+                Err(fault) => {
+                    diagnostics.push(Diagnostic::warning(format!(
+                        "{helper_name} kernel reply is not a unit direction: {fault}"
+                    )));
+                    Some(reify_ir::Value::Undef)
+                }
+            },
             Err(err) => {
                 diagnostics.push(Diagnostic::warning(format!(
                     "{} kernel reply parse failed: {}",
@@ -10993,7 +10999,7 @@ fn dispatch_curvature(
 /// (rad·m⁻¹) cells.
 ///
 /// On any parse failure emits a Warning and returns `Value::Undef` (same
-/// defensive-downgrade contract as `dispatch_normal_vector3`).
+/// defensive-downgrade contract as `dispatch_normal_direction`).
 fn parse_curvature_matrix_reply(
     value: &reify_ir::Value,
     helper_name: &str,

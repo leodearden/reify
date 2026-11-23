@@ -36,7 +36,7 @@
 //!    (step-1).
 //!
 //! The `Normal` helper dispatch arm (`TopologySelectorHelper::Normal`,
-//! `dispatch_normal_vector3`) and its four mock-kernel unit tests (step-5/6)
+//! `dispatch_normal_direction`) and its mock-kernel unit tests (step-5/6)
 //! together prove the `try_eval_topology_selector` path; this smoke test pins
 //! the compile-type contract and OCCT FFI reachability.
 //!
