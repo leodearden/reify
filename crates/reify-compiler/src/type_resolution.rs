@@ -218,6 +218,8 @@ thread_local! {
 /// resolving. Callers must treat `None` as "cycle: do not recurse" and fall
 /// through to their existing unresolved handling, which preserves the
 /// pre-existing `circular type alias` + `unresolved type` output byte-for-byte.
+/// A guard must never exist for an insert it did not make, because its `Drop`
+/// removes the marker that the outer guard still holds.
 struct AliasDeferScope {
     entry: AliasEntryId,
 }
@@ -225,8 +227,10 @@ struct AliasDeferScope {
 impl AliasDeferScope {
     fn new(entry: &TypeAliasEntry) -> Option<Self> {
         let entry = entry.identity();
-        let inserted = ALIAS_DEFER_IN_PROGRESS.with(|s| s.borrow_mut().insert(entry));
-        inserted.then_some(AliasDeferScope { entry })
+        if !ALIAS_DEFER_IN_PROGRESS.with(|s| s.borrow_mut().insert(entry)) {
+            return None;
+        }
+        Some(AliasDeferScope { entry })
     }
 }
 
