@@ -106,7 +106,10 @@ fn def_env_resolves_with_entry_then_imports_then_stdlib_precedence() {
 
     // (a) an entry-declared template binds the entry's own; an import's pub
     // template binds the IMPORT UNIT's, not the copy the I5 merge made.
-    assert!(same(env.resolve_template("Rig"), template_in(entry_own, "Rig")));
+    assert!(same(
+        env.resolve_template("Rig"),
+        template_in(entry_own, "Rig")
+    ));
     assert!(
         program.entry().templates.iter().any(|t| t.name == "Pulley"),
         "precondition: the I5 merge copied Pulley into the entry"
@@ -182,7 +185,10 @@ fn def_env_agrees_with_the_compile_side_rule_and_binds_merged_names_at_home() {
 
     let declared = program.entry_declared_templates();
     let merged = &program.entry().templates[declared.len()..];
-    assert!(!merged.is_empty(), "precondition: the I5 merge copied a template");
+    assert!(
+        !merged.is_empty(),
+        "precondition: the I5 merge copied a template"
+    );
     let merged_names: HashSet<&str> = merged.iter().map(|t| t.name.as_str()).collect();
 
     let names = declared
@@ -291,7 +297,12 @@ fn rows() -> Vec<KindRow> {
         },
         KindRow {
             kind: "purpose",
-            names: ["shared_purpose", "peer_purpose", "hidden_purpose", "vis_purpose"],
+            names: [
+                "shared_purpose",
+                "peer_purpose",
+                "hidden_purpose",
+                "vis_purpose",
+            ],
             declare: |n| {
                 format!(
                     "purpose {n}(subject : Structure) {{\n    \
@@ -344,8 +355,16 @@ impl KindsFixture {
         let dir = tempfile::tempdir().unwrap();
         let (a, b, main) = kinds_sources();
         let program = compile_in(dir.path(), &[("a", &a), ("b", &b)], &main);
-        assert_eq!(errors_of(&program), Vec::<&str>::new(), "precondition: no Error");
-        let keys: Vec<&str> = program.imports.iter().map(|u| u.import_path.as_str()).collect();
+        assert_eq!(
+            errors_of(&program),
+            Vec::<&str>::new(),
+            "precondition: no Error"
+        );
+        let keys: Vec<&str> = program
+            .imports
+            .iter()
+            .map(|u| u.import_path.as_str())
+            .collect();
         assert_eq!(keys, ["a", "b"], "precondition: a is imported before b");
         KindsFixture { _dir: dir, program }
     }
@@ -496,18 +515,38 @@ fn assert_kind_precedence<D: Kind>(kind: &str) {
 
     if row.entry_redeclares {
         let own: &D = named(program.entry(), shared);
-        assert_binds(&env, named::<D>(a, shared), own, what("the entry beats the first import"));
+        assert_binds(
+            &env,
+            named::<D>(a, shared),
+            own,
+            what("the entry beats the first import"),
+        );
         assert_qualified(&env, "main", shared, Some(own));
     } else {
         let first: &D = named(a, shared);
-        assert_binds(&env, named::<D>(b, shared), first, what("the first import binds"));
+        assert_binds(
+            &env,
+            named::<D>(b, shared),
+            first,
+            what("the first import binds"),
+        );
     }
     let first_peer: &D = named(a, peer);
-    assert_binds(&env, named::<D>(b, peer), first_peer, what("the first import beats the second"));
+    assert_binds(
+        &env,
+        named::<D>(b, peer),
+        first_peer,
+        what("the first import beats the second"),
+    );
     if let Some(std_name) = row.std_name {
         let (_, std_def) = std_home::<D>(std_name);
         let redeclared: &D = named(b, std_name);
-        assert_binds(&env, std_def, redeclared, what("the second import beats the stdlib"));
+        assert_binds(
+            &env,
+            std_def,
+            redeclared,
+            what("the second import beats the stdlib"),
+        );
     }
     let hidden_def: &D = named(a, hidden);
     assert!(
@@ -516,7 +555,12 @@ fn assert_kind_precedence<D: Kind>(kind: &str) {
         what("a non-pub import definition is invisible")
     );
     let visible_def: &D = named(a, visible);
-    assert_binds(&env, visible_def, visible_def, what("its pub sibling is visible"));
+    assert_binds(
+        &env,
+        visible_def,
+        visible_def,
+        what("its pub sibling is visible"),
+    );
     let std_def = std_only::<D>(&row);
     assert_binds(&env, std_def, std_def, what("a stdlib-only name resolves"));
 
@@ -524,7 +568,12 @@ fn assert_kind_precedence<D: Kind>(kind: &str) {
     assert_qualified::<D>(&env, "a", hidden, None);
     assert_qualified(&env, "b", peer, Some(named::<D>(b, peer)));
     let (std_module, _) = std_home::<D>(std_def.name());
-    assert_qualified(&env, &std_module.path.to_dotted(), std_def.name(), Some(std_def));
+    assert_qualified(
+        &env,
+        &std_module.path.to_dotted(),
+        std_def.name(),
+        Some(std_def),
+    );
     assert_qualified::<D>(&env, "nope", visible, None);
 }
 
@@ -600,7 +649,10 @@ fn function_resolution_matches_parameter_types_exactly() {
     let fx = KindsFixture::new();
     let env = DefEnv::from_program(&fx.program);
     let peer: &CompiledFunction = named(fx.a(), row.names[1]);
-    assert!(same(env.resolve_function(&peer.name, &param_types(peer)), peer));
+    assert!(same(
+        env.resolve_function(&peer.name, &param_types(peer)),
+        peer
+    ));
     assert!(
         env.resolve_function(&peer.name, &[Type::Bool]).is_none(),
         "no `{}` takes one Bool",
