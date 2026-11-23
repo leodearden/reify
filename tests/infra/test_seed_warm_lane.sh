@@ -2077,6 +2077,39 @@ N9_MTIME="$(stat -c '%Y' "$N_ABS_LANE/crates/foo/tests/env_probe.rs")"
 assert "N9: tests/env_probe.rs mtime > 2020 epoch (buildroot absent -> fail-safe relink)" \
     test "$N9_MTIME" -gt "$EPOCH_2020"
 
+# N13: the test-path-baked-at-compile-time* rows of
+# tests/infra/adoption-ratchet.manifest count what this relink touches, so each
+# row's ERE must be the seed's _ENV_PATH_MACRO_RE in the ratchet engine's
+# portable dialect, which has no [:class:]: [[:space:]] alone is ' ', and
+# [:space:] inside a bracket is ' '. A macro added to the seed alone would let
+# new bakes of it regrow the relink list with no ratchet red. The rows are read
+# through the engine's own parser.
+N13_SEED_ERE="$(sed -n "s/^ *_ENV_PATH_MACRO_RE='\(.*\)'$/\1/p" "$SCRIPT")"
+N13_WANT="${N13_SEED_ERE//'[[:space:]]'/ }"
+N13_WANT="${N13_WANT//'[:space:]'/ }"
+N13_ROWS_RC=0
+N13_ROWS="$(python3 -B - "$SCRIPT_DIR" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+from adoption_ratchet import DEFAULT_MANIFEST, load_manifest
+for row in load_manifest(DEFAULT_MANIFEST):
+    if row.pattern_id.startswith("test-path-baked-at-compile-time"):
+        print(f"{row.pattern_id}\t{row.pattern.pattern}")
+PY
+)" || N13_ROWS_RC=$?
+assert "N13a: seed's _ENV_PATH_MACRO_RE extracted" test -n "$N13_SEED_ERE"
+assert "N13b: adoption-ratchet manifest parsed (rc=$N13_ROWS_RC)" test "$N13_ROWS_RC" -eq 0
+assert "N13c: adoption-ratchet manifest holds a test-path-baked-at-compile-time row" \
+    test -n "$N13_ROWS"
+while IFS=$'\t' read -r N13_ID N13_ERE; do
+    if [ "$N13_ERE" != "$N13_WANT" ]; then
+        echo "  N13d: row '$N13_ID' ERE:        $N13_ERE"
+        echo "  N13d: seed ERE, portable form: $N13_WANT"
+    fi
+    assert "N13d: adoption-ratchet row '$N13_ID' restates the seed's relink ERE" \
+        test "$N13_ERE" = "$N13_WANT"
+done <<< "$N13_ROWS"
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Block O — base-absent vs reflink-unsupported discrimination (task 4989,
 # esc-triaged 2026-07-03)

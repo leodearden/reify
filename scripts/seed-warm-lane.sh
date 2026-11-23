@@ -1605,8 +1605,12 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     # MAINTENANCE: extend this regex if a new cargo-internal path-baking env!()
     # macro is identified (mirrors the _NONRELOCATABLE_BUILD_GLOBS allow-list
     # convention above).  Currently covers the CARGO_* macros known to bake
-    # absolute build-time paths into compiled test/bench binaries.  Keep it ONE
-    # single-quoted line: docs/notes/workspace-feature-union.md sed-extracts it.
+    # absolute build-time paths into compiled test/bench binaries.  The
+    # test-path-baked-at-compile-time* rows of tests/infra/adoption-ratchet.manifest
+    # restate this ERE (with ' ' for its [:space:] class) to count what it relinks;
+    # update them in the same change (tests/infra/test_seed_warm_lane.sh N13
+    # reds on drift).  Keep it ONE single-quoted line:
+    # docs/notes/workspace-feature-union.md and N13 sed-extract it.
     _ENV_PATH_MACRO_RE='^[[:space:]]*([^/[:space:]].*|/([^/].*)?)?env!\("(CARGO_MANIFEST_DIR|OUT_DIR|CARGO_TARGET_TMPDIR|CARGO_BIN_EXE_[A-Za-z0-9_-]+)"\)'
 
     # ── buildroot-match gate ───────────────────────────────────────────────
