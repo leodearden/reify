@@ -239,11 +239,14 @@ def lock_held():
 
 
 def endpoint_open(url):
+    # A reset racing the handshake (a relay to a refusing store) still means something listens.
     if not url:
         return None
     host, port = url.removeprefix("http://").split("/")[0].split(":")
     try:
         socket.create_connection((host, int(port)), timeout=5).close()
+    except ConnectionResetError:
+        return True
     except OSError:
         return False
     return True
