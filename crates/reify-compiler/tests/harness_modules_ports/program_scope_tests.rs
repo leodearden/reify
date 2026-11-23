@@ -57,16 +57,33 @@ fn constraint_def_decl(name: &str) -> String {
     format!("constraint def {name} {{\n    param t : Length\n    t > 0mm\n}}\n")
 }
 
+/// A name-keyed kind: how to declare one, and its fixture names.
+struct NameKeyedKind {
+    declare: fn(&str) -> String,
+    names: [&'static str; 5],
+}
+
+const NAME_KEYED_KINDS: [NameKeyedKind; 3] = [
+    NameKeyedKind {
+        declare: alias_decl,
+        names: ALIAS_NAMES,
+    },
+    NameKeyedKind {
+        declare: trait_decl,
+        names: TRAIT_NAMES,
+    },
+    NameKeyedKind {
+        declare: constraint_def_decl,
+        names: CONSTRAINT_DEF_NAMES,
+    },
+];
+
 /// Declarations of the name-keyed kinds, one per `[shared, peer, std,
 /// hidden, visible]` slot `module` declares.
 fn name_keyed_decls(module: &str) -> String {
-    let kinds: [(fn(&str) -> String, [&str; 5]); 3] = [
-        (alias_decl, ALIAS_NAMES),
-        (trait_decl, TRAIT_NAMES),
-        (constraint_def_decl, CONSTRAINT_DEF_NAMES),
-    ];
     let mut decls = String::new();
-    for (declare, [shared, peer, std_name, hidden, visible]) in kinds {
+    for NameKeyedKind { declare, names } in NAME_KEYED_KINDS {
+        let [shared, peer, std_name, hidden, visible] = names;
         let slots: Vec<(&str, &str)> = match module {
             "a" => vec![
                 ("pub ", shared),
