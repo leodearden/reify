@@ -42,7 +42,7 @@ fn parentless_gui_exe_is_refused_naming_it() {
 
 #[test]
 fn constant_matches_the_bundled_external_bin() {
-    let conf_path = Path::new(&super::gui_crate_manifest_dir()).join("tauri.conf.json");
+    let conf_path = reify_test_support::test_package::manifest_dir().join("tauri.conf.json");
     let conf: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&conf_path).unwrap()).unwrap();
     let external_bins: Vec<&str> = conf["bundle"]["externalBin"]

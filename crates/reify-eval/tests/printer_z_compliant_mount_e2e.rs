@@ -41,11 +41,11 @@ use reify_ir::Value;
 use reify_test_support::{errors_only, make_simple_engine, parse_and_compile_with_stdlib};
 
 /// Absolute path to the printer Z-flexure dogfood example.
-/// Mirrors the CARGO_MANIFEST_DIR pattern from `toolhead_motor_sizing_e2e.rs`.
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/flexures/printer_z_compliant_mount.ri"
-);
+/// Mirrors the examples-path pattern from `toolhead_motor_sizing_e2e.rs`.
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir()
+        .join("flexures/printer_z_compliant_mount.ri")
+}
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -86,7 +86,7 @@ fn field<'a>(v: &'a Value, type_name: &str, member: &str) -> &'a Value {
 /// Shared by all four tests to avoid repeating the ~12-line compile+eval
 /// boilerplate in each.
 fn eval_fixture() -> reify_eval::EvalResult {
-    let source = std::fs::read_to_string(EXAMPLE_PATH).expect(
+    let source = std::fs::read_to_string(example_path()).expect(
         "examples/flexures/printer_z_compliant_mount.ri should exist (authored by step-2)",
     );
     let compiled = parse_and_compile_with_stdlib(&source);

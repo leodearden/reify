@@ -36,10 +36,9 @@ use reify_test_support::{MockGeometryKernel, parse_and_compile_with_stdlib};
 
 use super::fixture_scaffolding::{build_source_with_occt, compile_and_build_with_occt};
 
-const MOMENT_OF_INERTIA_BOX_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/kernel_queries/moment_of_inertia_box.ri"
-);
+fn moment_of_inertia_box_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("kernel_queries/moment_of_inertia_box.ri")
+}
 
 /// Asserts `actual` is a rank-2 3×3 `MOMENT_OF_INERTIA` tensor whose every
 /// entry lies within 1e-9 kg·m² of the analytic centroidal tensor of the
@@ -104,7 +103,7 @@ fn moment_of_inertia_box_evals_to_analytic_tensor() {
     // grammar/compile regression fails on every runner); the OCCT build is
     // skipped cleanly when OCCT is not built.
     let Some(result) = compile_and_build_with_occt(
-        MOMENT_OF_INERTIA_BOX_PATH,
+        &moment_of_inertia_box_path(),
         "examples/kernel_queries/moment_of_inertia_box.ri (task 3620 step-4)",
     ) else {
         return;

@@ -64,10 +64,9 @@ use reify_eval::Engine;
 use reify_ir::{ExportFormat, GeometryOp, Value};
 use reify_test_support::{compile_source_with_stdlib, errors_only};
 
-const FIXTURE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/selectors/relational_selectors_v2.ri"
-);
+fn fixture_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("selectors/relational_selectors_v2.ri")
+}
 
 /// End-to-end pin for `siblings_of_face` (5 sibling faces per box face) and
 /// `ancestor_faces_of_edge` (2 ancestor faces per box edge) on a 10×10×10 mm box.
@@ -83,7 +82,7 @@ const FIXTURE_PATH: &str = concat!(
 fn relational_selectors_v2_compile_and_return_correct_semantics() {
     // ── assertion 1: fixture compiles cleanly (unconditional) ─────────────────
 
-    let source = std::fs::read_to_string(FIXTURE_PATH)
+    let source = std::fs::read_to_string(fixture_path())
         .expect("examples/selectors/relational_selectors_v2.ri should exist (task #4759 pre-1)");
     // Use the non-asserting `compile_source_with_stdlib` so the explicit
     // `errors_only` assert below is the active gate (with a descriptive message),
@@ -198,7 +197,7 @@ fn relational_selectors_v2_face_chain_resolves_end_to_end() {
         return;
     }
 
-    let source = std::fs::read_to_string(FIXTURE_PATH)
+    let source = std::fs::read_to_string(fixture_path())
         .expect("examples/selectors/relational_selectors_v2.ri should exist");
     let compiled = compile_source_with_stdlib(&source);
     assert!(
@@ -269,7 +268,7 @@ fn relational_selectors_v2_edge_chain_resolves_end_to_end() {
         return;
     }
 
-    let source = std::fs::read_to_string(FIXTURE_PATH)
+    let source = std::fs::read_to_string(fixture_path())
         .expect("examples/selectors/relational_selectors_v2.ri should exist");
     let compiled = compile_source_with_stdlib(&source);
     assert!(

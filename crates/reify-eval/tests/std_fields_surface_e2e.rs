@@ -32,11 +32,10 @@ use reify_core::{DiagnosticCode, Severity, ValueCellId};
 use reify_ir::{ExportFormat, Satisfaction, Value};
 use reify_test_support::parse_and_compile_with_stdlib;
 
-/// Absolute path to the integration fixture, resolved at compile time.
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/fields/std_fields_surface.ri"
-);
+/// Absolute path to the integration fixture.
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("fields/std_fields_surface.ri")
+}
 
 /// Read the fixture and compile it with the stdlib, returning the compiled module.
 ///
@@ -45,7 +44,7 @@ const EXAMPLE_PATH: &str = concat!(
 ///
 /// Panics if the example file is absent (RED signal when step-2 is not yet done).
 fn compile_surface_fixture() -> CompiledModule {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
+    let source = std::fs::read_to_string(example_path())
         .expect("examples/fields/std_fields_surface.ri should exist (task η #4225 step-2)");
 
     parse_and_compile_with_stdlib(&source)
@@ -207,7 +206,7 @@ structure def B4RbfDemo {
 /// Reuses the exact harness of `fields_restrict_e2e.rs::restrict_field_b5_integration`.
 #[test]
 fn std_fields_surface_b5_restrict_occt_gated() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
+    let source = std::fs::read_to_string(example_path())
         .expect("examples/fields/std_fields_surface.ri should exist");
     // parse_and_compile_with_stdlib asserts compile-clean internally.
     let compiled = parse_and_compile_with_stdlib(&source);

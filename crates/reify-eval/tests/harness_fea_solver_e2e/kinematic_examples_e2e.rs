@@ -24,20 +24,17 @@ use reify_test_support::{
 
 // ── Path constants ────────────────────────────────────────────────────────────
 
-const CMB_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/kinematic/counter_mass_balance.ri"
-);
+fn cmb_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("kinematic/counter_mass_balance.ri")
+}
 
-const DP_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/kinematic/dock_pickup.ri"
-);
+fn dp_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("kinematic/dock_pickup.ri")
+}
 
-const FBS_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/kinematic/four_bar_singular.ri"
-);
+fn fbs_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("kinematic/four_bar_singular.ri")
+}
 
 // ── Cached source + compile helpers for counter_mass_balance ──────────────────
 
@@ -45,7 +42,7 @@ const FBS_PATH: &str = concat!(
 fn cmb_source() -> &'static str {
     static S: OnceLock<String> = OnceLock::new();
     S.get_or_init(|| {
-        std::fs::read_to_string(CMB_PATH).unwrap_or_else(|e| panic!("{CMB_PATH} should exist: {e}"))
+        std::fs::read_to_string(cmb_path()).unwrap_or_else(|e| panic!("{} should exist: {e}", cmb_path().display()))
     })
     .as_str()
 }
@@ -183,7 +180,7 @@ fn counter_mass_balance_constraints_all_satisfied() {
 fn dp_source() -> &'static str {
     static S: OnceLock<String> = OnceLock::new();
     S.get_or_init(|| {
-        std::fs::read_to_string(DP_PATH).unwrap_or_else(|e| panic!("{DP_PATH} should exist: {e}"))
+        std::fs::read_to_string(dp_path()).unwrap_or_else(|e| panic!("{} should exist: {e}", dp_path().display()))
     })
     .as_str()
 }
@@ -480,8 +477,8 @@ fn dock_pickup_constraints_all_satisfied() {
 fn fbs_source() -> &'static str {
     static S: OnceLock<String> = OnceLock::new();
     S.get_or_init(|| {
-        std::fs::read_to_string(FBS_PATH)
-            .unwrap_or_else(|e| panic!("{FBS_PATH} should exist: {e}"))
+        std::fs::read_to_string(fbs_path())
+            .unwrap_or_else(|e| panic!("{} should exist: {e}", fbs_path().display()))
     })
     .as_str()
 }

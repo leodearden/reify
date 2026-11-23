@@ -246,13 +246,10 @@ fn snapshot_from_compiled_module_propagates_auto_type_substitution_to_graph() {
     use reify_eval::snapshot::Snapshot;
     use reify_test_support::parse_and_compile_with_stdlib;
 
-    const EXAMPLE_PATH: &str = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/bearing_auto_seal.ri"
-    );
+    let example_path = reify_test_support::examples_corpus::examples_dir().join("bearing_auto_seal.ri");
 
     let source =
-        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/bearing_auto_seal.ri should exist");
+        std::fs::read_to_string(&example_path).expect("examples/bearing_auto_seal.ri should exist");
 
     // Compile once; stdlib + example is expensive in an integration test.
     // The baseline keeps the default empty auto_type_substitution.
@@ -303,13 +300,10 @@ fn multi_param_resolution_outcome_substitution_drives_topology_fingerprint() {
     use reify_core::SourceSpan;
     use reify_test_support::{MockConstraintChecker, parse_and_compile_with_stdlib};
 
-    const EXAMPLE_PATH: &str = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/bearing_auto_seal.ri"
-    );
+    let example_path = reify_test_support::examples_corpus::examples_dir().join("bearing_auto_seal.ri");
 
     let source =
-        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/bearing_auto_seal.ri should exist");
+        std::fs::read_to_string(&example_path).expect("examples/bearing_auto_seal.ri should exist");
     let module = parse_and_compile_with_stdlib(&source);
 
     // Build registries (mirrors auto_type_param_determinism_tests.rs::build_registries).

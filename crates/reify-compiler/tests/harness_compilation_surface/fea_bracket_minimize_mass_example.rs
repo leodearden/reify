@@ -76,17 +76,16 @@ use reify_ir::{CompiledExpr, CompiledExprKind, ObjectiveSense, Value};
 
 /// Path to the example, resolved from `CARGO_MANIFEST_DIR` so it works in any
 /// worktree (mirrors `multi_load_bracket_example_tests.rs`).
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/fea_bracket_minimize_mass.ri"
-);
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("fea_bracket_minimize_mass.ri")
+}
 
 /// The structure declared by the example.
 const TEMPLATE_NAME: &str = "FeaBracketMinimizeMass";
 
 #[test]
 fn fea_bracket_minimize_mass_example_compiles_and_pins_the_design_loop() {
-    let src = std::fs::read_to_string(EXAMPLE_PATH).expect(
+    let src = std::fs::read_to_string(example_path()).expect(
         "failed to read examples/fea_bracket_minimize_mass.ri — it is task 2930's \
          deliverable; check CARGO_MANIFEST_DIR resolution if the file does exist",
     );

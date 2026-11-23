@@ -12,10 +12,9 @@ use reify_core::Severity;
 use reify_ir::Satisfaction;
 use reify_test_support::parse_and_compile_with_stdlib;
 
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/stdlib/fields.ri"
-);
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("stdlib/fields.ri")
+}
 
 /// Read examples/stdlib/fields.ri, compile-with-stdlib, eval, and verify
 /// all constraints in FieldsModuleDemo are Satisfied.
@@ -25,7 +24,7 @@ const EXAMPLE_PATH: &str = concat!(
 #[test]
 fn example_fields_sample_evaluates_to_300_k() {
     let source =
-        std::fs::read_to_string(EXAMPLE_PATH).expect("examples/stdlib/fields.ri should exist");
+        std::fs::read_to_string(example_path()).expect("examples/stdlib/fields.ri should exist");
 
     let compiled = parse_and_compile_with_stdlib(&source);
 

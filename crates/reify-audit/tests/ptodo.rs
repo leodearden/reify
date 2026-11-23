@@ -478,7 +478,7 @@ mod tests {
     /// genuinely swept. `seed` rows populate the default-path task DB; `None`
     /// leaves it absent, so the liveness lane degrades.
     fn check_committed_fixture(name: &str, seed: Option<&[(&str, i64, &str)]>) -> Vec<Finding> {
-        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        let fixture = reify_test_support::test_package::manifest_dir()
             .join("tests/fixtures/ptodo")
             .join(name);
         let content = std::fs::read_to_string(&fixture)
@@ -1097,12 +1097,7 @@ mod tests {
     ///   finding for the real files; control is still orphaned.
     #[test]
     fn perf_anchor_v3_perf_cites_resolve_live() {
-        // Workspace root: CARGO_MANIFEST_DIR = <ws>/crates/reify-audit
-        let ws_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap() // <ws>/crates
-            .parent()
-            .unwrap(); // <ws>
+        let ws_root = reify_test_support::workspace_root::workspace_root();
 
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();

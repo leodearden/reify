@@ -69,10 +69,9 @@ use reify_ir::{ExportFormat, GeometryOp, GeometryQuery, Value};
 
 use super::fixture_scaffolding::read_and_compile_fixture;
 
-const ALL_QUERIES_WALK_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/kernel_queries/all_queries_walk.ri"
-);
+fn all_queries_walk_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("kernel_queries/all_queries_walk.ri")
+}
 
 /// Pins fixture presence and that every in-scope §2 helper name/signature
 /// resolves at compile time (no ERROR diagnostics) on every CI runner.
@@ -84,7 +83,7 @@ fn all_queries_walk_compiles_with_stdlib_no_errors() {
     // Warnings from Undef eval are acceptable pre-Phase-3; only error-severity
     // diagnostics fail the compile.
     read_and_compile_fixture(
-        ALL_QUERIES_WALK_PATH,
+        &all_queries_walk_path(),
         "examples/kernel_queries/all_queries_walk.ri (task 3626 step-2)",
     );
 }
@@ -103,7 +102,7 @@ fn all_queries_walk_compiles_with_stdlib_no_errors() {
 fn all_queries_walk_evals_top_level_helpers_to_non_undef() {
     // ── always-on: fixture exists and compiles cleanly ────────────────────────
     let compiled = read_and_compile_fixture(
-        ALL_QUERIES_WALK_PATH,
+        &all_queries_walk_path(),
         "examples/kernel_queries/all_queries_walk.ri (task 3626 step-2)",
     );
 

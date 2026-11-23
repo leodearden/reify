@@ -21,14 +21,10 @@
 use reify_core::Severity;
 use reify_test_support::{compile_source_with_stdlib, make_engine_with_mock_kernel, mesh_aabb};
 
-/// Path to the committed example, relative to this crate's manifest.
-///
-/// The crate lives at `<root>/crates/reify-eval`; the examples directory is
-/// two levels up.  The path is evaluated at compile time via `env!`.
-const EXAMPLE_SRC: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/sub_placement_assembly.ri"
-);
+/// Absolute path to the committed example under the workspace `examples/` dir.
+fn example_src() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("sub_placement_assembly.ri")
+}
 
 // ── Engine builder helpers (copied from sub_placement_surfacing.rs) ───────────
 
@@ -91,7 +87,7 @@ fn composed_path(template: &reify_compiler::TopologyTemplate, prefix: &str, name
 /// Compile the committed example and assert zero Error-severity diagnostics.
 #[test]
 fn example_compiles_clean() {
-    let source = std::fs::read_to_string(EXAMPLE_SRC)
+    let source = std::fs::read_to_string(example_src())
         .expect("examples/sub_placement_assembly.ri must exist (create it in step-2)");
     let compiled = compile_source_with_stdlib(&source);
     let errors: Vec<_> = compiled
@@ -126,7 +122,7 @@ fn example_compiles_clean() {
 /// ACTIVE (no `#[ignore]`): Mock-kernel runs without OCCT.
 #[test]
 fn visible_chain_surfaces_at_composed_paths() {
-    let source = std::fs::read_to_string(EXAMPLE_SRC)
+    let source = std::fs::read_to_string(example_src())
         .expect("examples/sub_placement_assembly.ri must exist (create it in step-2)");
     let compiled = compile_source_with_stdlib(&source);
 
@@ -235,7 +231,7 @@ fn visible_chain_surfaces_at_composed_paths() {
 #[test]
 #[ignore = "requires OCCT"]
 fn product_bodies_surface_at_composed_world_aabb() {
-    let source = std::fs::read_to_string(EXAMPLE_SRC)
+    let source = std::fs::read_to_string(example_src())
         .expect("examples/sub_placement_assembly.ri must exist");
     let compiled = compile_source_with_stdlib(&source);
 
@@ -347,7 +343,7 @@ fn product_bodies_surface_at_composed_world_aabb() {
 /// ACTIVE (no `#[ignore]`): Mock-kernel runs without OCCT.
 #[test]
 fn assembly_has_four_surfaces_with_aux_hidden() {
-    let source = std::fs::read_to_string(EXAMPLE_SRC)
+    let source = std::fs::read_to_string(example_src())
         .expect("examples/sub_placement_assembly.ri must exist");
     let compiled = compile_source_with_stdlib(&source);
 
@@ -471,7 +467,7 @@ fn assembly_has_four_surfaces_with_aux_hidden() {
 #[test]
 #[ignore = "requires OCCT"]
 fn aux_fixture_surfaces_at_composed_world_aabb() {
-    let source = std::fs::read_to_string(EXAMPLE_SRC)
+    let source = std::fs::read_to_string(example_src())
         .expect("examples/sub_placement_assembly.ri must exist");
     let compiled = compile_source_with_stdlib(&source);
 
@@ -571,7 +567,7 @@ fn aux_fixture_surfaces_at_composed_world_aabb() {
 #[test]
 #[ignore = "requires OCCT"]
 fn placed_distances_match_composed_world_gaps() {
-    let source = std::fs::read_to_string(EXAMPLE_SRC)
+    let source = std::fs::read_to_string(example_src())
         .expect("examples/sub_placement_assembly.ri must exist");
     let compiled = compile_source_with_stdlib(&source);
 

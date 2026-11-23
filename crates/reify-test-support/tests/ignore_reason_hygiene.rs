@@ -23,18 +23,9 @@
 /// This workspace test uses the more permissive `find_stale_plan_pointers_in_source`
 /// because nine test files in `reify-eval` use `#[ignore]` reasons that don't
 /// yet follow the `"known bug:"` convention.
-use std::path::Path;
-
 #[test]
 fn no_stale_plan_pointers_in_workspace_ignore_reasons() {
-    // Resolve workspace root: CARGO_MANIFEST_DIR is crates/reify-test-support,
-    // so two .parent() calls reach the workspace root.
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let workspace_root = Path::new(manifest_dir)
-        .parent()
-        .expect("crates/ parent of CARGO_MANIFEST_DIR")
-        .parent()
-        .expect("workspace root parent of crates/");
+    let workspace_root = reify_test_support::workspace_root::workspace_root();
 
     // Walker-health guard: verify the walker found a reasonable number of test
     // files before we trust the stale-pointer check.  If the walker silently

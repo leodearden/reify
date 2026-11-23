@@ -51,10 +51,9 @@ use std::f64::consts::{PI, TAU};
 
 use super::fixture_scaffolding::read_and_compile_fixture;
 
-const CURVATURE_SMOKE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/kernel_queries/curvature_smoke.ri"
-);
+fn curvature_smoke_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("kernel_queries/curvature_smoke.ri")
+}
 
 /// Pins the user-observable signal for KGQ-μ:
 ///
@@ -73,7 +72,7 @@ fn curvature_smoke_compiles_and_occt_query_chain_live() {
     // Warnings from solid-handle Undef eval are acceptable pre-Phase-3; only
     // error-severity diagnostics fail the compile.
     read_and_compile_fixture(
-        CURVATURE_SMOKE_PATH,
+        &curvature_smoke_path(),
         "examples/kernel_queries/curvature_smoke.ri (task 3621 step-7)",
     );
 
@@ -204,7 +203,7 @@ fn curvature_smoke_compiles_and_occt_query_chain_live() {
 fn curvature_smoke_surface_face_typechecks_as_matrix_2x2_curvature() {
     // No error-severity diagnostics (Warnings from Undef eval are acceptable).
     let compiled = read_and_compile_fixture(
-        CURVATURE_SMOKE_PATH,
+        &curvature_smoke_path(),
         "examples/kernel_queries/curvature_smoke.ri",
     );
 

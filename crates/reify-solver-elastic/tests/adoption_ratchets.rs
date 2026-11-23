@@ -9,13 +9,18 @@
 use reify_test_support::adoption_ratchet::{
     self, Host, Measure, Pattern, Ratchet, TEST_ITEMS, View,
 };
+use reify_test_support::test_package;
 
-const HOST: Host = Host {
-    crate_root: env!("CARGO_MANIFEST_DIR"),
-    file: file!(),
-    path_in_crate: "tests/adoption_ratchets.rs",
-    decision: "docs/prds/v0_6/solver-crates-layering.md D20",
-};
+fn host() -> Host {
+    Host {
+        crate_root: test_package::manifest_dir()
+            .to_str()
+            .expect("the crate root is UTF-8"),
+        file: file!(),
+        path_in_crate: "tests/adoption_ratchets.rs",
+        decision: "docs/prds/v0_6/solver-crates-layering.md D20",
+    }
+}
 
 const SOLVE_REDUCED_DEFINITION_AND_TEST_ITEMS: &[&str] = &[TEST_ITEMS[0], "fn solve_reduced"];
 const COMBINED_BUILDER_AND_TEST_ITEMS: &[&str] =
@@ -256,10 +261,10 @@ const RATCHETS: &[Ratchet] = &[
 
 #[test]
 fn every_row_flags_and_clears_its_seeded_copies() {
-    adoption_ratchet::assert_seeded_self_tests(RATCHETS, &HOST)
+    adoption_ratchet::assert_seeded_self_tests(RATCHETS, &host())
 }
 
 #[test]
 fn every_ratchet_row_holds_at_its_committed_baseline() {
-    adoption_ratchet::assert_crate_tree_at_baselines(RATCHETS, &HOST)
+    adoption_ratchet::assert_crate_tree_at_baselines(RATCHETS, &host())
 }

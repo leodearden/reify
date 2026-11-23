@@ -856,10 +856,9 @@ fn bt4_dependent_cells_is_cross_scope_topo_order_and_writeback_authority() {
 /// away from the behaviour its own header comment advertises.
 ///
 /// Idiom: `crates/reify-eval/tests/continuous_cost_min_example_e2e.rs`.
-const JOINT_DRIVE_EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/whole_model_joint_drive.ri"
-);
+fn joint_drive_example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("whole_model_joint_drive.ri")
+}
 
 /// Compile + eval `src` through the REAL solver.
 ///
@@ -950,9 +949,9 @@ fn strip_inlined_minimize(src: &str) -> String {
 ///
 /// Does NO caching itself: each wrapper memoizes its own pair, for the
 /// reasons documented once on [`joint_drive_halves`].
-fn halves(path: &str) -> (EvalResult, EvalResult) {
-    let merged_src =
-        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("could not read {path}: {e}"));
+fn halves(path: &std::path::Path) -> (EvalResult, EvalResult) {
+    let merged_src = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("could not read {}: {e}", path.display()));
     let frozen_src = strip_inlined_minimize(&merged_src);
 
     let merged = eval_ri_with_real_solver(&merged_src, "merged (inlined `minimize` present)");
@@ -961,7 +960,7 @@ fn halves(path: &str) -> (EvalResult, EvalResult) {
 }
 
 /// The joint-drive example's merged/frozen-cascade pair — a thin wrapper over
-/// [`halves`] for [`JOINT_DRIVE_EXAMPLE_PATH`].
+/// [`halves`] for [`joint_drive_example_path`].
 ///
 /// Shared by BT-5 and its companion known-limitation pin
 /// (`parent_let_total_cost_is_declared_but_stays_unresolved_in_both_halves`)
@@ -976,7 +975,7 @@ fn halves(path: &str) -> (EvalResult, EvalResult) {
 /// other and follows this verbatim.
 fn joint_drive_halves() -> &'static (EvalResult, EvalResult) {
     static CACHE: std::sync::OnceLock<(EvalResult, EvalResult)> = std::sync::OnceLock::new();
-    CACHE.get_or_init(|| halves(JOINT_DRIVE_EXAMPLE_PATH))
+    CACHE.get_or_init(|| halves(&joint_drive_example_path()))
 }
 
 /// BT-5 — THE LEAF. The parent's cost objective reaches the CHILD's auto in one
@@ -1423,8 +1422,12 @@ fn bt5b_merged_auto_lands_on_the_robustness_floored_lower_bound() {
     //
     // `eval_ri_with_real_solver` already asserts zero `Severity::Error`, so a
     // `RobustnessFloorInfeasible` regression on this bracket fails right here.
-    let merged_src = std::fs::read_to_string(JOINT_DRIVE_EXAMPLE_PATH)
-        .unwrap_or_else(|e| panic!("could not read {JOINT_DRIVE_EXAMPLE_PATH}: {e}"));
+    let merged_src = std::fs::read_to_string(joint_drive_example_path()).unwrap_or_else(|e| {
+        panic!(
+            "could not read {}: {e}",
+            joint_drive_example_path().display()
+        )
+    });
     let shifted_src = shift_lower_bracket(&merged_src);
     let shifted =
         eval_ri_with_real_solver(&shifted_src, "bracket-shifted (`quantity_produced >= 1.0`)");
@@ -1823,19 +1826,18 @@ fn bt11_per_sub_parameter_override_reaches_the_folded_instance_path_cost() {
 /// fixture string — so this test degrades loudly if the published example
 /// drifts away from the behaviour its own header comment advertises.
 ///
-/// Idiom: this file's own `JOINT_DRIVE_EXAMPLE_PATH`;
+/// Idiom: this file's own `joint_drive_example_path`;
 /// `crates/reify-eval/tests/continuous_cost_min_example_e2e.rs`.
-const WHOLE_MODEL_COST_MIN_EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/whole_model_cost_min.ri"
-);
+fn whole_model_cost_min_example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("whole_model_cost_min.ri")
+}
 
 /// Shared preamble for the `mwhole_*` tests below: the M-WHOLE ε example's
 /// merged/frozen-cascade pair, via [`halves`]. Memoized behind a `OnceLock`
 /// exactly like [`joint_drive_halves`]; the rationale for both lives there.
 fn mwhole_halves() -> &'static (EvalResult, EvalResult) {
     static CACHE: std::sync::OnceLock<(EvalResult, EvalResult)> = std::sync::OnceLock::new();
-    CACHE.get_or_init(|| halves(WHOLE_MODEL_COST_MIN_EXAMPLE_PATH))
+    CACHE.get_or_init(|| halves(&whole_model_cost_min_example_path()))
 }
 
 /// BT4(i) — the joint-drive signal generalised to TWO coupled children under

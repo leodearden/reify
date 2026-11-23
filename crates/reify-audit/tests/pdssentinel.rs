@@ -291,11 +291,7 @@ Type::dimensionless_scalar()
 /// tests/real_git_ops.rs (pattern for a real-repo audit test).
 #[test]
 fn zero_on_main_scoped_files_have_no_unmarked_offenders() {
-    // Resolve the repo root from CARGO_MANIFEST_DIR (crates/reify-audit) → ../../
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
-        .expect("CARGO_MANIFEST_DIR must be set by cargo test");
-    let repo_root = std::path::Path::new(&manifest_dir)
-        .join("../..")
+    let repo_root = reify_test_support::workspace_root::workspace_root()
         .canonicalize()
         .expect("canonicalize repo root");
 

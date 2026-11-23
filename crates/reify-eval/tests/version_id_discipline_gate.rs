@@ -489,7 +489,7 @@ fn collect_rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
 /// allocate/read API family — see the module doc comment.
 #[test]
 fn no_raw_version_id_use_outside_allocator() {
-    let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let src_dir = reify_test_support::test_package::manifest_dir().join("src");
     let mut files = Vec::new();
     collect_rs_files(&src_dir, &mut files);
 

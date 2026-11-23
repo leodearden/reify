@@ -49,14 +49,12 @@ use reify_test_support::{compile_source_with_stdlib, frame_val, orientation_val,
 
 /// Read the committed §1 worked example so the kernel-free unit slice and the
 /// step-17/18 e2e build exercise the SAME source — no drift between the collection
-/// test and the example. `CARGO_MANIFEST_DIR` is `crates/reify-eval`;
-/// `../../examples/...` is the workspace-root example dir.
+/// test and the example.
 fn bolt_plate_source() -> String {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/geometric_relations/bolt_plate.ri"
-    );
-    std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read §1 example {path}: {e}"))
+    let path = reify_test_support::examples_corpus::examples_dir()
+        .join("geometric_relations/bolt_plate.ri");
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("read §1 example {}: {e}", path.display()))
 }
 
 /// Find the named template, panicking with the full diagnostics on miss.
@@ -912,22 +910,18 @@ fn bolt_plate_example_builds_and_places_auto_bolt() {
 
 /// Read the committed η construction-datum worked example.
 fn construction_datum_source() -> String {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/geometric_relations/construction_datum.ri"
-    );
-    std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("read η construction-datum example {path}: {e}"))
+    let path = reify_test_support::examples_corpus::examples_dir()
+        .join("geometric_relations/construction_datum.ri");
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("read η construction-datum example {}: {e}", path.display()))
 }
 
 /// Read the committed η global-float worked example.
 fn global_float_source() -> String {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/geometric_relations/global_float.ri"
-    );
-    std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("read η global-float example {path}: {e}"))
+    let path = reify_test_support::examples_corpus::examples_dir()
+        .join("geometric_relations/global_float.ri");
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("read η global-float example {}: {e}", path.display()))
 }
 
 /// Compile `source`, collect the named scope, realize its operand datums against a
@@ -1104,14 +1098,12 @@ fn global_float_example_emits_b6_diagnostic() {
 
 /// Read the committed tangent-roller worked example so the acceptance e2e exercises
 /// the SAME source a user would `reify build` — no drift between test and example.
-/// `CARGO_MANIFEST_DIR` is `crates/reify-eval`; `../../examples/...` is the
-/// workspace-root example dir. Mirrors [`bolt_plate_source`].
+/// Mirrors [`bolt_plate_source`].
 fn tangent_roller_source() -> String {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/geometric_relations/tangent_roller.ri"
-    );
-    std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read tangent example {path}: {e}"))
+    let path = reify_test_support::examples_corpus::examples_dir()
+        .join("geometric_relations/tangent_roller.ri");
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("read tangent example {}: {e}", path.display()))
 }
 
 /// The roller's radius in SI metres, as the fixture declares it (`5mm`).

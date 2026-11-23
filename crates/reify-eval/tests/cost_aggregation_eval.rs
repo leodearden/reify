@@ -19,12 +19,11 @@ use reify_ir::Value;
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
 /// Absolute path to the canonical cost-aggregation example fixture.
-/// Mirrors the CARGO_MANIFEST_DIR pattern from
+/// Mirrors the examples-path pattern from
 /// `crates/reify-eval/tests/harness_fea_solver_e2e/stress_large_assembly.rs:21–25`.
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/cost_aggregation.ri"
-);
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("cost_aggregation.ri")
+}
 
 // ─── .sum dimension-preservation probe over Money literals ──────────────────
 
@@ -97,7 +96,7 @@ structure def MoneySumProbe {
 /// the raw 36.88.
 #[test]
 fn cost_aggregation_example_evaluates_total_cost_to_expected_money_value() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
+    let source = std::fs::read_to_string(example_path())
         .unwrap_or_else(|e| panic!("failed to read examples/cost_aggregation.ri: {}", e));
 
     let compiled = parse_and_compile_with_stdlib(&source);

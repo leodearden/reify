@@ -52,13 +52,13 @@ use reify_ir::value::{LeafQuery, SelectorNode};
 use reify_ir::{ExportFormat, Value};
 use reify_test_support::{compile_source_with_stdlib, errors_only, parse_and_compile_with_stdlib};
 
-const FIXTURE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/selectors/single_face_by_normal.ri"
-);
+fn fixture_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("selectors/single_face_by_normal.ri")
+}
 
-const KERNEL_QUERIES_DIR: &str =
-    concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/kernel_queries");
+fn kernel_queries_dir() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("kernel_queries")
+}
 
 /// End-to-end γ golden: `single(faces_by_normal(b, +Z, 1°))` realizes the single
 /// +Z face through the `Selector → List<Geometry>` coercion, while the bare
@@ -67,7 +67,7 @@ const KERNEL_QUERIES_DIR: &str =
 fn single_face_by_normal_coercion_golden() {
     // ── assertion 1: fixture exists and compiles cleanly (unconditional) ──────
 
-    let source = std::fs::read_to_string(FIXTURE_PATH).expect(
+    let source = std::fs::read_to_string(fixture_path()).expect(
         "examples/selectors/single_face_by_normal.ri should exist (task 4118 γ golden fixture)",
     );
     let compiled = parse_and_compile_with_stdlib(&source);
@@ -157,7 +157,7 @@ fn single_face_by_normal_coercion_golden() {
 fn kernel_queries_examples_still_compile_unchanged() {
     let mut checked = 0usize;
     let entries =
-        std::fs::read_dir(KERNEL_QUERIES_DIR).expect("examples/kernel_queries/ should exist");
+        std::fs::read_dir(kernel_queries_dir()).expect("examples/kernel_queries/ should exist");
     for entry in entries {
         let path = entry.expect("readable dir entry").path();
         if path.extension().and_then(|e| e.to_str()) != Some("ri") {
@@ -184,10 +184,9 @@ fn kernel_queries_examples_still_compile_unchanged() {
 
 // ── Vertex coercion→resolve e2e golden (task 4723) ───────────────────────────
 
-const VERTICES_FIXTURE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/selectors/vertices_index_coercion.ri"
-);
+fn vertices_fixture_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("selectors/vertices_index_coercion.ri")
+}
 
 /// End-to-end Vertex coercion→resolve golden: `vertices(b)[0]` realizes the
 /// first vertex through the `Selector → List<Geometry>` coercion (IndexAccess),
@@ -218,7 +217,7 @@ const VERTICES_FIXTURE_PATH: &str = concat!(
 fn vertices_index_coercion_golden() {
     // ── assertion 1: fixture exists and compiles cleanly (unconditional) ──────
 
-    let source = std::fs::read_to_string(VERTICES_FIXTURE_PATH).expect(
+    let source = std::fs::read_to_string(vertices_fixture_path()).expect(
         "examples/selectors/vertices_index_coercion.ri should exist (task 4723 golden fixture)",
     );
     // Use compile_source_with_stdlib (no internal assert) so the explicit

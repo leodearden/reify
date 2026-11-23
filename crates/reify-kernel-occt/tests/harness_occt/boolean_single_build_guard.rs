@@ -182,7 +182,7 @@ fn cpp_sources(dir: &Path) -> Vec<PathBuf> {
 
 #[test]
 fn wrapper_sources_construct_no_boolean_with_operands() {
-    let cpp_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("cpp");
+    let cpp_dir = reify_test_support::test_package::manifest_dir().join("cpp");
     let sources = cpp_sources(&cpp_dir);
     assert!(
         sources

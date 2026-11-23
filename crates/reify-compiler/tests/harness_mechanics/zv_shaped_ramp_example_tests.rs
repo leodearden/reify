@@ -36,12 +36,10 @@ use reify_core::Severity;
 /// `examples_smoke.rs::smoke_one` parses every example file.
 #[test]
 fn zv_shaped_ramp_example_compiles_under_stdlib_with_zero_errors() {
-    const EXAMPLE_PATH: &str = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/trajectory/zv_shaped_ramp.ri"
-    );
+    let example_path =
+        reify_test_support::examples_corpus::examples_dir().join("trajectory/zv_shaped_ramp.ri");
 
-    let src = std::fs::read_to_string(EXAMPLE_PATH).expect(
+    let src = std::fs::read_to_string(&example_path).expect(
         "failed to read examples/trajectory/zv_shaped_ramp.ri — \
          check CARGO_MANIFEST_DIR resolution and that the file exists",
     );

@@ -179,10 +179,9 @@ fn seed_keys_entries_under_param_member_not_candidate_name() {
 // ─── Group 2: fixture-Ambiguous baseline ─────────────────────────────────────
 
 /// Path to the fixture under `examples/auto/`.
-const FIXTURE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/auto/bearing_constraint_select.ri"
-);
+fn fixture_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("auto/bearing_constraint_select.ri")
+}
 
 /// Compiling `examples/auto/bearing_constraint_select.ri` under the default
 /// compile-time stub checker must produce at least one
@@ -204,11 +203,12 @@ fn bearing_constraint_select_is_ambiguous_under_stub() {
     use reify_core::{DiagnosticCode, ModulePath, Severity};
     use std::fs;
 
-    let source = fs::read_to_string(FIXTURE_PATH).unwrap_or_else(|e| {
+    let source = fs::read_to_string(fixture_path()).unwrap_or_else(|e| {
         panic!(
             "cannot read fixture '{}': {} — \
              did you forget to author examples/auto/bearing_constraint_select.ri (step-4)?",
-            FIXTURE_PATH, e
+            fixture_path().display(),
+            e
         )
     });
 

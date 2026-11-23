@@ -56,16 +56,19 @@ use reify_kernel_occt::OcctKernel;
 use reify_test_support::{assert_no_eval_errors, compile_source_named, make_engine};
 
 /// Absolute path to the shipped perforated-plate fixture.
-const FIXTURE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/perforated_plate.ri"
-);
+fn fixture_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("perforated_plate.ri")
+}
 
 /// Load the fixture source, panicking with a clear message if it is absent (the
 /// RED state before step-10 authors it).
 fn load_fixture() -> String {
-    fs::read_to_string(FIXTURE_PATH)
-        .unwrap_or_else(|e| panic!("{FIXTURE_PATH} should exist (authored in step-10): {e}"))
+    fs::read_to_string(fixture_path()).unwrap_or_else(|e| {
+        panic!(
+            "{} should exist (authored in step-10): {e}",
+            fixture_path().display()
+        )
+    })
 }
 
 /// Return the Error-severity diagnostics from a slice, for precise failure text.

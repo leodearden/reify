@@ -745,7 +745,7 @@ fn spawn_lsp_and_initialize<T>(
     T,
 ) {
     let mut child = KillOnDrop(
-        Command::new(env!("CARGO_BIN_EXE_reify"))
+        Command::new(reify_test_support::test_package::bin_exe("reify"))
             .args(["lsp"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

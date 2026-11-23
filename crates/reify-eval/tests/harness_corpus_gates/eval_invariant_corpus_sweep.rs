@@ -73,14 +73,13 @@ use reify_test_support::examples_corpus::discover_ri_files;
 
 // ── The repo-relative shard key ────────────────────────────────────
 
-/// The repo root, resolved from this crate's manifest dir.
+/// The repo root, resolved at run time.
 ///
 /// Canonicalised, so it is directly comparable with a canonicalised corpus path
 /// no matter how many `..` hops or symlinks either side carries.
 fn workspace_root() -> std::path::PathBuf {
-    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let root = manifest_dir.join("../..");
-    root.canonicalize().unwrap_or(root)
+    let root = reify_test_support::workspace_root::workspace_root();
+    root.canonicalize().unwrap_or_else(|_| root.to_path_buf())
 }
 
 /// `path`, expressed relative to `root`, as the `/`-separated string used as the
@@ -173,7 +172,7 @@ struct CorpusFile {
 /// Cheap (a directory walk, no compilation) — recomputing it once per shard is
 /// not worth caching, and keeps the shard processes free of shared state.
 fn corpus_files() -> Vec<CorpusFile> {
-    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest_dir = reify_test_support::test_package::manifest_dir();
     let root = workspace_root();
 
     let mut files = discover_ri_files(&manifest_dir.join("tests/fixtures"));
@@ -346,8 +345,8 @@ fn shard_of_is_independent_of_corpus_membership() {
 /// The trap that makes hash keying CORRECT in this repo: the shard key must be
 /// a REPO-RELATIVE path, never the absolute one.
 ///
-/// Every corpus root here is derived from `env!("CARGO_MANIFEST_DIR")`, whose
-/// prefix differs per checkout — `/home/leo/src/reify` in the main checkout
+/// Every corpus root here is derived from the running checkout's workspace root,
+/// whose prefix differs per checkout — `/home/leo/src/reify` in the main checkout
 /// versus `/home/leo/src/warm-lanes/worktrees/_lane-N` in each of the 235 linked
 /// worktrees. Hashing the absolute path would therefore give the SAME `.ri` file
 /// a DIFFERENT shard in every lane, destroying exactly the reproducibility
@@ -393,7 +392,7 @@ fn shard_key_is_worktree_independent() {
     // (b) Real live corpus paths — these carry the `../..` hops the corpus-root
     //     joins introduce, so this is the canonicalizing half.
     let root = workspace_root();
-    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest_dir = reify_test_support::test_package::manifest_dir();
     let live: Vec<std::path::PathBuf> = vec![
         manifest_dir.join("tests/fixtures/undef_trace.ri"),
         manifest_dir.join("../../examples/fdm_bracket.ri"),

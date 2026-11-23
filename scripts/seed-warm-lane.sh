@@ -1590,18 +1590,28 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     # Fix: touch (to now) only the seeded tests/ and benches/ .rs sources that
     # contain one of these macros, forcing cargo to recompile+relink ONLY those
     # integration/bench test binaries (each is its own compilation-unit root —
-    # no lib rlib cascade).  src/ env!() usage, lib or unit-test, is
+    # no lib rlib cascade).  The regex ignores a line whose first non-blank
+    # characters are `//`: a line comment, or the inside of a multi-line
+    # string, can never bake a path.  Every other line still matches (a block
+    # comment, a trailing comment, string contents), so a miss is impossible
+    # and the worst case is a spare relink.  Tests resolve paths at run time
+    # through reify_test_support::test_package / workspace_root, so a converted
+    # source is no longer touched.  src/ env!() usage, lib or unit-test, is
     # deliberately NOT relinked: touching a src/ file forces a lib recompile
     # that cascades to every dependent.  The gap is real (task #8927: a Fresh
     # reify-test-support rlib kept _merge-verify's path), so src/ code that
-    # needs a workspace path must resolve it at run time, e.g.
-    # crates/reify-test-support/src/workspace_root.rs, never via env!().
+    # needs a workspace path must resolve it at run time too, never via env!().
     #
     # MAINTENANCE: extend this regex if a new cargo-internal path-baking env!()
     # macro is identified (mirrors the _NONRELOCATABLE_BUILD_GLOBS allow-list
     # convention above).  Currently covers the CARGO_* macros known to bake
-    # absolute build-time paths into compiled test/bench binaries.
-    _ENV_PATH_MACRO_RE='env!\("(CARGO_MANIFEST_DIR|OUT_DIR|CARGO_TARGET_TMPDIR|CARGO_BIN_EXE_[A-Za-z0-9_-]+)"\)'
+    # absolute build-time paths into compiled test/bench binaries.  The
+    # test-path-baked-at-compile-time* rows of tests/infra/adoption-ratchet.manifest
+    # restate this ERE (with ' ' for its [:space:] class) to count what it relinks;
+    # update them in the same change (tests/infra/test_seed_warm_lane.sh N13
+    # reds on drift).  Keep it ONE single-quoted line:
+    # docs/notes/workspace-feature-union.md and N13 sed-extract it.
+    _ENV_PATH_MACRO_RE='^[[:space:]]*([^/[:space:]].*|/([^/].*)?)?env!\("(CARGO_MANIFEST_DIR|OUT_DIR|CARGO_TARGET_TMPDIR|CARGO_BIN_EXE_[A-Za-z0-9_-]+)"\)'
 
     # ── buildroot-match gate ───────────────────────────────────────────────
     # Compare the base's recorded build-worktree (refresh-warm-base.sh Step 4b

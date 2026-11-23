@@ -100,9 +100,9 @@ fn values_namespace_spelling_hint(printer: &TopologyTemplate, scoped_id: &str) -
     }
 }
 
-/// Path to the GUI-side gate that first caught esc-5098-6 (see module doc).
-const RAIL_LENGTHENING_GATE_MJS: &str =
-    concat!(env!("CARGO_MANIFEST_DIR"), "/../../gui/test/visual/railLengtheningGate.mjs");
+/// Repo-relative path to the GUI-side gate that first caught esc-5098-6 (see
+/// module doc).
+const RAIL_LENGTHENING_GATE_MJS: &str = "gui/test/visual/railLengtheningGate.mjs";
 
 /// The string literal assigned to `export const {name} = "...";` in `source`
 /// — a minimal parse of exactly the shape `railLengtheningGate.mjs` uses for
@@ -120,7 +120,9 @@ fn extract_js_string_const(source: &str, name: &str) -> Option<String> {
 /// link that keeps the two from silently diverging (see module doc).
 #[test]
 fn scoped_ids_match_the_gui_gates_pin_constants() {
-    let source = std::fs::read_to_string(RAIL_LENGTHENING_GATE_MJS)
+    let source = std::fs::read_to_string(
+        reify_test_support::workspace_root::workspace_root().join(RAIL_LENGTHENING_GATE_MJS),
+    )
         .unwrap_or_else(|e| panic!("cannot read {RAIL_LENGTHENING_GATE_MJS}: {e}"));
 
     for (rust_name, rust_value, js_name) in [

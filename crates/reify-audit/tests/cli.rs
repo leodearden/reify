@@ -1,6 +1,6 @@
 //! Integration tests for the `reify-audit` CLI binary.
 //!
-//! Tests invoke the compiled binary via `env!("CARGO_BIN_EXE_reify-audit")`
+//! Tests invoke the compiled binary via `test_package::bin_exe("reify-audit")`
 //! and assert on stdout, stderr, and exit codes.
 //!
 //! User-observable signal:
@@ -14,6 +14,8 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 use std::time::Duration;
+
+use reify_test_support::test_package;
 
 mod common;
 
@@ -66,18 +68,15 @@ fn task_fixture_with_files(
 
 /// Absolute path to this workspace's git repository root.
 ///
-/// `CARGO_MANIFEST_DIR` is `<root>/crates/reify-audit`, so two levels up is the
-/// worktree root. Tests that exercise `path_tracked_on` must point
+/// Tests that exercise `path_tracked_on` must point
 /// `--project-root` at a REAL git repo — a bare `tempfile::tempdir()` is not one,
 /// so every `git ls-tree` there fails and `path_tracked_on` fail-safes to
 /// `false` for every path, which would make an "absent from main" assertion
 /// vacuously true.
 fn repo_root() -> std::path::PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
+    reify_test_support::workspace_root::workspace_root()
         .canonicalize()
-        .expect("canonicalize repo root from CARGO_MANIFEST_DIR/../..")
+        .expect("canonicalize the workspace root")
 }
 
 /// Write tasks.json with the given task fixtures to `dir/tasks.json`.
@@ -223,8 +222,8 @@ mod cli {
     /// lists the deleted `--since`.
     #[test]
     fn binary_help_succeeds() {
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .arg("--help")
             .output()
             .expect("failed to invoke reify-audit --help");
@@ -265,8 +264,8 @@ mod cli {
         let tmp = tempfile::tempdir().expect("create tempdir");
         let project_root = tmp.path();
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args(["--print-repo-id", "--project-root"])
             .arg(project_root)
             .output()
@@ -296,8 +295,8 @@ mod cli {
     fn print_repo_id_honours_jcodemunch_repo_override() {
         let tmp = tempfile::tempdir().expect("create tempdir");
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args(["--print-repo-id", "--project-root"])
             .arg(tmp.path())
             .args(["--jcodemunch-repo", "leodearden/reify"])
@@ -408,7 +407,7 @@ mod cli {
     fn index_script_repo_id_agrees_between_the_rust_and_bash_producers() {
         let tmp = tempfile::tempdir().expect("create tempdir");
         let code_index = tmp.path().join("code-index");
-        let bin = Path::new(env!("CARGO_BIN_EXE_reify-audit"));
+        let bin = test_package::bin_exe("reify-audit");
         // A path that cannot exec forces the cold-checkout branch.
         let absent = tmp.path().join("no-such-reify-audit");
 
@@ -420,7 +419,7 @@ mod cli {
 
         for project_root in [ordinary.as_path(), spaced.as_path(), Path::new("/")] {
             let (rust_id, rust_from, rust_err) =
-                index_script_repo_id(project_root, &code_index, bin);
+                index_script_repo_id(project_root, &code_index, &bin);
             assert!(
                 rust_from.contains("--print-repo-id"),
                 "the binary leg must be answered by reify-audit for {}; \
@@ -506,8 +505,8 @@ mod cli {
         let tasks_file = write_tasks_json(dir, &tasks);
         let runs_db = write_empty_runs_db(dir);
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--task",
                 "3242",
@@ -611,9 +610,9 @@ mod cli {
         let tasks_file = write_tasks_json(dir, &tasks);
         let runs_db = write_empty_runs_db(dir);
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let bin = test_package::bin_exe("reify-audit");
         let run = |task_id: &str| {
-            Command::new(bin)
+            Command::new(&bin)
                 .args([
                     "--task",
                     task_id,
@@ -713,8 +712,8 @@ mod cli {
         let tasks_file = write_tasks_json(dir, &tasks);
         let runs_db = write_empty_runs_db(dir);
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--task",
                 "3242",
@@ -785,9 +784,9 @@ mod cli {
         let tasks_file = write_tasks_json(dir, &tasks);
         let runs_db = write_empty_runs_db(dir);
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let bin = test_package::bin_exe("reify-audit");
         let run = |warn_only: bool| {
-            let mut cmd = Command::new(bin);
+            let mut cmd = Command::new(&bin);
             cmd.args([
                 "--task",
                 "63451",
@@ -926,8 +925,8 @@ mod cli {
         let tasks_file = write_tasks_json(dir, &tasks);
         let runs_db = write_empty_runs_db(dir);
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--task",
                 "9911",
@@ -980,10 +979,10 @@ mod cli {
         let tasks_file = write_tasks_json(dir, &tasks);
         let runs_db = write_empty_runs_db(dir);
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let bin = test_package::bin_exe("reify-audit");
 
         // --- Spot-check on done/merged task (expect at least P5 High) ---
-        let out = Command::new(bin)
+        let out = Command::new(&bin)
             .args([
                 "--task",
                 "3242",
@@ -1016,7 +1015,7 @@ mod cli {
         );
 
         // --- Spot-check on pending task (expect zero findings) ---
-        let out2 = Command::new(bin)
+        let out2 = Command::new(&bin)
             .args([
                 "--task",
                 "7777",
@@ -1080,8 +1079,8 @@ mod cli {
         // Corroborate 9999: runs.db check passes, git check trivially passes (no files).
         insert_completed_event(&runs_db, "9999");
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--pattern",
                 "P5",
@@ -1149,8 +1148,8 @@ mod cli {
         let tasks_file = write_tasks_json(dir, &tasks);
         let runs_db = write_empty_runs_db(dir);
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--no-jcodemunch",
                 "--tasks-file",
@@ -1189,8 +1188,8 @@ mod cli {
         let tasks_file = write_tasks_json(dir, &tasks);
         let runs_db = write_empty_runs_db(dir);
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--task", "1",
                 "--pre-done",
@@ -1221,8 +1220,8 @@ mod cli {
         let tasks_file = write_tasks_json(dir, &tasks);
         let runs_db = write_empty_runs_db(dir);
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--since", "2026-01-01",
                 "--tasks-file", tasks_file.to_str().unwrap(),
@@ -1268,8 +1267,8 @@ mod cli {
         let tasks_file = write_tasks_json(dir, &tasks);
         let runs_db = write_empty_runs_db(dir);
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--task",
                 "4200",
@@ -1318,8 +1317,8 @@ mod cli {
         // `common::net` for why port 0 has no TOCTOU window.
         let unreachable_url = common::net::unreachable_mcp_url();
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--task",
                 "1",
@@ -1390,8 +1389,8 @@ mod cli {
         let tasks_file = write_tasks_json(dir, &tasks);
         let runs_db = write_empty_runs_db(dir);
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--task",
                 "4201",
@@ -1453,8 +1452,8 @@ mod cli {
         let runs_db = write_empty_runs_db(dir);
         git_init_commit_all(dir);
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--task",
                 "7113",
@@ -1521,8 +1520,8 @@ mod cli {
         // A non-existent tasks file (the first --tasks-file; should lose).
         let nonexistent = dir.join("does-not-exist.json");
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--task",
                 "dup-test-1",
@@ -1564,8 +1563,8 @@ mod cli {
         let tasks_file = write_tasks_json(dir, &tasks);
         let runs_db = write_empty_runs_db(dir);
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--pattern",
                 "P1",
@@ -1610,8 +1609,8 @@ mod cli {
 
         let unreachable_url = common::net::unreachable_mcp_url();
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--jcodemunch-url", &unreachable_url,
                 "--tasks-file", tasks_file.to_str().unwrap(),
@@ -1690,8 +1689,8 @@ mod cli {
         let tasks_file = write_tasks_json(dir, &tasks);
         let runs_db = write_empty_runs_db(dir);
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--jcodemunch-url", &url,
                 "--tasks-file", tasks_file.to_str().unwrap(),
@@ -1784,8 +1783,8 @@ mod cli {
 
         let unreachable_url = common::net::unreachable_mcp_url();
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--pattern", "P1",
                 "--no-jcodemunch",
@@ -1832,8 +1831,8 @@ mod cli {
 
         let unreachable_url = common::net::unreachable_mcp_url();
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--task", "42",
                 "--pre-done",
@@ -1884,8 +1883,8 @@ mod cli {
         let tasks_file = write_tasks_json(dir, &[]);
         let runs_db = write_empty_runs_db(dir);
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--pattern",
                 "PDEAD",
@@ -1929,8 +1928,8 @@ mod cli {
         let tasks_file = write_tasks_json(dir, &[]);
         let runs_db = write_empty_runs_db(dir);
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--pattern",
                 "PUNTESTED",
@@ -1979,8 +1978,8 @@ mod cli {
         let tasks_file = write_tasks_json(dir, &[]);
         let runs_db = write_empty_runs_db(dir);
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--pattern",
                 "PLAYER",
@@ -2115,8 +2114,8 @@ mod cli {
             }))
         });
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--pattern",
                 "PLAYER",
@@ -2199,8 +2198,8 @@ mod cli {
         let tasks_file = write_tasks_json(dir, &tasks);
         let runs_db = write_empty_runs_db(dir);
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--task",
                 "3242",
@@ -2259,8 +2258,8 @@ mod cli {
         let tasks_file = write_tasks_json(dir, &[]);
         let runs_db = write_empty_runs_db(dir);
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--pattern",
                 "P1,BOGUS",
@@ -2322,15 +2321,15 @@ mod cli {
         let repo = tempfile::tempdir().expect("create repo tempdir");
         let aux = tempfile::tempdir().expect("create aux tempdir");
 
-        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ptodo");
+        let fixtures = test_package::manifest_dir().join("tests/fixtures/ptodo");
         copy_dir_recursive(&fixtures, repo.path());
         git_init_commit_all(repo.path());
 
         let tasks_file = write_tasks_json(aux.path(), &[]);
         let runs_db = write_empty_runs_db(aux.path());
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--pattern",
                 "PTODO",
@@ -2493,7 +2492,7 @@ mod cli {
         let repo = tempfile::tempdir().expect("create repo tempdir");
         let aux = tempfile::tempdir().expect("create aux tempdir");
 
-        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ptodo");
+        let fixtures = test_package::manifest_dir().join("tests/fixtures/ptodo");
         copy_dir_recursive(&fixtures, repo.path());
         git_init_commit_all(repo.path());
 
@@ -2506,8 +2505,8 @@ mod cli {
         // than one copy here and one in the replay harness.
         let decoy = common::git_env::decoy_repo();
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let mut cmd = Command::new(bin);
+        let bin = test_package::bin_exe("reify-audit");
+        let mut cmd = Command::new(&bin);
         cmd.args([
             "--pattern",
             "PTODO",
@@ -2645,8 +2644,8 @@ mod cli {
         let tasks_file = write_tasks_json(aux.path(), &[]);
         let runs_db = write_empty_runs_db(aux.path());
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--pattern",
                 "PTODO",
@@ -2741,8 +2740,8 @@ mod cli {
         let tasks_file = write_tasks_json(aux.path(), &[]);
         let runs_db = write_empty_runs_db(aux.path());
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--pattern",
                 "PTODO",
@@ -2828,8 +2827,8 @@ mod cli {
         let tasks_file = write_tasks_json(aux.path(), &[]);
         let runs_db = write_empty_runs_db(aux.path());
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .env("REIFY_PTODO_TASKS_DB", &override_db)
             .args([
                 "--pattern",
@@ -2932,15 +2931,15 @@ mod cli {
         let repo = tempfile::tempdir().expect("create repo tempdir");
         let aux = tempfile::tempdir().expect("create aux tempdir");
 
-        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pdiag");
+        let fixtures = test_package::manifest_dir().join("tests/fixtures/pdiag");
         copy_dir_recursive(&fixtures, repo.path());
         git_init_commit_all(repo.path());
 
         let tasks_file = write_tasks_json(aux.path(), &[]);
         let runs_db = write_empty_runs_db(aux.path());
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--pattern",
                 "PDIAG",
@@ -3061,15 +3060,15 @@ mod cli {
         let repo = tempfile::tempdir().expect("create repo tempdir");
         let aux = tempfile::tempdir().expect("create aux tempdir");
 
-        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pdiag");
+        let fixtures = test_package::manifest_dir().join("tests/fixtures/pdiag");
         copy_dir_recursive(&fixtures, repo.path());
         git_init_commit_all(repo.path());
 
         let tasks_file = write_tasks_json(aux.path(), &[]);
         let runs_db = write_empty_runs_db(aux.path());
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--no-jcodemunch",
                 "--project-root",
@@ -3101,7 +3100,7 @@ mod cli {
     /// (SELF-MATCH DISCIPLINE, as above). One copy is one code-less site, so
     /// the file's code-less count is exactly `n`.
     fn pdiag_ratchet_source(n: u32) -> String {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pdiag_ratchet");
+        let dir = test_package::manifest_dir().join("tests/fixtures/pdiag_ratchet");
         let header = std::fs::read_to_string(dir.join("header.rs.template"))
             .expect("read pdiag_ratchet/header.rs.template");
         let block = std::fs::read_to_string(dir.join("site_block.rs.template"))
@@ -3143,10 +3142,9 @@ mod cli {
 
         // Lift the REAL committed manifest — not a synthetic stand-in, so the
         // test also fails if the shipped manifest stops parsing.
-        let baseline_text = std::fs::read_to_string(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("pdiag-baseline.txt"),
-        )
-        .expect("read the committed crates/reify-audit/pdiag-baseline.txt");
+        let baseline_text =
+            std::fs::read_to_string(test_package::manifest_dir().join("pdiag-baseline.txt"))
+                .expect("read the committed crates/reify-audit/pdiag-baseline.txt");
         let baseline = reify_audit::pdiag::parse_baseline(&baseline_text)
             .expect("the committed pdiag-baseline.txt must parse");
 
@@ -3179,9 +3177,9 @@ mod cli {
         let tasks_file = write_tasks_json(aux.path(), &[]);
         let runs_db = write_empty_runs_db(aux.path());
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let bin = test_package::bin_exe("reify-audit");
         let run = || {
-            Command::new(bin)
+            Command::new(&bin)
                 .args([
                     "--pattern",
                     "PDIAG",
@@ -3293,8 +3291,8 @@ mod http_loader {
             }))
         });
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--task", "9999",
                 "--pre-done",
@@ -3374,8 +3372,8 @@ mod http_loader {
         });
         let observed = mock.observed_handle();
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--task",
                 "9998",
@@ -3495,8 +3493,8 @@ mod http_loader {
             }))
         });
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--task",
                 "9997",
@@ -3551,8 +3549,8 @@ mod http_loader {
             }))
         });
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--task", "4242",
                 "--pre-done",
@@ -3593,8 +3591,8 @@ mod http_loader {
 
         let mock = spawn_mock_mcp(|_args| None);
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--task", "0000",
                 "--pre-done",
@@ -3637,8 +3635,8 @@ mod http_loader {
         let mock =
             spawn_mock_mcp_shaped(Framing::Sse, ResultShape::StructuredContent, |_args| None);
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--task",
                 "9995",
@@ -3706,8 +3704,8 @@ mod http_loader {
             },
         );
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--task",
                 "9994",
@@ -3769,8 +3767,8 @@ mod http_loader {
             },
         );
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--task",
                 "9993",
@@ -3859,8 +3857,8 @@ mod http_loader {
             }))
         });
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--pattern", "P5",
                 "--no-jcodemunch",
@@ -3914,8 +3912,8 @@ mod http_loader {
         // `common::net` for why port 0 has no TOCTOU window.
         let url = common::net::unreachable_mcp_url();
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--task", "1234",
                 "--pre-done",
@@ -3973,8 +3971,8 @@ mod http_loader {
             }))
         });
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--task", "9999",
                 "--pre-done",
@@ -4040,8 +4038,8 @@ mod http_loader {
             }))
         });
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--pattern", "P1",
                 "--no-jcodemunch",
@@ -4085,8 +4083,8 @@ mod http_loader {
         // adapter is `{}` (no `tasks` array).
         let mock = spawn_mock_mcp(|_args| Some(serde_json::json!({})));
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--fused-memory-url", mock.url(),
                 "--runs-db", runs_db.to_str().unwrap(),
@@ -4135,8 +4133,8 @@ mod http_loader {
             Some(serde_json::json!({}))
         });
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--fused-memory-url",
                 mock.url(),
@@ -4240,8 +4238,8 @@ mod freshness_gate {
         }
 
         fn run_raw(&self, pattern: &[&str], extra: &[&str]) -> std::process::Output {
-            let bin = env!("CARGO_BIN_EXE_reify-audit");
-            let mut cmd = Command::new(bin);
+            let bin = test_package::bin_exe("reify-audit");
+            let mut cmd = Command::new(&bin);
             cmd.args(pattern);
             cmd.args([
                 "--tasks-file", self.tasks_file.to_str().unwrap(),
@@ -4267,8 +4265,8 @@ mod freshness_gate {
             env: &[(&str, Option<&str>)],
             extra: &[&str],
         ) -> std::process::Output {
-            let bin = env!("CARGO_BIN_EXE_reify-audit");
-            let mut cmd = Command::new(bin);
+            let bin = test_package::bin_exe("reify-audit");
+            let mut cmd = Command::new(&bin);
             cmd.args(["--pattern", pattern]);
             cmd.args([
                 "--tasks-file", self.tasks_file.to_str().unwrap(),
@@ -5267,8 +5265,8 @@ mod freshness_gate {
         std::fs::create_dir_all(&non_git).expect("create non-git root");
         let mock = spawn_jcodemunch_mock();
 
-        let bin = env!("CARGO_BIN_EXE_reify-audit");
-        let out = Command::new(bin)
+        let bin = test_package::bin_exe("reify-audit");
+        let out = Command::new(&bin)
             .args([
                 "--pattern", "P1",
                 "--tasks-file", s.tasks_file.to_str().unwrap(),
@@ -5383,8 +5381,8 @@ mod wire_identity {
 
     impl Fixture {
         fn run(&self, url: &str, extra: &[&str]) -> std::process::Output {
-            let bin = env!("CARGO_BIN_EXE_reify-audit");
-            let mut cmd = Command::new(bin);
+            let bin = test_package::bin_exe("reify-audit");
+            let mut cmd = Command::new(&bin);
             cmd.args([
                 "--pattern", "PLAYER",
                 "--jcodemunch-url", url,

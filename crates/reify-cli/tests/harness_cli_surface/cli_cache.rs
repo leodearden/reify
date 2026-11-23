@@ -1,7 +1,7 @@
 //! Integration tests for `reify cache export/import` (task 2977).
 //!
 //! These tests are intentionally outer-shell-only: they drive the `reify`
-//! binary through `Command::new(env!("CARGO_BIN_EXE_reify"))`, mirroring the
+//! binary through `Command::new(test_package::bin_exe("reify"))`, mirroring the
 //! pattern established by `cli_smoke.rs` / `cli_doc.rs`.  They use
 //! `tempfile::tempdir()` for hermetic cache roots and steer the binary at
 //! that root via the `REIFY_CACHE_DIR` env var.
@@ -14,6 +14,7 @@ use reify_eval::persistent_cache::{
     CacheEntryHeader, ENGINE_VERSION_HASH, ENTRY_FORMAT_VERSION, STALE_TEMPFILE_AGE,
     WithDiagnostics, read_entry, shard_dir, write_entry,
 };
+use reify_test_support::test_package;
 use tempfile::tempdir;
 
 /// Build a tetrahedral-only (no shell elements) `ElasticResult` fixture for
@@ -70,7 +71,7 @@ fn seed_entry(
 fn help_text_mentions_cache_export_subcommand() {
     // `reify` with no args should mention `cache export` alongside the other
     // commands so operators can discover the subcommand from `--help`.
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+    let output = Command::new(test_package::bin_exe("reify"))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -93,7 +94,7 @@ fn help_text_mentions_cache_export_subcommand() {
 fn cache_with_no_subcommand_shows_usage() {
     // `reify cache` (no sub-subcommand) should exit non-zero and print the
     // cache-specific usage banner.
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+    let output = Command::new(test_package::bin_exe("reify"))
         .args(["cache"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -117,7 +118,7 @@ fn cache_with_no_subcommand_shows_usage() {
 fn cache_unknown_subcommand_shows_usage() {
     // `reify cache foo` (unknown sub-subcommand) should be rejected with the
     // cache-specific usage banner.
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+    let output = Command::new(test_package::bin_exe("reify"))
         .args(["cache", "foo"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -143,7 +144,7 @@ fn cache_export_with_no_hash_shows_export_usage() {
     // export-specific usage banner.  Pinned cache dir keeps the test hermetic.
     let cache_dir = tempdir().expect("tempdir");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+    let output = Command::new(test_package::bin_exe("reify"))
         .args(["cache", "export"])
         .env("REIFY_CACHE_DIR", cache_dir.path())
         .stdin(std::process::Stdio::null())
@@ -177,7 +178,7 @@ fn export_existing_entry_writes_tar_with_bin_and_meta_to_stdout() {
     seed_entry(cache_dir.path(), ENGINE_VERSION_HASH, &input_hash, &fixture)
         .expect("write_entry must seed the source cache");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+    let output = Command::new(test_package::bin_exe("reify"))
         .args(["cache", "export", &input_hash])
         .env("REIFY_CACHE_DIR", cache_dir.path())
         .stdin(std::process::Stdio::null())
@@ -244,7 +245,7 @@ fn export_with_missing_entry_writes_error_and_exits_failure() {
     let cache_dir = tempdir().expect("tempdir");
     let hash = "00112233445566778899aabbccddeeff";
 
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+    let output = Command::new(test_package::bin_exe("reify"))
         .args(["cache", "export", hash])
         .env("REIFY_CACHE_DIR", cache_dir.path())
         .stdin(std::process::Stdio::null())
@@ -299,7 +300,7 @@ fn import_malformed_tar_exits_failure_and_leaves_cache_empty() {
     let cache_dir = tempdir().expect("tempdir");
     let garbage: Vec<u8> = std::iter::repeat_n(b'X', 4096).collect();
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_reify"))
+    let mut child = Command::new(test_package::bin_exe("reify"))
         .args(["cache", "import"])
         .env("REIFY_CACHE_DIR", cache_dir.path())
         .stdin(Stdio::piped())
@@ -360,7 +361,7 @@ fn round_trip_export_import_preserves_elastic_result() {
         .expect("write_entry must seed source cache");
 
     // (1) Export from src.
-    let export_output = Command::new(env!("CARGO_BIN_EXE_reify"))
+    let export_output = Command::new(test_package::bin_exe("reify"))
         .args(["cache", "export", &input_hash])
         .env("REIFY_CACHE_DIR", src.path())
         .stdin(Stdio::null())
@@ -377,7 +378,7 @@ fn round_trip_export_import_preserves_elastic_result() {
     assert!(!tar_bytes.is_empty(), "exported tar must be non-empty");
 
     // (2) Import into dst.
-    let mut import_child = Command::new(env!("CARGO_BIN_EXE_reify"))
+    let mut import_child = Command::new(test_package::bin_exe("reify"))
         .args(["cache", "import"])
         .env("REIFY_CACHE_DIR", dst.path())
         .stdin(Stdio::piped())
@@ -459,7 +460,7 @@ fn import_with_mismatched_engine_version_warns_and_skips() {
 
     let cache_dir = tempdir().expect("tempdir");
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_reify"))
+    let mut child = Command::new(test_package::bin_exe("reify"))
         .args(["cache", "import"])
         .env("REIFY_CACHE_DIR", cache_dir.path())
         .stdin(Stdio::piped())
@@ -564,7 +565,7 @@ fn import_with_path_traversal_input_hash_warns_and_skips_no_filesystem_writes() 
     let cache_dir = outer.path().join("cache");
     std::fs::create_dir(&cache_dir).expect("create cache subdir");
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_reify"))
+    let mut child = Command::new(test_package::bin_exe("reify"))
         .args(["cache", "import"])
         .env("REIFY_CACHE_DIR", &cache_dir)
         .stdin(Stdio::piped())
@@ -641,7 +642,7 @@ fn cache_export_rejects_invalid_hash_without_panic() {
     ];
 
     for bad in bad_hashes {
-        let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+        let output = Command::new(test_package::bin_exe("reify"))
             .args(["cache", "export", bad])
             .env("REIFY_CACHE_DIR", cache_dir.path())
             .stdin(Stdio::null())
@@ -711,7 +712,7 @@ fn import_with_traversal_shaped_tar_path_exits_failure_no_filesystem_writes() {
     let cache_dir = outer.path().join("cache");
     std::fs::create_dir(&cache_dir).expect("create cache subdir");
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_reify"))
+    let mut child = Command::new(test_package::bin_exe("reify"))
         .args(["cache", "import"])
         .env("REIFY_CACHE_DIR", &cache_dir)
         .stdin(Stdio::piped())
@@ -786,7 +787,7 @@ fn import_with_non_hex_stem_warns_and_skips_no_filesystem_writes() {
 
     let cache_dir = tempdir().expect("tempdir");
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_reify"))
+    let mut child = Command::new(test_package::bin_exe("reify"))
         .args(["cache", "import"])
         .env("REIFY_CACHE_DIR", cache_dir.path())
         .stdin(Stdio::piped())
@@ -832,7 +833,7 @@ fn cache_stats_on_empty_cache_succeeds_and_prints_entry_count_zero() {
     // and the later golden test (step-5).
     let cache_dir = tempdir().expect("tempdir");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+    let output = Command::new(test_package::bin_exe("reify"))
         .args(["cache", "stats"])
         .env("REIFY_CACHE_DIR", cache_dir.path())
         .stdin(Stdio::null())
@@ -873,7 +874,7 @@ fn cache_stats_reports_correct_entry_count_and_total_size_for_seeded_cache() {
             .expect("write_entry must seed the cache");
     }
 
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+    let output = Command::new(test_package::bin_exe("reify"))
         .args(["cache", "stats"])
         .env("REIFY_CACHE_DIR", cache_dir.path())
         .stdin(Stdio::null())
@@ -957,7 +958,7 @@ fn cache_stats_output_schema_golden_with_top_n_and_hit_rate_caveat() {
             .expect("write_entry must seed the cache");
     }
 
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+    let output = Command::new(test_package::bin_exe("reify"))
         .args(["cache", "stats"])
         .env("REIFY_CACHE_DIR", cache_dir.path())
         .stdin(Stdio::null())
@@ -1101,7 +1102,7 @@ fn cache_stats_aggregates_across_engine_versions() {
     seed_entry(cache_dir.path(), &stale_engine, &stale_input, &fixture)
         .expect("write_entry must seed under synthesized stale engine version");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+    let output = Command::new(test_package::bin_exe("reify"))
         .args(["cache", "stats"])
         .env("REIFY_CACHE_DIR", cache_dir.path())
         .stdin(Stdio::null())
@@ -1163,7 +1164,7 @@ fn cache_clear_without_yes_refuses_and_exits_failure_and_preserves_entries() {
         "test setup: cache must contain a .bin before clear; found: {pre:?}"
     );
 
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+    let output = Command::new(test_package::bin_exe("reify"))
         .args(["cache", "clear"])
         .env("REIFY_CACHE_DIR", cache_dir.path())
         .stdin(Stdio::null())
@@ -1208,7 +1209,7 @@ fn cache_clear_yes_then_stats_round_trip_reports_empty() {
     }
 
     // (1) clear --yes
-    let clear_output = Command::new(env!("CARGO_BIN_EXE_reify"))
+    let clear_output = Command::new(test_package::bin_exe("reify"))
         .args(["cache", "clear", "--yes"])
         .env("REIFY_CACHE_DIR", cache_dir.path())
         .stdin(Stdio::null())
@@ -1223,7 +1224,7 @@ fn cache_clear_yes_then_stats_round_trip_reports_empty() {
     );
 
     // (2) stats reports 0
-    let stats_output = Command::new(env!("CARGO_BIN_EXE_reify"))
+    let stats_output = Command::new(test_package::bin_exe("reify"))
         .args(["cache", "stats"])
         .env("REIFY_CACHE_DIR", cache_dir.path())
         .stdin(Stdio::null())
@@ -1284,7 +1285,7 @@ fn cache_clear_with_engine_version_yes_clears_only_target_subdir_and_preserves_o
         "test setup: subdir_b must exist before clear: {subdir_b:?}"
     );
 
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+    let output = Command::new(test_package::bin_exe("reify"))
         .args(["cache", "clear", "--yes", "--engine-version", &hash_a])
         .env("REIFY_CACHE_DIR", cache_dir.path())
         .stdin(Stdio::null())
@@ -1337,7 +1338,7 @@ fn cache_clear_engine_version_nondir_target_is_idempotent_success_and_preserves_
         "test setup: stray must be a regular file before running the command: {stray:?}"
     );
 
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+    let output = Command::new(test_package::bin_exe("reify"))
         .args(["cache", "clear", "--yes", "--engine-version", &hash])
         .env("REIFY_CACHE_DIR", cache_dir.path())
         .stdin(Stdio::null())
@@ -1377,7 +1378,7 @@ fn cache_gc_under_cap_is_no_op_and_preserves_all_entries() {
             .expect("write_entry must seed the cache");
     }
 
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+    let output = Command::new(test_package::bin_exe("reify"))
         .args(["cache", "gc"])
         .env("REIFY_CACHE_DIR", cache_dir.path())
         .env("REIFY_CACHE_MAX_BYTES", "10000000000") // 10 GB — well above the seeded footprint
@@ -1465,7 +1466,7 @@ fn cache_gc_evicts_when_forced_over_cap() {
         "test setup: all seeded .bins must be present pre-gc"
     );
 
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+    let output = Command::new(test_package::bin_exe("reify"))
         .args(["cache", "gc"])
         .env("REIFY_CACHE_DIR", cache_dir.path())
         .env("REIFY_CACHE_MAX_BYTES", "1024")
@@ -1542,7 +1543,7 @@ fn cache_stats_honors_cache_dir_flag_overriding_env_var() {
             .expect("write_entry must seed env_dir");
     }
 
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+    let output = Command::new(test_package::bin_exe("reify"))
         .args([
             "cache",
             "stats",
@@ -1578,7 +1579,7 @@ fn cache_export_with_extra_positional_shows_export_usage() {
     // rejected with the export-specific usage banner.
     let cache_dir = tempdir().expect("tempdir");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+    let output = Command::new(test_package::bin_exe("reify"))
         .args(["cache", "export", "aaa", "bbb"])
         .env("REIFY_CACHE_DIR", cache_dir.path())
         .stdin(std::process::Stdio::null())
@@ -1640,10 +1641,9 @@ fn cli_check_sweeps_stale_persistent_cache_tempfile_at_startup() {
         file.set_times(times).expect("backdate mtime");
     }
 
-    let fixture =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bracket.ri");
+    let fixture = test_package::manifest_dir().join("tests/fixtures/bracket.ri");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+    let output = Command::new(test_package::bin_exe("reify"))
         .args(["check", fixture.to_str().unwrap()])
         .env("REIFY_CACHE_DIR", cache_dir.path())
         // Remove vars the resolver also consults so a stale dev-shell env
@@ -1681,7 +1681,7 @@ const SHELL_TOO_THICK_TEXT: &str = "too thick for shell solve";
 /// Merged because the acceptance is "the user still sees the warning", which
 /// does not depend on which stream carries it.
 fn run_eval_with_cache_dir(fixture: &std::path::Path, cache_dir: &std::path::Path) -> String {
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
+    let output = Command::new(test_package::bin_exe("reify"))
         .args(["eval", fixture.to_str().expect("fixture path is UTF-8")])
         .env("REIFY_CACHE_DIR", cache_dir)
         // Remove the vars the cache resolver also consults, so a stale dev-shell
@@ -1733,8 +1733,8 @@ fn snapshot_bin_entries(
 #[test]
 fn shell_too_thick_warning_survives_a_second_eval_against_a_warm_cache() {
     let cache_dir = tempdir().expect("tempdir");
-    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples/fea_shell_too_thick_auto.ri");
+    let fixture =
+        reify_test_support::examples_corpus::examples_dir().join("fea_shell_too_thick_auto.ri");
 
     let first = run_eval_with_cache_dir(&fixture, cache_dir.path());
     assert!(

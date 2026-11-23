@@ -24,10 +24,9 @@ use reify_ir::Value;
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_eval::Engine;
 
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/structural_query_bom.ri"
-);
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("structural_query_bom.ri")
+}
 
 /// Golden eval: reads `examples/structural_query_bom.ri` and asserts that
 /// `Assembly.part_count == Int(6)` and `Assembly.bolt_count == Int(4)` with
@@ -37,7 +36,7 @@ const EXAMPLE_PATH: &str = concat!(
 /// GREEN after step-6 creates the example.
 #[test]
 fn example_structural_query_bom_ri_evals_to_golden_counts() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
+    let source = std::fs::read_to_string(example_path())
         .expect("examples/structural_query_bom.ri should exist (created by step-6)");
 
     // ── parse ──

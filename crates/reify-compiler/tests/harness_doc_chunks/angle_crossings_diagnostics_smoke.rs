@@ -65,10 +65,8 @@ use crate::chunk_io::{UNITS_CHUNK_PATH, read_chunk};
 ///
 /// `include_str!` (not `fs::read_to_string`) so a moved or renamed exemplar is
 /// a BUILD error rather than a runtime panic.
-const ANGLE_CROSSINGS_EXEMPLAR: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/best_practices/angle_crossings.ri"
-));
+const ANGLE_CROSSINGS_EXEMPLAR: &str =
+    include_str!("../../../../examples/best_practices/angle_crossings.ri");
 
 /// The exemplar's `CANONICAL COPY` block transcribes a diagnostic for exactly
 /// these four declarations, in this order, under these renderers.

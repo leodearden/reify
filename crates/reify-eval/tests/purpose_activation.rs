@@ -34,10 +34,9 @@ use reify_test_support::{
     make_engine, make_simple_engine, mm, parse_and_compile, parse_and_compile_with_stdlib,
 };
 
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/m10_purpose_activation.ri"
-);
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("m10_purpose_activation.ri")
+}
 
 // ─── Fixture sources ──────────────────────────────────────────────────────────
 
@@ -710,7 +709,7 @@ purpose mfg_ready(subject : Structure) {
 
 #[test]
 fn m10_purpose_activation_example_parses_and_compiles() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
+    let source = std::fs::read_to_string(example_path())
         .expect("examples/m10_purpose_activation.ri should exist");
     let parsed = reify_syntax::parse(&source, ModulePath::single("test"));
     assert!(
@@ -756,7 +755,7 @@ fn m10_purpose_activation_example_parses_and_compiles() {
 
 #[test]
 fn m10_purpose_activation_example_constraints_satisfied() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
+    let source = std::fs::read_to_string(example_path())
         .expect("examples/m10_purpose_activation.ri should exist");
     let compiled = parse_and_compile_with_stdlib(&source);
     // Use make_simple_engine() (rather than make_engine()) because this test needs a
@@ -789,7 +788,7 @@ fn m10_purpose_activation_example_constraints_satisfied() {
 
 #[test]
 fn m10_purpose_activation_example_activate_minimize_purpose() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
+    let source = std::fs::read_to_string(example_path())
         .expect("examples/m10_purpose_activation.ri should exist");
     let compiled = parse_and_compile_with_stdlib(&source);
     let mut engine = make_engine();
@@ -823,7 +822,7 @@ fn m10_purpose_activation_example_activate_minimize_purpose() {
 
 #[test]
 fn m10_purpose_activation_example_activate_multi_constraint_purpose() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
+    let source = std::fs::read_to_string(example_path())
         .expect("examples/m10_purpose_activation.ri should exist");
     let compiled = parse_and_compile_with_stdlib(&source);
     let mut engine = make_engine();

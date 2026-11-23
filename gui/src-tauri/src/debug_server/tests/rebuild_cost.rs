@@ -13,7 +13,7 @@
 //! A child of `debug_server::tests` so it builds only under the `gui` feature,
 //! which is what links the OCCT kernel. It reaches public items only.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -53,7 +53,7 @@ fn measure() {
         "the OCCT kernel is not registered, so this would measure a stand-in"
     );
 
-    let root = workspace_root();
+    let root = reify_test_support::workspace_root::workspace_root();
     let design = std::env::var("REIFY_REBUILD_COST_DESIGN").unwrap_or(DEFAULT_DESIGN.to_string());
     let engine: Engine = Arc::new(Mutex::new(EngineSession::with_registered_kernel(Box::new(
         SimpleConstraintChecker,
@@ -74,7 +74,7 @@ fn measure() {
         } else {
             "release"
         },
-        head_sha(&root),
+        head_sha(root),
         host_load(),
         ms(load),
         ms(rebuild),
@@ -205,12 +205,6 @@ fn ms(d: Duration) -> String {
     format!("{:.1}", d.as_secs_f64() * 1000.0)
 }
 
-fn workspace_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .expect("workspace root")
-}
 
 /// Wall-clock numbers mean little without the load they were taken under.
 fn host_load() -> String {

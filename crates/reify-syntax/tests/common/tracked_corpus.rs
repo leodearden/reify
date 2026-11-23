@@ -71,15 +71,9 @@ fn partition_inert_by<T: AsRef<str>>(classifier: &Path, paths: Vec<T>) -> InertP
     partition
 }
 
-/// The workspace root, resolved from this crate's manifest dir
-/// (`<root>/crates/reify-syntax` → up two).
+/// The workspace root of the running test process.
 pub fn workspace_root() -> PathBuf {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    manifest
-        .parent()
-        .and_then(|p| p.parent())
-        .expect("CARGO_MANIFEST_DIR must be <workspace>/crates/reify-syntax")
-        .to_path_buf()
+    reify_test_support::workspace_root::workspace_root().to_path_buf()
 }
 
 /// Every `*.ri` file TRACKED by git under `root`, as sorted repo-relative

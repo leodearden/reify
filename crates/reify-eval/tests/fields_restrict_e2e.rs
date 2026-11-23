@@ -21,15 +21,13 @@ use reify_expr::ContainmentQuery;
 use reify_ir::{ExportFormat, GeometryHandleId, Value};
 use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
 
-const CONTAINS_BOX_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/kernel_queries/contains_box.ri"
-);
+fn contains_box_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("kernel_queries/contains_box.ri")
+}
 
-const RESTRICT_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/fields/restrict.ri"
-);
+fn restrict_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("fields/restrict.ri")
+}
 
 // ── step-5 RED: impl ContainmentQuery for Engine ────────────────────────────
 
@@ -51,7 +49,7 @@ const RESTRICT_PATH: &str = concat!(
 #[test]
 fn engine_containment_query_impl_dispatches_correctly() {
     // Fixture compilation is kernel-independent — validate unconditionally.
-    let source = std::fs::read_to_string(CONTAINS_BOX_PATH)
+    let source = std::fs::read_to_string(contains_box_path())
         .expect("examples/kernel_queries/contains_box.ri should exist");
     let compiled = parse_and_compile_with_stdlib(&source);
     assert!(
@@ -143,7 +141,7 @@ fn engine_containment_query_impl_dispatches_correctly() {
 /// Skips OCCT-dependent assertions when OCCT is not available.
 #[test]
 fn restrict_field_b5_integration() {
-    let source = std::fs::read_to_string(RESTRICT_PATH)
+    let source = std::fs::read_to_string(restrict_path())
         .expect("examples/fields/restrict.ri should exist (task 4222 pre-1)");
     let compiled = parse_and_compile_with_stdlib(&source);
     assert!(

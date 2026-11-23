@@ -325,13 +325,9 @@ const SECTION_6_ROWS: &[BoundaryRow] = &[
     },
 ];
 
-/// Resolve the workspace root from `CARGO_MANIFEST_DIR`.
-///
-/// `reify-cli` lives at `<root>/crates/reify-cli`, so the root is two levels up — the
-/// same resolution `harness_cli/corpus_no_bare_scalar.rs` uses.
+/// The running checkout's workspace root, canonicalized.
 fn workspace_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
+    reify_test_support::workspace_root::workspace_root()
         .canonicalize()
         .expect("workspace root must be accessible")
 }

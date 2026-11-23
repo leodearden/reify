@@ -1027,11 +1027,9 @@ purpose ok_purpose(subject : Structure) {
 /// confirms the comparison is correct under the restored strict erroring.
 #[test]
 fn counter_mass_balance_example_compiles_clean_under_strict_erroring() {
-    const PATH: &str = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/kinematic/counter_mass_balance.ri"
-    );
-    let src = std::fs::read_to_string(PATH)
+    let path = reify_test_support::examples_corpus::examples_dir()
+        .join("kinematic/counter_mass_balance.ri");
+    let src = std::fs::read_to_string(&path)
         .expect("failed to read examples/kinematic/counter_mass_balance.ri");
     let module = compile_source_with_stdlib(&src);
     assert_no_error_diagnostics(

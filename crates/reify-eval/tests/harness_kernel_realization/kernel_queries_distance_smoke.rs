@@ -25,10 +25,9 @@
 
 use super::fixture_scaffolding::{assert_length_cell, compile_and_build_with_occt};
 
-const DISTANCE_BOX_POINT_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/kernel_queries/distance_box_point.ri"
-);
+fn distance_box_point_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("kernel_queries/distance_box_point.ri")
+}
 
 /// Pins the user-observable signal for KGQ-α: `distance(box(10mm,20mm,30mm),
 /// point3(20mm,0mm,0mm))` must evaluate to `Value::Scalar{LENGTH, si_value ≈ 0.015}`.
@@ -40,7 +39,7 @@ const DISTANCE_BOX_POINT_PATH: &str = concat!(
 #[test]
 fn distance_box_point_evals_to_15mm() {
     let Some(result) = compile_and_build_with_occt(
-        DISTANCE_BOX_POINT_PATH,
+        &distance_box_point_path(),
         "examples/kernel_queries/distance_box_point.ri (task 3610 pre-1)",
     ) else {
         return;

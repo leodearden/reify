@@ -37,12 +37,11 @@ use reify_ir::Value;
 use reify_test_support::{errors_only, make_simple_engine, parse_and_compile_with_stdlib};
 
 /// Absolute path to the toolhead motor-sizing example fixture.
-/// Mirrors the CARGO_MANIFEST_DIR pattern from
+/// Mirrors the examples-path pattern from
 /// `crates/reify-eval/tests/rigid_body_dynamics_e2e.rs:30-33`.
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/dynamics/toolhead_motor_sizing.ri"
-);
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("dynamics/toolhead_motor_sizing.ri")
+}
 
 /// Read an `f64` out of a numeric value cell (`Real` / `Int` / dimensioned
 /// `Scalar`).  Panics on a non-numeric cell so a shape regression fails loudly.
@@ -85,7 +84,7 @@ fn field<'a>(v: &'a Value, type_name: &str, member: &str) -> &'a Value {
 /// exactly 1 element (one prismatic joint → one JointForce).
 #[test]
 fn toolhead_motor_sizing_peak_force_is_2_5_n() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
+    let source = std::fs::read_to_string(example_path())
         .expect("examples/dynamics/toolhead_motor_sizing.ri should exist (authored by step-2)");
 
     let compiled = parse_and_compile_with_stdlib(&source);

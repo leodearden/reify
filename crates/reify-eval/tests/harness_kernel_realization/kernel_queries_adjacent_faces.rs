@@ -50,10 +50,9 @@ use reify_ir::{GeometryOp, GeometryQuery, Value};
 
 use super::fixture_scaffolding::read_and_compile_fixture;
 
-const FIXTURE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/kernel_queries/adjacent_faces.ri"
-);
+fn fixture_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("kernel_queries/adjacent_faces.ri")
+}
 
 /// End-to-end pin for KGQ-κ: `adjacent_faces` (4 adjacent faces per box face)
 /// and `shared_edges` (1 shared edge per adjacent face pair) on a 10×20×30 mm box.
@@ -69,7 +68,7 @@ fn adjacent_faces_and_shared_edges_compile_and_return_correct_semantics() {
     // ── assertion 1: fixture exists and compiles cleanly (unconditional) ──────
 
     read_and_compile_fixture(
-        FIXTURE_PATH,
+        &fixture_path(),
         "examples/kernel_queries/adjacent_faces.ri (task 3619 pre-1)",
     );
 

@@ -36,8 +36,9 @@ use reify_test_support::{
 };
 
 /// Path to the shipped example, resolved relative to this crate's manifest directory.
-const EXAMPLE_PATH: &str =
-    concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/continuous_cost_min.ri");
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("continuous_cost_min.ri")
+}
 
 /// Integration gate (β §8.2 headline): `CostMinBracket` resolves off the 2mm boundary
 /// and emits exactly one `RobustnessFloorApplied` Info naming `cost_robustness_tradeoff`.
@@ -56,10 +57,11 @@ const EXAMPLE_PATH: &str =
 /// convergence assertion is now a free second signal rather than a gap.
 #[test]
 fn continuous_cost_min_example_resolves_off_boundary_and_emits_info() {
-    let src = std::fs::read_to_string(EXAMPLE_PATH).unwrap_or_else(|e| {
+    let src = std::fs::read_to_string(example_path()).unwrap_or_else(|e| {
         panic!(
             "Could not read {}: {} — run step-2 impl to create the example file",
-            EXAMPLE_PATH, e
+            example_path().display(),
+            e
         )
     });
 

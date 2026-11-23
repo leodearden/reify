@@ -24,15 +24,13 @@ use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
 // ── Path constants ────────────────────────────────────────────────────────────
 
-const FULL_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/integration_full_v01.ri"
-);
+fn full_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("integration_full_v01.ri")
+}
 
-const CORNER_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/integration_corner_cases.ri"
-);
+fn corner_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("integration_corner_cases.ri")
+}
 
 // ── Cached helpers: integration_full_v01.ri ───────────────────────────────────
 
@@ -40,8 +38,8 @@ const CORNER_PATH: &str = concat!(
 fn source_full() -> &'static str {
     static S: OnceLock<String> = OnceLock::new();
     S.get_or_init(|| {
-        std::fs::read_to_string(FULL_PATH)
-            .unwrap_or_else(|e| panic!("{FULL_PATH} should exist: {e}"))
+        std::fs::read_to_string(full_path())
+            .unwrap_or_else(|e| panic!("{} should exist: {e}", full_path().display()))
     })
     .as_str()
 }
@@ -77,8 +75,8 @@ fn check_full_source(src: &str) -> reify_eval::CheckResult {
 fn source_corner() -> &'static str {
     static S: OnceLock<String> = OnceLock::new();
     S.get_or_init(|| {
-        std::fs::read_to_string(CORNER_PATH)
-            .unwrap_or_else(|e| panic!("{CORNER_PATH} should exist: {e}"))
+        std::fs::read_to_string(corner_path())
+            .unwrap_or_else(|e| panic!("{} should exist: {e}", corner_path().display()))
     })
     .as_str()
 }

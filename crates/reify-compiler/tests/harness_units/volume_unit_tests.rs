@@ -116,8 +116,8 @@ fn lowercase_l_stays_unknown() {
 /// it.
 #[test]
 fn prd_gate_fixture_unit_curated_labels_ascii_compiles_clean() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/prd-gate/fixtures/unit_curated_labels_ascii.ri");
+    let path = reify_test_support::workspace_root::workspace_root()
+        .join("tests/prd-gate/fixtures/unit_curated_labels_ascii.ri");
     let src = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read fixture {}: {}", path.display(), e));
 

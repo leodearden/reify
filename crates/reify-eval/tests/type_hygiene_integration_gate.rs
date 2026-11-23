@@ -46,15 +46,13 @@ use reify_test_support::{
 
 // ── Path constants ────────────────────────────────────────────────────────────
 
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/type_hygiene/type_hygiene_surface.ri"
-);
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("type_hygiene/type_hygiene_surface.ri")
+}
 
-const PENDULUM_IDYN_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/dynamics/pendulum_idyn.ri"
-);
+fn pendulum_idyn_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("dynamics/pendulum_idyn.ri")
+}
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -172,7 +170,7 @@ fn assert_moi_box_analytic_tensor(actual: Option<&Value>, label: &str) {
 #[test]
 fn ci_example_compiles_clean_and_evaluates_green() {
     // Read unconditionally: fixture presence is a CI contract independent of OCCT.
-    let source = std::fs::read_to_string(EXAMPLE_PATH).expect(
+    let source = std::fs::read_to_string(example_path()).expect(
         "examples/type_hygiene/type_hygiene_surface.ri must exist \
              (task #4495 step-2 creates it)",
     );
@@ -609,7 +607,7 @@ structure def OperatorUndef {
 /// and end-to-end by `rigid_body_dynamics_e2e.rs::pendulum_idyn_static_gravity_torque_is_0_4905`.
 #[test]
 fn row_14_rnea_numerically_identical_post_kappa() {
-    let source = std::fs::read_to_string(PENDULUM_IDYN_PATH)
+    let source = std::fs::read_to_string(pendulum_idyn_path())
         .expect("examples/dynamics/pendulum_idyn.ri must exist (authored prior to task #4495)");
 
     // parse_and_compile_with_stdlib panics on any Error-severity diagnostic

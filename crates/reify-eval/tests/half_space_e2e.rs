@@ -169,10 +169,9 @@ structure S {
 /// Path to the shipped example file (task #3465, step-10 creates it).
 ///
 /// RED until step-10 creates `examples/half_space.ri`.
-const HALF_SPACE_EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/half_space.ri"
-);
+fn half_space_example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("half_space.ri")
+}
 
 /// `examples/half_space.ri` must compile with no Error-severity diagnostics
 /// and `engine.build()` must produce non-empty STEP output (the example shows
@@ -188,7 +187,7 @@ const HALF_SPACE_EXAMPLE_PATH: &str = concat!(
 /// RED: `examples/half_space.ri` does not exist yet (created by step-10).
 #[test]
 fn example_half_space_ri_compiles_and_builds() {
-    let source = std::fs::read_to_string(HALF_SPACE_EXAMPLE_PATH)
+    let source = std::fs::read_to_string(half_space_example_path())
         .expect("examples/half_space.ri should exist (created by step-10)");
     // build_step handles the OCCT_AVAILABLE guard internally and returns
     // None when OCCT is unavailable.  If it returns Some(_) the asserts

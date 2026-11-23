@@ -21,16 +21,16 @@
 //! Step-11 RED: fails because `examples/dynamics/pendulum_idyn.ri` does not yet
 //! exist (the `read_to_string` panics). Step-12 authors the fixture → GREEN.
 
+use std::path::PathBuf;
+
 use reify_ir::{ExportFormat, Value};
+use reify_test_support::examples_corpus;
 use reify_test_support::{MockGeometryKernel, errors_only, parse_and_compile_with_stdlib};
 
-/// Absolute path to the pendulum inverse-dynamics example fixture.
-/// Mirrors the CARGO_MANIFEST_DIR pattern from
-/// `crates/reify-eval/tests/cost_aggregation_eval.rs:24–27`.
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/dynamics/pendulum_idyn.ri"
-);
+/// Path to the pendulum inverse-dynamics example fixture.
+fn example_path() -> PathBuf {
+    examples_corpus::examples_dir().join("dynamics/pendulum_idyn.ri")
+}
 
 /// Read an `f64` out of a numeric value cell (`Real` / `Int` / dimensioned
 /// `Scalar`). Panics on a non-numeric cell so a shape regression fails loudly.
@@ -65,7 +65,7 @@ fn field<'a>(v: &'a Value, type_name: &str, member: &str) -> &'a Value {
 /// the gravity-holding torque `m·g·L·sin(30°) = 0.4905 N·m` within 1 µN·m.
 #[test]
 fn pendulum_idyn_static_gravity_torque_is_0_4905() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
+    let source = std::fs::read_to_string(example_path())
         .expect("examples/dynamics/pendulum_idyn.ri should exist (authored by step-12)");
 
     let compiled = parse_and_compile_with_stdlib(&source);

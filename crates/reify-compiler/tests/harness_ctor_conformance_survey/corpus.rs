@@ -3,7 +3,8 @@
 
 use reify_test_support::rust_fixture_scan;
 
-use crate::workspace_git::{WORKSPACE_ROOT, git_at_workspace_root, git_is_available};
+use crate::workspace_git::{git_at_workspace_root, git_is_available};
+use reify_test_support::workspace_root::workspace_root;
 
 /// `Some(corpus)` when git can be spawned, `None` when it cannot.
 ///
@@ -131,15 +132,17 @@ fn scan_tracked_corpus(pathspec: &str) -> Vec<String> {
         .output()
         .unwrap_or_else(|e| {
             panic!(
-                "harness_ctor_conformance_survey::corpus: cannot run `git ls-files` in {WORKSPACE_ROOT}: {e}"
+                "harness_ctor_conformance_survey::corpus: cannot run `git ls-files` in {root}: {e}",
+                root = workspace_root().display()
             )
         });
     assert!(
         out.status.success(),
-        "harness_ctor_conformance_survey::corpus: `git ls-files -z -- '{pathspec}'` in {WORKSPACE_ROOT} \
+        "harness_ctor_conformance_survey::corpus: `git ls-files -z -- '{pathspec}'` in {root} \
          exited {:?}: {}",
         out.status.code(),
-        String::from_utf8_lossy(&out.stderr).trim()
+        String::from_utf8_lossy(&out.stderr).trim(),
+        root = workspace_root().display()
     );
 
     let stdout = String::from_utf8(out.stdout)
@@ -154,7 +157,8 @@ fn scan_tracked_corpus(pathspec: &str) -> Vec<String> {
     assert!(
         !paths.is_empty(),
         "harness_ctor_conformance_survey::corpus: `git ls-files -z -- '{pathspec}'` returned nothing in \
-         {WORKSPACE_ROOT} — a silently-empty corpus would render a falsely-clean survey"
+         {root} — a silently-empty corpus would render a falsely-clean survey",
+        root = workspace_root().display()
     );
     paths
 }

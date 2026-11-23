@@ -9,7 +9,7 @@
 //! absolute build-machine one. A wrong path fails loudly at read time; nothing
 //! here ever skips.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// The chunk directory, repo-relative, as a macro so `concat!` can splice it
 /// into every per-chunk path below — `concat!` expands a macro argument eagerly
@@ -59,18 +59,10 @@ pub(crate) const CONSTRAINTS_CHUNK_PATH: &str = concat!(chunks_dir!(), "/constra
 /// warning describing a bug that did not happen.
 pub(crate) const CHUNK_FILE_COUNT: usize = 20;
 
-/// Repo root, derived from this crate's manifest dir
-/// (`<repo>/crates/reify-compiler`) — what every repo-relative path in this
+/// The running checkout's repo root — what every repo-relative path in this
 /// binary resolves against.
 pub(crate) fn repo_root() -> PathBuf {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    manifest
-        .parent()
-        .and_then(Path::parent)
-        .unwrap_or_else(|| {
-            panic!("CARGO_MANIFEST_DIR ({manifest:?}) must sit two levels under the repo root")
-        })
-        .to_path_buf()
+    reify_test_support::workspace_root::workspace_root().to_path_buf()
 }
 
 /// The text of the chunk at the repo-relative `path`, panicking loudly (never

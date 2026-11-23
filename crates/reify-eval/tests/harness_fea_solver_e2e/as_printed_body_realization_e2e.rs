@@ -250,10 +250,7 @@ fn fdm_bracket_example_produces_non_degraded_heterogeneous_material_field() {
 
     // Use read_to_string (not include_str!) so the test panics at runtime when
     // the file is missing (step-6 creates it), rather than failing at compile time.
-    let path = format!(
-        "{}/../../examples/fdm_bracket.ri",
-        env!("CARGO_MANIFEST_DIR")
-    );
+    let path = reify_test_support::examples_corpus::examples_dir().join("fdm_bracket.ri");
     let source = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read examples/fdm_bracket.ri: {e}"));
 

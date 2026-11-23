@@ -23,14 +23,9 @@ use reify_test_support::{errors_only, make_simple_engine, parse_and_compile_with
 
 // ── Fixture paths ─────────────────────────────────────────────────────────────
 
-/// Workspace root derived from CARGO_MANIFEST_DIR (two levels above crates/reify-eval).
+/// The running checkout's workspace root.
 fn workspace_root() -> std::path::PathBuf {
-    let manifest = env!("CARGO_MANIFEST_DIR"); // .../crates/reify-eval
-    std::path::Path::new(manifest)
-        .ancestors()
-        .nth(2)
-        .expect("workspace root is two levels above crates/reify-eval")
-        .to_path_buf()
+    reify_test_support::workspace_root::workspace_root().to_path_buf()
 }
 
 // ── Step-5 RED: success-signal (overlay attaches for `2.0 * 1.5`) ──────────

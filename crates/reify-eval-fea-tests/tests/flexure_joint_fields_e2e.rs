@@ -237,11 +237,10 @@ structure def Probe {
 
 // ─── Constrained-DOF compliance (task 7163) ──────────────────────────────────
 
-/// Read the committed fixture. Path resolved from `CARGO_MANIFEST_DIR` so the
-/// test is location-independent.
+/// Read the committed fixture.
 fn fixture_source() -> String {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/prd-gate/fixtures/joint_constrained_dof_compliance.ri");
+    let path = reify_test_support::workspace_root::workspace_root()
+        .join("tests/prd-gate/fixtures/joint_constrained_dof_compliance.ri");
     std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read fixture {}: {}", path.display(), e))
 }

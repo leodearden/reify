@@ -1,10 +1,11 @@
+use reify_test_support::{test_package, workspace_root::workspace_root};
 use serde_json::Value;
 use std::process::Command;
 
 // Test fixture for gui subcommand integration tests.
 // Uses the same pattern as cli_smoke.rs.
 fn reify_cmd() -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_reify"));
+    let mut cmd = Command::new(test_package::bin_exe("reify"));
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -117,8 +118,7 @@ fn gui_extension_validation_fires_before_existence_check() {
 #[test]
 fn gui_with_valid_ri_file_skips_launch_when_env_set() {
     // Use the existing bracket.ri fixture
-    let fixture =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bracket.ri");
+    let fixture = test_package::manifest_dir().join("tests/fixtures/bracket.ri");
     assert!(fixture.exists(), "fixture file should exist");
 
     let output = reify_cmd()
@@ -152,8 +152,7 @@ fn gui_default_mode_probe_indicates_debug_false() {
     // dedicated probe channel (REIFY_GUI_DEBUG_PROBE=1), keeping the
     // user-visible error message clean. The probe channel is a deliberate
     // test seam — opt-in via env var, not part of the default error path.
-    let fixture =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bracket.ri");
+    let fixture = test_package::manifest_dir().join("tests/fixtures/bracket.ri");
     assert!(fixture.exists(), "fixture file should exist");
 
     let output = reify_cmd()
@@ -178,8 +177,7 @@ fn gui_default_mode_probe_indicates_debug_false() {
 fn gui_debug_flag_probe_indicates_debug_true() {
     // `reify gui --debug <fixture>` should parse the flag and propagate it via
     // the probe channel as debug=true.
-    let fixture =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bracket.ri");
+    let fixture = test_package::manifest_dir().join("tests/fixtures/bracket.ri");
     assert!(fixture.exists(), "fixture file should exist");
 
     let output = reify_cmd()
@@ -206,8 +204,7 @@ fn gui_debug_subcommand_routes_to_cmd_gui_with_debug_true() {
     // `reify gui --debug <fixture>` and produce debug=true on the probe
     // channel — this is the only end-to-end check that the gui-debug
     // subcommand wiring forwards `--debug` to cmd_gui.
-    let fixture =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bracket.ri");
+    let fixture = test_package::manifest_dir().join("tests/fixtures/bracket.ri");
     assert!(fixture.exists(), "fixture file should exist");
 
     let output = reify_cmd()
@@ -232,8 +229,7 @@ fn gui_debug_subcommand_routes_to_cmd_gui_with_debug_true() {
 fn gui_mcp_flag_is_alias_for_debug() {
     // `--mcp` is the alias spelling of `--debug` and should produce the same
     // debug=true marker on the probe channel.
-    let fixture =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bracket.ri");
+    let fixture = test_package::manifest_dir().join("tests/fixtures/bracket.ri");
     assert!(fixture.exists(), "fixture file should exist");
 
     let output = reify_cmd()
@@ -260,8 +256,7 @@ fn gui_skip_launch_default_error_message_does_not_leak_debug_state() {
     // the parsed debug flag — that's internal state and should stay off the
     // user-visible error path. (The probe channel is the structured way to
     // observe it from tests.)
-    let fixture =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bracket.ri");
+    let fixture = test_package::manifest_dir().join("tests/fixtures/bracket.ri");
     assert!(fixture.exists(), "fixture file should exist");
 
     let output = reify_cmd()
@@ -313,8 +308,7 @@ fn gui_unknown_flag_is_rejected() {
 }
 
 fn read_tauri_config() -> Value {
-    let config_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../gui/src-tauri/tauri.conf.json");
+    let config_path = workspace_root().join("gui/src-tauri/tauri.conf.json");
     let content = std::fs::read_to_string(&config_path).unwrap_or_else(|e| {
         panic!(
             "failed to read tauri.conf.json at {}: {}",

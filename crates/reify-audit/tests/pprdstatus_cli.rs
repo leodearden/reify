@@ -31,11 +31,6 @@ use std::process::{Command, Output};
 
 const PRE_FIX: &str = include_str!("fixtures/pprdstatus/kernel-seam-contracts.pre-edd9703fae.md");
 const POST_FIX: &str = include_str!("fixtures/pprdstatus/kernel-seam-contracts.post-edd9703fae.md");
-const LIVE_DOC: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../docs/prds/kernel-seam-contracts.md"
-);
-
 const KERNEL_SEAM_CONTRACTS: &str = "docs/prds/kernel-seam-contracts.md";
 
 /// `git init` a repo at `dir` holding `content` at [`KERNEL_SEAM_CONTRACTS`],
@@ -123,7 +118,7 @@ fn run_pprdstatus_over(prd_text: &str, tasks: &[TaskMetadata]) -> Output {
 /// pinned: the repo, no jcodemunch, and the runs.db. The caller appends the
 /// task source.
 fn audit_command(pattern: &str, repo: &Path, runs_db: &Path) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_reify-audit"));
+    let mut command = Command::new(reify_test_support::test_package::bin_exe("reify-audit"));
     command.args([
         "--pattern",
         pattern,
@@ -245,7 +240,10 @@ fn pattern_pprdstatus_is_silent_on_the_post_fix_doc() {
 /// `pattern_pprdstatus_is_silent_on_the_post_fix_doc`.
 #[test]
 fn pattern_pprdstatus_is_silent_on_the_live_kernel_seam_contracts_doc() {
-    let live = std::fs::read_to_string(LIVE_DOC).expect("read the live kernel-seam-contracts doc");
+    let live = std::fs::read_to_string(
+        reify_test_support::workspace_root::workspace_root().join(KERNEL_SEAM_CONTRACTS),
+    )
+    .expect("read the live kernel-seam-contracts doc");
     let out = run_pprdstatus(&live);
     let stderr = String::from_utf8_lossy(&out.stderr);
 

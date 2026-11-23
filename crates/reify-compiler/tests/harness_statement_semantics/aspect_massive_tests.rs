@@ -114,11 +114,9 @@ fn aspect_massive_trait_present_in_std_io_standalone_with_required_mass() {
 /// RED: examples/aspect_massive.ri does not exist yet — read_to_string panics.
 #[test]
 fn aspect_massive_example_compiles_under_stdlib_with_zero_errors() {
-    const EXAMPLE_PATH: &str = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/aspect_massive.ri"
-    );
-    let src = std::fs::read_to_string(EXAMPLE_PATH)
+    let example_path =
+        reify_test_support::examples_corpus::examples_dir().join("aspect_massive.ri");
+    let src = std::fs::read_to_string(&example_path)
         .expect("failed to read examples/aspect_massive.ri — check CARGO_MANIFEST_DIR resolution");
 
     let parsed = reify_syntax::parse(&src, ModulePath::single("aspect_massive"));

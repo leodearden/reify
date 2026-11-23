@@ -1520,11 +1520,9 @@ fn sealed_seal_pressure_rating_member_is_pressure_dimension() {
 /// step-4; both tests cover the file after it lands.
 #[test]
 fn structural_traits_dimensioned_example_conforms_clean() {
-    const EXAMPLE_PATH: &str = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/structural_traits_dimensioned.ri"
-    );
-    let source = std::fs::read_to_string(EXAMPLE_PATH).unwrap_or_else(|e| {
+    let example_path = reify_test_support::examples_corpus::examples_dir()
+        .join("structural_traits_dimensioned.ri");
+    let source = std::fs::read_to_string(&example_path).unwrap_or_else(|e| {
         panic!(
             "examples/structural_traits_dimensioned.ri should exist: {}",
             e

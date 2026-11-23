@@ -29,15 +29,9 @@ use reify_test_support::{
     MockConstraintChecker, collect_errors, compile_source_with_stdlib, panic_message_of,
 };
 
-/// Workspace root, two levels above `crates/reify-eval` — where the modules
-/// that read a PRD fixture from disk resolve its repo-relative path.
-pub fn workspace_root() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .expect("workspace root is two levels above crates/reify-eval")
-        .to_path_buf()
-}
+/// Workspace root — where the modules that read a PRD fixture from disk resolve
+/// its repo-relative path.
+pub use reify_test_support::workspace_root::workspace_root;
 
 /// Compile + eval `src` through the REAL `SolverRegistry::production()` (what a
 /// `SolverPosture::Solve` engine wires), and assert the eval produced zero

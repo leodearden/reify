@@ -21,9 +21,8 @@ use reify_test_support::compile_source_with_stdlib;
 /// `PreludeCoupling` of `EntityKind::Structure` — the spec §7.6 witness.
 #[test]
 fn example_ports_prelude_ri_compiles_without_import() {
-    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let example_path = manifest_dir
-        .join("../../examples/stdlib/ports_prelude.ri")
+    let example_path = reify_test_support::examples_corpus::examples_dir()
+        .join("stdlib/ports_prelude.ri")
         .canonicalize()
         .expect("examples/stdlib/ports_prelude.ri should exist on disk");
 

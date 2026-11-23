@@ -26,10 +26,10 @@ use crate::common::make_ts_parser;
 /// **GREEN state:** both assertions pass once the fixture is created (step 2).
 #[test]
 fn affine_map_spec_example_parses() {
-    let src = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/affine_map_spec_example.ri"
-    ))
+    let src = std::fs::read_to_string(
+        reify_test_support::test_package::manifest_dir()
+            .join("tests/fixtures/affine_map_spec_example.ri"),
+    )
     .expect("fixture must exist");
 
     let module = reify_syntax::parse(&src, ModulePath::single("test"));

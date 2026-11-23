@@ -35,10 +35,9 @@ use reify_test_support::make_simple_engine;
 
 // ── File path ─────────────────────────────────────────────────────────────────
 
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/stdlib/ports_breadth.ri"
-);
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("stdlib/ports_breadth.ri")
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -81,8 +80,8 @@ fn eval_breadth() -> reify_eval::EvalResult {
 /// warnings and errors are inspectable by the caller. Panics only on a parse
 /// error. `eval_breadth()` layers the compile-stage Error assertion on top.
 fn compile_breadth() -> CompiledModule {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
-        .unwrap_or_else(|e| panic!("{} should exist: {}", EXAMPLE_PATH, e));
+    let source = std::fs::read_to_string(example_path())
+        .unwrap_or_else(|e| panic!("{} should exist: {}", example_path().display(), e));
 
     // Prelude-aware parsing, so `Type.Variant` references against stdlib enums
     // (`ThreadSystem.ISO_Metric`, `FluidType.Liquid`, …) lower to `EnumAccess`

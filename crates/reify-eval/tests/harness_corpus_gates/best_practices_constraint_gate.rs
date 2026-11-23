@@ -316,13 +316,14 @@ fn audit_reports_stale_expected_indeterminate() {
 
 // ── corpus_files: flat corpus discovery (steps 5/6) ──────────────────────────
 
-/// Absolute path to `examples/best_practices/`, resolved at compile time from
-/// this crate's manifest directory (two levels up) — the same corpus root as
+/// Absolute path to `examples/best_practices/` — the corpus root
 /// `reify_test_support::examples_corpus::examples_dir()` (the shared root
 /// `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs`
 /// now walks), narrowed to the `best_practices/` subdirectory, and matching
 /// both sibling gates' `corpus_files`.
-const CORPUS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/best_practices");
+fn corpus_dir() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("best_practices")
+}
 
 /// Basenames of the `*.ri` files directly inside `examples/best_practices/`,
 /// sorted for deterministic reporting.
@@ -335,7 +336,7 @@ const CORPUS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/be
 /// change that should be reviewed rather than silently absorbed by switching
 /// this to a recursive walk.
 fn corpus_files() -> Vec<std::path::PathBuf> {
-    let dir = std::path::Path::new(CORPUS_DIR);
+    let dir = &corpus_dir();
     let entries = std::fs::read_dir(dir).unwrap_or_else(|e| {
         panic!(
             "best_practices_constraint_gate: cannot read directory '{}': {e}",

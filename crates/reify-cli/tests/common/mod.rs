@@ -1,5 +1,6 @@
 // Shared helpers for CLI integration tests.
 
+use reify_test_support::{examples_corpus, test_package};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Output, Stdio};
@@ -12,13 +13,13 @@ use tempfile::TempDir;
 /// below is a thin wrapper over this one, which is what the module was created for
 /// (before, the same six-line `Command`/`Stdio` block appeared four times).
 ///
-/// The binary is `env!("CARGO_BIN_EXE_reify")` — cargo builds this package's
+/// The binary is `test_package::bin_exe("reify")` — cargo builds this package's
 /// `[[bin]]` before its integration tests run, which is the build edge the #5718
 /// relocation exists to obtain. Args are `&OsStr` so callers can forward a
 /// `Path` without a lossy UTF-8 round-trip.
 fn spawn_reify(args: &[&OsStr], cwd: Option<&Path>) -> Output {
-    let bin = env!("CARGO_BIN_EXE_reify");
-    let mut cmd = Command::new(bin);
+    let bin = test_package::bin_exe("reify");
+    let mut cmd = Command::new(&bin);
     cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -27,33 +28,30 @@ fn spawn_reify(args: &[&OsStr], cwd: Option<&Path>) -> Output {
         cmd.current_dir(dir);
     }
     cmd.output().unwrap_or_else(|e| {
-        panic!("failed to spawn the cargo-built reify binary at {bin} with args {args:?}: {e}")
+        panic!(
+            "failed to spawn the cargo-built reify binary at {} with args {args:?}: {e}",
+            bin.display()
+        )
     })
 }
 
 /// Resolve a fixture file path relative to the crate's test fixtures directory.
 pub fn fixture_path(name: &str) -> String {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    format!("{}/tests/fixtures/{}", manifest_dir, name)
+    test_package::manifest_dir()
+        .join("tests/fixtures")
+        .join(name)
+        .to_string_lossy()
+        .into_owned()
 }
 
-/// Resolve an example file path relative to the workspace root's `examples/` directory.
+/// Resolve an example file path under the workspace root's `examples/` directory.
 ///
-/// The crate lives at `<root>/crates/reify-cli`, so the examples directory is
-/// two levels up: `<CARGO_MANIFEST_DIR>/../../examples/<name>`.
-///
-/// When the file exists on disk, the path is canonicalized (resolving `..`
-/// segments) so that assertion failure messages are readable.  When the file
-/// does not yet exist (e.g. it belongs to a sibling task not yet merged), the
-/// raw path is returned — callers can still call `.exists()` on it.
+/// The path need not exist (e.g. it belongs to a sibling task not yet merged);
+/// callers can still call `.exists()` on it.
 #[allow(dead_code)]
 pub fn example_path(name: &str) -> String {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let raw = PathBuf::from(manifest_dir)
-        .join("../../examples")
-        .join(name);
-    std::fs::canonicalize(&raw)
-        .unwrap_or(raw)
+    examples_corpus::examples_dir()
+        .join(name)
         .to_string_lossy()
         .into_owned()
 }
@@ -129,23 +127,10 @@ pub fn run_with_args_in(cwd: &Path, args: &[&str]) -> (ExitStatus, String, Strin
 // change would shift the goldens as a side effect of the move — indistinguishable
 // from the real drift these tests exist to detect.
 
-/// The workspace root — `<CARGO_MANIFEST_DIR>/../..`, canonicalized.
-///
-/// `reify-cli` lives at `<root>/crates/reify-cli`, so the root is two levels up.
-/// Falls back to the un-canonicalized path if canonicalization fails, keeping
-/// assertion messages readable either way.
-///
-/// The value is a process-lifetime constant, so the `canonicalize` syscall is
-/// memoized: it is otherwise re-run on every fixture/golden resolution and every
-/// [`run_cli_from_workspace_root`] spawn (~30 times across the relocated tests).
+/// The workspace root of the running checkout.
 #[allow(dead_code)]
 pub fn workspace_root() -> PathBuf {
-    static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-    ROOT.get_or_init(|| {
-        let raw = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-        std::fs::canonicalize(&raw).unwrap_or(raw)
-    })
-    .clone()
+    reify_test_support::workspace_root::workspace_root().to_path_buf()
 }
 
 /// Resolve a fixture under `crates/reify-eval/tests/fixtures/`.

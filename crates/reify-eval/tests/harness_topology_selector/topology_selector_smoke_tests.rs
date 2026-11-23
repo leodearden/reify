@@ -37,24 +37,21 @@ use reify_eval::Engine;
 use reify_ir::{ExportFormat, GeometryOp, Value};
 use reify_test_support::{MockGeometryKernel, errors_only, parse_and_compile_with_stdlib};
 
-const BLOCK_INERTIA_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/topology_selectors/block_inertia.ri"
-);
+fn block_inertia_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("topology_selectors/block_inertia.ri")
+}
 
-const FILLET_TOP_EDGES_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/topology_selectors/fillet_top_edges.ri"
-);
+fn fillet_top_edges_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("topology_selectors/fillet_top_edges.ri")
+}
 
-const ALL_TOPOLOGY_SELECTORS_WIRING_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/topology_selectors/all_topology_selectors_wiring.ri"
-);
+fn all_topology_selectors_wiring_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("topology_selectors/all_topology_selectors_wiring.ri")
+}
 
 #[test]
 fn all_topology_selectors_wiring_compiles_with_stdlib() {
-    let source = std::fs::read_to_string(ALL_TOPOLOGY_SELECTORS_WIRING_PATH)
+    let source = std::fs::read_to_string(all_topology_selectors_wiring_path())
         .expect("examples/topology_selectors/all_topology_selectors_wiring.ri should exist");
     let compiled = parse_and_compile_with_stdlib(&source);
     assert!(
@@ -78,7 +75,7 @@ fn all_topology_selectors_wiring_compiles_with_stdlib() {
 /// `block_inertia_evals_moment_of_inertia_to_tensor` (step S5).
 #[test]
 fn block_inertia_compiles_with_stdlib_no_errors() {
-    let source = std::fs::read_to_string(BLOCK_INERTIA_PATH)
+    let source = std::fs::read_to_string(block_inertia_path())
         .expect("examples/topology_selectors/block_inertia.ri should exist");
     let compiled = parse_and_compile_with_stdlib(&source);
     assert!(
@@ -111,7 +108,7 @@ fn block_inertia_compiles_with_stdlib_no_errors() {
 fn block_inertia_evals_moment_of_inertia_to_tensor() {
     use reify_ir::GeometryHandleId;
 
-    let source = std::fs::read_to_string(BLOCK_INERTIA_PATH)
+    let source = std::fs::read_to_string(block_inertia_path())
         .expect("examples/topology_selectors/block_inertia.ri should exist");
     let compiled = parse_and_compile_with_stdlib(&source);
     assert!(
@@ -172,7 +169,7 @@ fn block_inertia_evals_moment_of_inertia_to_tensor() {
 
 #[test]
 fn block_inertia_ri_parses_cleanly() {
-    let source = std::fs::read_to_string(BLOCK_INERTIA_PATH)
+    let source = std::fs::read_to_string(block_inertia_path())
         .expect("examples/topology_selectors/block_inertia.ri should exist");
 
     let parsed = reify_syntax::parse(&source, ModulePath::single("test"));
@@ -201,7 +198,7 @@ fn block_inertia_ri_parses_cleanly() {
 /// topology-relational edge selection).
 #[test]
 fn fillet_top_edges_compiles_with_stdlib_no_errors() {
-    let source = std::fs::read_to_string(FILLET_TOP_EDGES_PATH)
+    let source = std::fs::read_to_string(fillet_top_edges_path())
         .expect("examples/topology_selectors/fillet_top_edges.ri should exist");
     let compiled = parse_and_compile_with_stdlib(&source);
     assert!(
@@ -282,7 +279,7 @@ fn fillet_top_edges_compiles_with_stdlib_no_errors() {
             coverage already in fillet_curated_edges_3205_e2e and \
             bottom_deck_selectors_example_builds_clean_e2e."]
 fn fillet_top_edges_evals_to_solid_via_topology_walk() {
-    let source = std::fs::read_to_string(FILLET_TOP_EDGES_PATH)
+    let source = std::fs::read_to_string(fillet_top_edges_path())
         .expect("examples/topology_selectors/fillet_top_edges.ri should exist");
     let compiled = parse_and_compile_with_stdlib(&source);
     assert!(
@@ -327,7 +324,7 @@ fn fillet_top_edges_evals_to_solid_via_topology_walk() {
 
 #[test]
 fn fillet_top_edges_ri_parses_cleanly() {
-    let source = std::fs::read_to_string(FILLET_TOP_EDGES_PATH)
+    let source = std::fs::read_to_string(fillet_top_edges_path())
         .expect("examples/topology_selectors/fillet_top_edges.ri should exist");
 
     let parsed = reify_syntax::parse(&source, ModulePath::single("test"));

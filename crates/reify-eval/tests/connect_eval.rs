@@ -384,16 +384,15 @@ structure def S {
 // ── task-247/step-14: m10_connect_advanced_ri_parses_and_compiles ─────
 
 /// Absolute path to the port-mapping example file.
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/m10_connect_advanced.ri"
-);
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("m10_connect_advanced.ri")
+}
 
 /// Read m10_connect_advanced.ri, verify it parses without errors, compiles
 /// without Error-severity diagnostics, and produces at least one template.
 #[test]
 fn m10_connect_advanced_ri_parses_and_compiles() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
+    let source = std::fs::read_to_string(example_path())
         .expect("examples/m10_connect_advanced.ri should exist");
 
     let parsed = reify_syntax::parse(&source, ModulePath::single("test"));
@@ -423,7 +422,7 @@ fn m10_connect_advanced_ri_parses_and_compiles() {
 /// file. Every constraint result must be Satisfied (no violations).
 #[test]
 fn m10_connect_advanced_ri_all_constraints_satisfied() {
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
+    let source = std::fs::read_to_string(example_path())
         .expect("examples/m10_connect_advanced.ri should exist");
 
     let parsed = reify_syntax::parse(&source, ModulePath::single("test"));

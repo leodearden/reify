@@ -29,28 +29,26 @@ use reify_test_support::{
     collect_errors, make_simple_engine, parse_and_compile_with_stdlib, read_f64,
 };
 
-const FIXTURE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/kinematic/revolute_pivot_offset.ri"
-);
+fn fixture_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("kinematic/revolute_pivot_offset.ri")
+}
 
-const ORIENTED_FIXTURE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/kinematic/spatial_linkage_oriented.ri"
-);
+fn oriented_fixture_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir()
+        .join("kinematic/spatial_linkage_oriented.ri")
+}
 
-const SCREW_FOLLOWER_FIXTURE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/kinematic/screw_follower_pivot.ri"
-);
+fn screw_follower_fixture_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("kinematic/screw_follower_pivot.ri")
+}
 
 /// Read the α fixture source, caching it via OnceLock.
 fn fixture_source() -> &'static str {
     use std::sync::OnceLock;
     static S: OnceLock<String> = OnceLock::new();
     S.get_or_init(|| {
-        std::fs::read_to_string(FIXTURE_PATH)
-            .unwrap_or_else(|e| panic!("{FIXTURE_PATH} should exist: {e}"))
+        std::fs::read_to_string(fixture_path())
+            .unwrap_or_else(|e| panic!("{} should exist: {e}", fixture_path().display()))
     })
     .as_str()
 }
@@ -60,8 +58,8 @@ fn oriented_fixture_source() -> &'static str {
     use std::sync::OnceLock;
     static S: OnceLock<String> = OnceLock::new();
     S.get_or_init(|| {
-        std::fs::read_to_string(ORIENTED_FIXTURE_PATH)
-            .unwrap_or_else(|e| panic!("{ORIENTED_FIXTURE_PATH} should exist: {e}"))
+        std::fs::read_to_string(oriented_fixture_path())
+            .unwrap_or_else(|e| panic!("{} should exist: {e}", oriented_fixture_path().display()))
     })
     .as_str()
 }
@@ -71,8 +69,12 @@ fn screw_follower_fixture_source() -> &'static str {
     use std::sync::OnceLock;
     static S: OnceLock<String> = OnceLock::new();
     S.get_or_init(|| {
-        std::fs::read_to_string(SCREW_FOLLOWER_FIXTURE_PATH)
-            .unwrap_or_else(|e| panic!("{SCREW_FOLLOWER_FIXTURE_PATH} should exist: {e}"))
+        std::fs::read_to_string(screw_follower_fixture_path()).unwrap_or_else(|e| {
+            panic!(
+                "{} should exist: {e}",
+                screw_follower_fixture_path().display()
+            )
+        })
     })
     .as_str()
 }

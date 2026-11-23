@@ -11,6 +11,7 @@
 
 use reify_audit::plinecite_baseline::{BASELINE_PATH, CiteRow, render_baseline};
 use reify_audit::{AuditContext, Finding, MockJCodemunchOps, RealGitOps};
+use reify_test_support::test_package;
 use rusqlite::Connection;
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -73,7 +74,7 @@ fn check_real(root: &Path) -> Vec<Finding> {
 /// The real generator aimed at `root`. Sanitized directly: the program is a
 /// reify binary that runs git internally, not git itself.
 fn run_generator(root: &Path, extra: &[&str]) -> Output {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_plinecite-baseline-gen"));
+    let mut cmd = Command::new(test_package::bin_exe("plinecite-baseline-gen"));
     cmd.arg("--project-root").arg(root).args(extra);
     reify_git_env::sanitize(&mut cmd);
     cmd.output().expect("plinecite-baseline-gen spawns")
@@ -236,7 +237,7 @@ fn a_shrink_only_run_refuses_a_ledger_its_own_redirect_truncated() {
     let ledger_file = dir.path().join(BASELINE_PATH);
     let redirect = std::fs::File::create(&ledger_file).expect("truncating redirect");
 
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_plinecite-baseline-gen"));
+    let mut cmd = Command::new(test_package::bin_exe("plinecite-baseline-gen"));
     cmd.arg("--project-root").arg(dir.path()).stdout(redirect);
     reify_git_env::sanitize(&mut cmd);
     let out = cmd.output().expect("plinecite-baseline-gen spawns");

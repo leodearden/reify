@@ -94,7 +94,7 @@ impl Sandbox {
 
     /// Invoke the binary with `args` plus this sandbox's substrates.
     fn run(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_reify-audit"))
+        Command::new(reify_test_support::test_package::bin_exe("reify-audit"))
             .args(args)
             .args([
                 "--tasks-file",

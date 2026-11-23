@@ -46,14 +46,7 @@
 //! cfg. Static verification compares REALIZED datums, so it needs a kernel; the
 //! no-kernel behaviour of the caller gate is deliberately out of scope.
 
-/// Workspace root, two levels above `crates/reify-eval`.
-fn workspace_root() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .expect("workspace root is two levels above crates/reify-eval")
-        .to_path_buf()
-}
+use reify_test_support::workspace_root::workspace_root;
 
 /// Repo-relative path of the PRD's VIOLATED fixture (B1). Named so the panic in
 /// [`fixture_source`] and this module's header cannot drift apart from the

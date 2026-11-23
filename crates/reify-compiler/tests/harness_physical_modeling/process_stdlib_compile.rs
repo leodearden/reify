@@ -548,9 +548,8 @@ fn std_process_module_cardinality_locked() {
 /// comment-text drift or header edits cannot silently defeat them.
 #[test]
 fn example_process_ri_compiles_clean() {
-    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let example_path = manifest_dir
-        .join("../../examples/stdlib/process.ri")
+    let example_path = reify_test_support::examples_corpus::examples_dir()
+        .join("stdlib/process.ri")
         .canonicalize()
         .expect("examples/stdlib/process.ri should exist on disk");
 

@@ -238,14 +238,7 @@ fn g_allow_repo_wide_hard_gate_live() {
     use reify_audit::{AuditContext, MockJCodemunchOps, RealGitOps};
     use rusqlite::Connection;
 
-    // Resolve workspace root from CARGO_MANIFEST_DIR (crates/reify-audit).
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let ws_root = Path::new(manifest_dir)
-        .parent()
-        .unwrap() // crates/
-        .parent()
-        .unwrap() // workspace root
-        .to_path_buf();
+    let ws_root = reify_test_support::workspace_root::workspace_root().to_path_buf();
 
     let db_path = reify_audit::ptodo::tasks_db_path(&ws_root);
 

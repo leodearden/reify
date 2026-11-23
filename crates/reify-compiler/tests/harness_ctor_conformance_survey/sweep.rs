@@ -15,7 +15,7 @@ use crate::owner::{
     Owner, collect_structure_defs_into, d9_owner, fea_owned_defs, stdlib_structure_defs,
 };
 use crate::survey_site::{ARG_PREFIX, DefOrigin, SurveySite, survey_site_from_diagnostic};
-use crate::workspace_git::WORKSPACE_ROOT;
+use reify_test_support::workspace_root::workspace_root;
 
 // ─── step 9/10: end-to-end sweep over a synthetic mini-corpus ────────────────
 
@@ -1047,8 +1047,9 @@ fn inline_fixture_pinned_hosts_name_all_four_enumeration_shapes() {
              file the census never sweeps"
         );
         assert!(
-            std::path::Path::new(WORKSPACE_ROOT).join(host).is_file(),
-            "pinned host {host} does not exist under {WORKSPACE_ROOT}"
+            workspace_root().join(host).is_file(),
+            "pinned host {host} does not exist under {root}",
+            root = workspace_root().display()
         );
         assert!(
             *floor > 0,
@@ -1079,7 +1080,7 @@ fn inline_fixture_pinned_hosts_still_yield_their_snippets() {
     let mut failures: Vec<String> = Vec::new();
 
     for (host, floor) in INLINE_FIXTURE_PINNED_HOSTS {
-        let host_path = std::path::Path::new(WORKSPACE_ROOT).join(host);
+        let host_path = workspace_root().join(host);
         let host_source = std::fs::read_to_string(&host_path)
             .unwrap_or_else(|e| panic!("pinned host {host} is unreadable: {e}"));
         let host_lines = host_source.lines().count() as u32;
@@ -1095,7 +1096,7 @@ fn inline_fixture_pinned_hosts_still_yield_their_snippets() {
             ));
         }
 
-        let run = survey_inline_corpus(std::path::Path::new(WORKSPACE_ROOT), &[(*host).to_owned()]);
+        let run = survey_inline_corpus(workspace_root(), &[(*host).to_owned()]);
 
         for (member, reason) in &run.not_surveyed {
             if reason == "read-error" {

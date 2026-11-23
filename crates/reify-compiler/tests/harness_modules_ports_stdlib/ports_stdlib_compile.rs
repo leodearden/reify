@@ -2996,9 +2996,8 @@ structure def HydroConformer {
 /// mirrors ShaftCoupling in examples/stdlib/ports_mechanical.ri).
 #[test]
 fn example_ports_domains_ri_compiles_clean() {
-    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let example_path = manifest_dir
-        .join("../../examples/stdlib/ports_domains.ri")
+    let example_path = reify_test_support::examples_corpus::examples_dir()
+        .join("stdlib/ports_domains.ri")
         .canonicalize()
         .expect("examples/stdlib/ports_domains.ri should exist on disk");
 
@@ -3144,9 +3143,8 @@ structure def S {
 /// `direction` literal remains uncovered.
 #[test]
 fn example_ports_mechanical_ri_compiles_clean() {
-    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let example_path = manifest_dir
-        .join("../../examples/stdlib/ports_mechanical.ri")
+    let example_path = reify_test_support::examples_corpus::examples_dir()
+        .join("stdlib/ports_mechanical.ri")
         .canonicalize()
         .expect("examples/stdlib/ports_mechanical.ri should exist on disk");
 

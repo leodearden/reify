@@ -92,7 +92,7 @@ fn fixture_path() -> String {
 /// child's cwd would also move `.ri` include/stdlib resolution, which is a
 /// bigger blast radius than the read it would close.
 fn eval_command(cache: &Path, sandbox: &Path) -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_reify"));
+    let mut cmd = Command::new(reify_test_support::test_package::bin_exe("reify"));
     cmd.arg("eval")
         .arg("--cache-dir")
         .arg(cache)

@@ -25,13 +25,8 @@ use std::path::PathBuf;
 /// Panics on parse errors or if either file doesn't exist.
 fn load_stdlib_module() -> CompiledModule {
     // Step 1: compile materials_appearance.ri (only built-in Real/String deps).
-    let appearance_path: PathBuf = [
-        env!("CARGO_MANIFEST_DIR"),
-        "stdlib",
-        "materials_appearance.ri",
-    ]
-    .iter()
-    .collect();
+    let appearance_path: PathBuf =
+        reify_test_support::test_package::manifest_dir().join("stdlib/materials_appearance.ri");
     let appearance_source = std::fs::read_to_string(&appearance_path)
         .unwrap_or_else(|e| panic!("failed to read {}: {}", appearance_path.display(), e));
     let parsed_appearance = reify_syntax::parse(
@@ -47,13 +42,8 @@ fn load_stdlib_module() -> CompiledModule {
 
     // Step 2: compile materials_mechanical.ri with the appearance prelude so
     // that `Visual`, `Appearance`, and `Color` resolve.
-    let path: PathBuf = [
-        env!("CARGO_MANIFEST_DIR"),
-        "stdlib",
-        "materials_mechanical.ri",
-    ]
-    .iter()
-    .collect();
+    let path: PathBuf =
+        reify_test_support::test_package::manifest_dir().join("stdlib/materials_mechanical.ri");
     let source = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read {}: {}", path.display(), e));
     let parsed = reify_syntax::parse(&source, ModulePath::single("stdlib"));

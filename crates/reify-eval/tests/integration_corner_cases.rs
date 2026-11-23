@@ -23,11 +23,10 @@ use reify_core::{Diagnostic, DimensionVector, ModulePath, Severity, ValueCellId}
 use reify_ir::{ExportFormat, Satisfaction, Value};
 use reify_test_support::MockGeometryKernel;
 
-/// Absolute path to the example file, resolved at compile time from the crate root.
-const EXAMPLE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/integration_corner_cases.ri"
-);
+/// Absolute path to the example file.
+fn example_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("integration_corner_cases.ri")
+}
 
 // ── Cached helpers ────────────────────────────────────────────────────────────
 
@@ -35,8 +34,8 @@ const EXAMPLE_PATH: &str = concat!(
 fn source() -> String {
     static S: OnceLock<String> = OnceLock::new();
     S.get_or_init(|| {
-        fs::read_to_string(EXAMPLE_PATH)
-            .unwrap_or_else(|e| panic!("{} should exist: {}", EXAMPLE_PATH, e))
+        fs::read_to_string(example_path())
+            .unwrap_or_else(|e| panic!("{} should exist: {}", example_path().display(), e))
     })
     .clone()
 }

@@ -49,10 +49,9 @@ use reify_ir::ExportFormat;
 use reify_ir::value::LeafQuery;
 use reify_test_support::{assert_selector_leaf, errors_only, parse_and_compile_with_stdlib};
 
-const FIXTURE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../examples/kernel_queries/filtered_edges.ri"
-);
+fn fixture_path() -> std::path::PathBuf {
+    reify_test_support::examples_corpus::examples_dir().join("kernel_queries/filtered_edges.ri")
+}
 
 /// End-to-end pin for KGQ-θ re-typed by task 4118 (γ): `edges_by_length`,
 /// `faces_by_area`, and `edges_at_height` on a box each build a kernel-free
@@ -62,7 +61,7 @@ const FIXTURE_PATH: &str = concat!(
 fn filtered_edges_compile_and_return_geometry_handles() {
     // ── assertion 1: fixture exists and compiles cleanly (unconditional) ──────
 
-    let source = std::fs::read_to_string(FIXTURE_PATH)
+    let source = std::fs::read_to_string(fixture_path())
         .expect("examples/kernel_queries/filtered_edges.ri should exist (task 3617)");
     let compiled = parse_and_compile_with_stdlib(&source);
     assert!(
