@@ -931,7 +931,7 @@ mod dimension_checked_readers {
     }
 
     fn axis_y() -> Value {
-        Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)])
+        reify_test_support::direction_val(0.0, 1.0, 0.0)
     }
 
     /// `prb_cantilever_beam(20mm, 5mm, 0.5mm, material, origin, y)`.
