@@ -1128,6 +1128,21 @@ class NamespaceParent(unittest.TestCase):
         Path(self.tmp, "go").touch()
         self.assertEqual(parent.wait(), 143)
 
+    def test_a_signal_while_bwrap_is_being_started_reaches_the_command(self):
+        parent = self.start(signal_during_start=True, command_secs="5")
+        self.assertEqual(parent.wait(), 143)
+
+    def test_a_descriptor_the_caller_passes_reaches_bwrap(self):
+        read_end, write_end = os.pipe()
+        self.addCleanup(os.close, read_end)
+        self.addCleanup(os.close, write_end)
+        os.set_inheritable(write_end, True)
+        parent = self.start(pass_fds=(write_end,))
+        self.wait_for("started", parent)
+        self.assertIn(write_end, json.loads(Path(self.tmp, "bwrap_fds.json").read_text()))
+        os.kill(parent.pid, signal.SIGTERM)
+        self.assertEqual(parent.wait(), 143)
+
 
 class CachePolicy(CanonInvocationCase):
     """C4's table as canon_invocation applies it (boundary row 4 for `incremental`)."""

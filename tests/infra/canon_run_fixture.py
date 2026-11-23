@@ -133,11 +133,15 @@ def run_bound(tree, cwd, *args, env, runner_dir):
 # is the path that ran. Exits with FAKE_CARGO_EXIT, default 0.
 # The NAMESPACE route's outer process, canon_run.run_in_namespace, around a fake
 # bwrap instead of the real one, so its signal forwarding runs with no mount
-# namespace. argv: <scripts dir> <directory>. In <directory>, the fake bwrap
-# touches `spawned` once it runs, waits for `go`, then starts the command
-# (`touch started; exec sleep 60`, at default dispositions), writes its pid to
-# the info fd as bwrap does, and exits with its status or 128+N.
+# namespace. argv: <scripts dir> <directory> <options JSON>. With options'
+# signal_during_start, the argv callback sends this process SIGTERM, so the
+# signal arrives while run_in_namespace is starting bwrap. In <directory>, the
+# fake bwrap lists its open descriptors in `bwrap_fds.json`, touches `spawned`,
+# waits for `go`, then starts the command (`touch started; exec sleep
+# <command_secs>`, at default dispositions), writes its pid to the info fd as
+# bwrap does, and exits with its status or 128+N.
 NAMESPACE_PARENT_RUNNER = r"""
+import json
 import os
 import signal
 import sys
@@ -146,15 +150,19 @@ sys.path.insert(0, sys.argv[1])
 import canon_cache
 import canon_run
 
-directory = sys.argv[2]
+directory, options = sys.argv[2], json.loads(sys.argv[3])
 fake_bwrap = os.path.join(directory, "fake_bwrap.py")
+
+
+def bwrap_argv(info_fd):
+    if options["signal_during_start"]:
+        os.kill(os.getpid(), signal.SIGTERM)
+    return [sys.executable, "-I", fake_bwrap, str(info_fd), directory, options["command_secs"]]
+
+
 signal.signal(signal.SIGINT, signal.default_int_handler)
 signal.signal(signal.SIGQUIT, signal.SIG_DFL)
-sys.exit(canon_run.run_in_namespace(
-    lambda info_fd: [sys.executable, "-I", fake_bwrap, str(info_fd), directory],
-    {"PATH": "/usr/bin:/bin"},
-    canon_cache.SignalForwarder(),
-))
+sys.exit(canon_run.run_in_namespace(bwrap_argv, {"PATH": "/usr/bin:/bin"}, canon_cache.SignalForwarder()))
 """
 FAKE_BWRAP = r"""
 import json
@@ -164,13 +172,17 @@ import subprocess
 import sys
 import time
 
-info_fd, directory = int(sys.argv[1]), sys.argv[2]
+info_fd, directory, command_secs = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+descriptors = sorted(int(fd) for fd in os.listdir("/proc/self/fd"))
+with open(os.path.join(directory, "bwrap_fds.json"), "w") as listing:
+    json.dump(descriptors, listing)
 open(os.path.join(directory, "spawned"), "w").close()
 for number in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT, signal.SIGQUIT):
     signal.signal(number, signal.SIG_DFL)
 while not os.path.exists(os.path.join(directory, "go")):
     time.sleep(0.02)
-command = subprocess.Popen(["/bin/sh", "-c", 'touch "$0"; exec sleep 60', os.path.join(directory, "started")])
+started = os.path.join(directory, "started")
+command = subprocess.Popen(["/bin/sh", "-c", 'touch "$0"; exec sleep "$1"', started, command_secs])
 with os.fdopen(info_fd, "w") as info:
     json.dump({"child-pid": command.pid}, info)
 status = command.wait()
@@ -178,15 +190,18 @@ sys.exit(128 - status if status < 0 else status)
 """
 
 
-def start_namespace_parent(directory, *, go=True):
+def start_namespace_parent(directory, *, go=True, pass_fds=(), signal_during_start=False, command_secs="60"):
     """The runner above as its own session's leader; `go` lets the fake bwrap start the command at once."""
     Path(directory, "fake_bwrap.py").write_text(FAKE_BWRAP)
     runner = Path(directory, "namespace_parent_runner.py")
     runner.write_text(NAMESPACE_PARENT_RUNNER)
     if go:
         Path(directory, "go").touch()
+    options = {"signal_during_start": signal_during_start, "command_secs": command_secs}
     return subprocess.Popen(
-        [PYTHON, "-I", str(runner), str(REPO_ROOT / "scripts"), str(directory)], start_new_session=True
+        [PYTHON, "-I", str(runner), str(REPO_ROOT / "scripts"), str(directory), json.dumps(options)],
+        start_new_session=True,
+        pass_fds=pass_fds,
     )
 
 
