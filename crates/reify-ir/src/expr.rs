@@ -175,8 +175,8 @@ pub enum CompiledExprKind {
     /// - `type_id`: a baked `StructureTypeId(0)` PLACEHOLDER. The compiler
     ///   cannot know the per-Engine id; authoritative identity is
     ///   `(type_name, version)` (esc-3540-173). Any site needing registry
-    ///   side-table access re-stamps the real id by name (esc-3540-177
-    ///   RULING 2) — that re-stamp is NOT on SIR-α's critical path.
+    ///   side-table access resolves by name (esc-3540-177 RULING 2) through
+    ///   [`StructureRegistry::meta_for`](crate::StructureRegistry::meta_for).
     /// - `version`: read from `template.version()` (the `@version(N)`
     ///   accessor, esc-3540-176) at lowering time.
     /// - `ordered_args`: positionally-bound supplied args, `(param_name,
@@ -184,7 +184,7 @@ pub enum CompiledExprKind {
     /// - `defaults`: `(param_name, default_expr)` for params NOT covered by
     ///   `ordered_args`, captured once at lowering time.
     StructureInstanceCtor {
-        type_id: crate::structure_registry::StructureTypeId,
+        type_id: crate::structure_type_id::StructureTypeId,
         type_name: String,
         version: u32,
         ordered_args: Vec<(String, CompiledExpr)>,
@@ -1667,7 +1667,7 @@ impl CompiledExpr {
     /// field doc on `CompiledExprKind::StructureInstanceCtor::span`.
     #[allow(clippy::too_many_arguments)]
     pub fn structure_instance_ctor(
-        type_id: crate::structure_registry::StructureTypeId,
+        type_id: crate::structure_type_id::StructureTypeId,
         type_name: String,
         version: u32,
         ordered_args: Vec<(String, CompiledExpr)>,
@@ -2987,7 +2987,7 @@ mod tests {
     /// `lets` parameter and the variant has no `lets` field.
     #[test]
     fn structure_instance_ctor_lets_stored_and_preserved() {
-        let placeholder_type_id = crate::structure_registry::StructureTypeId(0);
+        let placeholder_type_id = crate::structure_type_id::StructureTypeId(0);
         let ref_a = CompiledExpr::value_ref(ValueCellId::new("MyStruct", "a"), Type::length());
         let ref_b = CompiledExpr::value_ref(ValueCellId::new("MyStruct", "b"), Type::length());
         let derived_expr =
@@ -3077,7 +3077,7 @@ mod tests {
     // parameter and the variant has no `span` field. Fails until step-4.
     #[test]
     fn structure_instance_ctor_span_excluded_from_content_hash() {
-        let placeholder_type_id = crate::structure_registry::StructureTypeId(0);
+        let placeholder_type_id = crate::structure_type_id::StructureTypeId(0);
         let ref_a = CompiledExpr::value_ref(ValueCellId::new("MyStruct", "a"), Type::length());
 
         let ctor_with_span = CompiledExpr::structure_instance_ctor(

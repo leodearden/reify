@@ -45,6 +45,7 @@ pub mod ri_literal;
 pub mod sampled;
 pub mod solve_termination;
 pub mod structure_registry;
+pub mod structure_type_id;
 #[cfg(test)]
 mod test_rng;
 pub mod traits;
@@ -124,7 +125,8 @@ pub use product_tree::{
 pub use provenance::{FieldImportProvenance, SnapshotProvenance};
 pub use completeness::{Completeness, PartialReason, SolutionSet};
 pub use ranked::{BestFoundReason, OptimalityStatus, RankedCandidate, RankedSolveResult};
-pub use structure_registry::{StructureMeta, StructureRegistry, StructureTypeId};
+pub use structure_registry::{StructureMeta, StructureRegistry};
+pub use structure_type_id::StructureTypeId;
 pub use traits::{EnumDef, EnumVariantDef, VariantPayload, TraitBound, TraitDef, TraitMember, TraitRef, TypeParam};
 pub use ri_literal::{
     RiLiteralError, UnitScope, value_to_ri_literal, value_to_ri_literal_in_scope,

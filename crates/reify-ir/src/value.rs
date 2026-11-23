@@ -10,7 +10,7 @@ use crate::expr::CompiledExpr;
 use reify_core::hash::ContentHash;
 use reify_core::identity::ValueCellId;
 use crate::persistent::PersistentMap;
-use crate::structure_registry::StructureTypeId;
+use crate::structure_type_id::StructureTypeId;
 use reify_core::ty::SelectorKind;
 use crate::geometry_id::{FeatureId, Role};
 
@@ -1216,9 +1216,11 @@ pub enum Value {
     SampledField(SampledField),
     /// Instance of a `structure def` (e.g. `Steel_AISI_1045()`).
     ///
-    /// `type_id` is an opaque per-Engine handle into the
-    /// [`StructureRegistry`](crate::StructureRegistry) side-table (declared
-    /// trait bounds, source span, field layout). `type_name` and `version`
+    /// `type_id` is a placeholder that carries no identity: side-table reads
+    /// (declared trait bounds, source span, field layout) resolve by
+    /// `type_name` through
+    /// [`StructureRegistry::meta_for`](crate::StructureRegistry::meta_for).
+    /// `type_name` and `version`
     /// are carried inline so that [`content_hash`](Value::content_hash) — a
     /// pure function with no registry access — can compose a cache key that
     /// is stable across Engine restarts (PRD §5: key on *name*, never the
@@ -1317,6 +1319,20 @@ impl<'a> MaterializedAnnotation<'a> {
 }
 
 impl StructureInstanceData {
+    /// An instance no registry entry stands behind (an engine-synthesized
+    /// result), at version 1 and carrying [`StructureTypeId::REGISTRY_FREE`].
+    pub fn registry_free(
+        type_name: impl Into<String>,
+        fields: PersistentMap<String, Value>,
+    ) -> Self {
+        Self {
+            type_id: StructureTypeId::REGISTRY_FREE,
+            type_name: type_name.into(),
+            version: 1,
+            fields,
+        }
+    }
+
     /// Look up the materialized overlay for annotation `name`.
     ///
     /// Returns `None` when no overlay exists for that annotation
@@ -4814,7 +4830,7 @@ mod tests {
     // ── Value::StructureInstance variant (task 3540 / SIR-α) ─────────────────
     mod structure_instance {
         use super::*;
-        use crate::structure_registry::StructureTypeId;
+        use crate::structure_type_id::StructureTypeId;
 
         /// Build a `Value::StructureInstance` with a fixed `type_id`/`version`
         /// and the given `(name, value)` field pairs.
@@ -14147,8 +14163,9 @@ mod registry_free_constructor_tests {
 
     #[test]
     fn registry_free_mints_the_registry_free_sentinel_at_version_one() {
-        let fields: PersistentMap<String, Value> =
-            [("area".to_string(), Value::Real(2.5))].into_iter().collect();
+        let fields: PersistentMap<String, Value> = [("area".to_string(), Value::Real(2.5))]
+            .into_iter()
+            .collect();
         let data = StructureInstanceData::registry_free("MidSurfaceMesh", fields.clone());
 
         assert_eq!(StructureTypeId::REGISTRY_FREE, StructureTypeId(u32::MAX));

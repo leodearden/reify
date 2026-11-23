@@ -7,18 +7,14 @@
 //!
 //! The registry is per-Engine: ids are *not* stable across Engine restarts,
 //! so cache-key composition keys off the structure *name* + `version`, never
-//! the [`StructureTypeId`].
+//! the [`StructureTypeId`]. Likewise an instance's own `type_id` is a
+//! placeholder, so reads keyed on an instance go through
+//! [`StructureRegistry::meta_for`], which resolves by `type_name`.
 
+use crate::structure_type_id::StructureTypeId;
+use crate::value::StructureInstanceData;
 use reify_core::{SourceSpan, Type};
 use std::collections::HashMap;
-
-/// Stable per-Engine identifier for an interned structure definition.
-///
-/// Opaque `u32` handle into the [`StructureRegistry`] side-table. Not stable
-/// across Engine restarts — cache-key composition uses the structure *name*,
-/// not this id.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct StructureTypeId(pub u32);
 
 /// Side-table metadata for a structure definition.
 ///
@@ -88,6 +84,18 @@ impl StructureRegistry {
     /// Borrow the full metadata for an id, if it is in range.
     pub fn meta(&self, id: StructureTypeId) -> Option<&StructureMeta> {
         self.by_id.get(id.0 as usize)
+    }
+
+    /// Borrow the metadata for `instance`'s structure, resolved by its
+    /// `type_name`, if that name is interned.
+    ///
+    /// The instance's `type_id` is never consulted: it is a placeholder that
+    /// carries no identity (`StructureTypeId(0)` when ctor-built,
+    /// [`StructureTypeId::REGISTRY_FREE`] when Rust-minted). An instance's
+    /// identity is `(type_name, version)` (esc-3540-177 RULING 2).
+    pub fn meta_for(&self, instance: &StructureInstanceData) -> Option<&StructureMeta> {
+        self.id_for(&instance.type_name)
+            .and_then(|id| self.meta(id))
     }
 
     /// Borrow the declared trait bounds for an id, if it is in range.
@@ -214,11 +222,17 @@ mod tests {
         let mut reg = StructureRegistry::new();
         let color = reg.intern("Color", sample_meta("Color", 1, &[]));
         let probe = reg.intern("ProbeDirect", sample_meta("ProbeDirect", 1, &["Probe"]));
-        assert_eq!(color, StructureTypeId(0), "Color must hold id 0 for this trap");
+        assert_eq!(
+            color,
+            StructureTypeId(0),
+            "Color must hold id 0 for this trap"
+        );
 
         let probe_bounds = vec!["Probe".to_string()];
         let ctor_placeholder = instance(StructureTypeId(0), "ProbeDirect");
-        let resolved = reg.meta_for(&ctor_placeholder).expect("ProbeDirect is interned");
+        let resolved = reg
+            .meta_for(&ctor_placeholder)
+            .expect("ProbeDirect is interned");
         assert_eq!(resolved.name, "ProbeDirect");
         assert_eq!(resolved.declared_trait_bounds, probe_bounds);
 
