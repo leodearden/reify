@@ -1032,12 +1032,6 @@ INTERACTIVE_CALLER = {
 }
 
 
-def ignored_signals(path):
-    """The signal numbers set in the `SigIgn:` hex mask a command wrote to path."""
-    mask = int(Path(path).read_text().split(":", 1)[1], 16)
-    return {number for number in range(1, mask.bit_length() + 1) if mask >> (number - 1) & 1}
-
-
 class Supervise(SessionCase):
     """C6's measurement around one command, and the supervisor's signal and descriptor policy."""
 
@@ -1074,7 +1068,7 @@ class Supervise(SessionCase):
     def supervised_ignored_signals(self):
         out = os.path.join(self.tmp, "sigign")
         self.supervise(["/bin/sh", "-c", SIGIGN_PROBE, out])
-        return {number for number in SUPERVISED_SIGNALS if number in ignored_signals(out)}
+        return {number for number in SUPERVISED_SIGNALS if number in fx.ignored_signals(out)}
 
     def start_supervise_runner(self, sleep_secs, **popen):
         """A supervisor process around `sleep sleep_secs`, returned once the command has started."""

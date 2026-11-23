@@ -3,12 +3,14 @@
 test_canon_run_host.py — stdlib unittest for scripts/canon_run.py with real
 cargo and real mount namespaces (canonical-build-path PRD, dark-factory
 plans/canonical-build-path-shared-cache-prd.md: C1-C4 end to end under the
-`incremental` policy; boundary rows 9, 11, 12 and 17).
+`incremental` policy; boundary rows 9, 11, 12, 17 and 26).
 
 Each case compiles a scratch one-crate workspace whose test prints the
 CARGO_MANIFEST_DIR rustc baked into it, so the output says which path the build
 ran at. The vendored gui/src-tauri/sandbox/landlock_exec.py makes mount
-namespaces deterministically unavailable where a row needs that.
+namespaces deterministically unavailable where a row needs that. Boundary row
+26's cases signal a NAMESPACE-route invocation whose command traps TERM and INT
+(PRD C3 as ruled in esc-10418-3).
 
 WHAT RUNS THIS: run_all.sh discovers `test_*.sh` only, so the discovered member
 is the thin wrapper tests/infra/test_canon_run_host.sh.
@@ -18,17 +20,21 @@ binary), the rows that need one SKIP with the named reason; likewise the rows
 that need landlock.
 """
 
+import contextlib
 import json
 import os
 import shlex
 import shutil
+import signal
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import canon_run_fixture as fx  # noqa: E402  (imported after sys.path manipulation)
+import canon_cache_fixture as cfx  # noqa: E402  (imported after sys.path manipulation)
+import canon_run_fixture as fx  # noqa: E402
 
 STAMP = ".reify-build-root"
 
@@ -40,6 +46,18 @@ dump["getcwd"] = os.getcwd()
 dump["pid_namespace"] = os.readlink("/proc/self/ns/pid")
 with open(sys.argv[1], "w") as out:
     json.dump(dump, out)
+"""
+
+# Boundary row 26's command (argv: probe dir): it traps TERM and INT, ending its
+# background child and exiting 7 after a pause, and records both pids.
+TRAPPING_COMMAND = r"""
+d=$0
+trap 'sleep 0.3; kill $! 2>/dev/null; echo trapped > "$d/trapped"; exit 7' TERM INT
+echo $$ > "$d/command.pid"
+sleep 60 &
+echo $! > "$d/child.pid"
+touch "$d/ready"
+wait
 """
 
 
@@ -95,6 +113,8 @@ class NamespaceRows(HostCase):
             self.skipTest(reason)
         super().setUp()
         self.enable_host()
+        self.probe = Path(self.tmp, "probe")
+        self.probe.mkdir()
 
     def skip_without_landlock(self):
         reason = fx.landlock_unavailable_reason()
@@ -190,6 +210,107 @@ class NamespaceRows(HostCase):
         self.assert_passed_at(result, self.canon)
         self.assertEqual(self.stamp.read_text(), self.canon + "\n")
         self.assertIn(f"PWD_AFTER={self.tree}", result.stdout.splitlines())
+
+    def start_probe(self, *command, pass_fds=()):
+        """canon_run.py exec -- command on the NAMESPACE route; survivors are killed at cleanup."""
+        process = fx.start_canon(self.tree, self.tree, "exec", "--", *command, env=self.env, pass_fds=pass_fds)
+        self.addCleanup(self.kill_survivors, process)
+        return process
+
+    def start_trapping(self):
+        """TRAPPING_COMMAND on the NAMESPACE route, once it has trapped and started its child."""
+        process = self.start_probe("/bin/bash", "-c", TRAPPING_COMMAND, str(self.probe))
+        while not Path(self.probe, "ready").exists():
+            if process.poll() is not None:
+                self.fail(f"the invocation ended (rc={process.returncode}) before its command was ready:"
+                          f" {process.stderr.read()}")
+            time.sleep(0.05)
+        return process
+
+    def recorded_pid(self, name):
+        return int(Path(self.probe, name).read_text())
+
+    def kill_survivors(self, process):
+        for name in ("command.pid", "child.pid"):
+            with contextlib.suppress(OSError, ValueError):
+                pid = self.recorded_pid(name)
+                if not cfx.process_gone(pid):
+                    os.kill(pid, signal.SIGKILL)
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+        process.wait()
+        process.stderr.close()
+
+    def survivors(self, pids):
+        """A bounded liveness wait: the pids still running when none are, or when the wait ends."""
+        deadline = time.monotonic() + cfx.READY_WAIT
+        while (running := [pid for pid in pids if not cfx.process_gone(pid)]) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        return running
+
+    def assert_trapped(self, process):
+        _, stderr = process.communicate()
+        self.assertEqual(process.returncode, 7, stderr)
+        self.assertTrue(Path(self.probe, "trapped").exists(), stderr)
+
+    def test_sigterm_to_the_started_pid_runs_the_commands_trap(self):
+        process = self.start_trapping()
+        os.kill(process.pid, signal.SIGTERM)
+        self.assert_trapped(process)
+
+    def test_sigterm_to_the_group_runs_the_commands_trap(self):
+        process = self.start_trapping()
+        os.killpg(process.pid, signal.SIGTERM)
+        self.assert_trapped(process)
+
+    def test_sigint_to_the_group_runs_the_commands_trap(self):
+        process = self.start_trapping()
+        os.killpg(process.pid, signal.SIGINT)
+        self.assert_trapped(process)
+
+    def test_sigterm_to_every_descendant_at_once_runs_the_commands_trap(self):
+        process = self.start_trapping()
+        for pid in fx.descendants(process.pid):
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(pid, signal.SIGTERM)
+        self.assert_trapped(process)
+
+    def test_sigkill_to_the_started_pid_takes_the_command_with_it(self):
+        process = self.start_trapping()
+        command = self.recorded_pid("command.pid")
+        os.kill(process.pid, signal.SIGKILL)
+        process.wait()
+        self.assertEqual(self.survivors([command]), [])
+
+    def test_sigkill_to_the_group_leaves_neither_the_command_nor_its_child(self):
+        process = self.start_trapping()
+        pids = [self.recorded_pid("command.pid"), self.recorded_pid("child.pid")]
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait()
+        self.assertEqual(self.survivors(pids), [])
+
+    def test_a_sigterm_while_the_namespace_is_set_up_never_lets_the_command_finish_normally(self):
+        """A signal before the command is ready is held, then delivered; it is never lost (rc 0)."""
+        process = self.start_probe("/bin/bash", "-c", TRAPPING_COMMAND, str(self.probe))
+        while not fx.catches(process.pid, signal.SIGTERM):
+            if process.poll() is not None:
+                self.fail(f"the invocation ended (rc={process.returncode}) before it forwarded signals:"
+                          f" {process.stderr.read()}")
+            time.sleep(0.01)
+        os.kill(process.pid, signal.SIGTERM)
+        _, stderr = process.communicate()
+        self.assertIn(process.returncode, {7, 143}, stderr)
+
+    def test_a_descriptor_the_caller_passes_reaches_the_command(self):
+        read_end, write_end = os.pipe()
+        self.addCleanup(os.close, read_end)
+        try:
+            process = self.start_probe("/bin/bash", "-c", f"echo through >&{write_end}", pass_fds=(write_end,))
+        finally:
+            os.close(write_end)
+        _, stderr = process.communicate()
+        self.assertEqual(process.returncode, 0, stderr)
+        self.assertEqual(os.read(read_end, 64), b"through\n")
 
 
 class LandlockRows(HostCase):

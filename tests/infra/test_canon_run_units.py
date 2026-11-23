@@ -1159,6 +1159,39 @@ class NamespaceParent(unittest.TestCase):
         os.kill(parent.pid, signal.SIGTERM)
         self.assertEqual(parent.wait(), 143)
 
+    def test_a_signal_the_caller_ignores_stays_ignored_and_the_rest_are_restored(self):
+        parent = self.start(ignore=(signal.SIGHUP,))
+        self.wait_for("started", parent)
+        ignored = fx.ignored_signals(os.path.join(self.tmp, "sigign"))
+        self.assertEqual(ignored & set(canon_cache.SUPERVISED_SIGNALS), {signal.SIGHUP})
+        os.kill(parent.pid, signal.SIGTERM)
+        self.assertEqual(parent.wait(), 143)
+
+
+class ReadChildPid(unittest.TestCase):
+    """bwrap's --info-fd record, read to its end: the pid of the child it started, or None."""
+
+    def read(self, data):
+        read_end, write_end = os.pipe()
+        with os.fdopen(write_end, "wb") as writer:
+            writer.write(data)
+        return canon_run.read_child_pid(read_end)
+
+    def test_bwrap_0_9_0s_record_gives_the_child_pid(self):
+        self.assertEqual(self.read(b'{\n    "child-pid": 1269159,\n    "mnt-namespace": 4026536262\n}'), 1269159)
+
+    def test_nothing_written_before_bwrap_exited_gives_none(self):
+        self.assertIsNone(self.read(b""))
+
+    def test_text_that_is_not_json_gives_none(self):
+        self.assertIsNone(self.read(b"child-pid: 12"))
+
+    def test_a_json_list_gives_none(self):
+        self.assertIsNone(self.read(b"[12]"))
+
+    def test_a_child_pid_that_is_not_an_integer_gives_none(self):
+        self.assertIsNone(self.read(b'{"child-pid": "12"}'))
+
 
 class CachePolicy(CanonInvocationCase):
     """C4's table as canon_invocation applies it (boundary row 4 for `incremental`)."""
