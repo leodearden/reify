@@ -56,6 +56,8 @@ mod module_dag_tests;
 mod module_decl_remedy_tests;
 #[path = "harness_modules_ports/name_env_policy_tests.rs"]
 mod name_env_policy_tests;
+#[path = "harness_modules_ports/program_scope_tests.rs"]
+mod program_scope_tests;
 #[path = "harness_modules_ports/ns_p4_parity_tests.rs"]
 mod ns_p4_parity_tests;
 #[path = "harness_modules_ports/occurrence_compile_tests.rs"]

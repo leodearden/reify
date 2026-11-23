@@ -17,6 +17,7 @@ use reify_compiler::cfg::CfgSet;
 use reify_compiler::module_dag::ModuleResolver;
 use reify_compiler::name_env::Definition;
 use reify_compiler::program::{CompiledProgram, compile_program};
+use reify_compiler::program_scope::ProgramDefinition;
 use reify_compiler::stdlib_loader::load_stdlib;
 use reify_compiler::{
     CompiledConstraintDef, CompiledModule, CompiledPurpose, CompiledTrait, CompiledTypeAlias,
@@ -379,7 +380,7 @@ impl KindsFixture {
 }
 
 /// A definition kind, with its DefEnv resolver.
-trait Kind: Definition + Sized {
+trait Kind: ProgramDefinition + Sized {
     /// Every definition of this kind `module` holds, `pub` or not.
     fn all_in(module: &CompiledModule) -> &[Self];
 

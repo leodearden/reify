@@ -11,7 +11,8 @@
 use std::collections::HashSet;
 
 use reify_compiler::name_env::{
-    Bindings, Definition, FunctionSignature, Origin, Tier, bind, resolve,
+    Bindings, Definition, FunctionSignature, Origin, Surface, Tier, bind, bind_scopes, resolve,
+    resolve_in_scopes, surface_of,
 };
 use reify_compiler::{
     CompiledConstraintDef, CompiledModule, CompiledPurpose, CompiledTrait, CompiledTypeAlias,
@@ -662,314 +663,291 @@ fn a_compiled_enum_records_whether_it_was_declared_pub() {
     assert!(!visibility("Kept"), "`enum Kept` is not pub");
 }
 
-// ─── program-level binding: bind_program / resolve_in_program (task 5522) ──
+// ─── scope-level core: surface_of / bind_scopes / resolve_in_scopes ───────
 //
-// Over a REAL tempdir program: entry `main` imports `a` then `b`. Every
-// expectation is a pointer into the program or the stdlib, so the test pins
-// WHICH definition binds, not just that one does.
+// Three scopes: a `local` surface, direct imports `[a, b]` (import tier, `pub`
+// surface only), and the ambient prelude `[std.p1, c]` (`c` import tier). The
+// expected precedence is local > direct imports in order > import-tier prelude
+// modules > std, whatever the slice order.
 
-mod program_binding {
-    use std::fs;
-    use std::path::Path;
+/// `(name, is_pub)` per scope module. `a`'s non-pub `Secret` must not bind
+/// through the direct-import tier; the ambient `c`'s does.
+const SCOPE_PLAN: &[(&str, &[(&str, bool)])] = &[
+    (
+        "a",
+        &[
+            ("Everywhere", true),
+            ("DirectPeer", true),
+            ("OverAmbient", true),
+            ("Secret", false),
+            ("Visible", true),
+        ],
+    ),
+    ("b", &[("Everywhere", true), ("DirectPeer", true)]),
+    (
+        "c",
+        &[
+            ("Everywhere", true),
+            ("OverAmbient", true),
+            ("Secret", false),
+            ("PreludeImport", true),
+        ],
+    ),
+    (
+        "std.p1",
+        &[
+            ("Everywhere", true),
+            ("OverAmbient", true),
+            ("PreludeImport", true),
+            ("StdOnly", true),
+            ("Secret", true),
+        ],
+    ),
+];
+const SCOPE_LOCAL: &[&str] = &["Everywhere", "Mine"];
 
-    use reify_compiler::cfg::CfgSet;
-    use reify_compiler::module_dag::ModuleResolver;
-    use reify_compiler::name_env::{
-        Definition, FunctionSignature, bind_program, resolve_in_program,
-    };
-    use reify_compiler::program::{CompiledProgram, compile_program};
-    use reify_compiler::stdlib_loader::load_stdlib;
-    use reify_compiler::{CompiledModule, CompiledPurpose, CompiledUnit, TopologyTemplate};
-    use reify_core::Severity;
-    use reify_ir::{CompiledFunction, EnumDef, Satisfaction};
-    use reify_test_support::mocks::MockConstraintChecker;
+/// `(name, origin)` of every winner, in precedence order.
+const SCOPE_WINNERS: &[(&str, &str)] = &[
+    ("Everywhere", "local"),
+    ("Mine", "local"),
+    ("DirectPeer", "a"),
+    ("OverAmbient", "a"),
+    ("Visible", "a"),
+    ("Secret", "c"),
+    ("PreludeImport", "c"),
+    ("StdOnly", "std.p1"),
+];
 
-    /// A std template an import redeclares (import beats std), and one only
-    /// the stdlib declares.
-    const STD_TEMPLATE: &str = "DisplayStyle";
-    const STD_ONLY_TEMPLATE: &str = "STLOutput";
-    /// A std enum an import redeclares, and one only the stdlib declares.
-    const STD_ENUM: &str = "InterpolationMethod";
-    const STD_ONLY_ENUM: &str = "JointPosition";
-    /// A std function signature an import redeclares.
-    const STD_FN: &str = "symmetric_tolerance";
-    const STD_ONLY_UNIT: &str = "cm";
+/// `(name, winner origin, shadowed origin)` for every losing definition.
+const SCOPE_SHADOWINGS: &[(&str, &str, &str)] = &[
+    ("DirectPeer", "a", "b"),
+    ("Everywhere", "local", "a"),
+    ("Everywhere", "local", "b"),
+    ("Everywhere", "local", "c"),
+    ("Everywhere", "local", "std.p1"),
+    ("OverAmbient", "a", "c"),
+    ("OverAmbient", "a", "std.p1"),
+    ("PreludeImport", "c", "std.p1"),
+    ("Secret", "c", "std.p1"),
+];
 
-    fn a_source() -> String {
-        format!(
-            "module a\n\
-             pub structure def Shared {{\n    param x : Real = 1\n}}\n\
-             pub structure def ImportPeer {{\n    param x : Real = 1\n}}\n\
-             pub structure def {STD_TEMPLATE} {{\n    param x : Real = 1\n}}\n\
-             structure def HiddenT {{\n    param x : Real = 1\n}}\n\
-             pub structure def VisT {{\n    param x : Real = 1\n}}\n\
-             pub fn shared_fn(x: Real) -> Real {{ x }}\n\
-             pub fn peer_fn(x: Real) -> Real {{ x }}\n\
-             pub fn {STD_FN}(nominal: Length, deviation: Length) -> Length {{ nominal }}\n\
-             fn hidden_fn(x: Real) -> Real {{ x }}\n\
-             pub fn vis_fn(x: Real) -> Real {{ x }}\n\
-             pub enum SharedE {{ A }}\n\
-             pub enum PeerE {{ A }}\n\
-             pub enum {STD_ENUM} {{ Mine }}\n\
-             enum HiddenE {{ H }}\n\
-             pub enum VisE {{ V }}\n\
-             pub unit peeru : Length = 1.0\n\
-             unit hiddenu : Length = 1.0\n\
-             pub unit visu : Length = 1.0\n"
-        )
-    }
-
-    const B_SOURCE: &str = "module b\n\
-         pub structure def Shared {\n    param y : Real = 2\n}\n\
-         pub structure def ImportPeer {\n    param y : Real = 2\n}\n\
-         pub fn peer_fn(x: Real) -> Real { x + 1 }\n\
-         pub enum PeerE { B }\n\
-         pub unit peeru : Length = 2.0\n";
-
-    const MAIN_SOURCE: &str = "module main\nimport a\nimport b\n\
-         structure def Shared {\n    param z : Real = 3\n}\n\
-         fn shared_fn(x: Real) -> Real { x * 2 }\n\
-         enum SharedE { Z }\n";
-
-    fn compile_fixture(dir: &Path) -> CompiledProgram {
-        fs::write(dir.join("a.ri"), a_source()).unwrap();
-        fs::write(dir.join("b.ri"), B_SOURCE).unwrap();
-        let entry_path = dir.join("main.ri");
-        fs::write(&entry_path, MAIN_SOURCE).unwrap();
-        let program = compile_program(
-            &entry_path,
-            MAIN_SOURCE,
-            &ModuleResolver::new(dir, dir.join("stdlib")),
-            &CfgSet::default(),
-            &MockConstraintChecker::new().with_default(Satisfaction::Indeterminate),
-        );
-        let errors: Vec<_> = program
-            .entry()
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == Severity::Error)
-            .collect();
-        assert!(errors.is_empty(), "precondition: fixture compiles: {errors:?}");
-        let keys: Vec<&str> = program.imports.iter().map(|u| u.import_path.as_str()).collect();
-        assert_eq!(keys, ["a", "b"], "precondition: a is imported before b");
-        program
-    }
-
-    struct Fixture {
-        _dir: tempfile::TempDir,
-        program: CompiledProgram,
-    }
-
-    impl Fixture {
-        fn new() -> Self {
-            let dir = tempfile::tempdir().unwrap();
-            let program = compile_fixture(dir.path());
-            Fixture { _dir: dir, program }
-        }
-
-        fn a(&self) -> &CompiledModule {
-            &self.program.imports[0].module
-        }
-
-        fn b(&self) -> &CompiledModule {
-            &self.program.imports[1].module
-        }
-    }
-
-    fn prelude() -> &'static [CompiledModule] {
-        load_stdlib()
-    }
-
-    fn std_home<D: Definition>(name: &str) -> &'static D {
-        prelude()
-            .iter()
-            .find_map(|m| D::exported_by(m).find(|d| d.name() == name))
-            .unwrap_or_else(|| panic!("precondition: some std module exports `{name}`"))
-    }
-
-    fn named<'a, D: Definition>(items: impl IntoIterator<Item = &'a D>, name: &str) -> &'a D {
-        items
-            .into_iter()
-            .find(|d| d.name() == name)
-            .unwrap_or_else(|| panic!("fixture declares `{name}`"))
-    }
-
-    fn assert_binds<'a, D: Definition>(found: Option<&'a D>, expected: &'a D, what: &str) {
-        let found = found.unwrap_or_else(|| panic!("{what}: nothing bound"));
-        assert!(std::ptr::eq(found, expected), "{what}: bound {found:?}");
-    }
-
-    fn by_name<'a, D>(program: &'a CompiledProgram, name: &str) -> Option<&'a D>
-    where
-        D: Definition,
-        D::Key<'a>: std::borrow::Borrow<str>,
-    {
-        let bound = bind_program::<D>(program, prelude()).get(name);
-        let resolved = resolve_in_program::<D, str>(program, prelude(), name);
-        assert_eq!(
-            bound.map(|d| d as *const D),
-            resolved.map(|d| d as *const D),
-            "bind_program and resolve_in_program disagree on `{name}`"
-        );
-        bound
-    }
-
-    #[test]
-    fn templates_bind_entry_then_imports_in_order_then_std() {
-        let fx = Fixture::new();
-        let p = &fx.program;
-        let entry_own = p.entry_declared_templates();
-        let t = |name| by_name::<TopologyTemplate>(p, name);
-        assert_binds(t("Shared"), named(entry_own, "Shared"), "entry beats import");
-        assert_binds(t("ImportPeer"), named(&fx.a().templates, "ImportPeer"), "a beats b");
-        assert_binds(t(STD_TEMPLATE), named(&fx.a().templates, STD_TEMPLATE), "import beats std");
-        assert_binds(
-            t(STD_ONLY_TEMPLATE),
-            std_home::<TopologyTemplate>(STD_ONLY_TEMPLATE),
-            "std-only resolves",
-        );
-        assert!(t("HiddenT").is_none(), "a non-pub import template is invisible");
-        assert_binds(t("VisT"), named(&fx.a().templates, "VisT"), "pub sibling visible");
-    }
-
-    #[test]
-    fn functions_bind_by_signature_entry_then_imports_in_order_then_std() {
-        let fx = Fixture::new();
-        let p = &fx.program;
-        let f = |module: &CompiledModule, name: &str| -> *const CompiledFunction {
-            let declared = named(&module.functions, name);
-            let key = FunctionSignature::new(name, &declared.params);
-            let bound = bind_program::<CompiledFunction>(p, prelude()).get(&key);
-            let resolved = resolve_in_program::<CompiledFunction, _>(p, prelude(), &key);
-            assert_eq!(
-                bound.map(|d| d as *const _),
-                resolved.map(|d| d as *const _),
-                "bind_program and resolve_in_program disagree on `{name}`"
-            );
-            bound.map_or(std::ptr::null(), |d| d as *const _)
-        };
-        let entry = p.entry();
-        assert_eq!(f(fx.a(), "shared_fn"), named(&entry.functions, "shared_fn") as *const _);
-        assert_eq!(f(fx.b(), "peer_fn"), named(&fx.a().functions, "peer_fn") as *const _);
-        let std_fn = prelude()
-            .iter()
-            .flat_map(|m| m.functions.iter())
-            .find(|g| {
-                g.key() == named(&fx.a().functions, STD_FN).key()
+fn scope_module(label: &str, declarations: &[(&str, bool)]) -> CompiledModule {
+    let mut builder = CompiledModuleBuilder::new(module_path(label));
+    for &(name, is_pub) in declarations {
+        builder = builder
+            .enum_def(EnumDef {
+                is_pub,
+                ..enum_def(name)
+            })
+            .function(CompiledFunction {
+                is_pub,
+                ..int_fn(name)
             });
-        assert!(std_fn.is_some(), "precondition: the stdlib declares {STD_FN} with a's signature");
-        assert_eq!(f(fx.a(), STD_FN), named(&fx.a().functions, STD_FN) as *const _);
-        let std_only = prelude()
-            .iter()
-            .flat_map(|m| m.functions.iter())
-            .find(|g| ![STD_FN, "shared_fn", "peer_fn", "vis_fn", "hidden_fn"].contains(&g.name.as_str()))
-            .expect("precondition: the stdlib declares some function");
-        let std_only_bound = resolve_in_program::<CompiledFunction, _>(p, prelude(), &std_only.key());
-        assert_binds(std_only_bound, std_only, "std-only function resolves");
-        assert!(f(fx.a(), "hidden_fn").is_null(), "a non-pub import fn is invisible");
-        assert_eq!(f(fx.a(), "vis_fn"), named(&fx.a().functions, "vis_fn") as *const _);
     }
+    builder.build()
+}
 
-    #[test]
-    fn enums_bind_entry_then_imports_in_order_then_std() {
-        let fx = Fixture::new();
-        let p = &fx.program;
-        let e = |name| by_name::<EnumDef>(p, name);
-        assert_binds(e("SharedE"), named(&p.entry().enum_defs, "SharedE"), "entry beats import");
-        assert_binds(e("PeerE"), named(&fx.a().enum_defs, "PeerE"), "a beats b");
-        assert_binds(e(STD_ENUM), named(&fx.a().enum_defs, STD_ENUM), "import beats std");
-        assert_binds(e(STD_ONLY_ENUM), std_home::<EnumDef>(STD_ONLY_ENUM), "std-only resolves");
-        assert!(e("HiddenE").is_none(), "a non-pub import enum is invisible");
-        assert_binds(e("VisE"), named(&fx.a().enum_defs, "VisE"), "pub sibling visible");
-    }
+struct ScopesFixture {
+    modules: Vec<CompiledModule>,
+    enums: Vec<EnumDef>,
+    functions: Vec<CompiledFunction>,
+}
 
-    /// An entry re-declaring an import's unit, or an import re-declaring a std
-    /// unit, is a compile Error that drops the later unit, so those two
-    /// precedence pairs never reach a compiled program.
-    #[test]
-    fn units_bind_first_import_then_std() {
-        let fx = Fixture::new();
-        let p = &fx.program;
-        let u = |name| by_name::<CompiledUnit>(p, name);
-        assert_binds(u("peeru"), named(&fx.a().units, "peeru"), "a beats b");
-        assert_binds(u(STD_ONLY_UNIT), std_home::<CompiledUnit>(STD_ONLY_UNIT), "std-only resolves");
-        assert!(u("hiddenu").is_none(), "a non-pub import unit is invisible");
-        assert_binds(u("visu"), named(&fx.a().units, "visu"), "pub sibling visible");
-    }
-
-    /// The entry's own templates are `entry_declared_templates()`: a pub
-    /// template the I5 merge copied into `entry.templates` binds the IMPORT
-    /// UNIT's template, and no Local-vs-Import shadowing is recorded for it.
-    #[test]
-    fn the_entry_scope_excludes_templates_merged_from_imports() {
-        let fx = Fixture::new();
-        let p = &fx.program;
-        assert!(
-            p.entry().templates.iter().any(|t| t.name == "VisT")
-                && !p.entry_declared_templates().iter().any(|t| t.name == "VisT"),
-            "precondition: VisT is an I5-merged copy, not an entry declaration"
-        );
-        let bindings = bind_program::<TopologyTemplate>(p, prelude());
-        assert_binds(bindings.get("VisT"), named(&fx.a().templates, "VisT"), "merged name");
-        assert!(
-            !bindings
-                .shadowings()
+impl ScopesFixture {
+    fn new() -> Self {
+        ScopesFixture {
+            modules: SCOPE_PLAN
                 .iter()
-                .any(|s| s.key == "VisT"),
-            "a merged copy is not a second candidate for its own name"
-        );
-    }
-
-    /// `merge_prelude_purposes` copies std purposes into every module's
-    /// `compiled_purposes` with prelude-sentinel spans; those copies are not
-    /// part of any module's surface, so with no user purposes nothing collides.
-    #[test]
-    fn merged_prelude_purposes_are_not_part_of_a_modules_surface() {
-        let fx = Fixture::new();
-        let p = &fx.program;
-        let merged = |m: &CompiledModule| {
-            m.compiled_purposes
-                .iter()
-                .any(|purpose| purpose.declaration_span.is_prelude())
-        };
-        assert!(
-            merged(p.entry()) && merged(fx.a()) && merged(fx.b()),
-            "precondition: std purposes are merged into the entry and each import"
-        );
-        let bindings = bind_program::<CompiledPurpose>(p, prelude());
-        assert!(
-            bindings.shadowings().is_empty(),
-            "no purpose collides: {:?}",
-            bindings
-                .shadowings()
-                .iter()
-                .map(|s| (s.key, s.winner.origin, s.shadowed.origin))
-                .collect::<Vec<_>>()
-        );
-    }
-
-    /// `resolve_in_program` agrees with `bind_program(..).get(key)` for every
-    /// name bound in the fixture, of every kind it declares.
-    #[test]
-    fn resolve_in_program_agrees_with_bind_program_for_every_bound_key() {
-        fn agree<D: Definition>(program: &CompiledProgram) {
-            let bindings = bind_program::<D>(program, prelude());
-            for candidate in bindings.winning_candidates() {
-                let key = candidate.definition.key();
-                let resolved = resolve_in_program::<D, _>(program, prelude(), &key)
-                    .unwrap_or_else(|| panic!("{key:?} resolves"));
-                let bound = bindings.get(&key).unwrap_or_else(|| panic!("{key:?} is bound"));
-                assert!(
-                    std::ptr::eq(resolved, bound) && std::ptr::eq(bound, candidate.definition),
-                    "{key:?}: resolve_in_program and bind_program disagree"
-                );
-            }
+                .map(|(label, declarations)| scope_module(label, declarations))
+                .collect(),
+            enums: SCOPE_LOCAL.iter().map(|n| enum_def(n)).collect(),
+            functions: SCOPE_LOCAL.iter().map(|n| int_fn(n)).collect(),
         }
-        let fx = Fixture::new();
-        agree::<TopologyTemplate>(&fx.program);
-        agree::<CompiledFunction>(&fx.program);
-        agree::<EnumDef>(&fx.program);
-        agree::<CompiledUnit>(&fx.program);
-        agree::<CompiledPurpose>(&fx.program);
     }
+
+    fn module(&self, label: &str) -> &CompiledModule {
+        self.modules
+            .iter()
+            .find(|m| origin_label(Origin::Module(&m.path)) == label)
+            .unwrap_or_else(|| panic!("scope fixture has no module {label}"))
+    }
+
+    fn direct_imports(&self) -> [&CompiledModule; 2] {
+        [self.module("a"), self.module("b")]
+    }
+
+    fn prelude(&self) -> [&CompiledModule; 2] {
+        [self.module("std.p1"), self.module("c")]
+    }
+}
+
+/// A kind the scope fixture declares in every module and locally.
+trait ScopeKind: Definition + Sized {
+    fn declared_in(module: &CompiledModule) -> &[Self];
+    fn local(fx: &ScopesFixture) -> &[Self];
+}
+
+impl ScopeKind for EnumDef {
+    fn declared_in(module: &CompiledModule) -> &[Self] {
+        &module.enum_defs
+    }
+    fn local(fx: &ScopesFixture) -> &[Self] {
+        &fx.enums
+    }
+}
+
+impl ScopeKind for CompiledFunction {
+    fn declared_in(module: &CompiledModule) -> &[Self] {
+        &module.functions
+    }
+    fn local(fx: &ScopesFixture) -> &[Self] {
+        &fx.functions
+    }
+}
+
+fn pointers<'a, D: 'a>(definitions: impl IntoIterator<Item = &'a D>) -> Vec<*const D> {
+    definitions.into_iter().map(|d| d as *const D).collect()
+}
+
+fn assert_surfaces<D: ScopeKind>(kind: &str) {
+    let fx = ScopesFixture::new();
+    let a = fx.module("a");
+    let pub_only: Vec<&D> = D::declared_in(a).iter().filter(|d| d.is_pub()).collect();
+    assert!(
+        pub_only.len() < D::declared_in(a).len(),
+        "precondition: a declares a non-pub {kind}"
+    );
+    assert_eq!(
+        pointers(surface_of::<D>(a, Surface::DirectImport)),
+        pointers(pub_only),
+        "{kind}: a direct import offers only its pub definitions"
+    );
+    assert_eq!(
+        pointers(surface_of::<D>(a, Surface::Ambient)),
+        pointers(D::exported_by(a)),
+        "{kind}: a prelude module offers everything it exports"
+    );
+}
+
+#[test]
+fn a_direct_import_offers_its_pub_surface_and_a_prelude_module_its_exports() {
+    assert_surfaces::<EnumDef>("enum");
+    assert_surfaces::<CompiledFunction>("function");
+}
+
+fn assert_scope_precedence<D: ScopeKind>(kind: &str) {
+    let fx = ScopesFixture::new();
+    let bindings = bind_scopes(D::local(&fx), fx.direct_imports(), fx.prelude());
+    let winners: Vec<(&str, String)> = bindings
+        .winning_candidates()
+        .iter()
+        .map(|c| (c.definition.name(), origin_label(c.origin)))
+        .collect();
+    let expected: Vec<(&str, String)> = SCOPE_WINNERS
+        .iter()
+        .map(|(name, origin)| (*name, origin.to_string()))
+        .collect();
+    assert_eq!(winners, expected, "{kind}: winners and their origins");
+
+    let mut shadowings: Vec<(&str, String, String)> = bindings
+        .shadowings()
+        .iter()
+        .map(|s| {
+            (
+                s.shadowed.definition.name(),
+                origin_label(s.winner.origin),
+                origin_label(s.shadowed.origin),
+            )
+        })
+        .collect();
+    shadowings.sort();
+    let expected: Vec<(&str, String, String)> = SCOPE_SHADOWINGS
+        .iter()
+        .map(|(n, w, s)| (*n, w.to_string(), s.to_string()))
+        .collect();
+    assert_eq!(shadowings, expected, "{kind}: shadowings");
+
+    let a_secret = D::declared_in(fx.module("a"))
+        .iter()
+        .find(|d| d.name() == "Secret")
+        .expect("a declares Secret");
+    assert!(
+        bindings
+            .winners()
+            .chain(bindings.shadowings().iter().map(|s| s.shadowed.definition))
+            .all(|d| !std::ptr::eq(d, a_secret)),
+        "{kind}: a's non-pub Secret is no candidate through the direct-import tier"
+    );
+}
+
+#[test]
+fn bind_scopes_ranks_local_then_direct_imports_then_prelude_imports_then_std() {
+    assert_scope_precedence::<EnumDef>("enum");
+    assert_scope_precedence::<CompiledFunction>("function");
+}
+
+fn assert_scope_lookup_agrees<D: ScopeKind>(kind: &str, absent: D::Key<'_>) {
+    let fx = ScopesFixture::new();
+    let local = D::local(&fx);
+    let bindings = bind_scopes(local, fx.direct_imports(), fx.prelude());
+    for candidate in bindings.winning_candidates() {
+        let key = candidate.definition.key();
+        let resolved = resolve_in_scopes(local, fx.direct_imports(), fx.prelude(), &key)
+            .unwrap_or_else(|| panic!("{kind} {key:?} resolves"));
+        assert!(
+            bindings.get(&key).is_some_and(|b| std::ptr::eq(b, resolved)),
+            "{kind} {key:?}: resolve_in_scopes and bind_scopes disagree"
+        );
+    }
+    assert!(
+        resolve_in_scopes(local, fx.direct_imports(), fx.prelude(), &absent).is_none(),
+        "{kind}: an absent key resolves to nothing"
+    );
+}
+
+#[test]
+fn resolve_in_scopes_agrees_with_bind_scopes_for_every_bound_key() {
+    assert_scope_lookup_agrees::<EnumDef>("enum", "Absent");
+    let absent_fn = int_fn("Absent");
+    assert_scope_lookup_agrees::<CompiledFunction>("function", absent_fn.key());
+}
+
+/// `bind` is `bind_scopes` with no direct imports: the same winners, by
+/// pointer and in order, and the same shadowings.
+fn assert_bind_is_bind_scopes_without_direct_imports<'a, D: Definition>(
+    kind: &str,
+    local: &'a [D],
+    prelude: &'a [CompiledModule],
+) {
+    let one = bind(local, prelude);
+    let scoped = bind_scopes(local, std::iter::empty::<&CompiledModule>(), prelude);
+    assert_eq!(
+        pointers(one.winners()),
+        pointers(scoped.winners()),
+        "{kind}: winners"
+    );
+    let rows = |b: &Bindings<'a, D>| -> Vec<(D::Key<'a>, Origin<'a>, Origin<'a>)> {
+        b.shadowings()
+            .iter()
+            .map(|s| (s.key.clone(), s.winner.origin, s.shadowed.origin))
+            .collect()
+    };
+    assert_eq!(rows(&one), rows(&scoped), "{kind}: shadowings");
+}
+
+#[test]
+fn bind_is_bind_scopes_without_direct_imports_for_every_kind() {
+    let fx = fixture();
+    let p = &fx.prelude;
+    assert_bind_is_bind_scopes_without_direct_imports("template", &fx.templates, p);
+    assert_bind_is_bind_scopes_without_direct_imports("enum", &fx.enums, p);
+    assert_bind_is_bind_scopes_without_direct_imports("trait", &fx.traits, p);
+    assert_bind_is_bind_scopes_without_direct_imports("function", &fx.functions, p);
+    assert_bind_is_bind_scopes_without_direct_imports("type alias", &fx.aliases, p);
+    assert_bind_is_bind_scopes_without_direct_imports(
+        "constraint def",
+        &fx.constraint_defs,
+        p,
+    );
+    assert_bind_is_bind_scopes_without_direct_imports("purpose", &fx.purposes, p);
 }
