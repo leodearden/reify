@@ -5,8 +5,8 @@
 //! [`name_env`] decides who wins; this pass only reports local wins over the
 //! stdlib tier. Definitions with no source declaration (monomorphs, registered
 //! associated functions) are synthesized, not written, and are not reported.
-//! Units keep their own duplicate-declaration Error until resolution-unification
-//! θ #5522 moves them onto `name_env`.
+//! Units keep their own duplicate-declaration Error; only their cross-prelude
+//! seeding binds by `name_env` (introduced by #5522).
 
 use std::collections::HashSet;
 

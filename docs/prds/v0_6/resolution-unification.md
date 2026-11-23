@@ -481,6 +481,22 @@ resolve #5387 relationship per its live status (§6 row 2).
    existing signature-based overload table (`merge_functions` shadowing rules). Exact
    merge of "first-wins across modules" with "signature match within module" decided
    in θ against the existing `eval_is_idempotent_for_prelude_functions` pins.
+   *Resolved 2026-11-23 (θ, task 5522):* **first-wins per signature; distinct
+   signatures coexist.** A function binds by `name_env::FunctionSignature`: its name
+   and parameter types. Parameter names and the return type take no part. Across the
+   program's scopes the FIRST definition of a signature in I6 order wins: the entry,
+   then the imports in declaration order, then the stdlib. Distinct signatures under
+   one name coexist as overloads. `DefEnv::function_table()` is the composed dispatch
+   table, the bound functions in precedence order, and `resolve_function(name,
+   param_types)` and `overloads(name)` read the same binding. A shadowed import-tier
+   signature draws the D-6 `DefinitionCollision` Warning like every other kind. For
+   an import-free program the table dispatches exactly as `merge_functions` does
+   (entry functions, then every prelude module's in load order, first match per
+   signature): `merge_functions`' extra entries are the shadowed duplicates that
+   first-match never reaches. That equivalence is pinned against the
+   `eval_is_idempotent_for_prelude_functions` source in
+   `crates/reify-eval/tests/harness_engine/def_env.rs`. θ leaves the engine's eval
+   table unchanged: moving dispatch onto `function_table()` is κ #5524's.
 5. **α's sweep breadth** — whether any non-examples `.ri` (prj/, dogfood worktree)
    carries the mirror pattern worth cleaning in the same task. Decide in α via grep.
    *Resolved 2026-07-28 (α, task 5515):* **no non-examples `.ri` needed cleaning.**

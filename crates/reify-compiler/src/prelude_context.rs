@@ -33,11 +33,10 @@
 //!
 //! # Cross-prelude collision policy
 //!
-//! Templates, enums, traits, functions, type aliases, constraint defs and
-//! purposes bind by [`crate::name_env`] (NS-P1/P3, PRD
-//! `docs/prds/v0_6/stdlib-namespace.md` §3.1). Units are the one remaining
-//! exception — last-wins with a Warning in `compile_builder::units_phase` —
-//! until resolution-unification θ #5522 moves them onto the same rule.
+//! Every kind, units included, binds by [`crate::name_env`] first-wins. The
+//! program-level resolution environment and its D-6 collision report are
+//! `reify_eval::DefEnv` (PRD `docs/prds/v0_6/resolution-unification.md` §3.2,
+//! D-6).
 
 use reify_ir::EnumDef;
 
