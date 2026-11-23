@@ -59,9 +59,11 @@
 //!   here only because the mechanism is name-keyed and generic. They are the
 //!   table's only `ExpectedArg::Enum` slots.
 //! - The `ExpectedArg::Direction` slots, all built by [`direction_arg`]:
-//!   `frame_at`'s `x`/`z` (direction-typing σ), and the axis of the four axial
-//!   joint ctors and the 13 PRB flexure ctors (direction-typing ζ-a); later
-//!   leaves add rows on the same constructor.
+//!   `frame_at`'s `x`/`z` (direction-typing σ), the axis of the four axial
+//!   joint ctors and the 13 PRB flexure ctors (direction-typing ζ-a), and the
+//!   direction of the four directional selectors plus arity-2 `angle`'s
+//!   `a`/`b` (direction-typing θ-b); later leaves add rows on the same
+//!   constructor.
 //!
 //! The RULES that decide whether a position inside a covered family gets a
 //! slot — each one is why some argument sitting right next to a slotted one is
@@ -100,8 +102,7 @@
 //!   and `revolve_full`'s 2π is SYNTHESIZED at lowering rather than written by
 //!   an author, so there is no positional index to key on.
 //! - **Polymorphic and coercing slots stay out.** Math args (no fixed
-//!   dimension), the `dir` Vec3 slot (accepts list literals like `[0,0,1]`
-//!   that coerce), and Range slots (`edges_by_length` / `faces_by_area`).
+//!   dimension) and Range slots (`edges_by_length` / `faces_by_area`).
 //! - **Indirect gating is not gating.** `rounded_box` / `rounded_rect` /
 //!   `zone_cylinder` / `zone_annulus` / `zone_profile` DESUGAR into
 //!   Box/Cylinder/Rectangle/Circle/Pipe/Thicken ops, so their own surface
@@ -495,18 +496,25 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
 
         // ── Directional topology selectors ───────────────────────────────────
         // arg0: geometry handle (unchecked)
-        // arg1: dir Vec3 (unchecked — accepts list literals like [0,0,1])
+        // arg1: the direction → Direction (direction-typing θ-b). Named `dir` /
+        //       `axis` to match the eval reader's `resolve_direction_arg` labels,
+        //       so both layers name the same argument.
         // arg2: tol → ANGLE ("Angle")
         // Task 3523 — faces_perpendicular_to/edges_perpendicular_to share the
-        // directional (solid, dir, tol) shape, so arg2 tol is likewise ANGLE.
+        // directional (solid, axis, tol) shape, so arg2 tol is likewise ANGLE.
         //
         // Built with [`angle_arg`] like the producer angle positions below, so
         // every ANGLE rejection reads with one wording (decision D11). Pinned
         // by `angle_slot_rejection_carries_the_migration_hint`.
-        "faces_by_normal"
-        | "edges_parallel_to"
-        | "faces_perpendicular_to"
-        | "edges_perpendicular_to" => const { &[angle_arg(2, "tol")] },
+        "faces_by_normal" => const { &[direction_arg(1, "dir"), angle_arg(2, "tol")] },
+        "edges_parallel_to" | "faces_perpendicular_to" | "edges_perpendicular_to" => {
+            const { &[direction_arg(1, "axis"), angle_arg(2, "tol")] }
+        }
+
+        // ── angle(a, b): the angle between two Directions (θ-b) ─────────────
+        // Arity 3 is the relation verb `angle(x, y, metric)`, policed by
+        // `relation_signatures`, and stays slot-free — hence the guard.
+        "angle" if arg_count == 2 => const { &[direction_arg(0, "a"), direction_arg(1, "b")] },
 
         // ── Height-based topology selectors ──────────────────────────────────
         // arg0: geometry handle (unchecked)
