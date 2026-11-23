@@ -26,7 +26,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum, StrEnum
 from pathlib import Path
@@ -836,15 +836,10 @@ def read_child_pid(info_read: int) -> int | None:
     return pid if type(pid) is int else None
 
 
-@contextlib.contextmanager
-def ignoring(numbers: tuple[int, ...]) -> Iterator[None]:
-    """These signals ignored for the block, so a child spawned in it starts ignoring them."""
-    previous = {number: signal.signal(number, signal.SIG_IGN) for number in numbers}
-    try:
-        yield
-    finally:
-        for number, handler in previous.items():
-            signal.signal(number, handler)
+def ignore_supervised_signals() -> None:
+    """bwrap's preexec_fn: it starts ignoring every supervised signal, and this process keeps forwarding."""
+    for number in canon_cache.SUPERVISED_SIGNALS:
+        signal.signal(number, signal.SIG_IGN)
 
 
 def sender_to(pid: int) -> Callable[[int], None]:
@@ -867,14 +862,11 @@ def run_in_namespace(
     info fd, and the re-run forwards it to its command.
     """
     info_read, info_write = os.pipe()
+    os.set_inheritable(info_write, True)
     with forwarder:
         try:
-            with ignoring(canon_cache.SUPERVISED_SIGNALS):
-                bwrap = subprocess.Popen(
-                    canon_cache.with_parent_death_signal(argv_for(info_write), "KILL"),
-                    env=env,
-                    pass_fds=(info_write,),
-                )
+            argv = canon_cache.with_parent_death_signal(argv_for(info_write), "KILL")
+            bwrap = subprocess.Popen(argv, env=env, close_fds=False, preexec_fn=ignore_supervised_signals)
         except OSError as exc:
             os.close(info_read)
             raise canon_cache.CommandNotFound(f"cannot run {BWRAP}: {exc}") from exc
