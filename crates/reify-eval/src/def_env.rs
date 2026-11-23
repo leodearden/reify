@@ -130,7 +130,9 @@ impl<'p> DefEnv<'p> {
 
     /// The `D` named `name` as seen through module `module_key` alone: the
     /// entry's own declarations, a direct import's `pub` surface, or a prelude
-    /// module's exports.
+    /// module's exports. Matches by name alone, so for a function it is the
+    /// module's first overload of `name`; [`Self::resolve_function`] matches
+    /// a signature.
     // G-allow: resolution-unification §3.2 DefEnv; first production consumer is ι #5523
     pub fn resolve_in<D: ProgramDefinition>(&self, module_key: &str, name: &str) -> Option<&'p D> {
         program_scope::module_surface::<D>(self.program, self.prelude, module_key)?
@@ -146,7 +148,9 @@ impl<'p> DefEnv<'p> {
         self.resolve_in(module_key, name)
     }
 
-    /// The program's entry module.
+    /// The program's entry module. Its `templates` include the copies the I5
+    /// merge took from its imports; the entry's own are
+    /// `CompiledProgram::entry_declared_templates`.
     // G-allow: resolution-unification §3.2 DefEnv; first production consumer is ι #5523
     pub fn declared(&self) -> &'p CompiledModule {
         self.program.entry()

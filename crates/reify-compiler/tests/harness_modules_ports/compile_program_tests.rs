@@ -1207,6 +1207,32 @@ fn imported_enum_unknown_variant_is_reported_as_such() {
     );
 }
 
+/// D-9 tests `E` against the compile env's enums, which still bind a direct
+/// import's NON-pub enums (the compile side's ambient import visibility), so
+/// a hidden enum's `E.V` compiles today. Narrowing that to the D-5 `pub`
+/// surface DefEnv already applies is owned by ι #5523, which inverts this pin.
+#[test]
+fn imported_non_pub_enum_variant_access_still_compiles() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(dir.path(), "a.ri", "enum Pick { Left }\n");
+
+    let program = compile_entry(dir.path(), "main", &pick_entry("Left"), &CfgSet::default());
+
+    let pick = program.imports[0]
+        .module
+        .enum_defs
+        .iter()
+        .find(|e| e.name == "Pick")
+        .expect("a compiles its enum Pick");
+    assert!(!pick.is_pub, "precondition: a's Pick is not pub");
+    assert!(
+        errors(program.entry()).is_empty(),
+        "a direct import's non-pub enum value still resolves, got {:?}",
+        program.entry().diagnostics
+    );
+    assert_is_pick_left(let_default(program.entry(), "Main", "p"));
+}
+
 /// D-9 applies inside every DAG unit, not just the entry: an import unit is
 /// parsed with stdlib enum names only, too.
 #[test]

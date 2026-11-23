@@ -1756,9 +1756,10 @@ impl Engine {
         self.prelude
     }
 
-    /// Install `program` as this engine's resolution environment and return
-    /// its definition-collision report for the caller to surface. Eval state
-    /// is untouched.
+    /// Install `program`, whose [`DefEnv`] [`Self::def_env`] then returns, and
+    /// return its definition-collision report for the caller to surface. No
+    /// eval lookup consults it yet (ι #5523 migrates them onto it), and eval
+    /// state is untouched.
     // G-allow: resolution-unification §3.2 Engine::load; first production consumer is ι #5523
     pub fn load(&mut self, program: impl Into<Arc<CompiledProgram>>) -> Vec<Diagnostic> {
         let program = program.into();
