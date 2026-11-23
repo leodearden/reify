@@ -91,7 +91,7 @@ fn moment_of_inertia_dimensioned_density_gives_no_arg_type_mismatch() {
 #[test]
 fn faces_by_normal_length_tol_gives_arg_type_mismatch() {
     let compiled = compile_struct_body(
-        "    let dir = vec3(0.0, 0.0, 1.0)\n    let sel = faces_by_normal(b, dir, 5.0mm)\n",
+        "    let up = dir(0, 0, 1)\n    let sel = faces_by_normal(b, up, 5.0mm)\n",
     );
     let arg_type_mismatches: Vec<_> = compiled
         .diagnostics
@@ -121,7 +121,7 @@ fn faces_by_normal_length_tol_gives_arg_type_mismatch() {
 #[test]
 fn faces_by_normal_angle_tol_gives_no_arg_type_mismatch() {
     let compiled = compile_struct_body(
-        "    let dir = vec3(0.0, 0.0, 1.0)\n    let sel = faces_by_normal(b, dir, 1deg)\n",
+        "    let up = dir(0, 0, 1)\n    let sel = faces_by_normal(b, up, 1deg)\n",
     );
     let arg_type_mismatches: Vec<_> = compiled
         .diagnostics
@@ -194,7 +194,7 @@ fn edges_at_height_length_args_give_no_arg_type_mismatch() {
 #[test]
 fn edges_parallel_to_angle_tol_gives_no_arg_type_mismatch() {
     let compiled = compile_struct_body(
-        "    let dir = vec3(0.0, 0.0, 1.0)\n    let sel = edges_parallel_to(b, dir, 1deg)\n",
+        "    let up = dir(0, 0, 1)\n    let sel = edges_parallel_to(b, up, 1deg)\n",
     );
     let arg_type_mismatches: Vec<_> = compiled
         .diagnostics
@@ -521,7 +521,7 @@ fn length_slot_rejection_uses_the_compile_layer_code_not_the_eval_layer_one() {
 #[test]
 fn angle_slot_rejection_carries_the_migration_hint() {
     let compiled = compile_struct_body(
-        "    let dir = vec3(0.0, 0.0, 1.0)\n    let sel = faces_by_normal(b, dir, 5)\n",
+        "    let up = dir(0, 0, 1)\n    let sel = faces_by_normal(b, up, 5)\n",
     );
     let errors = arg_type_mismatch_errors(&compiled);
     assert_eq!(
@@ -548,7 +548,7 @@ fn angle_slot_rejection_carries_the_migration_hint() {
 #[test]
 fn angle_slot_rejection_uses_the_compile_layer_code_not_the_eval_layer_one() {
     let compiled = compile_struct_body(
-        "    let dir = vec3(0.0, 0.0, 1.0)\n    let sel = faces_by_normal(b, dir, 5)\n",
+        "    let up = dir(0, 0, 1)\n    let sel = faces_by_normal(b, up, 5)\n",
     );
     let errors = arg_type_mismatch_errors(&compiled);
     assert_eq!(errors.len(), 1, "diagnostics: {:#?}", compiled.diagnostics);

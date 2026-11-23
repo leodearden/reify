@@ -85,6 +85,8 @@ mod numeric_and_range_literals_example;
 mod polymorphic_zero_tests;
 #[path = "harness_type_checking/real_dimensionless_unification_tests.rs"]
 mod real_dimensionless_unification_tests;
+#[path = "harness_type_checking/selector_angle_direction_slot_tests.rs"]
+mod selector_angle_direction_slot_tests;
 #[path = "harness_type_checking/self_datum_projection_tests.rs"]
 mod self_datum_projection_tests;
 #[path = "harness_type_checking/self_keyword_tests.rs"]
