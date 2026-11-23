@@ -3645,6 +3645,18 @@ fn modify_offset_curve(
                 if matches!(v, reify_ir::Value::Undef) {
                     return Err(unresolved_arg_message("third", kind));
                 }
+                if matches!(
+                    v,
+                    reify_ir::Value::GeometryHandle {
+                        kernel_handle: None,
+                        ..
+                    }
+                ) {
+                    return Err(labelled(
+                        kind,
+                        "reference Surface (3rd argument) is not realized",
+                    ));
+                }
                 let unit = decode_direction(&v).map_err(|e| {
                     labelled(
                         kind,

@@ -7915,6 +7915,58 @@
         }
     }
 
+    /// A 3rd arg bound to an UNREALIZED `Value::GeometryHandle`
+    /// (`kernel_handle: None`) is a reference Surface the kernel never built,
+    /// not a malformed Direction: the error names the unrealized reference and
+    /// carries no `dir(...)` hint.
+    #[test]
+    fn compile_geometry_op_offset_curve_3arg_unrealized_handle_is_an_unrealized_reference() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+
+        let ref_cell = ValueCellId::new("E", "surf");
+        let mut values = ValueMap::new();
+        values.insert(
+            ref_cell.clone(),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new("E", 0),
+                upstream_values_hash: [0x11; 32],
+                kernel_handle: None,
+            },
+        );
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::OffsetCurve,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("distance".into(), literal_length(0.002)),
+                (
+                    "third".into(),
+                    reify_ir::CompiledExpr::value_ref(ref_cell, Type::Geometry),
+                ),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &[GeometryHandleId(10)],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        match result {
+            Err(msg) => {
+                assert_eq!(
+                    msg, "offset_curve: reference Surface (3rd argument) is not realized",
+                    "an unrealized reference must not be reported as a bad Direction"
+                );
+            }
+            Ok(op) => panic!("an unrealized reference must be Err, got Ok({op:?})"),
+        }
+    }
+
     // ── Fillet eval-arm: anti-zero-edges + 2-arg back-compat (task 3205 step-9/10) ──
 
     /// Build a `CompiledExpr` literal that evaluates to an empty `Value::List`
