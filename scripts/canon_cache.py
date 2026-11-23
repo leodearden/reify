@@ -133,7 +133,8 @@ def choose_fallback_dir(settings: CacheSettings, tmp_root: str = "/tmp") -> str:
     if is_writable_dir(settings.fallback_dir):
         return settings.fallback_dir
     per_user = os.path.join(tmp_root, f"reify-canon-fallback-{os.getuid()}")
-    os.makedirs(per_user, mode=0o700, exist_ok=True)
+    with refusing_os_errors(f"create the fallback directory {per_user}"):
+        os.makedirs(per_user, mode=0o700, exist_ok=True)
     return per_user
 
 
@@ -227,11 +228,15 @@ def is_guard(path: str) -> bool:
         return False
 
 
+def is_executable_file(path: str) -> bool:
+    return os.path.isfile(path) and os.access(path, os.X_OK)
+
+
 def resolve_real_sccache(path_value: str) -> str | None:
     """The first executable `sccache` on path_value that is not a reify-canon guard."""
     for entry in path_value.split(os.pathsep):
         candidate = os.path.join(entry, "sccache")
-        if entry and os.path.isfile(candidate) and os.access(candidate, os.X_OK) and not is_guard(candidate):
+        if entry and is_executable_file(candidate) and not is_guard(candidate):
             return candidate
     return None
 
@@ -596,6 +601,15 @@ class CacheSessionError(Exception):
     """A one-line reason no private sccache server could be started."""
 
 
+@contextlib.contextmanager
+def refusing_os_errors(action: str) -> Iterator[None]:
+    """An OSError from the body as the one-line CacheSessionError `cannot <action>: <why>`."""
+    try:
+        yield
+    except OSError as exc:
+        raise CacheSessionError(f"cannot {action}: {exc.strerror or exc}") from exc
+
+
 @dataclass(frozen=True)
 class SessionOutcome:
     backend: Backend
@@ -737,7 +751,9 @@ def start_server(
     """Spawn a foreground server under the start lock and check it: ready, and not read-only."""
     with start_lock(knobs, clock):
         unlink_quietly(files.socket)
-        with open(files.err, "wb") as err:
+        with refusing_os_errors(f"open {files.err}"):
+            err = open(files.err, "wb")
+        with err, refusing_os_errors(f"start {sccache}"):
             process = subprocess.Popen(
                 with_parent_death_signal([sccache], "TERM"),
                 env=env,
@@ -876,9 +892,12 @@ def open_session(
     """Start the private server for shared or mixed (C4): the store when it holds, else the fallback."""
     if policy is Policy.INCREMENTAL:
         raise ValueError("the incremental policy runs no sccache server")
+    if not is_executable_file(sccache):
+        raise CacheSessionError(f"cannot start {sccache}: not an executable file")
     rng = rng or random.Random()
     probe = probe or (lambda: probe_store(settings, knobs))
-    os.makedirs(canon_build_dir, exist_ok=True)
+    with refusing_os_errors(f"create the build directory {canon_build_dir}"):
+        os.makedirs(canon_build_dir, exist_ok=True)
     files = SessionFiles.in_build_dir(canon_build_dir, os.getpid())
     fallback_dir = choose_fallback_dir(settings, knobs.tmp_root)
     backend, reason = choose_backend(settings, probe)
