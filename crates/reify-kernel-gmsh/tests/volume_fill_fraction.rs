@@ -369,6 +369,27 @@ fn tessellated_cylinder_is_completely_tetrahedralized() {
     );
 }
 
+/// Premise of this file's exact assertions: [`fill_report_at`] measures a
+/// reproducible mesh. Numbers: `docs/notes/adaptive-e2e-seed-mesh-drift-measurement.md`.
+#[test]
+fn the_measured_mesh_is_reproducible_across_calls() {
+    let label = "cylinder r=0.5 h=1.0 x24";
+    let surface = tessellated_cylinder_mesh(CYL_R as f32, CYL_H as f32, CYL_SEGMENTS);
+
+    let first = fill_report_at(&surface, Some(CYL_FINE), label);
+    let second = fill_report_at(&surface, Some(CYL_FINE), label);
+
+    assert_eq!(
+        first, second,
+        "{label} @ {CYL_FINE}: two meshes of identical input differ ({} tets / {} nodes \
+         vs {} tets / {} nodes). The exact assertions in this file (`inverted_tets == 0`, \
+         the signed-vs-abs cancellation check) are meaningful only on a reproducible \
+         mesh, so `fill_report_at` must mesh with one gmsh thread (D-J, \
+         docs/prds/v0_6/meshing-service.md).",
+        first.n_tets, first.n_nodes, second.n_tets, second.n_nodes
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The exact production composition: unwelded OCCT-shaped input + repair
 // ---------------------------------------------------------------------------
