@@ -283,6 +283,7 @@ test_test_run_semaphore.sh pool
 test_thin_warm_lane.sh pool
 test_trampoline_decode_ratchet.sh pool
 test_tree_sitter_abi_pin.sh pool
+test_tree_sitter_generate_without_cli.sh pool
 test_tree_sitter_parse_isolation.sh pool
 test_typecheck_compiles_tests.sh pool
 test_unlimited_holder_lock_pins.sh pool
