@@ -181,6 +181,9 @@
 #   file's mtime across its `sed -i`, and `_assert_delta_newer_than_build_outputs`
 #   enforces the ordering fail-closed at the end of --fresh-checkout (violation →
 #   abort → empty stdout → the caller falls back to a cold rebuild).
+#
+# Recorded-input relocation (task 10167 — full statement: §9.5 inv.15; rule:
+#   relocate-depinfo-paths.py header).
 
 set -euo pipefail
 
