@@ -213,7 +213,13 @@ pub(crate) fn check_trait_conformance(
     // trait-declared param default (DD2). Top-level structures resolve at file
     // scope (DD6 → `purpose = None`); purpose-nested structures pass
     // `Some(purpose_name)` for innermost-wins resolution (task 4639).
-    check_phase_inject_ambient_defaults(&mut ctx, ambient, &structure_all_members, purpose);
+    let ambient_param_defaults = ambient.synthesize_param_defaults(
+        &ctx.requirements,
+        &ctx.defaults,
+        &structure_all_members,
+        purpose,
+    );
+    ctx.defaults.extend(ambient_param_defaults);
 
     let functions = calls.functions;
     let pre = check_phase_pre_register_default_types(

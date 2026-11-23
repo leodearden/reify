@@ -16,6 +16,7 @@ use reify_compiler::CompiledModule;
 use reify_core::ty::Type;
 use reify_core::{DiagnosticCode, Severity};
 use reify_ir::{CompiledExpr, CompiledExprKind, Value, VariantPayload};
+use reify_test_support::error_codes;
 
 /// The shared `Shape` enum used by the construction-check tests: one
 /// single-field variant (`Circle`), one two-field variant (`Rect`), and one
@@ -27,17 +28,6 @@ enum Shape {
     Point,
 }
 ";
-
-/// Compile `source` and collect the codes of its Error-severity diagnostics
-/// (used to render a helpful message when a `has_error_code` assertion fails).
-fn error_codes(source: &str) -> Vec<Option<DiagnosticCode>> {
-    compile_with_stdlib_helper(source)
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .map(|d| d.code)
-        .collect()
-}
 
 /// True if compiling `source` yields at least one Error-severity diagnostic
 /// carrying `code`.
@@ -136,7 +126,7 @@ fn missing_field_emits_variant_missing_field() {
         has_error_code(&source, DiagnosticCode::VariantMissingField),
         "Rect {{ width: 20mm }} omits declared field 'height' -> expected \
          VariantMissingField; got error codes {:?}",
-        error_codes(&source)
+        error_codes(&compile_with_stdlib_helper(&source))
     );
 }
 
@@ -154,7 +144,7 @@ fn unknown_field_on_named_variant_emits_variant_unknown_field() {
         has_error_code(&source, DiagnosticCode::VariantUnknownField),
         "Circle {{ diameter: 5mm }} supplies undeclared field 'diameter' -> expected \
          VariantUnknownField; got error codes {:?}",
-        error_codes(&source)
+        error_codes(&compile_with_stdlib_helper(&source))
     );
 }
 
@@ -170,7 +160,7 @@ fn field_on_bare_variant_emits_variant_unknown_field() {
         has_error_code(&source, DiagnosticCode::VariantUnknownField),
         "Point {{ x: 1mm }} supplies a field to a bare variant -> expected \
          VariantUnknownField; got error codes {:?}",
-        error_codes(&source)
+        error_codes(&compile_with_stdlib_helper(&source))
     );
 }
 
@@ -188,7 +178,7 @@ fn payload_type_mismatch_emits_variant_payload_type() {
         has_error_code(&source, DiagnosticCode::VariantPayloadType),
         "Circle {{ radius: \"x\" }} supplies a String for Length field 'radius' -> \
          expected VariantPayloadType; got error codes {:?}",
-        error_codes(&source)
+        error_codes(&compile_with_stdlib_helper(&source))
     );
 }
 
@@ -211,16 +201,6 @@ fn outline_default(module: &CompiledModule) -> &CompiledExpr {
         .expect("outline param should carry a compiled default_expr")
 }
 
-/// Error-severity diagnostic codes of `module` (for failure messages).
-fn module_error_codes(module: &CompiledModule) -> Vec<Option<DiagnosticCode>> {
-    module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .map(|d| d.code)
-        .collect()
-}
-
 /// step-9 (RED) two-field variant: `Rect { width: 20mm, height: 10mm }` is a
 /// valid construction — it must check clean (ZERO Error diagnostics) AND compile
 /// to a `Literal(Value::Enum)` whose payload carries `[width, height]` in
@@ -234,9 +214,9 @@ fn valid_rect_construction_builds_enum_value() {
     let module = compile_with_stdlib_helper(&source);
 
     assert!(
-        module_error_codes(&module).is_empty(),
+        error_codes(&module).is_empty(),
         "valid Rect construction should produce ZERO Error diagnostics; got {:?}",
-        module_error_codes(&module)
+        error_codes(&module)
     );
 
     let expr = outline_default(&module);
@@ -274,9 +254,9 @@ fn valid_circle_construction_builds_enum_value() {
     let module = compile_with_stdlib_helper(&source);
 
     assert!(
-        module_error_codes(&module).is_empty(),
+        error_codes(&module).is_empty(),
         "valid Circle construction should produce ZERO Error diagnostics; got {:?}",
-        module_error_codes(&module)
+        error_codes(&module)
     );
 
     let expr = outline_default(&module);
@@ -313,7 +293,7 @@ fn duplicate_field_emits_variant_duplicate_field() {
         has_error_code(&source, DiagnosticCode::VariantDuplicateField),
         "Rect {{ width: 20mm, width: 10mm, height: 5mm }} repeats field 'width' -> expected \
          VariantDuplicateField; got error codes {:?}",
-        error_codes(&source)
+        error_codes(&compile_with_stdlib_helper(&source))
     );
 }
 
@@ -335,9 +315,9 @@ fn clean_variant_ctor_payload(
 ) -> Vec<(String, CompiledExpr)> {
     let module = compile_with_stdlib_helper(&shape_param_reading_r_source(construction));
     assert!(
-        module_error_codes(&module).is_empty(),
+        error_codes(&module).is_empty(),
         "{construction} should produce ZERO Error diagnostics; got {:?}",
-        module_error_codes(&module)
+        error_codes(&module)
     );
     let expr = outline_default(&module);
     assert_eq!(expr.result_type, Type::Enum("Shape".to_string()));
@@ -408,7 +388,7 @@ fn non_literal_payload_still_type_checked() {
     assert!(
         has_error_code(&source, DiagnosticCode::VariantPayloadType),
         "an Area at Length field 'radius' -> expected VariantPayloadType; got {:?}",
-        module_error_codes(&module)
+        error_codes(&module)
     );
     let expr = outline_default(&module);
     assert_eq!(expr.result_type, Type::Enum("Shape".to_string()));
@@ -432,9 +412,9 @@ fn bare_unit_variant_builds_empty_payload_enum_value() {
     let module = compile_with_stdlib_helper(&source);
 
     assert!(
-        module_error_codes(&module).is_empty(),
+        error_codes(&module).is_empty(),
         "bare Unit variant should produce ZERO Error diagnostics; got {:?}",
-        module_error_codes(&module)
+        error_codes(&module)
     );
 
     let expr = outline_default(&module);
