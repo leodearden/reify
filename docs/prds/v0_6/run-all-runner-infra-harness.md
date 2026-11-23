@@ -145,7 +145,7 @@ The only intended byte change is that member-captured `@@REIFY_SLOT_` / `@@REIFY
 | `build_cache` | `mode` (`canon`/`real_path`), `policy` (`shared`/`mixed`/`incremental`), `backend` (`shared`/`local_fallback`/`none`), `reason` (`""`, `store_unreachable`, `store_lost`, `store_not_configured`, `read_only_server`, `legacy_build_dir`, `canon_unavailable`), `hits`, `misses`, `write_errors`, `uncached_machine_flags`, `detached_server`, `store_attempts` (int), `wall_secs`, `cpu_secs` (number), `subcommand` (cargo's, or `""` for `exec`) — the canonical-build-path record (dark-factory `plans/canonical-build-path-shared-cache-prd.md` C6) | `scripts/canon_cache.py` through `lib_event_log.sh`, one per outermost `scripts/canon_run.py` invocation |
 | `run_finish` | `discovered`, `failures`, `failed` (list), `flaky` (list), `skipped` (list), `interrupted` (bool) | run_all, normal path and `_ra_on_term` |
 
-The same `build_cache` line is appended to `<build dir>/.reify-canon-journal.jsonl`.
+The same `build_cache` line is appended to `<build dir>/.reify-canon-journal.jsonl`. A `build_cache` record's `pid` is that of the short-lived shell that wrote it, not the supervisor's, so nothing joins on it. Its `cpu_secs` is every descendant's processor time, so it includes the whole build of another tree's outermost invocation run inside it (boundary row 14), which writes its own row too: a sum of `cpu_secs` over rows counts such a tree twice, while `hits` and `misses` stay separate.
 
 Note: `member_finish` is written once, by `_ra_record_result`, after the verdict is known. `_ra_run_member` passes rc and detail through its capture metadata. One writer per record keeps it SPOT.
 

@@ -594,6 +594,16 @@ or boolean field may be `null`; the lib header says when.
 The same `build_cache` line is appended to `<build dir>/.reify-canon-journal.jsonl`,
 the invocation journal, whether or not the channel is set.
 
+Two `build_cache` fields do not mean what their names suggest:
+
+- `pid` is the pid of the short-lived shell that wrote the record, not the
+  supervisor's, so nothing can be joined on it.
+- `cpu_secs` is the processor time of every descendant of the invocation.
+  When another tree's outermost invocation runs inside it (canonical-build-path
+  boundary row 14), that tree's whole build is included, and that tree writes
+  its own row too. A sum of `cpu_secs` over rows counts such a tree twice;
+  `hits` and `misses` are not affected.
+
 The `*_ns` fields are epoch nanoseconds on the `ts_ns` clock
 (`event_log_clock_ns`). A `member_finish` times the attempt it reports, so a
 retried member's record times its retry. `queued_ns` is set only for a pool
