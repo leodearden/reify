@@ -157,15 +157,9 @@ pub(crate) fn rigid_mass_props_session_seeded_then_failing(
 }
 
 /// Absolute path to the committed `examples/rigid_mass_props_smoke.ri` fixture,
-/// resolved from this crate's manifest dir (two levels up → workspace root),
-/// mirroring `load_file_returns_gui_state`.
+/// resolved at run time, mirroring `load_file_returns_gui_state`.
 pub(crate) fn rigid_mass_props_fixture_path() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("examples/rigid_mass_props_smoke.ri")
+    reify_test_support::examples_corpus::examples_dir().join("rigid_mass_props_smoke.ri")
 }
 
 /// Locate the `moi_principal[0] > 0` positive-definiteness constraint injected by

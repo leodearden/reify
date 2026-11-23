@@ -13,7 +13,7 @@ use std::process::{Command, Output, Stdio};
 pub fn run_hermetic_reify_gui(configure: impl FnOnce(&mut Command)) -> Output {
     let cache_home = tempfile::tempdir().expect("tempdir for XDG_CACHE_HOME");
 
-    let mut command = Command::new(env!("CARGO_BIN_EXE_reify-gui"));
+    let mut command = Command::new(reify_test_support::test_package::bin_exe("reify-gui"));
     command
         .env_remove("DISPLAY")
         .env_remove("WAYLAND_DISPLAY")

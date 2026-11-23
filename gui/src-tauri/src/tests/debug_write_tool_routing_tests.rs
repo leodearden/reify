@@ -702,12 +702,10 @@ fn write_tool_bypasses(source: &str) -> Vec<Bypass> {
 
 /// Reads the real `debug_server.rs` this gate is asserted against.
 ///
-/// Located via [`super::gui_crate_manifest_dir`], which prefers the RUNTIME
-/// `CARGO_MANIFEST_DIR` over the compile-time `env!()` bake — the bake goes
-/// stale when a seeded warm-lane `target/` is reused from a since-deleted
-/// worktree (esc-4906-57).
+/// Located from the run-time package dir, so a seeded warm lane reads its own
+/// checkout's copy (esc-4906-57).
 fn debug_server_source() -> String {
-    let path = std::path::Path::new(&super::gui_crate_manifest_dir()).join("src/debug_server.rs");
+    let path = reify_test_support::test_package::manifest_dir().join("src/debug_server.rs");
     std::fs::read_to_string(&path).unwrap_or_else(|e| {
         panic!(
             "failed to read {} for the INV-GUI-2 gate: {e}",

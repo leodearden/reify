@@ -10,7 +10,7 @@ use std::process::Command;
 
 #[test]
 fn reify_gui_binary_embeds_runpath() {
-    let exe = env!("CARGO_BIN_EXE_reify-gui");
+    let exe = &reify_gui_exe();
     let Some(stdout) = readelf_d(exe) else {
         return;
     };
@@ -25,7 +25,7 @@ fn reify_gui_binary_embeds_runpath() {
 
 #[test]
 fn reify_gui_binary_does_not_link_conda_occt_7_9() {
-    let exe = env!("CARGO_BIN_EXE_reify-gui");
+    let exe = &reify_gui_exe();
     let Some(stdout) = readelf_d(exe) else {
         return;
     };
@@ -45,6 +45,14 @@ fn reify_gui_binary_does_not_link_conda_occt_7_9() {
         leaks = leaks_7_9.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n"),
         all = needed_tk.join("\n"),
     );
+}
+
+/// The cargo-built `reify-gui` binary's path, as the `&str` the readelf/ldd helpers take.
+fn reify_gui_exe() -> String {
+    reify_test_support::test_package::bin_exe("reify-gui")
+        .into_os_string()
+        .into_string()
+        .expect("the reify-gui binary path is UTF-8")
 }
 
 fn readelf_d(path: &str) -> Option<String> {
@@ -152,7 +160,7 @@ fn ldd_resolved_path_resolves_listed_and_skips_unlisted_sonames() {
 /// canonicalized, so it tolerates the tbb-pin symlink hop.
 #[test]
 fn reify_gui_binary_ldd_resolves_libtbb_to_deps_lib() {
-    let exe = env!("CARGO_BIN_EXE_reify-gui");
+    let exe = &reify_gui_exe();
     if !tbb_pin_present() {
         eprintln!("{TBB_PIN_DIR}/libtbb.so.12 absent on this host; skipping");
         return;
@@ -183,7 +191,7 @@ fn reify_gui_binary_ldd_resolves_libtbb_to_deps_lib() {
 /// present) may resolve via it.
 #[test]
 fn reify_gui_binary_collateral_libs_do_not_shift_to_tbb_pin() {
-    let exe = env!("CARGO_BIN_EXE_reify-gui");
+    let exe = &reify_gui_exe();
     if !tbb_pin_present() {
         eprintln!("{TBB_PIN_DIR}/libtbb.so.12 absent on this host; skipping collateral guard");
         return;
@@ -225,7 +233,7 @@ fn reify_gui_binary_collateral_libs_do_not_shift_to_tbb_pin() {
 /// `/opt/reify-deps/tbb-pin` must be FIRST in its RUNPATH.
 #[test]
 fn reify_gui_binary_has_direct_needed_libtbb_and_pin_first_in_runpath() {
-    let exe = env!("CARGO_BIN_EXE_reify-gui");
+    let exe = &reify_gui_exe();
     if !tbb_pin_present() {
         eprintln!("{TBB_PIN_DIR}/libtbb.so.12 absent on this host; skipping");
         return;

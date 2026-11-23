@@ -118,28 +118,9 @@ fn public_api_types_are_accessible() {
     let _ = std::any::type_name::<EngineSession>();
 }
 
-/// Resolve this crate's manifest dir, preferring the RUNTIME
-/// `CARGO_MANIFEST_DIR` over the compile-time `env!()` bake.
-///
-/// The bake goes stale when a seeded warm-lane `target/` is reused from a
-/// since-deleted worktree — `CARGO_MANIFEST_DIR` is not part of cargo's
-/// fingerprint, so a content-identical rebuild is never triggered. Same
-/// hazard and same fix as `eval_crate_manifest_dir` in
-/// `crates/reify-eval/src/geometry_ops/tests.rs` (esc-4906-57).
-fn gui_crate_manifest_dir() -> String {
-    std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_string())
-}
-
-/// Absolute path to the workspace's `examples/<file_name>`, two levels up from
-/// [`gui_crate_manifest_dir`].
+/// Absolute path to the workspace's `examples/<file_name>`, resolved at run time.
 fn examples_path(file_name: &str) -> std::path::PathBuf {
-    std::path::Path::new(&gui_crate_manifest_dir())
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("examples")
-        .join(file_name)
+    reify_test_support::examples_corpus::examples_dir().join(file_name)
 }
 
 /// Guards against a file under `src/tests/` that this module never
@@ -155,8 +136,7 @@ fn examples_path(file_name: &str) -> std::path::PathBuf {
 fn every_test_module_file_is_declared() {
     use std::collections::BTreeSet;
 
-    let manifest_dir = gui_crate_manifest_dir();
-    let tests_dir = std::path::Path::new(&manifest_dir).join("src/tests");
+    let tests_dir = reify_test_support::test_package::manifest_dir().join("src/tests");
 
     let mod_rs_path = tests_dir.join("mod.rs");
     let mod_rs_src = std::fs::read_to_string(&mod_rs_path).unwrap_or_else(|e| {
