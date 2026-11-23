@@ -4,7 +4,7 @@
 //!
 //!   1. `offset_curve(c, 2mm)`                  — planar 2-D offset
 //!   2. `offset_curve(c, 2mm, faces(b)[0])`     — +reference Surface
-//!   3. `offset_curve(c, 2mm, vec3(0,0,1))`     — +direction Vector3
+//!   3. `offset_curve(c, 2mm, dir(0,0,1))`      — +direction Direction
 //!
 //! `parse → compile → Engine (real OCCT) → build`, mirroring the proven
 //! `geometry_query_kernel_dispatch.rs` / `kernel_queries_curvature_smoke.rs`
@@ -12,7 +12,7 @@
 //!
 //! * **COMPILE-LEVEL** (always runs, even with no OCCT) — every overload source
 //!   compiles with no error-severity diagnostics (so the mixed 3rd-argument
-//!   shapes — a bound Surface handle vs a `vec3` — are NOT rejected by the
+//!   shapes — a bound Surface handle vs a `Direction` — are NOT rejected by the
 //!   type-checker) and lowers to a `Modify(OffsetCurve)` op. A grammar / lowering
 //!   regression therefore fails on every runner.
 //!
@@ -50,12 +50,12 @@ structure def OffsetPlanar {
 }
 "#;
 
-/// Overload 3 — `+direction Vector3`. The 3rd arg is a `vec3`, disambiguated at
-/// eval time as the offset direction.
+/// Overload 3 — `+direction Direction`. The 3rd arg is a `dir(..)`, disambiguated
+/// at eval time as the offset direction.
 const DIRECTIONAL_SOURCE: &str = r#"
 structure def OffsetDirectional {
     let c = arc(0mm, 0mm, 0mm, 10mm, -0.7853981633974483rad, 0.7853981633974483rad, 0mm, 0mm, 1mm)
-    let o = offset_curve(c, 2mm, vec3(0.0, 0.0, 1.0))
+    let o = offset_curve(c, 2mm, dir(0, 0, 1))
     let bb = bounding_box(o)
 }
 "#;
@@ -151,7 +151,7 @@ fn assert_bbox_max(value: Option<&Value>, what: &str) -> [f64; 3] {
 // ── COMPILE-LEVEL: all three overloads compile clean and lower to OffsetCurve ─
 
 /// Pins the compile + type-check glue for every overload call shape: the mixed
-/// 3rd argument (a bound Surface handle in overload 2, a `vec3` in overload 3)
+/// 3rd argument (a bound Surface handle in overload 2, a `Direction` in overload 3)
 /// must NOT be rejected, and each call must lower to `Modify(OffsetCurve)`. Runs
 /// unconditionally so a compile/lowering regression fails on every runner.
 #[test]
@@ -212,8 +212,8 @@ fn offset_curve_planar_radius_grows_to_12mm_e2e() {
 
 // ── OCCT-BACKED: overloads 2 & 3 each eval to a non-Undef Curve ───────────────
 
-/// Overload 3 (`+direction Vector3`) end-to-end: `offset_curve(c, 2mm,
-/// vec3(0,0,1))` realizes a non-`Undef` Curve. A valid `bounding_box(o)` proves
+/// Overload 3 (`+direction Direction`) end-to-end: `offset_curve(c, 2mm,
+/// dir(0,0,1))` realizes a non-`Undef` Curve. A valid `bounding_box(o)` proves
 /// the directional offset evaluated to real geometry.
 #[test]
 fn offset_curve_directional_overload_evals_non_undef_e2e() {
@@ -232,7 +232,7 @@ fn offset_curve_directional_overload_evals_non_undef_e2e() {
         result
             .values
             .get(&ValueCellId::new("OffsetDirectional", "bb")),
-        "offset_curve(c, 2mm, vec3(0,0,1))",
+        "offset_curve(c, 2mm, dir(0,0,1))",
     );
 }
 

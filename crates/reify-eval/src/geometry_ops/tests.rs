@@ -7724,28 +7724,17 @@
         }
     }
 
-    /// Compile `offset_curve(curve, 2mm, vec3(x, y, z))` with a literal bare
-    /// direction, returning the eval-boundary result and its diagnostics.
-    ///
-    /// A Literal 3rd arg is not a ValueRef, so `resolve_parent_geometry_handle_arg`
-    /// returns None and the dispatch takes the direction-decode path.
-    fn compile_offset_curve_with_direction(
-        x: f64,
-        y: f64,
-        z: f64,
+    /// Compile `offset_curve(curve, 2mm, <third>)` over the curve at step 0,
+    /// returning the eval-boundary result and its diagnostics.
+    fn compile_offset_curve_with_third(
+        third: reify_ir::CompiledExpr,
     ) -> (Result<reify_ir::GeometryOp, String>, Vec<Diagnostic>) {
         let op = CompiledGeometryOp::Modify {
             kind: reify_compiler::ModifyKind::OffsetCurve,
             target: reify_compiler::GeomRef::Step(0),
             args: vec![
                 ("distance".into(), literal_length(0.002)),
-                (
-                    "third".into(),
-                    reify_ir::CompiledExpr::literal(
-                        bare_real_vector3(x, y, z),
-                        reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
-                    ),
-                ),
+                ("third".into(), third),
             ],
         };
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
@@ -7761,28 +7750,103 @@
         (result, diagnostics)
     }
 
-    /// (b) 3-arg `offset_curve(curve, distance, vec3(0,0,1))` — the 3rd arg is a
-    /// `Value::Vector` → `direction: Some([0,0,1])`, `reference: None` (overload 3).
-    ///
-    /// RED until step-14: the step-12 stub ignores the 3rd arg and always yields
-    /// `direction: None`.
+    /// `offset_curve(curve, 2mm, dir(x, y, z))` with a literal Direction 3rd
+    /// arg. A Literal 3rd arg is not a ValueRef, so
+    /// `resolve_parent_geometry_handle_arg` returns None and the dispatch takes
+    /// the direction-decode path.
+    fn compile_offset_curve_with_direction(
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> (Result<reify_ir::GeometryOp, String>, Vec<Diagnostic>) {
+        compile_offset_curve_with_third(reify_ir::CompiledExpr::literal(
+            unit_dir(x, y, z),
+            reify_core::Type::Direction,
+        ))
+    }
+
+    /// `offset_curve(curve, 2mm, vec3(x, y, z))` with a literal bare Vector 3rd
+    /// arg, which is not a Direction.
+    fn compile_offset_curve_with_vector(
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> (Result<reify_ir::GeometryOp, String>, Vec<Diagnostic>) {
+        compile_offset_curve_with_third(reify_ir::CompiledExpr::literal(
+            bare_real_vector3(x, y, z),
+            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+        ))
+    }
+
+    /// Assert `result` is an `Err` naming `offset_curve` and ending with the
+    /// Direction fix hint (hard-coded: this is the drift pin).
+    fn assert_offset_curve_rejects_with_dir_hint(
+        result: Result<reify_ir::GeometryOp, String>,
+        case: &str,
+    ) {
+        match result {
+            Err(msg) => {
+                assert!(msg.contains("offset_curve"), "{case}: must name offset_curve: {msg}");
+                assert!(
+                    msg.ends_with("write dir(x, y, z)"),
+                    "{case}: must end with the dir(...) fix hint: {msg}"
+                );
+            }
+            Ok(op) => panic!("{case}: expected Err, got Ok({op:?})"),
+        }
+    }
+
+    /// (b) 3-arg `offset_curve(curve, distance, dir(0,0,1))` — the 3rd arg is a
+    /// `Value::Direction` → `direction: Some([0,0,1])`, `reference: None`
+    /// (overload 3), with no diagnostic at all (direction-typing θ-b, C7).
     #[test]
-    fn compile_geometry_op_offset_curve_3arg_vector_is_direction() {
-        let (result, _) = compile_offset_curve_with_direction(0.0, 0.0, 1.0);
+    fn compile_geometry_op_offset_curve_3arg_direction_is_direction() {
+        let (result, diagnostics) = compile_offset_curve_with_direction(0.0, 0.0, 1.0);
         match result {
             Ok(reify_ir::GeometryOp::OffsetCurve {
                 reference,
                 direction,
                 ..
             }) => {
-                assert_eq!(reference, None, "a vec3 3rd arg is NOT a reference");
+                assert_eq!(reference, None, "a Direction 3rd arg is NOT a reference");
                 assert_eq!(
                     direction,
                     Some([0.0, 0.0, 1.0]),
-                    "a vec3 3rd arg becomes the direction"
+                    "a Direction 3rd arg becomes the direction"
                 );
             }
             other => panic!("expected Ok(OffsetCurve) with direction, got {:?}", other),
+        }
+        assert!(diagnostics.is_empty(), "got: {diagnostics:?}");
+    }
+
+    /// A bare `vec3(..)` 3rd arg is not a Direction: the build rejects it with
+    /// the `dir(...)` fix hint instead of reading it as one.
+    #[test]
+    fn compile_geometry_op_offset_curve_3arg_vector_is_rejected_with_the_dir_hint() {
+        let (result, _) = compile_offset_curve_with_vector(0.0, 0.0, 1.0);
+        assert_offset_curve_rejects_with_dir_hint(result, "vec3(0, 0, 1) third");
+    }
+
+    /// A Real 3rd arg is neither a reference Surface nor a Direction.
+    #[test]
+    fn compile_geometry_op_offset_curve_3arg_real_is_rejected_with_the_dir_hint() {
+        let (result, _) = compile_offset_curve_with_third(literal_f64(1.0));
+        assert_offset_curve_rejects_with_dir_hint(result, "Real third");
+    }
+
+    /// A 3rd arg that evaluates to Undef is an unresolved argument, never a
+    /// silent planar offset (direction-typing C3).
+    #[test]
+    fn compile_geometry_op_offset_curve_3arg_undef_is_unresolved_not_planar() {
+        let absent = reify_ir::CompiledExpr::value_ref(
+            reify_core::ValueCellId::new("E", "missing"),
+            reify_core::Type::Direction,
+        );
+        let (result, _) = compile_offset_curve_with_third(absent);
+        match result {
+            Err(msg) => assert!(msg.contains("unresolved"), "got: {msg}"),
+            Ok(op) => panic!("an Undef third must be Err, got Ok({op:?})"),
         }
     }
 
@@ -7855,7 +7919,7 @@
     /// with an error naming the builtin, rather than reaching the kernel.
     #[test]
     fn compile_geometry_op_offset_curve_zero_direction_is_rejected() {
-        let (result, _) = compile_offset_curve_with_direction(0.0, 0.0, 0.0);
+        let (result, _) = compile_offset_curve_with_vector(0.0, 0.0, 0.0);
         match result {
             Err(msg) => {
                 assert!(
@@ -7899,7 +7963,7 @@
     /// IR is canonical for every magnitude of the same direction.
     #[test]
     fn compile_geometry_op_offset_curve_non_unit_direction_is_normalised() {
-        let (result, _) = compile_offset_curve_with_direction(3.0, 0.0, 4.0);
+        let (result, _) = compile_offset_curve_with_vector(3.0, 0.0, 4.0);
         assert_offset_curve_direction(result, [0.6, 0.0, 0.8]);
     }
 
@@ -7909,7 +7973,7 @@
     /// which is the wrong kind of bound for a dimensionless vector.
     #[test]
     fn compile_geometry_op_offset_curve_tiny_direction_is_normalised_not_rejected() {
-        let (result, _) = compile_offset_curve_with_direction(1e-9, 0.0, 0.0);
+        let (result, _) = compile_offset_curve_with_vector(1e-9, 0.0, 0.0);
         assert_offset_curve_direction(result, [1.0, 0.0, 0.0]);
     }
 
@@ -26356,16 +26420,12 @@
     // | `decode_axis`         | axis DIRECTION        | a `Value::Direction`, read by `decode_direction` (ε, task 9638) |
     // | `modify_offset_curve` | `third` → `direction` | its own production diagnostic already calls it "a direction vec3" |
 
-    /// SCOPE LOCK (a) — `offset_curve`'s 3rd argument. GREEN by construction.
+    /// SCOPE LOCK (a) — `offset_curve`'s 3rd argument.
     ///
-    /// A bare dimensionless `vec3(0, 0, 1)` in the `third` position must still
-    /// reach `GeometryOp::OffsetCurve { direction: Some([0,0,1]) }` with no units
-    /// complaint. The surrounding production diagnostic already calls this
-    /// argument "a direction vec3"; gating it would reject correct `.ri` code.
-    ///
-    /// This is the one `point3_components` caller that is neither a plane nor an
-    /// axis, so it is the one most likely to be swept up by a future edit that
-    /// reasons "this helper is the un-gated one, gate it everywhere".
+    /// A `dir(0, 0, 1)` in the `third` position must reach
+    /// `GeometryOp::OffsetCurve { direction: Some([0,0,1]) }` with no units
+    /// complaint: a Direction is dimensionless by construction, so gating it as
+    /// a Length would reject correct `.ri` code.
     #[test]
     fn delta_scope_lock_offset_curve_direction_stays_dimensionless() {
         let (result, diagnostics) = compile_offset_curve_with_direction(0.0, 0.0, 1.0);
@@ -26374,7 +26434,7 @@
                 assert_eq!(
                     direction,
                     Some([0.0, 0.0, 1.0]),
-                    "a bare vec3 direction must still be accepted verbatim"
+                    "a Direction must be accepted verbatim"
                 );
             }
             other => panic!("expected Ok(OffsetCurve), got {:?}", other),
