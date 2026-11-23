@@ -32,7 +32,7 @@
 
 use std::ops::RangeInclusive;
 
-use reify_core::{ContentHash, Diagnostic, DimensionVector};
+use reify_core::{ContentHash, Diagnostic, DiagnosticCode, DimensionVector};
 use reify_ir::arg_acceptance::{FieldRejection, read_arg, read_field, time_spec};
 use reify_ir::{PersistentMap, StructureInstanceData, Value};
 
@@ -724,21 +724,24 @@ pub enum ShapeInputFault {
     /// its declared dimension refuses.
     Rejected(FieldRejection),
     /// A TOTS-arm profile joint, by index, that no `actuator_limits` entry
-    /// bounds: the joint is never solved against a substituted bound.
+    /// bounds: the joint is never solved against a substituted bound. Reported
+    /// as the coded `TotsJointUncovered` Error.
     UncoveredJoint(usize),
 }
 
 impl ShapeInputFault {
     /// The one Error `builtin`'s caller reports for this fault: the coded
-    /// `DimensionedArgRejected` for a refused field, and an Error naming
-    /// `actuator_limits` and the joint index for an uncovered joint.
+    /// `DimensionedArgRejected` for a refused field, and the coded
+    /// `TotsJointUncovered` naming `actuator_limits` and the joint index for an
+    /// uncovered joint.
     pub fn to_error(&self, builtin: &str) -> Diagnostic {
         match self {
             ShapeInputFault::Rejected(rejection) => rejection.to_error(builtin),
             ShapeInputFault::UncoveredJoint(joint) => Diagnostic::error(format!(
                 "{builtin}: actuator_limits has no entry for profile joint {joint}; a TOTS \
                  shaper solves only the joints an actuator limit bounds"
-            )),
+            ))
+            .with_code(DiagnosticCode::TotsJointUncovered),
         }
     }
 }
