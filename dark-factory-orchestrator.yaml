@@ -1122,6 +1122,16 @@ verify_task_remote_cross_check_every_n: 10
 # RELOADABLE_FIELDS); live from the next orchestrator restart.
 merge_verify_breadth: "full"
 
+# Main-tip sweep cold control: off (Leo, 2026-11-23, reify task 10425). The sweep builds
+# warm (CoW-seeded from the warm-lane base); dark-factory forces one sweep cold per this
+# many seconds as a control against a poisoned base (default 86400, i.e. daily). That
+# daily cold full build is retired here: the weekly warm-versus-cold shadow compare
+# (git.warm_verify_shadow_compare below) is the cold detector. The key has no "never"
+# value (0 means every sweep cold), so ten years is the off switch. A sweep still builds
+# cold if the cold-verdict ledger in runs.db is empty or unreadable, or if its seed fails.
+# Restart-only (not in RELOADABLE_FIELDS); live from the next orchestrator restart.
+main_tip_sweep_cold_interval_secs: 315360000
+
 # Pre-merge rebase-and-reverify: run it ONCE and never repeat it (Leo, 2026-09-06,
 # applied to reify after the same ruling on dark-factory). workflow.py's merge
 # phase rebases the task branch onto main and runs a full task-role scoped
