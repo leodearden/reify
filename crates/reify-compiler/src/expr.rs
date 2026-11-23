@@ -1510,12 +1510,6 @@ pub(crate) fn compile_expr_guarded_with_expected(
     )
 }
 
-/// Inner body of [`compile_expr_guarded_with_expected`]. All recursion-depth
-/// bounding — the [`RecursionDepthGuard`](crate::recursion_guard::RecursionDepthGuard)
-/// cap and the `stacker::maybe_grow` on-demand stack growth — lives in that
-/// wrapper and is re-applied at every level because this body's recursive calls
-/// go back through it (via `compile_expr_guarded[_with_expected]`), never here.
-#[allow(clippy::too_many_arguments)]
 /// The enum `object` names when `object.member` is an enum access: the
 /// parser's own rule (an identifier naming a known enum, then `.V`), applied
 /// with the compile env's bound enum set. The parser knows only the enum names
@@ -1567,6 +1561,12 @@ fn compile_enum_access(
     }
 }
 
+/// Inner body of [`compile_expr_guarded_with_expected`]. All recursion-depth
+/// bounding — the [`RecursionDepthGuard`](crate::recursion_guard::RecursionDepthGuard)
+/// cap and the `stacker::maybe_grow` on-demand stack growth — lives in that
+/// wrapper and is re-applied at every level because this body's recursive calls
+/// go back through it (via `compile_expr_guarded[_with_expected]`), never here.
+#[allow(clippy::too_many_arguments)]
 fn compile_expr_guarded_with_expected_inner(
     expr: &reify_ast::Expr,
     scope: &CompilationScope,
