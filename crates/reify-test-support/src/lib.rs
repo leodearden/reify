@@ -55,6 +55,7 @@ pub mod workspace_sweep;
 // - `selector_fixtures`
 // - `stdlib_prelude`
 // - `stl_bytes`
+// - `test_package`
 // - `workspace_root`
 pub use builders::*;
 pub use ctor_conformance::*;
