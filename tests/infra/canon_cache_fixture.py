@@ -163,15 +163,18 @@ def can_bind(port):
 
 
 def raw_get(port, path):
-    """One HTTP/1.0 GET over a fresh connection; the full response bytes, or what arrived before a reset."""
+    """One HTTP/1.0 GET over a fresh connection; the full response bytes, or what arrived before a reset.
+
+    A reset can beat the connect itself (a relay resets at once when its store refuses).
+    """
     received = b""
-    with socket.create_connection(("127.0.0.1", port)) as connection:
-        try:
+    try:
+        with socket.create_connection(("127.0.0.1", port)) as connection:
             connection.sendall(f"GET {path} HTTP/1.0\r\nHost: store\r\n\r\n".encode())
             while chunk := connection.recv(65536):
                 received += chunk
-        except (ConnectionResetError, BrokenPipeError):
-            pass
+    except (ConnectionResetError, BrokenPipeError):
+        pass
     return received
 
 
@@ -399,6 +402,122 @@ sys.exit(canon_cache.supervise(
 def write_supervise_runner(directory):
     runner = Path(directory, "supervise_runner.py")
     runner.write_text(SUPERVISE_RUNNER)
+    return str(runner)
+
+
+# A relay run out of file descriptors, in its own process so the suite's
+# RLIMIT_NOFILE never changes. argv: <scripts dir> <store port> <case>; prints
+# one JSON verdict line. Every socket wait has a 30 s hang guard (not a bound).
+#   accept  one descriptor left: the relay accepts a client but cannot open its
+#           upstream; then, with the limit restored, a fresh GET through it
+#   loop    no descriptor left when the relay's loop starts; then cut, a connect
+#           to its port, and close
+RELAY_FD_RUNNER = r"""
+import json
+import os
+import resource
+import socket
+import sys
+import time
+
+sys.path.insert(0, sys.argv[1])
+import canon_cache
+
+store_port, case = int(sys.argv[2]), sys.argv[3]
+HANG_GUARD = 30.0
+REQUEST = b"GET /reify/object HTTP/1.0\r\nHost: store\r\n\r\n"
+soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+
+
+def lowest_free_fd():
+    descriptor = os.open("/dev/null", os.O_RDONLY)
+    os.close(descriptor)
+    return descriptor
+
+
+def limit_open_files(count):
+    resource.setrlimit(resource.RLIMIT_NOFILE, (count, hard))
+
+
+def holds_a_selector():
+    for name in os.listdir("/proc/self/fd"):
+        try:
+            if os.readlink(f"/proc/self/fd/{name}") == "anon_inode:[eventpoll]":
+                return True
+        except OSError:
+            pass
+    return False
+
+
+def wait_for_the_relay_selector():
+    deadline = time.monotonic() + HANG_GUARD
+    while not holds_a_selector():
+        if time.monotonic() > deadline:
+            sys.exit("the relay thread never created its selector")
+        time.sleep(0.01)
+
+
+def guarded_socket():
+    client = socket.socket()
+    client.settimeout(HANG_GUARD)
+    return client
+
+
+def exchange(client, port):
+    # The HTTP status through the relay; "reset" for a reset or an empty answer, "timeout" at the guard.
+    received = b""
+    try:
+        client.connect(("127.0.0.1", port))
+        client.sendall(REQUEST)
+        while chunk := client.recv(65536):
+            received += chunk
+    except (ConnectionResetError, BrokenPipeError):
+        return "reset"
+    except TimeoutError:
+        return "timeout"
+    finally:
+        client.close()
+    return int(received.split()[1]) if received else "reset"
+
+
+def refused(port):
+    with guarded_socket() as probe:
+        try:
+            probe.connect(("127.0.0.1", port))
+        except ConnectionRefusedError:
+            return True
+    return False
+
+
+relay = canon_cache.Relay("127.0.0.1", store_port)
+if case == "accept":
+    relay.start()
+    wait_for_the_relay_selector()
+    client = guarded_socket()
+    limit_open_files(lowest_free_fd() + 1)
+    first = exchange(client, relay.port)
+    limit_open_files(soft)
+    second = exchange(guarded_socket(), relay.port)
+    relay.cut()
+    relay.close()
+    verdict = {"first": first, "second": second, "closed": True}
+elif case == "loop":
+    limit_open_files(lowest_free_fd())
+    relay.start()
+    relay.cut()
+    limit_open_files(soft)
+    was_refused = refused(relay.port)
+    relay.close()
+    verdict = {"cut": True, "refused": was_refused, "closed": True}
+else:
+    sys.exit(f"unknown case {case!r}")
+print(json.dumps(verdict))
+"""
+
+
+def write_relay_fd_runner(directory):
+    runner = Path(directory, "relay_fd_runner.py")
+    runner.write_text(RELAY_FD_RUNNER)
     return str(runner)
 
 

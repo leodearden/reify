@@ -49,6 +49,7 @@ CARGO_HOME_LINE = re.compile(r"^\s+CARGO_HOME:\s*(\S+)\s*$", re.MULTILINE)
 GUARD_LINE = "#!/bin/sh\n# reify-canon-guard\nexit 0\n"
 REAL_LINE = "#!/bin/sh\nexit 0\n"
 GUARD = fx.REPO_ROOT / "scripts" / "canon-bin" / "guard" / "sccache"
+UNRESOLVABLE_HOST = "reify-canon-no-such-host.invalid"  # RFC 6761: .invalid never resolves
 
 # A stub compiler or sccache: records its own name, its arguments and the
 # CARGO_* names it was given, then exits 0.
@@ -238,6 +239,7 @@ class ParseCacheSettings(unittest.TestCase):
         for key, value in (
             ("store_url", "ftp://x"),
             ("store_url", "https://store.invalid/reify"),
+            ("store_url", "http://a..b/reify"),
             ("store_url", 7),
             ("store_user", ["a"]),
             ("store_password", 1),
@@ -559,6 +561,41 @@ class Relay(RelayCase):
         self.relay.close()
         self.assertTrue(cfx.can_bind(self.relay_port))
 
+    def test_a_refusing_target_resets_the_client_and_still_cuts_and_closes(self):
+        relay = canon_cache.Relay("127.0.0.1", cfx.closed_port())
+        relay.start()
+        self.addCleanup(relay.close)
+        self.assertEqual(cfx.raw_get(relay.port, "/reify/object"), b"")
+        relay.cut()
+        relay.close()
+        self.assertTrue(cfx.can_bind(relay.port))
+
+    def test_an_unresolvable_store_fails_at_construction(self):
+        with self.assertRaises(OSError):
+            canon_cache.Relay(UNRESOLVABLE_HOST, 80)
+
+
+class RelayOutOfDescriptors(StoreCase):
+    """A relay that cannot get a descriptor resets what it holds and never strands a caller."""
+
+    def run_case(self, case):
+        runner = cfx.write_relay_fd_runner(scratch(self))
+        completed = subprocess.run(
+            [sys.executable, "-I", runner, str(fx.REPO_ROOT / "scripts"), str(self.store.port), case],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        self.assertNotIn("Traceback", completed.stderr)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        return json.loads(completed.stdout)
+
+    def test_a_client_whose_upstream_gets_no_descriptor_is_reset_and_the_relay_serves_on(self):
+        self.assertEqual(self.run_case("accept"), {"first": "reset", "second": 200, "closed": True})
+
+    def test_a_loop_that_cannot_start_still_lets_cut_and_close_return_and_refuses(self):
+        self.assertEqual(self.run_case("loop"), {"cut": True, "refused": True, "closed": True})
+
 
 class FakeClock:
     def __init__(self):
@@ -778,6 +815,16 @@ class OpenSession(SessionCase):
         self.assertEqual(session.backend, canon_cache.Backend.LOCAL_FALLBACK)
         self.assertEqual(session.reason, canon_cache.Reason.STORE_UNREACHABLE)
         self.assertEqual(session.store_attempts, 0)
+
+    def test_an_unresolvable_store_falls_back_without_attempts(self):
+        settings = dataclasses.replace(self.settings, store_url=f"http://{UNRESOLVABLE_HOST}:8080/reify")
+        session = self.open("ok", settings=settings)
+        self.assertEqual(
+            (session.backend, session.reason, session.store_attempts),
+            (canon_cache.Backend.LOCAL_FALLBACK, canon_cache.Reason.STORE_UNREACHABLE, 0),
+        )
+        [server] = self.servers()
+        self.assertEqual([name for name in server["env"] if name.startswith("SCCACHE_WEBDAV_")], [])
 
     def test_no_store_url_falls_back_without_attempts(self):
         settings = dataclasses.replace(self.settings, store_url=None)
