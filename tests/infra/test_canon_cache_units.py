@@ -75,6 +75,13 @@ def scratch(test):
     return os.path.realpath(tmp.name)
 
 
+def assert_one_line_naming(test, error, path):
+    """A refusal a caller can print as one line, naming the path it is about."""
+    message = str(error)
+    test.assertNotIn("\n", message)
+    test.assertIn(path, message)
+
+
 def executable(directory, name, text):
     path = Path(directory, name)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -309,6 +316,15 @@ class ChooseFallbackDir(unittest.TestCase):
         chosen = canon_cache.choose_fallback_dir(self.settings(str(parent / "fallback")), tmp_root=self.tmp)
         self.assertEqual(chosen, os.path.join(self.tmp, f"reify-canon-fallback-{os.getuid()}"))
         self.assertTrue(os.path.isdir(chosen))
+
+    def test_a_tmp_root_that_cannot_hold_the_directory_is_a_session_error(self):
+        """Regular files in the way, so neither directory can be made even as root."""
+        configured_parent, tmp_root = Path(self.tmp, "configured-file"), Path(self.tmp, "tmp-root-file")
+        configured_parent.write_text("")
+        tmp_root.write_text("")
+        with self.assertRaises(canon_cache.CacheSessionError) as refused:
+            canon_cache.choose_fallback_dir(self.settings(str(configured_parent / "fallback")), tmp_root=str(tmp_root))
+        assert_one_line_naming(self, refused.exception, os.path.join(tmp_root, f"reify-canon-fallback-{os.getuid()}"))
 
 
 class Guard(unittest.TestCase):
@@ -729,13 +745,16 @@ class SessionCase(unittest.TestCase):
             fallback_cap="3G",
         )
 
-    def open(self, plan, *, settings=None, reachable=True, policy=canon_cache.Policy.SHARED):
+    def open(
+        self, plan, *, settings=None, reachable=True, policy=canon_cache.Policy.SHARED, sccache=None,
+        canon_build_dir=None,
+    ):
         cfx.set_plan(self.fake, plan)
         session = canon_cache.open_session(
             policy,
             settings or self.settings,
-            canon_build_dir=self.build,
-            sccache=self.sccache,
+            canon_build_dir=canon_build_dir or self.build,
+            sccache=sccache or self.sccache,
             knobs=self.knobs,
             env=self.env,
             probe=lambda: reachable,
@@ -857,6 +876,38 @@ class OpenSession(SessionCase):
     def test_incremental_is_refused(self):
         with self.assertRaises(ValueError):
             self.open("ok", policy=canon_cache.Policy.INCREMENTAL)
+        self.assertEqual(self.servers(), [])
+
+    def test_a_sccache_that_is_not_executable_is_refused_before_any_start_attempt(self):
+        """With or without /usr/bin/setpriv: no store retry, and the refusal names the real cause."""
+        plain = Path(self.tmp, "plain-file-sccache")
+        plain.write_text("#!/bin/sh\nexit 0\n")
+        plain.chmod(0o644)
+        for sccache in (str(plain), os.path.join(self.tmp, "no-such-sccache")):
+            with self.subTest(sccache=sccache):
+                self.delays.clear()
+                with self.assertRaises(canon_cache.CacheSessionError) as refused:
+                    self.open("ok", sccache=sccache)
+                assert_one_line_naming(self, refused.exception, sccache)
+                self.assertEqual(self.delays, [])
+                self.assertEqual([name for name in os.listdir(self.build) if name.startswith(".reify-sccache.")], [])
+
+    def test_a_build_directory_that_cannot_be_created_is_a_session_error(self):
+        blocker = Path(self.tmp, "a-file")
+        blocker.write_text("")
+        build = str(blocker / "build")
+        with self.assertRaises(canon_cache.CacheSessionError) as refused:
+            self.open("ok", canon_build_dir=build)
+        assert_one_line_naming(self, refused.exception, build)
+
+    def test_an_unwritable_build_directory_is_a_session_error(self):
+        if os.geteuid() == 0:
+            self.skipTest("root writes into a read-only directory regardless of its mode")
+        os.chmod(self.build, 0o500)
+        self.addCleanup(os.chmod, self.build, 0o755)
+        with self.assertRaises(canon_cache.CacheSessionError) as refused:
+            self.open("ok")
+        assert_one_line_naming(self, refused.exception, os.path.join(self.build, f".reify-sccache.{os.getpid()}.err"))
         self.assertEqual(self.servers(), [])
 
 
