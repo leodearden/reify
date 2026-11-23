@@ -21,7 +21,7 @@ use crate::common::compile_with_stdlib_helper;
 use reify_compiler::CompiledModule;
 use reify_core::{DiagnosticCode, Severity};
 use reify_ir::{CompiledExprKind, Value};
-use reify_test_support::get_let_expr_in;
+use reify_test_support::{error_codes, get_let_expr_in};
 
 /// The two-param `Result<T, E>` enum shared across inference tests (identical
 /// fixture to `enum_generic_ir_lowering_tests.rs` / `generic_enum_pattern_binder_tests.rs`).
@@ -31,23 +31,6 @@ enum Result<T, E> {
     Err { error: E },
 }
 ";
-
-/// Collect the codes of `module`'s Error-severity diagnostics (used to render
-/// a helpful message when a `has_error_code` assertion fails).
-///
-/// Takes an already-compiled `&CompiledModule` rather than a `source: &str`
-/// (and re-compiling internally) so that a test asserting both code-presence
-/// AND the failure-message diagnostic list compiles `source` exactly ONCE via
-/// `compile_with_stdlib_helper` — amendment (reviewer suggestion: avoid the
-/// 2-3x recompile per test the source-taking variant caused).
-fn error_codes(module: &CompiledModule) -> Vec<Option<DiagnosticCode>> {
-    module
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .map(|d| d.code)
-        .collect()
-}
 
 /// True if `module` carries at least one Error-severity diagnostic carrying
 /// `code`.

@@ -12,6 +12,7 @@
 use crate::common::compile_with_stdlib_helper;
 use reify_core::ty::Type;
 use reify_core::{DiagnosticCode, Severity};
+use reify_test_support::error_codes;
 
 /// The shared `Shape` enum used by the pattern-check tests: one
 /// single-field variant (`Circle`), one two-field variant (`Rect`), and one
@@ -31,16 +32,6 @@ fn has_error_code(source: &str, code: DiagnosticCode) -> bool {
         .diagnostics
         .iter()
         .any(|d| d.severity == Severity::Error && d.code == Some(code))
-}
-
-/// Collect all Error-severity diagnostic codes (for assertion failure messages).
-fn error_codes(source: &str) -> Vec<Option<DiagnosticCode>> {
-    compile_with_stdlib_helper(source)
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .map(|d| d.code)
-        .collect()
 }
 
 /// Build a Reify source that declares SHAPE_ENUM and a structure whose `let area`
@@ -105,7 +96,7 @@ fn pattern_unknown_field_emits_diagnostic() {
         has_error_code(&source, DiagnosticCode::PatternUnknownField),
         "expected PatternUnknownField for 'Circle {{ diameter: d }}' (Circle has no 'diameter'); \
          actual error codes: {:?}",
-        error_codes(&source),
+        error_codes(&compile_with_stdlib_helper(&source)),
     );
 }
 
@@ -122,7 +113,7 @@ fn pattern_missing_field_emits_diagnostic() {
         has_error_code(&source, DiagnosticCode::PatternMissingField),
         "expected PatternMissingField for 'Rect {{ width: w }}' (Rect also declares 'height'); \
          actual error codes: {:?}",
-        error_codes(&source),
+        error_codes(&compile_with_stdlib_helper(&source)),
     );
 }
 
@@ -227,7 +218,7 @@ fn non_exhaustive_payload_match_still_flagged() {
         has_error_containing(&source, "non-exhaustive"),
         "non-exhaustive match on Shape (Point missing) should still emit the \
          non-exhaustive diagnostic; error codes: {:?}",
-        error_codes(&source),
+        error_codes(&compile_with_stdlib_helper(&source)),
     );
 }
 

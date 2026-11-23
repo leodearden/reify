@@ -429,6 +429,11 @@ pub fn errors_only(module: &reify_compiler::CompiledModule) -> Vec<&Diagnostic> 
     collect_errors(&module.diagnostics)
 }
 
+/// The codes of the module's `Severity::Error` diagnostics, in order.
+pub fn error_codes(module: &reify_compiler::CompiledModule) -> Vec<Option<DiagnosticCode>> {
+    errors_only(module).iter().map(|d| d.code).collect()
+}
+
 /// Return only the `Severity::Warning` diagnostics from a compiled module.
 pub fn warnings_only(module: &reify_compiler::CompiledModule) -> Vec<&Diagnostic> {
     module

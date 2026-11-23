@@ -12,7 +12,7 @@
 
 use reify_compiler::{CompiledModule, ValueCellDecl};
 use reify_core::{DiagnosticCode, Severity, Type};
-use reify_test_support::{compile_source_with_stdlib, errors_only};
+use reify_test_support::{compile_source_with_stdlib, error_codes, errors_only};
 
 /// A fully-valid `Material(...)` constructor expression (all three required
 /// params provided), usable as an ambient-default value without itself
@@ -455,11 +455,6 @@ structure def Plate : Physical {
     param geometry : Solid = box(50mm, 50mm, 2mm)
 }
 "#;
-
-/// The codes of the module's `Severity::Error` diagnostics, in order.
-fn error_codes(module: &CompiledModule) -> Vec<Option<DiagnosticCode>> {
-    errors_only(module).iter().map(|d| d.code).collect()
-}
 
 /// The `member` value cell of the compiled template `template_name`.
 fn cell<'a>(module: &'a CompiledModule, template_name: &str, member: &str) -> &'a ValueCellDecl {
