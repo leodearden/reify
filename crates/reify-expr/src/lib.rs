@@ -2078,8 +2078,9 @@ fn interp_render(value: &Value) -> String {
 /// FEA (`linear_combine`, task #10), the geometry-builtin dimension family (see
 /// `geometry_diagnose`'s own doc for the name list), inverse-dynamics body
 /// mass, ISO tolerancing, the `orient_exp` rotation-vector dimension gate
-/// (#6080), and the `dir` direction constructor (`direction_diagnose`) — for a
-/// builtin call whose `result` is `Value::Undef`.
+/// (#6080), the `dir` direction constructor (`direction_diagnose`), and the
+/// joint LENGTH positions (`joints_diagnose`) — for a builtin call whose
+/// `result` is `Value::Undef`.
 ///
 /// Extracted from `eval_expr`'s `FunctionCall` arm — and marked
 /// `#[inline(never)]` — for the same stack-frame-shrinking reason as
@@ -2092,7 +2093,8 @@ fn interp_render(value: &Value) -> String {
 ///
 /// The classifiers' name families (stackup math builtins / `"linear_combine"` /
 /// the geometry-builtin family (`geometry_diagnose`) / dynamics /
-/// `"iso_it_tolerance"` / `"orient_exp"` / `"dir"`) are disjoint, so at most
+/// `"iso_it_tolerance"` / `"orient_exp"` / `"dir"` / `"transform_at"`,
+/// `"couple"`, `"screw"`, `"rack_and_pinion"`) are disjoint, so at most
 /// one classifier returns `Some` for any single `Undef`; each returns `None`
 /// for every other name or for valid input, making this a cheap no-op for
 /// ordinary builtins.
@@ -2133,6 +2135,9 @@ fn emit_undef_builtin_diagnostics(name: &str, args: &[Value], result: &Value, ct
         // `dir`: dimensioned component -> DimensionedArgRejected; zero or
         // non-finite vector -> E_DegenerateDirection.
         reify_stdlib::direction_diagnose(name, args),
+        // Joint LENGTH positions (transform_at / couple / screw / rack_and_pinion):
+        // a refused bare number -> DimensionedArgRejected.
+        reify_stdlib::joints_diagnose(name, args),
     ];
     for diag in classified.into_iter().flatten() {
         record_classified_cause(ctx, result, &diag);

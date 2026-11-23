@@ -86,6 +86,10 @@ pub use orientation::diagnose as orientation_diagnose;
 /// `E_DegenerateDirection`; shape faults stay silent.
 pub use direction::diagnose as direction_diagnose;
 
+/// Public re-export of the joint builtins' post-`Value::Undef` classifier, drained
+/// by `emit_undef_builtin_diagnostics`: names a joint LENGTH argument refused by dimension.
+pub use joints::diagnose as joints_diagnose;
+
 /// Public re-export of the PRB-flexure diagnostic classifier (task 3871).
 ///
 /// Called by `crates/reify-expr/src/lib.rs` at the builtin fallthrough arm to

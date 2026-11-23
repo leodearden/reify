@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
-use reify_core::DimensionVector;
+use reify_core::{Diagnostic, DimensionVector};
+use reify_ir::arg_acceptance::ArgRejection;
 use reify_ir::{Value, decode_direction, quaternion_is_finite};
 
 use crate::dynamics::spatial::SpatialVector6;
@@ -259,12 +260,12 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                     };
                     // Extract x (metres), y (metres), theta (radians).
                     let x = match length_input(&items[0]) {
-                        Some(v) => v,
-                        None => return Some(Value::Undef),
+                        Ok(Some(v)) => v,
+                        Ok(None) | Err(_) => return Some(Value::Undef),
                     };
                     let y = match length_input(&items[1]) {
-                        Some(v) => v,
-                        None => return Some(Value::Undef),
+                        Ok(Some(v)) => v,
+                        Ok(None) | Err(_) => return Some(Value::Undef),
                     };
                     let theta = match trig_input(&items[2]) {
                         Some(v) => v,
@@ -448,8 +449,8 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
                     // both helpers reject wrong-dim Scalars and non-finite values.
                     let v_si = if parent_kind == "prismatic" {
                         match length_input(&args[1]) {
-                            Some(d) => d,
-                            None => return Some(Value::Undef),
+                            Ok(Some(d)) => d,
+                            Ok(None) | Err(_) => return Some(Value::Undef),
                         }
                     } else {
                         match trig_input(&args[1]) {
@@ -527,8 +528,8 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             let offset_si = if args.len() == 3 {
                 if is_prismatic {
                     match length_input(&args[2]) {
-                        Some(d) => d,
-                        None => return Some(Value::Undef),
+                        Ok(Some(d)) => d,
+                        Ok(None) | Err(_) => return Some(Value::Undef),
                     }
                 } else {
                     match trig_input(&args[2]) {
@@ -575,8 +576,8 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             }
             // Parse lead as a LENGTH value (SI metres).
             let lead_si = match length_input(&args[1]) {
-                Some(v) => v,
-                None => return Some(Value::Undef),
+                Ok(Some(v)) => v,
+                Ok(None) | Err(_) => return Some(Value::Undef),
             };
             // Compute the dimensionless ratio: lead / (2π).
             let ratio = lead_si / (2.0 * std::f64::consts::PI);
@@ -648,8 +649,8 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
             }
             // Parse pitch_radius as a LENGTH value (SI metres).
             let pitch_radius_si = match length_input(&args[1]) {
-                Some(v) => v,
-                None => return Some(Value::Undef),
+                Ok(Some(v)) => v,
+                Ok(None) | Err(_) => return Some(Value::Undef),
             };
             // ratio = pitch_radius (dimensionless scaling factor for the coupling).
             let ratio = pitch_radius_si;
@@ -751,6 +752,60 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
         }
         _ => return None,
     })
+}
+
+/// Post-`Value::Undef` classifier for the joint builtins that read a LENGTH
+/// position (`transform_at`, `couple`, `screw`, `rack_and_pinion`), drained by
+/// reify-expr's `emit_undef_builtin_diagnostics`. A position refused by
+/// dimension, a bare number included, is one `DimensionedArgRejected` Error
+/// naming the argument; an unresolved (`Value::Undef`) argument is never
+/// diagnosed.
+pub fn diagnose(name: &str, args: &[Value]) -> Option<Diagnostic> {
+    let (arg, rejection) = refused_length_position(name, args)?;
+    Some(rejection.to_error(name, &arg))
+}
+
+/// The first LENGTH position of `name(args)` that [`length_input`] refuses,
+/// with its argument name: exactly the positions the [`eval_joints`] arms read.
+fn refused_length_position(name: &str, args: &[Value]) -> Option<(String, ArgRejection)> {
+    let refused = |arg: &str, v: &Value| length_input(v).err().map(|r| (arg.to_string(), r));
+    match (name, args) {
+        ("screw", [_, lead]) => refused("lead", lead),
+        ("rack_and_pinion", [_, pitch_radius]) => refused("pitch_radius", pitch_radius),
+        ("couple", [parent, _, offset]) if joint_kind(parent) == Some("prismatic") => {
+            refused("offset", offset)
+        }
+        ("transform_at", [joint, v]) => match (joint_kind(joint)?, v) {
+            ("prismatic", _) => refused("v", v),
+            ("planar", Value::List(items)) if items.len() == 3 => {
+                refused("v[0]", &items[0]).or_else(|| refused("v[1]", &items[1]))
+            }
+            ("cylindrical", Value::List(items)) if items.len() == 2 => refused("v[0]", &items[0]),
+            ("coupling", _)
+                if joint_field(joint, "parent").and_then(joint_kind) == Some("prismatic") =>
+            {
+                refused("v", v)
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The `kind` string of a joint Map; `None` for any other value.
+fn joint_kind(joint: &Value) -> Option<&str> {
+    match joint_field(joint, "kind")? {
+        Value::String(kind) => Some(kind),
+        _ => None,
+    }
+}
+
+/// The `key` field of a joint Map; `None` for any other value.
+fn joint_field<'a>(joint: &'a Value, key: &str) -> Option<&'a Value> {
+    match joint {
+        Value::Map(map) => map.get(&Value::String(key.to_string())),
+        _ => None,
+    }
 }
 
 /// Compute the SE(3) twist column for a joint Map.
@@ -1158,17 +1213,21 @@ fn ratio_input(v: &Value) -> Option<f64> {
     }
 }
 
-/// Extract metres from a joint LENGTH position (a prismatic displacement, a
+/// Read metres from a joint LENGTH position (a prismatic displacement, a
 /// planar / cylindrical length component, a coupling offset, a screw lead, a
-/// rack pitch radius): a finite LENGTH `Value::Scalar`.
+/// rack pitch radius).
 ///
-/// Returns `None` for any other value — a bare `Value::Real` / `Value::Int`
-/// included, which would otherwise read as metres (the 10-vs-10mm hazard). The
-/// one LENGTH motion-component reader is
+/// - `Ok(Some(m))`: accepted, a finite LENGTH `Value::Scalar`.
+/// - `Ok(None)`: unresolved (`Value::Undef`) or non-finite.
+/// - `Err`: refused by dimension — a bare `Value::Real` / `Value::Int` included,
+///   which would otherwise read as metres (the 10-vs-10mm hazard).
+///
+/// The value path maps both non-accepted arms to `Value::Undef`; [`diagnose`]
+/// reports the `Err`. The one LENGTH motion-component reader is
 /// [`crate::loop_closure::length_component`], shared with the loop-closure
 /// binding reader so a bound and a driven displacement accept the same values.
-fn length_input(v: &Value) -> Option<f64> {
-    crate::loop_closure::length_component(v).ok().flatten()
+fn length_input(v: &Value) -> Result<Option<f64>, ArgRejection> {
+    crate::loop_closure::length_component(v)
 }
 
 /// Extract `(dist, theta)` from a cylindrical motion-variable argument.
@@ -1196,7 +1255,7 @@ fn cylindrical_motion_vars(value: &Value) -> Option<(f64, f64)> {
         Value::List(items) if items.len() == 2 => items,
         _ => return None,
     };
-    let dist = length_input(&items[0])?;
+    let dist = length_input(&items[0]).ok().flatten()?;
     let theta = trig_input(&items[1])?;
     Some((dist, theta))
 }
@@ -1703,8 +1762,8 @@ fn transform_at_simple_joint(kind: &str, map: &BTreeMap<Value, Value>, value: &V
             };
             // Accept Length Scalar or bare Real/Int as metres
             let dist = match length_input(value) {
-                Some(d) => d,
-                None => return Value::Undef,
+                Ok(Some(d)) => d,
+                Ok(None) | Err(_) => return Value::Undef,
             };
             // length_input already enforces finiteness for the Scalar/Real
             // branches; the Int branch yields finite f64 by construction.
