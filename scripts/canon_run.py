@@ -2,14 +2,16 @@
 """Decide a build directory's mode and run a command in it.
 
 The canonical-build-path primitive (dark-factory
-plans/canonical-build-path-shared-cache-prd.md C1-C4, C7): ``status`` reports
+plans/canonical-build-path-shared-cache-prd.md C1-C7): ``status`` reports
 the mode of the build directory under the current tree, and ``exec -- <cmd>``
 and ``cargo <args>`` run a command either untouched at the tree's real path or
-at CANON, the one path every stamped build directory is built at.
+at CANON, the one path every stamped build directory is built at. What cache a
+command at CANON gets (C4-C6) is the sibling module canon_cache.py's business.
 """
 from __future__ import annotations
 
 import functools
+import http.client
 import importlib.util
 import json
 import os
@@ -20,11 +22,16 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+import urllib.parse
+from base64 import b64encode
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum, StrEnum
 from pathlib import Path
 from typing import NoReturn
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import canon_cache  # noqa: E402  (imported after sys.path manipulation)
 
 CANON_DEFAULT = "/opt/reify-canon/ws"
 STAMP_NAME = ".reify-build-root"
@@ -62,12 +69,6 @@ PASS_THROUGH = frozenset(
 )
 
 
-class Policy(StrEnum):
-    SHARED = "shared"
-    MIXED = "mixed"
-    INCREMENTAL = "incremental"
-
-
 class Mode(StrEnum):
     CANON = "canon"
     REAL_PATH = "real_path"
@@ -92,7 +93,8 @@ class CommandNotFound(Exception):
 class HostConfig:
     path: Path
     enabled: bool
-    policy: Policy
+    policy: canon_cache.Policy
+    cache: canon_cache.CacheSettings
 
 
 @dataclass(frozen=True)
@@ -171,27 +173,53 @@ def load_host_config(path: Path) -> HostConfig:
         with open(path, "rb") as config_file:
             data = tomllib.load(config_file)
     except FileNotFoundError:
-        return HostConfig(path, False, Policy.SHARED)
+        return HostConfig(path, False, canon_cache.Policy.SHARED, canon_cache.CacheSettings())
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         raise Refusal(f"cannot read host config {path}: {exc}") from exc
     enabled = data.get("enabled", False)
     if not isinstance(enabled, bool):
         raise Refusal(f"host config {path}: enabled {enabled!r} is not true or false")
-    policy = data.get("policy", Policy.SHARED.value)
-    if policy not in tuple(Policy):
-        choices = ", ".join(Policy)
+    policy = data.get("policy", canon_cache.Policy.SHARED.value)
+    if policy not in tuple(canon_cache.Policy):
+        choices = ", ".join(canon_cache.Policy)
         raise Refusal(f"host config {path}: policy {policy!r} is not one of {choices}")
-    return HostConfig(path, enabled, Policy(policy))
+    try:
+        cache = canon_cache.parse_cache_settings(data, path)
+    except canon_cache.CacheConfigError as exc:
+        raise Refusal(str(exc)) from exc
+    return HostConfig(path, enabled, canon_cache.Policy(policy), cache)
 
 
-def policy_refusal(host: HostConfig) -> str:
-    """Empty when this canon_run.py can run at CANON under host's policy, else why not."""
-    if host.policy is Policy.INCREMENTAL:
+def cache_refusal(host: HostConfig, search_path: str) -> str:
+    """Empty when host's policy can run with the composed search_path, else why not."""
+    if host.policy is canon_cache.Policy.INCREMENTAL:
+        return ""
+    if canon_cache.resolve_real_sccache(search_path) is not None:
         return ""
     return (
-        f"host policy '{host.policy}' needs the sccache server, which this canon_run.py"
-        f' does not provide; set policy = "incremental" or enabled = false in {host.path}'
+        f"host policy '{host.policy}' needs a real sccache, and none is on the CANON PATH;"
+        f' install sccache, or set policy = "incremental" or enabled = false in {host.path}'
     )
+
+
+def store_reachable(settings: canon_cache.CacheSettings) -> bool | None:
+    """None without a store; else whether GET <store_url>/.sccache_check answers 200 or 404."""
+    if settings.store_url is None:
+        return None
+    parts = urllib.parse.urlsplit(settings.store_url)
+    headers = {}
+    if settings.store_user is not None:
+        credentials = f"{settings.store_user}:{settings.store_password or ''}".encode()
+        headers["Authorization"] = "Basic " + b64encode(credentials).decode()
+    connection = http.client.HTTPConnection(parts.hostname, parts.port or 80, timeout=2.0)
+    try:
+        connection.request("GET", parts.path.rstrip("/") + "/.sccache_check", headers=headers)
+        status = connection.getresponse().status
+    except (OSError, http.client.HTTPException):
+        return False
+    finally:
+        connection.close()
+    return status in (200, 404)
 
 
 def is_inside(path: str | Path, root: str | Path) -> bool:
@@ -397,6 +425,7 @@ def build_dir_decision(
 def status_report(environ: Mapping[str, str], cwd: str) -> dict[str, object]:
     canon = canon_root(environ)
     host = load_host_config(host_config_path(environ))
+    uses_guard = canon_cache.CacheEnvironment(host.policy, None).uses_guard
     report: dict[str, object] = {
         "canon_root": canon,
         "canon_provisioned": is_real_dir(canon),
@@ -414,11 +443,15 @@ def status_report(environ: Mapping[str, str], cwd: str) -> dict[str, object]:
         report["tree_root"] = str(tree.real_root)
         report["build_dir"] = str(build_dir)
         decision = build_dir_decision(tree, build_dir, canon, lambda: host.enabled)
-        refusal = policy_refusal(host)
+        search_path = canon_search_path(
+            environ.get("PATH", ""), tree, canon, environ.get("HOME"), guard=uses_guard
+        )
+        refusal = cache_refusal(host, search_path)
         if decision.mode is Mode.CANON and refusal:
             decision = Decision(Mode.REFUSED, refusal)
     report["build_dir_mode"] = decision.mode.value
     report["reason"] = decision.reason
+    report["store_reachable"] = store_reachable(host.cache)
     return report
 
 
@@ -525,14 +558,25 @@ def rebase_argument(argument: str, tree: Tree, canon: str) -> str:
     return rebase(argument, tree, canon)
 
 
-def canon_search_path(path_value: str, tree: Tree, canon: str, home: str | None) -> str:
-    """C4: CANON's trampoline, then $HOME/.cargo/bin, then the caller's other entries."""
+def canon_search_path(
+    path_value: str, tree: Tree, canon: str, home: str | None, *, guard: bool
+) -> str:
+    """C4: CANON's guard (with sccache), its trampoline, $HOME/.cargo/bin, then the rest.
+
+    Every spelling of the tree's two directories leaves the rest, so re-composing is idempotent.
+    """
     front = []
+    if guard and os.path.isfile(tree.root / "scripts" / "canon-bin" / "guard" / "sccache"):
+        front.append(os.path.join(canon, "scripts", "canon-bin", "guard"))
     if os.path.isfile(tree.root / "scripts" / "canon-bin" / "cargo"):
         front.append(os.path.join(canon, "scripts", "canon-bin"))
     if home:
         front.append(os.path.join(home, ".cargo", "bin"))
-    tree_bins = (tree.real_root / "scripts" / "canon-bin", tree.root / "scripts" / "canon-bin")
+    tree_bins = [
+        os.path.join(spelling, "scripts", "canon-bin", *guard_part)
+        for spelling in (tree.real_root, tree.root, canon)
+        for guard_part in ((), ("guard",))
+    ]
     dropped = {os.path.normpath(entry) for entry in (*front, *tree_bins)}
     rest = [
         entry
@@ -565,35 +609,26 @@ def grammar_cache_dir(real_root: Path) -> str | None:
         return None
 
 
-def apply_incremental_policy(env: dict[str, str]) -> None:
-    """C4's `incremental` row: no sccache in any form, incremental compilation on."""
-    for name in list(env):
-        if name in ("RUSTC_WRAPPER", "CARGO_BUILD_RUSTC_WRAPPER") or name.startswith("SCCACHE_"):
-            del env[name]
-    env["CARGO_INCREMENTAL"] = "1"
-
-
 def canon_invocation(
     command: list[str],
     environ: Mapping[str, str],
     tree: Tree,
     canon: str,
     cwd: str,
-    host: HostConfig,
+    cache: canon_cache.CacheEnvironment,
     *,
     cargo: bool,
 ) -> Invocation:
     """What the command gets at CANON (C3, C4); for cargo, command is cargo's arguments."""
-    refusal = policy_refusal(host)
-    if refusal:
-        raise Refusal(refusal)
     argv = [rebase_argument(argument, tree, canon) for argument in command]
     env = dict(environ)
     for name, value in environ.items():
         if name.startswith("CARGO_"):
             env[name] = rebase(value, tree, canon)
     env["PWD"] = rebase(cwd, tree, canon)
-    env["PATH"] = canon_search_path(environ.get("PATH", ""), tree, canon, environ.get("HOME"))
+    env["PATH"] = canon_search_path(
+        environ.get("PATH", ""), tree, canon, environ.get("HOME"), guard=cache.uses_guard
+    )
     env["REIFY_CANON_ACTIVE"] = format_active(tree, canon)
     env["REIFY_VERIFY_LEDGER_LANE_DIR"] = str(tree.real_root)
     cache_home = grammar_cache_dir(tree.real_root)
@@ -601,8 +636,8 @@ def canon_invocation(
         env.pop("REIFY_TS_CACHE_HOME", None)
     else:
         env["REIFY_TS_CACHE_HOME"] = cache_home
+    env = cache.for_cargo(env) if cargo else cache.for_command(env)
     if cargo:
-        apply_incremental_policy(env)
         real_cargo = resolve_canon_cargo(env["PATH"])
         if real_cargo is None:
             raise CommandNotFound("no cargo on the CANON PATH other than reify-canon trampolines")
@@ -673,7 +708,11 @@ def enter_canon(
     route: Route,
 ) -> NoReturn:
     """Run the command at CANON: directly when CANON is already the tree, else under bwrap."""
-    invocation = canon_invocation(command, environ, tree, canon, cwd, host, cargo=cargo)
+    cache = canon_cache.CacheEnvironment(host.policy, None)
+    invocation = canon_invocation(command, environ, tree, canon, cwd, cache, cargo=cargo)
+    refusal = cache_refusal(host, invocation.env["PATH"])
+    if refusal:
+        raise Refusal(refusal)
     ensure_stamp(build_dir, canon)
     if route is Route.NAMESPACE:
         file, search = BWRAP, False
