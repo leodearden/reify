@@ -317,6 +317,40 @@ class ChooseFallbackDir(unittest.TestCase):
         self.assertEqual(chosen, os.path.join(self.tmp, f"reify-canon-fallback-{os.getuid()}"))
         self.assertTrue(os.path.isdir(chosen))
 
+    def settings_with_an_unusable_configured_dir(self):
+        """A fallback_dir under a regular file, so the per-user directory under self.tmp is the one chosen."""
+        blocker = Path(self.tmp, "configured-file")
+        blocker.write_text("")
+        return self.settings(str(blocker / "fallback"))
+
+    def per_user(self):
+        return os.path.join(self.tmp, f"reify-canon-fallback-{os.getuid()}")
+
+    def assert_per_user_refused(self):
+        with self.assertRaises(canon_cache.CacheSessionError) as refused:
+            canon_cache.choose_fallback_dir(self.settings_with_an_unusable_configured_dir(), tmp_root=self.tmp)
+        assert_one_line_naming(self, refused.exception, self.per_user())
+
+    def test_a_per_user_directory_writable_by_others_is_refused(self):
+        os.mkdir(self.per_user())
+        for mode in (0o777, 0o770):
+            with self.subTest(mode=oct(mode)):
+                os.chmod(self.per_user(), mode)
+                self.assert_per_user_refused()
+
+    def test_a_per_user_path_that_is_a_symlink_is_refused(self):
+        private = Path(self.tmp, "private")
+        private.mkdir()
+        private.chmod(0o700)
+        os.symlink(private, self.per_user())
+        self.assert_per_user_refused()
+
+    def test_an_existing_private_per_user_directory_is_used(self):
+        os.mkdir(self.per_user())
+        os.chmod(self.per_user(), 0o700)
+        chosen = canon_cache.choose_fallback_dir(self.settings_with_an_unusable_configured_dir(), tmp_root=self.tmp)
+        self.assertEqual(chosen, self.per_user())
+
     def test_a_tmp_root_that_cannot_hold_the_directory_is_a_session_error(self):
         """Regular files in the way, so neither directory can be made even as root."""
         configured_parent, tmp_root = Path(self.tmp, "configured-file"), Path(self.tmp, "tmp-root-file")
