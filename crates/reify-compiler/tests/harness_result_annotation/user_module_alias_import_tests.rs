@@ -220,7 +220,8 @@ structure def App {{\n\
 /// An imported parametric body's ENTITY name is not an alias where the body is
 /// defined, so an importer's alias of that name is not consulted either:
 /// `O10<Real>` means the same with or without the importer's `type E10 = Length`.
-/// The non-parametric counterpart is still captured by such an alias (#10354).
+/// The non-parametric counterpart holds too (#10354), pinned by
+/// `importer_local_alias_named_like_an_imported_plain_alias_body_entity_is_not_consulted`.
 #[test]
 fn importer_local_alias_named_like_an_imported_parametric_body_entity_is_not_consulted() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -252,6 +253,103 @@ fn importer_local_alias_named_like_an_imported_parametric_body_entity_is_not_con
     assert_eq!(cell_type(shadowed.entry(), "App", "m"), meant);
 }
 
+fn plain_entity_importer8(stem: &str, local_alias: &str) -> String {
+    format!(
+        "module {stem}\n\
+import prod8\n\
+{local_alias}\n\
+structure def App {{\n\
+\x20   param m : F8\n\
+}}\n"
+    )
+}
+
+/// The non-parametric counterpart: `F8` names prod8's enum `E8`, and an
+/// importer's `type E8 = Length` does not turn it into a Length.
+#[test]
+fn importer_local_alias_named_like_an_imported_plain_alias_body_entity_is_not_consulted() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(
+        dir.path(),
+        "prod8.ri",
+        "module prod8\npub enum E8 { A, B }\npub type F8 = E8\n",
+    );
+
+    let plain = compile(dir.path(), "imp8a", &plain_entity_importer8("imp8a", ""));
+    assert!(
+        errors(plain.entry()).is_empty(),
+        "got {:?}",
+        errors(plain.entry())
+    );
+    let meant = cell_type(plain.entry(), "App", "m");
+    assert!(!meant.is_error(), "`F8` must resolve; got {meant:?}");
+
+    let shadowed = compile(
+        dir.path(),
+        "imp8b",
+        &plain_entity_importer8("imp8b", "type E8 = Length"),
+    );
+    assert!(
+        errors(shadowed.entry()).is_empty(),
+        "got {:?}",
+        errors(shadowed.entry())
+    );
+    assert_eq!(cell_type(shadowed.entry(), "App", "m"), meant);
+}
+
+const PROD8_MIXED: &str = "module prod8\n\
+pub enum E8 { A, B }\n\
+type In8 = Length\n\
+pub type F8 = Map<In8, E8>\n";
+
+fn mixed_importer8(stem: &str, local_alias: &str) -> String {
+    format!(
+        "module {stem}\n\
+import prod8\n\
+{local_alias}\n\
+structure def App {{\n\
+\x20   param m : F8\n\
+\x20   param d : Map<Length, E8>\n\
+}}\n"
+    )
+}
+
+/// A plain pub alias whose body names both an entity and a non-pub alias is
+/// accepted where it is defined, and in every importer its alias name `In8`
+/// is prod8's `Length`, whatever the importer calls `In8`.
+#[test]
+fn imported_plain_alias_body_binds_its_defining_modules_alias_names() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(dir.path(), "prod8.ri", PROD8_MIXED);
+
+    let defining = compile(dir.path(), "prod8", PROD8_MIXED);
+    assert!(
+        errors(defining.entry()).is_empty(),
+        "a pub plain alias may name a non-pub alias; got {:?}",
+        errors(defining.entry())
+    );
+
+    for (stem, local_alias) in [("imp8m", ""), ("imp8n", "type In8 = Time")] {
+        let program = compile(dir.path(), stem, &mixed_importer8(stem, local_alias));
+        let entry = program.entry();
+        assert!(
+            errors(entry).is_empty(),
+            "with `{local_alias}`: got {:?}",
+            errors(entry)
+        );
+        let aliased = cell_type(entry, "App", "m");
+        assert!(
+            !aliased.is_error(),
+            "with `{local_alias}`: `F8` must resolve; got {aliased:?}"
+        );
+        assert_eq!(
+            aliased,
+            cell_type(entry, "App", "d"),
+            "with `{local_alias}`: `F8` must mean prod8's `Map<Length, E8>`"
+        );
+    }
+}
+
 const PROD2: &str = "module prod2\n\
 type InnerZz = Force / Length\n\
 type HiddenZz = Length\n\
@@ -259,8 +357,8 @@ pub type OuterZz = InnerZz / Time\n";
 
 /// A plain (non-parametric) pub alias whose body names no entity is resolved
 /// where it is defined, so an importer's local `InnerZz` does not touch it.
-/// One whose body names an entity resolves at each use site instead, and an
-/// importer's alias can still capture it (#10354).
+/// One whose body names an entity resolves at each use site, but its alias
+/// names still bind where it is defined (#10354).
 #[test]
 fn plain_pub_alias_is_immune_to_an_importer_local_of_the_same_name() {
     let dir = tempfile::tempdir().expect("tempdir");
