@@ -10,7 +10,7 @@
 //! the in-module RED→GREEN tests in src/orientation.rs by exercising the same
 //! functions through the public eval_builtin surface.
 
-use std::f64::consts::{FRAC_PI_2, FRAC_PI_4};
+use std::f64::consts::{FRAC_1_SQRT_2, FRAC_PI_2, FRAC_PI_4};
 
 use reify_core::{DiagnosticCode, DimensionVector, Severity};
 use reify_ir::Value;
@@ -72,8 +72,9 @@ fn euler_extract(v: &Value) -> Option<[f64; 3]> {
 // ── orient_axis_angle takes a Direction axis ──────────────────────────────────
 
 /// B14: a Direction axis keeps the exact bits a `vec3(1.0, 0.0, 0.0)` axis gave
-/// before the axis became Direction-typed, because dir(1, 0, 0)'s components
-/// are exactly 1, 0, 0.
+/// before the axis became Direction-typed (0.7071067811865476,
+/// 0.7071067811865475, 0, 0), because dir(1, 0, 0)'s components are exactly
+/// 1, 0, 0.
 #[test]
 fn integration_orient_axis_angle_direction_x_quarter_turn_is_bitwise_stable() {
     let result = eval_builtin(
@@ -85,7 +86,7 @@ fn integration_orient_axis_angle_direction_x_quarter_turn_is_bitwise_stable() {
     };
     assert_eq!(
         [w, x, y, z].map(f64::to_bits),
-        [0.7071067811865476, 0.7071067811865475, 0.0, 0.0].map(f64::to_bits),
+        [FRAC_1_SQRT_2, FRAC_1_SQRT_2.next_down(), 0.0, 0.0].map(f64::to_bits),
         "orient_axis_angle(dir(1, 0, 0), 90deg) drifted: got ({w}, {x}, {y}, {z})"
     );
 }
