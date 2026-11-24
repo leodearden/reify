@@ -2003,9 +2003,11 @@ fn interp_render(value: &Value) -> String {
 /// Emit the post-`Undef` builtin diagnostics — stackup (§4.4), multi-load-case
 /// FEA (`linear_combine`, task #10), the geometry-builtin dimension family (see
 /// `geometry_diagnose`'s own doc for the name list), inverse-dynamics body
-/// mass, ISO tolerancing, the `orient_exp` rotation-vector dimension gate
-/// (#6080), and the `dir` direction constructor (`direction_diagnose`) — for a
-/// builtin call whose `result` is `Value::Undef`.
+/// mass, ISO tolerancing, the orientation builtins (`orient_exp`'s
+/// rotation-vector dimension gate, #6080, and a non-Direction at
+/// `orient_axis_angle` / `orient_look_at` / `orient_basis`'s Direction
+/// positions), and the `dir` direction constructor (`direction_diagnose`) — for
+/// a builtin call whose `result` is `Value::Undef`.
 ///
 /// Extracted from `eval_expr`'s `FunctionCall` arm — and marked
 /// `#[inline(never)]` — for the same stack-frame-shrinking reason as
@@ -2018,7 +2020,8 @@ fn interp_render(value: &Value) -> String {
 ///
 /// The classifiers' name families (stackup math builtins / `"linear_combine"` /
 /// the geometry-builtin family (`geometry_diagnose`) / dynamics /
-/// `"iso_it_tolerance"` / `"orient_exp"` / `"dir"`) are disjoint, so at most
+/// `"iso_it_tolerance"` / `"orient_exp"`, `"orient_axis_angle"`,
+/// `"orient_look_at"`, `"orient_basis"` / `"dir"`) are disjoint, so at most
 /// one classifier returns `Some` for any single `Undef`; each returns `None`
 /// for every other name or for valid input, making this a cheap no-op for
 /// ordinary builtins.
@@ -2051,10 +2054,13 @@ fn emit_undef_builtin_diagnostics(name: &str, args: &[Value], result: &Value, ct
         // IT5–IT18 / nominal > 500 mm) — well-typed but unsupported, surfaced as
         // Severity::Error instead of a silent Undef.
         reify_stdlib::tolerancing_diagnose(name, args),
-        // Rotation-vector dimension (#6080): `orient_exp` requires Vector3<Angle>,
-        // since log(q) = axis * angle. DIMENSIONLESS used to be the accepted
-        // spelling, so this Severity::Error is the migration mechanism for that
-        // breaking change rather than a silent Undef.
+        // Orientation builtins. Rotation-vector dimension (#6080): `orient_exp`
+        // requires Vector3<Angle>, since log(q) = axis * angle. DIMENSIONLESS
+        // used to be the accepted spelling, so this Severity::Error is the
+        // migration mechanism for that breaking change rather than a silent
+        // Undef. And a non-Direction that reaches orient_axis_angle /
+        // orient_look_at / orient_basis's Direction positions at eval ->
+        // ArgTypeMismatch.
         reify_stdlib::orientation_diagnose(name, args),
         // `dir`: dimensioned component -> DimensionedArgRejected; zero or
         // non-finite vector -> E_DegenerateDirection.

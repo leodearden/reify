@@ -785,8 +785,22 @@ pub(crate) fn rotation_vector_dimension_error(
 /// pushes any returned `Diagnostic` into the `EvalContext` runtime sink so
 /// `reify eval` can print it and exit non-zero.
 ///
-/// Only `orient_exp` is diagnosed, and only for its one user-correctable
-/// failure cause: a rotation vector whose components carry the wrong dimension.
+/// Two families are diagnosed.
+///
+/// `orient_axis_angle`, `orient_look_at` and `orient_basis` report an argument
+/// at a Direction position that is not a Direction, through the same
+/// [`classify_direction_args`] and `DirectionParams` consts their eval arms
+/// read, so the gate and the diagnostic cannot drift. The static Direction slot
+/// already rejects every vector it can see; this arm covers what reaches eval
+/// anyway. The fault is an `Error` with
+/// [`reify_core::DiagnosticCode::ArgTypeMismatch`], the code the static slot
+/// gives the same rejection reason (ruling A7). An `Undef` argument, the wrong
+/// arity, and valid Directions whose geometry fails (forward ∥ up, a
+/// non-orthogonal or left-handed basis) stay silent, so none is misattributed
+/// to a type fault.
+///
+/// `orient_exp` is diagnosed for its one user-correctable failure cause: a
+/// rotation vector whose components carry the wrong dimension.
 /// A rotation vector is `axis * angle`, so it carries ANGLE (#6080) — the exact
 /// dimension `orient_log` emits, which is what keeps `exp(log(q)) == q`
 /// well-typed. `DIMENSIONLESS` used to be the accepted spelling and is now
@@ -809,11 +823,11 @@ pub(crate) fn rotation_vector_dimension_error(
 /// with `geometry::diagnose`'s `transform_exp` arm so the token, the severity
 /// and the recommended fix cannot drift between the two.
 ///
-/// Returns `None` for any other name, and for a shape error (wrong arity,
+/// For `orient_exp` it returns `None` for a shape error (wrong arity,
 /// non-container argument, non-3d vector, mixed component dimensions), which
 /// keeps its existing silent-`Undef` behaviour so a shape error is never
 /// misattributed as a dimension error — the same restraint `geometry::diagnose`
-/// documents.
+/// documents. Any other name returns `None`.
 pub fn diagnose(name: &str, args: &[Value]) -> Option<reify_core::Diagnostic> {
     match name {
         "orient_exp" => {
@@ -834,7 +848,34 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<reify_core::Diagnostic> {
             }
             Some(rotation_vector_dimension_error("orient_exp", None, dim))
         }
+        "orient_axis_angle" => direction_arg_diagnostic(
+            name,
+            classify_direction_args(args, &ORIENT_AXIS_ANGLE_PARAMS),
+        ),
+        "orient_look_at" => {
+            direction_arg_diagnostic(name, classify_direction_args(args, &ORIENT_LOOK_AT_PARAMS))
+        }
+        "orient_basis" => {
+            direction_arg_diagnostic(name, classify_direction_args(args, &ORIENT_BASIS_PARAMS))
+        }
         _ => None,
+    }
+}
+
+/// The diagnostic for `builtin`'s Direction-argument classification: `None`
+/// unless it found a non-Direction. The message reuses
+/// [`DecodeDirectionError`]'s Display, so the wording and the shared
+/// `dir(x, y, z)` hint have one home.
+fn direction_arg_diagnostic<const N: usize>(
+    builtin: &str,
+    classified: Result<[[f64; 3]; N], DirectionArgFault>,
+) -> Option<reify_core::Diagnostic> {
+    match classified {
+        Err(DirectionArgFault::NotADirection { param, error }) => Some(
+            reify_core::Diagnostic::error(format!("{builtin}: {param}: {error}"))
+                .with_code(reify_core::DiagnosticCode::ArgTypeMismatch),
+        ),
+        Ok(_) | Err(DirectionArgFault::ReportedElsewhere) => None,
     }
 }
 
