@@ -46,6 +46,7 @@ from pathlib import Path
 
 INFRA_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(INFRA_DIR))
+from proc_strays import kill_strays  # noqa: E402  (imported after sys.path manipulation)
 from run_all_fixture import run_all_env, write_executable  # noqa: E402  (imported after sys.path manipulation)
 
 REPO_ROOT = INFRA_DIR.parents[1]
@@ -402,23 +403,6 @@ RUN_ALL_OWN_WORKDIR_PREFIX = "reify-run-all-"
 TIMEOUT_LINE_RE = re.compile(r"^MEMBER_TIMEOUT FAIL member=(?P<member>\S+) ", re.M)
 
 
-def _strays(*needles):
-    """(pid, cmdline) of every live process but this one whose cmdline holds a needle."""
-    own = os.getpid()
-    wanted = [n.encode() for n in needles]
-    found = []
-    for entry in os.listdir("/proc"):
-        if not entry.isdigit() or int(entry) == own:
-            continue
-        try:
-            cmdline = Path("/proc", entry, "cmdline").read_bytes()
-        except OSError:
-            continue
-        if any(n in cmdline for n in wanted):
-            found.append(int(entry))
-    return found
-
-
 class RunAllWiring(unittest.TestCase):
     """One real run_all.sh run over three litter members, with a dead and a
     leased reify-ra-tmp.* dir seeded in its TMPDIR beforehand."""
@@ -428,7 +412,7 @@ class RunAllWiring(unittest.TestCase):
         cls.root = Path(tempfile.mkdtemp(prefix="ra-member-tmpdir-"))
         cls.token = f"ra-member-tmpdir-{uuid.uuid4().hex}"
         cls.addClassCleanup(shutil.rmtree, cls.root, True)
-        cls.addClassCleanup(cls.kill_strays)
+        cls.addClassCleanup(kill_strays, str(cls.root) + os.sep, cls.token)
         cls.infra = cls.root / "infra"
         cls.state = cls.root / "state"
         cls.tmp = cls.root / "tmp"
@@ -465,12 +449,6 @@ class RunAllWiring(unittest.TestCase):
             errors="surrogateescape",
             timeout=RUN_TIMEOUT_S,
         )
-
-    @classmethod
-    def kill_strays(cls):
-        for pid in _strays(str(cls.root) + os.sep, cls.token):
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.kill(pid, signal.SIGKILL)
 
     def output(self):
         return self.run_all.stdout + self.run_all.stderr
