@@ -87,14 +87,22 @@ class Fixture:
     CANON + "\\n"), a journal and a leftover socket, and its replay files bake
     CANON. Otherwise they bake the base's real build root, as today.
     primitive: the repo (so the lane) tracks scripts/canon_run.py.
+    canon_via_symlink: CANON is spelled through a symlinked directory, so its
+    realpath differs from the bytes the stamp and replay files hold.
     """
 
-    def __init__(self, test, *, stamped, primitive, stamp_content=None):
+    def __init__(self, test, *, stamped, primitive, stamp_content=None,
+                 canon_via_symlink=False):
         tmp = tempfile.TemporaryDirectory(prefix="test-seed-canon-stamp-")
         test.addCleanup(tmp.cleanup)
         self.test = test
         self.tmp = Path(tmp.name).resolve()
-        self.canon = str(self.tmp / "opt-canon" / "ws")
+        if canon_via_symlink:
+            (self.tmp / "canon-real").mkdir()
+            os.symlink("canon-real", self.tmp / "canon-link")
+            self.canon = str(self.tmp / "canon-link" / "ws")
+        else:
+            self.canon = str(self.tmp / "opt-canon" / "ws")
         merge_verify = self.tmp / "merge-verify"
         merge_verify.mkdir()
         self.merge_verify_rp = os.path.realpath(merge_verify)
@@ -239,6 +247,18 @@ class StampedWithoutPrimitive(SeedCase):
 
     def test_the_stamp_goes_and_the_target_is_adapted_from_canon(self):
         fixture = Fixture(self, stamped=True, primitive=False)
+        completed = fixture.run_seed()
+        self.assert_seeded(fixture, completed)
+
+        for name in (STAMP_NAME, JOURNAL_NAME, SOCKET_NAME):
+            self.assertFalse(os.path.lexists(fixture.lane_target / name),
+                             f"{name} survived the seed" + _diag(completed))
+        self.assert_adapted_from(fixture, completed, fixture.canon)
+
+    def test_a_canon_under_a_symlinked_dir_is_rewritten_from_its_stamped_spelling(self):
+        """The stamp's bytes are the literal prefix the clone's files bake, so they are matched unresolved."""
+        fixture = Fixture(self, stamped=True, primitive=False, canon_via_symlink=True)
+        self.assertNotEqual(os.path.realpath(fixture.canon), fixture.canon)
         completed = fixture.run_seed()
         self.assert_seeded(fixture, completed)
 
