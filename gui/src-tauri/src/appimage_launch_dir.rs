@@ -10,13 +10,16 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 /// The directory the AppImage was run from, when `current_dir` carries
-/// AppRun.wrapped's signature: `APPDIR` is non-empty and `current_dir` is
+/// AppRun.wrapped's signature: `APPDIR` is absolute and `current_dir` is
 /// `$APPDIR/usr`. It is the first of `OWD` (exported in FUSE mode only), then
 /// `PWD` (the calling shell's, which also survives extract-and-run), that is
-/// non-empty, absolute and an existing directory.
+/// absolute and an existing directory. Only `current_dir` stands for the
+/// process cwd: every path read from `var` must be absolute.
 pub fn launch_dir(var: impl Fn(&str) -> Option<OsString>, current_dir: &Path) -> Option<PathBuf> {
-    let appdir = var("APPDIR").filter(|appdir| !appdir.is_empty())?;
-    let apprun_cwd = Path::new(&appdir).join("usr").canonicalize().ok()?;
+    let appdir = var("APPDIR")
+        .map(PathBuf::from)
+        .filter(|appdir| appdir.is_absolute())?;
+    let apprun_cwd = appdir.join("usr").canonicalize().ok()?;
     if apprun_cwd != current_dir.canonicalize().ok()? {
         return None;
     }

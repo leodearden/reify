@@ -1,15 +1,16 @@
 //! Tests for recovering the directory the AppImage was run from
 //! (`crate::appimage_launch_dir::launch_dir`) and resolving the caller's paths
 //! against it (`path_from_launch_dir`). Driven only through the lookup closure
-//! and an explicit current directory, never the real process environment or
-//! cwd.
+//! and an explicit current directory, never the real process environment. The
+//! real cwd is read once, to show that a relative `APPDIR` never consults it.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use crate::appimage_launch_dir::{launch_dir, path_from_launch_dir};
+use crate::tests::test_helpers::cwd_lock;
 
 /// Real directories laid out the way an AppImage launch sees them.
 struct Fixture {
@@ -67,6 +68,35 @@ fn empty_appdir_restores_nothing() {
     let f = fixture();
     let var = lookup_with(&[
         ("APPDIR", OsString::new()),
+        ("OWD", f.launch.clone().into()),
+    ]);
+    assert_eq!(launch_dir(var, &f.appdir_usr), None);
+}
+
+/// `target` spelt relative to this process's real cwd: one `..` per component
+/// of the canonical cwd, then `target` below the root.
+fn relative_from_real_cwd(target: &Path) -> PathBuf {
+    let cwd = canonical(&std::env::current_dir().expect("read the process cwd"));
+    let up: PathBuf = cwd
+        .components()
+        .skip(1)
+        .map(|_| Component::ParentDir)
+        .collect();
+    up.join(
+        canonical(target)
+            .strip_prefix("/")
+            .expect("a canonical path is absolute"),
+    )
+}
+
+#[test]
+fn relative_appdir_restores_nothing() {
+    let f = fixture();
+    let _cwd_held = cwd_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let var = lookup_with(&[
+        ("APPDIR", relative_from_real_cwd(&f.appdir).into()),
         ("OWD", f.launch.clone().into()),
     ]);
     assert_eq!(launch_dir(var, &f.appdir_usr), None);
