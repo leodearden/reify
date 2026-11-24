@@ -1,3 +1,5 @@
+module m5_geometry
+
 structure def Flange {
     param radius : Length = 50mm
     param height : Length = 10mm
