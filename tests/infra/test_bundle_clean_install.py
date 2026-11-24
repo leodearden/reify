@@ -81,7 +81,7 @@ GUI_ENV = {
     "REIFY_DEBUG_PORT": str(DEBUG_PORT),
 }
 GUI_LOG = "/tmp/reify-gui.log"
-VERSION_ERR = "/tmp/reify-version.err"
+SPLIT_STDERR = "/tmp/reify-split.err"
 GUI_EXIT = "/tmp/reify-gui.exit"
 SIDECAR_ERR = "/tmp/reify-sidecar.err"
 # The readiness claude_bridge::ensure_sidecar_ready waits for.
@@ -214,12 +214,17 @@ class Container:
         offenders = [p for p in self.installed_packages() if pattern.match(p)]
         self.test.assertEqual(offenders, [], f"unexpected packages in {self.name}")
 
+    def run_split(self, command):
+        """Runs `command` with its stderr kept apart from its stdout. Returns
+        the process, whose stdout is the command's alone, and that stderr."""
+        proc = self.run(f"{command} 2>{SPLIT_STDERR}")
+        return proc, self.run(f"cat {SPLIT_STDERR}").stdout
+
     def assert_reports(self, command, expected):
         """`command` exits 0 and its stdout, its stderr kept apart, is the line
         `expected`. Either failure shows that stderr, where a loader error lands."""
-        proc = self.run(f"{command} 2>{VERSION_ERR}")
+        proc, stderr = self.run_split(command)
         reported = proc.stdout.strip()
-        stderr = self.run(f"cat {VERSION_ERR}").stdout
         self.test.assertEqual(
             (proc.returncode, reported), (0, expected),
             f"in {self.name}: {command}\nstderr:\n{stderr[-2000:]}")
@@ -228,9 +233,8 @@ class Container:
     def assert_usage(self, command):
         """`command` exits 0 and its first stdout line, its stderr kept apart,
         begins USAGE_PREFIX. Either failure shows that stderr."""
-        proc = self.run(f"{command} 2>{VERSION_ERR}")
+        proc, stderr = self.run_split(command)
         first_line = next(iter(proc.stdout.splitlines()), "")
-        stderr = self.run(f"cat {VERSION_ERR}").stdout
         self.test.assertEqual(
             (proc.returncode, first_line.startswith(USAGE_PREFIX)), (0, True),
             f"in {self.name}: {command}\nstdout:\n{proc.stdout[-2000:]}\n"
