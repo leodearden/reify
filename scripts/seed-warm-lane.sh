@@ -184,6 +184,13 @@
 #
 # Recorded-input relocation (task 10167 — full statement: §9.5 inv.15; rule:
 #   relocate-depinfo-paths.py header).
+#
+# Canonical-build-path stamp (task 10230 — dark-factory
+#   plans/canonical-build-path-shared-cache-prd.md C12): a clone stamped
+#   .reify-build-root is kept byte-for-byte, minus the base's journal and
+#   sockets, when this lane's tree holds scripts/canon_run.py, because the lane
+#   then builds at the same CANON. Without the primitive the stamp is removed
+#   and the target is adapted from the stamped root to the lane's real path.
 
 set -euo pipefail
 
@@ -1065,6 +1072,40 @@ _adapt_cloned_target_to_lane() {
     _relink_env_path_tests "$1" "$2"
 }
 
+# Canonical-build-path names: dark-factory
+# plans/canonical-build-path-shared-cache-prd.md C1/C4/C6. Their homes are
+# scripts/canon_run.py STAMP_NAME and scripts/canon_cache.py JOURNAL_NAME / SessionFiles.
+_CANON_STAMP_NAME=".reify-build-root"
+_CANON_JOURNAL_NAME=".reify-canon-journal.jsonl"
+
+# Print the CANON root <target_dir> is stamped for (one trailing newline
+# stripped, as canon_run.py's read_stamp does), or nothing when it is unstamped.
+# A stamp naming no absolute root returns 1: the caller's set -e then aborts the
+# seed with empty stdout (cold rebuild forced).
+_read_canon_stamp() {
+    local stamp="$1/$_CANON_STAMP_NAME" content
+    [ -f "$stamp" ] || return 0
+    if ! content="$(cat -- "$stamp" && printf x)"; then
+        err "cannot read canonical-build-path stamp $stamp; seed aborted (cold rebuild forced)"
+        return 1
+    fi
+    content="${content%x}"
+    content="${content%$'\n'}"
+    case "$content" in
+        /*) printf '%s' "$content" ;;
+        *)
+            err "canonical-build-path stamp $stamp names no absolute build root (content ${content@Q}); seed aborted (cold rebuild forced)"
+            return 1
+            ;;
+    esac
+}
+
+# Remove the base build's journal and leftover private-sccache sockets from the
+# clone: they belong to the base's sessions, never to this lane.
+_remove_canon_runtime_files() {
+    rm -f -- "$LANE_TARGET/$_CANON_JOURNAL_NAME" "$LANE_TARGET"/.reify-sccache.*.sock
+}
+
 # ── main: record-base mode ────────────────────────────────────────────────────
 if [ "$MODE" = "record-base" ]; then
     SIDECAR="$(_sidecar_path "$RECORD_BASE_DIR")"
@@ -1666,7 +1707,18 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     if [ -n "$_recorded_buildroot" ]; then
         _foreign_rp="$(realpath -m "$_recorded_buildroot")"
     fi
-    _adapt_cloned_target_to_lane "$_foreign_rp" "$_lane_rp"
+    _canon_root="$(_read_canon_stamp "$LANE_TARGET")"
+    if [ -n "$_canon_root" ] && [ -f "$LANE_DIR/scripts/canon_run.py" ]; then
+        _remove_canon_runtime_files
+        info "Target stamped for CANON $_canon_root and this lane's tree holds scripts/canon_run.py: the lane builds at CANON too, so the clone is kept as is"
+    elif [ -n "$_canon_root" ]; then
+        _remove_canon_runtime_files
+        rm -f -- "$LANE_TARGET/$_CANON_STAMP_NAME"
+        info "Target stamped for CANON $_canon_root, but this lane's tree has no scripts/canon_run.py: removed the stamp, so the lane builds at its real path"
+        _adapt_cloned_target_to_lane "$_canon_root" "$_lane_rp"
+    else
+        _adapt_cloned_target_to_lane "$_foreign_rp" "$_lane_rp"
+    fi
 
     # Seed-time post-condition (§9.5 inv.12). Called HERE — last of the
     # mtime-mutating steps, after the relocation sweep AND the env!()-relink
