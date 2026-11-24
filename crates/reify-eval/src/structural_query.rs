@@ -45,9 +45,11 @@
 use std::collections::HashMap;
 use std::ops::ControlFlow;
 
-use reify_compiler::{CompiledTrait, TopologyTemplate, find_template, satisfies_trait_bound};
+use reify_compiler::{CompiledTrait, TopologyTemplate, satisfies_trait_bound};
 use reify_core::{Diagnostic, DimensionVector, Type, ValueCellId};
 use reify_ir::{CompiledExpr, CompiledExprKind, Value, ValueMap};
+
+use crate::DefEnv;
 
 /// Build a `HashMap<String, &CompiledTrait>` from an ordered sequence of
 /// trait definitions.
@@ -142,12 +144,12 @@ pub(crate) fn enumerate_members(template: &TopologyTemplate, values: &ValueMap) 
 /// - If `depth >= max_depth` at entry, push a Diagnostic::error mentioning
 ///   "depth" and return empty (never panic).
 /// - If `*node_budget == 0` before emitting a node, push an error and return.
-/// - Calling with an unknown `structure_name` (no matching template) silently
-///   stops that branch.
+/// - A sub whose structure does not resolve in `env` stops that branch; it is
+///   already diagnosed at check time and at graph build.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn enumerate_descendants(
     template: &TopologyTemplate,
-    all_templates: &[TopologyTemplate],
+    env: DefEnv<'_>,
     values: &ValueMap,
     prefix: &str,
     depth: usize,
@@ -187,10 +189,10 @@ pub(crate) fn enumerate_descendants(
                 *node_budget -= 1;
                 let node_path = format!("{}.{}[{}]", prefix, sub.name, idx);
                 result.push(entity_ref_element(node_path.clone(), &sub.structure_name));
-                if let Some(child_tmpl) = find_template(all_templates, &sub.structure_name) {
+                if let Some(child_tmpl) = env.resolve_template(&sub.structure_name) {
                     let mut child = enumerate_descendants(
                         child_tmpl,
-                        all_templates,
+                        env,
                         values,
                         &node_path,
                         depth + 1,
@@ -213,10 +215,10 @@ pub(crate) fn enumerate_descendants(
         *node_budget -= 1;
         let node_path = format!("{}.{}", prefix, sub.name);
         result.push(entity_ref_element(node_path.clone(), &sub.structure_name));
-        if let Some(child_tmpl) = find_template(all_templates, &sub.structure_name) {
+        if let Some(child_tmpl) = env.resolve_template(&sub.structure_name) {
             let mut child = enumerate_descendants(
                 child_tmpl,
-                all_templates,
+                env,
                 values,
                 &node_path,
                 depth + 1,
@@ -287,7 +289,7 @@ fn is_self_ref(expr: &CompiledExpr) -> bool {
 pub(crate) fn expand_structural_query(
     expr: &mut CompiledExpr,
     template: &TopologyTemplate,
-    all_templates: &[TopologyTemplate],
+    env: DefEnv<'_>,
     values: &ValueMap,
     max_depth: usize,
     node_budget: &mut usize,
@@ -306,7 +308,7 @@ pub(crate) fn expand_structural_query(
         } else if method_str == "descendants" {
             enumerate_descendants(
                 template,
-                all_templates,
+                env,
                 values,
                 &template.name,
                 0,
@@ -327,7 +329,15 @@ pub(crate) fn expand_structural_query(
     // Recurse into the children: a MethodCall that is NOT a placeholder has
     // its object and args walked here, as `contains_structural_query` assumes.
     expr.for_each_child_mut(&mut |child| {
-        expand_structural_query(child, template, all_templates, values, max_depth, node_budget, diagnostics);
+        expand_structural_query(
+            child,
+            template,
+            env,
+            values,
+            max_depth,
+            node_budget,
+            diagnostics,
+        );
     });
 }
 
@@ -354,7 +364,7 @@ pub(crate) fn expand_structural_query(
 /// structure also satisfies a filter for `Fastener`).
 pub(crate) fn apply_trait_filters(
     expr: &mut CompiledExpr,
-    all_templates: &[TopologyTemplate],
+    env: DefEnv<'_>,
     trait_registry: &HashMap<String, &CompiledTrait>,
 ) {
     // Post-order walk: recurse into children FIRST so nested
@@ -362,7 +372,7 @@ pub(crate) fn apply_trait_filters(
     // After this call, any inner filter whose arg0 was a FunctionCall has been
     // rewritten to a list_literal, making the outer detection check below correct.
     expr.for_each_child_mut(&mut |child| {
-        apply_trait_filters(child, all_templates, trait_registry);
+        apply_trait_filters(child, env, trait_registry);
     });
 
     // Detect `filter(list_literal, TraitObject-marker)` at this node.
@@ -401,7 +411,7 @@ pub(crate) fn apply_trait_filters(
             .into_iter()
             .filter(|e| {
                 if let Type::StructureRef(tn) = &e.result_type {
-                    find_template(all_templates, tn)
+                    env.resolve_template(tn)
                         .map(|t| {
                             satisfies_trait_bound(&t.trait_bounds, &trait_name, trait_registry)
                         })
@@ -438,7 +448,7 @@ pub(crate) fn apply_trait_filters(
 /// (`Scalar{0.0, MONEY}`, not Undef / dimensionless `Real(0)`).
 ///
 /// Elements are first filtered to `Costed`-conformers — identical
-/// conformance logic to [`apply_trait_filters`] (`find_template` +
+/// conformance logic to [`apply_trait_filters`] (`env.resolve_template` +
 /// `satisfies_trait_bound(&t.trait_bounds, "Costed", trait_registry)`), so a
 /// non-Costed structural node is dropped BEFORE any `line_cost` ValueRef is
 /// emitted and can never poison the sum with Undef. `cost(...)` performs
@@ -446,12 +456,12 @@ pub(crate) fn apply_trait_filters(
 /// the user already wrote — the double Costed filter is idempotent.
 pub(crate) fn apply_cost_aggregation(
     expr: &mut CompiledExpr,
-    all_templates: &[TopologyTemplate],
+    env: DefEnv<'_>,
     trait_registry: &HashMap<String, &CompiledTrait>,
 ) {
     // Post-order walk: recurse into children FIRST, mirroring apply_trait_filters.
     expr.for_each_child_mut(&mut |child| {
-        apply_cost_aggregation(child, all_templates, trait_registry);
+        apply_cost_aggregation(child, env, trait_registry);
     });
 
     let is_cost_call = matches!(&expr.kind,
@@ -484,7 +494,7 @@ pub(crate) fn apply_cost_aggregation(
         .into_iter()
         .filter(|e| {
             if let Type::StructureRef(tn) = &e.result_type {
-                find_template(all_templates, tn)
+                env.resolve_template(tn)
                     .map(|t| satisfies_trait_bound(&t.trait_bounds, "Costed", trait_registry))
                     .unwrap_or(false)
             } else {
@@ -532,7 +542,7 @@ pub(crate) fn apply_cost_aggregation(
 pub(crate) fn expand_constraint_expr(
     expr: &CompiledExpr,
     template: &TopologyTemplate,
-    all_templates: &[TopologyTemplate],
+    env: DefEnv<'_>,
     values: &ValueMap,
     max_depth: usize,
     max_nodes: usize,
@@ -547,13 +557,13 @@ pub(crate) fn expand_constraint_expr(
     expand_structural_query(
         &mut expanded,
         template,
-        all_templates,
+        env,
         values,
         max_depth,
         &mut node_budget,
         diagnostics,
     );
-    apply_trait_filters(&mut expanded, all_templates, trait_registry);
+    apply_trait_filters(&mut expanded, env, trait_registry);
     Some(expanded)
 }
 
