@@ -216,3 +216,59 @@ pub fn module_surface<'a, D: ProgramDefinition>(
             Box::new(name_env::surface_of(module, Surface::Ambient))
         })
 }
+
+#[cfg(test)]
+mod tests {
+    use reify_core::ModulePath;
+
+    use super::*;
+
+    fn compile_at(path: ModulePath, src: &str) -> CompiledModule {
+        let parsed = reify_syntax::parse(src, path);
+        assert!(
+            parsed.errors.is_empty(),
+            "fixture must parse: {:?}",
+            parsed.errors
+        );
+        crate::compile(&parsed)
+    }
+
+    fn named<'a>(module: &'a CompiledModule, name: &str) -> &'a TopologyTemplate {
+        module
+            .templates
+            .iter()
+            .find(|t| t.name == name)
+            .unwrap_or_else(|| panic!("fixture declares {name}"))
+    }
+
+    /// A lone module is the entry of the import-free program it stands for
+    /// (I1): it declares every template it holds, imports nothing, and binds
+    /// its own templates before the prelude's.
+    #[test]
+    fn a_lone_module_root_declares_every_template_it_holds_and_imports_nothing() {
+        let module = compile_at(
+            ModulePath::single("main"),
+            "structure def Own { param a : Real = 1.0 }\n\
+             structure def Shared { param a : Real = 1.0 }\n",
+        );
+        let prelude = [compile_at(
+            ModulePath(vec!["std".into(), "lo".into()]),
+            "structure def Shared { param a : Real = 2.0 }\n\
+             structure def StdOnly { param a : Real = 2.0 }\n",
+        )];
+        let root = ProgramRoot::from(&module);
+
+        assert!(std::ptr::eq(root.entry(), &module));
+        assert!(std::ptr::eq(
+            root.entry_declared_templates(),
+            module.templates.as_slice()
+        ));
+        assert!(root.imports().is_empty());
+
+        let resolve =
+            |name: &str| resolve_in_program::<TopologyTemplate, str>(root, &prelude, name);
+        assert!(resolve("Shared").is_some_and(|t| std::ptr::eq(t, named(&module, "Shared"))));
+        assert!(resolve("StdOnly").is_some_and(|t| std::ptr::eq(t, named(&prelude[0], "StdOnly"))));
+        assert!(resolve("Absent").is_none());
+    }
+}

@@ -2335,6 +2335,80 @@ mod reflective_param_type_predicate_tests {
 }
 
 #[cfg(test)]
+mod sub_component_decl_tests {
+    use reify_core::{DiagnosticCode, ModulePath};
+
+    use super::{CompiledModule, SubComponentDecl};
+
+    const KEYED_AND_PLAIN: &str = "structure def Vent { param area : Length = 1mm }\n\
+        structure def Manifold {\n\
+            sub vents : Keyed<Vent> {\n\
+                \"intake\" => { area = 5mm }\n\
+            }\n\
+            sub spare = Vent()\n\
+        }\n";
+
+    fn compile(src: &str) -> CompiledModule {
+        let parsed = reify_syntax::parse(src, ModulePath::single("test"));
+        assert!(
+            parsed.errors.is_empty(),
+            "fixture must parse: {:?}",
+            parsed.errors
+        );
+        crate::compile(&parsed)
+    }
+
+    fn manifold_sub<'a>(module: &'a CompiledModule, name: &str) -> &'a SubComponentDecl {
+        module
+            .templates
+            .iter()
+            .find(|t| t.name == "Manifold")
+            .and_then(|t| t.sub_components.iter().find(|sub| sub.name == name))
+            .unwrap_or_else(|| panic!("fixture declares Manifold.{name}"))
+    }
+
+    #[test]
+    fn a_keyed_sub_names_its_element_structure_not_its_container() {
+        let module = compile(KEYED_AND_PLAIN);
+        let vents = manifold_sub(&module, "vents");
+
+        assert_ne!(
+            vents.structure_name, "Vent",
+            "the keyed sub's raw structure name must differ from its element's, else this \
+             test passes vacuously"
+        );
+        assert_eq!(vents.element_structure_name(), "Vent");
+    }
+
+    #[test]
+    fn a_plain_sub_names_its_own_structure() {
+        let module = compile(KEYED_AND_PLAIN);
+        let spare = manifold_sub(&module, "spare");
+
+        assert_eq!(spare.structure_name, "Vent");
+        assert_eq!(spare.element_structure_name(), "Vent");
+    }
+
+    #[test]
+    fn the_unknown_structure_diagnostic_is_coded_names_the_element_and_labels_the_sub() {
+        let module = compile(KEYED_AND_PLAIN);
+        let vents = manifold_sub(&module, "vents");
+
+        let diagnostic = vents.unknown_structure_diagnostic();
+
+        assert_eq!(diagnostic.code, Some(DiagnosticCode::UnknownSubStructure));
+        assert_eq!(
+            diagnostic.message,
+            "sub-component \"vents\" references unknown structure \"Vent\""
+        );
+        let [label] = diagnostic.labels.as_slice() else {
+            panic!("expected one label, got {:?}", diagnostic.labels);
+        };
+        assert_eq!(label.span, vents.span);
+    }
+}
+
+#[cfg(test)]
 mod find_template_tests {
     use super::find_template;
 
