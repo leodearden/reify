@@ -13,7 +13,7 @@
 //! `mod` or `#[path]` declaration, a `#[global_allocator]`, or a file-level inner
 //! attribute, so no content fixup was needed.
 //!
-//! This unit is deliberately SMALL — three modules — and that is not an oversight.
+//! This unit is deliberately SMALL — four modules — and that is not an oversight.
 //! `dynamics_` and `trajectory_` are two of the prefix clusters EVAL-3 was asked to home,
 //! so they get a named root of their own. Padding it toward the band with the obvious
 //! semantic neighbours (`rigid_mass_props_autoderive_gui_path`,
@@ -51,5 +51,7 @@
 mod dynamics_body_mass_props;
 #[path = "harness_dynamics/dynamics_reader_dimensions.rs"]
 mod dynamics_reader_dimensions;
+#[path = "harness_dynamics/mass_properties_parity.rs"]
+mod mass_properties_parity;
 #[path = "harness_dynamics/trajectory_gcode_dialect_eval.rs"]
 mod trajectory_gcode_dialect_eval;
