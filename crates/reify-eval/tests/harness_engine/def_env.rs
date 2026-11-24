@@ -853,49 +853,35 @@ fn names_collision(
         && matches!((position(winner), position(shadowed)), (Some(w), Some(s)) if w < s)
 }
 
-/// Every collision whose loser is a user import's definition has exactly one
-/// reporter, across the entry's own compile and DefEnv's report, and the
-/// reporter each kind's import-vs-import collisions go to is fixed: units,
-/// type aliases and constraint defs are the entry compile's prelude seeds',
-/// every other kind DefEnv's.
+/// Every collision whose loser is a user import's definition is reported
+/// exactly once on the entry, whichever compile computes it: the entry's own
+/// (units', type aliases' and constraint defs' import-vs-import collisions,
+/// through its prelude seeds) or the program's collision report (every other
+/// one). The template row waits on the I5 merge's code-less second report.
 #[test]
 fn each_import_tier_collision_has_exactly_one_reporter() {
     let fx = KindsFixture::new();
-    let def_env = DefEnv::from_program(&fx.program).collision_warnings();
-    let entry_compile: Vec<&Diagnostic> = fx.program.entry_own_diagnostics().collect();
-    for row in rows() {
-        let kind_word = match row.kind {
-            "template" => named::<TopologyTemplate>(fx.a(), row.names[0]).kind_word(),
-            _ => row.kind,
-        };
-        for (name, winner, shadowed, reporter) in import_tier_collisions(&row) {
-            let reports = |diagnostics: &[&Diagnostic]| {
-                diagnostics
-                    .iter()
-                    .filter(|d| names_collision(d, kind_word, name, winner, shadowed))
-                    .count()
-            };
-            let counts = (
-                reports(&entry_compile),
-                reports(&def_env.iter().collect::<Vec<_>>()),
-            );
-            let expected = match reporter {
-                Reporter::EntryCompile => (1, 0),
-                Reporter::DefEnv => (0, 1),
-            };
+    let on_entry: Vec<&Diagnostic> = fx.program.entry().diagnostics.iter().collect();
+    for row in rows().into_iter().filter(|row| row.kind != "template") {
+        for (name, winner, shadowed, _) in import_tier_collisions(&row) {
+            let reports = on_entry
+                .iter()
+                .filter(|d| names_collision(d, row.kind, name, winner, shadowed))
+                .count();
             assert_eq!(
-                counts, expected,
-                "{} '{name}' ({winner} over {shadowed}): (entry compile, DefEnv) report \
-                 counts, expected only {reporter:?}",
+                reports, 1,
+                "{} '{name}' ({winner} over {shadowed}): reported once on the entry, \
+                 got {on_entry:#?}",
                 row.kind
             );
         }
     }
 }
 
-/// A shadowed STD definition is not DefEnv's to report: the entry's own
+/// A shadowed STD definition is not the collision report's: the entry's own
 /// compile reports entry-vs-std as `StdlibNameShadowed`, and the import's own
-/// compile reports import-vs-std the same way.
+/// compile reports import-vs-std the same way. The entry carries exactly one
+/// `DefinitionCollision`, for main-vs-a.
 #[test]
 fn a_shadowed_stdlib_definition_is_not_in_the_collision_report() {
     const STD_NAME: &str = "Color";
@@ -926,14 +912,19 @@ fn a_shadowed_stdlib_definition_is_not_in_the_collision_report() {
         "a's own compile reports import-vs-std"
     );
 
-    let warnings = DefEnv::from_program(&program).collision_warnings();
+    let collisions: Vec<&Diagnostic> = program
+        .entry()
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::DefinitionCollision))
+        .collect();
     assert_eq!(
-        warnings.len(),
+        collisions.len(),
         1,
-        "only main-vs-a is DefEnv's, got {warnings:#?}"
+        "only main-vs-a is a definition collision, got {collisions:#?}"
     );
     assert!(reports_collision(
-        &warnings[0],
+        collisions[0],
         "structure",
         STD_NAME,
         "main",

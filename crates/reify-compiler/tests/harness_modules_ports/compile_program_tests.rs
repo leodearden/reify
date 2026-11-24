@@ -440,6 +440,80 @@ fn compile_program_unit_collision_between_imports_is_first_wins() {
     );
 }
 
+/// The program compile reports each first-wins collision whose loser is an
+/// import's definition (resolution-unification D-6) on the entry, once, coded
+/// `DefinitionCollision`: import-vs-import (`twice`) and entry-vs-import
+/// (`Pick`). The report follows the re-homed copies of the imports' own
+/// diagnostics (`b`'s `SignalKind` shadows the stdlib's).
+#[test]
+fn the_program_compile_reports_each_import_tier_collision_on_the_entry() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(
+        dir.path(),
+        "a.ri",
+        "module a\n\
+         pub fn twice(x: Real) -> Real { x * 2 }\n\
+         pub enum Pick { Left, Right }\n",
+    );
+    write(
+        dir.path(),
+        "b.ri",
+        "module b\n\
+         pub fn twice(x: Real) -> Real { x + x }\n\
+         pub enum SignalKind { Foo, Bar }\n",
+    );
+    let main_src = "module main\nimport a\nimport b\nenum Pick { Up, Down }\n";
+
+    let program = compile_entry(dir.path(), "main", main_src, &CfgSet::default());
+
+    let all = &program.entry().diagnostics;
+    let copies: Vec<&reify_core::Diagnostic> = program.rehomed_from("b").collect();
+    assert!(
+        !copies.is_empty(),
+        "precondition: b's own compile reports its stdlib shadowing, got {all:?}"
+    );
+    let index_of = |target: &reify_core::Diagnostic| {
+        all.iter()
+            .position(|d| std::ptr::eq(d, target))
+            .expect("a diagnostic of the entry")
+    };
+    let last_copy = copies.iter().map(|copy| index_of(copy)).max();
+    for (prefix, winner, shadowed) in [
+        ("function 'twice' ", "'a'", "'b'"),
+        ("enum 'Pick' ", "'main'", "'a'"),
+    ] {
+        let reports: Vec<&reify_core::Diagnostic> = all
+            .iter()
+            .filter(|d| {
+                let position = |origin: &str| d.message.find(origin);
+                d.severity == Severity::Warning
+                    && d.code == Some(DiagnosticCode::DefinitionCollision)
+                    && d.message.starts_with(prefix)
+                    && d.message.contains("first-wins")
+                    && matches!(
+                        (position(winner), position(shadowed)),
+                        (Some(w), Some(s)) if w < s
+                    )
+            })
+            .collect();
+        assert_eq!(
+            reports.len(),
+            1,
+            "one coded report of {prefix}({winner} over {shadowed}), got {all:?}"
+        );
+        assert!(
+            program
+                .entry_own_diagnostics()
+                .any(|own| std::ptr::eq(own, reports[0])),
+            "{prefix}is the program compile's own report, not a re-homed copy"
+        );
+        assert!(
+            Some(index_of(reports[0])) > last_copy,
+            "{prefix}follows the re-homed copies, got {all:?}"
+        );
+    }
+}
+
 fn errors(module: &CompiledModule) -> Vec<&str> {
     module
         .diagnostics
