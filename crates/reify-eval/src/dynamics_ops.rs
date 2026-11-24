@@ -2131,7 +2131,7 @@ mod inverse_dynamics_trampoline_tests {
     /// This exercises the backward-compatible code path: `cell_f64` accepts both
     /// `Value::Real(x)` and `Value::Scalar { si_value: x, .. }`, so RNEA extraction
     /// is dimension-agnostic and produces identical numerics for both encodings.
-    /// See `make_mass_properties` / `mass_properties_fixture` in `reify-stdlib` for
+    /// See `MassProperties::to_value` in `reify_stdlib::dynamics::mass_props` for
     /// the production-faithful dimensioned shape.
     fn mass_properties(mass: f64, com: [f64; 3], inertia: [[f64; 3]; 3]) -> Value {
         let com_point = Value::Point(com.iter().map(|&c| Value::length(c)).collect());

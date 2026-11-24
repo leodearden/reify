@@ -1,3 +1,69 @@
+//! C4's runtime written-equals-declared key-set check for Rust result builders
+//! (`docs/prds/v0_6/trampoline-decode-and-result-build.md` §4 C4).
+
+use std::collections::BTreeSet;
+use std::fmt;
+
+use reify_ir::{StructureRegistry, Value};
+
+/// How the fields a minted instance writes differ from the fields its structure
+/// declares; both lists sorted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeySetMismatch {
+    pub structure: String,
+    pub undeclared_written: Vec<String>,
+    pub declared_unwritten: Vec<String>,
+}
+
+impl fmt::Display for KeySetMismatch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}: written but undeclared {:?}, declared but unwritten {:?}",
+            self.structure, self.undeclared_written, self.declared_unwritten
+        )
+    }
+}
+
+/// `Ok` when `value` writes exactly the fields its structure declares in
+/// `registry`, resolved by `type_name`.
+///
+/// # Panics
+///
+/// When `value` is not a `Value::StructureInstance`, or its structure is not
+/// registered: either is a broken test precondition, not a mismatch.
+pub fn key_set_parity(registry: &StructureRegistry, value: &Value) -> Result<(), KeySetMismatch> {
+    let Value::StructureInstance(data) = value else {
+        panic!("key_set_parity needs a StructureInstance, got {value:?}");
+    };
+    let meta = registry
+        .meta_for(data)
+        .unwrap_or_else(|| panic!("structure {:?} is not registered", data.type_name));
+    let declared: BTreeSet<&str> = meta
+        .field_layout
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .collect();
+    let written: BTreeSet<&str> = data.fields.keys().map(String::as_str).collect();
+    let undeclared_written: Vec<String> = written
+        .difference(&declared)
+        .map(|name| name.to_string())
+        .collect();
+    let declared_unwritten: Vec<String> = declared
+        .difference(&written)
+        .map(|name| name.to_string())
+        .collect();
+    if undeclared_written.is_empty() && declared_unwritten.is_empty() {
+        Ok(())
+    } else {
+        Err(KeySetMismatch {
+            structure: data.type_name.clone(),
+            undeclared_written,
+            declared_unwritten,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

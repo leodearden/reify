@@ -34,7 +34,7 @@ fn mass_properties_written_equals_declared() {
     assert_eq!(declared, ["com", "inertia", "mass", "origin"]);
 
     let diagonal = [[0.1, 0.0, 0.0], [0.0, 0.2, 0.0], [0.0, 0.0, 0.3]];
-    let two_kg = scalar(2.0, DimensionVector::MASS);
+    let two_kg = || scalar(2.0, DimensionVector::MASS);
     let com = Value::Point([0.1, 0.2, 0.3].map(Value::length).to_vec());
     let inertia = Value::Matrix(
         diagonal
@@ -61,10 +61,10 @@ fn mass_properties_written_equals_declared() {
             "MassProperties::unresolved_value",
             MassProperties::unresolved_value(),
         ),
-        ("point_mass", eval_builtin("point_mass", &[two_kg.clone()])),
+        ("point_mass", eval_builtin("point_mass", &[two_kg()])),
         (
             "mass_properties",
-            eval_builtin("mass_properties", &[two_kg, com, inertia]),
+            eval_builtin("mass_properties", &[two_kg(), com, inertia]),
         ),
     ];
     for (entry, value) in &entries {
