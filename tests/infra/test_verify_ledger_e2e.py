@@ -216,8 +216,9 @@ class VerifyLedgerE2ETests(unittest.TestCase):
             self.assertIsNone(step["began_at"])
             self.assertIsNone(step["ended_at"])
 
-    def test_b_timed_out_step_keeps_exit_124(self):
-        ledger = self.vehicle.work / "ledger-timeout"
+    def test_b_failing_step_keeps_its_own_exit_code_124(self):
+        """124 stands in for a fired `timeout`; the stub exits it, so no wall is driven here."""
+        ledger = self.vehicle.work / "ledger-exit-124"
         run = self.vehicle.run(ledger, STUB_RC="124")
         self.assertEqual(run.returncode, 124, run.stderr)
         self.assertIn("verify.sh: FAILED (exit 124): ", run.stderr)
