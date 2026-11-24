@@ -906,13 +906,13 @@ _invalidate_nonrelocatable_build_dirs() {
 # replay file under a NEW name (beyond `output`/`root-output`), add it to
 # the `-name` clause below rather than widening this into a content scan.
 _relocate_baked_build_root() {
-    local from_rp="$1" lane_rp="$2"
+    local from_root="$1" lane_rp="$2"
     local search_esc replace_esc candidate_count relocated_count rl_file rl_ts
-    if [ -z "$from_rp" ]; then
+    if [ -z "$from_root" ]; then
         warn "buildroot stamp absent (${BASE_TARGET_DIR}.buildroot not found) — cannot relocate baked links-metadata/OUT_DIR path(s); an empty search prefix would match every byte and corrupt files, so skipping rather than guessing. Re-run scripts/refresh-warm-base.sh to (re)write the stamp."
     else
-        if [ "$from_rp" != "$lane_rp" ]; then
-            search_esc="$(_sed_escape "$from_rp")"
+        if [ "$from_root" != "$lane_rp" ]; then
+            search_esc="$(_sed_escape "$from_root")"
             replace_esc="$(_sed_escape "$lane_rp")"
             candidate_count=0
             relocated_count=0
@@ -924,7 +924,7 @@ _relocate_baked_build_root() {
             # subdir and incremental-fingerprint dir under the (potentially huge) warm target tree.
             while IFS= read -r -d '' rl_file; do
                 candidate_count=$((candidate_count + 1))
-                if grep -qF "$from_rp" "$rl_file" 2>/dev/null; then
+                if grep -qF "$from_root" "$rl_file" 2>/dev/null; then
                     # MTIME PRESERVATION (§9.5 inv.12) — load-bearing, not
                     # cosmetic: rewriting a baked path is a CONTENT correction,
                     # not evidence the build script ran, and `sed -i` replaces
@@ -953,9 +953,9 @@ _relocate_baked_build_root() {
                 # foreign path(s) survive verbatim, reproducing the exact ENOENT this fix targets. Warn
                 # instead of a bare "Relocated 0" so canonicalization drift surfaces instead of reading
                 # as success.
-                warn "Relocated 0 of $candidate_count links-metadata/OUT_DIR candidate file(s) even though recorded buildroot ($from_rp) differs from this lane ($lane_rp) — none contained the expected foreign prefix. This may mean the .buildroot stamp and the baked paths were canonicalized inconsistently (e.g. symlinked vs realpath worktree root); if so, the foreign path(s) will survive uncorrected and the lane may hit ENOENT. Re-check the stamp written by refresh-warm-base.sh."
+                warn "Relocated 0 of $candidate_count links-metadata/OUT_DIR candidate file(s) even though recorded buildroot ($from_root) differs from this lane ($lane_rp) — none contained the expected foreign prefix. This may mean the .buildroot stamp and the baked paths were canonicalized inconsistently (e.g. symlinked vs realpath worktree root); if so, the foreign path(s) will survive uncorrected and the lane may hit ENOENT. Re-check the stamp written by refresh-warm-base.sh."
             else
-                info "Relocated $relocated_count of $candidate_count links-metadata/OUT_DIR candidate file(s): foreign buildroot ($from_rp) -> this lane ($lane_rp)"
+                info "Relocated $relocated_count of $candidate_count links-metadata/OUT_DIR candidate file(s): foreign buildroot ($from_root) -> this lane ($lane_rp)"
             fi
         else
             info "Skipping links-metadata/OUT_DIR relocation: recorded buildroot matches this lane ($lane_rp)"
@@ -967,11 +967,11 @@ _relocate_baked_build_root() {
 # §9.5 inv.15 — rule: relocate-depinfo-paths.py header. Same stamp gate as
 # the 5126 sweep above; a missing or failing helper aborts the seed.
 _relocate_depinfo_inputs() {
-    local from_rp="$1" lane_rp="$2"
+    local from_root="$1" lane_rp="$2"
     local depinfo_helper depinfo_rc
-    if [ -z "$from_rp" ]; then
+    if [ -z "$from_root" ]; then
         warn "buildroot stamp absent (${BASE_TARGET_DIR}.buildroot not found) — cannot relocate cargo dep-info input paths, so units recording inputs outside their package stay judged against the base's build root (§9.5 inv.15). Re-run scripts/refresh-warm-base.sh to (re)write the stamp."
-    elif [ "$from_rp" = "$lane_rp" ]; then
+    elif [ "$from_root" = "$lane_rp" ]; then
         info "Skipping dep-info input-path relocation: recorded buildroot matches this lane ($lane_rp)"
     else
         depinfo_helper="$_SCRIPT_DIR/relocate-depinfo-paths.py"
@@ -980,7 +980,7 @@ _relocate_depinfo_inputs() {
             exit 1
         fi
         depinfo_rc=0
-        python3 "$depinfo_helper" --from-root "$from_rp" \
+        python3 "$depinfo_helper" --from-root "$from_root" \
             --to-root "$lane_rp" "$LANE_TARGET" >&2 || depinfo_rc=$?
         if [ "$depinfo_rc" -ne 0 ]; then
             err "relocate-depinfo-paths.py exited $depinfo_rc — cargo dep-info input paths may still name the base's build root (§9.5 inv.15); seed aborted (cold rebuild forced)"
@@ -1028,13 +1028,13 @@ _relocate_depinfo_inputs() {
 _ENV_PATH_MACRO_RE='^[[:space:]]*([^/[:space:]].*|/([^/].*)?)?env!\("(CARGO_MANIFEST_DIR|OUT_DIR|CARGO_TARGET_TMPDIR|CARGO_BIN_EXE_[A-Za-z0-9_-]+)"\)'
 
 _relink_env_path_tests() {
-    local from_rp="$1" lane_rp="$2"
+    local from_root="$1" lane_rp="$2"
     local relinked_count rs_file
     # ── buildroot-match gate ───────────────────────────────────────────────
     # Compare the base's recorded build-worktree (refresh-warm-base.sh Step 4b
     # .buildroot stamp) against THIS consuming lane.  In production the base
     # is always built under _merge-verify while the consuming lane is
-    # _lane-K, so these realpaths always DIFFER and the relink below fires on
+    # _lane-K, so these roots always DIFFER and the relink below fires on
     # every acquire — correctly, because the baked path is never the lane's
     # own, and trusting that the base's original build worktree still exists
     # with identical content is exactly the esc-4906-57 failure mode (that
@@ -1043,7 +1043,7 @@ _relink_env_path_tests() {
     # Step 4b write) fails safe and relinks too, since the baked path's
     # provenance is unknown. Only an EXACT match (the base was built under
     # this lane's own path) skips the relink as a genuine no-op.
-    if [ -z "$from_rp" ] || [ "$from_rp" != "$lane_rp" ]; then
+    if [ -z "$from_root" ] || [ "$from_root" != "$lane_rp" ]; then
         relinked_count=0
         while IFS= read -r -d '' rs_file; do
             # grep -q exits 1 on no-match; under set -euo pipefail a bare/&&-
@@ -1056,15 +1056,21 @@ _relink_env_path_tests() {
         done < <(find "$LANE_DIR" -type f -name '*.rs' \
                       \( -path '*/tests/*' -o -path '*/benches/*' \) \
                       -not -path "$LANE_DIR/target/*" -print0)
-        info "Relinked $relinked_count env!()-baked-path test/bench source(s) so cargo re-bakes the lane's own env!() paths (recorded buildroot=${from_rp:-<absent>}, lane=$lane_rp)"
+        info "Relinked $relinked_count env!()-baked-path test/bench source(s) so cargo re-bakes the lane's own env!() paths (recorded buildroot=${from_root:-<absent>}, lane=$lane_rp)"
     else
         info "Skipping env!()-baked-path relink: recorded buildroot matches this lane ($lane_rp)"
     fi
 }
 
-# Make a target cloned from a base built at <from_rp> usable at this lane's
-# real path <lane_rp>: the four fix-ups above, in order. <from_rp> empty
-# means the base's build root is unknown; each fix-up owns its policy for that.
+# Make a target cloned from a base built at <from_root> usable at this lane's
+# real path <lane_rp>: the four fix-ups above, in order. <from_root> is the
+# literal prefix baked into the clone's files: the realpath'd .buildroot stamp
+# for an unstamped base, the canonical-build-path stamp's bytes VERBATIM for a
+# stamped one. The fix-ups match it as a literal prefix (grep -F, sed,
+# relocate-depinfo-paths.py), so resolving a CANON behind a symlink would make
+# every match miss (pinned: test_seed_warm_lane_canon_stamp.py
+# StampedWithoutPrimitive). An empty <from_root> means the base's build root is
+# unknown; each fix-up owns its policy for that.
 _adapt_cloned_target_to_lane() {
     _invalidate_nonrelocatable_build_dirs
     _relocate_baked_build_root "$1" "$2"
@@ -1697,10 +1703,11 @@ if [ -n "$FRESH_CHECKOUT" ]; then
         _assert_delta_touch_base_substantiated
     fi
 
-    # Base build-worktree stamp (refresh-warm-base.sh Step 4b), shared by the
-    # gated fix-ups in _adapt_cloned_target_to_lane. Each decides absent /
-    # equal / differs from _foreign_rp (the stamp's realpath, empty when the
-    # stamp is absent) against _lane_rp.
+    # Base build-worktree stamp (refresh-warm-base.sh Step 4b). The gated
+    # fix-ups in _adapt_cloned_target_to_lane decide absent / equal / differs
+    # from their from-root against _lane_rp: _foreign_rp (this stamp's
+    # realpath, empty when absent) for an unstamped target, _canon_root
+    # verbatim for a stamped one.
     _recorded_buildroot="$(_read_buildroot_stamp "$BASE_TARGET_DIR")"
     _lane_rp="$(realpath -m "$LANE_DIR")"
     _foreign_rp=""
