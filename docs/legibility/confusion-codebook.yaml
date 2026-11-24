@@ -9188,6 +9188,13 @@ entries:
     manifested_phase: unknown
     note: A warm-lane task-meta iterations.jsonl is expected but absent at the expected path, and the agent's wc probe fails with No such file or directory.
     evidence_quote: 'wc: /home/leo/src/warm-lanes/worktrees/.task-meta/task-10169/iterations.jsonl: No such file or directory'
+  - date: '2026-11-23'
+    project: reify
+    session: 914120fb-8af1-4a5c-80af-89dcf5d3b249
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Agent inspected .task/ in a warm lane and found iterations.jsonl absent at the expected path. The entry is a symlink into .task-meta/task-6941, but wc reports the path as nonexistent, so the per-lane iterations.jsonl is missing where the agent looks for it.
+    evidence_quote: 'wc: .task/iterations.jsonl: No such file or directory'
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261106
@@ -9413,6 +9420,13 @@ entries:
     manifested_phase: verify
     note: A Bash call chained a sleep 90 with a tail of a test log to wait for output, and the anti-chaining guard blocked it. This is the chained sleep+poll pattern the entry names.
     evidence_quote: 'Blocked: sleep 90 followed by: tail -60 /tmp/review-10036-tests.log.'
+  - date: '2026-11-23'
+    project: reify
+    session: 31814011-4ff9-4f14-a14f-3cf6584126ce
+    origin_phase: unknown
+    manifested_phase: verify
+    note: The agent chained a sleep with a tail of a test log to wait for a nextest run, and the anti-chaining guard blocked it. The guard's message says to use Monitor or run_in_background instead.
+    evidence_quote: 'Blocked: sleep 100 followed by: tail -4 /tmp/rev10354_nextest.log.'
   last_seen_runs:
   - census-reify-20261022
 - id: entry-cand-20260719-7
@@ -9837,6 +9851,13 @@ entries:
     manifested_phase: unknown
     note: The digest shows a `sleep 60; tail` polling chain blocked by the sandbox guard, which is the mechanism this entry's title names.
     evidence_quote: '<tool_use_error>Blocked: sleep 60 followed by: tail -4 /tmp/rv_test_run_all.log.'
+  - date: '2026-11-23'
+    project: reify
+    session: 3d6ef6b9-8aa3-4122-aabc-74028fce0a6f
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: The agent ran `sleep 60; tail -3` to poll a clippy log, and the sandbox blocked the sleep+check chain. The digest shows the blocked sleep+check polling mechanism this entry names.
+    evidence_quote: 'Blocked: sleep 60 followed by: tail -3 /tmp/rev10170-clippy.log. To wait for a condition, use Monitor with an until-loop'
 - id: entry-cand-20260801-5
   title: Bash `rg` invocation fails — ripgrep binary absent from worktree environment
   severity: medium
@@ -11757,6 +11778,13 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: The digest's User Corrections section lists the injected /escalation-watcher command body (turn 4), which is a skill invocation rather than a user correction, and it lists an assistant-quoted citation (turn 98) as well. Both are digest mislabels.
+  - date: '2026-11-23'
+    project: reify
+    session: 32ad216b-784e-478e-9e75-9fb01678f7e6
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: The digest's User Corrections section lists record 248, which is an injected message from the dark-factory L2 escalation watcher, not a user statement. The digest mislabels it as a User Correction, the mechanism this entry names.
+    evidence_quote: From the dark-factory L2 escalation watcher (watcher-df-890246)
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261030
