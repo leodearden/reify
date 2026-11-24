@@ -3040,7 +3040,7 @@ async fn handle_mcp(
                 },
                 "serverInfo": {
                     "name": "reify-debug",
-                    "version": env!("CARGO_PKG_VERSION")
+                    "version": reify_version::VERSION
                 }
             }),
         ),

@@ -925,12 +925,16 @@ async fn set_active_fea_case(
 fn main() {
     // SAFETY: the first statement of main, before any thread exists.
     unsafe { reify_gui::webkit_env::apply_process_defaults() }
-    if std::env::args_os()
-        .nth(1)
-        .is_some_and(|arg| arg == reify_gui::webkit_env::PRINT_ENV_FLAG)
-    {
-        print!("{}", reify_gui::webkit_env::process_env_report());
-        return;
+    match std::env::args_os().nth(1) {
+        Some(arg) if arg == reify_gui::webkit_env::PRINT_ENV_FLAG => {
+            print!("{}", reify_gui::webkit_env::process_env_report());
+            return;
+        }
+        Some(arg) if arg == "--version" || arg == "-V" => {
+            println!("reify-gui {}", reify_version::VERSION);
+            return;
+        }
+        _ => {}
     }
     let mut context = tauri::generate_context!();
     if let Err(e) =
