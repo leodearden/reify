@@ -62,6 +62,17 @@
 #      failure, or a missing sibling, aborts the refresh before the
 #      partial→gen rename. Rule: that script's header and PRD §9.5 inv.14.
 #      Executable spec: tests/infra/test_evict_dirty_target_units.py RefreshStep.
+#   2d.Evict tree-sitter-reify runs a seeded lane's verify preflight would force
+#      on: one call to the sibling scripts/tree-sitter-freshness.sh evict-stale
+#      --build-root <advancing worktree> on <base_dir>.gen.<N>.partial, which
+#      deletes from the staging copy only each tree-sitter-reify build-script RUN
+#      dir whose out/tree_sitter_inputs.stamp does not match the promoted tree's
+#      --print-fingerprint, with its .fingerprint record. Kept, such a dormant
+#      dir makes every seeded lane's `ensure` force a rebuild, since the seed
+#      rewinds the ledger's mtime witness. A failure, or a missing sibling,
+#      aborts the refresh before the partial→gen rename. Rule: that script's
+#      header and PRD §9.5 inv.16.
+#      Executable spec: tests/infra/test_tree_sitter_stale_run_eviction.py RefreshStep.
 #   3. Bootstrap (first refresh): if <base_dir> is a pre-existing real dir,
 #      rename it to a retired gen dir first (never rename-over-populated).
 #   4. Write per-gen authoritative landed-commit stamp: <base_dir>.gen.<N>.basecommit
@@ -497,6 +508,11 @@ ok "Reflink copy complete (gen ${_next_gen})."
 # (header item 2c). Called plainly, like Step 3b, so set -e aborts on any
 # failure (a missing sibling included) before the rename below.
 "$_SCRIPT_DIR/evict-dirty-target-units.py" --build-root "$_prov_wt" "$_new_gen_partial"
+
+# Step 3d: evict tree-sitter-reify build-script runs whose input stamp disagrees
+# with the promoted tree (header item 2d). Called plainly, like Steps 3b/3c, so
+# set -e aborts on any failure (a missing sibling included) before the rename.
+"$_SCRIPT_DIR/tree-sitter-freshness.sh" evict-stale --build-root "$_prov_wt" "$_new_gen_partial" >&2
 
 # Step 4: rename staging dir to the final gen dir (dir→new-name rename, safe).
 info "Finalizing: $_new_gen_partial -> $_new_gen_dir"

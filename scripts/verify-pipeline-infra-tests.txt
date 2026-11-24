@@ -147,6 +147,39 @@ tests/infra/refresh_warm_base_harness.py  tests/infra/test_refresh_warm_base_bui
 scripts/relocate-depinfo-paths.py  tests/infra/test_seed_depinfo_relocation.sh
 scripts/seed-warm-lane.sh    tests/infra/test_seed_depinfo_relocation.sh
 tests/infra/test_seed_depinfo_relocation.py  tests/infra/test_seed_depinfo_relocation.sh
+# Its seed fixture (Pool, hermetic_env, STUB_CP) lives in a shared helper module,
+# so an edit to the helper selects the suite.
+tests/infra/seed_warm_lane_harness.py  tests/infra/test_seed_depinfo_relocation.sh
+# Task 10168: tree-sitter-freshness.sh evict-stale, the promote-time removal of
+# tree-sitter-reify build-script runs whose input stamp disagrees with the
+# promoted tree, pinned by a .py suite behind a thin .sh wrapper.
+scripts/tree-sitter-freshness.sh  tests/infra/test_tree_sitter_stale_run_eviction.sh
+tests/infra/test_tree_sitter_stale_run_eviction.py  tests/infra/test_tree_sitter_stale_run_eviction.sh
+# Its RefreshStep class pins refresh-warm-base.sh's Step 3d to that sibling
+# (fail-closed when missing); SeededLaneEnsure runs the promote -> real seed ->
+# lane ensure chain through both shared harness modules.
+scripts/refresh-warm-base.sh  tests/infra/test_tree_sitter_stale_run_eviction.sh
+scripts/seed-warm-lane.sh  tests/infra/test_tree_sitter_stale_run_eviction.sh
+tests/infra/refresh_warm_base_harness.py  tests/infra/test_tree_sitter_stale_run_eviction.sh
+tests/infra/seed_warm_lane_harness.py  tests/infra/test_tree_sitter_stale_run_eviction.sh
+# Its no-hasher case builds a hasher-free PATH through a shared helper module.
+tests/infra/masked_path_harness.py  tests/infra/test_tree_sitter_stale_run_eviction.sh
+# The real freshness script also runs in place inside test_refresh_warm_base.sh's
+# refreshes, as the evictor does, so a freshness edit selects that suite.
+scripts/tree-sitter-freshness.sh  tests/infra/test_refresh_warm_base.sh
+# Two more suites run the REAL refresh in place, and so every sibling it runs:
+# test_warm_base_coherence.sh (its --landed-commit boundary cases) and
+# test_warm_lane_pool.sh (its lane-to-base refreshes). An edit to the refresh or
+# to any of those siblings selects both, so a sibling edit that broke the
+# refresh on those suites' fixture lanes cannot red them unselected.
+# The refresh -> test_warm_lane_pool.sh row already exists, above Task 5981's.
+scripts/refresh-warm-base.sh         tests/infra/test_warm_base_coherence.sh
+scripts/prune-unconsulted-target.sh  tests/infra/test_warm_base_coherence.sh
+scripts/prune-unconsulted-target.sh  tests/infra/test_warm_lane_pool.sh
+scripts/evict-dirty-target-units.py  tests/infra/test_warm_base_coherence.sh
+scripts/evict-dirty-target-units.py  tests/infra/test_warm_lane_pool.sh
+scripts/tree-sitter-freshness.sh     tests/infra/test_warm_base_coherence.sh
+scripts/tree-sitter-freshness.sh     tests/infra/test_warm_lane_pool.sh
 # Task 9246: the cron sweep of idle worktree targets exempts _merge-verify and
 # respects each worktree's lane lock, pinned by a .py suite behind a thin .sh
 # wrapper, same pair shape.
