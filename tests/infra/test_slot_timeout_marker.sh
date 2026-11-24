@@ -1416,6 +1416,7 @@ D_ROSTER=(
     test_run_all_clock_marker_sanitize.sh
     test_run_all_content_skip.sh
     test_run_all_member_lifetime.sh
+    test_run_all_member_tmpdir.sh
     test_run_all_pool_lock_host_global.sh
     test_run_all.sh
     test_run_all_timing.sh
@@ -1551,6 +1552,14 @@ D_ROSTER=(
 #   (stdout=PIPE, stderr=STDOUT). Its fixture members never reach a pool
 #   deadline (private pool lock). Kept static-only for the same wall-clock
 #   reason as test_run_all_timing.sh: each class runs a nested run_all.sh.
+#   test_run_all_member_tmpdir.sh (task 10372) -- bucket pool; route
+#   run_all.sh through its `.py` sibling (RUN_ALL bound at module level,
+#   exec'd as `["bash", str(RUN_ALL), ...]` in RunAllWiring.setUpClass). Two
+#   spawn funnels, both measured CLEAN on the SITE channel: the subprocess.run
+#   calls (capture_output=True) and one Popen (stdout=PIPE, stderr=STDOUT) that
+#   runs the TMPDIR lib, not run_all.sh. Its fixture members never reach a
+#   pool deadline (private pool lock, concurrency 1). Kept static-only for the
+#   same wall-clock reason as test_run_all_member_lifetime.sh.
 #   test_verify_env_ambient_isolation.sh -- bucket pool; route
 #   test_occt_flock_gate.sh (`bash "$SCRIPT_DIR/test_occt_flock_gate.sh"
 #   2>&1` :177). The capture at the site is correct (into $amb_out,
@@ -3136,6 +3145,11 @@ G_MEMBERS=(
     # module level, spawned by Fixture.run's subprocess.run and Fixture.spawn's
     # Popen, which are therefore the sites -- see G_SCAN below.
     test_run_all_member_lifetime.sh
+    # Route run_all.sh via its `.py` sibling (task 10372): RUN_ALL bound at
+    # module level, spawned by RunAllWiring.setUpClass's subprocess.run; the
+    # lib classes' subprocess.run and Popen calls are sites too -- see G_SCAN
+    # below.
+    test_run_all_member_tmpdir.sh
     # Route run_all.sh under a different variable name: REAL_RUN_ALL bound :69
     # (RUN_ALL there names a WRAPPER fixture, not the real thing -- hence the
     # distinct target), invoked :122 and :126.
@@ -3177,6 +3191,7 @@ G_SITE=(
     '"\$_target"'
     '"\$RUN_ALL"'
     '"\$RUN_ALL"'
+    'subprocess\.(run|Popen)\('
     'subprocess\.(run|Popen)\('
     '"\$REAL_RUN_ALL"'
     '"\$RUN_ALL"'
@@ -3234,6 +3249,7 @@ G_SCAN=(
     run_all_ambient_isolation_lib.sh
     '' ''
     test_run_all_member_lifetime.py
+    test_run_all_member_tmpdir.py
     '' ''
     test_run_all_timing.py
     ''

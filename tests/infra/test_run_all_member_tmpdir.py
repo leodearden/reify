@@ -15,22 +15,39 @@ tests/infra/run-all-member-tmpdir-lib.sh:
     whose lease is free and whose mtime is over a minute old.
 
 The lib classes drive those two functions through `bash -c 'source <lib>; ...'`
-in a private root. The only time bounds are hang guards on the subprocesses,
-never assertions that anything is fast.
+in a private root. RunAllWiring EXECUTES the real tests/infra/run_all.sh on a
+tempdir fixture INFRA_DIR, in run_all_fixture.run_all_env's environment plus a
+private TMPDIR, as test_run_all_member_lifetime.py does. Every fixture process
+carries the fixture's unique token or path in its /proc cmdline, and whatever
+still carries one is SIGKILLed at cleanup.
+
+The only time bounds are hang guards on the subprocesses, never assertions
+that anything is fast.
 
 run_all.sh discovers `test_*.sh` only; the gate runs this file through its
 thin wrapper tests/infra/test_run_all_member_tmpdir.sh.
 """
 
+import contextlib
 import fcntl
 import os
+import re
+import shutil
+import signal
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
+import uuid
 from pathlib import Path
 
 INFRA_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(INFRA_DIR))
+from run_all_fixture import run_all_env, write_executable  # noqa: E402  (imported after sys.path manipulation)
+
+REPO_ROOT = INFRA_DIR.parents[1]
+RUN_ALL = REPO_ROOT / "tests" / "infra" / "run_all.sh"
 LIB = INFRA_DIR / "run-all-member-tmpdir-lib.sh"
 
 PREFIX = "reify-ra-tmp."
@@ -79,8 +96,6 @@ class LibHarness(unittest.TestCase):
     def setUp(self):
         base = tempfile.TemporaryDirectory(prefix="test-ra-member-tmpdir-")
         self.addCleanup(base.cleanup)
-        # A read-only subdir a failed case leaves behind would defeat cleanup().
-        self.addCleanup(subprocess.run, ["chmod", "-R", "u+rwx", base.name], check=False)
         self.base = Path(base.name)
         self.root = self.base / "root"
         self.state = self.base / "state"
@@ -105,8 +120,14 @@ class LibHarness(unittest.TestCase):
                 *map(str, args)]
 
     def call(self, function, *args):
-        return subprocess.run(self.lib_argv(function, *args), env=self.env(),
-                              capture_output=True, text=True, timeout=HANG_GUARD_S, check=False)
+        return subprocess.run(
+            self.lib_argv(function, *args),
+            env=self.env(),
+            capture_output=True,
+            text=True,
+            timeout=HANG_GUARD_S,
+            check=False,
+        )
 
     def recorded_tmpdir(self):
         return Path((self.state / "tmpdir").read_text().strip())
@@ -258,7 +279,11 @@ class MemberTmpdirReap(LibHarness):
     def test_a_running_members_dir_is_kept_even_when_its_mtime_is_old(self):
         proc = subprocess.Popen(
             self.lib_argv("member_tmpdir_run", self.root, self.child("waiting", WAITING_CHILD)),
-            env=self.env(), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            env=self.env(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
         self.addCleanup(self.finish, proc)
         recorded = self.state / "tmpdir"
         deadline = time.monotonic() + HANG_GUARD_S
@@ -285,6 +310,149 @@ class MemberTmpdirReap(LibHarness):
                 proc.kill()
                 proc.wait()
         proc.stdout.close()
+
+
+# RunAllWiring's members. Each records its TMPDIR to
+# $FIXTURE_STATE/<name>.tmpdir and litters it; @TOKEN@ is the fixture's token.
+LITTER_MEMBER = r"""#!/usr/bin/env bash
+printf '%s\n' "$TMPDIR" > "$FIXTURE_STATE/$(basename "$0").tmpdir"
+nested="$(mktemp -d)"
+echo litter > "$nested/file"
+python3 -c 'import tempfile; tempfile.mkdtemp()'
+echo litter > "$TMPDIR/plain-file"
+exit @RC@
+"""
+
+WIRING_MEMBERS = {
+    "test_litter.sh": LITTER_MEMBER.replace("@RC@", "0"),
+    "test_litter_fail.sh": LITTER_MEMBER.replace("@RC@", "3"),
+    "test_hang_litter.sh": r"""#!/usr/bin/env bash
+printf '%s\n' "$TMPDIR" > "$FIXTURE_STATE/$(basename "$0").tmpdir"
+mkdir "$TMPDIR/hang-litter"
+bash -c 'exec -a @TOKEN@ sleep 300'
+""",
+}
+
+# Long enough that the litter members finish far inside it on a loaded host,
+# short against the 300 s the hanging member would otherwise live.
+WIRING_BUDGET_S = 20
+WIRING_GRACE_S = 2
+RUN_TIMEOUT_S = 600
+RUN_ALL_OWN_WORKDIR_PREFIX = "reify-run-all-"
+
+TIMEOUT_LINE_RE = re.compile(r"^MEMBER_TIMEOUT FAIL member=(?P<member>\S+) ", re.M)
+
+
+def _strays(*needles):
+    """(pid, cmdline) of every live process but this one whose cmdline holds a needle."""
+    own = os.getpid()
+    wanted = [n.encode() for n in needles]
+    found = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit() or int(entry) == own:
+            continue
+        try:
+            cmdline = Path("/proc", entry, "cmdline").read_bytes()
+        except OSError:
+            continue
+        if any(n in cmdline for n in wanted):
+            found.append(int(entry))
+    return found
+
+
+class RunAllWiring(unittest.TestCase):
+    """One real run_all.sh run over three litter members, with a dead and a
+    leased reify-ra-tmp.* dir seeded in its TMPDIR beforehand."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = Path(tempfile.mkdtemp(prefix="ra-member-tmpdir-"))
+        cls.token = f"ra-member-tmpdir-{uuid.uuid4().hex}"
+        cls.addClassCleanup(shutil.rmtree, cls.root, True)
+        cls.addClassCleanup(cls.kill_strays)
+        cls.infra = cls.root / "infra"
+        cls.state = cls.root / "state"
+        cls.tmp = cls.root / "tmp"
+        for d in (cls.infra, cls.state, cls.tmp):
+            d.mkdir()
+        for name, body in WIRING_MEMBERS.items():
+            write_executable(cls.infra / name, body.replace("@TOKEN@", cls.token))
+        manifest = cls.root / "classification.manifest"
+        manifest.write_text("".join(f"{name} pool\n" for name in WIRING_MEMBERS))
+
+        cls.stale = cls.tmp / f"{PREFIX}stale"
+        cls.stale.mkdir()
+        (cls.stale / "litter").write_text("left by a SIGKILLed run\n")
+        backdate(cls.stale)
+        cls.held = cls.tmp / f"{PREFIX}held"
+        cls.held.mkdir()
+        (cls.held / "litter").write_text("a live run's\n")
+        backdate(cls.held)
+        held_fd = os.open(cls.held, os.O_RDONLY)
+        cls.addClassCleanup(os.close, held_fd)
+        fcntl.flock(held_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        env = run_all_env(
+            cls.root, manifest, TMPDIR=str(cls.tmp), FIXTURE_STATE=str(cls.state),
+            REIFY_RUN_ALL_POOL_CONCURRENCY="1",
+            REIFY_RUN_ALL_MEMBER_TIMEOUT=str(WIRING_BUDGET_S),
+            REIFY_RUN_ALL_MEMBER_KILL_GRACE=str(WIRING_GRACE_S),
+        )
+        cls.run_all = subprocess.run(
+            ["bash", str(RUN_ALL), str(cls.infra)],
+            env=env,
+            capture_output=True,
+            text=True,
+            errors="surrogateescape",
+            timeout=RUN_TIMEOUT_S,
+        )
+
+    @classmethod
+    def kill_strays(cls):
+        for pid in _strays(str(cls.root) + os.sep, cls.token):
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.kill(pid, signal.SIGKILL)
+
+    def output(self):
+        return self.run_all.stdout + self.run_all.stderr
+
+    def recorded_tmpdirs(self):
+        return {name: Path((self.state / f"{name}.tmpdir").read_text().strip())
+                for name in WIRING_MEMBERS}
+
+    def test_the_verdicts_are_unchanged(self):
+        self.assertEqual(self.run_all.returncode, 1, self.output())
+        self.assertIn("RESULT: PASS (test_litter.sh)", self.run_all.stdout)
+        failed = [line.split()[1:] for line in self.run_all.stdout.splitlines()
+                  if line.startswith("FAILED ")]
+        self.assertEqual([sorted(names) for names in failed],
+                         [["test_hang_litter.sh", "test_litter_fail.sh"]], self.output())
+        timed_out = [m["member"] for m in TIMEOUT_LINE_RE.finditer(self.run_all.stdout)]
+        self.assertIn("test_hang_litter.sh", timed_out, self.output())
+        self.assertNotIn("test_litter_fail.sh", timed_out)
+
+    def test_each_member_ran_in_its_own_tmpdir_under_the_runs_tmpdir(self):
+        tmpdirs = self.recorded_tmpdirs()
+        for name, tmpdir in tmpdirs.items():
+            with self.subTest(name):
+                self.assertEqual(tmpdir.parent, self.tmp)
+                self.assertTrue(tmpdir.name.startswith(PREFIX), tmpdir)
+        self.assertEqual(len(set(tmpdirs.values())), len(tmpdirs), tmpdirs)
+
+    def test_no_member_tmpdir_or_litter_outlives_the_run(self):
+        for name, tmpdir in self.recorded_tmpdirs().items():
+            with self.subTest(name):
+                self.assertFalse(os.path.lexists(tmpdir), self.output())
+        left = sorted(p.name for p in self.tmp.iterdir()
+                      if not p.name.startswith(RUN_ALL_OWN_WORKDIR_PREFIX) and p != self.held)
+        self.assertEqual(left, [], self.output())
+
+    def test_a_dead_runs_stale_tmpdir_is_reaped_at_start(self):
+        self.assertFalse(os.path.lexists(self.stale), self.output())
+        self.assertIn(f"reaped 1 stale member TMPDIR(s) under {self.tmp}", self.run_all.stderr)
+
+    def test_a_leased_tmpdir_survives_the_run(self):
+        self.assertTrue((self.held / "litter").is_file(), self.output())
 
 
 if __name__ == "__main__":
