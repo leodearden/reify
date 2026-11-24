@@ -308,8 +308,8 @@ fn fallback_undef_subject_returns_undef() {
 // and is dropped at ctx.rs:201 when the `CompiledModule` is built. Evaluating
 // against `module.functions` therefore uses a table in which no stdlib body is
 // registered at all. `prelude_backed_functions` restores it by reproducing the
-// PRODUCTION runtime dispatch table (`reify_eval::merge_functions`,
-// reify-eval/src/lib.rs:1425-1432).
+// PRODUCTION runtime dispatch (`reify_eval::DefEnv::function_table`; see the
+// helper's doc for why its unfiltered list dispatches identically).
 //
 // WHAT THEY GUARD, MEASURED. The stdlib `.ri` bodies ARE registered here and DO
 // compete: each generic placeholder is the candidate

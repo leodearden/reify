@@ -1752,7 +1752,6 @@ impl Engine {
     /// or building exactly that module resolves in `program`'s environment
     /// ([`Self::env_of`]). The program's definition-collision report rides
     /// `program.entry()`'s diagnostics. Eval state is untouched.
-    // G-allow: resolution-unification §3.2 Engine::load; first production consumer is κ #5524
     pub fn load(&mut self, program: impl Into<Arc<CompiledProgram>>) -> Arc<CompiledModule> {
         let loaded = LoadedProgram::new(program.into());
         let evaluated = Arc::clone(loaded.evaluated());

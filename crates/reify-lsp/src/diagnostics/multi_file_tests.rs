@@ -154,7 +154,8 @@ fn an_imported_pub_function_is_dispatched() {
         "module mathlib\npub fn double_it(x: Real) -> Real {\n    x * 2\n}\n",
     )
     .expect("write mathlib.ri");
-    let entry = "module main\nimport mathlib\nstructure def Calc {\n    let y = double_it(21.0)\n}\n";
+    let entry =
+        "module main\nimport mathlib\nstructure def Calc {\n    let y = double_it(21.0)\n}\n";
 
     let result = diagnose(guard.path(), entry);
 

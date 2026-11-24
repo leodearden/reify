@@ -221,7 +221,9 @@ impl DefEnv {
     pub fn resolve_enum(&self, name: &str) -> Option<&EnumDef>;
     // …units, aliases, traits: same pattern (purposes, constraint defs: §8 ι amendment).
     // Presentation view — entity enumeration, doc, BOM, GUI tree:
-    pub fn declared(&self) -> &CompiledModule; // the entry, pure post-P2
+    pub fn declared(&self) -> &CompiledModule; // the root's entry: a program's holds only its
+                                               // own declarations; the engine's evaluation
+                                               // module also its user templates (§8 κ amendment)
 }
 ```
 
@@ -457,6 +459,39 @@ runs against P1's landed net)
   `Engine::prelude` statics; templates purity** *(leaf)*. Modules: reify-eval,
   reify-compiler, gui. Signals: #13, #14; `git grep find_template_with_prelude` empty;
   full multi-file + stdlib suites green. Deps: ι.
+  *Amended 2026-11-24 (κ #5524, landed shape):* `entry.templates` is pure: the I5
+  merge (`merge_imported_pub_templates`), `CompiledProgram`'s declared-template prefix
+  and `entry_declared_templates()` are deleted, so `program.entry()` holds only the
+  entry's own declarations (#14, pinned by `an_importing_entrys_templates_are_only_its_own`).
+  The D-6 collision report rides the program compile: θ's `DefEnv::collision_warnings`
+  moved to `program_scope::collision_warnings`, which `compile_program` appends to the
+  entry's diagnostics after the re-homed block. Every surface therefore prints each
+  collision once, coded `DefinitionCollision`, and the merge's code-less template
+  warning went with the merge (#13, pinned by
+  `the_program_compile_reports_each_import_tier_collision_on_the_entry` and
+  `a_template_collision_is_reported_once_with_its_code`). Eval itself was not
+  re-plumbed onto `declared()`-plus-`resolve_*`: every per-template walk in reify-eval
+  (graph roots and per-template constraint checks, the positional realization arrays,
+  the sub-geometry walks) is index-aligned with `module.templates`, and an imported
+  template is checked and realized only because it is one of those roots. So
+  `Engine::load(program)` returns the module the engine evaluates the program as,
+  `reify_eval::evaluation_module(&program)`: the entry with `DefEnv::user_templates()`
+  as its templates (the entry's own, then each direct import's `pub` templates,
+  first-wins). The CLI, GUI and LSP load their program and evaluate exactly the
+  returned `Arc`, so their user-visible content is unchanged from P1. `Engine::env_of`
+  is identity-checked through `EnvScope`: the loaded program's environment, rooted at
+  the evaluation module, for exactly that module (pointer identity), and a module's own
+  environment (I1) for any other, including a copy of it. `ProgramRoot` is a plain
+  `{entry, imports}`. `merge_functions` folded into `DefEnv::function_table()`
+  (closing §10 Q4's hand-off), and `prelude_functions`, `Engine::prelude()`,
+  `Engine::def_env()` and the eval-side `find_template_with_prelude` are deleted; the
+  hand-rolled prelude-then-module trait and template reads in bom_report,
+  engine_build, engine_constraints and engine_eval resolve through the scope's
+  `DefEnv`. The `Engine` prelude field survives only as `DefEnv`'s ambient tier. The
+  compile-side namesake from #5867, `reify_compiler::types::find_template_with_prelude`,
+  is a different resolver (sub-target lookup against the compile's prelude
+  registries) and was renamed `resolve_sub_target_template`, so the
+  `git grep find_template_with_prelude` signal reads empty across `crates/` and `gui/`.
 - **λ — Cross-kind end-to-end signals** *(leaf)*. Modules: reify-eval tests +
   reify-cli tests (fixtures). Signals: #10 (fn `42` not `undef`), #11 (#5387
   acceptance: construction/type/match, non-pub invisible), #12 (unit/alias/trait).

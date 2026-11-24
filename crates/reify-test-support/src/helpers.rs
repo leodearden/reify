@@ -253,23 +253,19 @@ pub fn compile_source_with_stdlib(source: &str) -> reify_compiler::CompiledModul
 ///
 /// # Why the append is UNFILTERED
 ///
-/// This mirrors [`reify_eval::merge_functions`] (`reify-eval/src/lib.rs:1425-1432`,
-/// `pub(crate)` so it cannot be called directly) — the table PRODUCTION
-/// evaluation actually uses — and deliberately NOT
-/// [`reify_compiler::merge_prelude_functions`] (`reify-compiler/src/lib.rs:332`).
+/// PRODUCTION evaluation dispatches through `reify_eval::DefEnv::function_table`,
+/// which this crate's featureless surface cannot call (`reify-eval` is behind
+/// the `eval-helpers` feature). That table binds ONE function per
+/// `(name, param_types)` signature, first wins: the entry's own, then each
+/// direct import's `pub` surface, then the prelude. A prelude fn a user fn
+/// shadows is therefore absent from it, as it is from
+/// [`reify_compiler::merge_prelude_functions`], the compile-time overload table.
 ///
-/// The two differ on collisions. `merge_prelude_functions` FILTERS out any
-/// prelude entry whose `(name, arity, param_types)` triple matches a user fn,
-/// because it builds the COMPILE-TIME overload-resolution table where a
-/// duplicate triple is an ambiguous-overload error. reify-eval omits that filter
-/// (its own doc, `lib.rs:1412-1419`) because dispatch is a first-match-wins
-/// linear scan, so a shadowed prelude entry is permanently unreachable anyway.
-///
-/// The two are therefore dispatch-EQUIVALENT; this is a fidelity choice, not a
-/// behaviour fix. But a harness whose entire purpose is "evaluate the way
-/// production does" should not quietly diverge from production in how it builds
-/// its table, so the runtime shape is what gets copied. User functions stay
-/// FIRST so they still shadow prelude functions, exactly as at runtime.
+/// This helper keeps the shadowed entry instead: user fns first, then the whole
+/// prelude, unfiltered. That was reify-eval's own runtime shape until task
+/// #5524 folded it into `DefEnv::function_table`. The two shapes are
+/// dispatch-EQUIVALENT: dispatch is a first-match-wins linear scan, and user
+/// functions stay FIRST, so a shadowed prelude entry is unreachable in either.
 ///
 /// # Example
 ///
@@ -283,16 +279,12 @@ pub fn compile_source_with_stdlib(source: &str) -> reify_compiler::CompiledModul
 pub fn prelude_backed_functions(
     module: &reify_compiler::CompiledModule,
 ) -> Vec<reify_ir::CompiledFunction> {
-    // Flatten the prelude exactly as `reify_eval::Engine::with_prelude_and_kernels`
-    // does (reify-eval/src/engine_admin.rs:255-258) when populating its
-    // `prelude_functions` field.
+    // Flatten every stdlib module's functions, then append them after the
+    // user fns unconditionally (see "Why the append is UNFILTERED").
     let prelude = reify_compiler::stdlib_loader::load_stdlib()
         .iter()
         .flat_map(|m| m.functions.iter().cloned());
 
-    // ...then merge with the same two lines as `reify_eval::merge_functions`
-    // (reify-eval/src/lib.rs:1429-1431): user fns first, prelude appended
-    // unconditionally.
     let mut merged = module.functions.clone();
     merged.extend(prelude);
     merged

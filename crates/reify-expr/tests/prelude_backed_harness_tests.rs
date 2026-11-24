@@ -18,8 +18,9 @@
 //! only "the intercept fires", never "the intercept beats the placeholder".
 //!
 //! `reify_test_support::prelude_backed_functions` fixes that by reproducing the
-//! PRODUCTION runtime dispatch table (`reify_eval::merge_functions`,
-//! reify-eval/src/lib.rs:1425-1432). This file pins that the fix is real.
+//! PRODUCTION runtime dispatch (`reify_eval::DefEnv::function_table`; see the
+//! helper's doc for why its unfiltered list dispatches identically). This file
+//! pins that the fix is real.
 //!
 //! THE LIVENESS WITNESS AND WHY IT USES `through`
 //!
