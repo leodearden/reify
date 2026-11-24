@@ -205,6 +205,8 @@ mod tests {
         }
     }
 
+    /// The evaluation module holds an imported template the entry does not;
+    /// only the entry's own templates' spans index the document.
     #[test]
     fn template_span_range_only_trusts_declared_templates() {
         let guard = reify_test_support::prefixed_tempdir("reify-lsp-doc-compile-");
@@ -219,6 +221,14 @@ mod tests {
 
         let document = compile_document(&parsed, source, &uri, &CfgSet::host_default());
 
+        let program = document
+            .program
+            .as_ref()
+            .expect("an importing document compiles as a program");
+        assert!(
+            !program.entry().templates.iter().any(|t| t.name == "Pulley"),
+            "the entry holds only its own templates"
+        );
         let templates = &document.module().templates;
         let index_of = |name: &str| {
             templates

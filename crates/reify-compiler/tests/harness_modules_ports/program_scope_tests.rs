@@ -445,30 +445,32 @@ fn constraint_defs_bind_entry_then_imports_in_order_then_std() {
     assert_name_keyed_precedence::<CompiledConstraintDef>("constraint def", CONSTRAINT_DEF_NAMES);
 }
 
-/// The entry's own templates are `entry_declared_templates()`: a pub
-/// template the I5 merge copied into `entry.templates` binds the IMPORT
-/// UNIT's template, and no Local-vs-Import shadowing is recorded for it.
+/// The entry holds only the templates it declares (resolution-unification
+/// boundary #14): an import's pub template is not copied into
+/// `entry.templates`, binds the IMPORT UNIT's template, and records no
+/// Local-vs-Import shadowing.
 #[test]
-fn the_entry_scope_excludes_templates_merged_from_imports() {
+fn the_entry_holds_none_of_its_imports_templates() {
     let fx = Fixture::new();
     let p = &fx.program;
     assert!(
-        p.entry().templates.iter().any(|t| t.name == "VisT")
-            && !p
-                .entry_declared_templates()
-                .iter()
-                .any(|t| t.name == "VisT"),
-        "precondition: VisT is an I5-merged copy, not an entry declaration"
+        !p.entry().templates.iter().any(|t| t.name == "VisT"),
+        "the entry must not hold a's pub VisT, got {:?}",
+        p.entry()
+            .templates
+            .iter()
+            .map(|t| &t.name)
+            .collect::<Vec<_>>()
     );
     let bindings = bind_program::<TopologyTemplate>(p, prelude());
     assert_binds(
         bindings.get("VisT"),
         named(&fx.a().templates, "VisT"),
-        "merged name",
+        "imported name",
     );
     assert!(
         !bindings.shadowings().iter().any(|s| s.key == "VisT"),
-        "a merged copy is not a second candidate for its own name"
+        "an imported template is the only candidate for its own name"
     );
 }
 

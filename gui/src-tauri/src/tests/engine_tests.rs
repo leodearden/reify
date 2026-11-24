@@ -7940,6 +7940,43 @@ fn load_file_dispatches_an_imported_pub_function() {
     );
 }
 
+/// The entity tree of an importing entry lists the evaluation module's
+/// templates: the entry's own, then each direct import's pub templates. The
+/// entry's compiled template list holds only its own (resolution-unification
+/// boundary #14); the tree reads what the engine evaluates.
+#[test]
+fn load_file_entity_tree_lists_the_evaluation_modules_templates() {
+    let mut session = setup_collision_session();
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+    let parts_src = "module parts\n\
+                     pub structure def Pulley { param d : Length = 40mm }\n\
+                     structure def Hidden { param h : Length = 1mm }\n";
+    let main_src = "module main\nimport parts\nstructure def Rig { sub p = Pulley() }\n";
+    std::fs::write(dir.path().join("parts.ri"), parts_src).expect("write parts.ri");
+    let main_path = dir.path().join("main.ri");
+    std::fs::write(&main_path, main_src).expect("write main.ri");
+
+    session.load_file(&main_path).expect("load_file should succeed");
+
+    let roots: Vec<String> = session
+        .get_entity_tree()
+        .into_iter()
+        .map(|node| node.entity_path)
+        .collect();
+    assert_eq!(roots, ["Rig", "Pulley"]);
+
+    let program = reify_compiler::program::compile_program(
+        &main_path,
+        main_src,
+        &reify_compiler::module_dag::ModuleResolver::new(dir.path(), dir.path().join("stdlib")),
+        &reify_compiler::cfg::CfgSet::default(),
+        &SimpleConstraintChecker,
+    );
+    let evaluated = reify_eval::evaluation_module(&program);
+    let evaluated: Vec<&str> = evaluated.templates.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(roots, evaluated);
+}
+
 /// Regression: loading a standalone .ri file with no imports via the
 /// file-backed `load_file` path must work correctly — same as before (since
 /// task 5519 an import-free entry compiles single-file through `compile_buffer`).
@@ -8456,47 +8493,47 @@ fn setup_collision_session() -> EngineSession {
     EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)))
 }
 
-/// Return the first Warning diagnostic whose `message` mentions both `name` and
-/// `"first-wins"`, or `None` if no such diagnostic exists. Backs
-/// `assert_collision_warning_mentions`.
-fn find_collision_warning<'a>(
-    state: &'a crate::types::GuiState,
-    name: &str,
-) -> Option<&'a DiagnosticInfo> {
-    state.compile_diagnostics.iter().find(|d| {
-        d.severity == "Warning" && d.message.contains(name) && d.message.contains("first-wins")
-    })
-}
-
-/// Assert that the collision Warning for structure `name` exists AND that each
-/// string in `origins` appears in the message in its **quoted form** (e.g.
-/// `"'helper1'"` rather than `"helper1"`).  Using the quoted form ties the
-/// assertion to the actual module-name slot in the format string:
+/// Assert that exactly one diagnostic reports the collision of structure `name`,
+/// in the program compile's `DefinitionCollision` wording, AND that each string
+/// in `origins` appears in its message in **quoted form** (e.g. `"'helper1'"`
+/// rather than `"helper1"`), in order: the winner, then the shadowed module.
 ///
 /// ```text
-/// imported pub structure 'Foo' declared in both 'helper1' and 'helper2'; first-wins
+/// structure 'Foo' declared in both 'helper1' and 'helper2'; first-wins: 'helper1' binds
 /// ```
 ///
-/// so that an incidental occurrence of a common fragment (e.g. `"main"` inside
-/// `"domain"` or `"remain"`) cannot produce a false-positive match.
+/// The quoted form ties the assertion to the module-name slots, so an
+/// incidental fragment (e.g. `"main"` inside `"domain"`) cannot match.
 fn assert_collision_warning_mentions(state: &crate::types::GuiState, name: &str, origins: &[&str]) {
-    let w = find_collision_warning(state, name).unwrap_or_else(|| {
-        panic!(
-            "expected a Warning diagnostic mentioning '{}' and 'first-wins', \
-             but state.compile_diagnostics = {:?}",
-            name, state.compile_diagnostics
-        )
-    });
-    for origin in origins {
-        let quoted = format!("'{}'", origin);
-        assert!(
-            w.message.contains(&quoted),
-            "collision warning should name module '{}' as {} in the message; got: {}",
-            origin,
-            quoted,
-            w.message
-        );
-    }
+    let quoted_name = format!("'{name}'");
+    let reports: Vec<&DiagnosticInfo> = state
+        .compile_diagnostics
+        .iter()
+        .filter(|d| d.message.contains(&quoted_name))
+        .collect();
+    assert_eq!(
+        reports.len(),
+        1,
+        "expected exactly one diagnostic reporting the {quoted_name} collision, \
+         but state.compile_diagnostics = {:?}",
+        state.compile_diagnostics
+    );
+    let w = reports[0];
+    assert!(
+        w.severity == "Warning"
+            && w.message.starts_with(&format!("structure {quoted_name} declared in both "))
+            && w.message.contains("first-wins"),
+        "the {quoted_name} collision must be the coded first-wins Warning; got: {w:?}"
+    );
+    let positions: Vec<Option<usize>> = origins
+        .iter()
+        .map(|origin| w.message.find(&format!("'{origin}'")))
+        .collect();
+    assert!(
+        positions.iter().all(Option::is_some) && positions.is_sorted(),
+        "collision warning should name {origins:?} in quoted form, in that order; got: {}",
+        w.message
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -8505,9 +8542,8 @@ fn assert_collision_warning_mentions(state: &crate::types::GuiState, name: &str,
 /// must emit a Warning diagnostic for the collision (first-wins is preserved, but
 /// the user must be told about the shadowing).
 ///
-/// Mirrors the compiler's cross-prelude alias collision policy
-/// (reify-compiler/src/lib.rs:281-292): same `Diagnostic::warning`, same
-/// "first-wins" trailer in the message, same `SourceSpan::prelude()` label.
+/// The program compile reports it as it reports every definition kind's
+/// collision (`DefinitionCollision`, resolution-unification D-6).
 #[test]
 fn load_file_two_imports_with_same_pub_structure_emits_collision_diagnostic() {
     let mut session = setup_collision_session();
@@ -8570,9 +8606,7 @@ fn load_file_entry_redeclares_imported_pub_structure_emits_collision_diagnostic(
         .expect("load_file should succeed despite collision (first-wins, not error)");
 
     // Assert the warning exists and names both module origins using the quoted form:
-    // 'main' (entry module = first-wins origin, pre-seeded in templates_origin) and
-    // 'helper' (colliding import path). Quoted form avoids false matches on common
-    // English fragments (e.g. "remain", "domain") that contain the bare substring.
+    // 'main' (the entry, which binds first) and 'helper' (the shadowed import).
     assert_collision_warning_mentions(&state, "Foo", &["main", "helper"]);
 }
 

@@ -3,9 +3,9 @@
 //!
 //! Per kind, a bare name binds the entry's own declaration, then each direct
 //! import's `pub` surface in declaration order, then the stdlib (I6); a
-//! qualified lookup is keyed by `(module_key, name)` (I7). The entry's own
-//! templates are `entry_declared_templates()`, so a name the I5 merge copied
-//! into the entry binds the import unit's template. The rule is
+//! qualified lookup is keyed by `(module_key, name)` (I7). The entry holds only
+//! its own templates, so an imported name binds the import unit's template.
+//! The rule is
 //! `reify_compiler::name_env`'s; these pins hold DefEnv to it over real
 //! programs built by `reify_compiler::program::compile_program`.
 
@@ -100,20 +100,16 @@ fn def_env_resolves_with_entry_then_imports_then_stdlib_precedence() {
     let dir = tempfile::tempdir().unwrap();
     let program = compile_fixture(dir.path());
     let env = DefEnv::from_program(&program);
-    let entry_own = program.entry_declared_templates();
+    let entry_own = &program.entry().templates;
     let parts_unit = &program.imports[0];
     assert_eq!(parts_unit.import_path, "parts");
 
     // (a) an entry-declared template binds the entry's own; an import's pub
-    // template binds the IMPORT UNIT's, not the copy the I5 merge made.
+    // template binds the IMPORT UNIT's.
     assert!(same(
         env.resolve_template("Rig"),
         template_in(entry_own, "Rig")
     ));
-    assert!(
-        program.entry().templates.iter().any(|t| t.name == "Pulley"),
-        "precondition: the I5 merge copied Pulley into the entry"
-    );
     assert!(
         same(
             env.resolve_template("Pulley"),
@@ -140,7 +136,7 @@ fn def_env_resolves_with_entry_then_imports_then_stdlib_precedence() {
     assert!(env.resolve_template("NoSuchThing").is_none());
     assert!(
         env.resolve_template("Hidden").is_none(),
-        "a non-pub import template is neither merged nor visible"
+        "a non-pub import template is not visible"
     );
 
     // (e) qualified lookup is keyed by (module_key, name), pub surface only;
@@ -156,7 +152,7 @@ fn def_env_resolves_with_entry_then_imports_then_stdlib_precedence() {
     ));
     assert!(
         env.resolve_template_in("main", "Pulley").is_none(),
-        "a merged copy is not part of the entry's own scope"
+        "an imported template is not part of the entry's own scope"
     );
     let stdlib_key = stdlib_only_home.path.to_dotted();
     assert!(same(
@@ -169,12 +165,12 @@ fn def_env_resolves_with_entry_then_imports_then_stdlib_precedence() {
     assert!(std::ptr::eq(env.declared(), program.entry()));
 }
 
-/// (g) Over every entry-declared and stdlib name, DefEnv agrees with the
-/// compile-side rule: `name_env::resolve` over the entry's template list and
-/// the stdlib, as eval's pre-DefEnv sub lookup called it. A name the I5 merge
-/// copied binds the import unit's template, which the copy duplicates.
+/// (g) Over every entry-declared and stdlib name no import binds, DefEnv agrees
+/// with the compile-side rule: `name_env::resolve` over the entry's template
+/// list and the stdlib, as eval's pre-DefEnv sub lookup called it. An imported
+/// pub name binds the import unit's template.
 #[test]
-fn def_env_agrees_with_the_compile_side_rule_and_binds_merged_names_at_home() {
+fn def_env_agrees_with_the_compile_side_rule_and_binds_imported_names_at_home() {
     let dir = tempfile::tempdir().unwrap();
     let program = compile_fixture(dir.path());
     let env = DefEnv::from_program(&program);
@@ -183,19 +179,27 @@ fn def_env_agrees_with_the_compile_side_rule_and_binds_merged_names_at_home() {
         reify_compiler::name_env::resolve(&program.entry().templates, load_stdlib(), name)
     };
 
-    let declared = program.entry_declared_templates();
-    let merged = &program.entry().templates[declared.len()..];
+    let declared = &program.entry().templates;
+    let imported: Vec<&TopologyTemplate> = program
+        .imports
+        .iter()
+        .flat_map(|unit| unit.module.templates.iter())
+        .filter(|t| {
+            t.visibility == reify_compiler::Visibility::Public
+                && !declared.iter().any(|own| own.name == t.name)
+        })
+        .collect();
     assert!(
-        !merged.is_empty(),
-        "precondition: the I5 merge copied a template"
+        !imported.is_empty(),
+        "precondition: an import exports a template the entry does not declare"
     );
-    let merged_names: HashSet<&str> = merged.iter().map(|t| t.name.as_str()).collect();
+    let imported_names: HashSet<&str> = imported.iter().map(|t| t.name.as_str()).collect();
 
     let names = declared
         .iter()
         .chain(load_stdlib().iter().flat_map(|m| m.templates.iter()))
         .map(|t| t.name.as_str())
-        .filter(|name| !merged_names.contains(name));
+        .filter(|name| !imported_names.contains(name));
     let mut checked = 0;
     for name in names {
         let expected = reference(name).expect("every enumerated name resolves");
@@ -207,15 +211,8 @@ fn def_env_agrees_with_the_compile_side_rule_and_binds_merged_names_at_home() {
     }
     assert!(checked > declared.len(), "stdlib names were enumerated");
 
-    for copy in merged {
-        let home = program
-            .imports
-            .iter()
-            .find_map(|unit| unit.module.templates.iter().find(|t| t.name == copy.name))
-            .unwrap_or_else(|| panic!("`{}` has a home import", copy.name));
-        assert!(same(env.resolve_template(&copy.name), home));
-        assert_eq!(home.name, copy.name);
-        assert_eq!(home.content_hash, copy.content_hash);
+    for home in imported {
+        assert!(same(env.resolve_template(&home.name), home));
     }
 }
 
@@ -852,20 +849,30 @@ fn names_collision(
         && matches!((position(winner), position(shadowed)), (Some(w), Some(s)) if w < s)
 }
 
+/// Whether `diagnostic` is a Warning naming `name`, `winner` and `shadowed`,
+/// winner first, in any wording and under any kind word.
+fn mentions_collision(diagnostic: &Diagnostic, name: &str, winner: &str, shadowed: &str) -> bool {
+    let message = &diagnostic.message;
+    let position = |origin: &str| message.find(&format!("'{origin}'"));
+    diagnostic.severity == Severity::Warning
+        && message.contains(&format!("'{name}'"))
+        && matches!((position(winner), position(shadowed)), (Some(w), Some(s)) if w < s)
+}
+
 /// Every collision whose loser is a user import's definition is reported
 /// exactly once on the entry, whichever compile computes it: the entry's own
 /// (units', type aliases' and constraint defs' import-vs-import collisions,
 /// through its prelude seeds) or the program's collision report (every other
-/// one). The template row waits on the I5 merge's code-less second report.
+/// one). No second diagnostic reports it in another wording.
 #[test]
 fn each_import_tier_collision_has_exactly_one_reporter() {
     let fx = KindsFixture::new();
     let on_entry: Vec<&Diagnostic> = fx.program.entry().diagnostics.iter().collect();
-    for row in rows().into_iter().filter(|row| row.kind != "template") {
+    for row in rows() {
         for (name, winner, shadowed, _) in import_tier_collisions(&row) {
             let reports = on_entry
                 .iter()
-                .filter(|d| names_collision(d, row.kind, name, winner, shadowed))
+                .filter(|d| mentions_collision(d, name, winner, shadowed))
                 .count();
             assert_eq!(
                 reports, 1,

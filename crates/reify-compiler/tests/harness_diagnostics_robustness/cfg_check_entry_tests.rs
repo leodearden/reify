@@ -19,8 +19,10 @@ use std::path::Path;
 
 use reify_compiler::cfg::CfgSet;
 use reify_compiler::module_dag::ModuleResolver;
-use reify_compiler::program::compile_program_with_parsed_entry;
-use reify_core::Severity;
+use reify_compiler::TopologyTemplate;
+use reify_compiler::program::{CompiledProgram, compile_program_with_parsed_entry};
+use reify_compiler::program_scope::bind_program;
+use reify_core::{DiagnosticCode, Severity};
 use reify_ir::Satisfaction;
 use reify_test_support::mocks::MockConstraintChecker;
 
@@ -87,10 +89,15 @@ fn write_entry_fixtures(dir: &Path) {
     .unwrap();
 }
 
-/// Compile `main.ri` from `dir` under `cfg` and return the program's entry,
-/// first asserting the entry source parses cleanly (with the stdlib enum
-/// pre-seed) so a fixture typo cannot masquerade as a gating result.
+/// Compile `main.ri` from `dir` under `cfg` and return the program's entry.
 fn compile_main(dir: &Path, cfg: &CfgSet) -> reify_compiler::CompiledModule {
+    compile_main_program(dir, cfg).into_entry()
+}
+
+/// Compile `main.ri` from `dir` under `cfg`, first asserting the entry source
+/// parses cleanly (with the stdlib enum pre-seed) so a fixture typo cannot
+/// masquerade as a gating result.
+fn compile_main_program(dir: &Path, cfg: &CfgSet) -> CompiledProgram {
     let entry_path = dir.join("main.ri");
     let entry_src = fs::read_to_string(&entry_path).unwrap();
     let parsed =
@@ -109,7 +116,6 @@ fn compile_main(dir: &Path, cfg: &CfgSet) -> reify_compiler::CompiledModule {
         cfg,
         &MockConstraintChecker::new().with_default(Satisfaction::Indeterminate),
     )
-    .into_entry()
 }
 
 /// Under `target = "linux"`, the gated linux import is followed: `LinuxOnly`
@@ -167,40 +173,47 @@ fn entry_has_template(module: &reify_compiler::CompiledModule, name: &str) -> bo
     module.templates.iter().any(|t| t.name == name)
 }
 
-/// Pub templates from a cfg-satisfied import are merged into the entry's
-/// `compiled.templates` so cross-module entities resolve for downstream eval.
+/// The names of the templates `program` binds, in precedence order.
+fn bound_template_names(program: &CompiledProgram) -> Vec<&str> {
+    bind_program::<TopologyTemplate>(program, &[])
+        .winners()
+        .map(|t| t.name.as_str())
+        .collect()
+}
+
+/// The names of the templates the entry itself holds.
+fn entry_template_names(program: &CompiledProgram) -> Vec<&str> {
+    program
+        .entry()
+        .templates
+        .iter()
+        .map(|t| t.name.as_str())
+        .collect()
+}
+
+/// A cfg-satisfied import's pub templates bind in the program, after the
+/// entry's own, while the entry's template list holds only its own templates.
 ///
 /// `platform_linux` exports `pub structure def LinuxOnly`. Under `target="linux"`
-/// the import is followed and `LinuxOnly` is merged into the entry's templates;
-/// under `target="wasm"` the import is gated out and `LinuxOnly` is absent.
+/// the import is followed and `LinuxOnly` binds from it; under `target="wasm"`
+/// the import is gated out and `LinuxOnly` binds nowhere.
 #[test]
-fn entry_merges_pub_templates_from_cfg_satisfied_import() {
+fn a_cfg_satisfied_imports_pub_template_binds_through_the_program() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
     write_entry_fixtures(dir);
 
-    let compiled_linux = compile_main(dir, &target_cfg("linux"));
-    assert!(
-        entry_has_template(&compiled_linux, "LinuxOnly"),
-        "under target=linux the pub structure 'LinuxOnly' from the followed \
-         platform_linux import must be merged into entry.templates; templates: {:?}",
-        compiled_linux
-            .templates
-            .iter()
-            .map(|t| &t.name)
-            .collect::<Vec<_>>()
-    );
+    let linux = compile_main_program(dir, &target_cfg("linux"));
+    assert_eq!(entry_template_names(&linux), vec!["Entry"]);
+    assert_eq!(bound_template_names(&linux), vec!["Entry", "LinuxOnly"]);
+    assert_eq!(linux.imports[0].import_path, "platform_linux");
 
-    let compiled_wasm = compile_main(dir, &target_cfg("wasm"));
-    assert!(
-        !entry_has_template(&compiled_wasm, "LinuxOnly"),
-        "under target=wasm the platform_linux import is gated out, so 'LinuxOnly' \
-         must NOT be in entry.templates; templates: {:?}",
-        compiled_wasm
-            .templates
-            .iter()
-            .map(|t| &t.name)
-            .collect::<Vec<_>>()
+    let wasm = compile_main_program(dir, &target_cfg("wasm"));
+    assert_eq!(entry_template_names(&wasm), vec!["Entry"]);
+    assert_eq!(
+        bound_template_names(&wasm),
+        vec!["Entry", "WasmOnly"],
+        "under target=wasm the platform_linux import is gated out"
     );
 }
 
@@ -208,7 +221,7 @@ fn entry_merges_pub_templates_from_cfg_satisfied_import() {
 /// structure `Widget`, triggering the cross-import first-wins collision path.
 ///
 /// Both imports are gated on `#cfg(target = "linux")`, so compiling under
-/// `target = "linux"` follows both and the merge sees a name collision.
+/// `target = "linux"` follows both and the program binds a name twice.
 fn write_collision_fixtures(dir: &Path) {
     let entry_src = "#cfg(target = \"linux\")\nimport helper_a\n\
                      #cfg(target = \"linux\")\nimport helper_b\n\
@@ -230,58 +243,46 @@ fn write_collision_fixtures(dir: &Path) {
 }
 
 /// Two cfg-satisfied imports that both declare `pub structure Widget` collide:
-/// the merge keeps the first declarer (first-wins, `Widget` merged exactly once)
-/// and pushes a `Warning` naming both module origins. Exercises the
-/// cross-import collision branch of `merge_imported_pub_templates`.
+/// the program binds the first declarer (first-wins, `Widget` bound exactly
+/// once), and the entry carries one coded `DefinitionCollision` Warning naming
+/// both module origins, the winner first.
 #[test]
 fn entry_collision_between_two_cfg_satisfied_imports_emits_first_wins_warning() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
     write_collision_fixtures(dir);
 
-    let compiled = compile_main(dir, &target_cfg("linux"));
+    let program = compile_main_program(dir, &target_cfg("linux"));
 
-    // First-wins: 'Widget' is merged exactly once despite two declarers.
-    let widget_count = compiled
-        .templates
-        .iter()
-        .filter(|t| t.name == "Widget")
-        .count();
-    assert_eq!(
-        widget_count,
-        1,
-        "first-wins: 'Widget' must be merged exactly once; templates: {:?}",
-        compiled
-            .templates
-            .iter()
-            .map(|t| &t.name)
-            .collect::<Vec<_>>()
+    assert_eq!(bound_template_names(&program), vec!["Entry", "Widget"]);
+    let widget = bind_program::<TopologyTemplate>(&program, &[])
+        .get("Widget")
+        .expect("Widget binds");
+    assert!(
+        std::ptr::eq(widget, &program.imports[0].module.templates[0]),
+        "first-wins: 'Widget' binds helper_a's declaration"
     );
 
-    // A kind-neutral first-wins Warning names both colliding module origins.
-    let warning = compiled
+    let compiled = program.entry();
+    let warnings: Vec<&reify_core::Diagnostic> = compiled
         .diagnostics
         .iter()
-        .find(|d| {
-            d.severity == Severity::Warning
-                && d.message.contains("imported pub template")
-                && d.message.contains("Widget")
-                && d.message.contains("first-wins")
-        })
-        .unwrap_or_else(|| {
-            panic!(
-                "expected a first-wins collision Warning for 'Widget'; diagnostics: {:?}",
-                dump_diags(&compiled)
-            )
-        });
-    for origin in ["helper_a", "helper_b"] {
-        assert!(
-            warning.message.contains(&format!("'{}'", origin)),
-            "collision warning should name module '{}' in quoted form; got: {}",
-            origin,
-            warning.message
-        );
-    }
+        .filter(|d| d.message.contains("Widget"))
+        .collect();
+    assert_eq!(
+        warnings.len(),
+        1,
+        "expected exactly one collision report for 'Widget'; diagnostics: {:?}",
+        dump_diags(compiled)
+    );
+    let warning = warnings[0];
+    assert_eq!(warning.severity, Severity::Warning);
+    assert_eq!(warning.code, Some(DiagnosticCode::DefinitionCollision));
+    assert_eq!(
+        warning.message,
+        "structure 'Widget' declared in both 'helper_a' and 'helper_b'; \
+         first-wins: 'helper_a' binds"
+    );
 }
 
 /// Write a project whose entry follows an import of a module that does NOT exist
