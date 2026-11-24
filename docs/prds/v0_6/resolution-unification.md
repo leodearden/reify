@@ -443,6 +443,16 @@ runs against P1's landed net)
   `Engine::compiled_purposes`, a migration owned by follow-up ticket
   tkt_0RXBWT36GNPZN1B7WHSWRA555P (task #10495). Both kinds stay reachable through
   the qualified `DefEnv::resolve_in`, whose consumer is stdlib-namespace ν #5505.
+  Known interim gap, closed by κ: `ProgramRoot::Module` counts every template a module
+  holds as declared, so over an `into_entry()` module the graph also walks the
+  templates the I5 merge copied in from its imports. If such a copy's sub does not
+  resolve in the entry's env, the eval-time `UnknownSubStructure` Error now carries
+  the sub's span label, as the check-time one does. A `SourceSpan` carries no file
+  id, so that span indexes the import's source, and a renderer that positions labels
+  against the entry's text (the CLI's `diagnostic_line`) prints a position in the
+  entry file. The old eval loop's label-less Error had no position. The renderer is
+  not special-cased for this: κ's templates purity leaves `declared()` holding only
+  the entry's own templates, which removes the case.
 - **κ — Delete the interim: merge consumption + `find_template_with_prelude` +
   `Engine::prelude` statics; templates purity** *(leaf)*. Modules: reify-eval,
   reify-compiler, gui. Signals: #13, #14; `git grep find_template_with_prelude` empty;
