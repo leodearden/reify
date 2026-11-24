@@ -155,6 +155,16 @@ tests/infra/seed_warm_lane_harness.py  tests/infra/test_seed_depinfo_relocation.
 # promoted tree, pinned by a .py suite behind a thin .sh wrapper.
 scripts/tree-sitter-freshness.sh  tests/infra/test_tree_sitter_stale_run_eviction.sh
 tests/infra/test_tree_sitter_stale_run_eviction.py  tests/infra/test_tree_sitter_stale_run_eviction.sh
+# Its RefreshStep class pins refresh-warm-base.sh's Step 3d to that sibling
+# (fail-closed when missing); SeededLaneEnsure runs the promote -> real seed ->
+# lane ensure chain through both shared harness modules.
+scripts/refresh-warm-base.sh  tests/infra/test_tree_sitter_stale_run_eviction.sh
+scripts/seed-warm-lane.sh  tests/infra/test_tree_sitter_stale_run_eviction.sh
+tests/infra/refresh_warm_base_harness.py  tests/infra/test_tree_sitter_stale_run_eviction.sh
+tests/infra/seed_warm_lane_harness.py  tests/infra/test_tree_sitter_stale_run_eviction.sh
+# The real freshness script also runs in place inside test_refresh_warm_base.sh's
+# refreshes, as the evictor does, so a freshness edit selects that suite.
+scripts/tree-sitter-freshness.sh  tests/infra/test_refresh_warm_base.sh
 # Task 9246: the cron sweep of idle worktree targets exempts _merge-verify and
 # respects each worktree's lane lock, pinned by a .py suite behind a thin .sh
 # wrapper, same pair shape.

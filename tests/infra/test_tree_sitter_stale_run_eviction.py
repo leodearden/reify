@@ -12,6 +12,15 @@ plus each run's .fingerprint record. No case runs cargo. The stamp format is
 never re-derived here: fingerprint_of() asks the script's own
 --print-fingerprint.
 
+RefreshStep runs a COPY of scripts/refresh-warm-base.sh, staged by
+refresh_warm_base_harness beside the REAL freshness script, and pins its Step 3d.
+
+SeededLaneEnsure is the task's acceptance case, end to end with no cargo:
+_merge-verify's verify preflight (`ensure` in the build root), the refresh, the
+REAL scripts/seed-warm-lane.sh into a linked-worktree lane, then `ensure` in
+that lane. Its control arm stages the freshness sibling as a no-op stub and
+must reproduce the forced rebuild, so the acceptance case cannot pass vacuously.
+
 WHAT RUNS THIS: run_all.sh discovers `test_*.sh` only, so the discovered member
 is the thin wrapper tests/infra/test_tree_sitter_stale_run_eviction.sh.
 """
@@ -23,20 +32,26 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 INFRA_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(INFRA_DIR))
+import refresh_warm_base_harness as refresh_harness  # noqa: E402
 from refresh_warm_base_harness import env_without  # noqa: E402
+from seed_warm_lane_harness import Pool  # noqa: E402
 
 REPO_ROOT = INFRA_DIR.parents[1]
 FRESHNESS = REPO_ROOT / "scripts" / "tree-sitter-freshness.sh"
+FRESHNESS_SIBLING = FRESHNESS.name
 BASH = shutil.which("bash")
 
 SECOND_NS = 10 ** 9
 FIXTURE_NS = 1_600_000_000 * SECOND_NS
 OLDER_NS = FIXTURE_NS + 100 * SECOND_NS
 NEWER_NS = FIXTURE_NS + 200 * SECOND_NS
+# seed-warm-lane.sh's bulk stamp, `touch -d 2020-01-01T00:00:00`: local time.
+SEED_STAMP_NS = int(datetime(2020, 1, 1).timestamp()) * SECOND_NS
 
 TS_PACKAGE = "tree-sitter-reify"
 ARCHIVE = "libtree_sitter_reify.a"
@@ -78,6 +93,12 @@ def make_ws(root):
     for rel, text in WS_INPUTS.items():
         write_file(root / TS_PACKAGE / rel, text)
     return root
+
+
+def build_root_files():
+    """The tracked files of a build root that ignores its target/."""
+    return {".gitignore": "/target\n",
+            **{f"{TS_PACKAGE}/{rel}": text for rel, text in WS_INPUTS.items()}}
 
 
 def bare_env():
@@ -361,6 +382,143 @@ class EvictStale(unittest.TestCase):
         self.assertIn("FRESH", ensured.stdout)
         self.assertNotIn("touched", ensured.stdout)
         self.assertEqual([path.stat().st_mtime_ns for path in inputs], before)
+
+
+class RefreshStep(unittest.TestCase):
+    """refresh-warm-base.sh's Step 3d runs the freshness sibling's evict-stale
+    on the staging copy, judged against the advancing worktree. The lane is a
+    git repository on main whose untracked target/ advances."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory(prefix="test-ts-evict-refresh-")
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(tmp.name).resolve()
+        self.stub_dir = self.tmp / "stub-bin"
+        self.stub_dir.mkdir()
+        refresh_harness.install_cp_stub(self.stub_dir)
+        self.lane = self.tmp / "lane"
+        for rel, text in build_root_files().items():
+            write_file(self.lane / rel, text)
+        refresh_harness.init_lane(self.lane)
+        refresh_harness.git(self.lane, "add", "--", ".")
+        self.head = refresh_harness.commit(self.lane, "-m", "fixture: advancing workspace")
+        self.advancing = self.lane / "target"
+        fp = fingerprint_of(self.lane / TS_PACKAGE)
+        self.current = write_ts_run_dir(self.advancing, "debug", "1111111111111111", fp,
+                                        NEWER_NS)
+        self.stale = write_ts_run_dir(self.advancing, "debug", "2222222222222222",
+                                      PRE_9896_STAMP, OLDER_NS)
+        self.compile = write_ts_compile_dir(self.advancing, "debug", "5555555555555555")
+        self.base = self.tmp / "base"
+
+    def run_refresh(self, real=(FRESHNESS_SIBLING,), absent=()):
+        refresh = refresh_harness.stage_refresh(self.tmp / "scripts", real=real, absent=absent)
+        return refresh_harness.run_refresh(refresh, self.stub_dir, self.advancing, self.base,
+                                           self.head)
+
+    def in_gen(self, path):
+        return Path(os.readlink(self.base)) / path.relative_to(self.advancing)
+
+    def test_the_new_gen_loses_the_stale_run_and_keeps_the_rest(self):
+        kept = [*self.current, *self.compile]
+        before = {str(path): tree_snapshot(path) for path in kept}
+
+        result = self.run_refresh()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
+        for path in self.stale:
+            self.assertFalse(os.path.lexists(self.in_gen(path)), f"{path} was promoted")
+        self.assertEqual({str(path): tree_snapshot(self.in_gen(path)) for path in kept}, before)
+        self.assertIn(f"evicted {self.stale[0].relative_to(self.advancing)} ", result.stderr)
+
+    def test_the_advancing_target_is_untouched(self):
+        before = tree_snapshot(self.advancing)
+
+        result = self.run_refresh()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(tree_snapshot(self.advancing), before)
+
+    def test_a_missing_freshness_sibling_fails_the_refresh_closed(self):
+        result = self.run_refresh(real=(), absent=(FRESHNESS_SIBLING,))
+
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(os.path.lexists(self.base), "the base advanced without the eviction")
+        self.assertEqual(sorted(self.tmp.glob("base.gen.*.partial")), [])
+
+
+class SeededLaneEnsure(unittest.TestCase):
+    """Promote, seed, then a lane's verify preflight. The build root's target
+    carries a live current run dir and a dormant pre-#9896 one, as gen.656 did;
+    `ensure` in the build root writes the ledger and its mtime witness first,
+    as _merge-verify's own verify preflight does."""
+
+    def setUp(self):
+        tmp = Path(tempfile.mkdtemp(prefix="test-ts-evict-seed-")).resolve()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        self.tmp = tmp
+        self.pool = Pool(tmp, "build-root")
+        self.pool.write_build_root(build_root_files())
+        self.pool.commit_build_root()
+        build_ts = self.pool.build_root / TS_PACKAGE
+        self.advancing = self.pool.build_root / "target"
+        fp = fingerprint_of(build_ts)
+        write_ts_run_dir(self.advancing, "debug", "1111111111111111", fp, NEWER_NS)
+        self.stale = write_ts_run_dir(self.advancing, "debug", "2222222222222222",
+                                      PRE_9896_STAMP, OLDER_NS)
+        preflight = run_freshness("ensure", env=seam_env(build_ts, self.advancing))
+        self.assertEqual(preflight.returncode, 0, preflight.stderr)
+        self.stub_dir = tmp / "refresh-stub-bin"
+        self.stub_dir.mkdir()
+        refresh_harness.install_cp_stub(self.stub_dir)
+        self.base = tmp / "base" / "target"
+        self.base.parent.mkdir()
+
+    def promote_seed_and_ensure(self, real):
+        """Refresh the base from the build root with the freshness sibling real
+        (or a no-op stub), seed a fresh lane from the new gen, and run `ensure`
+        in it. Returns (gen, lane's watched-input mtimes after the seed,
+        ensure's result, the mtimes after ensure)."""
+        refresh = refresh_harness.stage_refresh(self.tmp / "scripts", real=real)
+        refreshed = refresh_harness.run_refresh(refresh, self.stub_dir, self.advancing,
+                                                self.base, self.pool.base_commit)
+        self.assertEqual(refreshed.returncode, 0, refreshed.stderr)
+        gen = Path(os.readlink(self.base))
+        lane = self.pool.add_lane("_lane-1")
+        seeded = self.pool.seed(lane, gen=gen)
+        self.assertEqual(seeded.returncode, 0, seeded.stderr)
+        self.assertEqual(seeded.stdout, f"{lane / 'target'}\n", seeded.stderr)
+        inputs = [lane / TS_PACKAGE / rel for rel in WATCHED_INPUTS]
+        seeded_mtimes = [path.stat().st_mtime_ns for path in inputs]
+        ensured = run_freshness("ensure", env=seam_env(lane / TS_PACKAGE, lane / "target"))
+        return gen, seeded_mtimes, ensured, [path.stat().st_mtime_ns for path in inputs]
+
+    def in_gen(self, gen, path):
+        return gen / path.relative_to(self.advancing)
+
+    def test_a_seeded_lanes_ensure_is_fresh_and_keeps_the_seed_stamp(self):
+        gen, seeded, ensured, after = self.promote_seed_and_ensure(real=(FRESHNESS_SIBLING,))
+
+        for path in self.stale:
+            self.assertFalse(os.path.lexists(self.in_gen(gen, path)), f"{path} was promoted")
+        self.assertEqual(ensured.returncode, 0, ensured.stderr)
+        self.assertIn("FRESH", ensured.stdout)
+        self.assertNotIn("touched", ensured.stdout)
+        self.assertEqual(seeded, [SEED_STAMP_NS] * len(WATCHED_INPUTS))
+        self.assertEqual(after, seeded)
+
+    def test_control_without_the_eviction_the_lanes_ensure_forces(self):
+        gen, seeded, ensured, after = self.promote_seed_and_ensure(real=())
+
+        self.assertTrue(self.in_gen(gen, self.stale[0] / "out" / ARCHIVE).is_file(),
+                        "the control's gen must carry the stale run dir")
+        self.assertEqual(ensured.returncode, 0, ensured.stderr)
+        for rel in WATCHED_INPUTS:
+            self.assertIn(f"touched {rel}", ensured.stdout)
+        self.assertEqual(seeded, [SEED_STAMP_NS] * len(WATCHED_INPUTS))
+        for before, now in zip(seeded, after):
+            self.assertGreater(now, before)
 
 
 if __name__ == "__main__":
