@@ -343,8 +343,9 @@ source "$_RA_MEMBER_BUDGET_LIB"
 
 # ---------------------------------------------------------------------------
 # Per-member TMPDIR (task 10372): member_tmpdir_run gives each member a private
-# TMPDIR, removed when the member exits, and member_tmpdir_reap removes the ones
-# a killed run left behind. Hard-required for the scrub's reason above: every
+# TMPDIR, removed when the member exits unless a process it left behind still
+# has it as TMPDIR, and member_tmpdir_reap removes the ones a killed run, or such
+# a process, left behind. Hard-required for the scrub's reason above: every
 # branch spawns members.
 # ---------------------------------------------------------------------------
 _RA_MEMBER_TMPDIR_LIB="$SCRIPT_DIR/run-all-member-tmpdir-lib.sh"

@@ -12,7 +12,8 @@ tests/infra/run-all-member-tmpdir-lib.sh:
     <root>/reify-ra-tmp.* dir, holds a flock lease on that dir which <cmd> does
     not inherit, and removes the dir when <cmd> exits;
   - member_tmpdir_reap <root> removes the reify-ra-tmp.* dirs under <root>
-    whose lease is free and whose mtime is over a minute old.
+    whose lease is free and whose mtime is over a minute old;
+  - neither removes a dir that a live process was started with as its TMPDIR.
 
 The lib classes drive those two functions through `bash -c 'source <lib>; ...'`
 in a private root. RunAllWiring EXECUTES the real tests/infra/run_all.sh on a
@@ -32,6 +33,7 @@ import contextlib
 import fcntl
 import os
 import re
+import select
 import shutil
 import signal
 import subprocess
@@ -81,6 +83,15 @@ WAITING_CHILD = r"""#!/usr/bin/env bash
 printf '%s\n' "$TMPDIR"
 read -r _
 exit 0
+"""
+
+# Records its TMPDIR, and leaves behind a process that was started with that
+# TMPDIR and lives until the caller's stdin closes; records that process's pid.
+HOLDER_CHILD = r"""#!/usr/bin/env bash
+printf '%s\n' "$TMPDIR" > "$STATE_DIR/tmpdir"
+exec 3<&0
+cat <&3 >/dev/null 2>&1 3<&- &
+printf '%s\n' "$!" > "$STATE_DIR/holder.pid"
 """
 
 
@@ -314,8 +325,54 @@ class MemberTmpdirReap(LibHarness):
         self.assertFalse(os.path.lexists(tmpdir))
 
 
+class StillInUse(LibHarness):
+    """A process a member leaves behind that was started with the member's
+    TMPDIR, such as a cache server its cargo respawned, keeps that dir: run
+    does not remove it, and reap removes it only once that process is gone."""
+
+    def test_a_dir_a_live_process_has_as_tmpdir_is_kept_until_that_process_exits(self):
+        proc = self.spawn("member_tmpdir_run", self.root, self.child("holder", HOLDER_CHILD))
+        self.assertEqual(proc.wait(timeout=HANG_GUARD_S), 0)
+        holder = self.pidfd(int((self.state / "holder.pid").read_text()))
+        tmpdir = self.recorded_tmpdir()
+
+        self.assertTrue(tmpdir.is_dir(), "the dir was removed under a live process")
+        naming = [line for line in proc.stderr.read().splitlines() if str(tmpdir) in line]
+        self.assertEqual(len(naming), 1, naming)
+
+        backdate(tmpdir)
+        result = self.reap()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(tmpdir.is_dir(), "the reap removed the dir under a live process")
+        self.assertNotIn("reaped", result.stderr)
+
+        proc.stdin.close()
+        ready, _, _ = select.select([holder], [], [], HANG_GUARD_S)
+        self.assertTrue(ready, "the holder did not exit when its stdin closed")
+        result = self.reap()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(os.path.lexists(tmpdir))
+        self.assertIn(f"reaped 1 stale member TMPDIR(s) under {self.root}", result.stderr)
+
+    def pidfd(self, pid):
+        """A pidfd on <pid>, readable once it exits; the cleanup SIGKILLs it first."""
+        fd = os.pidfd_open(pid)
+        self.addCleanup(os.close, fd)
+        self.addCleanup(self.kill, fd)
+        return fd
+
+    @staticmethod
+    def kill(pidfd):
+        with contextlib.suppress(ProcessLookupError):
+            signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+
+
 # RunAllWiring's members. Each records its TMPDIR to
 # $FIXTURE_STATE/<name>.tmpdir and litters it; @TOKEN@ is the fixture's token.
+# The hanging member execs its sleep, so the one process that has its TMPDIR is
+# the one timeout waits for, and none is left alive to keep the dir.
 LITTER_MEMBER = r"""#!/usr/bin/env bash
 printf '%s\n' "$TMPDIR" > "$FIXTURE_STATE/$(basename "$0").tmpdir"
 nested="$(mktemp -d)"
@@ -331,7 +388,7 @@ WIRING_MEMBERS = {
     "test_hang_litter.sh": r"""#!/usr/bin/env bash
 printf '%s\n' "$TMPDIR" > "$FIXTURE_STATE/$(basename "$0").tmpdir"
 mkdir "$TMPDIR/hang-litter"
-bash -c 'exec -a @TOKEN@ sleep 300'
+exec -a @TOKEN@ sleep 300
 """,
 }
 

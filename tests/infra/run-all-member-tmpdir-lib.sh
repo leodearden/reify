@@ -21,8 +21,18 @@
 #
 # NOT INHERITED. The command runs with the lease fd closed, so neither the
 # member nor a background child it leaves behind holds it: run_all's rule that
-# no member holds a lock fd the run opened. A stray child therefore cannot keep
-# its dead member's dir alive forever.
+# no member holds a lock fd the run opened.
+#
+# STILL IN USE. A process a member started can outlive it and still work in
+# its TMPDIR: an sccache server that a member's cargo respawned runs with the
+# member's environment and makes a temp dir under TMPDIR for every compile, so
+# removing the dir would fail every compile routed to it. Removal therefore
+# first scans /proc/<pid>/environ, and keeps the dir, with one stderr line,
+# while any live process this user can read was started with TMPDIR=<dir>.
+# The first reap after that process exits collects the dir. The scan matches
+# TMPDIR=<dir> exactly, in the environment a process was started with: a
+# process that moved TMPDIR to a subdir, or uses the dir by another name, is
+# not seen.
 #
 # THE CREATION RACE. mktemp creates the dir a moment before the lease is
 # taken. member_tmpdir_reap only considers dirs whose mtime is more than a
@@ -39,10 +49,20 @@ if [ "${_REIFY_RUN_ALL_MEMBER_TMPDIR_LIB_SOURCED:-}" = "1" ]; then
 fi
 _REIFY_RUN_ALL_MEMBER_TMPDIR_LIB_SOURCED=1
 
+# _member_tmpdir_in_use <dir>: whether a live process this user can read was
+# started with TMPDIR=<dir>.
+_member_tmpdir_in_use() {
+    grep -qsxzF -e "TMPDIR=$1" -- /proc/[0-9]*/environ
+}
+
 # _member_tmpdir_remove <dir>: rm -rf <dir>, retrying once with every entry
-# made writable, since a member may leave a dir it cannot write into. One
-# stderr warning, and status 1, when the dir survives both attempts.
+# made writable, since a member may leave a dir it cannot write into. Status 1,
+# with one stderr line, when the dir is still in use or survives both attempts.
 _member_tmpdir_remove() {
+    if _member_tmpdir_in_use "$1"; then
+        printf 'run_all.sh: keeping member TMPDIR %s: a live process still has it as TMPDIR; a later run reaps it.\n' "$1" >&2
+        return 1
+    fi
     rm -rf -- "$1" 2>/dev/null && return 0
     chmod -R u+rwx -- "$1" 2>/dev/null || true
     rm -rf -- "$1" 2>/dev/null && return 0
@@ -52,9 +72,10 @@ _member_tmpdir_remove() {
 
 # member_tmpdir_run <root> <cmd> [arg...]
 #   Runs <cmd> with TMPDIR set to a fresh <root>/reify-ra-tmp.XXXXXX dir it
-#   holds the lease on, removes that dir when <cmd> exits, and exits with
-#   <cmd>'s status. When the dir cannot be created or leased, it warns once on
-#   stderr naming <root> and runs <cmd> with the inherited TMPDIR.
+#   holds the lease on, removes that dir when <cmd> exits unless it is still in
+#   use, and exits with <cmd>'s status. When the dir cannot be created or
+#   leased, it warns once on stderr naming <root> and runs <cmd> with the
+#   inherited TMPDIR.
 member_tmpdir_run() (
     _mt_root="$1"
     shift
@@ -78,10 +99,10 @@ member_tmpdir_run() (
 
 # member_tmpdir_reap <root>
 #   Removes every <root>/reify-ra-tmp.* that is a directory (never a symlink),
-#   owned by this user, last modified more than a minute ago, and not leased.
-#   A leased dir is a live run's and is kept; a lease that cannot be probed
-#   keeps the dir with one stderr warning. Says on stderr how many it removed,
-#   when any. Always exits 0.
+#   owned by this user, last modified more than a minute ago, not leased, and
+#   not still in use. A leased dir is a live run's and is kept; a lease that
+#   cannot be probed keeps the dir with one stderr warning. Says on stderr how
+#   many it removed, when any. Always exits 0.
 member_tmpdir_reap() (
     _mt_root="$1"
     _mt_reaped=0
