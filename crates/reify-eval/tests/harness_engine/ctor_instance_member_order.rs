@@ -2,10 +2,11 @@
 //! `instance_scope_param_default_order.rs` (task #10098).
 //!
 //! A structure instance built by a constructor EXPRESSION — `let primary =
-//! Beam()`, a param-held ctor default, a fn-returned ctor — is evaluated by
-//! reify-expr's structure-ctor evaluator, not by `unfold.rs`. Its param
-//! defaults and lets may read one another in either direction, exactly as at
-//! template scope and under a `sub`.
+//! Beam()`, a param-held ctor default, a fn-returned ctor, a list element, a
+//! ctor nested in another ctor's default — is evaluated by reify-expr's
+//! structure-ctor evaluator, not by `unfold.rs`. Its param defaults and lets
+//! may read one another in either direction, exactly as at template scope and
+//! under a `sub`.
 //!
 //! The property these tests pin is AGREEMENT: each ctor-built field is
 //! compared against the template cell (and the `sub` cell where one exists)
@@ -43,15 +44,27 @@ fn cell(result: &EvalResult, entity: &str, member: &str) -> Value {
         .unwrap_or_else(|| panic!("no cell {entity}.{member} after eval"))
 }
 
+/// A field of the structure instance `instance`, described as `what`.
+#[track_caller]
+fn instance_field(instance: &Value, what: &str, member: &str) -> Value {
+    match instance {
+        Value::StructureInstance(data) => data
+            .fields
+            .get(member)
+            .cloned()
+            .unwrap_or_else(|| panic!("{what} has no `{member}` field: {:?}", data.fields)),
+        other => panic!("{what} must hold a StructureInstance, got {other:?}"),
+    }
+}
+
 /// A field of the structure instance held by cell `host.holder`.
 #[track_caller]
 fn ctor_field(result: &EvalResult, host: &str, holder: &str, member: &str) -> Value {
-    match cell(result, host, holder) {
-        Value::StructureInstance(data) => data.fields.get(member).cloned().unwrap_or_else(|| {
-            panic!("{host}.{holder} has no `{member}` field: {:?}", data.fields)
-        }),
-        other => panic!("{host}.{holder} must hold a StructureInstance, got {other:?}"),
-    }
+    instance_field(
+        &cell(result, host, holder),
+        &format!("{host}.{holder}"),
+        member,
+    )
 }
 
 /// The number a resolved numeric field holds; the Real representation is not
@@ -194,4 +207,48 @@ fn param_held_and_fn_returned_ctors_agree_with_template_scope() {
     assert_ctor_field_agrees(&result, "Holder", "b", "n", 4.0);
     assert_ctor_field_agrees(&result, "Host", "via_fn", "n", 4.0);
     assert_no_error_diagnostics(&result, "param-held and fn-returned ctors");
+}
+
+#[test]
+fn list_element_and_nested_ctors_agree_with_template_scope() {
+    let result = eval_source(&format!(
+        "{MIXED_CHAIN_BEAM} \
+         structure Wrap {{ param inner : Beam = Beam() }} \
+         structure Host {{ \
+             let items = [Beam(), Beam()] \
+             let wrapped = Wrap() \
+         }}"
+    ));
+
+    let template = cell(&result, "Beam", "n");
+    assert_eq!(
+        number(&template, "template Beam.n"),
+        4.0,
+        "template scope must resolve Beam.n; otherwise the agreement below \
+         measures nothing"
+    );
+
+    let items = match cell(&result, "Host", "items") {
+        Value::List(items) => items,
+        other => panic!("Host.items must hold a List, got {other:?}"),
+    };
+    assert_eq!(items.len(), 2, "Host.items must hold both Beams");
+    for (i, item) in items.iter().enumerate() {
+        let what = format!("Host.items[{i}]");
+        assert_eq!(
+            instance_field(item, &what, "n"),
+            template,
+            "{what}.n must agree with template Beam.n: a list element is built \
+             by the same ctor evaluator as a let-held instance"
+        );
+    }
+
+    let inner = ctor_field(&result, "Host", "wrapped", "inner");
+    assert_eq!(
+        instance_field(&inner, "Host.wrapped.inner", "n"),
+        template,
+        "Host.wrapped.inner.n must agree with template Beam.n: a ctor nested in \
+         another ctor's default evaluates its own members in dependency order"
+    );
+    assert_no_error_diagnostics(&result, "list-element and nested ctors");
 }
