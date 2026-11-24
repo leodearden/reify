@@ -1455,19 +1455,11 @@
     }
 
     fn revolve_with_angle(angle: reify_ir::CompiledExpr) -> CompiledGeometryOp {
-        CompiledGeometryOp::Sweep {
-            kind: SweepKind::Revolve,
-            profiles: vec![GeomRef::Step(0)],
-            args: vec![
-                ("ox".into(), literal_length(0.0)),
-                ("oy".into(), literal_length(0.0)),
-                ("oz".into(), literal_length(0.0)),
-                ("ax".into(), literal_f64(0.0)),
-                ("ay".into(), literal_f64(1.0)),
-                ("az".into(), literal_f64(0.0)),
-                ("angle".into(), angle),
-            ],
-        }
+        revolve_direction_form(
+            reify_test_support::point3(0.0, 0.0, 0.0),
+            reify_test_support::direction_val(0.0, 1.0, 0.0),
+            angle,
+        )
     }
 
     fn arc_with_angles(
@@ -1647,8 +1639,9 @@
     /// untouched beside it and the stored `angle_rad` unchanged.
     ///
     /// This is the assertion that stops γ from being "reject everything": the
-    /// ax/ay/az unit-vector components in every one of these fixtures stay
-    /// bare, and must keep producing no diagnostic at all.
+    /// ax/ay/az unit-vector components in these fixtures stay bare (revolve's
+    /// axis is a `Direction` since task 9647), and must keep producing no
+    /// diagnostic at all.
     #[test]
     fn compile_geometry_op_dimensioned_angle_compiles_clean_with_bare_axis() {
         for (builtin, arg_name, build) in gamma_angle_sites() {
@@ -1998,8 +1991,8 @@
         }
     }
 
-    // Constants `DEGENERATE_LENGTH_M`, `DEGENERATE_ANGLE_RAD`, and
-    // `GEOMETRY_EPSILON` (top of file) are not pinned by a standalone unit
+    // Constants `DEGENERATE_LENGTH_M` and `DEGENERATE_ANGLE_RAD` (top of
+    // file) are not pinned by a standalone unit
     // test — that would just restate the `const` definitions. Their behavior
     // is pinned by the boundary tests that drive the guards they feed:
     //   - `build_extrude_distance_{just_below,at}_threshold_*` (geometry_error_handling.rs)
@@ -3044,19 +3037,11 @@
         let values = ValueMap::new();
 
         // Revolve with a near-zero (1e-15 rad) angle — should return None (degenerate geometry)
-        let op = CompiledGeometryOp::Sweep {
-            kind: SweepKind::Revolve,
-            profiles: vec![GeomRef::Step(0)],
-            args: vec![
-                ("ox".into(), literal_length(0.0)),
-                ("oy".into(), literal_length(0.0)),
-                ("oz".into(), literal_length(0.0)),
-                ("ax".into(), literal_f64(0.0)),
-                ("ay".into(), literal_f64(0.0)),
-                ("az".into(), literal_f64(1.0)),
-                ("angle".into(), literal_angle(1e-15)),
-            ],
-        };
+        let op = revolve_direction_form(
+            reify_test_support::point3(0.0, 0.0, 0.0),
+            reify_test_support::direction_val(0.0, 0.0, 1.0),
+            literal_angle(1e-15),
+        );
 
         let mut diagnostics = Vec::new();
         let result = compile_geometry_op(
@@ -3088,19 +3073,11 @@
         let step_handles = vec![GeometryHandleId(55)];
         let values = ValueMap::new();
 
-        let op = CompiledGeometryOp::Sweep {
-            kind: SweepKind::Revolve,
-            profiles: vec![GeomRef::Step(0)],
-            args: vec![
-                ("ox".into(), literal_length(0.0)),
-                ("oy".into(), literal_length(0.0)),
-                ("oz".into(), literal_length(0.0)),
-                ("ax".into(), literal_f64(0.0)),
-                ("ay".into(), literal_f64(0.0)),
-                ("az".into(), literal_f64(1.0)),
-                ("angle".into(), literal_angle(std::f64::consts::TAU)),
-            ],
-        };
+        let op = revolve_direction_form(
+            reify_test_support::point3(0.0, 0.0, 0.0),
+            reify_test_support::direction_val(0.0, 0.0, 1.0),
+            literal_angle(std::f64::consts::TAU),
+        );
 
         let result = compile_geometry_op(
             &op,
@@ -5595,8 +5572,7 @@
     ///   * `revolve`'s `angle` belonged to
     ///     `docs/prds/v0_6/angle-units-surface-convergence.md` (PRD 3), which
     ///     GATED it in leaf γ (task 5779) —
-    ///     [`compile_geometry_op_revolve_length_origin_bare_axis_dimensioned_angle_accepted`]
-    ///     now locks the surviving half, that the bare AXIS stays un-gated.
+    ///     [`compile_geometry_op_bare_angle_is_rejected_at_all_five_producer_sites`].
     ///
     /// Both are CITED here rather than duplicated: a second copy of a negative
     /// lock is a second thing to forget to update.
@@ -8887,20 +8863,12 @@
             diagnostics
         );
 
-        // Sweep::Revolve — all seven args present with a valid axis
-        let revolve_op = CompiledGeometryOp::Sweep {
-            kind: reify_compiler::SweepKind::Revolve,
-            profiles: vec![reify_compiler::GeomRef::Step(0)],
-            args: vec![
-                ("ox".into(), literal_length(0.0)),
-                ("oy".into(), literal_length(0.0)),
-                ("oz".into(), literal_length(0.0)),
-                ("ax".into(), literal_f64(0.0)),
-                ("ay".into(), literal_f64(0.0)),
-                ("az".into(), literal_f64(1.0)),
-                ("angle".into(), literal_angle(std::f64::consts::PI)),
-            ],
-        };
+        // Sweep::Revolve — every arg of the Direction form present and valid
+        let revolve_op = revolve_direction_form(
+            reify_test_support::point3(0.0, 0.0, 0.0),
+            reify_test_support::direction_val(0.0, 0.0, 1.0),
+            literal_angle(std::f64::consts::PI),
+        );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         let result = compile_geometry_op(
             &revolve_op,
@@ -9380,9 +9348,9 @@
     ///   (a) a BARE `Value::Real` — the 1000× hazard itself (`5` silently read
     ///       as 5 SI **metres** by `Value::as_f64` instead of 5 mm);
     ///   (b) a WRONG-DIMENSION `Value::Scalar` — an ANGLE Scalar (a live
-    ///       argument-order slip: `rotate_around` and `revolve` are
-    ///       8-positional-arg signatures ENDING in an angle, and `arc` carries
-    ///       two) and a DIMENSIONLESS Scalar (the likeliest silent-regression
+    ///       argument-order slip: `rotate_around` and `revolve` both END in
+    ///       an angle, and `arc` carries two) and a DIMENSIONLESS Scalar (the
+    ///       likeliest silent-regression
     ///       path, since eval arithmetic can collapse to a dimensionless
     ///       `Scalar` rather than a `Real` and would sneak past a `Real`-shaped
     ///       guard);
@@ -9818,31 +9786,23 @@
     // ---------------------------------------------------------------------------
     // `revolve`'s axis ORIGIN (task 5623, R1 sweep)
     //
-    // ARG-VECTOR ORDER TRAP: the DSL surface is
-    // `revolve(profile, ox, oy, oz, ax, ay, az, angle)`, but the `args` vector
-    // built by the existing unit tests and by the characterization harness is
-    // `ax, ay, az, angle, ox, oy, oz`. Everything here is keyed on the arg
-    // NAME, which is what `sweep_revolve` reads.
+    // Since task 9647 the origin is one `point3(..)` value, gated per component
+    // under the `ox`/`oy`/`oz` names the retired scalar form used.
     // ---------------------------------------------------------------------------
 
-    /// Build a `revolve` op from its three gated axis-ORIGIN components, in
-    /// gate order, holding the axis (+Z) and angle fixed and BARE.
+    /// Build a `revolve` op whose `origin` Point carries the given components,
+    /// holding the direction (+Z) and angle fixed and valid. The gate tables
+    /// hand in literals only.
     fn revolve_with_origin(c: &[reify_ir::CompiledExpr]) -> CompiledGeometryOp {
-        CompiledGeometryOp::Sweep {
-            kind: SweepKind::Revolve,
-            profiles: vec![GeomRef::Step(0)],
-            args: vec![
-                ("ox".into(), c[0].clone()),
-                ("oy".into(), c[1].clone()),
-                ("oz".into(), c[2].clone()),
-                // Axis DIRECTION is a dimensionless unit vector → stays bare.
-                ("ax".into(), literal_f64(0.0)),
-                ("ay".into(), literal_f64(0.0)),
-                ("az".into(), literal_f64(1.0)),
-                // ANGLE is PRD 3's, never ours → stays bare.
-                ("angle".into(), literal_angle(std::f64::consts::PI)),
-            ],
-        }
+        let component = |e: &reify_ir::CompiledExpr| match &e.kind {
+            reify_ir::CompiledExprKind::Literal(v) => v.clone(),
+            other => panic!("revolve_with_origin takes literal components, got {other:?}"),
+        };
+        revolve_direction_form(
+            reify_ir::Value::Point(c.iter().map(component).collect()),
+            reify_test_support::direction_val(0.0, 0.0, 1.0),
+            literal_angle(std::f64::consts::PI),
+        )
     }
 
     /// `revolve`'s row in the shared gate table — the axis ORIGIN only.
@@ -9857,63 +9817,6 @@
     #[test]
     fn compile_geometry_op_revolve_length_gate_rejects_every_component() {
         assert_length_gated(REVOLVE_GATE);
-    }
-
-    /// Locks the split: a `Length` origin with a BARE dimensionless axis and a
-    /// DIMENSIONED angle is the fully clean path and must emit NO diagnostic.
-    ///
-    /// Inverted by PRD 3 leaf γ (task 5779) for the same reason as its
-    /// `rotate_around` sibling above: the angle half used to assert that a BARE
-    /// angle emitted nothing, on the premise that `revolve`'s angle was PRD 3's
-    /// and not PRD 1's to gate. γ is PRD 3. The surviving lock is the AXIS,
-    /// which stays dimensionless (C1 inv. 4).
-    ///
-    /// Distinct components also pin the ox/oy/oz → `axis_origin` ORDERING.
-    #[test]
-    fn compile_geometry_op_revolve_length_origin_bare_axis_dimensioned_angle_accepted() {
-        let step_handles = vec![GeometryHandleId(42)];
-        let values = ValueMap::new();
-
-        let op = revolve_with_origin(&[
-            literal_length(0.012),
-            literal_length(0.034),
-            literal_length(0.056),
-        ]);
-
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let result = compile_geometry_op(
-            &op,
-            &values,
-            &step_handles,
-            &[],
-            &HashMap::new(),
-            &HashMap::new(),
-            &mut diagnostics,
-        );
-        match result {
-            Ok(reify_ir::GeometryOp::Revolve {
-                axis_origin,
-                axis_dir,
-                angle_rad,
-                ..
-            }) => {
-                assert_eq!(axis_origin, [0.012, 0.034, 0.056]);
-                assert_eq!(axis_dir, [0.0, 0.0, 1.0]);
-                assert_eq!(angle_rad, std::f64::consts::PI);
-            }
-            other => panic!(
-                "expected Ok(Revolve) for a Length origin with a bare axis and a \
-                 dimensioned angle, got {:?}",
-                other
-            ),
-        }
-        assert!(
-            diagnostics.is_empty(),
-            "a Length origin + BARE dimensionless axis + dimensioned angle is the \
-             fully clean path and must emit NO diagnostic at all — in particular \
-             the bare AXIS must not be gated (C1 inv. 4); got: {:?}",
-            diagnostics
-        );
     }
 
     // ---------------------------------------------------------------------------
@@ -9958,7 +9861,10 @@
         }
     }
 
-    fn revolve_axis_form(axis: reify_ir::Value, angle: reify_ir::CompiledExpr) -> CompiledGeometryOp {
+    fn revolve_axis_form(
+        axis: reify_ir::Value,
+        angle: reify_ir::CompiledExpr,
+    ) -> CompiledGeometryOp {
         CompiledGeometryOp::Sweep {
             kind: SweepKind::Revolve,
             profiles: vec![GeomRef::Step(0)],
@@ -10090,6 +9996,20 @@
             !diagnostics.iter().any(|d| d.message.contains("revolve dropped")),
             "got: {diagnostics:?}"
         );
+    }
+
+    #[test]
+    fn compile_geometry_op_revolve_undef_origin_is_unresolved() {
+        let (result, diagnostics) = run_compile(&revolve_direction_form(
+            reify_ir::Value::Undef,
+            reify_test_support::direction_val(0.0, 0.0, 1.0),
+            literal_angle(std::f64::consts::PI),
+        ));
+        assert_eq!(
+            result.expect_err("an Undef origin must drop the op"),
+            unresolved_arg_message("origin", "revolve")
+        );
+        assert!(diagnostics.is_empty(), "got: {diagnostics:?}");
     }
 
     #[test]
@@ -12647,26 +12567,24 @@
     /// the missing argument and the op kind, so callers can emit a specific
     /// Error diagnostic instead of a generic one.
     ///
-    /// Uses Revolve missing `ox` as the representative case because Revolve has
-    /// the most required f64 args (7) and `ox` is the last one resolved, making
-    /// it easy to isolate without triggering other validation guards.
+    /// Uses Revolve missing `direction` as the representative case: every other
+    /// argument is valid, so no other validation guard can fire.
     #[test]
     fn compile_geometry_op_missing_arg_returns_err_with_arg_name() {
         let step_handles = vec![GeometryHandleId(1)];
         let values = ValueMap::new();
 
-        // Revolve with all required args EXCEPT ox — drives the Result API.
+        // Revolve with all required args EXCEPT direction — drives the Result API.
         let op = CompiledGeometryOp::Sweep {
             kind: SweepKind::Revolve,
             profiles: vec![GeomRef::Step(0)],
             args: vec![
-                ("oy".into(), literal_length(0.0)),
-                ("oz".into(), literal_length(0.0)),
-                ("ax".into(), literal_f64(0.0)),
-                ("ay".into(), literal_f64(0.0)),
-                ("az".into(), literal_f64(1.0)),
+                (
+                    "origin".into(),
+                    literal_value(reify_test_support::point3(0.0, 0.0, 0.0)),
+                ),
                 ("angle".into(), literal_angle(std::f64::consts::PI)),
-                // "ox" deliberately omitted — drives Result<_, String> API
+                // "direction" deliberately omitted — drives Result<_, String> API
             ],
         };
 
@@ -12685,13 +12603,13 @@
         // This assertion fails to compile with the current Option<_> return type.
         assert!(
             result.is_err(),
-            "missing 'ox' should return Err, got: {:?}",
+            "missing 'direction' should return Err, got: {:?}",
             result
         );
         let err_msg = result.unwrap_err();
         assert!(
-            err_msg.contains("ox"),
-            "error message should mention the missing arg 'ox', got: {:?}",
+            err_msg.contains("'direction'"),
+            "error message should mention the missing arg 'direction', got: {:?}",
             err_msg
         );
         assert!(

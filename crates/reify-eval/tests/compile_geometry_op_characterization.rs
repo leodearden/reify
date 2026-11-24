@@ -2688,18 +2688,16 @@ fn sweep_case(k: SweepKind) -> CompiledGeometryOp {
         ),
         SweepKind::Revolve => (
             vec![GeomRef::Step(0)],
+            // The lowered Direction form (task 9647): a Point3<Length>
+            // origin, a Direction and an ANGLE. A basis-vector Direction
+            // carries bit-identical components, so the golden is unchanged.
             vec![
-                ("ax".to_string(), real_literal(0.0)),
-                ("ay".to_string(), real_literal(0.0)),
-                ("az".to_string(), real_literal(1.0)),
+                ("origin".to_string(), lit_raw(point3_len([0.0, 0.0, 0.0]))),
+                (
+                    "direction".to_string(),
+                    lit_raw(direction_val(0.0, 0.0, 1.0)),
+                ),
                 ("angle".to_string(), angle_literal(1.0)),
-                // Only the axis ORIGIN is LENGTH-semantic (task 5623); the
-                // ax/ay/az direction stays on `real_literal`, and `angle` is
-                // ANGLE-dimensioned via `angle_literal` (angle-units PRD leaf γ).
-                // Golden unchanged.
-                ("ox".to_string(), length_literal(0.0)),
-                ("oy".to_string(), length_literal(0.0)),
-                ("oz".to_string(), length_literal(0.0)),
             ],
         ),
         SweepKind::Sweep => (vec![GeomRef::Step(0), GeomRef::Step(1)], vec![]),
@@ -2721,13 +2719,15 @@ fn sweep_case(k: SweepKind) -> CompiledGeometryOp {
         ),
         SweepKind::ExtrudeInfinite => (
             vec![GeomRef::Step(0)],
+            // The lowered `extrude_infinite(profile, dir(0, 0, 1))` (task
+            // 9647): `symmetric` is the compiler-synthesized Bool. Golden
+            // unchanged.
             vec![
-                // `dx`/`dy`/`dz` are a dimensionless DIRECTION, not a length —
-                // they stay on `real_literal` (task 5744 boundary). Golden unchanged.
-                ("dx".to_string(), real_literal(0.0)),
-                ("dy".to_string(), real_literal(0.0)),
-                ("dz".to_string(), real_literal(1.0)),
-                ("direction".to_string(), lit_raw(Value::String("positive".into()))),
+                (
+                    "direction".to_string(),
+                    lit_raw(direction_val(0.0, 0.0, 1.0)),
+                ),
+                ("symmetric".to_string(), lit_raw(Value::Bool(false))),
             ],
         ),
     };

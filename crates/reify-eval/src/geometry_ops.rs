@@ -34,10 +34,6 @@ pub(crate) const DEGENERATE_LENGTH_M: f64 = 1e-12;
 /// `build_revolve_angle_*_threshold_*` tests.
 pub(crate) const DEGENERATE_ANGLE_RAD: f64 = 1e-12;
 
-/// Generic geometry epsilon for axis-magnitude / direction-vector checks
-/// (e.g. rejecting near-zero revolve axes).
-pub(crate) const GEOMETRY_EPSILON: f64 = 1e-12;
-
 /// Routing outcome returned by [`gate_query_capability`].
 ///
 /// Maps directly to the downstream dispatcher choice:
@@ -282,8 +278,8 @@ pub(crate) enum LengthArg {
 ///
 /// This is the units chokepoint for the length-semantic args that reach an
 /// `f64` through a NAMED-ARG read: the pattern spacings and origins, the
-/// transform components and pivot, the sweep axis origins, and the curve
-/// coordinates and radii. It is NOT the chokepoint for every length-semantic
+/// transform components and pivot, and the curve coordinates and radii. It is
+/// NOT the chokepoint for every length-semantic
 /// arg of a scalar-form geometry builtin — the modify + sweep MAGNITUDES
 /// (`fillet` radius, `extrude` distance, …) are placed into their `GeometryOp`
 /// field as a raw `Value` and coerced as SI metres only at the kernel boundary,
@@ -917,8 +913,8 @@ fn required_length_args<const N: usize>(
 }
 
 /// [`required_length_args`] specialised to the `ox`/`oy`/`oz` ORIGIN triple —
-/// the name shared by `pattern_circular` (task 5350), `pattern_mirror`
-/// (task 5214) and `sweep_revolve` (task 5623).
+/// the name shared by `pattern_circular` (task 5350) and `pattern_mirror`
+/// (task 5214).
 fn required_length_origin3(
     kind_label: impl std::fmt::Display + Copy,
     args: &[(String, reify_ir::CompiledExpr)],
@@ -1251,11 +1247,13 @@ fn accept_variadic_length_args(
 /// |----------------------------------------|---------------------------|---------------|--------|
 /// | [`decode_plane`]                       | plane ORIGIN              | **LENGTH**    | yes — a point in space |
 /// | [`decode_axis`]                        | axis ORIGIN               | **LENGTH**    | yes — a point in space |
+/// | [`required_length_point3_arg`]         | `revolve` axis ORIGIN     | **LENGTH**    | yes — a point in space |
 /// | `compile_geometry_op` `SurfaceKind::Nurbs` | control-point grid    | **LENGTH**    | yes — pole POSITIONS, the SURFACE sibling of the curve poles task 5658 gated |
 ///
 /// DIRECTIONS are not rows — the D3 adversary finding's ORIGIN-vs-DIRECTION
 /// split (2026-07-28, BINDING). The plane NORMAL, the axis DIRECTION (ε, task
-/// 9638) and `offset_curve`'s direction (θ-b, task 9645) are each a
+/// 9638), `offset_curve`'s direction (θ-b, task 9645) and the `revolve` /
+/// `extrude_infinite` direction (ι-b, task 9647) are each a
 /// `Value::Direction` read through [`reify_ir::decode_direction`].
 fn accept_length_point3<N: std::fmt::Display + Copy>(
     value: &reify_ir::Value,
@@ -2152,6 +2150,84 @@ pub(crate) fn decode_axis(
     Ok((origin_arr, unit_dir.components()))
 }
 
+/// Read a REQUIRED `Direction`-typed named argument (`dir(x, y, z)`).
+///
+/// An absent argument takes [`eval_named_arg`]'s missing-arg Warning. An Undef
+/// value takes the shared unresolved sentence (PRD-1 D10), because a transient
+/// solver Undef, or a degenerate `dir(0, 0, 0)` cell, is not the author's
+/// mistake to fix. Any other non-Direction value takes
+/// [`decode_direction`]'s message, which ends in the `dir(x, y, z)` hint.
+/// None of these push a diagnostic of their own.
+fn required_direction_arg(
+    name: &str,
+    kind_label: impl std::fmt::Display + Copy,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<UnitVec3, String> {
+    let value = eval_named_arg(
+        name,
+        kind_label,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )
+    .ok_or_else(|| format!("missing required argument '{name}' for {kind_label}"))?;
+    if matches!(value, reify_ir::Value::Undef) {
+        return Err(unresolved_arg_message(name, kind_label));
+    }
+    decode_direction(&value).map_err(|e| labelled(kind_label, format_args!("{name}: {e}")))
+}
+
+/// Read a REQUIRED point-in-space named argument (`point3(x, y, z)`), LENGTH-gated
+/// per component through [`accept_length_point3`].
+///
+/// `component_names` name the three components in a rejection, so a caller
+/// can keep the wording its scalar form used (`revolve` passes
+/// `ox`/`oy`/`oz`). An Undef value takes the shared unresolved sentence, as in
+/// [`required_direction_arg`].
+#[allow(clippy::too_many_arguments)]
+fn required_length_point3_arg(
+    name: &str,
+    component_names: [&str; 3],
+    kind_label: impl std::fmt::Display + Copy,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<[f64; 3], String> {
+    let value = eval_named_arg(
+        name,
+        kind_label,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )
+    .ok_or_else(|| format!("missing required argument '{name}' for {kind_label}"))?;
+    if matches!(value, reify_ir::Value::Undef) {
+        return Err(unresolved_arg_message(name, kind_label));
+    }
+    accept_length_point3(
+        &value,
+        component_names,
+        kind_label,
+        |_| {
+            labelled(
+                kind_label,
+                format_args!("{name} is not a 3-component Point"),
+            )
+        },
+        diagnostics,
+    )
+}
+
 /// Translate a compiled geometry operation into a runtime `GeometryOp` by
 /// evaluating its argument expressions against the current value environment.
 ///
@@ -2161,7 +2237,7 @@ pub(crate) fn decode_axis(
 /// evaluation is incomplete: a required argument is absent, a value is
 /// non-finite, a `GeomRef` cannot be resolved, or an arm-level validation
 /// guard fires (e.g. negative scale factor, degenerate extrude distance,
-/// zero-length revolve axis).
+/// degenerate revolve angle).
 ///
 /// This is the intentional, convention-aligned alternative to silent defaults
 /// (see `review/briefing.yaml` line 9 and project norm
@@ -4530,47 +4606,44 @@ fn sweep_revolve(
         step_handles,
         named_steps,
     )?;
-    // The axis ORIGIN is a point in space → gated. HOISTED here, above the
-    // `f64_arg` closure: the borrow-ordering contract on
-    // `required_length_origin3` makes this mandatory, not stylistic.
+    // Every argument is EVALUATED before the first `?`, and the first error in
+    // source order is returned: an author sees every bad argument in one build,
+    // and a bare origin still reports before a bad direction (the task-5623
+    // precedence). The angle must be reached even when the axis fails; the
+    // units closure guard can fill only scalars, so it observes the angle gate
+    // through exactly that.
     //
-    // This is a deliberate PRECEDENCE change — the origin used to be read LAST,
-    // after the degenerate-axis and degenerate-angle checks — so a revolve with
-    // both a bare origin and a degenerate axis now reports the ORIGIN. Pinned by
-    // `compile_geometry_op_revolve_bare_origin_beats_degenerate_axis`. It also
-    // matches the two pre-existing `required_length_origin3` call sites
-    // (`pattern_circular`, `pattern_mirror`), where the origin is likewise read
-    // before the direction's magnitude check.
-    let axis_origin =
-        required_length_origin3(kind, args, values, functions, meta_map, diagnostics)?;
-    // Axis DIRECTION only — a dimensionless unit vector, un-gated (C1 inv. 4).
-    // SCOPED so the borrow ends before the angle gate below.
-    let axis_dir = {
-        let mut f64_arg = |name: &str| -> Result<f64, String> {
-            eval_named_arg_f64(
-                name,
-                kind,
-                args,
-                values,
-                functions,
-                meta_map,
-                diagnostics,
-            )
-            .ok_or_else(|| {
-                format!("missing or non-finite argument '{}' for {}", name, kind)
-            })
-        };
-        [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?]
+    // The axis comes in two spellings, told apart by the presence of `axis`:
+    // `revolve(profile, axis, angle)` takes an Axis datum, and
+    // `revolve(profile, origin, direction, angle)` (also revolve_full's
+    // lowering) a Point3 origin beside a Direction. Neither has a magnitude to
+    // check: a Direction is unit by construction.
+    let axis = if args.iter().any(|(n, _)| n == "axis") {
+        eval_named_arg("axis", kind, args, values, functions, meta_map, diagnostics)
+            .ok_or_else(|| format!("missing required argument 'axis' for {kind}"))
+            .and_then(|axis| decode_axis(&axis, kind, diagnostics))
+    } else {
+        let origin = required_length_point3_arg(
+            "origin",
+            ["ox", "oy", "oz"],
+            kind,
+            args,
+            values,
+            functions,
+            meta_map,
+            diagnostics,
+        );
+        let direction = required_direction_arg(
+            "direction",
+            kind,
+            args,
+            values,
+            functions,
+            meta_map,
+            diagnostics,
+        );
+        origin.and_then(|origin| direction.map(|direction| (origin, direction.components())))
     };
-    let mag = axis_dir.iter().map(|x| x * x).sum::<f64>().sqrt();
-    if !mag.is_finite() || mag < GEOMETRY_EPSILON {
-        diagnostics.push(Diagnostic::warning(format!(
-            "revolve dropped: rotation axis [{}, {}, {}] has \
-             degenerate magnitude={} (must be finite and >= 1e-12)",
-            axis_dir[0], axis_dir[1], axis_dir[2], mag
-        )));
-        return Err(format!("revolve axis has degenerate magnitude: {}", mag));
-    }
     // The DIMENSION gate runs BEFORE the degeneracy check below, deliberately:
     // a bare `0` is both bare and degenerate, and reporting it as "angle is
     // degenerate" would send the author to fix the wrong thing. Pinned by
@@ -4583,7 +4656,9 @@ fn sweep_revolve(
         functions,
         meta_map,
         diagnostics,
-    )?;
+    );
+    let (axis_origin, axis_dir) = axis?;
+    let angle_rad = angle_rad?;
     if angle_rad.abs() < DEGENERATE_ANGLE_RAD {
         diagnostics.push(Diagnostic::warning(format!(
             "revolve dropped: angle={} rad is degenerate \
@@ -4708,26 +4783,7 @@ fn sweep_extrude_infinite(
         step_handles,
         named_steps,
     )?;
-    let mut f64_arg = |name: &str| -> Result<f64, String> {
-        eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing or non-finite argument '{}' for {}", name, kind))
-    };
-    let dx = f64_arg("dx")?;
-    let dy = f64_arg("dy")?;
-    let dz = f64_arg("dz")?;
-    let mag = (dx * dx + dy * dy + dz * dz).sqrt();
-    if !mag.is_finite() || mag < GEOMETRY_EPSILON {
-        diagnostics.push(Diagnostic::warning(format!(
-            "extrude_infinite dropped: axis [{}, {}, {}] has \
-             degenerate magnitude={} (must be finite and >= 1e-12)",
-            dx, dy, dz, mag
-        )));
-        return Err(format!(
-            "extrude_infinite axis has degenerate magnitude: {}",
-            mag
-        ));
-    }
-    let direction_str = eval_named_arg(
+    let axis = required_direction_arg(
         "direction",
         kind,
         args,
@@ -4735,37 +4791,30 @@ fn sweep_extrude_infinite(
         functions,
         meta_map,
         diagnostics,
+    )?;
+    // `symmetric` is synthesized by the lowering: false for
+    // `extrude_infinite`, true for `extrude_infinite_symmetric`. It is
+    // required rather than defaulted, so a hand-built op that lacks it fails
+    // instead of quietly building one side.
+    let symmetric = eval_named_arg(
+        "symmetric",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
     )
-    .ok_or_else(|| "missing required argument 'direction' for extrude_infinite".to_string())?;
-    let direction_s = match &direction_str {
-        reify_ir::Value::String(s) => s.as_str().to_owned(),
-        other => {
-            return Err(format!(
-                "extrude_infinite direction must be a string, got: {:?}",
-                other
-            ))
-        }
-    };
-    // Fold direction into (axis, both):
-    // "positive" → keep axis as-is, both=false
-    // "negative" → negate axis, both=false
-    // "both"     → keep axis as-is, both=true
-    let (axis, both) = match direction_s.as_str() {
-        "positive" => ([dx, dy, dz], false),
-        "negative" => ([-dx, -dy, -dz], false),
-        "both" => ([dx, dy, dz], true),
-        other => {
-            diagnostics.push(Diagnostic::error(format!(
-                "extrude_infinite: invalid direction {:?}; \
-                 must be one of \"positive\", \"negative\", or \"both\"",
-                other
-            )));
-            return Err(format!("extrude_infinite: invalid direction {:?}", other));
-        }
+    .ok_or_else(|| format!("missing required argument 'symmetric' for {kind}"))?;
+    let reify_ir::Value::Bool(both) = symmetric else {
+        return Err(labelled(
+            kind,
+            format_args!("symmetric must be a Bool, got {}", symmetric.kind_name()),
+        ));
     };
     Ok(reify_ir::GeometryOp::ExtrudeInfinite {
         profile: profile_handle,
-        axis,
+        axis: axis.components(),
         both,
     })
 }

@@ -29,7 +29,7 @@
 use std::sync::{Arc, Mutex};
 
 use reify_compiler::{CompiledGeometryOp, CurveKind, GeomRef, SweepKind};
-use reify_core::ModulePath;
+use reify_core::{ModulePath, Type};
 use reify_ir::{
     AttributeHistory, CapKind, CompiledExpr, ExportFormat, FeatureId, GeometryError,
     GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, HistoryRecord,
@@ -224,12 +224,14 @@ fn revolve_module() -> reify_compiler::CompiledModule {
         "TestRevolve",
         SweepKind::Revolve,
         vec![
-            ("ox".into(), mm_literal(0.0)),
-            ("oy".into(), mm_literal(0.0)),
-            ("oz".into(), mm_literal(0.0)),
-            ("ax".into(), real_literal(0.0)),
-            ("ay".into(), real_literal(0.0)),
-            ("az".into(), real_literal(1.0)),
+            (
+                "origin".into(),
+                CompiledExpr::literal(point3(0.0, 0.0, 0.0), Type::point3(Type::length())),
+            ),
+            (
+                "direction".into(),
+                CompiledExpr::literal(direction_val(0.0, 0.0, 1.0), Type::direction()),
+            ),
             ("angle".into(), angle_literal(std::f64::consts::PI)),
         ],
     )
