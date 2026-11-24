@@ -536,20 +536,24 @@ struct DirectionParams<const N: usize> {
     names: [&'static str; N],
 }
 
-const ORIENT_AXIS_ANGLE_PARAMS: DirectionParams<1> = DirectionParams {
-    arity: 2,
-    names: ["axis"],
-};
+impl<const N: usize> DirectionParams<N> {
+    /// Fails const evaluation unless every named Direction parameter fits in
+    /// the arity, so [`classify_direction_args`] reads all `N` of them.
+    const fn new(arity: usize, names: [&'static str; N]) -> Self {
+        assert!(
+            N <= arity,
+            "DirectionParams: more Direction parameter names than the arity"
+        );
+        Self { arity, names }
+    }
+}
 
-const ORIENT_LOOK_AT_PARAMS: DirectionParams<2> = DirectionParams {
-    arity: 2,
-    names: ["forward", "up"],
-};
+const ORIENT_AXIS_ANGLE_PARAMS: DirectionParams<1> = DirectionParams::new(2, ["axis"]);
 
-const ORIENT_BASIS_PARAMS: DirectionParams<3> = DirectionParams {
-    arity: 3,
-    names: ["x_axis", "y_axis", "z_axis"],
-};
+const ORIENT_LOOK_AT_PARAMS: DirectionParams<2> = DirectionParams::new(2, ["forward", "up"]);
+
+const ORIENT_BASIS_PARAMS: DirectionParams<3> =
+    DirectionParams::new(3, ["x_axis", "y_axis", "z_axis"]);
 
 /// Why a Direction-typed orientation constructor could not read its
 /// Direction arguments.
