@@ -55,11 +55,15 @@ REGISTRY_META_BY_ID = re.compile(
 
 def result_type_write(structure):
     """A write of `structure`'s type_name literal: a `type_name:` field, a
-    `registry_free(` / `mint_[registry_free_]instance(` argument, or the literal
-    opening its own line (rustfmt's multi-line argument). A read such as
-    `d.type_name == "<S>"` or `StructureRef("<S>")` matches none of these."""
-    return re.compile(r'(?:type_name\s*:\s*|registry_free\(\s*|instance\(\s*|^\s*)"'
-                      + re.escape(structure) + '"')
+    `registry_free(` / `mint_[registry_free_]instance(` argument, or rustfmt's
+    multi-line argument -- the literal, optionally converted to a `String`,
+    alone on its line and ended by a comma. Reads such as
+    `d.type_name == "<S>"`, `StructureRef("<S>")` and a match arm
+    `"<S>" => ...` match none of these."""
+    literal = '"' + re.escape(structure) + '"'
+    return re.compile(r'(?:type_name\s*:\s*|registry_free\(\s*|instance\(\s*)' + literal
+                      + r'|^\s*' + literal
+                      + r'(?:\.(?:to_string|to_owned|into)\(\))?\s*,')
 
 
 def _is_excluded(path, excluded):
@@ -237,6 +241,11 @@ NOT_COUNTED = {
         Case(rust_fn('    let t = Type::StructureRef("MassProperties".to_string());')),
         Case(rust_fn('    // type_name: "MassProperties"')),
         Case(rust_fn('    let s = r#"type_name: "MassProperties""#;')),
+        Case(rust_fn("    match d.type_name.as_str() {",
+                     '        "MassProperties" => true,',
+                     '        "MassProperties" | "Frame3" => true,',
+                     "        _ => false,",
+                     "    };")),
         Case(cfg_test_module('let v = mint_instance("MassProperties", fields);')),
         Case(rust_fn('    let v = mint_instance("MassProperties", fields);'),
              rel=MASS_PROPERTIES_OWNER),
@@ -268,6 +277,11 @@ COUNTED = {
             "    let c = mint_instance(",
             '        "MassProperties",',
             "        fields,",
+            "    );"))),
+        (1, Case(rust_fn(
+            "    let d = StructureInstanceData::registry_free(",
+            '        "MassProperties".to_string(),',
+            "        f,",
             "    );"))),
     ),
 }
