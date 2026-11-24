@@ -85,3 +85,24 @@ fn non_utf8_file_argument_opens_the_gui_on_it() {
     let file = OsStr::from_bytes(b"\xff.ri").to_os_string();
     assert_eq!(parse([file.clone()]), Launch::Gui { file: Some(file) });
 }
+
+#[test]
+fn end_of_options_makes_the_next_argument_the_file() {
+    assert_eq!(
+        launch_for(&["--", "-x.ri"]),
+        Launch::Gui {
+            file: Some(OsString::from("-x.ri"))
+        }
+    );
+    assert_eq!(
+        launch_for(&["--", "--help"]),
+        Launch::Gui {
+            file: Some(OsString::from("--help"))
+        }
+    );
+}
+
+#[test]
+fn bare_end_of_options_opens_the_gui_without_a_file() {
+    assert_eq!(launch_for(&["--"]), Launch::Gui { file: None });
+}

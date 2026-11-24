@@ -24,12 +24,17 @@ pub enum Launch {
 /// The subcommand that forwards every remaining argument to the bundled CLI.
 const CLI_SUBCOMMAND: &str = "cli";
 
+/// Ends the options: the argument after it is the file, even when it begins
+/// with `-`.
+const END_OF_OPTIONS: &str = "--";
+
 /// The `--help` text, newline-terminated, for `print!`.
 pub const USAGE: &str = "\
-Usage: reify-gui [FILE.ri]
+Usage: reify-gui [--] [FILE.ri]
        reify-gui cli [ARGS...]
 
   FILE.ri        open this design; without it the Start view opens
+  --             end of options: a FILE.ri after it may begin with -
   cli [ARGS...]  run the reify CLI shipped beside this GUI with ARGS;
                  `reify-gui cli --help` lists its commands
   -h, --help     print this help and exit
@@ -52,6 +57,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Launch {
         Some(CLI_SUBCOMMAND) => Launch::Cli {
             args: args.collect(),
         },
+        Some(END_OF_OPTIONS) => Launch::Gui { file: args.next() },
         _ if first.as_encoded_bytes().starts_with(b"-") => Launch::UnknownOption(first),
         _ => Launch::Gui { file: Some(first) },
     }
