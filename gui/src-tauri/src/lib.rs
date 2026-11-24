@@ -17,6 +17,7 @@
 extern crate reify_kernel_openvdb as _;
 
 pub mod claude_bridge;
+pub mod command_line;
 pub mod commands;
 pub mod path_key;
 pub mod debug;

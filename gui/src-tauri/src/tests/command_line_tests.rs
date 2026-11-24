@@ -83,8 +83,5 @@ fn non_utf8_file_argument_opens_the_gui_on_it() {
     use std::os::unix::ffi::OsStrExt;
 
     let file = OsStr::from_bytes(b"\xff.ri").to_os_string();
-    assert_eq!(
-        parse([file.clone()]),
-        Launch::Gui { file: Some(file) }
-    );
+    assert_eq!(parse([file.clone()]), Launch::Gui { file: Some(file) });
 }
