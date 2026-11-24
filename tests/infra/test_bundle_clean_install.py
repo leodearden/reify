@@ -204,11 +204,14 @@ class Container:
         self.test.assertEqual(offenders, [], f"unexpected packages in {self.name}")
 
     def assert_reports(self, command, expected):
-        """`command`'s stdout, its stderr kept apart, is the line `expected`."""
-        reported = self.check(f"{command} 2>{VERSION_ERR}").strip()
+        """`command` exits 0 and its stdout, its stderr kept apart, is the line
+        `expected`. Either failure shows that stderr, where a loader error lands."""
+        proc = self.run(f"{command} 2>{VERSION_ERR}")
+        reported = proc.stdout.strip()
         stderr = self.run(f"cat {VERSION_ERR}").stdout
         self.test.assertEqual(
-            reported, expected, f"in {self.name}: {command}\nstderr:\n{stderr[-2000:]}")
+            (proc.returncode, reported), (0, expected),
+            f"in {self.name}: {command}\nstderr:\n{stderr[-2000:]}")
         _log(f"{self.name}: {command} reports {reported!r}")
 
     def assert_debug_server_reports(self, expected):
