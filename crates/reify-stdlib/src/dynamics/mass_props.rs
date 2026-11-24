@@ -46,8 +46,7 @@ pub struct MassProperties {
 
 impl MassProperties {
     /// The resolved instance: `mass` a MASS scalar, `com` a `Value::Point` of
-    /// LENGTHs, `inertia` a 3×3 `Value::Matrix` of MOMENT_OF_INERTIAs, and
-    /// `origin` the default zero `Frame3`.
+    /// LENGTHs, and `inertia` a 3×3 `Value::Matrix` of MOMENT_OF_INERTIAs.
     pub fn to_value(&self) -> Value {
         let scalar = |si_value, dimension| Value::Scalar {
             si_value,
@@ -137,8 +136,7 @@ impl MassProperties {
     }
 }
 
-/// The one `MassProperties` mint: the three geometric fields plus the default
-/// zero-`Frame3` `origin`.
+/// The one `MassProperties` mint: exactly its three declared fields.
 fn instance(mass: Value, com: Value, inertia: Value) -> Value {
     mint_registry_free_instance(
         TYPE_NAME,
@@ -146,35 +144,6 @@ fn instance(mass: Value, com: Value, inertia: Value) -> Value {
             ("mass".to_string(), mass),
             ("com".to_string(), com),
             ("inertia".to_string(), inertia),
-            ("origin".to_string(), default_frame3()),
-        ],
-    )
-}
-
-/// Mint the default zero-`Frame3` `Value::StructureInstance` carried as
-/// `MassProperties.origin` (task 4547, Disposition 1).
-///
-/// `Frame3` (declared in `std.ports`, `ports.ri`) has four 3-vector members whose
-/// quantity slots are NOT uniform (task 5848): `origin` is a position, so
-/// `Vector3<Length>`; `x_axis` / `y_axis` / `z_axis` are directions, so
-/// `Vector3<Dimensionless>`. The default is therefore one zero length-vector plus
-/// three zero dimensionless vectors — the axes as `Value::Real`, the house
-/// representation for a dimensionless quantity (Invariant V), which is also what
-/// the DSL spelling `vec3(0.0, 0.0, 0.0)` evaluates to. Minting a real `Frame3`
-/// keeps the runtime value faithful to the declared `origin : Frame3` type.
-fn default_frame3() -> Value {
-    // The ZERO magnitude is load-bearing, not a placeholder: every producer
-    // emits this identical `origin`, so the degenerate basis must NOT be
-    // "improved" into an identity basis here.
-    let zero_position = || Value::Vector(vec![Value::length(0.0); 3]);
-    let zero_direction = || Value::Vector(vec![Value::Real(0.0); 3]);
-    mint_registry_free_instance(
-        "Frame3",
-        vec![
-            ("origin".to_string(), zero_position()),
-            ("x_axis".to_string(), zero_direction()),
-            ("y_axis".to_string(), zero_direction()),
-            ("z_axis".to_string(), zero_direction()),
         ],
     )
 }
