@@ -62,8 +62,9 @@
 //!   `frame_at`'s `x`/`z` (direction-typing σ), the axis of the four axial
 //!   joint ctors and the 13 PRB flexure ctors (direction-typing ζ-a), and the
 //!   direction of the four directional selectors plus arity-2 `angle`'s
-//!   `a`/`b` (direction-typing θ-b); later leaves add rows on the same
-//!   constructor.
+//!   `a`/`b` (direction-typing θ-b), and the axes of `orient_axis_angle`,
+//!   `orient_look_at` and `orient_basis` (direction-typing θ-a); later leaves
+//!   add rows on the same constructor.
 //!
 //! The RULES that decide whether a position inside a covered family gets a
 //! slot — each one is why some argument sitting right next to a slotted one is
@@ -1180,6 +1181,24 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
             },
         }],
 
+        // ── SO(3) constructors' axes → Direction (direction-typing θ-a) ──────
+        // Names per reify-stdlib orientation.rs's DirectionParams consts. Each
+        // has exactly one accepted arity (the eval arm returns Undef
+        // otherwise), so each arm carries the guard, like `orient_euler`'s.
+        "orient_axis_angle" if arg_count == 2 => const { &[direction_arg(0, "axis")] },
+        "orient_look_at" if arg_count == 2 => {
+            const { &[direction_arg(0, "forward"), direction_arg(1, "up")] }
+        }
+        "orient_basis" if arg_count == 3 => {
+            const {
+                &[
+                    direction_arg(0, "x_axis"),
+                    direction_arg(1, "y_axis"),
+                    direction_arg(2, "z_axis"),
+                ]
+            }
+        }
+
         // ── frame_at(o, x: Direction, z: Direction) ──────────────────────────
         // arg0: the origin, unchecked (arg0 is never a slot).
         // args1-2: x / z → Direction, names per units.rs's frame_at row.
@@ -1760,6 +1779,12 @@ mod tests {
         // direction-typing θ-b — arity-2 `angle(a, b)`, Direction slots. A
         // GEOMETRY_QUERY_NAMES member, not a topology selector.
         "angle",
+        // direction-typing θ-a — SO(3) constructors typed by
+        // orientation_signatures.rs's ORIENTATION_TYPED_FN_NAMES, not topology
+        // selectors; their axes are Direction slots.
+        "orient_axis_angle",
+        "orient_look_at",
+        "orient_basis",
     ];
 
     // ── builtin_arg_slots table contract (step-1) ────────────────────────────
@@ -1875,6 +1900,42 @@ mod tests {
                 builtin_arg_slots("angle", arg_count).is_empty(),
                 "angle at arity {arg_count} must carry no slot"
             );
+        }
+    }
+
+    /// The three SO(3) constructors slot their axes as Direction (θ-a), each
+    /// only at its one accepted arity.
+    #[test]
+    fn orientation_constructors_slot_their_directions_only_at_their_arity() {
+        let expected: [(&str, usize, Vec<CheckableArg>); 3] = [
+            ("orient_axis_angle", 2, vec![direction_slot(0, "axis")]),
+            (
+                "orient_look_at",
+                2,
+                vec![direction_slot(0, "forward"), direction_slot(1, "up")],
+            ),
+            (
+                "orient_basis",
+                3,
+                vec![
+                    direction_slot(0, "x_axis"),
+                    direction_slot(1, "y_axis"),
+                    direction_slot(2, "z_axis"),
+                ],
+            ),
+        ];
+        for (name, arity, slots) in expected {
+            assert_eq!(
+                builtin_arg_slots(name, arity),
+                slots,
+                "{name} at arity {arity}"
+            );
+            for arg_count in (0usize..=MAX_PROBED_ARITY).filter(|n| *n != arity) {
+                assert!(
+                    builtin_arg_slots(name, arg_count).is_empty(),
+                    "{name} at arity {arg_count} must carry no slot"
+                );
+            }
         }
     }
 
@@ -4521,6 +4582,14 @@ mod tests {
         // `if arg_count == 2` guard (arity 3 is the slot-free relation verb),
         // so it does not rely on this exemption for its safety.
         "angle",
+        // direction-typing θ-a's three SO(3) constructors: pure eval builtins
+        // with no lowering arm. MEASURED: the probe reports the full {0..=14}
+        // window for each, like the Euler pair. Each arm carries an explicit
+        // `if arg_count ==` guard (2, 2, 3), so none relies on this exemption
+        // for its safety.
+        "orient_axis_angle",
+        "orient_look_at",
+        "orient_basis",
     ];
 
     /// Names that legitimately accept MORE THAN ONE arity while being served by
