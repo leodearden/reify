@@ -11,11 +11,12 @@
 //!   side did not bind the loser.
 
 use std::fs;
+use std::sync::Arc;
 
 use reify_compiler::CompiledModule;
 use reify_compiler::cfg::CfgSet;
 use reify_compiler::module_dag::ModuleResolver;
-use reify_compiler::program::compile_program_with_parsed_entry;
+use reify_compiler::program::{CompiledProgram, compile_program_with_parsed_entry};
 use reify_core::{Diagnostic, ModulePath, Severity};
 use reify_eval::{Engine, SolverPosture};
 use reify_ir::{Satisfaction, Value};
@@ -177,7 +178,7 @@ fn enum_value(type_name: &str, variant: &str) -> Value {
 
 /// A compiled entry plus the `Engine` that evaluates it under the row's prelude.
 struct Compiled {
-    module: CompiledModule,
+    module: Arc<CompiledModule>,
     engine: Engine,
 }
 
@@ -185,13 +186,14 @@ fn compile_row(row: &ParityRow, probe: &str) -> Compiled {
     let source = row.entry.replace("PROBE", probe);
     match row.setup {
         Setup::SingleFileWithStdlib => Compiled {
-            module: reify_test_support::compile_source_with_stdlib(&source),
+            module: Arc::new(reify_test_support::compile_source_with_stdlib(&source)),
             engine: reify_test_support::make_engine(),
         },
-        Setup::Project(imports) => Compiled {
-            module: compile_project(row.name, &source, imports),
-            engine: reify_test_support::make_engine(),
-        },
+        Setup::Project(imports) => {
+            let mut engine = reify_test_support::make_engine();
+            let module = engine.load(compile_project(row.name, &source, imports));
+            Compiled { module, engine }
+        }
         Setup::SyntheticPrelude(modules) => {
             let prelude = synthetic_prelude(row.name, modules);
             let parsed = reify_syntax::parse(&source, ModulePath::single("main"));
@@ -202,7 +204,7 @@ fn compile_row(row: &ParityRow, probe: &str) -> Compiled {
                 parsed.errors
             );
             Compiled {
-                module: reify_compiler::compile_with_prelude(&parsed, prelude),
+                module: Arc::new(reify_compiler::compile_with_prelude(&parsed, prelude)),
                 engine: Engine::with_prelude(
                     SolverPosture::SolverFree,
                     Box::new(MockConstraintChecker::new()),
@@ -215,8 +217,8 @@ fn compile_row(row: &ParityRow, probe: &str) -> Compiled {
 }
 
 /// Write `entry` as `main.ri` plus its imports into a tempdir and compile it
-/// the way `reify check` does (prelude = stdlib ++ followed imports).
-fn compile_project(row: &str, entry: &str, imports: &[(&str, &str)]) -> CompiledModule {
+/// as a program, the way `reify check` does.
+fn compile_project(row: &str, entry: &str, imports: &[(&str, &str)]) -> CompiledProgram {
     let tmp = tempfile::tempdir().expect("tempdir");
     let dir = tmp.path();
     fs::write(dir.join("main.ri"), entry).expect("write main.ri");
@@ -238,7 +240,6 @@ fn compile_project(row: &str, entry: &str, imports: &[(&str, &str)]) -> Compiled
         &CfgSet::default(),
         &MockConstraintChecker::new().with_default(Satisfaction::Indeterminate),
     )
-    .into_entry()
 }
 
 /// Compile each module standalone under its own path. Leaked because
@@ -434,9 +435,9 @@ fn kind_row_failures(row: &KindRow) -> Vec<String> {
     compile_side_failures(CompileSide {
         row: row.name,
         winner_probe: row.winner_probe,
-        winner: &compile(row.winner_probe),
+        winner: compile(row.winner_probe).entry(),
         loser_probe: row.loser_probe,
-        loser: &compile(row.loser_probe),
+        loser: compile(row.loser_probe).entry(),
         loser_error: row.loser_error,
     })
 }
@@ -456,7 +457,7 @@ fn every_kind_binds_the_import_tier_first_wins_on_the_compile_side() {
 /// `design_review` takes TWO params; std.determinacy.purposes' takes one.
 #[test]
 fn purposes_bind_the_import_tier_over_the_stdlib() {
-    let module = compile_project(
+    let program = compile_project(
         "purpose, import tier beats the stdlib",
         "import a\n\nstructure def Main {\n    param t : Length = 5mm\n}\n",
         &[(
@@ -464,6 +465,7 @@ fn purposes_bind_the_import_tier_over_the_stdlib() {
             "pub purpose design_review(subject : Structure, witness : Structure) {\n    constraint forall p in subject.params: determined(p)\n}\n",
         )],
     );
+    let module = program.entry();
     let errors = errors_of(&module.diagnostics);
     assert!(
         errors.is_empty(),

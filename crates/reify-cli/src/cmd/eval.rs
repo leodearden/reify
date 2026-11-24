@@ -10,7 +10,7 @@ use crate::check_verdict::has_error_diagnostic;
 use crate::constraint_report::format_undef_cause;
 use crate::help::EVAL_USAGE;
 use crate::module_capabilities::module_has_geometry;
-use crate::{configured_eval_engine, parse_and_compile_program_entry};
+use crate::{configured_eval_engine, parse_and_compile_program_with_evaluation_module};
 
 /// `reify eval <file>` — compile the entry as a program (its `#cfg`-satisfied
 /// imports resolved as under `reify check`, with repeated `--cfg` selecting
@@ -107,7 +107,7 @@ pub(crate) fn cmd_eval(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     };
 
-    let compiled = match parse_and_compile_program_entry(path, &cfg) {
+    let (program, compiled) = match parse_and_compile_program_with_evaluation_module(path, &cfg) {
         Ok(c) => c,
         Err(code) => return code,
     };
@@ -156,7 +156,8 @@ pub(crate) fn cmd_eval(args: &[String]) -> ExitCode {
             engine.set_persistent_cache_dir(Some(override_dir.clone()));
         }
         engine.set_capture_undef_causes(true);
-        let result = engine.realize_for_check(&compiled);
+        let evaluated = engine.load(program);
+        let result = engine.realize_for_check(&evaluated);
         (result.values, result.diagnostics, engine)
     } else {
         // Plain numeric module: keep the existing lightweight eval() path so
@@ -173,7 +174,8 @@ pub(crate) fn cmd_eval(args: &[String]) -> ExitCode {
             engine.set_persistent_cache_dir(Some(override_dir.clone()));
         }
         engine.set_capture_undef_causes(true);
-        let result = engine.eval(&compiled);
+        let evaluated = engine.load(program);
+        let result = engine.eval(&evaluated);
         (result.values, result.diagnostics, engine)
     };
 

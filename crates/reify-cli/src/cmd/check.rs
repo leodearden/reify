@@ -16,7 +16,7 @@ use crate::module_capabilities::{
     module_has_dfm_rule, module_has_geometric_conforms, module_has_geometry,
     module_has_representation_within, module_has_thickness_dfm_rule,
 };
-use crate::{configured_check_build_engine, parse_and_compile_program_entry};
+use crate::{configured_check_build_engine, parse_and_compile_program_with_evaluation_module};
 
 /// `reify check <file>` — resolves autos and reports every constraint verdict.
 ///
@@ -98,7 +98,7 @@ pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
         }
     };
 
-    let compiled = match parse_and_compile_program_entry(file, &cfg) {
+    let (program, compiled) = match parse_and_compile_program_with_evaluation_module(file, &cfg) {
         Ok(c) => c,
         Err(code) => return code,
     };
@@ -204,6 +204,7 @@ pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
             let mut engine = configured_check_build_engine(|posture| {
                 reify_eval::Engine::with_registered_kernel(posture, Box::new(checker))
             });
+            let evaluated = engine.load(program);
             if has_representation_within {
                 // Record deviation during tessellation.
                 engine.set_capture_repr_tol(true);
@@ -244,7 +245,7 @@ pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
                 // `reify check`: `realize_for_check` →
                 // `build_with_geometry_output` opens with `self.check(module)`
                 // (which opens with `self.eval`), and the authoritative
-                // `engine.check(&compiled)` below opens with another fresh
+                // `engine.check(&evaluated)` below opens with another fresh
                 // `self.eval`. That second eval is also the sole reason
                 // `merge_post_build_verdicts` exists — it discards the
                 // post-processed value map the realization just produced, and
@@ -264,12 +265,12 @@ pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
                 // merge precisely BECAUSE (C) fell outside 5748's file scope.
                 // The double eval, the verdict merge and the (b)/(c) asymmetry
                 // all retire together there.
-                build_result = Some(engine.realize_for_check(&compiled));
+                build_result = Some(engine.realize_for_check(&evaluated));
             }
             if has_representation_within {
                 // Populate `achieved_repr_tol`. Does not touch
                 // `realization_handles`, so the build handles above survive.
-                engine.tessellate_realizations(&compiled);
+                engine.tessellate_realizations(&evaluated);
             }
             if has_thickness_dfm {
                 // Lazily acquire the OpenVDB kernel for the thickness-DFM
@@ -289,14 +290,15 @@ pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
             // `measure_dfm_rules` (emits W_/E_DFM_OVERHANG, W_/E_DFM_DRAFT,
             // W_/E_DFM_MIN_WALL, W_/E_DFM_MIN_FEATURE diagnostics) — each
             // reads the map its side effect populated.
-            let result = engine.check(&compiled);
+            let result = engine.check(&evaluated);
             (result, take_deviation_readout(&engine))
         } else {
             // Lightweight arm: no geometry kernel, no tessellation (C2).
             let mut engine = configured_check_build_engine(|posture| {
                 reify_eval::Engine::new(posture, Box::new(checker), None)
             });
-            let result = engine.check(&compiled);
+            let evaluated = engine.load(program);
+            let result = engine.check(&evaluated);
             (result, take_deviation_readout(&engine))
         };
 
@@ -404,21 +406,23 @@ pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
         // `check_constraints_with_values` / `run_gdt_check_passes` are all
         // called on it below.
         let used_build = module_has_geometry(&compiled);
-        let (values, front_end_diagnostics, mut engine) = if used_build {
+        let (values, front_end_diagnostics, mut engine, evaluated) = if used_build {
             let mut engine = configured_check_build_engine(|posture| {
                 reify_eval::Engine::with_registered_kernel(posture, Box::new(checker))
             });
             // `realize_for_check`, not `build()` — same esc-5748-6 reason as
             // sub-path (b) above: `check` writes no artifact, so the Phase-B
             // export walk's diagnostics would be user-visible false errors.
-            let r = engine.realize_for_check(&compiled);
-            (r.values, r.diagnostics, engine)
+            let evaluated = engine.load(program);
+            let r = engine.realize_for_check(&evaluated);
+            (r.values, r.diagnostics, engine, evaluated)
         } else {
             let mut engine = configured_check_build_engine(|posture| {
                 reify_eval::Engine::new(posture, Box::new(checker), None)
             });
-            let r = engine.eval(&compiled);
-            (r.values, r.diagnostics, engine)
+            let evaluated = engine.load(program);
+            let r = engine.eval(&evaluated);
+            (r.values, r.diagnostics, engine, evaluated)
         };
 
         // Activate each purpose in flag order; one check_constraints_with_values
@@ -497,7 +501,7 @@ pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
         // `strip_diagnostics_reproduced_by`).  Folded in below, before
         // `report_eval_output`, so the error prints to stderr alongside the
         // others.
-        let gdt_diagnostics = engine.run_gdt_check_passes(&compiled, &values);
+        let gdt_diagnostics = engine.run_gdt_check_passes(&evaluated, &values);
 
         // Front-end diagnostics first, then check diagnostics — chronological order.
         let mut diagnostics = if used_build {

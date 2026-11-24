@@ -1747,11 +1747,6 @@ impl Engine {
         }
     }
 
-    /// Returns the compiled stdlib prelude modules stored by this engine.
-    pub fn prelude(&self) -> &[CompiledModule] {
-        self.prelude
-    }
-
     /// Install `program`, replacing any earlier load, and return the module to
     /// evaluate it as: its [`crate::evaluation_module`]. Evaluating, checking
     /// or building exactly that module resolves in `program`'s environment

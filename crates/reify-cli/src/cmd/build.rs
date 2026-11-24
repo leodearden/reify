@@ -12,7 +12,7 @@ use crate::check_verdict::{ConstraintOutcome, build_is_success, has_error_diagno
 use crate::constraint_report::report_eval_output;
 use crate::help::BUILD_USAGE;
 use crate::module_capabilities::module_has_isosurface;
-use crate::{configured_check_build_engine, parse_and_compile_program_entry};
+use crate::{configured_check_build_engine, parse_and_compile_program_with_evaluation_module};
 
 pub(crate) fn cmd_build(args: &[String]) -> ExitCode {
     let (cfg, rest) = match split_cfg_args_or_usage(args, BUILD_USAGE) {
@@ -97,7 +97,7 @@ pub(crate) fn cmd_build(args: &[String]) -> ExitCode {
         }
     }
 
-    let compiled = match parse_and_compile_program_entry(file, &cfg) {
+    let (program, compiled) = match parse_and_compile_program_with_evaluation_module(file, &cfg) {
         Ok(c) => c,
         Err(code) => return code,
     };
@@ -114,6 +114,7 @@ pub(crate) fn cmd_build(args: &[String]) -> ExitCode {
     let mut engine = configured_check_build_engine(|posture| {
         reify_eval::Engine::with_registered_kernel(posture, Box::new(checker))
     });
+    let evaluated = engine.load(program);
     // Lazily acquire the OpenVDB kernel when the module contains an
     // `isosurface(...)` realization op (task δ/5002). Without OpenVDB
     // registered, the operand's Mesh→Voxel voxelize stage and the terminal
@@ -236,7 +237,7 @@ pub(crate) fn cmd_build(args: &[String]) -> ExitCode {
                 }
             };
 
-            let result = engine.build(&compiled, format);
+            let result = engine.build(&evaluated, format);
 
             let outcome = report_eval_output(
                 &result.constraint_results,
@@ -348,7 +349,8 @@ pub(crate) fn cmd_build(args: &[String]) -> ExitCode {
             // constraint-checked, and serialized the discarded Phase-B STEP output
             // twice. Kernel provenance is read from engine state below, populated
             // by this single realization.
-            let outputs = engine.build_outputs_with_result(&compiled, design_dir, out_dir_override);
+            let outputs =
+                engine.build_outputs_with_result(&evaluated, design_dir, out_dir_override);
             let artifacts = &outputs.artifacts;
 
             // Surface BOTH the build diagnostics AND every per-artifact

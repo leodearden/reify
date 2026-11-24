@@ -6,13 +6,13 @@ use std::sync::Arc;
 
 use tracing::warn;
 
-use reify_compiler::{CompiledModule, EntityKind, ValueCellKind, find_template};
+use reify_compiler::{CompiledModule, EntityKind, ValueCellKind};
 use reify_eval::cache::NodeId;
 use reify_eval::tolerance_combine::{
     OutputTarget, conforms_to_output, conforms_to_trait, extract_output_export_spec,
     unenforced_representation_bound_diagnostic,
 };
-use reify_eval::{CancellationHandle, CheckResult, ConstraintUpgrade, Engine};
+use reify_eval::{CancellationHandle, CheckResult, ConstraintUpgrade, DefEnv, Engine};
 use reify_core::{
     ContentHash, ConstraintNodeId, DimensionVector, ModulePath, RealizationNodeId, Severity,
     ValueCellId,
@@ -96,6 +96,7 @@ pub fn bootstrap_persistent_cache_sweep() {
 mod core_state {
     use std::collections::HashMap;
     use std::path::{Path, PathBuf};
+    use std::sync::Arc;
 
     use reify_compiler::CompiledModule;
     use reify_eval::{CheckResult, Engine};
@@ -153,7 +154,9 @@ mod core_state {
     /// See `engine_lock.rs` for the invariant rationale.
     pub(crate) struct CoreState {
         engine: Engine,
-        compiled: Option<CompiledModule>,
+        /// The module `engine` evaluates: for a program, the very one
+        /// `Engine::load` returned, so it resolves in the program's environment.
+        compiled: Option<Arc<CompiledModule>>,
         source_map: HashMap<String, String>,
         file_path: Option<PathBuf>,
         last_check: Option<CheckResult>,
@@ -188,7 +191,7 @@ mod core_state {
 
         /// Return a reference to the compiled module, or `None` if no module is loaded.
         pub(crate) fn compiled(&self) -> Option<&CompiledModule> {
-            self.compiled.as_ref()
+            self.compiled.as_deref()
         }
 
         /// Return a reference to the last check result, or `None` if no check has run.
@@ -226,7 +229,7 @@ mod core_state {
         pub(super) fn split_compiled_and_engine_mut(
             &mut self,
         ) -> (Option<&CompiledModule>, &mut Engine) {
-            (self.compiled.as_ref(), &mut self.engine)
+            (self.compiled.as_deref(), &mut self.engine)
         }
 
         /// Atomically commit a fresh `CheckResult` into `last_check`.
@@ -277,7 +280,7 @@ mod core_state {
         /// outer `EngineSession::commit_state` wrapper after this call returns.
         pub(crate) fn commit_state(
             &mut self,
-            compiled: CompiledModule,
+            compiled: Arc<CompiledModule>,
             check_result: CheckResult,
             module_name: &str,
             source: &str,
@@ -346,17 +349,17 @@ mod core_state {
         /// session's invariant is intentionally broken after this call.
         #[cfg(test)]
         pub(crate) fn inject_compiled(&mut self, compiled: CompiledModule) {
-            self.compiled = Some(compiled);
+            self.compiled = Some(Arc::new(compiled));
         }
 
         /// Re-run `engine.check` on the current compiled module and store the result.
         ///
-        /// Clones `self.compiled` to avoid the borrow conflict between
+        /// Clones the `self.compiled` handle to avoid the borrow conflict between
         /// `self.engine` (needs `&mut`) and `self.compiled` (immutable reference
         /// for the check call).  No-op when no module is loaded.
         #[cfg(test)]
         pub(crate) fn recheck(&mut self) {
-            if let Some(compiled) = self.compiled.as_ref().cloned() {
+            if let Some(compiled) = self.compiled.clone() {
                 let check_result = self.engine.check(&compiled);
                 self.last_check = Some(check_result);
             }
@@ -367,11 +370,11 @@ mod core_state {
         /// Panics if no module is currently loaded.
         #[cfg(test)]
         pub(crate) fn inject_diagnostic(&mut self, diag: Diagnostic) {
-            self.compiled
+            let compiled = self
+                .compiled
                 .as_mut()
-                .expect("inject_diagnostic: no compiled module loaded")
-                .diagnostics
-                .push(diag);
+                .expect("inject_diagnostic: no compiled module loaded");
+            Arc::make_mut(compiled).diagnostics.push(diag);
         }
     }
 }
@@ -852,7 +855,35 @@ pub(crate) fn source_key_matches_path(spelling: &str, path: &str) -> bool {
 /// What a successful compile produced, in one order everywhere.
 pub(crate) struct CompiledSource {
     pub(crate) parsed: reify_ast::ParsedModule,
-    pub(crate) compiled: CompiledModule,
+    pub(crate) compiled: Compilation,
+}
+
+impl CompiledSource {
+    fn of_module(parsed: reify_ast::ParsedModule, module: CompiledModule) -> Self {
+        Self {
+            parsed,
+            compiled: Compilation::Module(module),
+        }
+    }
+}
+
+/// What a buffer compiled to.
+pub(crate) enum Compilation {
+    /// A single-file compile.
+    Module(CompiledModule),
+    /// The program of an entry that follows imports.
+    Program(Arc<reify_compiler::program::CompiledProgram>),
+}
+
+impl Compilation {
+    /// The module `engine` evaluates this compile as. A program is loaded into
+    /// `engine`, and only the module returned resolves in its environment.
+    fn evaluated_in(self, engine: &mut Engine) -> Arc<CompiledModule> {
+        match self {
+            Self::Module(module) => Arc::new(module),
+            Self::Program(program) => engine.load(program),
+        }
+    }
 }
 
 /// Why a compile was rejected.
@@ -926,22 +957,18 @@ fn parse_errs_to_payload(
 /// carries only the `Severity::Error` diagnostics, under the
 /// `"Compile errors"` prefix, keyed by `module_key(module_name)`.
 fn reject_compile_errors(
-    compiled: CompiledModule,
+    diagnostics: &[Diagnostic],
     module_name: &str,
     source: &str,
-) -> Result<CompiledModule, CompileRejection> {
-    if !compiled
-        .diagnostics
+) -> Result<(), CompileRejection> {
+    let error_diags: Vec<Diagnostic> = diagnostics
         .iter()
-        .any(|d| d.severity == Severity::Error)
-    {
-        return Ok(compiled);
-    }
-    let error_diags: Vec<Diagnostic> = compiled
-        .diagnostics
-        .into_iter()
         .filter(|d| d.severity == Severity::Error)
+        .cloned()
         .collect();
+    if error_diags.is_empty() {
+        return Ok(());
+    }
     Err(build_err_payload(
         "Compile errors",
         &error_diags,
@@ -1006,7 +1033,8 @@ fn compile_buffer(
         Some(entry_path) if reify_compiler::program::entry_follows_imports(&parsed, &gui_cfg()) => {
             compile_entry_program(entry_path, source, parsed, module_name)
         }
-        Some(_) => compile_single_file_with_stdlib(parsed, source, module_name),
+        Some(_) => compile_single_file_with_stdlib(&parsed, source, module_name)
+            .map(|module| CompiledSource::of_module(parsed, module)),
         None => compile_unanchored(parsed, source, module_name),
     }
 }
@@ -1025,10 +1053,10 @@ fn compile_unanchored(
         &parsed,
         &gui_cfg(),
     ));
-    match compile_single_file_with_stdlib(parsed, source, module_name) {
-        Ok(mut accepted) => {
-            accepted.compiled.diagnostics.extend(warning);
-            Ok(accepted)
+    match compile_single_file_with_stdlib(&parsed, source, module_name) {
+        Ok(mut module) => {
+            module.diagnostics.extend(warning);
+            Ok(CompiledSource::of_module(parsed, module))
         }
         Err(rejection) => {
             Err(rejection.explained_by(warning.as_slice(), &module_key(module_name), source))
@@ -1062,7 +1090,7 @@ fn unanchored_import_warning(followed: &[&reify_ast::ImportDecl]) -> Option<Diag
 /// Compile `parsed`, the parse of `source`, single-file against the stdlib
 /// prelude.
 ///
-/// Returns the [`CompiledSource`] on success, or a [`CompileRejection`]
+/// Returns the compiled module on success, or a [`CompileRejection`]
 /// whose message preserves the `"Compile errors: …"` format (so existing
 /// substring assertions remain valid) and whose diagnostics carry the same
 /// errors in structured form. Callers store those diagnostics in
@@ -1072,16 +1100,16 @@ fn unanchored_import_warning(followed: &[&reify_ast::ImportDecl]) -> Option<Diag
 /// The single-file counterpart to [`compile_entry_program`]; [`compile_buffer`]
 /// routes between them.
 fn compile_single_file_with_stdlib(
-    parsed: reify_ast::ParsedModule,
+    parsed: &reify_ast::ParsedModule,
     source: &str,
     module_name: &str,
-) -> Result<CompiledSource, CompileRejection> {
+) -> Result<CompiledModule, CompileRejection> {
     let compiled = reify_compiler::compile_with_stdlib_checked(
-        &parsed,
+        parsed,
         &reify_constraints::SimpleConstraintChecker,
     );
-    let compiled = reject_compile_errors(compiled, module_name, source)?;
-    Ok(CompiledSource { parsed, compiled })
+    reject_compile_errors(&compiled.diagnostics, module_name, source)?;
+    Ok(compiled)
 }
 
 /// Compile the entry from its possibly dirty buffer `source` as a program
@@ -1105,8 +1133,11 @@ fn compile_entry_program(
         &gui_cfg(),
         &reify_constraints::SimpleConstraintChecker,
     );
-    let compiled = reject_compile_errors(program.into_entry(), module_name, source)?;
-    Ok(CompiledSource { parsed, compiled })
+    reject_compile_errors(&program.entry().diagnostics, module_name, source)?;
+    Ok(CompiledSource {
+        parsed,
+        compiled: Compilation::Program(Arc::new(program)),
+    })
 }
 
 impl EngineSession {
@@ -3253,9 +3284,11 @@ impl EngineSession {
 
     /// Reload's post-compile half up to the build: check, commit, emit.
     ///
-    /// The one place a reload runs [`Self::check_with_solve_slot`]. Check runs
-    /// before any state is written, so a panic in it leaves the session
-    /// unchanged. Telemetry fires only after [`Self::commit_state`] has
+    /// The one place a reload runs [`Self::check_with_solve_slot`], on the
+    /// module the engine evaluates the compile as. Check runs before any
+    /// session field is written, so a panic in it leaves the session unchanged;
+    /// the program loaded before it is engine state, like the eval state the
+    /// check replaces. Telemetry fires only after [`Self::commit_state`] has
     /// committed everything — so a panic during the commit cannot leak phantom
     /// events to the GUI, and every emitter reads the freshly committed
     /// `last_check`. The build is left to the caller so `load_from_compiled`
@@ -3267,8 +3300,10 @@ impl EngineSession {
         source: &str,
         file: FilePathUpdate,
     ) {
-        let check_result = self.check_with_solve_slot(&compiled.compiled);
-        self.commit_state(compiled, check_result, module_name, source, file);
+        let CompiledSource { parsed, compiled } = compiled;
+        let evaluated = compiled.evaluated_in(self.core.engine_mut());
+        let check_result = self.check_with_solve_slot(&evaluated);
+        self.commit_state(parsed, evaluated, check_result, module_name, source, file);
         self.post_engine_call_telemetry();
     }
 
@@ -3428,13 +3463,13 @@ impl EngineSession {
     /// or injected by `load_from_compiled` — runs this one reset list.
     fn commit_state(
         &mut self,
-        compiled: CompiledSource,
+        parsed: reify_ast::ParsedModule,
+        compiled: Arc<CompiledModule>,
         check_result: CheckResult,
         module_name: &str,
         source: &str,
         file_path: FilePathUpdate,
     ) {
-        let CompiledSource { parsed, compiled } = compiled;
         // Commit the five canonical core fields atomically via CoreState::commit_state.
         // A panic between the core commit and the cache updates below leaves core fields
         // consistent (at new values) while caches may be stale — that is tolerated per
@@ -4242,8 +4277,8 @@ impl EngineSession {
                 // borrow from tessellate_snapshot was released above.
                 let (display_panes, display_appearance) = {
                     let compiled = self.core.compiled().unwrap();
-                    let prelude = self.core.engine().prelude();
-                    collect_display_routing(compiled, prelude, &result.values)
+                    let scope = self.core.engine().env_of(compiled);
+                    collect_display_routing(compiled, scope.env(), &result.values)
                 };
                 (meshes, tess_diags, display_panes, display_appearance)
             }
@@ -4655,7 +4690,8 @@ impl EngineSession {
         // seeds it from `stdlib_loader::load_stdlib()`, so every session already
         // has it. Same access `build_gui_state` uses; both this and
         // `self.core.compiled()` are `&`-borrows of `&self`, so no borrow conflict.
-        let trait_defs = merged_trait_defs(compiled, self.core.engine().prelude());
+        let scope = self.core.engine().env_of(compiled);
+        let trait_defs = merged_trait_defs(scope.env());
 
         compiled
             .templates
@@ -5716,18 +5752,14 @@ impl MergedTraitDefs {
     }
 }
 
-/// Merge a module's declared traits with the prelude's, yielding the set every
-/// refinement walk in this file resolves against.
+/// The traits `env` binds, the set every refinement walk in this file resolves
+/// against.
 ///
 /// Mirrors `engine_build.rs::build_outputs_with_result`. Shared by
 /// `collect_display_routing`'s `conforms_to_output` gate and
 /// `get_entity_tree`'s `conforms_to_trait` gate so the two cannot drift.
-fn merged_trait_defs(module: &CompiledModule, prelude: &[CompiledModule]) -> MergedTraitDefs {
-    let mut merged = module.trait_defs.clone();
-    for pm in prelude {
-        merged.extend(pm.trait_defs.iter().cloned());
-    }
-    MergedTraitDefs(merged)
+fn merged_trait_defs(env: DefEnv<'_>) -> MergedTraitDefs {
+    MergedTraitDefs(env.traits().cloned().collect())
 }
 
 // ── PRD-3 γ: DisplayOutput occurrence walk → display_panes ────────────────────
@@ -5738,7 +5770,7 @@ fn merged_trait_defs(module: &CompiledModule, prelude: &[CompiledModule]) -> Mer
 /// Replicates `Engine::build_outputs`' four-gate enumeration using the same
 /// already-public primitives:
 ///
-/// 1. `find_template` — module-first, prelude-fallback sub-component resolution.
+/// 1. `DefEnv::resolve_template` — the sub-component's structure as `env` binds it.
 /// 2. `entity_kind == EntityKind::Occurrence` — discard structure templates.
 /// 3. `conforms_to_output` — only occurrences that conform to the `Output` trait.
 /// 4. `values.get(ValueCellId::new(template, sub))` + `extract_output_export_spec`
@@ -5758,24 +5790,18 @@ fn merged_trait_defs(module: &CompiledModule, prelude: &[CompiledModule]) -> Mer
 /// no `DisplayOutput` yields an empty vec (inv.2).
 fn collect_display_routing(
     module: &CompiledModule,
-    prelude: &[CompiledModule],
+    env: DefEnv<'_>,
     values: &ValueMap,
 ) -> (Vec<DisplayDirective>, Vec<AppearanceDirective>) {
-    let trait_defs = merged_trait_defs(module, prelude);
+    let trait_defs = merged_trait_defs(env);
 
     let mut directives = Vec::new();
     let mut appearances = Vec::new();
 
     for template in &module.templates {
         for sub in &template.sub_components {
-            // Gate 1: resolve occurrence template — module first, then prelude.
-            let Some(occ_template) = find_template(&module.templates, &sub.structure_name)
-                .or_else(|| {
-                    prelude
-                        .iter()
-                        .find_map(|pm| find_template(&pm.templates, &sub.structure_name))
-                })
-            else {
+            // Gate 1: resolve the occurrence template.
+            let Some(occ_template) = env.resolve_template(&sub.structure_name) else {
                 continue;
             };
 
@@ -7519,7 +7545,7 @@ impl EngineSession {
     ) -> Result<GuiState, String> {
         let parsed = reify_compiler::parse_with_stdlib("", ModulePath::single(module_name));
         self.reload_compiled(
-            CompiledSource { parsed, compiled },
+            CompiledSource::of_module(parsed, compiled),
             module_name,
             "",
             FilePathUpdate::Preserve,
@@ -7575,10 +7601,9 @@ impl EngineSession {
     ///
     /// No-op when no module is loaded.
     pub(crate) fn build_for_freshness_test(&mut self) {
-        if let Some(compiled) = self.core.compiled().cloned() {
+        if let (Some(compiled), engine) = self.core.split_compiled_and_engine_mut() {
             // Discards the BuildResult — callers read freshness via get_entity_tree().
-            // compiled() borrow is released after cloned(), so engine_mut() is safe.
-            let _ = self.core.engine_mut().build(&compiled, ExportFormat::Step);
+            let _ = engine.build(compiled, ExportFormat::Step);
         }
     }
 
