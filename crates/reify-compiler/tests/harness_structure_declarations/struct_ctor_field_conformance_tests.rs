@@ -1342,12 +1342,7 @@ structure def HydroConformer {
         param flow_rate : VolumetricFlowRate = 1gal / 1s
         param medium : String = "hydraulic_oil"
         param fluid_type : FluidType = FluidType.Liquid
-        param frame : Frame3 = Frame3(
-            origin: vec3(0mm, 0mm, 0mm),
-            x_axis: vec3(1, 0, 0),
-            y_axis: vec3(0, 1, 0),
-            z_axis: vec3(0, 0, 1),
-        )
+        param frame : Frame = frame_at(point3(0mm, 0mm, 0mm), dir(1, 0, 0), dir(0, 0, 1))
         param fitting_type : FittingStandard = FittingStandard.NPT
     }
 }

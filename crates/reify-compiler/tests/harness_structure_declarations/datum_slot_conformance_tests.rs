@@ -253,15 +253,17 @@ fn a_wrapped_direction_slot_keeps_the_dir_hint() {
     }
 }
 
-/// The stdlib `structure Frame3` is not the `Frame` datum. Its message
-/// currently reads `'Frame3'` on both sides, since `Type::Frame(3)` displays
-/// as `Frame3`; #9639 deletes the struct.
+/// A user structure named `Frame3` is not the `Frame` datum, although
+/// `Type::Frame(3)` displays as `Frame3`, so the message reads `'Frame3'` on
+/// both sides.
 #[test]
-fn a_frame_slot_rejects_the_stdlib_frame3_structure() {
-    let frame3 = "Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(1.0, 0.0, 0.0), \
-                  y_axis: vec3(0.0, 1.0, 0.0), z_axis: vec3(0.0, 0.0, 1.0))";
-    let module = compile_source_with_stdlib(&ctor_field_source("param f : Frame", "f", frame3));
-    assert_one_arg_type_mismatch_naming(&module, "f", "Frame <- stdlib Frame3 structure");
+fn a_frame_slot_rejects_a_user_structure_named_frame3() {
+    let source = format!(
+        "structure def Frame3 {{\n    param origin : Point3<Length>\n}}\n{}",
+        ctor_field_source("param f : Frame", "f", "Frame3(origin: point3(0mm, 0mm, 0mm))")
+    );
+    let module = compile_source_with_stdlib(&source);
+    assert_one_arg_type_mismatch_naming(&module, "f", "Frame <- user Frame3 structure");
 }
 
 /// The ctor-slot hint gate and the builtin-slot one
