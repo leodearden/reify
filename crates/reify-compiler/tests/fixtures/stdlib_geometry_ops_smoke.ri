@@ -24,9 +24,10 @@
 //   - argument DIMENSION/TYPE. Only arity is checked for these ops (no Key
 //     Geometry Operation has a checkable slot in builtin_signatures.rs), so
 //     `extrude(prof, 5)` would compile just as green. The unit convention used
-//     below — positions/lengths in `mm`, angles in `deg`, direction/axis/normal
-//     components and counts as plain numbers — mirrors the chunk's prose line
-//     but nothing verifies it;
+//     below — positions/lengths in `mm`, angles in `deg`, rotate's and
+//     rotate_around's axis and mirror's normal as `dir(..)`, other
+//     direction/axis components and counts as plain numbers — mirrors the
+//     chunk's prose line but nothing verifies it;
 //   - argument ORDER.
 // Keep the two files in lockstep: if you edit a signature in one, edit it in the
 // other. Renaming a call here to something with no compiler arm goes RED.
@@ -35,7 +36,7 @@
 // the match arms in reify-compiler/src/geometry{,_transform,_boolean,_modify,
 // _curve}.rs). Where an ergonomic value-form overload exists (mirror/plane,
 // circular_pattern/axis, rotate/orientation) it is exercised alongside the
-// all-scalar form.
+// scalar or Direction form.
 
 structure def StdlibGeometryOpsSmoke {
     // ── Inputs (real constructors) ──────────────────────────────────────────
@@ -86,12 +87,12 @@ structure def StdlibGeometryOpsSmoke {
 
     // ── Transform ─────────────────────────────────────────────────────────────
     let tr  = translate(solid, 1mm, 2mm, 3mm)      // translate(geo, dx, dy, dz)
-    let ro5 = rotate(solid, 0, 0, 1, 90deg)        // rotate(geo, ax, ay, az, angle)  [5, scalar]
+    let ro3 = rotate(solid, dir(0, 0, 1), 90deg)  // rotate(geo, axis, angle)        [3, direction]
     let ro2 = rotate(solid, orient_identity())     // rotate(geo, orientation)        [2, value]
     let mi2 = mirror(solid, plane_xy(0mm))         // mirror(geo, plane)              [2, value]
-    let mi7 = mirror(solid, 0mm, 0mm, 0mm, 1, 0, 0)  // mirror(geo, ox,oy,oz, nx,ny,nz) [7, scalar]
+    let mi3 = mirror(solid, point3(0mm, 0mm, 0mm), dir(1, 0, 0))  // mirror(geo, origin, normal) [3, direction]
     let sc  = scale(solid, 2.0)                    // scale(geo, factor)
-    let rar = rotate_around(solid, 0mm, 0mm, 0mm, 0, 0, 1, 90deg)  // rotate_around(geo, px,py,pz, ax,ay,az, angle)
+    let rar = rotate_around(solid, point3(0mm, 0mm, 0mm), dir(0, 0, 1), 90deg)  // rotate_around(geo, pivot, axis, angle)
     let apt = apply_transform(solid, transform3_identity())         // apply_transform(geo, transform)  [rigid]
     let afa = affine_apply(solid, affine_scale(1.0, 1.0, 1.5))      // affine_apply(geo, map)           [general affine]
 

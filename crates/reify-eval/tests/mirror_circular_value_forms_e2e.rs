@@ -126,16 +126,14 @@ fn mirror_value_form_plane_xy_builds_and_emits_correct_mirror_op() {
     }
 }
 
-/// (b) Back-compat: legacy 7-arg scalar form mirror(box, 0mm,0mm,0mm, 1,0,0) still builds
+/// (b) The point-direction form mirror(box, point3(0mm, 0mm, 0mm), dir(1, 0, 0)) builds
 /// without errors and emits Mirror with plane_normal ≈ [1,0,0].
-///
-/// GREEN before and after step-6 (back-compat must hold).
 #[test]
-fn mirror_scalar_back_compat_emits_correct_plane() {
+fn mirror_point_direction_form_emits_correct_plane() {
     let source = r#"
         structure def S {
             let b = box(10mm, 10mm, 10mm)
-            let m = mirror(b, 0mm, 0mm, 0mm, 1, 0, 0)
+            let m = mirror(b, point3(0mm, 0mm, 0mm), dir(1, 0, 0))
         }
     "#;
 
@@ -148,7 +146,7 @@ fn mirror_scalar_back_compat_emits_correct_plane() {
         .collect();
     assert!(
         error_diags.is_empty(),
-        "expected zero Error diagnostics for back-compat scalar mirror, got: {:?}",
+        "expected zero Error diagnostics for the point-direction mirror, got: {:?}",
         error_diags
     );
 

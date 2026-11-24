@@ -140,8 +140,8 @@ structure def TopDeckHalf : Rigid {
     aux let padded = union_all(perforated, translate(cylinder(pad_r, floor_t), pad_x, 0mm, 0mm))
     aux let slots = union_all(
         translate(box(4 * wall_t, slot_flat, slot_h), end_x, 0mm, slot_z),
-        translate(rotate(cylinder(slot_h / 2, 4 * wall_t), 0, 1, 0, 90deg), end_x - 2 * wall_t, slot_flat / 2, slot_z),
-        translate(rotate(cylinder(slot_h / 2, 4 * wall_t), 0, 1, 0, 90deg), end_x - 2 * wall_t, 0mm - slot_flat / 2, slot_z)
+        translate(rotate(cylinder(slot_h / 2, 4 * wall_t), dir(0, 1, 0), 90deg), end_x - 2 * wall_t, slot_flat / 2, slot_z),
+        translate(rotate(cylinder(slot_h / 2, 4 * wall_t), dir(0, 1, 0), 90deg), end_x - 2 * wall_t, 0mm - slot_flat / 2, slot_z)
     )
     aux let slotted = difference(padded, slots)
 
@@ -158,12 +158,12 @@ structure def TopDeckHalf : Rigid {
         ),
             intersection(
                 translate(box(2 * strip_half, scw, 3 * floor_t), 0mm, scw / 2, floor_t - 1.5 * floor_t),
-                translate(rotate(box(40mm, scw, 40mm), 0, 1, 0, 45deg), -6mm, scw / 2, strip_half - 6mm + 28.284mm)
+                translate(rotate(box(40mm, scw, 40mm), dir(0, 1, 0), 45deg), -6mm, scw / 2, strip_half - 6mm + 28.284mm)
             )
         ),
             intersection(
                 translate(box(2 * strip_half, scw, 3 * floor_t), 0mm, -scw / 2, floor_t - 1.5 * floor_t),
-                translate(rotate(box(40mm, scw, 40mm), 0, 1, 0, 45deg), -16mm, -scw / 2, strip_half - 28.284mm + 16mm)
+                translate(rotate(box(40mm, scw, 40mm), dir(0, 1, 0), 45deg), -16mm, -scw / 2, strip_half - 28.284mm + 16mm)
             )
         )
 
@@ -172,7 +172,7 @@ structure def TopDeckHalf : Rigid {
     // wall end without support. Unioned AFTER the trims (it bridges the seam).
     aux let tab = difference(
         translate(box(tab_len, tab_t, tab_h), 0mm, tab_y, tab_z0 + tab_h / 2),
-        translate(rotate(box(40mm, 10mm, 40mm), 0, 1, 0, 45deg), -25mm, tab_y, tab_z0 - 3.284mm)
+        translate(rotate(box(40mm, 10mm, 40mm), dir(0, 1, 0), 45deg), -25mm, tab_y, tab_z0 - 3.284mm)
     )
 
     param geometry : Solid = union_all(trimmed, tab)

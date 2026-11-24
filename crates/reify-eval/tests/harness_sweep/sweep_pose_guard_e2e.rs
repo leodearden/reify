@@ -429,7 +429,7 @@ fn curve_profile_is_refused_by_the_compiler() {
 #[test]
 fn an_inline_posed_profile_realizes() {
     const SOURCE: &str = r#"structure S {
-    let b = sweep(rotate(rectangle(20mm, 20mm), 1.0, 0.0, 0.0, -90deg), line_segment(0mm, 0mm, 0mm, 0mm, 200mm, 0mm))
+    let b = sweep(rotate(rectangle(20mm, 20mm), dir(1.0, 0.0, 0.0), -90deg), line_segment(0mm, 0mm, 0mm, 0mm, 200mm, 0mm))
     let v = volume(b)
 }
 "#;

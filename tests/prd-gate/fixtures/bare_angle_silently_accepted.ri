@@ -8,7 +8,7 @@
 //
 // Measured at HEAD dc83d4fd60 with `reify eval`:
 //
-//   rotate(b, 0.0, 0.0, 1.0, 45)
+//   rotate(b, dir(0.0, 0.0, 1.0), 45)
 //       -> builds, exit 0, ZERO diagnostics. The 45 is read as 45 RADIANS
 //          (≈ 2578°), not 45 degrees. Mechanism: the bare-accepting
 //          eval_named_arg_f64 in geometry_ops.rs.
@@ -55,7 +55,7 @@ structure def BareAngleSilentlyAccepted {
     let b = box(10mm, 10mm, 10mm)
 
     // Silent radians — zero diagnostics today.
-    let spun = rotate(b, 0.0, 0.0, 1.0, 45)
+    let spun = rotate(b, dir(0.0, 0.0, 1.0), 45)
 
     // Warned degrees — the contradictory convention, same literal shape.
     let ring = circular_pattern(b, 0mm, 0mm, 0mm, 0.0, 0.0, 1.0, 4, 360)

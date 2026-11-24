@@ -140,11 +140,11 @@ structure def TopDeck : Rigid {
     // Hand slots through both end walls (rounded ends).
     aux let slots = union_all(
         translate(box(4 * wall_t, slot_flat, slot_h), end_x, 0mm, slot_z),
-        translate(rotate(cylinder(slot_h / 2, 4 * wall_t), 0, 1, 0, 90deg), end_x - 2 * wall_t, slot_flat / 2, slot_z),
-        translate(rotate(cylinder(slot_h / 2, 4 * wall_t), 0, 1, 0, 90deg), end_x - 2 * wall_t, 0mm - slot_flat / 2, slot_z),
+        translate(rotate(cylinder(slot_h / 2, 4 * wall_t), dir(0, 1, 0), 90deg), end_x - 2 * wall_t, slot_flat / 2, slot_z),
+        translate(rotate(cylinder(slot_h / 2, 4 * wall_t), dir(0, 1, 0), 90deg), end_x - 2 * wall_t, 0mm - slot_flat / 2, slot_z),
         translate(box(4 * wall_t, slot_flat, slot_h), 0mm - end_x, 0mm, slot_z),
-        translate(rotate(cylinder(slot_h / 2, 4 * wall_t), 0, 1, 0, 90deg), 0mm - end_x - 2 * wall_t, slot_flat / 2, slot_z),
-        translate(rotate(cylinder(slot_h / 2, 4 * wall_t), 0, 1, 0, 90deg), 0mm - end_x - 2 * wall_t, 0mm - slot_flat / 2, slot_z)
+        translate(rotate(cylinder(slot_h / 2, 4 * wall_t), dir(0, 1, 0), 90deg), 0mm - end_x - 2 * wall_t, slot_flat / 2, slot_z),
+        translate(rotate(cylinder(slot_h / 2, 4 * wall_t), dir(0, 1, 0), 90deg), 0mm - end_x - 2 * wall_t, 0mm - slot_flat / 2, slot_z)
     )
 
     param geometry : Solid = difference(padded, slots)

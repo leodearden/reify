@@ -156,12 +156,12 @@ structure def BottomDeck : Rigid {
     aux let channels = union_all(
         translate(box(void_d + 1mm, void_w, void_h), inner_x - void_d / 2 + 0.5mm, 0mm, floor_thickness + void_h / 2),
         translate(box(4 * lower_wall, slot_flat, slot_h), end_x, 0mm, slot_z),
-        translate(rotate(cylinder(slot_h / 2, 4 * lower_wall), 0, 1, 0, 90deg), end_x - 2 * lower_wall, slot_flat / 2, slot_z),
-        translate(rotate(cylinder(slot_h / 2, 4 * lower_wall), 0, 1, 0, 90deg), end_x - 2 * lower_wall, 0mm - slot_flat / 2, slot_z),
+        translate(rotate(cylinder(slot_h / 2, 4 * lower_wall), dir(0, 1, 0), 90deg), end_x - 2 * lower_wall, slot_flat / 2, slot_z),
+        translate(rotate(cylinder(slot_h / 2, 4 * lower_wall), dir(0, 1, 0), 90deg), end_x - 2 * lower_wall, 0mm - slot_flat / 2, slot_z),
         translate(box(void_d + 1mm, void_w, void_h), void_d / 2 - inner_x - 0.5mm, 0mm, floor_thickness + void_h / 2),
         translate(box(4 * lower_wall, slot_flat, slot_h), 0mm - end_x, 0mm, slot_z),
-        translate(rotate(cylinder(slot_h / 2, 4 * lower_wall), 0, 1, 0, 90deg), 0mm - end_x - 2 * lower_wall, slot_flat / 2, slot_z),
-        translate(rotate(cylinder(slot_h / 2, 4 * lower_wall), 0, 1, 0, 90deg), 0mm - end_x - 2 * lower_wall, 0mm - slot_flat / 2, slot_z)
+        translate(rotate(cylinder(slot_h / 2, 4 * lower_wall), dir(0, 1, 0), 90deg), 0mm - end_x - 2 * lower_wall, slot_flat / 2, slot_z),
+        translate(rotate(cylinder(slot_h / 2, 4 * lower_wall), dir(0, 1, 0), 90deg), 0mm - end_x - 2 * lower_wall, 0mm - slot_flat / 2, slot_z)
     )
 
     param geometry : Solid = difference(base_soft, channels)

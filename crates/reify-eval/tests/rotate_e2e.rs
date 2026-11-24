@@ -27,7 +27,7 @@ use reify_test_support::{
 fn rotate_with_explicit_deg_unit_realization_lands_in_kernel() {
     let source = r#"
         structure def S {
-            let r = rotate(cylinder(30mm, 800mm), 1, 0, 0, 90deg)
+            let r = rotate(cylinder(30mm, 800mm), dir(1, 0, 0), 90deg)
         }
     "#;
 
@@ -116,7 +116,7 @@ fn rotate_with_explicit_deg_unit_realization_lands_in_kernel() {
 fn rotate_around_with_explicit_deg_unit_realization_lands_in_kernel() {
     let source = r#"
         structure def S {
-            let r = rotate_around(cylinder(30mm, 800mm), 0mm, 0mm, 0mm, 0, 0, 1, 90deg)
+            let r = rotate_around(cylinder(30mm, 800mm), point3(0mm, 0mm, 0mm), dir(0, 0, 1), 90deg)
         }
     "#;
 
@@ -230,7 +230,7 @@ fn rotate_with_bare_radian_literal_is_rejected() {
     // π/2 written as a bare decimal literal — no unit suffix.
     let source = r#"
         structure def S {
-            let r = rotate(cylinder(30mm, 800mm), 1, 0, 0, 1.5707963267948966)
+            let r = rotate(cylinder(30mm, 800mm), dir(1, 0, 0), 1.5707963267948966)
         }
     "#;
 
@@ -333,7 +333,7 @@ fn rotate_with_bare_radian_literal_is_rejected() {
     // gates the angle, it does not break `rotate`.
     let dimensioned = r#"
         structure def S {
-            let r = rotate(cylinder(30mm, 800mm), 1, 0, 0, 1.5707963267948966rad)
+            let r = rotate(cylinder(30mm, 800mm), dir(1, 0, 0), 1.5707963267948966rad)
         }
     "#;
     let compiled = parse_and_compile(dimensioned);
@@ -375,7 +375,7 @@ fn rotate_with_bare_radian_literal_is_rejected() {
 // ── Orientation overload e2e tests (task γ, #4166) ───────────────────────────
 
 /// G2 signal: rotate(box, orient_axis_angle(z, 90deg)) emits a Rotate op with
-/// axis ≈ [0,0,1] and angle_rad ≈ π/2 — identical to rotate(box, 0,0,1, 90deg).
+/// axis ≈ [0,0,1] and angle_rad ≈ π/2 — identical to rotate(box, dir(0, 0, 1), 90deg).
 ///
 /// Both forms must produce Rotate ops with axis/angle equality within tolerance,
 /// realizing the "bbox equals the axis+angle form" signal at op level.
@@ -390,7 +390,7 @@ fn rotate_orientation_overload_equals_axis_angle_form() {
     let axis_angle_src = r#"
         structure def S {
             let b = box(10mm, 10mm, 10mm)
-            let r = rotate(b, 0, 0, 1, 90deg)
+            let r = rotate(b, dir(0, 0, 1), 90deg)
         }
     "#;
 
