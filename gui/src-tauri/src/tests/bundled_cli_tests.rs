@@ -1,45 +1,16 @@
-//! Tests for where reify-gui looks for the reify CLI it ships
-//! (`crate::bundled_cli::{CLI_EXECUTABLE, cli_executable_beside}`): beside the
-//! GUI executable, in every layout Tauri installs it to.
+//! Tests for which executable reify-gui runs as the reify CLI it ships
+//! (`crate::bundled_cli::cli_executable_beside`). Where a shipped executable
+//! lives is `shipped_executables_tests`'s subject; the CLI's file name is
+//! pinned end to end by `tests/infra/test_bundle_clean_install.py`.
 
 use std::path::Path;
 
 use crate::bundled_cli::{CLI_EXECUTABLE, cli_executable_beside};
 
 #[test]
-fn cli_is_beside_the_gui_in_every_tauri_layout() {
-    let layouts = [
-        (
-            "cargo target dir",
-            "/work/reify/target/release/reify-gui",
-            "/work/reify/target/release/reify",
-        ),
-        ("deb", "/usr/bin/reify-gui", "/usr/bin/reify"),
-        (
-            "AppImage",
-            "/tmp/.mount_ReifyX1/usr/bin/reify-gui",
-            "/tmp/.mount_ReifyX1/usr/bin/reify",
-        ),
-    ];
-    for (layout, gui_exe, cli_exe) in layouts {
-        assert_eq!(
-            cli_executable_beside(Path::new(gui_exe)),
-            Ok(Path::new(cli_exe).to_path_buf()),
-            "{layout} layout",
-        );
-    }
-}
-
-#[test]
-fn relative_gui_exe_is_refused_naming_it() {
-    let err = cli_executable_beside(Path::new("reify-gui")).unwrap_err();
-    assert!(
-        err.contains("reify-gui"),
-        "error does not name the path: {err}"
+fn cli_is_the_cli_executable_beside_the_gui() {
+    assert_eq!(
+        cli_executable_beside(Path::new("/usr/bin/reify-gui")),
+        Ok(Path::new("/usr/bin").join(CLI_EXECUTABLE)),
     );
-}
-
-#[test]
-fn constant_is_the_cli_the_deb_ships() {
-    assert_eq!(CLI_EXECUTABLE, "reify");
 }

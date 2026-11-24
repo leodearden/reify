@@ -40,6 +40,7 @@ mod openvdb_kernel_tests;
 mod path_key_tests;
 mod recent_files_tests;
 mod screenshot_save_tests;
+mod shipped_executables_tests;
 mod sidecar_env_tests;
 mod sidecar_location_tests;
 mod sidecar_runtime_tests;

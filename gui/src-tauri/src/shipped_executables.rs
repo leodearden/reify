@@ -2,9 +2,10 @@
 
 use std::path::{Path, PathBuf};
 
-/// The executable `name` beside `gui_exe`. Tauri installs what the package
-/// ships next to the GUI executable (`target/<profile>/`, `/usr/bin/`,
-/// `<AppDir>/usr/bin/`), never in `resource_dir`.
+/// The executable `name` beside `gui_exe`. Every layout reify-gui runs from
+/// places the executables the package ships beside the GUI executable
+/// (`target/<profile>/`, `/usr/bin/`, `<AppDir>/usr/bin/`), never in
+/// `resource_dir`.
 ///
 /// Errs, naming `gui_exe`, unless it is absolute with a parent directory: a
 /// relative result would make `Command::new` search `PATH`.
