@@ -9975,8 +9975,11 @@ structure Assembly {
             .fields
             .get("inertia")
             .expect("MassProperties must have an `inertia` field");
-        let inertia = crate::dynamics_psd::inertia_3x3_from_value(inertia_field)
-            .expect("inertia must parse as 3×3 via inertia_3x3_from_value");
+        let inertia =
+            reify_stdlib::dynamics::mass_props::MassProperties::read_inertia(inertia_field)
+                .ok()
+                .flatten()
+                .expect("inertia must read as a 3×3 moment of inertia");
         assert!(
             (inertia[0][0] - 1.0).abs() < 1e-9,
             "inertia[0][0] must be 1.0; got {}",

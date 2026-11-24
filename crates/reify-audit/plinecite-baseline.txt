@@ -275,9 +275,6 @@ crates/reify-eval/src/deps.rs :: deps.rs:320
 crates/reify-eval/src/deps.rs :: deps.rs:344
 crates/reify-eval/src/deps.rs :: engine_edit.rs:956
 crates/reify-eval/src/deps.rs :: engine_edit.rs:961
-crates/reify-eval/src/detectors.rs :: dynamics_ops.rs:722
-crates/reify-eval/src/detectors.rs :: dynamics_psd.rs:315
-crates/reify-eval/src/detectors.rs :: dynamics_psd.rs:56
 crates/reify-eval/src/detectors.rs :: engine_eval.rs:4400
 crates/reify-eval/src/detectors.rs :: engine_eval.rs:4662
 crates/reify-eval/src/detectors.rs :: engine_eval.rs:6312
