@@ -2488,9 +2488,9 @@ fn build_circular_pattern_missing_axis_no_kernel_error() {
     );
 }
 
-/// Mirror pattern dispatch rejects a missing `ox` (plane origin X) at
-/// compile time. First f64 arg in the Mirror arm; exercises the arm's
-/// entry.
+/// Mirror pattern dispatch rejects a missing `origin` (the plane origin) at
+/// compile time. The first arg the point-direction form reads; exercises the
+/// arm's entry.
 #[test]
 fn build_mirror_pattern_missing_plane_origin_no_kernel_error() {
     use reify_compiler::PatternKind;
@@ -2508,12 +2508,11 @@ fn build_mirror_pattern_missing_plane_origin_no_kernel_error() {
         kind: PatternKind::Mirror,
         target: GeomRef::Step(0),
         args: vec![
-            // ox deliberately omitted
-            ("oy".into(), real_literal(0.0)),
-            ("oz".into(), real_literal(0.0)),
-            ("nx".into(), real_literal(0.0)),
-            ("ny".into(), real_literal(0.0)),
-            ("nz".into(), real_literal(1.0)),
+            // origin deliberately omitted
+            (
+                "normal".into(),
+                reify_ir::CompiledExpr::literal(direction_val(0.0, 0.0, 1.0), Type::Direction),
+            ),
         ],
     };
 
@@ -2521,7 +2520,7 @@ fn build_mirror_pattern_missing_plane_origin_no_kernel_error() {
         .realization(e, 0, vec![box_op, mirror_op])
         .build();
     let module =
-        CompiledModuleBuilder::new(reify_core::ModulePath::single("test_mirror_missing_ox"))
+        CompiledModuleBuilder::new(reify_core::ModulePath::single("test_mirror_missing_origin"))
             .template(template)
             .build();
 
@@ -2535,7 +2534,7 @@ fn build_mirror_pattern_missing_plane_origin_no_kernel_error() {
         &result,
         &ops_ref.lock().unwrap(),
         Some(|op| matches!(op, reify_ir::GeometryOp::Box { .. })),
-        &["missing required geometry argument", "ox", "mirror"],
+        &["missing required geometry argument", "origin", "mirror"],
     );
 }
 

@@ -864,8 +864,8 @@ fn required_length_values<const N: usize>(
 /// Read a GROUP of length-semantic arguments of a scalar-form geometry builtin
 /// as LENGTHs, in the given name order, diagnosing EVERY failing member.
 ///
-/// A point in space (an origin `ox`/`oy`/`oz`, a pivot `px`/`py`/`pz`, a curve
-/// endpoint `x1`/`y1`/`z1`, an arc centre `cx`/`cy`/`cz`), a displacement
+/// A point in space (an origin `ox`/`oy`/`oz`, a boundary point `px`/`py`/`pz`,
+/// a curve endpoint `x1`/`y1`/`z1`, an arc centre `cx`/`cy`/`cz`), a displacement
 /// (`dx`/`dy`/`dz`) and an independent length group (`helix`'s
 /// `radius`/`pitch`/`height`) are alike length-semantic in every member, so
 /// each must be a finite LENGTH `Scalar`: a bare/dimensionless member would be
@@ -917,8 +917,9 @@ fn required_length_args<const N: usize>(
 }
 
 /// [`required_length_args`] specialised to the `ox`/`oy`/`oz` ORIGIN triple —
-/// the name shared by `pattern_circular` (task 5350), `pattern_mirror`
-/// (task 5214) and `sweep_revolve` (task 5623).
+/// the name shared by `pattern_circular` (task 5350) and `sweep_revolve` (task
+/// 5623). `pattern_mirror` read it too (task 5214) until direction-typing ι-a
+/// moved its origin to one `Point3` (`required_length_point3_arg`).
 fn required_length_origin3(
     kind_label: impl std::fmt::Display + Copy,
     args: &[(String, reify_ir::CompiledExpr)],
@@ -3173,11 +3174,10 @@ fn prim_half_space(
     // `nx`/`ny`/`nz` triples, and `examples/half_space.ri` depends on it:
     // `half_space(0mm, 0mm, 0mm, 0, 0, 1)`.
     //
-    // The point triple goes through the GROUP reader — the same
-    // `["px", "py", "pz"]` call `transform_rotate_around` makes — so it
-    // inherits all-failures-at-once, `Unresolved`-beats-`Invalid` precedence
-    // and the borrow ordering the group readers document (see
-    // `required_length_args`), rather than restating any of them here.
+    // The point triple goes through the GROUP reader, so it inherits
+    // all-failures-at-once, `Unresolved`-beats-`Invalid` precedence and the
+    // borrow ordering the group readers document (see `required_length_args`),
+    // rather than restating any of them here.
     let [px, py, pz] = required_length_values(
         ["px", "py", "pz"],
         kind,
@@ -3871,7 +3871,7 @@ fn transform_rotate(
                 Err("rotate: 'orientation' arg is not a valid Orientation<3>".into())
             }
         }
-    } else if args.iter().any(|(n, _)| n == "axis") {
+    } else {
         // Both are read before either `?`: a bad axis must not hide a bare angle.
         let axis =
             required_direction_arg("axis", kind, args, values, functions, meta_map, diagnostics);
@@ -3888,35 +3888,6 @@ fn transform_rotate(
             target: target_id,
             axis: axis?,
             angle_rad: angle_rad?,
-        })
-    } else {
-        // The axis DIRECTION is a dimensionless unit vector and stays bare
-        // (C1 inv. 4); the ANGLE is gated. The closure is SCOPED so its
-        // `diagnostics` borrow ends before the gate runs — that is what keeps
-        // the ax/ay/az-then-angle read order, and so the diagnostic order,
-        // exactly as it was.
-        let axis = {
-            let mut f64_arg = |name: &str| -> Result<f64, String> {
-                eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
-                    .ok_or_else(|| {
-                        format!("missing or non-finite argument '{}' for {}", name, kind)
-                    })
-            };
-            [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?]
-        };
-        let angle_rad = required_angle_arg(
-            "angle",
-            kind,
-            args,
-            values,
-            functions,
-            meta_map,
-            diagnostics,
-        )?;
-        Ok(reify_ir::GeometryOp::Rotate {
-            target: target_id,
-            axis,
-            angle_rad,
         })
     }
 }
@@ -3967,61 +3938,18 @@ fn transform_rotate_around(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    if args.iter().any(|(n, _)| n == "pivot") {
-        // All three are read before any `?`: a bad pivot or axis must not hide
-        // a bare angle.
-        let point = required_length_point3_arg(
-            "pivot",
-            kind,
-            args,
-            values,
-            functions,
-            meta_map,
-            diagnostics,
-        );
-        let axis =
-            required_direction_arg("axis", kind, args, values, functions, meta_map, diagnostics);
-        let angle_rad = required_angle_arg(
-            "angle",
-            kind,
-            args,
-            values,
-            functions,
-            meta_map,
-            diagnostics,
-        );
-        return Ok(reify_ir::GeometryOp::RotateAround {
-            target: target_id,
-            point: point?,
-            axis: axis?,
-            angle_rad: angle_rad?,
-        });
-    }
-    // The PIVOT is a point in space → gated. Read BEFORE `f64_arg` is declared
-    // (borrow ordering); this is also the existing source order, so both the
-    // read order and the diagnostic order are preserved exactly.
-    let point = required_length_args(
-        ["px", "py", "pz"],
+    // All three are read before any `?`: a bad pivot or axis must not hide a
+    // bare angle.
+    let point = required_length_point3_arg(
+        "pivot",
         kind,
         args,
         values,
         functions,
         meta_map,
         diagnostics,
-    )?;
-    // The axis is a dimensionless unit vector and stays on the bare-accepting
-    // path (C1 inv. 4). The ANGLE is gated as of PRD 3 leaf γ; its closure is
-    // SCOPED so the borrow ends before the gate runs, preserving the read and
-    // diagnostic order.
-    let axis = {
-        let mut f64_arg = |name: &str| -> Result<f64, String> {
-            eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
-                .ok_or_else(|| {
-                    format!("missing or non-finite argument '{}' for {}", name, kind)
-                })
-        };
-        [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?]
-    };
+    );
+    let axis = required_direction_arg("axis", kind, args, values, functions, meta_map, diagnostics);
     let angle_rad = required_angle_arg(
         "angle",
         kind,
@@ -4030,12 +3958,12 @@ fn transform_rotate_around(
         functions,
         meta_map,
         diagnostics,
-    )?;
+    );
     Ok(reify_ir::GeometryOp::RotateAround {
         target: target_id,
-        point,
-        axis,
-        angle_rad,
+        point: point?,
+        axis: axis?,
+        angle_rad: angle_rad?,
     })
 }
 
@@ -4392,7 +4320,7 @@ fn pattern_mirror(
             plane_origin,
             plane_normal,
         })
-    } else if args.iter().any(|(n, _)| n == "normal") {
+    } else {
         // Both are read before either `?`, so a bad normal and a bare origin
         // are reported in one build.
         let plane_origin = required_length_point3_arg(
@@ -4417,32 +4345,6 @@ fn pattern_mirror(
             target: target_id,
             plane_origin: plane_origin?,
             plane_normal: plane_normal?,
-        })
-    } else {
-        // The mirror-plane ORIGIN is length-semantic; see
-        // `required_length_origin3` for the units rationale AND for why it must
-        // be read before `f64_arg`.
-        let plane_origin =
-            required_length_origin3(kind, args, values, functions, meta_map, diagnostics)?;
-        // The plane NORMAL is a dimensionless unit vector — stays bare f64.
-        let mut f64_arg = |name: &str| -> Result<f64, String> {
-            eval_named_arg_f64(
-                name,
-                kind,
-                args,
-                values,
-                functions,
-                meta_map,
-                diagnostics,
-            )
-            .ok_or_else(|| {
-                format!("missing or non-finite argument '{}' for {}", name, kind)
-            })
-        };
-        Ok(reify_ir::GeometryOp::Mirror {
-            target: target_id,
-            plane_origin,
-            plane_normal: [f64_arg("nx")?, f64_arg("ny")?, f64_arg("nz")?],
         })
     }
 }

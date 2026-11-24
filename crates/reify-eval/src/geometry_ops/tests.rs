@@ -1428,10 +1428,7 @@
             kind: TransformKind::Rotate,
             target: GeomRef::Step(0),
             args: vec![
-                // Axis DIRECTION is a dimensionless unit vector → stays bare.
-                ("ax".into(), literal_f64(0.0)),
-                ("ay".into(), literal_f64(0.0)),
-                ("az".into(), literal_f64(1.0)),
+                ("axis".into(), literal_direction([0.0, 0.0, 1.0])),
                 ("angle".into(), angle),
             ],
         }
@@ -1443,12 +1440,8 @@
             target: GeomRef::Step(0),
             args: vec![
                 // Pivot is a point in space → PRD-1's LENGTH gate.
-                ("px".into(), literal_length(0.05)),
-                ("py".into(), literal_length(0.0)),
-                ("pz".into(), literal_length(0.0)),
-                ("ax".into(), literal_f64(0.0)),
-                ("ay".into(), literal_f64(0.0)),
-                ("az".into(), literal_f64(1.0)),
+                ("pivot".into(), literal_length_point3([0.05, 0.0, 0.0])),
+                ("axis".into(), literal_direction([0.0, 0.0, 1.0])),
                 ("angle".into(), angle),
             ],
         }
@@ -1643,12 +1636,13 @@
     }
 
     /// γ CONTROL (C1 inv. 4) — a DIMENSIONED angle compiles clean at all five
-    /// positions, with the bare dimensionless axis-direction components
-    /// untouched beside it and the stored `angle_rad` unchanged.
+    /// positions, with the dimensionless axis direction untouched beside it
+    /// and the stored `angle_rad` unchanged.
     ///
     /// This is the assertion that stops γ from being "reject everything": the
-    /// ax/ay/az unit-vector components in every one of these fixtures stay
-    /// bare, and must keep producing no diagnostic at all.
+    /// axis direction in every one of these fixtures (a `Direction` for
+    /// `rotate`/`rotate_around`, bare `ax`/`ay`/`az` elsewhere) stays ungated,
+    /// and must keep producing no diagnostic at all.
     #[test]
     fn compile_geometry_op_dimensioned_angle_compiles_clean_with_bare_axis() {
         for (builtin, arg_name, build) in gamma_angle_sites() {
@@ -1661,9 +1655,9 @@
             );
             assert!(
                 diagnostics.is_empty(),
-                "{builtin}.{arg_name}: a dimensioned angle beside BARE ax/ay/az must \
-                 produce no diagnostic — the axis direction is a dimensionless unit \
-                 vector and stays un-gated (C1 inv. 4); got: {diagnostics:?}"
+                "{builtin}.{arg_name}: a dimensioned angle beside its axis direction \
+                 must produce no diagnostic — the axis direction is dimensionless \
+                 and stays un-gated (C1 inv. 4); got: {diagnostics:?}"
             );
         }
 
@@ -2050,14 +2044,9 @@
             kind: TransformKind::RotateAround,
             target: GeomRef::Step(0),
             args: vec![
-                // Pivot is LENGTH-semantic (task 5623); the axis + angle below
-                // stay bare.
-                ("px".into(), literal_length(0.05)),
-                ("py".into(), literal_length(0.0)),
-                ("pz".into(), literal_length(0.0)),
-                ("ax".into(), literal_f64(0.0)),
-                ("ay".into(), literal_f64(0.0)),
-                ("az".into(), literal_f64(1.0)),
+                // Pivot is LENGTH-semantic (task 5623); the axis is a Direction.
+                ("pivot".into(), literal_length_point3([0.05, 0.0, 0.0])),
+                ("axis".into(), literal_direction([0.0, 0.0, 1.0])),
                 ("angle".into(), literal_angle(std::f64::consts::FRAC_PI_2)),
             ],
         };
@@ -3707,19 +3696,15 @@
         let step_handles = vec![GeometryHandleId(99)];
         let values = ValueMap::new();
 
-        // RotateAround with missing az
+        // RotateAround with a missing axis
         let op = CompiledGeometryOp::Transform {
             kind: TransformKind::RotateAround,
             target: GeomRef::Step(0),
             args: vec![
                 // Pivot is LENGTH-semantic (task 5623), so the failure under
-                // test stays the MISSING `az`, not a units rejection.
-                ("px".into(), literal_length(0.0)),
-                ("py".into(), literal_length(0.0)),
-                ("pz".into(), literal_length(0.0)),
-                ("ax".into(), literal_f64(0.0)),
-                ("ay".into(), literal_f64(1.0)),
-                // az deliberately omitted
+                // test stays the MISSING `axis`, not a units rejection.
+                ("pivot".into(), literal_length_point3([0.0, 0.0, 0.0])),
+                // axis deliberately omitted
                 ("angle".into(), literal_angle(1.0)),
             ],
         };
@@ -3733,7 +3718,10 @@
             &HashMap::new(),
             &mut Vec::new(),
         );
-        assert!(result.is_err(), "missing az should return Err");
+        assert_eq!(
+            result.expect_err("a missing axis should return Err"),
+            "missing required argument 'axis' for rotate_around"
+        );
     }
 
     #[test]
@@ -4046,12 +4034,15 @@
             target: GeomRef::Step(0),
             args: vec![
                 // BARE origin x — the other two components are proper Lengths.
-                ("ox".into(), literal_f64(0.0)),
-                ("oy".into(), literal_length(0.0)),
-                ("oz".into(), literal_length(0.0)),
-                ("nx".into(), literal_f64(1.0)),
-                ("ny".into(), literal_f64(0.0)),
-                ("nz".into(), literal_f64(0.0)),
+                (
+                    "origin".into(),
+                    literal_value(reify_ir::Value::Point(vec![
+                        reify_ir::Value::Real(0.0),
+                        reify_ir::Value::length(0.0),
+                        reify_ir::Value::length(0.0),
+                    ])),
+                ),
+                ("normal".into(), literal_direction([1.0, 0.0, 0.0])),
             ],
         };
 
@@ -4078,7 +4069,7 @@
             "{rej:?}"
         );
         assert!(
-            rej.message.contains("ox") && rej.message.contains("mirror"),
+            rej.message.contains("origin.x") && rej.message.contains("mirror"),
             "{:?}",
             rej.message
         );
@@ -6804,14 +6795,10 @@
             kind: PatternKind::Mirror,
             target: GeomRef::Step(0),
             args: vec![
-                // Plane ORIGIN is length-semantic → must be dimensioned Length.
-                ("ox".into(), literal_length(0.0)),
-                ("oy".into(), literal_length(0.0)),
-                ("oz".into(), literal_length(0.0)),
-                // Plane NORMAL is a dimensionless unit vector → stays bare f64.
-                ("nx".into(), literal_f64(1.0)),
-                ("ny".into(), literal_f64(0.0)),
-                ("nz".into(), literal_f64(0.0)),
+                // Plane ORIGIN is length-semantic → a Point3 of Lengths.
+                ("origin".into(), literal_length_point3([0.0, 0.0, 0.0])),
+                // Plane NORMAL is a Direction.
+                ("normal".into(), literal_direction([1.0, 0.0, 0.0])),
             ],
         };
 
@@ -6843,36 +6830,23 @@
     /// as 0 SI metres (and any non-zero bare value 1000× off). The op is dropped
     /// (Err) with a diagnostic naming the offending component and Length.
     ///
-    /// Run once per component: `ox`/`oy`/`oz` are read by three separate call
-    /// sites, so an `ox`-only test would not notice one of the other two
-    /// regressing back to the bare-accepting `f64_arg` closure.
+    /// Run once per component: an `origin.x`-only test would not notice one of
+    /// the other two components slipping past the per-component gate.
     #[test]
     fn compile_geometry_op_mirror_bare_origin_rejected() {
         let step_handles = vec![GeometryHandleId(42)];
         let values = ValueMap::new();
 
-        for bare in ["ox", "oy", "oz"] {
+        for (position, bare) in ["origin.x", "origin.y", "origin.z"].into_iter().enumerate() {
             // Exactly one origin component is BARE; the other two are Lengths.
-            let origin_arg = |name: &str| -> (String, reify_ir::CompiledExpr) {
-                (
-                    name.into(),
-                    if name == bare {
-                        literal_f64(0.0)
-                    } else {
-                        literal_length(0.0)
-                    },
-                )
-            };
+            let mut components = vec![reify_ir::Value::length(0.0); 3];
+            components[position] = reify_ir::Value::Real(0.0);
             let op = CompiledGeometryOp::Pattern {
                 kind: PatternKind::Mirror,
                 target: GeomRef::Step(0),
                 args: vec![
-                    origin_arg("ox"),
-                    origin_arg("oy"),
-                    origin_arg("oz"),
-                    ("nx".into(), literal_f64(1.0)),
-                    ("ny".into(), literal_f64(0.0)),
-                    ("nz".into(), literal_f64(0.0)),
+                    ("origin".into(), literal_value(reify_ir::Value::Point(components))),
+                    ("normal".into(), literal_direction([1.0, 0.0, 0.0])),
                 ],
             };
 
@@ -6902,11 +6876,11 @@
         }
     }
 
-    /// Locks the split: the mirror-plane ORIGIN must be a Length, but the plane
-    /// NORMAL is a dimensionless unit vector — so a `Length` origin with BARE
-    /// (dimensionless) normal components is accepted, no error.
+    /// Locks the split: the mirror-plane ORIGIN must be a `Point3` of Lengths,
+    /// while the plane NORMAL is a dimensionless `Direction` — so that pair is
+    /// accepted with no error.
     #[test]
-    fn compile_geometry_op_mirror_length_origin_bare_normal_accepted() {
+    fn compile_geometry_op_mirror_point3_length_origin_direction_normal_accepted() {
         let step_handles = vec![GeometryHandleId(42)];
         let values = ValueMap::new();
 
@@ -6914,13 +6888,8 @@
             kind: PatternKind::Mirror,
             target: GeomRef::Step(0),
             args: vec![
-                ("ox".into(), literal_length(0.0)),
-                ("oy".into(), literal_length(0.0)),
-                ("oz".into(), literal_length(0.0)),
-                // Normal stays a bare dimensionless unit vector.
-                ("nx".into(), literal_f64(1.0)),
-                ("ny".into(), literal_f64(0.0)),
-                ("nz".into(), literal_f64(0.0)),
+                ("origin".into(), literal_length_point3([0.0, 0.0, 0.0])),
+                ("normal".into(), literal_direction([1.0, 0.0, 0.0])),
             ],
         };
 
@@ -6945,7 +6914,8 @@
                 assert_eq!(plane_normal, [1.0, 0.0, 0.0]);
             }
             other => panic!(
-                "expected Ok(Mirror) for Length origin + bare normal, got {:?}",
+                "expected Ok(Mirror) for a Point3 Length origin + Direction normal, \
+                 got {:?}",
                 other
             ),
         }
@@ -6953,7 +6923,7 @@
             !diagnostics
                 .iter()
                 .any(|d| d.severity == reify_core::Severity::Error),
-            "Length origin + dimensionless normal must not produce an Error \
+            "Point3 Length origin + Direction normal must not produce an Error \
              diagnostic; got: {:?}",
             diagnostics
         );
@@ -9823,28 +9793,30 @@
     // ---------------------------------------------------------------------------
     // `rotate_around`'s PIVOT (task 5623, R1 sweep)
     //
-    // The pivot is a point in space. The co-located axis (`ax`/`ay`/`az`, a
-    // dimensionless unit vector) and `angle` are NOT gated by this task — all
-    // ANGLE gating belongs to docs/prds/v0_6/angle-units-surface-convergence.md
-    // (PRD 3) by seam-table decree — and the accepted test below is the
-    // executable lock on that boundary.
+    // The pivot is a point in space, one `Point3` gated per component as
+    // `pivot.x`/`pivot.y`/`pivot.z` (direction-typing ι-a). The co-located axis
+    // is a dimensionless `Direction`, and the `angle` is PRD 3's
+    // (docs/prds/v0_6/angle-units-surface-convergence.md) by seam-table decree;
+    // the accepted test below is the executable lock on that boundary.
     // ---------------------------------------------------------------------------
 
-    /// Build a `rotate_around` op from its three gated PIVOT components, in
-    /// gate order, holding the axis (+Z) and angle fixed and BARE.
+    /// Build a `rotate_around` op whose `Point3` PIVOT holds the three literal
+    /// `c` components in gate order, holding the axis (+Z) and the dimensioned
+    /// angle fixed.
     fn rotate_around_with_point(c: &[reify_ir::CompiledExpr]) -> CompiledGeometryOp {
+        let component = |e: &reify_ir::CompiledExpr| match &e.kind {
+            reify_ir::CompiledExprKind::Literal(v) => v.clone(),
+            other => panic!("a pivot component must be a literal, got {other:?}"),
+        };
         CompiledGeometryOp::Transform {
             kind: TransformKind::RotateAround,
             target: GeomRef::Step(0),
             args: vec![
-                ("px".into(), c[0].clone()),
-                ("py".into(), c[1].clone()),
-                ("pz".into(), c[2].clone()),
-                // Axis DIRECTION is a dimensionless unit vector → stays bare.
-                ("ax".into(), literal_f64(0.0)),
-                ("ay".into(), literal_f64(0.0)),
-                ("az".into(), literal_f64(1.0)),
-                // ANGLE is PRD 3's, never ours → stays bare.
+                (
+                    "pivot".into(),
+                    literal_value(reify_ir::Value::Point(c.iter().map(component).collect())),
+                ),
+                ("axis".into(), literal_direction([0.0, 0.0, 1.0])),
                 ("angle".into(), literal_angle(std::f64::consts::FRAC_PI_2)),
             ],
         }
@@ -9854,7 +9826,7 @@
     const ROTATE_AROUND_GATE: LengthGateCase = LengthGateCase {
         label: "rotate_around",
         build: rotate_around_with_point,
-        gated: &["px", "py", "pz"],
+        gated: &["pivot.x", "pivot.y", "pivot.z"],
         filler: 0.0,
         step_handles: &[GeometryHandleId(42)],
     };
@@ -9864,7 +9836,7 @@
         assert_length_gated(ROTATE_AROUND_GATE);
     }
 
-    /// Locks the split: a `Length` pivot with a BARE dimensionless axis and a
+    /// Locks the split: a `Length` pivot with a `Direction` axis and a
     /// DIMENSIONED angle is the fully clean path and must emit NO diagnostic.
     ///
     /// The angle half was, until PRD 3 leaf γ (task 5779), a scope lock in the
@@ -9872,13 +9844,12 @@
     /// PRD 1 gated no angle position and `rotate_around`'s belonged to PRD 3
     /// by seam-table decree. γ IS that PRD, and it gated this angle, so the
     /// lock is inverted rather than deleted: what still needs protecting is
-    /// the AXIS, whose dimensionless components sit one careless edit away
-    /// from a gated triple and must stay bare (C1 inv. 4).
+    /// the AXIS, which is dimensionless and must stay ungated (C1 inv. 4).
     ///
-    /// Distinct components also pin the px/py/pz → `point` ORDERING against a
-    /// transposed assembly.
+    /// Distinct components also pin the pivot.x/y/z → `point` ORDERING against
+    /// a transposed assembly.
     #[test]
-    fn compile_geometry_op_rotate_around_length_point_bare_axis_dimensioned_angle_accepted() {
+    fn compile_geometry_op_rotate_around_length_point_direction_axis_dimensioned_angle_accepted() {
         let step_handles = vec![GeometryHandleId(42)];
         let values = ValueMap::new();
 
@@ -9911,16 +9882,15 @@
                 assert_eq!(angle_rad, std::f64::consts::FRAC_PI_2);
             }
             other => panic!(
-                "expected Ok(RotateAround) for a Length pivot with a bare axis and \
-                 a dimensioned angle, got {:?}",
+                "expected Ok(RotateAround) for a Length pivot with a Direction axis \
+                 and a dimensioned angle, got {:?}",
                 other
             ),
         }
         assert!(
             diagnostics.is_empty(),
-            "a Length pivot + BARE dimensionless axis + dimensioned angle is the \
-             path and must emit NO diagnostic at all — in particular the angle \
-             must NOT be gated here (that is PRD 3's scope); got: {:?}",
+            "a Length pivot + Direction axis + dimensioned angle is the clean \
+             path and must emit NO diagnostic at all; got: {:?}",
             diagnostics
         );
     }
