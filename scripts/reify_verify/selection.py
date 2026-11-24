@@ -80,7 +80,7 @@ class Selection:
     leaves: tuple[SelectedLeaf, ...]
 
     def to_json(self) -> list:
-        return [{"glob": leaf.glob, "env": dict(leaf.env)} for leaf in self.leaves]
+        return [{"glob": leaf.glob, "env": dict(leaf.env), "wall": leaf.wall} for leaf in self.leaves]
 
 
 def select_infra(
@@ -110,8 +110,8 @@ def _leaf_env(glob: str, mode: Scope) -> tuple[tuple[str, str], ...]:
 
 
 def _leaf_wall(glob: str) -> str:
-    """selected_infra_leaf_wall: a member named in LONG_LEAF_WALLS outlasts the 10m default."""
-    return LONG_LEAF_WALLS.get(glob, INFRA_LEAF_WALL)
+    """selected_infra_leaf_wall: a leaf whose glob selects a LONG_LEAF_WALLS member runs under its wall."""
+    return next((wall for member, wall in LONG_LEAF_WALLS.items() if fnmatchcase(member, glob)), INFRA_LEAF_WALL)
 
 
 def _mapped_globs(changed_paths: tuple[str, ...], repo_root: Path) -> tuple[list[str], tuple[str, ...]]:

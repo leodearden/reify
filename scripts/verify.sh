@@ -2121,15 +2121,18 @@ selected_infra_leaf_env() {
 }
 
 # selected_infra_leaf_wall <glob-or-path> — print the `timeout` wall a single
-# selective-infra leaf runs under: 10m for every member but the ones named
-# here. Printf-only, so the caller's command-substitution assignment keeps
-# status 0 under set -euo pipefail (selected_infra_leaf_env's reason). Python
-# twin: scripts/reify_verify/selection.py _leaf_wall, held equal by
+# selective-infra leaf runs under: 10m, unless the leaf's glob selects a member
+# named here. The member is matched AGAINST the glob (the unquoted `$1` is the
+# case pattern), so a wildcard row that selects it carries its wall to the
+# whole loop instead of cutting it at 10m. Printf-only, so the caller's
+# command-substitution assignment keeps status 0 under set -euo pipefail
+# (selected_infra_leaf_env's reason). Python twin:
+# scripts/reify_verify/selection.py _leaf_wall, held equal by
 # test_verify_plan_parity_region.py TestSelectiveInfraLeafWalls. Derivation:
 # docs/notes/verify-pipeline-knobs.md, "Selective-infra leaf walls".
 selected_infra_leaf_wall() {
-    case "$1" in
-        tests/infra/test_tree_sitter_pipeline.sh) printf '30m' ;;
+    case tests/infra/test_tree_sitter_pipeline.sh in
+        $1) printf '30m' ;;
         *) printf '10m' ;;
     esac
 }
