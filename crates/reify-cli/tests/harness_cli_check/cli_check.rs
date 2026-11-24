@@ -1043,15 +1043,14 @@ purpose thick_enough(subject : Structure) {
 ///     exit 0
 ///
 /// WHY THE FIXTURE MOVED (task 5662).  It used to carry the 7-arg scalar form
-/// `mirror(arm, 0, 0, 0, 1, 0, 0)`, which now short-circuits `cmd_check` before
-/// `build()` and would have destroyed every assertion below, including the dedup
-/// pin this test exists for.  It moved to the decoded-value form
+/// `mirror(arm, 0, 0, 0, 1, 0, 0)`, whose bare origin slots then short-circuited
+/// `cmd_check` before `build()` and would have destroyed every assertion below,
+/// including the dedup pin this test exists for (direction-typing ι-a has since
+/// retired that form outright).  It moved to the decoded-value form
 /// `mirror(arm, plane_yz(0))` and is still deliberately BARE — only the route
 /// changed, not the mistake.  The argument for why that route is the durable one
-/// is stated once, on the `mirror` / `circular_pattern` arms of
-/// `builtin_arg_slots` in `crates/reify-compiler/src/builtin_signatures.rs`.
-/// The exit-gate half is pinned by the `mirror` row of `ROWS` in
-/// `cli_check_bare_length_exit.rs`.
+/// is stated once, on the `circular_pattern` arms of `builtin_arg_slots` in
+/// `crates/reify-compiler/src/builtin_signatures.rs`.
 ///
 /// Baseline RE-MEASURED at task 5746 (units-length ε, R11), which moved the
 /// SPEAKER without touching this test's subject.  `plane_yz(0)` is now rejected

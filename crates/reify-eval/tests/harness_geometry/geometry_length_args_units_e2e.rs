@@ -148,21 +148,22 @@ fn translate_bare_component_drops_op_dimensioned_builds() {
 
 #[test]
 fn rotate_around_bare_pivot_drops_op_dimensioned_builds() {
-    // The axis `0, 0, 1` stays BARE in BOTH forms — a dimensionless unit
-    // vector, and the dimensioned control's zero-diagnostic assertion is what
-    // pins that. The ANGLE is now dimensioned in both arms: PRD 3 leaf γ gates
-    // it, so a bare angle here would fire γ's Error inside THIS file's LENGTH
-    // signal — including in the dimensioned control, whose whole assertion is
-    // that it emits none. Migrating only the bare arm would present γ's gate
-    // as a task-5623 length regression.
+    // Since direction-typing ι-a the pivot is one `point3(..)` value with no
+    // compile-time slot, so this is now the BUILD-layer witness:
+    // `accept_length_point3` names the bare component `pivot.x`. The
+    // `dir(0, 0, 1)` axis is identical in both forms, and the dimensioned
+    // control's zero-diagnostic assertion pins that it stays silent. The ANGLE
+    // is dimensioned in both arms: PRD 3 leaf γ gates it, so a bare angle here
+    // would fire γ's Error inside THIS file's LENGTH signal — including in the
+    // dimensioned control, whose whole assertion is that it emits none.
     assert_length_gate(
         "rotate_around",
-        "px",
+        "pivot.x",
         r#"structure def BareRotateAround {
-            let s = rotate_around(box(10mm, 10mm, 10mm), 5, 0, 0, 0, 0, 1, 1.5707963267948966rad)
+            let s = rotate_around(box(10mm, 10mm, 10mm), point3(5, 0, 0), dir(0, 0, 1), 1.5707963267948966rad)
         }"#,
         r#"structure def DimRotateAround {
-            let s = rotate_around(box(10mm, 10mm, 10mm), 5mm, 0mm, 0mm, 0, 0, 1, 1.5707963267948966rad)
+            let s = rotate_around(box(10mm, 10mm, 10mm), point3(5mm, 0mm, 0mm), dir(0, 0, 1), 1.5707963267948966rad)
         }"#,
         |op| matches!(op, GeometryOp::RotateAround { .. }),
     );

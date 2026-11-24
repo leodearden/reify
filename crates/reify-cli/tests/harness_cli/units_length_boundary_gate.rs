@@ -256,10 +256,10 @@ fn a_bare_fillet_radius_replaces_the_span_less_occt_failure() {
 /// then fails attributably on the resulting `undef` rather than silently building a
 /// mirror plane 10 METRES out.
 ///
-/// Split from the scalar form below because the two travel different routes: this one
-/// rejects inside `plane_yz` and propagates `undef` into `mirror`, while the scalar form
-/// rejects at `mirror`'s own origin slots. One test asserting a loose `contains("mirror")`
-/// would pass on either and so pin neither.
+/// Split from the point form below because the two travel different routes: this one
+/// rejects inside `plane_yz` and propagates `undef` into `mirror`, while the point form
+/// rejects at `mirror`'s own origin components. One test asserting a loose
+/// `contains("mirror")` would pass on either and so pin neither.
 #[test]
 fn a_bare_plane_offset_is_rejected_and_mirror_fails_attributably() {
     let (status, stdout, stderr) = RiSource {
@@ -287,38 +287,15 @@ structure def S {
     );
 }
 
-/// §6 row 5b — the SCALAR form keeps its pre-existing per-component wording. The
-/// no-regression half of row 5.
-///
-/// `ox` is asserted by name: a loose `contains("mirror")` would also be satisfied by the
-/// plane-value route's `expected a Plane value` message, so it could not tell a surviving
-/// per-component gate from a collapsed one.
-#[test]
-fn the_scalar_mirror_origin_keeps_its_per_component_wording() {
-    let (status, stdout, stderr) = RiSource {
-        stem: "bare_mirror_scalar_origin",
-        source: r#"module bare_mirror_scalar_origin
-
-structure def S {
-    let b = box(20mm, 20mm, 10mm)
-    let m = mirror(b, 10, 0, 0, 1, 0, 0)
-    param geometry : Solid = m
-}
-"#,
-    }
-    .eval();
-
-    assert!(
-        !status.success(),
-        "the scalar mirror origin must still exit nonzero;\nstdout: {stdout}\nstderr: {stderr}"
-    );
-    expect_length_rejection(&stderr, "mirror", "ox", "Int");
-}
-
-/// The Direction form's `Point3` origin (direction-typing ι-a, task 9646) has no
-/// compile-time slot — no `ExpectedArg` kind describes a point — so it is gated at build
-/// by `accept_length_point3`. Both `reify check` and `reify eval` must reach that gate
+/// §6 row 5b — the point form keeps per-component wording. Since direction-typing ι-a
+/// (task 9646) `mirror`'s origin is one `Point3`, which has no compile-time slot — no
+/// `ExpectedArg` kind describes a point — so it is gated at build by
+/// `accept_length_point3`. Both `reify check` and `reify eval` must reach that gate
 /// and name every bare component, or the narrowing is a silent hole.
+///
+/// Each `origin.*` is asserted by name: a loose `contains("mirror")` would also be
+/// satisfied by the plane-value route's `expected a Plane value` message, so it could not
+/// tell a surviving per-component gate from a collapsed one.
 #[test]
 fn the_point3_mirror_origin_is_rejected_at_build_by_check_and_eval() {
     let fixture = RiSource {

@@ -222,7 +222,7 @@ fn a_correct_form_whose_fillers_draw_a_type_error_is_not_an_arity_violation() {
         "module call_arity_gate_control\n\
          \n\
          structure def FillerControl {\n\
-         \x20   let v = rotate(1mm, 1mm, 1mm, 1mm, 1mm)\n\
+         \x20   let v = rotate(1mm, 1mm, 1mm)\n\
          }\n",
     );
     assert!(
@@ -230,15 +230,16 @@ fn a_correct_form_whose_fillers_draw_a_type_error_is_not_an_arity_violation() {
             .diagnostics
             .iter()
             .any(|d| d.severity == Severity::Error && !d.message.starts_with("rotate() expects")),
-        "control: `1mm` fillers must draw a NON-arity error on rotate/5 (its angle slot expects \
-         an Angle), or the case below proves nothing about the narrowed predicate; got {:#?}",
+        "control: `1mm` fillers must draw a NON-arity error on rotate/3 (its axis slot expects \
+         a Direction and its angle slot an Angle), or the case below proves nothing about the \
+         narrowed predicate; got {:#?}",
         control.diagnostics
     );
 
     assert_eq!(
-        demo_violations("```reify-fragment\nlet r = rotate(geo, ax, ay, az, angle)\n```\n"),
+        demo_violations("```reify-fragment\nlet r = rotate(geo, axis, angle)\n```\n"),
         Vec::<String>::new(),
-        "rotate/5 is an accepted arity: only an argument-count rejection is a violation, never \
+        "rotate/3 is an accepted arity: only an argument-count rejection is a violation, never \
          the type error its fillers draw"
     );
 }
