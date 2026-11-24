@@ -32,6 +32,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import canon_run_fixture as fx  # noqa: E402  (imported after sys.path manipulation)
+import seed_warm_lane_harness as harness  # noqa: E402
 
 REPO_ROOT = fx.REPO_ROOT
 HOOKS = ("pre-commit", "project-checks", "pre-merge-commit", "main-gate-lib.sh")
@@ -59,11 +60,6 @@ def _diag(completed):
             f"{completed.stdout}\n--- stderr ---\n{completed.stderr}")
 
 
-def _write_executable(path, body):
-    path.write_text(body)
-    path.chmod(0o755)
-
-
 class LaunchSiteFixture(unittest.TestCase):
     """A committed tree on main with the real hooks and a recording verify.sh."""
 
@@ -72,16 +68,8 @@ class LaunchSiteFixture(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.tmp = Path(tmp.name).resolve()
         self.stub_log = self.tmp / "verify-stub.jsonl"
-        empty_global = self.tmp / "gitconfig-global"
-        empty_global.write_text("")
         self.env = fx.scratch_env(self.tmp, VERIFY_STUB_LOG=str(self.stub_log))
-        self.env.update({
-            "GIT_CONFIG_GLOBAL": str(empty_global),
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_CEILING_DIRECTORIES": str(self.tmp),
-            "GIT_AUTHOR_NAME": "Fixture", "GIT_AUTHOR_EMAIL": "fixture@example.test",
-            "GIT_COMMITTER_NAME": "Fixture", "GIT_COMMITTER_EMAIL": "fixture@example.test",
-        })
+        self.env.update(harness.isolated_git_env(self.tmp))
 
         self.tree = Path(fx.make_tree(self.tmp, "tree"))
         hooks = self.tree / "hooks"
@@ -91,7 +79,7 @@ class LaunchSiteFixture(unittest.TestCase):
             (hooks / name).chmod(0o755)
         if MAIN_GATE_MARK.exists():
             shutil.copy2(MAIN_GATE_MARK, self.tree / "scripts" / MAIN_GATE_MARK.name)
-        _write_executable(self.tree / "scripts" / "verify.sh", VERIFY_STUB)
+        harness.write_executable(self.tree / "scripts" / "verify.sh", VERIFY_STUB)
         (self.tree / ".gitignore").write_text("target/\n")
         self.git("init", "-q", "-b", "main")
         self.git("add", "-A")
@@ -206,28 +194,35 @@ class SeedWarmBaseInitialRouting(LaunchSiteFixture):
         super().setUp()
         stub_bin = self.tmp / "stub-bin"
         stub_bin.mkdir()
-        _write_executable(stub_bin / "mountpoint", PASSTHROUGH_STUB)
-        # No reflink on a tmp fs: drop the flag so the pre-check's probe copy works.
-        _write_executable(
-            stub_bin / "cp",
-            "#!/bin/sh\n"
-            'for arg; do shift; [ "$arg" = "--reflink=always" ] || set -- "$@" "$arg"; done\n'
-            f'exec {shutil.which("cp")} "$@"\n')
+        harness.write_executable(stub_bin / "mountpoint", PASSTHROUGH_STUB)
+        # No reflink on a tmp fs: the stub lets the pre-check's probe copy work.
+        harness.install_cp_stub(stub_bin)
         self.env["PATH"] = f"{stub_bin}{os.pathsep}{self.env['PATH']}"
         self.mount = self.tmp / "mount"
         self.mount.mkdir()
         self.built = self.tmp / "built"
 
+    def run_seed(self):
+        """The cold build records its working directory in self.built."""
+        return subprocess.run(
+            ["bash", str(SEED_WARM_BASE_INITIAL), "--mount", str(self.mount),
+             "--merge-verify", str(self.tree), "--build-cmd", f"pwd > {self.built}"],
+            cwd=self.tmp, env=self.env, capture_output=True, text=True)
+
     def test_a_merge_verify_target_stamped_for_another_root_refuses_the_build(self):
         self.stamp_target(FOREIGN_ROOT)
-        completed = subprocess.run(
-            ["bash", str(SEED_WARM_BASE_INITIAL), "--mount", str(self.mount),
-             "--merge-verify", str(self.tree), "--build-cmd", f"touch {self.built}"],
-            cwd=self.tmp, env=self.env, capture_output=True, text=True)
+        completed = self.run_seed()
         self.assertNotEqual(completed.returncode, 0, _diag(completed))
         self.assertFalse(self.built.exists(), "the build ran despite the refusal" + _diag(completed))
         self.assertTrue(any(line.startswith(REFUSAL_PREFIX)
                             for line in completed.stderr.splitlines()), _diag(completed))
+
+    def test_with_no_build_directory_the_build_runs_untouched_in_merge_verify(self):
+        completed = self.run_seed()
+        self.assertTrue(self.built.exists(), "the build did not run" + _diag(completed))
+        self.assertEqual(self.built.read_text(), f"{self.tree}\n", _diag(completed))
+        self.assertEqual([line for line in completed.stderr.splitlines()
+                          if line.startswith("canon_run:")], [], _diag(completed))
 
 
 if __name__ == "__main__":

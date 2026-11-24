@@ -154,6 +154,19 @@ tests/infra/test_seed_depinfo_relocation.py  tests/infra/test_seed_depinfo_reloc
 # Task 10230: the seed honours the canonical-build-path stamp of a cloned base target.
 scripts/seed-warm-lane.sh    tests/infra/test_seed_warm_lane_canon_stamp.sh
 tests/infra/test_seed_warm_lane_canon_stamp.py    tests/infra/test_seed_warm_lane_canon_stamp.sh
+# It asserts relocate-depinfo-paths.py's own summary line, positively for an
+# adapted target and negatively for a kept one, so a wording change reds here.
+scripts/relocate-depinfo-paths.py  tests/infra/test_seed_warm_lane_canon_stamp.sh
+# The suites that run the REAL seed scripts stage their fixtures through
+# seed_warm_lane_harness.py, which reuses refresh_warm_base_harness.py's cp
+# stub, and load the primitive through canon_run_fixture.py, so an edit to any
+# of the three selects each.
+tests/infra/seed_warm_lane_harness.py     tests/infra/test_seed_warm_lane_canon_stamp.sh
+tests/infra/seed_warm_lane_harness.py     tests/infra/test_canon_launch_sites.sh
+tests/infra/refresh_warm_base_harness.py  tests/infra/test_seed_warm_lane_canon_stamp.sh
+tests/infra/refresh_warm_base_harness.py  tests/infra/test_canon_launch_sites.sh
+tests/infra/canon_run_fixture.py          tests/infra/test_seed_warm_lane_canon_stamp.sh
+tests/infra/canon_run_fixture.py          tests/infra/test_canon_launch_sites.sh
 # Task 9246: the cron sweep of idle worktree targets exempts _merge-verify and
 # respects each worktree's lane lock, pinned by a .py suite behind a thin .sh
 # wrapper, same pair shape.

@@ -33,12 +33,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import canon_run_fixture as fx  # noqa: E402  (imported after sys.path manipulation)
+import seed_warm_lane_harness as harness  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SEED = REPO_ROOT / "scripts" / "seed-warm-lane.sh"
 STAMP_NAME = fx.load_canon_run().STAMP_NAME
 JOURNAL_NAME = fx.load_canon_cache().JOURNAL_NAME
-SOCKET_NAME = ".reify-sccache.4242.sock"
+# A leftover private-sccache socket, named by canon_cache's own SessionFiles.
+SOCKET_NAME = Path(fx.load_canon_cache().SessionFiles.in_build_dir("target", 4242).socket).name
 UNIT = "fixture-0123456789abcdef"
 TAURI_UNIT = "tauri-0123456789abcdef"
 IT_RS = Path("crates", "fixture", "tests", "it.rs")
@@ -134,31 +136,17 @@ class Fixture:
                    f"{self.canon}\n" if stamp_content is None else stamp_content)
             _write(self.base_target / JOURNAL_NAME, '{"event": "build"}\n')
             os.mknod(self.base_target / SOCKET_NAME, stat.S_IFSOCK | 0o600)
-        _write(base / "target.basecommit", base_commit)
-        _write(base / "target.buildroot", f"{merge_verify}\n")
-        _write(base / ".warm-base-meta", "RUSTFLAGS=\nINVOCATION=\n")
+        harness.stage_base_gen(self.base_target, base_commit=base_commit, build_root=merge_verify)
 
     def _env(self):
         env = {k: v for k, v in os.environ.items() if not k.startswith(_AMBIENT_PREFIXES)}
-        empty_global = self.tmp / "gitconfig-global"
-        empty_global.write_text("")
         stub_bin = self.tmp / "stub-bin"
         stub_bin.mkdir()
-        # No reflink on a tmp fs: drop the flag so the clone is a real byte copy.
-        cp = stub_bin / "cp"
-        cp.write_text(
-            "#!/bin/sh\n"
-            'for arg; do shift; [ "$arg" = "--reflink=always" ] || set -- "$@" "$arg"; done\n'
-            f'exec {shutil.which("cp")} "$@"\n')
-        cp.chmod(0o755)
+        # No reflink on a tmp fs: the stub's clone is a real byte copy.
+        harness.install_cp_stub(stub_bin)
+        env.update(harness.isolated_git_env(self.tmp))
         env.update({
             "PATH": f"{stub_bin}{os.pathsep}{os.environ.get('PATH', '')}",
-            "GIT_CONFIG_GLOBAL": str(empty_global),
-            "GIT_CONFIG_NOSYSTEM": "1",
-            # A plain dir in the tempdir must never discover an enclosing repo.
-            "GIT_CEILING_DIRECTORIES": str(self.tmp),
-            "GIT_AUTHOR_NAME": "Fixture", "GIT_AUTHOR_EMAIL": "fixture@example.test",
-            "GIT_COMMITTER_NAME": "Fixture", "GIT_COMMITTER_EMAIL": "fixture@example.test",
             "RUSTFLAGS": "",
             # Keeps the rerere guard's shared-config writes out of the fixture.
             "REIFY_WARM_LANE_RERERE_ARM": "0",

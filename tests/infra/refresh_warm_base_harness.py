@@ -14,6 +14,8 @@ caller asks for the real one or for none. A new sibling call in the refresh is
 added to REFRESH_SIBLINGS once, and every member stages it.
 PATH: install_cp_stub() writes a `cp` that drops --reflink=always, so the
 refresh's reflink copy works on any filesystem; run_refresh() puts it first.
+seed_warm_lane_harness.py reuses it and write_executable() for the members
+that run the real seed scripts.
 LANES: init_lane() and commit() make a git repository on main under an env
 with no GIT_* variables and a fixed test identity.
 """
