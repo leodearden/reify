@@ -382,7 +382,7 @@ mod tests {
         assert_eq!(data.type_name, "MassProperties");
         let mut keys: Vec<&str> = data.fields.keys().map(String::as_str).collect();
         keys.sort_unstable();
-        assert_eq!(keys, ["com", "inertia", "mass", "origin"]);
+        assert_eq!(keys, ["com", "inertia", "mass"]);
 
         assert_eq!(
             field(&v, "mass"),
@@ -412,26 +412,6 @@ mod tests {
                 row, &want,
                 "inertia row {r} must be MOMENT_OF_INERTIA scalars"
             );
-        }
-
-        // origin: the default zero Frame3 — a position (LENGTH zeros) plus three
-        // directions (dimensionless zeros, `Value::Real` per Invariant V). The
-        // all-zero basis is the production default, not a placeholder to
-        // "improve" into an identity basis.
-        let origin = field(&v, "origin");
-        assert_eq!(instance_data(origin).type_name, "Frame3");
-        let components = |member: &str| -> Vec<Value> {
-            match field(origin, member) {
-                Value::Vector(c) if c.len() == 3 => c.clone(),
-                other => panic!("Frame3.{member} must be a 3-component Vector, got {other:?}"),
-            }
-        };
-        assert_eq!(components("origin"), vec![Value::length(0.0); 3]);
-        for member in ["x_axis", "y_axis", "z_axis"] {
-            for (i, c) in components(member).into_iter().enumerate() {
-                assert_eq!(c, Value::Real(0.0), "Frame3.{member}[{i}]");
-                assert!(c.dimension().is_dimensionless(), "Frame3.{member}[{i}]");
-            }
         }
     }
 
@@ -499,7 +479,10 @@ mod tests {
                 "{name} must be the honest Undef"
             );
         }
-        assert_eq!(field(&v, "origin"), field(&sample().to_value(), "origin"));
+        assert!(
+            instance_data(&v).fields.get("origin").is_none(),
+            "MassProperties carries no origin"
+        );
         assert_eq!(MassProperties::from_value(&v), None);
     }
 

@@ -31,7 +31,7 @@ fn mass_properties_written_equals_declared() {
         .map(|(name, _)| name.as_str())
         .collect();
     declared.sort_unstable();
-    assert_eq!(declared, ["com", "inertia", "mass", "origin"]);
+    assert_eq!(declared, ["com", "inertia", "mass"]);
 
     let diagonal = [[0.1, 0.0, 0.0], [0.0, 0.2, 0.0], [0.0, 0.0, 0.3]];
     let two_kg = || scalar(2.0, DimensionVector::MASS);
