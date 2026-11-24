@@ -2,7 +2,8 @@
 refresh_warm_base_harness.py — the hermetic staging shared by every unittest
 that runs a COPY of scripts/refresh-warm-base.sh (task 10152):
 test_refresh_warm_base_built_tree.py, test_prune_unconsulted_target.py
-RefreshDelegation and test_evict_dirty_target_units.py RefreshStep.
+RefreshDelegation, test_evict_dirty_target_units.py RefreshStep and
+test_refresh_warm_base_sockets.py.
 
 Not a test module itself (no `test_` prefix): run_all.sh never discovers it,
 and the members import it via the sys.path idiom.

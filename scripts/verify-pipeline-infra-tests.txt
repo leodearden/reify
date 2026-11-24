@@ -129,6 +129,9 @@ tests/infra/test_refresh_warm_base_built_tree.py  tests/infra/test_refresh_warm_
 # Its WriterParity class replays verify.sh's own attempt-0 stamp line, so moving
 # or reshaping that sidecar reds here instead of disabling the guard fail-open.
 scripts/verify.sh                    tests/infra/test_refresh_warm_base_built_tree.sh
+# Task 10230: refresh-warm-base.sh drops top-level socket nodes from the gen, pinned by a .py suite.
+scripts/refresh-warm-base.sh         tests/infra/test_refresh_warm_base_sockets.sh
+tests/infra/test_refresh_warm_base_sockets.py  tests/infra/test_refresh_warm_base_sockets.sh
 # Task 10152: the promote-time eviction of build-script runs the build root's
 # cargo would rerun, pinned by a .py suite whose RefreshStep class also pins
 # refresh-warm-base.sh's Step 3c to that sibling (fail-closed when missing).
@@ -143,6 +146,7 @@ scripts/evict-dirty-target-units.py  tests/infra/test_refresh_warm_base.sh
 tests/infra/refresh_warm_base_harness.py  tests/infra/test_evict_dirty_target_units.sh
 tests/infra/refresh_warm_base_harness.py  tests/infra/test_prune_unconsulted_target.sh
 tests/infra/refresh_warm_base_harness.py  tests/infra/test_refresh_warm_base_built_tree.sh
+tests/infra/refresh_warm_base_harness.py  tests/infra/test_refresh_warm_base_sockets.sh
 # Task 10167: the seed-time relocation of cargo dep-info input paths, called by seed-warm-lane.sh.
 scripts/relocate-depinfo-paths.py  tests/infra/test_seed_depinfo_relocation.sh
 scripts/seed-warm-lane.sh    tests/infra/test_seed_depinfo_relocation.sh
