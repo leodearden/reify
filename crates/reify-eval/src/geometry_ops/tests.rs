@@ -33873,3 +33873,336 @@
             diagnostics[0].message
         );
     }
+
+    // ── direction-typing ι-a (task 9646): the Direction-taking readers ──────
+    //
+    // `rotate(geo, axis, angle)`, `rotate_around(geo, pivot, axis, angle)` and
+    // `mirror(geo, origin, normal)` read the axis/normal as a `Value::Direction`
+    // and the pivot/origin as a `Point3<Length>`, through the same decoders the
+    // plane/axis value forms already use.
+
+    /// A `CompiledExpr` literal wrapping a `Value::Direction`.
+    fn literal_direction(v: [f64; 3]) -> reify_ir::CompiledExpr {
+        reify_ir::CompiledExpr::literal(unit_dir(v[0], v[1], v[2]), reify_core::Type::Direction)
+    }
+
+    /// A `CompiledExpr` literal wrapping a `Point3<Length>` of SI metres — the
+    /// shape `point3(50mm, 0mm, 0mm)` has once evaluated.
+    fn literal_length_point3(c: [f64; 3]) -> reify_ir::CompiledExpr {
+        reify_ir::CompiledExpr::literal(
+            point3_length_value(c[0], c[1], c[2]),
+            reify_core::Type::point3(reify_core::Type::length()),
+        )
+    }
+
+    /// A `CompiledExpr` literal wrapping an arbitrary `Value`; the declared type
+    /// is inert to `eval_expr`.
+    fn literal_value(v: reify_ir::Value) -> reify_ir::CompiledExpr {
+        reify_ir::CompiledExpr::literal(v, reify_core::Type::dimensionless_scalar())
+    }
+
+    fn rotate_direction_form(
+        axis: reify_ir::CompiledExpr,
+        angle: reify_ir::CompiledExpr,
+    ) -> CompiledGeometryOp {
+        CompiledGeometryOp::Transform {
+            kind: TransformKind::Rotate,
+            target: GeomRef::Step(0),
+            args: vec![("axis".into(), axis), ("angle".into(), angle)],
+        }
+    }
+
+    fn rotate_around_direction_form(
+        pivot: reify_ir::CompiledExpr,
+        axis: reify_ir::CompiledExpr,
+        angle: reify_ir::CompiledExpr,
+    ) -> CompiledGeometryOp {
+        CompiledGeometryOp::Transform {
+            kind: TransformKind::RotateAround,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("pivot".into(), pivot),
+                ("axis".into(), axis),
+                ("angle".into(), angle),
+            ],
+        }
+    }
+
+    fn mirror_direction_form(
+        origin: reify_ir::CompiledExpr,
+        normal: reify_ir::CompiledExpr,
+    ) -> CompiledGeometryOp {
+        CompiledGeometryOp::Pattern {
+            kind: PatternKind::Mirror,
+            target: GeomRef::Step(0),
+            args: vec![("origin".into(), origin), ("normal".into(), normal)],
+        }
+    }
+
+    fn run_direction_form(
+        op: &CompiledGeometryOp,
+    ) -> (Result<reify_ir::GeometryOp, String>, Vec<Diagnostic>) {
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            op,
+            &ValueMap::new(),
+            &[GeometryHandleId(42)],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        (result, diagnostics)
+    }
+
+    /// The names carried by every `DimensionedArgRejected` diagnostic of a run,
+    /// in emission order.
+    fn dimension_rejected_messages(diagnostics: &[Diagnostic]) -> Vec<&str> {
+        diagnostics
+            .iter()
+            .filter(|d| d.code == Some(reify_core::DiagnosticCode::DimensionedArgRejected))
+            .map(|d| d.message.as_str())
+            .collect()
+    }
+
+    /// The six signed basis vectors — every direction triple the scalar-form
+    /// corpus wrote.
+    const SIGNED_BASIS: [[f64; 3]; 6] = [
+        [1.0, 0.0, 0.0],
+        [-1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, -1.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [0.0, 0.0, -1.0],
+    ];
+
+    fn assert_bits_eq(got: [f64; 3], want: [f64; 3], what: &str) {
+        assert_eq!(
+            got.map(f64::to_bits),
+            want.map(f64::to_bits),
+            "{what}: {got:?} must be bit-identical to the basis literal {want:?}"
+        );
+    }
+
+    #[test]
+    fn rotate_direction_form_lowers_axis_and_angle() {
+        let op = rotate_direction_form(
+            literal_direction([0.0, 0.0, 1.0]),
+            literal_angle(std::f64::consts::FRAC_PI_2),
+        );
+        let (result, diagnostics) = run_direction_form(&op);
+        match result {
+            Ok(reify_ir::GeometryOp::Rotate {
+                target,
+                axis,
+                angle_rad,
+            }) => {
+                assert_eq!(target, GeometryHandleId(42));
+                assert_eq!(axis, [0.0, 0.0, 1.0]);
+                assert_eq!(angle_rad, std::f64::consts::FRAC_PI_2);
+            }
+            other => panic!("expected Ok(Rotate), got {other:?}"),
+        }
+        assert!(diagnostics.is_empty(), "clean read, got: {diagnostics:?}");
+    }
+
+    #[test]
+    fn rotate_around_direction_form_lowers_pivot_axis_and_angle() {
+        let op = rotate_around_direction_form(
+            literal_length_point3([0.05, 0.0, 0.0]),
+            literal_direction([0.0, 0.0, 1.0]),
+            literal_angle(std::f64::consts::FRAC_PI_2),
+        );
+        let (result, diagnostics) = run_direction_form(&op);
+        match result {
+            Ok(reify_ir::GeometryOp::RotateAround {
+                target,
+                point,
+                axis,
+                angle_rad,
+            }) => {
+                assert_eq!(target, GeometryHandleId(42));
+                assert_eq!(point, [0.05, 0.0, 0.0]);
+                assert_eq!(axis, [0.0, 0.0, 1.0]);
+                assert_eq!(angle_rad, std::f64::consts::FRAC_PI_2);
+            }
+            other => panic!("expected Ok(RotateAround), got {other:?}"),
+        }
+        assert!(diagnostics.is_empty(), "clean read, got: {diagnostics:?}");
+    }
+
+    #[test]
+    fn mirror_direction_form_lowers_origin_and_normal() {
+        let op = mirror_direction_form(
+            literal_length_point3([0.0, 0.0, 0.0]),
+            literal_direction([1.0, 0.0, 0.0]),
+        );
+        let (result, diagnostics) = run_direction_form(&op);
+        match result {
+            Ok(reify_ir::GeometryOp::Mirror {
+                target,
+                plane_origin,
+                plane_normal,
+            }) => {
+                assert_eq!(target, GeometryHandleId(42));
+                assert_eq!(plane_origin, [0.0, 0.0, 0.0]);
+                assert_eq!(plane_normal, [1.0, 0.0, 0.0]);
+            }
+            other => panic!("expected Ok(Mirror), got {other:?}"),
+        }
+        assert!(diagnostics.is_empty(), "clean read, got: {diagnostics:?}");
+    }
+
+    /// B12: a signed basis Direction reaches the IR bit-identical to the
+    /// literal the scalar form passed through raw, for every one of the six.
+    #[test]
+    fn direction_forms_pass_signed_basis_axes_through_bit_identically() {
+        for basis in SIGNED_BASIS {
+            let angle = || literal_angle(std::f64::consts::FRAC_PI_2);
+            match run_direction_form(&rotate_direction_form(literal_direction(basis), angle())).0 {
+                Ok(reify_ir::GeometryOp::Rotate { axis, .. }) => {
+                    assert_bits_eq(axis, basis, "rotate axis")
+                }
+                other => panic!("rotate {basis:?}: expected Ok(Rotate), got {other:?}"),
+            }
+            match run_direction_form(&rotate_around_direction_form(
+                literal_length_point3([0.0, 0.0, 0.0]),
+                literal_direction(basis),
+                angle(),
+            ))
+            .0
+            {
+                Ok(reify_ir::GeometryOp::RotateAround { axis, .. }) => {
+                    assert_bits_eq(axis, basis, "rotate_around axis")
+                }
+                other => panic!("rotate_around {basis:?}: expected Ok(RotateAround), got {other:?}"),
+            }
+            match run_direction_form(&mirror_direction_form(
+                literal_length_point3([0.0, 0.0, 0.0]),
+                literal_direction(basis),
+            ))
+            .0
+            {
+                Ok(reify_ir::GeometryOp::Mirror { plane_normal, .. }) => {
+                    assert_bits_eq(plane_normal, basis, "mirror normal")
+                }
+                other => panic!("mirror {basis:?}: expected Ok(Mirror), got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn rotate_direction_form_rejects_a_vector_axis_with_the_migration_hint() {
+        let op = rotate_direction_form(
+            literal_vec3(0.0, 0.0, 1.0),
+            literal_angle(std::f64::consts::FRAC_PI_2),
+        );
+        let err = run_direction_form(&op)
+            .0
+            .expect_err("a raw Vector is not a Direction");
+        for needle in [
+            "axis",
+            "expected a Direction",
+            reify_core::direction::DIRECTION_MIGRATION_HINT,
+        ] {
+            assert!(err.contains(needle), "{needle:?} missing from {err:?}");
+        }
+    }
+
+    #[test]
+    fn rotate_direction_form_reports_an_undef_axis_as_unresolved() {
+        let op = rotate_direction_form(literal_undef(), literal_angle(std::f64::consts::FRAC_PI_2));
+        let err = run_direction_form(&op)
+            .0
+            .expect_err("an unresolved axis drops the op");
+        assert_eq!(err, "argument 'axis' for rotate is unresolved (Undef)");
+    }
+
+    #[test]
+    fn mirror_direction_form_rejects_a_bare_origin_per_component() {
+        let bare_origin = literal_value(reify_ir::Value::Point(vec![
+            reify_ir::Value::Int(0),
+            reify_ir::Value::Int(0),
+            reify_ir::Value::Int(0),
+        ]));
+        let (result, diagnostics) =
+            run_direction_form(&mirror_direction_form(bare_origin, literal_direction([1.0, 0.0, 0.0])));
+        assert!(result.is_err(), "a bare origin drops the op, got: {result:?}");
+        let rejected = dimension_rejected_messages(&diagnostics);
+        assert_eq!(rejected.len(), 3, "one rejection per component, got: {diagnostics:?}");
+        for (msg, name) in rejected.iter().zip(["origin.x", "origin.y", "origin.z"]) {
+            assert!(msg.contains(name), "{name:?} missing from {msg:?}");
+            assert!(
+                diagnostics
+                    .iter()
+                    .filter(|d| d.message == *msg)
+                    .all(|d| d.severity == reify_core::Severity::Error),
+                "a dimension rejection is an Error, got: {diagnostics:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rotate_around_direction_form_rejects_a_bare_pivot_per_component() {
+        let bare_pivot = literal_value(reify_ir::Value::Point(vec![
+            reify_ir::Value::Int(0),
+            reify_ir::Value::Int(0),
+            reify_ir::Value::Int(0),
+        ]));
+        let (result, diagnostics) = run_direction_form(&rotate_around_direction_form(
+            bare_pivot,
+            literal_direction([0.0, 0.0, 1.0]),
+            literal_angle(std::f64::consts::FRAC_PI_2),
+        ));
+        assert!(result.is_err(), "a bare pivot drops the op, got: {result:?}");
+        let rejected = dimension_rejected_messages(&diagnostics);
+        assert_eq!(rejected.len(), 3, "one rejection per component, got: {diagnostics:?}");
+        for (msg, name) in rejected.iter().zip(["pivot.x", "pivot.y", "pivot.z"]) {
+            assert!(msg.contains(name), "{name:?} missing from {msg:?}");
+        }
+    }
+
+    #[test]
+    fn mirror_direction_form_rejects_a_wrong_shape_origin_without_a_units_code() {
+        let (result, diagnostics) = run_direction_form(&mirror_direction_form(
+            literal_f64(0.0),
+            literal_direction([1.0, 0.0, 0.0]),
+        ));
+        assert!(result.is_err(), "a Real is not a Point3, got: {result:?}");
+        assert!(
+            dimension_rejected_messages(&diagnostics).is_empty(),
+            "a wrong shape is not a units rejection, got: {diagnostics:?}"
+        );
+    }
+
+    /// The closure guard plants bare scalars in every position, and a scalar
+    /// never fills a Direction or Point3 slot: the angle must still be read, or
+    /// its gate is unobservable behind the unfillable one.
+    #[test]
+    fn direction_forms_read_the_angle_past_an_unfillable_slot() {
+        let (result, diagnostics) = run_direction_form(&rotate_direction_form(
+            literal_vec3(0.0, 0.0, 1.0),
+            literal_f64(1.0),
+        ));
+        assert!(result.is_err(), "rotate: got {result:?}");
+        assert!(
+            dimension_rejected_messages(&diagnostics)
+                .iter()
+                .any(|m| m.contains("angle")),
+            "rotate: the bare angle must be diagnosed beside the bad axis, got: {diagnostics:?}"
+        );
+
+        let (result, diagnostics) = run_direction_form(&rotate_around_direction_form(
+            literal_f64(0.0),
+            literal_direction([0.0, 0.0, 1.0]),
+            literal_f64(1.0),
+        ));
+        assert!(result.is_err(), "rotate_around: got {result:?}");
+        assert!(
+            dimension_rejected_messages(&diagnostics)
+                .iter()
+                .any(|m| m.contains("angle")),
+            "rotate_around: the bare angle must be diagnosed beside the bad pivot, \
+             got: {diagnostics:?}"
+        );
+    }
