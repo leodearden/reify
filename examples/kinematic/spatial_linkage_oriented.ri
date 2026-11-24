@@ -1,7 +1,7 @@
 // Spatial linkage with oriented Frame3 joint-origin authoring (KIN-OFFSET δ, task 4394).
 //
 // Demonstrates the δ authoring surface: joint origins specified as a
-// frame3(point3(..mm), orient_axis_angle(vec3(..), ..rad)) supply BOTH a translation
+// frame3(point3(..mm), orient_axis_angle(dir(..), ..rad)) supply BOTH a translation
 // offset AND an orientation for the joint mount frame, enabling spatial (3D)
 // linkages where link-local frames are not collinear with the world frame.
 //
@@ -37,7 +37,7 @@ structure def SpatialLinkageOriented {
         0m .. 1m,
         frame3(
             point3(0mm, 0mm, 0mm),
-            orient_axis_angle(vec3(0, 0, 1), 1.5707963267948966rad)
+            orient_axis_angle(dir(0, 0, 1), 1.5707963267948966rad)
         )
     )
 
@@ -52,7 +52,7 @@ structure def SpatialLinkageOriented {
         0rad .. 3.141592653589793rad,
         frame3(
             point3(100mm, 0mm, 0mm),
-            orient_axis_angle(vec3(1, 0, 0), 1.5707963267948966rad)
+            orient_axis_angle(dir(1, 0, 0), 1.5707963267948966rad)
         )
     )
 

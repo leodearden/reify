@@ -384,7 +384,7 @@ fn rotate_orientation_overload_equals_axis_angle_form() {
     let orientation_src = r#"
         structure def S {
             let b = box(10mm, 10mm, 10mm)
-            let r = rotate(b, orient_axis_angle(vec3(0.0, 0.0, 1.0), 90deg))
+            let r = rotate(b, orient_axis_angle(dir(0, 0, 1), 90deg))
         }
     "#;
     let axis_angle_src = r#"
@@ -483,14 +483,15 @@ fn rotate_orientation_overload_equals_axis_angle_form() {
     );
 }
 
-/// Malformed orientation (zero-length axis → Undef after orient_axis_angle) →
-/// no GeometryOp::Rotate in the recorded ops (op dropped) and non-empty diagnostics.
+/// Malformed orientation (a zero axis: `dir(0, 0, 0)` is E_DegenerateDirection,
+/// so orient_axis_angle gets Undef) → no GeometryOp::Rotate in the recorded ops
+/// (op dropped) and a DegenerateDirection diagnostic.
 #[test]
 fn rotate_orientation_malformed_drops_op() {
     let source = r#"
         structure def S {
             let b = box(10mm, 10mm, 10mm)
-            let r = rotate(b, orient_axis_angle(vec3(0.0, 0.0, 0.0), 90deg))
+            let r = rotate(b, orient_axis_angle(dir(0, 0, 0), 90deg))
         }
     "#;
 
@@ -505,7 +506,11 @@ fn rotate_orientation_malformed_drops_op() {
     let has_rotate = ops.iter().any(|r| matches!(r.op, GeometryOp::Rotate { .. }));
     assert!(!has_rotate, "malformed orientation: Rotate op must be dropped");
     assert!(
-        !result.diagnostics.is_empty(),
-        "malformed orientation: expected at least one diagnostic"
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.code == Some(reify_core::DiagnosticCode::DegenerateDirection)),
+        "malformed orientation: expected a DegenerateDirection diagnostic, got {:?}",
+        result.diagnostics
     );
 }

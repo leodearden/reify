@@ -63,9 +63,8 @@ fn infer_warnings(module: &CompiledModule) -> Vec<&str> {
 /// Dimensionless numeric args keep these sources independent of the stdlib unit
 /// registry (`compile_source` has no `unit` decls in scope). The constructor
 /// result types are arg-agnostic, so this does not weaken the assertions — for
-/// `orient_axis_angle` the axis argument still types as
-/// `Vector{3, dimensionless}`, which is exactly the wrong first-arg type the old
-/// fallback adopted.
+/// `orient_axis_angle` the axis argument types as `Direction`, a wrong result
+/// type for the old first-arg fallback to adopt.
 ///
 /// `EulerConvention` is declared LOCALLY for the same stdlib-free reason. Task
 /// #6082 gave `orient_euler`'s convention slot an `ExpectedArg::Enum`, so the
@@ -82,9 +81,9 @@ const ORIENT_HOST: &str = r#"
         let identity    = orient_identity()
         let quaternion  = orient_quaternion(1.0, 0.0, 0.0, 0.0)
         let euler       = orient_euler(EulerConvention.XYZ, 0.0, 0.0, 0.0)
-        let basis       = orient_basis(vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0))
-        let look_at     = orient_look_at(vec3(1.0, 0.0, 0.0), vec3(0.0, 0.0, 1.0))
-        let axis_angle  = orient_axis_angle(vec3(0.0, 0.0, 1.0), 90.0)
+        let basis       = orient_basis(dir(1, 0, 0), dir(0, 1, 0), dir(0, 0, 1))
+        let look_at     = orient_look_at(dir(1, 0, 0), dir(0, 0, 1))
+        let axis_angle  = orient_axis_angle(dir(0, 0, 1), 90.0)
         let exp         = orient_exp(vec3(0.0, 0.0, 0.0))
         let inverse     = orient_inverse(orient_identity())
         let compose     = orient_compose(orient_identity(), orient_identity())
@@ -268,14 +267,14 @@ fn real_printer_ri_emits_zero_infer_warnings() {
 ///     composes through nesting rather than only at leaf call sites — which the
 ///     real-file test above cannot show, since it only counts diagnostics.
 ///
-/// Uses `compile_source_with_stdlib` so the dimensioned literals (`1m`, `90deg`,
-/// `0mm`) printer.ri actually passes resolve — the arguments are the real thing,
-/// not dimensionless stand-ins.
+/// Uses `compile_source_with_stdlib` so the dimensioned literals (`90deg`, `0mm`)
+/// printer.ri actually passes resolve — the arguments are the real thing, not
+/// dimensionless stand-ins.
 #[test]
 fn printer_shaped_source_emits_zero_infer_warnings() {
     let source = r#"
         structure PrinterShaped {
-            let rot_to_y = orient_axis_angle(vec3(1m, 0mm, 0mm), 90deg)
+            let rot_to_y = orient_axis_angle(dir(1, 0, 0), 90deg)
             let a_upper = transform3(rot_to_y, vec3(0mm, 0mm, 10mm))
             let a_lower = transform3(orient_identity(), vec3(0mm, 0mm, 20mm))
             let b_upper = transform3(orient_identity(), vec3(0mm, 0mm, 30mm))
@@ -459,8 +458,8 @@ fn orient_log_result_is_accepted_by_a_vector3_angle_parameter() {
         fn rotation_vector_arity(v: Vector3<Angle>) -> Int { 3 }
 
         structure def RotationVectorHost {
-            let q_int  = orient_axis_angle(vec3(0, 0, 1), 90deg)
-            let q_real = orient_axis_angle(vec3(0.0, 0.0, 1.0), 90deg)
+            let q_int  = orient_axis_angle(dir(0, 0, 1), 90deg)
+            let q_real = orient_axis_angle(dir(0.0, 0.0, 1.0), 90deg)
             let n_int  = rotation_vector_arity(orient_log(q_int))
             let n_real = rotation_vector_arity(orient_log(q_real))
         }

@@ -197,7 +197,7 @@ fn revolute_pivot_offset_e2e() {
 
 /// Signal test (δ, task 4394): `spatial_linkage_oriented.ri` produces the expected
 /// oriented-origin poses for both a prismatic and a revolute joint authored with
-/// `frame3(point3(..mm), orient_axis_angle(vec3(..), ..rad))` as the 3rd pivot arg.
+/// `frame3(point3(..mm), orient_axis_angle(dir(..), ..rad))` as the 3rd pivot arg.
 ///
 /// Invariants (hand-computed, tolerance 1e-12):
 ///

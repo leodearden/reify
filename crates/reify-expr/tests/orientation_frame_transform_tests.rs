@@ -8,6 +8,7 @@ use reify_expr::{EvalContext, eval_expr};
 use reify_stdlib::eval_builtin;
 use reify_core::Type;
 use reify_ir::{BinOp, CompiledExpr, Value, ValueMap};
+use reify_test_support::direction_val;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -198,7 +199,7 @@ fn quat_negative_equivalent_same_rotation() {
 /// A very small angle (1e-8) should produce a near-identity quaternion (w≈1, xyz≈0).
 #[test]
 fn axis_angle_small_angle_near_identity() {
-    let axis = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+    let axis = direction_val(0.0, 0.0, 1.0);
     let angle = Value::Real(1e-8);
     let q = eval_builtin("orient_axis_angle", &[axis, angle]);
     match q {
@@ -215,7 +216,7 @@ fn axis_angle_small_angle_near_identity() {
 /// Negative angle reverses rotation: applying angle then -angle to a point returns original.
 #[test]
 fn axis_angle_negative_angle_reverses_rotation() {
-    let axis_z = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+    let axis_z = direction_val(0.0, 0.0, 1.0);
     let q_pos = eval_builtin(
         "orient_axis_angle",
         &[axis_z.clone(), Value::Real(std::f64::consts::FRAC_PI_4)],
@@ -289,9 +290,9 @@ fn euler_xyz_matches_sequential_axis_angle() {
     );
 
     // Build sequential axis-angle rotations and compose via Transform * Transform
-    let axis_x = Value::Tensor(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
-    let axis_y = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
-    let axis_z = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+    let axis_x = direction_val(1.0, 0.0, 0.0);
+    let axis_y = direction_val(0.0, 1.0, 0.0);
+    let axis_z = direction_val(0.0, 0.0, 1.0);
     let q_x = eval_builtin("orient_axis_angle", &[axis_x, Value::Real(a)]);
     let q_y = eval_builtin("orient_axis_angle", &[axis_y, Value::Real(b)]);
     let q_z = eval_builtin("orient_axis_angle", &[axis_z, Value::Real(c)]);
@@ -713,7 +714,7 @@ fn identity_noop_arbitrary_vector() {
 /// Frame stores origin and basis correctly; they can be recovered.
 #[test]
 fn frame_round_trip_construction() {
-    let axis_z = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+    let axis_z = direction_val(0.0, 0.0, 1.0);
     let orient = eval_builtin(
         "orient_axis_angle",
         &[axis_z, Value::Real(std::f64::consts::FRAC_PI_4)],

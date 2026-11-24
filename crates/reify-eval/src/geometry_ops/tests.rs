@@ -24678,12 +24678,8 @@
                 .and_then(|v| v.as_f64())
                 .unwrap_or_else(|| panic!("Map missing / non-numeric 'angle' key"));
             let axis = match axis_v {
-                reify_ir::Value::Vector(items) if items.len() == 3 => [
-                    items[0].as_f64().unwrap(),
-                    items[1].as_f64().unwrap(),
-                    items[2].as_f64().unwrap(),
-                ],
-                other => panic!("'axis' is not a 3-vec, got {:?}", other),
+                reify_ir::Value::Direction(u) => u.components(),
+                other => panic!("'axis' is not a Direction, got {:?}", other),
             };
             (axis, angle_si)
         }

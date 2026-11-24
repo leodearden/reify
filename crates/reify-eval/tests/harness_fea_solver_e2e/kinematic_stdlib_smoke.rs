@@ -80,7 +80,7 @@ use reify_test_support::{collect_errors, make_simple_engine, parse_and_compile_w
 const SMOKE_SOURCE: &str = r#"
 structure def Kinematic {
     let r_id       = orient_identity()
-    let r_z90      = orient_axis_angle(vec3(0, 0, 1), 1.5707963267948966)
+    let r_z90      = orient_axis_angle(dir(0, 0, 1), 1.5707963267948966)
     let r_composed = orient_compose(r_z90, r_z90)
     let r_inv      = orient_inverse(r_z90)
 
@@ -108,7 +108,7 @@ structure def Kinematic {
     let planar_jac   = joint_jacobian(planar_joint)
 
     let sj             = spherical(0rad .. 3.141592653589793rad)
-    let q_z90          = orient_axis_angle(vec3(0, 0, 1), 1.5707963267948966)
+    let q_z90          = orient_axis_angle(dir(0, 0, 1), 1.5707963267948966)
     let sj_xform       = transform_at(sj, q_z90)
     let sj_jac         = joint_jacobian(sj)
     let q_euler_in     = orient_euler(EulerConvention.XYZ, 0.1, 0.2, 0.3)
@@ -779,8 +779,8 @@ fn kinematic_stdlib_smoke_e2e() {
     }
 
     // sj_aa_back = orient_to_axis_angle(q_euler_in) → Map { angle, axis }.
-    // angle is an ANGLE-dimensioned Scalar; axis is a Vector3 of unit-magnitude
-    // Real components. Together they reconstruct q_euler_in via the half-angle
+    // angle is an ANGLE-dimensioned Scalar; axis is a unit Direction. Together
+    // they reconstruct q_euler_in via the half-angle
     // identity: q = (cos(angle/2), axis * sin(angle/2)).
     let sj_aa_back = get_value(v, "sj_aa_back");
     let aa_map = match sj_aa_back {
@@ -806,21 +806,10 @@ fn kinematic_stdlib_smoke_e2e() {
     let aa_axis = aa_map
         .get(&Value::String("axis".to_string()))
         .unwrap_or_else(|| panic!("sj_aa_back: missing 'axis' key"));
-    let aa_axis_items = match aa_axis {
-        Value::Vector(v) if v.len() == 3 => v,
-        other => panic!("sj_aa_back.axis: expected Vector3, got {other:?}"),
+    let aa_axis_f: [f64; 3] = match aa_axis {
+        Value::Direction(u) => u.components(),
+        other => panic!("sj_aa_back.axis: expected Direction, got {other:?}"),
     };
-    let aa_axis_f: [f64; 3] = [
-        aa_axis_items[0]
-            .as_f64()
-            .expect("sj_aa_back.axis[0] numeric"),
-        aa_axis_items[1]
-            .as_f64()
-            .expect("sj_aa_back.axis[1] numeric"),
-        aa_axis_items[2]
-            .as_f64()
-            .expect("sj_aa_back.axis[2] numeric"),
-    ];
     let aa_axis_norm =
         (aa_axis_f[0] * aa_axis_f[0] + aa_axis_f[1] * aa_axis_f[1] + aa_axis_f[2] * aa_axis_f[2])
             .sqrt();

@@ -9,5 +9,5 @@
 module orient_rotvec_round_trip
 
 structure def RotVecRoundTrip {
-    let rt = orient_exp(orient_log(orient_axis_angle(vec3(0,0,1), 90deg)))
+    let rt = orient_exp(orient_log(orient_axis_angle(dir(0,0,1), 90deg)))
 }

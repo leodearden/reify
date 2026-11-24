@@ -518,7 +518,7 @@ fn compile_arbitrary_pattern_list_form_produces_realization() {
     // arbitrary_pattern(target, [transform3(...)]) — 2-arg LIST form (task 4168),
     // additive alongside the triple form exercised above.
     let source = r#"structure S {
-    let pattern = arbitrary_pattern(box(2mm, 2mm, 10mm), [transform3(orient_axis_angle(vec3(0.0, 1.0, 0.0), 90deg), vec3(0mm, 0mm, 0mm))])
+    let pattern = arbitrary_pattern(box(2mm, 2mm, 10mm), [transform3(orient_axis_angle(dir(0, 1, 0), 90deg), vec3(0mm, 0mm, 0mm))])
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_arbpat_list"));
     assert!(

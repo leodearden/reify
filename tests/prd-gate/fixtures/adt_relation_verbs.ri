@@ -10,6 +10,6 @@ pub structure Pair {
     sub a = Unit() at transform3(orient_identity(), vec3(100mm, 0mm, 0mm))
     sub b = Unit() at transform3(orient_identity(), vec3(0mm - 100mm, 0mm, 0mm))
     relate {
-        image_placed(a, b, transform3(orient_axis_angle(vec3(0mm, 0mm, 1m), 180deg), vec3(0mm, 0mm, 0mm)))
+        image_placed(a, b, transform3(orient_axis_angle(dir(0, 0, 1), 180deg), vec3(0mm, 0mm, 0mm)))
     }
 }
