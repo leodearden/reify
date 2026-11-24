@@ -11,9 +11,11 @@
 #       SIGKILL.  ESRCH-safe: a stale/nonexistent PGID returns 0.
 #
 #   reaper_run_in_pgroup <cmd-string>
-#       Run <cmd-string> in its own process group (set -m; eval & ; $!-as-PGID).
+#       Run <cmd-string> in its own process group
+#       (set -m; { set +e; eval; } & ; $!-as-PGID).
 #       Tracks the PGID in _REIFY_REAP_PGIDS for reaper_teardown.
-#       Propagates the command's exit code (set -e safe).
+#       <cmd-string> runs with errexit off, as one line whose own operators
+#       decide; returns <cmd-string>'s own exit status (set -e safe).
 #
 #   reaper_teardown
 #       Kill all PGIDs tracked by reaper_run_in_pgroup (TERM->grace->KILL).
@@ -74,8 +76,9 @@ reaper_kill_pgroup() {
 # reaper_run_in_pgroup <cmd-string>
 #   Run cmd-string in its own process group; track the PGID for teardown.
 #   Uses the set -m + background + $!-as-PGID idiom from lib_portable.sh
-#   portable_timeout(), inheriting its proven exit-code propagation and
-#   PID-reuse-safe PGID tracking.
+#   portable_timeout(), with its PID-reuse-safe PGID tracking. Unlike
+#   portable_timeout's simple `"$@" &`, an async `eval` under the caller's
+#   set -e exits 1 for any failing command, hence the `set +e` below.
 # ---------------------------------------------------------------------------
 reaper_run_in_pgroup() {
     local _cmd="$1"
@@ -99,7 +102,10 @@ reaper_run_in_pgroup() {
         # teardown of this pass will be a no-op rather than a full group kill.
         echo "lib_proc_reaper.sh: WARNING: set -m unavailable; pgroup teardown degraded for: ${_cmd:0:80}" >&2
     fi
-    eval "$_cmd" &
+    # Errexit off inside the line, whatever the caller's context: the line
+    # returns its own status (docs/notes/orphaned-test-binary-reaper.md,
+    # Layer A).
+    { set +e; eval "$_cmd"; } &
     local _pid=$!
     if [ "$_had_monitor" -eq 0 ]; then set +m 2>/dev/null || true; fi
 

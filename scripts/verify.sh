@@ -2120,6 +2120,23 @@ selected_infra_leaf_env() {
     esac
 }
 
+# selected_infra_leaf_wall <glob-or-path> — print the `timeout` wall a single
+# selective-infra leaf runs under: 10m, unless the leaf's glob selects a member
+# named here. The member is matched AGAINST the glob (the unquoted `$1` is the
+# case pattern), so a wildcard row that selects it carries its wall to the
+# whole loop instead of cutting it at 10m. Printf-only, so the caller's
+# command-substitution assignment keeps status 0 under set -euo pipefail
+# (selected_infra_leaf_env's reason). Python twin:
+# scripts/reify_verify/selection.py _leaf_wall, held equal by
+# test_verify_plan_parity_region.py TestSelectiveInfraLeafWalls. Derivation:
+# docs/notes/verify-pipeline-knobs.md, "Selective-infra leaf walls".
+selected_infra_leaf_wall() {
+    case tests/infra/test_tree_sitter_pipeline.sh in
+        $1) printf '30m' ;;
+        *) printf '10m' ;;
+    esac
+}
+
 select_infra_tests() {
     local _VP_INFRA_MAP="$SCRIPT_DIR/verify-pipeline-infra-tests.txt"
     # Graceful degradation: absent map or empty changed-file list -> empty.
@@ -2995,7 +3012,7 @@ add() { PLAN+=("$1"); }
 # A leading `export ...;` STATEMENT is shape-agnostic — it composes ahead of
 # `if`, `{`, `(` and `for` alike, so no plan line needs restructuring — and it
 # does not leak forward, because reaper_run_in_pgroup normally runs each plan
-# line in its own background subshell (`set -m; eval "$cmd" &`).
+# line in its own background subshell (`set -m; { set +e; eval "$cmd"; } &`).
 #
 # That containment is NOT unconditional. Under the break-glass knob
 # REIFY_PROC_REAPER_DISABLE=1, lib_proc_reaper.sh evaluates each plan line in
@@ -4254,7 +4271,7 @@ build_plan() {
     # LOADER SCRUB — the ONE add_tool() exception (task 5730). The node lane is
     # a tool line and needs the scrub, but this plan line is the only one the
     # executor eval's in its MAIN shell (everything else goes through
-    # reaper_run_in_pgroup's `set -m; eval "$cmd" &` subshell). A leading
+    # reaper_run_in_pgroup's `set -m; { set +e; eval "$cmd"; } &` subshell). A leading
     # `export ...;` here would therefore persist into every SUBSEQUENT plan
     # line, including the cargo ones — silently stripping the OCCT search dir
     # from the rest of the gate. It goes INSIDE the `{ ... ; } &` braces, which
@@ -4589,7 +4606,7 @@ build_plan() {
         # always being an `env ...` invocation. ONE add_tool call is kept —
         # test_verify_ld_library_path_scope.sh asserts this file has exactly one
         # `for _vt in` emission site calling add_tool, so a second arm reds.
-        local _leaf_env
+        local _leaf_env _leaf_wall
         # Each member runs with REIFY_VERIFY_EVENT_LOG removed, so its own
         # slot_acquire deadline or nested run_all.sh never writes into this
         # verify's channel (run-all-runner-infra-harness.md §4 C4, #8919). The
@@ -4599,7 +4616,8 @@ build_plan() {
         set -f  # disable pathname expansion: keep glob tokens as literals
         for _glob in $SELECTED_INFRA_GLOBS; do
             _leaf_env="$(selected_infra_leaf_env "$_glob")"
-            add_tool "( for _vt in $_glob; do [ -f \"\$_vt\" ] || continue; ${_leaf_env}timeout --kill-after=60 10m $_git_scrub -u REIFY_VERIFY_EVENT_LOG bash \"\$_vt\" || exit \$?; done )"
+            _leaf_wall="$(selected_infra_leaf_wall "$_glob")"
+            add_tool "( for _vt in $_glob; do [ -f \"\$_vt\" ] || continue; ${_leaf_env}timeout --kill-after=60 ${_leaf_wall} $_git_scrub -u REIFY_VERIFY_EVENT_LOG bash \"\$_vt\" || exit \$?; done )"
         done
         set +f
     fi

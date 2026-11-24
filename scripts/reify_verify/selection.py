@@ -25,6 +25,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
 from pathlib import Path
+from types import MappingProxyType
 
 from reify_verify import bashcall, gitcall
 from reify_verify.bashcall import BashCall, DataFile, DataFileUnreadable
@@ -58,16 +59,20 @@ PDOCCOVER_INPUTS = (
 )
 KLOC_TEST_GLOB = "crates/*/tests/*.rs"
 
+INFRA_LEAF_WALL = "10m"
+LONG_LEAF_WALLS = MappingProxyType({"tests/infra/test_tree_sitter_pipeline.sh": "30m"})
+
 _MAP_SKIPPED = re.compile(r"\s*(#.*)?", re.ASCII)
 _FIELD_SEPARATOR = re.compile(r"[ \t]+")
 
 
 @dataclass(frozen=True)
 class SelectedLeaf:
-    """One selective-infra plan leaf: a test glob and the env it runs with."""
+    """One selective-infra plan leaf: a test glob, and the env and the wall it runs with."""
 
     glob: str
     env: tuple[tuple[str, str], ...] = ()
+    wall: str = INFRA_LEAF_WALL
 
 
 @dataclass(frozen=True)
@@ -75,7 +80,7 @@ class Selection:
     leaves: tuple[SelectedLeaf, ...]
 
     def to_json(self) -> list:
-        return [{"glob": leaf.glob, "env": dict(leaf.env)} for leaf in self.leaves]
+        return [{"glob": leaf.glob, "env": dict(leaf.env), "wall": leaf.wall} for leaf in self.leaves]
 
 
 def select_infra(
@@ -93,7 +98,7 @@ def select_infra(
     for glob in candidates:
         if glob not in globs:
             globs.append(glob)
-    leaves = tuple(SelectedLeaf(glob, _leaf_env(glob, decision.mode)) for glob in globs)
+    leaves = tuple(SelectedLeaf(glob, _leaf_env(glob, decision.mode), _leaf_wall(glob)) for glob in globs)
     return Selection(leaves), (*map_warnings, *kloc_warnings)
 
 
@@ -102,6 +107,11 @@ def _leaf_env(glob: str, mode: Scope) -> tuple[tuple[str, str], ...]:
     if glob == PTODO_LEAF and mode is Scope.STAGED:
         return (("REIFY_PTODO_RATCHET_REQUIRED", "1"),)
     return ()
+
+
+def _leaf_wall(glob: str) -> str:
+    """selected_infra_leaf_wall: a leaf whose glob selects a LONG_LEAF_WALLS member runs under its wall."""
+    return next((wall for member, wall in LONG_LEAF_WALLS.items() if fnmatchcase(member, glob)), INFRA_LEAF_WALL)
 
 
 def _mapped_globs(changed_paths: tuple[str, ...], repo_root: Path) -> tuple[list[str], tuple[str, ...]]:
