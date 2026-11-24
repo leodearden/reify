@@ -1209,7 +1209,7 @@ fn eval_structure_instance_ctor(
         .chain(lets)
         .collect();
     let mut child: Option<ValueMap> = None;
-    for (name, expr) in ctor_member_order(type_name, &members) {
+    for (name, expr) in ctor_member_order(type_name, members) {
         let value = if matches!(expr.kind, CompiledExprKind::Literal(_)) {
             eval_expr(expr, ctx)
         } else {
