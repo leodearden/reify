@@ -25,7 +25,12 @@ asserted first (no /opt/reify-deps, only the stock apt sources):
     carry itself); it has no node, and after `apt install nodejs` (the
     E_GUI_SIDECAR_NODE_MISSING remedy) its reify-sidecar completes the handshake;
     with python3 added, as a desktop ships it, its Assistant turn runs claude
-    inside the landlock sandbox.
+    inside the landlock sandbox;
+  * every shipped surface reports the version the assets were built at, the
+    deb's control Version (task 10485): the installed `reify --version` and
+    `reify-gui --version` (the AppImage's run through the AppImage itself, which
+    is also named for that version) and the rendering GUI's debug-MCP
+    initialize serverInfo.version.
 
 The sandboxed turn: the sidecar gets REIFY_LANDLOCK_EXEC at the helper's
 installed path (tauri's Linux resource dir, where gui/src-tauri/src/main.rs
@@ -65,6 +70,7 @@ GUI_ENV = {
     "REIFY_DEBUG_PORT": str(DEBUG_PORT),
 }
 GUI_LOG = "/tmp/reify-gui.log"
+VERSION_ERR = "/tmp/reify-version.err"
 GUI_EXIT = "/tmp/reify-gui.exit"
 SIDECAR_ERR = "/tmp/reify-sidecar.err"
 # The readiness claude_bridge::ensure_sidecar_ready waits for.
@@ -102,6 +108,7 @@ STORE_STATE_BODY = json.dumps({
     "jsonrpc": "2.0", "id": 1, "method": "tools/call",
     "params": {"name": "store_state", "arguments": {}},
 })
+INITIALIZE_BODY = json.dumps({"jsonrpc": "2.0", "id": 0, "method": "initialize"})
 BUNDLED_NOT_DEPENDED = re.compile(r"^(libocct|gmsh|libgmsh|libopenvdb|libtbb)")
 APPIMAGE_CARRIES_WEBKIT = re.compile(r"^libwebkit2gtk")
 # The desktop-session stand-in for the AppImage: the libraries the AppImage
@@ -195,6 +202,25 @@ class Container:
     def assert_none_installed(self, pattern):
         offenders = [p for p in self.installed_packages() if pattern.match(p)]
         self.test.assertEqual(offenders, [], f"unexpected packages in {self.name}")
+
+    def assert_reports(self, command, expected):
+        """`command`'s stdout, its stderr kept apart, is the line `expected`."""
+        reported = self.check(f"{command} 2>{VERSION_ERR}").strip()
+        stderr = self.run(f"cat {VERSION_ERR}").stdout
+        self.test.assertEqual(
+            reported, expected, f"in {self.name}: {command}\nstderr:\n{stderr[-2000:]}")
+        _log(f"{self.name}: {command} reports {reported!r}")
+
+    def debug_server_version(self):
+        """serverInfo.version from the running GUI's debug-MCP initialize."""
+        reply = self.check(
+            f"curl -fsS --max-time 5 -X POST http://127.0.0.1:{DEBUG_PORT}/mcp "
+            f"-H 'Content-Type: application/json' -d {shlex.quote(INITIALIZE_BODY)}")
+        try:
+            return json.loads(reply)["result"]["serverInfo"]["version"]
+        except (ValueError, KeyError, TypeError):
+            self.test.fail(f"in {self.name}: initialize reply has no serverInfo.version: "
+                           f"{reply[-2000:]!r}")
 
     def assert_gui_renders(self, gui_command):
         self.start_detached(
@@ -324,6 +350,21 @@ class BundleCleanInstall(unittest.TestCase):
         else:
             cls.build = cls._run_build_bundle()
             cls.deb, cls.appimage = cls._assets_from(cls.build.stdout)
+        cls.version = cls._deb_control_version(cls.deb)
+        _log(f"the assets' version, from {cls.deb.name}'s control Version: {cls.version}")
+
+    @staticmethod
+    def _deb_control_version(deb):
+        proc = subprocess.run(
+            ["dpkg-deb", "-f", str(deb), "Version"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+        )
+        version = proc.stdout.strip()
+        if proc.returncode != 0 or not version:
+            raise AssertionError(
+                f"no control Version in {deb} (dpkg-deb exit {proc.returncode}): "
+                f"{proc.stderr[-2000:]}")
+        return version
 
     @staticmethod
     def _run_build_bundle():
@@ -368,9 +409,12 @@ class BundleCleanInstall(unittest.TestCase):
         box.assert_stock_premises()
         box.apt_install(deb, "xvfb", "xauth", "curl")
         self.assertEqual(box.check("command -v reify").strip(), "/usr/bin/reify")
+        box.assert_reports("reify --version", f"reify {self.version}")
+        box.assert_reports("reify-gui --version", f"reify-gui {self.version}")
         box.assert_none_installed(BUNDLED_NOT_DEPENDED)
         box.check(f"reify check {EXAMPLE}")
         box.assert_gui_renders(f"xvfb-run -a reify-gui {EXAMPLE}")
+        self.assertEqual(box.debug_server_version(), self.version)
         self.assertIn("nodejs", box.installed_packages(),
                       "the deb's Depends must bring nodejs onto a stock image")
         box.check("command -v node")
@@ -380,6 +424,8 @@ class BundleCleanInstall(unittest.TestCase):
         box.assert_assistant_sandboxed("/usr/bin/reify-sidecar", "/" + LANDLOCK_EXEC)
 
     def test_appimage(self):
+        self.assertIn(f"_{self.version}_", self.appimage.name,
+                      "the AppImage must be named for the deb's version")
         appimage = f"/assets/{self.appimage.name}"
         box = self.container((self.appimage, appimage))
         box.assert_stock_premises()
@@ -388,7 +434,12 @@ class BundleCleanInstall(unittest.TestCase):
         box.assert_none_installed(APPIMAGE_CARRIES_WEBKIT)
         box.check(f"mkdir -p /tmp/extract && cd /tmp/extract && {appimage} --appimage-extract >/dev/null"
                   f" && squashfs-root/usr/bin/reify check {EXAMPLE}")
+        box.assert_reports("/tmp/extract/squashfs-root/usr/bin/reify --version",
+                           f"reify {self.version}")
+        box.assert_reports(f"APPIMAGE_EXTRACT_AND_RUN=1 {appimage} --version",
+                           f"reify-gui {self.version}")
         box.assert_gui_renders(f"APPIMAGE_EXTRACT_AND_RUN=1 xvfb-run -a {appimage} {EXAMPLE}")
+        self.assertEqual(box.debug_server_version(), self.version)
         # An AppImage can declare no Depends, so the user installs node as the refusal says.
         box.check("! command -v node")
         box.apt_install("nodejs")
