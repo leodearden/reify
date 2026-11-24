@@ -3,6 +3,7 @@
 //! Tests the public API `reify_stdlib::eval_builtin()` for:
 //! - orient_axis_angle / orient_look_at / orient_basis: Direction-typed inputs
 //! - orient_to_axis_angle: the Map's "axis" is a Direction
+//! - orientation_diagnose: a non-Direction at a Direction position is an Error
 //! - orient_euler / orient_to_euler: EulerConvention enum-value path
 //!
 //! These lock the G2 boundary signals over the completed impl; they complement
@@ -11,9 +12,9 @@
 
 use std::f64::consts::{FRAC_PI_2, FRAC_PI_4};
 
-use reify_core::DimensionVector;
+use reify_core::{DiagnosticCode, DimensionVector, Severity};
 use reify_ir::Value;
-use reify_stdlib::eval_builtin;
+use reify_stdlib::{eval_builtin, orientation_diagnose};
 use reify_test_support::direction_val;
 
 const TOLERANCE: f64 = 1e-10;
@@ -313,6 +314,156 @@ fn integration_orient_to_axis_angle_identity_axis_is_canonical_x_direction() {
         "the identity's canonical axis is +x"
     );
     assert_eq!(angle, &Value::angle(0.0), "the identity's angle is 0");
+}
+
+// ── orientation_diagnose: a non-Direction at a Direction position ──────────────
+//
+// The static Direction slot catches every vector it can see; this runtime arm
+// covers what reaches eval anyway (an argument typed Type::Error or a type
+// parameter, say).
+
+/// The user-visible fix hint, hard-coded on purpose so a drift in the shared
+/// hint text reds here.
+const DIRECTION_HINT: &str = "write dir(x, y, z)";
+
+/// `orientation_diagnose(name, args)` is one Error-severity `ArgTypeMismatch`
+/// starting `prefix`, naming the received `kind` and ending with the dir hint.
+fn assert_direction_arg_error(name: &str, args: &[Value], prefix: &str, kind: &str) {
+    let diagnostic = orientation_diagnose(name, args)
+        .unwrap_or_else(|| panic!("{name}({args:?}) should be diagnosed"));
+    assert_eq!(diagnostic.severity, Severity::Error, "{diagnostic:?}");
+    assert_eq!(
+        diagnostic.code,
+        Some(DiagnosticCode::ArgTypeMismatch),
+        "{diagnostic:?}"
+    );
+    let message = &diagnostic.message;
+    assert!(
+        message.starts_with(prefix),
+        "expected a message starting {prefix:?}: {message:?}"
+    );
+    assert!(
+        message.contains(kind),
+        "the message must name {kind}: {message:?}"
+    );
+    assert!(
+        message.ends_with(DIRECTION_HINT),
+        "the message must end with the hint: {message:?}"
+    );
+}
+
+fn assert_not_diagnosed(name: &str, args: &[Value], why: &str) {
+    let diagnostic = orientation_diagnose(name, args);
+    assert!(
+        diagnostic.is_none(),
+        "{why}: {name}({args:?}) must stay silent, got {diagnostic:?}"
+    );
+}
+
+#[test]
+fn diagnose_a_vector_axis_names_the_axis_param() {
+    assert_direction_arg_error(
+        "orient_axis_angle",
+        &[v3(1.0, 0.0, 0.0), Value::angle(FRAC_PI_2)],
+        "orient_axis_angle: axis: ",
+        "Vector",
+    );
+}
+
+#[test]
+fn diagnose_blames_the_param_holding_the_non_direction() {
+    assert_direction_arg_error(
+        "orient_look_at",
+        &[direction_val(1.0, 0.0, 0.0), v3(0.0, 0.0, 1.0)],
+        "orient_look_at: up: ",
+        "Vector",
+    );
+    assert_direction_arg_error(
+        "orient_basis",
+        &[
+            direction_val(1.0, 0.0, 0.0),
+            direction_val(0.0, 1.0, 0.0),
+            v3(0.0, 0.0, 1.0),
+        ],
+        "orient_basis: z_axis: ",
+        "Vector",
+    );
+    assert_direction_arg_error(
+        "orient_axis_angle",
+        &[Value::String("z".to_string()), Value::angle(FRAC_PI_2)],
+        "orient_axis_angle: axis: ",
+        "String",
+    );
+}
+
+#[test]
+fn diagnose_stays_silent_for_an_undef_argument() {
+    assert_not_diagnosed(
+        "orient_axis_angle",
+        &[Value::Undef, Value::angle(FRAC_PI_2)],
+        "an Undef axis was reported where it arose (dir(0, 0, 0)'s E_DegenerateDirection)",
+    );
+    assert_not_diagnosed(
+        "orient_basis",
+        &[
+            direction_val(1.0, 0.0, 0.0),
+            Value::Undef,
+            direction_val(0.0, 0.0, 1.0),
+        ],
+        "an Undef basis axis was reported where it arose",
+    );
+}
+
+#[test]
+fn diagnose_stays_silent_at_the_wrong_arity() {
+    assert_not_diagnosed("orient_axis_angle", &[v3(1.0, 0.0, 0.0)], "arity 1");
+    assert_not_diagnosed(
+        "orient_look_at",
+        &[v3(1.0, 0.0, 0.0), v3(0.0, 0.0, 1.0), v3(0.0, 1.0, 0.0)],
+        "arity 3",
+    );
+    assert_not_diagnosed("orient_basis", &[v3(1.0, 0.0, 0.0)], "arity 1");
+}
+
+#[test]
+fn diagnose_never_blames_a_geometric_failure_on_valid_directions() {
+    assert_not_diagnosed(
+        "orient_look_at",
+        &[direction_val(0.0, 0.0, 1.0), direction_val(0.0, 0.0, 1.0)],
+        "forward ∥ up",
+    );
+    assert_not_diagnosed(
+        "orient_basis",
+        &[
+            direction_val(1.0, 0.0, 0.0),
+            direction_val(1.0, 1.0, 0.0),
+            direction_val(0.0, 0.0, 1.0),
+        ],
+        "a non-orthogonal basis",
+    );
+    assert_not_diagnosed(
+        "orient_basis",
+        &[
+            direction_val(1.0, 0.0, 0.0),
+            direction_val(0.0, 1.0, 0.0),
+            direction_val(0.0, 0.0, -1.0),
+        ],
+        "a left-handed basis",
+    );
+}
+
+#[test]
+fn diagnose_still_reports_orient_exp_s_dimensionless_rotation_vector() {
+    let diagnostic = orientation_diagnose("orient_exp", &[v3(0.0, 0.0, FRAC_PI_2)])
+        .expect("a dimensionless rotation vector should be diagnosed");
+    assert_eq!(
+        diagnostic.code,
+        Some(DiagnosticCode::DimensionedArgRejected)
+    );
+    assert!(
+        diagnostic.message.contains("E_RotationVectorDimension"),
+        "{diagnostic:?}"
+    );
 }
 
 // ── orient_euler EulerConvention enum G2 signals ──────────────────────────────
