@@ -7827,8 +7827,8 @@ fn compile_diagnostics_full_pipeline_engine_to_event() {
 // ── Multi-file import resolution (task 3228) ─────────────────────────────────
 
 /// Pin the live MCP repro: loading a .ri file that imports another user module
-/// must resolve the import, merge the imported template, and produce non-empty
-/// GUI values.
+/// must resolve the import, evaluate the imported template, and produce
+/// non-empty GUI values.
 ///
 /// Pre-fix (compile_with_stdlib path): `load_file` ignores the import entirely.
 /// `structure Top` has no direct params, so compiled.templates = [Top] with
@@ -7836,15 +7836,16 @@ fn compile_diagnostics_full_pipeline_engine_to_event() {
 ///
 /// Post-fix (task 3228; since task 5519 the program compile,
 /// `compile_entry_program`): the entry-directory resolver resolves `helper`,
-/// Helper's template is merged into compiled.templates, phase-1 eval produces
-/// `Helper.x = 10mm`, and build_values surfaces it as a ValueData entry.
+/// the evaluation module `Engine::load` returns holds Helper's template after
+/// Top, phase-1 eval produces `Helper.x = 10mm`, and build_values surfaces it as
+/// a ValueData entry.
 ///
 /// The checked value ("10", unit "mm") is the DEFAULT from Helper.x's
 /// declaration — `build_values` iterates template.value_cells (statics), not
 /// per-instance scoped overrides.  Surfacing per-instance overrides is a
 /// separate concern; the present assertion (non-empty `state.values` with
 /// `Helper.x = 10mm`) is the correct proxy for confirming the import resolved
-/// and the template was merged.
+/// and the template was evaluated.
 #[test]
 fn load_file_with_user_import_resolves_imported_structure() {
     let checker = SimpleConstraintChecker;
@@ -7874,8 +7875,8 @@ fn load_file_with_user_import_resolves_imported_structure() {
         .load_file(&dir.path().join("main.ri"))
         .expect("load_file should succeed with resolved import");
 
-    // Post-fix: Helper's template is merged into compiled.templates, so phase-1
-    // eval produces Helper.x = 10mm and build_values surfaces it.
+    // Post-fix: Helper's template is in the evaluation module, so phase-1 eval
+    // produces Helper.x = 10mm and build_values surfaces it.
     // Pre-fix: compiled.templates = [Top] only, Top has no value_cells → empty.
     assert!(
         !state.values.is_empty(),
@@ -7956,7 +7957,9 @@ fn load_file_entity_tree_lists_the_evaluation_modules_templates() {
     let main_path = dir.path().join("main.ri");
     std::fs::write(&main_path, main_src).expect("write main.ri");
 
-    session.load_file(&main_path).expect("load_file should succeed");
+    session
+        .load_file(&main_path)
+        .expect("load_file should succeed");
 
     let roots: Vec<String> = session
         .get_entity_tree()
@@ -7973,7 +7976,11 @@ fn load_file_entity_tree_lists_the_evaluation_modules_templates() {
         &SimpleConstraintChecker,
     );
     let evaluated = reify_eval::evaluation_module(&program);
-    let evaluated: Vec<&str> = evaluated.templates.iter().map(|t| t.name.as_str()).collect();
+    let evaluated: Vec<&str> = evaluated
+        .templates
+        .iter()
+        .map(|t| t.name.as_str())
+        .collect();
     assert_eq!(roots, evaluated);
 }
 
@@ -8521,7 +8528,8 @@ fn assert_collision_warning_mentions(state: &crate::types::GuiState, name: &str,
     let w = reports[0];
     assert!(
         w.severity == "Warning"
-            && w.message.starts_with(&format!("structure {quoted_name} declared in both "))
+            && w.message
+                .starts_with(&format!("structure {quoted_name} declared in both "))
             && w.message.contains("first-wins"),
         "the {quoted_name} collision must be the coded first-wins Warning; got: {w:?}"
     );

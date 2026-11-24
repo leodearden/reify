@@ -21,9 +21,9 @@ pub(super) struct CompiledDocument {
     module: Arc<CompiledModule>,
     program: Option<Arc<CompiledProgram>>,
     eval_cache_key: ContentHash,
-    /// How many of `module.templates`, from the front, the document's own
-    /// compile produced (`CompiledProgram::entry_declared_templates`); the rest
-    /// are merged imports, whose spans index another file.
+    /// How many of `module.templates`, from the front, the document itself
+    /// declares (its program entry's templates); the rest are imported, and
+    /// their spans index another file.
     declared_templates: usize,
 }
 
@@ -96,7 +96,7 @@ pub(super) fn compile_document(
             ));
             CompiledDocument {
                 eval_cache_key: program_eval_cache_key(&parsed.path.0.join("."), &compiled),
-                declared_templates: compiled.entry_declared_templates().len(),
+                declared_templates: compiled.entry().templates.len(),
                 module: Arc::new(reify_eval::evaluation_module(&compiled)),
                 program: Some(compiled),
             }

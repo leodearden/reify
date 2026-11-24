@@ -426,10 +426,9 @@ fn assert_purpose_has_objective(compiled: &reify_compiler::CompiledModule, name:
 // Review round 1, finding 1. `phase_inert_objective_check` judges a template
 // against `ctx.templates` — the templates of the module being compiled, and
 // nothing else. `ctx.templates` is initialized EMPTY (`ctx.rs`'s ctor, whose
-// doc says "no prelude content is seeded here"), imported templates live in
-// borrow-only registries during compilation, and `merge_imported_pub_templates`
-// appends them onto the finished `CompiledModule` only AFTER compilation
-// returns. So `auto_override_possible` — whose entire purpose is to notice a
+// doc says "no prelude content is seeded here"), and imported templates live in
+// borrow-only registries during compilation, never in the module's own
+// template list. So `auto_override_possible` — whose entire purpose is to notice a
 // `sub w : Widget { k = auto }` override that makes `k` reachable-as-auto —
 // cannot see an override that lives in another module.
 //

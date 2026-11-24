@@ -743,7 +743,7 @@ fn compile_program_cfg_gated_imports_are_inert() {
     }
     assert!(
         !template_names(program.entry()).contains(&"BrokenThing"),
-        "no template from a gated-out import may be merged"
+        "no template from a gated-out import may reach the entry"
     );
     assert_eq!(import_keys(&program), vec!["mid"]);
 }

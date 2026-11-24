@@ -291,8 +291,7 @@ fn auto_override_possible(
 ///
 /// **`all_templates` is the module currently being compiled and nothing else.**
 /// It is `ctx.templates`, initialised empty; imported templates live in
-/// borrow-only prelude registries during compilation and are appended to the
-/// finished `CompiledModule` afterwards by `merge_imported_pub_templates`.
+/// borrow-only prelude registries during compilation and never enter it.
 /// Obligations 0 and 0′ are what that boundary costs.
 ///
 /// Obligation 6 ([`auto_override_possible`]) is the only thing that can rescue
@@ -321,10 +320,10 @@ fn auto_override_possible(
 /// some template outside `all_templates` declares a `sub` of `template`. For a
 /// template that survives obligations 0 and 0′ there are exactly three places
 /// such a `sub` could live: this module (that IS `all_templates`); a downstream
-/// module (which cannot name it — `merge_imported_pub_templates` exports only
-/// `Visibility::Public` templates); or an upstream prelude module (which would
-/// have to import this one, and `ModuleDag`'s `in_progress` DFS rejects the
-/// resulting cycle). The set is closed.
+/// module (which cannot name it — an import exposes only `Visibility::Public`
+/// templates, resolution-unification D-5); or an upstream prelude module
+/// (which would have to import this one, and `ModuleDag`'s `in_progress` DFS
+/// rejects the resulting cycle). The set is closed.
 pub(crate) fn inert_objective_finding(
     template: &TopologyTemplate,
     all_templates: &[TopologyTemplate],

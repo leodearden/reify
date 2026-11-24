@@ -245,7 +245,7 @@ where
 fn templates_bind_entry_then_imports_in_order_then_std() {
     let fx = Fixture::new();
     let p = &fx.program;
-    let entry_own = p.entry_declared_templates();
+    let entry_own = &p.entry().templates;
     let t = |name| by_name::<TopologyTemplate>(p, name);
     assert_binds(
         t("Shared"),
@@ -585,7 +585,7 @@ fn holds_name(surface: &[&TopologyTemplate], name: &str) -> bool {
 
 /// A qualified lookup sees one module's surface alone (I7), keyed by dotted
 /// module path: a direct import's `pub` templates, the entry's own
-/// declarations (never an I5-merged copy), or a prelude module's exports.
+/// declarations, or a prelude module's exports.
 #[test]
 fn module_surface_is_one_modules_surface_keyed_by_dotted_path() {
     let fx = Fixture::new();
@@ -608,12 +608,12 @@ fn module_surface_is_one_modules_surface_keyed_by_dotted_path() {
 
     let main = surface("main");
     assert!(
-        holds(&main, named(p.entry_declared_templates(), "Shared")),
+        holds(&main, named(&p.entry().templates, "Shared")),
         "the entry exposes its own Shared"
     );
     assert!(
         !holds_name(&main, "VisT"),
-        "the entry's surface excludes the I5-merged VisT"
+        "the entry's surface excludes a's VisT"
     );
 
     let std_key = prelude()

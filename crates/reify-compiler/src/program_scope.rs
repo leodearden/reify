@@ -14,37 +14,25 @@ use crate::types::{
     CompiledUnit, TopologyTemplate,
 };
 
-/// What resolution starts from: an entry module and its direct imports. A
-/// lone module stands for the import-free program whose entry it is
-/// (resolution-unification I1) and so declares every template it holds.
+/// What resolution starts from: an entry module, whose own declarations are
+/// everything it holds, and its direct imports. A lone module stands for the
+/// import-free program whose entry it is (resolution-unification I1).
 #[derive(Debug, Clone, Copy)]
 pub struct ProgramRoot<'a> {
     entry: &'a CompiledModule,
-    /// The templates `entry` itself declares, never a copy merged into it.
-    declared_templates: &'a [TopologyTemplate],
     imports: &'a [CompiledImportUnit],
 }
 
 impl<'a> ProgramRoot<'a> {
-    /// The root whose entry is `entry`, declaring every template it holds, over
-    /// the direct `imports`, in declaration order.
+    /// The root whose entry is `entry` over the direct `imports`, in
+    /// declaration order.
     pub fn new(entry: &'a CompiledModule, imports: &'a [CompiledImportUnit]) -> Self {
-        Self {
-            entry,
-            declared_templates: &entry.templates,
-            imports,
-        }
+        Self { entry, imports }
     }
 
     /// The entry module.
     pub fn entry(self) -> &'a CompiledModule {
         self.entry
-    }
-
-    /// The templates the entry itself declares, never a copy merged into it
-    /// from one of the root's imports.
-    pub fn entry_declared_templates(self) -> &'a [TopologyTemplate] {
-        self.declared_templates
     }
 
     /// The entry's direct imports, in declaration order.
@@ -55,11 +43,7 @@ impl<'a> ProgramRoot<'a> {
 
 impl<'a> From<&'a CompiledProgram> for ProgramRoot<'a> {
     fn from(program: &'a CompiledProgram) -> Self {
-        Self {
-            entry: program.entry(),
-            declared_templates: program.entry_declared_templates(),
-            imports: &program.imports,
-        }
+        Self::new(program.entry(), &program.imports)
     }
 }
 
@@ -71,14 +55,13 @@ impl<'a> From<&'a CompiledModule> for ProgramRoot<'a> {
 
 /// A definition kind as a program's entry declares it.
 pub trait ProgramDefinition: Definition {
-    /// The definitions the root's entry itself declares, never a copy merged
-    /// into it from another module.
+    /// The definitions the root's entry itself declares.
     fn declared_by_entry(root: ProgramRoot<'_>) -> impl Iterator<Item = &Self>;
 }
 
 impl ProgramDefinition for TopologyTemplate {
     fn declared_by_entry(root: ProgramRoot<'_>) -> impl Iterator<Item = &Self> {
-        root.entry_declared_templates().iter()
+        root.entry().templates.iter()
     }
 }
 
@@ -322,10 +305,14 @@ mod tests {
         let root = ProgramRoot::from(&module);
 
         assert!(std::ptr::eq(root.entry(), &module));
-        assert!(std::ptr::eq(
-            root.entry_declared_templates(),
-            module.templates.as_slice()
-        ));
+        assert!(
+            TopologyTemplate::declared_by_entry(root)
+                .map(|t| t as *const TopologyTemplate)
+                .eq(module
+                    .templates
+                    .iter()
+                    .map(|t| t as *const TopologyTemplate))
+        );
         assert!(root.imports().is_empty());
 
         let resolve =

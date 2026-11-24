@@ -4,9 +4,9 @@
 //! Per kind, a bare name binds the entry's own declaration, then each direct
 //! import's `pub` surface in declaration order (D-5), then the ambient prelude
 //! (I6). A qualified lookup sees one module's surface alone, keyed by
-//! `(module_key, name)` (I7). The entry's own declarations exclude every copy
-//! merged into it: its templates are `entry_declared_templates()` and its
-//! purposes are those it declares. The rule itself lives in
+//! `(module_key, name)` (I7). The entry's own declarations are its templates,
+//! which hold no import's, and the purposes it declares, never the prelude
+//! copies merged into its purpose list. The rule itself lives in
 //! `reify_compiler::name_env`, which the compiler binds by too, and the
 //! program's scopes come from `reify_compiler::program_scope`; this is a view
 //! over them.
@@ -78,7 +78,7 @@ impl<'p> DefEnv<'p> {
                 .filter(|candidate| candidate.origin.tier() == Tier::Import)
                 .map(|candidate| candidate.definition)
                 .collect();
-        self.root.entry_declared_templates().iter().chain(imported)
+        self.root.entry().templates.iter().chain(imported)
     }
 
     /// The bound traits, in precedence order: the trait lattice every
@@ -179,9 +179,7 @@ impl<'p> DefEnv<'p> {
         self.resolve_in(module_key, name)
     }
 
-    /// The entry module. A program's entry's `templates` include the copies
-    /// the I5 merge took from its imports; the entry's own are
-    /// `CompiledProgram::entry_declared_templates`.
+    /// The entry module, holding only its own declarations.
     pub fn declared(&self) -> &'p CompiledModule {
         self.root.entry()
     }

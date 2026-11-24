@@ -17,9 +17,9 @@
 use std::fs;
 use std::path::Path;
 
+use reify_compiler::TopologyTemplate;
 use reify_compiler::cfg::CfgSet;
 use reify_compiler::module_dag::ModuleResolver;
-use reify_compiler::TopologyTemplate;
 use reify_compiler::program::{CompiledProgram, compile_program_with_parsed_entry};
 use reify_compiler::program_scope::bind_program;
 use reify_core::{DiagnosticCode, Severity};

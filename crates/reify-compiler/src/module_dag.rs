@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use indexmap::IndexSet;
 
-use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, ModulePathParseError, SourceSpan};
+use reify_core::{Diagnostic, DiagnosticCode, ModulePathParseError};
 
 use crate::CompiledModule;
 use crate::cfg::{CfgSet, cfg_satisfied};
@@ -891,71 +891,4 @@ pub(crate) fn entry_module_name(entry_path: &Path) -> &str {
 /// seeded into every unit's prelude via `stdlib_loader::load_stdlib_context()`.
 fn is_std_import_path(path: &str) -> bool {
     path == "std" || path.starts_with("std.")
-}
-
-/// Merge the `pub` templates of already-compiled direct imports into `entry`'s
-/// own template list, **first-wins** with a `Warning` on every name collision.
-///
-/// This is the single home of the cross-import template-merge policy — the
-/// visibility filter, the first-wins de-dup, and the collision-warning wording.
-/// Its one caller is the program compile
-/// ([`crate::program::compile_program_with_parsed_entry`]), which the CLI's
-/// `reify check` and the GUI's file-backed reload enter through; PRD
-/// resolution-unification κ #5524 deletes it with the interim merge.
-///
-/// - `entry_origin` is the entry module's own path/name, used only to label
-///   entry-vs-import collisions in the warning message.
-/// - `imports` is the ordered list of `(import path, compiled module)` pairs for
-///   the **followed** (cfg-satisfied, non-`std`) direct imports. Callers own the
-///   gating; this function merges whatever it is given, in order.
-///
-/// Only `Visibility::Public` imported templates are merged — private imports
-/// must not leak, mirroring compile-time import semantics. A template name that
-/// already exists (declared by the entry or merged from an earlier import) is
-/// skipped and a `Severity::Warning` is pushed onto `entry.diagnostics` naming
-/// both declaring sides and the `first-wins` policy. The warning is phrased
-/// kind-neutrally ("imported pub template") because `templates` can hold
-/// non-structure template kinds.
-pub(crate) fn merge_imported_pub_templates(
-    entry: &mut CompiledModule,
-    entry_origin: &str,
-    imports: &[(&str, &CompiledModule)],
-) {
-    // `templates_origin` (template name → declaring module path) is pre-seeded
-    // with the entry's own templates so BOTH entry-vs-import and
-    // import-vs-import collisions emit a Warning naming both sides.
-    let mut templates_origin: HashMap<String, String> = HashMap::new();
-    for tmpl in &entry.templates {
-        templates_origin.insert(tmpl.name.clone(), entry_origin.to_string());
-    }
-    for &(import_path, imported_module) in imports {
-        for template in &imported_module.templates {
-            if template.visibility != crate::Visibility::Public {
-                continue;
-            }
-            if let Some(prior_origin) = templates_origin.get(&template.name) {
-                entry.diagnostics.push(
-                    Diagnostic::warning(format!(
-                        "imported pub template '{}' declared in both '{}' and '{}'; first-wins",
-                        template.name, prior_origin, import_path
-                    ))
-                    .with_label(DiagnosticLabel::new(
-                        SourceSpan::prelude(),
-                        "cross-import collision",
-                    )),
-                );
-                continue;
-            }
-            // Whole-template clone — per-member visibility is PRESERVED, NOT
-            // stripped (task #3978 δ, PRD §6). A `priv` member (priv param/sub
-            // → Visibility::Private, priv port → is_priv) of an imported `pub`
-            // def must remain private so cross-module dot-access to it is gated
-            // by the same `expr.rs` member-access enforcement used in-module.
-            // Stripping member visibility here would silently un-hide priv
-            // members across the import boundary; `priv_import_boundary_tests.rs`
-            // is the regression guard.
-            entry.templates.push(template.clone());
-            templates_origin.insert(template.name.clone(), import_path.to_string());
-        }
-    }
 }
