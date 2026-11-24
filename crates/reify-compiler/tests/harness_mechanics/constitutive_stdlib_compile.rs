@@ -1,5 +1,5 @@
 //! Tests for `crates/reify-compiler/stdlib/constitutive.ri` —
-//! `std.constitutive` module: `Frame`, `ConstitutiveLaw` trait,
+//! `std.constitutive` module: `ConstitutiveLaw` trait,
 //! `OrthotropicMaterial`, `TransverseIsotropicMaterial`,
 //! `AnisotropicMaterial`.
 //!
