@@ -870,11 +870,11 @@ pub(crate) struct PreludeRegistries<'r, 't> {
     /// Prelude templates for SUB-TARGET resolution, each name bound by
     /// [`crate::name_env`] (NS-P1) — UNFILTERED by `EntityKind`, because a sub
     /// target may be an occurrence (`sub o = STLOutput(…)`). Read only via
-    /// [`find_template_with_prelude`].
+    /// [`resolve_sub_target_template`].
     pub(crate) sub_target: &'r HashMap<String, &'t TopologyTemplate>,
     /// Entity names THIS module declares itself (local only — never seeded
     /// from the prelude). Suppresses the prelude fallback for a name the
-    /// module owns; see property 1 of [`find_template_with_prelude`].
+    /// module owns; see property 1 of [`resolve_sub_target_template`].
     pub(crate) local_entity_names: &'r HashSet<String>,
 }
 
@@ -929,7 +929,7 @@ pub(crate) struct PreludeRegistries<'r, 't> {
 ///    targets may be occurrences — `sub o = STLOutput(…)` is a shipped shape —
 ///    and a Structure-filtered registry leaves exactly that case broken
 ///    (MEASURED, task #5867).
-pub(crate) fn find_template_with_prelude<'a>(
+pub(crate) fn resolve_sub_target_template<'a>(
     templates: &'a [TopologyTemplate],
     prelude: &PreludeRegistries<'_, 'a>,
     name: &str,
