@@ -2,12 +2,16 @@
 //!
 //! Tests cover: quaternion normalization, axis-angle construction, euler-to-quaternion,
 //! transform composition, identity no-op, frame construction, point transformation,
-//! vector rotation vs translation, and numerical accuracy.
+//! vector rotation vs translation, numerical accuracy, and the runtime
+//! `ArgTypeMismatch` a non-Direction axis that reaches eval emits into the sink.
+
+use std::cell::RefCell;
 
 use reify_expr::{EvalContext, eval_expr};
 use reify_stdlib::eval_builtin;
-use reify_core::Type;
-use reify_ir::{BinOp, CompiledExpr, Value, ValueMap};
+use reify_core::{ContentHash, Diagnostic, DiagnosticCode, Severity, Type};
+use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, ResolvedFunction, Value, ValueMap};
+use reify_test_support::direction_val;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -198,7 +202,7 @@ fn quat_negative_equivalent_same_rotation() {
 /// A very small angle (1e-8) should produce a near-identity quaternion (w≈1, xyz≈0).
 #[test]
 fn axis_angle_small_angle_near_identity() {
-    let axis = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+    let axis = direction_val(0.0, 0.0, 1.0);
     let angle = Value::Real(1e-8);
     let q = eval_builtin("orient_axis_angle", &[axis, angle]);
     match q {
@@ -215,7 +219,7 @@ fn axis_angle_small_angle_near_identity() {
 /// Negative angle reverses rotation: applying angle then -angle to a point returns original.
 #[test]
 fn axis_angle_negative_angle_reverses_rotation() {
-    let axis_z = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+    let axis_z = direction_val(0.0, 0.0, 1.0);
     let q_pos = eval_builtin(
         "orient_axis_angle",
         &[axis_z.clone(), Value::Real(std::f64::consts::FRAC_PI_4)],
@@ -289,9 +293,9 @@ fn euler_xyz_matches_sequential_axis_angle() {
     );
 
     // Build sequential axis-angle rotations and compose via Transform * Transform
-    let axis_x = Value::Tensor(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
-    let axis_y = Value::Tensor(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
-    let axis_z = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+    let axis_x = direction_val(1.0, 0.0, 0.0);
+    let axis_y = direction_val(0.0, 1.0, 0.0);
+    let axis_z = direction_val(0.0, 0.0, 1.0);
     let q_x = eval_builtin("orient_axis_angle", &[axis_x, Value::Real(a)]);
     let q_y = eval_builtin("orient_axis_angle", &[axis_y, Value::Real(b)]);
     let q_z = eval_builtin("orient_axis_angle", &[axis_z, Value::Real(c)]);
@@ -713,7 +717,7 @@ fn identity_noop_arbitrary_vector() {
 /// Frame stores origin and basis correctly; they can be recovered.
 #[test]
 fn frame_round_trip_construction() {
-    let axis_z = Value::Tensor(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+    let axis_z = direction_val(0.0, 0.0, 1.0);
     let orient = eval_builtin(
         "orient_axis_angle",
         &[axis_z, Value::Real(std::f64::consts::FRAC_PI_4)],
@@ -1083,5 +1087,70 @@ fn accumulated_composition_error_bounded() {
         -2.1,
         8.5,
         "360° rotation should return original point within 1e-10",
+    );
+}
+
+// ── Non-Direction axis reaching eval ─────────────────────────────────────────
+
+/// Evaluates `orient_axis_angle(axis, 90deg)` as a compiled builtin call with a
+/// diagnostics sink attached. The axis literal is `Type::Error`-typed: the
+/// static Direction slot defers on a poisoned argument, so this is how a
+/// non-Direction axis gets past the compiler and reaches eval.
+fn eval_axis_angle_with_diagnostics(axis: Value) -> (Value, Vec<Diagnostic>) {
+    let call = CompiledExpr {
+        kind: CompiledExprKind::FunctionCall {
+            function: ResolvedFunction {
+                name: "orient_axis_angle".to_string(),
+                qualified_name: "std::orient_axis_angle".to_string(),
+            },
+            args: vec![
+                CompiledExpr::literal(axis, Type::Error),
+                CompiledExpr::literal(Value::angle(std::f64::consts::FRAC_PI_2), Type::angle()),
+            ],
+        },
+        result_type: Type::Orientation(3),
+        content_hash: ContentHash::of(b"orient_axis_angle"),
+    };
+    let values = ValueMap::new();
+    let diagnostics = RefCell::new(Vec::new());
+    let ctx = EvalContext::new(&values, &[]).with_runtime_diagnostics(&diagnostics);
+    let value = eval_expr(&call, &ctx);
+    (value, diagnostics.into_inner())
+}
+
+#[test]
+fn vector_axis_reaching_eval_emits_arg_type_mismatch_into_the_sink() {
+    let axis = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
+    let (value, diagnostics) = eval_axis_angle_with_diagnostics(axis);
+
+    assert_eq!(value, Value::Undef);
+    let mismatches: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::ArgTypeMismatch))
+        .collect();
+    assert_eq!(
+        mismatches.len(),
+        1,
+        "expected one ArgTypeMismatch, got {diagnostics:?}"
+    );
+    assert_eq!(mismatches[0].severity, Severity::Error);
+    let message = &mismatches[0].message;
+    assert!(
+        message.starts_with("orient_axis_angle: axis: "),
+        "{message}"
+    );
+}
+
+#[test]
+fn direction_axis_reaching_eval_emits_nothing() {
+    let (value, diagnostics) = eval_axis_angle_with_diagnostics(direction_val(0.0, 0.0, 1.0));
+
+    assert!(
+        matches!(value, Value::Orientation { .. }),
+        "expected an Orientation, got {value:?}"
+    );
+    assert!(
+        diagnostics.is_empty(),
+        "a Direction axis must emit nothing; got {diagnostics:?}"
     );
 }

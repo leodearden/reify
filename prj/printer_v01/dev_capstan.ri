@@ -317,8 +317,8 @@ pub structure Fairlead {
     /// here and `CapstanDrive` asserts the coverage as a constraint instead.
     param stroke   : Length = 63mm
 
-    let rot_to_x = orient_axis_angle(vec3(0mm, 1mm, 0mm), 90deg)  // idler +Z → +X (spin axis)
-    let rot_to_y = orient_axis_angle(vec3(1mm, 0mm, 0mm), 90deg)  // idler +Z → +X (spin axis)
+    let rot_to_x = orient_axis_angle(dir(0, 1, 0), 90deg)  // idler +Z → +X (spin axis)
+    let rot_to_y = orient_axis_angle(dir(1, 0, 0), 90deg)  // idler +Z → +X (spin axis)
     let neg_x = 0mm - x_corner
     let neg_y = 0mm - y_corner
     // Idlers stand proud of the carrier on a bracket standoff (axle + bracket not

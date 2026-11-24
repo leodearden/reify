@@ -957,20 +957,20 @@ const BUILTIN_FUNCTIONS: &[BuiltinFunctionInfo] = &[
     },
     BuiltinFunctionInfo {
         name: "orient_basis",
-        signature: "orient_basis(x_axis: Vector, y_axis: Vector, z_axis: Vector) -> Orientation",
-        doc: "Constructs an orientation from three orthonormal basis vectors.",
+        signature: "orient_basis(x_axis: Direction, y_axis: Direction, z_axis: Direction) -> Orientation",
+        doc: "Constructs an orientation from three mutually orthogonal, right-handed unit Directions (`dir(x, y, z)`), the rotated frame's x, y and z axes.",
         sort_group: "07-orientation",
     },
     BuiltinFunctionInfo {
         name: "orient_axis_angle",
-        signature: "orient_axis_angle(axis: Vector, angle: Angle) -> Orientation",
-        doc: "Constructs an orientation from an axis vector and a rotation angle.",
+        signature: "orient_axis_angle(axis: Direction, angle: Angle) -> Orientation",
+        doc: "Constructs an orientation from a unit Direction axis (`dir(x, y, z)`) and a rotation angle.",
         sort_group: "07-orientation",
     },
     BuiltinFunctionInfo {
         name: "orient_look_at",
-        signature: "orient_look_at(forward: Vector, up: Vector) -> Orientation",
-        doc: "Constructs an orientation whose local Z axis points along `forward`, using `up` to resolve the remaining rotation about that axis.",
+        signature: "orient_look_at(forward: Direction, up: Direction) -> Orientation",
+        doc: "Constructs an orientation whose local Z axis points along the unit Direction `forward`, using the Direction `up` to resolve the remaining rotation about that axis. Both are spelled `dir(x, y, z)`.",
         sort_group: "07-orientation",
     },
     // --- 08-coordinate: coordinate frames, planes, axes ---

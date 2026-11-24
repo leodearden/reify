@@ -28,7 +28,7 @@
 structure def ArbitraryTransformBracket : Physical {
     param geometry : Solid = arbitrary_pattern(
         box(2mm, 2mm, 10mm),
-        [transform3(orient_axis_angle(vec3(0.0, 1.0, 0.0), 90deg), vec3(0mm, 0mm, 0mm))]
+        [transform3(orient_axis_angle(dir(0, 1, 0), 90deg), vec3(0mm, 0mm, 0mm))]
     )
     param material : Material = Material(
         name: "Steel AISI 1045",
