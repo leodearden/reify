@@ -554,11 +554,12 @@ const ORIENT_BASIS_PARAMS: DirectionParams<3> = DirectionParams {
 /// Why a Direction-typed orientation constructor could not read its
 /// Direction arguments.
 enum DirectionArgFault {
-    /// Wrong arity, or an argument that is already `Undef`. Both were reported
-    /// where they arose — the compiler's arity check, or whatever produced the
-    /// `Undef` (`dir(0, 0, 0)`'s E_DegenerateDirection, say) — so naming them
-    /// again here would misattribute the cause.
-    ReportedElsewhere,
+    /// The argument count is not the builtin's arity. Nothing diagnoses it, so
+    /// the call is a silent `Undef`, as `orient_exp`'s shape errors are.
+    WrongArity,
+    /// An argument at a Direction position is already `Undef`; its cause was
+    /// diagnosed where it arose (direction-typing PRD C11), e.g. `dir(0, 0, 0)`.
+    UndefArgument,
     NotADirection {
         param: &'static str,
         error: DecodeDirectionError,
@@ -572,12 +573,12 @@ fn classify_direction_args<const N: usize>(
     params: &DirectionParams<N>,
 ) -> Result<[[f64; 3]; N], DirectionArgFault> {
     if args.len() != params.arity {
-        return Err(DirectionArgFault::ReportedElsewhere);
+        return Err(DirectionArgFault::WrongArity);
     }
     let mut components = [[0.0; 3]; N];
     for ((slot, arg), param) in components.iter_mut().zip(args).zip(params.names) {
         if matches!(arg, Value::Undef) {
-            return Err(DirectionArgFault::ReportedElsewhere);
+            return Err(DirectionArgFault::UndefArgument);
         }
         let direction = decode_direction(arg)
             .map_err(|error| DirectionArgFault::NotADirection { param, error })?;
@@ -875,7 +876,7 @@ fn direction_arg_diagnostic<const N: usize>(
             reify_core::Diagnostic::error(format!("{builtin}: {param}: {error}"))
                 .with_code(reify_core::DiagnosticCode::ArgTypeMismatch),
         ),
-        Ok(_) | Err(DirectionArgFault::ReportedElsewhere) => None,
+        Ok(_) | Err(DirectionArgFault::WrongArity | DirectionArgFault::UndefArgument) => None,
     }
 }
 
