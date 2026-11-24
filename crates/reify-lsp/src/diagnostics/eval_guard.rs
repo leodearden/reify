@@ -161,10 +161,11 @@ fn engine_env(compiled: &reify_compiler::CompiledModule) -> reify_eval::DefEnv<'
 ///
 /// The staging matters most on the WARM path. `compute_diagnostics_with_state`
 /// takes the `content_unchanged` branch on a repeat request, where the gated
-/// work is `eval_cached` + `check_snapshot` — neither of which calls
-/// `from_env` (`eval_cached` builds a combined param/let graph;
-/// `check_snapshot` reuses the stored snapshot). An unconditional exact walk
-/// there would be pure new cost with no counterpart; the stage-1 scan is not.
+/// work is `eval_cached` + `check_snapshot`. `eval_cached` already runs the
+/// `from_env` walk once per call (its `Snapshot::from_env` builds the
+/// evaluation graph), and `check_snapshot` reuses the stored snapshot. An
+/// unconditional exact walk there would duplicate `eval_cached`'s own graph
+/// build on every repeat request; the stage-1 scan does not.
 ///
 /// ## Blast radius: wider than `auto:`, deliberately
 ///
