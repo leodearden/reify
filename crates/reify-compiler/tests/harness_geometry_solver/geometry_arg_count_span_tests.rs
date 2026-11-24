@@ -141,6 +141,21 @@ fn mirror_arg_count_diagnostic_has_span_label() {
     );
 }
 
+/// The retired scalar `mirror(g, ox, oy, oz, nx, ny, nz)` is a labelled arity
+/// error naming the Direction form (direction-typing ι-a, task 9646; PRD B13).
+#[test]
+fn mirror_retired_scalar_form_is_an_arity_error_naming_the_direction_form() {
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let m = mirror(box(10mm, 10mm, 10mm), 0mm, 0mm, 0mm, 1, 0, 0)
+            }
+        "#,
+        "mirror() expects 2 or 3 arguments: mirror(geo, plane) or \
+         mirror(geo, point3(x, y, z), dir(x, y, z)), got 7",
+    );
+}
+
 // ── linear_pattern_2d() ────────────────────────────────────────────────
 
 #[test]
@@ -356,6 +371,21 @@ fn rotate_arg_count_diagnostic_has_span_label() {
     );
 }
 
+/// The retired scalar `rotate(g, ax, ay, az, angle)` is a labelled arity error
+/// naming the Direction form (direction-typing ι-a, task 9646; PRD B13).
+#[test]
+fn rotate_retired_scalar_form_is_an_arity_error_naming_the_direction_form() {
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let r = rotate(box(10mm, 10mm, 10mm), 0, 0, 1, 90deg)
+            }
+        "#,
+        "rotate() expects 2 or 3 arguments: rotate(geo, orientation) or \
+         rotate(geo, dir(x, y, z), angle), got 5",
+    );
+}
+
 #[test]
 fn scale_arg_count_diagnostic_has_span_label() {
     // scale() expects 2 arguments — passing 1 should produce a labeled diagnostic
@@ -381,6 +411,22 @@ fn rotate_around_arg_count_diagnostic_has_span_label() {
             }
         "#,
         "rotate_around() expects",
+    );
+}
+
+/// The retired scalar `rotate_around(g, px, py, pz, ax, ay, az, angle)` is a
+/// labelled arity error naming the Direction form (direction-typing ι-a, task
+/// 9646; PRD B13).
+#[test]
+fn rotate_around_retired_scalar_form_is_an_arity_error_naming_the_direction_form() {
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let r = rotate_around(box(10mm, 10mm, 10mm), 0mm, 0mm, 0mm, 0, 0, 1, 90deg)
+            }
+        "#,
+        "rotate_around() expects 4 arguments: \
+         rotate_around(geo, point3(x, y, z), dir(x, y, z), angle), got 8",
     );
 }
 

@@ -2535,86 +2535,69 @@ mod tests {
         );
     }
 
-    /// rotate(target, ax, ay, az, angle) → the ANGLE only, at arity 5 ONLY.
+    /// rotate(target, axis, angle) → the Direction `axis` and the ANGLE, at
+    /// arity 3 ONLY (direction-typing ι-a, task 9646; the angle is PRD
+    /// `docs/prds/v0_6/angle-units-surface-convergence.md` boundary row B4).
     ///
-    /// PRD `docs/prds/v0_6/angle-units-surface-convergence.md` boundary row B4.
-    /// Task 4166's 2-arg `rotate(target, orientation)` overload has no index 4
-    /// and holds an `Orientation` VALUE at index 1, so the arm is arity-guarded
-    /// per the HAZARD block above the primitive arms: arity 2 exposes NO slots
-    /// because nothing there is an angle, not because nothing there is present.
+    /// The guard is load-bearing because `rotate` stays overloaded: at arity 2,
+    /// task 4166's `rotate(target, orientation)`, index 1 holds an Orientation
+    /// VALUE, so an arity-agnostic `axis@1` Direction slot would fire on correct
+    /// code. The retired scalar arity 5 exposes no slots either: such a call
+    /// draws only its arity error.
     #[test]
-    fn rotate_angle_slot_is_arity_5_only() {
+    fn rotate_slots_are_arity_3_only() {
         assert_eq!(
-            builtin_arg_slots("rotate", 5),
-            vec![angle_slot(4, "angle")],
-            "rotate(target, ax, ay, az, angle) — arg0 is the geometry handle, \
-             args 1-3 are a dimensionless unit-vector DIRECTION, and only arg4 \
-             is the ANGLE"
+            builtin_arg_slots("rotate", 3),
+            vec![direction_slot(1, "axis"), angle_slot(2, "angle")],
+            "rotate(target, axis, angle) — arg0 is the geometry handle, arg1 the \
+             Direction axis and arg2 the ANGLE"
         );
-        for arity in (0usize..=MAX_PROBED_ARITY).filter(|n| *n != 5 && *n != 3) {
+        for arity in (0usize..=MAX_PROBED_ARITY).filter(|n| *n != 3) {
             assert!(
                 builtin_arg_slots("rotate", arity).is_empty(),
-                "rotate at arity {arity} is not the 5-arg axis-angle form, so it \
-                 must expose NO slots — index 4 does not denote `angle` there \
-                 (at arity 2, task 4166's `rotate(target, orientation)`, index 1 \
-                 is an Orientation VALUE); got {:?}",
+                "rotate at arity {arity} is not the 3-arg Direction form, so it must \
+                 expose NO slots — at arity 2 index 1 is an Orientation VALUE, and \
+                 arity 5 is the retired scalar form; got {:?}",
                 builtin_arg_slots("rotate", arity)
             );
         }
     }
 
-    /// rotate(target, axis, angle) → the Direction `axis` and the ANGLE, at
-    /// arity 3 only (direction-typing ι-a, task 9646). At arity 2 index 1 is an
-    /// Orientation VALUE, so the guard is load-bearing.
-    #[test]
-    fn rotate_direction_form_slots_the_axis_and_the_angle() {
-        assert_eq!(
-            builtin_arg_slots("rotate", 3),
-            vec![direction_slot(1, "axis"), angle_slot(2, "angle")],
-        );
-    }
-
-    /// rotate_around(target, px, py, pz, ax, ay, az, angle) → PIVOT and ANGLE.
-    ///
-    /// The third STRADDLE case, and structurally identical to `revolve`'s: a
-    /// gated point in space, an un-gated dimensionless axis DIRECTION, and an
-    /// ANGLE — slotted since PRD 3 leaf ζ (task 5782). The exclusions are
-    /// asserted positively and narrow to the handle and the direction.
-    #[test]
-    fn rotate_around_slots_the_pivot_and_the_angle_but_never_the_axis() {
-        assert_eq!(
-            builtin_arg_slots("rotate_around", 8),
-            vec![
-                length_slot(1, "px"),
-                length_slot(2, "py"),
-                length_slot(3, "pz"),
-                angle_slot(7, "angle"),
-            ],
-        );
-
-        let slotted: Vec<usize> = builtin_arg_slots("rotate_around", 8)
-            .iter()
-            .map(|slot| slot.index)
-            .collect();
-        for excluded in [0usize, 4, 5, 6] {
-            assert!(
-                !slotted.contains(&excluded),
-                "rotate_around arg{excluded} is the geometry handle or an axis \
-                 DIRECTION component — a dimensionless unit vector, legitimately \
-                 bare in correct `.ri`; got slots at {slotted:?}"
-            );
-        }
-    }
-
     /// rotate_around(target, pivot, axis, angle) → the Direction `axis` and the
-    /// ANGLE (direction-typing ι-a, task 9646). The `pivot` is a Point3, which
-    /// no `ExpectedArg` kind describes: it is gated at build by
-    /// `accept_length_point3`, so index 1 stays unslotted.
+    /// ANGLE, at EVERY arity (direction-typing ι-a, task 9646).
+    ///
+    /// `rotate_around` is single-form again once the scalar
+    /// `rotate_around(target, px, py, pz, ax, ay, az, angle)` retires, so its arm
+    /// carries no `if arg_count ==` guard (the guard-only-overloaded-names rule).
+    /// The `pivot` at index 1 stays unslotted: it is a Point3, which no
+    /// `ExpectedArg` kind describes, and `accept_length_point3` gates it at build.
     #[test]
-    fn rotate_around_direction_form_slots_the_axis_and_the_angle_but_not_the_pivot() {
-        assert_eq!(
-            builtin_arg_slots("rotate_around", 4),
-            vec![direction_slot(2, "axis"), angle_slot(3, "angle")],
+    fn rotate_around_slots_the_axis_and_the_angle_but_never_the_pivot() {
+        assert_slots_at_every_arity(
+            "rotate_around",
+            &[direction_slot(2, "axis"), angle_slot(3, "angle")],
+        );
+    }
+
+    /// A retired 8-arg `rotate_around` call is an arity error that names the
+    /// Direction form (PRD B13). Its arm is arity-agnostic, so the call may also
+    /// draw slot mismatches at `axis@2` and `angle@3`: accepted migration noise,
+    /// since the arity error is what teaches the form.
+    #[test]
+    fn rotate_around_retired_8_arg_call_names_the_direction_form() {
+        let module = compile_module(
+            "module test\n\nstructure def S {\n    let b = box(1mm, 1mm, 1mm)\n    \
+             let r = rotate_around(b, 0mm, 0mm, 0mm, 0, 0, 1, 90deg)\n}\n",
+        );
+        let expected = "rotate_around() expects 4 arguments: \
+                        rotate_around(geo, point3(x, y, z), dir(x, y, z), angle), got 8";
+        assert!(
+            module
+                .diagnostics
+                .iter()
+                .any(|d| d.severity == Severity::Error && d.message == expected),
+            "expected the Error {expected:?}; got: {:#?}",
+            module.diagnostics
         );
     }
 
@@ -3679,18 +3662,12 @@ mod tests {
 
     // ── mirror / circular_pattern ORIGIN LENGTH slots (task 5662) ────────────
 
-    /// Build a 7-arg `mirror(target, ox, oy, oz, nx, ny, nz)` arg list with the
-    /// given origin-component type. The normal components 4-6 are deliberately
-    /// unslotted — see the `mirror` arm of [`builtin_arg_slots`].
-    fn mirror_args(origin: Type) -> Vec<CompiledExpr> {
+    /// Build a 3-arg `mirror(target, origin, normal)` arg list.
+    fn mirror_args(origin: Type, normal: Type) -> Vec<CompiledExpr> {
         vec![
-            arg_expr(Type::Geometry),               // 0 target
-            arg_expr(origin.clone()),               // 1 ox
-            arg_expr(origin.clone()),               // 2 oy
-            arg_expr(origin),                       // 3 oz
-            arg_expr(Type::dimensionless_scalar()), // 4 nx
-            arg_expr(Type::dimensionless_scalar()), // 5 ny
-            arg_expr(Type::dimensionless_scalar()), // 6 nz
+            arg_expr(Type::Geometry), // 0 target
+            arg_expr(origin),         // 1 origin
+            arg_expr(normal),         // 2 normal
         ]
     }
 
@@ -3713,48 +3690,32 @@ mod tests {
         ]
     }
 
-    /// mirror @ arity 7 → ox@1 / oy@2 / oz@3 (LENGTH); every other arity → empty.
+    /// mirror @ arity 3 → normal@2 (Direction); every other arity → empty
+    /// (direction-typing ι-a, task 9646).
     ///
     /// Arity 2 gets its own assertion because it is the CONCRETE false positive
-    /// the guard prevents, not a hypothetical: `mirror(target, plane)` holds a
-    /// `Plane` at index 1, so an arity-agnostic `ox@1 LENGTH` slot would demand
-    /// a Length of a Plane on correct code.
+    /// the guard prevents: `mirror(target, plane)` holds a `Plane` at index 1. The
+    /// retired scalar arity 7 exposes no slots: such a call draws only its arity
+    /// error.
     #[test]
-    fn mirror_origin_slots_are_arity_7_only() {
+    fn mirror_slots_are_arity_3_only() {
         assert_eq!(
-            builtin_arg_slots("mirror", 7),
-            vec![
-                length_slot(1, "ox"),
-                length_slot(2, "oy"),
-                length_slot(3, "oz"),
-            ],
-            "mirror(target, ox, oy, oz, nx, ny, nz) — args 1-3 are the mirror-plane \
-             ORIGIN and must be LENGTH"
+            builtin_arg_slots("mirror", 3),
+            vec![direction_slot(2, "normal")],
+            "mirror(target, origin, normal) — arg2 is the Direction normal"
         );
         assert!(
             builtin_arg_slots("mirror", 2).is_empty(),
             "at arity 2 (`mirror(target, plane)`, the task-5745 decoded-value form) \
-             index 1 is `plane`, a Plane — an ox@1 LENGTH slot would emit a FALSE \
-             ArgTypeMismatch on valid code, so arity 2 must expose NO slots"
+             index 1 is `plane`, a Plane, so arity 2 must expose NO slots"
         );
-        for arity in (0usize..=MAX_PROBED_ARITY).filter(|n| *n != 7 && *n != 3) {
+        for arity in (0usize..=MAX_PROBED_ARITY).filter(|n| *n != 3) {
             assert!(
                 builtin_arg_slots("mirror", arity).is_empty(),
-                "mirror at arity {arity} is not the 7-arg scalar form, so it must \
-                 expose NO slots — index 1 does not denote `ox` there"
+                "mirror at arity {arity} is not the 3-arg Direction form, so it must \
+                 expose NO slots"
             );
         }
-    }
-
-    /// mirror(target, origin, normal) → the Direction `normal` only
-    /// (direction-typing ι-a, task 9646). The `origin` is a Point3, gated at
-    /// build by `accept_length_point3`, so index 1 stays unslotted.
-    #[test]
-    fn mirror_direction_form_slots_the_normal_but_not_the_origin() {
-        assert_eq!(
-            builtin_arg_slots("mirror", 3),
-            vec![direction_slot(2, "normal")],
-        );
     }
 
     /// circular_pattern @ arity 9 → ox@1 / oy@2 / oz@3 (LENGTH) + angle@8
@@ -3794,32 +3755,46 @@ mod tests {
         }
     }
 
-    /// The STRADDLE case, fourth of five: `mirror`'s 7-arg form mixes a gated
-    /// plane ORIGIN with an un-gated plane NORMAL in one argument list.
+    /// `mirror`'s 3-arg form slots its Direction normal and NEVER its Point3
+    /// origin (direction-typing ι-a, task 9646).
     ///
     /// Stated POSITIVELY as a decision rather than left to be inferred from an
-    /// absence, exactly as `half_space_slots_the_point_but_never_the_normal`
-    /// does: `nx`/`ny`/`nz` are a dimensionless unit vector whose components are
-    /// legitimately bare in correct `.ri` (a normal's scale is irrelevant to the
-    /// plane it defines), so slotting 4-6 would reject valid code.
+    /// absence: no `ExpectedArg` kind describes a point, so the origin is gated
+    /// at build by `accept_length_point3` — the accepted narrowing of the
+    /// direction-typing PRD's §8 decompose amendments.
     #[test]
-    fn mirror_slots_the_origin_but_never_the_normal() {
-        let slotted: Vec<usize> = builtin_arg_slots("mirror", 7)
+    fn mirror_slots_the_normal_but_never_the_point3_origin() {
+        let slotted: Vec<usize> = builtin_arg_slots("mirror", 3)
             .iter()
             .map(|slot| slot.index)
             .collect();
         assert_eq!(
             slotted,
-            vec![1, 2, 3],
-            "mirror's slotted index set at arity 7 must be exactly the ORIGIN \
-             triple {{1,2,3}}; got {slotted:?}"
+            vec![2],
+            "mirror's slotted index set at arity 3 must be exactly the normal {{2}}; \
+             the Point3 origin at index 1 stays slot-free; got {slotted:?}"
         );
-        for normal_index in [4usize, 5, 6] {
+    }
+
+    /// The accepted narrowing, executed: whatever the 3-arg `mirror`'s origin
+    /// is typed, the compile layer reports nothing for it.
+    #[test]
+    fn mirror_point3_origin_draws_no_slot_diagnostic_whatever_its_type() {
+        let point3 = |quantity: Type| Type::Point {
+            n: 3,
+            quantity: Box::new(quantity),
+        };
+        for origin in [point3(Type::length()), point3(Type::Int), Type::Int] {
+            let mut diags = Vec::new();
+            check_builtin_arg_types(
+                "mirror",
+                &mirror_args(origin.clone(), Type::Direction),
+                dummy_span(),
+                &mut diags,
+            );
             assert!(
-                !slotted.contains(&normal_index),
-                "mirror arg{normal_index} is a plane-NORMAL component — a \
-                 dimensionless unit vector — and must stay slot-free; got slots at \
-                 {slotted:?}"
+                diags.is_empty(),
+                "mirror: a {origin} origin has no compile-time slot, got: {diags:?}"
             );
         }
     }
@@ -3863,21 +3838,20 @@ mod tests {
         );
     }
 
-    /// CORRECT: a dimensioned `Length` origin → 0 diagnostics, both builtins.
+    /// CORRECT: a dimensioned `Length` origin → 0 diagnostics.
     #[test]
     fn pattern_origin_length_components_give_no_error() {
-        for (name, args) in [
-            ("mirror", mirror_args(Type::length())),
-            ("circular_pattern", circular_pattern_args(Type::length())),
-        ] {
-            let mut diags = Vec::new();
-            check_builtin_arg_types(name, &args, dummy_span(), &mut diags);
-            assert!(
-                diags.is_empty(),
-                "{name}: a dimensioned Length origin must pass, got: {:?}",
-                diags
-            );
-        }
+        let mut diags = Vec::new();
+        check_builtin_arg_types(
+            "circular_pattern",
+            &circular_pattern_args(Type::length()),
+            dummy_span(),
+            &mut diags,
+        );
+        assert!(
+            diags.is_empty(),
+            "circular_pattern: a dimensioned Length origin must pass, got: {diags:?}"
+        );
     }
 
     /// MISMATCH: a bare `Int` origin (`0`) → exactly 3 ArgTypeMismatch Errors,
@@ -3889,38 +3863,38 @@ mod tests {
     /// three diagnostics — hence the per-component name assertion below.
     #[test]
     fn pattern_bare_int_origin_gives_three_errors_naming_each_component() {
-        for (name, args) in [
-            ("mirror", mirror_args(Type::Int)),
-            ("circular_pattern", circular_pattern_args(Type::Int)),
-        ] {
-            let mut diags = Vec::new();
-            check_builtin_arg_types(name, &args, dummy_span(), &mut diags);
+        let name = "circular_pattern";
+        let mut diags = Vec::new();
+        check_builtin_arg_types(
+            name,
+            &circular_pattern_args(Type::Int),
+            dummy_span(),
+            &mut diags,
+        );
+        assert_eq!(
+            diags.len(),
+            3,
+            "{name}: a bare origin triple must produce one diagnostic per \
+             component, got: {diags:?}"
+        );
+        for (diag, component) in diags.iter().zip(["ox", "oy", "oz"]) {
+            assert_eq!(diag.severity, Severity::Error, "{name}/{component}");
             assert_eq!(
-                diags.len(),
-                3,
-                "{name}: a bare origin triple must produce one diagnostic per \
-                 component, got: {:?}",
-                diags
+                diag.code,
+                Some(DiagnosticCode::ArgTypeMismatch),
+                "{name}/{component}"
             );
-            for (diag, component) in diags.iter().zip(["ox", "oy", "oz"]) {
-                assert_eq!(diag.severity, Severity::Error, "{name}/{component}");
-                assert_eq!(
-                    diag.code,
-                    Some(DiagnosticCode::ArgTypeMismatch),
-                    "{name}/{component}"
+            for needle in [
+                name,
+                component,
+                "expects Length",
+                "pass a dimensioned length such as `5mm`",
+            ] {
+                assert!(
+                    diag.message.contains(needle),
+                    "{name}/{component}: message must contain {needle:?}: {}",
+                    diag.message
                 );
-                for needle in [
-                    name,
-                    component,
-                    "expects Length",
-                    "pass a dimensioned length such as `5mm`",
-                ] {
-                    assert!(
-                        diag.message.contains(needle),
-                        "{name}/{component}: message must contain {needle:?}: {}",
-                        diag.message
-                    );
-                }
             }
         }
     }
@@ -3932,59 +3906,56 @@ mod tests {
     /// level: a bare Int lands in `check_builtin_arg_types`' catch-all `other =>`
     /// arm, whereas a wrong-dimension scalar goes through the
     /// `Type::Scalar { dimension } != expected_dim` arm. Without this case that
-    /// arm is unexercised for both new slots.
+    /// arm is unexercised for the origin slots.
     #[test]
     fn pattern_wrong_dimension_origin_names_length_and_actual_unit() {
         let angle = Type::Scalar {
             dimension: DimensionVector::ANGLE,
         };
-        for (name, args) in [
-            ("mirror", mirror_args(angle.clone())),
-            ("circular_pattern", circular_pattern_args(angle.clone())),
-        ] {
-            let mut diags = Vec::new();
-            check_builtin_arg_types(name, &args, dummy_span(), &mut diags);
-            assert_eq!(
-                diags.len(),
-                3,
-                "{name}: expected 3 diagnostics, got: {:?}",
-                diags
-            );
-            for diag in &diags {
-                assert_eq!(diag.severity, Severity::Error);
-                assert_eq!(diag.code, Some(DiagnosticCode::ArgTypeMismatch));
-                for needle in ["expects Length", "got Scalar[rad]"] {
-                    assert!(
-                        diag.message.contains(needle),
-                        "{name}: message must contain {needle:?} so the user can see \
-                         WHICH unit was wrong, not merely that one was: {}",
-                        diag.message
-                    );
-                }
+        let mut diags = Vec::new();
+        check_builtin_arg_types(
+            "circular_pattern",
+            &circular_pattern_args(angle),
+            dummy_span(),
+            &mut diags,
+        );
+        assert_eq!(
+            diags.len(),
+            3,
+            "circular_pattern: expected 3 diagnostics, got: {diags:?}"
+        );
+        for diag in &diags {
+            assert_eq!(diag.severity, Severity::Error);
+            assert_eq!(diag.code, Some(DiagnosticCode::ArgTypeMismatch));
+            for needle in ["expects Length", "got Scalar[rad]"] {
+                assert!(
+                    diag.message.contains(needle),
+                    "circular_pattern: message must contain {needle:?} so the user \
+                     can see WHICH unit was wrong, not merely that one was: {}",
+                    diag.message
+                );
             }
         }
     }
 
     /// GRADUALISM: an unresolved `TypeParam` / poison `Error` origin → 0
-    /// diagnostics, both builtins. The executable proof of the two-layer
-    /// relationship stated in this module's "Relationship to the eval-layer
-    /// units gate" section.
+    /// diagnostics. The executable proof of the two-layer relationship stated in
+    /// this module's "Relationship to the eval-layer units gate" section.
     #[test]
     fn pattern_unresolved_origin_passes_silently() {
         for ty in [Type::TypeParam("T".to_string()), Type::Error] {
-            for (name, args) in [
-                ("mirror", mirror_args(ty.clone())),
-                ("circular_pattern", circular_pattern_args(ty.clone())),
-            ] {
-                let mut diags = Vec::new();
-                check_builtin_arg_types(name, &args, dummy_span(), &mut diags);
-                assert!(
-                    diags.is_empty(),
-                    "{name}: a {ty} origin must pass silently (gradualism) — the \
-                     eval-layer gate stays the backstop; got: {:?}",
-                    diags
-                );
-            }
+            let mut diags = Vec::new();
+            check_builtin_arg_types(
+                "circular_pattern",
+                &circular_pattern_args(ty.clone()),
+                dummy_span(),
+                &mut diags,
+            );
+            assert!(
+                diags.is_empty(),
+                "circular_pattern: a {ty} origin must pass silently (gradualism) — \
+                 the eval-layer gate stays the backstop; got: {diags:?}"
+            );
         }
     }
 
@@ -4898,7 +4869,7 @@ mod tests {
     ///
     /// # What this pins that main's arity tests do not
     ///
-    /// [`mirror_origin_slots_are_arity_7_only`] and
+    /// [`mirror_slots_are_arity_3_only`] and
     /// [`circular_pattern_forms_are_keyed_independently`] already pin the slot
     /// SHAPE against a hard-coded arity, and this test deliberately does not
     /// restate them. It pins the LEDGER-side fact they cannot see: each name
@@ -4907,11 +4878,17 @@ mod tests {
     /// — by a guard that discriminates the accepted arities — and not by a
     /// [`MULTI_ARITY_AGNOSTIC_SAFE`] exemption. Every arity it reasons about is
     /// read back from the probe; none is written by hand.
+    ///
+    /// Since direction-typing ι-a (task 9646) `mirror`'s second form is
+    /// `mirror(target, origin, normal)`, whose Point3 origin no slot kind
+    /// describes, so NO accepted `mirror` arity slots index 1. The guard still
+    /// discharges the coupling rule: its arity-3 normal slot must not reach the
+    /// arity-2 plane form.
     #[test]
     fn pattern_origin_family_is_ledgered_and_guarded_not_exempted() {
         let probed = lowering_accepted_arities();
 
-        for name in ["mirror", "circular_pattern"] {
+        for (name, origin_slotted_forms) in [("mirror", 0usize), ("circular_pattern", 1)] {
             assert!(
                 LOWERING_ACCEPTED_ARITIES.iter().any(|(n, _)| *n == name),
                 "{name:?} yields origin slots (task 5662) but carries no \
@@ -4928,20 +4905,20 @@ mod tests {
             // the lowering accepts BOTH the scalar form and the value form.
             assert!(
                 measured.len() > 1,
-                "{name} is expected to accept both a scalar and a value form, but \
-                 the probe measured only {measured:?}. If the value form went \
-                 away the coupling rule no longer bites here and this test should \
-                 go with it."
+                "{name} is expected to accept two forms (a value form and a \
+                 component form), but the probe measured only {measured:?}. If the \
+                 value form went away the coupling rule no longer bites here and \
+                 this test should go with it."
             );
 
             // Discharged by a GUARD, never by an exemption.
             assert!(
                 !MULTI_ARITY_AGNOSTIC_SAFE.contains(&name),
                 "{name} must satisfy the coupling rule with its `if arg_count ==` \
-                 guard, never with a MULTI_ARITY_AGNOSTIC_SAFE exemption: index 1 \
-                 is `ox` at the scalar form but the composite plane/axis at the \
-                 value form, so an arity-agnostic arm would demand a Length OF A \
-                 PLANE on correct code."
+                 guard, never with a MULTI_ARITY_AGNOSTIC_SAFE exemption: the \
+                 value form hands its composite plane/axis an index the component \
+                 form slots differently, so an arity-agnostic arm would fire on \
+                 correct code."
             );
             // Keyed on INDEX 1 — the origin — not on "any slot": the invariant
             // is that the origin never reaches the value form's composite.
@@ -4953,9 +4930,10 @@ mod tests {
                 .collect();
             assert_eq!(
                 origin_slotted.len(),
-                1,
-                "exactly ONE of {name}'s accepted arities {measured:?} may carry a \
-                 slot at index 1 (the origin) — the scalar form. The value form \
+                origin_slotted_forms,
+                "{origin_slotted_forms} of {name}'s accepted arities {measured:?} may \
+                 carry a slot at index 1 (the origin): circular_pattern's scalar \
+                 form, and none of mirror's, whose origin is a Point3. A value form \
                  hands index 1 a composite built by a stdlib producer, so slotting \
                  it would fire on correct code. Index-1 slots found at arities: \
                  {origin_slotted:?}"

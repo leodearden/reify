@@ -1506,19 +1506,20 @@ fn rotate_bare_angle_is_rejected_naming_the_angle() {
 /// BOUNDARY (PRD row B4) — the 2-arg Orientation overload must NOT mis-fire.
 ///
 /// The other half of the arity guard, and the half a slot table gets wrong
-/// silently. `rotate(target, orientation)` is task 4166's overload: index 4
-/// does not exist and index 1 holds an `Orientation` VALUE. An arity-agnostic
-/// `angle@4` arm would be rescued here only by `compiled_args.get(4)` returning
-/// None — an accident of the SHORT call that says nothing about an arm's
-/// correctness, per the HAZARD block in `builtin_signatures.rs`.
+/// silently. `rotate(target, orientation)` is task 4166's overload: index 1
+/// holds an `Orientation` VALUE. Since direction-typing ι-a (task 9646) the
+/// 3-arg form slots a Direction `axis` at that same index 1, so an
+/// arity-agnostic arm would fire on this correct call; no
+/// `compiled_args.get(index)` bounds check can rescue it, per the HAZARD block
+/// in `builtin_signatures.rs`.
 #[test]
 fn rotate_orientation_overload_yields_no_arg_type_mismatch() {
     let compiled = compile_struct_body("    let r = rotate(b, orient_identity())\n");
     let errors = arg_type_mismatch_errors(&compiled);
     assert!(
         errors.is_empty(),
-        "`rotate(b, orient_identity())` is correct code — the ANGLE slot must be \
-         keyed to arity 5 and expose nothing here.\nAll diagnostics: {:#?}",
+        "`rotate(b, orient_identity())` is correct code — the axis and ANGLE slots \
+         must be keyed to arity 3 and expose nothing here.\nAll diagnostics: {:#?}",
         compiled.diagnostics
     );
 }

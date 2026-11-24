@@ -1829,7 +1829,7 @@ fn compile_translate_arg_ordering() {
 fn compile_rotate_arg_ordering() {
     let source = r#"structure S {
     param p: Length = 5mm
-    let result = rotate(p, p, p, p, p)
+    let result = rotate(p, p, p)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_rotate_args"));
     assert!(
@@ -1844,7 +1844,7 @@ fn compile_rotate_arg_ordering() {
     if let CompiledGeometryOp::Transform { kind, args, .. } = op {
         assert_eq!(*kind, TransformKind::Rotate);
         let names: Vec<&str> = args.iter().map(|(n, _)| n.as_str()).collect();
-        assert_eq!(names, vec!["target", "ax", "ay", "az", "angle"]);
+        assert_eq!(names, vec!["target", "axis", "angle"]);
     } else {
         panic!("expected Transform, got {:?}", op);
     }
@@ -1879,7 +1879,7 @@ fn compile_scale_arg_ordering() {
 fn compile_rotate_around_arg_ordering() {
     let source = r#"structure S {
     param p: Length = 5mm
-    let result = rotate_around(p, p, p, p, p, p, p, p)
+    let result = rotate_around(p, p, p, p)
 }"#;
     let parsed = reify_syntax::parse(
         source,
@@ -1897,12 +1897,48 @@ fn compile_rotate_around_arg_ordering() {
     if let CompiledGeometryOp::Transform { kind, args, .. } = op {
         assert_eq!(*kind, TransformKind::RotateAround);
         let names: Vec<&str> = args.iter().map(|(n, _)| n.as_str()).collect();
-        assert_eq!(
-            names,
-            vec!["target", "px", "py", "pz", "ax", "ay", "az", "angle"]
-        );
+        assert_eq!(names, vec!["target", "pivot", "axis", "angle"]);
     } else {
         panic!("expected Transform, got {:?}", op);
+    }
+}
+
+/// The retired scalar `rotate/5` and `rotate_around/8` are each exactly ONE
+/// arity Error, and it names the Direction form (direction-typing ι-a, task
+/// 9646; PRD B13). Other diagnostics on the same call, such as slot
+/// mismatches, are not this test's subject.
+#[test]
+fn retired_scalar_rotate_forms_are_one_arity_error_naming_dir() {
+    for (name, call) in [
+        ("rotate", "rotate(p, p, p, p, p)"),
+        ("rotate_around", "rotate_around(p, p, p, p, p, p, p, p)"),
+    ] {
+        let source =
+            format!("structure S {{\n    param p: Length = 5mm\n    let result = {call}\n}}");
+        let parsed = reify_syntax::parse(
+            &source,
+            reify_core::ModulePath::single("test_retired_rotate_forms"),
+        );
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
+        let compiled = compile(&parsed);
+        let prefix = format!("{name}() expects");
+        let arity_errors: Vec<&str> = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == reify_core::Severity::Error && d.message.starts_with(&prefix))
+            .map(|d| d.message.as_str())
+            .collect();
+        let [arity_error] = arity_errors.as_slice() else {
+            panic!("`{call}` must draw exactly one arity Error, got: {arity_errors:?}");
+        };
+        assert!(
+            arity_error.contains("dir(x, y, z)"),
+            "`{call}`'s arity error must name the Direction form: {arity_error}"
+        );
     }
 }
 
