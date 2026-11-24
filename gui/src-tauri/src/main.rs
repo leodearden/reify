@@ -926,7 +926,6 @@ async fn set_active_fea_case(
 fn main() {
     // SAFETY: the first statement of main, before any thread exists.
     unsafe { reify_gui::webkit_env::apply_process_defaults() }
-    reify_gui::appimage_launch_dir::restore();
     let launch_file = match reify_gui::command_line::parse(std::env::args_os().skip(1)) {
         Launch::PrintWebkitEnv => {
             print!("{}", reify_gui::webkit_env::process_env_report());
@@ -945,11 +944,12 @@ fn main() {
             std::process::exit(2);
         }
         Launch::Cli { args } => {
+            reify_gui::appimage_launch_dir::restore();
             let Err(e) = reify_gui::bundled_cli::exec(args);
             eprintln!("reify-gui: {e}");
             std::process::exit(127);
         }
-        Launch::Gui { file } => file,
+        Launch::Gui { file } => file.map(reify_gui::appimage_launch_dir::resolve),
     };
     let mut context = tauri::generate_context!();
     if let Err(e) =

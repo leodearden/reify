@@ -1,14 +1,15 @@
-//! Tests for returning reify-gui to the directory the AppImage was run from
-//! (`crate::appimage_launch_dir::launch_dir`). Driven only through the lookup
-//! closure and an explicit current directory, never the real process
-//! environment or cwd.
+//! Tests for recovering the directory the AppImage was run from
+//! (`crate::appimage_launch_dir::launch_dir`) and resolving the caller's paths
+//! against it (`path_from_launch_dir`). Driven only through the lookup closure
+//! and an explicit current directory, never the real process environment or
+//! cwd.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::appimage_launch_dir::launch_dir;
+use crate::appimage_launch_dir::{launch_dir, path_from_launch_dir};
 
 /// Real directories laid out the way an AppImage launch sees them.
 struct Fixture {
@@ -148,4 +149,41 @@ fn cwd_outside_appdir_usr_restores_nothing() {
         ("PWD", f.launch.clone().into()),
     ]);
     assert_eq!(launch_dir(var, &f.other), None);
+}
+
+#[test]
+fn relative_path_under_appimage_resolves_from_launch_dir() {
+    let f = fixture();
+    let var = lookup_with(&[
+        ("APPDIR", f.appdir.clone().into()),
+        ("OWD", f.launch.clone().into()),
+    ]);
+    assert_eq!(
+        path_from_launch_dir(var, &f.appdir_usr, PathBuf::from("m5.ri")),
+        f.launch.join("m5.ri")
+    );
+}
+
+#[test]
+fn absolute_path_under_appimage_is_unchanged() {
+    let f = fixture();
+    let var = lookup_with(&[
+        ("APPDIR", f.appdir.clone().into()),
+        ("OWD", f.launch.clone().into()),
+    ]);
+    let absolute = f.other.join("m5.ri");
+    assert_eq!(
+        path_from_launch_dir(var, &f.appdir_usr, absolute.clone()),
+        absolute
+    );
+}
+
+#[test]
+fn relative_path_outside_appimage_is_unchanged() {
+    let f = fixture();
+    let var = lookup_with(&[("PWD", f.launch.clone().into())]);
+    assert_eq!(
+        path_from_launch_dir(var, &f.other, PathBuf::from("m5.ri")),
+        PathBuf::from("m5.ri")
+    );
 }
