@@ -163,3 +163,33 @@ fn assert_one_coded_unknown_structure_error(diagnostics: &[reify_core::Diagnosti
         "{path}: {report:?}"
     );
 }
+
+/// A structural query sees a stdlib-typed descendant's structure:
+/// `ZeroForce` (stdlib/dynamics.ri, `: JointForceValue`) passes a
+/// `JointForceValue` trait filter over `self.descendants`.
+#[test]
+fn a_stdlib_typed_descendant_passes_a_trait_filter() {
+    let compiled = parse_and_compile_with_stdlib(
+        "structure def P {\n    sub z = ZeroForce()\n    \
+         let n = filter(self.descendants, JointForceValue).count\n}",
+    );
+    let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
+        Box::new(MockConstraintChecker::new()),
+        None,
+    );
+    let result = engine.eval(&compiled);
+
+    assert!(
+        !result
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == reify_core::Severity::Error),
+        "{:?}",
+        result.diagnostics
+    );
+    assert_eq!(
+        result.values.get(&ValueCellId::new("P", "n")),
+        Some(&Value::Int(1))
+    );
+}
