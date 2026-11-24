@@ -495,6 +495,30 @@ where
     resolve_in_scopes(local, std::iter::empty(), prelude, key)
 }
 
+/// What a module whose compile prelude is `prelude` can name: `local`, then
+/// the `pub` surface of each user-import prelude module in order (D-5), then
+/// every std module's exports. This is the lookup set of that module's
+/// definition environment (resolution-unification §3.2). Lazy and
+/// allocation-free.
+pub fn resolve_visible<'a, D, Q>(
+    local: &'a [D],
+    prelude: &[&'a CompiledModule],
+    key: &Q,
+) -> Option<&'a D>
+where
+    D: Definition,
+    D::Key<'a>: Borrow<Q>,
+    Q: Eq + ?Sized,
+{
+    let of_tier = |tier: Tier| {
+        prelude
+            .iter()
+            .copied()
+            .filter(move |module| module_tier(&module.path) == tier)
+    };
+    resolve_in_scopes(local, of_tier(Tier::Import), of_tier(Tier::Stdlib), key)
+}
+
 /// Every key's binding plus every shadowing, by the same rule as [`resolve`].
 pub fn bind<'a, D, P>(local: &'a [D], prelude: P) -> Bindings<'a, D>
 where

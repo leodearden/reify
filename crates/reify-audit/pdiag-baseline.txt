@@ -40,7 +40,6 @@ crates/reify-compiler/src/compile_builder/pre_pass.rs 4
 crates/reify-compiler/src/compile_builder/units_phase.rs 3
 crates/reify-compiler/src/conformance/checker.rs 3
 crates/reify-compiler/src/conformance/mod.rs 1
-crates/reify-compiler/src/conformance/sub_component_validation.rs 1
 crates/reify-compiler/src/connect.rs 11
 crates/reify-compiler/src/diagnostics.rs 1
 crates/reify-compiler/src/entity.rs 48
@@ -77,7 +76,7 @@ crates/reify-eval/src/engine_compute.rs 1
 crates/reify-eval/src/engine_constraints.rs 1
 crates/reify-eval/src/engine_edit.rs 6
 crates/reify-eval/src/engine_eval.rs 21
-crates/reify-eval/src/geometry_ops.rs 139
+crates/reify-eval/src/geometry_ops.rs 137
 crates/reify-eval/src/modal_ops.rs 25
 crates/reify-eval/src/morph_producer.rs 1
 crates/reify-eval/src/realization_content.rs 4

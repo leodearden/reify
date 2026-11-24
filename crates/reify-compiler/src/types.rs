@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use reify_core::{
-    ConstraintNodeId, ContentHash, DimensionVector, RealizationNodeId, SourceSpan, Type,
-    ValueCellId,
+    ConstraintNodeId, ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, DimensionVector,
+    RealizationNodeId, SourceSpan, Type, ValueCellId,
 };
 use reify_ir::{CompiledExpr, ConstraintDomain, ObjectiveSet};
 
@@ -1131,6 +1131,34 @@ pub struct SubComponentDecl {
     pub keyed_member_overrides: Vec<(reify_ir::MemberKey, Vec<(String, CompiledExpr)>)>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
+}
+
+impl SubComponentDecl {
+    /// The structure each instance of this sub is: a keyed sub's element
+    /// structure from `type_args[0]` (its `structure_name` is the `Keyed`
+    /// wrapper), otherwise `structure_name`. A `List<T>` sub already holds
+    /// `T` in `structure_name`.
+    pub fn element_structure_name(&self) -> &str {
+        match (self.keyed_members.is_empty(), self.type_args.first()) {
+            (false, Some(Type::StructureRef(name))) => name,
+            _ => &self.structure_name,
+        }
+    }
+
+    /// The Error that this sub's [`Self::element_structure_name`] names no
+    /// template its module can see, at check time and at eval time alike.
+    pub fn unknown_structure_diagnostic(&self) -> Diagnostic {
+        Diagnostic::error(format!(
+            "sub-component \"{}\" references unknown structure \"{}\"",
+            self.name,
+            self.element_structure_name()
+        ))
+        .with_code(DiagnosticCode::UnknownSubStructure)
+        .with_label(DiagnosticLabel::new(
+            self.span,
+            "references unknown structure",
+        ))
+    }
 }
 
 /// A compiled guarded group — a set of members/constraints active only when a guard condition is true.

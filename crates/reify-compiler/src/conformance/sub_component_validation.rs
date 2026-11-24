@@ -1,98 +1,55 @@
-//! Compile-time validation that every `sub` declaration's `structure_name`
-//! resolves to a known template in (local module ∪ prelude).
+//! Compile-time validation that every `sub` declaration's structure resolves
+//! to a template the declaring module can see.
 //!
-//! Task 4528. Mirrors the (module ∪ prelude) lookup performed at eval time by
-//! `find_template_with_prelude` (crates/reify-eval/src/engine_eval.rs:55) and
-//! the unknown-structure diagnostic emitted there (engine_eval.rs:2283/3476).
-//!
-//! The lookup set is the UNION of all prelude templates and local templates,
-//! with NO EntityKind filter — stdlib OCCURRENCE templates (e.g. STLOutput)
-//! must resolve, matching eval's behaviour. Compare with the filtered registries
-//! in `phase_pending_bound_checks` / `phase_sub_override_autos`, which restrict
-//! prelude to `EntityKind::Structure` for trait-bound purposes only.
+//! Task 4528; visibility per task #5523. The lookup set is the declaring
+//! module's definition-environment set for templates
+//! ([`name_env::resolve_visible`]): its own templates, each user import's
+//! `pub` templates, then every stdlib template — the set `reify_eval::DefEnv`
+//! resolves a sub's structure in at eval time, so check and eval agree on
+//! which names are unknown. There is NO EntityKind filter: stdlib OCCURRENCE
+//! templates (e.g. STLOutput) must resolve, as at eval. Compare the filtered
+//! registries in `phase_pending_bound_checks` / `phase_sub_override_autos`,
+//! which restrict the prelude to `EntityKind::Structure` for trait-bound
+//! purposes only.
 
 use super::*;
-use std::collections::HashSet;
+use crate::name_env;
 
-/// Validate that every `sub` declaration in every local template references a
-/// `structure_name` that exists in the combined (prelude ∪ local) template set.
-///
-/// For each violation, pushes a `Severity::Error` diagnostic with the message:
-/// `sub-component "{name}" references unknown structure "{structure_name}"`
-/// and a span label at the sub's source span.
+/// Validate that every `sub` declaration in every local template names a
+/// structure its module can see, pushing
+/// [`SubComponentDecl::unknown_structure_diagnostic`] for each that does not.
 ///
 /// # Semantics
 ///
 /// - Iterates **all** sub_components unconditionally (scalar `= Foo(...)`,
-///   collection `List<T>`, and specialization-scope forms), mirroring eval's
-///   unconditional loop. For collection subs, the element type name lands in
-///   `structure_name` (`is_collection=true`).
-/// - The lookup set is built from ALL templates across `prelude` (no
-///   `EntityKind` filter) plus `templates`, then `structure_name` is checked
-///   for membership.  This is semantically equivalent to eval's `or_else`
-///   chain: module-first, then prelude fallback (precedence only matters when
-///   SELECTING which template to use, not when checking EXISTENCE).
-/// - The message wording is byte-identical to the eval backstop so that users
-///   see the same text whether the error is caught at compile time or eval time.
-///   The compile-time version adds a span label (the compiler-diagnostic idiom,
-///   see termination.rs) to point at the offending sub in `reify check` output.
+///   collection `List<T>`, keyed, and specialization-scope forms), mirroring
+///   eval's unconditional loop, and checks each sub's
+///   [`SubComponentDecl::element_structure_name`].
+/// - The diagnostic is the one eval-time graph build reports too (same code,
+///   same text), so users see the same error whether check or eval catches
+///   it; at compile time its span label points at the offending sub in
+///   `reify check` output.
 ///
 /// # Relationship to termination.rs
 ///
 /// `check_recursive_termination` (termination.rs) checks SCC *membership* for
 /// subs that target a template WITHIN a recursive SCC — it does not check that
-/// the target EXISTS in the full (module ∪ prelude) set. This function fills
-/// that orthogonal role. If this function fires for a given sub,
-/// `check_recursive_termination` will silently skip it (the target is absent
-/// from both local templates and the SCC, so `scc.contains(&sub.structure_name)`
-/// is false).
+/// the target EXISTS. This function fills that orthogonal role. If this
+/// function fires for a given sub, `check_recursive_termination` will silently
+/// skip it (the target is absent from both local templates and the SCC, so
+/// `scc.contains(&sub.structure_name)` is false).
 pub(crate) fn check_sub_structure_existence(
     templates: &[TopologyTemplate],
     prelude: &[&CompiledModule],
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    // Build the set of known template names: prelude first, then local.
-    // No EntityKind filter — occurrence templates (STLOutput, STEPOutput, …)
-    // must resolve, matching eval's find_template_with_prelude contract.
-    let mut known: HashSet<&str> = HashSet::new();
-    for pm in prelude {
-        for t in &pm.templates {
-            known.insert(t.name.as_str());
-        }
-    }
-    for t in templates {
-        known.insert(t.name.as_str());
-    }
-
-    // Check every sub in every local template.
     for template in templates {
         for sub in &template.sub_components {
-            // Keyed subs (task 3931 γ) carry the element structure in
-            // `type_args[0]`; their `structure_name` is the "Keyed" wrapper,
-            // which is never a known template. Resolve the element name so the
-            // existence check (and any diagnostic) targets the element, mirroring
-            // the eval-time `effective_structure_name` resolution in
-            // engine_eval.rs. (Collection `List<T>` subs already store the
-            // element in `structure_name`; only keyed subs need this.)
-            let effective_structure_name: &str = if sub.keyed_members.is_empty() {
-                &sub.structure_name
-            } else {
-                match sub.type_args.first() {
-                    Some(reify_core::Type::StructureRef(name)) => name,
-                    _ => &sub.structure_name,
-                }
-            };
-            if !known.contains(effective_structure_name) {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "sub-component \"{}\" references unknown structure \"{}\"",
-                        sub.name, effective_structure_name
-                    ))
-                    .with_label(DiagnosticLabel::new(
-                        sub.span,
-                        "references unknown structure",
-                    )),
-                );
+            let target = sub.element_structure_name();
+            if name_env::resolve_visible::<TopologyTemplate, _>(templates, prelude, target)
+                .is_none()
+            {
+                diagnostics.push(sub.unknown_structure_diagnostic());
             }
         }
     }
