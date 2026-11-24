@@ -59,8 +59,9 @@
 # a deps file deleted in THIS pass (age or eviction) and has no
 # <profile>/build/<pkg>-<hash> dir, also delete .fingerprint/<pkg>-<hash>/ and
 # each depth-1 deps/*.dwo whose name, cut at its FIRST dot, ends in that
-# -<hash> (the later 16-hex cgu token is not a unit hash). Order: deps files, then shards, then records, each stage
-# only after the previous one succeeded, so a failed unlink leaves the record.
+# -<hash> (the later 16-hex cgu token is not a unit hash). Order: deps files,
+# then shards, then records, each stage only after the previous one succeeded,
+# so a failed unlink leaves the record.
 #   Safe: a unit whose deps are gone is rebuilt whether or not its record
 #   survives. Build-script units own no deps files, so they keep their records
 #   and build/ outputs, which a later build can still reuse as Fresh.
@@ -476,7 +477,7 @@ if [ -n "$FREE_FLOOR_GIB" ]; then
         fi
         [ "$_free" -lt "$_floor_bytes" ] || break
         _deficit=$(( _floor_bytes - _free ))
-        info "free ${_free} bytes is below the ${FREE_FLOOR_GIB} GiB floor; evicting up to ${_deficit} bytes from $_profile."
+        info "free ${_free} bytes is below the ${FREE_FLOOR_GIB} GiB floor; evicting whole units from $_profile, least recently consulted first, until they cover the ${_deficit}-byte deficit or none is left."
         _prune_profile "$_profile" "free_floor_gib=$FREE_FLOOR_GIB protect_hours=$PROTECT_HOURS" \
             _select_lru_prefix "$(( PROTECT_HOURS * 3600 ))" "$_deficit"
     done
