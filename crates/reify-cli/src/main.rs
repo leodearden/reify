@@ -60,7 +60,7 @@ fn main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
         "--version" | "-V" => {
-            println!("reify {}", env!("CARGO_PKG_VERSION"));
+            println!("reify {}", reify_version::VERSION);
             return ExitCode::SUCCESS;
         }
         _ => {}

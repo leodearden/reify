@@ -149,3 +149,30 @@ fn build_no_file_shows_usage() {
         "should show usage message, got: {stderr}"
     );
 }
+
+#[test]
+fn version_flags_print_the_reify_version_crate_version() {
+    for flag in ["--version", "-V"] {
+        let output = Command::new(test_package::bin_exe("reify"))
+            .arg(flag)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .expect("failed to execute reify binary");
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert!(
+            output.status.success(),
+            "reify {flag} should exit zero, got {:?}; stderr: {stderr}",
+            output.status
+        );
+        assert_eq!(
+            stdout,
+            format!("reify {}\n", reify_version::VERSION),
+            "reify {flag} stdout"
+        );
+    }
+}

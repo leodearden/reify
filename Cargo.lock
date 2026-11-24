@@ -4317,6 +4317,7 @@ dependencies = [
  "reify-stdlib",
  "reify-syntax",
  "reify-test-support",
+ "reify-version",
  "serde_json",
  "tar",
  "tempfile",
@@ -4587,6 +4588,7 @@ dependencies = [
  "reify-stdlib",
  "reify-syntax",
  "reify-test-support",
+ "reify-version",
  "serde",
  "serde_json",
  "tauri",
@@ -4867,6 +4869,13 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tracing",
+ "workspace-feature-union",
+]
+
+[[package]]
+name = "reify-version"
+version = "0.1.0"
+dependencies = [
  "workspace-feature-union",
 ]
 

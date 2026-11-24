@@ -1,0 +1,9 @@
+[package]
+name = "reify-version"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The version every shipped Reify binary reports"
+
+[dependencies]
+workspace-feature-union.workspace = true

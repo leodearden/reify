@@ -1,6 +1,5 @@
 {
   "productName": "Reify",
-  "version": "0.1.0",
   "identifier": "dev.reify.app",
   "build": {
     "beforeDevCommand": "npm run dev -- --port 1420",
