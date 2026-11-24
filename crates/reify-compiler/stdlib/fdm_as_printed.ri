@@ -14,7 +14,7 @@
 //   - `as_printed_material` — `@optimized("fdm::as_printed_material_r_fast")`
 //                            ComputeNode producing the material field
 //
-// Dependencies, imported below: `AnisotropicMaterial` / `MaterialFrame`
+// Dependencies, imported below: `AnisotropicMaterial`
 // (std.constitutive), `FDMProcess` (std.fdm) and `FDMCouponOverride`
 // (std.fdm.correlations).
 

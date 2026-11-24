@@ -255,7 +255,7 @@ fn field_oob_warning_emitted_exactly_once_across_serve_modes() {
 /// positive-definite diagonal `diag(0.10, 0.10, 0.10)` (all eigenvalues > 0 ⇒
 /// PSD), so the MassProperties PSD post-pass leaves the cell intact and emits
 /// no `DynamicsInertiaNotPSD` diagnostic on EVERY serve mode.
-/// `MassProperties` / `point3` / `vec3` / `Frame3` resolve through the growing
+/// `MassProperties` / `point3` resolve through the growing
 /// prelude (cf. `examples/dynamics/closed_4bar_idyn.ri`), so no OCCT kernel is
 /// needed — this exercises the detector's classification path directly, unlike
 /// the OCCT-gated `body_mass_props(...)` fixtures in
@@ -271,7 +271,7 @@ const VALID_MASS_PROPS_SRC: &str = r#"
 structure MpModel {
     param touched : Bool = false
     let flag = touched
-    let mp = MassProperties(mass: 1kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.10, 0.0, 0.0], [0.0, 0.10, 0.0], [0.0, 0.0, 0.10]], origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0.0, 0.0, 0.0), y_axis: vec3(0.0, 0.0, 0.0), z_axis: vec3(0.0, 0.0, 0.0)))
+    let mp = MassProperties(mass: 1kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.10, 0.0, 0.0], [0.0, 0.10, 0.0], [0.0, 0.0, 0.10]])
 }
 "#;
 

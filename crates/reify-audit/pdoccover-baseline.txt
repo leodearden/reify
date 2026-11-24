@@ -47,7 +47,6 @@ body_mass_props
 envelope_displacement_magnitude
 envelope_max_principal
 envelope_von_mises
-frame_at
 is_bounded
 is_closed
 is_connected

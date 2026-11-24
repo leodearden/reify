@@ -1,4 +1,5 @@
-//! The shared `&Value` readers for directions and frame bases
+//! The shared `&Value` readers for directions and frame bases, and the
+//! basis→quaternion inverse of the frame-basis reader
 //! (docs/prds/v0_6/direction-typing.md §5 C3/C8).
 
 use std::fmt;
@@ -36,6 +37,41 @@ impl fmt::Display for DecodeDirectionError {
 }
 
 impl std::error::Error for DecodeDirectionError {}
+
+/// The rotation invariant a basis given to [`basis_quaternion`] failed, with
+/// the offending value. Checks run in declaration order, so a later variant
+/// implies every earlier check passed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum NotARotation {
+    NonFinite { row: usize, col: usize, value: f64 },
+    NonUnitAxis { row: usize, length: f64 },
+    NonOrthogonalAxes { rows: [usize; 2], dot: f64 },
+    LeftHanded { determinant: f64 },
+}
+
+impl fmt::Display for NotARotation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            NotARotation::NonFinite { row, col, value } => {
+                write!(f, "basis row {row} component {col} is {value}, not finite")
+            }
+            NotARotation::NonUnitAxis { row, length } => {
+                write!(f, "basis row {row} has length {length}, not 1")
+            }
+            NotARotation::NonOrthogonalAxes { rows: [a, b], dot } => {
+                write!(f, "basis rows {a} and {b} have dot product {dot}, not 0")
+            }
+            NotARotation::LeftHanded { determinant } => {
+                write!(
+                    f,
+                    "basis has determinant {determinant}, not 1: it is left-handed"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for NotARotation {}
 
 /// Accepts only `Value::Direction`: a raw `Vector` is not a direction.
 pub fn decode_direction(v: &Value) -> Result<UnitVec3, DecodeDirectionError> {
@@ -83,6 +119,90 @@ pub fn frame_basis(frame: &Value) -> Result<[[f64; 3]; 3], DecodeDirectionError>
             1.0 - 2.0 * (x * x + y * y),
         ],
     ])
+}
+
+const ROTATION_TOLERANCE: f64 = 1e-6;
+
+/// The inverse of [`frame_basis`]: the unit `[w, x, y, z]` quaternion whose
+/// frame has `rows` as its x, y and z axes. Refused unless `rows` is a finite,
+/// right-handed orthonormal basis within [`ROTATION_TOLERANCE`].
+pub fn basis_quaternion(rows: [[f64; 3]; 3]) -> Result<[f64; 4], NotARotation> {
+    check_rotation(rows)?;
+    let r = |row: usize, col: usize| rows[col][row];
+    let trace = r(0, 0) + r(1, 1) + r(2, 2);
+    let (w, x, y, z) = if trace > 0.0 {
+        let s = (trace + 1.0).sqrt() * 2.0;
+        (
+            0.25 * s,
+            (r(2, 1) - r(1, 2)) / s,
+            (r(0, 2) - r(2, 0)) / s,
+            (r(1, 0) - r(0, 1)) / s,
+        )
+    } else if r(0, 0) > r(1, 1) && r(0, 0) > r(2, 2) {
+        let s = (1.0 + r(0, 0) - r(1, 1) - r(2, 2)).sqrt() * 2.0;
+        (
+            (r(2, 1) - r(1, 2)) / s,
+            0.25 * s,
+            (r(0, 1) + r(1, 0)) / s,
+            (r(0, 2) + r(2, 0)) / s,
+        )
+    } else if r(1, 1) > r(2, 2) {
+        let s = (1.0 - r(0, 0) + r(1, 1) - r(2, 2)).sqrt() * 2.0;
+        (
+            (r(0, 2) - r(2, 0)) / s,
+            (r(0, 1) + r(1, 0)) / s,
+            0.25 * s,
+            (r(1, 2) + r(2, 1)) / s,
+        )
+    } else {
+        let s = (1.0 - r(0, 0) - r(1, 1) + r(2, 2)).sqrt() * 2.0;
+        (
+            (r(1, 0) - r(0, 1)) / s,
+            (r(0, 2) + r(2, 0)) / s,
+            (r(1, 2) + r(2, 1)) / s,
+            0.25 * s,
+        )
+    };
+    let n = (w * w + x * x + y * y + z * z).sqrt();
+    Ok([w / n, x / n, y / n, z / n])
+}
+
+fn check_rotation(rows: [[f64; 3]; 3]) -> Result<(), NotARotation> {
+    let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let off = |value: f64, target: f64| (value - target).abs() > ROTATION_TOLERANCE;
+    for (row, axis) in rows.iter().enumerate() {
+        for (col, &value) in axis.iter().enumerate() {
+            if !value.is_finite() {
+                return Err(NotARotation::NonFinite { row, col, value });
+            }
+        }
+    }
+    for (row, &axis) in rows.iter().enumerate() {
+        let length = dot(axis, axis).sqrt();
+        if off(length, 1.0) {
+            return Err(NotARotation::NonUnitAxis { row, length });
+        }
+    }
+    for [a, b] in [[0, 1], [0, 2], [1, 2]] {
+        let product = dot(rows[a], rows[b]);
+        if off(product, 0.0) {
+            return Err(NotARotation::NonOrthogonalAxes {
+                rows: [a, b],
+                dot: product,
+            });
+        }
+    }
+    let [x, y, z] = rows;
+    let cross_yz = [
+        y[1] * z[2] - y[2] * z[1],
+        y[2] * z[0] - y[0] * z[2],
+        y[0] * z[1] - y[1] * z[0],
+    ];
+    let determinant = dot(x, cross_yz);
+    if off(determinant, 1.0) {
+        return Err(NotARotation::LeftHanded { determinant });
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -244,6 +364,110 @@ mod tests {
         assert_eq!(
             frame_basis(&real_basis),
             Err(DecodeDirectionError::MalformedFrameBasis { got: "Real" })
+        );
+    }
+
+    #[test]
+    fn basis_quaternion_of_identity_rows_is_exactly_the_identity_quaternion() {
+        let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let q = basis_quaternion(identity).expect("the identity is a rotation");
+        assert_eq!(q.map(f64::to_bits), [1.0, 0.0, 0.0, 0.0].map(f64::to_bits));
+        let rows = frame_basis(&frame(q[0], q[1], q[2], q[3])).unwrap();
+        assert_eq!(row_bits(rows), row_bits(identity));
+    }
+
+    #[test]
+    fn basis_quaternion_reads_rows_as_axes_not_columns() {
+        let cyclic = [[0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]];
+        let q = basis_quaternion(cyclic).expect("the cyclic basis is a rotation");
+        for (i, (got, want)) in q.iter().zip([0.5, 0.5, 0.5, 0.5]).enumerate() {
+            assert!((got - want).abs() <= 1e-12, "component {i}: got {q:?}");
+        }
+        assert_rows_close(frame_basis(&frame(q[0], q[1], q[2], q[3])).unwrap(), cyclic);
+    }
+
+    fn assert_round_trips(q: [f64; 4]) {
+        let rows = frame_basis(&frame(q[0], q[1], q[2], q[3]))
+            .unwrap_or_else(|e| panic!("quaternion {q:?}: {e}"));
+        let q2 = basis_quaternion(rows)
+            .unwrap_or_else(|e| panic!("frame_basis of {q:?} is a rotation: {rows:?}: {e}"));
+        assert_rows_close(
+            frame_basis(&frame(q2[0], q2[1], q2[2], q2[3])).unwrap(),
+            rows,
+        );
+    }
+
+    #[test]
+    fn basis_quaternion_round_trips_frame_basis() {
+        let mut rng = SplitMix64(0xB0A5_15C0_47E2_9D11);
+        let mut checked = 0usize;
+        while checked < 1000 {
+            let q = [
+                rng.symmetric(),
+                rng.symmetric(),
+                rng.symmetric(),
+                rng.symmetric(),
+            ];
+            if q.iter().map(|c| c * c).sum::<f64>().sqrt() < 1e-6 {
+                continue;
+            }
+            checked += 1;
+            assert_round_trips(q);
+        }
+        for half_turn in [
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+            [0.0, FRAC_1_SQRT_2, FRAC_1_SQRT_2, 0.0],
+        ] {
+            assert_round_trips(half_turn);
+        }
+    }
+
+    #[test]
+    fn basis_quaternion_rejects_a_non_rotation() {
+        let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let mut nan = identity;
+        nan[1][2] = f64::NAN;
+        let mut infinite = identity;
+        infinite[0][0] = f64::INFINITY;
+        let mut scaled = identity;
+        scaled[2] = [0.0, 0.0, 2.0];
+        let parallel = [[1.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
+        let left_handed = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]];
+        assert!(
+            matches!(
+                basis_quaternion(nan),
+                Err(NotARotation::NonFinite { row: 1, col: 2, value }) if value.is_nan()
+            ),
+            "{:?}",
+            basis_quaternion(nan)
+        );
+        assert_eq!(
+            basis_quaternion(infinite),
+            Err(NotARotation::NonFinite {
+                row: 0,
+                col: 0,
+                value: f64::INFINITY
+            })
+        );
+        assert_eq!(
+            basis_quaternion(scaled),
+            Err(NotARotation::NonUnitAxis {
+                row: 2,
+                length: 2.0
+            })
+        );
+        assert_eq!(
+            basis_quaternion(parallel),
+            Err(NotARotation::NonOrthogonalAxes {
+                rows: [0, 1],
+                dot: 1.0
+            })
+        );
+        assert_eq!(
+            basis_quaternion(left_handed),
+            Err(NotARotation::LeftHanded { determinant: -1.0 })
         );
     }
 }

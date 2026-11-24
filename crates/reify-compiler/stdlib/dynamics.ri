@@ -9,7 +9,7 @@
 // (wired in reify-eval/src/engine_eval.rs, RBD-α task 3822).
 //
 // Surface:
-//   - structure def MassProperties        (mass, com, inertia, origin;
+//   - structure def MassProperties        (mass, com, inertia;
 //                                          constraint mass >= 0kg)
 //   - trait JointForceValue               (marker for force payload variants)
 //   - structure def ScalarForce           : JointForceValue (magnitude : Force)
@@ -23,8 +23,7 @@
 //   - structure def MotionTrajectory      (mechanism, samples)
 //
 // Dependencies: the `import` lines below — `std.kinematic` (Mechanism /
-// Snapshot), `std.ports` (Frame3, encoding note 3) and `std.trajectory`
-// (JointValue).
+// Snapshot) and `std.trajectory` (JointValue).
 //
 // Encoding notes:
 //   1. `JointForceValue` is a marker trait + refining structures. This is
@@ -36,9 +35,8 @@
 //   2. Multi-component force payloads (CylForce/PlanarForce/SphereForce) are
 //      typed `List<Real>`. Fixed-array syntax `[Real;N]` is not supported in
 //      the grammar. Per PRD §4.2, arity is shape-validated by the η dispatcher.
-//   3. `origin` is the real `Frame3` struct (declared in std.ports, shipped
-//      constructible by task 4254, and imported below). `mechanism`
-//      (Mechanism) and `joint_id` (BodyId) still use `Real` placeholders with
+//   3. MassProperties carries no frame of its own (see its comment below).
+//      `mechanism` (Mechanism) and `joint_id` (BodyId) use `Real` placeholders with
 //      TODO(…-type) comments — same convention as trajectory.ri // ptodo:allow type-placeholder awaiting future type-system PRD
 //      `mechanism : Real`, `Pose3 = Real`, and JointLimit.joint : Real.
 //      Retargeting each placeholder propagates the type tightening to every
@@ -54,7 +52,6 @@
 module std.dynamics
 
 import std.kinematic
-import std.ports
 import std.trajectory
 
 // ── MassProperties ────────────────────────────────────────────────────────
@@ -70,11 +67,11 @@ import std.trajectory
 //                                    (dynamics_psd.rs); non-PSD inertia replaces
 //                                    the instance with Value::Undef and emits
 //                                    E_DynamicsInertiaNotPSD.
-//   origin  : Frame3                — body-frame origin pose. Retargeted (task
-//                                    4547) from the old `Real` placeholder to the
-//                                    real `Frame3` struct declared in std.ports
-//                                    (shipped constructible by task 4254), which
-//                                    this module imports.
+//
+// Body-frame convention: `com` and `inertia` are expressed in the body's own
+// frame — the frame its joint places it in — and the dynamics solver reads
+// them that way. MassProperties carries no frame of its own; a real body pose
+// would be a later widening (direction-typing D6).
 //
 // Declarative constraint:
 //   `constraint mass >= 0kg` fires at ctor time via SIR-α
@@ -85,7 +82,6 @@ structure def MassProperties {
     param mass : Mass
     param com : Point3<Length>
     param inertia : Matrix<3, 3, MomentOfInertia>
-    param origin : Frame3
 
     // Non-negativity guard: mass must be physically valid at construction.
     // The RHS is `0kg` by the convention stated in header decision 4 above (an

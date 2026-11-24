@@ -46,8 +46,7 @@ pub struct MassProperties {
 
 impl MassProperties {
     /// The resolved instance: `mass` a MASS scalar, `com` a `Value::Point` of
-    /// LENGTHs, `inertia` a 3×3 `Value::Matrix` of MOMENT_OF_INERTIAs, and
-    /// `origin` the default zero `Frame3`.
+    /// LENGTHs, and `inertia` a 3×3 `Value::Matrix` of MOMENT_OF_INERTIAs.
     pub fn to_value(&self) -> Value {
         let scalar = |si_value, dimension| Value::Scalar {
             si_value,
@@ -137,8 +136,7 @@ impl MassProperties {
     }
 }
 
-/// The one `MassProperties` mint: the three geometric fields plus the default
-/// zero-`Frame3` `origin`.
+/// The one `MassProperties` mint: exactly its three declared fields.
 fn instance(mass: Value, com: Value, inertia: Value) -> Value {
     mint_registry_free_instance(
         TYPE_NAME,
@@ -146,35 +144,6 @@ fn instance(mass: Value, com: Value, inertia: Value) -> Value {
             ("mass".to_string(), mass),
             ("com".to_string(), com),
             ("inertia".to_string(), inertia),
-            ("origin".to_string(), default_frame3()),
-        ],
-    )
-}
-
-/// Mint the default zero-`Frame3` `Value::StructureInstance` carried as
-/// `MassProperties.origin` (task 4547, Disposition 1).
-///
-/// `Frame3` (declared in `std.ports`, `ports.ri`) has four 3-vector members whose
-/// quantity slots are NOT uniform (task 5848): `origin` is a position, so
-/// `Vector3<Length>`; `x_axis` / `y_axis` / `z_axis` are directions, so
-/// `Vector3<Dimensionless>`. The default is therefore one zero length-vector plus
-/// three zero dimensionless vectors — the axes as `Value::Real`, the house
-/// representation for a dimensionless quantity (Invariant V), which is also what
-/// the DSL spelling `vec3(0.0, 0.0, 0.0)` evaluates to. Minting a real `Frame3`
-/// keeps the runtime value faithful to the declared `origin : Frame3` type.
-fn default_frame3() -> Value {
-    // The ZERO magnitude is load-bearing, not a placeholder: every producer
-    // emits this identical `origin`, so the degenerate basis must NOT be
-    // "improved" into an identity basis here.
-    let zero_position = || Value::Vector(vec![Value::length(0.0); 3]);
-    let zero_direction = || Value::Vector(vec![Value::Real(0.0); 3]);
-    mint_registry_free_instance(
-        "Frame3",
-        vec![
-            ("origin".to_string(), zero_position()),
-            ("x_axis".to_string(), zero_direction()),
-            ("y_axis".to_string(), zero_direction()),
-            ("z_axis".to_string(), zero_direction()),
         ],
     )
 }
@@ -382,7 +351,7 @@ mod tests {
         assert_eq!(data.type_name, "MassProperties");
         let mut keys: Vec<&str> = data.fields.keys().map(String::as_str).collect();
         keys.sort_unstable();
-        assert_eq!(keys, ["com", "inertia", "mass", "origin"]);
+        assert_eq!(keys, ["com", "inertia", "mass"]);
 
         assert_eq!(
             field(&v, "mass"),
@@ -412,26 +381,6 @@ mod tests {
                 row, &want,
                 "inertia row {r} must be MOMENT_OF_INERTIA scalars"
             );
-        }
-
-        // origin: the default zero Frame3 — a position (LENGTH zeros) plus three
-        // directions (dimensionless zeros, `Value::Real` per Invariant V). The
-        // all-zero basis is the production default, not a placeholder to
-        // "improve" into an identity basis.
-        let origin = field(&v, "origin");
-        assert_eq!(instance_data(origin).type_name, "Frame3");
-        let components = |member: &str| -> Vec<Value> {
-            match field(origin, member) {
-                Value::Vector(c) if c.len() == 3 => c.clone(),
-                other => panic!("Frame3.{member} must be a 3-component Vector, got {other:?}"),
-            }
-        };
-        assert_eq!(components("origin"), vec![Value::length(0.0); 3]);
-        for member in ["x_axis", "y_axis", "z_axis"] {
-            for (i, c) in components(member).into_iter().enumerate() {
-                assert_eq!(c, Value::Real(0.0), "Frame3.{member}[{i}]");
-                assert!(c.dimension().is_dimensionless(), "Frame3.{member}[{i}]");
-            }
         }
     }
 
@@ -499,7 +448,10 @@ mod tests {
                 "{name} must be the honest Undef"
             );
         }
-        assert_eq!(field(&v, "origin"), field(&sample().to_value(), "origin"));
+        assert!(
+            instance_data(&v).fields.get("origin").is_none(),
+            "MassProperties carries no origin"
+        );
         assert_eq!(MassProperties::from_value(&v), None);
     }
 

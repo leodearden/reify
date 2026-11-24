@@ -14,7 +14,7 @@ use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 /// Inline copy of `examples/dynamics/pendulum_idyn.ri` (a 1 kg point mass
 /// 100 mm below a revolute joint, held at θ = −30°).
 const PENDULUM_SOURCE: &str = "structure def PendulumIdyn {
-    let mp = MassProperties(mass: 1kg, com: point3(0mm, 0mm, -100mm), inertia: [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]], origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0, 0, 0), y_axis: vec3(0, 0, 0), z_axis: vec3(0, 0, 0)))
+    let mp = MassProperties(mass: 1kg, com: point3(0mm, 0mm, -100mm), inertia: [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
     let axis_y = dir(0, 1, 0)
     let joint = revolute(axis_y, -180deg .. 180deg)
     let m0 = mechanism()

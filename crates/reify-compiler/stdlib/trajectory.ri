@@ -111,9 +111,10 @@ pub type Pose3 = Transform3
 // was "required syntactically" and named fdm.ri's `build_direction` and
 // ports.ri's Frame3 members as the convention to copy. `build_direction` was
 // mis-typed outright and is now dimensionless. Frame3 was mis-typed only in
-// part, and is the clearest illustration of the rule: its three axes moved to
-// the dimensionless slot while `origin` KEEPS Length, because a position is
-// not a direction. Copying a neighbour's spelling is what produced both bugs.
+// part, and illustrated the rule: its three axes moved to the dimensionless
+// slot while `origin` kept Length, because a position is not a direction
+// (task 9639 later deleted Frame3; a port frame is the `Frame` datum).
+// Copying a neighbour's spelling is what produced both bugs.
 //
 // Two anchors make the ruling checkable rather than advisory: the joint axis
 // fields in kinematic.ri, which have since moved on to `Direction` and are read

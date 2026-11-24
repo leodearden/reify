@@ -119,18 +119,15 @@ fn law_constant(aniso: &Value, key: &str) -> f64 {
     }
 }
 
-/// Read the material frame's `x_axis` (the dominant bead direction for R0, an
+/// Read the material frame's x axis (the dominant bead direction for R0, an
 /// arbitrary build-Z complement for R-fast).
 fn frame_x_axis(aniso: &Value) -> [f64; 3] {
     let Value::StructureInstance(data) = aniso else {
         panic!("expected AnisotropicMaterial StructureInstance, got {aniso:?}");
     };
     let frame = data.fields.get("frame").expect("AnisotropicMaterial.frame");
-    let Value::StructureInstance(frame) = frame else {
-        panic!("expected frame StructureInstance, got {frame:?}");
-    };
-    let x = frame.fields.get("x_axis").expect("MaterialFrame.x_axis");
-    point_components(x)
+    reify_ir::frame_basis(frame)
+        .unwrap_or_else(|e| panic!("AnisotropicMaterial.frame must be a Frame: {e}"))[0]
 }
 
 fn point_components(v: &Value) -> [f64; 3] {

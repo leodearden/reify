@@ -4073,36 +4073,20 @@ mod tests {
         }
     }
 
-    // ── task-4547 step-3 RED: MassProperties.origin is a Frame3, not Real ───────
+    // ── B10 (direction-typing η): MassProperties carries no origin ──────────────
     //
-    // Disposition 1 retargets `MassProperties.origin` from the `Real` placeholder
-    // (the `Value::Real(0.0)` sentinel) to the real `Frame3` struct (declared in
-    // std.ports). Both constructors mint through `MassProperties::to_value`, so
-    // `mass_properties(...)` and `point_mass(...)` must mint `origin` as a
-    // `Value::StructureInstance` with `type_name == "Frame3"`.
+    // Both constructors mint through `MassProperties::to_value`, so neither
+    // `mass_properties(...)` nor `point_mass(...)` may print an `origin` field.
     #[test]
-    fn mass_properties_origin_is_frame3_not_real() {
-        fn origin_of(mp: &Value) -> Value {
+    fn mass_properties_and_point_mass_mint_no_origin_field() {
+        fn assert_no_origin(mp: &Value, ctor: &str) {
             match mp {
-                Value::StructureInstance(d) => d
-                    .fields
-                    .get("origin")
-                    .cloned()
-                    .expect("MassProperties must carry an `origin` field"),
-                other => panic!("expected a MassProperties StructureInstance, got {other:?}"),
-            }
-        }
-        fn assert_frame3(origin: &Value, ctor: &str) {
-            match origin {
-                Value::StructureInstance(d) => assert_eq!(
-                    d.type_name, "Frame3",
-                    "{ctor}: origin must be a Frame3 StructureInstance, got type_name {:?}",
-                    d.type_name
+                Value::StructureInstance(d) => assert!(
+                    d.fields.get("origin").is_none(),
+                    "{ctor}: MassProperties must carry no `origin` field, got {:?}",
+                    d.fields.get("origin")
                 ),
-                other => panic!(
-                    "{ctor}: origin must be a Frame3 StructureInstance (not the old \
-                     Value::Real(0.0) placeholder), got {other:?}"
-                ),
+                other => panic!("{ctor}: expected a MassProperties StructureInstance, got {other:?}"),
             }
         }
 
@@ -4112,7 +4096,7 @@ mod tests {
             &[Value::Scalar { si_value: 2.5, dimension: DimensionVector::MASS }],
         )
         .expect("point_mass is a recognised dynamics constructor");
-        assert_frame3(&origin_of(&pm), "point_mass");
+        assert_no_origin(&pm, "point_mass");
 
         // mass_properties(mass, com, inertia) → MassProperties::to_value
         let com_val =
@@ -4132,7 +4116,7 @@ mod tests {
             ],
         )
         .expect("mass_properties is a recognised dynamics constructor");
-        assert_frame3(&origin_of(&mp), "mass_properties");
+        assert_no_origin(&mp, "mass_properties");
     }
 
     #[test]

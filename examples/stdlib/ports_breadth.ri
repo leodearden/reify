@@ -17,8 +17,8 @@
 // This file is auto-covered by examples_smoke.rs (directory walk).
 
 // All types here come from the stdlib prelude with no inline redeclaration:
-// std.ports supplies Frame3; the three submodules supply the port traits,
-// ThreadSpec, and the thread/fluid enums.
+// std.ports and its three submodules supply the port traits, ThreadSpec, and
+// the thread/fluid enums; a port frame is the built-in `Frame` datum.
 import std.ports
 import std.ports.mechanical
 import std.ports.thermal
@@ -49,12 +49,7 @@ structure def ThreadAssembly {
 
 structure def AsymmetricRig {
     port mech : out MechanicalPort {
-        param frame : Frame3 = Frame3(
-            origin: vec3(0mm, 0mm, 0mm),
-            x_axis: vec3(1, 0, 0),
-            y_axis: vec3(0, 1, 0),
-            z_axis: vec3(0, 0, 1)
-        )
+        param frame : Frame = frame_at(point3(0mm, 0mm, 0mm), dir(1, 0, 0), dir(0, 0, 1))
     }
     port heat : in ThermalPort {
         param heat_flow : Power = 10W
@@ -80,12 +75,7 @@ structure def HydroConformer {
         param flow_rate : VolumetricFlowRate = 1gal / 1s
         param medium : String = "hydraulic_oil"
         param fluid_type : FluidType = FluidType.Liquid
-        param frame : Frame3 = Frame3(
-            origin: vec3(0mm, 0mm, 0mm),
-            x_axis: vec3(1, 0, 0),
-            y_axis: vec3(0, 1, 0),
-            z_axis: vec3(0, 0, 1)
-        )
+        param frame : Frame = frame_at(point3(0mm, 0mm, 0mm), dir(1, 0, 0), dir(0, 0, 1))
         param fitting_type : FittingStandard = FittingStandard.NPT
     }
 }

@@ -1050,15 +1050,8 @@ trait Port {
 
 enum Directionality { In, Out, Bidi }
 
-structure def Frame3 {
-    param origin : Vector3<Length>
-    param x_axis : Vector3<Dimensionless>
-    param y_axis : Vector3<Dimensionless>
-    param z_axis : Vector3<Dimensionless>
-}
-
 trait LocatedPort : Port {
-    param frame : Frame3
+    param frame : Frame
 }
 
 trait RegionPort : LocatedPort {
