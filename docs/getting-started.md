@@ -1,6 +1,6 @@
 # Getting Started with Reify
 
-This walks through editing your first `.ri` file, re-running it, and opening the GUI. Assumes you've already finished the `Install` section in the top-level [README](../README.md) (the `.deb` or AppImage from the release page). Contributors building from source, from the checkout root: use `./target/release/reify` and `examples/m5_geometry.ri` wherever this guide says `reify` and `m5_geometry.ri`, and skip the curl.
+This walks through editing your first `.ri` file, re-running it, and opening the GUI. Assumes you've already finished the `Install` section in the top-level [README](../README.md) (the `.deb` or AppImage from the release page). AppImage users: use `./Reify_*_amd64.AppImage cli` wherever this guide says `reify`. Contributors building from source, from the checkout root: use `./target/release/reify` and `examples/m5_geometry.ri` wherever this guide says `reify` and `m5_geometry.ri`, and skip the curl.
 
 The examples live in the repository, not in the package. Fetch the one this guide uses into your current directory:
 

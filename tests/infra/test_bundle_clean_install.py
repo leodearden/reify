@@ -30,7 +30,13 @@ asserted first (no /opt/reify-deps, only the stock apt sources):
     deb's control Version (task 10485): the installed `reify --version` and
     `reify-gui --version` (the AppImage's run through the AppImage itself, which
     is also named for that version) and the rendering GUI's debug-MCP
-    initialize serverInfo.version.
+    initialize serverInfo.version;
+  * reify-gui answers its own command line before any window exists (task
+    10487), on the deb and through the AppImage itself: `--help` prints usage
+    and exits 0 in a container with no display, and `cli --version` runs the
+    bundled reify CLI. The AppImage's `cli check` and its GUI launch take a
+    path relative to the caller's directory, though AppRun.wrapped chdirs into
+    $APPDIR/usr before it execs reify-gui.
 
 The sandboxed turn: the sidecar gets REIFY_LANDLOCK_EXEC at the helper's
 installed path (tauri's Linux resource dir, where gui/src-tauri/src/main.rs
@@ -47,6 +53,7 @@ is about to publish (B7 before any tag, task 10079).
 
 import json
 import os
+import posixpath
 import re
 import secrets
 import shlex
@@ -64,6 +71,10 @@ DOCKER_CREATE_PROBE = REPO_ROOT / "scripts" / "docker-create-probe.sh"
 ARM_VAR = "REIFY_RUN_BUNDLE_CLEAN_INSTALL"
 BASE_IMAGE = "ubuntu:24.04"
 EXAMPLE = "/work/examples/m5_geometry.ri"
+EXAMPLE_DIR, EXAMPLE_NAME = posixpath.split(EXAMPLE)
+# Only this marker is asserted here; gui/src-tauri/tests/command_line.rs pins
+# the whole --help text against command_line::USAGE.
+USAGE_PREFIX = "Usage: "
 DEBUG_PORT = 3939
 GUI_ENV = {
     "REIFY_DEBUG": "1",
@@ -213,6 +224,18 @@ class Container:
             (proc.returncode, reported), (0, expected),
             f"in {self.name}: {command}\nstderr:\n{stderr[-2000:]}")
         _log(f"{self.name}: {command} reports {reported!r}")
+
+    def assert_usage(self, command):
+        """`command` exits 0 and its first stdout line, its stderr kept apart,
+        begins USAGE_PREFIX. Either failure shows that stderr."""
+        proc = self.run(f"{command} 2>{VERSION_ERR}")
+        first_line = next(iter(proc.stdout.splitlines()), "")
+        stderr = self.run(f"cat {VERSION_ERR}").stdout
+        self.test.assertEqual(
+            (proc.returncode, first_line.startswith(USAGE_PREFIX)), (0, True),
+            f"in {self.name}: {command}\nstdout:\n{proc.stdout[-2000:]}\n"
+            f"stderr:\n{stderr[-2000:]}")
+        _log(f"{self.name}: {command} prints {first_line!r}")
 
     def assert_debug_server_reports(self, expected):
         """The running GUI's debug-MCP initialize answers serverInfo.version `expected`."""
@@ -417,6 +440,8 @@ class BundleCleanInstall(unittest.TestCase):
         self.assertEqual(box.check("command -v reify").strip(), "/usr/bin/reify")
         box.assert_reports("reify --version", f"reify {self.version}")
         box.assert_reports("reify-gui --version", f"reify-gui {self.version}")
+        box.assert_usage("reify-gui --help")
+        box.assert_reports("reify-gui cli --version", f"reify {self.version}")
         box.assert_none_installed(BUNDLED_NOT_DEPENDED)
         box.check(f"reify check {EXAMPLE}")
         box.assert_gui_renders(f"xvfb-run -a reify-gui {EXAMPLE}")
@@ -438,13 +463,16 @@ class BundleCleanInstall(unittest.TestCase):
         box.apt_install("xvfb", "xauth", "curl", *DESKTOP_STAND_IN)
         box.assert_none_installed(BUNDLED_NOT_DEPENDED)
         box.assert_none_installed(APPIMAGE_CARRIES_WEBKIT)
-        box.check(f"mkdir -p /tmp/extract && cd /tmp/extract && {appimage} --appimage-extract >/dev/null"
-                  f" && squashfs-root/usr/bin/reify check {EXAMPLE}")
-        box.assert_reports("/tmp/extract/squashfs-root/usr/bin/reify --version",
-                           f"reify {self.version}")
+        # The extracted tree is for the sidecar and landlock asserts below.
+        box.check(f"mkdir -p /tmp/extract && cd /tmp/extract && {appimage} --appimage-extract >/dev/null")
         box.assert_reports(f"APPIMAGE_EXTRACT_AND_RUN=1 {appimage} --version",
                            f"reify-gui {self.version}")
-        box.assert_gui_renders(f"APPIMAGE_EXTRACT_AND_RUN=1 xvfb-run -a {appimage} {EXAMPLE}")
+        box.assert_usage(f"APPIMAGE_EXTRACT_AND_RUN=1 {appimage} --help")
+        box.assert_reports(f"APPIMAGE_EXTRACT_AND_RUN=1 {appimage} cli --version",
+                           f"reify {self.version}")
+        box.check(f"cd {EXAMPLE_DIR} && APPIMAGE_EXTRACT_AND_RUN=1 {appimage} cli check {EXAMPLE_NAME}")
+        box.assert_gui_renders(
+            f"cd {EXAMPLE_DIR} && APPIMAGE_EXTRACT_AND_RUN=1 xvfb-run -a {appimage} {EXAMPLE_NAME}")
         box.assert_debug_server_reports(self.version)
         # An AppImage can declare no Depends, so the user installs node as the refusal says.
         box.check("! command -v node")
