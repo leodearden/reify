@@ -821,11 +821,11 @@ pub fn compile_with_prelude_context_checked_with_config(
         &rejected_param_defaults,
     );
 
-    // Compile-time existence check: every sub's structure_name must resolve in
-    // (local templates ∪ prelude).  Runs after all entity/auto/bound phases so
-    // templates are fully populated.  Mirrors eval's find_template_with_prelude
-    // contract (engine_eval.rs:55); see conformance/sub_component_validation.rs.
-    // task 4528.
+    // Compile-time existence check: every sub's structure must resolve among
+    // the templates this module can see (local, user imports' pub, stdlib).
+    // Runs after all entity/auto/bound phases so templates are fully
+    // populated. Mirrors eval's DefEnv template lookup set; see
+    // conformance/sub_component_validation.rs. task 4528.
     conformance::check_sub_structure_existence(
         &compile_ctx.templates,
         prelude_refs,

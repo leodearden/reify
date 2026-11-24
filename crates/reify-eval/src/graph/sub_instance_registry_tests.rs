@@ -9,6 +9,7 @@ use super::cell_contributions::fixtures::rig_with_every_slot_kind;
 use super::{
     CollectionSubInfo, EvaluationGraph, KeyedSubInfo, SubSlotRegistryMismatch, ValueCellNode,
 };
+use crate::DefEnv;
 
 fn cell(entity: &str, member: &str) -> ValueCellNode {
     ValueCellNode {
@@ -280,20 +281,20 @@ fn a_keyed_slot_stamped_around_the_registry_is_a_mismatch() {
 #[test]
 fn from_templates_builds_a_registry_with_no_mismatch() {
     let module = rig_with_every_slot_kind();
-    let mut graph = EvaluationGraph::from_templates(&module.templates);
+    let mut graph = EvaluationGraph::from_env(DefEnv::of_module(&module, &[]));
 
     assert_eq!(graph.sub_slot_registry_mismatches(), vec![]);
     let keyed_a = keyed_slot("Rig", "keyed", "a");
     assert_eq!(
         graph.sub_instance_template(&keyed_a),
         Some("Bolt"),
-        "anti-vacuity: from_templates must register the keyed slot it stamps",
+        "anti-vacuity: from_env must register the keyed slot it stamps",
     );
     assert!(
         graph
             .value_cells
             .contains_key(&ValueCellId::new(&keyed_a, "len")),
-        "anti-vacuity: from_templates must stamp the keyed slot's cells",
+        "anti-vacuity: from_env must stamp the keyed slot's cells",
     );
 
     let past_rack = graph

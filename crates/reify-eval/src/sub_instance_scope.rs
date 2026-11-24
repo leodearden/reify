@@ -18,6 +18,8 @@ use reify_compiler::{SubComponentDecl, TopologyTemplate};
 use reify_core::ValueCellId;
 use reify_ir::{CompiledExpr, KernelHandle, Value, ValueMap};
 
+use crate::DefEnv;
+
 /// The parent `named_steps` key for step `member` of the sub (or `let`
 /// binding) `binding`. It matches the name the compiler gives
 /// `GeomRef::Sub` for `self.<binding>.<member>`.
@@ -127,11 +129,11 @@ pub(crate) struct SubInstance<'t> {
 }
 
 /// The direct non-collection subs of `template` that have an instance in
-/// `values` (every sub but a guard-declined one) and whose child template is
-/// in `templates`, in declaration order.
+/// `values` (every sub but a guard-declined one) and whose child template
+/// resolves in `env`, in declaration order.
 pub(crate) fn direct_sub_instances<'t>(
     template: &'t TopologyTemplate,
-    templates: &'t [TopologyTemplate],
+    env: DefEnv<'t>,
     values: &ValueMap,
 ) -> Vec<SubInstance<'t>> {
     template
@@ -145,7 +147,7 @@ pub(crate) fn direct_sub_instances<'t>(
             )
         })
         .filter_map(|sub| {
-            let child_template = reify_compiler::find_template(templates, &sub.structure_name)?;
+            let child_template = env.resolve_template(&sub.structure_name)?;
             Some(SubInstance {
                 scoped_entity: format!("{}.{}", template.name, sub.name),
                 sub_name: &sub.name,
@@ -209,12 +211,13 @@ mod tests {
         BinOp, CompiledExpr, CompiledExprKind, GeometryHandleId, KernelHandle, KernelId, Value,
         ValueMap,
     };
-    use reify_test_support::parse_and_compile_with_stdlib;
+    use reify_test_support::{module_of, parse_and_compile_with_stdlib};
 
     use super::{
         ScopedArgs, direct_sub_instances, instance_value_overlay, scoped_arg_values,
         scoped_step_key,
     };
+    use crate::DefEnv;
 
     const MINI_SOURCE: &str = r#"
 structure def Inner {
@@ -258,7 +261,8 @@ structure def MiniParent {
         let compiled = compile_mini();
         let parent = mini_parent(&compiled);
 
-        let instances = direct_sub_instances(parent, &compiled.templates, &ValueMap::new());
+        let instances =
+            direct_sub_instances(parent, DefEnv::of_module(&compiled, &[]), &ValueMap::new());
 
         assert_eq!(
             instances.len(),
@@ -277,19 +281,40 @@ structure def MiniParent {
     fn direct_sub_instances_skips_a_sub_whose_template_is_not_in_scope() {
         let compiled = compile_mini();
         let parent = mini_parent(&compiled);
-        let only_parent = vec![parent.clone()];
+        let only_parent = module_of([parent.clone()]);
+        let env = DefEnv::of_module(&only_parent, &[]);
 
-        assert!(direct_sub_instances(parent, &only_parent, &ValueMap::new()).is_empty());
+        assert!(direct_sub_instances(parent, env, &ValueMap::new()).is_empty());
+    }
+
+    #[test]
+    fn a_stdlib_typed_sub_is_a_direct_sub_instance() {
+        let compiled =
+            parse_and_compile_with_stdlib("structure def P {\n    sub z = ZeroForce()\n}");
+        let parent = reify_compiler::find_template(&compiled.templates, "P")
+            .expect("P template must compile");
+        let env = DefEnv::of_module(&compiled, reify_compiler::stdlib_loader::load_stdlib());
+
+        let instances = direct_sub_instances(parent, env, &ValueMap::new());
+
+        assert_eq!(
+            instances.len(),
+            1,
+            "the stdlib-typed sub `z` is a direct sub instance"
+        );
+        assert_eq!(instances[0].scoped_entity(), "P.z");
+        assert_eq!(instances[0].child_template().name, "ZeroForce");
     }
 
     #[test]
     fn rescope_maps_only_the_child_templates_own_refs() {
         let compiled = compile_mini();
         let parent = mini_parent(&compiled);
-        let instance = direct_sub_instances(parent, &compiled.templates, &ValueMap::new())
-            .into_iter()
-            .next()
-            .expect("MiniParent has one direct instance");
+        let instance =
+            direct_sub_instances(parent, DefEnv::of_module(&compiled, &[]), &ValueMap::new())
+                .into_iter()
+                .next()
+                .expect("MiniParent has one direct instance");
 
         let expr = CompiledExpr::binop(
             BinOp::Add,
@@ -320,10 +345,11 @@ structure def MiniParent {
     fn named_steps_view_strips_only_this_subs_prefix() {
         let compiled = compile_mini();
         let parent = mini_parent(&compiled);
-        let instance = direct_sub_instances(parent, &compiled.templates, &ValueMap::new())
-            .into_iter()
-            .next()
-            .expect("MiniParent has one direct instance");
+        let instance =
+            direct_sub_instances(parent, DefEnv::of_module(&compiled, &[]), &ValueMap::new())
+                .into_iter()
+                .next()
+                .expect("MiniParent has one direct instance");
 
         let parent_steps: HashMap<String, KernelHandle> = [
             ("body", 1),
@@ -347,10 +373,11 @@ structure def MiniParent {
     fn named_steps_view_reads_back_what_scoped_step_key_writes() {
         let compiled = compile_mini();
         let parent = mini_parent(&compiled);
-        let instance = direct_sub_instances(parent, &compiled.templates, &ValueMap::new())
-            .into_iter()
-            .next()
-            .expect("MiniParent has one direct instance");
+        let instance =
+            direct_sub_instances(parent, DefEnv::of_module(&compiled, &[]), &ValueMap::new())
+                .into_iter()
+                .next()
+                .expect("MiniParent has one direct instance");
 
         assert_eq!(scoped_step_key("c", "body"), "c.body");
 
@@ -441,10 +468,14 @@ structure def Tree {
 
     fn instance_entities(values: &ValueMap) -> Vec<String> {
         let compiled = parse_and_compile_with_stdlib(GUARDED_SOURCE);
-        direct_sub_instances(tree_template(&compiled), &compiled.templates, values)
-            .iter()
-            .map(|instance| instance.scoped_entity().to_string())
-            .collect()
+        direct_sub_instances(
+            tree_template(&compiled),
+            DefEnv::of_module(&compiled, &[]),
+            values,
+        )
+        .iter()
+        .map(|instance| instance.scoped_entity().to_string())
+        .collect()
     }
 
     #[test]

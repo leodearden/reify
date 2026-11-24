@@ -65,6 +65,10 @@
 #                   src/scanner.c) so cargo is guaranteed to re-run the build
 #                   script, and thus recompile, on the next invocation.  This is
 #                   what verify.sh runs before every cargo leaf.
+#   evict-stale --build-root DIR TARGET_DIR
+#                   PROMOTE-TIME REMOVAL, run by scripts/refresh-warm-base.sh
+#                   Step 3d on the staging copy of a new warm base gen.  See
+#                   "EVICT-STALE" below for the rule.
 #   --help, -h      This message.
 #
 # LIVE vs DORMANT — WHY `check` AND `ensure` HAVE DIFFERENT SCOPES
@@ -148,10 +152,13 @@
 # WHY `touch`, AND WHY A LEDGER
 # -----------------------------
 # `touch` mutates mtime only, never content, so `git status` stays clean in the
-# shared merge lane.  Deleting target/*/build/tree-sitter-reify-*/out/ was
-# rejected: cargo keys its rebuild decision on its own fingerprint files, not on
-# the archive's existence, so removing the .a yields a missing-symbol link error
-# rather than a rebuild.
+# shared merge lane; it is the in-lane repair.  Deleting only
+# target/*/build/tree-sitter-reify-*/out/ was rejected: cargo keys its rebuild
+# decision on its own fingerprint files, not on the archive's existence, so
+# removing the .a alone yields a missing-symbol link error rather than a
+# rebuild.  Removing the whole run dir WITH its .fingerprint record does
+# rebuild; that is `evict-stale`, the promote-time removal of dormant stale dirs
+# from a warm base (docs/prds/warm-lane-pool-cow-seeding.md §9.5 inv.16).
 #
 # `check` must scan EVERY fingerprint dir, because nothing in the shell can tell
 # which one cargo will link.  But a checkout accumulates dead fingerprint dirs
@@ -179,6 +186,23 @@
 # the warm-lane rewind signature, and it bypasses the ledger.  Missing or
 # unreadable witness also bypasses — fail closed, at a cost of one force.
 #
+# EVICT-STALE
+# -----------
+# That rewind is also why a warm base must not carry stale dormant dirs: every
+# lane seeded from it re-forces over them on its first `ensure`, rebuilding
+# tree-sitter-reify and everything above it.  `evict-stale` removes them when
+# the base is promoted.  It judges exactly the archives `ensure` judges
+# (ts_archives), by the same stamp verdict (ts_stamp_verdict), against the
+# fingerprint of DIR/tree-sitter-reify — the promoted tree, never this script's
+# own checkout — and keeps a run dir only when its $STAMP_NAME exists and
+# equals that fingerprint.  A missing, UNAVAILABLE or
+# different stamp is evicted; UNAVAILABLE too, because such a dir is
+# unattestable forever and would propagate to every seeded lane (FAIL POLICY).
+# The run dir goes TOGETHER with its <profile>/.fingerprint/<same name> record:
+# measured with cargo 1.96 for task 10168, cargo then reruns the build script
+# and relinks.  Compile-unit dirs (no out/ archive) and other packages are never
+# touched.  Rationale: docs/prds/warm-lane-pool-cow-seeding.md §9.5 inv.16.
+#
 # FAIL POLICY
 # -----------
 # A missing stamp beside an archive means that archive's provenance is UNPROVEN,
@@ -186,7 +210,10 @@
 # for the WHOLE run, matching the reify-bin-freshness.sh / reify-audit-freshness.sh
 # precedent: a host with neither sha256sum nor shasum (nothing can be attested,
 # so a hard failure would be a permanent spurious RED), and a target tree with
-# nothing built yet (nothing built means nothing can be stale).
+# nothing built yet (nothing built means nothing can be stale).  `evict-stale`
+# honours both: with no hasher it prints SKIP and evicts nothing, costing lane
+# rebuilds, never a false GREEN.  A missing or unhashable input, or a failed
+# removal, exits 1 so the refresh aborts before it promotes the gen.
 #
 # A third degradation exists and is deliberately SCOPED TO ONE ARCHIVE: a stamp
 # whose content is the literal UNAVAILABLE — written by build.rs when it could
@@ -218,6 +245,7 @@
 #                                  worktree.  Never set in production.
 #   REIFY_TS_FRESHNESS_TARGET_DIR  Point at a fake cargo build tree instead of
 #                                  ./target.  Same rationale.
+# `evict-stale` takes both trees as arguments, which win over these overrides.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -228,7 +256,10 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # shellcheck source=scripts/lib.sh
 source "$SCRIPT_DIR/lib.sh"
 
-TS_DIR="${REIFY_TS_FRESHNESS_TS_DIR:-$REPO_ROOT/tree-sitter-reify}"
+# The grammar package's directory under a checkout's root.
+TS_PACKAGE_DIR="tree-sitter-reify"
+
+TS_DIR="${REIFY_TS_FRESHNESS_TS_DIR:-$REPO_ROOT/$TS_PACKAGE_DIR}"
 TARGET_DIR="${REIFY_TS_FRESHNESS_TARGET_DIR:-$REPO_ROOT/target}"
 
 # The manifest build.rs writes next to each libtree_sitter_reify.a it produces.
@@ -260,6 +291,7 @@ TS_RC_UNAVAILABLE=3
 usage() {
     cat <<'EOF'
 Usage: scripts/tree-sitter-freshness.sh <mode>
+       scripts/tree-sitter-freshness.sh evict-stale --build-root DIR TARGET_DIR
 
 Modes:
   --list-inputs        Print the attested input set, grammar.js and
@@ -279,6 +311,12 @@ Modes:
                        dormant, bump the mtime of the watched inputs so cargo
                        re-runs the build script (and thus recompiles) next
                        invocation. Exit 1 only if the repair itself fails.
+  evict-stale --build-root DIR TARGET_DIR
+                       Delete every tree-sitter-reify build-script run dir under
+                       TARGET_DIR whose input stamp is missing, UNAVAILABLE or
+                       differs from DIR/tree-sitter-reify's fingerprint, with
+                       its .fingerprint record. Exit 1 if an input cannot be
+                       fingerprinted or a removal fails; 2 on a usage error.
   --help, -h           Show this message.
 EOF
 }
@@ -576,6 +614,34 @@ ts_first_differing_input() {
     printf '(input set shrank: the attested manifest lists paths that are no longer compiled)'
 }
 
+# ts_stamp_verdict <run-dir>
+#
+# The ONE judgement of a run dir's $STAMP_NAME against $CURRENT_FP.  It only
+# classifies; each caller applies its own policy (ts_scan reports an
+# unavailable stamp as a per-dir SKIP, evict-stale evicts it).  Sets, in the
+# caller's shell:
+#   TS_STAMP_VERDICT          match | missing | unavailable | differs
+#   TS_STAMP_FIRST_DIFFERING  the first differing input when the verdict is
+#                             `differs`; empty otherwise
+ts_stamp_verdict() {
+    local stamp="$1/out/$STAMP_NAME" attested
+    TS_STAMP_VERDICT=""
+    TS_STAMP_FIRST_DIFFERING=""
+    if [ ! -f "$stamp" ]; then
+        TS_STAMP_VERDICT="missing"
+        return 0
+    fi
+    attested=$(cat "$stamp")
+    if [ "$attested" = "UNAVAILABLE" ]; then
+        TS_STAMP_VERDICT="unavailable"
+    elif [ "$attested" = "$CURRENT_FP" ]; then
+        TS_STAMP_VERDICT="match"
+    else
+        TS_STAMP_VERDICT="differs"
+        TS_STAMP_FIRST_DIFFERING=$(ts_first_differing_input "$stamp")
+    fi
+}
+
 # ts_scan
 #
 # The shared freshness computation behind both `check` and `ensure`.
@@ -653,7 +719,7 @@ ts_scan() {
     local epoch
     epoch=$(ts_epoch_mtime)
 
-    local a run_dir dir stamp attested detail is_live
+    local a run_dir dir detail is_live
     local -a stale=()
     local -a dormant=()
     local -a unattestable=()
@@ -662,7 +728,6 @@ ts_scan() {
         # .../build/tree-sitter-reify-<fingerprint>/out/libtree_sitter_reify.a
         run_dir="$(dirname "$(dirname "$a")")"
         dir="$(basename "$run_dir")"
-        stamp="$(dirname "$a")/$STAMP_NAME"
 
         # Live when cargo re-ran this dir's build script inside THIS run's window,
         # or when it IS the newest-marker dir, or when liveness could not be
@@ -681,23 +746,25 @@ ts_scan() {
             TS_RUN_WINDOW_COUNT=$(( TS_RUN_WINDOW_COUNT + 1 ))
         fi
 
-        detail=""
-        if [ ! -f "$stamp" ]; then
-            detail="$dir — no $STAMP_NAME beside the archive; its provenance is UNPROVEN"
-        else
-            attested=$(cat "$stamp")
-            if [ "$attested" = "UNAVAILABLE" ]; then
+        ts_stamp_verdict "$run_dir"
+        case "$TS_STAMP_VERDICT" in
+            match)
+                continue
+                ;;
+            unavailable)
                 # Scoped to THIS dir: record it and keep going.  Aborting the scan
                 # here would discard every stale archive already found AND skip
                 # every one not yet reached — see FAIL POLICY (#5629).
                 unattestable+=("SKIP $dir — built where sha256sum/shasum was unavailable or failed; its inputs cannot be attested")
                 continue
-            fi
-            if [ "$attested" != "$CURRENT_FP" ]; then
-                detail="$dir — built from different bytes; first differing input: $(ts_first_differing_input "$stamp")"
-            fi
-        fi
-        [ -n "$detail" ] || continue
+                ;;
+            missing)
+                detail="$dir — no $STAMP_NAME beside the archive; its provenance is UNPROVEN"
+                ;;
+            differs)
+                detail="$dir — built from different bytes; first differing input: $TS_STAMP_FIRST_DIFFERING"
+                ;;
+        esac
 
         # Reuses the is_live decision made above rather than re-deriving it: the
         # membership test and the count must never be able to disagree, and
@@ -1054,6 +1121,100 @@ ts_mode_ensure() {
     return 0
 }
 
+# ts_evict_stale_usage_error <why> — name a malformed `evict-stale` invocation,
+# then print usage, both on stderr.  The caller returns 2.
+ts_evict_stale_usage_error() {
+    echo "ERROR: evict-stale: $1" >&2
+    usage >&2
+}
+
+# ts_evict_stale_args <args...>
+#
+# Parse `--build-root DIR TARGET_DIR` and point TS_DIR and TARGET_DIR at them,
+# so explicit arguments win over the test-only env overrides.
+ts_evict_stale_args() {
+    local build_root="" target="" have_target=0
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --build-root)
+                [ "$#" -ge 2 ] || { ts_evict_stale_usage_error "--build-root needs a value"; return 2; }
+                build_root="$2"
+                shift 2
+                ;;
+            -*)
+                ts_evict_stale_usage_error "unknown option: $1"
+                return 2
+                ;;
+            *)
+                [ "$have_target" -eq 0 ] \
+                    || { ts_evict_stale_usage_error "unexpected extra argument: $1"; return 2; }
+                target="$1"
+                have_target=1
+                shift
+                ;;
+        esac
+    done
+    [ -n "$build_root" ] || { ts_evict_stale_usage_error "--build-root DIR is required"; return 2; }
+    [ -d "$build_root" ] \
+        || { ts_evict_stale_usage_error "--build-root is not a directory: $build_root"; return 2; }
+    [ "$have_target" -eq 1 ] || { ts_evict_stale_usage_error "TARGET_DIR is required"; return 2; }
+    [ -d "$target" ] || { ts_evict_stale_usage_error "TARGET_DIR is not a directory: $target"; return 2; }
+    TS_DIR="$build_root/$TS_PACKAGE_DIR"
+    TARGET_DIR="$target"
+}
+
+# ts_mode_evict_stale — the rule is the header's "EVICT-STALE".
+ts_mode_evict_stale() {
+    echo "tree-sitter-freshness: evict-stale — judging the archives under $TARGET_DIR against $TS_DIR"
+
+    local archives
+    archives=$(ts_archives)
+    if [ -z "$archives" ]; then
+        echo "tree-sitter-freshness: no built archive under $TARGET_DIR; nothing to evict"
+        return 0
+    fi
+
+    local rc=0
+    CURRENT_FP=$(ts_fingerprint) || rc=$?
+    if [ "$rc" -eq "$TS_RC_UNAVAILABLE" ]; then
+        echo "tree-sitter-freshness: SKIP — neither sha256sum nor shasum on PATH; no stamp can be judged, so nothing is evicted"
+        return 0
+    elif [ "$rc" -ne 0 ]; then
+        return "$rc"
+    fi
+
+    local a run_dir reason record kept=0 evicted=0
+    while IFS= read -r a; do
+        [ -n "$a" ] || continue
+        run_dir="$(dirname "$(dirname "$a")")"
+        ts_stamp_verdict "$run_dir"
+        case "$TS_STAMP_VERDICT" in
+            match)
+                kept=$(( kept + 1 ))
+                continue
+                ;;
+            missing)
+                reason="no $STAMP_NAME"
+                ;;
+            unavailable)
+                reason="stamp is UNAVAILABLE"
+                ;;
+            differs)
+                reason="built from different bytes; first differing input: $TS_STAMP_FIRST_DIFFERING"
+                ;;
+        esac
+        record="$(dirname "$(dirname "$run_dir")")/.fingerprint/$(basename "$run_dir")"
+        if ! rm -rf -- "$run_dir" "$record"; then
+            echo "ERROR: tree-sitter-freshness: could not evict $run_dir with its record $record" >&2
+            return 1
+        fi
+        echo "tree-sitter-freshness: evicted ${run_dir#"$TARGET_DIR"/} — $reason"
+        evicted=$(( evicted + 1 ))
+    done <<< "$archives"
+
+    echo "tree-sitter-freshness: kept $kept and evicted $evicted tree-sitter-reify build-script run dir(s)"
+}
+
 main() {
     local mode="${1:---help}"
     case "$mode" in
@@ -1073,6 +1234,11 @@ main() {
             ;;
         ensure)
             ts_mode_ensure
+            ;;
+        evict-stale)
+            shift
+            ts_evict_stale_args "$@" || return
+            ts_mode_evict_stale
             ;;
         --help | -h)
             usage

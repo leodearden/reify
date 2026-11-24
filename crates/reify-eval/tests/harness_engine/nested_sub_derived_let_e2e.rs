@@ -875,7 +875,7 @@ structure def Parent {
 /// That gap is now CLOSED, by #5867: compile-side sub-target template
 /// resolution is module-first with a prelude fallback
 /// (`reify_compiler::types::find_template_with_prelude`), the mirror of
-/// `unfold::find_template_in_scope` on this side. The relay assertion it made
+/// `DefEnv::resolve_template` on this side. The relay assertion it made
 /// impossible now lives in
 /// [`prelude_typed_sub_member_read_relays_at_both_scopes`] below. This test's
 /// own scope is deliberately unchanged — it remains #5360's regression pin for
@@ -939,7 +939,7 @@ structure def Parent {
 ///
 /// The compiler-side fix is `types::find_template_with_prelude`: sub-target
 /// template resolution is module-first with a prelude fallback, mirroring
-/// `unfold::find_template_in_scope` on the eval side. No eval-side change was
+/// `DefEnv::resolve_template` on the eval side. No eval-side change was
 /// needed — #5360's instance-scope elaboration already handles the scoped-id
 /// rewrite once the compiler emits a value cell instead of a realization.
 ///

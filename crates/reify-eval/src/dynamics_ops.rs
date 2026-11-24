@@ -2196,7 +2196,7 @@ mod inverse_dynamics_trampoline_tests {
     }
 
     /// A `MassProperties` instance: mass (Mass-scalar), com (Point3<Length>),
-    /// inertia (3×3 Matrix of **`Value::Real`**), origin (Real).
+    /// inertia (3×3 Matrix of **`Value::Real`**).
     ///
     /// The inertia cells are intentionally `Value::Real` (the legacy / user-authored
     /// encoding) rather than `Value::Scalar{MOMENT_OF_INERTIA}` (production path).
@@ -2225,7 +2225,6 @@ mod inverse_dynamics_trampoline_tests {
                 ),
                 ("com".to_string(), com_point),
                 ("inertia".to_string(), inertia_matrix),
-                ("origin".to_string(), Value::Real(0.0)),
             ],
         )
     }

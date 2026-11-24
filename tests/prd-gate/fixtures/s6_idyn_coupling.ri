@@ -4,8 +4,8 @@ module s6_idyn_coupling
 
 // Probe: an open chain with a coupling body through trajectory inverse dynamics.
 structure def CouplingIdyn {
-    let mp_a = MassProperties(mass: 2kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.1, 0.0, 0.0], [0.0, 0.1, 0.0], [0.0, 0.0, 0.1]], origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0, 0, 0), y_axis: vec3(0, 0, 0), z_axis: vec3(0, 0, 0)))
-    let mp_b = MassProperties(mass: 3kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.2, 0.0, 0.0], [0.0, 0.2, 0.0], [0.0, 0.0, 0.2]], origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0, 0, 0), y_axis: vec3(0, 0, 0), z_axis: vec3(0, 0, 0)))
+    let mp_a = MassProperties(mass: 2kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.1, 0.0, 0.0], [0.0, 0.1, 0.0], [0.0, 0.0, 0.1]])
+    let mp_b = MassProperties(mass: 3kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.2, 0.0, 0.0], [0.0, 0.2, 0.0], [0.0, 0.0, 0.2]])
     let j_x = prismatic(dir(1, 0, 0), 0mm .. 1000mm)
     let j_c = couple(j_x, -1.0)
     let m0 = mechanism()

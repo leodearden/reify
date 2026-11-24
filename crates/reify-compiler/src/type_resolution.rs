@@ -935,7 +935,7 @@ pub(crate) fn resolve_type_name(name: &str) -> Option<Type> {
         // translation) — see crates/reify-core/src/ty.rs:305/462.  Surfacing the
         // bare "Transform3" name makes `pub type Pose3 = Transform3` and
         // `param : Transform3` annotations resolvable.  "Frame3" is intentionally
-        // absent (collides with the `structure Frame3` in ports.ri), as is
+        // absent (the Frame datum is spelled `Frame`), as is
         // "AffineMap3" (no surface demand).
         "Transform3" => Some(Type::Transform(3)),
         // Orientation type-name surface (task 6384).  WHY: without an arm here

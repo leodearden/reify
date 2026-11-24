@@ -13,7 +13,8 @@
 //! instead of a value cell — silently, with zero diagnostics.
 //!
 //! This is the compile-side mirror of esc-5360-9, which fixed the same
-//! module-only assumption on the eval side (`unfold::find_template_in_scope`).
+//! module-only assumption on the eval side (eval now resolves sub targets
+//! through `reify_eval::DefEnv::resolve_template`).
 
 use reify_compiler::{TopologyTemplate, ValueCellKind};
 use reify_core::{DimensionVector, Type};

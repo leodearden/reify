@@ -1757,10 +1757,11 @@ impl Engine {
     }
 
     /// Install `program`, whose [`DefEnv`] [`Self::def_env`] then returns, and
-    /// return its definition-collision report for the caller to surface. No
-    /// eval lookup consults it yet (ι #5523 migrates them onto it), and eval
-    /// state is untouched.
-    // G-allow: resolution-unification §3.2 Engine::load; first production consumer is ι #5523
+    /// return its definition-collision report for the caller to surface. Eval
+    /// state is untouched, and eval does not resolve in it: eval and build
+    /// resolve through `Engine::env_of(module)`, the module's own
+    /// environment. κ #5524 points that seam at the loaded program.
+    // G-allow: resolution-unification §3.2 Engine::load; first production consumer is κ #5524
     pub fn load(&mut self, program: impl Into<Arc<CompiledProgram>>) -> Vec<Diagnostic> {
         let program = program.into();
         let warnings = DefEnv::with_prelude(&program, self.prelude).collision_warnings();
@@ -1768,9 +1769,16 @@ impl Engine {
         warnings
     }
 
+    /// The definition environment every eval and build path resolves
+    /// `module`'s definitions in: `module`'s own over this engine's prelude.
+    /// It borrows `module` alone, never `self`.
+    pub(crate) fn env_of<'m>(&self, module: &'m CompiledModule) -> DefEnv<'m> {
+        DefEnv::of_module(module, self.prelude)
+    }
+
     /// The loaded program's definition environment over this engine's
     /// prelude; `None` before a load.
-    // G-allow: resolution-unification §3.2 Engine::load; first production consumer is ι #5523
+    // G-allow: resolution-unification §3.2 Engine::load; first production consumer is κ #5524
     pub fn def_env(&self) -> Option<DefEnv<'_>> {
         self.loaded_program
             .as_deref()
@@ -2000,7 +2008,7 @@ impl Engine {
     /// Used by task ε (3436) step-9 to pre-corrupt a realization node's
     /// `produced_repr` and prove that step-10's executor-write actually
     /// restores it (rather than the assertion trivially passing because the
-    /// construction-time default in `EvaluationGraph::from_templates`
+    /// construction-time default in `EvaluationGraph::from_env`
     /// already matches). Future test-instrumentation use cases that need to
     /// reach inside the snapshot (e.g. corrupt cached values, force
     /// determinacy transitions, surgically edit graph nodes) can reuse this

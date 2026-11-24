@@ -135,7 +135,7 @@ structure EditPathOptimizedProbe {
 /// carry-over would mask the RED signal in `values` on the `edit_source` leg
 /// (see `edit_source_dispatches_optimized_compute_into_solver_cost_loop`
 /// below). Because it is instead a brand-new cell in the AFTER graph, it is
-/// seeded `(Undef, DeterminacyState::Auto)` by `Snapshot::from_compiled_module`,
+/// seeded `(Undef, DeterminacyState::Auto)` by `Snapshot::from_env`,
 /// so `values` genuinely reads `Undef` on RED too — belt and braces
 /// alongside the `resolved_params` primary assertion.
 const EDIT_PATH_THICKNESS_TAIL: &str = r#"    param thickness : Length = auto

@@ -495,6 +495,30 @@ where
     resolve_in_scopes(local, std::iter::empty(), prelude, key)
 }
 
+/// What a module whose compile prelude is `prelude` can name: `local`, then
+/// the `pub` surface of each user-import prelude module in order (D-5), then
+/// every std module's exports. This is the lookup set of that module's
+/// definition environment (resolution-unification §3.2). Lazy and
+/// allocation-free.
+pub fn resolve_visible<'a, D, Q>(
+    local: &'a [D],
+    prelude: &[&'a CompiledModule],
+    key: &Q,
+) -> Option<&'a D>
+where
+    D: Definition,
+    D::Key<'a>: Borrow<Q>,
+    Q: Eq + ?Sized,
+{
+    let of_tier = |tier: Tier| {
+        prelude
+            .iter()
+            .copied()
+            .filter(move |module| module_tier(&module.path) == tier)
+    };
+    resolve_in_scopes(local, of_tier(Tier::Import), of_tier(Tier::Stdlib), key)
+}
+
 /// Every key's binding plus every shadowing, by the same rule as [`resolve`].
 pub fn bind<'a, D, P>(local: &'a [D], prelude: P) -> Bindings<'a, D>
 where
@@ -798,6 +822,51 @@ mod tests {
                 &ctor_template_registry(&fixture.local, &prelude),
                 &fixture.expected_overlaid_view(),
                 &prelude,
+            );
+        }
+    }
+
+    /// An import offers only its `pub` templates, a std module every template,
+    /// and an import outranks std whatever the prelude's slice order.
+    #[test]
+    fn resolve_visible_offers_an_imports_pub_surface_and_every_std_template() {
+        let import = compile_at(
+            ModulePath::single("parts"),
+            "pub structure def Shared { param a : Real = 1.0 }\n\
+             structure def Hidden { param a : Real = 1.0 }\n",
+        );
+        let std = compile_at(
+            ModulePath(vec!["std".into(), "lo".into()]),
+            "structure def Shared { param a : Real = 2.0 }\n\
+             structure def StdOnly { param a : Real = 2.0 }\n",
+        );
+        let local = compile_at(
+            ModulePath::single("local"),
+            "structure def Own { param a : Real = 3.0 }\n",
+        )
+        .templates;
+
+        for prelude in [[&import, &std], [&std, &import]] {
+            let visible =
+                |name: &str| resolve_visible::<TopologyTemplate, str>(&local, &prelude, name);
+            let order: Vec<_> = prelude.iter().map(|m| m.path.to_string()).collect();
+            assert!(
+                visible("Own").is_some_and(|t| std::ptr::eq(t, first_named(&local, "Own"))),
+                "a local template is visible (prelude {order:?})"
+            );
+            assert!(
+                visible("Shared")
+                    .is_some_and(|t| std::ptr::eq(t, first_named(&import.templates, "Shared"))),
+                "an import's pub template outranks std's (prelude {order:?})"
+            );
+            assert!(
+                visible("Hidden").is_none(),
+                "an import's non-pub template is invisible (prelude {order:?})"
+            );
+            assert!(
+                visible("StdOnly")
+                    .is_some_and(|t| std::ptr::eq(t, first_named(&std.templates, "StdOnly"))),
+                "a std module's non-pub template is visible (prelude {order:?})"
             );
         }
     }

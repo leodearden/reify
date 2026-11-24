@@ -715,7 +715,7 @@ structure MultiPrinter {
 ///
 /// SHAPE NOTE — why `param part : Solid` and NOT `let part = box(…)`: the
 /// constraint→realization edge that δ's guard walks is `geometry_cell`, populated
-/// by `EvaluationGraph::from_templates` ONLY for a value cell whose
+/// by `EvaluationGraph::from_env` ONLY for a value cell whose
 /// `cell_type == Type::Geometry` and whose member name matches the realization's
 /// name (graph.rs `from_templates_populates_realization_geometry_cell`). A
 /// `param … : Solid = box(…)` cell satisfies that (a `Solid` cell IS

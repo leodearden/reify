@@ -1,6 +1,7 @@
 //! Integration test: Snapshot + EvaluationGraph with bracket fixture.
 
 use reify_core::{ContentHash, RealizationNodeId, SnapshotId, ValueCellId, VersionId};
+use reify_eval::DefEnv;
 use reify_eval::snapshot::Snapshot;
 use reify_ir::{DeterminacyState, SnapshotProvenance, Value};
 use reify_test_support::bracket_compiled_module;
@@ -8,7 +9,7 @@ use reify_test_support::bracket_compiled_module;
 #[test]
 fn snapshot_from_bracket_compiled_module() {
     let module = bracket_compiled_module();
-    let snap = Snapshot::from_compiled_module(&module);
+    let snap = Snapshot::from_env(DefEnv::of_module(&module, &[]));
 
     // bracket_compiled_module has 5 params + 1 let (volume) = 6 value cells
     // and 1 realization (box with width, height, depth=thickness)
@@ -72,7 +73,7 @@ fn snapshot_from_bracket_compiled_module() {
 #[test]
 fn snapshot_clone_and_modify_independence() {
     let module = bracket_compiled_module();
-    let snap = Snapshot::from_compiled_module(&module);
+    let snap = Snapshot::from_env(DefEnv::of_module(&module, &[]));
 
     // Clone the snapshot
     let mut modified = snap.clone();
@@ -155,7 +156,7 @@ fn snapshot_from_template_with_realizations() {
         .template(template)
         .build();
 
-    let snap = Snapshot::from_compiled_module(&module);
+    let snap = Snapshot::from_env(DefEnv::of_module(&module, &[]));
 
     // Verify node counts
     assert_eq!(

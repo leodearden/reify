@@ -7,9 +7,10 @@
 //! reported them as unknown structures and `sub o = STLOutput(...)` never
 //! elaborated into a `Value::StructureInstance`. Sub-component resolution must
 //! consult the user module's templates FIRST (shadowing wins) and fall back to
-//! the prelude — at BOTH resolver sites: the elaborating loop in `eval()` and
-//! the validation-only mirror in `eval_cached()` (the two must agree on which
-//! names are unknown, or cached re-evals emit false errors).
+//! the prelude. Both eval paths take their unknown-structure report from the
+//! evaluation graph (`EvaluationGraph::unresolved_sub_diagnostics`, surfaced by
+//! `report_unresolved_subs`), so `eval()` and `eval_cached()` agree on which
+//! names are unknown by construction.
 
 use reify_core::{ModulePath, ValueCellId, VersionId};
 use reify_ir::Value;
@@ -93,9 +94,9 @@ fn stdlib_occurrence_sub_elaborates_via_prelude_fallback() {
     }
 }
 
-/// The `eval_cached()` validation mirror must agree with `eval()` on which
-/// structure names are unknown: a stdlib occurrence sub must NOT produce a
-/// false "references unknown structure" error on the cached path.
+/// `eval_cached()` must agree with `eval()` on which structure names are
+/// unknown: a stdlib occurrence sub must NOT produce a false "references
+/// unknown structure" error on the cached path.
 #[test]
 fn eval_cached_no_unknown_structure_error_for_stdlib_occurrence_sub() {
     let compiled = parse_and_compile_with_stdlib(SINGLE_STL_OUTPUT);
@@ -116,8 +117,8 @@ fn eval_cached_no_unknown_structure_error_for_stdlib_occurrence_sub() {
 
 /// Guard: the prelude fallback must not make genuinely unknown structures
 /// resolve — a sub referencing a name in neither the module nor the prelude
-/// still emits the Error diagnostic and increments the instrumentation
-/// counter, on both resolver sites.
+/// still emits ONE coded Error diagnostic and increments the instrumentation
+/// counter, on both the cold and the cached eval path.
 #[test]
 fn genuinely_unknown_structure_still_errors_with_prelude_loaded() {
     let template = TopologyTemplateBuilder::new("Parent")
@@ -131,25 +132,65 @@ fn genuinely_unknown_structure_still_errors_with_prelude_loaded() {
     // templates to search and must still come up empty for "DoesNotExist".
     let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     let result = engine.eval(&module);
-    assert!(
-        result.diagnostics.iter().any(|d| {
-            d.message.contains("sub-component")
-                && d.message.contains("references unknown structure")
-                && d.message.contains("DoesNotExist")
-        }),
-        "genuinely unknown structure must still error under the prelude \
-         fallback, got: {:?}",
-        result.diagnostics
-    );
+    assert_one_coded_unknown_structure_error(&result.diagnostics, "eval");
     assert_eq!(engine.last_sub_component_unknown_structure_errors(), 1);
 
     let mut cached_engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     let cached = cached_engine.eval_cached(&module, VersionId(1));
+    assert_one_coded_unknown_structure_error(&cached.eval_result.diagnostics, "eval_cached");
+    assert_eq!(
+        cached_engine.last_sub_component_unknown_structure_errors(),
+        1
+    );
+}
+
+/// Exactly one of `diagnostics` reports `DoesNotExist` as an unknown
+/// structure, and it carries [`DiagnosticCode::UnknownSubStructure`].
+fn assert_one_coded_unknown_structure_error(diagnostics: &[reify_core::Diagnostic], path: &str) {
+    let reports: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| {
+            d.message
+                .contains("references unknown structure \"DoesNotExist\"")
+        })
+        .collect();
+    let [report] = reports.as_slice() else {
+        panic!("{path}: exactly one unknown-structure report, got {diagnostics:?}");
+    };
+    assert_eq!(report.severity, reify_core::Severity::Error, "{path}");
+    assert_eq!(
+        report.code,
+        Some(reify_core::DiagnosticCode::UnknownSubStructure),
+        "{path}: {report:?}"
+    );
+}
+
+/// A structural query sees a stdlib-typed descendant's structure:
+/// `ZeroForce` (stdlib/dynamics.ri, `: JointForceValue`) passes a
+/// `JointForceValue` trait filter over `self.descendants`.
+#[test]
+fn a_stdlib_typed_descendant_passes_a_trait_filter() {
+    let compiled = parse_and_compile_with_stdlib(
+        "structure def P {\n    sub z = ZeroForce()\n    \
+         let n = filter(self.descendants, JointForceValue).count\n}",
+    );
+    let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
+        Box::new(MockConstraintChecker::new()),
+        None,
+    );
+    let result = engine.eval(&compiled);
+
     assert!(
-        cached.eval_result.diagnostics.iter().any(|d| {
-            d.message.contains("references unknown structure") && d.message.contains("DoesNotExist")
-        }),
-        "eval_cached must still error for genuinely unknown structures, got: {:?}",
-        cached.eval_result.diagnostics
+        !result
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == reify_core::Severity::Error),
+        "{:?}",
+        result.diagnostics
+    );
+    assert_eq!(
+        result.values.get(&ValueCellId::new("P", "n")),
+        Some(&Value::Int(1))
     );
 }

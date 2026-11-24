@@ -669,7 +669,7 @@ pub(crate) fn compute_representation_bounds(module: &CompiledModule) -> BTreeMap
 /// occurrence is sub-instantiated, the constraint stays under its
 /// *template-name* entity scope in the runtime graph (subs duplicate value
 /// cells under scoped entity-refs but do NOT scope-duplicate constraints —
-/// see `crate::graph::EvaluationGraph::from_templates`). So the extractor
+/// see `crate::graph::EvaluationGraph::from_env`). So the extractor
 /// scans `constraints` for entries with `id.entity == output_template_name`
 /// regardless of how many times the occurrence was instantiated.
 ///

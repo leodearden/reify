@@ -4347,7 +4347,7 @@ pub enum UndefCause {
     /// The cell is an unbound required param with no default expression and no
     /// caller-supplied override.  The cell is absent from `EvalResult.values`
     /// but present in `snapshot.values` as `(Undef, Undetermined)` via the
-    /// pre-seed in `Snapshot::from_compiled_module`.
+    /// pre-seed in `Snapshot::from_env`.
     Unbound {
         /// The `ValueCellId` of the unbound param.
         param: ValueCellId,

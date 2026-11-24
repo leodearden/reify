@@ -446,6 +446,7 @@ mod tests {
         InstanceMintOutcome, InstanceMintPath, InstanceMintScope, SymbolicMintOrder,
         instance_mint_reads, project_instance_reads, slot_commit_order,
     };
+    use crate::DefEnv;
     use crate::deps::extract_dependency_trace;
     use crate::geometry_ops::try_eval_symbolic_topology_selector;
     use crate::graph::geometry_cell_link_fixture::{
@@ -519,7 +520,7 @@ mod tests {
 
     /// The evaluation graph of `src`, which must compile.
     fn graph_of(src: &str) -> EvaluationGraph {
-        EvaluationGraph::from_templates(&parse_and_compile(src).templates)
+        EvaluationGraph::from_env(DefEnv::of_module(&parse_and_compile(src), &[]))
     }
 
     /// The graph of the shared geometry-cell fixture: template `T`, and `P`

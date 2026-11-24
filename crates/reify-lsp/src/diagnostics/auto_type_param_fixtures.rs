@@ -143,10 +143,10 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
 /// **Why a second fixture rather than a parameter on the first.** A guarded
 /// member is not merely a different spelling: `crates/reify-compiler/src/`
 /// collects it into `CompiledGuardedGroup::members`, a Vec that never appears
-/// in `TopologyTemplate::value_cells`. `EvaluationGraph::from_templates`
+/// in `TopologyTemplate::value_cells`. `EvaluationGraph::from_env`
 /// nevertheless inserts it into `graph.value_cells` (a guarded-member
 /// contribution of `reify_eval::graph::cell_contributions::contributed_cells`,
-/// the enumeration `from_templates` folds), cloning its `cell_type` verbatim. A
+/// the enumeration `from_env` folds), cloning its `cell_type` verbatim. A
 /// scan of `value_cells` alone therefore proves ABSENCE over a strict subset
 /// of what reaches the graph, and answers "safe" on a graph that is not —
 /// measured on this fixture: stage 1 all-representable → `None`, while the

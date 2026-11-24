@@ -5058,6 +5058,21 @@ pub enum DiagnosticCode {
     ///
     /// Severity: Warning.
     ImportRequiresFileBackedBuffer,
+    /// Origins: `crates/reify-compiler/src/conformance/sub_component_validation.rs`
+    /// at check time and the `reify-eval` evaluation-graph build at eval time
+    /// (task #5523, PRD resolution-unification boundary #15; PRD prose
+    /// `E_UNKNOWN_SUB_STRUCTURE`). Both build it through
+    /// `SubComponentDecl::unknown_structure_diagnostic`.
+    ///
+    /// Emitted when a `sub`'s structure (a keyed sub's element structure) names
+    /// no template the declaring module's definition environment can see: its
+    /// own, a direct import's `pub` ones, or the stdlib's.
+    ///
+    /// Canonical message: `"sub-component \"<sub>\" references unknown
+    /// structure \"<structure>\""`.
+    ///
+    /// Severity: Error.
+    UnknownSubStructure,
 }
 
 /// A diagnostic message with location and optional labels.

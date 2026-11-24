@@ -98,12 +98,12 @@ pub fn realization_graph_shape_hash(graph: &EvaluationGraph) -> ContentHash {
 ///    (conservative: unknown cells are assumed topology-controlling).
 /// 2. **`structure_controlling`** — cell is in `graph.structure_controlling`
 ///    → `Structural`. This catches feature-suppression toggles (guard cells
-///    registered by `EvaluationGraph::from_templates`'s guard-group
+///    registered by `EvaluationGraph::from_env`'s guard-group
 ///    construction path).
 /// 3. **Collection count** — cell appears as `count_cell` of any entry in
 ///    `graph.collection_subs` → `Structural`. Pattern/array counts have
 ///    `Type::Int` but drive topology via the collection-elaboration path in
-///    `EvaluationGraph::from_templates`.
+///    `EvaluationGraph::from_env`.
 ///
 /// 3b. **Keyed-sub count** *(speculative, task 3932 δ)* — cell appears as
 ///    `count_cell` of any entry in `graph.keyed_subs` → `Structural`. Mirrors
@@ -298,7 +298,7 @@ pub fn classify_cell(graph: &EvaluationGraph, cell_id: &ValueCellId) -> Paramete
     // Rule 3: collection-count override. Pattern/array counts have Type::Int
     // (which would otherwise be Dimensional) but structurally drive collection
     // elaboration (see `EvaluationGraph::collection_subs` and the
-    // collection-count wiring in `EvaluationGraph::from_templates`).
+    // collection-count wiring in `EvaluationGraph::from_env`).
     if graph
         .collection_subs
         .iter()

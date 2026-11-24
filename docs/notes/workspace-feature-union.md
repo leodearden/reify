@@ -395,10 +395,16 @@ reify-ast, reify-config, reify-ir or reify-stdlib, and it reaches reify-expr
 only under `-p reify-expr`, through that package's dev-dependencies. That is the
 reach by manifest edges. The next subsection measures it: a first build pays
 only for tree-sitter-reify itself, and the reach shows in the next invocation.
-Since #9896 this contributor is gone: `build.rs` generates into `$OUT_DIR/src`
+Since #9896 this trigger is gone: `build.rs` generates into `$OUT_DIR/src`
 and watches only `grammar.js`, `src/scanner.c`, `build_support.rs` and the
 tree-sitter CLI, so the acquire's `git clean` no longer reaches the build
-(Limits, Tree-sitter regeneration).
+(Limits, Tree-sitter regeneration). The tree-sitter rebuild itself outlived it
+in a freshly seeded lane's verify. verify.sh's `tree-sitter-freshness.sh
+ensure` preflight still forced it, because base gens carried dormant run dirs
+stamped before #9896 and the seed's rewind of `grammar.js` defeats the ledger's
+mtime witness. The #9896 re-probe below ran cargo directly and skipped that
+preflight. #10168 evicts those dirs at promote (PRD
+warm-lane-pool-cow-seeding.md §9.5 inv.16).
 
 Hypothesis, not isolated by these probes: once tree-sitter regeneration is
 excluded (next subsection), the workspace units that remain are the union of
@@ -525,6 +531,10 @@ against gen.618 before the union reached the base, when every member rehashes,
 so its 30 units are not separable into a `CLIPPY_ARGS` part and a rehash part.
 
 ### Tree-sitter re-probe after #9896 (#10046)
+
+These runs call cargo directly, so they skip verify.sh's
+`tree-sitter-freshness.sh ensure` preflight, which in a freshly seeded lane
+still forced the tree-sitter rebuild until #10168.
 
 Lane `_lane-10`, 2026-11-17 14:27 to 14:45 UTC. Its `target/` carried base
 `target.gen.643`'s mtime to the nanosecond (`12:56:44.495479464`, built under
@@ -689,7 +699,10 @@ once on the next build.
 
 Fresh lanes do not see it: the seed stamps `grammar.js` back to 2020-01-01,
 whatever mtime `_merge-verify` left, and probe (1) measured tree-sitter-reify's
-build-script run Fresh in such a lane.
+build-script run Fresh in such a lane. Probe (1) skipped verify.sh's `ensure`
+preflight, though, and in such a lane that preflight forced the rebuild anyway,
+over the base's dormant pre-#9896 run dirs, until #10168 evicted them at
+promote.
 
 ### Cold build
 
@@ -951,8 +964,10 @@ indicative only.
   #9884) still rebuilt reify-eval.
 - **Advisory MEMBER-SPLIT reporting: adopted.** Failing on the accepted
   splits would red the gate permanently.
-- **Next candidate**, now that #9896 has removed the tree-sitter share (the
-  build-script variants were fixed by #9884): reify-stdlib `test-support`,
+- **Next candidate**, now that the tree-sitter share is gone (#9896 removed
+  the acquire's `git clean` trigger and #10168 the freshness force after a
+  seed; the build-script variants were fixed by #9884): reify-stdlib
+  `test-support`,
   behind the remaining 3 split-only
   units (reify-stdlib, reify-expr and reify-constraints).
 
@@ -1243,7 +1258,9 @@ kernels' accepted member-feature splits (Member features) still make a plain
   these cases' bumps and does not reset `_merge-verify`'s current `grammar.js`
   mtime, so its older run dirs are expected to re-run once; the next
   `_merge-verify` verify will show whether bumps there end. The other trigger,
-  the freshness force after a seed, is owned by #10168.
+  the freshness force after a seed, is closed by #10168, which evicts the
+  dormant stale run dirs at promote (PRD warm-lane-pool-cow-seeding.md §9.5
+  inv.16).
   Details: Tree-sitter re-probe after #9896 (#10046).
 - **Feature selections.** A non-default selection such as
   `-p reify-gui --features gui` is a resolution of its own, and the gate does

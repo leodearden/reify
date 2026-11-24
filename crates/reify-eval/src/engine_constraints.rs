@@ -1439,6 +1439,7 @@ impl Engine {
             self.prelude.iter().flat_map(|m| m.trait_defs.iter())
                 .chain(module.trait_defs.iter()),
         );
+        let env = self.env_of(module);
 
         for template in &module.templates {
             let active_constraints = Self::collect_active_constraints(template, values);
@@ -1462,7 +1463,7 @@ impl Engine {
                     crate::structural_query::expand_constraint_expr(
                         &c.expr,
                         template,
-                        &module.templates,
+                        env,
                         values,
                         self.max_unfold_depth,
                         self.max_unfold_nodes,
