@@ -31,7 +31,7 @@
 
 #![cfg(has_gmsh)]
 
-use reify_ir::{ElementOrderTag, Mesh};
+use reify_ir::{ElementOrderTag, GeometryKernel, Mesh};
 use reify_kernel_gmsh::fill_metrics::{TetFillReport, enclosed_volume_of_surface, tet_fill_report};
 use reify_kernel_gmsh::repair::RepairConfig;
 use reify_kernel_gmsh::{GmshKernel, MeshingOptions, mesh_surface_to_volume_with_diagnostics};
@@ -137,16 +137,24 @@ fn assert_complete_prismatic_fill(report: &TetFillReport, surface: &Mesh, label:
     );
 }
 
+/// One gmsh thread, as every production producer meshes (D-J); multi-threaded
+/// HXT output depends on thread scheduling. Numbers:
+/// `docs/notes/adaptive-e2e-seed-mesh-drift-measurement.md`.
+fn one_thread_options(mesh_size: Option<f64>) -> MeshingOptions {
+    MeshingOptions {
+        mesh_size,
+        deterministic: true,
+        ..MeshingOptions::default()
+    }
+}
+
 /// Mesh `surface` through the plain `mesh_to_volume` entry point.
 ///
 /// Deliberately does NOT acquire `init::GMSH_LOCK`: `mesh_to_volume` acquires
 /// it internally, so holding it here would self-deadlock (see the warning at
 /// `mesh_plane_2d_tests.rs:22-23`).
 fn fill_report_at(surface: &Mesh, mesh_size: Option<f64>, label: &str) -> TetFillReport {
-    let options = MeshingOptions {
-        mesh_size,
-        ..MeshingOptions::default()
-    };
+    let options = one_thread_options(mesh_size);
     let kernel = GmshKernel::new();
     let volume = kernel
         .mesh_to_volume(surface, &options, ElementOrderTag::P1)
@@ -237,7 +245,9 @@ const CYL_FINE: f64 = 0.13;
 /// Derived from the measured residual, not tuned to it. Measured
 /// `1 - surface_match_ratio` on this branch (n = 12 / 24 / 48 segments, so the
 /// residual is a function of the MESH size, essentially not of the fixture's
-/// tessellation density):
+/// tessellation density). This sweep predates the one-thread pin (task 10467),
+/// so it is a multi-threaded reading; the pinned n=24 readings are in the
+/// convergence comment of the curved-body test below:
 ///
 /// | mesh size | n=12     | n=24     | n=48     |
 /// |-----------|----------|----------|----------|
@@ -345,9 +355,10 @@ fn tessellated_cylinder_is_completely_tetrahedralized() {
     );
 
     // 2. CONVERGENCE — what separates a chord residual from an under-fill.
-    //    Measured 2.31e-2 -> 6.19e-3, a factor of 3.73 for a mesh-size ratio of
-    //    1.92 (i.e. ~h^2). The bar is 2x, well inside that, but far outside the
-    //    flat-under-refinement behaviour of the #6200 defect itself.
+    //    Measured 2.24e-2 -> 6.21e-3, a factor of 3.61 (one gmsh thread, libgmsh
+    //    4.15.2) for a mesh-size ratio of 1.92 (i.e. ~h^2). The bar is 2x, well
+    //    inside that, but far outside the flat-under-refinement behaviour of the
+    //    #6200 defect itself.
     let coarse_residual = (1.0 - coarse.surface_match_ratio(surface_volume)).abs();
     let fine_residual = (1.0 - fine_ratio).abs();
     assert!(
@@ -369,14 +380,36 @@ fn tessellated_cylinder_is_completely_tetrahedralized() {
     );
 }
 
+/// Premise of this file's exact assertions: [`fill_report_at`] measures a
+/// reproducible mesh. Numbers: `docs/notes/adaptive-e2e-seed-mesh-drift-measurement.md`.
+#[test]
+fn the_measured_mesh_is_reproducible_across_calls() {
+    let label = "cylinder r=0.5 h=1.0 x24";
+    let surface = tessellated_cylinder_mesh(CYL_R as f32, CYL_H as f32, CYL_SEGMENTS);
+
+    let first = fill_report_at(&surface, Some(CYL_FINE), label);
+    let second = fill_report_at(&surface, Some(CYL_FINE), label);
+
+    assert_eq!(
+        first, second,
+        "{label} @ {CYL_FINE}: two meshes of identical input differ ({} tets / {} nodes \
+         vs {} tets / {} nodes). The exact assertions in this file (`inverted_tets == 0`, \
+         the signed-vs-abs cancellation check) are meaningful only on a reproducible \
+         mesh, so `fill_report_at` must mesh with one gmsh thread (D-J, \
+         docs/prds/v0_6/meshing-service.md).",
+        first.n_tets, first.n_nodes, second.n_tets, second.n_nodes
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The exact production composition: unwelded OCCT-shaped input + repair
 // ---------------------------------------------------------------------------
 
-/// Drive the guard through `mesh_surface_to_volume_with_diagnostics` with an
-/// UNWELDED 24-vertex input and `RepairConfig::default()`, i.e. the precise
-/// composition `kernel_real.rs:464-478` uses in production, rather than only
-/// the hand-welded input.
+/// Drive the guard through the production trait method
+/// `GeometryKernel::mesh_surface_to_volume` with an UNWELDED 24-vertex input,
+/// rather than only the hand-welded input. That method is `kernel_real.rs`'s
+/// `trait_producer_meshing_options` plus `RepairConfig::default()`, so the
+/// composition under test is production's by construction, not restated here.
 ///
 /// The reference volume is taken from the unwelded input directly: the
 /// divergence-theorem sum is welding-independent (proven in
@@ -391,17 +424,12 @@ fn production_composition_unwelded_plus_repair_is_completely_tetrahedralized() {
         "fixture must be per-face unwelded, as OcctKernel::tessellate emits"
     );
 
-    let report = mesh_surface_to_volume_with_diagnostics(
-        &surface,
-        &MeshingOptions::default(),
-        ElementOrderTag::P1,
-        Some(RepairConfig::default()),
-        None,
-        None,
-    )
-    .expect("mesh_surface_to_volume_with_diagnostics failed");
+    let kernel = GmshKernel::new();
+    let volume = (&kernel as &dyn GeometryKernel)
+        .mesh_surface_to_volume(&surface, ElementOrderTag::P1)
+        .expect("GeometryKernel::mesh_surface_to_volume failed");
 
-    let fill = tet_fill_report(&report.volume).expect("produced mesh is not measurable as tets");
+    let fill = tet_fill_report(&volume).expect("produced mesh is not measurable as tets");
     assert_complete_prismatic_fill(&fill, &surface, "unwelded box 1.0x0.1x0.1 m + repair");
 }
 
@@ -427,7 +455,7 @@ fn production_report_surfaces_the_fill_measurement() {
 
     let report = mesh_surface_to_volume_with_diagnostics(
         &surface,
-        &MeshingOptions::default(),
+        &one_thread_options(None),
         ElementOrderTag::P1,
         Some(RepairConfig::default()),
         None,
@@ -470,7 +498,9 @@ fn production_report_surfaces_the_fill_measurement() {
 /// mesh size, on the premise that a complete B-rep decomposition produces
 /// interior nodes and that #6154's "0 interior nodes of 80" was therefore
 /// diagnostic of #6200. **Measurement refutes that premise.** Sweeping mesh
-/// size with the fix in place, fill fraction is 1.000000 in every row:
+/// size with the fix in place, fill fraction is 1.000000 in every row (a
+/// multi-threaded sweep, taken before the one-thread pin of task 10467, so the
+/// node and tet counts are indicative, not reproducible):
 ///
 /// | body          | mesh size | nodes | tets | fill     | interior |
 /// |---------------|-----------|-------|------|----------|----------|
