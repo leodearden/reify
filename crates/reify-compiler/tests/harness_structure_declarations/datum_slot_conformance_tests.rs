@@ -260,7 +260,11 @@ fn a_wrapped_direction_slot_keeps_the_dir_hint() {
 fn a_frame_slot_rejects_a_user_structure_named_frame3() {
     let source = format!(
         "structure def Frame3 {{\n    param origin : Point3<Length>\n}}\n{}",
-        ctor_field_source("param f : Frame", "f", "Frame3(origin: point3(0mm, 0mm, 0mm))")
+        ctor_field_source(
+            "param f : Frame",
+            "f",
+            "Frame3(origin: point3(0mm, 0mm, 0mm))"
+        )
     );
     let module = compile_source_with_stdlib(&source);
     assert_one_arg_type_mismatch_naming(&module, "f", "Frame <- user Frame3 structure");

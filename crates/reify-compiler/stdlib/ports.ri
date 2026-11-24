@@ -1,4 +1,4 @@
-// Stdlib: Port Interfaces — Directionality, Port, Frame3, LocatedPort, RegionPort
+// Stdlib: Port Interfaces — Directionality, Port, LocatedPort, RegionPort
 // Provides the base trait surface for representing directional port interfaces
 // on parametric structures (connectors, interfaces, joints).
 //
@@ -6,8 +6,7 @@
 //
 // This task (α) adds:
 //   - Port.direction default = Directionality.Bidi (§4 decision 1)
-//   - structure def Frame3  { origin : Vec3<Length>, x/y/z_axis : Vec3<Dimensionless> }
-//   - trait LocatedPort : Port { param frame : Frame3 }
+//   - trait LocatedPort : Port { param frame : Frame }
 //   - trait RegionPort : LocatedPort { param region : Geometry }
 //
 // Deviations from §11 spec (forced by current language scope):
@@ -17,18 +16,8 @@
 //   2. No `#no_prelude` pragma. std.ports is not in the `targets` list of
 //      stdlib_loader_tests::prelude_modules_carry_no_prelude_pragma, whose
 //      bidirectional check rejects the pragma on any module outside that list.
-//      The pragma would also be wrong here: std.ports imports std.trajectory
-//      (for Vec3), a stdlib module's prelude is exactly its imports, and
-//      `#no_prelude` makes `effective_prelude` empty, discarding that import.
-//   3. Frame3 spells its `origin` as a Vec3<Length>, where constitutive.ri
-//      MaterialFrame spells the same role as Point3<Length>. (§4 decision 1
-//      made ALL four members uniformly Vector3<Length>; task 5848 retired the
-//      uniformity — see the Frame3 block below — but left this Vector-vs-Point
-//      divergence on the origin alone.)
 
 module std.ports
-
-import std.trajectory
 
 // ── Enumerations ─────────────────────────────────────────────────────────────
 
@@ -48,38 +37,17 @@ trait Port {
     param direction : Directionality = Directionality.Bidi
 }
 
-// ── Port-frame structure ──────────────────────────────────────────────────────
-
-// A coordinate frame for a port attachment point in 3-D space.
-// The four members are NOT uniform — each takes the quantity slot its meaning
-// requires (task 5848):
-//   origin  — a POSITION,  so Vec3<Length>.
-//   x/y/z_axis — DIRECTIONS, so Vec3<Dimensionless>: a unit vector is
-//                genuinely dimensionless.
-// Shape mirrors constitutive.ri MaterialFrame (origin + 3 axes, axes-as-vectors
-// convention), but uses Vec3<..> for origin rather than Point3<Length>.
-// LocatedPort.frame uses this type so the compiler can route spatial-port
-// connections through the existing asymmetric-LocatedPort warning (connect.rs);
-// that routing keys off the Frame3 type NAME, not its members' quantity slots,
-// so it is unaffected by the split above.
-// Alias Vec3<Q> seeded from trajectory.ri (topo pos 11, before ports pos 16).
-structure def Frame3 {
-    param origin : Vec3<Length>
-    param x_axis : Vec3<Dimensionless>
-    param y_axis : Vec3<Dimensionless>
-    param z_axis : Vec3<Dimensionless>
-}
-
 // ── Spatial port traits ───────────────────────────────────────────────────────
 
 // Trait for ports with a defined spatial attachment frame.
+// A port frame is the `Frame` datum, built by `frame_at(origin, x: Direction, z: Direction)`.
 // The compiler has expected this trait BY NAME since task 370
 // (reify-core/src/identity.rs, LOCATED_PORT_TRAIT = "LocatedPort").
 // connect::compile_connection checks trait_satisfies(port_type,
 // LOCATED_PORT_TRAIT) and emits the asymmetric-LocatedPort warning when only
 // one side of a connection satisfies it.
 trait LocatedPort : Port {
-    param frame : Frame3
+    param frame : Frame
 }
 
 // A port with a spatial attachment frame AND a bounding geometry region.
