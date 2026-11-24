@@ -154,8 +154,7 @@ fn instance(mass: Value, com: Value, inertia: Value) -> Value {
 /// representation for a dimensionless quantity (Invariant V), which is also what
 /// the DSL spelling `vec3(0.0, 0.0, 0.0)` evaluates to. Minting a real `Frame3`
 /// keeps the runtime value faithful to the declared `origin : Frame3` type.
-#[doc(hidden)]
-pub fn default_frame3() -> Value {
+fn default_frame3() -> Value {
     // The ZERO magnitude is load-bearing, not a placeholder: every producer
     // emits this identical `origin`, so the degenerate basis must NOT be
     // "improved" into an identity basis here.
@@ -294,7 +293,7 @@ pub fn resolve_density(explicit: Option<f64>, material: Option<f64>) -> (f64, De
 /// (kg/m³), expressed in a **corner-origin** body frame (one corner at the
 /// frame origin, edges along +x/+y/+z).
 ///
-/// Returns `(mass, com, inertia)` where:
+/// Returns the [`MassProperties`] where:
 ///   * `mass = ρ·a·b·c`,
 ///   * `com = [a/2, b/2, c/2]` (the box's geometric centre relative to the
 ///     corner origin),
@@ -309,7 +308,7 @@ pub fn resolve_density(explicit: Option<f64>, material: Option<f64>) -> (f64, De
 /// is `pub` so that future supervisor wiring and its cross-validation test can
 /// reuse the exact same closed form.
 #[allow(dead_code)] // G-allow: test-only analytic ground-truth closed form; KGQ wiring into body_mass_props landed via #3829 (done) + #4237 dynamics_ops seam (done); fn is permanent test-only helper, zero production callers by design
-pub fn uniform_box_inertia(dims: [f64; 3], density: f64) -> (f64, [f64; 3], [[f64; 3]; 3]) {
+pub fn uniform_box_inertia(dims: [f64; 3], density: f64) -> MassProperties {
     let [a, b, c] = dims;
     let mass = density * a * b * c;
     let com = [a / 2.0, b / 2.0, c / 2.0];
@@ -319,7 +318,7 @@ pub fn uniform_box_inertia(dims: [f64; 3], density: f64) -> (f64, [f64; 3], [[f6
         [0.0, coeff * (a * a + c * c), 0.0],
         [0.0, 0.0, coeff * (a * a + b * b)],
     ];
-    (mass, com, inertia)
+    MassProperties { mass, com, inertia }
 }
 
 #[cfg(test)]
@@ -663,7 +662,7 @@ mod tests {
         //   Iyy  = m/12·(a²+c²) = 6/12·(0.01+0.09) = 0.5·0.10 = 0.05
         //   Izz  = m/12·(a²+b²) = 6/12·(0.01+0.04) = 0.5·0.05 = 0.025
         //   all products of inertia = 0
-        let (mass, com, inertia) = uniform_box_inertia([0.1, 0.2, 0.3], 1000.0);
+        let MassProperties { mass, com, inertia } = uniform_box_inertia([0.1, 0.2, 0.3], 1000.0);
 
         assert!((mass - 6.0).abs() < 1e-12, "mass should be 6.0 kg, got {mass}");
 
