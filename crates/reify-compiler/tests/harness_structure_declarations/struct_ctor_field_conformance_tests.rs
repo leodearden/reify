@@ -1471,8 +1471,7 @@ structure def Root {
 /// [`point3_dimensionless_at_dimensioned_point_param_stays_clean`] (arg names no
 /// dimension at all ⇒ the surviving tolerance).
 ///
-/// Shape from `examples/anisotropic_bar.ri:82` (`origin: point3(0m, 0m, 0m)`)
-/// and `examples/dynamics/pendulum_idyn.ri:29` (`com:`).
+/// Shape from `examples/dynamics/pendulum_idyn.ri:29` (`com:`).
 #[test]
 fn point_param_given_matching_dimensioned_point3_call_stays_clean() {
     let module = compile_source_with_stdlib(SRC_FAMILY_POINT);

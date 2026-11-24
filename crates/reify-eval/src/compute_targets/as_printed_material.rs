@@ -25,7 +25,7 @@
 //!   3. runs the β effective-property correlation once per zone — dense
 //!      (Wall & Skin, ρ = 1) and infill (ρ = infill_density),
 //!   4. builds three `AnisotropicMaterial` values (a transverse-isotropic — or,
-//!      opt-in, orthotropic — law plus one shared [`MaterialFrame`] whose
+//!      opt-in, orthotropic — law plus one shared `Frame` datum whose
 //!      axial / z-axis is the build direction, so build-Z is the weakest axis),
 //!      and
 //!   5. packs them as a `Value::Field { source: AsPrintedZones, .. }` whose
@@ -415,21 +415,27 @@ fn anisotropic_material(law: Value, frame: &Value) -> Value {
     )
 }
 
-/// One shared [`MaterialFrame`] whose z-axis is the (weak) build axis; the
+/// One shared material frame whose z-axis is the (weak) build axis; the
 /// in-plane x/y axes are an arbitrary orthonormal complement (the
 /// transverse-isotropic isotropy plane makes their in-plane orientation
 /// observationally irrelevant).
 fn material_frame(build_z: [f64; 3]) -> Value {
     let (x_axis, y_axis) = orthonormal_complement(build_z);
-    structure(
-        "MaterialFrame",
-        vec![
-            ("origin", super::point3_length([0.0, 0.0, 0.0])),
-            ("x_axis", vec3_dimensionless(x_axis)),
-            ("y_axis", vec3_dimensionless(y_axis)),
-            ("z_axis", vec3_dimensionless(build_z)),
-        ],
-    )
+    material_frame_value([x_axis, y_axis, build_z])
+}
+
+/// The `Frame` datum at the origin whose x, y and z axes are `axes`, as
+/// `AnisotropicMaterial.frame` declares it. `Value::Undef` if `axes` is not a
+/// right-handed orthonormal basis, which the as-printed constructions never
+/// produce.
+pub(crate) fn material_frame_value(axes: [[f64; 3]; 3]) -> Value {
+    match reify_ir::basis_quaternion(axes) {
+        Some([w, x, y, z]) => Value::Frame {
+            origin: Box::new(super::point3_length([0.0, 0.0, 0.0])),
+            basis: Box::new(Value::Orientation { w, x, y, z }),
+        },
+        None => Value::Undef,
+    }
 }
 
 /// An empty-citation `MaterialPropertyProvenance` (structurally present, content
@@ -462,10 +468,10 @@ fn mass_density(si: f64) -> Value {
     }
 }
 
-/// A `Vector3<Dimensionless>` — the representation `MaterialFrame`'s three
-/// axes declare (task 5848) and what the stdlib `vec3(0, 0, 1)` axis literals
+/// A `Vector3<Dimensionless>` — what the stdlib `vec3(0, 0, 1)` literals
 /// evaluate to. Components are `Value::Real`, the house spelling for a
-/// dimensionless quantity (Invariant V), matching `default_frame3()`'s axes.
+/// dimensionless quantity (Invariant V).
+#[cfg(test)]
 pub(crate) fn vec3_dimensionless(v: [f64; 3]) -> Value {
     Value::Vector(vec![
         Value::Real(v[0]),

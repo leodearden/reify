@@ -4,7 +4,7 @@
 //   - Isotropic baseline (Steel_AISI_1045) vs transverse-isotropic (weak build/z axis)
 //   - Identical geometry, loads, supports, and solver options; only the constitutive
 //     law differs — isolating anisotropy as the sole cause of the deflection delta
-//   - MaterialFrame orients the weak axial axis along the bar's length (bending) axis,
+//   - a Frame orients the weak axial axis along the bar's length (bending) axis,
 //     making the build-direction weakness manifest as materially larger tip response
 //
 // PRD: docs/prds/v0_5/anisotropic-heterogeneous-elastostatics.md task ζ.
@@ -53,7 +53,7 @@ structure AnisotropicBar {
     // ── Transverse-isotropic arm (weak build/z axis) ──────────────────────────
     // e_in_plane matches the iso baseline (205 GPa); e_axial is markedly weaker
     // (~1/3 — simulates an FDM-printed bar with weak interlayer-bond build axis).
-    // The MaterialFrame orients the weak axial direction along the bar's length
+    // The material Frame orients the weak axial direction along the bar's length
     // axis (x-global) so bending-mode stiffness drops and tip response is
     // materially larger than the isotropic arm under the same load.
     //
@@ -75,16 +75,11 @@ structure AnisotropicBar {
         g_axial_provenance:     prov,
         density_provenance:     prov,
     )
-    // MaterialFrame: weak axial (z_axis) aligned with global x (beam length).
-    // The axes are dimensionless directions and MUST be supplied unit: nothing
-    // normalises them, and D_global is homogeneous of degree 4 in the frame
-    // entries, so a non-unit frame silently rescales the stiffness.
-    let ti_frame = MaterialFrame(
-        origin: point3(0m, 0m, 0m),
-        x_axis: vec3(0, 1, 0),      // in-plane dir 1 (y-global)
-        y_axis: vec3(0, 0, 1),      // in-plane dir 2 (z-global)
-        z_axis: vec3(1, 0, 0),      // weak axial dir along beam length (x-global)
-    )
+    // Material Frame: weak axial z aligned with global x (beam length); x is
+    // in-plane dir 1 (y-global), so y = z × x is in-plane dir 2 (z-global).
+    // A Frame is orthonormal by construction, so its axes cannot rescale the
+    // stiffness.
+    let ti_frame = frame_at(point3(0m, 0m, 0m), dir(0, 1, 0), dir(1, 0, 0))
     let ti_result = solve_elastic_static(
         ti_material, length, width, height, [tip_load], [mount], ElasticOptions()
     )

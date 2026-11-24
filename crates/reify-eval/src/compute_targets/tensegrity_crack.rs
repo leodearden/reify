@@ -140,7 +140,7 @@ pub(crate) fn crack_dimensioned_scalar(
 /// there is no value-level coercion and an integer ratio literal such as
 /// `form_find(net, [1, 1, 1, 1], anchors)` arrives here as `Value::Int`
 /// verbatim. `elastic_static.rs::dimensionless_component` records the same
-/// reasoning for the `MaterialFrame` dimensionless axis.
+/// reasoning for a load's dimensionless `direction`.
 ///
 /// The dimensionless counterpart of [`crack_dimensioned_scalar`]: that one wants
 /// one PARTICULAR unit, this one wants no unit at all, so the acceptance sets
@@ -808,8 +808,8 @@ mod tests {
     /// overload selection "does NOT apply Int→Real … widening"), so there is no
     /// value-level coercion and `form_find(net, [1, 1, 1, 1], anchors)` reaches
     /// this reader as `Value::Int` verbatim. Same reasoning
-    /// `elastic_static.rs::dimensionless_component` records for the
-    /// `MaterialFrame` dimensionless axis, and the same acceptance set the PRD
+    /// `elastic_static.rs::dimensionless_component` records for a load's
+    /// dimensionless `direction`, and the same acceptance set the PRD
     /// states for `dimensionless_spec`: `Real | Int | Scalar{DIMENSIONLESS}`.
     #[test]
     fn crack_dimensionless_scalar_accepts_int() {

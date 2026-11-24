@@ -49,10 +49,10 @@ use reify_fdm::{
 use reify_ir::{OpaqueState, Value};
 
 use super::as_printed_material::{
-    AS_PRINTED_MATERIAL, as_printed_field_value, field_int, field_vec3, orthotropic_material,
-    read_base_elastic, zone_params_value,
+    AS_PRINTED_MATERIAL, as_printed_field_value, field_int, field_vec3, material_frame_value,
+    orthotropic_material, read_base_elastic, zone_params_value,
 };
-use super::{MM_TO_M, rejected_input_outcome, struct_data, structure};
+use super::{MM_TO_M, rejected_input_outcome, struct_data};
 use crate::arg_acceptance::{FieldRejection, dimensionless_spec, length_spec, read_field};
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
@@ -208,15 +208,7 @@ fn r0_material_frame(build_z: [f64; 3], bead_dir: [f64; 3]) -> Value {
     ];
     let x = unit3(x_perp).unwrap_or_else(|| complement_x(z));
     let y = cross(z, x);
-    structure(
-        "MaterialFrame",
-        vec![
-            ("origin", super::point3_length([0.0, 0.0, 0.0])),
-            ("x_axis", super::as_printed_material::vec3_dimensionless(x)),
-            ("y_axis", super::as_printed_material::vec3_dimensionless(y)),
-            ("z_axis", super::as_printed_material::vec3_dimensionless(z)),
-        ],
-    )
+    material_frame_value([x, y, z])
 }
 
 /// The toolpath bead-centerline AABB in SI metres (native mm × 1e-3), or `None`

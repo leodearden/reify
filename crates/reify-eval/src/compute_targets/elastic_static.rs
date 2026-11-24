@@ -4281,7 +4281,7 @@ fn element_stress_anisotropic(
 ///
 /// Identity material frame `I₃` is used for the homogeneous `ConstitutiveLaw`
 /// surface (axis-aligned cantilever, beam axis = material 1-axis → E1 governs
-/// bending). The heterogeneous arm honours the per-zone `MaterialFrame`
+/// bending). The heterogeneous arm honours the per-zone material `frame`
 /// (build-Z = weak axis) via `anisotropic_material_from_value`.
 ///
 /// Task D7 (compute-fea-hardening PRD): Result-ified — returns
@@ -4407,10 +4407,9 @@ fn classify_material_as_printed_zones(lambda: &Value) -> Result<MaterialModel, F
     Ok(MaterialModel::Heterogeneous(field))
 }
 
-/// Shared arity + per-component extraction for
-/// `extract_point3_si`/`extract_vec3_si`, once the caller has matched `val`
-/// against `Value::Point`/`Value::Vector` and obtained the ordered component
-/// slice.
+/// Shared arity + per-component extraction for `extract_point3_si`, once the
+/// caller has matched `val` against `Value::Point` and obtained the ordered
+/// component slice.
 ///
 /// `shape_context` labels a `< 3`-components arity error; `component_context`
 /// labels a per-component read failure, and is threaded into `component` so
@@ -4418,26 +4417,19 @@ fn classify_material_as_printed_zones(lambda: &Value) -> Result<MaterialModel, F
 /// inventing one; `noun` names the shape (`"Point"`/`"Vector"`) for the
 /// arity error's message.
 ///
-/// `component` is what SPLITS the two callers (task 5848; task #7019 gives it
-/// its final shape). They differ in DIMENSION, so they differ in which
-/// `Value` spellings are legitimate: `extract_point3_si` reads a genuinely
-/// dimensioned `Point3<Length>` via [`dimensioned_component`];
-/// `extract_vec3_si` reads the dimensionless `MaterialFrame` axes via
-/// [`dimensionless_component`]. Both are thin adapters over the same
-/// [`spec_component`]/`accept_arg` rule, so this parameter carries the one
-/// axis of variability between the two positions rather than a bespoke
-/// per-caller predicate.
+/// `component` carries the per-position acceptance set (task 5848; task
+/// #7019 gives it its final shape): `extract_point3_si` reads a genuinely
+/// dimensioned `Point3<Length>` via [`dimensioned_component`], a thin adapter
+/// over the shared [`spec_component`]/`accept_arg` rule.
 ///
 /// `comp` (below) is the ONE place this function's `Value::Undef` policy is
 /// expressed (task #7019 review [reviewer_comprehensive]): it maps
-/// `ComponentRead::Undefined` to `Err(ExpectedScalar)`, preserving BOTH
-/// triple extractors' pre-existing behaviour unchanged — a deliberate hold,
-/// not an oversight; see [`ComponentRead`]'s doc for why the policy is
-/// decided here rather than inside `component`, and
-/// `extract_vec3_si_treats_an_undef_component_as_a_shape_error` for the
-/// characterization lock. Follow-up #7793 is filed to decide, deliberately
-/// and with its own test coverage, whether this position should widen to
-/// quiet degradation too.
+/// `ComponentRead::Undefined` to `Err(ExpectedScalar)`, preserving the
+/// pre-existing behaviour unchanged — a deliberate hold, not an oversight;
+/// see [`ComponentRead`]'s doc for why the policy is decided here rather than
+/// inside `component`. Follow-up #7793 is filed to decide, deliberately and
+/// with its own test coverage, whether this position should widen to quiet
+/// degradation too.
 fn extract_scalar_triple(
     comps: &[Value],
     shape_context: &'static str,
@@ -4477,9 +4469,7 @@ fn extract_scalar_triple(
 ///
 /// This reader and [`dimensionless_component`] stay distinct functions: they
 /// differ only in which `ArgSpec` they pass to [`spec_component`] — the
-/// acceptance RULE is shared, the expectation is per-position, which is the
-/// orthogonal axis of variability `extract_scalar_triple`'s `component`
-/// parameter already isolates.
+/// acceptance RULE is shared, the expectation is per-position.
 ///
 /// Returns the three-way [`ComponentRead`], not a `Result`: this reader has
 /// no Undef policy of its own — its caller (`extract_scalar_triple`'s `comp`
@@ -4490,8 +4480,8 @@ fn dimensioned_component(v: &Value, context: &'static str) -> ComponentRead {
     spec_component(v, &length_spec(), context)
 }
 
-/// Per-component reader for a DIMENSIONLESS triple — `MaterialFrame`'s three
-/// `Vector3<Dimensionless>` axes (task 5848). A dimensionless `.ri` literal
+/// Per-component reader for a DIMENSIONLESS triple — a load's
+/// `Vector3<Dimensionless>` `direction` (task 5848). A dimensionless `.ri` literal
 /// compiles to `Value::Int`/`Value::Real` and reaches this reader verbatim, so
 /// all three numeric spellings must read; `Int` is not redundant with `Real`,
 /// since an integer `.ri` literal (e.g. `vec3(0, 1, 0)`) compiles to
@@ -4508,9 +4498,8 @@ fn dimensioned_component(v: &Value, context: &'static str) -> ComponentRead {
 /// reader at the same Leg B position, consuming the same spec.
 ///
 /// Returns the three-way [`ComponentRead`], not a `Result`: this reader has
-/// no Undef policy of its own — each of its two callers
-/// (`extract_scalar_triple`'s `comp` closure for `extract_vec3_si`, and
-/// `read_direction_or_neg_z` directly) decides its own.
+/// no Undef policy of its own — its caller, `read_direction_or_neg_z`,
+/// decides it.
 fn dimensionless_component(v: &Value, context: &'static str) -> ComponentRead {
     use crate::arg_acceptance::dimensionless_spec;
 
@@ -4543,37 +4532,6 @@ fn extract_point3_si(val: &Value) -> Result<[f64; 3], FeaValueShapeError> {
         "extract_point3_si component",
         "Point",
         dimensioned_component,
-    )
-}
-
-/// Extract `[f64; 3]` values from a `Value::Vector` of three numeric
-/// components.
-///
-/// Used to parse MaterialFrame axis vectors from the AsPrintedZones lambda.
-/// Those axes are `Vector3<Dimensionless>` (task 5848): a `Scalar{DIMENSIONLESS}`,
-/// `Real`, or `Int` component all read alike, but (task #7019) a
-/// `Value::Scalar` carrying any OTHER dimension is rejected instead of
-/// having its SI magnitude reinterpreted as the bare component — see
-/// [`dimensionless_component`], a thin adapter over the canonical
-/// `reify_ir::arg_acceptance::dimensionless_spec` (PRD
-/// `dimension-checked-readers.md` Leg B, invariant I3). Its sibling at the
-/// same Leg B position is `tensegrity_crack::crack_dimensionless_scalar`.
-fn extract_vec3_si(val: &Value) -> Result<[f64; 3], FeaValueShapeError> {
-    let comps = match val {
-        Value::Vector(v) => v,
-        other => {
-            return Err(FeaValueShapeError::ExpectedList {
-                context: "extract_vec3_si (Vector3<Dimensionless>)",
-                got: format!("{other:?}"),
-            })
-        }
-    };
-    extract_scalar_triple(
-        comps,
-        "extract_vec3_si",
-        "extract_vec3_si component",
-        "Vector",
-        dimensionless_component,
     )
 }
 
@@ -4643,9 +4601,10 @@ fn extract_zone_process_params(val: &Value) -> Result<ZoneProcessParams, FeaValu
     Ok(params)
 }
 
-/// Convert an `AnisotropicMaterial { law: ConstitutiveLaw, frame: MaterialFrame }`
+/// Convert an `AnisotropicMaterial { law: ConstitutiveLaw, frame: Frame }`
 /// Value to a Rust `AnisotropicMaterial`, honouring the frame's x/y/z axes as
-/// the local → global rotation (columns = local basis in global).
+/// the local → global rotation (columns = local basis in global). A `frame`
+/// that is not the Frame datum is `Err(FeaValueShapeError::MalformedFrame)`.
 ///
 /// PRD compute-fea-hardening D5: Result-ified leaf extractor. Returns
 /// `Err(FeaValueShapeError)` instead of panicking on a malformed `Value`:
@@ -4698,46 +4657,14 @@ fn anisotropic_material_from_value(val: &Value) -> Result<AnisotropicMaterial, F
         field: "frame",
     })?;
 
-    // Parse the MaterialFrame: extract x/y/z axes, build the local→global matrix
-    // (columns = local basis vectors in global coordinates, i.e. frame[row][col]).
-    let frame = {
-        let frame_data = match frame_val {
-            Value::StructureInstance(d) => d,
-            other => {
-                return Err(FeaValueShapeError::ExpectedStructureInstance {
-                    context: "anisotropic_material_from_value (frame)",
-                    got: format!("{other:?}"),
-                })
-            }
-        };
-        let x_axis = frame_data.fields.get("x_axis").ok_or(FeaValueShapeError::MissingField {
-            context: "anisotropic_material_from_value (frame)",
-            field: "x_axis",
-        })?;
-        let y_axis = frame_data.fields.get("y_axis").ok_or(FeaValueShapeError::MissingField {
-            context: "anisotropic_material_from_value (frame)",
-            field: "y_axis",
-        })?;
-        let z_axis = frame_data.fields.get("z_axis").ok_or(FeaValueShapeError::MissingField {
-            context: "anisotropic_material_from_value (frame)",
-            field: "z_axis",
-        })?;
-        let x = extract_vec3_si(x_axis)?;
-        let y = extract_vec3_si(y_axis)?;
-        let z = extract_vec3_si(z_axis)?;
-        // Columns = local basis vectors in global: frame[row][col] = global-row-component
-        // of local-col-axis.  rotate_voigt reads rows as direction cosines of global
-        // axes in local coords (R[i] = global-i in local), which is the TRANSPOSE of
-        // R_local_to_global.  We pass the local→global matrix (columns = local axes):
-        //   frame[0] = [x[0], y[0], z[0]]   (global-x components of local x, y, z)
-        //   frame[1] = [x[1], y[1], z[1]]   (global-y components)
-        //   frame[2] = [x[2], y[2], z[2]]   (global-z components)
-        [
-            [x[0], y[0], z[0]],
-            [x[1], y[1], z[1]],
-            [x[2], y[2], z[2]],
-        ]
-    };
+    // `frame_basis` gives rows = the frame's axes; `rotate_voigt` takes the
+    // local→global matrix whose COLUMNS are those axes, i.e. the transpose:
+    // frame[row][col] = global-row component of local-col axis.
+    let rows = reify_ir::frame_basis(frame_val).map_err(|error| FeaValueShapeError::MalformedFrame {
+        context: "anisotropic_material_from_value (frame)",
+        error,
+    })?;
+    let frame: [[f64; 3]; 3] = std::array::from_fn(|r| std::array::from_fn(|c| rows[c][r]));
 
     // Parse the law: destructure to a StructureInstance, then dispatch on
     // type_name via the shared `law_from_value` (OrthotropicMaterial,
@@ -4760,7 +4687,7 @@ fn anisotropic_material_from_value(val: &Value) -> Result<AnisotropicMaterial, F
 /// dispatch — `OrthotropicMaterial`, `TransverseIsotropicMaterial`, or
 /// (structural, NOT name-based) an isotropic fallback — used by both
 /// `classify_material`'s two named-law arms (`frame = IDENTITY`) and
-/// `anisotropic_material_from_value` (the parsed `MaterialFrame`).
+/// `anisotropic_material_from_value` (the parsed `frame`).
 /// `classify_material`'s own guard gates on `is_named_anisotropic_law`
 /// instead of repeating this `match`'s name list, so the two dispatches
 /// can't drift.
@@ -4843,9 +4770,10 @@ fn is_named_anisotropic_law(type_name: &str) -> bool {
 /// missing or malformed, which alone gives no hint the `type_name` went
 /// unrecognised at all (task #7210 review round 2 suggestion 3). Stays
 /// inside the `FeaValueShapeError` taxonomy: `MissingField`, `Unresolved`,
-/// `WrongDimension` and `Rejected` each get their own `reason` arm below
-/// (`WrongDimension`'s folds in `expected` alongside `got`, since it has no
-/// `field` to report; `Rejected` is the shared rejection wording); the rest
+/// `WrongDimension`, `Rejected` and `MalformedFrame` each get their own
+/// `reason` arm below (`WrongDimension`'s folds in `expected` alongside `got`,
+/// since it has no `field` to report; `Rejected` is the shared rejection
+/// wording; `MalformedFrame` renders its decode error); the rest
 /// have no `got: String` distinct enough to need one and re-emit as
 /// `ExpectedScalar`, whose `got` is already a free-form diagnostic string
 /// elsewhere in the FEA readers.
@@ -4857,6 +4785,7 @@ fn annotate_law_type(err: FeaValueShapeError, type_name: &str) -> FeaValueShapeE
             format!("expected {expected}, got {got}")
         }
         FeaValueShapeError::Rejected(field) => field.to_string(),
+        FeaValueShapeError::MalformedFrame { error, .. } => error.to_string(),
         FeaValueShapeError::ExpectedScalar { got, .. }
         | FeaValueShapeError::ExpectedReal { got, .. }
         | FeaValueShapeError::ExpectedStructureInstance { got, .. }
@@ -9363,7 +9292,7 @@ mod tests {
     /// correctly-SHAPED `direction` component that carries a unit: it must
     /// be rejected, not silently coerced.
     ///
-    /// Why the MaterialFrame axis gate and this fix had to land in one
+    /// Why the (since-retired) MaterialFrame axis gate and this fix had to land in one
     /// commit: gating `dimensionless_component` alone, without also
     /// Result-ifying `read_direction_or_neg_z`'s old `.unwrap_or(0.0)`,
     /// would have turned a unit-strip (this component's SI magnitude read
@@ -9444,10 +9373,8 @@ mod tests {
     /// row B6 forbid that: an unresolved component is expected transient
     /// solver state, not a mistake, and only a *defined-but-wrong* value is
     /// a fault. See [`ComponentRead`]'s doc for the fix (Undef surfaced to
-    /// the caller rather than folded away) and
-    /// `extract_vec3_si_treats_an_undef_component_as_a_shape_error` for the
-    /// sibling characterization lock on the OTHER reader's (deliberately
-    /// different) policy.
+    /// the caller rather than folded away) and `extract_scalar_triple`'s doc
+    /// for the OTHER reader's (deliberately different) policy.
     ///
     /// Four legs, covering both `PointLoad` and `Gravity` and both the
     /// `Value::Vector` and `Value::List` direction spellings.
@@ -11769,181 +11696,6 @@ mod tests {
         };
         let point = Value::Point(vec![scalar(1.0), scalar(2.0), scalar(3.0), scalar(4.0)]);
         assert_eq!(extract_point3_si(&point), Ok([1.0, 2.0, 3.0]));
-    }
-
-    /// step-9 RED: `extract_vec3_si` must reject a non-Vector `Value` with
-    /// `Err(FeaValueShapeError::ExpectedList { .. })` instead of panicking.
-    ///
-    /// RED: `extract_vec3_si` currently returns a bare `[f64; 3]`, so
-    /// matching `Err(..)` fails to type-check until step-10 converts it to
-    /// `Result<[f64; 3], FeaValueShapeError>`.
-    #[test]
-    fn extract_vec3_si_rejects_non_vector() {
-        let res = extract_vec3_si(&Value::Real(1.0));
-        assert!(
-            matches!(res, Err(FeaValueShapeError::ExpectedList { .. })),
-            "expected Err(ExpectedList) for a non-Vector Value, got: {:?}",
-            res
-        );
-    }
-
-    /// Amendment (task #5080 review, suggestion 1): a `Value::Vector` with
-    /// fewer than 3 components is the right shape but the wrong arity — must
-    /// still report `Err(FeaValueShapeError::ExpectedList { .. })` (the arity
-    /// guard lives inside the same variant as the non-Vector case above).
-    #[test]
-    fn extract_vec3_si_rejects_wrong_arity() {
-        let one_component = Value::Vector(vec![Value::Scalar {
-            si_value: 1.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        }]);
-        let res = extract_vec3_si(&one_component);
-        assert!(
-            matches!(res, Err(FeaValueShapeError::ExpectedList { .. })),
-            "expected Err(ExpectedList) for a Vector with < 3 components, got: {:?}",
-            res
-        );
-    }
-
-    /// Task 5848 RETARGET of the task-#5080 review amendment (suggestion 1),
-    /// which pinned that a `Value::Vector` component that is not a
-    /// `Value::Scalar` must report `Err(ExpectedScalar)`.
-    ///
-    /// That contract was written when `MaterialFrame`'s axes were
-    /// `Vector3<Length>`, where a bare `Real`/`Int` component genuinely IS a
-    /// missing dimension. The axes are now `Vector3<Dimensionless>`, where
-    /// `Real`/`Int` is the CORRECT spelling — so the Vector path reads all
-    /// three numeric spellings and returns their f64s.
-    ///
-    /// #5080 is preserved where it is still true rather than overturned: its
-    /// Point-path twin `extract_point3_si_rejects_non_scalar_component` above
-    /// still pins the strict reading for the genuinely dimensioned
-    /// `Point3<Length>` (`aabb_min`/`aabb_max`), and is deliberately untouched.
-    ///
-    /// The rejection half survives here too: a genuinely NON-NUMERIC component
-    /// must still report `Err(ExpectedScalar)`.
-    #[test]
-    fn extract_vec3_si_reads_numeric_components_and_rejects_non_numeric() {
-        let scalar = |v: f64| Value::Scalar { si_value: v, dimension: DimensionVector::DIMENSIONLESS };
-        let mixed = Value::Vector(vec![scalar(1.0), Value::Real(2.0), Value::Int(3)]);
-        assert_eq!(
-            extract_vec3_si(&mixed),
-            Ok([1.0, 2.0, 3.0]),
-            "Scalar/Real/Int axis components must all read as their f64 value"
-        );
-
-        let non_numeric =
-            Value::Vector(vec![scalar(1.0), scalar(2.0), Value::String("z".to_string())]);
-        let res = extract_vec3_si(&non_numeric);
-        assert!(
-            matches!(res, Err(FeaValueShapeError::ExpectedScalar { .. })),
-            "expected Err(ExpectedScalar) for a Vector with a non-numeric component, got: {:?}",
-            res
-        );
-    }
-
-    /// Amendment (task #5080 review round 2, suggestion 1): `extract_vec3_si`
-    /// must return `Ok` with the 3 SI components for a well-formed
-    /// 3-component `Value::Vector`, locking the success path alongside the
-    /// error paths above.
-    #[test]
-    fn extract_vec3_si_accepts_vector() {
-        let scalar = |v: f64| Value::Scalar { si_value: v, dimension: DimensionVector::DIMENSIONLESS };
-        let vector = Value::Vector(vec![scalar(1.0), scalar(2.0), scalar(3.0)]);
-        assert_eq!(extract_vec3_si(&vector), Ok([1.0, 2.0, 3.0]));
-    }
-
-    /// PRD `dimension-checked-readers.md` Leg B: `extract_vec3_si` rejects a
-    /// MaterialFrame axis component that carries a dimension other than
-    /// DIMENSIONLESS, instead of silently reinterpreting its SI magnitude as
-    /// the bare axis component. Asserts BOTH sides of the two-sided contract
-    /// in one test, the way `tensegrity_crack::crack_dimensionless_scalar`'s
-    /// rustdoc states it.
-    ///
-    /// REJECT half: without the gate this would return `Ok([1.0, 0.0,
-    /// 0.0])`, silently reading 1 metre as the bare component 1.0. Nothing
-    /// on the `extract_vec3_si` → `AnisotropicMaterial::from_law` →
-    /// `rotate_voigt` path normalises the frame (see the FENCE test
-    /// `material_frame_is_not_normalised_so_a_non_unit_axis_moves_d_global`
-    /// below) and `D_global` is homogeneous of degree 4 in the frame's
-    /// entries, so a 1mm-spelled "unit" axis would silently rescale the
-    /// stiffness by 1e-12 with no diagnostic.
-    ///
-    /// ACCEPT half (characterization lock): a `Value::Vector` of
-    /// `Scalar{DIMENSIONLESS}`/`Real`/`Int` components still reads
-    /// `Ok([1.0, 2.0, 3.0])` — a future over-tightening to "bare Real only"
-    /// would be a regression, not a hardening (PRD Leg B side 1).
-    #[test]
-    fn extract_vec3_si_rejects_a_dimensioned_axis_component() {
-        let dimensioned = Value::Vector(vec![
-            Value::Scalar {
-                si_value: 1.0,
-                dimension: DimensionVector::LENGTH,
-            },
-            Value::Real(0.0),
-            Value::Real(0.0),
-        ]);
-        let res = extract_vec3_si(&dimensioned);
-        assert!(
-            matches!(
-                res,
-                Err(FeaValueShapeError::WrongDimension {
-                    expected: "Real",
-                    ..
-                })
-            ),
-            "expected Err(WrongDimension {{ expected: \"Real\", .. }}) for a \
-             LENGTH-dimensioned axis component instead of silently \
-             reinterpreting its SI magnitude as the bare component — nothing \
-             normalises the frame afterward and D_global is homogeneous of \
-             degree 4 in its entries, so a 1mm-spelled axis would silently \
-             rescale the stiffness by 1e-12. Asserting the variant (not just \
-             is_err) is what distinguishes a real dimension check from a \
-             fluke ExpectedScalar; got: {:?}",
-            res
-        );
-
-        let scalar = |v: f64| Value::Scalar {
-            si_value: v,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let legit = Value::Vector(vec![scalar(1.0), Value::Real(2.0), Value::Int(3)]);
-        assert_eq!(
-            extract_vec3_si(&legit),
-            Ok([1.0, 2.0, 3.0]),
-            "Scalar{{DIMENSIONLESS}}/Real/Int axis components must still read — \
-             a future over-tightening to bare Real only would be a regression"
-        );
-    }
-
-    /// step-7 characterization lock (task #7019 review [reviewer_comprehensive]):
-    /// `extract_vec3_si` must keep TODAY's treatment of an Undef component —
-    /// `Err(ExpectedScalar)` — even though step-8 gives `read_direction_or_neg_z`
-    /// a different, quiet-degradation policy for the identical `Value::Undef`
-    /// input. This PASSES today and must keep passing.
-    ///
-    /// Why this is a deliberate ASYMMETRY rather than an inconsistency: PRD
-    /// decision 2 would arguably want quiet degradation here too, but that is
-    /// PRE-EXISTING behaviour (not a regression #7019 introduced), has no test
-    /// coverage to justify a change, and no charter in this task — and on the
-    /// MaterialFrame path an `Err` already becomes an Undef cell downstream
-    /// (`engine_build.rs:10328`/`:10530` match `Err(_)` and discard), so the
-    /// observable end state is already "Undef in, Undef out". Without this
-    /// lock, step-8's three-way `ComponentRead` refactor could silently widen
-    /// quiet degradation into the MaterialFrame/aabb readers too — a behaviour
-    /// change this task has no charter for. A follow-up is filed to consider
-    /// widening it deliberately, with its own test coverage.
-    #[test]
-    fn extract_vec3_si_treats_an_undef_component_as_a_shape_error() {
-        let with_undef = Value::Vector(vec![Value::Undef, Value::Real(0.0), Value::Real(0.0)]);
-        let res = extract_vec3_si(&with_undef);
-        assert!(
-            matches!(res, Err(FeaValueShapeError::ExpectedScalar { .. })),
-            "an Undef axis component must still report Err(ExpectedScalar), \
-             unchanged from today — read_direction_or_neg_z is the only \
-             reader in this file that gains quiet Undef degradation, got: {:?}",
-            res
-        );
     }
 
     // ── task 5081 (PRD compute-fea-hardening D3): Result-ify extract_material
