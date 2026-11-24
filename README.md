@@ -69,7 +69,7 @@ chmod +x Reify_*_amd64.AppImage
 ./Reify_*_amd64.AppImage cli check m5_geometry.ri  # the bundled reify CLI
 ```
 
-Relative paths resolve from your current directory. Every `reify <command>` in this README and in [`docs/getting-started.md`](docs/getting-started.md) works as `./Reify_<version>_amd64.AppImage cli <command>`; `alias reify="$PWD/Reify_<version>_amd64.AppImage cli"` puts it on your command line.
+Relative paths resolve from your current directory. Every `reify <command>` in this README and in [`docs/getting-started.md`](docs/getting-started.md) except `gui` and `gui-debug` works as `./Reify_<version>_amd64.AppImage cli <command>`; `alias reify="$PWD/Reify_<version>_amd64.AppImage cli"` puts it on your command line, with the same exception. To open a file in the GUI, pass it to the AppImage itself, `./Reify_<version>_amd64.AppImage m5_geometry.ri`, where a relative path also resolves from your current directory.
 
 If your machine has no FUSE 2 (`libfuse2t64`), run it with `APPIMAGE_EXTRACT_AND_RUN=1 ./Reify_*_amd64.AppImage`.
 
