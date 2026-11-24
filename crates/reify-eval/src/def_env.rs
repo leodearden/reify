@@ -93,16 +93,6 @@ impl<'p> DefEnv<'p> {
         self.resolve(name)
     }
 
-    // G-allow: resolution-unification §3.2 DefEnv; first production consumer is λ #5525
-    pub fn resolve_constraint_def(&self, name: &str) -> Option<&'p CompiledConstraintDef> {
-        self.resolve(name)
-    }
-
-    // G-allow: resolution-unification §3.2 DefEnv; first production consumer is λ #5525
-    pub fn resolve_purpose(&self, name: &str) -> Option<&'p CompiledPurpose> {
-        self.resolve(name)
-    }
-
     /// The bound functions in precedence order, one per signature (name and
     /// parameter types): the program's dispatch table (§10 Q4).
     // G-allow: resolution-unification §10 Q4 dispatch table; κ #5524 folds merge_functions into it
@@ -146,13 +136,13 @@ impl<'p> DefEnv<'p> {
     /// module's exports. Matches by name alone, so for a function it is the
     /// module's first overload of `name`; [`Self::resolve_function`] matches
     /// a signature.
-    // G-allow: resolution-unification §3.2 DefEnv; first production consumer is λ #5525
+    // G-allow: resolution-unification I7 qualified lookup; first production consumer is stdlib-namespace ν #5505
     pub fn resolve_in<D: ProgramDefinition>(&self, module_key: &str, name: &str) -> Option<&'p D> {
         program_scope::module_surface::<D>(self.root, self.prelude, module_key)?
             .find(|definition| definition.name() == name)
     }
 
-    // G-allow: resolution-unification §3.2 DefEnv; first production consumer is λ #5525
+    // G-allow: resolution-unification I7 qualified lookup; first production consumer is stdlib-namespace ν #5505
     pub fn resolve_template_in(
         &self,
         module_key: &str,
