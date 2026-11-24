@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::ops::Range;
 
 use reify_compiler::{
-    CompiledConnection, CompiledForallTemplate, CompiledGeometryOp, TopologyTemplate, ValueCellKind,
+    CompiledConnection, CompiledForallTemplate, CompiledGeometryOp, ValueCellKind,
 };
 use reify_core::{
     ComputeNodeId, ConstraintNodeId, ContentHash, KernelId, RealizationNodeId, ResolutionNodeId,
@@ -25,6 +25,8 @@ mod unresolved_sub_tests;
 mod value_cell_fold_tests;
 
 use cell_contributions::{ContributedCell, SubShape, contributed_cells};
+
+use crate::DefEnv;
 
 /// A value cell node in the evaluation graph.
 /// Corresponds to a param or let binding in the topology.
@@ -66,7 +68,7 @@ pub struct RealizationNodeData {
     pub produced_repr: ReprKind,
     /// GHR-δ (PRD geometry-handle-runtime.md §8 Phase 4): the value cell that
     /// holds this realization's `Value::GeometryHandle`, if any. Populated by
-    /// [`EvaluationGraph::from_templates`] when a template has a `Type::Geometry`
+    /// [`EvaluationGraph::from_env`] when a template has a `Type::Geometry`
     /// value cell whose member name matches this realization's name (the same
     /// rule GHR-γ uses in `post_process_geometry_handle_cells`). `None` for
     /// realizations with no backing geometry cell. Riding this link on the graph
@@ -235,7 +237,7 @@ impl CollectionSubInfo {
 ///
 /// **Registry:** stored in `EvaluationGraph::keyed_subs`. NOT mixed into
 /// `topology_fingerprint` (keyed members already stamp value cells that ARE in
-/// the fingerprint via `from_templates`).
+/// the fingerprint via `from_env`).
 #[derive(Debug, Clone)]
 pub struct KeyedSubInfo {
     /// The parent template/entity name (e.g., "Manifold").
@@ -321,7 +323,7 @@ pub struct EvaluationGraph {
     /// Every sub-instance entity whose cells are in `value_cells` (`P.s`,
     /// `P.s[i]`, `P.s["k"]`), mapped to the name of the template those cells
     /// are stamped from. Read through [`Self::sub_instance_template`].
-    /// `from_templates` fills it from [`cell_contributions::sub_instances`],
+    /// `from_env` fills it from [`cell_contributions::sub_instances`],
     /// the same slot enumeration that stamps those cells. The edit path's
     /// collection resizes stamp through [`Self::insert_sub_instance_cell`] and
     /// remove through [`Self::remove_collection_slots`].
@@ -403,7 +405,8 @@ fn insert_contributed_cell(
 }
 
 impl EvaluationGraph {
-    /// Build an EvaluationGraph from compiled topology templates.
+    /// Build an EvaluationGraph from the templates `env` declares, each sub's
+    /// structure resolved through `env`.
     ///
     /// Converts each template's declarations into typed graph nodes:
     /// - ValueCellDecl → ValueCellNode
@@ -412,10 +415,10 @@ impl EvaluationGraph {
     ///
     /// `value_cells` is exactly the fold of
     /// [`cell_contributions::contributed_cells`].
-    pub fn from_templates(templates: &[TopologyTemplate]) -> Self {
+    pub fn from_env(env: DefEnv<'_>) -> Self {
         let mut graph = EvaluationGraph::default();
 
-        for template in templates {
+        for template in &env.declared().templates {
             // task 2629: carry forall templates (deferred-count statement-form
             // forall body shapes) into the runtime graph. Populated alongside
             // other per-template extraction passes so the runtime
@@ -517,7 +520,7 @@ impl EvaluationGraph {
             // Sub-component registration. The scoped instance cells themselves
             // come from the value-cell fold below.
             for sub in &template.sub_components {
-                let Some(elab) = cell_contributions::resolve_sub(templates, template, sub) else {
+                let Some(elab) = cell_contributions::resolve_sub(env, template, sub) else {
                     continue; // skip unknown structures silently
                 };
                 match elab.shape {
@@ -607,10 +610,10 @@ impl EvaluationGraph {
             }
         }
 
-        for cell in contributed_cells(templates) {
+        for cell in contributed_cells(env) {
             insert_contributed_cell(&mut graph.value_cells, cell);
         }
-        for (entity, template) in cell_contributions::sub_instances(templates) {
+        for (entity, template) in cell_contributions::sub_instances(env) {
             graph.record_sub_instance(entity, template.to_string());
         }
         graph.debug_assert_sub_instance_registry_agrees();
@@ -622,7 +625,7 @@ impl EvaluationGraph {
     /// (a clone of `data.computation_id`) for caller convenience.
     ///
     /// **Note (P3.1 scope):** ComputeNodes are not produced by any builder in
-    /// P3.1 — `from_templates` does not construct them, and the
+    /// P3.1 — `from_env` does not construct them, and the
     /// `topology_fingerprint` does NOT yet include a ComputeNode bucket. P3.2
     /// composes `cache_key` and adds the fingerprint bucket; P3.4 wires
     /// `@optimized` lowering to call this method. See
@@ -728,7 +731,7 @@ impl EvaluationGraph {
     }
 
     /// The realization whose handle the scalar geometry cell `cell` holds: the
-    /// one whose `geometry_cell` link, set by [`Self::from_templates`], names
+    /// one whose `geometry_cell` link, set by [`Self::from_env`], names
     /// it. `None` for any other cell. A geometry-list cell is linked N:1 (task
     /// #5385), and for length 1 that is indistinguishable from 1:1 by link
     /// count, so the cell's type decides. A list cell's value is never one
@@ -737,7 +740,7 @@ impl EvaluationGraph {
     ///
     /// A scalar geometry cell can be linked twice today, by a top-level Solid
     /// param and a guarded same-name override: the compiler names both
-    /// realizations after the member, and `from_templates` links by name. This
+    /// realizations after the member, and `from_env` links by name. This
     /// returns whichever link the map's iteration reaches first, which is
     /// unspecified.
     pub(crate) fn scalar_geometry_cell_realization(
@@ -1070,6 +1073,7 @@ mod tests {
     use reify_ir::{CompiledExpr, Value};
 
     use super::*;
+    use reify_test_support::module_of;
 
     #[test]
     fn value_cell_node_construction() {
@@ -1195,11 +1199,11 @@ mod tests {
         use reify_ir::ReprKind;
         use reify_test_support::TopologyTemplateBuilder;
 
-        // from_templates must initialize produced_repr to ReprKind::BRep (v0.2 OCCT default).
+        // from_env must initialize produced_repr to ReprKind::BRep (v0.2 OCCT default).
         let template = TopologyTemplateBuilder::new("A")
             .realization("A", 0, vec![])
             .build();
-        let graph = EvaluationGraph::from_templates(&[template]);
+        let graph = EvaluationGraph::from_env(DefEnv::of_module(&module_of([template]), &[]));
         let r_node = graph
             .realizations
             .get(&RealizationNodeId::new("A", 0))
@@ -1207,19 +1211,19 @@ mod tests {
         assert_eq!(
             r_node.produced_repr,
             ReprKind::BRep,
-            "from_templates must initialize produced_repr to ReprKind::BRep \
+            "from_env must initialize produced_repr to ReprKind::BRep \
              (v0.2 default; task ε (3436) wires the per-op dispatcher choice)"
         );
     }
 
-    /// GHR-δ S1: `EvaluationGraph::from_templates` populates
+    /// GHR-δ S1: `EvaluationGraph::from_env` populates
     /// `RealizationNodeData.geometry_cell` with the `Type::Geometry` value cell
     /// whose member name matches the realization's name (the GHR-γ rule from
     /// `post_process_geometry_handle_cells`: `cell.id.member == realization.name
     /// && cell.cell_type == Type::Geometry`), and leaves it `None` for
     /// realizations with no backing geometry cell.
     ///
-    /// RED until S2 wires the population in `from_templates`.
+    /// RED until S2 wires the population in `from_env`.
     #[test]
     fn from_templates_populates_realization_geometry_cell() {
         use reify_test_support::{bracket_compiled_module, parse_and_compile};
@@ -1232,7 +1236,7 @@ mod tests {
     param body : Solid = box(10mm, 20mm, 30mm)
 }"#,
         );
-        let graph = EvaluationGraph::from_templates(&module.templates);
+        let graph = EvaluationGraph::from_env(DefEnv::of_module(&module, &[]));
         let widget_r0 = graph
             .realizations
             .get(&RealizationNodeId::new("Widget", 0))
@@ -1247,7 +1251,7 @@ mod tests {
         // Type::Geometry value cell — every member is Length/Scalar — so the
         // realization has no backing geometry cell.
         let bracket = bracket_compiled_module();
-        let bgraph = EvaluationGraph::from_templates(&bracket.templates);
+        let bgraph = EvaluationGraph::from_env(DefEnv::of_module(&bracket, &[]));
         let bracket_r0 = bgraph
             .realizations
             .get(&RealizationNodeId::new("Bracket", 0))
@@ -1281,7 +1285,7 @@ mod tests {
     let loc_box = box(width, width, width)
 }"#,
         );
-        let graph = EvaluationGraph::from_templates(&module.templates);
+        let graph = EvaluationGraph::from_env(DefEnv::of_module(&module, &[]));
         let s_r0 = graph
             .realizations
             .get(&RealizationNodeId::new("S", 0))
@@ -1759,7 +1763,7 @@ mod tests {
             )
             .build();
 
-        let graph = EvaluationGraph::from_templates(&[template]);
+        let graph = EvaluationGraph::from_env(DefEnv::of_module(&module_of([template]), &[]));
 
         // 2 params + 1 let = 3 value cells
         assert_eq!(graph.value_cells.len(), 3);
@@ -1846,8 +1850,8 @@ mod tests {
             )
             .build();
 
-        let g1 = EvaluationGraph::from_templates(&[template1]);
-        let g2 = EvaluationGraph::from_templates(&[template2]);
+        let g1 = EvaluationGraph::from_env(DefEnv::of_module(&module_of([template1]), &[]));
+        let g2 = EvaluationGraph::from_env(DefEnv::of_module(&module_of([template2]), &[]));
 
         assert_eq!(g1.topology_fingerprint(), g2.topology_fingerprint());
     }
@@ -1879,8 +1883,8 @@ mod tests {
             )
             .build();
 
-        let g1 = EvaluationGraph::from_templates(&[template1]);
-        let g2 = EvaluationGraph::from_templates(&[template2]);
+        let g1 = EvaluationGraph::from_env(DefEnv::of_module(&module_of([template1]), &[]));
+        let g2 = EvaluationGraph::from_env(DefEnv::of_module(&module_of([template2]), &[]));
 
         assert_ne!(g1.topology_fingerprint(), g2.topology_fingerprint());
     }
@@ -1940,8 +1944,8 @@ mod tests {
             )
             .build();
 
-        let graph_a = EvaluationGraph::from_templates(&[template_a]);
-        let graph_b = EvaluationGraph::from_templates(&[template_b]);
+        let graph_a = EvaluationGraph::from_env(DefEnv::of_module(&module_of([template_a]), &[]));
+        let graph_b = EvaluationGraph::from_env(DefEnv::of_module(&module_of([template_b]), &[]));
 
         let hash_width = graph_a
             .value_cells
@@ -1972,7 +1976,7 @@ mod tests {
             .constraint("A", 1, None, expr)
             .build();
 
-        let graph = EvaluationGraph::from_templates(&[template]);
+        let graph = EvaluationGraph::from_env(DefEnv::of_module(&module_of([template]), &[]));
 
         let hash_0 = graph
             .constraints
@@ -2001,7 +2005,7 @@ mod tests {
             .param("A", "x", Type::length(), None)
             .build();
 
-        let graph = EvaluationGraph::from_templates(&[template]);
+        let graph = EvaluationGraph::from_env(DefEnv::of_module(&module_of([template]), &[]));
         let node = graph.value_cells.get(&ValueCellId::new("A", "x")).unwrap();
 
         assert_ne!(
@@ -2043,7 +2047,7 @@ mod tests {
             .realization("A", 0, ops.clone())
             .build();
 
-        let graph = EvaluationGraph::from_templates(&[template]);
+        let graph = EvaluationGraph::from_env(DefEnv::of_module(&module_of([template]), &[]));
 
         // Realization should be populated
         assert_eq!(graph.realizations.len(), 1);
@@ -2236,8 +2240,8 @@ mod tests {
             )
             .build();
 
-        let g1 = EvaluationGraph::from_templates(&[template1]);
-        let mut g2 = EvaluationGraph::from_templates(&[template2]);
+        let g1 = EvaluationGraph::from_env(DefEnv::of_module(&module_of([template1]), &[]));
+        let mut g2 = EvaluationGraph::from_env(DefEnv::of_module(&module_of([template2]), &[]));
 
         // Before adding resolution, fingerprints should be equal
         assert_eq!(g1.topology_fingerprint(), g2.topology_fingerprint());
@@ -2358,7 +2362,7 @@ mod tests {
             .sub_component("rib", "Child", vec![("height".to_string(), arg_expr)])
             .build();
 
-        let graph = EvaluationGraph::from_templates(&[child, parent]);
+        let graph = EvaluationGraph::from_env(DefEnv::of_module(&module_of([child, parent]), &[]));
 
         // Should have scoped entries for sub-component
         let scoped_height = ValueCellId::new("Parent.rib", "height");
@@ -2514,7 +2518,7 @@ mod tests {
         );
     }
 
-    /// task-2629 step-6: `EvaluationGraph::from_templates` carries
+    /// task-2629 step-6: `EvaluationGraph::from_env` carries
     /// `TopologyTemplate.forall_templates` through to the graph for the
     /// runtime `engine_edit` collection-count phase to consume. Adding a
     /// `CompiledForallTemplate` to a template with no instantiated
@@ -2548,7 +2552,7 @@ mod tests {
         let template = TopologyTemplateBuilder::new("S")
             .forall_template(ft.clone())
             .build();
-        let graph = EvaluationGraph::from_templates(&[template]);
+        let graph = EvaluationGraph::from_env(DefEnv::of_module(&module_of([template]), &[]));
 
         // (a) The forall_templates field carries through.
         assert_eq!(
@@ -2566,7 +2570,8 @@ mod tests {
         // differs (the templates alone don't affect the constraint set;
         // per-element constraints become visible only at runtime emission).
         let template_no_ft = TopologyTemplateBuilder::new("S").build();
-        let graph_no_ft = EvaluationGraph::from_templates(&[template_no_ft]);
+        let graph_no_ft =
+            EvaluationGraph::from_env(DefEnv::of_module(&module_of([template_no_ft]), &[]));
         assert_eq!(
             graph.topology_fingerprint(),
             graph_no_ft.topology_fingerprint(),
@@ -2602,7 +2607,7 @@ mod tests {
         let template = TopologyTemplateBuilder::new("S")
             .connection(conn.clone())
             .build();
-        let graph = EvaluationGraph::from_templates(&[template]);
+        let graph = EvaluationGraph::from_env(DefEnv::of_module(&module_of([template]), &[]));
 
         assert_eq!(
             graph.connections.len(),

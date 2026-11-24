@@ -22,11 +22,18 @@ use reify_core::{ContentHash, Type, ValueCellId};
 use tower_lsp::lsp_types;
 
 /// Stage 1 of [`first_unrepresentable_cell`]: `true` only when no value cell
-/// `from_templates` would insert is unrepresentable. Allocation-free, and never
+/// `from_env` would insert is unrepresentable. Allocation-free, and never
 /// a hit of its own — see that function's "## Cost" section.
 fn stage_one_proves_absence(compiled: &reify_compiler::CompiledModule) -> bool {
-    reify_eval::graph::cell_contributions::contributed_cell_types(&compiled.templates)
+    reify_eval::graph::cell_contributions::contributed_cell_types(engine_env(compiled))
         .all(reify_eval::is_representable_cell_type)
+}
+
+/// The definition environment the engine builds `compiled`'s graph in: its
+/// own templates over the stdlib, so this guard's prediction matches the
+/// engine's graph.
+fn engine_env(compiled: &reify_compiler::CompiledModule) -> reify_eval::DefEnv<'_> {
+    reify_eval::DefEnv::of_module(compiled, reify_compiler::stdlib_loader::load_stdlib())
 }
 
 /// `Some((id, cell_type))` when the evaluation graph `compiled` would build
@@ -81,8 +88,8 @@ fn stage_one_proves_absence(compiled: &reify_compiler::CompiledModule) -> bool {
 /// The predicate asks the *actual hazard* — "does the graph the engine is
 /// about to build contain an unrepresentable cell" — rather than a proxy for
 /// it. It is exact by construction:
-/// `reify_eval::graph::EvaluationGraph::from_templates` is literally the call
-/// `Snapshot::from_compiled_module` makes
+/// `reify_eval::graph::EvaluationGraph::from_env` is literally the call
+/// `Snapshot::from_env` makes
 /// (`crates/reify-eval/src/snapshot.rs`) to build the graph the assertion
 /// then walks, and `reify_eval::is_representable_cell_type` is the
 /// assertion's own single-source-of-truth predicate. There is no third
@@ -121,7 +128,7 @@ fn stage_one_proves_absence(compiled: &reify_compiler::CompiledModule) -> bool {
 /// ## Cost
 ///
 /// Two-stage, because the exact question is not cheap enough to ask on every
-/// keystroke. `EvaluationGraph::from_templates` is not free — per value cell
+/// keystroke. `EvaluationGraph::from_env` is not free — per value cell
 /// it does an id-string allocation, two content hashes and a map insert, and
 /// it also walks constraints, realizations and sub-component registration
 /// (`crates/reify-eval/src/graph.rs`).
@@ -129,7 +136,7 @@ fn stage_one_proves_absence(compiled: &reify_compiler::CompiledModule) -> bool {
 /// Stage 1, [`stage_one_proves_absence`], is an allocation-free
 /// `all(is_representable_cell_type)` scan over
 /// `reify_eval::graph::cell_contributions::contributed_cell_types` — the types
-/// of the enumeration `from_templates` itself folds into `graph.value_cells` —
+/// of the enumeration `from_env` itself folds into `graph.value_cells` —
 /// so "every contributed type representable" implies "every graph cell
 /// representable" by construction. That view collapses each sub's instances
 /// to one, so a collection's literal count adds nothing: the scan is linear in
@@ -148,14 +155,14 @@ fn stage_one_proves_absence(compiled: &reify_compiler::CompiledModule) -> bool {
 /// `true`.
 ///
 /// Stage 2, reached only when stage 1 finds a candidate, is the exact
-/// `from_templates` walk. It is the SAME construction the gated eval would
+/// `from_env` walk. It is the SAME construction the gated eval would
 /// itself run, so on the shape that actually trips the guard the cost is at
 /// worst a doubled graph construction, and never an added eval.
 ///
 /// The staging matters most on the WARM path. `compute_diagnostics_with_state`
 /// takes the `content_unchanged` branch on a repeat request, where the gated
 /// work is `eval_cached` + `check_snapshot` — neither of which calls
-/// `from_templates` (`eval_cached` builds a combined param/let graph;
+/// `from_env` (`eval_cached` builds a combined param/let graph;
 /// `check_snapshot` reuses the stored snapshot). An unconditional exact walk
 /// there would be pure new cost with no counterpart; the stage-1 scan is not.
 ///
@@ -203,7 +210,7 @@ pub(crate) fn first_unrepresentable_cell(
     }
 
     // Stage 2 — the exact question, on the rare shape that got past stage 1.
-    reify_eval::graph::EvaluationGraph::from_templates(&compiled.templates)
+    reify_eval::graph::EvaluationGraph::from_env(engine_env(compiled))
         .value_cells
         .iter()
         .find(|(_, node)| !reify_eval::is_representable_cell_type(&node.cell_type))
@@ -443,7 +450,7 @@ mod tests {
         // This fixture is exactly the shape where it finds a candidate and
         // the graph is nevertheless safe, so an edit that let stage 1 answer
         // `true` on its own (rather than falling through to the exact
-        // `from_templates` walk) goes RED right here.
+        // `from_env` walk) goes RED right here.
         assert!(
             !fires(
                 r#"trait Seal {}
@@ -467,7 +474,7 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
         // inside a GUARDED group, which is where stage 1's absence proof was
         // UNSOUND. A guarded member lives in `CompiledGuardedGroup::members`,
         // a Vec that never appears in `TopologyTemplate::value_cells`, yet
-        // `from_templates` inserts it into `graph.value_cells` all the same.
+        // `from_env` inserts it into `graph.value_cells` all the same.
         // Measured before the fix: stage 1 found every scanned cell
         // representable and short-circuited to `None`, while the graph carried
         // `Bearing.seal : TypeParam("T")` and `compute_diagnostics` panicked at
@@ -482,7 +489,7 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
              graph whether the `param seal : T` member is plain or GUARDED — \
              the guard MUST fire on both, or the engine panics on the guarded \
              one (task #6851). Stage 1 may only ever prove ABSENCE, so it has \
-             to scan every collection `EvaluationGraph::from_templates` draws \
+             to scan every collection `EvaluationGraph::from_env` draws \
              cells from, not just `value_cells`"
         );
 
@@ -524,7 +531,7 @@ structure def Assembly { sub b = Bearing<auto: Seal>() }
     /// What stays here is the LSP's own wiring: stage 1 declines on both
     /// unsubstituted-`TypeParam` arms so stage 2 runs and names the offender,
     /// and it DOES prove absence on healthy modules — a stage 1 that always
-    /// declined would be sound but would put the full `from_templates` walk on
+    /// declined would be sound but would put the full `from_env` walk on
     /// every keystroke.
     #[test]
     fn stage_one_proves_absence_only_where_the_graph_is_safe() {
@@ -560,7 +567,7 @@ structure Fitting {
             assert!(
                 super::stage_one_proves_absence(&compile(src)),
                 "stage 1 must prove absence on a healthy {shape} module, or every \
-                 keystroke pays for the stage-2 `from_templates` walk"
+                 keystroke pays for the stage-2 `from_env` walk"
             );
         }
 

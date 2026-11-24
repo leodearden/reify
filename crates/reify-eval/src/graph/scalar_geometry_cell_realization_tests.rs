@@ -11,6 +11,7 @@ use super::geometry_cell_link_fixture::{
     GEOMETRY_LIST_MEMBERS, SCALAR_GEOMETRY_MEMBERS, SRC, TEMPLATE, assert_some_realization_links,
     compiled_realization_named,
 };
+use crate::DefEnv;
 
 /// A top-level Solid param and a guarded same-name override: the compiler
 /// names both realizations `body` and links both to the one cell `T.body`.
@@ -28,7 +29,7 @@ const GUARDED_SAME_NAME_PARAM_SRC: &str = r#"
 #[test]
 fn a_scalar_geometry_let_resolves_to_its_own_realization() {
     let module = parse_and_compile(SRC);
-    let graph = EvaluationGraph::from_templates(&module.templates);
+    let graph = EvaluationGraph::from_env(DefEnv::of_module(&module, &[]));
 
     for member in SCALAR_GEOMETRY_MEMBERS {
         let own_realization = compiled_realization_named(&module, member);
@@ -48,7 +49,7 @@ fn a_scalar_geometry_let_resolves_to_its_own_realization() {
 
 #[test]
 fn a_geometry_list_cell_resolves_to_no_realization() {
-    let graph = EvaluationGraph::from_templates(&parse_and_compile(SRC).templates);
+    let graph = EvaluationGraph::from_env(DefEnv::of_module(&parse_and_compile(SRC), &[]));
 
     for member in GEOMETRY_LIST_MEMBERS {
         let cell = ValueCellId::new(TEMPLATE, member);
@@ -63,7 +64,7 @@ fn a_geometry_list_cell_resolves_to_no_realization() {
 
 #[test]
 fn a_cell_absent_from_the_graph_resolves_to_no_realization() {
-    let graph = EvaluationGraph::from_templates(&parse_and_compile(SRC).templates);
+    let graph = EvaluationGraph::from_env(DefEnv::of_module(&parse_and_compile(SRC), &[]));
 
     assert!(
         graph
@@ -76,8 +77,10 @@ fn a_cell_absent_from_the_graph_resolves_to_no_realization() {
 /// hash order. Choosing a policy for this shape is a separate follow-up.
 #[test]
 fn a_scalar_geometry_cell_linked_by_a_guarded_same_name_param_resolves_to_one_of_its_links() {
-    let graph =
-        EvaluationGraph::from_templates(&parse_and_compile(GUARDED_SAME_NAME_PARAM_SRC).templates);
+    let graph = EvaluationGraph::from_env(DefEnv::of_module(
+        &parse_and_compile(GUARDED_SAME_NAME_PARAM_SRC),
+        &[],
+    ));
     let cell = ValueCellId::new("T", "body");
     let linking: Vec<_> = graph
         .realizations

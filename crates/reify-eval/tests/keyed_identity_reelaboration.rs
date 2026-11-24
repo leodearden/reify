@@ -3,13 +3,14 @@
 //! Step-1 (RED): pins connect desugaring to a keyed member port and the
 //! key-addressed identity-stability integration guard.
 //!
-//! Step-5 (RED): pins that `from_templates` registers keyed subs in
+//! Step-5 (RED): pins that `from_env` registers keyed subs in
 //! `graph.keyed_subs` with the correct member_keys.
 //!
 //! User-observable signal:
 //!   cargo test -p reify-eval --test keyed_identity_reelaboration
 
 use reify_core::{Severity, ValueCellId};
+use reify_eval::DefEnv;
 use reify_eval::graph::EvaluationGraph;
 use reify_ir::MemberKey;
 use reify_test_support::{compile_source, parse_and_compile_with_stdlib};
@@ -88,7 +89,7 @@ structure def Manifold {
 "#;
 
 /// Clean source for keyed sub registration test (step-5): no connect/port,
-/// no count — tests only that from_templates populates keyed_subs.
+/// no count — tests only that from_env populates keyed_subs.
 const KEYED_CLEAN_SRC: &str = r#"
 structure def Vent {
     param area : Length = 1mm
@@ -109,7 +110,7 @@ structure def Manifold {
 /// a `<sub>.count == n` constraint is present (reconciliation sweep, not gated
 /// on is_collection). This exercises the full path:
 ///
-///   compiler (entity.rs backfill) → from_templates (propagates count_cell)
+///   compiler (entity.rs backfill) → from_env (propagates count_cell)
 ///     → classify_cell Rule 3b (Keyed count_cell → Structural)
 ///
 /// Used by `from_templates_keyed_sub_count_cell_backfilled_by_count_constraint`.
@@ -198,8 +199,8 @@ fn keyed_member_identity_stable_across_sibling_add() {
     let m2 = compile_source(M2_SRC);
 
     // Build evaluation graphs from the compiled templates.
-    let g1 = EvaluationGraph::from_templates(&m1.templates);
-    let g2 = EvaluationGraph::from_templates(&m2.templates);
+    let g1 = EvaluationGraph::from_env(DefEnv::of_module(&m1, &[]));
+    let g2 = EvaluationGraph::from_env(DefEnv::of_module(&m2, &[]));
 
     // Cell identity: Manifold.vents["intake"].area must be present in BOTH graphs
     // with the same 5mm override (scoped entity id is the key-addressed path).
@@ -266,17 +267,17 @@ fn keyed_member_identity_stable_across_sibling_add() {
     );
 }
 
-/// (step-5 RED) `from_templates` registers keyed subs in `graph.keyed_subs`.
+/// (step-5 RED) `from_env` registers keyed subs in `graph.keyed_subs`.
 ///
 /// GREEN criterion (step-6): populate keyed_subs in the keyed branch of
-/// from_templates. RED today: keyed_subs stays empty (population not yet
+/// from_env. RED today: keyed_subs stays empty (population not yet
 /// implemented).
 ///
 /// Uses `parse_and_compile_with_stdlib` (clean source, no connect, no missing key).
 #[test]
 fn from_templates_registers_keyed_sub_with_member_keys() {
     let module = parse_and_compile_with_stdlib(KEYED_CLEAN_SRC);
-    let graph = EvaluationGraph::from_templates(&module.templates);
+    let graph = EvaluationGraph::from_env(DefEnv::of_module(&module, &[]));
 
     // There must be exactly one keyed_subs entry for the Manifold.vents sub.
     let info = graph
@@ -323,13 +324,13 @@ fn from_templates_registers_keyed_sub_with_member_keys() {
 #[test]
 fn from_templates_keyed_sub_count_cell_is_none_backfill_not_yet_wired() {
     let module = compile_source(KEYED_COUNT_CONSTRAINT_SRC);
-    let graph = EvaluationGraph::from_templates(&module.templates);
+    let graph = EvaluationGraph::from_env(DefEnv::of_module(&module, &[]));
 
     let info = graph
         .keyed_subs
         .iter()
         .find(|s| s.parent_entity == "Manifold" && s.sub_name == "vents")
-        .expect("expected a KeyedSubInfo for Manifold.vents — from_templates must populate keyed_subs");
+        .expect("expected a KeyedSubInfo for Manifold.vents — from_env must populate keyed_subs");
 
     // Confirmed: entity.rs does NOT backfill count_cell for keyed subs.
     // Rule 3b is speculative. When the backfill is wired, change this to

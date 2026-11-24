@@ -7,6 +7,7 @@ use std::collections::HashMap;
 
 use reify_compiler::{CompiledForallBody, CompiledForallTemplate, TopologyTemplate};
 use reify_core::*;
+use reify_eval::DefEnv;
 use reify_eval::cache::NodeId;
 use reify_eval::graph::EvaluationGraph;
 use reify_eval::{Engine, EvalResult};
@@ -14,7 +15,7 @@ use reify_ir::*;
 use reify_test_support::builders::value_ref_typed;
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{
-    CompiledModuleBuilder, MultiCallSpyConstraintSolver, TopologyTemplateBuilder, lt,
+    CompiledModuleBuilder, MultiCallSpyConstraintSolver, TopologyTemplateBuilder, lt, module_of,
 };
 
 /// Build the canonical Bolt + Parent (collection sub) templates and return
@@ -28,7 +29,7 @@ use reify_test_support::{
 /// - `n_default = Some(n)` gives `n` an Int default; `None` leaves it Undef.
 ///
 /// The return order `(parent, bolt)` matches the argument order expected by
-/// `EvaluationGraph::from_templates(&[parent, bolt])` and
+/// `EvaluationGraph::from_env(DefEnv::of_module(&module_of([parent, bolt]), &[]))` and
 /// `CompiledModuleBuilder::template(parent).template(bolt)`.
 fn make_bolt_parent_templates(n_default: Option<i64>) -> (TopologyTemplate, TopologyTemplate) {
     let bolt = TopologyTemplateBuilder::new("Bolt")
@@ -80,12 +81,12 @@ fn count_bolt_diameter_instances(values: &ValueMap) -> usize {
         .count()
 }
 
-// ─── step-7: collection sub elaboration in from_templates ───
+// ─── step-7: collection sub elaboration in from_env ───
 
 #[test]
 fn from_templates_creates_collection_instances() {
     let (parent, bolt) = make_bolt_parent_templates(Some(4));
-    let graph = EvaluationGraph::from_templates(&[parent, bolt]);
+    let graph = EvaluationGraph::from_env(DefEnv::of_module(&module_of([parent, bolt]), &[]));
 
     // Verify 4 scoped instances exist: Parent.bolts[0].diameter through Parent.bolts[3].diameter
     for i in 0..4 {

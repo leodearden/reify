@@ -5276,7 +5276,7 @@ impl Engine {
         let version_id = ver_id.0;
         let version = ver_id;
 
-        let mut snapshot = Snapshot::from_compiled_module(module);
+        let mut snapshot = Snapshot::from_env(self.env_of(module));
         #[cfg(debug_assertions)]
         assert_value_cell_types_representable(&snapshot.graph);
         snapshot.id = snap_id;
@@ -9442,11 +9442,11 @@ impl Engine {
         // unified Param+Let topological pass above.  Cells absent from `values`
         // (cells that were short-circuited by a fast-path or that have no entry
         // yet) keep the (Undef, Undetermined/Auto) initialised by
-        // Snapshot::from_compiled_module.
+        // Snapshot::from_env.
         {
             let snapshot_id = self.next_snapshot_id; // version-id-gate: allow — snapshot-only re-stamp in eval_cached, reuses the caller-supplied `version`
             self.next_snapshot_id += 1; // version-id-gate: allow — snapshot-only re-stamp in eval_cached; routing through allocate_snapshot_version would spuriously bump next_version_id too
-            let mut snapshot = Snapshot::from_compiled_module(module);
+            let mut snapshot = Snapshot::from_env(self.env_of(module));
             snapshot.id = SnapshotId(snapshot_id);
             snapshot.version = version;
             snapshot.provenance = SnapshotProvenance::Initial;
@@ -14061,7 +14061,7 @@ mod evaluate_let_bindings_provenance_and_freshness_tests {
         let module = two_cell_module();
         let template = &module.templates[0];
         let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
-        let mut snapshot = Snapshot::from_compiled_module(&module);
+        let mut snapshot = Snapshot::from_env(crate::DefEnv::of_module(&module, &[]));
 
         let e = "T";
         let a_id = ValueCellId::new(e, "a");
@@ -14244,7 +14244,7 @@ mod evaluate_let_bindings_provenance_and_freshness_tests {
     fn evaluate_let_bindings_non_migrated_subpaths_emit_paired_started_events() {
         let module = two_cell_module();
         let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
-        let mut snapshot = Snapshot::from_compiled_module(&module);
+        let mut snapshot = Snapshot::from_env(crate::DefEnv::of_module(&module, &[]));
 
         let a_id = ValueCellId::new("T", "a");
         let b_id = ValueCellId::new("T", "b");
@@ -14396,7 +14396,7 @@ structure LetSiteProbe {
     fn drive_let_site(engine: &mut Engine) -> Vec<Diagnostic> {
         let module = parse_and_compile_with_stdlib(SOURCE);
         let template = &module.templates[0];
-        let mut snapshot = Snapshot::from_compiled_module(&module);
+        let mut snapshot = Snapshot::from_env(crate::DefEnv::of_module(&module, &[]));
 
         let input_id = ValueCellId::new("LetSiteProbe", "input");
         let mut values = ValueMap::new();
