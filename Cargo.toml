@@ -38,6 +38,7 @@ members = [
     "crates/reify-test-support",
     "crates/reify-builtins",
     "crates/reify-exec-lookup",
+    "crates/reify-version",
     "crates/workspace-feature-union",
     "tree-sitter-reify",
     "gui/src-tauri",
@@ -82,6 +83,7 @@ reify-git-env = { path = "crates/reify-git-env" }
 reify-test-support = { path = "crates/reify-test-support" }
 reify-builtins = { path = "crates/reify-builtins" }
 reify-exec-lookup = { path = "crates/reify-exec-lookup" }
+reify-version = { path = "crates/reify-version" }
 workspace-feature-union = { path = "crates/workspace-feature-union" }
 reify-gui = { path = "gui/src-tauri" }
 
