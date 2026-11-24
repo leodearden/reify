@@ -1,0 +1,7 @@
+module calc
+
+import mathlib
+
+structure def Calc {
+    let y = double_it(21.0)
+}

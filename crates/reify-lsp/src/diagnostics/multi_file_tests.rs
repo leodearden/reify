@@ -5,8 +5,8 @@
 use std::path::Path;
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_core::ModulePath;
-use reify_ir::Satisfaction;
+use reify_core::{ModulePath, ValueCellId};
+use reify_ir::{Satisfaction, Value};
 use tower_lsp::lsp_types::{DiagnosticSeverity, Range, Url};
 
 use crate::diagnostics::{
@@ -141,6 +141,36 @@ fn imported_template_violation_is_not_mislocated_in_the_entry() {
     for range in violation_range(&result, "Rig") {
         assert_ne!(range, Range::default());
         assert_eq!(range.start.line, rig_constraint_line);
+    }
+}
+
+/// The document is evaluated as the program it compiles to, so a `let`
+/// calling an imported `pub fn` dispatches to it.
+#[test]
+fn an_imported_pub_function_is_dispatched() {
+    let guard = reify_test_support::prefixed_tempdir("reify-lsp-multifile-");
+    std::fs::write(
+        guard.path().join("mathlib.ri"),
+        "module mathlib\npub fn double_it(x: Real) -> Real {\n    x * 2\n}\n",
+    )
+    .expect("write mathlib.ri");
+    let entry = "module main\nimport mathlib\nstructure def Calc {\n    let y = double_it(21.0)\n}\n";
+
+    let result = diagnose(guard.path(), entry);
+
+    let check = result.check_result.as_ref().expect("eval ran");
+    let y = check.values.get(&ValueCellId::new("Calc", "y"));
+    assert_eq!(
+        y.and_then(Value::as_f64),
+        Some(42.0),
+        "Calc.y must be mathlib.double_it(21.0), got {y:?}; diagnostics {:?}",
+        messages(&result)
+    );
+    for message in messages(&result) {
+        assert!(
+            !message.contains("double_it") && !message.contains("undef"),
+            "the imported call must evaluate cleanly, got {message:?}"
+        );
     }
 }
 

@@ -7903,6 +7903,43 @@ fn load_file_with_user_import_resolves_imported_structure() {
     );
 }
 
+/// The GUI evaluates the program it compiled: a `let` calling an imported
+/// `pub fn` resolves through the import, not to undef.
+#[test]
+fn load_file_dispatches_an_imported_pub_function() {
+    let mut session = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+    std::fs::write(
+        dir.path().join("mathlib.ri"),
+        "module mathlib\npub fn double_it(x: Real) -> Real { x * 2 }\n",
+    )
+    .expect("write mathlib.ri");
+    std::fs::write(
+        dir.path().join("calc.ri"),
+        "module calc\nimport mathlib\nstructure def Calc { let y = double_it(21.0) }\n",
+    )
+    .expect("write calc.ri");
+
+    let state = session
+        .load_file(&dir.path().join("calc.ri"))
+        .expect("load_file should succeed with resolved import");
+
+    let y = state
+        .values
+        .iter()
+        .find(|v| v.name == "y" && v.entity_path == "Calc")
+        .expect("Calc.y should be a value cell");
+    assert_eq!(
+        (y.value.as_str(), y.reason.as_deref()),
+        ("42", None),
+        "Calc.y must be mathlib.double_it(21.0)"
+    );
+}
+
 /// Regression: loading a standalone .ri file with no imports via the
 /// file-backed `load_file` path must work correctly — same as before (since
 /// task 5519 an import-free entry compiles single-file through `compile_buffer`).
