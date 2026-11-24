@@ -818,6 +818,253 @@ _touch_explicit_delta() {
     info "Touched $count of $# explicit --touch path(s)"
 }
 
+# ── non-relocatable build-script output-dir invalidation ──────────────────
+# tauri (links = "Tauri") bakes absolute paths into `links` metadata via
+# cargo:...PERMISSION_FILES_PATH=<abs>/out/tauri-core-*-permission-files.
+# Cargo turns these into DEP_TAURI_*_PERMISSION_FILES_PATH env vars that
+# reify-gui's tauri-build ACL codegen opens as files.  After a CoW clone
+# from _merge-verify, those paths still point at _merge-verify (which gets
+# refreshed/cleaned) → ENOENT in the lane, even though the .toml files
+# exist at the correct _lane-K path.
+#
+# Fix: delete only the build-script output dirs whose scripts bake such
+# non-relocatable absolute paths consumed by DEPENDENT build scripts.
+# This forces cargo to re-RUN their build scripts (cheap, seconds), re-
+# baking correct lane paths, while the expensive rlib compiles stay Fresh
+# (path-independent fingerprint, PRD spike §4/§6.1).
+_invalidate_nonrelocatable_build_dirs() {
+    # Allow-list globs (tauri-* covers tauri core + tauri-plugin-* + tauri-runtime*).
+    # MUST be single-quoted to defer pathname expansion to the glob site below;
+    # without quotes, bash expands tauri-* / reify-gui-* against the CWD at
+    # assignment time — silently replacing the literal patterns with any CWD
+    # matches and invalidating 0 dirs (re-introducing the ENOENT bug, no error).
+    #
+    # MAINTENANCE: when a workspace crate gains `links = "..."` in Cargo.toml AND
+    # its build script emits absolute paths into cargo metadata consumed by dependent
+    # build scripts (e.g. `cargo:MY_KEY=/abs/path/to/out/file`), add its package-
+    # name prefix glob here.  Omitting it lets the stale cross-lane absolute path
+    # survive verbatim in the CoW-cloned `output` file; cargo treats the build
+    # script as Fresh (path-independent fingerprint, PRD spike §4/§6.1) → ENOENT
+    # in the lane once the base is refreshed/cleaned.
+    local -a _NONRELOCATABLE_BUILD_GLOBS=('tauri-*' 'reify-gui-*')
+    local invalidated_count=0 build_dir glob d
+    # -maxdepth 3: covers depth-2 profile build dirs (debug/build, release/build)
+    # and depth-3 cross-compile dirs (<triple>/debug/build, <triple>/release/build).
+    # Depths 4+ are nested build/ dirs inside build-script out/ subdirs — not
+    # cargo profile build dirs — intentionally excluded (false-invalidation risk).
+    while IFS= read -r -d '' build_dir; do
+        for glob in "${_NONRELOCATABLE_BUILD_GLOBS[@]}"; do
+            for d in "$build_dir"/$glob; do
+                # [ -e ] guard: if the glob matches nothing, the shell expands it
+                # to the literal pattern string; skip instead of rm-ing a literal.
+                [ -e "$d" ] || continue
+                rm -rf "$d"
+                invalidated_count=$((invalidated_count + 1))
+            done
+        done
+    done < <(find "$LANE_TARGET" -maxdepth 3 -type d -name build -print0)
+    info "Invalidated $invalidated_count non-relocatable build-script output dir(s) so cargo re-bakes lane-correct paths"
+}
+
+# ── non-relocatable links-metadata/OUT_DIR path relocation (task 5126) ────
+# cxx/reify-kernel-occt/reify-kernel-openvdb/libsqlite3-sys/zstd-sys/etc. sit
+# outside the _NONRELOCATABLE_BUILD_GLOBS allow-list above, so the foreign
+# buildroot baked into two build-script replay files survives the CoW seed
+# verbatim -> ENOENT once the base's own worktree is refreshed or cleaned:
+#   `output`      — links-metadata cargo emits, e.g. cxx's
+#                   cargo:CXXBRIDGE_DIR0=<foreign>/target/.../out/cxxbridge/include
+#   `root-output` — the build script's OUT_DIR, replayed so
+#                   include!(concat!(env!("OUT_DIR"), ...)) opens the right dir
+# Rewrite the foreign prefix to this lane's root in place rather than
+# deleting the build dir: the CoW copy already placed identical out/
+# content at the lane-relative path, so relocating keeps the compiled
+# rlib/.o/.a Fresh (path-independent fingerprint) instead of forcing a
+# multi-minute native/C++ rebuild.
+# Gate (distinct from the env!()-relink gate below): an ABSENT stamp means
+# the foreign prefix is UNKNOWN, so this skips with a warn rather than
+# relinking-on-uncertainty like the env!() case — an empty search prefix
+# would match every byte of every candidate file and corrupt it, whereas
+# the env!() relink's fail-safe action (a bare `touch`) has no such risk.
+#
+# SCOPE BOUNDARY (deliberate, not exhaustive): only files NAMED `output` or
+# `root-output` are candidates — a filename filter, not a content scan — so
+# a sibling `.d` depfile or a compiled `.o`/`.a`/`.rlib` that happens to
+# also contain the foreign prefix is NEVER touched, even though it exists
+# in the same build dir. `.d` depfiles are advisory (a stale entry forces
+# at most a localized recompile, never ENOENT); binaries are already
+# compiled and path-independent, and rewriting their bytes is a corruption
+# risk with no upside. This mirrors the _NONRELOCATABLE_BUILD_GLOBS
+# allow-list's philosophy of a narrow, explicit surface rather than a
+# broad one. MAINTENANCE: if cargo ever bakes a foreign-path-carrying
+# replay file under a NEW name (beyond `output`/`root-output`), add it to
+# the `-name` clause below rather than widening this into a content scan.
+_relocate_baked_build_root() {
+    local from_rp="$1" lane_rp="$2"
+    local search_esc replace_esc candidate_count relocated_count rl_file rl_ts
+    if [ -z "$from_rp" ]; then
+        warn "buildroot stamp absent (${BASE_TARGET_DIR}.buildroot not found) — cannot relocate baked links-metadata/OUT_DIR path(s); an empty search prefix would match every byte and corrupt files, so skipping rather than guessing. Re-run scripts/refresh-warm-base.sh to (re)write the stamp."
+    else
+        if [ "$from_rp" != "$lane_rp" ]; then
+            search_esc="$(_sed_escape "$from_rp")"
+            replace_esc="$(_sed_escape "$lane_rp")"
+            candidate_count=0
+            relocated_count=0
+            # -maxdepth 5: output/root-output live at target/<profile>/build/<pkg>-<hash>/{output,root-output}
+            # (depth 4) or, for cross-compiled targets, target/<triple>/<profile>/build/<pkg>-<hash>/{output,root-output}
+            # (depth 5) — mirrors the -maxdepth 3 bound on the tauri/reify-gui deletion sweep's directory
+            # walk above, applied one filename-match level deeper here since this find locates leaf files
+            # rather than `build` dirs. Bounding this avoids a full unbounded descent into every out/
+            # subdir and incremental-fingerprint dir under the (potentially huge) warm target tree.
+            while IFS= read -r -d '' rl_file; do
+                candidate_count=$((candidate_count + 1))
+                if grep -qF "$from_rp" "$rl_file" 2>/dev/null; then
+                    # MTIME PRESERVATION (§9.5 inv.12) — load-bearing, not
+                    # cosmetic: rewriting a baked path is a CONTENT correction,
+                    # not evidence the build script ran, and `sed -i` replaces
+                    # via temp+rename so the file would otherwise land at SEED
+                    # time, above the sources delta-touched two find-walks
+                    # earlier. Pinned by Block S/S1c.
+                    # `stat -c '%y'` + GNU `touch -d` round-trip full sub-second
+                    # precision: required, since cargo compares at nanosecond
+                    # resolution. Deliberately NOT `|| true`-guarded — under
+                    # `set -euo pipefail` a stat/touch failure aborts the seed
+                    # (empty stdout → cold rebuild), the correct fail-closed
+                    # posture for a freshness invariant.
+                    rl_ts="$(stat -c '%y' "$rl_file")"
+                    sed -E -i "s/${search_esc}/${replace_esc}/g" "$rl_file"
+                    touch -d "$rl_ts" "$rl_file"
+                    relocated_count=$((relocated_count + 1))
+                fi
+            done < <(find "$LANE_TARGET" -maxdepth 5 -type f \( -name output -o -name root-output \) -print0)
+            if [ "$relocated_count" -eq 0 ] && [ "$candidate_count" -gt 0 ]; then
+                # Candidates exist (cargo DID write output/root-output files) yet NONE carried the
+                # recorded foreign prefix, even though the buildroot gate says foreign != lane. That
+                # combination is only expected if the .buildroot stamp and the bytes actually baked into
+                # these files were canonicalized inconsistently (e.g. the base was built through a
+                # symlinked worktree path while the stamp records the realpath, or vice-versa) — grep -qF
+                # would then silently match nothing on every candidate, nothing gets rewritten, and the
+                # foreign path(s) survive verbatim, reproducing the exact ENOENT this fix targets. Warn
+                # instead of a bare "Relocated 0" so canonicalization drift surfaces instead of reading
+                # as success.
+                warn "Relocated 0 of $candidate_count links-metadata/OUT_DIR candidate file(s) even though recorded buildroot ($from_rp) differs from this lane ($lane_rp) — none contained the expected foreign prefix. This may mean the .buildroot stamp and the baked paths were canonicalized inconsistently (e.g. symlinked vs realpath worktree root); if so, the foreign path(s) will survive uncorrected and the lane may hit ENOENT. Re-check the stamp written by refresh-warm-base.sh."
+            else
+                info "Relocated $relocated_count of $candidate_count links-metadata/OUT_DIR candidate file(s): foreign buildroot ($from_rp) -> this lane ($lane_rp)"
+            fi
+        else
+            info "Skipping links-metadata/OUT_DIR relocation: recorded buildroot matches this lane ($lane_rp)"
+        fi
+    fi
+}
+
+# ── recorded-input relocation (task 10167) ────────────────────────────────
+# §9.5 inv.15 — rule: relocate-depinfo-paths.py header. Same stamp gate as
+# the 5126 sweep above; a missing or failing helper aborts the seed.
+_relocate_depinfo_inputs() {
+    local from_rp="$1" lane_rp="$2"
+    local depinfo_helper depinfo_rc
+    if [ -z "$from_rp" ]; then
+        warn "buildroot stamp absent (${BASE_TARGET_DIR}.buildroot not found) — cannot relocate cargo dep-info input paths, so units recording inputs outside their package stay judged against the base's build root (§9.5 inv.15). Re-run scripts/refresh-warm-base.sh to (re)write the stamp."
+    elif [ "$from_rp" = "$lane_rp" ]; then
+        info "Skipping dep-info input-path relocation: recorded buildroot matches this lane ($lane_rp)"
+    else
+        depinfo_helper="$_SCRIPT_DIR/relocate-depinfo-paths.py"
+        if [ ! -f "$depinfo_helper" ]; then
+            err "relocate-depinfo-paths.py not found at $depinfo_helper — cargo dep-info input paths stay under the base's build root, so lane edits to inputs outside a unit's package would be invisible (§9.5 inv.15); seed aborted (cold rebuild forced)"
+            exit 1
+        fi
+        depinfo_rc=0
+        python3 "$depinfo_helper" --from-root "$from_rp" \
+            --to-root "$lane_rp" "$LANE_TARGET" >&2 || depinfo_rc=$?
+        if [ "$depinfo_rc" -ne 0 ]; then
+            err "relocate-depinfo-paths.py exited $depinfo_rc — cargo dep-info input paths may still name the base's build root (§9.5 inv.15); seed aborted (cold rebuild forced)"
+            exit 1
+        fi
+    fi
+}
+
+# ── non-relocatable env!()-baked-path test/bench relink (task 4983) ───────
+# A TEST or BENCH source can bake an absolute worktree path at compile time
+# via a cargo-internal env!() macro (CARGO_MANIFEST_DIR, OUT_DIR,
+# CARGO_TARGET_TMPDIR, CARGO_BIN_EXE_*).  These macros are NOT part of
+# cargo's fingerprint, so after a CoW clone from a base built under a
+# DIFFERENT worktree, the frozen 2020-01-01 source mtime makes cargo treat
+# the test/bench binary as Fresh and it keeps serving the BASE's baked
+# path — a deterministic runtime NotFound (Cargo.toml missing) once that
+# worktree is deleted or holds different content (esc-4906-57; confirmed
+# manual fix: touching the offending sources forces cargo to recompile and
+# relink).
+#
+# Fix: touch (to now) only the seeded tests/ and benches/ .rs sources that
+# contain one of these macros, forcing cargo to recompile+relink ONLY those
+# integration/bench test binaries (each is its own compilation-unit root —
+# no lib rlib cascade).  The regex ignores a line whose first non-blank
+# characters are `//`: a line comment, or the inside of a multi-line
+# string, can never bake a path.  Every other line still matches (a block
+# comment, a trailing comment, string contents), so a miss is impossible
+# and the worst case is a spare relink.  Tests resolve paths at run time
+# through reify_test_support::test_package / workspace_root, so a converted
+# source is no longer touched.  src/ env!() usage, lib or unit-test, is
+# deliberately NOT relinked: touching a src/ file forces a lib recompile
+# that cascades to every dependent.  The gap is real (task #8927: a Fresh
+# reify-test-support rlib kept _merge-verify's path), so src/ code that
+# needs a workspace path must resolve it at run time too, never via env!().
+#
+# MAINTENANCE: extend this regex if a new cargo-internal path-baking env!()
+# macro is identified (mirrors the _NONRELOCATABLE_BUILD_GLOBS allow-list
+# convention above).  Currently covers the CARGO_* macros known to bake
+# absolute build-time paths into compiled test/bench binaries.  The
+# test-path-baked-at-compile-time* rows of tests/infra/adoption-ratchet.manifest
+# restate this ERE (with ' ' for its [:space:] class) to count what it relinks;
+# update them in the same change (tests/infra/test_seed_warm_lane.sh N13
+# reds on drift).  Keep it ONE single-quoted line:
+# docs/notes/workspace-feature-union.md and N13 sed-extract it.
+_ENV_PATH_MACRO_RE='^[[:space:]]*([^/[:space:]].*|/([^/].*)?)?env!\("(CARGO_MANIFEST_DIR|OUT_DIR|CARGO_TARGET_TMPDIR|CARGO_BIN_EXE_[A-Za-z0-9_-]+)"\)'
+
+_relink_env_path_tests() {
+    local from_rp="$1" lane_rp="$2"
+    local relinked_count rs_file
+    # ── buildroot-match gate ───────────────────────────────────────────────
+    # Compare the base's recorded build-worktree (refresh-warm-base.sh Step 4b
+    # .buildroot stamp) against THIS consuming lane.  In production the base
+    # is always built under _merge-verify while the consuming lane is
+    # _lane-K, so these realpaths always DIFFER and the relink below fires on
+    # every acquire — correctly, because the baked path is never the lane's
+    # own, and trusting that the base's original build worktree still exists
+    # with identical content is exactly the esc-4906-57 failure mode (that
+    # worktree gets refreshed or deleted out from under the stale baked
+    # path). ABSENT (no stamp — pre-fix base, or refresh has not yet run the
+    # Step 4b write) fails safe and relinks too, since the baked path's
+    # provenance is unknown. Only an EXACT match (the base was built under
+    # this lane's own path) skips the relink as a genuine no-op.
+    if [ -z "$from_rp" ] || [ "$from_rp" != "$lane_rp" ]; then
+        relinked_count=0
+        while IFS= read -r -d '' rs_file; do
+            # grep -q exits 1 on no-match; under set -euo pipefail a bare/&&-
+            # chained call would abort the seed on the (common) no-match
+            # case, so guard it in an `if` instead.
+            if grep -qE "$_ENV_PATH_MACRO_RE" "$rs_file" 2>/dev/null; then
+                touch "$rs_file"
+                relinked_count=$((relinked_count + 1))
+            fi
+        done < <(find "$LANE_DIR" -type f -name '*.rs' \
+                      \( -path '*/tests/*' -o -path '*/benches/*' \) \
+                      -not -path "$LANE_DIR/target/*" -print0)
+        info "Relinked $relinked_count env!()-baked-path test/bench source(s) so cargo re-bakes the lane's own env!() paths (recorded buildroot=${from_rp:-<absent>}, lane=$lane_rp)"
+    else
+        info "Skipping env!()-baked-path relink: recorded buildroot matches this lane ($lane_rp)"
+    fi
+}
+
+# Make a target cloned from a base built at <from_rp> usable at this lane's
+# real path <lane_rp>: the four fix-ups above, in order. <from_rp> empty
+# means the base's build root is unknown; each fix-up owns its policy for that.
+_adapt_cloned_target_to_lane() {
+    _invalidate_nonrelocatable_build_dirs
+    _relocate_baked_build_root "$1" "$2"
+    _relocate_depinfo_inputs "$1" "$2"
+    _relink_env_path_tests "$1" "$2"
+}
+
 # ── main: record-base mode ────────────────────────────────────────────────────
 if [ "$MODE" = "record-base" ]; then
     SIDECAR="$(_sidecar_path "$RECORD_BASE_DIR")"
@@ -1409,242 +1656,17 @@ if [ -n "$FRESH_CHECKOUT" ]; then
         _assert_delta_touch_base_substantiated
     fi
 
-    # ── non-relocatable build-script output-dir invalidation ──────────────────
-    # tauri (links = "Tauri") bakes absolute paths into `links` metadata via
-    # cargo:...PERMISSION_FILES_PATH=<abs>/out/tauri-core-*-permission-files.
-    # Cargo turns these into DEP_TAURI_*_PERMISSION_FILES_PATH env vars that
-    # reify-gui's tauri-build ACL codegen opens as files.  After a CoW clone
-    # from _merge-verify, those paths still point at _merge-verify (which gets
-    # refreshed/cleaned) → ENOENT in the lane, even though the .toml files
-    # exist at the correct _lane-K path.
-    #
-    # Fix: delete only the build-script output dirs whose scripts bake such
-    # non-relocatable absolute paths consumed by DEPENDENT build scripts.
-    # This forces cargo to re-RUN their build scripts (cheap, seconds), re-
-    # baking correct lane paths, while the expensive rlib compiles stay Fresh
-    # (path-independent fingerprint, PRD spike §4/§6.1).
-    #
-    # Allow-list globs (tauri-* covers tauri core + tauri-plugin-* + tauri-runtime*).
-    # MUST be single-quoted to defer pathname expansion to the glob site below;
-    # without quotes, bash expands tauri-* / reify-gui-* against the CWD at
-    # assignment time — silently replacing the literal patterns with any CWD
-    # matches and invalidating 0 dirs (re-introducing the ENOENT bug, no error).
-    #
-    # MAINTENANCE: when a workspace crate gains `links = "..."` in Cargo.toml AND
-    # its build script emits absolute paths into cargo metadata consumed by dependent
-    # build scripts (e.g. `cargo:MY_KEY=/abs/path/to/out/file`), add its package-
-    # name prefix glob here.  Omitting it lets the stale cross-lane absolute path
-    # survive verbatim in the CoW-cloned `output` file; cargo treats the build
-    # script as Fresh (path-independent fingerprint, PRD spike §4/§6.1) → ENOENT
-    # in the lane once the base is refreshed/cleaned.
-    _NONRELOCATABLE_BUILD_GLOBS=('tauri-*' 'reify-gui-*')
-    _invalidated_count=0
-    # -maxdepth 3: covers depth-2 profile build dirs (debug/build, release/build)
-    # and depth-3 cross-compile dirs (<triple>/debug/build, <triple>/release/build).
-    # Depths 4+ are nested build/ dirs inside build-script out/ subdirs — not
-    # cargo profile build dirs — intentionally excluded (false-invalidation risk).
-    while IFS= read -r -d '' _build_dir; do
-        for _glob in "${_NONRELOCATABLE_BUILD_GLOBS[@]}"; do
-            for _d in "$_build_dir"/$_glob; do
-                # [ -e ] guard: if the glob matches nothing, the shell expands it
-                # to the literal pattern string; skip instead of rm-ing a literal.
-                [ -e "$_d" ] || continue
-                rm -rf "$_d"
-                _invalidated_count=$((_invalidated_count + 1))
-            done
-        done
-    done < <(find "$LANE_TARGET" -maxdepth 3 -type d -name build -print0)
-    info "Invalidated $_invalidated_count non-relocatable build-script output dir(s) so cargo re-bakes lane-correct paths"
-
     # Base build-worktree stamp (refresh-warm-base.sh Step 4b), shared by the
-    # two relocation steps below and the env!()-relink gate further down.
-    # Each gate decides absent / equal / differs from _foreign_rp (the stamp's
-    # realpath, empty when the stamp is absent) against _lane_rp.
+    # gated fix-ups in _adapt_cloned_target_to_lane. Each decides absent /
+    # equal / differs from _foreign_rp (the stamp's realpath, empty when the
+    # stamp is absent) against _lane_rp.
     _recorded_buildroot="$(_read_buildroot_stamp "$BASE_TARGET_DIR")"
     _lane_rp="$(realpath -m "$LANE_DIR")"
     _foreign_rp=""
     if [ -n "$_recorded_buildroot" ]; then
         _foreign_rp="$(realpath -m "$_recorded_buildroot")"
     fi
-
-    # ── non-relocatable links-metadata/OUT_DIR path relocation (task 5126) ────
-    # cxx/reify-kernel-occt/reify-kernel-openvdb/libsqlite3-sys/zstd-sys/etc. sit
-    # outside the _NONRELOCATABLE_BUILD_GLOBS allow-list above, so the foreign
-    # buildroot baked into two build-script replay files survives the CoW seed
-    # verbatim -> ENOENT once the base's own worktree is refreshed or cleaned:
-    #   `output`      — links-metadata cargo emits, e.g. cxx's
-    #                   cargo:CXXBRIDGE_DIR0=<foreign>/target/.../out/cxxbridge/include
-    #   `root-output` — the build script's OUT_DIR, replayed so
-    #                   include!(concat!(env!("OUT_DIR"), ...)) opens the right dir
-    # Rewrite the foreign prefix to this lane's root in place rather than
-    # deleting the build dir: the CoW copy already placed identical out/
-    # content at the lane-relative path, so relocating keeps the compiled
-    # rlib/.o/.a Fresh (path-independent fingerprint) instead of forcing a
-    # multi-minute native/C++ rebuild.
-    # Gate (distinct from the env!()-relink gate below): an ABSENT stamp means
-    # the foreign prefix is UNKNOWN, so this skips with a warn rather than
-    # relinking-on-uncertainty like the env!() case — an empty search prefix
-    # would match every byte of every candidate file and corrupt it, whereas
-    # the env!() relink's fail-safe action (a bare `touch`) has no such risk.
-    #
-    # SCOPE BOUNDARY (deliberate, not exhaustive): only files NAMED `output` or
-    # `root-output` are candidates — a filename filter, not a content scan — so
-    # a sibling `.d` depfile or a compiled `.o`/`.a`/`.rlib` that happens to
-    # also contain the foreign prefix is NEVER touched, even though it exists
-    # in the same build dir. `.d` depfiles are advisory (a stale entry forces
-    # at most a localized recompile, never ENOENT); binaries are already
-    # compiled and path-independent, and rewriting their bytes is a corruption
-    # risk with no upside. This mirrors the _NONRELOCATABLE_BUILD_GLOBS
-    # allow-list's philosophy of a narrow, explicit surface rather than a
-    # broad one. MAINTENANCE: if cargo ever bakes a foreign-path-carrying
-    # replay file under a NEW name (beyond `output`/`root-output`), add it to
-    # the `-name` clause below rather than widening this into a content scan.
-    if [ -z "$_foreign_rp" ]; then
-        warn "buildroot stamp absent (${BASE_TARGET_DIR}.buildroot not found) — cannot relocate baked links-metadata/OUT_DIR path(s); an empty search prefix would match every byte and corrupt files, so skipping rather than guessing. Re-run scripts/refresh-warm-base.sh to (re)write the stamp."
-    else
-        if [ "$_foreign_rp" != "$_lane_rp" ]; then
-            _relocate_search_esc="$(_sed_escape "$_foreign_rp")"
-            _relocate_replace_esc="$(_sed_escape "$_lane_rp")"
-            _relocate_candidate_count=0
-            _relocated_count=0
-            # -maxdepth 5: output/root-output live at target/<profile>/build/<pkg>-<hash>/{output,root-output}
-            # (depth 4) or, for cross-compiled targets, target/<triple>/<profile>/build/<pkg>-<hash>/{output,root-output}
-            # (depth 5) — mirrors the -maxdepth 3 bound on the tauri/reify-gui deletion sweep's directory
-            # walk above, applied one filename-match level deeper here since this find locates leaf files
-            # rather than `build` dirs. Bounding this avoids a full unbounded descent into every out/
-            # subdir and incremental-fingerprint dir under the (potentially huge) warm target tree.
-            while IFS= read -r -d '' _rl_file; do
-                _relocate_candidate_count=$((_relocate_candidate_count + 1))
-                if grep -qF "$_foreign_rp" "$_rl_file" 2>/dev/null; then
-                    # MTIME PRESERVATION (§9.5 inv.12) — load-bearing, not
-                    # cosmetic: rewriting a baked path is a CONTENT correction,
-                    # not evidence the build script ran, and `sed -i` replaces
-                    # via temp+rename so the file would otherwise land at SEED
-                    # time, above the sources delta-touched two find-walks
-                    # earlier. Pinned by Block S/S1c.
-                    # `stat -c '%y'` + GNU `touch -d` round-trip full sub-second
-                    # precision: required, since cargo compares at nanosecond
-                    # resolution. Deliberately NOT `|| true`-guarded — under
-                    # `set -euo pipefail` a stat/touch failure aborts the seed
-                    # (empty stdout → cold rebuild), the correct fail-closed
-                    # posture for a freshness invariant.
-                    _rl_ts="$(stat -c '%y' "$_rl_file")"
-                    sed -E -i "s/${_relocate_search_esc}/${_relocate_replace_esc}/g" "$_rl_file"
-                    touch -d "$_rl_ts" "$_rl_file"
-                    _relocated_count=$((_relocated_count + 1))
-                fi
-            done < <(find "$LANE_TARGET" -maxdepth 5 -type f \( -name output -o -name root-output \) -print0)
-            if [ "$_relocated_count" -eq 0 ] && [ "$_relocate_candidate_count" -gt 0 ]; then
-                # Candidates exist (cargo DID write output/root-output files) yet NONE carried the
-                # recorded foreign prefix, even though the buildroot gate says foreign != lane. That
-                # combination is only expected if the .buildroot stamp and the bytes actually baked into
-                # these files were canonicalized inconsistently (e.g. the base was built through a
-                # symlinked worktree path while the stamp records the realpath, or vice-versa) — grep -qF
-                # would then silently match nothing on every candidate, nothing gets rewritten, and the
-                # foreign path(s) survive verbatim, reproducing the exact ENOENT this fix targets. Warn
-                # instead of a bare "Relocated 0" so canonicalization drift surfaces instead of reading
-                # as success.
-                warn "Relocated 0 of $_relocate_candidate_count links-metadata/OUT_DIR candidate file(s) even though recorded buildroot ($_foreign_rp) differs from this lane ($_lane_rp) — none contained the expected foreign prefix. This may mean the .buildroot stamp and the baked paths were canonicalized inconsistently (e.g. symlinked vs realpath worktree root); if so, the foreign path(s) will survive uncorrected and the lane may hit ENOENT. Re-check the stamp written by refresh-warm-base.sh."
-            else
-                info "Relocated $_relocated_count of $_relocate_candidate_count links-metadata/OUT_DIR candidate file(s): foreign buildroot ($_foreign_rp) -> this lane ($_lane_rp)"
-            fi
-        else
-            info "Skipping links-metadata/OUT_DIR relocation: recorded buildroot matches this lane ($_lane_rp)"
-        fi
-    fi
-
-    # ── recorded-input relocation (task 10167) ────────────────────────────────
-    # §9.5 inv.15 — rule: relocate-depinfo-paths.py header. Same stamp gate as
-    # the 5126 sweep above; a missing or failing helper aborts the seed.
-    if [ -z "$_foreign_rp" ]; then
-        warn "buildroot stamp absent (${BASE_TARGET_DIR}.buildroot not found) — cannot relocate cargo dep-info input paths, so units recording inputs outside their package stay judged against the base's build root (§9.5 inv.15). Re-run scripts/refresh-warm-base.sh to (re)write the stamp."
-    elif [ "$_foreign_rp" = "$_lane_rp" ]; then
-        info "Skipping dep-info input-path relocation: recorded buildroot matches this lane ($_lane_rp)"
-    else
-        _depinfo_helper="$_SCRIPT_DIR/relocate-depinfo-paths.py"
-        if [ ! -f "$_depinfo_helper" ]; then
-            err "relocate-depinfo-paths.py not found at $_depinfo_helper — cargo dep-info input paths stay under the base's build root, so lane edits to inputs outside a unit's package would be invisible (§9.5 inv.15); seed aborted (cold rebuild forced)"
-            exit 1
-        fi
-        _depinfo_rc=0
-        python3 "$_depinfo_helper" --from-root "$_foreign_rp" \
-            --to-root "$_lane_rp" "$LANE_TARGET" >&2 || _depinfo_rc=$?
-        if [ "$_depinfo_rc" -ne 0 ]; then
-            err "relocate-depinfo-paths.py exited $_depinfo_rc — cargo dep-info input paths may still name the base's build root (§9.5 inv.15); seed aborted (cold rebuild forced)"
-            exit 1
-        fi
-    fi
-
-    # ── non-relocatable env!()-baked-path test/bench relink (task 4983) ───────
-    # A TEST or BENCH source can bake an absolute worktree path at compile time
-    # via a cargo-internal env!() macro (CARGO_MANIFEST_DIR, OUT_DIR,
-    # CARGO_TARGET_TMPDIR, CARGO_BIN_EXE_*).  These macros are NOT part of
-    # cargo's fingerprint, so after a CoW clone from a base built under a
-    # DIFFERENT worktree, the frozen 2020-01-01 source mtime makes cargo treat
-    # the test/bench binary as Fresh and it keeps serving the BASE's baked
-    # path — a deterministic runtime NotFound (Cargo.toml missing) once that
-    # worktree is deleted or holds different content (esc-4906-57; confirmed
-    # manual fix: touching the offending sources forces cargo to recompile and
-    # relink).
-    #
-    # Fix: touch (to now) only the seeded tests/ and benches/ .rs sources that
-    # contain one of these macros, forcing cargo to recompile+relink ONLY those
-    # integration/bench test binaries (each is its own compilation-unit root —
-    # no lib rlib cascade).  The regex ignores a line whose first non-blank
-    # characters are `//`: a line comment, or the inside of a multi-line
-    # string, can never bake a path.  Every other line still matches (a block
-    # comment, a trailing comment, string contents), so a miss is impossible
-    # and the worst case is a spare relink.  Tests resolve paths at run time
-    # through reify_test_support::test_package / workspace_root, so a converted
-    # source is no longer touched.  src/ env!() usage, lib or unit-test, is
-    # deliberately NOT relinked: touching a src/ file forces a lib recompile
-    # that cascades to every dependent.  The gap is real (task #8927: a Fresh
-    # reify-test-support rlib kept _merge-verify's path), so src/ code that
-    # needs a workspace path must resolve it at run time too, never via env!().
-    #
-    # MAINTENANCE: extend this regex if a new cargo-internal path-baking env!()
-    # macro is identified (mirrors the _NONRELOCATABLE_BUILD_GLOBS allow-list
-    # convention above).  Currently covers the CARGO_* macros known to bake
-    # absolute build-time paths into compiled test/bench binaries.  The
-    # test-path-baked-at-compile-time* rows of tests/infra/adoption-ratchet.manifest
-    # restate this ERE (with ' ' for its [:space:] class) to count what it relinks;
-    # update them in the same change (tests/infra/test_seed_warm_lane.sh N13
-    # reds on drift).  Keep it ONE single-quoted line:
-    # docs/notes/workspace-feature-union.md and N13 sed-extract it.
-    _ENV_PATH_MACRO_RE='^[[:space:]]*([^/[:space:]].*|/([^/].*)?)?env!\("(CARGO_MANIFEST_DIR|OUT_DIR|CARGO_TARGET_TMPDIR|CARGO_BIN_EXE_[A-Za-z0-9_-]+)"\)'
-
-    # ── buildroot-match gate ───────────────────────────────────────────────
-    # Compare the base's recorded build-worktree (refresh-warm-base.sh Step 4b
-    # .buildroot stamp) against THIS consuming lane.  In production the base
-    # is always built under _merge-verify while the consuming lane is
-    # _lane-K, so these realpaths always DIFFER and the relink below fires on
-    # every acquire — correctly, because the baked path is never the lane's
-    # own, and trusting that the base's original build worktree still exists
-    # with identical content is exactly the esc-4906-57 failure mode (that
-    # worktree gets refreshed or deleted out from under the stale baked
-    # path). ABSENT (no stamp — pre-fix base, or refresh has not yet run the
-    # Step 4b write) fails safe and relinks too, since the baked path's
-    # provenance is unknown. Only an EXACT match (the base was built under
-    # this lane's own path) skips the relink as a genuine no-op.
-    # (_foreign_rp/_lane_rp already computed above, shared with both relocation
-    # steps.)
-    if [ -z "$_foreign_rp" ] || [ "$_foreign_rp" != "$_lane_rp" ]; then
-        _relinked_count=0
-        while IFS= read -r -d '' _rs_file; do
-            # grep -q exits 1 on no-match; under set -euo pipefail a bare/&&-
-            # chained call would abort the seed on the (common) no-match
-            # case, so guard it in an `if` instead.
-            if grep -qE "$_ENV_PATH_MACRO_RE" "$_rs_file" 2>/dev/null; then
-                touch "$_rs_file"
-                _relinked_count=$((_relinked_count + 1))
-            fi
-        done < <(find "$LANE_DIR" -type f -name '*.rs' \
-                      \( -path '*/tests/*' -o -path '*/benches/*' \) \
-                      -not -path "$LANE_DIR/target/*" -print0)
-        info "Relinked $_relinked_count env!()-baked-path test/bench source(s) so cargo re-bakes the lane's own env!() paths (recorded buildroot=${_recorded_buildroot:-<absent>}, lane=$_lane_rp)"
-    else
-        info "Skipping env!()-baked-path relink: recorded buildroot matches this lane ($_lane_rp)"
-    fi
+    _adapt_cloned_target_to_lane "$_foreign_rp" "$_lane_rp"
 
     # Seed-time post-condition (§9.5 inv.12). Called HERE — last of the
     # mtime-mutating steps, after the relocation sweep AND the env!()-relink
