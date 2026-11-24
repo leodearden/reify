@@ -264,6 +264,7 @@ test_scope_boundary.sh pool
 test_seed_depinfo_relocation.sh pool
 test_seed_warm_base_initial.sh pool
 test_seed_warm_lane.sh pool
+test_seed_warm_lane_canon_stamp.sh pool
 test_setup_dev_no_ldconfig.sh pool
 test_setup_worktree_debug_port.sh pool
 test_sidecar_typecheck_test_path.sh pool
