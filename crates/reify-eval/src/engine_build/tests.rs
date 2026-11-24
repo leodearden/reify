@@ -9977,9 +9977,8 @@ structure Assembly {
             .expect("MassProperties must have an `inertia` field");
         let inertia =
             reify_stdlib::dynamics::mass_props::MassProperties::read_inertia(inertia_field)
-                .ok()
-                .flatten()
-                .expect("inertia must read as a 3×3 moment of inertia");
+                .expect("inertia cells must be accepted")
+                .expect("inertia must be a resolved 3×3");
         assert!(
             (inertia[0][0] - 1.0).abs() < 1e-9,
             "inertia[0][0] must be 1.0; got {}",
