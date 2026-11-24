@@ -76,15 +76,11 @@ chmod 0500 "$TMPDIR/locked"
 printf '%s\n' "$TMPDIR" > "$STATE_DIR/tmpdir"
 """
 
-# Records its TMPDIR, then waits for $STATE_DIR/go (bounded by a hang guard).
+# Says its TMPDIR on stdout, then waits for its stdin to close.
 WAITING_CHILD = r"""#!/usr/bin/env bash
-printf '%s\n' "$TMPDIR" > "$STATE_DIR/tmpdir.partial"
-mv "$STATE_DIR/tmpdir.partial" "$STATE_DIR/tmpdir"
-for _ in $(seq 1200); do
-    [ -e "$STATE_DIR/go" ] && exit 0
-    sleep 0.1
-done
-exit 99
+printf '%s\n' "$TMPDIR"
+read -r _
+exit 0
 """
 
 
@@ -129,6 +125,23 @@ class LibHarness(unittest.TestCase):
             check=False,
         )
 
+    def spawn(self, function, *args):
+        """The lib call, running, with stdin, stdout and stderr piped. Closing
+        its stdin is what releases a child that waits on it."""
+        proc = subprocess.Popen(
+            self.lib_argv(function, *args),
+            env=self.env(),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        self.addCleanup(finish, proc)
+        return proc
+
+    def reap(self):
+        return self.call("member_tmpdir_reap", self.root)
+
     def recorded_tmpdir(self):
         return Path((self.state / "tmpdir").read_text().strip())
 
@@ -151,6 +164,18 @@ class LibHarness(unittest.TestCase):
 def backdate(path, follow_symlinks=True):
     then = time.time() - STALE_AGE_S
     os.utime(path, (then, then), follow_symlinks=follow_symlinks)
+
+
+def finish(proc):
+    """Release a spawned lib call, and kill it if it outlives the hang guard."""
+    proc.stdin.close()
+    try:
+        proc.wait(timeout=HANG_GUARD_S)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+    proc.stdout.close()
+    proc.stderr.close()
 
 
 class MemberTmpdirRun(LibHarness):
@@ -210,9 +235,6 @@ class MemberTmpdirRun(LibHarness):
 
 
 class MemberTmpdirReap(LibHarness):
-    def reap(self):
-        return self.call("member_tmpdir_reap", self.root)
-
     def test_an_unleased_stale_dir_is_removed(self):
         dead = self.stale_dir(f"{PREFIX}dead")
         locked = dead / "locked"
@@ -277,39 +299,19 @@ class MemberTmpdirReap(LibHarness):
         self.assertTrue((other / "litter").is_file())
 
     def test_a_running_members_dir_is_kept_even_when_its_mtime_is_old(self):
-        proc = subprocess.Popen(
-            self.lib_argv("member_tmpdir_run", self.root, self.child("waiting", WAITING_CHILD)),
-            env=self.env(),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-        self.addCleanup(self.finish, proc)
-        recorded = self.state / "tmpdir"
-        deadline = time.monotonic() + HANG_GUARD_S
-        while not recorded.exists() and proc.poll() is None and time.monotonic() < deadline:
-            time.sleep(0.1)
-        self.assertTrue(recorded.exists(), "the member never started")
-        tmpdir = self.recorded_tmpdir()
+        proc = self.spawn("member_tmpdir_run", self.root, self.child("waiting", WAITING_CHILD))
+        said = proc.stdout.readline().strip()
+        self.assertTrue(said, "the member never started")
+        tmpdir = Path(said)
         backdate(tmpdir)
 
         result = self.reap()
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(tmpdir.is_dir(), "a live member's TMPDIR was reaped")
-        (self.state / "go").touch()
+        proc.stdin.close()
         self.assertEqual(proc.wait(timeout=HANG_GUARD_S), 0)
         self.assertFalse(os.path.lexists(tmpdir))
-
-    def finish(self, proc):
-        (self.state / "go").touch()
-        if proc.poll() is None:
-            try:
-                proc.wait(timeout=HANG_GUARD_S)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait()
-        proc.stdout.close()
 
 
 # RunAllWiring's members. Each records its TMPDIR to
