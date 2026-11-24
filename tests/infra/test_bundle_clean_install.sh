@@ -7,6 +7,10 @@
 # The installed reify-sidecar completes its ready handshake under the system node,
 # and an Assistant turn through it runs claude inside the landlock sandbox; nodejs
 # and python3 arrive as the deb's Depends.
+# Every shipped surface reports the deb's version (task 10485). reify-gui
+# answers `--help` and runs the bundled CLI as `cli <args>` on both assets, and
+# the AppImage's `cli check` and GUI launch take a path relative to the caller's
+# directory (task 10487).
 #
 # DEFAULT-SKIPPING: armed only by REIFY_RUN_BUNDLE_CLEAN_INSTALL=1, because it
 # costs a cold scripts/build-bundle.sh plus two containers. Classified
