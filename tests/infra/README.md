@@ -828,6 +828,7 @@ runs every adopting member with an empty `CARGO_HOME` and
 | `run_all.sh` | Discovery runner — runs every member `classification_discovered_set` returns |
 | `run-all-classification-lib.sh` | Shared library: the discovery predicate (`classification_discovered_set`) and the manifest bucket accessors |
 | `run-all-member-budget-lib.sh` | Shared library: runs one member under its wall-clock budget in a process group of its own (`member_budget_run`) and attributes a timeout (`member_budget_exceeded`) |
+| `run-all-member-tmpdir-lib.sh` | Shared library: runs one member with a private, flock-leased TMPDIR that is removed when it exits (`member_tmpdir_run`), and removes the unleased ones a killed run left behind (`member_tmpdir_reap`); neither removes a dir a live process was started with as its TMPDIR |
 | `adoption_ratchet.py` | Adoption-ratchet engine and report CLI |
 | `adoption-ratchet.manifest` | Adoption-ratchet rows (grammar in its header) |
 | `test_infra_adoption_ratchet.sh` | Regression guard: no adoption-ratchet row exceeds its ceiling |

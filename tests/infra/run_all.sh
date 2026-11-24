@@ -341,6 +341,21 @@ fi
 # shellcheck source=tests/infra/run-all-member-budget-lib.sh
 source "$_RA_MEMBER_BUDGET_LIB"
 
+# ---------------------------------------------------------------------------
+# Per-member TMPDIR (task 10372): member_tmpdir_run gives each member a private
+# TMPDIR, removed when the member exits unless a process it left behind still
+# has it as TMPDIR, and member_tmpdir_reap removes the ones a killed run, or such
+# a process, left behind. Hard-required for the scrub's reason above: every
+# branch spawns members.
+# ---------------------------------------------------------------------------
+_RA_MEMBER_TMPDIR_LIB="$SCRIPT_DIR/run-all-member-tmpdir-lib.sh"
+if [ ! -f "$_RA_MEMBER_TMPDIR_LIB" ]; then
+    echo "run_all.sh: ERROR — tests/infra/run-all-member-tmpdir-lib.sh not found at $_RA_MEMBER_TMPDIR_LIB" >&2
+    exit 1
+fi
+# shellcheck source=tests/infra/run-all-member-tmpdir-lib.sh
+source "$_RA_MEMBER_TMPDIR_LIB"
+
 # Per-run identifier for the FLAKY ledger (task #5142): stamps every ledger
 # line so the chronic-offender scan (_ra_flaky_chronic_check) can window
 # over "the last M DISTINCT runs" exactly, even though a single run can
@@ -711,7 +726,8 @@ _ra_emit_fail_detail() {
 
 # _ra_spawn_member <name> -- the ONE member spawn line. Every member runs
 # under its budget, in a process group of its own (member_budget_run; the
-# REIFY_RUN_ALL_MEMBER_TIMEOUT knob), and gets the git-env scrub, an unset
+# REIFY_RUN_ALL_MEMBER_TIMEOUT knob), and gets a private TMPDIR, removed when
+# the member exits (member_tmpdir_run), the git-env scrub, an unset
 # REIFY_RUN_ALL_MEMBER_SUBSET (that knob filters this run's discovery only; a
 # member that drives run_all.sh over its own fixtures must not inherit the
 # filter), an unset REIFY_VERIFY_EVENT_LOG (no member writes the parent
@@ -725,7 +741,7 @@ _ra_emit_fail_detail() {
 _ra_spawn_member() (
     exec 9<&- {_RA_RUN_STDOUT_FD}>&- {_RA_RUN_STDERR_FD}>&-
     # shellcheck disable=SC2046  # the scrub prefix is deliberately split into argv words
-    member_budget_run "$_RA_MEMBER_TIMEOUT" "$_RA_MEMBER_KILL_GRACE" \
+    member_tmpdir_run "${TMPDIR:-/tmp}" member_budget_run "$_RA_MEMBER_TIMEOUT" "$_RA_MEMBER_KILL_GRACE" \
         $(reify_git_env_scrub_prefix) -u REIFY_RUN_ALL_MEMBER_SUBSET -u REIFY_VERIFY_EVENT_LOG bash "$INFRA_DIR/$1"
 )
 
@@ -1873,6 +1889,11 @@ command -v timeout >/dev/null 2>&1 || {
     echo "ERROR: run_all.sh: the per-member budget needs GNU timeout (coreutils) on PATH" >&2
     exit 1
 }
+
+# Reap the member TMPDIRs a SIGKILLed run left behind (task 10372). Once per
+# run, in the main shell, before the branch chain spawns any member; never in a
+# pool worker. A live run's dirs are leased and kept.
+member_tmpdir_reap "${TMPDIR:-/tmp}"
 
 if [ "$SCOPE" = "host-infra" ]; then
     # -------------------------------------------------------------------------
