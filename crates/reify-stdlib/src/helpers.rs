@@ -192,6 +192,15 @@ pub(crate) fn mint_registry_free_instance(type_name: &str, fields: Vec<(String, 
     )))
 }
 
+/// The three cells of a `Value::Point` / `Value::Vector` / `Value::List` of
+/// exactly three, or `None` for any other shape or arity.
+pub(crate) fn vec3_cells(v: &Value) -> Option<&[Value]> {
+    match v {
+        Value::Point(c) | Value::Vector(c) | Value::List(c) if c.len() == 3 => Some(c),
+        _ => None,
+    }
+}
+
 /// Validate that `v` is a usable topology-selector target.
 ///
 /// Three shapes are accepted:

@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use reify_core::diagnostics::{Diagnostic, DiagnosticCode};
 use reify_ir::Value;
 
-use crate::dynamics::eval::mass_properties_from_value;
+use crate::dynamics::mass_props::MassProperties;
 use crate::eval_builtin;
 use crate::joints::{is_driving_joint, is_joint_value, make_nondriving_joint_error};
 use crate::loop_closure::{extract_loop_closure_chains, joint_range_midpoint};
@@ -1085,7 +1085,7 @@ enum MassRung {
 /// - Call [`resolve_body_mass`] — `None` ⇒ return [`MassRung::Fallback`]
 ///   immediately (all-or-nothing: a single unresolved body drops the whole
 ///   call to the legacy density path).
-/// - Extract `(mass, com, _)` via [`mass_properties_from_value`] — failure,
+/// - Extract `mass` and `com` via [`MassProperties::from_value`] — failure,
 ///   or `!mass.is_finite() || mass < 0.0` ⇒ [`MassRung::Degenerate`].
 /// - Read the body's `"world_transform"` map key and accumulate
 ///   `weighted[i] += mass × world_apply_point(wt, com)[i]`
@@ -1109,7 +1109,7 @@ fn explicit_mass_weighted_com(snap_bodies: &[Value]) -> MassRung {
         };
 
         // Extract scalar mass and com offset (SI metres).
-        let (mass, com, _) = match mass_properties_from_value(&mp) {
+        let MassProperties { mass, com, .. } = match MassProperties::from_value(&mp) {
             Some(t) => t,
             None => return MassRung::Degenerate,
         };

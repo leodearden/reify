@@ -45,11 +45,25 @@ CTOR_EQUIVALENT_PLACEHOLDERS = (
 )
 EXCLUSIONS = IR_AND_CTOR_PATH + TEST_ONLY + CTOR_EQUIVALENT_PLACEHOLDERS
 GUI_TEST_ONLY = ("gui/src-tauri/src/tests/",)
+MASS_PROPERTIES_OWNER = "crates/reify-stdlib/src/dynamics/mass_props.rs"
 
 REGISTRY_FREE_LITERAL = re.compile(r"StructureTypeId\(\s*(?:u32::MAX|0)\s*\)")
 REGISTRY_META_BY_ID = re.compile(
     r"\.(?:meta|declared_bounds|name_for)\(\s*&?\s*"
     r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\.type_id\b")
+
+
+def result_type_write(structure):
+    """A write of `structure`'s type_name literal: a `type_name:` field, a
+    `registry_free(` / `mint_[registry_free_]instance(` argument, or rustfmt's
+    multi-line argument -- the literal, optionally converted to a `String`,
+    alone on its line and ended by a comma. Reads such as
+    `d.type_name == "<S>"`, `StructureRef("<S>")` and a match arm
+    `"<S>" => ...` match none of these."""
+    literal = '"' + re.escape(structure) + '"'
+    return re.compile(r'(?:type_name\s*:\s*|registry_free\(\s*|instance\(\s*)' + literal
+                      + r'|^\s*' + literal
+                      + r'(?:\.(?:to_string|to_owned|into)\(\))?\s*,')
 
 
 def _is_excluded(path, excluded):
@@ -92,6 +106,12 @@ def rows(root):
                 view=rcr.View.STARTS_IN_CODE,
                 paths=(RUST_SOURCES, GUI_SOURCES),
                 baseline=0, target=0, lowered_by="δ #8686"),
+        rcr.Row(row_id="result-type-literal-mass-properties",
+                construct=result_type_write("MassProperties"),
+                view=rcr.View.STARTS_IN_CODE,
+                paths=scan_set(root, (RUST_SOURCES, GUI_SOURCES),
+                               TEST_ONLY + GUI_TEST_ONLY + (MASS_PROPERTIES_OWNER,)),
+                baseline=0, target=0, lowered_by="η #8697"),
     )
 
 
@@ -100,6 +120,7 @@ FIXTURE_LINES = {
     "registry-free-placeholder": "    let id = StructureTypeId(0);",
     "registry-free-gui": "    let id = StructureTypeId(u32::MAX);",
     "registry-meta-by-id": "    let m = registry.meta(data.type_id);",
+    "result-type-literal-mass-properties": '    let v = mint_instance("MassProperties", fields);',
 }
 
 PRODUCER = "crates/demo/src/producer.rs"
@@ -112,12 +133,13 @@ def sample_file(row_id):
     return {"registry-free-literal": PRODUCER,
             "registry-free-placeholder": CTOR_EQUIVALENT_PLACEHOLDERS[-1],
             "registry-free-gui": GUI_FILE,
-            "registry-meta-by-id": GUI_FILE}[row_id]
+            "registry-meta-by-id": GUI_FILE,
+            "result-type-literal-mass-properties": PRODUCER}[row_id]
 
 
 def write_clean_twin(root):
     """Every row's scope, holding exactly `baseline` samples per row."""
-    for rel in (PRODUCER, GUI_FILE) + CTOR_EQUIVALENT_PLACEHOLDERS:
+    for rel in (PRODUCER, GUI_FILE, MASS_PROPERTIES_OWNER) + CTOR_EQUIVALENT_PLACEHOLDERS:
         write_file(root, rel, rust_fn())
     for row in rows(root):
         if row.baseline:
@@ -214,6 +236,20 @@ NOT_COUNTED = {
         Case(rust_fn("    let m = reg.meta(reg.id_for(&d.type_name)?);")),
         Case(rust_fn("    // registry.meta(data.type_id)")),
     ),
+    "result-type-literal-mass-properties": (
+        Case(rust_fn('    let is_mp = d.type_name == "MassProperties";')),
+        Case(rust_fn('    let t = Type::StructureRef("MassProperties".to_string());')),
+        Case(rust_fn('    // type_name: "MassProperties"')),
+        Case(rust_fn('    let s = r#"type_name: "MassProperties""#;')),
+        Case(rust_fn("    match d.type_name.as_str() {",
+                     '        "MassProperties" => true,',
+                     '        "MassProperties" | "Frame3" => true,',
+                     "        _ => false,",
+                     "    };")),
+        Case(cfg_test_module('let v = mint_instance("MassProperties", fields);')),
+        Case(rust_fn('    let v = mint_instance("MassProperties", fields);'),
+             rel=MASS_PROPERTIES_OWNER),
+    ),
 }
 
 REGISTRY_FREE_COUNTED = ((3, Case(rust_fn(
@@ -231,6 +267,22 @@ COUNTED = {
             "    let b = registry.declared_bounds(inst.type_id);",
             "    let c = registry.meta(&self.data.type_id);"))),
         (1, Case(rust_fn("    let m = registry.meta(data.type_id);"), rel=PRODUCER)),
+    ),
+    "result-type-literal-mass-properties": (
+        (3, Case(rust_fn(
+            "    let a = StructureInstanceData {",
+            '        type_name: "MassProperties".to_string(),',
+            "    };",
+            '    let b = StructureInstanceData::registry_free("MassProperties", f);',
+            "    let c = mint_instance(",
+            '        "MassProperties",',
+            "        fields,",
+            "    );"))),
+        (1, Case(rust_fn(
+            "    let d = StructureInstanceData::registry_free(",
+            '        "MassProperties".to_string(),',
+            "        f,",
+            "    );"))),
     ),
 }
 
@@ -262,7 +314,7 @@ class RowExclusions(TempRoot):
 class LiveTree(unittest.TestCase):
 
     def test_every_exclusion_names_a_live_path(self):
-        for entry in EXCLUSIONS + GUI_TEST_ONLY:
+        for entry in EXCLUSIONS + GUI_TEST_ONLY + (MASS_PROPERTIES_OWNER,):
             with self.subTest(entry):
                 self.assertTrue((REPO_ROOT / entry).exists(), f"{entry} names no path")
 

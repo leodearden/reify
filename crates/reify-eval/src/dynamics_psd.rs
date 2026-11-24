@@ -12,10 +12,9 @@
 //! cases the tests exercise — diagonal eigenvalues equal the diagonal entries
 //! exactly).  PSD is declared when all eigenvalues ≥ −tol.
 //!
-//! `inertia_3x3_from_value` extracts a `[[f64;3];3]` from either a
-//! `Value::Matrix` (3 rows × 3 cols) or a nested `Value::List` (3 elements,
-//! each a 3-element `Value::List`). Scalar entries are extracted via their
-//! `si_value` field.
+//! The math is `Value`-free: the inertia it checks is read by the one
+//! `MassProperties` inertia reader,
+//! `reify_stdlib::dynamics::mass_props::MassProperties::read_inertia`.
 //!
 //! # Relationship to `reify-solver-elastic/src/eigensolve.rs`
 //!
@@ -37,61 +36,6 @@
 //!
 //! Smith, O.K. (1961). "Eigenvalues of a symmetric 3×3 matrix."
 //! *Communications of the ACM*, 4(4), 168.
-
-use reify_ir::Value;
-use reify_stdlib::dynamics::eval::cell_f64;
-
-/// Extract a `[[f64; 3]; 3]` from `v`, which may be either
-/// `Value::Matrix(rows)` (3 rows × 3 values each) or a nested
-/// `Value::List` (3 elements, each a 3-element list).
-///
-/// Returns `None` when:
-/// - the outer container has a length other than 3,
-/// - any row has a length other than 3, or
-/// - any cell is not numeric (`Value::Real` or `Value::Scalar { si_value }`).
-pub fn inertia_3x3_from_value(v: &Value) -> Option<[[f64; 3]; 3]> {
-    // Helper: extract a row of 3 f64 from a slice of Values.
-    fn row_3(vals: &[Value]) -> Option<[f64; 3]> {
-        if vals.len() != 3 {
-            return None;
-        }
-        let a = cell_f64(&vals[0])?;
-        let b = cell_f64(&vals[1])?;
-        let c = cell_f64(&vals[2])?;
-        Some([a, b, c])
-    }
-
-    match v {
-        Value::Matrix(rows) => {
-            if rows.len() != 3 {
-                return None;
-            }
-            let r0 = row_3(&rows[0])?;
-            let r1 = row_3(&rows[1])?;
-            let r2 = row_3(&rows[2])?;
-            Some([r0, r1, r2])
-        }
-        Value::List(outer) => {
-            if outer.len() != 3 {
-                return None;
-            }
-            let r0 = match &outer[0] {
-                Value::List(row) => row_3(row)?,
-                _ => return None,
-            };
-            let r1 = match &outer[1] {
-                Value::List(row) => row_3(row)?,
-                _ => return None,
-            };
-            let r2 = match &outer[2] {
-                Value::List(row) => row_3(row)?,
-                _ => return None,
-            };
-            Some([r0, r1, r2])
-        }
-        _ => None,
-    }
-}
 
 /// Compute the three eigenvalues of the symmetric part `S = (M + Mᵀ)/2`
 /// of a 3×3 matrix `m`, using the analytic closed-form Smith 1961 /
@@ -216,7 +160,6 @@ pub fn psd_tol(m: &[[f64; 3]; 3]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_core::DimensionVector;
 
     // ── is_symmetric_psd ─────────────────────────────────────────────────────
 
@@ -267,83 +210,6 @@ mod tests {
         assert!(
             !is_symmetric_psd(&m, psd_tol(&m)),
             "[[0,2,0],[2,0,0],[0,0,1]] has min eigenvalue -2 — should NOT be PSD"
-        );
-    }
-
-    // ── inertia_3x3_from_value ────────────────────────────────────────────────
-
-    #[test]
-    fn extracts_from_value_matrix() {
-        let rows = vec![
-            vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)],
-            vec![Value::Real(0.0), Value::Real(2.0), Value::Real(0.0)],
-            vec![Value::Real(0.0), Value::Real(0.0), Value::Real(3.0)],
-        ];
-        let v = Value::Matrix(rows);
-        let m = inertia_3x3_from_value(&v).expect("should extract from Value::Matrix");
-        assert_eq!(m, [[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 3.0]]);
-    }
-
-    #[test]
-    fn extracts_from_nested_list() {
-        let row = |a: f64, b: f64, c: f64| {
-            Value::List(vec![Value::Real(a), Value::Real(b), Value::Real(c)])
-        };
-        let v = Value::List(vec![
-            row(1.0, 0.0, 0.0),
-            row(0.0, 2.0, 0.0),
-            row(0.0, 0.0, 3.0),
-        ]);
-        let m = inertia_3x3_from_value(&v).expect("should extract from nested Value::List");
-        assert_eq!(m, [[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 3.0]]);
-    }
-
-    #[test]
-    fn extracts_scalar_si_value() {
-        // A cell that is Value::Scalar{si_value} (e.g. kg·m²) should also be extracted.
-        let scalar_cell = Value::Scalar {
-            si_value: 5.0,
-            dimension: DimensionVector::MASS, // arbitrary dimensioned value
-        };
-        let rows = vec![
-            vec![scalar_cell, Value::Real(0.0), Value::Real(0.0)],
-            vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)],
-            vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)],
-        ];
-        let v = Value::Matrix(rows);
-        let m = inertia_3x3_from_value(&v).expect("should extract Scalar si_value");
-        assert!(
-            (m[0][0] - 5.0).abs() < 1e-12,
-            "expected si_value 5.0, got {}",
-            m[0][0]
-        );
-    }
-
-    #[test]
-    fn returns_none_for_wrong_shape() {
-        // A 2×3 matrix
-        let rows = vec![
-            vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)],
-            vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)],
-        ];
-        let v = Value::Matrix(rows);
-        assert!(
-            inertia_3x3_from_value(&v).is_none(),
-            "2×3 matrix should return None"
-        );
-    }
-
-    #[test]
-    fn returns_none_for_non_numeric_cell() {
-        let rows = vec![
-            vec![Value::Bool(true), Value::Real(0.0), Value::Real(0.0)],
-            vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)],
-            vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)],
-        ];
-        let v = Value::Matrix(rows);
-        assert!(
-            inertia_3x3_from_value(&v).is_none(),
-            "matrix with non-numeric cell (Value::Bool) should return None"
         );
     }
 }
