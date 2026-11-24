@@ -38,11 +38,20 @@ such trap killed the cargo subtree.
 `scripts/verify.sh` now routes all `cargo nextest run` and `cargo test` plan steps
 through `reaper_run_in_pgroup` from `scripts/lib_proc_reaper.sh`.
 
-`reaper_run_in_pgroup` uses the `set -m; eval cmd &; PGID=$!; set +m` idiom (the
-same proven idiom as `portable_timeout()` in `scripts/lib_portable.sh`) to run each
-cargo pass as its own **process-group leader**.  The PGID is tracked in a module
+`reaper_run_in_pgroup` uses the `set -m; { set +e; eval cmd; } &; PGID=$!; set +m`
+idiom (the backgrounding of `portable_timeout()` in `scripts/lib_portable.sh`) to run
+each cargo pass as its own **process-group leader**.  The PGID is tracked in a module
 array so `reaper_teardown` can SIGTERM → grace → SIGKILL the entire group atomically
 via `kill -- -<pgid>`.
+
+The line runs with errexit off and returns its own exit status (task 10313). On bash
+5.2 a bare async `eval cmd &` under the caller's `set -e` exits 1 for any failing
+command, whatever its code, and keeps errexit live mid-line, so a `timeout` wall
+cutoff surfaced as a silent exit 1. The explicit `set +e` gives every plan line
+PRD `verify-structured-plan-and-role-table` D10's semantics (the line's own operators
+decide) whatever the caller's context, per its §3 premise 5, which fixes its §2.4
+defects 1 (status collapse) and 2 (the offline confirm wrapper skipping its recorder
+on a red pass).
 
 `reaper_teardown` is called:
 - From `_verify_cleanup` (which runs on EXIT).
@@ -135,7 +144,11 @@ covers:
 - **Part 2:** `reap-orphans` — positive (kills matching orphan), negative (PPID not
   in set / age below threshold / not under deps glob / dry-run).
 - **Part 3:** `reaper_run_in_pgroup` / `reaper_teardown` — exit-code propagation,
-  SIGTERM teardown kills entire group, idempotent double-teardown.
+  SIGTERM teardown kills entire group, idempotent double-teardown. Test 3a-rc: under
+  the caller's `set -euo pipefail` a failing line keeps its own status (`timeout`'s
+  124, an external 7, the selective-infra leaf and the confirm-wrapper shapes) on both
+  the pgroup and `REIFY_PROC_REAPER_DISABLE=1` arms, and the confirm wrapper's
+  recorder runs from a bare `set -e` caller too.
 - **Part 4:** Structural verify.sh wiring — sources lib, routes cargo passes through
   pgroup runner, TERM trap, `_verify_cleanup` calls teardown, no plan-churn.
 - **Part 5:** End-to-end SIGKILL proof — parent SIGKILLed; orphan survives; wrapper

@@ -2995,7 +2995,7 @@ add() { PLAN+=("$1"); }
 # A leading `export ...;` STATEMENT is shape-agnostic — it composes ahead of
 # `if`, `{`, `(` and `for` alike, so no plan line needs restructuring — and it
 # does not leak forward, because reaper_run_in_pgroup normally runs each plan
-# line in its own background subshell (`set -m; eval "$cmd" &`).
+# line in its own background subshell (`set -m; { set +e; eval "$cmd"; } &`).
 #
 # That containment is NOT unconditional. Under the break-glass knob
 # REIFY_PROC_REAPER_DISABLE=1, lib_proc_reaper.sh evaluates each plan line in
@@ -4254,7 +4254,7 @@ build_plan() {
     # LOADER SCRUB — the ONE add_tool() exception (task 5730). The node lane is
     # a tool line and needs the scrub, but this plan line is the only one the
     # executor eval's in its MAIN shell (everything else goes through
-    # reaper_run_in_pgroup's `set -m; eval "$cmd" &` subshell). A leading
+    # reaper_run_in_pgroup's `set -m; { set +e; eval "$cmd"; } &` subshell). A leading
     # `export ...;` here would therefore persist into every SUBSEQUENT plan
     # line, including the cargo ones — silently stripping the OCCT search dir
     # from the rest of the gate. It goes INSIDE the `{ ... ; } &` braces, which

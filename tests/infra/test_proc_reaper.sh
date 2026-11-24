@@ -135,7 +135,7 @@ _poll_survivor_alive() {
 #   wait for them — the shared launcher for the "N self-expiring sentinels in
 #   one process group" shape used by both Test 3b (SIGTERM teardown) and the
 #   Test 3d SIGKILL self-reap regression (task 4931 / esc-3002-145 FIX #1).
-#   Intended to run inside reaper_run_in_pgroup's `eval "$_cmd" &` context, so
+#   Intended to run inside reaper_run_in_pgroup's `{ set +e; eval "$_cmd"; } &` context, so
 #   its own PID (captured by the caller via $!) becomes the process-group
 #   leader and each spawned sentinel is a child sharing that pgroup —
 #   identical topology to the inline "sleep <dur> & sleep <dur>; wait" idiom
