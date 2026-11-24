@@ -5169,6 +5169,18 @@ impl Engine {
             .collect()
     }
 
+    /// Report `graph`'s unresolved subs as this call's unknown-structure
+    /// diagnostics: the graph is eval's one detector of a sub whose structure
+    /// the definition environment cannot resolve.
+    fn report_unresolved_subs(
+        &mut self,
+        graph: &crate::graph::EvaluationGraph,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        self.last_sub_component_unknown_structure_errors = graph.unresolved_sub_diagnostics.len();
+        diagnostics.extend(graph.unresolved_sub_diagnostics.iter().cloned());
+    }
+
     /// Evaluate a compiled module, returning computed values.
     ///
     /// This is a cold-start evaluation that builds a new Snapshot and
@@ -5279,6 +5291,7 @@ impl Engine {
         let mut snapshot = Snapshot::from_env(self.env_of(module));
         #[cfg(debug_assertions)]
         assert_value_cell_types_representable(&snapshot.graph);
+        self.report_unresolved_subs(&snapshot.graph, &mut diagnostics);
         snapshot.id = snap_id;
         snapshot.version = version;
         snapshot.provenance = SnapshotProvenance::Initial;
@@ -5560,35 +5573,16 @@ impl Engine {
         let env = self.env_of(module);
         for template in &module.templates {
             for sub in &template.sub_components {
-                // Keyed subs (task 3931 γ) carry the element structure in
-                // `type_args[0]`; their `structure_name` is the "Keyed" wrapper,
-                // which find_template would miss (emitting a spurious "unknown
-                // structure Keyed" error). Resolve the element name so the child
-                // template is found and any genuine diagnostic names the element.
-                let effective_structure_name: &str = if sub.keyed_members.is_empty() {
-                    &sub.structure_name
-                } else {
-                    match sub.type_args.first() {
-                        Some(reify_core::Type::StructureRef(name)) => name,
-                        _ => &sub.structure_name,
-                    }
-                };
                 // Find the referenced child template by name — module
-                // templates first, then the stdlib prelude (esc-4287-15).
-                let child_template = match find_template_with_prelude(
+                // templates first, then the stdlib prelude (esc-4287-15). A
+                // sub that does not resolve was already reported from the
+                // graph (`report_unresolved_subs`).
+                let Some(child_template) = find_template_with_prelude(
                     module,
                     self.prelude,
-                    effective_structure_name,
-                ) {
-                    Some(t) => t,
-                    None => {
-                        self.last_sub_component_unknown_structure_errors += 1;
-                        diagnostics.push(Diagnostic::error(format!(
-                            "sub-component \"{}\" references unknown structure \"{}\"",
-                            sub.name, effective_structure_name
-                        )));
-                        continue;
-                    }
+                    sub.element_structure_name(),
+                ) else {
+                    continue;
                 };
 
                 // Collection sub: determine count, then elaborate N instances
@@ -5693,7 +5687,7 @@ impl Engine {
                         let si = Value::StructureInstance(Box::new(
                             reify_ir::StructureInstanceData {
                                 type_id: reify_ir::StructureTypeId(0),
-                                type_name: effective_structure_name.to_string(),
+                                type_name: sub.element_structure_name().to_string(),
                                 version: child_template.version(),
                                 fields,
                             },
@@ -8139,7 +8133,7 @@ impl Engine {
         // Inside the template loop, `lookup_solver_for_module` re-runs the
         // unwarned lookup so the &self borrow only spans the `.solve(&problem)`
         // expression and doesn't conflict with `&mut self` mutations elsewhere
-        // in the loop body (e.g. `self.last_sub_component_unknown_structure_errors`).
+        // in the loop body (e.g. `self.journal.record(..)`).
         let has_active_solver = self
             .resolve_solver_for_module(module, &mut diagnostics)
             .is_some();
@@ -8847,23 +8841,6 @@ impl Engine {
                     false,
                 );
             }
-
-            // Sub-component validation pass: emit "unknown structure" error for any
-            // sub_component whose structure_name has no matching template in the
-            // module OR the stdlib prelude (the lookup set must match eval()'s
-            // elaborating loop, esc-4287-15). Mirrors eval()'s resolver. We do NOT
-            // elaborate child instances here — this is lookup-only by design (see
-            // design decision in plan).
-            for sub in &template.sub_components {
-                if find_template_with_prelude(module, self.prelude, &sub.structure_name).is_none() {
-                    self.last_sub_component_unknown_structure_errors += 1;
-                    diagnostics.push(Diagnostic::error(format!(
-                        "sub-component \"{}\" references unknown structure \"{}\"",
-                        sub.name, sub.structure_name
-                    )));
-                }
-            }
-
         }
 
         // β #4822: Solver sub-pass in ro.order (dependency-ordered).
@@ -9447,6 +9424,7 @@ impl Engine {
             let snapshot_id = self.next_snapshot_id; // version-id-gate: allow — snapshot-only re-stamp in eval_cached, reuses the caller-supplied `version`
             self.next_snapshot_id += 1; // version-id-gate: allow — snapshot-only re-stamp in eval_cached; routing through allocate_snapshot_version would spuriously bump next_version_id too
             let mut snapshot = Snapshot::from_env(self.env_of(module));
+            self.report_unresolved_subs(&snapshot.graph, &mut diagnostics);
             snapshot.id = SnapshotId(snapshot_id);
             snapshot.version = version;
             snapshot.provenance = SnapshotProvenance::Initial;

@@ -678,8 +678,8 @@ pub struct Engine {
     last_param_override_dimension_rejections: usize,
     /// Count of sub-component elaboration errors due to an unknown structure
     /// reference during the most recent `eval()` or `eval_cached()` call.
-    /// Reset to 0 at the start of each call. Incremented directly at both
-    /// writer sites in `engine_eval.rs` (eval path and eval_cached path).
+    /// Reset to 0 at the start of each call, then set from the evaluation
+    /// graph's unresolved subs by `report_unresolved_subs` in `engine_eval.rs`.
     ///
     /// Exposed to callers only under `#[cfg(any(test, feature = "test-instrumentation"))]`
     /// via `Engine::last_sub_component_unknown_structure_errors()` in `engine_admin.rs`.

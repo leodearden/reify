@@ -7,8 +7,8 @@ use reify_compiler::{
     CompiledConnection, CompiledForallTemplate, CompiledGeometryOp, ValueCellKind,
 };
 use reify_core::{
-    ComputeNodeId, ConstraintNodeId, ContentHash, KernelId, RealizationNodeId, ResolutionNodeId,
-    Type, ValueCellId,
+    ComputeNodeId, ConstraintNodeId, ContentHash, Diagnostic, KernelId, RealizationNodeId,
+    ResolutionNodeId, Type, ValueCellId,
 };
 use reify_ir::{CompiledExpr, MemberKey, OpaqueState, PersistentMap, ReprKind, Value, ValueMap};
 
@@ -380,6 +380,17 @@ pub struct EvaluationGraph {
     ///
     /// **Invariant:** param names must be unique; duplicates are a producer bug.
     pub auto_type_substitution: Vec<(String, String)>,
+
+    /// One [`SubComponentDecl::unknown_structure_diagnostic`] per sub whose
+    /// structure the environment could not resolve; such a sub contributes no
+    /// cells and is not registered. The engine reports these as eval's
+    /// unknown-structure diagnostics.
+    ///
+    /// **NOT mixed into `topology_fingerprint`:** it derives from the templates
+    /// the fingerprint already covers.
+    ///
+    /// [`SubComponentDecl::unknown_structure_diagnostic`]: reify_compiler::SubComponentDecl::unknown_structure_diagnostic
+    pub unresolved_sub_diagnostics: Vec<Diagnostic>,
 }
 
 /// Insert `cell` as a node, unless its policy defers to a cell already there.
@@ -406,7 +417,8 @@ fn insert_contributed_cell(
 
 impl EvaluationGraph {
     /// Build an EvaluationGraph from the templates `env` declares, each sub's
-    /// structure resolved through `env`.
+    /// structure resolved through `env`; a sub that does not resolve is
+    /// recorded in [`Self::unresolved_sub_diagnostics`].
     ///
     /// Converts each template's declarations into typed graph nodes:
     /// - ValueCellDecl → ValueCellNode
@@ -521,7 +533,10 @@ impl EvaluationGraph {
             // come from the value-cell fold below.
             for sub in &template.sub_components {
                 let Some(elab) = cell_contributions::resolve_sub(env, template, sub) else {
-                    continue; // skip unknown structures silently
+                    graph
+                        .unresolved_sub_diagnostics
+                        .push(sub.unknown_structure_diagnostic());
+                    continue;
                 };
                 match elab.shape {
                     SubShape::Collection => {
