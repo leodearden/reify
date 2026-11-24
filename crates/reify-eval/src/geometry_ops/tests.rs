@@ -34206,3 +34206,107 @@
              got: {diagnostics:?}"
         );
     }
+
+    // ── direction-typing ι-a (task 9646): the legacy scalar names retire ────
+    //
+    // Once the compiler stops lowering rotate/5, rotate_around/8 and mirror/7,
+    // nothing writes `ax`/`ay`/`az`, `px`/`py`/`pz`, `ox`/`oy`/`oz` or
+    // `nx`/`ny`/`nz` for these kinds. An op carrying only those names is
+    // missing the Direction form's required args, and must drop the op rather
+    // than be read through a retired branch.
+
+    /// The Warning texts a run pushed for a missing required argument.
+    fn missing_arg_warnings(diagnostics: &[Diagnostic]) -> Vec<&str> {
+        diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == reify_core::Severity::Warning
+                    && d.message.starts_with("missing required geometry argument")
+            })
+            .map(|d| d.message.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn rotate_with_only_the_legacy_scalar_axis_is_missing_its_direction_axis() {
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::Rotate,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(1.0)),
+                ("angle".into(), literal_angle(std::f64::consts::FRAC_PI_2)),
+            ],
+        };
+        let (result, diagnostics) = run_direction_form(&op);
+        assert_eq!(
+            result.expect_err("the legacy axis triple is no longer read"),
+            "missing required argument 'axis' for rotate"
+        );
+        assert_eq!(
+            missing_arg_warnings(&diagnostics),
+            ["missing required geometry argument 'axis' for rotate"],
+            "got: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn rotate_around_with_only_the_legacy_scalars_is_missing_its_pivot_and_axis() {
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::RotateAround,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("px".into(), literal_length(0.05)),
+                ("py".into(), literal_length(0.0)),
+                ("pz".into(), literal_length(0.0)),
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(1.0)),
+                ("angle".into(), literal_angle(std::f64::consts::FRAC_PI_2)),
+            ],
+        };
+        let (result, diagnostics) = run_direction_form(&op);
+        assert_eq!(
+            result.expect_err("the legacy pivot and axis triples are no longer read"),
+            "missing required argument 'pivot' for rotate_around"
+        );
+        assert_eq!(
+            missing_arg_warnings(&diagnostics),
+            [
+                "missing required geometry argument 'pivot' for rotate_around",
+                "missing required geometry argument 'axis' for rotate_around",
+            ],
+            "got: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn mirror_with_only_the_legacy_scalars_is_missing_its_origin_and_normal() {
+        let op = CompiledGeometryOp::Pattern {
+            kind: PatternKind::Mirror,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("ox".into(), literal_length(0.0)),
+                ("oy".into(), literal_length(0.0)),
+                ("oz".into(), literal_length(0.0)),
+                ("nx".into(), literal_f64(1.0)),
+                ("ny".into(), literal_f64(0.0)),
+                ("nz".into(), literal_f64(0.0)),
+            ],
+        };
+        let (result, diagnostics) = run_direction_form(&op);
+        assert_eq!(
+            result.expect_err("the legacy origin and normal triples are no longer read"),
+            "missing required argument 'origin' for mirror"
+        );
+        assert_eq!(
+            missing_arg_warnings(&diagnostics),
+            [
+                "missing required geometry argument 'origin' for mirror",
+                "missing required geometry argument 'normal' for mirror",
+            ],
+            "the op must take the origin/normal branch, never the plane one; \
+             got: {diagnostics:?}"
+        );
+    }
