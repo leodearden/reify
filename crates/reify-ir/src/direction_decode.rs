@@ -246,4 +246,80 @@ mod tests {
             Err(DecodeDirectionError::MalformedFrameBasis { got: "Real" })
         );
     }
+
+    #[test]
+    fn basis_quaternion_of_identity_rows_is_exactly_the_identity_quaternion() {
+        let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let q = basis_quaternion(identity).expect("the identity is a rotation");
+        assert_eq!(q.map(f64::to_bits), [1.0, 0.0, 0.0, 0.0].map(f64::to_bits));
+        let rows = frame_basis(&frame(q[0], q[1], q[2], q[3])).unwrap();
+        assert_eq!(row_bits(rows), row_bits(identity));
+    }
+
+    #[test]
+    fn basis_quaternion_reads_rows_as_axes_not_columns() {
+        let cyclic = [[0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]];
+        let q = basis_quaternion(cyclic).expect("the cyclic basis is a rotation");
+        for (i, (got, want)) in q.iter().zip([0.5, 0.5, 0.5, 0.5]).enumerate() {
+            assert!((got - want).abs() <= 1e-12, "component {i}: got {q:?}");
+        }
+        assert_rows_close(frame_basis(&frame(q[0], q[1], q[2], q[3])).unwrap(), cyclic);
+    }
+
+    fn assert_round_trips(q: [f64; 4]) {
+        let rows = frame_basis(&frame(q[0], q[1], q[2], q[3]))
+            .unwrap_or_else(|e| panic!("quaternion {q:?}: {e}"));
+        let q2 = basis_quaternion(rows)
+            .unwrap_or_else(|| panic!("frame_basis of {q:?} is a rotation: {rows:?}"));
+        assert_rows_close(frame_basis(&frame(q2[0], q2[1], q2[2], q2[3])).unwrap(), rows);
+    }
+
+    #[test]
+    fn basis_quaternion_round_trips_frame_basis() {
+        let mut rng = SplitMix64(0xB0A5_15C0_47E2_9D11);
+        let mut checked = 0usize;
+        while checked < 1000 {
+            let q = [
+                rng.symmetric(),
+                rng.symmetric(),
+                rng.symmetric(),
+                rng.symmetric(),
+            ];
+            if q.iter().map(|c| c * c).sum::<f64>().sqrt() < 1e-6 {
+                continue;
+            }
+            checked += 1;
+            assert_round_trips(q);
+        }
+        for half_turn in [
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+            [0.0, FRAC_1_SQRT_2, FRAC_1_SQRT_2, 0.0],
+        ] {
+            assert_round_trips(half_turn);
+        }
+    }
+
+    #[test]
+    fn basis_quaternion_rejects_a_non_rotation() {
+        let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let mut nan = identity;
+        nan[1][2] = f64::NAN;
+        let mut infinite = identity;
+        infinite[0][0] = f64::INFINITY;
+        let mut scaled = identity;
+        scaled[2] = [0.0, 0.0, 2.0];
+        let parallel = [[1.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
+        let left_handed = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]];
+        for (name, rows) in [
+            ("NaN component", nan),
+            ("infinite component", infinite),
+            ("row scaled by 2", scaled),
+            ("parallel rows", parallel),
+            ("left-handed", left_handed),
+        ] {
+            assert_eq!(basis_quaternion(rows), None, "{name}: {rows:?}");
+        }
+    }
 }
