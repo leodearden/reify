@@ -1,4 +1,5 @@
 mod appimage_launch_dir_tests;
+mod bundled_cli_tests;
 mod claude_bridge_tests;
 mod command_line_tests;
 mod commands_tests;
