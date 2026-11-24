@@ -1,6 +1,8 @@
-//! `Engine::load(CompiledProgram)`: the engine's resolution environment is the
-//! loaded program's `DefEnv` over the engine's own prelude (PRD
-//! docs/prds/v0_6/resolution-unification.md §3.2).
+//! `Engine::load(CompiledProgram)` returns the module the engine evaluates: the
+//! entry with the program's user templates. The engine resolves exactly that
+//! module in the loaded program's `DefEnv` over its own prelude, and any other
+//! module in that module's own environment (PRD
+//! docs/prds/v0_6/resolution-unification.md §3.2, I1).
 
 use std::fs;
 use std::path::Path;
@@ -9,10 +11,11 @@ use std::sync::Arc;
 use reify_compiler::cfg::CfgSet;
 use reify_compiler::module_dag::ModuleResolver;
 use reify_compiler::program::{CompiledProgram, compile_program};
+use reify_compiler::CompiledModule;
 use reify_compiler::stdlib_loader::load_stdlib;
-use reify_core::{Diagnostic, Severity, Type};
-use reify_eval::{DefEnv, Engine, SolverPosture};
-use reify_ir::{CompiledFunction, Satisfaction};
+use reify_core::{Diagnostic, Severity, Type, ValueCellId};
+use reify_eval::{DefEnv, Engine, EvalResult, SolverPosture};
+use reify_ir::{CompiledFunction, EnumDef, Satisfaction, Value};
 use reify_test_support::helpers::make_engine;
 use reify_test_support::mocks::MockConstraintChecker;
 
@@ -88,9 +91,140 @@ fn same<D>(found: Option<&D>, expected: &D) -> bool {
     found.is_some_and(|d| std::ptr::eq(d, expected))
 }
 
+fn enum_in<'m>(program: &'m CompiledProgram, import: usize, name: &str) -> &'m EnumDef {
+    program.imports[import]
+        .module
+        .enum_defs
+        .iter()
+        .find(|e| e.name == name)
+        .unwrap_or_else(|| panic!("import {import} declares `{name}`"))
+}
+
+/// `main` imports `a`, whose pub surface is `Pulley`, `twice` and `Pick`;
+/// `Hidden` is not pub. `Rig` uses `Pulley` and `twice`.
+fn compile_rig(dir: &Path) -> Arc<CompiledProgram> {
+    compile_in(
+        dir,
+        &[(
+            "a",
+            "module a\n\
+             pub structure def Pulley {\n    param d : Length = 40mm\n}\n\
+             structure def Hidden {\n    param h : Real = 0\n}\n\
+             pub fn twice(x: Real) -> Real { x * 2 }\n\
+             pub enum Pick { L, R }\n",
+        )],
+        "module main\nimport a\n\
+         structure def Rig {\n    sub p = Pulley()\n    let y = twice(21.0)\n}\n",
+    )
+}
+
+fn template_names(module: &CompiledModule) -> Vec<&str> {
+    module.templates.iter().map(|t| t.name.as_str()).collect()
+}
+
+fn value_of<'r>(result: &'r EvalResult, entity: &str, member: &str) -> Option<&'r Value> {
+    result.values.get(&ValueCellId::new(entity, member))
+}
+
+fn is_close(value: Option<&Value>, expected: f64) -> bool {
+    value
+        .and_then(Value::as_f64)
+        .is_some_and(|v| (v - expected).abs() < 1e-12)
+}
+
 #[test]
-fn an_engine_has_no_definition_environment_before_a_load() {
-    assert!(make_engine().def_env().is_none());
+fn load_returns_the_entry_with_the_programs_user_templates() {
+    let dir = tempfile::tempdir().unwrap();
+    let program = compile_rig(dir.path());
+    let mut engine = make_engine();
+
+    let module = engine.load(Arc::clone(&program));
+
+    assert_eq!(template_names(&module), ["Rig", "Pulley"]);
+    let without_templates = |module: &CompiledModule| {
+        format!(
+            "{:?}",
+            CompiledModule {
+                templates: Vec::new(),
+                ..module.clone()
+            }
+        )
+    };
+    assert_eq!(
+        without_templates(&module),
+        without_templates(program.entry()),
+        "every field but the templates is the entry's"
+    );
+}
+
+#[test]
+fn the_loaded_module_evaluates_through_the_loaded_program() {
+    let dir = tempfile::tempdir().unwrap();
+    let program = compile_rig(dir.path());
+    let mut engine = make_engine();
+    let module = engine.load(Arc::clone(&program));
+
+    let result = engine.eval(&module);
+
+    assert!(
+        is_close(value_of(&result, "Rig", "y"), 42.0),
+        "`twice` dispatches to a's pub fn, got {:?}",
+        value_of(&result, "Rig", "y")
+    );
+    assert!(
+        is_close(value_of(&result, "Rig.p", "d"), 0.04),
+        "Rig.p is a's Pulley, got {:?}",
+        value_of(&result, "Rig.p", "d")
+    );
+}
+
+#[test]
+fn the_loaded_module_resolves_in_the_loaded_programs_environment() {
+    let dir = tempfile::tempdir().unwrap();
+    let program = compile_rig(dir.path());
+    let mut engine = make_engine();
+    let module = engine.load(Arc::clone(&program));
+
+    let scope = engine.env_of(&module);
+    let env = scope.env();
+
+    assert!(same(env.resolve_enum("Pick"), enum_in(&program, 0, "Pick")));
+    assert!(std::ptr::eq(env.declared(), &*module));
+}
+
+/// A copy of the loaded module is not the module the engine loaded, so it
+/// resolves in its own environment: it imports nothing.
+#[test]
+fn a_copy_of_the_loaded_module_resolves_in_its_own_environment() {
+    let dir = tempfile::tempdir().unwrap();
+    let program = compile_rig(dir.path());
+    let mut engine = make_engine();
+    let module = engine.load(Arc::clone(&program));
+    let copy = CompiledModule::clone(&module);
+
+    assert!(engine.env_of(&copy).env().resolve_enum("Pick").is_none());
+    let result = engine.eval(&copy);
+    assert!(
+        matches!(value_of(&result, "Rig", "y"), None | Some(Value::Undef)),
+        "the copy's environment has no `twice`, got {:?}",
+        value_of(&result, "Rig", "y")
+    );
+}
+
+/// Before any load, a module resolves in its own environment.
+#[test]
+fn an_unloaded_engine_resolves_a_module_in_its_own_environment() {
+    let dir = tempfile::tempdir().unwrap();
+    let program = compile_colliding(dir.path());
+    let twice_types = param_types(function_in(&program, 0, "twice"));
+    let engine = make_engine();
+
+    let scope = engine.env_of(program.entry());
+    let env = scope.env();
+
+    assert!(env.resolve_function("twice", &twice_types).is_none());
+    assert!(env.resolve_enum("Pick").is_none());
+    assert!(std::ptr::eq(env.declared(), program.entry()));
 }
 
 #[test]
@@ -98,30 +232,23 @@ fn the_loaded_environment_resolves_through_the_loaded_program() {
     let dir = tempfile::tempdir().unwrap();
     let program = compile_colliding(dir.path());
     let mut engine = make_engine();
-    engine.load(Arc::clone(&program));
-    let env = engine
-        .def_env()
-        .expect("a loaded engine has an environment");
+    let module = engine.load(Arc::clone(&program));
+    let scope = engine.env_of(&module);
+    let env = scope.env();
 
     let twice = function_in(&program, 0, "twice");
     assert!(same(
         env.resolve_function("twice", &param_types(twice)),
         twice
     ));
-    let pick = program.imports[0]
-        .module
-        .enum_defs
-        .iter()
-        .find(|e| e.name == "Pick")
-        .expect("a declares Pick");
-    assert!(same(env.resolve_enum("Pick"), pick));
+    assert!(same(env.resolve_enum("Pick"), enum_in(&program, 0, "Pick")));
     let stdlib_template = load_stdlib()
         .iter()
         .flat_map(|m| m.templates.iter())
         .find(|t| t.name == STDLIB_ONLY)
         .unwrap_or_else(|| panic!("precondition: the stdlib declares `{STDLIB_ONLY}`"));
     assert!(same(env.resolve_template(STDLIB_ONLY), stdlib_template));
-    assert!(std::ptr::eq(env.declared(), program.entry()));
+    assert!(std::ptr::eq(env.declared(), &*module));
     assert_eq!(env.declared().path, program.entry().path);
 }
 
@@ -143,10 +270,9 @@ fn an_engine_with_an_empty_prelude_resolves_no_stdlib_name() {
         None,
         &[],
     );
-    engine.load(Arc::clone(&program));
-    let env = engine
-        .def_env()
-        .expect("a loaded engine has an environment");
+    let module = engine.load(Arc::clone(&program));
+    let scope = engine.env_of(&module);
+    let env = scope.env();
     assert!(env.resolve_template(STDLIB_ONLY).is_none());
     let twice = function_in(&program, 0, "twice");
     assert!(same(
@@ -155,6 +281,8 @@ fn an_engine_with_an_empty_prelude_resolves_no_stdlib_name() {
     ));
 }
 
+/// After a second load only the second program's module resolves through a
+/// loaded program; the first's falls back to its own environment.
 #[test]
 fn a_second_load_replaces_the_first() {
     let first_dir = tempfile::tempdir().unwrap();
@@ -163,11 +291,11 @@ fn a_second_load_replaces_the_first() {
     let second = compile_other(second_dir.path());
     let twice_types = param_types(function_in(&first, 0, "twice"));
     let mut engine = make_engine();
-    engine.load(Arc::clone(&first));
-    engine.load(Arc::clone(&second));
-    let env = engine
-        .def_env()
-        .expect("a loaded engine has an environment");
+    let first_module = engine.load(Arc::clone(&first));
+    let second_module = engine.load(Arc::clone(&second));
+
+    let second_scope = engine.env_of(&second_module);
+    let env = second_scope.env();
     assert!(
         env.resolve_function("twice", &twice_types).is_none(),
         "only the first program's import defined `twice`"
@@ -177,5 +305,13 @@ fn a_second_load_replaces_the_first() {
         env.resolve_function("thrice", &param_types(thrice)),
         thrice
     ));
-    assert!(std::ptr::eq(env.declared(), second.entry()));
+    assert!(std::ptr::eq(env.declared(), &*second_module));
+
+    let first_scope = engine.env_of(&first_module);
+    let stale = first_scope.env();
+    assert!(
+        stale.resolve_function("twice", &twice_types).is_none(),
+        "the first module is no longer the loaded one"
+    );
+    assert!(std::ptr::eq(stale.declared(), &*first_module));
 }
