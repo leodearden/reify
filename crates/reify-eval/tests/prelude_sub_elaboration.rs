@@ -7,9 +7,10 @@
 //! reported them as unknown structures and `sub o = STLOutput(...)` never
 //! elaborated into a `Value::StructureInstance`. Sub-component resolution must
 //! consult the user module's templates FIRST (shadowing wins) and fall back to
-//! the prelude — at BOTH resolver sites: the elaborating loop in `eval()` and
-//! the validation-only mirror in `eval_cached()` (the two must agree on which
-//! names are unknown, or cached re-evals emit false errors).
+//! the prelude. Both eval paths take their unknown-structure report from the
+//! evaluation graph (`EvaluationGraph::unresolved_sub_diagnostics`, surfaced by
+//! `report_unresolved_subs`), so `eval()` and `eval_cached()` agree on which
+//! names are unknown by construction.
 
 use reify_core::{ModulePath, ValueCellId, VersionId};
 use reify_ir::Value;
@@ -93,9 +94,9 @@ fn stdlib_occurrence_sub_elaborates_via_prelude_fallback() {
     }
 }
 
-/// The `eval_cached()` validation mirror must agree with `eval()` on which
-/// structure names are unknown: a stdlib occurrence sub must NOT produce a
-/// false "references unknown structure" error on the cached path.
+/// `eval_cached()` must agree with `eval()` on which structure names are
+/// unknown: a stdlib occurrence sub must NOT produce a false "references
+/// unknown structure" error on the cached path.
 #[test]
 fn eval_cached_no_unknown_structure_error_for_stdlib_occurrence_sub() {
     let compiled = parse_and_compile_with_stdlib(SINGLE_STL_OUTPUT);

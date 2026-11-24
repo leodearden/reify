@@ -298,9 +298,11 @@ fn eval_cached_solver_solved_arm_is_intentional_noop() {
 /// eval_cached must emit "sub-component references unknown structure" for collection
 /// sub-components (is_collection=true), not just scalar sub-components.
 ///
-/// The eval_cached sub-component validation pass (added in step-6) iterates
-/// template.sub_components unconditionally. This test pins that both collection and
-/// non-collection subs are covered — preventing a regression where someone adds an
+/// eval_cached takes its unknown-structure report from the evaluation graph
+/// (`EvaluationGraph::unresolved_sub_diagnostics`, surfaced by
+/// `report_unresolved_subs`), whose build walks every template's
+/// `sub_components`. This test pins that both collection and non-collection subs
+/// are covered — preventing a regression where someone adds an
 /// `if !sub.is_collection` guard and silently drops the collection case.
 #[test]
 fn eval_cached_emits_sub_component_unknown_structure_collection_diagnostic() {
@@ -924,15 +926,15 @@ fn eval_cached_repeat_call_with_unchanged_module_re_emits_circular_diagnostic() 
 /// fast-path hit, and bumped-version repeat (1, 1, 2 cadence mirrors the
 /// param_override repeat-call tests).
 ///
-/// This locks the LSP requirement that sub-component validation surfaces on every
-/// keystroke. Without this lock, a future change that gates the validation pass at
-/// `engine_eval.rs:1696-1703` on `any_auto_miss` or similar cache-coherence flag
-/// would silently drop the diagnostic on the second call (same-version fast-path hit),
-/// breaking the LSP's real-time error reporting. The same-version call is the
-/// canonical scenario that an `any_auto_miss`-style gate would break.
+/// This locks the LSP requirement that the unknown-structure report surfaces on
+/// every keystroke. Without this lock, a future change that gates eval_cached's
+/// `report_unresolved_subs` call on `any_auto_miss` or a similar cache-coherence
+/// flag would silently drop the diagnostic on the second call (same-version
+/// fast-path hit), breaking the LSP's real-time error reporting. The same-version
+/// call is the canonical scenario that an `any_auto_miss`-style gate would break.
 ///
-/// Should pass immediately because the sub-component validation pass already
-/// iterates `template.sub_components` unconditionally inside the per-template loop.
+/// Passes because eval_cached builds the evaluation graph, and reports its
+/// `unresolved_sub_diagnostics`, on every call.
 #[test]
 fn eval_cached_repeat_call_re_emits_sub_component_unknown_structure_diagnostic() {
     let template = TopologyTemplateBuilder::new("Parent")
@@ -951,7 +953,7 @@ fn eval_cached_repeat_call_re_emits_sub_component_unknown_structure_diagnostic()
             && d.message.contains("DoesNotExist")
     };
 
-    // First call — cold start (cache-miss path, validation runs, diagnostic surfaces)
+    // First call — cold start (cache-miss path, the graph reports the unknown structure)
     let result1 = engine.eval_cached(&module, VersionId(1));
     assert_eq!(
         result1
@@ -983,8 +985,8 @@ fn eval_cached_repeat_call_re_emits_sub_component_unknown_structure_diagnostic()
     );
 
     // Third call — bumped version (models LSP keystroke: each keypress increments
-    // the version). The sub-component validation pass must run unconditionally and
-    // must NOT be gated on cache state or any_auto_miss.
+    // the version). The graph's unknown-structure report must surface unconditionally
+    // and must NOT be gated on cache state or any_auto_miss.
     let result3 = engine.eval_cached(&module, VersionId(2));
     assert_eq!(
         result3
