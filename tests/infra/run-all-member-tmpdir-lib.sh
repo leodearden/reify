@@ -8,6 +8,11 @@
 # member starts. The root (run_all's own ${TMPDIR:-/tmp}) arrives here as an
 # argument, and nothing here reads a caller global.
 #
+# SCOPE. Only run_all.sh's members get a private TMPDIR. A task-role verify
+# runs its selected infra members from verify.sh's selective infra leaf
+# (scripts/reify_verify/render.py::_infra_leaf_loop), not through run_all.sh,
+# so a member killed there still leaks into /tmp.
+#
 # WHY. Members clean their temp dirs up on a normal exit, but a member killed
 # by its budget, or a cancelled verify, dies before its cleanup runs, and no
 # per-test fix survives SIGKILL. Giving every member a TMPDIR of its own and
