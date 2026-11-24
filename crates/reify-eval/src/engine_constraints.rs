@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use reify_compiler::{
-    CompiledConstraint, CompiledModule, CompiledTrait, TopologyTemplate, satisfies_trait_bound,
+    CompiledConstraint, CompiledModule, TopologyTemplate, satisfies_trait_bound,
 };
 use reify_core::{
     ConstraintNodeId, Diagnostic, DiagnosticCode, DiagnosticLabel, DimensionVector, Severity,
@@ -1435,12 +1435,9 @@ impl Engine {
         // ε (task 3992): build the trait registry once for structural-query
         // expansion of constraint exprs (mirrors the Let-cell pass in
         // engine_eval.rs and the purpose precedent in engine_purposes.rs).
-        let sq_trait_registry = crate::structural_query::build_trait_registry(
-            self.prelude.iter().flat_map(|m| m.trait_defs.iter())
-                .chain(module.trait_defs.iter()),
-        );
         let env_scope = self.env_of(module);
         let env = env_scope.env();
+        let sq_trait_registry = crate::structural_query::build_trait_registry(env.traits());
 
         for template in &module.templates {
             let active_constraints = Self::collect_active_constraints(template, values);
@@ -2034,26 +2031,11 @@ impl Engine {
 
         // ── Phase 1: resolve specs (immutable prelude/functions/handles borrows) ──
         let work: Vec<GdtConformanceWork> = {
-            // Trait + template registries (prelude + module), mirroring
+            // The module's environment's traits and templates, mirroring
             // `enumerate_gdt_callouts` so the GeometricTolerance walk is identical.
-            let mut trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
-            for prelude_mod in self.prelude {
-                for t in &prelude_mod.trait_defs {
-                    trait_registry.insert(t.name.clone(), t);
-                }
-            }
-            for t in &module.trait_defs {
-                trait_registry.insert(t.name.clone(), t);
-            }
-            let mut template_by_name: HashMap<&str, &TopologyTemplate> = HashMap::new();
-            for prelude_mod in self.prelude {
-                for t in &prelude_mod.templates {
-                    template_by_name.insert(t.name.as_str(), t);
-                }
-            }
-            for t in &module.templates {
-                template_by_name.insert(t.name.as_str(), t);
-            }
+            let env_scope = self.env_of(module);
+            let env = env_scope.env();
+            let trait_registry = crate::structural_query::build_trait_registry(env.traits());
 
             // Augment the eval value map with live realization handles before
             // evaluating the captured arg-bindings. A fresh `eval()` does NOT
@@ -2131,8 +2113,8 @@ impl Engine {
                                 );
                             }
                         };
-                        let conforms = template_by_name
-                            .get(data.type_name.as_str())
+                        let conforms = env
+                            .resolve_template(&data.type_name)
                             .map(|t| {
                                 satisfies_trait_bound(
                                     &t.trait_bounds,
@@ -2398,31 +2380,12 @@ impl Engine {
         module: &CompiledModule,
         values: &ValueMap,
     ) -> Vec<GdtCallout> {
-        // Build trait registry from prelude trait_defs + user module trait_defs.
-        // Stdlib traits like GeometricTolerance live in the prelude, not in
-        // module.trait_defs (which only holds user-defined traits).
-        let mut trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
-        for prelude_mod in self.prelude {
-            for t in &prelude_mod.trait_defs {
-                trait_registry.insert(t.name.clone(), t);
-            }
-        }
-        for t in &module.trait_defs {
-            trait_registry.insert(t.name.clone(), t);
-        }
-
-        // Build combined template lookup from prelude + user templates.
-        // Stdlib types (Flatness, Position, etc.) live in the prelude, not in
-        // module.templates (which only holds user-defined structure templates).
-        let mut template_by_name: HashMap<&str, &TopologyTemplate> = HashMap::new();
-        for prelude_mod in self.prelude {
-            for t in &prelude_mod.templates {
-                template_by_name.insert(t.name.as_str(), t);
-            }
-        }
-        for t in &module.templates {
-            template_by_name.insert(t.name.as_str(), t);
-        }
+        // Traits and templates resolve in the module's environment: stdlib
+        // traits like GeometricTolerance and stdlib types (Flatness, Position,
+        // etc.) live in the prelude, not in the module.
+        let env_scope = self.env_of(module);
+        let env = env_scope.env();
+        let trait_registry = crate::structural_query::build_trait_registry(env.traits());
 
         // Fast-path: if no evaluated StructureInstance value conforms to
         // GeometricTolerance, there are no GD&T callouts to collect.
@@ -2430,8 +2393,8 @@ impl Engine {
         // GeometricTolerance-conforming templates, so a template-only check would
         // be vacuously true for every module that loads the tolerancing stdlib.
         let has_gdt_instance = values.iter().any(|(_, v)| match v {
-            Value::StructureInstance(data) => template_by_name
-                .get(data.type_name.as_str())
+            Value::StructureInstance(data) => env
+                .resolve_template(&data.type_name)
                 .map(|t| {
                     satisfies_trait_bound(&t.trait_bounds, "GeometricTolerance", &trait_registry)
                 })
@@ -2460,7 +2423,7 @@ impl Engine {
                 };
 
                 // Look up the instance's template to check trait bounds.
-                let instance_tmpl = match template_by_name.get(instance_data.type_name.as_str()) {
+                let instance_tmpl = match env.resolve_template(&instance_data.type_name) {
                     Some(t) => t,
                     None => continue, // unknown type — skip; no false positive
                 };

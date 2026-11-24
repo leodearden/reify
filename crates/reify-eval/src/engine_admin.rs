@@ -1,12 +1,12 @@
 // Split from lib.rs (task 2032) — admin methods.
 
 use crate::cache::{CacheStore, NodeId};
+use crate::def_env::LoadedProgram;
 use crate::demand::DemandRegistry;
 use crate::journal::EventJournal;
 use crate::snapshot::Snapshot;
 use crate::solver_posture::SolveStage;
-use crate::def_env::LoadedProgram;
-use crate::{EnvScope, Engine, EvaluationState, SolverPosture};
+use crate::{Engine, EnvScope, EvaluationState, SolverPosture};
 use reify_compiler::{CompiledModule, EntityKind, ValueCellKind, program::CompiledProgram};
 use reify_core::{Diagnostic, SnapshotId, VersionId};
 use reify_ir::{

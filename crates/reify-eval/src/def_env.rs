@@ -24,8 +24,8 @@
 use std::borrow::Borrow;
 use std::sync::Arc;
 
-use reify_compiler::program::CompiledProgram;
 use reify_compiler::name_env::Tier;
+use reify_compiler::program::CompiledProgram;
 use reify_compiler::program_scope::{self, ProgramDefinition, ProgramRoot};
 use reify_compiler::stdlib_loader::load_stdlib;
 use reify_compiler::{

@@ -8,10 +8,10 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
+use reify_compiler::CompiledModule;
 use reify_compiler::cfg::CfgSet;
 use reify_compiler::module_dag::ModuleResolver;
 use reify_compiler::program::{CompiledProgram, compile_program};
-use reify_compiler::CompiledModule;
 use reify_compiler::stdlib_loader::load_stdlib;
 use reify_core::{Diagnostic, Severity, Type, ValueCellId};
 use reify_eval::{DefEnv, Engine, EvalResult, SolverPosture};

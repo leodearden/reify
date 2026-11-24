@@ -147,26 +147,21 @@ impl Engine {
     /// `engine.eval(module)` — the rollup is kernel-free (lifecycle cells
     /// populate under plain eval; no geometry realization is required).
     pub fn build_bom_report(&self, module: &CompiledModule, values: &ValueMap) -> BomReport {
-        // Merge module + prelude trait defs so the std.io refinement lattice
-        // (Costed:Buy:Source, Discard:Sink, Input:Source) is visible: user
-        // modules carry empty `trait_defs`; the io traits live in the prelude.
-        // Mirrors `build_outputs_with_result`'s merge.
-        let mut merged_trait_defs: Vec<reify_compiler::CompiledTrait> = module.trait_defs.clone();
-        for pm in self.prelude {
-            merged_trait_defs.extend(pm.trait_defs.iter().cloned());
-        }
+        // The environment's bound traits, so the std.io refinement lattice
+        // (Costed:Buy:Source, Discard:Sink, Input:Source) and any imported
+        // refinement of it are visible: the io traits live in the prelude.
+        // Mirrors `build_outputs_with_result`.
+        let env_scope = self.env_of(module);
+        let env = env_scope.env();
+        let merged_trait_defs: Vec<reify_compiler::CompiledTrait> = env.traits().cloned().collect();
 
         let mut report = BomReport::default();
 
         // Deterministic declaration-order walk over every sub of every template.
         for template in &module.templates {
             for sub in &template.sub_components {
-                // Resolve the sub's own template (module first, then prelude).
-                let Some(sub_template) = crate::engine_eval::find_template_with_prelude(
-                    module,
-                    self.prelude,
-                    &sub.structure_name,
-                ) else {
+                // Resolve the sub's own template in the module's environment.
+                let Some(sub_template) = env.resolve_template(&sub.structure_name) else {
                     continue;
                 };
                 let bounds = &sub_template.trait_bounds;

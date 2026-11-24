@@ -42,27 +42,6 @@ use crate::{
     OptimizedComputeDispatcher, build_meta_map, eval_ctx_with_meta, guard_state_fingerprint,
 };
 
-/// Resolve a sub-component's `structure_name` in `module`'s definition
-/// environment over `prelude`: [`DefEnv::of_module`]`(module,
-/// prelude).resolve_template(name)`, the rule every eval-side template lookup
-/// binds by.
-///
-/// Stdlib occurrence templates (e.g. `STLOutput`, `stdlib/io.ri`) live in
-/// `Engine::prelude` and are deliberately NOT merged into
-/// `CompiledModule::templates`, so a module-only lookup reports them as
-/// unknown structures and `sub o = STLOutput(...)` never elaborates
-/// (io-export δ / esc-4287-15). `pub(crate)` so the io-export δ
-/// occurrence-driven export driver ([`Engine::build_outputs`],
-/// `engine_build.rs`) resolves each `sub`'s occurrence template through the
-/// same rule.
-pub(crate) fn find_template_with_prelude<'a>(
-    module: &'a CompiledModule,
-    prelude: &'a [CompiledModule],
-    name: &str,
-) -> Option<&'a TopologyTemplate> {
-    DefEnv::of_module(module, prelude).resolve_template(name)
-}
-
 /// Sentinel substring included in every panic raised by
 /// [`assert_value_cell_types_representable`].  Used by the unit test
 /// (`invariant_tests::panics_on_unrepresentable_cell_types`) and integration
@@ -5570,15 +5549,12 @@ impl Engine {
         let env = env_scope.env();
         for template in &module.templates {
             for sub in &template.sub_components {
-                // Find the referenced child template by name — module
-                // templates first, then the stdlib prelude (esc-4287-15). A
-                // sub that does not resolve was already reported from the
-                // graph (`report_unresolved_subs`).
-                let Some(child_template) = find_template_with_prelude(
-                    module,
-                    self.prelude,
-                    sub.element_structure_name(),
-                ) else {
+                // Find the referenced child template by name in the module's
+                // definition environment, stdlib prelude included
+                // (esc-4287-15). A sub that does not resolve was already
+                // reported from the graph (`report_unresolved_subs`).
+                let Some(child_template) = env.resolve_template(sub.element_structure_name())
+                else {
                     continue;
                 };
 
@@ -5843,12 +5819,9 @@ impl Engine {
         // list_literal of entity-refs, apply_trait_filters rewrites any
         // `filter(list_literal, TraitObject-marker)` nodes to their filtered
         // subset.  trait_registry is built once here via the shared helper in
-        // structural_query.rs (prelude traits first so module traits shadow
-        // them; mirrors the canonical pattern in engine_constraints.rs:1504-1511).
-        let sq_trait_registry = crate::structural_query::build_trait_registry(
-            self.prelude.iter().flat_map(|m| m.trait_defs.iter())
-                .chain(module.trait_defs.iter()),
-        );
+        // structural_query.rs from the environment's bound traits, one per
+        // name (`DefEnv::traits`).
+        let sq_trait_registry = crate::structural_query::build_trait_registry(env.traits());
         for template in &module.templates {
             for cell in &template.value_cells {
                 if !matches!(cell.kind, ValueCellKind::Let) {
@@ -7131,7 +7104,7 @@ impl Engine {
     /// so downstream consumers never observe a partially-materialized annotation.
     ///
     /// Kept a shared HELPER rather than a λ `PostPassDetector` because its state
-    /// shape — `module` / `self.prelude` / `functions` / `self.meta_map` (via a
+    /// shape — `module`'s environment / `functions` / `self.meta_map` (via a
     /// constructed `EvalContext`) plus `self.cache` / `self.journal` for the
     /// `commit_cell_result` overlay — deliberately exceeds `PostPassState` (which
     /// carries only `values` / `snapshot_values` / `diagnostics`). Do NOT bloat
@@ -7189,6 +7162,8 @@ impl Engine {
             String,
             Vec<reify_compiler::MaterializationAnnotationArg>,
         > = std::collections::HashMap::new();
+        let env_scope = self.env_of(module);
+        let env = env_scope.env();
 
         // Collect instances that carry AtMaterialization args.
         // Releasing the immutable borrow on `values` before any mutable
@@ -7203,19 +7178,15 @@ impl Engine {
                 let margs = margs_by_type
                     .entry(data.type_name.clone())
                     .or_insert_with(|| {
-                        find_template_with_prelude(
-                            module,
-                            self.prelude,
-                            &data.type_name,
-                        )
-                        .map(|t| {
-                            reify_compiler::compile_materialization_annotation_args(
-                                t,
-                                &module.enum_defs,
-                                functions,
-                            )
-                        })
-                        .unwrap_or_default()
+                        env.resolve_template(&data.type_name)
+                            .map(|t| {
+                                reify_compiler::compile_materialization_annotation_args(
+                                    t,
+                                    &module.enum_defs,
+                                    functions,
+                                )
+                            })
+                            .unwrap_or_default()
                     });
                 if margs.is_empty() {
                     return None;
@@ -7559,14 +7530,10 @@ impl Engine {
     ) {
         // α (task #5188): trait registry for objective/constraint-position
         // structural-query expansion inside build_merged_solver_problem.
-        // `self.prelude` is &'static and `module` is a param, so this borrows
-        // neither self nor conflicts with the &mut self write-back below.
-        let expansion_trait_registry = crate::structural_query::build_trait_registry(
-            self.prelude
-                .iter()
-                .flat_map(|m| m.trait_defs.iter())
-                .chain(module.trait_defs.iter()),
-        );
+        // `env` borrows only `module` and the &'static prelude, so this
+        // borrows neither self nor conflicts with the &mut self write-back
+        // below.
+        let expansion_trait_registry = crate::structural_query::build_trait_registry(env.traits());
         let problem = build_merged_solver_problem(
             cluster,
             env,
@@ -8872,18 +8839,14 @@ impl Engine {
             let governance = governing_objective(&module.templates, &containment);
             // α (task #5188): objective/constraint-position structural-query
             // expansion registry — built identically to eval()'s
-            // `sq_trait_registry` (prelude first so module traits shadow) so
-            // both paths hand the solver byte-identical expanded exprs. Borrows
-            // only &'static prelude + &module, never self, so it lives across
+            // `sq_trait_registry` (`DefEnv::traits`) so both paths hand the
+            // solver byte-identical expanded exprs. Borrows only &'static
+            // prelude + &module, never self, so it lives across
             // the &mut self resolution loop below without a borrow clash.
-            let expansion_trait_registry = crate::structural_query::build_trait_registry(
-                self.prelude
-                    .iter()
-                    .flat_map(|m| m.trait_defs.iter())
-                    .chain(module.trait_defs.iter()),
-            );
             let env_scope = self.env_of(module);
             let env = env_scope.env();
+            let expansion_trait_registry =
+                crate::structural_query::build_trait_registry(env.traits());
 
             // β #4822: compute dependency-ordered resolve order so the solver sub-pass
             // (below) runs in read-DAG order — a later-declared scope that reads
@@ -9574,15 +9537,9 @@ impl Engine {
         // α (task #5188): trait registry for objective/constraint-position
         // structural-query expansion inside `build_merged_solver_problem`,
         // built EXACTLY as cold `dispatch_merged_cluster_solve` builds it.
-        // `self.prelude` is `&'a [CompiledModule]` and `module` is a param, so
-        // this borrows neither `self` nor conflicts with the `&mut self`
-        // write-back below.
-        let expansion_trait_registry = crate::structural_query::build_trait_registry(
-            self.prelude
-                .iter()
-                .flat_map(|m| m.trait_defs.iter())
-                .chain(module.trait_defs.iter()),
-        );
+        // `env` borrows only `module` and the prelude, so this borrows
+        // neither `self` nor conflicts with the `&mut self` write-back below.
+        let expansion_trait_registry = crate::structural_query::build_trait_registry(env.traits());
         let problem = build_merged_solver_problem(
             cluster,
             env,

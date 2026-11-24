@@ -10,14 +10,23 @@ use reify_test_support::{
 
 // ─── step-7: Engine stores prelude ──────────────────────────────────
 
-/// Engine::new() stores a non-empty prelude from stdlib_loader.
+/// A template only the stdlib declares (std.io).
+const STDLIB_ONLY_TEMPLATE: &str = "STLOutput";
+
+/// Engine::new() stores the stdlib prelude from stdlib_loader: a stdlib-only
+/// name resolves in a module's environment.
 #[test]
 fn engine_has_non_empty_prelude() {
     let checker = MockConstraintChecker::new();
     let engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
+    let module = parse_and_compile_with_stdlib("structure S {}\n");
     assert!(
-        !engine.prelude().is_empty(),
-        "Engine prelude should be non-empty after new()"
+        engine
+            .env_of(&module)
+            .env()
+            .resolve_template(STDLIB_ONLY_TEMPLATE)
+            .is_some(),
+        "Engine prelude should hold the stdlib after new()"
     );
 }
 
@@ -733,16 +742,20 @@ fn end_to_end_material_elastic_conformance() {
 
 // ── step-5: Engine::with_prelude ──────────────────────────────────────
 
-/// Engine::with_prelude accepts an empty prelude slice; prelude() returns
-/// an empty slice afterwards.
+/// Engine::with_prelude accepts an empty prelude slice; no stdlib name
+/// resolves in a module's environment afterwards.
 #[test]
 fn engine_with_prelude_accepts_custom_slice() {
     let checker = MockConstraintChecker::new();
     let engine = reify_eval::Engine::with_prelude(reify_eval::SolverPosture::SolverFree, Box::new(checker), None, &[]);
+    let module = parse_and_compile_with_stdlib("structure S {}\n");
     assert!(
-        engine.prelude().is_empty(),
-        "Engine::with_prelude(&[]) should store an empty prelude, got {} modules",
-        engine.prelude().len()
+        engine
+            .env_of(&module)
+            .env()
+            .resolve_template(STDLIB_ONLY_TEMPLATE)
+            .is_none(),
+        "Engine::with_prelude(&[]) should store an empty prelude"
     );
 }
 
