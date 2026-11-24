@@ -1756,17 +1756,14 @@ impl Engine {
         self.prelude
     }
 
-    /// Install `program`, whose [`DefEnv`] [`Self::def_env`] then returns, and
-    /// return its definition-collision report for the caller to surface. Eval
+    /// Install `program`, whose [`DefEnv`] [`Self::def_env`] then returns. Its
+    /// definition-collision report rides `program.entry()`'s diagnostics. Eval
     /// state is untouched, and eval does not resolve in it: eval and build
     /// resolve through `Engine::env_of(module)`, the module's own
     /// environment. κ #5524 points that seam at the loaded program.
     // G-allow: resolution-unification §3.2 Engine::load; first production consumer is κ #5524
-    pub fn load(&mut self, program: impl Into<Arc<CompiledProgram>>) -> Vec<Diagnostic> {
-        let program = program.into();
-        let warnings = DefEnv::with_prelude(&program, self.prelude).collision_warnings();
-        self.loaded_program = Some(program);
-        warnings
+    pub fn load(&mut self, program: impl Into<Arc<CompiledProgram>>) {
+        self.loaded_program = Some(program.into());
     }
 
     /// The definition environment every eval and build path resolves

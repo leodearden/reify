@@ -10,7 +10,7 @@ use reify_compiler::cfg::CfgSet;
 use reify_compiler::module_dag::ModuleResolver;
 use reify_compiler::program::{CompiledProgram, compile_program};
 use reify_compiler::stdlib_loader::load_stdlib;
-use reify_core::{Diagnostic, DiagnosticCode, Severity, Type};
+use reify_core::{Diagnostic, Severity, Type};
 use reify_eval::{DefEnv, Engine, SolverPosture};
 use reify_ir::{CompiledFunction, Satisfaction};
 use reify_test_support::helpers::make_engine;
@@ -88,27 +88,9 @@ fn same<D>(found: Option<&D>, expected: &D) -> bool {
     found.is_some_and(|d| std::ptr::eq(d, expected))
 }
 
-fn coded_messages(diagnostics: &[Diagnostic]) -> Vec<(Option<DiagnosticCode>, &str)> {
-    diagnostics
-        .iter()
-        .map(|d| (d.code, d.message.as_str()))
-        .collect()
-}
-
 #[test]
 fn an_engine_has_no_definition_environment_before_a_load() {
     assert!(make_engine().def_env().is_none());
-}
-
-#[test]
-fn load_returns_the_programs_collision_report() {
-    let dir = tempfile::tempdir().unwrap();
-    let program = compile_colliding(dir.path());
-    let expected = DefEnv::from_program(&program).collision_warnings();
-    assert!(!expected.is_empty(), "precondition: `twice` collides");
-    let mut engine = make_engine();
-    let warnings = engine.load(Arc::clone(&program));
-    assert_eq!(coded_messages(&warnings), coded_messages(&expected));
 }
 
 #[test]

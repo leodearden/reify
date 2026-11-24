@@ -4,9 +4,10 @@
 
 use std::borrow::Borrow;
 
+use reify_core::Diagnostic;
 use reify_ir::{CompiledFunction, EnumDef};
 
-use crate::name_env::{self, Bindings, Definition, Surface};
+use crate::name_env::{self, Bindings, Definition, Origin, Surface, Tier};
 use crate::program::{CompiledImportUnit, CompiledProgram};
 use crate::types::{
     CompiledConstraintDef, CompiledModule, CompiledPurpose, CompiledTrait, CompiledTypeAlias,
@@ -184,6 +185,61 @@ pub fn bind_program_where<'a, D: ProgramDefinition>(
         prelude,
         keep,
     )
+}
+
+/// One Warning per first-wins collision across `root` whose loser is a user
+/// import's definition (resolution-unification D-6) and that no module's own
+/// compile already reports, so each collision has one reporter. Entry-vs-import
+/// is always reported here. Import-vs-import is reported here too, except for
+/// units, type aliases and constraint defs: the entry's compile binds its
+/// imports as its prelude and reports those three kinds' collisions there. A
+/// shadowed stdlib definition is the shadowing module's own compile's to
+/// report.
+pub fn collision_warnings<'a>(
+    root: impl Into<ProgramRoot<'a>>,
+    prelude: &'a [CompiledModule],
+) -> Vec<Diagnostic> {
+    use ImportPairs::{LeaveToEntryCompile, Report};
+    let root = root.into();
+    [
+        import_tier_collisions::<TopologyTemplate>(root, prelude, Report),
+        import_tier_collisions::<CompiledFunction>(root, prelude, Report),
+        import_tier_collisions::<EnumDef>(root, prelude, Report),
+        import_tier_collisions::<CompiledUnit>(root, prelude, LeaveToEntryCompile),
+        import_tier_collisions::<CompiledTypeAlias>(root, prelude, LeaveToEntryCompile),
+        import_tier_collisions::<CompiledTrait>(root, prelude, Report),
+        import_tier_collisions::<CompiledConstraintDef>(root, prelude, LeaveToEntryCompile),
+        import_tier_collisions::<CompiledPurpose>(root, prelude, Report),
+    ]
+    .concat()
+}
+
+fn import_tier_collisions<D: ProgramDefinition>(
+    root: ProgramRoot<'_>,
+    prelude: &[CompiledModule],
+    import_pairs: ImportPairs,
+) -> Vec<Diagnostic> {
+    let entry = &root.entry().path;
+    bind_program::<D>(root, prelude)
+        .shadowings()
+        .iter()
+        .filter(|shadowing| {
+            shadowing.shadowed.origin.tier() == Tier::Import
+                && shadowing.winner.origin != shadowing.shadowed.origin
+                && (shadowing.winner.origin == Origin::Local || import_pairs == ImportPairs::Report)
+        })
+        .map(|shadowing| name_env::collision_warning(shadowing, Some(entry)))
+        .collect()
+}
+
+/// Who reports a collision between two direct imports' definitions of one
+/// kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ImportPairs {
+    /// [`collision_warnings`] does.
+    Report,
+    /// The entry's own compile does: it binds its imports as its prelude.
+    LeaveToEntryCompile,
 }
 
 /// The definitions one module of `root` offers a qualified lookup

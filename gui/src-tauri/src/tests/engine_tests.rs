@@ -8568,12 +8568,15 @@ fn load_file_three_imports_same_pub_structure_emits_two_collision_diagnostics() 
         .expect("load_file should succeed (first-wins, not error)");
 
     // Each of the two colliding imports (helper2, helper3) produces exactly one
-    // warning that names the original declarer (helper1) and the collider.
+    // program collision report that names the original declarer (helper1) and
+    // the collider.
     let warnings: Vec<_> = state
         .compile_diagnostics
         .iter()
         .filter(|d| {
-            d.severity == "Warning" && d.message.contains("Foo") && d.message.contains("first-wins")
+            d.severity == "Warning"
+                && d.message.starts_with("structure 'Foo' declared in both ")
+                && d.message.contains("first-wins")
         })
         .collect();
     assert_eq!(

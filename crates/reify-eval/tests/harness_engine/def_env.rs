@@ -17,7 +17,7 @@ use reify_compiler::cfg::CfgSet;
 use reify_compiler::module_dag::ModuleResolver;
 use reify_compiler::program::{CompiledProgram, compile_program};
 use reify_compiler::name_env::Definition;
-use reify_compiler::program_scope::ProgramDefinition;
+use reify_compiler::program_scope::{self, ProgramDefinition};
 use reify_compiler::stdlib_loader::load_stdlib;
 use reify_compiler::{
     CompiledConstraintDef, CompiledModule, CompiledPurpose, CompiledTrait, CompiledTypeAlias,
@@ -246,8 +246,8 @@ struct KindRow {
 /// The one side that reports a collision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Reporter {
-    /// `DefEnv::collision_warnings`.
-    DefEnv,
+    /// The program's collision report, `program_scope::collision_warnings`.
+    CollisionReport,
     /// The entry's own compile, whose prelude-only bind sees `a` and `b`.
     EntryCompile,
 }
@@ -260,7 +260,7 @@ fn rows() -> Vec<KindRow> {
             declare: |n| format!("structure def {n} {{\n    param x : Real = 1\n}}\n"),
             std_name: Some("Color"),
             entry_redeclares: true,
-            import_pairs: Reporter::DefEnv,
+            import_pairs: Reporter::CollisionReport,
         },
         KindRow {
             kind: "function",
@@ -272,7 +272,7 @@ fn rows() -> Vec<KindRow> {
             },
             std_name: Some("ramp_profile"),
             entry_redeclares: true,
-            import_pairs: Reporter::DefEnv,
+            import_pairs: Reporter::CollisionReport,
         },
         KindRow {
             kind: "enum",
@@ -280,7 +280,7 @@ fn rows() -> Vec<KindRow> {
             declare: |n| format!("enum {n} {{ Foo, Bar }}\n"),
             std_name: Some("SignalKind"),
             entry_redeclares: true,
-            import_pairs: Reporter::DefEnv,
+            import_pairs: Reporter::CollisionReport,
         },
         KindRow {
             kind: "unit",
@@ -304,7 +304,7 @@ fn rows() -> Vec<KindRow> {
             declare: |n| format!("trait {n} {{\n    param k : Real\n}}\n"),
             std_name: Some("Rigid"),
             entry_redeclares: true,
-            import_pairs: Reporter::DefEnv,
+            import_pairs: Reporter::CollisionReport,
         },
         KindRow {
             kind: "constraint def",
@@ -330,7 +330,7 @@ fn rows() -> Vec<KindRow> {
             },
             std_name: Some("design_review"),
             entry_redeclares: true,
-            import_pairs: Reporter::DefEnv,
+            import_pairs: Reporter::CollisionReport,
         },
     ]
 }
@@ -743,8 +743,8 @@ fn import_tier_collisions(
     let [shared, peer, ..] = row.names;
     let mut expected = vec![(peer, "a", "b", row.import_pairs)];
     if row.entry_redeclares {
-        expected.push((shared, "main", "a", Reporter::DefEnv));
-        expected.push((shared, "main", "b", Reporter::DefEnv));
+        expected.push((shared, "main", "a", Reporter::CollisionReport));
+        expected.push((shared, "main", "b", Reporter::CollisionReport));
     }
     if !row.entry_redeclares || row.import_pairs == Reporter::EntryCompile {
         expected.push((shared, "a", "b", row.import_pairs));
@@ -759,11 +759,11 @@ fn import_tier_collisions(
 fn assert_kind_collisions<D: Kind>(kind: &str) {
     let row = row(kind);
     let fx = KindsFixture::new();
-    let warnings = DefEnv::from_program(&fx.program).collision_warnings();
+    let warnings = program_scope::collision_warnings(&fx.program, load_stdlib());
     let kind_word = named::<D>(fx.a(), row.names[0]).kind_word();
     let expected: Vec<(&str, &str, &str)> = import_tier_collisions(&row)
         .into_iter()
-        .filter(|&(.., reporter)| reporter == Reporter::DefEnv)
+        .filter(|&(.., reporter)| reporter == Reporter::CollisionReport)
         .map(|(name, winner, shadowed, _)| (name, winner, shadowed))
         .collect();
     let of_kind = collisions_of_kind(&warnings, kind_word);
@@ -827,11 +827,11 @@ fn purpose_collisions_are_reported_once_per_import_tier_shadowing() {
 #[test]
 fn the_kinds_fixture_reports_exactly_the_import_tier_shadowings() {
     let fx = KindsFixture::new();
-    let warnings = DefEnv::from_program(&fx.program).collision_warnings();
+    let warnings = program_scope::collision_warnings(&fx.program, load_stdlib());
     let expected = rows()
         .iter()
         .flat_map(import_tier_collisions)
-        .filter(|&(.., reporter)| reporter == Reporter::DefEnv)
+        .filter(|&(.., reporter)| reporter == Reporter::CollisionReport)
         .count();
     assert_eq!(warnings.len(), expected, "got {warnings:#?}");
 }
@@ -936,7 +936,7 @@ fn a_shadowed_stdlib_definition_is_not_in_the_collision_report() {
 fn a_program_without_import_tier_shadowing_reports_no_collision() {
     let dir = tempfile::tempdir().unwrap();
     let program = compile_fixture(dir.path());
-    let warnings = DefEnv::from_program(&program).collision_warnings();
+    let warnings = program_scope::collision_warnings(&program, load_stdlib());
     assert!(warnings.is_empty(), "got {warnings:#?}");
 }
 
@@ -975,7 +975,7 @@ fn an_import_vs_import_function_collision_warns_and_the_first_import_binds() {
         env.resolve_function("twice", &param_types(twice_in_a)),
         twice_in_a
     ));
-    let warnings = env.collision_warnings();
+    let warnings = program_scope::collision_warnings(&program, load_stdlib());
     assert_eq!(warnings.len(), 1, "got {warnings:#?}");
     assert!(reports_collision(
         &warnings[0],
@@ -1002,7 +1002,7 @@ fn distinct_signatures_coexist_as_overloads_in_precedence_order() {
     );
     assert!(std::ptr::eq(overloads[1], imported));
     assert!(
-        !env.collision_warnings()
+        !program_scope::collision_warnings(&program, load_stdlib())
             .iter()
             .any(|d| d.message.contains("'scale'")),
         "overloads are not collisions"
@@ -1127,7 +1127,7 @@ fn a_lone_modules_environment_binds_its_own_templates_then_the_prelude() {
     ));
     assert!(env.resolve_template("NoSuchStructure").is_none());
     assert!(std::ptr::eq(env.declared(), &module));
-    assert!(env.collision_warnings().is_empty());
+    assert!(program_scope::collision_warnings(&module, load_stdlib()).is_empty());
 }
 
 fn same_binding<D>(a: Option<&D>, b: Option<&D>) -> bool {

@@ -169,7 +169,9 @@ impl CompiledProgram {
 /// entry too, attributed to its file (see `rehome_imported`);
 /// [`CompiledProgram::rehomed_from`] and
 /// [`CompiledProgram::entry_own_diagnostics`] tell those copies apart from the
-/// entry's own diagnostics.
+/// entry's own diagnostics. After the copies comes the program's definition
+/// collision report ([`crate::program_scope::collision_warnings`]), which is
+/// entry-own too.
 ///
 /// **Entry/import checker asymmetry.** Only the entry's compile receives
 /// `checker`; import units are compiled with the compile-time stub checker,
@@ -275,7 +277,11 @@ pub fn compile_program_with_parsed_entry(
         })
         .collect();
 
-    CompiledProgram::new(entry, imports, sources, rehomed, declared_templates)
+    let mut program = CompiledProgram::new(entry, imports, sources, rehomed, declared_templates);
+    let collisions =
+        crate::program_scope::collision_warnings(&program, crate::stdlib_loader::load_stdlib());
+    program.entry.diagnostics.extend(collisions);
+    program
 }
 
 /// True iff compiling `parsed` as a program entry under `cfg` follows at least

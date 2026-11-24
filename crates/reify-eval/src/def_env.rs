@@ -18,15 +18,13 @@
 use std::borrow::Borrow;
 use std::sync::Arc;
 
-use reify_compiler::name_env::{self, Origin, Tier};
 use reify_compiler::program::CompiledProgram;
 use reify_compiler::program_scope::{self, ProgramDefinition, ProgramRoot};
 use reify_compiler::stdlib_loader::load_stdlib;
 use reify_compiler::{
-    CompiledConstraintDef, CompiledModule, CompiledPurpose, CompiledTrait, CompiledTypeAlias,
-    CompiledUnit, TopologyTemplate,
+    CompiledModule, CompiledTrait, CompiledTypeAlias, CompiledUnit, TopologyTemplate,
 };
-use reify_core::{Diagnostic, Type};
+use reify_core::Type;
 use reify_ir::{CompiledFunction, EnumDef};
 
 /// Every definition a [`CompiledProgram`] (or a lone module) can name,
@@ -157,54 +155,4 @@ impl<'p> DefEnv<'p> {
     pub fn declared(&self) -> &'p CompiledModule {
         self.root.entry()
     }
-
-    /// One Warning per first-wins collision whose loser is a user import's
-    /// definition (D-6) and that no module's own compile already reports, so
-    /// each collision has one reporter. Entry-vs-import is always reported
-    /// here. Import-vs-import is reported here too, except for units, type
-    /// aliases and constraint defs: the entry's compile binds its imports as
-    /// its prelude and reports those three kinds' collisions there. A shadowed
-    /// stdlib definition is the shadowing module's own compile's to report.
-    pub fn collision_warnings(&self) -> Vec<Diagnostic> {
-        use ImportPairs::{LeaveToEntryCompile, Report};
-        [
-            self.import_tier_collisions::<TopologyTemplate>(Report),
-            self.import_tier_collisions::<CompiledFunction>(Report),
-            self.import_tier_collisions::<EnumDef>(Report),
-            self.import_tier_collisions::<CompiledUnit>(LeaveToEntryCompile),
-            self.import_tier_collisions::<CompiledTypeAlias>(LeaveToEntryCompile),
-            self.import_tier_collisions::<CompiledTrait>(Report),
-            self.import_tier_collisions::<CompiledConstraintDef>(LeaveToEntryCompile),
-            self.import_tier_collisions::<CompiledPurpose>(Report),
-        ]
-        .concat()
-    }
-
-    fn import_tier_collisions<D: ProgramDefinition>(
-        &self,
-        import_pairs: ImportPairs,
-    ) -> Vec<Diagnostic> {
-        let entry = &self.root.entry().path;
-        program_scope::bind_program::<D>(self.root, self.prelude)
-            .shadowings()
-            .iter()
-            .filter(|shadowing| {
-                shadowing.shadowed.origin.tier() == Tier::Import
-                    && shadowing.winner.origin != shadowing.shadowed.origin
-                    && (shadowing.winner.origin == Origin::Local
-                        || import_pairs == ImportPairs::Report)
-            })
-            .map(|shadowing| name_env::collision_warning(shadowing, Some(entry)))
-            .collect()
-    }
-}
-
-/// Who reports a collision between two direct imports' definitions of one
-/// kind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ImportPairs {
-    /// [`DefEnv::collision_warnings`] does.
-    Report,
-    /// The entry's own compile does: it binds its imports as its prelude.
-    LeaveToEntryCompile,
 }
