@@ -2120,6 +2120,20 @@ selected_infra_leaf_env() {
     esac
 }
 
+# selected_infra_leaf_wall <glob-or-path> — print the `timeout` wall a single
+# selective-infra leaf runs under: 10m for every member but the ones named
+# here. Printf-only, so the caller's command-substitution assignment keeps
+# status 0 under set -euo pipefail (selected_infra_leaf_env's reason). Python
+# twin: scripts/reify_verify/selection.py _leaf_wall, held equal by
+# test_verify_plan_parity_region.py TestSelectiveInfraLeafWalls. Derivation:
+# docs/notes/verify-pipeline-knobs.md, "Selective-infra leaf walls".
+selected_infra_leaf_wall() {
+    case "$1" in
+        tests/infra/test_tree_sitter_pipeline.sh) printf '30m' ;;
+        *) printf '10m' ;;
+    esac
+}
+
 select_infra_tests() {
     local _VP_INFRA_MAP="$SCRIPT_DIR/verify-pipeline-infra-tests.txt"
     # Graceful degradation: absent map or empty changed-file list -> empty.
@@ -4589,7 +4603,7 @@ build_plan() {
         # always being an `env ...` invocation. ONE add_tool call is kept —
         # test_verify_ld_library_path_scope.sh asserts this file has exactly one
         # `for _vt in` emission site calling add_tool, so a second arm reds.
-        local _leaf_env
+        local _leaf_env _leaf_wall
         # Each member runs with REIFY_VERIFY_EVENT_LOG removed, so its own
         # slot_acquire deadline or nested run_all.sh never writes into this
         # verify's channel (run-all-runner-infra-harness.md §4 C4, #8919). The
@@ -4599,7 +4613,8 @@ build_plan() {
         set -f  # disable pathname expansion: keep glob tokens as literals
         for _glob in $SELECTED_INFRA_GLOBS; do
             _leaf_env="$(selected_infra_leaf_env "$_glob")"
-            add_tool "( for _vt in $_glob; do [ -f \"\$_vt\" ] || continue; ${_leaf_env}timeout --kill-after=60 10m $_git_scrub -u REIFY_VERIFY_EVENT_LOG bash \"\$_vt\" || exit \$?; done )"
+            _leaf_wall="$(selected_infra_leaf_wall "$_glob")"
+            add_tool "( for _vt in $_glob; do [ -f \"\$_vt\" ] || continue; ${_leaf_env}timeout --kill-after=60 ${_leaf_wall} $_git_scrub -u REIFY_VERIFY_EVENT_LOG bash \"\$_vt\" || exit \$?; done )"
         done
         set +f
     fi

@@ -638,7 +638,6 @@ RUN_ALL_POOL_ENV = (
     ("REIFY_RUN_ALL_CONTENT_SKIP", "1"),
 )
 RUN_ALL_POOL_WALL = "60m"
-INFRA_LEAF_WALL = "10m"
 INFRA_LEAF_UNSET = ("REIFY_VERIFY_EVENT_LOG",)
 
 
@@ -784,7 +783,7 @@ def _selective_infra(inputs: PlanInputs) -> tuple[Step, ...]:
     return tuple(
         _tool(
             Phase.INFRA_SELECTIVE,
-            InfraLeafLoop(leaf.glob, leaf.env, INFRA_LEAF_WALL, scrub_prefix, INFRA_LEAF_UNSET),
+            InfraLeafLoop(leaf.glob, leaf.env, leaf.wall, scrub_prefix, INFRA_LEAF_UNSET),
         )
         for leaf in inputs.selection.leaves
     )

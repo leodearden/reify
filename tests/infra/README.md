@@ -790,7 +790,7 @@ That is the same infrastructure verdict: a column-0
 It is never a SKIP (a vacuous pass) and never a FAIL.
 `test_tree_sitter_pipeline.sh`'s `run_guarded_cargo_check` is the first user.
 That suite stops at the first such case, because each timeout spends 300s of
-its 10m selective-infra wall, and an assertion that already FAILed still wins.
+its 30m selective-infra wall, and an assertion that already FAILed still wins.
 A build that hangs on a real defect also reads as 75, on every run: the guard
 prints the tail of cargo's output so a lock wait can be told from a hang.
 

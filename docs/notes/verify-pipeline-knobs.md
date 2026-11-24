@@ -218,6 +218,17 @@ The **polarity is unchanged and still fail-safe**: every plan line, cargo or too
 
 The six `LD_LIBRARY_PATH="" sqlite3` workarounds in `tests/infra/test_reify_audit_ptodo.sh` are **retained as defence-in-depth**, not superseded: the plan-line scrub cannot reach a bare `bash tests/infra/test_reify_audit_ptodo.sh` run from a shell that already carries a hostile ambient loader path.
 
+## Selective-infra leaf walls (task 10313)
+
+Every selective-infra member runs as `timeout --kill-after=60 10m ... bash <member>` except the ones named here. `tests/infra/test_tree_sitter_pipeline.sh` gets **30m**. The wall is per member, chosen by `scripts/verify.sh::selected_infra_leaf_wall` and its Python twin `scripts/reify_verify/selection.py::LONG_LEAF_WALLS` / `_leaf_wall`. `tests/infra/test_verify_plan_parity_region.py::TestSelectiveInfraLeafWalls` holds the two planners equal. A member cut by its wall exits 124, and `verify.sh` reports that as `FAILED (exit 124)` (the reaper keeps a plan line's own status; see `docs/notes/orphaned-test-binary-reaper.md`, Layer A).
+
+**Derivation of the 30m.**
+- Standalone in a task lane, the suite took 183s for 49/49 cases, with the loadavg falling from 167 to 97. Its 9 `mk_ts_build_fixture` cold builds were about 80s of that.
+- Under verify contention, full runs took 515s (loadavg 160-180) and 598s (174-207, 21% CPU, so latency-dominated). One run was cut at 600s at case 36/49 at loadavg 213. Scaled from the standalone run's 80%-done-at-case-35 point, that run projects to about 750s.
+- So the suite is roughly 3-4x load-sensitive. 30m is about 3x the worst completed run and 2.4x the projected cut run. It stays a backstop above the suite's own 300s per-cargo-build bound (`run_guarded_cargo_check`), which ends the suite with an INFRA verdict at the first build timeout.
+
+If it is ever cut at 30m, measure again and re-derive; do not multiply. When #8725 partitions the suite into several members, re-target the wall at whichever members inherit the slow cases.
+
 ## Merge-gate breadth: `merge_verify_workspace` (task 9871)
 
 **What it does.** Top-level `merge_verify_workspace: true` in `dark-factory-orchestrator.yaml` makes dark-factory's merge role run the yaml's global `test_command` / `lint_command` / `type_check_command` verbatim (`force_workspace`), before any file-scoping, fallback or trivial-pass logic. Those commands run with `DF_VERIFY_ROLE=merge`, under which `verify.sh` forces `--scope all` (contract C2), so the merge gate is the whole-workspace gate. Leave `merge_verify_breadth` at its default: `full` only widens *registered* DF module configs, and reify registers none.
