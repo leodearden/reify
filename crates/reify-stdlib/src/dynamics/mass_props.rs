@@ -125,6 +125,207 @@ pub fn uniform_box_inertia(dims: [f64; 3], density: f64) -> (f64, [f64; 3], [[f6
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reify_core::dimension::DimensionVector;
+    use reify_ir::{StructureInstanceData, Value};
+
+    // ── MassProperties owner: the one Value shape (S15 η, task 8697) ─────────
+
+    const ASYMMETRIC_INERTIA: [[f64; 3]; 3] = [
+        [0.10, 0.01, 0.02],
+        [0.03, 0.20, 0.04],
+        [0.05, 0.06, 0.30],
+    ];
+
+    fn moi(x: f64) -> Value {
+        Value::Scalar {
+            si_value: x,
+            dimension: DimensionVector::MOMENT_OF_INERTIA,
+        }
+    }
+
+    fn instance_data(v: &Value) -> &StructureInstanceData {
+        match v {
+            Value::StructureInstance(d) => d,
+            other => panic!("expected a StructureInstance, got {other:?}"),
+        }
+    }
+
+    fn field<'a>(v: &'a Value, name: &str) -> &'a Value {
+        instance_data(v)
+            .fields
+            .get(name)
+            .unwrap_or_else(|| panic!("missing field {name} in {v:?}"))
+    }
+
+    fn sample() -> MassProperties {
+        MassProperties {
+            mass: 2.5,
+            com: [0.1, -0.2, 0.3],
+            inertia: ASYMMETRIC_INERTIA,
+        }
+    }
+
+    #[test]
+    fn to_value_emits_the_declared_shape() {
+        let v = sample().to_value();
+        let data = instance_data(&v);
+        assert_eq!(data.type_name, "MassProperties");
+        let mut keys: Vec<&str> = data.fields.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["com", "inertia", "mass", "origin"]);
+
+        assert_eq!(
+            field(&v, "mass"),
+            &Value::Scalar {
+                si_value: 2.5,
+                dimension: DimensionVector::MASS,
+            }
+        );
+        assert_eq!(
+            field(&v, "com"),
+            &Value::Point(vec![
+                Value::length(0.1),
+                Value::length(-0.2),
+                Value::length(0.3),
+            ])
+        );
+        let Value::Matrix(rows) = field(&v, "inertia") else {
+            panic!("inertia must be a Value::Matrix, got {:?}", field(&v, "inertia"))
+        };
+        assert_eq!(rows.len(), 3, "inertia must have 3 rows");
+        for (r, row) in rows.iter().enumerate() {
+            let want: Vec<Value> = ASYMMETRIC_INERTIA[r].iter().map(|&x| moi(x)).collect();
+            assert_eq!(row, &want, "inertia row {r} must be MOMENT_OF_INERTIA scalars");
+        }
+
+        // origin: the default zero Frame3 — a position (LENGTH zeros) plus three
+        // directions (dimensionless zeros, `Value::Real` per Invariant V). The
+        // all-zero basis is the production default, not a placeholder to
+        // "improve" into an identity basis.
+        let origin = field(&v, "origin");
+        assert_eq!(instance_data(origin).type_name, "Frame3");
+        let components = |member: &str| -> Vec<Value> {
+            match field(origin, member) {
+                Value::Vector(c) if c.len() == 3 => c.clone(),
+                other => panic!("Frame3.{member} must be a 3-component Vector, got {other:?}"),
+            }
+        };
+        assert_eq!(components("origin"), vec![Value::length(0.0); 3]);
+        for member in ["x_axis", "y_axis", "z_axis"] {
+            for (i, c) in components(member).into_iter().enumerate() {
+                assert_eq!(c, Value::Real(0.0), "Frame3.{member}[{i}]");
+                assert!(c.dimension().is_dimensionless(), "Frame3.{member}[{i}]");
+            }
+        }
+    }
+
+    #[test]
+    fn from_value_inverts_to_value() {
+        let mp = sample();
+        assert_eq!(MassProperties::from_value(&mp.to_value()), Some(mp));
+    }
+
+    #[test]
+    fn from_value_accepts_the_legacy_spellings() {
+        let mp = sample();
+        let bare = crate::helpers::mint_registry_free_instance(
+            "MassProperties",
+            vec![
+                ("mass".to_string(), Value::Real(mp.mass)),
+                (
+                    "com".to_string(),
+                    Value::List(mp.com.iter().map(|&c| Value::length(c)).collect()),
+                ),
+                (
+                    "inertia".to_string(),
+                    Value::Matrix(
+                        mp.inertia
+                            .iter()
+                            .map(|row| row.iter().map(|&x| Value::Real(x)).collect())
+                            .collect(),
+                    ),
+                ),
+            ],
+        );
+        assert_eq!(
+            MassProperties::from_value(&bare),
+            MassProperties::from_value(&mp.to_value()),
+            "bare Real mass/inertia cells and a List com read like the dimensioned twin"
+        );
+        assert_eq!(MassProperties::from_value(&bare), Some(mp));
+    }
+
+    #[test]
+    fn from_value_rejects_non_mass_properties() {
+        assert_eq!(MassProperties::from_value(&Value::Real(1.0)), None);
+        let other = crate::helpers::mint_registry_free_instance(
+            "Block",
+            vec![
+                ("mass".to_string(), Value::Real(1.0)),
+                ("com".to_string(), Value::List(vec![Value::Real(0.0); 3])),
+                ("inertia".to_string(), Value::Matrix(vec![vec![Value::Real(0.0); 3]; 3])),
+            ],
+        );
+        assert_eq!(MassProperties::from_value(&other), None);
+    }
+
+    #[test]
+    fn unresolved_value_is_honest_undef() {
+        let v = MassProperties::unresolved_value();
+        assert_eq!(instance_data(&v).type_name, "MassProperties");
+        for name in ["mass", "com", "inertia"] {
+            assert_eq!(field(&v, name), &Value::Undef, "{name} must be the honest Undef");
+        }
+        assert_eq!(field(&v, "origin"), field(&sample().to_value(), "origin"));
+        assert_eq!(MassProperties::from_value(&v), None);
+    }
+
+    #[test]
+    fn read_inertia_reads_one_shape() {
+        let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let cells = |f: fn(f64) -> Value| -> Vec<Vec<Value>> {
+            identity
+                .iter()
+                .map(|row| row.iter().map(|&x| f(x)).collect())
+                .collect()
+        };
+        let list_of = |rows: Vec<Vec<Value>>, wrap: fn(Vec<Value>) -> Value| {
+            Value::List(rows.into_iter().map(wrap).collect())
+        };
+
+        let read = |v: &Value| MassProperties::read_inertia(v);
+        assert_eq!(read(&Value::Matrix(cells(moi))), Ok(Some(identity)));
+        assert_eq!(
+            read(&list_of(cells(|x| Value::Int(x as i64)), Value::List)),
+            Ok(Some(identity)),
+            "List-of-List of Int"
+        );
+        assert_eq!(
+            read(&list_of(cells(Value::Real), Value::List)),
+            Ok(Some(identity)),
+            "List-of-List of Real: the OCCT InertiaTensor reply shape"
+        );
+        assert_eq!(
+            read(&list_of(cells(moi), Value::Vector)),
+            Ok(Some(identity)),
+            "List of Vector rows"
+        );
+
+        let mut two_by_three = cells(moi);
+        two_by_three.pop();
+        assert_eq!(read(&Value::Matrix(two_by_three)), Ok(None), "2×3 is shape-malformed");
+        let mut one_undef = cells(moi);
+        one_undef[1][2] = Value::Undef;
+        assert_eq!(read(&Value::Matrix(one_undef)), Ok(None), "an Undef cell is unresolved");
+
+        assert!(
+            read(&Value::Matrix(cells(Value::length))).is_err(),
+            "LENGTH cells are refused"
+        );
+        let mut one_bool = cells(moi);
+        one_bool[0][0] = Value::Bool(true);
+        assert!(read(&Value::Matrix(one_bool)).is_err(), "a Bool cell is refused");
+    }
 
     // ── resolve_density priority ladder ──────────────────────────────────────
 
