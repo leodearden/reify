@@ -169,7 +169,10 @@ fn integration_orient_basis_left_handed_directions_return_undef() {
             direction_val(0.0, 0.0, -1.0),
         ],
     );
-    assert!(result.is_undef(), "a left-handed basis should return Undef, got {result:?}");
+    assert!(
+        result.is_undef(),
+        "a left-handed basis should return Undef, got {result:?}"
+    );
 }
 
 #[test]
@@ -182,7 +185,10 @@ fn integration_orient_basis_non_orthogonal_directions_return_undef() {
             direction_val(0.0, 0.0, 1.0),
         ],
     );
-    assert!(result.is_undef(), "a non-orthogonal basis should return Undef, got {result:?}");
+    assert!(
+        result.is_undef(),
+        "a non-orthogonal basis should return Undef, got {result:?}"
+    );
 }
 
 // ── A non-Direction at any Direction position is Undef ────────────────────────
@@ -194,7 +200,11 @@ fn v3(x: f64, y: f64, z: f64) -> Value {
 /// The values a Direction parameter must refuse: the Vector and Tensor
 /// spellings it replaced, and a non-numeric kind.
 fn non_directions() -> [Value; 3] {
-    [v3(1.0, 0.0, 0.0), t3(1.0, 0.0, 0.0), Value::String("x".to_string())]
+    [
+        v3(1.0, 0.0, 0.0),
+        t3(1.0, 0.0, 0.0),
+        Value::String("x".to_string()),
+    ]
 }
 
 /// `valid` with its argument at `position` replaced by each non-Direction.
@@ -273,7 +283,10 @@ fn integration_orient_to_axis_angle_axis_is_a_direction() {
         "a 90° turn about Z should have axis ≈ (0, 0, 1), got ({ax}, {ay}, {az})"
     );
     match angle {
-        Value::Scalar { si_value, dimension } if *dimension == DimensionVector::ANGLE => assert!(
+        Value::Scalar {
+            si_value,
+            dimension,
+        } if *dimension == DimensionVector::ANGLE => assert!(
             (si_value - FRAC_PI_2).abs() < TOLERANCE,
             "a 90° turn about Z should have angle ≈ π/2, got {si_value}"
         ),
@@ -294,7 +307,11 @@ fn integration_orient_to_axis_angle_identity_axis_is_canonical_x_direction() {
     let Value::Direction(u) = axis else {
         panic!("the identity's axis should be a Direction, got {axis:?}");
     };
-    assert_eq!(u.components(), [1.0, 0.0, 0.0], "the identity's canonical axis is +x");
+    assert_eq!(
+        u.components(),
+        [1.0, 0.0, 0.0],
+        "the identity's canonical axis is +x"
+    );
     assert_eq!(angle, &Value::angle(0.0), "the identity's angle is 0");
 }
 

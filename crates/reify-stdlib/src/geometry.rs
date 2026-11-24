@@ -1462,6 +1462,7 @@ fn make_point3(xyz: [f64; 3], dim: DimensionVector) -> Value {
 }
 
 /// Build a dimensionless `Value::Vector` of three `Real` components (a normal/direction).
+#[cfg(test)]
 fn make_real_vec3(xyz: [f64; 3]) -> Value {
     Value::Vector(vec![
         Value::Real(xyz[0]),
@@ -1867,7 +1868,8 @@ fn eval_offset_plane(args: &[Value]) -> Value {
 
 /// `frame_at(o: Point, x: Direction, z: Direction) -> Frame`:
 /// orthonormalize (ŷ = ẑ×x̂, x̂' = ŷ×ẑ) into a basis quaternion; origin o.
-/// Reuses the tested `orient_basis` (Shepperd's method + orthonormality guards).
+/// The basis quaternion comes from `orientation::orientation_from_basis`, the
+/// helper `orient_basis` uses (Shepperd's method + orthonormality guards).
 ///
 /// The ORIGIN is REQUIRED to be a `Point3<Length>` — units-length η (task 6591).
 /// This function previously did not check the origin's dimension at all, not
@@ -1893,18 +1895,9 @@ fn eval_frame_at(args: &[Value]) -> Value {
         None => return Value::Undef,
     };
     let x_hat = cross3(y_hat, z_hat);
-    let basis = crate::orientation::eval_orientation(
-        "orient_basis",
-        &[
-            make_real_vec3(x_hat),
-            make_real_vec3(y_hat),
-            make_real_vec3(z_hat),
-        ],
-    )
-    .unwrap_or(Value::Undef);
-    if !matches!(basis, Value::Orientation { .. }) {
+    let Some(basis) = crate::orientation::orientation_from_basis(x_hat, y_hat, z_hat) else {
         return Value::Undef;
-    }
+    };
     Value::Frame {
         origin: Box::new(args[0].clone()),
         basis: Box::new(basis),
