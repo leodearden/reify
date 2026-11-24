@@ -211,16 +211,19 @@ class Container:
             reported, expected, f"in {self.name}: {command}\nstderr:\n{stderr[-2000:]}")
         _log(f"{self.name}: {command} reports {reported!r}")
 
-    def debug_server_version(self):
-        """serverInfo.version from the running GUI's debug-MCP initialize."""
+    def assert_debug_server_reports(self, expected):
+        """The running GUI's debug-MCP initialize answers serverInfo.version `expected`."""
         reply = self.check(
             f"curl -fsS --max-time 5 -X POST http://127.0.0.1:{DEBUG_PORT}/mcp "
             f"-H 'Content-Type: application/json' -d {shlex.quote(INITIALIZE_BODY)}")
         try:
-            return json.loads(reply)["result"]["serverInfo"]["version"]
+            reported = json.loads(reply)["result"]["serverInfo"]["version"]
         except (ValueError, KeyError, TypeError):
             self.test.fail(f"in {self.name}: initialize reply has no serverInfo.version: "
                            f"{reply[-2000:]!r}")
+        self.test.assertEqual(reported, expected,
+                              f"in {self.name}: debug-MCP initialize serverInfo.version")
+        _log(f"{self.name}: debug-MCP initialize reports serverInfo.version {reported!r}")
 
     def assert_gui_renders(self, gui_command):
         self.start_detached(
@@ -414,7 +417,7 @@ class BundleCleanInstall(unittest.TestCase):
         box.assert_none_installed(BUNDLED_NOT_DEPENDED)
         box.check(f"reify check {EXAMPLE}")
         box.assert_gui_renders(f"xvfb-run -a reify-gui {EXAMPLE}")
-        self.assertEqual(box.debug_server_version(), self.version)
+        box.assert_debug_server_reports(self.version)
         self.assertIn("nodejs", box.installed_packages(),
                       "the deb's Depends must bring nodejs onto a stock image")
         box.check("command -v node")
@@ -439,7 +442,7 @@ class BundleCleanInstall(unittest.TestCase):
         box.assert_reports(f"APPIMAGE_EXTRACT_AND_RUN=1 {appimage} --version",
                            f"reify-gui {self.version}")
         box.assert_gui_renders(f"APPIMAGE_EXTRACT_AND_RUN=1 xvfb-run -a {appimage} {EXAMPLE}")
-        self.assertEqual(box.debug_server_version(), self.version)
+        box.assert_debug_server_reports(self.version)
         # An AppImage can declare no Depends, so the user installs node as the refusal says.
         box.check("! command -v node")
         box.apt_install("nodejs")
