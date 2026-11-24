@@ -215,6 +215,7 @@ mod tests {
         ScopedArgs, direct_sub_instances, instance_value_overlay, scoped_arg_values,
         scoped_step_key,
     };
+    use crate::DefEnv;
 
     const MINI_SOURCE: &str = r#"
 structure def Inner {
@@ -280,6 +281,25 @@ structure def MiniParent {
         let only_parent = vec![parent.clone()];
 
         assert!(direct_sub_instances(parent, &only_parent, &ValueMap::new()).is_empty());
+    }
+
+    #[test]
+    fn a_stdlib_typed_sub_is_a_direct_sub_instance() {
+        let compiled =
+            parse_and_compile_with_stdlib("structure def P {\n    sub z = ZeroForce()\n}");
+        let parent = reify_compiler::find_template(&compiled.templates, "P")
+            .expect("P template must compile");
+        let env = DefEnv::of_module(&compiled, reify_compiler::stdlib_loader::load_stdlib());
+
+        let instances = direct_sub_instances(parent, env, &ValueMap::new());
+
+        assert_eq!(
+            instances.len(),
+            1,
+            "the stdlib-typed sub `z` is a direct sub instance"
+        );
+        assert_eq!(instances[0].scoped_entity(), "P.z");
+        assert_eq!(instances[0].child_template().name, "ZeroForce");
     }
 
     #[test]
