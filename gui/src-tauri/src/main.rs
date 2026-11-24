@@ -768,7 +768,8 @@ async fn claude_send_message(
     // Resolve the writable workspace directory for the landlock sandbox.
     let initial_file_opt: Option<std::path::PathBuf> =
         state.initial_file.lock().ok().and_then(|g| g.clone());
-    let fallback_cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let fallback_cwd = reify_gui::appimage_launch_dir::caller_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
     let workspace = reify_gui::claude_bridge::resolve_workspace_dir(
         context.as_ref(),
         initial_file_opt.as_deref(),
