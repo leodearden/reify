@@ -236,6 +236,43 @@ fn compile_mirror_produces_realization() {
     );
 }
 
+/// The Direction form `mirror(geo, origin, normal)` (direction-typing ι-a,
+/// task 9646) lowers to the same Pattern(Mirror) op, under the named args the
+/// eval reader keys on.
+#[test]
+fn compile_mirror_direction_form_produces_realization() {
+    let source = r#"structure S {
+    param w: Length = 10mm
+    let mirrored = mirror(w, point3(0mm, 0mm, 0mm), dir(1, 0, 0))
+}"#;
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_mirror_dir"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let compiled = compile(&parsed);
+    let template = &compiled.templates[0];
+    assert_eq!(
+        template.realizations.len(),
+        1,
+        "expected 1 realization for mirror call, got {}; diagnostics: {:?}",
+        template.realizations.len(),
+        compiled.diagnostics
+    );
+    match &template.realizations[0].operations[0] {
+        CompiledGeometryOp::Pattern {
+            kind: PatternKind::Mirror,
+            args,
+            ..
+        } => {
+            let names: Vec<&str> = args.iter().map(|(n, _)| n.as_str()).collect();
+            assert_eq!(names, ["target", "origin", "normal"]);
+        }
+        other => panic!("expected Pattern(Mirror), got {other:?}"),
+    }
+}
+
 #[test]
 fn compile_linear_pattern_2d_produces_realization() {
     let source = r#"structure S {
@@ -1692,7 +1729,7 @@ fn compile_translate_wrong_arg_count() {
 fn compile_rotate_wrong_arg_count() {
     let source = r#"structure S {
     param p: Length = 5mm
-    let result = rotate(p, p, p)
+    let result = rotate(p, p, p, p)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_rotate_bad"));
     assert!(

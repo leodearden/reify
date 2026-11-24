@@ -112,6 +112,57 @@ mod tests {
         assert_eq!(diagnostics[0].labels[0].span, span);
     }
 
+    // --- check_arg_count_exact_form tests ---
+
+    #[test]
+    fn check_arg_count_exact_form_ok() {
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let result = check_arg_count_exact_form(
+            "rotate_around",
+            4,
+            4,
+            "geo, point3(x, y, z), dir(x, y, z), angle",
+            SourceSpan::new(0, 10),
+            &mut diagnostics,
+        );
+        assert!(result, "expected true when got == expected");
+        assert!(diagnostics.is_empty(), "expected no diagnostics on ok path");
+    }
+
+    #[test]
+    fn check_arg_count_exact_form_names_the_form_between_expects_and_got() {
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let span = SourceSpan::new(10, 20);
+        let result = check_arg_count_exact_form(
+            "rotate_around",
+            8,
+            4,
+            "geo, point3(x, y, z), dir(x, y, z), angle",
+            span,
+            &mut diagnostics,
+        );
+        assert!(!result, "expected false when got != expected");
+        assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
+        assert_eq!(
+            diagnostics[0].message,
+            "rotate_around() expects 4 arguments: \
+             rotate_around(geo, point3(x, y, z), dir(x, y, z), angle), got 8"
+        );
+        assert_eq!(diagnostics[0].labels.len(), 1, "expected one label");
+        assert_eq!(
+            diagnostics[0].labels[0].message,
+            "wrong number of arguments"
+        );
+        assert_eq!(diagnostics[0].labels[0].span, span);
+    }
+
+    #[test]
+    fn check_arg_count_exact_form_uses_the_singular_noun_for_one_argument() {
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_arg_count_exact_form("f", 2, 1, "x", SourceSpan::new(0, 1), &mut diagnostics);
+        assert_eq!(diagnostics[0].message, "f() expects 1 argument: f(x), got 2");
+    }
+
     // --- check_arg_count_at_least tests ---
 
     // (a) got == min returns true with no diagnostic

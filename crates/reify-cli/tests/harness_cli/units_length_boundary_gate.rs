@@ -315,6 +315,64 @@ structure def S {
     expect_length_rejection(&stderr, "mirror", "ox", "Int");
 }
 
+/// The Direction form's `Point3` origin (direction-typing ι-a, task 9646) has no
+/// compile-time slot — no `ExpectedArg` kind describes a point — so it is gated at build
+/// by `accept_length_point3`. Both `reify check` and `reify eval` must reach that gate
+/// and name every bare component, or the narrowing is a silent hole.
+#[test]
+fn the_point3_mirror_origin_is_rejected_at_build_by_check_and_eval() {
+    let fixture = RiSource {
+        stem: "bare_mirror_point3_origin",
+        source: r#"module bare_mirror_point3_origin
+
+structure def S {
+    let b = box(20mm, 20mm, 10mm)
+    let m = mirror(b, point3(10, 0, 0), dir(1, 0, 0))
+    param geometry : Solid = m
+}
+"#,
+    };
+    for (subcommand, (status, stdout, stderr)) in
+        [("check", fixture.check()), ("eval", fixture.eval())]
+    {
+        assert!(
+            !status.success(),
+            "`reify {subcommand}` must exit nonzero on a bare point3 mirror origin;\n\
+             stdout: {stdout}\nstderr: {stderr}"
+        );
+        for arg in ["origin.x", "origin.y", "origin.z"] {
+            expect_length_rejection(&stderr, "mirror", arg, "Int");
+        }
+    }
+}
+
+/// The `rotate_around` sibling of the row above: its `Point3` pivot is gated at build
+/// the same way, naming `pivot.x`.
+#[test]
+fn the_point3_rotate_around_pivot_is_rejected_at_build_by_check_and_eval() {
+    let fixture = RiSource {
+        stem: "bare_rotate_around_point3_pivot",
+        source: r#"module bare_rotate_around_point3_pivot
+
+structure def S {
+    let b = box(20mm, 20mm, 10mm)
+    let r = rotate_around(b, point3(5, 0, 0), dir(0, 0, 1), 90deg)
+    param geometry : Solid = r
+}
+"#,
+    };
+    for (subcommand, (status, stdout, stderr)) in
+        [("check", fixture.check()), ("eval", fixture.eval())]
+    {
+        assert!(
+            !status.success(),
+            "`reify {subcommand}` must exit nonzero on a bare point3 rotate_around pivot;\n\
+             stdout: {stdout}\nstderr: {stderr}"
+        );
+        expect_length_rejection(&stderr, "rotate_around", "pivot.x", "Int");
+    }
+}
+
 /// §6 row 6 (control) — the dimensioned plane offset still exits 0 and still mirrors
 /// about the same place.
 ///

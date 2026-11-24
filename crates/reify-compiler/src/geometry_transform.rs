@@ -496,29 +496,27 @@ mod tests {
         }
     }
 
-    /// 3-arg rotate → None with "rotate() expects 2 or 5 arguments, got 3" diagnostic
-    /// whose label span matches expr_span.
+    /// 3-arg translate → None with "translate() expects 4 arguments, got 3"
+    /// whose label span matches expr_span. An arity rejected both before and
+    /// after direction-typing ι-a (task 9646) made `rotate`'s 3-arg form legal.
     #[test]
-    fn compile_transform_op_rotate_3_arg_error() {
+    fn compile_transform_op_translate_3_arg_error() {
         let args: Vec<CompiledExpr> = (0..3).map(|_| scalar_literal(0.0)).collect();
         let span = SourceSpan::new(7, 42);
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let result = compile_transform_op(
-            "rotate",
+            "translate",
             args,
             GeomRef::Step(0),
             span,
             &mut diagnostics,
             vec![],
         );
-        assert!(result.is_none(), "expected None for 3-arg rotate");
+        assert!(result.is_none(), "expected None for 3-arg translate");
         assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
-        assert!(
-            diagnostics[0]
-                .message
-                .contains("rotate() expects 2 or 5 arguments, got 3"),
-            "diagnostic message should mention 'rotate() expects 2 or 5 arguments, got 3', got: {}",
-            diagnostics[0].message,
+        assert_eq!(
+            diagnostics[0].message, "translate() expects 4 arguments, got 3",
+            "diagnostic message"
         );
         assert!(
             !diagnostics[0].labels.is_empty(),
@@ -527,6 +525,52 @@ mod tests {
         assert_eq!(
             diagnostics[0].labels[0].span, span,
             "label span must match expr_span"
+        );
+    }
+
+    /// Lower `name` with `n` placeholder args and return the single op's kind and
+    /// arg names, asserting no diagnostics.
+    fn lowered_transform(name: &str, n: usize) -> (TransformKind, Vec<String>) {
+        let args: Vec<CompiledExpr> = (0..n).map(|_| scalar_literal(0.0)).collect();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let ops = compile_transform_op(
+            name,
+            args,
+            GeomRef::Step(0),
+            SourceSpan::new(0, 0),
+            &mut diagnostics,
+            vec![],
+        )
+        .unwrap_or_else(|| panic!("{n}-arg {name} should lower, got: {diagnostics:?}"));
+        assert!(diagnostics.is_empty(), "unexpected diagnostics: {diagnostics:?}");
+        match ops.as_slice() {
+            [CompiledGeometryOp::Transform { kind, args, .. }] => {
+                (*kind, args.iter().map(|(n, _)| n.clone()).collect())
+            }
+            other => panic!("expected one Transform op, got {other:?}"),
+        }
+    }
+
+    /// rotate(target, axis, angle) — the Direction form (direction-typing ι-a,
+    /// task 9646).
+    #[test]
+    fn compile_transform_op_rotate_3_arg_direction_form() {
+        assert_eq!(
+            lowered_transform("rotate", 3),
+            (TransformKind::Rotate, vec!["target".into(), "axis".into(), "angle".into()])
+        );
+    }
+
+    /// rotate_around(target, pivot, axis, angle) — the Direction form
+    /// (direction-typing ι-a, task 9646).
+    #[test]
+    fn compile_transform_op_rotate_around_4_arg_direction_form() {
+        assert_eq!(
+            lowered_transform("rotate_around", 4),
+            (
+                TransformKind::RotateAround,
+                vec!["target".into(), "pivot".into(), "axis".into(), "angle".into()]
+            )
         );
     }
 

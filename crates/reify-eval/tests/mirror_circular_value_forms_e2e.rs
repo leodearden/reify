@@ -971,3 +971,43 @@ fn circular_pattern_and_mirror_accept_axis_through_and_plane_through_datums() {
         other => panic!("expected exactly one Mirror op, got {other:?}"),
     }
 }
+
+// ── direction-typing ι-a (task 9646): mirror(geo, origin, normal) ──────────
+
+/// The Direction form and the plane form survive retirement of the scalar
+/// form, so their equality is a durable cross-form check: `mirror(b,
+/// point3(0mm, 0mm, 0mm), dir(1, 0, 0))` reaches the kernel as exactly the op
+/// `mirror(b, plane_yz(0mm))` does, bit for bit.
+#[test]
+fn mirror_direction_form_equals_the_plane_form() {
+    let mirror_op = |call: &str| -> ([f64; 3], [f64; 3]) {
+        let (diagnostics, ops) = build_mirror(&format!(
+            "structure def S {{\n    let b = box(10mm, 10mm, 10mm)\n    let m = {call}\n}}\n"
+        ));
+        assert!(
+            diagnostics.iter().all(|d| d.severity != Severity::Error),
+            "{call}: unexpected errors: {diagnostics:?}"
+        );
+        match ops.as_slice() {
+            [GeometryOp::Mirror {
+                plane_origin,
+                plane_normal,
+                ..
+            }] => (*plane_origin, *plane_normal),
+            other => panic!("{call}: expected one Mirror op, got {other:?}"),
+        }
+    };
+    let (direction_origin, direction_normal) =
+        mirror_op("mirror(b, point3(0mm, 0mm, 0mm), dir(1, 0, 0))");
+    let (plane_origin, plane_normal) = mirror_op("mirror(b, plane_yz(0mm))");
+    assert_eq!(
+        direction_origin.map(f64::to_bits),
+        plane_origin.map(f64::to_bits),
+        "origin"
+    );
+    assert_eq!(
+        direction_normal.map(f64::to_bits),
+        plane_normal.map(f64::to_bits),
+        "normal"
+    );
+}

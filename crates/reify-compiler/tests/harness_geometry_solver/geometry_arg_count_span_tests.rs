@@ -129,15 +129,15 @@ fn circular_pattern_arg_count_diagnostic_has_span_label() {
 
 #[test]
 fn mirror_arg_count_diagnostic_has_span_label() {
-    // mirror() expects 7 arguments — passing 3 should produce a labeled diagnostic
-    // (2 args is now valid as the plane-value form: mirror(target, plane_value))
+    // mirror() rejects 4 arguments under every form it has had, so the needle
+    // is the prefix alone: the accepted-arity list is not this test's subject.
     assert_arg_count_label(
         r#"
             structure S {
-                let m = mirror(box(10mm, 10mm, 10mm), 1.0, 2.0)
+                let m = mirror(box(10mm, 10mm, 10mm), 1.0, 2.0, 3.0)
             }
         "#,
-        "mirror() expects 7 arguments",
+        "mirror() expects",
     );
 }
 
@@ -344,14 +344,15 @@ fn translate_arg_count_diagnostic_has_span_label() {
 
 #[test]
 fn rotate_arg_count_diagnostic_has_span_label() {
-    // rotate() now accepts 2 or 5 arguments — passing 3 should produce a labeled diagnostic
+    // rotate() rejects 4 arguments under every form it has had, so the needle
+    // is the prefix alone: the accepted-arity list is not this test's subject.
     assert_arg_count_label(
         r#"
             structure S {
-                let r = rotate(box(10mm, 10mm, 10mm), 0.0, 0.0)
+                let r = rotate(box(10mm, 10mm, 10mm), 0.0, 0.0, 0.0)
             }
         "#,
-        "rotate() expects 2 or 5 arguments",
+        "rotate() expects",
     );
 }
 
@@ -370,14 +371,16 @@ fn scale_arg_count_diagnostic_has_span_label() {
 
 #[test]
 fn rotate_around_arg_count_diagnostic_has_span_label() {
-    // rotate_around() expects 8 arguments — passing 2 should produce a labeled diagnostic
+    // rotate_around() rejects 2 arguments under every form it has had, so the
+    // needle is the prefix alone: the accepted-arity list is not this test's
+    // subject.
     assert_arg_count_label(
         r#"
             structure S {
                 let r = rotate_around(box(10mm, 10mm, 10mm), 1mm)
             }
         "#,
-        "rotate_around() expects 8 arguments",
+        "rotate_around() expects",
     );
 }
 

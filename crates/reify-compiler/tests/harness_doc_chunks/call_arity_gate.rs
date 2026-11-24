@@ -129,17 +129,17 @@ fn overloading_listing(name: &str) -> String {
 
 #[test]
 fn the_6890_overload_listing_on_a_builtin_name_is_reported_at_its_three_parameter_head() {
-    let violations = demo_violations(&overloading_listing("rotate"));
+    let violations = demo_violations(&overloading_listing("scale"));
     assert_eq!(
         violations.len(),
         1,
-        "the listing writes rotate/3, which the builtin rejects, and rotate/2, which it accepts \
+        "the listing writes scale/3, which the builtin rejects, and scale/2, which it accepts \
          — exactly one violation; got {violations:#?}"
     );
     for expected in [
         format!("{}:6 ", chunk_label("demo")),
-        "rotate/3".to_string(),
-        "rotate() expects 2 or 5 arguments, got 3".to_string(),
+        "scale/3".to_string(),
+        "scale() expects 2 arguments, got 3".to_string(),
     ] {
         assert!(
             violations[0].contains(&expected),
@@ -318,7 +318,7 @@ const SENTINELS: &[Sentinel] = &[
         source: CallSource::ProseSpan,
         name: "rotate",
         documented: 5,
-        rejected: 3,
+        rejected: 4,
     },
 ];
 

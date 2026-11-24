@@ -2526,7 +2526,7 @@ mod tests {
              args 1-3 are a dimensionless unit-vector DIRECTION, and only arg4 \
              is the ANGLE"
         );
-        for arity in (0usize..=MAX_PROBED_ARITY).filter(|n| *n != 5) {
+        for arity in (0usize..=MAX_PROBED_ARITY).filter(|n| *n != 5 && *n != 3) {
             assert!(
                 builtin_arg_slots("rotate", arity).is_empty(),
                 "rotate at arity {arity} is not the 5-arg axis-angle form, so it \
@@ -2538,6 +2538,17 @@ mod tests {
         }
     }
 
+    /// rotate(target, axis, angle) → the Direction `axis` and the ANGLE, at
+    /// arity 3 only (direction-typing ι-a, task 9646). At arity 2 index 1 is an
+    /// Orientation VALUE, so the guard is load-bearing.
+    #[test]
+    fn rotate_direction_form_slots_the_axis_and_the_angle() {
+        assert_eq!(
+            builtin_arg_slots("rotate", 3),
+            vec![direction_slot(1, "axis"), angle_slot(2, "angle")],
+        );
+    }
+
     /// rotate_around(target, px, py, pz, ax, ay, az, angle) → PIVOT and ANGLE.
     ///
     /// The third STRADDLE case, and structurally identical to `revolve`'s: a
@@ -2546,9 +2557,9 @@ mod tests {
     /// asserted positively and narrow to the handle and the direction.
     #[test]
     fn rotate_around_slots_the_pivot_and_the_angle_but_never_the_axis() {
-        assert_slots_at_every_arity(
-            "rotate_around",
-            &[
+        assert_eq!(
+            builtin_arg_slots("rotate_around", 8),
+            vec![
                 length_slot(1, "px"),
                 length_slot(2, "py"),
                 length_slot(3, "pz"),
@@ -2568,6 +2579,18 @@ mod tests {
                  bare in correct `.ri`; got slots at {slotted:?}"
             );
         }
+    }
+
+    /// rotate_around(target, pivot, axis, angle) → the Direction `axis` and the
+    /// ANGLE (direction-typing ι-a, task 9646). The `pivot` is a Point3, which
+    /// no `ExpectedArg` kind describes: it is gated at build by
+    /// `accept_length_point3`, so index 1 stays unslotted.
+    #[test]
+    fn rotate_around_direction_form_slots_the_axis_and_the_angle_but_not_the_pivot() {
+        assert_eq!(
+            builtin_arg_slots("rotate_around", 4),
+            vec![direction_slot(2, "axis"), angle_slot(3, "angle")],
+        );
     }
 
     /// `scale` stays wholly slot-free — its factor is DIMENSIONLESS.
@@ -3689,13 +3712,24 @@ mod tests {
              index 1 is `plane`, a Plane — an ox@1 LENGTH slot would emit a FALSE \
              ArgTypeMismatch on valid code, so arity 2 must expose NO slots"
         );
-        for arity in (0usize..=MAX_PROBED_ARITY).filter(|n| *n != 7) {
+        for arity in (0usize..=MAX_PROBED_ARITY).filter(|n| *n != 7 && *n != 3) {
             assert!(
                 builtin_arg_slots("mirror", arity).is_empty(),
                 "mirror at arity {arity} is not the 7-arg scalar form, so it must \
                  expose NO slots — index 1 does not denote `ox` there"
             );
         }
+    }
+
+    /// mirror(target, origin, normal) → the Direction `normal` only
+    /// (direction-typing ι-a, task 9646). The `origin` is a Point3, gated at
+    /// build by `accept_length_point3`, so index 1 stays unslotted.
+    #[test]
+    fn mirror_direction_form_slots_the_normal_but_not_the_origin() {
+        assert_eq!(
+            builtin_arg_slots("mirror", 3),
+            vec![direction_slot(2, "normal")],
+        );
     }
 
     /// circular_pattern @ arity 9 → ox@1 / oy@2 / oz@3 (LENGTH) + angle@8

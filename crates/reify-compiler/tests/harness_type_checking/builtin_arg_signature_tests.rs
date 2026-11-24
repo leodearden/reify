@@ -1523,6 +1523,92 @@ fn rotate_orientation_overload_yields_no_arg_type_mismatch() {
     );
 }
 
+// ── direction-typing ι-a (task 9646): the Direction-taking forms ──────────
+//
+// `rotate(geo, axis, angle)`, `rotate_around(geo, pivot, axis, angle)` and
+// `mirror(geo, origin, normal)` slot their axis/normal as a Direction. The
+// Point3 pivot/origin has no compile-time slot: `accept_length_point3` gates
+// it at build.
+
+/// The `dir(…)` fix hint, hard-coded on purpose: this is a DRIFT PIN, so
+/// reading `DIRECTION_MIGRATION_HINT` here would make it a tautology.
+const DIRECTION_HINT: &str = "write dir(x, y, z)";
+
+/// SIGNAL — a `vec3` axis on the 3-arg `rotate` is one Direction mismatch.
+#[test]
+fn rotate_vector_axis_is_rejected_with_the_dir_hint() {
+    let compiled = compile_struct_body("    let r = rotate(b, vec3(0, 0, 1), 90deg)\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    let messages: Vec<&str> = errors.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        [format!(
+            "rotate: axis argument expects Direction, got Vector3<Int>; {DIRECTION_HINT}"
+        )],
+        "All diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
+
+/// SIGNAL — the 3-arg `rotate` still gates its angle.
+#[test]
+fn rotate_direction_form_bare_angle_is_rejected_naming_the_angle() {
+    let compiled = compile_struct_body("    let r = rotate(b, dir(0, 0, 1), 45)\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    let messages: Vec<&str> = errors.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        [format!("rotate: angle argument expects Angle, got Int; {ANGLE_HINT}")],
+        "All diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
+
+/// CLEAN — the 4-arg `rotate_around` draws no slot mismatch: the 8-arg form's
+/// `px`/`py`/`pz` LENGTH slots must not fire on the pivot or axis.
+#[test]
+fn rotate_around_direction_form_yields_no_arg_type_mismatch() {
+    let compiled = compile_struct_body(
+        "    let r = rotate_around(b, point3(0mm, 0mm, 0mm), dir(0, 0, 1), 90deg)\n",
+    );
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert!(
+        errors.is_empty(),
+        "correct code must stay silent.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
+
+/// SIGNAL — a `vec3` normal on the 3-arg `mirror` is one Direction mismatch.
+#[test]
+fn mirror_vector_normal_is_rejected_with_the_dir_hint() {
+    let compiled =
+        compile_struct_body("    let m = mirror(b, point3(0mm, 0mm, 0mm), vec3(1, 0, 0))\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    let messages: Vec<&str> = errors.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        [format!(
+            "mirror: normal argument expects Direction, got Vector3<Int>; {DIRECTION_HINT}"
+        )],
+        "All diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
+
+/// CLEAN — the 3-arg `mirror` with a Direction normal draws no mismatch.
+#[test]
+fn mirror_direction_form_yields_no_arg_type_mismatch() {
+    let compiled =
+        compile_struct_body("    let m = mirror(b, point3(0mm, 0mm, 0mm), dir(1, 0, 0))\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    assert!(
+        errors.is_empty(),
+        "correct code must stay silent.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
+
 /// SIGNAL — a bare `revolve` angle is rejected, naming `angle`.
 ///
 /// The origin triple is written dimensioned so the count isolates the angle:
