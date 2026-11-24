@@ -315,3 +315,61 @@ fn a_second_load_replaces_the_first() {
     );
     assert!(std::ptr::eq(stale.declared(), &*first_module));
 }
+
+/// `parts`' pub trait `Supplied` refines the stdlib's `Buy`, and its pub `Bolt`
+/// conforms to `Supplied`. `Kit` uses `Bolt` and queries its descendants by
+/// the stdlib trait.
+fn compile_kit(dir: &Path) -> Arc<CompiledProgram> {
+    compile_in(
+        dir,
+        &[(
+            "parts",
+            "module parts\n\
+             pub trait Supplied : Buy {}\n\
+             pub structure def Bolt : Supplied {\n\
+             \x20   param supplier : String = \"Fastenal\"\n\
+             \x20   param part_number : String = \"BOLT-M6-20\"\n\
+             \x20   param unit_cost : Money = 0.50USD\n\
+             \x20   param lead_time : Time = 24h\n\
+             }\n",
+        )],
+        "module main\nimport parts\n\
+         structure def Kit {\n\
+         \x20   sub bolt = Bolt()\n\
+         \x20   let bought = filter(self.descendants, Buy)\n\
+         }\n",
+    )
+}
+
+/// The BOM rollup classifies a sub through the loaded program's trait
+/// lattice: `Bolt : Supplied` is a `Buy` only through `parts`' `Supplied`.
+#[test]
+fn an_imported_trait_refinement_makes_a_bom_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let program = compile_kit(dir.path());
+    let mut engine = make_engine();
+    let module = engine.load(Arc::clone(&program));
+    let result = engine.eval(&module);
+
+    let report = engine.build_bom_report(&module, &result.values);
+
+    let subs: Vec<&str> = report.lines.iter().map(|line| line.sub.as_str()).collect();
+    assert_eq!(subs, ["bolt"], "Bolt : Supplied : Buy is a Buy line item");
+}
+
+/// A structural query's trait filter walks the same lattice.
+#[test]
+fn an_imported_trait_refinement_passes_a_structural_query_filter() {
+    let dir = tempfile::tempdir().unwrap();
+    let program = compile_kit(dir.path());
+    let mut engine = make_engine();
+    let module = engine.load(Arc::clone(&program));
+
+    let result = engine.eval(&module);
+
+    assert_eq!(
+        value_of(&result, "Kit", "bought"),
+        Some(&Value::List(vec![Value::String("Kit.bolt".to_string())])),
+        "filter(self.descendants, Buy) keeps the Bolt"
+    );
+}
