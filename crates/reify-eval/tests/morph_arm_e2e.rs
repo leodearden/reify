@@ -941,7 +941,7 @@ fn stage_a_admits_dimensional_tick_with_param_list_geometry_leaf_from_compiled_m
 /// proves leaf scoping ADMITS a derived cell. This one proves it does not
 /// admit too much, and it carries the seam the unit test
 /// `structural_classifier::tests::stage_a_eligible_derived_let_guard_cell_diff_returns_false`
-/// can only assume: that the production compiler + `EvaluationGraph::from_templates`
+/// can only assume: that the production compiler + `EvaluationGraph::from_env`
 /// really do route a `where` guard into `graph.structure_controlling`. Without
 /// this test, a future compiler change that emitted a guard outside
 /// `template.guarded_groups` would leave every unit test green while Stage A

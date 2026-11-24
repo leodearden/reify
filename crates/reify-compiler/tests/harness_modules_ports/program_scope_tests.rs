@@ -399,7 +399,7 @@ where
     let in_a = |name| named(D::exported_by(fx.a()), name);
     assert_binds(
         bound(shared),
-        named(D::declared_by_entry(p), shared),
+        named(D::declared_by_entry(p.into()), shared),
         &format!("{kind}: entry beats import"),
     );
     assert_binds(bound(peer), in_a(peer), &format!("{kind}: a beats b"));

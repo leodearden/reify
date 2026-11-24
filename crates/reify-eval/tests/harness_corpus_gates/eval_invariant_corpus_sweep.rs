@@ -694,7 +694,7 @@ const STALE_UNDEF_RESIDUALS: &[(&str, &str)] = &[
         "Bolt.head.across_flats: a decl-level `match head_type { ... => sub head: ... }` \
          block. The compiler tracks per-arm active/inactive state in \
          `TopologyTemplate::match_arm_groups` (`GuardedDeclGroup`), but \
-         `EvaluationGraph::from_templates` does not carry that field into the runtime \
+         `EvaluationGraph::from_env` does not carry that field into the runtime \
          graph at all (confirmed: no analogous field exists on EvaluationGraph). Same \
          class of gap as the RecTree entry above, for match blocks instead of `where` \
          guards — needs shared graph-construction plumbing, out of this task's scope.",

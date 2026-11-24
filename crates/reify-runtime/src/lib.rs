@@ -370,6 +370,7 @@ mod tests {
         // 5. compute_eval_set
         // 6. Verify eval_set = [C1] in correct order
         // 7. Execute via SequentialScheduler
+        use reify_eval::DefEnv;
         use reify_eval::cache::{EvalOutcome, NodeId};
         use reify_eval::demand::DemandRegistry;
         use reify_eval::deps::{ReverseDependencyIndex, build_trace_map};
@@ -381,7 +382,7 @@ mod tests {
 
         // 1. Build graph
         let module = bracket_compiled_module();
-        let graph = EvaluationGraph::from_templates(&module.templates);
+        let graph = EvaluationGraph::from_env(DefEnv::of_module(&module, &[]));
 
         // 2. Build reverse index
         let index = ReverseDependencyIndex::build_from_graph(&graph);

@@ -172,7 +172,7 @@ fn def_env_resolves_with_entry_then_imports_then_stdlib_precedence() {
 
 /// (g) Over every entry-declared and stdlib name, DefEnv agrees with the
 /// compile-side rule: `name_env::resolve` over the entry's template list and
-/// the stdlib, as eval's `find_template_in_scope` calls it. A name the I5 merge
+/// the stdlib, as eval's pre-DefEnv sub lookup called it. A name the I5 merge
 /// copied binds the import unit's template, which the copy duplicates.
 #[test]
 fn def_env_agrees_with_the_compile_side_rule_and_binds_merged_names_at_home() {
@@ -398,11 +398,14 @@ impl KindsFixture {
     }
 }
 
-/// A definition kind, with its DefEnv resolver.
+/// A definition kind.
 trait Kind: ProgramDefinition + Sized {
     /// Every definition of this kind `module` holds, `pub` or not.
     fn all_in(module: &CompiledModule) -> &[Self];
+}
 
+/// A kind DefEnv resolves by bare name, through its own typed resolver.
+trait ResolvedByBareName: Kind {
     /// What `env` binds `like`'s key to, through this kind's own resolver.
     fn resolve<'p>(env: &DefEnv<'p>, like: &Self) -> Option<&'p Self>;
 }
@@ -411,6 +414,9 @@ impl Kind for TopologyTemplate {
     fn all_in(module: &CompiledModule) -> &[Self] {
         &module.templates
     }
+}
+
+impl ResolvedByBareName for TopologyTemplate {
     fn resolve<'p>(env: &DefEnv<'p>, like: &Self) -> Option<&'p Self> {
         env.resolve_template(&like.name)
     }
@@ -424,6 +430,9 @@ impl Kind for CompiledFunction {
     fn all_in(module: &CompiledModule) -> &[Self] {
         &module.functions
     }
+}
+
+impl ResolvedByBareName for CompiledFunction {
     fn resolve<'p>(env: &DefEnv<'p>, like: &Self) -> Option<&'p Self> {
         env.resolve_function(&like.name, &param_types(like))
     }
@@ -433,6 +442,9 @@ impl Kind for EnumDef {
     fn all_in(module: &CompiledModule) -> &[Self] {
         &module.enum_defs
     }
+}
+
+impl ResolvedByBareName for EnumDef {
     fn resolve<'p>(env: &DefEnv<'p>, like: &Self) -> Option<&'p Self> {
         env.resolve_enum(&like.name)
     }
@@ -442,6 +454,9 @@ impl Kind for CompiledUnit {
     fn all_in(module: &CompiledModule) -> &[Self] {
         &module.units
     }
+}
+
+impl ResolvedByBareName for CompiledUnit {
     fn resolve<'p>(env: &DefEnv<'p>, like: &Self) -> Option<&'p Self> {
         env.resolve_unit(&like.name)
     }
@@ -451,6 +466,9 @@ impl Kind for CompiledTypeAlias {
     fn all_in(module: &CompiledModule) -> &[Self] {
         &module.type_aliases
     }
+}
+
+impl ResolvedByBareName for CompiledTypeAlias {
     fn resolve<'p>(env: &DefEnv<'p>, like: &Self) -> Option<&'p Self> {
         env.resolve_alias(&like.name)
     }
@@ -460,6 +478,9 @@ impl Kind for CompiledTrait {
     fn all_in(module: &CompiledModule) -> &[Self] {
         &module.trait_defs
     }
+}
+
+impl ResolvedByBareName for CompiledTrait {
     fn resolve<'p>(env: &DefEnv<'p>, like: &Self) -> Option<&'p Self> {
         env.resolve_trait(&like.name)
     }
@@ -469,17 +490,11 @@ impl Kind for CompiledConstraintDef {
     fn all_in(module: &CompiledModule) -> &[Self] {
         &module.constraint_defs
     }
-    fn resolve<'p>(env: &DefEnv<'p>, like: &Self) -> Option<&'p Self> {
-        env.resolve_constraint_def(&like.name)
-    }
 }
 
 impl Kind for CompiledPurpose {
     fn all_in(module: &CompiledModule) -> &[Self] {
         &module.compiled_purposes
-    }
-    fn resolve<'p>(env: &DefEnv<'p>, like: &Self) -> Option<&'p Self> {
-        env.resolve_purpose(&like.name)
     }
 }
 
@@ -507,7 +522,7 @@ fn std_home<D: Kind>(name: &str) -> (&'static CompiledModule, &'static D) {
         .unwrap_or_else(|| panic!("precondition: some stdlib module exports `{name}`"))
 }
 
-fn assert_binds<D: Kind>(env: &DefEnv<'_>, like: &D, expected: &D, what: String) {
+fn assert_binds<D: ResolvedByBareName>(env: &DefEnv<'_>, like: &D, expected: &D, what: String) {
     let found = D::resolve(env, like).unwrap_or_else(|| panic!("{what}: nothing bound"));
     assert!(std::ptr::eq(found, expected), "{what}: bound {found:?}");
 }
@@ -521,10 +536,34 @@ fn assert_qualified<D: Kind>(env: &DefEnv<'_>, module_key: &str, name: &str, exp
     );
 }
 
+/// Qualified lookup sees one module's surface alone: an import's `pub`
+/// definitions, never its non-pub ones, and a stdlib module's exports; an
+/// unknown module key binds nothing.
+fn assert_kind_qualified<D: Kind>(kind: &str) {
+    let row = row(kind);
+    let fx = KindsFixture::new();
+    let env = DefEnv::from_program(&fx.program);
+    let (a, b) = (fx.a(), fx.b());
+    let [_, peer, hidden, visible] = row.names;
+
+    assert_qualified(&env, "a", visible, Some(named::<D>(a, visible)));
+    assert_qualified::<D>(&env, "a", hidden, None);
+    assert_qualified(&env, "b", peer, Some(named::<D>(b, peer)));
+    let std_def = std_only::<D>(&row);
+    let (std_module, _) = std_home::<D>(std_def.name());
+    assert_qualified(
+        &env,
+        &std_module.path.to_dotted(),
+        std_def.name(),
+        Some(std_def),
+    );
+    assert_qualified::<D>(&env, "nope", visible, None);
+}
+
 /// entry > first import > second import > stdlib for one kind; a non-pub
 /// import definition is invisible; a stdlib-only name resolves; qualified
 /// lookup sees one module's surface alone.
-fn assert_kind_precedence<D: Kind>(kind: &str) {
+fn assert_kind_precedence<D: ResolvedByBareName>(kind: &str) {
     let row = row(kind);
     let fx = KindsFixture::new();
     let program = &fx.program;
@@ -584,17 +623,7 @@ fn assert_kind_precedence<D: Kind>(kind: &str) {
     let std_def = std_only::<D>(&row);
     assert_binds(&env, std_def, std_def, what("a stdlib-only name resolves"));
 
-    assert_qualified(&env, "a", visible, Some(visible_def));
-    assert_qualified::<D>(&env, "a", hidden, None);
-    assert_qualified(&env, "b", peer, Some(named::<D>(b, peer)));
-    let (std_module, _) = std_home::<D>(std_def.name());
-    assert_qualified(
-        &env,
-        &std_module.path.to_dotted(),
-        std_def.name(),
-        Some(std_def),
-    );
-    assert_qualified::<D>(&env, "nope", visible, None);
+    assert_kind_qualified::<D>(kind);
 }
 
 #[test]
@@ -628,13 +657,13 @@ fn traits_bind_entry_then_imports_in_order_then_stdlib() {
 }
 
 #[test]
-fn constraint_defs_bind_entry_then_imports_in_order_then_stdlib() {
-    assert_kind_precedence::<CompiledConstraintDef>("constraint def");
+fn constraint_defs_resolve_qualified_through_one_modules_surface() {
+    assert_kind_qualified::<CompiledConstraintDef>("constraint def");
 }
 
 #[test]
-fn purposes_bind_entry_then_imports_in_order_then_stdlib() {
-    assert_kind_precedence::<CompiledPurpose>("purpose");
+fn purposes_resolve_qualified_through_one_modules_surface() {
+    assert_kind_qualified::<CompiledPurpose>("purpose");
 }
 
 /// An entry re-declaring an imported unit is a compile Error that drops the
@@ -1084,4 +1113,87 @@ fn the_function_table_dispatches_as_the_engine_table_does() {
             signature(function)
         );
     }
+}
+
+/// The stdlib's own declaration of template `name`.
+fn stdlib_template(name: &str) -> &'static TopologyTemplate {
+    template_in(&stdlib_module_declaring(name).templates, name)
+}
+
+#[test]
+fn a_lone_modules_environment_binds_its_own_templates_then_the_prelude() {
+    let module =
+        reify_test_support::helpers::parse_and_compile_with_stdlib("structure def Local { }");
+    let env = DefEnv::of_module(&module, load_stdlib());
+
+    assert!(same(
+        env.resolve_template("Local"),
+        template_in(&module.templates, "Local")
+    ));
+    assert!(same(
+        env.resolve_template(STDLIB_ONLY),
+        stdlib_template(STDLIB_ONLY)
+    ));
+    assert!(env.resolve_template("NoSuchStructure").is_none());
+    assert!(std::ptr::eq(env.declared(), &module));
+    assert!(env.collision_warnings().is_empty());
+}
+
+fn same_binding<D>(a: Option<&D>, b: Option<&D>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => std::ptr::eq(a, b),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+#[test]
+fn an_import_free_programs_environment_equals_its_entrys_lone_environment() {
+    let dir = tempfile::tempdir().unwrap();
+    let program = compile_in(
+        dir.path(),
+        &[],
+        "module main\n\
+         structure def Bracket {\n    param w : Real = 1\n}\n\
+         enum Side { Left, Right }\n",
+    );
+    assert!(
+        errors_of(&program).is_empty(),
+        "precondition: {:?}",
+        errors_of(&program)
+    );
+    let of_program = DefEnv::from_program(&program);
+    let of_entry = DefEnv::of_module(program.entry(), load_stdlib());
+
+    let names = program
+        .entry()
+        .templates
+        .iter()
+        .map(|t| t.name.as_str())
+        .chain([STDLIB_ONLY, "ZeroForce", "NoSuchStructure"]);
+    for name in names {
+        assert!(
+            same_binding(
+                of_program.resolve_template(name),
+                of_entry.resolve_template(name)
+            ),
+            "`{name}` binds differently in the program and its lone entry"
+        );
+    }
+    assert!(of_entry.resolve_enum("Side").is_some());
+    assert!(same_binding(
+        of_program.resolve_enum("Side"),
+        of_entry.resolve_enum("Side")
+    ));
+}
+
+#[test]
+fn a_lone_modules_own_template_shadows_the_stdlibs() {
+    let module =
+        reify_test_support::helpers::parse_and_compile_with_stdlib("structure def ZeroForce { }");
+    let env = DefEnv::of_module(&module, load_stdlib());
+
+    let own = template_in(&module.templates, "ZeroForce");
+    assert!(same(env.resolve_template("ZeroForce"), own));
+    assert!(!std::ptr::eq(own, stdlib_template("ZeroForce")));
 }

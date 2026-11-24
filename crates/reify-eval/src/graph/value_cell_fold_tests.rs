@@ -1,4 +1,4 @@
-//! `from_templates` builds `graph.value_cells` by folding
+//! `from_env` builds `graph.value_cells` by folding
 //! [`contributed_cells`]. These tests pin that fold from outside: a corpus of
 //! `.ri` inputs reaching every value-cell arm, each carrying hand-measured
 //! graph cells, plus the precedence and ordering the fold must keep.
@@ -11,12 +11,13 @@ use reify_core::{ContentHash, ModulePath, Type, ValueCellId};
 
 use super::EvaluationGraph;
 use super::cell_contributions::{ContributedCell, contributed_cell_types, contributed_cells};
+use crate::DefEnv;
 
-/// A `.ri` input chosen to reach one `from_templates` value-cell arm.
+/// A `.ri` input chosen to reach one `from_env` value-cell arm.
 struct CorpusEntry {
     arm: &'static str,
     src: &'static str,
-    /// Cells measured by hand in `from_templates`' output, proving the input
+    /// Cells measured by hand in `from_env`' output, proving the input
     /// reaches its arm. Never derived from the enumeration under test.
     expected: &'static [ExpectedCell],
 }
@@ -213,11 +214,11 @@ fn compile(src: &str) -> CompiledModule {
 }
 
 /// The value-cell map a consumer gets by writing every contribution, in
-/// iteration order, where its `landing_id` says: `from_templates`' fold
+/// iteration order, where its `landing_id` says: `from_env`' fold
 /// without the node construction.
-fn replay(templates: &[TopologyTemplate]) -> HashMap<ValueCellId, ContributedCell<'_>> {
+fn replay(module: &CompiledModule) -> HashMap<ValueCellId, ContributedCell<'_>> {
     let mut cells = HashMap::new();
-    for cell in contributed_cells(templates) {
+    for cell in contributed_cells(DefEnv::of_module(module, &[])) {
         if let Some(id) = cell.landing_id(|id| cells.contains_key(id)) {
             cells.insert(id, cell);
         }
@@ -245,10 +246,10 @@ fn contributed_cells_replay_reproduces_from_templates_value_cells() {
 
 fn assert_fold_oracle(entry: &CorpusEntry) {
     let compiled = compile(entry.src);
-    let graph = EvaluationGraph::from_templates(&compiled.templates);
+    let graph = EvaluationGraph::from_env(DefEnv::of_module(&compiled, &[]));
     assert_expected_cells(entry, &graph);
     assert_guard_cells_are_bool_lets_over_their_guards(entry, &compiled.templates, &graph);
-    assert_replay_equals_graph(entry, &compiled.templates, &graph);
+    assert_replay_equals_graph(entry, &compiled, &graph);
 }
 
 fn assert_expected_cells(entry: &CorpusEntry, graph: &EvaluationGraph) {
@@ -316,10 +317,10 @@ fn assert_guard_cells_are_bool_lets_over_their_guards(
 
 fn assert_replay_equals_graph(
     entry: &CorpusEntry,
-    templates: &[TopologyTemplate],
+    module: &CompiledModule,
     graph: &EvaluationGraph,
 ) {
-    let replayed = replay(templates);
+    let replayed = replay(module);
     let mut only_in_graph: Vec<String> = graph
         .value_cells
         .keys()
@@ -369,10 +370,10 @@ fn assert_replay_equals_graph(
 #[test]
 fn plain_sub_child_default_keeps_parent_override() {
     let compiled = compile(PARENT_OVERRIDE.src);
-    let graph = EvaluationGraph::from_templates(&compiled.templates);
+    let graph = EvaluationGraph::from_env(DefEnv::of_module(&compiled, &[]));
     let bore = ValueCellId::new("A.b", "bore");
     assert!(
-        contributed_cells(&compiled.templates)
+        contributed_cells(DefEnv::of_module(&compiled, &[]))
             .any(|c| c.graph_id() == bore && c.landing_id(|_| true).is_none()),
         "({}) no contribution for `{bore}` defers to a cell already present",
         PARENT_OVERRIDE.arm,
@@ -392,9 +393,9 @@ fn plain_sub_child_default_keeps_parent_override() {
 #[test]
 fn same_id_contributions_resolve_last_writer_wins() {
     let compiled = compile(SUCCESSFUL_MONOMORPH.src);
-    let graph = EvaluationGraph::from_templates(&compiled.templates);
+    let graph = EvaluationGraph::from_env(DefEnv::of_module(&compiled, &[]));
     let seal = ValueCellId::new("Bearing", "seal");
-    let seal_types: Vec<&Type> = contributed_cells(&compiled.templates)
+    let seal_types: Vec<&Type> = contributed_cells(DefEnv::of_module(&compiled, &[]))
         .filter(|c| c.graph_id() == seal)
         .map(|c| c.cell_type())
         .collect();
@@ -428,10 +429,11 @@ fn same_id_contributions_resolve_last_writer_wins() {
 fn contributed_cell_types_are_the_contributed_cells_type_set() {
     for entry in CORPUS {
         let compiled = compile(entry.src);
-        let full: HashSet<&Type> = contributed_cells(&compiled.templates)
+        let full: HashSet<&Type> = contributed_cells(DefEnv::of_module(&compiled, &[]))
             .map(|c| c.cell_type())
             .collect();
-        let collapsed: HashSet<&Type> = contributed_cell_types(&compiled.templates).collect();
+        let collapsed: HashSet<&Type> =
+            contributed_cell_types(DefEnv::of_module(&compiled, &[])).collect();
         assert_eq!(
             collapsed, full,
             "({}) contributed_cell_types (left) must yield exactly the types \

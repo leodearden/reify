@@ -3707,7 +3707,7 @@ fn edit_source_role_flip_probe_memoised_across_multiple_groups() {
 /// This mirrors the defensive invariant already present on the `Engine::eval`
 /// cold-start path.  Without the corresponding fix in engine_edit.rs the call
 /// either returns normally or panics later with an unrelated message — the
-/// assertion must fire immediately after `Snapshot::from_compiled_module`.
+/// assertion must fire immediately after `Snapshot::from_env`.
 #[test]
 #[cfg(debug_assertions)]
 #[allow(clippy::single_element_loop)]

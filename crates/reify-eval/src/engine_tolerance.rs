@@ -145,7 +145,7 @@ impl Engine {
     ///   regardless of how many times the occurrence is sub-instantiated
     ///   (subs duplicate value cells under scoped entity-refs but do NOT
     ///   scope-duplicate constraints — see
-    ///   `crate::graph::EvaluationGraph::from_templates`). Resolved via
+    ///   `crate::graph::EvaluationGraph::from_env`). Resolved via
     ///   [`crate::tolerance_combine::extract_output_tolerance_bound`].
     /// - `subject_entity_ref` — the realization target (e.g. `"MyDesign"`)
     ///   the active purpose's subject prefix-scan covers. Resolved via

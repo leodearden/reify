@@ -19,6 +19,7 @@ use reify_ir::{Value, ValueMap};
 use reify_test_support::parse_and_compile;
 
 use super::Engine;
+use crate::DefEnv;
 use crate::graph::EvaluationGraph;
 use crate::graph::geometry_cell_link_fixture::{
     GEOMETRY_LIST_MEMBERS, SCALAR_GEOMETRY_MEMBERS, SRC, TEMPLATE, assert_some_realization_links,
@@ -38,7 +39,7 @@ fn mint_from_graph(cell: &ValueCellId, graph: &EvaluationGraph) -> Option<Value>
 #[test]
 fn from_graph_mint_never_writes_a_scalar_handle_into_a_geometry_list_cell() {
     let module = parse_and_compile(SRC);
-    let graph = EvaluationGraph::from_templates(&module.templates);
+    let graph = EvaluationGraph::from_env(DefEnv::of_module(&module, &[]));
 
     for member in GEOMETRY_LIST_MEMBERS {
         let cell = ValueCellId::new(TEMPLATE, member);

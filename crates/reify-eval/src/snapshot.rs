@@ -1,9 +1,9 @@
 // Snapshot: immutable evaluation state with provenance tracking.
 
-use reify_compiler::CompiledModule;
 use reify_core::{ConstraintNodeId, ContentHash, SnapshotId, ValueCellId, VersionId};
 use reify_ir::{DeterminacyState, PersistentMap, SnapshotProvenance, Value};
 
+use crate::DefEnv;
 use crate::graph::EvaluationGraph;
 
 /// An immutable snapshot of evaluation state.
@@ -46,16 +46,17 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    /// Create an initial snapshot from a compiled module.
+    /// Create an initial snapshot of the module `env` declares.
     ///
-    /// Builds the evaluation graph from the module's templates,
-    /// wires `module.auto_type_substitution` into `graph.auto_type_substitution`
+    /// Builds the evaluation graph through `env`,
+    /// wires the module's `auto_type_substitution` into `graph.auto_type_substitution`
     /// BEFORE computing `topology_fingerprint` so the 7th bucket reflects the
     /// substitution (PRD task 5 criterion 7, tasks 2388/2778). Initializes all
     /// values to (Undef, Undetermined), and sets provenance to Initial with
     /// version/snapshot IDs starting at 0.
-    pub fn from_compiled_module(module: &CompiledModule) -> Self {
-        let mut graph = EvaluationGraph::from_templates(&module.templates);
+    pub fn from_env(env: DefEnv<'_>) -> Self {
+        let module = env.declared();
+        let mut graph = EvaluationGraph::from_env(env);
         // Wire MultiParamResolutionOutcome.substitution from CompiledModule
         // into the graph BEFORE computing topology_fingerprint, so the 7th
         // bucket reflects the substitution (PRD task 5 criterion 7,
@@ -123,7 +124,7 @@ mod tests {
         use reify_test_support::bracket_compiled_module;
 
         let module = bracket_compiled_module();
-        let snap = Snapshot::from_compiled_module(&module);
+        let snap = Snapshot::from_env(DefEnv::of_module(&module, &[]));
 
         // Check snapshot IDs start at 0
         assert_eq!(snap.id, SnapshotId(0));
@@ -161,7 +162,7 @@ mod tests {
         use reify_test_support::bracket_compiled_module;
 
         let module = bracket_compiled_module();
-        let snap = Snapshot::from_compiled_module(&module);
+        let snap = Snapshot::from_env(DefEnv::of_module(&module, &[]));
 
         let debug = format!("{:?}", snap);
         assert!(debug.contains("Snapshot"));
@@ -177,7 +178,7 @@ mod tests {
         use reify_test_support::bracket_compiled_module;
 
         let module = bracket_compiled_module();
-        let snap = Snapshot::from_compiled_module(&module);
+        let snap = Snapshot::from_env(DefEnv::of_module(&module, &[]));
 
         // Clone the snapshot (O(1) via PersistentMap)
         let mut cloned = snap.clone();

@@ -226,8 +226,10 @@ impl DemandRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::DefEnv;
     use crate::cache::NodeId;
     use reify_core::{ConstraintNodeId, ValueCellId};
+    use reify_test_support::module_of;
 
     #[test]
     fn demand_registry_new_is_empty() {
@@ -253,7 +255,7 @@ mod tests {
                 CompiledExpr::literal(Value::Bool(true), Type::Bool),
             )
             .build();
-        let graph = EvaluationGraph::from_templates(&[template]);
+        let graph = EvaluationGraph::from_env(DefEnv::of_module(&module_of([template]), &[]));
 
         let node = NodeId::Constraint(ConstraintNodeId::new(e, 0));
         let mut reg = DemandRegistry::new();
@@ -283,7 +285,7 @@ mod tests {
                 CompiledExpr::literal(Value::Bool(true), Type::Bool),
             )
             .build();
-        let graph = EvaluationGraph::from_templates(&[template]);
+        let graph = EvaluationGraph::from_env(DefEnv::of_module(&module_of([template]), &[]));
 
         let node = NodeId::Constraint(ConstraintNodeId::new(e, 0));
         let mut reg = DemandRegistry::new();
@@ -327,7 +329,7 @@ mod tests {
                 CompiledExpr::literal(Value::Bool(true), Type::Bool),
             )
             .build();
-        let graph = EvaluationGraph::from_templates(&[template]);
+        let graph = EvaluationGraph::from_env(DefEnv::of_module(&module_of([template]), &[]));
 
         let node = NodeId::Constraint(ConstraintNodeId::new(e, 0));
         let mut reg = DemandRegistry::new();
@@ -367,7 +369,7 @@ mod tests {
         use reify_test_support::bracket_compiled_module;
 
         let module = bracket_compiled_module();
-        let graph = EvaluationGraph::from_templates(&module.templates);
+        let graph = EvaluationGraph::from_env(DefEnv::of_module(&module, &[]));
 
         let e = "Bracket";
         let c0 = NodeId::Constraint(ConstraintNodeId::new(e, 0));
@@ -394,7 +396,7 @@ mod tests {
         use reify_test_support::bracket_compiled_module;
 
         let module = bracket_compiled_module();
-        let graph = EvaluationGraph::from_templates(&module.templates);
+        let graph = EvaluationGraph::from_env(DefEnv::of_module(&module, &[]));
 
         let e = "Bracket";
         let c1 = NodeId::Constraint(ConstraintNodeId::new(e, 1));
@@ -420,7 +422,7 @@ mod tests {
         use reify_test_support::bracket_compiled_module;
 
         let module = bracket_compiled_module();
-        let graph = EvaluationGraph::from_templates(&module.templates);
+        let graph = EvaluationGraph::from_env(DefEnv::of_module(&module, &[]));
 
         let e = "Bracket";
         let c0 = NodeId::Constraint(ConstraintNodeId::new(e, 0));
@@ -567,7 +569,7 @@ mod tests {
             .constraint(e, 0, None, c0_expr)
             .build();
 
-        let graph = EvaluationGraph::from_templates(&[template]);
+        let graph = EvaluationGraph::from_env(DefEnv::of_module(&module_of([template]), &[]));
 
         let c0 = NodeId::Constraint(ConstraintNodeId::new(e, 0));
         let mut reg = DemandRegistry::new();
@@ -737,7 +739,7 @@ mod tests {
                 CompiledExpr::literal(Value::Bool(true), Type::Bool),
             )
             .build();
-        let graph = EvaluationGraph::from_templates(&[template]);
+        let graph = EvaluationGraph::from_env(DefEnv::of_module(&module_of([template]), &[]));
 
         let node = NodeId::Constraint(ConstraintNodeId::new(e, 0));
         let absent = NodeId::Value(ValueCellId::new("Nowhere", "ghost"));
@@ -786,7 +788,7 @@ mod tests {
     /// occupies into the demand cone.
     ///
     /// The γ arm above rides `RealizationNodeData.geometry_cell`, which was
-    /// `None` for every element until `from_templates` learned to derive it
+    /// `None` for every element until `from_env` learned to derive it
     /// from `list_binding`. Without the pull, an all-visible selective cone
     /// schedules strictly LESS than full scope — it drops `S.holes` — breaking
     /// the "all-visible selectivity is a no-op: schedule EXACTLY what full
@@ -819,7 +821,7 @@ mod tests {
                     .clone()
             })
             .collect();
-        let graph = EvaluationGraph::from_templates(&module.templates);
+        let graph = EvaluationGraph::from_env(DefEnv::of_module(&module, &[]));
         let holes = NodeId::Value(ValueCellId::new("S", "holes"));
 
         for (k, rid) in element_ids.iter().enumerate() {
@@ -884,7 +886,7 @@ mod tests {
         };
         let holes: Vec<NodeId> = (0..3).map(|k| element(&format!("holes#{k}"))).collect();
         let pins: Vec<NodeId> = (0..2).map(|k| element(&format!("pins#{k}"))).collect();
-        let graph = EvaluationGraph::from_templates(&module.templates);
+        let graph = EvaluationGraph::from_env(DefEnv::of_module(&module, &[]));
 
         let cone_from = |roots: &[NodeId]| {
             let mut reg = DemandRegistry::new();
@@ -958,7 +960,7 @@ mod tests {
                 .map(|r| r.id.clone())
                 .unwrap_or_else(|| panic!("repro must compile a realization named {name:?}"))
         };
-        let graph = EvaluationGraph::from_templates(&module.templates);
+        let graph = EvaluationGraph::from_env(DefEnv::of_module(&module, &[]));
 
         for cell in ["loc_box", "body"] {
             let mut reg = DemandRegistry::new();

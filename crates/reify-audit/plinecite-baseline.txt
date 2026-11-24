@@ -80,8 +80,6 @@ crates/reify-compiler/src/conformance/checker.rs :: type_compat.rs:81
 crates/reify-compiler/src/conformance/mod.rs :: examples/m6_result_recovery.ri:30
 crates/reify-compiler/src/conformance/mod.rs :: expr.rs:782
 crates/reify-compiler/src/conformance/mod.rs :: stdlib/trajectory.ri:103
-crates/reify-compiler/src/conformance/sub_component_validation.rs :: crates/reify-eval/src/engine_eval.rs:55
-crates/reify-compiler/src/conformance/sub_component_validation.rs :: engine_eval.rs:2283
 crates/reify-compiler/src/connect.rs :: entity.rs (~2145
 crates/reify-compiler/src/connect.rs :: entity.rs (~2726
 crates/reify-compiler/src/connect.rs :: entity.rs ~2249
@@ -147,7 +145,6 @@ crates/reify-compiler/src/guards.rs :: entity.rs:1757
 crates/reify-compiler/src/joint_signatures.rs :: engine_eval.rs:144
 crates/reify-compiler/src/joint_signatures.rs :: expr.rs:1718
 crates/reify-compiler/src/joint_signatures.rs :: lib.rs:215
-crates/reify-compiler/src/lib.rs :: engine_eval.rs:55
 crates/reify-compiler/src/lib.rs :: lib.rs:270
 crates/reify-compiler/src/lib.rs :: stdlib/tolerancing.ri:268
 crates/reify-compiler/src/list_helpers.rs :: expr.rs:~1741
@@ -239,9 +236,7 @@ crates/reify-core/src/diagnostics.rs :: solver_buckling.ri:85
 crates/reify-core/src/diagnostics.rs :: solver_buckling.ri:88
 crates/reify-core/src/field_calculus.rs :: calculus.rs:1542
 crates/reify-core/src/field_calculus.rs :: calculus.rs:1591
-crates/reify-core/src/field_calculus.rs :: calculus.rs:1651
 crates/reify-core/src/field_calculus.rs :: calculus.rs:2102
-crates/reify-core/src/field_calculus.rs :: reify-expr/src/calculus.rs:19
 crates/reify-core/src/ty.rs :: conformance.rs:521
 crates/reify-core/src/ty.rs :: crates/reify-ir/src/geometry.rs:567
 crates/reify-doc/src/fmt_markdown.rs :: fmt_markdown.rs:337
@@ -416,7 +411,6 @@ crates/reify-eval/src/primitive_attribute_seed.rs :: kernel-occt/tests/harness_o
 crates/reify-eval/src/realization_staleness.rs :: deps.rs:73
 crates/reify-eval/src/realization_staleness.rs :: dirty.rs:658
 crates/reify-eval/src/realization_staleness.rs :: geometry_boolean.rs:165
-crates/reify-eval/src/realization_staleness.rs :: graph.rs:371
 crates/reify-eval/src/realize_solid_sdf.rs :: register.rs:157
 crates/reify-eval/src/registry_drift_tests.rs :: geometry_ops.rs:3626
 crates/reify-eval/src/registry_drift_tests.rs :: geometry_ops.rs:3703
@@ -466,8 +460,6 @@ crates/reify-expr/src/dual_eval.rs :: lib.rs:3852
 crates/reify-expr/src/dual_eval.rs :: lib.rs:459
 crates/reify-expr/src/dual_eval.rs :: lib.rs:488
 crates/reify-expr/src/dual_eval.rs :: lib.rs:490
-crates/reify-expr/src/dual_eval.rs :: lib.rs:5007
-crates/reify-expr/src/dual_eval.rs :: lib.rs:5018
 crates/reify-expr/src/dual_eval.rs :: lib.rs:751
 crates/reify-expr/src/dual_eval.rs :: lib.rs:780
 crates/reify-expr/src/dual_eval.rs :: lib.rs:783
@@ -476,8 +468,6 @@ crates/reify-expr/src/dual_eval.rs :: lib.rs:824
 crates/reify-expr/src/dual_eval.rs :: reify-expr/src/lib.rs:1946
 crates/reify-expr/src/lib.rs :: crates/reify-expr/tests/collection_eval_tests.rs:518
 crates/reify-expr/src/lib.rs :: entity.rs:1104
-crates/reify-expr/src/lib.rs :: entity.rs:1107
-crates/reify-expr/src/lib.rs :: entity.rs:4107
 crates/reify-expr/src/lib.rs :: lib.rs line 444
 crates/reify-expr/src/lib.rs :: lib.rs:145
 crates/reify-expr/src/lib.rs :: lib.rs:2022
@@ -490,7 +480,6 @@ crates/reify-expr/src/lib.rs :: lib.rs:855
 crates/reify-expr/src/lib.rs :: numeric.rs:42
 crates/reify-expr/src/lib.rs :: numeric.rs:63
 crates/reify-expr/src/lib.rs :: reify-compiler/src/expr.rs:256
-crates/reify-expr/src/lib.rs :: reify-eval/src/unfold.rs:570
 crates/reify-expr/src/lib.rs :: reify-ir/value.rs:1141
 crates/reify-expr/src/lib.rs :: units.rs:680
 crates/reify-expr/src/lib.rs :: value.rs:885

@@ -463,7 +463,7 @@ pub(crate) type ValueCellDiff = (
 /// - `removed`: present only in the old graph.
 ///
 /// The content_hash already combines the cell's ID hash and expression
-/// content_hash (see `EvaluationGraph::from_templates`), so a match signals
+/// content_hash (see `EvaluationGraph::from_env`), so a match signals
 /// "equivalent node; cached value is still valid" while a mismatch signals
 /// "re-evaluate". This is the identity/equivalence key used by
 /// `Engine::edit_source`.
@@ -483,7 +483,7 @@ pub(crate) fn diff_value_cells(
 /// `ConstraintNodeId` is positional (`entity, index`) within its template, so a
 /// re-ordering of constraint declarations in source surfaces here as a
 /// `changed` diff at the shifted indexes — not as add+remove. This matches
-/// `EvaluationGraph::from_templates`, which assigns indexes from the
+/// `EvaluationGraph::from_env`, which assigns indexes from the
 /// constraint's declaration order.
 pub(crate) fn diff_constraints(
     old_graph: &EvaluationGraph,
@@ -3142,7 +3142,7 @@ impl Engine {
     /// 5. Seed the working `values` map and `new_snapshot.values`: for every
     ///    cell present in both graphs with unchanged `content_hash`, copy the
     ///    prior `(Value, DeterminacyState)`; for changed/added cells keep the
-    ///    `Snapshot::from_compiled_module` default (Undef) — the eval loop
+    ///    `Snapshot::from_env` default (Undef) — the eval loop
     ///    below fills these in.
     /// 6. Invalidate cache entries for removed and changed value cells.
     /// 7. Refresh `self.functions` / `self.compiled_purposes` / `self.meta_map`
@@ -3201,11 +3201,11 @@ impl Engine {
         let parent_id = eval_state.snapshot.id;
 
         // (2) Build the new snapshot from the incoming CompiledModule.
-        //     Snapshot::from_compiled_module seeds every value cell to
+        //     Snapshot::from_env seeds every value cell to
         //     (Undef, Undetermined) or (Undef, Auto); the seeding loop
         //     below overwrites those with the preserved prior values for
         //     cells whose content_hash matches the old graph.
-        let mut new_snapshot = crate::snapshot::Snapshot::from_compiled_module(module);
+        let mut new_snapshot = crate::snapshot::Snapshot::from_env(self.env_of(module));
         // Invariant mirror of engine_eval.rs:248-249 — covers the edit-time recompile path.
         #[cfg(debug_assertions)]
         crate::engine_eval::assert_value_cell_types_representable(&new_snapshot.graph);
@@ -3262,7 +3262,7 @@ impl Engine {
         // selective-realization-eviction β (#4729): carry `input_cone_hash`
         // FORWARD onto every realization that persists across the recompile.
         //
-        // `edit_source` rebuilds the graph, and `EvaluationGraph::from_templates`
+        // `edit_source` rebuilds the graph, and `EvaluationGraph::from_env`
         // seeds every new node's `input_cone_hash` to `None` (graph.rs:406).
         // That field means "the input cone as of the last EXECUTION", so
         // without this copy a recompile destroys the record and the §11.2
@@ -3276,7 +3276,7 @@ impl Engine {
         // guards the other's blind spot (the same argument that justifies the
         // union below at the β compare site):
         //
-        //   • `content_hash` sees the OPS but not the values. `from_templates`
+        //   • `content_hash` sees the OPS but not the values. `from_env`
         //     builds it as `of_str(id) ⊕ combine_all(of_str(format!("{:?}",
         //     op)))` (graph.rs:396) — a Debug render of the whole op IR — so
         //     "unchanged content_hash" implies the ops are identical.
@@ -3298,7 +3298,7 @@ impl Engine {
         // previously rendered mesh", so the GUI keeps showing the union
         // after the user typed `difference`. Restricting the carry-forward to
         // ops-identical nodes leaves a changed node with the `None`
-        // `from_templates` seeds, which is exactly the pre-diff state that
+        // `from_env` seeds, which is exactly the pre-diff state that
         // forces the gate down its re-execute branch. Cost is bounded to one
         // transient re-execution: the gate unconditionally re-stamps the hash
         // (its `hash_updates.push` runs on both arms), so a skipped node holds
@@ -3477,7 +3477,7 @@ impl Engine {
         // (8) Seed values by preserving unchanged-content_hash entries from
         //     the old snapshot, with `param_overrides` winning for Param cells
         //     (step-12). Changed cells retain their
-        //     Snapshot::from_compiled_module default (Undef) so the eval loop
+        //     Snapshot::from_env default (Undef) so the eval loop
         //     fills them in; added cells are seeded from overrides (if any,
         //     for Param kind) else left Undef for the eval loop. Removed cells
         //     are simply absent from the new graph, and their override entries
@@ -3520,7 +3520,7 @@ impl Engine {
                 continue;
             }
             // Changed/added/no prior entry: read the Undef seed placed by
-            // Snapshot::from_compiled_module so the working values map has
+            // Snapshot::from_env so the working values map has
             // an entry for every present cell (downstream expressions can
             // fail-stop on missing reads).
             if let Some((val, _)) = new_snapshot.values.get(id) {

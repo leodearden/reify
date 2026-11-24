@@ -44,7 +44,7 @@ use crate::topology_attribute_propagation::{
     populate_sweep_attributes, propagate_attributes_via_brepalgoapi_history,
 };
 use crate::volume_mesh_sources::{MeshedVolume, VolumeMeshSources};
-use crate::{BuildResult, Engine, EvaluationState, MeshSurface, TessellateResult};
+use crate::{BuildResult, DefEnv, Engine, EvaluationState, MeshSurface, TessellateResult};
 
 /// The four build/tessellate entry-point "surfaces" whose per-build engine
 /// state is reset unconditionally by [`Engine::reset_per_build_state`]
@@ -826,7 +826,7 @@ fn seed_cross_sub_named_steps(
     functions: &[CompiledFunction],
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
-    templates: &[reify_compiler::TopologyTemplate],
+    env: DefEnv<'_>,
 ) {
     // Same-call dedup: (child_template_name, args_fingerprint, realization_name) → handle.
     // Two subs of the same child with identical override declarations share one
@@ -854,14 +854,11 @@ fn seed_cross_sub_named_steps(
         } else {
             // ── override path: per-instance re-realization ─────────────────
             //
-            // 1. Locate the child template.  If it isn't in the module (e.g.
-            //    an external or forward-declared structure) skip silently —
-            //    the missing-structure diagnostic was already emitted during
-            //    compilation.
-            let child_template = match reify_compiler::find_template(templates, &sub.structure_name)
-            {
-                Some(t) => t,
-                None => continue,
+            // 1. Locate the child template.  A structure that does not
+            //    resolve in `env` is skipped: check-time conformance and graph
+            //    build already diagnose it (`UnknownSubStructure`).
+            let Some(child_template) = env.resolve_template(&sub.structure_name) else {
+                continue;
             };
 
             // 2. Build the per-instance overlay: `values` with each arg's
@@ -1059,10 +1056,9 @@ fn realize_overridden_instance_into(
 /// handles via `resolve_geometry_handle_arg`'s `IndexAccess` arm (which
 /// already reconstructs `"<binding>.<member>"`).
 ///
-/// Forward-declared or external defs not yet present in
-/// `module_named_steps` are skipped silently on the no-args path, and
-/// handled via [`reify_compiler::find_template`] on the args path (which
-/// searches the full templates slice regardless of order).
+/// Defs not yet present in `module_named_steps` (declared later, or outside
+/// the module) are skipped on the no-args path, and resolved in `env` on the
+/// args path (regardless of declaration order).
 ///
 /// # Scope boundary
 ///
@@ -1083,7 +1079,7 @@ fn seed_cross_let_named_steps(
     functions: &[CompiledFunction],
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
-    templates: &[reify_compiler::TopologyTemplate],
+    env: DefEnv<'_>,
 ) {
     use reify_core::identity::ValueCellId;
 
@@ -1121,13 +1117,12 @@ fn seed_cross_let_named_steps(
         } else {
             // ── override path: per-instance re-realization ─────────────────
 
-            // 1. Locate the child template.  If absent (forward-declared / external
-            //    def) skip silently — same policy as seed_cross_sub_named_steps.
-            let child_template =
-                match reify_compiler::find_template(templates, def_name.as_str()) {
-                    Some(t) => t,
-                    None => continue,
-                };
+            // 1. Locate the child template.  A def that does not resolve in
+            //    `env` is skipped — its constructor was already diagnosed at
+            //    compile time; same policy as seed_cross_sub_named_steps.
+            let Some(child_template) = env.resolve_template(def_name.as_str()) else {
+                continue;
+            };
 
             // 2. Obtain the default kernel.  The build() entry-point guards verify
             //    `kernels.contains_key(default_kernel_name)` before entering the
@@ -3912,6 +3907,7 @@ impl Engine {
             // and deliberately keeps a non-projectable node a candidate across
             // all of them — see `RedispatchPassState`.
             let mut redispatch_pass_state = RedispatchPassState::default();
+            let env = self.env_of(module);
             for (t_idx, template) in module.templates.iter().enumerate() {
                 // `named_steps` is scoped per-template so that two structures
                 // that each declare `let body = …` cannot clobber each other's
@@ -3935,7 +3931,7 @@ impl Engine {
                     &self.functions,
                     &self.meta_map,
                     &mut diagnostics,
-                    &module.templates,
+                    env,
                 );
                 let build_steps = template_build_steps(template, unified_schedule.as_deref(), None);
                 let terminal_idx = terminal_realization_index(template);
@@ -4224,7 +4220,7 @@ impl Engine {
                     &self.swept_kind_table,
                     &realized_reprs,
                     &mut diagnostics,
-                    &module.templates,
+                    env,
                 );
                 // task 4222 δ: re-evaluate Undef Let cells with containment hook.
                 // Mirrors the identical call in `build()` — see that site for the
@@ -4731,6 +4727,7 @@ impl Engine {
             // and deliberately keeps a non-projectable node a candidate across
             // all of them — see `RedispatchPassState`.
             let mut redispatch_pass_state = RedispatchPassState::default();
+            let env = self.env_of(module);
             for (t_idx, template) in module.templates.iter().enumerate() {
                 // `named_steps` is scoped per-template so that two structures
                 // that each declare `let body = …` cannot clobber each other's
@@ -4754,7 +4751,7 @@ impl Engine {
                     &self.functions,
                     &self.meta_map,
                     &mut diagnostics,
-                    &module.templates,
+                    env,
                 );
                 // Task 4628: seed per-binding cross-`let` handles. Runs on both
                 // schedulers (same as seed_cross_sub_named_steps); named_steps entries
@@ -4770,7 +4767,7 @@ impl Engine {
                     &self.functions,
                     &self.meta_map,
                     &mut diagnostics,
-                    &module.templates,
+                    env,
                 );
                 // Task 4358 ε: this template's realizations + selector/query
                 // value-cells in build-walk order (see `template_build_steps`).
@@ -5077,7 +5074,7 @@ impl Engine {
                     &self.swept_kind_table,
                     &realized_reprs,
                     &mut diagnostics,
-                    &module.templates,
+                    env,
                 );
                 // task 4222 δ: re-evaluate Undef Let cells with the live
                 // containment hook so `sample(restrict(field, region), point)`
@@ -5898,6 +5895,7 @@ impl Engine {
         // per-iteration.
         let mesh_contract_mode = self.mesh_contract_mode;
 
+        let env = self.env_of(module);
         for (t_idx, template) in module.templates.iter().enumerate() {
             let mut named_steps: HashMap<String, KernelHandle> = HashMap::new();
             // Task 5033 Gap #2 Gap A: by-name repr sibling of `named_steps`.
@@ -5913,7 +5911,7 @@ impl Engine {
                 &self.functions,
                 &self.meta_map,
                 &mut diagnostics,
-                &module.templates,
+                env,
             );
             let terminal_idx = terminal_realization_index(template);
             for (r_idx, realization) in template.realizations.iter().enumerate() {
@@ -6397,11 +6395,12 @@ impl Engine {
             } else {
                 HashSet::new()
             };
+        let env = self.env_of(module);
         let meshes = Self::tessellate_from_values(
             &mut self.geometry_kernels,
             &registry_borrowed,
             self.default_kernel_name.as_deref(),
-            module,
+            env,
             &mut values,
             &self.functions,
             &mut diagnostics,
@@ -6743,7 +6742,9 @@ impl Engine {
         geometry_kernels: &mut BTreeMap<String, Box<dyn GeometryKernel>>,
         registry: &BTreeMap<String, &CapabilityDescriptor>,
         default_kernel_name: Option<&str>,
-        module: &CompiledModule,
+        // The module to tessellate is `env.declared()`; its subs and
+        // let-bound instances resolve in `env`.
+        env: DefEnv<'_>,
         values: &mut ValueMap,
         functions: &[CompiledFunction],
         diagnostics: &mut Vec<Diagnostic>,
@@ -6810,6 +6811,7 @@ impl Engine {
         // cannot abort a build; this one can.)
         mesh_contract_mode: reify_ir::geometry::MeshContractMode,
     ) -> Vec<MeshSurface> {
+        let module = env.declared();
         let mut meshes = Vec::new();
 
         // Task ε (3436): the engine's default kernel is fetched by name from
@@ -6894,7 +6896,7 @@ impl Engine {
                 functions,
                 meta_map,
                 diagnostics,
-                &module.templates,
+                env,
             );
             // θ (task 4361) step-6: this template's realizations + selector/
             // query value-cells in tessellate-walk order — the same
@@ -7106,7 +7108,7 @@ impl Engine {
                 &*swept_kind_table,
                 &realized_reprs_tess,
                 diagnostics,
-                &module.templates,
+                env,
             );
             // Task 3441: snapshot this template's `named_steps` so a later
             // template that subs from it can seed compound-key entries.
@@ -11494,7 +11496,7 @@ impl Engine {
         swept_kinds: &SweptKindTable,
         realized_reprs: &HashMap<RealizationNodeId, ReprKind>,
         diagnostics: &mut Vec<Diagnostic>,
-        templates: &[reify_compiler::TopologyTemplate],
+        env: DefEnv<'_>,
     ) {
         // GHR-ζ (task 3608): whole-handle geometry-query dispatch
         // (volume / area / centroid / bounding_box). Added here — rather than a
@@ -11549,7 +11551,7 @@ impl Engine {
             meta_map,
             &*kernel,
             diagnostics,
-            templates,
+            env,
         );
         // Sub-instance copies of kinematic-query cells. Must run BEFORE
         // `post_process_derived_lets` so a parent let over
@@ -11560,7 +11562,7 @@ impl Engine {
             values,
             kernel,
             diagnostics,
-            templates,
+            env,
         );
         // task 4229: re-evaluate Let cells whose expressions depend on
         // topology-selector-derived cells (e.g. `moi_principal =
@@ -11825,14 +11827,14 @@ impl Engine {
         meta_map: &HashMap<String, HashMap<String, String>>,
         kernel: &dyn GeometryKernel,
         diagnostics: &mut Vec<Diagnostic>,
-        templates: &[reify_compiler::TopologyTemplate],
+        env: DefEnv<'_>,
     ) {
         // Collect (scoped_cell_id, rescoped_expr) candidates first to avoid
         // holding a borrow on `values` while also inserting into it (parallels
         // `post_process_derived_lets` / `post_process_feature_datum_projections`).
         let mut candidates: Vec<(reify_core::ValueCellId, reify_ir::CompiledExpr)> = Vec::new();
 
-        for instance in direct_sub_instances(template, templates, values) {
+        for instance in direct_sub_instances(template, env, values) {
             for child_cell in &instance.child_template().value_cells {
                 let Some(default_expr) = &child_cell.default_expr else {
                     continue;
@@ -11886,13 +11888,13 @@ impl Engine {
         values: &mut ValueMap,
         kernel: &mut dyn GeometryKernel,
         diagnostics: &mut Vec<Diagnostic>,
-        templates: &[reify_compiler::TopologyTemplate],
+        env: DefEnv<'_>,
     ) {
         let mut pose_cache: HashMap<
             (reify_ir::GeometryHandleId, [u64; 4], [u64; 3]),
             reify_ir::GeometryHandleId,
         > = HashMap::new();
-        for instance in direct_sub_instances(template, templates, values) {
+        for instance in direct_sub_instances(template, env, values) {
             let steps = instance.named_steps_view(named_steps);
             let mut instance_diagnostics = Vec::new();
             for cell in &instance.child_template().value_cells {
@@ -12625,11 +12627,12 @@ impl Engine {
             registry_owned.iter().map(|(k, v)| (k.clone(), v)).collect();
         // (Per-build attribute tables + `achieved_repr_tol` were reset at the
         // TOP of this surface by `reset_per_build_state(TessellateSnapshot)`.)
+        let env = self.env_of(module);
         let meshes = Self::tessellate_from_values(
             &mut self.geometry_kernels,
             &registry_borrowed,
             self.default_kernel_name.as_deref(),
-            module,
+            env,
             &mut values,
             &self.functions,
             &mut diagnostics,

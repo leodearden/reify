@@ -474,10 +474,12 @@ pub(crate) fn assert_dag_complete_from_graph(
 
 #[cfg(test)]
 mod tests {
+    use crate::DefEnv;
     use crate::cache::NodeId;
     use crate::deps::ReverseDependencyIndex;
     use crate::dirty::compute_dirty_cone;
     use reify_core::{ConstraintNodeId, ValueCellId};
+    use reify_test_support::module_of;
     use std::collections::HashSet;
 
     #[test]
@@ -497,7 +499,7 @@ mod tests {
         use reify_test_support::bracket_compiled_module;
 
         let module = bracket_compiled_module();
-        let graph = EvaluationGraph::from_templates(&module.templates);
+        let graph = EvaluationGraph::from_env(DefEnv::of_module(&module, &[]));
         let index = ReverseDependencyIndex::build_from_graph(&graph);
 
         let e = "Bracket";
@@ -524,7 +526,7 @@ mod tests {
         use reify_test_support::bracket_compiled_module;
 
         let module = bracket_compiled_module();
-        let graph = EvaluationGraph::from_templates(&module.templates);
+        let graph = EvaluationGraph::from_env(DefEnv::of_module(&module, &[]));
         let index = ReverseDependencyIndex::build_from_graph(&graph);
 
         let e = "Bracket";
@@ -554,7 +556,7 @@ mod tests {
         use reify_test_support::bracket_compiled_module;
 
         let module = bracket_compiled_module();
-        let graph = EvaluationGraph::from_templates(&module.templates);
+        let graph = EvaluationGraph::from_env(DefEnv::of_module(&module, &[]));
         let index = ReverseDependencyIndex::build_from_graph(&graph);
 
         let e = "Bracket";
@@ -583,7 +585,7 @@ mod tests {
         use reify_test_support::bracket_compiled_module;
 
         let module = bracket_compiled_module();
-        let graph = EvaluationGraph::from_templates(&module.templates);
+        let graph = EvaluationGraph::from_env(DefEnv::of_module(&module, &[]));
         let index = ReverseDependencyIndex::build_from_graph(&graph);
 
         let e = "Bracket";
@@ -2067,7 +2069,7 @@ mod tests {
         use reify_test_support::bracket_compiled_module;
 
         let module = bracket_compiled_module();
-        let graph = EvaluationGraph::from_templates(&module.templates);
+        let graph = EvaluationGraph::from_env(DefEnv::of_module(&module, &[]));
 
         let e = "Bracket";
         let c0 = NodeId::Constraint(ConstraintNodeId::new(e, 0));
@@ -2102,7 +2104,7 @@ mod tests {
         use reify_test_support::bracket_compiled_module;
 
         let module = bracket_compiled_module();
-        let graph = EvaluationGraph::from_templates(&module.templates);
+        let graph = EvaluationGraph::from_env(DefEnv::of_module(&module, &[]));
         let index = ReverseDependencyIndex::build_from_graph(&graph);
         let traces = crate::deps::build_trace_map(&graph);
 
@@ -2135,7 +2137,7 @@ mod tests {
         use reify_test_support::bracket_compiled_module;
 
         let module = bracket_compiled_module();
-        let graph = EvaluationGraph::from_templates(&module.templates);
+        let graph = EvaluationGraph::from_env(DefEnv::of_module(&module, &[]));
         let index = ReverseDependencyIndex::build_from_graph(&graph);
         let traces = crate::deps::build_trace_map(&graph);
 
@@ -2212,7 +2214,7 @@ mod tests {
             .realization(e, 0, ops)
             .build();
 
-        let graph = EvaluationGraph::from_templates(&[template]);
+        let graph = EvaluationGraph::from_env(DefEnv::of_module(&module_of([template]), &[]));
         let index = ReverseDependencyIndex::build_from_graph(&graph);
         let traces = crate::deps::build_trace_map(&graph);
 
