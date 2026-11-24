@@ -93,6 +93,8 @@ mod selector_angle_direction_slot_tests;
 mod self_datum_projection_tests;
 #[path = "harness_type_checking/self_keyword_tests.rs"]
 mod self_keyword_tests;
+#[path = "harness_type_checking/sweep_direction_slot_tests.rs"]
+mod sweep_direction_slot_tests;
 #[path = "harness_type_checking/undef_literal_compile_tests.rs"]
 mod undef_literal_compile_tests;
 #[path = "harness_type_checking/unresolved_function_tests.rs"]

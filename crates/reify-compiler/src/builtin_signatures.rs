@@ -1744,6 +1744,10 @@ mod tests {
         "pipe",
         "revolve",
         "revolve_full",
+        // direction-typing ι-b (task 9647) — sweep producers whose only slot
+        // is their Direction.
+        "extrude_infinite",
+        "extrude_infinite_symmetric",
         // Task 5750 — transforms.
         "translate",
         "rotate_around",
@@ -2319,76 +2323,48 @@ mod tests {
         }
     }
 
-    /// revolve → the axis ORIGIN triple AND the angle.
+    /// revolve → one GUARDED layout per form (direction-typing ι-b, task 9647).
     ///
-    /// The second STRADDLE case, after `half_space`. `revolve(profile, ox, oy,
-    /// oz, ax, ay, az, angle)` carries three kinds of argument in one list:
-    /// * `ox`/`oy`/`oz` are a point in space — bare components silently read as
-    ///   SI metres, so they are LENGTH slots (task 5750);
-    /// * `ax`/`ay`/`az` are a dimensionless unit vector, legitimately bare;
-    /// * `angle` is an ANGLE slot since PRD 3 leaf ζ (task 5782).
-    ///
-    /// The exclusion loop therefore narrows to the DIRECTION alone. That
-    /// narrowing is the assertion: index 7 moving from the excluded set to the
-    /// expected set is what the leaf did, and a reader comparing the two sees
-    /// exactly one position change hands.
-    ///
-    /// Single-form, so arity-agnostic; `revolve_full` is deliberately NOT swept
-    /// alongside it any more — see the control below for why the two can no
-    /// longer share a loop.
+    /// `revolve(profile, origin, direction, angle)` slots the Direction at 2
+    /// and the angle at 3; `revolve(profile, axis, angle)` slots only the
+    /// angle, at 2. Index 2 names a different parameter in each form, which is
+    /// the HAZARD block's worked example, so the arms carry `if arg_count ==`
+    /// guards and every other arity slots nothing. The Point3 origin and the
+    /// Axis datum are not slotted: no `ExpectedArg` kind exists for either, so
+    /// both are gated at build.
     #[test]
-    fn revolve_slots_the_origin_and_the_angle_but_never_the_axis() {
-        assert_slots_at_every_arity(
-            "revolve",
-            &[
-                length_slot(1, "ox"),
-                length_slot(2, "oy"),
-                length_slot(3, "oz"),
-                angle_slot(7, "angle"),
-            ],
+    fn revolve_slots_one_layout_per_form() {
+        assert_eq!(
+            builtin_arg_slots("revolve", 4),
+            [direction_slot(2, "direction"), angle_slot(3, "angle")]
         );
-
-        // The exclusion stated positively: the axis DIRECTION at 4/5/6.
-        let slotted: Vec<usize> = builtin_arg_slots("revolve", 8)
-            .iter()
-            .map(|slot| slot.index)
-            .collect();
-        for excluded in [4usize, 5, 6] {
+        assert_eq!(builtin_arg_slots("revolve", 3), [angle_slot(2, "angle")]);
+        for arg_count in (0usize..=MAX_PROBED_ARITY).filter(|n| ![3, 4].contains(n)) {
             assert!(
-                !slotted.contains(&excluded),
-                "revolve arg{excluded} is an axis DIRECTION component — a \
-                 dimensionless unit vector, legitimately bare in correct `.ri`; \
-                 got slots at {slotted:?}"
+                builtin_arg_slots("revolve", arg_count).is_empty(),
+                "revolve/{arg_count} is not a revolve form and must slot nothing"
             );
         }
     }
 
-    /// CONTROL — `revolve_full` gets the origin and NOTHING at index 7.
+    /// CONTROL — `revolve_full(profile, origin, direction)` slots the Direction
+    /// and NO angle.
     ///
-    /// This is why `revolve` and `revolve_full` can no longer share one sweep,
-    /// and the reason is positive rather than an omission: `revolve_full`'s CALL
-    /// arity is 7, and the `angle` that appears at index 7 of its LOWERED
-    /// op-args is a compiler-SYNTHESIZED `Value::angle(TAU)` typed
-    /// `Type::angle()` (`geometry.rs`, the type PRD D10 ratified). No author
-    /// ever writes it, so there is no user-written position for an index-keyed
-    /// table to gate — gating one would demand an argument the call form does
-    /// not have.
-    ///
-    /// Asserted at EVERY arity, not just 7: exact slot equality leaves no
-    /// room for an index 4-7 slot anywhere. A shared arm that leaned on
-    /// `compiled_args.get(7)` returning None at the 7-arg call would pass a
-    /// canonical-arity probe and fail here, which is the point: the bounds
-    /// check is an accident of the short call, not a statement about the arm.
+    /// The `angle` in its LOWERED op-args is a compiler-SYNTHESIZED
+    /// `Value::angle(TAU)` typed `Type::angle()` (`geometry.rs`, the type PRD
+    /// D10 ratified). No author ever writes it, so there is no user-written
+    /// position for an index-keyed table to gate.
     #[test]
-    fn revolve_full_slots_the_origin_only_because_its_2pi_is_synthesized() {
-        assert_slots_at_every_arity(
-            "revolve_full",
-            &[
-                length_slot(1, "ox"),
-                length_slot(2, "oy"),
-                length_slot(3, "oz"),
-            ],
-        );
+    fn revolve_full_slots_the_direction_only_because_its_2pi_is_synthesized() {
+        assert_slots_at_every_arity("revolve_full", &[direction_slot(2, "direction")]);
+    }
+
+    /// extrude_infinite / extrude_infinite_symmetric → the Direction at 1.
+    #[test]
+    fn extrude_infinite_pair_slots_the_direction() {
+        for name in ["extrude_infinite", "extrude_infinite_symmetric"] {
+            assert_slots_at_every_arity(name, &[direction_slot(1, "direction")]);
+        }
     }
 
     /// arc(cx, cy, cz, radius, start_angle, end_angle, ax, ay, az) → BOTH
@@ -4445,8 +4421,10 @@ mod tests {
         ("extrude", AcceptedArities::Exactly(&[2])),
         ("extrude_symmetric", AcceptedArities::Exactly(&[2])),
         ("pipe", AcceptedArities::Exactly(&[2])),
-        ("revolve", AcceptedArities::Exactly(&[8])),
-        ("revolve_full", AcceptedArities::Exactly(&[7])),
+        ("revolve", AcceptedArities::Exactly(&[3, 4])),
+        ("revolve_full", AcceptedArities::Exactly(&[3])),
+        ("extrude_infinite", AcceptedArities::Exactly(&[2])),
+        ("extrude_infinite_symmetric", AcceptedArities::Exactly(&[2])),
         // Transform producers and patterns.
         ("linear_pattern", AcceptedArities::Exactly(&[6])),
         ("linear_pattern_2d", AcceptedArities::Exactly(&[11])),
