@@ -197,15 +197,14 @@ fn r0_zone_material(region: &R0Region, build_unit: [f64; 3]) -> Value {
 /// weakest), x-axis = the zone's dominant bead-centerline direction projected
 /// into the plane ⊥ z, y = z × x. A bead direction parallel to z (degenerate)
 /// falls back to an arbitrary in-plane complement.
+///
+/// The projection runs twice. One pass leaves a rounding residue along z that
+/// normalising scales by 1/|x_perp|, so a bead within ~1e-10 rad of z would
+/// leave x more than 1e-6 off perpendicular and the basis would not be a
+/// rotation; the second pass reduces the residue to rounding.
 fn r0_material_frame(build_z: [f64; 3], bead_dir: [f64; 3]) -> Value {
     let z = unit3(build_z).unwrap_or([0.0, 0.0, 1.0]);
-    // Project the bead direction into the plane perpendicular to z.
-    let d = bead_dir[0] * z[0] + bead_dir[1] * z[1] + bead_dir[2] * z[2];
-    let x_perp = [
-        bead_dir[0] - d * z[0],
-        bead_dir[1] - d * z[1],
-        bead_dir[2] - d * z[2],
-    ];
+    let x_perp = reject(reject(bead_dir, z), z);
     let x = unit3(x_perp).unwrap_or_else(|| complement_x(z));
     let y = cross(z, x);
     material_frame_value([x, y, z])
@@ -263,6 +262,12 @@ fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     ]
 }
 
+/// `v` with its component along the unit `z` removed.
+fn reject(v: [f64; 3], z: [f64; 3]) -> [f64; 3] {
+    let d = v[0] * z[0] + v[1] * z[1] + v[2] * z[2];
+    [v[0] - d * z[0], v[1] - d * z[1], v[2] - d * z[2]]
+}
+
 /// An in-plane unit x-axis for the degenerate case (bead direction parallel to
 /// z): cross a reference axis not parallel to z with z.
 fn complement_x(z: [f64; 3]) -> [f64; 3] {
@@ -272,4 +277,39 @@ fn complement_x(z: [f64; 3]) -> [f64; 3] {
         [0.0, 1.0, 0.0]
     };
     unit3(cross(reference, z)).unwrap_or([1.0, 0.0, 0.0])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+        a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+    }
+
+    /// Projecting a bead that lies within ~1e-10 rad of the build axis leaves a
+    /// rounding residue along z that normalising scales by 1/|x_perp|, past
+    /// `basis_quaternion`'s 1e-6 orthogonality tolerance. The frame must still
+    /// be minted, with its x-axis following the bead.
+    #[test]
+    fn a_bead_nearly_parallel_to_the_build_axis_still_mints_a_frame_along_the_bead() {
+        let z = unit3([0.3, -0.5, 0.8]).expect("a non-zero build axis");
+        let toward = cross(z, complement_x(z));
+        for angle in [1e-4_f64, 1e-8, 1e-10, 1e-11] {
+            let bead = std::array::from_fn(|k| z[k] * angle.cos() + toward[k] * angle.sin());
+            let frame = r0_material_frame(z, bead);
+            let rows = reify_ir::frame_basis(&frame)
+                .unwrap_or_else(|e| panic!("bead {angle} rad off the build axis: {e}"));
+            assert!(
+                (dot(rows[2], z) - 1.0).abs() <= 1e-12,
+                "bead {angle} rad off: z-axis {:?} is not the build axis {z:?}",
+                rows[2]
+            );
+            assert!(
+                dot(rows[0], toward) >= 1.0 - 1e-6,
+                "bead {angle} rad off: x-axis {:?} does not follow the bead toward {toward:?}",
+                rows[0]
+            );
+        }
+    }
 }

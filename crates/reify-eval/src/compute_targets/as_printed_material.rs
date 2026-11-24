@@ -425,16 +425,24 @@ fn material_frame(build_z: [f64; 3]) -> Value {
 }
 
 /// The `Frame` datum at the origin whose x, y and z axes are `axes`, as
-/// `AnisotropicMaterial.frame` declares it. `Value::Undef` if `axes` is not a
-/// right-handed orthonormal basis, which the as-printed constructions never
-/// produce.
+/// `AnisotropicMaterial.frame` declares it. `Value::Undef`, with a logged
+/// warning naming the failed check, if `axes` is not a right-handed orthonormal
+/// basis. Both as-printed constructions start from a unit z and orthogonalise
+/// to rounding for every input, so reaching that arm is a minter bug.
 pub(crate) fn material_frame_value(axes: [[f64; 3]; 3]) -> Value {
     match reify_ir::basis_quaternion(axes) {
-        Some([w, x, y, z]) => Value::Frame {
+        Ok([w, x, y, z]) => Value::Frame {
             origin: Box::new(super::point3_length([0.0, 0.0, 0.0])),
             basis: Box::new(Value::Orientation { w, x, y, z }),
         },
-        None => Value::Undef,
+        Err(not_a_rotation) => {
+            tracing::warn!(
+                ?axes,
+                %not_a_rotation,
+                "as-printed material frame is not a rotation; the zone material degrades to Undef"
+            );
+            Value::Undef
+        }
     }
 }
 
