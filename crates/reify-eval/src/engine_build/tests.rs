@@ -990,7 +990,10 @@ structure Assembly {
         let functions: Vec<CompiledFunction> = Vec::new();
         let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let templates: Vec<TopologyTemplate> = Vec::new();
+        let empty_module = reify_test_support::CompiledModuleBuilder::new(
+            reify_core::ModulePath::single("test"),
+        )
+        .build();
 
         seed_cross_sub_named_steps(
             &template,
@@ -1002,7 +1005,7 @@ structure Assembly {
             &functions,
             &meta_map,
             &mut diagnostics,
-            &templates,
+            crate::DefEnv::of_module(&empty_module, &[]),
         );
 
         let got = named_steps
@@ -8417,7 +8420,7 @@ structure Assembly {
             &mut geometry_kernels,
             &registry,
             Some(Engine::DEFAULT_KERNEL_NAME),
-            &module,
+            crate::DefEnv::of_module(&module, &[]),
             &mut values,
             &functions,
             &mut diagnostics,
@@ -8483,7 +8486,7 @@ structure Assembly {
             &mut geometry_kernels,
             &registry,
             Some(Engine::DEFAULT_KERNEL_NAME),
-            &module,
+            crate::DefEnv::of_module(&module, &[]),
             &mut values,
             &functions,
             &mut diagnostics,
@@ -9901,6 +9904,11 @@ structure Assembly {
             );
         }
 
+        let empty_module = reify_test_support::CompiledModuleBuilder::new(
+            reify_core::ModulePath::single("test"),
+        )
+        .build();
+
         // ── MAIN ASSERTION ────────────────────────────────────────────────────
         //
         // Before task 4538 (post_process_body_mass_props ran BEFORE selectors):
@@ -9922,7 +9930,7 @@ structure Assembly {
             &SweptKindTable::default(),
             &HashMap::new(),
             &mut diagnostics,
-            &[],
+            crate::DefEnv::of_module(&empty_module, &[]),
         );
 
         let mp_val = values
@@ -10109,6 +10117,10 @@ structure Assembly {
         let table = TopologyAttributeTable::default();
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
+        let empty_module = reify_test_support::CompiledModuleBuilder::new(
+            reify_core::ModulePath::single("test"),
+        )
+        .build();
         Engine::run_post_processes(
             &template,
             &named_steps,
@@ -10120,7 +10132,7 @@ structure Assembly {
             &SweptKindTable::default(),
             &HashMap::new(),
             &mut diagnostics,
-            &[],
+            crate::DefEnv::of_module(&empty_module, &[]),
         );
 
         let mp_val = values
