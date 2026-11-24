@@ -1,4 +1,5 @@
-//! The shared `&Value` readers for directions and frame bases
+//! The shared `&Value` readers for directions and frame bases, and the
+//! basis→quaternion inverse of the frame-basis reader
 //! (docs/prds/v0_6/direction-typing.md §5 C3/C8).
 
 use std::fmt;
@@ -83,6 +84,71 @@ pub fn frame_basis(frame: &Value) -> Result<[[f64; 3]; 3], DecodeDirectionError>
             1.0 - 2.0 * (x * x + y * y),
         ],
     ])
+}
+
+const ROTATION_TOLERANCE: f64 = 1e-6;
+
+/// The inverse of [`frame_basis`]: the unit `[w, x, y, z]` quaternion whose
+/// frame has `rows` as its x, y and z axes. `None` unless `rows` is a finite,
+/// right-handed orthonormal basis within [`ROTATION_TOLERANCE`].
+pub fn basis_quaternion(rows: [[f64; 3]; 3]) -> Option<[f64; 4]> {
+    if !is_rotation(rows) {
+        return None;
+    }
+    let r = |row: usize, col: usize| rows[col][row];
+    let trace = r(0, 0) + r(1, 1) + r(2, 2);
+    let (w, x, y, z) = if trace > 0.0 {
+        let s = (trace + 1.0).sqrt() * 2.0;
+        (
+            0.25 * s,
+            (r(2, 1) - r(1, 2)) / s,
+            (r(0, 2) - r(2, 0)) / s,
+            (r(1, 0) - r(0, 1)) / s,
+        )
+    } else if r(0, 0) > r(1, 1) && r(0, 0) > r(2, 2) {
+        let s = (1.0 + r(0, 0) - r(1, 1) - r(2, 2)).sqrt() * 2.0;
+        (
+            (r(2, 1) - r(1, 2)) / s,
+            0.25 * s,
+            (r(0, 1) + r(1, 0)) / s,
+            (r(0, 2) + r(2, 0)) / s,
+        )
+    } else if r(1, 1) > r(2, 2) {
+        let s = (1.0 - r(0, 0) + r(1, 1) - r(2, 2)).sqrt() * 2.0;
+        (
+            (r(0, 2) - r(2, 0)) / s,
+            (r(0, 1) + r(1, 0)) / s,
+            0.25 * s,
+            (r(1, 2) + r(2, 1)) / s,
+        )
+    } else {
+        let s = (1.0 - r(0, 0) - r(1, 1) + r(2, 2)).sqrt() * 2.0;
+        (
+            (r(1, 0) - r(0, 1)) / s,
+            (r(0, 2) + r(2, 0)) / s,
+            (r(1, 2) + r(2, 1)) / s,
+            0.25 * s,
+        )
+    };
+    let n = (w * w + x * x + y * y + z * z).sqrt();
+    Some([w / n, x / n, y / n, z / n])
+}
+
+fn is_rotation(rows: [[f64; 3]; 3]) -> bool {
+    let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let [x, y, z] = rows;
+    let cross_yz = [
+        y[1] * z[2] - y[2] * z[1],
+        y[2] * z[0] - y[0] * z[2],
+        y[0] * z[1] - y[1] * z[0],
+    ];
+    let within = |value: f64, target: f64| (value - target).abs() <= ROTATION_TOLERANCE;
+    rows.iter().flatten().all(|c| c.is_finite())
+        && rows.iter().all(|&row| within(dot(row, row).sqrt(), 1.0))
+        && within(dot(x, y), 0.0)
+        && within(dot(x, z), 0.0)
+        && within(dot(y, z), 0.0)
+        && within(dot(x, cross_yz), 1.0)
 }
 
 #[cfg(test)]
@@ -271,7 +337,10 @@ mod tests {
             .unwrap_or_else(|e| panic!("quaternion {q:?}: {e}"));
         let q2 = basis_quaternion(rows)
             .unwrap_or_else(|| panic!("frame_basis of {q:?} is a rotation: {rows:?}"));
-        assert_rows_close(frame_basis(&frame(q2[0], q2[1], q2[2], q2[3])).unwrap(), rows);
+        assert_rows_close(
+            frame_basis(&frame(q2[0], q2[1], q2[2], q2[3])).unwrap(),
+            rows,
+        );
     }
 
     #[test]
