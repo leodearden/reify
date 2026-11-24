@@ -9,10 +9,11 @@
 //! User-observable signal:
 //!   cargo test -p reify-eval --test keyed_identity_reelaboration
 
-use reify_core::{Severity, ValueCellId};
-use reify_eval::DefEnv;
+use reify_core::{DiagnosticCode, Severity, ValueCellId, VersionId};
 use reify_eval::graph::EvaluationGraph;
+use reify_eval::{DefEnv, Engine, SolverPosture};
 use reify_ir::MemberKey;
+use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{compile_source, parse_and_compile_with_stdlib};
 
 // ── Sources ───────────────────────────────────────────────────────────────────
@@ -339,5 +340,34 @@ fn from_templates_keyed_sub_count_cell_is_none_backfill_not_yet_wired() {
         info.count_cell.is_none(),
         "count_cell is unexpectedly Some — the backfill path may have been wired; \
          flip this assertion and add the Rule 3b Structural check"
+    );
+}
+
+/// `eval_cached` resolves a keyed sub by its element structure (`Vent`), not
+/// by its raw structure name (`Keyed`), so a clean keyed module reports no
+/// unknown structure on the warm path.
+#[test]
+fn eval_cached_resolves_a_keyed_sub_by_its_element_structure() {
+    let module = parse_and_compile_with_stdlib(KEYED_CLEAN_SRC);
+    let mut engine = Engine::new(
+        SolverPosture::SolverFree,
+        Box::new(MockConstraintChecker::new()),
+        None,
+    );
+
+    let diagnostics = engine
+        .eval_cached(&module, VersionId(1))
+        .eval_result
+        .diagnostics;
+
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::UnknownSubStructure)),
+        "a keyed sub must resolve by its element structure on the warm path, got: {diagnostics:?}"
+    );
+    assert!(
+        !diagnostics.iter().any(|d| d.severity == Severity::Error),
+        "a clean keyed module must evaluate on the warm path with no Error at all, got: {diagnostics:?}"
     );
 }
