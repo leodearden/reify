@@ -14,6 +14,7 @@ import importlib.util
 import json
 import os
 import pwd
+import re
 import shutil
 import signal
 import subprocess
@@ -242,16 +243,18 @@ def catches(pid, signum):
     return False
 
 
-@functools.cache
+PIDFD_INFO_EXIT_RELEASE = (6, 15)
+
+
 def pidfd_exit_record_available():
-    """Whether this kernel keeps a reaped process's exit record behind its pidfd (PIDFD_INFO_EXIT, Linux 6.15)."""
-    child = subprocess.Popen(["true"])
-    pidfd = os.pidfd_open(child.pid)
-    try:
-        child.wait()
-        return load_canon_run().exited_returncode(pidfd) is not None
-    finally:
-        os.close(pidfd)
+    """Whether this kernel keeps a reaped process's exit record behind its pidfd (PIDFD_INFO_EXIT, Linux 6.15).
+
+    Read from the kernel release, never by calling canon_run.exited_returncode: that is the
+    code under test, and an oracle sharing its defect would turn its checks into skips.
+    A backport to an older release can only make the suites fail loudly, not pass silently.
+    """
+    release = re.match(r"(\d+)\.(\d+)", os.uname().release)
+    return release is not None and tuple(map(int, release.groups())) >= PIDFD_INFO_EXIT_RELEASE
 
 
 PIDFD_EXIT_RECORD_MISSING = "this kernel keeps no pidfd exit record: PIDFD_INFO_EXIT needs Linux 6.15"
