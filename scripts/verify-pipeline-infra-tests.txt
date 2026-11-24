@@ -150,6 +150,11 @@ tests/infra/test_seed_depinfo_relocation.py  tests/infra/test_seed_depinfo_reloc
 # Its seed fixture (Pool, hermetic_env, STUB_CP) lives in a shared helper module,
 # so an edit to the helper selects the suite.
 tests/infra/seed_warm_lane_harness.py  tests/infra/test_seed_depinfo_relocation.sh
+# Task 10168: tree-sitter-freshness.sh evict-stale, the promote-time removal of
+# tree-sitter-reify build-script runs whose input stamp disagrees with the
+# promoted tree, pinned by a .py suite behind a thin .sh wrapper.
+scripts/tree-sitter-freshness.sh  tests/infra/test_tree_sitter_stale_run_eviction.sh
+tests/infra/test_tree_sitter_stale_run_eviction.py  tests/infra/test_tree_sitter_stale_run_eviction.sh
 # Task 9246: the cron sweep of idle worktree targets exempts _merge-verify and
 # respects each worktree's lane lock, pinned by a .py suite behind a thin .sh
 # wrapper, same pair shape.
