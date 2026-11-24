@@ -192,9 +192,10 @@
 # lane seeded from it re-forces over them on its first `ensure`, rebuilding
 # tree-sitter-reify and everything above it.  `evict-stale` removes them when
 # the base is promoted.  It judges exactly the archives `ensure` judges
-# (ts_archives) against the fingerprint of DIR/tree-sitter-reify — the promoted
-# tree, never this script's own checkout — and keeps a run dir only when its
-# $STAMP_NAME exists and equals that fingerprint.  A missing, UNAVAILABLE or
+# (ts_archives), by the same stamp verdict (ts_stamp_verdict), against the
+# fingerprint of DIR/tree-sitter-reify — the promoted tree, never this script's
+# own checkout — and keeps a run dir only when its $STAMP_NAME exists and
+# equals that fingerprint.  A missing, UNAVAILABLE or
 # different stamp is evicted; UNAVAILABLE too, because such a dir is
 # unattestable forever and would propagate to every seeded lane (FAIL POLICY).
 # The run dir goes TOGETHER with its <profile>/.fingerprint/<same name> record:
@@ -613,6 +614,34 @@ ts_first_differing_input() {
     printf '(input set shrank: the attested manifest lists paths that are no longer compiled)'
 }
 
+# ts_stamp_verdict <run-dir>
+#
+# The ONE judgement of a run dir's $STAMP_NAME against $CURRENT_FP.  It only
+# classifies; each caller applies its own policy (ts_scan reports an
+# unavailable stamp as a per-dir SKIP, evict-stale evicts it).  Sets, in the
+# caller's shell:
+#   TS_STAMP_VERDICT          match | missing | unavailable | differs
+#   TS_STAMP_FIRST_DIFFERING  the first differing input when the verdict is
+#                             `differs`; empty otherwise
+ts_stamp_verdict() {
+    local stamp="$1/out/$STAMP_NAME" attested
+    TS_STAMP_VERDICT=""
+    TS_STAMP_FIRST_DIFFERING=""
+    if [ ! -f "$stamp" ]; then
+        TS_STAMP_VERDICT="missing"
+        return 0
+    fi
+    attested=$(cat "$stamp")
+    if [ "$attested" = "UNAVAILABLE" ]; then
+        TS_STAMP_VERDICT="unavailable"
+    elif [ "$attested" = "$CURRENT_FP" ]; then
+        TS_STAMP_VERDICT="match"
+    else
+        TS_STAMP_VERDICT="differs"
+        TS_STAMP_FIRST_DIFFERING=$(ts_first_differing_input "$stamp")
+    fi
+}
+
 # ts_scan
 #
 # The shared freshness computation behind both `check` and `ensure`.
@@ -690,7 +719,7 @@ ts_scan() {
     local epoch
     epoch=$(ts_epoch_mtime)
 
-    local a run_dir dir stamp attested detail is_live
+    local a run_dir dir detail is_live
     local -a stale=()
     local -a dormant=()
     local -a unattestable=()
@@ -699,7 +728,6 @@ ts_scan() {
         # .../build/tree-sitter-reify-<fingerprint>/out/libtree_sitter_reify.a
         run_dir="$(dirname "$(dirname "$a")")"
         dir="$(basename "$run_dir")"
-        stamp="$(dirname "$a")/$STAMP_NAME"
 
         # Live when cargo re-ran this dir's build script inside THIS run's window,
         # or when it IS the newest-marker dir, or when liveness could not be
@@ -718,23 +746,25 @@ ts_scan() {
             TS_RUN_WINDOW_COUNT=$(( TS_RUN_WINDOW_COUNT + 1 ))
         fi
 
-        detail=""
-        if [ ! -f "$stamp" ]; then
-            detail="$dir — no $STAMP_NAME beside the archive; its provenance is UNPROVEN"
-        else
-            attested=$(cat "$stamp")
-            if [ "$attested" = "UNAVAILABLE" ]; then
+        ts_stamp_verdict "$run_dir"
+        case "$TS_STAMP_VERDICT" in
+            match)
+                continue
+                ;;
+            unavailable)
                 # Scoped to THIS dir: record it and keep going.  Aborting the scan
                 # here would discard every stale archive already found AND skip
                 # every one not yet reached — see FAIL POLICY (#5629).
                 unattestable+=("SKIP $dir — built where sha256sum/shasum was unavailable or failed; its inputs cannot be attested")
                 continue
-            fi
-            if [ "$attested" != "$CURRENT_FP" ]; then
-                detail="$dir — built from different bytes; first differing input: $(ts_first_differing_input "$stamp")"
-            fi
-        fi
-        [ -n "$detail" ] || continue
+                ;;
+            missing)
+                detail="$dir — no $STAMP_NAME beside the archive; its provenance is UNPROVEN"
+                ;;
+            differs)
+                detail="$dir — built from different bytes; first differing input: $TS_STAMP_FIRST_DIFFERING"
+                ;;
+        esac
 
         # Reuses the is_live decision made above rather than re-deriving it: the
         # membership test and the count must never be able to disagree, and
@@ -1153,26 +1183,26 @@ ts_mode_evict_stale() {
         return "$rc"
     fi
 
-    local a run_dir stamp attested reason record kept=0 evicted=0
+    local a run_dir reason record kept=0 evicted=0
     while IFS= read -r a; do
         [ -n "$a" ] || continue
         run_dir="$(dirname "$(dirname "$a")")"
-        stamp="$run_dir/out/$STAMP_NAME"
-        reason=""
-        if [ ! -f "$stamp" ]; then
-            reason="no $STAMP_NAME"
-        else
-            attested=$(cat "$stamp")
-            if [ "$attested" = "UNAVAILABLE" ]; then
+        ts_stamp_verdict "$run_dir"
+        case "$TS_STAMP_VERDICT" in
+            match)
+                kept=$(( kept + 1 ))
+                continue
+                ;;
+            missing)
+                reason="no $STAMP_NAME"
+                ;;
+            unavailable)
                 reason="stamp is UNAVAILABLE"
-            elif [ "$attested" != "$CURRENT_FP" ]; then
-                reason="built from different bytes; first differing input: $(ts_first_differing_input "$stamp")"
-            fi
-        fi
-        if [ -z "$reason" ]; then
-            kept=$(( kept + 1 ))
-            continue
-        fi
+                ;;
+            differs)
+                reason="built from different bytes; first differing input: $TS_STAMP_FIRST_DIFFERING"
+                ;;
+        esac
         record="$(dirname "$(dirname "$run_dir")")/.fingerprint/$(basename "$run_dir")"
         if ! rm -rf -- "$run_dir" "$record"; then
             echo "ERROR: tree-sitter-freshness: could not evict $run_dir with its record $record" >&2
