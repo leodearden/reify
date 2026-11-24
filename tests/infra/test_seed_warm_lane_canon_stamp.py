@@ -281,16 +281,23 @@ class Unstamped(SeedCase):
 
 
 class MalformedStamp(SeedCase):
-    """A stamp that names no absolute root fails the seed closed."""
+    """A stamp that is no build root (absolute, no trailing slash, one line) fails the seed closed
+    where it is read, before any fix-up runs, with or without the primitive."""
 
-    def test_a_stamp_that_is_not_an_absolute_path_aborts_the_seed(self):
-        for content in ("not/absolute\n", "\n"):
-            with self.subTest(stamp=content):
-                fixture = Fixture(self, stamped=True, primitive=True, stamp_content=content)
-                completed = fixture.run_seed()
-                self.assertNotEqual(completed.returncode, 0, _diag(completed))
-                self.assertEqual(completed.stdout, "", _diag(completed))
-                self.assertIn(STAMP_NAME, completed.stderr)
+    def test_a_stamp_that_names_no_build_root_aborts_the_seed(self):
+        for content in ("not/absolute\n", "\n", "/opt/x/\n", "/opt/x\n/opt/y\n"):
+            for primitive in (True, False):
+                with self.subTest(stamp=content, primitive=primitive):
+                    fixture = Fixture(self, stamped=True, primitive=primitive,
+                                      stamp_content=content)
+                    completed = fixture.run_seed()
+                    self.assertNotEqual(completed.returncode, 0, _diag(completed))
+                    self.assertEqual(completed.stdout, "", _diag(completed))
+                    self.assertIn(f"canonical-build-path stamp {fixture.lane_target / STAMP_NAME}",
+                                  completed.stderr)
+                    fixups = [line for line in completed.stderr.splitlines()
+                              if FIXUP_LINE.search(line)]
+                    self.assertEqual(fixups, [], _diag(completed))
 
 
 if __name__ == "__main__":

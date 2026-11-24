@@ -1086,10 +1086,11 @@ _CANON_JOURNAL_NAME=".reify-canon-journal.jsonl"
 
 # Print the CANON root <target_dir> is stamped for (one trailing newline
 # stripped, as canon_run.py's read_stamp does), or nothing when it is unstamped.
-# A stamp naming no absolute root returns 1: the caller's set -e then aborts the
-# seed with empty stdout (cold rebuild forced).
+# The root must be what relocate-depinfo-paths.py requires of one: absolute, no
+# trailing slash, one line. Any other stamp returns 1: the caller's set -e then
+# aborts the seed with empty stdout (cold rebuild forced).
 _read_canon_stamp() {
-    local stamp="$1/$_CANON_STAMP_NAME" content
+    local stamp="$1/$_CANON_STAMP_NAME" content defect
     [ -f "$stamp" ] || return 0
     if ! content="$(cat -- "$stamp" && printf x)"; then
         err "cannot read canonical-build-path stamp $stamp; seed aborted (cold rebuild forced)"
@@ -1098,12 +1099,13 @@ _read_canon_stamp() {
     content="${content%x}"
     content="${content%$'\n'}"
     case "$content" in
-        /*) printf '%s' "$content" ;;
-        *)
-            err "canonical-build-path stamp $stamp names no absolute build root (content ${content@Q}); seed aborted (cold rebuild forced)"
-            return 1
-            ;;
+        *$'\n'*) defect="spans more than one line" ;;
+        / | /*/) defect="ends in a slash" ;;
+        /*) printf '%s' "$content"; return 0 ;;
+        *) defect="is not an absolute path" ;;
     esac
+    err "canonical-build-path stamp $stamp holds ${content@Q}, which $defect (a build root must be absolute, with no trailing slash, on one line); seed aborted (cold rebuild forced)"
+    return 1
 }
 
 # Remove the base build's journal and leftover private-sccache sockets from the
