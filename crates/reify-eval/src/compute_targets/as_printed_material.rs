@@ -616,8 +616,7 @@ mod tests {
     }
 
     #[test]
-    fn material_frame_is_a_frame_datum_whose_z_axis_is_the_build_direction() {
-        let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    fn material_frame_is_a_frame_datum_carrying_the_build_direction_and_its_complement() {
         let n = 14.0_f64.sqrt();
         for build_z in [[0.0, 0.0, 1.0], [1.0 / n, 2.0 / n, 3.0 / n]] {
             let frame = material_frame(build_z);
@@ -627,13 +626,13 @@ mod tests {
                  StructureInstance: {frame:?}"
             );
             let rows = reify_ir::frame_basis(&frame).expect("a Frame has a basis");
-            for c in 0..3 {
-                assert!((rows[2][c] - build_z[c]).abs() <= 1e-12, "{build_z:?}: {rows:?}");
-            }
-            for i in 0..3 {
-                assert!((dot(rows[i], rows[i]) - 1.0).abs() <= 1e-12, "{rows:?}");
-                for j in (i + 1)..3 {
-                    assert!(dot(rows[i], rows[j]).abs() <= 1e-12, "{rows:?}");
+            let (x_axis, y_axis) = orthonormal_complement(build_z);
+            for (axis, want) in [x_axis, y_axis, build_z].into_iter().enumerate() {
+                for c in 0..3 {
+                    assert!(
+                        (rows[axis][c] - want[c]).abs() <= 1e-12,
+                        "{build_z:?} axis {axis}: got {rows:?}, want {want:?}"
+                    );
                 }
             }
         }
