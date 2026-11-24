@@ -4317,6 +4317,7 @@ dependencies = [
  "reify-stdlib",
  "reify-syntax",
  "reify-test-support",
+ "reify-version",
  "serde_json",
  "tar",
  "tempfile",
