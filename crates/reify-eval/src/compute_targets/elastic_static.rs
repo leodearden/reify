@@ -4407,53 +4407,6 @@ fn classify_material_as_printed_zones(lambda: &Value) -> Result<MaterialModel, F
     Ok(MaterialModel::Heterogeneous(field))
 }
 
-/// Shared arity + per-component extraction for `extract_point3_si`, once the
-/// caller has matched `val` against `Value::Point` and obtained the ordered
-/// component slice.
-///
-/// `shape_context` labels a `< 3`-components arity error; `component_context`
-/// labels a per-component read failure, and is threaded into `component` so
-/// the reader itself owns its rejection wording instead of this caller
-/// inventing one; `noun` names the shape (`"Point"`/`"Vector"`) for the
-/// arity error's message.
-///
-/// `component` carries the per-position acceptance set (task 5848; task
-/// #7019 gives it its final shape): `extract_point3_si` reads a genuinely
-/// dimensioned `Point3<Length>` via [`dimensioned_component`], a thin adapter
-/// over the shared [`spec_component`]/`accept_arg` rule.
-///
-/// `comp` (below) is the ONE place this function's `Value::Undef` policy is
-/// expressed (task #7019 review [reviewer_comprehensive]): it maps
-/// `ComponentRead::Undefined` to `Err(ExpectedScalar)`, preserving the
-/// pre-existing behaviour unchanged — a deliberate hold, not an oversight;
-/// see [`ComponentRead`]'s doc for why the policy is decided here rather than
-/// inside `component`. Follow-up #7793 is filed to decide, deliberately and
-/// with its own test coverage, whether this position should widen to quiet
-/// degradation too.
-fn extract_scalar_triple(
-    comps: &[Value],
-    shape_context: &'static str,
-    component_context: &'static str,
-    noun: &'static str,
-    component: fn(&Value, &'static str) -> ComponentRead,
-) -> Result<[f64; 3], FeaValueShapeError> {
-    if comps.len() < 3 {
-        return Err(FeaValueShapeError::ExpectedList {
-            context: shape_context,
-            got: format!("{noun} with {} components", comps.len()),
-        });
-    }
-    let comp = |v: &Value| match component(v, component_context) {
-        ComponentRead::Accepted(x) => Ok(x),
-        ComponentRead::Undefined => Err(FeaValueShapeError::ExpectedScalar {
-            context: component_context,
-            got: format!("{v:?}"),
-        }),
-        ComponentRead::Rejected(e) => Err(e),
-    };
-    Ok([comp(&comps[0])?, comp(&comps[1])?, comp(&comps[2])?])
-}
-
 /// Per-component reader for a DIMENSIONED triple — `aabb_min`/`aabb_max`'s
 /// `Point3<Length>`. A bare `Value::Real`/`Value::Int` component there is a
 /// genuinely missing dimension, so it must fail (task #5080's contract, pinned
@@ -4472,8 +4425,7 @@ fn extract_scalar_triple(
 /// acceptance RULE is shared, the expectation is per-position.
 ///
 /// Returns the three-way [`ComponentRead`], not a `Result`: this reader has
-/// no Undef policy of its own — its caller (`extract_scalar_triple`'s `comp`
-/// closure) does.
+/// no Undef policy of its own — its caller, [`extract_point3_si`], decides it.
 fn dimensioned_component(v: &Value, context: &'static str) -> ComponentRead {
     use crate::arg_acceptance::length_spec;
 
@@ -4516,7 +4468,12 @@ fn dimensionless_component(v: &Value, context: &'static str) -> ComponentRead {
 /// reinterpreted as metres — see [`dimensioned_component`], a thin adapter
 /// over the canonical `reify_ir::arg_acceptance::length_spec` (PRD
 /// `dimension-checked-readers.md` invariant I3, "strict equality").
+///
+/// A `Value::Undef` component is `Err(ExpectedScalar)`, deliberately: unlike
+/// `read_direction_or_neg_z`, this position does not degrade quietly (see
+/// [`ComponentRead`] for why the caller, not the component reader, decides).
 fn extract_point3_si(val: &Value) -> Result<[f64; 3], FeaValueShapeError> {
+    const COMPONENT_CONTEXT: &str = "extract_point3_si component";
     let comps = match val {
         Value::Point(v) => v,
         other => {
@@ -4526,13 +4483,21 @@ fn extract_point3_si(val: &Value) -> Result<[f64; 3], FeaValueShapeError> {
             })
         }
     };
-    extract_scalar_triple(
-        comps,
-        "extract_point3_si",
-        "extract_point3_si component",
-        "Point",
-        dimensioned_component,
-    )
+    if comps.len() < 3 {
+        return Err(FeaValueShapeError::ExpectedList {
+            context: "extract_point3_si",
+            got: format!("Point with {} components", comps.len()),
+        });
+    }
+    let comp = |v: &Value| match dimensioned_component(v, COMPONENT_CONTEXT) {
+        ComponentRead::Accepted(x) => Ok(x),
+        ComponentRead::Undefined => Err(FeaValueShapeError::ExpectedScalar {
+            context: COMPONENT_CONTEXT,
+            got: format!("{v:?}"),
+        }),
+        ComponentRead::Rejected(e) => Err(e),
+    };
+    Ok([comp(&comps[0])?, comp(&comps[1])?, comp(&comps[2])?])
 }
 
 /// Extract `ZoneProcessParams` from the 7-element `params` list in the
@@ -9373,7 +9338,7 @@ mod tests {
     /// row B6 forbid that: an unresolved component is expected transient
     /// solver state, not a mistake, and only a *defined-but-wrong* value is
     /// a fault. See [`ComponentRead`]'s doc for the fix (Undef surfaced to
-    /// the caller rather than folded away) and `extract_scalar_triple`'s doc
+    /// the caller rather than folded away) and `extract_point3_si`'s doc
     /// for the OTHER reader's (deliberately different) policy.
     ///
     /// Four legs, covering both `PointLoad` and `Gravity` and both the
@@ -11682,7 +11647,7 @@ mod tests {
     }
 
     /// Amendment (task #5080 review round 3, suggestion 2): `extract_point3_si`
-    /// (via `extract_scalar_triple`'s `comps.len() < 3` arity guard) only
+    /// (via its `comps.len() < 3` arity guard) only
     /// requires AT LEAST 3 components, so a `Value::Point` with MORE than 3
     /// silently uses just the first three — this pins that lenient over-arity
     /// behavior as an intentional, documented contract rather than an
