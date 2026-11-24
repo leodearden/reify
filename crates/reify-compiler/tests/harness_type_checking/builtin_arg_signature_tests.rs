@@ -1558,7 +1558,9 @@ fn rotate_direction_form_bare_angle_is_rejected_naming_the_angle() {
     let messages: Vec<&str> = errors.iter().map(|d| d.message.as_str()).collect();
     assert_eq!(
         messages,
-        [format!("rotate: angle argument expects Angle, got Int; {ANGLE_HINT}")],
+        [format!(
+            "rotate: angle argument expects Angle, got Int; {ANGLE_HINT}"
+        )],
         "All diagnostics: {:#?}",
         compiled.diagnostics
     );

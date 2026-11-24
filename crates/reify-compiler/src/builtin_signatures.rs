@@ -62,9 +62,10 @@
 //!   `frame_at`'s `x`/`z` (direction-typing σ), the axis of the four axial
 //!   joint ctors and the 13 PRB flexure ctors (direction-typing ζ-a), and the
 //!   direction of the four directional selectors plus arity-2 `angle`'s
-//!   `a`/`b` (direction-typing θ-b), and the axes of `orient_axis_angle`,
-//!   `orient_look_at` and `orient_basis` (direction-typing θ-a); later leaves
-//!   add rows on the same constructor.
+//!   `a`/`b` (direction-typing θ-b), the axes of `orient_axis_angle`,
+//!   `orient_look_at` and `orient_basis` (direction-typing θ-a), and rotate's
+//!   and rotate_around's axis and mirror's normal (direction-typing ι-a);
+//!   later leaves add rows on the same constructor.
 //!
 //! The RULES that decide whether a position inside a covered family gets a
 //! slot — each one is why some argument sitting right next to a slotted one is
@@ -681,6 +682,12 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
             length_arg(3, "oz"),
         ] },
 
+        // mirror(target, origin, normal)  — 3-arg, direction-typing ι-a
+        //   arg1:    the `origin`, a Point3<Length>: UNSLOTTED, gated at build by
+        //            `accept_length_point3`, as `rotate_around`'s pivot is.
+        //   arg2:    `normal` → Direction.
+        "mirror" if arg_count == 3 => const { &[direction_arg(2, "normal")] },
+
         // circular_pattern(target, ox, oy, oz, ax, ay, az, count, angle)  — 9-arg
         // circular_pattern(target, axis, count, angle)                    — 4-arg
         //   args1-3: the rotation-axis ORIGIN → LENGTH ("Length").
@@ -944,6 +951,24 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         // `rotate_orientation_overload_yields_no_arg_type_mismatch`.
         "rotate" if arg_count == 5 => const { &[angle_arg(4, "angle")] },
 
+        // rotate(target, axis, angle)            — 3-arg, direction-typing ι-a
+        //   arg1:    `axis` → Direction.
+        //   arg2:    `angle` → ANGLE ("Angle").
+        //   Guarded for the same reason as the 5-arg arm: at arity 2 index 1 is
+        //   the Orientation VALUE.
+        "rotate" if arg_count == 3 => const { &[direction_arg(1, "axis"), angle_arg(2, "angle")] },
+
+        // rotate_around(target, pivot, axis, angle) — 4-arg, direction-typing ι-a
+        //   arg1:    the `pivot`, a Point3<Length>. No `ExpectedArg` kind
+        //            describes a point, so it is UNSLOTTED here and gated at
+        //            build by `accept_length_point3` (the decoded-value route).
+        //   arg2:    `axis` → Direction.
+        //   arg3:    `angle` → ANGLE ("Angle").
+        //   Guarded only while the 8-arg form below is still accepted.
+        "rotate_around" if arg_count == 4 => {
+            const { &[direction_arg(2, "axis"), angle_arg(3, "angle")] }
+        }
+
         // rotate_around(target, px, py, pz, ax, ay, az, angle)
         //   The third STRADDLE case, structurally identical to `revolve`'s:
         //   args1-3: the PIVOT `px`/`py`/`pz` → LENGTH ("Length") — a point in
@@ -956,7 +981,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         //   `factor` (and the `factors` vec3 of its non-uniform form) is a
         //   dimensionless RATIO, so a LENGTH slot would reject correct code.
         //   Pinned by `scale_stays_slot_free_because_its_factor_is_dimensionless`.
-        "rotate_around" => const { &[
+        "rotate_around" if arg_count == 8 => const { &[
             length_arg(1, "px"),
             length_arg(2, "py"),
             length_arg(3, "pz"),
@@ -4484,7 +4509,7 @@ mod tests {
         // Transform producers and patterns.
         ("linear_pattern", AcceptedArities::Exactly(&[6])),
         ("linear_pattern_2d", AcceptedArities::Exactly(&[11])),
-        ("rotate_around", AcceptedArities::Exactly(&[8])),
+        ("rotate_around", AcceptedArities::Exactly(&[4, 8])),
         ("translate", AcceptedArities::Exactly(&[4])),
         // PRD 3 leaf ζ (task 5782). `rotate` is multi-arity because it is
         // genuinely OVERLOADED — task 4166's 2-arg Orientation form alongside
@@ -4492,9 +4517,9 @@ mod tests {
         // way the pattern rows below are: its arm carries a load-bearing
         // `if arg_count ==` guard, so the two arities expose DIFFERENT slot
         // sets and no MULTI_ARITY_AGNOSTIC_SAFE exemption is needed or
-        // permitted. `geometry_transform.rs`' fallback reads
-        // `"rotate() expects 2 or 5 arguments, got {n}"`.
-        ("rotate", AcceptedArities::Exactly(&[2, 5])),
+        // permitted. Direction-typing ι-a adds the 3-arg Direction form, its
+        // own guarded arm.
+        ("rotate", AcceptedArities::Exactly(&[2, 3, 5])),
         ("arc", AcceptedArities::Exactly(&[9])),
         // `draft` moves its angle between forms; its guarded pair discharges
         // the coupling rule exactly as `rotate`'s guard does.
@@ -4513,7 +4538,7 @@ mod tests {
         // unrelated task's change — which is the evidence that this guard is
         // enforceable rather than decorative.
         ("circular_pattern", AcceptedArities::Exactly(&[4, 9])),
-        ("mirror", AcceptedArities::Exactly(&[2, 7])),
+        ("mirror", AcceptedArities::Exactly(&[2, 3, 7])),
     ];
 
     /// Slotted names whose lowering emits NO observable arg-count diagnostic, so

@@ -989,11 +989,13 @@ fn mirror_direction_form_equals_the_plane_form() {
             "{call}: unexpected errors: {diagnostics:?}"
         );
         match ops.as_slice() {
-            [GeometryOp::Mirror {
-                plane_origin,
-                plane_normal,
-                ..
-            }] => (*plane_origin, *plane_normal),
+            [
+                GeometryOp::Mirror {
+                    plane_origin,
+                    plane_normal,
+                    ..
+                },
+            ] => (*plane_origin, *plane_normal),
             other => panic!("{call}: expected one Mirror op, got {other:?}"),
         }
     };

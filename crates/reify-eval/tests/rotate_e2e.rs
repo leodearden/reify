@@ -534,7 +534,10 @@ fn built_ops(source: &str) -> Vec<GeometryOp> {
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(errors.is_empty(), "build produced unexpected errors: {errors:?}");
+    assert!(
+        errors.is_empty(),
+        "build produced unexpected errors: {errors:?}"
+    );
     ops_ref
         .lock()
         .unwrap()
@@ -549,7 +552,12 @@ fn rotate_direction_form_realizes_a_rotate_op() {
         "structure def S {\n    let r = rotate(cylinder(30mm, 800mm), dir(0, 0, 1), 90deg)\n}\n",
     );
     match ops.as_slice() {
-        [GeometryOp::Cylinder { .. }, GeometryOp::Rotate { axis, angle_rad, .. }] => {
+        [
+            GeometryOp::Cylinder { .. },
+            GeometryOp::Rotate {
+                axis, angle_rad, ..
+            },
+        ] => {
             assert_eq!(*axis, [0.0, 0.0, 1.0]);
             assert_eq!(*angle_rad, std::f64::consts::FRAC_PI_2);
         }
@@ -598,12 +606,18 @@ fn direction_form_basis_axes_reach_the_kernel_bit_identically() {
     for (spelling, basis) in cases {
         for call in [
             format!("rotate(cylinder(30mm, 800mm), {spelling}, 90deg)"),
-            format!("rotate_around(cylinder(30mm, 800mm), point3(0mm, 0mm, 0mm), {spelling}, 90deg)"),
+            format!(
+                "rotate_around(cylinder(30mm, 800mm), point3(0mm, 0mm, 0mm), {spelling}, 90deg)"
+            ),
         ] {
             let ops = built_ops(&format!("structure def S {{\n    let r = {call}\n}}\n"));
             let (axis, angle_rad) = match ops.last() {
-                Some(GeometryOp::Rotate { axis, angle_rad, .. })
-                | Some(GeometryOp::RotateAround { axis, angle_rad, .. }) => (*axis, *angle_rad),
+                Some(GeometryOp::Rotate {
+                    axis, angle_rad, ..
+                })
+                | Some(GeometryOp::RotateAround {
+                    axis, angle_rad, ..
+                }) => (*axis, *angle_rad),
                 other => panic!("{call}: expected a rotation op last, got {other:?}"),
             };
             assert_eq!(

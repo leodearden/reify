@@ -1050,6 +1050,22 @@ const RESIDUAL_SPANS: &[(&str, usize, std::ops::Range<usize>, TaskCite, &str)] =
          rejects every scalar filler at `axis` before the angle is read, so the \
          probe cannot show it",
     ),
+    (
+        "mirror",
+        2,
+        0..1,
+        TaskCite(7714),
+        "origin — a Point3 origin no scalar filler produces; still gated at build \
+         by accept_length_point3",
+    ),
+    (
+        "rotate_around",
+        3,
+        0..1,
+        TaskCite(7714),
+        "pivot — a Point3 pivot no scalar filler produces; still gated at build by \
+         accept_length_point3",
+    ),
 ];
 
 /// Length-semantic sites OUTSIDE this guard's universe, recorded so a green
@@ -1284,6 +1300,14 @@ const ALLOWLIST: &[(&str, usize, std::ops::Range<usize>, Justification, &str)] =
         "plane — a Plane datum, the short form of the six-argument call",
     ),
     (
+        "mirror",
+        2,
+        1..2,
+        Justification::Index,
+        "normal — a Direction (dir(x, y, z)), never a bare number; \
+         decode_direction rejects a scalar filler",
+    ),
+    (
         "offset_curve",
         2,
         1..2,
@@ -1299,6 +1323,22 @@ const ALLOWLIST: &[(&str, usize, std::ops::Range<usize>, Justification, &str)] =
         Justification::Index,
         "orientation — an Orientation value, the short form of the four-\
          argument call",
+    ),
+    (
+        "rotate",
+        2,
+        0..1,
+        Justification::Index,
+        "axis — a Direction (dir(x, y, z)), never a bare number; \
+         decode_direction rejects a scalar filler",
+    ),
+    (
+        "rotate_around",
+        3,
+        1..2,
+        Justification::Index,
+        "axis — a Direction (dir(x, y, z)), never a bare number; \
+         decode_direction rejects a scalar filler",
     ),
     (
         "shell",
@@ -1374,7 +1414,9 @@ const ANGLE_ALLOWLIST: &[(&str, usize, std::ops::Range<usize>, &str)] = &[
     ("draft", 3, 1..2, "angle, the 4-arg form"),
     ("revolve", 7, 6..7, "angle"),
     ("rotate", 4, 3..4, "angle"),
+    ("rotate", 2, 1..2, "angle, the Direction form"),
     ("rotate_around", 7, 6..7, "angle"),
+    ("rotate_around", 3, 2..3, "angle, the Direction form"),
 ];
 
 /// One entry per index of `indices`, all expecting `expected`.

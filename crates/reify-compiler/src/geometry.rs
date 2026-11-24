@@ -2037,6 +2037,7 @@ fn compile_geometry_call_inner(
             }
         }
         // mirror(target, ox, oy, oz, nx, ny, nz) — scalar form (7 args)
+        // mirror(target, origin, normal)         — Direction form (3 args)
         // mirror(target, plane_value)            — value form  (2 args)
         "mirror" => {
             let n = compiled_args.len();
@@ -2058,6 +2059,20 @@ fn compile_geometry_call_inner(
                 };
                 sub_ops.push(op);
                 Some(sub_ops)
+            } else if n == 3 {
+                let mut it = compiled_args.into_iter();
+                let target = geom_ref(0);
+                let op = CompiledGeometryOp::Pattern {
+                    kind: PatternKind::Mirror,
+                    target,
+                    args: vec![
+                        ("target".to_string(), it.next().unwrap()),
+                        ("origin".to_string(), it.next().unwrap()),
+                        ("normal".to_string(), it.next().unwrap()),
+                    ],
+                };
+                sub_ops.push(op);
+                Some(sub_ops)
             } else if n == 2 {
                 let mut it = compiled_args.into_iter();
                 let target = geom_ref(0);
@@ -2073,7 +2088,10 @@ fn compile_geometry_call_inner(
                 Some(sub_ops)
             } else {
                 push_labeled_arg_count_error(
-                    format!("mirror() expects 7 arguments (scalar) or 2 (plane-value), got {n}"),
+                    format!(
+                        "mirror() expects 2, 3 or 7 arguments: mirror(geo, plane) or \
+                         mirror(geo, point3(x, y, z), dir(x, y, z)), got {n}"
+                    ),
                     expr.span,
                     diagnostics,
                 );

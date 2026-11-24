@@ -27,6 +27,36 @@ pub(crate) fn check_arg_count_exact(
     false
 }
 
+/// As [`check_arg_count_exact`], naming the one accepted call `form` in the
+/// message: `"{name}() expects {expected} arguments: {name}({form}), got {got}"`.
+///
+/// For a builtin whose accepted form changed, so the error teaches the form to
+/// write. The form sits between `{name}() expects` and `, got {got}` because the
+/// behavioural arity probes read exactly that prefix and suffix.
+pub(crate) fn check_arg_count_exact_form(
+    name: &str,
+    got: usize,
+    expected: usize,
+    form: &str,
+    span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> bool {
+    if got == expected {
+        return true;
+    }
+    let noun = if expected == 1 {
+        "argument"
+    } else {
+        "arguments"
+    };
+    push_labeled_arg_count_error(
+        format!("{name}() expects {expected} {noun}: {name}({form}), got {got}"),
+        span,
+        diagnostics,
+    );
+    false
+}
+
 /// Returns `true` when `got >= min_expected`.
 ///
 /// On failure, pushes a `Diagnostic::error` whose message is
@@ -160,7 +190,10 @@ mod tests {
     fn check_arg_count_exact_form_uses_the_singular_noun_for_one_argument() {
         let mut diagnostics: Vec<Diagnostic> = vec![];
         check_arg_count_exact_form("f", 2, 1, "x", SourceSpan::new(0, 1), &mut diagnostics);
-        assert_eq!(diagnostics[0].message, "f() expects 1 argument: f(x), got 2");
+        assert_eq!(
+            diagnostics[0].message,
+            "f() expects 1 argument: f(x), got 2"
+        );
     }
 
     // --- check_arg_count_at_least tests ---

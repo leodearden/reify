@@ -1,7 +1,9 @@
 use reify_core::{Diagnostic, SourceSpan, Type};
 use reify_ir::CompiledExpr;
 
-use crate::arg_check::{check_arg_count_exact, push_labeled_arg_count_error};
+use crate::arg_check::{
+    check_arg_count_exact, check_arg_count_exact_form, push_labeled_arg_count_error,
+};
 use crate::types::{CompiledGeometryOp, GeomRef, TransformKind};
 
 /// Compile a transform operation into CompiledGeometryOps.
@@ -37,7 +39,8 @@ pub(crate) fn compile_transform_op(
             sub_ops.push(op);
             Some(sub_ops)
         }
-        // rotate(target, ax, ay, az, angle)  OR  rotate(target, orientation)
+        // rotate(target, ax, ay, az, angle)  OR  rotate(target, axis, angle)  OR
+        // rotate(target, orientation)
         "rotate" => match compiled_args.len() {
             5 => {
                 let mut it = compiled_args.into_iter();
@@ -49,6 +52,20 @@ pub(crate) fn compile_transform_op(
                         ("ax".to_string(), it.next().unwrap()),
                         ("ay".to_string(), it.next().unwrap()),
                         ("az".to_string(), it.next().unwrap()),
+                        ("angle".to_string(), it.next().unwrap()),
+                    ],
+                };
+                sub_ops.push(op);
+                Some(sub_ops)
+            }
+            3 => {
+                let mut it = compiled_args.into_iter();
+                let op = CompiledGeometryOp::Transform {
+                    kind: TransformKind::Rotate,
+                    target,
+                    args: vec![
+                        ("target".to_string(), it.next().unwrap()),
+                        ("axis".to_string(), it.next().unwrap()),
                         ("angle".to_string(), it.next().unwrap()),
                     ],
                 };
@@ -70,7 +87,10 @@ pub(crate) fn compile_transform_op(
             }
             n => {
                 push_labeled_arg_count_error(
-                    format!("rotate() expects 2 or 5 arguments, got {n}"),
+                    format!(
+                        "rotate() expects 2, 3 or 5 arguments: rotate(geo, orientation) or \
+                         rotate(geo, dir(x, y, z), angle), got {n}"
+                    ),
                     expr_span,
                     diagnostics,
                 );
@@ -113,35 +133,57 @@ pub(crate) fn compile_transform_op(
             sub_ops.push(op);
             Some(sub_ops)
         }
-        // rotate_around(target, px, py, pz, ax, ay, az, angle)
-        "rotate_around" => {
-            if !check_arg_count_exact(
-                "rotate_around",
-                compiled_args.len(),
-                8,
-                expr_span,
-                diagnostics,
-            ) {
-                return None;
+        // rotate_around(target, px, py, pz, ax, ay, az, angle)  OR
+        // rotate_around(target, pivot, axis, angle)
+        "rotate_around" => match compiled_args.len() {
+            4 => {
+                let mut it = compiled_args.into_iter();
+                let op = CompiledGeometryOp::Transform {
+                    kind: TransformKind::RotateAround,
+                    target,
+                    args: vec![
+                        ("target".to_string(), it.next().unwrap()),
+                        ("pivot".to_string(), it.next().unwrap()),
+                        ("axis".to_string(), it.next().unwrap()),
+                        ("angle".to_string(), it.next().unwrap()),
+                    ],
+                };
+                sub_ops.push(op);
+                Some(sub_ops)
             }
-            let mut it = compiled_args.into_iter();
-            let op = CompiledGeometryOp::Transform {
-                kind: TransformKind::RotateAround,
-                target,
-                args: vec![
-                    ("target".to_string(), it.next().unwrap()),
-                    ("px".to_string(), it.next().unwrap()),
-                    ("py".to_string(), it.next().unwrap()),
-                    ("pz".to_string(), it.next().unwrap()),
-                    ("ax".to_string(), it.next().unwrap()),
-                    ("ay".to_string(), it.next().unwrap()),
-                    ("az".to_string(), it.next().unwrap()),
-                    ("angle".to_string(), it.next().unwrap()),
-                ],
-            };
-            sub_ops.push(op);
-            Some(sub_ops)
-        }
+            8 => {
+                let mut it = compiled_args.into_iter();
+                let op = CompiledGeometryOp::Transform {
+                    kind: TransformKind::RotateAround,
+                    target,
+                    args: vec![
+                        ("target".to_string(), it.next().unwrap()),
+                        ("px".to_string(), it.next().unwrap()),
+                        ("py".to_string(), it.next().unwrap()),
+                        ("pz".to_string(), it.next().unwrap()),
+                        ("ax".to_string(), it.next().unwrap()),
+                        ("ay".to_string(), it.next().unwrap()),
+                        ("az".to_string(), it.next().unwrap()),
+                        ("angle".to_string(), it.next().unwrap()),
+                    ],
+                };
+                sub_ops.push(op);
+                Some(sub_ops)
+            }
+            // The legacy 8-arg form is still accepted above, but a rejection
+            // teaches only the Direction form.
+            n => {
+                check_arg_count_exact_form(
+                    "rotate_around",
+                    n,
+                    4,
+                    "geo, point3(x, y, z), dir(x, y, z), angle",
+                    expr_span,
+                    diagnostics,
+                );
+                None
+            }
+        },
         // apply_transform(target, transform)
         "apply_transform" => {
             if !check_arg_count_exact(
@@ -542,7 +584,10 @@ mod tests {
             vec![],
         )
         .unwrap_or_else(|| panic!("{n}-arg {name} should lower, got: {diagnostics:?}"));
-        assert!(diagnostics.is_empty(), "unexpected diagnostics: {diagnostics:?}");
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {diagnostics:?}"
+        );
         match ops.as_slice() {
             [CompiledGeometryOp::Transform { kind, args, .. }] => {
                 (*kind, args.iter().map(|(n, _)| n.clone()).collect())
@@ -557,7 +602,10 @@ mod tests {
     fn compile_transform_op_rotate_3_arg_direction_form() {
         assert_eq!(
             lowered_transform("rotate", 3),
-            (TransformKind::Rotate, vec!["target".into(), "axis".into(), "angle".into()])
+            (
+                TransformKind::Rotate,
+                vec!["target".into(), "axis".into(), "angle".into()]
+            )
         );
     }
 
@@ -569,7 +617,12 @@ mod tests {
             lowered_transform("rotate_around", 4),
             (
                 TransformKind::RotateAround,
-                vec!["target".into(), "pivot".into(), "axis".into(), "angle".into()]
+                vec![
+                    "target".into(),
+                    "pivot".into(),
+                    "axis".into(),
+                    "angle".into()
+                ]
             )
         );
     }
