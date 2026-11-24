@@ -1439,7 +1439,8 @@ impl Engine {
             self.prelude.iter().flat_map(|m| m.trait_defs.iter())
                 .chain(module.trait_defs.iter()),
         );
-        let env = self.env_of(module);
+        let env_scope = self.env_of(module);
+        let env = env_scope.env();
 
         for template in &module.templates {
             let active_constraints = Self::collect_active_constraints(template, values);

@@ -40,7 +40,6 @@ use crate::unfold::{elaborate_child_instance, unfold_recursive_sub};
 use crate::{
     CacheStats, CachedEvalResult, Engine, EvalResult, EvaluationState, GuardLookup,
     OptimizedComputeDispatcher, build_meta_map, eval_ctx_with_meta, guard_state_fingerprint,
-    merge_functions,
 };
 
 /// Resolve a sub-component's `structure_name` in `module`'s definition
@@ -5184,10 +5183,10 @@ impl Engine {
     /// dependency structures. Subsequent calls to edit_param() can perform
     /// incremental re-evaluation using these structures.
     pub fn eval(&mut self, module: &CompiledModule) -> EvalResult {
-        // Build the merged function table (user functions first, then prelude —
-        // SHADOWING INVARIANT) and seal it in an Arc so clones are O(1).
-        // See `merge_functions` in lib.rs for the full contract.
-        self.functions = merge_functions(module, &self.prelude_functions);
+        // The dispatch table of the environment `module` resolves in, sealed
+        // in an Arc so clones are O(1): one function per signature, in
+        // precedence order (see `DefEnv::function_table`).
+        self.functions = self.env_of(module).env().function_table();
         // Incrementally refresh the structure side-table from the user
         // module's `structure def` templates (task 3540 / SIR-α step-12).
         // `intern` is idempotent on name: prelude-seeded structures keep
@@ -5240,8 +5239,8 @@ impl Engine {
         // when signatures collide, while prelude functions with distinct
         // (name, arity, param types) triples remain callable.
         //
-        // Arc::clone is O(1) — a single refcount increment. The merged table was
-        // built and sealed by `merge_functions` (see lib.rs) at the assignment above;
+        // Arc::clone is O(1) — a single refcount increment. The table was
+        // built and sealed by `DefEnv::function_table` at the assignment above;
         // this local binding lets `evaluate_let_bindings` borrow `self` mutably
         // (it takes &mut self) without conflicting with any immutable borrow of
         // `self.functions`. The Arc keeps the table alive for the lifetime of this
@@ -5285,7 +5284,7 @@ impl Engine {
         let version_id = ver_id.0;
         let version = ver_id;
 
-        let mut snapshot = Snapshot::from_env(self.env_of(module));
+        let mut snapshot = Snapshot::from_env(self.env_of(module).env());
         #[cfg(debug_assertions)]
         assert_value_cell_types_representable(&snapshot.graph);
         self.report_unresolved_subs(&snapshot.graph, &mut diagnostics);
@@ -5567,7 +5566,8 @@ impl Engine {
 
         // Sub-component elaboration: evaluate child template params/lets
         // for each sub_component in each template.
-        let env = self.env_of(module);
+        let env_scope = self.env_of(module);
+        let env = env_scope.env();
         for template in &module.templates {
             for sub in &template.sub_components {
                 // Find the referenced child template by name — module
@@ -6147,6 +6147,7 @@ impl Engine {
                         &ro.clusters[cluster_idx],
                         idx,
                         module,
+                        env,
                         &governance,
                         &mut values,
                         &mut snapshot,
@@ -7540,6 +7541,7 @@ impl Engine {
         cluster: &crate::resolve_order::Cluster,
         idx: usize,
         module: &'t CompiledModule,
+        env: DefEnv<'t>,
         governance: &[GoverningObjective],
         values: &mut ValueMap,
         snapshot: &mut Snapshot,
@@ -7567,7 +7569,7 @@ impl Engine {
         );
         let problem = build_merged_solver_problem(
             cluster,
-            self.env_of(module),
+            env,
             governance,
             values,
             Arc::clone(&functions),
@@ -8111,8 +8113,8 @@ impl Engine {
         // eval_cached is called without a prior eval().
         self.meta_map = build_meta_map(module);
 
-        // R3e (#4907): build the merged function table (same logic as eval(),
-        // see `merge_functions`'s doc). Without this, `self.functions` stays
+        // R3e (#4907): build the function table (same logic as eval(), see
+        // `DefEnv::function_table`). Without this, `self.functions` stays
         // empty when `eval_cached` is called without a prior `eval()` on this
         // Engine, so `reify_expr::find_matching_compiled_function` can never
         // find a `UserFunctionCall` target — every user-fn call (including
@@ -8121,7 +8123,7 @@ impl Engine {
         // of the function body. Mirrors the `meta_map` fix immediately above:
         // both are Engine state that `eval()` populates as a side effect, and
         // `eval_cached` must independently ensure for standalone use.
-        self.functions = merge_functions(module, &self.prelude_functions);
+        self.functions = self.env_of(module).env().function_table();
 
         // Resolve the active solver once per call so the named-vs-default
         // routing (Task 2300) is identical to eval(): `resolve_solver_for_module`
@@ -8880,7 +8882,8 @@ impl Engine {
                     .flat_map(|m| m.trait_defs.iter())
                     .chain(module.trait_defs.iter()),
             );
-            let env = self.env_of(module);
+            let env_scope = self.env_of(module);
+            let env = env_scope.env();
 
             // β #4822: compute dependency-ordered resolve order so the solver sub-pass
             // (below) runs in read-DAG order — a later-declared scope that reads
@@ -9011,6 +9014,7 @@ impl Engine {
                         &ro.clusters[cluster_idx],
                         idx,
                         module,
+                        env,
                         &governance,
                         &mut values,
                         &mut snapshot_values,
@@ -9423,7 +9427,7 @@ impl Engine {
         {
             let snapshot_id = self.next_snapshot_id; // version-id-gate: allow — snapshot-only re-stamp in eval_cached, reuses the caller-supplied `version`
             self.next_snapshot_id += 1; // version-id-gate: allow — snapshot-only re-stamp in eval_cached; routing through allocate_snapshot_version would spuriously bump next_version_id too
-            let mut snapshot = Snapshot::from_env(self.env_of(module));
+            let mut snapshot = Snapshot::from_env(self.env_of(module).env());
             self.report_unresolved_subs(&snapshot.graph, &mut diagnostics);
             snapshot.id = SnapshotId(snapshot_id);
             snapshot.version = version;
@@ -9542,6 +9546,7 @@ impl Engine {
         cluster: &crate::resolve_order::Cluster,
         idx: usize,
         module: &'t CompiledModule,
+        env: DefEnv<'t>,
         governance: &[GoverningObjective],
         values: &mut ValueMap,
         snapshot_values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
@@ -9580,7 +9585,7 @@ impl Engine {
         );
         let problem = build_merged_solver_problem(
             cluster,
-            self.env_of(module),
+            env,
             governance,
             values,
             Arc::clone(&self.functions),

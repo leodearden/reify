@@ -16,7 +16,6 @@ use std::path::Path;
 use reify_compiler::cfg::CfgSet;
 use reify_compiler::module_dag::ModuleResolver;
 use reify_compiler::program::{CompiledProgram, compile_program};
-use reify_compiler::name_env::Definition;
 use reify_compiler::program_scope::{self, ProgramDefinition};
 use reify_compiler::stdlib_loader::load_stdlib;
 use reify_compiler::{
@@ -1019,9 +1018,9 @@ fn signature(function: &CompiledFunction) -> (&str, Vec<&Type>) {
 
 /// §10 Q4 against the `eval_is_idempotent_for_prelude_functions` source
 /// (tests/stdlib_prelude_tests.rs): the entry's `symmetric_tolerance` shadows
-/// the stdlib's, and `function_table()` dispatches exactly as the engine's
-/// table does, the entry's functions followed by every stdlib module's in load
-/// order, first match per signature.
+/// the stdlib's, and `function_table()`, now the engine's table, dispatches
+/// exactly as the rule it replaced: the entry's functions followed by every
+/// stdlib module's in load order, first match per signature.
 #[test]
 fn the_function_table_dispatches_as_the_engine_table_does() {
     let source = "module main\n\

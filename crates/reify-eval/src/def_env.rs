@@ -14,11 +14,18 @@
 //! A lone [`CompiledModule`] has the environment of the import-free program
 //! whose entry it is (I1): its own templates, all of them declared, then the
 //! prelude.
+//!
+//! The engine evaluates a loaded program as one module, its
+//! [`evaluation_module`]: eval walks `module.templates` index by index, so the
+//! program's user templates are that module's. [`EnvScope`] is the
+//! environment the engine resolves a module in: the loaded program's for
+//! exactly that module, the module's own for any other.
 
 use std::borrow::Borrow;
 use std::sync::Arc;
 
 use reify_compiler::program::CompiledProgram;
+use reify_compiler::name_env::Tier;
 use reify_compiler::program_scope::{self, ProgramDefinition, ProgramRoot};
 use reify_compiler::stdlib_loader::load_stdlib;
 use reify_compiler::{
@@ -37,7 +44,6 @@ pub struct DefEnv<'p> {
 
 impl<'p> DefEnv<'p> {
     /// The environment of `program` over the stdlib.
-    // G-allow: resolution-unification §3.2 DefEnv; first production consumer is κ #5524
     pub fn from_program(program: &'p CompiledProgram) -> Self {
         Self::with_prelude(program, load_stdlib())
     }
@@ -53,10 +59,35 @@ impl<'p> DefEnv<'p> {
     /// The environment of `module` over `prelude`: that of the import-free
     /// program whose entry `module` is (I1).
     pub fn of_module(module: &'p CompiledModule, prelude: &'p [CompiledModule]) -> Self {
-        Self {
-            root: module.into(),
-            prelude,
-        }
+        Self::with_root(module.into(), prelude)
+    }
+
+    /// The environment of `root` over `prelude`.
+    pub fn with_root(root: ProgramRoot<'p>, prelude: &'p [CompiledModule]) -> Self {
+        Self { root, prelude }
+    }
+
+    /// The program's user templates: every template the entry declares, then
+    /// each direct import's `pub` templates whose name nothing before them
+    /// binds, in declaration order. The prelude's are not among them.
+    pub fn user_templates(&self) -> impl Iterator<Item = &'p TopologyTemplate> {
+        let imported: Vec<&'p TopologyTemplate> =
+            program_scope::bind_program::<TopologyTemplate>(self.root, &[])
+                .winning_candidates()
+                .iter()
+                .filter(|candidate| candidate.origin.tier() == Tier::Import)
+                .map(|candidate| candidate.definition)
+                .collect();
+        self.root.entry_declared_templates().iter().chain(imported)
+    }
+
+    /// The bound traits, in precedence order: the trait lattice every
+    /// conformance check walks.
+    pub fn traits(&self) -> impl Iterator<Item = &'p CompiledTrait> {
+        program_scope::bind_program::<CompiledTrait>(self.root, self.prelude)
+            .winners()
+            .collect::<Vec<_>>()
+            .into_iter()
     }
 
     fn resolve<D>(&self, name: &str) -> Option<&'p D>
@@ -93,7 +124,6 @@ impl<'p> DefEnv<'p> {
 
     /// The bound functions in precedence order, one per signature (name and
     /// parameter types): the program's dispatch table (§10 Q4).
-    // G-allow: resolution-unification §10 Q4 dispatch table; κ #5524 folds merge_functions into it
     pub fn function_table(&self) -> Arc<[CompiledFunction]> {
         program_scope::bind_program::<CompiledFunction>(self.root, self.prelude)
             .winners()
@@ -154,5 +184,76 @@ impl<'p> DefEnv<'p> {
     /// `CompiledProgram::entry_declared_templates`.
     pub fn declared(&self) -> &'p CompiledModule {
         self.root.entry()
+    }
+}
+
+/// The module the engine evaluates for `program`: its entry, with the
+/// program's [`DefEnv::user_templates`] as its templates.
+pub fn evaluation_module(program: &CompiledProgram) -> CompiledModule {
+    let templates = DefEnv::from_program(program)
+        .user_templates()
+        .cloned()
+        .collect();
+    CompiledModule {
+        templates,
+        ..program.entry().clone()
+    }
+}
+
+/// A program installed by `Engine::load`, with the module the engine evaluates
+/// for it.
+#[derive(Debug)]
+pub(crate) struct LoadedProgram {
+    program: Arc<CompiledProgram>,
+    evaluated: Arc<CompiledModule>,
+}
+
+impl LoadedProgram {
+    pub(crate) fn new(program: Arc<CompiledProgram>) -> Self {
+        let evaluated = Arc::new(evaluation_module(&program));
+        Self { program, evaluated }
+    }
+
+    pub(crate) fn evaluated(&self) -> &Arc<CompiledModule> {
+        &self.evaluated
+    }
+}
+
+/// The definition environment the engine resolves one module in. It owns what
+/// it shares with the engine, so it borrows the module alone, never the engine.
+#[derive(Debug, Clone)]
+pub struct EnvScope<'m> {
+    module: &'m CompiledModule,
+    /// The engine's loaded program, iff `module` is its evaluation module.
+    loaded: Option<Arc<LoadedProgram>>,
+    prelude: &'m [CompiledModule],
+}
+
+impl<'m> EnvScope<'m> {
+    pub(crate) fn new(
+        module: &'m CompiledModule,
+        loaded: Option<&Arc<LoadedProgram>>,
+        prelude: &'m [CompiledModule],
+    ) -> Self {
+        let loaded = loaded
+            .filter(|loaded| std::ptr::eq(module, &*loaded.evaluated))
+            .cloned();
+        Self {
+            module,
+            loaded,
+            prelude,
+        }
+    }
+
+    /// The loaded program's environment, rooted at its evaluation module, when
+    /// the scope's module is that module; otherwise the module's own (I1).
+    pub fn env(&self) -> DefEnv<'_> {
+        match &self.loaded {
+            Some(loaded) => DefEnv::with_root(
+                ProgramRoot::new(&loaded.evaluated, &loaded.program.imports),
+                self.prelude,
+            ),
+            None => DefEnv::of_module(self.module, self.prelude),
+        }
     }
 }

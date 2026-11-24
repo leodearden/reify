@@ -14,51 +14,58 @@ use crate::types::{
     CompiledUnit, TopologyTemplate,
 };
 
-/// What resolution starts from: a compiled program, or a lone module, which
-/// stands for the import-free program whose entry it is (resolution-unification
-/// I1) and so declares every template it holds.
+/// What resolution starts from: an entry module and its direct imports. A
+/// lone module stands for the import-free program whose entry it is
+/// (resolution-unification I1) and so declares every template it holds.
 #[derive(Debug, Clone, Copy)]
-pub enum ProgramRoot<'a> {
-    Program(&'a CompiledProgram),
-    Module(&'a CompiledModule),
+pub struct ProgramRoot<'a> {
+    entry: &'a CompiledModule,
+    /// The templates `entry` itself declares, never a copy merged into it.
+    declared_templates: &'a [TopologyTemplate],
+    imports: &'a [CompiledImportUnit],
 }
 
 impl<'a> ProgramRoot<'a> {
+    /// The root whose entry is `entry`, declaring every template it holds, over
+    /// the direct `imports`, in declaration order.
+    pub fn new(entry: &'a CompiledModule, imports: &'a [CompiledImportUnit]) -> Self {
+        Self {
+            entry,
+            declared_templates: &entry.templates,
+            imports,
+        }
+    }
+
     /// The entry module.
     pub fn entry(self) -> &'a CompiledModule {
-        match self {
-            Self::Program(program) => program.entry(),
-            Self::Module(module) => module,
-        }
+        self.entry
     }
 
     /// The templates the entry itself declares, never a copy merged into it
     /// from one of the root's imports.
     pub fn entry_declared_templates(self) -> &'a [TopologyTemplate] {
-        match self {
-            Self::Program(program) => program.entry_declared_templates(),
-            Self::Module(module) => &module.templates,
-        }
+        self.declared_templates
     }
 
     /// The entry's direct imports, in declaration order.
     pub fn imports(self) -> &'a [CompiledImportUnit] {
-        match self {
-            Self::Program(program) => &program.imports,
-            Self::Module(_) => &[],
-        }
+        self.imports
     }
 }
 
 impl<'a> From<&'a CompiledProgram> for ProgramRoot<'a> {
     fn from(program: &'a CompiledProgram) -> Self {
-        Self::Program(program)
+        Self {
+            entry: program.entry(),
+            declared_templates: program.entry_declared_templates(),
+            imports: &program.imports,
+        }
     }
 }
 
 impl<'a> From<&'a CompiledModule> for ProgramRoot<'a> {
     fn from(module: &'a CompiledModule) -> Self {
-        Self::Module(module)
+        Self::new(module, &[])
     }
 }
 

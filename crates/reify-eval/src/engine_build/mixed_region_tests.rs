@@ -1722,9 +1722,9 @@
     /// A stdlib `@optimized` geometry-consumer (e.g. `solve_elastic_static`)
     /// is never a member of a compiled user module's `functions` table —
     /// `compile_with_stdlib` keeps stdlib fns in a separate prelude, and the
-    /// engine only merges prelude + module fns into
+    /// engine only binds prelude + module fns into
     /// `self.functions: Arc<[CompiledFunction]>` (`lib.rs:674`) during
-    /// `build()` → `check()` (`merge_functions`), which runs BEFORE
+    /// `build()` → `check()` (`DefEnv::function_table`), which runs BEFORE
     /// `compute_demanded_reprs` (`build_with_geometry_output`'s
     /// `self.check(module)` precedes its `compute_demanded_reprs` call). This
     /// test reproduces that shape directly, without a real build: the
