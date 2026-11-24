@@ -40,7 +40,7 @@
 # Keystone for H2 (reads intra-run-serial), H3/H9 (read host-exclusive), and
 # H5-H7 (reclassify entries as they rescue/split host-exclusive files).
 
-# --- intra-run-serial (10) ---------------------------------------------------
+# --- intra-run-serial (11) ---------------------------------------------------
 # test_reify_audit_pdiag.sh (task #5405) drives `reify_audit_guard ...
 # rebuild-budget-safe`, which forks `cargo build --release -p reify-audit` on a
 # stale binary and so mutates the lane-shared CoW target/ — the identical reason
@@ -74,6 +74,9 @@ test_canon_run_host.sh intra-run-serial
 # runs real sccache servers and a private rclone store, and compiles scratch
 # workspaces at a per-test CANON; PRD §6 classifies such members intra-run-serial.
 test_canon_cache_host.sh intra-run-serial
+# test_canon_launch_sites.sh (task #10230), like test_canon_run_host.sh, enters mount
+# namespaces with /usr/bin/bwrap; PRD §6 classifies such members intra-run-serial.
+test_canon_launch_sites.sh intra-run-serial
 
 # --- host-exclusive (5) ------------------------------------------------------
 # test_bundle_clean_install.sh (task #9732) is default-SKIPPING: armed only by
