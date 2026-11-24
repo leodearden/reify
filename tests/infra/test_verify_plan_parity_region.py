@@ -74,6 +74,15 @@ EVAL_CHANGE = "crates/reify-eval/src/cache.rs"
 DECLARED_LIST = "scripts/release-sensitive-crates.txt"
 DECLARED_MISSING = "ERROR: release-sensitive-crates.txt not found at "
 CLIPPY_WARNING = "WARNING: invalid REIFY_VERIFY_CLIPPY_TIMEOUT=bogus; using default "
+TREE_SITTER_CHANGE = "scripts/tree-sitter-generate.sh"
+
+
+def _leaf_prefix(member: str, wall: str) -> str:
+    return '( for _vt in ' + member + '; do [ -f "$_vt" ] || continue; timeout --kill-after=60 ' + wall + ' '
+
+
+PIPELINE_LEAF_WALL = _leaf_prefix("tests/infra/test_tree_sitter_pipeline.sh", "30m")
+ABI_PIN_LEAF_WALL = _leaf_prefix("tests/infra/test_tree_sitter_abi_pin.sh", "10m")
 
 
 def tearDownModule():
@@ -212,6 +221,17 @@ class TestRegionNarrowing(PremisedParity):
             stage_written(self.clone, path)
             scenario = plan(f"test staged {path}", "test", "--scope", "staged", "--include-infra")
             self.check_pair(Case(scenario), run_both(self.clone, scenario))
+
+
+class TestSelectiveInfraLeafWalls(PremisedParity):
+    """Each selective-infra leaf runs under its own wall, in bash and Python alike."""
+
+    def test_the_pipeline_member_outlasts_its_sibling(self):
+        self.clone.stage(TREE_SITTER_CHANGE)
+        self.check(Case(
+            plan(f"test staged {TREE_SITTER_CHANGE}", "test", "--scope", "staged"),
+            stdout=(PIPELINE_LEAF_WALL, ABI_PIN_LEAF_WALL),
+        ))
 
 
 class TestRegionToolchain(PremisedParity):
