@@ -21,7 +21,7 @@ import std.modal.analysis
 //
 // Model: lumped generalized-coordinate eigensolve — one generalized DOF per
 // spanning-tree body.  Diagonal M[i,i] = body_i scalar mass (via
-// `resolve_body_mass` + `mass_properties_from_value`).  Diagonal K[i,i] =
+// `resolve_body_mass` + `MassProperties::from_value`).  Diagonal K[i,i] =
 // spring_rate of body_i's inbound `at` flexure joint (zero for rigid joints).
 // K is assembled via `reify_solver_elastic::add_joint_stiffness` (the same
 // primitive `joint_stiffness_modal_frequency.rs` uses).  First-mode eigenvalue

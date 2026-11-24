@@ -32,8 +32,7 @@ use reify_solver_elastic::{
 // Not re-exported from the crate root: the shift-contract C5 rule belongs beside
 // the other shift helpers, and this is the module path to it.
 use reify_solver_elastic::eigensolve::conservative_shift_provenance;
-use reify_stdlib::dynamics::mass_props::resolve_density_strict;
-use reify_stdlib::{mass_properties_from_value, resolve_body_mass};
+use reify_stdlib::dynamics::mass_props::{MassProperties, resolve_density_strict};
 use reify_stdlib::modal::free_vibration::{
     eigenvalue_to_frequency_hz, frequency_hz_to_eigenvalue, is_rigid_body_mode,
     mass_normalization_scale, modal_participation_mass, rayleigh_damping_ratio,
@@ -45,6 +44,7 @@ use reify_stdlib::modal::transient::{
     impulse_force_at, integrate_prepared, prepare_modal_integrator, reconstruct_series,
     sampled_force_at, solve_modal_response, step_force_at, uniform_time_grid,
 };
+use reify_stdlib::resolve_body_mass;
 
 use crate::compute_targets::bc_resolve::named_leaf_target;
 use crate::compute_targets::result_topology::carried_topology_from_result;
@@ -1843,7 +1843,7 @@ fn spring_rate_for_lumped_dof(v: &Value) -> (Option<f64>, Option<StiffnessSkipKi
 ///   springs skipped with a warning).
 /// - `M` is an `n_dof × n_dof` diagonal `SparseRowMat` with `M[i,i] =` body
 ///   `i`'s scalar mass extracted via the canonical two-step
-///   `resolve_body_mass` → `mass_properties_from_value`.
+///   `resolve_body_mass` → `MassProperties::from_value`.
 /// - `n_dof` = number of spanning-tree bodies (= `bodies.len()` for open chains).
 /// - `diagnostics` is a `Vec<Diagnostic>` of non-fatal advisory messages (e.g. a
 ///   `W_MechanismModalRotationalDOF` when a joint has `ROTATIONAL_STIFFNESS` —
@@ -1914,12 +1914,12 @@ fn assemble_mechanism_km(
                 return (None, diagnostics);
             }
         };
-        let (mass, _, _) = match mass_properties_from_value(&mp) {
+        let MassProperties { mass, .. } = match MassProperties::from_value(&mp) {
             Some(v) => v,
             None => {
                 diagnostics.push(Diagnostic::error(format!(
                     "E_MechanismModalNoMass: body at list index {i}{body_id_tag} has \
-                     a MassProperties solid but mass_properties_from_value could not \
+                     a MassProperties solid but MassProperties::from_value could not \
                      extract its scalar mass. The lumped generalized-coordinate \
                      eigenproblem Kφ = λMφ is undefined — returning an empty \
                      modal result.",

@@ -27,10 +27,8 @@ use std::sync::Arc;
 use reify_core::dimension::DimensionVector;
 use reify_core::{ContentHash, Diagnostic, DiagnosticCode};
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, Value};
-use reify_stdlib::dynamics::eval::{
-    cell_f64, default_frame3, inverse_dynamics_sample, motion_trajectory_samples,
-};
-use reify_stdlib::dynamics::mass_props::{resolve_density, resolve_density_strict};
+use reify_stdlib::dynamics::eval::{cell_f64, inverse_dynamics_sample, motion_trajectory_samples};
+use reify_stdlib::dynamics::mass_props::{default_frame3, resolve_density, resolve_density_strict};
 use reify_stdlib::dynamics::rnea::default_gravity;
 use reify_stdlib::dynamics::trampoline::{InverseDynamicsCacheKey, body_solid_hashes};
 
