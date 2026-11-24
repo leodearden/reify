@@ -1,4 +1,5 @@
 mod claude_bridge_tests;
+mod command_line_tests;
 mod commands_tests;
 mod constraint_recheck_tests;
 mod debug_boundary_tests;
