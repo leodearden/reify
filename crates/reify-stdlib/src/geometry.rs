@@ -1461,16 +1461,6 @@ fn make_point3(xyz: [f64; 3], dim: DimensionVector) -> Value {
     ])
 }
 
-/// Build a dimensionless `Value::Vector` of three `Real` components (a normal/direction).
-#[cfg(test)]
-fn make_real_vec3(xyz: [f64; 3]) -> Value {
-    Value::Vector(vec![
-        Value::Real(xyz[0]),
-        Value::Real(xyz[1]),
-        Value::Real(xyz[2]),
-    ])
-}
-
 /// Decode a `Value::Plane` into (origin[3], origin_dim, unit normal). `None` for
 /// any non-Plane / non-3D / mixed-dimension / non-finite origin, or a normal that
 /// is not a `Value::Direction`. The origin goes through the shared
@@ -2561,6 +2551,15 @@ mod tests {
         Value::Direction(
             reify_ir::UnitVec3::from_vector([x, y, z]).expect("test direction is non-degenerate"),
         )
+    }
+
+    /// Build a dimensionless `Value::Vector` of three `Real` components.
+    fn make_real_vec3(xyz: [f64; 3]) -> Value {
+        Value::Vector(vec![
+            Value::Real(xyz[0]),
+            Value::Real(xyz[1]),
+            Value::Real(xyz[2]),
+        ])
     }
 
     // --- Determinacy predicate stubs (step-7) ---
@@ -4712,7 +4711,7 @@ mod tests {
     fn datum_family_rejects_a_plane_whose_normal_is_a_vector() {
         let vector_normal = Value::Plane {
             origin: Box::new(point3_len(0.0, 0.0, 0.005)),
-            normal: Box::new(super::make_real_vec3([0.0, 0.0, 1.0])),
+            normal: Box::new(make_real_vec3([0.0, 0.0, 1.0])),
         };
         for (name, args) in [
             ("midplane", vec![vector_normal.clone(), plane_at_z(0.010)]),
@@ -9656,7 +9655,7 @@ mod tests {
         };
         let vector_normal_plane = Value::Plane {
             origin: Box::new(good_point.clone()),
-            normal: Box::new(super::make_real_vec3([0.0, 0.0, 1.0])),
+            normal: Box::new(make_real_vec3([0.0, 0.0, 1.0])),
         };
 
         for (label, name, args) in [
