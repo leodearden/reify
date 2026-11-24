@@ -1038,7 +1038,7 @@ fn eval_omits_no_default_no_override_param_cell_from_result_values() {
         "sibling Param cell `other` (with default) must be present in result.values"
     );
 
-    // (c) Snapshot pre-seed survives: Snapshot::from_compiled_module pre-seeds
+    // (c) Snapshot pre-seed survives: Snapshot::from_env pre-seeds
     //     every cell with (Undef, Undetermined); the no-override-no-default
     //     `continue` does NOT touch snapshot.values, so the pre-seed value
     //     remains. This is the orthogonal half of the task-2179 snapshot

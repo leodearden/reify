@@ -508,7 +508,7 @@ pub struct Engine {
     /// adding per-Engine memory proportional to the number of prelude functions.
     prelude_functions: Vec<CompiledFunction>,
     /// The program installed by [`Engine::load`]: the program whose [`DefEnv`]
-    /// ι #5523 migrates eval lookups onto (PRD resolution-unification §3.2);
+    /// κ #5524 points `Engine::env_of` at (PRD resolution-unification §3.2);
     /// `None` until a load.
     loaded_program: Option<Arc<reify_compiler::program::CompiledProgram>>,
     /// Per-Engine structure-definition side-table (task 3540 / SIR-α).

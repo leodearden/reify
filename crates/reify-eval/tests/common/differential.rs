@@ -1054,7 +1054,7 @@ structure SmallPart {
 ///
 /// SHAPE NOTE — `param part : Solid` (NOT `let part = box(…)`): the
 /// constraint→realization edge δ's guard walks is `geometry_cell`, populated by
-/// `EvaluationGraph::from_templates` ONLY for a value cell whose `cell_type ==
+/// `EvaluationGraph::from_env` ONLY for a value cell whose `cell_type ==
 /// Type::Geometry` (a `Solid` cell IS `Type::Geometry`) whose member name matches
 /// the realization's name. A `let part = box(…)` inferred-type binding leaves
 /// `geometry_cell == None`, so `collect_constraint_realization_reads` finds no

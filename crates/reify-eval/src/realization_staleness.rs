@@ -33,7 +33,7 @@ use crate::graph::{EvaluationGraph, RealizationNodeData};
 ///
 /// [`diff_realizations`](crate::engine_edit::diff_realizations) keys on
 /// `content_hash`, which
-/// `EvaluationGraph::from_templates` builds (graph.rs:371-396) as
+/// `EvaluationGraph::from_env` builds as
 /// `of_str(id) ⊕ combine_all(of_str(format!("{:?}", op)))` — a `Debug`
 /// render of the compiled op IR. A `Primitive{Box, args:[("width",
 /// ValueRef(width))]}` renders identically no matter what `width`

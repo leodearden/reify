@@ -39,7 +39,7 @@ pub struct DefEnv<'p> {
 
 impl<'p> DefEnv<'p> {
     /// The environment of `program` over the stdlib.
-    // G-allow: resolution-unification §3.2 DefEnv; first production consumer is ι #5523
+    // G-allow: resolution-unification §3.2 DefEnv; first production consumer is κ #5524
     pub fn from_program(program: &'p CompiledProgram) -> Self {
         Self::with_prelude(program, load_stdlib())
     }
@@ -69,37 +69,36 @@ impl<'p> DefEnv<'p> {
         program_scope::resolve_in_program(self.root, self.prelude, name)
     }
 
-    // G-allow: resolution-unification §3.2 DefEnv; first production consumer is ι #5523
     pub fn resolve_template(&self, name: &str) -> Option<&'p TopologyTemplate> {
         self.resolve(name)
     }
 
-    // G-allow: resolution-unification §3.2 DefEnv; first production consumer is ι #5523
+    // G-allow: resolution-unification §3.2 DefEnv; first production consumer is λ #5525
     pub fn resolve_enum(&self, name: &str) -> Option<&'p EnumDef> {
         self.resolve(name)
     }
 
-    // G-allow: resolution-unification §3.2 DefEnv; first production consumer is ι #5523
+    // G-allow: resolution-unification §3.2 DefEnv; first production consumer is λ #5525
     pub fn resolve_unit(&self, name: &str) -> Option<&'p CompiledUnit> {
         self.resolve(name)
     }
 
-    // G-allow: resolution-unification §3.2 DefEnv; first production consumer is ι #5523
+    // G-allow: resolution-unification §3.2 DefEnv; first production consumer is λ #5525
     pub fn resolve_alias(&self, name: &str) -> Option<&'p CompiledTypeAlias> {
         self.resolve(name)
     }
 
-    // G-allow: resolution-unification §3.2 DefEnv; first production consumer is ι #5523
+    // G-allow: resolution-unification §3.2 DefEnv; first production consumer is λ #5525
     pub fn resolve_trait(&self, name: &str) -> Option<&'p CompiledTrait> {
         self.resolve(name)
     }
 
-    // G-allow: resolution-unification §3.2 DefEnv; first production consumer is ι #5523
+    // G-allow: resolution-unification §3.2 DefEnv; first production consumer is λ #5525
     pub fn resolve_constraint_def(&self, name: &str) -> Option<&'p CompiledConstraintDef> {
         self.resolve(name)
     }
 
-    // G-allow: resolution-unification §3.2 DefEnv; first production consumer is ι #5523
+    // G-allow: resolution-unification §3.2 DefEnv; first production consumer is λ #5525
     pub fn resolve_purpose(&self, name: &str) -> Option<&'p CompiledPurpose> {
         self.resolve(name)
     }
@@ -116,7 +115,7 @@ impl<'p> DefEnv<'p> {
 
     /// The function `name(param_types)` binds to: functions are keyed by name
     /// and parameter types. Lazy and allocation-free.
-    // G-allow: resolution-unification §3.2 DefEnv; first production consumer is ι #5523
+    // G-allow: resolution-unification §3.2 DefEnv; first production consumer is λ #5525
     pub fn resolve_function(
         &self,
         name: &str,
@@ -133,7 +132,7 @@ impl<'p> DefEnv<'p> {
 
     /// The bound functions named `name`, one per signature, in precedence
     /// order. Only `name`'s candidates are bound.
-    // G-allow: resolution-unification §3.2 DefEnv; first production consumer is ι #5523
+    // G-allow: resolution-unification §3.2 DefEnv; first production consumer is λ #5525
     pub fn overloads(&self, name: &str) -> Vec<&'p CompiledFunction> {
         program_scope::bind_program_where(self.root, self.prelude, |function: &CompiledFunction| {
             function.name == name
@@ -147,13 +146,13 @@ impl<'p> DefEnv<'p> {
     /// module's exports. Matches by name alone, so for a function it is the
     /// module's first overload of `name`; [`Self::resolve_function`] matches
     /// a signature.
-    // G-allow: resolution-unification §3.2 DefEnv; first production consumer is ι #5523
+    // G-allow: resolution-unification §3.2 DefEnv; first production consumer is λ #5525
     pub fn resolve_in<D: ProgramDefinition>(&self, module_key: &str, name: &str) -> Option<&'p D> {
         program_scope::module_surface::<D>(self.root, self.prelude, module_key)?
             .find(|definition| definition.name() == name)
     }
 
-    // G-allow: resolution-unification §3.2 DefEnv; first production consumer is ι #5523
+    // G-allow: resolution-unification §3.2 DefEnv; first production consumer is λ #5525
     pub fn resolve_template_in(
         &self,
         module_key: &str,
@@ -165,7 +164,6 @@ impl<'p> DefEnv<'p> {
     /// The entry module. A program's entry's `templates` include the copies
     /// the I5 merge took from its imports; the entry's own are
     /// `CompiledProgram::entry_declared_templates`.
-    // G-allow: resolution-unification §3.2 DefEnv; first production consumer is ι #5523
     pub fn declared(&self) -> &'p CompiledModule {
         self.root.entry()
     }

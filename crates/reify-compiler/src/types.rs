@@ -327,7 +327,7 @@ pub struct CompiledPurpose {
 /// `auto_type_param::resolve_auto_type_params`; the caller wraps the result via
 /// `AutoTypeSubstitution::new(outcome.substitution)`.
 ///
-/// **Consumer:** `Snapshot::from_compiled_module` calls `.clone().into_inner()`
+/// **Consumer:** `Snapshot::from_env` calls `.clone().into_inner()`
 /// to populate `EvaluationGraph::auto_type_substitution` (still a plain `Vec`).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct AutoTypeSubstitution(Vec<(String, String)>);
@@ -357,7 +357,7 @@ impl AutoTypeSubstitution {
 
     /// Consumes the newtype and returns the underlying `Vec<(String, String)>`.
     ///
-    /// Used by `Snapshot::from_compiled_module` to populate the still-`Vec`
+    /// Used by `Snapshot::from_env` to populate the still-`Vec`
     /// `EvaluationGraph::auto_type_substitution` field.
     pub fn into_inner(self) -> Vec<(String, String)> {
         self.0

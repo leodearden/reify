@@ -13,7 +13,7 @@
 //! already built the AST field, lowering, and compiler producer — but the eval
 //! reconciliation (graph.rs / unfold.rs) is not yet in place.
 //!
-//! Step 6 (GREEN): graph.rs `from_templates` skips inserting a child-derived
+//! Step 6 (GREEN): graph.rs `from_env` skips inserting a child-derived
 //! scoped node when the parent template already has an override cell for that id.
 //! unfold.rs `elaborate_child_params_only` skips writing the child default when
 //! the snapshot already holds an `Auto` entry for the scoped id.  Both changes

@@ -415,6 +415,27 @@ runs against P1's landed net)
   reify-compiler/conformance (sub_component_validation mirrors the env lookup set).
   Lookup sites → `resolve_*`; iterate sites → `declared()`; graph.rs silent skip →
   diagnostic (#15). Deps: θ.
+  *Amended 2026-11-24 (ι #5523, landed shape):* no production caller loads a
+  program, so eval holds only a `CompiledModule`; `DefEnv` therefore also wraps a lone
+  module, through `program_scope::ProgramRoot` (`Program` | `Module`). `DefEnv::of_module`
+  is the environment of the import-free program whose entry that module is (I1), and
+  over an `into_entry()` module it reproduces the interim module-then-prelude rule. The
+  engine's one seam is `Engine::env_of(module)`; κ points it at the loaded program.
+  unfold, the evaluation graph (`EvaluationGraph::from_env` / `Snapshot::from_env`),
+  structural queries and the walks mirroring them, the solver-problem builders and
+  engine_build's sub/let seeders and cross-sub post-processes resolve through it. The
+  graph is eval's single detector of an unresolvable sub (#15): it records
+  `DiagnosticCode::UnknownSubStructure`, built by `SubComponentDecl::unknown_structure_diagnostic`,
+  the constructor check-time conformance shares. Conformance mirrors the env's template
+  lookup set through `name_env::resolve_visible`: a direct import's `pub` surface (D-5),
+  then the stdlib. `find_template_with_prelude` remains for κ, re-pointed at
+  `DefEnv::of_module`; `eval_cached`'s validation-only loop over it is already gone.
+  Cross-reference to λ's 2026-11-23 amendment (task #10453): for the TEMPLATE kind at
+  sub positions, a direct import's non-pub structure is now unknown at check time,
+  measured by `a_sub_naming_an_imports_non_pub_structure_is_unknown_at_check`
+  (`crates/reify-compiler/tests/harness_modules_ports/sub_structure_existence_tests.rs`).
+  Template visibility at other compile sites (constructor calls, type positions) is
+  unchanged and stays with that amendment's follow-up ticket.
 - **κ — Delete the interim: merge consumption + `find_template_with_prelude` +
   `Engine::prelude` statics; templates purity** *(leaf)*. Modules: reify-eval,
   reify-compiler, gui. Signals: #13, #14; `git grep find_template_with_prelude` empty;

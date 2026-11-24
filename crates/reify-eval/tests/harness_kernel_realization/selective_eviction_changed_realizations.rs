@@ -257,7 +257,7 @@ structure TwoBody {
 /// recompile, so the pre-β machinery provably could not have seen the change.
 ///
 /// Also pins the carry-forward: `edit_source` rebuilds the graph and
-/// `EvaluationGraph::from_templates` reseeds every `input_cone_hash` to
+/// `EvaluationGraph::from_env` reseeds every `input_cone_hash` to
 /// `None`, so without an explicit copy every recompile would destroy the
 /// "as of the last execution" record and make every realization
 /// conservatively changed forever after.
@@ -306,9 +306,9 @@ fn edit_source_reports_the_moved_input_cone_that_the_static_content_hash_cannot_
     // ── PREMISE LOCK 2: the design §5.2 gap, made explicit ─────────────
     //
     // `diff_realizations` classifies purely by `RealizationNodeData::content_hash`
-    // (engine_edit.rs:429 → `diff_nodes(.., |n| n.content_hash)`), which
-    // `from_templates` builds as `of_str(id) ⊕ combine_all(of_str(format!("{:?}", op)))`
-    // (graph.rs:371-396) — a Debug render of the op IR. `Primitive{Box,
+    // (via `diff_nodes(.., |n| n.content_hash)`), which
+    // `from_env` builds as `of_str(id) ⊕ combine_all(of_str(format!("{:?}", op)))`
+    // — a Debug render of the op IR. `Primitive{Box,
     // args:[("width", ValueRef(wa))]}` renders identically no matter what
     // `wa` evaluates to, so the static hash cannot move here.
     //
@@ -342,8 +342,7 @@ fn edit_source_reports_the_moved_input_cone_that_the_static_content_hash_cannot_
 
     // ── Carry-forward ──────────────────────────────────────────────────
     //
-    // `from_templates` seeds every new node's input_cone_hash to `None`
-    // (graph.rs:406). Without an explicit copy from the OLD graph, the
+    // `from_env` seeds every new node's input_cone_hash to `None`. Without an explicit copy from the OLD graph, the
     // "as of the last EXECUTION" record dies at every recompile and the very
     // next edit_param conservatively marks EVERY realization changed —
     // defeating γ/δ's "an unaffected body's cache entry survives" boundary
@@ -352,7 +351,7 @@ fn edit_source_reports_the_moved_input_cone_that_the_static_content_hash_cannot_
         graph.realizations.get(&rb).unwrap().input_cone_hash,
         old_input_cone_b,
         "edit_source must carry the OLD graph's stored input_cone_hash forward onto \
-         body_b's persisting node, not leave the `None` that from_templates seeds"
+         body_b's persisting node, not leave the `None` that from_env seeds"
     );
     // The carry-forward reaches body_a too, and for a NARROW reason: body_a's
     // OPS are byte-identical across this recompile (PREMISE LOCK 2 above
@@ -532,8 +531,8 @@ fn edit_source_does_not_carry_input_cone_hash_forward_when_ops_changed() {
         graph.realizations.get(&r_combined).unwrap().input_cone_hash,
         None,
         "combined's OPS changed (union→difference), so its stored input_cone_hash must \
-         NOT be carried forward — it must keep the `None` that from_templates seeds \
-         (graph.rs:406). Carrying it forward is unsafe precisely because the fold is \
+         NOT be carried forward — it must keep the `None` that from_env seeds. \
+         Carrying it forward is unsafe precisely because the fold is \
          BLIND to this change: see the in-crate lock \
          `input_cone_fold_is_blind_to_a_boolean_kind_flip` (engine_edit.rs), which pins \
          that a union→difference flip folds to a byte-IDENTICAL hash. With the old hash \
@@ -547,7 +546,7 @@ fn edit_source_does_not_carry_input_cone_hash_forward_when_ops_changed() {
     //
     // The fix must be a TARGETED skip, not a blanket revert of the
     // carry-forward. Losing body_c's carried hash would re-break γ/δ's
-    // "an unaffected body's cache entry survives" boundary case: from_templates
+    // "an unaffected body's cache entry survives" boundary case: from_env
     // reseeds it to `None`, the §11.2 `None` arm marks it conservatively
     // changed forever, and γ's keyed eviction degenerates into the wholesale
     // flush it exists to replace.
