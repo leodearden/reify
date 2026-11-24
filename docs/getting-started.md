@@ -19,13 +19,10 @@ reify check m5_geometry.ri
 You should see:
 
 ```
-warning: W_MODULE_DECL_MISSING: file has no top-of-file `module` declaration; expected `module m5_geometry` (spec §7.1)
   OK Flange#constraint[0]
   OK Flange#constraint[1]
 All constraints satisfied.
 ```
-
-The warning is harmless: the example has no `module` line.
 
 ## 2. Build a STEP file
 
@@ -40,6 +37,8 @@ Open `/tmp/flange.step` in any STEP viewer (FreeCAD, KiCad's 3D viewer, Online o
 `m5_geometry.ri` looks like:
 
 ```
+module m5_geometry
+
 structure def Flange {
     param radius : Length = 50mm
     param height : Length = 10mm
