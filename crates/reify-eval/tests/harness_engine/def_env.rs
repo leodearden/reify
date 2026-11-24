@@ -398,11 +398,14 @@ impl KindsFixture {
     }
 }
 
-/// A definition kind, with its DefEnv resolver.
+/// A definition kind.
 trait Kind: ProgramDefinition + Sized {
     /// Every definition of this kind `module` holds, `pub` or not.
     fn all_in(module: &CompiledModule) -> &[Self];
+}
 
+/// A kind DefEnv resolves by bare name, through its own typed resolver.
+trait ResolvedByBareName: Kind {
     /// What `env` binds `like`'s key to, through this kind's own resolver.
     fn resolve<'p>(env: &DefEnv<'p>, like: &Self) -> Option<&'p Self>;
 }
@@ -411,6 +414,9 @@ impl Kind for TopologyTemplate {
     fn all_in(module: &CompiledModule) -> &[Self] {
         &module.templates
     }
+}
+
+impl ResolvedByBareName for TopologyTemplate {
     fn resolve<'p>(env: &DefEnv<'p>, like: &Self) -> Option<&'p Self> {
         env.resolve_template(&like.name)
     }
@@ -424,6 +430,9 @@ impl Kind for CompiledFunction {
     fn all_in(module: &CompiledModule) -> &[Self] {
         &module.functions
     }
+}
+
+impl ResolvedByBareName for CompiledFunction {
     fn resolve<'p>(env: &DefEnv<'p>, like: &Self) -> Option<&'p Self> {
         env.resolve_function(&like.name, &param_types(like))
     }
@@ -433,6 +442,9 @@ impl Kind for EnumDef {
     fn all_in(module: &CompiledModule) -> &[Self] {
         &module.enum_defs
     }
+}
+
+impl ResolvedByBareName for EnumDef {
     fn resolve<'p>(env: &DefEnv<'p>, like: &Self) -> Option<&'p Self> {
         env.resolve_enum(&like.name)
     }
@@ -442,6 +454,9 @@ impl Kind for CompiledUnit {
     fn all_in(module: &CompiledModule) -> &[Self] {
         &module.units
     }
+}
+
+impl ResolvedByBareName for CompiledUnit {
     fn resolve<'p>(env: &DefEnv<'p>, like: &Self) -> Option<&'p Self> {
         env.resolve_unit(&like.name)
     }
@@ -451,6 +466,9 @@ impl Kind for CompiledTypeAlias {
     fn all_in(module: &CompiledModule) -> &[Self] {
         &module.type_aliases
     }
+}
+
+impl ResolvedByBareName for CompiledTypeAlias {
     fn resolve<'p>(env: &DefEnv<'p>, like: &Self) -> Option<&'p Self> {
         env.resolve_alias(&like.name)
     }
@@ -460,6 +478,9 @@ impl Kind for CompiledTrait {
     fn all_in(module: &CompiledModule) -> &[Self] {
         &module.trait_defs
     }
+}
+
+impl ResolvedByBareName for CompiledTrait {
     fn resolve<'p>(env: &DefEnv<'p>, like: &Self) -> Option<&'p Self> {
         env.resolve_trait(&like.name)
     }
@@ -469,17 +490,11 @@ impl Kind for CompiledConstraintDef {
     fn all_in(module: &CompiledModule) -> &[Self] {
         &module.constraint_defs
     }
-    fn resolve<'p>(env: &DefEnv<'p>, like: &Self) -> Option<&'p Self> {
-        env.resolve_constraint_def(&like.name)
-    }
 }
 
 impl Kind for CompiledPurpose {
     fn all_in(module: &CompiledModule) -> &[Self] {
         &module.compiled_purposes
-    }
-    fn resolve<'p>(env: &DefEnv<'p>, like: &Self) -> Option<&'p Self> {
-        env.resolve_purpose(&like.name)
     }
 }
 
@@ -507,7 +522,7 @@ fn std_home<D: Kind>(name: &str) -> (&'static CompiledModule, &'static D) {
         .unwrap_or_else(|| panic!("precondition: some stdlib module exports `{name}`"))
 }
 
-fn assert_binds<D: Kind>(env: &DefEnv<'_>, like: &D, expected: &D, what: String) {
+fn assert_binds<D: ResolvedByBareName>(env: &DefEnv<'_>, like: &D, expected: &D, what: String) {
     let found = D::resolve(env, like).unwrap_or_else(|| panic!("{what}: nothing bound"));
     assert!(std::ptr::eq(found, expected), "{what}: bound {found:?}");
 }
@@ -521,10 +536,34 @@ fn assert_qualified<D: Kind>(env: &DefEnv<'_>, module_key: &str, name: &str, exp
     );
 }
 
+/// Qualified lookup sees one module's surface alone: an import's `pub`
+/// definitions, never its non-pub ones, and a stdlib module's exports; an
+/// unknown module key binds nothing.
+fn assert_kind_qualified<D: Kind>(kind: &str) {
+    let row = row(kind);
+    let fx = KindsFixture::new();
+    let env = DefEnv::from_program(&fx.program);
+    let (a, b) = (fx.a(), fx.b());
+    let [_, peer, hidden, visible] = row.names;
+
+    assert_qualified(&env, "a", visible, Some(named::<D>(a, visible)));
+    assert_qualified::<D>(&env, "a", hidden, None);
+    assert_qualified(&env, "b", peer, Some(named::<D>(b, peer)));
+    let std_def = std_only::<D>(&row);
+    let (std_module, _) = std_home::<D>(std_def.name());
+    assert_qualified(
+        &env,
+        &std_module.path.to_dotted(),
+        std_def.name(),
+        Some(std_def),
+    );
+    assert_qualified::<D>(&env, "nope", visible, None);
+}
+
 /// entry > first import > second import > stdlib for one kind; a non-pub
 /// import definition is invisible; a stdlib-only name resolves; qualified
 /// lookup sees one module's surface alone.
-fn assert_kind_precedence<D: Kind>(kind: &str) {
+fn assert_kind_precedence<D: ResolvedByBareName>(kind: &str) {
     let row = row(kind);
     let fx = KindsFixture::new();
     let program = &fx.program;
@@ -584,17 +623,7 @@ fn assert_kind_precedence<D: Kind>(kind: &str) {
     let std_def = std_only::<D>(&row);
     assert_binds(&env, std_def, std_def, what("a stdlib-only name resolves"));
 
-    assert_qualified(&env, "a", visible, Some(visible_def));
-    assert_qualified::<D>(&env, "a", hidden, None);
-    assert_qualified(&env, "b", peer, Some(named::<D>(b, peer)));
-    let (std_module, _) = std_home::<D>(std_def.name());
-    assert_qualified(
-        &env,
-        &std_module.path.to_dotted(),
-        std_def.name(),
-        Some(std_def),
-    );
-    assert_qualified::<D>(&env, "nope", visible, None);
+    assert_kind_qualified::<D>(kind);
 }
 
 #[test]
@@ -628,13 +657,13 @@ fn traits_bind_entry_then_imports_in_order_then_stdlib() {
 }
 
 #[test]
-fn constraint_defs_bind_entry_then_imports_in_order_then_stdlib() {
-    assert_kind_precedence::<CompiledConstraintDef>("constraint def");
+fn constraint_defs_resolve_qualified_through_one_modules_surface() {
+    assert_kind_qualified::<CompiledConstraintDef>("constraint def");
 }
 
 #[test]
-fn purposes_bind_entry_then_imports_in_order_then_stdlib() {
-    assert_kind_precedence::<CompiledPurpose>("purpose");
+fn purposes_resolve_qualified_through_one_modules_surface() {
+    assert_kind_qualified::<CompiledPurpose>("purpose");
 }
 
 /// An entry re-declaring an imported unit is a compile Error that drops the
