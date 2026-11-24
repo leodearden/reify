@@ -4,7 +4,11 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
-use reify_ir::{StructureRegistry, Value};
+use reify_ir::{MATERIALIZED_ANNOTATIONS_KEY, SOURCE_SPAN_KEY, StructureRegistry, Value};
+
+/// The engine's overlay keys: attached to an evaluated instance's fields map,
+/// never declared by its structure.
+const OVERLAY_KEYS: [&str; 2] = [SOURCE_SPAN_KEY, MATERIALIZED_ANNOTATIONS_KEY];
 
 /// How the fields a minted instance writes differ from the fields its structure
 /// declares; both lists sorted.
@@ -26,7 +30,9 @@ impl fmt::Display for KeySetMismatch {
 }
 
 /// `Ok` when `value` writes exactly the fields its structure declares in
-/// `registry`, resolved by `type_name`.
+/// `registry`, resolved by `type_name`. The engine's overlay keys
+/// (`@@source_span`, `@@materialized_annotations`) are not written fields, so an
+/// engine-evaluated instance compares like the builder output it came from.
 ///
 /// # Panics
 ///
@@ -44,7 +50,12 @@ pub fn key_set_parity(registry: &StructureRegistry, value: &Value) -> Result<(),
         .iter()
         .map(|(name, _)| name.as_str())
         .collect();
-    let written: BTreeSet<&str> = data.fields.keys().map(String::as_str).collect();
+    let written: BTreeSet<&str> = data
+        .fields
+        .keys()
+        .map(String::as_str)
+        .filter(|name| !OVERLAY_KEYS.contains(name))
+        .collect();
     let undeclared_written: Vec<String> = written
         .difference(&declared)
         .map(|name| name.to_string())
@@ -67,7 +78,7 @@ pub fn key_set_parity(registry: &StructureRegistry, value: &Value) -> Result<(),
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_core::Type;
+    use reify_core::{SourceSpan, Type};
     use reify_ir::{StructureInstanceData, StructureMeta, StructureRegistry, Value};
 
     /// A registry declaring one structure, `Pair { a, b }`.
@@ -104,6 +115,22 @@ mod tests {
     fn writing_exactly_the_declared_fields_is_parity() {
         assert_eq!(
             key_set_parity(&pair_registry(), &pair_writing(&["a", "b"])),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn engine_overlays_are_not_written_fields() {
+        let Value::StructureInstance(data) = pair_writing(&["a", "b"]) else {
+            unreachable!("pair_writing mints a StructureInstance")
+        };
+        let mut data = data.with_source_span(Some(SourceSpan::new(3, 9)));
+        data.fields.insert(
+            MATERIALIZED_ANNOTATIONS_KEY.to_string(),
+            Value::Map(Default::default()),
+        );
+        assert_eq!(
+            key_set_parity(&pair_registry(), &Value::StructureInstance(Box::new(data))),
             Ok(())
         );
     }
