@@ -20,6 +20,8 @@ mod scalar_geometry_cell_realization_tests;
 #[cfg(test)]
 mod sub_instance_registry_tests;
 #[cfg(test)]
+mod unresolved_sub_tests;
+#[cfg(test)]
 mod value_cell_fold_tests;
 
 use cell_contributions::{ContributedCell, SubShape, contributed_cells};
