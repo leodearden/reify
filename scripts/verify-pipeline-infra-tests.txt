@@ -162,6 +162,8 @@ scripts/refresh-warm-base.sh  tests/infra/test_tree_sitter_stale_run_eviction.sh
 scripts/seed-warm-lane.sh  tests/infra/test_tree_sitter_stale_run_eviction.sh
 tests/infra/refresh_warm_base_harness.py  tests/infra/test_tree_sitter_stale_run_eviction.sh
 tests/infra/seed_warm_lane_harness.py  tests/infra/test_tree_sitter_stale_run_eviction.sh
+# Its no-hasher case builds a hasher-free PATH through a shared helper module.
+tests/infra/masked_path_harness.py  tests/infra/test_tree_sitter_stale_run_eviction.sh
 # The real freshness script also runs in place inside test_refresh_warm_base.sh's
 # refreshes, as the evictor does, so a freshness edit selects that suite.
 scripts/tree-sitter-freshness.sh  tests/infra/test_refresh_warm_base.sh

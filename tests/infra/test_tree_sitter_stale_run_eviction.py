@@ -38,7 +38,7 @@ from pathlib import Path
 INFRA_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(INFRA_DIR))
 import refresh_warm_base_harness as refresh_harness  # noqa: E402
-from refresh_warm_base_harness import env_without  # noqa: E402
+from masked_path_harness import masked_path_dir  # noqa: E402
 from seed_warm_lane_harness import Pool  # noqa: E402
 
 REPO_ROOT = INFRA_DIR.parents[1]
@@ -82,7 +82,7 @@ def set_mtime_ns(path, ns):
     os.utime(path, ns=(ns, ns), follow_symlinks=False)
 
 
-def write_file(path, text, mtime_ns=FIXTURE_NS):
+def write_fixture_file(path, text, mtime_ns=FIXTURE_NS):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
     set_mtime_ns(path, mtime_ns)
@@ -91,7 +91,7 @@ def write_file(path, text, mtime_ns=FIXTURE_NS):
 def make_ws(root):
     """A build root holding tree-sitter-reify's two watched inputs."""
     for rel, text in WS_INPUTS.items():
-        write_file(root / TS_PACKAGE / rel, text)
+        write_fixture_file(root / TS_PACKAGE / rel, text)
     return root
 
 
@@ -103,7 +103,7 @@ def build_root_files():
 
 def bare_env():
     """The caller's env without any test-only freshness override or git knob."""
-    return env_without("REIFY_TS_FRESHNESS_", "GIT_")
+    return refresh_harness.env_without("REIFY_TS_FRESHNESS_", "GIT_")
 
 
 def run_freshness(*args, env=None):
@@ -134,14 +134,14 @@ def write_ts_run_dir(target, profile_rel, hash16, stamp, marker_ns):
     record. Returns (run_dir, record_dir)."""
     name = f"{TS_PACKAGE}-{hash16}"
     run_dir = target / profile_rel / "build" / name
-    write_file(run_dir / "out" / ARCHIVE, "!<arch>\nfixture archive\n")
+    write_fixture_file(run_dir / "out" / ARCHIVE, "!<arch>\nfixture archive\n")
     if stamp is not None:
-        write_file(run_dir / "out" / STAMP, stamp)
-    write_file(run_dir / "output", "cargo:rerun-if-changed=grammar.js\n", marker_ns)
-    write_file(run_dir / "invoked.timestamp", "", marker_ns)
+        write_fixture_file(run_dir / "out" / STAMP, stamp)
+    write_fixture_file(run_dir / "output", "cargo:rerun-if-changed=grammar.js\n", marker_ns)
+    write_fixture_file(run_dir / "invoked.timestamp", "", marker_ns)
     record_dir = target / profile_rel / ".fingerprint" / name
-    write_file(record_dir / RUN_RECORD, "8a5654c15705d0b3")
-    write_file(record_dir / f"{RUN_RECORD}.json", json.dumps({"local": [], "deps": []}))
+    write_fixture_file(record_dir / RUN_RECORD, "8a5654c15705d0b3")
+    write_fixture_file(record_dir / f"{RUN_RECORD}.json", json.dumps({"local": [], "deps": []}))
     return run_dir, record_dir
 
 
@@ -150,10 +150,10 @@ def write_ts_compile_dir(target, profile_rel, hash16):
     Returns (build_dir, record_dir)."""
     name = f"{TS_PACKAGE}-{hash16}"
     build_dir = target / profile_rel / "build" / name
-    write_file(build_dir / "build-script-build", "\x7fELF fixture build script\n")
+    write_fixture_file(build_dir / "build-script-build", "\x7fELF fixture build script\n")
     record_dir = target / profile_rel / ".fingerprint" / name
-    write_file(record_dir / COMPILE_RECORD, "0d2e5b1c0f6a4e77")
-    write_file(record_dir / f"{COMPILE_RECORD}.json", json.dumps({"local": [], "deps": []}))
+    write_fixture_file(record_dir / COMPILE_RECORD, "0d2e5b1c0f6a4e77")
+    write_fixture_file(record_dir / f"{COMPILE_RECORD}.json", json.dumps({"local": [], "deps": []}))
     return build_dir, record_dir
 
 
@@ -161,11 +161,11 @@ def write_other_run_dir(target, profile_rel, pkg, hash16):
     """Another package's build-script RUN unit with an out/ and a record."""
     name = f"{pkg}-{hash16}"
     run_dir = target / profile_rel / "build" / name
-    write_file(run_dir / "out" / f"lib{pkg}_core.a", "!<arch>\nother archive\n")
-    write_file(run_dir / "output", "cargo:rustc-link-lib=static=core\n")
+    write_fixture_file(run_dir / "out" / f"lib{pkg}_core.a", "!<arch>\nother archive\n")
+    write_fixture_file(run_dir / "output", "cargo:rustc-link-lib=static=core\n")
     record_dir = target / profile_rel / ".fingerprint" / name
-    write_file(record_dir / RUN_RECORD, "77aa11bb22cc33dd")
-    write_file(record_dir / f"{RUN_RECORD}.json", json.dumps({"local": [], "deps": []}))
+    write_fixture_file(record_dir / RUN_RECORD, "77aa11bb22cc33dd")
+    write_fixture_file(record_dir / f"{RUN_RECORD}.json", json.dumps({"local": [], "deps": []}))
     return run_dir, record_dir
 
 
@@ -191,25 +191,6 @@ def evicted_line(test, stdout, rel):
     lines = [line for line in stdout.splitlines() if f"evicted {rel} " in f"{line} "]
     test.assertEqual(len(lines), 1, f"expected one eviction line for {rel}:\n{stdout}")
     return lines[0]
-
-
-def masked_path_dir(shim, masked):
-    """Fill `shim` with symlinks to every executable on PATH except `masked`
-    (first occurrence of a name wins), so PATH=<shim> is this host minus
-    exactly those binaries. Masking by omission: a failing stub would drive
-    the hasher's retry path, not its absence."""
-    shim.mkdir()
-    for entry in os.environ.get("PATH", "").split(os.pathsep):
-        if not entry or not os.path.isdir(entry):
-            continue
-        for name in sorted(os.listdir(entry)):
-            source = os.path.join(entry, name)
-            link = shim / name
-            if name in masked or os.path.lexists(link):
-                continue
-            if os.path.isfile(source) and os.access(source, os.X_OK):
-                link.symlink_to(source)
-    return shim
 
 
 class EvictStale(unittest.TestCase):
@@ -330,11 +311,9 @@ class EvictStale(unittest.TestCase):
 
     def test_a_host_without_a_hasher_skips_the_whole_run(self):
         self.mixed_target()
-        shim = masked_path_dir(self.tmp / "no-hasher-bin", HASHERS)
+        shim = masked_path_dir(self.tmp / "no-hasher-bin", *HASHERS)
         env = {**bare_env(), "PATH": str(shim)}
-        probe = run_freshness("--print-fingerprint", env={**env, "REIFY_TS_FRESHNESS_TS_DIR":
-                                                          str(self.ts_dir)})
-        self.assertEqual((probe.returncode, probe.stdout), (0, "UNAVAILABLE\n"),
+        self.assertEqual(fingerprint_of(self.ts_dir, env=env), "UNAVAILABLE\n",
                          "the masked PATH still carries a hasher: the case would be vacuous")
         before = tree_snapshot(self.target)
 
@@ -398,7 +377,7 @@ class RefreshStep(unittest.TestCase):
         refresh_harness.install_cp_stub(self.stub_dir)
         self.lane = self.tmp / "lane"
         for rel, text in build_root_files().items():
-            write_file(self.lane / rel, text)
+            write_fixture_file(self.lane / rel, text)
         refresh_harness.init_lane(self.lane)
         refresh_harness.git(self.lane, "add", "--", ".")
         self.head = refresh_harness.commit(self.lane, "-m", "fixture: advancing workspace")
