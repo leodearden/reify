@@ -1085,3 +1085,86 @@ fn the_function_table_dispatches_as_the_engine_table_does() {
         );
     }
 }
+
+/// The stdlib's own declaration of template `name`.
+fn stdlib_template(name: &str) -> &'static TopologyTemplate {
+    template_in(&stdlib_module_declaring(name).templates, name)
+}
+
+#[test]
+fn a_lone_modules_environment_binds_its_own_templates_then_the_prelude() {
+    let module =
+        reify_test_support::helpers::parse_and_compile_with_stdlib("structure def Local { }");
+    let env = DefEnv::of_module(&module, load_stdlib());
+
+    assert!(same(
+        env.resolve_template("Local"),
+        template_in(&module.templates, "Local")
+    ));
+    assert!(same(
+        env.resolve_template(STDLIB_ONLY),
+        stdlib_template(STDLIB_ONLY)
+    ));
+    assert!(env.resolve_template("NoSuchStructure").is_none());
+    assert!(std::ptr::eq(env.declared(), &module));
+    assert!(env.collision_warnings().is_empty());
+}
+
+fn same_binding<D>(a: Option<&D>, b: Option<&D>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => std::ptr::eq(a, b),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+#[test]
+fn an_import_free_programs_environment_equals_its_entrys_lone_environment() {
+    let dir = tempfile::tempdir().unwrap();
+    let program = compile_in(
+        dir.path(),
+        &[],
+        "module main\n\
+         structure def Bracket {\n    param w : Real = 1\n}\n\
+         enum Side { Left, Right }\n",
+    );
+    assert!(
+        errors_of(&program).is_empty(),
+        "precondition: {:?}",
+        errors_of(&program)
+    );
+    let of_program = DefEnv::from_program(&program);
+    let of_entry = DefEnv::of_module(program.entry(), load_stdlib());
+
+    let names = program
+        .entry()
+        .templates
+        .iter()
+        .map(|t| t.name.as_str())
+        .chain([STDLIB_ONLY, "ZeroForce", "NoSuchStructure"]);
+    for name in names {
+        assert!(
+            same_binding(
+                of_program.resolve_template(name),
+                of_entry.resolve_template(name)
+            ),
+            "`{name}` binds differently in the program and its lone entry"
+        );
+    }
+    assert!(of_entry.resolve_enum("Side").is_some());
+    assert!(same_binding(
+        of_program.resolve_enum("Side"),
+        of_entry.resolve_enum("Side")
+    ));
+}
+
+#[test]
+fn a_lone_modules_own_template_shadows_the_stdlibs() {
+    let module =
+        reify_test_support::helpers::parse_and_compile_with_stdlib("structure def ZeroForce { }");
+    let env = DefEnv::of_module(&module, load_stdlib());
+
+    let own = template_in(&module.templates, "ZeroForce");
+    assert!(same(env.resolve_template("ZeroForce"), own));
+    assert!(!std::ptr::eq(own, stdlib_template("ZeroForce")));
+}
