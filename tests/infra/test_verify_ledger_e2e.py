@@ -216,6 +216,18 @@ class VerifyLedgerE2ETests(unittest.TestCase):
             self.assertIsNone(step["began_at"])
             self.assertIsNone(step["ended_at"])
 
+    def test_b_timed_out_step_keeps_exit_124(self):
+        ledger = self.vehicle.work / "ledger-timeout"
+        run = self.vehicle.run(ledger, STUB_RC="124")
+        self.assertEqual(run.returncode, 124, run.stderr)
+        self.assertIn("verify.sh: FAILED (exit 124): ", run.stderr)
+        (line,) = ledger_lines(ledger)
+        record = json.loads(line)
+        self.assertEqual(record["exit_code"], 124)
+        self.assertEqual(record["verdict"], "fail")
+        (cargo_step,) = [s for s in record["steps"] if s["phase"] == "cargo_check"]
+        self.assertEqual(cargo_step["rc"], 124)
+
     def test_c_nested_run_records_nothing(self):
         ledger = self.vehicle.work / "ledger-nested"
         run = self.vehicle.run(ledger, REIFY_VERIFY_RUN_ID="outer-id")

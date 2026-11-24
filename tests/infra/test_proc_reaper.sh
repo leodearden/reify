@@ -511,6 +511,76 @@ assert "reaper_teardown after completed pass is a no-op (exits 0)" \
         reaper_teardown
     '
 
+# -- Test 3a-rc: a failing line keeps its own exit status, and its later
+# statements run — under the caller's `set -euo pipefail` (verify.sh's mode),
+# from an `||` caller (as _run_plan_step calls it) and from a bare statement.
+# A builtin `exit 42` (Test 3a) survives either way; an external command's
+# status and the line's errexit are what these cases pin.
+_P3_RC_DIR="$(mktemp -d)"
+_TMPDIRS+=("$_P3_RC_DIR")
+
+_P3_RC_OR_HARNESS='
+    [ -f "$LIB_REAPER" ] || exit 1
+    set -euo pipefail
+    source "$LIB_REAPER"
+    f() {
+        rc=0
+        reaper_run_in_pgroup "$CMD" || rc=$?
+        echo "rc=$rc want=$WANT"
+        [ "$rc" -eq "$WANT" ] && { [ -z "${MARK:-}" ] || [ -e "$MARK" ]; }
+    }
+    x=0
+    f || x=$?
+    exit "$x"
+'
+
+_P3_RC_BARE_HARNESS='
+    [ -f "$LIB_REAPER" ] || exit 1
+    set -euo pipefail
+    source "$LIB_REAPER"
+    trap "echo rc=\$? > \"\$OUT\"" EXIT
+    reaper_run_in_pgroup "$CMD"
+'
+
+_P3_RC_TIMEOUT_CMD='timeout 1 sleep 30'
+_P3_RC_EXIT7_CMD='sh -c "exit 7"'
+_P3_RC_LEAF_CMD='export X=1; ( for _vt in x; do timeout 1 sleep 30 || exit $?; done )'
+_P3_RC_CONFIRM_CMD='( sh -c "exit 7"; _r=$?; : > "$MARK"; exit $_r )'
+
+for _p3_arm in pgroup disabled; do
+    if [ "$_p3_arm" = disabled ]; then
+        _p3_arm_env=(REIFY_PROC_REAPER_DISABLE=1)
+    else
+        _p3_arm_env=(-u REIFY_PROC_REAPER_DISABLE)
+    fi
+
+    assert "reaper_run_in_pgroup ($_p3_arm arm, ||-caller): 'timeout 1 sleep 30' returns 124" \
+        env "${_p3_arm_env[@]}" LIB_REAPER="$LIB_REAPER" WANT=124 CMD="$_P3_RC_TIMEOUT_CMD" \
+        bash -c "$_P3_RC_OR_HARNESS"
+
+    assert "reaper_run_in_pgroup ($_p3_arm arm, ||-caller): 'sh -c \"exit 7\"' returns 7" \
+        env "${_p3_arm_env[@]}" LIB_REAPER="$LIB_REAPER" WANT=7 CMD="$_P3_RC_EXIT7_CMD" \
+        bash -c "$_P3_RC_OR_HARNESS"
+
+    assert "reaper_run_in_pgroup ($_p3_arm arm, ||-caller): the selective-infra leaf shape returns its member's 124" \
+        env "${_p3_arm_env[@]}" LIB_REAPER="$LIB_REAPER" WANT=124 CMD="$_P3_RC_LEAF_CMD" \
+        bash -c "$_P3_RC_OR_HARNESS"
+
+    assert "reaper_run_in_pgroup ($_p3_arm arm, ||-caller): the confirm-wrapper shape returns 7 and runs its recorder" \
+        env "${_p3_arm_env[@]}" LIB_REAPER="$LIB_REAPER" WANT=7 CMD="$_P3_RC_CONFIRM_CMD" \
+            MARK="$_P3_RC_DIR/mark-or-$_p3_arm" \
+        bash -c "$_P3_RC_OR_HARNESS"
+done
+
+assert "reaper_run_in_pgroup (pgroup arm, bare caller): the confirm-wrapper shape returns 7 and runs its recorder" \
+    env -u REIFY_PROC_REAPER_DISABLE LIB_REAPER="$LIB_REAPER" CMD="$_P3_RC_CONFIRM_CMD" \
+        MARK="$_P3_RC_DIR/mark-bare" OUT="$_P3_RC_DIR/out-bare" HARNESS="$_P3_RC_BARE_HARNESS" \
+    bash -c '
+        bash -c "$HARNESS" || true
+        cat "$OUT"
+        [ "$(cat "$OUT")" = "rc=7" ] && [ -e "$MARK" ]
+    '
+
 # Uniquely-named copied-sleep marker binary for Test 3b (task 4931 /
 # esc-3002-145 FIX #1) — see Test 1c comment above for rationale.
 _P3_PGROUP_DIR="$(mktemp -d)"
