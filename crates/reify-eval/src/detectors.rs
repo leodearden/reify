@@ -888,4 +888,106 @@ mod tests {
             Some(&(scalar_value, DeterminacyState::Determined))
         );
     }
+
+    /// A `Value::List` of three `Value::Vector` rows built from a plain
+    /// `[[f64; 3]; 3]` — an inertia spelling RNEA's reader accepts.
+    fn list3_vector_rows(rows: [[f64; 3]; 3]) -> Value {
+        Value::List(
+            rows.iter()
+                .map(|row| Value::Vector(row.iter().map(|&c| Value::Real(c)).collect()))
+                .collect(),
+        )
+    }
+
+    /// The PSD hook reads the inertia shape RNEA reads: List-of-Vector rows
+    /// reach the PSD check (identity untouched, `diag(1,1,-1)` flagged as
+    /// not PSD) rather than being classified as unparseable.
+    #[test]
+    fn mass_properties_psd_detector_reads_list_of_vector_rows() {
+        let psd_cell = ValueCellId::new("BodyJ", "mass_props");
+        let psd_value = mass_properties(Some(list3_vector_rows([
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ])));
+        let non_psd_cell = ValueCellId::new("BodyK", "mass_props");
+        let non_psd_value = mass_properties(Some(list3_vector_rows([
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, -1.0],
+        ])));
+
+        let entries = [
+            (psd_cell.clone(), psd_value.clone()),
+            (non_psd_cell.clone(), non_psd_value.clone()),
+        ];
+        let mut state = OwnedState::seeded(&entries);
+        DetectorRegistry::with_builtins().run_all(&mut state.as_state());
+
+        assert_eq!(
+            state.diagnostics.len(),
+            1,
+            "expected exactly the non-PSD cell to be flagged, got {:?}",
+            diag_keys(&state.diagnostics)
+        );
+        let diagnostic = &state.diagnostics[0];
+        assert_eq!(diagnostic.severity, reify_core::Severity::Error);
+        assert_eq!(diagnostic.code, Some(DiagnosticCode::DynamicsInertiaNotPSD));
+        assert!(
+            diagnostic.message.contains("not positive semi-definite"),
+            "got {:?}",
+            diagnostic.message
+        );
+
+        assert_eq!(state.values.get(&psd_cell), Some(&psd_value));
+        assert_eq!(
+            state.snapshot_values.get(&psd_cell),
+            Some(&(psd_value, DeterminacyState::Determined))
+        );
+        assert_eq!(state.values.get(&non_psd_cell), Some(&Value::Undef));
+        assert_eq!(
+            state.snapshot_values.get(&non_psd_cell),
+            Some(&(Value::Undef, DeterminacyState::Determined))
+        );
+    }
+
+    /// The PSD hook reads the inertia dimension RNEA reads: a 3×3 of LENGTH
+    /// cells is not a moment of inertia, so it is flagged as unparseable
+    /// rather than PSD-checked as if it were one.
+    #[test]
+    fn mass_properties_psd_detector_flags_a_wrong_dimension_inertia() {
+        let length_cell = ValueCellId::new("BodyL", "mass_props");
+        let length_value = mass_properties(Some(Value::Matrix(
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+                .iter()
+                .map(|row| row.iter().map(|&c| Value::length(c)).collect())
+                .collect(),
+        )));
+
+        let entries = [(length_cell.clone(), length_value)];
+        let mut state = OwnedState::seeded(&entries);
+        DetectorRegistry::with_builtins().run_all(&mut state.as_state());
+
+        assert_eq!(
+            state.diagnostics.len(),
+            1,
+            "expected the LENGTH inertia to be flagged, got {:?}",
+            diag_keys(&state.diagnostics)
+        );
+        let diagnostic = &state.diagnostics[0];
+        assert_eq!(diagnostic.severity, reify_core::Severity::Error);
+        assert_eq!(diagnostic.code, Some(DiagnosticCode::DynamicsInertiaNotPSD));
+        assert!(
+            diagnostic
+                .message
+                .contains("inertia field cannot be parsed as a 3×3 numeric matrix"),
+            "got {:?}",
+            diagnostic.message
+        );
+        assert_eq!(state.values.get(&length_cell), Some(&Value::Undef));
+        assert_eq!(
+            state.snapshot_values.get(&length_cell),
+            Some(&(Value::Undef, DeterminacyState::Determined))
+        );
+    }
 }
