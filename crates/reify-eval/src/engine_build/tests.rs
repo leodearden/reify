@@ -990,10 +990,7 @@ structure Assembly {
         let functions: Vec<CompiledFunction> = Vec::new();
         let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let empty_module = reify_test_support::CompiledModuleBuilder::new(
-            reify_core::ModulePath::single("test"),
-        )
-        .build();
+        let empty_module = reify_test_support::module_of([]);
 
         seed_cross_sub_named_steps(
             &template,
@@ -9904,10 +9901,7 @@ structure Assembly {
             );
         }
 
-        let empty_module = reify_test_support::CompiledModuleBuilder::new(
-            reify_core::ModulePath::single("test"),
-        )
-        .build();
+        let empty_module = reify_test_support::module_of([]);
 
         // ── MAIN ASSERTION ────────────────────────────────────────────────────
         //
@@ -10117,10 +10111,7 @@ structure Assembly {
         let table = TopologyAttributeTable::default();
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
-        let empty_module = reify_test_support::CompiledModuleBuilder::new(
-            reify_core::ModulePath::single("test"),
-        )
-        .build();
+        let empty_module = reify_test_support::module_of([]);
         Engine::run_post_processes(
             &template,
             &named_steps,

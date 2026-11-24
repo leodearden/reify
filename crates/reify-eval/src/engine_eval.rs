@@ -865,12 +865,12 @@ fn build_combined_param_let_graph(
 /// discoverability (grep/log searches on the scope name alone hit this message)
 /// and the redundancy is pinned by existing tests.
 fn detect_underdetermined<'t>(
-    templates: &'t [reify_compiler::TopologyTemplate],
     env: DefEnv<'t>,
     read_index: &std::cell::OnceCell<CellReadIndex<'t>>,
     max_unfold_depth: usize,
     max_unfold_nodes: usize,
 ) -> Vec<Diagnostic> {
+    let templates = &env.declared().templates;
     // EARLY RETURN before any index work (task #5467 amendment, review
     // suggestion 4). The loop at the tail can only emit for a STRICTLY-auto
     // (non-`auto(free)`) cell, so a module with none — every solver-free model,
@@ -910,8 +910,8 @@ fn detect_underdetermined<'t>(
     // `OnceCell` per eval and every consumer draws from it, so the template
     // sweep and the budgeted instance-path unfold are paid ONCE per eval. This
     // consumer used to build its own throwaway index right here.
-    let index = read_index
-        .get_or_init(|| CellReadIndex::build(templates, env, max_unfold_depth, max_unfold_nodes));
+    let index =
+        read_index.get_or_init(|| CellReadIndex::build(env, max_unfold_depth, max_unfold_nodes));
     // The budgets above are honoured only when THIS consumer wins `get_or_init`
     // — otherwise the index already exists and was built with whatever budgets
     // `build_solver_problem` (or layer 1) passed. Every call site currently
@@ -2021,20 +2021,6 @@ pub(crate) fn is_optimized_userfn_cell(expr: &CompiledExpr, functions: &[Compile
     )
 }
 
-/// Test fixture: hand-built `templates` as one lone module's own declarations,
-/// so a [`CellReadIndex`] over them resolves subs in that module alone (built
-/// with an empty prelude).
-#[cfg(test)]
-fn lone_test_module(templates: Vec<TopologyTemplate>) -> CompiledModule {
-    templates
-        .into_iter()
-        .fold(
-            reify_test_support::CompiledModuleBuilder::new(reify_core::ModulePath::single("test")),
-            |builder, template| builder.template(template),
-        )
-        .build()
-}
-
 /// The ONE cross-template value-cell read graph (task #5467 / PRD2 α), and the
 /// single authority for walking it in either direction.
 ///
@@ -2128,28 +2114,23 @@ struct CellReadIndex<'t> {
     /// and a suppressor that unflags what the emitter dropped is exactly the
     /// silent-`Undef` regression this branch guards against.
     alias_paths: std::cell::OnceCell<HashMap<String, String>>,
-    /// The templates this index was built over, the environment their subs
-    /// resolve in, and the budgets it was built at, retained so a consumer that
-    /// needs a SECOND walk of the same shape — [`build_dependent_cells`]'
-    /// stage-(g) [`build_single_instance_alias_paths`] — cannot be handed a
-    /// different slice, environment or budget than the one the rest of its own
-    /// answer was derived from. Retaining them also keeps that consumer under
-    /// clippy's `too_many_arguments` ceiling without an `allow`.
-    templates: &'t [TopologyTemplate],
+    /// The environment this index was built over — its declared templates are
+    /// the ones swept, and their subs resolve in it — and the budgets it was
+    /// built at, retained so a consumer that needs a SECOND walk of the same
+    /// shape — [`build_dependent_cells`]' stage-(g)
+    /// [`build_single_instance_alias_paths`] — cannot be handed a different
+    /// environment or budget than the one the rest of its own answer was
+    /// derived from. Retaining them also keeps that consumer under clippy's
+    /// `too_many_arguments` ceiling without an `allow`.
     env: DefEnv<'t>,
     max_unfold_depth: usize,
     max_unfold_nodes: usize,
 }
 
 impl<'t> CellReadIndex<'t> {
-    fn build(
-        all_templates: &'t [TopologyTemplate],
-        env: DefEnv<'t>,
-        max_unfold_depth: usize,
-        max_unfold_nodes: usize,
-    ) -> Self {
+    fn build(env: DefEnv<'t>, max_unfold_depth: usize, max_unfold_nodes: usize) -> Self {
         let mut cell_map: HashMap<ValueCellId, &'t CompiledExpr> = HashMap::new();
-        for template in all_templates {
+        for template in &env.declared().templates {
             for cell in &template.value_cells {
                 if cell.kind.is_auto() {
                     continue;
@@ -2160,7 +2141,6 @@ impl<'t> CellReadIndex<'t> {
             }
         }
         let path_map = crate::resolve_order::build_instance_path_structure_map(
-            all_templates,
             env,
             max_unfold_depth,
             max_unfold_nodes,
@@ -2170,7 +2150,6 @@ impl<'t> CellReadIndex<'t> {
             path_map,
             reverse: std::cell::OnceCell::new(),
             alias_paths: std::cell::OnceCell::new(),
-            templates: all_templates,
             env,
             max_unfold_depth,
             max_unfold_nodes,
@@ -2202,7 +2181,6 @@ impl<'t> CellReadIndex<'t> {
     fn single_instance_alias_paths(&self) -> &HashMap<String, String> {
         self.alias_paths.get_or_init(|| {
             build_single_instance_alias_paths(
-                self.templates,
                 self.env,
                 self.max_unfold_depth,
                 self.max_unfold_nodes,
@@ -3052,7 +3030,6 @@ fn optimality_unproven_finding(optimality_status: Option<&OptimalityStatus>) -> 
 /// pre-#5189 behaviour for that cell (its template-keyed entry still folds).
 /// This is the fixture's documented depth-1 / single-instance v1 boundary.
 fn build_single_instance_alias_paths(
-    all_templates: &[TopologyTemplate],
     env: DefEnv<'_>,
     max_depth: usize,
     max_nodes: usize,
@@ -3098,7 +3075,7 @@ fn build_single_instance_alias_paths(
 
     let mut collected: HashMap<String, Vec<String>> = HashMap::new();
     let mut node_budget = max_nodes;
-    for template in all_templates {
+    for template in &env.declared().templates {
         walk(
             template,
             env,
@@ -3207,7 +3184,6 @@ fn build_solver_problem<'t>(
     objective: Option<&ObjectiveSet>,
     values: &ValueMap,
     functions: Arc<[CompiledFunction]>,
-    all_templates: &'t [reify_compiler::TopologyTemplate],
     env: DefEnv<'t>,
     snap_values: &PersistentMap<ValueCellId, (Value, DeterminacyState)>,
     max_unfold_depth: usize,
@@ -3299,8 +3275,8 @@ fn build_solver_problem<'t>(
     // identical recomputation of it.
     //
     // HOISTED, and LAZY (task #5467 amendment, review suggestion 4). The index
-    // is a pure function of `(all_templates, max_unfold_depth,
-    // max_unfold_nodes)` — all three loop-invariant — but building it sweeps
+    // is a pure function of `(env, max_unfold_depth, max_unfold_nodes)` — all
+    // three loop-invariant — but building it sweeps
     // every template's `value_cells`, runs the budgeted
     // `build_instance_path_structure_map` unfold, and (on first
     // `cells_reaching`) an `extract_value_deps` pass over the whole `cell_map`.
@@ -3315,8 +3291,8 @@ fn build_solver_problem<'t>(
     // NO autos anywhere must keep paying ZERO, exactly as it did when the
     // build sat below that early return. `get_or_init` fires only on the first
     // scope that actually reaches this line.
-    let read_index = read_index
-        .get_or_init(|| CellReadIndex::build(all_templates, env, max_unfold_depth, max_unfold_nodes));
+    let read_index =
+        read_index.get_or_init(|| CellReadIndex::build(env, max_unfold_depth, max_unfold_nodes));
     let reaching = read_index.cells_reaching(&auto_ids);
 
     let mut filtered_constraints =
@@ -3469,7 +3445,6 @@ fn build_solver_problem<'t>(
 #[allow(clippy::too_many_arguments)]
 fn build_merged_solver_problem<'t>(
     cluster: &crate::resolve_order::Cluster,
-    templates: &'t [TopologyTemplate],
     env: DefEnv<'t>,
     governance: &[GoverningObjective],
     values: &ValueMap,
@@ -3480,6 +3455,7 @@ fn build_merged_solver_problem<'t>(
     trait_registry: &HashMap<String, &reify_compiler::CompiledTrait>,
     read_index: &'t std::cell::OnceCell<CellReadIndex<'t>>,
 ) -> ResolutionProblem {
+    let templates = &env.declared().templates;
     // Union each member's auto cells, in cluster.scopes (ascending source
     // index) × value_cells declaration order — a pure function of stable Vec
     // iteration; no HashMap/HashSet contributes to this ordering (§5.2 BT5).
@@ -3538,8 +3514,8 @@ fn build_merged_solver_problem<'t>(
     // note for why the hoist is lazy rather than eager. A cluster always has
     // at least one auto (an auto-free scope never forms one), so this
     // `get_or_init` does fire; the laziness is inherited, not needed here.
-    let read_index = read_index
-        .get_or_init(|| CellReadIndex::build(templates, env, max_unfold_depth, max_unfold_nodes));
+    let read_index =
+        read_index.get_or_init(|| CellReadIndex::build(env, max_unfold_depth, max_unfold_nodes));
     let reaching = read_index.cells_reaching(&auto_ids);
 
     // Shared per-scope tail with `build_solver_problem` (amendment, task
@@ -6210,7 +6186,6 @@ impl Engine {
                     governance[idx].objective.as_ref(),
                     &values,
                     Arc::clone(&functions),
-                    &module.templates,
                     env,
                     &snapshot.values,
                     // α (task #5188): objective/constraint-position expansion
@@ -7071,7 +7046,6 @@ impl Engine {
         // Emits a warning for each auto value cell absent from the global constraint read-set —
         // TRANSITIVELY since task #5467, so an auto pinned only through a `let` is not flagged.
         diagnostics.extend(detect_underdetermined(
-            &module.templates,
             env,
             &read_index,
             self.max_unfold_depth,
@@ -7593,7 +7567,6 @@ impl Engine {
         );
         let problem = build_merged_solver_problem(
             cluster,
-            &module.templates,
             self.env_of(module),
             governance,
             values,
@@ -9064,7 +9037,6 @@ impl Engine {
                     governance[idx].objective.as_ref(),
                     &values,
                     Arc::clone(&self.functions),
-                    &module.templates,
                     env,
                     &snapshot_values,
                     self.max_unfold_depth,
@@ -9608,7 +9580,6 @@ impl Engine {
         );
         let problem = build_merged_solver_problem(
             cluster,
-            &module.templates,
             self.env_of(module),
             governance,
             values,
@@ -12785,9 +12756,9 @@ mod cell_read_index_tests {
 
     use reify_core::{Type, ValueCellId};
     use reify_ir::BinOp;
-    use reify_test_support::{TopologyTemplateBuilder, binop, literal, mm, value_ref};
+    use reify_test_support::{TopologyTemplateBuilder, binop, literal, mm, module_of, value_ref};
 
-    use super::{CellReadIndex, lone_test_module};
+    use super::CellReadIndex;
     use crate::DefEnv;
 
     /// Same budgets the sibling `dependent_cells_admissibility_tests` use — far
@@ -12831,10 +12802,8 @@ mod cell_read_index_tests {
     /// `S.a`, so `S.a` must be in the closure.
     #[test]
     fn read_closure_follows_a_let_through_to_the_auto_behind_it() {
-        let module = lone_test_module(single_template());
-        let templates = &module.templates;
+        let module = module_of(single_template());
         let index = CellReadIndex::build(
-            templates,
             DefEnv::of_module(&module, &[]),
             TEST_MAX_UNFOLD_DEPTH,
             TEST_MAX_UNFOLD_NODES,
@@ -12870,10 +12839,8 @@ mod cell_read_index_tests {
     /// two sets' union silently order-dependent to reason about.
     #[test]
     fn cells_reaching_returns_the_let_but_not_the_auto_itself() {
-        let module = lone_test_module(single_template());
-        let templates = &module.templates;
+        let module = module_of(single_template());
         let index = CellReadIndex::build(
-            templates,
             DefEnv::of_module(&module, &[]),
             TEST_MAX_UNFOLD_DEPTH,
             TEST_MAX_UNFOLD_NODES,
@@ -12901,10 +12868,8 @@ mod cell_read_index_tests {
     /// would leak.
     #[test]
     fn cells_reaching_excludes_a_cell_that_reads_no_auto() {
-        let module = lone_test_module(single_template());
-        let templates = &module.templates;
+        let module = module_of(single_template());
         let index = CellReadIndex::build(
-            templates,
             DefEnv::of_module(&module, &[]),
             TEST_MAX_UNFOLD_DEPTH,
             TEST_MAX_UNFOLD_NODES,
@@ -12988,10 +12953,8 @@ mod cell_read_index_tests {
     /// against layer 4's [`auto_is_pinned_through_a_reader`].
     #[test]
     fn cells_reaching_seeds_both_spellings_of_an_instance_path_auto() {
-        let module = lone_test_module(child_side_let_templates());
-        let templates = &module.templates;
+        let module = module_of(child_side_let_templates());
         let index = CellReadIndex::build(
-            templates,
             DefEnv::of_module(&module, &[]),
             TEST_MAX_UNFOLD_DEPTH,
             TEST_MAX_UNFOLD_NODES,
@@ -13082,10 +13045,8 @@ mod cell_read_index_tests {
     /// test green while breaking the user-visible signal.
     #[test]
     fn read_closure_keeps_both_spellings_of_an_instance_path_seed() {
-        let module = lone_test_module(instance_path_templates());
-        let templates = &module.templates;
+        let module = module_of(instance_path_templates());
         let index = CellReadIndex::build(
-            templates,
             DefEnv::of_module(&module, &[]),
             TEST_MAX_UNFOLD_DEPTH,
             TEST_MAX_UNFOLD_NODES,
@@ -13131,10 +13092,8 @@ mod cell_read_index_tests {
     /// `total`'s own `default_expr`.
     #[test]
     fn read_closure_keeps_both_spellings_of_a_mid_walk_hop() {
-        let module = lone_test_module(instance_path_templates());
-        let templates = &module.templates;
+        let module = module_of(instance_path_templates());
         let index = CellReadIndex::build(
-            templates,
             DefEnv::of_module(&module, &[]),
             TEST_MAX_UNFOLD_DEPTH,
             TEST_MAX_UNFOLD_NODES,
@@ -13173,10 +13132,8 @@ mod cell_read_index_tests {
     /// in the closure VERBATIM.
     #[test]
     fn read_closure_is_a_superset_of_the_unnormalised_reads() {
-        let module = lone_test_module(instance_path_templates());
-        let templates = &module.templates;
+        let module = module_of(instance_path_templates());
         let index = CellReadIndex::build(
-            templates,
             DefEnv::of_module(&module, &[]),
             TEST_MAX_UNFOLD_DEPTH,
             TEST_MAX_UNFOLD_NODES,
@@ -13238,9 +13195,11 @@ mod transitive_constraint_admission_tests {
 
     use reify_core::{Type, ValueCellId};
     use reify_ir::BinOp;
-    use reify_test_support::{TopologyTemplateBuilder, binop, eq, gt, literal, mm, value_ref};
+    use reify_test_support::{
+        TopologyTemplateBuilder, binop, eq, gt, literal, mm, module_of, value_ref,
+    };
 
-    use super::{CellReadIndex, filter_constraints_reading_autos, lone_test_module};
+    use super::{CellReadIndex, filter_constraints_reading_autos};
     use crate::DefEnv;
 
     const TEST_MAX_UNFOLD_DEPTH: usize = 64;
@@ -13312,10 +13271,9 @@ mod transitive_constraint_admission_tests {
     /// direct reader alongside them.
     #[test]
     fn a_constraint_reading_an_auto_only_through_a_let_is_admitted() {
-        let module = lone_test_module(fixture());
+        let module = module_of(fixture());
         let templates = &module.templates;
         let index = CellReadIndex::build(
-            templates,
             DefEnv::of_module(&module, &[]),
             TEST_MAX_UNFOLD_DEPTH,
             TEST_MAX_UNFOLD_NODES,
@@ -13348,10 +13306,9 @@ mod transitive_constraint_admission_tests {
     /// into "admit everything" and hand the solver residuals it cannot move.
     #[test]
     fn a_constraint_reaching_no_auto_is_still_dropped() {
-        let module = lone_test_module(fixture());
+        let module = module_of(fixture());
         let templates = &module.templates;
         let index = CellReadIndex::build(
-            templates,
             DefEnv::of_module(&module, &[]),
             TEST_MAX_UNFOLD_DEPTH,
             TEST_MAX_UNFOLD_NODES,
@@ -13473,10 +13430,9 @@ mod transitive_constraint_admission_tests {
     /// constraint is dropped whatever the probe does.
     #[test]
     fn a_constraint_pinning_an_instance_path_declared_auto_through_a_child_let_is_admitted() {
-        let module = lone_test_module(child_side_let_fixture());
+        let module = module_of(child_side_let_fixture());
         let templates = &module.templates;
         let index = CellReadIndex::build(
-            templates,
             DefEnv::of_module(&module, &[]),
             TEST_MAX_UNFOLD_DEPTH,
             TEST_MAX_UNFOLD_NODES,
@@ -13519,10 +13475,9 @@ mod transitive_constraint_admission_tests {
     /// other test in this module green.
     #[test]
     fn a_parent_constraint_reading_a_childs_let_through_an_instance_path_is_admitted() {
-        let module = lone_test_module(cross_template_let_fixture());
+        let module = module_of(cross_template_let_fixture());
         let templates = &module.templates;
         let index = CellReadIndex::build(
-            templates,
             DefEnv::of_module(&module, &[]),
             TEST_MAX_UNFOLD_DEPTH,
             TEST_MAX_UNFOLD_NODES,
@@ -13567,10 +13522,9 @@ mod transitive_constraint_admission_tests {
     /// every constraint unconditionally.
     #[test]
     fn an_empty_reaching_set_drops_the_instance_path_constraint_too() {
-        let module = lone_test_module(cross_template_let_fixture());
+        let module = module_of(cross_template_let_fixture());
         let templates = &module.templates;
         let index = CellReadIndex::build(
-            templates,
             DefEnv::of_module(&module, &[]),
             TEST_MAX_UNFOLD_DEPTH,
             TEST_MAX_UNFOLD_NODES,
@@ -13604,10 +13558,9 @@ mod transitive_constraint_admission_tests {
     /// dependent cells is unchanged" an asserted invariant rather than a claim.
     #[test]
     fn an_empty_reaching_set_reproduces_the_direct_only_filter_exactly() {
-        let module = lone_test_module(fixture());
+        let module = module_of(fixture());
         let templates = &module.templates;
         let index = CellReadIndex::build(
-            templates,
             DefEnv::of_module(&module, &[]),
             TEST_MAX_UNFOLD_DEPTH,
             TEST_MAX_UNFOLD_NODES,
@@ -13655,9 +13608,9 @@ mod dependent_cells_admissibility_tests {
 
     use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, Severity, Type, ValueCellId};
     use reify_ir::{BinOp, CompiledExpr, CompiledFunction};
-    use reify_test_support::{TopologyTemplateBuilder, binop, literal, mm, value_ref};
+    use reify_test_support::{TopologyTemplateBuilder, binop, literal, mm, module_of, value_ref};
 
-    use super::{CellReadIndex, build_dependent_cells, lone_test_module};
+    use super::{CellReadIndex, build_dependent_cells};
     use crate::DefEnv;
 
     /// Expansion budgets for the instance-path bridge. Matching δ's own
@@ -13747,8 +13700,7 @@ mod dependent_cells_admissibility_tests {
             )
             .build();
 
-        let module = lone_test_module(vec![alpha, beta]);
-        let templates = &module.templates;
+        let module = module_of(vec![alpha, beta]);
         let seed = binop(
             BinOp::Add,
             value_ref("Alpha", "x"),
@@ -13760,7 +13712,6 @@ mod dependent_cells_admissibility_tests {
 
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         let index = CellReadIndex::build(
-            templates,
             DefEnv::of_module(&module, &[]),
             TEST_MAX_UNFOLD_DEPTH,
             TEST_MAX_UNFOLD_NODES,
@@ -13863,8 +13814,7 @@ mod dependent_cells_admissibility_tests {
             )
             .build();
 
-        let module = lone_test_module(vec![parent, child]);
-        let templates = &module.templates;
+        let module = module_of(vec![parent, child]);
         let seed = value_ref("Parent", "total");
         let seed_exprs: Vec<&CompiledExpr> = vec![&seed];
         let auto_ids: HashSet<ValueCellId> = [ValueCellId::new("Child", "q")].into_iter().collect();
@@ -13872,7 +13822,6 @@ mod dependent_cells_admissibility_tests {
 
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         let index = CellReadIndex::build(
-            templates,
             DefEnv::of_module(&module, &[]),
             TEST_MAX_UNFOLD_DEPTH,
             TEST_MAX_UNFOLD_NODES,
@@ -13974,8 +13923,7 @@ mod dependent_cells_admissibility_tests {
             )
             .build();
 
-        let module = lone_test_module(vec![parent, child]);
-        let templates = &module.templates;
+        let module = module_of(vec![parent, child]);
         // The objective reads the INSTANCE PATH, exactly as `apply_cost_aggregation`
         // expands `cost(self.descendants)`.
         let seed = value_ref("RivetedPanel.rivets", "line_cost");
@@ -13985,7 +13933,6 @@ mod dependent_cells_admissibility_tests {
 
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         let index = CellReadIndex::build(
-            templates,
             DefEnv::of_module(&module, &[]),
             TEST_MAX_UNFOLD_DEPTH,
             TEST_MAX_UNFOLD_NODES,

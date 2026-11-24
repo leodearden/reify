@@ -135,7 +135,8 @@ pub(crate) struct ClusterFormationCtx<'a> {
     /// `self.descendants` node-count budget (mirrors `Engine::max_unfold_nodes`).
     pub(crate) max_unfold_nodes: usize,
     /// The definition environment the expansion resolves descendant
-    /// structures in.
+    /// structures in. The templates it declares are the ones `resolve_order`
+    /// orders: cluster scopes index that one slice.
     pub(crate) env: DefEnv<'a>,
 }
 
@@ -385,6 +386,13 @@ fn resolve_order_impl(
     templates: &[TopologyTemplate],
     cluster_ctx: Option<&ClusterFormationCtx>,
 ) -> ResolveOrder {
+    debug_assert!(
+        cluster_ctx
+            .is_none_or(|ctx| std::ptr::eq(templates, ctx.env.declared().templates.as_slice())),
+        "resolve_order's templates must be the ones its cluster context's \
+         environment declares: cluster scopes index the one, instance paths \
+         are walked from the other"
+    );
     let n = templates.len();
     if n == 0 {
         return ResolveOrder {
@@ -826,8 +834,8 @@ fn union_via_transitive_auto_owners(
 ///
 /// Mirrors `enumerate_descendants`' path composition
 /// (structural_query.rs:213 `{prefix}.{sub}`, :187 `{prefix}.{sub}[{idx}]`),
-/// seeded once per template at `prefix = &template.name` exactly as
-/// `expand_structural_query` seeds it, and resolving each child structure in
+/// seeded once per template `env` declares at `prefix = &template.name` exactly
+/// as `expand_structural_query` seeds it, and resolving each child structure in
 /// `env` exactly as it does.  A COLLECTION sub contributes its
 /// INDEX-STRIPPED base path — `Rig.bolts[0]` and `Rig.bolts[7]` both denote
 /// structure `Bolt`, and the runtime index is not knowable statically — which is
@@ -868,7 +876,6 @@ fn union_via_transitive_auto_owners(
 /// budget ONCE (for its index-stripped base path) rather than once per runtime
 /// index, so this side is strictly cheaper and can only ever truncate later.
 pub(crate) fn build_instance_path_structure_map(
-    templates: &[TopologyTemplate],
     env: DefEnv<'_>,
     max_depth: usize,
     max_nodes: usize,
@@ -915,7 +922,7 @@ pub(crate) fn build_instance_path_structure_map(
 
     let mut out: HashMap<String, String> = HashMap::new();
     let mut node_budget = max_nodes;
-    for template in templates {
+    for template in &env.declared().templates {
         walk(
             template,
             env,
@@ -1082,7 +1089,6 @@ fn compute_clusters(
             // See [`normalize_cell_id`] for the two-sided root cause, and
             // [`build_instance_path_structure_map`] for why it is budgeted.
             let path_map = build_instance_path_structure_map(
-                templates,
                 ctx.env,
                 ctx.max_unfold_depth,
                 ctx.max_unfold_nodes,
@@ -1151,13 +1157,13 @@ mod tests {
     use std::collections::HashMap;
 
     use reify_compiler::CompiledTrait;
-    use reify_core::{ContentHash, Diagnostic, DimensionVector, ModulePath, Type, ValueCellId};
+    use reify_core::{ContentHash, Diagnostic, DimensionVector, Type, ValueCellId};
     use reify_ir::{
         BinOp, CompiledFnBody, CompiledFunction, ObjectiveSense, ObjectiveSet, Value, ValueMap,
     };
     use reify_test_support::{
-        CompiledModuleBuilder, TopologyTemplateBuilder, binop, fn_call, gt, literal,
-        method_call_expr, mm, user_fn_call, value_ref, value_ref_typed,
+        TopologyTemplateBuilder, binop, fn_call, gt, literal, method_call_expr, mm, module_of,
+        user_fn_call, value_ref, value_ref_typed,
     };
 
     use super::{
@@ -1835,10 +1841,7 @@ mod tests {
             )
             .build();
 
-        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
-            .template(parent)
-            .template(child)
-            .build();
+        let module = module_of([parent, child]);
         let templates = &module.templates;
 
         let values = ValueMap::default();
@@ -1919,10 +1922,7 @@ mod tests {
             )
             .build();
 
-        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
-            .template(parent)
-            .template(child)
-            .build();
+        let module = module_of([parent, child]);
         let templates = &module.templates;
 
         let values = ValueMap::default();
@@ -2024,10 +2024,7 @@ mod tests {
             )
             .build();
 
-        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
-            .template(parent)
-            .template(child)
-            .build();
+        let module = module_of([parent, child]);
         let templates = &module.templates;
 
         let values = ValueMap::default();
@@ -2119,10 +2116,7 @@ mod tests {
             )
             .build();
 
-        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
-            .template(parent)
-            .template(child)
-            .build();
+        let module = module_of([parent, child]);
         let templates = &module.templates;
 
         let values = ValueMap::default();
@@ -2184,10 +2178,7 @@ mod tests {
             .constraint("Y", 0, None, gt(value_ref("Y", "b"), literal(mm(0.0))))
             .build();
 
-        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
-            .template(x)
-            .template(y)
-            .build();
+        let module = module_of([x, y]);
         let templates = &module.templates;
 
         let ro_legacy = resolve_order(templates, None);
@@ -2271,10 +2262,7 @@ mod tests {
             )
             .build();
 
-        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
-            .template(parent)
-            .template(child)
-            .build();
+        let module = module_of([parent, child]);
         let templates = &module.templates;
 
         let values = ValueMap::default();
@@ -2614,12 +2602,7 @@ structure Rig {
             .sub_component("washer", "Washer", vec![])
             .build();
         let washer = TopologyTemplateBuilder::new("Washer").build();
-        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
-            .template(rig)
-            .template(head)
-            .template(bolt)
-            .template(washer)
-            .build();
+        let module = module_of([rig, head, bolt, washer]);
         let templates = &module.templates;
 
         let mut values = ValueMap::default();
@@ -2648,12 +2631,8 @@ structure Rig {
         // when both run unbudgeted-in-practice (asserted for the oracle by
         // `diags.is_empty()`); under truncation the map is a strict subset by
         // design.
-        let map = super::build_instance_path_structure_map(
-            templates,
-            DefEnv::of_module(&module, &[]),
-            64,
-            10_000,
-        );
+        let map =
+            super::build_instance_path_structure_map(DefEnv::of_module(&module, &[]), 64, 10_000);
         assert!(
             !map.is_empty(),
             "the instance-path map must be non-empty, else this guard passes vacuously"
@@ -2735,10 +2714,7 @@ structure Rig {
         let b = TopologyTemplateBuilder::new("B")
             .sub_component("a", "A", vec![])
             .build();
-        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
-            .template(a)
-            .template(b)
-            .build();
+        let module = module_of([a, b]);
         let templates = &module.templates;
         let values = ValueMap::default();
 
@@ -2777,7 +2753,6 @@ structure Rig {
         );
 
         let map = super::build_instance_path_structure_map(
-            templates,
             DefEnv::of_module(&module, &[]),
             MAX_DEPTH,
             10_000,
@@ -2870,10 +2845,7 @@ structure Rig {
             )
             .build();
 
-        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
-            .template(parent)
-            .template(child)
-            .build();
+        let module = module_of([parent, child]);
         let templates = &module.templates;
 
         let values = ValueMap::default();
@@ -2989,10 +2961,7 @@ structure Rig {
             )
             .build();
 
-        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
-            .template(parent)
-            .template(child)
-            .build();
+        let module = module_of([parent, child]);
         let templates = &module.templates;
 
         let values = ValueMap::default();
@@ -3069,10 +3038,7 @@ structure Rig {
             )
             .build();
 
-        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
-            .template(parent)
-            .template(child)
-            .build();
+        let module = module_of([parent, child]);
         let templates = &module.templates;
 
         let values = ValueMap::default();

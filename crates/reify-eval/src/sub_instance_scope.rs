@@ -206,12 +206,12 @@ impl<'t> SubInstance<'t> {
 mod tests {
     use std::collections::{BTreeSet, HashMap};
 
-    use reify_core::{ModulePath, Type, ValueCellId};
+    use reify_core::{Type, ValueCellId};
     use reify_ir::{
         BinOp, CompiledExpr, CompiledExprKind, GeometryHandleId, KernelHandle, KernelId, Value,
         ValueMap,
     };
-    use reify_test_support::{CompiledModuleBuilder, parse_and_compile_with_stdlib};
+    use reify_test_support::{module_of, parse_and_compile_with_stdlib};
 
     use super::{
         ScopedArgs, direct_sub_instances, instance_value_overlay, scoped_arg_values,
@@ -281,9 +281,7 @@ structure def MiniParent {
     fn direct_sub_instances_skips_a_sub_whose_template_is_not_in_scope() {
         let compiled = compile_mini();
         let parent = mini_parent(&compiled);
-        let only_parent = CompiledModuleBuilder::new(ModulePath::single("test"))
-            .template(parent.clone())
-            .build();
+        let only_parent = module_of([parent.clone()]);
         let env = DefEnv::of_module(&only_parent, &[]);
 
         assert!(direct_sub_instances(parent, env, &ValueMap::new()).is_empty());
