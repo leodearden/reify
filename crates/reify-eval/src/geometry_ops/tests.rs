@@ -2829,29 +2829,20 @@
 
     #[test]
     fn compile_geometry_op_revolve_missing_each_required_arg_returns_none() {
-        // Table-driven coverage for all 7 required Revolve args. Revolve reads
-        // ax, ay, az, angle, ox, oy, oz via f64_arg?; omitting any of them must
-        // yield None (not silently treat as 0.0).
-        let step_handles = vec![GeometryHandleId(10)];
-        let values = ValueMap::new();
-
-        // Each iteration omits exactly one named arg; all other required args
-        // remain present so that f64_arg? short-circuits on (and diagnoses)
-        // only the omitted arg under test.
+        // Table-driven coverage for the three required args of revolve's
+        // Direction form. Omitting any one must drop the op (never default
+        // it), and the other two are valid, so the one diagnostic is the
+        // omitted arg's.
         let full_args: Vec<(&'static str, reify_ir::CompiledExpr)> = vec![
-            // Axis origin is LENGTH-semantic (task 5623) and the angle is
-            // ANGLE-semantic (PRD 3 leaf γ); only the axis vector stays bare.
-            // Fans out to all 7 loop iterations.
-            ("ox", literal_length(0.0)),
-            ("oy", literal_length(0.0)),
-            ("oz", literal_length(0.0)),
-            ("ax", literal_f64(0.0)),
-            ("ay", literal_f64(0.0)),
-            ("az", literal_f64(1.0)),
+            ("origin", literal_value(reify_test_support::point3(0.0, 0.0, 0.0))),
+            (
+                "direction",
+                literal_value(reify_test_support::direction_val(0.0, 0.0, 1.0)),
+            ),
             ("angle", literal_angle(std::f64::consts::PI)),
         ];
 
-        for omit in ["ox", "oy", "oz", "ax", "ay", "az", "angle"] {
+        for omit in ["origin", "direction", "angle"] {
             let args: Vec<(String, reify_ir::CompiledExpr)> = full_args
                 .iter()
                 .filter(|(name, _)| *name != omit)
@@ -2864,23 +2855,10 @@
                 args,
             };
 
-            // Pin the observable contract: each missing required arg
-            // must (a) return None and (b) emit exactly one warning
-            // diagnostic naming the quoted arg (e.g. `'ox'`) and the
-            // 'Revolve' op. Covers all seven required args including `ox`.
-            let mut diagnostics: Vec<Diagnostic> = Vec::new();
-            let result = compile_geometry_op(
-                &op,
-                &values,
-                &step_handles,
-                &[],
-                &HashMap::new(),
-                &HashMap::new(),
-                &mut diagnostics,
-            );
+            let (result, diagnostics) = run_compile(&op);
             assert!(
                 result.is_err(),
-                "missing '{omit}' should return None, got {:?}",
+                "missing '{omit}' should drop the op, got {:?}",
                 result
             );
             assert_eq!(
@@ -3057,94 +3035,6 @@
                     && d.message.contains("degenerate")),
             "expected degenerate-extrude warning, got {:?}",
             diagnostics,
-        );
-    }
-
-    #[test]
-    fn compile_geometry_op_revolve_zero_axis_returns_none() {
-        let step_handles = vec![GeometryHandleId(10)];
-        let values = ValueMap::new();
-
-        // All 7 args present and numeric, but ax=ay=az=0.0 (zero-length rotation axis)
-        let op = CompiledGeometryOp::Sweep {
-            kind: SweepKind::Revolve,
-            profiles: vec![GeomRef::Step(0)],
-            args: vec![
-                ("ox".into(), literal_length(0.0)),
-                ("oy".into(), literal_length(0.0)),
-                ("oz".into(), literal_length(0.0)),
-                ("ax".into(), literal_f64(0.0)),
-                ("ay".into(), literal_f64(0.0)),
-                ("az".into(), literal_f64(0.0)),
-                ("angle".into(), literal_angle(std::f64::consts::PI)),
-            ],
-        };
-
-        let mut diagnostics = Vec::new();
-        let result = compile_geometry_op(
-            &op,
-            &values,
-            &step_handles,
-            &[],
-            &HashMap::new(),
-            &HashMap::new(),
-            &mut diagnostics,
-        );
-        assert!(
-            result.is_err(),
-            "zero-length rotation axis should return None"
-        );
-        assert!(
-            diagnostics
-                .iter()
-                .any(|d| matches!(d.severity, reify_core::Severity::Warning)
-                    && d.message.contains("revolve dropped")
-                    && d.message.contains("axis")),
-            "expected degenerate-revolve-axis warning, got {:?}",
-            diagnostics,
-        );
-    }
-
-    #[test]
-    fn compile_geometry_op_revolve_nan_axis_returns_none() {
-        let step_handles = vec![GeometryHandleId(10)];
-        let values = ValueMap::new();
-
-        // All 7 args present and numeric, but ax=NaN (non-finite rotation axis)
-        let op = CompiledGeometryOp::Sweep {
-            kind: SweepKind::Revolve,
-            profiles: vec![GeomRef::Step(0)],
-            args: vec![
-                ("ox".into(), literal_length(0.0)),
-                ("oy".into(), literal_length(0.0)),
-                ("oz".into(), literal_length(0.0)),
-                ("ax".into(), literal_f64(f64::NAN)),
-                ("ay".into(), literal_f64(0.0)),
-                ("az".into(), literal_f64(0.0)),
-                ("angle".into(), literal_angle(std::f64::consts::PI)),
-            ],
-        };
-
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let result = compile_geometry_op(
-            &op,
-            &values,
-            &step_handles,
-            &[],
-            &HashMap::new(),
-            &HashMap::new(),
-            &mut diagnostics,
-        );
-        assert!(result.is_err(), "NaN rotation axis should return None");
-        assert!(
-            diagnostics.iter().any(|d| {
-                matches!(d.severity, reify_core::Severity::Warning)
-                    && d.message.contains("non-numeric/non-finite")
-                    && d.message.contains("ax")
-                    && d.message.contains("revolve")
-            }),
-            "expected a Warning mentioning 'non-numeric/non-finite', 'ax', and 'revolve', got: {:?}",
-            diagnostics
         );
     }
 
@@ -5700,8 +5590,8 @@
     /// either dimensionless by construction or owned by another PRD, and both
     /// exclusions already carry their own executable lock rather than prose:
     ///
-    ///   * `extrude_infinite`'s `dx`/`dy`/`dz` are a dimensionless DIRECTION —
-    ///     [`compile_geometry_op_extrude_infinite_bare_direction_still_accepted`].
+    ///   * `extrude_infinite`'s `direction` is a `Direction`, never a length —
+    ///     [`compile_geometry_op_extrude_infinite_reads_direction_and_symmetric`].
     ///   * `revolve`'s `angle` belonged to
     ///     `docs/prds/v0_6/angle-units-surface-convergence.md` (PRD 3), which
     ///     GATED it in leaf γ (task 5779) —
@@ -10026,80 +9916,241 @@
         );
     }
 
-    /// PRECEDENCE PIN for the one deliberate read-order change in task 5623.
-    ///
-    /// `sweep_revolve` used to read its origin LAST — after the
-    /// degenerate-axis and degenerate-angle checks. The borrow-ordering
-    /// contract on `required_length_args` forces the gated read to happen
-    /// before the `f64_arg` closure is declared, so the origin now goes FIRST
-    /// and an op with BOTH a bare origin AND a degenerate zero axis fails on
-    /// the ORIGIN.
-    ///
-    /// Without this test that shift is invisible behaviour drift. Asserting
-    /// the ABSENCE of the axis diagnostic is the load-bearing half: the axis
-    /// check is downstream of the whole units group, so it is never reached.
-    ///
-    /// The units group itself reports ALL THREE bare components (the
-    /// all-failures-at-once contract on `required_length_args`), which is
-    /// pinned explicitly below — a regression to `?`-chained reads would show
-    /// up here as one diagnostic instead of three.
-    #[test]
-    fn compile_geometry_op_revolve_bare_origin_beats_degenerate_axis() {
-        let step_handles = vec![GeometryHandleId(42)];
-        let values = ValueMap::new();
+    // ---------------------------------------------------------------------------
+    // direction-typing ι-b (task 9647): `revolve`'s Direction and Axis forms
+    //
+    // The compiler lowers `revolve(profile, origin, direction, angle)` and
+    // `revolve_full(profile, origin, direction)` to the op args
+    // `[origin, direction, angle]` (revolve_full's angle is the synthesized
+    // TAU), and `revolve(profile, axis, angle)` to `[axis, angle]`.
+    // `sweep_revolve` tells the forms apart by the presence of `axis`.
+    // ---------------------------------------------------------------------------
 
-        let op = CompiledGeometryOp::Sweep {
+    /// A literal carrying any `Value`. `eval_expr` clones the value and never
+    /// reads the declared `Type`, so one placeholder type serves every kind.
+    fn literal_value(v: reify_ir::Value) -> reify_ir::CompiledExpr {
+        reify_ir::CompiledExpr::literal(v, reify_core::Type::dimensionless_scalar())
+    }
+
+    /// A 3-component `Value::Point` whose components are BARE `Real`s, the
+    /// `point3(0, 0, 0)` an author writes when they forget the units.
+    fn bare_point(x: f64, y: f64, z: f64) -> reify_ir::Value {
+        reify_ir::Value::Point(vec![
+            reify_ir::Value::Real(x),
+            reify_ir::Value::Real(y),
+            reify_ir::Value::Real(z),
+        ])
+    }
+
+    fn revolve_direction_form(
+        origin: reify_ir::Value,
+        direction: reify_ir::Value,
+        angle: reify_ir::CompiledExpr,
+    ) -> CompiledGeometryOp {
+        CompiledGeometryOp::Sweep {
             kind: SweepKind::Revolve,
             profiles: vec![GeomRef::Step(0)],
             args: vec![
-                // BARE origin — the units gate must fire here …
-                ("ox".into(), literal_f64(0.0)),
-                ("oy".into(), literal_f64(0.0)),
-                ("oz".into(), literal_f64(0.0)),
-                // … BEFORE this zero-magnitude axis is even evaluated.
-                ("ax".into(), literal_f64(0.0)),
-                ("ay".into(), literal_f64(0.0)),
-                ("az".into(), literal_f64(0.0)),
-                ("angle".into(), literal_angle(std::f64::consts::PI)),
+                ("origin".into(), literal_value(origin)),
+                ("direction".into(), literal_value(direction)),
+                ("angle".into(), angle),
             ],
-        };
-
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let result = compile_geometry_op(
-            &op,
-            &values,
-            &step_handles,
-            &[],
-            &HashMap::new(),
-            &HashMap::new(),
-            &mut diagnostics,
-        );
-        assert!(
-            result.is_err(),
-            "a revolve with both a bare origin and a degenerate axis must drop \
-             the op, got: {:?}",
-            result
-        );
-        // ALL THREE bare components are reported in this single build — the
-        // author fixes `ox`, `oy` and `oz` in one edit, not three.
-        for bare in ["ox", "oy", "oz"] {
-            assert!(
-                diagnostics
-                    .iter()
-                    .any(|d| d.message.contains(bare) && d.message.contains("Length")),
-                "the units gate runs FIRST and reports every bare component, so a \
-                 diagnostic must name '{bare}' and the Length requirement; got: {:?}",
-                diagnostics
-            );
         }
+    }
+
+    fn revolve_axis_form(axis: reify_ir::Value, angle: reify_ir::CompiledExpr) -> CompiledGeometryOp {
+        CompiledGeometryOp::Sweep {
+            kind: SweepKind::Revolve,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![
+                ("axis".into(), literal_value(axis)),
+                ("angle".into(), angle),
+            ],
+        }
+    }
+
+    /// The `(profile, axis_origin, axis_dir, angle_rad)` of an `Ok(Revolve)`.
+    fn expect_revolve(
+        result: Result<reify_ir::GeometryOp, String>,
+    ) -> (GeometryHandleId, [f64; 3], [f64; 3], f64) {
+        match result {
+            Ok(reify_ir::GeometryOp::Revolve {
+                profile,
+                axis_origin,
+                axis_dir,
+                angle_rad,
+            }) => (profile, axis_origin, axis_dir, angle_rad),
+            other => panic!("expected Ok(Revolve), got {other:?}"),
+        }
+    }
+
+    /// The `DimensionedArgRejected` Errors whose message names `arg`.
+    fn dimension_rejections_naming<'a>(
+        diagnostics: &'a [Diagnostic],
+        arg: &str,
+    ) -> Vec<&'a Diagnostic> {
+        let needle = format!("{arg} argument expects");
+        diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == reify_core::Severity::Error
+                    && d.code == Some(reify_core::DiagnosticCode::DimensionedArgRejected)
+                    && d.message.contains(&needle)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn compile_geometry_op_revolve_direction_form_reads_point_origin_and_direction() {
+        let (result, diagnostics) = run_compile(&revolve_direction_form(
+            reify_test_support::point3(0.012, 0.034, 0.056),
+            reify_test_support::direction_val(0.0, 0.0, 1.0),
+            literal_angle(std::f64::consts::PI),
+        ));
+        assert_eq!(
+            expect_revolve(result),
+            (
+                GeometryHandleId(42),
+                [0.012, 0.034, 0.056],
+                [0.0, 0.0, 1.0],
+                std::f64::consts::PI
+            )
+        );
+        assert!(diagnostics.is_empty(), "got: {diagnostics:?}");
+    }
+
+    #[test]
+    fn compile_geometry_op_revolve_axis_form_reads_the_axis_datum() {
+        let (result, diagnostics) = run_compile(&revolve_axis_form(
+            reify_test_support::axis_val(
+                reify_test_support::point3(-0.01, 0.0, 0.0),
+                reify_test_support::direction_val(0.0, 1.0, 0.0),
+            ),
+            literal_angle(std::f64::consts::FRAC_PI_2),
+        ));
+        assert_eq!(
+            expect_revolve(result),
+            (
+                GeometryHandleId(42),
+                [-0.01, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                std::f64::consts::FRAC_PI_2
+            )
+        );
+        assert!(diagnostics.is_empty(), "got: {diagnostics:?}");
+    }
+
+    /// PRECEDENCE PIN (task 5623, retargeted by task 9647): the origin is read
+    /// first, so an op with a bare origin AND a bad direction reports the
+    /// origin, every component of it in one build. No magnitude check remains
+    /// to reach: a `Direction` is unit by construction.
+    #[test]
+    fn compile_geometry_op_revolve_bare_origin_beats_a_non_direction() {
+        let (result, diagnostics) = run_compile(&revolve_direction_form(
+            bare_point(0.0, 0.0, 0.0),
+            reify_test_support::vec3_dimensionless(0.0, 0.0, 1.0),
+            literal_angle(std::f64::consts::PI),
+        ));
+        let err = result.expect_err("a bare origin must drop the op");
+        assert!(err.contains("'ox'"), "the Err must be the origin's; got: {err:?}");
+        let origin_rejections: Vec<&Diagnostic> = ["ox", "oy", "oz"]
+            .iter()
+            .flat_map(|c| dimension_rejections_naming(&diagnostics, c))
+            .collect();
+        assert_eq!(
+            origin_rejections.len(),
+            3,
+            "exactly one rejection per origin component, all in one build; \
+             got: {diagnostics:?}"
+        );
         assert!(
             !diagnostics
                 .iter()
                 .any(|d| d.message.contains("degenerate magnitude")),
-            "the op must fail FAST on the origin — the degenerate-axis check is \
-             never reached, so no axis diagnostic may be emitted alongside it; \
-             got: {:?}",
-            diagnostics
+            "got: {diagnostics:?}"
+        );
+    }
+
+    /// An Undef direction gets the shared unresolved sentence (PRD-1 D10),
+    /// not "expected a Direction, got Undef". A degenerate `dir(0, 0, 0)` cell
+    /// evaluates to Undef, so this is also what replaced the retired
+    /// zero-axis Warning.
+    #[test]
+    fn compile_geometry_op_revolve_undef_direction_is_unresolved() {
+        let (result, diagnostics) = run_compile(&revolve_direction_form(
+            reify_test_support::point3(0.0, 0.0, 0.0),
+            reify_ir::Value::Undef,
+            literal_angle(std::f64::consts::PI),
+        ));
+        assert_eq!(
+            result.expect_err("an Undef direction must drop the op"),
+            unresolved_arg_message("direction", "revolve")
+        );
+        assert!(
+            !diagnostics.iter().any(|d| d.message.contains("revolve dropped")),
+            "got: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn compile_geometry_op_revolve_vector_direction_is_not_a_direction() {
+        let (result, diagnostics) = run_compile(&revolve_direction_form(
+            reify_test_support::point3(0.0, 0.0, 0.0),
+            reify_test_support::vec3_dimensionless(0.0, 0.0, 1.0),
+            literal_angle(std::f64::consts::PI),
+        ));
+        let err = result.expect_err("a Vector direction must drop the op");
+        assert_eq!(
+            err,
+            format!(
+                "revolve: direction: {}",
+                reify_ir::DecodeDirectionError::NotADirection { got: "Vector" }
+            )
+        );
+        assert!(
+            err.ends_with(reify_core::direction::DIRECTION_MIGRATION_HINT),
+            "got: {err:?}"
+        );
+        assert!(
+            !diagnostics.iter().any(|d| d.message.contains("revolve dropped")),
+            "got: {diagnostics:?}"
+        );
+    }
+
+    /// ALL FAILURES IN ONE BUILD, across argument kinds: every argument is
+    /// evaluated before the first error is returned. The units closure guard
+    /// depends on this, since its probe can fill only scalars: the origin,
+    /// direction and axis positions always fail there, and the angle gate
+    /// must still be observed.
+    #[test]
+    fn compile_geometry_op_revolve_reports_every_bad_argument_in_one_build() {
+        let (result, diagnostics) = run_compile(&revolve_direction_form(
+            bare_point(0.0, 0.0, 0.0),
+            reify_test_support::vec3_dimensionless(0.0, 0.0, 1.0),
+            literal_f64(1.5),
+        ));
+        let err = result.expect_err("every argument is bad");
+        assert!(err.contains("'ox'"), "the origin's Err wins; got: {err:?}");
+        for arg in ["ox", "oy", "oz", "angle"] {
+            assert_eq!(
+                dimension_rejections_naming(&diagnostics, arg).len(),
+                1,
+                "the Direction form must reject '{arg}' in the same build; \
+                 got: {diagnostics:?}"
+            );
+        }
+
+        let (result, diagnostics) =
+            run_compile(&revolve_axis_form(reify_ir::Value::Real(1.0), literal_f64(1.5)));
+        let err = result.expect_err("every argument is bad");
+        assert!(
+            err.contains("expected an Axis value"),
+            "the axis's Err wins; got: {err:?}"
+        );
+        assert_eq!(
+            dimension_rejections_naming(&diagnostics, "angle").len(),
+            1,
+            "the Axis form must reject the angle in the same build; got: {diagnostics:?}"
         );
     }
 
@@ -11341,84 +11392,94 @@
     }
 
     // ---------------------------------------------------------------------------
-    // Test: the SWEEP BOUNDARY of task 5623's R1 triage
+    // direction-typing ι-b (task 9647): `extrude_infinite`'s Direction
+    //
+    // `extrude_infinite(profile, direction)` and
+    // `extrude_infinite_symmetric(profile, direction)` both lower to
+    // `[direction, symmetric]` on `SweepKind::ExtrudeInfinite`, with the Bool
+    // synthesized by the compiler (false and true). The retired String sense
+    // is gone: negate the `dir(..)` for the old "negative".
     // ---------------------------------------------------------------------------
 
-    /// NEGATIVE LOCK on the triage decision that sets this task's position
-    /// count. `extrude_infinite`'s `dx`/`dy`/`dz` look exactly like
-    /// `translate`'s — same names, same neighbourhood, same shape — but they
-    /// are a dimensionless DIRECTION: `sweep_extrude_infinite` magnitude-checks
-    /// them and stores them into `ExtrudeInfinite.axis`, never as a length.
-    /// They MUST stay on the bare-accepting `eval_named_arg_f64` path.
-    ///
-    /// Excluding this triple is precisely what makes R1 land on 22 gated
-    /// positions rather than 25, so it is the triage decision most worth
-    /// executable protection — an over-eager sweep that gated it would make
-    /// every `extrude_infinite` call in the corpus fail. Green before and after
-    /// this task by design.
-    ///
-    /// RE-CITED by task 5744 (units-length γ) as its SWEEP negative scope lock.
-    /// γ gates the three sweep MAGNITUDES ([`GAMMA_SWEEP_SLOTS`]) and reaches
-    /// `sweep_extrude_infinite`'s neighbourhood while doing it, so the hazard is
-    /// live a second time: `dx`/`dy`/`dz` sit in the same `Sweep` arm, take the
-    /// same `f64`s, and are the obvious next thing to "finish". They are not
-    /// γ's, and this test is why an over-broad edit fails instead of shipping.
-    /// Extended rather than duplicated — a second copy of a negative lock is a
-    /// second thing to forget to update.
-    #[test]
-    fn compile_geometry_op_extrude_infinite_bare_direction_still_accepted() {
-        let step_handles = vec![GeometryHandleId(42)];
-        let values = ValueMap::new();
-
-        let direction_lit = reify_ir::CompiledExpr::literal(
-            reify_ir::Value::String("positive".to_string()),
-            reify_core::Type::String,
-        );
-        let op = CompiledGeometryOp::Sweep {
+    fn extrude_infinite_op(
+        direction: reify_ir::Value,
+        symmetric: Option<reify_ir::Value>,
+    ) -> CompiledGeometryOp {
+        let mut args = vec![("direction".into(), literal_value(direction))];
+        if let Some(s) = symmetric {
+            args.push(("symmetric".into(), literal_value(s)));
+        }
+        CompiledGeometryOp::Sweep {
             kind: SweepKind::ExtrudeInfinite,
             profiles: vec![GeomRef::Step(0)],
-            args: vec![
-                // A dimensionless unit vector — bare on purpose.
-                ("dx".into(), literal_f64(0.0)),
-                ("dy".into(), literal_f64(0.0)),
-                ("dz".into(), literal_f64(1.0)),
-                ("direction".into(), direction_lit),
-            ],
-        };
-
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let result = compile_geometry_op(
-            &op,
-            &values,
-            &step_handles,
-            &[],
-            &HashMap::new(),
-            &HashMap::new(),
-            &mut diagnostics,
-        );
-        match result {
-            Ok(reify_ir::GeometryOp::ExtrudeInfinite {
-                profile,
-                axis,
-                both,
-            }) => {
-                assert_eq!(profile, GeometryHandleId(42));
-                assert_eq!(axis, [0.0, 0.0, 1.0]);
-                assert!(!both);
-            }
-            other => panic!(
-                "extrude_infinite's dx/dy/dz are a dimensionless DIRECTION and \
-                 must keep accepting bare values — task 5623 gates 22 positions, \
-                 and these three are deliberately not among them; got {:?}",
-                other
-            ),
+            args,
         }
+    }
+
+    #[test]
+    fn compile_geometry_op_extrude_infinite_reads_direction_and_symmetric() {
+        for (direction, symmetric, axis) in [
+            ([0.0, 0.0, 1.0], false, [0.0, 0.0, 1.0]),
+            ([0.0, 0.0, -1.0], false, [0.0, 0.0, -1.0]),
+            ([0.0, 0.0, 1.0], true, [0.0, 0.0, 1.0]),
+        ] {
+            let [x, y, z] = direction;
+            let (result, diagnostics) = run_compile(&extrude_infinite_op(
+                reify_test_support::direction_val(x, y, z),
+                Some(reify_test_support::bool_val(symmetric)),
+            ));
+            match result {
+                Ok(reify_ir::GeometryOp::ExtrudeInfinite {
+                    profile,
+                    axis: got_axis,
+                    both,
+                }) => {
+                    assert_eq!(profile, GeometryHandleId(42));
+                    assert_eq!(got_axis, axis, "direction {direction:?}");
+                    assert_eq!(both, symmetric, "direction {direction:?}");
+                }
+                other => panic!(
+                    "direction {direction:?}, symmetric {symmetric}: expected \
+                     Ok(ExtrudeInfinite), got {other:?}"
+                ),
+            }
+            assert!(diagnostics.is_empty(), "got: {diagnostics:?}");
+        }
+    }
+
+    #[test]
+    fn compile_geometry_op_extrude_infinite_rejects_a_string_sense() {
+        let (result, _) = run_compile(&extrude_infinite_op(
+            reify_ir::Value::String("positive".to_string()),
+            Some(reify_test_support::bool_val(false)),
+        ));
+        let err = result.expect_err("the String sense is retired");
         assert!(
-            diagnostics.is_empty(),
-            "a bare dimensionless extrude_infinite direction must emit NO \
-             diagnostic; got: {:?}",
-            diagnostics
+            err.ends_with(reify_core::direction::DIRECTION_MIGRATION_HINT),
+            "got: {err:?}"
         );
+    }
+
+    #[test]
+    fn compile_geometry_op_extrude_infinite_requires_a_bool_symmetric() {
+        let (result, diagnostics) = run_compile(&extrude_infinite_op(
+            reify_test_support::direction_val(0.0, 0.0, 1.0),
+            None,
+        ));
+        assert!(result.is_err(), "a missing `symmetric` must drop the op");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("'symmetric'")),
+            "got: {diagnostics:?}"
+        );
+
+        let (result, _) = run_compile(&extrude_infinite_op(
+            reify_test_support::direction_val(0.0, 0.0, 1.0),
+            Some(reify_ir::Value::Real(1.0)),
+        ));
+        let err = result.expect_err("a non-Bool `symmetric` must drop the op");
+        assert!(err.contains("symmetric"), "got: {err:?}");
     }
 
     // ---------------------------------------------------------------------------
