@@ -229,10 +229,20 @@ fn query_body_mass_props_from_kernel(
     // (c) InertiaTensor{handle, density} → List-of-lists → [[f64;3];3]
     let inertia_reply =
         kernel.query(&reify_ir::GeometryQuery::InertiaTensor { handle, density })?;
-    let Ok(Some(inertia)) = MassProperties::read_inertia(&inertia_reply) else {
-        return Err(reify_ir::QueryError::QueryFailed(format!(
-            "body_mass_props InertiaTensor reply is not a 3×3 matrix: {inertia_reply:?}"
-        )));
+    let inertia = match MassProperties::read_inertia(&inertia_reply) {
+        Ok(Some(inertia)) => inertia,
+        Ok(None) => {
+            return Err(reify_ir::QueryError::QueryFailed(format!(
+                "body_mass_props InertiaTensor reply is not a 3×3 matrix: {inertia_reply:?}"
+            )));
+        }
+        Err(r) => {
+            return Err(reify_ir::QueryError::QueryFailed(format!(
+                "body_mass_props InertiaTensor reply expects {} cells, got {}: \
+                 {inertia_reply:?}",
+                r.expected, r.got
+            )));
+        }
     };
 
     Ok(MassProperties { mass, com, inertia })
@@ -1490,6 +1500,68 @@ mod tests {
         assert!(
             !warnings.is_empty(),
             "malformed CenterOfMass JSON must emit at least one Warning, got: {diags:?}"
+        );
+    }
+
+    /// Wrong-dimension InertiaTensor reply: Volume and CenterOfMass succeed but
+    /// the inertia reply is a 3×3 of LENGTH cells. `read_inertia` refuses it, and
+    /// the Undef-downgrade Warning names the refused dimension rather than
+    /// calling a 3×3 numeric matrix the wrong shape.
+    #[test]
+    fn try_eval_body_mass_props_wrong_dimension_inertia_reply_names_the_refusal() {
+        use reify_core::RealizationNodeId;
+        use reify_ir::GeometryHandleId;
+
+        let body_cell = ValueCellId::new("Design", "body");
+        let rho_cell = ValueCellId::new("Design", "rho");
+        let mut values = ValueMap::new();
+        values.insert(
+            body_cell.clone(),
+            Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new("Design", 0),
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: Some(GeometryHandleId(16)),
+            },
+        );
+        values.insert(
+            rho_cell.clone(),
+            Value::Scalar {
+                si_value: 2000.0,
+                dimension: DimensionVector::MASS_DENSITY,
+            },
+        );
+
+        let length_inertia = Value::List(vec![Value::List(vec![Value::length(1.0); 3]); 3]);
+        let kernel = MockGeometryKernel::new()
+            .with_volume_result(GeometryHandleId(16), Value::Real(5.0))
+            .with_center_of_mass_result(
+                GeometryHandleId(16),
+                2000.0,
+                Value::String("{\"x\":0.0,\"y\":0.0,\"z\":0.0}".to_string()),
+            )
+            .with_inertia_tensor_result(GeometryHandleId(16), 2000.0, length_inertia);
+
+        let expr = call_expr("body_mass_props", &[body_cell, rho_cell]);
+        let mut diags = Vec::new();
+        let result = try_eval_body_mass_props(&expr, &values, &kernel, &mut diags)
+            .expect("a refused InertiaTensor reply must still return Some(MassProperties)");
+
+        assert_deferred_mass_props(&result);
+        let warning = diags
+            .iter()
+            .find(|d| d.severity == Severity::Warning && d.message.contains("InertiaTensor"))
+            .unwrap_or_else(|| panic!("expected an InertiaTensor Warning, got: {diags:?}"));
+        assert!(
+            warning
+                .message
+                .contains("reply expects MomentOfInertia cells, got Length Scalar"),
+            "got {:?}",
+            warning.message
+        );
+        assert!(
+            !warning.message.contains("is not a 3×3 matrix"),
+            "a 3×3 numeric reply of the wrong dimension is not a shape failure; got {:?}",
+            warning.message
         );
     }
 

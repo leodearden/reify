@@ -42,6 +42,7 @@
 //!   doc comment).
 
 use reify_core::{Diagnostic, DiagnosticCode, ValueCellId};
+use reify_ir::arg_acceptance::ArgRejection;
 use reify_ir::{DeterminacyState, PersistentMap, Value, ValueMap};
 use reify_stdlib::dynamics::mass_props::MassProperties;
 
@@ -148,15 +149,15 @@ impl DetectorRegistry {
 /// wired (via [`DetectorRegistry::with_builtins`]) into all three serve paths:
 /// `Engine::eval`, `Engine::eval_cached`, and `Engine::edit_check`.
 ///
-/// For every cell whose value is a `StructureInstance` with
-/// `type_name == "MassProperties"`, reads the `inertia` field through
+/// For every `MassProperties` cell, found through
+/// `MassProperties::inertia_field`, reads the `inertia` field through
 /// `MassProperties::read_inertia` (the reader RNEA uses) and replaces the cell
 /// with `Value::Undef` (in both `values` and `snapshot_values`, paired with
 /// `DeterminacyState::Determined`) when the field is malformed (not a 3×3
-/// matrix of moment-of-inertia cells that reader accepts) or non-PSD,
-/// emitting a [`DiagnosticCode::DynamicsInertiaNotPSD`] diagnostic in either
-/// case. A cell with no `inertia` field (or an already-`Undef` one) is left
-/// untouched — no false positives.
+/// matrix, or holding a cell that reader refuses, named by what it got) or
+/// non-PSD, emitting a [`DiagnosticCode::DynamicsInertiaNotPSD`] diagnostic in
+/// each case. A cell with no `inertia` field (or an already-`Undef` one) is
+/// left untouched — no false positives.
 ///
 /// **Sole owner — no drift risk (task λ's detail (b) is obviated, not
 /// deferred)**: there is no longer a second inline copy of this logic. Task μ
@@ -186,19 +187,23 @@ impl PostPassDetector for MassPropertiesPsdDetector {
         // Fast early-out: skip the O(n) extraction pass when no MassProperties
         // cell exists (the common case when std.dynamics is unused). Mirrors
         // the inline pass's guard.
-        let has_mass_props = state.values.iter().any(|(_, v)| {
-            matches!(v, Value::StructureInstance(d) if d.type_name == "MassProperties")
-        });
+        let has_mass_props = state
+            .values
+            .iter()
+            .any(|(_, v)| MassProperties::inertia_field(v).is_some());
         if !has_mass_props {
             return;
         }
 
         // Classify each MassProperties cell's inertia field.
         enum InertiaResult {
-            /// Field is absent or already Undef — leave untouched (no false positives).
+            /// Field is already Undef — leave untouched (no false positives).
+            /// An absent field is dropped with the non-`MassProperties` cells.
             Skip,
-            /// Field is present but could not be parsed as a 3×3 numeric matrix.
-            Malformed,
+            /// Field is present but is not a 3×3 matrix of moment-of-inertia
+            /// cells: the wrong shape (`None`), or a cell the reader refuses
+            /// (`Some`, carrying what it got and expected).
+            Malformed(Option<ArgRejection>),
             /// Field parsed successfully — run PSD check.
             Valid([[f64; 3]; 3]),
         }
@@ -209,22 +214,17 @@ impl PostPassDetector for MassPropertiesPsdDetector {
             .values
             .iter()
             .filter_map(|(id, val)| {
-                if let Value::StructureInstance(data) = val
-                    && data.type_name == "MassProperties"
-                {
-                    let result = match data.fields.get("inertia") {
-                        None | Some(Value::Undef) => InertiaResult::Skip,
-                        Some(v) => match MassProperties::read_inertia(v) {
-                            Ok(Some(m)) => InertiaResult::Valid(m),
-                            Ok(None) | Err(_) => InertiaResult::Malformed,
-                        },
-                    };
-                    match result {
-                        InertiaResult::Skip => None,
-                        other => Some((id.clone(), other)),
-                    }
-                } else {
-                    None
+                let result = match MassProperties::inertia_field(val)? {
+                    Value::Undef => InertiaResult::Skip,
+                    v => match MassProperties::read_inertia(v) {
+                        Ok(Some(m)) => InertiaResult::Valid(m),
+                        Ok(None) => InertiaResult::Malformed(None),
+                        Err(rejection) => InertiaResult::Malformed(Some(rejection)),
+                    },
+                };
+                match result {
+                    InertiaResult::Skip => None,
+                    other => Some((id.clone(), other)),
                 }
             })
             .collect();
@@ -232,14 +232,19 @@ impl PostPassDetector for MassPropertiesPsdDetector {
         for (id, result) in mass_props_cells {
             match result {
                 InertiaResult::Skip => unreachable!("Skip filtered above"),
-                InertiaResult::Malformed => {
-                    state.diagnostics.push(
-                        Diagnostic::error(format!(
-                            "MassProperties '{}': inertia field cannot be parsed as \
+                InertiaResult::Malformed(rejection) => {
+                    let message = match rejection {
+                        None => format!(
+                            "MassProperties '{id}': inertia field cannot be parsed as \
                              a 3×3 numeric matrix",
-                            id,
-                        ))
-                        .with_code(DiagnosticCode::DynamicsInertiaNotPSD),
+                        ),
+                        Some(r) => format!(
+                            "MassProperties '{id}': inertia field expects {} cells, got {}",
+                            r.expected, r.got,
+                        ),
+                    };
+                    state.diagnostics.push(
+                        Diagnostic::error(message).with_code(DiagnosticCode::DynamicsInertiaNotPSD),
                     );
                     state.values.insert(id.clone(), Value::Undef);
                     state
@@ -575,9 +580,9 @@ mod tests {
     /// matrices are used (clearly-PSD identity vs. clearly-non-PSD
     /// `diag(1,1,-1)`) — no near-tolerance-boundary premise. Covers all
     /// three `InertiaResult` arms (Skip / Malformed / Valid), including
-    /// both ways to land on Skip (absent field vs. already-`Undef` field)
+    /// both ways to be left untouched (absent field vs. already-`Undef` field)
     /// and both ways to land on Malformed (wrong-shape vs.
-    /// right-shape-but-non-numeric).
+    /// right-shape-but-refused-cell).
     #[test]
     fn mass_properties_psd_detector_flags_and_replaces_deterministically() {
         let identity_cell = ValueCellId::new("BodyA", "mass_props");
@@ -676,6 +681,12 @@ mod tests {
                 .iter()
                 .any(|m| m.contains("inertia field cannot be parsed as a 3×3 numeric matrix")),
             "detector's malformed-cell wording changed; got {run1_messages:?}"
+        );
+        assert!(
+            run1_messages
+                .iter()
+                .any(|m| m.contains("inertia field expects MomentOfInertia cells, got Bool")),
+            "detector's refused-cell wording changed; got {run1_messages:?}"
         );
         assert!(
             run1_messages.iter().any(|m| m.contains(
@@ -946,8 +957,8 @@ mod tests {
     }
 
     /// The PSD hook reads the inertia dimension RNEA reads: a 3×3 of LENGTH
-    /// cells is not a moment of inertia, so it is flagged as unparseable
-    /// rather than PSD-checked as if it were one.
+    /// cells is not a moment of inertia, so it is flagged, naming the refused
+    /// dimension, rather than PSD-checked as if it were one.
     #[test]
     fn mass_properties_psd_detector_flags_a_wrong_dimension_inertia() {
         let length_cell = ValueCellId::new("BodyL", "mass_props");
@@ -974,8 +985,13 @@ mod tests {
         assert!(
             diagnostic
                 .message
-                .contains("inertia field cannot be parsed as a 3×3 numeric matrix"),
+                .contains("inertia field expects MomentOfInertia cells, got Length Scalar"),
             "got {:?}",
+            diagnostic.message
+        );
+        assert!(
+            !diagnostic.message.contains("cannot be parsed"),
+            "a 3×3 numeric matrix of the wrong dimension is not a shape failure; got {:?}",
             diagnostic.message
         );
         assert_eq!(state.values.get(&length_cell), Some(&Value::Undef));

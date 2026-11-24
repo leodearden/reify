@@ -9,7 +9,9 @@
 //!     the only minters of a `MassProperties` `Value::StructureInstance`;
 //!   * [`MassProperties::from_value`] is the one dimension-checked reader, and
 //!     [`MassProperties::read_inertia`] the one inertia reader, shared by RNEA,
-//!     the PSD hook and the kernel `InertiaTensor` reply parse.
+//!     the PSD hook and the kernel `InertiaTensor` reply parse;
+//!   * [`MassProperties::inertia_field`] is how the PSD hook recognises an
+//!     instance and finds its inertia.
 //!
 //! The density half stays `Value`-free:
 //!   * [`resolve_density_strict`] — the shared explicit→material rung-walk,
@@ -23,11 +25,11 @@
 
 use crate::helpers::{mint_registry_free_instance, vec3_cells};
 use reify_core::dimension::DimensionVector;
-use reify_ir::Value;
 use reify_ir::arg_acceptance::{
     ArgRejection, ArgSpec, FieldRejection, length_spec, mass_spec, moment_of_inertia_spec,
     read_arg_or_bare,
 };
+use reify_ir::{PersistentMap, Value};
 
 /// The nominal `type_name` of `std.dynamics`' `MassProperties` structure: the
 /// one write-site literal, and the type check of [`MassProperties::from_value`].
@@ -78,6 +80,12 @@ impl MassProperties {
     pub fn from_value(v: &Value) -> Option<Self> {
         let [mass, com, inertia] = fields(v)?;
         Self::read(mass, com, inertia).ok().flatten()
+    }
+
+    /// The `inertia` field of a `MassProperties` instance, or `None` for any
+    /// other value or an instance carrying no `inertia`.
+    pub fn inertia_field(v: &Value) -> Option<&Value> {
+        instance_fields(v)?.get("inertia")
     }
 
     /// The field of a `MassProperties` value its reader refuses, named
@@ -171,16 +179,22 @@ fn default_frame3() -> Value {
     )
 }
 
-/// The `mass` / `com` / `inertia` fields of a `MassProperties` instance.
-fn fields(v: &Value) -> Option<[&Value; 3]> {
+/// The field map of a `MassProperties` instance, or `None` for any other value.
+fn instance_fields(v: &Value) -> Option<&PersistentMap<String, Value>> {
     match v {
-        Value::StructureInstance(d) if d.type_name == TYPE_NAME => Some([
-            d.fields.get("mass")?,
-            d.fields.get("com")?,
-            d.fields.get("inertia")?,
-        ]),
+        Value::StructureInstance(d) if d.type_name == TYPE_NAME => Some(&d.fields),
         _ => None,
     }
+}
+
+/// The `mass` / `com` / `inertia` fields of a `MassProperties` instance.
+fn fields(v: &Value) -> Option<[&Value; 3]> {
+    let fields = instance_fields(v)?;
+    Some([
+        fields.get("mass")?,
+        fields.get("com")?,
+        fields.get("inertia")?,
+    ])
 }
 
 /// The three rows of a 3×3 `Value::Matrix` (or nested `Value::List` of
@@ -545,6 +559,69 @@ mod tests {
             read(&Value::Matrix(one_bool)).is_err(),
             "a Bool cell is refused"
         );
+    }
+
+    /// `sample()`'s instance with `name` overwritten by `value`.
+    fn sample_with(name: &str, value: Value) -> Value {
+        let mut data = instance_data(&sample().to_value()).clone();
+        data.fields.insert(name.to_string(), value);
+        Value::StructureInstance(Box::new(data))
+    }
+
+    #[test]
+    fn rejection_names_the_refused_field() {
+        assert_eq!(MassProperties::rejection(&sample().to_value()), None);
+
+        let mass_scalar = Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::MASS,
+        };
+        let cases = [
+            ("mass", Value::length(1.0), "Mass", "Length Scalar"),
+            (
+                "com",
+                Value::Point(vec![mass_scalar; 3]),
+                "Length",
+                "Mass Scalar",
+            ),
+            (
+                "inertia",
+                Value::Matrix(vec![vec![Value::length(1.0); 3]; 3]),
+                "MomentOfInertia",
+                "Length Scalar",
+            ),
+        ];
+        for (name, refused, expected, got) in cases {
+            let v = sample_with(name, refused);
+            let rejection = MassProperties::rejection(&v)
+                .unwrap_or_else(|| panic!("a refused {name} must be named"));
+            assert_eq!(rejection.path, format!("MassProperties.{name}"));
+            assert_eq!(rejection.rejection.expected, expected, "{name}");
+            assert_eq!(rejection.rejection.got, got, "{name}");
+            assert_eq!(MassProperties::from_value(&v), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn inertia_field_finds_only_a_mass_properties_inertia() {
+        let v = sample().to_value();
+        assert_eq!(
+            MassProperties::inertia_field(&v),
+            Some(field(&v, "inertia"))
+        );
+
+        let mut no_inertia = instance_data(&v).clone();
+        no_inertia.fields.remove(&"inertia".to_string());
+        assert_eq!(
+            MassProperties::inertia_field(&Value::StructureInstance(Box::new(no_inertia))),
+            None
+        );
+
+        let other = crate::helpers::mint_registry_free_instance(
+            "Block",
+            vec![("inertia".to_string(), field(&v, "inertia").clone())],
+        );
+        assert_eq!(MassProperties::inertia_field(&other), None);
     }
 
     // ── resolve_density priority ladder ──────────────────────────────────────
