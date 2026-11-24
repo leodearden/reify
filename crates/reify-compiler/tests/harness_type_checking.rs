@@ -81,6 +81,8 @@ mod mul_div_operand_guard_tests;
 mod mul_div_static_runtime_parity;
 #[path = "harness_type_checking/numeric_and_range_literals_example.rs"]
 mod numeric_and_range_literals_example;
+#[path = "harness_type_checking/orientation_direction_slot_tests.rs"]
+mod orientation_direction_slot_tests;
 #[path = "harness_type_checking/polymorphic_zero_tests.rs"]
 mod polymorphic_zero_tests;
 #[path = "harness_type_checking/real_dimensionless_unification_tests.rs"]
