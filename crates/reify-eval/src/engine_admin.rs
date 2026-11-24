@@ -1768,6 +1768,13 @@ impl Engine {
         warnings
     }
 
+    /// The definition environment every eval and build path resolves
+    /// `module`'s definitions in: `module`'s own over this engine's prelude.
+    /// It borrows `module` alone, never `self`.
+    pub(crate) fn env_of<'m>(&self, module: &'m CompiledModule) -> DefEnv<'m> {
+        DefEnv::of_module(module, self.prelude)
+    }
+
     /// The loaded program's definition environment over this engine's
     /// prelude; `None` before a load.
     // G-allow: resolution-unification §3.2 Engine::load; first production consumer is ι #5523

@@ -7,75 +7,123 @@ use std::borrow::Borrow;
 use reify_ir::{CompiledFunction, EnumDef};
 
 use crate::name_env::{self, Bindings, Definition, Surface};
-use crate::program::CompiledProgram;
+use crate::program::{CompiledImportUnit, CompiledProgram};
 use crate::types::{
     CompiledConstraintDef, CompiledModule, CompiledPurpose, CompiledTrait, CompiledTypeAlias,
     CompiledUnit, TopologyTemplate,
 };
 
+/// What resolution starts from: a compiled program, or a lone module, which
+/// stands for the import-free program whose entry it is (resolution-unification
+/// I1) and so declares every template it holds.
+#[derive(Debug, Clone, Copy)]
+pub enum ProgramRoot<'a> {
+    Program(&'a CompiledProgram),
+    Module(&'a CompiledModule),
+}
+
+impl<'a> ProgramRoot<'a> {
+    /// The entry module.
+    pub fn entry(self) -> &'a CompiledModule {
+        match self {
+            Self::Program(program) => program.entry(),
+            Self::Module(module) => module,
+        }
+    }
+
+    /// The templates the entry itself declares, never a copy merged into it
+    /// from one of the root's imports.
+    pub fn entry_declared_templates(self) -> &'a [TopologyTemplate] {
+        match self {
+            Self::Program(program) => program.entry_declared_templates(),
+            Self::Module(module) => &module.templates,
+        }
+    }
+
+    /// The entry's direct imports, in declaration order.
+    pub fn imports(self) -> &'a [CompiledImportUnit] {
+        match self {
+            Self::Program(program) => &program.imports,
+            Self::Module(_) => &[],
+        }
+    }
+}
+
+impl<'a> From<&'a CompiledProgram> for ProgramRoot<'a> {
+    fn from(program: &'a CompiledProgram) -> Self {
+        Self::Program(program)
+    }
+}
+
+impl<'a> From<&'a CompiledModule> for ProgramRoot<'a> {
+    fn from(module: &'a CompiledModule) -> Self {
+        Self::Module(module)
+    }
+}
+
 /// A definition kind as a program's entry declares it.
 pub trait ProgramDefinition: Definition {
-    /// The definitions the program's entry itself declares, never a copy
-    /// merged into it from another module.
-    fn declared_by_entry(program: &CompiledProgram) -> impl Iterator<Item = &Self>;
+    /// The definitions the root's entry itself declares, never a copy merged
+    /// into it from another module.
+    fn declared_by_entry(root: ProgramRoot<'_>) -> impl Iterator<Item = &Self>;
 }
 
 impl ProgramDefinition for TopologyTemplate {
-    fn declared_by_entry(program: &CompiledProgram) -> impl Iterator<Item = &Self> {
-        program.entry_declared_templates().iter()
+    fn declared_by_entry(root: ProgramRoot<'_>) -> impl Iterator<Item = &Self> {
+        root.entry_declared_templates().iter()
     }
 }
 
 impl ProgramDefinition for EnumDef {
-    fn declared_by_entry(program: &CompiledProgram) -> impl Iterator<Item = &Self> {
-        program.entry().enum_defs.iter()
+    fn declared_by_entry(root: ProgramRoot<'_>) -> impl Iterator<Item = &Self> {
+        root.entry().enum_defs.iter()
     }
 }
 
 impl ProgramDefinition for CompiledTrait {
-    fn declared_by_entry(program: &CompiledProgram) -> impl Iterator<Item = &Self> {
-        program.entry().trait_defs.iter()
+    fn declared_by_entry(root: ProgramRoot<'_>) -> impl Iterator<Item = &Self> {
+        root.entry().trait_defs.iter()
     }
 }
 
 impl ProgramDefinition for CompiledFunction {
-    fn declared_by_entry(program: &CompiledProgram) -> impl Iterator<Item = &Self> {
-        program.entry().functions.iter()
+    fn declared_by_entry(root: ProgramRoot<'_>) -> impl Iterator<Item = &Self> {
+        root.entry().functions.iter()
     }
 }
 
 impl ProgramDefinition for CompiledTypeAlias {
-    fn declared_by_entry(program: &CompiledProgram) -> impl Iterator<Item = &Self> {
-        program.entry().type_aliases.iter()
+    fn declared_by_entry(root: ProgramRoot<'_>) -> impl Iterator<Item = &Self> {
+        root.entry().type_aliases.iter()
     }
 }
 
 impl ProgramDefinition for CompiledConstraintDef {
-    fn declared_by_entry(program: &CompiledProgram) -> impl Iterator<Item = &Self> {
-        program.entry().constraint_defs.iter()
+    fn declared_by_entry(root: ProgramRoot<'_>) -> impl Iterator<Item = &Self> {
+        root.entry().constraint_defs.iter()
     }
 }
 
 impl ProgramDefinition for CompiledPurpose {
-    fn declared_by_entry(program: &CompiledProgram) -> impl Iterator<Item = &Self> {
-        name_env::own_purposes(program.entry())
+    fn declared_by_entry(root: ProgramRoot<'_>) -> impl Iterator<Item = &Self> {
+        name_env::own_purposes(root.entry())
     }
 }
 
 impl ProgramDefinition for CompiledUnit {
-    fn declared_by_entry(program: &CompiledProgram) -> impl Iterator<Item = &Self> {
-        program.entry().units.iter()
+    fn declared_by_entry(root: ProgramRoot<'_>) -> impl Iterator<Item = &Self> {
+        root.entry().units.iter()
     }
 }
 
-fn direct_imports(program: &CompiledProgram) -> impl Iterator<Item = &CompiledModule> + Clone {
-    program.imports.iter().map(|unit| &unit.module)
+fn direct_imports(root: ProgramRoot<'_>) -> impl Iterator<Item = &CompiledModule> + Clone {
+    root.imports().iter().map(|unit| &unit.module)
 }
 
-/// The definition `key` binds to across `program`, over the ambient
-/// `prelude`. Lazy and allocation-free.
+/// The definition `key` binds to across `root`, over the ambient `prelude`.
+/// Lazy and allocation-free.
 pub fn resolve_in_program<'a, D, Q>(
-    program: &'a CompiledProgram,
+    root: impl Into<ProgramRoot<'a>>,
     prelude: &'a [CompiledModule],
     key: &Q,
 ) -> Option<&'a D>
@@ -84,74 +132,75 @@ where
     D::Key<'a>: Borrow<Q>,
     Q: Eq + ?Sized,
 {
+    let root = root.into();
     name_env::resolve_in_scopes(
-        D::declared_by_entry(program),
-        direct_imports(program),
+        D::declared_by_entry(root),
+        direct_imports(root),
         prelude,
         key,
     )
 }
 
-/// The first definition across `program` that `matches` accepts, in
+/// The first definition across `root` that `matches` accepts, in
 /// [`resolve_in_program`] order: by [`name_env::resolve_in_scopes_by`], a
 /// key's binding when `matches` accepts exactly that key's definitions. Lazy
 /// and allocation-free.
 pub fn resolve_in_program_by<'a, D: ProgramDefinition>(
-    program: &'a CompiledProgram,
+    root: impl Into<ProgramRoot<'a>>,
     prelude: &'a [CompiledModule],
     matches: impl FnMut(&'a D) -> bool,
 ) -> Option<&'a D> {
+    let root = root.into();
     name_env::resolve_in_scopes_by(
-        D::declared_by_entry(program),
-        direct_imports(program),
+        D::declared_by_entry(root),
+        direct_imports(root),
         prelude,
         matches,
     )
 }
 
-/// Every key's binding plus every shadowing across `program`, by the same rule
+/// Every key's binding plus every shadowing across `root`, by the same rule
 /// as [`resolve_in_program`].
 pub fn bind_program<'a, D: ProgramDefinition>(
-    program: &'a CompiledProgram,
+    root: impl Into<ProgramRoot<'a>>,
     prelude: &'a [CompiledModule],
 ) -> Bindings<'a, D> {
-    name_env::bind_scopes(
-        D::declared_by_entry(program),
-        direct_imports(program),
-        prelude,
-    )
+    let root = root.into();
+    name_env::bind_scopes(D::declared_by_entry(root), direct_imports(root), prelude)
 }
 
 /// [`bind_program`] over only the definitions `keep` accepts, with
 /// [`name_env::bind_scopes_where`]'s guarantee: a kept key binds as under
 /// [`bind_program`] when `keep` accepts or rejects its definitions together.
 pub fn bind_program_where<'a, D: ProgramDefinition>(
-    program: &'a CompiledProgram,
+    root: impl Into<ProgramRoot<'a>>,
     prelude: &'a [CompiledModule],
     keep: impl FnMut(&'a D) -> bool,
 ) -> Bindings<'a, D> {
+    let root = root.into();
     name_env::bind_scopes_where(
-        D::declared_by_entry(program),
-        direct_imports(program),
+        D::declared_by_entry(root),
+        direct_imports(root),
         prelude,
         keep,
     )
 }
 
-/// The definitions one module of `program` offers a qualified lookup
+/// The definitions one module of `root` offers a qualified lookup
 /// (resolution-unification I7), keyed by dotted module path: the entry's own
 /// declarations, a direct import's `pub` surface, or a prelude module's
 /// exports. `None` for a key naming none of them.
 pub fn module_surface<'a, D: ProgramDefinition>(
-    program: &'a CompiledProgram,
+    root: impl Into<ProgramRoot<'a>>,
     prelude: &'a [CompiledModule],
     module_key: &str,
 ) -> Option<Box<dyn Iterator<Item = &'a D> + 'a>> {
-    if program.entry().path.to_dotted() == module_key {
-        return Some(Box::new(D::declared_by_entry(program)));
+    let root = root.into();
+    if root.entry().path.to_dotted() == module_key {
+        return Some(Box::new(D::declared_by_entry(root)));
     }
-    if let Some(unit) = program
-        .imports
+    if let Some(unit) = root
+        .imports()
         .iter()
         .find(|unit| unit.import_path == module_key)
     {

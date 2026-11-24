@@ -782,10 +782,10 @@ mod tests {
     /// child structure got no template-scope pass at all, because
     /// `engine_eval.rs` keys its `@optimized` lowering on `for template in
     /// &module.templates` and a PRELUDE/stdlib structure is deliberately not
-    /// merged into that list (see [`super::find_template_in_scope`]). It is not
-    /// incidental — the FEA/solver targets #6662 exists for live in the stdlib,
-    /// and `find_template_in_scope` shows prelude-typed subs ARE elaborated on
-    /// this path — but no end-to-end fixture can reach it: building a prelude
+    /// merged into that list (see [`crate::DefEnv::resolve_template`]). It is
+    /// not incidental — the FEA/solver targets #6662 exists for live in the
+    /// stdlib, and `DefEnv::resolve_template` shows prelude-typed subs ARE
+    /// elaborated on this path — but no end-to-end fixture can reach it: building a prelude
     /// module a user module can also name at COMPILE time needs a `&'static`
     /// prelude the test-support compile helpers do not expose. So the branch is
     /// covered where it is decided, with a `global_values` map that simply

@@ -883,7 +883,7 @@ pub(crate) struct PreludeRegistries<'r, 't> {
 ///
 /// This is the compile-side single source of truth for the question "which
 /// template does `sub x = Foo(…)` / `sub x : Foo` point at?", mirroring
-/// `reify_eval::unfold::find_template_in_scope` on the eval side. Every
+/// `reify_eval::DefEnv::resolve_template` on the eval side. Every
 /// sub-target lookup in `entity.rs` routes through here so no resolver on the
 /// path is left module-only — the asymmetry that caused esc-5360-9, where one
 /// resolver gained the prelude fallback and its sibling did not.

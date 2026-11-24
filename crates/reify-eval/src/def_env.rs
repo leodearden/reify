@@ -10,13 +10,17 @@
 //! `reify_compiler::name_env`, which the compiler binds by too, and the
 //! program's scopes come from `reify_compiler::program_scope`; this is a view
 //! over them.
+//!
+//! A lone [`CompiledModule`] has the environment of the import-free program
+//! whose entry it is (I1): its own templates, all of them declared, then the
+//! prelude.
 
 use std::borrow::Borrow;
 use std::sync::Arc;
 
 use reify_compiler::name_env::{self, Origin, Tier};
 use reify_compiler::program::CompiledProgram;
-use reify_compiler::program_scope::{self, ProgramDefinition};
+use reify_compiler::program_scope::{self, ProgramDefinition, ProgramRoot};
 use reify_compiler::stdlib_loader::load_stdlib;
 use reify_compiler::{
     CompiledConstraintDef, CompiledModule, CompiledPurpose, CompiledTrait, CompiledTypeAlias,
@@ -25,11 +29,11 @@ use reify_compiler::{
 use reify_core::{Diagnostic, Type};
 use reify_ir::{CompiledFunction, EnumDef};
 
-/// Every definition a [`CompiledProgram`] can name, resolved on demand over
-/// the program and a prelude.
+/// Every definition a [`CompiledProgram`] (or a lone module) can name,
+/// resolved on demand over it and a prelude.
 #[derive(Debug, Clone, Copy)]
 pub struct DefEnv<'p> {
-    program: &'p CompiledProgram,
+    root: ProgramRoot<'p>,
     prelude: &'p [CompiledModule],
 }
 
@@ -42,7 +46,19 @@ impl<'p> DefEnv<'p> {
 
     /// The environment of `program` over `prelude`.
     pub fn with_prelude(program: &'p CompiledProgram, prelude: &'p [CompiledModule]) -> Self {
-        Self { program, prelude }
+        Self {
+            root: program.into(),
+            prelude,
+        }
+    }
+
+    /// The environment of `module` over `prelude`: that of the import-free
+    /// program whose entry `module` is (I1).
+    pub fn of_module(module: &'p CompiledModule, prelude: &'p [CompiledModule]) -> Self {
+        Self {
+            root: module.into(),
+            prelude,
+        }
     }
 
     fn resolve<D>(&self, name: &str) -> Option<&'p D>
@@ -50,7 +66,7 @@ impl<'p> DefEnv<'p> {
         D: ProgramDefinition,
         D::Key<'p>: Borrow<str>,
     {
-        program_scope::resolve_in_program(self.program, self.prelude, name)
+        program_scope::resolve_in_program(self.root, self.prelude, name)
     }
 
     // G-allow: resolution-unification §3.2 DefEnv; first production consumer is ι #5523
@@ -92,7 +108,7 @@ impl<'p> DefEnv<'p> {
     /// parameter types): the program's dispatch table (§10 Q4).
     // G-allow: resolution-unification §10 Q4 dispatch table; κ #5524 folds merge_functions into it
     pub fn function_table(&self) -> Arc<[CompiledFunction]> {
-        program_scope::bind_program::<CompiledFunction>(self.program, self.prelude)
+        program_scope::bind_program::<CompiledFunction>(self.root, self.prelude)
             .winners()
             .cloned()
             .collect()
@@ -107,7 +123,7 @@ impl<'p> DefEnv<'p> {
         param_types: &[Type],
     ) -> Option<&'p CompiledFunction> {
         program_scope::resolve_in_program_by(
-            self.program,
+            self.root,
             self.prelude,
             |function: &CompiledFunction| {
                 function.name == name && function.params.iter().map(|(_, ty)| ty).eq(param_types)
@@ -119,11 +135,9 @@ impl<'p> DefEnv<'p> {
     /// order. Only `name`'s candidates are bound.
     // G-allow: resolution-unification §3.2 DefEnv; first production consumer is ι #5523
     pub fn overloads(&self, name: &str) -> Vec<&'p CompiledFunction> {
-        program_scope::bind_program_where(
-            self.program,
-            self.prelude,
-            |function: &CompiledFunction| function.name == name,
-        )
+        program_scope::bind_program_where(self.root, self.prelude, |function: &CompiledFunction| {
+            function.name == name
+        })
         .winners()
         .collect()
     }
@@ -135,7 +149,7 @@ impl<'p> DefEnv<'p> {
     /// a signature.
     // G-allow: resolution-unification §3.2 DefEnv; first production consumer is ι #5523
     pub fn resolve_in<D: ProgramDefinition>(&self, module_key: &str, name: &str) -> Option<&'p D> {
-        program_scope::module_surface::<D>(self.program, self.prelude, module_key)?
+        program_scope::module_surface::<D>(self.root, self.prelude, module_key)?
             .find(|definition| definition.name() == name)
     }
 
@@ -148,12 +162,12 @@ impl<'p> DefEnv<'p> {
         self.resolve_in(module_key, name)
     }
 
-    /// The program's entry module. Its `templates` include the copies the I5
-    /// merge took from its imports; the entry's own are
+    /// The entry module. A program's entry's `templates` include the copies
+    /// the I5 merge took from its imports; the entry's own are
     /// `CompiledProgram::entry_declared_templates`.
     // G-allow: resolution-unification §3.2 DefEnv; first production consumer is ι #5523
     pub fn declared(&self) -> &'p CompiledModule {
-        self.program.entry()
+        self.root.entry()
     }
 
     /// One Warning per first-wins collision whose loser is a user import's
@@ -182,8 +196,8 @@ impl<'p> DefEnv<'p> {
         &self,
         import_pairs: ImportPairs,
     ) -> Vec<Diagnostic> {
-        let entry = &self.program.entry().path;
-        program_scope::bind_program::<D>(self.program, self.prelude)
+        let entry = &self.root.entry().path;
+        program_scope::bind_program::<D>(self.root, self.prelude)
             .shadowings()
             .iter()
             .filter(|shadowing| {

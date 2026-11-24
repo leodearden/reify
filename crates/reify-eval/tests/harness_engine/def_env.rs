@@ -172,7 +172,7 @@ fn def_env_resolves_with_entry_then_imports_then_stdlib_precedence() {
 
 /// (g) Over every entry-declared and stdlib name, DefEnv agrees with the
 /// compile-side rule: `name_env::resolve` over the entry's template list and
-/// the stdlib, as eval's `find_template_in_scope` calls it. A name the I5 merge
+/// the stdlib, as eval's pre-DefEnv sub lookup called it. A name the I5 merge
 /// copied binds the import unit's template, which the copy duplicates.
 #[test]
 fn def_env_agrees_with_the_compile_side_rule_and_binds_merged_names_at_home() {

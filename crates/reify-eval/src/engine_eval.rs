@@ -27,6 +27,7 @@ use crate::cell_commit::{
     CacheLeg, CommitLegs, DeterminacyRule, commit_cell_result, commit_cell_result_at,
 };
 use crate::cell_eval_ctx::cell_eval_ctx;
+use crate::def_env::DefEnv;
 use crate::demand::DemandRegistry;
 use crate::deps::{DependencyTrace, ReverseDependencyIndex, extract_dependency_trace, take_trace};
 use crate::dirty::topological_sort;
@@ -44,39 +45,25 @@ use crate::{
     merge_functions,
 };
 
-/// Resolve a sub-component's `structure_name` against the user module's
-/// templates and the engine's prelude modules, by the NS-P1 rule in
-/// [`reify_compiler::name_env`].
+/// Resolve a sub-component's `structure_name` in `module`'s definition
+/// environment over `prelude`: [`DefEnv::of_module`]`(module,
+/// prelude).resolve_template(name)`, the rule every eval-side template lookup
+/// binds by.
 ///
 /// Stdlib occurrence templates (e.g. `STLOutput`, `stdlib/io.ri`) live in
 /// `Engine::prelude` and are deliberately NOT merged into
 /// `CompiledModule::templates`, so a module-only lookup reports them as
 /// unknown structures and `sub o = STLOutput(...)` never elaborates
-/// (io-export δ / esc-4287-15). Used by BOTH resolver sites — the elaborating
-/// sub-component loop in `eval()` and the validation-only mirror in
-/// `eval_cached()` — which must agree on which names are unknown, or cached
-/// re-evals emit false "unknown structure" errors.
-///
-/// `pub(crate)` so the io-export δ occurrence-driven export driver
-/// ([`Engine::build_outputs`], `engine_build.rs`) resolves each `sub`'s
-/// occurrence template through the SAME rule the evaluator uses — stdlib
-/// `Output` occurrence templates (`STLOutput` et al.) live in the prelude, not
-/// `CompiledModule::templates`.
-/// This is a thin `&CompiledModule` adapter over
-/// [`crate::unfold::find_template_in_scope`], the evaluator's one entry to that
-/// rule. `unfold.rs` cannot call this overload — its recursion carries
-/// `&[TopologyTemplate]`, not the owning `CompiledModule` — so this delegates
-/// there. Keep it that way: the two sites diverging is exactly the defect
-/// esc-5360-9 reported (the
-/// instance-scope nesting recursion resolved module-only, so a prelude-typed
-/// nested sub was silently skipped AND then falsely reported "not found in this
-/// module").
+/// (io-export δ / esc-4287-15). `pub(crate)` so the io-export δ
+/// occurrence-driven export driver ([`Engine::build_outputs`],
+/// `engine_build.rs`) resolves each `sub`'s occurrence template through the
+/// same rule.
 pub(crate) fn find_template_with_prelude<'a>(
     module: &'a CompiledModule,
     prelude: &'a [CompiledModule],
     name: &str,
 ) -> Option<&'a TopologyTemplate> {
-    crate::unfold::find_template_in_scope(&module.templates, prelude, name)
+    DefEnv::of_module(module, prelude).resolve_template(name)
 }
 
 /// Sentinel substring included in every panic raised by
@@ -5570,6 +5557,7 @@ impl Engine {
 
         // Sub-component elaboration: evaluate child template params/lets
         // for each sub_component in each template.
+        let env = self.env_of(module);
         for template in &module.templates {
             for sub in &template.sub_components {
                 // Keyed subs (task 3931 γ) carry the element structure in
@@ -5630,8 +5618,7 @@ impl Engine {
                                 &sub.args,
                                 &self.meta_map,
                                 &mut diagnostics,
-                                &module.templates,
-                                self.prelude,
+                                env,
                             );
                         }
 
@@ -5688,8 +5675,7 @@ impl Engine {
                             overrides,
                             &self.meta_map,
                             &mut diagnostics,
-                            &module.templates,
-                            self.prelude,
+                            env,
                         );
 
                         // Per-key SIR-α StructureInstance at
@@ -5751,8 +5737,7 @@ impl Engine {
                         self.max_unfold_depth,
                         &self.meta_map,
                         &mut diagnostics,
-                        &module.templates,
-                        self.prelude,
+                        env,
                         &mut unfold_budget,
                     );
                     continue;
@@ -5773,8 +5758,7 @@ impl Engine {
                     &sub.args,
                     &self.meta_map,
                     &mut diagnostics,
-                    &module.templates,
-                    self.prelude,
+                    env,
                 );
 
                 // task 3540 (SIR-α), handler esc-3540-182 (A): expose the

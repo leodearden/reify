@@ -1,11 +1,16 @@
 // Recursive sub-component unfolding — unfold_recursive_sub and elaborate_child_* functions.
+//
+// Every sub's target template on these recursion paths resolves through the
+// one `DefEnv` the caller hands in, the same environment the top-level
+// sub-elaboration loop in `engine_eval.rs` uses. esc-5360-9: the nesting
+// recursion once resolved module-only while that loop also saw the stdlib, so
+// a stdlib-typed `sub o` elaborated at template scope but not at instance
+// scope, and the skip was misreported as an unknown structure.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
-use reify_compiler::{
-    CompiledGuardedGroup, CompiledModule, GuardedGroupCell, TopologyTemplate, ValueCellKind,
-};
+use reify_compiler::{CompiledGuardedGroup, GuardedGroupCell, TopologyTemplate, ValueCellKind};
 use reify_core::{Diagnostic, ValueCellId, VersionId};
 use reify_expr::ContainmentQuery;
 use reify_ir::{CompiledFunction, DeterminacyState, PersistentMap, Value, ValueMap};
@@ -13,6 +18,7 @@ use reify_ir::{CompiledFunction, DeterminacyState, PersistentMap, Value, ValueMa
 use crate::cache::{CacheStore, NodeId};
 use crate::cell_commit::{CacheLeg, CommitLegs, DeterminacyRule, commit_cell_result};
 use crate::cell_eval_ctx::cell_eval_ctx;
+use crate::def_env::DefEnv;
 use crate::deps::{DependencyTrace, extract_dependency_trace, take_trace};
 use crate::dirty::topological_sort;
 use crate::eval_ctx_with_meta;
@@ -34,38 +40,6 @@ use optimized_instance_reuse::{
 mod phase1_walk;
 
 use phase1_walk::{Phase1Step, phase1_walk};
-
-/// The evaluator's sub-component template lookup. The binding rule itself —
-/// module templates first, then user-import prelude modules, then std prelude
-/// modules, first match wins — is NOT stated here: it is
-/// [`reify_compiler::name_env::resolve`], the NS-P1 policy point the compiler's
-/// registries also bind through, so compile and eval cannot disagree (NS-P4).
-///
-/// Stdlib occurrence/structure templates (e.g. `STLOutput` and `DisplayStyle`
-/// from `stdlib/io.ri`) live in `Engine::prelude` and are deliberately NOT
-/// merged into `CompiledModule::templates`, so a module-only lookup reports
-/// them as unknown (io-export δ / esc-4287-15).
-///
-/// EVERY resolver on this file's recursion paths must go through here, not bare
-/// [`reify_compiler::find_template`]. esc-5360-9: the instance-scope nesting recursion
-/// originally resolved module-only while the top-level sub-elaboration loop in
-/// `engine_eval.rs` resolved with the prelude fallback. That asymmetry both
-/// (a) silently declined to materialise `Parent.m.o` for a prelude-typed
-/// `sub o` that DOES elaborate at template scope — reintroducing, for every
-/// prelude type, the exact instance/template gap task 5360 exists to close —
-/// and (b) recorded the skip as "target structure not found in this module",
-/// so `report_unresolvable_nested_reads` raised a NEW error naming a structure
-/// that is in fact perfectly resolvable.
-///
-/// `engine_eval::find_template_with_prelude` is the `&CompiledModule` adapter
-/// over this function; it delegates here rather than duplicating the rule.
-pub(crate) fn find_template_in_scope<'a>(
-    templates: &'a [TopologyTemplate],
-    prelude: &'a [CompiledModule],
-    name: &str,
-) -> Option<&'a TopologyTemplate> {
-    reify_compiler::name_env::resolve(templates, prelude, name)
-}
 
 /// No-op [`ContainmentQuery`]: containment stays `None` on this
 /// recursive-unfold path, matching its pre-migration behaviour (restricted-
@@ -126,7 +100,7 @@ impl ContainmentQuery for NoContainment {
 /// - `parent_entity`: the entity currently being processed (e.g., "A" at depth 0, "A.b" at depth 1)
 /// - `depth`: current recursion depth (0 = processing the top-level template)
 /// - `max_depth`: maximum allowed depth before stopping
-/// - `templates`: all templates in the module, used to look up target templates for
+/// - `env`: the definition environment that resolves the target templates of
 ///   child_template's recursive subs in Phase 2.
 /// - `node_budget`: remaining total nodes allowed across all branches. Prevents exponential
 ///   blowup when B > 1 recursive subs exist (B^D total without this limit).
@@ -146,8 +120,7 @@ pub(crate) fn unfold_recursive_sub<'t>(
     max_depth: usize,
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
-    templates: &'t [TopologyTemplate],
-    prelude: &'t [CompiledModule],
+    env: DefEnv<'t>,
     node_budget: &mut usize,
 ) {
     // Check total node budget before doing any work.
@@ -278,11 +251,7 @@ pub(crate) fn unfold_recursive_sub<'t>(
         // Look up the target template for next_sub from the module's template list.
         // For self-recursion, this finds the same template. For mutual recursion (A→B→A),
         // this alternates: B's sub "a" targets A, A's sub "b" targets B.
-        let next_child_template = match find_template_in_scope(
-            templates,
-            prelude,
-            &next_sub.structure_name,
-        ) {
+        let next_child_template = match env.resolve_template(&next_sub.structure_name) {
             Some(t) => t,
             None => {
                 diagnostics.push(Diagnostic::error(format!(
@@ -319,8 +288,7 @@ pub(crate) fn unfold_recursive_sub<'t>(
             max_depth,
             meta_map,
             diagnostics,
-            templates,
-            prelude,
+            env,
             node_budget,
         );
     }
@@ -342,8 +310,7 @@ pub(crate) fn unfold_recursive_sub<'t>(
         child_values,
         meta_map,
         &next_recursive_sub_names,
-        templates,
-        prelude,
+        env,
         diagnostics,
         &optimized_names,
     );
@@ -405,8 +372,7 @@ pub(crate) fn elaborate_child_instance<'t>(
     args: &[(String, reify_ir::CompiledExpr)],
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
-    templates: &'t [TopologyTemplate],
-    prelude: &'t [CompiledModule],
+    env: DefEnv<'t>,
 ) {
     // ONE `@optimized`-name index for this whole instance TREE — phase 1,
     // phase 1.5, phase 2 and every nested-sub recursion level below them share
@@ -424,8 +390,7 @@ pub(crate) fn elaborate_child_instance<'t>(
         args,
         meta_map,
         diagnostics,
-        templates,
-        prelude,
+        env,
         &mut Vec::new(),
         &optimized_names,
     );
@@ -515,8 +480,7 @@ fn elaborate_child_instance_nested<'t, 'f>(
     args: &[(String, reify_ir::CompiledExpr)],
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
-    templates: &'t [TopologyTemplate],
-    prelude: &'t [CompiledModule],
+    env: DefEnv<'t>,
     ancestors: &mut Vec<&'t str>,
     optimized_names: &OptimizedNameIndex<'f>,
 ) {
@@ -558,14 +522,13 @@ fn elaborate_child_instance_nested<'t, 'f>(
             skipped_subs.push((sub.name.as_str(), skip_reason_for_shape(sub)));
             continue;
         }
-        // Module-first, then the stdlib prelude — the SAME rule the top-level
+        // Through the environment — the SAME rule the top-level
         // sub-elaboration loop in `engine_eval.rs` applies (esc-5360-9). A bare
         // `find_template(templates, ..)` here would miss every prelude type,
         // leaving `Parent.m.<prelude-typed sub>` unelaborated while `Mid.<same
         // sub>` elaborates at template scope, and would then mis-report the
         // resolvable name as "not found in this module" below.
-        let Some(nested_template) = find_template_in_scope(templates, prelude, &sub.structure_name)
-        else {
+        let Some(nested_template) = env.resolve_template(&sub.structure_name) else {
             skipped_subs.push((
                 sub.name.as_str(),
                 "target structure not found in this module or the stdlib prelude",
@@ -788,8 +751,7 @@ fn elaborate_child_instance_nested<'t, 'f>(
                     &concrete_args,
                     meta_map,
                     diagnostics,
-                    templates,
-                    prelude,
+                    env,
                     ancestors,
                     optimized_names,
                 );
@@ -908,8 +870,7 @@ fn elaborate_child_instance_nested<'t, 'f>(
         child_values,
         meta_map,
         &nested_sub_names,
-        templates,
-        prelude,
+        env,
         diagnostics,
         optimized_names,
     );
@@ -1638,8 +1599,7 @@ fn elaborate_child_lets_only<'t, 'f>(
     mut child_values: ValueMap,
     meta_map: &HashMap<String, HashMap<String, String>>,
     elaborated_sub_names: &[&str],
-    templates: &'t [TopologyTemplate],
-    prelude: &'t [CompiledModule],
+    env: DefEnv<'t>,
     diagnostics: &mut Vec<Diagnostic>,
     optimized_names: &OptimizedNameIndex<'f>,
 ) {
@@ -1677,7 +1637,7 @@ fn elaborate_child_lets_only<'t, 'f>(
                 // fail on exactly those names and raise a spurious "unknown
                 // structure" error for a sub that WAS just elaborated.
                 let target_tmpl =
-                    find_template_in_scope(templates, prelude, &sub_decl.structure_name).or_else(
+                    env.resolve_template(&sub_decl.structure_name).or_else(
                         || {
                             diagnostics.push(Diagnostic::error(format!(
                                 "BFS seed: sub \"{}\" in \"{}\" references unknown structure \"{}\"; skipping",
@@ -1729,9 +1689,7 @@ fn elaborate_child_lets_only<'t, 'f>(
                 // For structural intermediaries, the prefix check serves the same purpose.
                 for sub_decl in &entity_template.sub_components {
                     if sub_decl.guard_state.is_compiled() {
-                        if let Some(target_tmpl) =
-                            find_template_in_scope(templates, prelude, &sub_decl.structure_name)
-                        {
+                        if let Some(target_tmpl) = env.resolve_template(&sub_decl.structure_name) {
                             queue.push_back((
                                 format!("{}.{}", depth_entity, sub_decl.name),
                                 target_tmpl,
