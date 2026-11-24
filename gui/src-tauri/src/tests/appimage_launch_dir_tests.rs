@@ -37,7 +37,7 @@ fn fixture() -> Fixture {
     }
 }
 
-fn lookup_with(vars: &[(&'static str, OsString)]) -> impl Fn(&str) -> Option<OsString> {
+fn lookup_with(vars: &[(&'static str, OsString)]) -> impl Fn(&str) -> Option<OsString> + use<> {
     let vars: HashMap<&'static str, OsString> = vars.iter().cloned().collect();
     move |asked| vars.get(asked).cloned()
 }

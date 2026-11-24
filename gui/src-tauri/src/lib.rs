@@ -16,6 +16,7 @@
 #[cfg(has_openvdb)]
 extern crate reify_kernel_openvdb as _;
 
+pub mod appimage_launch_dir;
 pub mod claude_bridge;
 pub mod command_line;
 pub mod commands;
