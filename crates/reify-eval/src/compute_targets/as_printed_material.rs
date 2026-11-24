@@ -600,4 +600,28 @@ mod tests {
         assert_eq!(build_unit(millimetres), build_unit(dimensionless));
         assert_eq!(build_unit(vec3_dimensionless([0.0, 0.0, 1.0])), [0.0, 0.0, 1.0]);
     }
+
+    #[test]
+    fn material_frame_is_a_frame_datum_whose_z_axis_is_the_build_direction() {
+        let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        let n = 14.0_f64.sqrt();
+        for build_z in [[0.0, 0.0, 1.0], [1.0 / n, 2.0 / n, 3.0 / n]] {
+            let frame = material_frame(build_z);
+            assert!(
+                matches!(frame, Value::Frame { .. }),
+                "the as-printed frame must be the Frame datum, not a MaterialFrame \
+                 StructureInstance: {frame:?}"
+            );
+            let rows = reify_ir::frame_basis(&frame).expect("a Frame has a basis");
+            for c in 0..3 {
+                assert!((rows[2][c] - build_z[c]).abs() <= 1e-12, "{build_z:?}: {rows:?}");
+            }
+            for i in 0..3 {
+                assert!((dot(rows[i], rows[i]) - 1.0).abs() <= 1e-12, "{rows:?}");
+                for j in (i + 1)..3 {
+                    assert!(dot(rows[i], rows[j]).abs() <= 1e-12, "{rows:?}");
+                }
+            }
+        }
+    }
 }

@@ -59,60 +59,20 @@ fn param_cells(template: &TopologyTemplate) -> Vec<&ValueCellDecl> {
         .collect()
 }
 
-// ─── MaterialFrame shape ─────────────────────────────────────────────────────
+// ─── MaterialFrame is gone ───────────────────────────────────────────────────
 
-/// MaterialFrame's four members SPLIT by what each one denotes (task 5848):
-///   - `origin` is a POSITION  → `Type::Point { n: 3, quantity: Length }`
-///   - `x_axis`/`y_axis`/`z_axis` are DIRECTIONS → `Type::Vector { n: 3,
-///     quantity: Dimensionless }`
-///
-/// The `origin` half is the load-bearing fence, and it is NOT a copy of
-/// `frame3_structure_surface`'s (ports_stdlib_compile.rs): Frame3's origin is
-/// a `Type::Vector`, MaterialFrame's is a `Type::Point`. Asserting the Point
-/// variant explicitly proves the retype discriminates position from direction
-/// without collapsing the two origin spellings into one another.
+/// `AnisotropicMaterial.frame` is the `Frame` datum (direction-typing η), so
+/// std/constitutive declares no `MaterialFrame` structure.
 #[test]
-fn frame_has_origin_and_three_axes() {
-    let template = find_structure("MaterialFrame");
-    let params = param_cells(template);
-    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
-    assert_eq!(
-        names,
-        vec!["origin", "x_axis", "y_axis", "z_axis"],
-        "MaterialFrame should have exactly (origin, x_axis, y_axis, z_axis) in that order"
-    );
-
-    let point3_length = Type::Point {
-        n: 3,
-        quantity: Box::new(Type::Scalar {
-            dimension: DimensionVector::LENGTH,
-        }),
-    };
-    let vec3_dimensionless = Type::Vector {
-        n: 3,
-        quantity: Box::new(Type::Scalar {
-            dimension: DimensionVector::DIMENSIONLESS,
-        }),
-    };
-
-    let expected: &[(&str, Type, &str)] = &[
-        ("origin", point3_length, "a POSITION"),
-        ("x_axis", vec3_dimensionless.clone(), "a DIRECTION"),
-        ("y_axis", vec3_dimensionless.clone(), "a DIRECTION"),
-        ("z_axis", vec3_dimensionless, "a DIRECTION"),
-    ];
-
-    for (member, expected_ty, why) in expected {
-        let cell = params
+fn material_frame_structure_is_deleted() {
+    let module = load_stdlib_module();
+    assert!(
+        !module
+            .templates
             .iter()
-            .find(|vc| vc.id.member == *member)
-            .unwrap_or_else(|| panic!("MaterialFrame missing param '{}'", member));
-        assert_eq!(
-            cell.cell_type, *expected_ty,
-            "MaterialFrame.{} denotes {}, so it must be {:?}; got {:?}",
-            member, why, expected_ty, cell.cell_type
-        );
-    }
+            .any(|t| t.name == "MaterialFrame" && t.entity_kind == EntityKind::Structure),
+        "std/constitutive must not declare `structure def MaterialFrame`"
+    );
 }
 
 // ─── module loads cleanly ────────────────────────────────────────────────────
@@ -339,8 +299,8 @@ fn anisotropic_material_has_law_and_frame() {
     let frame_cell = params.iter().find(|p| p.id.member == "frame").unwrap();
     assert_eq!(
         frame_cell.cell_type,
-        Type::StructureRef("MaterialFrame".to_string()),
-        "AnisotropicMaterial.frame must be a MaterialFrame structure ref"
+        Type::Frame(3),
+        "AnisotropicMaterial.frame must be the Frame datum"
     );
 }
 
@@ -375,7 +335,7 @@ structure def TestHolder {
 // ─── AnisotropicMaterial construction: trait-object coercion probe ───────────
 //
 // Probes that OrthotropicMaterial can be coerced into the `law : ConstitutiveLaw`
-// trait-object slot, and that a MaterialFrame can fill the `frame` slot.
+// trait-object slot, and that a `frame_at(..)` Frame can fill the `frame` slot.
 // Trait-object coercion is the kind of thing that can break silently between
 // releases; it deserves its own probe separate from the bare-orthotropic test.
 
@@ -394,12 +354,7 @@ structure def AnisotropicConstructionProbe {
         nu12_provenance: provenance, nu13_provenance: provenance, nu23_provenance: provenance,
         density_provenance: provenance,
     )
-    let mat_frame = MaterialFrame(
-        origin: point3(0m, 0m, 0m),
-        x_axis: vec3(1, 0, 0),
-        y_axis: vec3(0, 1, 0),
-        z_axis: vec3(0, 0, 1),
-    )
+    let mat_frame = frame_at(point3(0m, 0m, 0m), dir(1, 0, 0), dir(0, 0, 1))
     let aniso = AnisotropicMaterial(law: ortho_law, frame: mat_frame)
 }
 "#;
@@ -411,7 +366,7 @@ structure def AnisotropicConstructionProbe {
         .collect();
     assert!(
         errors.is_empty(),
-        "AnisotropicMaterial(law: OrthotropicMaterial(...), frame: MaterialFrame(...)) \
+        "AnisotropicMaterial(law: OrthotropicMaterial(...), frame: frame_at(...)) \
          should compile (trait-object coercion probe); got errors: {:?}",
         errors
     );

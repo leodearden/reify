@@ -12297,11 +12297,11 @@ mod tests {
     // The two tests above only exercise `anisotropic_material_from_value`'s
     // delegation to `modulus_field` (the `Rejected` path). The
     // structural `Err` branches this function constructs directly — a
-    // non-`StructureInstance` `val`/`frame`/`law`, a missing `law`/`frame`
-    // field, and a missing frame-axis field — were previously only covered
+    // non-`StructureInstance` `val`/`law`, a `frame` that is not the Frame
+    // datum, and a missing `law`/`frame` field — were previously only covered
     // transitively (via the leaf helpers' own tests), so a partial or
-    // transposed error-construction here (wrong `context`/`field` label, or
-    // a swapped axis `MissingField`) would have gone uncaught. The tests
+    // transposed error-construction here (wrong `context`/`field` label)
+    // would have gone uncaught. The tests
     // below assert on the exact `context`/`field` label (not just the
     // variant), mirroring `extract_material_rejects_non_structure_instance`'s
     // precedent, to directly guard against that.
@@ -12385,29 +12385,41 @@ mod tests {
     }
 
     /// `anisotropic_material_from_value` must reject a `frame` field that is
-    /// not a `Value::StructureInstance` with `Err(FeaValueShapeError::
-    /// ExpectedStructureInstance { context: "anisotropic_material_from_value
-    /// (frame)", .. })` — a distinct `context` label from the top-level
-    /// `val`/`law` shape checks.
+    /// not the Frame datum — a legacy `MaterialFrame` StructureInstance
+    /// included — with `Err(FeaValueShapeError::MalformedFrame)` carrying
+    /// `frame_basis`'s own `NotAFrame` naming the kind received.
     #[test]
-    fn anisotropic_material_from_value_rejects_non_structure_instance_frame() {
-        let fields: PersistentMap<String, Value> = [
-            ("law".to_string(), Value::Real(1.0)),
-            ("frame".to_string(), Value::Real(1.0)),
-        ]
-        .into_iter()
-        .collect();
-
-        let res = anisotropic_material_from_value(&anisotropic_material(fields));
-        match res {
-            Err(FeaValueShapeError::ExpectedStructureInstance { context, .. }) => {
-                assert_eq!(context, "anisotropic_material_from_value (frame)");
-            }
-            other => panic!(
-                "expected Err(ExpectedStructureInstance) for a non-StructureInstance \
-                 frame, got: {:?}",
-                other
-            ),
+    fn anisotropic_material_from_value_rejects_a_frame_that_is_not_the_frame_datum() {
+        let axis = |v: [f64; 3]| Value::Vector(v.map(Value::Real).to_vec());
+        let legacy_material_frame = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "MaterialFrame".to_string(),
+            version: 1,
+            fields: [
+                ("x_axis".to_string(), axis([1.0, 0.0, 0.0])),
+                ("y_axis".to_string(), axis([0.0, 1.0, 0.0])),
+                ("z_axis".to_string(), axis([0.0, 0.0, 1.0])),
+            ]
+            .into_iter()
+            .collect(),
+        }));
+        for (frame, got) in [
+            (legacy_material_frame, "StructureInstance"),
+            (Value::Real(1.0), "Real"),
+        ] {
+            let fields: PersistentMap<String, Value> = [
+                ("law".to_string(), Value::Real(1.0)),
+                ("frame".to_string(), frame),
+            ]
+            .into_iter()
+            .collect();
+            assert_eq!(
+                anisotropic_material_from_value(&anisotropic_material(fields)),
+                Err(FeaValueShapeError::MalformedFrame {
+                    context: "anisotropic_material_from_value (frame)",
+                    error: reify_ir::DecodeDirectionError::NotAFrame { got },
+                })
+            );
         }
     }
 
@@ -12438,40 +12450,6 @@ mod tests {
             other => panic!(
                 "expected Err(ExpectedStructureInstance) for a non-StructureInstance \
                  law, got: {:?}",
-                other
-            ),
-        }
-    }
-
-    /// `anisotropic_material_from_value` must reject a `frame` StructureInstance
-    /// whose `x_axis` field is absent with `Err(FeaValueShapeError::
-    /// MissingField { field: "x_axis", .. })`. `x_axis` is read before
-    /// `y_axis`/`z_axis`, so an empty frame fields map deterministically
-    /// surfaces this specific axis label — guarding against a swapped axis
-    /// label, the review's stated concern.
-    #[test]
-    fn anisotropic_material_from_value_rejects_missing_frame_axis_field() {
-        let frame = Value::StructureInstance(Box::new(StructureInstanceData {
-            type_id: StructureTypeId(u32::MAX),
-            type_name: "MaterialFrame".to_string(),
-            version: 1,
-            fields: PersistentMap::new(),
-        }));
-        let fields: PersistentMap<String, Value> = [
-            ("law".to_string(), Value::Real(1.0)),
-            ("frame".to_string(), frame),
-        ]
-        .into_iter()
-        .collect();
-
-        let res = anisotropic_material_from_value(&anisotropic_material(fields));
-        match res {
-            Err(FeaValueShapeError::MissingField { field, .. }) => {
-                assert_eq!(field, "x_axis");
-            }
-            other => panic!(
-                "expected Err(MissingField {{ field: \"x_axis\" }}) for an absent \
-                 x_axis field, got: {:?}",
                 other
             ),
         }
@@ -12533,7 +12511,7 @@ mod tests {
     /// task #7210: `anisotropic_material_from_value` must accept an
     /// ISOTROPIC `ConstitutiveLaw` as `AnisotropicMaterial.law` — not just
     /// the two named anisotropic laws — and lift it through
-    /// `AnisotropicMaterial::from_law`, honouring the PARSED `MaterialFrame`
+    /// `AnisotropicMaterial::from_law`, honouring the PARSED `frame`
     /// (not `IDENTITY`). See `anisotropic_material_from_value`'s doc comment
     /// for why an isotropic law is legal input here; this test exercises the
     /// surface #6880 δ's
@@ -12544,41 +12522,39 @@ mod tests {
     /// invariant, so a lazy implementation that copies `classify_material`'s
     /// homogeneous arms and passes `IDENTITY` would still produce a
     /// plausible-looking `d_matrix_global()`, but `AnisotropicMaterial.frame`
-    /// itself would silently diverge from the input `MaterialFrame`. The
-    /// `assert_eq!` below catches that directly on `.frame`, before any
+    /// itself would silently diverge from the input `frame`. The
+    /// assertion below catches that directly on `.frame`, before any
     /// rotation happens.
     ///
-    /// Exactness: `from_law` is `Self { d_local: law.d_matrix_local(), frame
-    /// }` — the same construction run on the same inputs in the same
-    /// binary — so the comparison is bitwise, not approximate. The expected
-    /// 3×3 is independently re-derived from the chosen axes (not copied from
-    /// prose): columns = local basis vectors in global coordinates, i.e.
-    /// `frame[row] = [x[row], y[row], z[row]]`.
-    ///
-    /// RED: see module-section comment above; `_ => panic!(..)` currently
-    /// fires for this `type_name` before either law field is read.
+    /// `d_local` is compared bitwise: `from_law` is `Self { d_local:
+    /// law.d_matrix_local(), frame }`, the same construction on the same law.
+    /// `.frame` is compared within 1e-12, because this ±90° basis round-trips
+    /// through a quaternion. The expected 3×3 is independently re-derived
+    /// from the axes `frame_at(o, dir(0,1,0), dir(0,0,1))` builds (x =
+    /// (0,1,0), y = z × x = (-1,0,0), z = (0,0,1)): columns = local basis
+    /// vectors in global coordinates, i.e. `frame[row] = [x[row], y[row],
+    /// z[row]]`.
     #[test]
     fn anisotropic_material_from_value_accepts_isotropic_law_and_honours_frame() {
-        let (x, y, z) = ([0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]);
         let aniso_fields: PersistentMap<String, Value> = [
             ("law".to_string(), isotropic_steel_law()),
-            ("frame".to_string(), frame_with_axes(x, y, z, Value::Real)),
+            ("frame".to_string(), frame_at_value([0.0, 1.0, 0.0], [0.0, 0.0, 1.0])),
         ]
         .into_iter()
         .collect();
 
-        // frame[row] = [x[row], y[row], z[row]] (columns = local axes in global).
         let expected_frame = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
-        assert_eq!(
-            anisotropic_material_from_value(&anisotropic_material(aniso_fields)),
-            Ok(AnisotropicMaterial::from_law(
-                &IsotropicElastic {
-                    youngs_modulus: 2.0e11,
-                    poisson_ratio: 0.29
-                },
-                expected_frame,
-            ))
+        let expected = AnisotropicMaterial::from_law(
+            &IsotropicElastic {
+                youngs_modulus: 2.0e11,
+                poisson_ratio: 0.29,
+            },
+            expected_frame,
         );
+        let got = anisotropic_material_from_value(&anisotropic_material(aniso_fields))
+            .expect("an isotropic law under a Frame datum must read");
+        assert_eq!(d_bits(got.d_local), d_bits(expected.d_local));
+        assert_frame_close(got.frame, expected_frame);
     }
 
     /// task #7210: supersedes `anisotropic_material_from_value_panics_on_
@@ -12792,9 +12768,10 @@ mod tests {
         match classify_material_as_printed_zones(&lambda) {
             Ok(MaterialModel::Heterogeneous(f)) => {
                 assert_eq!(f.cells.len(), 3);
-                assert_eq!(f.cells[0], expected_cell);
-                assert_eq!(f.cells[1], expected_cell);
-                assert_eq!(f.cells[2], expected_cell);
+                for cell in &f.cells {
+                    assert_eq!(d_bits(cell.d_local), d_bits(expected_cell.d_local));
+                    assert_frame_close(cell.frame, expected_frame);
+                }
             }
             Ok(MaterialModel::Isotropic(_)) => {
                 panic!("expected Ok(Heterogeneous) for an AsPrintedZones lambda, got Isotropic")
@@ -12810,62 +12787,110 @@ mod tests {
         }
     }
 
-    // ── task 5848: MaterialFrame's axes are DIMENSIONLESS, and nothing on the
-    // path to `rotate_voigt` normalises them ─────────────────────────────────
+    // ── AnisotropicMaterial.frame is the Frame datum (direction-typing η) ────
+    //
+    // `anisotropic_material_from_value` reads the frame through
+    // `reify_ir::frame_basis` (rows = the frame's axes) and hands
+    // `rotate_voigt` the transpose (columns = the local axes).
 
-    /// Build a `MaterialFrame` Value with explicit axes, spelling every axis
-    /// component with `component` — the `Value` variant a `.ri` literal of
-    /// that kind compiles to. `origin` stays `Point3<Length>` either way.
-    fn frame_with_axes(
-        x: [f64; 3],
-        y: [f64; 3],
-        z: [f64; 3],
-        component: fn(f64) -> Value,
-    ) -> Value {
+    fn zero_length_origin() -> Value {
         let len = |v: f64| Value::Scalar {
             si_value: v,
             dimension: DimensionVector::LENGTH,
         };
-        let axis =
-            |v: [f64; 3]| Value::Vector(vec![component(v[0]), component(v[1]), component(v[2])]);
-        let fields: PersistentMap<String, Value> = [
-            (
-                "origin".to_string(),
-                Value::Point(vec![len(0.0), len(0.0), len(0.0)]),
-            ),
-            ("x_axis".to_string(), axis(x)),
-            ("y_axis".to_string(), axis(y)),
-            ("z_axis".to_string(), axis(z)),
-        ]
-        .into_iter()
-        .collect();
-        Value::StructureInstance(Box::new(StructureInstanceData {
-            type_id: StructureTypeId(u32::MAX),
-            type_name: "MaterialFrame".to_string(),
-            version: 1,
-            fields,
-        }))
+        Value::Point(vec![len(0.0), len(0.0), len(0.0)])
+    }
+
+    /// A `Value::Frame` at the origin whose basis is the (possibly non-unit)
+    /// `[w, x, y, z]` quaternion `q`.
+    fn frame_value(q: [f64; 4]) -> Value {
+        Value::Frame {
+            origin: Box::new(zero_length_origin()),
+            basis: Box::new(Value::Orientation {
+                w: q[0],
+                x: q[1],
+                y: q[2],
+                z: q[3],
+            }),
+        }
+    }
+
+    /// The Frame `.ri`'s `frame_at(point3(0m, 0m, 0m), dir(x), dir(z))` mints,
+    /// built by the real stdlib producer.
+    fn frame_at_value(x: [f64; 3], z: [f64; 3]) -> Value {
+        let dir = |v: [f64; 3]| {
+            Value::Direction(reify_ir::UnitVec3::from_vector(v).expect("a unit test axis"))
+        };
+        let frame = reify_stdlib::eval_builtin("frame_at", &[zero_length_origin(), dir(x), dir(z)]);
+        assert!(matches!(frame, Value::Frame { .. }), "frame_at gave {frame:?}");
+        frame
+    }
+
+    fn d_bits(d: [[f64; 6]; 6]) -> [[u64; 6]; 6] {
+        d.map(|row| row.map(f64::to_bits))
+    }
+
+    fn assert_frame_close(got: [[f64; 3]; 3], want: [[f64; 3]; 3]) {
+        for r in 0..3 {
+            for c in 0..3 {
+                assert!(
+                    (got[r][c] - want[r][c]).abs() <= 1e-12,
+                    "frame[{r}][{c}]: got {got:?}, want {want:?}"
+                );
+            }
+        }
+    }
+
+    fn assert_d_close(got: [[f64; 6]; 6], want: [[f64; 6]; 6], rel: f64) {
+        let scale = want.iter().flatten().fold(0.0_f64, |m, v| m.max(v.abs()));
+        for r in 0..6 {
+            for c in 0..6 {
+                assert!(
+                    (got[r][c] - want[r][c]).abs() <= rel * scale,
+                    "D[{r}][{c}]: got {}, want {}",
+                    got[r][c],
+                    want[r][c]
+                );
+            }
+        }
     }
 
     /// A genuinely ANISOTROPIC orthotropic law (distinct `e1`/`e2`/`e3`), so
     /// the frame actually moves `D_global`. `het_ortho_law`'s isotropic alias
-    /// would make any orthonormal rotation a no-op and the invariance
-    /// assertion below vacuous.
+    /// would make any orthonormal rotation a no-op and the assertions below
+    /// vacuous.
+    fn anisotropic_ortho() -> OrthotropicMaterial {
+        OrthotropicMaterial {
+            e1: 205e9,
+            e2: 120e9,
+            e3: 68e9,
+            g12: 50e9,
+            g13: 40e9,
+            g23: 28e9,
+            nu12: 0.29,
+            nu13: 0.25,
+            nu23: 0.20,
+        }
+    }
+
+    /// [`anisotropic_ortho`] spelled as the `OrthotropicMaterial` Value the
+    /// DSL produces.
     fn anisotropic_ortho_law() -> Value {
+        let law = anisotropic_ortho();
         let pa = |v: f64| Value::Scalar {
             si_value: v,
             dimension: DimensionVector::PRESSURE,
         };
         let fields: PersistentMap<String, Value> = [
-            ("e1".to_string(), pa(205e9)),
-            ("e2".to_string(), pa(120e9)),
-            ("e3".to_string(), pa(68e9)),
-            ("g12".to_string(), pa(50e9)),
-            ("g13".to_string(), pa(40e9)),
-            ("g23".to_string(), pa(28e9)),
-            ("nu12".to_string(), Value::Real(0.29)),
-            ("nu13".to_string(), Value::Real(0.25)),
-            ("nu23".to_string(), Value::Real(0.20)),
+            ("e1".to_string(), pa(law.e1)),
+            ("e2".to_string(), pa(law.e2)),
+            ("e3".to_string(), pa(law.e3)),
+            ("g12".to_string(), pa(law.g12)),
+            ("g13".to_string(), pa(law.g13)),
+            ("g23".to_string(), pa(law.g23)),
+            ("nu12".to_string(), Value::Real(law.nu12)),
+            ("nu13".to_string(), Value::Real(law.nu13)),
+            ("nu23".to_string(), Value::Real(law.nu23)),
         ]
         .into_iter()
         .collect();
@@ -12877,139 +12902,88 @@ mod tests {
         }))
     }
 
-    /// `d_matrix_global()` for [`anisotropic_ortho_law`] under the given frame
-    /// axes and axis-component spelling, read through the production
+    /// [`anisotropic_ortho_law`] under `frame`, read through the production
     /// `anisotropic_material_from_value` seam.
-    fn d_global_under_frame(
-        x: [f64; 3],
-        y: [f64; 3],
-        z: [f64; 3],
-        component: fn(f64) -> Value,
-    ) -> [[f64; 6]; 6] {
+    fn ortho_material_under(frame: Value) -> AnisotropicMaterial {
         let fields: PersistentMap<String, Value> = [
             ("law".to_string(), anisotropic_ortho_law()),
-            ("frame".to_string(), frame_with_axes(x, y, z, component)),
+            ("frame".to_string(), frame),
         ]
         .into_iter()
         .collect();
         anisotropic_material_from_value(&anisotropic_material(fields))
             .expect("a well-formed AnisotropicMaterial must read")
-            .d_matrix_global()
     }
 
-    /// Task 5848 retypes `MaterialFrame`'s three axes from `Vector3<Length>`
-    /// to `Vector3<Dimensionless>`, so the DSL spelling moves from
-    /// `vec3(0m, 1m, 0m)` to `vec3(0, 1, 0)`. Every LEGITIMATE numeric
-    /// `Value` spelling a component can arrive as must therefore yield a
-    /// BITWISE identical `D_global` — the retype moves the declaration, not
-    /// the solve.
-    ///
-    /// The basis for exactness is NOT normalisation (there is none — see the
-    /// fence below). It is that `dimensionless_component` (task #7019) now
-    /// accepts exactly `reify_ir::arg_acceptance::dimensionless_spec`'s
-    /// `Real | Int | Scalar{DIMENSIONLESS}` acceptance set, and reads the
-    /// same f64 out of `Scalar { si_value: 1.0, dimension: DIMENSIONLESS }`,
-    /// `Real(1.0)` and `Int(1)`, so the identical numbers reach
-    /// `rotate_voigt`'s `T`. A `Scalar` carrying any OTHER dimension — e.g.
-    /// the LENGTH spelling this test used as its baseline before #7019 — is
-    /// no longer among the legitimate spellings and is rejected instead
-    /// (`extract_vec3_si_rejects_a_dimensioned_axis_component` above pins
-    /// the rejection; `material_frame_axes_reject_a_length_spelled_component`
-    /// below pins it through this test's own `d_global_under_frame` seam).
-    ///
-    /// The `Int` leg is the load-bearing one: an integer `.ri` literal
-    /// compiles to `Value::Int`, so `vec3(0, 1, 0)` — the natural dimensionless
-    /// spelling, and the one `examples/anisotropic_bar.ri` now uses — reaches
-    /// this reader as `Int`, not `Real`.
-    #[test]
-    fn material_frame_axes_read_identically_across_numeric_spellings() {
-        let (x, y, z) = ([0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]);
-        let as_dimensionless: fn(f64) -> Value = |v| Value::Scalar {
-            si_value: v,
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        let as_real: fn(f64) -> Value = Value::Real;
-        let as_int: fn(f64) -> Value = |v| Value::Int(v as i64);
+    /// `d_matrix_global()` for [`anisotropic_ortho_law`] under the frame whose
+    /// basis is the quaternion `q`.
+    fn d_global_under_frame(q: [f64; 4]) -> [[f64; 6]; 6] {
+        ortho_material_under(frame_value(q)).d_matrix_global()
+    }
 
-        let baseline = d_global_under_frame(x, y, z, as_dimensionless);
+    /// B11: the identity `frame_at(o, dir(1,0,0), dir(0,0,1))` mints the
+    /// quaternion [1,0,0,0], whose basis is exactly I, so `rotate_voigt`'s
+    /// identity no-op leaves `D_global` bitwise equal to `D_local`.
+    #[test]
+    fn identity_frame_at_material_d_global_is_bitwise_d_local() {
+        let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let material = ortho_material_under(frame_at_value([1.0, 0.0, 0.0], [0.0, 0.0, 1.0]));
         assert_eq!(
-            d_global_under_frame(x, y, z, as_real),
-            baseline,
-            "Real-spelled axis components must give a bitwise-identical D_global \
-             to the Scalar{{DIMENSIONLESS}} spelling"
+            material.frame.map(|row| row.map(f64::to_bits)),
+            identity.map(|row: [f64; 3]| row.map(f64::to_bits))
         );
-        assert_eq!(
-            d_global_under_frame(x, y, z, as_int),
-            baseline,
-            "Int-spelled axis components (what `vec3(0, 1, 0)` compiles to) must \
-             give a bitwise-identical D_global to the Scalar{{DIMENSIONLESS}} spelling"
+        assert_eq!(d_bits(material.d_matrix_global()), d_bits(material.d_local));
+    }
+
+    /// `frame_basis` returns rows = axes; `rotate_voigt` takes columns = axes.
+    /// The cyclic anisotropic_bar frame `frame_at(o, dir(0,1,0), dir(1,0,0))`
+    /// has x = (0,1,0), y = z × x = (0,0,1), z = (1,0,0), so the reader must
+    /// hand on `frame[row] = [x[row], y[row], z[row]]` =
+    /// [[0,0,1],[1,0,0],[0,1,0]]; the untransposed rows would be
+    /// [[0,1,0],[0,0,1],[1,0,0]].
+    #[test]
+    fn material_reader_transposes_frame_basis_rows_into_rotate_voigt_columns() {
+        let columns = [[0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let material = ortho_material_under(frame_at_value([0.0, 1.0, 0.0], [1.0, 0.0, 0.0]));
+        assert_frame_close(material.frame, columns);
+        assert_d_close(
+            material.d_matrix_global(),
+            AnisotropicMaterial::from_law(&anisotropic_ortho(), columns).d_matrix_global(),
+            1e-9,
         );
     }
 
-    /// step-1(c) RED companion to the retarget above (task #7019): a
-    /// LENGTH-spelled axis component — the baseline this test group used
-    /// before #7019 — must now FAIL to read. `d_global_under_frame`
-    /// `.expect()`s the read (see its own doc comment), so this asserts
-    /// through `anisotropic_material_from_value` directly — the same seam
-    /// `d_global_under_frame` calls — so the `Err` is observable instead of
-    /// panicking the test.
+    /// Whatever quaternion a Frame carries, the matrix reaching `rotate_voigt`
+    /// is orthonormal: `frame_basis` normalises the quaternion, so a scaled
+    /// quaternion names the same frame and gives the same `D_global`. (The
+    /// retired `MaterialFrame` path read raw axes and rescaled `D_global` by
+    /// the fourth power of a non-unit axis.)
     #[test]
-    fn material_frame_axes_reject_a_length_spelled_component() {
-        let as_length: fn(f64) -> Value = |v| Value::Scalar {
-            si_value: v,
-            dimension: DimensionVector::LENGTH,
-        };
-        let fields: PersistentMap<String, Value> = [
-            ("law".to_string(), anisotropic_ortho_law()),
-            (
-                "frame".to_string(),
-                frame_with_axes([0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0], as_length),
-            ),
-        ]
-        .into_iter()
-        .collect();
-        let res = anisotropic_material_from_value(&anisotropic_material(fields));
-        assert!(
-            matches!(
-                res,
-                Err(FeaValueShapeError::WrongDimension {
-                    expected: "Real",
-                    ..
-                })
-            ),
-            "a LENGTH-dimensioned axis component must be rejected with \
-             WrongDimension {{ expected: \"Real\", .. }}, not silently \
-             reinterpreted as a bare dimensionless component and not a fluke \
-             ExpectedScalar, got: {:?}",
-            res
-        );
-    }
+    fn a_frame_reaching_rotate_voigt_is_orthonormal_through_frame_basis() {
+        let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        for q in [
+            [1.0, 0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0, 0.0],
+            [0.5, 0.5, 0.5, 0.5],
+            [0.3, -0.4, 0.5, 0.6],
+        ] {
+            let frame = ortho_material_under(frame_value(q)).frame;
+            let column = |c: usize| [frame[0][c], frame[1][c], frame[2][c]];
+            for i in 0..3 {
+                assert!((dot(column(i), column(i)) - 1.0).abs() <= 1e-12, "{q:?}: {frame:?}");
+                for j in (i + 1)..3 {
+                    assert!(dot(column(i), column(j)).abs() <= 1e-12, "{q:?}: {frame:?}");
+                }
+            }
+        }
 
-    /// FENCE: nothing on the path `extract_vec3_si` →
-    /// `AnisotropicMaterial::from_law` → `rotate_voigt` normalises the frame —
-    /// no `normalize`, no `.norm()`, no `debug_assert!`. `rotate_voigt`
-    /// consumes the rows raw as direction cosines and `D_global` is homogeneous
-    /// of DEGREE 4 in them, so a frame supplied non-unit silently rescales the
-    /// stiffness (a 1mm-spelled "unit" axis would have scaled it by 1e-12).
-    ///
-    /// This is the executable replacement for constitutive.ri's former claims
-    /// that `rotate_voigt` "normalises each axis to unit magnitude", that
-    /// `vec3(1mm, 0mm, 0mm)` and `vec3(2m, 0m, 0m)` "produce the same
-    /// D_global", and that it "debug-asserts the basis is orthonormal". All
-    /// three were false. Orthonormality is a real but UNENFORCED precondition,
-    /// and this test is what makes a future non-unit producer fail loudly
-    /// instead of quietly rescaling.
-    #[test]
-    fn material_frame_is_not_normalised_so_a_non_unit_axis_moves_d_global() {
-        let as_real: fn(f64) -> Value = Value::Real;
-        let unit = d_global_under_frame([0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0], as_real);
-        let doubled_x =
-            d_global_under_frame([0.0, 2.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0], as_real);
-        assert_ne!(
-            unit, doubled_x,
-            "doubling x_axis must move D_global — if this ever passes, something \
-             started normalising the frame and constitutive.ri's precondition \
-             comment needs revisiting"
+        let q = [0.3, -0.4, 0.5, 0.6];
+        let n = q.iter().map(|c| c * c).sum::<f64>().sqrt();
+        assert_d_close(
+            d_global_under_frame(q.map(|c| 3.0 * c)),
+            d_global_under_frame(q.map(|c| c / n)),
+            1e-12,
         );
     }
 
