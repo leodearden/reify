@@ -245,7 +245,7 @@ where
 fn templates_bind_entry_then_imports_in_order_then_std() {
     let fx = Fixture::new();
     let p = &fx.program;
-    let entry_own = p.entry_declared_templates();
+    let entry_own = &p.entry().templates;
     let t = |name| by_name::<TopologyTemplate>(p, name);
     assert_binds(
         t("Shared"),
@@ -445,30 +445,32 @@ fn constraint_defs_bind_entry_then_imports_in_order_then_std() {
     assert_name_keyed_precedence::<CompiledConstraintDef>("constraint def", CONSTRAINT_DEF_NAMES);
 }
 
-/// The entry's own templates are `entry_declared_templates()`: a pub
-/// template the I5 merge copied into `entry.templates` binds the IMPORT
-/// UNIT's template, and no Local-vs-Import shadowing is recorded for it.
+/// The entry holds only the templates it declares (resolution-unification
+/// boundary #14): an import's pub template is not copied into
+/// `entry.templates`, binds the IMPORT UNIT's template, and records no
+/// Local-vs-Import shadowing.
 #[test]
-fn the_entry_scope_excludes_templates_merged_from_imports() {
+fn the_entry_holds_none_of_its_imports_templates() {
     let fx = Fixture::new();
     let p = &fx.program;
     assert!(
-        p.entry().templates.iter().any(|t| t.name == "VisT")
-            && !p
-                .entry_declared_templates()
-                .iter()
-                .any(|t| t.name == "VisT"),
-        "precondition: VisT is an I5-merged copy, not an entry declaration"
+        !p.entry().templates.iter().any(|t| t.name == "VisT"),
+        "the entry must not hold a's pub VisT, got {:?}",
+        p.entry()
+            .templates
+            .iter()
+            .map(|t| &t.name)
+            .collect::<Vec<_>>()
     );
     let bindings = bind_program::<TopologyTemplate>(p, prelude());
     assert_binds(
         bindings.get("VisT"),
         named(&fx.a().templates, "VisT"),
-        "merged name",
+        "imported name",
     );
     assert!(
         !bindings.shadowings().iter().any(|s| s.key == "VisT"),
-        "a merged copy is not a second candidate for its own name"
+        "an imported template is the only candidate for its own name"
     );
 }
 
@@ -583,7 +585,7 @@ fn holds_name(surface: &[&TopologyTemplate], name: &str) -> bool {
 
 /// A qualified lookup sees one module's surface alone (I7), keyed by dotted
 /// module path: a direct import's `pub` templates, the entry's own
-/// declarations (never an I5-merged copy), or a prelude module's exports.
+/// declarations, or a prelude module's exports.
 #[test]
 fn module_surface_is_one_modules_surface_keyed_by_dotted_path() {
     let fx = Fixture::new();
@@ -606,12 +608,12 @@ fn module_surface_is_one_modules_surface_keyed_by_dotted_path() {
 
     let main = surface("main");
     assert!(
-        holds(&main, named(p.entry_declared_templates(), "Shared")),
+        holds(&main, named(&p.entry().templates, "Shared")),
         "the entry exposes its own Shared"
     );
     assert!(
         !holds_name(&main, "VisT"),
-        "the entry's surface excludes the I5-merged VisT"
+        "the entry's surface excludes a's VisT"
     );
 
     let std_key = prelude()

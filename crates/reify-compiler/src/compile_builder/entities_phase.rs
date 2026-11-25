@@ -117,7 +117,7 @@ pub(crate) fn phase_entities(
     // task 5867: split out the LOCAL half first. `structure_names` is the union
     // (local ∪ prelude) its own consumers want, but sub-target resolution needs
     // to know which names the module OWNS — see `PreludeRegistries::
-    // local_entity_names` and property 1 of `find_template_with_prelude`.
+    // local_entity_names` and property 1 of `resolve_sub_target_template`.
     let local_entity_names: HashSet<String> = ctx.local_entity_names();
     let structure_names: HashSet<String> = local_entity_names
         .iter()
@@ -138,7 +138,7 @@ pub(crate) fn phase_entities(
     let mut resolved_import_paths: Option<HashSet<String>> = None;
 
     // task 5867: prelude templates keyed by name for SUB-TARGET resolution
-    // (`types::find_template_with_prelude`), which the `Sub` pre-passes in
+    // (`types::resolve_sub_target_template`), which the `Sub` pre-passes in
     // `entity.rs` consult to populate `sub_member_types` /
     // `sub_realization_names` / `sub_structure_traits` / `sub_assoc_fn_keys`.
     //

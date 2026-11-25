@@ -1,4 +1,5 @@
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use reify_compiler::cfg::CfgSet;
 use reify_constraints::SimpleConstraintChecker;
@@ -162,7 +163,7 @@ pub(crate) fn module_path_for_file(path: &str) -> ModulePath {
 fn parse_and_compile_program(
     path: &str,
     cfg: &CfgSet,
-) -> Result<reify_compiler::program::CompiledProgram, ExitCode> {
+) -> Result<Arc<reify_compiler::program::CompiledProgram>, ExitCode> {
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
@@ -210,16 +211,17 @@ fn parse_and_compile_program(
         eprintln!("{}: {}", diag.severity, diag.message);
     }
 
-    Ok(program)
+    Ok(Arc::new(program))
 }
 
-/// The entry module of [`parse_and_compile_program`], for a command that needs
-/// nothing else of the program. They differ only in what they return.
-fn parse_and_compile_program_entry(
+/// [`parse_and_compile_program`], prepared for an engine to load, for a command
+/// whose routing gates inspect [`reify_eval::LoadedProgram::evaluated`] before
+/// it picks the engine. Loading it returns that same module.
+fn parse_and_prepare_program(
     path: &str,
     cfg: &CfgSet,
-) -> Result<reify_compiler::CompiledModule, ExitCode> {
-    parse_and_compile_program(path, cfg).map(|program| program.into_entry())
+) -> Result<reify_eval::LoadedProgram, ExitCode> {
+    parse_and_compile_program(path, cfg).map(reify_eval::LoadedProgram::new)
 }
 
 /// CLI-local alias for

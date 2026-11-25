@@ -4,73 +4,66 @@
 
 use std::borrow::Borrow;
 
+use reify_core::Diagnostic;
 use reify_ir::{CompiledFunction, EnumDef};
 
-use crate::name_env::{self, Bindings, Definition, Surface};
+use crate::name_env::{self, Bindings, Definition, Origin, Surface, Tier};
 use crate::program::{CompiledImportUnit, CompiledProgram};
 use crate::types::{
     CompiledConstraintDef, CompiledModule, CompiledPurpose, CompiledTrait, CompiledTypeAlias,
     CompiledUnit, TopologyTemplate,
 };
 
-/// What resolution starts from: a compiled program, or a lone module, which
-/// stands for the import-free program whose entry it is (resolution-unification
-/// I1) and so declares every template it holds.
+/// What resolution starts from: an entry module and its direct imports. A
+/// root is built only from a compiled program, whose entry holds only its own
+/// declarations (boundary #14), or from a lone module, which stands for the
+/// import-free program whose entry it is (resolution-unification I1). So the
+/// entry's own declarations are everything it holds.
 #[derive(Debug, Clone, Copy)]
-pub enum ProgramRoot<'a> {
-    Program(&'a CompiledProgram),
-    Module(&'a CompiledModule),
+pub struct ProgramRoot<'a> {
+    entry: &'a CompiledModule,
+    imports: &'a [CompiledImportUnit],
 }
 
 impl<'a> ProgramRoot<'a> {
-    /// The entry module.
-    pub fn entry(self) -> &'a CompiledModule {
-        match self {
-            Self::Program(program) => program.entry(),
-            Self::Module(module) => module,
-        }
+    /// The root whose entry is `entry` over the direct `imports`, in
+    /// declaration order.
+    fn new(entry: &'a CompiledModule, imports: &'a [CompiledImportUnit]) -> Self {
+        Self { entry, imports }
     }
 
-    /// The templates the entry itself declares, never a copy merged into it
-    /// from one of the root's imports.
-    pub fn entry_declared_templates(self) -> &'a [TopologyTemplate] {
-        match self {
-            Self::Program(program) => program.entry_declared_templates(),
-            Self::Module(module) => &module.templates,
-        }
+    /// The entry module.
+    pub fn entry(self) -> &'a CompiledModule {
+        self.entry
     }
 
     /// The entry's direct imports, in declaration order.
     pub fn imports(self) -> &'a [CompiledImportUnit] {
-        match self {
-            Self::Program(program) => &program.imports,
-            Self::Module(_) => &[],
-        }
+        self.imports
     }
 }
 
 impl<'a> From<&'a CompiledProgram> for ProgramRoot<'a> {
     fn from(program: &'a CompiledProgram) -> Self {
-        Self::Program(program)
+        Self::new(program.entry(), &program.imports)
     }
 }
 
 impl<'a> From<&'a CompiledModule> for ProgramRoot<'a> {
     fn from(module: &'a CompiledModule) -> Self {
-        Self::Module(module)
+        Self::new(module, &[])
     }
 }
 
 /// A definition kind as a program's entry declares it.
 pub trait ProgramDefinition: Definition {
-    /// The definitions the root's entry itself declares, never a copy merged
-    /// into it from another module.
+    /// The definitions the root's entry itself declares.
     fn declared_by_entry(root: ProgramRoot<'_>) -> impl Iterator<Item = &Self>;
 }
 
 impl ProgramDefinition for TopologyTemplate {
     fn declared_by_entry(root: ProgramRoot<'_>) -> impl Iterator<Item = &Self> {
-        root.entry_declared_templates().iter()
+        root.entry().templates.iter()
     }
 }
 
@@ -186,6 +179,61 @@ pub fn bind_program_where<'a, D: ProgramDefinition>(
     )
 }
 
+/// One Warning per first-wins collision across `root` whose loser is a user
+/// import's definition (resolution-unification D-6) and that no module's own
+/// compile already reports, so each collision has one reporter. Entry-vs-import
+/// is always reported here. Import-vs-import is reported here too, except for
+/// units, type aliases and constraint defs: the entry's compile binds its
+/// imports as its prelude and reports those three kinds' collisions there. A
+/// shadowed stdlib definition is the shadowing module's own compile's to
+/// report.
+///
+/// The ambient prelude binds after every import, so it can neither win over an
+/// import's definition nor change which import's wins: the report is the same
+/// over any prelude, and is computed over none.
+pub fn collision_warnings<'a>(root: impl Into<ProgramRoot<'a>>) -> Vec<Diagnostic> {
+    use ImportPairs::{LeaveToEntryCompile, Report};
+    let root = root.into();
+    [
+        import_tier_collisions::<TopologyTemplate>(root, Report),
+        import_tier_collisions::<CompiledFunction>(root, Report),
+        import_tier_collisions::<EnumDef>(root, Report),
+        import_tier_collisions::<CompiledUnit>(root, LeaveToEntryCompile),
+        import_tier_collisions::<CompiledTypeAlias>(root, LeaveToEntryCompile),
+        import_tier_collisions::<CompiledTrait>(root, Report),
+        import_tier_collisions::<CompiledConstraintDef>(root, LeaveToEntryCompile),
+        import_tier_collisions::<CompiledPurpose>(root, Report),
+    ]
+    .concat()
+}
+
+fn import_tier_collisions<D: ProgramDefinition>(
+    root: ProgramRoot<'_>,
+    import_pairs: ImportPairs,
+) -> Vec<Diagnostic> {
+    let entry = &root.entry().path;
+    bind_program::<D>(root, &[])
+        .shadowings()
+        .iter()
+        .filter(|shadowing| {
+            shadowing.shadowed.origin.tier() == Tier::Import
+                && shadowing.winner.origin != shadowing.shadowed.origin
+                && (shadowing.winner.origin == Origin::Local || import_pairs == ImportPairs::Report)
+        })
+        .map(|shadowing| name_env::collision_warning(shadowing, Some(entry)))
+        .collect()
+}
+
+/// Who reports a collision between two direct imports' definitions of one
+/// kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ImportPairs {
+    /// [`collision_warnings`] does.
+    Report,
+    /// The entry's own compile does: it binds its imports as its prelude.
+    LeaveToEntryCompile,
+}
+
 /// The definitions one module of `root` offers a qualified lookup
 /// (resolution-unification I7), keyed by dotted module path: the entry's own
 /// declarations, a direct import's `pub` surface, or a prelude module's
@@ -259,10 +307,14 @@ mod tests {
         let root = ProgramRoot::from(&module);
 
         assert!(std::ptr::eq(root.entry(), &module));
-        assert!(std::ptr::eq(
-            root.entry_declared_templates(),
-            module.templates.as_slice()
-        ));
+        assert!(
+            TopologyTemplate::declared_by_entry(root)
+                .map(|t| t as *const TopologyTemplate)
+                .eq(module
+                    .templates
+                    .iter()
+                    .map(|t| t as *const TopologyTemplate))
+        );
         assert!(root.imports().is_empty());
 
         let resolve =

@@ -50,6 +50,7 @@
 //! | Construct               | Where it slots in                                   | `InferredTraits`                      |
 //! |-------------------------|-----------------------------------------------------|---------------------------------------|
 //! | `extrude_infinite(...)` | `SweepKind::ExtrudeInfinite` arm of [`combine_sweep`], shared by both walkers | `InferredTraits::none()` flags |
+//! | `extrude_infinite_symmetric(...)` | the same `SweepKind::ExtrudeInfinite` arm | `InferredTraits::none()` flags |
 //!
 //! ## Unimplemented Unbounded primitives
 //!
@@ -942,7 +943,9 @@ pub fn try_infer_traits_for_function_call_in_env(
         // keeps it. zone_profile is in the modify arm above.
         "extrude" => Some(sweep_in_env(SweepKind::Extrude, args, env)),
         "extrude_symmetric" => Some(sweep_in_env(SweepKind::ExtrudeSymmetric, args, env)),
-        "extrude_infinite" => Some(sweep_in_env(SweepKind::ExtrudeInfinite, args, env)),
+        "extrude_infinite" | "extrude_infinite_symmetric" => {
+            Some(sweep_in_env(SweepKind::ExtrudeInfinite, args, env))
+        }
         "revolve" | "revolve_full" => Some(sweep_in_env(SweepKind::Revolve, args, env)),
         "sweep" => Some(sweep_in_env(SweepKind::Sweep, args, env)),
         "sweep_guided" => Some(sweep_in_env(SweepKind::SweepGuided, args, env)),

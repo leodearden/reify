@@ -655,10 +655,21 @@ if [ -f gui/sidecar/package-lock.json ]; then
     ok "gui/sidecar npm packages"
 fi
 
+# ---------- canonical-build-path cargo trampoline ----------
+#
+# Puts the cargo trampoline first on login shells' and systemd --user units'
+# PATH (see the installer's header and CLAUDE.md "Canonical build path").
+# Non-fatal: without it cargo simply builds at the real path.
+if "$(dirname "${BASH_SOURCE[0]}")/install-canon-trampoline.sh"; then
+    ok "canonical-build-path cargo trampoline installed"
+else
+    warn "cargo trampoline install failed (see above) — non-fatal, continuing setup"
+fi
+
 # ---------- Verification ----------
 
 info "Running verification build (cargo check)..."
-cargo check --workspace 2>&1
+"$(dirname "${BASH_SOURCE[0]}")/canon_run.py" cargo check --workspace 2>&1
 ok "cargo check passed"
 
 # ---------- agent toolchain-cache redirect (landlock sandbox) ----------
@@ -719,7 +730,7 @@ fi
 # and gives the user a known-good first command to copy.
 
 info "Building release CLI for smoke test (this may take 5-15 min on first run)..."
-cargo build --release -p reify-cli
+"$(dirname "${BASH_SOURCE[0]}")/canon_run.py" cargo build --release -p reify-cli
 ok "release binary at target/release/reify"
 
 info "Smoke test: reify check examples/m5_geometry.ri"

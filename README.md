@@ -18,7 +18,7 @@ Reify is in active development. Two things to set expectations:
 What the release ships, from the [GitHub releases page](https://github.com/leodearden/reify/releases):
 
 - `Reify_<version>_amd64.deb` — **the headline asset.** One `apt install` gives you the `reify` CLI on your `PATH`, the `reify-gui` app and a desktop entry. It brings its own copies of OpenCASCADE, gmsh, OpenVDB and oneTBB, so there is no PPA, conda or build step.
-- `Reify_<version>_amd64.AppImage` — the same GUI as a single file, for when you don't want to install a package. It needs a desktop session (GTK 3 and the usual GL libraries, which a stock Ubuntu desktop has). It carries the `reify` CLI inside it too; see [Install](#install).
+- `Reify_<version>_amd64.AppImage` — the same GUI as a single file, for when you don't want to install a package. It needs a desktop session (GTK 3 and the usual GL libraries, which a stock Ubuntu desktop has). It carries the `reify` CLI inside it too; run it as `./Reify_*_amd64.AppImage cli <command>` (see [Install](#install)).
 
 What does work, end-to-end:
 
@@ -64,10 +64,14 @@ What's flaky or missing:
 
 ```sh
 chmod +x Reify_*_amd64.AppImage
-./Reify_*_amd64.AppImage          # opens the GUI on its Start view
+./Reify_*_amd64.AppImage                           # opens the GUI on its Start view
+./Reify_*_amd64.AppImage --help                    # prints usage
+./Reify_*_amd64.AppImage cli check m5_geometry.ri  # the bundled reify CLI
 ```
 
-If your machine has no FUSE 2 (`libfuse2t64`), run it with `APPIMAGE_EXTRACT_AND_RUN=1 ./Reify_*_amd64.AppImage`. To get the CLI out of an AppImage, extract it once with `./Reify_*_amd64.AppImage --appimage-extract`; the CLI is then `squashfs-root/usr/bin/reify`.
+Relative paths resolve from your current directory. Every `reify <command>` in this README and in [`docs/getting-started.md`](docs/getting-started.md) except `gui` and `gui-debug` works as `./Reify_<version>_amd64.AppImage cli <command>`; `alias reify="$PWD/Reify_<version>_amd64.AppImage cli"` puts it on your command line, with the same exception. To open a file in the GUI, pass it to the AppImage itself, `./Reify_<version>_amd64.AppImage m5_geometry.ri`, where a relative path also resolves from your current directory.
+
+If your machine has no FUSE 2 (`libfuse2t64`), run it with `APPIMAGE_EXTRACT_AND_RUN=1 ./Reify_*_amd64.AppImage`.
 
 ## Try it
 
@@ -79,7 +83,7 @@ reify build m5_geometry.ri -o /tmp/flange.step
 reify test  m5_geometry.ri
 ```
 
-GUI: launch **Reify** from your desktop's application menu, or run `reify-gui` (add a `.ri` path to skip the Start view and open that file). With no file, the Start view lets you Open…, create a New… file, reopen a Recent one, and pick a Mode.
+GUI: launch **Reify** from your desktop's application menu, or run `reify-gui` (add a `.ri` path to skip the Start view and open that file; `reify-gui --help` lists its options). With no file, the Start view lets you Open…, create a New… file, reopen a Recent one, and pick a Mode.
 
 For more, see [`docs/getting-started.md`](docs/getting-started.md).
 

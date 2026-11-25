@@ -59,7 +59,7 @@ Where context is insufficient to disambiguate, the qualified term is used. Unqua
 
 ## 2. Evaluation Graph
 
-The evaluation graph is the central runtime data structure. It is a directed acyclic graph (DAG) of typed nodes connected by dependency edges, built on immutable snapshots with persistent data structures.
+The evaluation graph is the central runtime data structure. It is a directed acyclic graph (DAG) of typed nodes connected by dependency edges, built on immutable snapshots with persistent data structures. Sections 2 to 6 describe a design that was never built in this form; `docs/evaluation-core-contract.md` succeeds them, and they stay here because the old engine's code cites them by number.
 
 ### 2.1 Node Taxonomy (7 Types)
 

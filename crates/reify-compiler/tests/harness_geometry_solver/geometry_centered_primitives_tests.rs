@@ -366,7 +366,7 @@ fn cylinder_centered_lowers_to_cylinder_plus_translate() {
 #[test]
 fn revolve_full_injects_angle_dimensioned_tau() {
     let source = r#"structure def S {
-    let body = revolve_full(rectangle(5mm, 10mm), 0mm, 0mm, 0mm, 0, 0, 1)
+    let body = revolve_full(rectangle(5mm, 10mm), point3(0mm, 0mm, 0mm), dir(0, 0, 1))
 }"#;
     let compiled = compile_no_errors(source);
     let template = compiled

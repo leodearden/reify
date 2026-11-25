@@ -130,7 +130,7 @@ fn tally_op(op: &CompiledGeometryOp, site: &str, tally: &mut Tally) {
 
 fn tally(program: &CompiledProgram) -> Tally {
     let mut tally = Tally::default();
-    for template in program.entry_declared_templates() {
+    for template in &program.entry().templates {
         for realization in &template.realizations {
             let site = format!(
                 "{}.{}",

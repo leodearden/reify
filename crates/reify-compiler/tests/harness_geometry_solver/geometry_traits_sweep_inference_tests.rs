@@ -48,10 +48,11 @@ const fn lifts_its_section(kind: SweepKind) -> bool {
 /// Every sweep builtin name that geometry.rs lowers to a single `Sweep` op,
 /// paired with that op's `SweepKind`. `zone_annulus` is absent: it lowers to a
 /// `Difference` of two `Pipe` sweeps.
-const SWEEP_NAME_KINDS: [(&str, SweepKind); 11] = [
+const SWEEP_NAME_KINDS: [(&str, SweepKind); 12] = [
     ("extrude", SweepKind::Extrude),
     ("extrude_symmetric", SweepKind::ExtrudeSymmetric),
     ("extrude_infinite", SweepKind::ExtrudeInfinite),
+    ("extrude_infinite_symmetric", SweepKind::ExtrudeInfinite),
     ("revolve", SweepKind::Revolve),
     ("revolve_full", SweepKind::Revolve),
     ("sweep", SweepKind::Sweep),
@@ -118,7 +119,7 @@ fn trait_slot_source(slot_trait: &str, top_lets: &str, g_arg: &str) -> String {
     )
 }
 
-const EXTRUDE_INFINITE_OF_CIRCLE: &str = r#"extrude_infinite(circle(5mm), 0, 0, 1, "positive")"#;
+const EXTRUDE_INFINITE_OF_CIRCLE: &str = "extrude_infinite(circle(5mm), dir(0, 0, 1))";
 
 fn template<'a>(compiled: &'a CompiledModule, name: &str) -> &'a TopologyTemplate {
     compiled
@@ -206,6 +207,19 @@ fn let_bound_extrude_infinite_at_bounded_param_matches_inline() {
         diagnostic_count(&let_bound, DiagnosticCode::GeometryUnbounded),
         1,
         "let-bound"
+    );
+}
+
+#[test]
+fn extrude_infinite_symmetric_at_bounded_param_is_unbounded() {
+    let source = trait_slot_source(
+        "Bounded",
+        "",
+        "extrude_infinite_symmetric(circle(5mm), dir(0, 0, 1))",
+    );
+    assert_eq!(
+        diagnostic_count(&source, DiagnosticCode::GeometryUnbounded),
+        1
     );
 }
 
@@ -412,7 +426,7 @@ fn let_bound_curve_profile_sweep_infers_surface_through_the_sibling_chase() {
 fn let_bound_profile_of_extrude_infinite_at_bounded_param_is_still_unbounded() {
     let let_bound_profile = trait_slot_source(
         "Bounded",
-        "let c = circle(5mm)\nlet e = extrude_infinite(c, 0, 0, 1, \"positive\")",
+        "let c = circle(5mm)\nlet e = extrude_infinite(c, dir(0, 0, 1))",
         "e",
     );
     assert_eq!(

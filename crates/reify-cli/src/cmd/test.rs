@@ -12,7 +12,7 @@ use reify_eval::{TestResult, TestStatus};
 use crate::args::{parse_single_file_arg, split_cfg_args_or_usage};
 use crate::constraint_report::report_eval_output;
 use crate::help::TEST_USAGE;
-use crate::parse_and_compile_program_entry;
+use crate::parse_and_compile_program;
 
 pub(crate) fn cmd_test(args: &[String]) -> ExitCode {
     let (cfg, rest) = match split_cfg_args_or_usage(args, TEST_USAGE) {
@@ -24,10 +24,13 @@ pub(crate) fn cmd_test(args: &[String]) -> ExitCode {
         Err(code) => return code,
     };
 
-    let compiled = match parse_and_compile_program_entry(&path, &cfg) {
-        Ok(c) => c,
+    let program = match parse_and_compile_program(&path, &cfg) {
+        Ok(p) => p,
         Err(code) => return code,
     };
+    // Each test evaluates in an engine of its own, over an isolated clone of
+    // this module.
+    let compiled = reify_eval::evaluation_module(&program);
 
     if compiled
         .diagnostics

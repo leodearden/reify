@@ -7,7 +7,7 @@ use reify_core::Severity;
 
 use crate::args::{parse_single_file_arg, split_cfg_args_or_usage};
 use crate::help::EXPLAIN_USAGE;
-use crate::{configured_eval_engine, parse_and_compile_program_entry};
+use crate::{configured_eval_engine, parse_and_compile_program};
 
 /// Compile the entry as a program (its `#cfg`-satisfied imports resolved as
 /// under `reify check`, with repeated `--cfg` selecting them), then print
@@ -32,12 +32,13 @@ pub(crate) fn cmd_explain(args: &[String]) -> ExitCode {
         Err(code) => return code,
     };
 
-    let compiled = match parse_and_compile_program_entry(&path, &cfg) {
-        Ok(c) => c,
+    let program = match parse_and_compile_program(&path, &cfg) {
+        Ok(p) => p,
         Err(code) => return code,
     };
 
-    if compiled
+    if program
+        .entry()
         .diagnostics
         .iter()
         .any(|d| d.severity == Severity::Error)
@@ -49,6 +50,7 @@ pub(crate) fn cmd_explain(args: &[String]) -> ExitCode {
     let mut engine = configured_eval_engine(|posture| {
         reify_eval::Engine::new(posture, Box::new(SimpleConstraintChecker), None)
     });
+    let compiled = engine.load(program);
     let result = engine.eval(&compiled);
 
     // Collect and sort for deterministic output (HashMap has non-deterministic order).

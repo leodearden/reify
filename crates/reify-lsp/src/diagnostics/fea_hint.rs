@@ -55,7 +55,7 @@ pub(super) fn fea_not_evaluated_hints(
     // test uses `param gap : Length = auto` as its non-FEA control case), so
     // plenty of non-FEA documents still build the maps below on every
     // keystroke. A cheaper *and correct* pre-filter isn't available for
-    // free: `engine.prelude()` is the full stdlib, which always
+    // free: the engine's prelude is the full stdlib, which always
     // declares `@optimized` functions (`solve_elastic_static` and its
     // siblings), so "does `compiled.functions` ∪ prelude declare any
     // function with `optimized_target.is_some()`" is trivially true on every
@@ -96,22 +96,18 @@ pub(super) fn fea_not_evaluated_hints(
     // functions) before, O(functions) once to build plus O(1) lookups
     // after.
     //
-    // Iterate the union of the compiled module's own functions and the
-    // engine's prelude functions directly, with no intermediate `Vec` —
-    // stdlib solvers like `solve_elastic_static` are prelude functions,
-    // not user-module functions, so the prelude must be included or
-    // every FEA constraint would fail to match. Module-local functions
-    // are chained FIRST so that `.or_insert_with` (which keeps only the
-    // first-seen function per name) resolves a name shared between a
-    // module-local function and a prelude solver to the module's own
-    // definition — see the caller precedence note on
-    // `constraint_depends_on_unregistered_optimized_compute`.
+    // Iterate the module's dispatch table: its own functions, then its
+    // imports', then the prelude's — stdlib solvers like
+    // `solve_elastic_static` are prelude functions, not user-module
+    // functions, so the prelude must be included or every FEA constraint
+    // would fail to match. The table is in precedence order, so
+    // `.or_insert_with` (which keeps only the first-seen function per name)
+    // resolves a name shared between a module-local function and a prelude
+    // solver to the module's own definition — see the caller precedence
+    // note on `constraint_depends_on_unregistered_optimized_compute`.
+    let functions = engine.env_of(compiled).env().function_table();
     let mut unregistered_optimized_fn_names: HashMap<&str, bool> = HashMap::new();
-    for f in compiled
-        .functions
-        .iter()
-        .chain(engine.prelude().iter().flat_map(|m| m.functions.iter()))
-    {
+    for f in functions.iter() {
         unregistered_optimized_fn_names
             .entry(f.name.as_str())
             .or_insert_with(|| {
@@ -208,9 +204,9 @@ pub(super) const FEA_NOT_EVALUATED_CODE: &str = "fea-not-evaluated";
 /// genuinely-unresolved `auto` param)" test.
 ///
 /// `unregistered_optimized_fn_names` should map every visible function name
-/// (the union of the compiled module's own functions and the engine's
-/// prelude functions — stdlib solvers such as `solve_elastic_static` are
-/// prelude functions, not user-module functions) to whether that name's
+/// (the module's dispatch table: its own functions, its imports' and the
+/// engine's prelude functions — stdlib solvers such as `solve_elastic_static`
+/// are prelude functions, not user-module functions) to whether that name's
 /// `@optimized("target")` annotation (if any) names a compute target with
 /// no registered trampoline on the engine. Building this map is the
 /// caller's responsibility (see [`fea_not_evaluated_hints`]) so it can
@@ -222,9 +218,9 @@ pub(super) const FEA_NOT_EVALUATED_CODE: &str = "fea-not-evaluated";
 /// match cannot mis-resolve which target applies among same-named prelude
 /// overloads.
 ///
-/// Caller precedence note: the caller builds this map from module-local
-/// functions chained *before* prelude functions and inserts with "first
-/// occurrence wins" — mirroring `find_matching_compiled_function`'s
+/// Caller precedence note: the caller builds this map from the dispatch
+/// table, where module-local functions precede prelude functions, and inserts
+/// with "first occurrence wins" — mirroring `find_matching_compiled_function`'s
 /// (`reify-expr/src/lib.rs`) first-match-wins precedent for "which function
 /// does this name resolve to". This means a module-local function that
 /// happens to share a prelude solver's name (e.g. a user helper also named
@@ -538,8 +534,7 @@ structure ShadowedSolver {
              `solve_elastic_static`"
         );
         assert!(
-            engine
-                .prelude()
+            reify_compiler::stdlib_loader::load_stdlib()
                 .iter()
                 .flat_map(|m| m.functions.iter())
                 .filter(|f| f.name == "solve_elastic_static")

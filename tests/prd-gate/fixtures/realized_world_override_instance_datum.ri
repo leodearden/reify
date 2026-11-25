@@ -5,7 +5,7 @@ module realized_world_override_instance_datum
 
 pub structure Inner {
     param size : Length = 10mm
-    let ref_cyl = translate(revolve(rectangle(20mm, 10mm), -10mm, 0mm, 0mm, 0.0, 1.0, 0.0, 6.283185307179586rad), size, 0mm, 0mm)
+    let ref_cyl = translate(revolve(rectangle(20mm, 10mm), point3(-10mm, 0mm, 0mm), dir(0.0, 1.0, 0.0), 6.283185307179586rad), size, 0mm, 0mm)
     let body = circular_pattern(box(1mm, 1mm, 1mm), ref_cyl.axis, 4, 360deg)
 }
 

@@ -1,12 +1,13 @@
 // Split from lib.rs (task 2032) — admin methods.
 
 use crate::cache::{CacheStore, NodeId};
+use crate::def_env::LoadedProgram;
 use crate::demand::DemandRegistry;
 use crate::journal::EventJournal;
 use crate::snapshot::Snapshot;
 use crate::solver_posture::SolveStage;
-use crate::{DefEnv, Engine, EvaluationState, SolverPosture};
-use reify_compiler::{CompiledModule, EntityKind, ValueCellKind, program::CompiledProgram};
+use crate::{Engine, EnvScope, EvaluationState, SolverPosture};
+use reify_compiler::{CompiledModule, EntityKind, ValueCellKind};
 use reify_core::{Diagnostic, SnapshotId, VersionId};
 use reify_ir::{
     CompiledFunction, ConstraintChecker, ConstraintSolver, GeometryKernel, OptimizedImpl,
@@ -258,10 +259,6 @@ impl Engine {
         default_kernel_name: Option<String>,
         prelude: &'static [CompiledModule],
     ) -> Self {
-        let prelude_functions: Vec<CompiledFunction> = prelude
-            .iter()
-            .flat_map(|pm| pm.functions.iter().cloned())
-            .collect();
         // Seed the structure side-table from the prelude's `structure def`
         // templates (task 3540 / SIR-α step-12). Refreshed incrementally per
         // `eval()` from the user module's templates.
@@ -274,7 +271,6 @@ impl Engine {
             solve_stage: SolveStage::for_posture(posture),
             cache: CacheStore::new(),
             prelude,
-            prelude_functions,
             loaded_program: None,
             structure_registry,
             param_overrides: std::collections::HashMap::new(),
@@ -1751,38 +1747,27 @@ impl Engine {
         }
     }
 
-    /// Returns the compiled stdlib prelude modules stored by this engine.
-    pub fn prelude(&self) -> &[CompiledModule] {
-        self.prelude
-    }
-
-    /// Install `program`, whose [`DefEnv`] [`Self::def_env`] then returns, and
-    /// return its definition-collision report for the caller to surface. Eval
-    /// state is untouched, and eval does not resolve in it: eval and build
-    /// resolve through `Engine::env_of(module)`, the module's own
-    /// environment. κ #5524 points that seam at the loaded program.
-    // G-allow: resolution-unification §3.2 Engine::load; first production consumer is κ #5524
-    pub fn load(&mut self, program: impl Into<Arc<CompiledProgram>>) -> Vec<Diagnostic> {
-        let program = program.into();
-        let warnings = DefEnv::with_prelude(&program, self.prelude).collision_warnings();
-        self.loaded_program = Some(program);
-        warnings
+    /// Install `program`, replacing any earlier load, and return the module to
+    /// evaluate it as: its [`crate::evaluation_module`], the very
+    /// [`LoadedProgram::evaluated`] when `program` is already a
+    /// [`LoadedProgram`]. Evaluating, checking or building exactly that module
+    /// resolves in `program`'s environment ([`Self::env_of`]). The program's
+    /// definition-collision report rides `program.entry()`'s diagnostics. Eval
+    /// state is untouched.
+    pub fn load(&mut self, program: impl Into<LoadedProgram>) -> Arc<CompiledModule> {
+        let loaded = program.into();
+        let evaluated = Arc::clone(loaded.evaluated());
+        self.loaded_program = Some(Arc::new(loaded));
+        evaluated
     }
 
     /// The definition environment every eval and build path resolves
-    /// `module`'s definitions in: `module`'s own over this engine's prelude.
-    /// It borrows `module` alone, never `self`.
-    pub(crate) fn env_of<'m>(&self, module: &'m CompiledModule) -> DefEnv<'m> {
-        DefEnv::of_module(module, self.prelude)
-    }
-
-    /// The loaded program's definition environment over this engine's
-    /// prelude; `None` before a load.
-    // G-allow: resolution-unification §3.2 Engine::load; first production consumer is κ #5524
-    pub fn def_env(&self) -> Option<DefEnv<'_>> {
-        self.loaded_program
-            .as_deref()
-            .map(|program| DefEnv::with_prelude(program, self.prelude))
+    /// `module`'s definitions in, over this engine's prelude: the loaded
+    /// program's when `module` is the very module [`Self::load`] returned,
+    /// otherwise `module`'s own. The scope borrows `module` alone, never
+    /// `self`.
+    pub fn env_of<'m>(&self, module: &'m CompiledModule) -> EnvScope<'m> {
+        EnvScope::new(module, self.loaded_program.as_ref(), self.prelude)
     }
 
     /// Set the maximum depth for recursive sub-component unfolding.

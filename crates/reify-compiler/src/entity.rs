@@ -1314,7 +1314,7 @@ pub(crate) fn compile_entity(
     compiled_templates: &[TopologyTemplate],
     // task 5867: the prelude-derived lookup tables. `prelude.ctor` is
     // Structure-filtered and drives constructor lowering; `prelude.sub_target`
-    // is unfiltered and is read ONLY via `find_template_with_prelude`, which
+    // is unfiltered and is read ONLY via `resolve_sub_target_template`, which
     // also applies the `prelude.local_entity_names` shadowing guard. They
     // travel bundled so the two same-typed maps cannot be transposed here; see
     // `types::PreludeRegistries` for the full contract.
@@ -2142,7 +2142,7 @@ pub(crate) fn compile_entity(
                             // `find_template` here is module-only, so an arm sub
                             // targeting a prelude template (`A => sub s :
                             // DisplayStyle`) left every map below unpopulated.
-                            let child_tmpl = find_template_with_prelude(
+                            let child_tmpl = resolve_sub_target_template(
                                 compiled_templates,
                                 prelude,
                                 &sub.structure_name,
@@ -2308,7 +2308,7 @@ pub(crate) fn compile_entity(
                 // below were populated while `sub_component_types` above always
                 // was — the "forward-declared" shape that makes a relaying
                 // `let` lower to a `RealizationDecl` instead of a value cell.
-                if let Some(child_tmpl) = find_template_with_prelude(
+                if let Some(child_tmpl) = resolve_sub_target_template(
                     compiled_templates,
                     prelude,
                     &effective_structure_name,
@@ -2381,7 +2381,7 @@ pub(crate) fn compile_entity(
                                     // so an arm type defined in the prelude does
                                     // not yield an empty member map here.
                                     let arm_members: BTreeMap<String, Type> =
-                                        find_template_with_prelude(
+                                        resolve_sub_target_template(
                                             compiled_templates,
                                             prelude,
                                             arm_struct,
@@ -5301,7 +5301,7 @@ fn compile_match_arm_decl_group(
     clusters_with_outside_collision: &HashSet<String>,
     compiled_templates: &[TopologyTemplate],
     // task 5867: the prelude-derived lookup tables; paired with
-    // `compiled_templates` in every `find_template_with_prelude` call.
+    // `compiled_templates` in every `resolve_sub_target_template` call.
     prelude: &PreludeRegistries<'_, '_>,
 ) {
     let Some(MatchArmDiscriminant {
@@ -5656,7 +5656,7 @@ fn compile_match_arm_decl_group(
             // task 5867 widened the LOOKUP to module-first/prelude-fallback; the
             // always-push discipline above is unchanged.
             let arm_member_types =
-                find_template_with_prelude(compiled_templates, prelude, &sub.structure_name)
+                resolve_sub_target_template(compiled_templates, prelude, &sub.structure_name)
                     .map(member_type_map_from_template)
                     .unwrap_or_default();
             per_arm_member_maps.push((sub.structure_name.clone(), arm_member_types));

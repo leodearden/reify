@@ -129,6 +129,9 @@ tests/infra/test_refresh_warm_base_built_tree.py  tests/infra/test_refresh_warm_
 # Its WriterParity class replays verify.sh's own attempt-0 stamp line, so moving
 # or reshaping that sidecar reds here instead of disabling the guard fail-open.
 scripts/verify.sh                    tests/infra/test_refresh_warm_base_built_tree.sh
+# Task 10230: refresh-warm-base.sh drops top-level socket nodes from the gen, pinned by a .py suite.
+scripts/refresh-warm-base.sh         tests/infra/test_refresh_warm_base_sockets.sh
+tests/infra/test_refresh_warm_base_sockets.py  tests/infra/test_refresh_warm_base_sockets.sh
 # Task 10152: the promote-time eviction of build-script runs the build root's
 # cargo would rerun, pinned by a .py suite whose RefreshStep class also pins
 # refresh-warm-base.sh's Step 3c to that sibling (fail-closed when missing).
@@ -143,10 +146,63 @@ scripts/evict-dirty-target-units.py  tests/infra/test_refresh_warm_base.sh
 tests/infra/refresh_warm_base_harness.py  tests/infra/test_evict_dirty_target_units.sh
 tests/infra/refresh_warm_base_harness.py  tests/infra/test_prune_unconsulted_target.sh
 tests/infra/refresh_warm_base_harness.py  tests/infra/test_refresh_warm_base_built_tree.sh
+tests/infra/refresh_warm_base_harness.py  tests/infra/test_refresh_warm_base_sockets.sh
 # Task 10167: the seed-time relocation of cargo dep-info input paths, called by seed-warm-lane.sh.
 scripts/relocate-depinfo-paths.py  tests/infra/test_seed_depinfo_relocation.sh
 scripts/seed-warm-lane.sh    tests/infra/test_seed_depinfo_relocation.sh
 tests/infra/test_seed_depinfo_relocation.py  tests/infra/test_seed_depinfo_relocation.sh
+# Its seed fixture (Pool, hermetic_env, STUB_CP) lives in a shared helper module,
+# so an edit to the helper selects the suite.
+tests/infra/seed_warm_lane_harness.py  tests/infra/test_seed_depinfo_relocation.sh
+# That helper imports refresh_warm_base_harness.py's cp stub, so an edit there
+# selects the suite too.
+tests/infra/refresh_warm_base_harness.py  tests/infra/test_seed_depinfo_relocation.sh
+# Task 10230: the seed honours the canonical-build-path stamp of a cloned base target.
+scripts/seed-warm-lane.sh    tests/infra/test_seed_warm_lane_canon_stamp.sh
+tests/infra/test_seed_warm_lane_canon_stamp.py    tests/infra/test_seed_warm_lane_canon_stamp.sh
+# It asserts relocate-depinfo-paths.py's own summary line, positively for an
+# adapted target and negatively for a kept one, so a wording change reds here.
+scripts/relocate-depinfo-paths.py  tests/infra/test_seed_warm_lane_canon_stamp.sh
+# The suites that run the REAL seed scripts stage their fixtures through
+# seed_warm_lane_harness.py, which reuses refresh_warm_base_harness.py's cp
+# stub, and load the primitive through canon_run_fixture.py, so an edit to any
+# of the three selects each.
+tests/infra/seed_warm_lane_harness.py     tests/infra/test_seed_warm_lane_canon_stamp.sh
+tests/infra/seed_warm_lane_harness.py     tests/infra/test_canon_launch_sites.sh
+tests/infra/refresh_warm_base_harness.py  tests/infra/test_seed_warm_lane_canon_stamp.sh
+tests/infra/refresh_warm_base_harness.py  tests/infra/test_canon_launch_sites.sh
+tests/infra/canon_run_fixture.py          tests/infra/test_seed_warm_lane_canon_stamp.sh
+tests/infra/canon_run_fixture.py          tests/infra/test_canon_launch_sites.sh
+# Task 10168: tree-sitter-freshness.sh evict-stale, the promote-time removal of
+# tree-sitter-reify build-script runs whose input stamp disagrees with the
+# promoted tree, pinned by a .py suite behind a thin .sh wrapper.
+scripts/tree-sitter-freshness.sh  tests/infra/test_tree_sitter_stale_run_eviction.sh
+tests/infra/test_tree_sitter_stale_run_eviction.py  tests/infra/test_tree_sitter_stale_run_eviction.sh
+# Its RefreshStep class pins refresh-warm-base.sh's Step 3d to that sibling
+# (fail-closed when missing); SeededLaneEnsure runs the promote -> real seed ->
+# lane ensure chain through both shared harness modules.
+scripts/refresh-warm-base.sh  tests/infra/test_tree_sitter_stale_run_eviction.sh
+scripts/seed-warm-lane.sh  tests/infra/test_tree_sitter_stale_run_eviction.sh
+tests/infra/refresh_warm_base_harness.py  tests/infra/test_tree_sitter_stale_run_eviction.sh
+tests/infra/seed_warm_lane_harness.py  tests/infra/test_tree_sitter_stale_run_eviction.sh
+# Its no-hasher case builds a hasher-free PATH through a shared helper module.
+tests/infra/masked_path_harness.py  tests/infra/test_tree_sitter_stale_run_eviction.sh
+# The real freshness script also runs in place inside test_refresh_warm_base.sh's
+# refreshes, as the evictor does, so a freshness edit selects that suite.
+scripts/tree-sitter-freshness.sh  tests/infra/test_refresh_warm_base.sh
+# Two more suites run the REAL refresh in place, and so every sibling it runs:
+# test_warm_base_coherence.sh (its --landed-commit boundary cases) and
+# test_warm_lane_pool.sh (its lane-to-base refreshes). An edit to the refresh or
+# to any of those siblings selects both, so a sibling edit that broke the
+# refresh on those suites' fixture lanes cannot red them unselected.
+# The refresh -> test_warm_lane_pool.sh row already exists, above Task 5981's.
+scripts/refresh-warm-base.sh         tests/infra/test_warm_base_coherence.sh
+scripts/prune-unconsulted-target.sh  tests/infra/test_warm_base_coherence.sh
+scripts/prune-unconsulted-target.sh  tests/infra/test_warm_lane_pool.sh
+scripts/evict-dirty-target-units.py  tests/infra/test_warm_base_coherence.sh
+scripts/evict-dirty-target-units.py  tests/infra/test_warm_lane_pool.sh
+scripts/tree-sitter-freshness.sh     tests/infra/test_warm_base_coherence.sh
+scripts/tree-sitter-freshness.sh     tests/infra/test_warm_lane_pool.sh
 # Task 9246: the cron sweep of idle worktree targets exempts _merge-verify and
 # respects each worktree's lane lock, pinned by a .py suite behind a thin .sh
 # wrapper, same pair shape.
@@ -370,6 +426,12 @@ tests/infra/run_all.sh               tests/infra/test_run_all*.sh
 scripts/land.sh                      tests/infra/test_land_*.sh
 hooks/pre-merge-commit               tests/infra/test_hooks_call_verify.sh
 hooks/pre-commit                     tests/infra/test_hooks_call_verify.sh
+# Task 10230: each launch site runs its command through the tree's scripts/canon_run.py.
+hooks/pre-merge-commit               tests/infra/test_canon_launch_sites.sh
+hooks/pre-commit                     tests/infra/test_canon_launch_sites.sh
+hooks/project-checks                 tests/infra/test_canon_launch_sites.sh
+scripts/seed-warm-base-initial.sh    tests/infra/test_canon_launch_sites.sh
+tests/infra/test_canon_launch_sites.py    tests/infra/test_canon_launch_sites.sh
 hooks/reference-transaction          tests/infra/test_reference_transaction_gate.sh
 hooks/main-gate-lib.sh               tests/infra/test_reference_transaction_gate.sh
 # Task 5981: the same two artifacts also carry the refs/stash arm (the guard
@@ -798,6 +860,12 @@ scripts/setup-main-gate-worktree-config.sh    tests/infra/test_main_gate_worktre
 # row above (same wiring-assert shape); setup-dev.sh already carries OCCT,
 # host-global-unit-pinning, git-rerere-guard and jcodemunch-index-units rows.
 scripts/setup-dev.sh                          tests/infra/test_main_gate_worktree_config.sh
+
+# test_canon_interactive.sh (task 10231) runs scripts/install-canon-trampoline.sh
+# against a scratch HOME and reads setup-dev.sh's wiring of it and of its two
+# in-tree builds through canon_run.py, so an edit to either selects the suite.
+scripts/setup-dev.sh                          tests/infra/test_canon_interactive.sh
+scripts/install-canon-trampoline.sh           tests/infra/test_canon_interactive.sh
 
 # Task 7044 (Gap 3): task 7630's GUI vitest worker->host RPC-hardening runner.
 # scripts/gui-vitest-run.sh already routes to the full --scope all gate via

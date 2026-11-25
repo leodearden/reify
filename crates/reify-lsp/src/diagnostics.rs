@@ -308,24 +308,7 @@ pub fn compute_diagnostics_with_state(
         .unwrap_or(false)
         && state.is_engine_initialized();
 
-    // Capture eval-time diagnostics from eval() / eval_cached().
-    //
-    // Both eval() and eval_cached() now emit the same diagnostic kinds:
-    // circular let-binding dependencies, sub-component lookup failures,
-    // param_override type/dimension mismatches, solver Infeasible / NoProgress.
-    // These are NOT reflected in check_snapshot()'s CheckResult and would be
-    // silently dropped without this capture.
-    //
-    // On the rare check_snapshot → None fallback we drop the captured copy
-    // because check() internally re-runs eval() and prepends those diagnostics
-    // to CheckResult.diagnostics — keeping them would double-emit.
-    let mut eval_diagnostics: Vec<Diagnostic> = if content_unchanged {
-        state
-            .engine
-            .eval_cached(compiled, VersionId(state.version_counter))
-            .eval_result
-            .diagnostics
-    } else {
+    if !content_unchanged {
         // Observability: if the key *did* match but the engine was uninitialized,
         // that is the specific invariant violation the engine-init guard (above) was
         // added to catch — last_eval_cache_key was set without a preceding eval().
@@ -348,6 +331,28 @@ pub fn compute_diagnostics_with_state(
         }
         let checker = SimpleConstraintChecker;
         state.engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
+    }
+    let document = document.loaded_into(&mut state.engine);
+    let compiled = document.module();
+
+    // Capture eval-time diagnostics from eval() / eval_cached().
+    //
+    // Both eval() and eval_cached() now emit the same diagnostic kinds:
+    // circular let-binding dependencies, sub-component lookup failures,
+    // param_override type/dimension mismatches, solver Infeasible / NoProgress.
+    // These are NOT reflected in check_snapshot()'s CheckResult and would be
+    // silently dropped without this capture.
+    //
+    // On the rare check_snapshot → None fallback we drop the captured copy
+    // because check() internally re-runs eval() and prepends those diagnostics
+    // to CheckResult.diagnostics — keeping them would double-emit.
+    let mut eval_diagnostics: Vec<Diagnostic> = if content_unchanged {
+        state
+            .engine
+            .eval_cached(compiled, VersionId(state.version_counter))
+            .eval_result
+            .diagnostics
+    } else {
         state.engine.eval(compiled).diagnostics
     };
 

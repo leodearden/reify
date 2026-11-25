@@ -1,0 +1,5 @@
+module mathlib
+
+pub fn double_it(x: Real) -> Real {
+    x * 2
+}

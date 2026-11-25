@@ -178,6 +178,8 @@ mod cli_structure_instance_golden;
 mod cli_sub_placement_assembly;
 #[path = "harness_cli/cli_surface_finish_cost.rs"]
 mod cli_surface_finish_cost;
+#[path = "harness_cli/cli_sweep_direction_forms.rs"]
+mod cli_sweep_direction_forms;
 #[path = "harness_cli/cli_test.rs"]
 mod cli_test;
 #[path = "harness_cli/cli_tensegrity_e2e.rs"]

@@ -14,9 +14,11 @@
 # debug-only so the common, high-frequency path gives fast feedback.
 # verify.sh bakes in the cargo env, sccache/jobserver, and OCCT LD_LIBRARY_PATH,
 # so the hook no longer depends on the caller's ambient environment.
+# verify.sh runs through the tree's canonical-build-path primitive, which execs it
+# untouched in a real-path build directory.
 #
 # Receives repo root as $1.
 
 ROOT="${1:?}"
 
-exec "$ROOT/scripts/verify.sh" all --profile debug --scope staged --include-infra
+exec "$ROOT/scripts/canon_run.py" exec -- "$ROOT/scripts/verify.sh" all --profile debug --scope staged --include-infra

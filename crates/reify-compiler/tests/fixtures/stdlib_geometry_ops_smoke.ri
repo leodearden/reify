@@ -75,12 +75,14 @@ structure def StdlibGeometryOpsSmoke {
 
     // ── Sweep ────────────────────────────────────────────────────────────────
     let ex = extrude(prof, 5mm)                                  // extrude(profile, distance)
-    let rv = revolve(prof, 0mm, 0mm, 0mm, 0, 1, 0, 360deg)      // revolve(profile, ox,oy,oz, ax,ay,az, angle)
+    let rv = revolve(prof, point3(0mm, 0mm, 0mm), dir(0, 1, 0), 360deg)  // revolve(profile, origin, direction, angle)
+    let rva = revolve(prof, axis_z(point3(0mm, 0mm, 0mm)), 360deg)       // revolve(profile, axis, angle)
     let sw = sweep(prof2, path)                                  // sweep(profile, path)
     let lf = loft(prof, prof2)                                   // loft(profile1, profile2, …)
     let exs = extrude_symmetric(prof, 10mm)                      // extrude_symmetric(profile, total_distance) [total extent]
-    let exi = extrude_infinite(prof, 0, 0, 1, "positive")        // extrude_infinite(profile, dx,dy,dz, direction) [unbounded]
-    let rvf = revolve_full(prof, 0mm, 0mm, 0mm, 0, 1, 0)        // revolve_full(profile, ox,oy,oz, ax,ay,az) [no angle]
+    let exi = extrude_infinite(prof, dir(0, 0, 1))               // extrude_infinite(profile, direction) [unbounded, one side]
+    let exis = extrude_infinite_symmetric(prof, dir(0, 0, 1))    // extrude_infinite_symmetric(profile, direction) [unbounded, both sides]
+    let rvf = revolve_full(prof, point3(0mm, 0mm, 0mm), dir(0, 1, 0))   // revolve_full(profile, origin, direction) [no angle]
     let swg = sweep_guided(prof2, path, guide)                   // sweep_guided(profile, path, guide)
     let pip = pipe(path, 2mm)                                    // pipe(path, radius) [path FIRST, no profile arg]
     let lfg = loft_guided(prof, prof2, guide)                    // loft_guided(profile1, profile2, …, guide) [guide TRAILING]

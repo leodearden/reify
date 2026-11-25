@@ -1525,7 +1525,7 @@ pub static GEOMETRY_OP_DESCRIPTORS: &[OpDescriptor] = &[
         operation: Some(Operation::SweepExtrudeInfinite),
         parent_role: ParentRole::SingleProfile,
         kind_token: "ExtrudeInfinite",
-        names: &["extrude_infinite"],
+        names: &["extrude_infinite", "extrude_infinite_symmetric"],
     },
     OpDescriptor {
         disc: GeometryOpDiscriminants::Revolve,

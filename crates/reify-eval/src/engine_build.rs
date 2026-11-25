@@ -2669,7 +2669,8 @@ impl Engine {
     /// `solve_load_cases`) is absent from a compiled user module's
     /// `functions` table — `compile_with_stdlib` keeps stdlib fns in a
     /// separate prelude — but present in `self.functions` once `build()` →
-    /// `check()` merges module + prelude (`merge_functions`), which runs
+    /// `check()` builds the environment's table (`DefEnv::function_table`),
+    /// which runs
     /// BEFORE this pass. Scanning `module.functions` alone therefore misses
     /// every stdlib consumer. `self.functions` is a superset of
     /// `module.functions` on the build path, but names dedup in the
@@ -2732,8 +2733,8 @@ impl Engine {
         // `functions` table — `compile_with_stdlib` keeps stdlib fns in a
         // separate prelude — so scanning `module.functions` alone misses it and
         // the demand never fires. `self.functions: Arc<[CompiledFunction]>`
-        // (`lib.rs:674`) holds the merged prelude+module table populated by
-        // `build()` → `check()` (`merge_functions`), which runs BEFORE this
+        // (`lib.rs:674`) holds the prelude+module table populated by
+        // `build()` → `check()` (`DefEnv::function_table`), which runs BEFORE this
         // demand pass (`build_with_geometry_output`'s `self.check(module)`
         // precedes its `compute_demanded_reprs` call) — so it is already
         // populated here on the real build path. `self.functions` is a
@@ -3572,7 +3573,6 @@ impl Engine {
             solve_stage: _,        // constructor-named solve profile + fallback solver
             cache: _,              // node cache (engine-scoped config)
             prelude: _,            // 'static compiled prelude
-            prelude_functions: _,  // pre-flattened prelude fns
             loaded_program: _,     // Engine::load's program (resolution environment)
             structure_registry: _, // SIR structure meta (eval state)
             param_overrides: _,    // set_param_and_invalidate overrides
@@ -3907,7 +3907,8 @@ impl Engine {
             // and deliberately keeps a non-projectable node a candidate across
             // all of them — see `RedispatchPassState`.
             let mut redispatch_pass_state = RedispatchPassState::default();
-            let env = self.env_of(module);
+            let env_scope = self.env_of(module);
+            let env = env_scope.env();
             for (t_idx, template) in module.templates.iter().enumerate() {
                 // `named_steps` is scoped per-template so that two structures
                 // that each declare `let body = …` cannot clobber each other's
@@ -4727,7 +4728,8 @@ impl Engine {
             // and deliberately keeps a non-projectable node a candidate across
             // all of them — see `RedispatchPassState`.
             let mut redispatch_pass_state = RedispatchPassState::default();
-            let env = self.env_of(module);
+            let env_scope = self.env_of(module);
+            let env = env_scope.env();
             for (t_idx, template) in module.templates.iter().enumerate() {
                 // `named_steps` is scoped per-template so that two structures
                 // that each declare `let body = …` cannot clobber each other's
@@ -5390,8 +5392,8 @@ impl Engine {
     ///    and run constraints. Its serialized `geometry_output` is discarded —
     ///    export is driven by the recognized occurrences below, not that format.
     /// 2. Walk `module.templates × sub_components` in declaration order. Each
-    ///    `sub`'s occurrence template is resolved module-first, then via the
-    ///    stdlib prelude ([`crate::engine_eval::find_template_with_prelude`]) —
+    ///    `sub`'s occurrence template is resolved in the module's environment
+    ///    ([`crate::DefEnv::resolve_template`]), stdlib prelude included —
     ///    stdlib `Output` templates (`STLOutput` et al.) live in the prelude, not
     ///    `CompiledModule::templates`. An occurrence is an `Output` iff it is an
     ///    `EntityKind::Occurrence` AND its trait bounds transitively conform to
@@ -5433,15 +5435,14 @@ impl Engine {
         //     argument is irrelevant when `emit_geometry_output == false`.
         let r = self.build_with_geometry_output(module, ExportFormat::Step, false);
 
-        // Merge module trait defs with the prelude's: the `trait Output : Sink`
-        // lattice lives in the prelude std.io module, and `module.trait_defs` is
-        // empty for user modules. Built once; supports transitive user-defined
-        // Output occurrences (`occurrence def Foo : MyExport`, `trait MyExport :
-        // Output`). The direct `["Output"]` bound greens even without the merge.
-        let mut merged_trait_defs: Vec<reify_compiler::CompiledTrait> = module.trait_defs.clone();
-        for pm in self.prelude {
-            merged_trait_defs.extend(pm.trait_defs.iter().cloned());
-        }
+        // The environment's bound traits: the `trait Output : Sink` lattice
+        // lives in the prelude std.io module. Built once; supports transitive
+        // user-defined Output occurrences (`occurrence def Foo : MyExport`,
+        // `trait MyExport : Output`). The direct `["Output"]` bound greens even
+        // without the lattice.
+        let env_scope = self.env_of(module);
+        let env = env_scope.env();
+        let bound_traits: Vec<reify_compiler::CompiledTrait> = env.traits().cloned().collect();
 
         let default_kernel_name = self.default_kernel_name.clone();
         let mut artifacts: Vec<crate::ExportArtifact> = Vec::new();
@@ -5524,12 +5525,8 @@ impl Engine {
         //     emit one artifact per recognized Output occurrence (step-10).
         for template in &module.templates {
             for sub in &template.sub_components {
-                // Resolve the occurrence template — module first, then prelude.
-                let Some(occ_template) = crate::engine_eval::find_template_with_prelude(
-                    module,
-                    self.prelude,
-                    &sub.structure_name,
-                ) else {
+                // Resolve the occurrence template in the module's environment.
+                let Some(occ_template) = env.resolve_template(&sub.structure_name) else {
                     continue;
                 };
                 // Gate: Output == an `occurrence def … : Output` (trait-bound
@@ -5537,7 +5534,7 @@ impl Engine {
                 if occ_template.entity_kind != reify_compiler::EntityKind::Occurrence {
                     continue;
                 }
-                if !conforms_to_output(&occ_template.trait_bounds, &merged_trait_defs) {
+                if !conforms_to_output(&occ_template.trait_bounds, &bound_traits) {
                     continue;
                 }
 
@@ -5895,7 +5892,9 @@ impl Engine {
         // per-iteration.
         let mesh_contract_mode = self.mesh_contract_mode;
 
-        let env = self.env_of(module);
+        let env_scope = self.env_of(module);
+
+        let env = env_scope.env();
         for (t_idx, template) in module.templates.iter().enumerate() {
             let mut named_steps: HashMap<String, KernelHandle> = HashMap::new();
             // Task 5033 Gap #2 Gap A: by-name repr sibling of `named_steps`.
@@ -6395,7 +6394,8 @@ impl Engine {
             } else {
                 HashSet::new()
             };
-        let env = self.env_of(module);
+        let env_scope = self.env_of(module);
+        let env = env_scope.env();
         let meshes = Self::tessellate_from_values(
             &mut self.geometry_kernels,
             &registry_borrowed,
@@ -6742,7 +6742,7 @@ impl Engine {
         geometry_kernels: &mut BTreeMap<String, Box<dyn GeometryKernel>>,
         registry: &BTreeMap<String, &CapabilityDescriptor>,
         default_kernel_name: Option<&str>,
-        // The module to tessellate is `env.declared()`; its subs and
+        // The module to tessellate is `env.module()`; its subs and
         // let-bound instances resolve in `env`.
         env: DefEnv<'_>,
         values: &mut ValueMap,
@@ -6811,7 +6811,7 @@ impl Engine {
         // cannot abort a build; this one can.)
         mesh_contract_mode: reify_ir::geometry::MeshContractMode,
     ) -> Vec<MeshSurface> {
-        let module = env.declared();
+        let module = env.module();
         let mut meshes = Vec::new();
 
         // Task ε (3436): the engine's default kernel is fetched by name from
@@ -12627,7 +12627,8 @@ impl Engine {
             registry_owned.iter().map(|(k, v)| (k.clone(), v)).collect();
         // (Per-build attribute tables + `achieved_repr_tol` were reset at the
         // TOP of this surface by `reset_per_build_state(TessellateSnapshot)`.)
-        let env = self.env_of(module);
+        let env_scope = self.env_of(module);
+        let env = env_scope.env();
         let meshes = Self::tessellate_from_values(
             &mut self.geometry_kernels,
             &registry_borrowed,

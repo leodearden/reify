@@ -7,9 +7,9 @@
 //! `E_PRIV_MEMBER_ACCESS`.
 //!
 //! This falls out of the same `expr.rs` enforcement used in-module (step-6):
-//! `merge_imported_pub_templates` clones whole templates (members + per-member
-//! visibility) into the consumer's resolution registry, so the priv marker
-//! survives the import and is gated at the shared member-access check.
+//! the consumer resolves an imported `pub` def against the import's whole
+//! template (members + per-member visibility), so the priv marker survives the
+//! import and is gated at the shared member-access check.
 
 use std::fs;
 

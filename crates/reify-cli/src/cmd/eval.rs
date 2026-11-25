@@ -10,7 +10,7 @@ use crate::check_verdict::has_error_diagnostic;
 use crate::constraint_report::format_undef_cause;
 use crate::help::EVAL_USAGE;
 use crate::module_capabilities::module_has_geometry;
-use crate::{configured_eval_engine, parse_and_compile_program_entry};
+use crate::{configured_eval_engine, parse_and_prepare_program};
 
 /// `reify eval <file>` — compile the entry as a program (its `#cfg`-satisfied
 /// imports resolved as under `reify check`, with repeated `--cfg` selecting
@@ -107,12 +107,13 @@ pub(crate) fn cmd_eval(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     };
 
-    let compiled = match parse_and_compile_program_entry(path, &cfg) {
-        Ok(c) => c,
+    let program = match parse_and_prepare_program(path, &cfg) {
+        Ok(program) => program,
         Err(code) => return code,
     };
 
-    if compiled
+    if program
+        .evaluated()
         .diagnostics
         .iter()
         .any(|d| d.severity == Severity::Error)
@@ -126,7 +127,7 @@ pub(crate) fn cmd_eval(args: &[String]) -> ExitCode {
     //   (b) trace_undef_causes can be called post-eval with the engine still alive.
     //
     // Both `eval` and `build` take `&mut self`, so the engine survives the call.
-    let (values, diagnostics, engine) = if module_has_geometry(&compiled) {
+    let (values, diagnostics, engine) = if module_has_geometry(program.evaluated()) {
         // Geometry-bearing module: route through the kernel-backed realization
         // path so that run_post_processes/post_process_geometry_queries fires and
         // resolves geometry-query value cells (mass, centroid, volume, …).
@@ -156,7 +157,8 @@ pub(crate) fn cmd_eval(args: &[String]) -> ExitCode {
             engine.set_persistent_cache_dir(Some(override_dir.clone()));
         }
         engine.set_capture_undef_causes(true);
-        let result = engine.realize_for_check(&compiled);
+        let evaluated = engine.load(program);
+        let result = engine.realize_for_check(&evaluated);
         (result.values, result.diagnostics, engine)
     } else {
         // Plain numeric module: keep the existing lightweight eval() path so
@@ -173,7 +175,8 @@ pub(crate) fn cmd_eval(args: &[String]) -> ExitCode {
             engine.set_persistent_cache_dir(Some(override_dir.clone()));
         }
         engine.set_capture_undef_causes(true);
-        let result = engine.eval(&compiled);
+        let evaluated = engine.load(program);
+        let result = engine.eval(&evaluated);
         (result.values, result.diagnostics, engine)
     };
 

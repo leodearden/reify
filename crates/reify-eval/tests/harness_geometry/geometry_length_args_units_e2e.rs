@@ -169,16 +169,18 @@ fn rotate_around_bare_pivot_drops_op_dimensioned_builds() {
     );
 }
 
+/// The revolve origin is a Point3, which no compile-time slot holds, so the
+/// BUILD gates its components under the names the retired scalar form used.
 #[test]
 fn revolve_bare_axis_origin_drops_op_dimensioned_builds() {
     assert_length_gate(
         "revolve",
         "ox",
         r#"structure def BareRevolve {
-            let s = revolve(rectangle(20mm, 10mm), -10, 0, 0, 0.0, 1.0, 0.0, 6.283185307179586rad)
+            let s = revolve(rectangle(20mm, 10mm), point3(-10, 0, 0), dir(0.0, 1.0, 0.0), 6.283185307179586rad)
         }"#,
         r#"structure def DimRevolve {
-            let s = revolve(rectangle(20mm, 10mm), -10mm, 0mm, 0mm, 0.0, 1.0, 0.0, 6.283185307179586rad)
+            let s = revolve(rectangle(20mm, 10mm), point3(-10mm, 0mm, 0mm), dir(0.0, 1.0, 0.0), 6.283185307179586rad)
         }"#,
         |op| matches!(op, GeometryOp::Revolve { .. }),
     );
@@ -391,7 +393,7 @@ fn desugared_builtins_build_clean() {
         (
             "revolve_full",
             r#"structure def RevFull {
-                let s = revolve_full(rectangle(20mm, 10mm), -10mm, 0mm, 0mm, 0.0, 1.0, 0.0)
+                let s = revolve_full(rectangle(20mm, 10mm), point3(-10mm, 0mm, 0mm), dir(0.0, 1.0, 0.0))
             }"#,
         ),
     ] {

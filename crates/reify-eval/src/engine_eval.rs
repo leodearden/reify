@@ -40,29 +40,7 @@ use crate::unfold::{elaborate_child_instance, unfold_recursive_sub};
 use crate::{
     CacheStats, CachedEvalResult, Engine, EvalResult, EvaluationState, GuardLookup,
     OptimizedComputeDispatcher, build_meta_map, eval_ctx_with_meta, guard_state_fingerprint,
-    merge_functions,
 };
-
-/// Resolve a sub-component's `structure_name` in `module`'s definition
-/// environment over `prelude`: [`DefEnv::of_module`]`(module,
-/// prelude).resolve_template(name)`, the rule every eval-side template lookup
-/// binds by.
-///
-/// Stdlib occurrence templates (e.g. `STLOutput`, `stdlib/io.ri`) live in
-/// `Engine::prelude` and are deliberately NOT merged into
-/// `CompiledModule::templates`, so a module-only lookup reports them as
-/// unknown structures and `sub o = STLOutput(...)` never elaborates
-/// (io-export δ / esc-4287-15). `pub(crate)` so the io-export δ
-/// occurrence-driven export driver ([`Engine::build_outputs`],
-/// `engine_build.rs`) resolves each `sub`'s occurrence template through the
-/// same rule.
-pub(crate) fn find_template_with_prelude<'a>(
-    module: &'a CompiledModule,
-    prelude: &'a [CompiledModule],
-    name: &str,
-) -> Option<&'a TopologyTemplate> {
-    DefEnv::of_module(module, prelude).resolve_template(name)
-}
 
 /// Sentinel substring included in every panic raised by
 /// [`assert_value_cell_types_representable`].  Used by the unit test
@@ -870,7 +848,7 @@ fn detect_underdetermined<'t>(
     max_unfold_depth: usize,
     max_unfold_nodes: usize,
 ) -> Vec<Diagnostic> {
-    let templates = &env.declared().templates;
+    let templates = &env.module().templates;
     // EARLY RETURN before any index work (task #5467 amendment, review
     // suggestion 4). The loop at the tail can only emit for a STRICTLY-auto
     // (non-`auto(free)`) cell, so a module with none — every solver-free model,
@@ -2130,7 +2108,7 @@ struct CellReadIndex<'t> {
 impl<'t> CellReadIndex<'t> {
     fn build(env: DefEnv<'t>, max_unfold_depth: usize, max_unfold_nodes: usize) -> Self {
         let mut cell_map: HashMap<ValueCellId, &'t CompiledExpr> = HashMap::new();
-        for template in &env.declared().templates {
+        for template in &env.module().templates {
             for cell in &template.value_cells {
                 if cell.kind.is_auto() {
                     continue;
@@ -3075,7 +3053,7 @@ fn build_single_instance_alias_paths(
 
     let mut collected: HashMap<String, Vec<String>> = HashMap::new();
     let mut node_budget = max_nodes;
-    for template in &env.declared().templates {
+    for template in &env.module().templates {
         walk(
             template,
             env,
@@ -3455,7 +3433,7 @@ fn build_merged_solver_problem<'t>(
     trait_registry: &HashMap<String, &reify_compiler::CompiledTrait>,
     read_index: &'t std::cell::OnceCell<CellReadIndex<'t>>,
 ) -> ResolutionProblem {
-    let templates = &env.declared().templates;
+    let templates = &env.module().templates;
     // Union each member's auto cells, in cluster.scopes (ascending source
     // index) × value_cells declaration order — a pure function of stable Vec
     // iteration; no HashMap/HashSet contributes to this ordering (§5.2 BT5).
@@ -5184,10 +5162,10 @@ impl Engine {
     /// dependency structures. Subsequent calls to edit_param() can perform
     /// incremental re-evaluation using these structures.
     pub fn eval(&mut self, module: &CompiledModule) -> EvalResult {
-        // Build the merged function table (user functions first, then prelude —
-        // SHADOWING INVARIANT) and seal it in an Arc so clones are O(1).
-        // See `merge_functions` in lib.rs for the full contract.
-        self.functions = merge_functions(module, &self.prelude_functions);
+        // The dispatch table of the environment `module` resolves in, sealed
+        // in an Arc so clones are O(1): one function per signature, in
+        // precedence order (see `DefEnv::function_table`).
+        self.functions = self.env_of(module).env().function_table();
         // Incrementally refresh the structure side-table from the user
         // module's `structure def` templates (task 3540 / SIR-α step-12).
         // `intern` is idempotent on name: prelude-seeded structures keep
@@ -5240,8 +5218,8 @@ impl Engine {
         // when signatures collide, while prelude functions with distinct
         // (name, arity, param types) triples remain callable.
         //
-        // Arc::clone is O(1) — a single refcount increment. The merged table was
-        // built and sealed by `merge_functions` (see lib.rs) at the assignment above;
+        // Arc::clone is O(1) — a single refcount increment. The table was
+        // built and sealed by `DefEnv::function_table` at the assignment above;
         // this local binding lets `evaluate_let_bindings` borrow `self` mutably
         // (it takes &mut self) without conflicting with any immutable borrow of
         // `self.functions`. The Arc keeps the table alive for the lifetime of this
@@ -5285,7 +5263,7 @@ impl Engine {
         let version_id = ver_id.0;
         let version = ver_id;
 
-        let mut snapshot = Snapshot::from_env(self.env_of(module));
+        let mut snapshot = Snapshot::from_env(self.env_of(module).env());
         #[cfg(debug_assertions)]
         assert_value_cell_types_representable(&snapshot.graph);
         self.report_unresolved_subs(&snapshot.graph, &mut diagnostics);
@@ -5567,18 +5545,16 @@ impl Engine {
 
         // Sub-component elaboration: evaluate child template params/lets
         // for each sub_component in each template.
-        let env = self.env_of(module);
+        let env_scope = self.env_of(module);
+        let env = env_scope.env();
         for template in &module.templates {
             for sub in &template.sub_components {
-                // Find the referenced child template by name — module
-                // templates first, then the stdlib prelude (esc-4287-15). A
-                // sub that does not resolve was already reported from the
-                // graph (`report_unresolved_subs`).
-                let Some(child_template) = find_template_with_prelude(
-                    module,
-                    self.prelude,
-                    sub.element_structure_name(),
-                ) else {
+                // Find the referenced child template by name in the module's
+                // definition environment, stdlib prelude included
+                // (esc-4287-15). A sub that does not resolve was already
+                // reported from the graph (`report_unresolved_subs`).
+                let Some(child_template) = env.resolve_template(sub.element_structure_name())
+                else {
                     continue;
                 };
 
@@ -5843,12 +5819,9 @@ impl Engine {
         // list_literal of entity-refs, apply_trait_filters rewrites any
         // `filter(list_literal, TraitObject-marker)` nodes to their filtered
         // subset.  trait_registry is built once here via the shared helper in
-        // structural_query.rs (prelude traits first so module traits shadow
-        // them; mirrors the canonical pattern in engine_constraints.rs:1504-1511).
-        let sq_trait_registry = crate::structural_query::build_trait_registry(
-            self.prelude.iter().flat_map(|m| m.trait_defs.iter())
-                .chain(module.trait_defs.iter()),
-        );
+        // structural_query.rs from the environment's bound traits, one per
+        // name (`DefEnv::traits`).
+        let sq_trait_registry = crate::structural_query::build_trait_registry(env.traits());
         for template in &module.templates {
             for cell in &template.value_cells {
                 if !matches!(cell.kind, ValueCellKind::Let) {
@@ -6147,6 +6120,7 @@ impl Engine {
                         &ro.clusters[cluster_idx],
                         idx,
                         module,
+                        env,
                         &governance,
                         &mut values,
                         &mut snapshot,
@@ -7130,7 +7104,7 @@ impl Engine {
     /// so downstream consumers never observe a partially-materialized annotation.
     ///
     /// Kept a shared HELPER rather than a λ `PostPassDetector` because its state
-    /// shape — `module` / `self.prelude` / `functions` / `self.meta_map` (via a
+    /// shape — `module`'s environment / `functions` / `self.meta_map` (via a
     /// constructed `EvalContext`) plus `self.cache` / `self.journal` for the
     /// `commit_cell_result` overlay — deliberately exceeds `PostPassState` (which
     /// carries only `values` / `snapshot_values` / `diagnostics`). Do NOT bloat
@@ -7188,6 +7162,8 @@ impl Engine {
             String,
             Vec<reify_compiler::MaterializationAnnotationArg>,
         > = std::collections::HashMap::new();
+        let env_scope = self.env_of(module);
+        let env = env_scope.env();
 
         // Collect instances that carry AtMaterialization args.
         // Releasing the immutable borrow on `values` before any mutable
@@ -7202,19 +7178,15 @@ impl Engine {
                 let margs = margs_by_type
                     .entry(data.type_name.clone())
                     .or_insert_with(|| {
-                        find_template_with_prelude(
-                            module,
-                            self.prelude,
-                            &data.type_name,
-                        )
-                        .map(|t| {
-                            reify_compiler::compile_materialization_annotation_args(
-                                t,
-                                &module.enum_defs,
-                                functions,
-                            )
-                        })
-                        .unwrap_or_default()
+                        env.resolve_template(&data.type_name)
+                            .map(|t| {
+                                reify_compiler::compile_materialization_annotation_args(
+                                    t,
+                                    &module.enum_defs,
+                                    functions,
+                                )
+                            })
+                            .unwrap_or_default()
                     });
                 if margs.is_empty() {
                     return None;
@@ -7540,6 +7512,7 @@ impl Engine {
         cluster: &crate::resolve_order::Cluster,
         idx: usize,
         module: &'t CompiledModule,
+        env: DefEnv<'t>,
         governance: &[GoverningObjective],
         values: &mut ValueMap,
         snapshot: &mut Snapshot,
@@ -7557,17 +7530,13 @@ impl Engine {
     ) {
         // α (task #5188): trait registry for objective/constraint-position
         // structural-query expansion inside build_merged_solver_problem.
-        // `self.prelude` is &'static and `module` is a param, so this borrows
-        // neither self nor conflicts with the &mut self write-back below.
-        let expansion_trait_registry = crate::structural_query::build_trait_registry(
-            self.prelude
-                .iter()
-                .flat_map(|m| m.trait_defs.iter())
-                .chain(module.trait_defs.iter()),
-        );
+        // `env` borrows only `module` and the &'static prelude, so this
+        // borrows neither self nor conflicts with the &mut self write-back
+        // below.
+        let expansion_trait_registry = crate::structural_query::build_trait_registry(env.traits());
         let problem = build_merged_solver_problem(
             cluster,
-            self.env_of(module),
+            env,
             governance,
             values,
             Arc::clone(&functions),
@@ -8111,8 +8080,8 @@ impl Engine {
         // eval_cached is called without a prior eval().
         self.meta_map = build_meta_map(module);
 
-        // R3e (#4907): build the merged function table (same logic as eval(),
-        // see `merge_functions`'s doc). Without this, `self.functions` stays
+        // R3e (#4907): build the function table (same logic as eval(), see
+        // `DefEnv::function_table`). Without this, `self.functions` stays
         // empty when `eval_cached` is called without a prior `eval()` on this
         // Engine, so `reify_expr::find_matching_compiled_function` can never
         // find a `UserFunctionCall` target — every user-fn call (including
@@ -8121,7 +8090,7 @@ impl Engine {
         // of the function body. Mirrors the `meta_map` fix immediately above:
         // both are Engine state that `eval()` populates as a side effect, and
         // `eval_cached` must independently ensure for standalone use.
-        self.functions = merge_functions(module, &self.prelude_functions);
+        self.functions = self.env_of(module).env().function_table();
 
         // Resolve the active solver once per call so the named-vs-default
         // routing (Task 2300) is identical to eval(): `resolve_solver_for_module`
@@ -8870,17 +8839,14 @@ impl Engine {
             let governance = governing_objective(&module.templates, &containment);
             // α (task #5188): objective/constraint-position structural-query
             // expansion registry — built identically to eval()'s
-            // `sq_trait_registry` (prelude first so module traits shadow) so
-            // both paths hand the solver byte-identical expanded exprs. Borrows
-            // only &'static prelude + &module, never self, so it lives across
+            // `sq_trait_registry` (`DefEnv::traits`) so both paths hand the
+            // solver byte-identical expanded exprs. Borrows only &'static
+            // prelude + &module, never self, so it lives across
             // the &mut self resolution loop below without a borrow clash.
-            let expansion_trait_registry = crate::structural_query::build_trait_registry(
-                self.prelude
-                    .iter()
-                    .flat_map(|m| m.trait_defs.iter())
-                    .chain(module.trait_defs.iter()),
-            );
-            let env = self.env_of(module);
+            let env_scope = self.env_of(module);
+            let env = env_scope.env();
+            let expansion_trait_registry =
+                crate::structural_query::build_trait_registry(env.traits());
 
             // β #4822: compute dependency-ordered resolve order so the solver sub-pass
             // (below) runs in read-DAG order — a later-declared scope that reads
@@ -9011,6 +8977,7 @@ impl Engine {
                         &ro.clusters[cluster_idx],
                         idx,
                         module,
+                        env,
                         &governance,
                         &mut values,
                         &mut snapshot_values,
@@ -9423,7 +9390,7 @@ impl Engine {
         {
             let snapshot_id = self.next_snapshot_id; // version-id-gate: allow — snapshot-only re-stamp in eval_cached, reuses the caller-supplied `version`
             self.next_snapshot_id += 1; // version-id-gate: allow — snapshot-only re-stamp in eval_cached; routing through allocate_snapshot_version would spuriously bump next_version_id too
-            let mut snapshot = Snapshot::from_env(self.env_of(module));
+            let mut snapshot = Snapshot::from_env(self.env_of(module).env());
             self.report_unresolved_subs(&snapshot.graph, &mut diagnostics);
             snapshot.id = SnapshotId(snapshot_id);
             snapshot.version = version;
@@ -9542,6 +9509,7 @@ impl Engine {
         cluster: &crate::resolve_order::Cluster,
         idx: usize,
         module: &'t CompiledModule,
+        env: DefEnv<'t>,
         governance: &[GoverningObjective],
         values: &mut ValueMap,
         snapshot_values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
@@ -9569,18 +9537,12 @@ impl Engine {
         // α (task #5188): trait registry for objective/constraint-position
         // structural-query expansion inside `build_merged_solver_problem`,
         // built EXACTLY as cold `dispatch_merged_cluster_solve` builds it.
-        // `self.prelude` is `&'a [CompiledModule]` and `module` is a param, so
-        // this borrows neither `self` nor conflicts with the `&mut self`
-        // write-back below.
-        let expansion_trait_registry = crate::structural_query::build_trait_registry(
-            self.prelude
-                .iter()
-                .flat_map(|m| m.trait_defs.iter())
-                .chain(module.trait_defs.iter()),
-        );
+        // `env` borrows only `module` and the prelude, so this borrows
+        // neither `self` nor conflicts with the `&mut self` write-back below.
+        let expansion_trait_registry = crate::structural_query::build_trait_registry(env.traits());
         let problem = build_merged_solver_problem(
             cluster,
-            self.env_of(module),
+            env,
             governance,
             values,
             Arc::clone(&self.functions),

@@ -32,6 +32,16 @@ fn eval_prints_an_imported_structure_instance() {
 }
 
 #[test]
+fn eval_dispatches_an_imported_pub_function() {
+    let (status, stdout, stderr) =
+        common::run_with_args(&["eval", &common::fixture_path("multi_file/calc.ri")]);
+    assert!(
+        status.success() && stdout.contains("Calc.y = 42"),
+        "eval must call mathlib's pub double_it.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+}
+
+#[test]
 fn build_writes_geometry_for_an_importing_entry() {
     let out = common::run_build("multi_file/main.ri");
     assert!(

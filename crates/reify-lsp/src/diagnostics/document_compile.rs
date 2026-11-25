@@ -2,6 +2,7 @@
 //! follows an import, otherwise exactly as the single-file stdlib compile.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use reify_ast::ParsedModule;
 use reify_compiler::CompiledModule;
@@ -10,17 +11,20 @@ use reify_compiler::module_dag::ModuleResolver;
 use reify_compiler::program::{self, CompiledProgram};
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{ContentHash, SourceSpan};
+use reify_eval::LoadedProgram;
 use tower_lsp::lsp_types::{Range, Url};
 
 use crate::convert;
 
 /// A compiled document, immutable once built.
 pub(super) struct CompiledDocument {
-    module: CompiledModule,
+    /// The module the document is evaluated as: a program's evaluation module.
+    module: Arc<CompiledModule>,
+    program: Option<LoadedProgram>,
     eval_cache_key: ContentHash,
-    /// How many of `module.templates`, from the front, the document's own
-    /// compile produced (`CompiledProgram::entry_declared_templates`); the rest
-    /// are merged imports, whose spans index another file.
+    /// How many of `module.templates`, from the front, the document itself
+    /// declares (its program entry's templates); the rest are imported, and
+    /// their spans index another file.
     declared_templates: usize,
 }
 
@@ -29,12 +33,26 @@ impl CompiledDocument {
         Self {
             eval_cache_key: module.content_hash,
             declared_templates: module.templates.len(),
-            module,
+            module: Arc::new(module),
+            program: None,
         }
     }
 
     pub(super) fn module(&self) -> &CompiledModule {
         &self.module
+    }
+
+    /// This document as `engine` evaluates it. A program is loaded into
+    /// `engine`, which returns the document's module: the only one that
+    /// resolves in the program's environment there.
+    pub(super) fn loaded_into(self, engine: &mut reify_eval::Engine) -> Self {
+        match &self.program {
+            Some(program) => Self {
+                module: engine.load(program.clone()),
+                ..self
+            },
+            None => self,
+        }
     }
 
     /// Equal for two compiles only when a warm re-evaluation of the earlier
@@ -69,18 +87,19 @@ pub(super) fn compile_document(
 ) -> CompiledDocument {
     match uri.to_file_path() {
         Ok(entry_path) if program::entry_follows_imports(parsed, cfg) => {
-            let compiled = program::compile_program_with_parsed_entry(
+            let loaded = LoadedProgram::new(program::compile_program_with_parsed_entry(
                 &entry_path,
                 source,
                 parsed,
                 &entry_dir_resolver(&entry_path),
                 cfg,
                 &SimpleConstraintChecker,
-            );
+            ));
             CompiledDocument {
-                eval_cache_key: program_eval_cache_key(&parsed.path.0.join("."), &compiled),
-                declared_templates: compiled.entry_declared_templates().len(),
-                module: compiled.into_entry(),
+                eval_cache_key: program_eval_cache_key(&parsed.path.0.join("."), loaded.program()),
+                declared_templates: loaded.program().entry().templates.len(),
+                module: Arc::clone(loaded.evaluated()),
+                program: Some(loaded),
             }
         }
         _ => CompiledDocument::single_file(reify_compiler::compile_with_stdlib_checked(
@@ -187,6 +206,8 @@ mod tests {
         }
     }
 
+    /// The evaluation module holds an imported template the entry does not;
+    /// only the entry's own templates' spans index the document.
     #[test]
     fn template_span_range_only_trusts_declared_templates() {
         let guard = reify_test_support::prefixed_tempdir("reify-lsp-doc-compile-");
@@ -201,6 +222,15 @@ mod tests {
 
         let document = compile_document(&parsed, source, &uri, &CfgSet::host_default());
 
+        let program = document
+            .program
+            .as_ref()
+            .expect("an importing document compiles as a program")
+            .program();
+        assert!(
+            !program.entry().templates.iter().any(|t| t.name == "Pulley"),
+            "the entry holds only its own templates"
+        );
         let templates = &document.module().templates;
         let index_of = |name: &str| {
             templates

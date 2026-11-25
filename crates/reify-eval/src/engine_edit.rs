@@ -171,7 +171,6 @@ use crate::warm_pool::WarmStatePool;
 use crate::{
     CheckResult, Engine, EngineError, EvalResult, EvaluationState, GuardLookup,
     OptimizedComputeDispatcher, build_meta_map, eval_ctx_with_meta, guard_state_fingerprint,
-    merge_functions,
 };
 
 mod instance_mint_settle;
@@ -3205,7 +3204,8 @@ impl Engine {
         //     (Undef, Undetermined) or (Undef, Auto); the seeding loop
         //     below overwrites those with the preserved prior values for
         //     cells whose content_hash matches the old graph.
-        let mut new_snapshot = crate::snapshot::Snapshot::from_env(self.env_of(module));
+        let env_scope = self.env_of(module);
+        let mut new_snapshot = crate::snapshot::Snapshot::from_env(env_scope.env());
         // Invariant mirror of engine_eval.rs:248-249 — covers the edit-time recompile path.
         #[cfg(debug_assertions)]
         crate::engine_eval::assert_value_cell_types_representable(&new_snapshot.graph);
@@ -3691,7 +3691,7 @@ impl Engine {
         //      none are captured by the per-cell content_hash diff, so
         //      relying on cell-level diffing alone would silently serve
         //      stale tables (see eval() for the same refresh rationale).
-        self.functions = merge_functions(module, &self.prelude_functions);
+        self.functions = env_scope.env().function_table();
         self.compiled_purposes = module.compiled_purposes.clone();
         // Snapshot the field declarations so `Engine::edit_param` can
         // re-elaborate composed fields incrementally when their tracked
@@ -3706,8 +3706,8 @@ impl Engine {
             }
         }
 
-        // Arc::clone is O(1) — a refcount bump. The merged table was built and
-        // sealed by `merge_functions` (see lib.rs) at the assignment above
+        // Arc::clone is O(1) — a refcount bump. The table was built and
+        // sealed by `DefEnv::function_table` at the assignment above
         // (same pattern as Engine::eval). The local binding satisfies the borrow
         // checker the same way as edit_param() above.
         let functions = Arc::clone(&self.functions);

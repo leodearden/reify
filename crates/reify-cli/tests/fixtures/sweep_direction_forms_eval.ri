@@ -1,0 +1,30 @@
+// sweep_direction_forms_eval.ri — CLI eval fixture for direction-typing ι-b
+// (#9647): the Direction-form twins of the retired scalar sweeps build the same
+// solids, so each volume prints the string the scalar form printed.
+
+module sweep_direction_forms_eval
+
+structure def QuarterRevolve {
+    let g = revolve(rectangle(20mm, 10mm), point3(-10mm, 0mm, 0mm), dir(0.0, 1.0, 0.0), 1.5707963267948966rad)
+    let v = volume(g)
+}
+
+structure def QuarterRevolveAboutAxis {
+    let g = revolve(rectangle(20mm, 10mm), axis_y(point3(-10mm, 0mm, 0mm)), 1.5707963267948966rad)
+    let v = volume(g)
+}
+
+structure def FullRevolve {
+    let g = revolve_full(rectangle(20mm, 10mm), point3(-10mm, 0mm, 0mm), dir(0.0, 1.0, 0.0))
+    let v = volume(g)
+}
+
+structure def PositiveClip {
+    let g = intersection(extrude_infinite(circle(5mm), dir(0, 0, 1)), box(20mm, 20mm, 10mm))
+    let v = volume(g)
+}
+
+structure def SymmetricClip {
+    let g = intersection(extrude_infinite_symmetric(circle(5mm), dir(0, 0, 1)), box(20mm, 20mm, 10mm))
+    let v = volume(g)
+}
