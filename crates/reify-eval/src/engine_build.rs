@@ -5442,7 +5442,7 @@ impl Engine {
         // without the lattice.
         let env_scope = self.env_of(module);
         let env = env_scope.env();
-        let merged_trait_defs: Vec<reify_compiler::CompiledTrait> = env.traits().cloned().collect();
+        let bound_traits: Vec<reify_compiler::CompiledTrait> = env.traits().cloned().collect();
 
         let default_kernel_name = self.default_kernel_name.clone();
         let mut artifacts: Vec<crate::ExportArtifact> = Vec::new();
@@ -5534,7 +5534,7 @@ impl Engine {
                 if occ_template.entity_kind != reify_compiler::EntityKind::Occurrence {
                     continue;
                 }
-                if !conforms_to_output(&occ_template.trait_bounds, &merged_trait_defs) {
+                if !conforms_to_output(&occ_template.trait_bounds, &bound_traits) {
                     continue;
                 }
 

@@ -14,7 +14,7 @@ use reify_core::{DiagnosticInfo, ModulePath, SourceLocationInfo, Type, ValueCell
 
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, gt, literal, mm, value_ref};
 
-use crate::engine::{CompileFailure, CompileFailureKind, CoreState, EngineSession, MergedTraitDefs, build_constraints, build_template_node, module_key, parse_value_string, unit_hint_from_default_literal};
+use crate::engine::{CompileFailure, CompileFailureKind, CoreState, EngineSession, BoundTraits, build_constraints, build_template_node, module_key, parse_value_string, unit_hint_from_default_literal};
 use crate::mcp_context::TauriToolContext;
 use crate::tests::test_helpers::{
     UNPARSEABLE_SRC, assert_rigid_mass_props_determined, bounded_bracket_source,
@@ -6329,7 +6329,7 @@ fn build_template_node_self_reference_does_not_stack_overflow() {
     // AFTER step-16 fix: the is_recursive check stops recursion and returns
     // a sub node with empty children.
     let node =
-        build_template_node(a_template, "A", &compiled, &MergedTraitDefs::empty(), None, false);
+        build_template_node(a_template, "A", &compiled, &BoundTraits::empty(), None, false);
 
     let sub_x = node
         .children
@@ -6374,9 +6374,9 @@ fn build_template_node_mutual_recursion_does_not_stack_overflow() {
     // AFTER step-16 fix: A.b has empty children (B is_recursive), B.a has
     // empty children (A is_recursive).
     let node_a =
-        build_template_node(a_template, "A", &compiled, &MergedTraitDefs::empty(), None, false);
+        build_template_node(a_template, "A", &compiled, &BoundTraits::empty(), None, false);
     let node_b =
-        build_template_node(b_template, "B", &compiled, &MergedTraitDefs::empty(), None, false);
+        build_template_node(b_template, "B", &compiled, &BoundTraits::empty(), None, false);
 
     let sub_b = node_a
         .children
@@ -6435,7 +6435,7 @@ fn build_template_node_non_recursive_parent_stops_at_recursive_child() {
         container_template,
         "Container",
         &compiled,
-        &MergedTraitDefs::empty(),
+        &BoundTraits::empty(),
         None,
         false,
     );
@@ -14145,19 +14145,19 @@ fn get_entity_tree_trait_geometry_follows_refinement_chain() {
     );
 }
 
-/// #5558: the merged trait defs must survive the RECURSION, not just reach the
+/// #5558: the bound trait defs must survive the RECURSION, not just reach the
 /// top-level templates.
 ///
 /// `build_template_node` forwards `trait_defs` verbatim into its sub-component
 /// recursion. Every other `trait_geometry` test asserts on a ROOT template's
 /// children, so all of them stay green if that forwarding is replaced by an
 /// empty set — which is exactly the silent degradation (refinement chain back
-/// down to direct-bound matching) that the MERGED-set precondition on
-/// `MergedTraitDefs` exists to prevent.
+/// down to direct-bound matching) that the bound-set precondition on
+/// `BoundTraits` exists to prevent.
 ///
 /// `Assembly` declares no trait bounds of its own; the `: Rigid` structure is
 /// reached only as `sub flange : Flange`, so the assertions below read
-/// `Assembly.flange`'s children and are false unless the merged set survives
+/// `Assembly.flange`'s children and are false unless the bound set survives
 /// one level of recursion. The root `Flange` node in the same tree is
 /// deliberately NOT what this test reads — it would pass either way.
 #[test]

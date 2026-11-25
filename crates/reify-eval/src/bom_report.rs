@@ -153,7 +153,7 @@ impl Engine {
         // Mirrors `build_outputs_with_result`.
         let env_scope = self.env_of(module);
         let env = env_scope.env();
-        let merged_trait_defs: Vec<reify_compiler::CompiledTrait> = env.traits().cloned().collect();
+        let bound_traits: Vec<reify_compiler::CompiledTrait> = env.traits().cloned().collect();
 
         let mut report = BomReport::default();
 
@@ -170,9 +170,9 @@ impl Engine {
                 // The io lattice makes Buy / Discard / Input mutually exclusive;
                 // the `else if` dispatch below keeps a single sub from
                 // double-counting even for an exotic user lattice.
-                let is_buy = conforms_to_trait(bounds, &merged_trait_defs, "Buy");
-                let is_discard = conforms_to_trait(bounds, &merged_trait_defs, "Discard");
-                let is_input = conforms_to_trait(bounds, &merged_trait_defs, "Input");
+                let is_buy = conforms_to_trait(bounds, &bound_traits, "Buy");
+                let is_discard = conforms_to_trait(bounds, &bound_traits, "Discard");
+                let is_input = conforms_to_trait(bounds, &bound_traits, "Input");
 
                 // Collection subs (`sub items : List<T>`) do NOT elaborate to a
                 // single `StructureInstance` at `ValueCellId(owner, sub)` — their

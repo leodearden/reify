@@ -4691,7 +4691,7 @@ impl EngineSession {
         // has it. Same access `build_gui_state` uses; both this and
         // `self.core.compiled()` are `&`-borrows of `&self`, so no borrow conflict.
         let scope = self.core.engine().env_of(compiled);
-        let trait_defs = merged_trait_defs(scope.env());
+        let trait_defs = bound_traits(scope.env());
 
         compiled
             .templates
@@ -5721,27 +5721,27 @@ fn recheck_indeterminate_constraints(
     upgrades
 }
 
-/// The trait defs a conformance check must be resolved against: the module's
-/// OWN declared traits, extended with every prelude module's.
+/// The trait defs a conformance check must be resolved against: every trait the
+/// module's environment binds, one per name, in precedence order.
 ///
-/// A newtype rather than a bare `Vec` because the merge is a PRECONDITION, not
-/// a convenience. A user module's `CompiledModule.trait_defs` holds only the
+/// A newtype rather than a bare `Vec` because the binding is a PRECONDITION,
+/// not a convenience. A user module's `CompiledModule.trait_defs` holds only the
 /// traits that module declares — `structure def X : Rigid` compiles to a module
 /// with an EMPTY `trait_defs`, because `Rigid` and its `Rigid : Physical`
 /// refinement edge live in the stdlib prelude (`stdlib/structural_physical.ri`).
 /// A bare module set passed to a refinement walk therefore type-checks, runs,
 /// and silently degrades the walk to direct-bound matching with no diagnostic.
-/// The field is private and [`merged_trait_defs`] is the only constructor that
+/// The field is private and [`bound_traits`] is the only constructor that
 /// fills it, so outside this module the degraded set is not expressible at all
-/// — the recursion tests reach for [`MergedTraitDefs::empty`], and nothing else
+/// — the recursion tests reach for [`BoundTraits::empty`], and nothing else
 /// can be built by hand.
-pub(crate) struct MergedTraitDefs(Vec<reify_compiler::CompiledTrait>);
+pub(crate) struct BoundTraits(Vec<reify_compiler::CompiledTrait>);
 
-impl MergedTraitDefs {
+impl BoundTraits {
     /// No trait defs at all — no refinement edges, so a walk over this set
     /// recognises only DIRECT bounds. Correct exactly where the templates under
     /// test declare no trait bounds; `#[cfg(test)]` so it can never stand in
-    /// for the real merge on a production path.
+    /// for the bound set on a production path.
     #[cfg(test)]
     pub(crate) fn empty() -> Self {
         Self(Vec::new())
@@ -5758,8 +5758,8 @@ impl MergedTraitDefs {
 /// Mirrors `engine_build.rs::build_outputs_with_result`. Shared by
 /// `collect_display_routing`'s `conforms_to_output` gate and
 /// `get_entity_tree`'s `conforms_to_trait` gate so the two cannot drift.
-fn merged_trait_defs(env: DefEnv<'_>) -> MergedTraitDefs {
-    MergedTraitDefs(env.traits().cloned().collect())
+fn bound_traits(env: DefEnv<'_>) -> BoundTraits {
+    BoundTraits(env.traits().cloned().collect())
 }
 
 // ── PRD-3 γ: DisplayOutput occurrence walk → display_panes ────────────────────
@@ -5793,7 +5793,7 @@ fn collect_display_routing(
     env: DefEnv<'_>,
     values: &ValueMap,
 ) -> (Vec<DisplayDirective>, Vec<AppearanceDirective>) {
-    let trait_defs = merged_trait_defs(env);
+    let trait_defs = bound_traits(env);
 
     let mut directives = Vec::new();
     let mut appearances = Vec::new();
@@ -7109,7 +7109,7 @@ pub(crate) fn build_template_node(
     template: &reify_compiler::TopologyTemplate,
     entity_path: &str,
     compiled: &reify_compiler::CompiledModule,
-    trait_defs: &MergedTraitDefs,
+    trait_defs: &BoundTraits,
     engine: Option<&Engine>,
     aux_ancestor: bool,
 ) -> EntityTreeNode {
