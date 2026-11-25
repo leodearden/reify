@@ -221,16 +221,17 @@ impl DefEnv {
     pub fn resolve_enum(&self, name: &str) -> Option<&EnumDef>;
     // …units, aliases, traits: same pattern (purposes, constraint defs: §8 ι amendment).
     // Presentation view — entity enumeration, doc, BOM, GUI tree:
-    pub fn declared(&self) -> &CompiledModule; // the root's entry: a program's holds only its
-                                               // own declarations; the engine's evaluation
-                                               // module also its user templates (§8 κ amendment)
+    pub fn module(&self) -> &CompiledModule; // the module the engine walks: the entry, or the
+                                             // engine's evaluation module, which is the entry
+                                             // plus the program's user templates (§8 κ amendment)
 }
 ```
 
 Consumption rule post-P2: a call site either **resolves a name** (→ `resolve_*`) or
-**enumerates the user's declarations** (→ `declared()`); passing a raw template slice
-across a subsystem boundary is retired. `Engine::prelude`, `prelude_functions`, and
-`find_template_with_prelude` are deleted; `merge_functions` folds into env construction.
+**enumerates the user's declarations** (→ `module()`; the entry's own declarations are
+`program.entry()`); passing a raw template slice across a subsystem boundary is retired.
+`Engine::prelude`, `prelude_functions`, and `find_template_with_prelude` are deleted;
+`merge_functions` folds into env construction.
 
 ---
 
@@ -479,10 +480,15 @@ runs against P1's landed net)
   as its templates (the entry's own, then each direct import's `pub` templates,
   first-wins). The CLI, GUI and LSP load their program and evaluate exactly the
   returned `Arc`, so their user-visible content is unchanged from P1. `Engine::env_of`
-  is identity-checked through `EnvScope`: the loaded program's environment, rooted at
-  the evaluation module, for exactly that module (pointer identity), and a module's own
-  environment (I1) for any other, including a copy of it. `ProgramRoot` is a plain
-  `{entry, imports}`. `merge_functions` folded into `DefEnv::function_table()`
+  is identity-checked through `EnvScope`. For exactly the evaluation module (pointer
+  identity) the engine's environment is the loaded program's own: it binds every name,
+  bare or qualified (I7), as `DefEnv::from_program` does, and differs only in that its
+  `module()` is the evaluation module. Any other module, including a copy of it,
+  resolves in its own environment (I1). `ProgramRoot` is a plain `{entry, imports}`
+  and `ProgramRoot::new` is private, so a root is built only from a compiled program
+  or a lone module. `DefEnv::declared()` was renamed `module()` because, for the loaded
+  program, it is the evaluation module and not the entry's declarations.
+  `merge_functions` folded into `DefEnv::function_table()`
   (closing §10 Q4's hand-off), and `prelude_functions`, `Engine::prelude()`,
   `Engine::def_env()` and the eval-side `find_template_with_prelude` are deleted; the
   hand-rolled prelude-then-module trait and template reads in bom_report,

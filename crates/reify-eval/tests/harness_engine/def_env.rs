@@ -161,8 +161,8 @@ fn def_env_resolves_with_entry_then_imports_then_stdlib_precedence() {
     ));
     assert!(env.resolve_template_in("nope", "Rig").is_none());
 
-    // (f) the declared module is the entry itself.
-    assert!(std::ptr::eq(env.declared(), program.entry()));
+    // (f) the environment's module is the entry itself.
+    assert!(std::ptr::eq(env.module(), program.entry()));
 }
 
 /// (g) Over every entry-declared and stdlib name no import binds, DefEnv agrees
@@ -1046,7 +1046,7 @@ fn the_function_table_dispatches_as_the_engine_table_does() {
         "precondition: no Error"
     );
     let env = DefEnv::from_program(&program);
-    let own: &CompiledFunction = named(env.declared(), "symmetric_tolerance");
+    let own: &CompiledFunction = named(program.entry(), "symmetric_tolerance");
     assert!(
         load_stdlib()
             .iter()
@@ -1060,8 +1060,8 @@ fn the_function_table_dispatches_as_the_engine_table_does() {
     ));
 
     let table = env.function_table();
-    let reference: Vec<&CompiledFunction> = env
-        .declared()
+    let reference: Vec<&CompiledFunction> = program
+        .entry()
         .functions
         .iter()
         .chain(load_stdlib().iter().flat_map(|m| m.functions.iter()))
@@ -1132,7 +1132,7 @@ fn a_lone_modules_environment_binds_its_own_templates_then_the_prelude() {
         stdlib_template(STDLIB_ONLY)
     ));
     assert!(env.resolve_template("NoSuchStructure").is_none());
-    assert!(std::ptr::eq(env.declared(), &module));
+    assert!(std::ptr::eq(env.module(), &module));
     assert!(program_scope::collision_warnings(&module, load_stdlib()).is_empty());
 }
 

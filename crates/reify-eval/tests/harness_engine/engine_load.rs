@@ -189,7 +189,7 @@ fn the_loaded_module_resolves_in_the_loaded_programs_environment() {
     let env = scope.env();
 
     assert!(same(env.resolve_enum("Pick"), enum_in(&program, 0, "Pick")));
-    assert!(std::ptr::eq(env.declared(), &*module));
+    assert!(std::ptr::eq(env.module(), &*module));
 }
 
 /// A copy of the loaded module is not the module the engine loaded, so it
@@ -224,7 +224,7 @@ fn an_unloaded_engine_resolves_a_module_in_its_own_environment() {
 
     assert!(env.resolve_function("twice", &twice_types).is_none());
     assert!(env.resolve_enum("Pick").is_none());
-    assert!(std::ptr::eq(env.declared(), program.entry()));
+    assert!(std::ptr::eq(env.module(), program.entry()));
 }
 
 #[test]
@@ -248,8 +248,8 @@ fn the_loaded_environment_resolves_through_the_loaded_program() {
         .find(|t| t.name == STDLIB_ONLY)
         .unwrap_or_else(|| panic!("precondition: the stdlib declares `{STDLIB_ONLY}`"));
     assert!(same(env.resolve_template(STDLIB_ONLY), stdlib_template));
-    assert!(std::ptr::eq(env.declared(), &*module));
-    assert_eq!(env.declared().path, program.entry().path);
+    assert!(std::ptr::eq(env.module(), &*module));
+    assert_eq!(env.module().path, program.entry().path);
 }
 
 /// The environment's ambient tier is the engine's own prelude, not a hard-wired
@@ -305,7 +305,7 @@ fn a_second_load_replaces_the_first() {
         env.resolve_function("thrice", &param_types(thrice)),
         thrice
     ));
-    assert!(std::ptr::eq(env.declared(), &*second_module));
+    assert!(std::ptr::eq(env.module(), &*second_module));
 
     let first_scope = engine.env_of(&first_module);
     let stale = first_scope.env();
@@ -313,7 +313,7 @@ fn a_second_load_replaces_the_first() {
         stale.resolve_function("twice", &twice_types).is_none(),
         "the first module is no longer the loaded one"
     );
-    assert!(std::ptr::eq(stale.declared(), &*first_module));
+    assert!(std::ptr::eq(stale.module(), &*first_module));
 }
 
 /// `parts`' pub trait `Supplied` refines the stdlib's `Buy`, and its pub `Bolt`

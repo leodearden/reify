@@ -46,7 +46,7 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    /// Create an initial snapshot of the module `env` declares.
+    /// Create an initial snapshot of `env.module()`.
     ///
     /// Builds the evaluation graph through `env`,
     /// wires the module's `auto_type_substitution` into `graph.auto_type_substitution`
@@ -55,7 +55,7 @@ impl Snapshot {
     /// values to (Undef, Undetermined), and sets provenance to Initial with
     /// version/snapshot IDs starting at 0.
     pub fn from_env(env: DefEnv<'_>) -> Self {
-        let module = env.declared();
+        let module = env.module();
         let mut graph = EvaluationGraph::from_env(env);
         // Wire MultiParamResolutionOutcome.substitution from CompiledModule
         // into the graph BEFORE computing topology_fingerprint, so the 7th

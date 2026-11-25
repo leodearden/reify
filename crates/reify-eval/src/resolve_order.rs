@@ -388,10 +388,10 @@ fn resolve_order_impl(
 ) -> ResolveOrder {
     debug_assert!(
         cluster_ctx
-            .is_none_or(|ctx| std::ptr::eq(templates, ctx.env.declared().templates.as_slice())),
-        "resolve_order's templates must be the ones its cluster context's \
-         environment declares: cluster scopes index the one, instance paths \
-         are walked from the other"
+            .is_none_or(|ctx| std::ptr::eq(templates, ctx.env.module().templates.as_slice())),
+        "resolve_order's templates must be its cluster context's \
+         `env.module()`'s templates: cluster scopes index the one, instance \
+         paths are walked from the other"
     );
     let n = templates.len();
     if n == 0 {
@@ -834,7 +834,7 @@ fn union_via_transitive_auto_owners(
 ///
 /// Mirrors `enumerate_descendants`' path composition
 /// (structural_query.rs:213 `{prefix}.{sub}`, :187 `{prefix}.{sub}[{idx}]`),
-/// seeded once per template `env` declares at `prefix = &template.name` exactly
+/// seeded once per template of `env.module()` at `prefix = &template.name` exactly
 /// as `expand_structural_query` seeds it, and resolving each child structure in
 /// `env` exactly as it does.  A COLLECTION sub contributes its
 /// INDEX-STRIPPED base path — `Rig.bolts[0]` and `Rig.bolts[7]` both denote
@@ -922,7 +922,7 @@ pub(crate) fn build_instance_path_structure_map(
 
     let mut out: HashMap<String, String> = HashMap::new();
     let mut node_budget = max_nodes;
-    for template in &env.declared().templates {
+    for template in &env.module().templates {
         walk(
             template,
             env,

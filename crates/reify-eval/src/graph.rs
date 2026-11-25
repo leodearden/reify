@@ -416,7 +416,7 @@ fn insert_contributed_cell(
 }
 
 impl EvaluationGraph {
-    /// Build an EvaluationGraph from the templates `env` declares, each sub's
+    /// Build an EvaluationGraph from `env.module()`'s templates, each sub's
     /// structure resolved through `env`; a sub that does not resolve is
     /// recorded in [`Self::unresolved_sub_diagnostics`].
     ///
@@ -430,7 +430,7 @@ impl EvaluationGraph {
     pub fn from_env(env: DefEnv<'_>) -> Self {
         let mut graph = EvaluationGraph::default();
 
-        for template in &env.declared().templates {
+        for template in &env.module().templates {
             // task 2629: carry forall templates (deferred-count statement-form
             // forall body shapes) into the runtime graph. Populated alongside
             // other per-template extraction passes so the runtime

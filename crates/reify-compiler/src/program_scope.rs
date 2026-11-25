@@ -14,9 +14,11 @@ use crate::types::{
     CompiledUnit, TopologyTemplate,
 };
 
-/// What resolution starts from: an entry module, whose own declarations are
-/// everything it holds, and its direct imports. A lone module stands for the
-/// import-free program whose entry it is (resolution-unification I1).
+/// What resolution starts from: an entry module and its direct imports. A
+/// root is built only from a compiled program, whose entry holds only its own
+/// declarations (boundary #14), or from a lone module, which stands for the
+/// import-free program whose entry it is (resolution-unification I1). So the
+/// entry's own declarations are everything it holds.
 #[derive(Debug, Clone, Copy)]
 pub struct ProgramRoot<'a> {
     entry: &'a CompiledModule,

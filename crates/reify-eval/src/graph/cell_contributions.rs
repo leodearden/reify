@@ -176,7 +176,7 @@ impl Instances {
 }
 
 fn enumerate(env: DefEnv<'_>, instances: Instances) -> impl Iterator<Item = ContributedCell<'_>> {
-    env.declared()
+    env.module()
         .templates
         .iter()
         .flat_map(move |template| template_cells(env, template, instances))
@@ -212,7 +212,7 @@ fn guarded_group_cell(cell: GuardedGroupCell<'_>) -> ContributedCell<'_> {
 /// entity (`P.s`, `P.s[i]`, `P.s["k"]`) and the name of the child template
 /// its cells are stamped from.
 pub(crate) fn sub_instances(env: DefEnv<'_>) -> impl Iterator<Item = (String, &str)> {
-    env.declared().templates.iter().flat_map(move |parent| {
+    env.module().templates.iter().flat_map(move |parent| {
         instance_slots(env, parent, Instances::Every)
             .map(|(slot, child)| (slot.scoped_entity(), child.name.as_str()))
     })

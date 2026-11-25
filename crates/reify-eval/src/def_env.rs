@@ -17,9 +17,10 @@
 //!
 //! The engine evaluates a loaded program as one module, its
 //! [`evaluation_module`]: eval walks `module.templates` index by index, so the
-//! program's user templates are that module's. [`EnvScope`] is the
-//! environment the engine resolves a module in: the loaded program's for
-//! exactly that module, the module's own for any other.
+//! program's user templates are that module's. [`EnvScope`] resolves exactly
+//! that module in the loaded program's own environment, with that module as
+//! its [`DefEnv::module`], and any other module in that module's own
+//! environment (I1).
 
 use std::borrow::Borrow;
 use std::sync::Arc;
@@ -180,8 +181,11 @@ impl<'p> DefEnv<'p> {
         self.resolve_in(module_key, name)
     }
 
-    /// The entry module, holding only its own declarations.
-    pub fn declared(&self) -> &'p CompiledModule {
+    /// The module the engine walks: the entry or, for the engine's loaded
+    /// program, its evaluation module, which also holds the program's user
+    /// templates. Names resolve through the environment, never through this
+    /// module's lists.
+    pub fn module(&self) -> &'p CompiledModule {
         self.module
     }
 }
@@ -254,8 +258,9 @@ impl<'m> EnvScope<'m> {
         }
     }
 
-    /// The loaded program's environment, rooted at its evaluation module, when
-    /// the scope's module is that module; otherwise the module's own (I1).
+    /// The loaded program's own environment, with its evaluation module as the
+    /// [`DefEnv::module`], when the scope's module is that module; otherwise
+    /// the module's own (I1).
     pub fn env(&self) -> DefEnv<'_> {
         match &self.loaded {
             Some(loaded) => loaded.env(self.prelude),

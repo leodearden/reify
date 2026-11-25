@@ -6742,7 +6742,7 @@ impl Engine {
         geometry_kernels: &mut BTreeMap<String, Box<dyn GeometryKernel>>,
         registry: &BTreeMap<String, &CapabilityDescriptor>,
         default_kernel_name: Option<&str>,
-        // The module to tessellate is `env.declared()`; its subs and
+        // The module to tessellate is `env.module()`; its subs and
         // let-bound instances resolve in `env`.
         env: DefEnv<'_>,
         values: &mut ValueMap,
@@ -6811,7 +6811,7 @@ impl Engine {
         // cannot abort a build; this one can.)
         mesh_contract_mode: reify_ir::geometry::MeshContractMode,
     ) -> Vec<MeshSurface> {
-        let module = env.declared();
+        let module = env.module();
         let mut meshes = Vec::new();
 
         // Task ε (3436): the engine's default kernel is fetched by name from

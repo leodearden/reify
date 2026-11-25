@@ -848,7 +848,7 @@ fn detect_underdetermined<'t>(
     max_unfold_depth: usize,
     max_unfold_nodes: usize,
 ) -> Vec<Diagnostic> {
-    let templates = &env.declared().templates;
+    let templates = &env.module().templates;
     // EARLY RETURN before any index work (task #5467 amendment, review
     // suggestion 4). The loop at the tail can only emit for a STRICTLY-auto
     // (non-`auto(free)`) cell, so a module with none — every solver-free model,
@@ -2108,7 +2108,7 @@ struct CellReadIndex<'t> {
 impl<'t> CellReadIndex<'t> {
     fn build(env: DefEnv<'t>, max_unfold_depth: usize, max_unfold_nodes: usize) -> Self {
         let mut cell_map: HashMap<ValueCellId, &'t CompiledExpr> = HashMap::new();
-        for template in &env.declared().templates {
+        for template in &env.module().templates {
             for cell in &template.value_cells {
                 if cell.kind.is_auto() {
                     continue;
@@ -3053,7 +3053,7 @@ fn build_single_instance_alias_paths(
 
     let mut collected: HashMap<String, Vec<String>> = HashMap::new();
     let mut node_budget = max_nodes;
-    for template in &env.declared().templates {
+    for template in &env.module().templates {
         walk(
             template,
             env,
@@ -3433,7 +3433,7 @@ fn build_merged_solver_problem<'t>(
     trait_registry: &HashMap<String, &reify_compiler::CompiledTrait>,
     read_index: &'t std::cell::OnceCell<CellReadIndex<'t>>,
 ) -> ResolutionProblem {
-    let templates = &env.declared().templates;
+    let templates = &env.module().templates;
     // Union each member's auto cells, in cluster.scopes (ascending source
     // index) × value_cells declaration order — a pure function of stable Vec
     // iteration; no HashMap/HashSet contributes to this ordering (§5.2 BT5).
