@@ -43,6 +43,10 @@ RUN_GUI_CODE=$(_rgs_code_lines "$RUN_GUI") || RUN_GUI_CODE=""
 
 # Shared launch-environment helpers sourced by BOTH launchers (#7254).
 LIB_GUI_LAUNCH="$REPO_ROOT/scripts/lib_gui_launch.sh"
+# The launchers build and launch through scripts/canon_run.py (task 10231), so
+# every fixture carries it and its siblings. A fixture holds no Cargo.lock, so
+# canon_run finds no tree there and runs each command untouched.
+CANON_RUN_FILES=(canon_run.py canon_cache.py lib_event_log.sh)
 # The loader-path helper lib_gui_launch.sh sources from its own dir (#8654).
 LIB_NATIVE_LD_PATH="$REPO_ROOT/scripts/lib_native_ld_path.sh"
 
@@ -410,6 +414,9 @@ _mk_rungui_dev_fixture() {
     chmod +x "$dir/scripts/run-gui-dev.sh"
     cp "$LIB_GUI_LAUNCH" "$dir/scripts/lib_gui_launch.sh"
     cp "$LIB_NATIVE_LD_PATH" "$dir/scripts/lib_native_ld_path.sh"
+    for _canon_file in "${CANON_RUN_FILES[@]}"; do
+        cp "$REPO_ROOT/scripts/$_canon_file" "$dir/scripts/$_canon_file"
+    done
 
     # Stub: build-sidecar.sh — no-op so the script reaches the vite spawn.
     cat > "$dir/gui/sidecar/build-sidecar.sh" <<'SIDECAR_STUB'
@@ -432,6 +439,9 @@ _mk_rungui_fixture() {
     chmod +x "$dir/scripts/run-gui.sh"
     cp "$LIB_GUI_LAUNCH" "$dir/scripts/lib_gui_launch.sh"
     cp "$LIB_NATIVE_LD_PATH" "$dir/scripts/lib_native_ld_path.sh"
+    for _canon_file in "${CANON_RUN_FILES[@]}"; do
+        cp "$REPO_ROOT/scripts/$_canon_file" "$dir/scripts/$_canon_file"
+    done
 
     cat > "$dir/gui/sidecar/build-sidecar.sh" <<'SIDECAR_STUB'
 #!/usr/bin/env bash

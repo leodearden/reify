@@ -77,6 +77,8 @@ test_canon_cache_host.sh intra-run-serial
 # test_canon_launch_sites.sh (task #10230), like test_canon_run_host.sh, enters mount
 # namespaces with /usr/bin/bwrap; PRD §6 classifies such members intra-run-serial.
 test_canon_launch_sites.sh intra-run-serial
+# test_canon_interactive.sh (task #10231) enters mount namespaces with /usr/bin/bwrap (PRD §6).
+test_canon_interactive.sh intra-run-serial
 
 # --- host-exclusive ------------------------------------------------------------
 # test_bundle_clean_install.sh (task #9732) is default-SKIPPING: armed only by

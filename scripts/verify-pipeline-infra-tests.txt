@@ -861,6 +861,12 @@ scripts/setup-main-gate-worktree-config.sh    tests/infra/test_main_gate_worktre
 # host-global-unit-pinning, git-rerere-guard and jcodemunch-index-units rows.
 scripts/setup-dev.sh                          tests/infra/test_main_gate_worktree_config.sh
 
+# test_canon_interactive.sh (task 10231) runs scripts/install-canon-trampoline.sh
+# against a scratch HOME and reads setup-dev.sh's wiring of it and of its two
+# in-tree builds through canon_run.py, so an edit to either selects the suite.
+scripts/setup-dev.sh                          tests/infra/test_canon_interactive.sh
+scripts/install-canon-trampoline.sh           tests/infra/test_canon_interactive.sh
+
 # Task 7044 (Gap 3): task 7630's GUI vitest worker->host RPC-hardening runner.
 # scripts/gui-vitest-run.sh already routes to the full --scope all gate via
 # scripts/verify-pipeline-paths.txt (task 7630), but that only fires the

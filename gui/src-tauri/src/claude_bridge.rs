@@ -647,14 +647,15 @@ pub async fn claude_permission_decision_impl(
 /// Resolution chain (first non-empty parent wins):
 /// 1. `message_context.current_file` parent — the dir of the currently-open editor file.
 /// 2. `initial_file` parent — the dir of the file passed on the CLI at startup.
-/// 3. `fallback_cwd` — typically `std::env::current_dir()`.
+/// 3. `fallback_dir` — the directory reify-gui was launched from
+///    (`appimage_launch_dir::caller_dir()`).
 ///
 /// Paths without a parent component (e.g. bare filenames like `"main.ri"`) and
 /// empty strings both fall through to the next option.
 pub fn resolve_workspace_dir(
     message_context: Option<&MessageContext>,
     initial_file: Option<&std::path::Path>,
-    fallback_cwd: &std::path::Path,
+    fallback_dir: &std::path::Path,
 ) -> std::path::PathBuf {
     // 1. current_file from message context
     if let Some(ctx) = message_context
@@ -679,7 +680,7 @@ pub fn resolve_workspace_dir(
     }
 
     // 3. fallback
-    fallback_cwd.to_path_buf()
+    fallback_dir.to_path_buf()
 }
 
 /// The reify-debug MCP endpoint URL, set for the sidecar ONLY when the host
@@ -733,20 +734,10 @@ pub fn apply_sidecar_env(
 /// `bundle.externalBin` in tauri.conf.json.
 pub const SIDECAR_EXECUTABLE: &str = "reify-sidecar";
 
-/// The sidecar executable beside `gui_exe`. Tauri installs `externalBin`
-/// next to the GUI executable (`target/<profile>/`, `/usr/bin/`,
-/// `<AppDir>/usr/bin/`), never in `resource_dir`.
-///
-/// Errs, naming `gui_exe`, unless it is absolute with a parent directory: a
-/// relative result would make `Command::new` search `PATH`.
+/// The sidecar executable beside `gui_exe`, where Tauri installs `externalBin`
+/// ([`crate::shipped_executables::beside_gui`]).
 pub fn sidecar_executable_beside(gui_exe: &Path) -> Result<std::path::PathBuf, String> {
-    match gui_exe.parent() {
-        Some(dir) if gui_exe.is_absolute() => Ok(dir.join(SIDECAR_EXECUTABLE)),
-        _ => Err(format!(
-            "cannot locate {SIDECAR_EXECUTABLE} beside GUI executable {gui_exe:?}: \
-             not an absolute path with a parent directory"
-        )),
-    }
+    crate::shipped_executables::beside_gui(gui_exe, SIDECAR_EXECUTABLE)
 }
 
 /// Spawn the Claude sidecar process and return a [`SidecarHandle`] in `Starting` state.

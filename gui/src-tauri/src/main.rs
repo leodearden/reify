@@ -20,6 +20,7 @@ use tauri::{Emitter, Manager};
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_eval::SolverProgressSink;
+use reify_gui::command_line::Launch;
 use reify_gui::commands::AppState;
 use reify_gui::debug_server_slot::DebugServerSlot;
 use reify_gui::diff::{StateDelta, delta_to_events};
@@ -767,11 +768,12 @@ async fn claude_send_message(
     // Resolve the writable workspace directory for the landlock sandbox.
     let initial_file_opt: Option<std::path::PathBuf> =
         state.initial_file.lock().ok().and_then(|g| g.clone());
-    let fallback_cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let caller_dir = reify_gui::appimage_launch_dir::caller_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
     let workspace = reify_gui::claude_bridge::resolve_workspace_dir(
         context.as_ref(),
         initial_file_opt.as_deref(),
-        &fallback_cwd,
+        &caller_dir,
     );
 
     // Resolve the landlock helper path from the bundle resource dir.
@@ -925,17 +927,31 @@ async fn set_active_fea_case(
 fn main() {
     // SAFETY: the first statement of main, before any thread exists.
     unsafe { reify_gui::webkit_env::apply_process_defaults() }
-    match std::env::args_os().nth(1) {
-        Some(arg) if arg == reify_gui::webkit_env::PRINT_ENV_FLAG => {
+    let launch_file = match reify_gui::command_line::parse(std::env::args_os().skip(1)) {
+        Launch::PrintWebkitEnv => {
             print!("{}", reify_gui::webkit_env::process_env_report());
             return;
         }
-        Some(arg) if arg == "--version" || arg == "-V" => {
+        Launch::Version => {
             println!("reify-gui {}", reify_version::VERSION);
             return;
         }
-        _ => {}
-    }
+        Launch::Help => {
+            print!("{}", reify_gui::command_line::USAGE);
+            return;
+        }
+        Launch::UnknownOption(option) => {
+            eprintln!("reify-gui: unknown option {option:?}; `reify-gui --help` lists the options");
+            std::process::exit(2);
+        }
+        Launch::Cli { args } => {
+            reify_gui::appimage_launch_dir::restore();
+            let Err(e) = reify_gui::bundled_cli::exec(args);
+            eprintln!("reify-gui: {e}");
+            std::process::exit(127);
+        }
+        Launch::Gui { file } => file.map(reify_gui::appimage_launch_dir::resolve),
+    };
     let mut context = tauri::generate_context!();
     if let Err(e) =
         reify_gui::dev_url::retarget_to_vite_port_from_env(&mut context.config_mut().build)
@@ -959,7 +975,9 @@ fn main() {
     let engine_arc = Arc::new(Mutex::new(session));
 
     // Loaded in `setup()`, through the evaluation queue.
-    let argv = std::env::args().nth(1).unwrap_or_default();
+    let launch_file = launch_file
+        .map(|file| file.to_string_lossy().into_owned())
+        .unwrap_or_default();
 
     let debug_enabled = std::env::var("REIFY_DEBUG").is_ok_and(|v| v == "1");
     let selection_arc = Arc::new(RwLock::new(reify_mcp::SelectionInfo::default()));
@@ -1102,7 +1120,7 @@ fn main() {
                 &evals,
                 Arc::clone(&engine_arc),
                 initial_file_load_failure_slot,
-                &argv,
+                &launch_file,
             ) {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
