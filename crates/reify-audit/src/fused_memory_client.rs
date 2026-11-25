@@ -378,7 +378,41 @@ fn task_metadata_from_wire(v: &Value) -> Option<TaskMetadata> {
         consumer_ref,
         audit_foundation,
         done_at,
+        dependencies: dependency_ids(v),
+        has_old_core_release: is_truthy(metadata.get("old_core_release")),
+        has_deferred_watch: is_truthy(metadata.get("deferred_watch")),
+        trigger_met: is_truthy(metadata.get("trigger_met")),
     })
+}
+
+/// The record's top-level `dependencies` as id strings. A number or string
+/// entry is kept; any other entry is skipped. Absent or non-array → empty.
+fn dependency_ids(task: &Value) -> Vec<String> {
+    task.get("dependencies")
+        .and_then(Value::as_array)
+        .map(|deps| {
+            deps.iter()
+                .filter_map(|d| match d {
+                    Value::Number(n) => Some(n.to_string()),
+                    Value::String(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Python `bool()` over a JSON value, absent read as `None`: the reading
+/// dark-factory's `orchestrator/src/orchestrator/pure_gate_resolution.py::_deferred_watch_holds` applies.
+fn is_truthy(value: Option<&Value>) -> bool {
+    match value {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(b)) => *b,
+        Some(Value::Number(n)) => n.as_f64().is_some_and(|x| x != 0.0),
+        Some(Value::String(s)) => !s.is_empty(),
+        Some(Value::Array(a)) => !a.is_empty(),
+        Some(Value::Object(o)) => !o.is_empty(),
+    }
 }
 
 /// `done_at` of a `done` task. An integer epoch-seconds `metadata.done_at`
@@ -779,5 +813,151 @@ mod tests {
         let v = json!({"id": "3676.1", "status": "pending"});
         let tm = task_metadata_from_wire(&v).expect("string id decode");
         assert_eq!(tm.task_id, "3676.1");
+    }
+
+    /// A pending wire task with `extra` merged in at the top level.
+    fn pending_task_wire(extra: Value) -> Value {
+        let mut v = json!({"id": "9001", "title": "t", "status": "pending"});
+        for (key, value) in extra.as_object().expect("extra is an object") {
+            v[key] = value.clone();
+        }
+        v
+    }
+
+    #[test]
+    fn wire_adapter_reads_top_level_dependencies_as_id_strings() {
+        let rows = [
+            ("ints", Some(json!([10376, 10510])), vec!["10376", "10510"]),
+            ("mixed", Some(json!(["7", 8])), vec!["7", "8"]),
+            ("absent", None, vec![]),
+            ("null", Some(json!(null)), vec![]),
+            ("non-array", Some(json!("10510")), vec![]),
+        ];
+        for (label, deps, expected) in rows {
+            let extra = match deps {
+                Some(d) => json!({ "dependencies": d }),
+                None => json!({}),
+            };
+            let tm = task_metadata_from_wire(&pending_task_wire(extra))
+                .unwrap_or_else(|| panic!("row {label} dropped"));
+            assert_eq!(tm.dependencies, expected, "dependencies = {label}");
+        }
+    }
+
+    /// The `is_truthy` reading of one metadata key over `values`: each value is
+    /// written to `metadata.<key>` in turn and the decoded flag compared with
+    /// `expected`. `None` leaves the key absent.
+    fn assert_flag(
+        key: &str,
+        flag: fn(&TaskMetadata) -> bool,
+        values: &[Option<Value>],
+        expected: bool,
+    ) {
+        for value in values {
+            let mut metadata = json!({});
+            if let Some(value) = value {
+                metadata[key] = value.clone();
+            }
+            let tm = task_metadata_from_wire(&pending_task_wire(json!({ "metadata": metadata })))
+                .expect("pending decode");
+            assert_eq!(flag(&tm), expected, "metadata.{key} = {value:?}");
+        }
+    }
+
+    #[test]
+    fn wire_adapter_old_core_release_is_truthy_when_non_empty() {
+        let release = |tm: &TaskMetadata| tm.has_old_core_release;
+        assert_flag(
+            "old_core_release",
+            release,
+            &[Some(json!({
+                "reason": "kept-code work the new engine needs",
+                "approved_by": "Leo",
+                "approved_at": "2026-11-25"
+            }))],
+            true,
+        );
+        assert_flag(
+            "old_core_release",
+            release,
+            &[
+                None,
+                Some(json!(null)),
+                Some(json!({})),
+                Some(json!(false)),
+                Some(json!("")),
+            ],
+            false,
+        );
+    }
+
+    #[test]
+    fn wire_adapter_deferred_watch_is_truthy_when_a_non_empty_string() {
+        let watch = |tm: &TaskMetadata| tm.has_deferred_watch;
+        assert_flag(
+            "deferred_watch",
+            watch,
+            &[Some(json!(
+                "Never dispatches while the new evaluation core is being built."
+            ))],
+            true,
+        );
+        assert_flag(
+            "deferred_watch",
+            watch,
+            &[None, Some(json!(null)), Some(json!(""))],
+            false,
+        );
+    }
+
+    /// Python `bool()` truthiness, the reading dark-factory's scheduler
+    /// applies to `metadata.trigger_met`.
+    #[test]
+    fn wire_adapter_trigger_met_reads_python_truthiness() {
+        let met = |tm: &TaskMetadata| tm.trigger_met;
+        assert_flag(
+            "trigger_met",
+            met,
+            &[Some(json!(true)), Some(json!("yes")), Some(json!(1))],
+            true,
+        );
+        assert_flag(
+            "trigger_met",
+            met,
+            &[
+                None,
+                Some(json!(null)),
+                Some(json!(false)),
+                Some(json!("")),
+                Some(json!(0)),
+            ],
+            false,
+        );
+    }
+
+    /// Task #10532 as the store served it before it was held: two of its
+    /// three files are held old-core files, and it had no edge on the holder.
+    #[test]
+    fn wire_adapter_decodes_the_10532_shape() {
+        let v = json!({
+            "id": 10532,
+            "title": "t",
+            "status": "pending",
+            "dependencies": [10376],
+            "metadata": {
+                "files": [
+                    "crates/reify-eval/src/def_env.rs",
+                    "crates/reify-eval/src/engine_admin.rs",
+                    "crates/reify-eval/src/lib.rs"
+                ]
+            }
+        });
+        let tm = task_metadata_from_wire(&v).expect("10532 decode");
+        assert_eq!(tm.task_id, "10532");
+        assert_eq!(tm.dependencies, vec!["10376"]);
+        assert_eq!(tm.files.len(), 3);
+        assert!(!tm.has_old_core_release);
+        assert!(!tm.has_deferred_watch);
+        assert!(!tm.trigger_met);
     }
 }

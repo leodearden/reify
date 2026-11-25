@@ -309,6 +309,9 @@ pub enum Pattern {
     /// PLINECITE — stale hard line cites. The [`plinecite`](crate::plinecite) module doc is the
     /// canonical definition.
     PLineCite,
+    /// POLDCORE — the old-core hold. The [`poldcore`](crate::poldcore) module doc is the
+    /// canonical definition.
+    POldCoreHold,
 }
 
 /// A pointer to forensic evidence supporting a [`Finding`]. Renders verbatim
@@ -424,6 +427,18 @@ pub struct TaskMetadata {
     /// for non-`done` tasks (P1 skips them). The T-4 CLI converts the ISO
     /// timestamp once at the boundary. Per `f-infra-design.md` §5 P1.
     pub done_at: Option<i64>,
+    /// Ids of the tasks this task depends on: the record's top-level `dependencies`.
+    #[serde(default)]
+    pub dependencies: Vec<String>,
+    /// `metadata.old_core_release` is truthy (Python `bool()`, the scheduler's reading).
+    #[serde(default)]
+    pub has_old_core_release: bool,
+    /// `metadata.deferred_watch` is truthy (Python `bool()`, the scheduler's reading).
+    #[serde(default)]
+    pub has_deferred_watch: bool,
+    /// `metadata.trigger_met` is truthy (Python `bool()`, the scheduler's reading).
+    #[serde(default)]
+    pub trigger_met: bool,
 }
 
 /// `metadata.done_provenance` payload as written by reify-orchestrator's
@@ -670,6 +685,10 @@ mod tests {
             consumer_ref: None,
             audit_foundation: None,
             done_at: None,
+            dependencies: vec![],
+            has_old_core_release: false,
+            has_deferred_watch: false,
+            trigger_met: false,
         };
 
         let ctx = AuditContext::new("/tmp/fake-project", &conn, &git, &jc)
@@ -681,5 +700,31 @@ mod tests {
         assert_eq!(keys, ["7"], "with_tasks installs exactly the given corpus");
         assert_eq!(ctx.target_task_id(), Some("7"));
         assert_eq!(ctx.now(), 1_700_000_000);
+    }
+
+    /// The nine-field record `tests/common/task_json.rs` and
+    /// `scripts/smoke-predone-hook.sh` write into a `--tasks-file` still
+    /// parses: the hold facts default to "no edges, nothing set".
+    #[test]
+    fn a_nine_field_tasks_file_record_defaults_the_hold_facts() {
+        use super::TaskMetadata;
+
+        let record = serde_json::json!({
+            "task_id": "7",
+            "status": "pending",
+            "files": ["crates/reify-audit/src/lib.rs"],
+            "done_provenance": null,
+            "title": "Task 7",
+            "prd": null,
+            "consumer_ref": null,
+            "audit_foundation": null,
+            "done_at": null
+        });
+        let task: TaskMetadata =
+            serde_json::from_value(record).expect("a nine-field record deserializes");
+        assert!(task.dependencies.is_empty());
+        assert!(!task.has_old_core_release);
+        assert!(!task.has_deferred_watch);
+        assert!(!task.trigger_met);
     }
 }

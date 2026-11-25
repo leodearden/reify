@@ -64,6 +64,10 @@ mod tests {
                 consumer_ref: None,
                 audit_foundation: None,
                 done_at: None,
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
 
@@ -121,6 +125,7 @@ mod tests {
             Pattern::PManifestCite,
             Pattern::PPrdStatus,
             Pattern::PLineCite,
+            Pattern::POldCoreHold,
         ] {
             match p {
                 Pattern::P5PhantomDone => {}
@@ -145,6 +150,7 @@ mod tests {
                 Pattern::PManifestCite => {}
                 Pattern::PPrdStatus => {}
                 Pattern::PLineCite => {}
+                Pattern::POldCoreHold => {}
             }
         }
 
@@ -217,6 +223,10 @@ mod tests {
             consumer_ref: _,
             audit_foundation: _,
             done_at: _,
+            dependencies: _,
+            has_old_core_release: _,
+            has_deferred_watch: _,
+            trigger_met: _,
         } = TaskMetadata {
             task_id: "0".to_string(),
             status: "done".to_string(),
@@ -231,6 +241,10 @@ mod tests {
             consumer_ref: None,
             audit_foundation: None,
             done_at: None,
+            dependencies: vec![],
+            has_old_core_release: false,
+            has_deferred_watch: false,
+            trigger_met: false,
         };
         let DoneProvenance {
             kind: _,
@@ -284,6 +298,10 @@ mod tests {
                 consumer_ref: None,
                 audit_foundation: None,
                 done_at: None,
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
 
@@ -359,6 +377,10 @@ mod tests {
                 consumer_ref: None,
                 audit_foundation: None,
                 done_at: None,
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
 
@@ -449,6 +471,10 @@ mod tests {
                 consumer_ref: None,
                 audit_foundation: None,
                 done_at: None,
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
 
@@ -535,6 +561,10 @@ mod tests {
                 consumer_ref: None,
                 audit_foundation: None,
                 done_at: None,
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
 
@@ -696,6 +726,10 @@ mod tests {
                 consumer_ref: None,
                 audit_foundation: None,
                 done_at: None,
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
 
@@ -774,6 +808,10 @@ mod tests {
                 consumer_ref: None,
                 audit_foundation: None,
                 done_at: None,
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
 
@@ -848,6 +886,10 @@ mod tests {
                 consumer_ref: None,
                 audit_foundation: None,
                 done_at: None,
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
         task_metadata.insert(
@@ -866,6 +908,10 @@ mod tests {
                 consumer_ref: None,
                 audit_foundation: None,
                 done_at: None,
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
 
@@ -958,6 +1004,10 @@ mod tests {
                 consumer_ref: None,
                 audit_foundation: None,
                 done_at: None,
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
         task_metadata.insert(
@@ -976,6 +1026,10 @@ mod tests {
                 consumer_ref: None,
                 audit_foundation: None,
                 done_at: None,
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
 
@@ -1030,6 +1084,10 @@ mod tests {
             consumer_ref: None,
             audit_foundation: None,
             done_at: None,
+            dependencies: vec![],
+            has_old_core_release: false,
+            has_deferred_watch: false,
+            trigger_met: false,
         }
     }
 
@@ -1200,6 +1258,10 @@ mod tests {
                 consumer_ref: None,
                 audit_foundation: None,
                 done_at: None,
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
 
@@ -1298,6 +1360,10 @@ mod tests {
                 consumer_ref: None,
                 audit_foundation: None,
                 done_at: None,
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
         task_metadata.insert(
@@ -1316,6 +1382,10 @@ mod tests {
                 consumer_ref: None,
                 audit_foundation: None,
                 done_at: None,
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
 
@@ -2210,6 +2280,10 @@ mod tests {
                 consumer_ref: None,
                 audit_foundation: None,
                 done_at: None,
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
 
@@ -2293,6 +2367,10 @@ mod tests {
                 consumer_ref: None,
                 audit_foundation: None,
                 done_at: None,
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
 
@@ -2381,6 +2459,10 @@ mod tests {
                 consumer_ref: None,
                 audit_foundation: None,
                 done_at: None,
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
         task_metadata.insert(
@@ -2399,6 +2481,10 @@ mod tests {
                 consumer_ref: None,
                 audit_foundation: None,
                 done_at: None,
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
 
@@ -2474,6 +2560,10 @@ mod tests {
                 consumer_ref: None,
                 audit_foundation: None,
                 done_at: None,
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
 
@@ -2563,6 +2653,10 @@ mod tests {
                 consumer_ref: None,
                 audit_foundation: None,
                 done_at: None,
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
 
@@ -2703,6 +2797,10 @@ mod tests {
                 consumer_ref: None,
                 audit_foundation: None,
                 done_at: None,
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
         let jc = InertJc;
@@ -2788,6 +2886,10 @@ mod tests {
                 consumer_ref: None,
                 audit_foundation: None,
                 done_at: None,
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
 
@@ -2892,6 +2994,10 @@ mod tests {
                 consumer_ref: None,
                 audit_foundation: None,
                 done_at: None,
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
 
@@ -2960,6 +3066,10 @@ mod tests {
                 consumer_ref: None,
                 audit_foundation: None,
                 done_at: None,
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
 
@@ -3082,6 +3192,10 @@ mod tests {
                 consumer_ref: None,
                 audit_foundation: None,
                 done_at: None,
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
 
@@ -3143,6 +3257,10 @@ mod tests {
                 consumer_ref: None,
                 audit_foundation: None,
                 done_at: None,
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
 
@@ -3224,6 +3342,10 @@ mod tests {
                 consumer_ref: None,
                 audit_foundation: None,
                 done_at: None,
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
 
@@ -3296,6 +3418,10 @@ mod tests {
                 consumer_ref: None,
                 audit_foundation: None,
                 done_at: None,
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
 
@@ -3381,6 +3507,10 @@ mod tests {
                 consumer_ref: None,
                 audit_foundation: None,
                 done_at: None,
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
 
@@ -3477,6 +3607,10 @@ mod tests {
                 consumer_ref: None,
                 audit_foundation: None,
                 done_at: None,
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
 
@@ -3566,6 +3700,10 @@ mod tests {
                 consumer_ref: None,
                 audit_foundation: None,
                 done_at: None,
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
 
@@ -3805,6 +3943,10 @@ mod tests {
                 consumer_ref: None,
                 audit_foundation: None,
                 done_at: None,
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
         task_metadata.insert(
@@ -3826,6 +3968,10 @@ mod tests {
                 consumer_ref: None,
                 audit_foundation: None,
                 done_at: None,
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
 
@@ -4010,6 +4156,10 @@ mod tests {
                 consumer_ref: None,
                 audit_foundation: None,
                 done_at: None,
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
 
@@ -4095,6 +4245,10 @@ mod tests {
                 consumer_ref: None,
                 audit_foundation: None,
                 done_at: None,
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
 
@@ -4180,6 +4334,10 @@ mod tests {
                 consumer_ref: None,
                 audit_foundation: None,
                 done_at: None,
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
 

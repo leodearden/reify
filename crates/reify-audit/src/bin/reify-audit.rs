@@ -14,8 +14,9 @@
 //!   the restricted detectors that move the exit code (see
 //!   `docs/notes/diagnostic-severity-policy.md`).
 //!   `PPRDSTATUS` is PRD status-prose drift — opt-in only, High, and raised to
-//!   the escalation queue by `scripts/pprdstatus-escalate.py`. A run of it
-//!   alone refuses an empty task corpus with 125.
+//!   the escalation queue by `scripts/pprdstatus-escalate.py`. `POLDCORE` is
+//!   the old-core hold — opt-in only, High. Both read only the task corpus, so a
+//!   run of them alone refuses an empty task corpus with 125.
 //!
 //! ## Output
 //!
@@ -72,7 +73,7 @@ use reify_audit::{
     jcodemunch_index,
     jcodemunch_seam::{Seam, SeamUnavailable},
     p1_producer_orphan, p2_consumer_stub, p5_phantom_done, pattern_flag, pcite, pdcheck,
-    pdead_dead_code, pdiag, pdoccover, pdssentinel, player, plinecite, pprdstatus, ptodo,
+    pdead_dead_code, pdiag, pdoccover, pdssentinel, player, plinecite, poldcore, pprdstatus, ptodo,
     puntested,
 };
 
@@ -143,7 +144,8 @@ fn print_usage(out: &mut dyn Write) {
     let _ = writeln!(out);
     let _ = writeln!(out, "Note: --tasks-file must be a JSON array of TaskMetadata objects");
     let _ = writeln!(out, "(all 9 fields required: task_id, status, files, done_provenance,");
-    let _ = writeln!(out, " title, prd, consumer_ref, audit_foundation, done_at).");
+    let _ = writeln!(out, " title, prd, consumer_ref, audit_foundation, done_at; optional:");
+    let _ = writeln!(out, " dependencies, has_old_core_release, has_deferred_watch, trigger_met).");
 }
 
 // Use std::io::Write trait alias to accept both stdout and stderr.
@@ -790,6 +792,7 @@ const DETECTORS: &[Detector] = &[
     Detector { token: pattern_flag::PCITE,       in_default_sweep: false, refuses_empty_task_corpus: false, check: Check::Plain(pcite::check),                    jcodemunch: JcodemunchUse::Never },
     Detector { token: pattern_flag::PPRDSTATUS,  in_default_sweep: false, refuses_empty_task_corpus: true,  check: Check::Plain(pprdstatus::check),               jcodemunch: JcodemunchUse::Never },
     Detector { token: pattern_flag::PLINECITE,   in_default_sweep: false, refuses_empty_task_corpus: false, check: Check::Plain(plinecite::check),                jcodemunch: JcodemunchUse::Never },
+    Detector { token: pattern_flag::POLDCORE,    in_default_sweep: false, refuses_empty_task_corpus: true,  check: Check::Plain(poldcore::check),                 jcodemunch: JcodemunchUse::Never },
 ];
 
 /// What one detector run produced.
@@ -2353,6 +2356,75 @@ mod tests {
             !jcodemunch_only_run_set(&make_args(false, Some("PLINECITE"))),
             "a PLINECITE-only run must not reach jcodemunch_only_run_set's \
              stale-index refusal (exit 125)"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // POLDCORE (task #10536) — the old-core hold
+    // -------------------------------------------------------------------
+
+    /// Accepted alone, and as a NON-LEADING member of a comma-separated union.
+    #[test]
+    fn parse_args_accepts_poldcore_pattern() {
+        let args = parse_args(&["--pattern".to_string(), "POLDCORE".to_string()])
+            .unwrap_or_else(|e| panic!("--pattern POLDCORE must parse successfully; got: {e}"));
+        assert_eq!(args.pattern.as_deref(), Some(pattern_flag::POLDCORE));
+
+        let args = parse_args(&["--pattern".to_string(), "P1,POLDCORE".to_string()])
+            .unwrap_or_else(|e| panic!("--pattern P1,POLDCORE must parse successfully; got: {e}"));
+        assert_eq!(args.pattern.as_deref(), Some("P1,POLDCORE"));
+        assert!(
+            selects(pattern_flag::POLDCORE, Some("P1,POLDCORE")),
+            "P1,POLDCORE must enable POLDCORE"
+        );
+    }
+
+    /// POLDCORE is OPT-IN: each High awaits a hold-or-release ruling, and the
+    /// exit code is the High count.
+    #[test]
+    fn poldcore_is_opt_in_not_in_default_sweep() {
+        assert!(
+            !selects(pattern_flag::POLDCORE, None),
+            "POLDCORE must NOT run in the no-`--pattern` default sweep"
+        );
+        assert!(
+            selects(pattern_flag::POLDCORE, Some("POLDCORE")),
+            "POLDCORE must activate when --pattern POLDCORE is given"
+        );
+        assert!(
+            !selects(pattern_flag::POLDCORE, Some("P2")),
+            "POLDCORE must be excluded when a named non-POLDCORE pattern is given"
+        );
+    }
+
+    /// POLDCORE reads the loaded task corpus and one tracked file, never the
+    /// jcodemunch serve.
+    #[test]
+    fn needs_jcodemunch_poldcore_routes_false() {
+        assert!(
+            !needs_jcodemunch(&make_args(false, Some("POLDCORE"))),
+            "POLDCORE must not open a jcodemunch connection"
+        );
+        assert!(
+            !jcodemunch_only_run_set(&make_args(false, Some("POLDCORE"))),
+            "a POLDCORE-only run must not reach jcodemunch_only_run_set's \
+             stale-index refusal (exit 125)"
+        );
+    }
+
+    /// An empty task corpus refuses a run whose every detector needs the
+    /// corpus, and nothing wider.
+    #[test]
+    fn empty_task_corpus_refusal_covers_poldcore_only_runs() {
+        for pattern in ["POLDCORE", "PPRDSTATUS,POLDCORE"] {
+            assert!(
+                task_corpus_only_run_set(&make_args(false, Some(pattern))),
+                "--pattern {pattern} must refuse an empty task corpus"
+            );
+        }
+        assert!(
+            !task_corpus_only_run_set(&make_args(false, Some("P5,POLDCORE"))),
+            "--pattern P5,POLDCORE must not refuse an empty task corpus"
         );
     }
 

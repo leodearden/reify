@@ -8,47 +8,19 @@ surface (CLI, language server, GUI) switches in one release that also deletes
 the old orchestration. Until that release, work on the old orchestration is
 held: an agent spent on it is working on code that is due for deletion.
 
-This note is the one place that lists what "the old orchestration" is and how
-a task is held or released. Task #10510 is the holder and points here.
+This note, with the list beside it, is the one place that says what "the old
+orchestration" is and how a task is held or released. Task #10510 is the
+holder and points here.
 
 ## The files
 
-All under `crates/reify-eval/src/`:
-
-```
-engine_eval.rs
-engine_edit.rs            engine_edit/
-engine_build.rs           engine_build/
-unfold.rs                 unfold/
-deps.rs                   deps/
-dirty.rs
-demand.rs
-engine_demand.rs
-observed_demand.rs
-freshness_walk.rs
-cache.rs                  cache/
-graph.rs                  graph/
-snapshot.rs
-engine_constraints.rs     engine_constraints/
-engine_purposes.rs
-engine_fixpoint.rs
-resolve_order.rs
-engine_admin.rs
-engine_compute.rs
-cell_commit.rs
-cell_eval_ctx.rs
-sub_instance_scope.rs
-scope_containment.rs
-realization_cache.rs
-realization_staleness.rs
-realization_content.rs
-geometry_ops/symbolic_cell_mint.rs
-lib.rs
-```
-
-Match these files one by one. Never match a prefix of the crate's name: the
-new core lives in a crate of its own, and a prefix match on
-`crates/reify-eval` would sweep its tasks into the hold.
+The held files and the holder's id are data in
+[`old-evaluation-core-hold.toml`](old-evaluation-core-hold.toml) beside this
+note, their one home: one repo-relative path per entry, a trailing slash
+naming a directory. They are matched one by one, never by a prefix of the
+crate's name: the new core lives in a crate of its own, and a prefix match on
+`crates/reify-eval` would sweep its tasks into the hold. `registration_only`
+marks `lib.rs`.
 
 Everything else is kept code and is not held: the expression evaluator, the
 compiler, the geometry kernels, the solvers, FEA and the other analyses,
@@ -60,7 +32,7 @@ old-orchestration work.
 ## The rule
 
 A task is old-orchestration work if doing it means refactoring, patching,
-extending or documenting the files above. Judge by what the task changes, not
+extending or documenting the held files. Judge by what the task changes, not
 by its file list alone: a task can list `engine_eval.rs` and be a solver
 change with one call site, or list only kept files and be a patch to an old
 mechanism.
@@ -95,3 +67,16 @@ A cancelled dependency counts as satisfied, so cancelling a held task
 releases whatever depends on it. The exception is a cancelled task that
 declares `metadata.delivered_checks`: its dependents then wait for a check
 that can no longer pass. Settle a task's dependents before cancelling it.
+
+## Detection
+
+`reify-audit --pattern POLDCORE` (the `/audit` skill) reports each open task
+that meets the mechanical rule (half or more of its `metadata.files`, tests
+excluded, are held) yet has no edge on the holder and no
+`metadata.old_core_release`; a task whose only held file is `lib.rs` is
+reported at Low. It also reports the holder's own state: closed, absent, or
+no longer kept from dispatching.
+
+It cannot see a task that lost its edge unless the task meets the rule: the
+store records a hold only as the edge itself, so such a task looks like one
+never held. No list of held tasks is kept in the repo.

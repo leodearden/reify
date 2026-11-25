@@ -59,6 +59,10 @@ fn done_meta(task_id: &str, done_at: i64, prd: Option<&str>) -> TaskMetadata {
         consumer_ref: None,
         audit_foundation: None,
         done_at: Some(done_at),
+        dependencies: vec![],
+        has_old_core_release: false,
+        has_deferred_watch: false,
+        trigger_met: false,
     }
 }
 
@@ -160,6 +164,10 @@ mod tests {
                 consumer_ref: None,
                 audit_foundation: None,
                 done_at: Some(0),
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
 
@@ -516,6 +524,10 @@ mod tests {
                 consumer_ref: Some("docs/x.md".to_string()),
                 audit_foundation: None,
                 done_at: None,
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
         let ctx_b = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
@@ -1116,6 +1128,10 @@ mod tests {
                 consumer_ref: Some("docs/x.md".to_string()),
                 audit_foundation: None,
                 done_at: None,
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
 
@@ -1260,6 +1276,10 @@ mod tests {
                 consumer_ref: Some("docs/p.md".to_string()),
                 audit_foundation: None,
                 done_at: None,
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
 
@@ -1488,6 +1508,10 @@ mod tests {
                 consumer_ref: None,
                 audit_foundation: None,
                 done_at: Some(done_at),
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
 
