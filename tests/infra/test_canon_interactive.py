@@ -3,7 +3,8 @@
 test_canon_interactive.py — stdlib unittest for the canonical-build-path PRD's
 interactive half (dark-factory plans/canonical-build-path-shared-cache-prd.md
 C7, task λ): scripts/install-canon-trampoline.sh against a scratch HOME shaped
-like a stock Ubuntu account with rustup.
+like a stock Ubuntu account with rustup, and scripts/setup-dev.sh's wiring of
+it and of its own in-tree builds through scripts/canon_run.py.
 
 WHAT RUNS THIS: run_all.sh discovers `test_*.sh` only, so the discovered member
 is the thin wrapper tests/infra/test_canon_interactive.sh.
@@ -14,6 +15,7 @@ named reason where none can be entered.
 
 import json
 import os
+import re
 import shlex
 import sys
 import tempfile
@@ -24,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import canon_run_fixture as fx  # noqa: E402  (imported after sys.path manipulation)
 
 INSTALLER = fx.REPO_ROOT / "scripts" / "install-canon-trampoline.sh"
+SETUP_DEV = fx.REPO_ROOT / "scripts" / "setup-dev.sh"
 ENV_GENERATOR = Path("/usr/lib/systemd/user-environment-generators/30-systemd-environment-d-generator")
 INSTALLED_BIN = Path(".local", "share", "reify-canon", "bin")
 BLOCK_START = "# >>> reify-canon trampoline (scripts/install-canon-trampoline.sh) >>>"
@@ -102,6 +105,59 @@ def first_cargo(path_value):
         if entry and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
             return candidate
     return None
+
+
+HEREDOC_START = re.compile(r"(?<!<)<<(?!<)(-?)\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2")
+INSTALLER_CALL = re.compile(r'^\s*(if\s+)?"\$\(dirname "\$\{BASH_SOURCE\[0\]\}"\)/install-canon-trampoline\.sh"')
+CHECK = r"cargo\s+check\s+--workspace"
+RELEASE_BUILD = r"cargo\s+build\s+--release\s+-p\s+reify-cli"
+IN_TREE_BUILD = re.compile(rf"{CHECK}|{RELEASE_BUILD}")
+ROUTED = {name: re.compile(rf'canon_run\.py"?\s+{build}') for name, build in (("check", CHECK), ("release build", RELEASE_BUILD))}
+BARE = {name: re.compile(rf"^\s*{build}") for name, build in (("check", CHECK), ("release build", RELEASE_BUILD))}
+
+
+def executable_lines(text):
+    """text's lines minus full-line comments and heredoc bodies (each body's terminator included)."""
+    lines, terminator, strip_tabs = [], None, False
+    for line in text.splitlines():
+        if terminator is not None:
+            if (line.lstrip("\t") if strip_tabs else line) == terminator:
+                terminator = None
+            continue
+        if line.lstrip().startswith("#"):
+            continue
+        lines.append(line)
+        heredoc = HEREDOC_START.search(line)
+        if heredoc:
+            strip_tabs, terminator = heredoc.group(1) == "-", heredoc.group(3)
+    return lines
+
+
+def wiring_defects(text):
+    """What setup-dev.sh text gets wrong about installing the trampoline and routing its builds."""
+    lines = executable_lines(text)
+    defects = []
+    installer = next((index for index, line in enumerate(lines) if INSTALLER_CALL.match(line)), None)
+    first_build = next((index for index, line in enumerate(lines) if IN_TREE_BUILD.search(line)), len(lines))
+    if installer is None:
+        defects.append("installer not invoked")
+    elif installer > first_build:
+        defects.append("installer invoked after an in-tree build")
+    for name, routed in ROUTED.items():
+        if not any(routed.search(line) for line in lines):
+            defects.append(f"{name} not routed through canon_run.py")
+    for name, bare in BARE.items():
+        if any(bare.match(line) for line in lines):
+            defects.append(f"bare {name}")
+    return defects
+
+
+def mutated(test, text, pattern, replacement):
+    """text with every line matching pattern rewritten; the mutation must apply."""
+    mutant = re.sub(pattern, replacement, text, flags=re.MULTILINE)
+    if mutant == text:
+        test.fail(f"mutation {pattern!r} matched nothing in setup-dev.sh")
+    return mutant
 
 
 class InstallerTest(unittest.TestCase):
@@ -183,6 +239,34 @@ class InstallerTest(unittest.TestCase):
         calls = fx.read_calls(os.path.dirname(self.rustup_cargo))
         self.assertEqual([call["cwd"] for call in calls], [canon], calls)
         self.assertEqual(Path(tree, "target", STAMP).read_text().strip(), canon)
+
+
+class SetupDevWiringTest(unittest.TestCase):
+    def setUp(self):
+        self.text = SETUP_DEV.read_text()
+
+    def test_detector_ignores_comments_and_heredoc_bodies(self):
+        text = (
+            '# "$(dirname "${BASH_SOURCE[0]}")/install-canon-trampoline.sh"\n'
+            "cat > unit <<-'EOF'\n"
+            "\tcargo check --workspace\n"
+            "\tEOF\n"
+            "echo done\n"
+        )
+        self.assertEqual(executable_lines(text), ["cat > unit <<-'EOF'", "echo done"])
+
+    def test_setup_dev_installs_the_trampoline_and_routes_its_builds(self):
+        self.assertEqual(wiring_defects(self.text), [])
+
+    def test_detector_reports_a_commented_out_installer(self):
+        mutant = mutated(self, self.text, r"^(\s*)(.*/install-canon-trampoline\.sh\")", r"\1# \2")
+        self.assertIn("installer not invoked", wiring_defects(mutant))
+
+    def test_detector_reports_a_bare_check(self):
+        mutant = mutated(self, self.text, r'^(\s*)\S*canon_run\.py"?\s+(cargo\s+check\s+--workspace)', r"\1\2")
+        defects = wiring_defects(mutant)
+        self.assertIn("check not routed through canon_run.py", defects)
+        self.assertIn("bare check", defects)
 
 
 if __name__ == "__main__":
