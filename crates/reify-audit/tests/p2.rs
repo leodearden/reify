@@ -34,6 +34,10 @@ fn benign_meta(task_id: &str, files: Vec<String>) -> TaskMetadata {
         consumer_ref: None,
         audit_foundation: None,
         done_at: None,
+        dependencies: vec![],
+        has_old_core_release: false,
+        has_deferred_watch: false,
+        trigger_met: false,
     }
 }
 
@@ -363,6 +367,10 @@ mod tests {
                     consumer_ref: None,
                     audit_foundation: None,
                     done_at: None,
+                    dependencies: vec![],
+                    has_old_core_release: false,
+                    has_deferred_watch: false,
+                    trigger_met: false,
                 },
             );
             let jc = MockJCodemunchOps::new();
@@ -648,6 +656,10 @@ mod tests {
             consumer_ref: None,
             audit_foundation: None,
             done_at: Some(200), // later → NOT the introducer
+            dependencies: vec![],
+            has_old_core_release: false,
+            has_deferred_watch: false,
+            trigger_met: false,
         });
         task_metadata.insert("7002".to_string(), TaskMetadata {
             task_id: "7002".to_string(),
@@ -659,6 +671,10 @@ mod tests {
             consumer_ref: None,
             audit_foundation: None,
             done_at: Some(100), // earlier → the introducer
+            dependencies: vec![],
+            has_old_core_release: false,
+            has_deferred_watch: false,
+            trigger_met: false,
         });
 
         let jc = MockJCodemunchOps::new();
@@ -1022,6 +1038,10 @@ mod tests {
             consumer_ref: None,
             audit_foundation: None,
             done_at: Some(50), // earliest → the introducer
+            dependencies: vec![],
+            has_old_core_release: false,
+            has_deferred_watch: false,
+            trigger_met: false,
         });
         task_metadata.insert("8002".to_string(), TaskMetadata {
             task_id: "8002".to_string(),
@@ -1033,6 +1053,10 @@ mod tests {
             consumer_ref: None,
             audit_foundation: None,
             done_at: Some(200), // later → NOT the introducer
+            dependencies: vec![],
+            has_old_core_release: false,
+            has_deferred_watch: false,
+            trigger_met: false,
         });
 
         let jc = MockJCodemunchOps::new();
@@ -1108,6 +1132,10 @@ mod tests {
                 consumer_ref: None,
                 audit_foundation: None,
                 done_at: Some(1000),
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
 
@@ -1195,6 +1223,10 @@ mod tests {
                 consumer_ref: None,
                 audit_foundation: None,
                 done_at: Some(2000),
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
 
@@ -1293,6 +1325,10 @@ mod tests {
                 consumer_ref: None,
                 audit_foundation: None,
                 done_at: Some(9999),
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
 

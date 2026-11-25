@@ -378,7 +378,41 @@ fn task_metadata_from_wire(v: &Value) -> Option<TaskMetadata> {
         consumer_ref,
         audit_foundation,
         done_at,
+        dependencies: dependency_ids(v),
+        has_old_core_release: is_set(metadata.get("old_core_release")),
+        has_deferred_watch: is_set(metadata.get("deferred_watch")),
+        trigger_met: is_set(metadata.get("trigger_met")),
     })
+}
+
+/// The record's top-level `dependencies` as id strings. A number or string
+/// entry is kept; any other entry is skipped. Absent or non-array → empty.
+fn dependency_ids(task: &Value) -> Vec<String> {
+    task.get("dependencies")
+        .and_then(Value::as_array)
+        .map(|deps| {
+            deps.iter()
+                .filter_map(|d| match d {
+                    Value::Number(n) => Some(n.to_string()),
+                    Value::String(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Python `bool()` over a JSON value, absent read as `None`: the reading
+/// dark-factory's `orchestrator/src/orchestrator/pure_gate_resolution.py::_deferred_watch_holds` applies.
+fn is_set(value: Option<&Value>) -> bool {
+    match value {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(b)) => *b,
+        Some(Value::Number(n)) => n.as_f64().is_some_and(|x| x != 0.0),
+        Some(Value::String(s)) => !s.is_empty(),
+        Some(Value::Array(a)) => !a.is_empty(),
+        Some(Value::Object(o)) => !o.is_empty(),
+    }
 }
 
 /// `done_at` of a `done` task. An integer epoch-seconds `metadata.done_at`

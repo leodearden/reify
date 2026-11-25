@@ -28,6 +28,10 @@ mod p2_suppression {
             consumer_ref: None,
             audit_foundation: None,
             done_at: None,
+            dependencies: vec![],
+            has_old_core_release: false,
+            has_deferred_watch: false,
+            trigger_met: false,
         }
     }
 

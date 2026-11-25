@@ -424,6 +424,18 @@ pub struct TaskMetadata {
     /// for non-`done` tasks (P1 skips them). The T-4 CLI converts the ISO
     /// timestamp once at the boundary. Per `f-infra-design.md` §5 P1.
     pub done_at: Option<i64>,
+    /// Ids of the tasks this task depends on: the record's top-level `dependencies`.
+    #[serde(default)]
+    pub dependencies: Vec<String>,
+    /// `metadata.old_core_release` is set.
+    #[serde(default)]
+    pub has_old_core_release: bool,
+    /// `metadata.deferred_watch` is set.
+    #[serde(default)]
+    pub has_deferred_watch: bool,
+    /// `metadata.trigger_met` is set.
+    #[serde(default)]
+    pub trigger_met: bool,
 }
 
 /// `metadata.done_provenance` payload as written by reify-orchestrator's
@@ -670,6 +682,10 @@ mod tests {
             consumer_ref: None,
             audit_foundation: None,
             done_at: None,
+            dependencies: vec![],
+            has_old_core_release: false,
+            has_deferred_watch: false,
+            trigger_met: false,
         };
 
         let ctx = AuditContext::new("/tmp/fake-project", &conn, &git, &jc)
