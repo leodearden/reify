@@ -497,3 +497,46 @@ fn holder_state_comes_first_then_missed_tasks_by_numeric_id() {
     );
     assert!(findings[0].summary.starts_with(HOLDER_STATE));
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The tracked list
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Floor guard on the tracked hold list: it parses and meets every invariant,
+/// its holder is 10510, the anchor `engine_eval.rs` is held, and the sibling
+/// crate `reify-evalcore` is not. Anchors only, never counts, so editing the
+/// list does not red it.
+#[test]
+fn the_tracked_hold_list_is_usable_and_holds_its_anchor() {
+    let root = reify_test_support::workspace_root::workspace_root();
+    let git = MockGitOps::new();
+    let conn = Connection::open_in_memory().expect("in-memory sqlite");
+    let jcodemunch = MockJCodemunchOps::new();
+    let corpus = [
+        healthy_holder(),
+        open_task("1", &[ENGINE_EVAL]),
+        open_task("2", &["crates/reify-evalcore/src/engine_eval.rs"]),
+    ]
+    .into_iter()
+    .map(|task| (task.task_id.clone(), task))
+    .collect();
+    let ctx = AuditContext::new(root.to_path_buf(), &conn, &git, &jcodemunch).with_tasks(corpus);
+
+    let findings = reify_audit::poldcore::check(&ctx);
+
+    assert!(
+        with_prefix(&findings, HOLD_LIST_INVALID).is_empty(),
+        "the tracked list must parse and meet every invariant: {findings:#?}"
+    );
+    assert!(
+        with_prefix(&findings, HOLDER_STATE).is_empty(),
+        "the tracked list's holder must be {HOLDER}: {findings:#?}"
+    );
+    let missed = with_prefix(&findings, HOLD_MISSED);
+    assert_eq!(
+        task_ids(&missed),
+        ["1"],
+        "engine_eval.rs is held and reify-evalcore is not: {findings:#?}"
+    );
+    assert_eq!(missed[0].severity, Severity::High);
+}
