@@ -4,7 +4,8 @@
 //! as its cwd, because the bundled WebKit finds its helper processes by a path
 //! relative to it, and resolves its file argument against the launch directory
 //! instead ([`resolve`]). `tests/infra/test_bundle_clean_install.py` pins both
-//! end to end.
+//! end to end. The GUI also takes the Claude sidecar's fallback workspace from
+//! the launch directory ([`caller_dir`]).
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -44,6 +45,19 @@ pub fn path_from_launch_dir(
         Some(dir) => dir.join(path),
         None => path,
     }
+}
+
+/// [`launch_dir`] when there is one, `current_dir` otherwise: the directory
+/// reify-gui's caller ran it from.
+pub fn caller_dir_from(var: impl Fn(&str) -> Option<OsString>, current_dir: PathBuf) -> PathBuf {
+    launch_dir(var, &current_dir).unwrap_or(current_dir)
+}
+
+/// [`caller_dir_from`] of this process's environment and cwd, leaving the cwd
+/// itself alone.
+pub fn caller_dir() -> std::io::Result<PathBuf> {
+    std::env::current_dir()
+        .map(|current_dir| caller_dir_from(|name| std::env::var_os(name), current_dir))
 }
 
 /// [`path_from_launch_dir`] of this process's environment and cwd, leaving

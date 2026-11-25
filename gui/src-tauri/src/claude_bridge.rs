@@ -647,14 +647,15 @@ pub async fn claude_permission_decision_impl(
 /// Resolution chain (first non-empty parent wins):
 /// 1. `message_context.current_file` parent — the dir of the currently-open editor file.
 /// 2. `initial_file` parent — the dir of the file passed on the CLI at startup.
-/// 3. `fallback_cwd` — typically `std::env::current_dir()`.
+/// 3. `fallback_dir` — the directory reify-gui was launched from
+///    (`appimage_launch_dir::caller_dir()`).
 ///
 /// Paths without a parent component (e.g. bare filenames like `"main.ri"`) and
 /// empty strings both fall through to the next option.
 pub fn resolve_workspace_dir(
     message_context: Option<&MessageContext>,
     initial_file: Option<&std::path::Path>,
-    fallback_cwd: &std::path::Path,
+    fallback_dir: &std::path::Path,
 ) -> std::path::PathBuf {
     // 1. current_file from message context
     if let Some(ctx) = message_context
@@ -679,7 +680,7 @@ pub fn resolve_workspace_dir(
     }
 
     // 3. fallback
-    fallback_cwd.to_path_buf()
+    fallback_dir.to_path_buf()
 }
 
 /// The reify-debug MCP endpoint URL, set for the sidecar ONLY when the host

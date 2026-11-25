@@ -1,6 +1,7 @@
 //! Tests for recovering the directory the AppImage was run from
-//! (`crate::appimage_launch_dir::launch_dir`) and resolving the caller's paths
-//! against it (`path_from_launch_dir`). Driven only through the lookup closure
+//! (`crate::appimage_launch_dir::launch_dir`), resolving the caller's paths
+//! against it (`path_from_launch_dir`) and falling back to the current dir
+//! without it (`caller_dir_from`). Driven only through the lookup closure
 //! and an explicit current directory, never the real process environment. The
 //! real cwd is read once, to show that a relative `APPDIR` never consults it.
 
@@ -9,7 +10,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-use crate::appimage_launch_dir::{launch_dir, path_from_launch_dir};
+use crate::appimage_launch_dir::{caller_dir_from, launch_dir, path_from_launch_dir};
 use crate::tests::test_helpers::cwd_lock;
 
 /// Real directories laid out the way an AppImage launch sees them.
@@ -216,4 +217,21 @@ fn relative_path_outside_appimage_is_unchanged() {
         path_from_launch_dir(var, &f.other, PathBuf::from("m5.ri")),
         PathBuf::from("m5.ri")
     );
+}
+
+#[test]
+fn caller_dir_under_appimage_is_the_launch_dir() {
+    let f = fixture();
+    let var = lookup_with(&[
+        ("APPDIR", f.appdir.clone().into()),
+        ("OWD", f.launch.clone().into()),
+    ]);
+    assert_launch_dir(Some(caller_dir_from(var, f.appdir_usr.clone())), &f.launch);
+}
+
+#[test]
+fn caller_dir_outside_appimage_is_the_current_dir() {
+    let f = fixture();
+    let var = lookup_with(&[("PWD", f.launch.clone().into())]);
+    assert_eq!(caller_dir_from(var, f.other.clone()), f.other);
 }
