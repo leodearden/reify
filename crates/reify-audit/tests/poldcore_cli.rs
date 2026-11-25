@@ -10,12 +10,14 @@
 //! on the exit code (the High-severity count) and the findings JSON on
 //! stderr. The corpus comes from a `--tasks-file`, or, in the `live_loader_*`
 //! case, from `tests/common/mcp_mock.rs` in fused-memory's wire shape.
-//!
-//! `findings_from_stderr` and `write_empty_runs_db` are deliberate local
-//! copies of `tests/pdcheck_cli.rs`'s, for the reason that file gives.
 
 mod common;
 
+#[path = "common/cli_fixture.rs"]
+mod cli_fixture;
+
+use cli_fixture::write_empty_runs_db;
+use common::findings::{parse_findings_from_stderr, stderr_has_parseable_findings_array};
 use common::fixtures::legacy_meta;
 use reify_audit::TaskMetadata;
 use serde_json::{Value, json};
@@ -110,25 +112,6 @@ fn write_tasks_json(dir: &Path, tasks: &[TaskMetadata]) -> PathBuf {
     path
 }
 
-fn write_empty_runs_db(dir: &Path) -> PathBuf {
-    let path = dir.join("runs.db");
-    let conn = rusqlite::Connection::open(&path).expect("open runs.db");
-    conn.execute_batch("CREATE TABLE events (task_id TEXT, event_type TEXT);")
-        .expect("create events table");
-    path
-}
-
-/// The findings array the binary appends to stderr, parsed.
-fn findings_from_stderr(stderr: &str) -> Vec<serde_json::Value> {
-    let start = stderr
-        .rfind("\n[")
-        .map(|pos| pos + 1)
-        .or_else(|| stderr.starts_with('[').then_some(0))
-        .unwrap_or_else(|| panic!("no findings array in stderr:\n{stderr}"));
-    serde_json::from_str(&stderr[start..])
-        .unwrap_or_else(|e| panic!("stderr findings array does not parse: {e}\n{stderr}"))
-}
-
 /// `reify-audit --pattern POLDCORE` with every substrate but the task source
 /// pinned: the repo, no jcodemunch, and the runs.db. The caller appends the
 /// task source.
@@ -188,7 +171,7 @@ fn run_poldcore_live(wire_tasks: Value) -> Output {
 fn assert_only_missed(out: &Output) {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(1), "stderr:\n{stderr}");
-    let findings = findings_from_stderr(&stderr);
+    let findings = parse_findings_from_stderr(&stderr);
     assert_eq!(findings.len(), 1, "{:#}", Value::Array(findings.clone()));
     let finding = &findings[0];
     assert_eq!(
@@ -224,7 +207,7 @@ fn pattern_poldcore_refuses_an_empty_task_corpus() {
          stderr:\n{stderr}"
     );
     assert!(
-        !stderr.lines().any(|line| line.starts_with('[')),
+        !stderr_has_parseable_findings_array(&stderr),
         "a refusal must print no findings array; stderr:\n{stderr}"
     );
 }
