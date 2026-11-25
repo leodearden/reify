@@ -42,7 +42,7 @@
 //! What the hold is for, and how to hold or release a task:
 //! `docs/notes/old-evaluation-core-hold.md`.
 
-use crate::old_core_hold::{HOLD_LIST_PATH, HoldList};
+use crate::old_core_hold::{HOLD_LIST_PATH, HeldShare, HoldList};
 use crate::task_rows::is_terminal_status;
 use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity, TaskMetadata};
 use std::collections::HashMap;
@@ -181,12 +181,7 @@ fn missed_finding(list: &HoldList, task: &TaskMetadata) -> Option<Finding> {
     if !outside_the_hold(list, task) {
         return None;
     }
-    let held = list.held_files_of(&task.files);
-    let non_test = task
-        .files
-        .iter()
-        .filter(|f| !crate::is_test_path(f))
-        .count();
+    let HeldShare { held, non_test } = list.held_share_of(&task.files);
     if held.is_empty() || 2 * held.len() < non_test {
         return None;
     }

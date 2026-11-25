@@ -238,6 +238,10 @@ fn the_rule_is_half_or_more_of_the_non_test_files() {
         ]),
         "a test path is never held"
     );
+    assert!(
+        !reported(&["crates/reify-eval/src/engine_build/tests/"]),
+        "a test directory under a held directory is a test path, never held"
+    );
     assert!(!reported(&[]), "a task with no files is not reported");
 }
 

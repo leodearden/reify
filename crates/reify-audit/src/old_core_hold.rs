@@ -99,14 +99,24 @@ impl HoldList {
         &self.holder
     }
 
-    /// The entries of `paths` that are held and are not test paths, each
-    /// normalised (a leading `./` and one trailing `/` stripped), in order.
-    pub(crate) fn held_files_of<'a>(&self, paths: &'a [String]) -> Vec<&'a str> {
-        paths
+    /// How many of `paths` are not test paths, and which of those are held.
+    /// A path is classified before its trailing `/` is stripped, so a test
+    /// directory such as `src/engine_build/tests/` stays a test path.
+    pub(crate) fn held_share_of<'a>(&self, paths: &'a [String]) -> HeldShare<'a> {
+        let non_test: Vec<&str> = paths
+            .iter()
+            .map(|p| without_leading_dot_slash(p))
+            .filter(|p| !crate::is_test_path(p))
+            .collect();
+        let held = non_test
             .iter()
             .map(|p| normalise(p))
-            .filter(|p| !crate::is_test_path(p) && self.holds(p))
-            .collect()
+            .filter(|p| self.holds(p))
+            .collect();
+        HeldShare {
+            held,
+            non_test: non_test.len(),
+        }
     }
 
     /// `path` is a held file whose only old-core change is registering a
@@ -121,8 +131,20 @@ impl HoldList {
     }
 }
 
+/// A task's non-test files, counted, and the held ones among them.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct HeldShare<'a> {
+    /// Normalised (a leading `./` and one trailing `/` stripped), in order.
+    pub(crate) held: Vec<&'a str>,
+    pub(crate) non_test: usize,
+}
+
+fn without_leading_dot_slash(path: &str) -> &str {
+    path.strip_prefix("./").unwrap_or(path)
+}
+
 fn normalise(path: &str) -> &str {
-    let path = path.strip_prefix("./").unwrap_or(path);
+    let path = without_leading_dot_slash(path);
     path.strip_suffix('/').unwrap_or(path)
 }
 
@@ -259,7 +281,7 @@ registration_only = ["crates/reify-eval/src/lib.rs"]
     }
 
     fn holds(list: &HoldList, path: &str) -> bool {
-        !list.held_files_of(&[path.to_string()]).is_empty()
+        !list.held_share_of(&[path.to_string()]).held.is_empty()
     }
 
     #[test]
@@ -294,20 +316,24 @@ registration_only = ["crates/reify-eval/src/lib.rs"]
     }
 
     #[test]
-    fn held_files_of_returns_the_normalised_held_non_test_paths_in_order() {
+    fn held_share_of_counts_the_non_test_paths_and_returns_the_held_ones_normalised_in_order() {
         let paths = [
             "./crates/reify-eval/src/engine_eval.rs",
             "crates/reify-gui/src/x.rs",
             "crates/reify-eval/src/engine_build/tests/stage.rs",
+            "crates/reify-eval/src/engine_build/tests/",
             "crates/reify-eval/src/engine_build/",
         ]
         .map(String::from);
         assert_eq!(
-            valid().held_files_of(&paths),
-            [
-                "crates/reify-eval/src/engine_eval.rs",
-                "crates/reify-eval/src/engine_build",
-            ],
+            valid().held_share_of(&paths),
+            HeldShare {
+                held: vec![
+                    "crates/reify-eval/src/engine_eval.rs",
+                    "crates/reify-eval/src/engine_build",
+                ],
+                non_test: 3,
+            },
         );
     }
 
