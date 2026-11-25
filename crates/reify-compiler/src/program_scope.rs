@@ -1,6 +1,7 @@
 //! A [`CompiledProgram`]'s definitions, bound by `name_env`'s rule over the
-//! program's three scopes: the entry's own declarations, each direct import's
-//! `pub` surface in declaration order, then the ambient prelude.
+//! program's three scopes: the entry's own declarations, the entry's import
+//! tier (each direct import's `pub` surface, followed by the surfaces it
+//! re-exports, in declaration order), then the ambient prelude.
 
 use std::borrow::Borrow;
 
@@ -14,7 +15,7 @@ use crate::types::{
     CompiledUnit, TopologyTemplate,
 };
 
-/// What resolution starts from: an entry module and its direct imports. A
+/// What resolution starts from: an entry module and its import tier. A
 /// root is built only from a compiled program, whose entry holds only its own
 /// declarations (boundary #14), or from a lone module, which stands for the
 /// import-free program whose entry it is (resolution-unification I1). So the
@@ -26,8 +27,8 @@ pub struct ProgramRoot<'a> {
 }
 
 impl<'a> ProgramRoot<'a> {
-    /// The root whose entry is `entry` over the direct `imports`, in
-    /// declaration order.
+    /// The root whose entry is `entry` over the import tier `imports`, in
+    /// precedence order.
     fn new(entry: &'a CompiledModule, imports: &'a [CompiledImportUnit]) -> Self {
         Self { entry, imports }
     }
@@ -37,7 +38,8 @@ impl<'a> ProgramRoot<'a> {
         self.entry
     }
 
-    /// The entry's direct imports, in declaration order.
+    /// The entry's import tier: each direct import's `pub` surface, followed
+    /// by the surfaces it re-exports, in precedence order.
     pub fn imports(self) -> &'a [CompiledImportUnit] {
         self.imports
     }
@@ -109,7 +111,7 @@ impl ProgramDefinition for CompiledUnit {
     }
 }
 
-fn direct_imports(root: ProgramRoot<'_>) -> impl Iterator<Item = &CompiledModule> + Clone {
+fn import_tier(root: ProgramRoot<'_>) -> impl Iterator<Item = &CompiledModule> + Clone {
     root.imports().iter().map(|unit| &unit.module)
 }
 
@@ -126,12 +128,7 @@ where
     Q: Eq + ?Sized,
 {
     let root = root.into();
-    name_env::resolve_in_scopes(
-        D::declared_by_entry(root),
-        direct_imports(root),
-        prelude,
-        key,
-    )
+    name_env::resolve_in_scopes(D::declared_by_entry(root), import_tier(root), prelude, key)
 }
 
 /// The first definition across `root` that `matches` accepts, in
@@ -146,7 +143,7 @@ pub fn resolve_in_program_by<'a, D: ProgramDefinition>(
     let root = root.into();
     name_env::resolve_in_scopes_by(
         D::declared_by_entry(root),
-        direct_imports(root),
+        import_tier(root),
         prelude,
         matches,
     )
@@ -159,7 +156,7 @@ pub fn bind_program<'a, D: ProgramDefinition>(
     prelude: &'a [CompiledModule],
 ) -> Bindings<'a, D> {
     let root = root.into();
-    name_env::bind_scopes(D::declared_by_entry(root), direct_imports(root), prelude)
+    name_env::bind_scopes(D::declared_by_entry(root), import_tier(root), prelude)
 }
 
 /// [`bind_program`] over only the definitions `keep` accepts, with
@@ -171,12 +168,7 @@ pub fn bind_program_where<'a, D: ProgramDefinition>(
     keep: impl FnMut(&'a D) -> bool,
 ) -> Bindings<'a, D> {
     let root = root.into();
-    name_env::bind_scopes_where(
-        D::declared_by_entry(root),
-        direct_imports(root),
-        prelude,
-        keep,
-    )
+    name_env::bind_scopes_where(D::declared_by_entry(root), import_tier(root), prelude, keep)
 }
 
 /// One Warning per first-wins collision across `root` whose loser is a user
@@ -224,8 +216,8 @@ fn import_tier_collisions<D: ProgramDefinition>(
         .collect()
 }
 
-/// Who reports a collision between two direct imports' definitions of one
-/// kind.
+/// Who reports a collision between two import-tier modules' definitions of
+/// one kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ImportPairs {
     /// [`collision_warnings`] does.

@@ -2,8 +2,9 @@
 //!
 //! [`compile_program`] compiles an entry module against the full stdlib plus
 //! its `#cfg`-satisfied user-import DAG and returns a [`CompiledProgram`]: the
-//! entry, the direct import units, and the source of every compiled user module
-//! (PRD docs/prds/v0_6/resolution-unification.md §3.1). It upholds I1 (an
+//! entry, the units of its import tier (each direct import followed by what it
+//! re-exports through `pub import`, D-5 + D-7), and the source of every
+//! compiled user module (PRD docs/prds/v0_6/resolution-unification.md §3.1). It upholds I1 (an
 //! import-free entry compiles exactly as the single-file stdlib compile does),
 //! I2 (a broken import surfaces as a diagnostic on the entry, never as a
 //! dropped compile), I3 (a gated-out import is inert) and I4 (`std.*` is never
@@ -20,10 +21,11 @@ use crate::cfg::CfgSet;
 use crate::compile_builder::pre_pass::{ExpectedPathOrigin, attach_module_path_diag};
 use crate::module_dag::{ModuleDag, ModuleResolver, ModuleSource, entry_module_name};
 
-/// One direct import of a program's entry, compiled.
+/// One module of a program entry's import tier, compiled.
 #[derive(Debug, Clone)]
 pub struct CompiledImportUnit {
-    /// The dotted path the entry imported it by.
+    /// The dotted path that imports it: the entry's own import, or the
+    /// re-exporting `pub import`. It equals the module key.
     pub import_path: String,
     /// The compiled module.
     pub module: CompiledModule,
@@ -36,8 +38,10 @@ pub struct CompiledImportUnit {
 pub struct CompiledProgram {
     /// See [`Self::entry`].
     entry: CompiledModule,
-    /// The entry's followed, successfully compiled direct imports, in
-    /// declaration order, one per distinct import path.
+    /// The entry's import tier in precedence order, one unit per module: each
+    /// followed, successfully compiled direct import, in declaration order,
+    /// followed depth-first by the units it re-exports through `pub import`
+    /// edges.
     pub imports: Vec<CompiledImportUnit>,
     /// The source of every user module compiled into the program, in
     /// topological order (dependencies first), entry last.
@@ -214,11 +218,14 @@ pub fn compile_program_with_parsed_entry(
         }
     }
 
-    // A satisfied-but-failed import is absent from `dag.modules`; `filter_map`
+    // The entry's import tier (D-5, D-7), shared by the prelude and the
+    // returned units so check and eval see the same modules. A
+    // satisfied-but-failed import is absent from `dag.modules`; `filter_map`
     // skips it (its failure is already collected).
-    let import_refs: Vec<&CompiledModule> = followed
+    let visible = dag.visible_imports(&followed);
+    let import_refs: Vec<&CompiledModule> = visible
         .iter()
-        .filter_map(|path| dag.modules.get(*path))
+        .filter_map(|path| dag.modules.get(path))
         .collect();
     let mut entry = crate::compile_with_stdlib_and_imports_checked(parsed, &import_refs, checker);
 
@@ -237,12 +244,12 @@ pub fn compile_program_with_parsed_entry(
         source: entry_source.to_string(),
     });
 
-    let imports: Vec<CompiledImportUnit> = followed
-        .iter()
+    let imports: Vec<CompiledImportUnit> = visible
+        .into_iter()
         .filter_map(|path| {
-            let origin = dag.source(path).map(|s| s.path.clone());
-            dag.modules.remove(*path).map(|module| CompiledImportUnit {
-                import_path: path.to_string(),
+            let origin = dag.source(&path).map(|s| s.path.clone());
+            dag.modules.remove(&path).map(|module| CompiledImportUnit {
+                import_path: path,
                 module,
                 origin,
             })
