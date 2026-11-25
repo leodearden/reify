@@ -2319,9 +2319,20 @@ fn compile_geometry_call_inner(
         // revolve(profile, origin, direction, angle) — origin a Point3, direction
         // a Direction; revolve(profile, axis, angle) — an Axis datum.
         "revolve" => {
-            let names: &[&str] = match compiled_args.len() {
-                4 => &["profile", "origin", "direction", "angle"],
-                3 => &["profile", "axis", "angle"],
+            let arg_count = compiled_args.len();
+            let mut it = compiled_args.into_iter();
+            let args = match arg_count {
+                4 => vec![
+                    ("profile".to_string(), it.next().unwrap()),
+                    ("origin".to_string(), it.next().unwrap()),
+                    ("direction".to_string(), it.next().unwrap()),
+                    ("angle".to_string(), it.next().unwrap()),
+                ],
+                3 => vec![
+                    ("profile".to_string(), it.next().unwrap()),
+                    ("axis".to_string(), it.next().unwrap()),
+                    ("angle".to_string(), it.next().unwrap()),
+                ],
                 n => {
                     diagnostics.push(Diagnostic::error(format!(
                         "revolve() expects 4 arguments (profile, origin, direction, angle) \
@@ -2335,11 +2346,7 @@ fn compile_geometry_call_inner(
             let op = CompiledGeometryOp::Sweep {
                 kind: SweepKind::Revolve,
                 profiles: vec![geom_ref(0)],
-                args: names
-                    .iter()
-                    .map(|name| name.to_string())
-                    .zip(compiled_args)
-                    .collect(),
+                args,
             };
             sub_ops.push(op);
             Some(sub_ops)

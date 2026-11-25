@@ -10051,7 +10051,7 @@
         ));
         let err = result.expect_err("every argument is bad");
         assert!(err.contains("'ox'"), "the origin's Err wins; got: {err:?}");
-        for arg in ["ox", "oy", "oz", "angle"] {
+        for arg in ["ox", "oy", "oz"] {
             assert_eq!(
                 dimension_rejections_naming(&diagnostics, arg).len(),
                 1,
@@ -10059,6 +10059,11 @@
                  got: {diagnostics:?}"
             );
         }
+        assert_eq!(
+            dimension_rejections_naming(&diagnostics, "angle").len(),
+            1,
+            "the Direction form must reject the angle in the same build; got: {diagnostics:?}"
+        );
 
         let (result, diagnostics) =
             run_compile(&revolve_axis_form(reify_ir::Value::Real(1.0), literal_f64(1.5)));
