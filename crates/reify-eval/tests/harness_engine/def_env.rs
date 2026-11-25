@@ -755,7 +755,7 @@ fn import_tier_collisions(
 fn assert_kind_collisions<D: Kind>(kind: &str) {
     let row = row(kind);
     let fx = KindsFixture::new();
-    let warnings = program_scope::collision_warnings(&fx.program, load_stdlib());
+    let warnings = program_scope::collision_warnings(&fx.program);
     let kind_word = named::<D>(fx.a(), row.names[0]).kind_word();
     let expected: Vec<(&str, &str, &str)> = import_tier_collisions(&row)
         .into_iter()
@@ -823,30 +823,13 @@ fn purpose_collisions_are_reported_once_per_import_tier_shadowing() {
 #[test]
 fn the_kinds_fixture_reports_exactly_the_import_tier_shadowings() {
     let fx = KindsFixture::new();
-    let warnings = program_scope::collision_warnings(&fx.program, load_stdlib());
+    let warnings = program_scope::collision_warnings(&fx.program);
     let expected = rows()
         .iter()
         .flat_map(import_tier_collisions)
         .filter(|&(.., reporter)| reporter == Reporter::CollisionReport)
         .count();
     assert_eq!(warnings.len(), expected, "got {warnings:#?}");
-}
-
-/// Whether `diagnostic` is a Warning reporting `kind` `name` bound by
-/// `winner` over `shadowed`, in any collision wording: the constraint-def
-/// prelude seed still has its own.
-fn names_collision(
-    diagnostic: &Diagnostic,
-    kind: &str,
-    name: &str,
-    winner: &str,
-    shadowed: &str,
-) -> bool {
-    let message = &diagnostic.message;
-    let position = |origin: &str| message.find(&format!("'{origin}'"));
-    diagnostic.severity == Severity::Warning
-        && message.starts_with(&format!("{kind} '{name}' "))
-        && matches!((position(winner), position(shadowed)), (Some(w), Some(s)) if w < s)
 }
 
 /// Whether `diagnostic` is a Warning naming `name`, `winner` and `shadowed`,
@@ -857,6 +840,19 @@ fn mentions_collision(diagnostic: &Diagnostic, name: &str, winner: &str, shadowe
     diagnostic.severity == Severity::Warning
         && message.contains(&format!("'{name}'"))
         && matches!((position(winner), position(shadowed)), (Some(w), Some(s)) if w < s)
+}
+
+/// [`mentions_collision`] for a message that opens with `kind` `name`, in any
+/// collision wording: the constraint-def prelude seed still has its own.
+fn names_collision(
+    diagnostic: &Diagnostic,
+    kind: &str,
+    name: &str,
+    winner: &str,
+    shadowed: &str,
+) -> bool {
+    diagnostic.message.starts_with(&format!("{kind} '{name}' "))
+        && mentions_collision(diagnostic, name, winner, shadowed)
 }
 
 /// Every collision whose loser is a user import's definition is reported
@@ -942,7 +938,7 @@ fn a_shadowed_stdlib_definition_is_not_in_the_collision_report() {
 fn a_program_without_import_tier_shadowing_reports_no_collision() {
     let dir = tempfile::tempdir().unwrap();
     let program = compile_fixture(dir.path());
-    let warnings = program_scope::collision_warnings(&program, load_stdlib());
+    let warnings = program_scope::collision_warnings(&program);
     assert!(warnings.is_empty(), "got {warnings:#?}");
 }
 
@@ -981,7 +977,7 @@ fn an_import_vs_import_function_collision_warns_and_the_first_import_binds() {
         env.resolve_function("twice", &param_types(twice_in_a)),
         twice_in_a
     ));
-    let warnings = program_scope::collision_warnings(&program, load_stdlib());
+    let warnings = program_scope::collision_warnings(&program);
     assert_eq!(warnings.len(), 1, "got {warnings:#?}");
     assert!(reports_collision(
         &warnings[0],
@@ -1008,7 +1004,7 @@ fn distinct_signatures_coexist_as_overloads_in_precedence_order() {
     );
     assert!(std::ptr::eq(overloads[1], imported));
     assert!(
-        !program_scope::collision_warnings(&program, load_stdlib())
+        !program_scope::collision_warnings(&program)
             .iter()
             .any(|d| d.message.contains("'scale'")),
         "overloads are not collisions"
@@ -1133,7 +1129,7 @@ fn a_lone_modules_environment_binds_its_own_templates_then_the_prelude() {
     ));
     assert!(env.resolve_template("NoSuchStructure").is_none());
     assert!(std::ptr::eq(env.module(), &module));
-    assert!(program_scope::collision_warnings(&module, load_stdlib()).is_empty());
+    assert!(program_scope::collision_warnings(&module).is_empty());
 }
 
 fn same_binding<D>(a: Option<&D>, b: Option<&D>) -> bool {

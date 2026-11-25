@@ -187,32 +187,32 @@ pub fn bind_program_where<'a, D: ProgramDefinition>(
 /// imports as its prelude and reports those three kinds' collisions there. A
 /// shadowed stdlib definition is the shadowing module's own compile's to
 /// report.
-pub fn collision_warnings<'a>(
-    root: impl Into<ProgramRoot<'a>>,
-    prelude: &'a [CompiledModule],
-) -> Vec<Diagnostic> {
+///
+/// The ambient prelude binds after every import, so it can neither win over an
+/// import's definition nor change which import's wins: the report is the same
+/// over any prelude, and is computed over none.
+pub fn collision_warnings<'a>(root: impl Into<ProgramRoot<'a>>) -> Vec<Diagnostic> {
     use ImportPairs::{LeaveToEntryCompile, Report};
     let root = root.into();
     [
-        import_tier_collisions::<TopologyTemplate>(root, prelude, Report),
-        import_tier_collisions::<CompiledFunction>(root, prelude, Report),
-        import_tier_collisions::<EnumDef>(root, prelude, Report),
-        import_tier_collisions::<CompiledUnit>(root, prelude, LeaveToEntryCompile),
-        import_tier_collisions::<CompiledTypeAlias>(root, prelude, LeaveToEntryCompile),
-        import_tier_collisions::<CompiledTrait>(root, prelude, Report),
-        import_tier_collisions::<CompiledConstraintDef>(root, prelude, LeaveToEntryCompile),
-        import_tier_collisions::<CompiledPurpose>(root, prelude, Report),
+        import_tier_collisions::<TopologyTemplate>(root, Report),
+        import_tier_collisions::<CompiledFunction>(root, Report),
+        import_tier_collisions::<EnumDef>(root, Report),
+        import_tier_collisions::<CompiledUnit>(root, LeaveToEntryCompile),
+        import_tier_collisions::<CompiledTypeAlias>(root, LeaveToEntryCompile),
+        import_tier_collisions::<CompiledTrait>(root, Report),
+        import_tier_collisions::<CompiledConstraintDef>(root, LeaveToEntryCompile),
+        import_tier_collisions::<CompiledPurpose>(root, Report),
     ]
     .concat()
 }
 
 fn import_tier_collisions<D: ProgramDefinition>(
     root: ProgramRoot<'_>,
-    prelude: &[CompiledModule],
     import_pairs: ImportPairs,
 ) -> Vec<Diagnostic> {
     let entry = &root.entry().path;
-    bind_program::<D>(root, prelude)
+    bind_program::<D>(root, &[])
         .shadowings()
         .iter()
         .filter(|shadowing| {

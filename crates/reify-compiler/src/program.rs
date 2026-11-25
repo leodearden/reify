@@ -95,7 +95,9 @@ impl CompiledProgram {
         &self.entry
     }
 
-    /// The same module as [`Self::entry`], handed back by value.
+    /// The same module as [`Self::entry`], handed back by value. It holds only
+    /// the entry's own declarations, so evaluating it resolves none of the
+    /// program's imports.
     pub fn into_entry(self) -> CompiledModule {
         self.entry
     }
@@ -248,8 +250,7 @@ pub fn compile_program_with_parsed_entry(
         .collect();
 
     let mut program = CompiledProgram::new(entry, imports, sources, rehomed);
-    let collisions =
-        crate::program_scope::collision_warnings(&program, crate::stdlib_loader::load_stdlib());
+    let collisions = crate::program_scope::collision_warnings(&program);
     program.entry.diagnostics.extend(collisions);
     program
 }

@@ -91,7 +91,7 @@ fn write_entry_fixtures(dir: &Path) {
 
 /// Compile `main.ri` from `dir` under `cfg` and return the program's entry.
 fn compile_main(dir: &Path, cfg: &CfgSet) -> reify_compiler::CompiledModule {
-    compile_main_program(dir, cfg).into_entry()
+    compile_main_program(dir, cfg).entry().clone()
 }
 
 /// Compile `main.ri` from `dir` under `cfg`, first asserting the entry source
