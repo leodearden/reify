@@ -1731,7 +1731,7 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     fi
     _canon_root="$(_read_canon_stamp "$LANE_TARGET")"
     if [ -n "$_canon_root" ] && [ -f "$LANE_DIR/scripts/canon_run.py" ]; then
-        info "Target stamped for CANON $_canon_root and this lane's tree holds scripts/canon_run.py: the lane builds at CANON too, so the clone is kept as is"
+        info "Target stamped for CANON $_canon_root and this lane's tree holds scripts/canon_run.py: the lane builds at CANON too, so the clone is kept (minus canon invocation files, dropped below)"
     elif [ -n "$_canon_root" ]; then
         rm -f -- "$LANE_TARGET/$_CANON_STAMP_NAME"
         info "Target stamped for CANON $_canon_root, but this lane's tree has no scripts/canon_run.py: removed the stamp, so the lane builds at its real path"
@@ -1820,7 +1820,9 @@ fi
 #   header.
 
 # Both modes reach this drop. It follows the fresh-checkout block so that a seed
-# the inv.13 probe refuses pays no walk of the clone.
+# the inv.13 probe refuses pays no walk of the clone. Its walk covers
+# $LANE_TARGET alone, which never holds the reseed trash, so the trash rm above
+# may already be running: that rm's ordering note is about walks that reach it.
 _drop_canon_invocation_files
 
 # ── git rerere disarm at LANE cadence (task 6889, open item (c)) ─────────────
