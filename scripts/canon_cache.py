@@ -652,23 +652,28 @@ class SessionFiles:
     uncached_log: str
 
     NAMES_AROUND_PID = (
-        (".reify-sccache.", ".sock"),
-        (".reify-sccache.", ".err"),
-        (".reify-canon-uncached.", ".log"),
+        ("socket", ".reify-sccache.", ".sock"),
+        ("err", ".reify-sccache.", ".err"),
+        ("uncached_log", ".reify-canon-uncached.", ".log"),
+    )
+    NAME_GRAMMAR = re.compile(
+        "|".join(f"{re.escape(prefix)}([1-9][0-9]*){re.escape(suffix)}" for _, prefix, suffix in NAMES_AROUND_PID)
     )
 
     @classmethod
     def in_build_dir(cls, build_dir: str, pid: int) -> SessionFiles:
-        return cls(*(os.path.join(build_dir, f"{prefix}{pid}{suffix}") for prefix, suffix in cls.NAMES_AROUND_PID))
+        return cls(**{
+            attribute: os.path.join(build_dir, f"{prefix}{pid}{suffix}")
+            for attribute, prefix, suffix in cls.NAMES_AROUND_PID
+        })
 
     @classmethod
     def owner_pid(cls, name: str) -> int | None:
         """The pid a basename names when it is exactly one of these files' names, else None."""
-        for prefix, suffix in cls.NAMES_AROUND_PID:
-            spelled = re.fullmatch(re.escape(prefix) + "([1-9][0-9]*)" + re.escape(suffix), name)
-            if spelled:
-                return int(spelled.group(1))
-        return None
+        spelled = cls.NAME_GRAMMAR.fullmatch(name)
+        if spelled is None:
+            return None
+        return int(next(pid for pid in spelled.groups() if pid is not None))
 
 
 def with_parent_death_signal(argv: list[str], signal_name: str) -> list[str]:
