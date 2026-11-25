@@ -430,13 +430,13 @@ pub struct TaskMetadata {
     /// Ids of the tasks this task depends on: the record's top-level `dependencies`.
     #[serde(default)]
     pub dependencies: Vec<String>,
-    /// `metadata.old_core_release` is set.
+    /// `metadata.old_core_release` is truthy (Python `bool()`, the scheduler's reading).
     #[serde(default)]
     pub has_old_core_release: bool,
-    /// `metadata.deferred_watch` is set.
+    /// `metadata.deferred_watch` is truthy (Python `bool()`, the scheduler's reading).
     #[serde(default)]
     pub has_deferred_watch: bool,
-    /// `metadata.trigger_met` is set.
+    /// `metadata.trigger_met` is truthy (Python `bool()`, the scheduler's reading).
     #[serde(default)]
     pub trigger_met: bool,
 }

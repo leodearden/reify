@@ -121,8 +121,8 @@ impl fmt::Display for HolderDefect {
             HolderDefect::NotPending(status) => {
                 write!(f, "has status `{status}`, not `pending`")
             }
-            HolderDefect::NoDeferredWatch => write!(f, "has no metadata.deferred_watch"),
-            HolderDefect::TriggerMet => write!(f, "has metadata.trigger_met set"),
+            HolderDefect::NoDeferredWatch => write!(f, "has no truthy metadata.deferred_watch"),
+            HolderDefect::TriggerMet => write!(f, "has a truthy metadata.trigger_met"),
         }
     }
 }

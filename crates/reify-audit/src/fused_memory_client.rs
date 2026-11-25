@@ -379,9 +379,9 @@ fn task_metadata_from_wire(v: &Value) -> Option<TaskMetadata> {
         audit_foundation,
         done_at,
         dependencies: dependency_ids(v),
-        has_old_core_release: is_set(metadata.get("old_core_release")),
-        has_deferred_watch: is_set(metadata.get("deferred_watch")),
-        trigger_met: is_set(metadata.get("trigger_met")),
+        has_old_core_release: is_truthy(metadata.get("old_core_release")),
+        has_deferred_watch: is_truthy(metadata.get("deferred_watch")),
+        trigger_met: is_truthy(metadata.get("trigger_met")),
     })
 }
 
@@ -404,7 +404,7 @@ fn dependency_ids(task: &Value) -> Vec<String> {
 
 /// Python `bool()` over a JSON value, absent read as `None`: the reading
 /// dark-factory's `orchestrator/src/orchestrator/pure_gate_resolution.py::_deferred_watch_holds` applies.
-fn is_set(value: Option<&Value>) -> bool {
+fn is_truthy(value: Option<&Value>) -> bool {
     match value {
         None | Some(Value::Null) => false,
         Some(Value::Bool(b)) => *b,
@@ -844,7 +844,7 @@ mod tests {
         }
     }
 
-    /// The `is_set` reading of one metadata key over `values`: each value is
+    /// The `is_truthy` reading of one metadata key over `values`: each value is
     /// written to `metadata.<key>` in turn and the decoded flag compared with
     /// `expected`. `None` leaves the key absent.
     fn assert_flag(
@@ -865,7 +865,7 @@ mod tests {
     }
 
     #[test]
-    fn wire_adapter_old_core_release_is_set_by_a_non_empty_value() {
+    fn wire_adapter_old_core_release_is_truthy_when_non_empty() {
         let release = |tm: &TaskMetadata| tm.has_old_core_release;
         assert_flag(
             "old_core_release",
@@ -892,7 +892,7 @@ mod tests {
     }
 
     #[test]
-    fn wire_adapter_deferred_watch_is_set_by_a_non_empty_string() {
+    fn wire_adapter_deferred_watch_is_truthy_when_a_non_empty_string() {
         let watch = |tm: &TaskMetadata| tm.has_deferred_watch;
         assert_flag(
             "deferred_watch",
