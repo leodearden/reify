@@ -191,6 +191,14 @@ tests/infra/seed_warm_lane_harness.py  tests/infra/test_drop_canon_invocation_fi
 scripts/drop-canon-invocation-files.py  tests/infra/test_seed_warm_lane.sh
 scripts/drop-canon-invocation-files.py  tests/infra/test_seed_depinfo_relocation.sh
 scripts/drop-canon-invocation-files.py  tests/infra/test_seed_warm_lane_canon_stamp.sh
+# The real seed, and so the real dropper after its clone, also runs in place
+# inside these suites. test_warm_lane_pool.sh runs the real refresh too, so its
+# row sits with the refresh siblings below. test_git_rerere_guard.sh only reads
+# the seed's text, so it never runs the dropper and takes no row.
+scripts/drop-canon-invocation-files.py  tests/infra/test_target_per_lane_independence.sh
+scripts/drop-canon-invocation-files.py  tests/infra/test_tree_sitter_stale_run_eviction.sh
+scripts/drop-canon-invocation-files.py  tests/infra/test_verify_ledger_lane_seed.sh
+scripts/drop-canon-invocation-files.py  tests/infra/test_hooks_armed_guard.sh
 # Task 10168: tree-sitter-freshness.sh evict-stale, the promote-time removal of
 # tree-sitter-reify build-script runs whose input stamp disagrees with the
 # promoted tree, pinned by a .py suite behind a thin .sh wrapper.
@@ -221,6 +229,8 @@ scripts/evict-dirty-target-units.py  tests/infra/test_warm_base_coherence.sh
 scripts/evict-dirty-target-units.py  tests/infra/test_warm_lane_pool.sh
 scripts/tree-sitter-freshness.sh     tests/infra/test_warm_base_coherence.sh
 scripts/tree-sitter-freshness.sh     tests/infra/test_warm_lane_pool.sh
+scripts/drop-canon-invocation-files.py  tests/infra/test_warm_base_coherence.sh
+scripts/drop-canon-invocation-files.py  tests/infra/test_warm_lane_pool.sh
 # Task 9246: the cron sweep of idle worktree targets exempts _merge-verify and
 # respects each worktree's lane lock, pinned by a .py suite behind a thin .sh
 # wrapper, same pair shape.
