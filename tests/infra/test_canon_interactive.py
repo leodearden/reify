@@ -3,8 +3,10 @@
 test_canon_interactive.py — stdlib unittest for the canonical-build-path PRD's
 interactive half (dark-factory plans/canonical-build-path-shared-cache-prd.md
 C7, task λ): scripts/install-canon-trampoline.sh against a scratch HOME shaped
-like a stock Ubuntu account with rustup, and scripts/setup-dev.sh's wiring of
-it and of its own in-tree builds through scripts/canon_run.py.
+like a stock Ubuntu account with rustup, scripts/setup-dev.sh's wiring of it
+and of its own in-tree builds through scripts/canon_run.py, and the GUI
+launchers scripts/run-gui*.sh building and launching through canon_run.py
+while reify-gui itself sees its real cwd, file and loader path.
 
 WHAT RUNS THIS: run_all.sh discovers `test_*.sh` only, so the discovered member
 is the thin wrapper tests/infra/test_canon_interactive.sh.
@@ -16,7 +18,10 @@ named reason where none can be entered.
 import json
 import os
 import re
+import select
 import shlex
+import signal
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -27,6 +32,9 @@ import canon_run_fixture as fx  # noqa: E402  (imported after sys.path manipulat
 
 INSTALLER = fx.REPO_ROOT / "scripts" / "install-canon-trampoline.sh"
 SETUP_DEV = fx.REPO_ROOT / "scripts" / "setup-dev.sh"
+GUI_LAUNCH_SCRIPTS = ("run-gui.sh", "run-gui-dev.sh", "lib_gui_launch.sh", "lib_native_ld_path.sh")
+GUI_BINARIES = {"run-gui.sh": "target/release/reify-gui", "run-gui-dev.sh": "target/debug/reify-gui"}
+TBB_PIN_DIR = "/opt/reify-deps/tbb-pin"
 ENV_GENERATOR = Path("/usr/lib/systemd/user-environment-generators/30-systemd-environment-d-generator")
 INSTALLED_BIN = Path(".local", "share", "reify-canon", "bin")
 BLOCK_START = "# >>> reify-canon trampoline (scripts/install-canon-trampoline.sh) >>>"
@@ -160,6 +168,82 @@ def mutated(test, text, pattern, replacement):
     return mutant
 
 
+NPM_STUB = """#!/bin/sh
+if [ "$1" = run ] && [ "$2" = dev ]; then exec sleep 600; fi
+exit 0
+"""
+# Exits 7 (connection refused) on its first call and 0 after, so the dev
+# launcher's readiness loop takes one retry.
+CURL_STUB = """#!/bin/sh
+counter="$(dirname "$0")/curl.count"
+[ -e "$counter" ] && exit 0
+: > "$counter"
+exit 7
+"""
+GUI_DUMP_STUB = """#!/usr/bin/python3 -I
+import json, os, sys
+
+def identity(path):
+    status = os.stat(path)
+    return f"{status.st_dev}:{status.st_ino}"
+
+canon = os.environ.get("REIFY_CANON_ROOT", "")
+with open(f"/proc/{os.getppid()}/environ", "rb") as parent:
+    parent_names = [entry.partition(b"=")[0] for entry in parent.read().split(b"\\0")]
+dump = {
+    "argv": sys.argv,
+    "cwd": os.getcwd(),
+    "canon_identity": identity(canon) if os.path.isdir(canon) else None,
+    "canon_active": "REIFY_CANON_ACTIVE" in os.environ,
+    "ld_library_path": os.environ.get("LD_LIBRARY_PATH"),
+    "parent_has_ld_library_path": b"LD_LIBRARY_PATH" in parent_names,
+}
+with open(os.environ["TEST_GUI_DUMP"], "w") as out:
+    json.dump(dump, out)
+"""
+# Records its pid, traps TERM (marker, exit 143), then signals readiness on the FIFO.
+GUI_TRAP_STUB = """#!/bin/sh
+echo $$ > "$TEST_GUI_PIDFILE"
+trap 'echo trapped > "$TEST_GUI_MARKER"; kill $! 2>/dev/null; exit 143' TERM
+sleep 600 &
+echo ready > "$TEST_GUI_FIFO"
+wait
+"""
+
+
+def write_executable(path, text):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    path.chmod(0o755)
+
+
+def make_gui_tree(parent, gui_stub):
+    """make_tree plus the GUI launchers, stub sidecar/frontend, an in-tree design file and stub binaries."""
+    tree = fx.make_tree(parent, "tree")
+    for name in GUI_LAUNCH_SCRIPTS:
+        fx.shutil.copy2(fx.REPO_ROOT / "scripts" / name, Path(tree, "scripts", name))
+    write_executable(Path(tree, "gui", "sidecar", "build-sidecar.sh"), "#!/bin/sh\nexit 0\n")
+    Path(tree, "gui", "package.json").write_text("{}")
+    Path(tree, "examples").mkdir()
+    Path(tree, "examples", "design.ri").write_text("")
+    for binary in GUI_BINARIES.values():
+        write_executable(Path(tree, binary), gui_stub)
+    return tree
+
+
+def kill_session(session):
+    """SIGKILL every process left in session (a launcher started as its own session's leader)."""
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            if os.getsid(int(entry)) == session:
+                os.kill(int(entry), signal.SIGKILL)
+        except OSError:
+            pass
+
+
 class InstallerTest(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory(prefix="test-canon-interactive-")
@@ -267,6 +351,142 @@ class SetupDevWiringTest(unittest.TestCase):
         defects = wiring_defects(mutant)
         self.assertIn("check not routed through canon_run.py", defects)
         self.assertIn("bare check", defects)
+
+
+class GuiTreeCase(unittest.TestCase):
+    """A scratch GUI tree, stub tools and the launchers' environment; gui_stub is the reify-gui stand-in."""
+
+    gui_stub = GUI_DUMP_STUB
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory(prefix="test-canon-interactive-gui-")
+        self.addCleanup(tmp.cleanup)
+        self.tmp = os.path.realpath(tmp.name)
+        self.tree = make_gui_tree(self.tmp, self.gui_stub)
+        self.design = os.path.join(self.tree, "examples", "design.ri")
+        self.stub_bin = fx.fake_cargo_dir(self.tmp, "stub-bin")
+        write_executable(Path(self.stub_bin, "npm"), NPM_STUB)
+        write_executable(Path(self.stub_bin, "curl"), CURL_STUB)
+        snap = Path(self.tmp, "snap-lib")
+        snap.mkdir()
+        self.expected_loader_path = (f"{TBB_PIN_DIR}:" if os.path.isdir(TBB_PIN_DIR) else "") + str(snap)
+        home = Path(self.tmp, "home")
+        home.mkdir()
+        self.canon = os.path.join(self.tmp, "canon")
+        os.mkdir(self.canon)
+        self.host_config = os.path.join(self.tmp, "host.toml")
+        self.dump = os.path.join(self.tmp, "gui-dump.json")
+        self.env = {
+            "HOME": str(home),
+            "PATH": f"{self.stub_bin}:/usr/bin:/bin",
+            "REIFY_GUI_SKIP_PREFLIGHT": "1",
+            "REIFY_VITE_PORT": "14200",
+            "REIFY_NATIVE_LD_SNAP_DIR": str(snap),
+            "REIFY_CANON_ROOT": self.canon,
+            "REIFY_CANON_HOST_CONFIG": self.host_config,
+            "TEST_GUI_DUMP": self.dump,
+        }
+
+    def enable_canon(self):
+        reason = fx.namespace_unavailable_reason()
+        if reason:
+            self.skipTest(reason)
+        fx.write_host_config(self.host_config, enabled=True, policy="incremental")
+
+    def start_launcher(self, launcher):
+        log_path = Path(self.tmp, f"{launcher}.log")
+        with open(log_path, "w") as log:
+            process = subprocess.Popen(
+                ["/bin/bash", os.path.join(self.tree, "scripts", launcher), self.design],
+                cwd=self.tmp,
+                env=self.env,
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        self.addCleanup(process.wait)
+        self.addCleanup(kill_session, process.pid)
+        return process, log_path
+
+    def launch(self, launcher):
+        process, log_path = self.start_launcher(launcher)
+        returncode = process.wait()
+        self.assertEqual(returncode, 0, log_path.read_text())
+        return json.loads(Path(self.dump).read_text())
+
+    def assert_built_at(self, root):
+        builds = [call for call in fx.read_calls(self.stub_bin) if call["argv"][1:4] == ["build", "-p", "reify-gui"]]
+        self.assertEqual([call["cwd"] for call in builds], [root], builds)
+
+    def assert_gui_saw_real_paths(self, dump):
+        self.assertEqual(dump["argv"][1:], [self.design])
+        self.assertEqual(dump["cwd"], self.tree)
+        self.assertEqual(dump["ld_library_path"], self.expected_loader_path)
+
+    def assert_real_path_launch(self, launcher):
+        dump = self.launch(launcher)
+        self.assert_built_at(self.tree)
+        self.assert_gui_saw_real_paths(dump)
+        self.assertFalse(dump["canon_active"])
+        self.assertFalse(Path(self.tree, "target", STAMP).exists())
+
+    def assert_canon_launch(self, launcher):
+        self.enable_canon()
+        dump = self.launch(launcher)
+        self.assert_built_at(self.canon)
+        self.assertEqual(Path(self.tree, "target", STAMP).read_text().strip(), self.canon)
+        tree_status = os.stat(self.tree)
+        self.assertTrue(dump["canon_active"], dump)
+        self.assertEqual(dump["canon_identity"], f"{tree_status.st_dev}:{tree_status.st_ino}")
+        self.assert_gui_saw_real_paths(dump)
+        self.assertFalse(dump["parent_has_ld_library_path"], dump)
+
+
+class GuiLaunchTest(GuiTreeCase):
+    def test_a_run_gui_at_the_real_path(self):
+        self.assert_real_path_launch("run-gui.sh")
+
+    def test_a_run_gui_dev_at_the_real_path(self):
+        self.assert_real_path_launch("run-gui-dev.sh")
+
+    def test_b_run_gui_at_canon(self):
+        self.assert_canon_launch("run-gui.sh")
+
+    def test_b_run_gui_dev_at_canon(self):
+        self.assert_canon_launch("run-gui-dev.sh")
+
+
+class GuiTeardownTest(GuiTreeCase):
+    """run-gui-dev.sh's TERM cleanup reaches a reify-gui launched at CANON through canon_run."""
+
+    gui_stub = GUI_TRAP_STUB
+
+    def test_c_term_to_run_gui_dev_reaches_the_gui_at_canon(self):
+        self.enable_canon()
+        fifo = os.path.join(self.tmp, "ready.fifo")
+        os.mkfifo(fifo)
+        marker = os.path.join(self.tmp, "trapped")
+        pidfile = os.path.join(self.tmp, "gui.pid")
+        self.env.update(TEST_GUI_FIFO=fifo, TEST_GUI_MARKER=marker, TEST_GUI_PIDFILE=pidfile)
+        ready = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
+        self.addCleanup(os.close, ready)
+        process, log_path = self.start_launcher("run-gui-dev.sh")
+        launcher_exit = os.pidfd_open(process.pid)
+        self.addCleanup(os.close, launcher_exit)
+
+        waiting = select.poll()
+        waiting.register(ready, select.POLLIN)
+        waiting.register(launcher_exit, select.POLLIN)
+        signalled = {fd for fd, _ in waiting.poll()}
+        self.assertIn(ready, signalled, f"the launcher exited before the GUI started:\n{log_path.read_text()}")
+
+        gui_pid = int(Path(pidfile).read_text())
+        os.kill(process.pid, signal.SIGTERM)
+        process.wait()
+        self.assertTrue(os.path.exists(marker), log_path.read_text())
+        with self.assertRaises(ProcessLookupError):
+            os.kill(gui_pid, 0)
 
 
 if __name__ == "__main__":
