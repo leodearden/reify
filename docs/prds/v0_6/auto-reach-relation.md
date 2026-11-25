@@ -82,6 +82,16 @@ Authoring rulings, this session (human, 2026-10-18; question, then the option ch
 - **R9 — δ's shape (after the critic pass).** Asked: δ's design is open (the parent constraint reads a graph-minted `P.l.k` node nothing writes; clusters today need an objective; resolve_order's bt10 fence, WMOC INV-2/BT-10 and joint-drive-seam decision 7 all say "constraint reads never union"). Chosen: "Pending decision milestone (Recommended)" — "δ becomes a dep-gated [MILESTONE] decision gate (execution_class='decision' → born-at-L2, no agent) depending on γ: when γ lands it escalates to you with the three design questions above, the two fixtures (tk_child_let works via template-keyed reads; cross_scope_child_auto needs the P.l.k rebinding) and bt10/INV-2 as the fence to re-rule. Your ruling then files the implementation leaf. No OPEN design sits on a dispatchable leaf; R3's 'later' stays literal and tracked."
 - **R10 — R5's retention home.** Asked: R5's option text named S1's `EvalArtifacts`, which does not exist on main. Chosen: "EvaluationState now (Recommended)" — "Use today's EvaluationState; S1 moves the fields if its partition says so (cross-reference line, no dependency edge). No wait on S1."
 
+### Amendment 2026-11-25: R3's "later" is answered for constraints (closes δ #9374)
+
+Leo ruled on 2026-11-25, in the design of the instance kinds for the new evaluation engine, that an `auto` belongs to the instance of the definition whose text contains it: a constraint written in another definition's text is checked against the result and never chooses it. He confirmed in the same ruling that this answers the δ milestone for constraints.
+
+- **Answered.** A parent's constraint on a child's own `auto` (`auto_reach_cross_scope_child_auto.ri`, `auto_reach_tk_child_let.ri`) does not drive it. R3's "undrivable now" stands, and no implementation leaf is filed to make such a constraint drive the auto. Items (a) to (d) that δ was to bring concern a merged solve in the present engine and are not taken up.
+- **Not answered.** R3's "drivable later via whole-model-objective-coupling": how an objective reaches a child's own unknowns is left to the solve design of the new evaluation engine. It is recorded on task #10296, the solve-node design milestone, to be carried to the solve PRD that replaces it.
+- **What stands unchanged.** The fences of §7 (resolve_order's `bt10_constraint_only_transitive_read_forms_no_cluster`, whole-model-objective-coupling INV-2/BT-10, whole-model-joint-drive-seam decision 7) are not re-ruled.
+
+δ #9374 closes on this amendment. Where §1, §5.4, §7, §8 and §9 say the δ milestone "decides later", read them with this amendment.
+
 ### Lead decisions (this session; each within the rulings above)
 
 - **D1 — One edge policy, one orthogonal Drivability axis** (R1, R2; heuristic 3). `ReachEdges` follows every value-cell read (including through `@optimized` and geometry cells, across instance spellings, through connector delegation). Whether the solver can drive the auto along that path is a separate fact, `Drivability`, computed once per reacher from the path by one function. The six walks never disagreed about whether a read exists; they disagreed about what to do with a cell the solver cannot refold. Consumers differ only by a filter on `drivable`, never by a second policy.
