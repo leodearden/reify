@@ -24,6 +24,7 @@ import resource
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -1016,6 +1017,75 @@ class CloseSession(SessionCase):
             except OSError:
                 return False
         return True
+
+
+class StaleSessionFiles(SessionCase):
+    """Opening a session removes the session files no live supervisor owns, and nothing else."""
+
+    def dead_pid(self):
+        process = subprocess.Popen(["true"])
+        process.wait()
+        self.assertTrue(cfx.process_gone(process.pid), "fixture precondition: the pid is dead")
+        return process.pid
+
+    def live_pid(self):
+        process = subprocess.Popen(["sleep", "300"])
+        self.addCleanup(process.wait)
+        self.addCleanup(process.kill)
+        return process.pid
+
+    def leave(self, pid):
+        """The three files a supervisor with this pid leaves behind, with their (type, text) by path."""
+        files = canon_cache.SessionFiles.in_build_dir(self.build, pid)
+        os.mknod(files.socket, stat.S_IFSOCK | 0o600)
+        Path(files.err).write_text(f"server {pid} said goodbye\n")
+        Path(files.uncached_log).write_text(f"cc {pid}\n")
+        return files
+
+    @staticmethod
+    def kind_and_text(path):
+        mode = os.lstat(path).st_mode
+        return stat.S_IFMT(mode), Path(path).read_text() if stat.S_ISREG(mode) else None
+
+    def test_a_dead_supervisors_session_files_are_removed_when_a_session_opens(self):
+        left = self.leave(self.dead_pid())
+        session = self.open("ok")
+        for path in (left.socket, left.err, left.uncached_log):
+            self.assertFalse(os.path.lexists(path), path)
+        self.assertEqual(session.backend, canon_cache.Backend.SHARED)
+        self.assertTrue(canon_cache.answers(session.environment.server.socket))
+
+    def test_a_live_supervisors_session_files_are_kept(self):
+        left = self.leave(self.live_pid())
+        paths = (left.socket, left.err, left.uncached_log)
+        before = {path: self.kind_and_text(path) for path in paths}
+        self.open("ok")
+        self.assertEqual({path: self.kind_and_text(path) for path in paths}, before)
+
+    def test_a_leftover_named_by_the_opening_process_is_removed(self):
+        """Otherwise this session would count the stale lines as its own uncached compiles."""
+        own = canon_cache.SessionFiles.in_build_dir(self.build, os.getpid())
+        Path(own.uncached_log).write_text("cc one\ncc two\n")
+        self.open("ok")
+        self.assertFalse(os.path.lexists(own.uncached_log))
+
+    def test_names_outside_the_session_grammar_are_kept(self):
+        dead = self.dead_pid()
+        names = (
+            ".reify-canon-journal.jsonl",
+            ".reify-build-root",
+            ".reify-sccache.0.sock",
+            f".reify-sccache.0{dead}.sock",
+            f".reify-sccache.{dead}.sock.old",
+            f".reify-sccache.{dead}.log",
+            f"x.reify-sccache.{dead}.sock",
+            f".reify-canon-uncached.{dead}.err",
+        )
+        for name in names:
+            Path(self.build, name).write_text(name)
+        self.open("ok")
+        for name in names:
+            self.assertTrue(os.path.lexists(os.path.join(self.build, name)), name)
 
 
 def sample_record(**changes):
