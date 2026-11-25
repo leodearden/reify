@@ -862,7 +862,7 @@ impl CompiledSource {
     fn of_module(parsed: reify_ast::ParsedModule, module: CompiledModule) -> Self {
         Self {
             parsed,
-            compiled: Compilation::Module(module),
+            compiled: Compilation::Module(Arc::new(module)),
         }
     }
 }
@@ -870,7 +870,7 @@ impl CompiledSource {
 /// What a buffer compiled to.
 pub(crate) enum Compilation {
     /// A single-file compile.
-    Module(CompiledModule),
+    Module(Arc<CompiledModule>),
     /// The program of an entry that follows imports.
     Program(Arc<reify_compiler::program::CompiledProgram>),
 }
@@ -880,7 +880,7 @@ impl Compilation {
     /// `engine`, and only the module returned resolves in its environment.
     fn evaluated_in(self, engine: &mut Engine) -> Arc<CompiledModule> {
         match self {
-            Self::Module(module) => Arc::new(module),
+            Self::Module(module) => module,
             Self::Program(program) => engine.load(program),
         }
     }
