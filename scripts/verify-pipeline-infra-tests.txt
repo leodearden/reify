@@ -173,6 +173,13 @@ tests/infra/refresh_warm_base_harness.py  tests/infra/test_seed_warm_lane_canon_
 tests/infra/refresh_warm_base_harness.py  tests/infra/test_canon_launch_sites.sh
 tests/infra/canon_run_fixture.py          tests/infra/test_seed_warm_lane_canon_stamp.sh
 tests/infra/canon_run_fixture.py          tests/infra/test_canon_launch_sites.sh
+# Task 10442: drop-canon-invocation-files.py removes canonical-build-path
+# invocation files (journal, private-server session files) from a warm-lane
+# copy, pinned by a .py suite that names every planted file through
+# canon_cache.py, loaded via canon_run_fixture.py.
+scripts/drop-canon-invocation-files.py  tests/infra/test_drop_canon_invocation_files.sh
+tests/infra/test_drop_canon_invocation_files.py  tests/infra/test_drop_canon_invocation_files.sh
+tests/infra/canon_run_fixture.py  tests/infra/test_drop_canon_invocation_files.sh
 # Task 10168: tree-sitter-freshness.sh evict-stale, the promote-time removal of
 # tree-sitter-reify build-script runs whose input stamp disagrees with the
 # promoted tree, pinned by a .py suite behind a thin .sh wrapper.
