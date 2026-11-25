@@ -10012,6 +10012,21 @@
         assert!(diagnostics.is_empty(), "got: {diagnostics:?}");
     }
 
+    /// The Axis form takes the same unresolved sentence as the Direction form,
+    /// not `decode_axis`'s "expected an Axis value, got undef".
+    #[test]
+    fn compile_geometry_op_revolve_undef_axis_is_unresolved() {
+        let (result, diagnostics) = run_compile(&revolve_axis_form(
+            reify_ir::Value::Undef,
+            literal_angle(std::f64::consts::PI),
+        ));
+        assert_eq!(
+            result.expect_err("an Undef axis must drop the op"),
+            unresolved_arg_message("axis", "revolve")
+        );
+        assert!(diagnostics.is_empty(), "got: {diagnostics:?}");
+    }
+
     #[test]
     fn compile_geometry_op_revolve_vector_direction_is_not_a_direction() {
         let (result, diagnostics) = run_compile(&revolve_direction_form(

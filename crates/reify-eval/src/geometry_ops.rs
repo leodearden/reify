@@ -2150,15 +2150,17 @@ pub(crate) fn decode_axis(
     Ok((origin_arr, unit_dir.components()))
 }
 
-/// Read a REQUIRED `Direction`-typed named argument (`dir(x, y, z)`).
+/// Read a REQUIRED named argument that must be RESOLVED before it can be
+/// decoded: the one owner of the missing-arg and Undef policy for the typed
+/// composite readers ([`required_direction_arg`],
+/// [`required_length_point3_arg`], and `revolve`'s Axis form ahead of
+/// [`decode_axis`]).
 ///
 /// An absent argument takes [`eval_named_arg`]'s missing-arg Warning. An Undef
 /// value takes the shared unresolved sentence (PRD-1 D10), because a transient
 /// solver Undef, or a degenerate `dir(0, 0, 0)` cell, is not the author's
-/// mistake to fix. Any other non-Direction value takes
-/// [`decode_direction`]'s message, which ends in the `dir(x, y, z)` hint.
-/// None of these push a diagnostic of their own.
-fn required_direction_arg(
+/// mistake to fix; it pushes no diagnostic of its own.
+fn required_resolved_arg(
     name: &str,
     kind_label: impl std::fmt::Display + Copy,
     args: &[(String, reify_ir::CompiledExpr)],
@@ -2166,7 +2168,7 @@ fn required_direction_arg(
     functions: &[CompiledFunction],
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
-) -> Result<UnitVec3, String> {
+) -> Result<reify_ir::Value, String> {
     let value = eval_named_arg(
         name,
         kind_label,
@@ -2180,6 +2182,32 @@ fn required_direction_arg(
     if matches!(value, reify_ir::Value::Undef) {
         return Err(unresolved_arg_message(name, kind_label));
     }
+    Ok(value)
+}
+
+/// Read a REQUIRED `Direction`-typed named argument (`dir(x, y, z)`).
+///
+/// Absent and Undef follow [`required_resolved_arg`]. Any other non-Direction
+/// value takes [`decode_direction`]'s message, which ends in the
+/// `dir(x, y, z)` hint, and pushes no diagnostic.
+fn required_direction_arg(
+    name: &str,
+    kind_label: impl std::fmt::Display + Copy,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<UnitVec3, String> {
+    let value = required_resolved_arg(
+        name,
+        kind_label,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     decode_direction(&value).map_err(|e| labelled(kind_label, format_args!("{name}: {e}")))
 }
 
@@ -2188,8 +2216,7 @@ fn required_direction_arg(
 ///
 /// `component_names` name the three components in a rejection, so a caller
 /// can keep the wording its scalar form used (`revolve` passes
-/// `ox`/`oy`/`oz`). An Undef value takes the shared unresolved sentence, as in
-/// [`required_direction_arg`].
+/// `ox`/`oy`/`oz`). Absent and Undef follow [`required_resolved_arg`].
 #[allow(clippy::too_many_arguments)]
 fn required_length_point3_arg(
     name: &str,
@@ -2201,7 +2228,7 @@ fn required_length_point3_arg(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<[f64; 3], String> {
-    let value = eval_named_arg(
+    let value = required_resolved_arg(
         name,
         kind_label,
         args,
@@ -2209,11 +2236,7 @@ fn required_length_point3_arg(
         functions,
         meta_map,
         diagnostics,
-    )
-    .ok_or_else(|| format!("missing required argument '{name}' for {kind_label}"))?;
-    if matches!(value, reify_ir::Value::Undef) {
-        return Err(unresolved_arg_message(name, kind_label));
-    }
+    )?;
     accept_length_point3(
         &value,
         component_names,
@@ -4606,12 +4629,15 @@ fn sweep_revolve(
         step_handles,
         named_steps,
     )?;
-    // Every argument is EVALUATED before the first `?`, and the first error in
-    // source order is returned: an author sees every bad argument in one build,
-    // and a bare origin still reports before a bad direction (the task-5623
-    // precedence). The angle must be reached even when the axis fails; the
-    // units closure guard can fill only scalars, so it observes the angle gate
-    // through exactly that.
+    // Every argument is EVALUATED before the first `?`, and the first `Err` in
+    // source order is returned, so a bare origin still reports before a bad
+    // direction (the task-5623 precedence). Only the DIMENSION gates push a
+    // diagnostic of their own, so the origin's components (in either spelling)
+    // and the angle are what an author sees all of in one build. An unresolved
+    // or undecodable Direction or Axis is reported only through its `Err`, so
+    // it surfaces once nothing before it fails. The angle must be reached even
+    // when the axis fails; the units closure guard can fill only scalars, so it
+    // observes the angle gate through exactly that.
     //
     // The axis comes in two spellings, told apart by the presence of `axis`:
     // `revolve(profile, axis, angle)` takes an Axis datum, and
@@ -4619,8 +4645,7 @@ fn sweep_revolve(
     // lowering) a Point3 origin beside a Direction. Neither has a magnitude to
     // check: a Direction is unit by construction.
     let axis = if args.iter().any(|(n, _)| n == "axis") {
-        eval_named_arg("axis", kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing required argument 'axis' for {kind}"))
+        required_resolved_arg("axis", kind, args, values, functions, meta_map, diagnostics)
             .and_then(|axis| decode_axis(&axis, kind, diagnostics))
     } else {
         let origin = required_length_point3_arg(
