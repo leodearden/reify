@@ -135,13 +135,14 @@ scope** (owned by the stdlib-namespace/shadowing PRD, §6).
 // reify-compiler (program.rs)
 pub struct CompiledImportUnit {
     pub import_path: String,        // as written: "parts", "lib.fasteners"
+    pub reach: ImportReach,         // Direct | ReExported (μ, D-7)
     pub module: CompiledModule,
     pub origin: Option<PathBuf>,    // None for embedded-stdlib-resolved units
 }
 
 pub struct CompiledProgram {
     entry: CompiledModule,          // private: read via entry() / into_entry()
-    pub imports: Vec<CompiledImportUnit>, // followed direct imports, declaration order
+    pub imports: Vec<CompiledImportUnit>, // import tier: direct imports + their pub re-exports (μ)
     pub sources: Vec<ModuleSource>, // { module_key, path, source }; topological, entry last
     /* private: the re-homed-diagnostics block, the entry-declared template count */
 }
@@ -340,7 +341,7 @@ touched.
 | 13 | Collision matrix | entry-vs-import, import-vs-import, import-vs-stdlib, per kind | first-wins per I6, Warning naming both origins; units flip pinned (D-6) | P2 (κ) |
 | 14 | Templates purity | any importing entry | post-P2 `entry.templates` contains only entry-declared names; GUI tree / doc unchanged vs P1 for user-visible content | P2 (κ) |
 | 15 | Silent-skip retirement | sub naming an unknown structure reaching graph build | structured diagnostic, not silent node omission | P2 (ι) |
-| 16 | Imported-file module-header mismatch | import whose file has wrong/missing `module` decl | Warning naming the *imported* file path | P3 (ξ) |
+| 16 | Imported-file module-header mismatch | import whose file has wrong/missing `module` decl | Warning naming the *imported* file path *(amended 2026-11-25, ξ #6953: "Warning" reads as the module-header diagnostic — an Error for a wrong declaration, a Warning for a missing one)* | P3 (ξ) |
 | 17 | GUI files panel | multi-file project | imported files listed (from `sources`), debug-MCP observable | P3 (ο) |
 | 18 | Stale-mirror removal | ports_breadth.ri stripped | eval output shows stdlib `thread_form`; examples_smoke green | P0 (α) |
 | 19 | Imported module *consuming* stdlib names (β amendment 2026-07-25) | imported module with a dimensioned param + si-unit default + stdlib trait bound (`param w : Length = 10mm`, `: ElasticMaterial`) | resolves at check AND eval — today it silently compiles poison (import units get no stdlib prelude: module_dag.rs:474-486, GUI twin engine.rs:946) *(probe)* | P1 (β) |
@@ -536,10 +537,39 @@ runs against P1's landed net)
   (compile_program frontier). Signal (#8): facade fixture — entry imports lib,
   lib pub-imports parts; `reify check` + `reify eval` resolve Pulley; plain-import
   chain does not leak. Deps: κ. (#5391 gate 3, second half.)
+  *Amended 2026-11-25 (μ #6953, landed shape):* `ModuleDag` records each followed
+  `pub import` as a re-export edge during the walk, behind the one import gate
+  (`follows_import`), so a cfg-gated-out import, or a `std.*` one the DAG does not
+  walk, is never an edge (I3, I4). `ModuleDag::visible_imports` is the one
+  import-tier rule, for an import unit's prelude, `compile_program`'s entry and
+  `compile_project`'s entry: each direct import followed depth-first by its
+  re-export closure, one unit per module, so a re-exported definition ranks with its
+  re-exporter under D-6 first-wins. `CompiledProgram.imports` carries that tier, each
+  unit marked by `CompiledImportUnit.reach` (`ImportReach::Direct` / `ReExported`),
+  so check (the compile prelude) and eval (`ProgramRoot` → `DefEnv` →
+  `evaluation_module`) see re-exports with no reify-eval change. Qualified lookup
+  (`module_surface`, I7) reaches only `Direct` units: neither `parts.X` nor `lib.X`
+  qualifies through a re-export, which is left to the stdlib-namespace PRD's
+  qualified-reference work (consumer #5505). An entity-form `pub import a.Helper`
+  re-exports a's whole pub surface until ν #5527's narrowing lands. Pinned by
+  `crates/reify-compiler/tests/harness_modules_ports/pub_import_reexport_tests.rs` and
+  `crates/reify-cli/tests/harness_cli/cli_pub_import_reexport.rs`.
 - **ν — Entity-import narrowing** *(leaf)*. Modules: reify-compiler. Signal (#9).
   Deps: κ.
 - **ξ — Imported-file module-header mismatch surfacing** *(leaf)*. Modules:
   reify-compiler (module_dag.rs:527-529 region). Signal (#16). Deps: β.
+  *Amended 2026-11-25 (ξ #6953, landed shape):* β's I2 aggregation already re-homed an
+  import unit's header diagnostic onto the entry, prefixed `in imported module '<key>'
+  (<path>)`, so the imported file is named. ξ codes both at their single constructor,
+  `compile_builder/pre_pass.rs::module_path_decl_diag`, as
+  `DiagnosticCode::ModulePathMismatch` and `DiagnosticCode::ModuleDeclMissing`, so the
+  entry, every import unit and the stdlib build carry the codes (INV-SF-6); the
+  `E_MODULE_PATH_MISMATCH:` / `W_MODULE_DECL_MISSING:` message prefixes are unchanged.
+  Severity policy: a wrong header stays an Error, as it is for the entry and for
+  `reify check` run on that file itself, because severity belongs to the condition,
+  not to the route that reached the file; a missing header stays a Warning. Pinned by
+  `crates/reify-compiler/tests/harness_modules_ports/module_decl_remedy_tests.rs` and
+  `crates/reify-cli/tests/harness_cli/cli_module_decl_remedy.rs`.
 - **ο — GUI files panel from `sources`** *(leaf)*. Modules: gui (engine.rs source_map,
   frontend files panel). Signal (#17): debug-MCP store_state lists the imported file.
   Deps: ε.
