@@ -182,6 +182,10 @@ tests/infra/canon_run_fixture.py  tests/infra/test_drop_canon_invocation_files.s
 # (fail-closed when missing), staged through the shared refresh harness.
 scripts/refresh-warm-base.sh  tests/infra/test_drop_canon_invocation_files.sh
 tests/infra/refresh_warm_base_harness.py  tests/infra/test_drop_canon_invocation_files.sh
+# Its SeedStep class runs the REAL seed in both modes through the shared seed
+# harness and pins its post-clone call to that sibling (fail-closed when missing).
+scripts/seed-warm-lane.sh  tests/infra/test_drop_canon_invocation_files.sh
+tests/infra/seed_warm_lane_harness.py  tests/infra/test_drop_canon_invocation_files.sh
 # Task 10168: tree-sitter-freshness.sh evict-stale, the promote-time removal of
 # tree-sitter-reify build-script runs whose input stamp disagrees with the
 # promoted tree, pinned by a .py suite behind a thin .sh wrapper.

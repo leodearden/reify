@@ -18,6 +18,7 @@ is the thin wrapper tests/infra/test_drop_canon_invocation_files.sh.
 
 import dataclasses
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -29,6 +30,7 @@ INFRA_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(INFRA_DIR))
 import canon_run_fixture as fx  # noqa: E402  (imported after sys.path manipulation)
 import refresh_warm_base_harness as refresh_harness  # noqa: E402
+import seed_warm_lane_harness as seed_harness  # noqa: E402
 
 CANON_CACHE = fx.load_canon_cache()
 DROPPER = fx.REPO_ROOT / "scripts" / "drop-canon-invocation-files.py"
@@ -224,6 +226,60 @@ class RefreshStep(unittest.TestCase):
         self.assertFalse(os.path.lexists(self.base), "the base advanced without the drop")
         self.assertEqual(sorted(self.tmp.glob("base.gen.*.partial")), [])
         self.assertIn(DROPPER.name, result.stderr, "the refresh failed before it reached the dropper")
+
+
+class SeedStep(unittest.TestCase):
+    """seed-warm-lane.sh runs the REAL dropper on its clone in both modes, on an
+    UNSTAMPED base target too (no .reify-build-root). Built as
+    test_seed_depinfo_relocation.py SeedWiringFailsClosed builds its pool: a
+    hand-made built target and no cargo."""
+
+    def setUp(self):
+        self.tmp = scratch(self)
+        self.pool = seed_harness.Pool(self.tmp, "build-root-playing-merge-verify")
+        self.pool.write_build_root({"tracked.txt": "v1\n"})
+        self.pool.commit_build_root()
+        built = self.tmp / "built-target"
+        seed_harness.write_file(built / "debug" / ".fingerprint" / "alpha-1" / "dep-lib-alpha", "")
+        self.keeper = Path("debug") / "base_artifact.a"
+        seed_harness.write_file(built / self.keeper, "base artifact\n")
+        planted = [
+            plant_journal(built),
+            plant_journal(built / "nested-build"),
+            *plant_session_files(built, dead_pid()),
+        ]
+        self.planted = [path.relative_to(built) for path in planted]
+        self.pool.stamp_gen(built)
+
+    def assert_no_invocation_file(self, target, result):
+        found = entries_under(target, lambda name, mode: CANON_CACHE.is_invocation_file(name))
+        self.assertEqual(found, [], diag(result))
+
+    def test_a_fresh_checkout_lane_carries_no_invocation_file_and_keeps_the_rest(self):
+        lane = self.pool.add_lane("_lane-1")
+        result = self.pool.seed(lane)
+        self.assertEqual(result.returncode, 0, diag(result))
+        self.assertEqual(result.stdout, f"{lane / 'target'}\n")
+        self.assert_no_invocation_file(lane / "target", result)
+        self.assertTrue((lane / "target" / self.keeper).is_file(), diag(result))
+        self.assertEqual([rel for rel in self.planted if not os.path.lexists(self.pool.gen / rel)], [],
+                         "the seed dropped files from the base gen it cloned")
+
+    def test_a_reset_in_place_seed_drops_them_too(self):
+        lane = self.pool.add_lane("_lane-2")
+        result = self.pool.seed(lane, mode="--reset-in-place")
+        self.assertEqual(result.returncode, 0, diag(result))
+        self.assert_no_invocation_file(lane / "target", result)
+
+    def test_a_seed_without_the_dropper_aborts_naming_it(self):
+        copy = self.tmp / "seed-copy" / seed_harness.SEED.name
+        copy.parent.mkdir()
+        shutil.copy2(seed_harness.SEED, copy)
+        lane = self.pool.add_lane("_lane-3")
+        result = self.pool.seed(lane, seed_script=copy)
+        self.assertNotEqual(result.returncode, 0, diag(result))
+        self.assertEqual(result.stdout, "")
+        self.assertIn(DROPPER.name, result.stderr)
 
 
 class Usage(unittest.TestCase):
