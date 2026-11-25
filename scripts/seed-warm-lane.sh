@@ -187,10 +187,13 @@
 #
 # Canonical-build-path stamp (task 10230 — dark-factory
 #   plans/canonical-build-path-shared-cache-prd.md C12): a clone stamped
-#   .reify-build-root is kept byte-for-byte, minus the base's journal and
-#   sockets, when this lane's tree holds scripts/canon_run.py, because the lane
-#   then builds at the same CANON. Without the primitive the stamp is removed
-#   and the target is adapted from the stamped root to the lane's real path.
+#   .reify-build-root is kept byte-for-byte when this lane's tree holds
+#   scripts/canon_run.py, because the lane then builds at the same CANON.
+#   Without the primitive the stamp is removed and the target is adapted from
+#   the stamped root to the lane's real path. Stamped or not, in either mode,
+#   no clone carries canonical-build-path invocation files: the base build's
+#   journal and private-server session files are dropped from it (task 10442,
+#   §9.5 inv.17).
 
 set -euo pipefail
 
@@ -1078,11 +1081,11 @@ _adapt_cloned_target_to_lane() {
     _relink_env_path_tests "$1" "$2"
 }
 
-# Canonical-build-path names: dark-factory
-# plans/canonical-build-path-shared-cache-prd.md C1/C4/C6. Their homes are
-# scripts/canon_run.py STAMP_NAME and scripts/canon_cache.py JOURNAL_NAME / SessionFiles.
+# Canonical-build-path stamp name: dark-factory
+# plans/canonical-build-path-shared-cache-prd.md C1/C12. Its home is
+# scripts/canon_run.py STAMP_NAME. The journal and session-file names live only
+# in scripts/canon_cache.py, applied to the clone by _drop_canon_invocation_files.
 _CANON_STAMP_NAME=".reify-build-root"
-_CANON_JOURNAL_NAME=".reify-canon-journal.jsonl"
 
 # Print the CANON root <target_dir> is stamped for (one trailing newline
 # stripped, as canon_run.py's read_stamp does), or nothing when it is unstamped.
@@ -1108,10 +1111,20 @@ _read_canon_stamp() {
     return 1
 }
 
-# Remove the base build's journal and leftover private-sccache sockets from the
-# clone: they belong to the base's sessions, never to this lane.
-_remove_canon_runtime_files() {
-    rm -f -- "$LANE_TARGET/$_CANON_JOURNAL_NAME" "$LANE_TARGET"/.reify-sccache.*.sock
+# ── canonical-build-path invocation-file drop (task 10442) ─────────────────
+# §9.5 inv.17 — rule: drop-canon-invocation-files.py header. A missing or
+# failing helper aborts the seed.
+_drop_canon_invocation_files() {
+    local helper="$_SCRIPT_DIR/drop-canon-invocation-files.py" rc=0
+    if [ ! -f "$helper" ]; then
+        err "drop-canon-invocation-files.py not found at $helper — the clone may carry another tree's canonical-build-path journal or session files (§9.5 inv.17); seed aborted (cold rebuild forced)"
+        exit 1
+    fi
+    python3 "$helper" "$LANE_TARGET" >&2 || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        err "drop-canon-invocation-files.py exited $rc — the clone may still carry another tree's canonical-build-path journal or session files (§9.5 inv.17); seed aborted (cold rebuild forced)"
+        exit 1
+    fi
 }
 
 # ── main: record-base mode ────────────────────────────────────────────────────
@@ -1718,10 +1731,8 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     fi
     _canon_root="$(_read_canon_stamp "$LANE_TARGET")"
     if [ -n "$_canon_root" ] && [ -f "$LANE_DIR/scripts/canon_run.py" ]; then
-        _remove_canon_runtime_files
         info "Target stamped for CANON $_canon_root and this lane's tree holds scripts/canon_run.py: the lane builds at CANON too, so the clone is kept as is"
     elif [ -n "$_canon_root" ]; then
-        _remove_canon_runtime_files
         rm -f -- "$LANE_TARGET/$_CANON_STAMP_NAME"
         info "Target stamped for CANON $_canon_root, but this lane's tree has no scripts/canon_run.py: removed the stamp, so the lane builds at its real path"
         _adapt_cloned_target_to_lane "$_canon_root" "$_lane_rp"
@@ -1807,6 +1818,10 @@ fi
 #   acquire is default-on under $FRESH_CHECKOUT, but DF's `--assume-lane-lock-held`
 #   clears it on BOTH production pool acquires — see the --lane-lock note in the
 #   header.
+
+# Both modes reach this drop. It follows the fresh-checkout block so that a seed
+# the inv.13 probe refuses pays no walk of the clone.
+_drop_canon_invocation_files
 
 # ── git rerere disarm at LANE cadence (task 6889, open item (c)) ─────────────
 #

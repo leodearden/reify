@@ -272,11 +272,13 @@ class SeedStep(unittest.TestCase):
         self.assert_no_invocation_file(lane / "target", result)
 
     def test_a_seed_without_the_dropper_aborts_naming_it(self):
-        copy = self.tmp / "seed-copy" / seed_harness.SEED.name
-        copy.parent.mkdir()
-        shutil.copy2(seed_harness.SEED, copy)
+        """The copy carries the relocate helper this unstamped clone needs before the drop."""
+        copy_dir = self.tmp / "seed-copy"
+        copy_dir.mkdir()
+        for name in (seed_harness.SEED.name, "relocate-depinfo-paths.py"):
+            shutil.copy2(seed_harness.SEED.parent / name, copy_dir / name)
         lane = self.pool.add_lane("_lane-3")
-        result = self.pool.seed(lane, seed_script=copy)
+        result = self.pool.seed(lane, seed_script=copy_dir / seed_harness.SEED.name)
         self.assertNotEqual(result.returncode, 0, diag(result))
         self.assertEqual(result.stdout, "")
         self.assertIn(DROPPER.name, result.stderr)
