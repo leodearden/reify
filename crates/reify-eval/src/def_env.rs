@@ -39,6 +39,7 @@ use reify_ir::{CompiledFunction, EnumDef};
 #[derive(Debug, Clone, Copy)]
 pub struct DefEnv<'p> {
     root: ProgramRoot<'p>,
+    module: &'p CompiledModule,
     prelude: &'p [CompiledModule],
 }
 
@@ -52,6 +53,7 @@ impl<'p> DefEnv<'p> {
     pub fn with_prelude(program: &'p CompiledProgram, prelude: &'p [CompiledModule]) -> Self {
         Self {
             root: program.into(),
+            module: program.entry(),
             prelude,
         }
     }
@@ -59,12 +61,11 @@ impl<'p> DefEnv<'p> {
     /// The environment of `module` over `prelude`: that of the import-free
     /// program whose entry `module` is (I1).
     pub fn of_module(module: &'p CompiledModule, prelude: &'p [CompiledModule]) -> Self {
-        Self::with_root(module.into(), prelude)
-    }
-
-    /// The environment of `root` over `prelude`.
-    pub fn with_root(root: ProgramRoot<'p>, prelude: &'p [CompiledModule]) -> Self {
-        Self { root, prelude }
+        Self {
+            root: module.into(),
+            module,
+            prelude,
+        }
     }
 
     /// The program's user templates: every template the entry declares, then
@@ -181,7 +182,7 @@ impl<'p> DefEnv<'p> {
 
     /// The entry module, holding only its own declarations.
     pub fn declared(&self) -> &'p CompiledModule {
-        self.root.entry()
+        self.module
     }
 }
 
@@ -215,6 +216,16 @@ impl LoadedProgram {
     pub(crate) fn evaluated(&self) -> &Arc<CompiledModule> {
         &self.evaluated
     }
+
+    /// The loaded program's own environment over `prelude`, whose module is
+    /// the evaluation module.
+    fn env<'a>(&'a self, prelude: &'a [CompiledModule]) -> DefEnv<'a> {
+        DefEnv {
+            root: (&*self.program).into(),
+            module: &self.evaluated,
+            prelude,
+        }
+    }
 }
 
 /// The definition environment the engine resolves one module in. It owns what
@@ -247,10 +258,7 @@ impl<'m> EnvScope<'m> {
     /// the scope's module is that module; otherwise the module's own (I1).
     pub fn env(&self) -> DefEnv<'_> {
         match &self.loaded {
-            Some(loaded) => DefEnv::with_root(
-                ProgramRoot::new(&loaded.evaluated, &loaded.program.imports),
-                self.prelude,
-            ),
+            Some(loaded) => loaded.env(self.prelude),
             None => DefEnv::of_module(self.module, self.prelude),
         }
     }

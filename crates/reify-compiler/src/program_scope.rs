@@ -26,7 +26,7 @@ pub struct ProgramRoot<'a> {
 impl<'a> ProgramRoot<'a> {
     /// The root whose entry is `entry` over the direct `imports`, in
     /// declaration order.
-    pub fn new(entry: &'a CompiledModule, imports: &'a [CompiledImportUnit]) -> Self {
+    fn new(entry: &'a CompiledModule, imports: &'a [CompiledImportUnit]) -> Self {
         Self { entry, imports }
     }
 
