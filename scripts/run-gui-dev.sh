@@ -15,11 +15,13 @@
 #   5. Start the vite dev server in its own PROCESS GROUP, with stdin detached
 #      from the terminal, and wait for :${REIFY_VITE_PORT:-1420}.
 #   6. Build the reify-gui cargo binary in DEBUG profile (with feature `gui`;
-#      no `embedded-frontend`, so the window loads devUrl).
-#   7. Export REIFY_DEBUG=1 and the OCCT/tbb LD_LIBRARY_PATH.
-#   8. Run target/debug/reify-gui [file.ri] as a backgrounded child and
-#      `wait`, so SIGTERM/SIGINT to this script reach the trap which reaps
-#      both the vite process GROUP and reify-gui.
+#      no `embedded-frontend`, so the window loads devUrl), through
+#      scripts/canon_run.py (CLAUDE.md "Canonical build path").
+#   7. Export REIFY_DEBUG=1 and compute the OCCT/tbb LD_LIBRARY_PATH.
+#   8. Run target/debug/reify-gui [file.ri] through scripts/canon_run.py
+#      (gui_launch_exec) as a backgrounded child and `wait`, so SIGTERM/SIGINT
+#      to this script reach the trap which reaps both the vite process GROUP
+#      and reify-gui (canon_run forwards the trap's TERM to it).
 #
 # ---------------------------------------------------------------------------
 # Environment contract
@@ -339,7 +341,7 @@ fi
 # window loads devUrl, retargeted by gui/src-tauri/src/dev_url.rs; the debug
 # profile is for build time.
 echo "==> Building reify-gui (debug)..."
-cargo build -p reify-gui --bin reify-gui --features gui
+"$GUI_LAUNCH_CANON_RUN" cargo build -p reify-gui --bin reify-gui --features gui
 
 # -- 7. Debug mode + launch environment --------------------------------------
 # REIFY_DEBUG=1 enables the MCP debug listener on 127.0.0.1:$REIFY_DEBUG_PORT
@@ -360,7 +362,9 @@ gui_launch_env_pin
 #   - The cleanup trap can kill GUI_PID explicitly when the script is
 #     killed externally, instead of orphaning the GUI window.
 echo "==> Launching target/debug/reify-gui ${FILE:-(no file: Start view)} (REIFY_DEBUG=1, port=$REIFY_DEBUG_PORT)"
-target/debug/reify-gui ${FILE:+"$FILE"} &
+# gui_launch_exec execs only the backgrounded subshell, so GUI_PID is
+# canon_run's pid and the trap above still runs here.
+gui_launch_exec target/debug/reify-gui "$FILE" &
 GUI_PID=$!
 RC=0
 wait "$GUI_PID" || RC=$?

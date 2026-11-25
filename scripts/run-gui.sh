@@ -15,9 +15,11 @@
 #   3. Install gui/ npm deps + build the frontend (produces gui/dist).
 #   4. Build the reify-gui cargo binary in release mode with features `gui` +
 #      `embedded-frontend` (see gui/src-tauri/Cargo.toml), so the window serves
-#      step 3's gui/dist, never devUrl.
-#   5. Export LD_LIBRARY_PATH (OCCT's bundled libs + the tbb pin).
-#   6. exec target/release/reify-gui [file.ri].
+#      step 3's gui/dist, never devUrl. The build goes through
+#      scripts/canon_run.py (CLAUDE.md "Canonical build path").
+#   5. Compute LD_LIBRARY_PATH (OCCT's bundled libs + the tbb pin).
+#   6. exec target/release/reify-gui [file.ri] through scripts/canon_run.py,
+#      with its real cwd, file and step 5's loader path (gui_launch_exec).
 #
 # Environment contract (full version in scripts/run-gui-dev.sh's header; the
 # mechanism for LD_LIBRARY_PATH and the preflight is scripts/lib_gui_launch.sh,
@@ -89,7 +91,7 @@ echo "==> Installing gui dependencies + building frontend..."
 # -- 4. Build reify-gui in release mode ----------------------------------------
 # §3's gui/dist is a compile-time input: `embedded-frontend` embeds it.
 echo "==> Building reify-gui (release)..."
-cargo build -p reify-gui --bin reify-gui --features gui,embedded-frontend --release
+"$GUI_LAUNCH_CANON_RUN" cargo build -p reify-gui --bin reify-gui --features gui,embedded-frontend --release
 
 # -- 5. Launch environment -----------------------------------------------------
 # The whole launch loader path, shared with scripts/run-gui-dev.sh:
@@ -98,4 +100,4 @@ gui_launch_env_pin
 
 # -- 6. Launch ----------------------------------------------------------------
 echo "==> Launching target/release/reify-gui ${FILE:-(no file: Start view)}"
-exec target/release/reify-gui ${FILE:+"$FILE"}
+gui_launch_exec target/release/reify-gui "$FILE"
