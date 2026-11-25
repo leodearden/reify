@@ -1018,6 +1018,11 @@ def journal_path(build_dir: str | Path) -> str:
     return os.path.join(build_dir, JOURNAL_NAME)
 
 
+def is_invocation_file(name: str) -> bool:
+    """Whether a basename names a file one supervised invocation, or its private server, writes in a build dir."""
+    return name == JOURNAL_NAME or SessionFiles.owner_pid(name) is not None
+
+
 @dataclass(frozen=True)
 class BuildCacheRecord:
     """C6's record of one outermost invocation; mode is canon_run's mode value."""
