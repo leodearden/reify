@@ -19,9 +19,10 @@ Kinds of test: a *named regression* is one test with the model as written; a *co
 
 - **Kind of test:** named regression. **Contract:** 2.1, 2.2. **Found by:** round 1, soundness (L7).
 - **Model:** A toy list cell that reads bindings arg0, arg1, ... until one answers absent; two declarations with 2 and 3 bound args, same recipe. A cell that reads binding 'arg' and falls back to binding 'default' when 'arg' answers absent.
-- **Sequence:** evaluate list [a, b] at path P1 → evaluate list [a, b, c] at path P2 (same recipe) → evaluate cell A, then cell B (same recipe) → repeat on a fresh store in the opposite order
+- **Sequence:** evaluate list [a, b] at path P1 → evaluate list [a, b, c] at path P2 (same recipe) → evaluate cell A, then cell B (same recipe) → repeat on a fresh core in the opposite order
 - **What went wrong in the draft reviewed:** run took a payload per node and nothing said a body learns its declaration only through recorded reads, so a body could branch on its declaration's shape without a recorded read, and a lookup could return another node's result.
 - **What the contract requires:** [a, b, c] answers [a, b, c] and [a, b] answers [a, b] in either order; A and B each get their own value; no lookup returns a result filed for a node whose declaration differs.
+- **Note for the leaf:** leaf β has no store, so the last clause holds trivially there; from leaf δ, where results are found by lookup, the same test checks it.
 
 ## Leaf δ: The store
 
@@ -37,17 +38,16 @@ Kinds of test: a *named regression* is one test with the model as written; a *co
 ### `values_of_different_types_never_share_a_content`
 
 - **Kind of test:** named regression. **Contract:** 5.2, 6. **Found by:** round 1, soundness (L23).
-- **Model:** Cell kind B producing Bool true and cell kind I producing Int 1, whose value bytes are equal; reader cell R reads binding 'x', bound to B at one path and to I at another.
+- **Model:** Two test-local kinds: B returns the Bool true and I returns the Int 1, and each kind's `content` hashes the same bytes, adding no tag of its own. Reader cell R reads binding 'x', bound to B at one path and to I at another.
 - **Sequence:** evaluate R where its ref resolves to Bool true → evaluate R at another path where the same ref resolves to Int 1
 - **What went wrong in the draft reviewed:** 5.2 defined content for a value and an opaque result only, and each kind hashed its own Out with no type tag.
-- **What the contract requires:** R computes from Int 1 and never finds the result filed from Bool true. Missing: the content of an emitted partial.
-- **The text does not yet settle this** (partly). See the PRD's list of open points.
+- **What the contract requires:** R computes from Int 1 and never finds the result filed from Bool true. The type tag is the core's: a kind supplies a content and the core does the combining (PRD decision D4), so the test passes with kinds whose `content` adds no tag.
 
 ### `two_places_check_catches_resource_minted_id_in_result`
 
 - **Kind of test:** named regression. **Contract:** 2.2 (O3), 5.4. **Found by:** round 1, geometry and session (G3 (raw kernel handle ids in values and ).
 - **Model:** Toy shape S embeds the resource counter value in its result (leaky variant) or a description-relative name (clean variant). Harness: evaluate S's declaration at path p1, do unrelated shape work, evaluate at p2, compare. Leaky fails, clean passes.
-- **Sequence:** realize B; face handle 201; mesh stores OnFace(201) → trim B's shape → re-realize B after other kernel work: face is 517 → load target resolved against new B has the same content → stored FEA found; its boundary nodes reference 201
+- **Sequence:** core 1: evaluate S's declaration at path p1 → core 2, fresh: unrelated shape work on the toy kernel, then evaluate S's declaration at path p2 → compare the two results by value; once with the leaky variant and once with the clean one
 - **What went wrong in the draft reviewed:** 5.4 did not list kernel handle ids, and the two-places test ran each place with an empty store and fresh kernel, which mints the same ids both times.
 - **What the contract requires:** The two-places harness reports a mismatch for a toy shape kind that embeds a resource-minted counter in its result, and passes for one that names parts relative to its description.
 - **Note for the leaf:** where the sequence trims a shape, use a second, fresh core. Trimming arrives with leaf ρ.
@@ -55,22 +55,21 @@ Kinds of test: a *named regression* is one test with the model as written; a *co
 ### `order_check_detects_result_mutated_through_exclusive_resource`
 
 - **Kind of test:** named regression. **Contract:** 2.2 (O1, O6), 5.3, 5.6. **Found by:** round 1, geometry and session (G4 (realized shape depends on representa).
-- **Model:** Toy shape S; reader F writes a 'fine' marker on S's resource entry inside exclusive; reader E's result depends on the marker. Evaluate F then E vs E alone: the debug determinism re-run must flag E (or F) when both claim determinism.
-- **Sequence:** viewport reader tessellates stored shape S at 1e-4 in place → export reader tessellates S at 0.1 → export result equals the 1e-4 tessellation → fresh evaluation of export alone gives the 0.1 tessellation
+- **Model:** Toy shape S, on a toy kernel that keeps a marker per shape. Reader F, a test-local variant of `measure`, sets S's marker inside its section and returns 1. Reader E, another, returns 1 if S's marker is set and 0 if it is not.
+- **Sequence:** core 1: evaluate demand {F}, then demand {E} → the order check: a fresh core evaluates demand {E} alone
 - **What went wrong in the draft reviewed:** The kernel preference and representation were not in the realize key, and nothing forbade a reader from writing onto a stored shape through the kernel.
-- **What the contract requires:** Export's result is independent of whether the viewport tessellated first (G0). Missing: a stated way for the core to detect an O6 violation, e.g. that the debug re-run happens against a resource state that has not seen the earlier readers.
-- **Note for the leaf:** what exposes the fault is the order check (the same demands in another order on a fresh core), not the debug mode's re-run, which would see the same changed resource. PRD section 13, point 18.
-- **The text does not yet settle this** (partly). See the PRD's list of open points.
+- **What the contract requires:** The order check reports that E's answer differs: 1 on core 1, 0 on the fresh core. The fault is F's (O6 forbids changing what it read); the core's part is that the order check exposes it (PRD section 13.2, point 18).
+- **Note for the leaf:** the debug mode's re-run would see the same changed kernel, so it is not the witness here.
 
 ## Leaf ε: Cycles
 
 ### `a_binding_to_a_sibling_place_is_not_a_read_by_the_declaring_scope`
 
 - **Kind of test:** named regression. **Contract:** 2.1, 3.1, 8. **Found by:** round 1, solve (S7).
-- **Model:** Root scope declares a child a whose binding 'owner' is the place root/handdown/a, a planning cell that reads root's declarations, and a hand-down cell that reads the planning cell; a's cell reads its binding.
-- **Sequence:** evaluate demand {a/len} → variant: the scope's own body reads its planning node; evaluate demand {a/len}
+- **Model:** Root, a toy `scope`, declares three members. `plan` is a test-local cell bound to root's own place, which reads root's result and answers the number of members it declares (3). `handdown` is a toy `scope` with a binding 'src' set to the place root/plan; it declares one member, `a`, a cell bound to handdown's binding 'src' that answers what it reads. root's member `a` is a cell whose binding 'owner' is the place root/handdown/a and which answers what it reads through 'owner'. Variant: root is a test-local scope whose body reads plan before it returns its declarations.
+- **Sequence:** evaluate demand {root/a} → variant: evaluate demand {root/a}
 - **What went wrong in the draft reviewed:** How an unknown learns its owner was unspecified; if ownership was part of the scope's result, scope -> plan -> scope declarations was a cycle.
-- **What the contract requires:** a/len resolves to the handed-down value with no cycle. Variant: root and root/plan answer 'cycle' with one description.
+- **What the contract requires:** root/a answers 3 with no cycle: root reads nothing by binding a child to a sibling place. Variant: root and root/plan answer 'cycle' with one description.
 
 ### `two_cell_ring_answers_cycle_on_both_whatever_is_demanded_first`
 
@@ -78,7 +77,7 @@ Kinds of test: a *named regression* is one test with the model as written; a *co
 - **Model:** Cells a = b + 1 and b = a + 1.
 - **Sequence:** evaluate demand {a} → fresh core: evaluate demand {b} → fresh core: evaluate demand {a, b}
 - **What went wrong in the draft reviewed:** Cycle detection looked only at running bodies, and a body waiting for a NotReady input had returned, so the ring was never detected.
-- **What the contract requires:** a and b answer 'cycle' with identical descriptions in all three orders; each body runs once; no budget is exhausted.
+- **What the contract requires:** a and b answer 'cycle' with identical descriptions in all three orders; each body runs once; `run()` returns with no budget given, so the ring is found and not ended by a budget.
 
 ### `conditional_mutual_reference_without_a_ring_of_running_bodies_is_not_a_cycle`
 
@@ -93,18 +92,18 @@ Kinds of test: a *named regression* is one test with the model as written; a *co
 ### `depth_limit_failure_is_a_fact_about_the_path_not_shared_by_content`
 
 - **Kind of test:** named regression. **Contract:** 7.6. **Found by:** round 1, soundness (L6).
-- **Model:** Scope kind T reading binding d; its result declares child c with d - 1 when d > 0. Root declares deep (d = 70) and shallow (d = 6). Depth limit is a snapshot setting input.
-- **Sequence:** core 1: evaluate demand {deep subtree}, then {shallow subtree} → core 2 (fresh store): shallow first, then deep → edit the depth-limit setting to 72; evaluate → edit it back to 64; evaluate
+- **Model:** T is a toy `guard` with bindings d and live: it reads live first and answers absent when it is false; otherwise it declares cells m = d - 1, l = (d > 0) and leaf = (if l then next/leaf else 1), and next, a T whose binding d is the place m and whose binding live is the place l. Root declares deep (T with d = 70, live = true) and shallow (T with d = 6, live = true). The depth of a path is its number of steps below the root, so the T under deep with d = 6 is at depth 65 and reads the same contents as root/shallow. Depth limit is a snapshot setting input.
+- **Sequence:** core 1: evaluate demand {root/deep/leaf}, then {root/shallow/leaf} → core 2 (fresh store): shallow first, then deep → edit the depth-limit setting to 72; evaluate → edit it back to 64; evaluate
 - **What went wrong in the draft reviewed:** The depth failure was stored like any result, by recipe and contents; whichever of the two T(d = 6) instances came first decided the other's answer.
-- **What the contract requires:** In both orders: root/shallow succeeds; the depth-65 path answers one depth failure with one diagnostic; readers above it answer 'blocked by the failure at this ref'. Limit 72: everything under deep succeeds. Limit 64 again: the same failure as the first time.
+- **What the contract requires:** In both orders: root/shallow/leaf = 1; the T at depth 65 answers one depth failure with one diagnostic; the leaf cells above it answer 'blocked by the failure at this ref'. Limit 72: everything under deep succeeds and root/deep/leaf = 1. Limit 64 again: the same failure as the first time.
 
 ### `shared_exponential_tree_ends_by_paths_budget_not_node_budget`
 
 - **Kind of test:** named regression. **Contract:** 7.6, 4.1, 4.2. **Found by:** round 1, whole design (W16 (dropping the total-node limit: 2^41); round 1, soundness (L17).
-- **Model:** Scope kind T(d) declares two children T(d-1) when d > 0 (guard cell). Demand a summary over T(40) with a paths-resolved budget of 10,000: request ends with a budget error; body runs about 41; store contains no failure entry.
-- **Sequence:** host calls evaluate(check) on TreeBracket(depth = 40) with a budget → root summary reads every declared body under it → each level's two children share results by content but each path is answered → paths resolved grows as 2^k
+- **Model:** T is a toy `guard` with bindings d and live: it reads live first and answers absent when it is false; otherwise it declares cells m = d - 1, l = (d > 0) and sum = (if l then left/sum + right/sum else 1), and two children left and right, each a T whose binding d is the place m and whose binding live is the place l. Root is T with d = 40 and live = true. Demand root/sum with a paths-resolved budget of 10,000: the request ends with a budget error; each kind's body runs about 41 times; the store holds no failure entry.
+- **Sequence:** evaluate demand {root/sum} with a paths budget of 10,000 → sum reads every T under it → each level's two children share results by content but each path is answered → paths resolved grows as 2^k
 - **What went wrong in the draft reviewed:** The per-request budget counted node evaluations, not path resolutions, so sharing kept it from firing while index entries grew without bound.
-- **What the contract requires:** The request ends with one budget error once paths resolved reaches the budget; body runs about depth + 1; nothing about the exhaustion is stored; a later request with a larger budget is not affected by the earlier one.
+- **What the contract requires:** The request ends with one budget error once paths resolved reaches the budget; each kind's body runs about depth + 1 times; nothing about the exhaustion is stored; a later request with a larger budget is not affected by the earlier one.
 - **Note for the leaf:** the summary reads its children one at a time. Read together, two identical siblings would both run until leaf ζ joins runs in flight.
 
 ## Leaf θ: Children declared by a running body
@@ -129,26 +128,25 @@ Kinds of test: a *named regression* is one test with the model as written; a *co
 ### `body_declared_child_is_shared_and_resolvable_without_rerunning_its_parent`
 
 - **Kind of test:** counter assertion. **Contract:** 7.1, 4.2, 2.5. **Found by:** round 2 (N10).
-- **Model:** Two identical scopes, each with a caller cell that declares a shape child from its arguments; demand both, then demand the second child's path directly.
-- **Sequence:** evaluate demand {root/c1/result} → evaluate demand {root/c2/result} (identical arguments) → demand the compute child's path of root/c2/result directly
+- **Model:** Two identical scopes c1 and c2, each with a toy `call` named result that declares a shape child from its arguments; demand both, then demand the second child's path directly.
+- **Sequence:** evaluate demand {root/c1/result} → evaluate demand {root/c2/result} (identical arguments) → demand the path of root/c2/result's shape child directly
 - **What went wrong in the draft reviewed:** The parent's chain recorded the read of the child but not its declaration, so an identical parent elsewhere had to run its body (G2 fails), the child could not be resolved by path from outside, and placeholder children could be declared.
-- **What the contract requires:** One compute body run for two identical cantilevers; zero runs of the second parent cell's body; the second compute child's path is answerable by a direct demand.
-- **The text does not yet settle this** (partly). See the PRD's list of open points.
+- **What the contract requires:** One body run of the shape child for the two identical scopes; zero runs of the second `call`'s body; the second shape child's path is answerable by a direct demand.
 
 ### `unbounded_body_declared_recursion_stops_at_the_depth_limit_with_one_failure`
 
 - **Kind of test:** named regression. **Contract:** 7.6, 7.1, 2.2. **Found by:** round 1, soundness (L16); round 1, whole design (W21 (small items: read by kind, versions).
-- **Model:** Cell kind V reading binding n; its body declares child step 'call' of recipe V with n := n + 1 and reads that child's value. Root declares V with n = 0. Depth limit is a snapshot setting.
-- **Sequence:** evaluate demand {root/v} for model (b) → a toy body that loops forever unless it reads and honours a work setting (model a)
+- **Model:** (b) V is a toy `call` reading binding n; its body declares child step 'call' of its own recipe with n := n + 1 and reads that child's value. Root declares V with n = 0. Depth limit is a snapshot setting. (a) A test-local kind whose body loops until it has done the work a work-limit setting it reads allows, and then returns the failure 'out of work'.
+- **Sequence:** evaluate demand {root/v} for model (b) → evaluate the kind of model (a) at two places with the same setting
 - **What went wrong in the draft reviewed:** Deterministic limits covered path depth and children per result only; roots named by content kept depth at 1, and nested views and a body's own work had no deterministic bound.
-- **What the contract requires:** (b) Terminates: exactly one depth failure, with one diagnostic, at the first path past the limit; root/v is a failure blocked by it; nothing stored for the depth failure. (a) A toy body with a fuel setting returns a stored 'out of work' failure, found again by content.
+- **What the contract requires:** (b) Terminates: exactly one depth failure, with one diagnostic, at the first path past the limit; root/v is a failure blocked by it; nothing stored for the depth failure. (a) The kind of model (a) returns a stored 'out of work' failure, found again by content at the second place.
 
 ## Leaf ι: Views
 
 ### `a_substitution_under_an_absent_parent_answers_absent`
 
 - **Kind of test:** named regression. **Contract:** 6. **Found by:** round 1, soundness (L24).
-- **Model:** Root scope declares a present-if child thin (guard x > 5) with cell t; constraint cell reads thin/t and x; a toy solver body opens the two views.
+- **Model:** Root scope declares a toy `guard` thin, which reads its own condition (x > 5) first, answers absent under a false one, and otherwise declares cell t; constraint cell reads thin/t and x; a toy solver body opens the two views.
 - **Sequence:** in a toy solver body: suppose([(x, 4), (thin/t, 3)]); read thin, thin/t and the constraint → suppose([(x, 6), (thin/t, 3)]); read the same
 - **What went wrong in the draft reviewed:** 4.2 answered a substitution before resolving the declaration, so a substituted path existed in a trial even when its parent was absent.
 - **What the contract requires:** x := 4: thin = absent, thin/t = absent (not 3), constraint evaluated on absent by its kind. x := 6: thin present, thin/t = 3.
@@ -156,10 +154,10 @@ Kinds of test: a *named regression* is one test with the model as written; a *co
 ### `an_unassigned_unknown_inside_its_own_solve_never_reaches_the_solve`
 
 - **Kind of test:** named regression. **Contract:** 8, 7.7, 2.3. **Found by:** round 1, solve (S10).
-- **Model:** Toy solver owning p and q that assigns one at a time and substitutes the other with an 'unassigned' outcome; cell c = p or q.
+- **Model:** A test-local variant of the toy solver, owning p and q, that assigns one at a time and substitutes the other with an 'unassigned' outcome: a failure whose description is 'unassigned' (contract 8). Cell c = p or q reads p and then q; it does not short-circuit, and it answers 'blocked by' an operand that is a failure.
 - **Sequence:** toy solver trial: suppose([(p, true), (q, unassigned)]); read constraint → faulty toy solver trial: suppose([(p, true)]) only; read constraint
 - **What went wrong in the draft reviewed:** The draft did not say what an owned, unsubstituted unknown reads as inside its own solve's view: a nested re-run of the same solve or a cycle.
-- **What the contract requires:** With q substituted: the constraint is evaluated by its kind (true by short-circuit, or 'unassigned'); no read reaches the solve; the caller can ask which answers depended on the substitution. Without: the solve fails with 'cycle', not a hang or a nested re-solve.
+- **What the contract requires:** With q substituted: c answers 'blocked by' the unassigned q; no read reaches the solve; the read of c through the view reports that it depended on the substitution. Without (the faulty variant substitutes p only): c's read of q reaches the solve, and the solve fails with 'cycle', not a hang or a nested re-solve.
 
 ### `solve_reached_again_under_its_own_view_is_a_cycle_and_terminates`
 
@@ -176,15 +174,15 @@ Kinds of test: a *named regression* is one test with the model as written; a *co
 - **Sequence:** toy solver opens a view, runs trials, then reads a cell outside the view
 - **What went wrong in the draft reviewed:** Two correctness obligations lived outside O1-O8 with no consequence for breaking them.
 - **What the contract requires:** The solve's run ends with a failure; that failure is its answer; no ordered read is filed after its set.
+- **Note for the leaf:** at leaf ι a view-opener's result is not stored, so the last clause holds trivially; from leaf κ, which stores view-openers, it can fail, and the test asserts it there.
 
 ### `view_reports_which_answers_depended_on_substitution`
 
 - **Kind of test:** named regression. **Contract:** 6, 8, 2.3. **Found by:** round 1, whole design (W6 (missed coupling cannot be reported: ).
 - **Model:** Toy solver opens view {x := 3}; reads cell y = x + 1 and cell z = 5 through it. Asking the core must answer: y depended on the substitution, z did not.
-- **Sequence:** a's solve opens a view on a.len → Clamp's constraint reads span = a.len but is not read by a's solve → a's solve returns 100 mm → Clamp's constraint is checked: violated
+- **Sequence:** a toy solver body opens the view {x := 3} → it reads y and z through the view; each read returns its outcome and whether it depended on the substitution
 - **What went wrong in the draft reviewed:** The draft claimed the core reports a trial that reads another solve's unknown, which needs either kind knowledge in the core or a transitive-read query that Cx lacked.
-- **What the contract requires:** A body that read a ref through a view can learn, for each answer it obtained, whether that answer depended on any substituted path. Missing: the interface for that query in 2.3 (on Cx or View).
-- **The text does not yet settle this** (partly). See the PRD's list of open points.
+- **What the contract requires:** y = 4, reported as depending on the substitution; z = 5, reported as not depending on it. A read through a view returns that fact with the outcome (contract 2.3 and 6; PRD section 13.2, point 11).
 
 ## Leaf κ: What a view-opener's trials rested on
 
@@ -224,10 +222,10 @@ Kinds of test: a *named regression* is one test with the model as written; a *co
 ### `rests_on_check_stops_at_first_changed_member_in_first_read_order`
 
 - **Kind of test:** counter assertion. **Contract:** 6. **Found by:** round 4, logic (F8).
-- **Model:** Toy guard cell g, expensive toy shape node K (independent of u), constraint present only if g reads u and K; edit g and K's input together; count K's runs.
-- **Sequence:** S0: evaluate the solve → S1 = S0.edit(use_fea := false, mesh input changed) → evaluate the solve; count FEA body runs
+- **Model:** Inputs use = true and mesh. K is a toy `shape` made from mesh, and k a `measure` of K; neither depends on u. A toy `guard` gc, whose condition is use, declares the constraint cell c = (u * k >= 10). A toy solver over u, minimising u, has c as its problem. Its trials read gc, which reads use, before they read k, so use is the first member of what they rested on.
+- **Sequence:** S0: evaluate the solve → S1 = S0.edit(use := false, mesh changed) → evaluate the solve; count K's body runs
 - **What went wrong in the draft reviewed:** The set was unordered, so a check had to answer every member.
-- **What the contract requires:** S1: FEA body runs 0; the solve re-runs without the guarded constraint.
+- **What the contract requires:** S1: K's body runs 0 times; the solve runs again without the guarded constraint.
 
 ### `rests_on_check_that_waits_on_a_running_reader_misses_instead_of_cycling`
 
@@ -244,6 +242,7 @@ Kinds of test: a *named regression* is one test with the model as written; a *co
 - **Sequence:** solve runs trials; its result is u = 7 mm determined → readers between u and the constraints evaluated in the final state; count body runs
 - **What went wrong in the draft reviewed:** Claimed the final state finds what the last trial computed.
 - **What the contract requires:** When the toy solver substitutes exactly its final outcome at the final point: 0 body runs of the trial-path nodes in the final state. When it does not: they run once (documented, not a fault).
+- **Note for the leaf:** the toy `solved` answers exactly the outcome (value and determinacy) its solve's map holds for its unknown, so a substitution of that outcome has the content the `solved` node's result will have; the option that substitutes the value only gives an outcome of another content.
 
 ### `change_and_change_back_refinds_a_view_opening_node`
 
@@ -251,18 +250,17 @@ Kinds of test: a *named regression* is one test with the model as written; a *co
 - **Model:** Toy solver whose trial reads cell m; edit m A -> B -> A; and K identical solvers at K places with K different m values.
 - **Sequence:** solve with rests-on member m = A → edit m := B → edit m := A → count solver body runs
 - **What went wrong in the draft reviewed:** 'A new run replaces the set', so the previous set was lost.
-- **What the contract requires:** Change and change back: 0 solver body runs on the way back, while the number of distinct sets under the prefix is within the store's alternative limit. Missing: the limit, and an honest qualification in 4.2.
-- **The text does not yet settle this** (partly). See the PRD's list of open points.
+- **What the contract requires:** Change and change back: 0 solver body runs on the way back, while the number of distinct sets under the prefix is within the store's alternative limit (a setting of the core, PRD section 13.2, point 20). K identical solvers at K places with K different values of m, K no more than that limit, evaluated one after another and then again in a snapshot made by an unrelated edit: no solver body runs the second time.
 
 ## Leaf λ: A view inside a view
 
 ### `guard_that_reads_an_unknown_is_evaluated_per_trial_not_a_cycle`
 
 - **Kind of test:** named regression. **Contract:** 6, 8. **Found by:** round 1, soundness (L3); round 1, whole design (W7 (solved count / guard over an unknown).
-- **Model:** Scope G declares: child scope a with its own toy solver owning len on [10, 100]; a present-if child whose guard cell reads x (x > 6.5) and whose constraint cell reads a/len and x; a planning cell that reads only G's declarations; a toy solver owning x on a grid in [6, 8] that reads the planning cell, then trials through cx.suppose.
+- **Model:** Scope G declares: a child scope a with its own toy solver owning len, trying 10, 11, ..., 100 in order, with constraint cells len >= 20 and len <= 100; a toy `guard` p, which reads its condition cell (x > 6.5) first, answers absent under a false one, and otherwise declares the constraint cell a/len == 2 * x; constraint cells x >= 6 and x <= 8; a planning cell, a test-local cell that reads only G's declarations; and a toy solver owning x, trying 8, 7.5, 7, 6.5, 6 in order, that reads the planning cell and then tries each candidate through cx.suppose. A toy solver counts an absent constraint as holding.
 - **Sequence:** evaluate demand {x, a.len} → fresh core: evaluate demand {a.len}, then {x}
 - **What went wrong in the draft reviewed:** The plan read guards and counts outside any view; the escape for structure controlled by a value on trial held only inside a view, so plan -> guard -> unknown -> solve -> plan was a cycle in the outer snapshot.
-- **What the contract requires:** No 'cycle'. a.len = a's own solve result, independent of x and of order. x = the toy solver's choice on [6, 8] given that a.len == 2x is present only in trials with x > 6.5; the guarded verdict at the solved x is present or absent accordingly. Same answers in both demand orders.
+- **What the contract requires:** No 'cycle'. a/len = 20, independent of x and of order. x = 6.5: the trials at 8, 7.5 and 7 have p present and a/len == 2 * x false; at 6.5 p is absent. At the solved x, p and its constraint answer absent. Same answers in both demand orders.
 
 ### `mutually_dependent_solves_fail_as_one_cycle_whatever_the_demand_order`
 
@@ -286,8 +284,8 @@ Kinds of test: a *named regression* is one test with the model as written; a *co
 - **Model:** Outer toy solver over count n (integer trials) reading a per-element value; toy collection declaring n scopes with constant binding pitch = 100 / n; each scope has an unknown angle and its own toy solver for a constraint over pitch and angle. Variant: scope cell q = pitch * 2 read by the constraint instead of pitch. Example 11 variant: outer unknown w, child scope Slot(width = w) with its own unknown depth >= width.
 - **Sequence:** outer solve on n opens view n := 3 → a trial reads vents/[0]'s solved angle → vents/[0]'s solve reads its declaration and pitch, then opens view angle := a and evaluates its constraint → outer trial n := 4 reads vents/[0]'s solved angle again
 - **What went wrong in the draft reviewed:** The exemption 'depending merely for existing does not count' needed a second kind of dependence the core does not record.
-- **What the contract requires:** Per section 6's last sentence and Example 11: under n := 3 the inner solve answers the angle satisfying its constraint at pitch 33.3 mm, under n := 4 at 25 mm; neither is an answer of the surrounding state; no 'cycle'. Missing: whether outer-dependence that flows only through the inner view-opener's pre-view reads counts for the view-inside-a-view rule, and what the core must record to tell that from a genuine mutual dependence (the case of `mutually_dependent_solves_fail_as_one_cycle_whatever_the_demand_order`).
-- **The text does not yet settle this** (undetermined). See the PRD's list of open points.
+- **What the contract requires:** Per section 6's last sentence and Example 11: under n := 3 the inner solve answers the angle satisfying its constraint at pitch 33.3 mm, under n := 4 at 25 mm; neither is an answer of the surrounding state; no 'cycle'. The property is now in contract section 6 (PRD section 13.2, point 31); what the core records to tell it from a genuine mutual dependence (the case of `mutually_dependent_solves_fail_as_one_cycle_whatever_the_demand_order`) is left to this leaf.
+- **The text does not yet settle this** (partly). PRD section 13.1, point 6.
 
 ### `element_solve_independent_of_the_count_answers_under_every_count_trial`
 
@@ -295,15 +293,15 @@ Kinds of test: a *named regression* is one test with the model as written; a *co
 - **Model:** Outer toy solver over count n (integer trials); collection of n toy scopes, each with an unknown angle and its own toy solver for angle == 30; outer constraint sums a value per element.
 - **Sequence:** outer solve on n opens view n := 3 → trial evaluates total_airflow over vents/[0..2], each reading its vent's angle → vents/[i]'s solve opens its own view angle := a → outer trial n := 4
 - **What went wrong in the draft reviewed:** The rule failed every inner view-opener whose path or inputs depended on the outer unknown, so Example 4's stronger case failed once Vent had any auto, and (b) and (c) were forbidden without saying so.
-- **What the contract requires:** Per section 6's last sentence: under each count trial every vent's solve answers angle = 30deg and total_airflow is evaluated on n such vents; no 'cycle'. Missing: (1) whether outer-dependence that passes only through the inner node's pre-view reads counts for the view-inside-a-view rule, and what the core records to tell (section 6 tracks one mark, 'depended on a substitution'); (2) which of section 6 / section 8 governs a non-mutual nested solve.
-- **The text does not yet settle this** (undetermined). See the PRD's list of open points.
+- **What the contract requires:** Per section 6's last sentence: under each count trial every vent's solve answers angle = 30deg and total_airflow is evaluated on n such vents; no 'cycle'. The property is now in contract section 6 (PRD section 13.2, point 31), and section 6 governs a nested solve that is not mutual: section 8's sentence that two solves never nest through the core is known to be wrong here (PRD section 13.2, the conflict in section 8). What the core records to tell this case from a mutual dependence is left to this leaf.
+- **The text does not yet settle this** (partly). PRD section 13.1, point 6.
 
 ## Leaf μ₁: What a new snapshot inherits
 
 ### `absent_answers_are_indexed_with_their_ancestor_reads`
 
 - **Kind of test:** named regression. **Contract:** 4.2, 6. **Found by:** round 1, soundness (L8).
-- **Model:** (1) Input use_plate; present-if scope child thin (guard reads use_plate) declaring cell t = 4; cell tt reads thin/t. (2) Input n = 4; collection vents reads n and declares elements with cell area = 10; cell probe reads vents/[3]/area; a toy solver body that calls suppose([(n, 3)]), reads probe and asks which answers depended on the substitution.
+- **Model:** (1) Input use_plate; a toy `guard` thin, which reads use_plate first, answers absent when it is false, and otherwise declares cell t = 4; cell tt reads thin/t. (2) Input n = 4; collection vents reads n and declares elements with cell area = 10; cell probe reads vents/[3]/area; a toy solver body that calls suppose([(n, 3)]), reads probe and asks which answers depended on the substitution.
 - **Sequence:** S1: evaluate demand {tt}: tt = absent → S2 = S1.edit(use_plate := true); evaluate demand {tt} (with tt kept from S1, and again with it not kept) → in a toy solver body in S: suppose(n := 3); read probe through the view; ask whether probe depended on the substitution → outside the view, evaluate S demand {probe}
 - **What went wrong in the draft reviewed:** Only body reads were recorded; ancestor declaration reads and 'absent' answers were not indexed, so (1) tt was not reached when root/thin came into existence and stayed absent, and (2) probe under the view was judged independent of the substitution and leaked into the parent's index.
 - **What the contract requires:** (1) tt = 4mm, final, in both variants. (2) probe = absent under the view and reported as depending on the substitution; outside the view probe = 10mm.
@@ -314,13 +312,13 @@ Kinds of test: a *named regression* is one test with the model as written; a *co
 - **Model:** Toy scope with N cell children whose argument values are separate snapshot inputs; a toy collection reading a count cell.
 - **Sequence:** root scope with N children gains one member; collection N -> N + 1; one part's parameter edited, at N = 100, 1000, 10000
 - **What went wrong in the draft reviewed:** G1 claimed no growth where the text required N comparisons; the argument sat inside the member body the parent reads.
-- **What the contract requires:** Gaining a member: at most N declaration comparisons, 0 body runs under unchanged children; editing one argument: no growth with N.
+- **What the contract requires:** Gaining a member: index entries touched at most N plus a constant (one per child, whose declaration is compared), and 0 body runs under unchanged children; editing one argument: no growth with N.
 
 ### `work_after_an_edit_stops_where_content_is_unchanged`
 
 - **Kind of test:** counter assertion. **Contract:** 4.4, 3.1, 11. **Found by:** round 1, soundness (L13); round 2 (W4 (Part 1 re-run, judged PARTLY)); round 1, whole design (W4 (G1 not delivered; walk without cutof).
 - **Model:** Input g; cell h = min(g, 10); N cells p_i = h + i. And a root scope declaring N child cells, each bound to its own argument source input.
-- **Sequence:** S1: evaluate demand {p_0..p_(N-1)} for N = 100, 1,000, 10,000 → S2 = S1.edit(g := 30mm); evaluate; read core.counters() → S3: root scope with N child parts, all demanded; edit one part's argument source; read core.counters()
+- **Sequence:** S1: evaluate demand {p_0..p_(N-1)} for N = 100, 1,000, 10,000 → S2 = S1.edit(g := 30mm); evaluate; read core.counters() → S3: the root scope with N child cells, each bound to its own argument source input, all demanded; edit one cell's argument source; read core.counters()
 - **What went wrong in the draft reviewed:** Reach was the full transitive 'who read this' closure from the changed inputs, with no comparison of contents, so G1's lookup and index counters grew with N behind a cutoff; and the root scope read the literal it bound.
 - **What the contract requires:** S2: body runs = 1 (h); store lookups and index entries touched bounded by a constant independent of N. S3: the root scope's body does not run; body runs, lookups and entries touched bounded by the edited part's cone, independent of N.
 
@@ -329,18 +327,18 @@ Kinds of test: a *named regression* is one test with the model as written; a *co
 ### `child_a_rerun_body_stops_declaring_becomes_absent`
 
 - **Kind of test:** named regression. **Contract:** 7.1. **Found by:** round 4, logic (F4).
-- **Model:** Caller cell ok = if flag then (declare shape child X, read it, compare) else true; demand ok and ok/X; flip flag.
-- **Sequence:** S1: flag = true; evaluate demand {ok, ok/@call} → S2 = S1.edit(flag := false); evaluate the same demand
-- **What went wrong in the draft reviewed:** The walk stopped at ok because its content was unchanged, and ok/@call's own reads (constant bindings) had not changed.
-- **What the contract requires:** S2: ok = true; ok/@call answers absent.
+- **Model:** Caller cell ok, a toy `call`: ok = if flag then (declare shape child X, read it, compare) else true. The child's path is written ok/X here; its step has the form leaf θ chose (PRD section 15, question 5). Demand ok and ok/X; flip flag.
+- **Sequence:** S1: flag = true; evaluate demand {ok, ok/X} → S2 = S1.edit(flag := false); evaluate the same demand
+- **What went wrong in the draft reviewed:** The walk stopped at ok because its content was unchanged, and ok/X's own reads (constant bindings) had not changed.
+- **What the contract requires:** S2: ok = true; ok/X answers absent.
 
 ### `child_of_a_parent_answered_from_the_store_is_absent_when_not_declared`
 
 - **Kind of test:** named regression. **Contract:** 7.1, 4.4, 4.2. **Found by:** found while cataloguing.
 - **Model:** As `child_a_rerun_body_stops_declaring_becomes_absent`, but with flag false first so the store already holds ok's no-child result when flag flips back.
-- **Sequence:** S0: evaluate demand {ok} → S1 = S0.edit(flag := true); evaluate demand {ok, ok/@call} → S2 = S1.edit(flag := false); evaluate demand {ok, ok/@call}
+- **Sequence:** S0: evaluate demand {ok} → S1 = S0.edit(flag := true); evaluate demand {ok, ok/X} → S2 = S1.edit(flag := false); evaluate demand {ok, ok/X}
 - **What went wrong in the draft reviewed:** Not reviewed: the rule is the post-round-4 fix to F4.
-- **What the contract requires:** S2: ok = true; ok/@call answers absent, as a fresh evaluation of S2 does. Missing: a rule that fires whenever the parent's answer changes which children it records, whether that answer came from a run or from the store.
+- **What the contract requires:** S2: ok = true; ok/X answers absent, as a fresh evaluation of S2 does. Missing: a rule that fires whenever the parent's answer changes which children it records, whether that answer came from a run or from the store.
 - **The text does not yet settle this** (undetermined). See the PRD's list of open points.
 
 ### `branch_left_by_an_edit_is_not_evaluated_before_its_reader_is_rechecked`
@@ -349,7 +347,7 @@ Kinds of test: a *named regression* is one test with the model as written; a *co
 - **Model:** Input load; cell detailed = load > 100; cell r whose body reads detailed and then either declares child step 'fea' (a shape reading binding load) and reads it, or returns load / 2.
 - **Sequence:** S1 (load = 150N): evaluate demand {r}: detailed = true; the FEA child runs → S2 = S1.edit(load := 50N); evaluate demand {r}; read the FEA kind's body-run counter
 - **What went wrong in the draft reviewed:** Every input of a body's last trace was brought up to date before the body ran, including reads after one whose content had changed, so the untaken branch's expensive node was evaluated (against G3).
-- **What the contract requires:** S2: the FEA body runs 0 times; r = estimate(50N); the FEA child path answers absent and its entry is removed from the index. Missing: a sentence that a kept node reached by the outward work is not re-checked until its readers' earlier reads are known unchanged (equivalently, that kept nodes are re-checked only through their readers, in read order).
+- **What the contract requires:** S2: the FEA child's body runs 0 times; r = 25 (load / 2); a later request on S2 that demands the FEA child's path gets 'absent': the entry passed over when r left that branch was removed from S2's index, so it is not served. Missing: a sentence that a kept node reached by the outward work is not re-checked until its readers' earlier reads are known unchanged (equivalently, that kept nodes are re-checked only through their readers, in read order).
 - **The text does not yet settle this** (partly). See the PRD's list of open points.
 
 ## Leaf ν: Inheriting a node that opened a view
@@ -357,10 +355,10 @@ Kinds of test: a *named regression* is one test with the model as written; a *co
 ### `independent_solve_groups_fail_and_resolve_independently`
 
 - **Kind of test:** counter assertion. **Contract:** 8, 11. **Found by:** round 1, solve (S4); round 1, whole design (W5 (solve keyed by scope alone re-solves).
-- **Model:** Scope whose planning cell (reading declarations only) declares one toy-solver child per independent unknown; one toy problem is infeasible.
-- **Sequence:** evaluate demand {a, c} → N = 100, 1,000, 10,000 independent groups under one scope, all demanded; edit one group's bound; read core.counters()
+- **Model:** Scope S declares a planning node P, a test-local kind that reads the sources of S's constraint cells (snapshot inputs) and nothing computed, and whose result, not its body, declares one toy solver per group of unknowns that a constraint couples. Each group here is one unknown with its bound constraint cells; the unknown is a `solved` node reading its group's solve, and each toy solver tries 0, 1, ..., 10 in order. In the first model there are two groups: a, with 1 <= a <= 5, and c, with c >= 6 and c <= 5, which no value meets.
+- **Sequence:** evaluate demand {a, c} → N = 100, 1,000, 10,000 independent groups under S, all demanded; edit the source of one group's bound; read core.counters()
 - **What went wrong in the draft reviewed:** One solve node per scope bundled independent components, so one failing strict auto poisoned every auto in its scope, and any edit re-solved every component.
-- **What the contract requires:** a solved; c undetermined with its cause. After editing one of N groups: solver body runs = 1, planning node runs = 1, other counters independent of N.
+- **What the contract requires:** a = 1; c answers 'blocked by' its solve's failure, and nothing else is affected by it. After editing one of N groups: solver body runs = 1, P's body runs = 1 (it read the edited source), other counters independent of N.
 
 ### `edit_that_routes_a_rested_on_member_through_the_unknown_is_a_miss_not_a_cycle`
 
@@ -376,16 +374,16 @@ Kinds of test: a *named regression* is one test with the model as written; a *co
 ### `edit_made_while_the_parent_is_still_evaluating_never_inherits_a_stale_answer`
 
 - **Kind of test:** named regression. **Contract:** 4.4. **Found by:** round 1, soundness (L12).
-- **Model:** Input w; cell area = w * 10. The test drives the executor so C's evaluation of area is suspended when P is made, then completes, then P is evaluated.
-- **Sequence:** C = snapshot(w = 10mm); evaluate demand {area}; suspend before area is answered → P = C.edit(w := 12mm) → let C's evaluation finish: area = 100 → evaluate P demand {area}
+- **Model:** Input w; a toy `shape` s whose section waits on a barrier the test holds; k, a `measure` of s, answering 0; cell area = w * 10 + k.
+- **Sequence:** C = snapshot(w = 10); evaluate demand {area} on C; one `turn()`: area waits on k, whose section is held → P = C.edit(w := 12); evaluate demand {area} on P while C's request is still live and area is unanswered in C → release the barrier; run until idle → end C's request → variants: P's first request made after C's request has finished; C's request ended before P's first request
 - **What went wrong in the draft reviewed:** A child's index was its parent's outside a reach computed once, at creation; entries the parent gained later, including ones copied in from trials, were served in the child for paths the change reaches.
-- **What the contract requires:** P: area = 120mm^2; C: area = 100mm^2; independent of when C finished relative to P's creation.
+- **What the contract requires:** P: area = 120; C: area = 100; in every variant. What P inherits is taken at its first request, and nothing C answers afterwards is served in P.
 
 ### `entry_inherited_from_an_unfinished_walk_is_reconfirmed_before_it_is_served`
 
 - **Kind of test:** named regression. **Contract:** 4.4. **Found by:** round 4, logic (F2).
-- **Model:** As the model, with cells only; use a 'paths resolved' request budget to stop S1's walk before x.
-- **Sequence:** (1) S0 evaluate {x, y}; S1 = S0.edit(a := 2); evaluate {x, y} with a budget that stops before x is re-checked; S2 = S1.edit(b := 2); evaluate {x, y} in S2 → (2) P evaluate {r}; S = P.edit(f := false, g := 5); evaluate {r}; second request on S demands {n}
+- **Model:** (1) Inputs a = 1, b = 1, h = 1. A toy `shape` s made from h, whose section waits on a barrier while the test holds it; m, a `measure` of s, answering 0; cells x = a * 10 + m and y = b * 10. (2) Inputs f = true, g = 1; cells n = g * 2 and r = if f then n else 0.
+- **Sequence:** (1) S0: evaluate {x, y} to completion, leaving the request live → S1 = S0.edit(a := 2, h := 2); hold the barrier; evaluate {x, y} on S1; one `turn()`: y is answered, and x waits on m, whose new section is held → S2 = S1.edit(b := 2); evaluate {x, y} on S2 while S1's request is still live → release the barrier; run until idle; end the earlier requests → (2) P: evaluate {r}, leaving the request live; S = P.edit(f := false, g := 5); evaluate {r}; a second request on S demands {n}
 - **What went wrong in the draft reviewed:** Nothing defined which inherited entries were current; an entry the parent's walk had not reached was inherited as current, and an entry skipped under the reader-first rule became 'kept' when a later request demanded it.
 - **What the contract requires:** (1) x = 20, y = 20 in S2. (2) r = 0; n = 10 on the second request; no read ever returns an unconfirmed entry.
 
@@ -395,19 +393,19 @@ Kinds of test: a *named regression* is one test with the model as written; a *co
 
 - **Kind of test:** named regression. **Contract:** 4.4. **Found by:** round 2 (N2).
 - **Model:** Cells g, x = g + 1, y = x * 2; demand changes between requests on the same snapshot.
-- **Sequence:** S0: evaluate demand {x, y} → on S0, demand becomes {x} → S1 = S0.edit(g := 5); evaluate demand {x} → evaluate demand {y} in S1 → variant: S2 = S1.edit(unrelated); demand {y} in S2; and x = if f then 0 else y with S2 flipping f
+- **Sequence:** S0: evaluate demand {x, y} → on S0, demand becomes {x} → S1 = S0.edit(g := 5); evaluate demand {x} → evaluate demand {y} in S1 → S2 = S1.edit(an unrelated input); evaluate demand {y} in S2 → variant, a separate model: inputs g = 1 and f = true; cells y = g * 2 and x = if f then 0 else y. S0: evaluate demand {x, y}; on S0 the demand becomes {x}; S1 = S0.edit(g := 5); evaluate demand {x}; S2 = S1.edit(f := false); evaluate demand {x}: x reads y for the first time since the demand dropped it
 - **What went wrong in the draft reviewed:** 'Checked in S' was undefined for an entry copied from the parent; copies counted as checked served y = 4.
-- **What the contract requires:** y = 12 in S1 and in S2; the variant gives x = the fresh value of y.
+- **What the contract requires:** y = 12 in S1 and in S2; in the variant, x = 10 in S2, the fresh value of y.
 
 ## Leaf ξ₃: A changed limit setting
 
 ### `changing_a_limit_setting_reaches_every_path_whose_check_changes`
 
 - **Kind of test:** named regression. **Contract:** 7.6, 4.2. **Found by:** round 4, logic (F3).
-- **Model:** Recursive toy scope T(d) declaring child next with d - 1 while d > 0, and cell leaf; depth limit as a snapshot setting.
-- **Sequence:** evaluate demand {root/leaf} with depth limit 64 → edit the depth setting to 100; evaluate → edit it to 3; evaluate demand {root summary} → a body declares 100000 children with a children-per-node limit below that
+- **Model:** T is a toy `guard` with bindings d and live: it reads live first and answers absent when it is false; otherwise it declares cells m = d - 1, l = (d > 0) and leaf = (if l then next/leaf else 1), and next, a T whose binding d is the place m and whose binding live is the place l. Root is T with d = 70 and live = true, so root/leaf reads down to the T with d = 0 at depth 70. The depth limit is a snapshot setting. Separately, a toy `call` declares 100,000 children in a loop, with a children-per-node setting of 1,000.
+- **Sequence:** evaluate demand {root/leaf} with depth limit 64 → edit the depth setting to 100; evaluate → edit it to 3; evaluate demand {root/leaf} → evaluate the `call`
 - **What went wrong in the draft reviewed:** The core checked limits but no read recorded the setting, so changing it reached no path; a body's children were not counted.
-- **What the contract requires:** root/leaf = 1 after raising the limit; after lowering to 3 every path below depth 3 answers too deep and the summary is not 'all satisfied'; the 100000-child body gets a children-per-node failure at the first child over the limit.
+- **What the contract requires:** limit 64: root/leaf answers 'blocked by' the depth failure at depth 65. Limit 100: root/leaf = 1. Limit 3: every path deeper than 3 that is read answers too deep, and root/leaf answers 'blocked by' that failure, not 1. The `call` gets a children-per-node failure at the first child over the limit.
 
 ## Leaf ζ: Joining a run in flight
 
@@ -417,43 +415,42 @@ Kinds of test: a *named regression* is one test with the model as written; a *co
 - **Model:** Collection holes whose count is read from an input n, declaring n elements each with a cell area; cell total reads the count, then read_all over the n element refs.
 - **Sequence:** snapshot with n holes, n = 100, 1,000, 10,000; evaluate demand {total}; read core.counters()
 - **What went wrong in the draft reviewed:** A body discovered one unpredicted read per run and was re-run after each NotReady, so a first evaluation of a fold was quadratic; no growth test measured a first evaluation.
-- **What the contract requires:** total's body runs once (an evaluator adapter: at most 2 rounds); reads O(n); element bodies run at most once each, once in all when the elements are identical.
+- **What the contract requires:** total's body runs once; reads O(n); element bodies run at most once each, once in all when the elements are identical.
 - **Note for the leaf:** the clause about identical elements costing one element body needs runs in flight to be joined, which is why the test sits here. That the fold's own body runs once is asserted from leaf β (G4).
 
 ### `inner_solve_independent_of_the_outer_trial_runs_once`
 
 - **Kind of test:** counter assertion. **Contract:** 8, 6. **Found by:** round 1, solve (S3).
-- **Model:** Three nested scopes, each with a toy solver owning one unknown and constraint cells as in the model; root's solver makes many trials.
-- **Sequence:** evaluate demand {z, y, a.x.len}; read the per-kind body-run counters
+- **Model:** Three nested toy scopes, each with a toy solver owning one unknown, read by a `solved` node. Scope x: unknown len, tried 10, 11, ..., 100 in order, with the constraint cell len >= 25. Scope a declares x and an unknown y, tried 0, 1, ..., 60, with the constraint cells x/len + y == 60 and y >= 0; a's solver reads x/len before it opens its view, since len is x's to decide. Root declares a and an unknown z, tried 20, 21, ..., 30, with the constraint cell a/x/len == z, which root's solver reads through its view.
+- **Sequence:** evaluate demand {root/z, root/a/y, root/a/x/len} together; read the per-kind body-run counters
 - **What went wrong in the draft reviewed:** The claim rule was not closed under coupling, so ordinary models produced solves nested inside each other's trials rather than 'one after the other'.
-- **What the contract requires:** x's solve, a's solve and root's solve each run once, however many trials root's solve makes; answers equal a fresh evaluation in every demand order.
+- **What the contract requires:** len = 25, y = 35, z = 25. x's solve, a's solve and root's solve each run once, though root's solve makes six trials; answers equal a fresh evaluation in every demand order.
 
 ## Leaf ο: Determinism and the nonce
 
 ### `seeded_reader_of_nondet_result_not_found_after_remake`
 
 - **Kind of test:** named regression. **Contract:** 5.2, 2.4. **Found by:** round 1, geometry and session (G6 (persistent disk cache aliases a re-m).
-- **Model:** core.seed a store with nondet mesh result (content K+n1) and reader F under that content. Evaluate: mesh remade with nonce n2; F must run; the seeded F is not returned.
-- **Sequence:** process 1: mesh M1 (not deterministic) under key K; FEA F1 stored under content of M1 → process 2: store starts holding F1 → mesh remade: M2 under key K, different numbering → FEA looked up
+- **Model:** A toy `shape` M in its non-deterministic mode (content: the hash of its key K plus a nonce), and F, a `measure` of M.
+- **Sequence:** core 1: evaluate demand {F}: M1 under key K, F1 filed under M1's content → `selected_store` on core 1 keeps F1 and not M1 → core 2, built on that store: evaluate demand {F}: M is made again as M2, with a new nonce → F is looked up
 - **What went wrong in the draft reviewed:** Content of a key-as-content result was the key alone, so a remade non-deterministic mesh had the same content and a persisted FEA matched it.
-- **What the contract requires:** With a store seeded holding F1 under M1's content, remaking the mesh gives a new content and the FEA body runs; F1 is never returned for M2. A deterministic mesh would be shared.
+- **What the contract requires:** Core 2 finds no stored result for F under M2's content, and F's body runs; F1 is never returned for M2. With M deterministic, core 2 would make M again with the same content and find F1.
 
 ### `debug_mode_catches_a_false_determinism_claim`
 
 - **Kind of test:** named regression. **Contract:** 5.6. **Found by:** round 4, logic (F22).
-- **Model:** Toy nondet kind configured to claim determinism falsely.
-- **Sequence:** evaluate a mesh M (claims deterministic, is not) and a reader F → trim M; remake it → demand F
+- **Model:** D, a test-local kind that claims its result is deterministic and returns a number that grows by one on each of its runs (it breaks O1 and O8 on purpose); cell F reads D.
+- **Sequence:** with the debug mode on and set to re-run every body that claimed determinism: evaluate demand {F} → a fresh core with the debug mode off: evaluate demand {F}
 - **What went wrong in the draft reviewed:** The debug mode only followed chains and never re-ran bodies.
-- **What the contract requires:** With the debug mode on and a sampling rate that covers the toy, the false claim is reported; with it off, behaviour follows O8's assumption.
-- **Note for the leaf:** the step that trims a result and makes it again is done here by evaluating on a second, fresh core. Trimming arrives with leaf ρ.
+- **What the contract requires:** With the debug mode on, its re-run of D returns another number and the false claim is reported; with it off, nothing is reported and the answers are those of the first run.
 
 ### `answers_downstream_of_a_nondeterministic_result_equal_a_fresh_evaluation_seeded_with_it`
 
 - **Kind of test:** the random-sequence generator must reach it. **Contract:** 11, 5.6, 10. **Found by:** round 1, soundness (L5); round 2 (N18); round 1, geometry and session (G12 (tolerance not carried through reade).
-- **Model:** Nondet kind N returns 70 + eps or 70 - eps (choice driven by previous or a test switch). Cell v = (N <= 70). Cell n = floor(N / 10). Collection declares n elements.
-- **Sequence:** S1: evaluate {verdict, collection} with the solve returning 70.00000000000006 → edit and edit back (or demand an identical instance first) so the solve, warm-started differently, returns 69.99999999999951 → compare verdict and element count against a fresh evaluation seeded (core.seed) with the solve result each history used
+- **Model:** N, a test-local kind that says its result is not deterministic, reads an input choice and returns 70.00000000000006 when it is 0 and 69.99999999999951 when it is 1; its tolerance is 1e-9 around 70. Cell v = (N <= 70). Cell n = floor(N / 10). A collection declares n elements.
+- **Sequence:** S1 (choice = 0): evaluate {v, the collection} → S2 = S1.edit(choice := 1); evaluate {v, the collection} → for each snapshot, compare v and the element count with those of a fresh core evaluating it on a store holding that snapshot's N result, built as section 5.5's check 2 builds it
 - **What went wrong in the draft reviewed:** G0 said history never changes an answer and section 10 said order never does; a tolerant result feeding exact kinds makes discrete downstream answers (a verdict, a count, structure) differ exactly between histories, so G0 as written could not hold or be tested.
-- **What the contract requires:** For every history: verdict and element count equal, exactly, those of a fresh evaluation seeded with the same solve result; the solve result is within tolerance of a cold solve. Different histories may legitimately give different downstream answers.
+- **What the contract requires:** For each snapshot: v and the element count equal, exactly, those of the fresh core handed the same N result; each N result is within its tolerance. The two snapshots legitimately give different downstream answers (v false and 7 elements; v true and 6 elements).
 
 ## Leaf π: What was there last time
 
@@ -476,32 +473,32 @@ Kinds of test: a *named regression* is one test with the model as written; a *co
 ### `previous_is_last_final_answer_outside_views_and_changed_covers_only_reads_made`
 
 - **Kind of test:** named regression. **Contract:** 5.7. **Found by:** round 4, logic (F9).
-- **Model:** Toy solver using previous() as a warm start across a sequence of edits; a variant whose guard switches which shape node it reads; count shape body runs.
-- **Sequence:** drag: ticks S1..Sk each = current.edit(tick value); p runs in each → guard flip; p runs and calls previous()
+- **Model:** Inputs t (the dragged value) and g. Toy shapes A and B, each with a `measure`; count their body runs. A toy solver p that warm-starts from previous() and whose problem reads t and the cells of two toy guards, one on g that reads A's measure and one on not g that reads B's.
+- **Sequence:** drag: ticks S1..Sk, each current.edit(t := tick value); p is demanded and runs in each → flip g; p runs and calls previous()
 - **What went wrong in the draft reviewed:** 'Last' was undefined across snapshots, and previous() reported changes in reads the new run would not make.
-- **What the contract requires:** Tick k's previous() is tick k-1's final result (or the most recent final at that path); no evaluation of root/a's mesh after the flip; answers under a view never become 'last'.
+- **What the contract requires:** Tick k's previous() is tick k-1's final result (or the most recent final at that path); after the flip, A's body does not run, and previous() reports as changed only reads the new run makes; answers under a view never become 'last'.
 
 ### `previous_found_at_body_declared_child_after_argument_change`
 
 - **Kind of test:** named regression. **Contract:** 7.1, 5.7. **Found by:** round 1, whole design (W2 (warm state kept by path, but expensi).
-- **Model:** Cell A reads input L and declares, via cx.child at a fixed step, a nondet child N(L). Run with L=1.00, edit L=1.01; N's body must see previous() = its 1.00 result; then edit back to 1.00: zero N body runs.
-- **Sequence:** cell root/result evaluates elastic_static(length = 1.00 m); compute runs cold and returns final result R1 → edit length to 1.01 m → root/result re-runs and requests the compute again → compute body calls cx.previous()
+- **Model:** root/result, a toy `call`, reads input L and declares, via cx.child at a fixed step, a `warm` child N bound to L. Run with L = 1.00, edit L = 1.01; N's body must see previous() = its 1.00 result; then edit back to 1.00: zero N body runs.
+- **Sequence:** L = 1.00: root/result declares N; N runs cold and returns final result R1 → edit L to 1.01 → root/result runs again and declares N again → N's body calls cx.previous()
 - **What went wrong in the draft reviewed:** The first draft kept warm state by path but named computations by the content of their declaration, so every argument change moved the computation to a fresh path with no history.
-- **What the contract requires:** previous() returns R1 (the 1.00 m result) with its reads; the body can ask which reads changed (length). The new result is marked not deterministic (5.7). Reverting to 1.00 m is a store hit and runs no body.
+- **What the contract requires:** previous() returns R1 (the result for L = 1.00) with its reads; the body can ask which reads changed (L). The new result is marked not deterministic (5.7). Reverting to 1.00 m is a store hit and runs no body.
 
 ### `kept_state_reaches_next_run_at_same_path_after_input_change`
 
 - **Kind of test:** named regression. **Contract:** 5.7, 7.1. **Found by:** round 1, geometry and session (G1 (warm state by path; FEA and volume-m).
-- **Model:** Cell A(L) declares nondet child N at a fixed step; N calls cx.keep(L) and on its next run reads previous().state. Edit L 1000 -> 1010: N sees kept state 1000.
-- **Sequence:** C(1000) runs cold, keeps its CG solution with cx.keep → slider moves to 1010 → C(1010) misses the store and runs → body calls previous()
+- **Model:** A, a toy `call`, reads input L and declares a `warm` child N bound to L at a fixed step; N calls cx.keep(L) and on its next run reads previous().state. Edit L 1000 -> 1010: N sees kept state 1000.
+- **Sequence:** L = 1000: N runs cold and keeps its state with cx.keep → edit L to 1010 → N misses the store and runs → N's body calls previous()
 - **What went wrong in the draft reviewed:** Warm state was kept by path while the computations that use it were roots named by content, which change path exactly when inputs change.
 - **What the contract requires:** previous() yields the 1000 result and its kept state; the new result carries a nonce if not hashed by value; the state kept beside the returned result is this run's.
 
 ### `returning_the_previous_result_keeps_its_content_and_spares_its_readers`
 
 - **Kind of test:** counter assertion. **Contract:** 5.6, 5.7. **Found by:** round 1, soundness (L22).
-- **Model:** Shape kind with a mode that reads previous and returns it when its input moved less than a tolerance; cell reads the shape's metric.
-- **Sequence:** S1: evaluate demand {reader of F} → S2 = S1.edit(F's input, within F's tolerance); evaluate; read core.counters()
+- **Model:** F, a test-local variant of the toy `shape` that reads previous and returns it when its input moved less than a tolerance (its result is not deterministic); cell R reads a `measure` of F.
+- **Sequence:** S1: evaluate demand {R} → S2 = S1.edit(F's input, within F's tolerance); evaluate; read core.counters()
 - **What went wrong in the draft reviewed:** Returning the previous result gave no early cutoff for an opaque kind, because its content was the key it was filed under.
 - **What the contract requires:** S2: F's body runs once; the reader's body runs 0 times; the reader's answer is unchanged; F's answer is non-deterministic.
 
@@ -517,10 +514,9 @@ Kinds of test: a *named regression* is one test with the model as written; a *co
 
 - **Kind of test:** named regression. **Contract:** 5.6, 5.7. **Found by:** round 1, solve (S1).
 - **Model:** Toy solver for min (x-2)^2 (x-8)^2 on [0, 10] that descends from its start (previous's point if any, else one derived from the bounds) and decides uniqueness from starts derived from the bounds only.
-- **Sequence:** S1: instance A, cold: demand x → edit and revert so that A's previous lies near 2; demand x → same with previous near 8 → identical instance B with no previous: demand x → compare the outcome variant (value or failure) across all four
+- **Sequence:** core 1: instance A, cold: demand x → core 2: A with its bounds narrowed to [0, 4]: demand x, so that A's previous lies near 2; then the original bounds: demand x, which core 2 has no result for, so the solve runs from previous → core 3: the same with bounds [6, 10], previous near 8 → core 4: identical instance B with no previous: demand x → compare the outcome variant (value or failure) across all four
 - **What went wrong in the draft reviewed:** Warm state by path chose the start; the strictness verdict and value depended on it; the result, a failure included, was stored by content and served to every identical instance.
-- **What the contract requires:** For a conforming toy solver: all four runs answer the same outcome variant (here failure 'not uniquely determined'); where the class is success, values may differ only within tolerance. Missing at core level: any check of the class rule (the text puts it on the kind alone and the debug mode does not cover bodies that used previous).
-- **The text does not yet settle this** (partly). See the PRD's list of open points.
+- **What the contract requires:** For a conforming toy solver: all four runs answer the same outcome variant (here failure 'not uniquely determined'); where the class is success, values may differ only within tolerance. The class rule is an obligation on the kind, tested per kind by solving cold and warm (PRD section 13.2, point 17); the core does not check it.
 
 ### `warm_started_trials_file_an_alternative_rested_on_set_beside_the_cold_one`
 
@@ -535,7 +531,7 @@ Kinds of test: a *named regression* is one test with the model as written; a *co
 ### `looking_inside_a_passed_opaque_value_is_a_recorded_read`
 
 - **Kind of test:** named regression. **Contract:** 5.2, 5.6. **Found by:** round 1, soundness (L25).
-- **Model:** Shape kind in its non-deterministic mode (content = key hash + nonce) with an internal edge order that changes per build; cell b passes it along; selection cell looks inside it via the shape's exclusive resource; trimming forced by a small store memory budget.
+- **Model:** K, a test-local variant of the toy `shape` in its non-deterministic mode (content: the hash of its key plus a nonce), whose internal order of edges changes with each build; cell b passes K along; a selection cell looks inside it through the toy kernel and names an edge; trimming forced by a small store memory budget. A second run uses K's deterministic mode.
 - **Sequence:** evaluate demand {selection} → force K out of the store (small memory budget) → evaluate demand {selection} again, in a new snapshot after an unrelated edit
 - **What went wrong in the draft reviewed:** A value could hold a reference to a stored result, and using the referenced result through it was not a recorded read.
 - **What the contract requires:** Non-deterministic K: after trim and remake the selection re-runs and names an edge of the new K. Deterministic K: the selection is found and is correct.
@@ -543,7 +539,7 @@ Kinds of test: a *named regression* is one test with the model as written; a *co
 ### `a_nondeterministic_answer_is_pinned_for_every_reader_in_its_snapshot`
 
 - **Kind of test:** named regression. **Contract:** 4.4, 5.5, 5.6. **Found by:** round 1, soundness (L21).
-- **Model:** Nondet kind x; shape reads x; verdict cell reads x; a small store memory budget forces trimming between the two reads.
+- **Model:** A `warm` node x (its result is not deterministic); a toy shape made from x; verdict cell reads x; a small store memory budget forces trimming between the two reads.
 - **Sequence:** evaluate demand {shape, verdict} with store trimming forced between the two reads, in normal mode and in debug mode
 - **What went wrong in the draft reviewed:** The draft said the index was never needed for correctness; without it a non-deterministic result could be trimmed and recomputed between two reads in one snapshot.
 - **What the contract requires:** Shape and verdict both read R; debug mode agrees with the index; no R'.
@@ -552,7 +548,7 @@ Kinds of test: a *named regression* is one test with the model as written; a *co
 
 - **Kind of test:** named regression. **Contract:** 5.2. **Found by:** round 2 (N5); round 1, whole design (W17 (G0 untestable for exact kinds downs).
 - **Model:** nondet toy F (opaque, nonce), deterministic opaque toy shape D reading F, cell I reading D; force-trim F.
-- **Sequence:** evaluate demand {I} → drop the snapshot holding F; trim F → evaluate demand {I} again
+- **Sequence:** evaluate demand {I} → drop the snapshot holding F; trim → evaluate demand {I} again
 - **What went wrong in the draft reviewed:** The content of a not-exact opaque result was the key it was first stored under, so a remade one took the old content; an exact opaque kind between it and its reader got its old key back.
 - **What the contract requires:** I is recomputed from D' (body runs: F 1, D 1, I 1 after the trim); G0's fresh run handed F' gives the same I.
 
@@ -567,29 +563,26 @@ Kinds of test: a *named regression* is one test with the model as written; a *co
 ### `trimmed_shapes_released_once_and_slider_session_stays_bounded`
 
 - **Kind of test:** counter assertion. **Contract:** 5.5, 10, 7.6. **Found by:** round 1, geometry and session (G5 (drop-together rule plus no per-shape).
-- **Model:** Chain box(w) -> cut -> fillet as three toy shapes. 300 edits of w, each a new snapshot, previous ones dropped. Live resource items bounded; release count equals drops; trim box alone, fillet still found.
-- **Sequence:** 300 preview snapshots, each producing 3 new shapes → old preview snapshots stop being live → store is trimmed for space → count live resource items and release calls → trim the current box alone; re-demand the fillet
+- **Model:** Chain box(w) -> cut -> fillet: three toy shapes, each made from the one before (test-local variants of `shape`). 300 edits of w, each a new snapshot with its own request; each earlier request is ended and its snapshot dropped.
+- **Sequence:** 300 preview snapshots, each producing 3 new shapes → old preview snapshots stop being live → the store trims for space under its memory budget → drain; count the shapes the toy kernel holds and the release calls → end the current request, drop the current snapshot, trim, drain → in a new snapshot with the same inputs, demand the fillet
 - **What went wrong in the draft reviewed:** A key-as-content result could be dropped only with its readers, and no rule released a shape at all; reload was the only collector and reload no longer happens.
-- **What the contract requires:** After the 300 ticks with old snapshots dead, live resource items stay bounded by the store's space policy; every dropped shape is released exactly once; a shape shared by many identical instances is released once. Trimming the current box alone does not drop the fillet; re-demanding the box remakes it with the same content. Missing: the trigger and relation between trimming for space and the memory budget.
-- **The text does not yet settle this** (partly). See the PRD's list of open points.
+- **What the contract requires:** After every tick and a drain, the shapes the toy kernel holds are exactly those the store, the running bodies and the test still hold, and the store stays within its memory budget; every dropped shape is released exactly once; a shape shared by many identical instances is released once. After the last trim, with no snapshot live, the kernel holds only what the store still holds; the re-demand remakes box, cut and fillet with the same contents as before, since they are deterministic.
 
 ### `every_shape_produced_for_a_dropped_body_is_released`
 
 - **Kind of test:** counter assertion. **Contract:** 2.5, 5.5, 2.2 O4. **Found by:** round 4, logic (F14).
 - **Model:** Toy shape kind on an exclusive resource with a live-handle counter and release; drop bodies during and after the section.
-- **Sequence:** drag: ticks 1..k each start a realize body that enters an exclusive section → each tick arrives while the previous section runs; the previous body is dropped → variant: the section has returned, the body holds the shape and is waiting on another read when it is dropped → count live shapes vs stored shape results
+- **Sequence:** ticks 1..k, each a new snapshot whose request starts a toy `shape` body that enters an exclusive section → each tick arrives while the previous section runs; the previous request is ended and its body dropped → variant: the section has returned, the body holds the shape and is waiting on another read when it is dropped → drain; count live shapes against stored shape results
 - **What went wrong in the draft reviewed:** release was called only for stored results; a section's output for a dropped body leaked.
-- **What the contract requires:** After any number of dropped ticks, live shapes = shapes referenced by stored results; every shape is released exactly once. Missing: the rule for a section output a body holds across a later wait (forbid it under O4, or require the core to own section outputs until the body returns).
-- **The text does not yet settle this** (partly). See the PRD's list of open points.
+- **What the contract requires:** After any number of dropped ticks and a drain, live shapes = shapes referenced by stored results; every shape is released exactly once, including one a body held across a later wait when it was dropped (PRD section 13.2, point 23).
 
 ### `trimming_a_nonce_result_leaves_its_dependents_reclaimable`
 
 - **Kind of test:** counter assertion. **Contract:** 5.5, 5.2. **Found by:** round 2 (W17 (Part 1 re-run, judged PARTLY)).
-- **Model:** Non-deterministic toy shape M, a cell F reading M; trim M; count store entries unreachable from any key.
-- **Sequence:** evaluate a mesh M (non-deterministic, nonce) and an FEA field F computed from it → drop all snapshots that index them → trim M → demand F's path again
+- **Model:** Non-deterministic toy shape M; F, a deterministic test-local shape made from M; cell G, a `measure` of F.
+- **Sequence:** evaluate demand {G} → end the request and drop every snapshot that indexes them → trim; drain → demand G again
 - **What went wrong in the draft reviewed:** The cost of the cascade was not stated; the trimming order ignored it.
-- **What the contract requires:** Correct answers (F recomputed from M'). Missing: whether entries keyed on a trimmed nonce content are reclaimed, and the trimming order's account of that cost.
-- **The text does not yet settle this** (undetermined). See the PRD's list of open points.
+- **What the contract requires:** G is recomputed from M' (M, F and G each run once more). After the trim and the drain the toy kernel holds nothing: F's result, whose key holds M's content, was trimmed with M (PRD section 13.2, point 16) and released.
 
 ## Leaf σ: Freshness and progress
 
@@ -605,16 +598,15 @@ Kinds of test: a *named regression* is one test with the model as written; a *co
 ### `reader_of_an_emitted_partial_is_recomputed_when_the_input_becomes_final`
 
 - **Kind of test:** named regression. **Contract:** 9, 5.2, 2.3. **Found by:** round 1, soundness (L4); round 1, whole design (W1 (partial result of a key-as-content k).
-- **Model:** Shape kind P emits a partial whose metric is 350, then returns a final whose metric is 420. Cell peak reads P's metric; cell verdict = peak < 400. Drive the executor so peak reads the partial.
-- **Sequence:** S: evaluate demand {constraint} → F emits F_p; peak and the constraint are computed from it → F finishes with F_f → S2 = S.edit(unrelated input); evaluate demand {constraint} → a second, identical instance of the cantilever is demanded
-- **What went wrong in the draft reviewed:** A partial and the final result had the same content (the key), so peak computed from F_p was filed under (F, key_F) and served as final in every later snapshot and to identical instances; and nothing re-checked a reader in the same snapshot when its input went from intermediate to final.
-- **What the contract requires:** While F is partial: peak = 350 MPa intermediate; constraint OK intermediate; nothing stored. After F is final: peak = 420 MPa final and constraint VIOLATED final, in S, in S2 and in the identical instance. Missing: the content of an emitted partial (it must differ from the final's), or a statement that 'checked again' re-runs every reader of an intermediate answer whatever the contents.
-- **The text does not yet settle this** (partly). See the PRD's list of open points.
+- **Model:** A `slow` node P publishes a partial 350 and then returns 420. Cell peak reads P; cell verdict = (peak < 400). Drive the executor so peak reads the partial.
+- **Sequence:** S: evaluate demand {verdict}; P publishes 350; peak and verdict are computed from it → P returns 420 → S2 = S.edit(an unrelated input); evaluate demand {verdict} → an identical instance of P, peak and verdict is demanded in S2
+- **What went wrong in the draft reviewed:** A partial and the final result had the same content (the key), so peak computed from the partial was filed under P's key and served as final in every later snapshot and to identical instances; and nothing re-checked a reader in the same snapshot when its input went from intermediate to final.
+- **What the contract requires:** While P is partial: peak = 350 intermediate; verdict true intermediate; nothing stored. After P is final: peak = 420 final and verdict false final, in S, in S2 and in the identical instance (PRD section 13.2, point 12).
 
 ### `intermediate_answer_becomes_final_in_its_snapshot_and_descendants`
 
 - **Kind of test:** named regression. **Contract:** 9, 5.7, 4.4. **Found by:** round 2 (N16).
-- **Model:** Toy solver emits a partial map then a final one; cell R reads it; edit between emit and finish.
+- **Model:** A `slow` node X publishes a partial and then returns a final result; cell R reads X; an unrelated edit falls between the two.
 - **Sequence:** S0: a slow node X emits a partial; reader R is shown intermediate → S1 = S0.edit(unrelated) before X finishes → X finishes
 - **What went wrong in the draft reviewed:** Unclear which result is 'previous', which snapshots re-check readers of an intermediate, and a blanket 'keeps that answer'.
 - **What the contract requires:** R is intermediate in S0 and S1 until X is final, then final in both, equal to a fresh evaluation; previous() never returns an intermediate result.
@@ -623,36 +615,34 @@ Kinds of test: a *named regression* is one test with the model as written; a *co
 ### `a_transient_failure_does_not_survive_into_a_later_snapshot`
 
 - **Kind of test:** named regression. **Contract:** 9, 2.3. **Found by:** round 1, soundness (L20); round 2 (L20 (Part 1 re-run, judged PARTLY)).
-- **Model:** Shape kind F with the hook armed for its first run; cell C reads F's metric and compares it with a bound; then an unrelated input edit.
+- **Model:** A `slow` node F whose switch makes its first run fail outside the inputs; cell C reads F and compares it with a bound; then an unrelated input edit.
 - **Sequence:** S: evaluate demand {C}; F's run hits a transient failure → S2 = S.edit(unrelated input); evaluate demand {C} → an identical instance of C is demanded in S2
 - **What went wrong in the draft reviewed:** 'Nothing is stored' for cancelled, out of memory and budget, but nothing said what a reader of such an answer gets; a reader that returned 'blocked' was a completed run, indexed and inherited by later snapshots.
-- **What the contract requires:** S2 and the identical instance: C = the verdict on F's real result; 'blocked' is never found. In S: C answers the transient to the host and is neither stored nor kept (the mechanism by which C's body sees it is not stated).
-- **The text does not yet settle this** (partly). See the PRD's list of open points.
+- **What the contract requires:** S2 and the identical instance: C = the verdict on F's real result; 'blocked' is never found. In S: C's body is dropped, nothing is stored or kept for it, and the host is told the error for C (PRD section 13.2, point 13).
 
 ### `progress_reaches_watcher_and_never_changes_result_or_key`
 
 - **Kind of test:** named regression. **Contract:** 2.3, 9, 2.4. **Found by:** round 1, geometry and session (G11 (progress has no channel)).
-- **Model:** Toy solver calls cx.progress(i) each iteration. Evaluate once with a watcher on its path and once without: identical content and counters; watcher saw the events.
-- **Sequence:** body runs an iterative loop → every stride it reports {iter, residual} → host watches the path → body finishes
+- **Model:** A `slow` node calls cx.progress(i) each iteration. Core 1: a request demands its path and the host takes the request's events. Core 2, fresh: the same request, and the host never takes events.
+- **Sequence:** body runs an iterative loop → every stride it reports {iter, residual} → on core 1 the host takes the events → body finishes
 - **What went wrong in the draft reviewed:** The only in-run output was emit(partial: Out), which would make each tick a distinct intermediate result; the thread-local sink was forbidden.
-- **What the contract requires:** A host watching path p receives the body's progress events; the result and its content are identical with and without watchers; counters of store lookups and index entries unchanged by progress. Missing: the host-side watch call in 2.4.
-- **The text does not yet settle this** (partly). See the PRD's list of open points.
+- **What the contract requires:** Core 1's host receives the node's progress events; the result and its content are identical in both cores; store lookups and index entries touched are equal in both. Progress goes to every live request whose demand needs the path (PRD section 13.2, point 14).
 
 ## Leaf τ: Scheduling and budgets
 
 ### `cold_reads_between_nodes_of_one_kind_do_not_deadlock_and_identical_runs_are_shared`
 
 - **Kind of test:** named regression. **Contract:** 10, 7.7. **Found by:** round 4, logic (F6).
-- **Model:** Cells width, w_eff = min(width, 40), area = w_eff * 10 on a cold store; two identical toy scopes demanded together.
-- **Sequence:** cold store: evaluate demand {root/area} → cold store: evaluate two identical instances together; count body runs → start a lookup in S2 that waits on a run started for S1; abandon S1
+- **Model:** Input width = 50; cells w_eff = min(width, 40) + k and area = w_eff * 10, where k is a `measure`, answering 0, of a toy `shape` whose section waits on a barrier while the test holds it. Two identical toy scopes, each declaring these cells.
+- **Sequence:** cold store: evaluate demand {root/area} → fresh core, cold store: evaluate the two identical scopes together; count body runs → fresh core: S1 = snapshot; hold the barrier; evaluate {area} on S1; one `turn()` → S2 = S1.edit(an input area does not read); evaluate {area} on S2: its lookup finds S1's run in progress and waits for it → end S1's request; release the barrier; run until idle
 - **What went wrong in the draft reviewed:** 'Two lookups that miss at the same point do not both run; the second waits' matched any two nodes of one kind at the recipe hash, with no exception when the run waits on the lookup.
-- **What the contract requires:** area = 0.04 m * 10 mm, no 'cycle'; identical instances: one body run per node; the run S2 waits on completes after S1 is abandoned.
+- **What the contract requires:** area = 400, no 'cycle'; identical scopes: one body run per node; the run S2 waits on is not dropped when S1's request ends, and S2's area = 400.
 
 ### `budget_exhaustion_is_one_request_error_and_stores_nothing`
 
 - **Kind of test:** named regression. **Contract:** 7.6. **Found by:** round 1, claims (V2 (node budget exhaustion prints 34 err).
-- **Model:** Toy recursive scope T(20) with two children per level, budget 10,000 paths: request A fails with one error. Request B with no tight budget, live at the same time and sharing work, completes.
-- **Sequence:** evaluate TreeBracket(depth = 20) under a 10,000 budget → budget exhausted at the frontier → report
+- **Model:** T is a toy `guard` with bindings d and live: it reads live first and answers absent when it is false; otherwise it declares cells m = d - 1, l = (d > 0) and sum = (if l then left/sum + right/sum else 1), and two children left and right, each a T whose binding d is the place m and whose binding live is the place l. Root is T with d = 20 and live = true. Request A demands root/sum with a budget of 10,000 paths and fails with one error. Request B, with an ample budget, live at the same time and sharing work, completes.
+- **Sequence:** evaluate requests A and B together → A's budget is exhausted at the frontier → A's one error is reported; B goes on
 - **What went wrong in the draft reviewed:** Today's engine reports one error per frontier node (34) and a partial tree; the reviewed draft misquoted the count. The core question is what the new core reports.
 - **What the contract requires:** One request-level budget error; no per-path failures stored; a second request with a sufficient budget succeeds with the same body-run counts as a cold one minus store hits; a concurrent second live request's shared work is not stopped.
 
@@ -669,7 +659,7 @@ Kinds of test: a *named regression* is one test with the model as written; a *co
 ### `read_all_of_child_declarations_starts_every_child_before_waiting`
 
 - **Kind of test:** named regression. **Contract:** 2.3. **Found by:** round 4, logic (F21).
-- **Model:** Caller body declares three toy shape children on three distinct resources in one read_all.
+- **Model:** A toy `call` declares three shape children in one read_all, each on a resource of its own: three toy kernel types (a resource is keyed by its Rust type, PRD decision D6; for example one kernel type with a const-generic parameter), each with its own shape kind.
 - **Sequence:** a body declares three children in one request → measure whether all three child bodies start before any finishes
 - **What went wrong in the draft reviewed:** cx.child was the only way to declare and it waited per child.
 - **What the contract requires:** All three children are started before the parent's single wait completes; the parent body waits once; the chain records them in the order given.
