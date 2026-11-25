@@ -2357,6 +2357,75 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
+    // POLDCORE (task #10536) — the old-core hold
+    // -------------------------------------------------------------------
+
+    /// Accepted alone, and as a NON-LEADING member of a comma-separated union.
+    #[test]
+    fn parse_args_accepts_poldcore_pattern() {
+        let args = parse_args(&["--pattern".to_string(), "POLDCORE".to_string()])
+            .unwrap_or_else(|e| panic!("--pattern POLDCORE must parse successfully; got: {e}"));
+        assert_eq!(args.pattern.as_deref(), Some(pattern_flag::POLDCORE));
+
+        let args = parse_args(&["--pattern".to_string(), "P1,POLDCORE".to_string()])
+            .unwrap_or_else(|e| panic!("--pattern P1,POLDCORE must parse successfully; got: {e}"));
+        assert_eq!(args.pattern.as_deref(), Some("P1,POLDCORE"));
+        assert!(
+            selects(pattern_flag::POLDCORE, Some("P1,POLDCORE")),
+            "P1,POLDCORE must enable POLDCORE"
+        );
+    }
+
+    /// POLDCORE is OPT-IN: each High awaits a hold-or-release ruling, and the
+    /// exit code is the High count.
+    #[test]
+    fn poldcore_is_opt_in_not_in_default_sweep() {
+        assert!(
+            !selects(pattern_flag::POLDCORE, None),
+            "POLDCORE must NOT run in the no-`--pattern` default sweep"
+        );
+        assert!(
+            selects(pattern_flag::POLDCORE, Some("POLDCORE")),
+            "POLDCORE must activate when --pattern POLDCORE is given"
+        );
+        assert!(
+            !selects(pattern_flag::POLDCORE, Some("P2")),
+            "POLDCORE must be excluded when a named non-POLDCORE pattern is given"
+        );
+    }
+
+    /// POLDCORE reads the loaded task corpus and one tracked file, never the
+    /// jcodemunch serve.
+    #[test]
+    fn needs_jcodemunch_poldcore_routes_false() {
+        assert!(
+            !needs_jcodemunch(&make_args(false, Some("POLDCORE"))),
+            "POLDCORE must not open a jcodemunch connection"
+        );
+        assert!(
+            !jcodemunch_only_run_set(&make_args(false, Some("POLDCORE"))),
+            "a POLDCORE-only run must not reach jcodemunch_only_run_set's \
+             stale-index refusal (exit 125)"
+        );
+    }
+
+    /// An empty task corpus refuses a run whose every detector needs the
+    /// corpus, and nothing wider.
+    #[test]
+    fn empty_task_corpus_refusal_covers_poldcore_only_runs() {
+        for pattern in ["POLDCORE", "PPRDSTATUS,POLDCORE"] {
+            assert!(
+                task_corpus_only_run_set(&make_args(false, Some(pattern))),
+                "--pattern {pattern} must refuse an empty task corpus"
+            );
+        }
+        assert!(
+            !task_corpus_only_run_set(&make_args(false, Some("P5,POLDCORE"))),
+            "--pattern P5,POLDCORE must not refuse an empty task corpus"
+        );
+    }
+
+    // -------------------------------------------------------------------
     // --print-repo-id (task #6459)
     // -------------------------------------------------------------------
 
