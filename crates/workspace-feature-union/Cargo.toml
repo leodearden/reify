@@ -40,6 +40,7 @@ smallvec = { version = "1", default-features = false, features = ["const_generic
 tokio = { version = "1", features = ["bytes", "io-std", "io-util", "libc", "macros", "mio", "net", "process", "rt", "rt-multi-thread", "signal-hook-registry", "socket2", "sync", "test-util", "time", "tokio-macros"] }
 tokio-util = { version = "0.7", features = ["codec", "futures-util", "rt"] }
 url = { version = "2", features = ["serde", "std"] }
+wide = { version = "0.7", features = ["std"] }
 zerocopy = { version = "0.8", default-features = false, features = ["derive", "simd", "zerocopy-derive"] }
 
 [target.x86_64-unknown-linux-gnu.build-dependencies]
