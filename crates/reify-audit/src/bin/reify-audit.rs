@@ -14,8 +14,9 @@
 //!   the restricted detectors that move the exit code (see
 //!   `docs/notes/diagnostic-severity-policy.md`).
 //!   `PPRDSTATUS` is PRD status-prose drift — opt-in only, High, and raised to
-//!   the escalation queue by `scripts/pprdstatus-escalate.py`. A run of it
-//!   alone refuses an empty task corpus with 125.
+//!   the escalation queue by `scripts/pprdstatus-escalate.py`. `POLDCORE` is
+//!   the old-core hold — opt-in only, High. Both read only the task corpus, so a
+//!   run of them alone refuses an empty task corpus with 125.
 //!
 //! ## Output
 //!
@@ -72,7 +73,7 @@ use reify_audit::{
     jcodemunch_index,
     jcodemunch_seam::{Seam, SeamUnavailable},
     p1_producer_orphan, p2_consumer_stub, p5_phantom_done, pattern_flag, pcite, pdcheck,
-    pdead_dead_code, pdiag, pdoccover, pdssentinel, player, plinecite, pprdstatus, ptodo,
+    pdead_dead_code, pdiag, pdoccover, pdssentinel, player, plinecite, poldcore, pprdstatus, ptodo,
     puntested,
 };
 
@@ -143,7 +144,8 @@ fn print_usage(out: &mut dyn Write) {
     let _ = writeln!(out);
     let _ = writeln!(out, "Note: --tasks-file must be a JSON array of TaskMetadata objects");
     let _ = writeln!(out, "(all 9 fields required: task_id, status, files, done_provenance,");
-    let _ = writeln!(out, " title, prd, consumer_ref, audit_foundation, done_at).");
+    let _ = writeln!(out, " title, prd, consumer_ref, audit_foundation, done_at; optional:");
+    let _ = writeln!(out, " dependencies, has_old_core_release, has_deferred_watch, trigger_met).");
 }
 
 // Use std::io::Write trait alias to accept both stdout and stderr.
@@ -790,6 +792,7 @@ const DETECTORS: &[Detector] = &[
     Detector { token: pattern_flag::PCITE,       in_default_sweep: false, refuses_empty_task_corpus: false, check: Check::Plain(pcite::check),                    jcodemunch: JcodemunchUse::Never },
     Detector { token: pattern_flag::PPRDSTATUS,  in_default_sweep: false, refuses_empty_task_corpus: true,  check: Check::Plain(pprdstatus::check),               jcodemunch: JcodemunchUse::Never },
     Detector { token: pattern_flag::PLINECITE,   in_default_sweep: false, refuses_empty_task_corpus: false, check: Check::Plain(plinecite::check),                jcodemunch: JcodemunchUse::Never },
+    Detector { token: pattern_flag::POLDCORE,    in_default_sweep: false, refuses_empty_task_corpus: true,  check: Check::Plain(poldcore::check),                 jcodemunch: JcodemunchUse::Never },
 ];
 
 /// What one detector run produced.

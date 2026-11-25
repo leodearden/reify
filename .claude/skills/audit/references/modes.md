@@ -60,7 +60,7 @@ reify-audit \
 
 ---
 
-## §4 Pattern-restricted mode (`--pattern P1|P2|P5|PTODO|PDSSENTINEL|PDEAD|PUNTESTED|PLAYER|PDIAG|PDOCCOVER|PDCHECK|PCITE|PPRDSTATUS|PLINECITE`)
+## §4 Pattern-restricted mode (`--pattern P1|P2|P5|PTODO|PDSSENTINEL|PDEAD|PUNTESTED|PLAYER|PDIAG|PDOCCOVER|PDCHECK|PCITE|PPRDSTATUS|PLINECITE|POLDCORE`)
 
 **When to use:** User wants to run only one detector, e.g. `/audit --pattern P5`, `/audit --pattern PTODO`, `/audit --pattern PDEAD`, or `/audit --pattern PDOCCOVER`.
 
@@ -68,7 +68,7 @@ reify-audit \
 
 ```bash
 reify-audit \
-  --pattern <P1|P2|P5|PTODO|PDSSENTINEL|PDEAD|PUNTESTED|PLAYER|PDIAG|PDOCCOVER|PDCHECK|PCITE|PPRDSTATUS|PLINECITE> \
+  --pattern <P1|P2|P5|PTODO|PDSSENTINEL|PDEAD|PUNTESTED|PLAYER|PDIAG|PDOCCOVER|PDCHECK|PCITE|PPRDSTATUS|PLINECITE|POLDCORE> \
   --runs-db    "$REPO_ROOT/data/orchestrator/runs.db" \
   --project-root "$REPO_ROOT"
 ```
@@ -90,6 +90,7 @@ reify-audit \
 { "patterns": ["PCITE"] }     // structural opt-in: phantom capability-manifest cites (Medium only)
 { "patterns": ["PPRDSTATUS"] } // opt-in: PRD status-prose drift (reads the loaded task corpus)
 { "patterns": ["PLINECITE"] } // structural opt-in: hard line cites in source comments (Medium only)
+{ "patterns": ["POLDCORE"] }  // opt-in: the old-core hold (reads the loaded task corpus)
 ```
 
 **Detectors run:** The named detector only.
@@ -144,6 +145,20 @@ PPRDSTATUS (`--pattern PPRDSTATUS`) detects PRD status-prose drift: a PRD's own 
 - **Routing:** one batched escalation per run through `scripts/pprdstatus-escalate.py`, never per finding and never follow-up tasks (`references/severity-routing.md` §2).
 - **No jcodemunch:** like the structural lanes above, adding it to a jcodemunch-backed pattern set makes that set *mixed*.
 
+### POLDCORE — notes
+
+POLDCORE (`--pattern POLDCORE`) checks the hold on the old evaluation core: work on the files listed in `docs/notes/old-evaluation-core-hold.toml` is held behind the holder task that list names, by a direct dependency edge on it, unless the task carries `metadata.old_core_release`. It is **opt-in only**: each High awaits a ruling, and the exit code is the High count. As with PTODO, a finding's kind is its summary prefix:
+
+- `hold-missed:` (High) — an open task (not `done` / `cancelled`), not the holder, with no direct edge on the holder and no `old_core_release`, where at least one and at least half of its non-test `metadata.files` are held. `task_id` is the task; the summary names its title, its held files and the k-of-n ratio. A transitive edge is not a hold.
+- `hold-missed-registration-only:` (Low, logged only) — the same, when every held file is a `registration_only` entry (lib.rs), which any task adding a reify-eval module lists.
+- `holder-state:` (High) — at most one per run, `task_id` the holder, naming every defect: the holder is absent from the corpus, not `pending`, has no `metadata.deferred_watch`, or has `metadata.trigger_met`. Each lets the hold release.
+- `hold-list-invalid:` (High) — the list is absent, unreadable, not valid TOML, or breaks an invariant. `task_id` is the list's path, and it is the run's only finding, so a broken list never reads as clean.
+
+- **List:** `docs/notes/old-evaluation-core-hold.toml`, the held files' one home. The rule, and how to hold or release a task: `docs/notes/old-evaluation-core-hold.md`.
+- **Task source:** the task corpus the fused-memory live loader returns, never `tasks.db`. An empty corpus refuses a run of it alone with exit 125 and no JSON array; a mixed run prints `reify-audit: POLDCORE skipped — the task corpus is empty; …` instead (`references/cli-invocation.md` §4.1).
+- **Not detectable:** a task whose edge was removed without a release. The store records a hold only as the edge itself, so such a task looks like one never held, and it is reported only when it meets the rule.
+- **No jcodemunch**, and `--task` is ignored (§6).
+
 ---
 
 ## §5 Markdown format (`--format markdown`)
@@ -181,6 +196,7 @@ Slice-2 deeper rendering (per-finding evidence expansion, links to task URLs) is
 | `--task <id> --pattern PDCHECK` | PDCHECK only, checking just task `<id>`'s `delivered_checks` rows (needs `tasks.db`) |
 | `--task` with PTODO, PDSSENTINEL, PDIAG or PDOCCOVER | No narrowing: these structural lanes ignore the flag and always sweep the whole tracked tree |
 | `--task` with PPRDSTATUS | No narrowing: findings are keyed by PRD path, so every tracked PRD is checked against the whole loaded task corpus |
+| `--task` with POLDCORE | No narrowing: the holder's state and the list fault are not per task, so the whole loaded task corpus is checked |
 | `--format markdown` | Adds markdown output to **any** of the above |
 
 **`--pre-done` is NOT composable from the skill.** It is reserved exclusively for the dark-factory D-1 pre-done hook (`REIFY_AUDIT_PREDONE_CMD`). The skill never passes `--pre-done` to the CLI. If a user asks to simulate a pre-done check, use `--task <id> --pattern P5 --no-jcodemunch` instead, which runs P5 in periodic-sweep (not blocking) mode and, like the hook, never connects. Without `--no-jcodemunch` the run dials jcodemunch for P5's H2 pass, and a port that accepts but never replies costs the client's HTTP timeout (`HTTP_TIMEOUT_SECS` in `jcodemunch_client.rs`, 60 s) before H2 is skipped.
