@@ -8,11 +8,11 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
-use reify_compiler::CompiledModule;
 use reify_compiler::cfg::CfgSet;
 use reify_compiler::module_dag::ModuleResolver;
 use reify_compiler::program::{CompiledProgram, compile_program};
 use reify_compiler::stdlib_loader::load_stdlib;
+use reify_compiler::{CompiledModule, TopologyTemplate};
 use reify_core::{Diagnostic, Severity, Type, ValueCellId};
 use reify_eval::{DefEnv, Engine, EvalResult, SolverPosture};
 use reify_ir::{CompiledFunction, EnumDef, Satisfaction, Value};
@@ -372,4 +372,65 @@ fn an_imported_trait_refinement_passes_a_structural_query_filter() {
         Some(&Value::List(vec![Value::String("Kit.bolt".to_string())])),
         "filter(self.descendants, Buy) keeps the Bolt"
     );
+}
+
+/// Both absent, or both the same definition.
+fn same_binding<D>(a: Option<&D>, b: Option<&D>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => std::ptr::eq(a, b),
+        _ => false,
+    }
+}
+
+/// The engine's environment for the module it loaded is the loaded program's
+/// own: every name, bare or qualified (I7), binds the definition
+/// `DefEnv::from_program` binds.
+#[test]
+fn the_loaded_environment_binds_as_the_loaded_program_does() {
+    let dir = tempfile::tempdir().unwrap();
+    let program = compile_rig(dir.path());
+    let mut engine = make_engine();
+    let module = engine.load(Arc::clone(&program));
+    let scope = engine.env_of(&module);
+    let env = scope.env();
+    let reference = DefEnv::from_program(&program);
+    let stdlib_key = load_stdlib()
+        .iter()
+        .find(|m| m.templates.iter().any(|t| t.name == STDLIB_ONLY))
+        .unwrap_or_else(|| panic!("precondition: the stdlib declares `{STDLIB_ONLY}`"))
+        .path
+        .to_dotted();
+
+    let names = ["Rig", "Pulley", "Hidden", STDLIB_ONLY, "Absent"];
+    for name in names {
+        assert!(
+            same_binding(env.resolve_template(name), reference.resolve_template(name)),
+            "bare `{name}` binds as in the loaded program"
+        );
+        for key in ["main", "a", stdlib_key.as_str(), "nope"] {
+            assert!(
+                same_binding(
+                    env.resolve_template_in(key, name),
+                    reference.resolve_template_in(key, name)
+                ),
+                "`{key}.{name}` binds as in the loaded program"
+            );
+        }
+    }
+    let pointers = |templates: &mut dyn Iterator<Item = &TopologyTemplate>| {
+        templates
+            .map(|t| t as *const TopologyTemplate)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        pointers(&mut env.user_templates()),
+        pointers(&mut reference.user_templates()),
+        "the user templates are the loaded program's own"
+    );
+    assert!(
+        env.resolve_template_in("main", "Pulley").is_none(),
+        "a's Pulley is not main's own declaration (I7)"
+    );
+    assert!(env.resolve_template_in("main", "Rig").is_some());
 }
