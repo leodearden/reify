@@ -9,7 +9,7 @@ use reify_core::Diagnostic;
 use reify_ir::{CompiledFunction, EnumDef};
 
 use crate::name_env::{self, Bindings, Definition, Origin, Surface, Tier};
-use crate::program::{CompiledImportUnit, CompiledProgram};
+use crate::program::{CompiledImportUnit, CompiledProgram, ImportReach};
 use crate::types::{
     CompiledConstraintDef, CompiledModule, CompiledPurpose, CompiledTrait, CompiledTypeAlias,
     CompiledUnit, TopologyTemplate,
@@ -229,7 +229,9 @@ enum ImportPairs {
 /// The definitions one module of `root` offers a qualified lookup
 /// (resolution-unification I7), keyed by dotted module path: the entry's own
 /// declarations, a direct import's `pub` surface, or a prelude module's
-/// exports. `None` for a key naming none of them.
+/// exports. `None` for a key naming none of them. A module the entry reaches
+/// only through a `pub import` is offered to bare-name resolution through the
+/// import tier, but not to a qualified lookup by its own key.
 pub fn module_surface<'a, D: ProgramDefinition>(
     root: impl Into<ProgramRoot<'a>>,
     prelude: &'a [CompiledModule],
@@ -242,7 +244,7 @@ pub fn module_surface<'a, D: ProgramDefinition>(
     if let Some(unit) = root
         .imports()
         .iter()
-        .find(|unit| unit.import_path == module_key)
+        .find(|unit| unit.import_path == module_key && unit.reach == ImportReach::Direct)
     {
         return Some(Box::new(name_env::surface_of(
             &unit.module,

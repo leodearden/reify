@@ -27,10 +27,22 @@ pub struct CompiledImportUnit {
     /// The dotted path that imports it: the entry's own import, or the
     /// re-exporting `pub import`. It equals the module key.
     pub import_path: String,
+    /// How the entry reaches it.
+    pub reach: ImportReach,
     /// The compiled module.
     pub module: CompiledModule,
     /// The file it was compiled from; `None` for an embedded-stdlib module.
     pub origin: Option<PathBuf>,
+}
+
+/// How a program's entry reaches one of its import units.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImportReach {
+    /// The entry imports it.
+    Direct,
+    /// Reached only through a direct import's chain of `pub import` edges
+    /// (resolution-unification D-7).
+    ReExported,
 }
 
 /// A compiled program: an entry module plus everything it was compiled with.
@@ -248,8 +260,14 @@ pub fn compile_program_with_parsed_entry(
         .into_iter()
         .filter_map(|path| {
             let origin = dag.source(&path).map(|s| s.path.clone());
+            let reach = if followed.contains(&path.as_str()) {
+                ImportReach::Direct
+            } else {
+                ImportReach::ReExported
+            };
             dag.modules.remove(&path).map(|module| CompiledImportUnit {
                 import_path: path,
+                reach,
                 module,
                 origin,
             })
