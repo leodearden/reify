@@ -21,6 +21,10 @@ use reify_test_support::test_package::bin_exe;
 
 /// A hard link to the freshly built reify-gui in a tempdir on the same
 /// filesystem, with room beside it for a stub CLI and launch-dir fixtures.
+///
+/// `dir` is symlink-resolved, because reify-gui reports the paths it derives
+/// from `current_exe` symlink-resolved: every path built from it compares
+/// equal to what reify-gui prints, whether or not `target/` is a symlink.
 struct LinkedGui {
     dir: tempfile::TempDir,
     exe: PathBuf,
@@ -28,8 +32,8 @@ struct LinkedGui {
 
 fn linked_gui() -> LinkedGui {
     let built = bin_exe("reify-gui");
-    let built_dir = built.parent().expect("reify-gui has a parent directory");
-    let dir = tempfile::tempdir_in(built_dir)
+    let built_dir = canonical(built.parent().expect("reify-gui has a parent directory"));
+    let dir = tempfile::tempdir_in(&built_dir)
         .unwrap_or_else(|e| panic!("tempdir in {}: {e}", built_dir.display()));
     let exe = dir.path().join("reify-gui");
     fs::hard_link(&built, &exe)
@@ -149,6 +153,31 @@ fn cli_without_a_bundled_cli_exits_127_naming_the_path() {
 }
 
 #[test]
+fn cli_is_looked_for_beside_the_real_executable_not_beside_a_symlink_to_it() {
+    let gui = linked_gui();
+    let symlinked_dir = "launched-through-a-symlink";
+    std::os::unix::fs::symlink(gui.dir.path(), gui.path(symlinked_dir))
+        .unwrap_or_else(|e| panic!("symlink {symlinked_dir}: {e}"));
+    let output = common::run_hermetic(&gui.path(symlinked_dir).join("reify-gui"), |command| {
+        command.args(["cli", "--version"]);
+    });
+    let looked_for = gui.path(CLI_EXECUTABLE);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(127), "{}", describe(&output));
+    assert!(
+        stderr.contains(&looked_for.display().to_string()),
+        "stderr must name {}; {}",
+        looked_for.display(),
+        describe(&output)
+    );
+    assert!(
+        !stderr.contains(symlinked_dir),
+        "stderr must not name the symlink the executable was launched through; {}",
+        describe(&output)
+    );
+}
+
+#[test]
 fn cli_runs_from_the_appimage_launch_dir() {
     let gui = linked_gui();
     write_stub_cli(gui.dir.path(), PRINT_PWD);
@@ -165,7 +194,7 @@ fn cli_runs_from_the_appimage_launch_dir() {
     assert!(output.status.success(), "{}", describe(&output));
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        format!("{}\n", canonical(&launch).display()),
+        format!("{}\n", launch.display()),
         "{}",
         describe(&output)
     );
@@ -183,7 +212,7 @@ fn cli_keeps_its_cwd_outside_an_appimage() {
     assert!(output.status.success(), "{}", describe(&output));
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        format!("{}\n", canonical(&other).display()),
+        format!("{}\n", other.display()),
         "{}",
         describe(&output)
     );
