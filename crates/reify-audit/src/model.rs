@@ -682,4 +682,30 @@ mod tests {
         assert_eq!(ctx.target_task_id(), Some("7"));
         assert_eq!(ctx.now(), 1_700_000_000);
     }
+
+    /// The nine-field record `tests/common/task_json.rs` and
+    /// `scripts/smoke-predone-hook.sh` write into a `--tasks-file` still
+    /// parses: the hold facts default to "no edges, nothing set".
+    #[test]
+    fn a_nine_field_tasks_file_record_defaults_the_hold_facts() {
+        use super::TaskMetadata;
+
+        let record = serde_json::json!({
+            "task_id": "7",
+            "status": "pending",
+            "files": ["crates/reify-audit/src/lib.rs"],
+            "done_provenance": null,
+            "title": "Task 7",
+            "prd": null,
+            "consumer_ref": null,
+            "audit_foundation": null,
+            "done_at": null
+        });
+        let task: TaskMetadata =
+            serde_json::from_value(record).expect("a nine-field record deserializes");
+        assert!(task.dependencies.is_empty());
+        assert!(!task.has_old_core_release);
+        assert!(!task.has_deferred_watch);
+        assert!(!task.trigger_met);
+    }
 }
