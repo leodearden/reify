@@ -129,9 +129,6 @@ tests/infra/test_refresh_warm_base_built_tree.py  tests/infra/test_refresh_warm_
 # Its WriterParity class replays verify.sh's own attempt-0 stamp line, so moving
 # or reshaping that sidecar reds here instead of disabling the guard fail-open.
 scripts/verify.sh                    tests/infra/test_refresh_warm_base_built_tree.sh
-# Task 10230: refresh-warm-base.sh drops top-level socket nodes from the gen, pinned by a .py suite.
-scripts/refresh-warm-base.sh         tests/infra/test_refresh_warm_base_sockets.sh
-tests/infra/test_refresh_warm_base_sockets.py  tests/infra/test_refresh_warm_base_sockets.sh
 # Task 10152: the promote-time eviction of build-script runs the build root's
 # cargo would rerun, pinned by a .py suite whose RefreshStep class also pins
 # refresh-warm-base.sh's Step 3c to that sibling (fail-closed when missing).
@@ -141,12 +138,13 @@ scripts/refresh-warm-base.sh         tests/infra/test_evict_dirty_target_units.s
 # The real evictor also runs in place inside test_refresh_warm_base.sh's
 # refreshes, as the prune sibling does, so an evictor edit selects that suite.
 scripts/evict-dirty-target-units.py  tests/infra/test_refresh_warm_base.sh
+# The real dropper runs in place inside that suite's refreshes too (Step 3a).
+scripts/drop-canon-invocation-files.py  tests/infra/test_refresh_warm_base.sh
 # The suites that run a COPY of refresh-warm-base.sh stage it, with its
 # siblings, through one shared harness module, so an edit to it selects each.
 tests/infra/refresh_warm_base_harness.py  tests/infra/test_evict_dirty_target_units.sh
 tests/infra/refresh_warm_base_harness.py  tests/infra/test_prune_unconsulted_target.sh
 tests/infra/refresh_warm_base_harness.py  tests/infra/test_refresh_warm_base_built_tree.sh
-tests/infra/refresh_warm_base_harness.py  tests/infra/test_refresh_warm_base_sockets.sh
 # Task 10167: the seed-time relocation of cargo dep-info input paths, called by seed-warm-lane.sh.
 scripts/relocate-depinfo-paths.py  tests/infra/test_seed_depinfo_relocation.sh
 scripts/seed-warm-lane.sh    tests/infra/test_seed_depinfo_relocation.sh
@@ -173,6 +171,34 @@ tests/infra/refresh_warm_base_harness.py  tests/infra/test_seed_warm_lane_canon_
 tests/infra/refresh_warm_base_harness.py  tests/infra/test_canon_launch_sites.sh
 tests/infra/canon_run_fixture.py          tests/infra/test_seed_warm_lane_canon_stamp.sh
 tests/infra/canon_run_fixture.py          tests/infra/test_canon_launch_sites.sh
+# Task 10442: drop-canon-invocation-files.py removes canonical-build-path
+# invocation files (journal, private-server session files) from a warm-lane
+# copy, pinned by a .py suite that names every planted file through
+# canon_cache.py, loaded via canon_run_fixture.py.
+scripts/drop-canon-invocation-files.py  tests/infra/test_drop_canon_invocation_files.sh
+tests/infra/test_drop_canon_invocation_files.py  tests/infra/test_drop_canon_invocation_files.sh
+tests/infra/canon_run_fixture.py  tests/infra/test_drop_canon_invocation_files.sh
+# Its RefreshStep class pins refresh-warm-base.sh's Step 3a to that sibling
+# (fail-closed when missing), staged through the shared refresh harness.
+scripts/refresh-warm-base.sh  tests/infra/test_drop_canon_invocation_files.sh
+tests/infra/refresh_warm_base_harness.py  tests/infra/test_drop_canon_invocation_files.sh
+# Its SeedStep class runs the REAL seed in both modes through the shared seed
+# harness and pins its post-clone call to that sibling (fail-closed when missing).
+scripts/seed-warm-lane.sh  tests/infra/test_drop_canon_invocation_files.sh
+tests/infra/seed_warm_lane_harness.py  tests/infra/test_drop_canon_invocation_files.sh
+# The real dropper runs after every clone of the suites that seed through the
+# real seed or a copy of it (the copies stage it beside themselves).
+scripts/drop-canon-invocation-files.py  tests/infra/test_seed_warm_lane.sh
+scripts/drop-canon-invocation-files.py  tests/infra/test_seed_depinfo_relocation.sh
+scripts/drop-canon-invocation-files.py  tests/infra/test_seed_warm_lane_canon_stamp.sh
+# The real seed, and so the real dropper after its clone, also runs in place
+# inside these suites. test_warm_lane_pool.sh runs the real refresh too, so its
+# row sits with the refresh siblings below. test_git_rerere_guard.sh only reads
+# the seed's text, so it never runs the dropper and takes no row.
+scripts/drop-canon-invocation-files.py  tests/infra/test_target_per_lane_independence.sh
+scripts/drop-canon-invocation-files.py  tests/infra/test_tree_sitter_stale_run_eviction.sh
+scripts/drop-canon-invocation-files.py  tests/infra/test_verify_ledger_lane_seed.sh
+scripts/drop-canon-invocation-files.py  tests/infra/test_hooks_armed_guard.sh
 # Task 10168: tree-sitter-freshness.sh evict-stale, the promote-time removal of
 # tree-sitter-reify build-script runs whose input stamp disagrees with the
 # promoted tree, pinned by a .py suite behind a thin .sh wrapper.
@@ -203,6 +229,8 @@ scripts/evict-dirty-target-units.py  tests/infra/test_warm_base_coherence.sh
 scripts/evict-dirty-target-units.py  tests/infra/test_warm_lane_pool.sh
 scripts/tree-sitter-freshness.sh     tests/infra/test_warm_base_coherence.sh
 scripts/tree-sitter-freshness.sh     tests/infra/test_warm_lane_pool.sh
+scripts/drop-canon-invocation-files.py  tests/infra/test_warm_base_coherence.sh
+scripts/drop-canon-invocation-files.py  tests/infra/test_warm_lane_pool.sh
 # Task 9246: the cron sweep of idle worktree targets exempts _merge-verify and
 # respects each worktree's lane lock, pinned by a .py suite behind a thin .sh
 # wrapper, same pair shape.

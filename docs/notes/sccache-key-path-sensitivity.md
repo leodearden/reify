@@ -80,16 +80,23 @@ hashes the member names. Most of the workspace depends on one of those three.
   `plans/canonical-build-path-shared-cache-prd.md`; in brief:
   - `scripts/canon_run.py` and `scripts/canon_cache.py` run a build at the canonical path under the host
     policy (`shared`, `mixed` or `incremental`). Under `shared` and `mixed` each outermost invocation
-    starts a private sccache server on a unix socket in its build directory, reaching the WebDAV store
-    through a loopback relay, or a local fallback cache when the store is unreachable.
+    that runs at the canonical path starts a private sccache server on the unix socket
+    `<CANON>/target/.reify-sccache.<pid>.sock`, whatever `CARGO_TARGET_DIR` or `--target-dir` names,
+    reaching the WebDAV store through a loopback relay, or a local fallback cache when the store is
+    unreachable.
   - The guard `scripts/canon-bin/guard/sccache` sends `-march`/`-mtune`/`-mcpu=native` and
     `target-cpu=native` compiles around the cache. It also hides `CARGO_INCREMENTAL`, `CARGO_TERM_*` and
     `CARGO_LOG` from sccache's key, so registry crates key the same under `shared` and `mixed`. cargo
     gets the incremental setting from the environment because a `cargo --config` is not forwarded to
     external subcommands such as nextest.
   - `CARGO_HOME` is pinned to `/tmp/reify-agent-cargo-home` in every policy.
-  - Every outermost invocation writes a `build_cache` record to `REIFY_VERIFY_EVENT_LOG` (when set) and to
-    `<build dir>/.reify-canon-journal.jsonl`.
+  - Only a supervised invocation writes a `build_cache` record, to `REIFY_VERIFY_EVENT_LOG` when set and
+    to `<build dir>/.reify-canon-journal.jsonl`: one at the canonical path, or one at its real path on an
+    enabled host with reason `legacy_build_dir` or `canon_unavailable`. A disabled host, a build directory
+    outside the tree, a pass-through command and a nested invocation write nothing.
+  - The journal and the session files are per-tree state. `scripts/drop-canon-invocation-files.py`
+    removes them from every warm-lane copy (base refresh and lane seed), and `canon_cache.open_session`
+    removes session files whose supervisor is dead.
 
 ## Soundness
 

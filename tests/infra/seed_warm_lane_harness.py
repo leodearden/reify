@@ -4,7 +4,8 @@ that runs the REAL warm-lane seed scripts (scripts/seed-warm-lane.sh and
 scripts/seed-warm-base-initial.sh) against a throwaway fixture store:
 test_seed_depinfo_relocation.py (task 10167),
 test_tree_sitter_stale_run_eviction.py SeededLaneEnsure (task 10168),
-test_seed_warm_lane_canon_stamp.py and test_canon_launch_sites.py (task 10230).
+test_seed_warm_lane_canon_stamp.py and test_canon_launch_sites.py (task 10230),
+test_drop_canon_invocation_files.py SeedStep (task 10442).
 
 Not a test module itself (no `test_` prefix): run_all.sh never discovers it,
 and the members import it via the sys.path idiom.
@@ -177,7 +178,7 @@ class Pool:
         self.git(self.build_root, "worktree", "add", "-q", *placement, lane, self.base_commit)
         return lane
 
-    def seed(self, lane, seed_script=SEED, gen=None):
-        """Seed `lane` from `gen`, or from this pool's own gen when None."""
+    def seed(self, lane, seed_script=SEED, gen=None, mode="--fresh-checkout"):
+        """Seed `lane` in seed `mode` from `gen`, or from this pool's own gen when None."""
         source = self.gen if gen is None else gen
-        return run(["bash", seed_script, source, lane, "--fresh-checkout"], lane, self.env)
+        return run(["bash", seed_script, source, lane, mode], lane, self.env)

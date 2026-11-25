@@ -5898,8 +5898,11 @@ unset REIFY_WARM_LANE_RERERE_ARM
 # at scripts/seed-warm-lane.sh:171 from BASH_SOURCE[0], and `grep -n _SCRIPT_DIR`
 # returns exactly three lines — that derivation plus its only two uses, the `-x`
 # existence gate (:1666) and the invocation (:1668). seed sources no sibling lib
-# at all, so a copy into a temp dir is faithful in every respect EXCEPT which
-# guard it finds — precisely the substitution wanted. run_helper is UNCHANGED: it
+# at all, and the sibling it runs on every clone,
+# drop-canon-invocation-files.py, is staged beside the copy with the
+# canon_cache.py it imports (task 10442), so a copy into a temp dir is faithful
+# in every respect EXCEPT which guard it finds — precisely the substitution
+# wanted. run_helper is UNCHANGED: it
 # invokes `bash "$SCRIPT" "$@"`, so BASH_SOURCE[0] — and therefore _SCRIPT_DIR —
 # resolves to the temp dir.
 #
@@ -5913,6 +5916,7 @@ unset REIFY_WARM_LANE_RERERE_ARM
 W10_DIR="$(mktemp -d /tmp/test-seed-W10-XXXXXX)"
 _TMPDIRS+=("$W10_DIR")
 cp "$SCRIPT" "$W10_DIR/seed-warm-lane.sh"
+cp "$REPO_ROOT/scripts/drop-canon-invocation-files.py" "$REPO_ROOT/scripts/canon_cache.py" "$W10_DIR/"
 W10_ARGV="$W10_DIR/guard-argv"
 
 # Self-contained shim: it writes BESIDE ITSELF, so the heredoc needs no

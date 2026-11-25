@@ -20,6 +20,7 @@ import http.client
 import json
 import os
 import random
+import re
 import resource
 import selectors
 import shutil
@@ -650,16 +651,29 @@ class SessionFiles:
     err: str
     uncached_log: str
 
+    NAMES_AROUND_PID = (
+        ("socket", ".reify-sccache.", ".sock"),
+        ("err", ".reify-sccache.", ".err"),
+        ("uncached_log", ".reify-canon-uncached.", ".log"),
+    )
+    NAME_GRAMMAR = re.compile(
+        "|".join(f"{re.escape(prefix)}([1-9][0-9]*){re.escape(suffix)}" for _, prefix, suffix in NAMES_AROUND_PID)
+    )
+
     @classmethod
     def in_build_dir(cls, build_dir: str, pid: int) -> SessionFiles:
-        def named(name: str) -> str:
-            return os.path.join(build_dir, name)
+        return cls(**{
+            attribute: os.path.join(build_dir, f"{prefix}{pid}{suffix}")
+            for attribute, prefix, suffix in cls.NAMES_AROUND_PID
+        })
 
-        return cls(
-            named(f".reify-sccache.{pid}.sock"),
-            named(f".reify-sccache.{pid}.err"),
-            named(f".reify-canon-uncached.{pid}.log"),
-        )
+    @classmethod
+    def owner_pid(cls, name: str) -> int | None:
+        """The pid a basename names when it is exactly one of these files' names, else None."""
+        spelled = cls.NAME_GRAMMAR.fullmatch(name)
+        if spelled is None:
+            return None
+        return int(next(pid for pid in spelled.groups() if pid is not None))
 
 
 def with_parent_death_signal(argv: list[str], signal_name: str) -> list[str]:
@@ -688,6 +702,29 @@ def read_text(path: str) -> str:
 def unlink_quietly(path: str) -> None:
     with contextlib.suppress(OSError):
         os.unlink(path)
+
+
+def pid_alive(pid: int) -> bool:
+    """Whether a process with this pid exists, by signal 0; a zombie counts as alive."""
+    try:
+        os.kill(pid, 0)
+    except (ProcessLookupError, OverflowError):
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def remove_stale_session_files(build_dir: str, own_pid: int) -> None:
+    """Unlink build_dir's session files named by a dead pid, or by own_pid, which has started none there yet."""
+    try:
+        names = os.listdir(build_dir)
+    except OSError:
+        return
+    for name in names:
+        owner = SessionFiles.owner_pid(name)
+        if owner is not None and (owner == own_pid or not pid_alive(owner)):
+            unlink_quietly(os.path.join(build_dir, name))
 
 
 def reap(process: subprocess.Popen, knobs: SessionKnobs) -> None:
@@ -919,6 +956,7 @@ def open_session(
     probe = probe or (lambda: probe_store(settings, knobs))
     with refusing_os_errors(f"create the build directory {canon_build_dir}"):
         os.makedirs(canon_build_dir, exist_ok=True)
+    remove_stale_session_files(canon_build_dir, os.getpid())
     files = SessionFiles.in_build_dir(canon_build_dir, os.getpid())
     fallback_dir = choose_fallback_dir(settings, knobs.tmp_root)
     backend, reason = choose_backend(settings, probe)
@@ -983,6 +1021,11 @@ JOURNAL_NAME = ".reify-canon-journal.jsonl"
 def journal_path(build_dir: str | Path) -> str:
     """The invocation journal: every supervised invocation's build_cache record, in its build directory."""
     return os.path.join(build_dir, JOURNAL_NAME)
+
+
+def is_invocation_file(name: str) -> bool:
+    """Whether a basename names a file one supervised invocation, or its private server, writes in a build dir."""
+    return name == JOURNAL_NAME or SessionFiles.owner_pid(name) is not None
 
 
 @dataclass(frozen=True)
