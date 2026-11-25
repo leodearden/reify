@@ -42,5 +42,6 @@ files = [
     "crates/reify-eval/src/lib.rs",
 ]
 
-# Held, but touching only these to register a module is not old-core work.
+# Held, but a task whose only held files are these is reported at Low:
+# it usually lists lib.rs only to register a module.
 registration_only = ["crates/reify-eval/src/lib.rs"]
