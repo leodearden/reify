@@ -189,18 +189,14 @@ fn eval_of_the_feature_datum_axis_example_recovers_the_revolution_axis() {
 #[test]
 fn check_of_the_realized_world_fixtures_reports_no_revolve_arity_error() {
     for fixture in [
-        "realized_world_datum_axis_inline.ri",
-        "realized_world_datum_axis_let.ri",
-        "realized_world_datum_user_fn.ri",
-        "realized_world_guarded_branch.ri",
-        "realized_world_override_instance_datum.ri",
-        "realized_world_override_instance_datum_let.ri",
+        "tests/prd-gate/fixtures/realized_world_datum_axis_inline.ri",
+        "tests/prd-gate/fixtures/realized_world_datum_axis_let.ri",
+        "tests/prd-gate/fixtures/realized_world_datum_user_fn.ri",
+        "tests/prd-gate/fixtures/realized_world_guarded_branch.ri",
+        "tests/prd-gate/fixtures/realized_world_override_instance_datum.ri",
+        "tests/prd-gate/fixtures/realized_world_override_instance_datum_let.ri",
     ] {
-        let stderr = stderr_of_a_compiled_check(
-            &common::workspace_root()
-                .join("tests/prd-gate/fixtures")
-                .join(fixture),
-        );
+        let stderr = stderr_of_a_compiled_check(&common::workspace_root().join(fixture));
         assert!(
             !stderr.contains("revolve() expects"),
             "{fixture} must not spell a retired revolve arity\nstderr: {stderr}"
