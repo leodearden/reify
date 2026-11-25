@@ -4,7 +4,8 @@
 //! non-pub or `#cfg`-gated-out edge re-exports nothing.
 //!
 //! Visibility is asserted at check time (no `UnknownSubStructure`) and through
-//! `program_scope::resolve_in_program`, the environment eval binds through.
+//! `program_scope::resolve_in_program`, the environment eval binds through. A
+//! re-exported module is not qualifiable by its own key (I7).
 
 use std::fs;
 use std::path::Path;
@@ -12,8 +13,8 @@ use std::path::Path;
 use reify_compiler::TopologyTemplate;
 use reify_compiler::cfg::CfgSet;
 use reify_compiler::module_dag::{ModuleResolver, compile_project};
-use reify_compiler::program::{CompiledProgram, compile_program};
-use reify_compiler::program_scope::resolve_in_program;
+use reify_compiler::program::{CompiledProgram, ImportReach, compile_program};
+use reify_compiler::program_scope::{module_surface, resolve_in_program};
 use reify_core::{Diagnostic, DiagnosticCode, Severity};
 use reify_ir::Satisfaction;
 use reify_test_support::mocks::MockConstraintChecker;
@@ -266,4 +267,47 @@ fn compile_project_entries_see_re_exports_too() {
     if let Some(diag) = unknown_sub(entry.diagnostics.iter(), "Helper") {
         panic!("c should see Helper through b's re-export, got: {diag:?}");
     }
+}
+
+/// Each import unit's key, with how the entry reaches it.
+fn reaches(program: &CompiledProgram) -> Vec<(&str, ImportReach)> {
+    program
+        .imports
+        .iter()
+        .map(|unit| (unit.import_path.as_str(), unit.reach))
+        .collect()
+}
+
+#[test]
+fn qualified_lookup_reaches_only_modules_the_entry_imports() {
+    let facade_only = compile_main(
+        MAIN_USING_PULLEY,
+        &[("lib.ri", FACADE_LIB), ("parts.ri", PARTS)],
+    );
+    assert_eq!(
+        reaches(&facade_only),
+        [
+            ("lib", ImportReach::Direct),
+            ("parts", ImportReach::ReExported)
+        ]
+    );
+    assert!(
+        module_surface::<TopologyTemplate>(&facade_only, &[], "parts").is_none(),
+        "a module the entry never named is not qualifiable by its own key"
+    );
+    assert!(module_surface::<TopologyTemplate>(&facade_only, &[], "lib").is_some());
+
+    let also_direct = compile_main(
+        "module main\nimport lib\nimport parts\nstructure def Rig { sub p = Pulley() }\n",
+        &[("lib.ri", FACADE_LIB), ("parts.ri", PARTS)],
+    );
+    assert_eq!(
+        reaches(&also_direct),
+        [("lib", ImportReach::Direct), ("parts", ImportReach::Direct)]
+    );
+    let parts_surface: Vec<&str> = module_surface::<TopologyTemplate>(&also_direct, &[], "parts")
+        .expect("a module the entry imports is qualifiable")
+        .map(|template| template.name.as_str())
+        .collect();
+    assert_eq!(parts_surface, ["Pulley"]);
 }
