@@ -263,7 +263,7 @@ class SetupDevWiringTest(unittest.TestCase):
         self.assertIn("installer not invoked", wiring_defects(mutant))
 
     def test_detector_reports_a_bare_check(self):
-        mutant = mutated(self, self.text, r'^(\s*)\S*canon_run\.py"?\s+(cargo\s+check\s+--workspace)', r"\1\2")
+        mutant = mutated(self, self.text, r'^(\s*).*canon_run\.py"?\s+(cargo\s+check\s+--workspace)', r"\1\2")
         defects = wiring_defects(mutant)
         self.assertIn("check not routed through canon_run.py", defects)
         self.assertIn("bare check", defects)
