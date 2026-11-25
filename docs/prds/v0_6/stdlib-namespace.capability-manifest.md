@@ -33,6 +33,10 @@ its batch files.
   eval-side first-wins `find_template_with_prelude`
   (`crates/reify-eval/src/engine_eval.rs:64-68`); both `structure def Mode`
   decls live (`solver_buckling.ri` — since renamed `BucklingMode` by #5496 — and `modal_analysis.ri`).
+  The eval-side site has since moved: #5524 step 6 (`7d3fff1eec`) deleted
+  `find_template_with_prelude` and routes its callers through
+  `DefEnv::resolve_template` (`crates/reify-eval/src/def_env.rs`), so the
+  delivered check greps that successor site.
 - **mode-compile-eval-divergence-real** → PASS. Fixtures
   `tests/prd-gate/fixtures/stdlib_ns_mode_member.ri` (exit 1, `structure 'Mode'
   has no member 'eigenvalue'`) vs `stdlib_ns_mode_member_modal.ri` (exit 0)

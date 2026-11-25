@@ -11,13 +11,16 @@ tasks:
       entities_phase.rs HashMap-collect last-wins, enums_phase.rs prelude++local inversion
       (type_resolution.rs .iter().find), eval-side first-wins find_template_with_prelude
       (reify-eval/src/engine_eval.rs:64-68); both `structure def Mode` decls live
-      (solver_buckling.ri, since renamed BucklingMode by #5496; modal_analysis.ri)'
+      (solver_buckling.ri, since renamed BucklingMode by #5496; modal_analysis.ri).
+      The eval-side site has since moved: #5524 step 6 (7d3fff1eec) deleted
+      find_template_with_prelude and routes its callers through DefEnv::resolve_template
+      (reify-eval/src/def_env.rs), so the check greps the successor site.'
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: fn find_template_with_prelude
+      pattern: pub fn resolve_template
       paths:
-      - crates/reify-eval/src/engine_eval.rs
+      - crates/reify-eval/src/def_env.rs
       expect: present
   - name: mode-compile-eval-divergence-real
     binding: 'signal premise — probe 2026-07-24 (PRD §0/§1) re-verified 2026-07-25
