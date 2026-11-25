@@ -3,7 +3,7 @@
 //! hand-built `CompiledGeometryOp`s.
 //!
 //! A BARE (dimensionless) length-semantic argument to `translate`,
-//! `rotate_around`, `line_segment`, `arc` or `helix` must be
+//! `rotate_around`, `revolve`, `line_segment`, `arc` or `helix` must be
 //! REJECTED at build, dropping the op with a `Severity::Error` and offering the
 //! `pass a dimensioned length such as \`5mm\`` migration hint — rather than
 //! silently reading the bare number as SI **metres** (the `5` vs `5mm` = 1000×
@@ -128,7 +128,7 @@ fn assert_length_gate(
 }
 
 // ---------------------------------------------------------------------------
-// The gated builtins, one leaf signal each (revolve's origin: sweep_direction_forms_e2e.rs)
+// The six gated builtins, one leaf signal each
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -165,6 +165,23 @@ fn rotate_around_bare_pivot_drops_op_dimensioned_builds() {
             let s = rotate_around(box(10mm, 10mm, 10mm), 5mm, 0mm, 0mm, 0, 0, 1, 1.5707963267948966rad)
         }"#,
         |op| matches!(op, GeometryOp::RotateAround { .. }),
+    );
+}
+
+/// The revolve origin is a Point3, which no compile-time slot holds, so the
+/// BUILD gates its components under the names the retired scalar form used.
+#[test]
+fn revolve_bare_axis_origin_drops_op_dimensioned_builds() {
+    assert_length_gate(
+        "revolve",
+        "ox",
+        r#"structure def BareRevolve {
+            let s = revolve(rectangle(20mm, 10mm), point3(-10, 0, 0), dir(0.0, 1.0, 0.0), 6.283185307179586rad)
+        }"#,
+        r#"structure def DimRevolve {
+            let s = revolve(rectangle(20mm, 10mm), point3(-10mm, 0mm, 0mm), dir(0.0, 1.0, 0.0), 6.283185307179586rad)
+        }"#,
+        |op| matches!(op, GeometryOp::Revolve { .. }),
     );
 }
 

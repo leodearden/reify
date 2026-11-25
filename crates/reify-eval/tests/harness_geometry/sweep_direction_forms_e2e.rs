@@ -2,15 +2,14 @@
 //! `docs/prds/v0_6/direction-typing.md` B12′), compiled from `.ri` SOURCE and
 //! built against a mock kernel.
 //!
-//! B12′ "same IR": each Direction form emits exactly the `GeometryOp` its
-//! retired scalar form emitted. The expected values are the scalar forms' IR
-//! literals, compared with `==` — `dir(0, 0, -1)` is `[0.0, 0.0, -1.0]` where
-//! the retired `"negative"` fold of `0, 0, 1` produced `[-0.0, -0.0, -1.0]`;
-//! the two are equal under IEEE `==` and denote the same axis.
+//! B12′ "same IR": each revolve Direction form emits exactly the `GeometryOp`
+//! its retired scalar form emitted, compared with `==` against the scalar
+//! forms' IR literals. `extrude_infinite`'s half of B12′ is pinned by
+//! `tests/extrude_infinite_e2e.rs`.
 //!
 //! The Point3 origin is not a compile-time slot (no `ExpectedArg` kind holds a
 //! Point3), so a bare origin is gated at BUILD, under the retired `ox`/`oy`/`oz`
-//! names.
+//! names; `geometry_length_args_units_e2e.rs` pins that leaf signal.
 
 use reify_core::{Diagnostic, DiagnosticCode, Severity};
 use reify_eval::{BuildResult, Engine};
@@ -20,9 +19,6 @@ use reify_test_support::{
 };
 
 const PROFILE: &str = "rectangle(20mm, 10mm)";
-
-/// The migration hint `arg_acceptance::length_spec` mints.
-const LENGTH_HINT: &str = "pass a dimensioned length such as `5mm`";
 
 fn structure_source(lets: &str) -> String {
     format!("structure def SweepDirectionForms {{\n{lets}\n}}\n")
@@ -48,9 +44,9 @@ fn build(compiled: &reify_compiler::CompiledModule) -> (Vec<Diagnostic>, Vec<Geo
     (result.diagnostics, ops)
 }
 
-/// The single sweep op `call` emits, built from strict-compiled source with no
-/// Error diagnostics.
-fn the_sweep_op(call: &str) -> GeometryOp {
+/// The single revolve op `call` emits, built from strict-compiled source with
+/// no Error diagnostics.
+fn the_revolve_op(call: &str) -> GeometryOp {
     let (diagnostics, ops) = build(&parse_and_compile(&structure_source(&format!(
         "    let g = {call}"
     ))));
@@ -59,22 +55,17 @@ fn the_sweep_op(call: &str) -> GeometryOp {
         .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(errors.is_empty(), "{call}: {errors:?}");
-    let sweeps: Vec<GeometryOp> = ops
+    let revolves: Vec<GeometryOp> = ops
         .into_iter()
-        .filter(|op| {
-            matches!(
-                op,
-                GeometryOp::Revolve { .. } | GeometryOp::ExtrudeInfinite { .. }
-            )
-        })
+        .filter(|op| matches!(op, GeometryOp::Revolve { .. }))
         .collect();
-    assert_eq!(sweeps.len(), 1, "{call}: {sweeps:?}");
-    sweeps.into_iter().next().unwrap()
+    assert_eq!(revolves.len(), 1, "{call}: {revolves:?}");
+    revolves.into_iter().next().unwrap()
 }
 
 #[track_caller]
 fn assert_revolve_ir(call: &str, origin: [f64; 3], dir: [f64; 3], angle: f64) {
-    match the_sweep_op(call) {
+    match the_revolve_op(call) {
         GeometryOp::Revolve {
             axis_origin,
             axis_dir,
@@ -86,17 +77,6 @@ fn assert_revolve_ir(call: &str, origin: [f64; 3], dir: [f64; 3], angle: f64) {
             assert_eq!(angle_rad, angle, "{call}: angle_rad");
         }
         other => panic!("{call}: expected a Revolve, got {other:?}"),
-    }
-}
-
-#[track_caller]
-fn assert_extrude_infinite_ir(call: &str, expected_axis: [f64; 3], expected_both: bool) {
-    match the_sweep_op(call) {
-        GeometryOp::ExtrudeInfinite { axis, both, .. } => {
-            assert_eq!(axis, expected_axis, "{call}: axis");
-            assert_eq!(both, expected_both, "{call}: both");
-        }
-        other => panic!("{call}: expected an ExtrudeInfinite, got {other:?}"),
     }
 }
 
@@ -129,50 +109,6 @@ fn revolve_full_direction_form_emits_a_tau_revolve() {
         [-0.01, 0.0, 0.0],
         [0.0, 1.0, 0.0],
         std::f64::consts::TAU,
-    );
-}
-
-#[test]
-fn extrude_infinite_direction_forms_emit_the_retired_sense_ir() {
-    // The retired `0, 0, 1, "positive"`.
-    assert_extrude_infinite_ir(
-        "extrude_infinite(circle(5mm), dir(0, 0, 1))",
-        [0.0, 0.0, 1.0],
-        false,
-    );
-    // The retired `0, 0, 1, "negative"`, which folded to [-0.0, -0.0, -1.0].
-    assert_extrude_infinite_ir(
-        "extrude_infinite(circle(5mm), dir(0, 0, -1))",
-        [-0.0, -0.0, -1.0],
-        false,
-    );
-    // The retired `0, 0, 1, "both"`.
-    assert_extrude_infinite_ir(
-        "extrude_infinite_symmetric(circle(5mm), dir(0, 0, 1))",
-        [0.0, 0.0, 1.0],
-        true,
-    );
-}
-
-/// The accepted narrowing: a bare origin is no longer a compile-time slot, so
-/// the build rejects it under the retired component names and drops the op.
-#[test]
-fn a_bare_revolve_origin_is_rejected_at_build_naming_the_component() {
-    let source = structure_source(&format!(
-        "    let g = revolve({PROFILE}, point3(-10, 0, 0), dir(0, 1, 0), 90deg)"
-    ));
-    let (diagnostics, ops) = build(&compile_source(&source));
-    assert!(
-        diagnostics.iter().any(|d| d.severity == Severity::Error
-            && d.message.contains("ox")
-            && d.message.contains("Length")
-            && d.message.contains(LENGTH_HINT)),
-        "a bare origin must be an Error naming `ox`, Length and the hint: {diagnostics:?}"
-    );
-    assert!(
-        !ops.iter()
-            .any(|op| matches!(op, GeometryOp::Revolve { .. })),
-        "a bare origin must drop the revolve: {ops:?}"
     );
 }
 

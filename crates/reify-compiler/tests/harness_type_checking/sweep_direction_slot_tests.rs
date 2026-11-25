@@ -29,13 +29,6 @@ fn errors_of(call: &str) -> Vec<Diagnostic> {
     errors_only(&module).into_iter().cloned().collect()
 }
 
-fn arg_type_mismatches(errors: &[Diagnostic]) -> Vec<&Diagnostic> {
-    errors
-        .iter()
-        .filter(|d| d.code == Some(DiagnosticCode::ArgTypeMismatch))
-        .collect()
-}
-
 /// Exactly one Error, an `ArgTypeMismatch`; returns its message.
 fn one_mismatch(call: &str) -> String {
     let errors = errors_of(call);
@@ -112,10 +105,7 @@ fn the_direction_forms_check_clean() {
         format!("extrude_infinite_symmetric({PROFILE}, dir(0, 0, -1))"),
     ] {
         let errors = errors_of(&call);
-        assert!(
-            arg_type_mismatches(&errors).is_empty(),
-            "{call} must yield no ArgTypeMismatch, got {errors:?}"
-        );
+        assert!(errors.is_empty(), "{call} must check clean, got {errors:?}");
     }
 }
 
@@ -138,6 +128,11 @@ fn the_retired_scalar_arities_are_arity_errors_naming_the_direction_form() {
             "extrude_infinite",
             format!("extrude_infinite({PROFILE}, 0, 0, 1, \"both\")"),
             5,
+        ),
+        (
+            "extrude_infinite",
+            format!("extrude_infinite({PROFILE}, 0, 0, 1)"),
+            4,
         ),
     ] {
         let errors = errors_of(&call);

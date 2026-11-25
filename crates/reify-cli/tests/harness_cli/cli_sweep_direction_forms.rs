@@ -11,15 +11,48 @@
 //!
 //! The arity errors' codes and the lowered op layouts are pinned by
 //! reify-compiler's `harness_type_checking/sweep_direction_slot_tests.rs`; the
-//! emitted IR by reify-eval's `harness_geometry/sweep_direction_forms_e2e.rs`.
+//! emitted IR by reify-eval's `harness_geometry/sweep_direction_forms_e2e.rs`
+//! (revolve) and `extrude_infinite_e2e.rs` (extrude_infinite).
 
 use crate::common;
+use std::path::Path;
 
 fn error_lines(stderr: &str) -> Vec<&str> {
     stderr
         .lines()
         .filter(|line| line.starts_with("error:"))
         .collect()
+}
+
+/// `reify check` prints one of these summaries on stdout only once it has read,
+/// parsed, compiled and evaluated the file; a read, parse or compile failure
+/// prints none of them.
+fn reached_the_constraint_verdict(stdout: &str) -> bool {
+    stdout.lines().any(|line| {
+        line == "All constraints satisfied."
+            || line == "Some constraints violated."
+            || line.starts_with("No constraints violated (")
+    })
+}
+
+/// `reify check`'s stderr for a corpus file another task owns and may move, so
+/// that an assertion that something is ABSENT from it cannot pass vacuously:
+/// the file must exist, and check must compile it through to the constraint
+/// verdict.
+fn stderr_of_a_compiled_check(path: &Path) -> String {
+    assert!(
+        path.exists(),
+        "{} is missing; if it was renamed or relocated, update this call site",
+        path.display()
+    );
+    let (_, stdout, stderr) = common::run_subcommand("check", &path.to_string_lossy());
+    assert!(
+        reached_the_constraint_verdict(&stdout),
+        "check of {} must compile it through to the constraint verdict\n\
+         stdout: {stdout}\nstderr: {stderr}",
+        path.display()
+    );
+    stderr
 }
 
 #[test]
@@ -122,8 +155,8 @@ fn check_accepts_the_migrated_sweep_examples() {
 /// spelling. Only the absence of a `revolve_full` error is this leaf's to pin.
 #[test]
 fn check_of_sweep_degenerate_reports_no_revolve_full_error() {
-    let path = common::example_path("sweep_degenerate.ri");
-    let (_, _, stderr) = common::run_subcommand("check", &path);
+    let stderr =
+        stderr_of_a_compiled_check(Path::new(&common::example_path("sweep_degenerate.ri")));
     assert!(
         !error_lines(&stderr)
             .iter()
@@ -163,10 +196,11 @@ fn check_of_the_realized_world_fixtures_reports_no_revolve_arity_error() {
         "realized_world_override_instance_datum.ri",
         "realized_world_override_instance_datum_let.ri",
     ] {
-        let path = common::workspace_root()
-            .join("tests/prd-gate/fixtures")
-            .join(fixture);
-        let (_, _, stderr) = common::run_subcommand("check", &path.to_string_lossy());
+        let stderr = stderr_of_a_compiled_check(
+            &common::workspace_root()
+                .join("tests/prd-gate/fixtures")
+                .join(fixture),
+        );
         assert!(
             !stderr.contains("revolve() expects"),
             "{fixture} must not spell a retired revolve arity\nstderr: {stderr}"

@@ -4,6 +4,12 @@
 //! Tests span from `.ri` source through compilation and evaluation to the final
 //! GeometryOp, using MockGeometryKernel to capture executed operations without
 //! OCCT.
+//!
+//! The pipeline tests are `extrude_infinite`'s half of direction-typing B12′
+//! (task ι-b #9647): each Direction form emits exactly the `GeometryOp` its
+//! retired `(profile, dx, dy, dz, sense)` form emitted. The retired arities'
+//! compile errors are pinned by reify-compiler's
+//! `harness_type_checking/sweep_direction_slot_tests.rs`.
 
 use reify_compiler::{CompiledGeometryOp, CompiledModule, SweepKind};
 use reify_ir::{ExportFormat, GeometryOp};
@@ -18,20 +24,6 @@ fn compile(name: &str, call: &str) -> CompiledModule {
         parsed.errors
     );
     reify_compiler::compile(&parsed)
-}
-
-fn has_extrude_infinite_op(compiled: &CompiledModule) -> bool {
-    compiled.templates[0].realizations.iter().any(|r| {
-        r.operations.iter().any(|op| {
-            matches!(
-                op,
-                CompiledGeometryOp::Sweep {
-                    kind: SweepKind::ExtrudeInfinite,
-                    ..
-                }
-            )
-        })
-    })
 }
 
 // ---------------------------------------------------------------------------
@@ -66,31 +58,6 @@ fn extrude_infinite_compiler_accepts_the_two_arg_direction_forms() {
             compiled.diagnostics.is_empty(),
             "expected no diagnostics for {call}, got: {:?}",
             compiled.diagnostics
-        );
-    }
-}
-
-/// The retired 5-arg `(profile, dx, dy, dz, sense)` form and a 4-arg call are
-/// arity errors naming the Direction form, and lower no op.
-#[test]
-fn extrude_infinite_compiler_rejects_the_retired_scalar_arities() {
-    for (call, got) in [
-        ("extrude_infinite(circle(5mm), 0, 0, 1, \"positive\")", 5),
-        ("extrude_infinite(circle(5mm), 0, 0, 1)", 4),
-    ] {
-        let compiled = compile("test_ei_retired", call);
-        assert!(
-            compiled.diagnostics.iter().any(|d| d
-                .message
-                .starts_with("extrude_infinite() expects")
-                && d.message.contains("dir(x, y, z)")
-                && d.message.ends_with(&format!(", got {got}"))),
-            "{call}: expected an arity error naming the Direction form, got: {:?}",
-            compiled.diagnostics
-        );
-        assert!(
-            !has_extrude_infinite_op(&compiled),
-            "{call}: a wrong arg count must lower no Sweep(ExtrudeInfinite) op"
         );
     }
 }
@@ -145,6 +112,8 @@ fn extrude_infinite_through_full_eval_pipeline_positive() {
 }
 
 /// `dir(0, 0, -1)` is the retired `0, 0, 1, "negative"`: axis [0, 0, -1], both=false.
+/// The retired fold produced `[-0.0, -0.0, -1.0]`; it is equal under IEEE `==`
+/// and denotes the same axis.
 #[test]
 fn extrude_infinite_through_full_eval_pipeline_negative() {
     assert_eq!(
