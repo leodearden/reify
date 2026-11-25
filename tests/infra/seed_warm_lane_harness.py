@@ -1,8 +1,10 @@
 """
 seed_warm_lane_harness.py — the hermetic seed fixture shared by every unittest
-that runs the REAL scripts/seed-warm-lane.sh against a throwaway pool:
-test_seed_depinfo_relocation.py (task 10167) and
-test_tree_sitter_stale_run_eviction.py SeededLaneEnsure (task 10168).
+that runs the REAL warm-lane seed scripts (scripts/seed-warm-lane.sh and
+scripts/seed-warm-base-initial.sh) against a throwaway fixture store:
+test_seed_depinfo_relocation.py (task 10167),
+test_tree_sitter_stale_run_eviction.py SeededLaneEnsure (task 10168),
+test_seed_warm_lane_canon_stamp.py and test_canon_launch_sites.py (task 10230).
 
 Not a test module itself (no `test_` prefix): run_all.sh never discovers it,
 and the members import it via the sys.path idiom.
@@ -14,6 +16,12 @@ ENV: hermetic_env() strips every git, cargo, rustc and warm-lane knob the
 caller could leak in, and pins a private git identity, CARGO_HOME and the
 toolchain rust-toolchain.toml names. STUB_CP stands in for the seed's reflink
 clone, which a tmp filesystem cannot do.
+GIT: isolated_git_env() points every child git at an empty global config, no
+system config, a ceiling at the fixture's tempdir and a fixed identity.
+BASE GEN: stage_base_gen() writes the provenance sidecars refresh-warm-base.sh
+writes beside a base target, so the seed reads a promoted gen's shape.
+PATH: install_cp_stub() is refresh_warm_base_harness's, so the refresh and
+seed members share one reflink-free `cp`.
 """
 
 import os
@@ -22,6 +30,8 @@ import subprocess
 import tomllib
 from pathlib import Path
 
+from refresh_warm_base_harness import install_cp_stub
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SEED = REPO_ROOT / "scripts" / "seed-warm-lane.sh"
 TOOLCHAIN_PIN = REPO_ROOT / "rust-toolchain.toml"
@@ -29,6 +39,11 @@ SUBPROCESS_TIMEOUT_SECS = 600
 
 STRIPPED_ENV_PREFIXES = ("GIT_", "CARGO_", "RUSTC_", "REIFY_WARM_LANE_", "REIFY_LANE_")
 STRIPPED_ENV_KEYS = frozenset({"RUSTC", "RUSTFLAGS", "RUSTDOCFLAGS"})
+
+IDENTITY = {
+    "GIT_AUTHOR_NAME": "Fixture", "GIT_AUTHOR_EMAIL": "fixture@example.test",
+    "GIT_COMMITTER_NAME": "Fixture", "GIT_COMMITTER_EMAIL": "fixture@example.test",
+}
 
 # The seed's reflink clone, as a physical copy: a tmp fs has no reflink.
 STUB_CP = """#!/usr/bin/env bash
@@ -64,6 +79,28 @@ def write_executable(path, text):
 def run(argv, cwd, env):
     return subprocess.run([str(a) for a in argv], cwd=cwd, env=env, capture_output=True,
                           text=True, check=False, timeout=SUBPROCESS_TIMEOUT_SECS)
+
+
+def isolated_git_env(tmp):
+    """The GIT_* settings that keep a child git inside the fixture under `tmp`."""
+    empty_global = Path(tmp, "gitconfig-global")
+    empty_global.write_text("")
+    return {
+        "GIT_CONFIG_GLOBAL": str(empty_global),
+        "GIT_CONFIG_NOSYSTEM": "1",
+        # A plain dir in the tempdir must never discover an enclosing repo.
+        "GIT_CEILING_DIRECTORIES": str(tmp),
+        **IDENTITY,
+    }
+
+
+def stage_base_gen(target, *, base_commit, build_root):
+    """Write `<target>.basecommit`, `<target>.buildroot` and the base dir's
+    .warm-base-meta (empty RUSTFLAGS and INVOCATION) for the base `target`."""
+    target = Path(target)
+    Path(f"{target}.basecommit").write_text(f"{base_commit}\n")
+    Path(f"{target}.buildroot").write_text(f"{build_root}\n")
+    (target.parent / ".warm-base-meta").write_text("RUSTFLAGS=\nINVOCATION=\n")
 
 
 def hermetic_env(tmp, stub_dir):

@@ -44,6 +44,11 @@
 #      Fail-closed: no swap on refusal.
 #   2. Symlink-gen staging: build <base_dir>.gen.<N>.partial via
 #      cp -a --reflink=always (fail-closed — P2), rename to <base_dir>.gen.<N>.
+#   2a.Drop socket files at the staging copy's top level: a build's private
+#      sccache socket (<build dir>/.reify-sccache.<pid>.sock, canonical-build-path
+#      PRD C4/C12) is runtime state, never an artifact. A failure aborts the
+#      refresh before the partial→gen rename.
+#      Executable spec: tests/infra/test_refresh_warm_base_sockets.py.
 #   2b.Prune unconsulted units from the staging copy: one call to the sibling
 #      scripts/prune-unconsulted-target.sh --prune-dead-unit-records on
 #      <base_dir>.gen.<N>.partial/debug (debug only, 7-day window, atime probed
@@ -496,6 +501,11 @@ if ! cp -a --reflink=always "$ADVANCING_DIR" "$_new_gen_partial"; then
     exit 1
 fi
 ok "Reflink copy complete (gen ${_next_gen})."
+
+# Step 3a: drop socket nodes at the staging copy's top level (header item 2a):
+# a build's private sccache socket (canonical-build-path PRD C4/C12) is runtime
+# state of the build directory, never an artifact. Called plainly, like Step 3b.
+find "$_new_gen_partial" -maxdepth 1 -type s -delete
 
 # Step 3b: prune unconsulted units from the staging copy (header item 2b).
 # Called plainly, with no `if` or `||`, so set -e aborts on any failure (a

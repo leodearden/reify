@@ -2,8 +2,9 @@
 refresh_warm_base_harness.py — the hermetic staging shared by every unittest
 that runs a COPY of scripts/refresh-warm-base.sh (task 10152):
 test_refresh_warm_base_built_tree.py, test_prune_unconsulted_target.py
-RefreshDelegation, test_evict_dirty_target_units.py RefreshStep and
-test_tree_sitter_stale_run_eviction.py RefreshStep and SeededLaneEnsure.
+RefreshDelegation, test_evict_dirty_target_units.py RefreshStep,
+test_refresh_warm_base_sockets.py and test_tree_sitter_stale_run_eviction.py
+RefreshStep and SeededLaneEnsure.
 
 Not a test module itself (no `test_` prefix): run_all.sh never discovers it,
 and the members import it via the sys.path idiom.
@@ -15,6 +16,8 @@ added to REFRESH_SIBLINGS once, and every member stages it. A real sibling that
 sources other scripts/ files carries them along (REAL_SIBLING_SOURCES).
 PATH: install_cp_stub() writes a `cp` that drops --reflink=always, so the
 refresh's reflink copy works on any filesystem; run_refresh() puts it first.
+seed_warm_lane_harness.py reuses it for the members that run the real seed
+scripts.
 LANES: init_lane() and commit() make a git repository on main under an env
 with no GIT_* variables and a fixed test identity.
 """

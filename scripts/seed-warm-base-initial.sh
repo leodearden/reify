@@ -10,8 +10,10 @@
 #
 # 3-step choreography (runbook):
 #   1. Cold-build the _merge-verify worktree's target/ (the advancing source):
-#        cd <merge-verify> && cargo build --release
-#      This is the only full cold build — lane clones are reflinked from it.
+#        cd <merge-verify> && scripts/canon_run.py exec -- bash -c 'cargo build --release'
+#      This is the only full cold build — lane clones are reflinked from it. It runs
+#      through the tree's canonical-build-path primitive, so the base is built under
+#      the host's cache policy (canonical-build-path PRD decision 9).
 #   2. Refresh the gen-dir base (initialize <mount>/base/target):
 #        scripts/refresh-warm-base.sh --landed-commit <HEAD> \
 #          --rustflags "$RUSTFLAGS" --invocation "$INVOCATION" \
@@ -41,7 +43,9 @@
 #                       (default: <mount>/base/target)
 #   --merge-verify DIR  _merge-verify worktree to cold-build
 #                       (default: <mount>/worktrees/_merge-verify)
-#   --build-cmd CMD     Cold-build command run inside <merge-verify>
+#   --build-cmd CMD     Cold-build command run inside <merge-verify> through
+#                       scripts/canon_run.py exec, so the base is built under the
+#                       host's cache policy (PRD decision 9)
 #                       (env: REIFY_SEED_BUILD_CMD; default: cargo build --release)
 #   --landed-commit SHA Assert advancing HEAD == SHA AND that SHA has landed (is an
 #                       ancestor of refs/heads/main) (passed to refresh-warm-base.sh
@@ -110,7 +114,9 @@ Usage: $(basename "$0") [OPTIONS]
                         (env: REIFY_WARM_LANE_MOUNT; default: $(_default_mount))
     --base-dir DIR      Base dir to seed (default: <mount>/base/target)
     --merge-verify DIR  _merge-verify worktree (default: <mount>/worktrees/_merge-verify)
-    --build-cmd CMD     Build command run inside <merge-verify>
+    --build-cmd CMD     Build command run inside <merge-verify> through
+                        scripts/canon_run.py exec, so the base is built under the
+                        host's cache policy (canonical-build-path PRD decision 9)
                         (env: REIFY_SEED_BUILD_CMD; default: cargo build --release)
     --landed-commit SHA Assert advancing HEAD == SHA AND that SHA has landed
                         (is an ancestor of refs/heads/main)
@@ -244,7 +250,7 @@ ok "Pre-check: mount and reflink OK."
 
 # ── Step 1: cold-build the _merge-verify target/ ──────────────────────────────
 info "Step 1: cold-building _merge-verify target/ (cmd: $BUILD_CMD; RUSTFLAGS=${RUSTFLAGS:-<empty>}) ..."
-if ! (cd "$MERGE_VERIFY" && bash -c "$BUILD_CMD"); then
+if ! (cd "$MERGE_VERIFY" && "$_SCRIPT_DIR/canon_run.py" exec -- bash -c "$BUILD_CMD"); then
     err "Cold build of _merge-verify failed (cmd: $BUILD_CMD); base NOT seeded."
     err "Fix the build failure and re-run this script."
     exit 1
