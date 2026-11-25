@@ -291,7 +291,8 @@ fn geometry_arg_indices(name: &str) -> &'static [usize] {
         "translate" | "rotate" | "scale" | "rotate_around" | "apply_transform" | "affine_apply"
         | "circular_pattern" | "linear_pattern" | "mirror" | "arbitrary_pattern"
         | "linear_pattern_2d" | "extrude" | "extrude_symmetric" | "extrude_infinite"
-        | "revolve" | "revolve_full" | "shell" | "shell_open" | "thicken" | "offset_solid"
+        | "extrude_infinite_symmetric" | "revolve" | "revolve_full" | "shell" | "shell_open"
+        | "thicken" | "offset_solid"
         | "offset_surface" | "offset_curve" | "draft" | "chamfer" | "chamfer_asymmetric" | "fillet" | "fillet_all"
         | "zone_slab" | "zone_cylinder" | "zone_annulus" | "zone_profile" | "isosurface" => &[0],
         "sweep" => &[0, 1],
@@ -802,15 +803,17 @@ fn check_profile_arg(
     }
 }
 
-/// Profile-precondition check for the eight profile-consuming geometry ops
-/// (`extrude`, `extrude_symmetric`, `revolve`, `loft`, `loft_guided`, `sweep`,
+/// Profile-precondition check for the ten profile-consuming geometry ops
+/// (`extrude`, `extrude_symmetric`, `extrude_infinite`,
+/// `extrude_infinite_symmetric`, `revolve`, `loft`, `loft_guided`, `sweep`,
 /// `sweep_guided`, `pipe`) — PRD `docs/prds/geometry-primitive-constructors.md`
 /// task α.
 ///
 /// Called once immediately before the lowering `match name`, reading
 /// `compiled_args` by reference so the arms' `into_iter` consumption is
 /// undisturbed. Dispatch-by-name routes each slot to its requirement:
-/// extrude/extrude_symmetric/revolve → arg0 is a Surface profile; loft → every
+/// extrude/extrude_symmetric/extrude_infinite/extrude_infinite_symmetric/revolve
+/// → arg0 is a Surface profile; loft → every
 /// arg is a profile; loft_guided → all but the trailing guide are profiles;
 /// sweep/sweep_guided → arg0 profile + arg1 Curve path; pipe → arg0 Curve path.
 ///
@@ -833,9 +836,14 @@ fn check_profile_preconditions(
     // an argument-order change there is caught here; if you reorder a lowering arm's
     // positional args, update the matching arm below in lock-step.
     match name {
-        // Lowering arms `"extrude"` / `"extrude_symmetric"` / `"revolve"`: arg0 is
-        // the Surface profile (followed by distance, or by revolve's axis+angle).
-        "extrude" | "extrude_symmetric" | "extrude_infinite" | "revolve" => {
+        // Lowering arms `"extrude"` / `"extrude_symmetric"` / `"extrude_infinite"` /
+        // `"extrude_infinite_symmetric"` / `"revolve"`: arg0 is the Surface profile
+        // (followed by distance, a direction, or revolve's axis and angle).
+        "extrude"
+        | "extrude_symmetric"
+        | "extrude_infinite"
+        | "extrude_infinite_symmetric"
+        | "revolve" => {
             check_profile_arg(compiled_args, ast_args, 0, &PROFILE_SLOT, diagnostics);
         }
         // Lowering arms `"sweep"` / `"sweep_guided"`: arg0 is the Surface profile,
@@ -1331,6 +1339,53 @@ fn emit_rounded_union_compose(
     }
 
     sub_ops
+}
+
+/// `extrude_infinite(profile, direction)` (`symmetric == false`) and
+/// `extrude_infinite_symmetric(profile, direction)` (`symmetric == true`).
+///
+/// Both lower to `SweepKind::ExtrudeInfinite`; the sense travels as a
+/// synthesized `symmetric` Bool, because the eval sees only the kind. The
+/// arity error teaches the Direction form that replaced the retired
+/// `(profile, dx, dy, dz, "positive" | "negative" | "both")`.
+fn extrude_infinite_op(
+    symmetric: bool,
+    compiled_args: Vec<CompiledExpr>,
+    profile: GeomRef,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<CompiledGeometryOp> {
+    if compiled_args.len() != 2 {
+        let got = compiled_args.len();
+        diagnostics.push(Diagnostic::error(if symmetric {
+            format!(
+                "extrude_infinite_symmetric() expects 2 arguments (profile, direction): \
+                 write extrude_infinite_symmetric(profile, dir(x, y, z)), got {got}"
+            )
+        } else {
+            format!(
+                "extrude_infinite() expects 2 arguments (profile, direction): write \
+                 extrude_infinite(profile, dir(x, y, z)); negate the dir for the other \
+                 side, or write extrude_infinite_symmetric(profile, dir(x, y, z)) for \
+                 both sides, got {got}"
+            )
+        }));
+        return None;
+    }
+    let mut it = compiled_args.into_iter();
+    let profile_expr = it.next().unwrap();
+    let direction = it.next().unwrap();
+    Some(CompiledGeometryOp::Sweep {
+        kind: SweepKind::ExtrudeInfinite,
+        profiles: vec![profile],
+        args: vec![
+            ("profile".to_string(), profile_expr),
+            ("direction".to_string(), direction),
+            (
+                "symmetric".to_string(),
+                CompiledExpr::literal(Value::Bool(symmetric), Type::Bool),
+            ),
+        ],
+    })
 }
 
 /// Compile a geometry function call expression into CompiledGeometryOps.
@@ -2247,100 +2302,66 @@ fn compile_geometry_call_inner(
             sub_ops.push(op);
             Some(sub_ops)
         }
-        // extrude_infinite(profile, dx, dy, dz, direction) — unbounded extrusion
-        // along a given axis direction.  direction ∈ {"positive","negative","both"}.
-        // Yields an UNBOUNDED solid (InferredTraits::none() — triggers
+        // extrude_infinite(profile, direction) — semi-infinite extrusion along
+        // the Direction; extrude_infinite_symmetric(profile, direction) runs both
+        // ways. Each yields an UNBOUNDED solid (InferredTraits::none() — triggers
         // E_GEOMETRY_UNBOUNDED at any `param g : Bounded` slot).
         "extrude_infinite" => {
-            if compiled_args.len() != 5 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "extrude_infinite() expects exactly 5 arguments \
-                     (profile, dx, dy, dz, direction), got {}",
-                    compiled_args.len()
-                )));
-                return None;
-            }
-            let mut it = compiled_args.into_iter();
-            let profile_expr = it.next().unwrap();
-            let dx_expr = it.next().unwrap();
-            let dy_expr = it.next().unwrap();
-            let dz_expr = it.next().unwrap();
-            let direction_expr = it.next().unwrap();
-            let profile = geom_ref(0);
-            let op = CompiledGeometryOp::Sweep {
-                kind: SweepKind::ExtrudeInfinite,
-                profiles: vec![profile],
-                args: vec![
-                    ("profile".to_string(), profile_expr),
-                    ("dx".to_string(), dx_expr),
-                    ("dy".to_string(), dy_expr),
-                    ("dz".to_string(), dz_expr),
-                    ("direction".to_string(), direction_expr),
-                ],
-            };
+            let op = extrude_infinite_op(false, compiled_args, geom_ref(0), diagnostics)?;
             sub_ops.push(op);
             Some(sub_ops)
         }
-        // revolve(profile, ox, oy, oz, ax, ay, az, angle)
+        "extrude_infinite_symmetric" => {
+            let op = extrude_infinite_op(true, compiled_args, geom_ref(0), diagnostics)?;
+            sub_ops.push(op);
+            Some(sub_ops)
+        }
+        // revolve(profile, origin, direction, angle) — origin a Point3, direction
+        // a Direction; revolve(profile, axis, angle) — an Axis datum.
         "revolve" => {
-            if compiled_args.len() != 8 {
-                diagnostics.push(Diagnostic::error(format!(
-                    "revolve() expects exactly 8 arguments (profile, ox, oy, oz, ax, ay, az, angle), got {}",
-                    compiled_args.len()
-                )));
-                return None;
-            }
-            let mut it = compiled_args.into_iter();
-            let profile_expr = it.next().unwrap();
-            let ox = it.next().unwrap();
-            let oy = it.next().unwrap();
-            let oz = it.next().unwrap();
-            let ax = it.next().unwrap();
-            let ay = it.next().unwrap();
-            let az = it.next().unwrap();
-            let angle = it.next().unwrap();
-            let profile = geom_ref(0);
+            let names: &[&str] = match compiled_args.len() {
+                4 => &["profile", "origin", "direction", "angle"],
+                3 => &["profile", "axis", "angle"],
+                n => {
+                    diagnostics.push(Diagnostic::error(format!(
+                        "revolve() expects 4 arguments (profile, origin, direction, angle) \
+                         or 3 (profile, axis, angle): write \
+                         revolve(profile, point3(x, y, z), dir(x, y, z), angle) or \
+                         revolve(profile, axis, angle), got {n}"
+                    )));
+                    return None;
+                }
+            };
             let op = CompiledGeometryOp::Sweep {
                 kind: SweepKind::Revolve,
-                profiles: vec![profile],
-                args: vec![
-                    ("profile".to_string(), profile_expr),
-                    ("ox".to_string(), ox),
-                    ("oy".to_string(), oy),
-                    ("oz".to_string(), oz),
-                    ("ax".to_string(), ax),
-                    ("ay".to_string(), ay),
-                    ("az".to_string(), az),
-                    ("angle".to_string(), angle),
-                ],
+                profiles: vec![geom_ref(0)],
+                args: names
+                    .iter()
+                    .map(|name| name.to_string())
+                    .zip(compiled_args)
+                    .collect(),
             };
             sub_ops.push(op);
             Some(sub_ops)
         }
-        // revolve_full(profile, ox, oy, oz, ax, ay, az) — injects 2π for angle
+        // revolve_full(profile, origin, direction) — injects 2π for angle
         "revolve_full" => {
-            if compiled_args.len() != 7 {
+            if compiled_args.len() != 3 {
                 diagnostics.push(Diagnostic::error(format!(
-                    "revolve_full() expects exactly 7 arguments (profile, ox, oy, oz, ax, ay, az), got {}",
+                    "revolve_full() expects 3 arguments (profile, origin, direction): write \
+                     revolve_full(profile, point3(x, y, z), dir(x, y, z)), got {}",
                     compiled_args.len()
                 )));
                 return None;
             }
             let mut it = compiled_args.into_iter();
             let profile_expr = it.next().unwrap();
-            let ox = it.next().unwrap();
-            let oy = it.next().unwrap();
-            let oz = it.next().unwrap();
-            let ax = it.next().unwrap();
-            let ay = it.next().unwrap();
-            let az = it.next().unwrap();
-            // Inject literal 2π (radians) for the angle — ANGLE-dimensioned in
-            // anticipation of the eval-layer angle gate
-            // (docs/prds/v0_6/angle-units-surface-convergence.md, which owns all OTHER
-            // angle gating). TODAY `sweep_revolve` reads this slot via
-            // `Value::as_f64()`, which accepts Real and Scalar alike, so the retype is
-            // behaviour-preserving. `Value::angle` takes radians and the SI angle base
-            // unit IS the radian, so si_value == TAU exactly.
+            let origin = it.next().unwrap();
+            let direction = it.next().unwrap();
+            // Inject literal 2π (radians) for the angle, ANGLE-dimensioned so
+            // `sweep_revolve`'s angle gate accepts it. `Value::angle` takes
+            // radians and the SI angle base unit IS the radian, so
+            // si_value == TAU exactly.
             let tau_expr = CompiledExpr::literal(
                 Value::angle(std::f64::consts::TAU),
                 reify_core::Type::angle(),
@@ -2351,12 +2372,8 @@ fn compile_geometry_call_inner(
                 profiles: vec![profile],
                 args: vec![
                     ("profile".to_string(), profile_expr),
-                    ("ox".to_string(), ox),
-                    ("oy".to_string(), oy),
-                    ("oz".to_string(), oz),
-                    ("ax".to_string(), ax),
-                    ("ay".to_string(), ay),
-                    ("az".to_string(), az),
+                    ("origin".to_string(), origin),
+                    ("direction".to_string(), direction),
                     ("angle".to_string(), tau_expr),
                 ],
             };

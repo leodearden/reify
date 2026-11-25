@@ -170,7 +170,8 @@ fn a_bare_revolve_origin_is_rejected_at_build_naming_the_component() {
         "a bare origin must be an Error naming `ox`, Length and the hint: {diagnostics:?}"
     );
     assert!(
-        !ops.iter().any(|op| matches!(op, GeometryOp::Revolve { .. })),
+        !ops.iter()
+            .any(|op| matches!(op, GeometryOp::Revolve { .. })),
         "a bare origin must drop the revolve: {ops:?}"
     );
 }
@@ -184,7 +185,8 @@ fn assert_degenerate_direction_drops_the_revolve(lets: &str) {
         "{lets}: a dir(0, 0, 0) must surface E_DegenerateDirection: {diagnostics:?}"
     );
     assert!(
-        !ops.iter().any(|op| matches!(op, GeometryOp::Revolve { .. })),
+        !ops.iter()
+            .any(|op| matches!(op, GeometryOp::Revolve { .. })),
         "{lets}: a degenerate direction must drop the revolve: {ops:?}"
     );
     assert!(

@@ -1869,7 +1869,7 @@ fn extrude_infinite_at_bounded_slot_emits_geometry_unbounded() {
             param g : Bounded
         }
         structure def Top {
-            sub x = Foo(g: extrude_infinite(circle(5mm), 0, 0, 1, "positive"))
+            sub x = Foo(g: extrude_infinite(circle(5mm), dir(0, 0, 1)))
         }
     "#;
     let compiled = compile_source_with_stdlib(source);
@@ -1901,7 +1901,7 @@ fn intersection_of_extrude_infinite_with_box_at_bounded_slot_emits_no_geometry_u
             param g : Bounded
         }
         structure def Top {
-            sub x = Foo(g: intersection(extrude_infinite(circle(5mm), 0, 0, 1, "positive"), box(20mm, 20mm, 10mm)))
+            sub x = Foo(g: intersection(extrude_infinite(circle(5mm), dir(0, 0, 1)), box(20mm, 20mm, 10mm)))
         }
     "#;
     let compiled = compile_source_with_stdlib(source);

@@ -262,9 +262,10 @@ enum Justification {
     /// names an entity.
     ///
     /// The ONE reading this guard's sweep added to D14's original seven, and it
-    /// was added because two measured positions fit none of them —
-    /// `isosurface`'s boolean `adaptive` and `extrude_infinite`'s `direction`
-    /// side selector. Recorded here rather than bent into `Index` so the
+    /// was added because a measured position fit none of them — `isosurface`'s
+    /// boolean `adaptive`. (`extrude_infinite`'s retired `direction` side
+    /// selector was its second case until direction-typing ι-b made the sense
+    /// the builtin's name.) Recorded here rather than bent into `Index` so the
     /// extension is visible: a variant is the unit in which a new reading gets
     /// argued.
     ModeFlag,
@@ -1042,6 +1043,22 @@ const RESIDUAL_SPANS: &[(&str, usize, std::ops::Range<usize>, TaskCite, &str)] =
          5745); a scalar literal cannot occupy it",
     ),
     (
+        "revolve",
+        3,
+        0..1,
+        TaskCite(7714),
+        "`origin` is a Point3 gated through `accept_length_point3` under the \
+         ox/oy/oz names; a scalar literal cannot occupy a decoded Point",
+    ),
+    (
+        "revolve_full",
+        2,
+        0..1,
+        TaskCite(7714),
+        "`origin` is a Point3 gated through `accept_length_point3` under the \
+         ox/oy/oz names; a scalar literal cannot occupy a decoded Point",
+    ),
+    (
         "circular_pattern",
         3,
         2..3,
@@ -1113,13 +1130,6 @@ const ALLOWLIST: &[(&str, usize, std::ops::Range<usize>, Justification, &str)] =
         "ax/ay/az — the axis direction, beside the gated ox/oy/oz origin",
     ),
     (
-        "extrude_infinite",
-        4,
-        0..3,
-        Justification::UnitVectorComponent,
-        "dx/dy/dz — the extrusion direction; infinite extent has no length",
-    ),
-    (
         "half_space",
         6,
         3..6,
@@ -1139,20 +1149,6 @@ const ALLOWLIST: &[(&str, usize, std::ops::Range<usize>, Justification, &str)] =
         3..6,
         Justification::UnitVectorComponent,
         "nx/ny/nz — the plane normal, beside the gated ox/oy/oz origin",
-    ),
-    (
-        "revolve",
-        7,
-        3..6,
-        Justification::UnitVectorComponent,
-        "ax/ay/az — the axis direction, beside the gated ox/oy/oz origin",
-    ),
-    (
-        "revolve_full",
-        6,
-        3..6,
-        Justification::UnitVectorComponent,
-        "ax/ay/az — the axis direction, beside the gated ox/oy/oz origin",
     ),
     (
         "rotate",
@@ -1293,6 +1289,45 @@ const ALLOWLIST: &[(&str, usize, std::ops::Range<usize>, Justification, &str)] =
          scalar filler",
     ),
     (
+        "extrude_infinite",
+        1,
+        0..1,
+        Justification::Index,
+        "direction — a Direction (dir(x, y, z)), never a bare number; \
+         decode_direction rejects a scalar filler",
+    ),
+    (
+        "extrude_infinite_symmetric",
+        1,
+        0..1,
+        Justification::Index,
+        "direction — a Direction (dir(x, y, z)), never a bare number; \
+         decode_direction rejects a scalar filler",
+    ),
+    (
+        "revolve",
+        2,
+        0..1,
+        Justification::Index,
+        "axis — an Axis datum, the short form of the origin-and-direction call",
+    ),
+    (
+        "revolve",
+        3,
+        1..2,
+        Justification::Index,
+        "direction — a Direction (dir(x, y, z)), never a bare number; \
+         decode_direction rejects a scalar filler",
+    ),
+    (
+        "revolve_full",
+        2,
+        1..2,
+        Justification::Index,
+        "direction — a Direction (dir(x, y, z)), never a bare number; \
+         decode_direction rejects a scalar filler",
+    ),
+    (
         "rotate",
         1,
         0..1,
@@ -1344,13 +1379,6 @@ const ALLOWLIST: &[(&str, usize, std::ops::Range<usize>, Justification, &str)] =
         "u_degree/v_degree — polynomial degrees",
     ),
     (
-        "extrude_infinite",
-        4,
-        3..4,
-        Justification::ModeFlag,
-        "direction — which side(s) of the profile the infinite extent covers",
-    ),
-    (
         "isosurface",
         3,
         2..3,
@@ -1372,7 +1400,8 @@ const ANGLE_ALLOWLIST: &[(&str, usize, std::ops::Range<usize>, &str)] = &[
     ("circular_pattern", 8, 7..8, "angle, the long form"),
     ("draft", 2, 0..1, "angle, the 3-arg form"),
     ("draft", 3, 1..2, "angle, the 4-arg form"),
-    ("revolve", 7, 6..7, "angle"),
+    ("revolve", 2, 1..2, "angle, the Axis form"),
+    ("revolve", 3, 2..3, "angle, the origin-and-direction form"),
     ("rotate", 4, 3..4, "angle"),
     ("rotate_around", 7, 6..7, "angle"),
 ];

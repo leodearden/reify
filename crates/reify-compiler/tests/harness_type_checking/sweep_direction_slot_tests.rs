@@ -39,14 +39,22 @@ fn arg_type_mismatches(errors: &[Diagnostic]) -> Vec<&Diagnostic> {
 /// Exactly one Error, an `ArgTypeMismatch`; returns its message.
 fn one_mismatch(call: &str) -> String {
     let errors = errors_of(call);
-    assert_eq!(errors.len(), 1, "{call}: expected one Error, got {errors:?}");
+    assert_eq!(
+        errors.len(),
+        1,
+        "{call}: expected one Error, got {errors:?}"
+    );
     let diagnostic = &errors[0];
     assert_eq!(
         diagnostic.code,
         Some(DiagnosticCode::ArgTypeMismatch),
         "{call}: {diagnostic:?}"
     );
-    assert_eq!(diagnostic.severity, Severity::Error, "{call}: {diagnostic:?}");
+    assert_eq!(
+        diagnostic.severity,
+        Severity::Error,
+        "{call}: {diagnostic:?}"
+    );
     diagnostic.message.clone()
 }
 
@@ -168,7 +176,7 @@ fn lowered_sweep(call: &str) -> (SweepKind, Vec<(String, CompiledExpr)>) {
         .flat_map(|t| &t.realizations)
         .flat_map(|r| &r.operations)
         .find_map(|op| match op {
-            CompiledGeometryOp::Sweep { kind, args, .. } => Some((kind.clone(), args.clone())),
+            CompiledGeometryOp::Sweep { kind, args, .. } => Some((*kind, args.clone())),
             _ => None,
         })
         .unwrap_or_else(|| panic!("{call}: no Sweep op was lowered"))
@@ -195,7 +203,10 @@ fn each_form_lowers_to_the_layout_the_eval_reads() {
         "revolve({PROFILE}, point3(0mm, 0mm, 0mm), dir(0, 0, 1), 90deg)"
     ));
     assert_eq!(kind, SweepKind::Revolve);
-    assert_eq!(arg_names(&args), ["profile", "origin", "direction", "angle"]);
+    assert_eq!(
+        arg_names(&args),
+        ["profile", "origin", "direction", "angle"]
+    );
 
     let (kind, args) = lowered_sweep(&format!(
         "revolve({PROFILE}, axis_y(point3(-10mm, 0mm, 0mm)), 90deg)"
@@ -207,7 +218,10 @@ fn each_form_lowers_to_the_layout_the_eval_reads() {
         "revolve_full({PROFILE}, point3(0mm, 0mm, 0mm), dir(0, 1, 0))"
     ));
     assert_eq!(kind, SweepKind::Revolve);
-    assert_eq!(arg_names(&args), ["profile", "origin", "direction", "angle"]);
+    assert_eq!(
+        arg_names(&args),
+        ["profile", "origin", "direction", "angle"]
+    );
     assert_eq!(
         literal_arg(&args, "angle"),
         &Value::angle(std::f64::consts::TAU)
@@ -215,7 +229,10 @@ fn each_form_lowers_to_the_layout_the_eval_reads() {
 
     for (call, symmetric) in [
         (format!("extrude_infinite({PROFILE}, dir(0, 0, 1))"), false),
-        (format!("extrude_infinite_symmetric({PROFILE}, dir(0, 0, 1))"), true),
+        (
+            format!("extrude_infinite_symmetric({PROFILE}, dir(0, 0, 1))"),
+            true,
+        ),
     ] {
         let (kind, args) = lowered_sweep(&call);
         assert_eq!(kind, SweepKind::ExtrudeInfinite, "{call}");
@@ -224,6 +241,10 @@ fn each_form_lowers_to_the_layout_the_eval_reads() {
             ["profile", "direction", "symmetric"],
             "{call}"
         );
-        assert_eq!(literal_arg(&args, "symmetric"), &Value::Bool(symmetric), "{call}");
+        assert_eq!(
+            literal_arg(&args, "symmetric"),
+            &Value::Bool(symmetric),
+            "{call}"
+        );
     }
 }

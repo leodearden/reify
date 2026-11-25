@@ -1002,43 +1002,12 @@ fn nested_primitive_keeps_one_diagnostic_per_axis() {
     );
 }
 
-// ── Task 5750 amendment: message-level pins for the ORIGIN/PIVOT rows ────────
-
-/// SIGNAL — a bare `revolve` axis ORIGIN is rejected, naming `ox`/`oy`/`oz`.
-///
-/// The straddle row: the origin is a point in space (gated), while the axis
-/// DIRECTION `0, 0, 1` in this same call is legitimately bare and must stay
-/// silent. The `90deg` angle is written DIMENSIONED so this row isolates the
-/// origin triple — the angle has its own gated slot and its own test, and
-/// leaving it bare here would silently turn `errors.len() == 3` into 4 while
-/// the assertion message still claimed three. Three errors, not six or seven.
-#[test]
-fn revolve_bare_origin_is_rejected_naming_the_origin_components() {
-    let compiled = compile_struct_body(
-        "    let profile = rectangle(10mm, 10mm)\n\
-         \x20   let r = revolve(profile, 0, 0, 0, 0, 0, 1, 90deg)\n",
-    );
-    let messages: Vec<&str> = arg_type_mismatch_errors(&compiled)
-        .iter()
-        .map(|d| d.message.as_str())
-        .collect();
-    assert_eq!(
-        messages,
-        vec![
-            "revolve: ox argument expects Length, got Int; pass a dimensioned length such as `5mm`",
-            "revolve: oy argument expects Length, got Int; pass a dimensioned length such as `5mm`",
-            "revolve: oz argument expects Length, got Int; pass a dimensioned length such as `5mm`",
-        ],
-        "only the axis ORIGIN is gated here — the axis direction must stay silent \
-         and the angle is already dimensioned.\nAll diagnostics: {:#?}",
-        compiled.diagnostics
-    );
-}
+// ── Task 5750 amendment: message-level pin for the PIVOT row ─────────────────
 
 /// SIGNAL — a bare `rotate_around` PIVOT is rejected, naming `px`/`py`/`pz`.
 ///
-/// Same straddle shape as `revolve`'s, on the TRANSFORM row: the pivot is
-/// gated and the axis direction is not. The angle is written dimensioned for
+/// The straddle row: the pivot is a point in space (gated), while the axis
+/// direction is legitimately bare. The angle is written dimensioned for
 /// the same reason — it carries its own slot, and this row's `errors.len()`
 /// must stay a statement about the pivot alone.
 #[test]
@@ -1064,8 +1033,8 @@ fn rotate_around_bare_pivot_is_rejected_naming_the_pivot_components() {
 // ── Task 5662: mirror / circular_pattern ORIGIN triples, end to end ──────────
 //
 // PRD `docs/prds/v0_6/units-length-gate-completion.md`, the pattern-origin row
-// task 5652 deferred and this task closes. Same straddle shape as the `revolve`
-// and `rotate_around` rows above: the origin is a point in space (gated), the
+// task 5652 deferred and this task closes. Same straddle shape as the
+// `rotate_around` row above: the origin is a point in space (gated), the
 // direction components beside it are dimensionless unit vectors (never gated).
 
 /// SIGNAL — a bare 7-arg `mirror` plane ORIGIN is rejected, naming `ox`/`oy`/`oz`.
@@ -1525,20 +1494,20 @@ fn rotate_orientation_overload_yields_no_arg_type_mismatch() {
 
 /// SIGNAL — a bare `revolve` angle is rejected, naming `angle`.
 ///
-/// The origin triple is written dimensioned so the count isolates the angle:
-/// exactly one error means the ANGLE slot fired and nothing else did.
+/// The origin and direction are written correctly so the count isolates the
+/// angle: exactly one error means the ANGLE slot fired and nothing else did.
 #[test]
 fn revolve_bare_angle_is_rejected_naming_the_angle() {
     let compiled = compile_struct_body(
         "    let profile = rectangle(10mm, 10mm)\n\
-         \x20   let r = revolve(profile, 0mm, 0mm, 0mm, 0, 0, 1, 90)\n",
+         \x20   let r = revolve(profile, point3(0mm, 0mm, 0mm), dir(0, 0, 1), 90)\n",
     );
     let errors = arg_type_mismatch_errors(&compiled);
     assert_eq!(
         errors.len(),
         1,
-        "expected exactly 1 ArgTypeMismatch — the origin is dimensioned and the \
-         axis DIRECTION must stay silent.\nAll diagnostics: {:#?}",
+        "expected exactly 1 ArgTypeMismatch — the origin is a dimensioned point \
+         and the direction a dir(...).\nAll diagnostics: {:#?}",
         compiled.diagnostics
     );
     assert_eq!(
@@ -1571,23 +1540,21 @@ fn rotate_around_bare_angle_is_rejected_naming_the_angle() {
 
 /// BOUNDARY (PRD row B2b) — `revolve_full` must gain NO angle slot.
 ///
-/// The two-way test of the PRD-1/PRD-3 seam. `revolve_full`'s call arity is 7
+/// The two-way test of the PRD-1/PRD-3 seam. `revolve_full`'s call arity is 3
 /// and its 2π is SYNTHESIZED at lowering, so there is no user-written position
-/// to gate. This fails loudly if the split is written as an arity-agnostic
-/// shared `"revolve" | "revolve_full"` arm that happens to be saved by
-/// `compiled_args.get(7)` returning None — because then any `revolve_full` call
-/// reaching index 7 by some other route would fire, and because the arm would
-/// be stating a layout it does not have.
+/// to gate. This fails loudly if `revolve_full` shares `revolve`'s arity-4 arm,
+/// whose angle slot at index 3 would then sit past the call's last argument
+/// and state a layout `revolve_full` does not have.
 #[test]
 fn revolve_full_yields_no_arg_type_mismatch() {
     let compiled = compile_struct_body(
         "    let profile = rectangle(10mm, 10mm)\n\
-         \x20   let r = revolve_full(profile, 0mm, 0mm, 0mm, 0, 1, 0)\n",
+         \x20   let r = revolve_full(profile, point3(0mm, 0mm, 0mm), dir(0, 1, 0))\n",
     );
     let errors = arg_type_mismatch_errors(&compiled);
     assert!(
         errors.is_empty(),
-        "`revolve_full(profile, 0mm, 0mm, 0mm, 0, 1, 0)` is correct code — its \
+        "`revolve_full(profile, point3(0mm, 0mm, 0mm), dir(0, 1, 0))` is correct code — its \
          angle is injected by the compiler, not written by the author.\n\
          All diagnostics: {:#?}",
         compiled.diagnostics
