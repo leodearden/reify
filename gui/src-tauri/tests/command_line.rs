@@ -138,7 +138,7 @@ fn cli_without_a_bundled_cli_exits_127_naming_the_path() {
     let output = gui.run(|command| {
         command.args(["cli", "--version"]);
     });
-    let looked_for = gui.path(CLI_EXECUTABLE);
+    let looked_for = canonical(gui.dir.path()).join(CLI_EXECUTABLE);
     assert_eq!(output.status.code(), Some(127), "{}", describe(&output));
     assert!(
         String::from_utf8_lossy(&output.stderr).contains(&looked_for.display().to_string()),
