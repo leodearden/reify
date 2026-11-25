@@ -309,6 +309,9 @@ pub enum Pattern {
     /// PLINECITE — stale hard line cites. The [`plinecite`](crate::plinecite) module doc is the
     /// canonical definition.
     PLineCite,
+    /// POLDCORE — the old-core hold. The [`poldcore`](crate::poldcore) module doc is the
+    /// canonical definition.
+    POldCoreHold,
 }
 
 /// A pointer to forensic evidence supporting a [`Finding`]. Renders verbatim

@@ -24,6 +24,7 @@ One row per `reify-audit --pattern` token, the CLI vocabulary defined in `reify_
 | `PCITE` | `PManifestCite` | no | repo path: a `docs/prds/**/*.capability-manifest.md` | §2 PCITE |
 | `PPRDSTATUS` | `PPrdStatus` | no | repo path: the PRD (`docs/prds/**.md`) | §2 PPRDSTATUS (batched) |
 | `PLINECITE` | `PLineCite` | no | repo path: the citing file, or `crates/reify-audit/plinecite-baseline.txt` for ledger/scope findings | §2 PLINECITE (grouped per file) |
+| `POLDCORE` | `POldCoreHold` | no | task id for hold-missed, hold-missed-registration-only and holder-state (the holder); repo path `docs/notes/old-evaluation-core-hold.toml` for hold-list-invalid | §2 POLDCORE |
 
 ---
 

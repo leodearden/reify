@@ -152,8 +152,17 @@ fn only_the_task_with_no_edge_and_no_release_is_reported() {
     assert_eq!(finding.pattern, Pattern::POldCoreHold);
     assert_eq!(finding.severity, Severity::High);
     assert_eq!(finding.task_id, "900");
-    assert!(finding.summary.starts_with(HOLD_MISSED), "{}", finding.summary);
-    for named in ["#900", "Task 900 reshapes the engine", ENGINE_EVAL, ENGINE_BUILD_STAGE] {
+    assert!(
+        finding.summary.starts_with(HOLD_MISSED),
+        "{}",
+        finding.summary
+    );
+    for named in [
+        "#900",
+        "Task 900 reshapes the engine",
+        ENGINE_EVAL,
+        ENGINE_BUILD_STAGE,
+    ] {
         assert!(
             finding.summary.contains(named),
             "summary names {named}: {}",
@@ -175,13 +184,18 @@ fn only_the_task_with_no_edge_and_no_release_is_reported() {
 
 #[test]
 fn a_task_whose_only_held_file_is_registration_only_is_low() {
-    let findings = check_one(open_task("900", &["crates/reify-eval/src/new_mod.rs", LIB_RS]));
+    let findings = check_one(open_task(
+        "900",
+        &["crates/reify-eval/src/new_mod.rs", LIB_RS],
+    ));
 
     assert_eq!(findings.len(), 1, "{findings:#?}");
     assert_eq!(findings[0].severity, Severity::Low);
     assert_eq!(findings[0].pattern, Pattern::POldCoreHold);
     assert!(
-        findings[0].summary.starts_with(HOLD_MISSED_REGISTRATION_ONLY),
+        findings[0]
+            .summary
+            .starts_with(HOLD_MISSED_REGISTRATION_ONLY),
         "{}",
         findings[0].summary
     );
@@ -193,7 +207,11 @@ fn registration_only_beside_another_held_file_is_high() {
 
     assert_eq!(findings.len(), 1, "{findings:#?}");
     assert_eq!(findings[0].severity, Severity::High);
-    assert!(findings[0].summary.starts_with(HOLD_MISSED), "{}", findings[0].summary);
+    assert!(
+        findings[0].summary.starts_with(HOLD_MISSED),
+        "{}",
+        findings[0].summary
+    );
 }
 
 #[test]
@@ -287,7 +305,11 @@ fn the_10532_replay_is_one_high_hold_missed() {
     let finding = &findings[0];
     assert_eq!(finding.severity, Severity::High);
     assert_eq!(finding.task_id, "10532");
-    assert!(finding.summary.starts_with(HOLD_MISSED), "{}", finding.summary);
+    assert!(
+        finding.summary.starts_with(HOLD_MISSED),
+        "{}",
+        finding.summary
+    );
     for named in [ENGINE_ADMIN, LIB_RS, "2 of 3"] {
         assert!(
             finding.summary.contains(named),
@@ -379,7 +401,10 @@ fn every_holder_defect_is_named_in_one_finding() {
         trigger_met: true,
         ..healthy_holder()
     };
-    assert_one_holder_state(&holder_state(holder), &["done", "deferred_watch", "trigger_met"]);
+    assert_one_holder_state(
+        &holder_state(holder),
+        &["done", "deferred_watch", "trigger_met"],
+    );
 }
 
 #[test]
@@ -401,7 +426,11 @@ fn assert_only_list_fault(findings: &[Finding], named: &[&str]) {
     assert_eq!(finding.pattern, Pattern::POldCoreHold);
     assert_eq!(finding.severity, Severity::High);
     assert_eq!(finding.task_id, HOLD_LIST);
-    assert!(finding.summary.starts_with(HOLD_LIST_INVALID), "{}", finding.summary);
+    assert!(
+        finding.summary.starts_with(HOLD_LIST_INVALID),
+        "{}",
+        finding.summary
+    );
     for name in named {
         assert!(
             finding.summary.contains(name),
@@ -461,6 +490,10 @@ fn holder_state_comes_first_then_missed_tasks_by_numeric_id() {
         ])
         .check();
 
-    assert_eq!(task_ids(&findings), [HOLDER, "900", "10000"], "{findings:#?}");
+    assert_eq!(
+        task_ids(&findings),
+        [HOLDER, "900", "10000"],
+        "{findings:#?}"
+    );
     assert!(findings[0].summary.starts_with(HOLDER_STATE));
 }

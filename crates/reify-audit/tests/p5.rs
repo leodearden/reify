@@ -125,6 +125,7 @@ mod tests {
             Pattern::PManifestCite,
             Pattern::PPrdStatus,
             Pattern::PLineCite,
+            Pattern::POldCoreHold,
         ] {
             match p {
                 Pattern::P5PhantomDone => {}
@@ -149,6 +150,7 @@ mod tests {
                 Pattern::PManifestCite => {}
                 Pattern::PPrdStatus => {}
                 Pattern::PLineCite => {}
+                Pattern::POldCoreHold => {}
             }
         }
 
