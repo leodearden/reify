@@ -99,3 +99,63 @@ fn eval_prints_the_volumes_the_retired_scalar_forms_printed() {
         );
     }
 }
+
+/// The examples that spelled a retired scalar sweep check clean once migrated
+/// to the Direction forms.
+#[test]
+fn check_accepts_the_migrated_sweep_examples() {
+    for example in [
+        "extrude_infinite.ri",
+        "sweep_degenerate.ri",
+        "geometric_relations/feature_datum_axis.ri",
+    ] {
+        let path = common::example_path(example);
+        let (status, stdout, stderr) = common::run_subcommand("check", &path);
+        assert!(
+            status.success() && error_lines(&stderr).is_empty(),
+            "examples/{example} must check clean\nstdout: {stdout}\nstderr: {stderr}"
+        );
+    }
+}
+
+/// The B8 example still recovers the revolution axis from the Direction-form
+/// revolve.
+#[test]
+fn eval_of_the_feature_datum_axis_example_recovers_the_revolution_axis() {
+    let path = common::example_path("geometric_relations/feature_datum_axis.ri");
+    let (status, stdout, stderr) = common::run_subcommand("eval", &path);
+
+    assert!(
+        status.success(),
+        "feature_datum_axis.ri must evaluate cleanly\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    let expected = "Cyl.axis_dir = dir(0, 1, 0)";
+    assert!(
+        stdout.lines().any(|line| line == expected),
+        "stdout must carry the exact line {expected:?}\nstdout: {stdout}"
+    );
+}
+
+/// ε′ #10154's realized-world fixtures no longer spell the retired 8-argument
+/// revolve. Only that is asserted: their own resolution behaviour is not this
+/// leaf's to pin.
+#[test]
+fn check_of_the_realized_world_fixtures_reports_no_revolve_arity_error() {
+    for fixture in [
+        "realized_world_datum_axis_inline.ri",
+        "realized_world_datum_axis_let.ri",
+        "realized_world_datum_user_fn.ri",
+        "realized_world_guarded_branch.ri",
+        "realized_world_override_instance_datum.ri",
+        "realized_world_override_instance_datum_let.ri",
+    ] {
+        let path = common::workspace_root()
+            .join("tests/prd-gate/fixtures")
+            .join(fixture);
+        let (_, _, stderr) = common::run_subcommand("check", &path.to_string_lossy());
+        assert!(
+            !stderr.contains("revolve() expects"),
+            "{fixture} must not spell a retired revolve arity\nstderr: {stderr}"
+        );
+    }
+}
