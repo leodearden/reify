@@ -68,6 +68,8 @@ mod pin_cell_id_namespace_tests;
 mod port_compile_tests;
 #[path = "harness_modules_ports/prelude_context_tests.rs"]
 mod prelude_context_tests;
+#[path = "harness_modules_ports/pub_import_reexport_tests.rs"]
+mod pub_import_reexport_tests;
 #[path = "harness_modules_ports/qualified_access_compile_tests.rs"]
 mod qualified_access_compile_tests;
 #[path = "harness_modules_ports/reserved_name_lint_tests.rs"]
