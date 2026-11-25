@@ -3,8 +3,9 @@ refresh_warm_base_harness.py — the hermetic staging shared by every unittest
 that runs a COPY of scripts/refresh-warm-base.sh (task 10152):
 test_refresh_warm_base_built_tree.py, test_prune_unconsulted_target.py
 RefreshDelegation, test_evict_dirty_target_units.py RefreshStep,
-test_refresh_warm_base_sockets.py and test_tree_sitter_stale_run_eviction.py
-RefreshStep and SeededLaneEnsure.
+test_refresh_warm_base_sockets.py, test_drop_canon_invocation_files.py
+RefreshStep and test_tree_sitter_stale_run_eviction.py RefreshStep and
+SeededLaneEnsure.
 
 Not a test module itself (no `test_` prefix): run_all.sh never discovers it,
 and the members import it via the sys.path idiom.
@@ -13,7 +14,8 @@ SIBLINGS: stage_refresh() copies the refresh into a fresh scripts/ dir beside
 every sibling script it calls (REFRESH_SIBLINGS), each a no-op stub unless the
 caller asks for the real one or for none. A new sibling call in the refresh is
 added to REFRESH_SIBLINGS once, and every member stages it. A real sibling that
-sources other scripts/ files carries them along (REAL_SIBLING_SOURCES).
+sources or imports other scripts/ files carries them along
+(REAL_SIBLING_SOURCES).
 PATH: install_cp_stub() writes a `cp` that drops --reflink=always, so the
 refresh's reflink copy works on any filesystem; run_refresh() puts it first.
 seed_warm_lane_harness.py reuses it for the members that run the real seed
@@ -29,10 +31,13 @@ from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
 REFRESH = SCRIPTS / "refresh-warm-base.sh"
-REFRESH_SIBLINGS = ("prune-unconsulted-target.sh", "evict-dirty-target-units.py",
-                    "tree-sitter-freshness.sh")
-# The scripts/ files a real copy of each sibling sources from beside itself.
-REAL_SIBLING_SOURCES = {"tree-sitter-freshness.sh": ("lib.sh", "lib_portable.sh")}
+REFRESH_SIBLINGS = ("drop-canon-invocation-files.py", "prune-unconsulted-target.sh",
+                    "evict-dirty-target-units.py", "tree-sitter-freshness.sh")
+# The scripts/ files a real copy of each sibling sources or imports from beside itself.
+REAL_SIBLING_SOURCES = {
+    "drop-canon-invocation-files.py": ("canon_cache.py",),
+    "tree-sitter-freshness.sh": ("lib.sh", "lib_portable.sh"),
+}
 NO_OP_SIBLING = "#!/bin/sh\nexit 0\n"
 
 

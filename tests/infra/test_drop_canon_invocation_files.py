@@ -28,13 +28,14 @@ from pathlib import Path
 INFRA_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(INFRA_DIR))
 import canon_run_fixture as fx  # noqa: E402  (imported after sys.path manipulation)
+import refresh_warm_base_harness as refresh_harness  # noqa: E402
 
 CANON_CACHE = fx.load_canon_cache()
 DROPPER = fx.REPO_ROOT / "scripts" / "drop-canon-invocation-files.py"
 
 
 def scratch(test):
-    tmp = tempfile.TemporaryDirectory(prefix="test-drop-canon-invocation-files-")
+    tmp = tempfile.TemporaryDirectory(prefix="test-canon-copy-hygiene-")
     test.addCleanup(tmp.cleanup)
     return Path(os.path.realpath(tmp.name))
 
@@ -54,7 +55,8 @@ def plant_journal(build_dir):
 
 def plant_session_files(build_dir, pid):
     """The socket node, server stderr and uncached log a supervisor with this pid leaves in build_dir."""
-    files = [Path(path) for path in dataclasses.astuple(CANON_CACHE.SessionFiles.in_build_dir(str(build_dir), pid))]
+    named = CANON_CACHE.SessionFiles.in_build_dir(str(build_dir), pid)
+    files = [Path(path) for path in dataclasses.astuple(named)]
     build_dir.mkdir(parents=True, exist_ok=True)
     for path in files:
         if path.name.endswith(".sock"):
@@ -64,11 +66,25 @@ def plant_session_files(build_dir, pid):
     return files
 
 
+def kind_and_bytes(path):
+    """(file type, bytes when regular) of path itself, never of a link's target."""
+    mode = os.lstat(path).st_mode
+    return stat.S_IFMT(mode), Path(path).read_bytes() if stat.S_ISREG(mode) else None
+
+
 def file_state(path):
-    """(file type, bytes when regular, mtime in ns) of path itself, never of a link's target."""
-    info = os.lstat(path)
-    content = Path(path).read_bytes() if stat.S_ISREG(info.st_mode) else None
-    return stat.S_IFMT(info.st_mode), content, info.st_mtime_ns
+    return (*kind_and_bytes(path), os.lstat(path).st_mtime_ns)
+
+
+def entries_under(root, accept):
+    """Every path below root, symlinks not followed, whose (name, lstat mode) accept() takes."""
+    found = []
+    for directory, dirnames, filenames in os.walk(root, followlinks=False):
+        for name in dirnames + filenames:
+            path = Path(directory, name)
+            if accept(name, os.lstat(path).st_mode):
+                found.append(path)
+    return found
 
 
 def drop(*args):
@@ -147,6 +163,67 @@ class DropRule(unittest.TestCase):
         self.assertEqual(result.returncode, 1, diag(result))
         self.assertEqual(result.stdout, "")
         self.assertIn(str(journal), result.stderr)
+
+
+class RefreshStep(unittest.TestCase):
+    """refresh-warm-base.sh's Step 3a runs the REAL dropper on the staging copy,
+    never on the advancing target. Staged by refresh_warm_base_harness; the lane
+    is a git repository on main whose untracked target/ advances."""
+
+    KEEPERS = (Path("debug") / "libplaceholder.rlib", Path(".reify-build-root"))
+
+    def setUp(self):
+        self.tmp = scratch(self)
+        self.stub_dir = self.tmp / "stub-bin"
+        self.stub_dir.mkdir()
+        refresh_harness.install_cp_stub(self.stub_dir)
+        self.refresh = refresh_harness.stage_refresh(self.tmp / "scripts", real=(DROPPER.name,))
+        self.lane = self.tmp / "lane"
+        refresh_harness.init_lane(self.lane)
+        (self.lane / "tracked.txt").write_text("tracked\n")
+        refresh_harness.git(self.lane, "add", "--", "tracked.txt")
+        self.head = refresh_harness.commit(self.lane, "-m", "fixture: one tracked file")
+        self.advancing = self.lane / "target"
+        self.planted = [
+            plant_journal(self.advancing),
+            plant_journal(self.advancing / "nested-build"),
+            *plant_session_files(self.advancing, dead_pid()),
+        ]
+        (self.advancing / self.KEEPERS[0]).parent.mkdir(parents=True)
+        (self.advancing / self.KEEPERS[0]).write_text("placeholder artifact\n")
+        (self.advancing / self.KEEPERS[1]).write_text("/opt/reify-canon/ws\n")
+        self.base = self.tmp / "base"
+
+    def run_refresh(self, refresh=None):
+        return refresh_harness.run_refresh(refresh or self.refresh, self.stub_dir, self.advancing,
+                                           self.base, self.head)
+
+    def test_the_new_gen_carries_no_invocation_file_and_keeps_the_rest(self):
+        result = self.run_refresh()
+        self.assertEqual(result.returncode, 0, diag(result))
+        gen = Path(os.readlink(self.base))
+        self.assertEqual(entries_under(gen, lambda name, mode: CANON_CACHE.is_invocation_file(name)), [],
+                         diag(result))
+        self.assertEqual(entries_under(gen, lambda name, mode: stat.S_ISSOCK(mode)), [], diag(result))
+        for kept in self.KEEPERS:
+            self.assertEqual((gen / kept).read_bytes(), (self.advancing / kept).read_bytes(),
+                             f"{kept} did not reach the gen unchanged")
+
+    def test_the_advancing_target_keeps_its_own_invocation_files(self):
+        """The _merge-verify lane's journal is its own history."""
+        watched = [*self.planted, *(self.advancing / kept for kept in self.KEEPERS)]
+        before = {path: kind_and_bytes(path) for path in watched}
+        result = self.run_refresh()
+        self.assertEqual(result.returncode, 0, diag(result))
+        self.assertEqual({path: kind_and_bytes(path) for path in watched}, before)
+
+    def test_a_missing_dropper_fails_the_refresh_closed(self):
+        refresh = refresh_harness.stage_refresh(self.tmp / "scripts-without-dropper", absent=(DROPPER.name,))
+        result = self.run_refresh(refresh)
+        self.assertNotEqual(result.returncode, 0, diag(result))
+        self.assertFalse(os.path.lexists(self.base), "the base advanced without the drop")
+        self.assertEqual(sorted(self.tmp.glob("base.gen.*.partial")), [])
+        self.assertIn(DROPPER.name, result.stderr, "the refresh failed before it reached the dropper")
 
 
 class Usage(unittest.TestCase):

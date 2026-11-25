@@ -180,6 +180,10 @@ tests/infra/canon_run_fixture.py          tests/infra/test_canon_launch_sites.sh
 scripts/drop-canon-invocation-files.py  tests/infra/test_drop_canon_invocation_files.sh
 tests/infra/test_drop_canon_invocation_files.py  tests/infra/test_drop_canon_invocation_files.sh
 tests/infra/canon_run_fixture.py  tests/infra/test_drop_canon_invocation_files.sh
+# Its RefreshStep class pins refresh-warm-base.sh's Step 3a to that sibling
+# (fail-closed when missing), staged through the shared refresh harness.
+scripts/refresh-warm-base.sh  tests/infra/test_drop_canon_invocation_files.sh
+tests/infra/refresh_warm_base_harness.py  tests/infra/test_drop_canon_invocation_files.sh
 # Task 10168: tree-sitter-freshness.sh evict-stale, the promote-time removal of
 # tree-sitter-reify build-script runs whose input stamp disagrees with the
 # promoted tree, pinned by a .py suite behind a thin .sh wrapper.
