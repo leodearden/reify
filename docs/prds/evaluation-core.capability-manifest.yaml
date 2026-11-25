@@ -1,0 +1,1235 @@
+# Capability manifest of docs/prds/evaluation-core.md, machine-readable twin.
+# Written with yaml.safe_dump when the PRD was decomposed (2026-11-25); the .md twin is generated from this file.
+prd: docs/prds/evaluation-core.md
+schema_version: 1
+signal_leaves:
+- φ
+tasks:
+- label: α
+  task_id: 10553
+  title: The crate, the body interface and the executor
+  capabilities:
+  - name: crate-registered-in-the-workspace
+    binding: 'built here: `crates/reify-eval-core` is a member of the workspace, with the registrations of PRD 5.3'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"crates/reify-eval-core"'
+      expect: present
+      paths:
+      - Cargo.toml
+  - name: body-interface-and-executor-signal
+    binding: 'built here: the eight clauses of the leaf''s signal, each a test of the crate'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the PRD states this signal in prose and gives its tests no names, so no pattern can be written before the leaf chooses them
+- label: χ
+  task_id: 10554
+  title: Programs that must not compile
+  capabilities:
+  - name: must-not-compile-programs-run-in-the-gate
+    binding: 'built here: one `trybuild` test over the five programs that must fail and the two that must compile (PRD 5.2, decision D9)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: TestCases::new\(\)
+      expect: present
+      paths:
+      - crates/reify-eval-core/tests
+- label: β
+  task_id: 10555
+  title: Structure by declaration
+  capabilities:
+  - name: a_body_learns_its_declaration_only_through_recorded_reads
+    binding: 'built here: the test `a_body_learns_its_declaration_only_through_recorded_reads` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn a_body_learns_its_declaration_only_through_recorded_reads\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: signal-clauses-in-prose
+    binding: 'built here: the clauses of the leaf''s signal that the PRD states in prose (G0 with this leaf''s generator feature, counter assertions), each a test of the crate'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the PRD gives these tests no names; the named tests above stand for the leaf at the dispatch gate
+- label: γ
+  task_id: 10556
+  title: The reference interpreter and random sequences
+  capabilities:
+  - name: reference-interpreter-and-random-sequences
+    binding: 'built here: test code only (the reference interpreter, the generator, the shrinker, the printer); G0 over `cell`, `scope`, `guard` and `collection`'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the leaf is test code whose items the PRD does not name (question 1 of PRD section 15 leaves their form to the leaf), so no pattern can be written before it
+- label: δ
+  task_id: 10557
+  title: The store
+  capabilities:
+  - name: a_body_never_observes_an_unready_read
+    binding: 'built here: the test `a_body_never_observes_an_unready_read` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn a_body_never_observes_an_unready_read\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: values_of_different_types_never_share_a_content
+    binding: 'built here: the test `values_of_different_types_never_share_a_content` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn values_of_different_types_never_share_a_content\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: two_places_check_catches_resource_minted_id_in_result
+    binding: 'built here: the test `two_places_check_catches_resource_minted_id_in_result` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn two_places_check_catches_resource_minted_id_in_result\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: order_check_detects_result_mutated_through_exclusive_resource
+    binding: 'built here: the test `order_check_detects_result_mutated_through_exclusive_resource` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn order_check_detects_result_mutated_through_exclusive_resource\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: signal-clauses-in-prose
+    binding: 'built here: the clauses of the leaf''s signal that the PRD states in prose (G0 with this leaf''s generator feature, counter assertions), each a test of the crate'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the PRD gives these tests no names; the named tests above stand for the leaf at the dispatch gate
+- label: ε
+  task_id: 10558
+  title: Cycles
+  capabilities:
+  - name: a_binding_to_a_sibling_place_is_not_a_read_by_the_declaring_scope
+    binding: 'built here: the test `a_binding_to_a_sibling_place_is_not_a_read_by_the_declaring_scope` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn a_binding_to_a_sibling_place_is_not_a_read_by_the_declaring_scope\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: two_cell_ring_answers_cycle_on_both_whatever_is_demanded_first
+    binding: 'built here: the test `two_cell_ring_answers_cycle_on_both_whatever_is_demanded_first` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn two_cell_ring_answers_cycle_on_both_whatever_is_demanded_first\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: conditional_mutual_reference_without_a_ring_of_running_bodies_is_not_a_cycle
+    binding: 'built here: the test `conditional_mutual_reference_without_a_ring_of_running_bodies_is_not_a_cycle` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn conditional_mutual_reference_without_a_ring_of_running_bodies_is_not_a_cycle\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: signal-clauses-in-prose
+    binding: 'built here: the clauses of the leaf''s signal that the PRD states in prose (G0 with this leaf''s generator feature, counter assertions), each a test of the crate'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the PRD gives these tests no names; the named tests above stand for the leaf at the dispatch gate
+- label: η
+  task_id: 10559
+  title: Limits as settings, and the paths budget
+  capabilities:
+  - name: depth_limit_failure_is_a_fact_about_the_path_not_shared_by_content
+    binding: 'built here: the test `depth_limit_failure_is_a_fact_about_the_path_not_shared_by_content` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn depth_limit_failure_is_a_fact_about_the_path_not_shared_by_content\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: shared_exponential_tree_ends_by_paths_budget_not_node_budget
+    binding: 'built here: the test `shared_exponential_tree_ends_by_paths_budget_not_node_budget` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn shared_exponential_tree_ends_by_paths_budget_not_node_budget\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: signal-clauses-in-prose
+    binding: 'built here: the clauses of the leaf''s signal that the PRD states in prose (G0 with this leaf''s generator feature, counter assertions), each a test of the crate'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the PRD gives these tests no names; the named tests above stand for the leaf at the dispatch gate
+- label: θ
+  task_id: 10560
+  title: Children declared by a running body
+  capabilities:
+  - name: children_declared_in_a_loop_get_distinct_paths
+    binding: 'built here: the test `children_declared_in_a_loop_get_distinct_paths` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn children_declared_in_a_loop_get_distinct_paths\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: one_inner_call_site_reached_from_two_outer_calls_gets_two_paths
+    binding: 'built here: the test `one_inner_call_site_reached_from_two_outer_calls_gets_two_paths` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn one_inner_call_site_reached_from_two_outer_calls_gets_two_paths\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: body_declared_child_is_shared_and_resolvable_without_rerunning_its_parent
+    binding: 'built here: the test `body_declared_child_is_shared_and_resolvable_without_rerunning_its_parent` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn body_declared_child_is_shared_and_resolvable_without_rerunning_its_parent\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: unbounded_body_declared_recursion_stops_at_the_depth_limit_with_one_failure
+    binding: 'built here: the test `unbounded_body_declared_recursion_stops_at_the_depth_limit_with_one_failure` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn unbounded_body_declared_recursion_stops_at_the_depth_limit_with_one_failure\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: signal-clauses-in-prose
+    binding: 'built here: the clauses of the leaf''s signal that the PRD states in prose (G0 with this leaf''s generator feature, counter assertions), each a test of the crate'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the PRD gives these tests no names; the named tests above stand for the leaf at the dispatch gate
+- label: ι
+  task_id: 10561
+  title: Views
+  capabilities:
+  - name: a_substitution_under_an_absent_parent_answers_absent
+    binding: 'built here: the test `a_substitution_under_an_absent_parent_answers_absent` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn a_substitution_under_an_absent_parent_answers_absent\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: an_unassigned_unknown_inside_its_own_solve_never_reaches_the_solve
+    binding: 'built here: the test `an_unassigned_unknown_inside_its_own_solve_never_reaches_the_solve` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn an_unassigned_unknown_inside_its_own_solve_never_reaches_the_solve\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: solve_reached_again_under_its_own_view_is_a_cycle_and_terminates
+    binding: 'built here: the test `solve_reached_again_under_its_own_view_is_a_cycle_and_terminates` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn solve_reached_again_under_its_own_view_is_a_cycle_and_terminates\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: read_outside_view_after_opening_it_fails_the_run
+    binding: 'built here: the test `read_outside_view_after_opening_it_fails_the_run` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn read_outside_view_after_opening_it_fails_the_run\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: view_reports_which_answers_depended_on_substitution
+    binding: 'built here: the test `view_reports_which_answers_depended_on_substitution` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn view_reports_which_answers_depended_on_substitution\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: signal-clauses-in-prose
+    binding: 'built here: the clauses of the leaf''s signal that the PRD states in prose (G0 with this leaf''s generator feature, counter assertions), each a test of the crate'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the PRD gives these tests no names; the named tests above stand for the leaf at the dispatch gate
+- label: κ
+  task_id: 10562
+  title: What a view-opener's trials rested on
+  capabilities:
+  - name: solve_rests_on_ordinary_values_its_constraints_read_under_trial
+    binding: 'built here: the test `solve_rests_on_ordinary_values_its_constraints_read_under_trial` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn solve_rests_on_ordinary_values_its_constraints_read_under_trial\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: rests_on_member_with_changed_content_invalidates_stored_solve
+    binding: 'built here: the test `rests_on_member_with_changed_content_invalidates_stored_solve` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn rests_on_member_with_changed_content_invalidates_stored_solve\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: solve_rests_on_inputs_its_trial_nodes_read_after_edit_and_across_places
+    binding: 'built here: the test `solve_rests_on_inputs_its_trial_nodes_read_after_edit_and_across_places` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn solve_rests_on_inputs_its_trial_nodes_read_after_edit_and_across_places\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: rests_on_check_evaluates_members_as_ordinary_answers_of_the_snapshot
+    binding: 'built here: the test `rests_on_check_evaluates_members_as_ordinary_answers_of_the_snapshot` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn rests_on_check_evaluates_members_as_ordinary_answers_of_the_snapshot\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: rests_on_check_stops_at_first_changed_member_in_first_read_order
+    binding: 'built here: the test `rests_on_check_stops_at_first_changed_member_in_first_read_order` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn rests_on_check_stops_at_first_changed_member_in_first_read_order\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: rests_on_check_that_waits_on_a_running_reader_misses_instead_of_cycling
+    binding: 'built here: the test `rests_on_check_that_waits_on_a_running_reader_misses_instead_of_cycling` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn rests_on_check_that_waits_on_a_running_reader_misses_instead_of_cycling\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: final_state_finds_trial_results_when_solver_substitutes_final_content
+    binding: 'built here: the test `final_state_finds_trial_results_when_solver_substitutes_final_content` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn final_state_finds_trial_results_when_solver_substitutes_final_content\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: change_and_change_back_refinds_a_view_opening_node
+    binding: 'built here: the test `change_and_change_back_refinds_a_view_opening_node` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn change_and_change_back_refinds_a_view_opening_node\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: stored_solve_is_not_found_when_a_rested_on_member_comes_to_depend_on_a_substituted_path
+    binding: 'built here: the test `stored_solve_is_not_found_when_a_rested_on_member_comes_to_depend_on_a_substituted_path` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn stored_solve_is_not_found_when_a_rested_on_member_comes_to_depend_on_a_substituted_path\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: signal-clauses-in-prose
+    binding: 'built here: the clauses of the leaf''s signal that the PRD states in prose (G0 with this leaf''s generator feature, counter assertions), each a test of the crate'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the PRD gives these tests no names; the named tests above stand for the leaf at the dispatch gate
+- label: λ
+  task_id: 10563
+  title: A view inside a view
+  capabilities:
+  - name: guard_that_reads_an_unknown_is_evaluated_per_trial_not_a_cycle
+    binding: 'built here: the test `guard_that_reads_an_unknown_is_evaluated_per_trial_not_a_cycle` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn guard_that_reads_an_unknown_is_evaluated_per_trial_not_a_cycle\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: mutually_dependent_solves_fail_as_one_cycle_whatever_the_demand_order
+    binding: 'built here: the test `mutually_dependent_solves_fail_as_one_cycle_whatever_the_demand_order` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn mutually_dependent_solves_fail_as_one_cycle_whatever_the_demand_order\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: solves_coupled_through_arguments_are_a_plain_ring
+    binding: 'built here: the test `solves_coupled_through_arguments_are_a_plain_ring` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn solves_coupled_through_arguments_are_a_plain_ring\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: inner_solve_with_outer_dependent_inputs_follows_each_outer_trial_without_cycle
+    binding: 'built here: the test `inner_solve_with_outer_dependent_inputs_follows_each_outer_trial_without_cycle` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn inner_solve_with_outer_dependent_inputs_follows_each_outer_trial_without_cycle\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: element_solve_independent_of_the_count_answers_under_every_count_trial
+    binding: 'built here: the test `element_solve_independent_of_the_count_answers_under_every_count_trial` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn element_solve_independent_of_the_count_answers_under_every_count_trial\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: inner_solve_follows_outer_trial_when_its_view_reads_another_part_of_the_outer_substitution
+    binding: 'built here: the test `inner_solve_follows_outer_trial_when_its_view_reads_another_part_of_the_outer_substitution` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn inner_solve_follows_outer_trial_when_its_view_reads_another_part_of_the_outer_substitution\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: inner_solve_infeasible_under_all_but_one_outer_trial_is_found_by_the_outer_solve
+    binding: 'built here: the test `inner_solve_infeasible_under_all_but_one_outer_trial_is_found_by_the_outer_solve` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn inner_solve_infeasible_under_all_but_one_outer_trial_is_found_by_the_outer_solve\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: signal-clauses-in-prose
+    binding: 'built here: the clauses of the leaf''s signal that the PRD states in prose (G0 with this leaf''s generator feature, counter assertions), each a test of the crate'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the PRD gives these tests no names; the named tests above stand for the leaf at the dispatch gate
+- label: μ₁
+  task_id: 10564
+  title: What a new snapshot inherits
+  capabilities:
+  - name: absent_answers_are_indexed_with_their_ancestor_reads
+    binding: 'built here: the test `absent_answers_are_indexed_with_their_ancestor_reads` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn absent_answers_are_indexed_with_their_ancestor_reads\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: scope_gaining_a_member_compares_one_declaration_per_child_and_touches_nothing_below
+    binding: 'built here: the test `scope_gaining_a_member_compares_one_declaration_per_child_and_touches_nothing_below` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn scope_gaining_a_member_compares_one_declaration_per_child_and_touches_nothing_below\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: work_after_an_edit_stops_where_content_is_unchanged
+    binding: 'built here: the test `work_after_an_edit_stops_where_content_is_unchanged` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn work_after_an_edit_stops_where_content_is_unchanged\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: repointing_a_passed_along_binding_reaches_the_child
+    binding: 'built here: the test `repointing_a_passed_along_binding_reaches_the_child` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn repointing_a_passed_along_binding_reaches_the_child\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: signal-clauses-in-prose
+    binding: 'built here: the clauses of the leaf''s signal that the PRD states in prose (G0 with this leaf''s generator feature, counter assertions), each a test of the crate'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the PRD gives these tests no names; the named tests above stand for the leaf at the dispatch gate
+- label: μ₂
+  task_id: 10565
+  title: Inheriting a node whose body declared children
+  capabilities:
+  - name: child_a_rerun_body_stops_declaring_becomes_absent
+    binding: 'built here: the test `child_a_rerun_body_stops_declaring_becomes_absent` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn child_a_rerun_body_stops_declaring_becomes_absent\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: child_of_a_parent_answered_from_the_store_is_absent_when_not_declared
+    binding: 'built here: the test `child_of_a_parent_answered_from_the_store_is_absent_when_not_declared` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn child_of_a_parent_answered_from_the_store_is_absent_when_not_declared\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: branch_left_by_an_edit_is_not_evaluated_before_its_reader_is_rechecked
+    binding: 'built here: the test `branch_left_by_an_edit_is_not_evaluated_before_its_reader_is_rechecked` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn branch_left_by_an_edit_is_not_evaluated_before_its_reader_is_rechecked\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: child_appearing_at_a_path_already_answered_absent_is_found
+    binding: 'built here: the test `child_appearing_at_a_path_already_answered_absent_is_found` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn child_appearing_at_a_path_already_answered_absent_is_found\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: signal-clauses-in-prose
+    binding: 'built here: the clauses of the leaf''s signal that the PRD states in prose (G0 with this leaf''s generator feature, counter assertions), each a test of the crate'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the PRD gives these tests no names; the named tests above stand for the leaf at the dispatch gate
+- label: ν
+  task_id: 10566
+  title: Inheriting a node that opened a view
+  capabilities:
+  - name: independent_solve_groups_fail_and_resolve_independently
+    binding: 'built here: the test `independent_solve_groups_fail_and_resolve_independently` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn independent_solve_groups_fail_and_resolve_independently\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: edit_that_routes_a_rested_on_member_through_the_unknown_is_a_miss_not_a_cycle
+    binding: 'built here: the test `edit_that_routes_a_rested_on_member_through_the_unknown_is_a_miss_not_a_cycle` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn edit_that_routes_a_rested_on_member_through_the_unknown_is_a_miss_not_a_cycle\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: signal-clauses-in-prose
+    binding: 'built here: the clauses of the leaf''s signal that the PRD states in prose (G0 with this leaf''s generator feature, counter assertions), each a test of the crate'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the PRD gives these tests no names; the named tests above stand for the leaf at the dispatch gate
+- label: ξ₁
+  task_id: 10567
+  title: Inheriting from a snapshot whose work was unfinished
+  capabilities:
+  - name: edit_made_while_the_parent_is_still_evaluating_never_inherits_a_stale_answer
+    binding: 'built here: the test `edit_made_while_the_parent_is_still_evaluating_never_inherits_a_stale_answer` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn edit_made_while_the_parent_is_still_evaluating_never_inherits_a_stale_answer\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: entry_inherited_from_an_unfinished_walk_is_reconfirmed_before_it_is_served
+    binding: 'built here: the test `entry_inherited_from_an_unfinished_walk_is_reconfirmed_before_it_is_served` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn entry_inherited_from_an_unfinished_walk_is_reconfirmed_before_it_is_served\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: signal-clauses-in-prose
+    binding: 'built here: the clauses of the leaf''s signal that the PRD states in prose (G0 with this leaf''s generator feature, counter assertions), each a test of the crate'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the PRD gives these tests no names; the named tests above stand for the leaf at the dispatch gate
+- label: ξ₂
+  task_id: 10568
+  title: A changed demand
+  capabilities:
+  - name: path_dropped_from_demand_is_not_inherited_stale
+    binding: 'built here: the test `path_dropped_from_demand_is_not_inherited_stale` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn path_dropped_from_demand_is_not_inherited_stale\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: signal-clauses-in-prose
+    binding: 'built here: the clauses of the leaf''s signal that the PRD states in prose (G0 with this leaf''s generator feature, counter assertions), each a test of the crate'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the PRD gives these tests no names; the named tests above stand for the leaf at the dispatch gate
+- label: ξ₃
+  task_id: 10569
+  title: A changed limit setting
+  capabilities:
+  - name: changing_a_limit_setting_reaches_every_path_whose_check_changes
+    binding: 'built here: the test `changing_a_limit_setting_reaches_every_path_whose_check_changes` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn changing_a_limit_setting_reaches_every_path_whose_check_changes\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: signal-clauses-in-prose
+    binding: 'built here: the clauses of the leaf''s signal that the PRD states in prose (G0 with this leaf''s generator feature, counter assertions), each a test of the crate'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the PRD gives these tests no names; the named tests above stand for the leaf at the dispatch gate
+- label: ζ
+  task_id: 10570
+  title: Joining a run in flight
+  capabilities:
+  - name: first_evaluation_of_a_fold_over_n_elements_runs_its_body_once
+    binding: 'built here: the test `first_evaluation_of_a_fold_over_n_elements_runs_its_body_once` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn first_evaluation_of_a_fold_over_n_elements_runs_its_body_once\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: inner_solve_independent_of_the_outer_trial_runs_once
+    binding: 'built here: the test `inner_solve_independent_of_the_outer_trial_runs_once` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn inner_solve_independent_of_the_outer_trial_runs_once\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: signal-clauses-in-prose
+    binding: 'built here: the clauses of the leaf''s signal that the PRD states in prose (G0 with this leaf''s generator feature, counter assertions), each a test of the crate'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the PRD gives these tests no names; the named tests above stand for the leaf at the dispatch gate
+- label: ο
+  task_id: 10571
+  title: Determinism and the nonce
+  capabilities:
+  - name: seeded_reader_of_nondet_result_not_found_after_remake
+    binding: 'built here: the test `seeded_reader_of_nondet_result_not_found_after_remake` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn seeded_reader_of_nondet_result_not_found_after_remake\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: debug_mode_catches_a_false_determinism_claim
+    binding: 'built here: the test `debug_mode_catches_a_false_determinism_claim` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn debug_mode_catches_a_false_determinism_claim\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: answers_downstream_of_a_nondeterministic_result_equal_a_fresh_evaluation_seeded_with_it
+    binding: 'built here: the test `answers_downstream_of_a_nondeterministic_result_equal_a_fresh_evaluation_seeded_with_it` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn answers_downstream_of_a_nondeterministic_result_equal_a_fresh_evaluation_seeded_with_it\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: signal-clauses-in-prose
+    binding: 'built here: the clauses of the leaf''s signal that the PRD states in prose (G0 with this leaf''s generator feature, counter assertions), each a test of the crate'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the PRD gives these tests no names; the named tests above stand for the leaf at the dispatch gate
+- label: π
+  task_id: 10572
+  title: What was there last time
+  capabilities:
+  - name: equal_roots_share_results_but_not_place
+    binding: 'built here: the test `equal_roots_share_results_but_not_place` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn equal_roots_share_results_but_not_place\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: identical_lookups_in_flight_run_the_body_once
+    binding: 'built here: the test `identical_lookups_in_flight_run_the_body_once` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn identical_lookups_in_flight_run_the_body_once\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: previous_is_last_final_answer_outside_views_and_changed_covers_only_reads_made
+    binding: 'built here: the test `previous_is_last_final_answer_outside_views_and_changed_covers_only_reads_made` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn previous_is_last_final_answer_outside_views_and_changed_covers_only_reads_made\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: previous_found_at_body_declared_child_after_argument_change
+    binding: 'built here: the test `previous_found_at_body_declared_child_after_argument_change` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn previous_found_at_body_declared_child_after_argument_change\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: kept_state_reaches_next_run_at_same_path_after_input_change
+    binding: 'built here: the test `kept_state_reaches_next_run_at_same_path_after_input_change` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn kept_state_reaches_next_run_at_same_path_after_input_change\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: returning_the_previous_result_keeps_its_content_and_spares_its_readers
+    binding: 'built here: the test `returning_the_previous_result_keeps_its_content_and_spares_its_readers` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn returning_the_previous_result_keeps_its_content_and_spares_its_readers\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: warm_started_hashable_result_with_unchanged_value_keeps_content
+    binding: 'built here: the test `warm_started_hashable_result_with_unchanged_value_keeps_content` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn warm_started_hashable_result_with_unchanged_value_keeps_content\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: warm_start_never_changes_whether_a_solve_succeeds
+    binding: 'built here: the test `warm_start_never_changes_whether_a_solve_succeeds` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn warm_start_never_changes_whether_a_solve_succeeds\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: warm_started_trials_file_an_alternative_rested_on_set_beside_the_cold_one
+    binding: 'built here: the test `warm_started_trials_file_an_alternative_rested_on_set_beside_the_cold_one` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn warm_started_trials_file_an_alternative_rested_on_set_beside_the_cold_one\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: signal-clauses-in-prose
+    binding: 'built here: the clauses of the leaf''s signal that the PRD states in prose (G0 with this leaf''s generator feature, counter assertions), each a test of the crate'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the PRD gives these tests no names; the named tests above stand for the leaf at the dispatch gate
+- label: ρ
+  task_id: 10573
+  title: Ownership, trimming and release
+  capabilities:
+  - name: looking_inside_a_passed_opaque_value_is_a_recorded_read
+    binding: 'built here: the test `looking_inside_a_passed_opaque_value_is_a_recorded_read` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn looking_inside_a_passed_opaque_value_is_a_recorded_read\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: a_nondeterministic_answer_is_pinned_for_every_reader_in_its_snapshot
+    binding: 'built here: the test `a_nondeterministic_answer_is_pinned_for_every_reader_in_its_snapshot` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn a_nondeterministic_answer_is_pinned_for_every_reader_in_its_snapshot\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: remade_nondeterministic_result_gets_new_content_and_downstream_reruns
+    binding: 'built here: the test `remade_nondeterministic_result_gets_new_content_and_downstream_reruns` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn remade_nondeterministic_result_gets_new_content_and_downstream_reruns\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: results_reached_only_from_trials_are_trimmed_first_and_released
+    binding: 'built here: the test `results_reached_only_from_trials_are_trimmed_first_and_released` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn results_reached_only_from_trials_are_trimmed_first_and_released\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: trimmed_shapes_released_once_and_slider_session_stays_bounded
+    binding: 'built here: the test `trimmed_shapes_released_once_and_slider_session_stays_bounded` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn trimmed_shapes_released_once_and_slider_session_stays_bounded\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: every_shape_produced_for_a_dropped_body_is_released
+    binding: 'built here: the test `every_shape_produced_for_a_dropped_body_is_released` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn every_shape_produced_for_a_dropped_body_is_released\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: trimming_a_nonce_result_leaves_its_dependents_reclaimable
+    binding: 'built here: the test `trimming_a_nonce_result_leaves_its_dependents_reclaimable` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn trimming_a_nonce_result_leaves_its_dependents_reclaimable\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: signal-clauses-in-prose
+    binding: 'built here: the clauses of the leaf''s signal that the PRD states in prose (G0 with this leaf''s generator feature, counter assertions), each a test of the crate'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the PRD gives these tests no names; the named tests above stand for the leaf at the dispatch gate
+- label: σ
+  task_id: 10574
+  title: Freshness and progress
+  capabilities:
+  - name: exclusive_section_handle_offers_cancelled_progress_emit_without_waiting
+    binding: 'built here: the test `exclusive_section_handle_offers_cancelled_progress_emit_without_waiting` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn exclusive_section_handle_offers_cancelled_progress_emit_without_waiting\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: reader_of_an_emitted_partial_is_recomputed_when_the_input_becomes_final
+    binding: 'built here: the test `reader_of_an_emitted_partial_is_recomputed_when_the_input_becomes_final` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn reader_of_an_emitted_partial_is_recomputed_when_the_input_becomes_final\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: intermediate_answer_becomes_final_in_its_snapshot_and_descendants
+    binding: 'built here: the test `intermediate_answer_becomes_final_in_its_snapshot_and_descendants` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn intermediate_answer_becomes_final_in_its_snapshot_and_descendants\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: a_transient_failure_does_not_survive_into_a_later_snapshot
+    binding: 'built here: the test `a_transient_failure_does_not_survive_into_a_later_snapshot` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn a_transient_failure_does_not_survive_into_a_later_snapshot\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: progress_reaches_watcher_and_never_changes_result_or_key
+    binding: 'built here: the test `progress_reaches_watcher_and_never_changes_result_or_key` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn progress_reaches_watcher_and_never_changes_result_or_key\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: signal-clauses-in-prose
+    binding: 'built here: the clauses of the leaf''s signal that the PRD states in prose (G0 with this leaf''s generator feature, counter assertions), each a test of the crate'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the PRD gives these tests no names; the named tests above stand for the leaf at the dispatch gate
+- label: τ
+  task_id: 10575
+  title: Scheduling and budgets
+  capabilities:
+  - name: cold_reads_between_nodes_of_one_kind_do_not_deadlock_and_identical_runs_are_shared
+    binding: 'built here: the test `cold_reads_between_nodes_of_one_kind_do_not_deadlock_and_identical_runs_are_shared` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn cold_reads_between_nodes_of_one_kind_do_not_deadlock_and_identical_runs_are_shared\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: budget_exhaustion_is_one_request_error_and_stores_nothing
+    binding: 'built here: the test `budget_exhaustion_is_one_request_error_and_stores_nothing` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn budget_exhaustion_is_one_request_error_and_stores_nothing\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: solver_budget_exhaustion_is_stored_and_request_budget_exhaustion_is_not
+    binding: 'built here: the test `solver_budget_exhaustion_is_stored_and_request_budget_exhaustion_is_not` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn solver_budget_exhaustion_is_stored_and_request_budget_exhaustion_is_not\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: signal-clauses-in-prose
+    binding: 'built here: the clauses of the leaf''s signal that the PRD states in prose (G0 with this leaf''s generator feature, counter assertions), each a test of the crate'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the PRD gives these tests no names; the named tests above stand for the leaf at the dispatch gate
+- label: υ
+  task_id: 10576
+  title: What an answer read, and what read it
+  capabilities:
+  - name: read_all_of_child_declarations_starts_every_child_before_waiting
+    binding: 'built here: the test `read_all_of_child_declarations_starts_every_child_before_waiting` of the crate, an entry of the catalogue under this leaf'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn read_all_of_child_declarations_starts_every_child_before_waiting\(
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: signal-clauses-in-prose
+    binding: 'built here: the clauses of the leaf''s signal that the PRD states in prose (G0 with this leaf''s generator feature, counter assertions), each a test of the crate'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the PRD gives these tests no names; the named tests above stand for the leaf at the dispatch gate
+- label: φ
+  task_id: 10577
+  title: Section 11 at size, and the boundary scenarios
+  capabilities:
+  - name: scenario-K1
+    binding: 'built here: the test of boundary scenario K1 (PRD section 10), named by the prefix PRD 12.4 fixes'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn scenario_k01_
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: scenario-K2
+    binding: 'built here: the test of boundary scenario K2 (PRD section 10), named by the prefix PRD 12.4 fixes'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn scenario_k02_
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: scenario-K3
+    binding: 'built here: the test of boundary scenario K3 (PRD section 10), named by the prefix PRD 12.4 fixes'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn scenario_k03_
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: scenario-K4
+    binding: 'built here: the test of boundary scenario K4 (PRD section 10), named by the prefix PRD 12.4 fixes'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn scenario_k04_
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: scenario-K5
+    binding: 'built here: the test of boundary scenario K5 (PRD section 10), named by the prefix PRD 12.4 fixes'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn scenario_k05_
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: scenario-K6
+    binding: 'built here: the test of boundary scenario K6 (PRD section 10), named by the prefix PRD 12.4 fixes'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn scenario_k06_
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: scenario-K7
+    binding: 'built here: the test of boundary scenario K7 (PRD section 10), named by the prefix PRD 12.4 fixes'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn scenario_k07_
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: scenario-K8
+    binding: 'built here: the test of boundary scenario K8 (PRD section 10), named by the prefix PRD 12.4 fixes'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn scenario_k08_
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: scenario-K9
+    binding: 'built here: the test of boundary scenario K9 (PRD section 10), named by the prefix PRD 12.4 fixes'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn scenario_k09_
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: scenario-K10
+    binding: 'built here: the test of boundary scenario K10 (PRD section 10), named by the prefix PRD 12.4 fixes'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn scenario_k10_
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: scenario-K11
+    binding: 'built here: the test of boundary scenario K11 (PRD section 10), named by the prefix PRD 12.4 fixes'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn scenario_k11_
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: scenario-K12
+    binding: 'built here: the test of boundary scenario K12 (PRD section 10), named by the prefix PRD 12.4 fixes'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn scenario_k12_
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: scenario-K13
+    binding: 'built here: the test of boundary scenario K13 (PRD section 10), named by the prefix PRD 12.4 fixes'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn scenario_k13_
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: scenario-K14
+    binding: 'built here: the test of boundary scenario K14 (PRD section 10), named by the prefix PRD 12.4 fixes'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn scenario_k14_
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: scenario-K15
+    binding: 'built here: the test of boundary scenario K15 (PRD section 10), named by the prefix PRD 12.4 fixes'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn scenario_k15_
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: scenario-H1
+    binding: 'built here: the test of boundary scenario H1 (PRD section 10), named by the prefix PRD 12.4 fixes'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn scenario_h01_
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: scenario-H2
+    binding: 'built here: the test of boundary scenario H2 (PRD section 10), named by the prefix PRD 12.4 fixes'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn scenario_h02_
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: scenario-H3
+    binding: 'built here: the test of boundary scenario H3 (PRD section 10), named by the prefix PRD 12.4 fixes'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn scenario_h03_
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: scenario-H4
+    binding: 'built here: the test of boundary scenario H4 (PRD section 10), named by the prefix PRD 12.4 fixes'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn scenario_h04_
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: scenario-H5
+    binding: 'built here: the test of boundary scenario H5 (PRD section 10), named by the prefix PRD 12.4 fixes'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn scenario_h05_
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: scenario-H6
+    binding: 'built here: the test of boundary scenario H6 (PRD section 10), named by the prefix PRD 12.4 fixes'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn scenario_h06_
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: scenario-H7
+    binding: 'built here: the test of boundary scenario H7 (PRD section 10), named by the prefix PRD 12.4 fixes'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn scenario_h07_
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: scenario-H8
+    binding: 'built here: the test of boundary scenario H8 (PRD section 10), named by the prefix PRD 12.4 fixes'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn scenario_h08_
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: scenario-H9
+    binding: 'built here: the test of boundary scenario H9 (PRD section 10), named by the prefix PRD 12.4 fixes'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn scenario_h09_
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: scenario-H10
+    binding: 'built here: the test of boundary scenario H10 (PRD section 10), named by the prefix PRD 12.4 fixes'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn scenario_h10_
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: scenario-H11
+    binding: 'built here: the test of boundary scenario H11 (PRD section 10), named by the prefix PRD 12.4 fixes'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn scenario_h11_
+      expect: present
+      paths:
+      - crates/reify-eval-core
+  - name: growth-report-committed
+    binding: 'built here: `docs/prds/evaluation-core.growth-report.md`, with the four counters for each model and each N'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - docs/prds/evaluation-core.growth-report.md
+  - name: growth-tests-g1-to-g4
+    binding: 'built here: the growth tests on every synthetic model of contract section 11 at N = 100, 1,000 and 10,000'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the PRD gives the growth tests no names; the scenario checks and the report check stand for the leaf
+- label: ω
+  task_id: 10578
+  title: Close
+  capabilities:
+  - name: prd-stamped-shipped
+    binding: 'built here: the PRD''s status line carries the terminal word, with the landed task ids; the contract loses its provisional status'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^\*\*Status[^A-Za-z]*SHIPPED
+      expect: present
+      paths:
+      - docs/prds/evaluation-core.md
