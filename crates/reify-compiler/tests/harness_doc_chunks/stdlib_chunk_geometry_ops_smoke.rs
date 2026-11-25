@@ -144,6 +144,11 @@ fn stdlib_chunk_geometry_ops_compile_with_stdlib_no_errors() {
 /// precisely because it adds two names to this exact-match allowlist instead of
 /// four — every entry here is a name the fixture guard stops checking, so the
 /// smallest sufficient extension is the right one.
+///
+/// `dir` builds the `Direction` the sweeps take since direction-typing ι-b
+/// (`revolve`, `revolve_full`, `extrude_infinite`,
+/// `extrude_infinite_symmetric`); the revolve Axis form reuses `axis_z` rather
+/// than adding another axis constructor.
 const SCAFFOLD_CTORS: &[&str] = &[
     "point3",
     "plane_xy",
@@ -151,6 +156,7 @@ const SCAFFOLD_CTORS: &[&str] = &[
     "orient_identity",
     "transform3_identity",
     "affine_scale",
+    "dir",
 ];
 
 /// Is `name` a call the compiler recognises for the purposes of this guard?

@@ -106,7 +106,6 @@ fn eval_prints_the_volumes_the_retired_scalar_forms_printed() {
 fn check_accepts_the_migrated_sweep_examples() {
     for example in [
         "extrude_infinite.ri",
-        "sweep_degenerate.ri",
         "geometric_relations/feature_datum_axis.ri",
     ] {
         let path = common::example_path(example);
@@ -116,6 +115,21 @@ fn check_accepts_the_migrated_sweep_examples() {
             "examples/{example} must check clean\nstdout: {stdout}\nstderr: {stderr}"
         );
     }
+}
+
+/// `sweep_degenerate.ri` is a parse/compile fixture: its profiles are Length
+/// params, not geometry, so every structure's build fails whatever the sweep
+/// spelling. Only the absence of a `revolve_full` error is this leaf's to pin.
+#[test]
+fn check_of_sweep_degenerate_reports_no_revolve_full_error() {
+    let path = common::example_path("sweep_degenerate.ri");
+    let (_, _, stderr) = common::run_subcommand("check", &path);
+    assert!(
+        !error_lines(&stderr)
+            .iter()
+            .any(|line| line.contains("revolve_full")),
+        "examples/sweep_degenerate.ri must spell revolve_full's Direction form\nstderr: {stderr}"
+    );
 }
 
 /// The B8 example still recovers the revolution axis from the Direction-form
