@@ -59,6 +59,8 @@ pub(crate) mod scan_util;
 pub(crate) mod comment_lex;
 /// Crate-internal: PTODO lane δ-C's owner-position grammar for task cites.
 pub(crate) mod ptodo_promise;
+/// Crate-internal: the old-core hold list's format, invariants and matching rule.
+pub(crate) mod old_core_hold;
 /// Not a detector: public only so the live-serve test harnesses decode MCP
 /// response bodies with the same function both clients use.
 pub mod mcp_wire;
