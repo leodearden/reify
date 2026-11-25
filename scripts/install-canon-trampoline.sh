@@ -42,10 +42,11 @@ pending_in() {
 }
 
 # commit_pending <dest> <mode>: returns 0 when dest was (re)written from
-# $PENDING, 1 when dest already is a regular file with those bytes.
+# $PENDING, 1 when dest already is a regular file with those bytes and mode.
 commit_pending() {
     local dest="$1" mode="$2"
-    if [ -f "$dest" ] && [ ! -L "$dest" ] && cmp -s "$PENDING" "$dest"; then
+    if [ -f "$dest" ] && [ ! -L "$dest" ] && cmp -s "$PENDING" "$dest" \
+        && [ "$(stat -c %a "$dest")" = "${mode#0}" ]; then
         rm -f "$PENDING"
         PENDING=""
         return 1
@@ -120,9 +121,11 @@ first_cargo_on() {
     done
 }
 
-login_out="$(env -i HOME="$HOME" bash -lc 'command -v cargo' 2>/dev/null)" || login_out=""
+# </dev/null: the user's login files run here, and must never be handed the
+# caller's terminal while stdout is captured.
+login_out="$(env -i HOME="$HOME" bash -lc 'command -v cargo' </dev/null 2>/dev/null)" || login_out=""
 login_cargo="${login_out##*$'\n'}"
-if [ "$login_cargo" = "$INSTALLED" ]; then
+if [ "$login_cargo" = "$INSTALLED" ] && [ -x "$login_cargo" ]; then
     ok "login shells resolve cargo to the trampoline"
 else
     warn "login shells resolve cargo to ${login_cargo:-nothing}, not $INSTALLED"
@@ -137,7 +140,7 @@ fi
 if [ -x "$ENV_GENERATOR" ]; then
     generator_env=(env -i HOME="$HOME")
     [ -n "${XDG_CONFIG_HOME:-}" ] && generator_env+=(XDG_CONFIG_HOME="$XDG_CONFIG_HOME")
-    generated="$("${generator_env[@]}" "$ENV_GENERATOR" 2>/dev/null)" || generated=""
+    generated="$("${generator_env[@]}" "$ENV_GENERATOR" </dev/null 2>/dev/null)" || generated=""
     unit_path=""
     while IFS= read -r line; do
         if [[ "$line" == PATH=* ]]; then unit_path="${line#PATH=}"; fi

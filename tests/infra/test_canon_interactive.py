@@ -20,7 +20,9 @@ import os
 import re
 import select
 import shlex
+import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -39,6 +41,7 @@ ENV_GENERATOR = Path("/usr/lib/systemd/user-environment-generators/30-systemd-en
 INSTALLED_BIN = Path(".local", "share", "reify-canon", "bin")
 BLOCK_START = "# >>> reify-canon trampoline (scripts/install-canon-trampoline.sh) >>>"
 BLOCK_END = "# <<< reify-canon trampoline <<<"
+DROP_IN = "999-reify-canon-trampoline.conf"
 STAMP = ".reify-build-root"
 
 CARGO_ENV = """#!/bin/sh
@@ -91,8 +94,17 @@ def make_home(parent):
     return os.path.realpath(home)
 
 
-def run_installer(home):
-    return fx.run(["/bin/bash", str(INSTALLER)], cwd=home, env={"HOME": home, "PATH": "/usr/bin:/bin"})
+def run_installer(home, installer=INSTALLER, *, stdin=None, **env):
+    """installer against home; stdin is this process's own unless given."""
+    return subprocess.run(
+        ["/bin/bash", str(installer)],
+        cwd=home,
+        env={"HOME": home, "PATH": "/usr/bin:/bin", **env},
+        stdin=stdin,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
 
 def login_shell(home, script, **env):
@@ -113,6 +125,18 @@ def first_cargo(path_value):
         if entry and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
             return candidate
     return None
+
+
+def generated_path(test, home, **env):
+    """The PATH the systemd environment.d generator composes for home (skips where there is none)."""
+    if not os.access(ENV_GENERATOR, os.X_OK):
+        test.skipTest(f"{ENV_GENERATOR} is absent: no systemd environment.d generator here")
+    assignments = [f"{name}={value}" for name, value in {"HOME": home, **env}.items()]
+    generated = fx.run(["/usr/bin/env", "-i", *assignments, str(ENV_GENERATOR)], cwd="/", env={})
+    test.assertEqual(generated.returncode, 0, generated.stderr)
+    paths = [line[len("PATH="):] for line in generated.stdout.splitlines() if line.startswith("PATH=")]
+    test.assertEqual(len(paths), 1, generated.stdout)
+    return paths[0]
 
 
 HEREDOC_START = re.compile(r"(?<!<)<<(?!<)(-?)\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2")
@@ -189,14 +213,17 @@ def identity(path):
 
 canon = os.environ.get("REIFY_CANON_ROOT", "")
 with open(f"/proc/{os.getppid()}/environ", "rb") as parent:
-    parent_names = [entry.partition(b"=")[0] for entry in parent.read().split(b"\\0")]
+    parent_env = dict(entry.partition(b"=")[::2] for entry in parent.read().split(b"\\0") if entry)
+parent_loader_path = parent_env.get(b"LD_LIBRARY_PATH")
 dump = {
     "argv": sys.argv,
     "cwd": os.getcwd(),
     "canon_identity": identity(canon) if os.path.isdir(canon) else None,
     "canon_active": "REIFY_CANON_ACTIVE" in os.environ,
     "ld_library_path": os.environ.get("LD_LIBRARY_PATH"),
-    "parent_has_ld_library_path": b"LD_LIBRARY_PATH" in parent_names,
+    "path": os.environ.get("PATH"),
+    "env_naming_canon": sorted(name for name, value in os.environ.items() if canon and canon in value),
+    "parent_ld_library_path": None if parent_loader_path is None else parent_loader_path.decode(),
 }
 with open(os.environ["TEST_GUI_DUMP"], "w") as out:
     json.dump(dump, out)
@@ -222,7 +249,7 @@ def make_gui_tree(parent, gui_stub):
     """make_tree plus the GUI launchers, stub sidecar/frontend, an in-tree design file and stub binaries."""
     tree = fx.make_tree(parent, "tree")
     for name in GUI_LAUNCH_SCRIPTS:
-        fx.shutil.copy2(fx.REPO_ROOT / "scripts" / name, Path(tree, "scripts", name))
+        shutil.copy2(fx.REPO_ROOT / "scripts" / name, Path(tree, "scripts", name))
     write_executable(Path(tree, "gui", "sidecar", "build-sidecar.sh"), "#!/bin/sh\nexit 0\n")
     Path(tree, "gui", "package.json").write_text("{}")
     Path(tree, "examples").mkdir()
@@ -292,14 +319,9 @@ class InstallerTest(unittest.TestCase):
         self.assertIn(self.rustup_cargo, shadowed.stdout + shadowed.stderr)
 
     def test_d_systemd_user_sessions_resolve_the_trampoline(self):
-        if not os.access(ENV_GENERATOR, os.X_OK):
-            self.skipTest(f"{ENV_GENERATOR} is absent: no systemd environment.d generator here")
         self.install()
-        generated = fx.run(["/usr/bin/env", "-i", f"HOME={self.home}", str(ENV_GENERATOR)], cwd="/", env={})
-        self.assertEqual(generated.returncode, 0, generated.stderr)
-        paths = [line[len("PATH="):] for line in generated.stdout.splitlines() if line.startswith("PATH=")]
-        self.assertEqual(len(paths), 1, generated.stdout)
-        self.assertEqual(first_cargo(paths[0]), self.installed, paths[0])
+        unit_path = generated_path(self, self.home)
+        self.assertEqual(first_cargo(unit_path), self.installed, unit_path)
 
     def test_e_a_login_shell_build_in_a_fresh_tree_runs_at_canon(self):
         reason = fx.namespace_unavailable_reason()
@@ -323,6 +345,53 @@ class InstallerTest(unittest.TestCase):
         calls = fx.read_calls(os.path.dirname(self.rustup_cargo))
         self.assertEqual([call["cwd"] for call in calls], [canon], calls)
         self.assertEqual(Path(tree, "target", STAMP).read_text().strip(), canon)
+
+    def test_f_a_rerun_restores_the_copys_mode(self):
+        self.install()
+        Path(self.installed).chmod(0o644)
+
+        self.install()
+        self.assertEqual(stat.S_IMODE(os.stat(self.installed).st_mode), 0o755)
+        self.assertEqual(login_cargo(self.home), self.installed)
+
+    def test_g_the_login_files_never_get_the_callers_stdin(self):
+        log = Path(self.home, "login-stdin.log")
+        profile = Path(self.home, ".profile")
+        profile.write_text(profile.read_text() + f'readlink /proc/$$/fd/0 >> "{log}"\n')
+        caller_stdin, held_open = os.pipe()
+        self.addCleanup(os.close, held_open)
+        try:
+            result = run_installer(self.home, stdin=caller_stdin)
+        finally:
+            os.close(caller_stdin)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(log.read_text().splitlines(), ["/dev/null"])
+
+    def test_h_refuses_a_missing_or_unmarked_source(self):
+        scripts = Path(self.tmp, "copy", "scripts")
+        scripts.mkdir(parents=True)
+        installer = scripts / INSTALLER.name
+        shutil.copy2(INSTALLER, installer)
+        environment_d = Path(self.home, ".config", "environment.d")
+        sources = {"missing": None, "unmarked": '#!/bin/sh\nexec cargo "$@"\n'}
+        for case, source in sources.items():
+            with self.subTest(case):
+                if source is not None:
+                    write_executable(scripts / "canon-bin" / "cargo", source)
+                result = run_installer(self.home, installer)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertFalse(Path(self.home, INSTALLED_BIN).parent.exists())
+                self.assertEqual(Path(self.home, ".profile").read_text(), PROFILE)
+                self.assertEqual(sorted(os.listdir(environment_d)), ["995-user-path.conf"])
+
+    def test_i_the_drop_in_follows_xdg_config_home(self):
+        config = os.path.join(self.tmp, "xdg-config")
+        result = run_installer(self.home, XDG_CONFIG_HOME=config)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(Path(config, "environment.d", DROP_IN).is_file())
+        self.assertFalse(Path(self.home, ".config", "environment.d", DROP_IN).exists())
+        unit_path = generated_path(self, self.home, XDG_CONFIG_HOME=config)
+        self.assertEqual(first_cargo(unit_path), self.installed, unit_path)
 
 
 class SetupDevWiringTest(unittest.TestCase):
@@ -370,6 +439,8 @@ class GuiTreeCase(unittest.TestCase):
         snap = Path(self.tmp, "snap-lib")
         snap.mkdir()
         self.expected_loader_path = (f"{TBB_PIN_DIR}:" if os.path.isdir(TBB_PIN_DIR) else "") + str(snap)
+        self.inherited_loader_path = None
+        self.file_args = [self.design]
         home = Path(self.tmp, "home")
         home.mkdir()
         self.canon = os.path.join(self.tmp, "canon")
@@ -387,6 +458,12 @@ class GuiTreeCase(unittest.TestCase):
             "TEST_GUI_DUMP": self.dump,
         }
 
+    def inherit_loader_path(self, value):
+        """Launch with LD_LIBRARY_PATH=value: canon_run keeps it, the GUI gets it behind the pin."""
+        self.env["LD_LIBRARY_PATH"] = value
+        self.inherited_loader_path = value
+        self.expected_loader_path += f":{value}"
+
     def enable_canon(self):
         reason = fx.namespace_unavailable_reason()
         if reason:
@@ -397,7 +474,7 @@ class GuiTreeCase(unittest.TestCase):
         log_path = Path(self.tmp, f"{launcher}.log")
         with open(log_path, "w") as log:
             process = subprocess.Popen(
-                ["/bin/bash", os.path.join(self.tree, "scripts", launcher), self.design],
+                ["/bin/bash", os.path.join(self.tree, "scripts", launcher), *self.file_args],
                 cwd=self.tmp,
                 env=self.env,
                 stdin=subprocess.DEVNULL,
@@ -420,9 +497,10 @@ class GuiTreeCase(unittest.TestCase):
         self.assertEqual([call["cwd"] for call in builds], [root], builds)
 
     def assert_gui_saw_real_paths(self, dump):
-        self.assertEqual(dump["argv"][1:], [self.design])
+        self.assertEqual(dump["argv"][1:], self.file_args)
         self.assertEqual(dump["cwd"], self.tree)
         self.assertEqual(dump["ld_library_path"], self.expected_loader_path)
+        self.assertEqual(dump["path"], self.env["PATH"])
 
     def assert_real_path_launch(self, launcher):
         dump = self.launch(launcher)
@@ -440,7 +518,8 @@ class GuiTreeCase(unittest.TestCase):
         self.assertTrue(dump["canon_active"], dump)
         self.assertEqual(dump["canon_identity"], f"{tree_status.st_dev}:{tree_status.st_ino}")
         self.assert_gui_saw_real_paths(dump)
-        self.assertFalse(dump["parent_has_ld_library_path"], dump)
+        self.assertEqual(dump["env_naming_canon"], ["REIFY_CANON_ACTIVE", "REIFY_CANON_ROOT"])
+        self.assertEqual(dump["parent_ld_library_path"], self.inherited_loader_path)
 
 
 class GuiLaunchTest(GuiTreeCase):
@@ -455,6 +534,14 @@ class GuiLaunchTest(GuiTreeCase):
 
     def test_b_run_gui_dev_at_canon(self):
         self.assert_canon_launch("run-gui-dev.sh")
+
+    def test_d_run_gui_at_canon_under_an_inherited_loader_path(self):
+        self.inherit_loader_path("/some/inherited")
+        self.assert_canon_launch("run-gui.sh")
+
+    def test_e_run_gui_at_canon_on_the_start_view(self):
+        self.file_args = []
+        self.assert_canon_launch("run-gui.sh")
 
 
 class GuiTeardownTest(GuiTreeCase):

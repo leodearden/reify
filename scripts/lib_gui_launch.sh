@@ -21,8 +21,9 @@
 #
 # Sets NO shell options: sourcing must not change the caller's `set -e` /
 # `set -u` / pipefail state. Every function below is safe under
-# `set -euo pipefail`, and none of them call `exit` — they return non-zero and
-# leave the exit decision to the launcher.
+# `set -euo pipefail`. gui_launch_exec replaces the process with the GUI; the
+# others never call `exit` — they return non-zero and leave the exit decision
+# to the launcher.
 #
 # Also sourced by gui/test/visual/lib_e2e_smoke.sh (#7273), which calls
 # gui_launch_env_pin in its §2b, so nothing here requires canon_run.py to
@@ -176,31 +177,37 @@ gui_launch_env_pin() {
 }
 
 # The /bin/sh stage gui_launch_exec runs under canon_run: it restores the real
-# cwd, file and loader path carried in GUI_LAUNCH_*, then becomes "$0", the
-# binary. The loader path is a plain set: gui_launch_env_pin already composed it.
+# cwd, PATH, file and loader path carried in GUI_LAUNCH_*, drops the OLDPWD its
+# cd exports (canon_run's cwd), then becomes "$0", the binary. The loader path
+# is a plain set: gui_launch_env_pin already composed it.
 _GUI_LAUNCH_STAGE='cd "$GUI_LAUNCH_DIR" || { echo "gui_launch_exec: cannot enter $GUI_LAUNCH_DIR" >&2; exit 126; }
+unset OLDPWD
+PATH=$GUI_LAUNCH_PATH
 if [ -n "${GUI_LAUNCH_LOADER_PATH_SET:-}" ]; then
     LD_LIBRARY_PATH=$GUI_LAUNCH_LOADER_PATH
     export LD_LIBRARY_PATH
 fi
 file=$GUI_LAUNCH_FILE
-unset GUI_LAUNCH_DIR GUI_LAUNCH_FILE GUI_LAUNCH_LOADER_PATH GUI_LAUNCH_LOADER_PATH_SET
+unset GUI_LAUNCH_DIR GUI_LAUNCH_FILE GUI_LAUNCH_PATH GUI_LAUNCH_LOADER_PATH GUI_LAUNCH_LOADER_PATH_SET
 exec "$0" ${file:+"$file"}'
 
 # gui_launch_exec <binary-relpath> [file]
 #
 # Become `canon_run.py exec -- <binary> [file]`, run from $PWD. At CANON,
-# canon_run rebases every in-tree argument and the cwd, and reify-gui must see
-# neither: it records opened files in its Recent store and roots its Claude
-# sidecar at the file's directory or its cwd (CLAUDE.md "Canonical build
-# path"). So the cwd, the file and gui_launch_env_pin's loader path ride in the
-# environment to _GUI_LAUNCH_STAGE, while canon_run's own processes keep the
-# launcher's inherited LD_LIBRARY_PATH. Never returns.
+# canon_run rebases every in-tree argument and the cwd and puts CANON's
+# trampoline first on PATH, and reify-gui must see none of them: it records
+# opened files in its Recent store and roots its Claude sidecar at the file's
+# directory or its cwd (CLAUDE.md "Canonical build path"). So the cwd, PATH,
+# the file and gui_launch_env_pin's loader path ride in the environment to
+# _GUI_LAUNCH_STAGE, while canon_run's own processes keep the launcher's
+# inherited LD_LIBRARY_PATH. The one CANON-naming value reify-gui keeps is
+# REIFY_CANON_ACTIVE, the supervisor record a nested canon_run reads. Never
+# returns.
 gui_launch_exec() {
     local binary="$1" file="${2:-}"
     # env applies every -u before any assignment, so an assignment wins.
     local -a unsets=(-u GUI_LAUNCH_LOADER_PATH -u GUI_LAUNCH_LOADER_PATH_SET -u LD_LIBRARY_PATH)
-    local -a assignments=(GUI_LAUNCH_DIR="$PWD" GUI_LAUNCH_FILE="$file")
+    local -a assignments=(GUI_LAUNCH_DIR="$PWD" GUI_LAUNCH_FILE="$file" GUI_LAUNCH_PATH="$PATH")
     if [ -n "${LD_LIBRARY_PATH+set}" ]; then
         assignments+=(GUI_LAUNCH_LOADER_PATH="$LD_LIBRARY_PATH" GUI_LAUNCH_LOADER_PATH_SET=1)
     fi
