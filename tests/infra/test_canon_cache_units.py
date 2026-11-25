@@ -1062,6 +1062,20 @@ class StaleSessionFiles(SessionCase):
         self.open("ok")
         self.assertEqual({path: self.kind_and_text(path) for path in paths}, before)
 
+    def test_a_supervisor_this_user_may_not_signal_counts_as_live(self):
+        try:
+            os.kill(1, 0)
+        except PermissionError:
+            pass
+        else:
+            self.skipTest("this user may signal pid 1, so it cannot stand for another user's supervisor")
+        left = self.leave(1)
+        paths = (left.socket, left.err, left.uncached_log)
+        before = {path: self.kind_and_text(path) for path in paths}
+        self.open("ok")
+        self.assertEqual([path for path in paths if not os.path.lexists(path)], [])
+        self.assertEqual({path: self.kind_and_text(path) for path in paths}, before)
+
     def test_a_leftover_named_by_the_opening_process_is_removed(self):
         """Otherwise this session would count the stale lines as its own uncached compiles."""
         own = canon_cache.SessionFiles.in_build_dir(self.build, os.getpid())

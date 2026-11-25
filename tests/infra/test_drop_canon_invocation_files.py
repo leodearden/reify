@@ -61,7 +61,7 @@ def plant_session_files(build_dir, pid):
     files = [Path(path) for path in dataclasses.astuple(named)]
     build_dir.mkdir(parents=True, exist_ok=True)
     for path in files:
-        if path.name.endswith(".sock"):
+        if path == Path(named.socket):
             os.mknod(path, stat.S_IFSOCK | 0o600)
         else:
             path.write_text(f"left by {pid}\n")
@@ -154,6 +154,16 @@ class DropRule(unittest.TestCase):
         self.assertTrue(link.is_symlink())
         self.assertFalse(os.path.lexists(journal_link), diag(result))
 
+    def test_a_symlinked_directory_with_an_invocation_files_name_is_removed_never_entered(self):
+        outside = self.tmp / "outside"
+        outside_journal = plant_journal(outside)
+        link = Path(CANON_CACHE.journal_path(self.tree))
+        link.symlink_to(outside, target_is_directory=True)
+        result = drop(self.tree)
+        self.assertEqual(result.returncode, 0, diag(result))
+        self.assertFalse(os.path.lexists(link), diag(result))
+        self.assertTrue(outside_journal.is_file(), "the dropper followed a symlinked directory")
+
     def test_a_file_that_cannot_be_removed_fails_the_run_naming_it(self):
         if os.geteuid() == 0:
             self.skipTest("root unlinks from a read-only directory regardless of its mode")
@@ -165,6 +175,19 @@ class DropRule(unittest.TestCase):
         self.assertEqual(result.returncode, 1, diag(result))
         self.assertEqual(result.stdout, "")
         self.assertIn(str(journal), result.stderr)
+
+    def test_a_directory_that_cannot_be_walked_fails_the_run_naming_it(self):
+        """Its invocation files cannot be seen, so the run cannot claim none is left."""
+        if os.geteuid() == 0:
+            self.skipTest("root lists a directory regardless of its mode")
+        unreadable = self.tree / "unreadable"
+        plant_journal(unreadable)
+        os.chmod(unreadable, 0o000)
+        self.addCleanup(os.chmod, unreadable, 0o755)
+        result = drop(self.tree)
+        self.assertEqual(result.returncode, 1, diag(result))
+        self.assertEqual(result.stdout, "")
+        self.assertIn(str(unreadable), result.stderr)
 
 
 class RefreshStep(unittest.TestCase):
@@ -270,6 +293,7 @@ class SeedStep(unittest.TestCase):
         result = self.pool.seed(lane, mode="--reset-in-place")
         self.assertEqual(result.returncode, 0, diag(result))
         self.assert_no_invocation_file(lane / "target", result)
+        self.assertTrue((lane / "target" / self.keeper).is_file(), diag(result))
 
     def test_a_seed_without_the_dropper_aborts_naming_it(self):
         """The copy carries the relocate helper this unstamped clone needs before the drop."""

@@ -74,6 +74,7 @@ def drop_tree(root: str) -> tuple[int, list[str]]:
     walk = os.walk(root, followlinks=False, onerror=lambda error: errors.append(error_line(error.filename, error)))
     for directory, dirnames, filenames in walk:
         symlinked_dirs = {name for name in dirnames if os.path.islink(os.path.join(directory, name))}
+        # Pruned because os.walk re-tests islink after this yield, and a link unlinked below would then be entered.
         dirnames[:] = [name for name in dirnames if name not in symlinked_dirs]
         removed += drop_named(directory, [*filenames, *sorted(symlinked_dirs)], errors)
     return removed, errors
