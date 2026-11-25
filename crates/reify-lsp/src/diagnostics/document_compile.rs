@@ -11,6 +11,7 @@ use reify_compiler::module_dag::ModuleResolver;
 use reify_compiler::program::{self, CompiledProgram};
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{ContentHash, SourceSpan};
+use reify_eval::LoadedProgram;
 use tower_lsp::lsp_types::{Range, Url};
 
 use crate::convert;
@@ -19,7 +20,7 @@ use crate::convert;
 pub(super) struct CompiledDocument {
     /// The module the document is evaluated as: a program's evaluation module.
     module: Arc<CompiledModule>,
-    program: Option<Arc<CompiledProgram>>,
+    program: Option<LoadedProgram>,
     eval_cache_key: ContentHash,
     /// How many of `module.templates`, from the front, the document itself
     /// declares (its program entry's templates); the rest are imported, and
@@ -42,12 +43,12 @@ impl CompiledDocument {
     }
 
     /// This document as `engine` evaluates it. A program is loaded into
-    /// `engine`, and the document's module becomes the one `load` returned,
-    /// the only one that resolves in the program's environment there.
+    /// `engine`, which returns the document's module: the only one that
+    /// resolves in the program's environment there.
     pub(super) fn loaded_into(self, engine: &mut reify_eval::Engine) -> Self {
         match &self.program {
             Some(program) => Self {
-                module: engine.load(Arc::clone(program)),
+                module: engine.load(program.clone()),
                 ..self
             },
             None => self,
@@ -86,7 +87,7 @@ pub(super) fn compile_document(
 ) -> CompiledDocument {
     match uri.to_file_path() {
         Ok(entry_path) if program::entry_follows_imports(parsed, cfg) => {
-            let compiled = Arc::new(program::compile_program_with_parsed_entry(
+            let loaded = LoadedProgram::new(program::compile_program_with_parsed_entry(
                 &entry_path,
                 source,
                 parsed,
@@ -95,10 +96,10 @@ pub(super) fn compile_document(
                 &SimpleConstraintChecker,
             ));
             CompiledDocument {
-                eval_cache_key: program_eval_cache_key(&parsed.path.0.join("."), &compiled),
-                declared_templates: compiled.entry().templates.len(),
-                module: Arc::new(reify_eval::evaluation_module(&compiled)),
-                program: Some(compiled),
+                eval_cache_key: program_eval_cache_key(&parsed.path.0.join("."), loaded.program()),
+                declared_templates: loaded.program().entry().templates.len(),
+                module: Arc::clone(loaded.evaluated()),
+                program: Some(loaded),
             }
         }
         _ => CompiledDocument::single_file(reify_compiler::compile_with_stdlib_checked(
@@ -224,7 +225,8 @@ mod tests {
         let program = document
             .program
             .as_ref()
-            .expect("an importing document compiles as a program");
+            .expect("an importing document compiles as a program")
+            .program();
         assert!(
             !program.entry().templates.iter().any(|t| t.name == "Pulley"),
             "the entry holds only its own templates"

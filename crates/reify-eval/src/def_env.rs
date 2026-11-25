@@ -203,21 +203,29 @@ pub fn evaluation_module(program: &CompiledProgram) -> CompiledModule {
     }
 }
 
-/// A program installed by `Engine::load`, with the module the engine evaluates
-/// for it.
-#[derive(Debug)]
-pub(crate) struct LoadedProgram {
+/// A program as `Engine::load` installs it: the program, with the module the
+/// engine evaluates it as. Build one before choosing an engine to inspect that
+/// module, then load it: [`Self::evaluated`] is the very module `load` returns.
+#[derive(Debug, Clone)]
+pub struct LoadedProgram {
     program: Arc<CompiledProgram>,
     evaluated: Arc<CompiledModule>,
 }
 
 impl LoadedProgram {
-    pub(crate) fn new(program: Arc<CompiledProgram>) -> Self {
+    pub fn new(program: impl Into<Arc<CompiledProgram>>) -> Self {
+        let program = program.into();
         let evaluated = Arc::new(evaluation_module(&program));
         Self { program, evaluated }
     }
 
-    pub(crate) fn evaluated(&self) -> &Arc<CompiledModule> {
+    pub fn program(&self) -> &Arc<CompiledProgram> {
+        &self.program
+    }
+
+    /// The program's [`evaluation_module`]. Once loaded, this module and no
+    /// copy of it resolves in the program's environment.
+    pub fn evaluated(&self) -> &Arc<CompiledModule> {
         &self.evaluated
     }
 
@@ -229,6 +237,40 @@ impl LoadedProgram {
             module: &self.evaluated,
             prelude,
         }
+    }
+
+    /// Whether `module` resolves in this program's environment: only the
+    /// evaluation module itself does. A copy of it resolves in its own
+    /// environment, without any imported function, trait or enum, so a copy
+    /// is warned about.
+    fn resolves(&self, module: &CompiledModule) -> bool {
+        let resolves = std::ptr::eq(module, &*self.evaluated);
+        if !resolves && is_copy(module, &self.evaluated) {
+            tracing::warn!(
+                module = %module.path,
+                "a copy of the loaded program's evaluation module resolves without \
+                 the program's imports; evaluate the module Engine::load returned",
+            );
+        }
+        resolves
+    }
+}
+
+/// Whether `module` carries `original`'s module path and content hash, as a
+/// copy of it does.
+fn is_copy(module: &CompiledModule, original: &CompiledModule) -> bool {
+    module.path == original.path && module.content_hash == original.content_hash
+}
+
+impl From<CompiledProgram> for LoadedProgram {
+    fn from(program: CompiledProgram) -> Self {
+        Self::new(program)
+    }
+}
+
+impl From<Arc<CompiledProgram>> for LoadedProgram {
+    fn from(program: Arc<CompiledProgram>) -> Self {
+        Self::new(program)
     }
 }
 
@@ -248,9 +290,7 @@ impl<'m> EnvScope<'m> {
         loaded: Option<&Arc<LoadedProgram>>,
         prelude: &'m [CompiledModule],
     ) -> Self {
-        let loaded = loaded
-            .filter(|loaded| std::ptr::eq(module, &*loaded.evaluated))
-            .cloned();
+        let loaded = loaded.filter(|loaded| loaded.resolves(module)).cloned();
         Self {
             module,
             loaded,

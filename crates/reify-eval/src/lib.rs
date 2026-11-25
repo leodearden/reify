@@ -26,7 +26,7 @@ pub mod compute_targets;
 pub use compute_targets::MorphRegistration;
 pub use compute_cache_key::compute_cache_key;
 pub mod def_env;
-pub use def_env::{DefEnv, EnvScope, evaluation_module};
+pub use def_env::{DefEnv, EnvScope, LoadedProgram, evaluation_module};
 pub mod demand;
 pub mod observed_demand;
 pub use observed_demand::{DemandPruneMeasurement, WouldPruneByKind};

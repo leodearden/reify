@@ -16,7 +16,7 @@ use crate::module_capabilities::{
     module_has_dfm_rule, module_has_geometric_conforms, module_has_geometry,
     module_has_representation_within, module_has_thickness_dfm_rule,
 };
-use crate::{configured_check_build_engine, parse_and_compile_program_with_evaluation_module};
+use crate::{configured_check_build_engine, parse_and_prepare_program};
 
 /// `reify check <file>` — resolves autos and reports every constraint verdict.
 ///
@@ -98,12 +98,13 @@ pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
         }
     };
 
-    let (program, compiled) = match parse_and_compile_program_with_evaluation_module(file, &cfg) {
-        Ok(c) => c,
+    let program = match parse_and_prepare_program(file, &cfg) {
+        Ok(program) => program,
         Err(code) => return code,
     };
 
-    if compiled
+    if program
+        .evaluated()
         .diagnostics
         .iter()
         .any(|d| d.severity == Severity::Error)
@@ -171,11 +172,11 @@ pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
         // When the module has NONE of the four kinds, take the kernel-less
         // `Engine::new(.., None) + check()` arm (C2).
         let checker = SimpleConstraintChecker;
-        let has_geometric_conforms = module_has_geometric_conforms(&compiled);
-        let has_representation_within = module_has_representation_within(&compiled);
-        let has_dfm_rule = module_has_dfm_rule(&compiled);
-        let has_thickness_dfm = module_has_thickness_dfm_rule(&compiled);
-        let has_geometry = module_has_geometry(&compiled);
+        let has_geometric_conforms = module_has_geometric_conforms(program.evaluated());
+        let has_representation_within = module_has_representation_within(program.evaluated());
+        let has_dfm_rule = module_has_dfm_rule(program.evaluated());
+        let has_thickness_dfm = module_has_thickness_dfm_rule(program.evaluated());
+        let has_geometry = module_has_geometry(program.evaluated());
         // BOTH nested gates below learn `has_geometry`, and both are
         // load-bearing (task 5748): extending only the outer one would put a
         // geometry-only module on the kernel-backed engine but never call
@@ -405,7 +406,7 @@ pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
         // `activate_purpose_with_bindings` / `is_purpose_active` /
         // `check_constraints_with_values` / `run_gdt_check_passes` are all
         // called on it below.
-        let used_build = module_has_geometry(&compiled);
+        let used_build = module_has_geometry(program.evaluated());
         let (values, front_end_diagnostics, mut engine, evaluated) = if used_build {
             let mut engine = configured_check_build_engine(|posture| {
                 reify_eval::Engine::with_registered_kernel(posture, Box::new(checker))

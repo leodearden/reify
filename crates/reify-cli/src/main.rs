@@ -214,24 +214,14 @@ fn parse_and_compile_program(
     Ok(Arc::new(program))
 }
 
-/// [`parse_and_compile_program`] together with the module an engine evaluates
-/// the program as ([`reify_eval::evaluation_module`]), for a command whose
-/// routing gates inspect that module before it picks an engine. The engine
-/// evaluates the module [`reify_eval::Engine::load`] returns, not this copy:
-/// only that one resolves in the program's environment.
-fn parse_and_compile_program_with_evaluation_module(
+/// [`parse_and_compile_program`], prepared for an engine to load, for a command
+/// whose routing gates inspect [`reify_eval::LoadedProgram::evaluated`] before
+/// it picks the engine. Loading it returns that same module.
+fn parse_and_prepare_program(
     path: &str,
     cfg: &CfgSet,
-) -> Result<
-    (
-        Arc<reify_compiler::program::CompiledProgram>,
-        reify_compiler::CompiledModule,
-    ),
-    ExitCode,
-> {
-    let program = parse_and_compile_program(path, cfg)?;
-    let module = reify_eval::evaluation_module(&program);
-    Ok((program, module))
+) -> Result<reify_eval::LoadedProgram, ExitCode> {
+    parse_and_compile_program(path, cfg).map(reify_eval::LoadedProgram::new)
 }
 
 /// CLI-local alias for

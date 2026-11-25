@@ -14,7 +14,7 @@ use reify_compiler::program::{CompiledProgram, compile_program};
 use reify_compiler::stdlib_loader::load_stdlib;
 use reify_compiler::{CompiledModule, TopologyTemplate};
 use reify_core::{Diagnostic, Severity, Type, ValueCellId};
-use reify_eval::{DefEnv, Engine, EvalResult, SolverPosture};
+use reify_eval::{DefEnv, Engine, EvalResult, LoadedProgram, SolverPosture};
 use reify_ir::{CompiledFunction, EnumDef, Satisfaction, Value};
 use reify_test_support::helpers::make_engine;
 use reify_test_support::mocks::MockConstraintChecker;
@@ -175,6 +175,26 @@ fn the_loaded_module_evaluates_through_the_loaded_program() {
         is_close(value_of(&result, "Rig.p", "d"), 0.04),
         "Rig.p is a's Pulley, got {:?}",
         value_of(&result, "Rig.p", "d")
+    );
+}
+
+/// A program prepared before an engine is picked loads as the very module it
+/// carries, so a routing gate that reads that module reads what the engine
+/// evaluates.
+#[test]
+fn a_prepared_program_loads_as_the_module_it_carries() {
+    let dir = tempfile::tempdir().unwrap();
+    let prepared = LoadedProgram::new(compile_rig(dir.path()));
+    let mut engine = make_engine();
+
+    let module = engine.load(prepared.clone());
+
+    assert!(Arc::ptr_eq(&module, prepared.evaluated()));
+    let result = engine.eval(prepared.evaluated());
+    assert!(
+        is_close(value_of(&result, "Rig", "y"), 42.0),
+        "`twice` dispatches to a's pub fn, got {:?}",
+        value_of(&result, "Rig", "y")
     );
 }
 

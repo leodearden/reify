@@ -7,7 +7,7 @@ use crate::journal::EventJournal;
 use crate::snapshot::Snapshot;
 use crate::solver_posture::SolveStage;
 use crate::{Engine, EnvScope, EvaluationState, SolverPosture};
-use reify_compiler::{CompiledModule, EntityKind, ValueCellKind, program::CompiledProgram};
+use reify_compiler::{CompiledModule, EntityKind, ValueCellKind};
 use reify_core::{Diagnostic, SnapshotId, VersionId};
 use reify_ir::{
     CompiledFunction, ConstraintChecker, ConstraintSolver, GeometryKernel, OptimizedImpl,
@@ -1748,12 +1748,14 @@ impl Engine {
     }
 
     /// Install `program`, replacing any earlier load, and return the module to
-    /// evaluate it as: its [`crate::evaluation_module`]. Evaluating, checking
-    /// or building exactly that module resolves in `program`'s environment
-    /// ([`Self::env_of`]). The program's definition-collision report rides
-    /// `program.entry()`'s diagnostics. Eval state is untouched.
-    pub fn load(&mut self, program: impl Into<Arc<CompiledProgram>>) -> Arc<CompiledModule> {
-        let loaded = LoadedProgram::new(program.into());
+    /// evaluate it as: its [`crate::evaluation_module`], the very
+    /// [`LoadedProgram::evaluated`] when `program` is already a
+    /// [`LoadedProgram`]. Evaluating, checking or building exactly that module
+    /// resolves in `program`'s environment ([`Self::env_of`]). The program's
+    /// definition-collision report rides `program.entry()`'s diagnostics. Eval
+    /// state is untouched.
+    pub fn load(&mut self, program: impl Into<LoadedProgram>) -> Arc<CompiledModule> {
+        let loaded = program.into();
         let evaluated = Arc::clone(loaded.evaluated());
         self.loaded_program = Some(Arc::new(loaded));
         evaluated

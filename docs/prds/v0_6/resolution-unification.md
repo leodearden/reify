@@ -466,7 +466,8 @@ runs against P1's landed net)
   entry's own declarations (#14, pinned by `an_importing_entrys_templates_are_only_its_own`).
   The D-6 collision report rides the program compile: θ's `DefEnv::collision_warnings`
   moved to `program_scope::collision_warnings`, which `compile_program` appends to the
-  entry's diagnostics after the re-homed block. Every surface therefore prints each
+  entry's diagnostics after the re-homed block. It binds over no prelude: the ambient
+  tier binds after every import, so it cannot change a report of import-tier losers. Every surface therefore prints each
   collision once, coded `DefinitionCollision`, and the merge's code-less template
   warning went with the merge (#13, pinned by
   `the_program_compile_reports_each_import_tier_collision_on_the_entry` and
@@ -479,12 +480,19 @@ runs against P1's landed net)
   `reify_eval::evaluation_module(&program)`: the entry with `DefEnv::user_templates()`
   as its templates (the entry's own, then each direct import's `pub` templates,
   first-wins). The CLI, GUI and LSP load their program and evaluate exactly the
-  returned `Arc`, so their user-visible content is unchanged from P1. `Engine::env_of`
+  returned `Arc`, so their user-visible content is unchanged from P1. `load` takes a
+  `reify_eval::LoadedProgram`, the program paired with its evaluation module, or a
+  program it prepares into one. A caller whose routing gates read that module before
+  it picks an engine (the CLI's `check`, `build` and `eval`, and the LSP's document)
+  prepares one, gates on `LoadedProgram::evaluated`, and loads it, so the module is
+  built once and the gates read the very `Arc` `load` returns. `Engine::env_of`
   is identity-checked through `EnvScope`. For exactly the evaluation module (pointer
   identity) the engine's environment is the loaded program's own: it binds every name,
   bare or qualified (I7), as `DefEnv::from_program` does, and differs only in that its
   `module()` is the evaluation module. Any other module, including a copy of it,
-  resolves in its own environment (I1). `ProgramRoot` is a plain `{entry, imports}`
+  resolves in its own environment (I1); a copy with the evaluation module's path and
+  content hash draws a `tracing` warning, since it silently drops every imported
+  function, trait and enum. Making the pairing structural is follow-up work. `ProgramRoot` is a plain `{entry, imports}`
   and `ProgramRoot::new` is private, so a root is built only from a compiled program
   or a lone module. `DefEnv::declared()` was renamed `module()` because, for the loaded
   program, it is the evaluation module and not the entry's declarations.
