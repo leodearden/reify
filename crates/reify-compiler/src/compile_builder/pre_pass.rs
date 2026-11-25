@@ -8,7 +8,7 @@
 use reify_ast::{
     Declaration, FieldDef, FnDef, ParsedModule, TraitDecl, TypeAliasDecl, UnitDecl,
 };
-use reify_core::{Diagnostic, DiagnosticLabel, ModulePath};
+use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, ModulePath};
 
 use crate::CompiledModule;
 use crate::annotations::is_known_module_pragma;
@@ -111,9 +111,9 @@ impl ExpectedPathOrigin {
 /// Check the top-of-file `module` declaration against the resolver-derived path.
 ///
 /// Returns `None` if the declared path matches the expected path (spec §7.1: correct).
-/// Returns `Some(Diagnostic::warning(...))` if `declared` is `None` (W_MODULE_DECL_MISSING).
-/// Returns `Some(Diagnostic::error(...))` if `declared` is `Some` but doesn't match
-/// (E_MODULE_PATH_MISMATCH); the error names the declaration that fixes it.
+/// Returns a Warning coded [`DiagnosticCode::ModuleDeclMissing`] if `declared` is `None`.
+/// Returns an Error coded [`DiagnosticCode::ModulePathMismatch`] if `declared` is `Some`
+/// but doesn't match; the error names the declaration that fixes it.
 ///
 /// This is a pure helper so it can be unit-tested without a full compilation context.
 /// Re-exported from the crate root so `reify-cli` can call it via `reify_compiler::check_module_path_decl`.
@@ -130,19 +130,25 @@ fn module_path_decl_diag(
     origin: ExpectedPathOrigin,
 ) -> Option<Diagnostic> {
     match declared {
-        None => Some(Diagnostic::warning(format!(
-            "W_MODULE_DECL_MISSING: file has no top-of-file `module` declaration; \
-             expected `{}` (spec \u{00a7}7.1)",
-            module_declaration(expected)
-        ))),
-        Some(d) if d != expected => Some(Diagnostic::error(format!(
-            "E_MODULE_PATH_MISMATCH: declared module path '{}' does not match \
-             expected path '{}' ({}); declare `{}` instead (spec \u{00a7}7.1)",
-            d.0.join("."),
-            expected.0.join("."),
-            origin.describe(),
-            module_declaration(expected)
-        ))),
+        None => Some(
+            Diagnostic::warning(format!(
+                "W_MODULE_DECL_MISSING: file has no top-of-file `module` declaration; \
+                 expected `{}` (spec \u{00a7}7.1)",
+                module_declaration(expected)
+            ))
+            .with_code(DiagnosticCode::ModuleDeclMissing),
+        ),
+        Some(d) if d != expected => Some(
+            Diagnostic::error(format!(
+                "E_MODULE_PATH_MISMATCH: declared module path '{}' does not match \
+                 expected path '{}' ({}); declare `{}` instead (spec \u{00a7}7.1)",
+                d.0.join("."),
+                expected.0.join("."),
+                origin.describe(),
+                module_declaration(expected)
+            ))
+            .with_code(DiagnosticCode::ModulePathMismatch),
+        ),
         Some(_) => None,
     }
 }

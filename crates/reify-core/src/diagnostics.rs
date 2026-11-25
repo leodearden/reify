@@ -5073,6 +5073,36 @@ pub enum DiagnosticCode {
     ///
     /// Severity: Error.
     UnknownSubStructure,
+    /// Origin: `crates/reify-compiler/src/compile_builder/pre_pass.rs::module_path_decl_diag`
+    /// (task #6953, PRD resolution-unification ξ, boundary #16; spec §7.1; PRD
+    /// prose `E_MODULE_PATH_MISMATCH`).
+    ///
+    /// Emitted when a module's top-of-file `module` declaration names a path
+    /// other than the one its location gives it, for every module a program or
+    /// DAG compiles: the entry, each import unit (re-homed onto the entry,
+    /// prefixed with the imported file's path) and the stdlib build. The
+    /// message names the declaration that fixes it.
+    ///
+    /// Canonical message: ``"E_MODULE_PATH_MISMATCH: declared module path
+    /// '<declared>' does not match expected path '<expected>' (<origin>);
+    /// declare `module <expected>` instead (spec §7.1)"``.
+    ///
+    /// Severity: Error.
+    ModulePathMismatch,
+    /// Origin: `crates/reify-compiler/src/compile_builder/pre_pass.rs::module_path_decl_diag`
+    /// (task #6953, PRD resolution-unification ξ, boundary #16; spec §7.1; PRD
+    /// prose `W_MODULE_DECL_MISSING`).
+    ///
+    /// Emitted when a module has no top-of-file `module` declaration, for
+    /// every module a program or DAG compiles: the entry, each import unit
+    /// (re-homed onto the entry, prefixed with the imported file's path) and
+    /// the stdlib build. The message names the declaration to add.
+    ///
+    /// Canonical message: ``"W_MODULE_DECL_MISSING: file has no top-of-file
+    /// `module` declaration; expected `module <expected>` (spec §7.1)"``.
+    ///
+    /// Severity: Warning.
+    ModuleDeclMissing,
 }
 
 /// A diagnostic message with location and optional labels.
