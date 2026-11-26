@@ -13,7 +13,7 @@ use crate::core_id::CoreId;
 use crate::counters::Counters;
 use crate::declaration::Declaration;
 use crate::demand::Demand;
-use crate::event::{Event, RequestId};
+use crate::event::{Event, RequestError, RequestId};
 use crate::failure::{Failure, OutsideFailure, panic_message};
 use crate::finish;
 use crate::index::{Entry, Indexes};
@@ -135,7 +135,10 @@ impl Executor {
             self.advance(key);
         }
         match self.in_flight.running() {
-            0 => Turn::Idle,
+            0 => {
+                self.end_stuck();
+                Turn::Idle
+            }
             running => Turn::SectionsRunning(running),
         }
     }
@@ -334,6 +337,65 @@ impl Executor {
             self.resolving.remove(&key);
             queue.extend(self.waits.forget(key));
         }
+    }
+
+    /// With no body ready and no section in flight nothing can make
+    /// progress, so every node in progress is stuck. Ends each live request
+    /// that still wants a node with an error naming the bodies those nodes
+    /// wait on, every error worked out before any request ends (PRD 12.2 β;
+    /// ε replaces this with the cycle rule).
+    fn end_stuck(&mut self) {
+        let stuck: Vec<_> = self
+            .requests
+            .wanting_any()
+            .into_iter()
+            .map(|(request, snapshot, wanted)| {
+                let waiting = self.bodies_waited_on(wanted);
+                (request, snapshot, RequestError::NothingCanRun { waiting })
+            })
+            .collect();
+        for (request, snapshot, error) in stuck {
+            self.events.push(Event::Ended {
+                request,
+                snapshot,
+                error,
+            });
+            let wanted = self.requests.end_id(request);
+            self.drop_unneeded(wanted);
+        }
+        self.drop_rings();
+    }
+
+    /// The bodies reachable from `wanted` through the wait relation, in path
+    /// order. A path waiting on its parent passes through to it; only
+    /// bodies are named.
+    fn bodies_waited_on(&self, wanted: Vec<TaskKey>) -> Vec<Path> {
+        let mut reached = BTreeSet::new();
+        let mut unvisited = wanted;
+        while let Some(key) = unvisited.pop() {
+            if reached.insert(key) {
+                unvisited.extend(self.waits.awaits(key));
+            }
+        }
+        let mut bodies: Vec<_> = reached
+            .into_iter()
+            .filter(|key| self.tasks.contains_key(key))
+            .map(|key| self.paths.path(key.path))
+            .collect();
+        bodies.sort();
+        bodies
+    }
+
+    /// Drops the work left once every stuck request has ended. Nothing can
+    /// run and no live request wants a node, so what is left in progress is
+    /// bodies awaiting one another in a ring, which the rule that keeps
+    /// what something awaits never drops.
+    fn drop_rings(&mut self) {
+        for (_, task) in mem::take(&mut self.tasks) {
+            task.abandon();
+        }
+        self.resolving.clear();
+        self.waits = Waits::default();
     }
 
     /// Polls the body at `key` if it is owed a poll.

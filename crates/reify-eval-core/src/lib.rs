@@ -46,7 +46,7 @@ pub use counters::Counters;
 pub use cx::Cx;
 pub use declaration::{Binding, Declaration, KindId};
 pub use demand::Demand;
-pub use event::{Event, RequestId};
+pub use event::{Event, RequestError, RequestId};
 pub use executor::Turn;
 pub use failure::{Failure, OutsideFailure, ResourceDeath};
 pub use hash::Hash128;

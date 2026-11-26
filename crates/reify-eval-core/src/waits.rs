@@ -35,6 +35,11 @@ impl Waits {
         freed
     }
 
+    /// The nodes `waiter` awaits.
+    pub fn awaits(&self, waiter: TaskKey) -> impl Iterator<Item = TaskKey> + '_ {
+        self.awaits.get(&waiter).into_iter().flatten().copied()
+    }
+
     pub fn is_awaited(&self, key: TaskKey) -> bool {
         self.awaited_by.contains_key(&key)
     }

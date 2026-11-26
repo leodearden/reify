@@ -86,13 +86,32 @@ impl Requests {
         self.wanted_by.contains_key(&key)
     }
 
+    /// Each live request that still wants a node, with its snapshot and
+    /// the nodes it wants.
+    pub fn wanting_any(&self) -> Vec<(RequestId, SnapshotId, Vec<TaskKey>)> {
+        self.wants
+            .iter()
+            .filter(|(_, wanted)| !wanted.is_empty())
+            .map(|(request, wanted)| {
+                let snapshot = self.on[request];
+                (*request, snapshot, wanted.iter().copied().collect())
+            })
+            .collect()
+    }
+
     /// Ends `request`, returning the nodes it wanted.
     pub fn end(&mut self, request: Request) -> BTreeSet<TaskKey> {
-        self.on.remove(&request.id);
-        let wanted = self.wants.remove(&request.id).unwrap_or_default();
+        self.end_id(request.id)
+    }
+
+    /// Ends the request `id`, for the core's own use, returning the nodes it
+    /// wanted; nothing, if it has already ended.
+    pub fn end_id(&mut self, id: RequestId) -> BTreeSet<TaskKey> {
+        self.on.remove(&id);
+        let wanted = self.wants.remove(&id).unwrap_or_default();
         for key in &wanted {
             if let Some(wanting) = self.wanted_by.get_mut(key) {
-                wanting.remove(&request.id);
+                wanting.remove(&id);
                 if wanting.is_empty() {
                     self.wanted_by.remove(key);
                 }
