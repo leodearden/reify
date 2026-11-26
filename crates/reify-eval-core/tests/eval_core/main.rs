@@ -17,6 +17,7 @@ mod outside;
 mod reading;
 mod roots;
 mod sections;
+mod seeding;
 mod sequences;
 mod snapshots;
 mod store;
