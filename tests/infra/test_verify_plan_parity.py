@@ -82,7 +82,12 @@ DOCS_CHANGE = "docs/note.md"
 EMPTY_PLAN = "# (no commands — nothing to verify for this action/scope)"
 INFRA_MAPPED_DOCS = "docs/notes/verify-pipeline-knobs.md"
 POLICY_LEAF = "( for _vt in tests/infra/test_verify_policy.sh; do "
-LEAF_TAIL = ' -u REIFY_VERIFY_EVENT_LOG bash "$_vt" || exit $?; done )'
+MEMBER_EXIT_ARM = (
+    '|| { _vrc=$?; echo "verify.sh: infra member $_vt exited rc=$_vrc'
+    '$(if [ "$_vrc" -gt 128 ]; then printf " (signal %s)" "$(kill -l "$_vrc" 2>/dev/null)"; fi)"'
+    ' >&2 || true; exit "$_vrc"; }'
+)
+LEAF_TAIL = ' -u REIFY_VERIFY_EVENT_LOG bash "$_vt" ' + MEMBER_EXIT_ARM + "; done )"
 LD_SCRUB = 'export LD_LIBRARY_PATH="${REIFY_AMBIENT_LD_LIBRARY_PATH-}"; '
 PLAIN_GUI_PROJECT = f"{LD_SCRUB}if test -d gui; then (cd gui && "
 FULL_GUI_SUITE = "../scripts/gui-vitest-run.sh'); fi"

@@ -55,6 +55,8 @@ tests/infra/test_flake_density_report.py    tests/infra/test_flake_density_repor
 tests/infra/test_no_shared_tmp_python_helpers.py    tests/infra/test_no_shared_tmp_python_helpers.sh
 # Task 10333: the selective-infra leaf fixture builders; an edit selects every suite that imports them.
 tests/infra/selective_infra_leaf_fixture.py    tests/infra/test_verify_selective_infra_*.sh
+# Task 10333: the selective-infra member-exit record's assertions live in its .py.
+tests/infra/test_verify_selective_infra_member_exit_record.py    tests/infra/test_verify_selective_infra_member_exit_record.sh
 # Task 8678: the adoption-ratchet data table and engine select its wrapper.
 tests/infra/adoption-ratchet.manifest    tests/infra/test_infra_adoption_ratchet.sh
 tests/infra/adoption_ratchet.py    tests/infra/test_infra_adoption_ratchet.sh
