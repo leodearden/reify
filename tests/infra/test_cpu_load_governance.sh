@@ -1877,6 +1877,234 @@ EOF_SETPRIV_SHIM
 fi
 
 # ----------------------------------------------------------------------------
+# FIXTURE-RESIGNAL: a cpu_load_fixture.sh stopped with SIGTERM reaps its workers
+# before it exits, even when a second SIGTERM arrives mid-teardown.  GNU timeout
+# signals its child and then the child's whole process group, so a fixture run
+# under it is TERMed twice, and bash exits at once on a repeated terminating
+# signal while an EXIT trap is still running, abandoning the trap's `wait` and
+# orphaning the worker it was reaping.  ROW4-LAUNCH-VACUITY-4 and -4d stand on
+# the fixture outliving its workers.
+#
+# A PATH shim named `timeout` stands in for the worker handle.  Once the
+# fixture's teardown has TERMed it, the shim TERMs its parent (the second TERM,
+# which therefore lands inside the teardown, never before or after it) and then
+# holds until released.  The fixture is then read from /proc: a fixture that
+# survived the second TERM waits on its worker (State S, no TERM pending), and
+# one that did not is gone while its worker lives.  Needs only bash, awk, mv and
+# /proc, so it is always-on, including under REIFY_CPU_GOVERN_DISABLE=1.  Every
+# deadline is an anti-hang guard only (technique T, docs/prds/infra-test-
+# wallclock-deflake.md); none discriminates pass from fail.
+# ----------------------------------------------------------------------------
+echo ""
+echo "--- FIXTURE-RESIGNAL: a TERMed fixture reaps its worker before it exits, a repeated TERM included (always-on) ---"
+
+# _fixture_resignal_state <pid>
+#   Prints what a process is doing about a TERM aimed at it:
+#     dead     /proc/<pid>/status is unreadable, or the process is a zombie or gone;
+#     settled  State S with SIGTERM pending nowhere (SigPnd, ShdPnd);
+#     busy     anything else: running, stopped, or sleeping with a TERM queued.
+#   Pending is read as well as State because kill() sets the pending bit
+#   synchronously while the target's wakeup (S -> R) can lag, so a State-only
+#   check could read a doomed process as settled.  SIGTERM is signal 15, bit
+#   0x4000 of the mask: the 4th hex digit from the right, value & 4.  POSIX awk
+#   only; the result is captured rather than piped into an early-closing reader,
+#   because this file runs under `set -o pipefail`.
+_fixture_resignal_state() {
+    local state
+    state="$(awk '
+        function term_in(mask,  digit) {
+            digit = substr(mask, length(mask) - 3, 1)
+            return int((index("0123456789abcdef", tolower(digit)) - 1) / 4) % 2
+        }
+        /^State:/  { st = $2 }
+        /^SigPnd:/ { pnd = $2 }
+        /^ShdPnd:/ { shd = $2 }
+        END {
+            if (st == "" || st == "Z" || st == "X") print "dead"
+            else if (st == "S" && !term_in(pnd) && !term_in(shd)) print "settled"
+            else print "busy"
+        }' "/proc/$1/status" 2>/dev/null || true)"
+    printf '%s\n' "${state:-dead}"
+}
+
+# _fixture_resignal_settle <pid> <deadline_s>
+#   Polls _fixture_resignal_state every 0.1 s and prints the first reading that
+#   is not `busy`, or `busy` when <deadline_s> passes first (anti-hang only).
+_fixture_resignal_settle() {
+    local deadline=$(( SECONDS + $2 )) state
+    while true; do
+        state="$(_fixture_resignal_state "$1")"
+        if [ "$state" != "busy" ] || [ "$SECONDS" -ge "$deadline" ]; then
+            printf '%s\n' "$state"
+            return 0
+        fi
+        sleep 0.1
+    done
+}
+
+# _fixture_resignal_await_stopped <pid> <deadline_s>
+#   Returns 0 once <pid> has processed a SIGSTOP (State T), 1 when <deadline_s>
+#   passes first (anti-hang only).  kill() only queues the stop: the kernel hands
+#   a process its queued signals lowest number first, so a TERM sent before the
+#   stop is processed is delivered first and ends the process.
+_fixture_resignal_await_stopped() {
+    local deadline=$(( SECONDS + $2 )) state
+    while true; do
+        state="$(awk '/^State:/ { print $2 }' "/proc/$1/status" 2>/dev/null || true)"
+        [ "$state" != "T" ] || return 0
+        [ "$SECONDS" -lt "$deadline" ] || return 1
+        sleep 0.05
+    done
+}
+
+# ── the state reader, on processes whose state this test controls.
+( : ) &
+_fixture_resignal_dead_pid=$!
+wait "$_fixture_resignal_dead_pid" 2>/dev/null || true
+_fixture_resignal_got="$(_fixture_resignal_state "$_fixture_resignal_dead_pid")"
+assert "FIXTURE-RESIGNAL-STATE-1: a reaped pid => 'dead' EXACTLY (got '${_fixture_resignal_got}')" \
+    test "$_fixture_resignal_got" = "dead"
+
+sleep 1000 &
+_fixture_resignal_sleeper=$!
+_fixture_resignal_got="$(_fixture_resignal_settle "$_fixture_resignal_sleeper" 30)"
+assert "FIXTURE-RESIGNAL-STATE-2: a live sleeping child with no TERM pending => 'settled' EXACTLY (got '${_fixture_resignal_got}')" \
+    test "$_fixture_resignal_got" = "settled"
+
+# NON-VACUITY CRUX: a process holding a TERM it has not acted on is not settled.
+# Stopped, it keeps the TERM pending, so a reader that ignored the pending bit
+# and State T alike would bless a fixture that is about to die.
+kill -STOP "$_fixture_resignal_sleeper"
+_fixture_resignal3_rc=0
+_fixture_resignal_await_stopped "$_fixture_resignal_sleeper" 30 || _fixture_resignal3_rc=$?
+kill -TERM "$_fixture_resignal_sleeper"
+_fixture_resignal_got="$(_fixture_resignal_state "$_fixture_resignal_sleeper")"
+assert "FIXTURE-RESIGNAL-STATE-3: NON-VACUITY CRUX -- a stopped child (rc ${_fixture_resignal3_rc}) with TERM pending => 'busy' EXACTLY (got '${_fixture_resignal_got}')" \
+    test "$_fixture_resignal_got" = "busy"
+kill -KILL "$_fixture_resignal_sleeper" 2>/dev/null || true
+wait "$_fixture_resignal_sleeper" 2>/dev/null || true
+
+# State S with TERM pending, the case only the pending bit tells from settled: a
+# child that blocks SIGTERM and sleeps keeps the signal queued and stays in S.
+if command -v python3 >/dev/null 2>&1; then
+    _fixture_resignal_blocked="$WORK/fixture-resignal-blocked"
+    python3 -c '
+import signal, sys, time
+signal.pthread_sigmask(signal.SIG_BLOCK, [signal.SIGTERM])
+with open(sys.argv[1], "w") as marker:
+    marker.write("blocked\n")
+time.sleep(1000)' "$_fixture_resignal_blocked" &
+    _fixture_resignal_blocker=$!
+    _fixture_resignal3b_rc=0
+    _row4_await_ready 30 "$_fixture_resignal_blocked" || _fixture_resignal3b_rc=$?
+    assert "FIXTURE-RESIGNAL-STATE-3a: the python3 child reports SIGTERM blocked (rc ${_fixture_resignal3b_rc}; the 30 s deadline is an anti-hang guard only); precondition of -3b" \
+        test "$_fixture_resignal3b_rc" -eq 0
+    kill -TERM "$_fixture_resignal_blocker"
+    _fixture_resignal_got="$(_fixture_resignal_state "$_fixture_resignal_blocker")"
+    assert "FIXTURE-RESIGNAL-STATE-3b: a child that blocks SIGTERM, with TERM pending => 'busy' EXACTLY (got '${_fixture_resignal_got}')" \
+        test "$_fixture_resignal_got" = "busy"
+    kill -KILL "$_fixture_resignal_blocker" 2>/dev/null || true
+    wait "$_fixture_resignal_blocker" 2>/dev/null || true
+else
+    echo "  SKIP FIXTURE-RESIGNAL-STATE-3b: python3 unavailable — cannot block SIGTERM in a sleeping child"
+fi
+
+# ── the real fixture, driven under the `timeout` shim.
+_fixture_resignal_dir="$(mktemp -d -p "$WORK" fixture-resignal.XXXXXX)"
+mkdir "$_fixture_resignal_dir/shim"
+cat > "$_fixture_resignal_dir/shim/timeout" << 'EOF_TIMEOUT_SHIM'
+#!/usr/bin/env bash
+# The fixture's worker handle: ignores its arguments, sleeps until TERMed, then
+# TERMs its own parent (the fixture) from inside its TERM trap and holds, so the
+# second TERM is delivered while the fixture's teardown waits on this process.
+current_ppid() { awk '/^PPid:/ { print $2 }' "/proc/$$/status"; }
+report() { printf '%s\n' "$2" > "$1.tmp.$$" && mv -f "$1.tmp.$$" "$1"; }
+_hold() {
+    kill "$_sleep" 2>/dev/null || true
+    kill -TERM "$PPID" 2>/dev/null || true
+    report "$GOVTEST_SHIM_TERMED" "$$"
+    while [ ! -e "$GOVTEST_SHIM_RELEASE" ] && [ -d "${GOVTEST_SHIM_RELEASE%/*}" ] \
+        && [ "$(current_ppid)" = "$PPID" ]; do
+        sleep 0.05
+    done
+    report "$GOVTEST_SHIM_EXIT_PPID" "$(current_ppid)"
+    exit 0
+}
+trap _hold TERM
+report "$GOVTEST_SHIM_ARMED" "$$"
+sleep 1000 &
+_sleep=$!
+wait "$_sleep"
+EOF_TIMEOUT_SHIM
+chmod +x "$_fixture_resignal_dir/shim/timeout"
+
+GOVTEST_SHIM_ARMED="$_fixture_resignal_dir/armed" \
+GOVTEST_SHIM_TERMED="$_fixture_resignal_dir/termed" \
+GOVTEST_SHIM_RELEASE="$_fixture_resignal_dir/release" \
+GOVTEST_SHIM_EXIT_PPID="$_fixture_resignal_dir/exit-ppid" \
+PATH="$_fixture_resignal_dir/shim:$PATH" \
+    bash "$FIXTURE" 1 30 --ready-file "$_fixture_resignal_dir/ready" >/dev/null 2>&1 &
+_fixture_resignal_pid=$!
+
+# The TERM must not beat the shim's trap, or the shim dies before it can send
+# the second one and the block waits for a marker that never comes.
+_fixture_resignal1_rc=0
+_row4_await_ready 30 "$_fixture_resignal_dir/ready" "$_fixture_resignal_dir/armed" \
+    || _fixture_resignal1_rc=$?
+assert "FIXTURE-RESIGNAL-1: the fixture reports ready and its worker's TERM trap is armed (rc ${_fixture_resignal1_rc}; the 30 s deadline is an anti-hang guard only)" \
+    test "$_fixture_resignal1_rc" -eq 0
+
+if [ "$_fixture_resignal1_rc" -ne 0 ]; then
+    assert "FIXTURE-RESIGNAL-2: fixture never reported ready with its worker armed (RESIGNAL-1 rc ${_fixture_resignal1_rc}) -- TERM cases not run" \
+        false
+else
+    kill -TERM "$_fixture_resignal_pid"
+    _fixture_resignal2_rc=0
+    _row4_await_ready 30 "$_fixture_resignal_dir/termed" || _fixture_resignal2_rc=$?
+    assert "FIXTURE-RESIGNAL-2: the fixture's teardown reached its worker, which sent the second TERM (rc ${_fixture_resignal2_rc}; the 30 s deadline is an anti-hang guard only)" \
+        test "$_fixture_resignal2_rc" -eq 0
+
+    if [ "$_fixture_resignal2_rc" -ne 0 ]; then
+        assert "FIXTURE-RESIGNAL-3: the worker never received the fixture's TERM (RESIGNAL-2 rc ${_fixture_resignal2_rc}) -- reap cases not run" \
+            false
+    else
+        # NON-VACUITY CRUX: the second TERM has been sent and the worker is still
+        # held, so the fixture is either waiting on it or gone.
+        _fixture_resignal_got="$(_fixture_resignal_settle "$_fixture_resignal_pid" 30)"
+        assert "FIXTURE-RESIGNAL-3: NON-VACUITY CRUX -- after a second TERM mid-teardown the fixture is waiting on its live worker, state EXACTLY 'settled' (got '${_fixture_resignal_got}')" \
+            test "$_fixture_resignal_got" = "settled"
+
+        : > "$_fixture_resignal_dir/release"
+        _fixture_resignal_rc=0
+        wait "$_fixture_resignal_pid" 2>/dev/null || _fixture_resignal_rc=$?
+        _fixture_resignal4_rc=0
+        _row4_await_ready 30 "$_fixture_resignal_dir/exit-ppid" || _fixture_resignal4_rc=$?
+        _fixture_resignal_exit_ppid="$(cat "$_fixture_resignal_dir/exit-ppid" 2>/dev/null || true)"
+        assert "FIXTURE-RESIGNAL-4: the worker still had the fixture (${_fixture_resignal_pid}) as its parent when it exited, so the fixture outlived it (exit-time PPid '${_fixture_resignal_exit_ppid}', rc ${_fixture_resignal4_rc}; the 30 s deadline is an anti-hang guard only)" \
+            test "$_fixture_resignal_exit_ppid" = "$_fixture_resignal_pid"
+        _fixture_resignal_after="$(_row4_worker_affinities "$_fixture_resignal_dir/ready" 2>/dev/null || true)"
+        assert "FIXTURE-RESIGNAL-4b: once the fixture is reaped its worker reads EXACTLY 'unavailable' (got '${_fixture_resignal_after//$'\n'/,}'); the property ROW4-LAUNCH-VACUITY-4 stands on" \
+            test "$_fixture_resignal_after" = "unavailable"
+        assert "FIXTURE-RESIGNAL-5: a TERMed fixture exits EXACTLY 143 (got ${_fixture_resignal_rc}); it never reports success" \
+            test "$_fixture_resignal_rc" -eq 143
+    fi
+fi
+
+# Unconditional cleanup, so no failure path hangs or leaks: release the shim,
+# KILL it with its sleeper, then the fixture.  Every error is ignored.
+: > "$_fixture_resignal_dir/release"
+if [ -r "$_fixture_resignal_dir/ready" ]; then
+    while IFS= read -r _fixture_resignal_recorded; do
+        if [ -n "$_fixture_resignal_recorded" ]; then
+            pkill -KILL -P "$_fixture_resignal_recorded" 2>/dev/null || true
+            kill -KILL "$_fixture_resignal_recorded" 2>/dev/null || true
+        fi
+    done < "$_fixture_resignal_dir/ready"
+fi
+kill -KILL "$_fixture_resignal_pid" 2>/dev/null || true
+wait "$_fixture_resignal_pid" 2>/dev/null || true
+
+# ----------------------------------------------------------------------------
 # ROW4-LAUNCH-VACUITY: the launch/stop seam ROW4 starts and ends its burns
 # through.  `_row4_launch_role_burn` takes the governed-exec wrapper as a
 # parameter, so this block hands it a pass-through stub: the REAL fixture and
