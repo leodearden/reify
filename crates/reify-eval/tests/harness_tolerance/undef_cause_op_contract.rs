@@ -250,20 +250,20 @@ fn g3_transparency_capture_off_is_byte_identical() {
 // MEASUREMENT behind the design — why this is a characterization floor and not a
 // reachability test of the never-overwrite gate itself:
 //
-//   `record_op_contract_failures` (crates/reify-eval/src/engine_eval.rs:4621) has
+//   `record_op_contract_failures` (crates/reify-eval/src/engine_eval.rs) has
 //   the INV-SF-1 never-overwrite half as its second gate,
-//   `if causes.contains_key(id) { continue; }` (:4637). That gate is NOT
+//   `if causes.contains_key(id) { continue; }`. That gate is NOT
 //   reachable from `.ri` source:
 //
 //     - `AwaitingSolve` / `SolveFailed` both require `det ∈ {Auto, Provisional}`,
 //       which implies `kind.is_auto()`, which implies `default_expr: None` —
 //       `build_param_value_cell_decl` hard-sets it on the auto branch
-//       (`build_param_value_cell_decl` in
-//       crates/reify-compiler/src/member_cell_decls.rs, pinned by the
+//       (in crates/reify-compiler/src/member_cell_decls.rs, pinned by the
 //       `build_param_value_cell_decl_auto_branch_skips_compile_default` test in
 //       the same file). A `None` default_expr is skipped by
-//       `record_op_contract_failures`'s THIRD gate anyway (:4646), so those two
-//       causes can never reach the `contains_key` check.
+//       `record_op_contract_failures`'s THIRD gate anyway,
+//       `let Some(default_expr) = &decl.default_expr else { continue; }`, so
+//       those two causes can never reach the `contains_key` check.
 //     - `Unbound` is likewise a required param with no default → same third gate.
 //     - The one α cause that CAN co-occur with `Some(default_expr)` is
 //       `UserUndef` (`param u: Real = undef`), and its re-eval is a
@@ -272,12 +272,13 @@ fn g3_transparency_capture_off_is_byte_identical() {
 //
 //   Hitting the `contains_key` gate itself would require a synthetic
 //   `ValueCellDecl` injection (precedent:
-//   crates/reify-eval/tests/boundary5_engine.rs:1008-1034 pushes directly onto
+//   `evaluate_let_bindings_skips_let_cell_without_default_expr` in
+//   crates/reify-eval/tests/boundary5_engine.rs pushes directly onto
 //   `template.value_cells`) and is deliberately out of α's remit.
 //
 // Both fixtures reused here are already registered in
 // `DELIBERATELY_UNDEF_FIXTURES`
-// (crates/reify-eval/tests/no_stale_undef_invariant_gate.rs:668-674), which is
+// (crates/reify-eval/tests/no_stale_undef_invariant_gate.rs), which is
 // why they were chosen over authoring a new `.ri`: no new fixture, no new
 // registry row, no run-all-classification.manifest row, no nextest partition
 // entry is due.
@@ -311,11 +312,11 @@ fn layer1_module() -> reify_compiler::CompiledModule {
 ///     `DiagnosticCode::OpContractViolation` — the generic code that leaf β will
 ///     replace with a specific one.
 ///
-/// When β changes `push_op_contract_failure` (crates/reify-expr/src/lib.rs:3262;
-/// call sites :646 and :4282) to carry a classified code, `x`'s code changes and
-/// this test's `x` half is expected to be retargeted by β — but the `a` half must
-/// keep holding untouched. Any collateral relabelling of an α-classified cell
-/// turns this red.
+/// When β changes `push_op_contract_failure` (crates/reify-expr/src/lib.rs, and
+/// its `OpContractViolation` callers there) to carry a classified code, `x`'s
+/// code changes and this test's `x` half is expected to be retargeted by β —
+/// but the `a` half must keep holding untouched. Any collateral relabelling of
+/// an α-classified cell turns this red.
 #[test]
 fn classified_cause_is_never_relabelled_op_contract_failed() {
     let module = op_contract_module();
