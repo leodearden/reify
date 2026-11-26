@@ -304,12 +304,19 @@ def resolve_real_sccache(path_value: str) -> str | None:
 
 @dataclass(frozen=True)
 class SessionKnobs:
-    """Every tuning constant of a session in one place (tests replace them)."""
+    """Every tuning constant of a session in one place (tests replace them).
+
+    ready_wait is how long a started server has to answer on its socket, stop_wait
+    each step of waiting for a process before terminating and then killing it, and
+    client_timeout each sccache client call.
+    """
 
     link: canon_store.LinkKnobs = canon_store.LinkKnobs()
     start_attempts: int = 3
     retry_delay: tuple[float, float] = (0.5, 2.0)
-    socket_wait: float = 60.0
+    ready_wait: float = 60.0
+    stop_wait: float = 60.0
+    client_timeout: float = 60.0
     start_lock: str = "/tmp/reify-canon-sccache-start.lock"
     start_lock_wait: float = 30.0
     tmp_root: str = "/tmp"
@@ -432,23 +439,23 @@ def remove_stale_session_files(build_dir: str, own_pid: int) -> None:
             unlink_quietly(os.path.join(build_dir, name))
 
 
-def reap(process: subprocess.Popen, knobs: SessionKnobs) -> None:
-    """Wait for process, terminating and then killing it when it outlives socket_wait."""
+def reap(process: subprocess.Popen, stop_wait: float) -> None:
+    """Wait for process, terminating and then killing it each time it outlives stop_wait."""
     for escalate in (None, process.terminate, process.kill):
         if escalate is not None:
             escalate()
         try:
-            process.wait(knobs.socket_wait)
+            process.wait(stop_wait)
             return
         except subprocess.TimeoutExpired:
             continue
     process.wait()
 
 
-def stop_now(process: subprocess.Popen, knobs: SessionKnobs) -> None:
+def stop_now(process: subprocess.Popen, stop_wait: float) -> None:
     if process.poll() is None:
         process.terminate()
-    reap(process, knobs)
+    reap(process, stop_wait)
 
 
 @contextlib.contextmanager
@@ -505,14 +512,18 @@ def server_env(
 
 class StartFailure(StrEnum):
     NONE = ""
-    EXITED = "exited"
+    NOT_READY = "not_ready"
     READ_ONLY = "read_only"
 
 
 def start_server(
     sccache: str, env: Mapping[str, str], files: SessionFiles, knobs: SessionKnobs, clock: Callable[[], float]
 ) -> tuple[subprocess.Popen, StartFailure]:
-    """Spawn a foreground server under the start lock and check it: ready, and not read-only."""
+    """Spawn a foreground server under the start lock and check it: ready, and not read-only.
+
+    NOT_READY when it exited, or did not answer within ready_wait; READ_ONLY when its
+    stderr says its storage write check failed.
+    """
     with start_lock(knobs, clock):
         unlink_quietly(files.socket)
         with refusing_os_errors(f"open {files.err}"):
@@ -526,10 +537,10 @@ def start_server(
                 stderr=err,
                 close_fds=True,
             )
-        deadline = clock() + knobs.socket_wait
+        deadline = clock() + knobs.ready_wait
         while not answers(files.socket):
             if process.poll() is not None or clock() >= deadline:
-                return process, StartFailure.EXITED
+                return process, StartFailure.NOT_READY
             time.sleep(POLL_INTERVAL)
         if READ_ONLY_LINE in read_text(files.err):
             return process, StartFailure.READ_ONLY
@@ -593,7 +604,7 @@ class CacheSession:
             if answers(self._files.socket):
                 counters = summed_counters(self._client("--show-stats", "--stats-format", "json"))
                 self._client("--stop-server")
-            reap(self._process, self._knobs)
+            reap(self._process, self._knobs.stop_wait)
             read_only = READ_ONLY_LINE in read_text(self._files.err)
         finally:
             if self._relay is not None:
@@ -623,7 +634,7 @@ class CacheSession:
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
-                timeout=self._knobs.socket_wait,
+                timeout=self._knobs.client_timeout,
                 check=False,
             )
         except (OSError, subprocess.TimeoutExpired):
@@ -673,7 +684,7 @@ def open_session(
                 process, failure = start_server(sccache, shared_env, files, knobs, clock)
                 if failure is StartFailure.NONE:
                     break
-                stop_now(process, knobs)
+                stop_now(process, knobs.stop_wait)
             if failure is not StartFailure.NONE:
                 relay.close()
                 relay = None
@@ -684,14 +695,14 @@ def open_session(
             local_env = server_env(env, files, backend, settings, fallback_dir, None)
             process, failure = start_server(sccache, local_env, files, knobs, clock)
             if failure is not StartFailure.NONE:
-                stop_now(process, knobs)
+                stop_now(process, knobs.stop_wait)
                 first_line = next(iter(read_text(files.err).splitlines()), "no stderr")
                 raise CacheSessionError(f"the local-fallback sccache server did not start: {first_line}")
     except BaseException:
         if relay is not None:
             relay.close()
         if process is not None and process.poll() is None:
-            stop_now(process, knobs)
+            stop_now(process, knobs.stop_wait)
         unlink_quietly(files.socket)
         unlink_quietly(files.err)
         raise
