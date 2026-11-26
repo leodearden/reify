@@ -10,7 +10,9 @@ pub struct Ref {
 
 impl Ref {
     pub fn binding(name: impl Into<Arc<str>>) -> Self {
-        Self { binding: name.into() }
+        Self {
+            binding: name.into(),
+        }
     }
 
     pub(crate) fn binding_name(&self) -> &str {

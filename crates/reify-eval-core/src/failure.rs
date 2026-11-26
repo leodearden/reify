@@ -8,7 +8,10 @@ use std::any::Any;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Failure {
     /// A read asked for one type and the value read is of another.
-    WrongType { expected: &'static str, found: &'static str },
+    WrongType {
+        expected: &'static str,
+        found: &'static str,
+    },
     /// A body made a second request before the first was answered (O2).
     TwoRequestsAtOnce,
 }
@@ -18,17 +21,30 @@ pub enum Failure {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OutsideFailure {
     /// A declaration names a kind the core was not built with.
-    UnknownKind { kind: &'static str },
+    UnknownKind {
+        kind: &'static str,
+    },
     /// A body was suspended waiting on something other than the core.
     WaitedOutsideCore,
-    BodyPanicked { message: String },
+    BodyPanicked {
+        message: String,
+    },
     /// A body asked for a section on a resource nobody added.
-    NoResource { resource: &'static str },
-    SectionPanicked { resource: &'static str, message: String },
+    NoResource {
+        resource: &'static str,
+    },
+    SectionPanicked {
+        resource: &'static str,
+        message: String,
+    },
     /// A section was asked of a resource on which an earlier section panicked.
-    ResourceDead { resource: &'static str },
+    ResourceDead {
+        resource: &'static str,
+    },
     /// A kind's own work ran out of memory in `resource`.
-    OutOfMemory { resource: &'static str },
+    OutOfMemory {
+        resource: &'static str,
+    },
 }
 
 /// The text a panic was raised with.

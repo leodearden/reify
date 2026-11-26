@@ -15,7 +15,10 @@ pub struct Snapshot {
 
 impl Snapshot {
     pub(crate) fn new(id: SnapshotId, inputs: impl IntoIterator<Item = (InputKey, Input)>) -> Self {
-        Self { id, inputs: inputs.into_iter().collect() }
+        Self {
+            id,
+            inputs: inputs.into_iter().collect(),
+        }
     }
 
     pub(crate) fn id(&self) -> SnapshotId {

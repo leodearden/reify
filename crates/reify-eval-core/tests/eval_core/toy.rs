@@ -39,13 +39,18 @@ impl Kind for Cell {
 
 /// A cell over the host-named inputs `names`, bound at "0", "1", … in order.
 pub fn cell(names: &[&str]) -> Declaration {
-    names.iter().enumerate().fold(Declaration::new(Cell::ID), |declaration, (index, name)| {
-        declaration.bind(index.to_string(), Binding::Input(InputKey::named(*name)))
-    })
+    names
+        .iter()
+        .enumerate()
+        .fold(Declaration::new(Cell::ID), |declaration, (index, name)| {
+            declaration.bind(index.to_string(), Binding::Input(InputKey::named(*name)))
+        })
 }
 
 pub fn with_cell() -> Builder {
-    Builder::new().kind::<Cell>().expect("a fresh builder has no kinds")
+    Builder::new()
+        .kind::<Cell>()
+        .expect("a fresh builder has no kinds")
 }
 
 /// A box the toy kernel made, by the number it handed out.
@@ -82,7 +87,11 @@ impl Kind for Shape {
         let (handle, built_on) = cx
             .exclusive(move |kernel: &mut ToyKernel, section| kernel.make_box(side, section))
             .await;
-        Produced::Outcome(Outcome::of(BoxShape { handle, volume: side * side * side, built_on }))
+        Produced::Outcome(Outcome::of(BoxShape {
+            handle,
+            volume: side * side * side,
+            built_on,
+        }))
     }
 }
 
@@ -92,7 +101,9 @@ pub fn shape(side: &str) -> Declaration {
 }
 
 pub fn with_toys() -> Builder {
-    with_cell().kind::<Shape>().expect("toy kind ids are distinct")
+    with_cell()
+        .kind::<Shape>()
+        .expect("toy kind ids are distinct")
 }
 
 /// What a test can see of the toy kernel from outside its thread.
@@ -110,7 +121,10 @@ impl Watch {
 
     /// The side of each box made, in the order the kernel made them.
     pub fn sides_in_order(&self) -> Vec<i64> {
-        self.sides_in_order.lock().expect("no holder panics").clone()
+        self.sides_in_order
+            .lock()
+            .expect("no holder panics")
+            .clone()
     }
 
     /// Whether a section read `cancelled` as true.
@@ -141,18 +155,28 @@ struct PointKeeper {
 
 impl PointKeeper {
     fn reached(&self) {
-        self.reached.recv().expect("the kernel lives while a section is expected");
+        self.reached
+            .recv()
+            .expect("the kernel lives while a section is expected");
     }
 
     fn open(&self) {
-        self.open.send(()).expect("the kernel lives while a section waits");
+        self.open
+            .send(())
+            .expect("the kernel lives while a section waits");
     }
 }
 
 fn point() -> (Point, PointKeeper) {
     let (reached_in, reached) = channel();
     let (open, open_out) = channel();
-    (Point { reached: reached_in, open: open_out }, PointKeeper { reached, open })
+    (
+        Point {
+            reached: reached_in,
+            open: open_out,
+        },
+        PointKeeper { reached, open },
+    )
 }
 
 /// Holds each section on entry, and, if built so, again after it has sent
@@ -193,7 +217,9 @@ impl GateKeeper {
     }
 
     fn second_point(&self) -> &PointKeeper {
-        self.after_progress.as_ref().expect("the gate was built to hold sections after progress")
+        self.after_progress
+            .as_ref()
+            .expect("the gate was built to hold sections after progress")
     }
 }
 
@@ -205,12 +231,20 @@ pub struct ToyKernel {
 }
 
 impl ToyKernel {
-    pub fn make_box(&mut self, side: i64, section: &Section<ToyKernel>) -> (Held<ToyKernel, BoxHandle>, ThreadId) {
+    pub fn make_box(
+        &mut self,
+        side: i64,
+        section: &Section<ToyKernel>,
+    ) -> (Held<ToyKernel, BoxHandle>, ThreadId) {
         if let Some(gate) = &self.gate {
             gate.entry.pass();
         }
         section.progress(side);
-        if let Some(point) = self.gate.as_ref().and_then(|gate| gate.after_progress.as_ref()) {
+        if let Some(point) = self
+            .gate
+            .as_ref()
+            .and_then(|gate| gate.after_progress.as_ref())
+        {
             point.pass();
         }
         if section.cancelled() {
@@ -219,7 +253,11 @@ impl ToyKernel {
         self.made += 1;
         self.boxes.insert(self.made);
         self.watch.live_boxes.fetch_add(1, Ordering::SeqCst);
-        self.watch.sides_in_order.lock().expect("no holder panics").push(side);
+        self.watch
+            .sides_in_order
+            .lock()
+            .expect("no holder panics")
+            .push(side);
         (section.hold(BoxHandle(self.made)), thread::current().id())
     }
 }
@@ -227,7 +265,12 @@ impl ToyKernel {
 fn with_kernel(builder: Builder, watch: &Watch, gate: Option<Gate>) -> Core {
     let mut core = builder.build();
     let watch = watch.clone();
-    core.add_resource(move || ToyKernel { boxes: BTreeSet::new(), made: 0, watch, gate });
+    core.add_resource(move || ToyKernel {
+        boxes: BTreeSet::new(),
+        made: 0,
+        watch,
+        gate,
+    });
     core
 }
 
@@ -240,15 +283,30 @@ pub fn ungated(builder: Builder, watch: &Watch) -> Core {
 /// second so that, bound as `let (core, keeper)`, it is dropped first.
 pub fn gated(builder: Builder, watch: &Watch) -> (Core, GateKeeper) {
     let (entry, entry_keeper) = point();
-    let gate = Gate { entry, after_progress: None };
-    (with_kernel(builder, watch, Some(gate)), GateKeeper { entry: entry_keeper, after_progress: None })
+    let gate = Gate {
+        entry,
+        after_progress: None,
+    };
+    (
+        with_kernel(builder, watch, Some(gate)),
+        GateKeeper {
+            entry: entry_keeper,
+            after_progress: None,
+        },
+    )
 }
 
 /// As `gated`, and each section is held again after its progress note.
 pub fn gated_after_progress(builder: Builder, watch: &Watch) -> (Core, GateKeeper) {
     let ((entry, entry_keeper), (after, after_keeper)) = (point(), point());
-    let gate = Gate { entry, after_progress: Some(after) };
-    let keeper = GateKeeper { entry: entry_keeper, after_progress: Some(after_keeper) };
+    let gate = Gate {
+        entry,
+        after_progress: Some(after),
+    };
+    let keeper = GateKeeper {
+        entry: entry_keeper,
+        after_progress: Some(after_keeper),
+    };
     (with_kernel(builder, watch, Some(gate)), keeper)
 }
 
@@ -271,9 +329,11 @@ pub fn answers(events: &[Event], request: RequestId) -> Vec<(Path, Answer<Erased
     events
         .iter()
         .filter_map(|event| match event {
-            Event::Answered { request: to, path, answer } if *to == request => {
-                Some((path.clone(), answer.clone()))
-            }
+            Event::Answered {
+                request: to,
+                path,
+                answer,
+            } if *to == request => Some((path.clone(), answer.clone())),
             _ => None,
         })
         .collect()
@@ -284,9 +344,11 @@ pub fn notes(events: &[Event], request: RequestId) -> Vec<(Path, Arc<dyn Any + S
     events
         .iter()
         .filter_map(|event| match event {
-            Event::Progress { request: to, path, note } if *to == request => {
-                Some((path.clone(), Arc::clone(note)))
-            }
+            Event::Progress {
+                request: to,
+                path,
+                note,
+            } if *to == request => Some((path.clone(), Arc::clone(note))),
             _ => None,
         })
         .collect()
@@ -304,7 +366,10 @@ pub fn the_answer(events: &[Event], request: &Request, name: &str) -> Answer<Era
 /// The one answer `request` received for root `name`, among others.
 pub fn answer_at(events: &[Event], request: &Request, name: &str) -> Answer<Erased> {
     let at = Path::root(Root::named(name));
-    let mut answers: Vec<_> = answers(events, request.id()).into_iter().filter(|(path, _)| *path == at).collect();
+    let mut answers: Vec<_> = answers(events, request.id())
+        .into_iter()
+        .filter(|(path, _)| *path == at)
+        .collect();
     assert_eq!(answers.len(), 1, "one answer for {name}: {answers:?}");
     answers.remove(0).1
 }

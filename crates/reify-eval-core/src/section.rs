@@ -23,7 +23,10 @@ pub struct Section<R> {
 
 impl<R: 'static> Section<R> {
     pub(crate) fn new(parts: SectionParts) -> Self {
-        Self { parts, resource: PhantomData }
+        Self {
+            parts,
+            resource: PhantomData,
+        }
     }
 
     /// Whether nobody wants the node this section works for any more.
@@ -34,7 +37,10 @@ impl<R: 'static> Section<R> {
     /// Tells every live request that wants this section's node, while the
     /// section still runs.
     pub fn progress(&self, note: impl Any + Send + Sync) {
-        let report = Report::Progress { serial: self.parts.serial, note: Arc::new(note) };
+        let report = Report::Progress {
+            serial: self.parts.serial,
+            note: Arc::new(note),
+        };
         let _ = self.parts.reports.send(report);
     }
 

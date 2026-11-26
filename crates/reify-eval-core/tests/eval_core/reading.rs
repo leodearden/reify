@@ -60,5 +60,9 @@ fn two_live_requests_on_one_snapshot_each_receive_the_answer_of_a_root_they_both
         let answer = toy::the_answer(&events, request, "total");
         assert_eq!(answer.downcast::<i64>(), Answer::Final(Outcome::of(5)));
     }
-    assert_eq!(core.counters().body_runs(Cell::ID), 1, "the running body is shared");
+    assert_eq!(
+        core.counters().body_runs(Cell::ID),
+        1,
+        "the running body is shared"
+    );
 }

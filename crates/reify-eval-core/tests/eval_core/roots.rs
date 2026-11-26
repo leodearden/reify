@@ -16,7 +16,10 @@ fn a_demanded_root_with_no_input_answers_absent() {
     assert_eq!(core.turn(), Turn::Idle);
 
     let answer = toy::the_answer(&core.take_events(), &request, "missing");
-    assert!(matches!(answer, Answer::Final(Outcome::Absent)), "{answer:?}");
+    assert!(
+        matches!(answer, Answer::Final(Outcome::Absent)),
+        "{answer:?}"
+    );
 }
 
 #[test]
@@ -45,6 +48,9 @@ fn a_root_declaring_a_kind_the_core_was_not_built_with_is_pending_with_that_fail
     assert_eq!(core.turn(), Turn::Idle);
 
     let answer = toy::the_answer(&core.take_events(), &request, "lost");
-    assert_eq!(toy::pending(answer), OutsideFailure::UnknownKind { kind: "toy.nobody" });
+    assert_eq!(
+        toy::pending(answer),
+        OutsideFailure::UnknownKind { kind: "toy.nobody" }
+    );
     assert_eq!(core.counters().body_runs(nobody), 0);
 }

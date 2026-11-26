@@ -18,7 +18,11 @@ pub(crate) type SectionJob = Box<dyn FnOnce(&mut dyn Any, SectionParts) -> Produ
 
 pub(crate) enum Ask {
     Read(Ref),
-    Exclusive { resource: TypeId, resource_name: &'static str, job: SectionJob },
+    Exclusive {
+        resource: TypeId,
+        resource_name: &'static str,
+        job: SectionJob,
+    },
 }
 
 pub(crate) enum Reply {
@@ -45,7 +49,9 @@ pub(crate) struct Mailbox {
 
 impl Mailbox {
     pub fn new() -> Self {
-        Self { slot: Mutex::new(Slot::Empty) }
+        Self {
+            slot: Mutex::new(Slot::Empty),
+        }
     }
 
     pub fn take_posted(&self) -> Posted {
@@ -65,7 +71,10 @@ impl Mailbox {
     }
 
     pub fn exchange(&self, ask: Ask) -> Exchange<'_> {
-        Exchange { mailbox: self, ask: Some(ask) }
+        Exchange {
+            mailbox: self,
+            ask: Some(ask),
+        }
     }
 
     fn slot(&self) -> MutexGuard<'_, Slot> {

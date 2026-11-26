@@ -65,13 +65,21 @@ impl Resources {
         let reports = self.reports_in.clone();
         let thread = thread::spawn(move || serve(make, queued, reports));
         self.dead.remove(&TypeId::of::<R>());
-        if let Some(replaced) = self.threads.insert(TypeId::of::<R>(), ResourceThread { jobs, thread }) {
+        if let Some(replaced) = self
+            .threads
+            .insert(TypeId::of::<R>(), ResourceThread { jobs, thread })
+        {
             replaced.stop();
         }
     }
 
     /// Queues a section on its resource's thread.
-    pub fn start(&mut self, resource: TypeId, cancel: Cancel, job: SectionJob) -> Result<u64, Unstarted> {
+    pub fn start(
+        &mut self,
+        resource: TypeId,
+        cancel: Cancel,
+        job: SectionJob,
+    ) -> Result<u64, Unstarted> {
         if self.dead.contains(&resource) {
             return Err(Unstarted::Dead);
         }
@@ -85,7 +93,10 @@ impl Resources {
             home: ReleaseHome::new(thread.jobs.clone(), Arc::clone(&self.pending_releases)),
         };
         let run: SectionRun = Box::new(move |resource| job(resource, parts));
-        thread.jobs.send(Job::Section { serial, run }).map_err(|_| Unstarted::Dead)?;
+        thread
+            .jobs
+            .send(Job::Section { serial, run })
+            .map_err(|_| Unstarted::Dead)?;
         Ok(serial)
     }
 
@@ -97,7 +108,9 @@ impl Resources {
 
     /// Blocks until a resource thread reports.
     pub fn receive(&self) -> Report {
-        self.reports.recv().expect("the core keeps a sender of its own")
+        self.reports
+            .recv()
+            .expect("the core keeps a sender of its own")
     }
 
     /// A report already sent, if there is one.
@@ -138,7 +151,8 @@ fn serve<R: 'static>(make: impl FnOnce() -> R, jobs: Receiver<Job>, reports: Sen
         match job {
             Job::Section { serial, run } => {
                 let product = match resource.as_mut() {
-                    Some(resource) if alive => guarded(|| run(resource)).map_err(|message| SectionFault::Panicked { message }),
+                    Some(resource) if alive => guarded(|| run(resource))
+                        .map_err(|message| SectionFault::Panicked { message }),
                     _ => {
                         let _ = guarded(move || drop(run));
                         Err(SectionFault::Dead)

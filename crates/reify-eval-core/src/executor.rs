@@ -63,7 +63,11 @@ impl Executor {
         self.resources.add(make);
     }
 
-    pub fn evaluate(&mut self, snapshot: &Snapshot, roots: impl IntoIterator<Item = Root>) -> Request {
+    pub fn evaluate(
+        &mut self,
+        snapshot: &Snapshot,
+        roots: impl IntoIterator<Item = Root>,
+    ) -> Request {
         let request = self.requests.open();
         for root in roots.into_iter().collect::<BTreeSet<_>>() {
             self.demand_root(request.id(), snapshot, root);
@@ -154,20 +158,35 @@ impl Executor {
         }
     }
 
-    fn start(&mut self, request: RequestId, key: TaskKey, declaration: Arc<Declaration>, snapshot: &Snapshot) {
+    fn start(
+        &mut self,
+        request: RequestId,
+        key: TaskKey,
+        declaration: Arc<Declaration>,
+        snapshot: &Snapshot,
+    ) {
         let kind_id = declaration.kind();
         let Some(kind) = self.kinds.get(kind_id) else {
             let unknown = OutsideFailure::UnknownKind { kind: kind_id.0 };
             return self.tell(request, key.1, Answer::Pending(unknown));
         };
         self.counters.count_body_run(kind_id);
-        self.tasks.insert(key.clone(), Task::start(kind, declaration, snapshot.clone()));
+        self.tasks.insert(
+            key.clone(),
+            Task::start(kind, declaration, snapshot.clone()),
+        );
         self.requests.want(request, key.clone());
         self.ready.push(key);
     }
 
     fn advance(&mut self, key: TaskKey) {
-        let Some(task) = self.tasks.get_mut(&key).filter(|task| task.section.is_none()) else { return };
+        let Some(task) = self
+            .tasks
+            .get_mut(&key)
+            .filter(|task| task.section.is_none())
+        else {
+            return;
+        };
         let posted = match catch_unwind(AssertUnwindSafe(|| task.poll())) {
             Ok(Poll::Ready(Produced::Outcome(outcome))) => return self.finish(&key, outcome),
             Ok(Poll::Ready(Produced::Outside(failure))) => return self.end_outside(&key, failure),
@@ -183,7 +202,11 @@ impl Executor {
                 task.mailbox.reply(Reply::Outcome(outcome));
                 self.ready.push(key);
             }
-            Posted::Ask(Ask::Exclusive { resource, resource_name, job }) => {
+            Posted::Ask(Ask::Exclusive {
+                resource,
+                resource_name,
+                job,
+            }) => {
                 let started = serve::section::start(
                     task,
                     &key,
@@ -224,7 +247,11 @@ impl Executor {
     }
 
     fn tell(&mut self, request: RequestId, path: Path, answer: Answer<Erased>) {
-        self.events.push(Event::Answered { request, path, answer });
+        self.events.push(Event::Answered {
+            request,
+            path,
+            answer,
+        });
     }
 
     /// Delivers the earliest finished section, blocking until one has
@@ -256,12 +283,17 @@ impl Executor {
     fn take_in(&mut self, report: Report) {
         match report {
             Report::Progress { serial, note } => {
-                let Some(key) = serve::section::waiting_task(serial, &self.in_flight, &self.tasks) else {
+                let Some(key) = serve::section::waiting_task(serial, &self.in_flight, &self.tasks)
+                else {
                     return;
                 };
                 for request in self.requests.wanting(key) {
                     let note = Arc::clone(&note);
-                    self.events.push(Event::Progress { request, path: key.1.clone(), note });
+                    self.events.push(Event::Progress {
+                        request,
+                        path: key.1.clone(),
+                        note,
+                    });
                 }
             }
             Report::Finished { serial, product } => self.in_flight.arrived(serial, product),

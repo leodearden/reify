@@ -8,7 +8,9 @@ pub(crate) struct ReadyQueue<T> {
 
 impl<T> Default for ReadyQueue<T> {
     fn default() -> Self {
-        Self { queue: VecDeque::new() }
+        Self {
+            queue: VecDeque::new(),
+        }
     }
 }
 

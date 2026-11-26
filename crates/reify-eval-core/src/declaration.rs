@@ -22,7 +22,10 @@ pub enum Binding {
 
 impl Declaration {
     pub fn new(kind: KindId) -> Self {
-        Self { kind, bindings: BTreeMap::new() }
+        Self {
+            kind,
+            bindings: BTreeMap::new(),
+        }
     }
 
     pub fn bind(mut self, name: impl Into<Arc<str>>, binding: Binding) -> Self {

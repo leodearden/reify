@@ -32,13 +32,22 @@ impl Task {
         let mailbox = Arc::new(Mailbox::new());
         let cancel = Cancel::default();
         let body = kind.start(Cx::new(Arc::clone(&mailbox), cancel.clone()));
-        Self { declaration, snapshot, mailbox, cancel, section: None, body }
+        Self {
+            declaration,
+            snapshot,
+            mailbox,
+            cancel,
+            section: None,
+            body,
+        }
     }
 
     /// Runs the body until it finishes or is suspended. Nothing wakes a
     /// body: the core queues it again when its reply is in the mailbox.
     pub fn poll(&mut self) -> Poll<Produced<Erased>> {
-        self.body.as_mut().poll(&mut Context::from_waker(Waker::noop()))
+        self.body
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
     }
 
     pub fn waits_on(&self, serial: u64) -> bool {

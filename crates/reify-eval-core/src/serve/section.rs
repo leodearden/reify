@@ -52,13 +52,26 @@ pub(crate) fn start(
     in_flight: &mut InFlight,
     counters: &mut Counters,
 ) -> Result<(), OutsideFailure> {
-    let serial = resources.start(resource, task.cancel.clone(), job).map_err(|unstarted| match unstarted {
-        Unstarted::NoResource => OutsideFailure::NoResource { resource: resource_name },
-        Unstarted::Dead => OutsideFailure::ResourceDead { resource: resource_name },
-    })?;
+    let serial = resources
+        .start(resource, task.cancel.clone(), job)
+        .map_err(|unstarted| match unstarted {
+            Unstarted::NoResource => OutsideFailure::NoResource {
+                resource: resource_name,
+            },
+            Unstarted::Dead => OutsideFailure::ResourceDead {
+                resource: resource_name,
+            },
+        })?;
     counters.count_section();
     task.section = Some(serial);
-    in_flight.started.insert(serial, Started { key: key.clone(), resource, resource_name });
+    in_flight.started.insert(
+        serial,
+        Started {
+            key: key.clone(),
+            resource,
+            resource_name,
+        },
+    );
     Ok(())
 }
 
@@ -75,7 +88,9 @@ pub(crate) fn deliver(
     resources: &mut Resources,
 ) -> Option<(TaskKey, OutsideFailure)> {
     let started = in_flight.started.remove(&serial)?;
-    let waiting = tasks.get_mut(&started.key).filter(|task| task.waits_on(serial));
+    let waiting = tasks
+        .get_mut(&started.key)
+        .filter(|task| task.waits_on(serial));
     let failure = match (product, waiting) {
         (Ok(product), Some(task)) => {
             task.mailbox.reply(Reply::Product(product));
@@ -89,11 +104,14 @@ pub(crate) fn deliver(
         }
         (Err(SectionFault::Panicked { message }), waiting) => {
             resources.mark_dead(started.resource);
-            waiting.map(|_| OutsideFailure::SectionPanicked { resource: started.resource_name, message })
+            waiting.map(|_| OutsideFailure::SectionPanicked {
+                resource: started.resource_name,
+                message,
+            })
         }
-        (Err(SectionFault::Dead), waiting) => {
-            waiting.map(|_| OutsideFailure::ResourceDead { resource: started.resource_name })
-        }
+        (Err(SectionFault::Dead), waiting) => waiting.map(|_| OutsideFailure::ResourceDead {
+            resource: started.resource_name,
+        }),
     };
     failure.map(|failure| (started.key, failure))
 }
@@ -106,5 +124,8 @@ pub(crate) fn waiting_task<'a>(
     tasks: &BTreeMap<TaskKey, Task>,
 ) -> Option<&'a TaskKey> {
     let key = &in_flight.started.get(&serial)?.key;
-    tasks.get(key).is_some_and(|task| task.waits_on(serial)).then_some(key)
+    tasks
+        .get(key)
+        .is_some_and(|task| task.waits_on(serial))
+        .then_some(key)
 }

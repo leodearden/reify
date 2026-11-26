@@ -48,7 +48,11 @@ pub struct Held<R: 'static, P: Release<R>> {
 
 impl<R: 'static, P: Release<R>> Held<R, P> {
     pub(crate) fn new(thing: P, home: ReleaseHome) -> Self {
-        Self { thing: Some(thing), home, resource: PhantomData }
+        Self {
+            thing: Some(thing),
+            home,
+            resource: PhantomData,
+        }
     }
 }
 
@@ -56,13 +60,17 @@ impl<R: 'static, P: Release<R>> Deref for Held<R, P> {
     type Target = P;
 
     fn deref(&self) -> &P {
-        self.thing.as_ref().expect("a held thing is taken only when it is dropped")
+        self.thing
+            .as_ref()
+            .expect("a held thing is taken only when it is dropped")
     }
 }
 
 impl<R: 'static, P: Release<R>> Drop for Held<R, P> {
     fn drop(&mut self) {
-        let Some(thing) = self.thing.take() else { return };
+        let Some(thing) = self.thing.take() else {
+            return;
+        };
         self.home.send(Box::new(move |resource: &mut dyn Any| {
             let resource = resource.downcast_mut::<R>();
             thing.release(resource.expect("a resource thread holds the type it was added under"));

@@ -33,7 +33,10 @@ fn a_second_body_runs_to_completion_while_a_first_waits_on_a_section_still_runni
     let events = core.take_events();
     let total = toy::the_answer(&events, &second, "total");
     assert_eq!(total.downcast::<i64>(), Answer::Final(Outcome::of(3)));
-    assert!(toy::answers(&events, first.id()).is_empty(), "the shape still waits on its section");
+    assert!(
+        toy::answers(&events, first.id()).is_empty(),
+        "the shape still waits on its section"
+    );
 
     keeper.open();
     core.run();
@@ -47,13 +50,18 @@ fn a_second_body_runs_to_completion_while_a_first_waits_on_a_section_still_runni
 #[test]
 fn a_section_for_a_resource_nobody_added_is_pending_with_that_failure() {
     let mut core = toy::with_toys().build();
-    let snapshot = core.snapshot([toy::named("side", 2_i64), toy::root("box", toy::shape("side"))]);
+    let snapshot = core.snapshot([
+        toy::named("side", 2_i64),
+        toy::root("box", toy::shape("side")),
+    ]);
 
     let request = core.evaluate(&snapshot, [Root::named("box")]);
     core.run();
 
     let answer = toy::the_answer(&core.take_events(), &request, "box");
-    let missing = OutsideFailure::NoResource { resource: type_name::<ToyKernel>() };
+    let missing = OutsideFailure::NoResource {
+        resource: type_name::<ToyKernel>(),
+    };
     assert_eq!(toy::pending(answer), missing);
 }
 
@@ -61,7 +69,10 @@ fn a_section_for_a_resource_nobody_added_is_pending_with_that_failure() {
 fn the_core_can_be_moved_to_another_thread_mid_evaluation() {
     let watch = Watch::default();
     let (mut core, keeper) = toy::gated(toy::with_toys(), &watch);
-    let snapshot = core.snapshot([toy::named("side", 3_i64), toy::root("box", toy::shape("side"))]);
+    let snapshot = core.snapshot([
+        toy::named("side", 3_i64),
+        toy::root("box", toy::shape("side")),
+    ]);
     let request = core.evaluate(&snapshot, [Root::named("box")]);
     assert_eq!(core.turn(), Turn::SectionsRunning(1));
 
@@ -81,7 +92,10 @@ fn the_core_can_be_moved_to_another_thread_mid_evaluation() {
 fn a_section_s_progress_notes_reach_the_host_while_it_still_runs() {
     let watch = Watch::default();
     let (mut core, keeper) = toy::gated_after_progress(toy::with_toys(), &watch);
-    let snapshot = core.snapshot([toy::named("side", 2_i64), toy::root("box", toy::shape("side"))]);
+    let snapshot = core.snapshot([
+        toy::named("side", 2_i64),
+        toy::root("box", toy::shape("side")),
+    ]);
     let first = core.evaluate(&snapshot, [Root::named("box")]);
     let second = core.evaluate(&snapshot, [Root::named("box")]);
     assert_eq!(core.turn(), Turn::SectionsRunning(1));
@@ -93,10 +107,17 @@ fn a_section_s_progress_notes_reach_the_host_while_it_still_runs() {
     let events = core.take_events();
     for request in [first.id(), second.id()] {
         let notes = toy::notes(&events, request);
-        assert_eq!(notes.len(), 1, "one note for each request that wants the shape");
+        assert_eq!(
+            notes.len(),
+            1,
+            "one note for each request that wants the shape"
+        );
         assert_eq!(notes[0].0, Path::root(Root::named("box")));
         assert_eq!(notes[0].1.downcast_ref::<i64>(), Some(&2));
-        assert!(toy::answers(&events, request).is_empty(), "the section still runs");
+        assert!(
+            toy::answers(&events, request).is_empty(),
+            "the section still runs"
+        );
     }
 
     keeper.open_after_progress();
@@ -107,7 +128,10 @@ fn a_section_s_progress_notes_reach_the_host_while_it_still_runs() {
 fn a_section_sees_cancelled_when_its_request_is_ended_without_waiting() {
     let watch = Watch::default();
     let (mut core, keeper) = toy::gated(toy::with_toys(), &watch);
-    let snapshot = core.snapshot([toy::named("side", 2_i64), toy::root("box", toy::shape("side"))]);
+    let snapshot = core.snapshot([
+        toy::named("side", 2_i64),
+        toy::root("box", toy::shape("side")),
+    ]);
     let request = core.evaluate(&snapshot, [Root::named("box")]);
     assert_eq!(core.turn(), Turn::SectionsRunning(1));
     keeper.entered();
@@ -128,7 +152,9 @@ impl Kind for Fragile {
     const ID: KindId = KindId("toy.fragile");
 
     async fn run(cx: &Cx) -> Produced<i64> {
-        let made = cx.exclusive(|_: &mut ToyKernel, _| -> i64 { panic!("toy kernel broke") }).await;
+        let made = cx
+            .exclusive(|_: &mut ToyKernel, _| -> i64 { panic!("toy kernel broke") })
+            .await;
         Produced::Outcome(Outcome::of(made))
     }
 }
@@ -148,7 +174,8 @@ fn assert_section_panicked(failure: OutsideFailure) {
 }
 
 #[test]
-fn a_section_that_panics_ends_its_node_pending_with_a_failure_outside_the_inputs_and_no_later_call_hangs() {
+fn a_section_that_panics_ends_its_node_pending_with_a_failure_outside_the_inputs_and_no_later_call_hangs()
+ {
     let watch = Watch::default();
     let mut core = toy::ungated(with_fragile(), &watch);
     let snapshot = core.snapshot([
@@ -160,7 +187,11 @@ fn a_section_that_panics_ends_its_node_pending_with_a_failure_outside_the_inputs
 
     let request = core.evaluate(&snapshot, [Root::named("fragile")]);
     core.run();
-    assert_section_panicked(toy::pending(toy::the_answer(&core.take_events(), &request, "fragile")));
+    assert_section_panicked(toy::pending(toy::the_answer(
+        &core.take_events(),
+        &request,
+        "fragile",
+    )));
 
     assert_eq!(core.turn(), Turn::Idle);
     assert_eq!(core.wait(), Turn::Idle);
@@ -182,18 +213,30 @@ fn after_a_section_panics_its_resource_is_dead_and_later_sections_for_it_fail_th
         toy::root("fragile", Declaration::new(Fragile::ID)),
         toy::root("shape", toy::shape("side")),
     ]);
-    let dead = OutsideFailure::ResourceDead { resource: type_name::<ToyKernel>() };
+    let dead = OutsideFailure::ResourceDead {
+        resource: type_name::<ToyKernel>(),
+    };
 
     let request = core.evaluate(&snapshot, [Root::named("fragile"), Root::named("shape")]);
-    assert_eq!(core.turn(), Turn::SectionsRunning(2), "both sections reach the kernel, the panicking one first");
+    assert_eq!(
+        core.turn(),
+        Turn::SectionsRunning(2),
+        "both sections reach the kernel, the panicking one first"
+    );
     core.run();
     let events = core.take_events();
     assert_section_panicked(toy::pending(toy::answer_at(&events, &request, "fragile")));
-    assert_eq!(toy::pending(toy::answer_at(&events, &request, "shape")), dead);
+    assert_eq!(
+        toy::pending(toy::answer_at(&events, &request, "shape")),
+        dead
+    );
 
     let later = core.evaluate(&snapshot, [Root::named("shape")]);
     core.run();
-    assert_eq!(toy::pending(toy::the_answer(&core.take_events(), &later, "shape")), dead);
+    assert_eq!(
+        toy::pending(toy::the_answer(&core.take_events(), &later, "shape")),
+        dead
+    );
     core.drain();
 }
 
@@ -213,7 +256,11 @@ fn a_release_for_a_dead_resource_does_not_hang_the_drain() {
 
     let broken = core.evaluate(&snapshot, [Root::named("fragile")]);
     core.run();
-    assert_section_panicked(toy::pending(toy::the_answer(&core.take_events(), &broken, "fragile")));
+    assert_section_panicked(toy::pending(toy::the_answer(
+        &core.take_events(),
+        &broken,
+        "fragile",
+    )));
 
     drop(kept);
     core.drain();

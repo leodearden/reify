@@ -12,7 +12,15 @@ pub struct RequestId(pub(crate) u64);
 
 #[derive(Debug)]
 pub enum Event {
-    Answered { request: RequestId, path: Path, answer: Answer<Erased> },
+    Answered {
+        request: RequestId,
+        path: Path,
+        answer: Answer<Erased>,
+    },
     /// A note a section sent while it ran, for a path the request needs.
-    Progress { request: RequestId, path: Path, note: Arc<dyn Any + Send + Sync> },
+    Progress {
+        request: RequestId,
+        path: Path,
+        note: Arc<dyn Any + Send + Sync>,
+    },
 }

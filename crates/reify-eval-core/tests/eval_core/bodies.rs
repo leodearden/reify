@@ -33,7 +33,10 @@ impl Kind for Impatient {
 
 #[test]
 fn a_body_that_makes_two_requests_at_once_ends_with_a_failure() {
-    let mut core = Builder::new().kind::<Impatient>().expect("one kind").build();
+    let mut core = Builder::new()
+        .kind::<Impatient>()
+        .expect("one kind")
+        .build();
     let snapshot = core.snapshot([toy::root("hasty", Declaration::new(Impatient::ID))]);
 
     let request = core.evaluate(&snapshot, [Root::named("hasty")]);
@@ -82,7 +85,10 @@ impl Kind for Panicking {
 
 #[test]
 fn a_body_that_panics_is_pending_with_a_failure_outside_the_inputs_and_the_next_turn_returns() {
-    let mut core = toy::with_cell().kind::<Panicking>().expect("distinct kinds").build();
+    let mut core = toy::with_cell()
+        .kind::<Panicking>()
+        .expect("distinct kinds")
+        .build();
     let snapshot = core.snapshot([
         toy::named("a", 2_i64),
         toy::root(
@@ -125,12 +131,18 @@ impl Kind for Exhausted {
 
 #[test]
 fn a_body_whose_own_work_fails_outside_the_inputs_is_reported_pending() {
-    let mut core = Builder::new().kind::<Exhausted>().expect("one kind").build();
+    let mut core = Builder::new()
+        .kind::<Exhausted>()
+        .expect("one kind")
+        .build();
     let snapshot = core.snapshot([toy::root("spent", Declaration::new(Exhausted::ID))]);
 
     let request = core.evaluate(&snapshot, [Root::named("spent")]);
     assert_eq!(core.turn(), Turn::Idle);
 
     let answer = toy::the_answer(&core.take_events(), &request, "spent");
-    assert_eq!(toy::pending(answer), OutsideFailure::OutOfMemory { resource: "toy" });
+    assert_eq!(
+        toy::pending(answer),
+        OutsideFailure::OutOfMemory { resource: "toy" }
+    );
 }

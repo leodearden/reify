@@ -18,14 +18,22 @@ pub(crate) enum Job {
 }
 
 pub(crate) enum Report {
-    Progress { serial: u64, note: Arc<dyn Any + Send + Sync> },
-    Finished { serial: u64, product: Result<Product, SectionFault> },
+    Progress {
+        serial: u64,
+        note: Arc<dyn Any + Send + Sync>,
+    },
+    Finished {
+        serial: u64,
+        product: Result<Product, SectionFault>,
+    },
     Released,
 }
 
 /// Why a section gave no product.
 pub(crate) enum SectionFault {
-    Panicked { message: String },
+    Panicked {
+        message: String,
+    },
     /// Its resource is dead: an earlier section on it panicked.
     Dead,
 }

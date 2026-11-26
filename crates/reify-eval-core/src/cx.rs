@@ -42,9 +42,15 @@ impl Cx {
             let resource = resource.expect("a resource thread holds the type it was added under");
             Box::new(section(resource, &Section::new(parts)))
         });
-        let ask = Ask::Exclusive { resource: TypeId::of::<R>(), resource_name: type_name::<R>(), job };
+        let ask = Ask::Exclusive {
+            resource: TypeId::of::<R>(),
+            resource_name: type_name::<R>(),
+            job,
+        };
         match self.mailbox.exchange(ask).await {
-            Reply::Product(product) => *product.downcast::<T>().expect("a section's product keeps its type"),
+            Reply::Product(product) => *product
+                .downcast::<T>()
+                .expect("a section's product keeps its type"),
             Reply::Outcome(_) => unreachable!("the core replies to a section with its product"),
         }
     }

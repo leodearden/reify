@@ -16,7 +16,10 @@ pub struct Core {
 
 impl Core {
     pub(crate) fn new(executor: Executor) -> Self {
-        Self { executor, snapshots: 0 }
+        Self {
+            executor,
+            snapshots: 0,
+        }
     }
 
     pub fn snapshot(&mut self, inputs: impl IntoIterator<Item = (InputKey, Input)>) -> Snapshot {
@@ -25,7 +28,11 @@ impl Core {
     }
 
     /// Opens a request on `snapshot` for the answers of `roots`.
-    pub fn evaluate(&mut self, snapshot: &Snapshot, roots: impl IntoIterator<Item = Root>) -> Request {
+    pub fn evaluate(
+        &mut self,
+        snapshot: &Snapshot,
+        roots: impl IntoIterator<Item = Root>,
+    ) -> Request {
         self.executor.evaluate(snapshot, roots)
     }
 
