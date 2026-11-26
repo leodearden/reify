@@ -26,7 +26,8 @@ fn snapshots_told(events: &[Event], request: RequestId) -> Vec<SnapshotId> {
 #[test]
 fn each_answer_is_tagged_with_its_request_and_the_snapshot_that_request_was_made_on() {
     let mut core = toy::core();
-    let (earlier, later) = (core.snapshot([]), core.snapshot([]));
+    let earlier = core.snapshot([toy::named("a", 1_i64)]);
+    let later = core.snapshot([toy::named("a", 2_i64)]);
     assert_ne!(earlier.id(), later.id());
 
     let on_earlier = core.evaluate(&earlier, toy::roots(&["missing"]));
