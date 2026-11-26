@@ -112,7 +112,7 @@ mod tests {
     };
 
     use super::{Answered, OrderMismatch, order_check};
-    use crate::toy;
+    use crate::toy::{self, BoxShape, ToyKernel, Watch};
 
     /// A resource that counts the sections run on it.
     struct Turns(u64);
@@ -194,6 +194,94 @@ mod tests {
         let expected = OrderMismatch::Differs {
             snapshot: 0,
             path: at("b"),
+            session: Answer::Final(Outcome::of(1)),
+            fresh: Answer::Final(Outcome::of(0)),
+        };
+        assert_eq!(found, Err(expected));
+    }
+
+    /// Marks, in the toy kernel, the shape it reads at "shape", and
+    /// answers 1: it changes what it read (it breaks O6).
+    struct Marks;
+
+    impl Kind for Marks {
+        type Out = i64;
+        const ID: KindId = KindId("test.marks");
+        const VERSION: u32 = 1;
+
+        async fn run(cx: &Cx) -> Produced<i64> {
+            let Outcome::Value(shape) = cx.read::<BoxShape>(&Ref::binding("shape")).await else {
+                return Produced::Outcome(Outcome::Absent);
+            };
+            cx.exclusive(move |kernel: &mut ToyKernel, _| kernel.mark(shape.handle.0))
+                .await;
+            Produced::Outcome(Outcome::of(1))
+        }
+    }
+
+    /// 1 if the shape it reads at "shape" is marked in the toy kernel,
+    /// else 0.
+    struct Examines;
+
+    impl Kind for Examines {
+        type Out = i64;
+        const ID: KindId = KindId("test.examines");
+        const VERSION: u32 = 1;
+
+        async fn run(cx: &Cx) -> Produced<i64> {
+            let Outcome::Value(shape) = cx.read::<BoxShape>(&Ref::binding("shape")).await else {
+                return Produced::Outcome(Outcome::Absent);
+            };
+            let marked = cx
+                .exclusive(move |kernel: &mut ToyKernel, _| kernel.is_marked(shape.handle.0))
+                .await;
+            Produced::Outcome(Outcome::of(i64::from(marked)))
+        }
+    }
+
+    fn marking_core() -> Core {
+        let builder = toy::with_every_kind()
+            .kind::<Marks>()
+            .and_then(|builder| builder.kind::<Examines>())
+            .expect("distinct kinds");
+        toy::ungated(builder, &Watch::default())
+    }
+
+    #[test]
+    fn order_check_detects_result_mutated_through_exclusive_resource() {
+        let reads_s = |kind| Declaration::new(kind).bind("shape", toy::sibling(&["s"]));
+        let mut inputs = vec![toy::named("side", 2_i64)];
+        inputs.extend(toy::root_scope(
+            "R",
+            toy::members([
+                ("s", toy::shape("side")),
+                ("f", reads_s(Marks::ID)),
+                ("e", reads_s(Examines::ID)),
+            ]),
+        ));
+        let mut core = marking_core();
+        let snapshot = core.snapshot(inputs.clone());
+        let mut answered = Vec::new();
+        for name in ["f", "e"] {
+            let at = toy::below("R", &[name]);
+            let request = core.evaluate(&snapshot, Demand::of([at.clone()]));
+            core.run();
+            let events = core.take_events();
+            answered.push(Answered {
+                snapshot: 0,
+                seen: toy::the_answer(&events, &request, &at).downcast::<i64>(),
+                path: at,
+            });
+            core.end(request);
+        }
+        core.drain();
+
+        let found = order_check(&marking_core, &[inputs], &answered, |answer| {
+            answer.downcast::<i64>()
+        });
+        let expected = OrderMismatch::Differs {
+            snapshot: 0,
+            path: toy::below("R", &["e"]),
             session: Answer::Final(Outcome::of(1)),
             fresh: Answer::Final(Outcome::of(0)),
         };

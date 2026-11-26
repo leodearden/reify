@@ -10,7 +10,7 @@ use reify_eval_core::{
     Produced, Release, ResourceDeath, Root, Turn,
 };
 
-use crate::toy::{self, BoxHandle, BoxShape, ToyKernel, Watch};
+use crate::toy::{self, BoxHandle, BoxShape, Cell, ToyKernel, Watch};
 
 #[test]
 fn a_second_body_runs_to_completion_while_a_first_waits_on_a_section_still_running() {
@@ -401,5 +401,37 @@ fn after_a_release_panics_its_resource_is_dead_and_later_sections_name_that_pani
         },
     };
     assert_eq!(toy::pending(answer), dead);
+    core.drain();
+}
+
+#[test]
+fn a_body_never_observes_an_unready_read() {
+    let watch = Watch::default();
+    let (mut core, keeper) = toy::gated(toy::with_every_kind(), &watch);
+    let mut inputs = vec![toy::named("side", 2_i64), toy::named("one", 1_i64)];
+    inputs.extend(toy::root_scope(
+        "R",
+        toy::members([
+            ("s", toy::shape("side")),
+            ("m", toy::measure(toy::sibling(&["s"]))),
+            (
+                "c",
+                toy::cell_over([toy::sibling(&["m"]), toy::input("one")]),
+            ),
+        ]),
+    ));
+    let snapshot = core.snapshot(inputs);
+    let c = toy::below("R", &["c"]);
+
+    let request = core.evaluate(&snapshot, toy::demand([&c]));
+    assert_eq!(core.turn(), Turn::SectionsRunning(1));
+    keeper.entered();
+    assert!(toy::answers(&core.take_events(), request.id()).is_empty());
+
+    keeper.open();
+    core.run();
+    let value = toy::the_value::<i64>(&core.take_events(), &request, &c);
+    assert_eq!(*value, 8 + 1);
+    assert_eq!(core.counters().body_runs(Cell::ID), 1);
     core.drain();
 }
