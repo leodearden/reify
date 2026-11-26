@@ -99,14 +99,14 @@ fn sphere_arg_count_diagnostic_has_span_label() {
 
 #[test]
 fn linear_pattern_arg_count_diagnostic_has_span_label() {
-    // linear_pattern() expects 6 arguments — passing 1 should produce a labeled diagnostic
+    // linear_pattern() expects 4 arguments — passing 1 should produce a labeled diagnostic
     assert_arg_count_label(
         r#"
             structure S {
                 let p = linear_pattern(box(10mm, 10mm, 10mm))
             }
         "#,
-        "linear_pattern() expects 6 arguments",
+        "linear_pattern() expects 4 arguments",
     );
 }
 

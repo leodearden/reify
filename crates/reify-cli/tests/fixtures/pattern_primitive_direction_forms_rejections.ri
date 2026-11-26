@@ -11,3 +11,8 @@ structure def ScalarHalfSpace {
 structure def ScalarArc {
     let g = arc(0mm, 0mm, 0mm, 5mm, 0deg, 90deg, 0, 0, 1)
 }
+
+structure def ScalarLinearPattern {
+    let b = box(2mm, 2mm, 2mm)
+    let g = linear_pattern(b, 1, 0, 0, 3, 5mm)
+}

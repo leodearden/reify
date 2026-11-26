@@ -3254,42 +3254,35 @@ mod tests {
         );
     }
 
-    // ── linear_pattern spacing LENGTH slot (task 5652) ────────────────────────
+    // ── linear_pattern direction + spacing slots (task 5652, direction-typing ι-c) ──
 
-    /// Build a 6-arg `linear_pattern(target, dx, dy, dz, count, spacing)` arg
-    /// list with the given `spacing` type. Args 1-4 (direction + count) are
-    /// deliberately unchecked slots — see the `linear_pattern` arm of
+    /// Build a 4-arg `linear_pattern(target, direction, count, spacing)` arg
+    /// list with the given `direction` and `spacing` types. `count` is an Int
+    /// the table leaves unchecked — see the `linear_pattern` arm of
     /// [`builtin_arg_slots`].
-    fn linear_pattern_args(spacing: Type) -> Vec<CompiledExpr> {
+    fn linear_pattern_args_with(direction: Type, spacing: Type) -> Vec<CompiledExpr> {
         vec![
-            arg_expr(Type::Geometry),               // 0 target
-            arg_expr(Type::dimensionless_scalar()), // 1 dx
-            arg_expr(Type::dimensionless_scalar()), // 2 dy
-            arg_expr(Type::dimensionless_scalar()), // 3 dz
-            arg_expr(Type::Int),                    // 4 count
-            arg_expr(spacing),                      // 5 spacing
+            arg_expr(Type::Geometry), // 0 target
+            arg_expr(direction),      // 1 direction
+            arg_expr(Type::Int),      // 2 count
+            arg_expr(spacing),        // 3 spacing
         ]
     }
 
-    /// linear_pattern @ arity 6 → arg5 spacing (LENGTH); every OTHER arity → empty.
-    ///
-    /// Pinning the empty result at arity 4 NOW is what makes task 5351's
-    /// direction-value overload safe to add later — why, on the `linear_pattern`
-    /// arm of [`builtin_arg_slots`].
+    /// [`linear_pattern_args_with`] with a correct `Direction`, so a diagnostic
+    /// is a statement about `spacing` alone.
+    fn linear_pattern_args(spacing: Type) -> Vec<CompiledExpr> {
+        linear_pattern_args_with(Type::Direction, spacing)
+    }
+
+    /// linear_pattern → direction@1 (Direction) and spacing@3 (LENGTH) at EVERY
+    /// arity: it is a single-form name, so its arm carries no arity guard.
     #[test]
-    fn linear_pattern_spacing_slot_is_arity_6_only() {
-        assert_eq!(
-            builtin_arg_slots("linear_pattern", 6),
-            vec![length_slot(5, "spacing")],
-            "linear_pattern(target, dx, dy, dz, count, spacing) — arg5 spacing must be LENGTH"
+    fn linear_pattern_slots_its_direction_and_spacing_at_every_arity() {
+        assert_slots_at_every_arity(
+            "linear_pattern",
+            &[direction_slot(1, "direction"), length_slot(3, "spacing")],
         );
-        for arity in [0usize, 1, 3, 4, 5, 7, 11] {
-            assert!(
-                builtin_arg_slots("linear_pattern", arity).is_empty(),
-                "linear_pattern at arity {arity} is not the 6-arg form, so it must \
-                 expose NO slots — index 5 does not denote `spacing` there"
-            );
-        }
     }
 
     /// CORRECT: a dimensioned `Length` spacing → 0 diagnostics.
@@ -3409,26 +3402,48 @@ mod tests {
         }
     }
 
-    /// A non-6-arg call is slot-free, so even a definitely-wrong spacing type
-    /// produces nothing: the arity guard, not luck, is what keeps it quiet.
+    /// CLEAN: a `Direction` at index 1 draws no diagnostic.
     #[test]
-    fn linear_pattern_non_6_arity_gives_no_diagnostics() {
-        let four_args = vec![
-            arg_expr(Type::Geometry), // 0 target
-            arg_expr(Type::Vector {
-                n: 3,
-                quantity: Box::new(Type::dimensionless_scalar()),
-            }), // 1 direction (task 5351's future form)
-            arg_expr(Type::Int),      // 2 count
-            arg_expr(Type::Int),      // 3 spacing — bare, but NOT checked at this arity
-        ];
+    fn linear_pattern_accepts_a_direction_at_index_1() {
         let mut diags = Vec::new();
-        check_builtin_arg_types("linear_pattern", &four_args, dummy_span(), &mut diags);
+        check_builtin_arg_types(
+            "linear_pattern",
+            &linear_pattern_args_with(Type::Direction, Type::length()),
+            dummy_span(),
+            &mut diags,
+        );
         assert!(
             diags.is_empty(),
-            "a 4-arg linear_pattern exposes no slots, got: {:?}",
+            "a Direction at index 1 must pass, got: {:?}",
             diags
         );
+    }
+
+    /// MISMATCH: a `Vector3` direction is one ArgTypeMismatch carrying the
+    /// `dir(x, y, z)` hint.
+    #[test]
+    fn linear_pattern_vector_direction_gives_error_with_dir_hint() {
+        let int_vector = Type::Vector {
+            n: 3,
+            quantity: Box::new(Type::Int),
+        };
+        let mut diags = Vec::new();
+        check_builtin_arg_types(
+            "linear_pattern",
+            &linear_pattern_args_with(int_vector, Type::length()),
+            dummy_span(),
+            &mut diags,
+        );
+        let messages: Vec<&str> = diags.iter().map(|d| d.message.as_str()).collect();
+        assert_eq!(
+            messages,
+            [format!(
+                "linear_pattern: direction argument expects Direction, got \
+                 Vector3<Int>; {DIRECTION_MIGRATION_HINT}"
+            )]
+        );
+        assert_eq!(diags[0].code, Some(DiagnosticCode::ArgTypeMismatch));
+        assert_eq!(diags[0].severity, Severity::Error);
     }
 
     // ── linear_pattern_2d spacing1/spacing2 LENGTH slots (task 5652) ─────────
@@ -4383,7 +4398,7 @@ mod tests {
         ("extrude_infinite", AcceptedArities::Exactly(&[2])),
         ("extrude_infinite_symmetric", AcceptedArities::Exactly(&[2])),
         // Transform producers and patterns.
-        ("linear_pattern", AcceptedArities::Exactly(&[6])),
+        ("linear_pattern", AcceptedArities::Exactly(&[4])),
         ("linear_pattern_2d", AcceptedArities::Exactly(&[11])),
         ("rotate_around", AcceptedArities::Exactly(&[4])),
         ("translate", AcceptedArities::Exactly(&[4])),

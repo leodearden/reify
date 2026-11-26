@@ -15,7 +15,8 @@ use crate::common;
 
 /// Each line is the one the retired scalar form printed:
 /// - `half_space(0mm, 0mm, 0mm, 0, 0, 1)` clipped by `box(20mm, 20mm, 20mm)`;
-/// - the `length` of `arc(0mm, 0mm, 0mm, 5mm, 0deg, 90deg, 0, 0, 1)`.
+/// - the `length` of `arc(0mm, 0mm, 0mm, 5mm, 0deg, 90deg, 0, 0, 1)`;
+/// - the `volume` of `linear_pattern(box(2mm, 2mm, 2mm), 1, 0, 0, 3, 5mm)`.
 #[test]
 fn eval_prints_the_values_the_retired_scalar_forms_printed() {
     let path = common::fixture_path("pattern_primitive_direction_forms_eval.ri");
@@ -28,6 +29,7 @@ fn eval_prints_the_values_the_retired_scalar_forms_printed() {
     for expected in [
         "HalfSpaceClip.v = 0.000004 m^3",
         "QuarterArc.len = 0.007853981633974483 m",
+        "LinearRow.v = 0.000000023999999999999993 m^3",
     ] {
         assert!(
             stdout.lines().any(|line| line == expected),
@@ -50,6 +52,8 @@ fn check_rejects_the_retired_scalar_arities_naming_the_direction_form() {
         "half_space() expects 2 arguments: half_space(point3(x, y, z), dir(x, y, z)), got 6",
         "arc() expects 5 arguments: \
          arc(point3(x, y, z), radius, start_angle, end_angle, dir(x, y, z)), got 9",
+        "linear_pattern() expects 4 arguments: \
+         linear_pattern(geo, dir(x, y, z), count, spacing), got 6",
     ] {
         assert!(
             stderr

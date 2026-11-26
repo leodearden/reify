@@ -234,7 +234,7 @@ fn arg_type_mismatch_errors(
 /// emitted from two wiring sites.
 #[test]
 fn linear_pattern_bare_spacing_gives_one_arg_type_mismatch() {
-    let compiled = compile_struct_body("    let p = linear_pattern(b, 1, 0, 0, 5, 10)\n");
+    let compiled = compile_struct_body("    let p = linear_pattern(b, dir(1, 0, 0), 5, 10)\n");
     let errors = arg_type_mismatch_errors(&compiled);
     assert_eq!(
         errors.len(),
@@ -257,7 +257,7 @@ fn linear_pattern_bare_spacing_gives_one_arg_type_mismatch() {
 /// wrong reason (e.g. a slot that fires on every `linear_pattern` call).
 #[test]
 fn linear_pattern_dimensioned_spacing_gives_no_arg_type_mismatch() {
-    let compiled = compile_struct_body("    let p = linear_pattern(b, 1, 0, 0, 5, 10mm)\n");
+    let compiled = compile_struct_body("    let p = linear_pattern(b, dir(1, 0, 0), 5, 10mm)\n");
     let errors = arg_type_mismatch_errors(&compiled);
     assert!(
         errors.is_empty(),
@@ -282,7 +282,7 @@ fn linear_pattern_dimensioned_spacing_gives_no_arg_type_mismatch() {
 /// friendly `"Angle"` used on the expected side of other slots' messages.
 #[test]
 fn linear_pattern_wrong_dimension_spacing_gives_one_arg_type_mismatch() {
-    let compiled = compile_struct_body("    let p = linear_pattern(b, 1, 0, 0, 5, 10deg)\n");
+    let compiled = compile_struct_body("    let p = linear_pattern(b, dir(1, 0, 0), 5, 10deg)\n");
     let errors = arg_type_mismatch_errors(&compiled);
     assert_eq!(
         errors.len(),
@@ -321,7 +321,7 @@ fn linear_pattern_wrong_dimension_spacing_gives_one_arg_type_mismatch() {
 fn nested_linear_pattern_bare_spacing_emits_exactly_one_diagnostic() {
     let compiled = compile_struct_body(
         "    let c = box(1mm, 1mm, 1mm)\n\
-         \x20   let u = union(linear_pattern(b, 1, 0, 0, 5, 10), c)\n",
+         \x20   let u = union(linear_pattern(b, dir(1, 0, 0), 5, 10), c)\n",
     );
     let errors = arg_type_mismatch_errors(&compiled);
     assert_eq!(
@@ -453,7 +453,7 @@ const ANGLE_HINT: &str = "pass a dimensioned angle such as `45deg` or `1.5rad`";
 /// one says nothing about the other.
 #[test]
 fn linear_pattern_bare_int_spacing_message_carries_the_migration_hint() {
-    let compiled = compile_struct_body("    let p = linear_pattern(b, 1, 0, 0, 5, 10)\n");
+    let compiled = compile_struct_body("    let p = linear_pattern(b, dir(1, 0, 0), 5, 10)\n");
     let errors = arg_type_mismatch_errors(&compiled);
     assert_eq!(
         errors.len(),
@@ -488,7 +488,7 @@ fn linear_pattern_bare_int_spacing_message_carries_the_migration_hint() {
 /// keeps the two layers independently observable as they do.
 #[test]
 fn length_slot_rejection_uses_the_compile_layer_code_not_the_eval_layer_one() {
-    let compiled = compile_struct_body("    let p = linear_pattern(b, 1, 0, 0, 5, 10)\n");
+    let compiled = compile_struct_body("    let p = linear_pattern(b, dir(1, 0, 0), 5, 10)\n");
     let errors = arg_type_mismatch_errors(&compiled);
     assert_eq!(errors.len(), 1, "diagnostics: {:#?}", compiled.diagnostics);
     assert_eq!(
@@ -595,7 +595,7 @@ fn angle_slot_rejection_uses_the_compile_layer_code_not_the_eval_layer_one() {
 #[test]
 fn builtin_slot_and_ctor_conformance_length_hints_are_deliberately_different() {
     let builtin = {
-        let compiled = compile_struct_body("    let p = linear_pattern(b, 1, 0, 0, 5, 10)\n");
+        let compiled = compile_struct_body("    let p = linear_pattern(b, dir(1, 0, 0), 5, 10)\n");
         let errors = arg_type_mismatch_errors(&compiled);
         assert_eq!(errors.len(), 1, "diagnostics: {:#?}", compiled.diagnostics);
         errors[0].message.clone()
@@ -1734,4 +1734,24 @@ fn circular_pattern_bare_angle_is_rejected_at_both_forms() {
             compiled.diagnostics
         );
     }
+}
+
+// ── direction-typing ι-c (task 9648): linear_pattern's Direction ──────────
+
+/// SIGNAL — a `vec3` direction on the 4-arg `linear_pattern` is one Direction
+/// mismatch. The spacing is dimensioned so the count isolates the direction.
+#[test]
+fn linear_pattern_vector_direction_is_rejected_with_the_dir_hint() {
+    let compiled = compile_struct_body("    let p = linear_pattern(b, vec3(1, 0, 0), 5, 10mm)\n");
+    let errors = arg_type_mismatch_errors(&compiled);
+    let messages: Vec<&str> = errors.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        [format!(
+            "linear_pattern: direction argument expects Direction, got Vector3<Int>; \
+             {DIRECTION_HINT}"
+        )],
+        "All diagnostics: {:#?}",
+        compiled.diagnostics
+    );
 }

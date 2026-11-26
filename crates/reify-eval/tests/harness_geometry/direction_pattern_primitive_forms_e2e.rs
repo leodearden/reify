@@ -135,3 +135,29 @@ fn arc_reports_a_bare_centre_and_a_bare_radius_in_one_build() {
         "{call}: a bare centre and radius must drop the arc: {ops:?}"
     );
 }
+
+/// Retired `linear_pattern(box(2mm, 2mm, 2mm), 1, 0, 0, 3, 5mm)` emitted
+/// `LinearPattern { direction: [1, 0, 0], count: 3, spacing: Scalar{0.005,
+/// LENGTH} }`.
+#[test]
+fn linear_pattern_direction_form_emits_the_retired_scalar_op() {
+    let call = "linear_pattern(box(2mm, 2mm, 2mm), dir(1, 0, 0), 3, 5mm)";
+    let patterns: Vec<GeometryOp> = clean_ops(call)
+        .into_iter()
+        .filter(|op| matches!(op, GeometryOp::LinearPattern { .. }))
+        .collect();
+    let [
+        GeometryOp::LinearPattern {
+            direction,
+            count,
+            spacing,
+            ..
+        },
+    ] = patterns.as_slice()
+    else {
+        panic!("{call}: expected exactly one LinearPattern op, got {patterns:?}");
+    };
+    assert_eq!(*direction, [1.0, 0.0, 0.0], "{call}: direction");
+    assert_eq!(*count, 3, "{call}: count");
+    assert_eq!(*spacing, Value::length(0.005), "{call}: spacing");
+}
