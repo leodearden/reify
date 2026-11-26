@@ -1171,10 +1171,11 @@ const ALLOWLIST: &[(&str, usize, std::ops::Range<usize>, Justification, &str)] =
     ),
     (
         "linear_pattern",
-        5,
-        0..3,
-        Justification::UnitVectorComponent,
-        "dx/dy/dz — the step direction; the magnitude is the gated `spacing`",
+        3,
+        0..1,
+        Justification::Index,
+        "direction — a Direction (dir(x, y, z)), never a bare number; \
+         decode_direction rejects a scalar filler",
     ),
     // COUNTS.
     (
@@ -1193,8 +1194,8 @@ const ALLOWLIST: &[(&str, usize, std::ops::Range<usize>, Justification, &str)] =
     ),
     (
         "linear_pattern",
-        5,
-        3..4,
+        3,
+        1..2,
         Justification::Count,
         "count — how many instances",
     ),

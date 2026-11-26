@@ -2342,7 +2342,7 @@ pub structure AFrame {
             // member (first in-anger linear_pattern in this project).
             linear_pattern(
                 translate(box(side_t * 3, slot_w, slot_h), wall_cx, centre_y - slot_pitch * 4, slab_top + mem_w / 2),
-                0, 1, 0, slot_n, slot_pitch)
+                dir(0, 1, 0), slot_n, slot_pitch)
         )
     )
 
@@ -2390,7 +2390,7 @@ pub structure AFrame {
             translate(
                 rotate(cylinder(grom_d / 2, side_t * 3), dir(1.0, 0.0, 0.0), 90deg),
                 centre_x - 150mm, y0 + side_t * 1.5, 0mm - 50mm),
-            1, 0, 0, 2, 300mm)
+            dir(1, 0, 0), 2, 300mm)
     )
 
     let body = union(
@@ -2898,7 +2898,7 @@ pub structure ToolDock {
     /// The rear lintel with 4 × 2 forward-opening pockets.
     let lintel = difference(
         translate(box(dock_len, dock_d, dock_h), dock_cx, dock_cy, dock_cz),
-        linear_pattern(pocket_pair, 1, 0, 0, 4, pitch)
+        linear_pattern(pocket_pair, dir(1, 0, 0), 4, pitch)
     )
     /// Parked tools at stations 0, 2, 3 (station 1 is being picked up).
     let parked = union_all(

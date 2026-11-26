@@ -137,7 +137,7 @@ fn linear_pattern_1d_bare_spacing_drops_op_dimensioned_builds() {
         compile_bare_spacing(
             r#"
         structure def BareSpacingRow {
-            let row = linear_pattern(box(10mm, 10mm, 10mm), 1, 0, 0, 3, 20)
+            let row = linear_pattern(box(10mm, 10mm, 10mm), dir(1, 0, 0), 3, 20)
         }
         "#,
         ),
@@ -161,7 +161,7 @@ fn linear_pattern_1d_bare_spacing_drops_op_dimensioned_builds() {
         parse_and_compile(
             r#"
         structure def DimSpacingRow {
-            let row = linear_pattern(box(10mm, 10mm, 10mm), 1, 0, 0, 3, 20mm)
+            let row = linear_pattern(box(10mm, 10mm, 10mm), dir(1, 0, 0), 3, 20mm)
         }
         "#,
         ),
@@ -251,7 +251,7 @@ fn unresolved_spacing_diagnostic_names_the_dsl_builtin_not_the_variant_nickname(
         structure def LabelProbe {
             param s : Length
             let b = box(10mm, 10mm, 10mm)
-            let p = linear_pattern(b, 1, 0, 0, 3, s)
+            let p = linear_pattern(b, dir(1, 0, 0), 3, s)
         }
     "#;
 

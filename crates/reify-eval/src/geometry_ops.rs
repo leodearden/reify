@@ -4140,23 +4140,29 @@ fn pattern_linear(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut f64_arg = |name: &str| -> Result<f64, String> {
-        eval_named_arg_f64(
-            name,
-            kind,
-            args,
-            values,
-            functions,
-            meta_map,
-            diagnostics,
-        )
-        .ok_or_else(|| {
-            format!("missing or non-finite argument '{}' for {}", name, kind)
-        })
-    };
-    let direction = [f64_arg("dx")?, f64_arg("dy")?, f64_arg("dz")?];
-    let count_raw = f64_arg("count")?;
-    let count = validate_pattern_count(count_raw, "count", kind, diagnostics)?;
+    // Every argument is read before any `?`, so a bad direction, a bad count
+    // and a bare spacing are all reported in one build.
+    let direction = required_direction_arg(
+        "direction",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )
+    .map(|unit| unit.components());
+    let count = eval_named_arg_f64(
+        "count",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )
+    .ok_or_else(|| format!("missing or non-finite argument 'count' for {kind}"))
+    .and_then(|raw| validate_pattern_count(raw, "count", kind, diagnostics));
     // LENGTH-required: reject a bare/dimensionless spacing (op dropped) rather
     // than silently reading it as SI metres; re-wrap as a LENGTH Scalar so the
     // IR/kernel spacing representation is unchanged.
@@ -4168,12 +4174,12 @@ fn pattern_linear(
         functions,
         meta_map,
         diagnostics,
-    )?;
+    );
     Ok(reify_ir::GeometryOp::LinearPattern {
         target: target_id,
-        direction,
-        count,
-        spacing,
+        direction: direction?,
+        count: count?,
+        spacing: spacing?,
     })
 }
 

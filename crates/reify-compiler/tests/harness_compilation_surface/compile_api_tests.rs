@@ -62,7 +62,7 @@ fn entity_kind_as_label() {
 fn compile_linear_pattern_produces_realization() {
     let source = r#"structure S {
     param w: Length = 10mm
-    let pattern = linear_pattern(w, 1, 0, 0, 4, 20mm)
+    let pattern = linear_pattern(w, dir(1, 0, 0), 4, 20mm)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_linpat"));
     assert!(
@@ -104,7 +104,7 @@ fn compile_linear_pattern_produces_realization() {
 fn geometry_let_pattern_lowers_a_named_geometry_target_slot() {
     let source = r#"structure S {
     let elem = box(10mm, 10mm, 10mm)
-    let row = linear_pattern(elem, 1, 0, 0, 4, 20mm)
+    let row = linear_pattern(elem, dir(1, 0, 0), 4, 20mm)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_geolet_linpat"));
     assert!(

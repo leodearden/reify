@@ -3591,14 +3591,12 @@
         let step_handles = vec![GeometryHandleId(42)];
         let values = ValueMap::new();
 
-        // LinearPattern with dx/dy/dz/count but OMITS spacing
+        // LinearPattern with direction/count but OMITS spacing
         let op = CompiledGeometryOp::Pattern {
             kind: PatternKind::Linear,
             target: GeomRef::Step(0),
             args: vec![
-                ("dx".into(), literal_f64(10.0)),
-                ("dy".into(), literal_f64(0.0)),
-                ("dz".into(), literal_f64(0.0)),
+                ("direction".into(), literal_direction([1.0, 0.0, 0.0])),
                 ("count".into(), literal_f64(3.0)),
                 // spacing deliberately omitted
             ],
@@ -3666,9 +3664,7 @@
             kind: PatternKind::Linear,
             target: GeomRef::Step(0),
             args: vec![
-                ("dx".into(), literal_f64(10.0)),
-                ("dy".into(), literal_f64(0.0)),
-                ("dz".into(), literal_f64(0.0)),
+                ("direction".into(), literal_direction([1.0, 0.0, 0.0])),
                 ("count".into(), literal_f64(3.0)),
                 ("spacing".into(), literal_length(0.02)),
             ],
@@ -3691,7 +3687,7 @@
                 spacing,
             }) => {
                 assert_eq!(target, GeometryHandleId(42));
-                assert_eq!(direction, [10.0, 0.0, 0.0]);
+                assert_eq!(direction, [1.0, 0.0, 0.0]);
                 assert_eq!(count, 3);
                 // spacing should be a Scalar value, not Undef
                 assert!(
@@ -3716,9 +3712,7 @@
             kind: PatternKind::Linear,
             target: GeomRef::Step(0),
             args: vec![
-                ("dx".into(), literal_f64(10.0)),
-                ("dy".into(), literal_f64(0.0)),
-                ("dz".into(), literal_f64(0.0)),
+                ("direction".into(), literal_direction([1.0, 0.0, 0.0])),
                 ("count".into(), literal_f64(3.0)),
                 // BARE dimensionless spacing — must be rejected.
                 ("spacing".into(), literal_f64(0.02)),
@@ -3760,9 +3754,7 @@
             kind: PatternKind::Linear,
             target: GeomRef::Step(0),
             args: vec![
-                ("dx".into(), literal_f64(10.0)),
-                ("dy".into(), literal_f64(0.0)),
-                ("dz".into(), literal_f64(0.0)),
+                ("direction".into(), literal_direction([1.0, 0.0, 0.0])),
                 ("count".into(), literal_f64(3.0)),
                 ("spacing".into(), spacing_expr),
             ],
@@ -8689,9 +8681,7 @@
         let translate_op = CompiledGeometryOp::Transform {
             kind: reify_compiler::TransformKind::Translate,
             target: reify_compiler::GeomRef::Step(0),
-            // Translation components are LENGTH-semantic (task 5623); the
-            // `PatternKind::Linear` dx/dy/dz below share the names but are a
-            // dimensionless DIRECTION vector and stay bare.
+            // Translation components are LENGTH-semantic (task 5623).
             args: vec![
                 ("dx".into(), literal_length(1.0)),
                 ("dy".into(), literal_length(0.0)),
@@ -8720,9 +8710,7 @@
             kind: reify_compiler::PatternKind::Linear,
             target: reify_compiler::GeomRef::Step(0),
             args: vec![
-                ("dx".into(), literal_f64(10.0)),
-                ("dy".into(), literal_f64(0.0)),
-                ("dz".into(), literal_f64(0.0)),
+                ("direction".into(), literal_direction([1.0, 0.0, 0.0])),
                 ("count".into(), literal_f64(3.0)),
                 ("spacing".into(), literal_length(0.02)),
             ],
@@ -8856,14 +8844,12 @@
         let step_handles = vec![GeometryHandleId(42)];
         let values = ValueMap::new();
 
-        // LinearPattern with dx/dy/dz/count but OMITS spacing
+        // LinearPattern with direction/count but OMITS spacing
         let op = CompiledGeometryOp::Pattern {
             kind: PatternKind::Linear,
             target: reify_compiler::GeomRef::Step(0),
             args: vec![
-                ("dx".into(), literal_f64(10.0)),
-                ("dy".into(), literal_f64(0.0)),
-                ("dz".into(), literal_f64(0.0)),
+                ("direction".into(), literal_direction([1.0, 0.0, 0.0])),
                 ("count".into(), literal_f64(3.0)),
                 // spacing deliberately omitted
             ],
@@ -12359,9 +12345,7 @@
             kind: PatternKind::Linear,
             target: GeomRef::Step(0),
             args: vec![
-                ("dx".into(), literal_f64(1.0)),
-                ("dy".into(), literal_f64(0.0)),
-                ("dz".into(), literal_f64(0.0)),
+                ("direction".into(), literal_direction([1.0, 0.0, 0.0])),
                 ("count".into(), literal_f64(1e15)),
                 ("spacing".into(), literal_length(0.01)),
             ],
@@ -12403,9 +12387,7 @@
             kind: PatternKind::Linear,
             target: GeomRef::Step(0),
             args: vec![
-                ("dx".into(), literal_f64(1.0)),
-                ("dy".into(), literal_f64(0.0)),
-                ("dz".into(), literal_f64(0.0)),
+                ("direction".into(), literal_direction([1.0, 0.0, 0.0])),
                 ("count".into(), literal_f64(100_000.0)),
                 ("spacing".into(), literal_length(0.01)),
             ],
@@ -12451,9 +12433,7 @@
             kind: PatternKind::Linear,
             target: GeomRef::Step(0),
             args: vec![
-                ("dx".into(), literal_f64(1.0)),
-                ("dy".into(), literal_f64(0.0)),
-                ("dz".into(), literal_f64(0.0)),
+                ("direction".into(), literal_direction([1.0, 0.0, 0.0])),
                 ("count".into(), literal_f64(100_001.0)),
                 ("spacing".into(), literal_length(0.01)),
             ],

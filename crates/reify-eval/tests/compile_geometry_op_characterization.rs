@@ -2460,9 +2460,10 @@ const PATTERN_VALUE_VARIANTS: [PatternKind; 2] = [PatternKind::Circular, Pattern
 fn pattern_case(k: PatternKind) -> CompiledGeometryOp {
     let args = match k {
         PatternKind::Linear => vec![
-            ("dx".to_string(), real_literal(1.0)),
-            ("dy".to_string(), real_literal(0.0)),
-            ("dz".to_string(), real_literal(0.0)),
+            (
+                "direction".to_string(),
+                lit_raw(direction_val(1.0, 0.0, 0.0)),
+            ),
             ("count".to_string(), real_literal(3.0)),
             // spacing is length-semantic → dimensioned Length (task 5214).
             ("spacing".to_string(), length_literal(0.01)),

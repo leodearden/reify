@@ -576,7 +576,7 @@ fn pattern_undef_length_arg_names_the_builtin_the_author_typed() {
 structure def S {
     param s : Length
     let b = box(10mm, 10mm, 10mm)
-    let p = linear_pattern(b, 1, 0, 0, 3, s)
+    let p = linear_pattern(b, dir(1, 0, 0), 3, s)
     param geometry : Solid = p
 }
 "#,

@@ -254,13 +254,12 @@ structure def LengthArguments {
 
 **The dimensionless column is an authoring rule you uphold, not one the compiler enforces.** The
 gate runs in one direction only: a bare number in a length slot is rejected, but a unit in a
-dimensionless slot generally is not. Measured 2026-08-30: `scale(g, 2mm)` is accepted, as is a
-dimensioned axis direction in `linear_pattern`. Write those bare because it is what you
-mean — nothing will tell you otherwise.
+dimensionless slot generally is not. Measured 2026-08-30: `scale(g, 2mm)` is accepted. Write a
+dimensionless argument bare because it is what you mean — nothing will tell you otherwise.
 A `Direction`-typed argument is the exception: the four directional selectors, `angle`'s operands,
 `rotate`'s and `rotate_around`'s axis, `mirror`'s, `half_space`'s and `arc`'s normal,
-`offset_curve`'s direction and the direction of `revolve`, `revolve_full`, `extrude_infinite` and
-`extrude_infinite_symmetric` take a typed operand, so a `vec3(…)` there, dimensioned or not, is rejected (at check for all but
+`offset_curve`'s and `linear_pattern`'s direction and the direction of `revolve`, `revolve_full`,
+`extrude_infinite` and `extrude_infinite_symmetric` take a typed operand, so a `vec3(…)` there, dimensioned or not, is rejected (at check for all but
 `offset_curve`, at eval for `offset_curve`); write `dir(x, y, z)`.
 
 The rejected forms and their migrations are tabulated once, in the `units` chunk under "What it

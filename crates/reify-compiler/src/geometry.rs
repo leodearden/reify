@@ -2015,12 +2015,14 @@ fn compile_geometry_call_inner(
         }
 
         // --- Patterns ---
-        // linear_pattern(target, dx, dy, dz, count, spacing)
+        // linear_pattern(target, direction, count, spacing): a Direction
+        // `direction` and a Length `spacing` (direction-typing ι-c).
         "linear_pattern" => {
-            if !check_arg_count_exact(
+            if !check_arg_count_exact_form(
                 "linear_pattern",
                 compiled_args.len(),
-                6,
+                4,
+                "geo, dir(x, y, z), count, spacing",
                 expr.span,
                 diagnostics,
             ) {
@@ -2033,9 +2035,7 @@ fn compile_geometry_call_inner(
                 target,
                 args: vec![
                     ("target".to_string(), it.next().unwrap()),
-                    ("dx".to_string(), it.next().unwrap()),
-                    ("dy".to_string(), it.next().unwrap()),
-                    ("dz".to_string(), it.next().unwrap()),
+                    ("direction".to_string(), it.next().unwrap()),
                     ("count".to_string(), it.next().unwrap()),
                     ("spacing".to_string(), it.next().unwrap()),
                 ],

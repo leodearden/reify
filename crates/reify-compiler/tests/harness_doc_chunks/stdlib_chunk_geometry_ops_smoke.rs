@@ -48,15 +48,16 @@
 //!
 //! - **Argument dimension/type of UNSLOTTED operands.**
 //!   `builtin_signatures.rs`'s checkable-arg-slot table checks the slotted
-//!   operands at compile time — lengths, angles, and the Direction axis/normal
-//!   of rotate/3, rotate_around/4 and mirror/3 — so a wrong type there is an
-//!   `ArgTypeMismatch` Error that reds (1). Pattern direction/axis components
-//!   and counts have no slot. Mutation-tested:
-//!   `linear_pattern(solid, 1mm, 0mm, 0mm, 3, 5mm)` and
+//!   operands at compile time — lengths, angles, and the Direction
+//!   axis/normal/direction of rotate/3, rotate_around/4, mirror/3 and
+//!   linear_pattern/4 — so a wrong type there is an `ArgTypeMismatch` Error
+//!   that reds (1). Pattern counts and circular_pattern/9's axis components
+//!   have no slot. Mutation-tested:
+//!   `linear_pattern(solid, dir(1, 0, 0), 3mm, 5mm)` and
 //!   `circular_pattern(solid, 0mm, 0mm, 0mm, 0mm, 0mm, 1mm, 6, 360deg)` both
-//!   leave this suite GREEN. The chunk's "positions/lengths take a `Length`;
-//!   angles take an `Angle`; direction/axis/normal components and counts are
-//!   plain numbers" line is therefore enforced only where a slot exists.
+//!   leave this suite GREEN. The chunk's "a direction, axis or normal argument
+//!   is a `Direction`; counts are plain numbers" line is therefore enforced
+//!   only where a slot exists.
 //! - **Argument order / semantics.** A permutation of two same-dimension
 //!   arguments satisfies all four properties above.
 //!

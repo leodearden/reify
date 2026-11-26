@@ -849,7 +849,7 @@ fn linear_pattern_let_bound_ops() {
     param r: Length = 5mm
     param h: Length = 10mm
     let hole = cylinder(r, h)
-    let result = linear_pattern(hole, 1, 0, 0, 3, 10mm)
+    let result = linear_pattern(hole, dir(1, 0, 0), 3, 10mm)
 }"#;
     let compiled = compile_no_errors(source);
     let template = &compiled.templates[0];

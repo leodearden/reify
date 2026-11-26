@@ -585,41 +585,27 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         }],
 
         // ── Pattern CSG producers: spacing is a Length (task 5652) ───────────
-        // linear_pattern(target, dx, dy, dz, count, spacing)
-        //   arg0:   target geometry handle (unchecked — ε=4358's territory)
-        //   args1-3: dx/dy/dz — a DIMENSIONLESS direction vector, deliberately
-        //            unchecked. Task 5214 established the direction is a unit
-        //            vector, so a bare component carries no silent-metres
-        //            hazard (unlike spacing, where a bare `10` was read as 10
-        //            SI metres — 1000× a plausible 10 mm pitch).
-        //   arg4:   count — an Int, deliberately unchecked here (a wrong count
-        //           is an arity/semantic error, not a dimension error).
-        //   arg5:   spacing → LENGTH ("Length").
+        // linear_pattern(target, direction, count, spacing)
+        //   arg0: target geometry handle (unchecked — ε=4358's territory)
+        //   arg1: `direction` → Direction (direction-typing ι-c).
+        //   arg2: count — an Int, deliberately unchecked here (a wrong count
+        //         is an arity/semantic error, not a dimension error).
+        //   arg3: spacing → LENGTH ("Length"). A bare `10` was read as 10 SI
+        //         metres — 1000× a plausible 10 mm pitch (task 5214).
         //
-        // The `arg_count == 6` guard is load-bearing forward-compat, not
-        // decoration, even though 6 is currently the only accepted arity
-        // (geometry.rs `check_arg_count_exact(..., 6, ...)`): task 5351 lands a
-        // 4-arg `(target, direction, count, spacing)` value form in which
-        // `spacing` moves to index 3. Without the guard, index 5 would denote
-        // nothing there — the slot would be semantically lying, and the only
-        // thing keeping it quiet would be the downstream `compiled_args.get(5)`
-        // bounds check, i.e. luck rather than intent.
-        "linear_pattern" if arg_count == 6 => &[CheckableArg {
-            index: 5,
-            name: "spacing",
-            expected: ExpectedArg::Scalar {
-                dimension: DimensionVector::LENGTH,
-                type_name: "Length",
-                migration_hint: LENGTH_MIGRATION_HINT,
-            },
-        }],
+        // Single-form (`check_arg_count_exact_form(.., 4, ..)`), so arity-agnostic
+        // per the "guard only genuinely overloaded names" rule. Pinned by
+        // `linear_pattern_slots_its_direction_and_spacing_at_every_arity`.
+        "linear_pattern" => const { &[direction_arg(1, "direction"), length_arg(3, "spacing")] },
 
         // linear_pattern_2d(target, dx1, dy1, dz1, count1, spacing1,
         //                           dx2, dy2, dz2, count2, spacing2)
         //   arg5:  spacing1 → LENGTH ("Length")
         //   arg10: spacing2 → LENGTH ("Length")
-        // Direction components and counts are unchecked for the same reasons
-        // as `linear_pattern` above.
+        // Direction components are unchecked: task 5214 established each
+        // direction is a unit vector, so a bare component carries no
+        // silent-metres hazard. Counts are Ints, unchecked as in
+        // `linear_pattern` above.
         //
         // Here the `arg_count == 11` guard is not merely forward-compat — it is
         // the case that makes the whole arity dimension necessary. Task 5351's
@@ -773,11 +759,10 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         // guards.
         //
         // `check_builtin_arg_types`' `compiled_args.get(index)` bounds check does
-        // NOT shield that case. It shields `linear_pattern`'s 4-arg form only
-        // because the slot indices there are ABSENT at the short arity; in
-        // `revolve`'s case index 2 IS populated at both arities, just by
-        // different parameters. A bounds check cannot tell those two situations
-        // apart.
+        // NOT shield that case. It shields a short form only when the slot
+        // indices are ABSENT at the short arity; in `revolve`'s case index 2 IS
+        // populated at both arities, just by different parameters. A bounds
+        // check cannot tell those two situations apart.
         //
         // Coupling: task 5351 owns the value forms, and `linear_pattern` /
         // `linear_pattern_2d` are already forward-compat-guarded for it.

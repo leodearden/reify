@@ -67,7 +67,10 @@ const fn floor(
 /// dependencies' ops again. A floor drops only with a new measurement saying why.
 const CORPUS: &[(&str, DirectionForms)] = &[
     ("designs/litter_tray/bottom_deck.ri", floor(4, 0, 0, 0)),
-    ("designs/litter_tray/bottom_deck_split.ri", floor(6, 0, 0, 0)),
+    (
+        "designs/litter_tray/bottom_deck_split.ri",
+        floor(6, 0, 0, 0),
+    ),
     ("designs/litter_tray/top_deck.ri", floor(4, 0, 0, 0)),
     ("designs/litter_tray/top_deck_split.ri", floor(5, 0, 0, 0)),
     ("prj/printer_v01/printer.ri", floor(3, 0, 1, 3)),
@@ -76,7 +79,10 @@ const CORPUS: &[(&str, DirectionForms)] = &[
         "examples/geometric_relations/tangent_roller.ri",
         floor(1, 0, 0, 0),
     ),
-    ("examples/best_practices/symmetry_mirror.ri", floor(0, 0, 1, 0)),
+    (
+        "examples/best_practices/symmetry_mirror.ri",
+        floor(0, 0, 1, 0),
+    ),
 ];
 
 /// Mirrors docs/prds/v0_6/fixtures/helix_sweep_dep_5342.ri's `Test` structure.
@@ -101,8 +107,16 @@ structure PnrgSpline {
 /// Each mirrored fixture's stem, used as its module path, with its call sites
 /// inlined and counted as a floor the way `CORPUS` counts them.
 const MIRRORED: &[(&str, &str, DirectionForms)] = &[
-    ("helix_sweep_dep_5342", HELIX_SWEEP_DEP_5342, floor(1, 0, 0, 0)),
-    ("pnrg_envelope_spline", PNRG_ENVELOPE_SPLINE, floor(2, 0, 0, 0)),
+    (
+        "helix_sweep_dep_5342",
+        HELIX_SWEEP_DEP_5342,
+        floor(1, 0, 0, 0),
+    ),
+    (
+        "pnrg_envelope_spline",
+        PNRG_ENVELOPE_SPLINE,
+        floor(2, 0, 0, 0),
+    ),
 ];
 
 /// What one file's lowered Direction-taking ops look like.

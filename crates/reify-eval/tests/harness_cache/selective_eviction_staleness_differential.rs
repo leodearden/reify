@@ -857,7 +857,7 @@ pub structure Ring {
 pub structure Row {
     param w2 : Length = 4mm
     let base = box(w2, 5mm, 5mm)
-    let row = linear_pattern(base, 1, 0, 0, 3, 10mm)
+    let row = linear_pattern(base, dir(1, 0, 0), 3, 10mm)
 }
 pub structure S {
     let shell = cylinder(5mm, 10mm)
