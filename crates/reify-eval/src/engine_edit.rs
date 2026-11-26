@@ -874,9 +874,10 @@ impl Drop for PendingWarmSeedsGuard<'_> {
 /// Used by `edit_source` step (4c) to drive the checkout half of the
 /// WarmStatePool round-trip uniformly across the `added` /
 /// `added_constraints` / `added_realizations` sets. The pool API itself
-/// is variant-agnostic, so a future `NodeId` variant (e.g. `Resolution`
-/// once a `diff_resolutions` (#4686) exists, or `ComputeNode` once it becomes a
-/// variant) drops in as a single additional call.
+/// is variant-agnostic, so a future `NodeId` variant (e.g. `Resolution`,
+/// which first needs a `diff_resolutions` helper (the gap recorded in #4686;
+/// see the step-(6) block comment in `edit_source`), or `ComputeNode` were it
+/// a variant) drops in as a single additional call.
 ///
 /// The `pending` guard owns the pool borrow, so callers do not need to pass
 /// both a `&mut WarmStatePool` and a separate sink map — both are accessed
@@ -921,8 +922,8 @@ where
 /// landed in `build_demand_for_graph` (only Value/Constraint/Realization are
 /// seeded today), so the Resolution arm is currently unreachable end-to-end
 /// via the `eval_set = dirty ∩ demand` intersection in `edit_source`. A
-/// separate `diff_resolutions` helper gap (#4686; see the step-(6) block comment)
-/// remains outstanding as a sibling concern.
+/// separate `diff_resolutions` helper gap (recorded in #4686; see the step-(6)
+/// block comment) is a sibling concern that stays open in this code.
 fn dependent_still_present_in_graph(dep: &NodeId, new_graph: &EvaluationGraph) -> bool {
     match dep {
         NodeId::Value(vcid) => new_graph.value_cells.contains_key(vcid),
@@ -3368,8 +3369,8 @@ impl Engine {
         //      Symmetric across all three NodeId variants currently produced
         //      by `diff_*` helpers — Value, Constraint, Realization — via
         //      the shared `checkout_added_warm_seeds` helper. Resolution is
-        //      not yet in any `diff_*` helper (tracked by #4686);
-        //      ComputeNode is not yet a NodeId variant. The pool API
+        //      in no `diff_*` helper (the gap recorded in #4686; see step
+        //      (6)); ComputeNode is not yet a NodeId variant. The pool API
         //      itself is variant-agnostic, so any future variant slots in
         //      as a single additional call to the helper.
         let mut pending_warm_seeds = PendingWarmSeedsGuard::new(&mut self.warm_pool);
@@ -3418,7 +3419,9 @@ impl Engine {
         //     `diff_constraints` / `diff_realizations`. That gap means changed
         //     or removed Resolution nodes are never seeded into `dirty_cone`
         //     via the changed/added/removed diff paths (steps (3)-(5)/(9)).
-        //     This is tracked as a separate task, #4686; do not conflate it
+        //     The gap is recorded in #4686 and is not being closed in this
+        //     code: the old evaluation orchestration is being replaced
+        //     (docs/notes/old-evaluation-core-hold.md). Do not conflate it
         //     with the membership check above, which is now correct.
         {
             let old_reverse_index = &eval_state.reverse_index;
@@ -3569,8 +3572,8 @@ impl Engine {
         // `donate_with_cost` so the pool→cache reinsert half of the
         // round-trip (run_compute_dispatch's cache-miss → pool fallback)
         // can restore both warm state and cost on the next dispatch.
-        // Resolution is not yet in any `diff_*` helper (tracked by
-        // #4686), so it does not donate today.
+        // Resolution is in no `diff_*` helper (the gap recorded in #4686;
+        // see step (6)), so it does not donate.
         for id in &changed {
             self.cache.invalidate(&NodeId::Value(id.clone()));
         }
@@ -6562,9 +6565,9 @@ mod tests {
     /// step (6) to silently leave stale Resolution caches after the cell they
     /// depend on is removed — this test locks the correct behaviour in advance.
     ///
-    /// The `diff_resolutions` helper gap (#4686; see the block comment near
-    /// `diff_realizations` in `edit_source`) is a separate sibling concern
-    /// not addressed by this fix.
+    /// The `diff_resolutions` helper gap (recorded in #4686; see the block
+    /// comment near `diff_realizations` in `edit_source`) is a separate
+    /// sibling concern not addressed by this fix.
     #[test]
     fn dependent_still_present_in_graph_resolution_consults_new_graph_resolutions_map() {
         use crate::cache::NodeId;
