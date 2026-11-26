@@ -13,7 +13,7 @@ use crate::mailbox::{Mailbox, Posted, Reply};
 use crate::outcome::{Erased, Outcome};
 use crate::path::Path;
 use crate::produced::Produced;
-use crate::snapshot::{Snapshot, SnapshotId};
+use crate::snapshot::SnapshotId;
 
 /// A node of one snapshot: within a snapshot, one body runs for a path.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -24,7 +24,6 @@ pub(crate) struct TaskKey {
 
 pub(crate) struct Task {
     declaration: Arc<Declaration>,
-    snapshot: Snapshot,
     mailbox: Arc<Mailbox>,
     cancel: Cancel,
     /// The section the body waits on, if it waits on one.
@@ -33,13 +32,12 @@ pub(crate) struct Task {
 }
 
 impl Task {
-    pub fn start(kind: &dyn ErasedKind, declaration: Arc<Declaration>, snapshot: Snapshot) -> Self {
+    pub fn start(kind: &dyn ErasedKind, declaration: Arc<Declaration>) -> Self {
         let mailbox = Arc::new(Mailbox::new());
         let cancel = Cancel::default();
         let body = kind.start(Cx::new(Arc::clone(&mailbox), cancel.clone()));
         Self {
             declaration,
-            snapshot,
             mailbox,
             cancel,
             section: None,
@@ -47,12 +45,8 @@ impl Task {
         }
     }
 
-    pub fn declaration(&self) -> &Declaration {
+    pub fn declaration(&self) -> &Arc<Declaration> {
         &self.declaration
-    }
-
-    pub fn snapshot(&self) -> &Snapshot {
-        &self.snapshot
     }
 
     /// The flag a section this body starts reads as `cancelled`.

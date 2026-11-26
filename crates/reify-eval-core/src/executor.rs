@@ -13,6 +13,7 @@ use crate::counters::Counters;
 use crate::declaration::Declaration;
 use crate::event::{Event, RequestId};
 use crate::failure::{Failure, OutsideFailure, panic_message};
+use crate::index::{Entry, Indexes};
 use crate::input::{Input, InputKey};
 use crate::job::Report;
 use crate::kinds::Kinds;
@@ -39,6 +40,7 @@ pub(crate) struct Executor {
     core: CoreId,
     snapshots: u64,
     kinds: Kinds,
+    indexes: Indexes,
     tasks: BTreeMap<TaskKey, Task>,
     ready: ReadyQueue<TaskKey>,
     requests: Requests,
@@ -55,6 +57,7 @@ impl Executor {
             core,
             snapshots: 0,
             kinds,
+            indexes: Indexes::default(),
             tasks: BTreeMap::new(),
             ready: ReadyQueue::default(),
             requests: Requests::new(core),
@@ -84,9 +87,11 @@ impl Executor {
         roots: impl IntoIterator<Item = Root>,
     ) -> Request {
         self.core.refuse_foreign(snapshot.id().core, "a snapshot");
-        let request = self.requests.open();
+        self.prune();
+        self.indexes.open(snapshot);
+        let request = self.requests.open(snapshot.id());
         for root in roots.into_iter().collect::<BTreeSet<_>>() {
-            self.demand_root(request.id(), snapshot, root);
+            self.demand_root(request.id(), snapshot.id(), root);
         }
         request
     }
@@ -101,6 +106,7 @@ impl Executor {
                 task.abandon();
             }
         }
+        self.prune();
     }
 
     pub fn take_events(&mut self) -> Vec<Event> {
@@ -112,6 +118,7 @@ impl Executor {
     /// delivered only by `wait` or `drain`, so what a turn does to bodies
     /// depends on the order of the host's calls alone.
     pub fn turn(&mut self) -> Turn {
+        self.prune();
         while let Some(report) = self.resources.try_receive() {
             self.take_in(report);
         }
@@ -157,45 +164,68 @@ impl Executor {
         &self.counters
     }
 
-    /// Reads the root's declaration from the snapshot with the typed read a
-    /// body uses (decision D11), then joins or starts its body.
-    fn demand_root(&mut self, request: RequestId, snapshot: &Snapshot, root: Root) {
+    /// Drops the index of each snapshot that is no longer live: no clone of
+    /// it is held and no live request is on it (contract 4.4).
+    fn prune(&mut self) {
+        let requests = &self.requests;
+        self.indexes.prune(|snapshot| requests.any_on(snapshot));
+    }
+
+    /// Tells a root already answered in the snapshot at once. Otherwise
+    /// reads its declaration from the snapshot with the typed read a body
+    /// uses (decision D11), then joins or starts its body.
+    fn demand_root(&mut self, request: RequestId, snapshot: SnapshotId, root: Root) {
         let key = TaskKey {
-            snapshot: snapshot.id(),
+            snapshot,
             path: Path::root(root.clone()),
         };
+        let index = self.indexes.of(snapshot);
+        if let Some(entry) = index.entry(&key.path) {
+            let answer = Answer::Final(entry.outcome.clone());
+            return self.tell(request, &key, answer);
+        }
         if self.tasks.contains_key(&key) {
             return self.requests.want(request, key);
         }
-        let declared = snapshot
+        let declared = index
             .input(&InputKey::Root(root))
             .map_or(Outcome::Absent, Input::outcome)
             .downcast::<Declaration>();
         match declared {
-            Outcome::Value(declaration) => self.start(request, key, declaration, snapshot),
-            settled => self.tell(request, &key, Answer::Final(settled.erase())),
+            Outcome::Value(declaration) => self.start(request, key, declaration),
+            settled => {
+                let outcome = settled.erase();
+                self.file(&key, outcome.clone(), None);
+                self.tell(request, &key, Answer::Final(outcome));
+            }
         }
     }
 
-    fn start(
-        &mut self,
-        request: RequestId,
-        key: TaskKey,
-        declaration: Arc<Declaration>,
-        snapshot: &Snapshot,
-    ) {
+    fn start(&mut self, request: RequestId, key: TaskKey, declaration: Arc<Declaration>) {
         let kind_id = declaration.kind();
         let Some(kind) = self.kinds.get(kind_id) else {
             let unknown = OutsideFailure::UnknownKind { kind: kind_id.0 };
             return self.tell(request, &key, Answer::Pending(unknown));
         };
         self.counters.count_body_run(kind_id);
-        self.tasks.insert(
-            key.clone(),
-            Task::start(kind, declaration, snapshot.clone()),
-        );
+        self.tasks
+            .insert(key.clone(), Task::start(kind, declaration));
         self.requests.want(request, key.clone());
         self.ready.push(key);
+    }
+
+    /// Files a final outcome in the index of its snapshot.
+    fn file(
+        &mut self,
+        key: &TaskKey,
+        outcome: Outcome<Erased>,
+        declaration: Option<Arc<Declaration>>,
+    ) {
+        let entry = Entry {
+            outcome,
+            declaration,
+        };
+        self.indexes.file(key.snapshot, key.path.clone(), entry);
     }
 
     fn advance(&mut self, key: TaskKey) {
@@ -217,7 +247,8 @@ impl Executor {
         };
         match posted {
             Posted::Ask(Ask::Read(r)) => {
-                task.answer_read(serve::read::answer(task.declaration(), task.snapshot(), &r));
+                let index = self.indexes.of(key.snapshot);
+                task.answer_read(serve::read::answer(task.declaration(), index, &r));
                 self.ready.push(key);
             }
             Posted::Ask(Ask::Exclusive(ask)) => {
@@ -237,11 +268,15 @@ impl Executor {
         }
     }
 
-    /// Ends a node with its outcome, told to every live request that wanted it.
+    /// Ends a node with its outcome, filed in its snapshot's index and told
+    /// to every live request that wanted it.
     fn finish(&mut self, key: &TaskKey, outcome: Outcome<Erased>) {
-        if let Some(task) = self.tasks.remove(key) {
+        let declaration = self.tasks.remove(key).map(|task| {
+            let declaration = Arc::clone(task.declaration());
             task.discard();
-        }
+            declaration
+        });
+        self.file(key, outcome.clone(), declaration);
         for request in self.requests.settle(key) {
             self.tell(request, key, Answer::Final(outcome.clone()));
         }
@@ -339,12 +374,13 @@ impl Executor {
 }
 
 impl Drop for Executor {
-    /// Bodies and untaken answers go before the resources, so what they
-    /// hold is queued for release before each resource thread stops.
+    /// Bodies, indexes and untaken answers go before the resources, so what
+    /// they hold is queued for release before each resource thread stops.
     fn drop(&mut self) {
         for (_, task) in mem::take(&mut self.tasks) {
             task.discard();
         }
+        self.indexes.clear();
         self.events.clear();
     }
 }

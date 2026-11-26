@@ -1,5 +1,7 @@
 //! A snapshot: the inputs one evaluation sees (contract 3).
 
+use std::sync::{Arc, Weak};
+
 use imbl::OrdMap;
 
 use crate::core_id::CoreId;
@@ -13,10 +15,22 @@ pub struct SnapshotId {
     pub(crate) serial: u64,
 }
 
+/// Every clone of a snapshot shares one token, so the core can tell
+/// whether any clone is still held (contract 4.4).
 #[derive(Clone)]
 pub struct Snapshot {
     id: SnapshotId,
     inputs: OrdMap<InputKey, Input>,
+    token: Arc<()>,
+}
+
+/// Says whether any clone of a snapshot is still held, without holding one.
+pub(crate) struct SnapshotWatch(Weak<()>);
+
+impl SnapshotWatch {
+    pub fn is_held(&self) -> bool {
+        self.0.strong_count() > 0
+    }
 }
 
 impl Snapshot {
@@ -24,6 +38,7 @@ impl Snapshot {
         Self {
             id,
             inputs: inputs.into_iter().collect(),
+            token: Arc::new(()),
         }
     }
 
@@ -31,7 +46,11 @@ impl Snapshot {
         self.id
     }
 
-    pub(crate) fn input(&self, key: &InputKey) -> Option<&Input> {
-        self.inputs.get(key)
+    pub(crate) fn inputs(&self) -> &OrdMap<InputKey, Input> {
+        &self.inputs
+    }
+
+    pub(crate) fn watch(&self) -> SnapshotWatch {
+        SnapshotWatch(Arc::downgrade(&self.token))
     }
 }

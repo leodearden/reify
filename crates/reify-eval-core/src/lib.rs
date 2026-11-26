@@ -15,6 +15,7 @@ mod failure;
 mod hash;
 mod held;
 mod host;
+mod index;
 mod input;
 mod job;
 mod kind;

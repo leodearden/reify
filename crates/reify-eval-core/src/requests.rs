@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::core_id::CoreId;
 use crate::event::RequestId;
+use crate::snapshot::SnapshotId;
 use crate::task::TaskKey;
 
 /// The host's handle on a request, given back to end it.
@@ -22,6 +23,7 @@ impl Request {
 
 pub(crate) struct Requests {
     core: CoreId,
+    on: BTreeMap<RequestId, SnapshotId>,
     wants: BTreeMap<RequestId, BTreeSet<TaskKey>>,
     wanted_by: BTreeMap<TaskKey, BTreeSet<RequestId>>,
     opened: u64,
@@ -31,18 +33,21 @@ impl Requests {
     pub fn new(core: CoreId) -> Self {
         Self {
             core,
+            on: BTreeMap::new(),
             wants: BTreeMap::new(),
             wanted_by: BTreeMap::new(),
             opened: 0,
         }
     }
 
-    pub fn open(&mut self) -> Request {
+    /// Opens a request on `snapshot`.
+    pub fn open(&mut self, snapshot: SnapshotId) -> Request {
         self.opened += 1;
         let id = RequestId {
             core: self.core,
             serial: self.opened,
         };
+        self.on.insert(id, snapshot);
         self.wants.insert(id, BTreeSet::new());
         Request { id }
     }
@@ -52,6 +57,11 @@ impl Requests {
             wanted.insert(key.clone());
             self.wanted_by.entry(key).or_default().insert(request);
         }
+    }
+
+    /// Whether a live request is on `snapshot`.
+    pub fn any_on(&self, snapshot: SnapshotId) -> bool {
+        self.on.values().any(|on| *on == snapshot)
     }
 
     /// The live requests that want `key`.
@@ -74,6 +84,7 @@ impl Requests {
     /// Ends `request`, returning the tasks no live request wants any more.
     pub fn end(&mut self, request: Request) -> Vec<TaskKey> {
         let mut unwanted = Vec::new();
+        self.on.remove(&request.id);
         for key in self.wants.remove(&request.id).unwrap_or_default() {
             if let Some(wanting) = self.wanted_by.get_mut(&key) {
                 wanting.remove(&request.id);
