@@ -33,4 +33,8 @@ impl Declaration {
     pub fn kind(&self) -> KindId {
         self.kind
     }
+
+    pub(crate) fn binding(&self, name: &str) -> Option<&Binding> {
+        self.bindings.get(name)
+    }
 }

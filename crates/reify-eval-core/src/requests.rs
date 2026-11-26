@@ -1,10 +1,10 @@
-//! The live requests: each is on one snapshot and stays live until the host
-//! ends it.
+//! The live requests, and which running tasks each wants: one relation,
+//! seen from both ends, with one owner.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::event::RequestId;
-use crate::snapshot::Snapshot;
+use crate::task::TaskKey;
 
 /// The host's handle on a request, given back to end it.
 #[derive(Debug)]
@@ -21,19 +21,46 @@ impl Request {
 
 #[derive(Default)]
 pub(crate) struct Requests {
-    live: BTreeMap<RequestId, Snapshot>,
+    wants: BTreeMap<RequestId, BTreeSet<TaskKey>>,
+    wanted_by: BTreeMap<TaskKey, BTreeSet<RequestId>>,
     opened: u64,
 }
 
 impl Requests {
-    pub fn open(&mut self, snapshot: Snapshot) -> Request {
+    pub fn open(&mut self) -> Request {
         self.opened += 1;
         let id = RequestId(self.opened);
-        self.live.insert(id, snapshot);
+        self.wants.insert(id, BTreeSet::new());
         Request { id }
     }
 
+    pub fn want(&mut self, request: RequestId, key: TaskKey) {
+        if let Some(wanted) = self.wants.get_mut(&request) {
+            wanted.insert(key.clone());
+            self.wanted_by.entry(key).or_default().insert(request);
+        }
+    }
+
+    /// The live requests that wanted `key`, which has now been answered, so
+    /// none of them wants it any more.
+    pub fn settle(&mut self, key: &TaskKey) -> BTreeSet<RequestId> {
+        let wanting = self.wanted_by.remove(key).unwrap_or_default();
+        for request in &wanting {
+            if let Some(wanted) = self.wants.get_mut(request) {
+                wanted.remove(key);
+            }
+        }
+        wanting
+    }
+
     pub fn end(&mut self, request: Request) {
-        self.live.remove(&request.id);
+        for key in self.wants.remove(&request.id).unwrap_or_default() {
+            if let Some(wanting) = self.wanted_by.get_mut(&key) {
+                wanting.remove(&request.id);
+                if wanting.is_empty() {
+                    self.wanted_by.remove(&key);
+                }
+            }
+        }
     }
 }

@@ -1,8 +1,10 @@
-//! The executor: resolves the roots a request demands and runs what is
-//! ready, on the thread that calls it.
+//! The executor: resolves the roots a request demands and runs every body
+//! that is ready, on the thread that calls it.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::mem;
+use std::sync::Arc;
+use std::task::Poll;
 
 use crate::answer::Answer;
 use crate::counters::Counters;
@@ -10,10 +12,16 @@ use crate::declaration::Declaration;
 use crate::event::{Event, RequestId};
 use crate::failure::OutsideFailure;
 use crate::input::{Input, InputKey};
+use crate::kinds::Kinds;
+use crate::mailbox::{Ask, Posted, Reply};
 use crate::outcome::{Erased, Outcome};
 use crate::path::{Path, Root};
+use crate::produced::Produced;
+use crate::ready::ReadyQueue;
 use crate::requests::{Request, Requests};
+use crate::serve;
 use crate::snapshot::Snapshot;
+use crate::task::{Task, TaskKey};
 
 /// What is left after a turn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,16 +30,29 @@ pub enum Turn {
     SectionsRunning(usize),
 }
 
-#[derive(Default)]
 pub(crate) struct Executor {
+    kinds: Kinds,
+    tasks: BTreeMap<TaskKey, Task>,
+    ready: ReadyQueue<TaskKey>,
     requests: Requests,
     counters: Counters,
     events: Vec<Event>,
 }
 
 impl Executor {
+    pub fn new(kinds: Kinds) -> Self {
+        Self {
+            kinds,
+            tasks: BTreeMap::new(),
+            ready: ReadyQueue::default(),
+            requests: Requests::default(),
+            counters: Counters::default(),
+            events: Vec::new(),
+        }
+    }
+
     pub fn evaluate(&mut self, snapshot: &Snapshot, roots: impl IntoIterator<Item = Root>) -> Request {
-        let request = self.requests.open(snapshot.clone());
+        let request = self.requests.open();
         for root in roots.into_iter().collect::<BTreeSet<_>>() {
             self.demand_root(request.id(), snapshot, root);
         }
@@ -47,6 +68,9 @@ impl Executor {
     }
 
     pub fn turn(&mut self) -> Turn {
+        while let Some(key) = self.ready.pop() {
+            self.advance(key);
+        }
         Turn::Idle
     }
 
@@ -55,19 +79,68 @@ impl Executor {
     }
 
     /// Reads the root's declaration from the snapshot with the typed read a
-    /// body uses (decision D11).
+    /// body uses (decision D11), then joins or starts its body.
     fn demand_root(&mut self, request: RequestId, snapshot: &Snapshot, root: Root) {
+        let key = (snapshot.id(), Path::root(root.clone()));
+        if self.tasks.contains_key(&key) {
+            return self.requests.want(request, key);
+        }
         let declared = snapshot
-            .input(&InputKey::Root(root.clone()))
+            .input(&InputKey::Root(root))
             .map_or(Outcome::Absent, Input::outcome)
             .downcast::<Declaration>();
-        let path = Path::root(root);
         match declared {
-            Outcome::Value(declaration) => {
-                let unknown = OutsideFailure::UnknownKind { kind: declaration.kind().0 };
-                self.tell(request, path, Answer::Pending(unknown));
+            Outcome::Value(declaration) => self.start(request, key, declaration, snapshot),
+            settled => self.tell(request, key.1, Answer::Final(settled.erase())),
+        }
+    }
+
+    fn start(&mut self, request: RequestId, key: TaskKey, declaration: Arc<Declaration>, snapshot: &Snapshot) {
+        let kind_id = declaration.kind();
+        let Some(kind) = self.kinds.get(kind_id) else {
+            let unknown = OutsideFailure::UnknownKind { kind: kind_id.0 };
+            return self.tell(request, key.1, Answer::Pending(unknown));
+        };
+        self.counters.count_body_run(kind_id);
+        self.tasks.insert(key.clone(), Task::start(kind, declaration, snapshot.clone()));
+        self.requests.want(request, key.clone());
+        self.ready.push(key);
+    }
+
+    fn advance(&mut self, key: TaskKey) {
+        let Some(task) = self.tasks.get_mut(&key) else { return };
+        let posted = match task.poll() {
+            Poll::Ready(Produced::Outcome(outcome)) => return self.finish(&key, outcome),
+            Poll::Ready(Produced::Outside(failure)) => return self.end_outside(&key, failure),
+            Poll::Pending => task.mailbox.take_posted(),
+        };
+        match posted {
+            Posted::Ask(Ask::Read(r)) => {
+                let outcome = serve::read::answer(&task.declaration, &task.snapshot, &r);
+                task.mailbox.reply(Reply::Outcome(outcome));
+                self.ready.push(key);
             }
-            settled => self.tell(request, path, Answer::Final(settled.erase())),
+            Posted::Nothing | Posted::TwoRequestsAtOnce => {
+                self.tasks.remove(&key);
+                self.requests.settle(&key);
+            }
+        }
+    }
+
+    /// Ends a node with its outcome, told to every live request that wanted it.
+    fn finish(&mut self, key: &TaskKey, outcome: Outcome<Erased>) {
+        self.tasks.remove(key);
+        for request in self.requests.settle(key) {
+            self.tell(request, key.1.clone(), Answer::Final(outcome.clone()));
+        }
+    }
+
+    /// Ends a node with a failure outside the inputs: pending to every live
+    /// request that wanted it, and stored nowhere.
+    fn end_outside(&mut self, key: &TaskKey, failure: OutsideFailure) {
+        self.tasks.remove(key);
+        for request in self.requests.settle(key) {
+            self.tell(request, key.1.clone(), Answer::Pending(failure.clone()));
         }
     }
 
