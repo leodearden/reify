@@ -13,4 +13,5 @@ mod reading;
 mod roots;
 mod sections;
 mod snapshots;
+mod structure;
 mod toy;

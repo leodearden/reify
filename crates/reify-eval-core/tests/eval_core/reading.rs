@@ -2,7 +2,7 @@
 
 use std::any::type_name;
 
-use reify_eval_core::{Answer, Failure, Kind, Outcome, Root, Turn};
+use reify_eval_core::{Answer, Failure, Kind, Outcome, Turn};
 
 use crate::toy::{self, Cell};
 
@@ -15,10 +15,10 @@ fn a_root_cell_adds_the_snapshot_inputs_its_declaration_binds() {
         toy::root("total", toy::cell(&["a", "b"])),
     ]);
 
-    let request = core.evaluate(&snapshot, [Root::named("total")]);
+    let request = core.evaluate(&snapshot, toy::roots(&["total"]));
     assert_eq!(core.turn(), Turn::Idle);
 
-    let answer = toy::the_answer(&core.take_events(), &request, "total");
+    let answer = toy::the_answer(&core.take_events(), &request, &toy::at("total"));
     assert_eq!(answer.downcast::<i64>(), Answer::Final(Outcome::of(5)));
     assert_eq!(core.counters().body_runs(Cell::ID), 1);
 }
@@ -31,10 +31,10 @@ fn a_read_at_the_wrong_type_gives_the_reader_a_failure_naming_both_types() {
         toy::root("total", toy::cell(&["a"])),
     ]);
 
-    let request = core.evaluate(&snapshot, [Root::named("total")]);
+    let request = core.evaluate(&snapshot, toy::roots(&["total"]));
     assert_eq!(core.turn(), Turn::Idle);
 
-    let answer = toy::the_answer(&core.take_events(), &request, "total");
+    let answer = toy::the_answer(&core.take_events(), &request, &toy::at("total"));
     let wrong_type = Failure::WrongType {
         expected: type_name::<i64>(),
         found: type_name::<String>(),
@@ -51,13 +51,13 @@ fn two_live_requests_on_one_snapshot_each_receive_the_answer_of_a_root_they_both
         toy::root("total", toy::cell(&["a", "b"])),
     ]);
 
-    let first = core.evaluate(&snapshot, [Root::named("total")]);
-    let second = core.evaluate(&snapshot, [Root::named("total")]);
+    let first = core.evaluate(&snapshot, toy::roots(&["total"]));
+    let second = core.evaluate(&snapshot, toy::roots(&["total"]));
     assert_eq!(core.turn(), Turn::Idle);
 
     let events = core.take_events();
     for request in [&first, &second] {
-        let answer = toy::the_answer(&events, request, "total");
+        let answer = toy::the_answer(&events, request, &toy::at("total"));
         assert_eq!(answer.downcast::<i64>(), Answer::Final(Outcome::of(5)));
     }
     assert_eq!(

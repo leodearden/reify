@@ -24,14 +24,14 @@ fn a_second_body_runs_to_completion_while_a_first_waits_on_a_section_still_runni
         toy::root("total", toy::cell(&["a", "b"])),
     ]);
 
-    let first = core.evaluate(&snapshot, [Root::named("box")]);
+    let first = core.evaluate(&snapshot, toy::roots(&["box"]));
     assert_eq!(core.turn(), Turn::SectionsRunning(1));
     keeper.entered();
 
-    let second = core.evaluate(&snapshot, [Root::named("total")]);
+    let second = core.evaluate(&snapshot, toy::roots(&["total"]));
     assert_eq!(core.turn(), Turn::SectionsRunning(1));
     let events = core.take_events();
-    let total = toy::the_answer(&events, &second, "total");
+    let total = toy::the_answer(&events, &second, &toy::at("total"));
     assert_eq!(total.downcast::<i64>(), Answer::Final(Outcome::of(3)));
     assert!(
         toy::answers(&events, first.id()).is_empty(),
@@ -40,7 +40,7 @@ fn a_second_body_runs_to_completion_while_a_first_waits_on_a_section_still_runni
 
     keeper.open();
     core.run();
-    let shape = toy::the_value::<BoxShape>(&core.take_events(), &first, "box");
+    let shape = toy::the_value::<BoxShape>(&core.take_events(), &first, &toy::at("box"));
     assert_eq!(shape.volume, 8);
     assert_eq!(*shape.handle, BoxHandle(1));
     assert_ne!(shape.built_on, thread::current().id());
@@ -55,10 +55,10 @@ fn a_section_for_a_resource_nobody_added_is_pending_with_that_failure() {
         toy::root("box", toy::shape("side")),
     ]);
 
-    let request = core.evaluate(&snapshot, [Root::named("box")]);
+    let request = core.evaluate(&snapshot, toy::roots(&["box"]));
     core.run();
 
-    let answer = toy::the_answer(&core.take_events(), &request, "box");
+    let answer = toy::the_answer(&core.take_events(), &request, &toy::at("box"));
     let missing = OutsideFailure::NoResource {
         resource: type_name::<ToyKernel>(),
     };
@@ -73,7 +73,7 @@ fn the_core_can_be_moved_to_another_thread_mid_evaluation() {
         toy::named("side", 3_i64),
         toy::root("box", toy::shape("side")),
     ]);
-    let request = core.evaluate(&snapshot, [Root::named("box")]);
+    let request = core.evaluate(&snapshot, toy::roots(&["box"]));
     assert_eq!(core.turn(), Turn::SectionsRunning(1));
 
     let driver = thread::spawn(move || {
@@ -84,7 +84,7 @@ fn the_core_can_be_moved_to_another_thread_mid_evaluation() {
     keeper.let_one_through();
     let (_core, events) = driver.join().expect("the driving thread finishes");
 
-    let shape = toy::the_value::<BoxShape>(&events, &request, "box");
+    let shape = toy::the_value::<BoxShape>(&events, &request, &toy::at("box"));
     assert_eq!(shape.volume, 27);
 }
 
@@ -96,8 +96,8 @@ fn a_section_s_progress_notes_reach_the_host_while_it_still_runs() {
         toy::named("side", 2_i64),
         toy::root("box", toy::shape("side")),
     ]);
-    let first = core.evaluate(&snapshot, [Root::named("box")]);
-    let second = core.evaluate(&snapshot, [Root::named("box")]);
+    let first = core.evaluate(&snapshot, toy::roots(&["box"]));
+    let second = core.evaluate(&snapshot, toy::roots(&["box"]));
     assert_eq!(core.turn(), Turn::SectionsRunning(1));
 
     keeper.let_one_through();
@@ -137,7 +137,7 @@ fn a_section_sees_cancelled_when_its_request_is_ended_without_waiting() {
         toy::named("side", 2_i64),
         toy::root("box", toy::shape("side")),
     ]);
-    let request = core.evaluate(&snapshot, [Root::named("box")]);
+    let request = core.evaluate(&snapshot, toy::roots(&["box"]));
     assert_eq!(core.turn(), Turn::SectionsRunning(1));
     keeper.entered();
 
@@ -190,12 +190,12 @@ fn a_section_that_panics_ends_its_node_pending_with_a_failure_outside_the_inputs
         toy::root("total", toy::cell(&["a", "b"])),
     ]);
 
-    let request = core.evaluate(&snapshot, [Root::named("fragile")]);
+    let request = core.evaluate(&snapshot, toy::roots(&["fragile"]));
     core.run();
     assert_section_panicked(toy::pending(toy::the_answer(
         &core.take_events(),
         &request,
-        "fragile",
+        &toy::at("fragile"),
     )));
 
     assert_eq!(core.turn(), Turn::Idle);
@@ -203,9 +203,9 @@ fn a_section_that_panics_ends_its_node_pending_with_a_failure_outside_the_inputs
     core.run();
     core.drain();
 
-    let later = core.evaluate(&snapshot, [Root::named("total")]);
+    let later = core.evaluate(&snapshot, toy::roots(&["total"]));
     core.run();
-    let total = toy::the_answer(&core.take_events(), &later, "total");
+    let total = toy::the_answer(&core.take_events(), &later, &toy::at("total"));
     assert_eq!(total.downcast::<i64>(), Answer::Final(Outcome::of(3)));
 }
 
@@ -225,7 +225,7 @@ fn after_a_section_panics_its_resource_is_dead_and_later_sections_for_it_fail_th
         },
     };
 
-    let request = core.evaluate(&snapshot, [Root::named("fragile"), Root::named("shape")]);
+    let request = core.evaluate(&snapshot, toy::roots(&["fragile", "shape"]));
     assert_eq!(
         core.turn(),
         Turn::SectionsRunning(2),
@@ -233,16 +233,16 @@ fn after_a_section_panics_its_resource_is_dead_and_later_sections_for_it_fail_th
     );
     core.run();
     let events = core.take_events();
-    assert_section_panicked(toy::pending(toy::answer_at(&events, &request, "fragile")));
+    assert_section_panicked(toy::pending(toy::answer_at(&events, &request, &toy::at("fragile"))));
     assert_eq!(
-        toy::pending(toy::answer_at(&events, &request, "shape")),
+        toy::pending(toy::answer_at(&events, &request, &toy::at("shape"))),
         dead
     );
 
-    let later = core.evaluate(&snapshot, [Root::named("shape")]);
+    let later = core.evaluate(&snapshot, toy::roots(&["shape"]));
     core.run();
     assert_eq!(
-        toy::pending(toy::the_answer(&core.take_events(), &later, "shape")),
+        toy::pending(toy::the_answer(&core.take_events(), &later, &toy::at("shape"))),
         dead
     );
     core.drain();
@@ -257,17 +257,17 @@ fn a_release_for_a_dead_resource_does_not_hang_the_drain() {
         toy::root("fragile", Declaration::new(Fragile::ID)),
         toy::root("shape", toy::shape("side")),
     ]);
-    let made = core.evaluate(&snapshot, [Root::named("shape")]);
+    let made = core.evaluate(&snapshot, toy::roots(&["shape"]));
     core.run();
     let kept = core.take_events();
-    assert_eq!(toy::the_value::<BoxShape>(&kept, &made, "shape").volume, 8);
+    assert_eq!(toy::the_value::<BoxShape>(&kept, &made, &toy::at("shape")).volume, 8);
 
-    let broken = core.evaluate(&snapshot, [Root::named("fragile")]);
+    let broken = core.evaluate(&snapshot, toy::roots(&["fragile"]));
     core.run();
     assert_section_panicked(toy::pending(toy::the_answer(
         &core.take_events(),
         &broken,
-        "fragile",
+        &toy::at("fragile"),
     )));
 
     core.end(made);
@@ -298,10 +298,10 @@ fn a_section_on_a_resource_whose_making_panicked_is_pending_with_that_panic() {
     core.add_resource(|| -> Unmade { panic!("the resource could not be made") });
     let snapshot = core.snapshot([toy::root("doomed", Declaration::new(OnUnmade::ID))]);
 
-    let request = core.evaluate(&snapshot, [Root::named("doomed")]);
+    let request = core.evaluate(&snapshot, toy::roots(&["doomed"]));
     core.run();
 
-    let answer = toy::the_answer(&core.take_events(), &request, "doomed");
+    let answer = toy::the_answer(&core.take_events(), &request, &toy::at("doomed"));
     let dead = OutsideFailure::ResourceDead {
         resource: type_name::<Unmade>(),
         death: ResourceDeath::MakePanicked {
@@ -349,19 +349,19 @@ fn after_a_release_panics_its_resource_is_dead_and_later_sections_name_that_pani
     let inputs = || [toy::root("shard", Declaration::new(MakeShard::ID))];
     let snapshot = core.snapshot(inputs());
 
-    let first = core.evaluate(&snapshot, [Root::named("shard")]);
+    let first = core.evaluate(&snapshot, toy::roots(&["shard"]));
     core.run();
     let events = core.take_events();
-    let made = toy::the_answer(&events, &first, "shard");
+    let made = toy::the_answer(&events, &first, &toy::at("shard"));
     assert!(matches!(made, Answer::Final(Outcome::Value(_))), "{made:?}");
     core.end(first);
     drop((made, events, snapshot));
     core.drain();
 
     let snapshot = core.snapshot(inputs());
-    let second = core.evaluate(&snapshot, [Root::named("shard")]);
+    let second = core.evaluate(&snapshot, toy::roots(&["shard"]));
     core.run();
-    let answer = toy::the_answer(&core.take_events(), &second, "shard");
+    let answer = toy::the_answer(&core.take_events(), &second, &toy::at("shard"));
     let dead = OutsideFailure::ResourceDead {
         resource: type_name::<Brittle>(),
         death: ResourceDeath::ReleasePanicked {

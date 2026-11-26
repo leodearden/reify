@@ -11,9 +11,9 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, ThreadId};
 
 use reify_eval_core::{
-    Answer, Binding, Builder, Core, Cx, Declaration, Erased, Event, Failure, Held, Input, InputKey,
-    Kind, KindId, Outcome, OutsideFailure, Path, Produced, Ref, Release, Request, RequestId, Root,
-    Section, Value,
+    Answer, Binding, Builder, Core, Cx, Declaration, Demand, Erased, Event, Failure, Held, Input,
+    InputKey, Kind, KindId, Outcome, OutsideFailure, Path, Produced, Ref, Release, Request,
+    RequestId, Root, Section, Step, Value,
 };
 
 /// Adds the i64s bound at "0", "1", … until a binding reads absent. A read
@@ -324,6 +324,28 @@ pub fn named<T: Value>(name: &str, value: T) -> (InputKey, Input) {
     (InputKey::named(name), Input::of(value))
 }
 
+/// The path of root `name`.
+pub fn at(name: &str) -> Path {
+    Path::root(Root::named(name))
+}
+
+/// The path `steps` down from root `name`, each step named.
+pub fn below(name: &str, steps: &[&str]) -> Path {
+    steps
+        .iter()
+        .fold(at(name), |path, step| path.child(Step::named(*step)))
+}
+
+/// A demand for `paths`.
+pub fn demand<'a>(paths: impl IntoIterator<Item = &'a Path>) -> Demand {
+    Demand::of(paths.into_iter().cloned())
+}
+
+/// A demand for the roots named `names`.
+pub fn roots(names: &[&str]) -> Demand {
+    Demand::of(names.iter().map(|name| at(name)))
+}
+
 /// Every answer among `events` that went to `request`, in the order given.
 pub fn answers(events: &[Event], request: RequestId) -> Vec<(Path, Answer<Erased>)> {
     events
@@ -356,29 +378,28 @@ pub fn notes(events: &[Event], request: RequestId) -> Vec<(Path, Arc<dyn Any + S
         .collect()
 }
 
-/// The one answer `request` received, which must be for root `name`.
-pub fn the_answer(events: &[Event], request: &Request, name: &str) -> Answer<Erased> {
+/// The one answer `request` received, which must be for `at`.
+pub fn the_answer(events: &[Event], request: &Request, at: &Path) -> Answer<Erased> {
     let mut answers = answers(events, request.id());
     assert_eq!(answers.len(), 1, "one answer to the request: {answers:?}");
     let (path, answer) = answers.remove(0);
-    assert_eq!(path, Path::root(Root::named(name)));
+    assert_eq!(path, *at);
     answer
 }
 
-/// The one answer `request` received for root `name`, among others.
-pub fn answer_at(events: &[Event], request: &Request, name: &str) -> Answer<Erased> {
-    let at = Path::root(Root::named(name));
+/// The one answer `request` received for `at`, among others.
+pub fn answer_at(events: &[Event], request: &Request, at: &Path) -> Answer<Erased> {
     let mut answers: Vec<_> = answers(events, request.id())
         .into_iter()
-        .filter(|(path, _)| *path == at)
+        .filter(|(path, _)| path == at)
         .collect();
-    assert_eq!(answers.len(), 1, "one answer for {name}: {answers:?}");
+    assert_eq!(answers.len(), 1, "one answer for {at:?}: {answers:?}");
     answers.remove(0).1
 }
 
-/// The value of the one answer `request` received, for root `name`.
-pub fn the_value<T: Value + Debug>(events: &[Event], request: &Request, name: &str) -> Arc<T> {
-    match the_answer(events, request, name).downcast::<T>() {
+/// The value of the one answer `request` received, for `at`.
+pub fn the_value<T: Value + Debug>(events: &[Event], request: &Request, at: &Path) -> Arc<T> {
+    match the_answer(events, request, at).downcast::<T>() {
         Answer::Final(Outcome::Value(value)) => value,
         other => panic!("expected a value of {}, got {other:?}", type_name::<T>()),
     }

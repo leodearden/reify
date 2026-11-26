@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use reify_eval_core::{
-    Binding, Cx, Declaration, Held, InputKey, Kind, KindId, Outcome, Produced, Ref, Root, Turn,
+    Binding, Cx, Declaration, Held, InputKey, Kind, KindId, Outcome, Produced, Ref, Turn,
 };
 
 use crate::toy::{self, BoxHandle, BoxShape, Shape, ToyKernel, Watch};
@@ -18,7 +18,7 @@ fn a_request_ended_while_its_body_s_section_runs_leaves_the_kernel_holding_nothi
         toy::named("side", 2_i64),
         toy::root("box", toy::shape("side")),
     ]);
-    let request = core.evaluate(&snapshot, [Root::named("box")]);
+    let request = core.evaluate(&snapshot, toy::roots(&["box"]));
     let ended = request.id();
     assert_eq!(core.turn(), Turn::SectionsRunning(1));
     keeper.entered();
@@ -77,7 +77,7 @@ fn a_body_dropped_because_its_request_ended_reads_cancelled_as_it_is_dropped() {
         toy::named("seen", Arc::clone(&seen)),
         toy::root("witnessed", witnessed),
     ]);
-    let request = core.evaluate(&snapshot, [Root::named("witnessed")]);
+    let request = core.evaluate(&snapshot, toy::roots(&["witnessed"]));
     assert_eq!(core.turn(), Turn::SectionsRunning(1));
     keeper.entered();
 
@@ -115,7 +115,7 @@ fn a_request_ended_while_its_body_holds_what_a_section_made_leaves_the_kernel_ho
     let builder = toy::with_toys().kind::<TwoBoxes>().expect("distinct kinds");
     let (mut core, keeper) = toy::gated(builder, &watch);
     let snapshot = core.snapshot([toy::root("pair", Declaration::new(TwoBoxes::ID))]);
-    let request = core.evaluate(&snapshot, [Root::named("pair")]);
+    let request = core.evaluate(&snapshot, toy::roots(&["pair"]));
     assert_eq!(core.turn(), Turn::SectionsRunning(1));
 
     keeper.let_one_through();
@@ -142,12 +142,12 @@ fn an_answer_the_host_drops_is_released_on_the_kernel_s_thread() {
         toy::named("side", 2_i64),
         toy::root("box", toy::shape("side")),
     ]);
-    let request = core.evaluate(&snapshot, [Root::named("box")]);
+    let request = core.evaluate(&snapshot, toy::roots(&["box"]));
     core.run();
 
     let events = core.take_events();
     assert_eq!(
-        toy::the_value::<BoxShape>(&events, &request, "box").volume,
+        toy::the_value::<BoxShape>(&events, &request, &toy::at("box")).volume,
         8
     );
     assert_eq!(watch.live_boxes(), 1, "the answer holds the box");
@@ -176,9 +176,9 @@ fn ending_a_request_drops_only_the_bodies_no_other_live_request_wants() {
         toy::root("x", toy::shape("one")),
         toy::root("y", toy::shape("two")),
     ]);
-    let first = core.evaluate(&snapshot, [Root::named("x"), Root::named("y")]);
+    let first = core.evaluate(&snapshot, toy::roots(&["x", "y"]));
     let ended = first.id();
-    let second = core.evaluate(&snapshot, [Root::named("y")]);
+    let second = core.evaluate(&snapshot, toy::roots(&["y"]));
     assert_eq!(core.turn(), Turn::SectionsRunning(2));
     keeper.entered();
 
@@ -189,7 +189,7 @@ fn ending_a_request_drops_only_the_bodies_no_other_live_request_wants() {
 
     let events = core.take_events();
     assert!(toy::answers(&events, ended).is_empty());
-    assert_eq!(toy::the_value::<BoxShape>(&events, &second, "y").volume, 8);
+    assert_eq!(toy::the_value::<BoxShape>(&events, &second, &toy::at("y")).volume, 8);
     assert_eq!(
         watch.live_boxes(),
         1,
@@ -212,7 +212,7 @@ fn live_requests_are_served_in_order_of_arrival() {
     ]);
 
     let _requests =
-        ["large", "small", "middle"].map(|name| core.evaluate(&snapshot, [Root::named(name)]));
+        ["large", "small", "middle"].map(|name| core.evaluate(&snapshot, toy::roots(&[name])));
     core.run();
 
     assert_eq!(watch.sides_in_order(), [3, 1, 2]);
