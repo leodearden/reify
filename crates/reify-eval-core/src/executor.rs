@@ -507,9 +507,11 @@ impl Executor {
 
     /// Ends a node with a failure outside the inputs, stored nowhere, and
     /// with it every node that waited on it, in turn: each is dropped and
-    /// pending to every live request that wanted it. Then drops the work no
-    /// live request still waits on.
+    /// pending to every live request that wanted it. Then, if any of them
+    /// awaited something, drops the work no live request still waits on; a
+    /// node that awaits nothing keeps no other work.
     fn end_outside(&mut self, key: TaskKey, failure: OutsideFailure) {
+        let mut released_a_wait = self.waits.awaits(key).next().is_some();
         let mut queue = VecDeque::from([key]);
         while let Some(key) = queue.pop_front() {
             if let Some(task) = self.tasks.remove(&key) {
@@ -520,9 +522,12 @@ impl Executor {
             for request in failed.tell {
                 self.tell(request, key, Answer::Pending(failure.clone()));
             }
+            released_a_wait |= !failed.dropped.is_empty();
             queue.extend(failed.dropped);
         }
-        self.drop_unwanted_work();
+        if released_a_wait {
+            self.drop_unwanted_work();
+        }
     }
 
     fn tell(&mut self, request: RequestId, key: TaskKey, answer: Answer<Erased>) {

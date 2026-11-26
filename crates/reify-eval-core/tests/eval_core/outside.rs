@@ -7,7 +7,7 @@ use reify_eval_core::{
     Snapshot, Turn,
 };
 
-use crate::toy::{self, Cell, Pair};
+use crate::toy::{self, BoxShape, Cell, Pair, Scope, Shape, Watch};
 
 const SPENT: OutsideFailure = OutsideFailure::OutOfMemory { resource: "toy" };
 
@@ -174,4 +174,50 @@ fn a_reader_dropped_because_a_node_it_reads_has_an_unknown_kind_starts_none_of_i
             "nobody wants `fine` once its only reader is dropped: {prefix:?}"
         );
     }
+}
+
+#[test]
+fn work_only_a_reader_dropped_for_a_failure_outside_the_inputs_awaited_is_dropped_with_it() {
+    let watch = Watch::default();
+    let builder = toy::with_toys()
+        .kind::<Scope>()
+        .and_then(|builder| builder.kind::<Spent>())
+        .and_then(|builder| builder.kind::<Pair>())
+        .expect("distinct kinds");
+    let mut core = toy::ungated(builder, &watch);
+    let pair = Declaration::new(Pair::ID)
+        .bind("0", toy::sibling(&["slow"]))
+        .bind("1", toy::sibling(&["bad"]));
+    let mut inputs = vec![toy::named("side", 2_i64)];
+    inputs.extend(toy::root_scope(
+        "R",
+        toy::members([
+            ("bad", Declaration::new(Spent::ID)),
+            ("slow", toy::shape("side")),
+            ("pair", pair),
+        ]),
+    ));
+    let snapshot = core.snapshot(inputs);
+    let [pair, slow] = ["pair", "slow"].map(|name| toy::below("R", &[name]));
+
+    let first = core.evaluate(&snapshot, toy::demand([&pair]));
+    core.drain();
+    let answer = toy::the_answer(&core.take_events(), &first, &pair);
+    assert_eq!(toy::pending(answer), SPENT);
+    assert_eq!(core.counters().body_runs(Shape::ID), 1);
+
+    let second = core.evaluate(&snapshot, toy::demand([&slow]));
+    core.run();
+    let events = core.take_events();
+    assert_eq!(
+        toy::the_value::<BoxShape>(&events, &second, &slow).volume,
+        8
+    );
+    assert_eq!(
+        core.counters().body_runs(Shape::ID),
+        2,
+        "the shape only the dropped pair awaited was dropped unfinished, so it runs again"
+    );
+    core.end(first);
+    core.end(second);
 }
