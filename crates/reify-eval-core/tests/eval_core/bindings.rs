@@ -237,3 +237,22 @@ fn a_place_binding_on_a_root_names_nothing_and_reads_absent() {
         assert_eq!(answer, Answer::Final(Outcome::of(0)), "{binding:?}");
     }
 }
+
+#[test]
+fn a_ref_with_steps_below_a_snapshot_input_names_nothing_and_reads_absent() {
+    for from in [toy::input("five"), Binding::Attached("from".into())] {
+        let mut core = toy::with_cell().build();
+        let inputs = vec![
+            toy::named("zero", 0_i64),
+            toy::named("five", 5_i64),
+            (
+                InputKey::attached(toy::at("lone"), "from"),
+                Input::of(5_i64),
+            ),
+            toy::root("lone", toy::picker(toy::input("zero"), from.clone())),
+        ];
+
+        let answer = i64_at(&mut core, inputs, &toy::at("lone"));
+        assert_eq!(answer, Answer::Final(Outcome::Absent), "{from:?}");
+    }
+}
