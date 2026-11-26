@@ -78,6 +78,13 @@ fn a_result_is_kept_while_a_live_snapshot_s_index_points_at_it() {
 
     drop(snapshot);
     core.drain();
+    assert_eq!(
+        watch.live_boxes(),
+        1,
+        "the store owns its results until they are trimmed (contract 5.5)"
+    );
+
+    drop(core);
     assert_eq!(watch.live_boxes(), 0);
 }
 

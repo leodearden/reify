@@ -170,6 +170,13 @@ fn an_answer_the_host_drops_is_released_on_the_kernel_s_thread() {
     core.end(request);
     drop(snapshot);
     core.drain();
+    assert_eq!(
+        watch.live_boxes(),
+        1,
+        "the store owns its results until they are trimmed (contract 5.5)"
+    );
+
+    drop(core);
     assert_eq!(watch.live_boxes(), 0);
 }
 

@@ -19,6 +19,7 @@ mod roots;
 mod sections;
 mod sequences;
 mod snapshots;
+mod store;
 mod structure;
 mod toy;
 mod waiting;
