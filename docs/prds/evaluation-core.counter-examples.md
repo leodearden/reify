@@ -457,10 +457,10 @@ Kinds of test: a *named regression* is one test with the model as written; a *co
 ### `equal_roots_share_results_but_not_place`
 
 - **Kind of test:** named regression. **Contract:** 7.5, 1 (item 9), 2.1. **Found by:** round 1, geometry and session (G9 (roots named by content conflate two ).
-- **Model:** Two roots L and R of the same toy scope recipe, each with cell w reading a snapshot input attached to its own path (both 10). Evaluate both: R runs no bodies. Change L's attached input to 12: R's answer and counters unchanged.
-- **Sequence:** evaluate roots Left and Right (identical content) → edit (or attach a per-path setting to) Left's w → read Right's body
+- **Model:** Two roots L and R with equal declarations: the same toy scope over the same members input, in which cell w reads a host-named input (10). Evaluate L, then R: R runs no bodies. Replace L's declaration with a scope over a second members input, in which w reads another input (12): R's answer and counters unchanged.
+- **Sequence:** evaluate roots Left and Right (equal declarations) → edit Left's declaration so that its w differs → read Right's body
 - **What went wrong in the draft reviewed:** Every root was named by the content of its declaration, so equal definitions or equal constructions had one path and any place-based job (preview, selection, previous) moved both.
-- **What the contract requires:** Before the edit, Right's evaluation after Left's runs zero bodies. After an input attached to root Left changes, Right's answer is unchanged and its index entries untouched; previous() at Right's paths is Right's own.
+- **What the contract requires:** Before the edit, Right's evaluation after Left's runs zero bodies. After root Left's declaration changes, Right's answer is unchanged and its index entries untouched; previous() at Right's paths is Right's own.
 
 ### `identical_lookups_in_flight_run_the_body_once`
 
