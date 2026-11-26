@@ -2921,6 +2921,44 @@ mod tests {
         assert_eq!(remapped.result_type, Type::Geometry);
     }
 
+    #[test]
+    fn contains_cross_sub_geometry_ref_detects_top_level_ref() {
+        let xref = CompiledExpr::cross_sub_geometry_ref(
+            ValueCellId::new("Parent.sub", "body"),
+            Type::Geometry,
+        );
+        assert!(xref.contains_cross_sub_geometry_ref());
+    }
+
+    #[test]
+    fn contains_cross_sub_geometry_ref_detects_ref_nested_in_larger_node() {
+        let xref = CompiledExpr::cross_sub_geometry_ref(
+            ValueCellId::new("Parent.sub", "body"),
+            Type::Geometry,
+        );
+        let scalar = CompiledExpr::value_ref(ValueCellId::new("E", "width"), Type::Bool);
+        let in_operand = CompiledExpr::binop(BinOp::Gt, xref.clone(), scalar, Type::Bool);
+        assert!(in_operand.contains_cross_sub_geometry_ref());
+
+        let in_call_arg = make_function_call(
+            "translate",
+            vec![CompiledExpr::literal(Value::Int(1), Type::Int), in_operand],
+            Type::Geometry,
+        );
+        assert!(in_call_arg.contains_cross_sub_geometry_ref());
+    }
+
+    #[test]
+    fn contains_cross_sub_geometry_ref_is_false_for_ref_free_tree() {
+        let plain = CompiledExpr::binop(
+            BinOp::Gt,
+            CompiledExpr::value_ref(ValueCellId::new("E", "a"), Type::Bool),
+            CompiledExpr::literal(Value::Int(3), Type::Int),
+            Type::Bool,
+        );
+        assert!(!plain.contains_cross_sub_geometry_ref());
+    }
+
     // ── task-3760 tests ───────────────────────────────────────────────────────
 
     /// `CompiledFunction::no_defaults_for` produces the canonical
