@@ -4,9 +4,7 @@
 
 use std::any::type_name;
 
-use reify_eval_core::{
-    Answer, Binding, Declaration, Erased, Failure, InputKey, Kind, Outcome, Step, Turn,
-};
+use reify_eval_core::{Answer, Declaration, Erased, Failure, Kind, Outcome, Step, Turn};
 
 use crate::toy::{self, Cell, Scope};
 
@@ -274,53 +272,28 @@ fn a_collection_declares_as_many_elements_as_its_count_reads() {
 }
 
 #[test]
-fn an_input_attached_to_a_scope_s_path_adds_a_member() {
-    let x = toy::below("R", &["x"]);
-    for attached in [false, true] {
-        let mut core = toy::with_structure().build();
-        let mut inputs = vec![toy::named("v", 9_i64)];
-        inputs.extend(toy::root_scope("R", toy::members([])));
-        if attached {
-            let extra = toy::members([("x", toy::cell(&["v"]))]);
-            inputs.push((
-                InputKey::attached(toy::at("R"), "extra"),
-                toy::input_of(extra),
-            ));
-        }
-        let snapshot = core.snapshot(inputs);
-
-        let answer = toy::answer_alone(&mut core, &snapshot, &x);
-        if attached {
-            assert_eq!(answer.downcast::<i64>(), Answer::Final(Outcome::of(9)));
-        } else {
-            assert!(is_absent(&answer), "{answer:?}");
-        }
-    }
-}
-
-#[test]
 fn a_ref_computed_from_an_earlier_answer_reads_the_element_it_names() {
     let pick = toy::below("R", &["pick"]);
     for (index, expected) in [(1_i64, Some(10_i64)), (5, None)] {
         let mut core = toy::with_structure().build();
-        let element = toy::cell_over([Binding::Attached("value".into())]);
+        let elements = toy::Members(
+            ["v0", "v1", "v2"]
+                .into_iter()
+                .zip(0_u64..)
+                .map(|(value, i)| (Step::index(i), toy::cell(&[value])))
+                .collect(),
+        );
         let mut inputs = vec![
-            toy::named("three", 3_i64),
             toy::named("index", index),
-            toy::named("element", element),
+            toy::named("v0", 0_i64),
+            toy::named("v1", 10_i64),
+            toy::named("v2", 20_i64),
+            toy::named("elems.members", elements),
         ];
-        for i in 0..3_u64 {
-            let at = toy::below("R", &["elems"]).child(Step::index(i));
-            let value = 10 * i64::try_from(i).expect("small");
-            inputs.push((InputKey::attached(at, "value"), toy::input_of(value)));
-        }
         inputs.extend(toy::root_scope(
             "R",
             toy::members([
-                (
-                    "elems",
-                    toy::collection(toy::input("three"), toy::input("element")),
-                ),
+                ("elems", toy::scope("elems.members")),
                 ("which", toy::cell(&["index"])),
                 (
                     "pick",

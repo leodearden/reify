@@ -76,14 +76,12 @@ fn key_text(key: &Key) -> String {
     match key {
         Key::Root(name) => format!("root({name:?})"),
         Key::Named(name) => format!("named({name:?})"),
-        Key::Attached(path, name) => format!("attached_to({}, {name:?})", path_text(path)),
     }
 }
 
 fn bind_text(bind: &Bind) -> String {
     match bind {
         Bind::Input(name) => format!("input({name:?})"),
-        Bind::Attached(name) => format!("attached({name:?})"),
         Bind::Declarer(place) => format!("declarer({})", steps_text(place)),
         Bind::Passed(r) => format!("passed({:?}, {})", r.binding, steps_text(&r.steps)),
     }
@@ -227,6 +225,7 @@ mod tests {
                     members([
                         (step("m0"), first),
                         (step("m1"), collection(input("n"), input("e"))),
+                        (step("m2"), picker(input("i"), declarer([step("m1")]))),
                         (
                             step("m3"),
                             divided(cell([input("i")]), declarer([step("m0")])),
@@ -235,13 +234,9 @@ mod tests {
                         (step("m5"), measure(declarer([step("m4")]))),
                     ]),
                 ),
-                (
-                    attached_to(path("r", []), "extra"),
-                    members([(step("m2"), picker(input("i"), declarer([step("m1")])))]),
-                ),
                 (named("f"), flag(true)),
                 (named("i"), int(-3)),
-                (named("e"), declaration(cell([attached("x")]))),
+                (named("e"), declaration(cell([input("x")]))),
                 (root("g"), declaration(guard(input("f"), "s"))),
                 (
                     root("odd"),
@@ -283,11 +278,10 @@ fn printed_case() {
             (root("g"), declaration(guard(input("f"), "s"))),
             (root("odd"), declaration(decl(ToyKind::Collection, [("count", input("n"))]))),
             (root("r"), declaration(scope("s"))),
-            (named("e"), declaration(cell([attached("x")]))),
+            (named("e"), declaration(cell([input("x")]))),
             (named("f"), flag(true)),
             (named("i"), int(-3)),
-            (named("s"), members([(step("m0"), cell([input("i"), declarer([step("m1"), index(2)]), passed("count", [index(0)])])), (step("m1"), collection(input("n"), input("e"))), (step("m3"), divided(cell([input("i")]), declarer([step("m0")]))), (step("m4"), shape(input("i"))), (step("m5"), measure(declarer([step("m4")])))])),
-            (attached_to(path("r", []), "extra"), members([(step("m2"), picker(input("i"), declarer([step("m1")])))])),
+            (named("s"), members([(step("m0"), cell([input("i"), declarer([step("m1"), index(2)]), passed("count", [index(0)])])), (step("m1"), collection(input("n"), input("e"))), (step("m2"), picker(input("i"), declarer([step("m1")]))), (step("m3"), divided(cell([input("i")]), declarer([step("m0")]))), (step("m4"), shape(input("i"))), (step("m5"), measure(declarer([step("m4")])))])),
         ]),
         events: vec![
             HostEvent::Edit { from: 0, changes: vec![(named("i"), Some(int(4))), (named("f"), None)] },

@@ -165,25 +165,19 @@ fn an_edit_that_removes_an_input_makes_its_reads_absent() {
 }
 
 #[test]
-fn an_edit_can_attach_an_input_to_a_path() {
+fn an_edit_can_add_an_input_the_snapshot_it_came_from_lacks() {
     let mut core = toy::with_scope().build();
-    let mut inputs = vec![toy::named("v", 9_i64)];
-    inputs.extend(toy::root_scope("R", toy::members([])));
-    let first = core.snapshot(inputs);
-    let extra = toy::members([("x", toy::cell(&["v"]))]);
-    let second = first.edit([(
-        InputKey::attached(toy::at("R"), "extra"),
-        Some(toy::input_of(extra)),
-    )]);
+    let first = core.snapshot(toy::root_scope(
+        "R",
+        toy::members([("x", toy::cell(&["v"]))]),
+    ));
+    let second = first.edit([(InputKey::named("v"), Some(toy::input_of(9_i64)))]);
     let x = toy::below("R", &["x"]);
 
     let answer = toy::answer_alone(&mut core, &second, &x);
     assert_eq!(answer.downcast::<i64>(), Answer::Final(Outcome::of(9)));
     let answer = toy::answer_alone(&mut core, &first, &x);
-    assert!(
-        matches!(answer, Answer::Final(Outcome::Absent)),
-        "{answer:?}"
-    );
+    assert_eq!(answer.downcast::<i64>(), Answer::Final(Outcome::of(0)));
 }
 
 /// The inputs of a root cell "total" over the named input "a" holding `a`.

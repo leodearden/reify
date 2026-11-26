@@ -1,6 +1,9 @@
 //! Seeded random cases: a toy design of cells and, as features allow,
 //! scopes, guards, collections, dividing cells, and shapes and measures on
-//! the toy kernel, and a sequence of host events on it.
+//! the toy kernel, and a sequence of host events on it. With dividing
+//! cells on, every members input the generator makes ends in a pair: a
+//! cell dividing by an input held at zero, and a sibling cell blocked by
+//! it.
 //! Every design is acyclic by construction (the ordinal rule: member m_k
 //! reaches through its declarer only the declarer itself or members m_j
 //! with j < k), and a feature that is off draws nothing from the rng, so
@@ -13,9 +16,9 @@ use reify_eval_core::Step;
 
 use super::case::{Case, HostEvent, Then, edited};
 use super::design::{
-    Decl, Inputs, Key, ModelPath, ToyKind, Val, attached_to, cell, collection, declaration,
-    declarer, divided, flag, guard, index, input, int, measure, members, named, passed, path,
-    picker, root, scope, shape, step,
+    Decl, Inputs, Key, ModelPath, ToyKind, Val, cell, collection, declaration, declarer, divided,
+    flag, guard, index, input, int, measure, members, named, passed, path, picker, root, scope,
+    shape, step,
 };
 use super::rng::XorShift64Star;
 
@@ -88,6 +91,9 @@ pub fn generate(seed: u64, features: Features, events: usize) -> Case {
     Case { inputs, events }
 }
 
+/// The prefix of the name of each blocked pair's input held at zero.
+const BLOCKED_PAIR_ZERO: &str = "z";
+
 /// The deepest a node that declares members may sit: a root is at depth
 /// 0, so the design nests at most three levels of nodes.
 const DEEPEST_DECLARER: usize = 1;
@@ -139,7 +145,6 @@ enum Change {
     Flag,
     Count,
     Member,
-    Extra,
     Remove,
     Root,
 }
@@ -328,10 +333,6 @@ impl Generator {
 
     fn scope_at(&mut self, at: &ModelPath, depth: usize, needed: &mut Needed) -> Decl {
         let level = self.level(at, depth, ToyKind::Scope, needed);
-        if self.rng.chance(1, 4) {
-            let extra = self.extra(&level, &BTreeMap::new(), needed);
-            needed.push((attached_to(at.clone(), "extra"), extra));
-        }
         let decl = scope(&level.input);
         self.levels.push(level);
         decl
@@ -356,10 +357,11 @@ impl Generator {
         decl
     }
 
-    /// A new members input of one to four members, for the node at `at`.
+    /// A new members input for the node at `at`: one to four drawn members,
+    /// then, with divide on, the blocked pair.
     fn level(&mut self, at: &ModelPath, depth: usize, kind: ToyKind, needed: &mut Needed) -> Level {
         let count = 1 + self.rng.below(4);
-        let level = Level {
+        let mut level = Level {
             input: self.fresh("s"),
             at: at.clone(),
             depth,
@@ -373,22 +375,34 @@ impl Generator {
             earlier.push((ordinal, decl.kind));
             held.insert(member_step(ordinal), decl);
         }
+        if self.features.divide {
+            self.blocked_pair(&mut level, &mut held, needed);
+        }
         needed.push((named(&level.input), members(held)));
         level
     }
 
-    /// Extra members for `level`, whose members are `held`: each at an
-    /// ordinal up to one past the last, over a member or beside them.
-    fn extra(&mut self, level: &Level, held: &BTreeMap<Step, Decl>, needed: &mut Needed) -> Val {
-        let present = level.siblings(held);
-        let mut extra = BTreeMap::new();
-        for _ in 0..1 + self.rng.below(2) {
-            let ordinal = self.rng.below(present.len() + 1);
-            let earlier = before(&present, ordinal);
-            let decl = self.member(level, ordinal, &earlier, needed);
-            extra.insert(member_step(ordinal), decl);
+    /// Appends to `held`, the members of `level`, a cell dividing by a new
+    /// input held at zero and a sibling cell whose only term reads it.
+    fn blocked_pair(
+        &mut self,
+        level: &mut Level,
+        held: &mut BTreeMap<Step, Decl>,
+        needed: &mut Needed,
+    ) {
+        let failing = level.ordinals;
+        let blocked = failing + 1;
+        level.ordinals += 2;
+        let zero = self.fresh(BLOCKED_PAIR_ZERO);
+        needed.push((named(&zero), int(0)));
+        held.insert(member_step(failing), divided(cell([]), input(&zero)));
+        held.insert(
+            member_step(blocked),
+            cell([declarer([member_step(failing)])]),
+        );
+        for ordinal in [failing, blocked] {
+            self.paths.push(level.at.child(member_step(ordinal)));
         }
-        Val::Members(extra)
     }
 
     /// A collection counting a new input, or an earlier sibling cell, of
@@ -498,9 +512,6 @@ impl Generator {
         if !self.levels.is_empty() {
             sorts.extend([Change::Member; 3]);
         }
-        if self.levels.iter().any(|level| level.kind == ToyKind::Scope) {
-            sorts.push(Change::Extra);
-        }
         let mut needed = Needed::new();
         let mut changes = match *self.rng.choose(&sorts) {
             Change::Int => {
@@ -516,7 +527,6 @@ impl Generator {
                 vec![(named(&name), Some(int(self.rng.below(5) as i64)))]
             }
             Change::Member => self.member_change(current, &mut needed),
-            Change::Extra => self.extra_change(current, &mut needed),
             Change::Remove => {
                 let present: Vec<_> = current
                     .keys()
@@ -569,29 +579,6 @@ impl Generator {
         self.levels.swap(at, last);
         vec![(key, Some(Val::Members(held)))]
     }
-
-    /// The extra members attached to some scope set anew, or removed.
-    fn extra_change(&mut self, current: &Inputs, needed: &mut Needed) -> Vec<(Key, Option<Val>)> {
-        let scopes: Vec<_> = (0..self.levels.len())
-            .filter(|at| self.levels[*at].kind == ToyKind::Scope)
-            .collect();
-        let at = *self.rng.choose(&scopes);
-        let level = self.levels.swap_remove(at);
-        let key = attached_to(level.at.clone(), "extra");
-        let change = if current.contains_key(&key) && self.rng.chance(1, 3) {
-            None
-        } else {
-            let held = match current.get(&named(&level.input)) {
-                Some(Val::Members(held)) => held.clone(),
-                _ => BTreeMap::new(),
-            };
-            Some(self.extra(&level, &held, needed))
-        };
-        self.levels.push(level);
-        let last = self.levels.len() - 1;
-        self.levels.swap(at, last);
-        vec![(key, change)]
-    }
 }
 
 fn member_step(ordinal: usize) -> Step {
@@ -622,7 +609,9 @@ mod tests {
     use super::super::case::{Case, HostEvent, Then};
     use super::super::design::{Bind, Decl, Key, ToyKind, Val};
     use super::super::reference::first_invalid;
-    use super::{Features, GATE_EVENTS, GATE_SEEDS, gate_case, gate_cases, generate};
+    use super::{
+        BLOCKED_PAIR_ZERO, Features, GATE_EVENTS, GATE_SEEDS, gate_case, gate_cases, generate,
+    };
 
     /// Every input value a case sets, initially or by an edit.
     fn values(case: &Case) -> Vec<(&Key, &Val)> {
@@ -761,7 +750,8 @@ mod tests {
     #[test]
     fn the_gate_cases_reach_every_kind_binding_and_event_shape() {
         let mut kinds = BTreeSet::new();
-        let (mut pickers, mut passed, mut extras, mut divisors) = (0, 0, 0, 0);
+        let (mut pickers, mut passed) = (0, 0);
+        let (mut drawn_divisors, mut blocked_pairs) = (0, 0);
         let (mut edits_off_latest, mut evaluations_off_latest) = (0, 0);
         let (mut zero_left, mut zero_ended) = (0, 0);
         for (_, case) in gate_cases() {
@@ -769,19 +759,21 @@ mod tests {
                 kinds.insert(decl.kind);
                 pickers +=
                     usize::from(decl.kind == ToyKind::Cell && decl.bindings.contains_key("pick"));
-                divisors += usize::from(
-                    decl.kind == ToyKind::Cell && decl.bindings.contains_key("divisor"),
-                );
+                match (decl.kind, decl.bindings.get("divisor")) {
+                    (ToyKind::Cell, Some(Bind::Input(name)))
+                        if name.starts_with(BLOCKED_PAIR_ZERO) =>
+                    {
+                        blocked_pairs += 1
+                    }
+                    (ToyKind::Cell, Some(_)) => drawn_divisors += 1,
+                    _ => {}
+                }
                 passed += decl
                     .bindings
                     .values()
                     .filter(|bind| matches!(bind, Bind::Passed(_)))
                     .count();
             }
-            extras += values(&case)
-                .iter()
-                .filter(|(key, _)| matches!(key, Key::Attached(_, name) if name == "extra"))
-                .count();
             let mut latest = 0;
             for event in &case.events {
                 match event {
@@ -817,9 +809,9 @@ mod tests {
         assert_eq!(kinds, BTreeSet::from(all));
         let counts = [
             ("pickers", pickers),
-            ("divisors", divisors),
+            ("drawn divisors", drawn_divisors),
+            ("blocked pairs", blocked_pairs),
             ("passed bindings", passed),
-            ("attached extras", extras),
             ("edits off the latest snapshot", edits_off_latest),
             (
                 "evaluations off the latest snapshot",

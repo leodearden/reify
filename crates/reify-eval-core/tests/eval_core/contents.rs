@@ -55,10 +55,6 @@ fn a_declaration_s_content_follows_its_kind_and_bindings() {
                 Binding::Passed(Ref::binding("b").step(Step::named("x"))),
             ),
         ),
-        (
-            "an attached input",
-            base().bind("1", Binding::Attached("b".into())),
-        ),
     ];
     for (what, declaration) in changed {
         assert_ne!(declaration.content(), base().content(), "{what}");

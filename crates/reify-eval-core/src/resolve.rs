@@ -22,9 +22,9 @@ pub(crate) enum Target {
 /// is `declaration`. A passed binding moves to the declarer, whose
 /// declaration the index holds (its answer declared the child), carrying
 /// the steps still to take; the walk ends at an input or a place. An unset
-/// binding names nothing; a snapshot input, attached or not, declares no
-/// children, so steps below one name nothing; a binding relative to the
-/// declarer names nothing on a root, which has no declarer.
+/// binding names nothing; a snapshot input declares no children, so steps
+/// below one name nothing; a binding relative to the declarer names nothing
+/// on a root, which has no declarer.
 pub(crate) fn target<'a>(
     reader: PathId,
     declaration: &'a Declaration,
@@ -40,10 +40,7 @@ pub(crate) fn target<'a>(
             (Some(Binding::Input(key)), _) if steps.is_empty() => {
                 return Target::Input(key.clone());
             }
-            (Some(Binding::Attached(attached)), _) if steps.is_empty() => {
-                return Target::Input(InputKey::attached(paths.path(node), attached.clone()));
-            }
-            (None | Some(Binding::Input(_) | Binding::Attached(_)), _)
+            (None | Some(Binding::Input(_)), _)
             | (Some(Binding::Declarer(_) | Binding::Passed(_)), None) => return Target::Absent,
             (Some(Binding::Declarer(place)), Some(declarer)) => {
                 let below = place.iter().chain(&steps);

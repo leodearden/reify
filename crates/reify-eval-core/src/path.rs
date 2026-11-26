@@ -54,10 +54,4 @@ impl Path {
     pub(crate) fn steps(&self) -> &[Step] {
         &self.steps
     }
-
-    pub(crate) fn encode(&self, encoder: &mut Encoder) {
-        encoder.tag("path");
-        self.root.encode(encoder);
-        encoder.sequence(self.steps.iter(), |encoder, step| step.encode(encoder));
-    }
 }

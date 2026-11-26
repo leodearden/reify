@@ -239,25 +239,13 @@ pub fn members<'a>(named: impl IntoIterator<Item = (&'a str, Declaration)>) -> M
     )
 }
 
-/// The members at binding "members", with those at binding "extra" added;
-/// with no extra members, what "members" read, not a copy.
+/// The members at binding "members".
 async fn read_members(cx: &Cx) -> Outcome<Members> {
-    let refs = [Ref::binding("members"), Ref::binding("extra")];
-    let [members, extra] = <[_; 2]>::try_from(cx.read_all::<Members>(&refs).await)
-        .expect("a read gives an outcome per ref");
-    match (members, extra) {
-        (Outcome::Value(members), Outcome::Value(extra)) => {
-            let mut all = (*members).clone();
-            all.0.extend(extra.0.clone());
-            Outcome::of(all)
-        }
-        (Outcome::Value(members), Outcome::Absent) => Outcome::Value(members),
-        (Outcome::Value(_), failed) | (failed, _) => failed,
-    }
+    cx.read::<Members>(&Ref::binding("members")).await
 }
 
-/// Declares the members it reads at binding "members", and those of the
-/// input "extra" attached to its own path; its value is those members.
+/// Declares the members it reads at binding "members", and nothing else
+/// (PRD 5.4); its value is those members.
 pub struct Scope;
 
 impl Kind for Scope {
@@ -278,12 +266,10 @@ impl Kind for Scope {
     }
 }
 
-/// A scope whose members are the host-named input `members`, with any
-/// members in the input "extra" attached to its path.
+/// A scope whose members are the host-named input `members`, and nothing
+/// else.
 pub fn scope(members: &str) -> Declaration {
-    Declaration::new(Scope::ID)
-        .bind("members", input(members))
-        .bind("extra", Binding::Attached("extra".into()))
+    Declaration::new(Scope::ID).bind("members", input(members))
 }
 
 /// Reads the bool at "condition" first: false makes it absent, true makes
