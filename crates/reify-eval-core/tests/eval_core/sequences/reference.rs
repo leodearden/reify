@@ -6,11 +6,13 @@
 //! reports a design no evaluation can answer (a cycle, or a sum past i64)
 //! as invalid rather than as an outcome.
 
-use std::collections::BTreeMap;
+use std::any::type_name;
+use std::collections::{BTreeMap, BTreeSet};
 
-use reify_eval_core::{Failure, Step};
+use reify_eval_core::{Declaration, Failure, Step};
 
-use super::design::{Decl, Inputs, ModelPath, ToyKind};
+use super::design::{Bind, Decl, Inputs, Key, ModelPath, ModelRef, ToyKind, Val};
+use crate::toy;
 
 /// What a path answers: the kind of the node declared there, if any, and
 /// its outcome.
@@ -46,28 +48,317 @@ pub enum Invalid {
     Overflow { path: ModelPath },
 }
 
+/// What a path is before any body runs: a node with its declaration, or
+/// an outcome reached without one.
+#[derive(Clone)]
+enum Declared {
+    Node(Decl),
+    Settled(Expect),
+}
+
+/// A read typed as the Rust type the core reads it as.
+enum Typed<T> {
+    Value(T),
+    Absent,
+    Failure(Failure),
+}
+
 /// The answers of one snapshot.
 pub struct Reference {
     inputs: Inputs,
+    answers: BTreeMap<ModelPath, Result<Expected, Invalid>>,
+    declared: BTreeMap<ModelPath, Declared>,
+    in_progress: BTreeSet<ModelPath>,
 }
 
 impl Reference {
     pub fn new(inputs: Inputs) -> Self {
-        Self { inputs }
+        Self {
+            inputs,
+            answers: BTreeMap::new(),
+            declared: BTreeMap::new(),
+            in_progress: BTreeSet::new(),
+        }
     }
 
     pub fn answer(&mut self, path: &ModelPath) -> Result<Expected, Invalid> {
-        let _ = (&self.inputs, path);
-        Ok(Expected {
-            node: None,
-            outcome: Expect::Absent,
-        })
+        if let Some(known) = self.answers.get(path) {
+            return known.clone();
+        }
+        if !self.in_progress.insert(path.clone()) {
+            return Err(Invalid::Cycle { path: path.clone() });
+        }
+        let answer = self.work_out(path);
+        self.in_progress.remove(path);
+        self.answers.insert(path.clone(), answer.clone());
+        answer
     }
 
     /// How many distinct paths have been answered.
     pub fn evaluations(&self) -> usize {
-        0
+        self.answers.len()
     }
+
+    /// What the node at `reader` reads at `r`; absent where no node is
+    /// declared there.
+    pub fn read_at(&mut self, reader: &ModelPath, r: &ModelRef) -> Result<Expect, Invalid> {
+        match self.declaration(reader)? {
+            Declared::Node(decl) => self.read(reader, &decl, r),
+            Declared::Settled(_) => Ok(Expect::Absent),
+        }
+    }
+
+    fn work_out(&mut self, path: &ModelPath) -> Result<Expected, Invalid> {
+        let decl = match self.declaration(path)? {
+            Declared::Node(decl) => decl,
+            Declared::Settled(outcome) => return Ok(Expected { node: None, outcome }),
+        };
+        let outcome = match decl.kind {
+            ToyKind::Cell => self.cell(path, &decl)?,
+            ToyKind::Scope => self.members(path, &decl)?,
+            ToyKind::Guard => self.guard(path, &decl)?,
+            ToyKind::Collection => self.collection(path, &decl)?,
+        };
+        Ok(Expected {
+            node: Some(decl.kind),
+            outcome,
+        })
+    }
+
+    /// A root from its snapshot input, read as a declaration; any other
+    /// path from what its parent's answer declares at its step.
+    fn declaration(&mut self, path: &ModelPath) -> Result<Declared, Invalid> {
+        if let Some(known) = self.declared.get(path) {
+            return Ok(known.clone());
+        }
+        let declared = match path.parent() {
+            None => match typed_decl(self.input(&Key::Root(path.root.clone()))) {
+                Typed::Value(decl) => Declared::Node(decl),
+                Typed::Absent => Declared::Settled(Expect::Absent),
+                Typed::Failure(failure) => Declared::Settled(Expect::Failure(failure)),
+            },
+            Some((parent, step)) => {
+                let above = self.answer(&parent)?;
+                match (above.node, above.outcome) {
+                    (_, Expect::Failure(failure)) => Declared::Settled(Expect::Failure(failure)),
+                    (Some(kind), Expect::Value(out)) => declares(kind, &out, step)
+                        .map_or(Declared::Settled(Expect::Absent), Declared::Node),
+                    _ => Declared::Settled(Expect::Absent),
+                }
+            }
+        };
+        self.declared.insert(path.clone(), declared.clone());
+        Ok(declared)
+    }
+
+    fn input(&self, key: &Key) -> Expect {
+        self.inputs
+            .get(key)
+            .map_or(Expect::Absent, |value| Expect::Value(out_of(value)))
+    }
+
+    /// What the node at `reader`, declared `decl`, reads at `r`: an unset
+    /// binding names nothing; an input names its value, and nothing with
+    /// steps below it; a binding relative to the declarer names nothing on
+    /// a root; a passed binding is the declarer's own binding, the steps
+    /// still to take carried along (contract 2.1).
+    fn read(&mut self, reader: &ModelPath, decl: &Decl, r: &ModelRef) -> Result<Expect, Invalid> {
+        let (mut node, mut decl) = (reader.clone(), decl.clone());
+        let (mut name, mut steps) = (r.binding.clone(), r.steps.clone());
+        loop {
+            let declarer = node.parent().map(|(declarer, _)| declarer);
+            match (decl.bindings.get(&name).cloned(), declarer) {
+                (Some(Bind::Input(input)), _) if steps.is_empty() => {
+                    return Ok(self.input(&Key::Named(input)));
+                }
+                (Some(Bind::Attached(attached)), _) if steps.is_empty() => {
+                    return Ok(self.input(&Key::Attached(node, attached)));
+                }
+                (Some(Bind::Declarer(place)), Some(declarer)) => {
+                    let target = place
+                        .iter()
+                        .chain(&steps)
+                        .fold(declarer, |at, step| at.child(step.clone()));
+                    return Ok(self.answer(&target)?.outcome);
+                }
+                (Some(Bind::Passed(passed)), Some(declarer)) => {
+                    let Declared::Node(declarer_decl) = self.declaration(&declarer)? else {
+                        unreachable!("a node's declarer is a node: its value declared it")
+                    };
+                    steps = passed.steps.iter().chain(&steps).cloned().collect();
+                    name = passed.binding;
+                    decl = declarer_decl;
+                    node = declarer;
+                }
+                _ => return Ok(Expect::Absent),
+            }
+        }
+    }
+
+    fn read_binding(&mut self, at: &ModelPath, decl: &Decl, name: &str) -> Result<Expect, Invalid> {
+        let r = ModelRef {
+            binding: name.to_owned(),
+            steps: Vec::new(),
+        };
+        self.read(at, decl, &r)
+    }
+
+    /// The i64s at "0", "1", … until one reads absent, a failure ending it;
+    /// then, if "pick" reads i, the i64 at "from"/[i] added, absent at a
+    /// negative i.
+    fn cell(&mut self, at: &ModelPath, decl: &Decl) -> Result<Expect, Invalid> {
+        let mut sum = 0_i64;
+        for term in 0_u32.. {
+            match typed_int(self.read_binding(at, decl, &term.to_string())?) {
+                Typed::Value(value) => sum = add(sum, value, at)?,
+                Typed::Absent => break,
+                Typed::Failure(failure) => return Ok(Expect::Failure(failure)),
+            }
+        }
+        let pick = match typed_int(self.read_binding(at, decl, "pick")?) {
+            Typed::Value(pick) => pick,
+            Typed::Absent => return Ok(Expect::Value(Out::Int(sum))),
+            Typed::Failure(failure) => return Ok(Expect::Failure(failure)),
+        };
+        let Ok(pick) = u64::try_from(pick) else {
+            return Ok(Expect::Absent);
+        };
+        let from = ModelRef {
+            binding: String::from("from"),
+            steps: vec![Step::index(pick)],
+        };
+        Ok(match typed_int(self.read(at, decl, &from)?) {
+            Typed::Value(value) => Expect::Value(Out::Int(add(sum, value, at)?)),
+            Typed::Absent => Expect::Absent,
+            Typed::Failure(failure) => Expect::Failure(failure),
+        })
+    }
+
+    /// The members at "members" with those at "extra" over them.
+    fn members(&mut self, at: &ModelPath, decl: &Decl) -> Result<Expect, Invalid> {
+        let members = typed_members(self.read_binding(at, decl, "members")?);
+        let extra = typed_members(self.read_binding(at, decl, "extra")?);
+        Ok(match (members, extra) {
+            (Typed::Value(mut members), Typed::Value(extra)) => {
+                members.extend(extra);
+                Expect::Value(Out::Members(members))
+            }
+            (Typed::Value(members), Typed::Absent) => Expect::Value(Out::Members(members)),
+            (Typed::Value(_), Typed::Failure(failure)) | (Typed::Failure(failure), _) => {
+                Expect::Failure(failure)
+            }
+            (Typed::Absent, _) => Expect::Absent,
+        })
+    }
+
+    /// Its members while "condition" reads true; absent while it reads
+    /// false or nothing.
+    fn guard(&mut self, at: &ModelPath, decl: &Decl) -> Result<Expect, Invalid> {
+        match typed_bool(self.read_binding(at, decl, "condition")?) {
+            Typed::Value(true) => self.members(at, decl),
+            Typed::Value(false) | Typed::Absent => Ok(Expect::Absent),
+            Typed::Failure(failure) => Ok(Expect::Failure(failure)),
+        }
+    }
+
+    /// The count at "count", none below zero, and the declaration at
+    /// "element".
+    fn collection(&mut self, at: &ModelPath, decl: &Decl) -> Result<Expect, Invalid> {
+        let count = match typed_int(self.read_binding(at, decl, "count")?) {
+            Typed::Value(count) => u64::try_from(count).unwrap_or(0),
+            Typed::Absent => return Ok(Expect::Absent),
+            Typed::Failure(failure) => return Ok(Expect::Failure(failure)),
+        };
+        Ok(match typed_decl(self.read_binding(at, decl, "element")?) {
+            Typed::Value(element) => Expect::Value(Out::Elements { count, element }),
+            Typed::Absent => Expect::Absent,
+            Typed::Failure(failure) => Expect::Failure(failure),
+        })
+    }
+}
+
+/// The declaration a node of `kind` whose value is `out` gives the child
+/// at `step`.
+fn declares(kind: ToyKind, out: &Out, step: &Step) -> Option<Decl> {
+    match (kind, out) {
+        (ToyKind::Scope | ToyKind::Guard, Out::Members(members)) => members.get(step).cloned(),
+        (ToyKind::Collection, Out::Elements { count, element }) => match step {
+            Step::Index(index) if index < count => Some(element.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn add(sum: i64, value: i64, at: &ModelPath) -> Result<i64, Invalid> {
+    sum.checked_add(value)
+        .ok_or_else(|| Invalid::Overflow { path: at.clone() })
+}
+
+fn out_of(value: &Val) -> Out {
+    match value {
+        Val::Int(value) => Out::Int(*value),
+        Val::Bool(value) => Out::Bool(*value),
+        Val::Members(members) => Out::Members(members.clone()),
+        Val::Decl(decl) => Out::Decl(decl.clone()),
+    }
+}
+
+impl Out {
+    /// The name of the Rust type the core holds this value as.
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            Out::Int(_) => type_name::<i64>(),
+            Out::Bool(_) => type_name::<bool>(),
+            Out::Members(_) => type_name::<toy::Members>(),
+            Out::Elements { .. } => type_name::<toy::Elements>(),
+            Out::Decl(_) => type_name::<Declaration>(),
+        }
+    }
+}
+
+/// `read` typed as `expected`: `take` gives the value of that type, and a
+/// value of another type is a failure naming both.
+fn typed<T>(read: Expect, expected: &'static str, take: impl FnOnce(Out) -> Option<T>) -> Typed<T> {
+    match read {
+        Expect::Value(out) => {
+            let found = out.type_name();
+            take(out).map_or(
+                Typed::Failure(Failure::WrongType { expected, found }),
+                Typed::Value,
+            )
+        }
+        Expect::Absent => Typed::Absent,
+        Expect::Failure(failure) => Typed::Failure(failure),
+    }
+}
+
+fn typed_int(read: Expect) -> Typed<i64> {
+    typed(read, type_name::<i64>(), |out| match out {
+        Out::Int(value) => Some(value),
+        _ => None,
+    })
+}
+
+fn typed_bool(read: Expect) -> Typed<bool> {
+    typed(read, type_name::<bool>(), |out| match out {
+        Out::Bool(value) => Some(value),
+        _ => None,
+    })
+}
+
+fn typed_members(read: Expect) -> Typed<BTreeMap<Step, Decl>> {
+    typed(read, type_name::<toy::Members>(), |out| match out {
+        Out::Members(members) => Some(members),
+        _ => None,
+    })
+}
+
+fn typed_decl(read: Expect) -> Typed<Decl> {
+    typed(read, type_name::<Declaration>(), |out| match out {
+        Out::Decl(decl) => Some(decl),
+        _ => None,
+    })
 }
 
 mod tests {
