@@ -80,6 +80,13 @@ class SelectiveInfraMemberExitRecordTests(unittest.TestCase):
                 self.assert_rc(proc, 3)
                 self.assertEqual(self.records(proc), [RECORD_PREFIX + "rc=3"])
 
+    def test_status_above_128_that_names_no_signal_gets_no_suffix(self):
+        for opts in SHELL_OPTION_SETS:
+            with self.subTest(opts=opts):
+                proc = self.run_leaf(opts, EXIT_PROBE_MODE="status", EXIT_PROBE_STATUS="200")
+                self.assert_rc(proc, 200)
+                self.assertEqual(self.records(proc), [RECORD_PREFIX + "rc=200"])
+
     def test_signal_death_is_decoded(self):
         for opts in SHELL_OPTION_SETS:
             with self.subTest(opts=opts):

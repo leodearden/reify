@@ -4612,7 +4612,7 @@ build_plan() {
         # so a silent abort is attributable; its write is `|| true`, so it can
         # never replace the member's status in an errexit context (#10333,
         # tests/infra/test_verify_selective_infra_member_exit_record.py).
-        local _member_exit_arm='|| { _vrc=$?; echo "verify.sh: infra member $_vt exited rc=$_vrc$(if [ "$_vrc" -gt 128 ]; then printf " (signal %s)" "$(kill -l "$_vrc" 2>/dev/null)"; fi)" >&2 || true; exit "$_vrc"; }'
+        local _member_exit_arm='|| { _vrc=$?; echo "verify.sh: infra member $_vt exited rc=$_vrc$(if [ "$_vrc" -gt 128 ] && _vsig=$(kill -l "$_vrc" 2>/dev/null); then printf " (signal %s)" "$_vsig"; fi)" >&2 || true; exit "$_vrc"; }'
         # Each member runs with REIFY_VERIFY_EVENT_LOG removed, so its own
         # slot_acquire deadline or nested run_all.sh never writes into this
         # verify's channel (run-all-runner-infra-harness.md §4 C4, #8919). The

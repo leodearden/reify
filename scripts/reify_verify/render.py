@@ -67,7 +67,7 @@ LD_SCRUB = 'export LD_LIBRARY_PATH="${REIFY_AMBIENT_LD_LIBRARY_PATH-}"; '
 KILL_AFTER = "timeout --kill-after=60"
 INFRA_MEMBER_EXIT_ARM = (
     '|| { _vrc=$?; echo "verify.sh: infra member $_vt exited rc=$_vrc'
-    '$(if [ "$_vrc" -gt 128 ]; then printf " (signal %s)" "$(kill -l "$_vrc" 2>/dev/null)"; fi)"'
+    '$(if [ "$_vrc" -gt 128 ] && _vsig=$(kill -l "$_vrc" 2>/dev/null); then printf " (signal %s)" "$_vsig"; fi)"'
     ' >&2 || true; exit "$_vrc"; }'
 )
 NODE_BG_PID = "_VERIFY_NODE_BG_PID"
