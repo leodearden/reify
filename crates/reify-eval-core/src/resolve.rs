@@ -19,9 +19,10 @@ pub(crate) enum Target {
 }
 
 /// The place `r` names when read by the node at `reader` whose declaration
-/// is `declaration`. An unset binding names nothing; a snapshot input
-/// declares no children, so steps below one name nothing; a place relative
-/// to the declarer names nothing on a root, which has no declarer.
+/// is `declaration`. An unset binding names nothing; a snapshot input,
+/// attached or not, declares no children, so steps below one name nothing;
+/// a place relative to the declarer names nothing on a root, which has no
+/// declarer.
 pub(crate) fn target(
     reader: PathId,
     declaration: &Declaration,
@@ -31,7 +32,10 @@ pub(crate) fn target(
     match declaration.binding(r.binding_name()) {
         None => Target::Absent,
         Some(Binding::Input(key)) if r.steps().is_empty() => Target::Input(key.clone()),
-        Some(Binding::Input(_)) => Target::Absent,
+        Some(Binding::Attached(name)) if r.steps().is_empty() => {
+            Target::Input(InputKey::attached(paths.path(reader), name.clone()))
+        }
+        Some(Binding::Input(_) | Binding::Attached(_)) => Target::Absent,
         Some(Binding::Declarer(steps)) => match paths.parent(reader) {
             None => Target::Absent,
             Some((declarer, _)) => Target::Node(

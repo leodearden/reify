@@ -19,6 +19,9 @@ pub struct Declaration {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Binding {
     Input(InputKey),
+    /// The snapshot input of that name attached to the bound node's own
+    /// path.
+    Attached(Arc<str>),
     /// The bound node's declarer's own place, then `steps` down.
     Declarer(Vec<Step>),
 }
