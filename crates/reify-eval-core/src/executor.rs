@@ -395,6 +395,20 @@ impl Executor {
         self.queue(key);
     }
 
+    /// Drops the lookup at `key`, with the read it waits on and its waits,
+    /// and starts the body of its node from the beginning; whatever waits on
+    /// the node waits on that body.
+    fn miss(&mut self, key: NodeKey) {
+        self.readings.remove(&key);
+        self.waits.forget(key);
+        let declaration = self
+            .lookups
+            .remove(&key)
+            .expect("a lookup that misses is in progress")
+            .miss();
+        self.start(key, declaration);
+    }
+
     /// Starts the body of the node at `key`, whose lookup found nothing.
     fn start(&mut self, key: NodeKey, declaration: Arc<Declaration>) {
         let kind_id = declaration.kind();
@@ -440,28 +454,32 @@ impl Executor {
         }
     }
 
-    /// At rest, answers "cycle" at every node of each ring of waits a live
-    /// request needs that holds no lookup (contract 7.7), then drops the
-    /// work no live request still waits on; whether it answered any. Every
-    /// member leaves the nodes in progress before any is answered, so no
-    /// member's answer resumes another member or works out a path on it.
+    /// At rest, breaks every ring of waits a live request needs (contract
+    /// 7.7): each lookup on a ring that holds one misses and its body
+    /// starts; each node of a ring that holds none answers "cycle". Then
+    /// drops the work no live request still waits on; whether it broke any.
+    /// Every node that answers leaves the nodes in progress before any
+    /// answers, so no answer on a ring resumes a node on it or works out a
+    /// path on it.
     fn break_rings(&mut self) -> bool {
-        let answered: Vec<_> = cycle::rings(&self.waits, self.requests.wanted())
-            .into_iter()
-            .filter(|ring| !ring.iter().any(|key| self.lookups.contains_key(key)))
-            .flatten()
-            .collect();
-        if answered.is_empty() {
+        let lookups = &self.lookups;
+        let broken = cycle::broken(&self.waits, self.requests.wanted(), |key| {
+            lookups.contains_key(key)
+        });
+        if broken.is_empty() {
             return false;
         }
-        for key in &answered {
+        for key in broken.missed {
+            self.miss(key);
+        }
+        for key in &broken.answered {
             if let Some(task) = self.remove_reader(*key) {
                 task.discard();
             }
             self.resolving.remove(key);
             self.waits.forget(*key);
         }
-        for key in answered {
+        for key in broken.answered {
             self.work(Work::Answered(key, cycle::entry()));
         }
         self.drop_unwanted_work();
@@ -571,11 +589,7 @@ impl Executor {
                     self.lookups.remove(&key);
                     return self.work(Work::Answered(key, entry));
                 }
-                None => {
-                    let declaration = Arc::clone(lookup.declaration());
-                    self.lookups.remove(&key);
-                    return self.start(key, declaration);
-                }
+                None => return self.miss(key),
             };
             let reading =
                 serve::read::serve(key.path, lookup.declaration(), refs, &mut self.paths, index);

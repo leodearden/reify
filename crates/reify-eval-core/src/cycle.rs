@@ -1,7 +1,7 @@
-//! Rings of waits (contract 7.7): the nodes in progress each of which
-//! needs, through what it awaits, its own answer. Looked for only at rest,
-//! when every node in progress awaits another, so the rings do not depend
-//! on the order of work.
+//! Rings of waits, and how they are broken (contract 7.7). A ring is a set
+//! of nodes in progress each of which needs, through what it awaits, its
+//! own answer. Rings are looked for only at rest, when every node in
+//! progress awaits another, so they do not depend on the order of work.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -11,14 +11,53 @@ use crate::index::{Entry, NodeKey};
 use crate::outcome::Outcome;
 use crate::waits::Waits;
 
+/// How the rings at rest are broken: the lookups that miss, and the nodes
+/// that answer "cycle".
+pub(crate) struct Broken {
+    /// Every lookup of each ring that holds one. Each misses and its body
+    /// runs; nothing else on its ring is answered yet.
+    pub missed: Vec<NodeKey>,
+    /// Every node of each ring that holds no lookup: a ring of running
+    /// bodies and of paths waiting on their parent.
+    pub answered: Vec<NodeKey>,
+}
+
+impl Broken {
+    pub fn is_empty(&self) -> bool {
+        self.missed.is_empty() && self.answered.is_empty()
+    }
+}
+
+/// How the rings reachable from `from` are broken, `is_lookup` telling
+/// which nodes are lookups. A chain of waits through a lookup is not a
+/// cycle: the lookup misses. A ring holding one is answered in no part,
+/// since the bodies of its lookups may join it, as a fresh evaluation,
+/// which has no lookup, finds the whole set as one ring.
+pub(crate) fn broken(
+    waits: &Waits,
+    from: impl IntoIterator<Item = NodeKey>,
+    is_lookup: impl Fn(&NodeKey) -> bool,
+) -> Broken {
+    let mut broken = Broken {
+        missed: Vec::new(),
+        answered: Vec::new(),
+    };
+    for ring in rings(waits, from) {
+        let lookups: Vec<_> = ring.iter().copied().filter(&is_lookup).collect();
+        if lookups.is_empty() {
+            broken.answered.extend(ring);
+        } else {
+            broken.missed.extend(lookups);
+        }
+    }
+    broken
+}
+
 /// Every ring of the wait relation reachable from `from`: a strongly
 /// connected set of nodes with a wait inside it, a node awaiting itself
 /// being a ring of one. Found with an explicit stack, never by recursion,
 /// and returned in key order.
-pub(crate) fn rings(
-    waits: &Waits,
-    from: impl IntoIterator<Item = NodeKey>,
-) -> Vec<BTreeSet<NodeKey>> {
+fn rings(waits: &Waits, from: impl IntoIterator<Item = NodeKey>) -> Vec<BTreeSet<NodeKey>> {
     let mut walk = Walk::default();
     for start in from {
         if !walk.order.contains_key(&start) {

@@ -29,6 +29,12 @@ impl Lookup {
         &self.declaration
     }
 
+    /// Gives up the lookup, which found nothing to apply, leaving the
+    /// declaration for the body that runs in its place.
+    pub fn miss(self) -> Arc<Declaration> {
+        self.declaration
+    }
+
     pub fn key(&self) -> Key {
         self.key
     }

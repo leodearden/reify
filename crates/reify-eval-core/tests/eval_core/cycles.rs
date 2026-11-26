@@ -17,6 +17,13 @@ fn cycle() -> Answer<i64> {
     Answer::Final(Outcome::Failure(Failure::Cycle))
 }
 
+/// The answer of a cell whose first term is a node on a ring.
+fn blocked_by_its_first_term() -> Answer<i64> {
+    Answer::Final(Outcome::Failure(Failure::BlockedBy {
+        at: Ref::binding("0"),
+    }))
+}
+
 /// The answers at `paths`, in order, to a fresh request for them on
 /// `snapshot`, which the core runs until no section is running.
 fn run_for(core: &mut Core, snapshot: &Snapshot, paths: &[&Path]) -> Vec<Answer<i64>> {
@@ -297,10 +304,10 @@ fn a_reader_outside_a_ring_is_blocked_by_it() {
     let mut core = toy::with_scope().build();
     let snapshot = core.snapshot(ring_inputs([("c", toy::cell_over([toy::sibling(&["a"])]))]));
 
-    let blocked = Answer::Final(Outcome::Failure(Failure::BlockedBy {
-        at: Ref::binding("0"),
-    }));
-    assert_eq!(run_for(&mut core, &snapshot, &[&r("c")]), [blocked]);
+    assert_eq!(
+        run_for(&mut core, &snapshot, &[&r("c")]),
+        [blocked_by_its_first_term()]
+    );
     assert_eq!(
         run_for(&mut core, &snapshot, &[&r("a"), &r("b")]),
         [cycle(), cycle()]
@@ -373,15 +380,12 @@ fn a_ring_does_not_stop_turn_wait_or_run_from_returning() {
 fn nothing_is_stored_for_a_ring_and_its_reader_is_found_in_the_store() {
     let c = || ("c", toy::cell_over([toy::sibling(&["a"])]));
     let (a, b) = (r("a"), r("b"));
-    let blocked = Answer::Final(Outcome::Failure(Failure::BlockedBy {
-        at: Ref::binding("0"),
-    }));
 
     let mut first = toy::with_scope().build();
     let snapshot = first.snapshot(ring_inputs([c()]));
     assert_eq!(
         run_for(&mut first, &snapshot, &[&r("c")]),
-        [blocked.clone()]
+        [blocked_by_its_first_term()]
     );
     assert_eq!(
         run_for(&mut first, &snapshot, &[&a, &b]),
@@ -392,7 +396,7 @@ fn nothing_is_stored_for_a_ring_and_its_reader_is_found_in_the_store() {
     let snapshot = core.snapshot(ring_inputs([c()]));
     assert_eq!(
         run_for(&mut core, &snapshot, &[&r("c"), &a, &b]),
-        [blocked, cycle(), cycle()]
+        [blocked_by_its_first_term(), cycle(), cycle()]
     );
     assert_eq!(
         core.counters().body_runs(Cell::ID),
