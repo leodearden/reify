@@ -1,14 +1,15 @@
-//! What a body knows of its declaration: only what its reads return
-//! (contract 2.1, 2.5).
+//! What a body knows of its declaration: only what its reads return; and
+//! what a binding passed along from a declarer names (contract 2.1, 2.5).
 
 use std::fmt::Debug;
 use std::sync::Arc;
 
 use reify_eval_core::{
-    Answer, Core, Cx, Declaration, Event, Kind, KindId, Outcome, Path, Produced, Ref, Turn, Value,
+    Answer, Binding, Core, Cx, Declaration, Event, Input, InputKey, Kind, KindId, Outcome, Path,
+    Produced, Ref, Step, Turn, Value,
 };
 
-use crate::toy;
+use crate::toy::{self, Cell};
 
 /// The i64s at "arg0", "arg1", … until one reads absent.
 struct List;
@@ -119,5 +120,120 @@ fn a_body_learns_its_declaration_only_through_recorded_reads() {
             2,
             "order {order:?}"
         );
+    }
+}
+
+/// A binding to what the declarer's binding `name` names.
+fn passed(name: &str) -> Binding {
+    Binding::Passed(Ref::binding(name))
+}
+
+/// The inputs of root scope R with members `x`, a cell over the input
+/// five, and `holder`, a scope whose binding "src" is `src` and whose
+/// members are `members`.
+fn with_holder(src: Binding, members: toy::Members) -> Vec<(InputKey, Input)> {
+    let mut inputs = vec![
+        toy::named("five", 5_i64),
+        toy::named("holder.members", members),
+    ];
+    inputs.extend(toy::root_scope(
+        "R",
+        toy::members([
+            ("x", toy::cell(&["five"])),
+            ("holder", toy::scope("holder.members").bind("src", src)),
+        ]),
+    ));
+    inputs
+}
+
+/// The answer at `at` to a fresh request for it alone on a snapshot of
+/// `inputs`, on `core`.
+fn i64_at(core: &mut Core, inputs: Vec<(InputKey, Input)>, at: &Path) -> Answer<i64> {
+    let snapshot = core.snapshot(inputs);
+    let request = core.evaluate(&snapshot, toy::demand([at]));
+    assert_eq!(core.turn(), Turn::Idle);
+    toy::the_answer(&core.take_events(), &request, at).downcast()
+}
+
+#[test]
+fn a_child_bound_to_its_declarer_s_binding_reads_the_place_that_binding_names_and_the_declarer_reads_nothing()
+ {
+    let mut core = toy::with_scope().build();
+    let members = toy::members([("a", toy::cell_over([passed("src")]))]);
+    let snapshot = core.snapshot(with_holder(toy::sibling(&["x"]), members));
+    let (holder, a) = (
+        toy::below("R", &["holder"]),
+        toy::below("R", &["holder", "a"]),
+    );
+
+    let first = core.evaluate(&snapshot, toy::demand([&holder]));
+    assert_eq!(core.turn(), Turn::Idle);
+    let answer = toy::the_answer(&core.take_events(), &first, &holder);
+    assert!(
+        matches!(answer, Answer::Final(Outcome::Value(_))),
+        "{answer:?}"
+    );
+    assert_eq!(
+        core.counters().body_runs(Cell::ID),
+        0,
+        "the place the holder binds is not read by binding it"
+    );
+
+    let second = core.evaluate(&snapshot, toy::demand([&a]));
+    assert_eq!(core.turn(), Turn::Idle);
+    let answer = toy::the_answer(&core.take_events(), &second, &a);
+    assert_eq!(answer.downcast::<i64>(), Answer::Final(Outcome::of(5)));
+    assert_eq!(core.counters().body_runs(Cell::ID), 2);
+}
+
+#[test]
+fn a_binding_passed_along_two_declarers_reads_the_first_place() {
+    let mut core = toy::with_scope().build();
+    let holder2 = toy::scope("holder2.members").bind("src2", passed("src"));
+    let mut inputs = with_holder(toy::sibling(&["x"]), toy::members([("holder2", holder2)]));
+    inputs.push(toy::named(
+        "holder2.members",
+        toy::members([("b", toy::cell_over([passed("src2")]))]),
+    ));
+    let b = toy::below("R", &["holder", "holder2", "b"]);
+
+    assert_eq!(i64_at(&mut core, inputs, &b), Answer::Final(Outcome::of(5)));
+}
+
+#[test]
+fn a_passed_binding_with_steps_descends_from_the_place_it_names() {
+    let mut core = toy::with_scope().build();
+    let down = Binding::Passed(Ref::binding("src").step(Step::named("x")));
+    let members = toy::members([("a", toy::cell_over([down]))]);
+    let inputs = with_holder(toy::sibling(&[]), members);
+    let a = toy::below("R", &["holder", "a"]);
+
+    assert_eq!(i64_at(&mut core, inputs, &a), Answer::Final(Outcome::of(5)));
+}
+
+#[test]
+fn a_passed_binding_that_names_the_declarer_s_input_reads_that_input() {
+    let mut core = toy::with_scope().build();
+    let members = toy::members([("a", toy::cell_over([passed("src")]))]);
+    let inputs = with_holder(toy::input("five"), members);
+    let a = toy::below("R", &["holder", "a"]);
+
+    assert_eq!(i64_at(&mut core, inputs, &a), Answer::Final(Outcome::of(5)));
+}
+
+#[test]
+fn a_place_binding_on_a_root_names_nothing_and_reads_absent() {
+    for binding in [toy::sibling(&["x"]), passed("src")] {
+        let mut core = toy::with_scope().build();
+        let inputs = vec![
+            toy::named("five", 5_i64),
+            toy::root(
+                "lone",
+                toy::cell_over([binding.clone()]).bind("src", toy::input("five")),
+            ),
+        ];
+
+        let answer = i64_at(&mut core, inputs, &toy::at("lone"));
+        assert_eq!(answer, Answer::Final(Outcome::of(0)), "{binding:?}");
     }
 }
