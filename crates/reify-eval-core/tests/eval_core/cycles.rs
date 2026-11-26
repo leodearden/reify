@@ -368,3 +368,87 @@ fn a_ring_does_not_stop_turn_wait_or_run_from_returning() {
         cycle()
     );
 }
+
+#[test]
+fn nothing_is_stored_for_a_ring_and_its_reader_is_found_in_the_store() {
+    let c = || ("c", toy::cell_over([toy::sibling(&["a"])]));
+    let (a, b) = (r("a"), r("b"));
+    let blocked = Answer::Final(Outcome::Failure(Failure::BlockedBy {
+        at: Ref::binding("0"),
+    }));
+
+    let mut first = toy::with_scope().build();
+    let snapshot = first.snapshot(ring_inputs([c()]));
+    assert_eq!(
+        run_for(&mut first, &snapshot, &[&r("c")]),
+        [blocked.clone()]
+    );
+    assert_eq!(
+        run_for(&mut first, &snapshot, &[&a, &b]),
+        [cycle(), cycle()]
+    );
+
+    let mut core = toy::with_scope().on_store(first.into_store()).build();
+    let snapshot = core.snapshot(ring_inputs([c()]));
+    assert_eq!(
+        run_for(&mut core, &snapshot, &[&r("c"), &a, &b]),
+        [blocked, cycle(), cycle()]
+    );
+    assert_eq!(
+        core.counters().body_runs(Cell::ID),
+        2,
+        "a and b run again; c's result is found"
+    );
+}
+
+/// R's members `a`, a pair over its siblings `b` and `l`; `b`, a pair over
+/// `a` and the input x; and `l`, a cell over `a`.
+fn pairs_and_l() -> Members {
+    let pair = |first: Binding, second: Binding| {
+        Declaration::new(toy::Pair::ID)
+            .bind("0", first)
+            .bind("1", second)
+    };
+    toy::members([
+        ("a", pair(toy::sibling(&["b"]), toy::sibling(&["l"]))),
+        ("b", pair(toy::sibling(&["a"]), toy::input("x"))),
+        ("l", toy::cell_over([toy::sibling(&["a"])])),
+    ])
+}
+
+fn with_pair() -> Core {
+    toy::with_scope()
+        .kind::<toy::Pair>()
+        .expect("distinct kinds")
+        .build()
+}
+
+#[test]
+fn a_ring_found_through_a_waiting_lookup_answers_cycle_on_every_node_of_it() {
+    let x = || [toy::named("x", 5_i64)];
+    let (a, b, l) = (r("a"), r("b"), r("l"));
+    let s0_members = toy::members([
+        ("a", toy::cell(&["x"])),
+        ("l", toy::cell_over([toy::sibling(&["a"])])),
+    ]);
+
+    let mut core = with_pair();
+    let s0 = core.snapshot(scope_r(s0_members, x()));
+    assert_eq!(
+        run_for(&mut core, &s0, &[&l]),
+        [Answer::Final(Outcome::of(5))]
+    );
+    let s1 = s0.edit([(
+        InputKey::named("R.members"),
+        Some(toy::input_of(pairs_and_l())),
+    )]);
+    let mut answers = run_for(&mut core, &s1, &[&l]);
+    answers.extend(run_for(&mut core, &s1, &[&a, &b]));
+    assert_eq!(answers, [cycle(), cycle(), cycle()]);
+
+    let mut fresh = with_pair();
+    let s1 = fresh.snapshot(scope_r(pairs_and_l(), x()));
+    let mut answers = run_for(&mut fresh, &s1, &[&l]);
+    answers.extend(run_for(&mut fresh, &s1, &[&a, &b]));
+    assert_eq!(answers, [cycle(), cycle(), cycle()]);
+}
