@@ -12,19 +12,19 @@
 //!   - `std_process_dfm_build_volume_constraints_declared` — the two FitsBuildVolume
 //!     constraint entries are present (as Indeterminate) in the no-kernel result.
 //!
-//! **(b) OCCT-GATED partial proof (degraded contract)** —
-//!   `std_process_dfm_build_volume_flip_pinned`: the constraint Satisfied/Violated flip
-//!   WORKS under the default UnifiedDag scheduler (Stage-4 cutover #4362 ι), and at
-//!   least one diagnostic IS emitted. The DFM-specific codes are asserted by (c),
-//!   routed since #4734. Self-skips without OCCT.
-//!
-//! **(c) FULL GATE (DFM diagnostic routing fixed, task #4734)** —
-//!   `std_process_dfm_build_volume_flip_and_severity_diagnostics`: asserts that
+//! **(b) FULL GATE (DFM diagnostic routing fixed, task #4734)** —
+//!   `std_process_dfm_build_volume_flip_and_severity_diagnostics`: asserts the
+//!   FitsBuildVolume flip (`FittingPart` Satisfied, `OversizedPart` Violated), that
 //!   `W/E/I_DFM_BUILD_VOLUME` diagnostics ARE emitted under the default UnifiedDag
 //!   scheduler, that NO generic `ConstraintViolated` referencing `FitsBuildVolume` is
 //!   emitted (replaced by the W_DFM Warning), and that NO spurious
 //!   `TopologyAttributeLocalIndexReassigned` warning is emitted on a plain-box build
-//!   (regression from the unified-DAG edge-centroid path, fixed in #4734).
+//!   (regression from the unified-DAG edge-centroid path, fixed in #4734). Self-skips
+//!   without OCCT.
+//!
+//! **(c) FOCUSED ROUTING** — `std_process_dfm_build_volume_constraint_routing_w_dfm`:
+//!   isolates the `W_DFM_BUILD_VOLUME` routing of `OversizedPart`'s constraint
+//!   predicate. Self-skips without OCCT.
 //!
 //! The example is also covered for compile-cleanliness by
 //! `crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs` (directory walk).
@@ -276,81 +276,6 @@ fn std_process_dfm_build_volume_constraints_declared() {
     );
 }
 
-/// OCCT-GATED partial proof: constraint flip + at least one diagnostic emitted
-/// under the default `UnifiedDag` scheduler (Stage-4 cutover, task ι #4362).
-///
-/// Pins the contract that the Stage-4 cutover delivers:
-/// - `FittingPart.FitsBuildVolume` → `Satisfaction::Satisfied`
-/// - `OversizedPart.FitsBuildVolume` → `Satisfaction::Violated`
-/// - At least one diagnostic is emitted.
-///
-/// Self-skips without OCCT. The full severity-bridge test (with DFM-code assertions
-/// and no-spurious-topology assertions, fixed by #4734) is
-/// `std_process_dfm_build_volume_flip_and_severity_diagnostics`.
-#[test]
-fn std_process_dfm_build_volume_flip_pinned() {
-    let source = read_dfm_example();
-    let compiled = parse_and_compile_with_stdlib(&source);
-    assert!(
-        errors_only(&compiled).is_empty(),
-        "compile check failed:\n{:#?}",
-        errors_only(&compiled)
-    );
-
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping OCCT-gated build-volume flip assertions: OCCT not available");
-        return;
-    }
-
-    let checker = SimpleConstraintChecker;
-    let kernel: Box<dyn reify_ir::GeometryKernel> =
-        Box::new(reify_kernel_occt::OcctKernelHandle::spawn());
-    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(kernel));
-    let result = engine.build(&compiled, ExportFormat::Step);
-
-    // Constraint flip — the primary deliverable of the Stage-4 default cutover.
-    let fitting = find_fvb_entry(&result.constraint_results, "FittingPart", "FitsBuildVolume")
-        .unwrap_or_else(|| {
-            panic!(
-                "FittingPart FitsBuildVolume absent; got:\n{:#?}",
-                result.constraint_results
-            )
-        });
-    assert_eq!(
-        fitting.satisfaction,
-        Satisfaction::Satisfied,
-        "FittingPart (100×100×150 mm) should fit the 220×220×250 mm envelope; got {:?}",
-        fitting.satisfaction
-    );
-
-    let oversized =
-        find_fvb_entry(&result.constraint_results, "OversizedPart", "FitsBuildVolume")
-            .unwrap_or_else(|| {
-                panic!(
-                    "OversizedPart FitsBuildVolume absent; got:\n{:#?}",
-                    result.constraint_results
-                )
-            });
-    assert_eq!(
-        oversized.satisfaction,
-        Satisfaction::Violated,
-        "OversizedPart (250×100×100 mm) should exceed the 220 mm X-axis envelope; got {:?}",
-        oversized.satisfaction
-    );
-
-    // Degraded-contract pin: the violated constraint emits at least one diagnostic
-    // under the default UnifiedDag scheduler. The DFM-specific codes are asserted by
-    // the full-gate test `std_process_dfm_build_volume_flip_and_severity_diagnostics`
-    // (#4734).
-    assert!(
-        !result.diagnostics.is_empty(),
-        "expected at least one diagnostic from the violated FitsBuildVolume constraint \
-         under the default UnifiedDag scheduler; got none; \
-         diagnostics:\n{:#?}",
-        result.diagnostics
-    );
-}
-
 /// FULL GATE (DFM diagnostic routing fixed, task #4734): the geometry-backed
 /// `FitsBuildVolume` OK→VIOLATED flip and the severity-tagged DFM diagnostics under
 /// the default UnifiedDag scheduler.
@@ -505,7 +430,7 @@ fn std_process_dfm_build_volume_flip_and_severity_diagnostics() {
     );
 }
 
-// ── (d) FOCUSED CONSTRAINT ROUTING TEST (A2/A3 isolation) ────────────────────
+// ── (c) FOCUSED CONSTRAINT ROUTING TEST (A2/A3 isolation) ────────────────────
 
 /// OCCT-GATED focused test (task #4734 step-3 / A2+A3): isolates the W_DFM routing
 /// for the OversizedPart FitsBuildVolume constraint predicate.
