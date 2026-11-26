@@ -1178,8 +1178,9 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
 /// `defaults` no ordered arg covers, the `geometry_lets` and the `lets`
 /// evaluate as ONE list, in the dependency order [`ctor_member_order`] gives
 /// (task 10098): a member sees every sibling it reads, whichever was declared
-/// first, as at template scope and under a `sub`. A geometry let becomes a
-/// symbolic handle in member scope only, never a field (task 10352). A default that is itself a structure ctor
+/// first, as at template scope and under a `sub`. A geometry let whose inputs
+/// resolve in member scope becomes a symbolic handle there only, never a field
+/// (task 10352). A default that is itself a structure ctor
 /// recurses through `eval_expr` → nested `Value::StructureInstance`. An
 /// `Undef` field value is kept in its own slot — the structure is still
 /// constructed (no `FunctionCall`-style strict whole-value short-circuit).
@@ -1253,6 +1254,11 @@ fn eval_structure_instance_ctor(
 /// hashed over the realization's upstream args evaluated in that scope, so a
 /// sibling selector over it resolves as at template scope and under a `sub`.
 ///
+/// A handle is minted only when every input the fold evaluates resolves in
+/// member scope: one hashed over an unresolved input names no geometry the
+/// template or a `sub` produces. Otherwise the member stays out of scope, and a
+/// sibling selector over it is Undef.
+///
 /// Out of line for the stack budget pinned by `eval_user_fn_recursion_depth_exceeded`.
 #[inline(never)]
 fn insert_symbolic_geometry_member(
@@ -1262,8 +1268,15 @@ fn insert_symbolic_geometry_member(
     ctx: &EvalContext,
 ) {
     let member_ctx = ctx.with_scope(scope);
-    let upstream_values_hash =
-        realization_upstream_values_hash(&geometry.upstream_args, |e| eval_expr(e, &member_ctx));
+    let mut unresolved = false;
+    let upstream_values_hash = realization_upstream_values_hash(&geometry.upstream_args, |e| {
+        let value = eval_expr(e, &member_ctx);
+        unresolved |= value.contains_undef();
+        value
+    });
+    if unresolved {
+        return;
+    }
     scope.insert(
         ValueCellId::new(type_name, geometry.member.as_str()),
         Value::GeometryHandle {
