@@ -12,8 +12,8 @@ use std::thread::{self, ThreadId};
 
 use reify_eval_core::{
     Answer, Binding, Builder, Core, Cx, Declaration, Erased, Event, Failure, Held, Input, InputKey,
-    Kind, KindId, Outcome, OutsideFailure, Path, Produced, Ref, Release, Request, Root, Section,
-    Value,
+    Kind, KindId, Outcome, OutsideFailure, Path, Produced, Ref, Release, Request, RequestId, Root,
+    Section, Value,
 };
 
 /// Adds the i64s bound at "0", "1", … until a binding reads absent. A read
@@ -98,13 +98,18 @@ pub fn with_toys() -> Builder {
 /// What a test can see of the toy kernel from outside its thread.
 #[derive(Clone, Default)]
 pub struct Watch {
-    pub live_boxes: Arc<AtomicUsize>,
-    pub sides_in_order: Arc<Mutex<Vec<i64>>>,
+    live_boxes: Arc<AtomicUsize>,
+    sides_in_order: Arc<Mutex<Vec<i64>>>,
 }
 
 impl Watch {
     pub fn live_boxes(&self) -> usize {
         self.live_boxes.load(Ordering::SeqCst)
+    }
+
+    /// The side of each box made, in the order the kernel made them.
+    pub fn sides_in_order(&self) -> Vec<i64> {
+        self.sides_in_order.lock().expect("no holder panics").clone()
     }
 }
 
@@ -201,11 +206,11 @@ pub fn named<T: Value>(name: &str, value: T) -> (InputKey, Input) {
 }
 
 /// Every answer among `events` that went to `request`, in the order given.
-pub fn answers(events: &[Event], request: &Request) -> Vec<(Path, Answer<Erased>)> {
+pub fn answers(events: &[Event], request: RequestId) -> Vec<(Path, Answer<Erased>)> {
     events
         .iter()
         .filter_map(|event| match event {
-            Event::Answered { request: to, path, answer } if *to == request.id() => {
+            Event::Answered { request: to, path, answer } if *to == request => {
                 Some((path.clone(), answer.clone()))
             }
             _ => None,
@@ -215,7 +220,7 @@ pub fn answers(events: &[Event], request: &Request) -> Vec<(Path, Answer<Erased>
 
 /// The one answer `request` received, which must be for root `name`.
 pub fn the_answer(events: &[Event], request: &Request, name: &str) -> Answer<Erased> {
-    let mut answers = answers(events, request);
+    let mut answers = answers(events, request.id());
     assert_eq!(answers.len(), 1, "one answer to the request: {answers:?}");
     let (path, answer) = answers.remove(0);
     assert_eq!(path, Path::root(Root::named(name)));

@@ -30,7 +30,7 @@ fn a_second_body_runs_to_completion_while_a_first_waits_on_a_section_still_runni
     let events = core.take_events();
     let total = toy::the_answer(&events, &second, "total");
     assert_eq!(total.downcast::<i64>(), Answer::Final(Outcome::of(3)));
-    assert!(toy::answers(&events, &first).is_empty(), "the shape still waits on its section");
+    assert!(toy::answers(&events, first.id()).is_empty(), "the shape still waits on its section");
 
     keeper.open();
     core.run();
