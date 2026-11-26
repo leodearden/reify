@@ -829,15 +829,26 @@ _ra_phase_tag() {
     esac
 }
 
+# _ra_phase_log <phase> <kind> <field>... -- prints one stderr line of the
+# phase log: the one home of its `INFO: run_all.sh <tag> <kind>: <fields>` shape.
+_ra_phase_log() {
+    local _rpl_tag
+    _rpl_tag="$(_ra_phase_tag "$1")"
+    shift
+    local _rpl_kind="$1"
+    shift
+    echo "INFO: run_all.sh $_rpl_tag $_rpl_kind: $*" >&2
+}
+
 # _ra_phase_begin <phase> <members> -- opens a phase and prints its start
 # line. The open phase lives in run-lifetime globals because the TERM trap
-# reads them; only this and _ra_phase_end write them. _RA_PHASE is set last:
-# the trap reads the other two only once it is non-empty.
+# reads them; only this and _ra_phase_end_text write them. _RA_PHASE is set
+# last: the trap reads the other two only once it is non-empty.
 _ra_phase_begin() {
     _RA_PHASE_MEMBERS="$2"
     event_log_clock_ns _RA_PHASE_STARTED_NS
     _RA_PHASE="$1"
-    echo "INFO: run_all.sh $(_ra_phase_tag "$1") start: members=$2" >&2
+    _ra_phase_log "$1" start "members=$2"
 }
 
 # _ra_phase_elapsed_s <out-var> <ended-ns> -- the open phase's whole seconds
@@ -851,24 +862,27 @@ _ra_phase_elapsed_s() {
     printf -v "$1" '%s' "$_rpes_s"
 }
 
-# _ra_phase_end [<ended-ns-out-var>] -- closes the open phase: prints its end
-# line from one clock read, and hands that instant back through the out-var.
-_ra_phase_end() {
+# _ra_phase_end_text [<ended-ns-out-var>] -- closes the open phase with its
+# end line ONLY (no event record), from one clock read, and hands that
+# instant back through the out-var.
+_ra_phase_end_text() {
     local _rpen_ended _rpen_s
     event_log_clock_ns _rpen_ended
     _ra_phase_elapsed_s _rpen_s "$_rpen_ended"
-    echo "INFO: run_all.sh $(_ra_phase_tag "$_RA_PHASE") end: members=$_RA_PHASE_MEMBERS elapsed_s=$_rpen_s" >&2
+    _ra_phase_log "$_RA_PHASE" end "members=$_RA_PHASE_MEMBERS" "elapsed_s=$_rpen_s"
     _RA_PHASE=""
     if [ -n "${1:-}" ]; then
         printf -v "$1" '%s' "$_rpen_ended"
     fi
 }
 
-# _ra_phase_finish -- closes the open pool/serial/retry phase: its end line
-# and its one phase_finish record, both from the same clock read.
+# _ra_phase_finish -- closes the open phase with its end line AND its one
+# phase_finish event record, both from the same clock read. The event
+# channel's phases are pool, serial and retry; any other phase closes with
+# _ra_phase_end_text.
 _ra_phase_finish() {
     local _rpf_phase="$_RA_PHASE" _rpf_started="$_RA_PHASE_STARTED_NS" _rpf_ended
-    _ra_phase_end _rpf_ended
+    _ra_phase_end_text _rpf_ended
     event_log_emit_phase_finish "$_rpf_phase" "$_rpf_started" "$_rpf_ended"
 }
 
@@ -2487,14 +2501,13 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     _ra_phase_begin retry "${#_h2_retry_members[@]}"
     for _h2_name in "${_h2_retry_members[@]+"${_h2_retry_members[@]}"}"; do
         _h2_i="${_h2_index_of[$_h2_name]}"
-        echo "INFO: run_all.sh $(_ra_phase_tag retry) retrying: member=$_h2_name" >&2
+        _ra_phase_log retry retrying "member=$_h2_name"
         _ra_run_member "$_h2_name" "$_H2_WORKDIR/${_h2_i}.retry.out" "$_H2_WORKDIR/${_h2_i}.retry.rc" capture 2
         _h2_retried["$_h2_name"]=1
     done
     _ra_phase_finish
 
     # -- Phase 3: emit (discovered/sorted order -- preserves the output contract) --
-    # Text-only close: the event channel's phases are pool, serial and retry.
     _ra_phase_begin report "${#_h2_discovered_list[@]}"
     for _h2_name in "${_h2_discovered_list[@]}"; do
         _ra_interrupt_if_worktree_gone
@@ -2515,7 +2528,7 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
             _ra_record_result "$_h2_name" "$(_ra_read_rc "$_h2_w.rc")" "$_h2_w.out"
         fi
     done
-    _ra_phase_end
+    _ra_phase_end_text
 else
     # -------------------------------------------------------------------------
     # Legacy all-serial fallback: the pool's members, in the pool's order, run
