@@ -170,13 +170,13 @@ fn probe_universe() -> &'static [&'static str] {
 /// `mod tests` and so is test-private and not importable across the crate
 /// boundary; this const is therefore a deliberate restatement, not an oversight.
 /// Both leave headroom above the largest arity any builtin arm guards on today
-/// (11, `linear_pattern_2d`). Raise them together.
+/// (9, `circular_pattern`'s scalar form). Raise them together.
 const MAX_PROBED_ARITY: usize = 14;
 
 /// The headroom claim above, enforced rather than asserted in prose: an
 /// arity-guarded builtin arm cannot hide from the sweep by sitting just above
 /// the bound.
-const _: () = assert!(MAX_PROBED_ARITY > 11);
+const _: () = assert!(MAX_PROBED_ARITY > 9);
 
 /// (e) The probe universe is READ from the compiler-side registry, never
 /// restated here, and is asserted against a FLOOR rather than an equality.
@@ -1016,15 +1016,6 @@ const UNSWEPT_BUILTINS: &[(&str, TaskCite)] = &[
 // recorded, then delete the rows they own here.
 const RESIDUAL_SPANS: &[(&str, usize, std::ops::Range<usize>, TaskCite, &str)] = &[
     (
-        "linear_pattern_2d",
-        10,
-        0..10,
-        TaskCite(7714),
-        "count1/count2 need Int values no scalar filler produces, so the op \
-         errors before spacing1/spacing2 reach the Contract C chokepoint; both \
-         spacing slots ARE gated (task 5214) but the probe cannot show it",
-    ),
-    (
         "nurbs",
         10,
         0..10,
@@ -1177,6 +1168,22 @@ const ALLOWLIST: &[(&str, usize, std::ops::Range<usize>, Justification, &str)] =
         "direction — a Direction (dir(x, y, z)), never a bare number; \
          decode_direction rejects a scalar filler",
     ),
+    (
+        "linear_pattern_2d",
+        6,
+        0..1,
+        Justification::Index,
+        "direction1 — a Direction (dir(x, y, z)), never a bare number; \
+         decode_direction rejects a scalar filler",
+    ),
+    (
+        "linear_pattern_2d",
+        6,
+        3..4,
+        Justification::Index,
+        "direction2 — a Direction (dir(x, y, z)), never a bare number; \
+         decode_direction rejects a scalar filler",
+    ),
     // COUNTS.
     (
         "circular_pattern",
@@ -1198,6 +1205,20 @@ const ALLOWLIST: &[(&str, usize, std::ops::Range<usize>, Justification, &str)] =
         1..2,
         Justification::Count,
         "count — how many instances",
+    ),
+    (
+        "linear_pattern_2d",
+        6,
+        1..2,
+        Justification::Count,
+        "count1 — how many instances along direction1",
+    ),
+    (
+        "linear_pattern_2d",
+        6,
+        4..5,
+        Justification::Count,
+        "count2 — how many instances along direction2",
     ),
     // ENTITY SELECTORS. These slots carry a handle, a selector list or a datum
     // VALUE; they name something rather than measure it.

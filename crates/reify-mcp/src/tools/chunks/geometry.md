@@ -258,7 +258,8 @@ dimensionless slot generally is not. Measured 2026-08-30: `scale(g, 2mm)` is acc
 dimensionless argument bare because it is what you mean — nothing will tell you otherwise.
 A `Direction`-typed argument is the exception: the four directional selectors, `angle`'s operands,
 `rotate`'s and `rotate_around`'s axis, `mirror`'s, `half_space`'s and `arc`'s normal,
-`offset_curve`'s and `linear_pattern`'s direction and the direction of `revolve`, `revolve_full`,
+`offset_curve`'s and `linear_pattern`'s direction, `linear_pattern_2d`'s two directions and the
+direction of `revolve`, `revolve_full`,
 `extrude_infinite` and `extrude_infinite_symmetric` take a typed operand, so a `vec3(…)` there, dimensioned or not, is rejected (at check for all but
 `offset_curve`, at eval for `offset_curve`); write `dir(x, y, z)`.
 

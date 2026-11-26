@@ -243,7 +243,7 @@ fn compile_mirror_direction_form_produces_realization() {
 fn compile_linear_pattern_2d_produces_realization() {
     let source = r#"structure S {
     param w: Length = 10mm
-    let pattern = linear_pattern_2d(w, 1, 0, 0, 3, 20mm, 0, 1, 0, 4, 30mm)
+    let pattern = linear_pattern_2d(w, dir(1, 0, 0), 3, 20mm, dir(0, 1, 0), 4, 30mm)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_linpat2d"));
     assert!(
@@ -271,16 +271,16 @@ fn compile_linear_pattern_2d_produces_realization() {
         "expected Pattern(Linear2D), got {:?}",
         op
     );
-    // Verify correct number of named args (11: target + 10 params)
+    // Verify correct number of named args (7: target + 6 params)
     if let CompiledGeometryOp::Pattern { args, .. } = op {
-        assert_eq!(args.len(), 11, "expected 11 args, got {}", args.len());
+        assert_eq!(args.len(), 7, "expected 7 args, got {}", args.len());
         assert_eq!(args[0].0, "target");
-        assert_eq!(args[1].0, "dx1");
-        assert_eq!(args[4].0, "count1");
-        assert_eq!(args[5].0, "spacing1");
-        assert_eq!(args[6].0, "dx2");
-        assert_eq!(args[9].0, "count2");
-        assert_eq!(args[10].0, "spacing2");
+        assert_eq!(args[1].0, "direction1");
+        assert_eq!(args[2].0, "count1");
+        assert_eq!(args[3].0, "spacing1");
+        assert_eq!(args[4].0, "direction2");
+        assert_eq!(args[5].0, "count2");
+        assert_eq!(args[6].0, "spacing2");
     }
 }
 
@@ -350,7 +350,7 @@ fn compile_linear_pattern_2d_nested_target_hoists_into_preceding_op() {
     // place — the eval-side resolution was already correct and covered, so
     // this compile-level test closes the actual gap.
     let source = r#"structure S {
-    let pattern = linear_pattern_2d(box(2mm, 2mm, 10mm), 1, 0, 0, 3, 20mm, 0, 1, 0, 4, 30mm)
+    let pattern = linear_pattern_2d(box(2mm, 2mm, 10mm), dir(1, 0, 0), 3, 20mm, dir(0, 1, 0), 4, 30mm)
 }"#;
     let parsed = reify_syntax::parse(
         source,
@@ -404,7 +404,7 @@ fn compile_linear_pattern_2d_nested_target_hoists_into_preceding_op() {
         "expected Pattern(Linear2D) targeting Step(0), got {:?}",
         op
     );
-    // Verify correct number of named args (11: target + 10 params). Bound via
+    // Verify correct number of named args (7: target + 6 params). Bound via
     // `let-else` (rather than `if let`) so these assertions cannot be
     // silently skipped if `op` were ever not a Pattern — the preceding
     // `matches!` assert already guarantees the variant, but this keeps the
@@ -412,10 +412,12 @@ fn compile_linear_pattern_2d_nested_target_hoists_into_preceding_op() {
     let CompiledGeometryOp::Pattern { args, .. } = op else {
         panic!("expected Pattern op to read args from, got {:?}", op);
     };
-    assert_eq!(args.len(), 11, "expected 11 args, got {}", args.len());
+    assert_eq!(args.len(), 7, "expected 7 args, got {}", args.len());
     assert_eq!(args[0].0, "target");
-    assert_eq!(args[1].0, "dx1");
-    assert_eq!(args[10].0, "spacing2");
+    assert_eq!(args[1].0, "direction1");
+    assert_eq!(args[3].0, "spacing1");
+    assert_eq!(args[4].0, "direction2");
+    assert_eq!(args[6].0, "spacing2");
 }
 
 #[test]

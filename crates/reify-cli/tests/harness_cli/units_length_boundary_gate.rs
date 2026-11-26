@@ -589,7 +589,7 @@ structure def S {
 structure def S {
     param s : Length
     let b = box(10mm, 10mm, 10mm)
-    let p = linear_pattern_2d(b, 1, 0, 0, 3, s, 0, 1, 0, 3, 20mm)
+    let p = linear_pattern_2d(b, dir(1, 0, 0), 3, s, dir(0, 1, 0), 3, 20mm)
     param geometry : Solid = p
 }
 "#,

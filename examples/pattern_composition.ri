@@ -53,12 +53,12 @@ structure def BaseElement {
 
 // ── 2. PatternRow ─────────────────────────────────────────────────────────────
 // 1D linear pattern: 5 instances along X, 1 instance along Y (degenerate row).
-// linear_pattern_2d(target, dx1,dy1,dz1, count1, spacing1, dx2,dy2,dz2, count2, spacing2)
+// linear_pattern_2d(target, direction1, count1, spacing1, direction2, count2, spacing2)
 
 structure def PatternRow {
     param w : Length = 10mm
 
-    let row = linear_pattern_2d(w, 1, 0, 0, 5, 20mm, 0, 1, 0, 1, 0mm)
+    let row = linear_pattern_2d(w, dir(1, 0, 0), 5, 20mm, dir(0, 1, 0), 1, 0mm)
 }
 
 // ── 3. PatternCountZero ───────────────────────────────────────────────────────
@@ -68,7 +68,7 @@ structure def PatternRow {
 structure def PatternCountZero {
     param w : Length = 10mm
 
-    let empty_pattern = linear_pattern_2d(w, 1, 0, 0, 0, 20mm, 0, 1, 0, 0, 20mm)
+    let empty_pattern = linear_pattern_2d(w, dir(1, 0, 0), 0, 20mm, dir(0, 1, 0), 0, 20mm)
 }
 
 // ── 4. PatternCountOne ────────────────────────────────────────────────────────
@@ -78,7 +78,7 @@ structure def PatternCountZero {
 structure def PatternCountOne {
     param w : Length = 10mm
 
-    let single_pattern = linear_pattern_2d(w, 1, 0, 0, 1, 20mm, 0, 1, 0, 1, 20mm)
+    let single_pattern = linear_pattern_2d(w, dir(1, 0, 0), 1, 20mm, dir(0, 1, 0), 1, 20mm)
 }
 
 // ── 5. PatternGrid10x10 ───────────────────────────────────────────────────────
@@ -87,7 +87,7 @@ structure def PatternCountOne {
 structure def PatternGrid10x10 {
     param w : Length = 10mm
 
-    let grid = linear_pattern_2d(w, 1, 0, 0, 10, 20mm, 0, 1, 0, 10, 20mm)
+    let grid = linear_pattern_2d(w, dir(1, 0, 0), 10, 20mm, dir(0, 1, 0), 10, 20mm)
 }
 
 // ── 6. PatternComposed ────────────────────────────────────────────────────────
@@ -99,7 +99,7 @@ structure def PatternGrid10x10 {
 structure def PatternComposed {
     param w : Length = 10mm
 
-    let linear  = linear_pattern_2d(w, 1, 0, 0, 3, 20mm, 0, 1, 0, 3, 20mm)
+    let linear  = linear_pattern_2d(w, dir(1, 0, 0), 3, 20mm, dir(0, 1, 0), 3, 20mm)
     let shifted = arbitrary_pattern(w, 10mm, 0mm, 0mm, 0mm, 20mm, 0mm)
 }
 

@@ -2486,16 +2486,19 @@ fn pattern_case(k: PatternKind) -> CompiledGeometryOp {
             ("origin".to_string(), lit_raw(point3_len([0.0, 0.0, 0.0]))),
             ("normal".to_string(), lit_raw(direction_val(0.0, 0.0, 1.0))),
         ],
+        // Both directions are `Direction`s (direction-typing ι-c). Golden unchanged.
         PatternKind::Linear2D => vec![
-            ("dx1".to_string(), real_literal(1.0)),
-            ("dy1".to_string(), real_literal(0.0)),
-            ("dz1".to_string(), real_literal(0.0)),
+            (
+                "direction1".to_string(),
+                lit_raw(direction_val(1.0, 0.0, 0.0)),
+            ),
             ("count1".to_string(), real_literal(2.0)),
             // spacings are length-semantic → dimensioned Length (task 5214).
             ("spacing1".to_string(), length_literal(0.01)),
-            ("dx2".to_string(), real_literal(0.0)),
-            ("dy2".to_string(), real_literal(1.0)),
-            ("dz2".to_string(), real_literal(0.0)),
+            (
+                "direction2".to_string(),
+                lit_raw(direction_val(0.0, 1.0, 0.0)),
+            ),
             ("count2".to_string(), real_literal(3.0)),
             ("spacing2".to_string(), length_literal(0.02)),
         ],

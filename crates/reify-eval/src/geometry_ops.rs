@@ -4350,26 +4350,32 @@ fn pattern_linear2d(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut f64_arg = |name: &str| -> Result<f64, String> {
-        eval_named_arg_f64(
-            name,
-            kind,
-            args,
-            values,
-            functions,
-            meta_map,
-            diagnostics,
-        )
-        .ok_or_else(|| {
-            format!("missing or non-finite argument '{}' for {}", name, kind)
-        })
-    };
-    let direction1 = [f64_arg("dx1")?, f64_arg("dy1")?, f64_arg("dz1")?];
-    let count1_raw = f64_arg("count1")?;
-    let count1 = validate_pattern_count(count1_raw, "count1", kind, diagnostics)?;
-    // LENGTH-required: a bare/dimensionless spacing1 is rejected (op dropped)
-    // instead of silently read as SI metres. Re-wrap the validated SI value as
-    // a LENGTH Scalar so the IR/kernel spacing representation is unchanged.
+    // Every argument is read, in source order, before any `?`, so every bad
+    // direction, count and bare spacing is reported in one build.
+    let direction1 = required_direction_arg(
+        "direction1",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )
+    .map(|unit| unit.components());
+    let count1 = eval_named_arg_f64(
+        "count1",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )
+    .ok_or_else(|| format!("missing or non-finite argument 'count1' for {kind}"))
+    .and_then(|raw| validate_pattern_count(raw, "count1", kind, diagnostics));
+    // LENGTH-required: a bare/dimensionless spacing is rejected (op dropped)
+    // instead of silently read as SI metres; the IR/kernel spacing
+    // representation is unchanged.
     let spacing1 = required_length_value(
         "spacing1",
         kind,
@@ -4378,24 +4384,28 @@ fn pattern_linear2d(
         functions,
         meta_map,
         diagnostics,
-    )?;
-    let mut f64_arg = |name: &str| -> Result<f64, String> {
-        eval_named_arg_f64(
-            name,
-            kind,
-            args,
-            values,
-            functions,
-            meta_map,
-            diagnostics,
-        )
-        .ok_or_else(|| {
-            format!("missing or non-finite argument '{}' for {}", name, kind)
-        })
-    };
-    let direction2 = [f64_arg("dx2")?, f64_arg("dy2")?, f64_arg("dz2")?];
-    let count2_raw = f64_arg("count2")?;
-    let count2 = validate_pattern_count(count2_raw, "count2", kind, diagnostics)?;
+    );
+    let direction2 = required_direction_arg(
+        "direction2",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )
+    .map(|unit| unit.components());
+    let count2 = eval_named_arg_f64(
+        "count2",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )
+    .ok_or_else(|| format!("missing or non-finite argument 'count2' for {kind}"))
+    .and_then(|raw| validate_pattern_count(raw, "count2", kind, diagnostics));
     let spacing2 = required_length_value(
         "spacing2",
         kind,
@@ -4404,15 +4414,15 @@ fn pattern_linear2d(
         functions,
         meta_map,
         diagnostics,
-    )?;
+    );
     Ok(reify_ir::GeometryOp::LinearPattern2D {
         target: target_id,
-        direction1,
-        count1,
-        spacing1,
-        direction2,
-        count2,
-        spacing2,
+        direction1: direction1?,
+        count1: count1?,
+        spacing1: spacing1?,
+        direction2: direction2?,
+        count2: count2?,
+        spacing2: spacing2?,
     })
 }
 

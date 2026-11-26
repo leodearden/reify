@@ -133,8 +133,8 @@ structure def TopDeckHalf : Rigid {
 
     // This half's sieve (x > seam strip only), pad, and hand slot.
     aux let holes = union_all(
-        linear_pattern_2d(translate(cylinder(hole_d / 2, floor_t + 2mm), x0a, y0a, -1mm), 1, 0, 0, nx_a, hole_pitch, 0, 1, 0, ny_a, 2 * row_step),
-        linear_pattern_2d(translate(cylinder(hole_d / 2, floor_t + 2mm), x0b, y0b, -1mm), 1, 0, 0, nx_b, hole_pitch, 0, 1, 0, ny_b, 2 * row_step)
+        linear_pattern_2d(translate(cylinder(hole_d / 2, floor_t + 2mm), x0a, y0a, -1mm), dir(1, 0, 0), nx_a, hole_pitch, dir(0, 1, 0), ny_a, 2 * row_step),
+        linear_pattern_2d(translate(cylinder(hole_d / 2, floor_t + 2mm), x0b, y0b, -1mm), dir(1, 0, 0), nx_b, hole_pitch, dir(0, 1, 0), ny_b, 2 * row_step)
     )
     aux let perforated = difference(base_soft, holes)
     aux let padded = union_all(perforated, translate(cylinder(pad_r, floor_t), pad_x, 0mm, 0mm))

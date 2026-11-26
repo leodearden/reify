@@ -4516,7 +4516,7 @@ mod tests {
     /// that the slot indices denote THE SAME PARAMETERS at every accepted arity,
     /// verified against the lowering. When they do NOT — the usual case — the
     /// correct fix is an `if arg_count ==` guard on the arm, as `fillet`,
-    /// `chamfer`, `linear_pattern` and `linear_pattern_2d` already carry.
+    /// `chamfer`, `rotate` and `mirror` already carry.
     ///
     /// The companion no-dead-entries assertion in
     /// [`lowering_arity_ledger_is_pinned_and_coupled_to_the_slot_table`] requires
@@ -4565,7 +4565,7 @@ mod tests {
     /// 2. COUPLING — for every multi-arity name, `builtin_arg_slots(name, k)`
     ///    must NOT be identical across its accepted arities, i.e. the arm must
     ///    carry an `if arg_count ==` guard (as `fillet` / `chamfer` /
-    ///    `linear_pattern` / `linear_pattern_2d` already do), UNLESS the name is
+    ///    `rotate` / `mirror` already do), UNLESS the name is
     ///    an argued [`MULTI_ARITY_AGNOSTIC_SAFE`] entry. An arity-agnostic arm
     ///    serving an overloaded name is EXACTLY how a slot comes to fire on the
     ///    wrong argument.

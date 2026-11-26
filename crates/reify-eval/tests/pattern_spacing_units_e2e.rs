@@ -71,8 +71,8 @@ fn linear_pattern_2d_bare_spacing_drops_op_with_error() {
         structure def BareSpacingGrid {
             let grid = linear_pattern_2d(
                 box(10mm, 10mm, 10mm),
-                1, 0, 0, 3, 20,
-                0, 1, 0, 3, 20
+                dir(1, 0, 0), 3, 20,
+                dir(0, 1, 0), 3, 20
             )
         }
     "#;
@@ -189,8 +189,8 @@ fn linear_pattern_2d_dimensioned_spacing_builds_op() {
         structure def DimSpacingGrid {
             let grid = linear_pattern_2d(
                 box(10mm, 10mm, 10mm),
-                1, 0, 0, 3, 20mm,
-                0, 1, 0, 3, 20mm
+                dir(1, 0, 0), 3, 20mm,
+                dir(0, 1, 0), 3, 20mm
             )
         }
     "#;
