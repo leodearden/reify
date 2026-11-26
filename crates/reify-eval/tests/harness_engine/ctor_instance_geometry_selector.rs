@@ -272,3 +272,40 @@ fn let_instance_selector_over_geometry_reading_a_sub_through_a_let_is_never_a_th
         SUB_READING_TRANSITIVE_SRC,
     );
 }
+
+const GEOMETRY_BY_VALUE_SRC: &str = r#"
+structure def Holder {
+    param target : Solid
+    param n : Int = 1
+}
+
+structure def Part {
+    param len : Length = 1000mm
+    let body = box(len, 100mm, 100mm)
+    let h = Holder(target: body)
+    let lst = [body]
+}
+
+structure def Asm {
+    let q = Part(len: 2000mm)
+    let g = q.h.target
+}
+"#;
+
+/// A ctor's symbolic geometry handle serves selectors in member scope only: a
+/// sibling that passes the geometry let by value gets the field value it had
+/// before the handle existed, never a handle frozen into an instance field
+/// (uniform-member-access.md C3(vi)).
+#[test]
+fn let_instance_field_passing_geometry_by_value_holds_no_handle() {
+    let result = eval_with_stdlib(GEOMETRY_BY_VALUE_SRC);
+
+    let holder = ctor_field(&result, "Asm", "q", "h");
+    assert_eq!(instance_field(&holder, "Asm.q.h", "target"), Value::Undef);
+    assert_eq!(instance_field(&holder, "Asm.q.h", "n"), Value::Int(1));
+    assert_eq!(
+        ctor_field(&result, "Asm", "q", "lst"),
+        Value::List(vec![Value::Undef])
+    );
+    assert_eq!(cell(&result, "Asm", "g"), Value::Undef);
+}
