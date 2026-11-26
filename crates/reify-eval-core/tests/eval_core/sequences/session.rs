@@ -719,6 +719,8 @@ impl Session {
             (Some(ToyKind::Cell), Expect::Failure(Failure::BlockedBy { .. })) => {
                 reached.push(Shape::BlockedBy)
             }
+            (Some(_), Expect::Failure(Failure::Cycle)) => reached.push(Shape::Cycle),
+            (None, Expect::Failure(Failure::Cycle)) => reached.push(Shape::CycleThroughStructure),
             _ => {}
         }
         if let Some((parent, step)) = path.parent()
