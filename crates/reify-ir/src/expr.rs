@@ -786,6 +786,20 @@ impl CompiledExpr {
         self.for_each_child(&mut |child| child.walk(f));
     }
 
+    /// True if a `CrossSubGeometryRef` occurs anywhere in this tree.
+    ///
+    /// `eval_expr` `unreachable!`s on that variant (task 3616), so a fold over
+    /// a realization's scalar args skips any arg that contains one.
+    pub fn contains_cross_sub_geometry_ref(&self) -> bool {
+        fn visit(expr: &CompiledExpr) -> ControlFlow<()> {
+            if matches!(expr.kind, CompiledExprKind::CrossSubGeometryRef(_)) {
+                return ControlFlow::Break(());
+            }
+            expr.try_for_each_child(&mut visit)
+        }
+        visit(self).is_break()
+    }
+
     /// Rewrite every `ValueRef` cell ID in this expression tree by applying
     /// `f`, returning a fresh `CompiledExpr` with recomputed `content_hash`
     /// values on every rebuilt node. (Task 2629 — runtime forall re-elaboration.)
