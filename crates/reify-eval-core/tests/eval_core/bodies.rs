@@ -1,0 +1,136 @@
+//! What a body does wrong, and what the host is told: a failure outcome
+//! where it follows from the inputs, a pending answer where it does not
+//! (contract 9, decision D12).
+
+use std::future::{Future, pending, poll_fn};
+use std::pin::pin;
+
+use reify_eval_core::{
+    Answer, Binding, Builder, Cx, Declaration, Failure, InputKey, Kind, KindId, Outcome,
+    OutsideFailure, Produced, Ref, Root, Turn,
+};
+
+use crate::toy;
+
+/// Makes a second request of the core without waiting for the first.
+struct Impatient;
+
+impl Kind for Impatient {
+    type Out = i64;
+    const ID: KindId = KindId("toy.impatient");
+
+    async fn run(cx: &Cx) -> Produced<i64> {
+        let (one, other) = (Ref::binding("0"), Ref::binding("1"));
+        let mut first = pin!(cx.read::<i64>(&one));
+        let mut second = pin!(cx.read::<i64>(&other));
+        let second = poll_fn(|context| {
+            let _ = first.as_mut().poll(context);
+            second.as_mut().poll(context)
+        });
+        Produced::Outcome(second.await)
+    }
+}
+
+#[test]
+fn a_body_that_makes_two_requests_at_once_ends_with_a_failure() {
+    let mut core = Builder::new().kind::<Impatient>().expect("one kind").build();
+    let snapshot = core.snapshot([toy::root("hasty", Declaration::new(Impatient::ID))]);
+
+    let request = core.evaluate(&snapshot, [Root::named("hasty")]);
+    assert_eq!(core.turn(), Turn::Idle);
+
+    let answer = toy::the_answer(&core.take_events(), &request, "hasty");
+    assert_eq!(toy::failed(answer), Failure::TwoRequestsAtOnce);
+}
+
+/// Waits on something that is not the core.
+struct Rogue;
+
+impl Kind for Rogue {
+    type Out = i64;
+    const ID: KindId = KindId("toy.rogue");
+
+    async fn run(_: &Cx) -> Produced<i64> {
+        pending().await
+    }
+}
+
+#[test]
+fn a_body_that_waits_on_something_other_than_the_core_is_pending_with_that_failure() {
+    let mut core = Builder::new().kind::<Rogue>().expect("one kind").build();
+    let snapshot = core.snapshot([toy::root("astray", Declaration::new(Rogue::ID))]);
+
+    let request = core.evaluate(&snapshot, [Root::named("astray")]);
+    assert_eq!(core.turn(), Turn::Idle);
+
+    let answer = toy::the_answer(&core.take_events(), &request, "astray");
+    assert_eq!(toy::pending(answer), OutsideFailure::WaitedOutsideCore);
+}
+
+/// Reads its first binding, then panics.
+struct Panicking;
+
+impl Kind for Panicking {
+    type Out = i64;
+    const ID: KindId = KindId("toy.panicking");
+
+    async fn run(cx: &Cx) -> Produced<i64> {
+        let _ = cx.read::<i64>(&Ref::binding("0")).await;
+        panic!("toy body broke")
+    }
+}
+
+#[test]
+fn a_body_that_panics_is_pending_with_a_failure_outside_the_inputs_and_the_next_turn_returns() {
+    let mut core = toy::with_cell().kind::<Panicking>().expect("distinct kinds").build();
+    let snapshot = core.snapshot([
+        toy::named("a", 2_i64),
+        toy::root(
+            "broken",
+            Declaration::new(Panicking::ID).bind("0", Binding::Input(InputKey::named("a"))),
+        ),
+        toy::root("total", toy::cell(&["a"])),
+    ]);
+
+    let request = core.evaluate(&snapshot, [Root::named("broken")]);
+    assert_eq!(core.turn(), Turn::Idle);
+
+    let answer = toy::the_answer(&core.take_events(), &request, "broken");
+    match toy::pending(answer) {
+        OutsideFailure::BodyPanicked { message } => {
+            assert!(message.contains("toy body broke"), "{message}")
+        }
+        other => panic!("expected a body panic, got {other:?}"),
+    }
+    assert_eq!(core.turn(), Turn::Idle);
+
+    let later = core.evaluate(&snapshot, [Root::named("total")]);
+    assert_eq!(core.turn(), Turn::Idle);
+    let answer = toy::the_answer(&core.take_events(), &later, "total");
+    assert_eq!(answer.downcast::<i64>(), Answer::Final(Outcome::of(2)));
+}
+
+/// Fails in its own work, outside the inputs, as a section that ran out of
+/// memory would.
+struct Exhausted;
+
+impl Kind for Exhausted {
+    type Out = i64;
+    const ID: KindId = KindId("toy.exhausted");
+
+    async fn run(_: &Cx) -> Produced<i64> {
+        Produced::Outside(OutsideFailure::OutOfMemory { resource: "toy" })
+    }
+}
+
+#[test]
+fn a_body_whose_own_work_fails_outside_the_inputs_is_reported_pending() {
+    let mut core = Builder::new().kind::<Exhausted>().expect("one kind").build();
+    let snapshot = core.snapshot([toy::root("spent", Declaration::new(Exhausted::ID))]);
+
+    let request = core.evaluate(&snapshot, [Root::named("spent")]);
+    assert_eq!(core.turn(), Turn::Idle);
+
+    let answer = toy::the_answer(&core.take_events(), &request, "spent");
+    assert_eq!(toy::pending(answer), OutsideFailure::OutOfMemory { resource: "toy" });
+}

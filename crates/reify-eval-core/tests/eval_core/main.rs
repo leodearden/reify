@@ -4,6 +4,7 @@
 //! kernel, host-side helpers); each other module holds the tests of one
 //! subject, with any kind only one of its tests uses.
 
+mod bodies;
 mod reading;
 mod roots;
 mod toy;
