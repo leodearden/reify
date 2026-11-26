@@ -5,7 +5,6 @@
 //! and printed in this form and converted to the core's only through its
 //! public constructors.
 
-use std::any::type_name;
 use std::collections::BTreeMap;
 
 use reify_eval_core::{Binding, Declaration, Input, InputKey, Kind, KindId, Path, Ref, Root, Step};
@@ -157,16 +156,6 @@ impl Val {
             Val::Bool(value) => Input::of(*value),
             Val::Members(members) => Input::of(toy::Members(core_members(members))),
             Val::Decl(decl) => Input::of(decl.to_core()),
-        }
-    }
-
-    /// The name of the Rust type the core holds this value as.
-    pub fn type_name(&self) -> &'static str {
-        match self {
-            Val::Int(_) => type_name::<i64>(),
-            Val::Bool(_) => type_name::<bool>(),
-            Val::Members(_) => type_name::<toy::Members>(),
-            Val::Decl(_) => type_name::<Declaration>(),
         }
     }
 }

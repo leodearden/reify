@@ -34,6 +34,27 @@ pub enum HostEvent {
     },
 }
 
+impl Case {
+    /// The inputs of each snapshot, by index: the initial inputs, then
+    /// each Edit applied to the inputs of the snapshot it starts from.
+    pub fn snapshots(&self) -> Vec<Inputs> {
+        let mut snapshots = vec![self.inputs.clone()];
+        for event in &self.events {
+            if let HostEvent::Edit { from, changes } = event {
+                let mut next = snapshots[*from].clone();
+                for (key, value) in changes {
+                    match value {
+                        Some(value) => next.insert(key.clone(), value.clone()),
+                        None => next.remove(key),
+                    };
+                }
+                snapshots.push(next);
+            }
+        }
+        snapshots
+    }
+}
+
 /// What becomes of a request once its event is over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Then {

@@ -5,14 +5,16 @@
 //! same paths in another order answers the same (the order check). What
 //! the run reached is counted, so a test can show it is not vacuous.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use reify_eval_core::{Core, Path, RequestError};
+use reify_eval_core::{
+    Answer, Core, Demand, Erased, Event, Path, Request, RequestError, RequestId, Snapshot,
+};
 
-use super::case::Case;
-use super::design::ModelPath;
-use super::reference::Invalid;
+use super::case::{Case, HostEvent, Then};
+use super::design::{Inputs, ModelPath, Val, to_core};
+use super::reference::{Invalid, Reference};
 use super::seen::Seen;
 
 /// A shape of design or event a run reached, counted to show the run is
@@ -37,6 +39,10 @@ pub struct Reach {
 }
 
 impl Reach {
+    fn reached(&mut self, shape: Shape) {
+        *self.shapes.entry(shape).or_default() += 1;
+    }
+
     /// How many final answers were checked on snapshot `snapshot`.
     pub fn checked_on(&self, snapshot: usize) -> u64 {
         self.checked.get(&snapshot).copied().unwrap_or(0)
@@ -202,8 +208,263 @@ impl fmt::Display for Mismatch {
 /// Runs `case` on a core `make_core` builds, checking after every host
 /// event.
 pub fn check(case: &Case, make_core: &dyn Fn() -> Core) -> Result<Reach, Mismatch> {
-    let _ = (case, make_core);
-    Ok(Reach::default())
+    let mut session = Session::new(case, make_core());
+    for (at, event) in case.events.iter().enumerate() {
+        session.host_event(at, event)?;
+    }
+    session.finish(case.events.len())?;
+    Ok(session.reach)
+}
+
+/// A request the session opened, live while it holds the handle.
+struct Opened {
+    handle: Option<Request>,
+    snapshot: usize,
+    /// The host event that opened it.
+    event: usize,
+    /// Whether a Drive left it live, unfinished.
+    left_live: bool,
+    demanded: BTreeMap<Path, ModelPath>,
+    told: BTreeSet<Path>,
+}
+
+/// The first final answer at a path of a snapshot.
+struct First {
+    snapshot: usize,
+    path: Path,
+    seen: Seen,
+}
+
+struct Session {
+    core: Core,
+    models: Vec<Inputs>,
+    snapshots: Vec<Snapshot>,
+    references: Vec<Option<Reference>>,
+    requests: BTreeMap<RequestId, Opened>,
+    first: Vec<First>,
+    answered: BTreeSet<(usize, Path)>,
+    reach: Reach,
+}
+
+impl Session {
+    fn new(case: &Case, mut core: Core) -> Self {
+        let models = case.snapshots();
+        let initial = core.snapshot(to_core(&models[0]));
+        Self {
+            references: models.iter().map(|_| None).collect(),
+            models,
+            snapshots: vec![initial],
+            core,
+            requests: BTreeMap::new(),
+            first: Vec::new(),
+            answered: BTreeSet::new(),
+            reach: Reach::default(),
+        }
+    }
+
+    fn host_event(&mut self, at: usize, event: &HostEvent) -> Result<(), Mismatch> {
+        match event {
+            HostEvent::Edit { from, changes } => {
+                if *from + 1 != self.snapshots.len() {
+                    self.reach.reached(Shape::EditFromNonLatest);
+                }
+                let changed = changes
+                    .iter()
+                    .map(|(key, value)| (key.to_core(), value.as_ref().map(Val::to_core)));
+                let next = self.snapshot(at, *from).edit(changed);
+                self.snapshots.push(next);
+                self.take_events(at)
+            }
+            HostEvent::Evaluate { on, paths, then } => {
+                let request = self.open(at, *on, paths, false);
+                self.core.run();
+                self.close(request, *then);
+                self.take_events(at)?;
+                self.complete(at, Some(request))
+            }
+            HostEvent::Drive {
+                on,
+                paths,
+                turns,
+                then,
+            } => {
+                let request = self.open(at, *on, paths, *then == Then::Leave);
+                for _ in 0..*turns {
+                    self.core.turn();
+                }
+                if *turns == 0 && *then == Then::End {
+                    self.reach.reached(Shape::DriveZeroEnded);
+                }
+                self.close(request, *then);
+                self.take_events(at)
+            }
+        }
+    }
+
+    /// After the last event: runs what is left, checks it, and ends every
+    /// live request.
+    fn finish(&mut self, at: usize) -> Result<(), Mismatch> {
+        self.core.run();
+        self.take_events(at)?;
+        self.complete(at, None)?;
+        let live: Vec<_> = self.requests.keys().copied().collect();
+        for request in live {
+            self.close(request, Then::End);
+        }
+        self.core.drain();
+        Ok(())
+    }
+
+    fn snapshot(&self, at: usize, index: usize) -> &Snapshot {
+        self.snapshots
+            .get(index)
+            .unwrap_or_else(|| panic!("event {at} names snapshot {index}, which is not made yet"))
+    }
+
+    fn open(&mut self, at: usize, on: usize, paths: &[ModelPath], left_live: bool) -> RequestId {
+        let demanded: BTreeMap<_, _> = paths
+            .iter()
+            .map(|path| (path.to_core(), path.clone()))
+            .collect();
+        let snapshot = self.snapshot(at, on).clone();
+        let handle = self
+            .core
+            .evaluate(&snapshot, Demand::of(demanded.keys().cloned()));
+        let id = handle.id();
+        let opened = Opened {
+            handle: Some(handle),
+            snapshot: on,
+            event: at,
+            left_live,
+            demanded,
+            told: BTreeSet::new(),
+        };
+        self.requests.insert(id, opened);
+        id
+    }
+
+    fn close(&mut self, request: RequestId, then: Then) {
+        if then == Then::End {
+            let opened = self.requests.get_mut(&request);
+            if let Some(handle) = opened.and_then(|opened| opened.handle.take()) {
+                self.core.end(handle);
+            }
+        }
+    }
+
+    fn take_events(&mut self, at: usize) -> Result<(), Mismatch> {
+        for event in self.core.take_events() {
+            match event {
+                Event::Answered {
+                    request,
+                    path,
+                    answer,
+                    ..
+                } => self.answered(at, request, path, answer)?,
+                Event::Ended { request, error, .. } => {
+                    let snapshot = self.opened(request).snapshot;
+                    return Err(Mismatch::Ended {
+                        event: at,
+                        snapshot,
+                        error,
+                    });
+                }
+                Event::Progress { .. } => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn opened(&mut self, request: RequestId) -> &mut Opened {
+        self.requests
+            .get_mut(&request)
+            .expect("the core tells only requests this session opened")
+    }
+
+    /// Checks the answer `request` was told at `path` after event `at`.
+    fn answered(
+        &mut self,
+        at: usize,
+        request: RequestId,
+        path: Path,
+        answer: Answer<Erased>,
+    ) -> Result<(), Mismatch> {
+        let opened = self.opened(request);
+        let snapshot = opened.snapshot;
+        let late_for_left_live = opened.left_live && opened.event < at;
+        let Some(model_path) = opened.demanded.get(&path).cloned() else {
+            return Err(Mismatch::Unasked {
+                event: at,
+                snapshot,
+                path,
+            });
+        };
+        if !opened.told.insert(path.clone()) {
+            return Err(Mismatch::Twice {
+                event: at,
+                snapshot,
+                path: model_path,
+            });
+        }
+        let expected = self
+            .reference(snapshot)
+            .answer(&model_path)
+            .map_err(|invalid| Mismatch::Invalid {
+                event: at,
+                snapshot,
+                invalid,
+            })?;
+        let (core, reference) = (Seen::of_answer(answer), Seen::of_expected(&expected.outcome));
+        if core != reference {
+            return Err(Mismatch::Reference {
+                event: at,
+                snapshot,
+                path: model_path,
+                core,
+                reference,
+            });
+        }
+        *self.reach.checked.entry(snapshot).or_default() += 1;
+        if late_for_left_live {
+            self.reach.reached(Shape::LeftLiveAnswer);
+        }
+        if self.answered.insert((snapshot, path.clone())) {
+            self.first.push(First {
+                snapshot,
+                path,
+                seen: core,
+            });
+        }
+        Ok(())
+    }
+
+    fn reference(&mut self, snapshot: usize) -> &mut Reference {
+        let model = &self.models[snapshot];
+        self.references[snapshot].get_or_insert_with(|| Reference::new(model.clone()))
+    }
+
+    /// Every live request, and `this` request, holds an answer at each
+    /// path it demanded: the core is idle, so none is still coming.
+    fn complete(&self, at: usize, this: Option<RequestId>) -> Result<(), Mismatch> {
+        let owed = self
+            .requests
+            .iter()
+            .filter(|(id, opened)| opened.handle.is_some() || Some(**id) == this);
+        for (_, opened) in owed {
+            let missing = opened
+                .demanded
+                .iter()
+                .find(|(path, _)| !opened.told.contains(*path));
+            if let Some((_, path)) = missing {
+                return Err(Mismatch::Unanswered {
+                    event: at,
+                    snapshot: opened.snapshot,
+                    path: path.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
 }
 
 mod tests {
