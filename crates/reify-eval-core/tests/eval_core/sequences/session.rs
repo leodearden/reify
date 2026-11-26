@@ -10,12 +10,12 @@ use std::fmt;
 
 use reify_eval_core::{
     Answer, Core, Demand, Erased, Event, Failure, Path, Request, RequestError, RequestId, Snapshot,
-    Step,
+    Step, Store,
 };
 
 use super::case::{Case, HostEvent, Then};
 use super::design::{Inputs, ModelPath, ModelRef, ToyKind, Val, to_core};
-use super::order::{Answered, OrderMismatch, order_check};
+use super::fresh::{Answered, FreshMismatch, Order, fresh_check};
 use super::reference::{Expect, Expected, Invalid, Out, Reference};
 use super::seen::Seen;
 use crate::toy;
@@ -160,6 +160,22 @@ pub enum Mismatch {
         snapshot: usize,
         error: RequestError,
     },
+    /// A fresh core built on the session core's selection (check 2),
+    /// asked in the session's order, answered otherwise.
+    Fresh {
+        snapshot: usize,
+        path: ModelPath,
+        session: Box<Seen>,
+        fresh: Box<Seen>,
+    },
+    /// A fresh core built on the session core's selection told no answer
+    /// at a path the session answered: it ended the request with `ended`,
+    /// or left it with neither.
+    FreshUnanswered {
+        snapshot: usize,
+        path: ModelPath,
+        ended: Option<RequestError>,
+    },
     /// A fresh core, asked in another order, answered otherwise.
     Order {
         snapshot: usize,
@@ -193,6 +209,8 @@ pub enum MismatchKind {
     Unasked,
     Twice,
     Ended,
+    Fresh,
+    FreshUnanswered,
     Order,
     OrderUnanswered,
     Invalid,
@@ -206,6 +224,8 @@ impl Mismatch {
             Mismatch::Unasked { .. } => MismatchKind::Unasked,
             Mismatch::Twice { .. } => MismatchKind::Twice,
             Mismatch::Ended { .. } => MismatchKind::Ended,
+            Mismatch::Fresh { .. } => MismatchKind::Fresh,
+            Mismatch::FreshUnanswered { .. } => MismatchKind::FreshUnanswered,
             Mismatch::Order { .. } => MismatchKind::Order,
             Mismatch::OrderUnanswered { .. } => MismatchKind::OrderUnanswered,
             Mismatch::Invalid { .. } => MismatchKind::Invalid,
@@ -262,6 +282,25 @@ impl fmt::Display for Mismatch {
                 f,
                 "after event {event}, the core ended a request on snapshot {snapshot}: {error:?}"
             ),
+            Mismatch::Fresh {
+                snapshot,
+                path,
+                session,
+                fresh,
+            } => write!(
+                f,
+                "at {path:?} on snapshot {snapshot}: the session answered {session:?}, a fresh \
+                 core built on the session's selection {fresh:?}"
+            ),
+            Mismatch::FreshUnanswered {
+                snapshot,
+                path,
+                ended,
+            } => write!(
+                f,
+                "at {path:?} on snapshot {snapshot}: a fresh core built on the session's \
+                 selection told no answer, the request ended with {ended:?}"
+            ),
             Mismatch::Order {
                 snapshot,
                 path,
@@ -293,20 +332,31 @@ impl fmt::Display for Mismatch {
     }
 }
 
-/// A core with the honest toy kinds of structure.
-pub fn toy_core() -> Core {
-    toy::with_structure().build()
+/// A core with the honest toy kinds of structure, built on `store`.
+pub fn toy_core(store: Store) -> Core {
+    toy::with_structure().on_store(store).build()
 }
 
-/// Runs `case` on a core `make_core` builds, checking after every host
-/// event.
-pub fn check(case: &Case, make_core: &dyn Fn() -> Core) -> Result<Reach, Mismatch> {
-    let mut session = Session::new(case, make_core());
+/// Which check asked a fresh core.
+#[derive(Clone, Copy)]
+enum FreshCheck {
+    /// Check 2: on the session core's selection, in the session's order.
+    Selection,
+    /// The order check: on an empty store, latest first.
+    Order,
+}
+
+/// Runs `case` on a core `make_core` builds on an empty store, checking
+/// after every host event; then check 2 and the order check, each on a
+/// core `make_core` builds on the store that check names.
+pub fn check(case: &Case, make_core: &dyn Fn(Store) -> Core) -> Result<Reach, Mismatch> {
+    let mut session = Session::new(case, make_core(Store::default()));
     for (at, event) in case.events.iter().enumerate() {
         session.host_event(at, event)?;
     }
     session.finish(case.events.len())?;
-    session.order_check(make_core)?;
+    session.fresh_check(FreshCheck::Selection, make_core)?;
+    session.fresh_check(FreshCheck::Order, make_core)?;
     Ok(session.reach)
 }
 
@@ -403,40 +453,79 @@ impl Session {
         Ok(())
     }
 
-    /// A fresh core asked for every answered path in reverse order gives
-    /// the same answers.
-    fn order_check(&mut self, make_core: &dyn Fn() -> Core) -> Result<(), Mismatch> {
+    /// A fresh core asked for every answered path gives the same answers.
+    /// Check 2 builds it on the session core's selection and asks in the
+    /// session's order. Every result is treated as deterministic until leaf
+    /// ο, so none is selected; ο selects those that are not. The order
+    /// check builds it on an empty store and asks latest first.
+    fn fresh_check(
+        &mut self,
+        check: FreshCheck,
+        make_core: &dyn Fn(Store) -> Core,
+    ) -> Result<(), Mismatch> {
+        let (core, order) = match check {
+            FreshCheck::Selection => (
+                make_core(self.core.selected_store(|_| false)),
+                Order::Session,
+            ),
+            FreshCheck::Order => (make_core(Store::default()), Order::Reverse),
+        };
         let snapshots: Vec<_> = self.models.iter().map(to_core).collect();
-        let compared = order_check(make_core, &snapshots, &self.first, Seen::of_answer)
-            .map_err(|mismatch| self.order_mismatch(mismatch))?;
-        let compared = u64::try_from(compared).expect("a count fits u64");
-        *self.reach.shapes.entry(Shape::OrderComparison).or_default() += compared;
+        let compared = fresh_check(core, order, &snapshots, &self.first, Seen::of_answer)
+            .map_err(|mismatch| self.fresh_mismatch(check, mismatch))?;
+        if let FreshCheck::Order = check {
+            let compared = u64::try_from(compared).expect("a count fits u64");
+            *self.reach.shapes.entry(Shape::OrderComparison).or_default() += compared;
+        }
         Ok(())
     }
 
-    /// `mismatch`, at the model path the session demanded.
-    fn order_mismatch(&self, mismatch: OrderMismatch<Seen>) -> Mismatch {
+    /// `mismatch`, found by `check`, at the model path the session
+    /// demanded.
+    fn fresh_mismatch(&self, check: FreshCheck, mismatch: FreshMismatch<Seen>) -> Mismatch {
         match mismatch {
-            OrderMismatch::Differs {
+            FreshMismatch::Differs {
                 snapshot,
                 path,
                 session,
                 fresh,
-            } => Mismatch::Order {
-                snapshot,
-                path: self.model_path(&path),
-                session: Box::new(session),
-                fresh: Box::new(fresh),
-            },
-            OrderMismatch::Unanswered {
+            } => {
+                let (path, session, fresh) =
+                    (self.model_path(&path), Box::new(session), Box::new(fresh));
+                match check {
+                    FreshCheck::Selection => Mismatch::Fresh {
+                        snapshot,
+                        path,
+                        session,
+                        fresh,
+                    },
+                    FreshCheck::Order => Mismatch::Order {
+                        snapshot,
+                        path,
+                        session,
+                        fresh,
+                    },
+                }
+            }
+            FreshMismatch::Unanswered {
                 snapshot,
                 path,
                 ended,
-            } => Mismatch::OrderUnanswered {
-                snapshot,
-                path: self.model_path(&path),
-                ended,
-            },
+            } => {
+                let path = self.model_path(&path);
+                match check {
+                    FreshCheck::Selection => Mismatch::FreshUnanswered {
+                        snapshot,
+                        path,
+                        ended,
+                    },
+                    FreshCheck::Order => Mismatch::OrderUnanswered {
+                        snapshot,
+                        path,
+                        ended,
+                    },
+                }
+            }
         }
     }
 
