@@ -5,9 +5,11 @@
 //! subject, with any kind only one of its tests uses.
 
 mod belonging;
+mod bindings;
 mod bodies;
 mod building;
 mod ending;
+mod growth;
 mod hash;
 mod reading;
 mod roots;

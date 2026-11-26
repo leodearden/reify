@@ -3,7 +3,7 @@
 //! snapshot inputs and reading the answers a request received.
 
 use std::any::{Any, type_name};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -37,20 +37,88 @@ impl Kind for Cell {
     }
 }
 
+/// A cell that adds what `terms` name, bound at "0", "1", … in order.
+pub fn cell_over(terms: impl IntoIterator<Item = Binding>) -> Declaration {
+    terms
+        .into_iter()
+        .enumerate()
+        .fold(Declaration::new(Cell::ID), |declaration, (index, term)| {
+            declaration.bind(index.to_string(), term)
+        })
+}
+
 /// A cell over the host-named inputs `names`, bound at "0", "1", … in order.
 pub fn cell(names: &[&str]) -> Declaration {
-    names
-        .iter()
-        .enumerate()
-        .fold(Declaration::new(Cell::ID), |declaration, (index, name)| {
-            declaration.bind(index.to_string(), Binding::Input(InputKey::named(*name)))
-        })
+    cell_over(names.iter().map(|name| input(name)))
+}
+
+/// A binding to the host-named input `name`.
+pub fn input(name: &str) -> Binding {
+    Binding::Input(InputKey::named(name))
+}
+
+/// A binding to the place `steps` down from the bound node's declarer:
+/// `sibling(&["b"])` names the declarer's member `b`.
+pub fn sibling(steps: &[&str]) -> Binding {
+    Binding::Declarer(steps.iter().map(|step| Step::named(*step)).collect())
 }
 
 pub fn with_cell() -> Builder {
     Builder::new()
         .kind::<Cell>()
         .expect("a fresh builder has no kinds")
+}
+
+/// What a scope declares: a declaration at each step.
+#[derive(Debug, Clone, Default)]
+pub struct Members(pub BTreeMap<Step, Declaration>);
+
+/// Members, each at a named step.
+pub fn members<'a>(named: impl IntoIterator<Item = (&'a str, Declaration)>) -> Members {
+    Members(
+        named
+            .into_iter()
+            .map(|(step, declaration)| (Step::named(step), declaration))
+            .collect(),
+    )
+}
+
+/// Declares the members it reads at binding "members"; its value is what
+/// it read.
+pub struct Scope;
+
+impl Kind for Scope {
+    type Out = Members;
+    const ID: KindId = KindId("toy.scope");
+
+    async fn run(cx: &Cx) -> Produced<Members> {
+        Produced::Outcome(cx.read::<Members>(&Ref::binding("members")).await)
+    }
+
+    fn declares(out: &Members, step: &Step) -> Option<Declaration> {
+        out.0.get(step).cloned()
+    }
+}
+
+/// A scope whose members are the host-named input `members`.
+pub fn scope(members: &str) -> Declaration {
+    Declaration::new(Scope::ID).bind("members", input(members))
+}
+
+/// The inputs of root scope `name` with `members`: the members under the
+/// host-named input "`name`.members", and the root's declaration.
+pub fn root_scope(name: &str, members: Members) -> [(InputKey, Input); 2] {
+    let input = format!("{name}.members");
+    [
+        (InputKey::named(input.as_str()), Input::of(members)),
+        root(name, scope(&input)),
+    ]
+}
+
+pub fn with_scope() -> Builder {
+    with_cell()
+        .kind::<Scope>()
+        .expect("toy kind ids are distinct")
 }
 
 /// A box the toy kernel made, by the number it handed out.
