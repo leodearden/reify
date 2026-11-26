@@ -714,8 +714,9 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         // populated at both arities, just by different parameters. A bounds
         // check cannot tell those two situations apart.
         //
-        // Coupling: task 5351 owns the value forms, and `linear_pattern` /
-        // `linear_pattern_2d` are already forward-compat-guarded for it.
+        // The linear pattern value forms landed in direction-typing ι-c as
+        // REPLACEMENTS, not overloads: `linear_pattern` and `linear_pattern_2d`
+        // are single-form, so their arms below are arity-agnostic.
         //
         // # What now enforces this
         //
@@ -1076,8 +1077,8 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         //   gradualism as the rest of the table; adding the ANGLE slots means
         //   migrating those call sites first.
         //
-        // The arity guard is forward-compat, matching `linear_pattern`'s: 4 is
-        // the only accepted arity today (the eval arm returns Undef otherwise),
+        // The arity guard is forward-compat: 4 is the only accepted arity
+        // today (the eval arm returns Undef otherwise),
         // so without it a future overload would silently inherit a slot at an
         // index that denotes a different parameter.
         "orient_euler" if arg_count == 4 => &[CheckableArg {
@@ -4096,8 +4097,8 @@ mod tests {
     /// backed by an OPEN lowering tail does not silently become wrong when
     /// [`MAX_PROBED_ARITY`] moves. If an entry disagrees with the probe,
     /// INVESTIGATE — a name that GAINED an accepted arity is exactly FINDING 2's
-    /// hazard arriving (task 5351's value forms are the named motivating case) —
-    /// rather than blindly re-pinning the new value.
+    /// hazard arriving (direction-typing ι-b's `revolve` Axis form was a worked
+    /// case) — rather than blindly re-pinning the new value.
     ///
     /// The slotted names deliberately absent from this list are recorded, with
     /// the measurement that justifies their absence, in
@@ -4153,7 +4154,7 @@ mod tests {
         // the 3-arg Direction one (direction-typing ι-a; any other arity reads
         // "rotate() expects 2 or 3 arguments: rotate(geo, orientation) or
         // rotate(geo, dir(x, y, z), angle), got {n}") — and is safe under the
-        // coupling rule the way the pattern rows below are: its arm carries a
+        // coupling rule the way `mirror`'s row below is: its arm carries a
         // load-bearing `if arg_count ==` guard, so the two arities expose
         // DIFFERENT slot sets and no MULTI_ARITY_AGNOSTIC_SAFE exemption is
         // needed or permitted.
@@ -4208,7 +4209,7 @@ mod tests {
     /// Euler builtins, nor direction-typing σ's `frame_at`. Nobody should read
     /// the guard as broader than that. The nine selectors plus `generate` are
     /// also the names least exposed to the hazard: none is overloaded today,
-    /// and a value-form overload is a producer-side notion (task 5351).
+    /// and a value-form overload is a producer-side notion.
     ///
     /// The two Euler builtins and `frame_at` are unobservable for a DIFFERENT
     /// reason worth stating, because it is not the selectors': they have no

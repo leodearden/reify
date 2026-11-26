@@ -3997,7 +3997,7 @@
     /// WHY THE UNDEF ROUTE, not a bare `spacing`: the bare-spacing route is
     /// SHADOWED. `linear_pattern` has a compile-layer LENGTH slot
     /// (`reify-compiler`'s `builtin_signatures.rs`), so
-    /// `linear_pattern(b, 1, 0, 0, 3, 20)` is rejected at COMPILE with a
+    /// `linear_pattern(b, dir(1, 0, 0), 3, 20)` is rejected at COMPILE with a
     /// message minted by `ArgRejection::message` from the DSL builtin name —
     /// already correct, and never routed through `PatternKind::Display`. The
     /// UNRESOLVED (`Undef`) arm of `required_length_arg` is the reachable route
