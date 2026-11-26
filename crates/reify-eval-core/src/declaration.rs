@@ -19,9 +19,6 @@ pub struct Declaration {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Binding {
     Input(InputKey),
-    /// The snapshot input of that name attached to the bound node's own
-    /// path.
-    Attached(Arc<str>),
     /// The bound node's declarer's own place, then `steps` down.
     Declarer(Vec<Step>),
     /// What the ref names when read by the bound node's declarer: one of
@@ -74,9 +71,6 @@ impl Binding {
             Binding::Input(key) => {
                 encoder.tag("binding.input");
                 key.encode(encoder);
-            }
-            Binding::Attached(name) => {
-                encoder.tag("binding.attached").text(name);
             }
             Binding::Declarer(steps) => {
                 encoder
