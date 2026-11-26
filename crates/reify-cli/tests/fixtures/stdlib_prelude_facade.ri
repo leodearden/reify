@@ -1,11 +1,11 @@
 // Fixture for the std.prelude facade (task #5502, stdlib-namespace ι): the
-// only import is `import std.prelude`, which brings Length/mm, unwrap_or and
-// the simulation_ready purpose.
+// file's only import is `import std.prelude`, which must resolve with no
+// unresolved-import warning.
 module stdlib_prelude_facade
 
 import std.prelude
 
-structure Part {
+structure Bracket {
     param width : Length = 80mm
     param height : Length = 60mm
     let bore : Length = unwrap_or(parse_length("garbage"), 6mm)

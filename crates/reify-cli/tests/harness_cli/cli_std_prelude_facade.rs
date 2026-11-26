@@ -12,12 +12,19 @@ fn facade_fixture() -> String {
     common::fixture_path("stdlib_prelude_facade.ri")
 }
 
+fn assert_std_prelude_resolved(stdout: &str, stderr: &str) {
+    assert!(
+        !stdout.contains(UNRESOLVED_IMPORT) && !stderr.contains(UNRESOLVED_IMPORT),
+        "`import std.prelude` must resolve.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+}
+
 #[test]
 fn check_with_simulation_ready_passes_on_a_std_prelude_only_file() {
     let (status, stdout, stderr) = common::run_with_args(&[
         "check",
         "--purpose",
-        "simulation_ready=Part",
+        "simulation_ready=Bracket",
         &facade_fixture(),
     ]);
     assert!(
@@ -28,10 +35,7 @@ fn check_with_simulation_ready_passes_on_a_std_prelude_only_file() {
         stdout.contains("All constraints satisfied."),
         "simulation_ready should be satisfied.\nstdout: {stdout}\nstderr: {stderr}"
     );
-    assert!(
-        !stdout.contains(UNRESOLVED_IMPORT) && !stderr.contains(UNRESOLVED_IMPORT),
-        "`import std.prelude` must resolve.\nstdout: {stdout}\nstderr: {stderr}"
-    );
+    assert_std_prelude_resolved(&stdout, &stderr);
 }
 
 #[test]
@@ -42,7 +46,8 @@ fn eval_recovers_through_unwrap_or_on_a_std_prelude_only_file() {
         "eval should succeed.\nstdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
-        stdout.contains("Part.bore = 0.006 m"),
+        stdout.contains("Bracket.bore = 0.006 m"),
         "unwrap_or should recover bore to 6mm.\nstdout: {stdout}\nstderr: {stderr}"
     );
+    assert_std_prelude_resolved(&stdout, &stderr);
 }
