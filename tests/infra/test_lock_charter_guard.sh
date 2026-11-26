@@ -300,6 +300,7 @@ rs
 scss
 service
 sh
+stderr
 step
 stl
 svg
