@@ -2,11 +2,20 @@
 """
 test_canon_cache_units.py — stdlib unittest for scripts/canon_cache.py, the
 cache half of the canonical-build-path primitive (dark-factory
-plans/canonical-build-path-shared-cache-prd.md C4-C6): the per-policy cargo
-and command environment, the host.toml cache settings, real-sccache
-resolution and the fallback directory.
+plans/canonical-build-path-shared-cache-prd.md C4-C7): C4's per-policy cargo
+and command environment table and its CARGO_HOME pin, the environment's server
+invariant, the host.toml cache settings, real-sccache resolution with the
+marker reader and PATH walk canon_run shares, the fallback directory, the
+guard, the backend choice and status's store check, the private session
+(start, start-up retry, its three waits, the stale session-file sweep,
+teardown), the build_cache writer, supervise's measurement and signal policy,
+and exit_like.
 
-No case enters a mount namespace or starts a real sccache.
+The store link itself (probe, relay, watchdog) lives in scripts/canon_store.py
+since task 10441; its cases are in test_canon_store_units.py.
+
+Every session runs canon_cache_fixture's fake sccache; no case enters a mount
+namespace or starts a real sccache.
 
 WHAT RUNS THIS: run_all.sh discovers `test_*.sh` only, so the discovered member
 is the thin wrapper tests/infra/test_canon_cache_units.sh.
