@@ -115,8 +115,8 @@ pub fn candidates(case: &Case) -> Vec<Case> {
 
 /// A measure each candidate of a case strictly lowers: a count of its
 /// events, paths, steps, inputs, changes and bindings, a Drive above an
-/// Evaluate, a request left above one ended, a structure kind above a
-/// cell, and an int by its distance from zero.
+/// Evaluate, a request left above one ended, any other kind above a cell,
+/// and an int by its distance from zero.
 pub fn size(case: &Case) -> u64 {
     let inputs: u64 = case
         .inputs
@@ -270,8 +270,8 @@ fn smaller_values(value: &Val) -> Vec<Val> {
     }
 }
 
-/// A structure made a cell with no terms, a binding dropped, or a
-/// binding's steps shortened by one.
+/// A declaration of any other kind made a cell with no terms, a binding
+/// dropped, or a binding's steps shortened by one.
 fn smaller_decls(of: &Decl) -> Vec<Decl> {
     let mut smaller = Vec::new();
     if of.kind != ToyKind::Cell {

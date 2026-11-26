@@ -1,5 +1,6 @@
 //! Seeded random cases: a toy design of cells and, as features allow,
-//! scopes, guards and collections, and a sequence of host events on it.
+//! scopes, guards, collections, dividing cells, and shapes and measures on
+//! the toy kernel, and a sequence of host events on it.
 //! Every design is acyclic by construction (the ordinal rule: member m_k
 //! reaches through its declarer only the declarer itself or members m_j
 //! with j < k), and a feature that is off draws nothing from the rng, so
@@ -13,8 +14,8 @@ use reify_eval_core::Step;
 use super::case::{Case, HostEvent, Then, edited};
 use super::design::{
     Decl, Inputs, Key, ModelPath, ToyKind, Val, attached_to, cell, collection, declaration,
-    declarer, flag, guard, index, input, int, members, named, passed, path, picker, root, scope,
-    step,
+    declarer, divided, flag, guard, index, input, int, measure, members, named, passed, path,
+    picker, root, scope, shape, step,
 };
 use super::rng::XorShift64Star;
 
@@ -22,10 +23,10 @@ use super::rng::XorShift64Star;
 pub const GATE_SEEDS: RangeInclusive<u64> = 1..=64;
 pub const GATE_EVENTS: usize = 16;
 
-/// The case G0 runs for `seed`: every feature the gate switches on, and
-/// `GATE_EVENTS` host events.
+/// The case G0 runs for `seed`: every feature, and `GATE_EVENTS` host
+/// events.
 pub fn gate_case(seed: u64) -> Case {
-    generate(seed, Features::structure(), GATE_EVENTS)
+    generate(seed, Features::every(), GATE_EVENTS)
 }
 
 /// The gate's case for each of `GATE_SEEDS`, with its seed.
@@ -33,21 +34,37 @@ pub fn gate_cases() -> impl Iterator<Item = (u64, Case)> {
     GATE_SEEDS.map(|seed| (seed, gate_case(seed)))
 }
 
-/// Which toy kinds a design may use besides cells.
+/// Which toy kinds a design may use besides cells, and whether its cells
+/// may divide.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Features {
     pub scope: bool,
     pub guard: bool,
     pub collection: bool,
+    /// Member cells binding a divisor.
+    pub divide: bool,
+    /// Shapes and measures, on the toy kernel.
+    pub kernel: bool,
 }
 
 impl Features {
-    /// Every kind of structure.
+    /// Every kind of structure, and nothing else.
     pub fn structure() -> Self {
         Self {
             scope: true,
             guard: true,
             collection: true,
+            divide: false,
+            kernel: false,
+        }
+    }
+
+    /// Every feature: the set the gate runs.
+    pub fn every() -> Self {
+        Self {
+            divide: true,
+            kernel: true,
+            ..Self::structure()
         }
     }
 }
@@ -197,6 +214,7 @@ impl Generator {
             ToyKind::Scope => self.scope_at(&at, 0, needed),
             ToyKind::Guard => self.guard_at(&at, 0, None, needed),
             ToyKind::Collection => self.collection_at(&at, &[], needed),
+            ToyKind::Shape | ToyKind::Measure => unreachable!("a root is never on the kernel"),
         }
     }
 
@@ -223,15 +241,34 @@ impl Generator {
             kinds.push(ToyKind::Collection);
         }
         match *self.rng.choose(&kinds) {
-            ToyKind::Cell => self.member_cell(&at, level.kind, earlier),
+            ToyKind::Cell if self.features.kernel && self.rng.chance(1, 3) => {
+                self.on_kernel(earlier)
+            }
+            ToyKind::Cell => self.member_cell(&at, level.kind, earlier, needed),
             ToyKind::Scope => self.scope_at(&at, depth, needed),
             ToyKind::Guard => self.guard_at(&at, depth, Some(level.kind), needed),
             ToyKind::Collection => self.collection_at(&at, earlier, needed),
+            ToyKind::Shape | ToyKind::Measure => unreachable!("the kernel takes a cell's place"),
         }
     }
 
+    /// A measure of an earlier shape, or a shape over an int input.
+    fn on_kernel(&mut self, earlier: &[Sibling]) -> Decl {
+        let shapes = of_kind(earlier, ToyKind::Shape);
+        if !shapes.is_empty() && self.rng.chance(1, 2) {
+            return measure(declarer([member_step(*self.rng.choose(&shapes))]));
+        }
+        shape(input(&self.some_int()))
+    }
+
     /// A picker of an earlier collection, or a cell of terms.
-    fn member_cell(&mut self, at: &ModelPath, declarer_kind: ToyKind, earlier: &[Sibling]) -> Decl {
+    fn member_cell(
+        &mut self,
+        at: &ModelPath,
+        declarer_kind: ToyKind,
+        earlier: &[Sibling],
+        needed: &mut Needed,
+    ) -> Decl {
         let collections = of_kind(earlier, ToyKind::Collection);
         if self.features.collection && !collections.is_empty() && self.rng.chance(1, 2) {
             let cells = of_kind(earlier, ToyKind::Cell);
@@ -243,7 +280,24 @@ impl Generator {
             let from = declarer([member_step(*self.rng.choose(&collections))]);
             return picker(pick, from);
         }
-        self.terms(at, earlier, Some(declarer_kind))
+        let terms = self.terms(at, earlier, Some(declarer_kind));
+        self.maybe_divided(terms, earlier, needed)
+    }
+
+    /// `cell`, or `cell` divided by an earlier sibling cell or by a new int
+    /// input, either often zero.
+    fn maybe_divided(&mut self, cell: Decl, earlier: &[Sibling], needed: &mut Needed) -> Decl {
+        if !(self.features.divide && self.rng.chance(1, 2)) {
+            return cell;
+        }
+        let cells = of_kind(earlier, ToyKind::Cell);
+        if !cells.is_empty() && self.rng.chance(1, 2) {
+            return divided(cell, declarer([member_step(*self.rng.choose(&cells))]));
+        }
+        let name = self.fresh("d");
+        needed.push((named(&name), int(self.rng.below(3) as i64)));
+        self.ints.push(name.clone());
+        divided(cell, input(&name))
     }
 
     /// A cell of up to three terms: mostly inputs, else earlier siblings,

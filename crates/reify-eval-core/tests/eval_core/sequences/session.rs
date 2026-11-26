@@ -9,8 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use reify_eval_core::{
-    Answer, Core, Demand, Erased, Event, Failure, Path, Request, RequestError, RequestId, Snapshot,
-    Step, Store,
+    Answer, Core, Demand, Erased, Event, Failure, Kind, Path, Request, RequestError, RequestId,
+    Snapshot, Step, Store,
 };
 
 use super::case::{Case, HostEvent, Then};
@@ -340,9 +340,13 @@ impl fmt::Display for Mismatch {
     }
 }
 
-/// A core with the honest toy kinds of structure, built on `store`.
+/// A core with every honest toy kind and the toy kernel, built on
+/// `store`.
 pub fn toy_core(store: Store) -> Core {
-    toy::with_structure().on_store(store).build()
+    toy::ungated(
+        toy::with_every_kind().on_store(store),
+        &toy::Watch::default(),
+    )
 }
 
 /// Which check asked a fresh core.
@@ -698,7 +702,17 @@ impl Session {
                 }
             }
             (Some(ToyKind::Collection), Expect::Value(_)) => reached.push(Shape::CollectionValue),
+            (Some(ToyKind::Shape), Expect::Value(_)) => reached.push(Shape::ShapeValue),
+            (Some(ToyKind::Measure), Expect::Value(_)) => reached.push(Shape::MeasureValue),
             (_, Expect::Failure(Failure::WrongType { .. })) => reached.push(Shape::WrongType),
+            (Some(ToyKind::Cell), Expect::Failure(Failure::OfKind { kind, code }))
+                if *kind == toy::Cell::ID && *code == toy::DIVISION_BY_ZERO =>
+            {
+                reached.push(Shape::DivisionByZero)
+            }
+            (Some(ToyKind::Cell), Expect::Failure(Failure::BlockedBy { .. })) => {
+                reached.push(Shape::BlockedBy)
+            }
             _ => {}
         }
         if let Some((parent, step)) = path.parent()

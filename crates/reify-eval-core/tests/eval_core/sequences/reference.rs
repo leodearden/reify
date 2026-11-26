@@ -3,8 +3,8 @@
 //! with no store, index or executor and no code shared with the core or the
 //! toy kinds' bodies. It remembers each path's answer within one snapshot,
 //! so a design whose nodes read one another many times stays linear, and it
-//! reports a design no evaluation can answer (a cycle, or a sum past i64)
-//! as invalid rather than as an outcome.
+//! reports a design no evaluation can answer (a cycle, or arithmetic past
+//! i64) as invalid rather than as an outcome.
 
 use std::any::type_name;
 use std::collections::{BTreeMap, BTreeSet};
@@ -39,6 +39,7 @@ pub enum Out {
     Members(BTreeMap<Step, Decl>),
     Elements { count: u64, element: Decl },
     Decl(Decl),
+    Shape { volume: i64 },
 }
 
 /// Why a path has no answer in this snapshot.
@@ -46,7 +47,7 @@ pub enum Out {
 pub enum Invalid {
     /// Answering `path` needs its own answer.
     Cycle { path: ModelPath },
-    /// The sum the cell at `path` adds is past i64.
+    /// What the node at `path` works out is past i64.
     Overflow { path: ModelPath },
 }
 
@@ -153,6 +154,8 @@ impl Reference {
             ToyKind::Scope => self.members(path, &decl)?,
             ToyKind::Guard => self.guard(path, &decl)?,
             ToyKind::Collection => self.collection(path, &decl)?,
+            ToyKind::Shape => self.shape(path, &decl)?,
+            ToyKind::Measure => self.measure(path, &decl)?,
         };
         Ok(Expected {
             node: Some(decl.kind),
@@ -376,6 +379,30 @@ impl Reference {
             Typed::Failure(failure) => Expect::Failure(failure),
         })
     }
+
+    /// A box whose volume is the cube of the i64 at "side".
+    fn shape(&mut self, at: &ModelPath, decl: &Rc<Decl>) -> Result<Expect, Invalid> {
+        Ok(match typed_int(self.read_binding(at, decl, "side")?) {
+            Typed::Value(side) => {
+                let volume = side
+                    .checked_mul(side)
+                    .and_then(|square| square.checked_mul(side))
+                    .ok_or_else(|| Invalid::Overflow { path: at.clone() })?;
+                Expect::Value(Out::Shape { volume })
+            }
+            Typed::Absent => Expect::Absent,
+            Typed::Failure(failure) => Expect::Failure(failure),
+        })
+    }
+
+    /// The volume of the box at "shape".
+    fn measure(&mut self, at: &ModelPath, decl: &Rc<Decl>) -> Result<Expect, Invalid> {
+        Ok(match typed_shape(self.read_binding(at, decl, "shape")?) {
+            Typed::Value(volume) => Expect::Value(Out::Int(volume)),
+            Typed::Absent => Expect::Absent,
+            Typed::Failure(failure) => Expect::Failure(failure),
+        })
+    }
 }
 
 /// The declaration a node of `kind` whose value is `out` gives the child
@@ -414,6 +441,7 @@ impl Out {
             Out::Members(_) => type_name::<toy::Members>(),
             Out::Elements { .. } => type_name::<toy::Elements>(),
             Out::Decl(_) => type_name::<Declaration>(),
+            Out::Shape { .. } => type_name::<toy::BoxShape>(),
         }
     }
 }
@@ -451,6 +479,14 @@ fn typed_bool(read: Expect) -> Typed<bool> {
 fn typed_members(read: Expect) -> Typed<BTreeMap<Step, Decl>> {
     typed(read, type_name::<toy::Members>(), |out| match out {
         Out::Members(members) => Some(members),
+        _ => None,
+    })
+}
+
+/// A box read as the toy kernel's box: its volume.
+fn typed_shape(read: Expect) -> Typed<i64> {
+    typed(read, type_name::<toy::BoxShape>(), |out| match out {
+        Out::Shape { volume } => Some(volume),
         _ => None,
     })
 }
