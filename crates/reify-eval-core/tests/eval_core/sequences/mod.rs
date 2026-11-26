@@ -7,5 +7,6 @@ mod design;
 mod generator;
 mod order;
 mod reference;
+mod rng;
 mod seen;
 mod session;

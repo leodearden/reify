@@ -41,13 +41,7 @@ impl Case {
         let mut snapshots = vec![self.inputs.clone()];
         for event in &self.events {
             if let HostEvent::Edit { from, changes } = event {
-                let mut next = snapshots[*from].clone();
-                for (key, value) in changes {
-                    match value {
-                        Some(value) => next.insert(key.clone(), value.clone()),
-                        None => next.remove(key),
-                    };
-                }
+                let next = edited(&snapshots[*from], changes);
                 snapshots.push(next);
             }
         }
@@ -74,6 +68,18 @@ impl Case {
             HostEvent::Evaluate { paths, .. } | HostEvent::Drive { paths, .. } => paths.iter(),
         })
     }
+}
+
+/// `inputs` with each `Some` in `changes` set and each `None` removed.
+pub fn edited(inputs: &Inputs, changes: &[(Key, Option<Val>)]) -> Inputs {
+    let mut next = inputs.clone();
+    for (key, value) in changes {
+        match value {
+            Some(value) => next.insert(key.clone(), value.clone()),
+            None => next.remove(key),
+        };
+    }
+    next
 }
 
 /// What becomes of a request once its event is over.
