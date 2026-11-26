@@ -1,8 +1,9 @@
 //! Seeded random cases: a toy design of cells and, as features allow,
 //! scopes, guards, collections, dividing cells, and shapes and measures on
 //! the toy kernel, and a sequence of host events on it. With dividing
-//! cells on, every members input ends in a pair: a cell dividing by an
-//! input held at zero, and a sibling cell blocked by it.
+//! cells on, every members input the generator makes ends in a pair: a
+//! cell dividing by an input held at zero, and a sibling cell blocked by
+//! it.
 //! Every design is acyclic by construction (the ordinal rule: member m_k
 //! reaches through its declarer only the declarer itself or members m_j
 //! with j < k), and a feature that is off draws nothing from the rng, so
@@ -89,6 +90,9 @@ pub fn generate(seed: u64, features: Features, events: usize) -> Case {
     let events = generator.events(&inputs, events);
     Case { inputs, events }
 }
+
+/// The prefix of the name of each blocked pair's input held at zero.
+const BLOCKED_PAIR_ZERO: &str = "z";
 
 /// The deepest a node that declares members may sit: a root is at depth
 /// 0, so the design nests at most three levels of nodes.
@@ -353,7 +357,8 @@ impl Generator {
         decl
     }
 
-    /// A new members input of one to four members, for the node at `at`.
+    /// A new members input for the node at `at`: one to four drawn members,
+    /// then, with divide on, the blocked pair.
     fn level(&mut self, at: &ModelPath, depth: usize, kind: ToyKind, needed: &mut Needed) -> Level {
         let count = 1 + self.rng.below(4);
         let mut level = Level {
@@ -388,7 +393,7 @@ impl Generator {
         let failing = level.ordinals;
         let blocked = failing + 1;
         level.ordinals += 2;
-        let zero = self.fresh("z");
+        let zero = self.fresh(BLOCKED_PAIR_ZERO);
         needed.push((named(&zero), int(0)));
         held.insert(member_step(failing), divided(cell([]), input(&zero)));
         held.insert(
@@ -604,7 +609,9 @@ mod tests {
     use super::super::case::{Case, HostEvent, Then};
     use super::super::design::{Bind, Decl, Key, ToyKind, Val};
     use super::super::reference::first_invalid;
-    use super::{Features, GATE_EVENTS, GATE_SEEDS, gate_case, gate_cases, generate};
+    use super::{
+        BLOCKED_PAIR_ZERO, Features, GATE_EVENTS, GATE_SEEDS, gate_case, gate_cases, generate,
+    };
 
     /// Every input value a case sets, initially or by an edit.
     fn values(case: &Case) -> Vec<(&Key, &Val)> {
@@ -743,7 +750,8 @@ mod tests {
     #[test]
     fn the_gate_cases_reach_every_kind_binding_and_event_shape() {
         let mut kinds = BTreeSet::new();
-        let (mut pickers, mut passed, mut divisors) = (0, 0, 0);
+        let (mut pickers, mut passed) = (0, 0);
+        let (mut drawn_divisors, mut blocked_pairs) = (0, 0);
         let (mut edits_off_latest, mut evaluations_off_latest) = (0, 0);
         let (mut zero_left, mut zero_ended) = (0, 0);
         for (_, case) in gate_cases() {
@@ -751,9 +759,15 @@ mod tests {
                 kinds.insert(decl.kind);
                 pickers +=
                     usize::from(decl.kind == ToyKind::Cell && decl.bindings.contains_key("pick"));
-                divisors += usize::from(
-                    decl.kind == ToyKind::Cell && decl.bindings.contains_key("divisor"),
-                );
+                match (decl.kind, decl.bindings.get("divisor")) {
+                    (ToyKind::Cell, Some(Bind::Input(name)))
+                        if name.starts_with(BLOCKED_PAIR_ZERO) =>
+                    {
+                        blocked_pairs += 1
+                    }
+                    (ToyKind::Cell, Some(_)) => drawn_divisors += 1,
+                    _ => {}
+                }
                 passed += decl
                     .bindings
                     .values()
@@ -795,7 +809,8 @@ mod tests {
         assert_eq!(kinds, BTreeSet::from(all));
         let counts = [
             ("pickers", pickers),
-            ("divisors", divisors),
+            ("drawn divisors", drawn_divisors),
+            ("blocked pairs", blocked_pairs),
             ("passed bindings", passed),
             ("edits off the latest snapshot", edits_off_latest),
             (
