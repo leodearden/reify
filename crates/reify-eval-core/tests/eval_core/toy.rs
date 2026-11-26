@@ -2,10 +2,10 @@
 //! holds its sections, and host-side helpers for building a core, making
 //! snapshot inputs and reading the answers a request received.
 
-use std::any::type_name;
+use std::any::{Any, type_name};
 use std::collections::BTreeSet;
 use std::fmt::Debug;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, ThreadId};
@@ -100,6 +100,7 @@ pub fn with_toys() -> Builder {
 pub struct Watch {
     live_boxes: Arc<AtomicUsize>,
     sides_in_order: Arc<Mutex<Vec<i64>>>,
+    saw_cancelled: Arc<AtomicBool>,
 }
 
 impl Watch {
@@ -111,42 +112,88 @@ impl Watch {
     pub fn sides_in_order(&self) -> Vec<i64> {
         self.sides_in_order.lock().expect("no holder panics").clone()
     }
+
+    /// Whether a section read `cancelled` as true.
+    pub fn saw_cancelled(&self) -> bool {
+        self.saw_cancelled.load(Ordering::SeqCst)
+    }
 }
 
-/// Holds each section that reaches it until the test lets it through. A
-/// closed channel counts as open, so a test that fails and drops its keeper
-/// never leaves a section blocked, and dropping the core never hangs.
-pub struct Gate {
-    entered: Sender<()>,
+/// Where a section is held until the test lets it through. A closed
+/// channel counts as open, so a test that fails and drops its keeper never
+/// leaves a section blocked, and dropping the core never hangs.
+struct Point {
+    reached: Sender<()>,
     open: Receiver<()>,
 }
 
-impl Gate {
+impl Point {
     fn pass(&self) {
-        let _ = self.entered.send(());
+        let _ = self.reached.send(());
         let _ = self.open.recv();
     }
 }
 
-pub struct GateKeeper {
-    entered: Receiver<()>,
+struct PointKeeper {
+    reached: Receiver<()>,
     open: Sender<()>,
+}
+
+impl PointKeeper {
+    fn reached(&self) {
+        self.reached.recv().expect("the kernel lives while a section is expected");
+    }
+
+    fn open(&self) {
+        self.open.send(()).expect("the kernel lives while a section waits");
+    }
+}
+
+fn point() -> (Point, PointKeeper) {
+    let (reached_in, reached) = channel();
+    let (open, open_out) = channel();
+    (Point { reached: reached_in, open: open_out }, PointKeeper { reached, open })
+}
+
+/// Holds each section on entry, and, if built so, again after it has sent
+/// its progress note and before it reads `cancelled`.
+pub struct Gate {
+    entry: Point,
+    after_progress: Option<Point>,
+}
+
+pub struct GateKeeper {
+    entry: PointKeeper,
+    after_progress: Option<PointKeeper>,
 }
 
 impl GateKeeper {
     /// Blocks until a section has reached the gate.
     pub fn entered(&self) {
-        self.entered.recv().expect("the kernel lives while a section is expected");
+        self.entry.reached();
     }
 
     /// Lets one section that reached the gate through.
     pub fn open(&self) {
-        self.open.send(()).expect("the kernel lives while a section waits");
+        self.entry.open();
     }
 
     pub fn let_one_through(&self) {
         self.entered();
         self.open();
+    }
+
+    /// Blocks until a section has sent its progress note and is held after it.
+    pub fn progressed(&self) {
+        self.second_point().reached();
+    }
+
+    pub fn open_after_progress(&self) {
+        self.second_point().open();
+    }
+
+    fn second_point(&self) -> &PointKeeper {
+        self.after_progress.as_ref().expect("the gate was built to hold sections after progress")
     }
 }
 
@@ -160,7 +207,14 @@ pub struct ToyKernel {
 impl ToyKernel {
     pub fn make_box(&mut self, side: i64, section: &Section<ToyKernel>) -> (Held<ToyKernel, BoxHandle>, ThreadId) {
         if let Some(gate) = &self.gate {
-            gate.pass();
+            gate.entry.pass();
+        }
+        section.progress(side);
+        if let Some(point) = self.gate.as_ref().and_then(|gate| gate.after_progress.as_ref()) {
+            point.pass();
+        }
+        if section.cancelled() {
+            self.watch.saw_cancelled.store(true, Ordering::SeqCst);
         }
         self.made += 1;
         self.boxes.insert(self.made);
@@ -182,13 +236,20 @@ pub fn ungated(builder: Builder, watch: &Watch) -> Core {
     with_kernel(builder, watch, None)
 }
 
-/// A core whose toy kernel holds each section at a gate. The keeper comes
+/// A core whose toy kernel holds each section on entry. The keeper comes
 /// second so that, bound as `let (core, keeper)`, it is dropped first.
 pub fn gated(builder: Builder, watch: &Watch) -> (Core, GateKeeper) {
-    let (entered_in, entered) = channel();
-    let (open, open_out) = channel();
-    let gate = Gate { entered: entered_in, open: open_out };
-    (with_kernel(builder, watch, Some(gate)), GateKeeper { entered, open })
+    let (entry, entry_keeper) = point();
+    let gate = Gate { entry, after_progress: None };
+    (with_kernel(builder, watch, Some(gate)), GateKeeper { entry: entry_keeper, after_progress: None })
+}
+
+/// As `gated`, and each section is held again after its progress note.
+pub fn gated_after_progress(builder: Builder, watch: &Watch) -> (Core, GateKeeper) {
+    let ((entry, entry_keeper), (after, after_keeper)) = (point(), point());
+    let gate = Gate { entry, after_progress: Some(after) };
+    let keeper = GateKeeper { entry: entry_keeper, after_progress: Some(after_keeper) };
+    (with_kernel(builder, watch, Some(gate)), keeper)
 }
 
 pub fn core() -> Core {
@@ -212,6 +273,19 @@ pub fn answers(events: &[Event], request: RequestId) -> Vec<(Path, Answer<Erased
         .filter_map(|event| match event {
             Event::Answered { request: to, path, answer } if *to == request => {
                 Some((path.clone(), answer.clone()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Every progress note among `events` that went to `request`, in order.
+pub fn notes(events: &[Event], request: RequestId) -> Vec<(Path, Arc<dyn Any + Send + Sync>)> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            Event::Progress { request: to, path, note } if *to == request => {
+                Some((path.clone(), Arc::clone(note)))
             }
             _ => None,
         })
