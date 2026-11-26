@@ -51,9 +51,9 @@ use reify_ast::QuantifierKind;
 use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, FIELD_ENTITY_PREFIX, SourceSpan, Type, ValueCellId};
 use reify_core::overload::{slot_matches_head_tier, slot_matches_wildcard_tier};
 use reify_core::scalar_tolerance::scalars_equal;
-use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, CompiledPattern, DeterminacyPredicateKind, DeterminacyState, FieldSourceKind, InterpolationKind, PersistentMap, SampledField, SampledGridKind, SelectorKind, StructureInstanceData, StructureTypeId, UnOp, UndefCause, Value, ValueMap, quaternion_is_finite};
+use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, CompiledPattern, CtorGeometryLet, DeterminacyPredicateKind, DeterminacyState, FieldSourceKind, InterpolationKind, PersistentMap, SampledField, SampledGridKind, SelectorKind, StructureInstanceData, StructureTypeId, UnOp, UndefCause, Value, ValueMap, quaternion_is_finite};
 
-use ctor_member_order::ctor_member_order;
+use ctor_member_order::{CtorMember, ctor_member_order};
 use datum_projection::{datum_vec3, eval_datum_projection, eval_self_datum_projection};
 
 /// Maximum recursion depth for user-defined function calls.
@@ -1117,8 +1117,8 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
         // lowering time (reify-expr stays registry-free,
         // design-decision-2; type_id is the StructureTypeId(0) placeholder,
         // identity is (name, version) per esc-3540-177 RULING 2+3).
-        // Ordered args first, then the uncovered defaults and the lets in
-        // dependency order; see `eval_structure_instance_ctor`.
+        // Ordered args first, then the uncovered defaults, the geometry lets
+        // and the lets in dependency order; see `eval_structure_instance_ctor`.
         CompiledExprKind::StructureInstanceCtor {
             type_id,
             type_name,
@@ -1126,7 +1126,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             ordered_args,
             defaults,
             lets,
-            geometry_lets: _,
+            geometry_lets,
             span,
         } => eval_structure_instance_ctor(
             *type_id,
@@ -1135,6 +1135,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             ordered_args,
             defaults,
             lets,
+            geometry_lets,
             *span,
             ctx,
         ),
@@ -1174,10 +1175,11 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
 /// `(type_name, version)` per esc-3540-177 RULING 2+3.
 ///
 /// `ordered_args` evaluate first, in stored order, against `ctx`. Then the
-/// `defaults` no ordered arg covers and the `lets` evaluate as ONE list, in
-/// the dependency order [`ctor_member_order`] gives (task 10098): a member
-/// sees every sibling it reads, whichever was declared first, as at template
-/// scope and under a `sub`. A default that is itself a structure ctor
+/// `defaults` no ordered arg covers, the `geometry_lets` and the `lets`
+/// evaluate as ONE list, in the dependency order [`ctor_member_order`] gives
+/// (task 10098): a member sees every sibling it reads, whichever was declared
+/// first, as at template scope and under a `sub`. A geometry let becomes a
+/// symbolic handle in member scope only, never a field (task 10352). A default that is itself a structure ctor
 /// recurses through `eval_expr` → nested `Value::StructureInstance`. An
 /// `Undef` field value is kept in its own slot — the structure is still
 /// constructed (no `FunctionCall`-style strict whole-value short-circuit).
@@ -1190,6 +1192,7 @@ fn eval_structure_instance_ctor(
     ordered_args: &[(String, CompiledExpr)],
     defaults: &[(String, CompiledExpr)],
     lets: &[(String, CompiledExpr)],
+    geometry_lets: &[CtorGeometryLet],
     span: Option<SourceSpan>,
     ctx: &EvalContext,
 ) -> Value {
@@ -1204,15 +1207,26 @@ fn eval_structure_instance_ctor(
     // (task 5494). `with_scope` REPLACES the value map, which is correct because
     // a well-compiled member reads only its own structure's cells. The child is
     // built lazily, so a ctor whose members are all literals pays nothing, and
-    // every result is written into both maps, so `child` stays equal to
-    // `member_scope(type_name, &fields)`.
-    let members: Vec<&(String, CompiledExpr)> = defaults
+    // every field result is written into both maps, so `child` stays equal to
+    // `member_scope(type_name, &fields)` plus the geometry members' symbolic
+    // handles, which stay out of `fields` (uniform-member-access.md D5).
+    let members: Vec<CtorMember> = defaults
         .iter()
         .filter(|(name, _)| !fields.contains_key(name))
-        .chain(lets)
+        .map(CtorMember::Field)
+        .chain(geometry_lets.iter().map(CtorMember::Geometry))
+        .chain(lets.iter().map(CtorMember::Field))
         .collect();
     let mut child: Option<ValueMap> = None;
-    for (name, expr) in ctor_member_order(type_name, members) {
+    for member in ctor_member_order(type_name, members) {
+        let (name, expr) = match member {
+            CtorMember::Field(field) => field,
+            CtorMember::Geometry(geometry) => {
+                let scope = child.get_or_insert_with(|| member_scope(type_name, &fields));
+                insert_symbolic_geometry_member(type_name, geometry, scope, ctx);
+                continue;
+            }
+        };
         let value = if matches!(expr.kind, CompiledExprKind::Literal(_)) {
             eval_expr(expr, ctx)
         } else {
@@ -1233,6 +1247,31 @@ fn eval_structure_instance_ctor(
         }
         .with_source_span(span),
     ))
+}
+
+/// Put a ctor's geometry let into its member `scope` as a symbolic handle,
+/// hashed over the realization's upstream args evaluated in that scope, so a
+/// sibling selector over it resolves as at template scope and under a `sub`.
+///
+/// Out of line for the stack budget pinned by `eval_user_fn_recursion_depth_exceeded`.
+#[inline(never)]
+fn insert_symbolic_geometry_member(
+    type_name: &str,
+    geometry: &CtorGeometryLet,
+    scope: &mut ValueMap,
+    ctx: &EvalContext,
+) {
+    let member_ctx = ctx.with_scope(scope);
+    let upstream_values_hash =
+        realization_upstream_values_hash(&geometry.upstream_args, |e| eval_expr(e, &member_ctx));
+    scope.insert(
+        ValueCellId::new(type_name, geometry.member.as_str()),
+        Value::GeometryHandle {
+            realization_ref: geometry.realization.clone(),
+            upstream_values_hash,
+            kernel_handle: None,
+        },
+    );
 }
 
 /// Build a `Value::Enum` for a runtime enum-variant constructor (task 7456),

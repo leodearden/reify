@@ -3,16 +3,46 @@
 use std::collections::BTreeSet;
 
 use reify_core::ValueCellId;
-use reify_ir::CompiledExpr;
+use reify_ir::{CompiledExpr, CtorGeometryLet};
 
-/// `members` (a ctor's uncovered defaults followed by its lets, in stored
-/// order) permuted so each member follows every sibling member it reads.
+/// One member a structure ctor evaluates after its ordered args.
+#[derive(Clone, Copy)]
+pub(crate) enum CtorMember<'e> {
+    /// An uncovered default or a let: becomes an instance field.
+    Field(&'e (String, CompiledExpr)),
+    /// A template geometry let: a symbolic handle in member scope only.
+    Geometry(&'e CtorGeometryLet),
+}
+
+impl<'e> CtorMember<'e> {
+    pub(crate) fn name(self) -> &'e str {
+        match self {
+            CtorMember::Field((name, _)) => name,
+            CtorMember::Geometry(geometry) => &geometry.member,
+        }
+    }
+
+    /// Every expression the member evaluates: a field's own expr, or a
+    /// geometry member's upstream args.
+    fn exprs(self) -> impl Iterator<Item = &'e CompiledExpr> {
+        let (field, upstream): (Option<&'e CompiledExpr>, &'e [(String, CompiledExpr)]) =
+            match self {
+                CtorMember::Field((_, expr)) => (Some(expr), &[]),
+                CtorMember::Geometry(geometry) => (None, &geometry.upstream_args),
+            };
+        field.into_iter().chain(upstream.iter().map(|(_, expr)| expr))
+    }
+}
+
+/// `members` (a ctor's uncovered defaults, its geometry lets and its lets, in
+/// stored order) permuted so each member follows every sibling member it reads.
 ///
-/// - What a member reads is `CompiledExpr::collect_value_refs`, the dependency
-///   semantics template scope orders by, so the two scopes agree on every
-///   edge. Only a read of `ValueCellId::new(type_name, m)` for a member `m` of
-///   `members` is an edge: arg-supplied params and outer cells are already in
-///   scope before any member runs.
+/// - What a member reads is `CompiledExpr::collect_value_refs` over its
+///   exprs, the dependency semantics template scope orders by, so the two
+///   scopes agree on every edge. Only a read of
+///   `ValueCellId::new(type_name, m)` for a member `m` of `members` is an
+///   edge: arg-supplied params and outer cells are already in scope before
+///   any member runs.
 /// - When no member reads a sibling at or after its own position, stored order
 ///   already is a dependency order and `members` is returned as given, with
 ///   no allocation: the common ctor pays one walk of its members and nothing
@@ -22,8 +52,8 @@ use reify_ir::CompiledExpr;
 ///   order and nothing is reported: template scope already reports the cycle.
 pub(crate) fn ctor_member_order<'e>(
     type_name: &str,
-    members: Vec<&'e (String, CompiledExpr)>,
-) -> Vec<&'e (String, CompiledExpr)> {
+    members: Vec<CtorMember<'e>>,
+) -> Vec<CtorMember<'e>> {
     if members.len() < 2 {
         return members;
     }
@@ -31,14 +61,16 @@ pub(crate) fn ctor_member_order<'e>(
         if id.entity == type_name {
             members
                 .iter()
-                .position(|(name, _)| name.as_str() == id.member.as_str())
+                .position(|member| member.name() == id.member.as_str())
         } else {
             None
         }
     };
 
-    let reads_forward = members.iter().enumerate().any(|(reader, (_, expr))| {
-        expr.contains_value_ref_matching(|id| sibling(id).is_some_and(|read| read >= reader))
+    let reads_forward = members.iter().enumerate().any(|(reader, member)| {
+        member.exprs().any(|expr| {
+            expr.contains_value_ref_matching(|id| sibling(id).is_some_and(|read| read >= reader))
+        })
     });
     if !reads_forward {
         return members;
@@ -46,11 +78,11 @@ pub(crate) fn ctor_member_order<'e>(
 
     let mut unmet_reads = vec![0usize; members.len()];
     let mut readers_of: Vec<Vec<usize>> = vec![Vec::new(); members.len()];
-    for (reader, (_, expr)) in members.iter().enumerate() {
-        let reads: BTreeSet<usize> = expr
-            .collect_value_refs()
-            .iter()
-            .filter_map(&sibling)
+    for (reader, member) in members.iter().enumerate() {
+        let reads: BTreeSet<usize> = member
+            .exprs()
+            .flat_map(CompiledExpr::collect_value_refs)
+            .filter_map(|id| sibling(&id))
             .collect();
         unmet_reads[reader] = reads.len();
         for read in reads {
@@ -86,7 +118,7 @@ mod tests {
     use reify_core::{Type, ValueCellId};
     use reify_ir::{BinOp, CompiledExpr, Value};
 
-    use super::ctor_member_order;
+    use super::{CtorMember, ctor_member_order};
 
     const TYPE: &str = "B";
 
@@ -114,9 +146,9 @@ mod tests {
     }
 
     fn order(stored: &[(String, CompiledExpr)]) -> Vec<&str> {
-        ctor_member_order(TYPE, stored.iter().collect())
+        ctor_member_order(TYPE, stored.iter().map(CtorMember::Field).collect())
             .into_iter()
-            .map(|(name, _)| name.as_str())
+            .map(CtorMember::name)
             .collect()
     }
 
@@ -127,7 +159,7 @@ mod tests {
             ("b", add(read("a"), lit(1))),
             ("c", add(read("a"), read("b"))),
         ]);
-        let given: Vec<_> = stored.iter().collect();
+        let given: Vec<_> = stored.iter().map(CtorMember::Field).collect();
         let buffer = given.as_ptr();
 
         let ordered = ctor_member_order(TYPE, given);
@@ -137,7 +169,7 @@ mod tests {
             buffer,
             "an already-ordered member list must be returned as given, not copied"
         );
-        let names: Vec<&str> = ordered.iter().map(|(name, _)| name.as_str()).collect();
+        let names: Vec<&str> = ordered.iter().map(|member| member.name()).collect();
         assert_eq!(names, ["a", "b", "c"]);
     }
 
