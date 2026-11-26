@@ -993,6 +993,8 @@ tests/infra/test_run_all_member_lifetime.py    tests/infra/test_run_all_member_l
 tests/infra/run_all_fixture.py    tests/infra/test_run_all_member_lifetime.sh
 tests/infra/test_run_all_member_tmpdir.py    tests/infra/test_run_all_member_tmpdir.sh
 tests/infra/proc_strays.py    tests/infra/test_run_all_member_tmpdir.sh
+tests/infra/test_run_all_phase_log.py    tests/infra/test_run_all_phase_log.sh
+tests/infra/run_all_fixture.py    tests/infra/test_run_all_phase_log.sh
 scripts/seed-warm-lane.sh    tests/infra/test_verify_ledger_lane_seed.sh
 scripts/agent-bin/cargo    tests/infra/test_verify_ledger_lane_seed.sh
 

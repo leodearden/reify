@@ -37,6 +37,19 @@
 #     escalation; with it the failure is reclassified as test_failure and handled
 #     by the normal debugger path.
 #
+# Phase log: each phase prints a start line and an end line on stderr, so a
+# run killed mid-phase shows which phase it was in and for how long:
+#   "INFO: run_all.sh phase <id> (<name>) start: members=<n>"
+#   "INFO: run_all.sh phase <id> (<name>) end: members=<n> elapsed_s=<s>"
+# and Phase 2.5 prints "INFO: run_all.sh phase 2.5 (retry) retrying:
+# member=<name>" as each retry starts. The pool branch runs phase 1 (pool),
+# 2 (serial), 2.5 (retry) and 3 (report); each serial-only branch runs one
+# phase 2 (serial). <n> counts the members the phase runs (Phase 3: the
+# members it reports); <s> is whole seconds, or `unknown` when the clock gave
+# none. A TERM that lands while a phase is open adds "=== INTERRUPTED in
+# phase <id> (<name>): members=<n> elapsed_s=<s> ===" to stdout, directly
+# after the interrupted Summary line.
+#
 # Exits 0 if all discovered tests pass (or none are found), 1 if any fail.
 #
 # Worktree-removal interruption (task #5261, W4e): if this suite's own
@@ -805,12 +818,73 @@ _ra_duration_ms() {
     printf -v "$1" '%s' "$_rdm_ms"
 }
 
-# _ra_phase_finish <phase> <started-ns> -- closes a phase: one phase_finish
-# record from <started-ns> to now.
+# _ra_phase_tag <phase> -- the `phase <id> (<name>)` tag of the phase log
+# (header, "Phase log"): the one home of its 1/2/2.5/3 numbering.
+_ra_phase_tag() {
+    case "$1" in
+        pool) echo "phase 1 (pool)" ;;
+        serial) echo "phase 2 (serial)" ;;
+        retry) echo "phase 2.5 (retry)" ;;
+        report) echo "phase 3 (report)" ;;
+        *) echo "ERROR: run_all.sh: _ra_phase_tag: unknown phase '$1'" >&2; return 1 ;;
+    esac
+}
+
+# _ra_phase_log <phase> <kind> <field>... -- prints one stderr line of the
+# phase log: the one home of its `INFO: run_all.sh <tag> <kind>: <fields>` shape.
+_ra_phase_log() {
+    local _rpl_tag
+    _rpl_tag="$(_ra_phase_tag "$1")"
+    shift
+    local _rpl_kind="$1"
+    shift
+    echo "INFO: run_all.sh $_rpl_tag $_rpl_kind: $*" >&2
+}
+
+# _ra_phase_begin <phase> <members> -- opens a phase and prints its start
+# line. The open phase lives in run-lifetime globals because the TERM trap
+# reads them; only this and _ra_phase_end_text write them. _RA_PHASE is set
+# last: the trap reads the other two only once it is non-empty.
+_ra_phase_begin() {
+    _RA_PHASE_MEMBERS="$2"
+    event_log_clock_ns _RA_PHASE_STARTED_NS
+    _RA_PHASE="$1"
+    _ra_phase_log "$1" start "members=$2"
+}
+
+# _ra_phase_elapsed_s <out-var> <ended-ns> -- the open phase's whole seconds
+# from its start to <ended-ns>, else `unknown`.
+_ra_phase_elapsed_s() {
+    local _rpes_ms _rpes_s=unknown
+    _ra_duration_ms _rpes_ms "$_RA_PHASE_STARTED_NS" "$2"
+    if [ -n "$_rpes_ms" ]; then
+        _rpes_s=$(( _rpes_ms / 1000 ))
+    fi
+    printf -v "$1" '%s' "$_rpes_s"
+}
+
+# _ra_phase_end_text [<ended-ns-out-var>] -- closes the open phase with its
+# end line ONLY (no event record), from one clock read, and hands that
+# instant back through the out-var.
+_ra_phase_end_text() {
+    local _rpen_ended _rpen_s
+    event_log_clock_ns _rpen_ended
+    _ra_phase_elapsed_s _rpen_s "$_rpen_ended"
+    _ra_phase_log "$_RA_PHASE" end "members=$_RA_PHASE_MEMBERS" "elapsed_s=$_rpen_s"
+    _RA_PHASE=""
+    if [ -n "${1:-}" ]; then
+        printf -v "$1" '%s' "$_rpen_ended"
+    fi
+}
+
+# _ra_phase_finish -- closes the open phase with its end line AND its one
+# phase_finish event record, both from the same clock read. The event
+# channel's phases are pool, serial and retry; any other phase closes with
+# _ra_phase_end_text.
 _ra_phase_finish() {
-    local _rpf_ended
-    event_log_clock_ns _rpf_ended
-    event_log_emit_phase_finish "$1" "$2" "$_rpf_ended"
+    local _rpf_phase="$_RA_PHASE" _rpf_started="$_RA_PHASE_STARTED_NS" _rpf_ended
+    _ra_phase_end_text _rpf_ended
+    event_log_emit_phase_finish "$_rpf_phase" "$_rpf_started" "$_rpf_ended"
 }
 
 # _ra_timeout_file <out-file> -- the path of an out file's budget sidecar,
@@ -1274,6 +1348,9 @@ _ra_partial_failed_names() {
 #   - a distinct `=== Summary: INTERRUPTED ... ===` line, deliberately NOT
 #     matching the byte-exact `=== Summary: N discovered, M failed ===`
 #     substring the contract tests assert (T9a/T13b/T22e class).
+#   - only while a phase is open, `=== INTERRUPTED in phase <id> (<name>):
+#     members=<n> elapsed_s=<s> ===` (header, "Phase log"), naming the phase
+#     the signal cut short.
 #   - `=== FAILED: <names> (partial) ===` (human-readable) and the bare
 #     `FAILED <names> (partial)` classifier line (matches DF's `^FAILED\s`
 #     reclassifier -- pattern #7b, checked before the tree-sitter mislabel).
@@ -1309,10 +1386,16 @@ _ra_partial_failed_names() {
 _ra_on_term() {
     set +e
     local -a _names=()
+    local _rot_now _rot_elapsed_s
 
     {
         echo ""
         echo "=== Summary: INTERRUPTED (outer timeout; partial results) ==="
+        if [ -n "${_RA_PHASE:-}" ]; then
+            event_log_clock_ns _rot_now
+            _ra_phase_elapsed_s _rot_elapsed_s "$_rot_now"
+            echo "=== INTERRUPTED in $(_ra_phase_tag "$_RA_PHASE"): members=$_RA_PHASE_MEMBERS elapsed_s=$_rot_elapsed_s ==="
+        fi
 
         # One array feeds both the text lines and the run_finish record, so the
         # record's failed names equal the classifier line's by construction.
@@ -1376,6 +1459,7 @@ declare -A _ra_fail_detail=()   # failed member name -> bounded FAIL-detail line
 flaky_names=()
 member_subset_skipped=()
 _RA_RUN_FINISH_WRITTEN=0
+_RA_PHASE=""   # the open phase, set by _ra_phase_begin; "" between phases
 
 # Install the TERM trap BEFORE any phase work (pool or legacy), so a
 # mid-run outer-timeout SIGTERM is reclassified regardless of which path is
@@ -1943,11 +2027,11 @@ if [ "$SCOPE" = "host-infra" ]; then
     discovered=${#_h9_members[@]}
     event_log_emit_run_start "$_RA_RUN_ID" "${SCOPE:-all}" host-infra "$discovered"
     _ra_serial_workdir_create
-    event_log_clock_ns _ra_phase_started
+    _ra_phase_begin serial "${#_h9_members[@]}"
     for _h9_name in "${_h9_members[@]+"${_h9_members[@]}"}"; do
         _ra_run_serial_member "$_RA_SERIAL_WORKDIR" "$_h9_name"
     done
-    _ra_phase_finish serial "$_ra_phase_started"
+    _ra_phase_finish
 
     lane_x_flock_release
     _RA_LANE_X_HELD=0
@@ -1970,17 +2054,23 @@ elif [ "${#_ra_member_subset[@]}" -gt 0 ]; then
     discovered=${#_ra_discovered[@]}
     event_log_emit_run_start "$_RA_RUN_ID" "${SCOPE:-all}" subset "$discovered"
     _ra_serial_workdir_create
+    # The matched list is built first, so the phase's start line counts the
+    # members it runs, not every member it skip-records.
     _ra_subset_matched=()
-    event_log_clock_ns _ra_phase_started
     for _ra_subset_base in "${_ra_discovered[@]+"${_ra_discovered[@]}"}"; do
         if _ra_in_member_subset "$_ra_subset_base"; then
             _ra_subset_matched+=("$_ra_subset_base")
+        fi
+    done
+    _ra_phase_begin serial "${#_ra_subset_matched[@]}"
+    for _ra_subset_base in "${_ra_discovered[@]+"${_ra_discovered[@]}"}"; do
+        if _ra_in_member_subset "$_ra_subset_base"; then
             _ra_run_serial_member "$_RA_SERIAL_WORKDIR" "$_ra_subset_base"
         else
             _ra_record_subset_skip "$_ra_subset_base"
         fi
     done
-    _ra_phase_finish serial "$_ra_phase_started"
+    _ra_phase_finish
 
     # Unmatched subset entries: named in the knob but not present in
     # INFRA_DIR (typo/stale retry name) -- a loud stderr WARNING, never a
@@ -2313,7 +2403,7 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
         disown 2>/dev/null || true
     fi
 
-    event_log_clock_ns _h2_phase_started
+    _ra_phase_begin pool "${#_h2_pool_members[@]}"
     for _h2_name in "${_h2_pool_members[@]}"; do
         _h2_i="${_h2_index_of[$_h2_name]}"
 
@@ -2351,7 +2441,7 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     if [ "${#_h2_pids[@]}" -gt 0 ]; then
         wait "${_h2_pids[@]}" 2>/dev/null || true
     fi
-    _ra_phase_finish pool "$_h2_phase_started"
+    _ra_phase_finish
 
     # W4e primary check point (task #5261): _H2_WORKDIR lives under TMPDIR
     # (/tmp), so it survives an INFRA_DIR deletion and the Phase-1 join above
@@ -2372,13 +2462,13 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     fi
 
     # -- Phase 2: serial (foreground, one at a time, discovered order) -----------
-    event_log_clock_ns _h2_phase_started
+    _ra_phase_begin serial "${#_h2_serial_members[@]}"
     for _h2_name in "${_h2_serial_members[@]}"; do
         _ra_interrupt_if_worktree_gone
         _h2_i="${_h2_index_of[$_h2_name]}"
         _ra_run_member "$_h2_name" "$_H2_WORKDIR/${_h2_i}.out" "$_H2_WORKDIR/${_h2_i}.rc" capture 1
     done
-    _ra_phase_finish serial "$_h2_phase_started"
+    _ra_phase_finish
 
     # -- Phase 2.5: serial retry-once of failed pool/intra-run-serial members
     # (deflake) --------------------------------------------------------------
@@ -2400,8 +2490,9 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     # A member that hit its budget is NOT retried (task 9441): a retry could
     # spend another whole budget here and push the run back toward the merge
     # envelope, turning a named FAILED into an anonymous INTERRUPTED.
+    # The retry list is built first, so the phase's start line can count it.
     declare -A _h2_retried=()
-    event_log_clock_ns _h2_phase_started
+    _h2_retry_members=()
     for _h2_name in "${_h2_discovered_list[@]}"; do
         if [ "${_h2_is_pool[$_h2_name]:-0}" != "1" ] && [ "${_h2_is_intra_serial[$_h2_name]:-0}" != "1" ]; then
             continue
@@ -2412,12 +2503,19 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
             echo "INFO: run_all.sh: not retrying $_h2_name -- it exceeded its ${_RA_MEMBER_TIMEOUT}s budget" >&2
             continue
         fi
+        _h2_retry_members+=("$_h2_name")
+    done
+    _ra_phase_begin retry "${#_h2_retry_members[@]}"
+    for _h2_name in "${_h2_retry_members[@]+"${_h2_retry_members[@]}"}"; do
+        _h2_i="${_h2_index_of[$_h2_name]}"
+        _ra_phase_log retry retrying "member=$_h2_name"
         _ra_run_member "$_h2_name" "$_H2_WORKDIR/${_h2_i}.retry.out" "$_H2_WORKDIR/${_h2_i}.retry.rc" capture 2
         _h2_retried["$_h2_name"]=1
     done
-    _ra_phase_finish retry "$_h2_phase_started"
+    _ra_phase_finish
 
     # -- Phase 3: emit (discovered/sorted order -- preserves the output contract) --
+    _ra_phase_begin report "${#_h2_discovered_list[@]}"
     for _h2_name in "${_h2_discovered_list[@]}"; do
         _ra_interrupt_if_worktree_gone
         _h2_w="$_H2_WORKDIR/${_h2_index_of[$_h2_name]}"
@@ -2437,6 +2535,7 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
             _ra_record_result "$_h2_name" "$(_ra_read_rc "$_h2_w.rc")" "$_h2_w.out"
         fi
     done
+    _ra_phase_end_text
 else
     # -------------------------------------------------------------------------
     # Legacy all-serial fallback: the pool's members, in the pool's order, run
@@ -2445,11 +2544,11 @@ else
     discovered=${#_ra_default_scope_members[@]}
     event_log_emit_run_start "$_RA_RUN_ID" "${SCOPE:-all}" serial "$discovered"
     _ra_serial_workdir_create
-    event_log_clock_ns _ra_phase_started
+    _ra_phase_begin serial "$discovered"
     for _ra_legacy_name in "${_ra_default_scope_members[@]+"${_ra_default_scope_members[@]}"}"; do
         _ra_run_serial_member "$_RA_SERIAL_WORKDIR" "$_ra_legacy_name"
     done
-    _ra_phase_finish serial "$_ra_phase_started"
+    _ra_phase_finish
 fi
 
 # W4e final backstop (task #5261): covers a nuke on the very last member,
