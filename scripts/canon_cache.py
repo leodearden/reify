@@ -277,10 +277,11 @@ def drop_sccache_variables(env: dict[str, str]) -> None:
         del env[name]
 
 
-def is_guard(path: str) -> bool:
+def carries_marker(path: str, marker: bytes) -> bool:
+    """Whether marker is within path's first MARKER_WINDOW bytes; False when path cannot be read."""
     try:
         with open(path, "rb") as candidate:
-            return GUARD_MARKER in candidate.read(MARKER_WINDOW)
+            return marker in candidate.read(MARKER_WINDOW)
     except OSError:
         return False
 
@@ -289,13 +290,16 @@ def is_executable_file(path: str) -> bool:
     return os.path.isfile(path) and os.access(path, os.X_OK)
 
 
+def executables_named(path_value: str, name: str) -> list[str]:
+    """Every `<entry>/<name>` on path_value that is an executable regular file, in PATH order."""
+    candidates = (os.path.join(entry, name) for entry in path_value.split(os.pathsep) if entry)
+    return [candidate for candidate in candidates if is_executable_file(candidate)]
+
+
 def resolve_real_sccache(path_value: str) -> str | None:
     """The first executable `sccache` on path_value that is not a reify-canon guard."""
-    for entry in path_value.split(os.pathsep):
-        candidate = os.path.join(entry, "sccache")
-        if entry and is_executable_file(candidate) and not is_guard(candidate):
-            return candidate
-    return None
+    candidates = executables_named(path_value, "sccache")
+    return next((sccache for sccache in candidates if not carries_marker(sccache, GUARD_MARKER)), None)
 
 
 @dataclass(frozen=True)

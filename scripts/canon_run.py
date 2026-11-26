@@ -49,7 +49,6 @@ EXIT_USAGE = 2
 USAGE = "usage: canon_run.py status | exec -- <command> [args...] | cargo [args...]"
 REBUILD_FIX = "delete the build directory to rebuild it at the real path"
 TRAMPOLINE_MARKER = b"reify-canon-trampoline"
-MARKER_WINDOW = 1024
 RESTORE_POLL_MS = 5
 STARTUP_IGNORED = (signal.SIGPIPE, signal.SIGXFSZ)  # CPython sets both to SIG_IGN at startup
 # Linux's PIDFD_GET_INFO (include/uapi/linux/pidfd.h, struct pidfd_info VER0, 6.15+).
@@ -495,17 +494,7 @@ def status_report(environ: Mapping[str, str], cwd: str) -> dict[str, object]:
 
 
 def is_trampoline(path: str) -> bool:
-    try:
-        with open(path, "rb") as candidate:
-            return TRAMPOLINE_MARKER in candidate.read(MARKER_WINDOW)
-    except OSError:
-        return False
-
-
-def executable_cargos(path_value: str) -> list[str]:
-    """Every `<entry>/cargo` on path_value that is an executable regular file, in PATH order."""
-    candidates = (os.path.join(entry, "cargo") for entry in path_value.split(os.pathsep) if entry)
-    return [cargo for cargo in candidates if canon_cache.is_executable_file(cargo)]
+    return canon_cache.carries_marker(path, TRAMPOLINE_MARKER)
 
 
 def resolve_real_cargo(path_value: str) -> str | None:
@@ -514,7 +503,7 @@ def resolve_real_cargo(path_value: str) -> str | None:
     When no unmarked cargo follows a trampoline, or nothing is marked, the first
     unmarked cargo anywhere on PATH; else None.
     """
-    cargos = [(cargo, is_trampoline(cargo)) for cargo in executable_cargos(path_value)]
+    cargos = [(cargo, is_trampoline(cargo)) for cargo in canon_cache.executables_named(path_value, "cargo")]
     first_trampoline = next((index for index, (_, mark) in enumerate(cargos) if mark), len(cargos))
     after_first = [cargo for cargo, mark in cargos[first_trampoline:] if not mark]
     anywhere = [cargo for cargo, mark in cargos if not mark]
@@ -527,7 +516,9 @@ def resolve_canon_cargo(path_value: str) -> str | None:
     C4's composed PATH starts with the tree's own trampoline, so every cargo on it
     follows the first trampoline whether or not that entry is visible from here.
     """
-    return next((cargo for cargo in executable_cargos(path_value) if not is_trampoline(cargo)), None)
+    return next(
+        (cargo for cargo in canon_cache.executables_named(path_value, "cargo") if not is_trampoline(cargo)), None
+    )
 
 
 def cargo_subcommand_index(args: list[str]) -> int | None:
