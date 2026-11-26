@@ -8734,13 +8734,6 @@
         );
     }
 
-    // TODO(#5818): add an end-to-end test that compiles a 4-arg curated
-    // `draft(solid, faces, angle, neutral_plane)` from .ri source, builds it,
-    // and asserts `GeometryOp::Draft.faces` is non-empty and the drafted solid
-    // has positive volume. #5818 owns it: its plane-placeholder fix
-    // (`modify_draft` resolving `plane` instead of `step_handles.last()`) is
-    // what currently stops that build.
-
     #[test]
     fn compile_geometry_op_transform_pattern_sweep_present_args_emit_no_diagnostics() {
         let step_handles = vec![GeometryHandleId(1)];

@@ -3413,10 +3413,16 @@ fn modify_draft(
         meta_map,
         diagnostics,
     )?;
-    // plane is resolved via step_handles.last() (a pre-existing approximation —
-    // plane_xy yields a Value::Plane, not a sub-op; the full plane-handle plumbing
-    // fix is out of scope for δ). Filter INVALID so a preceding compile failure
-    // (sentinel) propagates as Err rather than forwarding INVALID to the kernel.
+    // TODO(#5818): resolve the `plane` argument here. It is read from
+    // step_handles.last() (a pre-existing approximation — plane_xy yields a
+    // Value::Plane, not a sub-op, so no plane handle is plumbed). When this is
+    // fixed, add the .ri-source e2e that #5818 owns: compile a 4-arg curated
+    // `draft(solid, faces, angle, neutral_plane)`, build it, and assert
+    // `GeometryOp::Draft.faces` is non-empty and the drafted solid has
+    // positive volume. Today that build stops at the Err below.
+    //
+    // Filter INVALID so a preceding compile failure (sentinel) propagates as
+    // Err rather than forwarding INVALID to the kernel.
     let plane_id = step_handles
         .last()
         .copied()
