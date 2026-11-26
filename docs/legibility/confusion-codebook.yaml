@@ -9858,6 +9858,13 @@ entries:
     manifested_phase: unknown
     note: The agent ran `sleep 60; tail -3` to poll a clippy log, and the sandbox blocked the sleep+check chain. The digest shows the blocked sleep+check polling mechanism this entry names.
     evidence_quote: 'Blocked: sleep 60 followed by: tail -3 /tmp/rev10170-clippy.log. To wait for a condition, use Monitor with an until-loop'
+  - date: '2026-11-25'
+    project: reify
+    session: 172d47c7-0363-4cfa-bd8c-605b271d2beb/subagents/agent-acf20dab7c02eba13
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: The guard blocked a sleep-120 chain used to poll a background run's log, and the block message says to use Monitor or run_in_background instead.
+    evidence_quote: '<tool_use_error>Blocked: sleep 120 followed by: cd /tmp/instance-design/failing wc -l run.log awk ''{print $1}'' run.log sort uniq -c uptime. To wait for a condition, use Monitor with an until-loop'
 - id: entry-cand-20260801-5
   title: Bash `rg` invocation fails — ripgrep binary absent from worktree environment
   severity: medium
@@ -10455,6 +10462,13 @@ entries:
     manifested_phase: unknown
     note: The agent calls a tool name ('bash') that is not in its toolset instead of the harness's actual Bash tool, and the harness rejects the call.
     evidence_quote: '<tool_use_error>Error: No such tool available: bash. Tool names are case-sensitive: call Bash instead.</tool_use_error>'
+  - date: '2026-11-25'
+    project: reify
+    session: 172d47c7-0363-4cfa-bd8c-605b271d2beb/subagents/agent-a4074d471fb331976
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: The agent called a tool name that does not exist in its toolset, which the harness rejected. This is the hallucinated-tool-name mechanism the entry names. Phases are not supportable from the digest.
+    evidence_quote: 'clever_Bash_placeholder({}) -> <tool_use_error>Error: No such tool available: clever_Bash_placeholder</tool_use_error>'
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261030
@@ -11083,6 +11097,13 @@ entries:
     origin_phase: unknown
     manifested_phase: verify
     note: 'Agent invoked grep_search and git_log, tool names absent from its actual toolset (tool_use_error: No such tool available), instead of Grep/Bash git log.'
+  - date: '2026-11-25'
+    project: reify
+    session: 172d47c7-0363-4cfa-bd8c-605b271d2beb/subagents/agent-accfccaae943d625e
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Agent invoked a tool name (clever_Bash) that is not in its actual toolset, and the harness returned 'No such tool available'.
+    evidence_quote: 'Error: No such tool available: clever_Bash'
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261030
@@ -11785,6 +11806,15 @@ entries:
     manifested_phase: unknown
     note: The digest's User Corrections section lists record 248, which is an injected message from the dark-factory L2 escalation watcher, not a user statement. The digest mislabels it as a User Correction, the mechanism this entry names.
     evidence_quote: From the dark-factory L2 escalation watcher (watcher-df-890246)
+  - date: '2026-11-25'
+    project: reify
+    session: e6b59800-589b-4d2b-a376-9da4e88709f3
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: The digest lists inter-session messages (records 567, 662, 824, 902, 1036) under '## User Corrections', although they come from other agent sessions, not from the user. This is the same digest mislabeling mechanism as the entry, but the injected source here is a peer-session message rather than an escalation notification, so the match is partial.
+    evidence_quote: '## User Corrections
+
+      - (record 567) From the Instance design session (listed in sessions.md). This is information and three questions, not a ruling of Leo''s.'
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261030
@@ -11854,6 +11884,13 @@ entries:
     origin_phase: implement
     manifested_phase: implement
     evidence_quote: pkill -f "skim test cargo -p reify-compiler --lib deferred_let_fixpoint_tests"; sleep 0; pgrep -af "deferred_let_fixpoint" | head' ... -> [exit 144] Exit code 144; process list shows the wrapping bash -c eval line itself contains the literal string 'skim test cargo -p reify-compiler --lib deferred_let_fixpoint_tests'
+  - date: '2026-11-25'
+    project: reify
+    session: 172d47c7-0363-4cfa-bd8c-605b271d2beb/subagents/agent-accfccaae943d625e
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: A pkill -f pattern ('census.py') appears in the same Bash command line that invokes it, and the shell exits 144, consistent with self-termination.
+    evidence_quote: pkill -f "census.py" ; cd /tmp/instance-design/roots; python3 - <<'EOF' ... -> [exit 144] Exit code 144
   filed_tickets:
   - ticket: null
     project_root: /home/leo/src/reify
@@ -12291,6 +12328,13 @@ entries:
     manifested_phase: unknown
     note: The command chains several subcommands with `;` and pipes. The grep stage printed matches, but the reported exit code is 1, which most likely comes from the final `which ruff pyright` stage. The digest does not confirm which subcommand set the code.
     evidence_quote: 'Bash({"command": "git grep -n \"REAPER_LIB\\|verify_sh_refusal\\|MISSING_LIB_REFUSALS\" -- tests scripts | head; ls tests/infra/test_verify_plan_model.py 2>&1; which ruff pyright 2>&1", "description": "Che...) -> [exit 1] Exit code 1'
+  - date: '2026-11-25'
+    project: reify
+    session: 78a355da-5c04-47b3-876c-60eb79c7a487
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: A multi-command shell chain reported exit 1 from its final subcommand (cat of a missing file). The earlier sed command had already printed the requested source lines, so the reported exit code masked the earlier success.
+    evidence_quote: '(record 187) Bash({"command": "sed -n 140,260p crates/reify-eval/src/def_env.rs; ls target 2>/dev/null | head; ls /opt/reify-canon/ws 2>/dev/null | head -3; cat target/.reify-build-root 2>/dev/null", "description": "Re...) -> [exit 1] Exit code 1'
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261106
@@ -12799,6 +12843,13 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: The composite Bash command ran 'pgrep -f' with a pattern that also appears in its own argv, so the watcher-up check can self-match and report a false positive.
+  - date: '2026-11-25'
+    project: reify
+    session: 172d47c7-0363-4cfa-bd8c-605b271d2beb/subagents/agent-acf20dab7c02eba13
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: A pkill -f pattern containing 'until ! pgrep' matched the agent's own invoking command line, and the shell exited 144.
+    evidence_quote: pkill -f 'until ! pgrep' ; tail -2 run.log; wc -l run.log; TAG=b timeout 100 python3 -I probe.py gen"}) -> [exit 144] Exit code 144
   last_seen_runs:
   - census-reify-20261022
 - id: entry-cand-20260926-5
