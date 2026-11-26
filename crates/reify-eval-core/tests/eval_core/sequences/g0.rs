@@ -4,6 +4,7 @@
 //! vacuous. REIFY_EVAL_CORE_SEQUENCES=N widens the run to seeds 1..=N
 //! outside the gate (PRD 5.5).
 
+use std::env::{self, VarError};
 use std::ops::RangeInclusive;
 
 use reify_eval_core::Core;
@@ -16,9 +17,21 @@ fn honest() -> Core {
     toy::with_structure().build()
 }
 
-/// The seeds to run.
+/// Widens the run to seeds 1..=N outside the gate.
+const WIDEN: &str = "REIFY_EVAL_CORE_SEQUENCES";
+
+/// The seeds to run: the gate's, unless `WIDEN` names a number of seeds.
 fn seeds() -> RangeInclusive<u64> {
-    GATE_SEEDS
+    match env::var(WIDEN) {
+        Err(VarError::NotPresent) => GATE_SEEDS,
+        Ok(text) => {
+            let last = text.parse().unwrap_or_else(|_| {
+                panic!("{WIDEN}={text:?} is not a number of seeds")
+            });
+            1..=last
+        }
+        Err(unreadable) => panic!("{WIDEN} cannot be read: {unreadable}"),
+    }
 }
 
 #[test]

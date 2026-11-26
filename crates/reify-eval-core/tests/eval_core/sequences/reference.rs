@@ -110,6 +110,14 @@ impl Reference {
         self.answers.len()
     }
 
+    /// The declaration of the node at `path`, if one is declared there.
+    pub fn declaration_at(&mut self, path: &ModelPath) -> Result<Option<Decl>, Invalid> {
+        Ok(match self.declaration(path)? {
+            Declared::Node(decl) => Some(decl),
+            Declared::Settled(_) => None,
+        })
+    }
+
     /// What the node at `reader` reads at `r`; absent where no node is
     /// declared there.
     pub fn read_at(&mut self, reader: &ModelPath, r: &ModelRef) -> Result<Expect, Invalid> {

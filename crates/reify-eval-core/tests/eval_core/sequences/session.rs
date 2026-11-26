@@ -9,13 +9,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use reify_eval_core::{
-    Answer, Core, Demand, Erased, Event, Path, Request, RequestError, RequestId, Snapshot,
+    Answer, Core, Demand, Erased, Event, Failure, Path, Request, RequestError, RequestId,
+    Snapshot, Step,
 };
 
 use super::case::{Case, HostEvent, Then};
-use super::design::{Inputs, ModelPath, Val, to_core};
+use super::design::{Inputs, ModelPath, ModelRef, ToyKind, Val, to_core};
 use super::order::{Answered, order_check};
-use super::reference::{Invalid, Reference};
+use super::reference::{Expect, Expected, Invalid, Out, Reference};
 use super::seen::Seen;
 
 /// A shape of design or event a run reached, counted to show the run is
@@ -77,8 +78,6 @@ pub struct Reach {
     shapes: BTreeMap<Shape, u64>,
     /// Distinct paths of a snapshot answered.
     answered: u64,
-    /// Answers the order check compared.
-    order_compared: u64,
 }
 
 impl Reach {
@@ -98,17 +97,26 @@ impl Reach {
 
     /// How many answers the order check compared.
     pub fn order_compared(&self) -> u64 {
-        self.order_compared
+        self.count(Shape::OrderComparison)
     }
 
     /// Adds what another run reached.
     pub fn add(&mut self, other: &Reach) {
-        let _ = other;
+        for (snapshot, checked) in &other.checked {
+            *self.checked.entry(*snapshot).or_default() += checked;
+        }
+        for (shape, count) in &other.shapes {
+            *self.shapes.entry(*shape).or_default() += count;
+        }
+        self.answered += other.answered;
     }
 
     /// The shapes never reached, in the order of `Shape::ALL`.
     pub fn missing(&self) -> Vec<Shape> {
-        Shape::ALL.to_vec()
+        Shape::ALL
+            .into_iter()
+            .filter(|shape| self.count(*shape) == 0)
+            .collect()
     }
 
     /// How often `shape` was reached.
@@ -384,7 +392,8 @@ impl Session {
                 session: mismatch.session,
                 fresh: mismatch.fresh,
             })?;
-        self.reach.order_compared = u64::try_from(compared).expect("a count fits u64");
+        let compared = u64::try_from(compared).expect("a count fits u64");
+        *self.reach.shapes.entry(Shape::OrderComparison).or_default() += compared;
         Ok(())
     }
 
@@ -506,6 +515,7 @@ impl Session {
             });
         }
         *self.reach.checked.entry(snapshot).or_default() += 1;
+        self.census(snapshot, &model_path, &expected);
         if late_for_left_live {
             self.reach.reached(Shape::LeftLiveAnswer);
         }
@@ -518,6 +528,55 @@ impl Session {
             });
         }
         Ok(())
+    }
+
+    /// Counts the shapes the answer `expected` at `path` reached: from the
+    /// node's kind and outcome, its declaration, and its parent's answer.
+    fn census(&mut self, snapshot: usize, path: &ModelPath, expected: &Expected) {
+        let reference = self.reference(snapshot);
+        let mut reached = Vec::new();
+        match (expected.node, &expected.outcome) {
+            (Some(ToyKind::Cell), Expect::Value(_)) => {
+                reached.push(Shape::CellValue);
+                let decl = reference.declaration_at(path).ok().flatten();
+                if decl.is_some_and(|decl| decl.bindings.contains_key("pick")) {
+                    reached.push(Shape::PickerValue);
+                }
+            }
+            (Some(ToyKind::Scope), Expect::Value(_)) => reached.push(Shape::ScopeValue),
+            (Some(ToyKind::Guard), Expect::Value(_)) => reached.push(Shape::GuardValue),
+            (Some(ToyKind::Guard), Expect::Absent) => {
+                let condition = ModelRef {
+                    binding: String::from("condition"),
+                    steps: Vec::new(),
+                };
+                if reference.read_at(path, &condition) == Ok(Expect::Value(Out::Bool(false))) {
+                    reached.push(Shape::GuardAbsentOnFalse);
+                }
+            }
+            (Some(ToyKind::Collection), Expect::Value(_)) => reached.push(Shape::CollectionValue),
+            (_, Expect::Failure(Failure::WrongType { .. })) => reached.push(Shape::WrongType),
+            _ => {}
+        }
+        if let Some((parent, step)) = path.parent()
+            && let Ok(above) = reference.answer(&parent)
+        {
+            match (above.node, &above.outcome, step) {
+                (Some(ToyKind::Guard), Expect::Absent, _) => reached.push(Shape::UnderAbsentGuard),
+                (Some(ToyKind::Collection), Expect::Value(Out::Elements { count, .. }), Step::Index(at)) => {
+                    if expected.node.is_some() {
+                        reached.push(Shape::CollectionElement);
+                    }
+                    if at >= count {
+                        reached.push(Shape::IndexPastCount);
+                    }
+                }
+                _ => {}
+            }
+        }
+        for shape in reached {
+            self.reach.reached(shape);
+        }
     }
 
     fn reference(&mut self, snapshot: usize) -> &mut Reference {
