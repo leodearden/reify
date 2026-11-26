@@ -32,7 +32,9 @@ impl Core {
         self.executor.evaluate(snapshot, demand)
     }
 
-    /// Ends `request`, dropping the bodies no other live request wants.
+    /// Ends `request`, dropping the work it wanted that no other live
+    /// request wants and nothing awaits. Ending a request the core has
+    /// already ended does nothing.
     ///
     /// # Panics
     ///
@@ -41,13 +43,15 @@ impl Core {
         self.executor.end(request);
     }
 
-    /// The answers and progress notes given since the last call, in the
-    /// order they were given.
+    /// The answers, progress notes and request endings given since the last
+    /// call, in the order they were given.
     pub fn take_events(&mut self) -> Vec<Event> {
         self.executor.take_events()
     }
 
-    /// Runs every body that is ready until none is. Never blocks.
+    /// Runs every body that is ready until none is. Never blocks. If then no
+    /// section is running either, each live request that still wants a path
+    /// is ended with `RequestError::NothingCanRun`.
     pub fn turn(&mut self) -> Turn {
         self.executor.turn()
     }

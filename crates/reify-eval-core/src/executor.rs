@@ -123,9 +123,10 @@ impl Executor {
     }
 
     /// Takes in what resource threads have reported, without blocking, then
-    /// runs every ready body until none is ready. A finished section is
-    /// delivered only by `wait` or `drain`, so what a turn does to bodies
-    /// depends on the order of the host's calls alone.
+    /// runs every ready body until none is ready, then ends the requests
+    /// nothing can now serve. A finished section is delivered only by `wait`
+    /// or `drain`, so what a turn does to bodies depends on the order of the
+    /// host's calls alone.
     pub fn turn(&mut self) -> Turn {
         self.prune();
         while let Some(report) = self.resources.try_receive() {
