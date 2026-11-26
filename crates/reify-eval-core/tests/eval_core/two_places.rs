@@ -5,11 +5,13 @@ use std::collections::BTreeSet;
 use std::thread::ThreadId;
 
 use reify_eval_core::{
-    Answer, Builder, Cx, Declaration, Erased, Held, Input, InputKey, Kind, KindId, Outcome,
-    Produced, Ref, Value,
+    Answer, Builder, Core, Cx, Declaration, Erased, Held, Input, InputKey, Kind, KindId, Outcome,
+    Path, Produced, Ref, Snapshot, Step, Value,
 };
 
-use crate::toy::{self, BoxHandle, Cell, Collection, Guard, Measure, Scope, Shape, ToyKernel};
+use crate::toy::{
+    self, BoxHandle, Cell, Collection, Guard, Measure, Scope, Shape, ToyKernel, Watch,
+};
 
 /// One kind's case: the subject's declaration, the members beside it it
 /// reads, the snapshot inputs it needs, and how its kind compares two of
@@ -86,6 +88,102 @@ fn shape_entry() -> Entry {
         inputs: vec![toy::named("side", 2_i64)],
         same: same_as::<toy::BoxShape>,
     }
+}
+
+/// Which half of the two-places test failed for `kind`.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Mismatch {
+    /// The two places, in two cores, answered otherwise by the kind's own
+    /// equality.
+    Differs { kind: KindId },
+    /// In one core, the second place ran the subject's body again.
+    SecondPlaceRan { kind: KindId },
+}
+
+/// The root of a place: declares the members its binding "members" reads.
+/// It is not a toy kind, so no subject's body count includes it.
+struct Place;
+
+impl Kind for Place {
+    type Out = toy::Members;
+    const ID: KindId = KindId("test.place");
+    const VERSION: u32 = 1;
+
+    async fn run(cx: &Cx) -> Produced<toy::Members> {
+        Produced::Outcome(cx.read::<toy::Members>(&Ref::binding("members")).await)
+    }
+
+    fn declares(out: &toy::Members, step: &Step) -> Option<Declaration> {
+        out.0.get(step).cloned()
+    }
+}
+
+fn place(members: &str) -> Declaration {
+    Declaration::new(Place::ID).bind("members", toy::input(members))
+}
+
+/// The inputs of both places and of unrelated kernel work: place A is
+/// member "subject" of root "A", place B one level deeper, at
+/// "B"/"inner"/"subject"; root "other" is a shape of another side.
+fn places(entry: &Entry) -> Vec<(InputKey, Input)> {
+    let members = || {
+        let subject = ("subject", entry.subject.clone());
+        toy::members(entry.siblings.iter().cloned().chain([subject]))
+    };
+    let mut inputs = entry.inputs.clone();
+    inputs.extend([
+        toy::named("A.members", members()),
+        toy::root("A", place("A.members")),
+        toy::named("B.inner", members()),
+        toy::named("B.members", toy::members([("inner", place("B.inner"))])),
+        toy::root("B", place("B.members")),
+        toy::named("other.side", 5_i64),
+        toy::root("other", toy::shape("other.side")),
+    ]);
+    inputs
+}
+
+/// The answer at `at` to a request for it alone, run until no section is.
+fn run_alone(core: &mut Core, snapshot: &Snapshot, at: &Path) -> Answer<Erased> {
+    let request = core.evaluate(snapshot, toy::demand([at]));
+    core.run();
+    toy::the_answer(&core.take_events(), &request, at)
+}
+
+/// The two-places test of contract 5.4 for `entry`, on cores built with
+/// `kinds`, the toy kernel and `Place`: core 1 answers place A; core 2
+/// first does unrelated work on the toy kernel, then answers place B; the
+/// two answers are compared by the kind's own equality. And in core 1,
+/// place B after place A costs no body run of the subject's kind.
+fn check(entry: &Entry, kinds: fn() -> Builder) -> Result<(), Mismatch> {
+    let make = || {
+        let builder = kinds().kind::<Place>().expect("Place is not a toy kind");
+        toy::ungated(builder, &Watch::default())
+    };
+    let (a, b) = (
+        toy::below("A", &["subject"]),
+        toy::below("B", &["inner", "subject"]),
+    );
+
+    let mut first = make();
+    let snapshot = first.snapshot(places(entry));
+    let at_a = run_alone(&mut first, &snapshot, &a);
+    let runs = first.counters().body_runs(entry.kind);
+    run_alone(&mut first, &snapshot, &b);
+    let second_place_ran = first.counters().body_runs(entry.kind) != runs;
+
+    let mut second = make();
+    let snapshot = second.snapshot(places(entry));
+    run_alone(&mut second, &snapshot, &toy::at("other"));
+    let at_b = run_alone(&mut second, &snapshot, &b);
+
+    if !(entry.same)(at_a, at_b) {
+        return Err(Mismatch::Differs { kind: entry.kind });
+    }
+    if second_place_ran {
+        return Err(Mismatch::SecondPlaceRan { kind: entry.kind });
+    }
+    Ok(())
 }
 
 #[test]

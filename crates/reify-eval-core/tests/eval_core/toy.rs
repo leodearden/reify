@@ -11,9 +11,9 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, ThreadId};
 
 use reify_eval_core::{
-    Answer, Binding, Builder, Core, Cx, Declaration, Demand, Erased, Event, Failure, Hash128, Held,
-    Input, InputKey, Kind, KindId, Outcome, OutsideFailure, Path, Produced, Ref, Release, Request,
-    RequestId, Root, Section, Snapshot, Step, Turn, Value,
+    Answer, Binding, Builder, Core, Cx, Declaration, Demand, DuplicateKind, Erased, Event, Failure,
+    Hash128, Held, Input, InputKey, Kind, KindId, Outcome, OutsideFailure, Path, Produced, Ref,
+    Release, Request, RequestId, Root, Section, Snapshot, Step, Turn, Value,
 };
 
 /// The content a test gives the core for one of its values: a hash of
@@ -226,7 +226,7 @@ pub fn with_cell() -> Builder {
 }
 
 /// What a scope declares: a declaration at each step.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Members(pub BTreeMap<Step, Declaration>);
 
 /// Members, each at a named step.
@@ -321,6 +321,7 @@ pub fn guard(condition: Binding, members: &str) -> Declaration {
 }
 
 /// How many elements a collection has, and what each is.
+#[derive(Debug, PartialEq)]
 pub struct Elements {
     pub count: u64,
     pub element: Declaration,
@@ -402,6 +403,7 @@ pub struct BoxHandle(pub u32);
 impl Release<ToyKernel> for BoxHandle {
     fn release(self, kernel: &mut ToyKernel) {
         kernel.boxes.remove(&self.0);
+        kernel.marked.remove(&self.0);
         kernel.watch.live_boxes.fetch_sub(1, Ordering::SeqCst);
     }
 }
@@ -411,6 +413,14 @@ pub struct BoxShape {
     pub handle: Held<ToyKernel, BoxHandle>,
     pub volume: i64,
     pub built_on: ThreadId,
+}
+
+/// A box is its description: the handle and the thread are where it
+/// lives (contract 5.4).
+impl PartialEq for BoxShape {
+    fn eq(&self, other: &Self) -> bool {
+        self.volume == other.volume
+    }
 }
 
 /// Makes a box on the toy kernel from the side length bound at "side".
@@ -443,9 +453,63 @@ pub fn shape(side: &str) -> Declaration {
     Declaration::new(Shape::ID).bind("side", Binding::Input(InputKey::named(side)))
 }
 
+/// Reads the box at "shape" and measures it in a section on the toy
+/// kernel: its volume as the kernel keeps it.
+pub struct Measure;
+
+impl Kind for Measure {
+    type Out = i64;
+    const ID: KindId = KindId("toy.measure");
+    const VERSION: u32 = 1;
+
+    async fn run(cx: &Cx) -> Produced<i64> {
+        let shape = match cx.read::<BoxShape>(&Ref::binding("shape")).await {
+            Outcome::Value(shape) => shape,
+            Outcome::Failure(failure) => return Produced::Outcome(Outcome::Failure(failure)),
+            Outcome::Absent => return Produced::Outcome(Outcome::Absent),
+        };
+        let volume = cx
+            .exclusive(move |kernel: &mut ToyKernel, _| kernel.measure(shape.handle.0))
+            .await;
+        Produced::Outcome(Outcome::of(volume))
+    }
+
+    fn content(out: &i64) -> Option<Hash128> {
+        Some(out.content())
+    }
+}
+
+/// A measure of the box `shape` names.
+pub fn measure(shape: Binding) -> Declaration {
+    Declaration::new(Measure::ID).bind("shape", shape)
+}
+
 pub fn with_toys() -> Builder {
     with_cell()
         .kind::<Shape>()
+        .and_then(|builder| builder.kind::<Measure>())
+        .expect("toy kind ids are distinct")
+}
+
+/// How a kind is registered on a builder.
+pub type Register = fn(Builder) -> Result<Builder, DuplicateKind>;
+
+/// Every PRD toy kind built so far (PRD 5.4), with its registration: the
+/// one list `with_every_kind` registers and the two-places table must
+/// cover. A kind added here needs a two-places entry.
+pub const TOY_KINDS: [(KindId, Register); 6] = [
+    (Cell::ID, Builder::kind::<Cell>),
+    (Scope::ID, Builder::kind::<Scope>),
+    (Guard::ID, Builder::kind::<Guard>),
+    (Collection::ID, Builder::kind::<Collection>),
+    (Shape::ID, Builder::kind::<Shape>),
+    (Measure::ID, Builder::kind::<Measure>),
+];
+
+pub fn with_every_kind() -> Builder {
+    TOY_KINDS
+        .iter()
+        .try_fold(Builder::new(), |builder, (_, register)| register(builder))
         .expect("toy kind ids are distinct")
 }
 
@@ -567,7 +631,9 @@ impl GateKeeper {
 }
 
 pub struct ToyKernel {
-    boxes: BTreeSet<u32>,
+    /// The volume of each live box, by handle.
+    boxes: BTreeMap<u32, i64>,
+    marked: BTreeSet<u32>,
     made: u32,
     watch: Watch,
     gate: Option<Gate>,
@@ -594,7 +660,7 @@ impl ToyKernel {
             self.watch.saw_cancelled.store(true, Ordering::SeqCst);
         }
         self.made += 1;
-        self.boxes.insert(self.made);
+        self.boxes.insert(self.made, side * side * side);
         self.watch.live_boxes.fetch_add(1, Ordering::SeqCst);
         self.watch
             .sides_in_order
@@ -603,13 +669,27 @@ impl ToyKernel {
             .push(side);
         (section.hold(BoxHandle(self.made)), thread::current().id())
     }
+
+    /// The volume of the live box `handle`.
+    pub fn measure(&self, handle: u32) -> i64 {
+        *self.boxes.get(&handle).expect("a held box is live")
+    }
+
+    pub fn mark(&mut self, handle: u32) {
+        self.marked.insert(handle);
+    }
+
+    pub fn is_marked(&self, handle: u32) -> bool {
+        self.marked.contains(&handle)
+    }
 }
 
 fn with_kernel(builder: Builder, watch: &Watch, gate: Option<Gate>) -> Core {
     let mut core = builder.build();
     let watch = watch.clone();
     core.add_resource(move || ToyKernel {
-        boxes: BTreeSet::new(),
+        boxes: BTreeMap::new(),
+        marked: BTreeSet::new(),
         made: 0,
         watch,
         gate,
