@@ -11,6 +11,7 @@ mod building;
 mod ending;
 mod growth;
 mod hash;
+mod outside;
 mod reading;
 mod roots;
 mod sections;
