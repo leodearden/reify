@@ -150,6 +150,8 @@ mod cli_one_sided_auto;
 mod cli_orientation_rotvec_dimension;
 #[path = "harness_cli/cli_pub_import_reexport.rs"]
 mod cli_pub_import_reexport;
+#[path = "harness_cli/cli_std_prelude_facade.rs"]
+mod cli_std_prelude_facade;
 #[path = "harness_cli/cli_purpose.rs"]
 mod cli_purpose;
 #[path = "harness_cli/cli_purpose_stdlib.rs"]

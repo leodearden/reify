@@ -506,11 +506,12 @@ pub fn merge_prelude_functions(
 /// Only `is_pub` purposes are merged; private prelude purposes remain scoped to
 /// their declaring module.
 ///
-/// A stdlib module inherits pub purposes only from the modules it imports, and
-/// no stdlib module imports `std.determinacy.purposes`, the only stdlib module
-/// with pub purposes. So only user modules (compiled against the full stdlib)
-/// gain the standard purposes: a prelude for users, not for sibling stdlib
-/// modules. (task-4016 ζ)
+/// A stdlib module inherits pub purposes only from the modules it imports, so
+/// of the stdlib modules only importers of `std.determinacy.purposes` (the only
+/// stdlib module with pub purposes) gain the standard purposes. The
+/// `std.prelude` facade imports it to re-export it; its merged copies carry
+/// the prelude sentinel and are never exported (`name_env::own_purposes`).
+/// (task-4016 ζ, task #5502)
 ///
 /// **Hash contract:** the merged purposes are included in `compute_module_hash`,
 /// so a user module's `content_hash` incorporates the full set of available

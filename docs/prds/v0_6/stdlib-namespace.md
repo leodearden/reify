@@ -177,8 +177,7 @@ references. N3/N4 consume resolution-unification substrate (§5).
   (`Real`, `Int`, `Bool`, `String`, geometry primitives, builtin fns/dimensions) + the pub
   surfaces of its declared imports. Nothing else. `import std.prelude` is an ordinary
   import of a facade module that `pub import`s the curated core (units, si_units,
-  option_recovery, result, determinacy.purposes, geometry traits — final list is a
-  curation task).
+  option_recovery, result, determinacy.purposes, io — the list decided in ι, §10 Q1).
 - **NS-V2 (fix-it).** An unresolved name that exists in exactly one stdlib module produces
   a structured fix-it diagnostic naming that module and `std.prelude`; ambiguous matches
   list candidates. (G7 `structured-facts-at-failure`.)
@@ -432,6 +431,16 @@ decompose (its β/θ carry the interim-seeding + units-flip-compile-side clauses
 1. **`std.prelude` curation list.** Baseline: units, si_units, option_recovery, result,
    determinacy.purposes, geometry traits, io. Decide in ι against dogfood-file usage
    frequency (grep the corpus).
+   *Decided in ι (#5502):* `crates/reify-compiler/stdlib/prelude.ri` `pub import`s, in
+   order, units, si_units, option_recovery, result, determinacy.purposes and io;
+   geometry traits are dropped. Evidence: `reify fix --imports --check` over the 268
+   tracked examples/ + prj/ files found 117 needing any std import (si_units 50,
+   units 42, io 10, option_recovery 4, result 3, geometry.traits 0). The domain modules
+   materials.fea 33, fea.multi_case 24, solver.elastic 22, materials.mechanical 13,
+   tolerancing 12 and structural.physical 12 are excluded as domain vocabulary (D-3).
+   The ε tool cannot attribute purposes, which are applied via `--purpose` rather than
+   named; before ι, simulation_ready/design_review were used in 2 examples and 5 CLI
+   fixtures.
 2. **Migration sweep breadth (λ).** examples/ + prj/ certain; the printer-dogfood
    worktree and any user files outside the repo get the tool, not the sweep. Decide in λ.
 3. **`import std` (bare) under strict.** Disallow with a fix-it pointing at

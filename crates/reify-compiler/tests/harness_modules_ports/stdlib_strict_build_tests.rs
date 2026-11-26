@@ -333,7 +333,10 @@ fn std_determinacy_purposes_reaches_no_sibling_even_when_registered_first() {
 
     let leaks: Vec<String> = built
         .iter()
-        .filter(|module| module.path.to_dotted() != PURPOSES_MODULE)
+        .filter(|module| {
+            module.path.to_dotted() != PURPOSES_MODULE
+                && !module.imports.iter().any(|i| i.path == PURPOSES_MODULE)
+        })
         .flat_map(|module| {
             module
                 .compiled_purposes
