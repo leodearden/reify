@@ -568,7 +568,7 @@ mod tests {
     use super::super::case::{Case, HostEvent, Then};
     use super::super::design::{Bind, Decl, Key, ToyKind, Val};
     use super::super::reference::first_invalid;
-    use super::{Features, GATE_EVENTS, GATE_SEEDS, gate_cases, generate};
+    use super::{Features, GATE_EVENTS, GATE_SEEDS, gate_case, gate_cases, generate};
 
     /// Every input value a case sets, initially or by an edit.
     fn values(case: &Case) -> Vec<(&Key, &Val)> {
@@ -637,27 +637,77 @@ mod tests {
     }
 
     #[test]
+    fn the_gate_runs_every_feature() {
+        let every = Features {
+            scope: true,
+            guard: true,
+            collection: true,
+            divide: true,
+            kernel: true,
+        };
+        assert_eq!(Features::every(), every);
+        for seed in GATE_SEEDS {
+            let case = generate(seed, every, GATE_EVENTS);
+            assert_eq!(gate_case(seed), case, "seed {seed}");
+        }
+    }
+
+    /// Whether `features` lets a design hold a declaration of `kind`.
+    fn allows(features: Features, kind: ToyKind) -> bool {
+        match kind {
+            ToyKind::Cell => true,
+            ToyKind::Scope => features.scope,
+            ToyKind::Guard => features.guard,
+            ToyKind::Collection => features.collection,
+            ToyKind::Shape | ToyKind::Measure => features.kernel,
+        }
+    }
+
+    #[test]
     fn a_feature_that_is_off_puts_no_declaration_of_its_kind_in_a_case() {
         let cells_only = Features {
             scope: false,
             guard: false,
             collection: false,
+            divide: false,
+            kernel: false,
         };
-        for seed in GATE_SEEDS {
-            let case = generate(seed, cells_only, GATE_EVENTS);
-            assert!(!case.events.is_empty(), "seed {seed}");
-            let kinds: BTreeSet<_> = decls(&case).iter().map(|decl| decl.kind).collect();
-            assert!(
-                kinds.iter().all(|kind| *kind == ToyKind::Cell),
-                "seed {seed}: {kinds:?}"
-            );
+        let every = Features::every();
+        let some_off = [
+            cells_only,
+            Features::structure(),
+            Features {
+                divide: false,
+                ..every
+            },
+            Features {
+                kernel: false,
+                ..every
+            },
+        ];
+        for features in some_off {
+            for seed in GATE_SEEDS {
+                let case = generate(seed, features, GATE_EVENTS);
+                assert!(!case.events.is_empty(), "seed {seed}");
+                for decl in decls(&case) {
+                    assert!(
+                        allows(features, decl.kind),
+                        "seed {seed}, {features:?}: {decl:?}"
+                    );
+                    let divides = decl.bindings.contains_key("divisor");
+                    assert!(
+                        features.divide || !divides,
+                        "seed {seed}, {features:?}: {decl:?}"
+                    );
+                }
+            }
         }
     }
 
     #[test]
     fn the_gate_cases_reach_every_kind_binding_and_event_shape() {
         let mut kinds = BTreeSet::new();
-        let (mut pickers, mut passed, mut extras) = (0, 0, 0);
+        let (mut pickers, mut passed, mut extras, mut divisors) = (0, 0, 0, 0);
         let (mut edits_off_latest, mut evaluations_off_latest) = (0, 0);
         let (mut zero_left, mut zero_ended) = (0, 0);
         for (_, case) in gate_cases() {
@@ -665,6 +715,9 @@ mod tests {
                 kinds.insert(decl.kind);
                 pickers +=
                     usize::from(decl.kind == ToyKind::Cell && decl.bindings.contains_key("pick"));
+                divisors += usize::from(
+                    decl.kind == ToyKind::Cell && decl.bindings.contains_key("divisor"),
+                );
                 passed += decl
                     .bindings
                     .values()
@@ -704,10 +757,13 @@ mod tests {
             ToyKind::Scope,
             ToyKind::Guard,
             ToyKind::Collection,
+            ToyKind::Shape,
+            ToyKind::Measure,
         ];
         assert_eq!(kinds, BTreeSet::from(all));
         let counts = [
             ("pickers", pickers),
+            ("divisors", divisors),
             ("passed bindings", passed),
             ("attached extras", extras),
             ("edits off the latest snapshot", edits_off_latest),

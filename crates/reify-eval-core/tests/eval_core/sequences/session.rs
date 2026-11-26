@@ -56,6 +56,14 @@ shapes! {
     PickerValue,
     /// A failure naming the type read and the type found.
     WrongType,
+    /// A cell answering its own failure: its divisor reads zero.
+    DivisionByZero,
+    /// A cell blocked by the failure at a ref it read.
+    BlockedBy,
+    /// A box a shape made on the toy kernel.
+    ShapeValue,
+    /// The volume a measure read from the toy kernel.
+    MeasureValue,
     /// An answer checked for a request left live after a Drive of no
     /// turns, told after a later event.
     LeftLiveAnswer,

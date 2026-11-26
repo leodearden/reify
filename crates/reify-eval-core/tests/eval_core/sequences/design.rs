@@ -17,6 +17,8 @@ pub enum ToyKind {
     Scope,
     Guard,
     Collection,
+    Shape,
+    Measure,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -129,6 +131,8 @@ impl ToyKind {
             ToyKind::Scope => toy::Scope::ID,
             ToyKind::Guard => toy::Guard::ID,
             ToyKind::Collection => toy::Collection::ID,
+            ToyKind::Shape => toy::Shape::ID,
+            ToyKind::Measure => toy::Measure::ID,
         }
     }
 }
@@ -264,6 +268,16 @@ pub fn collection(count: Bind, element: Bind) -> Decl {
         ToyKind::Collection,
         [("count", count), ("element", element)],
     )
+}
+
+/// A box on the toy kernel whose side is what `side` names.
+pub fn shape(side: Bind) -> Decl {
+    decl(ToyKind::Shape, [("side", side)])
+}
+
+/// A measure of the box `shape` names.
+pub fn measure(shape: Bind) -> Decl {
+    decl(ToyKind::Measure, [("shape", shape)])
 }
 
 pub fn int(value: i64) -> Val {

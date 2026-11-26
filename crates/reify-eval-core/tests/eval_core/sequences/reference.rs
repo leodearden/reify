@@ -775,6 +775,109 @@ mod tests {
         assert_eq!(answer(&design, &at("r", &["t"])), blocked_at("0"));
     }
 
+    /// Root scope `r` whose members are a shape "s" over the side "side",
+    /// a cell "z" dividing by zero and `others`.
+    fn kernel_r(others: impl IntoIterator<Item = (Step, Decl)>, side: Val) -> Inputs {
+        let held = [
+            (step("s"), shape(input("side"))),
+            (step("z"), divided(cell([input("a")]), input("zero"))),
+        ];
+        let mut design = scope_r(
+            members(held.into_iter().chain(others)),
+            &[("a", 7), ("zero", 0)],
+        );
+        design.insert(named("side"), side);
+        design.insert(named("on"), flag(true));
+        design
+    }
+
+    #[test]
+    fn a_shape_is_a_box_of_its_side_cubed_passing_absent_and_a_failure_through() {
+        let held = [
+            (step("n"), shape(input("missing"))),
+            (step("w"), shape(input("on"))),
+            (step("f"), shape(declarer([step("z")]))),
+        ];
+        let design = kernel_r(held, int(3));
+        assert_eq!(
+            answer(&design, &at("r", &["s"])),
+            value(ToyKind::Shape, Out::Shape { volume: 27 })
+        );
+        assert_eq!(
+            answer(&kernel_r([], int(-2)), &at("r", &["s"])),
+            value(ToyKind::Shape, Out::Shape { volume: -8 })
+        );
+        assert_eq!(
+            answer(&design, &at("r", &["n"])),
+            absent(Some(ToyKind::Shape))
+        );
+        let (int, bool) = (type_name::<i64>(), type_name::<bool>());
+        assert_eq!(
+            answer(&design, &at("r", &["w"])),
+            failed(Some(ToyKind::Shape), int, bool)
+        );
+        let by_zero = Failure::OfKind {
+            kind: toy::Cell::ID,
+            code: toy::DIVISION_BY_ZERO,
+        };
+        assert_eq!(
+            answer(&design, &at("r", &["f"])),
+            Ok(Expected {
+                node: Some(ToyKind::Shape),
+                outcome: Expect::Failure(by_zero),
+            })
+        );
+    }
+
+    #[test]
+    fn a_measure_of_a_sibling_shape_is_its_volume_and_a_cell_reads_it_as_an_int() {
+        let held = [
+            (step("m"), measure(declarer([step("s")]))),
+            (step("c"), cell([declarer([step("m")]), input("a")])),
+            (step("n"), measure(declarer([step("none")]))),
+        ];
+        let design = kernel_r(held, int(2));
+        assert_eq!(
+            answer(&design, &at("r", &["m"])),
+            int_of(ToyKind::Measure, 8)
+        );
+        assert_eq!(answer(&design, &at("r", &["c"])), int_of(ToyKind::Cell, 15));
+        assert_eq!(
+            answer(&design, &at("r", &["n"])),
+            absent(Some(ToyKind::Measure))
+        );
+    }
+
+    #[test]
+    fn a_measure_of_what_is_not_a_shape_fails_naming_both_types() {
+        let held = [
+            (step("i"), measure(input("side"))),
+            (step("f"), measure(declarer([step("z")]))),
+            (step("k"), cell([declarer([step("s")])])),
+        ];
+        let design = kernel_r(held, int(2));
+        let (int, shape) = (type_name::<i64>(), type_name::<toy::BoxShape>());
+        assert_eq!(
+            answer(&design, &at("r", &["i"])),
+            failed(Some(ToyKind::Measure), shape, int)
+        );
+        let by_zero = Failure::OfKind {
+            kind: toy::Cell::ID,
+            code: toy::DIVISION_BY_ZERO,
+        };
+        assert_eq!(
+            answer(&design, &at("r", &["f"])),
+            Ok(Expected {
+                node: Some(ToyKind::Measure),
+                outcome: Expect::Failure(by_zero),
+            })
+        );
+        assert_eq!(
+            answer(&design, &at("r", &["k"])),
+            failed(Some(ToyKind::Cell), int, shape)
+        );
+    }
+
     #[test]
     fn a_child_of_a_failed_node_answers_that_failure() {
         let mut design = scope_r(members([(step("a"), cell([declarer([])]))]), &[]);
