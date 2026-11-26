@@ -70,6 +70,10 @@ impl Core {
 
     /// Adds resource `R` on a thread of its own; `make` runs there, so `R`
     /// need not be `Send`.
+    ///
+    /// # Panics
+    ///
+    /// If the core already has a resource of type `R`.
     pub fn add_resource<R: 'static>(&mut self, make: impl FnOnce() -> R + Send + 'static) {
         self.executor.add_resource(make);
     }

@@ -5,6 +5,7 @@
 //! subject, with any kind only one of its tests uses.
 
 mod bodies;
+mod building;
 mod ending;
 mod reading;
 mod roots;

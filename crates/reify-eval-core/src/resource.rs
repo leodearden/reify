@@ -1,7 +1,8 @@
 //! Every exclusive resource, each alone on a thread of its own that runs
 //! one job at a time, and the one channel their reports come back on.
 
-use std::any::TypeId;
+use std::any::{TypeId, type_name};
+use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::mem;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -58,19 +59,23 @@ impl Resources {
     }
 
     /// Starts resource `R`'s thread, which makes it, so `R` need not be
-    /// `Send`. Adding a type again replaces the first, once its queued
-    /// jobs have run.
+    /// `Send`. One thread serves `R` for the core's whole life, so whatever
+    /// a section made in `R` goes back to the thread that made it.
+    ///
+    /// # Panics
+    ///
+    /// If the core already has a resource of type `R`.
     pub fn add<R: 'static>(&mut self, make: impl FnOnce() -> R + Send + 'static) {
+        let Entry::Vacant(slot) = self.threads.entry(TypeId::of::<R>()) else {
+            panic!(
+                "the core already has a resource of type {}",
+                type_name::<R>()
+            );
+        };
         let (jobs, queued) = channel();
         let reports = self.reports_in.clone();
         let thread = thread::spawn(move || serve(make, queued, reports));
-        self.dead.remove(&TypeId::of::<R>());
-        if let Some(replaced) = self
-            .threads
-            .insert(TypeId::of::<R>(), ResourceThread { jobs, thread })
-        {
-            replaced.stop();
-        }
+        slot.insert(ResourceThread { jobs, thread });
     }
 
     /// Queues a section on its resource's thread.

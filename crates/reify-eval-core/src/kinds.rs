@@ -1,6 +1,7 @@
 //! The kinds a core is built with, by id.
 
 use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 
 use crate::declaration::KindId;
 use crate::erased_kind::{ErasedKind, Of};
@@ -17,10 +18,11 @@ pub(crate) struct Kinds {
 
 impl Kinds {
     pub fn add<K: Kind>(&mut self) -> Result<(), DuplicateKind> {
-        match self.by_id.insert(K::ID, Box::new(Of::<K>::new())) {
-            None => Ok(()),
-            Some(_) => Err(DuplicateKind(K::ID)),
-        }
+        let Entry::Vacant(slot) = self.by_id.entry(K::ID) else {
+            return Err(DuplicateKind(K::ID));
+        };
+        slot.insert(Box::new(Of::<K>::new()));
+        Ok(())
     }
 
     pub fn get(&self, id: KindId) -> Option<&dyn ErasedKind> {
