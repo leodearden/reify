@@ -154,6 +154,15 @@ fn an_answer_the_host_drops_is_released_on_the_kernel_s_thread() {
 
     drop(events);
     core.drain();
+    assert_eq!(
+        watch.live_boxes(),
+        1,
+        "the index of the live snapshot holds the box"
+    );
+
+    core.end(request);
+    drop(snapshot);
+    core.drain();
     assert_eq!(watch.live_boxes(), 0);
 }
 

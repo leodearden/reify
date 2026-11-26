@@ -270,7 +270,9 @@ fn a_release_for_a_dead_resource_does_not_hang_the_drain() {
         "fragile",
     )));
 
-    drop(kept);
+    core.end(made);
+    core.end(broken);
+    drop((snapshot, kept));
     core.drain();
 }
 
@@ -344,16 +346,19 @@ fn after_a_release_panics_its_resource_is_dead_and_later_sections_name_that_pani
         .expect("one kind")
         .build();
     core.add_resource(|| Brittle);
-    let snapshot = core.snapshot([toy::root("shard", Declaration::new(MakeShard::ID))]);
+    let inputs = || [toy::root("shard", Declaration::new(MakeShard::ID))];
+    let snapshot = core.snapshot(inputs());
 
     let first = core.evaluate(&snapshot, [Root::named("shard")]);
     core.run();
     let events = core.take_events();
     let made = toy::the_answer(&events, &first, "shard");
     assert!(matches!(made, Answer::Final(Outcome::Value(_))), "{made:?}");
-    drop((made, events));
+    core.end(first);
+    drop((made, events, snapshot));
     core.drain();
 
+    let snapshot = core.snapshot(inputs());
     let second = core.evaluate(&snapshot, [Root::named("shard")]);
     core.run();
     let answer = toy::the_answer(&core.take_events(), &second, "shard");

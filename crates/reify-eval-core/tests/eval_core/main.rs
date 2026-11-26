@@ -12,4 +12,5 @@ mod hash;
 mod reading;
 mod roots;
 mod sections;
+mod snapshots;
 mod toy;
