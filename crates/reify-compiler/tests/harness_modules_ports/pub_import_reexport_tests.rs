@@ -86,12 +86,25 @@ fn unknown_sub<'d>(
     })
 }
 
-/// Panic unless the entry's own diagnostics leave structure `name` known.
+/// Panic unless `diagnostics` hold no Error, so a code-filtered "clean" check
+/// beside it cannot pass only because the fixture stopped compiling.
+#[track_caller]
+fn assert_no_errors<'d>(diagnostics: impl IntoIterator<Item = &'d Diagnostic>) {
+    let errors: Vec<&Diagnostic> = diagnostics
+        .into_iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no Errors, got: {errors:?}");
+}
+
+/// Panic unless the entry's own diagnostics leave structure `name` known, and
+/// the entry, re-homed copies included, carries no Error at all.
 #[track_caller]
 fn assert_entry_knows(program: &CompiledProgram, name: &str) {
     if let Some(diag) = unknown_sub(program.entry_own_diagnostics(), name) {
         panic!("`{name}` should be visible at the entry, got: {diag:?}");
     }
+    assert_no_errors(&program.entry().diagnostics);
 }
 
 /// Panic unless the entry's own diagnostics report structure `name` unknown.
@@ -210,6 +223,10 @@ fn a_cfg_gated_out_pub_import_re_exports_nothing() {
     assert!(!source_keys(&program).contains(&"parts"));
 }
 
+/// Compile-time visibility only: app's own compile binds `Pulley` through its
+/// facade. Whole-program eval of app's `sub p` still resolves in the entry's
+/// environment, whose tier is `[app]`, and reports `Pulley` unknown, exactly as
+/// it does when app imports parts directly.
 #[test]
 fn an_import_unit_sees_what_its_facade_re_exports() {
     let program = compile_main(
@@ -242,6 +259,30 @@ fn a_module_both_imported_and_re_exported_appears_once() {
 }
 
 #[test]
+fn a_re_exported_definition_ranks_with_its_re_exporter() {
+    let program = compile_main(
+        "module main\nimport lib\nimport other\nstructure def Rig { sub p = Pulley() }\n",
+        &[
+            ("lib.ri", FACADE_LIB),
+            ("parts.ri", PARTS),
+            (
+                "other.ri",
+                "module other\npub structure def Pulley { param diameter : Length = 60mm }\n",
+            ),
+        ],
+    );
+
+    assert_entry_knows(&program, "Pulley");
+    assert_eq!(import_keys(&program), ["lib", "parts", "other"]);
+    let resolved = resolve_in_program::<TopologyTemplate, str>(&program, &[], "Pulley")
+        .expect("eval's environment should bind Pulley");
+    assert!(
+        std::ptr::eq(resolved, template_in(&program, "parts", "Pulley")),
+        "lib's re-export of parts should win over the later direct import other"
+    );
+}
+
+#[test]
 fn compile_project_entries_see_re_exports_too() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
@@ -267,6 +308,7 @@ fn compile_project_entries_see_re_exports_too() {
     if let Some(diag) = unknown_sub(entry.diagnostics.iter(), "Helper") {
         panic!("c should see Helper through b's re-export, got: {diag:?}");
     }
+    assert_no_errors(&entry.diagnostics);
 }
 
 /// Each import unit's key, with how the entry reaches it.

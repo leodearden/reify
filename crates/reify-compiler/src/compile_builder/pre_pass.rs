@@ -300,7 +300,7 @@ pub(crate) fn collect_decl_refs<'a>(
 mod tests {
     use std::collections::HashSet;
 
-    use reify_core::{ModulePath, Severity};
+    use reify_core::{DiagnosticCode, ModulePath, Severity};
 
     use super::{check_module_path_decl, collect_decl_refs};
     use crate::compile_builder::ctx::CompilationCtx;
@@ -346,6 +346,7 @@ structure def Taken { param b : Real = 2.0 }
         let diag = check_module_path_decl(None, &expected)
             .expect("should return Some(diag) for absent declaration");
         assert_eq!(diag.severity, Severity::Warning);
+        assert_eq!(diag.code, Some(DiagnosticCode::ModuleDeclMissing));
         assert!(
             diag.message.contains("W_MODULE_DECL_MISSING"),
             "message should contain 'W_MODULE_DECL_MISSING', got: {}",
@@ -372,6 +373,7 @@ structure def Taken { param b : Real = 2.0 }
         let diag = check_module_path_decl(Some(&declared), &expected)
             .expect("should return Some(diag) for mismatch");
         assert_eq!(diag.severity, Severity::Error);
+        assert_eq!(diag.code, Some(DiagnosticCode::ModulePathMismatch));
         assert!(
             diag.message.contains("E_MODULE_PATH_MISMATCH"),
             "message should contain 'E_MODULE_PATH_MISMATCH', got: {}",
