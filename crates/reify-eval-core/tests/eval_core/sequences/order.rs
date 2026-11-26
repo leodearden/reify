@@ -43,15 +43,18 @@ pub fn order_check<O: PartialEq + Debug + Clone>(
             .or_insert_with(|| core.snapshot(snapshots[first.snapshot].clone()));
         let request = core.evaluate(snapshot, Demand::of([first.path.clone()]));
         core.run();
-        let answer = core.take_events().into_iter().find_map(|event| match event {
-            Event::Answered {
-                request: to,
-                path,
-                answer,
-                ..
-            } if to == request.id() && path == first.path => Some(answer),
-            _ => None,
-        });
+        let answer = core
+            .take_events()
+            .into_iter()
+            .find_map(|event| match event {
+                Event::Answered {
+                    request: to,
+                    path,
+                    answer,
+                    ..
+                } if to == request.id() && path == first.path => Some(answer),
+                _ => None,
+            });
         core.end(request);
         let answer = answer.unwrap_or_else(|| panic!("a fresh core gave no answer at {first:?}"));
         let fresh = observe(answer);
@@ -119,8 +122,14 @@ mod tests {
     #[test]
     fn a_kind_whose_answer_depends_on_the_order_of_requests_is_caught() {
         let inputs = vec![
-            (InputKey::root("a"), Input::of(Declaration::new(Turnstile::ID))),
-            (InputKey::root("b"), Input::of(Declaration::new(Turnstile::ID))),
+            (
+                InputKey::root("a"),
+                Input::of(Declaration::new(Turnstile::ID)),
+            ),
+            (
+                InputKey::root("b"),
+                Input::of(Declaration::new(Turnstile::ID)),
+            ),
         ];
         let mut core = turnstile_core();
         let snapshot = core.snapshot(inputs.clone());
@@ -136,8 +145,14 @@ mod tests {
             });
             core.end(request);
         }
-        let seen: Vec<_> = answered.iter().map(|answered| answered.seen.clone()).collect();
-        assert_eq!(seen, [Answer::Final(Outcome::of(0)), Answer::Final(Outcome::of(1))]);
+        let seen: Vec<_> = answered
+            .iter()
+            .map(|answered| answered.seen.clone())
+            .collect();
+        assert_eq!(
+            seen,
+            [Answer::Final(Outcome::of(0)), Answer::Final(Outcome::of(1))]
+        );
         let found = order_check(&turnstile_core, &[inputs], &answered, turns);
         let expected = OrderMismatch {
             snapshot: 0,
@@ -162,7 +177,9 @@ mod tests {
             seen: Answer::Final(Outcome::of(sum)),
         });
         let make_core = || toy::with_cell().build();
-        let found = order_check(&make_core, &[inputs], &answered, |answer| answer.downcast::<i64>());
+        let found = order_check(&make_core, &[inputs], &answered, |answer| {
+            answer.downcast::<i64>()
+        });
         assert_eq!(found, Ok(2));
     }
 }

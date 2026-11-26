@@ -158,12 +158,16 @@ fn event_text(event: &HostEvent) -> String {
     match event {
         HostEvent::Edit { from, changes } => {
             let each = changes.iter().map(|(key, value)| {
-                let value = value
-                    .as_ref()
-                    .map_or_else(|| String::from("None"), |value| format!("Some({})", val_text(value)));
+                let value = value.as_ref().map_or_else(
+                    || String::from("None"),
+                    |value| format!("Some({})", val_text(value)),
+                );
                 format!("({}, {value})", key_text(key))
             });
-            format!("HostEvent::Edit {{ from: {from}, changes: vec![{}] }}", list(each))
+            format!(
+                "HostEvent::Edit {{ from: {from}, changes: vec![{}] }}",
+                list(each)
+            )
         }
         HostEvent::Evaluate { on, paths, then } => format!(
             "HostEvent::Evaluate {{ on: {on}, paths: {}, then: {} }}",
@@ -269,14 +273,24 @@ fn printed_case() {
 
     #[test]
     fn a_case_prints_as_constructor_calls_asserting_it_is_caught() {
-        let printed = print_test(&every_variant(), 7, "printed_case", Expectation::CaughtWithFaultyCell);
+        let printed = print_test(
+            &every_variant(),
+            7,
+            "printed_case",
+            Expectation::CaughtWithFaultyCell,
+        );
         let expected = format!("{PRINTED}    assert!(super::faulty::caught(&case));\n}}\n");
         assert_eq!(printed, expected, "printed:\n{printed}");
     }
 
     #[test]
     fn a_case_prints_as_constructor_calls_asserting_the_toy_kinds_pass_it() {
-        let printed = print_test(&every_variant(), 7, "printed_case", Expectation::PassesWithToyKinds);
+        let printed = print_test(
+            &every_variant(),
+            7,
+            "printed_case",
+            Expectation::PassesWithToyKinds,
+        );
         let check = "if let Err(mismatch) = super::session::check(&case, &super::session::toy_core) \
                      { panic!(\"{mismatch}\") }";
         let expected = format!("{PRINTED}    {check}\n}}\n");

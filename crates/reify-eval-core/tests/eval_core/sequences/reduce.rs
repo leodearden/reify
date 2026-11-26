@@ -37,7 +37,9 @@ pub fn candidates(case: &Case) -> Vec<Case> {
         shortened.map(|paths| with_paths(event, paths)).collect()
     }));
     all.extend(each_event(case, |event| match event {
-        HostEvent::Drive { on, paths, then, .. } => vec![HostEvent::Evaluate {
+        HostEvent::Drive {
+            on, paths, then, ..
+        } => vec![HostEvent::Evaluate {
             on: *on,
             paths: paths.clone(),
             then: *then,
@@ -45,12 +47,21 @@ pub fn candidates(case: &Case) -> Vec<Case> {
         _ => Vec::new(),
     }));
     all.extend(each_event(case, |event| match event {
-        HostEvent::Evaluate { on, paths, then: Then::Leave } => vec![HostEvent::Evaluate {
+        HostEvent::Evaluate {
+            on,
+            paths,
+            then: Then::Leave,
+        } => vec![HostEvent::Evaluate {
             on: *on,
             paths: paths.clone(),
             then: Then::End,
         }],
-        HostEvent::Drive { on, paths, turns, then: Then::Leave } => vec![HostEvent::Drive {
+        HostEvent::Drive {
+            on,
+            paths,
+            turns,
+            then: Then::Leave,
+        } => vec![HostEvent::Drive {
             on: *on,
             paths: paths.clone(),
             turns: *turns,
@@ -107,7 +118,11 @@ pub fn candidates(case: &Case) -> Vec<Case> {
 /// Evaluate, a request left above one ended, a structure kind above a
 /// cell, and an int by its distance from zero.
 pub fn size(case: &Case) -> u64 {
-    let inputs: u64 = case.inputs.values().map(|value| 1 + value_size(value)).sum();
+    let inputs: u64 = case
+        .inputs
+        .values()
+        .map(|value| 1 + value_size(value))
+        .sum();
     inputs + case.events.iter().map(event_size).sum::<u64>()
 }
 
@@ -136,7 +151,11 @@ fn value_size(value: &Val) -> u64 {
 }
 
 fn decl_size(decl: &Decl) -> u64 {
-    let bindings: u64 = decl.bindings.values().map(|bind| 1 + bind_steps(bind)).sum();
+    let bindings: u64 = decl
+        .bindings
+        .values()
+        .map(|bind| 1 + bind_steps(bind))
+        .sum();
     u64::from(decl.kind != ToyKind::Cell) + bindings
 }
 
@@ -204,7 +223,9 @@ fn with_paths(event: &HostEvent, paths: Vec<ModelPath>) -> HostEvent {
             paths,
             then: *then,
         },
-        HostEvent::Drive { on, turns, then, .. } => HostEvent::Drive {
+        HostEvent::Drive {
+            on, turns, then, ..
+        } => HostEvent::Drive {
             on: *on,
             paths,
             turns: *turns,
@@ -298,8 +319,15 @@ mod tests {
             assert!(!smaller.is_empty(), "seed {seed} has no candidate");
             for candidate in smaller {
                 assert!(size(&candidate) < size(&case), "seed {seed}: {candidate:?}");
-                assert!(candidate.names_made_snapshots(), "seed {seed}: {candidate:?}");
-                assert_eq!(first_invalid(&candidate), None, "seed {seed}: {candidate:?}");
+                assert!(
+                    candidate.names_made_snapshots(),
+                    "seed {seed}: {candidate:?}"
+                );
+                assert_eq!(
+                    first_invalid(&candidate),
+                    None,
+                    "seed {seed}: {candidate:?}"
+                );
             }
         }
     }
@@ -340,7 +368,10 @@ mod tests {
             .into_iter()
             .filter(evaluates_below_a_guard)
             .collect();
-        assert!(still.is_empty(), "seed {seed}: {shrunk:?} shrinks further to {still:?}");
+        assert!(
+            still.is_empty(),
+            "seed {seed}: {shrunk:?} shrinks further to {still:?}"
+        );
         let [HostEvent::Evaluate { paths, .. }] = shrunk.events.as_slice() else {
             panic!("seed {seed}: one Evaluate is all the predicate needs: {shrunk:?}");
         };

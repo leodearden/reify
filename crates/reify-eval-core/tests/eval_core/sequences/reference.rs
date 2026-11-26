@@ -56,7 +56,9 @@ pub fn first_invalid(case: &Case) -> Option<Invalid> {
     let demanded: BTreeSet<_> = case.demanded().collect();
     case.snapshots().into_iter().find_map(|inputs| {
         let mut reference = Reference::new(inputs);
-        demanded.iter().find_map(|path| reference.answer(path).err())
+        demanded
+            .iter()
+            .find_map(|path| reference.answer(path).err())
     })
 }
 
@@ -136,7 +138,12 @@ impl Reference {
     fn work_out(&mut self, path: &ModelPath) -> Result<Expected, Invalid> {
         let decl = match self.declaration(path)? {
             Declared::Node(decl) => decl,
-            Declared::Settled(outcome) => return Ok(Expected { node: None, outcome }),
+            Declared::Settled(outcome) => {
+                return Ok(Expected {
+                    node: None,
+                    outcome,
+                });
+            }
         };
         let outcome = match decl.kind {
             ToyKind::Cell => self.cell(path, &decl)?,
@@ -191,7 +198,12 @@ impl Reference {
     /// steps below it; a binding relative to the declarer names nothing on
     /// a root; a passed binding is the declarer's own binding, the steps
     /// still to take carried along (contract 2.1).
-    fn read(&mut self, reader: &ModelPath, decl: &Rc<Decl>, r: &ModelRef) -> Result<Expect, Invalid> {
+    fn read(
+        &mut self,
+        reader: &ModelPath,
+        decl: &Rc<Decl>,
+        r: &ModelRef,
+    ) -> Result<Expect, Invalid> {
         let (mut node, mut decl) = (reader.clone(), Rc::clone(decl));
         let (mut name, mut steps) = (r.binding.clone(), r.steps.clone());
         loop {
@@ -224,7 +236,12 @@ impl Reference {
         }
     }
 
-    fn read_binding(&mut self, at: &ModelPath, decl: &Rc<Decl>, name: &str) -> Result<Expect, Invalid> {
+    fn read_binding(
+        &mut self,
+        at: &ModelPath,
+        decl: &Rc<Decl>,
+        name: &str,
+    ) -> Result<Expect, Invalid> {
         let r = ModelRef {
             binding: name.to_owned(),
             steps: Vec::new(),
@@ -421,7 +438,11 @@ mod tests {
         })
     }
 
-    fn failed(node: Option<ToyKind>, expected: &'static str, found: &'static str) -> Result<Expected, Invalid> {
+    fn failed(
+        node: Option<ToyKind>,
+        expected: &'static str,
+        found: &'static str,
+    ) -> Result<Expected, Invalid> {
         Ok(Expected {
             node,
             outcome: Expect::Failure(Failure::WrongType { expected, found }),
@@ -476,12 +497,18 @@ mod tests {
         let Val::Members(held) = held else {
             unreachable!("members() makes members")
         };
-        assert_eq!(answer(&design, &at("r", &[])), value(ToyKind::Scope, Out::Members(held)));
+        assert_eq!(
+            answer(&design, &at("r", &[])),
+            value(ToyKind::Scope, Out::Members(held))
+        );
     }
 
     #[test]
     fn a_path_below_a_cell_is_absent() {
-        let design = inputs([(root("c"), declaration(cell([input("a")]))), (named("a"), int(2))]);
+        let design = inputs([
+            (root("c"), declaration(cell([input("a")]))),
+            (named("a"), int(2)),
+        ]);
         assert_eq!(answer(&design, &at("c", &["x"])), absent(None));
     }
 
@@ -489,8 +516,14 @@ mod tests {
     fn a_step_below_a_snapshot_input_is_absent() {
         let held = members([
             (step("a"), cell([input("x")])),
-            (step("b"), cell([input("y"), passed("members", [step("a")]), input("y")])),
-            (step("c"), cell([input("y"), passed("extra", [step("a")]), input("y")])),
+            (
+                step("b"),
+                cell([input("y"), passed("members", [step("a")]), input("y")]),
+            ),
+            (
+                step("c"),
+                cell([input("y"), passed("extra", [step("a")]), input("y")]),
+            ),
         ]);
         let mut design = scope_r(held.clone(), &[("x", 4), ("y", 1)]);
         design.insert(attached_to(at("r", &[]), "extra"), held);
@@ -501,8 +534,14 @@ mod tests {
     #[test]
     fn a_declarer_and_a_passed_binding_on_a_root_read_absent() {
         let design = inputs([
-            (root("d"), declaration(cell([input("a"), declarer([]), input("b")]))),
-            (root("e"), declaration(cell([input("a"), passed("0", []), input("b")]))),
+            (
+                root("d"),
+                declaration(cell([input("a"), declarer([]), input("b")])),
+            ),
+            (
+                root("e"),
+                declaration(cell([input("a"), passed("0", []), input("b")])),
+            ),
             (root("p"), declaration(picker(input("zero"), declarer([])))),
             (named("a"), int(2)),
             (named("b"), int(3)),
@@ -529,7 +568,10 @@ mod tests {
         let Val::Members(held) = held else {
             unreachable!("members() makes members")
         };
-        assert_eq!(answer(&design, &at("h", &[])), value(ToyKind::Guard, Out::Members(held)));
+        assert_eq!(
+            answer(&design, &at("h", &[])),
+            value(ToyKind::Guard, Out::Members(held))
+        );
         assert_eq!(answer(&design, &at("h", &["a"])), int_of(ToyKind::Cell, 7));
     }
 
@@ -546,8 +588,14 @@ mod tests {
     fn a_collection_declares_its_element_below_its_count_and_nothing_else() {
         let element = cell([passed("count", []), input("x")]);
         let design = inputs([
-            (root("col"), declaration(collection(input("n"), input("el")))),
-            (root("none"), declaration(collection(input("neg"), input("el")))),
+            (
+                root("col"),
+                declaration(collection(input("n"), input("el"))),
+            ),
+            (
+                root("none"),
+                declaration(collection(input("neg"), input("el"))),
+            ),
             (named("el"), declaration(element.clone())),
             (named("n"), int(3)),
             (named("neg"), int(-1)),
@@ -557,12 +605,18 @@ mod tests {
             count,
             element: element.clone(),
         };
-        assert_eq!(answer(&design, &at("col", &[])), value(ToyKind::Collection, elements(3)));
+        assert_eq!(
+            answer(&design, &at("col", &[])),
+            value(ToyKind::Collection, elements(3))
+        );
         let col = |i| path("col", [index(i)]);
         assert_eq!(answer(&design, &col(0)), int_of(ToyKind::Cell, 13));
         assert_eq!(answer(&design, &col(2)), int_of(ToyKind::Cell, 13));
         assert_eq!(answer(&design, &col(3)), absent(None));
-        assert_eq!(answer(&design, &at("none", &[])), value(ToyKind::Collection, elements(0)));
+        assert_eq!(
+            answer(&design, &at("none", &[])),
+            value(ToyKind::Collection, elements(0))
+        );
         assert_eq!(answer(&design, &path("none", [index(0)])), absent(None));
     }
 
@@ -574,18 +628,30 @@ mod tests {
             (step("q"), picker(input("five"), declarer([step("col")]))),
             (step("s"), picker(input("neg"), declarer([step("col")]))),
         ]);
-        let mut design = scope_r(held, &[("n", 3), ("x", 10), ("one", 1), ("five", 5), ("neg", -1)]);
+        let mut design = scope_r(
+            held,
+            &[("n", 3), ("x", 10), ("one", 1), ("five", 5), ("neg", -1)],
+        );
         design.insert(named("el"), declaration(cell([input("x")])));
         assert_eq!(answer(&design, &at("r", &["p"])), int_of(ToyKind::Cell, 10));
-        assert_eq!(answer(&design, &at("r", &["q"])), absent(Some(ToyKind::Cell)));
-        assert_eq!(answer(&design, &at("r", &["s"])), absent(Some(ToyKind::Cell)));
+        assert_eq!(
+            answer(&design, &at("r", &["q"])),
+            absent(Some(ToyKind::Cell))
+        );
+        assert_eq!(
+            answer(&design, &at("r", &["s"])),
+            absent(Some(ToyKind::Cell))
+        );
     }
 
     #[test]
     fn a_cell_reading_a_scope_fails_naming_both_types() {
         let design = scope_r(members([(step("a"), cell([declarer([])]))]), &[]);
         let (int, scope) = (type_name::<i64>(), type_name::<toy::Members>());
-        assert_eq!(answer(&design, &at("r", &["a"])), failed(Some(ToyKind::Cell), int, scope));
+        assert_eq!(
+            answer(&design, &at("r", &["a"])),
+            failed(Some(ToyKind::Cell), int, scope)
+        );
     }
 
     #[test]
@@ -593,14 +659,23 @@ mod tests {
         let mut design = scope_r(members([(step("a"), cell([declarer([])]))]), &[]);
         design.insert(root("bad"), int(1));
         let (int, scope) = (type_name::<i64>(), type_name::<toy::Members>());
-        assert_eq!(answer(&design, &at("r", &["a", "z"])), failed(None, int, scope));
+        assert_eq!(
+            answer(&design, &at("r", &["a", "z"])),
+            failed(None, int, scope)
+        );
         let declaration = type_name::<Declaration>();
-        assert_eq!(answer(&design, &at("bad", &["x"])), failed(None, declaration, int));
+        assert_eq!(
+            answer(&design, &at("bad", &["x"])),
+            failed(None, declaration, int)
+        );
     }
 
     #[test]
     fn an_attached_extra_input_adds_a_member_and_overrides_one_at_the_same_step() {
-        let held = members([(step("a"), cell([input("x")])), (step("b"), cell([input("y")]))]);
+        let held = members([
+            (step("a"), cell([input("x")])),
+            (step("b"), cell([input("y")])),
+        ]);
         let mut design = scope_r(held, &[("x", 1), ("y", 5)]);
         let extra = members([
             (step("b"), cell([input("x"), input("x")])),
@@ -614,10 +689,15 @@ mod tests {
 
     #[test]
     fn a_cell_whose_term_is_below_its_own_path_is_a_cycle() {
-        let design = scope_r(members([(step("a"), cell([declarer([step("a"), step("x")])]))]), &[]);
+        let design = scope_r(
+            members([(step("a"), cell([declarer([step("a"), step("x")])]))]),
+            &[],
+        );
         assert_eq!(
             answer(&design, &at("r", &["a"])),
-            Err(Invalid::Cycle { path: at("r", &["a"]) })
+            Err(Invalid::Cycle {
+                path: at("r", &["a"])
+            })
         );
     }
 
@@ -636,7 +716,11 @@ mod tests {
         let mut reference = Reference::new(design);
         let last = reference.answer(&at("r", &["c39"]));
         assert_eq!(last, int_of(ToyKind::Cell, 3 << 39));
-        assert_eq!(reference.evaluations(), 41, "the root and its forty members");
+        assert_eq!(
+            reference.evaluations(),
+            41,
+            "the root and its forty members"
+        );
     }
 
     #[test]

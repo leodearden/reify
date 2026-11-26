@@ -165,7 +165,13 @@ impl Generator {
 
     /// The declaration of member m`ordinal` of `level`, reading through
     /// its declarer only the declarer itself or the `earlier` siblings.
-    fn member(&mut self, level: &Level, ordinal: usize, earlier: &[Sibling], needed: &mut Needed) -> Decl {
+    fn member(
+        &mut self,
+        level: &Level,
+        ordinal: usize,
+        earlier: &[Sibling],
+        needed: &mut Needed,
+    ) -> Decl {
         let at = level.at.child(member_step(ordinal));
         self.paths.push(at.clone());
         let depth = level.depth + 1;
@@ -205,16 +211,19 @@ impl Generator {
 
     /// A cell of up to three terms: mostly inputs, else earlier siblings,
     /// places below them, or the declarer itself.
-    fn terms(&mut self, at: &ModelPath, earlier: &[Sibling], declarer_kind: Option<ToyKind>) -> Decl {
+    fn terms(
+        &mut self,
+        at: &ModelPath,
+        earlier: &[Sibling],
+        declarer_kind: Option<ToyKind>,
+    ) -> Decl {
         if self.rng.chance(1, 4) {
             self.paths.push(at.child(step("x")));
         }
         let count = self.rng.below(4);
         let terms: Vec<_> = (0..count)
             .map(|_| match self.rng.below(10) {
-                5..=7 if !earlier.is_empty() => {
-                    declarer([member_step(self.rng.choose(earlier).0)])
-                }
+                5..=7 if !earlier.is_empty() => declarer([member_step(self.rng.choose(earlier).0)]),
                 8 if !earlier.is_empty() => {
                     declarer([member_step(self.rng.choose(earlier).0), step("x")])
                 }
@@ -416,7 +425,10 @@ impl Generator {
             Change::Member => self.member_change(current, &mut needed),
             Change::Extra => self.extra_change(current, &mut needed),
             Change::Remove => {
-                let present: Vec<_> = current.keys().filter(|key| matches!(key, Key::Named(_))).collect();
+                let present: Vec<_> = current
+                    .keys()
+                    .filter(|key| matches!(key, Key::Named(_)))
+                    .collect();
                 match present.is_empty() {
                     true => Vec::new(),
                     false => vec![((*self.rng.choose(&present)).clone(), None)],
@@ -507,7 +519,11 @@ fn siblings(held: &BTreeMap<Step, Decl>) -> Vec<Sibling> {
 
 /// The members of `present` below `ordinal`.
 fn before(present: &[Sibling], ordinal: usize) -> Vec<Sibling> {
-    present.iter().filter(|(at, _)| *at < ordinal).copied().collect()
+    present
+        .iter()
+        .filter(|(at, _)| *at < ordinal)
+        .copied()
+        .collect()
 }
 
 /// The ordinals of the members of `kind` among `siblings`.
@@ -552,14 +568,23 @@ mod tests {
                 Val::Int(_) | Val::Bool(_) => Vec::new(),
             }
         }
-        values(case).into_iter().flat_map(|(_, value)| within(value)).collect()
+        values(case)
+            .into_iter()
+            .flat_map(|(_, value)| within(value))
+            .collect()
     }
 
     #[test]
     fn a_seed_gives_one_case_and_another_seed_another() {
         let features = Features::structure();
-        assert_eq!(generate(7, features, GATE_EVENTS), generate(7, features, GATE_EVENTS));
-        assert_ne!(generate(7, features, GATE_EVENTS), generate(8, features, GATE_EVENTS));
+        assert_eq!(
+            generate(7, features, GATE_EVENTS),
+            generate(7, features, GATE_EVENTS)
+        );
+        assert_ne!(
+            generate(7, features, GATE_EVENTS),
+            generate(8, features, GATE_EVENTS)
+        );
     }
 
     #[test]
@@ -574,7 +599,10 @@ mod tests {
                 {
                     let next = &case.events[at + 1];
                     let edits_driven = matches!(next, HostEvent::Edit { from, .. } if from == on);
-                    assert!(edits_driven, "seed {seed}: event {at} is a Drive on {on}, then {next:?}");
+                    assert!(
+                        edits_driven,
+                        "seed {seed}: event {at} is a Drive on {on}, then {next:?}"
+                    );
                 }
                 if let HostEvent::Edit { .. } = event {
                     made += 1;
@@ -596,7 +624,10 @@ mod tests {
             let case = generate(seed, cells_only, GATE_EVENTS);
             assert!(!case.events.is_empty(), "seed {seed}");
             let kinds: BTreeSet<_> = decls(&case).iter().map(|decl| decl.kind).collect();
-            assert!(kinds.iter().all(|kind| *kind == ToyKind::Cell), "seed {seed}: {kinds:?}");
+            assert!(
+                kinds.iter().all(|kind| *kind == ToyKind::Cell),
+                "seed {seed}: {kinds:?}"
+            );
         }
     }
 
@@ -609,8 +640,13 @@ mod tests {
         for (_, case) in gate_cases() {
             for decl in decls(&case) {
                 kinds.insert(decl.kind);
-                pickers += usize::from(decl.kind == ToyKind::Cell && decl.bindings.contains_key("pick"));
-                passed += decl.bindings.values().filter(|bind| matches!(bind, Bind::Passed(_))).count();
+                pickers +=
+                    usize::from(decl.kind == ToyKind::Cell && decl.bindings.contains_key("pick"));
+                passed += decl
+                    .bindings
+                    .values()
+                    .filter(|bind| matches!(bind, Bind::Passed(_)))
+                    .count();
             }
             extras += values(&case)
                 .iter()
@@ -623,21 +659,39 @@ mod tests {
                         edits_off_latest += usize::from(*from != latest);
                         latest += 1;
                     }
-                    HostEvent::Evaluate { on, .. } => evaluations_off_latest += usize::from(*on != latest),
-                    HostEvent::Drive { turns: 0, then: Then::Leave, .. } => zero_left += 1,
-                    HostEvent::Drive { turns: 0, then: Then::End, .. } => zero_ended += 1,
+                    HostEvent::Evaluate { on, .. } => {
+                        evaluations_off_latest += usize::from(*on != latest)
+                    }
+                    HostEvent::Drive {
+                        turns: 0,
+                        then: Then::Leave,
+                        ..
+                    } => zero_left += 1,
+                    HostEvent::Drive {
+                        turns: 0,
+                        then: Then::End,
+                        ..
+                    } => zero_ended += 1,
                     HostEvent::Drive { .. } => {}
                 }
             }
         }
-        let all = [ToyKind::Cell, ToyKind::Scope, ToyKind::Guard, ToyKind::Collection];
+        let all = [
+            ToyKind::Cell,
+            ToyKind::Scope,
+            ToyKind::Guard,
+            ToyKind::Collection,
+        ];
         assert_eq!(kinds, BTreeSet::from(all));
         let counts = [
             ("pickers", pickers),
             ("passed bindings", passed),
             ("attached extras", extras),
             ("edits off the latest snapshot", edits_off_latest),
-            ("evaluations off the latest snapshot", evaluations_off_latest),
+            (
+                "evaluations off the latest snapshot",
+                evaluations_off_latest,
+            ),
             ("drives of no turns left live", zero_left),
             ("drives of no turns ended", zero_ended),
         ];

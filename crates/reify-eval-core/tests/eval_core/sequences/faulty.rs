@@ -32,7 +32,9 @@ impl Kind for FaultyCell {
 }
 
 fn hashes_to_a_tenth(value: i64) -> bool {
-    Hash128::of_bytes(&value.to_le_bytes()).as_u128() % 10 == 0
+    Hash128::of_bytes(&value.to_le_bytes())
+        .as_u128()
+        .is_multiple_of(10)
 }
 
 /// A core with the faulty cell in the toy cell's place: the only builder
@@ -62,10 +64,7 @@ fn a_wrong_rule_in_the_cell_is_caught_shrunk_and_printed() {
         .find(|(_, case)| caught(case))
         .expect("a gate case catches the faulty cell");
     let shrunk = shrink(case, candidates, size, caught);
-    let still: Vec<_> = candidates(&shrunk)
-        .into_iter()
-        .filter(|candidate| caught(candidate))
-        .collect();
+    let still: Vec<_> = candidates(&shrunk).into_iter().filter(caught).collect();
     assert!(still.is_empty(), "{shrunk:?} shrinks further to {still:?}");
     let name = format!("faulty_cell_case_from_seed_{seed}");
     let printed = print_test(&shrunk, seed, &name, Expectation::CaughtWithFaultyCell);

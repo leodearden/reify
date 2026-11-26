@@ -9,8 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use reify_eval_core::{
-    Answer, Core, Demand, Erased, Event, Failure, Path, Request, RequestError, RequestId,
-    Snapshot, Step,
+    Answer, Core, Demand, Erased, Event, Failure, Path, Request, RequestError, RequestId, Snapshot,
+    Step,
 };
 
 use super::case::{Case, HostEvent, Then};
@@ -391,13 +391,14 @@ impl Session {
     /// the same answers.
     fn order_check(&mut self, make_core: &dyn Fn() -> Core) -> Result<(), Mismatch> {
         let snapshots: Vec<_> = self.models.iter().map(to_core).collect();
-        let compared = order_check(make_core, &snapshots, &self.first, Seen::of_answer)
-            .map_err(|mismatch| Mismatch::Order {
+        let compared = order_check(make_core, &snapshots, &self.first, Seen::of_answer).map_err(
+            |mismatch| Mismatch::Order {
                 snapshot: mismatch.snapshot,
                 path: self.model_path(&mismatch.path),
                 session: Box::new(mismatch.session),
                 fresh: Box::new(mismatch.fresh),
-            })?;
+            },
+        )?;
         let compared = u64::try_from(compared).expect("a count fits u64");
         *self.reach.shapes.entry(Shape::OrderComparison).or_default() += compared;
         Ok(())
@@ -510,7 +511,10 @@ impl Session {
                 snapshot,
                 invalid,
             })?;
-        let (core, reference) = (Seen::of_answer(answer), Seen::of_expected(&expected.outcome));
+        let (core, reference) = (
+            Seen::of_answer(answer),
+            Seen::of_expected(&expected.outcome),
+        );
         if core != reference {
             return Err(Mismatch::Reference {
                 event: at,
@@ -569,7 +573,11 @@ impl Session {
         {
             match (above.node, &above.outcome, step) {
                 (Some(ToyKind::Guard), Expect::Absent, _) => reached.push(Shape::UnderAbsentGuard),
-                (Some(ToyKind::Collection), Expect::Value(Out::Elements { count, .. }), Step::Index(at)) => {
+                (
+                    Some(ToyKind::Collection),
+                    Expect::Value(Out::Elements { count, .. }),
+                    Step::Index(at),
+                ) => {
                     if expected.node.is_some() {
                         reached.push(Shape::CollectionElement);
                     }

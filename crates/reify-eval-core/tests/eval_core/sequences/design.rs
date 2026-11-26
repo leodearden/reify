@@ -95,7 +95,9 @@ impl ModelPath {
 impl ModelRef {
     pub fn to_core(&self) -> Ref {
         let start = Ref::binding(self.binding.as_str());
-        self.steps.iter().fold(start, |r, step| r.step(step.clone()))
+        self.steps
+            .iter()
+            .fold(start, |r, step| r.step(step.clone()))
     }
 }
 
@@ -133,11 +135,10 @@ impl ToyKind {
 
 impl Decl {
     pub fn to_core(&self) -> Declaration {
-        self.bindings
-            .iter()
-            .fold(Declaration::new(self.kind.id()), |declaration, (name, bind)| {
-                declaration.bind(name.as_str(), bind.to_core())
-            })
+        self.bindings.iter().fold(
+            Declaration::new(self.kind.id()),
+            |declaration, (name, bind)| declaration.bind(name.as_str(), bind.to_core()),
+        )
     }
 }
 
@@ -253,7 +254,10 @@ pub fn guard(condition: Bind, members: &str) -> Decl {
 
 /// A collection of `count` elements, each the declaration `element` reads.
 pub fn collection(count: Bind, element: Bind) -> Decl {
-    decl(ToyKind::Collection, [("count", count), ("element", element)])
+    decl(
+        ToyKind::Collection,
+        [("count", count), ("element", element)],
+    )
 }
 
 pub fn int(value: i64) -> Val {

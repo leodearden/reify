@@ -4,9 +4,7 @@
 use std::any::Any;
 use std::collections::BTreeMap;
 
-use reify_eval_core::{
-    Answer, Declaration, Erased, Failure, Outcome, OutsideFailure, Step, Value,
-};
+use reify_eval_core::{Answer, Declaration, Erased, Failure, Outcome, OutsideFailure, Step, Value};
 
 use super::design::core_members;
 use super::reference::{Expect, Out};
@@ -20,7 +18,10 @@ pub enum Seen {
     Int(i64),
     Bool(bool),
     Members(BTreeMap<Step, Declaration>),
-    Elements { count: u64, element: Declaration },
+    Elements {
+        count: u64,
+        element: Declaration,
+    },
     Declaration(Declaration),
     /// A value of a type no toy kind produces, by its type's name.
     Other(&'static str),
