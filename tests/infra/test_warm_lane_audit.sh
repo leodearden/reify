@@ -37,6 +37,11 @@ source "$SCRIPT_DIR/test_helpers.sh"
 
 echo "=== scripts/warm-lane-audit.sh hermetic tests (task 5172) ==="
 
+# A block that wants a status oracle passes --status-cmd with a stub. The
+# orchestrator's environment exports the live oracle (introduced by #5310), and
+# the fixture branches below reuse real task numbers.
+unset REIFY_LANE_LEAK_STATUS_CMD
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Shared temp state + cleanup
 # ──────────────────────────────────────────────────────────────────────────────
