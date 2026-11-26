@@ -2,13 +2,14 @@
 
 use std::collections::BTreeMap;
 
-use crate::declaration::KindId;
+use crate::kind_id::KindId;
 
 #[derive(Debug, Default)]
 pub struct Counters {
     body_runs: BTreeMap<KindId, u64>,
     sections: u64,
     paths_resolved: u64,
+    store_lookups: u64,
 }
 
 impl Counters {
@@ -29,6 +30,12 @@ impl Counters {
         self.paths_resolved
     }
 
+    /// How many times the core has probed the store for what is filed at
+    /// a key: each step of each lookup.
+    pub fn store_lookups(&self) -> u64 {
+        self.store_lookups
+    }
+
     pub(crate) fn count_body_run(&mut self, kind: KindId) {
         *self.body_runs.entry(kind).or_default() += 1;
     }
@@ -39,5 +46,9 @@ impl Counters {
 
     pub(crate) fn count_path_resolved(&mut self) {
         self.paths_resolved += 1;
+    }
+
+    pub(crate) fn count_store_lookup(&mut self) {
+        self.store_lookups += 1;
     }
 }

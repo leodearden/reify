@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use imbl::OrdMap;
 
+use crate::content::Content;
 use crate::declaration::Declaration;
 use crate::input::{Input, InputKey};
 use crate::outcome::{Erased, Outcome};
@@ -22,12 +23,13 @@ pub(crate) struct NodeKey {
     pub path: PathId,
 }
 
-/// A path's final answer: its outcome and, when a body produced it, the
-/// declaration of the node that body ran for.
+/// A path's final answer: its outcome, its content and, when a body
+/// produced it, the declaration of the node that body ran for.
 #[derive(Clone)]
 pub(crate) struct Entry {
     pub outcome: Outcome<Erased>,
     pub declaration: Option<Arc<Declaration>>,
+    pub content: Content,
 }
 
 pub(crate) struct Index {

@@ -107,8 +107,8 @@ fn told(
 
 mod tests {
     use reify_eval_core::{
-        Answer, Builder, Core, Cx, Declaration, Demand, Erased, InputKey, Kind, KindId, Outcome,
-        Path, Produced, RequestError, Root,
+        Answer, Binding, Builder, Core, Cx, Declaration, Demand, Erased, Input, InputKey, Kind,
+        KindId, Outcome, Path, Produced, Ref, RequestError, Root,
     };
 
     use super::{Answered, OrderMismatch, order_check};
@@ -117,8 +117,10 @@ mod tests {
     /// A resource that counts the sections run on it.
     struct Turns(u64);
 
-    /// How many sections its resource ran before its own: it depends on
-    /// the order of requests on purpose (it breaks O1).
+    /// Reads its binding "tag", so that turnstiles of different tags are
+    /// different results in the store, then answers how many sections its
+    /// resource ran before its own: it depends on the order of requests on
+    /// purpose (it breaks O1).
     struct Turnstile;
 
     impl Kind for Turnstile {
@@ -127,6 +129,7 @@ mod tests {
         const VERSION: u32 = 1;
 
         async fn run(cx: &Cx) -> Produced<u64> {
+            let _ = cx.read::<i64>(&Ref::binding("tag")).await;
             let before = cx
                 .exclusive(|turns: &mut Turns, _| {
                     turns.0 += 1;
@@ -154,18 +157,17 @@ mod tests {
         answer.downcast()
     }
 
+    /// Root `name`, a turnstile tagged with the input `name`, which holds
+    /// `tag`.
+    fn turnstile(name: &str, tag: i64) -> [(InputKey, Input); 2] {
+        let declaration =
+            Declaration::new(Turnstile::ID).bind("tag", Binding::Input(InputKey::named(name)));
+        [toy::named(name, tag), toy::root(name, declaration)]
+    }
+
     #[test]
     fn a_kind_whose_answer_depends_on_the_order_of_requests_is_caught() {
-        let inputs = vec![
-            (
-                InputKey::root("a"),
-                toy::input_of(Declaration::new(Turnstile::ID)),
-            ),
-            (
-                InputKey::root("b"),
-                toy::input_of(Declaration::new(Turnstile::ID)),
-            ),
-        ];
+        let inputs = [turnstile("a", 1), turnstile("b", 2)].concat();
         let mut core = turnstile_core();
         let snapshot = core.snapshot(inputs.clone());
         let mut answered = Vec::new();

@@ -86,15 +86,20 @@ fn a_failure_that_follows_from_the_inputs_is_stored_and_found_again_and_its_read
 }
 
 /// A root scope `R` whose member `t` reads its member `s`, and `u` reads
-/// `t`, with `s` adding the inputs "a" and "b".
+/// `t` and the input "c", with `s` adding the inputs "a" and "b". (A `u`
+/// reading `t` alone would be found from `t`'s result: equal reads.)
 fn chain_of_three(core: &mut Core, a: i64, b: i64) -> Snapshot {
-    let mut inputs = vec![toy::named("a", a), toy::named("b", b)];
+    let mut inputs = vec![
+        toy::named("a", a),
+        toy::named("b", b),
+        toy::named("c", 10_i64),
+    ];
     inputs.extend(toy::root_scope(
         "R",
         toy::members([
             ("s", toy::cell(&["a", "b"])),
             ("t", toy::cell_over([toy::sibling(&["s"])])),
-            ("u", toy::cell_over([toy::sibling(&["t"])])),
+            ("u", toy::cell_over([toy::sibling(&["t"]), toy::input("c")])),
         ]),
     ));
     core.snapshot(inputs)
@@ -125,7 +130,7 @@ fn an_edit_and_its_reversal_cost_no_body_run() {
         .collect();
 
     assert_eq!(after, before);
-    assert_eq!(before, [final_int(3), final_int(3)]);
+    assert_eq!(before, [final_int(3), final_int(13)]);
     assert_eq!(all_runs(&core), runs, "no body ran for the reversal");
 }
 
@@ -134,7 +139,7 @@ fn after_an_edit_body_runs_are_at_most_the_nodes_whose_read_contents_changed() {
     let mut core = toy::with_scope().build();
     let u = toy::below("R", &["u"]);
     let s0 = chain_of_three(&mut core, 1, 2);
-    assert_eq!(int(toy::answer_alone(&mut core, &s0, &u)), final_int(3));
+    assert_eq!(int(toy::answer_alone(&mut core, &s0, &u)), final_int(13));
     let (cells, scopes) = (
         core.counters().body_runs(Cell::ID),
         core.counters().body_runs(Scope::ID),
@@ -144,16 +149,16 @@ fn after_an_edit_body_runs_are_at_most_the_nodes_whose_read_contents_changed() {
         (InputKey::named("a"), Some(toy::input_of(2_i64))),
         (InputKey::named("b"), Some(toy::input_of(1_i64))),
     ]);
-    assert_eq!(int(toy::answer_alone(&mut core, &s1, &u)), final_int(3));
+    assert_eq!(int(toy::answer_alone(&mut core, &s1, &u)), final_int(13));
     assert_eq!(core.counters().body_runs(Cell::ID), cells + 1, "only s ran");
     assert_eq!(core.counters().body_runs(Scope::ID), scopes);
 
     let s2 = a_set_to(&s1, 5);
-    assert_eq!(int(toy::answer_alone(&mut core, &s2, &u)), final_int(6));
+    assert_eq!(int(toy::answer_alone(&mut core, &s2, &u)), final_int(16));
     assert_eq!(
         core.counters().body_runs(Cell::ID),
         cells + 4,
-        "s, t and u ran"
+        "then s, t and u ran"
     );
     assert_eq!(core.counters().body_runs(Scope::ID), scopes);
 }

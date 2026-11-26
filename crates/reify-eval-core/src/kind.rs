@@ -4,8 +4,9 @@
 use std::future::Future;
 
 use crate::cx::Cx;
-use crate::declaration::{Declaration, KindId};
+use crate::declaration::Declaration;
 use crate::hash::Hash128;
+use crate::kind_id::KindId;
 use crate::outcome::Value;
 use crate::produced::Produced;
 use crate::step::Step;

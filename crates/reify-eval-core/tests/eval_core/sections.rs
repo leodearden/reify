@@ -353,26 +353,44 @@ impl Kind for MakeShard {
     }
 }
 
+/// Makes a shard in `Brittle`, lets it go, and answers 1.
+struct ThrowShard;
+
+impl Kind for ThrowShard {
+    type Out = i64;
+    const ID: KindId = KindId("toy.throw_shard");
+    const VERSION: u32 = 1;
+
+    async fn run(cx: &Cx) -> Produced<i64> {
+        let shard = cx
+            .exclusive(|_: &mut Brittle, section| section.hold(Shard))
+            .await;
+        drop(shard);
+        Produced::Outcome(Outcome::of(1))
+    }
+}
+
 #[test]
 fn after_a_release_panics_its_resource_is_dead_and_later_sections_name_that_panic() {
     let mut core = Builder::new()
         .kind::<MakeShard>()
-        .expect("one kind")
+        .and_then(|builder| builder.kind::<ThrowShard>())
+        .expect("distinct kinds")
         .build();
     core.add_resource(|| Brittle);
-    let inputs = || [toy::root("shard", Declaration::new(MakeShard::ID))];
-    let snapshot = core.snapshot(inputs());
+    let snapshot = core.snapshot([
+        toy::root("thrown", Declaration::new(ThrowShard::ID)),
+        toy::root("shard", Declaration::new(MakeShard::ID)),
+    ]);
 
-    let first = core.evaluate(&snapshot, toy::roots(&["shard"]));
+    let first = core.evaluate(&snapshot, toy::roots(&["thrown"]));
     core.run();
     let events = core.take_events();
-    let made = toy::the_answer(&events, &first, &toy::at("shard"));
+    let made = toy::the_answer(&events, &first, &toy::at("thrown"));
     assert!(matches!(made, Answer::Final(Outcome::Value(_))), "{made:?}");
     core.end(first);
-    drop((made, events, snapshot));
     core.drain();
 
-    let snapshot = core.snapshot(inputs());
     let second = core.evaluate(&snapshot, toy::roots(&["shard"]));
     core.run();
     let answer = toy::the_answer(&core.take_events(), &second, &toy::at("shard"));

@@ -4,8 +4,8 @@
 
 use std::any::Any;
 
-use crate::declaration::KindId;
 use crate::hash::Encoder;
+use crate::kind_id::KindId;
 use crate::reference::Ref;
 
 /// A failure that follows from the inputs. None names a path (contract

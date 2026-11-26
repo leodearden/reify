@@ -11,6 +11,7 @@ use crate::hash::Hash128;
 use crate::kind::Kind;
 use crate::outcome::Erased;
 use crate::produced::Produced;
+use crate::recipe::Recipe;
 use crate::step::Step;
 
 pub(crate) type Body = Pin<Box<dyn Future<Output = Produced<Erased>> + Send>>;
@@ -18,8 +19,8 @@ pub(crate) type Body = Pin<Box<dyn Future<Output = Produced<Erased>> + Send>>;
 pub(crate) trait ErasedKind: Send + Sync {
     fn start(&self, cx: Cx) -> Body;
 
-    /// The version of the kind's body.
-    fn version(&self) -> u32;
+    /// The kind and the version of its body.
+    fn recipe(&self) -> Recipe;
 
     /// The content of `out`, a value this kind produced, if it is hashed
     /// by value.
@@ -42,8 +43,11 @@ impl<K: Kind> ErasedKind for Of<K> {
         Box::pin(async move { K::run(&cx).await.erase() })
     }
 
-    fn version(&self) -> u32 {
-        K::VERSION
+    fn recipe(&self) -> Recipe {
+        Recipe {
+            kind: K::ID,
+            version: K::VERSION,
+        }
     }
 
     fn content(&self, out: &Erased) -> Option<Hash128> {

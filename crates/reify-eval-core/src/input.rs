@@ -79,4 +79,8 @@ impl Input {
     pub(crate) fn leaf_content(&self) -> Hash128 {
         self.content
     }
+
+    pub(crate) fn type_name(&self) -> &'static str {
+        <Erased as Value>::type_name(&*self.value)
+    }
 }

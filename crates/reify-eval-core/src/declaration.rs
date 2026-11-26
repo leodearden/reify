@@ -5,11 +5,9 @@ use std::sync::Arc;
 
 use crate::hash::{Encoder, Hash128};
 use crate::input::InputKey;
+use crate::kind_id::KindId;
 use crate::reference::Ref;
 use crate::step::Step;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct KindId(pub &'static str);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Declaration {

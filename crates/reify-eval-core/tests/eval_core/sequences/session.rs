@@ -889,8 +889,10 @@ mod tests {
     /// A resource that counts the cells run on its core.
     struct Ran(i64);
 
-    /// Registered in place of the toy cell: answers how many cells ran on
-    /// its core before it, so its answer depends on the order of requests.
+    /// Registered in place of the toy cell: reads its term "0", so that
+    /// cells over different terms are different results in the store, then
+    /// answers how many cells ran on its core before it, so its answer
+    /// depends on the order of requests.
     struct CountingCell;
 
     impl Kind for CountingCell {
@@ -899,6 +901,7 @@ mod tests {
         const VERSION: u32 = toy::Cell::VERSION;
 
         async fn run(cx: &Cx) -> Produced<i64> {
+            let _ = cx.read::<i64>(&Ref::binding("0")).await;
             let before = cx
                 .exclusive(|ran: &mut Ran, _| {
                     ran.0 += 1;

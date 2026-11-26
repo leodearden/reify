@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::task::Poll;
 
 use crate::answer::Answer;
+use crate::content::Content;
 use crate::core_id::CoreId;
 use crate::counters::Counters;
 use crate::declaration::Declaration;
@@ -19,7 +20,9 @@ use crate::finish;
 use crate::index::{self, Entry, Indexes, NodeKey};
 use crate::input::{Input, InputKey};
 use crate::job::Report;
+use crate::key::Key;
 use crate::kinds::Kinds;
+use crate::lookup::Lookup;
 use crate::mailbox::{Ask, Posted};
 use crate::outcome::{Erased, Outcome};
 use crate::path::Path;
@@ -33,6 +36,7 @@ use crate::resource::Resources;
 use crate::serve;
 use crate::serve::section::{Delivery, InFlight};
 use crate::snapshot::{Snapshot, SnapshotId};
+use crate::store::{Store, Stored};
 use crate::task::Task;
 use crate::waits::Waits;
 
@@ -57,12 +61,15 @@ pub(crate) struct Executor {
     kinds: Kinds,
     paths: PathTable,
     indexes: Indexes,
+    store: Store,
+    /// The nodes following the store for a result filed for them.
+    lookups: BTreeMap<NodeKey, Lookup>,
     tasks: BTreeMap<NodeKey, Task>,
     /// The paths waiting on their parent's answer.
     resolving: BTreeSet<NodeKey>,
     waits: Waits,
-    /// The read each body waiting on its reads has outstanding, kept until
-    /// every node it awaits is answered and dropped with its body.
+    /// The read each body or lookup waiting on its reads has outstanding,
+    /// kept until every node it awaits is answered and dropped with it.
     readings: BTreeMap<NodeKey, Reading>,
     ready: ReadyQueue<NodeKey>,
     requests: Requests,
@@ -80,6 +87,8 @@ impl Executor {
             kinds,
             paths: PathTable::default(),
             indexes: Indexes::default(),
+            store: Store::default(),
+            lookups: BTreeMap::new(),
             tasks: BTreeMap::new(),
             resolving: BTreeSet::new(),
             waits: Waits::default(),
@@ -215,16 +224,24 @@ impl Executor {
         self.ensure(key);
     }
 
-    /// Every node in progress: a body, or a path waiting on its parent's
-    /// answer.
+    /// Every node in progress: a lookup, a body, or a path waiting on its
+    /// parent's answer.
     fn nodes_in_progress(&self) -> impl Iterator<Item = &NodeKey> {
-        self.tasks.keys().chain(&self.resolving)
+        self.lookups
+            .keys()
+            .chain(self.tasks.keys())
+            .chain(&self.resolving)
     }
 
     /// Whether `key` is among `nodes_in_progress`, found without walking
     /// them.
     fn in_progress(&self, key: NodeKey) -> bool {
-        self.tasks.contains_key(&key) || self.resolving.contains(&key)
+        self.reads(key) || self.resolving.contains(&key)
+    }
+
+    /// Whether `key` is a lookup or a body: a node in progress that reads.
+    fn reads(&self, key: NodeKey) -> bool {
+        self.lookups.contains_key(&key) || self.tasks.contains_key(&key)
     }
 
     fn answered(&self, key: NodeKey) -> bool {
@@ -295,7 +312,7 @@ impl Executor {
 
     /// Works out what the path at `key` is: a root from its snapshot input,
     /// read with the typed read a body uses (decision D11); any other path
-    /// from its parent's final answer. A declaration starts the body; any
+    /// from its parent's final answer. A declaration starts a lookup; any
     /// other outcome is the path's answer.
     fn resolve(&mut self, key: NodeKey) -> Option<Work> {
         self.counters.count_path_resolved();
@@ -320,12 +337,13 @@ impl Executor {
         };
         match declared {
             Outcome::Value(declaration) => {
-                self.start(key, declaration);
+                self.look_up(key, declaration);
                 None
             }
             settled => Some(Work::Answered(
                 key,
                 Entry {
+                    content: Content::of_settled(&settled),
                     outcome: settled.erase(),
                     declaration: None,
                 },
@@ -333,29 +351,48 @@ impl Executor {
         }
     }
 
-    /// Removes the body at `key`, with the read it waits on, if any.
-    fn remove_task(&mut self, key: NodeKey) -> Option<Task> {
+    /// Removes the lookup or body at `key`, with the read it waits on, if
+    /// any, returning the body.
+    fn remove_reader(&mut self, key: NodeKey) -> Option<Task> {
         self.readings.remove(&key);
+        self.lookups.remove(&key);
         self.tasks.remove(&key)
     }
 
-    fn start(&mut self, key: NodeKey, declaration: Arc<Declaration>) {
+    /// Queues a lookup for the node at `key`, which starts at its recipe's
+    /// key; a kind the core was not built with fails outside the inputs.
+    fn look_up(&mut self, key: NodeKey, declaration: Arc<Declaration>) {
         let kind_id = declaration.kind();
         let Some(kind) = self.kinds.get(kind_id) else {
             let unknown = OutsideFailure::UnknownKind { kind: kind_id.0 };
             return self.end_outside(key, unknown);
         };
+        let start = Key::of_recipe(kind.recipe());
+        self.lookups.insert(key, Lookup::new(declaration, start));
+        self.queue(key);
+    }
+
+    /// Starts the body of the node at `key`, whose lookup found nothing.
+    fn start(&mut self, key: NodeKey, declaration: Arc<Declaration>) {
+        let kind_id = declaration.kind();
+        let kind = self
+            .kinds
+            .get(kind_id)
+            .expect("a lookup is made only for a kind the core was built with");
         self.counters.count_body_run(kind_id);
         self.tasks.insert(key, Task::start(kind, declaration));
         self.queue(key);
     }
 
-    /// Queues the body at `key` to be polled, once however often it is
-    /// queued before its poll.
+    /// Queues the lookup or body at `key` to be stepped, once however often
+    /// it is queued before its step.
     fn queue(&mut self, key: NodeKey) {
-        if let Some(task) = self.tasks.get_mut(&key)
-            && task.owe_poll()
-        {
+        let owed = match (self.lookups.get_mut(&key), self.tasks.get_mut(&key)) {
+            (Some(lookup), _) => lookup.queue(),
+            (None, Some(task)) => task.owe_poll(),
+            (None, None) => false,
+        };
+        if owed {
             self.ready.push(key);
         }
     }
@@ -372,7 +409,7 @@ impl Executor {
             .copied()
             .collect();
         for key in unwanted {
-            if let Some(task) = self.remove_task(key) {
+            if let Some(task) = self.remove_reader(key) {
                 task.abandon();
             }
             self.resolving.remove(&key);
@@ -408,22 +445,26 @@ impl Executor {
     }
 
     /// The bodies reachable from `wanted` through the wait relation, in path
-    /// order. A path waiting on its parent passes through to it; only
-    /// bodies are named.
+    /// order, a lookup standing for its body. A path waiting on its parent
+    /// passes through to it; only bodies are named.
     fn bodies_waited_on(&self, wanted: Vec<NodeKey>) -> Vec<Path> {
         let mut bodies: Vec<_> = self
             .waits
             .reach(wanted)
             .into_iter()
-            .filter(|key| self.tasks.contains_key(key))
+            .filter(|key| self.reads(*key))
             .map(|key| self.paths.path(key.path))
             .collect();
         bodies.sort();
         bodies
     }
 
-    /// Polls the body at `key` if it is owed a poll.
+    /// Steps the lookup at `key` if it is queued, or polls the body there
+    /// if it is owed a poll.
     fn advance(&mut self, key: NodeKey) {
+        if self.lookups.contains_key(&key) {
+            return self.step_lookup(key);
+        }
         let Some(task) = self.tasks.get_mut(&key) else {
             return;
         };
@@ -442,8 +483,9 @@ impl Executor {
         match posted {
             Posted::Ask(Ask::Read(refs)) => {
                 let index = self.indexes.of(key.snapshot);
+                let declaration = task.declaration();
                 let reading =
-                    serve::read::serve(key.path, task.declaration(), &refs, &mut self.paths, index);
+                    serve::read::serve(key.path, declaration, refs.into(), &mut self.paths, index);
                 let awaited = reading.awaited();
                 if awaited.is_empty() {
                     task.answer_read(reading.reply(index));
@@ -469,6 +511,53 @@ impl Executor {
         }
     }
 
+    /// Follows the store for the lookup at `key` if it is queued: first
+    /// past the request it awaited, if any, then from key to key while
+    /// each request stored can be answered at once. A result found is the
+    /// node's answer, with the node's own declaration, and no body runs; a
+    /// request that awaits a node makes the lookup wait as a body would;
+    /// a key where nothing is filed starts the body from its beginning.
+    fn step_lookup(&mut self, key: NodeKey) {
+        let Some(lookup) = self.lookups.get_mut(&key) else {
+            return;
+        };
+        if !lookup.take_queued() {
+            return;
+        }
+        let index = self.indexes.of(key.snapshot);
+        if let Some(reading) = self.readings.remove(&key) {
+            lookup.advance(&reading.reply(index));
+        }
+        loop {
+            self.counters.count_store_lookup();
+            let refs = match self.store.probe(lookup.key()) {
+                Some(Stored::Next(refs)) => Arc::clone(refs),
+                Some(Stored::Result(result)) => {
+                    let entry = Entry {
+                        outcome: result.outcome.clone(),
+                        declaration: Some(Arc::clone(lookup.declaration())),
+                        content: result.content,
+                    };
+                    self.lookups.remove(&key);
+                    return self.work(Work::Answered(key, entry));
+                }
+                None => {
+                    let declaration = Arc::clone(lookup.declaration());
+                    self.lookups.remove(&key);
+                    return self.start(key, declaration);
+                }
+            };
+            let reading =
+                serve::read::serve(key.path, lookup.declaration(), refs, &mut self.paths, index);
+            let awaited = reading.awaited();
+            if !awaited.is_empty() {
+                self.readings.insert(key, reading);
+                return self.await_nodes(key, awaited);
+            }
+            lookup.advance(&reading.reply(index));
+        }
+    }
+
     /// Makes the reader at `key` wait on each node in `awaited` before any
     /// of them is worked out, so that none can answer the reading early.
     /// Stops once the reader is dropped: a node that fails outside the
@@ -485,17 +574,21 @@ impl Executor {
             self.waits.add(key, *node);
         }
         for node in nodes {
-            if !self.tasks.contains_key(&key) {
+            if !self.reads(key) {
                 return;
             }
             self.ensure(node);
         }
     }
 
-    /// Replies to the body at `key`, whose reading awaits nothing more, and
+    /// Queues the lookup at `key`, whose reading awaits nothing more, to
+    /// move on when it is next stepped; or replies to the body there and
     /// queues it.
     fn resume_reader(&mut self, key: NodeKey) {
-        let Some(task) = self.tasks.get(&key) else {
+        if self.lookups.contains_key(&key) {
+            return self.queue(key);
+        }
+        let Some(task) = self.tasks.get_mut(&key) else {
             return;
         };
         if let Some(reading) = self.readings.remove(&key) {
@@ -504,20 +597,14 @@ impl Executor {
         }
     }
 
-    /// Ends a node whose body produced `outcome`.
+    /// Ends a node whose body produced `outcome`, filing it in the store.
     fn finish(&mut self, key: NodeKey, outcome: Outcome<Erased>) {
-        let declaration = self.remove_task(key).map(|task| {
-            let declaration = Arc::clone(task.declaration());
-            task.discard();
-            declaration
-        });
-        self.work(Work::Answered(
-            key,
-            Entry {
-                outcome,
-                declaration,
-            },
-        ));
+        let Some(task) = self.remove_reader(key) else {
+            return;
+        };
+        let (declaration, chain) = task.finish();
+        let entry = finish::filed(declaration, chain, outcome, &self.kinds, &mut self.store);
+        self.work(Work::Answered(key, entry));
     }
 
     /// Ends a node with a failure outside the inputs, stored nowhere, and
@@ -529,7 +616,7 @@ impl Executor {
         let mut released_a_wait = self.waits.awaits(key).next().is_some();
         let mut queue = VecDeque::from([key]);
         while let Some(key) = queue.pop_front() {
-            if let Some(task) = self.remove_task(key) {
+            if let Some(task) = self.remove_reader(key) {
                 task.discard();
             }
             self.resolving.remove(&key);
@@ -627,15 +714,17 @@ impl Executor {
 }
 
 impl Drop for Executor {
-    /// Bodies, the reads they wait on, indexes and untaken answers go
-    /// before the resources, so what they hold is queued for release before
-    /// each resource thread stops.
+    /// Bodies, lookups, the reads they wait on, indexes, the store and
+    /// untaken answers go before the resources, so what they hold is queued
+    /// for release before each resource thread stops.
     fn drop(&mut self) {
         for (_, task) in mem::take(&mut self.tasks) {
             task.discard();
         }
+        self.lookups.clear();
         self.readings.clear();
         self.indexes.clear();
+        self.store.clear();
         self.events.clear();
     }
 }

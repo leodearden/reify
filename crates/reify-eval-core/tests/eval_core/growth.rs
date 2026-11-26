@@ -74,7 +74,12 @@ fn a_body_that_makes_n_reads_runs_once() {
         let answer = toy::the_answer(&core.take_events(), &request, &reader);
         let sum = 3 * i64::try_from(n).expect("n is small");
         assert_eq!(answer.downcast::<i64>(), Answer::Final(Outcome::of(sum)));
-        assert_eq!(core.counters().body_runs(Cell::ID), n + 1, "n = {n}");
+        assert_eq!(
+            core.counters().body_runs(Cell::ID),
+            2,
+            "the reader, and the first part: each later part, read after it, is an identical \
+             instance found in the store (contract 4.2); n = {n}"
+        );
     }
 }
 
