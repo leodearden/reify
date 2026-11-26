@@ -10,7 +10,7 @@ use std::any::type_name;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
-use reify_eval_core::{Declaration, Failure, Step};
+use reify_eval_core::{Declaration, Failure, Kind, Step};
 
 use super::case::Case;
 use super::design::{Bind, Decl, Inputs, Key, ModelPath, ModelRef, ToyKind, Val};
@@ -252,34 +252,86 @@ impl Reference {
         self.read(at, decl, &r)
     }
 
-    /// The i64s at "0", "1", … until one reads absent, a failure ending it;
-    /// then, if "pick" reads i, the i64 at "from"/[i] added, absent at a
-    /// negative i.
+    /// The i64s at "0", "1", … until one reads absent; then, if "pick"
+    /// reads i, the i64 at "from"/[i] added, absent at a negative i; then,
+    /// if "divisor" reads an i64, the sum divided by it, truncating, and
+    /// zero the cell's own failure.
     fn cell(&mut self, at: &ModelPath, decl: &Rc<Decl>) -> Result<Expect, Invalid> {
-        let mut sum = 0_i64;
-        for term in 0_u32.. {
-            match typed_int(self.read_binding(at, decl, &term.to_string())?) {
-                Typed::Value(value) => sum = add(sum, value, at)?,
-                Typed::Absent => break,
-                Typed::Failure(failure) => return Ok(Expect::Failure(failure)),
-            }
-        }
-        let pick = match typed_int(self.read_binding(at, decl, "pick")?) {
-            Typed::Value(pick) => pick,
-            Typed::Absent => return Ok(Expect::Value(Out::Int(sum))),
+        let sum = match self.cell_sum(at, decl)? {
+            Typed::Value(sum) => sum,
+            Typed::Absent => return Ok(Expect::Absent),
             Typed::Failure(failure) => return Ok(Expect::Failure(failure)),
         };
+        let divisor = ModelRef {
+            binding: String::from("divisor"),
+            steps: Vec::new(),
+        };
+        Ok(match self.term(at, decl, &divisor)? {
+            Typed::Absent => Expect::Value(Out::Int(sum)),
+            Typed::Value(0) => Expect::Failure(Failure::OfKind {
+                kind: toy::Cell::ID,
+                code: toy::DIVISION_BY_ZERO,
+            }),
+            Typed::Value(divisor) => {
+                let quotient = sum
+                    .checked_div(divisor)
+                    .ok_or_else(|| Invalid::Overflow { path: at.clone() })?;
+                Expect::Value(Out::Int(quotient))
+            }
+            Typed::Failure(failure) => Expect::Failure(failure),
+        })
+    }
+
+    /// The cell's terms added, with the picked element; absent where the
+    /// cell is.
+    fn cell_sum(&mut self, at: &ModelPath, decl: &Rc<Decl>) -> Result<Typed<i64>, Invalid> {
+        let mut sum = 0_i64;
+        for term in 0_u32.. {
+            let r = ModelRef {
+                binding: term.to_string(),
+                steps: Vec::new(),
+            };
+            match self.term(at, decl, &r)? {
+                Typed::Value(value) => sum = add(sum, value, at)?,
+                Typed::Absent => break,
+                failed @ Typed::Failure(_) => return Ok(failed),
+            }
+        }
+        let pick = ModelRef {
+            binding: String::from("pick"),
+            steps: Vec::new(),
+        };
+        let pick = match self.term(at, decl, &pick)? {
+            Typed::Value(pick) => pick,
+            Typed::Absent => return Ok(Typed::Value(sum)),
+            failed @ Typed::Failure(_) => return Ok(failed),
+        };
         let Ok(pick) = u64::try_from(pick) else {
-            return Ok(Expect::Absent);
+            return Ok(Typed::Absent);
         };
         let from = ModelRef {
             binding: String::from("from"),
             steps: vec![Step::index(pick)],
         };
-        Ok(match typed_int(self.read(at, decl, &from)?) {
-            Typed::Value(value) => Expect::Value(Out::Int(add(sum, value, at)?)),
-            Typed::Absent => Expect::Absent,
-            Typed::Failure(failure) => Expect::Failure(failure),
+        Ok(match self.term(at, decl, &from)? {
+            Typed::Value(value) => Typed::Value(add(sum, value, at)?),
+            other => other,
+        })
+    }
+
+    /// What the cell at `at` reads at `r` as an i64. A failure ends the
+    /// cell: a wrong type is its answer, whether found by this read or by
+    /// the node read, and any other makes it blocked by `r`.
+    fn term(
+        &mut self,
+        at: &ModelPath,
+        decl: &Rc<Decl>,
+        r: &ModelRef,
+    ) -> Result<Typed<i64>, Invalid> {
+        Ok(match typed_int(self.read(at, decl, r)?) {
+            Typed::Failure(wrong @ Failure::WrongType { .. }) => Typed::Failure(wrong),
+            Typed::Failure(_) => Typed::Failure(Failure::BlockedBy { at: r.to_core() }),
+            read => read,
         })
     }
 

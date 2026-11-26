@@ -4,7 +4,12 @@
 
 use std::any::Any;
 
-/// A failure that follows from the inputs.
+use crate::declaration::KindId;
+use crate::hash::Encoder;
+use crate::reference::Ref;
+
+/// A failure that follows from the inputs. None names a path (contract
+/// 5.4), so equal failures at two places have one content.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Failure {
     /// A read asked for one type and the value read is of another.
@@ -14,6 +19,32 @@ pub enum Failure {
     },
     /// A body made a second request before the first was answered (O2).
     TwoRequestsAtOnce,
+    /// A reader's answer: what it read at `at` failed. The chain to the
+    /// cause is the recorded reads (contract 9).
+    BlockedBy { at: Ref },
+    /// A failure a body states in its kind's own terms, by a code the kind
+    /// defines and the core never interprets.
+    OfKind { kind: KindId, code: &'static str },
+}
+
+impl Failure {
+    pub(crate) fn encode(&self, encoder: &mut Encoder) {
+        match self {
+            Failure::WrongType { expected, found } => {
+                encoder.tag("failure.wrong_type").text(expected).text(found);
+            }
+            Failure::TwoRequestsAtOnce => {
+                encoder.tag("failure.two_requests_at_once");
+            }
+            Failure::BlockedBy { at } => {
+                encoder.tag("failure.blocked_by");
+                at.encode(encoder);
+            }
+            Failure::OfKind { kind, code } => {
+                encoder.tag("failure.of_kind").text(kind.0).text(code);
+            }
+        }
+    }
 }
 
 /// A failure outside the inputs: a fault of the core's setup or of a kind's

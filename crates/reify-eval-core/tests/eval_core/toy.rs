@@ -88,9 +88,43 @@ pub fn input_of<T: Value + Contented>(value: T) -> Input {
 
 /// Adds the i64s bound at "0", "1", … until a binding reads absent. Then,
 /// if "pick" reads an i64 i, adds the i64 at "from"/[i], a ref computed
-/// from an answer; absent there, or at a negative i, the cell is absent. A
-/// read that fails ends the body with that failure as its outcome.
+/// from an answer; absent there, or at a negative i, the cell is absent.
+/// Then, if "divisor" reads an i64, divides the sum by it, truncating; zero
+/// is the cell's own failure, `DIVISION_BY_ZERO`. A read that fails ends
+/// the body: a wrong type is its answer, whether its own read found the
+/// wrong type or what it read had (a body cannot tell the two apart), and
+/// any other failure makes it blocked by the ref it read.
 pub struct Cell;
+
+/// What a cell's read of an i64 at `r` gives it: the value, or none where
+/// it reads absent; a failure is the cell's answer.
+async fn read_term(cx: &Cx, r: &Ref) -> Result<Option<i64>, Failure> {
+    match cx.read::<i64>(r).await {
+        Outcome::Value(value) => Ok(Some(*value)),
+        Outcome::Absent => Ok(None),
+        Outcome::Failure(wrong @ Failure::WrongType { .. }) => Err(wrong),
+        Outcome::Failure(_) => Err(Failure::BlockedBy { at: r.clone() }),
+    }
+}
+
+/// A cell's sum, with the picked element; none where the cell is absent.
+async fn sum(cx: &Cx) -> Result<Option<i64>, Failure> {
+    let mut sum = 0;
+    for index in 0_u32.. {
+        match read_term(cx, &Ref::binding(index.to_string())).await? {
+            Some(value) => sum += value,
+            None => break,
+        }
+    }
+    let Some(pick) = read_term(cx, &Ref::binding("pick")).await? else {
+        return Ok(Some(sum));
+    };
+    let Ok(pick) = u64::try_from(pick) else {
+        return Ok(None);
+    };
+    let from = Ref::binding("from").step(Step::index(pick));
+    Ok(read_term(cx, &from).await?.map(|value| sum + value))
+}
 
 impl Kind for Cell {
     type Out = i64;
@@ -98,29 +132,20 @@ impl Kind for Cell {
     const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<i64> {
-        let mut sum = 0;
-        for index in 0_u32.. {
-            match cx.read::<i64>(&Ref::binding(index.to_string())).await {
-                Outcome::Value(value) => sum += *value,
-                Outcome::Absent => break,
-                Outcome::Failure(failure) => return Produced::Outcome(Outcome::Failure(failure)),
-            }
-        }
-        let pick = match cx.read::<i64>(&Ref::binding("pick")).await {
-            Outcome::Value(pick) => u64::try_from(*pick).ok(),
-            Outcome::Absent => return Produced::Outcome(Outcome::of(sum)),
-            Outcome::Failure(failure) => return Produced::Outcome(Outcome::Failure(failure)),
+        let sum = match sum(cx).await {
+            Ok(Some(sum)) => sum,
+            Ok(None) => return Produced::Outcome(Outcome::Absent),
+            Err(failure) => return Produced::Outcome(Outcome::Failure(failure)),
         };
-        let Some(pick) = pick else {
-            return Produced::Outcome(Outcome::Absent);
-        };
-        match cx
-            .read::<i64>(&Ref::binding("from").step(Step::index(pick)))
-            .await
-        {
-            Outcome::Value(value) => Produced::Outcome(Outcome::of(sum + *value)),
-            other => Produced::Outcome(other),
-        }
+        Produced::Outcome(match read_term(cx, &Ref::binding("divisor")).await {
+            Ok(None) => Outcome::of(sum),
+            Ok(Some(0)) => Outcome::Failure(Failure::OfKind {
+                kind: Self::ID,
+                code: DIVISION_BY_ZERO,
+            }),
+            Ok(Some(divisor)) => Outcome::of(sum / divisor),
+            Err(failure) => Outcome::Failure(failure),
+        })
     }
 
     fn content(out: &i64) -> Option<Hash128> {
