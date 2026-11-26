@@ -1658,6 +1658,7 @@ class ActiveRecord(unittest.TestCase):
             {"mode": "canon", "cache": None},
             {"mode": "real_path", "cache": {"policy": "incremental", "server": None}},
             {"cache": None},
+            {"mode": "canon", "cache": {"policy": "shared", "server": None}},
         ):
             with self.subTest(section=section):
                 active = canon_run.parse_active(self.record(supervisor=section))

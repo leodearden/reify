@@ -183,6 +183,29 @@ class ForCommand(CacheEnvironmentCase):
         self.assertFalse(self.environment(canon_cache.Policy.INCREMENTAL).uses_guard)
 
 
+class ServerInvariant(CacheEnvironmentCase):
+    """A server address exactly when the policy runs sccache: refused at construction, None at decode."""
+
+    def test_a_mismatched_server_is_refused_naming_the_policy(self):
+        for policy, server in (
+            (canon_cache.Policy.SHARED, None),
+            (canon_cache.Policy.MIXED, None),
+            (canon_cache.Policy.INCREMENTAL, self.SERVER),
+        ):
+            with self.subTest(policy=policy):
+                with self.assertRaises(ValueError) as refused:
+                    canon_cache.CacheEnvironment(policy, server)
+                assert_one_line_naming(self, refused.exception, "server")
+                self.assertIn(policy.value, str(refused.exception))
+
+    def test_uses_guard_needs_no_server(self):
+        """The PATH probe's seam: which policies put the guard first, before any server exists."""
+        self.assertEqual(
+            {policy: canon_cache.uses_guard(policy) for policy in canon_cache.Policy},
+            {canon_cache.Policy.SHARED: True, canon_cache.Policy.MIXED: True, canon_cache.Policy.INCREMENTAL: False},
+        )
+
+
 class CacheEnvironmentRecord(CacheEnvironmentCase):
     def test_round_trips_through_json(self):
         for policy in canon_cache.Policy:
@@ -202,6 +225,8 @@ class CacheEnvironmentRecord(CacheEnvironmentCase):
             dict(good, server="x"),
             dict(good, server=dict(good["server"], socket=7)),
             {key: value for key, value in good.items() if key != "server"},
+            dict(good, server=None),
+            {"policy": "incremental", "server": good["server"]},
         ):
             with self.subTest(value=value):
                 self.assertIsNone(canon_cache.CacheEnvironment.from_record(value))
