@@ -661,6 +661,7 @@ impl Session {
 mod tests {
     use reify_eval_core::{
         Builder, Core, Cx, Kind, KindId, Outcome, OutsideFailure, Produced, Ref, RequestError,
+        Store,
     };
 
     use super::super::case::{Case, HostEvent, Then};
@@ -788,11 +789,12 @@ mod tests {
         }
     }
 
-    fn with_cell_kind<K: Kind>() -> Core {
+    fn with_cell_kind<K: Kind>(store: Store) -> Core {
         Builder::new()
             .kind::<K>()
             .and_then(|builder| builder.kind::<toy::Scope>())
             .expect("the kind ids are distinct")
+            .on_store(store)
             .build()
     }
 
@@ -912,8 +914,8 @@ mod tests {
         }
     }
 
-    fn counting_core() -> Core {
-        let mut core = with_cell_kind::<CountingCell>();
+    fn counting_core(store: Store) -> Core {
+        let mut core = with_cell_kind::<CountingCell>(store);
         core.add_resource(|| Ran(0));
         core
     }
@@ -942,6 +944,37 @@ mod tests {
         assert_eq!(check(&case, &counting_core), Err(expected));
     }
 
+    #[test]
+    fn an_answer_that_depends_on_history_is_reported_by_the_fresh_core_check() {
+        let case = Case {
+            inputs: inputs([
+                (root("c0"), declaration(cell([]))),
+                (root("c1"), declaration(cell([input("one")]))),
+                (named("one"), int(1)),
+            ]),
+            events: vec![
+                HostEvent::Drive {
+                    on: 0,
+                    paths: vec![path("c0", [])],
+                    turns: 1,
+                    then: Then::End,
+                },
+                HostEvent::Evaluate {
+                    on: 0,
+                    paths: vec![path("c1", [])],
+                    then: Then::End,
+                },
+            ],
+        };
+        let expected = Mismatch::Fresh {
+            snapshot: 0,
+            path: path("c1", []),
+            session: Box::new(Seen::Int(1)),
+            fresh: Box::new(Seen::Int(0)),
+        };
+        assert_eq!(check(&case, &counting_core), Err(expected));
+    }
+
     /// Registered in place of the toy cell: reads its binding "loop", then
     /// answers 0.
     struct LoopCell;
@@ -957,25 +990,46 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_fresh_core_that_ends_a_request_the_session_answered_is_reported() {
+    /// What `check` finds when the first `honest` cores it builds are
+    /// honest and every later one is built with `LoopCell`.
+    fn looping_after(honest: usize) -> Mismatch {
         let made = std::cell::Cell::new(0);
-        let honest_then_looping = || {
+        let honest_then_looping = |store| {
             made.set(made.get() + 1);
-            match made.get() {
-                1 => toy_core(),
-                _ => with_cell_kind::<LoopCell>(),
+            if made.get() <= honest {
+                toy_core(store)
+            } else {
+                with_cell_kind::<LoopCell>(store)
             }
         };
         let looping = decl(ToyKind::Cell, [("loop", below_a())]);
-        let found = check(&evaluate_a(looping), &honest_then_looping);
+        check(&evaluate_a(looping), &honest_then_looping).expect_err("a looping core ends it")
+    }
+
+    fn ended_waiting_on_a() -> Option<RequestError> {
+        Some(RequestError::NothingCanRun {
+            waiting: vec![r(&["a"]).to_core()],
+        })
+    }
+
+    #[test]
+    fn a_fresh_core_on_the_session_s_selection_that_ends_a_request_the_session_answered_is_reported()
+     {
+        let expected = Mismatch::FreshUnanswered {
+            snapshot: 0,
+            path: r(&["a"]),
+            ended: ended_waiting_on_a(),
+        };
+        assert_eq!(looping_after(1), expected);
+    }
+
+    #[test]
+    fn a_fresh_core_that_ends_a_request_the_session_answered_is_reported() {
         let expected = Mismatch::OrderUnanswered {
             snapshot: 0,
             path: r(&["a"]),
-            ended: Some(RequestError::NothingCanRun {
-                waiting: vec![r(&["a"]).to_core()],
-            }),
+            ended: ended_waiting_on_a(),
         };
-        assert_eq!(found, Err(expected));
+        assert_eq!(looping_after(2), expected);
     }
 }
