@@ -6,8 +6,8 @@ use std::any::type_name;
 use std::thread;
 
 use reify_eval_core::{
-    Answer, Builder, Cx, Declaration, Held, Kind, KindId, Outcome, OutsideFailure, Path, Produced,
-    Release, ResourceDeath, Root, Turn,
+    Answer, Builder, Cx, Declaration, Event, Held, Kind, KindId, Outcome, OutsideFailure, Path,
+    Produced, Release, ResourceDeath, Root, Turn,
 };
 
 use crate::toy::{self, BoxHandle, BoxShape, ToyKernel, Watch};
@@ -105,6 +105,11 @@ fn a_section_s_progress_notes_reach_the_host_while_it_still_runs() {
     assert_eq!(core.turn(), Turn::SectionsRunning(1));
 
     let events = core.take_events();
+    for event in &events {
+        if let Event::Progress { snapshot: told, .. } = event {
+            assert_eq!(*told, snapshot.id(), "a note is tagged with its snapshot");
+        }
+    }
     for request in [first.id(), second.id()] {
         let notes = toy::notes(&events, request);
         assert_eq!(

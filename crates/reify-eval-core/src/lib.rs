@@ -4,6 +4,7 @@
 mod answer;
 mod builder;
 mod cancel;
+mod core_id;
 mod counters;
 mod cx;
 mod declaration;
@@ -51,4 +52,4 @@ pub use produced::Produced;
 pub use reference::Ref;
 pub use requests::Request;
 pub use section::Section;
-pub use snapshot::Snapshot;
+pub use snapshot::{Snapshot, SnapshotId};

@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::task::Poll;
 
 use crate::answer::Answer;
+use crate::core_id::CoreId;
 use crate::counters::Counters;
 use crate::declaration::Declaration;
 use crate::event::{Event, RequestId};
@@ -24,7 +25,7 @@ use crate::requests::{Request, Requests};
 use crate::resource::Resources;
 use crate::serve;
 use crate::serve::section::{Delivery, InFlight};
-use crate::snapshot::Snapshot;
+use crate::snapshot::{Snapshot, SnapshotId};
 use crate::task::{Task, TaskKey};
 
 /// What is left after a turn.
@@ -35,6 +36,8 @@ pub enum Turn {
 }
 
 pub(crate) struct Executor {
+    core: CoreId,
+    snapshots: u64,
     kinds: Kinds,
     tasks: BTreeMap<TaskKey, Task>,
     ready: ReadyQueue<TaskKey>,
@@ -47,11 +50,14 @@ pub(crate) struct Executor {
 
 impl Executor {
     pub fn new(kinds: Kinds) -> Self {
+        let core = CoreId::fresh();
         Self {
+            core,
+            snapshots: 0,
             kinds,
             tasks: BTreeMap::new(),
             ready: ReadyQueue::default(),
-            requests: Requests::default(),
+            requests: Requests::new(core),
             counters: Counters::default(),
             events: Vec::new(),
             in_flight: InFlight::default(),
@@ -63,11 +69,21 @@ impl Executor {
         self.resources.add(make);
     }
 
+    pub fn snapshot(&mut self, inputs: impl IntoIterator<Item = (InputKey, Input)>) -> Snapshot {
+        self.snapshots += 1;
+        let id = SnapshotId {
+            core: self.core,
+            serial: self.snapshots,
+        };
+        Snapshot::new(id, inputs)
+    }
+
     pub fn evaluate(
         &mut self,
         snapshot: &Snapshot,
         roots: impl IntoIterator<Item = Root>,
     ) -> Request {
+        self.core.refuse_foreign(snapshot.id().core, "a snapshot");
         let request = self.requests.open();
         for root in roots.into_iter().collect::<BTreeSet<_>>() {
             self.demand_root(request.id(), snapshot, root);
@@ -79,6 +95,7 @@ impl Executor {
     /// A section such a body started keeps running; what it makes is
     /// released when it is delivered.
     pub fn end(&mut self, request: Request) {
+        self.core.refuse_foreign(request.id().core, "a request");
         for key in self.requests.end(request) {
             if let Some(task) = self.tasks.remove(&key) {
                 task.abandon();
@@ -156,7 +173,7 @@ impl Executor {
             .downcast::<Declaration>();
         match declared {
             Outcome::Value(declaration) => self.start(request, key, declaration, snapshot),
-            settled => self.tell(request, key.path, Answer::Final(settled.erase())),
+            settled => self.tell(request, &key, Answer::Final(settled.erase())),
         }
     }
 
@@ -170,7 +187,7 @@ impl Executor {
         let kind_id = declaration.kind();
         let Some(kind) = self.kinds.get(kind_id) else {
             let unknown = OutsideFailure::UnknownKind { kind: kind_id.0 };
-            return self.tell(request, key.path, Answer::Pending(unknown));
+            return self.tell(request, &key, Answer::Pending(unknown));
         };
         self.counters.count_body_run(kind_id);
         self.tasks.insert(
@@ -226,7 +243,7 @@ impl Executor {
             task.discard();
         }
         for request in self.requests.settle(key) {
-            self.tell(request, key.path.clone(), Answer::Final(outcome.clone()));
+            self.tell(request, key, Answer::Final(outcome.clone()));
         }
     }
 
@@ -237,14 +254,15 @@ impl Executor {
             task.discard();
         }
         for request in self.requests.settle(key) {
-            self.tell(request, key.path.clone(), Answer::Pending(failure.clone()));
+            self.tell(request, key, Answer::Pending(failure.clone()));
         }
     }
 
-    fn tell(&mut self, request: RequestId, path: Path, answer: Answer<Erased>) {
+    fn tell(&mut self, request: RequestId, key: &TaskKey, answer: Answer<Erased>) {
         self.events.push(Event::Answered {
             request,
-            path,
+            snapshot: key.snapshot,
+            path: key.path.clone(),
             answer,
         });
     }
@@ -308,6 +326,7 @@ impl Executor {
                     let note = Arc::clone(&note);
                     self.events.push(Event::Progress {
                         request,
+                        snapshot: key.snapshot,
                         path: key.path.clone(),
                         note,
                     });

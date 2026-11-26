@@ -2,10 +2,16 @@
 
 use imbl::OrdMap;
 
+use crate::core_id::CoreId;
 use crate::input::{Input, InputKey};
 
+/// Which snapshot: the core that made it, and its place among that core's
+/// snapshots.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct SnapshotId(pub(crate) u64);
+pub struct SnapshotId {
+    pub(crate) core: CoreId,
+    pub(crate) serial: u64,
+}
 
 #[derive(Clone)]
 pub struct Snapshot {
@@ -21,7 +27,7 @@ impl Snapshot {
         }
     }
 
-    pub(crate) fn id(&self) -> SnapshotId {
+    pub fn id(&self) -> SnapshotId {
         self.id
     }
 

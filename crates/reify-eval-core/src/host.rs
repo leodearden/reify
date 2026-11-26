@@ -7,27 +7,26 @@ use crate::executor::{Executor, Turn};
 use crate::input::{Input, InputKey};
 use crate::path::Root;
 use crate::requests::Request;
-use crate::snapshot::{Snapshot, SnapshotId};
+use crate::snapshot::Snapshot;
 
 pub struct Core {
     executor: Executor,
-    snapshots: u64,
 }
 
 impl Core {
     pub(crate) fn new(executor: Executor) -> Self {
-        Self {
-            executor,
-            snapshots: 0,
-        }
+        Self { executor }
     }
 
     pub fn snapshot(&mut self, inputs: impl IntoIterator<Item = (InputKey, Input)>) -> Snapshot {
-        self.snapshots += 1;
-        Snapshot::new(SnapshotId(self.snapshots), inputs)
+        self.executor.snapshot(inputs)
     }
 
     /// Opens a request on `snapshot` for the answers of `roots`.
+    ///
+    /// # Panics
+    ///
+    /// If another core made `snapshot`.
     pub fn evaluate(
         &mut self,
         snapshot: &Snapshot,
@@ -37,11 +36,16 @@ impl Core {
     }
 
     /// Ends `request`, dropping the bodies no other live request wants.
+    ///
+    /// # Panics
+    ///
+    /// If another core opened `request`.
     pub fn end(&mut self, request: Request) {
         self.executor.end(request);
     }
 
-    /// The answers given since the last call, in the order they were given.
+    /// The answers and progress notes given since the last call, in the
+    /// order they were given.
     pub fn take_events(&mut self) -> Vec<Event> {
         self.executor.take_events()
     }

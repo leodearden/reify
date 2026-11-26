@@ -333,6 +333,7 @@ pub fn answers(events: &[Event], request: RequestId) -> Vec<(Path, Answer<Erased
                 request: to,
                 path,
                 answer,
+                ..
             } if *to == request => Some((path.clone(), answer.clone())),
             _ => None,
         })
@@ -348,6 +349,7 @@ pub fn notes(events: &[Event], request: RequestId) -> Vec<(Path, Arc<dyn Any + S
                 request: to,
                 path,
                 note,
+                ..
             } if *to == request => Some((path.clone(), Arc::clone(note))),
             _ => None,
         })

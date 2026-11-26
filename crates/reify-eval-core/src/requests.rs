@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::core_id::CoreId;
 use crate::event::RequestId;
 use crate::task::TaskKey;
 
@@ -19,17 +20,29 @@ impl Request {
     }
 }
 
-#[derive(Default)]
 pub(crate) struct Requests {
+    core: CoreId,
     wants: BTreeMap<RequestId, BTreeSet<TaskKey>>,
     wanted_by: BTreeMap<TaskKey, BTreeSet<RequestId>>,
     opened: u64,
 }
 
 impl Requests {
+    pub fn new(core: CoreId) -> Self {
+        Self {
+            core,
+            wants: BTreeMap::new(),
+            wanted_by: BTreeMap::new(),
+            opened: 0,
+        }
+    }
+
     pub fn open(&mut self) -> Request {
         self.opened += 1;
-        let id = RequestId(self.opened);
+        let id = RequestId {
+            core: self.core,
+            serial: self.opened,
+        };
         self.wants.insert(id, BTreeSet::new());
         Request { id }
     }
