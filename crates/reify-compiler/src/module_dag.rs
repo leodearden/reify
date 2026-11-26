@@ -184,14 +184,28 @@ pub struct ModuleDag {
     sources: HashMap<String, ModuleSource>,
     /// How the stdlib becomes visible to the units this DAG compiles.
     stdlib: StdlibVisibility,
-    /// The `pub import` targets each file-compiled module's walk followed,
-    /// keyed like `modules`, in declaration order, one per path: the module's
-    /// re-export edges (resolution-unification D-7). A cfg-gated-out import,
-    /// or a `std.*` one this DAG does not walk, is never an edge. A module the
-    /// embedded-stdlib fallback inserts is not walked, so it has no edges
-    /// either: under [`StdlibVisibility::Imported`] a `pub import` inside the
-    /// stdlib re-exports only when the stdlib is served from the filesystem.
+    /// Each module's re-export edges (resolution-unification D-7), keyed like
+    /// `modules`: its `pub import` targets in declaration order, one per path.
+    /// For a file-compiled module, the targets its walk followed (a
+    /// cfg-gated-out import, or a `std.*` one this DAG does not walk, is never
+    /// an edge); for a module the embedded-stdlib fallback inserts, every
+    /// `pub import` it was built with ([`embedded_re_exports`]).
     re_exports: HashMap<String, Vec<String>>,
+}
+
+/// The re-export edges of an embedded stdlib module, as it was built: every
+/// `pub import` in declaration order, one per path. No `#cfg` filter applies,
+/// because the stdlib build compiles each module against all its declared
+/// imports. The slice is topologically ordered, so every target is inserted
+/// before the module that re-exports it.
+fn embedded_re_exports(module: &CompiledModule) -> Vec<String> {
+    let mut targets: Vec<String> = Vec::new();
+    for import in module.imports.iter().filter(|import| import.is_pub) {
+        if !targets.contains(&import.path) {
+            targets.push(import.path.clone());
+        }
+    }
+    targets
 }
 
 /// Build an "invalid module path" [`Diagnostic`] vec.
@@ -539,6 +553,8 @@ impl ModuleDag {
                         .unwrap_or(0);
                     for embedded in &stdlib[start..=idx] {
                         let dotted = embedded.path.0.join(".");
+                        self.re_exports
+                            .insert(dotted.clone(), embedded_re_exports(embedded));
                         self.topo_order.push(dotted.clone());
                         self.modules.insert(dotted, embedded.clone());
                     }
