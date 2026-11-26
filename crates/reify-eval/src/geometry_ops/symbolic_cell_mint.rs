@@ -43,8 +43,10 @@ pub(crate) enum RealizationSource<'a> {
     /// The compiled template's declarations, which `eval()` has.
     Template(&'a TopologyTemplate),
     /// The graph's realization nodes, which carry the same operations, for the
-    /// edit path, which has no template. This is the hook #8209 folds the
-    /// `edit_param` walk's template-scope mint onto.
+    /// edit path, which has no template. Folding the `edit_param` walk's
+    /// template-scope mint onto this hook was proposed in #8209; that fold is
+    /// not being done in this code, because the old evaluation orchestration
+    /// is being replaced (docs/notes/old-evaluation-core-hold.md).
     Graph(&'a EvaluationGraph),
 }
 

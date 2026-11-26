@@ -1391,7 +1391,10 @@ impl Engine {
                 // selector, over the graph's RealizationNodeData (same
                 // operations, same upstream_values_hash fold) because
                 // edit_param has no access to the CompiledModule. Folding that
-                // arm onto `symbolic_cell_mint` is #8209's. Its selector
+                // arm onto `symbolic_cell_mint` was proposed in #8209 and is
+                // not being done in this code, since the old evaluation
+                // orchestration is being replaced
+                // (docs/notes/old-evaluation-core-hold.md). Its selector
                 // diagnostics (e.g. a kind-closure violation leaving the cell
                 // `Undef`) are accumulated into `selector_mint_diagnostics`,
                 // since `diagnostics` is declared later in this function, and
