@@ -568,7 +568,9 @@ runs against P1's landed net)
   embedded-stdlib fallback inserts modules without walking them, so those modules record
   no edges. Under `compile_project`, a stdlib `pub import` therefore re-exports only when
   the stdlib is served from the filesystem. This is latent, since no stdlib module uses
-  `pub import` today, and `compile_program` never walks std (I4).
+  `pub import` today, and `compile_program` never walks std (I4). *Closed by
+  stdlib-namespace ι (#5502):* the fallback now records each inserted embedded module's
+  `pub import` edges, which `std.prelude`'s re-exports rely on under `compile_project`.
 - **ν — Entity-import narrowing** *(leaf)*. Modules: reify-compiler. Signal (#9).
   Deps: κ.
 - **ξ — Imported-file module-header mismatch surfacing** *(leaf)*. Modules:
