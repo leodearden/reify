@@ -697,7 +697,7 @@ Uses: waiting, a child declared by a body, `previous`, freshness, `progress`.
 
 - If `b` had no argument (`sub b : Peg`), the edit would add one: `sub b : Peg { w = 22mm }`. It would not rewrite `Peg`'s default, which would move `a` as well.
 - The argument for `b` lives in `Pair`. If `Pair` is itself used twice, the gesture moves `b` in both. The preview shows both moving, because the preview is the edit. The session can say so when the drag starts.
-- A parameter has a direct control exactly when what is written for it, where the instance is declared, is a literal. `auto` and `undef` count as literals, reached by a toggle. A literal has one place in source wherever it is written, a constructor call inside an expression included; editing it moves every instance that text makes, and the preview shows which.
+- A parameter has a direct control unless what is written for it, where the instance is declared, is a formula. A literal is edited in place; `auto` and `undef` count as literals, reached by a toggle. Where nothing is written the control adds an argument and leaves the definition's default alone, whether that default is a literal or a formula. A literal has one place in source wherever it is written, a constructor call inside an expression included; editing it moves every instance that text makes, and the preview shows which.
 - The gesture is refused for an argument that is a formula (it is edited in source, so that a formula is not silently replaced), an element of a list collection (it has no arguments of its own), a definition in an imported module, a value whose unit cannot be written back exactly, and a required parameter of a root (a root's declaration carries no arguments, 7.5).
 
 Uses: `edit`, demand priorities.
