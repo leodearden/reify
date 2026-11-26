@@ -185,7 +185,7 @@ A snapshot is an immutable map from input key to value. The inputs:
 - **Source.** One input per unit of compiled source. A unit is one thing that becomes one node's source: a member's default or body, a constraint's expression, a geometry operation list, each argument where an instance is declared, its guard, its placement, a function body. A definition's list of members is a unit of its own, so changing a literal does not change the list, and a declaring scope binds an argument without reading it.
 - **Settings** that change results: which purposes are active and on what, tolerance classes, the default solver, which kernels and outside tools are available and their versions, and the limits of 7.6.
 - **Imported files**, by content.
-- **Roots.** One input per root: its declaration.
+- **Roots.** One input per root: its declaration, which names a definition and carries no arguments (7.5).
 
 **A unit of source is identified by its meaning, not its text.** Its hash is that of the compiled tree after parsing and name resolution: no comments, no whitespace, no positions. An edit that changes only spelling changes no input. Positions for diagnostics are kept beside the units in a table that no node reads.
 
@@ -404,7 +404,7 @@ There is no removal operation. A path whose parent no longer declares it resolve
 ### 7.5 Identity
 
 - **A path is stable across re-elaboration.** Same root, same steps, same node. Demand, selection and what was there last time survive.
-- **A root is named by the session**: a module and a definition. Two definitions with the same text are two roots that share their results. A root's declaration is a snapshot input. A demand names the root; a name with no such input answers "absent".
+- **A root is named by the session**: a module and a definition. Two definitions with the same text are two roots that share their results. A root's declaration is a snapshot input. A demand names the root; a name with no such input answers "absent". A root's declaration names its definition and carries no arguments: the source is the sole definition of a design, so a value the source does not hold is not part of one.
 - **Collection elements** are steps by position or by key. The core does not care which, but each element has exactly one step; the other form of address is a lookup.
 - **A child a body declares inside an iteration** keeps its path only while the order of the iteration holds. Filtering or reordering the list moves it.
 
@@ -697,7 +697,8 @@ Uses: waiting, a child declared by a body, `previous`, freshness, `progress`.
 
 - If `b` had no argument (`sub b : Peg`), the edit would add one: `sub b : Peg { w = 22mm }`. It would not rewrite `Peg`'s default, which would move `a` as well.
 - The argument for `b` lives in `Pair`. If `Pair` is itself used twice, the gesture moves `b` in both. The preview shows both moving, because the preview is the edit. The session can say so when the drag starts.
-- Where there is no such place the gesture is refused: an element of a collection, an instance built inside an expression, a value given by an expression or by `auto`, a definition in an imported module, a value whose unit cannot be written back exactly. The GUI refuses a non-literal default today on purpose, so that a formula is not silently replaced.
+- A parameter has a direct control exactly when what is written for it, where the instance is declared, is a literal. `auto` and `undef` count as literals, reached by a toggle. A literal has one place in source wherever it is written, a constructor call inside an expression included; editing it moves every instance that text makes, and the preview shows which.
+- The gesture is refused for an argument that is a formula (it is edited in source, so that a formula is not silently replaced), an element of a list collection (it has no arguments of its own), a definition in an imported module, a value whose unit cannot be written back exactly, and a required parameter of a root (a root's declaration carries no arguments, 7.5).
 
 Uses: `edit`, demand priorities.
 
@@ -812,6 +813,7 @@ Also ruled in discussion:
 - **Structure values are closed** (Example 11, option B). Leo first: "I think so. I'm finding it a bit slippery to reason out". Then, after the three options were set out: "Yes". His hunch on the way: `let c = Plate()` followed by `sub d = Widget(c)` "should be semantically identical to" `sub d = Widget(Plate())`; and on a version of option C limited to a constructor that is the whole right-hand side: "Absolutely not - confusingly inconsistent."
 - **A sub and a value handle `auto` and constraints the same way** (section 8, "Who decides an unknown"). Leo: "let and sub should behave the same way (in how they handle auto and constraints). Objectives will probably have to differ."
 - **Who owns an `auto`, what a structure value carries, and what is not there** were ruled in the session that designed the instance kinds, each "LGTM" to that design's recommendation (2026-11-25): an `auto` belongs to the instance of the definition whose text contains it, and only a constraint inside that instance bears on it (section 8); a structure value is its type's name and arguments, its parameters, and every value decided at or below its instance (5.4, with the exception this makes in 5.3); a guarded member reads its own guard first and is absent under a false one (7.3, Example 3). Later the same day he ruled there that a constraint written in the braces after a sub, and a purpose's constraints, bear on the instance's own `auto`: "this is what aligns best with the purpose of the braces on a sub: customizing the instance that is being created." How objectives travel, and how groups are formed when unknowns have different owners, are still the solve design's.
+- **The source is the sole definition of a design.** Asked in the same session, on 2026-11-26, whether a root's declaration could carry a value for a root's required parameter, Leo: "No. This adds a semantically critical value that lives outside the source. The source must remain the canonical sole definition of the design. If the source can't represent it we either improve the expressive power of the source (judiciously - the bar for expanding the language should be high to prevent accretion) or we refuse it." So a root's declaration names a definition and carries no arguments (7.5). The same day he agreed that editing a literal in a constructor call inside an expression is not refused ("I don't see why this should be refused"), and settled which parameters get a direct control (Example 8). Open with him on that date: which purposes are active is a setting, and a purpose's constraints bear on its subject's own `auto`, so an active purpose changes solved values from outside the source. Example 9 and the purpose clause of section 8 may change with his answer.
 - **The next step is the PRD for the core crate**, with the three fragile mechanisms built and tested first, authored by a separate session run as a team. Leo: "/spawn (fable, x-high) (/team (/prd this))".
 
 Also agreed in discussion:
@@ -897,3 +899,4 @@ The text as landed includes the sentences approved with the PRD on 2026-11-25. T
 
 | Date | Section | Change | Forced by | Task |
 |---|---|---|---|---|
+| 2026-11-26 | 7.5, 3.1 | Added: a root's declaration names its definition and carries no arguments. Nothing was removed | Leo's ruling of that date, recorded in Part C: the source is the sole definition of a design | none (a docs commit) |

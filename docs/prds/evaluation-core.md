@@ -403,6 +403,8 @@ The contract says a root is "named by the session" and leaves what the roots are
 
 **Leo:** chose "Yes, a snapshot input" when asked directly, over "given with each request" and "wait for the instance design".
 
+**Bounded by a later ruling of his (2026-11-26, in the instance design).** A root's declaration names a definition and carries no arguments: "The source must remain the canonical sole definition of the design." Contract 7.5 says so. For the core nothing changes: a root's declaration is a recipe and bindings like any other, and what a host may put in one is the host's rule. The toy designs of this PRD are not Reify designs; their roots bind the inputs they read.
+
 ### D12. Smaller choices made here
 
 - A read at the wrong type, and a body that makes two requests at once, each give a failure outcome. Each follows from the key, so it is stored like any failure. One faulty kind cannot take a session down.
