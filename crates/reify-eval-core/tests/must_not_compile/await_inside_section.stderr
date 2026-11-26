@@ -1,0 +1,7 @@
+error[E0728]: `await` is only allowed inside `async` functions and blocks
+ --> tests/must_not_compile/await_inside_section.rs:5:32
+  |
+4 |     cx.exclusive(|numbers: &mut Vec<i64>, _| {
+  |                  --------------------------- this is not `async`
+5 |         std::future::ready(()).await;
+  |                                ^^^^^ only allowed inside `async` functions and blocks
