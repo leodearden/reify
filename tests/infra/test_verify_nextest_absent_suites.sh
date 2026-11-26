@@ -133,6 +133,41 @@ source "$SCRIPT_DIR/nextest_absent_lib.sh"
 echo "=== the nine covered plan-oracle infra suites are host-independent on a nextest-less host (tasks 5599 + 5604 + 5587) ==="
 
 # ---------------------------------------------------------------------------
+# Exit record (task 10333, esc-9637-1): on any non-zero exit, one stderr line
+# names the decoded status, what was in flight, the last nested result and the
+# failing command, so an abort with no Results: line is still attributable.
+# Pinned by tests/infra/test_verify_nextest_absent_suites_exit_record.py.
+# ---------------------------------------------------------------------------
+
+_NX_IN_FLIGHT="harness construction"
+_NX_LAST_NESTED="none"
+# The record goes to a saved copy of the harness's own stderr: assert sends a
+# check's stdout and stderr to its tmpfile, so a signal during a nested suite
+# would otherwise route the record there. Nested suites run with it closed.
+exec {_NX_RECORD_FD}>&2 || _NX_RECORD_FD=2
+
+# _nx_describe_status <rc> — `rc=<rc>`, plus ` (signal <NAME>)` when bash's own
+# `kill -l` names rc as a signal death.
+_nx_describe_status() {
+    local rc="$1" name=""
+    if [ "$rc" -gt 128 ]; then
+        name="$(kill -l "$rc" 2>/dev/null)" || name=""
+    fi
+    printf 'rc=%s%s' "$rc" "${name:+ (signal $name)}"
+}
+
+# _nx_exit_record <rc> — the EXIT handler. Fail-open and never `exit`s, so the
+# shell keeps its pre-trap status.
+_nx_exit_record() {
+    set +e
+    local rc="$1" cmd="$BASH_COMMAND" load="?" l1 l2 l3 _rest
+    nextest_absent_cleanup
+    [ "$rc" -eq 0 ] && return 0
+    read -r l1 l2 l3 _rest 2>/dev/null </proc/loadavg && load="$l1 $l2 $l3"
+    echo "EXIT RECORD (test_verify_nextest_absent_suites.sh): $(_nx_describe_status "$rc"); in flight: $_NX_IN_FLIGHT; last nested result: $_NX_LAST_NESTED; last command: ${cmd//$'\n'/ }; loadavg: $load" >&"$_NX_RECORD_FD"
+}
+
+# ---------------------------------------------------------------------------
 # Harness construction (once, at suite start) — delegated to
 # tests/infra/nextest_absent_lib.sh, which also supplies nx_run below.
 # ---------------------------------------------------------------------------
@@ -146,6 +181,11 @@ echo "=== the nine covered plan-oracle infra suites are host-independent on a ne
 # check runs. NX_WORKDIR/NX_FARM/NX_PATH are left fully constructed either
 # way, so the nextest_absent_available call below is valid regardless.
 nextest_absent_init || true
+# CALLER-OWNED under nextest_absent_lib.sh's TRAP OWNERSHIP contract half (b):
+# it replaces the lib's EXIT dispatcher, so _nx_exit_record calls
+# nextest_absent_cleanup itself. The lib's INT/TERM/HUP dispatchers stay armed
+# and `exit 128+n`, which reaches this trap with the signal status.
+trap '_nx_exit_record "$?"' EXIT
 
 # HOST PRECONDITION (skip, do NOT fail). Where the constructed env is not a
 # genuine simulation — cargo-nextest still reachable, or cargo not executable
@@ -231,8 +271,9 @@ _suite_is_clean_without_nextest() {
         return 1
     }
 
+    _NX_IN_FLIGHT="nested suite $basename"
     set +e
-    out="$(nx_run bash "$suite" 2>&1)"
+    out="$(nx_run bash "$suite" {_NX_RECORD_FD}>&- 2>&1)"
     rc=$?
     set -e
 
@@ -241,14 +282,15 @@ _suite_is_clean_without_nextest() {
         | sed -n 's/^Results: \([0-9]\{1,\}\) passed, \([0-9]\{1,\}\) failed$/\1/p')"
     failed="$(printf '%s\n' "$results" \
         | sed -n 's/^Results: \([0-9]\{1,\}\) passed, \([0-9]\{1,\}\) failed$/\2/p')"
+    _NX_LAST_NESTED="$basename $(_nx_describe_status "$rc") ${results:-(no Results: line)}"
 
     if [ "$rc" -eq 0 ] && [ -n "$passed" ] && [ -n "$failed" ] \
        && [ "$failed" -eq 0 ] && [ "$passed" -ge "$floor" ]; then
-        echo "$basename: rc=$rc  $results  (>= floor $floor)"
+        echo "$basename: $(_nx_describe_status "$rc")  $results  (>= floor $floor)"
         return 0
     fi
 
-    echo "$basename FAILED under the nextest-absent harness: rc=$rc (pass floor $floor)"
+    echo "$basename FAILED under the nextest-absent harness: $(_nx_describe_status "$rc") (pass floor $floor)"
     echo "  ${results:-(no Results: line — suite aborted before test_summary)}"
     if [ -z "$passed" ] || [ -z "$failed" ]; then
         echo "  -> the Results line does not match the canonical"
@@ -293,6 +335,7 @@ _suite_is_clean_without_nextest() {
 # ORDER AND COUNT ARE PART OF THE CONTRACT, not incidental: the S1-S8 floors
 # below were measured against a run in which this section contributed exactly
 # these asserts. nextest_absent_assert_real reproduces them one-for-one.
+_NX_IN_FLIGHT="harness self-checks H1-H7"
 nextest_absent_assert_real "$VERIFY"
 
 # ---------------------------------------------------------------------------
@@ -504,4 +547,5 @@ assert "S8: test_release_mode_in_test_command.sh reaches test_summary with rc=0 
 assert "S9: test_verify_retry_subset.sh reaches test_summary with rc=0 / 0 FAIL / >= 16 passed on a nextest-less host" \
     _suite_is_clean_without_nextest test_verify_retry_subset.sh 16
 
+_NX_IN_FLIGHT="test_summary"
 test_summary
