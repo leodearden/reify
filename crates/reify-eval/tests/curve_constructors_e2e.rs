@@ -123,9 +123,9 @@ fn line_segment_through_full_eval_pipeline() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn arc_compiler_accepts_9_args() {
+fn arc_compiler_accepts_5_args() {
     let source = r#"structure S {
-    let wire = arc(0mm, 0mm, 0mm, 10mm, 0rad, 1.5708rad, 0mm, 0mm, 1mm)
+    let wire = arc(point3(0mm, 0mm, 0mm), 10mm, 0rad, 1.5708rad, dir(0, 0, 1))
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_arc"));
     let compiled = reify_compiler::compile(&parsed);
@@ -185,30 +185,27 @@ fn arc_through_full_eval_pipeline() {
             Type::angle(),
         )
     };
-    // Axis direction is a dimensionless unit vector, not a length quantity.
-    // Using dimensionless literals documents the intended semantics.
-    let dim_literal = |v: f64| {
-        reify_ir::CompiledExpr::literal(
-            reify_ir::Value::Scalar {
-                si_value: v,
-                dimension: reify_core::DimensionVector::DIMENSIONLESS,
-            },
-            Type::dimensionless_scalar(),
-        )
-    };
+    // The centre is a `point3` of lengths and the normal a Direction
+    // (direction-typing ι-c).
+    let center = reify_ir::CompiledExpr::literal(
+        reify_ir::Value::Point(vec![mm(0.0), mm(0.0), mm(0.0)]),
+        Type::point3(Type::length()),
+    );
+    let normal = reify_ir::CompiledExpr::literal(
+        reify_ir::Value::Direction(
+            reify_ir::UnitVec3::from_vector([0.0, 0.0, 1.0]).expect("non-degenerate"),
+        ),
+        Type::Direction,
+    );
 
     let curve_op = CompiledGeometryOp::Curve {
         kind: CurveKind::Arc,
         args: vec![
-            ("cx".into(), mm_literal(0.0)),
-            ("cy".into(), mm_literal(0.0)),
-            ("cz".into(), mm_literal(0.0)),
+            ("center".into(), center),
             ("radius".into(), mm_literal(10.0)),
             ("start_angle".into(), rad_literal(0.0)),
             ("end_angle".into(), rad_literal(std::f64::consts::FRAC_PI_2)),
-            ("ax".into(), dim_literal(0.0)),
-            ("ay".into(), dim_literal(0.0)),
-            ("az".into(), dim_literal(1.0)),
+            ("normal".into(), normal),
         ],
     };
 
@@ -251,7 +248,7 @@ fn arc_through_full_eval_pipeline() {
             );
             assert!((*start_angle).abs() < 1e-9);
             assert!((*end_angle - std::f64::consts::FRAC_PI_2).abs() < 1e-9);
-            assert!(axis[2].abs() > 1e-9, "z-axis should be non-zero");
+            assert_eq!(*axis, [0.0, 0.0, 1.0], "the normal's unit components");
         }
         other => panic!("expected GeometryOp::Arc, got {:?}", other),
     }

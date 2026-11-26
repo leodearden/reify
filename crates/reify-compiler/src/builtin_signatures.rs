@@ -68,8 +68,8 @@
 //!   rotate_around's axis and mirror's normal (direction-typing ι-a), and the
 //!   direction of `revolve` / `revolve_full` / `extrude_infinite` /
 //!   `extrude_infinite_symmetric` (direction-typing ι-b), and `half_space`'s
-//!   normal (direction-typing ι-c); later leaves add rows on the same
-//!   constructor.
+//!   and `arc`'s normal (direction-typing ι-c); later leaves add rows on the
+//!   same constructor.
 //!
 //! The RULES that decide whether a position inside a covered family gets a
 //! slot — each one is why some argument sitting right next to a slotted one is
@@ -141,14 +141,15 @@
 //! backstop that will surface any of these if they are ever forgotten.
 //!
 //! - The task-5623 CURVE row — `line_segment`'s endpoints `x1`…`z2`, `arc`'s
-//!   centre `cx`/`cy`/`cz` plus its `radius`, and `helix`'s
-//!   `radius`/`pitch`/`height`. These ARE index-addressable and ARE Contract C
-//!   gated at eval, so they are eligible in the mechanical sense; they are
-//!   simply not among the families task 5750's leaf scoped, and no fixture
-//!   forced the decision. A later leaf can add them by following the arms
-//!   above verbatim. `arc`'s two ANGLES are the exception: PRD 3 leaf ζ
-//!   (task 5782) slotted them, which leaves its centre and radius — and
-//!   `line_segment` and `helix` — outside the table, unchanged.
+//!   `radius`, and `helix`'s `radius`/`pitch`/`height`. These ARE
+//!   index-addressable and ARE Contract C gated at eval, so they are eligible
+//!   in the mechanical sense; they are simply not among the families task
+//!   5750's leaf scoped, and no fixture forced the decision. A later leaf can
+//!   add them by following the arms above verbatim. `arc`'s two ANGLES are the
+//!   exception: PRD 3 leaf ζ (task 5782) slotted them, which leaves its radius
+//!   — and `line_segment` and `helix` — outside the table, unchanged. `arc`'s
+//!   centre is a Point3 (direction-typing ι-c), listed with the other Point3
+//!   origins below.
 //!
 //! - The ARITY-OPEN variadic route — `polygon`'s 2-D vertex pairs, `interp`
 //!   and `bezier`'s coordinate triples, and `nurbs`' `2 .. 2 + 3·n_points`
@@ -168,7 +169,9 @@
 //!
 //! - The `Point3` origin of `mirror(target, origin, normal)` and pivot of
 //!   `rotate_around(target, pivot, axis, angle)` (direction-typing ι-a), and
-//!   the origin of `half_space(origin, normal)` (direction-typing ι-c).
+//!   the origin of `half_space(origin, normal)` and centre of
+//!   `arc(center, radius, start_angle, end_angle, normal)` (direction-typing
+//!   ι-c).
 //!   Structural: [`ExpectedArg`] has no Point kind, so `accept_length_point3`
 //!   gates the point at build. An accepted narrowing, recorded in the decompose
 //!   amendments of `docs/prds/v0_6/direction-typing.md` §8.
@@ -1097,21 +1100,31 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         //
         // Arg names copied from `geometry_curve.rs`'s `arc` lowering arm (D9).
         //
-        // arc(cx, cy, cz, radius, start_angle, end_angle, ax, ay, az)
-        //   args0-2: the centre `cx`/`cy`/`cz`, and arg3 `radius` — Length-
-        //            semantic, but deliberately UNSLOTTED here: curve producers
-        //            sit outside task 5750's families, recorded under the module
-        //            doc's "Contract C positions this table deliberately does NOT
-        //            cover" CURVE bullet. PRD 1's territory, not this leaf's.
-        //   args4-5: `start_angle` / `end_angle` → ANGLE ("Angle").
-        //   args6-8: the axis DIRECTION `ax`/`ay`/`az` — a dimensionless unit
-        //            vector, legitimately bare in correct `.ri`. UNSLOTTED.
+        // arc(center, radius, start_angle, end_angle, normal)
+        //   arg0:    the `center`, a Point3<Length>: UNSLOTTED (no `ExpectedArg`
+        //            kind describes a point), gated at build by
+        //            `accept_length_point3`.
+        //   arg1:    `radius` — Length-semantic, but deliberately UNSLOTTED
+        //            here: curve producers sit outside task 5750's families,
+        //            recorded under the module doc's "Contract C positions this
+        //            table deliberately does NOT cover" CURVE bullet. PRD 1's
+        //            territory, not this leaf's; the build gates it.
+        //   args2-3: `start_angle` / `end_angle` → ANGLE ("Angle").
+        //   arg4:    the `normal` → Direction (direction-typing ι-c).
         //
-        // Single-form (`check_arg_count_exact(.., 9, ..)`), so arity-agnostic per
-        // the "guard only genuinely overloaded names" rule. Pinned by
-        // `arc_slots_both_angles_but_neither_its_centre_nor_its_radius` and, at
-        // the message layer, by `arc_bare_angles_are_both_rejected_in_one_pass`.
-        "arc" => const { &[angle_arg(4, "start_angle"), angle_arg(5, "end_angle")] },
+        // Single-form (`check_arg_count_exact_form(.., 5, ..)`), so arity-agnostic
+        // per the "guard only genuinely overloaded names" rule. Pinned by
+        // `arc_slots_both_angles_and_its_normal_but_neither_its_centre_nor_its_radius`
+        // and, at the message layer, by `arc_bare_angles_are_both_rejected_in_one_pass`.
+        //
+        // The constrained-sketch `arc/3` (#5508) shares this name. When it
+        // reaches `check_builtin_arg_types`, its index 2 is a point, so #5508
+        // must land an `arg_count == 5` guard on this arm, per the HAZARD block.
+        "arc" => const { &[
+            angle_arg(2, "start_angle"),
+            angle_arg(3, "end_angle"),
+            direction_arg(4, "normal"),
+        ] },
 
         // ── Euler builtins: the convention is an enum, not a String (#6082) ──
         // orient_euler(convention, a, b, c) — a CONSTRUCTOR, so the convention

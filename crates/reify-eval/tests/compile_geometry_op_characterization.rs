@@ -3028,19 +3028,15 @@ fn curve_case(k: CurveKind) -> CompiledGeometryOp {
             ("y2".to_string(), length_literal(0.02)),
             ("z2".to_string(), length_literal(0.03)),
         ],
-        // Centre and radius are LENGTH-gated (task 5623); the two angles are
+        // The Point3 centre and the radius are LENGTH-gated; the two angles are
         // ANGLE-dimensioned via `angle_literal` (angle-units PRD leaf γ); the
-        // ax/ay/az unit vector stays deliberately bare. Golden below unchanged.
+        // normal is a Direction (direction-typing ι-c). Golden below unchanged.
         CurveKind::Arc => vec![
-            ("cx".to_string(), length_literal(0.0)),
-            ("cy".to_string(), length_literal(0.0)),
-            ("cz".to_string(), length_literal(0.0)),
+            ("center".to_string(), lit_raw(point3_len([0.0, 0.0, 0.0]))),
             ("radius".to_string(), length_literal(0.01)),
             ("start_angle".to_string(), angle_literal(0.0)),
             ("end_angle".to_string(), angle_literal(1.0)),
-            ("ax".to_string(), real_literal(0.0)),
-            ("ay".to_string(), real_literal(0.0)),
-            ("az".to_string(), real_literal(1.0)),
+            ("normal".to_string(), lit_raw(direction_val(0.0, 0.0, 1.0))),
         ],
         // radius / pitch / height are all LENGTH-gated (task 5623); `pitch` is a
         // rise per turn, not an angle. Golden below unchanged.

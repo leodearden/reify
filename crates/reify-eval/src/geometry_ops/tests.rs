@@ -1462,15 +1462,11 @@
         CompiledGeometryOp::Curve {
             kind: CurveKind::Arc,
             args: vec![
-                ("cx".into(), literal_length(0.0)),
-                ("cy".into(), literal_length(0.0)),
-                ("cz".into(), literal_length(0.0)),
+                ("center".into(), literal_length_point3([0.0, 0.0, 0.0])),
                 ("radius".into(), literal_length(0.01)),
                 ("start_angle".into(), start_angle),
                 ("end_angle".into(), end_angle),
-                ("ax".into(), literal_f64(0.0)),
-                ("ay".into(), literal_f64(0.0)),
-                ("az".into(), literal_f64(1.0)),
+                ("normal".into(), literal_direction([0.0, 0.0, 1.0])),
             ],
         }
     }
@@ -1591,11 +1587,10 @@
     ///
     /// The table above exercises each arc angle bare with the OTHER dimensioned,
     /// so it cannot see a short-circuit: `?`-chained per-slot reads pass it
-    /// while `arc(0mm, 0mm, 0mm, 10mm, 0, 90, 0, 0, 1)` — bare in both, which
-    /// is how an author who forgot the units actually writes it — reports only
-    /// `start_angle` and costs a second edit-build cycle to find `end_angle`.
-    /// This is the LENGTH guarantee `arc`'s own centre/radius group twelve
-    /// lines above already has, held to by [`required_angle_args`].
+    /// while `arc(point3(0mm, 0mm, 0mm), 10mm, 0, 90, dir(0, 0, 1))` — bare in
+    /// both, which is how an author who forgot the units actually writes it —
+    /// reports only `start_angle` and costs a second edit-build cycle to find
+    /// `end_angle`. Held to by [`required_angle_args`].
     #[test]
     fn compile_geometry_op_arc_reports_both_bare_angles_in_one_pass() {
         let (result, diagnostics) =
@@ -10185,11 +10180,11 @@
     // ---------------------------------------------------------------------------
     // `arc`'s CENTRE and RADIUS (task 5623, R1 sweep)
     //
-    // `arc(cx, cy, cz, radius, start_angle, end_angle, ax, ay, az)` — the
-    // angles come BEFORE the axis. Unlike `line_segment` and `helix`, `arc`
-    // DOES have dimensionless neighbours: the two angles (PRD 3's scope, never
-    // ours) and the `ax`/`ay`/`az` unit vector. Four of its nine args are
-    // gated; the other five keep the bare-accepting `f64_arg` path.
+    // `arc(center, radius, start_angle, end_angle, normal)` (direction-typing
+    // ι-c): the centre is a `Point3` gated per component as
+    // `center.x`/`center.y`/`center.z`, and the radius a Length. Its other
+    // arguments are the two angles (PRD 3's scope, never ours) and the
+    // Direction normal.
     //
     // SCOPE PIN (PRD decision D13): every assertion here is on a rejection
     // DIAGNOSTIC or on a `GeometryOp::Arc` IR field as returned by
@@ -10200,34 +10195,36 @@
     // MEANS, not about who currently reads it.
     // ---------------------------------------------------------------------------
 
-    /// Build an `arc` op from its four gated positions (centre triple, then
-    /// radius) in gate order, holding both angles and the axis fixed and BARE.
+    /// Build an `arc` op from its four gated positions in gate order — the
+    /// three literal centre components assembled into one `Point3`, then the
+    /// radius — holding the dimensioned angles and the +Z normal fixed.
     fn arc_with_center_radius(c: &[reify_ir::CompiledExpr]) -> CompiledGeometryOp {
+        let component = |e: &reify_ir::CompiledExpr| match &e.kind {
+            reify_ir::CompiledExprKind::Literal(v) => v.clone(),
+            other => panic!("a centre component must be a literal, got {other:?}"),
+        };
         CompiledGeometryOp::Curve {
             kind: CurveKind::Arc,
             args: vec![
-                ("cx".into(), c[0].clone()),
-                ("cy".into(), c[1].clone()),
-                ("cz".into(), c[2].clone()),
+                (
+                    "center".into(),
+                    literal_value(reify_ir::Value::Point(c[..3].iter().map(component).collect())),
+                ),
                 ("radius".into(), c[3].clone()),
-                // ANGLES are PRD 3's, never ours → stay bare.
                 ("start_angle".into(), literal_angle(0.0)),
                 ("end_angle".into(), literal_angle(1.0)),
-                // Axis DIRECTION is a dimensionless unit vector → stays bare.
-                ("ax".into(), literal_f64(0.0)),
-                ("ay".into(), literal_f64(0.0)),
-                ("az".into(), literal_f64(1.0)),
+                ("normal".into(), literal_direction([0.0, 0.0, 1.0])),
             ],
         }
     }
 
     /// `arc`'s row in the shared gate table — a gated POINT plus a gated
-    /// standalone EXTENT, four of nine args.
+    /// standalone EXTENT.
     const ARC_GATE: LengthGateCase = LengthGateCase {
         label: "arc",
         build: arc_with_center_radius,
-        // Deliberately EXCLUDES `start_angle`/`end_angle`/`ax`/`ay`/`az`.
-        gated: &["cx", "cy", "cz", "radius"],
+        // Deliberately EXCLUDES the angles and the normal.
+        gated: &["center.x", "center.y", "center.z", "radius"],
         // Non-zero: a zero radius is degenerate independently of units.
         filler: 1.0,
         step_handles: &[],
@@ -10238,20 +10235,15 @@
         assert_length_gated(ARC_GATE);
     }
 
-    /// Locks the split AND the scope boundary: a Length centre + Length radius
-    /// alongside BARE angles and a BARE dimensionless axis is the fully clean
-    /// path and must emit NO diagnostic at all.
+    /// Locks the split: a Length centre + Length radius alongside dimensioned
+    /// angles and a Direction normal is the fully clean path and must emit NO
+    /// diagnostic at all.
     ///
-    /// The bare-angle half is binding scope protection, not decoration — `arc`
-    /// is the only gated builtin carrying TWO angle args, and both belong to
-    /// `docs/prds/v0_6/angle-units-surface-convergence.md` (PRD 3). Gating
-    /// either here would be a scope violation this test would catch.
-    ///
-    /// Distinct centre components pin the cx/cy/cz → `center` ORDERING, and the
+    /// Distinct centre components pin the `center` component ORDERING, and the
     /// radius is distinct from all three so a centre/radius transposition
     /// cannot pass. Assertions are on IR fields only (PRD D13).
     #[test]
-    fn compile_geometry_op_arc_length_center_radius_bare_angles_axis_accepted() {
+    fn compile_geometry_op_arc_length_center_and_radius_accepted() {
         let values = ValueMap::new();
 
         let op = arc_with_center_radius(&[
@@ -10286,16 +10278,15 @@
                 assert_eq!(axis, [0.0, 0.0, 1.0]);
             }
             other => panic!(
-                "expected Ok(Arc) for a Length centre and radius with bare angles \
-                 and a bare axis, got {:?}",
+                "expected Ok(Arc) for a Length centre and radius with dimensioned \
+                 angles and a Direction normal, got {:?}",
                 other
             ),
         }
         assert!(
             diagnostics.is_empty(),
-            "a Length centre + Length radius + dimensionless axis + BARE angles \
-             is the fully clean path and must emit NO diagnostic at all — in \
-             particular neither angle may be gated here (that is PRD 3's scope); \
+            "a Length centre + Length radius + dimensioned angles + Direction \
+             normal is the fully clean path and must emit NO diagnostic at all; \
              got: {:?}",
             diagnostics
         );

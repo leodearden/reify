@@ -113,7 +113,7 @@ structure def StdlibGeometryOpsSmoke {
 
     // ── Curves ────────────────────────────────────────────────────────────────
     let ls = line_segment(0mm, 0mm, 0mm, 10mm, 0mm, 0mm)                 // line_segment(x1,y1,z1, x2,y2,z2)
-    let ar = arc(0mm, 0mm, 0mm, 5mm, 0deg, 90deg, 0, 0, 1)              // arc(cx,cy,cz, radius, start,end, ax,ay,az)
+    let ar = arc(point3(0mm, 0mm, 0mm), 5mm, 0deg, 90deg, dir(0, 0, 1)) // arc(center, radius, start,end, normal)
     let hx = helix(5mm, 2mm, 20mm)                                       // helix(radius, pitch, height)
     let ip = interp(0mm, 0mm, 0mm, 5mm, 5mm, 0mm, 10mm, 0mm, 0mm)       // interp(x1,y1,z1, …) coord triples
     let bz = bezier(0mm, 0mm, 0mm, 5mm, 10mm, 0mm, 10mm, 0mm, 0mm)      // bezier(x1,y1,z1, …) coord triples

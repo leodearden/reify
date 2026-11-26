@@ -218,8 +218,8 @@ direction only. Measured 2026-08-30: `scale(g, 2mm)` is accepted, as is a dimens
 in `linear_pattern`. So a unit in a dimensionless slot will not be reported; write these
 bare because it is what you mean, not because you will be told.
 A `Direction`-typed argument is the exception: the four directional selectors, `angle`'s operands,
-`rotate`'s and `rotate_around`'s axis, `mirror`'s and `half_space`'s normal, `offset_curve`'s
-direction and the direction of `revolve`, `revolve_full`, `extrude_infinite` and
+`rotate`'s and `rotate_around`'s axis, `mirror`'s, `half_space`'s and `arc`'s normal,
+`offset_curve`'s direction and the direction of `revolve`, `revolve_full`, `extrude_infinite` and
 `extrude_infinite_symmetric` take a typed operand, so a `vec3(…)` there, dimensioned or not, is rejected (at check for all but
 `offset_curve`, at eval for `offset_curve`); write `dir(x, y, z)`.
 

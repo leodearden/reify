@@ -788,12 +788,12 @@ fn required_angle_value(
 /// first-error-wins policy.
 ///
 /// Why `arc` needs it (reviewer amendment):
-/// `arc(0mm, 0mm, 0mm, 10mm, 0, 90, 0, 0, 1)` is written as ONE gesture, so an
-/// author who forgot the units on `start_angle` forgot them on `end_angle` too.
-/// `?`-chaining two [`required_angle_arg`] calls would hand back one slot name
-/// per rebuild — two edit-build cycles for one mistake — and would be
-/// inconsistent with the LENGTH group `arc` already reads its centre and radius
-/// through, twelve lines above its angles.
+/// `arc(point3(0mm, 0mm, 0mm), 10mm, 0, 90, dir(0, 0, 1))` is written as ONE
+/// gesture, so an author who forgot the units on `start_angle` forgot them on
+/// `end_angle` too. `?`-chaining two [`required_angle_arg`] calls would hand
+/// back one slot name per rebuild — two edit-build cycles for one mistake — and
+/// would be inconsistent with `arc` reading its centre and radius before
+/// either `?`.
 fn required_angle_args<const N: usize>(
     names: [&str; N],
     kind_label: impl std::fmt::Display + Copy,
@@ -861,7 +861,7 @@ fn required_length_values<const N: usize>(
 /// as LENGTHs, in the given name order, diagnosing EVERY failing member.
 ///
 /// A point in space (an origin `ox`/`oy`/`oz`, a curve endpoint
-/// `x1`/`y1`/`z1`, an arc centre `cx`/`cy`/`cz`), a displacement
+/// `x1`/`y1`/`z1`), a displacement
 /// (`dx`/`dy`/`dz`) and an independent length group (`helix`'s
 /// `radius`/`pitch`/`height`) are alike length-semantic in every member, so
 /// each must be a finite LENGTH `Scalar`: a bare/dimensionless member would be
@@ -5007,34 +5007,28 @@ fn curve_arc(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    // The centre is a point in space and the radius is a length, so all four
-    // are gated (task 5623's R1 sweep) — as ONE group, so a bare centre still
-    // reports the bare radius alongside it. They are read BEFORE the `f64_arg`
-    // closure is declared — the borrow-ordering contract on
-    // `required_length_args` makes that mandatory, and it preserves the
-    // pre-existing read order exactly (centre and radius were already first).
-    //
-    // What stays BARE is a deliberate triage decision, not an omission:
-    // `start_angle`/`end_angle` are angles (PRD 3's scope — gated by #5779)
-    // and `ax`/`ay`/`az` are a dimensionless unit vector.
-    let [cx, cy, cz, radius] = required_length_args(
-        ["cx", "cy", "cz", "radius"],
+    // Every argument is read before any `?`, so a bare centre, a bare radius
+    // and a bare angle are all reported in one build.
+    let center = required_length_point3_arg(
+        "center",
+        ["center.x", "center.y", "center.z"],
         kind,
         args,
         values,
         functions,
         meta_map,
         diagnostics,
-    )?;
-    let center = [cx, cy, cz];
-    // Both ANGLES are gated (PRD 3 leaf γ) and read FIRST, which is also their
-    // existing source order — so the diagnostic order is unchanged. They go
-    // through the GROUP reader for the same reason the centre and radius above
-    // do: `arc` is the one builtin with two angle slots, they are written as
-    // one gesture, and a bare `start_angle` is almost always beside a bare
-    // `end_angle`. The axis DIRECTION stays bare (C1 inv. 4) behind a scoped
-    // closure.
-    let [start_angle, end_angle] = required_angle_args(
+    );
+    let radius = required_length_arg(
+        "radius",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    );
+    let angles = required_angle_args(
         ["start_angle", "end_angle"],
         kind,
         args,
@@ -5042,30 +5036,26 @@ fn curve_arc(
         functions,
         meta_map,
         diagnostics,
-    )?;
-    let axis = {
-        let mut f64_arg = |name: &str| -> Result<f64, String> {
-            eval_named_arg_f64(
-                name,
-                kind,
-                args,
-                values,
-                functions,
-                meta_map,
-                diagnostics,
-            )
-            .ok_or_else(|| {
-                format!("missing or non-finite argument '{}' for {}", name, kind)
-            })
-        };
-        [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?]
-    };
+    );
+    let normal = required_direction_arg(
+        "normal",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )
+    .map(|unit| unit.components());
+    let center = center?;
+    let radius = radius?;
+    let [start_angle, end_angle] = angles?;
     Ok(reify_ir::GeometryOp::Arc {
         center,
         radius,
         start_angle,
         end_angle,
-        axis,
+        axis: normal?,
     })
 }
 

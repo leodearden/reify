@@ -1075,6 +1075,14 @@ const RESIDUAL_SPANS: &[(&str, usize, std::ops::Range<usize>, TaskCite, &str)] =
          by accept_length_point3",
     ),
     (
+        "arc",
+        5,
+        0..1,
+        TaskCite(7714),
+        "center — a Point3 centre no scalar filler produces; still gated at build \
+         by accept_length_point3",
+    ),
+    (
         "half_space",
         2,
         0..1,
@@ -1140,10 +1148,11 @@ const ALLOWLIST: &[(&str, usize, std::ops::Range<usize>, Justification, &str)] =
     // would reject correct `.ri`. This is the D3 adversary finding (BINDING).
     (
         "arc",
-        9,
-        6..9,
-        Justification::UnitVectorComponent,
-        "ax/ay/az — the arc's axis direction, beside the gated centre and radius",
+        5,
+        4..5,
+        Justification::Index,
+        "normal — a Direction (dir(x, y, z)), never a bare number; \
+         decode_direction rejects a scalar filler",
     ),
     (
         "circular_pattern",
@@ -1423,7 +1432,7 @@ const ALLOWLIST: &[(&str, usize, std::ops::Range<usize>, Justification, &str)] =
 /// an angle gate from a length one. The one producer angle the probe cannot
 /// reach, `circular_pattern`'s short form, is a residual instead.
 const ANGLE_ALLOWLIST: &[(&str, usize, std::ops::Range<usize>, &str)] = &[
-    ("arc", 9, 4..6, "start_angle/end_angle"),
+    ("arc", 5, 2..4, "start_angle/end_angle"),
     ("circular_pattern", 8, 7..8, "angle, the long form"),
     ("draft", 2, 0..1, "angle, the 3-arg form"),
     ("draft", 3, 1..2, "angle, the 4-arg form"),
@@ -2031,18 +2040,6 @@ mod baseline_search {
              failure, so no position of it can be read cleanly: {:?}",
             probed.diagnostics
         );
-    }
-
-    /// TRAP: a repair that HIDES a rejection instead of removing it.
-    ///
-    /// A length group is read with `?`, so the first slot holding a non-length
-    /// filler ends the read and every later slot's rejection vanishes with it.
-    /// A greedy that starts from all-length fillers scores that as an
-    /// improvement and cannot leave it. Witness: `arc` at arity 9, a centre and
-    /// radius length group followed by two angles.
-    #[test]
-    fn the_baseline_search_escapes_a_short_circuiting_length_group() {
-        assert_baseline_is_clean("arc", TargetTemplate::None, 9);
     }
 
     /// TRAP: a repair that EXPOSES a later gate.

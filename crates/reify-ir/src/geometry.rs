@@ -849,7 +849,7 @@ pub enum GeometryOp {
     /// `curve_arc` in `reify-eval/src/geometry_ops.rs` looks them up by name),
     /// and the published `arc(...)` signature in
     /// `docs/reify-stdlib-reference.md`. No `.ri` source names them — the
-    /// compiler checks an exact 9-argument count and assigns those keys
+    /// compiler checks an exact 5-argument count and assigns those keys
     /// POSITIONALLY — so no design file is involved either way. Churn plus
     /// cosmetic divergence, in exchange for a suffix: the rename was
     /// CONSIDERED AND DECLINED (#6521), so the absence is a recorded decision,
