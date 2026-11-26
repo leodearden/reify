@@ -5,18 +5,10 @@
 use std::any::type_name;
 
 use reify_eval_core::{
-    Answer, Binding, Core, Declaration, Erased, Failure, Input, InputKey, Kind, Outcome, Path,
-    Snapshot, Step, Turn,
+    Answer, Binding, Declaration, Erased, Failure, Input, InputKey, Kind, Outcome, Step, Turn,
 };
 
 use crate::toy::{self, Cell, Scope};
-
-/// The answer at `at` to a fresh request for it alone on `snapshot`.
-fn answer_alone(core: &mut Core, snapshot: &Snapshot, at: &Path) -> Answer<Erased> {
-    let request = core.evaluate(snapshot, toy::demand([at]));
-    assert_eq!(core.turn(), Turn::Idle);
-    toy::the_answer(&core.take_events(), &request, at)
-}
 
 fn is_absent(answer: &Answer<Erased>) -> bool {
     matches!(answer, Answer::Final(Outcome::Absent))
@@ -224,8 +216,8 @@ fn a_path_under_an_absent_guard_answers_absent() {
             toy::root("g", toy::guard(toy::input("holds"), "g.members")),
         ]);
 
-        let guarded = answer_alone(&mut core, &snapshot, &guard);
-        let below = answer_alone(&mut core, &snapshot, &m);
+        let guarded = toy::answer_alone(&mut core, &snapshot, &guard);
+        let below = toy::answer_alone(&mut core, &snapshot, &m);
         if holds {
             assert!(!is_absent(&guarded), "{guarded:?}");
             assert_eq!(below.downcast::<i64>(), Answer::Final(Outcome::of(4)));
@@ -249,9 +241,9 @@ fn a_guard_whose_condition_is_not_a_bool_fails_and_a_path_under_it_answers_that_
         found: type_name::<i64>(),
     };
 
-    let guarded = answer_alone(&mut core, &snapshot, &toy::at("g"));
+    let guarded = toy::answer_alone(&mut core, &snapshot, &toy::at("g"));
     assert_eq!(toy::failed(guarded), wrong_type);
-    let below = answer_alone(&mut core, &snapshot, &toy::below("g", &["m"]));
+    let below = toy::answer_alone(&mut core, &snapshot, &toy::below("g", &["m"]));
     assert_eq!(toy::failed(below), wrong_type);
 }
 
@@ -270,14 +262,14 @@ fn a_collection_declares_as_many_elements_as_its_count_reads() {
     let element = |i| toy::at("elems").child(Step::index(i));
 
     for i in 0..3 {
-        let answer = answer_alone(&mut core, &snapshot, &element(i));
+        let answer = toy::answer_alone(&mut core, &snapshot, &element(i));
         assert_eq!(
             answer.downcast::<i64>(),
             Answer::Final(Outcome::of(6)),
             "[{i}]"
         );
     }
-    let beyond = answer_alone(&mut core, &snapshot, &element(3));
+    let beyond = toy::answer_alone(&mut core, &snapshot, &element(3));
     assert!(is_absent(&beyond), "{beyond:?}");
 }
 
@@ -294,7 +286,7 @@ fn an_input_attached_to_a_scope_s_path_adds_a_member() {
         }
         let snapshot = core.snapshot(inputs);
 
-        let answer = answer_alone(&mut core, &snapshot, &x);
+        let answer = toy::answer_alone(&mut core, &snapshot, &x);
         if attached {
             assert_eq!(answer.downcast::<i64>(), Answer::Final(Outcome::of(9)));
         } else {
@@ -335,7 +327,7 @@ fn a_ref_computed_from_an_earlier_answer_reads_the_element_it_names() {
         ));
         let snapshot = core.snapshot(inputs);
 
-        let answer = answer_alone(&mut core, &snapshot, &pick);
+        let answer = toy::answer_alone(&mut core, &snapshot, &pick);
         match expected {
             Some(value) => assert_eq!(answer.downcast::<i64>(), Answer::Final(Outcome::of(value))),
             None => assert!(is_absent(&answer), "{answer:?}"),

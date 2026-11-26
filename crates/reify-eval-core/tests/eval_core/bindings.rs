@@ -150,9 +150,7 @@ fn with_holder(src: Binding, members: toy::Members) -> Vec<(InputKey, Input)> {
 /// `inputs`, on `core`.
 fn i64_at(core: &mut Core, inputs: Vec<(InputKey, Input)>, at: &Path) -> Answer<i64> {
     let snapshot = core.snapshot(inputs);
-    let request = core.evaluate(&snapshot, toy::demand([at]));
-    assert_eq!(core.turn(), Turn::Idle);
-    toy::the_answer(&core.take_events(), &request, at).downcast()
+    toy::answer_alone(core, &snapshot, at).downcast()
 }
 
 #[test]

@@ -11,10 +11,12 @@ use crate::toy::{self, BoxShape, Cell, Watch};
 
 /// The answer at `at` to a fresh request for it alone on `snapshot`, and
 /// the snapshot the answer is tagged with.
-fn answer_alone(core: &mut Core, snapshot: &Snapshot, at: &Path) -> (Answer<Erased>, SnapshotId) {
-    let request = core.evaluate(snapshot, toy::demand([at]));
-    assert_eq!(core.turn(), Turn::Idle);
-    let events = core.take_events();
+fn tagged_answer_alone(
+    core: &mut Core,
+    snapshot: &Snapshot,
+    at: &Path,
+) -> (Answer<Erased>, SnapshotId) {
+    let (request, events) = toy::evaluate_to_idle(core, snapshot, &[at]);
     let tagged = events
         .iter()
         .find_map(|event| match event {
@@ -107,10 +109,10 @@ fn an_edit_makes_a_new_snapshot_whose_answers_follow_the_edited_input() {
     assert_ne!(first.id(), second.id());
     let total = toy::at("total");
 
-    let (answer, tagged) = answer_alone(&mut core, &first, &total);
+    let (answer, tagged) = tagged_answer_alone(&mut core, &first, &total);
     assert_eq!(answer.downcast::<i64>(), Answer::Final(Outcome::of(2)));
     assert_eq!(tagged, first.id());
-    let (answer, tagged) = answer_alone(&mut core, &second, &total);
+    let (answer, tagged) = tagged_answer_alone(&mut core, &second, &total);
     assert_eq!(answer.downcast::<i64>(), Answer::Final(Outcome::of(3)));
     assert_eq!(tagged, second.id());
 }
@@ -123,12 +125,12 @@ fn the_snapshot_an_edit_came_from_keeps_its_answers_and_its_index() {
         toy::root("total", toy::cell(&["a"])),
     ]);
     let total = toy::at("total");
-    let (answer, _) = answer_alone(&mut core, &first, &total);
+    let answer = toy::answer_alone(&mut core, &first, &total);
     assert_eq!(answer.downcast::<i64>(), Answer::Final(Outcome::of(2)));
     let runs = core.counters().body_runs(Cell::ID);
 
     let _second = first.edit([(InputKey::named("a"), Some(Input::of(3_i64)))]);
-    let (answer, _) = answer_alone(&mut core, &first, &total);
+    let answer = toy::answer_alone(&mut core, &first, &total);
     assert_eq!(answer.downcast::<i64>(), Answer::Final(Outcome::of(2)));
     assert_eq!(core.counters().body_runs(Cell::ID), runs);
 }
@@ -143,11 +145,11 @@ fn an_edit_that_removes_an_input_makes_its_reads_absent() {
     let total = toy::at("total");
 
     let without_a = first.edit([(InputKey::named("a"), None)]);
-    let (answer, _) = answer_alone(&mut core, &without_a, &total);
+    let answer = toy::answer_alone(&mut core, &without_a, &total);
     assert_eq!(answer.downcast::<i64>(), Answer::Final(Outcome::of(0)));
 
     let without_root = first.edit([(InputKey::root("total"), None)]);
-    let (answer, _) = answer_alone(&mut core, &without_root, &total);
+    let answer = toy::answer_alone(&mut core, &without_root, &total);
     assert!(
         matches!(answer, Answer::Final(Outcome::Absent)),
         "{answer:?}"
@@ -167,9 +169,9 @@ fn an_edit_can_attach_an_input_to_a_path() {
     )]);
     let x = toy::below("R", &["x"]);
 
-    let (answer, _) = answer_alone(&mut core, &second, &x);
+    let answer = toy::answer_alone(&mut core, &second, &x);
     assert_eq!(answer.downcast::<i64>(), Answer::Final(Outcome::of(9)));
-    let (answer, _) = answer_alone(&mut core, &first, &x);
+    let answer = toy::answer_alone(&mut core, &first, &x);
     assert!(
         matches!(answer, Answer::Final(Outcome::Absent)),
         "{answer:?}"

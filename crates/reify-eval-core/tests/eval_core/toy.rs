@@ -13,7 +13,7 @@ use std::thread::{self, ThreadId};
 use reify_eval_core::{
     Answer, Binding, Builder, Core, Cx, Declaration, Demand, Erased, Event, Failure, Held, Input,
     InputKey, Kind, KindId, Outcome, OutsideFailure, Path, Produced, Ref, Release, Request,
-    RequestId, Root, Section, Step, Value,
+    RequestId, Root, Section, Snapshot, Step, Turn, Value,
 };
 
 /// Adds the i64s bound at "0", "1", … until a binding reads absent. Then,
@@ -558,6 +558,34 @@ pub fn demand<'a>(paths: impl IntoIterator<Item = &'a Path>) -> Demand {
 /// A demand for the roots named `names`.
 pub fn roots(names: &[&str]) -> Demand {
     Demand::of(names.iter().map(|name| at(name)))
+}
+
+/// A fresh request for `paths` on `snapshot`, and the events of the turn
+/// it is given, which must leave nothing running.
+pub fn evaluate_to_idle(
+    core: &mut Core,
+    snapshot: &Snapshot,
+    paths: &[&Path],
+) -> (Request, Vec<Event>) {
+    let request = core.evaluate(snapshot, demand(paths.iter().copied()));
+    assert_eq!(core.turn(), Turn::Idle);
+    (request, core.take_events())
+}
+
+/// The answer at `at` to a fresh request for it alone on `snapshot`.
+pub fn answer_alone(core: &mut Core, snapshot: &Snapshot, at: &Path) -> Answer<Erased> {
+    let (request, events) = evaluate_to_idle(core, snapshot, &[at]);
+    the_answer(&events, &request, at)
+}
+
+/// The answers to a fresh request for `paths` on `snapshot`, one for each
+/// path in order.
+pub fn answers_to(core: &mut Core, snapshot: &Snapshot, paths: &[&Path]) -> Vec<Answer<Erased>> {
+    let (request, events) = evaluate_to_idle(core, snapshot, paths);
+    paths
+        .iter()
+        .map(|path| answer_at(&events, &request, path))
+        .collect()
 }
 
 /// Every answer among `events` that went to `request`, in the order given.

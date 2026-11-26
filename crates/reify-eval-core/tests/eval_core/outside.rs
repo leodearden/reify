@@ -3,8 +3,7 @@
 //! point 13).
 
 use reify_eval_core::{
-    Answer, Core, Cx, Declaration, Erased, Kind, KindId, Outcome, OutsideFailure, Path, Produced,
-    Snapshot, Turn,
+    Answer, Core, Cx, Declaration, Kind, KindId, Outcome, OutsideFailure, Produced, Snapshot, Turn,
 };
 
 use crate::toy::{self, BoxShape, Cell, Pair, Scope, Shape, Watch};
@@ -51,18 +50,6 @@ fn model() -> (Core, Snapshot) {
     (core, snapshot)
 }
 
-/// The answers to a fresh request for `paths` on `snapshot`, after a turn
-/// that leaves nothing running.
-fn answers_to(core: &mut Core, snapshot: &Snapshot, paths: &[&Path]) -> Vec<Answer<Erased>> {
-    let request = core.evaluate(snapshot, toy::demand(paths.iter().copied()));
-    assert_eq!(core.turn(), Turn::Idle);
-    let events = core.take_events();
-    paths
-        .iter()
-        .map(|path| toy::answer_at(&events, &request, path))
-        .collect()
-}
-
 #[test]
 fn a_body_that_reads_a_node_that_failed_outside_the_inputs_is_dropped_and_each_demanded_path_that_needed_it_is_pending()
  {
@@ -70,7 +57,7 @@ fn a_body_that_reads_a_node_that_failed_outside_the_inputs_is_dropped_and_each_d
     let [reader, chained, fine] =
         ["reader", "chained", "fine"].map(|name| toy::below("R", &[name]));
 
-    let answers = answers_to(&mut core, &snapshot, &[&reader, &chained, &fine]);
+    let answers = toy::answers_to(&mut core, &snapshot, &[&reader, &chained, &fine]);
     assert_eq!(toy::pending(answers[0].clone()), SPENT);
     assert_eq!(toy::pending(answers[1].clone()), SPENT);
     assert_eq!(
@@ -84,7 +71,7 @@ fn a_body_that_reads_a_node_that_failed_outside_the_inputs_is_dropped_and_each_d
 fn nothing_is_kept_for_a_body_that_read_a_failure_outside_the_inputs() {
     let (mut core, snapshot) = model();
     let reader = toy::below("R", &["reader"]);
-    let answers = answers_to(&mut core, &snapshot, &[&reader]);
+    let answers = toy::answers_to(&mut core, &snapshot, &[&reader]);
     assert_eq!(toy::pending(answers[0].clone()), SPENT);
     let runs = |core: &Core| {
         (
@@ -94,7 +81,7 @@ fn nothing_is_kept_for_a_body_that_read_a_failure_outside_the_inputs() {
     };
     let (spent, cells) = runs(&core);
 
-    let answers = answers_to(&mut core, &snapshot, &[&reader]);
+    let answers = toy::answers_to(&mut core, &snapshot, &[&reader]);
     assert_eq!(toy::pending(answers[0].clone()), SPENT);
     assert_eq!(runs(&core), (spent + 1, cells + 1));
 }
@@ -103,13 +90,13 @@ fn nothing_is_kept_for_a_body_that_read_a_failure_outside_the_inputs() {
 fn a_path_below_a_node_that_failed_outside_the_inputs_is_pending_with_that_failure() {
     let (mut core, snapshot) = model();
     let below = toy::below("R", &["bad", "x"]);
-    let answers = answers_to(&mut core, &snapshot, &[&below]);
+    let answers = toy::answers_to(&mut core, &snapshot, &[&below]);
     assert_eq!(toy::pending(answers[0].clone()), SPENT);
 
     let nobody = KindId("toy.nobody");
     let lost = core.snapshot([toy::root("lost", Declaration::new(nobody))]);
     let below = toy::below("lost", &["x"]);
-    let answers = answers_to(&mut core, &lost, &[&below]);
+    let answers = toy::answers_to(&mut core, &lost, &[&below]);
     assert_eq!(
         toy::pending(answers[0].clone()),
         OutsideFailure::UnknownKind { kind: "toy.nobody" }
@@ -121,7 +108,7 @@ fn a_read_all_with_one_target_failing_outside_the_inputs_drops_the_reader() {
     let (mut core, snapshot) = model();
     let pair = toy::below("R", &["pair"]);
 
-    let answers = answers_to(&mut core, &snapshot, &[&pair]);
+    let answers = toy::answers_to(&mut core, &snapshot, &[&pair]);
     assert_eq!(toy::pending(answers[0].clone()), SPENT);
 }
 
@@ -162,7 +149,7 @@ fn a_reader_dropped_because_a_node_it_reads_has_an_unknown_kind_starts_none_of_i
         let (mut core, snapshot) = unknown_beside_fine(prefix);
         let p = toy::below("R", &["p"]);
 
-        let answers = answers_to(&mut core, &snapshot, &[&p]);
+        let answers = toy::answers_to(&mut core, &snapshot, &[&p]);
         assert_eq!(
             toy::pending(answers[0].clone()),
             OutsideFailure::UnknownKind { kind: "toy.nobody" },
