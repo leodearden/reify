@@ -944,7 +944,9 @@ class SessionWaits(SessionCase):
         self.assertFalse(clock.tripped, "start_server polled past ready_wait=3 on the injected clock")
         self.assertIs(failure, canon_cache.StartFailure.NOT_READY)
         self.assertIsNone(process.poll(), "gave up by its deadline, not because the server exited")
-        canon_cache.stop_now(process, 3600.0)
+        stopper = threading.Thread(target=canon_cache.stop_now, args=(process, 3600.0), daemon=True)
+        stopper.start()
+        self.join_or_fail(stopper, "stop_now on the silent server", process.kill)
         self.assertTrue(cfx.process_gone(process.pid))
 
     def test_reap_kills_a_process_that_ignores_term_after_two_stop_waits(self):
