@@ -6,9 +6,9 @@
 //! expression kinds (e.g. FunctionCall/UserFunctionCall args); it awaits retirement in #7886.
 //!
 //! This pass performs an ANF-style let-hoist: for every selector-ctor
-//! `FunctionCall` sitting as a `StructureInstanceCtor` field value it mints a
+//! `FunctionCall` sitting as a `StructureInstanceCtor` ordered arg it mints a
 //! synthetic top-level `Let` value cell (`<Template>::__sel_N`) carrying the
-//! ctor verbatim, and rewrites the field to a `ValueRef(__sel_N)`. The synthetic
+//! ctor verbatim, and rewrites the arg to a `ValueRef(__sel_N)`. The synthetic
 //! cell IS a top-level `value_cells` entry, so the symbolic mint now resolves it;
 //! and because `collect_value_refs` recurses `StructureInstanceCtor` args, the
 //! `ValueRef(__sel_N)` inside the ctor creates a dependency edge ordering
@@ -17,12 +17,15 @@
 //!
 //! ## Scope (design decision 4)
 //!
-//! The walk descends `StructureInstanceCtor` `ordered_args` + `defaults` and the
-//! `ListLiteral`/`SetLiteral` collections between them, but NOT a ctor's `lets`
-//! (struct-def template lets, which resolve in the constructed instance's child
-//! scope, not the enclosing template's). A selector ctor that is itself a
-//! top-level cell default (`let sel = faces(b)`) is left alone — it is already a
-//! value cell the mint visits. Only selector ctors in *field* position are lifted.
+//! The walk descends `StructureInstanceCtor` `ordered_args` and the
+//! `ListLiteral`/`SetLiteral` collections between them: only a ctor's ordered
+//! args evaluate in the enclosing template's scope. A ctor's `defaults` and
+//! `lets` are callee-template members, evaluated in the constructed instance's
+//! member scope, where a caller-template `__sel_N` is invisible (task 10352);
+//! since #7875 the eval hook resolves the selectors there in place. A selector
+//! ctor that is itself a top-level cell default (`let sel = faces(b)`) is left
+//! alone — it is already a value cell the mint visits. Only selector ctors in
+//! *ordered-arg* position are lifted.
 //!
 //! ## Hash (design decision 5)
 //!
@@ -86,8 +89,9 @@ pub(crate) fn phase_hoist_nested_selector_ctors(ctx: &mut CompilationCtx) {
 }
 
 /// Recursively descend `expr`, hoisting selector-ctor `FunctionCall`s that sit as
-/// `StructureInstanceCtor` field values (in `ordered_args` / `defaults`, or in a
-/// `ListLiteral`/`SetLiteral` nested in one).
+/// `StructureInstanceCtor` ordered args (directly, or in a
+/// `ListLiteral`/`SetLiteral` nested in one). A ctor's `defaults` and `lets` are
+/// not descended: they evaluate in the constructed instance's member scope.
 fn hoist_in_expr(
     expr: &mut CompiledExpr,
     template_name: &str,
@@ -95,12 +99,8 @@ fn hoist_in_expr(
     minted: &mut Vec<ValueCellDecl>,
 ) {
     match &mut expr.kind {
-        CompiledExprKind::StructureInstanceCtor {
-            ordered_args,
-            defaults,
-            ..
-        } => {
-            for (_, field) in ordered_args.iter_mut().chain(defaults.iter_mut()) {
+        CompiledExprKind::StructureInstanceCtor { ordered_args, .. } => {
+            for (_, field) in ordered_args.iter_mut() {
                 // Descend FIRST so deeper nesting (a ctor field that is itself a
                 // ctor, or a list of ctors) is hoisted before we test this field.
                 hoist_in_expr(field, template_name, counter, minted);
@@ -111,7 +111,8 @@ fn hoist_in_expr(
                     hoist_field(field, template_name, counter, minted);
                 }
             }
-            // `lets` are intentionally not descended (design decision 4).
+            // `defaults` and `lets` are intentionally not descended (design
+            // decision 4).
         }
         CompiledExprKind::ListLiteral(elems) | CompiledExprKind::SetLiteral(elems) => {
             for e in elems.iter_mut() {
@@ -119,7 +120,7 @@ fn hoist_in_expr(
             }
         }
         // A nested selector ctor only reaches a hoistable position through a
-        // StructureInstanceCtor field (directly or via a list/set of ctors); other
+        // StructureInstanceCtor ordered arg (directly or via a list/set of ctors); other
         // expr shapes are out of scope for the field-only hoist (design decision 4).
         _ => {}
     }
