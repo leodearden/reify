@@ -9,6 +9,7 @@ pub struct Keeper;
 impl Kind for Keeper {
     type Out = usize;
     const ID: KindId = KindId("loophole.keeper");
+    const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<usize> {
         let kernel = cx

@@ -17,6 +17,7 @@ struct List;
 impl Kind for List {
     type Out = Vec<i64>;
     const ID: KindId = KindId("toy.list");
+    const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<Vec<i64>> {
         let mut list = Vec::new();
@@ -37,6 +38,7 @@ struct Fallback;
 impl Kind for Fallback {
     type Out = i64;
     const ID: KindId = KindId("toy.fallback");
+    const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<i64> {
         match cx.read::<i64>(&Ref::binding("arg")).await {
@@ -245,7 +247,7 @@ fn a_ref_with_steps_below_a_snapshot_input_names_nothing_and_reads_absent() {
             toy::named("five", 5_i64),
             (
                 InputKey::attached(toy::at("lone"), "from"),
-                Input::of(5_i64),
+                toy::input_of(5_i64),
             ),
             toy::root("lone", toy::picker(toy::input("zero"), from.clone())),
         ];

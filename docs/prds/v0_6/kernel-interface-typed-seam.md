@@ -1,6 +1,6 @@
 # PRD — Kernel interface: typed replies, total delegation, one selector
 
-**Status:** authored pass 1, 2026-10-13 (review-all program `review-all-reify-20261010`, stream **S10**, wave 2, spawn mode, size L, risk high; program contract `plans/review-all-program-reify-20261012.md`). Leo ruled R1–R6 in-session (§3). An adversarial critic pass (fable/high: 4 blockers, 10 majors, 10 minors) is folded (lead decisions L13–L17 and premise corrections 11–14 are its outcomes). Decomposed 2026-10-14: α₁ #8930, α₂ #8931, α₃ #8932, α₄ #8933, α₅ #8934, β₁ #8935, β₂ #8936, β₃ #8957, γ #8958, δ₁ #8959, δ₂ #8960, δ₃ #8961, δ₄ #8962, δ₆ #8963, δ₇ #8964, ε₁ #8965, ε₂ #8966, ε₃ #8967, ε₄ #8968, ε₅ #8969, ζ₁ #8970, ζ₂ #8971, ζ₃ #8972, ζ₄ #8973, η₁ #8974, η₂ #8975, η₃ #8976, η₄ #8977, η₅ #8978, η₆ #8979, θ₁ #8980, θ₂ #8981, θ₃ #8982, θ₄ #8983, θ₅ #8985, ι₁ #8987, ι₂ #8989, ι₃ #8992, ι₄ #8993, ι₅ #8995, ι₆ #8998, ω #9000 (close). gap-fill 2026-10-16: α₆ #9301; ι₅ #8995 now depends on #9311. Subsumed and cancelled: #8532, #8790, #8795, #6137, #6474 and S14 κ #8632. v0_6. Approach **B + H** (multi-kernel is a load-bearing seam per the overlay's G5 list): contracts in §5, boundary tests facing both ways in §5's tables.
+**Status:** authored pass 1, 2026-10-13 (review-all program `review-all-reify-20261010`, stream **S10**, wave 2, spawn mode, size L, risk high; program contract `plans/review-all-program-reify-20261012.md`). Leo ruled R1–R6 in-session (§3). An adversarial critic pass (fable/high: 4 blockers, 10 majors, 10 minors) is folded (lead decisions L13–L17 and premise corrections 11–14 are its outcomes). Decomposed 2026-10-14: α₁ #8930, α₂ #8931, α₃ #8932, α₄ #8933, α₅ #8934, β₁ #8935, β₂ #8936, β₃ #8957, γ #8958, δ₁ #8959, δ₂ #8960, δ₃ #8961, δ₄ #8962, δ₆ #8963, δ₇ #8964, ε₁ #8965, ε₂ #8966, ε₃ #8967, ε₄ #8968, ε₅ #8969, ζ₁ #8970, ζ₂ #8971, ζ₃ #8972, ζ₄ #8973, η₁ #8974, η₂ #8975, η₃ #8976, η₄ #8977, η₅ #8978, η₆ #8979, θ₁ #8980, θ₂ #8981, θ₃ #8982, θ₄ #8983, θ₅ #8985, ι₁ #8987, ι₂ #8989, ι₃ #8992, ι₄ #8993, ι₅ #8995, ι₆ #8998, ω #9000 (close). gap-fill 2026-10-16: α₆ #9301; ι₅ #8995 now depends on #9311. Amended 2026-11-26 (#10613, esc-9648-2): θ₁'s half_space probe retired; direction-typing ι-c #9648 makes it unspellable (§1, §4.5, §5 BT-θ2, §7, §8 graph, θ₁ and θ₅). Subsumed and cancelled: #8532, #8790, #8795, #6137, #6474 and S14 κ #8632. v0_6. Approach **B + H** (multi-kernel is a load-bearing seam per the overlay's G5 list): contracts in §5, boundary tests facing both ways in §5's tables.
 **Invariants established or corrected:** **INV-GEO-5** (new; program invariant candidate 6: a delegating `GeometryKernel` wrapper forwards every capability, by type plus a delegation lint; partial at ε₂, enforced at ε₅). **INV-GEO-1** (mechanism made true: the mesh-consuming capability methods take `&ValidatedMesh`; leaf ζ₂). **INV-GEO-2** (consumer-side clause added: a handle is served only by its owning kernel; leaf ι₅). **INV-GEO-4** (corrected now in the landing commit, since its text is inverted at main; completed by leaf δ₄). INV-GEO-3 is **not** S10's: S11 ε #8682 owns its OCCT rewording (§7). Every leaf that extracts a shared primitive names its row in `tests/infra/adoption-ratchet.manifest` (invariant candidate 5). Each flip writes resolving pointers in S24's pointer grammar (`reify-audit-typed-findings-and-registry-lanes.md` §5.7): in the Enforcement cell before S24 ξ #8821 lands, in the Pointer column after it.
 **Finding keys:** 23 owned: the 21 keys in the stream row, fk-030602c2fd62 reassigned from S11, and the prior-instrument canonical `language-pipeline|crates/reify-ir/src/geometry.rs::mesh|h10` (prior key fk-a60cf0fbe772, p10). Nineteen go to leaves here, one of them (fk-0f933e75bf7d) through the subsumed filed task #8532. Three stay on filed tasks that are referenced, not re-filed (#8533, #8529, #8561). One (fk-92d313d2986f) is stamped onto meshing-service β #8285 (R4). β₁ also carries S14's fk-c497935d4b8a when it subsumes S14 κ #8632 (L13). §11 maps every key.
 **Code anchors** verified against main `274a212e0a` (2026-10-13); at commit time main is `cf59570562`, where **#6308 has landed** (export and terminal-owner routing, `kernel_owner.rs`). The leaves that depend on #6308 (ζ₂, ζ₄, ι₃) start from its tree. All other S10 paths are unchanged. `git diff a030ee7528..main` over every S10 path is empty except +4 lines in `crates/reify-kernel-gmsh/src/kernel_real.rs` (a `cfg_attr` on `TetReadback::tag_to_idx`), so the review-run anchors hold. In-flight branches read: `task/8533`, `task/8529`, `task/8652`, `task/6308`. Main moves fast: cite by symbol and re-locate lines at implementation time. Counts carry their rule inline.
@@ -10,10 +10,10 @@
 ## 1. Consumers and user-observable surface (G1, G2)
 
 **Consumers.**
-- **Design authors**, through four behaviours that are wrong today. Each was measured with `target/debug/reify` (built 2026-10-12) on main `274a212e0a`:
+- **Design authors**, through three behaviours that are wrong today, plus a fourth that direction-typing ι-c #9648 retires. Each was measured with `target/debug/reify` (built 2026-10-12) on main `274a212e0a`:
   - `scale(base, 2mm)` silently scales by 0.002: `ScaledBlock.v_bad = 0.000000000008 m^3`, exit 0, no diagnostic. Fixture: `tests/prd-gate/fixtures/kernel_interface_scale_dimensioned_factor.ri`. Leaf θ₅.
   - `linear_pattern(base, 1, 0, 0, 3000mm, 20mm)` reads the count `3000mm` as 3 copies: `Pat.vp = 0.0000029999999999999997 m^3`, exit 0. Fixture: `tests/prd-gate/fixtures/kernel_interface_pattern_dimensioned_count.ri`. Leaf θ₅.
-  - `half_space(0mm, 0mm, 0mm, 0, 0, true)` fails with `error: geometry error: geometry operation failed: expected numeric value`. The error names no op, no argument and no span. Fixture: `tests/prd-gate/fixtures/kernel_interface_halfspace_nonnumeric_normal.ri`. Leaf θ₁.
+  - Retired (provenance only): at main `274a212e0a`, `half_space(0mm, 0mm, 0mm, 0, 0, true)` failed with the context-free `expected numeric value` (fixture `tests/prd-gate/fixtures/kernel_interface_halfspace_nonnumeric_normal.ri`). Direction-typing ι-c #9648 makes it unspellable: half_space becomes `half_space(origin: Point3<Length>, normal: Direction)`, the normal is checked at compile, `prim_half_space` emits the normal's components from the decoded `Direction`, and #9648 deletes that fixture. No leaf here owns this behaviour any more, and θ₁ has no user-visible signal (§8 θ₁).
   - `reify build <union of two overlapping boxes> -o x.stl` exits 1 with `error: internal error: dispatcher named target kernel 'manifold' not present in engine.geometry_kernels for a conversion plan`. It still writes an STL, and that STL holds only `box_b` (12 triangles, x in [0, 10] mm). The dispatcher plans over the process-global registry, which lists kernels this Engine never instantiated. Fixture: `tests/prd-gate/fixtures/kernel_interface_boolean_stl_export.ri`. Leaf ι₄ (with #6104).
 - **The next agent to change the kernel seam.** Every structural finding here is a next-change cost:
   - adding a trait capability (nine forwarders went missing in the holder, and three test proxies mask eleven methods each);
@@ -247,7 +247,7 @@ impl Length { pub fn accept(v: &Value) -> QuantityAcceptance<Length>; pub fn fro
 
 - reify-eval's `accept_length_value`/`accept_angle_value` become thin diagnostic adapters over `accept`. The `required_length_*` family keeps its wording, Undef handling and group policy.
 - Kernels read `.metres()`/`.radians()`, which names the unit at every read site (h1).
-- Directions stay `[f64;3]`, and HalfSpace's normal becomes `f64` read through the direction reader.
+- Directions stay `[f64;3]`, and HalfSpace's normal becomes `f64`, taken from the components of the `Direction` that `prim_half_space` decodes (#9648).
 - Once the 47 `Value` fields are typed, the warn-only tripwire, both extractors, the unused macro and the second classifier family are dead and are **deleted, not unified** (fk-08aa3fff3378 closes by removal).
 
 ### 4.6 Kernel selection (ι; R1, L8)
@@ -319,7 +319,7 @@ pub enum SelectionError { NoKernelChain{..}, OwnerAbsent{owner, need}, NoProvide
 | boundary test | side | postcondition |
 |---|---|---|
 | BT-θ1 | type | `crates/reify-ir/tests/geometry_op_quantity_fields.rs`: `Value`-field count at baseline (47 → 0 across θ₁–θ₃); the justification guard red on an unjustified new `f64` field |
-| BT-θ2 | user surface | the half-space fixture names `half_space` and `nz`; `examples_smoke` green (no corpus file changes meaning) |
+| BT-θ2 | user surface | θ₁: `reify eval tests/prd-gate/fixtures/kernel_interface_query_reply_oracle.ri` and `reify eval examples/half_space.ri`, stdout and stderr captured at the leaf's base commit in the same lane, are byte-identical after it; every θ leaf: `examples_smoke` green (no corpus file changes meaning) |
 
 **C6 — One selector (ι, INV-GEO-2 consumer clause).** `select` returns only a kernel the set holds. A handle-served request goes to the handle's owner or fails with `OwnerAbsent`.
 
@@ -384,6 +384,7 @@ Read with `get_task`/`search_tasks`, 2026-10-13. Decomposition re-runs contract 
 | build-routing reads of the global kernel registry (part of S1's fk-4db43199eda2) | **S10** (R1) | ι₄ deletes them; S1 keeps link anchors, its constructor and `test_registry_override` |
 | Engine constructor signature | S1 | **unchanged** by every S10 leaf (L8) |
 | `reify_ir::arg_acceptance` | S15 | consumed unchanged by θ (R2) |
+| `prim_half_space`'s origin and normal decode (`Point3<Length>`, `Direction`) and the HalfSpace fields it emits | direction-typing ι-c **#9648** | θ₁ types those fields |
 | `GeometryError::BackendUnavailable` (S14 κ #8632) | S14 | its only producer is the gmsh stub arm, which R5 removes; **β₁ subsumes κ** (L13) |
 | owner-routed-or-rejected queries, `QueryKernelMismatch`/`QueryKernelUnserved` | implicit-solids γ **#8391** | ι₅ consumes them and re-expresses the owner check through `select` (L14) |
 | `distance_between_placed` | **S10 ι₅** (L14) | was #6366 part (1) |
@@ -406,7 +407,7 @@ contract      δ₁ ─► δ₂ ─► δ₃ ◄─ α₃ ; δ₃ ─► δ₄ 
 delegation    (α₃, #8533, #8672 ◄ #8284, β₁) ─► ε₁ ─► ε₂ ◄─ δ₇ ; ε₂ ─► ε₃ ─► ε₄ ─► ε₅ ◄─ η₂ ; ε₂ ─► η₁
 mesh          α₂ ─► ζ₁ ─► ζ₂ ◄─ ε₄, #6308 ; ζ₂ ─► ζ₄ ;  (#7636, α₂) ─► ζ₃
 replies       (α₃, ε₂, δ₃, δ₇, #8533, #8684, #8751, #8672) ─► η₁ ─► η₂ ─► η₃ ; η₁ ─► η₄ ◄─ #8748 ; η₁ ─► η₅ ; η₂..η₅ ─► η₆
-quantities    θ₅ ─► θ₁ ◄─ (α₃, #8652, #8669) ; θ₁ ─► θ₂ ─► θ₃ ─► θ₄
+quantities    θ₅ ─► θ₁ ◄─ (α₃, #8652, #8669, #9648) ; θ₁ ─► θ₂ ─► θ₃ ─► θ₄
 selection     ι₁ (independent) ; ι₂ ─► ι₃ ◄─ #6308 ; ι₃ ─► ι₄ ─► ι₅ ◄─ #8391 ; ι₅ ─► ι₆ ◄─ ε₄, ι₂ ; ι₄ ─► #6104 ; ι₅ ─► #6366
 close         ω ◄─ every leaf
 ```
@@ -825,13 +826,13 @@ Priorities follow the severity of the stamped key, and enablers take medium. **H
 ### θ₁ (#8980) — Length and Angle; the primitives family
 - **Keys:** none (fk-1d857a1e9750 closes in θ₄).
 - **Files:** `crates/reify-ir/src/quantity.rs` (new), `crates/reify-ir/src/lib.rs`, `crates/reify-ir/src/geometry/op.rs`, `crates/reify-ir/Cargo.toml` (`syn` dev-dep), `crates/reify-ir/tests/geometry_op_quantity_fields.rs` (new), `crates/reify-eval/src/geometry_ops.rs` (or its post-S13 children: `accept_length_value`, `accept_angle_value`, `required_length_values`, the `prim_*` builders, `prim_half_space`), `crates/reify-kernel-occt/src/{op_args,lib}.rs` (the primitive arms; `op_args.rs` is created by #8652), `crates/reify-kernel-fidget/src/kernel.rs`, `tests/infra/adoption-ratchet.manifest`, plus primitive test sites by rule (`git grep -l -E 'GeometryOp::(Box|Cylinder|Sphere|Tube|Cone|Wedge|Torus|HalfSpace) \{'`).
-- **Deps:** α₃, #8652, #8669, θ₅ (θ₁ reads HalfSpace's normal through θ₅'s `required_dimensionless_arg`; one direction reader).
+- **Deps:** α₃, #8652, #8669, θ₅, #9648 (direction-typing ι-c: θ₁ types the HalfSpace fields that #9648's `prim_half_space` emits from its decoded origin and normal).
 - **Work:**
   - Add the types (§4.5), rebase the eval gate onto `accept`, and type Box..Torus and HalfSpace px/py/pz as `Length`.
-  - HalfSpace nx/ny/nz become `f64` read through θ₅'s `required_dimensionless_arg`.
+  - HalfSpace nx/ny/nz become `f64` taken from the components of the decoded `Direction` (#9648).
   - Kernels read `.metres()`.
   - Fidget's `extract_length_f64` loses all its callers and goes.
-- **Signal:** `reify eval tests/prd-gate/fixtures/kernel_interface_halfspace_nonnumeric_normal.ri` names `half_space` and `nz` instead of `expected numeric value`. `value_fields_in_geometry_op_within_baseline` moves from 47 to 26. `git grep -c 'extract_length_f64(' crates/reify-kernel-fidget/src` = 0.
+- **Signal:** `value_fields_in_geometry_op_within_baseline` moves from 47 to 26. `git grep -c 'extract_length_f64(' crates/reify-kernel-fidget/src` = 0. BT-θ2's byte-identical oracle pin. θ₁ has no user-visible probe: #9648 makes the non-numeric normal unspellable, and no other primitive-family field reaches the kernel's `expected numeric value`.
 - **Ratchet:** the syn baseline in `geometry_op_quantity_fields.rs`, plus `raw-quantity-ctor | ^[^/]*(Length::from_metres|Angle::from_radians)[(] | crates/reify-eval/src/**/*.rs | <allowlist count> | θ₄` (production SI sources only: engine posing, `decode_plane`, AffineMap decode).
 
 ### θ₂ (#8981) — Modify, sweep and profile families; SweptKind
@@ -869,7 +870,7 @@ Priorities follow the severity of the stamped key, and enablers take medium. **H
 - **Files:** `crates/reify-eval/src/geometry_ops.rs` (or its post-S13 `args.rs`: a `required_dimensionless_arg` over `accept_arg(&v, &dimensionless_spec())`, used at factor, count and direction positions); docs-truth (overlay, all four items): `crates/reify-mcp/src/tools/chunks/geometry.md`, `crates/reify-mcp/src/tools/chunks/units.md`, `examples/best_practices/dimensioned_arguments.ri`, `examples/best_practices/INDEX.md`, `.claude/skills/reify-design/SKILL.md`; plus tests.
 - **Deps:** none.
 - **Work:**
-  - Route Scale.factor, ScaleNonUniform, the pattern counts and the direction components through `dimensionless_spec`. HalfSpace's normal is a raw `Value` passthrough today and is θ₁'s, which reuses this reader. A dimensioned value is a `DimensionedArgRejected` Error; Real, Int and Scalar{DIMENSIONLESS} are accepted.
+  - Route Scale.factor, ScaleNonUniform, the pattern counts and the direction components through `dimensionless_spec`. HalfSpace's normal is not one of this reader's positions: #9648 makes it a compile-checked `Direction`. The direction components are conditional, per direction-typing D7 (the note on #8985's record). ι-a #9646 and ι-b #9647 have landed, and the scalar triples left at main `a78117af69` (linear_pattern, linear_pattern_2d, circular_pattern's axis, arc) are the ones #9648 retypes as `Direction`. If #9648 lands first, this reader takes only the factors and counts. A dimensioned value is a `DimensionedArgRejected` Error; Real, Int and Scalar{DIMENSIONLESS} are accepted.
   - This reverses a documented posture, so the docs change in the same diff:
     - the geometry chunk's "The dimensionless column is an authoring rule you uphold … Measured 2026-08-30: `scale(g, 2mm)` is accepted …" paragraph becomes the rejection, and the transform and pattern sections say a scale factor and a count are plain numbers;
     - the units chunk's matching "authoring rule you uphold, not one the compiler enforces" sentence (units.md, the dimensionless-slot paragraph) is rewritten the same way;

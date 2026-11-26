@@ -8,6 +8,7 @@ use crate::executor::{Executor, Turn};
 use crate::input::{Input, InputKey};
 use crate::requests::Request;
 use crate::snapshot::Snapshot;
+use crate::store::{Store, StoredResult};
 
 pub struct Core {
     executor: Executor,
@@ -86,5 +87,20 @@ impl Core {
 
     pub fn counters(&self) -> &Counters {
         self.executor.counters()
+    }
+
+    /// The core's results, as a store another core can be built on
+    /// (`Builder::on_store`); the core is gone. A result that holds a thing
+    /// inside a resource stays good only beside this core's resource, which
+    /// goes with it.
+    pub fn into_store(self) -> Store {
+        self.executor.into_store()
+    }
+
+    /// A new store holding each result `keep` accepts, with what leads to
+    /// it, sharing those results with this core, which is left as it was.
+    /// `keep` sees every stored result once.
+    pub fn selected_store(&self, keep: impl FnMut(&StoredResult) -> bool) -> Store {
+        self.executor.selected_store(keep)
     }
 }

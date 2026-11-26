@@ -10,12 +10,16 @@ use crate::cx::Cx;
 use crate::declaration::Declaration;
 use crate::erased_kind::{Body, ErasedKind};
 use crate::job::Product;
+use crate::key::Chain;
 use crate::mailbox::{Mailbox, Posted, Reply};
-use crate::outcome::{Erased, Outcome};
+use crate::outcome::Erased;
 use crate::produced::Produced;
+use crate::record::Answers;
 
 pub(crate) struct Task {
     declaration: Arc<Declaration>,
+    /// The keys its reads have taken it through, from its recipe's key.
+    chain: Chain,
     mailbox: Arc<Mailbox>,
     cancel: Cancel,
     /// The section the body waits on, if it waits on one.
@@ -34,6 +38,7 @@ impl Task {
         let body = kind.start(Cx::new(Arc::clone(&mailbox), cancel.clone()));
         Self {
             declaration,
+            chain: Chain::new(kind.recipe()),
             mailbox,
             cancel,
             section: None,
@@ -64,8 +69,11 @@ impl Task {
         self.mailbox.take_posted()
     }
 
-    pub fn answer_read(&self, outcomes: Vec<Outcome<Erased>>) {
-        self.mailbox.reply(Reply::Outcomes(outcomes));
+    /// Replies to its read, which its chain records.
+    pub fn answer_read(&mut self, answers: Answers) {
+        self.chain
+            .read(Arc::clone(answers.refs()), answers.contents());
+        self.mailbox.reply(Reply::Outcomes(answers.into_outcomes()));
     }
 
     pub fn begin_section(&mut self, serial: u64) {
@@ -97,6 +105,20 @@ impl Task {
     /// cannot escape the core.
     pub fn discard(self) {
         let _ = catch_unwind(AssertUnwindSafe(move || drop(self)));
+    }
+
+    /// Discards the finished body, keeping what it was started with and
+    /// the chain its reads took it through.
+    pub fn finish(self) -> (Arc<Declaration>, Chain) {
+        let Self {
+            declaration,
+            chain,
+            mailbox,
+            body,
+            ..
+        } = self;
+        let _ = catch_unwind(AssertUnwindSafe(move || drop((body, mailbox))));
+        (declaration, chain)
     }
 
     /// Tells the section the body waits on, if any, that nobody wants the

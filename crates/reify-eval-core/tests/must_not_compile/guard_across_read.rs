@@ -9,6 +9,7 @@ pub struct Hoarder;
 impl Kind for Hoarder {
     type Out = i64;
     const ID: KindId = KindId("negative.hoarder");
+    const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<i64> {
         let shared = SHARED.lock().unwrap();

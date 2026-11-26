@@ -3,12 +3,11 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use crate::hash::{Encoder, Hash128};
 use crate::input::InputKey;
+use crate::kind_id::KindId;
 use crate::reference::Ref;
 use crate::step::Step;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct KindId(pub &'static str);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Declaration {
@@ -49,5 +48,45 @@ impl Declaration {
 
     pub(crate) fn binding(&self, name: &str) -> Option<&Binding> {
         self.bindings.get(name)
+    }
+
+    /// What the declaration says, hashed: its kind and what each binding
+    /// names, whatever order they were bound in.
+    pub fn content(&self) -> Hash128 {
+        let mut encoder = Encoder::new("declaration");
+        self.encode(&mut encoder);
+        encoder.finish()
+    }
+
+    pub(crate) fn encode(&self, encoder: &mut Encoder) {
+        encoder
+            .text(self.kind.0)
+            .sequence(self.bindings.iter(), |encoder, (name, binding)| {
+                encoder.text(name);
+                binding.encode(encoder);
+            });
+    }
+}
+
+impl Binding {
+    pub(crate) fn encode(&self, encoder: &mut Encoder) {
+        match self {
+            Binding::Input(key) => {
+                encoder.tag("binding.input");
+                key.encode(encoder);
+            }
+            Binding::Attached(name) => {
+                encoder.tag("binding.attached").text(name);
+            }
+            Binding::Declarer(steps) => {
+                encoder
+                    .tag("binding.declarer")
+                    .sequence(steps.iter(), |encoder, step| step.encode(encoder));
+            }
+            Binding::Passed(passed) => {
+                encoder.tag("binding.passed");
+                passed.encode(encoder);
+            }
+        }
     }
 }
