@@ -1,7 +1,7 @@
 //! The index of each live snapshot (contract 4.4, 5.5): the final answer at
 //! every path answered in it, with the inputs it was made of. Within a
-//! snapshot a path is answered once; an index is kept while a clone of its
-//! snapshot is held or a live request is on it.
+//! snapshot a path is answered once; an index is kept while the host holds
+//! its snapshot or a live request is on it.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -13,7 +13,7 @@ use crate::declaration::Declaration;
 use crate::input::{Input, InputKey};
 use crate::outcome::{Erased, Outcome};
 use crate::path_table::PathId;
-use crate::snapshot::{Snapshot, SnapshotId, SnapshotWatch};
+use crate::snapshot::{Snapshot, SnapshotId};
 
 /// A node of one snapshot, where its final answer is filed: within a
 /// snapshot a path is answered once, by at most one body.
@@ -34,7 +34,6 @@ pub(crate) struct Entry {
 
 pub(crate) struct Index {
     inputs: OrdMap<InputKey, Input>,
-    watch: SnapshotWatch,
     entries: OrdMap<PathId, Entry>,
 }
 
@@ -60,7 +59,6 @@ impl Indexes {
             .entry(snapshot.id())
             .or_insert_with(|| Index {
                 inputs: snapshot.inputs().clone(),
-                watch: snapshot.watch(),
                 entries: OrdMap::new(),
             });
     }
@@ -86,16 +84,16 @@ impl Indexes {
         index.entries.insert(path, entry);
     }
 
-    /// Drops the index of each snapshot no clone of which is held and on
-    /// which `requested` says no live request is, returning their ids.
-    pub fn prune(&mut self, requested: impl Fn(SnapshotId) -> bool) -> Vec<SnapshotId> {
+    /// Drops the index of each snapshot `live` says is not live, returning
+    /// their ids.
+    pub fn prune(&mut self, live: impl Fn(SnapshotId) -> bool) -> Vec<SnapshotId> {
         let mut dropped = Vec::new();
-        self.by_snapshot.retain(|snapshot, index| {
-            let live = index.watch.is_held() || requested(*snapshot);
-            if !live {
+        self.by_snapshot.retain(|snapshot, _| {
+            let kept = live(*snapshot);
+            if !kept {
                 dropped.push(*snapshot);
             }
-            live
+            kept
         });
         dropped
     }

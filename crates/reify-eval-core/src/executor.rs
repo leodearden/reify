@@ -35,7 +35,7 @@ use crate::resolve::declaration_of;
 use crate::resource::Resources;
 use crate::serve;
 use crate::serve::section::{Delivery, InFlight};
-use crate::snapshot::{Snapshot, SnapshotId};
+use crate::snapshot::{Snapshot, SnapshotId, SnapshotTokens};
 use crate::store::{Store, Stored, StoredResult};
 use crate::task::Task;
 use crate::waits::Waits;
@@ -60,6 +60,7 @@ pub(crate) struct Executor {
     core: CoreId,
     kinds: Kinds,
     paths: PathTable,
+    snapshots: Arc<SnapshotTokens>,
     indexes: Indexes,
     store: Store,
     /// The nodes following the store for a result filed for them.
@@ -86,6 +87,7 @@ impl Executor {
             core,
             kinds,
             paths: PathTable::default(),
+            snapshots: Arc::default(),
             indexes: Indexes::default(),
             store,
             lookups: BTreeMap::new(),
@@ -107,7 +109,7 @@ impl Executor {
     }
 
     pub fn snapshot(&mut self, inputs: impl IntoIterator<Item = (InputKey, Input)>) -> Snapshot {
-        Snapshot::new(self.core, inputs)
+        Snapshot::new(self.core, &self.snapshots, inputs)
     }
 
     pub fn evaluate(&mut self, snapshot: &Snapshot, demand: Demand) -> Request {
@@ -200,16 +202,19 @@ impl Executor {
         self.store.selected(keep)
     }
 
-    /// Drops the index of each snapshot that is no longer live: no clone of
-    /// it is held and no live request is on it (contract 4.4).
+    /// Drops the index of each snapshot that is no longer live: the host
+    /// holds it in no value and no live request is on it (contract 4.4).
     ///
     /// # Panics
     ///
     /// If a node in progress is on such a snapshot: work on a snapshot
     /// keeps its index.
     fn prune(&mut self) {
-        let requests = &self.requests;
-        let dropped = self.indexes.prune(|snapshot| requests.any_on(snapshot));
+        let (requests, snapshots) = (&self.requests, &self.snapshots);
+        snapshots.forget_unheld();
+        let dropped = self
+            .indexes
+            .prune(|snapshot| snapshots.is_held(snapshot) || requests.any_on(snapshot));
         if let Some(key) = self
             .nodes_in_progress()
             .find(|key| dropped.contains(&key.snapshot))
