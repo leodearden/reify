@@ -1703,7 +1703,7 @@ else
     _fixture_hold_reap "$_fixture_hold_pid" "$_fixture_hold_ready1" "$_fixture_hold_spinners1"
 
     # ── group 3: SIGKILL of the launcher above the fixture.  The fixture's own
-    # parent-death signal TERMs it, its EXIT trap reaps the handles, and the
+    # parent-death signal TERMs it, its TERM trap (_on_signal) reaps the handles, and the
     # handles take the spinners.  The launcher records the fixture's pid itself:
     # the test cannot see a grandchild's `$!`.
     _fixture_hold_ready3="$WORK/fixture-hold-ready-3"
@@ -1975,10 +1975,10 @@ assert "FIXTURE-RESIGNAL-STATE-2: a live sleeping child with no TERM pending => 
 # NON-VACUITY CRUX: a process holding a TERM it has not acted on is not settled.
 # Stopped, it keeps the TERM pending, so a reader that ignored the pending bit
 # and State T alike would bless a fixture that is about to die.
-kill -STOP "$_fixture_resignal_sleeper"
+kill -STOP "$_fixture_resignal_sleeper" 2>/dev/null || true
 _fixture_resignal3_rc=0
 _fixture_resignal_await_stopped "$_fixture_resignal_sleeper" 30 || _fixture_resignal3_rc=$?
-kill -TERM "$_fixture_resignal_sleeper"
+kill -TERM "$_fixture_resignal_sleeper" 2>/dev/null || true
 _fixture_resignal_got="$(_fixture_resignal_state "$_fixture_resignal_sleeper")"
 assert "FIXTURE-RESIGNAL-STATE-3: NON-VACUITY CRUX -- a stopped child (rc ${_fixture_resignal3_rc}) with TERM pending => 'busy' EXACTLY (got '${_fixture_resignal_got}')" \
     test "$_fixture_resignal_got" = "busy"
@@ -2000,10 +2000,15 @@ time.sleep(1000)' "$_fixture_resignal_blocked" &
     _row4_await_ready 30 "$_fixture_resignal_blocked" || _fixture_resignal3b_rc=$?
     assert "FIXTURE-RESIGNAL-STATE-3a: the python3 child reports SIGTERM blocked (rc ${_fixture_resignal3b_rc}; the 30 s deadline is an anti-hang guard only); precondition of -3b" \
         test "$_fixture_resignal3b_rc" -eq 0
-    kill -TERM "$_fixture_resignal_blocker"
-    _fixture_resignal_got="$(_fixture_resignal_state "$_fixture_resignal_blocker")"
-    assert "FIXTURE-RESIGNAL-STATE-3b: a child that blocks SIGTERM, with TERM pending => 'busy' EXACTLY (got '${_fixture_resignal_got}')" \
-        test "$_fixture_resignal_got" = "busy"
+    if [ "$_fixture_resignal3b_rc" -ne 0 ]; then
+        assert "FIXTURE-RESIGNAL-STATE-3b: the python3 child never reported SIGTERM blocked (STATE-3a rc ${_fixture_resignal3b_rc}) -- pending-TERM case not run" \
+            false
+    else
+        kill -TERM "$_fixture_resignal_blocker" 2>/dev/null || true
+        _fixture_resignal_got="$(_fixture_resignal_state "$_fixture_resignal_blocker")"
+        assert "FIXTURE-RESIGNAL-STATE-3b: a child that blocks SIGTERM, with TERM pending => 'busy' EXACTLY (got '${_fixture_resignal_got}')" \
+            test "$_fixture_resignal_got" = "busy"
+    fi
     kill -KILL "$_fixture_resignal_blocker" 2>/dev/null || true
     wait "$_fixture_resignal_blocker" 2>/dev/null || true
 else
@@ -2032,9 +2037,9 @@ _hold() {
     exit 0
 }
 trap _hold TERM
-report "$GOVTEST_SHIM_ARMED" "$$"
 sleep 1000 &
 _sleep=$!
+report "$GOVTEST_SHIM_ARMED" "$$"
 wait "$_sleep"
 EOF_TIMEOUT_SHIM
 chmod +x "$_fixture_resignal_dir/shim/timeout"
@@ -2059,7 +2064,7 @@ if [ "$_fixture_resignal1_rc" -ne 0 ]; then
     assert "FIXTURE-RESIGNAL-2: fixture never reported ready with its worker armed (RESIGNAL-1 rc ${_fixture_resignal1_rc}) -- TERM cases not run" \
         false
 else
-    kill -TERM "$_fixture_resignal_pid"
+    kill -TERM "$_fixture_resignal_pid" 2>/dev/null || true
     _fixture_resignal2_rc=0
     _row4_await_ready 30 "$_fixture_resignal_dir/termed" || _fixture_resignal2_rc=$?
     assert "FIXTURE-RESIGNAL-2: the fixture's teardown reached its worker, which sent the second TERM (rc ${_fixture_resignal2_rc}; the 30 s deadline is an anti-hang guard only)" \

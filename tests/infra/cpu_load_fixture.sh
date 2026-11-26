@@ -163,8 +163,8 @@ if [ "$DURATION_S" -eq 0 ] && ! command -v setpriv >/dev/null 2>&1; then
 fi
 
 # Self-anchor: re-exec once under a parent-death signal, so the launcher's death
-# (SIGKILL included, which runs no trap) TERMs this fixture and its EXIT trap
-# reaps the workers.  exec keeps the pid, so the caller's `$!` stays valid.  The
+# (SIGKILL included, which runs no trap) TERMs this fixture and its TERM trap
+# (_on_signal) reaps the workers.  exec keeps the pid, so the caller's `$!` stays valid.  The
 # marker is compared with `$$`: one inherited from another process never matches.
 # The launcher may die before the signal is armed, which no signal reports, so
 # the anchored pass compares its parent (read at its startup, after the arming)
@@ -203,11 +203,9 @@ _cleanup() {
 }
 
 # _on_signal <exit_status>: reap the workers, then exit.  Further terminating
-# signals are ignored first, so a repeat can never cut the nested `wait` short.
-# Measured on bash 5.2.21, a repeat is survived without that line too; it keeps
-# the reap from depending on how another bash version interleaves a trap with
-# `wait`.  _cleanup empties _WORKER_PIDS, so the EXIT trap that `exit` fires is
-# then a no-op.
+# signals are ignored first, so a repeat can never cut the nested `wait` short,
+# whichever way a given bash interleaves a trap with `wait`.  _cleanup empties
+# _WORKER_PIDS, so the EXIT trap that `exit` fires is then a no-op.
 _on_signal() {
     trap '' TERM INT HUP
     _cleanup
