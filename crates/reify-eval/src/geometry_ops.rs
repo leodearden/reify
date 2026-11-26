@@ -860,8 +860,8 @@ fn required_length_values<const N: usize>(
 /// Read a GROUP of length-semantic arguments of a scalar-form geometry builtin
 /// as LENGTHs, in the given name order, diagnosing EVERY failing member.
 ///
-/// A point in space (an origin `ox`/`oy`/`oz`, a pivot `px`/`py`/`pz`, a curve
-/// endpoint `x1`/`y1`/`z1`, an arc centre `cx`/`cy`/`cz`), a displacement
+/// A point in space (an origin `ox`/`oy`/`oz`, a boundary point `px`/`py`/`pz`,
+/// a curve endpoint `x1`/`y1`/`z1`, an arc centre `cx`/`cy`/`cz`), a displacement
 /// (`dx`/`dy`/`dz`) and an independent length group (`helix`'s
 /// `radius`/`pitch`/`height`) are alike length-semantic in every member, so
 /// each must be a finite LENGTH `Scalar`: a bare/dimensionless member would be
@@ -913,8 +913,9 @@ fn required_length_args<const N: usize>(
 }
 
 /// [`required_length_args`] specialised to the `ox`/`oy`/`oz` ORIGIN triple —
-/// the name shared by `pattern_circular` (task 5350) and `pattern_mirror`
-/// (task 5214).
+/// the name used by `pattern_circular` (task 5350). `pattern_mirror` (task
+/// 5214) and `sweep_revolve` (task 5623) read it too until direction-typing ι-a
+/// and ι-b moved their origins to one `Point3` (`required_length_point3_arg`).
 fn required_length_origin3(
     kind_label: impl std::fmt::Display + Copy,
     args: &[(String, reify_ir::CompiledExpr)],
@@ -1249,12 +1250,15 @@ fn accept_variadic_length_args(
 /// | [`decode_axis`]                        | axis ORIGIN               | **LENGTH**    | yes — a point in space |
 /// | [`required_length_point3_arg`]         | `revolve` axis ORIGIN     | **LENGTH**    | yes — a point in space |
 /// | `compile_geometry_op` `SurfaceKind::Nurbs` | control-point grid    | **LENGTH**    | yes — pole POSITIONS, the SURFACE sibling of the curve poles task 5658 gated |
+/// | [`pattern_mirror`]                     | mirror ORIGIN             | **LENGTH**    | yes — a point in space (ι-a, task 9646) |
+/// | [`transform_rotate_around`]            | rotate_around PIVOT       | **LENGTH**    | yes — a point in space (ι-a, task 9646) |
 ///
 /// DIRECTIONS are not rows — the D3 adversary finding's ORIGIN-vs-DIRECTION
 /// split (2026-07-28, BINDING). The plane NORMAL, the axis DIRECTION (ε, task
-/// 9638), `offset_curve`'s direction (θ-b, task 9645) and the `revolve` /
-/// `extrude_infinite` direction (ι-b, task 9647) are each a
-/// `Value::Direction` read through [`reify_ir::decode_direction`].
+/// 9638), `offset_curve`'s direction (θ-b, task 9645), mirror's normal and
+/// rotate/rotate_around's axis (ι-a, task 9646), and the `revolve` /
+/// `extrude_infinite` direction (ι-b, task 9647) are each a `Value::Direction`
+/// read through [`reify_ir::decode_direction`].
 fn accept_length_point3<N: std::fmt::Display + Copy>(
     value: &reify_ir::Value,
     names: [N; 3],
@@ -1992,14 +1996,14 @@ fn labelled(kind_label: impl std::fmt::Display, failure: impl std::fmt::Display)
 /// - the ORIGIN is a POINT IN SPACE and is LENGTH-gated through
 ///   [`accept_length_point3`], the decoded-value route into the Contract C
 ///   chokepoint. Its components must be LENGTH-dimensioned `Scalar`s; a bare
-///   `Real`/`Int` or a wrong-dimension `Scalar` is rejected with the SAME
-///   `ox`/`oy`/`oz` names and the SAME `ArgRejection::message` wording the
-///   SCALAR form of `mirror` has used since task 5214. Until δ this route
-///   BYPASSED that gate entirely: `mirror(b, plane_yz(10))` reached the kernel
-///   as a 10 SI-**metre** plane offset with zero diagnostics while its scalar
-///   sibling `mirror(b, 10, 0, 0, 1, 0, 0)` was rejected — the 1000× hazard
-///   arriving through the route an author is most likely to take (PRD decision
-///   D3);
+///   `Real`/`Int` or a wrong-dimension `Scalar` is rejected under the names
+///   `ox`/`oy`/`oz`, which [`decode_axis`] and `circular_pattern`'s scalar
+///   origin also use, in the SAME `ArgRejection::message` wording. Until δ
+///   this route BYPASSED that gate entirely: `mirror(b, plane_yz(10))` reached
+///   the kernel as a 10 SI-**metre** plane offset with zero diagnostics while
+///   its then-current scalar sibling `mirror(b, 10, 0, 0, 1, 0, 0)` was
+///   rejected — the 1000× hazard arriving through the route an author is most
+///   likely to take (PRD decision D3);
 /// - the NORMAL is a `Value::Direction`, read through
 ///   [`reify_ir::decode_direction`] (ε, task 9638). A Direction is
 ///   dimensionless by type and unit by construction, so there is neither a
@@ -2185,11 +2189,22 @@ fn required_resolved_arg(
     Ok(value)
 }
 
-/// Read a REQUIRED `Direction`-typed named argument (`dir(x, y, z)`).
+/// Read a REQUIRED `Direction`-typed named argument (`dir(x, y, z)`) —
+/// `rotate`/`rotate_around`'s `axis`, `mirror`'s `normal`, the `revolve` /
+/// `extrude_infinite` `direction` — through [`reify_ir::decode_direction`],
+/// the one direction reader.
+///
+/// The argument-list sibling of [`decode_plane`]'s and [`decode_axis`]'s
+/// direction halves. A Direction is dimensionless by type and unit by
+/// construction, so there is no units gate and no normalisation here.
 ///
 /// Absent and Undef follow [`required_resolved_arg`]. Any other non-Direction
-/// value takes [`decode_direction`]'s message, which ends in the
-/// `dir(x, y, z)` hint, and pushes no diagnostic.
+/// value takes [`decode_direction`]'s message behind `{kind_label}: {name}: `,
+/// which ends in the `dir(x, y, z)` hint, and pushes no diagnostic.
+///
+/// Not θ-b's `resolve_direction_arg`: that is the selector path's quiet
+/// reader, which degrades to `None` with a Warning, while a failure here must
+/// drop the op.
 fn required_direction_arg(
     name: &str,
     kind_label: impl std::fmt::Display + Copy,
@@ -2211,16 +2226,29 @@ fn required_direction_arg(
     decode_direction(&value).map_err(|e| labelled(kind_label, format_args!("{name}: {e}")))
 }
 
-/// Read a REQUIRED point-in-space named argument (`point3(x, y, z)`), LENGTH-gated
-/// per component through [`accept_length_point3`].
+/// Read a REQUIRED point-in-space named argument (`point3(x, y, z)`) as three
+/// SI metres, LENGTH-gated per component through [`accept_length_point3`].
 ///
 /// `component_names` name the three components in a rejection, so a caller
 /// can keep the wording its scalar form used (`revolve` passes
-/// `ox`/`oy`/`oz`). Absent and Undef follow [`required_resolved_arg`].
+/// `ox`/`oy`/`oz`) or name them `{arg}.x|y|z` (`mirror`'s `origin`,
+/// `rotate_around`'s `pivot` — the `translation.x|y|z` precedent of
+/// [`accept_transform_to_arrays`]).
+///
+/// # Returns
+/// - `Ok(metres)`.
+/// - `Err(message)` — for any of:
+///   - an absent argument or a `Value::Undef` — per [`required_resolved_arg`];
+///   - a component that is not a finite LENGTH — [`accept_length_point3`]'s
+///     per-component rejection, every component diagnosed, FIRST error
+///     returned;
+///   - a wrong SHAPE (not a 3-component `Point`/`Vector`) — a labelled shape
+///     message and no diagnostic, because a wrong shape is not a units
+///     rejection.
 #[allow(clippy::too_many_arguments)]
-fn required_length_point3_arg(
+fn required_length_point3_arg<N: std::fmt::Display + Copy>(
     name: &str,
-    component_names: [&str; 3],
+    component_names: [N; 3],
     kind_label: impl std::fmt::Display + Copy,
     args: &[(String, reify_ir::CompiledExpr)],
     values: &ValueMap,
@@ -2244,7 +2272,7 @@ fn required_length_point3_arg(
         |_| {
             labelled(
                 kind_label,
-                format_args!("{name} is not a 3-component Point"),
+                format_args!("'{name}' is not a valid 3-component numeric Point/Vector"),
             )
         },
         diagnostics,
@@ -3134,11 +3162,10 @@ fn prim_half_space(
     // `nx`/`ny`/`nz` triples, and `examples/half_space.ri` depends on it:
     // `half_space(0mm, 0mm, 0mm, 0, 0, 1)`.
     //
-    // The point triple goes through the GROUP reader — the same
-    // `["px", "py", "pz"]` call `transform_rotate_around` makes — so it
-    // inherits all-failures-at-once, `Unresolved`-beats-`Invalid` precedence
-    // and the borrow ordering the group readers document (see
-    // `required_length_args`), rather than restating any of them here.
+    // The point triple goes through the GROUP reader, so it inherits
+    // all-failures-at-once, `Unresolved`-beats-`Invalid` precedence and the
+    // borrow ordering the group readers document (see `required_length_args`),
+    // rather than restating any of them here.
     let [px, py, pz] = required_length_values(
         ["px", "py", "pz"],
         kind,
@@ -3833,20 +3860,10 @@ fn transform_rotate(
             }
         }
     } else {
-        // The axis DIRECTION is a dimensionless unit vector and stays bare
-        // (C1 inv. 4); the ANGLE is gated. The closure is SCOPED so its
-        // `diagnostics` borrow ends before the gate runs — that is what keeps
-        // the ax/ay/az-then-angle read order, and so the diagnostic order,
-        // exactly as it was.
-        let axis = {
-            let mut f64_arg = |name: &str| -> Result<f64, String> {
-                eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
-                    .ok_or_else(|| {
-                        format!("missing or non-finite argument '{}' for {}", name, kind)
-                    })
-            };
-            [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?]
-        };
+        // Both are read before either `?`: a bad axis must not hide a bare angle.
+        let axis =
+            required_direction_arg("axis", kind, args, values, functions, meta_map, diagnostics)
+                .map(|unit| unit.components());
         let angle_rad = required_angle_arg(
             "angle",
             kind,
@@ -3855,11 +3872,11 @@ fn transform_rotate(
             functions,
             meta_map,
             diagnostics,
-        )?;
+        );
         Ok(reify_ir::GeometryOp::Rotate {
             target: target_id,
-            axis,
-            angle_rad,
+            axis: axis?,
+            angle_rad: angle_rad?,
         })
     }
 }
@@ -3910,31 +3927,20 @@ fn transform_rotate_around(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    // The PIVOT is a point in space → gated. Read BEFORE `f64_arg` is declared
-    // (borrow ordering); this is also the existing source order, so both the
-    // read order and the diagnostic order are preserved exactly.
-    let point = required_length_args(
-        ["px", "py", "pz"],
+    // All three are read before any `?`: a bad pivot or axis must not hide a
+    // bare angle.
+    let point = required_length_point3_arg(
+        "pivot",
+        ["pivot.x", "pivot.y", "pivot.z"],
         kind,
         args,
         values,
         functions,
         meta_map,
         diagnostics,
-    )?;
-    // The axis is a dimensionless unit vector and stays on the bare-accepting
-    // path (C1 inv. 4). The ANGLE is gated as of PRD 3 leaf γ; its closure is
-    // SCOPED so the borrow ends before the gate runs, preserving the read and
-    // diagnostic order.
-    let axis = {
-        let mut f64_arg = |name: &str| -> Result<f64, String> {
-            eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
-                .ok_or_else(|| {
-                    format!("missing or non-finite argument '{}' for {}", name, kind)
-                })
-        };
-        [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?]
-    };
+    );
+    let axis = required_direction_arg("axis", kind, args, values, functions, meta_map, diagnostics)
+        .map(|unit| unit.components());
     let angle_rad = required_angle_arg(
         "angle",
         kind,
@@ -3943,12 +3949,12 @@ fn transform_rotate_around(
         functions,
         meta_map,
         diagnostics,
-    )?;
+    );
     Ok(reify_ir::GeometryOp::RotateAround {
         target: target_id,
-        point,
-        axis,
-        angle_rad,
+        point: point?,
+        axis: axis?,
+        angle_rad: angle_rad?,
     })
 }
 
@@ -4306,30 +4312,32 @@ fn pattern_mirror(
             plane_normal,
         })
     } else {
-        // The mirror-plane ORIGIN is length-semantic; see
-        // `required_length_origin3` for the units rationale AND for why it must
-        // be read before `f64_arg`.
-        let plane_origin =
-            required_length_origin3(kind, args, values, functions, meta_map, diagnostics)?;
-        // The plane NORMAL is a dimensionless unit vector — stays bare f64.
-        let mut f64_arg = |name: &str| -> Result<f64, String> {
-            eval_named_arg_f64(
-                name,
-                kind,
-                args,
-                values,
-                functions,
-                meta_map,
-                diagnostics,
-            )
-            .ok_or_else(|| {
-                format!("missing or non-finite argument '{}' for {}", name, kind)
-            })
-        };
+        // Both are read before either `?`, so a bad normal and a bare origin
+        // are reported in one build.
+        let plane_origin = required_length_point3_arg(
+            "origin",
+            ["origin.x", "origin.y", "origin.z"],
+            kind,
+            args,
+            values,
+            functions,
+            meta_map,
+            diagnostics,
+        );
+        let plane_normal = required_direction_arg(
+            "normal",
+            kind,
+            args,
+            values,
+            functions,
+            meta_map,
+            diagnostics,
+        )
+        .map(|unit| unit.components());
         Ok(reify_ir::GeometryOp::Mirror {
             target: target_id,
-            plane_origin,
-            plane_normal: [f64_arg("nx")?, f64_arg("ny")?, f64_arg("nz")?],
+            plane_origin: plane_origin?,
+            plane_normal: plane_normal?,
         })
     }
 }

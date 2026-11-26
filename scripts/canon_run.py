@@ -49,7 +49,6 @@ EXIT_USAGE = 2
 USAGE = "usage: canon_run.py status | exec -- <command> [args...] | cargo [args...]"
 REBUILD_FIX = "delete the build directory to rebuild it at the real path"
 TRAMPOLINE_MARKER = b"reify-canon-trampoline"
-MARKER_WINDOW = 1024
 RESTORE_POLL_MS = 5
 STARTUP_IGNORED = (signal.SIGPIPE, signal.SIGXFSZ)  # CPython sets both to SIG_IGN at startup
 # Linux's PIDFD_GET_INFO (include/uapi/linux/pidfd.h, struct pidfd_info VER0, 6.15+).
@@ -403,10 +402,10 @@ def read_mountinfo() -> str:
         return ""
 
 
-def reachability_of(canon: str, tree: Tree) -> Callable[[], Reachability]:
+def reachability_of(canon: str, tree: Tree, mountinfo: Callable[[], str]) -> Callable[[], Reachability]:
     def compute() -> Reachability:
         return canon_reachability(
-            canon, tree, read_mountinfo(), lambda: namespace_refusal(tree.real_root, canon)
+            canon, tree, mountinfo(), lambda: namespace_refusal(tree.real_root, canon)
         )
 
     return compute
@@ -454,18 +453,17 @@ def decide_mode(
 
 
 def build_dir_decision(
-    tree: Tree, build_dir: Path, canon: str, host_enabled: Callable[[], bool]
+    tree: Tree, build_dir: Path, canon: str, host_enabled: Callable[[], bool], mountinfo: Callable[[], str]
 ) -> Decision:
     if not tree.contains(build_dir):
         return Decision(Mode.REAL_PATH, f"build directory {build_dir} is outside the tree")
     state = read_build_dir_state(build_dir)
-    return decide_mode(state, canon, host_enabled, reachability_of(canon, tree))
+    return decide_mode(state, canon, host_enabled, reachability_of(canon, tree, mountinfo))
 
 
-def status_report(environ: Mapping[str, str], cwd: str) -> dict[str, object]:
+def status_report(environ: Mapping[str, str], cwd: str, mountinfo: Callable[[], str]) -> dict[str, object]:
     canon = canon_root(environ)
     host = load_host_config(host_config_path(environ))
-    uses_guard = canon_cache.CacheEnvironment(host.policy, None).uses_guard
     report: dict[str, object] = {
         "canon_root": canon,
         "canon_provisioned": is_real_dir(canon),
@@ -482,35 +480,21 @@ def status_report(environ: Mapping[str, str], cwd: str) -> dict[str, object]:
         build_dir = build_dir_for(tree, cwd, environ)
         report["tree_root"] = str(tree.real_root)
         report["build_dir"] = str(build_dir)
-        decision = build_dir_decision(tree, build_dir, canon, lambda: host.enabled)
+        decision = build_dir_decision(tree, build_dir, canon, lambda: host.enabled, mountinfo)
         search_path = canon_search_path(
-            environ.get("PATH", ""), tree, canon, environ.get("HOME"), guard=uses_guard
+            environ.get("PATH", ""), tree, canon, environ.get("HOME"), guard=canon_cache.uses_guard(host.policy)
         )
         refusal = cache_refusal(host, search_path)
         if decision.mode is Mode.CANON and refusal:
             decision = Decision(Mode.REFUSED, refusal)
     report["build_dir_mode"] = decision.mode.value
     report["reason"] = decision.reason
-    report["store_reachable"] = (
-        None
-        if host.cache.store_url is None
-        else canon_cache.probe_store(host.cache, canon_cache.SessionKnobs())
-    )
+    report["store_reachable"] = canon_cache.store_reachable(host.cache)
     return report
 
 
 def is_trampoline(path: str) -> bool:
-    try:
-        with open(path, "rb") as candidate:
-            return TRAMPOLINE_MARKER in candidate.read(MARKER_WINDOW)
-    except OSError:
-        return False
-
-
-def executable_cargos(path_value: str) -> list[str]:
-    """Every `<entry>/cargo` on path_value that is an executable regular file, in PATH order."""
-    candidates = (os.path.join(entry, "cargo") for entry in path_value.split(os.pathsep) if entry)
-    return [cargo for cargo in candidates if canon_cache.is_executable_file(cargo)]
+    return canon_cache.carries_marker(path, TRAMPOLINE_MARKER)
 
 
 def resolve_real_cargo(path_value: str) -> str | None:
@@ -519,7 +503,7 @@ def resolve_real_cargo(path_value: str) -> str | None:
     When no unmarked cargo follows a trampoline, or nothing is marked, the first
     unmarked cargo anywhere on PATH; else None.
     """
-    cargos = [(cargo, is_trampoline(cargo)) for cargo in executable_cargos(path_value)]
+    cargos = [(cargo, is_trampoline(cargo)) for cargo in canon_cache.executables_named(path_value, "cargo")]
     first_trampoline = next((index for index, (_, mark) in enumerate(cargos) if mark), len(cargos))
     after_first = [cargo for cargo, mark in cargos[first_trampoline:] if not mark]
     anywhere = [cargo for cargo, mark in cargos if not mark]
@@ -532,7 +516,9 @@ def resolve_canon_cargo(path_value: str) -> str | None:
     C4's composed PATH starts with the tree's own trampoline, so every cargo on it
     follows the first trampoline whether or not that entry is visible from here.
     """
-    return next((cargo for cargo in executable_cargos(path_value) if not is_trampoline(cargo)), None)
+    return next(
+        (cargo for cargo in canon_cache.executables_named(path_value, "cargo") if not is_trampoline(cargo)), None
+    )
 
 
 def cargo_subcommand_index(args: list[str]) -> int | None:
@@ -683,11 +669,16 @@ def canon_invocation(
         env["REIFY_TS_CACHE_HOME"] = cache_home
     env = cache.for_cargo(env) if cargo else cache.for_command(env)
     if cargo:
-        real_cargo = resolve_canon_cargo(env["PATH"])
-        if real_cargo is None:
-            raise canon_cache.CommandNotFound("no cargo on the CANON PATH other than reify-canon trampolines")
-        argv = [real_cargo, *argv]
+        argv = [canon_cargo(env["PATH"]), *argv]
     return Invocation(tuple(argv), env, env["PWD"])
+
+
+def canon_cargo(path_value: str) -> str:
+    """The real cargo on the composed CANON PATH; CommandNotFound when there is none."""
+    real_cargo = resolve_canon_cargo(path_value)
+    if real_cargo is None:
+        raise canon_cache.CommandNotFound("no cargo on the CANON PATH other than reify-canon trampolines")
+    return real_cargo
 
 
 def flatten(message: object) -> str:
@@ -940,13 +931,18 @@ def run_in_namespace(
 
 def validated_canon_path(call: Call, host: HostConfig) -> str:
     """The composed CANON PATH, once the command and, with sccache, a real sccache resolve on it."""
-    probe = call.at_canon(canon_cache.CacheEnvironment(host.policy, None))
-    refusal = cache_refusal(host, probe.env["PATH"])
+    search_path = canon_search_path(
+        call.environ.get("PATH", ""), call.tree, call.canon, call.environ.get("HOME"),
+        guard=canon_cache.uses_guard(host.policy),
+    )
+    if call.cargo:
+        canon_cargo(search_path)
+    refusal = cache_refusal(host, search_path)
     if refusal:
         raise Refusal(refusal)
     if not call.cargo:
         canon_cache.resolve_command(call.command[0], call.environ, call.cwd)
-    return probe.env["PATH"]
+    return search_path
 
 
 def enter_namespace(call: Call, host: HostConfig) -> int:
@@ -1007,7 +1003,7 @@ def supervise_at_canon(call: Call, host: HostConfig) -> int:
         invocation.env,
         invocation.cwd,
         session=session,
-        record_base=canon_cache.RecordBase(Mode.CANON.value, host.policy),
+        record_base=canon_cache.RecordBase(canon_cache.RecordMode.CANON, host.policy),
         subcommand=call.subcommand,
         channel=call.channel,
         journal=canon_cache.journal_path(rebase(str(call.build_dir), call.tree, call.canon)),
@@ -1026,14 +1022,18 @@ def supervise_real_path(call: Call, host: HostConfig, reason: canon_cache.Reason
         env,
         call.cwd,
         session=None,
-        record_base=canon_cache.RecordBase(Mode.REAL_PATH.value, host.policy, canon_cache.Backend.NONE, reason),
+        record_base=canon_cache.RecordBase(
+            canon_cache.RecordMode.REAL_PATH, host.policy, canon_cache.Backend.NONE, reason
+        ),
         subcommand=call.subcommand,
         channel=call.channel,
         journal=canon_cache.journal_path(call.build_dir),
     )
 
 
-def run(command: list[str], *, cargo: bool, environ: Mapping[str, str]) -> int:
+def run(
+    command: list[str], *, cargo: bool, environ: Mapping[str, str], mountinfo: Callable[[], str]
+) -> int:
     """`exec` (command is the full command) or `cargo` (command is cargo's arguments).
 
     Returns the command's returncode as subprocess gives it; the exec paths never return.
@@ -1050,7 +1050,7 @@ def run(command: list[str], *, cargo: bool, environ: Mapping[str, str]) -> int:
     build_dir = build_dir_for(tree, cwd, environ, target_dir)
     canon = canon_root(environ)
     host = functools.cache(lambda: load_host_config(host_config_path(environ)))
-    decision = build_dir_decision(tree, build_dir, canon, lambda: host().enabled)
+    decision = build_dir_decision(tree, build_dir, canon, lambda: host().enabled, mountinfo)
     call = Call(tuple(command), cargo, environ, tree, canon, cwd, build_dir)
     if is_nested(active, tree, decision):
         if decision.mode is Mode.REAL_PATH:
@@ -1067,17 +1067,17 @@ def run(command: list[str], *, cargo: bool, environ: Mapping[str, str]) -> int:
     return supervise_at_canon(call, host())
 
 
-def main(argv: list[str]) -> int:
+def main(argv: list[str], *, mountinfo: Callable[[], str] = read_mountinfo) -> int:
     environ = caller_environ()
     try:
         match argv:
             case ["status"]:
-                print(json.dumps(status_report(environ, os.getcwd())))
+                print(json.dumps(status_report(environ, os.getcwd(), mountinfo)))
                 return 0
             case ["exec", "--", *command] if command:
-                return canon_cache.exit_like(run(command, cargo=False, environ=environ))
+                return canon_cache.exit_like(run(command, cargo=False, environ=environ, mountinfo=mountinfo))
             case ["cargo", *args]:
-                return canon_cache.exit_like(run(args, cargo=True, environ=environ))
+                return canon_cache.exit_like(run(args, cargo=True, environ=environ, mountinfo=mountinfo))
     except Refusal as refusal:
         print(f"canon_run: {flatten(refusal)}", file=sys.stderr)
         return EXIT_REFUSED

@@ -27,7 +27,7 @@ use reify_test_support::{
 fn rotate_with_explicit_deg_unit_realization_lands_in_kernel() {
     let source = r#"
         structure def S {
-            let r = rotate(cylinder(30mm, 800mm), 1, 0, 0, 90deg)
+            let r = rotate(cylinder(30mm, 800mm), dir(1, 0, 0), 90deg)
         }
     "#;
 
@@ -116,7 +116,7 @@ fn rotate_with_explicit_deg_unit_realization_lands_in_kernel() {
 fn rotate_around_with_explicit_deg_unit_realization_lands_in_kernel() {
     let source = r#"
         structure def S {
-            let r = rotate_around(cylinder(30mm, 800mm), 0mm, 0mm, 0mm, 0, 0, 1, 90deg)
+            let r = rotate_around(cylinder(30mm, 800mm), point3(0mm, 0mm, 0mm), dir(0, 0, 1), 90deg)
         }
     "#;
 
@@ -230,7 +230,7 @@ fn rotate_with_bare_radian_literal_is_rejected() {
     // π/2 written as a bare decimal literal — no unit suffix.
     let source = r#"
         structure def S {
-            let r = rotate(cylinder(30mm, 800mm), 1, 0, 0, 1.5707963267948966)
+            let r = rotate(cylinder(30mm, 800mm), dir(1, 0, 0), 1.5707963267948966)
         }
     "#;
 
@@ -333,7 +333,7 @@ fn rotate_with_bare_radian_literal_is_rejected() {
     // gates the angle, it does not break `rotate`.
     let dimensioned = r#"
         structure def S {
-            let r = rotate(cylinder(30mm, 800mm), 1, 0, 0, 1.5707963267948966rad)
+            let r = rotate(cylinder(30mm, 800mm), dir(1, 0, 0), 1.5707963267948966rad)
         }
     "#;
     let compiled = parse_and_compile(dimensioned);
@@ -375,7 +375,7 @@ fn rotate_with_bare_radian_literal_is_rejected() {
 // ── Orientation overload e2e tests (task γ, #4166) ───────────────────────────
 
 /// G2 signal: rotate(box, orient_axis_angle(z, 90deg)) emits a Rotate op with
-/// axis ≈ [0,0,1] and angle_rad ≈ π/2 — identical to rotate(box, 0,0,1, 90deg).
+/// axis ≈ [0,0,1] and angle_rad ≈ π/2 — identical to rotate(box, dir(0, 0, 1), 90deg).
 ///
 /// Both forms must produce Rotate ops with axis/angle equality within tolerance,
 /// realizing the "bbox equals the axis+angle form" signal at op level.
@@ -390,7 +390,7 @@ fn rotate_orientation_overload_equals_axis_angle_form() {
     let axis_angle_src = r#"
         structure def S {
             let b = box(10mm, 10mm, 10mm)
-            let r = rotate(b, 0, 0, 1, 90deg)
+            let r = rotate(b, dir(0, 0, 1), 90deg)
         }
     "#;
 
@@ -513,4 +513,123 @@ fn rotate_orientation_malformed_drops_op() {
         "malformed orientation: expected a DegenerateDirection diagnostic, got {:?}",
         result.diagnostics
     );
+}
+
+// ── direction-typing ι-a (task 9646): the Direction-taking forms ────────────
+
+/// Build `source` against the mock kernel, assert no Error diagnostic, and
+/// return the recorded ops.
+fn built_ops(source: &str) -> Vec<GeometryOp> {
+    let compiled = parse_and_compile(source);
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let mut engine = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
+        Box::new(MockConstraintChecker::new()),
+        Some(Box::new(kernel)),
+    );
+    let result: BuildResult = engine.build(&compiled, ExportFormat::Step);
+    let errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "build produced unexpected errors: {errors:?}"
+    );
+    ops_ref
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|recorded| recorded.op.clone())
+        .collect()
+}
+
+#[test]
+fn rotate_direction_form_realizes_a_rotate_op() {
+    let ops = built_ops(
+        "structure def S {\n    let r = rotate(cylinder(30mm, 800mm), dir(0, 0, 1), 90deg)\n}\n",
+    );
+    match ops.as_slice() {
+        [
+            GeometryOp::Cylinder { .. },
+            GeometryOp::Rotate {
+                axis, angle_rad, ..
+            },
+        ] => {
+            assert_eq!(*axis, [0.0, 0.0, 1.0]);
+            assert_eq!(*angle_rad, std::f64::consts::FRAC_PI_2);
+        }
+        other => panic!("expected [Cylinder, Rotate], got {other:?}"),
+    }
+}
+
+#[test]
+fn rotate_around_direction_form_realizes_a_rotate_around_op() {
+    let ops = built_ops(
+        "structure def S {\n    let r = rotate_around(cylinder(30mm, 800mm), \
+         point3(50mm, 0mm, 0mm), dir(0, 0, 1), 90deg)\n}\n",
+    );
+    match ops.as_slice() {
+        [
+            GeometryOp::Cylinder { .. },
+            GeometryOp::RotateAround {
+                point,
+                axis,
+                angle_rad,
+                ..
+            },
+        ] => {
+            assert_eq!(*point, [0.05, 0.0, 0.0]);
+            assert_eq!(*axis, [0.0, 0.0, 1.0]);
+            assert_eq!(*angle_rad, std::f64::consts::FRAC_PI_2);
+        }
+        other => panic!("expected [Cylinder, RotateAround], got {other:?}"),
+    }
+}
+
+/// B12: every signed basis axis, spelled as Int or as Real inside `dir(..)`,
+/// reaches the kernel bit-identical to the literal the scalar form passed raw.
+#[test]
+fn direction_form_basis_axes_reach_the_kernel_bit_identically() {
+    let cases: [(&str, [f64; 3]); 8] = [
+        ("dir(1, 0, 0)", [1.0, 0.0, 0.0]),
+        ("dir(-1, 0, 0)", [-1.0, 0.0, 0.0]),
+        ("dir(0, 1, 0)", [0.0, 1.0, 0.0]),
+        ("dir(0, -1, 0)", [0.0, -1.0, 0.0]),
+        ("dir(0, 0, 1)", [0.0, 0.0, 1.0]),
+        ("dir(0, 0, -1)", [0.0, 0.0, -1.0]),
+        ("dir(1.0, 0.0, 0.0)", [1.0, 0.0, 0.0]),
+        ("dir(0.0, 0.0, -1.0)", [0.0, 0.0, -1.0]),
+    ];
+    for (spelling, basis) in cases {
+        for call in [
+            format!("rotate(cylinder(30mm, 800mm), {spelling}, 90deg)"),
+            format!(
+                "rotate_around(cylinder(30mm, 800mm), point3(0mm, 0mm, 0mm), {spelling}, 90deg)"
+            ),
+        ] {
+            let ops = built_ops(&format!("structure def S {{\n    let r = {call}\n}}\n"));
+            let (axis, angle_rad) = match ops.last() {
+                Some(GeometryOp::Rotate {
+                    axis, angle_rad, ..
+                })
+                | Some(GeometryOp::RotateAround {
+                    axis, angle_rad, ..
+                }) => (*axis, *angle_rad),
+                other => panic!("{call}: expected a rotation op last, got {other:?}"),
+            };
+            assert_eq!(
+                axis.map(f64::to_bits),
+                basis.map(f64::to_bits),
+                "{call}: axis {axis:?} must be bit-identical to {basis:?}"
+            );
+            assert_eq!(
+                angle_rad.to_bits(),
+                std::f64::consts::FRAC_PI_2.to_bits(),
+                "{call}: angle"
+            );
+        }
+    }
 }

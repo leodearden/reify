@@ -15,10 +15,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from verify_ledger_env import hermetic_env  # noqa: E402  (imported after sys.path manipulation)
+from selective_infra_leaf_fixture import (  # noqa: E402  (imported after sys.path manipulation)
+    LEAF_GLOB,
+    build_task_branch_fixture,
+    selective_leaves,
+)
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
 EVENT_LOG_VAR = "REIFY_VERIFY_EVENT_LOG"
-LEAF_GLOB = "for _vt in tests/infra/test_verify_*.sh"
 PROBE_NAME = "test_verify_zz_event_log_probe.sh"
 PROBE_BODY = """\
 printf '%s' "${REIFY_VERIFY_EVENT_LOG-<unset>}" > "$EVLOG_PROBE_DIR/event_log"
@@ -28,49 +31,6 @@ if [ -n "${REIFY_VERIFY_EVENT_LOG:-}" ]; then
 fi
 exit "${EVLOG_PROBE_EXIT:-0}"
 """
-
-
-def git(cwd, *args):
-    subprocess.run(
-        ["git", "-c", "user.email=t@example.invalid", "-c", "user.name=t", *args],
-        cwd=str(cwd),
-        env=hermetic_env(),
-        check=True,
-        capture_output=True,
-        timeout=120,
-    )
-
-
-def build_task_branch_fixture(fixture):
-    shutil.copytree(REPO_ROOT / "scripts", fixture / "scripts", symlinks=True)
-    shutil.copytree(REPO_ROOT / ".config", fixture / ".config", symlinks=True)
-    git(fixture, "init", "-q", "-b", "main")
-    git(fixture, "add", "-A")
-    git(fixture, "commit", "-qm", "base")
-    git(fixture, "checkout", "-qb", "task")
-    with open(fixture / "scripts" / "verify.sh", "a", encoding="utf-8") as fh:
-        fh.write("# fixture edit\n")
-    git(fixture, "commit", "-qam", "edit verify.sh")
-
-
-def selective_leaves(fixture):
-    proc = subprocess.run(
-        ["bash", "scripts/verify.sh", "test", "--scope", "branch", "--print-plan"],
-        cwd=str(fixture),
-        env=hermetic_env(DF_VERIFY_ROLE="task", REIFY_RELEASE_DELTA_SKIP="0"),
-        capture_output=True,
-        text=True,
-        timeout=300,
-    )
-    if proc.returncode != 0:
-        raise AssertionError(
-            f"verify.sh --print-plan exited {proc.returncode}: {proc.stderr}"
-        )
-    return [
-        line
-        for line in proc.stdout.splitlines()
-        if line and not line.startswith("#") and LEAF_GLOB in line
-    ]
 
 
 class SelectiveInfraEventLogIsolationTests(unittest.TestCase):

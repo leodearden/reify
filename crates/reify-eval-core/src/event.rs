@@ -33,4 +33,19 @@ pub enum Event {
         path: Path,
         note: Arc<dyn Any + Send + Sync>,
     },
+    /// The core ended the request: it is no longer live, and nothing more
+    /// is told to it.
+    Ended {
+        request: RequestId,
+        snapshot: SnapshotId,
+        error: RequestError,
+    },
+}
+
+/// Why the core ended a request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RequestError {
+    /// No body could run, and the paths the request wanted wait on the
+    /// bodies at `waiting`, in path order.
+    NothingCanRun { waiting: Vec<Path> },
 }

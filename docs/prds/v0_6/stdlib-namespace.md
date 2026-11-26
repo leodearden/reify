@@ -35,10 +35,11 @@ After this PRD lands, a user observes:
   buckling's `Mode` fields are unreachable from user code (`m.eigenvalue` →
   `error: structure 'Mode' has no member 'eigenvalue'`) *(probe)*. Buckling's struct is
   renamed `BucklingMode`; a collision like it can never silently recur (stdlib build error).
-- A file that uses `Length`/`10mm` without imports gets a fix-it diagnostic naming the
-  providing module ("`Length` is defined in `std.units` — add `import std.units` or
-  `import std.prelude`") instead of ambient magic; `import std.prelude` alone restores the
-  scripting experience in one visible, versionable line.
+- A file that uses a stdlib-defined name such as `200GPa` without imports gets a fix-it
+  diagnostic naming the providing module ("`GPa` is defined in `std.si_units` — add
+  `import std.si_units` or `import std.prelude`") instead of ambient magic, while builtins
+  such as `Length`/`10mm` stay visible with no import (NS-V1); `import std.prelude` alone
+  restores the scripting experience in one visible, versionable line.
 - `import parts as pp` followed by `pp.Pulley` (expression and type position) resolves —
   today both are parse errors *(grammar-gate probe, fixtures
   `/tmp/prd-gate-fixtures/stdlib-namespace-{1,2}.ri`, both exit 1)*.
@@ -307,7 +308,7 @@ references. N3/N4 consume resolution-unification substrate (§5).
 | 9 | Embedded mount unification | η | `import std.units` walks the DAG; `CompiledProgram.imports` lists it (`origin: None`); `git grep StdlibMode` empty; a project with a `stdlib/units.ri` on disk compiles identically to one without | N2 (η) |
 | 10 | `mechanism_modal_analysis` fold | ζ (declared imports exist) | resolves from `std.modal.analysis`; file gone | N2 (θ) |
 | 11 | `import std.prelude` one-liner | ι | file with only that import uses `mm`, `Length`, `unwrap_or`, `simulation_ready` | N3 (ι) |
-| 12 | Strict unresolved fix-it | κ | file using `Length` with no import → Error whose text names `std.units` and `std.prelude` (NS-V2); with the import → clean | N3 (κ) |
+| 12 | Strict unresolved fix-it | κ | file using `GPa` (`200GPa`; generated `std.si_units`, not in `reify_core::units::BUILTIN_UNITS`) with no import → Error whose text names `std.si_units` and `std.prelude` (NS-V2); with the import → clean. **Negative control:** a file using `Length`/`10mm` with no import → clean (builtin dimension and unit, NS-V1). *2026-11-26, Leo ruled option A on esc-5503-2: Length is a builtin dimension (NS-V1), so it cannot be the strict-visibility witness; `kg` is builtin too (`BUILTIN_UNITS`), so the witness is `GPa`.* | N3 (κ) |
 | 13 | Corpus migration | λ | examples/ + prj/ compile strict; CI green; `fix --imports` output on a stripped file reproduces the committed headers | N3 (λ) |
 | 14 | `#cfg`-gated std import | κ | cfg-unsatisfied `import std.x` ⇒ its names invisible (Error on use), satisfied ⇒ visible | N3 (κ) |
 | 15 | Qualified-ref grammar | μ | fixtures `stdlib-namespace-{1,2}.ri` shapes parse, 0 ERROR nodes (`tree-sitter parse --quiet` exit 0) | N4 (μ) |

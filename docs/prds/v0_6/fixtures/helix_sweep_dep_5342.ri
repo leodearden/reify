@@ -11,6 +11,6 @@
 
 structure def Test {
     let path = helix(2.15mm, 0.8mm, 10mm)
-    aux let profile = translate(rotate(circle(0.4mm), 1.0, 0.0, 0.0, -90deg), 2.15mm, 0mm, 0mm)
+    aux let profile = translate(rotate(circle(0.4mm), dir(1.0, 0.0, 0.0), -90deg), 2.15mm, 0mm, 0mm)
     let body = sweep(profile, path)
 }

@@ -115,6 +115,9 @@ The contract's pseudo-code was never compiled. A probe written for this PRD comp
 | a section that returns a future borrowing the resource | lifetime may not live long enough |
 | a section that takes the body's `Cx` with it | E0521: borrowed data escapes outside of function |
 | a kind whose `run` holds a standard lock guard across a read (it must be a kind's `run`: the trait requires that future to be `Send`, and a free `async fn` that holds the guard compiles) | future cannot be sent between threads safely |
+| an async closure given as a section | E0308: mismatched types, "one type is more general than the other", from the bound of `exclusive` itself (`F: FnOnce(&mut R, &Section<R>) -> T`) |
+
+The first row fails whatever `exclusive` accepts: the compiler rejects `await` in a closure that is not async before it looks at any signature. The sixth fails only while the signature of `exclusive` holds, so it is the one that would catch a section allowed to wait. It was not in the probe. The review of leaf χ compiled it against the crate, and it was added on Leo's ruling (decision D9).
 
 **What the compiler cannot reject.** Two programs compile that break the intent of O4: a resource type that hands out shared ownership of itself (a section returns a clone of an `Arc` of the resource, and the body keeps it across waits), and a section that blocks on a channel only a body or the host would fill. Both become stated obligations: on whoever adds a resource type, and on whoever writes a section (section 13, point 29). `trybuild` runs a program it expects to compile, so each of the two is written to do nothing when run: the section that blocks on a channel is in a function that takes the receiver as a parameter and that `main` never calls.
 
@@ -226,7 +229,7 @@ A toy design is described entirely by snapshot inputs, as the contract requires 
 | Toy kind | What it computes | What it is the consumer of |
 |---|---|---|
 | `cell` | Arithmetic over refs. A ref may be computed from an earlier answer (`elems[i]`). Division by zero is a failure. | `read`, `read_all`; reads that depend on values, so the store's decision tree; failures and "blocked by" |
-| `scope` | Its result declares a fixed list of members, read from a source input. It also reads an optional setting attached to its own path that adds a member. | a result that declares children; path resolution; a snapshot input attached to a path |
+| `scope` | Its result declares a fixed list of members, read from a source input. | a result that declares children; path resolution |
 | `guard` | A scope that reads a condition first. Under a false condition its own answer is "absent"; otherwise it declares its members. The instance kinds read their guards this way. | "absent" as a node's own answer; a path under an absent node; structure controlled by a value |
 | `collection` | Reads a count. Its result declares that many elements. | structure controlled by a value; one declaration comparison per child |
 | `call` | A cell whose body declares a child at a call-site step, with a declaration built from argument values, optionally inside a loop. It may declare a child of its own recipe. | `cx.child`; recursion through body-declared children |
@@ -383,6 +386,12 @@ If option 1 cannot be made to run in the gate, leaf χ stops and says so, and Le
 
 **Leo:** "LGTM"
 
+**Found at leaf χ on 2026-11-26, after the ruling.** Three things the table above did not have.
+
+- The expected-output files of option 1 end in `.stderr`, an extension the lock-charter guard's list must gain before such a file can be tracked (section 8). That is a change in two repositories, and it went to Leo, who ruled on 2026-11-26: "Widen it." The widening is task #10618 here and task 11872 in dark-factory; leaf χ depends on the first.
+- The test's first run in a build directory compiles the crate's dependencies again, in a directory of its own. It was measured once at 798 s, with the machine's load average between 155 and 308, against the default limit of 1,200 s for one test; the next run took 18 s. If the gate ends the test at that limit, that goes to Leo under the sentence above.
+- The first program of section 5.2, a section that waits, fails with E0728 whatever `exclusive` accepts: the compiler rejects `await` in a closure that is not async before it looks at any signature. So that program is evidence about the language, not about this crate. A sixth program, an async closure that `exclusive`'s own bound rejects, would fail only while the signature holds. Task #10596 put it to Leo, who ruled on 2026-11-26: "Yes, add & amend." It is the sixth row of the table in section 5.2. Task #10619 adds the program after leaf χ, and leaf φ depends on it.
+
 ### D10. How the open points of section 13 are closed (RULED)
 
 - The nine points of 13.1 (rules inside the three mechanisms): the leaf named finds the rule under test and brings it to Leo as an amendment. *Cost:* up to six leaves on the critical path may each stop once for a ruling.
@@ -397,12 +406,22 @@ The contract says a root is "named by the session" and leaves what the roots are
 
 **Leo:** chose "Yes, a snapshot input" when asked directly, over "given with each request" and "wait for the instance design".
 
+**Bounded by a later ruling of his (2026-11-26, in the instance design).** A root's declaration names a definition and carries no arguments: "The source must remain the canonical sole definition of the design." Contract 7.5 says so. For the core nothing changes: a root's declaration is a recipe and bindings like any other, and what a host may put in one is the host's rule. The toy designs of this PRD are not Reify designs; their roots bind the inputs they read.
+
 ### D12. Smaller choices made here
 
 - A read at the wrong type, and a body that makes two requests at once, each give a failure outcome. Each follows from the key, so it is stored like any failure. One faulty kind cannot take a session down.
 - A body that waits on something other than the core is caught only when the thing it waited on was not ready, so that failure is one outside the inputs and is not stored.
 - A missing resource, and a body or a section that panics, are failures outside the inputs (contract 9): nothing is stored.
 - The probe stays outside the repository (section 5.2). Leaf α's task names its path on the workstation. *Cost:* a task dispatched on another host would not find it and would rebuild from the listing in 5.2.
+
+### D13. An input attached to a node's own path (RULED: removed)
+
+The contract as landed let a binding name "a snapshot input attached to this node's own path": a value the session hangs on a place. Its one use among Reify's kinds was to say which purposes are active, and Leo ruled on 2026-11-26 that a purpose is applied in source. It was also a way to change an answer at a place from outside the source, which the principle of his ruling under D11 excludes for a Reify design. Leaf β had built the kind, and leaf γ's toy `scope` and test bed used it.
+
+**Leo**, asked on 2026-11-26 whether to remove it from the core: "do delete it".
+
+Contract 2.1 and 7.3 are amended (third row of the contract's amendment log). The toy `scope` reads its members and nothing else (section 5.4). The catalogue entry `equal_roots_share_results_but_not_place` is restated with two roots whose declarations are equal. Task #10617 removes the kind from the crate and its test bed. It runs after leaf δ, and leaves ε and η depend on it, so that no later leaf builds on the kind. It is not a leaf: it adds no named test, and the manifest is unchanged. *Cost:* one more task on the path from α to π. The tests of the test bed that exist only for the kind are deleted or restated, and the generator loses one of its two ways of changing what a scope declares; the other, an edit to the scope's list of members, stays.
 
 ## 8. Preconditions, and what was verified
 
@@ -419,6 +438,7 @@ Nothing in any Reify crate is assumed. What is assumed, with how each was checke
 | A task that touches only the new crate verifies that crate alone; a merge verifies the workspace | `decide_scope` in `scripts/verify.sh`; `scripts/reify_path_attribution.py` |
 | Integration tests under a crate's `tests/` run in the gate with no registration, if they are not heavy and assert no wall-clock bound | `.config/nextest.toml` (default 120 s period, 10 periods); the overlay's "Gate-test drift-guard registration" |
 | No gate runs doctests | a search of `scripts/verify.sh` for `--doc` found comments only |
+| A tracked file with a new extension passes the repository's guards | **not checked before filing.** `trybuild` reads each program's expected compiler output from a file named after the program and ending in `.stderr`. The lock-charter guard's list of extensions (`scripts/lock-charter-guard.sh --list-extensions`) has no `stderr`, so `tests/infra/test_lock_charter_guard.sh` fails once such a file is tracked. Found at leaf χ (#10554). Widening the list is a lockstep change here and in dark-factory's copy of it. Leo ruled on 2026-11-26: "Widen it." Leaf χ waits for that change, task #10618 |
 | Clippy runs with `-D warnings` on all targets; there is no rustfmt gate | `scripts/verify.sh`; `CLAUDE.md` |
 | The module-cycle ratchet runs at merge for every crate, and at task level only when `reify-build-utils` is affected | `scripts/assert-module-scc.py --help`; `docs/legibility/design-invariants.md` |
 | A test path written in prose is checked against the repository | `tests/infra/test_cited_test_paths_resolve.sh`. This PRD and its catalogue name tests, never test files |
@@ -530,7 +550,7 @@ Signals are named tests that run in the merge gate. A name in `code font` is a t
   *Prereqs:* none. *Unlocks:* β, χ.
 
 - **χ (#10554). Programs that must not compile** (decision D9). Beside the chain.
-  One test that compiles the five programs of section 5.2 and expects each to fail with its stated error, and the two loophole programs and expects them to compile, so that a change which closes a loophole is noticed too.
+  One test that compiles the programs of section 5.2 and expects each to fail with its stated error (five land with this leaf; task #10619 adds the sixth, decision D9), and the two loophole programs and expects them to compile, so that a change which closes a loophole is noticed too.
   *Signal:* that test, in the merge gate (boundary scenario K10). If the gate cannot run it, the leaf stops and reports what it found.
   *Prereqs:* α. *Unlocks:* φ.
 
@@ -697,6 +717,8 @@ Signals are named tests that run in the merge gate. A name in `code font` is a t
 Eighteen leaves lie one after another from α to π, and the longest path has twenty-one. That is the price of rule 1 and of building the three mechanisms one rule family at a time. Merging neighbours (ι with κ, μ₁ with μ₂, the three ξ) would save one merge each and give up the isolation that lets a contradiction stop one rule family only.
 
 The four leaves after π have no order among themselves, but each edits `host`, and the orchestrator runs one task at a time on a file. Expect them to land one after another in whatever order the scheduler picks.
+
+Two tasks are not leaves and are not drawn. Task #10617 (decision D13) depends on δ, and ε and η depend on it. Task #10619 (decision D9) depends on χ, and φ depends on it.
 
 ### 12.4 The manifest
 

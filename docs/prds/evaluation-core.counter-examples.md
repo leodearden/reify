@@ -205,7 +205,7 @@ Kinds of test: a *named regression* is one test with the model as written; a *co
 ### `solve_rests_on_inputs_its_trial_nodes_read_after_edit_and_across_places`
 
 - **Kind of test:** named regression. **Contract:** 6, 2.1, 5.3. **Found by:** round 4, logic (F1).
-- **Model:** Cells read their formula from a snapshot-input binding. Scope Sa: y's formula input 'A.y' = u*2, constraint input 'A.c' = (y >= 10), objective min u, toy solver. Scope Sb: identical except y's input key 'B.y' = u*4 and constraint input key 'B.c' with the same content as 'A.c'. Edit test: change 'A.y'. Cross test: demand both solves in both orders. Attached-input variant: y also reads an input attached to its own path, different at the two places.
+- **Model:** Cells read their formula from a snapshot-input binding. Scope Sa: y's formula input 'A.y' = u*2, constraint input 'A.c' = (y >= 10), objective min u, toy solver. Scope Sb: identical except y's input key 'B.y' = u*4 and constraint input key 'B.c' with the same content as 'A.c'. Edit test: change 'A.y'. Cross test: demand both solves in both orders.
 - **Sequence:** evaluate demand {u} → edit the source of y from u * 2 to u * 4 → evaluate demand {u} → cross-place: evaluate two solves whose constraint and objective sources are equal in content but whose y cells read different source units (u * 2 and u * 4), both orders
 - **What went wrong in the draft reviewed:** The set recorded only nodes; a node's source, a function body and a setting are snapshot inputs, so an edit to them left the stored solve applicable and the walk never reached it.
 - **What the contract requires:** Edit case: u = 5 mm, then 2.5 mm. Cross-place case: the two solves answer 5 mm and 2.5 mm in one snapshot, in either order. Missing: how a rests-on member that is a snapshot input is named so that a lookup at another place checks that place's own input (relative to the caller, as nodes are), not the recording run's key.
@@ -457,10 +457,10 @@ Kinds of test: a *named regression* is one test with the model as written; a *co
 ### `equal_roots_share_results_but_not_place`
 
 - **Kind of test:** named regression. **Contract:** 7.5, 1 (item 9), 2.1. **Found by:** round 1, geometry and session (G9 (roots named by content conflate two ).
-- **Model:** Two roots L and R of the same toy scope recipe, each with cell w reading a snapshot input attached to its own path (both 10). Evaluate both: R runs no bodies. Change L's attached input to 12: R's answer and counters unchanged.
-- **Sequence:** evaluate roots Left and Right (identical content) → edit (or attach a per-path setting to) Left's w → read Right's body
+- **Model:** Two roots L and R with equal declarations: the same toy scope over the same members input, in which cell w reads a host-named input (10). Evaluate L, then R: R runs no bodies. Replace L's declaration with a scope over a second members input, in which w reads another input (12): R's answer and counters unchanged.
+- **Sequence:** evaluate roots Left and Right (equal declarations) → edit Left's declaration so that its w differs → read Right's body
 - **What went wrong in the draft reviewed:** Every root was named by the content of its declaration, so equal definitions or equal constructions had one path and any place-based job (preview, selection, previous) moved both.
-- **What the contract requires:** Before the edit, Right's evaluation after Left's runs zero bodies. After an input attached to root Left changes, Right's answer is unchanged and its index entries untouched; previous() at Right's paths is Right's own.
+- **What the contract requires:** Before the edit, Right's evaluation after Left's runs zero bodies. After root Left's declaration changes, Right's answer is unchanged and its index entries untouched; previous() at Right's paths is Right's own.
 
 ### `identical_lookups_in_flight_run_the_body_once`
 

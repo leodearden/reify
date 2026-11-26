@@ -359,7 +359,7 @@ pub structure C {
 }
 
 /// Stage has `body = box(...)`; Assy has `sub stage_left = Stage()` and
-/// `mirrored = mirror(self.stage_left.body, 0mm, 0mm, 0mm, 1, 0, 0)` — origin
+/// `mirrored = mirror(self.stage_left.body, point3(0mm, 0mm, 0mm), dir(1, 0, 0))` — origin
 /// at the world origin, normal along +X.
 ///
 /// Asserts (a) recorded ops contain a Mirror op whose target == Stage's box
@@ -378,7 +378,7 @@ fn cross_sub_mirror_uses_child_body_handle() {
 }
 pub structure Assy {
     sub stage_left = Stage()
-    let mirrored = mirror(self.stage_left.body, 0mm, 0mm, 0mm, 1, 0, 0)
+    let mirrored = mirror(self.stage_left.body, point3(0mm, 0mm, 0mm), dir(1, 0, 0))
 }"#;
     let compiled = compile_source(source);
 
@@ -457,7 +457,7 @@ pub structure Assy {
 }
 
 /// Nested transform chain over a cross-sub body: `translate(rotate(self.inner.body,
-/// 0, 0, 1, 90deg), 10mm, 0mm, 0mm)`.
+/// dir(0, 0, 1), 90deg), 10mm, 0mm, 0mm)`.
 ///
 /// Pins that nesting works end-to-end: a `Sub`-resolved geometry-arg can sit at any
 /// depth of a nested transform call, and the resulting ops form a clean
@@ -478,7 +478,7 @@ fn cross_sub_geometry_anti_cascade_no_spurious_errors_in_translate_chain() {
 }
 pub structure Outer {
     sub inner = Inner()
-    let composed = translate(rotate(self.inner.body, 0, 0, 1, 90deg), 10mm, 0mm, 0mm)
+    let composed = translate(rotate(self.inner.body, dir(0, 0, 1), 90deg), 10mm, 0mm, 0mm)
 }"#;
     let compiled = compile_source(source);
 

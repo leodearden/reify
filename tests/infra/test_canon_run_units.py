@@ -607,6 +607,15 @@ class BoundRoute(CliCase):
         self.assertEqual(Path(self.target, ".reify-build-root").read_text(), self.tree + "\n")
         self.assertEqual(self.leftovers(), [])
 
+    def test_status_on_the_bound_route_reports_canon(self):
+        """status, too, reads mountinfo from the reader main is given."""
+        result = self.bound("status")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["build_dir_mode"], "canon")
+        self.assertIn("is already this tree", report["reason"])
+        self.assertIsNone(report["store_reachable"])
+
     def test_command_status_passes_through(self):
         self.env["FAKE_CARGO_EXIT"] = "5"
         self.one_call(self.bound("cargo", "build"), status=5)
@@ -724,6 +733,18 @@ class BoundRoute(CliCase):
             self.skipTest("a real sccache is installed in /usr/bin or /bin")
         self.env["PATH"] = f"{self.tree}/scripts/canon-bin:{self.fake}:/usr/bin:/bin"
         self.assert_refused(self.bound("cargo", "build"), "sccache")
+        self.assertFalse(os.path.exists(os.path.join(self.target, ".reify-build-root")))
+
+    def test_with_neither_a_real_cargo_nor_a_real_sccache_the_missing_cargo_answers_127(self):
+        """The CANON PATH is checked for cargo before sccache, so this is not the sccache refusal's 126."""
+        if any(shutil.which(name, path="/usr/bin:/bin") for name in ("cargo", "sccache")):
+            self.skipTest("a real cargo or sccache is installed in /usr/bin or /bin")
+        self.env["PATH"] = f"{self.tree}/scripts/canon-bin:/usr/bin:/bin"
+        result = self.bound("cargo", "build")
+        self.assertEqual(result.returncode, 127, result.stderr)
+        lines = result.stderr.splitlines()
+        self.assertEqual(len(lines), 1, result.stderr)
+        self.assertIn("no cargo", lines[0])
         self.assertFalse(os.path.exists(os.path.join(self.target, ".reify-build-root")))
 
 
@@ -1658,6 +1679,7 @@ class ActiveRecord(unittest.TestCase):
             {"mode": "canon", "cache": None},
             {"mode": "real_path", "cache": {"policy": "incremental", "server": None}},
             {"cache": None},
+            {"mode": "canon", "cache": {"policy": "shared", "server": None}},
         ):
             with self.subTest(section=section):
                 active = canon_run.parse_active(self.record(supervisor=section))

@@ -309,7 +309,7 @@ fn sweep_with_history_preserves_caps_for_a_correctly_posed_profile() {
 /// degenerate-pose error that names only the failure leaves them nowhere to
 /// go. The example is spelled inline because inline is legal: since #6188 the
 /// compiler's profile precondition sees through a transform, and the inline
-/// `sweep(translate(rotate(circle(3mm), 1,0,0, -90deg), 24mm,0mm,0mm),
+/// `sweep(translate(rotate(circle(3mm), dir(1, 0, 0), -90deg), 24mm,0mm,0mm),
 /// helix(24mm, 7mm, 63mm))` realizes at 3.836681796674759e-5 m³, identical to
 /// the `let`-bound spelling.
 ///
@@ -338,7 +338,7 @@ fn degenerate_pose_error_carries_every_fact_the_author_needs() {
         ("the corrective action", "pose the profile normal"),
         ("what to pose it against", "start tangent"),
         ("the measured tangent", "start tangent (1.000000,"),
-        ("a paste-able inline example", "sweep(rotate("),
+        ("a paste-able inline example", "sweep(rotate(circle(r), dir(1, 0, 0)"),
     ] {
         assert!(
             msg.contains(needle),

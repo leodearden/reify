@@ -1,5 +1,6 @@
 //! A running body and what it was started with.
 
+use std::mem;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
@@ -11,48 +12,38 @@ use crate::erased_kind::{Body, ErasedKind};
 use crate::job::Product;
 use crate::mailbox::{Mailbox, Posted, Reply};
 use crate::outcome::{Erased, Outcome};
-use crate::path::Path;
 use crate::produced::Produced;
-use crate::snapshot::{Snapshot, SnapshotId};
-
-/// A node of one snapshot: within a snapshot, one body runs for a path.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct TaskKey {
-    pub snapshot: SnapshotId,
-    pub path: Path,
-}
 
 pub(crate) struct Task {
     declaration: Arc<Declaration>,
-    snapshot: Snapshot,
     mailbox: Arc<Mailbox>,
     cancel: Cancel,
     /// The section the body waits on, if it waits on one.
     section: Option<u64>,
+    /// Whether the body is queued to be polled. A ready-queue entry for a
+    /// task that is not owed a poll is stale: left by a dropped task whose
+    /// successor has the same key.
+    owed_poll: bool,
     body: Body,
 }
 
 impl Task {
-    pub fn start(kind: &dyn ErasedKind, declaration: Arc<Declaration>, snapshot: Snapshot) -> Self {
+    pub fn start(kind: &dyn ErasedKind, declaration: Arc<Declaration>) -> Self {
         let mailbox = Arc::new(Mailbox::new());
         let cancel = Cancel::default();
         let body = kind.start(Cx::new(Arc::clone(&mailbox), cancel.clone()));
         Self {
             declaration,
-            snapshot,
             mailbox,
             cancel,
             section: None,
+            owed_poll: false,
             body,
         }
     }
 
-    pub fn declaration(&self) -> &Declaration {
+    pub fn declaration(&self) -> &Arc<Declaration> {
         &self.declaration
-    }
-
-    pub fn snapshot(&self) -> &Snapshot {
-        &self.snapshot
     }
 
     /// The flag a section this body starts reads as `cancelled`.
@@ -73,8 +64,8 @@ impl Task {
         self.mailbox.take_posted()
     }
 
-    pub fn answer_read(&self, outcome: Outcome<Erased>) {
-        self.mailbox.reply(Reply::Outcome(outcome));
+    pub fn answer_read(&self, outcomes: Vec<Outcome<Erased>>) {
+        self.mailbox.reply(Reply::Outcomes(outcomes));
     }
 
     pub fn begin_section(&mut self, serial: u64) {
@@ -91,8 +82,15 @@ impl Task {
         self.section == Some(serial)
     }
 
-    pub fn waits_on_a_section(&self) -> bool {
-        self.section.is_some()
+    /// Marks the body as owed a poll: `false` if it already was, so that it
+    /// is queued once.
+    pub fn owe_poll(&mut self) -> bool {
+        !mem::replace(&mut self.owed_poll, true)
+    }
+
+    /// Whether the body is owed a poll, which from then on it is not.
+    pub fn take_poll(&mut self) -> bool {
+        mem::take(&mut self.owed_poll)
     }
 
     /// Drops the task, so that a panic while dropping what its body holds

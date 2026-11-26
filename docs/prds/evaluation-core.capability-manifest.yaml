@@ -29,7 +29,7 @@ tasks:
   title: Programs that must not compile
   capabilities:
   - name: must-not-compile-programs-run-in-the-gate
-    binding: 'built here: one `trybuild` test over the five programs that must fail and the two that must compile (PRD 5.2, decision D9)'
+    binding: 'built here: one `trybuild` test over the six programs that must fail and the two that must compile (PRD 5.2, decision D9; five land with the leaf and task #10619 adds the sixth)'
     verdict: PASS
     delivered_check:
       kind: grep

@@ -569,24 +569,29 @@ fn documented_call_names_in_the_length_section_are_real_registry_entries() {
 /// can tabulate a constructor it never demonstrates, and demonstrate one it
 /// never tabulates — so it keeps its own number instead of tracking the table's.
 ///
-/// That number is the EXACT live count of 7 calls in the fence (`helix`,
-/// `translate`, `cylinder`, `rotate_around`, `polygon`, `interp`, `nurbs`),
+/// That number is the EXACT live count of 9 calls in the fence (`helix`,
+/// `translate`, `cylinder`, `rotate_around`, `point3`, `dir`, `polygon`,
+/// `interp`, `nurbs`),
 /// under the same contract as [`MINIMUM_FN_CITES`]: at a floor under live,
 /// calls can be deleted from the worked forms while this stays green. See that
 /// constant for the re-measurement protocol.
-const MINIMUM_SECTION_CALL_NAMES: usize = 7;
+const MINIMUM_SECTION_CALL_NAMES: usize = 9;
 
 /// Names the length-arguments section may call that are in none of
 /// `callable_registries.rs`'s `CALLABLE_NAME_REGISTRIES`, each with its
 /// justification.
 ///
-/// EMPTY, and kept empty on purpose — every constructor the catalogue names is a
-/// `GEOMETRY_FUNCTION_NAMES` entry. The hook exists because the prelude
-/// constructors this chunk documents elsewhere (`point3`, `vec3`, …) live in
-/// `math_signatures::MATH_CONSTRUCTION_NAMES`, which is not reachable from the
-/// crate root; see `CALLABLE_NAME_REGISTRIES`. Adding an entry here is a claim
-/// that a name is real-but-unreachable, so write the justification next to it.
-const LENGTH_SECTION_NAME_ALLOWLIST: &[&str] = &[];
+/// Every constructor the catalogue names is a `GEOMETRY_FUNCTION_NAMES` entry.
+/// The fence's `rotate_around` builds its pivot and axis with the two
+/// constructors below, which are real but unreachable from the crate root; see
+/// `CALLABLE_NAME_REGISTRIES`. Adding an entry here is a claim that a name is
+/// real-but-unreachable, so write the justification next to it.
+const LENGTH_SECTION_NAME_ALLOWLIST: &[&str] = &[
+    // `math_signatures::MATH_CONSTRUCTION_NAMES`, a private module.
+    "point3",
+    // `units::DATUM_CONSTRUCTOR_NAMES`, `pub(crate)`.
+    "dir",
+];
 
 /// NEGATIVE CONTROL for the fence guard — pins the part of it that discriminates.
 ///

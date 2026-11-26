@@ -20,33 +20,29 @@ module symmetry_mirror
 //   `box` mirrored across `plane_yz(0mm)` unions to its own volume, unchanged.
 //
 //   Two call forms, and only two:
-//     * plane-value (2 args): mirror(g, plane_yz(0mm))     <- prefer this
-//     * scalar      (7 args): mirror(g, ox,oy,oz, nx,ny,nz)
-//   Any other arity is a compile diagnostic:
-//     "mirror() expects 7 arguments (scalar) or 2 (plane-value), got N".
+//     * plane-value     (2 args): mirror(g, plane_yz(0mm))     <- prefer this
+//     * point-direction (3 args): mirror(g, point3(ox, oy, oz), dir(nx, ny, nz))
+//   Any other arity is a compile diagnostic naming both:
+//     "mirror() expects 2 or 3 arguments: mirror(geo, plane) or
+//      mirror(geo, point3(x, y, z), dir(x, y, z)), got N".
 //
-//   In the 7-arg form the ORIGIN components must be dimensioned Lengths while
-//   the NORMAL components stay bare dimensionless numbers:
-//       mirror(g, 0mm, 0mm, 0mm, 1, 0, 0)     // correct
-//       mirror(g,   0,   0,   0, 1, 0, 0)     // WRONG — bare-0 origin
-//   The wrong form is rejected at COMPILE time, before anything is built: one
-//   error per component ("mirror: ox argument expects Length, got Int; pass a
-//   dimensioned length such as `5mm`", then the same for oy and oz), and exit 1
-//   under BOTH `reify check` and `reify eval`. Compilation aborts there, so the
-//   older geometry-compile error ("missing or non-Length argument 'ox' for
-//   mirror") is NOT reached on this route — it survives only on the
-//   decoded-value route described just below.
+//   In the 3-arg form the ORIGIN is a `point3` of dimensioned Lengths and the
+//   NORMAL is a Direction:
+//       mirror(g, point3(0mm, 0mm, 0mm), dir(1, 0, 0))     // correct
+//       mirror(g, point3(0, 0, 0), dir(1, 0, 0))           // WRONG — bare-0 origin
+//   The wrong form is rejected at BUILD, when the origin is read: one error per
+//   component ("mirror: origin.x argument expects Length, got Int; pass a
+//   dimensioned length such as `5mm`", then the same for origin.y and
+//   origin.z), then "failed to compile geometry operation: missing or
+//   non-Length argument 'origin.x' for mirror". A normal that is not a
+//   Direction, such as `vec3(1, 0, 0)`, is rejected earlier, at compile time.
 //
-//   TRAP, re-scoped: the bare-0 7-arg form above is now a HARD `reify check`
-//   failure — a compile-layer ArgTypeMismatch (task 5662) on each of ox, oy and
-//   oz, exit 1, and no verdict line at all. What survives is narrower: on the
-//   decoded-value route `mirror(g, plane_yz(0))` the same three ox/oy/oz Length
-//   errors DO reach check's stderr, yet check still exits 0 and still prints
-//   "All constraints satisfied." underneath them. So the surviving warning is
-//   about the EXIT STATUS and that trailing verdict line, not about the error
-//   being absent — read check's stderr, never its exit code alone. That split
-//   is measured behaviour here and is deliberate but not permanent; re-measure
-//   rather than trusting this line.
+//   TRAP: the bare origin above, and the decoded-value route
+//   `mirror(g, plane_yz(0))` (whose error names `plane_yz: offset` instead),
+//   both make `reify check` exit 1, yet check still prints "All constraints
+//   satisfied." underneath the errors. Read check's stderr and exit status,
+//   never that trailing verdict line alone. That is measured behaviour, not a
+//   promise; re-measure rather than trusting this line.
 //
 //   Plane constructors: plane_xy(z), plane_xz(y), plane_yz(x) — each takes
 //   EXACTLY ONE offset argument, naming the axis the plane spans (so the
@@ -63,13 +59,13 @@ module symmetry_mirror
 //       circular_pattern(g, axis_z(vec3(0mm,0mm,0mm)), 4, 360deg)
 //           -> error: failed to compile geometry operation: circular_pattern:
 //              expected an Axis value, got undef
-//   `reify check` prints that error and still exits 0 — the same exit-status
-//   split as above; `reify eval` exits 1. Same for `point3`:
+//   Both `reify check` and `reify eval` exit 1, and check again prints "All
+//   constraints satisfied." underneath, as above. Same for `point3`:
 //   `axis_z(point3(0mm, 0mm))` produces the same "expected an Axis value, got
 //   undef" from `circular_pattern`, because the `undef` propagates up the whole
 //   chain and only the outermost consumer speaks. So the error names the op
-//   that CONSUMED the `undef`, never the miscounted call that produced it, and
-//   check's exit status will not tell you at all. Count the arguments.
+//   that CONSUMED the `undef`, never the miscounted call that produced it.
+//   Count the arguments.
 
 structure def SymmetryMirror {
     param arm_len   : Length = 40mm
@@ -91,8 +87,8 @@ structure def SymmetryMirror {
     let hub  = cylinder_centered(hub_r, arm_width)
     let body = union(arms, hub)
 
-    // The equivalent 7-arg scalar form: dimensioned origin, bare normal.
-    let arm_mirrored_scalar = mirror(arm, 0mm, 0mm, 0mm, 1, 0, 0)
+    // The equivalent 3-arg form: a point3 origin of Lengths, a Direction normal.
+    let arm_mirrored_point_dir = mirror(arm, point3(0mm, 0mm, 0mm), dir(1, 0, 0))
 
     constraint arm_len > arm_width
     constraint arm_width > 1mm

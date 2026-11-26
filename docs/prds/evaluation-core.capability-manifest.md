@@ -17,7 +17,7 @@ The leaf whose completion delivers the PRD's goal is φ.
 
 | Capability | Evidence | Check |
 |---|---|---|
-| must-not-compile-programs-run-in-the-gate | built here: one `trybuild` test over the five programs that must fail and the two that must compile (PRD 5.2, decision D9) | pattern `TestCases::new\(\)` present under `crates/reify-eval-core/tests` |
+| must-not-compile-programs-run-in-the-gate | built here: one `trybuild` test over the six programs that must fail and the two that must compile (PRD 5.2, decision D9; five land with the leaf and task #10619 adds the sixth) | pattern `TestCases::new\(\)` present under `crates/reify-eval-core/tests` |
 
 ## β (#10555) — Structure by declaration
 

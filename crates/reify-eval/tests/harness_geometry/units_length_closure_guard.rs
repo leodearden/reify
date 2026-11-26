@@ -218,8 +218,8 @@ fn probe_universe_is_the_compiler_registry_and_clears_the_floor() {
 /// This tuple is the ONLY suppression key in this file. Nothing is waved
 /// through by builtin name alone, because a builtin's gated and un-gated slots
 /// routinely sit next to each other — `half_space` gates its `px`/`py`/`pz`
-/// POINT while its `nx`/`ny`/`nz` NORMAL stays bare, and `mirror` draws the same
-/// origin-vs-direction split.
+/// POINT while its `nx`/`ny`/`nz` NORMAL stays bare, and `circular_pattern`
+/// draws the same origin-vs-direction split.
 ///
 /// `arity` is part of the key because Contract C's gated spans are
 /// arity-dependent: `nurbs` gates `2 .. 2 + 3·n_points`, a range computed from
@@ -588,7 +588,7 @@ mod seeded_classifier {
     use super::*;
 
     const SEED: Position = Position {
-        builtin: "mirror",
+        builtin: "half_space",
         arity: 6,
         index: 3,
     };
@@ -620,7 +620,7 @@ mod seeded_classifier {
         assert_eq!(violations.len(), 1, "expected exactly one violation");
         let rendered = violations[0].to_string();
         assert!(
-            rendered.contains("mirror") && rendered.contains('6') && rendered.contains('3'),
+            rendered.contains("half_space/6[3]"),
             "violation must name builtin, arity and index; got {rendered:?}"
         );
     }
@@ -652,8 +652,8 @@ mod seeded_classifier {
     /// suppress.
     ///
     /// Pins that suppression is keyed by the whole `(builtin, arity, index)`
-    /// tuple. A name-keyed allowlist would wave through `mirror`'s gated
-    /// `ox`/`oy`/`oz` origin along with its bare `nx`/`ny`/`nz` normal.
+    /// tuple. A name-keyed allowlist would wave through `half_space`'s gated
+    /// `px`/`py`/`pz` point along with its bare `nx`/`ny`/`nz` normal.
     #[test]
     fn an_entry_for_a_neighbouring_index_does_not_suppress() {
         let neighbour = Position {
@@ -679,7 +679,7 @@ mod seeded_classifier {
     /// a position listed in both would otherwise keep only the later row and hide
     /// the earlier one.
     #[test]
-    #[should_panic(expected = "mirror/6[3]")]
+    #[should_panic(expected = "half_space/6[3]")]
     fn duplicate_allow_positions_are_refused() {
         let _ = Registry::from_allow([
             AllowEntry {
@@ -711,8 +711,8 @@ mod seeded_gate_dimension {
     /// `rotate`'s angle — measured gated at ANGLE on this tree.
     const SEED: Position = Position {
         builtin: "rotate",
-        arity: 4,
-        index: 3,
+        arity: 2,
+        index: 1,
     };
 
     fn observed(
@@ -772,7 +772,7 @@ mod seeded_gate_dimension {
         );
         let rendered = violation.to_string();
         assert!(
-            rendered.contains("rotate/4[3]"),
+            rendered.contains("rotate/2[1]"),
             "violation must name builtin, arity and index; got {rendered:?}"
         );
     }
@@ -1067,6 +1067,22 @@ const RESIDUAL_SPANS: &[(&str, usize, std::ops::Range<usize>, TaskCite, &str)] =
          rejects every scalar filler at `axis` before the angle is read, so the \
          probe cannot show it",
     ),
+    (
+        "mirror",
+        2,
+        0..1,
+        TaskCite(7714),
+        "origin — a Point3 origin no scalar filler produces; still gated at build \
+         by accept_length_point3",
+    ),
+    (
+        "rotate_around",
+        3,
+        0..1,
+        TaskCite(7714),
+        "pivot — a Point3 pivot no scalar filler produces; still gated at build by \
+         accept_length_point3",
+    ),
 ];
 
 /// Length-semantic sites OUTSIDE this guard's universe, recorded so a green
@@ -1142,27 +1158,6 @@ const ALLOWLIST: &[(&str, usize, std::ops::Range<usize>, Justification, &str)] =
         0..3,
         Justification::UnitVectorComponent,
         "dx/dy/dz — the step direction; the magnitude is the gated `spacing`",
-    ),
-    (
-        "mirror",
-        6,
-        3..6,
-        Justification::UnitVectorComponent,
-        "nx/ny/nz — the plane normal, beside the gated ox/oy/oz origin",
-    ),
-    (
-        "rotate",
-        4,
-        0..3,
-        Justification::UnitVectorComponent,
-        "ax/ay/az — the rotation axis direction",
-    ),
-    (
-        "rotate_around",
-        7,
-        3..6,
-        Justification::UnitVectorComponent,
-        "ax/ay/az — the axis direction, beside the gated px/py/pz pivot",
     ),
     // COUNTS.
     (
@@ -1277,7 +1272,15 @@ const ALLOWLIST: &[(&str, usize, std::ops::Range<usize>, Justification, &str)] =
         1,
         0..1,
         Justification::Index,
-        "plane — a Plane datum, the short form of the six-argument call",
+        "plane — a Plane datum, the value form beside the point-direction one",
+    ),
+    (
+        "mirror",
+        2,
+        1..2,
+        Justification::Index,
+        "normal — a Direction (dir(x, y, z)), never a bare number; \
+         decode_direction rejects a scalar filler",
     ),
     (
         "offset_curve",
@@ -1332,8 +1335,24 @@ const ALLOWLIST: &[(&str, usize, std::ops::Range<usize>, Justification, &str)] =
         1,
         0..1,
         Justification::Index,
-        "orientation — an Orientation value, the short form of the four-\
-         argument call",
+        "orientation — an Orientation value, the form beside the axis-angle \
+         one",
+    ),
+    (
+        "rotate",
+        2,
+        0..1,
+        Justification::Index,
+        "axis — a Direction (dir(x, y, z)), never a bare number; \
+         decode_direction rejects a scalar filler",
+    ),
+    (
+        "rotate_around",
+        3,
+        1..2,
+        Justification::Index,
+        "axis — a Direction (dir(x, y, z)), never a bare number; \
+         decode_direction rejects a scalar filler",
     ),
     (
         "shell",
@@ -1402,8 +1421,8 @@ const ANGLE_ALLOWLIST: &[(&str, usize, std::ops::Range<usize>, &str)] = &[
     ("draft", 3, 1..2, "angle, the 4-arg form"),
     ("revolve", 2, 1..2, "angle, the Axis form"),
     ("revolve", 3, 2..3, "angle, the origin-and-direction form"),
-    ("rotate", 4, 3..4, "angle"),
-    ("rotate_around", 7, 6..7, "angle"),
+    ("rotate", 2, 1..2, "angle"),
+    ("rotate_around", 3, 2..3, "angle"),
 ];
 
 /// One entry per index of `indices`, all expecting `expected`.
@@ -2035,12 +2054,11 @@ mod baseline_search {
 mod seeded_stubbed_gate {
     use super::*;
 
-    /// `mirror`'s plane-origin `ox` — gated on this tree (measured), and the
-    /// origin half of the D3 origin-vs-direction split whose `nx`/`ny`/`nz`
-    /// sibling is deliberately bare.
+    /// `translate`'s displacement `dx` — a live LENGTH gate on this tree
+    /// (measured), reached by a scalar filler.
     const GATED_TODAY: Position = Position {
-        builtin: "mirror",
-        arity: 6,
+        builtin: "translate",
+        arity: 3,
         index: 0,
     };
 
@@ -2071,7 +2089,7 @@ mod seeded_stubbed_gate {
         assert_eq!(stubbed[0].position, GATED_TODAY);
         let rendered = stubbed[0].to_string();
         assert!(
-            rendered.contains("mirror") && rendered.contains('6') && rendered.contains('0'),
+            rendered.contains("translate/3[0]"),
             "violation must name builtin, arity and index; got {rendered:?}"
         );
 
@@ -2129,8 +2147,8 @@ mod seeded_stubbed_gate {
         );
 
         let uncoded = reify_core::Diagnostic::error(
-            "argument 'ox' for mirror expects Length, got Int; pass a dimensioned \
-             length such as `5mm`",
+            "argument 'dx' for translate expects Length, got Int; pass a \
+             dimensioned length such as `5mm`",
         );
         assert!(
             matches!(

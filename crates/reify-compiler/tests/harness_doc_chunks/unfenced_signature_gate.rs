@@ -147,7 +147,7 @@ pub(crate) fn unfenced_signature_violations(
 /// Anti-vacuity floor: the distinct documented forms the gate reads across the
 /// corpus, excused spans left out. EXACT live value — re-measure it by the
 /// protocol stated once next to `geometry_chunk_smoke.rs`'s `MINIMUM_FN_CITES`.
-const MINIMUM_UNFENCED_FORMS: usize = 119;
+const MINIMUM_UNFENCED_FORMS: usize = 121;
 
 /// One form per chunk family that prose extraction must reach. The geometry
 /// and topology ones each sit after every fence and maintainer note in their
@@ -158,7 +158,7 @@ const SENTINELS: &[(&str, &str, Arity)] = &[
     ("collections", "generate", Arity::Exact(2)),
     ("enums", "unwrap_or", Arity::Exact(2)),
     ("fields", "constant_field", Arity::Exact(1)),
-    ("stdlib", "rotate", Arity::Exact(5)),
+    ("stdlib", "rotate", Arity::Exact(3)),
     ("geometry", "min_clearance", Arity::Exact(3)),
     ("measurement", "max_deviation", Arity::Exact(2)),
     ("topology", "faces_by_normal", Arity::Exact(3)),

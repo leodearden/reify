@@ -27,6 +27,36 @@ pub(crate) fn check_arg_count_exact(
     false
 }
 
+/// As [`check_arg_count_exact`], naming the one accepted call `form` in the
+/// message: `"{name}() expects {expected} arguments: {name}({form}), got {got}"`.
+///
+/// For a builtin whose accepted form changed, so the error teaches the form to
+/// write. The form sits between `{name}() expects` and `, got {got}` because the
+/// behavioural arity probes read exactly that prefix and suffix.
+pub(crate) fn check_arg_count_exact_form(
+    name: &str,
+    got: usize,
+    expected: usize,
+    form: &str,
+    span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> bool {
+    if got == expected {
+        return true;
+    }
+    let noun = if expected == 1 {
+        "argument"
+    } else {
+        "arguments"
+    };
+    push_labeled_arg_count_error(
+        format!("{name}() expects {expected} {noun}: {name}({form}), got {got}"),
+        span,
+        diagnostics,
+    );
+    false
+}
+
 /// Returns `true` when `got >= min_expected`.
 ///
 /// On failure, pushes a `Diagnostic::error` whose message is
@@ -110,6 +140,60 @@ mod tests {
             "wrong number of arguments"
         );
         assert_eq!(diagnostics[0].labels[0].span, span);
+    }
+
+    // --- check_arg_count_exact_form tests ---
+
+    #[test]
+    fn check_arg_count_exact_form_ok() {
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let result = check_arg_count_exact_form(
+            "rotate_around",
+            4,
+            4,
+            "geo, point3(x, y, z), dir(x, y, z), angle",
+            SourceSpan::new(0, 10),
+            &mut diagnostics,
+        );
+        assert!(result, "expected true when got == expected");
+        assert!(diagnostics.is_empty(), "expected no diagnostics on ok path");
+    }
+
+    #[test]
+    fn check_arg_count_exact_form_names_the_form_between_expects_and_got() {
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let span = SourceSpan::new(10, 20);
+        let result = check_arg_count_exact_form(
+            "rotate_around",
+            8,
+            4,
+            "geo, point3(x, y, z), dir(x, y, z), angle",
+            span,
+            &mut diagnostics,
+        );
+        assert!(!result, "expected false when got != expected");
+        assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
+        assert_eq!(
+            diagnostics[0].message,
+            "rotate_around() expects 4 arguments: \
+             rotate_around(geo, point3(x, y, z), dir(x, y, z), angle), got 8"
+        );
+        assert_eq!(diagnostics[0].labels.len(), 1, "expected one label");
+        assert_eq!(
+            diagnostics[0].labels[0].message,
+            "wrong number of arguments"
+        );
+        assert_eq!(diagnostics[0].labels[0].span, span);
+    }
+
+    #[test]
+    fn check_arg_count_exact_form_uses_the_singular_noun_for_one_argument() {
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_arg_count_exact_form("f", 2, 1, "x", SourceSpan::new(0, 1), &mut diagnostics);
+        assert_eq!(
+            diagnostics[0].message,
+            "f() expects 1 argument: f(x), got 2"
+        );
     }
 
     // --- check_arg_count_at_least tests ---
