@@ -2231,9 +2231,8 @@ fn required_direction_arg(
 ///
 /// `component_names` name the three components in a rejection, so a caller
 /// can keep the wording its scalar form used (`revolve` passes
-/// `ox`/`oy`/`oz`) or name them `{arg}.x|y|z` through
-/// [`PointComponentName::xyz`] (`mirror`'s `origin`, `rotate_around`'s
-/// `pivot` — the `translation.x|y|z` precedent of
+/// `ox`/`oy`/`oz`) or name them `{arg}.x|y|z` (`mirror`'s `origin`,
+/// `rotate_around`'s `pivot` — the `translation.x|y|z` precedent of
 /// [`accept_transform_to_arrays`]).
 ///
 /// # Returns
@@ -2278,31 +2277,6 @@ fn required_length_point3_arg<N: std::fmt::Display + Copy>(
         },
         diagnostics,
     )
-}
-
-/// One component of a named point argument, rendered on demand as
-/// `{arg}.{x|y|z}` — a `Copy` [`Display`](std::fmt::Display) for
-/// [`accept_length_point3`]'s names, for [`GridCoordName`]'s reason: only a
-/// rejection branch renders it.
-#[derive(Clone, Copy)]
-struct PointComponentName<'a> {
-    arg: &'a str,
-    /// An index into [`Stride::Xyz`]'s axis table, in bounds by construction:
-    /// [`PointComponentName::xyz`] is the only constructor.
-    axis: usize,
-}
-
-impl<'a> PointComponentName<'a> {
-    /// The `x`, `y` and `z` components of `arg`, in that order.
-    fn xyz(arg: &'a str) -> [Self; 3] {
-        [0, 1, 2].map(|axis| Self { arg, axis })
-    }
-}
-
-impl std::fmt::Display for PointComponentName<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}.{}", self.arg, Stride::Xyz.axes()[self.axis])
-    }
 }
 
 /// Translate a compiled geometry operation into a runtime `GeometryOp` by
@@ -3957,7 +3931,7 @@ fn transform_rotate_around(
     // bare angle.
     let point = required_length_point3_arg(
         "pivot",
-        PointComponentName::xyz("pivot"),
+        ["pivot.x", "pivot.y", "pivot.z"],
         kind,
         args,
         values,
@@ -4342,7 +4316,7 @@ fn pattern_mirror(
         // are reported in one build.
         let plane_origin = required_length_point3_arg(
             "origin",
-            PointComponentName::xyz("origin"),
+            ["origin.x", "origin.y", "origin.z"],
             kind,
             args,
             values,
