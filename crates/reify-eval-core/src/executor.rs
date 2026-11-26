@@ -1,6 +1,9 @@
 //! The executor: works out the paths a request demands and runs every body
 //! that is ready, on the thread that calls it. What one answer sets off is
-//! worked through a queue, never by recursion.
+//! worked through a queue, never by recursion. At rest, with no body ready
+//! and no section running, every node in progress awaits another, so a
+//! request still waiting waits on a ring; each ring is broken by the rule of
+//! `cycle` (contract 7.7), and the work goes on.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::mem;
@@ -12,9 +15,10 @@ use crate::answer::Answer;
 use crate::content::Content;
 use crate::core_id::CoreId;
 use crate::counters::Counters;
+use crate::cycle;
 use crate::declaration::Declaration;
 use crate::demand::Demand;
-use crate::event::{Event, RequestError, RequestId};
+use crate::event::{Event, RequestId};
 use crate::failure::{Failure, OutsideFailure, panic_message};
 use crate::finish;
 use crate::index::{self, Entry, Indexes, NodeKey};
@@ -139,25 +143,28 @@ impl Executor {
     }
 
     /// Takes in what resource threads have reported, without blocking, then
-    /// runs every ready body until none is ready, then ends the requests
-    /// nothing can now serve. A finished section is delivered only by `wait`
-    /// or `drain`, so what a turn does to bodies depends on the order of the
-    /// host's calls alone.
+    /// runs every ready body until none is ready. If then no section is
+    /// running, breaks the rings of waits and runs what that makes ready,
+    /// until no ring is left. A finished section is delivered only by
+    /// `wait` or `drain`, so what a turn does to bodies depends on the order
+    /// of the host's calls alone.
     pub fn turn(&mut self) -> Turn {
         self.prune();
         while let Some(report) = self.resources.try_receive() {
             self.take_in(report);
         }
-        while let Some(key) = self.ready.pop() {
-            self.advance(key);
-        }
-        match self.in_flight.running() {
-            0 => {
-                self.end_stuck();
-                Turn::Idle
+        loop {
+            while let Some(key) = self.ready.pop() {
+                self.advance(key);
             }
-            running => Turn::SectionsRunning(running),
+            match self.in_flight.running() {
+                0 if self.break_rings() => {}
+                0 => break,
+                running => return Turn::SectionsRunning(running),
+            }
         }
+        self.refuse_stuck();
+        Turn::Idle
     }
 
     /// Blocks until one running section is delivered, then takes a turn.
@@ -433,46 +440,53 @@ impl Executor {
         }
     }
 
-    /// With no body ready and no section in flight nothing can make
-    /// progress, so every node in progress is stuck. Ends each live request
-    /// that still wants a node with an error naming the bodies those nodes
-    /// wait on, every error worked out before any request ends (PRD 12.2 β;
-    /// ε replaces this with the cycle rule), then drops the work no live
-    /// request still waits on.
-    fn end_stuck(&mut self) {
+    /// At rest, answers "cycle" at every node of each ring of waits a live
+    /// request needs that holds no lookup (contract 7.7), then drops the
+    /// work no live request still waits on; whether it answered any. Every
+    /// member leaves the nodes in progress before any is answered, so no
+    /// member's answer resumes another member or works out a path on it.
+    fn break_rings(&mut self) -> bool {
+        let answered: Vec<_> = cycle::rings(&self.waits, self.requests.wanted())
+            .into_iter()
+            .filter(|ring| !ring.iter().any(|key| self.lookups.contains_key(key)))
+            .flatten()
+            .collect();
+        if answered.is_empty() {
+            return false;
+        }
+        for key in &answered {
+            if let Some(task) = self.remove_reader(*key) {
+                task.discard();
+            }
+            self.resolving.remove(key);
+            self.waits.forget(*key);
+        }
+        for key in answered {
+            self.work(Work::Answered(key, cycle::entry()));
+        }
+        self.drop_unwanted_work();
+        true
+    }
+
+    /// # Panics
+    ///
+    /// If a live request still wants a node at rest with every ring broken:
+    /// every node in progress then awaits another, so the nodes a request
+    /// waits on would hold a ring.
+    fn refuse_stuck(&self) {
         let stuck: Vec<_> = self
             .requests
             .wanting_any()
             .into_iter()
-            .map(|(request, snapshot, wanted)| {
-                let waiting = self.bodies_waited_on(wanted);
-                (request, snapshot, RequestError::NothingCanRun { waiting })
+            .map(|(request, _, wanted)| {
+                let paths: Vec<_> = wanted.iter().map(|key| self.paths.path(key.path)).collect();
+                (request, paths)
             })
             .collect();
-        for (request, snapshot, error) in stuck {
-            self.events.push(Event::Ended {
-                request,
-                snapshot,
-                error,
-            });
-            self.requests.end_id(request);
-        }
-        self.drop_unwanted_work();
-    }
-
-    /// The bodies reachable from `wanted` through the wait relation, in path
-    /// order, a lookup standing for its body. A path waiting on its parent
-    /// passes through to it; only bodies are named.
-    fn bodies_waited_on(&self, wanted: Vec<NodeKey>) -> Vec<Path> {
-        let mut bodies: Vec<_> = self
-            .waits
-            .reach(wanted)
-            .into_iter()
-            .filter(|key| self.is_reader(*key))
-            .map(|key| self.paths.path(key.path))
-            .collect();
-        bodies.sort();
-        bodies
+        assert!(
+            stuck.is_empty(),
+            "at rest with no ring of waits left, live requests still want {stuck:?}"
+        );
     }
 
     /// Steps the lookup at `key` if it is queued, or polls the body there

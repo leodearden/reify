@@ -52,8 +52,9 @@ impl Core {
     }
 
     /// Runs every body that is ready until none is. Never blocks. If then no
-    /// section is running either, each live request that still wants a path
-    /// is ended with `RequestError::NothingCanRun`.
+    /// section is running either, every ring of waits is answered "cycle"
+    /// (contract 7.7) and what that makes ready is run, until no body is
+    /// ready and no ring is left.
     pub fn turn(&mut self) -> Turn {
         self.executor.turn()
     }

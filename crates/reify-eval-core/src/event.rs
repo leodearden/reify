@@ -42,10 +42,8 @@ pub enum Event {
     },
 }
 
-/// Why the core ended a request.
+/// Why the core ended a request. The core ends none yet: a ring of waits,
+/// which would leave a request waiting for ever, answers "cycle" at every
+/// node of it instead (contract 7.7).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RequestError {
-    /// No body could run, and the paths the request wanted wait on the
-    /// bodies at `waiting`, in path order.
-    NothingCanRun { waiting: Vec<Path> },
-}
+pub enum RequestError {}
