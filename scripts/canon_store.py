@@ -1,4 +1,6 @@
-"""C5's store link: the probe, the loopback relay a private sccache server reaches the store through, and the watchdog that cuts it."""
+"""C5's store link: the probe, the loopback relay a private sccache server reaches
+the store through, and the watchdog that cuts it.
+"""
 from __future__ import annotations
 
 import contextlib

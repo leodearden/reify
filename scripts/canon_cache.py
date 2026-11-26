@@ -175,19 +175,40 @@ class ServerAddress:
     fallback_cap: str
 
 
+def uses_guard(policy: Policy) -> bool:
+    """Whether policy puts the compile guard first on PATH and runs a private sccache server."""
+    return policy is not Policy.INCREMENTAL
+
+
+def server_mismatch(policy: Policy, server: ServerAddress | None) -> str:
+    """Why server does not fit policy, or "" when it is present exactly when uses_guard(policy)."""
+    if uses_guard(policy) and server is None:
+        return f"policy '{policy.value}' needs a private server address, and none was given"
+    if not uses_guard(policy) and server is not None:
+        return f"policy '{policy.value}' runs no sccache server, but was given {server.socket}"
+    return ""
+
+
 @dataclass(frozen=True)
 class CacheEnvironment:
     """C4's variable table: what cargo, and the command around it, get under a policy.
 
-    server is None under incremental, which uses no sccache in any form.
+    It holds a server address exactly when the policy runs sccache (server_mismatch):
+    construction refuses a mismatch, and from_record decodes one as None, so a record
+    from another process never reaches for_cargo without the server it names.
     """
 
     policy: Policy
     server: ServerAddress | None
 
+    def __post_init__(self) -> None:
+        problem = server_mismatch(self.policy, self.server)
+        if problem:
+            raise ValueError(f"CacheEnvironment: {problem}")
+
     @property
     def uses_guard(self) -> bool:
-        return self.policy is not Policy.INCREMENTAL
+        return uses_guard(self.policy)
 
     def for_command(self, env: Mapping[str, str]) -> dict[str, str]:
         """The command's environment: the pin and, with sccache, the client's server variables."""
@@ -233,12 +254,15 @@ class CacheEnvironment:
         policy, server = record.get("policy"), record["server"]
         if policy not in tuple(Policy):
             return None
-        if server is None:
-            return cls(Policy(policy), None)
-        names = [address_field.name for address_field in fields(ServerAddress)]
-        if not isinstance(server, dict) or not all(isinstance(server.get(name), str) for name in names):
+        address = None
+        if server is not None:
+            names = [address_field.name for address_field in fields(ServerAddress)]
+            if not isinstance(server, dict) or not all(isinstance(server.get(name), str) for name in names):
+                return None
+            address = ServerAddress(**{name: server[name] for name in names})
+        if server_mismatch(Policy(policy), address):
             return None
-        return cls(Policy(policy), ServerAddress(**{name: server[name] for name in names}))
+        return cls(Policy(policy), address)
 
 
 def drop_sccache_variables(env: dict[str, str]) -> None:
@@ -280,7 +304,9 @@ class SessionKnobs:
     tmp_root: str = "/tmp"
 
 
-def store_reachable(settings: CacheSettings, knobs: canon_store.LinkKnobs = canon_store.LinkKnobs()) -> bool | None:
+def store_reachable(
+    settings: CacheSettings, knobs: canon_store.LinkKnobs = canon_store.LinkKnobs()
+) -> bool | None:
     """Whether the configured store answers the link's probe; None when no store is configured."""
     store = settings.store
     return None if store is None else canon_store.probe_store(store, knobs)

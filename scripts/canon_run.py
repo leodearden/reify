@@ -465,7 +465,6 @@ def build_dir_decision(
 def status_report(environ: Mapping[str, str], cwd: str) -> dict[str, object]:
     canon = canon_root(environ)
     host = load_host_config(host_config_path(environ))
-    uses_guard = canon_cache.CacheEnvironment(host.policy, None).uses_guard
     report: dict[str, object] = {
         "canon_root": canon,
         "canon_provisioned": is_real_dir(canon),
@@ -484,7 +483,7 @@ def status_report(environ: Mapping[str, str], cwd: str) -> dict[str, object]:
         report["build_dir"] = str(build_dir)
         decision = build_dir_decision(tree, build_dir, canon, lambda: host.enabled)
         search_path = canon_search_path(
-            environ.get("PATH", ""), tree, canon, environ.get("HOME"), guard=uses_guard
+            environ.get("PATH", ""), tree, canon, environ.get("HOME"), guard=canon_cache.uses_guard(host.policy)
         )
         refusal = cache_refusal(host, search_path)
         if decision.mode is Mode.CANON and refusal:
@@ -679,11 +678,16 @@ def canon_invocation(
         env["REIFY_TS_CACHE_HOME"] = cache_home
     env = cache.for_cargo(env) if cargo else cache.for_command(env)
     if cargo:
-        real_cargo = resolve_canon_cargo(env["PATH"])
-        if real_cargo is None:
-            raise canon_cache.CommandNotFound("no cargo on the CANON PATH other than reify-canon trampolines")
-        argv = [real_cargo, *argv]
+        argv = [canon_cargo(env["PATH"]), *argv]
     return Invocation(tuple(argv), env, env["PWD"])
+
+
+def canon_cargo(path_value: str) -> str:
+    """The real cargo on the composed CANON PATH; CommandNotFound when there is none."""
+    real_cargo = resolve_canon_cargo(path_value)
+    if real_cargo is None:
+        raise canon_cache.CommandNotFound("no cargo on the CANON PATH other than reify-canon trampolines")
+    return real_cargo
 
 
 def flatten(message: object) -> str:
@@ -936,13 +940,18 @@ def run_in_namespace(
 
 def validated_canon_path(call: Call, host: HostConfig) -> str:
     """The composed CANON PATH, once the command and, with sccache, a real sccache resolve on it."""
-    probe = call.at_canon(canon_cache.CacheEnvironment(host.policy, None))
-    refusal = cache_refusal(host, probe.env["PATH"])
+    search_path = canon_search_path(
+        call.environ.get("PATH", ""), call.tree, call.canon, call.environ.get("HOME"),
+        guard=canon_cache.uses_guard(host.policy),
+    )
+    if call.cargo:
+        canon_cargo(search_path)
+    refusal = cache_refusal(host, search_path)
     if refusal:
         raise Refusal(refusal)
     if not call.cargo:
         canon_cache.resolve_command(call.command[0], call.environ, call.cwd)
-    return probe.env["PATH"]
+    return search_path
 
 
 def enter_namespace(call: Call, host: HostConfig) -> int:
