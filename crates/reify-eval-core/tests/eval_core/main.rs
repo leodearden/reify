@@ -9,6 +9,7 @@ mod bodies;
 mod building;
 mod ending;
 mod hash;
+mod must_not_compile;
 mod reading;
 mod roots;
 mod sections;
