@@ -192,6 +192,10 @@ pub fn stdlib_sources() -> Vec<(&'static str, String)> {
             "std.determinacy.purposes",
             include_str!("../stdlib/determinacy_purposes.ri").to_owned(),
         ),
+        (
+            "std.prelude",
+            include_str!("../stdlib/prelude.ri").to_owned(),
+        ),
     ]
 }
 

@@ -1,0 +1,11 @@
+// std.prelude — the curated core that one `import std.prelude` brings
+// (stdlib-namespace D-4). Declares nothing of its own; curation rationale in
+// docs/prds/v0_6/stdlib-namespace.md §10 Q1.
+module std.prelude
+
+pub import std.units
+pub import std.si_units
+pub import std.option_recovery
+pub import std.result
+pub import std.determinacy.purposes
+pub import std.io

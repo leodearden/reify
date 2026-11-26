@@ -42,40 +42,37 @@ fn all_stdlib_modules_have_no_errors() {
 // ─── task-4016 ζ: the standard purposes stay out of sibling stdlib modules ─
 //
 // merge_prelude_purposes runs for every compile, intra-stdlib ones included,
-// but a stdlib module's prelude is only what it imports. No stdlib module
-// imports std.determinacy.purposes, so none inherits its pub purposes and the
-// stdlib-internal count/hash goldens stay byte-stable. Registration order plays
-// no part: harness_modules_ports/stdlib_strict_build_tests pins the same fact
-// with std.determinacy.purposes registered first.
+// but a stdlib module's prelude is only what it imports. A module that does not
+// import std.determinacy.purposes therefore inherits none of its pub purposes,
+// and the stdlib-internal count/hash goldens stay byte-stable. The std.prelude
+// facade imports it on purpose, to re-export it. Registration order plays no
+// part: harness_modules_ports/stdlib_strict_build_tests pins the same fact with
+// std.determinacy.purposes registered first.
 
-/// No stdlib module other than std.determinacy.purposes may have a compiled
-/// purpose named "simulation_ready" or "design_review" in its compiled_purposes.
+/// A stdlib module that does not import std.determinacy.purposes may not have
+/// a compiled purpose named "simulation_ready" or "design_review".
 ///
-/// A stdlib module inherits pub purposes only from the modules it imports, and
-/// no stdlib module imports std.determinacy.purposes: the standard purposes are
-/// a prelude for user modules, not for sibling stdlib modules. If this fails,
-/// a stdlib module imports std.determinacy.purposes or re-declares one of the
-/// standard purposes.
+/// A stdlib module inherits pub purposes only from the modules it imports. If
+/// this fails, a module carries a standard purpose without importing its home
+/// module, or re-declares one of the standard purposes.
 #[test]
 fn no_stdlib_module_inherits_standard_purposes() {
+    const PURPOSES_MODULE: &str = "std.determinacy.purposes";
     let modules = stdlib_loader::load_stdlib();
     let standard_purpose_names = ["simulation_ready", "design_review"];
 
-    for module in modules {
-        let path_str = format!("{}", module.path);
-        if path_str == "std/determinacy/purposes" {
-            // The declaring module itself is expected to have them.
-            continue;
-        }
+    let non_importers = modules.iter().filter(|module| {
+        module.path.to_dotted() != PURPOSES_MODULE
+            && !module.imports.iter().any(|i| i.path == PURPOSES_MODULE)
+    });
+    for module in non_importers {
         for purpose in &module.compiled_purposes {
             assert!(
                 !standard_purpose_names.contains(&purpose.name.as_str()),
-                "stdlib module '{}' unexpectedly has a purpose named '{}' in \
-                 its compiled_purposes. Standard purposes (simulation_ready, \
-                 design_review) must only appear in std.determinacy.purposes \
-                 and in user modules compiled against the full stdlib, so no \
-                 stdlib module may import std.determinacy.purposes.",
-                path_str,
+                "stdlib module '{}' has a purpose named '{}' in its \
+                 compiled_purposes but does not import {PURPOSES_MODULE}. A \
+                 standard purpose reaches only the modules that import it.",
+                module.path.to_dotted(),
                 purpose.name
             );
         }
