@@ -250,11 +250,11 @@ impl Executor {
     /// Whether `key` is among `nodes_in_progress`, found without walking
     /// them.
     fn in_progress(&self, key: NodeKey) -> bool {
-        self.reads(key) || self.resolving.contains(&key)
+        self.is_reader(key) || self.resolving.contains(&key)
     }
 
     /// Whether `key` is a lookup or a body: a node in progress that reads.
-    fn reads(&self, key: NodeKey) -> bool {
+    fn is_reader(&self, key: NodeKey) -> bool {
         self.lookups.contains_key(&key) || self.tasks.contains_key(&key)
     }
 
@@ -349,20 +349,22 @@ impl Executor {
                 declaration_of(step, entry, &self.kinds)
             }
         };
-        match declared {
+        let (content, outcome) = match declared {
             Outcome::Value(declaration) => {
                 self.look_up(key, declaration);
-                None
+                return None;
             }
-            settled => Some(Work::Answered(
-                key,
-                Entry {
-                    content: Content::of_settled(&settled),
-                    outcome: settled.erase(),
-                    declaration: None,
-                },
-            )),
-        }
+            Outcome::Failure(failure) => (Content::of_failure(&failure), Outcome::Failure(failure)),
+            Outcome::Absent => (Content::absent(), Outcome::Absent),
+        };
+        Some(Work::Answered(
+            key,
+            Entry {
+                content,
+                outcome,
+                declaration: None,
+            },
+        ))
     }
 
     /// Removes the lookup or body at `key`, with the read it waits on, if
@@ -466,7 +468,7 @@ impl Executor {
             .waits
             .reach(wanted)
             .into_iter()
-            .filter(|key| self.reads(*key))
+            .filter(|key| self.is_reader(*key))
             .map(|key| self.paths.path(key.path))
             .collect();
         bodies.sort();
@@ -588,7 +590,7 @@ impl Executor {
             self.waits.add(key, *node);
         }
         for node in nodes {
-            if !self.reads(key) {
+            if !self.is_reader(key) {
                 return;
             }
             self.ensure(node);

@@ -80,7 +80,7 @@ impl Input {
         self.content
     }
 
-    pub(crate) fn type_name(&self) -> &'static str {
-        <Erased as Value>::type_name(&*self.value)
+    pub(crate) fn value(&self) -> &Erased {
+        &*self.value
     }
 }

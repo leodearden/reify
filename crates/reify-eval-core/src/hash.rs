@@ -2,7 +2,10 @@
 //! `std::hash::Hash`, and the one encoder through which the core combines
 //! anything into one (PRD D4: a host supplies leaf contents only).
 
-use xxhash_rust::xxh3::xxh3_128;
+use std::any::TypeId;
+use std::hash::{Hash as _, Hasher};
+
+use xxhash_rust::xxh3::{xxh3_64, xxh3_128};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Hash128(u128);
@@ -60,6 +63,18 @@ impl Encoder {
         self
     }
 
+    /// A type: its identity in this process, then its name. A name alone
+    /// is not unique (`std::any::type_name`); an identity that holds only
+    /// in this process is enough, because the store does not outlive it
+    /// (Part D).
+    pub fn type_of(&mut self, id: TypeId, name: &str) -> &mut Self {
+        let mut identity = Written::default();
+        id.hash(&mut identity);
+        self.bytes.push(b'y');
+        self.length_prefixed(&identity.0);
+        self.text(name)
+    }
+
     /// The count of `items`, then each written by `write`.
     pub fn sequence<T>(
         &mut self,
@@ -82,5 +97,20 @@ impl Encoder {
             .extend_from_slice(&(bytes.len() as u64).to_le_bytes());
         self.bytes.extend_from_slice(bytes);
         self
+    }
+}
+
+/// The bytes a `std::hash::Hash` impl writes, the only access to the bits
+/// of a `TypeId`.
+#[derive(Default)]
+struct Written(Vec<u8>);
+
+impl Hasher for Written {
+    fn write(&mut self, bytes: &[u8]) {
+        self.0.extend_from_slice(bytes);
+    }
+
+    fn finish(&self) -> u64 {
+        xxh3_64(&self.0)
     }
 }

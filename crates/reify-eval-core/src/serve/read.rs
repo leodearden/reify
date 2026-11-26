@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::content::Content;
 use crate::declaration::Declaration;
 use crate::index::Index;
-use crate::outcome::{Erased, Outcome};
+use crate::outcome::Outcome;
 use crate::path_table::{PathId, PathTable};
 use crate::record::Reading;
 use crate::reference::Ref;
@@ -37,7 +37,5 @@ pub(crate) fn serve(
 }
 
 fn absent(reading: &mut Reading) {
-    let absent = Outcome::<Erased>::Absent;
-    let content = Content::of_settled(&absent);
-    reading.settled(absent, content);
+    reading.settled(Outcome::Absent, Content::absent());
 }
