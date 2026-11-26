@@ -187,7 +187,10 @@ pub struct ModuleDag {
     /// The `pub import` targets each file-compiled module's walk followed,
     /// keyed like `modules`, in declaration order, one per path: the module's
     /// re-export edges (resolution-unification D-7). A cfg-gated-out import,
-    /// or a `std.*` one this DAG does not walk, is never an edge.
+    /// or a `std.*` one this DAG does not walk, is never an edge. A module the
+    /// embedded-stdlib fallback inserts is not walked, so it has no edges
+    /// either: under [`StdlibVisibility::Imported`] a `pub import` inside the
+    /// stdlib re-exports only when the stdlib is served from the filesystem.
     re_exports: HashMap<String, Vec<String>>,
 }
 
@@ -854,20 +857,20 @@ pub fn compile_project_with_entry_source_cfg(
 
     let mut dag = ModuleDag::with_cfg(cfg.clone());
 
-    // The entry's cfg-satisfied direct imports, shared by the compile loop and
-    // the prelude so they cannot drift.
+    // The entry's followed direct imports, through the DAG's one import gate,
+    // shared by the compile loop and the prelude so they cannot drift.
     let direct: Vec<&str> = parsed
         .declarations
         .iter()
         .filter_map(|d| match d {
-            reify_ast::Declaration::Import(import) if import_cfg_satisfied(import, cfg) => {
+            reify_ast::Declaration::Import(import) if dag.follows_import(import) => {
                 Some(import.path.as_str())
             }
             _ => None,
         })
         .collect();
 
-    // Recursively compile imports that satisfy the active cfg.
+    // Recursively compile the followed imports.
     for import_path in &direct {
         dag.compile_module(import_path, resolver)?;
     }
