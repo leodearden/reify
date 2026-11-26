@@ -45,7 +45,9 @@
 # member=<name>" as each retry starts. The pool branch runs phase 1 (pool),
 # 2 (serial), 2.5 (retry) and 3 (report); each serial-only branch runs one
 # phase 2 (serial). <n> counts the members the phase covers; <s> is whole
-# seconds, or `unknown` when the clock gave none.
+# seconds, or `unknown` when the clock gave none. A TERM that lands while a
+# phase is open adds "=== INTERRUPTED in phase <id> (<name>): members=<n>
+# elapsed_s=<s> ===" to stdout, directly after the interrupted Summary line.
 #
 # Exits 0 if all discovered tests pass (or none are found), 1 if any fail.
 #
@@ -829,11 +831,12 @@ _ra_phase_tag() {
 
 # _ra_phase_begin <phase> <members> -- opens a phase and prints its start
 # line. The open phase lives in run-lifetime globals because the TERM trap
-# reads them; only this and _ra_phase_end write them.
+# reads them; only this and _ra_phase_end write them. _RA_PHASE is set last:
+# the trap reads the other two only once it is non-empty.
 _ra_phase_begin() {
-    _RA_PHASE="$1"
     _RA_PHASE_MEMBERS="$2"
     event_log_clock_ns _RA_PHASE_STARTED_NS
+    _RA_PHASE="$1"
     echo "INFO: run_all.sh $(_ra_phase_tag "$1") start: members=$2" >&2
 }
 
@@ -1330,6 +1333,9 @@ _ra_partial_failed_names() {
 #   - a distinct `=== Summary: INTERRUPTED ... ===` line, deliberately NOT
 #     matching the byte-exact `=== Summary: N discovered, M failed ===`
 #     substring the contract tests assert (T9a/T13b/T22e class).
+#   - only while a phase is open, `=== INTERRUPTED in phase <id> (<name>):
+#     members=<n> elapsed_s=<s> ===` (header, "Phase log"), naming the phase
+#     the signal cut short.
 #   - `=== FAILED: <names> (partial) ===` (human-readable) and the bare
 #     `FAILED <names> (partial)` classifier line (matches DF's `^FAILED\s`
 #     reclassifier -- pattern #7b, checked before the tree-sitter mislabel).
@@ -1365,10 +1371,16 @@ _ra_partial_failed_names() {
 _ra_on_term() {
     set +e
     local -a _names=()
+    local _rot_now _rot_elapsed_s
 
     {
         echo ""
         echo "=== Summary: INTERRUPTED (outer timeout; partial results) ==="
+        if [ -n "${_RA_PHASE:-}" ]; then
+            event_log_clock_ns _rot_now
+            _ra_phase_elapsed_s _rot_elapsed_s "$_rot_now"
+            echo "=== INTERRUPTED in $(_ra_phase_tag "$_RA_PHASE"): members=$_RA_PHASE_MEMBERS elapsed_s=$_rot_elapsed_s ==="
+        fi
 
         # One array feeds both the text lines and the run_finish record, so the
         # record's failed names equal the classifier line's by construction.
