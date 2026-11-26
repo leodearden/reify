@@ -84,6 +84,7 @@ requires a census row in the same change.**
 | prose task-promises naming an owner (`owned by #N`, `deferred to task N`, `#N will …`, `until #N lands`) | PTODO lane δ-C → `orphaned` via the §19(b) cadenced liveness sweep (`reify-audit-ptodo-detector.md` §8.1, §21) | shipped |
 | prose task-promises outside δ-C's grammar (uncited "in a later task"; trailing `(task N)` on a future clause; promise split across lines) | convention-only — measured and declined (`reify-audit-ptodo-detector.md` §21) | unenforced |
 | whether a declared knob should exist at all | convention-only — deliberately unaudited (`trampoline-param-drop-closure.md` §11) | unenforced |
+| obligations O1–O10 on a node body of `reify-eval-core` (`docs/evaluation-core-contract.md` §2.2) | O4's lending: the compiler, its evidence kept by leaf χ's must-not-compile test (#10554); O9: the core fails the run; O2 and O8: the debug mode's sampled re-run (leaf ο, #10571); O3: the two-places test (leaf δ, #10557); convention-only: O1, O5, O6, O7, the two obligations PRD 13.2 point 29 adds to O4 (a resource type hands out no shared ownership of itself; a section blocks on nothing a body or the host must supply) and O10 (wrap what is made inside a resource) — `docs/prds/evaluation-core.md` §14 | chartered; the convention-only obligations unenforced (leaf ω, #10578, refreshes this row) |
 
 ## INV-SF-1 `undef-has-provenance`
 
