@@ -1,0 +1,19 @@
+error: future cannot be sent between threads safely
+  --> tests/must_not_compile/guard_across_read.rs:14:30
+   |
+14 |     async fn run(cx: &Cx) -> Produced<i64> {
+   |                              ^^^^^^^^^^^^^ future returned by `run` is not `Send`
+   |
+   = help: within `impl Future<Output = Produced<i64>>`, the trait `Send` is not implemented for `std::sync::MutexGuard<'_, i64>`
+note: future is not `Send` as this value is used across an await
+  --> tests/must_not_compile/guard_across_read.rs:16:55
+   |
+15 |         let shared = SHARED.lock().unwrap();
+   |             ------ has type `std::sync::MutexGuard<'_, i64>` which is not `Send`
+16 |         let read = cx.read::<i64>(&Ref::binding("x")).await;
+   |                                                       ^^^^^ await occurs here, with `shared` maybe used later
+note: required by a bound in `Kind::run::{anon_assoc#0}`
+  --> src/kind.rs
+   |
+   |     fn run(cx: &Cx) -> impl Future<Output = Produced<Self::Out>> + Send;
+   |                                                                    ^^^^ required by this bound in `Kind::run::{anon_assoc#0}`

@@ -13,6 +13,7 @@ mod ending;
 mod failures;
 mod growth;
 mod hash;
+mod must_not_compile;
 mod outside;
 mod reading;
 mod roots;
