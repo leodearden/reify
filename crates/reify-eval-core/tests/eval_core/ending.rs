@@ -1,7 +1,12 @@
 //! Ending requests, and giving back what sections made (contract 2.5 and
 //! 5.5, K11). Every count of live boxes is read after a drain.
 
-use reify_eval_core::{Cx, Declaration, Held, Kind, KindId, Outcome, Produced, Root, Turn};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use reify_eval_core::{
+    Binding, Cx, Declaration, Held, InputKey, Kind, KindId, Outcome, Produced, Ref, Root, Turn,
+};
 
 use crate::toy::{self, BoxHandle, BoxShape, Shape, ToyKernel, Watch};
 
@@ -24,6 +29,63 @@ fn a_request_ended_while_its_body_s_section_runs_leaves_the_kernel_holding_nothi
 
     assert_eq!(watch.live_boxes(), 0);
     assert!(toy::answers(&core.take_events(), ended).is_empty());
+}
+
+/// Stores what its body's `cancelled` reads at the moment it is dropped.
+struct Witness<'a> {
+    cx: &'a Cx,
+    seen: Arc<Arc<AtomicBool>>,
+}
+
+impl Drop for Witness<'_> {
+    fn drop(&mut self) {
+        self.seen.store(self.cx.cancelled(), Ordering::SeqCst);
+    }
+}
+
+/// Holds a witness of its own `cancelled` while it waits on a section.
+struct Witnessed;
+
+impl Kind for Witnessed {
+    type Out = i64;
+    const ID: KindId = KindId("toy.witnessed");
+
+    async fn run(cx: &Cx) -> Produced<i64> {
+        let Outcome::Value(seen) = cx.read::<Arc<AtomicBool>>(&Ref::binding("seen")).await else {
+            return Produced::Outcome(Outcome::Absent);
+        };
+        let _witness = Witness { cx, seen };
+        let _ = cx
+            .exclusive(|kernel: &mut ToyKernel, section| kernel.make_box(1, section))
+            .await;
+        Produced::Outcome(Outcome::of(1))
+    }
+}
+
+#[test]
+fn a_body_dropped_because_its_request_ended_reads_cancelled_as_it_is_dropped() {
+    let watch = Watch::default();
+    let builder = toy::with_toys()
+        .kind::<Witnessed>()
+        .expect("distinct kinds");
+    let (mut core, keeper) = toy::gated(builder, &watch);
+    let seen = Arc::new(AtomicBool::new(false));
+    let witnessed =
+        Declaration::new(Witnessed::ID).bind("seen", Binding::Input(InputKey::named("seen")));
+    let snapshot = core.snapshot([
+        toy::named("seen", Arc::clone(&seen)),
+        toy::root("witnessed", witnessed),
+    ]);
+    let request = core.evaluate(&snapshot, [Root::named("witnessed")]);
+    assert_eq!(core.turn(), Turn::SectionsRunning(1));
+    keeper.entered();
+
+    core.end(request);
+    assert!(seen.load(Ordering::SeqCst));
+
+    keeper.open();
+    core.drain();
+    assert_eq!(watch.live_boxes(), 0);
 }
 
 /// Makes a box in one section and keeps it while a second section makes
