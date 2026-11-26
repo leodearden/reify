@@ -37,6 +37,9 @@
 #     matches whole lines and a scripts/canon-bin/ row would never match.
 #   - scripts/canon_cache.py: loaded by canon_run.py on every verify leg; it
 #     decides what cache a command at CANON runs with (task 10232).
+#   - scripts/canon_store.py: imported by canon_cache.py on every verify leg;
+#     the store link a private sccache server reaches the store through
+#     (task 10441).
 #   - scripts/canon-bin/guard/sccache: the compile guard every cached compile
 #     passes through (task 10232). A file row, for the same reason.
 #
@@ -328,4 +331,5 @@ gui/src/__tests__/reifyGrammarCorpus.expected-clean.json
 scripts/canon_run.py
 scripts/canon-bin/cargo
 scripts/canon_cache.py
+scripts/canon_store.py
 scripts/canon-bin/guard/sccache

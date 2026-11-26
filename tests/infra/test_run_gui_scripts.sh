@@ -46,7 +46,7 @@ LIB_GUI_LAUNCH="$REPO_ROOT/scripts/lib_gui_launch.sh"
 # The launchers build and launch through scripts/canon_run.py (task 10231), so
 # every fixture carries it and its siblings. A fixture holds no Cargo.lock, so
 # canon_run finds no tree there and runs each command untouched.
-CANON_RUN_FILES=(canon_run.py canon_cache.py lib_event_log.sh)
+CANON_RUN_FILES=(canon_run.py canon_cache.py canon_store.py lib_event_log.sh)
 # The loader-path helper lib_gui_launch.sh sources from its own dir (#8654).
 LIB_NATIVE_LD_PATH="$REPO_ROOT/scripts/lib_native_ld_path.sh"
 

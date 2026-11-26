@@ -34,7 +34,7 @@ REFRESH_SIBLINGS = ("drop-canon-invocation-files.py", "prune-unconsulted-target.
                     "evict-dirty-target-units.py", "tree-sitter-freshness.sh")
 # The scripts/ files a real copy of each sibling sources or imports from beside itself.
 REAL_SIBLING_SOURCES = {
-    "drop-canon-invocation-files.py": ("canon_cache.py",),
+    "drop-canon-invocation-files.py": ("canon_cache.py", "canon_store.py"),
     "tree-sitter-freshness.sh": ("lib.sh", "lib_portable.sh"),
 }
 NO_OP_SIBLING = "#!/bin/sh\nexit 0\n"

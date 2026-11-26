@@ -491,11 +491,7 @@ def status_report(environ: Mapping[str, str], cwd: str) -> dict[str, object]:
             decision = Decision(Mode.REFUSED, refusal)
     report["build_dir_mode"] = decision.mode.value
     report["reason"] = decision.reason
-    report["store_reachable"] = (
-        None
-        if host.cache.store_url is None
-        else canon_cache.probe_store(host.cache, canon_cache.SessionKnobs())
-    )
+    report["store_reachable"] = canon_cache.store_reachable(host.cache)
     return report
 
 
