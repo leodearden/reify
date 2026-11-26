@@ -50,7 +50,7 @@ pub mod structure_type_id;
 mod test_rng;
 pub mod traits;
 pub mod value;
-mod value_undef;
+mod value_deep;
 pub mod warm;
 pub mod warm_registry;
 

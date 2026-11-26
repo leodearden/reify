@@ -4,19 +4,28 @@ impl Value {
     /// True when an `Undef` appears anywhere in the value, not only at the top
     /// level: the deep sibling of [`Value::is_undef`].
     pub fn contains_undef(&self) -> bool {
+        self.any_deep(&Value::is_undef)
+    }
+
+    /// True when `pred` holds for this value or for any value nested in it, at
+    /// any depth: collection elements, map keys and values, enum payloads,
+    /// composite components, range bounds, structure-instance fields, a
+    /// field's lambda and a lambda's captures.
+    pub fn any_deep(&self, pred: &dyn Fn(&Value) -> bool) -> bool {
+        if pred(self) {
+            return true;
+        }
+        let deep = |value: &Value| value.any_deep(pred);
         match self {
-            Value::Undef => true,
             Value::List(items)
             | Value::Tensor(items)
             | Value::Point(items)
-            | Value::Vector(items) => items.iter().any(Value::contains_undef),
-            Value::Set(items) => items.iter().any(Value::contains_undef),
-            Value::Matrix(rows) => rows.iter().flatten().any(Value::contains_undef),
-            Value::Map(entries) => entries
-                .iter()
-                .any(|(key, value)| key.contains_undef() || value.contains_undef()),
-            Value::Option(inner) => inner.as_deref().is_some_and(Value::contains_undef),
-            Value::Enum { payload, .. } => payload.iter().any(|(_, value)| value.contains_undef()),
+            | Value::Vector(items) => items.iter().any(deep),
+            Value::Set(items) => items.iter().any(deep),
+            Value::Matrix(rows) => rows.iter().flatten().any(deep),
+            Value::Map(entries) => entries.iter().any(|(key, value)| deep(key) || deep(value)),
+            Value::Option(inner) => inner.as_deref().is_some_and(deep),
+            Value::Enum { payload, .. } => payload.iter().any(|(_, value)| deep(value)),
             Value::Frame {
                 origin: a,
                 basis: b,
@@ -33,18 +42,15 @@ impl Value {
                 origin: a,
                 direction: b,
             }
-            | Value::BoundingBox { min: a, max: b } => a.contains_undef() || b.contains_undef(),
+            | Value::BoundingBox { min: a, max: b } => deep(a) || deep(b),
             Value::Range { lower, upper, .. } => [lower, upper]
                 .into_iter()
-                .any(|bound| bound.as_deref().is_some_and(Value::contains_undef)),
-            Value::StructureInstance(data) => {
-                data.fields.iter().any(|(_, value)| value.contains_undef())
-            }
-            Value::Field { lambda, .. } => lambda.contains_undef(),
-            Value::Lambda { captures, .. } => {
-                captures.iter().any(|(_, value)| value.contains_undef())
-            }
-            Value::Bool(_)
+                .any(|bound| bound.as_deref().is_some_and(deep)),
+            Value::StructureInstance(data) => data.fields.iter().any(|(_, value)| deep(value)),
+            Value::Field { lambda, .. } => deep(lambda),
+            Value::Lambda { captures, .. } => captures.iter().any(|(_, value)| deep(value)),
+            Value::Undef
+            | Value::Bool(_)
             | Value::Int(_)
             | Value::Real(_)
             | Value::String(_)
@@ -173,5 +179,18 @@ mod tests {
             basis: Box::new(identity_orientation()),
         };
         assert!(frame.contains_undef());
+    }
+
+    #[test]
+    fn any_deep_finds_a_geometry_handle_nested_in_an_instance_field() {
+        let handle = Value::GeometryHandle {
+            realization_ref: RealizationNodeId::new("Part", 0),
+            upstream_values_hash: [7u8; 32],
+            kernel_handle: None,
+        };
+        let holder = instance(&[("target", handle.clone()), ("n", Value::Int(1))]);
+        let wrapped = Value::List(vec![holder]);
+        assert!(wrapped.any_deep(&|v| *v == handle));
+        assert!(!wrapped.any_deep(&|v| matches!(v, Value::Selector(_))));
     }
 }

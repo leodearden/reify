@@ -25,8 +25,9 @@ fn vref(member: &str) -> CompiledExpr {
 }
 
 /// Stand-in for reify-eval's symbolic topology-selector hook: builds only calls
-/// named `stub_sel`, echoing the value its first `ValueRef` argument has in the
-/// scope the hook was handed.
+/// named `stub_sel`, naming the value its first `ValueRef` argument has in the
+/// scope the hook was handed. Like a real `Value::Selector`, the result holds
+/// no geometry handle.
 fn stub_mint(expr: &CompiledExpr, values: &ValueMap, _: &mut Vec<Diagnostic>) -> Option<Value> {
     let CompiledExprKind::FunctionCall { function, args } = &expr.kind else {
         return None;
@@ -35,9 +36,13 @@ fn stub_mint(expr: &CompiledExpr, values: &ValueMap, _: &mut Vec<Diagnostic>) ->
         return None;
     }
     match args.first().map(|a| &a.kind) {
-        Some(CompiledExprKind::ValueRef(id)) => values.get(id).cloned(),
+        Some(CompiledExprKind::ValueRef(id)) => values.get(id).map(selected),
         _ => None,
     }
+}
+
+fn selected(target: &Value) -> Value {
+    Value::String(format!("selector over {target:?}"))
 }
 
 fn stub_sel(arg: CompiledExpr) -> CompiledExpr {
@@ -121,6 +126,11 @@ fn expected_body_handle(width_value: CompiledExpr) -> Value {
     }
 }
 
+/// What `stub_sel(body)` yields when `body` minted over `width_value`.
+fn expected_tip(width_value: CompiledExpr) -> Value {
+    selected(&expected_body_handle(width_value))
+}
+
 fn tip_reading_body() -> Vec<(&'static str, CompiledExpr)> {
     vec![("tip", stub_sel(vref("body")))]
 }
@@ -134,7 +144,7 @@ fn selector_let_sees_the_symbolic_geometry_member() {
     ));
     assert_eq!(
         field(&data, "tip"),
-        &expected_body_handle(length(1.0)),
+        &expected_tip(length(1.0)),
         "a selector let over a geometry let must see the instance's symbolic \
          handle, hashed over the instance's own `len`"
     );
@@ -166,7 +176,7 @@ fn supplied_param_changes_the_geometry_member_hash() {
         tip_reading_body(),
         vec![body_reading(vref("len"))],
     ));
-    assert_eq!(field(&supplied, "tip"), &expected_body_handle(length(2.0)));
+    assert_eq!(field(&supplied, "tip"), &expected_tip(length(2.0)));
     assert_ne!(field(&supplied, "tip"), field(&defaulted, "tip"));
 }
 
@@ -177,7 +187,7 @@ fn geometry_member_reading_a_sibling_let_sees_it() {
     let data = construct(&ctor(vec![], lets, vec![body_reading(vref("w"))]));
     assert_eq!(
         field(&data, "tip"),
-        &expected_body_handle(length(3.0)),
+        &expected_tip(length(3.0)),
         "a geometry member must follow the sibling let it reads in the ctor's \
          dependency order"
     );
@@ -254,8 +264,26 @@ fn cross_sub_geometry_arg_is_skipped_so_the_member_still_mints() {
     let data = construct(&ctor(vec![], tip_reading_body(), vec![body]));
     assert_eq!(
         field(&data, "tip"),
-        &expected_body_handle(length(1.0)),
+        &expected_tip(length(1.0)),
         "the fold skips a CrossSubGeometryRef arg unevaluated, so it neither \
          refuses the mint nor changes the hash"
     );
+}
+
+#[test]
+fn field_member_carrying_the_geometry_member_by_value_holds_no_handle() {
+    let mut lets = tip_reading_body();
+    lets.push(("held", vref("body")));
+    lets.push((
+        "listed",
+        CompiledExpr::list_literal(vec![vref("body")], Type::List(Box::new(Type::Geometry))),
+    ));
+    let data = construct(&ctor(vec![], lets, vec![body_reading(vref("len"))]));
+    assert_eq!(field(&data, "tip"), &expected_tip(length(1.0)));
+    assert_eq!(
+        field(&data, "held"),
+        &Value::Undef,
+        "a handle serves selectors only, never a field value"
+    );
+    assert_eq!(field(&data, "listed"), &Value::List(vec![Value::Undef]));
 }

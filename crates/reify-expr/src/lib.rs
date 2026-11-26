@@ -1180,7 +1180,8 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
 /// (task 10098): a member sees every sibling it reads, whichever was declared
 /// first, as at template scope and under a `sub`. A geometry let whose inputs
 /// resolve in member scope becomes a symbolic handle there only, never a field
-/// (task 10352). A default that is itself a structure ctor
+/// (task 10352): a field member whose value would carry such a handle is
+/// re-evaluated without it, so only a selector consumes it. A default that is itself a structure ctor
 /// recurses through `eval_expr` → nested `Value::StructureInstance`. An
 /// `Undef` field value is kept in its own slot — the structure is still
 /// constructed (no `FunctionCall`-style strict whole-value short-circuit).
@@ -1219,12 +1220,15 @@ fn eval_structure_instance_ctor(
         .chain(lets.iter().map(CtorMember::Field))
         .collect();
     let mut child: Option<ValueMap> = None;
+    let mut minted: Vec<Value> = Vec::new();
     for member in ctor_member_order(type_name, members) {
         let (name, expr) = match member {
             CtorMember::Field(field) => field,
             CtorMember::Geometry(geometry) => {
                 let scope = child.get_or_insert_with(|| member_scope(type_name, &fields));
-                insert_symbolic_geometry_member(type_name, geometry, scope, ctx);
+                minted.extend(insert_symbolic_geometry_member(
+                    type_name, geometry, scope, ctx,
+                ));
                 continue;
             }
         };
@@ -1232,7 +1236,14 @@ fn eval_structure_instance_ctor(
             eval_expr(expr, ctx)
         } else {
             let scope = child.get_or_insert_with(|| member_scope(type_name, &fields));
-            eval_expr(expr, &ctx.with_scope(scope))
+            let value = eval_expr(expr, &ctx.with_scope(scope));
+            if !minted.is_empty() && value.any_deep(&|v| minted.contains(v)) {
+                // A handle serves selectors only: a member that carries one by
+                // value takes what it reads with no handle in scope.
+                eval_expr(expr, &ctx.with_scope(&member_scope(type_name, &fields)))
+            } else {
+                value
+            }
         };
         if let Some(scope) = child.as_mut() {
             scope.insert(ValueCellId::new(type_name, name.as_str()), value.clone());
@@ -1257,7 +1268,7 @@ fn eval_structure_instance_ctor(
 /// A handle is minted only when every input the fold evaluates resolves in
 /// member scope: one hashed over an unresolved input names no geometry the
 /// template or a `sub` produces. Otherwise the member stays out of scope, and a
-/// sibling selector over it is Undef.
+/// sibling selector over it is Undef. Returns the minted handle, if any.
 ///
 /// Out of line for the stack budget pinned by `eval_user_fn_recursion_depth_exceeded`.
 #[inline(never)]
@@ -1266,7 +1277,7 @@ fn insert_symbolic_geometry_member(
     geometry: &CtorGeometryLet,
     scope: &mut ValueMap,
     ctx: &EvalContext,
-) {
+) -> Option<Value> {
     let member_ctx = ctx.with_scope(scope);
     let mut unresolved = false;
     let upstream_values_hash = realization_upstream_values_hash(&geometry.upstream_args, |e| {
@@ -1275,16 +1286,18 @@ fn insert_symbolic_geometry_member(
         value
     });
     if unresolved {
-        return;
+        return None;
     }
+    let handle = Value::GeometryHandle {
+        realization_ref: geometry.realization.clone(),
+        upstream_values_hash,
+        kernel_handle: None,
+    };
     scope.insert(
         ValueCellId::new(type_name, geometry.member.as_str()),
-        Value::GeometryHandle {
-            realization_ref: geometry.realization.clone(),
-            upstream_values_hash,
-            kernel_handle: None,
-        },
+        handle.clone(),
     );
+    Some(handle)
 }
 
 /// Build a `Value::Enum` for a runtime enum-variant constructor (task 7456),
