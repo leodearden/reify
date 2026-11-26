@@ -969,18 +969,15 @@ mod tests {
         }
     }
 
-    /// A place below member "a" itself.
-    fn below_a() -> Bind {
-        declarer([step("a"), step("x")])
-    }
-
     #[test]
     fn an_answer_on_a_case_the_reference_cannot_judge_is_reported_invalid() {
-        let found = check(&evaluate_a(cell([below_a()])), &with_cell_kind::<ZeroCell>);
+        let mut case = evaluate_a(cell([input("big"), input("big")]));
+        case.inputs.insert(named("big"), int(i64::MAX));
+        let found = check(&case, &with_cell_kind::<ZeroCell>);
         let expected = Mismatch::Invalid {
             event: 0,
             snapshot: 0,
-            invalid: Invalid::Cycle { path: r(&["a"]) },
+            invalid: Invalid::Overflow { path: r(&["a"]) },
         };
         assert_eq!(found, Err(expected));
     }

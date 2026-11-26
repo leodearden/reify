@@ -915,6 +915,14 @@ mod tests {
         );
     }
 
+    /// The answer of a node on a ring of waits, declared a `node`, if any.
+    fn cycle(node: Option<ToyKind>) -> Result<Expected, Invalid> {
+        Ok(Expected {
+            node,
+            outcome: Expect::Failure(Failure::Cycle),
+        })
+    }
+
     #[test]
     fn a_cell_whose_term_is_below_its_own_path_is_a_cycle() {
         let design = scope_r(
@@ -923,17 +931,80 @@ mod tests {
         );
         assert_eq!(
             answer(&design, &at("r", &["a"])),
-            Err(Invalid::Cycle {
-                path: at("r", &["a"])
-            })
+            cycle(Some(ToyKind::Cell))
         );
+        assert_eq!(answer(&design, &at("r", &["a", "x"])), cycle(None));
+    }
+
+    /// Root scope `r` with the cells a, over its sibling b, and b, over a,
+    /// and `more` beside them.
+    fn two_cell_ring(more: impl IntoIterator<Item = (Step, Decl)>) -> Inputs {
+        let over = |other: &str| cell([declarer([step(other)])]);
+        let mut held = vec![(step("a"), over("b")), (step("b"), over("a"))];
+        held.extend(more);
+        scope_r(members(held), &[])
     }
 
     #[test]
-    fn first_invalid_finds_a_cycle_an_edit_makes_at_a_demanded_path() {
-        let a_over = |term| members([(step("a"), cell([term]))]);
+    fn a_two_cell_ring_answers_cycle_whichever_member_is_asked_first() {
+        let design = two_cell_ring([]);
+        for order in [["a", "b"], ["b", "a"]] {
+            let mut reference = Reference::new(design.clone());
+            for name in order {
+                assert_eq!(
+                    reference.answer(&at("r", &[name])),
+                    cycle(Some(ToyKind::Cell)),
+                    "{name} in order {order:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_reader_of_a_ring_is_blocked_by_it() {
+        let design = two_cell_ring([(step("c"), cell([declarer([step("a")])]))]);
+        for order in [["c", "a"], ["a", "c"]] {
+            let mut reference = Reference::new(design.clone());
+            for name in order {
+                let expected = match name {
+                    "c" => blocked_at("0"),
+                    _ => cycle(Some(ToyKind::Cell)),
+                };
+                let found = reference.answer(&at("r", &[name]));
+                assert_eq!(found, expected, "{name} in order {order:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_ring_through_a_collection_s_element_answers_cycle_on_each_path_of_it() {
+        let held = members([
+            (step("m0"), cell([declarer([step("m1"), index(0)])])),
+            (
+                step("m1"),
+                collection(declarer([step("m0")]), input("element")),
+            ),
+        ]);
+        let mut design = scope_r(held, &[]);
+        design.insert(named("element"), declaration(cell([])));
+        assert_eq!(
+            answer(&design, &at("r", &["m0"])),
+            cycle(Some(ToyKind::Cell))
+        );
+        assert_eq!(
+            answer(&design, &at("r", &["m1"])),
+            cycle(Some(ToyKind::Collection))
+        );
+        let element = at("r", &["m1"]).child(index(0));
+        assert_eq!(answer(&design, &element), cycle(None));
+    }
+
+    #[test]
+    fn first_invalid_finds_an_overflow_an_edit_makes_at_a_demanded_path() {
+        let a_over = |terms: Vec<Bind>| members([(step("a"), cell(terms))]);
+        let ints = [("x", 1), ("big", i64::MAX)];
         let mut case = Case {
-            inputs: scope_r(a_over(input("x")), &[("x", 1)]),
+            inputs: scope_r(a_over(vec![input("x")]), &ints),
             events: vec![HostEvent::Evaluate {
                 on: 0,
                 paths: vec![at("r", &["a"])],
@@ -941,14 +1012,18 @@ mod tests {
             }],
         };
         assert_eq!(first_invalid(&case), None);
-        let below_itself = a_over(declarer([step("a"), step("x")]));
-        case.events.push(HostEvent::Edit {
+        let edit = |held| HostEvent::Edit {
             from: 0,
-            changes: vec![(named("r.m"), Some(below_itself))],
-        });
+            changes: vec![(named("r.m"), Some(held))],
+        };
+        let below_itself = a_over(vec![declarer([step("a"), step("x")])]);
+        case.events.push(edit(below_itself));
+        assert_eq!(first_invalid(&case), None, "a cycle is an answer");
+        let past_i64 = a_over(vec![input("big"), input("big")]);
+        case.events.push(edit(past_i64));
         assert_eq!(
             first_invalid(&case),
-            Some(Invalid::Cycle {
+            Some(Invalid::Overflow {
                 path: at("r", &["a"])
             })
         );
