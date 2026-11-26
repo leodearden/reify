@@ -3314,6 +3314,7 @@ fn compile_expr_guarded_with_expected_inner(
                     ordered_args,
                     defaults,
                     lets,
+                    Vec::new(),
                     Some(expr.span),
                     Type::StructureRef(name.clone()),
                 );

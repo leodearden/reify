@@ -1126,6 +1126,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             ordered_args,
             defaults,
             lets,
+            geometry_lets: _,
             span,
         } => eval_structure_instance_ctor(
             *type_id,
@@ -6272,6 +6273,7 @@ mod tests {
             lets.into_iter()
                 .map(|(n, e)| (n.to_string(), e))
                 .collect(),
+            Vec::new(),
             None, // test fixture: no user source span
             Type::StructureRef(name.to_string()),
         )
@@ -6416,6 +6418,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            Vec::new(),
             span,
             Type::StructureRef(name.to_string()),
         )

@@ -198,6 +198,10 @@ pub enum CompiledExprKind {
         /// `remap_entity`, `remap_cell`, …) skip them — those passes act on
         /// surrounding-scope refs only.
         lets: Vec<(String, CompiledExpr)>,
+        /// Template geometry `let`s the evaluator places in the instance's
+        /// member scope as symbolic handles (task 10352), in value-cell order.
+        /// Template-local like `lets`, so NOT children.
+        geometry_lets: Vec<CtorGeometryLet>,
         /// The `.ri` source span of the constructor call site (task 4089,
         /// FEA result-model R2), populated by the compiler from the AST
         /// `FunctionCall` node's own span. `None` for synthetic ctors with no
@@ -323,6 +327,17 @@ impl CompiledPattern {
             }
         }
     }
+}
+
+/// A template geometry `let` a structure ctor places in the constructed
+/// instance's member scope as a symbolic `GeometryHandle`, never as a field
+/// (docs/prds/v0_6/uniform-member-access.md D5). `upstream_args` are the
+/// realization ops' scalar args the handle's upstream-values hash folds over.
+#[derive(Debug, Clone)]
+pub struct CtorGeometryLet {
+    pub member: String,
+    pub realization: reify_core::identity::RealizationNodeId,
+    pub upstream_args: Vec<(String, CompiledExpr)>,
 }
 
 /// A compiled match arm.
@@ -1045,6 +1060,7 @@ impl CompiledExpr {
                 ordered_args,
                 defaults,
                 lets,
+                geometry_lets,
                 span,
             } => {
                 // Rebuild via the constructor so content_hash is recomputed
@@ -1057,10 +1073,11 @@ impl CompiledExpr {
                     .into_iter()
                     .map(|(n, e)| (n, e.map_value_refs(f)))
                     .collect();
-                // `lets` reference template-local ValueCellIds (entity ==
-                // type_name) — do NOT apply `f`, which remaps surrounding-scope
-                // refs.  Pass through cloned-unchanged so lets survive the
-                // map_value_refs rebuild without being dropped or wrongly remapped.
+                // `lets` and `geometry_lets` reference template-local
+                // ValueCellIds (entity == type_name) — do NOT apply `f`, which
+                // remaps surrounding-scope refs.  Pass through unchanged so they
+                // survive the map_value_refs rebuild without being dropped or
+                // wrongly remapped.
                 //
                 // INVARIANT ENFORCEMENT (suggestion 4): assert in debug/test builds
                 // that every ValueRef inside a let expr has entity == type_name.
@@ -1089,6 +1106,7 @@ impl CompiledExpr {
                     new_args,
                     new_defaults,
                     lets,
+                    geometry_lets,
                     span,
                     result_type,
                 )
@@ -1687,6 +1705,7 @@ impl CompiledExpr {
         ordered_args: Vec<(String, CompiledExpr)>,
         defaults: Vec<(String, CompiledExpr)>,
         lets: Vec<(String, CompiledExpr)>,
+        geometry_lets: Vec<CtorGeometryLet>,
         span: Option<SourceSpan>,
         result_type: Type,
     ) -> Self {
@@ -1711,6 +1730,19 @@ impl CompiledExpr {
                 .combine(ContentHash::of_str(name))
                 .combine(let_expr.content_hash);
         }
+        // Empty geometry_lets fold nothing, so a geometry-free ctor's hash is
+        // unchanged (task 10352, the task-4342 precedent above).
+        for geometry_let in &geometry_lets {
+            content_hash = content_hash
+                .combine(ContentHash::of_str(&geometry_let.member))
+                .combine(ContentHash::of_str(&geometry_let.realization.entity))
+                .combine(ContentHash::of(&geometry_let.realization.index.to_le_bytes()));
+            for (name, arg) in &geometry_let.upstream_args {
+                content_hash = content_hash
+                    .combine(ContentHash::of_str(name))
+                    .combine(arg.content_hash);
+            }
+        }
         CompiledExpr {
             kind: CompiledExprKind::StructureInstanceCtor {
                 type_id,
@@ -1719,6 +1751,7 @@ impl CompiledExpr {
                 ordered_args,
                 defaults,
                 lets,
+                geometry_lets,
                 span,
             },
             result_type,
@@ -3053,6 +3086,7 @@ mod tests {
             vec![("a".to_string(), ref_a.clone()), ("b".to_string(), ref_b.clone())],
             vec![],
             vec![("derived".to_string(), derived_expr.clone())], // <-- NEW lets param
+            Vec::new(),
             None,
             Type::Bool, // placeholder result type
         );
@@ -3089,6 +3123,7 @@ mod tests {
             vec![("a".to_string(), ref_a.clone()), ("b".to_string(), ref_b.clone())],
             vec![],
             vec![], // no lets
+            Vec::new(),
             None,
             Type::Bool,
         );
@@ -3250,6 +3285,7 @@ mod tests {
             vec![("a".to_string(), ref_a.clone())],
             vec![],
             vec![],
+            Vec::new(),
             Some(SourceSpan::new(10, 25)),
             Type::Bool,
         );
@@ -3260,6 +3296,7 @@ mod tests {
             vec![("a".to_string(), ref_a.clone())],
             vec![],
             vec![],
+            Vec::new(),
             None,
             Type::Bool,
         );

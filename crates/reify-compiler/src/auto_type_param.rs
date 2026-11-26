@@ -1130,6 +1130,7 @@ pub(crate) fn check_candidate_constructible(candidate: &TopologyTemplate) -> Cto
         vec![], // zero ordered_args
         defaults,
         lets,
+        Vec::new(),
         None, // synthetic ctor: no user source span
         Type::StructureRef(candidate.name.clone()),
     ))

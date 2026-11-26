@@ -52,10 +52,7 @@ mod tests {
     }
 
     fn cross_sub_ref() -> CompiledExpr {
-        CompiledExpr::cross_sub_geometry_ref(
-            ValueCellId::new("Parent.sub", "body"),
-            Type::Geometry,
-        )
+        CompiledExpr::cross_sub_geometry_ref(ValueCellId::new("Parent.sub", "body"), Type::Geometry)
     }
 
     fn hash(args: &[(String, CompiledExpr)]) -> [u8; 32] {
