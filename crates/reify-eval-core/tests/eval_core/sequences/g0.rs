@@ -7,15 +7,8 @@
 use std::env::{self, VarError};
 use std::ops::RangeInclusive;
 
-use reify_eval_core::Core;
-
 use super::generator::{Features, GATE_EVENTS, GATE_SEEDS, generate};
-use super::session::{Reach, check};
-use crate::toy;
-
-fn honest() -> Core {
-    toy::with_structure().build()
-}
+use super::session::{Reach, check, toy_core};
 
 /// Widens the run to seeds 1..=N outside the gate.
 const WIDEN: &str = "REIFY_EVAL_CORE_SEQUENCES";
@@ -39,7 +32,7 @@ fn random_sequences_over_cells_scopes_guards_and_collections_satisfy_g0() {
     let mut reach = Reach::default();
     for seed in seeds() {
         let case = generate(seed, Features::structure(), GATE_EVENTS);
-        match check(&case, &honest) {
+        match check(&case, &toy_core) {
             Ok(found) => reach.add(&found),
             Err(mismatch) => panic!("seed {seed}: {mismatch}"),
         }

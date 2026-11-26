@@ -18,6 +18,7 @@ use super::design::{Inputs, ModelPath, ModelRef, ToyKind, Val, to_core};
 use super::order::{Answered, order_check};
 use super::reference::{Expect, Expected, Invalid, Out, Reference};
 use super::seen::Seen;
+use crate::toy;
 
 /// A shape of design or event a run reached, counted to show the run is
 /// not vacuous (PRD 12.1 rule 9).
@@ -274,6 +275,11 @@ impl fmt::Display for Mismatch {
             ),
         }
     }
+}
+
+/// A core with the honest toy kinds of structure.
+pub fn toy_core() -> Core {
+    toy::with_structure().build()
 }
 
 /// Runs `case` on a core `make_core` builds, checking after every host
@@ -614,12 +620,8 @@ mod tests {
     use super::super::case::{Case, HostEvent, Then};
     use super::super::design::*;
     use super::super::seen::Seen;
-    use super::{Mismatch, Shape, check};
+    use super::{Mismatch, Shape, check, toy_core};
     use crate::toy;
-
-    fn honest() -> Core {
-        toy::with_structure().build()
-    }
 
     /// Root scope "r" with a cell "a" over "x" and a cell "b" adding "a"
     /// and "y".
@@ -672,7 +674,7 @@ mod tests {
                 },
             ],
         };
-        let reach = check(&case, &honest).unwrap_or_else(|mismatch| panic!("{mismatch}"));
+        let reach = check(&case, &toy_core).unwrap_or_else(|mismatch| panic!("{mismatch}"));
         assert!(reach.checked_on(0) > 0, "{reach:?}");
         assert!(reach.checked_on(1) > 0, "{reach:?}");
         assert_eq!(reach.answered(), 4, "a, b and the root on 0, b on 1");
@@ -702,14 +704,14 @@ mod tests {
     #[test]
     fn a_request_left_live_unfinished_is_answered_and_checked_after_later_events() {
         let case = driven_then_edited(Then::Leave);
-        let reach = check(&case, &honest).unwrap_or_else(|mismatch| panic!("{mismatch}"));
+        let reach = check(&case, &toy_core).unwrap_or_else(|mismatch| panic!("{mismatch}"));
         assert!(reach.count(Shape::LeftLiveAnswer) > 0, "{reach:?}");
     }
 
     #[test]
     fn a_request_ended_unfinished_is_owed_no_answer() {
         let case = driven_then_edited(Then::End);
-        let reach = check(&case, &honest).unwrap_or_else(|mismatch| panic!("{mismatch}"));
+        let reach = check(&case, &toy_core).unwrap_or_else(|mismatch| panic!("{mismatch}"));
         assert!(reach.count(Shape::DriveZeroEnded) > 0, "{reach:?}");
     }
 

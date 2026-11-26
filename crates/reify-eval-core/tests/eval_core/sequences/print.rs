@@ -2,7 +2,12 @@
 //! call of design.rs's constructors or an enum variant, so a failing case
 //! found by the random run can be pasted in as a named test.
 
-use super::case::Case;
+use reify_eval_core::Step;
+
+use super::case::{Case, HostEvent, Then};
+use super::design::{
+    Bind, Decl, Key, ModelPath, ToyKind, Val, cell, collection, guard, picker, scope,
+};
 
 /// What the printed test asserts of its case.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,10 +19,168 @@ pub enum Expectation {
 }
 
 /// The test file named `name` holding `case`, shrunk from seed `seed`,
-/// asserting `expectation`.
+/// asserting `expectation`. The header and `use` lines are in rustfmt's
+/// form; the test carries `#[rustfmt::skip]`, one input or event a line.
 pub fn print_test(case: &Case, seed: u64, name: &str, expectation: Expectation) -> String {
-    let _ = (case, seed, name, expectation);
-    String::new()
+    let mut text = format!(
+        "//! A case shrunk from seed {seed} of the random sequences and printed by\n\
+         //! sequences::print. To regenerate it, run the test that printed it and paste\n\
+         //! the text its failure message shows.\n\n\
+         use super::case::*;\n\
+         use super::design::*;\n\n\
+         #[rustfmt::skip]\n\
+         #[test]\n\
+         fn {name}() {{\n    \
+         let case = Case {{\n        \
+         inputs: inputs([\n"
+    );
+    for (key, value) in &case.inputs {
+        text += &format!("            ({}, {}),\n", key_text(key), val_text(value));
+    }
+    text += "        ]),\n        events: vec![\n";
+    for event in &case.events {
+        text += &format!("            {},\n", event_text(event));
+    }
+    text += "        ],\n    };\n";
+    text += match expectation {
+        Expectation::CaughtWithFaultyCell => "    assert!(super::faulty::caught(&case));\n",
+        Expectation::PassesWithToyKinds => {
+            "    if let Err(mismatch) = super::session::check(&case, &super::session::toy_core) \
+             { panic!(\"{mismatch}\") }\n"
+        }
+    };
+    text + "}\n"
+}
+
+fn list(items: impl Iterator<Item = String>) -> String {
+    items.collect::<Vec<_>>().join(", ")
+}
+
+fn step_text(step: &Step) -> String {
+    match step {
+        Step::Named(name) => format!("step({:?})", &**name),
+        Step::Index(index) => format!("index({index})"),
+    }
+}
+
+fn steps_text(steps: &[Step]) -> String {
+    format!("[{}]", list(steps.iter().map(step_text)))
+}
+
+fn path_text(path: &ModelPath) -> String {
+    format!("path({:?}, {})", path.root, steps_text(&path.steps))
+}
+
+fn key_text(key: &Key) -> String {
+    match key {
+        Key::Root(name) => format!("root({name:?})"),
+        Key::Named(name) => format!("named({name:?})"),
+        Key::Attached(path, name) => format!("attached_to({}, {name:?})", path_text(path)),
+    }
+}
+
+fn bind_text(bind: &Bind) -> String {
+    match bind {
+        Bind::Input(name) => format!("input({name:?})"),
+        Bind::Attached(name) => format!("attached({name:?})"),
+        Bind::Declarer(place) => format!("declarer({})", steps_text(place)),
+        Bind::Passed(r) => format!("passed({:?}, {})", r.binding, steps_text(&r.steps)),
+    }
+}
+
+fn kind_text(kind: ToyKind) -> String {
+    format!("ToyKind::{kind:?}")
+}
+
+/// A declaration as the constructor that makes it, where one does, else
+/// as its kind and bindings.
+fn decl_text(decl: &Decl) -> String {
+    let bound = |name: &str| decl.bindings.get(name).cloned();
+    let terms: Vec<_> = (0..decl.bindings.len())
+        .map_while(|at| bound(&at.to_string()))
+        .collect();
+    if *decl == cell(terms.clone()) {
+        return format!("cell([{}])", list(terms.iter().map(bind_text)));
+    }
+    if let (Some(pick), Some(from)) = (bound("pick"), bound("from"))
+        && *decl == picker(pick.clone(), from.clone())
+    {
+        return format!("picker({}, {})", bind_text(&pick), bind_text(&from));
+    }
+    if let Some(Bind::Input(members)) = bound("members") {
+        if *decl == scope(&members) {
+            return format!("scope({members:?})");
+        }
+        if let Some(condition) = bound("condition")
+            && *decl == guard(condition.clone(), &members)
+        {
+            return format!("guard({}, {members:?})", bind_text(&condition));
+        }
+    }
+    if let (Some(count), Some(element)) = (bound("count"), bound("element"))
+        && *decl == collection(count.clone(), element.clone())
+    {
+        return format!("collection({}, {})", bind_text(&count), bind_text(&element));
+    }
+    let bindings = decl
+        .bindings
+        .iter()
+        .map(|(name, bind)| format!("({name:?}, {})", bind_text(bind)));
+    format!("decl({}, [{}])", kind_text(decl.kind), list(bindings))
+}
+
+fn val_text(value: &Val) -> String {
+    match value {
+        Val::Int(value) => format!("int({value})"),
+        Val::Bool(value) => format!("flag({value})"),
+        Val::Members(members) => {
+            let each = members
+                .iter()
+                .map(|(step, decl)| format!("({}, {})", step_text(step), decl_text(decl)));
+            format!("members([{}])", list(each))
+        }
+        Val::Decl(decl) => format!("declaration({})", decl_text(decl)),
+    }
+}
+
+fn then_text(then: Then) -> &'static str {
+    match then {
+        Then::Leave => "Then::Leave",
+        Then::End => "Then::End",
+    }
+}
+
+fn paths_text(paths: &[ModelPath]) -> String {
+    format!("vec![{}]", list(paths.iter().map(path_text)))
+}
+
+fn event_text(event: &HostEvent) -> String {
+    match event {
+        HostEvent::Edit { from, changes } => {
+            let each = changes.iter().map(|(key, value)| {
+                let value = value
+                    .as_ref()
+                    .map_or_else(|| String::from("None"), |value| format!("Some({})", val_text(value)));
+                format!("({}, {value})", key_text(key))
+            });
+            format!("HostEvent::Edit {{ from: {from}, changes: vec![{}] }}", list(each))
+        }
+        HostEvent::Evaluate { on, paths, then } => format!(
+            "HostEvent::Evaluate {{ on: {on}, paths: {}, then: {} }}",
+            paths_text(paths),
+            then_text(*then)
+        ),
+        HostEvent::Drive {
+            on,
+            paths,
+            turns,
+            then,
+        } => format!(
+            "HostEvent::Drive {{ on: {on}, paths: {}, turns: {turns}, then: {} }}",
+            paths_text(paths),
+            then_text(*then)
+        ),
+    }
 }
 
 mod tests {
