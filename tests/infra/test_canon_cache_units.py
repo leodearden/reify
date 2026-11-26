@@ -21,7 +21,6 @@ import re
 import resource
 import shutil
 import signal
-import socket
 import stat
 import subprocess
 import sys
@@ -74,6 +73,18 @@ def scratch(test):
     tmp = tempfile.TemporaryDirectory(prefix="test-canon-cache-units-")
     test.addCleanup(tmp.cleanup)
     return os.path.realpath(tmp.name)
+
+
+HANG_GUARD = 60.0
+
+
+def wait_until(test, predicate, what):
+    """Poll until predicate holds; past HANG_GUARD fail naming what never happened (a hang guard, not a bound)."""
+    deadline = time.monotonic() + HANG_GUARD
+    while not predicate():
+        if time.monotonic() > deadline:
+            test.fail(f"{what}: not within the {HANG_GUARD:.0f}s hang guard")
+        time.sleep(0.02)
 
 
 def assert_one_line_naming(test, error, path):
@@ -319,6 +330,59 @@ class ResolveRealSccache(unittest.TestCase):
         self.assertIsNone(self.resolve())
 
 
+class CarriesMarker(unittest.TestCase):
+    """The one marker reader: the marker within a file's first MARKER_WINDOW bytes."""
+
+    MARKER = b"reify-canon-test-marker"
+
+    def setUp(self):
+        self.tmp = scratch(self)
+
+    def file_with(self, data):
+        path = Path(self.tmp, "candidate")
+        path.write_bytes(data)
+        return str(path)
+
+    def test_a_marker_inside_the_first_1024_bytes_is_carried(self):
+        for data in (b"#!/bin/sh\n# " + self.MARKER + b"\n", b"x" * (1024 - len(self.MARKER)) + self.MARKER):
+            with self.subTest(at=data.index(self.MARKER)):
+                self.assertTrue(canon_cache.carries_marker(self.file_with(data), self.MARKER))
+
+    def test_a_marker_starting_after_byte_1024_is_not(self):
+        self.assertFalse(canon_cache.carries_marker(self.file_with(b"x" * 1024 + self.MARKER), self.MARKER))
+
+    def test_a_missing_path_or_a_directory_does_not_carry_it(self):
+        self.assertFalse(canon_cache.carries_marker(os.path.join(self.tmp, "missing"), self.MARKER))
+        self.assertFalse(canon_cache.carries_marker(self.tmp, self.MARKER))
+
+
+class ExecutablesNamed(unittest.TestCase):
+    """The one PATH walk: every <entry>/<name> that is an executable regular file, in PATH order."""
+
+    def setUp(self):
+        self.tmp = scratch(self)
+        self.a, self.b, self.c, self.d = (os.path.join(self.tmp, name) for name in "abcd")
+        executable(self.a, "cargo", REAL_LINE)
+        executable(self.a, "sccache", REAL_LINE)
+        Path(self.b).mkdir()
+        Path(self.b, "cargo").write_text(REAL_LINE)
+        executable(self.c, "cargo", REAL_LINE)
+        Path(self.d, "cargo").mkdir(parents=True)
+        self.path = ":".join((self.a, "", self.b, self.c, self.d))
+
+    def test_executable_regular_files_in_path_order(self):
+        self.assertEqual(
+            canon_cache.executables_named(self.path, "cargo"),
+            [os.path.join(self.a, "cargo"), os.path.join(self.c, "cargo")],
+        )
+
+    def test_only_the_name_asked_for(self):
+        self.assertEqual(canon_cache.executables_named(self.path, "sccache"), [os.path.join(self.a, "sccache")])
+
+    def test_an_empty_path_names_none(self):
+        self.assertEqual(canon_cache.executables_named("", "cargo"), [])
+
+
 class ChooseFallbackDir(unittest.TestCase):
     def setUp(self):
         self.tmp = scratch(self)
@@ -514,7 +578,7 @@ class Guard(unittest.TestCase):
         self.assertFalse(os.path.exists(self.uncached))
 
     def test_guard_carries_the_marker_canon_cache_skips(self):
-        self.assertTrue(canon_cache.is_guard(str(GUARD)))
+        self.assertTrue(canon_cache.carries_marker(str(GUARD), canon_cache.GUARD_MARKER))
         self.assertEqual(sorted(os.listdir(GUARD.parent)), ["sccache"])
 
 
@@ -798,8 +862,7 @@ class CloseSession(SessionCase):
     def test_detached_server_on_the_socket_is_counted_and_stopped(self):
         session = self.open("die")
         Path(self.fake, "die-now").touch()
-        while self.answers(self.socket):
-            time.sleep(0.02)
+        wait_until(self, lambda: not canon_cache.answers(self.socket), "the dying server released its socket")
         os.unlink(self.socket)
         detached = subprocess.Popen(
             [self.sccache],
@@ -813,21 +876,11 @@ class CloseSession(SessionCase):
             stdin=subprocess.DEVNULL,
         )
         self.addCleanup(detached.kill)
-        while not self.answers(self.socket):
-            time.sleep(0.02)
+        wait_until(self, lambda: canon_cache.answers(self.socket), "the detached server answers on the socket")
         outcome = session.close()
         self.assertEqual(outcome.detached_server, 1)
         self.assertEqual((outcome.hits, outcome.misses, outcome.write_errors), (40, 9, 0))
         self.assertEqual(detached.wait(), 0)
-
-    @staticmethod
-    def answers(path):
-        with socket.socket(socket.AF_UNIX) as probe:
-            try:
-                probe.connect(path)
-            except OSError:
-                return False
-        return True
 
 
 class StaleSessionFiles(SessionCase):
