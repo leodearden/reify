@@ -202,43 +202,9 @@ fn compile_isosurface_produces_realization_for_operand_and_result() {
     );
 }
 
-#[test]
-fn compile_mirror_produces_realization() {
-    let source = r#"structure S {
-    param w: Length = 10mm
-    let mirrored = mirror(w, point3(0mm, 0mm, 0mm), dir(1, 0, 0))
-}"#;
-    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_mirror"));
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    let compiled = compile(&parsed);
-    let template = &compiled.templates[0];
-    assert_eq!(
-        template.realizations.len(),
-        1,
-        "expected 1 realization for mirror call, got {}",
-        template.realizations.len()
-    );
-    let op = &template.realizations[0].operations[0];
-    assert!(
-        matches!(
-            op,
-            CompiledGeometryOp::Pattern {
-                kind: PatternKind::Mirror,
-                ..
-            }
-        ),
-        "expected Pattern(Mirror), got {:?}",
-        op
-    );
-}
-
 /// The Direction form `mirror(geo, origin, normal)` (direction-typing ι-a,
-/// task 9646) lowers to the same Pattern(Mirror) op, under the named args the
-/// eval reader keys on.
+/// task 9646) lowers to a Pattern(Mirror) op, under the named args the eval
+/// reader keys on.
 #[test]
 fn compile_mirror_direction_form_produces_realization() {
     let source = r#"structure S {
