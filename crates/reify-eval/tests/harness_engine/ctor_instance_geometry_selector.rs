@@ -147,3 +147,51 @@ fn let_instance_carries_no_geometry_field() {
     assert_no_field(&result, "NestedAssembly", "primary", "body");
     assert_no_field(&result, "NestedAssembly", "wide", "body");
 }
+
+const SELECTOR_DEFAULT_SRC: &str = r#"
+structure def Beam {
+    param load : Load = PointLoad(point: vertex(body, "tip"))
+    let body = box(1000mm, 100mm, 100mm)
+}
+
+structure def NestedAssembly {
+    let primary = Beam()
+    sub secondary = Beam()
+}
+"#;
+
+/// A param default whose nested selector reads a geometry let resolves in a
+/// let-constructed instance's own member scope, agreeing with the template and
+/// a `sub`, and the caller template gains no synthetic selector cell.
+#[test]
+fn let_instance_selector_in_param_default_agrees_with_template_and_sub() {
+    let result = eval_with_stdlib(SELECTOR_DEFAULT_SRC);
+    assert_no_error_diagnostics(&result, "the selector-default fixture");
+
+    let template_point = instance_field(&cell(&result, "Beam", "load"), "Beam.load", "point");
+    assert_selector(&template_point, "Beam.load.point");
+    let primary_point = instance_field(
+        &ctor_field(&result, "NestedAssembly", "primary", "load"),
+        "NestedAssembly.primary.load",
+        "point",
+    );
+    assert_selector(&primary_point, "NestedAssembly.primary.load.point");
+    assert_eq!(primary_point, template_point);
+    let sub_point = instance_field(
+        &cell(&result, "NestedAssembly.secondary", "load"),
+        "NestedAssembly.secondary.load",
+        "point",
+    );
+    assert_eq!(sub_point, template_point);
+
+    let caller_sel_cells: Vec<_> = result
+        .values
+        .iter()
+        .map(|(id, _)| id)
+        .filter(|id| id.entity == "NestedAssembly" && id.member.starts_with("__sel"))
+        .collect();
+    assert!(
+        caller_sel_cells.is_empty(),
+        "no selector cell may be minted in the caller template: {caller_sel_cells:?}"
+    );
+}
