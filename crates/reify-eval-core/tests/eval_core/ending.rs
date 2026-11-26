@@ -34,7 +34,7 @@ fn a_request_ended_while_its_body_s_section_runs_leaves_the_kernel_holding_nothi
 /// Stores what its body's `cancelled` reads at the moment it is dropped.
 struct Witness<'a> {
     cx: &'a Cx,
-    seen: Arc<Arc<AtomicBool>>,
+    seen: Arc<AtomicBool>,
 }
 
 impl Drop for Witness<'_> {
@@ -54,6 +54,7 @@ impl Kind for Witnessed {
         let Outcome::Value(seen) = cx.read::<Arc<AtomicBool>>(&Ref::binding("seen")).await else {
             return Produced::Outcome(Outcome::Absent);
         };
+        let seen = Arc::clone(&*seen);
         let _witness = Witness { cx, seen };
         let _ = cx
             .exclusive(|kernel: &mut ToyKernel, section| kernel.make_box(1, section))
