@@ -1,6 +1,8 @@
 //! Seeded random cases: a toy design of cells and, as features allow,
 //! scopes, guards, collections, dividing cells, and shapes and measures on
-//! the toy kernel, and a sequence of host events on it.
+//! the toy kernel, and a sequence of host events on it. With dividing
+//! cells on, every members input ends in a pair: a cell dividing by an
+//! input held at zero, and a sibling cell blocked by it.
 //! Every design is acyclic by construction (the ordinal rule: member m_k
 //! reaches through its declarer only the declarer itself or members m_j
 //! with j < k), and a feature that is off draws nothing from the rng, so
@@ -354,7 +356,7 @@ impl Generator {
     /// A new members input of one to four members, for the node at `at`.
     fn level(&mut self, at: &ModelPath, depth: usize, kind: ToyKind, needed: &mut Needed) -> Level {
         let count = 1 + self.rng.below(4);
-        let level = Level {
+        let mut level = Level {
             input: self.fresh("s"),
             at: at.clone(),
             depth,
@@ -368,8 +370,34 @@ impl Generator {
             earlier.push((ordinal, decl.kind));
             held.insert(member_step(ordinal), decl);
         }
+        if self.features.divide {
+            self.blocked_pair(&mut level, &mut held, needed);
+        }
         needed.push((named(&level.input), members(held)));
         level
+    }
+
+    /// Appends to `held`, the members of `level`, a cell dividing by a new
+    /// input held at zero and a sibling cell whose only term reads it.
+    fn blocked_pair(
+        &mut self,
+        level: &mut Level,
+        held: &mut BTreeMap<Step, Decl>,
+        needed: &mut Needed,
+    ) {
+        let failing = level.ordinals;
+        let blocked = failing + 1;
+        level.ordinals += 2;
+        let zero = self.fresh("z");
+        needed.push((named(&zero), int(0)));
+        held.insert(member_step(failing), divided(cell([]), input(&zero)));
+        held.insert(
+            member_step(blocked),
+            cell([declarer([member_step(failing)])]),
+        );
+        for ordinal in [failing, blocked] {
+            self.paths.push(level.at.child(member_step(ordinal)));
+        }
     }
 
     /// A collection counting a new input, or an earlier sibling cell, of
