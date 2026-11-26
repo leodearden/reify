@@ -1721,6 +1721,13 @@ entries:
     origin_phase: implement
     manifested_phase: implement
     note: Sleep-chain (sleep 100 + cat/tail) used to poll background task b67sgwcpn's output in a warm-lane worktree; guard fired before any output was read.
+  - date: '2026-11-24'
+    project: reify
+    session: 7b5e22e0-f1ce-4bf8-bb7b-4c101c76fa85
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Agent chained sleep 60 with cat/tail to poll a background task's output file; the sandbox guard blocked the chain and the digest shows no Monitor or run_in_background use.
+    evidence_quote: 'Blocked: sleep 60 followed by: cat /tmp/claude-1000/-home-leo-src-warm-lanes-worktrees--lane-4/7b5e22e0-f1ce-4bf8-bb7b-4c101c76fa85/tasks/bemc6d4yr.output tail -20. To wait for a condition, use Monitor with an until-loop'
 - id: entry-cand-20260728-5
   title: grep with 2>/dev/null conflates 'no matches' with a real path/argument error
   severity: medium
@@ -9427,6 +9434,13 @@ entries:
     manifested_phase: verify
     note: The agent chained a sleep with a tail of a test log to wait for a nextest run, and the anti-chaining guard blocked it. The guard's message says to use Monitor or run_in_background instead.
     evidence_quote: 'Blocked: sleep 100 followed by: tail -4 /tmp/rev10354_nextest.log.'
+  - date: '2026-11-24'
+    project: reify
+    session: c1e6cbc6-a2c4-4ae8-b3fa-6605e04989e3
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: A Bash call chained `sleep 60` with `cat` of a background task's output file was blocked by the anti-chaining guard, which is the mechanism this entry names.
+    evidence_quote: 'Blocked: sleep 60 followed by: cat /tmp/claude-1000/-home-leo-src-warm-lanes-worktrees--lane-4/c1e6cbc6-a2c4-4ae8-b3fa-6605e04989e3/tasks/bjt1uqzt8.output'
   last_seen_runs:
   - census-reify-20261022
 - id: entry-cand-20260719-7
@@ -10325,6 +10339,13 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Read of docs/prds/v0_6/geometry-algebra-solver-unification.md (turn 46) exceeded the 25000-token cap even with offset/limit, and the error suggests allow_large. This matches the file-size-cap entry; the file is a PRD, not generated source.
+  - date: '2026-11-24'
+    project: reify
+    session: 5192dd92-0633-45b9-bda8-8ad0edf2fe6f
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: The Read tool's size cap rejected a 276KB file, and the error text directs the agent to offset/limit or search. The digest's file is a /tmp test log rather than a generated source file, so the match rests on the shared cap-then-fallback mechanism, not the file type.
+    evidence_quote: File content (276KB) exceeds maximum allowed size (256KB). Use offset and limit parameters to read specific portions of the file, or search for specific content instead of reading the whole file.
   last_seen_runs:
   - census-reify-20261022
   filed_tickets:
@@ -11815,6 +11836,13 @@ entries:
     evidence_quote: '## User Corrections
 
       - (record 567) From the Instance design session (listed in sessions.md). This is information and three questions, not a ruling of Leo''s.'
+  - date: '2026-11-24'
+    project: reify
+    session: 030513d6-92f6-409a-ae3f-794d73528b66
+    origin_phase: ops
+    manifested_phase: ops
+    note: Several 'User Corrections' records are escalation text (escalation IDs, questions, and resume instructions) rather than user corrections, which matches the mislabeling of injected escalation content. Some records are genuine user replies, so the match is moderate.
+    evidence_quote: '(record 176) esc-6941-23: resume 6941 so it re-merges from the fixed commit. esc-9992-3: /spawn discuss & resolve: what''s the hardening that assert_in_subshell might need?'
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261030
@@ -33523,6 +33551,45 @@ candidates:
     origin_phase: unknown
     manifested_phase: verify
     evidence_quote: Permission to use Bash has been denied because Claude Code is running in don't ask mode.
+- id: cand-20261124-1
+  title: Escalation resolve_issue call times out with unknown write outcome, verified only by out-of-band file read
+  cause: An escalation MCP write (resolve_issue close_only) returns a timeout, so the agent cannot tell whether the resolution landed. It must fall back to reading the escalation JSON file directly and cannot confirm the state through the tool. This leaves escalation state ambiguous for the next watcher or human reader.
+  area: escalation MCP / escalation watcher
+  first_seen: '2026-11-24'
+  disposition: pending
+  sightings:
+  - date: '2026-11-24'
+    project: reify
+    session: 030513d6-92f6-409a-ae3f-794d73528b66
+    origin_phase: ops
+    manifested_phase: ops
+    evidence_quote: 'mcp__escalation__resolve_issue({"action": "close_only", "escalation_id": "esc-__merge_verify_base_divergence__-16", ...}) -> The operation timed out.'
+- id: cand-20261124-2
+  title: Test assert helper runs checker in suite shell, so a shell-fatal error silently ends the suite with rc=1 and no FAIL line
+  cause: assert() deliberately runs its checker inside the suite shell, so an unbound variable or exit in a checker terminates the whole suite. The failure message goes to a capture tmpfile that is never dumped or removed. The run shows only PASS lines and a generic exit 1, which misleads the next debugger and verifier into treating a red gate as green.
+  area: test-infra
+  first_seen: '2026-11-24'
+  disposition: pending
+  sightings:
+  - date: '2026-11-24'
+    project: reify
+    session: 50c0c167-efb7-4ec5-a819-422a8902d68a
+    origin_phase: unknown
+    manifested_phase: verify
+    evidence_quote: A shell-fatal error (unbound variable, `${x:?}`, `exit N` in a checker function) is not suppressed by the if-context the way set -e is. It ends the WHOLE suite.
+- id: cand-20261124-3
+  title: Docs assert a uniform AppImage `cli <command>` invocation for every reify subcommand, but gui and gui-debug need the launch directory kept as cwd
+  cause: Docs generalized one invocation pattern (`./Reify_<version>_amd64.AppImage cli <command>`) to all subcommands. The bundled `reify gui` and `gui-debug` depend on the directory the AppImage was run from, because the bundled WebKit looks up its helper programs relative to it. Following the docs changes that directory, so the GUI exits 127 with no hint that the docs were wrong.
+  area: docs
+  first_seen: '2026-11-24'
+  disposition: pending
+  sightings:
+  - date: '2026-11-24'
+    project: reify
+    session: 7c376264-cfdf-417f-b8f2-3d8aa84b8757
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: The docs from step-10 said every `reify <command>` works as `./Reify_<version>_amd64.AppImage cli <command>`. That's wrong for `gui` and `gui-debug`. Before running the bundled `reify`, the `cli` path moves back to the directory the AppImage was run from. `reify gui` then starts the bundled GUI from that directory, the bundled WebKit can't find its helper programs, and the GUI exits 127.
 historical_backfill:
   run_id: census-reify-20261022
   unmatched_task_ids:
