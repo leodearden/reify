@@ -14,6 +14,8 @@ is the thin wrapper tests/infra/test_canon_cache_units.sh.
 
 import dataclasses
 import fcntl
+import functools
+import itertools
 import json
 import os
 import random
@@ -25,6 +27,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -645,9 +648,7 @@ class SessionCase(unittest.TestCase):
         self.build = os.path.join(self.tmp, "build")
         os.mkdir(self.build)
         self.lock = os.path.join(self.tmp, "start.lock")
-        self.knobs = dataclasses.replace(
-            canon_cache.SessionKnobs(), start_lock=self.lock, tmp_root=self.tmp, socket_wait=60.0
-        )
+        self.knobs = dataclasses.replace(canon_cache.SessionKnobs(), start_lock=self.lock, tmp_root=self.tmp)
         self.delays = []
         self.socket = os.path.join(self.build, f".reify-sccache.{os.getpid()}.sock")
         self.env = {
@@ -881,6 +882,65 @@ class CloseSession(SessionCase):
         self.assertEqual(outcome.detached_server, 1)
         self.assertEqual((outcome.hits, outcome.misses, outcome.write_errors), (40, 9, 0))
         self.assertEqual(detached.wait(), 0)
+
+
+IGNORES_TERM = """
+import pathlib, signal, sys, time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+pathlib.Path(sys.argv[1]).touch()
+time.sleep(600)
+"""
+
+
+class SessionWaits(SessionCase):
+    """Three waits, three knobs: ready_wait for a start, stop_wait for each reap step, client_timeout per call."""
+
+    def join_or_fail(self, thread, what, unstick):
+        thread.join(HANG_GUARD)
+        if thread.is_alive():
+            unstick()
+            self.fail(f"{what}: not within the {HANG_GUARD:.0f}s hang guard")
+
+    def test_start_server_gives_up_on_a_silent_server_after_ready_wait(self):
+        files = canon_cache.SessionFiles.in_build_dir(self.build, os.getpid())
+        env = dict(
+            self.env, SCCACHE_START_SERVER="1", SCCACHE_SERVER_UDS=files.socket, FAKE_SCCACHE_BEHAVIOUR="silent"
+        )
+        knobs = dataclasses.replace(self.knobs, ready_wait=3.0, stop_wait=3600.0, client_timeout=3600.0)
+        clock = functools.partial(next, itertools.count(1000.0, 1.0))
+        process, failure = canon_cache.start_server(self.sccache, env, files, knobs, clock)
+        self.addCleanup(process.wait)
+        self.addCleanup(process.kill)
+        self.assertIs(failure, canon_cache.StartFailure.NOT_READY)
+        self.assertIsNone(process.poll(), "gave up by its deadline, not because the server exited")
+        canon_cache.stop_now(process, 3600.0)
+        self.assertTrue(cfx.process_gone(process.pid))
+
+    def test_reap_kills_a_process_that_ignores_term_after_two_stop_waits(self):
+        ready = os.path.join(self.tmp, "ready")
+        child = subprocess.Popen([sys.executable, "-I", "-c", IGNORES_TERM, ready])
+        self.addCleanup(child.wait)
+        self.addCleanup(child.kill)
+        wait_until(self, lambda: os.path.exists(ready), "the TERM-ignoring child started")
+        reaper = threading.Thread(target=canon_cache.reap, args=(child, 0.1), daemon=True)
+        reaper.start()
+        self.join_or_fail(reaper, "reap", child.kill)
+        self.assertEqual(child.returncode, -signal.SIGKILL)
+
+    def test_close_bounds_each_client_call_by_client_timeout(self):
+        self.knobs = dataclasses.replace(self.knobs, ready_wait=60.0, stop_wait=0.2, client_timeout=1.0)
+        session = self.open("mute")
+        [server] = self.servers()
+        outcomes = []
+        closer = threading.Thread(target=lambda: outcomes.append(session.close()), daemon=True)
+        closer.start()
+        self.join_or_fail(closer, "close() against a mute server", lambda: os.kill(server["pid"], signal.SIGKILL))
+        [outcome] = outcomes
+        self.assertEqual((outcome.hits, outcome.misses, outcome.write_errors, outcome.detached_server), (0, 0, 0, 0))
+        clients = [call["argv"][0] for call in cfx.read_sccache_calls(self.fake) if call["role"] == "client"]
+        self.assertEqual(clients, ["--show-stats", "--stop-server"])
+        self.assertTrue(cfx.process_gone(server["pid"]))
+        self.assertEqual(sorted(name for name in os.listdir(self.build) if name.startswith(".reify-sccache")), [])
 
 
 class StaleSessionFiles(SessionCase):

@@ -42,6 +42,9 @@ from verify_events_lib import read_events  # noqa: E402
 #   ok             binds
 #   late_readonly  binds, and prints the write-check failure when asked for stats
 #   die            binds, then exits leaving its socket file once `die-now` exists
+#   silent         never binds and never exits: sleeps until a signal ends it
+#   mute           binds and reads each command line, but never answers, never
+#                  stops, and keeps every accepted connection open
 # Otherwise it is a client: --show-stats prints the server's stats in sccache
 # 0.14's JSON shape, --stop-server stops the server and waits for it to go, and
 # finding no listener is logged as `autostart`.
@@ -49,6 +52,7 @@ FAKE_SCCACHE = r"""#!/usr/bin/python3 -I
 import fcntl
 import json
 import os
+import signal
 import socket
 import sys
 
@@ -128,6 +132,9 @@ def serve():
         sys.stderr.write("sccache: error: Server startup failed: cache storage failed to read:"
                          " Unexpected (permanent) at read => end of file\n")
         sys.exit(2)
+    if behaviour == "silent":
+        while True:
+            signal.pause()
     if behaviour == "readonly":
         sys.stderr.write(READ_ONLY)
         sys.stderr.flush()
@@ -135,6 +142,12 @@ def serve():
     listener = socket.socket(socket.AF_UNIX)
     listener.bind(path)
     listener.listen(8)
+    if behaviour == "mute":
+        held = []
+        while True:
+            connection, _ = listener.accept()
+            connection.makefile().readline()
+            held.append(connection)
     if behaviour == "die":
         listener.settimeout(0.02)
     while True:
