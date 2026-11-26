@@ -88,7 +88,7 @@ structure def SymmetryMirror {
     let body = union(arms, hub)
 
     // The equivalent 3-arg form: a point3 origin of Lengths, a Direction normal.
-    let arm_mirrored_scalar = mirror(arm, point3(0mm, 0mm, 0mm), dir(1, 0, 0))
+    let arm_mirrored_point_dir = mirror(arm, point3(0mm, 0mm, 0mm), dir(1, 0, 0))
 
     constraint arm_len > arm_width
     constraint arm_width > 1mm
