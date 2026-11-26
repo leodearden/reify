@@ -383,6 +383,12 @@ If option 1 cannot be made to run in the gate, leaf χ stops and says so, and Le
 
 **Leo:** "LGTM"
 
+**Found at leaf χ on 2026-11-26, after the ruling.** Three things the table above did not have.
+
+- The expected-output files of option 1 end in `.stderr`, an extension the lock-charter guard's list must gain before such a file can be tracked (section 8). That is a change in two repositories, and it went to Leo.
+- The test's first run in a build directory compiles the crate's dependencies again, in a directory of its own. It was measured once at 798 s, with the machine's load average between 155 and 308, against the default limit of 1,200 s for one test; the next run took 18 s. If the gate ends the test at that limit, that goes to Leo under the sentence above.
+- The first program of section 5.2, a section that waits, fails with E0728 whatever `exclusive` accepts: the compiler rejects `await` in a closure that is not async before it looks at any signature. So that program is evidence about the language, not about this crate. A sixth program, an async closure that `exclusive`'s own bound rejects, would fail only while the signature holds. Task #10596 puts it to Leo.
+
 ### D10. How the open points of section 13 are closed (RULED)
 
 - The nine points of 13.1 (rules inside the three mechanisms): the leaf named finds the rule under test and brings it to Leo as an amendment. *Cost:* up to six leaves on the critical path may each stop once for a ruling.
@@ -419,6 +425,7 @@ Nothing in any Reify crate is assumed. What is assumed, with how each was checke
 | A task that touches only the new crate verifies that crate alone; a merge verifies the workspace | `decide_scope` in `scripts/verify.sh`; `scripts/reify_path_attribution.py` |
 | Integration tests under a crate's `tests/` run in the gate with no registration, if they are not heavy and assert no wall-clock bound | `.config/nextest.toml` (default 120 s period, 10 periods); the overlay's "Gate-test drift-guard registration" |
 | No gate runs doctests | a search of `scripts/verify.sh` for `--doc` found comments only |
+| A tracked file with a new extension passes the repository's guards | **not checked before filing.** `trybuild` reads each program's expected compiler output from a file named after the program and ending in `.stderr`. The lock-charter guard's list of extensions (`scripts/lock-charter-guard.sh --list-extensions`) has no `stderr`, so `tests/infra/test_lock_charter_guard.sh` fails once such a file is tracked. Found at leaf χ (#10554). Widening the list is a lockstep change here and in dark-factory's copy of it, and needs Leo's ruling |
 | Clippy runs with `-D warnings` on all targets; there is no rustfmt gate | `scripts/verify.sh`; `CLAUDE.md` |
 | The module-cycle ratchet runs at merge for every crate, and at task level only when `reify-build-utils` is affected | `scripts/assert-module-scc.py --help`; `docs/legibility/design-invariants.md` |
 | A test path written in prose is checked against the repository | `tests/infra/test_cited_test_paths_resolve.sh`. This PRD and its catalogue name tests, never test files |
