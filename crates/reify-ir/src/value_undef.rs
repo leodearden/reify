@@ -1,3 +1,66 @@
+use crate::value::Value;
+
+impl Value {
+    /// True when an `Undef` appears anywhere in the value, not only at the top
+    /// level: the deep sibling of [`Value::is_undef`].
+    pub fn contains_undef(&self) -> bool {
+        match self {
+            Value::Undef => true,
+            Value::List(items)
+            | Value::Tensor(items)
+            | Value::Point(items)
+            | Value::Vector(items) => items.iter().any(Value::contains_undef),
+            Value::Set(items) => items.iter().any(Value::contains_undef),
+            Value::Matrix(rows) => rows.iter().flatten().any(Value::contains_undef),
+            Value::Map(entries) => entries
+                .iter()
+                .any(|(key, value)| key.contains_undef() || value.contains_undef()),
+            Value::Option(inner) => inner.as_deref().is_some_and(Value::contains_undef),
+            Value::Enum { payload, .. } => payload.iter().any(|(_, value)| value.contains_undef()),
+            Value::Frame {
+                origin: a,
+                basis: b,
+            }
+            | Value::Transform {
+                rotation: a,
+                translation: b,
+            }
+            | Value::Plane {
+                origin: a,
+                normal: b,
+            }
+            | Value::Axis {
+                origin: a,
+                direction: b,
+            }
+            | Value::BoundingBox { min: a, max: b } => a.contains_undef() || b.contains_undef(),
+            Value::Range { lower, upper, .. } => [lower, upper]
+                .into_iter()
+                .any(|bound| bound.as_deref().is_some_and(Value::contains_undef)),
+            Value::StructureInstance(data) => {
+                data.fields.iter().any(|(_, value)| value.contains_undef())
+            }
+            Value::Field { lambda, .. } => lambda.contains_undef(),
+            Value::Lambda { captures, .. } => {
+                captures.iter().any(|(_, value)| value.contains_undef())
+            }
+            Value::Bool(_)
+            | Value::Int(_)
+            | Value::Real(_)
+            | Value::String(_)
+            | Value::Scalar { .. }
+            | Value::Complex { .. }
+            | Value::Orientation { .. }
+            | Value::Direction(_)
+            | Value::AffineMap { .. }
+            | Value::GeometryHandle { .. }
+            | Value::Selector(_)
+            | Value::Feature(_)
+            | Value::SampledField(_) => false,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::persistent::PersistentMap;
