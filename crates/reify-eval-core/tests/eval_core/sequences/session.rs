@@ -134,8 +134,8 @@ pub enum Mismatch {
         event: usize,
         snapshot: usize,
         path: ModelPath,
-        core: Seen,
-        reference: Seen,
+        core: Box<Seen>,
+        reference: Box<Seen>,
     },
     /// The core is idle and a live request holds no answer at a path it
     /// demanded.
@@ -166,8 +166,8 @@ pub enum Mismatch {
     Order {
         snapshot: usize,
         path: ModelPath,
-        session: Seen,
-        fresh: Seen,
+        session: Box<Seen>,
+        fresh: Box<Seen>,
     },
     /// The reference interpreter has no answer: the case is not one the
     /// checks can judge.
@@ -389,8 +389,8 @@ impl Session {
             .map_err(|mismatch| Mismatch::Order {
                 snapshot: mismatch.snapshot,
                 path: self.model_path(&mismatch.path),
-                session: mismatch.session,
-                fresh: mismatch.fresh,
+                session: Box::new(mismatch.session),
+                fresh: Box::new(mismatch.fresh),
             })?;
         let compared = u64::try_from(compared).expect("a count fits u64");
         *self.reach.shapes.entry(Shape::OrderComparison).or_default() += compared;
@@ -510,8 +510,8 @@ impl Session {
                 event: at,
                 snapshot,
                 path: model_path,
-                core,
-                reference,
+                core: Box::new(core),
+                reference: Box::new(reference),
             });
         }
         *self.reach.checked.entry(snapshot).or_default() += 1;
@@ -770,8 +770,8 @@ mod tests {
             event: 1,
             snapshot: 1,
             path: path("c", []),
-            core: Seen::Int(0),
-            reference: Seen::Int(5),
+            core: Box::new(Seen::Int(0)),
+            reference: Box::new(Seen::Int(5)),
         };
         assert_eq!(found, Err(expected));
     }
@@ -784,8 +784,8 @@ mod tests {
             event: 1,
             snapshot: 1,
             path: path("c", []),
-            core: Seen::Pending(pending),
-            reference: Seen::Int(5),
+            core: Box::new(Seen::Pending(pending)),
+            reference: Box::new(Seen::Int(5)),
         };
         assert_eq!(found, Err(expected));
     }
