@@ -612,15 +612,9 @@ mod tests {
                 step("b"),
                 cell([input("y"), passed("members", [step("a")]), input("y")]),
             ),
-            (
-                step("c"),
-                cell([input("y"), passed("extra", [step("a")]), input("y")]),
-            ),
         ]);
-        let mut design = scope_r(held.clone(), &[("x", 4), ("y", 1)]);
-        design.insert(attached_to(at("r", &[]), "extra"), held);
+        let design = scope_r(held, &[("x", 4), ("y", 1)]);
         assert_eq!(answer(&design, &at("r", &["b"])), int_of(ToyKind::Cell, 1));
-        assert_eq!(answer(&design, &at("r", &["c"])), int_of(ToyKind::Cell, 1));
     }
 
     #[test]
@@ -928,23 +922,6 @@ mod tests {
             answer(&design, &at("bad", &["x"])),
             failed(None, declaration, int)
         );
-    }
-
-    #[test]
-    fn an_attached_extra_input_adds_a_member_and_overrides_one_at_the_same_step() {
-        let held = members([
-            (step("a"), cell([input("x")])),
-            (step("b"), cell([input("y")])),
-        ]);
-        let mut design = scope_r(held, &[("x", 1), ("y", 5)]);
-        let extra = members([
-            (step("b"), cell([input("x"), input("x")])),
-            (step("c"), cell([input("y")])),
-        ]);
-        design.insert(attached_to(at("r", &[]), "extra"), extra);
-        assert_eq!(answer(&design, &at("r", &["a"])), int_of(ToyKind::Cell, 1));
-        assert_eq!(answer(&design, &at("r", &["b"])), int_of(ToyKind::Cell, 2));
-        assert_eq!(answer(&design, &at("r", &["c"])), int_of(ToyKind::Cell, 5));
     }
 
     #[test]

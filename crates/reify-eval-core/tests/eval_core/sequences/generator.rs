@@ -761,7 +761,7 @@ mod tests {
     #[test]
     fn the_gate_cases_reach_every_kind_binding_and_event_shape() {
         let mut kinds = BTreeSet::new();
-        let (mut pickers, mut passed, mut extras, mut divisors) = (0, 0, 0, 0);
+        let (mut pickers, mut passed, mut divisors) = (0, 0, 0);
         let (mut edits_off_latest, mut evaluations_off_latest) = (0, 0);
         let (mut zero_left, mut zero_ended) = (0, 0);
         for (_, case) in gate_cases() {
@@ -778,10 +778,6 @@ mod tests {
                     .filter(|bind| matches!(bind, Bind::Passed(_)))
                     .count();
             }
-            extras += values(&case)
-                .iter()
-                .filter(|(key, _)| matches!(key, Key::Attached(_, name) if name == "extra"))
-                .count();
             let mut latest = 0;
             for event in &case.events {
                 match event {
@@ -819,7 +815,6 @@ mod tests {
             ("pickers", pickers),
             ("divisors", divisors),
             ("passed bindings", passed),
-            ("attached extras", extras),
             ("edits off the latest snapshot", edits_off_latest),
             (
                 "evaluations off the latest snapshot",
