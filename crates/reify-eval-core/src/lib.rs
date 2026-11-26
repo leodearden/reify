@@ -70,3 +70,4 @@ pub use requests::Request;
 pub use section::Section;
 pub use snapshot::{Snapshot, SnapshotId};
 pub use step::Step;
+pub use store::{Store, StoredResult};

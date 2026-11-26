@@ -36,7 +36,7 @@ use crate::resource::Resources;
 use crate::serve;
 use crate::serve::section::{Delivery, InFlight};
 use crate::snapshot::{Snapshot, SnapshotId};
-use crate::store::{Store, Stored};
+use crate::store::{Store, Stored, StoredResult};
 use crate::task::Task;
 use crate::waits::Waits;
 
@@ -80,14 +80,14 @@ pub(crate) struct Executor {
 }
 
 impl Executor {
-    pub fn new(kinds: Kinds) -> Self {
+    pub fn new(kinds: Kinds, store: Store) -> Self {
         let core = CoreId::fresh();
         Self {
             core,
             kinds,
             paths: PathTable::default(),
             indexes: Indexes::default(),
-            store: Store::default(),
+            store,
             lookups: BTreeMap::new(),
             tasks: BTreeMap::new(),
             resolving: BTreeSet::new(),
@@ -189,6 +189,15 @@ impl Executor {
 
     pub fn counters(&self) -> &Counters {
         &self.counters
+    }
+
+    /// The store, taken out before the rest of the executor is dropped.
+    pub fn into_store(mut self) -> Store {
+        mem::take(&mut self.store)
+    }
+
+    pub fn selected_store(&self, keep: impl FnMut(&StoredResult) -> bool) -> Store {
+        self.store.selected(keep)
     }
 
     /// Drops the index of each snapshot that is no longer live: no clone of
