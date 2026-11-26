@@ -1,4 +1,6 @@
-use crate::value::Value;
+use std::sync::Arc;
+
+use crate::value::{Value, ValueMap};
 
 impl Value {
     /// True when an `Undef` appears anywhere in the value, not only at the top
@@ -65,14 +67,142 @@ impl Value {
             | Value::SampledField(_) => false,
         }
     }
+
+    /// This value with every value `rewrite` maps replaced by its image, at any
+    /// depth: the rebuilding sibling of [`Value::any_deep`], over the same
+    /// children. A value `rewrite` maps is replaced whole, not descended into.
+    pub fn map_deep(&self, rewrite: &dyn Fn(&Value) -> Option<Value>) -> Value {
+        if let Some(image) = rewrite(self) {
+            return image;
+        }
+        let deep = |value: &Value| value.map_deep(rewrite);
+        let boxed = |value: &Value| Box::new(deep(value));
+        let all = |items: &[Value]| items.iter().map(deep).collect::<Vec<_>>();
+        match self {
+            Value::List(items) => Value::List(all(items)),
+            Value::Tensor(items) => Value::Tensor(all(items)),
+            Value::Point(items) => Value::Point(all(items)),
+            Value::Vector(items) => Value::Vector(all(items)),
+            Value::Set(items) => Value::Set(items.iter().map(deep).collect()),
+            Value::Matrix(rows) => Value::Matrix(rows.iter().map(|row| all(row)).collect()),
+            Value::Map(entries) => Value::Map(
+                entries
+                    .iter()
+                    .map(|(key, value)| (deep(key), deep(value)))
+                    .collect(),
+            ),
+            Value::Option(inner) => Value::Option(inner.as_deref().map(boxed)),
+            Value::Enum {
+                type_name,
+                variant,
+                payload,
+            } => Value::Enum {
+                type_name: type_name.clone(),
+                variant: variant.clone(),
+                payload: payload
+                    .iter()
+                    .map(|(name, value)| (name.clone(), deep(value)))
+                    .collect(),
+            },
+            Value::Frame { origin, basis } => Value::Frame {
+                origin: boxed(origin),
+                basis: boxed(basis),
+            },
+            Value::Transform {
+                rotation,
+                translation,
+            } => Value::Transform {
+                rotation: boxed(rotation),
+                translation: boxed(translation),
+            },
+            Value::Plane { origin, normal } => Value::Plane {
+                origin: boxed(origin),
+                normal: boxed(normal),
+            },
+            Value::Axis { origin, direction } => Value::Axis {
+                origin: boxed(origin),
+                direction: boxed(direction),
+            },
+            Value::BoundingBox { min, max } => Value::BoundingBox {
+                min: boxed(min),
+                max: boxed(max),
+            },
+            Value::Range {
+                lower,
+                upper,
+                lower_inclusive,
+                upper_inclusive,
+            } => Value::Range {
+                lower: lower.as_deref().map(boxed),
+                upper: upper.as_deref().map(boxed),
+                lower_inclusive: *lower_inclusive,
+                upper_inclusive: *upper_inclusive,
+            },
+            Value::StructureInstance(data) => {
+                let fields = data
+                    .fields
+                    .iter()
+                    .map(|(name, value)| (name.clone(), deep(value)))
+                    .collect();
+                let mut data = data.clone();
+                data.fields = fields;
+                Value::StructureInstance(data)
+            }
+            Value::Field {
+                domain_type,
+                codomain_type,
+                source,
+                lambda,
+            } => Value::Field {
+                domain_type: domain_type.clone(),
+                codomain_type: codomain_type.clone(),
+                source: source.clone(),
+                lambda: Arc::new(deep(lambda)),
+            },
+            Value::Lambda {
+                params,
+                body,
+                captures,
+            } => {
+                let mut mapped = ValueMap::new();
+                for (id, value) in captures.iter() {
+                    mapped.insert(id.clone(), deep(value));
+                }
+                Value::Lambda {
+                    params: params.clone(),
+                    body: body.clone(),
+                    captures: mapped,
+                }
+            }
+            Value::Undef
+            | Value::Bool(_)
+            | Value::Int(_)
+            | Value::Real(_)
+            | Value::String(_)
+            | Value::Scalar { .. }
+            | Value::Complex { .. }
+            | Value::Orientation { .. }
+            | Value::Direction(_)
+            | Value::AffineMap { .. }
+            | Value::GeometryHandle { .. }
+            | Value::Selector(_)
+            | Value::Feature(_)
+            | Value::SampledField(_) => self.clone(),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::sync::Arc;
+
+    use crate::expr::CompiledExpr;
     use crate::persistent::PersistentMap;
     use crate::structure_type_id::StructureTypeId;
-    use crate::value::{StructureInstanceData, Value};
+    use crate::value::{FieldSourceKind, StructureInstanceData, Value, ValueMap};
     use reify_core::identity::RealizationNodeId;
+    use reify_core::{Type, ValueCellId};
 
     fn instance(pairs: &[(&str, Value)]) -> Value {
         let fields: PersistentMap<String, Value> = pairs
@@ -192,5 +322,144 @@ mod tests {
         let wrapped = Value::List(vec![holder]);
         assert!(wrapped.any_deep(&|v| *v == handle));
         assert!(!wrapped.any_deep(&|v| matches!(v, Value::Selector(_))));
+    }
+
+    fn handle() -> Value {
+        Value::GeometryHandle {
+            realization_ref: RealizationNodeId::new("Part", 0),
+            upstream_values_hash: [7u8; 32],
+            kernel_handle: None,
+        }
+    }
+
+    /// One value per child slot `any_deep` descends, each holding `target` there.
+    fn containers_holding(target: &Value) -> Vec<(&'static str, Value)> {
+        let t = || target.clone();
+        let boxed = || Box::new(t());
+        let mut captures = ValueMap::new();
+        captures.insert(ValueCellId::new("Part", "body"), t());
+        vec![
+            ("list", Value::List(vec![Value::Int(1), t()])),
+            ("tensor", Value::Tensor(vec![t()])),
+            ("point", Value::Point(vec![t()])),
+            ("vector", Value::Vector(vec![t()])),
+            ("set", Value::Set(BTreeSet::from([t()]))),
+            (
+                "matrix",
+                Value::Matrix(vec![vec![Value::Int(1)], vec![t()]]),
+            ),
+            (
+                "map key",
+                Value::Map(BTreeMap::from([(t(), Value::Int(1))])),
+            ),
+            (
+                "map value",
+                Value::Map(BTreeMap::from([(Value::Int(1), t())])),
+            ),
+            ("option", Value::Option(Some(boxed()))),
+            (
+                "enum payload",
+                Value::Enum {
+                    type_name: "Support".to_string(),
+                    variant: "Pinned".to_string(),
+                    payload: vec![("at".to_string(), t())],
+                },
+            ),
+            (
+                "frame",
+                Value::Frame {
+                    origin: boxed(),
+                    basis: Box::new(identity_orientation()),
+                },
+            ),
+            (
+                "transform",
+                Value::Transform {
+                    rotation: Box::new(identity_orientation()),
+                    translation: boxed(),
+                },
+            ),
+            (
+                "plane",
+                Value::Plane {
+                    origin: Box::new(Value::Int(0)),
+                    normal: boxed(),
+                },
+            ),
+            (
+                "axis",
+                Value::Axis {
+                    origin: boxed(),
+                    direction: Box::new(Value::Int(0)),
+                },
+            ),
+            (
+                "bounding box",
+                Value::BoundingBox {
+                    min: Box::new(Value::Int(0)),
+                    max: boxed(),
+                },
+            ),
+            ("range lower", Value::range(Some(t()), None, true, true)),
+            ("range upper", Value::range(None, Some(t()), true, true)),
+            ("structure field", instance(&[("target", t())])),
+            (
+                "field lambda",
+                Value::Field {
+                    domain_type: Type::length(),
+                    codomain_type: Type::length(),
+                    source: FieldSourceKind::Analytical,
+                    lambda: Arc::new(t()),
+                },
+            ),
+            (
+                "lambda capture",
+                Value::Lambda {
+                    params: vec![],
+                    body: Box::new(CompiledExpr::literal(Value::Int(0), Type::Int)),
+                    captures,
+                },
+            ),
+        ]
+    }
+
+    #[test]
+    fn map_deep_rewrites_every_child_any_deep_reaches() {
+        let target = handle();
+        for (slot, container) in containers_holding(&target) {
+            assert!(
+                container.any_deep(&|v| *v == target),
+                "{slot}: any_deep must reach the target"
+            );
+            let rewritten = container.map_deep(&|v| (*v == target).then_some(Value::Undef));
+            assert!(
+                !rewritten.any_deep(&|v| *v == target),
+                "{slot}: map_deep must rewrite every child any_deep reaches: {rewritten:?}"
+            );
+            assert!(
+                rewritten.contains_undef(),
+                "{slot}: the target's image takes its place: {rewritten:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn map_deep_keeps_the_siblings_of_a_rewritten_value() {
+        let target = handle();
+        let holder = instance(&[("target", target.clone()), ("n", Value::Int(1))]);
+        let expected = instance(&[("target", Value::Undef), ("n", Value::Int(1))]);
+        assert_eq!(
+            holder.map_deep(&|v| (*v == target).then_some(Value::Undef)),
+            expected
+        );
+    }
+
+    #[test]
+    fn map_deep_with_no_match_returns_an_equal_value() {
+        let nested = Value::List(vec![
+            instance(&[("len", Value::length(1.0))]),
+            Value::Option(Some(Box::new(Value::Int(2)))),
+        ]);
+        assert_eq!(nested.map_deep(&|_| None), nested);
     }
 }

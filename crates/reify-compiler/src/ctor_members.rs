@@ -3,7 +3,7 @@
 //! synthetic ctor (`auto_type_param.rs`).
 
 use reify_core::Type;
-use reify_ir::{CompiledExpr, CtorGeometryLet};
+use reify_ir::{CompiledExpr, CompiledExprKind, CtorGeometryLet};
 
 use crate::types::{TopologyTemplate, ValueCellDecl, ValueCellKind};
 
@@ -23,7 +23,11 @@ pub(crate) struct CtorTemplateMembers {
 ///   β's `cell_type != Type::Geometry` compute-input exclusion.
 ///
 /// `geometry_lets` holds exactly those geometry lets that are backed by a
-/// named, non-list realization; any other geometry let stays out of both.
+/// named, non-list realization and are not an alias of a sibling member; any
+/// other geometry let stays out of both. An alias (`let shifted = base`) has a
+/// realization of its own, but template and `sub` scope disagree on which
+/// realization it names, so a ctor leaves it out and a selector over it is
+/// Undef rather than either disputed identity.
 pub(crate) fn ctor_template_members(template: &TopologyTemplate) -> CtorTemplateMembers {
     let source_lets = template
         .value_cells
@@ -42,9 +46,18 @@ pub(crate) fn ctor_template_members(template: &TopologyTemplate) -> CtorTemplate
             .collect(),
         geometry_lets: geometry_cells
             .into_iter()
+            .filter(|vc| !aliases_a_sibling(template, vc))
             .filter_map(|vc| geometry_let(template, &vc.id.member))
             .collect(),
     }
+}
+
+fn aliases_a_sibling(template: &TopologyTemplate, cell: &ValueCellDecl) -> bool {
+    matches!(
+        cell.default_expr.as_ref().map(|e| &e.kind),
+        Some(CompiledExprKind::ValueRef(id))
+            if template.value_cells.iter().any(|sibling| sibling.id == *id)
+    )
 }
 
 fn geometry_let(template: &TopologyTemplate, member: &str) -> Option<CtorGeometryLet> {

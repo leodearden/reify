@@ -1180,9 +1180,10 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
 /// (task 10098): a member sees every sibling it reads, whichever was declared
 /// first, as at template scope and under a `sub`. A geometry let whose inputs
 /// resolve in member scope becomes a symbolic handle there only, never a field
-/// (task 10352): a field member whose value would carry such a handle is
-/// re-evaluated without it, so only a selector consumes it. A default that is itself a structure ctor
-/// recurses through `eval_expr` → nested `Value::StructureInstance`. An
+/// (task 10352): a field member whose value would carry such a handle holds
+/// Undef in its place, so only a selector consumes it. A default that is
+/// itself a structure ctor recurses through `eval_expr` → nested
+/// `Value::StructureInstance`. An
 /// `Undef` field value is kept in its own slot — the structure is still
 /// constructed (no `FunctionCall`-style strict whole-value short-circuit).
 #[inline(never)]
@@ -1236,14 +1237,7 @@ fn eval_structure_instance_ctor(
             eval_expr(expr, ctx)
         } else {
             let scope = child.get_or_insert_with(|| member_scope(type_name, &fields));
-            let value = eval_expr(expr, &ctx.with_scope(scope));
-            if !minted.is_empty() && value.any_deep(&|v| minted.contains(v)) {
-                // A handle serves selectors only: a member that carries one by
-                // value takes what it reads with no handle in scope.
-                eval_expr(expr, &ctx.with_scope(&member_scope(type_name, &fields)))
-            } else {
-                value
-            }
+            without_minted_handles(eval_expr(expr, &ctx.with_scope(scope)), &minted)
         };
         if let Some(scope) = child.as_mut() {
             scope.insert(ValueCellId::new(type_name, name.as_str()), value.clone());
@@ -1298,6 +1292,18 @@ fn insert_symbolic_geometry_member(
         handle.clone(),
     );
     Some(handle)
+}
+
+/// `value` with every handle in `minted` replaced by `Undef`, at any depth. A
+/// ctor's symbolic geometry handle serves selectors in member scope only, so a
+/// field member that carries one by value holds Undef in its place, while a
+/// selector beside it keeps what it resolved over the handle.
+fn without_minted_handles(value: Value, minted: &[Value]) -> Value {
+    let is_minted = |v: &Value| minted.contains(v);
+    if minted.is_empty() || !value.any_deep(&is_minted) {
+        return value;
+    }
+    value.map_deep(&|v| is_minted(v).then_some(Value::Undef))
 }
 
 /// Build a `Value::Enum` for a runtime enum-variant constructor (task 7456),
