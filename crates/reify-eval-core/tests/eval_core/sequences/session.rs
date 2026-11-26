@@ -36,6 +36,10 @@ pub struct Reach {
     /// Final answers checked, by snapshot index.
     checked: BTreeMap<usize, u64>,
     shapes: BTreeMap<Shape, u64>,
+    /// Distinct paths of a snapshot answered.
+    answered: u64,
+    /// Answers the order check compared.
+    order_compared: u64,
 }
 
 impl Reach {
@@ -46,6 +50,16 @@ impl Reach {
     /// How many final answers were checked on snapshot `snapshot`.
     pub fn checked_on(&self, snapshot: usize) -> u64 {
         self.checked.get(&snapshot).copied().unwrap_or(0)
+    }
+
+    /// How many distinct paths of a snapshot were answered.
+    pub fn answered(&self) -> u64 {
+        self.answered
+    }
+
+    /// How many answers the order check compared.
+    pub fn order_compared(&self) -> u64 {
+        self.order_compared
     }
 
     /// How often `shape` was reached.
@@ -429,6 +443,7 @@ impl Session {
             self.reach.reached(Shape::LeftLiveAnswer);
         }
         if self.answered.insert((snapshot, path.clone())) {
+            self.reach.answered += 1;
             self.first.push(First {
                 snapshot,
                 path,
@@ -534,6 +549,8 @@ mod tests {
         let reach = check(&case, &honest).unwrap_or_else(|mismatch| panic!("{mismatch}"));
         assert!(reach.checked_on(0) > 0, "{reach:?}");
         assert!(reach.checked_on(1) > 0, "{reach:?}");
+        assert_eq!(reach.answered(), 4, "a, b and the root on 0, b on 1");
+        assert_eq!(reach.order_compared(), reach.answered(), "{reach:?}");
     }
 
     fn driven_then_edited(then: Then) -> Case {
