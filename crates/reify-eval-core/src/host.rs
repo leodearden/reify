@@ -43,6 +43,23 @@ impl Core {
         self.executor.turn()
     }
 
+    /// Blocks until one running section is delivered to its body, then
+    /// takes a turn.
+    pub fn wait(&mut self) -> Turn {
+        self.executor.wait()
+    }
+
+    /// Turns and waits until no section is running.
+    pub fn run(&mut self) {
+        self.executor.run();
+    }
+
+    /// Adds resource `R` on a thread of its own; `make` runs there, so `R`
+    /// need not be `Send`.
+    pub fn add_resource<R: 'static>(&mut self, make: impl FnOnce() -> R + Send + 'static) {
+        self.executor.add_resource(make);
+    }
+
     pub fn counters(&self) -> &Counters {
         self.executor.counters()
     }

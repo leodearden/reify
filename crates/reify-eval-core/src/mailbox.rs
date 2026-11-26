@@ -2,21 +2,28 @@
 //! ask and is suspended; the core puts the reply in the same slot. So a
 //! body makes one request at a time (O2) by construction.
 
+use std::any::{Any, TypeId};
 use std::future::Future;
 use std::mem;
 use std::pin::Pin;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::task::{Context, Poll};
 
+use crate::job::Product;
 use crate::outcome::{Erased, Outcome};
 use crate::reference::Ref;
+use crate::section::SectionParts;
+
+pub(crate) type SectionJob = Box<dyn FnOnce(&mut dyn Any, SectionParts) -> Product + Send>;
 
 pub(crate) enum Ask {
     Read(Ref),
+    Exclusive { resource: TypeId, resource_name: &'static str, job: SectionJob },
 }
 
 pub(crate) enum Reply {
     Outcome(Outcome<Erased>),
+    Product(Product),
 }
 
 pub(crate) enum Posted {

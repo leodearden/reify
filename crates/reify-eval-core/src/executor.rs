@@ -13,6 +13,7 @@ use crate::declaration::Declaration;
 use crate::event::{Event, RequestId};
 use crate::failure::{Failure, OutsideFailure, panic_message};
 use crate::input::{Input, InputKey};
+use crate::job::{Product, Report, SectionFault};
 use crate::kinds::Kinds;
 use crate::mailbox::{Ask, Posted, Reply};
 use crate::outcome::{Erased, Outcome};
@@ -20,7 +21,9 @@ use crate::path::{Path, Root};
 use crate::produced::Produced;
 use crate::ready::ReadyQueue;
 use crate::requests::{Request, Requests};
+use crate::resource::Resources;
 use crate::serve;
+use crate::serve::section::InFlight;
 use crate::snapshot::Snapshot;
 use crate::task::{Task, TaskKey};
 
@@ -38,6 +41,8 @@ pub(crate) struct Executor {
     requests: Requests,
     counters: Counters,
     events: Vec<Event>,
+    in_flight: InFlight,
+    resources: Resources,
 }
 
 impl Executor {
@@ -49,7 +54,13 @@ impl Executor {
             requests: Requests::default(),
             counters: Counters::default(),
             events: Vec::new(),
+            in_flight: InFlight::default(),
+            resources: Resources::new(),
         }
+    }
+
+    pub fn add_resource<R: 'static>(&mut self, make: impl FnOnce() -> R + Send + 'static) {
+        self.resources.add(make);
     }
 
     pub fn evaluate(&mut self, snapshot: &Snapshot, roots: impl IntoIterator<Item = Root>) -> Request {
@@ -72,7 +83,26 @@ impl Executor {
         while let Some(key) = self.ready.pop() {
             self.advance(key);
         }
-        Turn::Idle
+        match self.in_flight.running() {
+            0 => Turn::Idle,
+            running => Turn::SectionsRunning(running),
+        }
+    }
+
+    /// Blocks until one running section is delivered, then takes a turn.
+    pub fn wait(&mut self) -> Turn {
+        if self.in_flight.running() > 0 {
+            let (serial, product) = self.next_finished();
+            serve::section::deliver(serial, product, &mut self.in_flight, &mut self.tasks, &mut self.ready);
+        }
+        self.turn()
+    }
+
+    pub fn run(&mut self) {
+        let mut turn = self.turn();
+        while turn != Turn::Idle {
+            turn = self.wait();
+        }
     }
 
     pub fn counters(&self) -> &Counters {
@@ -109,7 +139,7 @@ impl Executor {
     }
 
     fn advance(&mut self, key: TaskKey) {
-        let Some(task) = self.tasks.get_mut(&key) else { return };
+        let Some(task) = self.tasks.get_mut(&key).filter(|task| task.section.is_none()) else { return };
         let posted = match catch_unwind(AssertUnwindSafe(|| task.poll())) {
             Ok(Poll::Ready(Produced::Outcome(outcome))) => return self.finish(&key, outcome),
             Ok(Poll::Ready(Produced::Outside(failure))) => return self.end_outside(&key, failure),
@@ -124,6 +154,20 @@ impl Executor {
                 let outcome = serve::read::answer(&task.declaration, &task.snapshot, &r);
                 task.mailbox.reply(Reply::Outcome(outcome));
                 self.ready.push(key);
+            }
+            Posted::Ask(Ask::Exclusive { resource, resource_name, job }) => {
+                let started = serve::section::start(
+                    task,
+                    &key,
+                    (resource, resource_name),
+                    job,
+                    &mut self.resources,
+                    &mut self.in_flight,
+                    &mut self.counters,
+                );
+                if let Err(failure) = started {
+                    self.end_outside(&key, failure);
+                }
             }
             Posted::TwoRequestsAtOnce => {
                 self.finish(&key, Outcome::Failure(Failure::TwoRequestsAtOnce))
@@ -153,5 +197,25 @@ impl Executor {
 
     fn tell(&mut self, request: RequestId, path: Path, answer: Answer<Erased>) {
         self.events.push(Event::Answered { request, path, answer });
+    }
+
+    fn next_finished(&mut self) -> (u64, Result<Product, SectionFault>) {
+        loop {
+            match self.resources.receive() {
+                Report::Finished { serial, product } => return (serial, product),
+                Report::Released => self.resources.acknowledge_release(),
+            }
+        }
+    }
+}
+
+impl Drop for Executor {
+    /// Bodies and untaken answers go before the resources, so what they
+    /// hold is queued for release before each resource thread stops.
+    fn drop(&mut self) {
+        for (_, task) in mem::take(&mut self.tasks) {
+            task.discard();
+        }
+        self.events.clear();
     }
 }

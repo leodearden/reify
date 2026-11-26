@@ -22,6 +22,8 @@ pub(crate) struct Task {
     pub snapshot: Snapshot,
     pub mailbox: Arc<Mailbox>,
     pub cancel: Cancel,
+    /// The section the body waits on, if it waits on one.
+    pub section: Option<u64>,
     body: Body,
 }
 
@@ -30,7 +32,7 @@ impl Task {
         let mailbox = Arc::new(Mailbox::new());
         let cancel = Cancel::default();
         let body = kind.start(Cx::new(Arc::clone(&mailbox), cancel.clone()));
-        Self { declaration, snapshot, mailbox, cancel, body }
+        Self { declaration, snapshot, mailbox, cancel, section: None, body }
     }
 
     /// Runs the body until it finishes or is suspended. Nothing wakes a

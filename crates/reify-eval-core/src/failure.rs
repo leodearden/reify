@@ -22,6 +22,8 @@ pub enum OutsideFailure {
     /// A body was suspended waiting on something other than the core.
     WaitedOutsideCore,
     BodyPanicked { message: String },
+    /// A body asked for a section on a resource nobody added.
+    NoResource { resource: &'static str },
     /// A kind's own work ran out of memory in `resource`.
     OutOfMemory { resource: &'static str },
 }
