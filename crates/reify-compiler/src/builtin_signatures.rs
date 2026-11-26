@@ -225,8 +225,8 @@
 //! [`builtin_arg_slots`] is keyed on `(name, arity)`, not `name` alone, and
 //! guards only genuinely overloaded names.  The rule, its rationale and the
 //! `relation_signatures::relation_operand_datum` precedent are documented there;
-//! the concrete false positive it prevents is on that function's
-//! `linear_pattern_2d` arm.
+//! the concrete false positive it prevents is on that function's `fillet` /
+//! `chamfer` arms.
 //!
 //! Most keys here are topology selectors; the exceptions are enumerated and
 //! justified in `tests::NON_SELECTOR_ARG_SLOT_KEYS`, which the coverage invariant
@@ -472,7 +472,7 @@ const fn direction_arg(index: usize, name: &'static str) -> CheckableArg {
 /// [`crate::relation_signatures::relation_operand_datum`], which discriminates
 /// `"offset" if args.len() == 3` / `"angle" if args.len() == 3` for the same
 /// reason.  The concrete false positive this prevents is documented on the
-/// `linear_pattern_2d` arm below.
+/// `fillet` / `chamfer` arms below.
 ///
 /// **Rule: guard only genuinely overloaded names.**  Non-overloaded arms stay
 /// unguarded (arity-agnostic) so a short or long call still has its present
@@ -598,44 +598,22 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         // `linear_pattern_slots_its_direction_and_spacing_at_every_arity`.
         "linear_pattern" => const { &[direction_arg(1, "direction"), length_arg(3, "spacing")] },
 
-        // linear_pattern_2d(target, dx1, dy1, dz1, count1, spacing1,
-        //                           dx2, dy2, dz2, count2, spacing2)
-        //   arg5:  spacing1 → LENGTH ("Length")
-        //   arg10: spacing2 → LENGTH ("Length")
-        // Direction components are unchecked: task 5214 established each
-        // direction is a unit vector, so a bare component carries no
-        // silent-metres hazard. Counts are Ints, unchecked as in
-        // `linear_pattern` above.
+        // linear_pattern_2d(target, direction1, count1, spacing1,
+        //                           direction2, count2, spacing2)
+        //   args1, 4: `direction1` / `direction2` → Direction (direction-typing ι-c).
+        //   args3, 6: `spacing1` / `spacing2` → LENGTH ("Length").
+        //   args2, 5: `count1` / `count2` are Ints and NEVER slots: a LENGTH slot
+        //             there would emit a false `ArgTypeMismatch` on correct code.
         //
-        // Here the `arg_count == 11` guard is not merely forward-compat — it is
-        // the case that makes the whole arity dimension necessary. Task 5351's
-        // 7-arg form is `(target, dir1, count1, spacing1, dir2, count2,
-        // spacing2)`, in which index 5 is `count2`, an `Int`. An arity-agnostic
-        // `spacing1@5 LENGTH` slot would emit a FALSE `ArgTypeMismatch` on
-        // valid code there. Unlike `linear_pattern`'s 4-arg form (which has no
-        // index 5 at all, so the `compiled_args.get(index)` bounds check
-        // happens to shield it), a 7-arg call DOES have an index 5 holding a
-        // different parameter — only this guard prevents the false positive.
-        "linear_pattern_2d" if arg_count == 11 => &[
-            CheckableArg {
-                index: 5,
-                name: "spacing1",
-                expected: ExpectedArg::Scalar {
-                    dimension: DimensionVector::LENGTH,
-                    type_name: "Length",
-                    migration_hint: LENGTH_MIGRATION_HINT,
-                },
-            },
-            CheckableArg {
-                index: 10,
-                name: "spacing2",
-                expected: ExpectedArg::Scalar {
-                    dimension: DimensionVector::LENGTH,
-                    type_name: "Length",
-                    migration_hint: LENGTH_MIGRATION_HINT,
-                },
-            },
-        ],
+        // Single-form (`check_arg_count_exact_form(.., 7, ..)`), so arity-agnostic
+        // per the "guard only genuinely overloaded names" rule. Pinned by
+        // `linear_pattern_2d_slots_directions_and_spacings_but_never_its_counts`.
+        "linear_pattern_2d" => const { &[
+            direction_arg(1, "direction1"),
+            length_arg(3, "spacing1"),
+            direction_arg(4, "direction2"),
+            length_arg(6, "spacing2"),
+        ] },
 
         // ── Pattern CSG producers: the ORIGIN triple is a Length (task 5662) ──
         //
@@ -959,10 +937,10 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         //   fillet(target, edges, radius)   — radius at index 2, index 1 is the
         //                                     edge SELECTOR
         // An arity-agnostic `radius@1` slot would therefore demand a Length of
-        // a Selector on correct code — the same class of false positive the
-        // `linear_pattern_2d` arm's guard exists to prevent, and the reason
-        // every modify arm whose magnitude moves — `fillet`, `chamfer`, `draft`
-        // — carries an `arg_count` guard. Every OTHER name below holds its
+        // a Selector on correct code — the false positive the arity dimension
+        // of this table exists to prevent, and the reason every modify arm
+        // whose magnitude moves — `fillet`, `chamfer`, `draft` — carries an
+        // `arg_count` guard. Every OTHER name below holds its
         // magnitude at a STABLE index across every arity it accepts, so per the
         // rule stated on this function they stay unguarded.
         //
@@ -1573,10 +1551,10 @@ mod tests {
 
     /// Inclusive upper bound for every arity sweep in this module.
     ///
-    /// The largest arity any arm currently guards on is 11 (`linear_pattern_2d`),
-    /// so this leaves headroom above every guard in the table — an arity-guarded
-    /// arm cannot hide from a sweep by sitting just above the bound. Raise it if a
-    /// future arm guards on a higher arity.
+    /// The largest arity any arm currently guards on is 9 (`circular_pattern`'s
+    /// scalar form), so this leaves headroom above every guard in the table — an
+    /// arity-guarded arm cannot hide from a sweep by sitting just above the
+    /// bound. Raise it if a future arm guards on a higher arity.
     const MAX_PROBED_ARITY: usize = 14;
 
     /// The curated exemption list for [`builtin_arg_slots`] keys that are NOT
@@ -2156,7 +2134,7 @@ mod tests {
     // them: `fillet(target, radius)` vs `fillet(target, edges, radius)`. An
     // arity-agnostic `radius@1` slot would therefore fire on the 3-arg form's
     // `edges` SELECTOR — a false positive on correct code, which is exactly the
-    // failure `linear_pattern_2d`'s guard was introduced to prevent. Both arms
+    // failure the table's arity dimension was introduced to prevent. Both arms
     // must be arity-keyed, and the tests below assert the negative half (no
     // slot at the other form's index) as well as the positive.
 

@@ -2137,12 +2137,14 @@ fn compile_geometry_call_inner(
                 None
             }
         }
-        // linear_pattern_2d(target, dx1, dy1, dz1, count1, spacing1, dx2, dy2, dz2, count2, spacing2)
+        // linear_pattern_2d(target, direction1, count1, spacing1, direction2, count2,
+        // spacing2): Direction directions and Length spacings (direction-typing ι-c).
         "linear_pattern_2d" => {
-            if !check_arg_count_exact(
+            if !check_arg_count_exact_form(
                 "linear_pattern_2d",
                 compiled_args.len(),
-                11,
+                7,
+                "geo, dir(x, y, z), count1, spacing1, dir(x, y, z), count2, spacing2",
                 expr.span,
                 diagnostics,
             ) {
@@ -2155,14 +2157,10 @@ fn compile_geometry_call_inner(
                 target,
                 args: vec![
                     ("target".to_string(), it.next().unwrap()),
-                    ("dx1".to_string(), it.next().unwrap()),
-                    ("dy1".to_string(), it.next().unwrap()),
-                    ("dz1".to_string(), it.next().unwrap()),
+                    ("direction1".to_string(), it.next().unwrap()),
                     ("count1".to_string(), it.next().unwrap()),
                     ("spacing1".to_string(), it.next().unwrap()),
-                    ("dx2".to_string(), it.next().unwrap()),
-                    ("dy2".to_string(), it.next().unwrap()),
-                    ("dz2".to_string(), it.next().unwrap()),
+                    ("direction2".to_string(), it.next().unwrap()),
                     ("count2".to_string(), it.next().unwrap()),
                     ("spacing2".to_string(), it.next().unwrap()),
                 ],
