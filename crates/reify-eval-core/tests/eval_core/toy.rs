@@ -16,8 +16,10 @@ use reify_eval_core::{
     RequestId, Root, Section, Step, Value,
 };
 
-/// Adds the i64s bound at "0", "1", … until a binding reads absent. A read
-/// that fails ends the body with that failure as its outcome.
+/// Adds the i64s bound at "0", "1", … until a binding reads absent. Then,
+/// if "pick" reads an i64 i, adds the i64 at "from"/[i], a ref computed
+/// from an answer; absent there, or at a negative i, the cell is absent. A
+/// read that fails ends the body with that failure as its outcome.
 pub struct Cell;
 
 impl Kind for Cell {
@@ -33,7 +35,21 @@ impl Kind for Cell {
                 Outcome::Failure(failure) => return Produced::Outcome(Outcome::Failure(failure)),
             }
         }
-        Produced::Outcome(Outcome::of(sum))
+        let pick = match cx.read::<i64>(&Ref::binding("pick")).await {
+            Outcome::Value(pick) => u64::try_from(*pick).ok(),
+            Outcome::Absent => return Produced::Outcome(Outcome::of(sum)),
+            Outcome::Failure(failure) => return Produced::Outcome(Outcome::Failure(failure)),
+        };
+        let Some(pick) = pick else {
+            return Produced::Outcome(Outcome::Absent);
+        };
+        match cx
+            .read::<i64>(&Ref::binding("from").step(Step::index(pick)))
+            .await
+        {
+            Outcome::Value(value) => Produced::Outcome(Outcome::of(sum + *value)),
+            other => Produced::Outcome(other),
+        }
     }
 }
 
@@ -55,6 +71,13 @@ pub fn cell(names: &[&str]) -> Declaration {
 /// A binding to the host-named input `name`.
 pub fn input(name: &str) -> Binding {
     Binding::Input(InputKey::named(name))
+}
+
+/// A cell whose only term is the element at "from"/[the i64 at "pick"].
+pub fn picker(pick: Binding, from: Binding) -> Declaration {
+    Declaration::new(Cell::ID)
+        .bind("pick", pick)
+        .bind("from", from)
 }
 
 /// A binding to the place `steps` down from the bound node's declarer:
@@ -83,8 +106,25 @@ pub fn members<'a>(named: impl IntoIterator<Item = (&'a str, Declaration)>) -> M
     )
 }
 
-/// Declares the members it reads at binding "members"; its value is what
-/// it read.
+/// The members at binding "members", with those at binding "extra" added;
+/// with no extra members, what "members" read, not a copy.
+async fn read_members(cx: &Cx) -> Outcome<Members> {
+    let refs = [Ref::binding("members"), Ref::binding("extra")];
+    let [members, extra] = <[_; 2]>::try_from(cx.read_all::<Members>(&refs).await)
+        .expect("a read gives an outcome per ref");
+    match (members, extra) {
+        (Outcome::Value(members), Outcome::Value(extra)) => {
+            let mut all = (*members).clone();
+            all.0.extend(extra.0.clone());
+            Outcome::of(all)
+        }
+        (Outcome::Value(members), Outcome::Absent) => Outcome::Value(members),
+        (Outcome::Value(_), failed) | (failed, _) => failed,
+    }
+}
+
+/// Declares the members it reads at binding "members", and those of the
+/// input "extra" attached to its own path; its value is those members.
 pub struct Scope;
 
 impl Kind for Scope {
@@ -92,7 +132,7 @@ impl Kind for Scope {
     const ID: KindId = KindId("toy.scope");
 
     async fn run(cx: &Cx) -> Produced<Members> {
-        Produced::Outcome(cx.read::<Members>(&Ref::binding("members")).await)
+        Produced::Outcome(read_members(cx).await)
     }
 
     fn declares(out: &Members, step: &Step) -> Option<Declaration> {
@@ -100,9 +140,86 @@ impl Kind for Scope {
     }
 }
 
-/// A scope whose members are the host-named input `members`.
+/// A scope whose members are the host-named input `members`, with any
+/// members in the input "extra" attached to its path.
 pub fn scope(members: &str) -> Declaration {
-    Declaration::new(Scope::ID).bind("members", input(members))
+    Declaration::new(Scope::ID)
+        .bind("members", input(members))
+        .bind("extra", Binding::Attached("extra".into()))
+}
+
+/// Reads the bool at "condition" first: false makes it absent, true makes
+/// it declare as a scope does; any other outcome is its answer.
+pub struct Guard;
+
+impl Kind for Guard {
+    type Out = Members;
+    const ID: KindId = KindId("toy.guard");
+
+    async fn run(cx: &Cx) -> Produced<Members> {
+        match cx.read::<bool>(&Ref::binding("condition")).await {
+            Outcome::Value(holds) if *holds => Produced::Outcome(read_members(cx).await),
+            Outcome::Value(_) => Produced::Outcome(Outcome::Absent),
+            Outcome::Absent => Produced::Outcome(Outcome::Absent),
+            Outcome::Failure(failure) => Produced::Outcome(Outcome::Failure(failure)),
+        }
+    }
+
+    fn declares(out: &Members, step: &Step) -> Option<Declaration> {
+        out.0.get(step).cloned()
+    }
+}
+
+/// A guard on `condition` over the host-named input `members`.
+pub fn guard(condition: Binding, members: &str) -> Declaration {
+    Declaration::new(Guard::ID)
+        .bind("condition", condition)
+        .bind("members", input(members))
+}
+
+/// How many elements a collection has, and what each is.
+pub struct Elements {
+    pub count: u64,
+    pub element: Declaration,
+}
+
+/// Reads the i64 count at "count" and the declaration at "element", and
+/// declares that element at each index below the count.
+pub struct Collection;
+
+impl Kind for Collection {
+    type Out = Elements;
+    const ID: KindId = KindId("toy.collection");
+
+    async fn run(cx: &Cx) -> Produced<Elements> {
+        let count = match cx.read::<i64>(&Ref::binding("count")).await {
+            Outcome::Value(count) => u64::try_from(*count).unwrap_or(0),
+            Outcome::Absent => return Produced::Outcome(Outcome::Absent),
+            Outcome::Failure(failure) => return Produced::Outcome(Outcome::Failure(failure)),
+        };
+        match cx.read::<Declaration>(&Ref::binding("element")).await {
+            Outcome::Value(element) => Produced::Outcome(Outcome::of(Elements {
+                count,
+                element: (*element).clone(),
+            })),
+            Outcome::Absent => Produced::Outcome(Outcome::Absent),
+            Outcome::Failure(failure) => Produced::Outcome(Outcome::Failure(failure)),
+        }
+    }
+
+    fn declares(out: &Elements, step: &Step) -> Option<Declaration> {
+        match step {
+            Step::Index(index) if *index < out.count => Some(out.element.clone()),
+            _ => None,
+        }
+    }
+}
+
+/// A collection of `count` elements, each declared as `element` reads.
+pub fn collection(count: Binding, element: Binding) -> Declaration {
+    Declaration::new(Collection::ID)
+        .bind("count", count)
+        .bind("element", element)
 }
 
 /// The inputs of root scope `name` with `members`: the members under the
@@ -118,6 +235,15 @@ pub fn root_scope(name: &str, members: Members) -> [(InputKey, Input); 2] {
 pub fn with_scope() -> Builder {
     with_cell()
         .kind::<Scope>()
+        .expect("toy kind ids are distinct")
+}
+
+/// A builder with every toy kind of structure: cells, scopes, guards and
+/// collections.
+pub fn with_structure() -> Builder {
+    with_scope()
+        .kind::<Guard>()
+        .and_then(|builder| builder.kind::<Collection>())
         .expect("toy kind ids are distinct")
 }
 
