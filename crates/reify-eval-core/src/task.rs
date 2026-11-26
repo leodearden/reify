@@ -1,5 +1,6 @@
 //! A running body and what it was started with.
 
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
@@ -36,5 +37,11 @@ impl Task {
     /// body: the core queues it again when its reply is in the mailbox.
     pub fn poll(&mut self) -> Poll<Produced<Erased>> {
         self.body.as_mut().poll(&mut Context::from_waker(Waker::noop()))
+    }
+
+    /// Drops the task, so that a panic while dropping what its body holds
+    /// cannot escape the core.
+    pub fn discard(self) {
+        let _ = catch_unwind(AssertUnwindSafe(move || drop(self)));
     }
 }

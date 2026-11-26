@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::mem;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::task::Poll;
 
@@ -10,7 +11,7 @@ use crate::answer::Answer;
 use crate::counters::Counters;
 use crate::declaration::Declaration;
 use crate::event::{Event, RequestId};
-use crate::failure::OutsideFailure;
+use crate::failure::{Failure, OutsideFailure, panic_message};
 use crate::input::{Input, InputKey};
 use crate::kinds::Kinds;
 use crate::mailbox::{Ask, Posted, Reply};
@@ -109,10 +110,14 @@ impl Executor {
 
     fn advance(&mut self, key: TaskKey) {
         let Some(task) = self.tasks.get_mut(&key) else { return };
-        let posted = match task.poll() {
-            Poll::Ready(Produced::Outcome(outcome)) => return self.finish(&key, outcome),
-            Poll::Ready(Produced::Outside(failure)) => return self.end_outside(&key, failure),
-            Poll::Pending => task.mailbox.take_posted(),
+        let posted = match catch_unwind(AssertUnwindSafe(|| task.poll())) {
+            Ok(Poll::Ready(Produced::Outcome(outcome))) => return self.finish(&key, outcome),
+            Ok(Poll::Ready(Produced::Outside(failure))) => return self.end_outside(&key, failure),
+            Ok(Poll::Pending) => task.mailbox.take_posted(),
+            Err(payload) => {
+                let message = panic_message(&*payload);
+                return self.end_outside(&key, OutsideFailure::BodyPanicked { message });
+            }
         };
         match posted {
             Posted::Ask(Ask::Read(r)) => {
@@ -120,10 +125,10 @@ impl Executor {
                 task.mailbox.reply(Reply::Outcome(outcome));
                 self.ready.push(key);
             }
-            Posted::Nothing | Posted::TwoRequestsAtOnce => {
-                self.tasks.remove(&key);
-                self.requests.settle(&key);
+            Posted::TwoRequestsAtOnce => {
+                self.finish(&key, Outcome::Failure(Failure::TwoRequestsAtOnce))
             }
+            Posted::Nothing => self.end_outside(&key, OutsideFailure::WaitedOutsideCore),
         }
     }
 
@@ -138,7 +143,9 @@ impl Executor {
     /// Ends a node with a failure outside the inputs: pending to every live
     /// request that wanted it, and stored nowhere.
     fn end_outside(&mut self, key: &TaskKey, failure: OutsideFailure) {
-        self.tasks.remove(key);
+        if let Some(task) = self.tasks.remove(key) {
+            task.discard();
+        }
         for request in self.requests.settle(key) {
             self.tell(request, key.1.clone(), Answer::Pending(failure.clone()));
         }
