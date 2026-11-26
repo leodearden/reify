@@ -4,8 +4,8 @@
 //! and its reversal.
 
 use reify_eval_core::{
-    Answer, Binding, Core, Cx, Declaration, Erased, Failure, Hash128, InputKey, Kind, KindId,
-    Outcome, Path, Produced, Ref, Snapshot,
+    Answer, Binding, Builder, Core, Cx, Declaration, Erased, Failure, Hash128, Input, InputKey,
+    Kind, KindId, Outcome, Path, Produced, Ref, Snapshot,
 };
 
 use crate::toy::{self, Cell, Scope};
@@ -278,6 +278,25 @@ fn values_of_different_types_never_share_a_content() {
     let at_i = toy::answer_alone(&mut core, &snapshot, &toy::below("I", &["r"]));
     assert_eq!(int(at_i), final_int(11));
     assert_eq!(core.counters().body_runs(TenMore::ID), 2);
+}
+
+/// Two closures written in one function are given the same type name.
+#[test]
+fn values_of_two_types_that_share_a_type_name_never_share_a_content() {
+    let first = || 1_i64;
+    let second = || 2_i64;
+    assert_eq!(type_name_of(&first), type_name_of(&second));
+    let leaf = Hash128::of_bytes(b"leaf");
+    let mut core = Builder::new().build();
+
+    let with_first = core.snapshot([(InputKey::named("x"), Input::of(first, leaf))]);
+    let with_second = core.snapshot([(InputKey::named("x"), Input::of(second, leaf))]);
+
+    assert_ne!(with_first.id(), with_second.id());
+}
+
+fn type_name_of<T>(_: &T) -> &'static str {
+    std::any::type_name::<T>()
 }
 
 #[test]
