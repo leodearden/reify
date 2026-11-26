@@ -1625,6 +1625,39 @@ fn arc_bare_angles_are_both_rejected_in_one_pass() {
     );
 }
 
+/// TRIPWIRE — the constrained-sketch `arc(start, centre, end)` must never draw
+/// the geometry `arc`'s slot mismatches.
+///
+/// The geometry `arc` slot arm is arity-agnostic and checks index 2 as an
+/// Angle, which is a point in the sketch form. Today the sketch block is
+/// rejected before its members reach `check_builtin_arg_types`, so this holds
+/// without any guard. When #5508 lowers sketch members through that check, it
+/// must guard the `arc` arm with `arg_count == 5`, or this test goes red.
+#[test]
+fn sketch_arc_three_point_form_draws_no_geometry_arc_slot_mismatch() {
+    let compiled = compile_source_with_stdlib(
+        r#"
+structure def SketchArc {
+    sketch profile {
+        let b = point(10mm, 0mm)
+        let c1 = arc(point(9mm, 1mm), b, point(10mm, 2mm))
+    }
+}
+"#,
+    );
+    let arc_mismatches: Vec<&str> = arg_type_mismatch_errors(&compiled)
+        .iter()
+        .map(|d| d.message.as_str())
+        .filter(|m| m.starts_with("arc:"))
+        .collect();
+    assert!(
+        arc_mismatches.is_empty(),
+        "a sketch arc/3 drew the geometry arc/5 slot checks: {arc_mismatches:?}\n\
+         All diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
+
 /// SIGNAL — a bare `draft` angle is rejected at BOTH arity forms, naming
 /// `angle`.
 ///

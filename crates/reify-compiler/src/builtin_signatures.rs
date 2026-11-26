@@ -1055,7 +1055,9 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         //
         // The constrained-sketch `arc/3` (#5508) shares this name. When it
         // reaches `check_builtin_arg_types`, its index 2 is a point, so #5508
-        // must land an `arg_count == 5` guard on this arm, per the HAZARD block.
+        // must land an `arg_count == 5` guard on this arm, per the HAZARD block;
+        // `sketch_arc_three_point_form_draws_no_geometry_arc_slot_mismatch` goes
+        // red if it does not.
         "arc" => const { &[
             angle_arg(2, "start_angle"),
             angle_arg(3, "end_angle"),
