@@ -14,8 +14,22 @@ pub fn shrink<C>(
     size: impl Fn(&C) -> u64,
     fails: impl Fn(&C) -> bool,
 ) -> C {
-    let _ = (candidates, size, fails);
-    case
+    let mut case = case;
+    'smaller: loop {
+        let current = size(&case);
+        for candidate in candidates(&case) {
+            let smaller = size(&candidate);
+            assert!(
+                smaller < current,
+                "a candidate of size {smaller} is not smaller than its case of size {current}"
+            );
+            if fails(&candidate) {
+                case = candidate;
+                continue 'smaller;
+            }
+        }
+        return case;
+    }
 }
 
 mod tests {

@@ -8,6 +8,7 @@
 
 use std::any::type_name;
 use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 
 use reify_eval_core::{Declaration, Failure, Step};
 
@@ -52,7 +53,7 @@ pub enum Invalid {
 /// The first path of `case` the reference has no answer for, trying every
 /// path the case demands on every snapshot it makes.
 pub fn first_invalid(case: &Case) -> Option<Invalid> {
-    let demanded: Vec<_> = case.demanded().collect();
+    let demanded: BTreeSet<_> = case.demanded().collect();
     case.snapshots().into_iter().find_map(|inputs| {
         let mut reference = Reference::new(inputs);
         demanded.iter().find_map(|path| reference.answer(path).err())
@@ -63,7 +64,7 @@ pub fn first_invalid(case: &Case) -> Option<Invalid> {
 /// an outcome reached without one.
 #[derive(Clone)]
 enum Declared {
-    Node(Decl),
+    Node(Rc<Decl>),
     Settled(Expect),
 }
 
@@ -77,7 +78,7 @@ enum Typed<T> {
 /// The answers of one snapshot.
 pub struct Reference {
     inputs: Inputs,
-    answers: BTreeMap<ModelPath, Result<Expected, Invalid>>,
+    answers: BTreeMap<ModelPath, Result<Rc<Expected>, Invalid>>,
     declared: BTreeMap<ModelPath, Declared>,
     in_progress: BTreeSet<ModelPath>,
 }
@@ -93,13 +94,18 @@ impl Reference {
     }
 
     pub fn answer(&mut self, path: &ModelPath) -> Result<Expected, Invalid> {
+        self.shared(path).map(|answer| Expected::clone(&answer))
+    }
+
+    /// The answer at `path`, shared with the memo.
+    fn shared(&mut self, path: &ModelPath) -> Result<Rc<Expected>, Invalid> {
         if let Some(known) = self.answers.get(path) {
             return known.clone();
         }
         if !self.in_progress.insert(path.clone()) {
             return Err(Invalid::Cycle { path: path.clone() });
         }
-        let answer = self.work_out(path);
+        let answer = self.work_out(path).map(Rc::new);
         self.in_progress.remove(path);
         self.answers.insert(path.clone(), answer.clone());
         answer
@@ -113,7 +119,7 @@ impl Reference {
     /// The declaration of the node at `path`, if one is declared there.
     pub fn declaration_at(&mut self, path: &ModelPath) -> Result<Option<Decl>, Invalid> {
         Ok(match self.declaration(path)? {
-            Declared::Node(decl) => Some(decl),
+            Declared::Node(decl) => Some(Decl::clone(&decl)),
             Declared::Settled(_) => None,
         })
     }
@@ -152,16 +158,20 @@ impl Reference {
         }
         let declared = match path.parent() {
             None => match typed_decl(self.input(&Key::Root(path.root.clone()))) {
-                Typed::Value(decl) => Declared::Node(decl),
+                Typed::Value(decl) => Declared::Node(Rc::new(decl)),
                 Typed::Absent => Declared::Settled(Expect::Absent),
                 Typed::Failure(failure) => Declared::Settled(Expect::Failure(failure)),
             },
             Some((parent, step)) => {
-                let above = self.answer(&parent)?;
-                match (above.node, above.outcome) {
-                    (_, Expect::Failure(failure)) => Declared::Settled(Expect::Failure(failure)),
-                    (Some(kind), Expect::Value(out)) => declares(kind, &out, step)
-                        .map_or(Declared::Settled(Expect::Absent), Declared::Node),
+                let above = self.shared(&parent)?;
+                match (above.node, &above.outcome) {
+                    (_, Expect::Failure(failure)) => {
+                        Declared::Settled(Expect::Failure(failure.clone()))
+                    }
+                    (Some(kind), Expect::Value(out)) => declares(kind, out, step)
+                        .map_or(Declared::Settled(Expect::Absent), |decl| {
+                            Declared::Node(Rc::new(decl))
+                        }),
                     _ => Declared::Settled(Expect::Absent),
                 }
             }
@@ -181,8 +191,8 @@ impl Reference {
     /// steps below it; a binding relative to the declarer names nothing on
     /// a root; a passed binding is the declarer's own binding, the steps
     /// still to take carried along (contract 2.1).
-    fn read(&mut self, reader: &ModelPath, decl: &Decl, r: &ModelRef) -> Result<Expect, Invalid> {
-        let (mut node, mut decl) = (reader.clone(), decl.clone());
+    fn read(&mut self, reader: &ModelPath, decl: &Rc<Decl>, r: &ModelRef) -> Result<Expect, Invalid> {
+        let (mut node, mut decl) = (reader.clone(), Rc::clone(decl));
         let (mut name, mut steps) = (r.binding.clone(), r.steps.clone());
         loop {
             let declarer = node.parent().map(|(declarer, _)| declarer);
@@ -198,7 +208,7 @@ impl Reference {
                         .iter()
                         .chain(&steps)
                         .fold(declarer, |at, step| at.child(step.clone()));
-                    return Ok(self.answer(&target)?.outcome);
+                    return Ok(self.shared(&target)?.outcome.clone());
                 }
                 (Some(Bind::Passed(passed)), Some(declarer)) => {
                     let Declared::Node(declarer_decl) = self.declaration(&declarer)? else {
@@ -214,7 +224,7 @@ impl Reference {
         }
     }
 
-    fn read_binding(&mut self, at: &ModelPath, decl: &Decl, name: &str) -> Result<Expect, Invalid> {
+    fn read_binding(&mut self, at: &ModelPath, decl: &Rc<Decl>, name: &str) -> Result<Expect, Invalid> {
         let r = ModelRef {
             binding: name.to_owned(),
             steps: Vec::new(),
@@ -225,7 +235,7 @@ impl Reference {
     /// The i64s at "0", "1", … until one reads absent, a failure ending it;
     /// then, if "pick" reads i, the i64 at "from"/[i] added, absent at a
     /// negative i.
-    fn cell(&mut self, at: &ModelPath, decl: &Decl) -> Result<Expect, Invalid> {
+    fn cell(&mut self, at: &ModelPath, decl: &Rc<Decl>) -> Result<Expect, Invalid> {
         let mut sum = 0_i64;
         for term in 0_u32.. {
             match typed_int(self.read_binding(at, decl, &term.to_string())?) {
@@ -254,7 +264,7 @@ impl Reference {
     }
 
     /// The members at "members" with those at "extra" over them.
-    fn members(&mut self, at: &ModelPath, decl: &Decl) -> Result<Expect, Invalid> {
+    fn members(&mut self, at: &ModelPath, decl: &Rc<Decl>) -> Result<Expect, Invalid> {
         let members = typed_members(self.read_binding(at, decl, "members")?);
         let extra = typed_members(self.read_binding(at, decl, "extra")?);
         Ok(match (members, extra) {
@@ -272,7 +282,7 @@ impl Reference {
 
     /// Its members while "condition" reads true; absent while it reads
     /// false or nothing.
-    fn guard(&mut self, at: &ModelPath, decl: &Decl) -> Result<Expect, Invalid> {
+    fn guard(&mut self, at: &ModelPath, decl: &Rc<Decl>) -> Result<Expect, Invalid> {
         match typed_bool(self.read_binding(at, decl, "condition")?) {
             Typed::Value(true) => self.members(at, decl),
             Typed::Value(false) | Typed::Absent => Ok(Expect::Absent),
@@ -282,7 +292,7 @@ impl Reference {
 
     /// The count at "count", none below zero, and the declaration at
     /// "element".
-    fn collection(&mut self, at: &ModelPath, decl: &Decl) -> Result<Expect, Invalid> {
+    fn collection(&mut self, at: &ModelPath, decl: &Rc<Decl>) -> Result<Expect, Invalid> {
         let count = match typed_int(self.read_binding(at, decl, "count")?) {
             Typed::Value(count) => u64::try_from(count).unwrap_or(0),
             Typed::Absent => return Ok(Expect::Absent),
