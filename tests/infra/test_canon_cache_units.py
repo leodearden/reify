@@ -915,7 +915,7 @@ class StaleSessionFiles(SessionCase):
 
 def sample_record(**changes):
     fields = dict(
-        mode="canon",
+        mode=canon_cache.RecordMode.CANON,
         policy=canon_cache.Policy.SHARED,
         backend=canon_cache.Backend.SHARED,
         reason=canon_cache.Reason.NONE,
@@ -976,6 +976,14 @@ class BuildCacheRecordWriter(unittest.TestCase):
                              "store_attempts"):
                     self.assertIs(type(rec[name]), int, name)
                 self.assertEqual((rec["wall_secs"], rec["cpu_secs"]), (12.346, 67.8))
+
+    def test_every_record_mode_is_written_as_its_value(self):
+        for mode in canon_cache.RecordMode:
+            with self.subTest(mode=mode):
+                Path(self.journal).unlink(missing_ok=True)
+                self.write(sample_record(mode=mode), channel=None)
+                (written,) = read_events(self.journal).records
+                self.assertEqual(written["mode"], mode.value)
 
     def test_without_a_channel_only_the_journal_is_written(self):
         self.write(channel=None)
@@ -1041,7 +1049,7 @@ class Supervise(SessionCase):
             env,
             self.tmp,
             session=session,
-            record_base=record_base or canon_cache.RecordBase("canon", canon_cache.Policy.SHARED),
+            record_base=record_base or canon_cache.RecordBase(canon_cache.RecordMode.CANON, canon_cache.Policy.SHARED),
             subcommand=subcommand,
             channel=channel,
             journal=self.journal,
@@ -1132,7 +1140,7 @@ class Supervise(SessionCase):
         self.assertEqual(self.row()["reason"], "store_lost")
 
     def test_incremental_starts_no_server(self):
-        base = canon_cache.RecordBase("canon", canon_cache.Policy.INCREMENTAL)
+        base = canon_cache.RecordBase(canon_cache.RecordMode.CANON, canon_cache.Policy.INCREMENTAL)
         self.assertEqual(self.supervise(["/bin/true"], session=None, record_base=base), 0)
         self.assertEqual(self.servers(), [])
         row = self.row()
@@ -1142,7 +1150,10 @@ class Supervise(SessionCase):
 
     def test_real_path_record(self):
         base = canon_cache.RecordBase(
-            "real_path", canon_cache.Policy.SHARED, canon_cache.Backend.NONE, canon_cache.Reason.LEGACY_BUILD_DIR
+            canon_cache.RecordMode.REAL_PATH,
+            canon_cache.Policy.SHARED,
+            canon_cache.Backend.NONE,
+            canon_cache.Reason.LEGACY_BUILD_DIR,
         )
         self.supervise(["/bin/true"], session=None, record_base=base)
         row = self.row()
@@ -1308,6 +1319,11 @@ class ExitLike(unittest.TestCase):
 class PolicyMembers(unittest.TestCase):
     def test_members(self):
         self.assertEqual([policy.value for policy in canon_cache.Policy], ["shared", "mixed", "incremental"])
+
+
+class RecordModeMembers(unittest.TestCase):
+    def test_members(self):
+        self.assertEqual([mode.value for mode in canon_cache.RecordMode], ["canon", "real_path"])
 
 
 if __name__ == "__main__":

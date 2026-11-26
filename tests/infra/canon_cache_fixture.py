@@ -247,7 +247,7 @@ sys.exit(canon_cache.exit_like(canon_cache.supervise(
     session.environment.for_command(env),
     build,
     session=session,
-    record_base=canon_cache.RecordBase("canon", canon_cache.Policy.SHARED),
+    record_base=canon_cache.RecordBase(canon_cache.RecordMode.CANON, canon_cache.Policy.SHARED),
     subcommand="",
     channel=None,
     journal=os.path.join(build, ".reify-canon-journal.jsonl"),
