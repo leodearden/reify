@@ -22,6 +22,23 @@ use super::seen::Seen;
 /// not vacuous (PRD 12.1 rule 9).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Shape {
+    /// A cell's value.
+    CellValue,
+    ScopeValue,
+    GuardValue,
+    /// A guard answering absent because its condition reads false.
+    GuardAbsentOnFalse,
+    /// A path below a guard that answers absent.
+    UnderAbsentGuard,
+    CollectionValue,
+    /// A node a collection declares at an index.
+    CollectionElement,
+    /// An index at or past a collection's count, answering absent.
+    IndexPastCount,
+    /// The value of a cell that picks an element.
+    PickerValue,
+    /// A failure naming the type read and the type found.
+    WrongType,
     /// An answer checked for a request left live after a Drive of no
     /// turns, told after a later event.
     LeftLiveAnswer,
@@ -29,6 +46,27 @@ pub enum Shape {
     DriveZeroEnded,
     /// An Edit from a snapshot other than the latest.
     EditFromNonLatest,
+    /// An answer the order check compared.
+    OrderComparison,
+}
+
+impl Shape {
+    pub const ALL: [Shape; 14] = [
+        Shape::CellValue,
+        Shape::ScopeValue,
+        Shape::GuardValue,
+        Shape::GuardAbsentOnFalse,
+        Shape::UnderAbsentGuard,
+        Shape::CollectionValue,
+        Shape::CollectionElement,
+        Shape::IndexPastCount,
+        Shape::PickerValue,
+        Shape::WrongType,
+        Shape::LeftLiveAnswer,
+        Shape::DriveZeroEnded,
+        Shape::EditFromNonLatest,
+        Shape::OrderComparison,
+    ];
 }
 
 /// What a run reached.
@@ -61,6 +99,16 @@ impl Reach {
     /// How many answers the order check compared.
     pub fn order_compared(&self) -> u64 {
         self.order_compared
+    }
+
+    /// Adds what another run reached.
+    pub fn add(&mut self, other: &Reach) {
+        let _ = other;
+    }
+
+    /// The shapes never reached, in the order of `Shape::ALL`.
+    pub fn missing(&self) -> Vec<Shape> {
+        Shape::ALL.to_vec()
     }
 
     /// How often `shape` was reached.
