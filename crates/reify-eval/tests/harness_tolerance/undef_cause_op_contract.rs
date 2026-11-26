@@ -258,9 +258,10 @@ fn g3_transparency_capture_off_is_byte_identical() {
 //     - `AwaitingSolve` / `SolveFailed` both require `det ∈ {Auto, Provisional}`,
 //       which implies `kind.is_auto()`, which implies `default_expr: None` —
 //       `build_param_value_cell_decl` hard-sets it on the auto branch
-//       (crates/reify-compiler/src/entity.rs:6307-6340, pinned by the
-//       `build_param_value_cell_decl_auto_branch_skips_compile_default` test at
-//       entity.rs:7494-7534). A `None` default_expr is skipped by
+//       (`build_param_value_cell_decl` in
+//       crates/reify-compiler/src/member_cell_decls.rs, pinned by the
+//       `build_param_value_cell_decl_auto_branch_skips_compile_default` test in
+//       the same file). A `None` default_expr is skipped by
 //       `record_op_contract_failures`'s THIRD gate anyway (:4646), so those two
 //       causes can never reach the `contains_key` check.
 //     - `Unbound` is likewise a required param with no default → same third gate.

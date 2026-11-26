@@ -42,7 +42,9 @@
 //! cone), a hierarchical chain of ambiguous `Sub` operands (dropped-operand
 //! seeding), and cross-entity and same-entity pattern ops. The converse of the
 //! ambiguous case — an ambiguous consumer that must HIT after an unrelated
-//! edit — over-evicts by design today (#8338). The conversion intermediate an
+//! edit — over-evicts by design today and will not be fixed in this code,
+//! because the old evaluation orchestration is being replaced
+//! (docs/notes/old-evaluation-core-hold.md; provenance: #8338). The conversion intermediate an
 //! evicted family owns is pinned separately, in
 //! `selective_eviction_conversion_intermediate`.
 //!
@@ -787,7 +789,9 @@ pub structure S {
 /// ambiguous and the reverse index links neither hop. `Asm` and `Top` are
 /// reached only because the edit seeds every `Sub` consumer the index drops.
 /// The converse — an ambiguous consumer that must HIT after an unrelated edit
-/// — over-evicts by design today and is #8338's deliverable.
+/// — over-evicts by design today and will not be fixed in this code, because
+/// the old evaluation orchestration is being replaced
+/// (docs/notes/old-evaluation-core-hold.md; provenance: #8338).
 #[test]
 fn a_hierarchical_chain_of_ambiguous_sub_operands_is_evicted_by_seeding() {
     const SRC: &str = r#"pub structure P {
