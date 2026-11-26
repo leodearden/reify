@@ -2,5 +2,8 @@
 //! reference interpreter (PRD 5.5, leaf γ): the design model, the
 //! interpreter, the cases and the session that runs one on a core.
 
+mod case;
 mod design;
 mod reference;
+mod seen;
+mod session;
