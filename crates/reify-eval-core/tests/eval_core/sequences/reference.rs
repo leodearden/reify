@@ -413,7 +413,7 @@ fn typed_decl(read: Expect) -> Typed<Decl> {
 mod tests {
     use std::any::type_name;
 
-    use reify_eval_core::{Declaration, Failure};
+    use reify_eval_core::{Declaration, Failure, Kind, Ref};
 
     use super::super::case::{HostEvent, Then};
     use super::super::design::*;
@@ -656,6 +656,71 @@ mod tests {
             answer(&design, &at("r", &["a"])),
             failed(Some(ToyKind::Cell), int, scope)
         );
+    }
+
+    fn failure(failure: Failure) -> Result<Expected, Invalid> {
+        Ok(Expected {
+            node: Some(ToyKind::Cell),
+            outcome: Expect::Failure(failure),
+        })
+    }
+
+    fn blocked_at(binding: &str) -> Result<Expected, Invalid> {
+        failure(Failure::BlockedBy {
+            at: Ref::binding(binding),
+        })
+    }
+
+    #[test]
+    fn a_dividing_cell_truncates_toward_zero() {
+        for (sum, quotient) in [(7, 3), (-7, -3)] {
+            let design = inputs([
+                (
+                    root("q"),
+                    declaration(divided(cell([input("a")]), input("d"))),
+                ),
+                (named("a"), int(sum)),
+                (named("d"), int(2)),
+            ]);
+            assert_eq!(
+                answer(&design, &at("q", &[])),
+                int_of(ToyKind::Cell, quotient)
+            );
+        }
+    }
+
+    #[test]
+    fn a_cell_dividing_by_zero_fails_in_the_cell_s_own_terms() {
+        let design = inputs([
+            (
+                root("q"),
+                declaration(divided(cell([input("a")]), input("d"))),
+            ),
+            (named("a"), int(7)),
+            (named("d"), int(0)),
+        ]);
+        let by_zero = Failure::OfKind {
+            kind: toy::Cell::ID,
+            code: toy::DIVISION_BY_ZERO,
+        };
+        assert_eq!(answer(&design, &at("q", &[])), failure(by_zero));
+    }
+
+    #[test]
+    fn a_cell_reading_a_failed_node_is_blocked_by_the_ref_it_read() {
+        let held = members([
+            (step("z"), divided(cell([input("a")]), input("zero"))),
+            (step("r"), cell([input("a"), declarer([step("z")])])),
+            (
+                step("s"),
+                divided(cell([input("a")]), declarer([step("z")])),
+            ),
+            (step("t"), cell([declarer([step("r")])])),
+        ]);
+        let design = scope_r(held, &[("a", 7), ("zero", 0)]);
+        assert_eq!(answer(&design, &at("r", &["r"])), blocked_at("1"));
+        assert_eq!(answer(&design, &at("r", &["s"])), blocked_at("divisor"));
+        assert_eq!(answer(&design, &at("r", &["t"])), blocked_at("0"));
     }
 
     #[test]

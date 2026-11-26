@@ -168,6 +168,14 @@ pub fn cell(names: &[&str]) -> Declaration {
     cell_over(names.iter().map(|name| input(name)))
 }
 
+/// The code of the toy cell's failure when its divisor is zero.
+pub const DIVISION_BY_ZERO: &str = "division by zero";
+
+/// `cell`, its sum divided by what `divisor` names.
+pub fn divided(cell: Declaration, divisor: Binding) -> Declaration {
+    cell.bind("divisor", divisor)
+}
+
 /// A binding to the host-named input `name`.
 pub fn input(name: &str) -> Binding {
     Binding::Input(InputKey::named(name))

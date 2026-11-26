@@ -10,6 +10,7 @@ mod bodies;
 mod building;
 mod contents;
 mod ending;
+mod failures;
 mod growth;
 mod hash;
 mod outside;

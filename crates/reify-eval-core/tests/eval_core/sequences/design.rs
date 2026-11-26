@@ -230,6 +230,12 @@ pub fn cell(terms: impl IntoIterator<Item = Bind>) -> Decl {
     }
 }
 
+/// `cell`, its sum divided by what `divisor` names.
+pub fn divided(mut cell: Decl, divisor: Bind) -> Decl {
+    cell.bindings.insert(String::from("divisor"), divisor);
+    cell
+}
+
 /// A cell whose only term is the element at "from"/[the i64 at "pick"].
 pub fn picker(pick: Bind, from: Bind) -> Decl {
     decl(ToyKind::Cell, [("pick", pick), ("from", from)])
