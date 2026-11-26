@@ -24,4 +24,8 @@ pub(crate) enum Report {
 }
 
 /// Why a section gave no product.
-pub(crate) enum SectionFault {}
+pub(crate) enum SectionFault {
+    Panicked { message: String },
+    /// Its resource is dead: an earlier section on it panicked.
+    Dead,
+}

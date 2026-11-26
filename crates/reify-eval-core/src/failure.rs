@@ -24,6 +24,9 @@ pub enum OutsideFailure {
     BodyPanicked { message: String },
     /// A body asked for a section on a resource nobody added.
     NoResource { resource: &'static str },
+    SectionPanicked { resource: &'static str, message: String },
+    /// A section was asked of a resource on which an earlier section panicked.
+    ResourceDead { resource: &'static str },
     /// A kind's own work ran out of memory in `resource`.
     OutOfMemory { resource: &'static str },
 }

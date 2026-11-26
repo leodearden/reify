@@ -235,7 +235,17 @@ impl Executor {
         }
         loop {
             if let Some((serial, product)) = self.in_flight.take_finished() {
-                serve::section::deliver(serial, product, &mut self.in_flight, &mut self.tasks, &mut self.ready);
+                let failed = serve::section::deliver(
+                    serial,
+                    product,
+                    &mut self.in_flight,
+                    &mut self.tasks,
+                    &mut self.ready,
+                    &mut self.resources,
+                );
+                if let Some((key, failure)) = failed {
+                    self.end_outside(&key, failure);
+                }
                 return true;
             }
             let report = self.resources.receive();

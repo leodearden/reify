@@ -1,17 +1,19 @@
 //! Every exclusive resource, each alone on a thread of its own that runs
 //! one job at a time, and the one channel their reports come back on.
 
-use std::any::{Any, TypeId};
-use std::collections::BTreeMap;
+use std::any::TypeId;
+use std::collections::{BTreeMap, BTreeSet};
 use std::mem;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::{self, JoinHandle};
 
 use crate::cancel::Cancel;
+use crate::failure::panic_message;
 use crate::held::ReleaseHome;
-use crate::job::{Job, Report, SectionRun};
+use crate::job::{Job, Report, SectionFault, SectionRun};
 use crate::mailbox::SectionJob;
 use crate::section::SectionParts;
 
@@ -27,8 +29,15 @@ impl ResourceThread {
     }
 }
 
+/// Why a section could not be queued.
+pub(crate) enum Unstarted {
+    NoResource,
+    Dead,
+}
+
 pub(crate) struct Resources {
     threads: BTreeMap<TypeId, ResourceThread>,
+    dead: BTreeSet<TypeId>,
     reports_in: Sender<Report>,
     reports: Receiver<Report>,
     pending_releases: Arc<AtomicUsize>,
@@ -40,6 +49,7 @@ impl Resources {
         let (reports_in, reports) = channel();
         Self {
             threads: BTreeMap::new(),
+            dead: BTreeSet::new(),
             reports_in,
             reports,
             pending_releases: Arc::default(),
@@ -53,16 +63,19 @@ impl Resources {
     pub fn add<R: 'static>(&mut self, make: impl FnOnce() -> R + Send + 'static) {
         let (jobs, queued) = channel();
         let reports = self.reports_in.clone();
-        let thread = thread::spawn(move || serve(make(), queued, reports));
+        let thread = thread::spawn(move || serve(make, queued, reports));
+        self.dead.remove(&TypeId::of::<R>());
         if let Some(replaced) = self.threads.insert(TypeId::of::<R>(), ResourceThread { jobs, thread }) {
             replaced.stop();
         }
     }
 
-    /// Queues a section on its resource's thread; `None` if nobody added
-    /// that resource.
-    pub fn start(&mut self, resource: TypeId, cancel: Cancel, job: SectionJob) -> Option<u64> {
-        let thread = self.threads.get(&resource)?;
+    /// Queues a section on its resource's thread.
+    pub fn start(&mut self, resource: TypeId, cancel: Cancel, job: SectionJob) -> Result<u64, Unstarted> {
+        if self.dead.contains(&resource) {
+            return Err(Unstarted::Dead);
+        }
+        let thread = self.threads.get(&resource).ok_or(Unstarted::NoResource)?;
         self.serial += 1;
         let serial = self.serial;
         let parts = SectionParts {
@@ -72,8 +85,14 @@ impl Resources {
             home: ReleaseHome::new(thread.jobs.clone(), Arc::clone(&self.pending_releases)),
         };
         let run: SectionRun = Box::new(move |resource| job(resource, parts));
-        thread.jobs.send(Job::Section { serial, run }).ok()?;
-        Some(serial)
+        thread.jobs.send(Job::Section { serial, run }).map_err(|_| Unstarted::Dead)?;
+        Ok(serial)
+    }
+
+    /// Marks `resource` dead once the core has delivered its section's panic,
+    /// so later sections for it fail without being queued.
+    pub fn mark_dead(&mut self, resource: TypeId) {
+        self.dead.insert(resource);
     }
 
     /// Blocks until a resource thread reports.
@@ -107,19 +126,43 @@ impl Drop for Resources {
     }
 }
 
-fn serve<R: 'static>(mut resource: R, jobs: Receiver<Job>, reports: Sender<Report>) {
-    let resource: &mut dyn Any = &mut resource;
+/// A resource thread. After a section panics the resource is dead: the
+/// thread never touches it again, answers each later section `Dead` and
+/// each release `Released` without running either, and drops it on `Stop`.
+/// Every job is answered, so the core never waits on a report that will
+/// not come.
+fn serve<R: 'static>(make: impl FnOnce() -> R, jobs: Receiver<Job>, reports: Sender<Report>) {
+    let mut resource = guarded(make).ok();
+    let mut alive = resource.is_some();
     for job in jobs {
         match job {
             Job::Section { serial, run } => {
-                let product = Ok(run(resource));
+                let product = match resource.as_mut() {
+                    Some(resource) if alive => guarded(|| run(resource)).map_err(|message| SectionFault::Panicked { message }),
+                    _ => {
+                        let _ = guarded(move || drop(run));
+                        Err(SectionFault::Dead)
+                    }
+                };
+                alive = alive && product.is_ok();
                 let _ = reports.send(Report::Finished { serial, product });
             }
             Job::Release(release) => {
-                release(resource);
+                match resource.as_mut() {
+                    Some(resource) if alive => alive = guarded(|| release(resource)).is_ok(),
+                    _ => {
+                        let _ = guarded(move || drop(release));
+                    }
+                }
                 let _ = reports.send(Report::Released);
             }
             Job::Stop => break,
         }
     }
+    let _ = guarded(move || drop(resource));
+}
+
+/// Runs `work`, turning a panic into its message.
+fn guarded<T>(work: impl FnOnce() -> T) -> Result<T, String> {
+    catch_unwind(AssertUnwindSafe(work)).map_err(|payload| panic_message(&*payload))
 }
