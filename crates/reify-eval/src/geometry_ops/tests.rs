@@ -8024,9 +8024,8 @@
 
     /// (d) MALFORMED ELEMENT: a 3-arg Fillet whose `edges` selector resolves to a
     /// List containing a NON-handle element must `Err` on the bad element rather
-    /// than silently filleting only the surviving handle subset. This mirrors
-    /// `resolve_subhandle_list`'s reject-non-handle strictness so the eval arm
-    /// and the full resolver share one validation policy. The malformed case is
+    /// than silently filleting only the surviving handle subset: the Fillet and
+    /// Chamfer arms share one reject-non-handle policy. The malformed case is
     /// distinct from an EMPTY selection, so it must NOT trip EmptyEdgeSelection.
     /// (Reviewer robustness note, task 3205.)
     #[test]
@@ -8200,9 +8199,9 @@
     /// CHAMFER (c) MALFORMED ELEMENT: a 3-arg Chamfer whose `edges` selector
     /// resolves to a List containing a NON-handle element must `Err` on the bad
     /// element rather than silently chamfering only the surviving handle subset.
-    /// Mirrors the Fillet arm's reject-non-handle strictness so the chamfer eval
-    /// arm and the full resolver share one validation policy. The malformed case
-    /// is distinct from an EMPTY selection, so it must NOT trip EmptyEdgeSelection.
+    /// The Chamfer arm shares the Fillet arm's reject-non-handle policy. The
+    /// malformed case is distinct from an EMPTY selection, so it must NOT trip
+    /// EmptyEdgeSelection.
     #[test]
     fn compile_geometry_op_chamfer_malformed_element_errors_not_empty_selection() {
         let step_handles = vec![GeometryHandleId(10)];
@@ -27204,165 +27203,6 @@
         );
     }
 
-    // ── resolve_subhandle_list (task 3205 step-7/8) ───────────────────────
-    //
-    // `resolve_subhandle_list(arg, parent)` is the KERNEL-FREE (pure
-    // Value→Value) helper that lowers a List<Geometry> of KGQ sub-handles to a
-    // canonical `Vec<GeometryHandleId>`: it requires a List of `GeometryHandle`
-    // elements, rejects any element whose `realization_ref` differs from the
-    // parent's (cross-solid gate), dedups by `kernel_handle`, and returns the
-    // ids in ascending canonical order (matching extract_edges' mint order).
-    // These cases are built from DIRECTLY-CONSTRUCTED handles via
-    // `make_sub_handle` — no live build / scheduling required.
-
-    /// (a) Happy path: a List of N edge sub-handles all sharing the parent's
-    /// `realization_ref` resolves to their `kernel_handle` ids in ascending-id
-    /// canonical order. The sub-handles are constructed OUT of ascending order
-    /// to prove the resolver sorts (canonical = ascending kernel_handle id,
-    /// matching extract_edges' TopExp mint order).
-    #[test]
-    fn resolve_subhandle_list_happy_path_canonical_order() {
-        let ra = reify_core::identity::RealizationNodeId::new("PartA", 0);
-        let parent_hash = [7u8; 32];
-        let parent = reify_ir::Value::GeometryHandle {
-            realization_ref: ra.clone(),
-            upstream_values_hash: parent_hash,
-            kernel_handle: Some(GeometryHandleId(1)),
-        };
-        // kernel handles deliberately scrambled to prove ascending canonical sort.
-        let scrambled = [103u64, 101, 102, 100];
-        let edges: Vec<reify_ir::Value> = scrambled
-            .iter()
-            .enumerate()
-            .map(|(i, &id)| {
-                crate::topology_selectors::make_sub_handle(
-                    &ra,
-                    &parent_hash,
-                    crate::topology_selectors::SubKind::Edge,
-                    i as u32,
-                    GeometryHandleId(id),
-                )
-            })
-            .collect();
-        let arg = reify_ir::Value::List(edges);
-        let result = super::resolve_subhandle_list(&arg, &parent);
-        assert_eq!(
-            result,
-            Ok(vec![
-                GeometryHandleId(100),
-                GeometryHandleId(101),
-                GeometryHandleId(102),
-                GeometryHandleId(103),
-            ]),
-            "happy path must resolve sub-handles to kernel_handle ids in \
-             ascending canonical order"
-        );
-    }
-
-    /// (b) Dedup: the same sub-handle listed twice collapses to one entry.
-    #[test]
-    fn resolve_subhandle_list_dedups_repeated_handle() {
-        let ra = reify_core::identity::RealizationNodeId::new("PartA", 0);
-        let parent_hash = [9u8; 32];
-        let parent = reify_ir::Value::GeometryHandle {
-            realization_ref: ra.clone(),
-            upstream_values_hash: parent_hash,
-            kernel_handle: Some(GeometryHandleId(1)),
-        };
-        let edge = crate::topology_selectors::make_sub_handle(
-            &ra,
-            &parent_hash,
-            crate::topology_selectors::SubKind::Edge,
-            0,
-            GeometryHandleId(200),
-        );
-        let arg = reify_ir::Value::List(vec![edge.clone(), edge]);
-        let result = super::resolve_subhandle_list(&arg, &parent);
-        assert_eq!(
-            result,
-            Ok(vec![GeometryHandleId(200)]),
-            "a repeated sub-handle must dedup to a single kernel_handle"
-        );
-    }
-
-    /// (c) Cross-solid rejection: a sub-handle whose `realization_ref` differs
-    /// from the parent's is rejected (a handle minted from a different solid).
-    #[test]
-    fn resolve_subhandle_list_rejects_cross_solid_handle() {
-        let ra = reify_core::identity::RealizationNodeId::new("PartA", 0);
-        let rb = reify_core::identity::RealizationNodeId::new("PartB", 0);
-        let parent_hash = [1u8; 32];
-        let other_hash = [2u8; 32];
-        let parent = reify_ir::Value::GeometryHandle {
-            realization_ref: ra.clone(),
-            upstream_values_hash: parent_hash,
-            kernel_handle: Some(GeometryHandleId(1)),
-        };
-        // One legit edge from PartA, one foreign edge from PartB.
-        let good = crate::topology_selectors::make_sub_handle(
-            &ra,
-            &parent_hash,
-            crate::topology_selectors::SubKind::Edge,
-            0,
-            GeometryHandleId(100),
-        );
-        let foreign = crate::topology_selectors::make_sub_handle(
-            &rb,
-            &other_hash,
-            crate::topology_selectors::SubKind::Edge,
-            0,
-            GeometryHandleId(101),
-        );
-        let arg = reify_ir::Value::List(vec![good, foreign]);
-        let result = super::resolve_subhandle_list(&arg, &parent);
-        assert!(
-            result.is_err(),
-            "a sub-handle from a different realization_ref must be rejected \
-             (cross-solid), got {:?}",
-            result
-        );
-    }
-
-    /// (d) Non-List arg: a non-List `Value` (e.g. `Real`) is rejected — the
-    /// resolver requires a `List<Geometry>`.
-    #[test]
-    fn resolve_subhandle_list_rejects_non_list_arg() {
-        let ra = reify_core::identity::RealizationNodeId::new("PartA", 0);
-        let parent = reify_ir::Value::GeometryHandle {
-            realization_ref: ra,
-            upstream_values_hash: [3u8; 32],
-            kernel_handle: Some(GeometryHandleId(1)),
-        };
-        let arg = reify_ir::Value::Real(2.0);
-        let result = super::resolve_subhandle_list(&arg, &parent);
-        assert!(
-            result.is_err(),
-            "a non-List arg must be rejected, got {:?}",
-            result
-        );
-    }
-
-    /// (e) Empty List: an empty selector list resolves to `Ok(vec![])`. The
-    /// anti-zero-edges (E_EMPTY_SELECTION) guard lives in the eval arm, NOT in
-    /// this kernel-free resolver — the resolver's job is purely structural.
-    #[test]
-    fn resolve_subhandle_list_empty_list_is_ok_empty() {
-        let ra = reify_core::identity::RealizationNodeId::new("PartA", 0);
-        let parent = reify_ir::Value::GeometryHandle {
-            realization_ref: ra,
-            upstream_values_hash: [4u8; 32],
-            kernel_handle: Some(GeometryHandleId(1)),
-        };
-        let arg = reify_ir::Value::List(vec![]);
-        let result = super::resolve_subhandle_list(&arg, &parent);
-        assert_eq!(
-            result,
-            Ok(Vec::<GeometryHandleId>::new()),
-            "an empty selector List must resolve to Ok(empty) — the \
-             anti-zero-edges guard lives in the eval arm, not the resolver"
-        );
-    }
-
     // ── MaxDeviation via try_eval_geometry_query (ζ / C4) ───────────────────
 
     /// ζ / C4 (step-7 RED → step-8 GREEN): `max_deviation(actual, nominal)`
@@ -28124,43 +27964,6 @@
              (step-4 wires this):\n{}",
             bad_arms.len(),
             bad_arms.join("\n")
-        );
-    }
-
-    /// Amendment (task #4652, reviewer suggestion 1): `resolve_subhandle_list`
-    /// must return `Err` with a "symbolic (unrealized) handle" message when the
-    /// edge list contains a `Value::GeometryHandle { kernel_handle: None }`.
-    ///
-    /// This branch (geometry_ops.rs ~line 360) is newly reachable on the
-    /// `reify check`/LSP eval path now that the eval mint produces symbolic
-    /// handles.  The test pins that a symbolic edge handle surfaces a clean
-    /// diagnostic (Err string) rather than a panic or a silent bogus-id
-    /// deref.
-    #[test]
-    fn resolve_subhandle_list_rejects_symbolic_none_kernel_handle() {
-        use reify_core::identity::RealizationNodeId;
-
-        let ra = RealizationNodeId::new("PartA", 0);
-        let parent = reify_ir::Value::GeometryHandle {
-            realization_ref: ra.clone(),
-            upstream_values_hash: [5u8; 32],
-            kernel_handle: Some(GeometryHandleId(1)),
-        };
-        // A symbolic (unrealized) edge sub-handle — same realization_ref as
-        // parent, but kernel_handle=None.
-        let symbolic_edge = reify_ir::Value::GeometryHandle {
-            realization_ref: ra,
-            upstream_values_hash: [5u8; 32],
-            kernel_handle: None,
-        };
-        let arg = reify_ir::Value::List(vec![symbolic_edge]);
-
-        let result = super::resolve_subhandle_list(&arg, &parent);
-        let msg = result.unwrap_err();
-        assert!(
-            msg.contains("symbolic (unrealized) handle"),
-            "resolve_subhandle_list must Err with 'symbolic (unrealized) handle' \
-             for a kernel_handle=None element; got: {msg:?}"
         );
     }
 
