@@ -51,11 +51,10 @@
 //!   operands at compile time — lengths, angles, and the Direction
 //!   axis/normal/direction of rotate/3, rotate_around/4, mirror/3 and
 //!   linear_pattern/4 — so a wrong type there is an `ArgTypeMismatch` Error
-//!   that reds (1). Pattern counts and circular_pattern/9's axis components
+//!   that reds (1). Pattern counts and circular_pattern's decoded `axis` value
 //!   have no slot. Mutation-tested:
-//!   `linear_pattern(solid, dir(1, 0, 0), 3mm, 5mm)` and
-//!   `circular_pattern(solid, 0mm, 0mm, 0mm, 0mm, 0mm, 1mm, 6, 360deg)` both
-//!   leave this suite GREEN. The chunk's "a direction, axis or normal argument
+//!   `linear_pattern(solid, dir(1, 0, 0), 3mm, 5mm)` leaves this suite GREEN.
+//!   The chunk's "a direction, axis or normal argument
 //!   is a `Direction`; counts are plain numbers" line is therefore enforced
 //!   only where a slot exists.
 //! - **Argument order / semantics.** A permutation of two same-dimension
@@ -1313,10 +1312,6 @@ fn assert_form_scan_not_vacuous(documented: &[DocForm]) {
             arity: Arity::Exact(4),
         },
         DocForm {
-            name: "circular_pattern".to_string(),
-            arity: Arity::Exact(9),
-        },
-        DocForm {
             name: "union_all".to_string(),
             arity: Arity::AtLeast(2),
         },
@@ -1324,8 +1319,8 @@ fn assert_form_scan_not_vacuous(documented: &[DocForm]) {
         assert!(
             documented.contains(&sentinel),
             "anti-vacuity: {sentinel:?} is documented in '{CHUNK_SECTION}' but the form scan \
-             did not find it — both members of each multi-overload pair (rotate, mirror, \
-             circular_pattern) are required sentinels, proving the scan splits overloads \
+             did not find it — both members of each multi-overload pair (rotate, mirror) \
+             are required sentinels, proving the scan splits overloads \
              instead of collapsing them back to the name-only scan this gate complements"
         );
     }

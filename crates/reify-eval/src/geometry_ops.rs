@@ -912,29 +912,6 @@ fn required_length_args<const N: usize>(
     })
 }
 
-/// [`required_length_args`] specialised to the `ox`/`oy`/`oz` ORIGIN triple —
-/// the name used by `pattern_circular` (task 5350). `pattern_mirror` (task
-/// 5214) and `sweep_revolve` (task 5623) read it too until direction-typing ι-a
-/// and ι-b moved their origins to one `Point3` (`required_length_point3_arg`).
-fn required_length_origin3(
-    kind_label: impl std::fmt::Display + Copy,
-    args: &[(String, reify_ir::CompiledExpr)],
-    values: &ValueMap,
-    functions: &[CompiledFunction],
-    meta_map: &HashMap<String, HashMap<String, String>>,
-    diagnostics: &mut Vec<Diagnostic>,
-) -> Result<[f64; 3], String> {
-    required_length_args(
-        ["ox", "oy", "oz"],
-        kind_label,
-        args,
-        values,
-        functions,
-        meta_map,
-        diagnostics,
-    )
-}
-
 /// Evaluate every positional arg of a variadic builtin to a `Value`, in arg
 /// order — the pure half of the variadic read, with no acceptance policy and no
 /// diagnostics of its own.
@@ -1210,7 +1187,7 @@ fn accept_variadic_length_args(
 /// unwrapped, and each decoder prefixes only its own non-units messages with the
 /// label it is given. [`pattern_mirror`] and [`pattern_circular`] both pass
 /// `kind`, whose `Display` is the builtin the author typed, so each value form
-/// reads exactly like its scalar branch.
+/// names that builtin as the builtin's other reads do.
 ///
 /// ALL FAILURES AT ONCE, FIRST error wins — [`required_length_args`]' rule and
 /// its mechanism. A position is written as one gesture (`point3(10, 0, 0)`), so
@@ -1997,8 +1974,8 @@ fn labelled(kind_label: impl std::fmt::Display, failure: impl std::fmt::Display)
 ///   [`accept_length_point3`], the decoded-value route into the Contract C
 ///   chokepoint. Its components must be LENGTH-dimensioned `Scalar`s; a bare
 ///   `Real`/`Int` or a wrong-dimension `Scalar` is rejected under the names
-///   `ox`/`oy`/`oz`, which [`decode_axis`] and `circular_pattern`'s scalar
-///   origin also use, in the SAME `ArgRejection::message` wording. Until δ
+///   `ox`/`oy`/`oz`, which [`decode_axis`] also uses, in the SAME
+///   `ArgRejection::message` wording. Until δ
 ///   this route BYPASSED that gate entirely: `mirror(b, plane_yz(10))` reached
 ///   the kernel as a 10 SI-**metre** plane offset with zero diagnostics while
 ///   its then-current scalar sibling `mirror(b, 10, 0, 0, 1, 0, 0)` was
@@ -2083,15 +2060,17 @@ pub(crate) fn decode_plane(
 /// through the same helpers (task 5745):
 ///
 /// - the ORIGIN is a POINT IN SPACE, LENGTH-gated through
-///   [`accept_length_point3`] under the `ox`/`oy`/`oz` names the SCALAR form of
-///   `circular_pattern` has used since task 5350. Until δ this route bypassed
-///   that gate: `circular_pattern(b, axis_z(point3(12, 0, 0)), …)` placed the
+///   [`accept_length_point3`] under the `ox`/`oy`/`oz` names the retired
+///   SCALAR form of `circular_pattern` used from task 5350 until
+///   direction-typing ι-c made this Axis route its only one. Until δ this route
+///   bypassed that gate: `circular_pattern(b, axis_z(point3(12, 0, 0)), …)` placed the
 ///   rotation axis 12 SI **metres** out with zero diagnostics — 1000× a
 ///   plausible 12 mm offset, and the scalar form's headline defect arriving
 ///   through a different door;
 /// - the DIRECTION is a `Value::Direction`, read through
 ///   [`reify_ir::decode_direction`] (ε, task 9638): dimensionless by type and
-///   unit by construction, matching the scalar form's un-gated `ax`/`ay`/`az`.
+///   unit by construction, as the retired scalar form's un-gated `ax`/`ay`/`az`
+///   were.
 ///   D3 adversary finding, 2026-07-28, BINDING.
 ///
 /// # Returns
@@ -4192,96 +4171,44 @@ fn pattern_circular(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    if args.iter().any(|(n, _)| n == "axis") {
-        let axis_val = eval_named_arg(
-            "axis",
-            kind,
-            args,
-            values,
-            functions,
-            meta_map,
-            diagnostics,
-        )
-        .ok_or_else(|| format!("missing required argument 'axis' for {}", kind))?;
-        let (axis_origin, axis_dir) = decode_axis(&axis_val, kind, diagnostics)?;
-        let count_raw = eval_named_arg_f64(
-            "count",
-            kind,
-            args,
-            values,
-            functions,
-            meta_map,
-            diagnostics,
-        )
-        .ok_or_else(|| {
-            format!("missing or non-finite argument 'count' for {}", kind)
-        })?;
-        let count = validate_pattern_count(count_raw, "count", kind, diagnostics)?;
-        // TASK #1763 REVERSED HERE: a bare `circular_pattern` angle no longer
-        // means DEGREES, and the shared resolver that converted it (with a
-        // code-less deprecation Warning) is gone. #1763 was decided
-        // per-builtin; the case for settling it across the whole surface
-        // instead is docs/prds/v0_6/angle-units-surface-convergence.md §3.10.
-        // Do not re-derive #1763 from this one call site and restore it.
-        let angle = required_angle_value(
-            "angle",
-            kind,
-            args,
-            values,
-            functions,
-            meta_map,
-            diagnostics,
-        )?;
-        Ok(reify_ir::GeometryOp::CircularPattern {
-            target: target_id,
-            axis_origin,
-            axis_dir,
-            count,
-            angle,
-        })
-    } else {
-        // The axis ORIGIN is length-semantic; see `required_length_origin3` for
-        // the units rationale AND for why it must be read before `f64_arg`.
-        let axis_origin =
-            required_length_origin3(kind, args, values, functions, meta_map, diagnostics)?;
-        // The axis DIRECTION is a dimensionless unit vector — stays bare f64.
-        let mut f64_arg = |name: &str| -> Result<f64, String> {
-            eval_named_arg_f64(
-                name,
-                kind,
-                args,
-                values,
-                functions,
-                meta_map,
-                diagnostics,
-            )
-            .ok_or_else(|| {
-                format!("missing or non-finite argument '{}' for {}", name, kind)
-            })
-        };
-        let axis_dir = [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?];
-        let count_raw = f64_arg("count")?;
-        let count = validate_pattern_count(count_raw, "count", kind, diagnostics)?;
-        // The scalar-axis sibling of the value-axis form above: same gate and
-        // same task-#1763 reversal, whose rationale is recorded there in full
-        // rather than copied here.
-        let angle = required_angle_value(
-            "angle",
-            kind,
-            args,
-            values,
-            functions,
-            meta_map,
-            diagnostics,
-        )?;
-        Ok(reify_ir::GeometryOp::CircularPattern {
-            target: target_id,
-            axis_origin,
-            axis_dir,
-            count,
-            angle,
-        })
-    }
+    // Every argument is read before any `?`, so a bad axis, a bad count and a
+    // bare angle are all reported in one build.
+    let axis = required_resolved_arg("axis", kind, args, values, functions, meta_map, diagnostics)
+        .and_then(|axis_val| decode_axis(&axis_val, kind, diagnostics));
+    let count = eval_named_arg_f64(
+        "count",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )
+    .ok_or_else(|| format!("missing or non-finite argument 'count' for {kind}"))
+    .and_then(|raw| validate_pattern_count(raw, "count", kind, diagnostics));
+    // TASK #1763 REVERSED HERE: a bare `circular_pattern` angle no longer
+    // means DEGREES, and the shared resolver that converted it (with a
+    // code-less deprecation Warning) is gone. #1763 was decided
+    // per-builtin; the case for settling it across the whole surface
+    // instead is docs/prds/v0_6/angle-units-surface-convergence.md §3.10.
+    // Do not re-derive #1763 from this one call site and restore it.
+    let angle = required_angle_value(
+        "angle",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    );
+    let (axis_origin, axis_dir) = axis?;
+    Ok(reify_ir::GeometryOp::CircularPattern {
+        target: target_id,
+        axis_origin,
+        axis_dir,
+        count: count?,
+        angle: angle?,
+    })
 }
 
 fn pattern_mirror(

@@ -19,13 +19,13 @@
 //   - `linear_pattern` / `linear_pattern_2d` SPACING slots are ALSO checked at
 //     COMPILE time since task 5652 — a bare number there is a hard
 //     ArgTypeMismatch at `reify check`.
-//   - `circular_pattern` / `mirror` ORIGIN triples (`ox`/`oy`/`oz`) gained a
-//     compile-time slot too, in task 5662 — but ONLY at the scalar arities
-//     `circular_pattern(…, 9 args)` and `mirror(…, 7 args)`. The decoded-VALUE
-//     forms `mirror(g, plane_xy(0mm))` and `circular_pattern(g, axis_z(…), n, a)`
-//     stay slot-free by construction, because a composite `Value` never passes
-//     through a positional argument index for the slot table to key on; a bare
-//     number inside one of those producers is caught only at EVAL.
+//   - `circular_pattern` / `mirror` ORIGINS have NO compile-time slot: they
+//     arrive as a decoded value — `circular_pattern(g, axis_z(…), n, a)`,
+//     `mirror(g, plane_xy(0mm))`, `mirror(g, point3(…), dir(…))` — which never
+//     passes through a positional argument index for the slot table to key on,
+//     so a bare number inside one of those producers is caught only at EVAL.
+//     (Task 5662's compile slots on the scalar `ox`/`oy`/`oz` triples went with
+//     those forms, retired by direction-typing ι-a and ι-c.)
 //   - `arbitrary_pattern` offsets (used by PatternComposed below) still have NO
 //     compile-time slot at all, so a bare number there is caught only by the
 //     EVAL-layer gate.

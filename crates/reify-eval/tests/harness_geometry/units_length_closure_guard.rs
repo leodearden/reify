@@ -170,13 +170,13 @@ fn probe_universe() -> &'static [&'static str] {
 /// `mod tests` and so is test-private and not importable across the crate
 /// boundary; this const is therefore a deliberate restatement, not an oversight.
 /// Both leave headroom above the largest arity any builtin arm guards on today
-/// (9, `circular_pattern`'s scalar form). Raise them together.
+/// (4, `draft`, `revolve` and `orient_euler`). Raise them together.
 const MAX_PROBED_ARITY: usize = 14;
 
 /// The headroom claim above, enforced rather than asserted in prose: an
 /// arity-guarded builtin arm cannot hide from the sweep by sitting just above
 /// the bound.
-const _: () = assert!(MAX_PROBED_ARITY > 9);
+const _: () = assert!(MAX_PROBED_ARITY > 4);
 
 /// (e) The probe universe is READ from the compiler-side registry, never
 /// restated here, and is asserted against a FLOOR rather than an equality.
@@ -222,8 +222,7 @@ fn probe_universe_is_the_compiler_registry_and_clears_the_floor() {
 ///
 /// `arity` is part of the key because Contract C's gated spans are
 /// arity-dependent: `nurbs` gates `2 .. 2 + 3·n_points`, a range computed from
-/// an argument, and `circular_pattern`'s short form has no origin triple to gate
-/// at all.
+/// an argument.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Position {
     builtin: &'static str,
@@ -1049,15 +1048,6 @@ const RESIDUAL_SPANS: &[(&str, usize, std::ops::Range<usize>, TaskCite, &str)] =
          ox/oy/oz names; a scalar literal cannot occupy a decoded Point",
     ),
     (
-        "circular_pattern",
-        3,
-        2..3,
-        TaskCite(7714),
-        "the short form's `angle` IS gated (PRD 3 leaf ε), but `decode_axis` \
-         rejects every scalar filler at `axis` before the angle is read, so the \
-         probe cannot show it",
-    ),
-    (
         "mirror",
         2,
         0..1,
@@ -1146,13 +1136,6 @@ const ALLOWLIST: &[(&str, usize, std::ops::Range<usize>, Justification, &str)] =
          decode_direction rejects a scalar filler",
     ),
     (
-        "circular_pattern",
-        8,
-        3..6,
-        Justification::UnitVectorComponent,
-        "ax/ay/az — the axis direction, beside the gated ox/oy/oz origin",
-    ),
-    (
         "half_space",
         2,
         1..2,
@@ -1189,13 +1172,6 @@ const ALLOWLIST: &[(&str, usize, std::ops::Range<usize>, Justification, &str)] =
         "circular_pattern",
         3,
         1..2,
-        Justification::Count,
-        "count — how many instances",
-    ),
-    (
-        "circular_pattern",
-        8,
-        6..7,
         Justification::Count,
         "count — how many instances",
     ),
@@ -1451,11 +1427,12 @@ const ALLOWLIST: &[(&str, usize, std::ops::Range<usize>, Justification, &str)] =
 /// `(builtin, arity, index range, the slots the range covers)`. Unlike an
 /// [`ALLOWLIST`] row this is a gate, not a licence: each position must be
 /// observed REJECTING a bare number with an ANGLE baseline, which is what tells
-/// an angle gate from a length one. The one producer angle the probe cannot
-/// reach, `circular_pattern`'s short form, is a residual instead.
+/// an angle gate from a length one. `circular_pattern`'s angle is reachable
+/// beside a rejected `axis` filler because its reader reads every argument
+/// before combining them (direction-typing ι-c).
 const ANGLE_ALLOWLIST: &[(&str, usize, std::ops::Range<usize>, &str)] = &[
     ("arc", 5, 2..4, "start_angle/end_angle"),
-    ("circular_pattern", 8, 7..8, "angle, the long form"),
+    ("circular_pattern", 3, 2..3, "angle"),
     ("draft", 2, 0..1, "angle, the 3-arg form"),
     ("draft", 3, 1..2, "angle, the 4-arg form"),
     ("revolve", 2, 1..2, "angle, the Axis form"),
@@ -1931,7 +1908,9 @@ fn start_fillers() -> Vec<Filler> {
 /// start first, because a repair can score WORSE than the state it repairs — a
 /// non-length filler in a `?`-chained length group hides the rejections behind
 /// it, and fixing an early slot exposes a later gate — so one start can stall
-/// where another does not (the `baseline_search` tests pin both). A later start
+/// where another does not. No test pins this today: the `baseline_search`
+/// regression test's measured witness, the 9-arg `circular_pattern`, was
+/// retired by direction-typing ι-c. A later start
 /// replaces the best so far only when strictly better, and a clean result ends
 /// the search. `None` outright when the default start compiles to no op: the
 /// arity decides that, not the values.
@@ -2039,42 +2018,6 @@ fn sweep_universe() -> Vec<Observation> {
 fn observe_universe() -> &'static [Observation] {
     static SWEEP: std::sync::OnceLock<Vec<Observation>> = std::sync::OnceLock::new();
     SWEEP.get_or_init(sweep_universe)
-}
-
-/// Baseline-search regression tests.
-///
-/// Each probes ONE `(builtin, template, arity)` — no full sweep — and pins a
-/// general trap the search must escape. The builtin it names is the measured
-/// witness on this tree, not a restated universe.
-#[cfg(test)]
-mod baseline_search {
-    use super::*;
-
-    fn assert_baseline_is_clean(name: &str, template: TargetTemplate, arity: usize) {
-        let fillers = baseline_args(name, template, arity)
-            .unwrap_or_else(|| panic!("{name}/{arity} has no rejection-free baseline"));
-        let probed = probe_call(name, template, &filler_sources(&fillers))
-            .unwrap_or_else(|| panic!("{name}/{arity}'s baseline compiles to no op"));
-        assert_eq!(
-            probed.baseline_badness(),
-            CLEAN_BASELINE,
-            "{name}/{arity}'s baseline still raises rejections, diagnostics or an op \
-             failure, so no position of it can be read cleanly: {:?}",
-            probed.diagnostics
-        );
-    }
-
-    /// TRAP: a repair that EXPOSES a later gate.
-    ///
-    /// An op that fails early never reads its later arguments, so repairing the
-    /// early slot surfaces the later slot's rejection — which a search accepting
-    /// only strict improvements reads as WORSE and refuses. Witness:
-    /// `circular_pattern` at arity 8, where a length-filled count is invalid and
-    /// hides the angle behind it.
-    #[test]
-    fn the_baseline_search_escapes_a_repair_that_exposes_a_later_gate() {
-        assert_baseline_is_clean("circular_pattern", TargetTemplate::Solid, 8);
-    }
 }
 
 #[cfg(test)]

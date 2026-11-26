@@ -852,7 +852,7 @@ fn pattern_consumers_of_the_edited_body_are_evicted() {
 }
 pub structure Ring {
     sub a = A()
-    let ring = circular_pattern(self.a.body, 0mm, 0mm, 0mm, 0, 0, 1, 4, 90deg)
+    let ring = circular_pattern(self.a.body, axis_z(point3(0mm, 0mm, 0mm)), 4, 90deg)
 }
 pub structure Row {
     param w2 : Length = 4mm

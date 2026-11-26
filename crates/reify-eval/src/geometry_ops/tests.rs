@@ -3627,14 +3627,8 @@
             kind: PatternKind::Circular,
             target: GeomRef::Step(0),
             args: vec![
-                // Axis ORIGIN is length-semantic → must be dimensioned Length.
-                ("ox".into(), literal_length(0.0)),
-                ("oy".into(), literal_length(0.0)),
-                ("oz".into(), literal_length(0.0)),
-                // Axis DIRECTION is a dimensionless unit vector → stays bare f64.
-                ("ax".into(), literal_f64(0.0)),
-                ("ay".into(), literal_f64(0.0)),
-                ("az".into(), literal_f64(1.0)),
+                // The axis: a LENGTH origin and a +Z Direction (ι-c's only form).
+                ("axis".into(), axis_z_literal()),
                 ("count".into(), literal_f64(4.0)),
                 // angle deliberately omitted
             ],
@@ -3772,8 +3766,9 @@
     // These drive the SHARED `eval_named_arg_length` chokepoint through real,
     // already-shipped Contract C callers (`linear_pattern` spacing and the
     // `mirror` plane origin) rather than calling the helper in isolation, so the
-    // retrofit is proven where users actually meet it. The same edit reaches
-    // `linear_pattern_2d`, `circular_pattern` and the arbitrary-pattern offsets.
+    // retrofit is proven where users actually meet it. The same edit reached
+    // `linear_pattern_2d`, the since-retired scalar `circular_pattern` origin and
+    // the arbitrary-pattern offsets.
 
     /// The `eval_named_arg_length` REJECTION is a `Severity::Error` carrying
     /// `DiagnosticCode::DimensionedArgRejected`, and its wording is still
@@ -4039,11 +4034,14 @@
                 "argument 'spacing1' for linear_pattern_2d is unresolved (Undef)",
             ),
             (
-                circular_pattern_with_origin(
-                    literal_undef(),
-                    literal_length(0.0),
-                    literal_length(0.0),
-                ),
+                circular_pattern_with_axis_value(axis_of(
+                    reify_ir::Value::Vector(vec![
+                        reify_ir::Value::Undef,
+                        reify_ir::Value::length(0.0),
+                        reify_ir::Value::length(0.0),
+                    ]),
+                    unit_dir(0.0, 0.0, 1.0),
+                )),
                 "argument 'ox' for circular_pattern is unresolved (Undef)",
             ),
             (
@@ -5828,14 +5826,8 @@
             kind: PatternKind::Circular,
             target: GeomRef::Step(0),
             args: vec![
-                // Axis ORIGIN is length-semantic → must be dimensioned Length.
-                ("ox".into(), literal_length(0.0)),
-                ("oy".into(), literal_length(0.0)),
-                ("oz".into(), literal_length(0.0)),
-                // Axis DIRECTION is a dimensionless unit vector → stays bare f64.
-                ("ax".into(), literal_f64(0.0)),
-                ("ay".into(), literal_f64(0.0)),
-                ("az".into(), literal_f64(1.0)),
+                // The axis: a LENGTH origin and a +Z Direction (ι-c's only form).
+                ("axis".into(), axis_z_literal()),
                 ("count".into(), literal_f64(4.0)),
                 // Explicitly dimensioned. Since ε there is no other kind: the
                 // degrees→radians coercion a bare f64 used to get is gone.
@@ -5885,29 +5877,24 @@
         }
     }
 
-    /// `circular_pattern`'s SCALAR-axis form with `angle` under test. Origin is
-    /// LENGTH (PRD-1's gate), direction stays a bare unit vector (C1 inv. 4).
-    fn circular_pattern_scalar_axis_with_angle(
-        angle: reify_ir::CompiledExpr,
-    ) -> CompiledGeometryOp {
-        CompiledGeometryOp::Pattern {
-            kind: PatternKind::Circular,
-            target: GeomRef::Step(0),
-            args: vec![
-                ("ox".into(), literal_length(0.0)),
-                ("oy".into(), literal_length(0.0)),
-                ("oz".into(), literal_length(0.0)),
-                ("ax".into(), literal_f64(0.0)),
-                ("ay".into(), literal_f64(0.0)),
-                ("az".into(), literal_f64(1.0)),
-                ("count".into(), literal_f64(4.0)),
-                ("angle".into(), angle),
-            ],
-        }
+    /// `axis_z` through the origin as a literal `Value::Axis`: a LENGTH origin
+    /// and a +Z Direction.
+    fn axis_z_literal() -> reify_ir::CompiledExpr {
+        reify_ir::CompiledExpr::literal(
+            axis_of(
+                reify_ir::Value::Vector(vec![
+                    reify_ir::Value::length(0.0),
+                    reify_ir::Value::length(0.0),
+                    reify_ir::Value::length(0.0),
+                ]),
+                unit_dir(0.0, 0.0, 1.0),
+            ),
+            reify_core::Type::dimensionless_scalar(),
+        )
     }
 
-    /// `circular_pattern`'s VALUE-axis form — a single `Value::Axis` arg rather
-    /// than six scalars. A separate eval branch, so it needs its own coverage.
+    /// `circular_pattern`'s axis form with `angle` under test — a single
+    /// `Value::Axis` arg, its only form since direction-typing ι-c.
     fn circular_pattern_value_axis_with_angle(
         angle: reify_ir::CompiledExpr,
     ) -> CompiledGeometryOp {
@@ -5936,7 +5923,7 @@
         }
     }
 
-    /// ε — a BARE `circular_pattern` angle is REJECTED, at BOTH axis forms.
+    /// ε — a BARE `circular_pattern` angle is REJECTED.
     ///
     /// REVERSES task #1763 (done, 2026-04), which ruled that this one builtin
     /// should read a bare angle as DEGREES per CAD convention. This test
@@ -5950,79 +5937,71 @@
     /// Covers the bare `Int` shape too — the one ε site whose literal is bound
     /// to a local, which is why a regex sweep over the test corpus cannot see it.
     #[test]
-    fn compile_geometry_op_circular_pattern_bare_angle_is_rejected_at_both_axis_forms() {
+    fn compile_geometry_op_circular_pattern_bare_angle_is_rejected() {
         let step_handles = vec![GeometryHandleId(42)];
         let values = ValueMap::new();
 
-        for (form, build) in [
+        let form = "axis";
+        for (label, expr) in [
+            ("bare Real", literal_f64(360.0)),
             (
-                "scalar-axis",
-                &circular_pattern_scalar_axis_with_angle
-                    as &dyn Fn(reify_ir::CompiledExpr) -> CompiledGeometryOp,
-            ),
-            ("value-axis", &circular_pattern_value_axis_with_angle),
-        ] {
-            for (label, expr) in [
-                ("bare Real", literal_f64(360.0)),
-                (
-                    "bare Int",
-                    reify_ir::CompiledExpr::literal(
-                        reify_ir::Value::Int(360),
-                        reify_core::Type::Int,
-                    ),
+                "bare Int",
+                reify_ir::CompiledExpr::literal(
+                    reify_ir::Value::Int(360),
+                    reify_core::Type::Int,
                 ),
-            ] {
-                let mut diagnostics: Vec<Diagnostic> = Vec::new();
-                let result = compile_geometry_op(
-                    &build(expr),
-                    &values,
-                    &step_handles,
-                    &[],
-                    &HashMap::new(),
-                    &HashMap::new(),
-                    &mut diagnostics,
-                );
-                assert!(
-                    result.is_err(),
-                    "{form} {label}: must drop the op, got: {result:?}"
-                );
+            ),
+        ] {
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = compile_geometry_op(
+                &circular_pattern_value_axis_with_angle(expr),
+                &values,
+                &step_handles,
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            );
+            assert!(
+                result.is_err(),
+                "{form} {label}: must drop the op, got: {result:?}"
+            );
 
-                let rejections = angle_rejections(&diagnostics);
-                assert_eq!(
-                    rejections.len(),
-                    1,
-                    "{form} {label}: exactly ONE rejection; got: {diagnostics:?}"
-                );
-                let rej = rejections[0];
-                assert_eq!(
-                    rej.severity,
-                    reify_core::Severity::Error,
-                    "{form} {label}: was a Warning + exit 0 before ε; got: {rej:?}"
-                );
-                assert_eq!(
-                    rej.code,
-                    Some(reify_core::DiagnosticCode::DimensionedArgRejected),
-                    "{form} {label}: the retired warning carried NO code at all \
-                     (INV-SF-6); got: {rej:?}"
-                );
-                for needle in [
-                    "circular_pattern: angle argument expects Angle, got ",
-                    reify_core::units::ANGLE_MIGRATION_HINT,
-                ] {
-                    assert!(
-                        rej.message.contains(needle),
-                        "{form} {label}: message must contain {needle:?}; got: {:?}",
-                        rej.message
-                    );
-                }
+            let rejections = angle_rejections(&diagnostics);
+            assert_eq!(
+                rejections.len(),
+                1,
+                "{form} {label}: exactly ONE rejection; got: {diagnostics:?}"
+            );
+            let rej = rejections[0];
+            assert_eq!(
+                rej.severity,
+                reify_core::Severity::Error,
+                "{form} {label}: was a Warning + exit 0 before ε; got: {rej:?}"
+            );
+            assert_eq!(
+                rej.code,
+                Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+                "{form} {label}: the retired warning carried NO code at all \
+                 (INV-SF-6); got: {rej:?}"
+            );
+            for needle in [
+                "circular_pattern: angle argument expects Angle, got ",
+                reify_core::units::ANGLE_MIGRATION_HINT,
+            ] {
                 assert!(
-                    !diagnostics
-                        .iter()
-                        .any(|d| d.message.contains("bare numeric angle")),
-                    "{form} {label}: the deprecation warning must be GONE, not \
-                     merely joined by a rejection; got: {diagnostics:?}"
+                    rej.message.contains(needle),
+                    "{form} {label}: message must contain {needle:?}; got: {:?}",
+                    rej.message
                 );
             }
+            assert!(
+                !diagnostics
+                    .iter()
+                    .any(|d| d.message.contains("bare numeric angle")),
+                "{form} {label}: the deprecation warning must be GONE, not \
+                 merely joined by a rejection; got: {diagnostics:?}"
+            );
         }
     }
 
@@ -6040,14 +6019,8 @@
             kind: reify_compiler::PatternKind::Circular,
             target: GeomRef::Step(0),
             args: vec![
-                // Axis ORIGIN is length-semantic → must be dimensioned Length.
-                ("ox".into(), literal_length(0.0)),
-                ("oy".into(), literal_length(0.0)),
-                ("oz".into(), literal_length(0.0)),
-                // Axis DIRECTION is a dimensionless unit vector → stays bare f64.
-                ("ax".into(), literal_f64(0.0)),
-                ("ay".into(), literal_f64(0.0)),
-                ("az".into(), literal_f64(1.0)),
+                // The axis: a LENGTH origin and a +Z Direction (ι-c's only form).
+                ("axis".into(), axis_z_literal()),
                 ("count".into(), literal_f64(6.0)),
                 // Explicit angle unit: PI radians
                 ("angle".into(), literal_angle(std::f64::consts::PI)),
@@ -6086,35 +6059,9 @@
         }
     }
 
-    /// Build the 9-arg SCALAR form of `circular_pattern` with caller-supplied
-    /// origin components. The axis DIRECTION (+Z), `count` and `angle` are held
-    /// fixed so each rejection test varies exactly one thing.
-    fn circular_pattern_with_origin(
-        ox: reify_ir::CompiledExpr,
-        oy: reify_ir::CompiledExpr,
-        oz: reify_ir::CompiledExpr,
-    ) -> CompiledGeometryOp {
-        CompiledGeometryOp::Pattern {
-            kind: PatternKind::Circular,
-            target: GeomRef::Step(0),
-            args: vec![
-                ("ox".into(), ox),
-                ("oy".into(), oy),
-                ("oz".into(), oz),
-                // Axis DIRECTION is a dimensionless unit vector → stays bare f64.
-                ("ax".into(), literal_f64(0.0)),
-                ("ay".into(), literal_f64(0.0)),
-                ("az".into(), literal_f64(1.0)),
-                ("count".into(), literal_f64(4.0)),
-                ("angle".into(), literal_angle(std::f64::consts::FRAC_PI_2)),
-            ],
-        }
-    }
-
-    /// Build the axis-VALUE form of `circular_pattern` around a caller-supplied
-    /// `Value`. `count` and `angle` are held fixed so each test varies exactly
-    /// the axis it hands in — the value-form sibling of
-    /// [`circular_pattern_with_origin`].
+    /// Build `circular_pattern(target, axis, count, angle)` — its only form since
+    /// direction-typing ι-c — around a caller-supplied axis `Value`. `count` and
+    /// `angle` are held fixed so each test varies exactly the axis it hands in.
     fn circular_pattern_with_axis_value(axis: reify_ir::Value) -> CompiledGeometryOp {
         CompiledGeometryOp::Pattern {
             kind: PatternKind::Circular,
@@ -6128,233 +6075,6 @@
                 ("angle".into(), literal_angle(std::f64::consts::FRAC_PI_2)),
             ],
         }
-    }
-
-    /// A BARE (dimensionless) circular-pattern axis-origin component must be
-    /// REJECTED — an axis ORIGIN is length-semantic (a point in space), so a
-    /// bare `12` would be silently read as 12 SI **metres** rather than 12 mm,
-    /// scattering the pattern 1000× too far with no diagnostic. The op is
-    /// dropped (Err) with a diagnostic naming the component and Length.
-    ///
-    /// Run once per component: `ox`/`oy`/`oz` are three separate call sites, so
-    /// an `ox`-only test would not notice one of the other two regressing back
-    /// to the bare-accepting `f64_arg` closure. Transposed from
-    /// `compile_geometry_op_mirror_bare_origin_rejected` (task 5214).
-    #[test]
-    fn compile_geometry_op_circular_pattern_bare_origin_rejected() {
-        let step_handles = vec![GeometryHandleId(42)];
-        let values = ValueMap::new();
-
-        for bare in ["ox", "oy", "oz"] {
-            // Exactly one origin component is BARE; the other two are Lengths.
-            let component = |name: &str| -> reify_ir::CompiledExpr {
-                if name == bare {
-                    literal_f64(0.0)
-                } else {
-                    literal_length(0.0)
-                }
-            };
-            let op =
-                circular_pattern_with_origin(component("ox"), component("oy"), component("oz"));
-
-            let mut diagnostics: Vec<Diagnostic> = Vec::new();
-            let result = compile_geometry_op(
-                &op,
-                &values,
-                &step_handles,
-                &[],
-                &HashMap::new(),
-                &HashMap::new(),
-                &mut diagnostics,
-            );
-            assert!(
-                result.is_err(),
-                "bare (dimensionless) circular-pattern axis origin {bare} must \
-                 drop the op, got: {:?}",
-                result
-            );
-            assert!(
-                diagnostics
-                    .iter()
-                    .any(|d| d.message.contains(bare) && d.message.contains("Length")),
-                "a diagnostic must name the {bare} arg and the Length units \
-                 requirement; got: {:?}",
-                diagnostics
-            );
-        }
-    }
-
-    /// A WRONG-DIMENSION `Value::Scalar` axis origin must be rejected exactly
-    /// like a bare `Value::Real` — `accept_arg`'s dimension check is strict, so
-    /// only a LENGTH Scalar passes.
-    ///
-    /// Two arms, both of which a `Real`-only test would miss:
-    ///   (a) an ANGLE Scalar (`20deg` where an origin was meant) — a plausible
-    ///       argument-order slip on this 9-positional-arg signature, which ends
-    ///       in an angle;
-    ///   (b) a DIMENSIONLESS Scalar — the likeliest silent-regression path,
-    ///       since eval arithmetic can collapse to a dimensionless `Scalar`
-    ///       rather than a `Real`, so it would sneak past a `Real`-shaped guard.
-    #[test]
-    fn compile_geometry_op_circular_pattern_wrong_dimension_origin_rejected() {
-        let step_handles = vec![GeometryHandleId(42)];
-        let values = ValueMap::new();
-
-        for (label, ox_expr) in [
-            (
-                "ANGLE",
-                literal_scalar(0.35, reify_core::DimensionVector::ANGLE),
-            ),
-            (
-                "dimensionless",
-                literal_scalar(0.02, reify_core::DimensionVector::DIMENSIONLESS),
-            ),
-        ] {
-            let op =
-                circular_pattern_with_origin(ox_expr, literal_length(0.0), literal_length(0.0));
-            let mut diagnostics: Vec<Diagnostic> = Vec::new();
-            let result = compile_geometry_op(
-                &op,
-                &values,
-                &step_handles,
-                &[],
-                &HashMap::new(),
-                &HashMap::new(),
-                &mut diagnostics,
-            );
-            assert!(
-                result.is_err(),
-                "a {label} Scalar axis origin must drop the op, got: {:?}",
-                result
-            );
-            assert!(
-                diagnostics
-                    .iter()
-                    .any(|d| d.message.contains("ox") && d.message.contains("Length")),
-                "a diagnostic must name the ox arg and the Length requirement \
-                 for a {label} Scalar; got: {:?}",
-                diagnostics
-            );
-        }
-    }
-
-    /// A LENGTH-dimensioned but NON-FINITE axis origin (NaN / ±inf — e.g. from a
-    /// divide-by-zero in a parametric expression) must also drop the op, and
-    /// must say so specifically: the value IS a Length, so the generic
-    /// wrong-dimension wording would be wrong. Pins `eval_named_arg_length`'s
-    /// dedicated non-finite arm for this call site.
-    #[test]
-    fn compile_geometry_op_circular_pattern_non_finite_length_origin_rejected() {
-        let step_handles = vec![GeometryHandleId(42)];
-        let values = ValueMap::new();
-
-        for (label, si) in [
-            ("NaN", f64::NAN),
-            ("+inf", f64::INFINITY),
-            ("-inf", f64::NEG_INFINITY),
-        ] {
-            let op = circular_pattern_with_origin(
-                literal_length(si),
-                literal_length(0.0),
-                literal_length(0.0),
-            );
-            let mut diagnostics: Vec<Diagnostic> = Vec::new();
-            let result = compile_geometry_op(
-                &op,
-                &values,
-                &step_handles,
-                &[],
-                &HashMap::new(),
-                &HashMap::new(),
-                &mut diagnostics,
-            );
-            assert!(
-                result.is_err(),
-                "a {label} Length axis origin must drop the op, got: {:?}",
-                result
-            );
-            assert!(
-                diagnostics.iter().any(|d| {
-                    d.message.contains("ox") && d.message.contains("non-finite Length")
-                }),
-                "the diagnostic for a {label} Length must name the arg and say \
-                 'non-finite Length' (NOT the wrong-dimension wording — the \
-                 value IS a Length); got: {:?}",
-                diagnostics
-            );
-        }
-    }
-
-    /// Locks the split: the circular-pattern axis ORIGIN must be a Length, but
-    /// the axis DIRECTION is a dimensionless unit vector — so a `Length` origin
-    /// with BARE direction components is accepted, no error. Also pins the
-    /// mm→metre semantics: a `12mm` origin reaches the IR as `0.012`, never
-    /// `12`.
-    ///
-    /// Every component is DISTINCT so this also pins the ox/oy/oz → `axis_origin`
-    /// COMPONENT ORDERING: the three reads happen outside the `f64_arg` closure
-    /// and the array is assembled separately, so a transposition to
-    /// `[ox, oz, oy]` is a live regression that an all-zero (or single-non-zero)
-    /// fixture could not see.
-    #[test]
-    fn compile_geometry_op_circular_pattern_length_origin_bare_direction_accepted() {
-        let step_handles = vec![GeometryHandleId(42)];
-        let values = ValueMap::new();
-
-        let op = circular_pattern_with_origin(
-            // 12mm/34mm/56mm — the values the bare form would have read as
-            // 12/34/56 metres.
-            literal_length(0.012),
-            literal_length(0.034),
-            literal_length(0.056),
-        );
-
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let result = compile_geometry_op(
-            &op,
-            &values,
-            &step_handles,
-            &[],
-            &HashMap::new(),
-            &HashMap::new(),
-            &mut diagnostics,
-        );
-        match result {
-            Ok(reify_ir::GeometryOp::CircularPattern {
-                target,
-                axis_origin,
-                axis_dir,
-                count,
-                ..
-            }) => {
-                assert_eq!(target, GeometryHandleId(42));
-                // Bit-exact: each SI value is an identity pass-through of its
-                // literal, with no arithmetic applied. Distinct components ⇒
-                // this also rejects a transposed assembly.
-                assert_eq!(axis_origin, [0.012, 0.034, 0.056]);
-                assert_eq!(axis_dir, [0.0, 0.0, 1.0]);
-                assert_eq!(count, 4);
-            }
-            other => panic!(
-                "expected Ok(CircularPattern) for Length origin + bare direction, \
-                 got {:?}",
-                other
-            ),
-        }
-        // Assert on CONTENT, not severity: the units gate never emits an
-        // `Error` here — `eval_named_arg_length` pushes `Diagnostic::warning`
-        // for every rejection, and the Error only materialises when the caller
-        // maps `compile_geometry_op`'s `Err(String)`. A severity filter would
-        // therefore pass even if a valid Length origin spuriously warned. The
-        // fixture uses a dimensioned `literal_angle`, so no bare-angle
-        // deprecation warning is expected either — the clean path is silent.
-        assert!(
-            diagnostics.is_empty(),
-            "Length origin + dimensionless direction is the fully clean path and \
-             must emit NO diagnostic at all (in particular no 'expects Length' / \
-             'non-finite Length' warning); got: {:?}",
-            diagnostics
-        );
     }
 
     /// FLIPPED by units-length δ (task 5745). This test previously asserted the
@@ -6429,9 +6149,8 @@
         for (d, name) in rejections.iter().zip(["ox", "oy", "oz"]) {
             assert_eq!(
                 d.message,
-                // The value form names the builtin the author typed, which is
-                // what the compile layer reports for the same mistake in the
-                // scalar form.
+                // The value form names the builtin the author typed, as the
+                // compile layer's messages for the same builtin do.
                 expected_length_rejection("circular_pattern", name, "Real"),
                 "the value form's rejection must name `circular_pattern`, the \
                  builtin the author typed"
@@ -6523,57 +6242,6 @@
             "a wrong variant is the decoder's own Err, not a units rejection, so \
              nothing is pushed; got: {:?}",
             diagnostics
-        );
-    }
-
-    /// Both forms of `circular_pattern` label the SAME bare-origin mistake with
-    /// the builtin the author typed (D7): the scalar form's
-    /// `required_length_origin3` and the value form's `decode_axis` render one
-    /// rejection template under one label, so neither form can drift from the
-    /// other.
-    #[test]
-    fn compile_geometry_op_circular_pattern_origin_rejection_label_agrees_across_forms() {
-        let origin_rejections = |op: CompiledGeometryOp| -> Vec<String> {
-            let mut diagnostics: Vec<Diagnostic> = Vec::new();
-            compile_geometry_op(
-                &op,
-                &ValueMap::new(),
-                &[GeometryHandleId(42)],
-                &[],
-                &HashMap::new(),
-                &HashMap::new(),
-                &mut diagnostics,
-            )
-            .expect_err("a bare origin must drop the op in both forms");
-            diagnostics
-                .into_iter()
-                .filter(|d| d.code == Some(reify_core::DiagnosticCode::DimensionedArgRejected))
-                .map(|d| d.message)
-                .collect()
-        };
-        let rejections_under = |label: &str| -> Vec<String> {
-            ["ox", "oy", "oz"]
-                .into_iter()
-                .map(|name| expected_length_rejection(label, name, "Real"))
-                .collect()
-        };
-
-        let scalar =
-            circular_pattern_with_origin(literal_f64(0.01), literal_f64(0.02), literal_f64(0.03));
-        let value = circular_pattern_with_axis_value(axis_of(
-            bare_real_vector3(0.01, 0.02, 0.03),
-            unit_dir(0.0, 0.0, 1.0),
-        ));
-
-        assert_eq!(
-            origin_rejections(scalar),
-            rejections_under("circular_pattern"),
-            "the scalar form names the builtin the author typed"
-        );
-        assert_eq!(
-            origin_rejections(value),
-            rejections_under("circular_pattern"),
-            "the value form names the builtin the author typed"
         );
     }
 
@@ -25720,9 +25388,9 @@
         assert_eq!(
             got,
             Err("missing or non-Length argument 'ox' for circular_pattern".to_string()),
-            "the caller-facing `Err` is the SCALAR form's — same `ox`/`oy`/`oz` \
-             names since task 5350 — under the label the caller threads in: the \
-             builtin the author typed"
+            "the caller-facing `Err` keeps the retired SCALAR form's \
+             `ox`/`oy`/`oz` names (task 5350) under the label the caller threads \
+             in: the builtin the author typed"
         );
         assert_eq!(
             diagnostics.len(),

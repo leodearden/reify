@@ -2447,14 +2447,15 @@ const ALL_PATTERN: [PatternKind; 5] = [
     PatternKind::Arbitrary,
 ];
 
-/// The Pattern kinds with a distinct scalar-form vs Value-form code path. The
-/// base `pattern_case` exercises the argument-list form (for Mirror, its
-/// `origin`/`normal` form); the `:value` extra cases below exercise the
-/// `axis`/`plane` Value-form decode branch.
+/// The Pattern kinds with a second, `:value` fixture. For Mirror that is a
+/// distinct code path: the base `pattern_case` exercises its `origin`/`normal`
+/// form and the `:value` case its `plane` decode branch. Circular has one path,
+/// the `axis` form, since direction-typing ι-c; its `:value` case drives that
+/// path with an offset origin and a non-unit direction.
 const PATTERN_VALUE_VARIANTS: [PatternKind; 2] = [PatternKind::Circular, PatternKind::Mirror];
 
-/// Build a representative base `Pattern` op for `k` (the scalar/back-compat form
-/// for Circular/Mirror). EXHAUSTIVE match (no `_`); see `geometry_ops.rs` Pattern
+/// Build a representative base `Pattern` op for `k` (for Mirror its
+/// `origin`/`normal` form). EXHAUSTIVE match (no `_`); see `geometry_ops.rs` Pattern
 /// arm. Circular's `angle` is ANGLE-dimensioned via `angle_literal` (angle-units
 /// PRD leaf ε retired the bare-number degrees→radians path).
 fn pattern_case(k: PatternKind) -> CompiledGeometryOp {
@@ -2468,15 +2469,13 @@ fn pattern_case(k: PatternKind) -> CompiledGeometryOp {
             // spacing is length-semantic → dimensioned Length (task 5214).
             ("spacing".to_string(), length_literal(0.01)),
         ],
+        // The Axis form, `circular_pattern`'s only one since direction-typing
+        // ι-c. Golden unchanged.
         PatternKind::Circular => vec![
-            // Axis ORIGIN is length-semantic → dimensioned Length (task 5350);
-            // axis DIRECTION stays a bare dimensionless unit vector.
-            ("ox".to_string(), length_literal(0.0)),
-            ("oy".to_string(), length_literal(0.0)),
-            ("oz".to_string(), length_literal(0.0)),
-            ("ax".to_string(), real_literal(0.0)),
-            ("ay".to_string(), real_literal(0.0)),
-            ("az".to_string(), real_literal(1.0)),
+            (
+                "axis".to_string(),
+                lit_raw(axis_value([0.0, 0.0, 0.0], [0.0, 0.0, 1.0])),
+            ),
             ("count".to_string(), real_literal(4.0)),
             ("angle".to_string(), angle_literal(std::f64::consts::FRAC_PI_2)),
         ],
@@ -2539,7 +2538,7 @@ fn pattern_case_value(k: PatternKind) -> CompiledGeometryOp {
     }
 }
 
-/// Golden snapshot per `PatternKind` (base / scalar form). EXHAUSTIVE match (no
+/// Golden snapshot per `PatternKind` (base form). EXHAUSTIVE match (no
 /// `_`). Placeholders replaced during the GREEN bootstrap.
 fn pattern_golden(k: PatternKind) -> &'static str {
     match k {

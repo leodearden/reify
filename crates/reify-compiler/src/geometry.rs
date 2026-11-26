@@ -2043,56 +2043,33 @@ fn compile_geometry_call_inner(
             sub_ops.push(op);
             Some(sub_ops)
         }
-        // circular_pattern(target, ox, oy, oz, ax, ay, az, count, angle)
-        // circular_pattern(target, ox, oy, oz, ax, ay, az, count, angle) — scalar form (9 args)
-        // circular_pattern(target, axis_value, count, angle)              — value form  (4 args)
+        // circular_pattern(target, axis, count, angle): an `Axis` value and an
+        // Angle, the only form since direction-typing ι-c.
         "circular_pattern" => {
-            let n = compiled_args.len();
-            if n == 9 {
-                let mut it = compiled_args.into_iter();
-                let target = geom_ref(0);
-                let op = CompiledGeometryOp::Pattern {
-                    kind: PatternKind::Circular,
-                    target,
-                    args: vec![
-                        ("target".to_string(), it.next().unwrap()),
-                        ("ox".to_string(), it.next().unwrap()),
-                        ("oy".to_string(), it.next().unwrap()),
-                        ("oz".to_string(), it.next().unwrap()),
-                        ("ax".to_string(), it.next().unwrap()),
-                        ("ay".to_string(), it.next().unwrap()),
-                        ("az".to_string(), it.next().unwrap()),
-                        ("count".to_string(), it.next().unwrap()),
-                        ("angle".to_string(), it.next().unwrap()),
-                    ],
-                };
-                sub_ops.push(op);
-                Some(sub_ops)
-            } else if n == 4 {
-                let mut it = compiled_args.into_iter();
-                let target = geom_ref(0);
-                let op = CompiledGeometryOp::Pattern {
-                    kind: PatternKind::Circular,
-                    target,
-                    args: vec![
-                        ("target".to_string(), it.next().unwrap()),
-                        ("axis".to_string(), it.next().unwrap()),
-                        ("count".to_string(), it.next().unwrap()),
-                        ("angle".to_string(), it.next().unwrap()),
-                    ],
-                };
-                sub_ops.push(op);
-                Some(sub_ops)
-            } else {
-                push_labeled_arg_count_error(
-                    format!(
-                        "circular_pattern() expects 9 arguments (scalar) or 4 (axis-value), got {n}"
-                    ),
-                    expr.span,
-                    diagnostics,
-                );
-                None
+            if !check_arg_count_exact_form(
+                "circular_pattern",
+                compiled_args.len(),
+                4,
+                "geo, axis, count, angle",
+                expr.span,
+                diagnostics,
+            ) {
+                return None;
             }
+            let mut it = compiled_args.into_iter();
+            let target = geom_ref(0);
+            let op = CompiledGeometryOp::Pattern {
+                kind: PatternKind::Circular,
+                target,
+                args: vec![
+                    ("target".to_string(), it.next().unwrap()),
+                    ("axis".to_string(), it.next().unwrap()),
+                    ("count".to_string(), it.next().unwrap()),
+                    ("angle".to_string(), it.next().unwrap()),
+                ],
+            };
+            sub_ops.push(op);
+            Some(sub_ops)
         }
         // mirror(target, origin, normal)  — Direction form (3 args)
         // mirror(target, plane_value)     — value form     (2 args)

@@ -38,8 +38,8 @@
 // Each form is the exact arity/overload the compiler accepts (verified against
 // the match arms in reify-compiler/src/geometry{,_transform,_boolean,_modify,
 // _curve}.rs). Where an ergonomic value-form overload exists (mirror/plane,
-// circular_pattern/axis, rotate/orientation) it is exercised alongside the
-// scalar or Direction form.
+// rotate/orientation) it is exercised alongside the Direction form;
+// circular_pattern's axis form is its only one.
 
 structure def StdlibGeometryOpsSmoke {
     // ── Inputs (real constructors) ──────────────────────────────────────────
@@ -107,7 +107,6 @@ structure def StdlibGeometryOpsSmoke {
     let apr = arbitrary_pattern(solid, 10mm, 0mm, 0mm, 0mm, 20mm, 0mm)      // arbitrary_pattern(geo, dx1,dy1,dz1, …) [offset triples]
     let apl = arbitrary_pattern(solid, [transform3_identity()])             // arbitrary_pattern(geo, transforms)     [2, List<Transform<3>>]
     let cp4 = circular_pattern(solid, axis_z(point3(0mm, 0mm, 0mm)), 6, 360deg)   // (geo, axis, count, angle) [4, value]
-    let cp9 = circular_pattern(solid, 0mm, 0mm, 0mm, 0, 0, 1, 6, 360deg)          // (geo, ox,oy,oz, ax,ay,az, count, angle) [9]
     let spl = split(solid, plane_xy(0mm))          // split(solid, plane) → List<Geometry> (topology selector)
 
     // ── Curves ────────────────────────────────────────────────────────────────

@@ -35,11 +35,11 @@
 //!   slot. It hosts here only because the mechanism is generic (name-keyed),
 //!   which avoids standing up a parallel checker for one slot.
 //! - Pattern SPACING (task 5652) — `linear_pattern` / `linear_pattern_2d`.
-//! - The pattern ORIGIN triple (task 5662) — `circular_pattern`'s 9-arg scalar
-//!   form, `ox`/`oy`/`oz`. The row task 5652 deferred; it mirrors the
-//!   eval-layer gate on the circular-pattern axis origin (task 5350). `mirror`'s
-//!   7-arg triple was its pair until direction-typing ι-a retired that form;
-//!   see the NOT-covered list below.
+//! - The pattern ORIGIN triple (task 5662, the row task 5652 deferred) was
+//!   covered here until direction-typing retired both scalar forms that carried
+//!   one: `mirror`'s 7-arg form in ι-a and `circular_pattern`'s 9-arg form in
+//!   ι-c. An origin now reaches those builtins only as a Point3 or inside a
+//!   Plane / Axis value, gated at build; see the NOT-covered list below.
 //! - The Contract C LENGTH families of PRD
 //!   `docs/prds/v0_6/units-length-gate-completion.md` leaf η (task 5750):
 //!   PRIMITIVE and PROFILE producers, MODIFY, SWEEP, and the TRANSFORM row
@@ -615,21 +615,17 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
             length_arg(6, "spacing2"),
         ] },
 
-        // ── Pattern CSG producers: the ORIGIN triple is a Length (task 5662) ──
+        // ── Pattern CSG producers: `mirror` and `circular_pattern` ──────────────
         //
-        // The pattern-origin row task 5652 deferred (it turned six then-valid
-        // call sites into hard compile errors, a separable breaking-surface
-        // migration) and task 5662 closed. It mirrors, at the compile layer, the
-        // eval-layer gate on the circular-pattern axis origin (task 5350). Arg
-        // names are COPIED from `geometry.rs`'s lowering sites — the
-        // `("ox".to_string(), …)` triple in its n==9 arm — never invented, so the
-        // two layers word one authoring mistake identically (PRD decision D9).
-        //
-        // `mirror`'s 7-arg origin triple held slots here too until
-        // direction-typing ι-a retired that form for
-        // `mirror(target, origin, normal)`, whose Point3 origin no slot kind
-        // describes (see the "Contract C positions this table deliberately does
-        // NOT cover" section of the module doc).
+        // Task 5662 slotted each one's scalar ORIGIN triple as a Length — the
+        // pattern-origin row task 5652 deferred — mirroring at the compile layer
+        // the eval-layer gate on the circular-pattern axis origin (task 5350).
+        // Both scalar forms are now retired: `mirror`'s 7-arg one by
+        // direction-typing ι-a, for `mirror(target, origin, normal)`, whose
+        // Point3 origin no slot kind describes (see the "Contract C positions
+        // this table deliberately does NOT cover" section of the module doc);
+        // `circular_pattern`'s 9-arg one by ι-c, so its origin reaches it only
+        // inside an `Axis` value (STRUCTURAL EXCLUSION below).
         //
         // mirror(target, origin, normal)  — 3-arg Direction form
         // mirror(target, plane)           — 2-arg value form
@@ -647,40 +643,30 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         // `mirror_slots_the_normal_but_never_the_point3_origin`.
         "mirror" if arg_count == 3 => const { &[direction_arg(2, "normal")] },
 
-        // circular_pattern(target, ox, oy, oz, ax, ay, az, count, angle)  — 9-arg
-        // circular_pattern(target, axis, count, angle)                    — 4-arg
-        //   args1-3: the rotation-axis ORIGIN → LENGTH ("Length").
-        //   args4-6: the axis DIRECTION `ax`/`ay`/`az` — a dimensionless unit
-        //            vector, UNSLOTTED for the same reason as `mirror`'s normal.
-        //            The FIFTH and widest straddle case.
-        //   arg7:    `count` — an Int. A wrong count is an arity/semantic error,
-        //            not a dimension error.
-        //   arg8:    `angle` → ANGLE ("Angle"), gated since PRD 3 leaf ζ
-        //            (task 5782).
-        //   Pinned by `circular_pattern_forms_are_keyed_independently` and
-        //   `circular_pattern_slots_the_origin_and_the_angle_but_never_the_axis_or_count`.
-        //
-        // The `arg_count == 9` guard is load-bearing: index 1 is `ox` at
-        // arity 9 but `axis` at arity 4.
+        // circular_pattern(target, axis, count, angle) — the only form
+        //   arg1: `axis`, a decoded Axis VALUE — never a slot (the STRUCTURAL
+        //         EXCLUSION below is about the ORIGIN inside it).
+        //   arg2: `count` — an Int. A wrong count is an arity/semantic error,
+        //         not a dimension error.
+        //   arg3: `angle` → ANGLE ("Angle"), since PRD 3 leaf ζ (task 5782).
+        // Single-form (`check_arg_count_exact_form(.., 4, ..)`), so
+        // arity-agnostic per the "guard only genuinely overloaded names" rule.
+        // Pinned by `circular_pattern_slots_only_its_angle`.
         //
         // PREFIX AGREEMENT. This layer is keyed on the CALL, so it reports the
         // SURFACE name. The eval layer's `kind_label` (`PatternKind`'s
         // `Display`) renders that same name, so for `circular_pattern:` the two
-        // layers agree byte-for-byte.
-        // Only the `_centered` aliases still diverge; see
-        // `check_builtin_arg_types`' "# Message format". This layer's half is
-        // pinned by `circular_pattern_bare_origin_is_rejected_naming_the_origin_components`
-        // in `tests/harness_type_checking/builtin_arg_signature_tests.rs`; the eval
-        // half by reify-eval's `expected_length_rejection("circular_pattern", …)`
-        // assertions in `src/geometry_ops/tests.rs`, e.g.
-        // `compile_geometry_op_circular_pattern_origin_rejection_label_agrees_across_forms`.
+        // layers agree byte-for-byte. Only the `_centered` aliases still
+        // diverge; see `check_builtin_arg_types`' "# Message format". This
+        // layer's half is pinned by `circular_pattern_bare_angle_is_rejected` in
+        // `tests/harness_type_checking/builtin_arg_signature_tests.rs`.
         //
-        // This arm makes `reify check` a REAL gate for these positions, not
-        // merely `reify eval`: `cmd_check` returns `ExitCode::FAILURE` on any
-        // compile `Severity::Error` and short-circuits BEFORE constraint checking
-        // and before `build()`. `mirror`'s 7-arg arm was the one pinned at the
-        // CLI seam; its `Point3`-origin successor is gated at build, and its row
-        // in `reify-cli/tests/harness_cli_check/cli_check_bare_length_exit.rs`'s
+        // This arm makes `reify check` a REAL gate for the angle, not merely
+        // `reify eval`: `cmd_check` returns `ExitCode::FAILURE` on any compile
+        // `Severity::Error` and short-circuits BEFORE constraint checking and
+        // before `build()`. The origins of `mirror` and `circular_pattern` are
+        // gated at build instead; `mirror`'s row in
+        // `reify-cli/tests/harness_cli_check/cli_check_bare_length_exit.rs`'s
         // `ROWS` is a `Layer::Eval` row.
         //
         // STRUCTURAL EXCLUSION OF THE DECODED-VALUE ROUTE — the AUTHORITATIVE
@@ -690,31 +676,17 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         // `cli_check.rs`' two build-diagnostic tests, and
         // `reify-eval/tests/mirror_circular_value_forms_e2e.rs`.
         //
-        // A bare origin reaching `mirror` / `circular_pattern` through the value
-        // form — `mirror(g, plane_yz(0))`, `circular_pattern(g, axis_z(…), n, a)`
-        // — arrives already assembled into a composite `Value` by a stdlib
+        // A bare origin reaching `mirror` / `circular_pattern` through a value —
+        // `mirror(g, plane_yz(0))`, `circular_pattern(g, axis_z(…), n, a)` —
+        // arrives already assembled into a composite `Value` by a stdlib
         // producer, so it never passes through a positional argument index for
         // this name-and-arity-keyed table to key on. NO arm can gate it: the
         // exclusion is structural, not a gap someone forgot to fill, so it stays
         // a BUILD-only diagnostic for as long as the table stays index-keyed.
         // That is why task 5748's two CLI fixtures had to move onto that route
-        // when these arms landed — the short-circuit above would otherwise have
-        // destroyed every assertion they carry.
-        "circular_pattern" if arg_count == 9 => const { &[
-            length_arg(1, "ox"),
-            length_arg(2, "oy"),
-            length_arg(3, "oz"),
-            angle_arg(8, "angle"),
-        ] },
-
-        // circular_pattern(target, axis, count, angle) — 4-arg value form
-        //   arg1: `axis`, a decoded Axis VALUE — never an origin slot (the
-        //         STRUCTURAL EXCLUSION above is about the ORIGIN, which this
-        //         form never exposes positionally).
-        //   arg2: `count` — an Int, never a slot.
-        //   arg3: `angle` → ANGLE ("Angle"), since PRD 3 leaf ζ (task 5782).
-        // The guard is load-bearing: index 3 is the `oz` LENGTH at arity 9.
-        "circular_pattern" if arg_count == 4 => const { &[angle_arg(3, "angle")] },
+        // when task 5662's origin arms landed — the short-circuit above would
+        // otherwise have destroyed every assertion they carry.
+        "circular_pattern" => const { &[angle_arg(3, "angle")] },
 
         // ── HAZARD: an arity-agnostic arm meets a future value-form overload ─
         //
@@ -1551,10 +1523,10 @@ mod tests {
 
     /// Inclusive upper bound for every arity sweep in this module.
     ///
-    /// The largest arity any arm currently guards on is 9 (`circular_pattern`'s
-    /// scalar form), so this leaves headroom above every guard in the table — an
-    /// arity-guarded arm cannot hide from a sweep by sitting just above the
-    /// bound. Raise it if a future arm guards on a higher arity.
+    /// The largest arity any arm currently guards on is 4 (`draft`, `revolve`
+    /// and `orient_euler`), so this leaves headroom above every guard in the
+    /// table — an arity-guarded arm cannot hide from a sweep by sitting just
+    /// above the bound. Raise it if a future arm guards on a higher arity.
     const MAX_PROBED_ARITY: usize = 14;
 
     /// The curated exemption list for [`builtin_arg_slots`] keys that are NOT
@@ -4190,12 +4162,13 @@ mod tests {
         // `draft` moves its angle between forms; its guarded pair discharges
         // the coupling rule exactly as `rotate`'s guard does.
         ("draft", AcceptedArities::Exactly(&[3, 4])),
-        // Pattern ORIGIN triples (task 5662) — multi-arity because the name
-        // is genuinely OVERLOADED: a component form (circular_pattern's scalar
-        // one, mirror's point-direction one since direction-typing ι-a) and the
-        // value form. Both are safe under the coupling rule because
-        // their arms carry a load-bearing `if arg_count ==` guard, so no
-        // MULTI_ARITY_AGNOSTIC_SAFE exemption is needed; pinned by
+        // The pattern-origin pair (task 5662). `circular_pattern` is
+        // single-form since direction-typing ι-c (its Axis form), so its row is
+        // single-arity and its arm agnostic. `mirror` is the one multi-arity
+        // name left, genuinely OVERLOADED: its point-direction form (since
+        // direction-typing ι-a) and its Plane form. Its arm carries a
+        // load-bearing `if arg_count ==` guard, so no MULTI_ARITY_AGNOSTIC_SAFE
+        // exemption is needed; pinned by
         // `mirror_is_ledgered_and_guarded_not_exempted`.
         //
         // PROVENANCE, worth one line: these two rows exist because task 5662

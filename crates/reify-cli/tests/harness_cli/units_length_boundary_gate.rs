@@ -606,12 +606,15 @@ structure def S {
 structure def S {
     param o : Length
     let b = box(10mm, 10mm, 10mm)
-    let p = circular_pattern(b, o, 0mm, 0mm, 0, 0, 1, 6, 60deg)
+    let p = circular_pattern(b, axis_z(point3(o, 0mm, 0mm)), 6, 60deg)
     param geometry : Solid = p
 }
 "#,
             },
-            unresolved_arg: "ox",
+            // The unresolved origin leaves `point3(..)` Undef, so the whole
+            // Axis arrives unresolved and is named as `axis` (measured; the
+            // retired 9-arg form named `ox`).
+            unresolved_arg: "axis",
             builtin: "circular_pattern",
             retired_nickname: "for circular ",
         },

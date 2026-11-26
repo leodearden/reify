@@ -22,7 +22,7 @@ fn plate_source(angle_expr: &str) -> String {
         r#"
         structure def Plate {{
             let hole = cylinder(5mm, 10mm)
-            let holes = circular_pattern(hole, 0mm, 0mm, 0mm, 0, 0, 1, 6, {angle_expr})
+            let holes = circular_pattern(hole, axis_z(point3(0mm, 0mm, 0mm)), 6, {angle_expr})
         }}
         "#
     )

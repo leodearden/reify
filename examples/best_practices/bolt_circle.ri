@@ -6,9 +6,7 @@ module bolt_circle
 //     let ring = circular_pattern(hole, axis_z(point3(0mm, 0mm, 0mm)), n, 360deg)
 //     let body = difference(plate, ring)
 //
-// ANTI-PATTERN this replaces: placing each hole by hand at a computed angle,
-// or reaching for the older 9-arg scalar form (as `examples/m5_geometry_flange.ri`
-// still does) when the axis is available as a value.
+// ANTI-PATTERN this replaces: placing each hole by hand at a computed angle.
 //
 // Verified contracts:
 //
