@@ -3431,55 +3431,57 @@ mod tests {
         assert_eq!(diags[0].severity, Severity::Error);
     }
 
-    // ── linear_pattern_2d spacing1/spacing2 LENGTH slots (task 5652) ─────────
+    // ── linear_pattern_2d direction + spacing slots (task 5652, direction-typing ι-c) ──
 
-    /// Build an 11-arg
-    /// `linear_pattern_2d(target, dx1, dy1, dz1, count1, spacing1,
-    ///                            dx2, dy2, dz2, count2, spacing2)`
-    /// arg list with the two given spacing types.
+    /// Build a 7-arg
+    /// `linear_pattern_2d(target, direction1, count1, spacing1,
+    ///                            direction2, count2, spacing2)`
+    /// arg list with Direction directions, Int counts and the two given
+    /// spacing types.
     fn linear_pattern_2d_args(spacing1: Type, spacing2: Type) -> Vec<CompiledExpr> {
         vec![
-            arg_expr(Type::Geometry),               // 0  target
-            arg_expr(Type::dimensionless_scalar()), // 1  dx1
-            arg_expr(Type::dimensionless_scalar()), // 2  dy1
-            arg_expr(Type::dimensionless_scalar()), // 3  dz1
-            arg_expr(Type::Int),                    // 4  count1
-            arg_expr(spacing1),                     // 5  spacing1
-            arg_expr(Type::dimensionless_scalar()), // 6  dx2
-            arg_expr(Type::dimensionless_scalar()), // 7  dy2
-            arg_expr(Type::dimensionless_scalar()), // 8  dz2
-            arg_expr(Type::Int),                    // 9  count2
-            arg_expr(spacing2),                     // 10 spacing2
+            arg_expr(Type::Geometry),  // 0 target
+            arg_expr(Type::Direction), // 1 direction1
+            arg_expr(Type::Int),       // 2 count1
+            arg_expr(spacing1),        // 3 spacing1
+            arg_expr(Type::Direction), // 4 direction2
+            arg_expr(Type::Int),       // 5 count2
+            arg_expr(spacing2),        // 6 spacing2
         ]
     }
 
-    /// linear_pattern_2d @ arity 11 → spacing1@5 + spacing2@10 (both LENGTH);
-    /// every other arity → empty.
+    /// linear_pattern_2d → direction1@1, spacing1@3, direction2@4, spacing2@6
+    /// at EVERY arity (a single-form name, so no arity guard), and never a slot
+    /// on count1@2 or count2@5.
     ///
-    /// Arity 7 gets its own assertion because it is the CONCRETE false positive
-    /// the arity dimension prevents, not a hypothetical — the reason, and how it
-    /// differs from `linear_pattern`'s 4-arg form, is on the `linear_pattern_2d`
-    /// arm of [`builtin_arg_slots`] and restated in the assertion message below,
-    /// where a failure is actually read.
+    /// The counts are Ints: a LENGTH slot on either would emit a FALSE
+    /// `ArgTypeMismatch` on correct code. That is the false positive the
+    /// retired 11-arg form's `arg_count == 11` guard existed to prevent, so it
+    /// is pinned positively here.
     #[test]
-    fn linear_pattern_2d_spacing_slots_are_arity_11_only() {
-        assert_eq!(
-            builtin_arg_slots("linear_pattern_2d", 11),
-            vec![length_slot(5, "spacing1"), length_slot(10, "spacing2")],
-            "linear_pattern_2d args 5 and 10 are spacing1/spacing2 and must be LENGTH"
+    fn linear_pattern_2d_slots_directions_and_spacings_but_never_its_counts() {
+        assert_slots_at_every_arity(
+            "linear_pattern_2d",
+            &[
+                direction_slot(1, "direction1"),
+                length_slot(3, "spacing1"),
+                direction_slot(4, "direction2"),
+                length_slot(6, "spacing2"),
+            ],
         );
-        assert!(
-            builtin_arg_slots("linear_pattern_2d", 7).is_empty(),
-            "at arity 7 (task 5351's future direction-value form) index 5 is \
-             `count2`, an Int — a spacing1@5 LENGTH slot would emit a FALSE \
-             ArgTypeMismatch on valid code, so arity 7 must expose NO slots"
-        );
-        for arity in [0usize, 1, 5, 6, 10, 12] {
-            assert!(
-                builtin_arg_slots("linear_pattern_2d", arity).is_empty(),
-                "linear_pattern_2d at arity {arity} is not the 11-arg form, \
-                 so it must expose no slots"
-            );
+        for arg_count in 0usize..=MAX_PROBED_ARITY {
+            let slotted: Vec<usize> = builtin_arg_slots("linear_pattern_2d", arg_count)
+                .iter()
+                .map(|slot| slot.index)
+                .collect();
+            for count_index in [2usize, 5] {
+                assert!(
+                    !slotted.contains(&count_index),
+                    "linear_pattern_2d arg{count_index} is a count, an Int: a slot \
+                     there would reject correct code; got slots at {slotted:?} \
+                     at arity {arg_count}"
+                );
+            }
         }
     }
 
@@ -3504,7 +3506,7 @@ mod tests {
     /// `spacing1`, a bare `spacing2` names `spacing2`, and both bare give 2.
     ///
     /// Naming the RIGHT one matters — a copy-paste slip duplicating the
-    /// `spacing1` name onto index 10 would point the user at the wrong axis.
+    /// `spacing1` name onto index 6 would point the user at the wrong axis.
     #[test]
     fn linear_pattern_2d_bare_spacings_are_reported_independently() {
         // (a) only spacing1 bare → 1 diagnostic naming spacing1 (not spacing2).
@@ -4384,7 +4386,7 @@ mod tests {
         ("extrude_infinite_symmetric", AcceptedArities::Exactly(&[2])),
         // Transform producers and patterns.
         ("linear_pattern", AcceptedArities::Exactly(&[4])),
-        ("linear_pattern_2d", AcceptedArities::Exactly(&[11])),
+        ("linear_pattern_2d", AcceptedArities::Exactly(&[7])),
         ("rotate_around", AcceptedArities::Exactly(&[4])),
         ("translate", AcceptedArities::Exactly(&[4])),
         // PRD 3 leaf ζ (task 5782). `rotate` is multi-arity because it is

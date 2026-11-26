@@ -36,6 +36,9 @@ struct DirectionForms {
     /// `Pattern{Linear}` carrying `direction`:
     /// `linear_pattern(geo, dir(..), count, spacing)`.
     linear_pattern: usize,
+    /// `Pattern{Linear2D}` carrying `direction1`:
+    /// `linear_pattern_2d(geo, dir(..), count1, spacing1, dir(..), count2, spacing2)`.
+    linear_pattern_2d: usize,
 }
 
 impl DirectionForms {
@@ -44,6 +47,7 @@ impl DirectionForms {
             && self.rotate_around >= floor.rotate_around
             && self.mirror >= floor.mirror
             && self.linear_pattern >= floor.linear_pattern
+            && self.linear_pattern_2d >= floor.linear_pattern_2d
     }
 }
 
@@ -52,12 +56,14 @@ const fn floor(
     rotate_around: usize,
     mirror: usize,
     linear_pattern: usize,
+    linear_pattern_2d: usize,
 ) -> DirectionForms {
     DirectionForms {
         rotate,
         rotate_around,
         mirror,
         linear_pattern,
+        linear_pattern_2d,
     }
 }
 
@@ -66,22 +72,30 @@ const fn floor(
 /// later `let` builds on the one holding it, since each realization lowers its
 /// dependencies' ops again. A floor drops only with a new measurement saying why.
 const CORPUS: &[(&str, DirectionForms)] = &[
-    ("designs/litter_tray/bottom_deck.ri", floor(4, 0, 0, 0)),
+    ("designs/litter_tray/bottom_deck.ri", floor(4, 0, 0, 0, 0)),
     (
         "designs/litter_tray/bottom_deck_split.ri",
-        floor(6, 0, 0, 0),
+        floor(6, 0, 0, 0, 0),
     ),
-    ("designs/litter_tray/top_deck.ri", floor(4, 0, 0, 0)),
-    ("designs/litter_tray/top_deck_split.ri", floor(5, 0, 0, 0)),
-    ("prj/printer_v01/printer.ri", floor(3, 0, 1, 3)),
-    ("prj/printer_v01/dev_capstan.ri", floor(1, 0, 0, 0)),
+    ("designs/litter_tray/top_deck.ri", floor(4, 0, 0, 0, 2)),
+    (
+        "designs/litter_tray/top_deck_split.ri",
+        floor(5, 0, 0, 0, 2),
+    ),
+    (
+        "designs/litter_tray/probe_5318_unit_spacing.ri",
+        floor(0, 0, 0, 0, 2),
+    ),
+    ("designs/litter_tray/sieve_coupon.ri", floor(0, 0, 0, 0, 2)),
+    ("prj/printer_v01/printer.ri", floor(3, 0, 1, 3, 0)),
+    ("prj/printer_v01/dev_capstan.ri", floor(1, 0, 0, 0, 0)),
     (
         "examples/geometric_relations/tangent_roller.ri",
-        floor(1, 0, 0, 0),
+        floor(1, 0, 0, 0, 0),
     ),
     (
         "examples/best_practices/symmetry_mirror.ri",
-        floor(0, 0, 1, 0),
+        floor(0, 0, 1, 0, 0),
     ),
 ];
 
@@ -110,12 +124,12 @@ const MIRRORED: &[(&str, &str, DirectionForms)] = &[
     (
         "helix_sweep_dep_5342",
         HELIX_SWEEP_DEP_5342,
-        floor(1, 0, 0, 0),
+        floor(1, 0, 0, 0, 0),
     ),
     (
         "pnrg_envelope_spline",
         PNRG_ENVELOPE_SPLINE,
-        floor(2, 0, 0, 0),
+        floor(2, 0, 0, 0, 0),
     ),
 ];
 
@@ -170,6 +184,17 @@ fn tally_op(op: &CompiledGeometryOp, site: &str, tally: &mut Tally) {
             "direction",
             None,
             &mut forms.linear_pattern,
+        ),
+        CompiledGeometryOp::Pattern {
+            kind: PatternKind::Linear2D,
+            args,
+            ..
+        } => (
+            "linear_pattern_2d",
+            args,
+            "direction1",
+            None,
+            &mut forms.linear_pattern_2d,
         ),
         _ => return,
     };

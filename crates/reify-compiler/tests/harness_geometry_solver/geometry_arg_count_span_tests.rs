@@ -160,14 +160,14 @@ fn mirror_retired_scalar_form_is_an_arity_error_naming_the_direction_form() {
 
 #[test]
 fn linear_pattern_2d_arg_count_diagnostic_has_span_label() {
-    // linear_pattern_2d() expects 11 arguments — passing 2 should produce a labeled diagnostic
+    // linear_pattern_2d() expects 7 arguments — passing 2 should produce a labeled diagnostic
     assert_arg_count_label(
         r#"
             structure S {
                 let p = linear_pattern_2d(box(10mm, 10mm, 10mm), 1mm)
             }
         "#,
-        "linear_pattern_2d() expects 11 arguments",
+        "linear_pattern_2d() expects 7 arguments",
     );
 }
 

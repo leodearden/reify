@@ -161,3 +161,36 @@ fn linear_pattern_direction_form_emits_the_retired_scalar_op() {
     assert_eq!(*count, 3, "{call}: count");
     assert_eq!(*spacing, Value::length(0.005), "{call}: spacing");
 }
+
+/// Retired `linear_pattern_2d(box(2mm, 2mm, 2mm), 1, 0, 0, 2, 5mm, 0, 1, 0, 2,
+/// 5mm)` emitted `LinearPattern2D { direction1: [1, 0, 0], count1: 2,
+/// spacing1: Scalar{0.005, LENGTH}, direction2: [0, 1, 0], count2: 2,
+/// spacing2: Scalar{0.005, LENGTH} }`.
+#[test]
+fn linear_pattern_2d_direction_form_emits_the_retired_scalar_op() {
+    let call = "linear_pattern_2d(box(2mm, 2mm, 2mm), dir(1, 0, 0), 2, 5mm, dir(0, 1, 0), 2, 5mm)";
+    let grids: Vec<GeometryOp> = clean_ops(call)
+        .into_iter()
+        .filter(|op| matches!(op, GeometryOp::LinearPattern2D { .. }))
+        .collect();
+    let [
+        GeometryOp::LinearPattern2D {
+            direction1,
+            count1,
+            spacing1,
+            direction2,
+            count2,
+            spacing2,
+            ..
+        },
+    ] = grids.as_slice()
+    else {
+        panic!("{call}: expected exactly one LinearPattern2D op, got {grids:?}");
+    };
+    assert_eq!(*direction1, [1.0, 0.0, 0.0], "{call}: direction1");
+    assert_eq!(*count1, 2, "{call}: count1");
+    assert_eq!(*spacing1, Value::length(0.005), "{call}: spacing1");
+    assert_eq!(*direction2, [0.0, 1.0, 0.0], "{call}: direction2");
+    assert_eq!(*count2, 2, "{call}: count2");
+    assert_eq!(*spacing2, Value::length(0.005), "{call}: spacing2");
+}

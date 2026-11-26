@@ -17,3 +17,7 @@ structure def QuarterArc {
 structure def LinearRow {
     let v = volume(linear_pattern(box(2mm, 2mm, 2mm), dir(1, 0, 0), 3, 5mm))
 }
+
+structure def LinearGrid {
+    let v = volume(linear_pattern_2d(box(2mm, 2mm, 2mm), dir(1, 0, 0), 2, 5mm, dir(0, 1, 0), 2, 5mm))
+}

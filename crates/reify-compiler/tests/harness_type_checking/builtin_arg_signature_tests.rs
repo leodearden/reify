@@ -340,8 +340,9 @@ fn nested_linear_pattern_bare_spacing_emits_exactly_one_diagnostic() {
 /// grid scattered cutting tools hundreds of metres from the plate.
 #[test]
 fn linear_pattern_2d_bare_spacing1_gives_one_arg_type_mismatch() {
-    let compiled =
-        compile_struct_body("    let g = linear_pattern_2d(b, 1, 0, 0, 3, 10, 0, 1, 0, 4, 20mm)\n");
+    let compiled = compile_struct_body(
+        "    let g = linear_pattern_2d(b, dir(1, 0, 0), 3, 10, dir(0, 1, 0), 4, 20mm)\n",
+    );
     let errors = arg_type_mismatch_errors(&compiled);
     assert_eq!(
         errors.len(),
@@ -367,7 +368,7 @@ fn linear_pattern_2d_bare_spacing1_gives_one_arg_type_mismatch() {
 #[test]
 fn linear_pattern_2d_dimensioned_spacings_give_no_arg_type_mismatch() {
     let compiled = compile_struct_body(
-        "    let g = linear_pattern_2d(b, 1, 0, 0, 3, 10mm, 0, 1, 0, 4, 20mm)\n",
+        "    let g = linear_pattern_2d(b, dir(1, 0, 0), 3, 10mm, dir(0, 1, 0), 4, 20mm)\n",
     );
     let errors = arg_type_mismatch_errors(&compiled);
     assert!(

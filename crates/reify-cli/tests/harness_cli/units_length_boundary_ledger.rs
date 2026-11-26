@@ -171,11 +171,11 @@ const SECTION_6_ROWS: &[BoundaryRow] = &[
     BoundaryRow {
         row: "9b",
         scenario: "linear_pattern_2d(w, 1, 0, 0, 3, 20) at arity 6 — resolved as an arity \
-                   error, not left silently un-slotted",
+                   error naming the 7-arg Direction form",
         discharged_by: &[
             Discharge {
                 file: BOUNDARY_GATE,
-                test_fn: "the_arity_6_linear_pattern_2d_site_is_an_arity_error_not_a_length_slot",
+                test_fn: "the_arity_6_linear_pattern_2d_site_is_an_arity_error_naming_the_7_arg_form",
             },
             Discharge {
                 file: "crates/reify-compiler/tests/harness_compilation_surface/\

@@ -16,3 +16,8 @@ structure def ScalarLinearPattern {
     let b = box(2mm, 2mm, 2mm)
     let g = linear_pattern(b, 1, 0, 0, 3, 5mm)
 }
+
+structure def ScalarLinearGrid {
+    let b = box(2mm, 2mm, 2mm)
+    let g = linear_pattern_2d(b, 1, 0, 0, 2, 5mm, 0, 1, 0, 2, 5mm)
+}

@@ -293,53 +293,39 @@ fn compile_linear_pattern_2d_wrong_arity_produces_diagnostic() {
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_linpat2d_err"));
     assert!(parsed.errors.is_empty());
     let compiled = compile(&parsed);
+    let expected = "linear_pattern_2d() expects 7 arguments: \
+                    linear_pattern_2d(geo, dir(x, y, z), count1, spacing1, \
+                    dir(x, y, z), count2, spacing2), got 6";
     assert!(
-        compiled
-            .diagnostics
-            .iter()
-            .any(|d| d.message.contains("linear_pattern_2d") && d.message.contains("11 arguments")),
-        "expected arity diagnostic, got: {:?}",
+        compiled.diagnostics.iter().any(|d| d.message == expected),
+        "expected the arity diagnostic {expected:?}, got: {:?}",
         compiled.diagnostics
     );
 
-    // Task 5652: the bare `20` above is NOT migrated to `20mm` on purpose —
-    // this is an ARITY-error fixture, and a 6-arg `linear_pattern_2d` is
-    // slot-free by construction (the spacing slots are guarded on
-    // `arg_count == 11`). So the wrong-arity call must report ONLY the arity
-    // problem; piling an ArgTypeMismatch on top would bury the real error
-    // under a diagnostic about an argument whose position is meaningless in a
-    // call that has the wrong shape to begin with.
+    // PRD `docs/prds/v0_6/units-length-gate-completion.md` boundary row 9b
+    // (task 5750) — RESOLUTION RECORDED HERE because this fixture is the site
+    // the row is about. The arity-6 call is a malformed fixture, not an
+    // overload: it is an arity error that names the 7-arg Direction form
+    // (direction-typing ι-c), so nothing slips past and the bare `20` stays
+    // bare under contract C6's deliberate-negative-fixture clause.
     //
-    // Task 5750 (units-length η), PRD boundary row 9b — RESOLUTION RECORDED
-    // HERE because this fixture is the site the row is about.
-    // `docs/prds/v0_6/units-length-gate-completion.md` claimed the arity-6
-    // `linear_pattern_2d(w, 1, 0, 0, 3, 20)` "slips past today's
-    // `arg_count == 11` guard entirely", leaving the bare `20` ungated and
-    // implying η owed either a new arity-6 slot or a migration of this line.
-    //
-    // PROBED on 2026-07-28 and again during η, and the claim is FALSE IN BOTH
-    // DIRECTIONS: this call is neither a legitimate overload nor a malformed
-    // fixture. The arity guard in `geometry.rs` DOES reject it — `reify check`
-    // and `reify eval` both exit 1 with
-    // `linear_pattern_2d() expects 11 arguments, got 6` — so nothing "slips
-    // past" and there is no ungated position to gate.
-    //
-    // Resolution: NO arity-6 LENGTH slot is added, the bare `20` stays bare
-    // under contract C6's deliberate-negative-fixture clause, and this site was
-    // SUBTRACTED from η's migration list. The `arg_type_mismatches.is_empty()`
-    // assertion below IS the pin for all of that — do not weaken it to a
-    // "contains the arity message" check, which would hold even if a future
-    // slot started firing here.
-    let arg_type_mismatches: Vec<_> = compiled
+    // `linear_pattern_2d` is single-form, so its slot arm is arity-agnostic
+    // and a malformed call's PRESENT slot positions are still checked: the
+    // `1`, `0` and `3` here draw direction/spacing mismatches beside the arity
+    // error (accepted migration noise, as direction-typing ι-a recorded for
+    // `rotate_around`). What must never fire is a slot on a COUNT — an Int
+    // whose LENGTH slot would reject correct code. The slot table's unit test
+    // pins that at every arity; this pins it on a real call.
+    let count_mismatches: Vec<_> = compiled
         .diagnostics
         .iter()
         .filter(|d| d.code == Some(reify_core::DiagnosticCode::ArgTypeMismatch))
+        .filter(|d| d.message.contains("count1") || d.message.contains("count2"))
         .collect();
     assert!(
-        arg_type_mismatches.is_empty(),
-        "a wrong-arity linear_pattern_2d must emit no ArgTypeMismatch — the \
-         arity guard makes a 6-arg call slot-free. Got: {:?}",
-        arg_type_mismatches
+        count_mismatches.is_empty(),
+        "no ArgTypeMismatch may name a linear_pattern_2d count. Got: {:?}",
+        count_mismatches
     );
 }
 
