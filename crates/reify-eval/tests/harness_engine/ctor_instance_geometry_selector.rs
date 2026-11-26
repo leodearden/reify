@@ -293,8 +293,8 @@ structure def Asm {
 "#;
 
 /// A ctor's symbolic geometry handle serves selectors in member scope only: a
-/// sibling that passes the geometry let by value gets the field value it had
-/// before the handle existed, never a handle frozen into an instance field
+/// sibling that passes the geometry let by value holds Undef in the handle's
+/// place, never a handle frozen into an instance field
 /// (uniform-member-access.md C3(vi)).
 #[test]
 fn let_instance_field_passing_geometry_by_value_holds_no_handle() {
@@ -308,4 +308,66 @@ fn let_instance_field_passing_geometry_by_value_holds_no_handle() {
         Value::List(vec![Value::Undef])
     );
     assert_eq!(cell(&result, "Asm", "g"), Value::Undef);
+}
+
+const HANDLE_BESIDE_SELECTOR_SRC: &str = r#"
+structure def Pinned {
+    param target : Solid
+    param pt : VertexSelector
+}
+
+structure def Part {
+    param len : Length = 1000mm
+    let body = box(len, 100mm, 100mm)
+    let both = Pinned(target: body, pt: vertex(body, "tip"))
+}
+
+structure def Asm {
+    let q = Part(len: 2000mm)
+    sub s = Part(len: 2000mm)
+}
+"#;
+
+/// A member passing the geometry let by value beside a selector over it loses
+/// only the handle: the selector still agrees with a `sub` given the same
+/// bindings.
+#[test]
+fn let_instance_member_keeps_a_selector_beside_a_by_value_handle() {
+    let result = eval_with_stdlib(HANDLE_BESIDE_SELECTOR_SRC);
+    assert_no_error_diagnostics(&result, "the handle-beside-selector fixture");
+
+    let both = ctor_field(&result, "Asm", "q", "both");
+    assert_eq!(instance_field(&both, "Asm.q.both", "target"), Value::Undef);
+    let pt = instance_field(&both, "Asm.q.both", "pt");
+    assert_selector(&pt, "Asm.q.both.pt");
+    let sub_pt = instance_field(&cell(&result, "Asm.s", "both"), "Asm.s.both", "pt");
+    assert_eq!(pt, sub_pt);
+}
+
+const GEOMETRY_ALIAS_SRC: &str = r#"
+structure def H {
+    param w : Length = 1mm
+    let base = box(w, w, w)
+    let shifted = base
+    let t = vertex(shifted, "tip")
+}
+
+structure def Asm {
+    let p = H()
+}
+"#;
+
+/// A geometry alias (`let shifted = base`) lowers to a realization of its own,
+/// which template and `sub` scope do not resolve the alias to alike: the CLI
+/// engine's template follows the alias's realization, a `sub` follows `base`'s,
+/// and the kernel-free engine's template follows `base`'s too. A let-constructed
+/// instance mints no handle for an alias, so a selector over it is Undef rather
+/// than whichever of the two disputed identities it would otherwise pick.
+#[test]
+fn let_instance_selector_over_a_geometry_alias_is_undef() {
+    let result = eval_with_stdlib(GEOMETRY_ALIAS_SRC);
+    assert_no_error_diagnostics(&result, "the geometry-alias fixture");
+
+    assert_selector(&cell(&result, "H", "t"), "template H.t");
+    assert_eq!(ctor_field(&result, "Asm", "p", "t"), Value::Undef);
 }

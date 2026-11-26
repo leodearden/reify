@@ -668,6 +668,65 @@ fn let_constructed_ctor_carries_no_geometry_list_let() {
     assert_eq!(members, ["body"]);
 }
 
+const GEOMETRY_ALIAS_LET_CTOR_SRC: &str = r#"
+module test.geometry_alias_let_ctor
+
+structure def H {
+    param w : Length = 1mm
+    let base = box(w, w, w)
+    let shifted = base
+    let t = vertex(shifted, "tip")
+}
+
+structure def Asm {
+    let p = H()
+}
+"#;
+
+/// A geometry let that only aliases a sibling geometry let has a realization of
+/// its own, but template and `sub` scope disagree on which realization the
+/// alias names, so a let-constructed ctor carries no `CtorGeometryLet` for it.
+#[test]
+fn let_constructed_ctor_carries_no_geometry_alias() {
+    let module = reify_test_support::parse_and_compile_with_stdlib(GEOMETRY_ALIAS_LET_CTOR_SRC);
+    let template = |name: &str| {
+        module
+            .templates
+            .iter()
+            .find(|t| t.name == name)
+            .unwrap_or_else(|| panic!("no template {name}"))
+    };
+    let shifted = template("H")
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "shifted")
+        .and_then(|vc| vc.default_expr.as_ref())
+        .expect("H.shifted default");
+    assert!(
+        matches!(&shifted.kind, CompiledExprKind::ValueRef(id) if *id == ValueCellId::new("H", "base")),
+        "premise: the alias lowers to a bare read of `base`, got {shifted:?}"
+    );
+    assert!(
+        template("H")
+            .realizations
+            .iter()
+            .any(|r| r.name.as_deref() == Some("shifted")),
+        "premise: the alias has a realization of its own"
+    );
+    let asm_p = template("Asm")
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "p")
+        .and_then(|vc| vc.default_expr.as_ref())
+        .expect("Asm.p default");
+
+    let CompiledExprKind::StructureInstanceCtor { geometry_lets, .. } = &asm_p.kind else {
+        panic!("Asm.p must lower to a StructureInstanceCtor, got {asm_p:?}");
+    };
+    let members: Vec<&str> = geometry_lets.iter().map(|g| g.member.as_str()).collect();
+    assert_eq!(members, ["base"]);
+}
+
 // ─── fn-call param default through a fn-returned ctor ─────────────────────────
 
 /// A structure-def param default that calls a SAME-MODULE fn, consumed through a

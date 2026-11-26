@@ -5,6 +5,8 @@
 //! kernel-free selector hook, while the handle itself never becomes an
 //! instance field (docs/prds/v0_6/uniform-member-access.md D5).
 
+use std::cell::RefCell;
+
 use reify_core::hash::ContentHash;
 use reify_core::identity::RealizationNodeId;
 use reify_core::{Diagnostic, Type, ValueCellId};
@@ -286,4 +288,73 @@ fn field_member_carrying_the_geometry_member_by_value_holds_no_handle() {
         "a handle serves selectors only, never a field value"
     );
     assert_eq!(field(&data, "listed"), &Value::List(vec![Value::Undef]));
+}
+
+/// A list holding the geometry member by value next to a selector over it.
+fn handle_beside_selector() -> CompiledExpr {
+    CompiledExpr::list_literal(
+        vec![vref("body"), stub_sel(vref("body"))],
+        Type::List(Box::new(Type::Geometry)),
+    )
+}
+
+#[test]
+fn field_member_mixing_the_handle_and_a_selector_keeps_the_selector() {
+    let data = construct(&ctor(
+        vec![],
+        vec![("both", handle_beside_selector())],
+        vec![body_reading(vref("len"))],
+    ));
+    assert_eq!(
+        field(&data, "both"),
+        &Value::List(vec![Value::Undef, expected_tip(length(1.0))]),
+        "only the by-value handle becomes Undef; the selector beside it still \
+         resolves over the symbolic member"
+    );
+}
+
+const HOOK_RAN: &str = "stub selector hook ran";
+
+/// [`stub_mint`] that also reports every call it sees, so a test can count how
+/// often the ctor evaluated a selector.
+fn announcing_mint(
+    expr: &CompiledExpr,
+    values: &ValueMap,
+    diags: &mut Vec<Diagnostic>,
+) -> Option<Value> {
+    diags.push(Diagnostic::info(HOOK_RAN));
+    stub_mint(expr, values, diags)
+}
+
+#[test]
+fn field_member_carrying_the_handle_is_evaluated_once() {
+    let handle_beside_a_call_over_len = CompiledExpr::list_literal(
+        vec![vref("body"), stub_sel(vref("len"))],
+        Type::List(Box::new(Type::Geometry)),
+    );
+    let sink = RefCell::new(Vec::new());
+    let outer = ValueMap::new();
+    let ctx = EvalContext::simple(&outer)
+        .with_symbolic_selector_ctor(announcing_mint)
+        .with_runtime_diagnostics(&sink);
+    eval_expr(
+        &ctor(
+            vec![],
+            vec![("both", handle_beside_a_call_over_len)],
+            vec![body_reading(vref("len"))],
+        ),
+        &ctx,
+    );
+    let hook_runs = sink
+        .borrow()
+        .iter()
+        .filter(|d| d.message == HOOK_RAN)
+        .count();
+    assert_eq!(
+        hook_runs,
+        1,
+        "a member carrying the handle by value is evaluated once, so a call in \
+         it that resolves with or without the handle reaches the hook once: {:?}",
+        sink.borrow()
+    );
 }
