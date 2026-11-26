@@ -10,17 +10,15 @@ on Phase 2.5 one line per member as its retry starts. Grammar: run_all.sh's
 header, "Phase log".
 
 The pool run covers all four phases (1 pool, 2 serial, 2.5 retry, 3 report);
-the legacy serial run covers the one serial phase. A run SIGTERMed while its
-Phase-2.5 retry is running (the merge envelope's group TERM) must name that
-phase on the stdout line its TERM trap adds after the Summary line. Every
-assertion compares the parsed (id, name, kind, fields) tuples of
-phase_lines(), never a whole sentence.
+each serial-only branch (legacy, member-subset, host-infra) covers its one
+serial phase, counting only the members it runs. A member that exceeded its
+budget is not retried, so Phase 2.5 neither counts nor names it. A run
+SIGTERMed while its Phase-2.5 retry is running (the merge envelope's group
+TERM) must name that phase on the stdout line its TERM trap adds after the
+Summary line. Every assertion compares the parsed (id, name, kind, fields)
+tuples of phase_lines(), never a whole sentence.
 
-The only time bounds here are hang guards: the subprocess timeouts and the
-wait for the held retry's readiness marker. No assertion bounds how long
-anything takes. The held retry member watches a release file, which cleanup
-touches before it SIGKILLs run_all's process group, so a failing case leaves
-nothing running.
+The only time bounds here are hang guards.
 
 run_all.sh discovers `test_*.sh` only; the gate runs this file through its
 thin wrapper tests/infra/test_run_all_phase_log.sh.
@@ -46,6 +44,8 @@ RUN_ALL = REPO_ROOT / "tests" / "infra" / "run_all.sh"
 
 RUN_TIMEOUT_S = 600
 READY_WAIT_S = 300
+BUDGET_S = 20
+GRACE_S = 2
 
 PASSING_MEMBER = """#!/usr/bin/env bash
 exit 0
@@ -69,7 +69,19 @@ for _ in $(seq 300); do [ -e "$FIXTURE_STATE/release" ] && break; sleep 1; done
 exit 1
 """
 
-PASS, FLAKY, SERIAL, RETRY_HOLD = "test_pass.sh", "test_flaky.sh", "test_serial.sh", "test_retry_hold.sh"
+# Outlives any budget this suite sets; run_all's budget kill ends it.
+HANG_MEMBER = """#!/usr/bin/env bash
+exec sleep 300
+"""
+
+PASS, FLAKY, SERIAL, RETRY_HOLD, HANG, OTHER = (
+    "test_pass.sh",
+    "test_flaky.sh",
+    "test_serial.sh",
+    "test_retry_hold.sh",
+    "test_hang.sh",
+    "test_other.sh",
+)
 
 COMPLETED_RUN_MEMBERS = {
     PASS: (PASSING_MEMBER, "pool"),
@@ -81,6 +93,20 @@ INTERRUPTED_RUN_MEMBERS = {
     PASS: (PASSING_MEMBER, "pool"),
     RETRY_HOLD: (RETRY_HOLD_MEMBER, "pool"),
     SERIAL: (PASSING_MEMBER, "intra-run-serial"),
+}
+
+OVER_BUDGET_RUN_MEMBERS = {
+    PASS: (PASSING_MEMBER, "pool"),
+    FLAKY: (FLAKY_MEMBER, "pool"),
+    HANG: (HANG_MEMBER, "pool"),
+}
+
+# Two of three members are host-exclusive, so the host-infra branch runs a
+# strict subset of what it discovers.
+SERIAL_BRANCH_MEMBERS = {
+    PASS: (PASSING_MEMBER, "host-exclusive"),
+    SERIAL: (PASSING_MEMBER, "host-exclusive"),
+    OTHER: (PASSING_MEMBER, "pool"),
 }
 
 PHASE_TAG_RE = re.compile(r"\bphase (?P<id>[0-9.]+) \((?P<name>[a-z]+)\)(?P<rest>.*)$")
@@ -105,13 +131,19 @@ def phase_lines(text):
     return found
 
 
+def phase_counts(text):
+    """(id, name, kind, members) for each phase line of <text>."""
+    return [(pid, name, kind, fields.get("members")) for pid, name, kind, fields in phase_lines(text)]
+
+
 def is_whole_seconds(value):
     return value is not None and value.isdigit()
 
 
-def _default_term():
-    """A shell cannot trap a signal it inherits ignored, so run_all starts with TERM at its default."""
-    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+def _default_fatal_signals():
+    """A shell cannot trap a signal it inherits ignored, so run_all starts with TERM, INT and HUP at their default."""
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(sig, signal.SIG_DFL)
 
 
 class Fixture:
@@ -133,19 +165,22 @@ class Fixture:
         return run_all_env(
             self.root,
             self.manifest,
-            TMPDIR=str(self.tmp),
-            FIXTURE_STATE=str(self.state),
-            REIFY_RUN_ALL_POOL_CONCURRENCY="2",
-            **knobs,
+            **{
+                "TMPDIR": str(self.tmp),
+                "FIXTURE_STATE": str(self.state),
+                "REIFY_RUN_ALL_POOL_CONCURRENCY": "2",
+                "REIFY_LANE_X_FLOCK_LOCK": str(self.root / "lane-x.lock"),
+                **knobs,
+            },
         )
 
     def reset_state(self):
         for path in self.state.iterdir():
             path.unlink()
 
-    def run(self, **knobs):
+    def run(self, *flags, **knobs):
         return subprocess.run(
-            ["bash", str(RUN_ALL), str(self.infra)],
+            ["bash", str(RUN_ALL), str(self.infra), *flags],
             env=self.env(knobs),
             capture_output=True,
             text=True,
@@ -163,7 +198,7 @@ class Fixture:
             text=True,
             errors="surrogateescape",
             start_new_session=True,
-            preexec_fn=_default_term,
+            preexec_fn=_default_fatal_signals,
         )
 
         def stop():
@@ -205,7 +240,7 @@ class CompletedRunPhaseLogTests(unittest.TestCase):
     def test_pool_run_names_each_phase_in_order(self):
         lines = phase_lines(self.pool_run.stderr)
         self.assertEqual(
-            [(pid, name, kind, fields.get("members")) for pid, name, kind, fields in lines],
+            phase_counts(self.pool_run.stderr),
             [
                 ("1", "pool", "start", "2"),
                 ("1", "pool", "end", "2"),
@@ -235,11 +270,72 @@ class CompletedRunPhaseLogTests(unittest.TestCase):
     def test_legacy_serial_run_names_its_one_phase(self):
         lines = phase_lines(self.serial_run.stderr)
         self.assertEqual(
-            [(pid, name, kind, fields.get("members")) for pid, name, kind, fields in lines],
+            phase_counts(self.serial_run.stderr),
             [("2", "serial", "start", "3"), ("2", "serial", "end", "3")],
             self.output(self.serial_run),
         )
         self.assertTrue(is_whole_seconds(lines[-1][3].get("elapsed_s")), self.output(self.serial_run))
+
+
+class SerialBranchPhaseLogTests(unittest.TestCase):
+    """The member-subset and host-infra branches count the members they run, not every member discovered."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.fixture = Fixture(cls.addClassCleanup, SERIAL_BRANCH_MEMBERS)
+        cls.subset_run = cls.fixture.run(REIFY_RUN_ALL_MEMBER_SUBSET=PASS)
+        cls.host_infra_run = cls.fixture.run("--scope", "host-infra")
+
+    def test_member_subset_run_counts_only_its_matched_members(self):
+        run = self.subset_run
+        self.assertEqual(
+            phase_counts(run.stderr),
+            [("2", "serial", "start", "1"), ("2", "serial", "end", "1")],
+            run.stdout + run.stderr,
+        )
+
+    def test_host_infra_run_counts_only_its_host_exclusive_members(self):
+        run = self.host_infra_run
+        self.assertEqual(
+            phase_counts(run.stderr),
+            [("2", "serial", "start", "2"), ("2", "serial", "end", "2")],
+            run.stdout + run.stderr,
+        )
+
+
+class OverBudgetRetryTests(unittest.TestCase):
+    """A member that exceeded its budget is not retried: Phase 2.5 neither counts nor names it."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.fixture = Fixture(cls.addClassCleanup, OVER_BUDGET_RUN_MEMBERS)
+        cls.run_all = cls.fixture.run(
+            REIFY_RUN_ALL_POOL_CONCURRENCY="3",
+            REIFY_RUN_ALL_MEMBER_TIMEOUT=str(BUDGET_S),
+            REIFY_RUN_ALL_MEMBER_KILL_GRACE=str(GRACE_S),
+        )
+
+    def output(self):
+        return self.run_all.stdout + self.run_all.stderr
+
+    def retry_phase(self):
+        return [(kind, fields) for pid, _, kind, fields in phase_lines(self.run_all.stderr) if pid == "2.5"]
+
+    def test_the_hung_member_exceeded_its_budget(self):
+        timed_out = {
+            dict(FIELD_RE.findall(line)).get("member")
+            for line in self.run_all.stdout.splitlines()
+            if line.startswith("MEMBER_TIMEOUT ")
+        }
+        self.assertEqual(timed_out, {HANG}, self.output())
+
+    def test_retry_phase_counts_only_the_member_it_retries(self):
+        counts = [(kind, fields.get("members")) for kind, fields in self.retry_phase() if kind != "retrying"]
+        self.assertEqual(counts, [("start", "1"), ("end", "1")], self.output())
+
+    def test_retry_phase_names_only_the_member_it_retries(self):
+        retrying = [fields for kind, fields in self.retry_phase() if kind == "retrying"]
+        self.assertEqual(retrying, [{"member": FLAKY}], self.output())
 
 
 class InterruptedInRetryTests(unittest.TestCase):
@@ -282,7 +378,7 @@ class InterruptedInRetryTests(unittest.TestCase):
     def test_stderr_log_ends_inside_the_retry_phase(self):
         lines = phase_lines(self.stderr)
         self.assertEqual(
-            [(pid, name, kind, fields.get("members")) for pid, name, kind, fields in lines],
+            phase_counts(self.stderr),
             [
                 ("1", "pool", "start", "2"),
                 ("1", "pool", "end", "2"),

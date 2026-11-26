@@ -44,10 +44,11 @@
 # and Phase 2.5 prints "INFO: run_all.sh phase 2.5 (retry) retrying:
 # member=<name>" as each retry starts. The pool branch runs phase 1 (pool),
 # 2 (serial), 2.5 (retry) and 3 (report); each serial-only branch runs one
-# phase 2 (serial). <n> counts the members the phase covers; <s> is whole
-# seconds, or `unknown` when the clock gave none. A TERM that lands while a
-# phase is open adds "=== INTERRUPTED in phase <id> (<name>): members=<n>
-# elapsed_s=<s> ===" to stdout, directly after the interrupted Summary line.
+# phase 2 (serial). <n> counts the members the phase runs (Phase 3: the
+# members it reports); <s> is whole seconds, or `unknown` when the clock gave
+# none. A TERM that lands while a phase is open adds "=== INTERRUPTED in
+# phase <id> (<name>): members=<n> elapsed_s=<s> ===" to stdout, directly
+# after the interrupted Summary line.
 #
 # Exits 0 if all discovered tests pass (or none are found), 1 if any fail.
 #
@@ -2053,11 +2054,17 @@ elif [ "${#_ra_member_subset[@]}" -gt 0 ]; then
     discovered=${#_ra_discovered[@]}
     event_log_emit_run_start "$_RA_RUN_ID" "${SCOPE:-all}" subset "$discovered"
     _ra_serial_workdir_create
+    # The matched list is built first, so the phase's start line counts the
+    # members it runs, not every member it skip-records.
     _ra_subset_matched=()
-    _ra_phase_begin serial "$discovered"
     for _ra_subset_base in "${_ra_discovered[@]+"${_ra_discovered[@]}"}"; do
         if _ra_in_member_subset "$_ra_subset_base"; then
             _ra_subset_matched+=("$_ra_subset_base")
+        fi
+    done
+    _ra_phase_begin serial "${#_ra_subset_matched[@]}"
+    for _ra_subset_base in "${_ra_discovered[@]+"${_ra_discovered[@]}"}"; do
+        if _ra_in_member_subset "$_ra_subset_base"; then
             _ra_run_serial_member "$_RA_SERIAL_WORKDIR" "$_ra_subset_base"
         else
             _ra_record_subset_skip "$_ra_subset_base"
