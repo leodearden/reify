@@ -874,10 +874,12 @@ impl Drop for PendingWarmSeedsGuard<'_> {
 /// Used by `edit_source` step (4c) to drive the checkout half of the
 /// WarmStatePool round-trip uniformly across the `added` /
 /// `added_constraints` / `added_realizations` sets. The pool API itself
-/// is variant-agnostic, so a future `NodeId` variant (e.g. `Resolution`,
-/// which first needs a `diff_resolutions` helper (the gap recorded in #4686;
-/// see the step-(6) block comment in `edit_source`), or `ComputeNode` were it
-/// a variant) drops in as a single additional call.
+/// is variant-agnostic, so each `NodeId` variant a `diff_*` helper produces
+/// costs one call here. The two variants no `diff_*` helper produces are
+/// `Resolution`, which first needs a `diff_resolutions` helper (the gap
+/// recorded in #4686; see the step-(6) block comment in `edit_source`), and
+/// `Compute`, whose nodes are runtime artefacts of per-cell eval rather than
+/// source-derived; `run_compute_dispatch`'s pool fallback checks them out.
 ///
 /// The `pending` guard owns the pool borrow, so callers do not need to pass
 /// both a `&mut WarmStatePool` and a separate sink map — both are accessed
@@ -923,7 +925,7 @@ where
 /// seeded today), so the Resolution arm is currently unreachable end-to-end
 /// via the `eval_set = dirty ∩ demand` intersection in `edit_source`. A
 /// separate `diff_resolutions` helper gap (recorded in #4686; see the step-(6)
-/// block comment) is a sibling concern that stays open in this code.
+/// block comment) is a sibling concern.
 fn dependent_still_present_in_graph(dep: &NodeId, new_graph: &EvaluationGraph) -> bool {
     match dep {
         NodeId::Value(vcid) => new_graph.value_cells.contains_key(vcid),
@@ -3373,9 +3375,11 @@ impl Engine {
         //      by `diff_*` helpers — Value, Constraint, Realization — via
         //      the shared `checkout_added_warm_seeds` helper. Resolution is
         //      in no `diff_*` helper (the gap recorded in #4686; see step
-        //      (6)); ComputeNode is not yet a NodeId variant. The pool API
-        //      itself is variant-agnostic, so any future variant slots in
-        //      as a single additional call to the helper.
+        //      (6)). Compute is a NodeId variant but no `diff_*` helper
+        //      produces it: ComputeNodes are runtime artefacts of per-cell
+        //      eval, checked out by `run_compute_dispatch`'s pool fallback.
+        //      The pool API itself is variant-agnostic, so a variant a
+        //      `diff_*` helper produces slots in as one more helper call.
         let mut pending_warm_seeds = PendingWarmSeedsGuard::new(&mut self.warm_pool);
         checkout_added_warm_seeds(&mut pending_warm_seeds, &added, NodeId::Value);
         checkout_added_warm_seeds(

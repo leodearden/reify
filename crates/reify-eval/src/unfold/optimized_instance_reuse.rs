@@ -93,9 +93,9 @@ impl<'f> OptimizedNameIndex<'f> {
 /// value through plain `eval_expr` (clobbering it) or leaves an instance cell
 /// body-inlined forever. This function is the definition;
 /// `is_optimized_userfn_cell` is `optimized_target_of(..).is_some()` over the
-/// same inputs. Collapsing it into a call to this one needs an edit to
-/// `engine_eval.rs`, which #6662 held no lock on (recorded in #7130); that
-/// edit is not being made, because the old evaluation orchestration is being
+/// same inputs. Collapsing it into a call to this one (recorded in #7130)
+/// needs an edit to `engine_eval.rs`, which #6662 held no lock on; that edit
+/// is not being made, because the old evaluation orchestration is being
 /// replaced (docs/notes/old-evaluation-core-hold.md). Instead
 /// `optimized_probe_agrees_with_engine_eval_is_optimized_userfn_cell` (below)
 /// asserts the equivalence across every shape either probe can see, so a
