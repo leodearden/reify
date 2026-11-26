@@ -5,7 +5,7 @@
 use std::any::type_name;
 
 use reify_eval_core::{
-    Answer, Binding, Declaration, Erased, Failure, Input, InputKey, Kind, Outcome, Step, Turn,
+    Answer, Binding, Declaration, Erased, Failure, InputKey, Kind, Outcome, Step, Turn,
 };
 
 use crate::toy::{self, Cell, Scope};
@@ -282,7 +282,10 @@ fn an_input_attached_to_a_scope_s_path_adds_a_member() {
         inputs.extend(toy::root_scope("R", toy::members([])));
         if attached {
             let extra = toy::members([("x", toy::cell(&["v"]))]);
-            inputs.push((InputKey::attached(toy::at("R"), "extra"), toy::input_of(extra)));
+            inputs.push((
+                InputKey::attached(toy::at("R"), "extra"),
+                toy::input_of(extra),
+            ));
         }
         let snapshot = core.snapshot(inputs);
 

@@ -4,7 +4,7 @@
 //! live boxes is read after a drain.
 
 use reify_eval_core::{
-    Answer, Core, Erased, Event, Input, InputKey, Kind, Outcome, Path, Snapshot, SnapshotId, Turn,
+    Answer, Core, Erased, Event, InputKey, Kind, Outcome, Path, Snapshot, SnapshotId, Turn,
 };
 
 use crate::toy::{self, BoxShape, Cell, Watch};

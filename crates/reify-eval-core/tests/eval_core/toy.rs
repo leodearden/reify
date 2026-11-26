@@ -61,7 +61,11 @@ impl Contented for Members {
             .0
             .iter()
             .flat_map(|(step, declaration)| {
-                [step_bytes(step), declaration.content().as_u128().to_le_bytes().to_vec()].concat()
+                [
+                    step_bytes(step),
+                    declaration.content().as_u128().to_le_bytes().to_vec(),
+                ]
+                .concat()
             })
             .collect();
         Hash128::of_bytes(&bytes)

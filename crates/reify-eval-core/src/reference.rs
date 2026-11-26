@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use crate::hash::Encoder;
 use crate::step::Step;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -31,5 +32,12 @@ impl Ref {
 
     pub(crate) fn steps(&self) -> &[Step] {
         &self.steps
+    }
+
+    pub(crate) fn encode(&self, encoder: &mut Encoder) {
+        encoder
+            .tag("ref")
+            .text(&self.binding)
+            .sequence(self.steps.iter(), |encoder, step| step.encode(encoder));
     }
 }

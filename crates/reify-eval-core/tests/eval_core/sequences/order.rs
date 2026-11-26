@@ -107,8 +107,8 @@ fn told(
 
 mod tests {
     use reify_eval_core::{
-        Answer, Builder, Core, Cx, Declaration, Demand, Erased, Input, InputKey, Kind, KindId,
-        Outcome, Path, Produced, RequestError, Root,
+        Answer, Builder, Core, Cx, Declaration, Demand, Erased, InputKey, Kind, KindId, Outcome,
+        Path, Produced, RequestError, Root,
     };
 
     use super::{Answered, OrderMismatch, order_check};
