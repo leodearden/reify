@@ -22,15 +22,14 @@
 //      mirrored too, not just the name; task 5583).
 // NOT enforced, and therefore review-time responsibilities:
 //   - argument DIMENSION/TYPE of UNSLOTTED operands. builtin_signatures.rs
-//     checks the slotted ones at compile time (lengths, angles, and the
-//     Direction axis of rotate/rotate_around, normal of mirror and direction
-//     of linear_pattern), so a wrong type there is an Error that reds the
-//     compile. Pattern counts have no slot, so
+//     checks the slotted ones at compile time (lengths, angles and
+//     Directions), so a wrong type there is an Error that reds the compile.
+//     Pattern counts have no slot, so
 //     `linear_pattern(solid, dir(1, 0, 0), 3mm, 5mm)` would compile just as
 //     green. The unit convention used below — positions/lengths in `mm`,
-//     angles in `deg`, Direction operands as `dir(..)`, other direction/axis
-//     components and counts as plain numbers — mirrors the chunk's prose
-//     line, verified only where a slot exists;
+//     angles in `deg`, Direction operands as `dir(..)`, counts as plain
+//     numbers — mirrors the chunk's prose line, verified only where a slot
+//     exists;
 //   - argument ORDER.
 // Keep the two files in lockstep: if you edit a signature in one, edit it in the
 // other. Renaming a call here to something with no compiler arm goes RED.

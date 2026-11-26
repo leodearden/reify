@@ -860,18 +860,13 @@ fn required_length_values<const N: usize>(
 /// Read a GROUP of length-semantic arguments of a scalar-form geometry builtin
 /// as LENGTHs, in the given name order, diagnosing EVERY failing member.
 ///
-/// A point in space (an origin `ox`/`oy`/`oz`, a curve endpoint
-/// `x1`/`y1`/`z1`), a displacement
-/// (`dx`/`dy`/`dz`) and an independent length group (`helix`'s
-/// `radius`/`pitch`/`height`) are alike length-semantic in every member, so
-/// each must be a finite LENGTH `Scalar`: a bare/dimensionless member would be
-/// silently read as SI **metres** by `Value::as_f64` (the `12` vs `12mm` 1000×
-/// hazard). The co-located DIRECTION triple (`ax`/`ay`/`az`) is
-/// a dimensionless unit vector and deliberately stays on the bare-accepting
-/// `eval_named_arg_f64` path — callers that have one keep their own `f64_arg`
-/// closure for it. Callers whose every argument is gated drop that closure.
-/// Which positions are routed here is enumerated ONCE, in the `arg_acceptance`
-/// module doc.
+/// A curve endpoint (`line_segment`'s `x1`/`y1`/`z1`), a displacement
+/// (`translate`'s `dx`/`dy`/`dz`, `arbitrary_pattern`'s offset triples) and an
+/// independent length group (`helix`'s `radius`/`pitch`/`height`) are alike
+/// length-semantic in every member, so each must be a finite LENGTH `Scalar`: a
+/// bare/dimensionless member would be silently read as SI **metres** by
+/// `Value::as_f64` (the `12` vs `12mm` 1000× hazard). Which positions are
+/// routed here is enumerated ONCE, in the `arg_acceptance` module doc.
 ///
 /// ALL FAILURES AT ONCE (reviewer amendment, task 5623) comes from
 /// [`required_args_with`], which owns that policy for every gated dimension:
@@ -886,9 +881,8 @@ fn required_length_values<const N: usize>(
 ///
 /// BORROW ORDERING (the reason this is a free function and not a closure):
 /// each call takes `&mut diagnostics`, so the whole group must be read BEFORE
-/// the caller declares its `f64_arg` closure — the closure captures
-/// `diagnostics` mutably for its own lifetime, and an interleaved read would
-/// overlap that borrow. Calling this helper first satisfies that ordering by
+/// the caller declares any closure that captures `diagnostics` mutably for its
+/// own lifetime, since an interleaved read would overlap that borrow. Calling this helper first satisfies that ordering by
 /// construction instead of by convention at each call site.
 fn required_length_args<const N: usize>(
     names: [&str; N],
@@ -1857,6 +1851,33 @@ fn validate_pattern_count(
         return Err("invalid pattern count: exceeds upper bound".to_string());
     }
     Ok(raw as usize)
+}
+
+/// Read a REQUIRED pattern-count named argument (`count`, `count1`, `count2`)
+/// and validate it through [`validate_pattern_count`].
+///
+/// Absent, non-numeric and non-finite values are diagnosed by
+/// [`eval_named_arg_f64`]; the `Err` names the argument and the pattern kind.
+fn required_pattern_count(
+    name: &str,
+    kind_label: impl std::fmt::Display + Copy,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<usize, String> {
+    let raw = eval_named_arg_f64(
+        name,
+        kind_label,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )
+    .ok_or_else(|| format!("missing or non-finite argument '{name}' for {kind_label}"))?;
+    validate_pattern_count(raw, name, kind_label, diagnostics)
 }
 
 /// Read a GROUP of PROFILE DIMENSION slots — a rectangle's `width`/`height`, a
@@ -4131,7 +4152,7 @@ fn pattern_linear(
         diagnostics,
     )
     .map(|unit| unit.components());
-    let count = eval_named_arg_f64(
+    let count = required_pattern_count(
         "count",
         kind,
         args,
@@ -4139,9 +4160,7 @@ fn pattern_linear(
         functions,
         meta_map,
         diagnostics,
-    )
-    .ok_or_else(|| format!("missing or non-finite argument 'count' for {kind}"))
-    .and_then(|raw| validate_pattern_count(raw, "count", kind, diagnostics));
+    );
     // LENGTH-required: reject a bare/dimensionless spacing (op dropped) rather
     // than silently reading it as SI metres; re-wrap as a LENGTH Scalar so the
     // IR/kernel spacing representation is unchanged.
@@ -4175,7 +4194,7 @@ fn pattern_circular(
     // bare angle are all reported in one build.
     let axis = required_resolved_arg("axis", kind, args, values, functions, meta_map, diagnostics)
         .and_then(|axis_val| decode_axis(&axis_val, kind, diagnostics));
-    let count = eval_named_arg_f64(
+    let count = required_pattern_count(
         "count",
         kind,
         args,
@@ -4183,9 +4202,7 @@ fn pattern_circular(
         functions,
         meta_map,
         diagnostics,
-    )
-    .ok_or_else(|| format!("missing or non-finite argument 'count' for {kind}"))
-    .and_then(|raw| validate_pattern_count(raw, "count", kind, diagnostics));
+    );
     // TASK #1763 REVERSED HERE: a bare `circular_pattern` angle no longer
     // means DEGREES, and the shared resolver that converted it (with a
     // code-less deprecation Warning) is gone. #1763 was decided
@@ -4289,7 +4306,7 @@ fn pattern_linear2d(
         diagnostics,
     )
     .map(|unit| unit.components());
-    let count1 = eval_named_arg_f64(
+    let count1 = required_pattern_count(
         "count1",
         kind,
         args,
@@ -4297,9 +4314,7 @@ fn pattern_linear2d(
         functions,
         meta_map,
         diagnostics,
-    )
-    .ok_or_else(|| format!("missing or non-finite argument 'count1' for {kind}"))
-    .and_then(|raw| validate_pattern_count(raw, "count1", kind, diagnostics));
+    );
     // LENGTH-required: a bare/dimensionless spacing is rejected (op dropped)
     // instead of silently read as SI metres; the IR/kernel spacing
     // representation is unchanged.
@@ -4322,7 +4337,7 @@ fn pattern_linear2d(
         diagnostics,
     )
     .map(|unit| unit.components());
-    let count2 = eval_named_arg_f64(
+    let count2 = required_pattern_count(
         "count2",
         kind,
         args,
@@ -4330,9 +4345,7 @@ fn pattern_linear2d(
         functions,
         meta_map,
         diagnostics,
-    )
-    .ok_or_else(|| format!("missing or non-finite argument 'count2' for {kind}"))
-    .and_then(|raw| validate_pattern_count(raw, "count2", kind, diagnostics));
+    );
     let spacing2 = required_length_value(
         "spacing2",
         kind,
