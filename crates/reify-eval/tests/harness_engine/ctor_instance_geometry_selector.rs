@@ -8,8 +8,36 @@
 //! the two folds equal and the three scopes in agreement.
 
 use reify_core::ValueCellId;
+use reify_eval::EvalResult;
 use reify_ir::Value;
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
+
+use crate::ctor_instance_support::{assert_no_error_diagnostics, cell, ctor_field, instance_field};
+
+fn eval_with_stdlib(source: &str) -> EvalResult {
+    make_simple_engine().eval(&parse_and_compile_with_stdlib(source))
+}
+
+#[track_caller]
+fn assert_selector(value: &Value, what: &str) {
+    assert!(
+        matches!(value, Value::Selector(_)),
+        "{what} must resolve to a Selector, got {value:?}"
+    );
+}
+
+#[track_caller]
+fn assert_no_field(result: &EvalResult, host: &str, holder: &str, member: &str) {
+    match cell(result, host, holder) {
+        Value::StructureInstance(data) => assert!(
+            data.fields.get(member).is_none(),
+            "{host}.{holder} must carry no `{member}` field (the geometry stays \
+             in member scope, uniform-member-access D5): {:?}",
+            data.fields
+        ),
+        other => panic!("{host}.{holder} must hold a StructureInstance, got {other:?}"),
+    }
+}
 
 /// The engine's template-scope `Beam.body` handle hashes its upstream values
 /// exactly as reify-expr's fold does over the same realization's op args.
@@ -59,4 +87,63 @@ fn reify_expr_fold_matches_engine_template_handle_hash() {
         "reify-expr's realization_upstream_values_hash must stay byte-equal to \
          the engine's compute_realization_upstream_values_hash_from_ops"
     );
+}
+
+const SELECTOR_LET_SRC: &str = r#"
+structure def Beam {
+    param len : Length = 1000mm
+    let body = box(len, 100mm, 100mm)
+    let tip = vertex(body, "tip")
+    let ld = PointLoad(point: tip)
+}
+
+structure def NestedAssembly {
+    let primary = Beam()
+    let wide = Beam(len: 2000mm)
+    sub secondary = Beam(len: 2000mm)
+}
+"#;
+
+/// A let-constructed instance's selector over its own geometry let agrees with
+/// the template's, and so does a selector-fed sibling's field.
+#[test]
+fn let_instance_selector_over_geometry_let_agrees_with_template() {
+    let result = eval_with_stdlib(SELECTOR_LET_SRC);
+    assert_no_error_diagnostics(&result, "the selector-let fixture");
+
+    let template_tip = cell(&result, "Beam", "tip");
+    assert_selector(&template_tip, "template Beam.tip");
+    let primary_tip = ctor_field(&result, "NestedAssembly", "primary", "tip");
+    assert_selector(&primary_tip, "NestedAssembly.primary.tip");
+    assert_eq!(primary_tip, template_tip);
+
+    let template_point = instance_field(&cell(&result, "Beam", "ld"), "Beam.ld", "point");
+    let primary_point = instance_field(
+        &ctor_field(&result, "NestedAssembly", "primary", "ld"),
+        "NestedAssembly.primary.ld",
+        "point",
+    );
+    assert_selector(&primary_point, "NestedAssembly.primary.ld.point");
+    assert_eq!(primary_point, template_point);
+}
+
+/// The selector comes from the instance's own bindings: a let instance with a
+/// supplied `len` agrees with a `sub` given the same `len`, not the template.
+#[test]
+fn let_instance_selector_follows_its_own_bindings() {
+    let result = eval_with_stdlib(SELECTOR_LET_SRC);
+    assert_no_error_diagnostics(&result, "the selector-let fixture");
+
+    let wide_tip = ctor_field(&result, "NestedAssembly", "wide", "tip");
+    let sub_tip = cell(&result, "NestedAssembly.secondary", "tip");
+    assert_selector(&wide_tip, "NestedAssembly.wide.tip");
+    assert_eq!(wide_tip, sub_tip);
+    assert_ne!(wide_tip, cell(&result, "Beam", "tip"));
+}
+
+#[test]
+fn let_instance_carries_no_geometry_field() {
+    let result = eval_with_stdlib(SELECTOR_LET_SRC);
+    assert_no_field(&result, "NestedAssembly", "primary", "body");
+    assert_no_field(&result, "NestedAssembly", "wide", "body");
 }
