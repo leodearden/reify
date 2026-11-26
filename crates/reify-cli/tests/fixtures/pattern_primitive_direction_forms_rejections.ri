@@ -1,0 +1,9 @@
+// pattern_primitive_direction_forms_rejections.ri — CLI check fixture for
+// direction-typing ι-c (#9648): each retired scalar call is an arity error
+// that teaches the Direction form.
+
+module pattern_primitive_direction_forms_rejections
+
+structure def ScalarHalfSpace {
+    let g = half_space(0mm, 0mm, 0mm, 0, 0, 1)
+}

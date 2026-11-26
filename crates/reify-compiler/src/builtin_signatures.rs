@@ -2099,41 +2099,16 @@ mod tests {
         );
     }
 
-    /// half_space → the boundary POINT `px`/`py`/`pz` only.
+    /// half_space(origin, normal) → the Direction `normal` only, at EVERY arity
+    /// (direction-typing ι-c).
     ///
-    /// The STRADDLE case: `half_space(px, py, pz, nx, ny, nz)` mixes a gated
-    /// POINT with an un-gated outward NORMAL in one argument list. The normal is
-    /// a dimensionless unit vector whose components are legitimately bare in
-    /// correct `.ri`, so slotting indices 3-5 would reject valid code — the same
-    /// ORIGIN-vs-DIRECTION split already drawn for the circular pattern (the
-    /// `UnitVectorComponent` rows of the closure guard's `ALLOWLIST` in
-    /// `units_length_closure_guard.rs`).
+    /// The `origin` at index 0 stays unslotted: it is a Point3, which no
+    /// `ExpectedArg` kind describes, and `accept_length_point3` gates it at
+    /// build, as `rotate_around`'s pivot is. `half_space` is single-form, so its
+    /// arm carries no `if arg_count ==` guard.
     #[test]
-    fn half_space_slots_the_point_but_never_the_normal() {
-        assert_slots_at_every_arity(
-            "half_space",
-            &[
-                length_slot(0, "px"),
-                length_slot(1, "py"),
-                length_slot(2, "pz"),
-            ],
-        );
-
-        // The exclusion stated POSITIVELY as well as by the list above, so a
-        // reader sees the straddle drawn rather than having to infer it from an
-        // absence — and so the reason travels with the assertion.
-        let slotted: Vec<usize> = builtin_arg_slots("half_space", 6)
-            .iter()
-            .map(|slot| slot.index)
-            .collect();
-        for normal_index in [3usize, 4, 5] {
-            assert!(
-                !slotted.contains(&normal_index),
-                "half_space arg{normal_index} is an outward-NORMAL component — a \
-                 dimensionless unit vector — and must stay slot-free; got slots at \
-                 {slotted:?}"
-            );
-        }
+    fn half_space_slots_its_normal_as_a_direction_but_never_its_point3_origin() {
+        assert_slots_at_every_arity("half_space", &[direction_slot(1, "normal")]);
     }
 
     /// rectangle → [width@0, height@1].
@@ -4388,7 +4363,7 @@ mod tests {
         ("cone", AcceptedArities::Exactly(&[3])),
         ("cylinder", AcceptedArities::Exactly(&[2])),
         ("cylinder_centered", AcceptedArities::Exactly(&[2])),
-        ("half_space", AcceptedArities::Exactly(&[6])),
+        ("half_space", AcceptedArities::Exactly(&[2])),
         ("sphere", AcceptedArities::Exactly(&[1])),
         ("torus", AcceptedArities::Exactly(&[2])),
         ("tube", AcceptedArities::Exactly(&[3])),

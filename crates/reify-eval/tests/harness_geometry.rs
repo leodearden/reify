@@ -27,6 +27,8 @@
 mod box_positional_axes_e2e;
 #[path = "harness_geometry/dimensionless_sub_pose_diagnostic_e2e.rs"]
 mod dimensionless_sub_pose_diagnostic_e2e;
+#[path = "harness_geometry/direction_pattern_primitive_forms_e2e.rs"]
+mod direction_pattern_primitive_forms_e2e;
 #[path = "harness_geometry/empty_boolean_result_diagnostic_e2e.rs"]
 mod empty_boolean_result_diagnostic_e2e;
 #[path = "harness_geometry/euler_convention_surface.rs"]

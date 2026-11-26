@@ -1413,7 +1413,7 @@ mod tests {
         ("cone", "cone(10, 5, 20)", CompileCheck),
         ("rounded_box", "rounded_box(20, 20, 10, 2)", BuildOnly),
         ("torus", "torus(20, 5)", CompileCheck),
-        ("half_space", "half_space(0, 0, 0, 0, 0, 1)", CompileCheck),
+        ("half_space", "half_space(point3(0, 0, 0), dir(0, 0, 1))", BuildOnly),
         ("wedge", "wedge(20, 20, 10, 5)", CompileCheck),
         ("rectangle", "rectangle(20, 10)", CompileCheck),
         ("circle", "circle(10)", CompileCheck),
@@ -1636,19 +1636,12 @@ mod tests {
     /// neighbour elsewhere — e.g. `02-numeric`'s `sqrt(x: Real)`.
     ///
     /// Two checks per row: the negative `!detail.contains(": Real")`, and a
-    /// positive `detail.contains(": Length")`. The negative alone passes for
-    /// a signature with NO type annotations at all — `polygon`'s shape
-    /// before its coordinates were retyped — so the positive check is what
-    /// actually closes that gap, uniformly for every row.
-    ///
-    /// `half_space` needs a different negative check: its signature mixes a
-    /// gated and a dimensionless slot group (the same split
-    /// [`DIMENSIONLESS_NORMAL_NOTE`] documents), which would trip a blanket
-    /// `!detail.contains(": Real")` even though nothing is wrong. So
-    /// `half_space` checks its three gated slot names by substring (`px:
-    /// Length` etc.) instead of banning `Real` from the whole signature;
-    /// every other row here has no non-gated slot at all, so the blanket
-    /// check is exact for them.
+    /// positive `detail.contains("Length")`, which also matches a
+    /// `Point3<Length>` slot. The negative alone passes for a signature with
+    /// NO type annotations at all — `polygon`'s shape before its coordinates
+    /// were retyped — so the positive check is what actually closes that gap,
+    /// uniformly for every row. `half_space`'s outward normal is additionally
+    /// pinned as a `Direction` (direction-typing ι-c).
     #[test]
     fn geometry_completion_signatures_type_gated_slots_as_length() {
         let source = reify_test_support::bracket_source();
@@ -1657,30 +1650,22 @@ mod tests {
         for (name, _, _) in GATED_LENGTH_BUILTIN_ROWS {
             let name = *name;
             let detail = served_signature(&items, name);
-            if name == "half_space" {
-                // Gated slots only — see the doc comment above.
-                for slot in ["px", "py", "pz"] {
-                    assert!(
-                        detail.contains(&format!("{slot}: Length")),
-                        "{name}: gated slot `{slot}` should be typed Length, got: {detail}"
-                    );
-                    assert!(
-                        !detail.contains(&format!("{slot}: Real")),
-                        "{name}: gated slot `{slot}` should not be typed Real, got: {detail}"
-                    );
-                }
-                continue;
-            }
             assert!(
                 !detail.contains(": Real"),
                 "{name}: signature should not type any gated slot as Real, got: {detail}"
             );
             assert!(
-                detail.contains(": Length"),
+                detail.contains("Length"),
                 "{name}: signature should type at least one gated slot as \
                  Length, got: {detail}"
             );
         }
+
+        let half_space = served_signature(&items, "half_space");
+        assert!(
+            half_space.contains("normal: Direction"),
+            "half_space's outward normal is a Direction, got: {half_space}"
+        );
     }
 
     /// The editor names box's parameters the way a diagnostic names them, in
