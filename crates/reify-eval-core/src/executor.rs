@@ -13,7 +13,7 @@ use crate::declaration::Declaration;
 use crate::event::{Event, RequestId};
 use crate::failure::{Failure, OutsideFailure, panic_message};
 use crate::input::{Input, InputKey};
-use crate::job::{Product, Report, SectionFault};
+use crate::job::Report;
 use crate::kinds::Kinds;
 use crate::mailbox::{Ask, Posted, Reply};
 use crate::outcome::{Erased, Outcome};
@@ -71,8 +71,16 @@ impl Executor {
         request
     }
 
+    /// Ends `request` and drops the bodies no other live request wants.
+    /// A section such a body started keeps running; what it makes is
+    /// released when it is delivered.
     pub fn end(&mut self, request: Request) {
-        self.requests.end(request);
+        for key in self.requests.end(request) {
+            if let Some(task) = self.tasks.remove(&key) {
+                task.cancel.set();
+                task.discard();
+            }
+        }
     }
 
     pub fn take_events(&mut self) -> Vec<Event> {
@@ -91,10 +99,7 @@ impl Executor {
 
     /// Blocks until one running section is delivered, then takes a turn.
     pub fn wait(&mut self) -> Turn {
-        if self.in_flight.running() > 0 {
-            let (serial, product) = self.next_finished();
-            serve::section::deliver(serial, product, &mut self.in_flight, &mut self.tasks, &mut self.ready);
-        }
+        self.deliver_one();
         self.turn()
     }
 
@@ -102,6 +107,22 @@ impl Executor {
         let mut turn = self.turn();
         while turn != Turn::Idle {
             turn = self.wait();
+        }
+    }
+
+    /// Runs until no section is running, nothing a section produced is
+    /// waiting to be delivered, and no release is waiting to run.
+    pub fn drain(&mut self) {
+        self.turn();
+        loop {
+            if self.deliver_one() {
+                self.turn();
+            } else if self.resources.pending_releases() > 0 {
+                let report = self.resources.receive();
+                self.take_in(report);
+            } else {
+                return;
+            }
         }
     }
 
@@ -199,12 +220,26 @@ impl Executor {
         self.events.push(Event::Answered { request, path, answer });
     }
 
-    fn next_finished(&mut self) -> (u64, Result<Product, SectionFault>) {
+    /// Delivers the earliest finished section, blocking until one has
+    /// finished; `false` if no section is running.
+    fn deliver_one(&mut self) -> bool {
+        if self.in_flight.running() == 0 {
+            return false;
+        }
         loop {
-            match self.resources.receive() {
-                Report::Finished { serial, product } => return (serial, product),
-                Report::Released => self.resources.acknowledge_release(),
+            if let Some((serial, product)) = self.in_flight.take_finished() {
+                serve::section::deliver(serial, product, &mut self.in_flight, &mut self.tasks, &mut self.ready);
+                return true;
             }
+            let report = self.resources.receive();
+            self.take_in(report);
+        }
+    }
+
+    fn take_in(&mut self, report: Report) {
+        match report {
+            Report::Finished { serial, product } => self.in_flight.arrived(serial, product),
+            Report::Released => self.resources.acknowledge_release(),
         }
     }
 }

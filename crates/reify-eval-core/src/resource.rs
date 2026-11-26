@@ -80,6 +80,11 @@ impl Resources {
     pub fn acknowledge_release(&self) {
         self.pending_releases.fetch_sub(1, Ordering::SeqCst);
     }
+
+    /// Releases sent to a resource thread and not yet reported done.
+    pub fn pending_releases(&self) -> usize {
+        self.pending_releases.load(Ordering::SeqCst)
+    }
 }
 
 impl Drop for Resources {

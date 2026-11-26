@@ -29,6 +29,7 @@ impl Core {
         self.executor.evaluate(snapshot, roots)
     }
 
+    /// Ends `request`, dropping the bodies no other live request wants.
     pub fn end(&mut self, request: Request) {
         self.executor.end(request);
     }
@@ -52,6 +53,12 @@ impl Core {
     /// Turns and waits until no section is running.
     pub fn run(&mut self) {
         self.executor.run();
+    }
+
+    /// Runs until no section is running, nothing a section produced is
+    /// waiting to be delivered, and no release is waiting to run.
+    pub fn drain(&mut self) {
+        self.executor.drain();
     }
 
     /// Adds resource `R` on a thread of its own; `make` runs there, so `R`

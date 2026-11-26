@@ -53,14 +53,18 @@ impl Requests {
         wanting
     }
 
-    pub fn end(&mut self, request: Request) {
+    /// Ends `request`, returning the tasks no live request wants any more.
+    pub fn end(&mut self, request: Request) -> Vec<TaskKey> {
+        let mut unwanted = Vec::new();
         for key in self.wants.remove(&request.id).unwrap_or_default() {
             if let Some(wanting) = self.wanted_by.get_mut(&key) {
                 wanting.remove(&request.id);
                 if wanting.is_empty() {
                     self.wanted_by.remove(&key);
+                    unwanted.push(key);
                 }
             }
         }
+        unwanted
     }
 }

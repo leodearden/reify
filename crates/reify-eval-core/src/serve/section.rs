@@ -2,7 +2,7 @@
 //! delivered to the body waiting on it.
 
 use std::any::TypeId;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 use crate::counters::Counters;
 use crate::failure::OutsideFailure;
@@ -13,15 +13,24 @@ use crate::resource::Resources;
 use crate::task::{Task, TaskKey};
 
 /// The sections started and not yet delivered, each with the task that
-/// started it.
+/// started it, and those of them that have finished, in order of arrival.
 #[derive(Default)]
 pub(crate) struct InFlight {
     started: BTreeMap<u64, TaskKey>,
+    finished: VecDeque<(u64, Result<Product, SectionFault>)>,
 }
 
 impl InFlight {
     pub fn running(&self) -> usize {
         self.started.len()
+    }
+
+    pub fn arrived(&mut self, serial: u64, product: Result<Product, SectionFault>) {
+        self.finished.push_back((serial, product));
+    }
+
+    pub fn take_finished(&mut self) -> Option<(u64, Result<Product, SectionFault>)> {
+        self.finished.pop_front()
     }
 }
 
