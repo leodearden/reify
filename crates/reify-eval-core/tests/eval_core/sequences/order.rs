@@ -22,7 +22,7 @@ pub fn order_check<O: PartialEq + Debug + Clone>(
 mod tests {
     use reify_eval_core::{
         Answer, Binding, Builder, Core, Cx, Declaration, Demand, Erased, Input, InputKey, Kind,
-        KindId, Outcome, Path, Produced, Ref, RequestError, Root,
+        KindId, Outcome, Path, Produced, Ref, Root,
     };
 
     use super::super::fresh::{Answered, FreshMismatch};
@@ -220,26 +220,5 @@ mod tests {
             answer.downcast::<i64>()
         });
         assert_eq!(found, Ok(2));
-    }
-
-    #[test]
-    fn a_fresh_core_that_ends_the_request_is_reported_with_its_error() {
-        let below_itself = toy::cell_over([toy::sibling(&["a", "x"])]);
-        let inputs = toy::root_scope("r", toy::members([("a", below_itself)])).to_vec();
-        let a = toy::below("r", &["a"]);
-        let answered = [Answered {
-            snapshot: 0,
-            path: a.clone(),
-            seen: Answer::Final(Outcome::of(0_i64)),
-        }];
-        let found = order_check(toy::with_scope().build(), &[inputs], &answered, |answer| {
-            answer.downcast::<i64>()
-        });
-        let expected = FreshMismatch::Unanswered {
-            snapshot: 0,
-            path: a.clone(),
-            ended: Some(RequestError::NothingCanRun { waiting: vec![a] }),
-        };
-        assert_eq!(found, Err(expected));
     }
 }

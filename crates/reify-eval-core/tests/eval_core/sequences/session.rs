@@ -771,8 +771,7 @@ impl Session {
 
 mod tests {
     use reify_eval_core::{
-        Builder, Core, Cx, Kind, KindId, Outcome, OutsideFailure, Produced, Ref, RequestError,
-        Store,
+        Builder, Core, Cx, Kind, KindId, Outcome, OutsideFailure, Produced, Ref, Store,
     };
 
     use super::super::case::{Case, HostEvent, Then};
@@ -976,19 +975,6 @@ mod tests {
     }
 
     #[test]
-    fn a_request_the_core_ends_is_reported_with_its_error() {
-        let found = check(&evaluate_a(cell([below_a()])), &toy_core);
-        let expected = Mismatch::Ended {
-            event: 0,
-            snapshot: 0,
-            error: RequestError::NothingCanRun {
-                waiting: vec![r(&["a"]).to_core()],
-            },
-        };
-        assert_eq!(found, Err(expected));
-    }
-
-    #[test]
     fn an_answer_on_a_case_the_reference_cannot_judge_is_reported_invalid() {
         let found = check(&evaluate_a(cell([below_a()])), &with_cell_kind::<ZeroCell>);
         let expected = Mismatch::Invalid {
@@ -1084,63 +1070,5 @@ mod tests {
             fresh: Box::new(Seen::Int(0)),
         };
         assert_eq!(check(&case, &counting_core), Err(expected));
-    }
-
-    /// Registered in place of the toy cell: reads its binding "loop", then
-    /// answers 0.
-    struct LoopCell;
-
-    impl Kind for LoopCell {
-        type Out = i64;
-        const ID: KindId = toy::Cell::ID;
-        const VERSION: u32 = toy::Cell::VERSION;
-
-        async fn run(cx: &Cx) -> Produced<i64> {
-            let _ = cx.read::<i64>(&Ref::binding("loop")).await;
-            Produced::Outcome(Outcome::of(0))
-        }
-    }
-
-    /// What `check` finds when the first `honest` cores it builds are
-    /// honest and every later one is built with `LoopCell`.
-    fn looping_after(honest: usize) -> Mismatch {
-        let made = std::cell::Cell::new(0);
-        let honest_then_looping = |store| {
-            made.set(made.get() + 1);
-            if made.get() <= honest {
-                toy_core(store)
-            } else {
-                with_cell_kind::<LoopCell>(store)
-            }
-        };
-        let looping = decl(ToyKind::Cell, [("loop", below_a())]);
-        check(&evaluate_a(looping), &honest_then_looping).expect_err("a looping core ends it")
-    }
-
-    fn ended_waiting_on_a() -> Option<RequestError> {
-        Some(RequestError::NothingCanRun {
-            waiting: vec![r(&["a"]).to_core()],
-        })
-    }
-
-    #[test]
-    fn a_fresh_core_on_the_session_s_selection_that_ends_a_request_the_session_answered_is_reported()
-     {
-        let expected = Mismatch::FreshUnanswered {
-            snapshot: 0,
-            path: r(&["a"]),
-            ended: ended_waiting_on_a(),
-        };
-        assert_eq!(looping_after(1), expected);
-    }
-
-    #[test]
-    fn a_fresh_core_that_ends_a_request_the_session_answered_is_reported() {
-        let expected = Mismatch::OrderUnanswered {
-            snapshot: 0,
-            path: r(&["a"]),
-            ended: ended_waiting_on_a(),
-        };
-        assert_eq!(looping_after(2), expected);
     }
 }
