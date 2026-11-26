@@ -8,6 +8,7 @@ mod belonging;
 mod bodies;
 mod building;
 mod ending;
+mod hash;
 mod reading;
 mod roots;
 mod sections;
