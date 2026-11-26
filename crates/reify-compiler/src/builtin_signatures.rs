@@ -667,9 +667,12 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         //            `accept_length_point3`, as `rotate_around`'s pivot is.
         //   arg2:    `normal` → Direction.
         //
-        // The `arg_count == 3` guard is SEMANTICALLY LOAD-BEARING, not
-        // forward-compat: `mirror` stays overloaded, and the plane form's
-        // composite must never meet the Direction form's slots. Pinned by
+        // The `arg_count == 3` guard does two jobs. It satisfies the coupling
+        // rule: `mirror` accepts arities 2 and 3, so the two must expose
+        // different slot sets. And it keeps the retired 7-arg scalar call down
+        // to its arity error, with no spurious `normal@2` mismatch on its `oy`.
+        // (The plane form is safe either way: the checker skips a slot past the
+        // call's arity, so `normal@2` cannot reach a 2-arg call.) Pinned by
         // `mirror_slots_are_arity_3_only` and
         // `mirror_slots_the_normal_but_never_the_point3_origin`.
         "mirror" if arg_count == 3 => const { &[direction_arg(2, "normal")] },
@@ -687,8 +690,8 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         //   Pinned by `circular_pattern_forms_are_keyed_independently` and
         //   `circular_pattern_slots_the_origin_and_the_angle_but_never_the_axis_or_count`.
         //
-        // Same load-bearing guard: index 1 is `ox` at arity 9 but `axis` at
-        // arity 4.
+        // The `arg_count == 9` guard is load-bearing: index 1 is `ox` at
+        // arity 9 but `axis` at arity 4.
         //
         // PREFIX AGREEMENT. This layer is keyed on the CALL, so it reports the
         // SURFACE name. The eval layer's `kind_label` (`PatternKind`'s
@@ -3632,10 +3635,10 @@ mod tests {
     /// mirror @ arity 3 → normal@2 (Direction); every other arity → empty
     /// (direction-typing ι-a, task 9646).
     ///
-    /// Arity 2 gets its own assertion because it is the CONCRETE false positive
-    /// the guard prevents: `mirror(target, plane)` holds a `Plane` at index 1. The
-    /// retired scalar arity 7 exposes no slots: such a call draws only its arity
-    /// error.
+    /// Arity 2 gets its own assertion because it is the other accepted form,
+    /// `mirror(target, plane)`: the coupling rule needs its slot set to differ
+    /// from arity 3's. The retired scalar arity 7 exposes no slots, so such a
+    /// call draws only its arity error.
     #[test]
     fn mirror_slots_are_arity_3_only() {
         assert_eq!(
@@ -3645,8 +3648,8 @@ mod tests {
         );
         assert!(
             builtin_arg_slots("mirror", 2).is_empty(),
-            "at arity 2 (`mirror(target, plane)`, the task-5745 decoded-value form) \
-             index 1 is `plane`, a Plane, so arity 2 must expose NO slots"
+            "arity 2 (`mirror(target, plane)`, the task-5745 decoded-value form) \
+             must expose NO slots, so its slot set differs from arity 3's"
         );
         for arity in (0usize..=MAX_PROBED_ARITY).filter(|n| *n != 3) {
             assert!(
@@ -3663,8 +3666,7 @@ mod tests {
     /// Neither form may share an arm with the other, because the same index
     /// denotes a different parameter in each: index 3 is the `oz` LENGTH at
     /// arity 9 but the `angle` at arity 4, and index 1 is `ox` at arity 9 but
-    /// the decoded `Axis` VALUE at arity 4 (the same reason arity 2 gets its own
-    /// assertion on `mirror`).
+    /// the decoded `Axis` VALUE at arity 4.
     #[test]
     fn circular_pattern_forms_are_keyed_independently() {
         assert_eq!(
@@ -3898,13 +3900,13 @@ mod tests {
         }
     }
 
-    /// The ARITY GUARD, not the `compiled_args.get(index)` bounds check, is what
-    /// keeps the two decoded-VALUE forms quiet.
+    /// Neither decoded-VALUE form draws a diagnostic, even with a definitely-
+    /// wrong type at index 1.
     ///
-    /// This is the distinction that matters, and it is why the guard is
-    /// semantically load-bearing rather than mere forward-compat: both value
-    /// forms DO have an index 1, holding a `Plane` / an `Axis`. A definitely-
-    /// wrong type there produces nothing only because the arm never matches.
+    /// For `circular_pattern` the ARITY GUARD, not the `compiled_args.get(index)`
+    /// bounds check, is what keeps it quiet: its value form DOES have an index 1,
+    /// holding an `Axis`, which the 9-arg form slots as `ox`. `mirror`'s only
+    /// slot is `normal@2`, which the bounds check alone keeps off a 2-arg call.
     #[test]
     fn pattern_value_form_arities_give_no_diagnostics() {
         // mirror(target, plane) — the task-5745 decoded-value form.
@@ -4825,8 +4827,8 @@ mod tests {
     /// Since direction-typing ι-a (task 9646) `mirror`'s second form is
     /// `mirror(target, origin, normal)`, whose Point3 origin no slot kind
     /// describes, so NO accepted `mirror` arity slots index 1. The guard still
-    /// discharges the coupling rule: its arity-3 normal slot must not reach the
-    /// arity-2 plane form.
+    /// discharges the coupling rule, by giving arities 2 and 3 different slot
+    /// sets.
     #[test]
     fn pattern_origin_family_is_ledgered_and_guarded_not_exempted() {
         let probed = lowering_accepted_arities();
