@@ -32,9 +32,10 @@ impl Core {
         self.executor.evaluate(snapshot, demand)
     }
 
-    /// Ends `request`, dropping the work it wanted that no other live
-    /// request wants and nothing awaits. Ending a request the core has
-    /// already ended does nothing.
+    /// Ends `request`, dropping every node in progress that no live request
+    /// still waits on, directly or through what it reads; a running section
+    /// such a body started is told through `cancelled`. Ending a request
+    /// the core has already ended does nothing.
     ///
     /// # Panics
     ///

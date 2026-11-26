@@ -81,9 +81,9 @@ impl Requests {
         wanting
     }
 
-    /// Whether a live request wants `key`.
-    pub fn is_wanted(&self, key: TaskKey) -> bool {
-        self.wanted_by.contains_key(&key)
+    /// Every node some live request wants.
+    pub fn wanted(&self) -> impl Iterator<Item = TaskKey> + '_ {
+        self.wanted_by.keys().copied()
     }
 
     /// Each live request that still wants a node, with its snapshot and
@@ -99,24 +99,21 @@ impl Requests {
             .collect()
     }
 
-    /// Ends `request`, returning the nodes it wanted.
-    pub fn end(&mut self, request: Request) -> BTreeSet<TaskKey> {
-        self.end_id(request.id)
+    pub fn end(&mut self, request: Request) {
+        self.end_id(request.id);
     }
 
-    /// Ends the request `id`, for the core's own use, returning the nodes it
-    /// wanted; nothing, if it has already ended.
-    pub fn end_id(&mut self, id: RequestId) -> BTreeSet<TaskKey> {
+    /// Ends the request `id`, for the core's own use; ending it again does
+    /// nothing.
+    pub fn end_id(&mut self, id: RequestId) {
         self.on.remove(&id);
-        let wanted = self.wants.remove(&id).unwrap_or_default();
-        for key in &wanted {
-            if let Some(wanting) = self.wanted_by.get_mut(key) {
+        for key in self.wants.remove(&id).unwrap_or_default() {
+            if let Some(wanting) = self.wanted_by.get_mut(&key) {
                 wanting.remove(&id);
                 if wanting.is_empty() {
-                    self.wanted_by.remove(key);
+                    self.wanted_by.remove(&key);
                 }
             }
         }
-        wanted
     }
 }

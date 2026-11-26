@@ -40,8 +40,17 @@ impl Waits {
         self.awaits.get(&waiter).into_iter().flatten().copied()
     }
 
-    pub fn is_awaited(&self, key: TaskKey) -> bool {
-        self.awaited_by.contains_key(&key)
+    /// `from`, and every node reachable from it through what each node
+    /// awaits, worked with a stack rather than by recursion.
+    pub fn reach(&self, from: impl IntoIterator<Item = TaskKey>) -> BTreeSet<TaskKey> {
+        let mut reached = BTreeSet::new();
+        let mut unvisited: Vec<_> = from.into_iter().collect();
+        while let Some(key) = unvisited.pop() {
+            if reached.insert(key) {
+                unvisited.extend(self.awaits(key));
+            }
+        }
+        reached
     }
 
     /// The nodes waiting on `awaited`.
@@ -54,18 +63,15 @@ impl Waits {
             .collect()
     }
 
-    /// Ends every wait of `waiter`, which has been dropped, returning what
-    /// it awaited.
-    pub fn forget(&mut self, waiter: TaskKey) -> BTreeSet<TaskKey> {
-        let awaited = self.awaits.remove(&waiter).unwrap_or_default();
-        for key in &awaited {
-            if let Some(waiters) = self.awaited_by.get_mut(key) {
+    /// Ends every wait of `waiter`, which has been dropped.
+    pub fn forget(&mut self, waiter: TaskKey) {
+        for key in self.awaits.remove(&waiter).unwrap_or_default() {
+            if let Some(waiters) = self.awaited_by.get_mut(&key) {
                 waiters.remove(&waiter);
                 if waiters.is_empty() {
-                    self.awaited_by.remove(key);
+                    self.awaited_by.remove(&key);
                 }
             }
         }
-        awaited
     }
 }

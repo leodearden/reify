@@ -61,24 +61,42 @@ impl Indexes {
     pub fn of(&self, snapshot: SnapshotId) -> &Index {
         self.by_snapshot
             .get(&snapshot)
-            .expect("work on a snapshot keeps its index")
+            .unwrap_or_else(|| lost(snapshot))
     }
 
     /// Files the final answer at `path` in the index of `snapshot`.
+    ///
+    /// # Panics
+    ///
+    /// If the index of `snapshot` was never opened or has been dropped.
     pub fn file(&mut self, snapshot: SnapshotId, path: PathId, entry: Entry) {
-        if let Some(index) = self.by_snapshot.get_mut(&snapshot) {
-            index.entries.insert(path, entry);
-        }
+        let Some(index) = self.by_snapshot.get_mut(&snapshot) else {
+            lost(snapshot)
+        };
+        index.entries.insert(path, entry);
     }
 
     /// Drops the index of each snapshot no clone of which is held and on
-    /// which `requested` says no live request is.
-    pub fn prune(&mut self, requested: impl Fn(SnapshotId) -> bool) {
-        self.by_snapshot
-            .retain(|snapshot, index| index.watch.is_held() || requested(*snapshot));
+    /// which `requested` says no live request is, returning their ids.
+    pub fn prune(&mut self, requested: impl Fn(SnapshotId) -> bool) -> Vec<SnapshotId> {
+        let mut dropped = Vec::new();
+        self.by_snapshot.retain(|snapshot, index| {
+            let live = index.watch.is_held() || requested(*snapshot);
+            if !live {
+                dropped.push(*snapshot);
+            }
+            live
+        });
+        dropped
     }
 
     pub fn clear(&mut self) {
         self.by_snapshot.clear();
     }
+}
+
+/// Refuses work on a snapshot whose index is gone: work on a snapshot keeps
+/// its index.
+pub(crate) fn lost(snapshot: SnapshotId) -> ! {
+    panic!("work on a snapshot keeps its index, and {snapshot:?} has none")
 }

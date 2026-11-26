@@ -16,7 +16,7 @@ use crate::demand::Demand;
 use crate::event::{Event, RequestError, RequestId};
 use crate::failure::{Failure, OutsideFailure, panic_message};
 use crate::finish;
-use crate::index::{Entry, Indexes};
+use crate::index::{self, Entry, Indexes};
 use crate::input::{Input, InputKey};
 use crate::job::Report;
 use crate::kinds::Kinds;
@@ -107,14 +107,14 @@ impl Executor {
         request
     }
 
-    /// Ends `request` and drops the work it wanted that no other live
-    /// request wants and nothing awaits (contract 10). A section such a
-    /// body started keeps running; what it makes is released when it is
-    /// delivered.
+    /// Ends `request`, then drops every node in progress that no live
+    /// request still waits on, directly or through what it reads (contract
+    /// 10). A running section such a body started is told through
+    /// `cancelled`; what it makes is released when it is delivered.
     pub fn end(&mut self, request: Request) {
         self.core.refuse_foreign(request.id().core, "a request");
-        let wanted = self.requests.end(request);
-        self.drop_unneeded(wanted);
+        self.requests.end(request);
+        self.drop_unwanted_work();
         self.prune();
     }
 
@@ -179,9 +179,22 @@ impl Executor {
 
     /// Drops the index of each snapshot that is no longer live: no clone of
     /// it is held and no live request is on it (contract 4.4).
+    ///
+    /// # Panics
+    ///
+    /// If a node in progress is on such a snapshot: work on a snapshot
+    /// keeps its index.
     fn prune(&mut self) {
         let requests = &self.requests;
-        self.indexes.prune(|snapshot| requests.any_on(snapshot));
+        let dropped = self.indexes.prune(|snapshot| requests.any_on(snapshot));
+        if let Some(key) = self
+            .tasks
+            .keys()
+            .chain(&self.resolving)
+            .find(|key| dropped.contains(&key.snapshot))
+        {
+            index::lost(key.snapshot);
+        }
     }
 
     /// Tells a path already answered in the snapshot at once; otherwise
@@ -322,21 +335,25 @@ impl Executor {
         }
     }
 
-    /// Drops each node among `candidates` that is in progress, wanted by no
-    /// live request and awaited by nothing, and in turn each node that this
-    /// leaves the same. A dropped body is abandoned: its cancel flag is set.
-    fn drop_unneeded(&mut self, candidates: impl IntoIterator<Item = TaskKey>) {
-        let mut queue: VecDeque<_> = candidates.into_iter().collect();
-        while let Some(key) = queue.pop_front() {
-            if !self.in_progress(key) || self.requests.is_wanted(key) || self.waits.is_awaited(key)
-            {
-                continue;
-            }
+    /// Drops every node in progress that no live request still waits on,
+    /// directly or through the wait relation (contract 10), in key order.
+    /// A dropped body is abandoned, so a running section it started is told
+    /// through `cancelled`.
+    fn drop_unwanted_work(&mut self) {
+        let kept = self.waits.reach(self.requests.wanted());
+        let unwanted: BTreeSet<_> = self
+            .tasks
+            .keys()
+            .chain(&self.resolving)
+            .filter(|key| !kept.contains(key))
+            .copied()
+            .collect();
+        for key in unwanted {
             if let Some(task) = self.tasks.remove(&key) {
                 task.abandon();
             }
             self.resolving.remove(&key);
-            queue.extend(self.waits.forget(key));
+            self.waits.forget(key);
         }
     }
 
@@ -344,7 +361,8 @@ impl Executor {
     /// progress, so every node in progress is stuck. Ends each live request
     /// that still wants a node with an error naming the bodies those nodes
     /// wait on, every error worked out before any request ends (PRD 12.2 β;
-    /// ε replaces this with the cycle rule).
+    /// ε replaces this with the cycle rule), then drops the work no live
+    /// request still waits on.
     fn end_stuck(&mut self) {
         let stuck: Vec<_> = self
             .requests
@@ -361,42 +379,24 @@ impl Executor {
                 snapshot,
                 error,
             });
-            let wanted = self.requests.end_id(request);
-            self.drop_unneeded(wanted);
+            self.requests.end_id(request);
         }
-        self.drop_rings();
+        self.drop_unwanted_work();
     }
 
     /// The bodies reachable from `wanted` through the wait relation, in path
     /// order. A path waiting on its parent passes through to it; only
     /// bodies are named.
     fn bodies_waited_on(&self, wanted: Vec<TaskKey>) -> Vec<Path> {
-        let mut reached = BTreeSet::new();
-        let mut unvisited = wanted;
-        while let Some(key) = unvisited.pop() {
-            if reached.insert(key) {
-                unvisited.extend(self.waits.awaits(key));
-            }
-        }
-        let mut bodies: Vec<_> = reached
+        let mut bodies: Vec<_> = self
+            .waits
+            .reach(wanted)
             .into_iter()
             .filter(|key| self.tasks.contains_key(key))
             .map(|key| self.paths.path(key.path))
             .collect();
         bodies.sort();
         bodies
-    }
-
-    /// Drops the work left once every stuck request has ended. Nothing can
-    /// run and no live request wants a node, so what is left in progress is
-    /// bodies awaiting one another in a ring, which the rule that keeps
-    /// what something awaits never drops.
-    fn drop_rings(&mut self) {
-        for (_, task) in mem::take(&mut self.tasks) {
-            task.abandon();
-        }
-        self.resolving.clear();
-        self.waits = Waits::default();
     }
 
     /// Polls the body at `key` if it is owed a poll.
@@ -494,11 +494,10 @@ impl Executor {
 
     /// Ends a node with a failure outside the inputs, stored nowhere, and
     /// with it every node that waited on it, in turn: each is dropped and
-    /// pending to every live request that wanted it. What they no longer
-    /// await is dropped if nothing else needs it.
+    /// pending to every live request that wanted it. Then drops the work no
+    /// live request still waits on.
     fn end_outside(&mut self, key: TaskKey, failure: OutsideFailure) {
         let mut queue = VecDeque::from([key]);
-        let mut unawaited = Vec::new();
         while let Some(key) = queue.pop_front() {
             if let Some(task) = self.tasks.remove(&key) {
                 task.discard();
@@ -509,9 +508,8 @@ impl Executor {
                 self.tell(request, key, Answer::Pending(failure.clone()));
             }
             queue.extend(failed.dropped);
-            unawaited.extend(failed.unawaited);
         }
-        self.drop_unneeded(unawaited);
+        self.drop_unwanted_work();
     }
 
     fn tell(&mut self, request: RequestId, key: TaskKey, answer: Answer<Erased>) {
