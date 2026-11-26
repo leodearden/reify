@@ -8734,13 +8734,12 @@
         );
     }
 
-    // TODO(#4727): The UnifiedDag cutover (Stage-4 #4362) has landed; the 4-arg
-    // `draft(solid, faces, angle, neutral_plane)` face selector now resolves on
-    // the active (default) pipeline. Add an end-to-end .ri-source test that
-    // compiles a 4-arg draft, runs it through eval, and asserts the resulting
-    // `GeometryOp::Draft.faces` vector is non-empty and the kernel produces a
-    // drafted solid with positive volume — confirming the full
-    // compiler → eval → kernel path works from authored .ri source.
+    // TODO(#5818): add an end-to-end test that compiles a 4-arg curated
+    // `draft(solid, faces, angle, neutral_plane)` from .ri source, builds it,
+    // and asserts `GeometryOp::Draft.faces` is non-empty and the drafted solid
+    // has positive volume. #5818 owns it: its plane-placeholder fix
+    // (`modify_draft` resolving `plane` instead of `step_handles.last()`) is
+    // what currently stops that build.
 
     #[test]
     fn compile_geometry_op_transform_pattern_sweep_present_args_emit_no_diagnostics() {
