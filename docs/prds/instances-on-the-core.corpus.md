@@ -22,9 +22,9 @@
 | `two-files` | leaf α (the runner) | 1 |
 | `paths` | leaf β | 11 |
 | `grammar-purpose` | leaf γ₁ | 19 |
-| `compile-error` | leaf δ, with the leaf that builds the rule | 49 |
-| `instance` | leaf ε | 157 |
-| `eval-reads` | leaf ε | 11 |
+| `compile-error` | leaf δ₂, with the leaf that builds the rule | 49 |
+| `instance` | leaf ε₂ | 157 |
+| `eval-reads` | leaf ε₂ | 11 |
 | `constraint` | leaf η | 88 |
 | `summary` | leaf η | 75 |
 | `guard` | leaf θ₁ | 60 |
@@ -37,12 +37,12 @@
 | `unknown` | leaf μ₁ | 61 |
 | `solve-forced` | leaf μ₁ | 36 |
 | `solve-infeasible` | leaf μ₁ | 3 |
-| `nested-solve` | leaf μ₂ | 10 |
+| `nested-solve` | leaf μ₂ | 11 |
 | `purpose` | leaf ν | 22 |
 | `roots` | leaf ξ | 31 |
 | `connect` | leaf ο | 2 |
 | `generic` | leaf π | 3 |
-| `state-tests` | leaf ρ | 2 |
+| `state-tests` | leaf ρ | 3 |
 | `edits` | leaf σ | 1 |
 | `solve-real` | task 10610, waits | 10 |
 | `geometry` | task 10611, waits | 3 |
@@ -111,7 +111,7 @@ structure def Nut  { param d : Length = 2mm   constraint d >= 3mm }
 - Rule: rule D (clause "an element's type")
 - Provenance: design Part 15.1 rule D
 - Needs: roots
-- Answer basis: stated: rule D lists "an element's type" among uses. Only the roots row is pinned, and the second output records what each definition uses (leaf δ), so the entry does not wait for collections.
+- Answer basis: stated: rule D lists "an element's type" among uses. Only the roots row is pinned, and the second output records what each definition uses (leaf δ₂), so the entry does not wait for collections.
 - Today: every definition in the file is a root (design Part 3).
 
 ```ri
@@ -925,7 +925,7 @@ structure def Case {
 - Rule: decision 3 (the `present` addition); Part 4 ("A test for 'is it there'")
 - Provenance: design Part 14 decision 3; Part 4; critic logic-3 R5. language-2 B5(a). logic-3 R5.
 - Needs: instance, guard
-- Answer basis: stated: Part 4 and decision 3b, "`determined(self.c.fan.flow)` is false when there is no fan. It is also false when there is a fan whose `flow` is undefined ... `present(self.c.fan)` would not". The `determined` rows need leaf ρ (readings F, `state-tests`); `present` is leaf θ₁'s. The source has no purpose line and parses today (tracer, run `present.ri`).
+- Answer basis: stated: Part 4 and decision 3b, "`determined(self.c.fan.flow)` is false when there is no fan. It is also false when there is a fan whose `flow` is undefined ... `present(self.c.fan)` would not". The `determined` rows need no word of their own: `determined` is leaf ε₂'s, built with the first cells (readings F); `present` is leaf θ₁'s. The source has no purpose line and parses today (tracer, run `present.ri`).
 - Today: "warning: unresolved function: present" (run, `p2.ri`).
 
 ```ri
@@ -1116,7 +1116,7 @@ structure def RecTree {
 - Rule: Part 4 (an undefined guard is not "false"); Part 5 ("If a member's presence is undetermined, the list is undefined"); decision 3c.
 - Provenance: logic-1 L17 (taken: presence undetermined in place of a failure); logic-3 R19 (taken: the list rule restored in Part 5); logic-2 Part C on decision 3c (the root needed naming under draft 2's default-parameter bullet; draft 5 has no such bullet, so `Asm` is a default root). design decision 3c (its model). claims-3 probe d3c.ri; language-1 L12; language-2 B6.
 - Needs: instance, guard, value, constraint, summary
-- Answer basis: traced. `use_plate` has no default and `Asm` is a root, so it is undefined. `thin`'s guard is undefined: presence undetermined. `w` reads an undefined `if` condition: undefined; its constraint is undetermined. `self.children` holds a member of undetermined presence, so it is undefined (readings E30), and so is its count. `determined` of an undefined value is false. Summary (readings B4, E28): the constraint and `thin`'s presence; nothing is failed. `self.children` is leaf κ₁'s (`value`), not a collection's; `determined` is leaf ρ's (`state-tests`).
+- Answer basis: traced. `use_plate` has no default and `Asm` is a root, so it is undefined. `thin`'s guard is undefined: presence undetermined. `w` reads an undefined `if` condition: undefined; its constraint is undetermined. `self.children` holds a member of undetermined presence, so it is undefined (readings E30), and so is its count. `determined` of an undefined value is false. Summary (readings B4, E28): the constraint and `thin`'s presence; nothing is failed. `self.children` is leaf κ₁'s (`value`), not a collection's; `determined` is leaf ε₂'s, built with the first cells.
 
 ```ri
 structure def Plate {
@@ -2180,7 +2180,7 @@ structure def Manifold {
 - Rule: Part 5 ("A count may read anything except its own elements"; only the direct case is a compile error); decision 10; decisions A (a count constraint is the source of the count cell `/count`) and B2.
 - Provenance: logic-1 L19 (taken in Part 4's wording for guards; Part 5 states only the direct case).
 - Needs: compile-error, instance, collection
-- Answer basis: traced. `xs`'s count cell reads `ys[0]`, which needs `ys`'s count cell, which reads `xs[0]`, which needs `xs`'s count cell. Neither count reads its own elements, so the compile rule (leaf ι) does not fire. The failure is at the count cells (decisions B2). Both constraints are count constraints, so neither has a `constraint[k]` path. The core's cycle detection (core task 10558) is a prerequisite of leaf ε, so it is built before this entry runs.
+- Answer basis: traced. `xs`'s count cell reads `ys[0]`, which needs `ys`'s count cell, which reads `xs[0]`, which needs `xs`'s count cell. Neither count reads its own elements, so the compile rule (leaf ι) does not fire. The failure is at the count cells (decisions B2). Both constraints are count constraints, so neither has a `constraint[k]` path. The core's cycle detection (core task 10558) is a prerequisite of leaf ε₁, so it is built before this entry runs.
 
 ```ri
 structure def Bolt {
@@ -3850,7 +3850,7 @@ structure def Bracket {
 - Tests: a purpose's constraint does not make `constrained(p)` true, so applying a purpose changes no value.
 - Rule: readings B7 (`constrained(p)`; PRD D3, ruled by Leo on 2026-11-26 as recommended: a constraint the declarer writes in a sub's braces does not count, and neither does a purpose's); seat-context ruling 1.
 - Provenance: the tracer's counter-example N3 (trace-braces-purposes-unknowns); critic-design F4.
-- Needs: compile-error, instance, constraint, purpose, grammar-purpose
+- Needs: compile-error, instance, constraint, purpose, grammar-purpose, state-tests
 - Answer basis: stated for `Bracket.w`: PRD D3 as Leo ruled it. No constraint written in `Bracket`'s definition reads `t` and a purpose's does not count, so `constrained(t)` is false and `w` is 1 mm. Traced for the rest: the source compiles, and the purpose's constraint reads `t` = 2 mm against 3 mm, violated. Under D3's reading before its revision (a present constraint inside the instance that holds `p`), the purpose's constraint, inside `Bracket` by path, would count, and `w` would be 5 mm with the purpose line and 1 mm without it.
 - Note: the member line `purpose robust(self)` needs grammar-purpose (readings E33); with it taken out, the source parses on main.
 
@@ -4139,7 +4139,7 @@ structure def Asm {
 - Tests: `Plate(t: auto)` in a `let` evaluated exactly once compiles and gives the holder an unknown on which `Plate`'s constraint and the holder's constraint both bear.
 - Rule: contract Example 11, lines (3) and (4); Part 6.3; Part 12 (Example 11).
 - Provenance: contract Part B Example 11, lines (3), (4); design Part 12 "Example 11".
-- Needs: compile-error, unknown, made
+- Needs: compile-error, unknown, made, nested-solve
 - Answer basis: open. `d.t` is `Asm`'s unknown with `t ≥ 3 mm` and `t > 5 mm` bearing and nothing bounding it above; `Plate`'s `minimize t` does not reach an unknown moved to the use "unless the solve design says so" (Part 6.5). So the value of `Asm.d/made[0].t` and the verdict of `Asm/constraint[0]` depend on the solve design: open, owner task 10610 (readings E37). Only compilation is pinned, so the entry runs (readings F, last note).
 - Today: form (3) does not compile (contract Example 11); a length `auto` in a constructor argument is a type error (design Part 6.3, run).
 
@@ -4694,7 +4694,7 @@ structure def M {
 - Rule: decision 12 (both operands read; a failure cannot be caught by an expression); rule A; Part 2; contract 7.7 ("every node on the cycle gets the failure cycle").
 - Provenance: design decision 12 ("So a ring of dependencies through an operand that could not affect the answer is a cycle. Today the evaluator skips a right operand once the left decides"). The ring crosses two subs so that the compiler's check for cycles among `let`s does not catch it first (that check rejects a ring of `let`s in one definition today: run, `cyc.ri`).
 - Needs: instance, eval-reads, compile-error
-- Answer basis: traced. `a.inp` reads `b.out`, which reads `b.inp`, which reads `a.out`, which reads `a.inp`: a ring of running bodies, each a cycle. `z` reads a failure: blocked (readings B2); `determined` cannot catch it. The braces hold only argument assignments, so the entry does not need `braces`; `determined` is leaf ρ's (`state-tests`).
+- Answer basis: traced. `a.inp` reads `b.out`, which reads `b.inp`, which reads `a.out`, which reads `a.inp`: a ring of running bodies, each a cycle. `z` reads a failure: blocked (readings B2); `determined` cannot catch it. The braces hold only argument assignments, so the entry does not need `braces`; `determined` is leaf ε₂'s, built with the first cells (PRD 5.5 and 5.8).
 - Today: `a.inp` = false (right operand skipped) and `b.inp` = true (run, `xcyc.ri`).
 
 ```ri
@@ -5440,7 +5440,7 @@ structure def Asm {
 - Needs: compile-error, instance
 - Answer basis: traced.
   Decisions C14: a ring of `let`s inside one definition compiles, so `(compile)` is ok.
-  The core's cycle detection (core task 10558) is a prerequisite of leaf ε, which builds `instance`, so the entry does not run before its answer can exist.
+  The core's cycle detection (core task 10558) is a prerequisite of leaf ε₁, which leaf ε₂ (the builder of `instance`) waits for, so the entry does not run before its answer can exist.
   The contract's 7.7 gives every node on the ring the failure "cycle"; its paragraph on failures gives a reader of a failed input "blocked".
   So `a` and `b` fail with cycle. `c` reads `a`, so it is blocked.
   `Parent.m.k.w` evaluates the argument `a` in `Mid`'s scope, so it is blocked too. `Parent.m.k` itself is present.
@@ -5605,9 +5605,9 @@ Each word belongs to exactly one leaf of the PRD, or to one other task. An entry
 | `two-files` | a source made of several files | α |
 | `paths` | to pin the text of a path itself (rule F) | β |
 | `grammar-purpose` | a source that has a `purpose Name(args)` member line | γ₁ |
-| `compile-error` | a compile outcome | δ |
-| `instance` | roots, subs, parameters, `let`s, arguments, `determined(...)` | ε |
-| `eval-reads` | rule A: what the evaluator reads, operand order, a cycle through an operand | ε |
+| `compile-error` | a compile outcome | δ₂ |
+| `instance` | roots, subs, parameters, `let`s, arguments, `determined(...)` | ε₂ |
+| `eval-reads` | rule A: what the evaluator reads, operand order, a cycle through an operand | ε₂ |
 | `constraint`, `summary` | a verdict; a summary's counts, the verdict on arguments, the class of a cause | η |
 | `guard` | a guard, presence, `present(...)`, a read of something not there | θ₁ |
 | `one-name` | one name declared more than once, `where`/`else`, `match` arms | θ₂ |

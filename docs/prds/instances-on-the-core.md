@@ -1,6 +1,6 @@
 # Instances on the core
 
-**Status:** APPROVED by Leo on 2026-11-26. He ruled on every decision; section 7 gives each ruling. Section 12.2 gives each leaf's task id once the batch is filed. Two rounds of critics read drafts 1 and 2 and three tracers traced the catalogue; section 13 says what they found and what changed.
+**Status:** APPROVED by Leo on 2026-11-26. He ruled on every decision; section 7 gives each ruling. It was decomposed the same day into 33 tasks: section 12.2 gives each leaf's task id, and section 12.5 lists what the decomposition changed in this text. Two rounds of critics read drafts 1 and 2 and three tracers traced the catalogue; section 13 says what they found and what changed.
 
 **Design:** `docs/instance-kinds-design.md` ("the design"), which lands in the same commit as this PRD (decision D11). Leo ruled on every decision in its Part 14. This PRD builds what the design specifies and does not restate it. "Design 6.3" below means section 6.3 of it; "rule A" to "rule G" are the seven mechanical rules of its Part 15.1.
 
@@ -324,7 +324,7 @@ The rulings change what compiles and what a program means. Decision D5 proposes 
 | `fn`, `meta`, `match` with declarations | a compile error |
 | an `auto` as a constructor argument inside any of these | a compile error, for the reason given for `let x : T = auto` |
 
-An annotation on a member written in the braces is treated as on any member. A constraint in the braces of a list sub is a member of every element.
+An annotation on a member written in the braces is treated as on any member. A constraint in the braces of a list sub is a member of every element, once the grammar accepts braces there (section 12.5).
 
 The design writes a guarded assignment in the braces as a block, `where thick { t = 6mm }`. That form does not parse: a guarded block cannot hold an assignment. The form that parses is `t = 6mm where thick`, and it is the one this PRD builds.
 
@@ -370,8 +370,8 @@ An entry may also carry: a limit that changes answers (the depth of a path, the 
 | `two-files` | α: the runner takes an entry made of several source files |
 | `paths` | β |
 | `grammar-purpose` | γ₁: the source applies a purpose and parses only once that leaf lands |
-| `compile-error` | δ: the second output reports an error by its code. A rejection entry also carries the word of the leaf that builds its rule |
-| `instance`, `eval-reads` | ε (with `determined`) |
+| `compile-error` | δ₂: the second output reports an error by its code. A rejection entry also carries the word of the leaf that builds its rule |
+| `instance`, `eval-reads` | ε₂ (with `determined`) |
 | `constraint`, `summary` | η |
 | `guard` | θ₁ |
 | `one-name` | θ₂ |
@@ -628,7 +628,7 @@ With `Asm` as a root, the plate's own constraint is undetermined and is known to
 
 **Ruled 2026-11-26.**
 
-*Recommended, as for the core:* every leaf at priority `high`; the leaves on the longest path pinned after the core's pins. No leaf depends on the old-core holder (10510) or on the alpha gate (9739). *Cost on the machine:* nine leaves edit a crate that much of the workspace depends on, and verify accordingly: α and δ (the workspace manifest), β (`reify-core`), γ₁ and γ₂ (the parser), γ₃ (`reify-compiler`), ζ₁, ζ₂ and κ₂ (`reify-expr`). χ edits the spec alone. The other twenty edit the two new crates only. Leaf γ₃ lists everything this PRD needs of the expression compiler; each thing found missing later costs one more near-workspace verify. From leaf ε on, every core task's verify includes this crate's tests. The merge gate verifies the workspace for every leaf, as for any task.
+*Recommended, as for the core:* every leaf at priority `high`; the leaves on the longest path pinned after the core's pins. No leaf depends on the old-core holder (10510) or on the alpha gate (9739). *Cost on the machine:* nine leaves edit a crate that much of the workspace depends on, and verify accordingly: α and δ (the workspace manifest), β (`reify-core`), γ₁ and γ₂ (the parser), γ₃ (`reify-compiler`), ζ₁, ζ₂ and κ₂ (`reify-expr`). χ edits the spec alone. The other twenty edit the two new crates only. Leaf γ₃ lists everything this PRD needs of the expression compiler; each thing found missing later costs one more near-workspace verify. From leaf ε₁ on, every core task's verify includes this crate's tests. The merge gate verifies the workspace for every leaf, as for any task.
 
 ### D13. Smaller choices made here: say if any is wrong
 
@@ -657,7 +657,7 @@ With `Asm` as a root, the plate's own constraint is undetermined and is known to
 21. `let x : T = auto` written in a sub's braces is a compile error, and so is `auto` as a constructor argument inside a member written there. The `auto` is in the parent's text and the member would be the sub's, so it has no single owner. The way to write it is a `let` in the parent, passed in.
 22. `auto` inside a purpose is a compile error, like an objective: a purpose decides nothing.
 23. A purpose line inside a purpose's body or a trait is a compile error.
-24. A constraint in the braces of a list sub is a member of every element.
+24. A constraint in the braces of a list sub is a member of every element. (Braces on a list sub do not parse today, so no leaf builds this: section 12.5.)
 
 **Leo's question on items 5, 7 and 19 (2026-11-26), and his ruling.** Leo: "These seem like inconsistent handling of reading guarded members. Since unguarded reads of guarded members from outside are allowed and may get undefined, what would happen if we simply allowed a read of a maybe-absent member, regardless of where it's from? Is the safety worth the inconsistency?"
 
@@ -727,7 +727,7 @@ Verified at main `a78117af69` by reading code, by the grammar gate, or by runnin
 | The old engine's tests do not see the evaluator change | reasoning over code read; leaf ζ₂'s signal is that the workspace's tests pass with no expectation edited |
 | Two top-level modules of a new crate that refer to each other fail the merge gate | read: the module-cycle ratchet. The task-level verify does not run it for these crates, so each leaf runs it before asking for a merge. |
 
-Activation: Leo approved on 2026-11-26. Leaves α, β, χ, γ₁, γ₂, γ₃, ζ₁, ζ₂ and δ wait for no core task. The first kind leaf, ε, waits for core tasks 10557, 10617, 10621, 10558 and 10559. No task behind the alpha gate or the old-core holder must land first.
+Activation: Leo approved on 2026-11-26. Leaves α, β, χ, γ₁, γ₂, γ₃, ζ₁, ζ₂, δ₁ and δ₂ wait for no core task. The first leaf on the core, ε₁, waits for core tasks 10557, 10617, 10621, 10558 and 10559. No task behind the alpha gate or the old-core holder must land first.
 
 ## 9. Seams with other work
 
@@ -756,18 +756,18 @@ What the neighbours will rely on, written from their side. Each is a test named 
 
 | # | Scenario | Given | Then | Leaf |
 |---|---|---|---|---|
-| C1 | A unit's content does not depend on its definition's name | two definitions with the same text | every unit of one has the same content as the matching unit of the other | δ |
-| C2 | A change of spelling changes nothing | a file, and the same file with comments and spacing changed | the same definition list, member tables and unit contents | δ |
-| C3 | An edit to one literal changes one unit; an edit to a function's body changes the units that call it | a default edited; a function body edited | one unit's content changes, and the member table does not; the callers' units change | δ |
+| C1 | A unit's content does not depend on its definition's name | two definitions with the same text | every unit of one has the same content as the matching unit of the other | δ₂ |
+| C2 | A change of spelling changes nothing | a file, and the same file with comments and spacing changed | the same definition list, member tables and unit contents | δ₂ |
+| C3 | An edit to one literal changes one unit; an edit to a function's body changes the units that call it | a default edited; a function body edited | one unit's content changes, and the member table does not; the callers' units change | δ₂ |
 | C4 | The existing compile is undisturbed | every leaf that edits `reify-syntax` or `reify-compiler` | no expectation of an existing test is edited, and the new mode of `compile_expr` is off unless the second output sets it | γ₁, γ₂, γ₃ |
-| C5 | A rejection that the catalogue pins fires | each entry that expects a compile error | the error with that code; accepting the source fails the entry | each leaf, by the runner |
-| C6 | Nothing is dropped | a definition with a member form whose lowering is not built | the member is in the table with its kind; its answer is `no-kind-supplied` | δ for the table, ε for the answer |
+| C5 | A rejection that the catalogue pins fires | each entry that expects a compile error | the error with that code; accepting the source fails the entry | each leaf, by the runner; the seeded failure of the runner itself, δ₁ |
+| C6 | Nothing is dropped | a definition with a member form whose lowering is not built | the member is in the table with its kind; its answer is `no-kind-supplied` | δ₁ for the table, ε₁ for the answer |
 
 **Facing a solve.**
 
 | # | Scenario | Given | Then | Leaf |
 |---|---|---|---|---|
-| S1 | The problem is readable without evaluating | an instance's `problem`, one with a guarded sub and a collection | its unknowns with guards, its constraints, its objectives, what its constraints read from outside, its children as data; no cell, guard or count is evaluated to produce it | μ₁ |
+| S1 | The problem is readable without evaluating | an instance's `problem`, one with a guarded sub and a collection | its unknowns with guards, its constraints, its objectives, what its constraints read from outside, its children as data; no cell, guard or count is evaluated to produce it | μ₀ |
 | S2 | A substitution at an unknown's cell reaches everything that reads it | the test solver's trial | constraints at and below the owner see the trial's value; the surrounding state does not | μ₁ |
 | S3 | An unknown that is absent is left out | an unknown under a false guard | it is not decided; the others are | μ₁ |
 | S4 | A purpose's constraint never bears | a purpose that the only feasible value violates | the unknown is decided as without the purpose; the purpose's verdict is violated | ν |
@@ -782,7 +782,7 @@ What the neighbours will rely on, written from their side. Each is a test named 
 
 | # | Scenario | Given | Then | Leaf |
 |---|---|---|---|---|
-| G1 | A member of a kind nobody supplied is loud | a definition with a geometry member, no geometry kinds | `no-kind-supplied` at that member; its readers blocked; the instance's other members answered | ε |
+| G1 | A member of a kind nobody supplied is loud | a definition with a geometry member, no geometry kinds | `no-kind-supplied` at that member; its readers blocked; the instance's other members answered | ε₂ |
 | G2 | A supplied kind is declared like any member | a stand-in kind in the tests, entered in the table of member kinds | the instance declares it with the member's unit of source and scope bound | ο |
 | G3 | A value's member is reached by opening | a stand-in member on a definition, read as `tool.body` on a value | the read resolves to the member under `open` | κ₃ |
 
@@ -791,11 +791,11 @@ What the neighbours will rely on, written from their side. Each is a test named 
 | # | Scenario | Given | Then | Leaf |
 |---|---|---|---|---|
 | H1 | An answer is named by text | any path of the catalogue | the text parses to the path and prints back the same | β |
-| H2 | A root nobody declared | a demand under a definition that is not a root | "absent" | ε |
+| H2 | A root nobody declared | a demand under a definition that is not a root | "absent" | ε₁ |
 | H3 | Naming a root is an edit | a definition used by a sibling, then declared as a root | its answers at its own defaults | ξ |
 | H4 | Why a verdict is undetermined | a root's parameter with no value; an explicit `undef`; a division by zero; a read of an absent member; a member whose guard is a root's parameter with no value; the first again through a made instance | partial, partial, other, other, partial; the class survives the constructor call | η; the two guard cases in θ₁; the made instance in κ₂ |
 | H5 | An edited session equals a fresh one | each entry with edits | every answer after each edit equals a fresh evaluation's | σ |
-| H6 | The same instance in two places | every entry whose root can be held as a sub | equal answers; no body run of a member in the second | ε |
+| H6 | The same instance in two places | every entry whose root can be held as a sub | equal answers; no body run of a member in the second | ε₂ |
 
 ## 11. Tasks, holds and priority
 
@@ -809,18 +809,18 @@ What the neighbours will rely on, written from their side. Each is a test named 
 
 ## 12. Decomposition plan
 
-Thirty leaves. *New files* are under `crates/reify-eval-instances/src/` unless a path is given; `tests/` files are not listed. *Edits* names the existing files a leaf changes. Task ids are assigned at decomposition.
+Thirty-three leaves. *New files* are under `crates/reify-eval-instances/src/` unless a path is given; `tests/` files are not listed. *Edits* names the existing files a leaf changes. Each leaf's task id follows its label. Three of the plan's thirty leaves were split at decomposition (section 12.5).
 
 ### 12.1 Rules that hold for every leaf
 
-1. **The corpus is the acceptance.** A leaf's signal is that the entries which need its word run and pass, in both orders of request. It adds its word to the runner's list in the same change.
+1. **The corpus is the acceptance.** A leaf's signal is that the entries which need its word run and pass, in both orders of request. It adds its word to the runner's list in the same change. An entry that needs words from two leaves neither of which waits for the other first runs when the later of the two lands, whichever that is; the leaf that lands later makes it pass or disputes it (section 6).
 2. **Never an approximation.** A member whose kind is not built yet answers `no-kind-supplied`. Nothing is skipped, defaulted or answered from the definition's defaults.
 3. **Section 6 applies.** A leaf may reword a rule it builds; it never edits an expected answer or a ruling. A disputed entry goes on the list.
 4. **The existing compile's output does not change** (scenario C4).
 5. **No file on the held list is edited.** A leaf that finds it must escalates.
 6. **A new concept is a new file.** Every diagnostic has a code; the codes are declared by leaf β. A leaf's file list names files and never a directory.
 7. **No test asserts a wall-clock bound.** Growth is asserted on the core's counters.
-8. **Two files are the only ones that touch the core's interface where it still grows.** `core_seam` is the only file that builds what a body returns or calls `read_all`; `host/core_calls` is the only file that calls the core's host interface. A core task's agent will edit them knowing nothing else about this crate, so the head of each says what each helper promises, and a helper's signature is the contract with the rest of the crate. One promise is the claim of determinism: every result an instance kind returns is deterministic. Kinds written in this crate's tests build their results through `core_seam` too, and the test solver states its own claim there. Leaf ε creates both files; a later leaf adds a helper only when it uses a call of the core for the first time.
+8. **Two files are the only ones that touch the core's interface where it still grows.** `core_seam` is the only file that builds what a body returns or calls `read_all`; `host/core_calls` is the only file that calls the core's host interface. A core task's agent will edit them knowing nothing else about this crate, so the head of each says what each helper promises, and a helper's signature is the contract with the rest of the crate. One promise is the claim of determinism: every result an instance kind returns is deterministic. Kinds written in this crate's tests build their results through `core_seam` too, and the test solver states its own claim there. Leaf ε₁ creates both files; a later leaf adds a helper only when it uses a call of the core for the first time.
 9. **Before asking for a merge**, a leaf runs `python3 scripts/assert-module-scc.py check`.
 10. **Tests are lean.** The catalogue is the test of behaviour. A leaf adds a test of its own only for what an entry cannot express: a property over generated inputs, a boundary scenario of section 10, or a seeded failure of the runner itself.
 11. **Each kind whose result declares children supplies `steps`.**
@@ -831,167 +831,182 @@ Leo's approval of this PRD rules its decisions, so no leaf lists a ruling as a p
 
 **Phase 0. The corpus and the path, before any kind.**
 
-- **α. The crate, the corpus files and the runner's frame.**
+- **α (#10634). The crate, the corpus files and the runner's frame.**
   Registers `reify-eval-instances` and declares every dependency that crate will need. Turns each entry of the catalogue into its two files. Builds the expectation loader with a closed set of keys, the needs vocabulary and its owner table, the list of disputed entries, and a validity test. The test checks that every entry loads; that every word is in the vocabulary; that each source is of the kind its entry says (it parses; it waits for the purpose grammar and does not parse today; it is meant never to parse); that a source which parses has no bare `Scalar`; and that the count of waiting entries per owner equals the committed number. Registers the tree with the parse guard. Adds the census row the project's rule on declared exceptions asks for. Freezes the catalogue with a header.
   *Edits:* root `Cargo.toml`, `Cargo.lock`, `scripts/crate-strata.json`; the parse guard's list of trees in the tests of `reify-syntax`.
   *Signal:* the validity test in the merge gate prints every entry with "waiting" and its owner; an expectation with an unknown key, given to the loader as a string, is refused by name.
   *Prereqs:* none.
 
-- **β. Typed paths and their text** (rule F), and this PRD's diagnostic codes. Replaces task 8704.
+- **β (#10635). Typed paths and their text** (rule F), and this PRD's diagnostic codes. Replaces task 8704.
   The path type and its kinds of step; one module that prints and parses. A round-trip test over generated paths: every kind of step, names that look like fixed children, keys that hold a dot, a slash, a bracket or a quote. The validity test of α gains: every path in the corpus parses and prints back the same. Declares, in one edit of `crates/reify-core/src/diagnostics.rs`, the code of every compile error this PRD adds: those of section 5.7, of decisions D2, D5 and D10, and of the list D13, the read of a private `let` among them.
   *New files:* `crates/reify-core/src/instance_path.rs`, `crates/reify-core/src/instance_path_text.rs`.
   *Signal:* scenario H1; the corpus's paths in the merge gate; rule F's final text in the design.
   *Prereqs:* α.
 
-- **χ. The spec says what was ruled.** Beside the chain.
+- **χ (#10636). The spec says what was ruled.** Beside the chain.
   Amends `docs/reify-language-spec.md` for each sentence the rulings contradict (section 5.7), keeping each anchor: 9.2.7 among them, where a user function is now entered whatever its arguments (decision D10(d)), and the reference-safety rule of 6.3 and 8.10, which is deleted (the end of decision D13). Adds `present`, the applied purpose and the rules for a sub's braces, and says in 7.4 that the braces of a sub and the body of a purpose read only what is visible from outside (decision D13, item 14). The spec is read by two compiled checks that run only at merge, the keyword test of `reify-syntax` and the anchor lint, so this is a task through the merge queue and not a docs commit.
   *Signal:* the amended sentences on main; both checks pass.
   *Prereqs:* none.
 
 **Phase 1. Shared code: the parser, the compiler's seam, the evaluator.**
 
-- **γ₁. The member form that applies a purpose** (decision D2).
+- **γ₁ (#10637). The member form that applies a purpose** (decision D2).
   The grammar rule, the generated parser and its corpus; the GUI editor's grammar and its test; the syntax tree's new member and its lowering; an arm for it wherever the existing code matches on a member exhaustively; a coded error from the existing compile wherever the form is written (a definition's body, a `where` block, a sub's braces, a purpose's body, a trait). It removes the waiting tag from the corpus entries that now parse and changes the committed count.
   *Edits:* the grammar under `tree-sitter-reify`; `gui/src/editor/reify.grammar`; `crates/reify-ast/src/decl.rs`; `crates/reify-syntax/src/ts_parser.rs`; the files of `reify-compiler`, `reify-lsp` and `gui/src-tauri` that match on a member. It verifies the whole workspace and the GUI's lane.
   *Signal:* `reify check` on a file that applies a purpose prints the coded error; the corpus entries that waited for grammar parse, and the validity test says so; the editor's grammar test accepts the form; scenario C4.
   *Prereqs:* α, β.
 
-- **γ₂. The parser keeps two guards it drops.**
+- **γ₂ (#10638). The parser keeps two guards it drops.**
   The guard on an assignment in a sub's braces, and a port's guard. Additions to the syntax tree; the existing lowering ignores them.
   *Edits:* `crates/reify-ast/src/decl.rs`, `crates/reify-syntax/src/ts_parser.rs`, and the lines that build or match a sub's or a port's declaration.
   *Signal:* a parsed sub with `t = 6mm where thick` carries the guard; scenario C4.
   *Prereqs:* none.
 
-- **γ₃. The compiler's seam.**
+- **γ₃ (#10639). The compiler's seam.**
   The expression compiler and the scopes become callable from another crate. `compile_expr` gains its mode, off by default. In the new mode: a reference is local to the unit, a read of `self.sub.member` included; a constructor call compiles to a request to make an instance at a site; a member read whose receiver is a cell or a sub compiles to a reference, also when the member may not be there; `auto` is accepted as a constructor argument where design 6.3 allows it; `present(...)` resolves; `determined`, `constrained` and `partially_determined` take a path through a sub; `self.children`, `self.members`, `self.descendants` and a bare collection are typed as values; a geometry member of a value can be read (`tool.body`); and a name can be resolved against two scopes, for a sub's braces.
   *Edits:* `crates/reify-compiler/src/expr.rs`, `scope.rs`, `lib.rs`, and the files whose items become public.
-  *Signal:* for each behaviour, a test in `reify-compiler` that compiles a small source in the new mode and in the old; scenario C4. It unlocks δ and has no entry of its own.
+  *Signal:* for each behaviour, a test in `reify-compiler` that compiles a small source in the new mode and in the old; scenario C4. It unlocks δ₁ and δ₂ and has no entry of its own.
   *Prereqs:* none.
 
-- **ζ₁. The evaluator reads through one interface** (section 5.5, change 1).
+- **ζ₁ (#10640). The evaluator reads through one interface** (section 5.5, change 1).
   *Edits:* `crates/reify-expr/src/lib.rs`, `dual_eval.rs`.
   *Signal:* the workspace's tests pass with no expectation edited; no read of the value map remains outside the reader.
   *Prereqs:* none.
 
-- **ζ₂. "Not here yet", and reading everything outside an arm** (section 5.5, change 2; rule A).
+- **ζ₂ (#10641). "Not here yet", and reading everything outside an arm** (section 5.5, change 2; rule A).
   A new entry that can return pending. `eval_expr` keeps its signature. Under a reader that can answer "not here yet", a user function is entered whatever its arguments (decision D10(d)); under the old engine's reader it is not entered when one is undefined, as today.
   *Signal:* with a test reader in `reify-expr`'s own tests: a quantifier over 10,000 elements asks for all of them in one round; an `if` with a pending condition evaluates no arm; the two operand orders of each logical operator ask for the same refs; a function whose body ignores its parameter returns its value for an undefined argument, and returns undefined under a reader that never says "not here yet". The workspace's tests pass with no expectation edited, the ten tests that pin skipping among them. The frame-budget test's new figure is recorded.
   *Prereqs:* ζ₁.
 
 **Phase 2. The first slice.**
 
-- **δ. The second output: definitions, members, units.**
-  Registers `reify-eval-source`. The entry, the output's types, the scope that mints local references, content by meaning with callees folded in. Every member form is in the table with its kind. Lowered in full here: parameters, `let`s, constraints, applied constraint definitions, subs with their arguments (with the braces' rule for a name on an assignment's right side), occurrence definitions, and what each definition uses. The compile error for a read of a private `let` from another definition's text (decision D13, item 14), in the one place where a name is resolved against another definition's members, so that the braces and purposes get it without code of their own.
-  *Edits:* root `Cargo.toml`, `Cargo.lock`, `scripts/crate-strata.json`.
-  *Signal:* scenarios C1, C2 and C3 over the catalogue's sources; scenario C6's first half: a member form not yet lowered is in the table with its kind; the entry `private-let-read-from-another-definition-rejected`.
-  *Prereqs:* β, γ₃.
+- **δ₁ (#10642). The second output: the crate, the definitions and the member tables.**
+  Registers `reify-eval-source` and makes `reify-eval-instances` depend on it. The entry, the output's types, the definition list with imports and the standard library. Every member form is in a definition's member table with its kind and its declared type, and no units yet; the members a definition inherits from its traits are in it, the traits' first; a `let` or a parameter of a geometry type has the kind of a geometry member and is never a cell. The corpus runner's compile step.
+  *Edits:* root `Cargo.toml`, `Cargo.lock`, `scripts/crate-strata.json`, `crates/reify-eval-instances/Cargo.toml`.
+  *Signal:* scenario C6's first half over every catalogue source that parses: a member form not yet lowered is in the table with its kind. Scenario C5: a seeded entry whose source is accepted where an error is expected fails the runner.
+  *Prereqs:* α, γ₃.
 
-- **ε. The first instances: host, definition table, member table, instance, cell.**
-  Loads the output into a snapshot. A parameter evaluates its argument in the scope that wrote it, or its default in its own instance. `determined`. The adapter's rounds. `core_seam`, `host/core_calls`, `step_map`, `unit_key`, the table of member kinds. The runner's two-places run.
-  *Signal:* the entries that need `instance` and `eval-reads` and nothing later pass: a sub's argument, a default, an argument that reads the parent, a root's parameter with no default, a ring of `let`s as a cycle, a recursion stopped by the depth limit. Scenarios G1, H2 and H6, and C6's second half.
-  *Prereqs:* α, δ, ζ₂; core 10557, 10617, 10621, 10558, 10559.
+- **δ₂ (#10643). The second output: units of source.**
+  The scope that mints local references, with γ₃'s steps turned into typed paths. Lowered in full here: parameters, `let`s, constraints, applied constraint definitions, subs with their arguments (with the braces' rule for a name on an assignment's right side), the members inherited from traits, occurrence definitions, and what each definition uses. Content by meaning, with callees folded in. The compile error for a read of a private `let` from another definition's text (decision D13, item 14), in the one place where a name is resolved against another definition's members, so that the braces and purposes get it without code of their own.
+  *Signal:* scenarios C1, C2 and C3 over every catalogue source that parses and is not a rejection; the entry `private-let-read-from-another-definition-rejected`.
+  *Prereqs:* δ₁, β, γ₃, γ₂.
 
-- **η. Constraints, the summary, and why a verdict is undetermined.**
+- **ε₁ (#10644). The host and the instance.**
+  Loads the output into a snapshot. `core_seam`, `host/core_calls`, `step_map`, the table of member kinds, the definition table, the member table and the instance kind; the host's demand and answer. The runner evaluates an entry and compares its answers, in both orders of request. No member has a kind yet, so every member answers `no-kind-supplied`.
+  *Signal:* scenario H2, and C6's second half.
+  *Prereqs:* α, δ₁; core 10557, 10617, 10621, 10558, 10559.
+
+- **ε₂ (#10645). The cell and the evaluator's adapter.**
+  A parameter evaluates its argument in the scope that wrote it, or its default in its own instance. `determined`. The adapter's rounds. `unit_key`. The runner's two-places run.
+  *Signal:* the entries that need `instance` and `eval-reads` and nothing later pass: a sub's argument, a default, an argument that reads the parent, a ring of `let`s as a cycle. Scenarios G1 and H6. (A root's parameter with no default first runs with η and ξ, and a recursion stopped by the depth limit with θ₁.)
+  *Prereqs:* ε₁, δ₂, ζ₂.
+
+- **η (#10646). Constraints, the summary, and why a verdict is undetermined.**
   The constraint kind; the built-in verdict on arguments; the cause and its class on a cell's result; the summary and its four groups.
-  *Signal:* the entries that need `constraint` and `summary` pass, the design's decision 7 among them (a `Bar` given a negative length is violated at `Asm.b`, where today it is "All constraints satisfied"). Scenario H4's first three cases.
-  *Prereqs:* ε.
+  *Signal:* the entries that need `constraint` and `summary` and nothing later pass. Scenario H4's first three cases. (The design's decision 7 model, a `Bar` given a negative length that is violated at `Asm.b` where today it is "All constraints satisfied", first runs at κ₂.)
+  *Prereqs:* ε₂.
 
 **Phase 3. One capability at a time.**
 
-- **θ₁. Guards and presence.**
+- **θ₁ (#10647). Guards and presence.**
   The second output gains guards, guard cells, guarded assignments (with the braces' rule for a name in the guard) and `present`. A member reads its guards first; absent; presence undetermined; reading what is not there gives undefined, with the ref and the class recorded. The compile error for a guard that reads what it guards. A read of a member that may be absent compiles wherever it is written (the end of decision D13), so there is no other compile check of presence.
   *Signal:* the entries that need `guard` pass, with both operand orders of each. Scenario H4's absent member and its member of undetermined presence.
   *Prereqs:* η, γ₂.
 
-- **θ₂. One name under several guards** (rule E).
+- **θ₂ (#10648). One name under several guards** (rule E).
   `where`/`else`, the arms of a `match`, separate guards. One node per name, which chooses the declaration; `ambiguous-declaration`; the compile error for two kinds of node under one name.
   *Signal:* the entries that need `one-name` pass; rule E's final text in the design.
   *Prereqs:* θ₁.
 
-- **ι. Collections.**
+- **ι (#10649). Collections.**
   List and keyed subs, the count's cell, elements by position and key, a `forall` block as one constraint per element, an index computed from data, a count that reads its own elements as a compile error.
-  *Signal:* the entries that need `collection` pass: a count read from a sibling sub, an undefined count, an index out of range in both operand orders, the limit on children per node.
+  *Signal:* the entries that need `collection` and nothing later pass: an undefined count, an index out of range in both operand orders. A test of the leaf's own for the limit on children per node. (A count read from a sibling sub first runs at κ₁ and κ₃.)
   *Prereqs:* θ₁; core 10560, for a `forall` over a range, whose index is a value.
 
-- **κ₁. An instance read as a value.**
+- **κ₁ (#10650). An instance read as a value.**
   `as-value`: the type's name, every present parameter, every value decided at or below, held as section 5.4 says. `let e = self.a`. `self.children`, `self.members`, `self.descendants` and a bare collection as values of present members. Equality by content.
   *Signal:* the entries that need `value` pass.
   *Prereqs:* η, ι.
 
-- **κ₂. Instances made by an expression** (rule B).
+- **κ₂ (#10651). Instances made by an expression** (rule B).
   The second output's units carry the table of constructor sites. The evaluator's walk keeps the site chain, and asks the reader to make an instance and to open a value. The adapter declares the child, passing each argument's value and the class of its cause, and reads its value; a parameter of a function keeps the class of the argument it was bound to, so that a wrapped call answers as an inline one (decision D10(d)); the list of what a cell made; the summary reads that list, exactly once.
   *Edits:* `crates/reify-expr/src/lib.rs`.
-  *Signal:* the entries that need `made` pass: a value made through a function and through a lambda, one made in a sub's argument counted once, a selecting built-in making nothing, two calls of one function, a function called with an undefined argument. Scenario H4 through a made instance. Rule B's final text in the design.
+  *Signal:* the entries that need `made` and nothing later pass. Scenario H4 through a made instance, a call wrapped in a function included. Rule B's final text in the design. (The entries for a value made through a function and through a lambda, one made in a sub's argument counted once, a selecting built-in, two calls of one function, and a function called with an undefined argument also need `open` or `roots`, and first run at κ₃ or with ξ.)
   *Prereqs:* κ₁; core 10560.
 
-- **κ₃. Opening a value.**
+- **κ₃ (#10652). Opening a value.**
   A member read on a value is a ref through `open`. One opened instance per holding cell; a value opened in mid-expression.
   *Signal:* the entries that need `open` pass, with the made instance's verdicts counted once and the opened one's never. Scenario G3.
   *Prereqs:* κ₂.
 
-- **λ. Members written in a sub's braces.**
-  The table of section 5.7: each form is compiled or is a coded error. A bare name is a `let` of the braces first, then the instance's own member, then the declaring definition; `self` is the parent. A name that resolves to a `let` without `pub` of the sub's definition is the compile error leaf δ built, and does not fall through to the declaring definition.
+- **λ (#10653). Members written in a sub's braces.**
+  The table of section 5.7: each form is compiled or is a coded error. A bare name is a `let` of the braces first, then the instance's own member, then the declaring definition; `self` is the parent. A name that resolves to a `let` without `pub` of the sub's definition is the compile error leaf δ₂ built, and does not fall through to the declaring definition.
   *Signal:* the entries that need `braces` and no solver pass: a false constraint in the braces is violated at the sub, where today the file reports all satisfied; the entry built so that a wrong resolution of a name flips its verdict; `t = t / 2` is a cycle; the entry `braces-read-of-private-let-rejected`.
   *Prereqs:* θ₁, γ₂.
 
-- **μ₁. An unknown's cell, and what an instance tells a solve** (section 5.6). A dependency of task 10610.
-  The second output gains the unknowns, named or not, with their guards, the objectives, what a definition's constraints can read, and the compile errors for where `auto` may not be written. The unknown's cell; `problem`; the two bindings of `solves`; the test solver.
-  *Signal:* the entries that need `unknown`, `solve-forced` or `solve-infeasible` and nothing later pass. Scenarios S1, S2, S3, S5, S7 and S8. The restated list of design 6.4 in the design.
-  *Prereqs:* η, θ₁, λ; core 10561 and 10562.
+- **μ₀ (#10654). What an instance tells a solve, from source alone** (section 5.6, items 5 and 11). Added at decomposition.
+  The second output gains the unknowns, named or not, with their guards, the parameters given under a guard, the objectives, what a definition's constraints can read, and the compile errors for where `auto` may not be written. The `problem` node.
+  *Signal:* scenario S1. The rejections fire by code in a test of the second output. The restated list of design 6.4 in the design.
+  *Prereqs:* η, θ₁, λ, ι.
 
-- **μ₂. An owner inside an owner.**
+- **μ₁ (#10655). An unknown's cell and its seam to a solve** (section 5.6). A dependency of task 10610.
+  The unknown's cell; the two bindings of `solves`; the summary reading the unknowns that have no name; the test solver.
+  *Signal:* the entries that need `unknown`, `solve-forced` or `solve-infeasible` and nothing later pass. Scenarios S2, S3, S5, S7 and S8.
+  *Prereqs:* μ₀, η, θ₁, λ; core 10561 and 10562.
+
+- **μ₂ (#10656). An owner inside an owner.**
   An instance with an unknown of its own inside an owner that has one: a sub or a made instance given an argument on trial; a braces constraint that reads the parent's unknown; `auto` as a constructor argument.
   *Signal:* the entries that need `nested-solve` pass. Scenarios S6, S9 and S10.
   *Prereqs:* μ₁, κ₂; core 10563.
 
-- **ν. Purposes, declared and applied.**
-  The second output gains purposes in the definition list, the applied purpose in the applying definition's member table, and the compile errors of section 5.7 and decisions D2 and D10(e): an objective or an `auto` in a purpose, a parameter of kind Constraint or Field, a subject that is a value, a line in a sub's braces. A purpose's body that reads a `let` without `pub` of its subject is the compile error leaf δ built (entry `purpose-read-of-private-let-rejected`). The instance declares one purpose instance per application, with its subjects bound to places. Everything below a purpose instance is kept out of the problem of every owner outside it.
+- **ν (#10657). Purposes, declared and applied.**
+  The second output gains purposes in the definition list, the applied purpose in the applying definition's member table, and the compile errors of section 5.7 and decisions D2 and D10(e): an objective or an `auto` in a purpose, a parameter of kind Constraint or Field, a subject that is a value, a line in a sub's braces. A purpose's body that reads a `let` without `pub` of its subject is the compile error leaf δ₂ built (entry `purpose-read-of-private-let-rejected`). The instance declares one purpose instance per application, with its subjects bound to places. Everything below a purpose instance is kept out of the problem of every owner outside it.
   *Signal:* the entries that need `purpose` pass: a purpose that only checks, with a forced unknown so that bearing would show; a subject that is absent; one purpose applied twice; a value as subject refused; an objective refused; a line in a sub's braces refused. Scenario S4.
   *Prereqs:* γ₁, η, θ₁, λ, μ₁.
 
-- **ξ. The default roots** (rule D).
+- **ξ (#10658). The default roots** (rule D).
   `default_roots` over the second output; a file with several roots; a file with none.
   *Signal:* the entries that need `roots` pass, one per clause. Scenario H3. Rule D's final text in the design.
-  *Prereqs:* δ, ε.
+  *Prereqs:* δ₂, ε₂.
 
-- **ο. Connections, ports, placements, and a geometry member's source.**
+- **ο (#10659). Connections, ports, placements, and a geometry member's source.**
   A `connect` as ordinary members; a port as a named group with its guard; an end that is a value refused; a placement as a cell, `at auto` and a connector's `auto` parameter as unknowns; a geometry member's unit and hash in the table; the same inside a sub's braces, where a connector sub the compiler makes is allowed though a written `sub` is not. The existing compiler's connector naming is counted by a ratchet, so the leaf does not copy it.
   *Signal:* the entries that need `connect` pass. Scenario G2.
   *Prereqs:* θ₁, λ, γ₂, μ₁.
 
-- **π. Generic definitions.**
+- **π (#10660). Generic definitions.**
   One member table per specialisation reached; a type argument that could not be chosen is a failure at the sub.
   *Signal:* the entries that need `generic` pass.
-  *Prereqs:* δ, η.
+  *Prereqs:* δ₂, η.
 
-- **ρ. `constrained` and `partially_determined`** (decision D3).
+- **ρ (#10661). `constrained` and `partially_determined`** (decision D3).
   The relation "this constraint can read this parameter" is the one leaf μ₁ puts in the member table.
   *Signal:* the entries that need `state-tests` pass, with a sub, a made instance and an opened value agreeing.
   *Prereqs:* θ₁, κ₃, μ₁.
 
-- **σ. Edits.**
+- **σ (#10662). Edits.**
   The runner's edit sequences. Adding an argument changes a member table and re-declares one child; editing a default re-runs only the cells that read it.
   *Signal:* scenario H5 and the entries that need `edits` pass. They pass by the slow path before core task 10564 lands, and exercise what a new snapshot inherits from the day it does.
   *Prereqs:* η.
 
 **Phase 4. Integration and close.**
 
-- **τ. The sources that stop compiling at the switch.**
+- **τ (#10663). The sources that stop compiling at the switch.**
   Runs the second output over every tracked `.ri` file and records which stop compiling, and why.
   *Signal:* the list, committed under `docs/` and named in task 10551.
-  *Prereqs:* every leaf that adds to the second output: δ, θ₁, θ₂, ι, κ₂, κ₃, λ, μ₁, μ₂, ν, ο, π, ρ.
+  *Prereqs:* every leaf that adds to the second output: δ₁, δ₂, θ₁, θ₂, ι, κ₂, κ₃, λ, μ₀, μ₁, μ₂, ν, ο, π, ρ.
 
-- **υ. What an instance costs.**
+- **υ (#10664). What an instance costs.**
   The core's counters on generated models with 100, 1,000 and 10,000 instances, and the same of values.
   *Signal:* the report, committed under `docs/`; a test that N identical instances cost the body runs of one.
-  *Prereqs:* ι, κ₃.
+  *Prereqs:* ι, κ₃; core 10564, for the count of index entries.
 
-- **φ. The whole corpus.** The integration gate of this PRD.
-  Every entry whose needs are built passes. The list of disputed entries is empty. The waiting entries per owner are committed and named in tasks 10610, 10611 and 10551. The runner turns on the core's debug mode. Every scenario of section 10 exists under its name.
+- **φ (#10665). The whole corpus.** The integration gate of this PRD.
+  Every entry whose needs are built passes. The list of disputed entries is empty. The waiting entries per owner are committed and named in tasks 10610, 10611 and 7874. Editing a default re-runs only the cells that read it, asserted on the core's counters. The runner turns on the core's debug mode. Every scenario of section 10 exists under its name.
   *Signal:* those, in the merge gate.
   *Prereqs:* every leaf above but χ; core 10564.
 
-- **ω. Close.** Stamps this PRD and its manifest with the landed task ids, the frozen-record header, and the list of what stays maintained: the design document, the corpus tree, and the manifest. A dependency of tasks 10552 and 10551.
+- **ω (#10666). Close.** Stamps this PRD and its manifest with the landed task ids, the frozen-record header, and the list of what stays maintained: the design document, the corpus tree, and the manifest. A dependency of tasks 10552 and 10551.
   *Prereqs:* every other leaf.
 
 ### 12.3 Order
@@ -1002,10 +1017,12 @@ Leo's approval of this PRD rules its decisions, so no leaf lists a ruling as a p
 | β | α | |
 | γ₁ | α, β | |
 | ζ₂ | ζ₁ | |
-| δ | β, γ₃ | |
-| ε | α, δ, ζ₂ | 10557, 10617, 10621, 10558, 10559 |
-| η | ε | |
-| ξ | δ, ε | |
+| δ₁ | α, γ₃ | |
+| δ₂ | δ₁, β, γ₃, γ₂ | |
+| ε₁ | α, δ₁ | 10557, 10617, 10621, 10558, 10559 |
+| ε₂ | ε₁, δ₂, ζ₂ | |
+| η | ε₂ | |
+| ξ | δ₂, ε₂ | |
 | θ₁ | η, γ₂ | |
 | θ₂ | θ₁ | |
 | ι | θ₁ | 10560 |
@@ -1013,27 +1030,71 @@ Leo's approval of this PRD rules its decisions, so no leaf lists a ruling as a p
 | κ₂ | κ₁ | 10560 |
 | κ₃ | κ₂ | |
 | λ | θ₁, γ₂ | |
-| μ₁ | η, θ₁, λ | 10561, 10562 |
+| μ₀ | η, θ₁, λ, ι | |
+| μ₁ | μ₀, η, θ₁, λ | 10561, 10562 |
 | μ₂ | μ₁, κ₂ | 10563 |
 | ν | γ₁, η, θ₁, λ, μ₁ | |
 | ο | θ₁, λ, γ₂, μ₁ | |
-| π | δ, η | |
+| π | δ₂, η | |
 | ρ | θ₁, κ₃, μ₁ | |
 | σ | η | |
-| τ | δ, θ₁, θ₂, ι, κ₂, κ₃, λ, μ₁, μ₂, ν, ο, π, ρ | |
-| υ | ι, κ₃ | |
+| τ | δ₁, δ₂, θ₁, θ₂, ι, κ₂, κ₃, λ, μ₀, μ₁, μ₂, ν, ο, π, ρ | |
+| υ | ι, κ₃ | 10564 |
 | φ | every leaf above but χ | 10564 |
 | ω | every other leaf | |
 
 What the core tasks give: 10557 the store; 10617 removes the attached binding; 10621 a step's space, a failure's description and public accessors for a path; 10558 cycles; 10559 limits and `steps`; 10560 children declared by a body, and constant bindings; 10561 views; 10562 storing the result of a body that opened a view, without which the two-places run would see a solve run twice; 10563 a view inside a view; 10564 what a new snapshot inherits, and with it the debug mode. None of this PRD's leaves waits for the core's later tasks on determinism or scheduling.
 
-The longest path inside this PRD has fourteen leaves: α, β, δ, ε, η, θ₁, ι, κ₁, κ₂, κ₃, ρ, τ, φ, ω. In practice the core sets the pace: ι and κ₂ wait for 10560, μ₁ for 10562, μ₂ for 10563 and φ for 10564, which lie one after another on the core's own chain.
+The longest path inside this PRD has fourteen leaves: α, β, δ₂, ε₂, η, θ₁, ι, κ₁, κ₂, κ₃, ρ, τ, φ, ω. Two more are as long: through δ₁ in β's place, and through γ₃ and δ₁ in the places of α and β. In practice the core sets the pace: ι and κ₂ wait for 10560, μ₁ for 10562, μ₂ for 10563 and φ for 10564, which lie one after another on the core's own chain.
 
 Leaves that edit one file land one after another, in whatever order the scheduler picks: γ₁ and γ₂ (the syntax tree and the parser); ζ₁, ζ₂ and κ₂ (`crates/reify-expr/src/lib.rs`); and, in the two new crates, the leaves that extend one kind or one lowering file.
 
 ### 12.4 The manifest
 
 The capability manifest and its sidecar are written at decomposition. Each leaf's bindings are of three sorts: a capability the leaf builds, bound to a check that its word is in the runner's list; a core capability, bound to the core task that builds it; and a rejection, bound to the entry that fails if the source is accepted.
+
+### 12.5 What the decomposition changed
+
+The plan above was filed on 2026-11-26 by a team: three seats drafted the task records, one the capability manifest, and two critics read the batch. Where a task differs from the text that Leo approved, this section says so, and the task is right. Nothing here changes a ruling or an expected answer.
+
+**Three leaves were split, so there are thirty-three.** None lengthens the longest path.
+
+- **δ became δ₁ and δ₂**, and **ε became ε₁ and ε₂**, each cut at "the table, then the units". δ₁ builds the crate, the definition list and every member table with kinds and no units; δ₂ builds the units, content by meaning, the private-`let` error and what each definition uses. ε₁ builds the host, the seam files, the tables and the instance kind, with every member answering `no-kind-supplied`; ε₂ builds the cell, the evaluator's adapter, `determined` and the two-places run. Each was more than one task could hold: ε alone had seventeen new files against five core interfaces that are still moving. Every leaf that waited for δ waits for δ₂, and every leaf that waited for ε waits for ε₂.
+- **μ₁ became μ₀ and μ₁.** μ₀ builds what a solve can read from source alone: the second output's record of unknowns, objectives and what constraints can read, the compile errors for where `auto` may not be written, and the `problem` node, with scenario S1. μ₁ keeps the unknown's cell, the two bindings of `solves`, the test solver and the three words. μ₀ waits for ι, because S1 and a keyed entry's unknown need collections.
+- **Elsewhere in this text**, "leaf δ" means δ₁ for the member table, a member's kind, the definition list and the runner's compile step, and δ₂ for a unit, a reference, content, the private-`let` check and what a definition uses. "Leaf ε" means ε₁ for the host, the seam files, the tables and the instance kind, and ε₂ for a cell, the adapter, `determined` and the two-places run.
+
+**Edges added.** δ₂ waits for γ₂, so that a guarded assignment in a sub's braces is never lowered as an unguarded one. υ waits for core task 10564, which adds the count of index entries its report needs.
+
+**A leaf's signal is what the runner applies.** Thirty-one entries need words from two leaves neither of which waits for the other, for example the default roots and guards. Such an entry first runs when the later of the two lands, and that leaf makes it pass. So each task states its signal as: when the leaf adds its word, every entry all of whose words are then built runs and passes. Four signals in section 12.2 named behaviours whose entries run later, and are reworded there: ε's (a root's parameter with no default; a recursion stopped by the depth limit), η's (the design's decision 7 model), ι's (a count read from a sibling sub) and κ₂'s (five of its six examples).
+
+**What a leaf builds that section 12.2 did not say.**
+
+- δ₁ puts the members a definition inherits from its traits in its member table, the traits' first, and gives a `let` or a parameter of a geometry type the kind of a geometry member. Two catalogue entries rest on these and no leaf had them.
+- δ₁ adds the edge from `reify-eval-instances` to `reify-eval-source` and the runner's compile step, which α cannot: the crate does not exist when α runs. δ₁ also writes scenario C5 as a seeded failure of the runner.
+- θ₁ builds, on the second output, the compile error for a recursive sub with no guard (decision D13, item 13), and decision D10(a): the verdict on arguments is violated when an argument is given to an absent parameter.
+- A made instance decides its own unknowns from whichever of κ₃ and μ₁ lands second; μ₂ keeps only what follows an outer trial.
+- ι writes one test of its own for the limit on children per node. The catalogue has no entry for it, because the contract does not say at which path the failure is reported.
+- φ asserts, on the core's counters, that editing a default re-runs only the cells that read it and that adding an argument re-declares one child. σ cannot: before core task 10564 a new snapshot inherits nothing.
+- τ's list has two parts: the tracked sources that stop compiling on the second output, with the error; and the sources whose meaning the rulings change with no compile error, found by six syntactic tests (a use of `constrained` or `partially_determined`; a file that declares a function; a use of `self.children`, `self.members` or `self.descendants`; a sub's braces that hold anything but an unguarded assignment; a braces assignment whose right side has a bare name the sub's definition declares; a guarded sub, a sub in a `where` block or in the arms of a `match`).
+- γ₃ gives the steps of a reference as written in the source; δ₂ turns them into typed paths. γ₃ does not wait for β.
+- α also passes a third repository-wide sweep over tracked `.ri` files, `member_continuation_sweep`, which section 8 does not name, and edits the record of unswept trees in `docs/prds/v0_6/syntax-lowering-contract.md`. β also edits `crates/reify-core/tests/api_surface.rs`, which pins that crate's public interface.
+
+**The corpus.**
+
+- Three files hold the runner's state, all created by α in `crates/reify-eval-instances/tests/corpus/`: `built.toml` (the words built), `waiting.toml` (the number of waiting entries per owner; an entry is counted under every owner of a word it needs that is not built) and `disputed.toml`.
+- The catalogue gives each expected compile error in words. α keeps the words; β writes each code into the corpus when it declares the codes, and from then on an expectation of a compile error with no code fails the validity test. Two codes have fixed names because other tasks rely on them: `PurposeApplicationNeedsNewEngine` and `PrivateLetReadFromAnotherDefinition`.
+- Twenty-two rejections that section 5.7 and decisions D2 and D13 require had no catalogue entry: eight forms in a sub's braces (λ), an `auto` in a `match` arm, a lambda or a quantifier's body (μ₀), nine about purposes (ν), a recursive sub with no guard (θ₁) and the seeded one of scenario C5 (δ₁). Most need the purpose grammar and could not be parsed when the catalogue was written. The leaf that builds each rejection adds its entry, a source and the expected error code, in the same change. That is the one case in which a leaf adds an entry.
+- The two-places run covers every entry that runs, expects no compile error, sets no limit and whose root has a default for every parameter. It counts body runs only for members whose answer is stored: the core stores nothing for `cycle` or `limit`, so a member that answers one of them may run again in the second place, and for those only the answers are compared.
+- Three entries were corrected before filing: `constrained-ignores-purpose-constraint` gained the word `state-tests`, `definition-objective-on-use-site-auto-open` gained `nested-solve`, and three entries' notes named the wrong leaf for `determined`.
+- A scenario's test is named with a lower-case id (`scenario_s1`), because an upper-case one fails the lint. C4 is three tests, one per leaf that writes it, and C6 is two.
+
+**Decision D13, item 24, cannot be built today.** Braces on a list sub do not parse: `sub vents : List<Vent> { constraint w >= 3mm }` is a syntax error. The item stands as what the form means when the grammar gains it, with indexed subs (task 5482). No leaf builds it and no entry pins it.
+
+**Decision D13, item 14, for a subject of type `Structure`.** A purpose's body reads only parameters, subs, ports and `pub` `let`s of its subject. Where the subject's type is a definition, a read of a private `let` is an error at the purpose's declaration. Where it is `Structure` or a trait, the read is resolved when the purpose is applied, and the error is at the application line. This is the lead's reading of the ruling.
+
+**Checks not run.** The overlay's substrate-verification workflow probes premises through the `reify` binary, and no leaf's signal can be observed that way before the switch, so it was not run; section 8 says what the authoring seats ran instead. The documentation leaves the docs-truth rule asks for are not in the batch (decision D6).
+
+**Verify cost.** ρ may have to edit `crates/reify-expr/src/lib.rs`; if it does it verifies most of the workspace, which decision D12 did not count. δ₁ takes δ's place among the leaves that edit the workspace manifest.
 
 ## 13. What the review found
 
@@ -1065,6 +1126,8 @@ Drafts 1 and 2 were each read by a design critic and by a check of every stated 
 
 **Leo's rulings of 2026-11-26, and what draft 4 changed for them.** Seven entries that had waited for a ruling now pin their answers: two on `constrained` and one on a purpose's constraint (D3), an argument to an absent parameter (D10(a)), a function called with an undefined argument (D10(d), rewritten for the alternative he took), a `let` in a sub's braces read from the parent (D10(f)), and a parameter read back out of a value (D10(h)). Three entries were added for the read of a private `let` (D13, item 14). Four entries that pinned the compile error for an unguarded read of a guarded member were rewritten to pin the run-time answers (the end of D13). A scan of the catalogue's sources found no other entry that reads a private `let` from another definition. The text changed in sections 5.4, 5.5 and 5.7, in decisions D5, D6, D9, D10 and D13, in sections 8, 9 and 11, and in leaves β, χ, ζ₂, δ, κ₂ and θ₁. The six new or changed sources were parsed with the binary of 2026-11-23.
 
+**The decomposition** was read by two critics, whose findings are in the tasks and in section 12.5. The text that changed after their reading (the split of δ and ε, and the corrections to forty-odd records) was checked by scripts for labels, dependencies and names, and by no further reader.
+
 **Not reviewed.** Draft 3's own changes were checked against the second round's findings by one seat and were not read adversarially again. The changes made for Leo's rulings of 2026-11-26 were made by the lead and checked by one seat before decomposition.
 
 **Amendments to the design document, landed with it:** decision 3b's line 1 and Part 4's "The compiler still reports the plain mistake", which Leo's ruling of 2026-11-26 removes; 6.4's requirement 1, which now holds for an undefined argument as well (decision D10(d)); 6.4's list of what is available without evaluating; rule A's wording on "not here yet"; Part 4's form of a guarded assignment in the braces; Part 10's sentence that a purpose can apply a constraint definition, which is true only once this PRD lands; 15.2's statement that one fixture has an `Output` in a purpose, which a scan did not find; Part 17's "the core crate's toy solver".
@@ -1085,11 +1148,11 @@ The project's invariants (`docs/legibility/design-invariants.md`), walked agains
 
 ## 15. Open questions (tactical; decided by the leaf named)
 
-1. **Lift or copy** each piece of `compile_entity` the second lowering needs (δ and later): section 5.2 gives the rule.
-2. **Which spaces the steps use** (ε): one for members by name, one for the fixed children, one per collection for its keys, or fewer. The core compares a space and never interprets it.
+1. **Lift or copy** each piece of `compile_entity` the second lowering needs (δ₁ and later): section 5.2 gives the rule.
+2. **Which spaces the steps use** (ε₁): one for members by name, one for the fixed children, one per collection for its keys, or fewer. The core compares a space and never interprets it.
 3. **How a value is written in an expectation and compared** (α): as a Reify literal evaluated by the kept evaluator, or parsed by the runner.
 4. **One test per entry, or one per theme** (α): the runner must name each failing entry either way.
-5. **The key of a unit of source as a snapshot input** (ε): one function builds it; nothing parses it back.
+5. **The key of a unit of source as a snapshot input** (ε₂): one function builds it; nothing parses it back.
 6. **Where the module is written in a path's text, and how a quote inside a key is escaped** (β).
 7. **Whether `relate` and `chain` are constraints or placements** (ο): the leaf reads how the existing lowering treats each; whatever places a part goes to task 10611. And whether an end of a `connect` written in a sub's braces may name a sibling of the sub.
 
