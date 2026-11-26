@@ -127,7 +127,11 @@ fn tip_reading_body() -> Vec<(&'static str, CompiledExpr)> {
 
 #[test]
 fn selector_let_sees_the_symbolic_geometry_member() {
-    let data = construct(&ctor(vec![], tip_reading_body(), vec![body_reading(vref("len"))]));
+    let data = construct(&ctor(
+        vec![],
+        tip_reading_body(),
+        vec![body_reading(vref("len"))],
+    ));
     assert_eq!(
         field(&data, "tip"),
         &expected_body_handle(length(1.0)),
@@ -138,7 +142,11 @@ fn selector_let_sees_the_symbolic_geometry_member() {
 
 #[test]
 fn geometry_member_is_not_an_instance_field() {
-    let data = construct(&ctor(vec![], tip_reading_body(), vec![body_reading(vref("len"))]));
+    let data = construct(&ctor(
+        vec![],
+        tip_reading_body(),
+        vec![body_reading(vref("len"))],
+    ));
     assert!(
         data.fields.get("body").is_none(),
         "the geometry handle must stay in member scope, never a field (D5): {:?}",
@@ -148,7 +156,11 @@ fn geometry_member_is_not_an_instance_field() {
 
 #[test]
 fn supplied_param_changes_the_geometry_member_hash() {
-    let defaulted = construct(&ctor(vec![], tip_reading_body(), vec![body_reading(vref("len"))]));
+    let defaulted = construct(&ctor(
+        vec![],
+        tip_reading_body(),
+        vec![body_reading(vref("len"))],
+    ));
     let supplied = construct(&ctor(
         vec![("len", length(2.0))],
         tip_reading_body(),
