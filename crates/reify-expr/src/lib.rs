@@ -23,6 +23,7 @@ mod option_recovery;
 pub mod sampled;
 mod sampled_fd;
 mod sanitize;
+mod upstream_values_hash;
 
 // Task #6672 (solver-unification ε): the forward-mode AD surface.  The AD
 // modules are PRIVATE and these flat re-exports are the only path to them, so
