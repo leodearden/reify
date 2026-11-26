@@ -97,7 +97,7 @@ Premise rows hold now. Deliverable rows are "not yet" by construction, and each 
 | η₅ | dual-shape-drift | ShapeLocalTolerance doc says Real, OCCT returns Value::length (Scalar); eval scalar consumers accept both shapes (seat B 1.3). | PASS | manual |
 | η₆ | reply-kind-contract | the contract core asserts reply.kind() == query.reply_kind() | PASS | grep `reply_kind\(\)` present in `crates/reify-test-support/src` |
 | θ₁ | no-newtype-today | git grep 'pub struct \w+\((pub )?f64\)' over crates = 0; Value::as_f64 accepts any-dimension Scalar (seat C 1.4). | PASS | manual |
-| θ₁ | halfspace-probe | reify eval tests/prd-gate/fixtures/kernel_interface_halfspace_nonnumeric_normal.ri at main 274a212e0a (2026-10-13): exit 1, 'error: geometry error: geometry operation failed: expected numeric value' with no op, argument or span. | PASS | manual |
+| θ₁ | halfspace-probe | reify eval tests/prd-gate/fixtures/kernel_interface_halfspace_nonnumeric_normal.ri at main 274a212e0a (2026-10-13): exit 1, 'error: geometry error: geometry operation failed: expected numeric value' with no op, argument or span. Retired 2026-11-26 (#10613): direction-typing ι-c #9648 makes half_space(origin: Point3<Length>, normal: Direction) and deletes this fixture; no θ₁ signal reads it. | PASS (pre-#9648; retired) | manual |
 | θ₁ | op-args-upstream | producer: task 8652 (S11 γ1, in progress) owns op_args.rs; task 8669 (S11 ζ) rewrites every execute arm; θ₁ depends on both. | PASS | manual |
 | θ₁ | quantity-module | the newtype home | PASS | path `crates/reify-ir/src/quantity.rs` present |
 | θ₂ | sweep-classifier-decodes | sweep_classifier.rs decodes Extrude.distance (:350) and profile extents (:628) via as_f64 with no tripwire (seat C 1.3). | PASS | manual |

@@ -791,7 +791,8 @@ tasks:
       reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
   - name: halfspace-probe
     binding: 'reify eval tests/prd-gate/fixtures/kernel_interface_halfspace_nonnumeric_normal.ri at main 274a212e0a (2026-10-13): exit 1, ''error: geometry error: geometry operation failed: expected numeric
-      value'' with no op, argument or span.'
+      value'' with no op, argument or span. Retired 2026-11-26 (#10613): direction-typing ι-c #9648 makes half_space(origin: Point3<Length>,
+      normal: Direction) and deletes this fixture; no θ₁ signal reads it.'
     verdict: PASS
     delivered_check:
       kind: manual
