@@ -81,19 +81,23 @@ impl Requests {
         wanting
     }
 
-    /// Ends `request`, returning the tasks no live request wants any more.
-    pub fn end(&mut self, request: Request) -> Vec<TaskKey> {
-        let mut unwanted = Vec::new();
+    /// Whether a live request wants `key`.
+    pub fn is_wanted(&self, key: TaskKey) -> bool {
+        self.wanted_by.contains_key(&key)
+    }
+
+    /// Ends `request`, returning the nodes it wanted.
+    pub fn end(&mut self, request: Request) -> BTreeSet<TaskKey> {
         self.on.remove(&request.id);
-        for key in self.wants.remove(&request.id).unwrap_or_default() {
-            if let Some(wanting) = self.wanted_by.get_mut(&key) {
+        let wanted = self.wants.remove(&request.id).unwrap_or_default();
+        for key in &wanted {
+            if let Some(wanting) = self.wanted_by.get_mut(key) {
                 wanting.remove(&request.id);
                 if wanting.is_empty() {
-                    self.wanted_by.remove(&key);
-                    unwanted.push(key);
+                    self.wanted_by.remove(key);
                 }
             }
         }
-        unwanted
+        wanted
     }
 }

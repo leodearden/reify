@@ -107,20 +107,14 @@ impl Executor {
         request
     }
 
-    /// Ends `request` and drops the work no other live request wants.
-    /// A section such a body started keeps running; what it makes is
-    /// released when it is delivered.
+    /// Ends `request` and drops the work it wanted that no other live
+    /// request wants and nothing awaits (contract 10). A section such a
+    /// body started keeps running; what it makes is released when it is
+    /// delivered.
     pub fn end(&mut self, request: Request) {
         self.core.refuse_foreign(request.id().core, "a request");
-        for key in self.requests.end(request) {
-            if let Some(task) = self.tasks.remove(&key) {
-                task.abandon();
-                self.waits.forget(key);
-            }
-            if self.resolving.remove(&key) {
-                self.waits.forget(key);
-            }
-        }
+        let wanted = self.requests.end(request);
+        self.drop_unneeded(wanted);
         self.prune();
     }
 
@@ -311,17 +305,45 @@ impl Executor {
         };
         self.counters.count_body_run(kind_id);
         self.tasks.insert(key, Task::start(kind, declaration));
-        self.ready.push(key);
+        self.queue(key);
     }
 
+    /// Queues the body at `key` to be polled, once however often it is
+    /// queued before its poll.
+    fn queue(&mut self, key: TaskKey) {
+        if let Some(task) = self.tasks.get_mut(&key)
+            && task.owe_poll()
+        {
+            self.ready.push(key);
+        }
+    }
+
+    /// Drops each node among `candidates` that is in progress, wanted by no
+    /// live request and awaited by nothing, and in turn each node that this
+    /// leaves the same. A dropped body is abandoned: its cancel flag is set.
+    fn drop_unneeded(&mut self, candidates: impl IntoIterator<Item = TaskKey>) {
+        let mut queue: VecDeque<_> = candidates.into_iter().collect();
+        while let Some(key) = queue.pop_front() {
+            if !self.in_progress(key) || self.requests.is_wanted(key) || self.waits.is_awaited(key)
+            {
+                continue;
+            }
+            if let Some(task) = self.tasks.remove(&key) {
+                task.abandon();
+            }
+            self.resolving.remove(&key);
+            queue.extend(self.waits.forget(key));
+        }
+    }
+
+    /// Polls the body at `key` if it is owed a poll.
     fn advance(&mut self, key: TaskKey) {
-        let Some(task) = self
-            .tasks
-            .get_mut(&key)
-            .filter(|task| !task.waits_on_a_section())
-        else {
+        let Some(task) = self.tasks.get_mut(&key) else {
             return;
         };
+        if !task.take_poll() {
+            return;
+        }
         let posted = match catch_unwind(AssertUnwindSafe(|| task.poll())) {
             Ok(Poll::Ready(Produced::Outcome(outcome))) => return self.finish(key, outcome),
             Ok(Poll::Ready(Produced::Outside(failure))) => return self.end_outside(key, failure),
@@ -339,7 +361,7 @@ impl Executor {
                 let awaited = reading.awaited();
                 if awaited.is_empty() {
                     task.answer_read(reading.reply(index));
-                    return self.ready.push(key);
+                    return self.queue(key);
                 }
                 task.wait_on(reading);
                 self.await_nodes(key, awaited);
@@ -387,7 +409,7 @@ impl Executor {
         };
         if let Some(reading) = task.take_reading() {
             task.answer_read(reading.reply(self.indexes.of(key.snapshot)));
-            self.ready.push(key);
+            self.queue(key);
         }
     }
 
@@ -409,9 +431,11 @@ impl Executor {
 
     /// Ends a node with a failure outside the inputs, stored nowhere, and
     /// with it every node that waited on it, in turn: each is dropped and
-    /// pending to every live request that wanted it.
+    /// pending to every live request that wanted it. What they no longer
+    /// await is dropped if nothing else needs it.
     fn end_outside(&mut self, key: TaskKey, failure: OutsideFailure) {
         let mut queue = VecDeque::from([key]);
+        let mut unawaited = Vec::new();
         while let Some(key) = queue.pop_front() {
             if let Some(task) = self.tasks.remove(&key) {
                 task.discard();
@@ -422,7 +446,9 @@ impl Executor {
                 self.tell(request, key, Answer::Pending(failure.clone()));
             }
             queue.extend(failed.dropped);
+            unawaited.extend(failed.unawaited);
         }
+        self.drop_unneeded(unawaited);
     }
 
     fn tell(&mut self, request: RequestId, key: TaskKey, answer: Answer<Erased>) {
@@ -469,7 +495,7 @@ impl Executor {
         match product {
             Ok(product) => {
                 task.resume(product);
-                self.ready.push(key);
+                self.queue(key);
             }
             Err(failure) => self.end_outside(key, failure),
         }

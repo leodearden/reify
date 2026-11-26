@@ -1,5 +1,6 @@
 //! A running body and what it was started with.
 
+use std::mem;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
@@ -31,6 +32,10 @@ pub(crate) struct Task {
     section: Option<u64>,
     /// The read the body waits on, while a node it reads is unanswered.
     reading: Option<Reading>,
+    /// Whether the body is queued to be polled. A ready-queue entry for a
+    /// task that is not owed a poll is stale: left by a dropped task whose
+    /// successor has the same key.
+    owed_poll: bool,
     body: Body,
 }
 
@@ -45,6 +50,7 @@ impl Task {
             cancel,
             section: None,
             reading: None,
+            owed_poll: false,
             body,
         }
     }
@@ -99,8 +105,15 @@ impl Task {
         self.section == Some(serial)
     }
 
-    pub fn waits_on_a_section(&self) -> bool {
-        self.section.is_some()
+    /// Marks the body as owed a poll: `false` if it already was, so that it
+    /// is queued once.
+    pub fn owe_poll(&mut self) -> bool {
+        !mem::replace(&mut self.owed_poll, true)
+    }
+
+    /// Whether the body is owed a poll, which from then on it is not.
+    pub fn take_poll(&mut self) -> bool {
+        mem::take(&mut self.owed_poll)
     }
 
     /// Drops the task, so that a panic while dropping what its body holds

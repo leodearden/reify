@@ -43,11 +43,13 @@ pub(crate) fn answered(
 }
 
 /// Who a failure outside the inputs at a node concerns: the live requests
-/// to tell it is pending, and the nodes that waited on it, which are to be
-/// dropped and fail the same way.
+/// to tell it is pending; the nodes that waited on it, which are to be
+/// dropped and fail the same way; and the other nodes those awaited, which
+/// they await no more.
 pub(crate) struct FailedOutside {
     pub tell: BTreeSet<RequestId>,
     pub dropped: Vec<TaskKey>,
+    pub unawaited: Vec<TaskKey>,
 }
 
 /// Ends the node at `key` with a failure outside the inputs (contract 9):
@@ -58,13 +60,15 @@ pub(crate) fn failed_outside(
     waits: &mut Waits,
     requests: &mut Requests,
 ) -> FailedOutside {
-    waits.forget(key);
+    let mut unawaited: Vec<_> = waits.forget(key).into_iter().collect();
     let dropped = waits.waiters(key);
     for waiter in &dropped {
-        waits.forget(*waiter);
+        unawaited.extend(waits.forget(*waiter));
     }
+    unawaited.retain(|node| *node != key);
     FailedOutside {
         tell: requests.settle(&key),
         dropped,
+        unawaited,
     }
 }
