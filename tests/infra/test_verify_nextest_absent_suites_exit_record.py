@@ -11,12 +11,13 @@ scenario reproduces one abort shape through the harness's public seam: its
 exit status, stdout and stderr.
 """
 
+import os
 import re
+import select
 import shutil
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
 from pathlib import Path
 
@@ -38,16 +39,21 @@ else
     echo "# verify.sh plan — nextest=0"
 fi
 """
+# `started` and `release` are FIFOs: each step blocks on the test's end of it.
 WAIT_FOR_RELEASE = """\
-touch "$PROBE_DIR/started"
-_i=0
-while [ ! -e "$PROBE_DIR/release" ] && [ "$_i" -lt 1200 ]; do
-    sleep 0.1
-    _i=$((_i + 1))
-done
+: > "$PROBE_DIR/started"
+read -r _ < "$PROBE_DIR/release"
 """ + CLEAN_RESULTS
 TERM_THE_HARNESS = 'kill -TERM "$PROBE_HARNESS_PID"\n' + CLEAN_RESULTS
 TERM_ITSELF = "kill -TERM $$\n"
+FAIL_ON_HARNESS_STDERR = """\
+for _fd in /proc/$$/fd/*; do
+    if [ "$(readlink "$_fd")" = "$PROBE_HARNESS_STDERR" ]; then
+        echo "inherited the harness stderr as fd ${_fd##*/}"
+        exit 1
+    fi
+done
+""" + CLEAN_RESULTS
 RECORD_PREFIX = f"EXIT RECORD ({HARNESS}): "
 LAUNCH = 'export PROBE_HARNESS_PID=$$; exec bash "$1"'
 WAIT_TIMEOUT = 300
@@ -76,12 +82,12 @@ class NextestAbsentSuitesExitRecordTests(unittest.TestCase):
     def write_suite(self, name, body):
         (self.fx / "tests" / "infra" / name).write_text(body, encoding="utf-8")
 
-    def spawn(self, *, stderr_file=None, restore_signals=True):
+    def spawn(self, *, stderr_file=None, restore_signals=True, **probe_env):
         stderr = stderr_file or self.enterContext(open(self.stderr_path, "w"))
         return subprocess.Popen(
             ["bash", "-c", LAUNCH, "_", str(self.fx / "tests" / "infra" / HARNESS)],
             cwd=str(self.fx),
-            env=hermetic_env(TMPDIR=str(self.tmp), PROBE_DIR=str(self.probe)),
+            env=hermetic_env(TMPDIR=str(self.tmp), PROBE_DIR=str(self.probe), **probe_env),
             stdout=subprocess.PIPE,
             stderr=stderr,
             text=True,
@@ -100,6 +106,22 @@ class NextestAbsentSuitesExitRecordTests(unittest.TestCase):
         self.skip_if_harness_unavailable(stdout or "")
         self.assert_no_leftover_directory()
         return proc.returncode, stdout or "", stderr
+
+    def await_trigger_start(self, proc, started_fd):
+        """Block until the trigger stub opens `started`; fail at once if the harness exits first."""
+        exited_fd = os.pidfd_open(proc.pid)
+        self.addCleanup(os.close, exited_fd)
+        poller = select.poll()
+        poller.register(started_fd, select.POLLIN)
+        poller.register(exited_fd, select.POLLIN)
+        ready = {fd for fd, _ in poller.poll(WAIT_TIMEOUT * 1000)}
+        if started_fd in ready:
+            return
+        if exited_fd in ready:
+            self.fail(f"harness exited rc={proc.wait()} before {TRIGGER} started")
+        proc.kill()
+        proc.wait()
+        self.fail(f"{TRIGGER} never started")
 
     def skip_if_harness_unavailable(self, stdout):
         if "SKIP: harness unavailable" in stdout:
@@ -129,21 +151,21 @@ class NextestAbsentSuitesExitRecordTests(unittest.TestCase):
 
     def test_stdout_write_failure_is_recorded(self):
         self.write_suite(TRIGGER, WAIT_FOR_RELEASE)
+        started, release = self.probe / "started", self.probe / "release"
+        os.mkfifo(started)
+        os.mkfifo(release)
+        started_fd = os.open(started, os.O_RDONLY | os.O_NONBLOCK)
+        self.addCleanup(os.close, started_fd)
         # Python leaves SIGPIPE ignored; inherited, it turns the harness's next
         # stdout write into EPIPE instead of a kill: the incident's silent rc=1.
         proc = self.spawn(restore_signals=False)
-        started = self.probe / "started"
-        deadline = time.monotonic() + WAIT_TIMEOUT
-        while not started.exists():
-            if proc.poll() is not None:
-                self.fail(f"harness exited rc={proc.returncode} before {TRIGGER} started")
-            if time.monotonic() > deadline:
-                proc.kill()
-                proc.wait()
-                self.fail(f"{TRIGGER} never started")
-            time.sleep(0.1)
+        self.await_trigger_start(proc, started_fd)
         proc.stdout.close()
-        (self.probe / "release").touch()
+        # On Linux an O_RDWR open of a FIFO needs no reader; holding it open
+        # keeps the release line buffered until the stub reads it.
+        release_fd = os.open(release, os.O_RDWR)
+        self.addCleanup(os.close, release_fd)
+        os.write(release_fd, b"\n")
         try:
             proc.wait(timeout=WAIT_TIMEOUT)
         except subprocess.TimeoutExpired:
@@ -155,9 +177,19 @@ class NextestAbsentSuitesExitRecordTests(unittest.TestCase):
         self.assert_rc(proc.returncode, 1, "<closed>", stderr)
         record = self.single_record(stderr)
         self.assertTrue(record.startswith(RECORD_PREFIX + "rc=1;"), record)
-        self.assertIn(f"in flight: nested suite {TRIGGER}", record)
+        self.assertIn(f"in flight: S-row verdict after nested suite {TRIGGER};", record)
         self.assertIn(f"last nested result: {TRIGGER} rc=0", record)
         self.assertIn("last command: echo", record)
+
+    def test_nested_suite_does_not_inherit_the_harness_stderr(self):
+        # A process a nested suite leaves behind would otherwise hold the
+        # harness's real stderr open past the harness's own exit.
+        self.write_suite(TRIGGER, FAIL_ON_HARNESS_STDERR)
+        rc, stdout, stderr = self.finish(
+            self.spawn(PROBE_HARNESS_STDERR=str(self.stderr_path.resolve()))
+        )
+        self.assert_rc(rc, 0, stdout, stderr)
+        self.assertEqual(self.records(stderr), [])
 
     def test_harness_signal_death_is_recorded(self):
         self.write_suite(TRIGGER, TERM_THE_HARNESS)

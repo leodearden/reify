@@ -156,9 +156,10 @@ _nx_describe_status() {
     printf 'rc=%s%s' "$rc" "${name:+ (signal $name)}"
 }
 
-# _nx_exit_record <rc> — the EXIT handler. Fail-open and never `exit`s, so the
-# shell keeps its pre-trap status.
-_nx_exit_record() {
+# _nx_on_exit <rc> — the EXIT handler: tears down the lib's harness env and, on
+# a non-zero rc, writes the record. Fail-open and never `exit`s, so the shell
+# keeps its pre-trap status.
+_nx_on_exit() {
     set +e
     local rc="$1" cmd="$BASH_COMMAND" load="?" l1 l2 l3 _rest
     nextest_absent_cleanup
@@ -182,10 +183,10 @@ _nx_exit_record() {
 # way, so the nextest_absent_available call below is valid regardless.
 nextest_absent_init || true
 # CALLER-OWNED under nextest_absent_lib.sh's TRAP OWNERSHIP contract half (b):
-# it replaces the lib's EXIT dispatcher, so _nx_exit_record calls
+# it replaces the lib's EXIT dispatcher, so _nx_on_exit calls
 # nextest_absent_cleanup itself. The lib's INT/TERM/HUP dispatchers stay armed
 # and `exit 128+n`, which reaches this trap with the signal status.
-trap '_nx_exit_record "$?"' EXIT
+trap '_nx_on_exit "$?"' EXIT
 
 # HOST PRECONDITION (skip, do NOT fail). Where the constructed env is not a
 # genuine simulation — cargo-nextest still reachable, or cargo not executable
@@ -275,6 +276,7 @@ _suite_is_clean_without_nextest() {
     set +e
     out="$(nx_run bash "$suite" {_NX_RECORD_FD}>&- 2>&1)"
     rc=$?
+    _NX_IN_FLIGHT="S-row verdict after nested suite $basename"
     set -e
 
     results="$(printf '%s\n' "$out" | grep -E '^Results:' | tail -1)"
