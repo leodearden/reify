@@ -303,14 +303,10 @@ fn smaller_decls(of: &Decl) -> Vec<Decl> {
 mod tests {
     use super::super::case::{Case, HostEvent, Then};
     use super::super::design::{Inputs, ModelPath, ToyKind, int, named, path};
-    use super::super::generator::{Features, GATE_EVENTS, GATE_SEEDS, generate};
+    use super::super::generator::gate_cases;
     use super::super::reference::{Reference, first_invalid};
     use super::super::shrink::shrink;
     use super::{candidates, size};
-
-    fn gate_cases() -> impl Iterator<Item = (u64, Case)> {
-        GATE_SEEDS.map(|seed| (seed, generate(seed, Features::structure(), GATE_EVENTS)))
-    }
 
     #[test]
     fn dropping_an_edit_moves_later_events_onto_the_snapshot_it_came_from() {

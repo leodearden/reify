@@ -22,6 +22,17 @@ use super::rng::XorShift64Star;
 pub const GATE_SEEDS: RangeInclusive<u64> = 1..=64;
 pub const GATE_EVENTS: usize = 16;
 
+/// The case G0 runs for `seed`: every feature the gate switches on, and
+/// `GATE_EVENTS` host events.
+pub fn gate_case(seed: u64) -> Case {
+    generate(seed, Features::structure(), GATE_EVENTS)
+}
+
+/// The gate's case for each of `GATE_SEEDS`, with its seed.
+pub fn gate_cases() -> impl Iterator<Item = (u64, Case)> {
+    GATE_SEEDS.map(|seed| (seed, gate_case(seed)))
+}
+
 /// Which toy kinds a design may use besides cells.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Features {
@@ -70,6 +81,32 @@ struct Level {
     at: ModelPath,
     depth: usize,
     kind: ToyKind,
+    /// One past the highest ordinal the members input has ever held.
+    ordinals: usize,
+}
+
+impl Level {
+    /// The ordinal and kind of each member of `held`, the level's members.
+    ///
+    /// # Panics
+    ///
+    /// If `held` holds a member at a step no ordinal of the level gives.
+    fn siblings(&self, held: &BTreeMap<Step, Decl>) -> Vec<Sibling> {
+        let present: Vec<Sibling> = (0..self.ordinals)
+            .filter_map(|ordinal| {
+                let decl = held.get(&member_step(ordinal))?;
+                Some((ordinal, decl.kind))
+            })
+            .collect();
+        assert_eq!(
+            present.len(),
+            held.len(),
+            "{} holds a member at a step no ordinal below {} gives",
+            self.input,
+            self.ordinals
+        );
+        present
+    }
 }
 
 /// A sibling member: its ordinal and its kind.
@@ -267,15 +304,17 @@ impl Generator {
 
     /// A new members input of one to four members, for the node at `at`.
     fn level(&mut self, at: &ModelPath, depth: usize, kind: ToyKind, needed: &mut Needed) -> Level {
+        let count = 1 + self.rng.below(4);
         let level = Level {
             input: self.fresh("s"),
             at: at.clone(),
             depth,
             kind,
+            ordinals: count,
         };
         let mut held = BTreeMap::new();
         let mut earlier = Vec::new();
-        for ordinal in 0..1 + self.rng.below(4) {
+        for ordinal in 0..count {
             let decl = self.member(&level, ordinal, &earlier, needed);
             earlier.push((ordinal, decl.kind));
             held.insert(member_step(ordinal), decl);
@@ -287,7 +326,7 @@ impl Generator {
     /// Extra members for `level`, whose members are `held`: each at an
     /// ordinal up to one past the last, over a member or beside them.
     fn extra(&mut self, level: &Level, held: &BTreeMap<Step, Decl>, needed: &mut Needed) -> Val {
-        let present = siblings(held);
+        let present = level.siblings(held);
         let mut extra = BTreeMap::new();
         for _ in 0..1 + self.rng.below(2) {
             let ordinal = self.rng.below(present.len() + 1);
@@ -448,13 +487,13 @@ impl Generator {
     /// removed.
     fn member_change(&mut self, current: &Inputs, needed: &mut Needed) -> Vec<(Key, Option<Val>)> {
         let at = self.rng.below(self.levels.len());
-        let level = self.levels.swap_remove(at);
+        let mut level = self.levels.swap_remove(at);
         let key = named(&level.input);
         let mut held = match current.get(&key) {
             Some(Val::Members(held)) => held.clone(),
             _ => BTreeMap::new(),
         };
-        let present = siblings(&held);
+        let present = level.siblings(&held);
         match (self.rng.below(3), present.last()) {
             (1, Some(_)) => {
                 let ordinal = self.rng.choose(&present).0;
@@ -466,6 +505,7 @@ impl Generator {
             }
             (_, last) => {
                 let ordinal = last.map_or(0, |(ordinal, _)| ordinal + 1);
+                level.ordinals = level.ordinals.max(ordinal + 1);
                 let decl = self.member(&level, ordinal, &present, needed);
                 held.insert(member_step(ordinal), decl);
             }
@@ -504,19 +544,6 @@ fn member_step(ordinal: usize) -> Step {
     step(&format!("m{ordinal}"))
 }
 
-/// The ordinal and kind of each member of `held`.
-fn siblings(held: &BTreeMap<Step, Decl>) -> Vec<Sibling> {
-    let mut present: Vec<Sibling> = held
-        .iter()
-        .filter_map(|(at, decl)| match at {
-            Step::Named(name) => Some((name.strip_prefix('m')?.parse().ok()?, decl.kind)),
-            Step::Index(_) => None,
-        })
-        .collect();
-    present.sort();
-    present
-}
-
 /// The members of `present` below `ordinal`.
 fn before(present: &[Sibling], ordinal: usize) -> Vec<Sibling> {
     present
@@ -541,11 +568,7 @@ mod tests {
     use super::super::case::{Case, HostEvent, Then};
     use super::super::design::{Bind, Decl, Key, ToyKind, Val};
     use super::super::reference::first_invalid;
-    use super::{Features, GATE_EVENTS, GATE_SEEDS, generate};
-
-    fn gate_cases() -> impl Iterator<Item = (u64, Case)> {
-        GATE_SEEDS.map(|seed| (seed, generate(seed, Features::structure(), GATE_EVENTS)))
-    }
+    use super::{Features, GATE_EVENTS, GATE_SEEDS, gate_cases, generate};
 
     /// Every input value a case sets, initially or by an edit.
     fn values(case: &Case) -> Vec<(&Key, &Val)> {

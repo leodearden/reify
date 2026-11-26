@@ -8,7 +8,7 @@ use std::env::{self, VarError};
 use std::ops::RangeInclusive;
 
 use super::case::Case;
-use super::generator::{Features, GATE_EVENTS, GATE_SEEDS, generate};
+use super::generator::{GATE_SEEDS, gate_case};
 use super::print::{Expectation, print_test};
 use super::reduce::{candidates, size};
 use super::session::{Mismatch, Reach, check, toy_core};
@@ -46,7 +46,7 @@ fn regression(seed: u64, case: Case, mismatch: &Mismatch) -> String {
 fn random_sequences_over_cells_scopes_guards_and_collections_satisfy_g0() {
     let mut reach = Reach::default();
     for seed in seeds() {
-        let case = generate(seed, Features::structure(), GATE_EVENTS);
+        let case = gate_case(seed);
         match check(&case, &toy_core) {
             Ok(found) => reach.add(&found),
             Err(mismatch) => panic!(
