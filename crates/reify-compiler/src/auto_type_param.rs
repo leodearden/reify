@@ -1103,34 +1103,15 @@ pub(crate) fn check_candidate_constructible(candidate: &TopologyTemplate) -> Cto
         })
         .collect();
 
-    // Collect lets: non-`__count_`-prefixed, non-geometry Let cells with a
-    // default_expr. Mirrors the canonical lowering at expr.rs:1654-1669,
-    // including the γ (task #4954) `cell_type != Type::Geometry` exclusion —
-    // geometry lets emit a value cell now, but eagerly materializing it here
-    // would shift ctor cache identity beyond γ's ratified shape change.
-    let lets: Vec<(String, CompiledExpr)> = candidate
-        .value_cells
-        .iter()
-        .filter(|cell| {
-            cell.kind == ValueCellKind::Let
-                && !cell.id.member.starts_with("__count_")
-                && cell.cell_type != Type::Geometry
-        })
-        .filter_map(|cell| {
-            cell.default_expr
-                .as_ref()
-                .map(|e| (cell.id.member.clone(), e.clone()))
-        })
-        .collect();
-
+    let members = crate::ctor_members::ctor_template_members(candidate);
     CtorSynthesisResult::Ctor(CompiledExpr::structure_instance_ctor(
         StructureTypeId(0),
         candidate.name.clone(),
         candidate.version(),
         vec![], // zero ordered_args
         defaults,
-        lets,
-        Vec::new(),
+        members.lets,
+        members.geometry_lets,
         None, // synthetic ctor: no user source span
         Type::StructureRef(candidate.name.clone()),
     ))
