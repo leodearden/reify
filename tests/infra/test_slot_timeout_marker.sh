@@ -1563,11 +1563,12 @@ D_ROSTER=(
 #   same wall-clock reason as test_run_all_member_lifetime.sh.
 #   test_run_all_phase_log.sh (task 10511) -- bucket pool; route run_all.sh
 #   through its `.py` sibling (RUN_ALL bound at module level, exec'd as
-#   `["bash", str(RUN_ALL), ...]` by Fixture.run). One spawn funnel, measured
-#   CLEAN on the SITE channel: Fixture.run's subprocess.run
-#   (capture_output=True). Its fixture members never reach a pool deadline
-#   (private pool lock). Kept static-only for the same wall-clock reason as
-#   test_run_all_member_lifetime.sh.
+#   `["bash", str(RUN_ALL), ...]` by Fixture.run and Fixture.spawn). Two spawn
+#   funnels, both measured CLEAN on the SITE channel: Fixture.run's
+#   subprocess.run (capture_output=True) and Fixture.spawn's Popen
+#   (stdout=PIPE, stderr=PIPE). Its fixture members never reach a pool
+#   deadline (private pool lock). Kept static-only for the same wall-clock
+#   reason as test_run_all_member_lifetime.sh.
 #   test_verify_env_ambient_isolation.sh -- bucket pool; route
 #   test_occt_flock_gate.sh (`bash "$SCRIPT_DIR/test_occt_flock_gate.sh"
 #   2>&1` :177). The capture at the site is correct (into $amb_out,
@@ -3159,8 +3160,8 @@ G_MEMBERS=(
     # below.
     test_run_all_member_tmpdir.sh
     # Route run_all.sh via its `.py` sibling (task 10511): RUN_ALL bound at
-    # module level, spawned by Fixture.run's subprocess.run, which is
-    # therefore the site -- see G_SCAN below.
+    # module level, spawned by Fixture.run's subprocess.run and Fixture.spawn's
+    # Popen, which are therefore the sites -- see G_SCAN below.
     test_run_all_phase_log.sh
     # Route run_all.sh under a different variable name: REAL_RUN_ALL bound :69
     # (RUN_ALL there names a WRAPPER fixture, not the real thing -- hence the
