@@ -447,14 +447,14 @@ fn line_segment_arg_count_diagnostic_has_span_label() {
 
 #[test]
 fn arc_arg_count_diagnostic_has_span_label() {
-    // arc() expects 9 arguments — passing 3 should produce a labeled diagnostic
+    // arc() expects 5 arguments — passing 3 should produce a labeled diagnostic
     assert_arg_count_label(
         r#"
             structure S {
                 let c = arc(0mm, 0mm, 0mm)
             }
         "#,
-        "arc() expects 9 arguments",
+        "arc() expects 5 arguments",
     );
 }
 

@@ -1631,12 +1631,14 @@ fn revolve_full_yields_no_arg_type_mismatch() {
 /// made `arc` report both bare angles together: stopping at the first would
 /// degrade the fix to two edit-build cycles for one authoring mistake.
 ///
-/// The centre and radius are dimensioned here so the count is a statement about
-/// the ANGLE slots alone — they are Length-semantic but deliberately unslotted,
-/// which the unit test states positively.
+/// The centre and radius are dimensioned and the normal is a Direction here, so
+/// the count is a statement about the ANGLE slots alone — the centre and radius
+/// are Length-semantic but deliberately unslotted, which the unit test states
+/// positively.
 #[test]
 fn arc_bare_angles_are_both_rejected_in_one_pass() {
-    let compiled = compile_struct_body("    let c = arc(0mm, 0mm, 0mm, 5mm, 0, 90, 0, 0, 1)\n");
+    let compiled =
+        compile_struct_body("    let c = arc(point3(0mm, 0mm, 0mm), 5mm, 0, 90, dir(0, 0, 1))\n");
     let messages: Vec<&str> = arg_type_mismatch_errors(&compiled)
         .iter()
         .map(|d| d.message.as_str())
@@ -1647,8 +1649,8 @@ fn arc_bare_angles_are_both_rejected_in_one_pass() {
             format!("arc: start_angle argument expects Angle, got Int; {ANGLE_HINT}"),
             format!("arc: end_angle argument expects Angle, got Int; {ANGLE_HINT}"),
         ],
-        "both angles must be reported together, and the axis DIRECTION must stay \
-         silent.\nAll diagnostics: {:#?}",
+        "both angles must be reported together, and the Direction normal must \
+         stay silent.\nAll diagnostics: {:#?}",
         compiled.diagnostics
     );
 }

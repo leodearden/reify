@@ -91,3 +91,47 @@ fn half_space_bare_origin_component_is_rejected_at_build() {
         "{call}: a bare origin component must drop the half_space: {ops:?}"
     );
 }
+
+/// Retired `arc(0mm, 0mm, 0mm, 5mm, 0deg, 90deg, 0, 0, 1)` emitted
+/// `Arc { center: [0, 0, 0], radius: 0.005, start_angle: 0, end_angle: π/2,
+/// axis: [0, 0, 1] }`.
+#[test]
+fn arc_direction_form_emits_the_retired_scalar_op() {
+    let call = "arc(point3(0mm, 0mm, 0mm), 5mm, 0deg, 90deg, dir(0, 0, 1))";
+    let arcs: Vec<GeometryOp> = clean_ops(call)
+        .into_iter()
+        .filter(|op| matches!(op, GeometryOp::Arc { .. }))
+        .collect();
+    let [
+        GeometryOp::Arc {
+            center,
+            radius,
+            start_angle,
+            end_angle,
+            axis,
+        },
+    ] = arcs.as_slice()
+    else {
+        panic!("{call}: expected exactly one Arc op, got {arcs:?}");
+    };
+    assert_eq!(*center, [0.0, 0.0, 0.0], "{call}: center");
+    assert_eq!(*radius, 0.005, "{call}: radius");
+    assert_eq!(*start_angle, 0.0, "{call}: start_angle");
+    assert_eq!(*end_angle, std::f64::consts::FRAC_PI_2, "{call}: end_angle");
+    assert_eq!(*axis, [0.0, 0.0, 1.0], "{call}: axis");
+}
+
+/// Every argument is read before any `?`, so a bare centre AND a bare radius
+/// are reported in one build.
+#[test]
+fn arc_reports_a_bare_centre_and_a_bare_radius_in_one_build() {
+    let call = "arc(point3(0, 0, 0), 5, 0deg, 90deg, dir(0, 0, 1))";
+    let (diagnostics, ops) = lenient_build(call);
+    for name in ["center.x", "center.y", "center.z", "radius"] {
+        assert_rejected_naming(&diagnostics, &["arc", name]);
+    }
+    assert!(
+        !ops.iter().any(|op| matches!(op, GeometryOp::Arc { .. })),
+        "{call}: a bare centre and radius must drop the arc: {ops:?}"
+    );
+}

@@ -8,3 +8,8 @@ module pattern_primitive_direction_forms_eval
 structure def HalfSpaceClip {
     let v = volume(intersection(half_space(point3(0mm, 0mm, 0mm), dir(0, 0, 1)), box(20mm, 20mm, 20mm)))
 }
+
+structure def QuarterArc {
+    let a = arc(point3(0mm, 0mm, 0mm), 5mm, 0deg, 90deg, dir(0, 0, 1))
+    let len = length(a)
+}

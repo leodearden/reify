@@ -2325,53 +2325,33 @@ mod tests {
         }
     }
 
-    /// arc(cx, cy, cz, radius, start_angle, end_angle, ax, ay, az) → BOTH
-    /// angles, and neither its centre nor its radius.
+    /// arc(center, radius, start_angle, end_angle, normal) → BOTH angles and
+    /// the Direction `normal`, at EVERY arity (direction-typing ι-c); neither
+    /// its centre nor its radius.
     ///
-    /// The table's first CURVE producer. Single-form at exactly 9 args
-    /// (`geometry_curve.rs`' `check_arg_count_exact`), so arity-agnostic per the
-    /// "guard only genuinely overloaded names" rule — a gratuitous
-    /// `arg_count == 9` guard here would silently hollow out short and long
-    /// calls for no gain.
+    /// The table's first CURVE producer. Single-form at exactly 5 args, so
+    /// arity-agnostic per the "guard only genuinely overloaded names" rule — a
+    /// gratuitous `arg_count == 5` guard here would silently hollow out short
+    /// and long calls for no gain.
     ///
-    /// Every exclusion stated positively, because two of them are excluded for
-    /// DIFFERENT reasons and collapsing them would lose the distinction:
-    /// * `cx`/`cy`/`cz`@0-2 and `radius`@3 ARE Length-semantic, and their
-    ///   absence is a SCOPE boundary rather than a judgement that they are
-    ///   dimensionless. Curve producers were outside the four Contract C
-    ///   families of `docs/prds/v0_6/units-length-gate-completion.md` leaf η, so
-    ///   their compile slots remain PRD 1's territory. Inventing them here would
-    ///   be the mirror image of the scope violation this leaf is closing.
-    /// * `ax`/`ay`/`az`@6-8 are a dimensionless unit-vector DIRECTION and are
-    ///   legitimately bare in correct `.ri`, per C1 invariant 4.
+    /// The two unslotted positions are excluded for DIFFERENT reasons:
+    /// * `center`@0 is a Point3, which no `ExpectedArg` kind describes;
+    ///   `accept_length_point3` gates it at build.
+    /// * `radius`@1 IS Length-semantic, and its absence is a SCOPE boundary
+    ///   rather than a judgement that it is dimensionless. Curve producers were
+    ///   outside the four Contract C families of
+    ///   `docs/prds/v0_6/units-length-gate-completion.md` leaf η, so its compile
+    ///   slot remains PRD 1's territory; the build gates it.
     #[test]
-    fn arc_slots_both_angles_but_neither_its_centre_nor_its_radius() {
+    fn arc_slots_both_angles_and_its_normal_but_neither_its_centre_nor_its_radius() {
         assert_slots_at_every_arity(
             "arc",
-            &[angle_slot(4, "start_angle"), angle_slot(5, "end_angle")],
+            &[
+                angle_slot(2, "start_angle"),
+                angle_slot(3, "end_angle"),
+                direction_slot(4, "normal"),
+            ],
         );
-
-        let slotted: Vec<usize> = builtin_arg_slots("arc", 9)
-            .iter()
-            .map(|slot| slot.index)
-            .collect();
-        for excluded in [0usize, 1, 2, 3] {
-            assert!(
-                !slotted.contains(&excluded),
-                "arc arg{excluded} (centre or radius) IS Length-semantic, but \
-                 curve producers sit outside task 5750's four Contract C \
-                 families — its compile slot is PRD 1's to add, not this leaf's \
-                 to invent; got slots at {slotted:?}"
-            );
-        }
-        for excluded in [6usize, 7, 8] {
-            assert!(
-                !slotted.contains(&excluded),
-                "arc arg{excluded} is an axis DIRECTION component — a \
-                 dimensionless unit vector, legitimately bare per C1 invariant \
-                 4; got slots at {slotted:?}"
-            );
-        }
     }
 
     /// draft(target, angle, plane) / draft(target, faces, angle, plane) → the
@@ -4404,7 +4384,7 @@ mod tests {
         // DIFFERENT slot sets and no MULTI_ARITY_AGNOSTIC_SAFE exemption is
         // needed or permitted.
         ("rotate", AcceptedArities::Exactly(&[2, 3])),
-        ("arc", AcceptedArities::Exactly(&[9])),
+        ("arc", AcceptedArities::Exactly(&[5])),
         // `draft` moves its angle between forms; its guarded pair discharges
         // the coupling rule exactly as `rotate`'s guard does.
         ("draft", AcceptedArities::Exactly(&[3, 4])),

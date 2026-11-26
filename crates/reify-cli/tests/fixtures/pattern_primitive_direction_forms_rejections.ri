@@ -7,3 +7,7 @@ module pattern_primitive_direction_forms_rejections
 structure def ScalarHalfSpace {
     let g = half_space(0mm, 0mm, 0mm, 0, 0, 1)
 }
+
+structure def ScalarArc {
+    let g = arc(0mm, 0mm, 0mm, 5mm, 0deg, 90deg, 0, 0, 1)
+}
