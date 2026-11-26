@@ -5,11 +5,17 @@
 //! subject, with any kind only one of its tests uses.
 
 mod belonging;
+mod bindings;
 mod bodies;
 mod building;
 mod ending;
+mod growth;
 mod hash;
+mod outside;
 mod reading;
 mod roots;
 mod sections;
+mod snapshots;
+mod structure;
 mod toy;
+mod waiting;

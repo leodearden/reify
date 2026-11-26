@@ -4,6 +4,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::input::InputKey;
+use crate::reference::Ref;
+use crate::step::Step;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct KindId(pub &'static str);
@@ -18,6 +20,14 @@ pub struct Declaration {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Binding {
     Input(InputKey),
+    /// The snapshot input of that name attached to the bound node's own
+    /// path.
+    Attached(Arc<str>),
+    /// The bound node's declarer's own place, then `steps` down.
+    Declarer(Vec<Step>),
+    /// What the ref names when read by the bound node's declarer: one of
+    /// the declarer's own bindings, then steps down (contract 2.1).
+    Passed(Ref),
 }
 
 impl Declaration {

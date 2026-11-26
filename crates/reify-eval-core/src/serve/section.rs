@@ -6,14 +6,14 @@ use std::collections::{BTreeMap, VecDeque};
 
 use crate::cancel::Cancel;
 use crate::failure::{OutsideFailure, ResourceDeath};
+use crate::index::NodeKey;
 use crate::job::{Product, SectionFault};
 use crate::mailbox::SectionAsk;
 use crate::resource::{Resources, Unstarted};
-use crate::task::TaskKey;
 
 /// A section started and not yet delivered.
 struct Started {
-    key: TaskKey,
+    key: NodeKey,
     resource: TypeId,
     resource_name: &'static str,
 }
@@ -21,7 +21,7 @@ struct Started {
 /// A finished section, for the task that started it: its product, or the
 /// failure outside the inputs that task's node ends with.
 pub(crate) struct Delivery {
-    pub key: TaskKey,
+    pub key: NodeKey,
     pub serial: u64,
     pub product: Result<Product, OutsideFailure>,
 }
@@ -43,7 +43,7 @@ impl InFlight {
     /// `Err` is the failure the task's node ends with.
     pub fn start(
         &mut self,
-        key: &TaskKey,
+        key: &NodeKey,
         ask: SectionAsk,
         cancel: Cancel,
         resources: &mut Resources,
@@ -66,7 +66,7 @@ impl InFlight {
                     },
                 })?;
         let started = Started {
-            key: key.clone(),
+            key: *key,
             resource,
             resource_name,
         };
@@ -113,7 +113,7 @@ impl InFlight {
     }
 
     /// The task that started section `serial`, while it is in flight.
-    pub fn starter(&self, serial: u64) -> Option<&TaskKey> {
+    pub fn starter(&self, serial: u64) -> Option<&NodeKey> {
         self.started.get(&serial).map(|started| &started.key)
     }
 }

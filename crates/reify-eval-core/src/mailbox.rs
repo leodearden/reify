@@ -24,12 +24,13 @@ pub(crate) struct SectionAsk {
 }
 
 pub(crate) enum Ask {
-    Read(Ref),
+    /// The outcomes at each ref, in order, in one reply.
+    Read(Vec<Ref>),
     Exclusive(SectionAsk),
 }
 
 pub(crate) enum Reply {
-    Outcome(Outcome<Erased>),
+    Outcomes(Vec<Outcome<Erased>>),
     Product(Product),
 }
 

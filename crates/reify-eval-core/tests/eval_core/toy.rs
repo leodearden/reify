@@ -3,7 +3,7 @@
 //! snapshot inputs and reading the answers a request received.
 
 use std::any::{Any, type_name};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -11,13 +11,15 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, ThreadId};
 
 use reify_eval_core::{
-    Answer, Binding, Builder, Core, Cx, Declaration, Erased, Event, Failure, Held, Input, InputKey,
-    Kind, KindId, Outcome, OutsideFailure, Path, Produced, Ref, Release, Request, RequestId, Root,
-    Section, Value,
+    Answer, Binding, Builder, Core, Cx, Declaration, Demand, Erased, Event, Failure, Held, Input,
+    InputKey, Kind, KindId, Outcome, OutsideFailure, Path, Produced, Ref, Release, Request,
+    RequestId, Root, Section, Snapshot, Step, Turn, Value,
 };
 
-/// Adds the i64s bound at "0", "1", … until a binding reads absent. A read
-/// that fails ends the body with that failure as its outcome.
+/// Adds the i64s bound at "0", "1", … until a binding reads absent. Then,
+/// if "pick" reads an i64 i, adds the i64 at "from"/[i], a ref computed
+/// from an answer; absent there, or at a negative i, the cell is absent. A
+/// read that fails ends the body with that failure as its outcome.
 pub struct Cell;
 
 impl Kind for Cell {
@@ -33,24 +35,236 @@ impl Kind for Cell {
                 Outcome::Failure(failure) => return Produced::Outcome(Outcome::Failure(failure)),
             }
         }
+        let pick = match cx.read::<i64>(&Ref::binding("pick")).await {
+            Outcome::Value(pick) => u64::try_from(*pick).ok(),
+            Outcome::Absent => return Produced::Outcome(Outcome::of(sum)),
+            Outcome::Failure(failure) => return Produced::Outcome(Outcome::Failure(failure)),
+        };
+        let Some(pick) = pick else {
+            return Produced::Outcome(Outcome::Absent);
+        };
+        match cx
+            .read::<i64>(&Ref::binding("from").step(Step::index(pick)))
+            .await
+        {
+            Outcome::Value(value) => Produced::Outcome(Outcome::of(sum + *value)),
+            other => Produced::Outcome(other),
+        }
+    }
+}
+
+/// Adds the i64s at "0" and "1", read in one read.
+pub struct Pair;
+
+impl Kind for Pair {
+    type Out = i64;
+    const ID: KindId = KindId("toy.pair");
+
+    async fn run(cx: &Cx) -> Produced<i64> {
+        let refs = [Ref::binding("0"), Ref::binding("1")];
+        let mut sum = 0;
+        for read in cx.read_all::<i64>(&refs).await {
+            match read {
+                Outcome::Value(value) => sum += *value,
+                other => return Produced::Outcome(other),
+            }
+        }
         Produced::Outcome(Outcome::of(sum))
     }
 }
 
+/// A cell that adds what `terms` name, bound at "0", "1", … in order.
+pub fn cell_over(terms: impl IntoIterator<Item = Binding>) -> Declaration {
+    terms
+        .into_iter()
+        .enumerate()
+        .fold(Declaration::new(Cell::ID), |declaration, (index, term)| {
+            declaration.bind(index.to_string(), term)
+        })
+}
+
 /// A cell over the host-named inputs `names`, bound at "0", "1", … in order.
 pub fn cell(names: &[&str]) -> Declaration {
-    names
-        .iter()
-        .enumerate()
-        .fold(Declaration::new(Cell::ID), |declaration, (index, name)| {
-            declaration.bind(index.to_string(), Binding::Input(InputKey::named(*name)))
-        })
+    cell_over(names.iter().map(|name| input(name)))
+}
+
+/// A binding to the host-named input `name`.
+pub fn input(name: &str) -> Binding {
+    Binding::Input(InputKey::named(name))
+}
+
+/// A cell whose only term is the element at "from"/[the i64 at "pick"].
+pub fn picker(pick: Binding, from: Binding) -> Declaration {
+    Declaration::new(Cell::ID)
+        .bind("pick", pick)
+        .bind("from", from)
+}
+
+/// A binding to the place `steps` down from the bound node's declarer:
+/// `sibling(&["b"])` names the declarer's member `b`.
+pub fn sibling(steps: &[&str]) -> Binding {
+    Binding::Declarer(steps.iter().map(|step| Step::named(*step)).collect())
 }
 
 pub fn with_cell() -> Builder {
     Builder::new()
         .kind::<Cell>()
         .expect("a fresh builder has no kinds")
+}
+
+/// What a scope declares: a declaration at each step.
+#[derive(Debug, Clone, Default)]
+pub struct Members(pub BTreeMap<Step, Declaration>);
+
+/// Members, each at a named step.
+pub fn members<'a>(named: impl IntoIterator<Item = (&'a str, Declaration)>) -> Members {
+    Members(
+        named
+            .into_iter()
+            .map(|(step, declaration)| (Step::named(step), declaration))
+            .collect(),
+    )
+}
+
+/// The members at binding "members", with those at binding "extra" added;
+/// with no extra members, what "members" read, not a copy.
+async fn read_members(cx: &Cx) -> Outcome<Members> {
+    let refs = [Ref::binding("members"), Ref::binding("extra")];
+    let [members, extra] = <[_; 2]>::try_from(cx.read_all::<Members>(&refs).await)
+        .expect("a read gives an outcome per ref");
+    match (members, extra) {
+        (Outcome::Value(members), Outcome::Value(extra)) => {
+            let mut all = (*members).clone();
+            all.0.extend(extra.0.clone());
+            Outcome::of(all)
+        }
+        (Outcome::Value(members), Outcome::Absent) => Outcome::Value(members),
+        (Outcome::Value(_), failed) | (failed, _) => failed,
+    }
+}
+
+/// Declares the members it reads at binding "members", and those of the
+/// input "extra" attached to its own path; its value is those members.
+pub struct Scope;
+
+impl Kind for Scope {
+    type Out = Members;
+    const ID: KindId = KindId("toy.scope");
+
+    async fn run(cx: &Cx) -> Produced<Members> {
+        Produced::Outcome(read_members(cx).await)
+    }
+
+    fn declares(out: &Members, step: &Step) -> Option<Declaration> {
+        out.0.get(step).cloned()
+    }
+}
+
+/// A scope whose members are the host-named input `members`, with any
+/// members in the input "extra" attached to its path.
+pub fn scope(members: &str) -> Declaration {
+    Declaration::new(Scope::ID)
+        .bind("members", input(members))
+        .bind("extra", Binding::Attached("extra".into()))
+}
+
+/// Reads the bool at "condition" first: false makes it absent, true makes
+/// it declare as a scope does; any other outcome is its answer.
+pub struct Guard;
+
+impl Kind for Guard {
+    type Out = Members;
+    const ID: KindId = KindId("toy.guard");
+
+    async fn run(cx: &Cx) -> Produced<Members> {
+        match cx.read::<bool>(&Ref::binding("condition")).await {
+            Outcome::Value(holds) if *holds => Produced::Outcome(read_members(cx).await),
+            Outcome::Value(_) => Produced::Outcome(Outcome::Absent),
+            Outcome::Absent => Produced::Outcome(Outcome::Absent),
+            Outcome::Failure(failure) => Produced::Outcome(Outcome::Failure(failure)),
+        }
+    }
+
+    fn declares(out: &Members, step: &Step) -> Option<Declaration> {
+        out.0.get(step).cloned()
+    }
+}
+
+/// A guard on `condition` over the host-named input `members`.
+pub fn guard(condition: Binding, members: &str) -> Declaration {
+    Declaration::new(Guard::ID)
+        .bind("condition", condition)
+        .bind("members", input(members))
+}
+
+/// How many elements a collection has, and what each is.
+pub struct Elements {
+    pub count: u64,
+    pub element: Declaration,
+}
+
+/// Reads the i64 count at "count" and the declaration at "element", and
+/// declares that element at each index below the count.
+pub struct Collection;
+
+impl Kind for Collection {
+    type Out = Elements;
+    const ID: KindId = KindId("toy.collection");
+
+    async fn run(cx: &Cx) -> Produced<Elements> {
+        let count = match cx.read::<i64>(&Ref::binding("count")).await {
+            Outcome::Value(count) => u64::try_from(*count).unwrap_or(0),
+            Outcome::Absent => return Produced::Outcome(Outcome::Absent),
+            Outcome::Failure(failure) => return Produced::Outcome(Outcome::Failure(failure)),
+        };
+        match cx.read::<Declaration>(&Ref::binding("element")).await {
+            Outcome::Value(element) => Produced::Outcome(Outcome::of(Elements {
+                count,
+                element: (*element).clone(),
+            })),
+            Outcome::Absent => Produced::Outcome(Outcome::Absent),
+            Outcome::Failure(failure) => Produced::Outcome(Outcome::Failure(failure)),
+        }
+    }
+
+    fn declares(out: &Elements, step: &Step) -> Option<Declaration> {
+        match step {
+            Step::Index(index) if *index < out.count => Some(out.element.clone()),
+            _ => None,
+        }
+    }
+}
+
+/// A collection of `count` elements, each declared as `element` reads.
+pub fn collection(count: Binding, element: Binding) -> Declaration {
+    Declaration::new(Collection::ID)
+        .bind("count", count)
+        .bind("element", element)
+}
+
+/// The inputs of root scope `name` with `members`: the members under the
+/// host-named input "`name`.members", and the root's declaration.
+pub fn root_scope(name: &str, members: Members) -> [(InputKey, Input); 2] {
+    let input = format!("{name}.members");
+    [
+        (InputKey::named(input.as_str()), Input::of(members)),
+        root(name, scope(&input)),
+    ]
+}
+
+pub fn with_scope() -> Builder {
+    with_cell()
+        .kind::<Scope>()
+        .expect("toy kind ids are distinct")
+}
+
+/// A builder with every toy kind of structure: cells, scopes, guards and
+/// collections.
+pub fn with_structure() -> Builder {
+    with_scope()
+        .kind::<Guard>()
+        .and_then(|builder| builder.kind::<Collection>())
+        .expect("toy kind ids are distinct")
 }
 
 /// A box the toy kernel made, by the number it handed out.
@@ -324,6 +538,56 @@ pub fn named<T: Value>(name: &str, value: T) -> (InputKey, Input) {
     (InputKey::named(name), Input::of(value))
 }
 
+/// The path of root `name`.
+pub fn at(name: &str) -> Path {
+    Path::root(Root::named(name))
+}
+
+/// The path `steps` down from root `name`, each step named.
+pub fn below(name: &str, steps: &[&str]) -> Path {
+    steps
+        .iter()
+        .fold(at(name), |path, step| path.child(Step::named(*step)))
+}
+
+/// A demand for `paths`.
+pub fn demand<'a>(paths: impl IntoIterator<Item = &'a Path>) -> Demand {
+    Demand::of(paths.into_iter().cloned())
+}
+
+/// A demand for the roots named `names`.
+pub fn roots(names: &[&str]) -> Demand {
+    Demand::of(names.iter().map(|name| at(name)))
+}
+
+/// A fresh request for `paths` on `snapshot`, and the events of the turn
+/// it is given, which must leave nothing running.
+pub fn evaluate_to_idle(
+    core: &mut Core,
+    snapshot: &Snapshot,
+    paths: &[&Path],
+) -> (Request, Vec<Event>) {
+    let request = core.evaluate(snapshot, demand(paths.iter().copied()));
+    assert_eq!(core.turn(), Turn::Idle);
+    (request, core.take_events())
+}
+
+/// The answer at `at` to a fresh request for it alone on `snapshot`.
+pub fn answer_alone(core: &mut Core, snapshot: &Snapshot, at: &Path) -> Answer<Erased> {
+    let (request, events) = evaluate_to_idle(core, snapshot, &[at]);
+    the_answer(&events, &request, at)
+}
+
+/// The answers to a fresh request for `paths` on `snapshot`, one for each
+/// path in order.
+pub fn answers_to(core: &mut Core, snapshot: &Snapshot, paths: &[&Path]) -> Vec<Answer<Erased>> {
+    let (request, events) = evaluate_to_idle(core, snapshot, paths);
+    paths
+        .iter()
+        .map(|path| answer_at(&events, &request, path))
+        .collect()
+}
+
 /// Every answer among `events` that went to `request`, in the order given.
 pub fn answers(events: &[Event], request: RequestId) -> Vec<(Path, Answer<Erased>)> {
     events
@@ -356,29 +620,28 @@ pub fn notes(events: &[Event], request: RequestId) -> Vec<(Path, Arc<dyn Any + S
         .collect()
 }
 
-/// The one answer `request` received, which must be for root `name`.
-pub fn the_answer(events: &[Event], request: &Request, name: &str) -> Answer<Erased> {
+/// The one answer `request` received, which must be for `at`.
+pub fn the_answer(events: &[Event], request: &Request, at: &Path) -> Answer<Erased> {
     let mut answers = answers(events, request.id());
     assert_eq!(answers.len(), 1, "one answer to the request: {answers:?}");
     let (path, answer) = answers.remove(0);
-    assert_eq!(path, Path::root(Root::named(name)));
+    assert_eq!(path, *at);
     answer
 }
 
-/// The one answer `request` received for root `name`, among others.
-pub fn answer_at(events: &[Event], request: &Request, name: &str) -> Answer<Erased> {
-    let at = Path::root(Root::named(name));
+/// The one answer `request` received for `at`, among others.
+pub fn answer_at(events: &[Event], request: &Request, at: &Path) -> Answer<Erased> {
     let mut answers: Vec<_> = answers(events, request.id())
         .into_iter()
-        .filter(|(path, _)| *path == at)
+        .filter(|(path, _)| path == at)
         .collect();
-    assert_eq!(answers.len(), 1, "one answer for {name}: {answers:?}");
+    assert_eq!(answers.len(), 1, "one answer for {at:?}: {answers:?}");
     answers.remove(0).1
 }
 
-/// The value of the one answer `request` received, for root `name`.
-pub fn the_value<T: Value + Debug>(events: &[Event], request: &Request, name: &str) -> Arc<T> {
-    match the_answer(events, request, name).downcast::<T>() {
+/// The value of the one answer `request` received, for `at`.
+pub fn the_value<T: Value + Debug>(events: &[Event], request: &Request, at: &Path) -> Arc<T> {
+    match the_answer(events, request, at).downcast::<T>() {
         Answer::Final(Outcome::Value(value)) => value,
         other => panic!("expected a value of {}, got {other:?}", type_name::<T>()),
     }

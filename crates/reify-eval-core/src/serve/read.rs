@@ -1,14 +1,34 @@
-//! A read: the outcome a binding of the reader's declaration names.
+//! A read ask: each ref's target, settled at once where its answer is
+//! known, otherwise awaiting the node it names.
 
-use crate::declaration::{Binding, Declaration};
+use crate::declaration::Declaration;
+use crate::index::Index;
 use crate::input::Input;
-use crate::outcome::{Erased, Outcome};
+use crate::outcome::Outcome;
+use crate::path_table::{PathId, PathTable};
+use crate::record::Reading;
 use crate::reference::Ref;
-use crate::snapshot::Snapshot;
+use crate::resolve::{Target, target};
 
-pub(crate) fn answer(declaration: &Declaration, snapshot: &Snapshot, r: &Ref) -> Outcome<Erased> {
-    match declaration.binding(r.binding_name()) {
-        None => Outcome::Absent,
-        Some(Binding::Input(key)) => snapshot.input(key).map_or(Outcome::Absent, Input::outcome),
+pub(crate) fn serve(
+    reader: PathId,
+    declaration: &Declaration,
+    refs: &[Ref],
+    paths: &mut PathTable,
+    index: &Index,
+) -> Reading {
+    let mut reading = Reading::default();
+    for r in refs {
+        match target(reader, declaration, r, paths, index) {
+            Target::Absent => reading.settled(Outcome::Absent),
+            Target::Input(key) => {
+                reading.settled(index.input(&key).map_or(Outcome::Absent, Input::outcome))
+            }
+            Target::Node(node) => match index.entry(node) {
+                Some(entry) => reading.settled(entry.outcome.clone()),
+                None => reading.awaits(node),
+            },
+        }
     }
+    reading
 }

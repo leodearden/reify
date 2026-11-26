@@ -2,10 +2,10 @@
 //! events out. One thread drives it at a time, through `&mut self`.
 
 use crate::counters::Counters;
+use crate::demand::Demand;
 use crate::event::Event;
 use crate::executor::{Executor, Turn};
 use crate::input::{Input, InputKey};
-use crate::path::Root;
 use crate::requests::Request;
 use crate::snapshot::Snapshot;
 
@@ -22,20 +22,20 @@ impl Core {
         self.executor.snapshot(inputs)
     }
 
-    /// Opens a request on `snapshot` for the answers of `roots`.
+    /// Opens a request on `snapshot` for the answers at the paths `demand`
+    /// names.
     ///
     /// # Panics
     ///
     /// If another core made `snapshot`.
-    pub fn evaluate(
-        &mut self,
-        snapshot: &Snapshot,
-        roots: impl IntoIterator<Item = Root>,
-    ) -> Request {
-        self.executor.evaluate(snapshot, roots)
+    pub fn evaluate(&mut self, snapshot: &Snapshot, demand: Demand) -> Request {
+        self.executor.evaluate(snapshot, demand)
     }
 
-    /// Ends `request`, dropping the bodies no other live request wants.
+    /// Ends `request`, dropping every node in progress that no live request
+    /// still waits on, directly or through what it reads; a running section
+    /// such a body started is told through `cancelled`. Ending a request
+    /// the core has already ended does nothing.
     ///
     /// # Panics
     ///
@@ -44,13 +44,15 @@ impl Core {
         self.executor.end(request);
     }
 
-    /// The answers and progress notes given since the last call, in the
-    /// order they were given.
+    /// The answers, progress notes and request endings given since the last
+    /// call, in the order they were given.
     pub fn take_events(&mut self) -> Vec<Event> {
         self.executor.take_events()
     }
 
-    /// Runs every body that is ready until none is. Never blocks.
+    /// Runs every body that is ready until none is. Never blocks. If then no
+    /// section is running either, each live request that still wants a path
+    /// is ended with `RequestError::NothingCanRun`.
     pub fn turn(&mut self) -> Turn {
         self.executor.turn()
     }
