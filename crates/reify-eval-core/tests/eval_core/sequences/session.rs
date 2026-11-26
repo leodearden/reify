@@ -14,6 +14,7 @@ use reify_eval_core::{
 
 use super::case::{Case, HostEvent, Then};
 use super::design::{Inputs, ModelPath, Val, to_core};
+use super::order::{Answered, order_check};
 use super::reference::{Invalid, Reference};
 use super::seen::Seen;
 
@@ -227,6 +228,7 @@ pub fn check(case: &Case, make_core: &dyn Fn() -> Core) -> Result<Reach, Mismatc
         session.host_event(at, event)?;
     }
     session.finish(case.events.len())?;
+    session.order_check(make_core)?;
     Ok(session.reach)
 }
 
@@ -242,20 +244,14 @@ struct Opened {
     told: BTreeSet<Path>,
 }
 
-/// The first final answer at a path of a snapshot.
-struct First {
-    snapshot: usize,
-    path: Path,
-    seen: Seen,
-}
-
 struct Session {
     core: Core,
     models: Vec<Inputs>,
     snapshots: Vec<Snapshot>,
     references: Vec<Option<Reference>>,
     requests: BTreeMap<RequestId, Opened>,
-    first: Vec<First>,
+    /// The first final answer at each path of each snapshot, in order.
+    first: Vec<Answered<Seen>>,
     answered: BTreeSet<(usize, Path)>,
     reach: Reach,
 }
@@ -327,6 +323,29 @@ impl Session {
         }
         self.core.drain();
         Ok(())
+    }
+
+    /// A fresh core asked for every answered path in reverse order gives
+    /// the same answers.
+    fn order_check(&mut self, make_core: &dyn Fn() -> Core) -> Result<(), Mismatch> {
+        let snapshots: Vec<_> = self.models.iter().map(to_core).collect();
+        let compared = order_check(make_core, &snapshots, &self.first, Seen::of_answer)
+            .map_err(|mismatch| Mismatch::Order {
+                snapshot: mismatch.snapshot,
+                path: self.model_path(&mismatch.path),
+                session: mismatch.session,
+                fresh: mismatch.fresh,
+            })?;
+        self.reach.order_compared = u64::try_from(compared).expect("a count fits u64");
+        Ok(())
+    }
+
+    /// The model path a request demanded as `path`.
+    fn model_path(&self, path: &Path) -> ModelPath {
+        self.requests
+            .values()
+            .find_map(|opened| opened.demanded.get(path).cloned())
+            .expect("an answered path was demanded")
     }
 
     fn snapshot(&self, at: usize, index: usize) -> &Snapshot {
@@ -444,7 +463,7 @@ impl Session {
         }
         if self.answered.insert((snapshot, path.clone())) {
             self.reach.answered += 1;
-            self.first.push(First {
+            self.first.push(Answered {
                 snapshot,
                 path,
                 seen: core,

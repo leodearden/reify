@@ -4,9 +4,10 @@
 //! interpreter and knows nothing of the toy kinds: a caller hands it core
 //! inputs, core paths and how to observe an answer.
 
+use std::collections::BTreeMap;
 use std::fmt::Debug;
 
-use reify_eval_core::{Answer, Core, Erased, Input, InputKey, Path};
+use reify_eval_core::{Answer, Core, Demand, Erased, Event, Input, InputKey, Path};
 
 /// What a session first observed at `path` of snapshot `snapshot`.
 #[derive(Debug, Clone, PartialEq)]
@@ -28,14 +29,43 @@ pub struct OrderMismatch<O> {
 /// Asks a fresh core for each of `answered` alone, latest first, on the
 /// snapshot made from that index's inputs in `snapshots`; how many answers
 /// it compared, or the first that differs.
-pub fn order_check<O: PartialEq + Debug>(
+pub fn order_check<O: PartialEq + Debug + Clone>(
     make_core: &dyn Fn() -> Core,
     snapshots: &[Vec<(InputKey, Input)>],
     answered: &[Answered<O>],
     observe: impl Fn(Answer<Erased>) -> O,
 ) -> Result<usize, OrderMismatch<O>> {
-    let _ = (make_core, snapshots, answered, observe);
-    Ok(0)
+    let mut core = make_core();
+    let mut made = BTreeMap::new();
+    for first in answered.iter().rev() {
+        let snapshot = made
+            .entry(first.snapshot)
+            .or_insert_with(|| core.snapshot(snapshots[first.snapshot].clone()));
+        let request = core.evaluate(snapshot, Demand::of([first.path.clone()]));
+        core.run();
+        let answer = core.take_events().into_iter().find_map(|event| match event {
+            Event::Answered {
+                request: to,
+                path,
+                answer,
+                ..
+            } if to == request.id() && path == first.path => Some(answer),
+            _ => None,
+        });
+        core.end(request);
+        let answer = answer.unwrap_or_else(|| panic!("a fresh core gave no answer at {first:?}"));
+        let fresh = observe(answer);
+        if fresh != first.seen {
+            return Err(OrderMismatch {
+                snapshot: first.snapshot,
+                path: first.path.clone(),
+                session: first.seen.clone(),
+                fresh,
+            });
+        }
+    }
+    core.drain();
+    Ok(answered.len())
 }
 
 mod tests {
