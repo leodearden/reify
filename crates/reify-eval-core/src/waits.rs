@@ -53,6 +53,11 @@ impl Waits {
         reached
     }
 
+    /// Whether any node waits on `awaited`.
+    pub fn is_awaited(&self, awaited: TaskKey) -> bool {
+        self.awaited_by.contains_key(&awaited)
+    }
+
     /// The nodes waiting on `awaited`.
     pub fn waiters(&self, awaited: TaskKey) -> Vec<TaskKey> {
         self.awaited_by

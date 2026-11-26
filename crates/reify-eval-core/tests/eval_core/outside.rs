@@ -124,3 +124,54 @@ fn a_read_all_with_one_target_failing_outside_the_inputs_drops_the_reader() {
     let answers = answers_to(&mut core, &snapshot, &[&pair]);
     assert_eq!(toy::pending(answers[0].clone()), SPENT);
 }
+
+/// A core with the toy kinds and `Pair`, and a snapshot of root scope R
+/// whose member `p` is a pair over the places `lost` (a kind the core was
+/// not built with) and `fine` (a cell over an input) under `R/prefix`;
+/// with a prefix, scope `s` declares them.
+fn unknown_beside_fine(prefix: &[&str]) -> (Core, Snapshot) {
+    let mut core = toy::with_scope()
+        .kind::<Pair>()
+        .expect("distinct kinds")
+        .build();
+    let place = |name| toy::sibling(&[prefix, &[name]].concat());
+    let pair = Declaration::new(Pair::ID)
+        .bind("0", place("lost"))
+        .bind("1", place("fine"));
+    let under = toy::members([
+        ("lost", Declaration::new(KindId("toy.nobody"))),
+        ("fine", toy::cell(&["two"])),
+    ]);
+    let mut inputs = vec![toy::named("two", 2_i64)];
+    let members = if prefix.is_empty() {
+        let mut members = under;
+        members.0.extend(toy::members([("p", pair)]).0);
+        members
+    } else {
+        inputs.push(toy::named("s.members", under));
+        toy::members([("s", toy::scope("s.members")), ("p", pair)])
+    };
+    inputs.extend(toy::root_scope("R", members));
+    let snapshot = core.snapshot(inputs);
+    (core, snapshot)
+}
+
+#[test]
+fn a_reader_dropped_because_a_node_it_reads_has_an_unknown_kind_starts_none_of_its_other_reads() {
+    for prefix in [&[][..], &["s"]] {
+        let (mut core, snapshot) = unknown_beside_fine(prefix);
+        let p = toy::below("R", &["p"]);
+
+        let answers = answers_to(&mut core, &snapshot, &[&p]);
+        assert_eq!(
+            toy::pending(answers[0].clone()),
+            OutsideFailure::UnknownKind { kind: "toy.nobody" },
+            "{prefix:?}"
+        );
+        assert_eq!(
+            core.counters().body_runs(Cell::ID),
+            0,
+            "nobody wants `fine` once its only reader is dropped: {prefix:?}"
+        );
+    }
+}

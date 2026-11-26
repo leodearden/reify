@@ -269,9 +269,17 @@ impl Executor {
                         self.resume_reader(reader);
                     }
                 }
+                Work::Resolve(key) if self.unwanted(key) => {}
                 Work::Resolve(key) => queue.extend(self.resolve(key)),
             }
         }
+    }
+
+    /// Whether no live request wants `key` and nothing awaits it: a path
+    /// its parent's answer released after the reader that awaited it was
+    /// dropped.
+    fn unwanted(&self, key: TaskKey) -> bool {
+        self.requests.wanting(&key).next().is_none() && !self.waits.is_awaited(key)
     }
 
     /// Works out what the path at `key` is: a root from its snapshot input,
@@ -448,6 +456,8 @@ impl Executor {
 
     /// Makes the reader at `key` wait on each node in `awaited` before any
     /// of them is worked out, so that none can answer the reading early.
+    /// Stops once the reader is dropped: a node that fails outside the
+    /// inputs as it is worked out drops it at once.
     fn await_nodes(&mut self, key: TaskKey, awaited: BTreeSet<PathId>) {
         let nodes: Vec<_> = awaited
             .into_iter()
@@ -460,6 +470,9 @@ impl Executor {
             self.waits.add(key, *node);
         }
         for node in nodes {
+            if !self.tasks.contains_key(&key) {
+                return;
+            }
             self.ensure(node);
         }
     }
