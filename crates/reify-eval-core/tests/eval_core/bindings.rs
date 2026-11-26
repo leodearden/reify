@@ -114,6 +114,10 @@ fn a_body_learns_its_declaration_only_through_recorded_reads() {
             }
         }
         assert_eq!(core.counters().body_runs(List::ID), 2, "order {order:?}");
-        assert_eq!(core.counters().body_runs(Fallback::ID), 2, "order {order:?}");
+        assert_eq!(
+            core.counters().body_runs(Fallback::ID),
+            2,
+            "order {order:?}"
+        );
     }
 }

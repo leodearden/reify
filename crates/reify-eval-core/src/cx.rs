@@ -23,9 +23,12 @@ impl Cx {
     /// The outcome at `r`, typed as `T`: a value of another type is a
     /// failure naming both types.
     pub async fn read<T: Value>(&self, r: &Ref) -> Outcome<T> {
-        match self.mailbox.exchange(Ask::Read(r.clone())).await {
-            Reply::Outcome(outcome) => outcome.downcast(),
-            Reply::Product(_) => unreachable!("the core replies to a read with an outcome"),
+        match self.mailbox.exchange(Ask::Read(vec![r.clone()])).await {
+            Reply::Outcomes(mut outcomes) => outcomes
+                .pop()
+                .expect("a read is answered with an outcome per ref")
+                .downcast(),
+            Reply::Product(_) => unreachable!("the core replies to a read with outcomes"),
         }
     }
 
@@ -51,7 +54,7 @@ impl Cx {
             Reply::Product(product) => *product
                 .downcast::<T>()
                 .expect("a section's product keeps its type"),
-            Reply::Outcome(_) => unreachable!("the core replies to a section with its product"),
+            Reply::Outcomes(_) => unreachable!("the core replies to a section with its product"),
         }
     }
 

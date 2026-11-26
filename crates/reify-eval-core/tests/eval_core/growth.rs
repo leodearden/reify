@@ -10,7 +10,9 @@ use crate::toy::{self, Cell, Scope};
 fn work_for_one_of(parts: usize) -> (u64, u64, u64) {
     let mut core = toy::with_scope().build();
     let names: Vec<String> = (0..parts).map(|i| format!("part{i}")).collect();
-    let cells = names.iter().map(|name| (name.as_str(), toy::cell(&["one"])));
+    let cells = names
+        .iter()
+        .map(|name| (name.as_str(), toy::cell(&["one"])));
     let mut inputs = vec![toy::named("one", 1_i64)];
     inputs.extend(toy::root_scope("R", toy::members(cells)));
     let snapshot = core.snapshot(inputs);

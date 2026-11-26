@@ -153,10 +153,7 @@ fn a_body_that_reads_a_node_not_yet_computed_runs_once() {
 #[test]
 fn a_member_the_scope_does_not_declare_answers_absent() {
     let mut core = toy::with_scope().build();
-    let snapshot = core.snapshot(toy::root_scope(
-        "R",
-        toy::members([("b", toy::cell(&[]))]),
-    ));
+    let snapshot = core.snapshot(toy::root_scope("R", toy::members([("b", toy::cell(&[]))])));
     let nope = toy::below("R", &["nope"]);
 
     let request = core.evaluate(&snapshot, toy::demand([&nope]));
@@ -192,7 +189,10 @@ fn a_chain_of_100000_dependent_cells_is_evaluated_on_the_default_test_thread_sta
 
     let answer = toy::the_answer(&core.take_events(), &request, &last);
     let expected = 7 + i64::try_from(CELLS - 1).expect("the chain is short enough");
-    assert_eq!(answer.downcast::<i64>(), Answer::Final(Outcome::of(expected)));
+    assert_eq!(
+        answer.downcast::<i64>(),
+        Answer::Final(Outcome::of(expected))
+    );
     let cells = u64::try_from(CELLS).expect("the chain is short enough");
     assert_eq!(core.counters().body_runs(Cell::ID), cells);
     assert_eq!(core.counters().body_runs(Scope::ID), 1);

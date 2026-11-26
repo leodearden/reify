@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::input::InputKey;
+use crate::step::Step;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct KindId(pub &'static str);
@@ -18,6 +19,8 @@ pub struct Declaration {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Binding {
     Input(InputKey),
+    /// The bound node's declarer's own place, then `steps` down.
+    Declarer(Vec<Step>),
 }
 
 impl Declaration {

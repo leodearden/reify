@@ -23,15 +23,15 @@ use crate::kinds::Kinds;
 use crate::mailbox::{Ask, Posted};
 use crate::outcome::{Erased, Outcome};
 use crate::path::Path;
-use crate::path_table::PathTable;
+use crate::path_table::{PathId, PathTable};
 use crate::produced::Produced;
 use crate::ready::ReadyQueue;
 use crate::requests::{Request, Requests};
+use crate::resolve::declaration_of;
 use crate::resource::Resources;
 use crate::serve;
 use crate::serve::section::{Delivery, InFlight};
 use crate::snapshot::{Snapshot, SnapshotId};
-use crate::step::Step;
 use crate::task::{Task, TaskKey};
 use crate::waits::Waits;
 
@@ -122,6 +122,7 @@ impl Executor {
         for key in self.requests.end(request) {
             if let Some(task) = self.tasks.remove(&key) {
                 task.abandon();
+                self.waits.forget(key);
             }
             if self.resolving.remove(&key) {
                 self.waits.forget(key);
@@ -254,14 +255,14 @@ impl Executor {
                         &mut self.indexes,
                         &mut self.waits,
                         &mut self.requests,
+                        &mut self.resolving,
                     );
                     for request in answered.tell {
                         self.tell(request, key, answer.clone());
                     }
-                    for waiter in answered.freed {
-                        if self.resolving.remove(&waiter) {
-                            queue.push_back(Work::Resolve(waiter));
-                        }
+                    queue.extend(answered.resolve.into_iter().map(Work::Resolve));
+                    for reader in answered.resume {
+                        self.resume_reader(reader);
                     }
                 }
                 Work::Resolve(key) => queue.extend(self.resolve(key)),
@@ -338,10 +339,17 @@ impl Executor {
             }
         };
         match posted {
-            Posted::Ask(Ask::Read(r)) => {
+            Posted::Ask(Ask::Read(refs)) => {
                 let index = self.indexes.of(key.snapshot);
-                task.answer_read(serve::read::answer(task.declaration(), index, &r));
-                self.ready.push(key);
+                let reading =
+                    serve::read::serve(key.path, task.declaration(), &refs, &mut self.paths, index);
+                let awaited = reading.awaited();
+                if awaited.is_empty() {
+                    task.answer_read(reading.reply(index));
+                    return self.ready.push(key);
+                }
+                task.wait_on(reading);
+                self.await_nodes(key, awaited);
             }
             Posted::Ask(Ask::Exclusive(ask)) => {
                 let cancel = task.cancel_flag();
@@ -357,6 +365,36 @@ impl Executor {
                 self.finish(key, Outcome::Failure(Failure::TwoRequestsAtOnce))
             }
             Posted::Nothing => self.end_outside(key, OutsideFailure::WaitedOutsideCore),
+        }
+    }
+
+    /// Makes the reader at `key` wait on each node in `awaited` before any
+    /// of them is worked out, so that none can answer the reading early.
+    fn await_nodes(&mut self, key: TaskKey, awaited: BTreeSet<PathId>) {
+        let nodes: Vec<_> = awaited
+            .into_iter()
+            .map(|path| TaskKey {
+                snapshot: key.snapshot,
+                path,
+            })
+            .collect();
+        for node in &nodes {
+            self.waits.add(key, *node);
+        }
+        for node in nodes {
+            self.ensure(node);
+        }
+    }
+
+    /// Replies to the body at `key`, whose reading awaits nothing more, and
+    /// queues it.
+    fn resume_reader(&mut self, key: TaskKey) {
+        let Some(task) = self.tasks.get_mut(&key) else {
+            return;
+        };
+        if let Some(reading) = task.take_reading() {
+            task.answer_read(reading.reply(self.indexes.of(key.snapshot)));
+            self.ready.push(key);
         }
     }
 
@@ -477,19 +515,5 @@ impl Drop for Executor {
         }
         self.indexes.clear();
         self.events.clear();
-    }
-}
-
-/// What the child at `step` below a node answered `entry` is: the
-/// declaration its kind gives for that step; absent where it gives none or
-/// the node is absent; the node's failure where it failed (design decision).
-fn declaration_of(step: &Step, entry: &Entry, kinds: &Kinds) -> Outcome<Declaration> {
-    match (&entry.outcome, &entry.declaration) {
-        (Outcome::Failure(failure), _) => Outcome::Failure(failure.clone()),
-        (Outcome::Value(value), Some(node)) => kinds
-            .get(node.kind())
-            .and_then(|kind| kind.declares(&**value, step))
-            .map_or(Outcome::Absent, Outcome::of),
-        (Outcome::Value(_), None) | (Outcome::Absent, _) => Outcome::Absent,
     }
 }

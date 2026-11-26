@@ -13,6 +13,7 @@ use crate::mailbox::{Mailbox, Posted, Reply};
 use crate::outcome::{Erased, Outcome};
 use crate::path_table::PathId;
 use crate::produced::Produced;
+use crate::record::Reading;
 use crate::snapshot::SnapshotId;
 
 /// A node of one snapshot: within a snapshot, one body runs for a path.
@@ -28,6 +29,8 @@ pub(crate) struct Task {
     cancel: Cancel,
     /// The section the body waits on, if it waits on one.
     section: Option<u64>,
+    /// The read the body waits on, while a node it reads is unanswered.
+    reading: Option<Reading>,
     body: Body,
 }
 
@@ -41,6 +44,7 @@ impl Task {
             mailbox,
             cancel,
             section: None,
+            reading: None,
             body,
         }
     }
@@ -67,8 +71,18 @@ impl Task {
         self.mailbox.take_posted()
     }
 
-    pub fn answer_read(&self, outcome: Outcome<Erased>) {
-        self.mailbox.reply(Reply::Outcome(outcome));
+    pub fn answer_read(&self, outcomes: Vec<Outcome<Erased>>) {
+        self.mailbox.reply(Reply::Outcomes(outcomes));
+    }
+
+    /// Keeps the body's read until the nodes it awaits are answered.
+    pub fn wait_on(&mut self, reading: Reading) {
+        self.reading = Some(reading);
+    }
+
+    /// The read the body waits on, which no longer waits.
+    pub fn take_reading(&mut self) -> Option<Reading> {
+        self.reading.take()
     }
 
     pub fn begin_section(&mut self, serial: u64) {
