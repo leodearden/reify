@@ -1036,6 +1036,28 @@ fn duplicate_purpose_name_across_modules_fails_the_stdlib_build() {
     );
 }
 
+/// Importing a module merges copies of its pub purposes into the importer
+/// (`merge_prelude_purposes`), marked with a prelude-sentinel span. Those
+/// copies are not declarations, so they must not collide with the originals.
+/// A genuinely re-declared purpose still collides (the test above).
+#[test]
+fn a_module_importing_a_purpose_module_does_not_collide_with_it() {
+    let sources = [
+        (
+            "std.zz_purposes",
+            "module std.zz_purposes\npub purpose ready(subject : Structure) {\n    constraint forall p in subject.geometric_params: determined(p)\n}\n",
+        ),
+        (
+            "std.zz_user",
+            "module std.zz_user\nimport std.zz_purposes\n",
+        ),
+    ];
+    assert_no_collision_panic(
+        &sources,
+        "a module that imports a purpose module (its merged purpose copies are not declarations)",
+    );
+}
+
 /// (f) Same function name AND identical signature in two modules is a genuine
 /// collision — one silently shadows the other today (lib.rs first-wins, with a
 /// comment deferring to "stdlib-level review"; this gate replaces that).
