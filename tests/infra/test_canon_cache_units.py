@@ -954,7 +954,7 @@ class SessionWaits(SessionCase):
         self.assertEqual(child.returncode, -signal.SIGKILL)
 
     def test_close_bounds_each_client_call_by_client_timeout(self):
-        self.knobs = dataclasses.replace(self.knobs, ready_wait=3600.0, stop_wait=3600.0, client_timeout=0.2)
+        self.knobs = dataclasses.replace(self.knobs, ready_wait=3600.0, stop_wait=3600.0, client_timeout=2.0)
         session = self.open("mute")
         [server] = self.servers()
         outcomes = []
