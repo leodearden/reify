@@ -53,6 +53,27 @@ impl Case {
         }
         snapshots
     }
+
+    /// Whether every event names a snapshot made before it.
+    pub fn names_made_snapshots(&self) -> bool {
+        let mut made = 1;
+        for event in &self.events {
+            match event {
+                HostEvent::Edit { from, .. } if *from < made => made += 1,
+                HostEvent::Evaluate { on, .. } | HostEvent::Drive { on, .. } if *on < made => {}
+                _ => return false,
+            }
+        }
+        true
+    }
+
+    /// Every path an event demands.
+    pub fn demanded(&self) -> impl Iterator<Item = &ModelPath> {
+        self.events.iter().flat_map(|event| match event {
+            HostEvent::Edit { .. } => [].iter(),
+            HostEvent::Evaluate { paths, .. } | HostEvent::Drive { paths, .. } => paths.iter(),
+        })
+    }
 }
 
 /// What becomes of a request once its event is over.

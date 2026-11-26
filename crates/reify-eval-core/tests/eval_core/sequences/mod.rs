@@ -4,6 +4,7 @@
 
 mod case;
 mod design;
+mod generator;
 mod order;
 mod reference;
 mod seen;

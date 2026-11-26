@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use reify_eval_core::{Declaration, Failure, Step};
 
+use super::case::Case;
 use super::design::{Bind, Decl, Inputs, Key, ModelPath, ModelRef, ToyKind, Val};
 use crate::toy;
 
@@ -46,6 +47,16 @@ pub enum Invalid {
     Cycle { path: ModelPath },
     /// The sum the cell at `path` adds is past i64.
     Overflow { path: ModelPath },
+}
+
+/// The first path of `case` the reference has no answer for, trying every
+/// path the case demands on every snapshot it makes.
+pub fn first_invalid(case: &Case) -> Option<Invalid> {
+    let demanded: Vec<_> = case.demanded().collect();
+    case.snapshots().into_iter().find_map(|inputs| {
+        let mut reference = Reference::new(inputs);
+        demanded.iter().find_map(|path| reference.answer(path).err())
+    })
 }
 
 /// What a path is before any body runs: a node with its declaration, or
