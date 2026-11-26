@@ -2,9 +2,10 @@
 //! out directly from the design model and the meaning of the toy kinds,
 //! with no store, index or executor and no code shared with the core or the
 //! toy kinds' bodies. It remembers each path's answer within one snapshot,
-//! so a design whose nodes read one another many times stays linear, and it
-//! reports a design no evaluation can answer (a cycle, or arithmetic past
-//! i64) as invalid rather than as an outcome.
+//! so a design whose nodes read one another many times stays linear. A
+//! path whose answer needs its own answer is on a ring and answers "cycle"
+//! (contract 7.7); arithmetic past i64, which no evaluation can answer, it
+//! reports as invalid rather than as an outcome.
 
 use std::any::type_name;
 use std::collections::{BTreeMap, BTreeSet};
@@ -45,10 +46,41 @@ pub enum Out {
 /// Why a path has no answer in this snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Invalid {
-    /// Answering `path` needs its own answer.
-    Cycle { path: ModelPath },
     /// What the node at `path` works out is past i64.
     Overflow { path: ModelPath },
+}
+
+/// Why working out a path stopped short of its answer: the case is
+/// invalid, or the recursion re-entered `entered`, which is in progress, so
+/// every path worked out from there up to the latest is on one ring. With
+/// one ref per read in every generated kind, each node waits on one other,
+/// and these are the paths whose waits the core closes into a ring at rest.
+enum Halt {
+    Invalid(Invalid),
+    Ring { entered: ModelPath },
+}
+
+impl From<Invalid> for Halt {
+    fn from(invalid: Invalid) -> Self {
+        Halt::Invalid(invalid)
+    }
+}
+
+impl Halt {
+    /// What a public call reports.
+    ///
+    /// # Panics
+    ///
+    /// On a ring: the path it re-entered was entered within the same call,
+    /// whose own frame answers it.
+    fn invalid(self) -> Invalid {
+        match self {
+            Halt::Invalid(invalid) => invalid,
+            Halt::Ring { entered } => {
+                unreachable!("the ring entered at {entered:?} is answered by that path's frame")
+            }
+        }
+    }
 }
 
 /// The first path of `case` the reference has no answer for, trying every
@@ -99,21 +131,53 @@ impl Reference {
     }
 
     pub fn answer(&mut self, path: &ModelPath) -> Result<Expected, Invalid> {
-        self.shared(path).map(|answer| Expected::clone(&answer))
+        self.shared(path)
+            .map(|answer| Expected::clone(&answer))
+            .map_err(Halt::invalid)
     }
 
-    /// The answer at `path`, shared with the memo.
-    fn shared(&mut self, path: &ModelPath) -> Result<Rc<Expected>, Invalid> {
+    /// The answer at `path`, shared with the memo. A path re-entered while
+    /// it is in progress halts the recursion; each path the halt passes
+    /// back through is on the ring and answers "cycle", and the re-entered
+    /// path's own frame returns that answer to its reader.
+    fn shared(&mut self, path: &ModelPath) -> Result<Rc<Expected>, Halt> {
         if let Some(known) = self.answers.get(path) {
-            return known.clone();
+            return Ok(Rc::clone(known.as_ref().map_err(Invalid::clone)?));
         }
         if !self.in_progress.insert(path.clone()) {
-            return Err(Invalid::Cycle { path: path.clone() });
+            return Err(Halt::Ring {
+                entered: path.clone(),
+            });
         }
-        let answer = self.work_out(path).map(Rc::new);
+        let worked = self.work_out(path);
         self.in_progress.remove(path);
+        let answer = match worked {
+            Ok(answer) => Ok(Rc::new(answer)),
+            Err(Halt::Invalid(invalid)) => Err(invalid),
+            Err(Halt::Ring { entered }) => {
+                let on_ring = Rc::new(Expected {
+                    node: self.node_declared(path),
+                    outcome: Expect::Failure(Failure::Cycle),
+                });
+                self.answers.insert(path.clone(), Ok(Rc::clone(&on_ring)));
+                return if entered == *path {
+                    Ok(on_ring)
+                } else {
+                    Err(Halt::Ring { entered })
+                };
+            }
+        };
         self.answers.insert(path.clone(), answer.clone());
-        answer
+        answer.map_err(Halt::from)
+    }
+
+    /// The kind of the node declared at `path`, if its declaration has
+    /// been worked out and is a node.
+    fn node_declared(&self, path: &ModelPath) -> Option<ToyKind> {
+        match self.declared.get(path)? {
+            Declared::Node(decl) => Some(decl.kind),
+            Declared::Settled(_) => None,
+        }
     }
 
     /// How many times a path's answer has been worked out, memo aside.
@@ -123,7 +187,7 @@ impl Reference {
 
     /// The declaration of the node at `path`, if one is declared there.
     pub fn declaration_at(&mut self, path: &ModelPath) -> Result<Option<Decl>, Invalid> {
-        Ok(match self.declaration(path)? {
+        Ok(match self.declaration(path).map_err(Halt::invalid)? {
             Declared::Node(decl) => Some(Decl::clone(&decl)),
             Declared::Settled(_) => None,
         })
@@ -132,13 +196,15 @@ impl Reference {
     /// What the node at `reader` reads at `r`; absent where no node is
     /// declared there.
     pub fn read_at(&mut self, reader: &ModelPath, r: &ModelRef) -> Result<Expect, Invalid> {
-        match self.declaration(reader)? {
-            Declared::Node(decl) => self.read(reader, &decl, r),
-            Declared::Settled(_) => Ok(Expect::Absent),
-        }
+        let read = match self.declaration(reader) {
+            Ok(Declared::Node(decl)) => self.read(reader, &decl, r),
+            Ok(Declared::Settled(_)) => Ok(Expect::Absent),
+            Err(halt) => Err(halt),
+        };
+        read.map_err(Halt::invalid)
     }
 
-    fn work_out(&mut self, path: &ModelPath) -> Result<Expected, Invalid> {
+    fn work_out(&mut self, path: &ModelPath) -> Result<Expected, Halt> {
         self.work_outs += 1;
         let decl = match self.declaration(path)? {
             Declared::Node(decl) => decl,
@@ -165,7 +231,7 @@ impl Reference {
 
     /// A root from its snapshot input, read as a declaration; any other
     /// path from what its parent's answer declares at its step.
-    fn declaration(&mut self, path: &ModelPath) -> Result<Declared, Invalid> {
+    fn declaration(&mut self, path: &ModelPath) -> Result<Declared, Halt> {
         if let Some(known) = self.declared.get(path) {
             return Ok(known.clone());
         }
@@ -204,12 +270,7 @@ impl Reference {
     /// steps below it; a binding relative to the declarer names nothing on
     /// a root; a passed binding is the declarer's own binding, the steps
     /// still to take carried along (contract 2.1).
-    fn read(
-        &mut self,
-        reader: &ModelPath,
-        decl: &Rc<Decl>,
-        r: &ModelRef,
-    ) -> Result<Expect, Invalid> {
+    fn read(&mut self, reader: &ModelPath, decl: &Rc<Decl>, r: &ModelRef) -> Result<Expect, Halt> {
         let (mut node, mut decl) = (reader.clone(), Rc::clone(decl));
         let (mut name, mut steps) = (r.binding.clone(), r.steps.clone());
         loop {
@@ -244,7 +305,7 @@ impl Reference {
         at: &ModelPath,
         decl: &Rc<Decl>,
         name: &str,
-    ) -> Result<Expect, Invalid> {
+    ) -> Result<Expect, Halt> {
         let r = ModelRef {
             binding: name.to_owned(),
             steps: Vec::new(),
@@ -256,7 +317,7 @@ impl Reference {
     /// reads i, the i64 at "from"/[i] added, absent at a negative i; then,
     /// if "divisor" reads an i64, the sum divided by it, truncating, and
     /// zero the cell's own failure.
-    fn cell(&mut self, at: &ModelPath, decl: &Rc<Decl>) -> Result<Expect, Invalid> {
+    fn cell(&mut self, at: &ModelPath, decl: &Rc<Decl>) -> Result<Expect, Halt> {
         let sum = match self.cell_sum(at, decl)? {
             Typed::Value(sum) => sum,
             Typed::Absent => return Ok(Expect::Absent),
@@ -284,7 +345,7 @@ impl Reference {
 
     /// The cell's terms added, with the picked element; absent where the
     /// cell is.
-    fn cell_sum(&mut self, at: &ModelPath, decl: &Rc<Decl>) -> Result<Typed<i64>, Invalid> {
+    fn cell_sum(&mut self, at: &ModelPath, decl: &Rc<Decl>) -> Result<Typed<i64>, Halt> {
         let mut sum = 0_i64;
         for term in 0_u32.. {
             let r = ModelRef {
@@ -322,12 +383,7 @@ impl Reference {
     /// What the cell at `at` reads at `r` as an i64. A failure ends the
     /// cell: a wrong type is its answer, whether found by this read or by
     /// the node read, and any other makes it blocked by `r`.
-    fn term(
-        &mut self,
-        at: &ModelPath,
-        decl: &Rc<Decl>,
-        r: &ModelRef,
-    ) -> Result<Typed<i64>, Invalid> {
+    fn term(&mut self, at: &ModelPath, decl: &Rc<Decl>, r: &ModelRef) -> Result<Typed<i64>, Halt> {
         Ok(match typed_int(self.read(at, decl, r)?) {
             Typed::Failure(wrong @ Failure::WrongType { .. }) => Typed::Failure(wrong),
             Typed::Failure(_) => Typed::Failure(Failure::BlockedBy { at: r.to_core() }),
@@ -336,7 +392,7 @@ impl Reference {
     }
 
     /// The members at "members".
-    fn members(&mut self, at: &ModelPath, decl: &Rc<Decl>) -> Result<Expect, Invalid> {
+    fn members(&mut self, at: &ModelPath, decl: &Rc<Decl>) -> Result<Expect, Halt> {
         Ok(
             match typed_members(self.read_binding(at, decl, "members")?) {
                 Typed::Value(members) => Expect::Value(Out::Members(members)),
@@ -348,7 +404,7 @@ impl Reference {
 
     /// Its members while "condition" reads true; absent while it reads
     /// false or nothing.
-    fn guard(&mut self, at: &ModelPath, decl: &Rc<Decl>) -> Result<Expect, Invalid> {
+    fn guard(&mut self, at: &ModelPath, decl: &Rc<Decl>) -> Result<Expect, Halt> {
         match typed_bool(self.read_binding(at, decl, "condition")?) {
             Typed::Value(true) => self.members(at, decl),
             Typed::Value(false) | Typed::Absent => Ok(Expect::Absent),
@@ -358,7 +414,7 @@ impl Reference {
 
     /// The count at "count", none below zero, and the declaration at
     /// "element".
-    fn collection(&mut self, at: &ModelPath, decl: &Rc<Decl>) -> Result<Expect, Invalid> {
+    fn collection(&mut self, at: &ModelPath, decl: &Rc<Decl>) -> Result<Expect, Halt> {
         let count = match typed_int(self.read_binding(at, decl, "count")?) {
             Typed::Value(count) => u64::try_from(count).unwrap_or(0),
             Typed::Absent => return Ok(Expect::Absent),
@@ -372,7 +428,7 @@ impl Reference {
     }
 
     /// A box whose volume is the cube of the i64 at "side".
-    fn shape(&mut self, at: &ModelPath, decl: &Rc<Decl>) -> Result<Expect, Invalid> {
+    fn shape(&mut self, at: &ModelPath, decl: &Rc<Decl>) -> Result<Expect, Halt> {
         Ok(match typed_int(self.read_binding(at, decl, "side")?) {
             Typed::Value(side) => {
                 let volume = side
@@ -387,7 +443,7 @@ impl Reference {
     }
 
     /// The volume of the box at "shape".
-    fn measure(&mut self, at: &ModelPath, decl: &Rc<Decl>) -> Result<Expect, Invalid> {
+    fn measure(&mut self, at: &ModelPath, decl: &Rc<Decl>) -> Result<Expect, Halt> {
         Ok(match typed_shape(self.read_binding(at, decl, "shape")?) {
             Typed::Value(volume) => Expect::Value(Out::Int(volume)),
             Typed::Absent => Expect::Absent,
