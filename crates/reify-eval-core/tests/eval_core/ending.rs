@@ -189,7 +189,10 @@ fn ending_a_request_drops_only_the_bodies_no_other_live_request_wants() {
 
     let events = core.take_events();
     assert!(toy::answers(&events, ended).is_empty());
-    assert_eq!(toy::the_value::<BoxShape>(&events, &second, &toy::at("y")).volume, 8);
+    assert_eq!(
+        toy::the_value::<BoxShape>(&events, &second, &toy::at("y")).volume,
+        8
+    );
     assert_eq!(
         watch.live_boxes(),
         1,

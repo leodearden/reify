@@ -66,7 +66,7 @@ impl InFlight {
                     },
                 })?;
         let started = Started {
-            key: key.clone(),
+            key: *key,
             resource,
             resource_name,
         };

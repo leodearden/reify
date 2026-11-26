@@ -1,7 +1,8 @@
-//! The executor: resolves the roots a request demands and runs every body
-//! that is ready, on the thread that calls it.
+//! The executor: works out the paths a request demands and runs every body
+//! that is ready, on the thread that calls it. What one answer sets off is
+//! worked through a queue, never by recursion.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::mem;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
@@ -11,15 +12,18 @@ use crate::answer::Answer;
 use crate::core_id::CoreId;
 use crate::counters::Counters;
 use crate::declaration::Declaration;
+use crate::demand::Demand;
 use crate::event::{Event, RequestId};
 use crate::failure::{Failure, OutsideFailure, panic_message};
+use crate::finish;
 use crate::index::{Entry, Indexes};
 use crate::input::{Input, InputKey};
 use crate::job::Report;
 use crate::kinds::Kinds;
 use crate::mailbox::{Ask, Posted};
 use crate::outcome::{Erased, Outcome};
-use crate::path::{Path, Root};
+use crate::path::Path;
+use crate::path_table::PathTable;
 use crate::produced::Produced;
 use crate::ready::ReadyQueue;
 use crate::requests::{Request, Requests};
@@ -27,7 +31,9 @@ use crate::resource::Resources;
 use crate::serve;
 use crate::serve::section::{Delivery, InFlight};
 use crate::snapshot::{Snapshot, SnapshotId};
+use crate::step::Step;
 use crate::task::{Task, TaskKey};
+use crate::waits::Waits;
 
 /// What is left after a turn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,12 +42,25 @@ pub enum Turn {
     SectionsRunning(usize),
 }
 
+/// What is left to do after a node's answer, worked in order.
+enum Work {
+    /// The node at the key has its final answer.
+    Answered(TaskKey, Entry),
+    /// The path at the key can now be worked out: it is a root, or its
+    /// parent has its final answer.
+    Resolve(TaskKey),
+}
+
 pub(crate) struct Executor {
     core: CoreId,
     snapshots: u64,
     kinds: Kinds,
+    paths: PathTable,
     indexes: Indexes,
     tasks: BTreeMap<TaskKey, Task>,
+    /// The paths waiting on their parent's answer.
+    resolving: BTreeSet<TaskKey>,
+    waits: Waits,
     ready: ReadyQueue<TaskKey>,
     requests: Requests,
     counters: Counters,
@@ -57,8 +76,11 @@ impl Executor {
             core,
             snapshots: 0,
             kinds,
+            paths: PathTable::default(),
             indexes: Indexes::default(),
             tasks: BTreeMap::new(),
+            resolving: BTreeSet::new(),
+            waits: Waits::default(),
             ready: ReadyQueue::default(),
             requests: Requests::new(core),
             counters: Counters::default(),
@@ -81,22 +103,18 @@ impl Executor {
         Snapshot::new(id, inputs)
     }
 
-    pub fn evaluate(
-        &mut self,
-        snapshot: &Snapshot,
-        roots: impl IntoIterator<Item = Root>,
-    ) -> Request {
+    pub fn evaluate(&mut self, snapshot: &Snapshot, demand: Demand) -> Request {
         self.core.refuse_foreign(snapshot.id().core, "a snapshot");
         self.prune();
         self.indexes.open(snapshot);
         let request = self.requests.open(snapshot.id());
-        for root in roots.into_iter().collect::<BTreeSet<_>>() {
-            self.demand_root(request.id(), snapshot.id(), root);
+        for path in demand.into_paths() {
+            self.demand(request.id(), snapshot.id(), &path);
         }
         request
     }
 
-    /// Ends `request` and drops the bodies no other live request wants.
+    /// Ends `request` and drops the work no other live request wants.
     /// A section such a body started keeps running; what it makes is
     /// released when it is delivered.
     pub fn end(&mut self, request: Request) {
@@ -104,6 +122,9 @@ impl Executor {
         for key in self.requests.end(request) {
             if let Some(task) = self.tasks.remove(&key) {
                 task.abandon();
+            }
+            if self.resolving.remove(&key) {
+                self.waits.forget(key);
             }
         }
         self.prune();
@@ -171,61 +192,132 @@ impl Executor {
         self.indexes.prune(|snapshot| requests.any_on(snapshot));
     }
 
-    /// Tells a root already answered in the snapshot at once. Otherwise
-    /// reads its declaration from the snapshot with the typed read a body
-    /// uses (decision D11), then joins or starts its body.
-    fn demand_root(&mut self, request: RequestId, snapshot: SnapshotId, root: Root) {
+    /// Tells a path already answered in the snapshot at once; otherwise
+    /// the request wants it until it is answered.
+    fn demand(&mut self, request: RequestId, snapshot: SnapshotId, path: &Path) {
         let key = TaskKey {
             snapshot,
-            path: Path::root(root.clone()),
+            path: self.paths.intern(path),
         };
-        let index = self.indexes.of(snapshot);
-        if let Some(entry) = index.entry(&key.path) {
+        if let Some(entry) = self.indexes.of(snapshot).entry(key.path) {
             let answer = Answer::Final(entry.outcome.clone());
-            return self.tell(request, &key, answer);
+            return self.tell(request, key, answer);
         }
-        if self.tasks.contains_key(&key) {
-            return self.requests.want(request, key);
+        self.requests.want(request, key);
+        self.ensure(key);
+    }
+
+    fn in_progress(&self, key: TaskKey) -> bool {
+        self.tasks.contains_key(&key) || self.resolving.contains(&key)
+    }
+
+    fn answered(&self, key: TaskKey) -> bool {
+        self.indexes.of(key.snapshot).entry(key.path).is_some()
+    }
+
+    /// Sees that `key` will be answered: walks up to the nearest ancestor
+    /// that is answered or in progress, each path on the way waiting on its
+    /// parent, and works out the topmost path that can be worked out now.
+    fn ensure(&mut self, key: TaskKey) {
+        if self.answered(key) || self.in_progress(key) {
+            return;
         }
-        let declared = index
-            .input(&InputKey::Root(root))
-            .map_or(Outcome::Absent, Input::outcome)
-            .downcast::<Declaration>();
-        match declared {
-            Outcome::Value(declaration) => self.start(request, key, declaration),
-            settled => {
-                let outcome = settled.erase();
-                self.file(&key, outcome.clone(), None);
-                self.tell(request, &key, Answer::Final(outcome));
+        let mut at = key;
+        while let Some((parent, _)) = self.paths.parent(at.path) {
+            let parent = TaskKey {
+                snapshot: key.snapshot,
+                path: parent,
+            };
+            if self.answered(parent) {
+                break;
+            }
+            self.resolving.insert(at);
+            self.waits.add(at, parent);
+            if self.in_progress(parent) {
+                return;
+            }
+            at = parent;
+        }
+        self.work(Work::Resolve(at));
+    }
+
+    /// Works through what `first` sets off, in order.
+    fn work(&mut self, first: Work) {
+        let mut queue = VecDeque::from([first]);
+        while let Some(work) = queue.pop_front() {
+            match work {
+                Work::Answered(key, entry) => {
+                    let answer = Answer::Final(entry.outcome.clone());
+                    let answered = finish::answered(
+                        key,
+                        entry,
+                        &mut self.indexes,
+                        &mut self.waits,
+                        &mut self.requests,
+                    );
+                    for request in answered.tell {
+                        self.tell(request, key, answer.clone());
+                    }
+                    for waiter in answered.freed {
+                        if self.resolving.remove(&waiter) {
+                            queue.push_back(Work::Resolve(waiter));
+                        }
+                    }
+                }
+                Work::Resolve(key) => queue.extend(self.resolve(key)),
             }
         }
     }
 
-    fn start(&mut self, request: RequestId, key: TaskKey, declaration: Arc<Declaration>) {
+    /// Works out what the path at `key` is: a root from its snapshot input,
+    /// read with the typed read a body uses (decision D11); any other path
+    /// from its parent's final answer. A declaration starts the body; any
+    /// other outcome is the path's answer.
+    fn resolve(&mut self, key: TaskKey) -> Option<Work> {
+        self.counters.count_path_resolved();
+        let index = self.indexes.of(key.snapshot);
+        let declared = match self.paths.parent(key.path) {
+            None => {
+                let root = self
+                    .paths
+                    .as_root(key.path)
+                    .expect("a path with no parent is a root");
+                index
+                    .input(&InputKey::Root(root.clone()))
+                    .map_or(Outcome::Absent, Input::outcome)
+                    .downcast::<Declaration>()
+            }
+            Some((parent, step)) => {
+                let entry = index
+                    .entry(parent)
+                    .expect("a path is worked out once its parent is answered");
+                declaration_of(step, entry, &self.kinds)
+            }
+        };
+        match declared {
+            Outcome::Value(declaration) => {
+                self.start(key, declaration);
+                None
+            }
+            settled => Some(Work::Answered(
+                key,
+                Entry {
+                    outcome: settled.erase(),
+                    declaration: None,
+                },
+            )),
+        }
+    }
+
+    fn start(&mut self, key: TaskKey, declaration: Arc<Declaration>) {
         let kind_id = declaration.kind();
         let Some(kind) = self.kinds.get(kind_id) else {
             let unknown = OutsideFailure::UnknownKind { kind: kind_id.0 };
-            return self.tell(request, &key, Answer::Pending(unknown));
+            return self.end_outside(key, unknown);
         };
         self.counters.count_body_run(kind_id);
-        self.tasks
-            .insert(key.clone(), Task::start(kind, declaration));
-        self.requests.want(request, key.clone());
+        self.tasks.insert(key, Task::start(kind, declaration));
         self.ready.push(key);
-    }
-
-    /// Files a final outcome in the index of its snapshot.
-    fn file(
-        &mut self,
-        key: &TaskKey,
-        outcome: Outcome<Erased>,
-        declaration: Option<Arc<Declaration>>,
-    ) {
-        let entry = Entry {
-            outcome,
-            declaration,
-        };
-        self.indexes.file(key.snapshot, key.path.clone(), entry);
     }
 
     fn advance(&mut self, key: TaskKey) {
@@ -237,12 +329,12 @@ impl Executor {
             return;
         };
         let posted = match catch_unwind(AssertUnwindSafe(|| task.poll())) {
-            Ok(Poll::Ready(Produced::Outcome(outcome))) => return self.finish(&key, outcome),
-            Ok(Poll::Ready(Produced::Outside(failure))) => return self.end_outside(&key, failure),
+            Ok(Poll::Ready(Produced::Outcome(outcome))) => return self.finish(key, outcome),
+            Ok(Poll::Ready(Produced::Outside(failure))) => return self.end_outside(key, failure),
             Ok(Poll::Pending) => task.take_posted(),
             Err(payload) => {
                 let message = panic_message(&*payload);
-                return self.end_outside(&key, OutsideFailure::BodyPanicked { message });
+                return self.end_outside(key, OutsideFailure::BodyPanicked { message });
             }
         };
         match posted {
@@ -258,46 +350,48 @@ impl Executor {
                         task.begin_section(serial);
                         self.counters.count_section();
                     }
-                    Err(failure) => self.end_outside(&key, failure),
+                    Err(failure) => self.end_outside(key, failure),
                 }
             }
             Posted::TwoRequestsAtOnce => {
-                self.finish(&key, Outcome::Failure(Failure::TwoRequestsAtOnce))
+                self.finish(key, Outcome::Failure(Failure::TwoRequestsAtOnce))
             }
-            Posted::Nothing => self.end_outside(&key, OutsideFailure::WaitedOutsideCore),
+            Posted::Nothing => self.end_outside(key, OutsideFailure::WaitedOutsideCore),
         }
     }
 
-    /// Ends a node with its outcome, filed in its snapshot's index and told
-    /// to every live request that wanted it.
-    fn finish(&mut self, key: &TaskKey, outcome: Outcome<Erased>) {
-        let declaration = self.tasks.remove(key).map(|task| {
+    /// Ends a node whose body produced `outcome`.
+    fn finish(&mut self, key: TaskKey, outcome: Outcome<Erased>) {
+        let declaration = self.tasks.remove(&key).map(|task| {
             let declaration = Arc::clone(task.declaration());
             task.discard();
             declaration
         });
-        self.file(key, outcome.clone(), declaration);
-        for request in self.requests.settle(key) {
-            self.tell(request, key, Answer::Final(outcome.clone()));
-        }
+        self.work(Work::Answered(
+            key,
+            Entry {
+                outcome,
+                declaration,
+            },
+        ));
     }
 
     /// Ends a node with a failure outside the inputs: pending to every live
     /// request that wanted it, and stored nowhere.
-    fn end_outside(&mut self, key: &TaskKey, failure: OutsideFailure) {
-        if let Some(task) = self.tasks.remove(key) {
+    fn end_outside(&mut self, key: TaskKey, failure: OutsideFailure) {
+        if let Some(task) = self.tasks.remove(&key) {
             task.discard();
         }
-        for request in self.requests.settle(key) {
+        for request in self.requests.settle(&key) {
             self.tell(request, key, Answer::Pending(failure.clone()));
         }
     }
 
-    fn tell(&mut self, request: RequestId, key: &TaskKey, answer: Answer<Erased>) {
+    fn tell(&mut self, request: RequestId, key: TaskKey, answer: Answer<Erased>) {
         self.events.push(Event::Answered {
             request,
             snapshot: key.snapshot,
-            path: key.path.clone(),
+            path: self.paths.path(key.path),
             answer,
         });
     }
@@ -339,7 +433,7 @@ impl Executor {
                 task.resume(product);
                 self.ready.push(key);
             }
-            Err(failure) => self.end_outside(&key, failure),
+            Err(failure) => self.end_outside(key, failure),
         }
     }
 
@@ -348,7 +442,7 @@ impl Executor {
     fn waiting_on(&self, serial: u64) -> Option<TaskKey> {
         let key = self.in_flight.starter(serial)?;
         let task = self.tasks.get(key)?;
-        task.waits_on(serial).then(|| key.clone())
+        task.waits_on(serial).then_some(*key)
     }
 
     fn take_in(&mut self, report: Report) {
@@ -357,12 +451,13 @@ impl Executor {
                 let Some(key) = self.waiting_on(serial) else {
                     return;
                 };
+                let path = self.paths.path(key.path);
                 for request in self.requests.wanting(&key) {
                     let note = Arc::clone(&note);
                     self.events.push(Event::Progress {
                         request,
                         snapshot: key.snapshot,
-                        path: key.path.clone(),
+                        path: path.clone(),
                         note,
                     });
                 }
@@ -382,5 +477,19 @@ impl Drop for Executor {
         }
         self.indexes.clear();
         self.events.clear();
+    }
+}
+
+/// What the child at `step` below a node answered `entry` is: the
+/// declaration its kind gives for that step; absent where it gives none or
+/// the node is absent; the node's failure where it failed (design decision).
+fn declaration_of(step: &Step, entry: &Entry, kinds: &Kinds) -> Outcome<Declaration> {
+    match (&entry.outcome, &entry.declaration) {
+        (Outcome::Failure(failure), _) => Outcome::Failure(failure.clone()),
+        (Outcome::Value(value), Some(node)) => kinds
+            .get(node.kind())
+            .and_then(|kind| kind.declares(&**value, step))
+            .map_or(Outcome::Absent, Outcome::of),
+        (Outcome::Value(_), None) | (Outcome::Absent, _) => Outcome::Absent,
     }
 }

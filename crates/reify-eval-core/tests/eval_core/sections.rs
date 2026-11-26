@@ -233,7 +233,11 @@ fn after_a_section_panics_its_resource_is_dead_and_later_sections_for_it_fail_th
     );
     core.run();
     let events = core.take_events();
-    assert_section_panicked(toy::pending(toy::answer_at(&events, &request, &toy::at("fragile"))));
+    assert_section_panicked(toy::pending(toy::answer_at(
+        &events,
+        &request,
+        &toy::at("fragile"),
+    )));
     assert_eq!(
         toy::pending(toy::answer_at(&events, &request, &toy::at("shape"))),
         dead
@@ -242,7 +246,11 @@ fn after_a_section_panics_its_resource_is_dead_and_later_sections_for_it_fail_th
     let later = core.evaluate(&snapshot, toy::roots(&["shape"]));
     core.run();
     assert_eq!(
-        toy::pending(toy::the_answer(&core.take_events(), &later, &toy::at("shape"))),
+        toy::pending(toy::the_answer(
+            &core.take_events(),
+            &later,
+            &toy::at("shape")
+        )),
         dead
     );
     core.drain();
@@ -260,7 +268,10 @@ fn a_release_for_a_dead_resource_does_not_hang_the_drain() {
     let made = core.evaluate(&snapshot, toy::roots(&["shape"]));
     core.run();
     let kept = core.take_events();
-    assert_eq!(toy::the_value::<BoxShape>(&kept, &made, &toy::at("shape")).volume, 8);
+    assert_eq!(
+        toy::the_value::<BoxShape>(&kept, &made, &toy::at("shape")).volume,
+        8
+    );
 
     let broken = core.evaluate(&snapshot, toy::roots(&["fragile"]));
     core.run();

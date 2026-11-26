@@ -54,7 +54,7 @@ impl Requests {
 
     pub fn want(&mut self, request: RequestId, key: TaskKey) {
         if let Some(wanted) = self.wants.get_mut(&request) {
-            wanted.insert(key.clone());
+            wanted.insert(key);
             self.wanted_by.entry(key).or_default().insert(request);
         }
     }

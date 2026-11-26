@@ -2,10 +2,10 @@
 //! events out. One thread drives it at a time, through `&mut self`.
 
 use crate::counters::Counters;
+use crate::demand::Demand;
 use crate::event::Event;
 use crate::executor::{Executor, Turn};
 use crate::input::{Input, InputKey};
-use crate::path::Root;
 use crate::requests::Request;
 use crate::snapshot::Snapshot;
 
@@ -22,17 +22,14 @@ impl Core {
         self.executor.snapshot(inputs)
     }
 
-    /// Opens a request on `snapshot` for the answers of `roots`.
+    /// Opens a request on `snapshot` for the answers at the paths `demand`
+    /// names.
     ///
     /// # Panics
     ///
     /// If another core made `snapshot`.
-    pub fn evaluate(
-        &mut self,
-        snapshot: &Snapshot,
-        roots: impl IntoIterator<Item = Root>,
-    ) -> Request {
-        self.executor.evaluate(snapshot, roots)
+    pub fn evaluate(&mut self, snapshot: &Snapshot, demand: Demand) -> Request {
+        self.executor.evaluate(snapshot, demand)
     }
 
     /// Ends `request`, dropping the bodies no other live request wants.

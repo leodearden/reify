@@ -11,7 +11,7 @@ use imbl::OrdMap;
 use crate::declaration::Declaration;
 use crate::input::{Input, InputKey};
 use crate::outcome::{Erased, Outcome};
-use crate::path::Path;
+use crate::path_table::PathId;
 use crate::snapshot::{Snapshot, SnapshotId, SnapshotWatch};
 
 /// A path's final answer: its outcome and, when a body produced it, the
@@ -25,7 +25,7 @@ pub(crate) struct Entry {
 pub(crate) struct Index {
     inputs: OrdMap<InputKey, Input>,
     watch: SnapshotWatch,
-    entries: OrdMap<Path, Entry>,
+    entries: OrdMap<PathId, Entry>,
 }
 
 impl Index {
@@ -33,8 +33,8 @@ impl Index {
         self.inputs.get(key)
     }
 
-    pub fn entry(&self, path: &Path) -> Option<&Entry> {
-        self.entries.get(path)
+    pub fn entry(&self, path: PathId) -> Option<&Entry> {
+        self.entries.get(&path)
     }
 }
 
@@ -65,7 +65,7 @@ impl Indexes {
     }
 
     /// Files the final answer at `path` in the index of `snapshot`.
-    pub fn file(&mut self, snapshot: SnapshotId, path: Path, entry: Entry) {
+    pub fn file(&mut self, snapshot: SnapshotId, path: PathId, entry: Entry) {
         if let Some(index) = self.by_snapshot.get_mut(&snapshot) {
             index.entries.insert(path, entry);
         }
