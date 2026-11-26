@@ -114,14 +114,15 @@ fn linear_pattern_arg_count_diagnostic_has_span_label() {
 
 #[test]
 fn circular_pattern_arg_count_diagnostic_has_span_label() {
-    // circular_pattern() expects 4 arguments — passing 2 should produce a labeled diagnostic
+    // The retired 9-argument scalar form is an arity error naming the Axis
+    // form, the only one left.
     assert_arg_count_label(
         r#"
             structure S {
-                let p = circular_pattern(box(10mm, 10mm, 10mm), 1.0)
+                let p = circular_pattern(box(10mm, 10mm, 10mm), 12mm, 34mm, 56mm, 0, 0, 1, 6, 60deg)
             }
         "#,
-        "circular_pattern() expects 4 arguments",
+        "circular_pattern() expects 4 arguments: circular_pattern(geo, axis, count, angle), got 9",
     );
 }
 

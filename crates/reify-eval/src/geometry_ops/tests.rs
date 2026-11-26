@@ -5881,14 +5881,7 @@
     /// and a +Z Direction.
     fn axis_z_literal() -> reify_ir::CompiledExpr {
         reify_ir::CompiledExpr::literal(
-            axis_of(
-                reify_ir::Value::Vector(vec![
-                    reify_ir::Value::length(0.0),
-                    reify_ir::Value::length(0.0),
-                    reify_ir::Value::length(0.0),
-                ]),
-                unit_dir(0.0, 0.0, 1.0),
-            ),
+            axis_of(length_point3(0.0, 0.0, 0.0), unit_dir(0.0, 0.0, 1.0)),
             reify_core::Type::dimensionless_scalar(),
         )
     }
@@ -5898,25 +5891,11 @@
     fn circular_pattern_value_axis_with_angle(
         angle: reify_ir::CompiledExpr,
     ) -> CompiledGeometryOp {
-        let axis = reify_ir::Value::Axis {
-            origin: Box::new(reify_ir::Value::Vector(vec![
-                reify_ir::Value::length(0.0),
-                reify_ir::Value::length(0.0),
-                reify_ir::Value::length(0.0),
-            ])),
-            direction: Box::new(unit_dir(0.0, 0.0, 1.0)),
-        };
         CompiledGeometryOp::Pattern {
             kind: PatternKind::Circular,
             target: GeomRef::Step(0),
             args: vec![
-                (
-                    "axis".into(),
-                    reify_ir::CompiledExpr::literal(
-                        axis,
-                        reify_core::Type::dimensionless_scalar(),
-                    ),
-                ),
+                ("axis".into(), axis_z_literal()),
                 ("count".into(), literal_f64(4.0)),
                 ("angle".into(), angle),
             ],

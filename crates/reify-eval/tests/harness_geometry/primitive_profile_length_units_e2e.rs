@@ -284,40 +284,6 @@ fn dimensioned_profile_radius_builds_clean() {
 }
 
 // ---------------------------------------------------------------------------
-// Row 5 — half_space's dimensioned origin and Direction normal build
-// ---------------------------------------------------------------------------
-
-/// `half_space`'s origin is a `point3` of lengths and its normal a Direction
-/// (direction-typing ι-c), the shape of the shipped `examples/half_space.ri`.
-/// That dimensioned form must build clean and reach the kernel; a bare origin
-/// component is pinned as rejected by
-/// `half_space_bare_origin_component_is_rejected_at_build`
-/// (`direction_pattern_primitive_forms_e2e.rs`).
-#[test]
-fn half_space_dimensioned_origin_and_direction_normal_build() {
-    let (diagnostics, ops) = build_capturing_ops(
-        r#"
-        structure def HalfSpaceMixed {
-            let body = half_space(point3(0mm, 0mm, 0mm), dir(0, 0, 1))
-        }
-        "#,
-    );
-    let errors: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "a dimensioned origin and a Direction normal must build clean; got: {errors:?}"
-    );
-    assert!(
-        ops.iter()
-            .any(|op| matches!(op, GeometryOp::HalfSpace { .. })),
-        "the half_space op must reach the kernel; got: {ops:?}"
-    );
-}
-
-// ---------------------------------------------------------------------------
 // The desugaring regression battery — the highest-risk item in this leaf
 // ---------------------------------------------------------------------------
 

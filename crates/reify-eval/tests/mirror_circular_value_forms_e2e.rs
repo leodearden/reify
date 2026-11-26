@@ -6,8 +6,8 @@
 //! Both scalar component forms are retired: `mirror`'s 7-arg one by
 //! direction-typing ι-a (task 9646), `circular_pattern`'s 9-arg one by ι-c
 //! (task 9648). `circular_pattern(target, axis, count, angle)` is now its only
-//! form, so a 9-arg call is an arity error naming it
-//! (`circular_pattern_nine_argument_call_is_an_arity_error`).
+//! form, so a 9-arg call is an arity error naming it (pinned at compile by
+//! `circular_pattern_arg_count_diagnostic_has_span_label` in reify-compiler).
 //!
 //! # Where an origin is gated
 //!
@@ -22,7 +22,7 @@
 
 use reify_core::Severity;
 use reify_ir::GeometryOp;
-use reify_test_support::{build_against_mock_kernel, compile_source, parse_and_compile};
+use reify_test_support::{build_against_mock_kernel, parse_and_compile};
 
 // ── step-5: mirror consumer tests ─────────────────────────────────────────────
 
@@ -316,35 +316,6 @@ fn circular_pattern_wrong_variant_plane_rejected_with_error_diagnostic() {
         cp_ops.is_empty(),
         "expected NO CircularPattern op when Plane is passed where Axis is required, got {} op(s)",
         cp_ops.len()
-    );
-}
-
-// ── direction-typing ι-c (task 9648): the retired 9-arg form ──────────────────
-
-/// The retired `circular_pattern(target, ox, oy, oz, ax, ay, az, count, angle)`
-/// is an arity error at compile that names the Axis form, the only one left.
-/// Its units half stays pinned by the Axis form's
-/// `circular_pattern_value_form_bare_axis_origin_drops_op_with_error` and
-/// `circular_pattern_value_form_dimensioned_axis_origin_builds_unchanged`.
-#[test]
-fn circular_pattern_nine_argument_call_is_an_arity_error() {
-    let compiled = compile_source(
-        r#"
-        structure def NineArgRing {
-            let b = box(2mm, 2mm, 2mm)
-            let p = circular_pattern(b, 12mm, 34mm, 56mm, 0, 0, 1, 6, 60deg)
-        }
-        "#,
-    );
-    let expected = "circular_pattern() expects 4 arguments: \
-                    circular_pattern(geo, axis, count, angle), got 9";
-    assert!(
-        compiled
-            .diagnostics
-            .iter()
-            .any(|d| d.severity == Severity::Error && d.message == expected),
-        "expected the arity Error {expected:?}, got: {:#?}",
-        compiled.diagnostics
     );
 }
 
