@@ -222,7 +222,9 @@ impl Executor {
 
     /// Ends a node with its outcome, told to every live request that wanted it.
     fn finish(&mut self, key: &TaskKey, outcome: Outcome<Erased>) {
-        self.tasks.remove(key);
+        if let Some(task) = self.tasks.remove(key) {
+            task.discard();
+        }
         for request in self.requests.settle(key) {
             self.tell(request, key.path.clone(), Answer::Final(outcome.clone()));
         }

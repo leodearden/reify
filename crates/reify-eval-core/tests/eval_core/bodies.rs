@@ -13,6 +13,17 @@ use reify_eval_core::{
 use crate::toy;
 
 /// Makes a second request of the core without waiting for the first.
+async fn two_reads_at_once(cx: &Cx) -> Outcome<i64> {
+    let (one, other) = (Ref::binding("0"), Ref::binding("1"));
+    let mut first = pin!(cx.read::<i64>(&one));
+    let mut second = pin!(cx.read::<i64>(&other));
+    poll_fn(|context| {
+        let _ = first.as_mut().poll(context);
+        second.as_mut().poll(context)
+    })
+    .await
+}
+
 struct Impatient;
 
 impl Kind for Impatient {
@@ -20,14 +31,7 @@ impl Kind for Impatient {
     const ID: KindId = KindId("toy.impatient");
 
     async fn run(cx: &Cx) -> Produced<i64> {
-        let (one, other) = (Ref::binding("0"), Ref::binding("1"));
-        let mut first = pin!(cx.read::<i64>(&one));
-        let mut second = pin!(cx.read::<i64>(&other));
-        let second = poll_fn(|context| {
-            let _ = first.as_mut().poll(context);
-            second.as_mut().poll(context)
-        });
-        Produced::Outcome(second.await)
+        Produced::Outcome(two_reads_at_once(cx).await)
     }
 }
 
@@ -38,6 +42,43 @@ fn a_body_that_makes_two_requests_at_once_ends_with_a_failure() {
         .expect("one kind")
         .build();
     let snapshot = core.snapshot([toy::root("hasty", Declaration::new(Impatient::ID))]);
+
+    let request = core.evaluate(&snapshot, [Root::named("hasty")]);
+    assert_eq!(core.turn(), Turn::Idle);
+
+    let answer = toy::the_answer(&core.take_events(), &request, "hasty");
+    assert_eq!(toy::failed(answer), Failure::TwoRequestsAtOnce);
+}
+
+/// Panics when it is dropped.
+struct Fuse;
+
+impl Drop for Fuse {
+    fn drop(&mut self) {
+        panic!("a fuse the body held went off as it was dropped");
+    }
+}
+
+/// Holds a fuse while it makes two requests at once.
+struct ImpatientHolder;
+
+impl Kind for ImpatientHolder {
+    type Out = i64;
+    const ID: KindId = KindId("toy.impatient_holder");
+
+    async fn run(cx: &Cx) -> Produced<i64> {
+        let _fuse = Fuse;
+        Produced::Outcome(two_reads_at_once(cx).await)
+    }
+}
+
+#[test]
+fn a_panic_from_what_a_body_holds_as_its_failed_node_drops_it_does_not_reach_the_host() {
+    let mut core = Builder::new()
+        .kind::<ImpatientHolder>()
+        .expect("one kind")
+        .build();
+    let snapshot = core.snapshot([toy::root("hasty", Declaration::new(ImpatientHolder::ID))]);
 
     let request = core.evaluate(&snapshot, [Root::named("hasty")]);
     assert_eq!(core.turn(), Turn::Idle);
