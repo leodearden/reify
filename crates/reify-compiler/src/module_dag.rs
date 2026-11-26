@@ -189,23 +189,20 @@ pub struct ModuleDag {
     /// For a file-compiled module, the targets its walk followed (a
     /// cfg-gated-out import, or a `std.*` one this DAG does not walk, is never
     /// an edge); for a module the embedded-stdlib fallback inserts, every
-    /// `pub import` it was built with ([`embedded_re_exports`]).
+    /// `pub import` it was built with. Both go through [`re_export_edges`].
     re_exports: HashMap<String, Vec<String>>,
 }
 
-/// The re-export edges of an embedded stdlib module, as it was built: every
-/// `pub import` in declaration order, one per path. No `#cfg` filter applies,
-/// because the stdlib build compiles each module against all its declared
-/// imports. The slice is topologically ordered, so every target is inserted
-/// before the module that re-exports it.
-fn embedded_re_exports(module: &CompiledModule) -> Vec<String> {
-    let mut targets: Vec<String> = Vec::new();
-    for import in module.imports.iter().filter(|import| import.is_pub) {
-        if !targets.contains(&import.path) {
-            targets.push(import.path.clone());
+/// A module's re-export edges from its `pub import` target paths in
+/// declaration order: one edge per path, at its first occurrence.
+fn re_export_edges<'a>(pub_targets: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    let mut edges: Vec<String> = Vec::new();
+    for target in pub_targets {
+        if !edges.iter().any(|edge| edge == target) {
+            edges.push(target.to_string());
         }
     }
-    targets
+    edges
 }
 
 /// Build an "invalid module path" [`Diagnostic`] vec.
@@ -546,6 +543,12 @@ impl ModuleDag {
                     // stdlib[j+1..=idx] unconditionally (no per-entry contains_key).
                     // This is faster on repeat calls with overlapping prefixes and makes
                     // the invariant explicit in code.
+                    //
+                    // Each inserted module records its re-export edges as it was
+                    // built: every `pub import`, with no `#cfg` filter, because the
+                    // stdlib build compiles a module against all its declared
+                    // imports. Topological order means every edge target is
+                    // inserted before the module that re-exports it.
                     let start = (0..=idx)
                         .rev()
                         .find(|&j| self.modules.contains_key(&stdlib[j].path.0.join(".")))
@@ -553,8 +556,13 @@ impl ModuleDag {
                         .unwrap_or(0);
                     for embedded in &stdlib[start..=idx] {
                         let dotted = embedded.path.0.join(".");
+                        let pub_targets = embedded
+                            .imports
+                            .iter()
+                            .filter(|import| import.is_pub)
+                            .map(|import| import.path.as_str());
                         self.re_exports
-                            .insert(dotted.clone(), embedded_re_exports(embedded));
+                            .insert(dotted.clone(), re_export_edges(pub_targets));
                         self.topo_order.push(dotted.clone());
                         self.modules.insert(dotted, embedded.clone());
                     }
@@ -610,7 +618,7 @@ impl ModuleDag {
             // and the path of each `pub import` as a re-export edge.
             // Imports with unsatisfied `#cfg(...)` predicates are skipped entirely.
             let mut import_paths: Vec<String> = Vec::new();
-            let mut re_export_paths: Vec<String> = Vec::new();
+            let mut pub_targets: Vec<&str> = Vec::new();
             for decl in &parsed.declarations {
                 if let reify_ast::Declaration::Import(import) = decl {
                     if !self.follows_import(import) {
@@ -618,11 +626,12 @@ impl ModuleDag {
                     }
                     self.compile_module(&import.path, resolver)?;
                     import_paths.push(import.path.clone());
-                    if import.is_pub && !re_export_paths.contains(&import.path) {
-                        re_export_paths.push(import.path.clone());
+                    if import.is_pub {
+                        pub_targets.push(&import.path);
                     }
                 }
             }
+            let re_export_paths = re_export_edges(pub_targets);
 
             // Block-scope the shared borrows of self.modules so they are
             // dropped before the later self.modules.insert call.
