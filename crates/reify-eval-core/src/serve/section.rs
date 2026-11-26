@@ -45,7 +45,9 @@ pub(crate) fn start(
     in_flight: &mut InFlight,
     counters: &mut Counters,
 ) -> Result<(), OutsideFailure> {
-    let serial = resources.start(resource, job).ok_or(OutsideFailure::NoResource { resource: resource_name })?;
+    let serial = resources
+        .start(resource, task.cancel.clone(), job)
+        .ok_or(OutsideFailure::NoResource { resource: resource_name })?;
     counters.count_section();
     task.section = Some(serial);
     in_flight.started.insert(serial, key.clone());
@@ -61,12 +63,12 @@ pub(crate) fn deliver(
     tasks: &mut BTreeMap<TaskKey, Task>,
     ready: &mut ReadyQueue<TaskKey>,
 ) {
-    let Some(key) = in_flight.started.remove(&serial) else { return };
     let product = match product {
         Ok(product) => product,
         Err(fault) => match fault {},
     };
-    match tasks.get_mut(&key).filter(|task| task.section == Some(serial)) {
+    let Some(key) = in_flight.started.remove(&serial) else { return };
+    match tasks.get_mut(&key).filter(|task| task.waits_on(serial)) {
         Some(task) => {
             task.mailbox.reply(Reply::Product(product));
             task.section = None;
@@ -74,4 +76,15 @@ pub(crate) fn deliver(
         }
         None => drop(product),
     }
+}
+
+/// The task that is still waiting on section `serial`, if any: the one
+/// that started it may have been dropped, and another started in its place.
+pub(crate) fn waiting_task<'a>(
+    serial: u64,
+    in_flight: &'a InFlight,
+    tasks: &BTreeMap<TaskKey, Task>,
+) -> Option<&'a TaskKey> {
+    let key = in_flight.started.get(&serial)?;
+    tasks.get(key).is_some_and(|task| task.waits_on(serial)).then_some(key)
 }

@@ -2,6 +2,7 @@
 //! reports back on the one channel they share.
 
 use std::any::Any;
+use std::sync::Arc;
 
 /// What a section returned, erased on its way back to the body.
 pub(crate) type Product = Box<dyn Any + Send>;
@@ -17,6 +18,7 @@ pub(crate) enum Job {
 }
 
 pub(crate) enum Report {
+    Progress { serial: u64, note: Arc<dyn Any + Send + Sync> },
     Finished { serial: u64, product: Result<Product, SectionFault> },
     Released,
 }

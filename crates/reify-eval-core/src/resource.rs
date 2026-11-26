@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::{self, JoinHandle};
 
+use crate::cancel::Cancel;
 use crate::held::ReleaseHome;
 use crate::job::{Job, Report, SectionRun};
 use crate::mailbox::SectionJob;
@@ -60,11 +61,14 @@ impl Resources {
 
     /// Queues a section on its resource's thread; `None` if nobody added
     /// that resource.
-    pub fn start(&mut self, resource: TypeId, job: SectionJob) -> Option<u64> {
+    pub fn start(&mut self, resource: TypeId, cancel: Cancel, job: SectionJob) -> Option<u64> {
         let thread = self.threads.get(&resource)?;
         self.serial += 1;
         let serial = self.serial;
         let parts = SectionParts {
+            serial,
+            cancel,
+            reports: self.reports_in.clone(),
             home: ReleaseHome::new(thread.jobs.clone(), Arc::clone(&self.pending_releases)),
         };
         let run: SectionRun = Box::new(move |resource| job(resource, parts));
@@ -75,6 +79,11 @@ impl Resources {
     /// Blocks until a resource thread reports.
     pub fn receive(&self) -> Report {
         self.reports.recv().expect("the core keeps a sender of its own")
+    }
+
+    /// A report already sent, if there is one.
+    pub fn try_receive(&self) -> Option<Report> {
+        self.reports.try_recv().ok()
     }
 
     pub fn acknowledge_release(&self) {

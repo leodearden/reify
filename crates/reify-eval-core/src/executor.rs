@@ -87,7 +87,14 @@ impl Executor {
         mem::take(&mut self.events)
     }
 
+    /// Takes in what resource threads have reported, without blocking, then
+    /// runs every ready body until none is ready. A finished section is
+    /// delivered only by `wait` or `drain`, so what a turn does to bodies
+    /// depends on the order of the host's calls alone.
     pub fn turn(&mut self) -> Turn {
+        while let Some(report) = self.resources.try_receive() {
+            self.take_in(report);
+        }
         while let Some(key) = self.ready.pop() {
             self.advance(key);
         }
@@ -238,6 +245,15 @@ impl Executor {
 
     fn take_in(&mut self, report: Report) {
         match report {
+            Report::Progress { serial, note } => {
+                let Some(key) = serve::section::waiting_task(serial, &self.in_flight, &self.tasks) else {
+                    return;
+                };
+                for request in self.requests.wanting(key) {
+                    let note = Arc::clone(&note);
+                    self.events.push(Event::Progress { request, path: key.1.clone(), note });
+                }
+            }
             Report::Finished { serial, product } => self.in_flight.arrived(serial, product),
             Report::Released => self.resources.acknowledge_release(),
         }

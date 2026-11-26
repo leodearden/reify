@@ -41,6 +41,11 @@ impl Requests {
         }
     }
 
+    /// The live requests that want `key`.
+    pub fn wanting(&self, key: &TaskKey) -> impl Iterator<Item = RequestId> + '_ {
+        self.wanted_by.get(key).into_iter().flatten().copied()
+    }
+
     /// The live requests that wanted `key`, which has now been answered, so
     /// none of them wants it any more.
     pub fn settle(&mut self, key: &TaskKey) -> BTreeSet<RequestId> {

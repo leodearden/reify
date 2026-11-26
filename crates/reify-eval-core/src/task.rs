@@ -41,6 +41,10 @@ impl Task {
         self.body.as_mut().poll(&mut Context::from_waker(Waker::noop()))
     }
 
+    pub fn waits_on(&self, serial: u64) -> bool {
+        self.section == Some(serial)
+    }
+
     /// Drops the task, so that a panic while dropping what its body holds
     /// cannot escape the core.
     pub fn discard(self) {
