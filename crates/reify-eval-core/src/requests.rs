@@ -24,6 +24,8 @@ impl Request {
 pub(crate) struct Requests {
     core: CoreId,
     on: BTreeMap<RequestId, SnapshotId>,
+    /// How many live requests are on each snapshot that has one.
+    live_on: BTreeMap<SnapshotId, usize>,
     wants: BTreeMap<RequestId, BTreeSet<NodeKey>>,
     wanted_by: BTreeMap<NodeKey, BTreeSet<RequestId>>,
     opened: u64,
@@ -34,6 +36,7 @@ impl Requests {
         Self {
             core,
             on: BTreeMap::new(),
+            live_on: BTreeMap::new(),
             wants: BTreeMap::new(),
             wanted_by: BTreeMap::new(),
             opened: 0,
@@ -48,6 +51,7 @@ impl Requests {
             serial: self.opened,
         };
         self.on.insert(id, snapshot);
+        *self.live_on.entry(snapshot).or_default() += 1;
         self.wants.insert(id, BTreeSet::new());
         Request { id }
     }
@@ -61,7 +65,7 @@ impl Requests {
 
     /// Whether a live request is on `snapshot`.
     pub fn any_on(&self, snapshot: SnapshotId) -> bool {
-        self.on.values().any(|on| *on == snapshot)
+        self.live_on.contains_key(&snapshot)
     }
 
     /// The live requests that want `key`.
@@ -106,7 +110,16 @@ impl Requests {
     /// Ends the request `id`, for the core's own use; ending it again does
     /// nothing.
     pub fn end_id(&mut self, id: RequestId) {
-        self.on.remove(&id);
+        if let Some(snapshot) = self.on.remove(&id) {
+            let live = self
+                .live_on
+                .get_mut(&snapshot)
+                .expect("a live request is counted on its snapshot");
+            *live -= 1;
+            if *live == 0 {
+                self.live_on.remove(&snapshot);
+            }
+        }
         for key in self.wants.remove(&id).unwrap_or_default() {
             if let Some(wanting) = self.wanted_by.get_mut(&key) {
                 wanting.remove(&id);
