@@ -21,7 +21,7 @@
 //! own postcondition column gives several rows two halves that cannot live in one test or
 //! even in one crate — row 1 (`reify eval`'s exit code at the process boundary, plus the
 //! `DiagnosticCode` clause, which is not observable there), row 5 (the value form's
-//! rejection, plus the scalar form's no-regression half), row 7 (the `.ri`-expressible
+//! rejection, plus the point form's no-regression half), row 7 (the `.ri`-expressible
 //! form, plus the `Scalar{DIMENSIONLESS}` form, which is not expressible from `.ri`),
 //! row 13 (naming the op kind, AND naming the field), and rows 14/19/20. Binding only
 //! one half of those rows would leave the other half un-bound, which is the exact failure
@@ -110,8 +110,9 @@ const SECTION_6_ROWS: &[BoundaryRow] = &[
     },
     BoundaryRow {
         row: "5",
-        scenario: "mirror(b, plane_yz(10)) value form is rejected; the scalar form keeps \
-                   its existing per-component wording (no regression)",
+        scenario: "mirror(b, plane_yz(10)) value form is rejected; the point form \
+                   mirror(b, point3(10, 0, 0), dir(1, 0, 0)) keeps per-component \
+                   wording (no regression)",
         discharged_by: &[
             Discharge {
                 file: BOUNDARY_GATE,
@@ -119,7 +120,7 @@ const SECTION_6_ROWS: &[BoundaryRow] = &[
             },
             Discharge {
                 file: BOUNDARY_GATE,
-                test_fn: "the_scalar_mirror_origin_keeps_its_per_component_wording",
+                test_fn: "the_point3_mirror_origin_is_rejected_at_build_by_check_and_eval",
             },
         ],
     },

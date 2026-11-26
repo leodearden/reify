@@ -129,17 +129,17 @@ fn overloading_listing(name: &str) -> String {
 
 #[test]
 fn the_6890_overload_listing_on_a_builtin_name_is_reported_at_its_three_parameter_head() {
-    let violations = demo_violations(&overloading_listing("rotate"));
+    let violations = demo_violations(&overloading_listing("scale"));
     assert_eq!(
         violations.len(),
         1,
-        "the listing writes rotate/3, which the builtin rejects, and rotate/2, which it accepts \
+        "the listing writes scale/3, which the builtin rejects, and scale/2, which it accepts \
          — exactly one violation; got {violations:#?}"
     );
     for expected in [
         format!("{}:6 ", chunk_label("demo")),
-        "rotate/3".to_string(),
-        "rotate() expects 2 or 5 arguments, got 3".to_string(),
+        "scale/3".to_string(),
+        "scale() expects 2 arguments, got 3".to_string(),
     ] {
         assert!(
             violations[0].contains(&expected),
@@ -222,7 +222,7 @@ fn a_correct_form_whose_fillers_draw_a_type_error_is_not_an_arity_violation() {
         "module call_arity_gate_control\n\
          \n\
          structure def FillerControl {\n\
-         \x20   let v = rotate(1mm, 1mm, 1mm, 1mm, 1mm)\n\
+         \x20   let v = rotate(1mm, 1mm, 1mm)\n\
          }\n",
     );
     assert!(
@@ -230,15 +230,16 @@ fn a_correct_form_whose_fillers_draw_a_type_error_is_not_an_arity_violation() {
             .diagnostics
             .iter()
             .any(|d| d.severity == Severity::Error && !d.message.starts_with("rotate() expects")),
-        "control: `1mm` fillers must draw a NON-arity error on rotate/5 (its angle slot expects \
-         an Angle), or the case below proves nothing about the narrowed predicate; got {:#?}",
+        "control: `1mm` fillers must draw a NON-arity error on rotate/3 (its axis slot expects \
+         a Direction and its angle slot an Angle), or the case below proves nothing about the \
+         narrowed predicate; got {:#?}",
         control.diagnostics
     );
 
     assert_eq!(
-        demo_violations("```reify-fragment\nlet r = rotate(geo, ax, ay, az, angle)\n```\n"),
+        demo_violations("```reify-fragment\nlet r = rotate(geo, axis, angle)\n```\n"),
         Vec::<String>::new(),
-        "rotate/5 is an accepted arity: only an argument-count rejection is a violation, never \
+        "rotate/3 is an accepted arity: only an argument-count rejection is a violation, never \
          the type error its fillers draw"
     );
 }
@@ -274,7 +275,7 @@ fn an_unreadable_chunk_is_reported_never_skipped() {
 /// The exact number of distinct `(name, arity)` forms the live chunks write —
 /// the anti-vacuity floor on the scan. Re-measured by the protocol stated once
 /// beside `geometry_chunk_smoke.rs`'s `MINIMUM_FN_CITES`.
-const MINIMUM_WRITTEN_CALL_FORMS: usize = 168;
+const MINIMUM_WRITTEN_CALL_FORMS: usize = 170;
 
 /// A form chunk `stem` writes at the `documented` arity in a `source`, whose
 /// name the compiler rejects at the `rejected` arity.
@@ -317,8 +318,8 @@ const SENTINELS: &[Sentinel] = &[
         stem: "stdlib",
         source: CallSource::ProseSpan,
         name: "rotate",
-        documented: 5,
-        rejected: 3,
+        documented: 3,
+        rejected: 4,
     },
 ];
 

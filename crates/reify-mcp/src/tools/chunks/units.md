@@ -75,10 +75,10 @@ structure def Bracket {
     // "20 by default" — it is rejected outright.
     let plate = box(20mm, 20mm, plate_h)
 
-    // `mirror` carries both halves of the rule in one call: the PIVOT POINT
-    // (ox, oy, oz) is length-semantic, so bare `0` is rejected there too —
-    // while the AXIS DIRECTION (1, 0, 0) is a unit vector and stays bare.
-    let mirrored = mirror(plate, 0mm, 0mm, 0mm, 1, 0, 0)
+    // `mirror` carries both halves of the rule in one call: the ORIGIN is a
+    // point of lengths, so bare `0` is rejected there too — while the NORMAL
+    // is a Direction whose components stay bare.
+    let mirrored = mirror(plate, point3(0mm, 0mm, 0mm), dir(1, 0, 0))
 
     // Dividing a length by a bare number preserves the length, so the
     // hand-centring idiom needs no extra unit on `-plate_h/2`.
@@ -115,11 +115,7 @@ box(20, 20, 10)                    -->  box(20mm, 20mm, 10mm)
 box(0, 0, 0)                       -->  box(0mm, 0mm, 0mm)                    // D1: no special case for zero
 translate(g, 0, 0, 5)              -->  translate(g, 0mm, 0mm, 5mm)
 fillet(box(10mm, 10mm, 10mm), 1)   -->  fillet(box(10mm, 10mm, 10mm), 1mm)
-mirror(g, 0, 0, 0, 1, 0, 0)        -->  mirror(g, 0mm, 0mm, 0mm, 1, 0, 0)     // trailing axis stays bare
 ```
-
-The `mirror` row is the one to read twice: the pivot `0, 0, 0` becomes `0mm, 0mm, 0mm` while the
-axis direction `1, 0, 0` stays exactly as it was. One call, both halves of the rule.
 
 Every rejection reads the same way — one diagnostic per offending argument, so a `box` with three
 bare dimensions reports three:
@@ -136,12 +132,12 @@ whichever layer catches it.
 above with exit 1. What differs under `reify check` is WHERE it stops, and that depends on which
 layer owns the constructor's argument slots.
 
-`box`, `translate`, `fillet`, `rotate_around` and the pivot triple of 7-argument `mirror` are
-checked by the **compiler**: `reify check` stops before evaluating anything, so it prints no
-verdict. `helix`, `polygon`, `arc`, `line_segment`, `interp`, `bezier` and `nurbs` have no
-compile-time length slot at all: their bare arguments are caught at build/eval time, so
-`reify check` evaluates the constraints first, prints `All constraints satisfied.` beside the
-`error:` lines, and still **exits 1**.
+`box`, `translate` and `fillet` are checked by the **compiler**: `reify check` stops before
+evaluating anything, so it prints no verdict. `helix`, `polygon`, `arc`, `line_segment`, `interp`,
+`bezier` and `nurbs` have no compile-time length slot at all, and neither do the `point3` origin of
+`mirror` and the `point3` pivot of `rotate_around`: their bare arguments are caught at build/eval
+time, so `reify check` evaluates the constraints first, prints `All constraints satisfied.` beside
+the `error:` lines, and still **exits 1**.
 
 <!-- These rows are the SAME rule as the block above; they differ only in which layer sees them.
      The ```reify-rejected-at-eval tag is matched BYTE-EXACTLY and carries the OPPOSITE
@@ -151,17 +147,23 @@ compile-time length slot at all: their bare arguments are caught at build/eval t
      added for one of these, that test goes RED and the row must move to the other block in the
      same commit — so this note cannot outlive the gap it warns about. Same row format.
 
-     THAT HAS ALREADY HAPPENED ONCE. `mirror` was a third row here until its 7-argument pivot
-     triple gained compile-layer `ox`/`oy`/`oz` LENGTH slots; the test went red naming the row, and
-     it now sits in the ```reify-rejected block above. Do not re-add it here.
+     A ROW HAS ALREADY MOVED BOTH WAYS. `mirror` left this block when its 7-argument pivot triple
+     gained compile-layer `ox`/`oy`/`oz` LENGTH slots, and came back when direction-typing ι-a
+     replaced that form with `mirror(g, point3(..), dir(..))`: no compile-layer slot kind
+     describes a point, so the `point3` origin is gated only at build, by `accept_length_point3`.
 
      Moving a row between the two blocks also moves its row in cli_check_bare_length_exit.rs to
      the other `Layer`. -->
 
 ```reify-rejected-at-eval
-helix(10, 2, 50)             -->  helix(10mm, 2mm, 50mm)
-polygon(0, 0, 10, 0, 5, 10)  -->  polygon(0mm, 0mm, 10mm, 0mm, 5mm, 10mm)
+helix(10, 2, 50)                          -->  helix(10mm, 2mm, 50mm)
+polygon(0, 0, 10, 0, 5, 10)               -->  polygon(0mm, 0mm, 10mm, 0mm, 5mm, 10mm)
+mirror(g, point3(0, 0, 0), dir(1, 0, 0))  -->  mirror(g, point3(0mm, 0mm, 0mm), dir(1, 0, 0))  // the normal stays bare
 ```
+
+The `mirror` row is the one to read twice: the origin `point3(0, 0, 0)` becomes
+`point3(0mm, 0mm, 0mm)` while the normal `dir(1, 0, 0)` stays exactly as it was. One call, both
+halves of the rule.
 
 **So read `reify check`'s exit status and its `error:` lines, never its verdict line alone.**
 `All constraints satisfied.` speaks for the declared constraints only. The exit gate is decision D3
@@ -193,13 +195,18 @@ of `docs/prds/v0_6/check-diagnostic-truthfulness.md`.
     constructors above, and 0 on its migration — PINNED at the CLI seam by
     crates/reify-cli/tests/harness_cli_check/cli_check_bare_length_exit.rs::check_exits_1_after_its_verdict_on_a_bare_eval_checked_length
   a unit in a DIMENSIONLESS slot is not reported — UNPINNED, prose only. Measured 2026-08-30:
-    scale(g, 2mm) accepted, dimensioned axis direction in mirror and linear_pattern accepted.
+    scale(g, 2mm) accepted, dimensioned axis direction in linear_pattern accepted.
     Re-verify before relying on it.
   a vec3(..) in a DIRECTION-typed slot IS reported, dimensioned or not (direction-typing θ-b) —
     at check for the four directional selectors and arity-2 angle, PINNED by
     crates/reify-compiler/tests/harness_type_checking/selector_angle_direction_slot_tests.rs;
     at eval for offset_curve's direction, PINNED by
-    crates/reify-eval/src/geometry_ops/tests.rs::compile_geometry_op_offset_curve_3arg_vector_is_rejected_with_the_dir_hint -->
+    crates/reify-eval/src/geometry_ops/tests.rs::compile_geometry_op_offset_curve_3arg_vector_is_rejected_with_the_dir_hint
+  and at check for rotate's and rotate_around's axis and mirror's normal (direction-typing ι-a) —
+    rotate's and mirror's PINNED by
+    crates/reify-compiler/tests/harness_type_checking/builtin_arg_signature_tests.rs::rotate_vector_axis_is_rejected_with_the_dir_hint
+    crates/reify-compiler/tests/harness_type_checking/builtin_arg_signature_tests.rs::mirror_vector_normal_is_rejected_with_the_dir_hint
+    rotate_around's axis is the same Direction slot kind, not separately pinned -->
 
 **What legitimately stays bare.** Not every geometry argument is a length. Unit-vector and
 axis-direction components, repeat counts, NURBS weights, knot values, polynomial degrees, `scale`
@@ -208,11 +215,13 @@ something the author does not mean.
 
 That half is an **authoring rule you uphold, not one the compiler enforces** — the gate runs in one
 direction only. Measured 2026-08-30: `scale(g, 2mm)` is accepted, as is a dimensioned axis direction
-in `mirror` or `linear_pattern`. So a unit in a dimensionless slot will not be reported; write these
+in `linear_pattern`. So a unit in a dimensionless slot will not be reported; write these
 bare because it is what you mean, not because you will be told.
-A `Direction`-typed argument is the exception: the four directional selectors, `angle`'s operands
-and `offset_curve`'s direction take a typed operand, so a `vec3(…)` there, dimensioned or not, is
-rejected (at check for the selectors and `angle`, at eval for `offset_curve`); write `dir(x, y, z)`.
+A `Direction`-typed argument is the exception: the four directional selectors, `angle`'s operands,
+`rotate`'s and `rotate_around`'s axis, `mirror`'s normal, `offset_curve`'s direction and the
+direction of `revolve`, `revolve_full`, `extrude_infinite` and `extrude_infinite_symmetric` take a
+typed operand, so a `vec3(…)` there, dimensioned or not, is rejected (at check for all but
+`offset_curve`, at eval for `offset_curve`); write `dir(x, y, z)`.
 
 <!-- LENGTH-ARGS-XREF -->
 **Which argument of which constructor is length-semantic** is catalogued per position in the

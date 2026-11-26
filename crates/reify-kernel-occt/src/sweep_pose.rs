@@ -98,7 +98,7 @@ pub(crate) fn validate_sweep_pose(
              degrees off-plane, where at least {SWEEP_DEGENERATE_POSE_DEG} \
              degrees is required. Fix: pose the profile normal along that \
              start tangent. The rotation depends on the tangent above; for \
-             a +Y tangent it is `sweep(rotate(circle(r), 1.0, 0.0, 0.0, \
+             a +Y tangent it is `sweep(rotate(circle(r), dir(1, 0, 0), \
              -90deg), path)`."
         )));
     }

@@ -106,9 +106,9 @@ const ROW_SEPARATOR: &str = "-->";
 /// byte-exact tags cost the same and stay inert.
 const EVAL_ONLY_TAG: &str = "reify-rejected-at-eval";
 
-/// Minimum rows the eval-only block must carry. The exact live set: `helix` and
-/// `polygon`, the two constructors with no compile-layer LENGTH slot that the
-/// chunk names by hand.
+/// Minimum rows the eval-only block must carry. The exact live set: `helix`,
+/// `polygon` and `mirror`, whose bare arguments no compile-layer LENGTH slot
+/// sees.
 ///
 /// WAS 3. `mirror` was the third until its arity-7 pivot triple gained a
 /// compile-layer LENGTH slot (`builtin_signatures.rs`, `#5662`); this test's own
@@ -117,20 +117,23 @@ const EVAL_ONLY_TAG: &str = "reify-rejected-at-eval";
 /// intended lifecycle of this constant, NOT a "lower it to go green" — every
 /// remaining row is still an exact, named member. Raise it again only by adding
 /// a row; lower it again only by moving one to the compile-layer block.
-const MINIMUM_EVAL_ONLY_ROWS: usize = 2;
+///
+/// WAS 2, raised when direction-typing ι-a replaced the arity-7 `mirror` with
+/// `mirror(g, point3(..), dir(..))`. No slot kind describes a point, so the
+/// `point3` origin is gated only at build and its row moved back here.
+const MINIMUM_EVAL_ONLY_ROWS: usize = 3;
 
 /// Minimum rows the rejected-forms block must carry, and the anti-vacuity floor.
 ///
 /// The EXACT set the chunk is required to document, not a round number under it:
-/// bare dimensions, the D1 bare-zero row, a `translate` row, a modify-op
-/// (`fillet`) row, and the `mirror` row that doubles as the legitimately-bare
-/// illustration. At a lower floor any one of those could be deleted while this
+/// bare dimensions, the D1 bare-zero row, a `translate` row and a modify-op
+/// (`fillet`) row. At a lower floor any one of those could be deleted while this
 /// still passed — the regression these floors exist to catch. Raise it with the
 /// block; never lower it to go green.
 ///
-/// WAS 4, raised when `mirror` moved here from the eval-only block (see
-/// [`MINIMUM_EVAL_ONLY_ROWS`]).
-const MINIMUM_REJECTED_ROWS: usize = 5;
+/// WAS 4, raised when `mirror` moved here from the eval-only block, and WAS 5
+/// until it moved back (see [`MINIMUM_EVAL_ONLY_ROWS`]).
+const MINIMUM_REJECTED_ROWS: usize = 4;
 
 /// The bare-zero form PRD decision D1 refuses to special-case. Pinned by name so
 /// deleting that row from the chunk is RED at the doc surface, not merely
@@ -155,7 +158,7 @@ fn squash_whitespace(s: &str) -> String {
 /// Wrap one documented FORM in the minimal compilable module the rejected-forms
 /// block is written against.
 ///
-/// `g` IS BOUND FOR THE FORM. The chunk writes `mirror(g, 0, 0, 0, 1, 0, 0)`
+/// `g` IS BOUND FOR THE FORM. The chunk writes `translate(g, 0, 0, 5)`
 /// because that is the shape an author recognises from their own file; a free
 /// `g` would fail to resolve and the rejection assertion below would pass for
 /// entirely the wrong reason. Binding it here keeps the documented row readable
@@ -377,7 +380,7 @@ fn units_reify_fences_call_the_migration_idiom_sentinels() {
     // `//` annotation or a string literal never counts. `box` is the primitive
     // whose bare-number rejection is the chunk's headline example; `mirror` is
     // the form that carries BOTH halves of the rule in one call (dimensioned
-    // pivot, bare axis components), so losing it would quietly retire the only
+    // origin, bare normal components), so losing it would quietly retire the only
     // fence-verified demonstration that the legitimately-bare tail really is
     // accepted.
     let called = callee_names(&fence_call_forms(&markdown, UNITS_CHUNK_PATH));
@@ -397,13 +400,17 @@ fn units_reify_fences_call_the_migration_idiom_sentinels() {
 /// Names units.md's fences may call that are in none of the reachable registries,
 /// each with its justification.
 ///
-/// EMPTY on purpose — the migration idiom calls `box`, `mirror` and `translate`,
-/// all `GEOMETRY_FUNCTION_NAMES` entries. The hook exists because the prelude
-/// constructors (`point3`, `vec3`, …) live in
-/// `math_signatures::MATH_CONSTRUCTION_NAMES`, which is not reachable from
-/// `reify_compiler`'s crate root; see `CALLABLE_NAME_REGISTRIES`. An entry here
+/// The migration idiom's `box`, `mirror` and `translate` are all
+/// `GEOMETRY_FUNCTION_NAMES` entries; `mirror`'s origin and normal are built
+/// with the two constructors below, which are real but unreachable from
+/// `reify_compiler`'s crate root (see `CALLABLE_NAME_REGISTRIES`). An entry here
 /// is a CLAIM that a name is real-but-unreachable, so write why next to it.
-const UNITS_FENCE_NAME_ALLOWLIST: &[&str] = &[];
+const UNITS_FENCE_NAME_ALLOWLIST: &[&str] = &[
+    // `math_signatures::MATH_CONSTRUCTION_NAMES`, a private module.
+    "point3",
+    // `units::DATUM_CONSTRUCTOR_NAMES`, `pub(crate)`.
+    "dir",
+];
 
 /// Every call name in units.md's ```` ```reify ```` fences must be a REAL
 /// registry entry.
@@ -557,8 +564,8 @@ fn bare_zero_is_not_special_cased() {
 /// a lowered floor is a SYNC row that has quietly stopped claiming anything. How
 /// to re-measure one — and why a batched sweep under-reports — is stated once,
 /// next to `geometry_chunk_smoke.rs::MINIMUM_FN_CITES`, not repeated here.
-const MINIMUM_FN_CITES: usize = 9;
-const MINIMUM_RS_FILES: usize = 4;
+const MINIMUM_FN_CITES: usize = 12;
+const MINIMUM_RS_FILES: usize = 7;
 const MINIMUM_RI_FILES: usize = 2;
 
 /// Every test units.md cites as PINNING a claim must still exist.
@@ -633,13 +640,15 @@ fn units_chunk_points_at_the_geometry_length_argument_catalogue() {
 /// `reify check` evaluates them to a verdict before its Severity::Error gate
 /// exits 1.
 ///
-/// `mirror` USED TO BE A THIRD MEMBER and no longer is: its arity-7 pivot triple
-/// gained `length_arg(1..=3, "ox"/"oy"/"oz")` slots, so a bare origin is now a
-/// COMPILE error and `reify check` exits 1 on it (pinned at the CLI seam by its row in
-/// `crates/reify-cli/tests/harness_cli_check/cli_check_bare_length_exit.rs`). This test
-/// went red exactly as its panic message promised, and the row moved to the
-/// ```` ```reify-rejected ```` block in the commit that recorded the move — the
-/// lifecycle "WHY PIN THE NEGATIVE" below describes, actually exercised.
+/// `mirror` HAS MOVED BOTH WAYS. Its arity-7 pivot triple gained
+/// `length_arg(1..=3, "ox"/"oy"/"oz")` slots, so this test went red exactly as its
+/// panic message promised, and the row moved to the ```` ```reify-rejected ````
+/// block in the commit that recorded the move — the lifecycle "WHY PIN THE
+/// NEGATIVE" below describes, actually exercised. Direction-typing ι-a then
+/// replaced that form with `mirror(g, point3(..), dir(..))`, whose `point3`
+/// origin no slot kind describes, so the row is back here and its CLI-seam row in
+/// `crates/reify-cli/tests/harness_cli_check/cli_check_bare_length_exit.rs` is
+/// `Layer::Eval` again.
 ///
 /// WHY PIN THE NEGATIVE. The chunk tells an author that `reify check` prints a
 /// clean verdict beside these rejections. If a compile-layer slot is later added
@@ -660,7 +669,7 @@ fn documented_eval_only_rejections_are_invisible_to_the_compile_layer() {
     assert!(
         rows.len() >= MINIMUM_EVAL_ONLY_ROWS,
         "only {} eval-only row(s) scraped from {UNITS_CHUNK_PATH} — expected at least \
-         {MINIMUM_EVAL_ONLY_ROWS} (`helix`, `polygon`). Either the \
+         {MINIMUM_EVAL_ONLY_ROWS} (`helix`, `polygon`, `mirror`). Either the \
          ```{EVAL_ONLY_TAG} block was deleted or retagged, or a row was removed while the \
          check-visibility note still names the constructor. Rows seen: {rows:?}",
         rows.len()
@@ -819,6 +828,6 @@ fn squash_whitespace_equates_respacings_but_not_different_forms() {
 fn wrap_form_binds_g_so_a_row_naming_it_compiles_clean() {
     assert_module_compiles(
         "wrap_form unit test: a dimensioned form referencing `g`",
-        &wrap_form("mirror(g, 0mm, 0mm, 0mm, 1, 0, 0)"),
+        &wrap_form("mirror(g, point3(0mm, 0mm, 0mm), dir(1, 0, 0))"),
     );
 }

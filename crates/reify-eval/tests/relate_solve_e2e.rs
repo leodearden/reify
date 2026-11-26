@@ -1962,7 +1962,7 @@ fn occt_required_when_ci_profile_expects_it() {
 /// `y`, faces `x` — no seat plane can be flush with both.
 const PERPENDICULAR_WALLS_PLATE: &str = "    let top = rectangle(40mm, 40mm)
     let top_plane : Plane = top.plane
-    let wall = rotate(rectangle(40mm, 5mm), 0.0, 1.0, 0.0, 90deg)
+    let wall = rotate(rectangle(40mm, 5mm), dir(0.0, 1.0, 0.0), 90deg)
     let wall_plane : Plane = wall.plane";
 
 fn perpendicular_walls_source() -> String {
@@ -1979,7 +1979,7 @@ fn perpendicular_walls_source() -> String {
 /// A `Plate` whose hole axis is tilted 20° about `x` and offset in-plane, so
 /// seating the shank in it is nonlinear in rotation and takes several steps.
 const TILTED_HOLE_PLATE: &str =
-    "    let hole = translate(rotate(cylinder(3.2mm, 5mm), 1.0, 0.0, 0.0, 20deg), 4mm, 3mm, 0mm)
+    "    let hole = translate(rotate(cylinder(3.2mm, 5mm), dir(1.0, 0.0, 0.0), 20deg), 4mm, 3mm, 0mm)
     let hole_axis : Axis = hole.axis";
 
 fn tilted_hole_source() -> String {
@@ -2157,7 +2157,7 @@ fn bolt_plate_publishes_the_spin_about_the_shank_as_its_free_twist() {
 
 /// A `Plate` whose hole is drilled along `x` (rotated 90° about `y`), so the
 /// identity seed puts the shank's tilt row at its maximum.
-const SIDE_HOLE_PLATE: &str = "    let hole = rotate(cylinder(3.2mm, 5mm), 0.0, 1.0, 0.0, 90deg)
+const SIDE_HOLE_PLATE: &str = "    let hole = rotate(cylinder(3.2mm, 5mm), dir(0.0, 1.0, 0.0), 90deg)
     let hole_axis : Axis = hole.axis";
 
 fn side_hole_source() -> String {

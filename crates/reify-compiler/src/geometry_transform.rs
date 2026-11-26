@@ -1,7 +1,9 @@
 use reify_core::{Diagnostic, SourceSpan, Type};
 use reify_ir::CompiledExpr;
 
-use crate::arg_check::{check_arg_count_exact, push_labeled_arg_count_error};
+use crate::arg_check::{
+    check_arg_count_exact, check_arg_count_exact_form, push_labeled_arg_count_error,
+};
 use crate::types::{CompiledGeometryOp, GeomRef, TransformKind};
 
 /// Compile a transform operation into CompiledGeometryOps.
@@ -37,18 +39,16 @@ pub(crate) fn compile_transform_op(
             sub_ops.push(op);
             Some(sub_ops)
         }
-        // rotate(target, ax, ay, az, angle)  OR  rotate(target, orientation)
+        // rotate(target, axis, angle)  OR  rotate(target, orientation)
         "rotate" => match compiled_args.len() {
-            5 => {
+            3 => {
                 let mut it = compiled_args.into_iter();
                 let op = CompiledGeometryOp::Transform {
                     kind: TransformKind::Rotate,
                     target,
                     args: vec![
                         ("target".to_string(), it.next().unwrap()),
-                        ("ax".to_string(), it.next().unwrap()),
-                        ("ay".to_string(), it.next().unwrap()),
-                        ("az".to_string(), it.next().unwrap()),
+                        ("axis".to_string(), it.next().unwrap()),
                         ("angle".to_string(), it.next().unwrap()),
                     ],
                 };
@@ -70,7 +70,10 @@ pub(crate) fn compile_transform_op(
             }
             n => {
                 push_labeled_arg_count_error(
-                    format!("rotate() expects 2 or 5 arguments, got {n}"),
+                    format!(
+                        "rotate() expects 2 or 3 arguments: rotate(geo, orientation) or \
+                         rotate(geo, dir(x, y, z), angle), got {n}"
+                    ),
                     expr_span,
                     diagnostics,
                 );
@@ -113,12 +116,13 @@ pub(crate) fn compile_transform_op(
             sub_ops.push(op);
             Some(sub_ops)
         }
-        // rotate_around(target, px, py, pz, ax, ay, az, angle)
+        // rotate_around(target, pivot, axis, angle)
         "rotate_around" => {
-            if !check_arg_count_exact(
+            if !check_arg_count_exact_form(
                 "rotate_around",
                 compiled_args.len(),
-                8,
+                4,
+                "geo, point3(x, y, z), dir(x, y, z), angle",
                 expr_span,
                 diagnostics,
             ) {
@@ -130,12 +134,8 @@ pub(crate) fn compile_transform_op(
                 target,
                 args: vec![
                     ("target".to_string(), it.next().unwrap()),
-                    ("px".to_string(), it.next().unwrap()),
-                    ("py".to_string(), it.next().unwrap()),
-                    ("pz".to_string(), it.next().unwrap()),
-                    ("ax".to_string(), it.next().unwrap()),
-                    ("ay".to_string(), it.next().unwrap()),
-                    ("az".to_string(), it.next().unwrap()),
+                    ("pivot".to_string(), it.next().unwrap()),
+                    ("axis".to_string(), it.next().unwrap()),
                     ("angle".to_string(), it.next().unwrap()),
                 ],
             };
@@ -496,29 +496,27 @@ mod tests {
         }
     }
 
-    /// 3-arg rotate → None with "rotate() expects 2 or 5 arguments, got 3" diagnostic
-    /// whose label span matches expr_span.
+    /// 3-arg translate → None with "translate() expects 4 arguments, got 3"
+    /// whose label span matches expr_span. An arity rejected both before and
+    /// after direction-typing ι-a (task 9646) made `rotate`'s 3-arg form legal.
     #[test]
-    fn compile_transform_op_rotate_3_arg_error() {
+    fn compile_transform_op_translate_3_arg_error() {
         let args: Vec<CompiledExpr> = (0..3).map(|_| scalar_literal(0.0)).collect();
         let span = SourceSpan::new(7, 42);
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let result = compile_transform_op(
-            "rotate",
+            "translate",
             args,
             GeomRef::Step(0),
             span,
             &mut diagnostics,
             vec![],
         );
-        assert!(result.is_none(), "expected None for 3-arg rotate");
+        assert!(result.is_none(), "expected None for 3-arg translate");
         assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
-        assert!(
-            diagnostics[0]
-                .message
-                .contains("rotate() expects 2 or 5 arguments, got 3"),
-            "diagnostic message should mention 'rotate() expects 2 or 5 arguments, got 3', got: {}",
-            diagnostics[0].message,
+        assert_eq!(
+            diagnostics[0].message, "translate() expects 4 arguments, got 3",
+            "diagnostic message"
         );
         assert!(
             !diagnostics[0].labels.is_empty(),
@@ -530,42 +528,105 @@ mod tests {
         );
     }
 
-    /// Regression: 5-arg rotate(target, ax, ay, az, angle) still works after the
-    /// dispatch change — arg names ["target","ax","ay","az","angle"], kind Rotate,
-    /// no diagnostics.
-    #[test]
-    fn compile_transform_op_rotate_5_arg_regression() {
-        let args: Vec<CompiledExpr> = (0..5).map(|_| scalar_literal(0.0)).collect();
-        let span = SourceSpan::new(0, 0);
+    /// Lower `name` with `n` placeholder args and return the single op's kind and
+    /// arg names, asserting no diagnostics.
+    fn lowered_transform(name: &str, n: usize) -> (TransformKind, Vec<String>) {
+        let args: Vec<CompiledExpr> = (0..n).map(|_| scalar_literal(0.0)).collect();
         let mut diagnostics: Vec<Diagnostic> = vec![];
-        let target = GeomRef::Step(0);
-        let result = compile_transform_op(
-            "rotate",
+        let ops = compile_transform_op(
+            name,
             args,
-            target.clone(),
-            span,
+            GeomRef::Step(0),
+            SourceSpan::new(0, 0),
             &mut diagnostics,
             vec![],
-        );
+        )
+        .unwrap_or_else(|| panic!("{n}-arg {name} should lower, got: {diagnostics:?}"));
         assert!(
             diagnostics.is_empty(),
-            "unexpected diagnostics: {:?}",
-            diagnostics
+            "unexpected diagnostics: {diagnostics:?}"
         );
-        let ops = result.expect("5-arg rotate should return Some");
-        assert_eq!(ops.len(), 1);
-        match &ops[0] {
-            CompiledGeometryOp::Transform {
-                kind: TransformKind::Rotate,
-                target: op_target,
-                args: op_args,
-            } => {
-                assert_eq!(*op_target, target);
-                let names: Vec<&str> = op_args.iter().map(|(n, _)| n.as_str()).collect();
-                assert_eq!(names, vec!["target", "ax", "ay", "az", "angle"]);
+        match ops.as_slice() {
+            [CompiledGeometryOp::Transform { kind, args, .. }] => {
+                (*kind, args.iter().map(|(n, _)| n.clone()).collect())
             }
-            other => panic!("expected Transform(Rotate), got {:?}", other),
+            other => panic!("expected one Transform op, got {other:?}"),
         }
+    }
+
+    /// rotate(target, axis, angle) — the Direction form (direction-typing ι-a,
+    /// task 9646).
+    #[test]
+    fn compile_transform_op_rotate_3_arg_direction_form() {
+        assert_eq!(
+            lowered_transform("rotate", 3),
+            (
+                TransformKind::Rotate,
+                vec!["target".into(), "axis".into(), "angle".into()]
+            )
+        );
+    }
+
+    /// rotate_around(target, pivot, axis, angle) — the Direction form
+    /// (direction-typing ι-a, task 9646).
+    #[test]
+    fn compile_transform_op_rotate_around_4_arg_direction_form() {
+        assert_eq!(
+            lowered_transform("rotate_around", 4),
+            (
+                TransformKind::RotateAround,
+                vec![
+                    "target".into(),
+                    "pivot".into(),
+                    "axis".into(),
+                    "angle".into()
+                ]
+            )
+        );
+    }
+
+    /// Lower `name` with `n` placeholder args, asserting it is REJECTED: `None`
+    /// and exactly one diagnostic whose label span is the call's `expr_span`.
+    /// Returns that diagnostic's message.
+    fn rejected_transform_message(name: &str, n: usize) -> String {
+        let args: Vec<CompiledExpr> = (0..n).map(|_| scalar_literal(0.0)).collect();
+        let span = SourceSpan::new(3, 29);
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let result =
+            compile_transform_op(name, args, GeomRef::Step(0), span, &mut diagnostics, vec![]);
+        assert!(result.is_none(), "{n}-arg {name} must not lower");
+        let [diagnostic] = diagnostics.as_slice() else {
+            panic!("expected exactly one diagnostic, got {diagnostics:?}");
+        };
+        assert_eq!(
+            diagnostic.labels.first().map(|label| label.span),
+            Some(span),
+            "label span must match expr_span"
+        );
+        diagnostic.message.clone()
+    }
+
+    /// The retired scalar rotate(target, ax, ay, az, angle) is an arity error
+    /// naming both live forms (direction-typing ι-a, task 9646; PRD B13).
+    #[test]
+    fn compile_transform_op_rotate_5_arg_is_rejected_naming_the_direction_form() {
+        assert_eq!(
+            rejected_transform_message("rotate", 5),
+            "rotate() expects 2 or 3 arguments: rotate(geo, orientation) or \
+             rotate(geo, dir(x, y, z), angle), got 5"
+        );
+    }
+
+    /// The retired scalar rotate_around(target, px, py, pz, ax, ay, az, angle)
+    /// is an arity error naming the Direction form (direction-typing ι-a, task
+    /// 9646; PRD B13).
+    #[test]
+    fn compile_transform_op_rotate_around_8_arg_is_rejected_naming_the_direction_form() {
+        assert_eq!(
+            rejected_transform_message("rotate_around", 8),
+            "rotate_around() expects 4 arguments: \
+             rotate_around(geo, point3(x, y, z), dir(x, y, z), angle), got 8"
+        );
     }
 
     // ── scale(target, factors: Vector3<Real>) dispatch tests (task 4167 step-7) ──

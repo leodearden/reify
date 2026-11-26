@@ -83,7 +83,7 @@ structure Roller {
     // The driven roller: a cylinder of radius 5 mm lying on its side (rotated 90°
     // about Y, so its local axis runs along X rather than Z — see the header note),
     // placed by the relate-solve.
-    let body = rotate(cylinder(5mm, 40mm), 0.0, 1.0, 0.0, 90deg)
+    let body = rotate(cylinder(5mm, 40mm), dir(0.0, 1.0, 0.0), 90deg)
     let axis : Axis = body.axis
 }
 

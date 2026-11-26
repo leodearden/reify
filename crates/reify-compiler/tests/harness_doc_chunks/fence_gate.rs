@@ -89,9 +89,9 @@
 //! prose scanning would be asserting a coverage claim it cannot keep.
 //!
 //! `functions.md`'s `## Overloading` listing used to overstate v1 the same way,
-//! with a 3-arg `rotate(geometry, axis, angle)` overload — the very phantom
-//! `a_reify_fence_whose_body_calls_the_phantom_three_arg_rotate_is_reported`
-//! plants below. It is `reify-schematic` (a signature listing, not compilable
+//! with a 3-arg `rotate(geometry, axis, angle)` overload — a phantom then, as
+//! `rotate` accepted only 2 or 5 arguments until direction-typing ι-a (task
+//! 9646). It is `reify-schematic` (a signature listing, not compilable
 //! source), so this gate exempts it by design and could not have caught it.
 //! What closed it instead was renaming the example to `align`, a name no
 //! builtin arity-gates, so copying the CALL form alone now fails as an
@@ -120,7 +120,7 @@
 //! NAME is frequently not an error: a body types such a call from its first
 //! argument's `result_type`, the same tolerance `geometry_chunk_smoke.rs`'s
 //! scope statement warns about and the reason this module's phantom demo pins
-//! an ARITY failure on the KNOWN name `rotate` rather than an invented
+//! an ARITY failure on the KNOWN name `translate` rather than an invented
 //! identifier. So for a `reify` fence, green means "the compiler accepted
 //! this", NOT "every name in it resolves"; a reader can still pay a probe cycle
 //! at eval time. The limitation is pinned executably by
@@ -615,7 +615,7 @@ fn several_malformed_files_are_all_reported_by_a_single_run() {
 // that rots.
 // ---------------------------------------------------------------------------
 
-/// A ```` ```reify ````-tagged fence containing the PHANTOM 3-arg `rotate` is
+/// A ```` ```reify ````-tagged fence containing the PHANTOM 3-arg `translate` is
 /// reported, with the compiler's own words.
 ///
 /// # Why THIS phantom
@@ -625,22 +625,22 @@ fn several_malformed_files_are_all_reported_by_a_single_run() {
 /// unknown call NAME is frequently NOT an error — a `structure def` body types
 /// an unresolved call from its first argument's `result_type` — so a made-up
 /// name would compile clean and this demo would silently prove nothing, leaving
-/// a vacuous gate behind. `rotate` instead dispatches purely on arity at
-/// `geometry_transform.rs:37` (2 or 5 args only); a 3-arg call reaches the
-/// `n =>` arm and calls `push_labeled_arg_count_error` (`arg_check.rs:67`),
-/// which builds a genuine `Severity::Error` `Diagnostic`.
+/// a vacuous gate behind. `translate` instead dispatches on arity in
+/// `geometry_transform.rs` (4 args only); a 3-arg call fails
+/// `check_arg_count_exact` (`arg_check.rs`), which builds a genuine
+/// `Severity::Error` `Diagnostic`.
 ///
-/// This is not a hypothetical shape either: `functions.md`'s overloading
-/// example shipped exactly this 3-arg `rotate` form until #6890 renamed it to
-/// `align`. Finding it cost a printer_v01 probe cycle; this gate is what makes
-/// the compiler say it first.
+/// The shape is not hypothetical: `functions.md`'s overloading example shipped
+/// a 3-arg `rotate` form while `rotate` still rejected arity 3, until #6890
+/// renamed it to `align`. Finding it cost a printer_v01 probe cycle; this gate
+/// is what makes the compiler say it first.
 #[test]
-fn a_reify_fence_whose_body_calls_the_phantom_three_arg_rotate_is_reported() {
+fn a_reify_fence_whose_body_calls_the_phantom_three_arg_translate_is_reported() {
     let md = "prose\n\
               ```reify\n\
-              structure def PhantomRotate {\n\
+              structure def PhantomTranslate {\n\
               \x20   let blank = box(20mm, 20mm, 20mm)\n\
-              \x20   let turned = rotate(blank, vec3(0.0, 0.0, 1.0), 45deg)\n\
+              \x20   let moved = translate(blank, 1mm, 2mm)\n\
               }\n\
               ```\n";
 
@@ -663,7 +663,7 @@ fn a_reify_fence_whose_body_calls_the_phantom_three_arg_rotate_is_reported() {
         "the violation must name the fence's OPENING line (`:2`), got: {message}"
     );
     assert!(
-        message.contains("rotate() expects 2 or 5 arguments, got 3"),
+        message.contains("translate() expects 4 arguments, got 3"),
         "the violation must carry the COMPILER'S OWN diagnostic text — that is \
          the whole point: the gate replaces a printer_v01 probe cycle with the \
          compiler saying it directly. Got: {message}"
@@ -739,9 +739,9 @@ fn an_unresolved_call_name_compiles_clean_so_a_green_reify_tag_is_weaker() {
 /// falsify, and are exempt outright.
 #[test]
 fn the_same_phantom_body_under_an_exempt_tag_is_never_compiled() {
-    let phantom = "structure def PhantomRotate {\n\
+    let phantom = "structure def PhantomTranslate {\n\
                    \x20   let blank = box(20mm, 20mm, 20mm)\n\
-                   \x20   let turned = rotate(blank, vec3(0.0, 0.0, 1.0), 45deg)\n\
+                   \x20   let moved = translate(blank, 1mm, 2mm)\n\
                    }";
 
     // Control: bare `reify` DOES catch it (same body, one tag apart).
@@ -810,14 +810,14 @@ fn a_reify_fence_with_a_parse_error_is_a_named_violation_not_a_panic() {
 #[test]
 fn the_violation_echoes_the_offending_fence_body() {
     let md = "```reify\n\
-              structure def PhantomRotate {\n\
-              \x20   let turned = rotate(box(1mm, 1mm, 1mm), vec3(0.0, 0.0, 1.0), 45deg)\n\
+              structure def PhantomTranslate {\n\
+              \x20   let moved = translate(box(1mm, 1mm, 1mm), 1mm, 2mm)\n\
               }\n\
               ```\n";
 
     let violations = check_markdown("chunks/x.md", md, reify_fence_violations);
     assert!(
-        violations[0].contains("structure def PhantomRotate"),
+        violations[0].contains("structure def PhantomTranslate"),
         "the fence body must be echoed in the violation, got: {}",
         violations[0]
     );
@@ -918,15 +918,15 @@ fn prose_under_reify_invalid_does_not_satisfy_the_tag() {
 
 /// A `reify-invalid` fence that genuinely errors is NOT reported.
 ///
-/// The control. Reusing the phantom 3-arg `rotate` makes the pairing exact:
+/// The control. Reusing the phantom 3-arg `translate` makes the pairing exact:
 /// the SAME body is a violation under `reify` (check 1) and clean under
 /// `reify-invalid` (check 3), which is precisely what the two tags mean.
 #[test]
 fn a_reify_invalid_fence_that_genuinely_errors_is_not_reported() {
     let md = "```reify-invalid\n\
-              structure def PhantomRotate {\n\
+              structure def PhantomTranslate {\n\
               \x20   let blank = box(20mm, 20mm, 20mm)\n\
-              \x20   let turned = rotate(blank, vec3(0.0, 0.0, 1.0), 45deg)\n\
+              \x20   let moved = translate(blank, 1mm, 2mm)\n\
               }\n\
               ```\n";
 

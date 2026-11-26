@@ -13,10 +13,10 @@
 //!
 //! # THREE layers now guard these two builtins (task 5662)
 //!
-//! Task 5662 gave the 7-arg `mirror` and 9-arg `circular_pattern` SCALAR origin
-//! triples a COMPILE-layer LENGTH slot in
-//! `crates/reify-compiler/src/builtin_signatures.rs`, so a bare scalar origin is
-//! now caught three times over:
+//! Task 5662 gave the 9-arg `circular_pattern` SCALAR origin triple (and the
+//! 7-arg `mirror` one, since retired by direction-typing ι-a, task 9646) a
+//! COMPILE-layer LENGTH slot in `crates/reify-compiler/src/builtin_signatures.rs`,
+//! so a bare scalar origin is now caught three times over:
 //!
 //! 1. compile — `DiagnosticCode::ArgTypeMismatch`, before anything is built;
 //! 2. eval — `DiagnosticCode::DimensionedArgRejected` (tasks 5214 / 5350 / 5745);
@@ -29,14 +29,15 @@
 //! template and the `5mm` migration hint (D9), so the wording is the same even
 //! though the code is not.
 //!
-//! The consequence for THIS file is mechanical: the two rows whose sources carry
-//! a deliberately bare SCALAR origin can no longer use the strict
-//! `parse_and_compile`, which hard-asserts zero Error diagnostics. They route
+//! The consequence for THIS file is mechanical: the row whose source carries a
+//! deliberately bare SCALAR origin can no longer use the strict
+//! `parse_and_compile`, which hard-asserts zero Error diagnostics. It routes
 //! through `compile_bare_origin` instead — a TIGHTENING, not a loosening; see
-//! that helper. Every dimensioned row and every VALUE-form row stays on the
-//! strict helper: the value form is structurally excluded from the compile slot
-//! table and so still compiles clean. Why that exclusion is structural rather
-//! than a gap is stated once, on the `mirror` / `circular_pattern` arms of
+//! that helper. Every dimensioned row, every VALUE-form row and every `mirror`
+//! point-form row stays on the strict helper: the value form is structurally
+//! excluded from the compile slot table, and `mirror`'s `Point3` origin has no
+//! slot kind, so both still compile clean. Why that exclusion is structural
+//! rather than a gap is stated once, on the `circular_pattern` arms of
 //! `builtin_arg_slots` in `crates/reify-compiler/src/builtin_signatures.rs`.
 
 use reify_core::Severity;
@@ -126,16 +127,14 @@ fn mirror_value_form_plane_xy_builds_and_emits_correct_mirror_op() {
     }
 }
 
-/// (b) Back-compat: legacy 7-arg scalar form mirror(box, 0mm,0mm,0mm, 1,0,0) still builds
+/// (b) The point-direction form mirror(box, point3(0mm, 0mm, 0mm), dir(1, 0, 0)) builds
 /// without errors and emits Mirror with plane_normal ≈ [1,0,0].
-///
-/// GREEN before and after step-6 (back-compat must hold).
 #[test]
-fn mirror_scalar_back_compat_emits_correct_plane() {
+fn mirror_point_direction_form_emits_correct_plane() {
     let source = r#"
         structure def S {
             let b = box(10mm, 10mm, 10mm)
-            let m = mirror(b, 0mm, 0mm, 0mm, 1, 0, 0)
+            let m = mirror(b, point3(0mm, 0mm, 0mm), dir(1, 0, 0))
         }
     "#;
 
@@ -148,7 +147,7 @@ fn mirror_scalar_back_compat_emits_correct_plane() {
         .collect();
     assert!(
         error_diags.is_empty(),
-        "expected zero Error diagnostics for back-compat scalar mirror, got: {:?}",
+        "expected zero Error diagnostics for the point-direction mirror, got: {:?}",
         error_diags
     );
 
@@ -407,11 +406,11 @@ fn build_circular_ops_bare(source: &str) -> (usize, Vec<GeometryOp>) {
     build_circular_ops_compiled(compile_bare_origin(source))
 }
 
-/// Compile a source whose `mirror` / `circular_pattern` ORIGIN components are
+/// Compile a source whose scalar `circular_pattern` ORIGIN components are
 /// deliberately BARE (task 5662).
 ///
-/// Task 5662 gave those origin triples a compile-layer LENGTH slot, so the bare
-/// sources in this file no longer compile clean and the strict
+/// Task 5662 gave that origin triple a compile-layer LENGTH slot, so the bare
+/// source in this file no longer compiles clean and the strict
 /// `parse_and_compile` — which hard-asserts zero Error diagnostics — would panic
 /// before eval ever ran. Delegates to the shared
 /// `reify_test_support::compile_expecting_only_arg_type_mismatch`, which is
@@ -434,7 +433,7 @@ fn build_circular_ops_bare(source: &str) -> (usize, Vec<GeometryOp>) {
 /// by the eval gate — which is the thing these rows actually test.
 #[track_caller]
 fn compile_bare_origin(source: &str) -> reify_compiler::CompiledModule {
-    compile_expecting_only_arg_type_mismatch(source, "scalar mirror/circular_pattern origin")
+    compile_expecting_only_arg_type_mismatch(source, "scalar circular_pattern origin")
 }
 
 /// The kernel half of [`build_circular_ops`], shared with its bare counterpart.
@@ -556,7 +555,8 @@ fn circular_pattern_scalar_mm_origin_builds_op() {
 // PRD §6 boundary rows 5 and 6, at the outermost seam. Until δ the value form
 // BYPASSED the very gate its scalar sibling enforced: `mirror(b, plane_yz(10))`
 // reached the kernel as a 10 SI-**metre** plane offset, exit 0, zero
-// diagnostics, while `mirror(b, 10, 0, 0, 1, 0, 0)` was rejected at ox/oy/oz.
+// diagnostics, while the since-retired `mirror(b, 10, 0, 0, 1, 0, 0)` was
+// rejected at ox/oy/oz.
 // That is the 1000× hazard this PRD exists for, arriving through the one route
 // an author is most likely to take.
 //
@@ -580,16 +580,6 @@ fn build_value_form(
     want: fn(&GeometryOp) -> bool,
 ) -> (Vec<reify_core::Diagnostic>, Vec<GeometryOp>) {
     build_value_form_compiled(parse_and_compile(source), want)
-}
-
-/// The BARE-source counterpart of [`build_value_form`], narrowed to `Mirror`
-/// ops (task 5662) — see [`compile_bare_origin`] for why the strict helper can
-/// no longer be used on a bare SCALAR origin.
-#[track_caller]
-fn build_mirror_bare(source: &str) -> (Vec<reify_core::Diagnostic>, Vec<GeometryOp>) {
-    build_value_form_compiled(compile_bare_origin(source), |op| {
-        matches!(op, GeometryOp::Mirror { .. })
-    })
 }
 
 /// The kernel half of [`build_value_form`], shared with its bare counterpart.
@@ -743,28 +733,28 @@ fn mirror_value_form_dimensioned_plane_origin_builds_unchanged() {
     }
 }
 
-/// NO-REGRESSION lock on the SCALAR form, which δ must leave completely alone.
-/// Its three `ox`/`oy`/`oz` rejections keep their exact pre-δ wording — this is
-/// what proves the decoded-value route joined the shared chokepoint rather than
-/// forking a second copy of the text.
+/// The point form's bare-origin rejections speak the one shared wording.
 ///
-/// Routed through [`build_mirror_bare`] since task 5662 gave this same origin a
-/// COMPILE-layer slot. The EVAL-layer assertions below are deliberately
-/// untouched, and they are what makes the two-layer split observable: the
-/// compile diagnostic carries `ArgTypeMismatch` while these carry
-/// `DimensionedArgRejected`, with byte-identical wording (PRD D2 + D9).
+/// δ's no-regression lock was on the 7-arg SCALAR form, whose `ox`/`oy`/`oz`
+/// rejections proved the decoded-value route joined the shared chokepoint
+/// rather than forking a second copy of the text. Direction-typing ι-a (task
+/// 9646) retired that form for `mirror(b, point3(..), dir(..))`, whose origin
+/// goes through `accept_length_point3` — the same chokepoint, under the
+/// `origin.x`/`origin.y`/`origin.z` names of the argument the author wrote. The
+/// `Point3` origin has no compile slot, so the source compiles clean on the
+/// strict helper and only the eval-layer `DimensionedArgRejected` fires.
 #[test]
-fn mirror_scalar_bare_origin_rejections_are_unchanged_by_delta() {
-    let (diagnostics, mirror_ops) = build_mirror_bare(
+fn mirror_point_form_bare_origin_rejections_use_the_shared_wording() {
+    let (diagnostics, mirror_ops) = build_mirror(
         r#"
-        structure def BareScalarMirror {
+        structure def BarePointMirror {
             let b = box(10mm, 10mm, 10mm)
-            let m = mirror(b, 10, 0, 0, 1, 0, 0)
+            let m = mirror(b, point3(10, 0, 0), dir(1, 0, 0))
         }
         "#,
     );
 
-    for name in ["ox", "oy", "oz"] {
+    for name in ["origin.x", "origin.y", "origin.z"] {
         let expected = format!(
             "mirror: {name} argument expects Length, got Int; \
              pass a dimensioned length such as `5mm`"
@@ -773,27 +763,27 @@ fn mirror_scalar_bare_origin_rejections_are_unchanged_by_delta() {
             diagnostics.iter().any(|d| d.message == expected
                 && d.severity == reify_core::Severity::Error
                 && d.code == Some(reify_core::DiagnosticCode::DimensionedArgRejected)),
-            "the scalar form's `{name}` rejection must be unchanged by δ; \
+            "the point form's `{name}` rejection must use the shared wording; \
              expected {expected:?}, got: {:?}",
             diagnostics
         );
     }
     assert!(
         mirror_ops.is_empty(),
-        "the scalar bare-origin form must still be DROPPED; got {:?}",
+        "the point-form bare origin must be DROPPED; got {:?}",
         mirror_ops
     );
 }
 
-/// The scalar-form positive control, unchanged by δ: a dimensioned scalar origin
-/// still builds clean. Paired with the row above so neither can pass vacuously.
+/// The point-form positive control: the same origin, dimensioned, builds clean.
+/// Paired with the row above so neither can pass vacuously.
 #[test]
-fn mirror_scalar_dimensioned_origin_still_builds_clean() {
+fn mirror_point_form_dimensioned_origin_builds_clean() {
     let (diagnostics, mirror_ops) = build_mirror(
         r#"
-        structure def MmScalarMirror {
+        structure def MmPointMirror {
             let b = box(10mm, 10mm, 10mm)
-            let m = mirror(b, 0mm, 0mm, 0mm, 1, 0, 0)
+            let m = mirror(b, point3(10mm, 0mm, 0mm), dir(1, 0, 0))
         }
         "#,
     );
@@ -970,4 +960,46 @@ fn circular_pattern_and_mirror_accept_axis_through_and_plane_through_datums() {
         [GeometryOp::Mirror { plane_normal, .. }] => assert_unit_z(plane_normal, "plane_normal"),
         other => panic!("expected exactly one Mirror op, got {other:?}"),
     }
+}
+
+// ── direction-typing ι-a (task 9646): mirror(geo, origin, normal) ──────────
+
+/// The Direction form and the plane form survive retirement of the scalar
+/// form, so their equality is a durable cross-form check: `mirror(b,
+/// point3(0mm, 0mm, 0mm), dir(1, 0, 0))` reaches the kernel as exactly the op
+/// `mirror(b, plane_yz(0mm))` does, bit for bit.
+#[test]
+fn mirror_direction_form_equals_the_plane_form() {
+    let mirror_op = |call: &str| -> ([f64; 3], [f64; 3]) {
+        let (diagnostics, ops) = build_mirror(&format!(
+            "structure def S {{\n    let b = box(10mm, 10mm, 10mm)\n    let m = {call}\n}}\n"
+        ));
+        assert!(
+            diagnostics.iter().all(|d| d.severity != Severity::Error),
+            "{call}: unexpected errors: {diagnostics:?}"
+        );
+        match ops.as_slice() {
+            [
+                GeometryOp::Mirror {
+                    plane_origin,
+                    plane_normal,
+                    ..
+                },
+            ] => (*plane_origin, *plane_normal),
+            other => panic!("{call}: expected one Mirror op, got {other:?}"),
+        }
+    };
+    let (direction_origin, direction_normal) =
+        mirror_op("mirror(b, point3(0mm, 0mm, 0mm), dir(1, 0, 0))");
+    let (plane_origin, plane_normal) = mirror_op("mirror(b, plane_yz(0mm))");
+    assert_eq!(
+        direction_origin.map(f64::to_bits),
+        plane_origin.map(f64::to_bits),
+        "origin"
+    );
+    assert_eq!(
+        direction_normal.map(f64::to_bits),
+        plane_normal.map(f64::to_bits),
+        "normal"
+    );
 }

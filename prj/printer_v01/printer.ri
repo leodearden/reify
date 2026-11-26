@@ -347,7 +347,7 @@ pub structure Capstan {
     // helical spine and re-centred on the drum mid-plane. The spine runs at the
     // seat's ARC CENTRE — not at pitch_r, which is where the seated rope's
     // centreline ends up.
-    aux let groove_profile = translate(rotate(circle(groove_r), 1.0, 0.0, 0.0, 0deg - 90deg), seat_c, 0mm, 0mm)
+    aux let groove_profile = translate(rotate(circle(groove_r), dir(1.0, 0.0, 0.0), 0deg - 90deg), seat_c, 0mm, 0mm)
     aux let groove_path    = helix(seat_c, lead, groove_len)
     aux let groove_cutter  = translate(sweep(groove_profile, groove_path), 0mm, 0mm, 0mm - groove_len / 2)
 
@@ -2333,7 +2333,7 @@ pub structure AFrame {
                 // Rail bore: one Y-axis cylinder cuts both sockets' C-grips
                 // (R_x(−90°) maps the cylinder's +Z axis onto +Y; base at y0).
                 translate(
-                    rotate(cylinder(rail_d_m / 2 + 0.5mm, rail_span_m), 1.0, 0.0, 0.0, 0deg - 90deg),
+                    rotate(cylinder(rail_d_m / 2 + 0.5mm, rail_span_m), dir(1.0, 0.0, 0.0), 0deg - 90deg),
                     rail_x_w, centre_y - rail_span_m / 2, rail_z_m),
                 // Rear-pillar tendon-routing window (open outboard + rear).
                 translate(box(50mm, pil_wy + 10mm, win_z1 - win_z0), win_x0 + 25mm, pil_r_cy - 5mm, win_cz)
@@ -2388,13 +2388,13 @@ pub structure AFrame {
         // outside per spec) — linear_pattern as a boolean cutter.
         linear_pattern(
             translate(
-                rotate(cylinder(grom_d / 2, side_t * 3), 1.0, 0.0, 0.0, 90deg),
+                rotate(cylinder(grom_d / 2, side_t * 3), dir(1.0, 0.0, 0.0), 90deg),
                 centre_x - 150mm, y0 + side_t * 1.5, 0mm - 50mm),
             1, 0, 0, 2, 300mm)
     )
 
     let body = union(
-        union(side_r, mirror(side_r, centre_x, 0mm, 0mm, 1.0, 0.0, 0.0)),
+        union(side_r, mirror(side_r, point3(centre_x, 0mm, 0mm), dir(1.0, 0.0, 0.0))),
         centre_faces
     )
 
