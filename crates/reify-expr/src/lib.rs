@@ -41,6 +41,7 @@ pub use dual_env::DualEnv;
 pub use dual_eval::{eval_dual, eval_dual_with_env, jacobian_row, jacobian_row_with_env};
 pub use dual_seeds::Seeds;
 pub use non_differentiable::NonDifferentiable;
+pub use upstream_values_hash::realization_upstream_values_hash;
 
 use std::cell::RefCell;
 use std::collections::HashMap;

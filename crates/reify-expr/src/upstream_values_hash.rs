@@ -1,8 +1,40 @@
+//! The kept-code home of the realization upstream-values fold. The old
+//! engine's held copy (reify-eval `compute_realization_upstream_values_hash_from_ops`)
+//! must stay byte-equal to it; the guard is the `ctor_instance_geometry_selector`
+//! drift test in reify-eval's harness_engine.
+
+use reify_core::hash::ContentHash;
+use reify_ir::{CompiledExpr, Value};
+
+/// The 32-byte upstream-values hash of a realization whose ops carry `args`,
+/// each evaluated by `eval`. An arg holding a `CrossSubGeometryRef` is skipped
+/// unevaluated: its identity is already carried by the op's geometry operands.
+pub fn realization_upstream_values_hash<'a>(
+    args: impl IntoIterator<Item = &'a (String, CompiledExpr)>,
+    mut eval: impl FnMut(&CompiledExpr) -> Value,
+) -> [u8; 32] {
+    let mut h = ContentHash::of(b"uvh1");
+    for (name, expr) in args {
+        if expr.contains_cross_sub_geometry_ref() {
+            continue;
+        }
+        h = h
+            .combine(ContentHash::of_str(name))
+            .combine(eval(expr).content_hash());
+    }
+    let lo = h.0.to_le_bytes();
+    let hi = h.combine(ContentHash::of(b"uvh2")).0.to_le_bytes();
+    let mut out = [0u8; 32];
+    out[..16].copy_from_slice(&lo);
+    out[16..].copy_from_slice(&hi);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use reify_core::{Type, ValueCellId};
-    use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, Value};
+    use reify_ir::{BinOp, CompiledExprKind};
 
     fn int(n: i64) -> CompiledExpr {
         CompiledExpr::literal(Value::Int(n), Type::Int)
