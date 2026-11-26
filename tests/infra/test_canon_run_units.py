@@ -607,6 +607,15 @@ class BoundRoute(CliCase):
         self.assertEqual(Path(self.target, ".reify-build-root").read_text(), self.tree + "\n")
         self.assertEqual(self.leftovers(), [])
 
+    def test_status_on_the_bound_route_reports_canon(self):
+        """status, too, reads mountinfo from the reader main is given."""
+        result = self.bound("status")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["build_dir_mode"], "canon")
+        self.assertIn("is already this tree", report["reason"])
+        self.assertIsNone(report["store_reachable"])
+
     def test_command_status_passes_through(self):
         self.env["FAKE_CARGO_EXIT"] = "5"
         self.one_call(self.bound("cargo", "build"), status=5)

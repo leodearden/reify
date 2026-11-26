@@ -106,10 +106,11 @@ def run(argv, *, cwd, env):
     return subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True, check=False)
 
 
-# Runs <scripts dir>/canon_run.py's main with one extra mountinfo line naming
-# CANON as a mount point. With REIFY_CANON_ROOT set to the tree's own path, C3's
-# bound check then holds (same directory, listed as a mount), so the BOUND route
-# runs where no mount namespace can be entered (argv: scripts dir, canon_run args).
+# Runs <scripts dir>/canon_run.py's main, passing it a mountinfo reader that adds
+# one line naming CANON as a mount point. With REIFY_CANON_ROOT set to the tree's
+# own path, C3's bound check then holds (same directory, listed as a mount), so
+# the BOUND route runs where no mount namespace can be entered (argv: scripts
+# dir, canon_run args).
 BOUND_RUNNER = r"""
 import sys
 
@@ -119,9 +120,7 @@ import canon_run
 canon = canon_run.canon_root(canon_run.caller_environ())
 escaped = canon.replace("\\", "\\134").replace(" ", "\\040")
 bound = f"36 35 0:51 / {escaped} rw,relatime shared:1 - ext4 /dev/vda1 rw\n"
-host_mountinfo = canon_run.read_mountinfo
-canon_run.read_mountinfo = lambda: host_mountinfo() + bound
-sys.exit(canon_run.main(sys.argv[2:]))
+sys.exit(canon_run.main(sys.argv[2:], mountinfo=lambda: canon_run.read_mountinfo() + bound))
 """
 
 
