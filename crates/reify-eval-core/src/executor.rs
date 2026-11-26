@@ -15,7 +15,7 @@ use crate::failure::{Failure, OutsideFailure, panic_message};
 use crate::input::{Input, InputKey};
 use crate::job::Report;
 use crate::kinds::Kinds;
-use crate::mailbox::{Ask, Posted, Reply};
+use crate::mailbox::{Ask, Posted};
 use crate::outcome::{Erased, Outcome};
 use crate::path::{Path, Root};
 use crate::produced::Produced;
@@ -23,7 +23,7 @@ use crate::ready::ReadyQueue;
 use crate::requests::{Request, Requests};
 use crate::resource::Resources;
 use crate::serve;
-use crate::serve::section::InFlight;
+use crate::serve::section::{Delivery, InFlight};
 use crate::snapshot::Snapshot;
 use crate::task::{Task, TaskKey};
 
@@ -81,8 +81,7 @@ impl Executor {
     pub fn end(&mut self, request: Request) {
         for key in self.requests.end(request) {
             if let Some(task) = self.tasks.remove(&key) {
-                task.cancel.set();
-                task.discard();
+                task.abandon();
             }
         }
     }
@@ -144,7 +143,10 @@ impl Executor {
     /// Reads the root's declaration from the snapshot with the typed read a
     /// body uses (decision D11), then joins or starts its body.
     fn demand_root(&mut self, request: RequestId, snapshot: &Snapshot, root: Root) {
-        let key = (snapshot.id(), Path::root(root.clone()));
+        let key = TaskKey {
+            snapshot: snapshot.id(),
+            path: Path::root(root.clone()),
+        };
         if self.tasks.contains_key(&key) {
             return self.requests.want(request, key);
         }
@@ -154,7 +156,7 @@ impl Executor {
             .downcast::<Declaration>();
         match declared {
             Outcome::Value(declaration) => self.start(request, key, declaration, snapshot),
-            settled => self.tell(request, key.1, Answer::Final(settled.erase())),
+            settled => self.tell(request, key.path, Answer::Final(settled.erase())),
         }
     }
 
@@ -168,7 +170,7 @@ impl Executor {
         let kind_id = declaration.kind();
         let Some(kind) = self.kinds.get(kind_id) else {
             let unknown = OutsideFailure::UnknownKind { kind: kind_id.0 };
-            return self.tell(request, key.1, Answer::Pending(unknown));
+            return self.tell(request, key.path, Answer::Pending(unknown));
         };
         self.counters.count_body_run(kind_id);
         self.tasks.insert(
@@ -183,14 +185,14 @@ impl Executor {
         let Some(task) = self
             .tasks
             .get_mut(&key)
-            .filter(|task| task.section.is_none())
+            .filter(|task| !task.waits_on_a_section())
         else {
             return;
         };
         let posted = match catch_unwind(AssertUnwindSafe(|| task.poll())) {
             Ok(Poll::Ready(Produced::Outcome(outcome))) => return self.finish(&key, outcome),
             Ok(Poll::Ready(Produced::Outside(failure))) => return self.end_outside(&key, failure),
-            Ok(Poll::Pending) => task.mailbox.take_posted(),
+            Ok(Poll::Pending) => task.take_posted(),
             Err(payload) => {
                 let message = panic_message(&*payload);
                 return self.end_outside(&key, OutsideFailure::BodyPanicked { message });
@@ -198,26 +200,17 @@ impl Executor {
         };
         match posted {
             Posted::Ask(Ask::Read(r)) => {
-                let outcome = serve::read::answer(&task.declaration, &task.snapshot, &r);
-                task.mailbox.reply(Reply::Outcome(outcome));
+                task.answer_read(serve::read::answer(task.declaration(), task.snapshot(), &r));
                 self.ready.push(key);
             }
-            Posted::Ask(Ask::Exclusive {
-                resource,
-                resource_name,
-                job,
-            }) => {
-                let started = serve::section::start(
-                    task,
-                    &key,
-                    (resource, resource_name),
-                    job,
-                    &mut self.resources,
-                    &mut self.in_flight,
-                    &mut self.counters,
-                );
-                if let Err(failure) = started {
-                    self.end_outside(&key, failure);
+            Posted::Ask(Ask::Exclusive(ask)) => {
+                let cancel = task.cancel_flag();
+                match self.in_flight.start(&key, ask, cancel, &mut self.resources) {
+                    Ok(serial) => {
+                        task.begin_section(serial);
+                        self.counters.count_section();
+                    }
+                    Err(failure) => self.end_outside(&key, failure),
                 }
             }
             Posted::TwoRequestsAtOnce => {
@@ -231,7 +224,7 @@ impl Executor {
     fn finish(&mut self, key: &TaskKey, outcome: Outcome<Erased>) {
         self.tasks.remove(key);
         for request in self.requests.settle(key) {
-            self.tell(request, key.1.clone(), Answer::Final(outcome.clone()));
+            self.tell(request, key.path.clone(), Answer::Final(outcome.clone()));
         }
     }
 
@@ -242,7 +235,7 @@ impl Executor {
             task.discard();
         }
         for request in self.requests.settle(key) {
-            self.tell(request, key.1.clone(), Answer::Pending(failure.clone()));
+            self.tell(request, key.path.clone(), Answer::Pending(failure.clone()));
         }
     }
 
@@ -261,18 +254,8 @@ impl Executor {
             return false;
         }
         loop {
-            if let Some((serial, product)) = self.in_flight.take_finished() {
-                let failed = serve::section::deliver(
-                    serial,
-                    product,
-                    &mut self.in_flight,
-                    &mut self.tasks,
-                    &mut self.ready,
-                    &mut self.resources,
-                );
-                if let Some((key, failure)) = failed {
-                    self.end_outside(&key, failure);
-                }
+            if let Some(delivery) = self.in_flight.deliver(&mut self.resources) {
+                self.hand_over(delivery);
                 return true;
             }
             let report = self.resources.receive();
@@ -280,18 +263,50 @@ impl Executor {
         }
     }
 
+    /// Gives a finished section's product to the task still waiting on it,
+    /// or ends that task's node with the section's failure. With no task
+    /// waiting, the product is dropped here, which releases what it holds.
+    fn hand_over(&mut self, delivery: Delivery) {
+        let Delivery {
+            key,
+            serial,
+            product,
+        } = delivery;
+        let Some(task) = self
+            .tasks
+            .get_mut(&key)
+            .filter(|task| task.waits_on(serial))
+        else {
+            return;
+        };
+        match product {
+            Ok(product) => {
+                task.resume(product);
+                self.ready.push(key);
+            }
+            Err(failure) => self.end_outside(&key, failure),
+        }
+    }
+
+    /// The task still waiting on section `serial`: the one that started it
+    /// may have been dropped, and another started in its place.
+    fn waiting_on(&self, serial: u64) -> Option<TaskKey> {
+        let key = self.in_flight.starter(serial)?;
+        let task = self.tasks.get(key)?;
+        task.waits_on(serial).then(|| key.clone())
+    }
+
     fn take_in(&mut self, report: Report) {
         match report {
             Report::Progress { serial, note } => {
-                let Some(key) = serve::section::waiting_task(serial, &self.in_flight, &self.tasks)
-                else {
+                let Some(key) = self.waiting_on(serial) else {
                     return;
                 };
-                for request in self.requests.wanting(key) {
+                for request in self.requests.wanting(&key) {
                     let note = Arc::clone(&note);
                     self.events.push(Event::Progress {
                         request,
-                        path: key.1.clone(),
+                        path: key.path.clone(),
                         note,
                     });
                 }

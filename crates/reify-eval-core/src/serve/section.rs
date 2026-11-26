@@ -1,22 +1,29 @@
-//! An exclusive section: started on its resource's thread, and its product
-//! delivered to the body waiting on it.
+//! Exclusive sections in flight: each started on its resource's thread for
+//! one task, and what it gave once it has finished.
 
 use std::any::TypeId;
 use std::collections::{BTreeMap, VecDeque};
 
-use crate::counters::Counters;
+use crate::cancel::Cancel;
 use crate::failure::OutsideFailure;
 use crate::job::{Product, SectionFault};
-use crate::mailbox::{Reply, SectionJob};
-use crate::ready::ReadyQueue;
+use crate::mailbox::SectionAsk;
 use crate::resource::{Resources, Unstarted};
-use crate::task::{Task, TaskKey};
+use crate::task::TaskKey;
 
 /// A section started and not yet delivered.
 struct Started {
     key: TaskKey,
     resource: TypeId,
     resource_name: &'static str,
+}
+
+/// A finished section, for the task that started it: its product, or the
+/// failure outside the inputs that task's node ends with.
+pub(crate) struct Delivery {
+    pub key: TaskKey,
+    pub serial: u64,
+    pub product: Result<Product, OutsideFailure>,
 }
 
 /// The sections started and not yet delivered, each with the task that
@@ -32,100 +39,73 @@ impl InFlight {
         self.started.len()
     }
 
+    /// Queues the section task `key` asked for, returning its serial. An
+    /// `Err` is the failure the task's node ends with.
+    pub fn start(
+        &mut self,
+        key: &TaskKey,
+        ask: SectionAsk,
+        cancel: Cancel,
+        resources: &mut Resources,
+    ) -> Result<u64, OutsideFailure> {
+        let SectionAsk {
+            resource,
+            resource_name,
+            job,
+        } = ask;
+        let serial =
+            resources
+                .start(resource, cancel, job)
+                .map_err(|unstarted| match unstarted {
+                    Unstarted::NoResource => OutsideFailure::NoResource {
+                        resource: resource_name,
+                    },
+                    Unstarted::Dead => OutsideFailure::ResourceDead {
+                        resource: resource_name,
+                    },
+                })?;
+        let started = Started {
+            key: key.clone(),
+            resource,
+            resource_name,
+        };
+        self.started.insert(serial, started);
+        Ok(serial)
+    }
+
     pub fn arrived(&mut self, serial: u64, product: Result<Product, SectionFault>) {
         self.finished.push_back((serial, product));
     }
 
-    pub fn take_finished(&mut self) -> Option<(u64, Result<Product, SectionFault>)> {
-        self.finished.pop_front()
-    }
-}
-
-/// Starts the section `task` posted. An `Err` is the failure its node ends
-/// with.
-pub(crate) fn start(
-    task: &mut Task,
-    key: &TaskKey,
-    (resource, resource_name): (TypeId, &'static str),
-    job: SectionJob,
-    resources: &mut Resources,
-    in_flight: &mut InFlight,
-    counters: &mut Counters,
-) -> Result<(), OutsideFailure> {
-    let serial = resources
-        .start(resource, task.cancel.clone(), job)
-        .map_err(|unstarted| match unstarted {
-            Unstarted::NoResource => OutsideFailure::NoResource {
-                resource: resource_name,
-            },
-            Unstarted::Dead => OutsideFailure::ResourceDead {
-                resource: resource_name,
-            },
-        })?;
-    counters.count_section();
-    task.section = Some(serial);
-    in_flight.started.insert(
-        serial,
-        Started {
-            key: key.clone(),
-            resource,
-            resource_name,
-        },
-    );
-    Ok(())
-}
-
-/// Delivers a finished section to the task waiting on it. A product whose
-/// task is gone is dropped here, which releases what it held. A section
-/// that gave no product returns the node to end and the failure outside
-/// the inputs to end it with; a panic marks its resource dead.
-pub(crate) fn deliver(
-    serial: u64,
-    product: Result<Product, SectionFault>,
-    in_flight: &mut InFlight,
-    tasks: &mut BTreeMap<TaskKey, Task>,
-    ready: &mut ReadyQueue<TaskKey>,
-    resources: &mut Resources,
-) -> Option<(TaskKey, OutsideFailure)> {
-    let started = in_flight.started.remove(&serial)?;
-    let waiting = tasks
-        .get_mut(&started.key)
-        .filter(|task| task.waits_on(serial));
-    let failure = match (product, waiting) {
-        (Ok(product), Some(task)) => {
-            task.mailbox.reply(Reply::Product(product));
-            task.section = None;
-            ready.push(started.key);
-            return None;
-        }
-        (Ok(product), None) => {
-            drop(product);
-            return None;
-        }
-        (Err(SectionFault::Panicked { message }), waiting) => {
-            resources.mark_dead(started.resource);
-            waiting.map(|_| OutsideFailure::SectionPanicked {
+    /// The earliest finished section, no longer in flight. A panic marks
+    /// its resource dead.
+    pub fn deliver(&mut self, resources: &mut Resources) -> Option<Delivery> {
+        let (serial, product) = self.finished.pop_front()?;
+        let started = self
+            .started
+            .remove(&serial)
+            .expect("a section reports once, after it was started");
+        let product = product.map_err(|fault| match fault {
+            SectionFault::Panicked { message } => {
+                resources.mark_dead(started.resource);
+                OutsideFailure::SectionPanicked {
+                    resource: started.resource_name,
+                    message,
+                }
+            }
+            SectionFault::Dead => OutsideFailure::ResourceDead {
                 resource: started.resource_name,
-                message,
-            })
-        }
-        (Err(SectionFault::Dead), waiting) => waiting.map(|_| OutsideFailure::ResourceDead {
-            resource: started.resource_name,
-        }),
-    };
-    failure.map(|failure| (started.key, failure))
-}
+            },
+        });
+        Some(Delivery {
+            key: started.key,
+            serial,
+            product,
+        })
+    }
 
-/// The task that is still waiting on section `serial`, if any: the one
-/// that started it may have been dropped, and another started in its place.
-pub(crate) fn waiting_task<'a>(
-    serial: u64,
-    in_flight: &'a InFlight,
-    tasks: &BTreeMap<TaskKey, Task>,
-) -> Option<&'a TaskKey> {
-    let key = &in_flight.started.get(&serial)?.key;
-    tasks
-        .get(key)
-        .is_some_and(|task| task.waits_on(serial))
-        .then_some(key)
+    /// The task that started section `serial`, while it is in flight.
+    pub fn starter(&self, serial: u64) -> Option<&TaskKey> {
+        self.started.get(&serial).map(|started| &started.key)
+    }
 }

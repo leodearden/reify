@@ -5,7 +5,7 @@ use std::any::{TypeId, type_name};
 use std::sync::Arc;
 
 use crate::cancel::Cancel;
-use crate::mailbox::{Ask, Mailbox, Reply, SectionJob};
+use crate::mailbox::{Ask, Mailbox, Reply, SectionAsk, SectionJob};
 use crate::outcome::{Outcome, Value};
 use crate::reference::Ref;
 use crate::section::Section;
@@ -42,11 +42,11 @@ impl Cx {
             let resource = resource.expect("a resource thread holds the type it was added under");
             Box::new(section(resource, &Section::new(parts)))
         });
-        let ask = Ask::Exclusive {
+        let ask = Ask::Exclusive(SectionAsk {
             resource: TypeId::of::<R>(),
             resource_name: type_name::<R>(),
             job,
-        };
+        });
         match self.mailbox.exchange(ask).await {
             Reply::Product(product) => *product
                 .downcast::<T>()

@@ -16,13 +16,16 @@ use crate::section::SectionParts;
 
 pub(crate) type SectionJob = Box<dyn FnOnce(&mut dyn Any, SectionParts) -> Product + Send>;
 
+/// A section a body asks to run on resource `resource`.
+pub(crate) struct SectionAsk {
+    pub resource: TypeId,
+    pub resource_name: &'static str,
+    pub job: SectionJob,
+}
+
 pub(crate) enum Ask {
     Read(Ref),
-    Exclusive {
-        resource: TypeId,
-        resource_name: &'static str,
-        job: SectionJob,
-    },
+    Exclusive(SectionAsk),
 }
 
 pub(crate) enum Reply {
