@@ -4,10 +4,12 @@
 
 mod case;
 mod design;
+mod faulty;
 mod g0;
 mod generator;
 mod order;
 mod print;
+mod printed_faulty_cell;
 mod reduce;
 mod reference;
 mod rng;
