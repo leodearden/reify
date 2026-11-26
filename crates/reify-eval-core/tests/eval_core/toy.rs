@@ -53,6 +53,26 @@ impl Kind for Cell {
     }
 }
 
+/// Adds the i64s at "0" and "1", read in one read.
+pub struct Pair;
+
+impl Kind for Pair {
+    type Out = i64;
+    const ID: KindId = KindId("toy.pair");
+
+    async fn run(cx: &Cx) -> Produced<i64> {
+        let refs = [Ref::binding("0"), Ref::binding("1")];
+        let mut sum = 0;
+        for read in cx.read_all::<i64>(&refs).await {
+            match read {
+                Outcome::Value(value) => sum += *value,
+                other => return Produced::Outcome(other),
+            }
+        }
+        Produced::Outcome(Outcome::of(sum))
+    }
+}
+
 /// A cell that adds what `terms` name, bound at "0", "1", … in order.
 pub fn cell_over(terms: impl IntoIterator<Item = Binding>) -> Declaration {
     terms

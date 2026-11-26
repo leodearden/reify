@@ -4,10 +4,10 @@
 
 use reify_eval_core::{
     Answer, Core, Cx, Declaration, Erased, Kind, KindId, Outcome, OutsideFailure, Path, Produced,
-    Ref, Snapshot, Turn,
+    Snapshot, Turn,
 };
 
-use crate::toy::{self, Cell};
+use crate::toy::{self, Cell, Pair};
 
 const SPENT: OutsideFailure = OutsideFailure::OutOfMemory { resource: "toy" };
 
@@ -20,26 +20,6 @@ impl Kind for Spent {
 
     async fn run(_: &Cx) -> Produced<i64> {
         Produced::Outside(SPENT)
-    }
-}
-
-/// Adds the i64s at "0" and "1", read in one read.
-struct Pair;
-
-impl Kind for Pair {
-    type Out = i64;
-    const ID: KindId = KindId("toy.pair");
-
-    async fn run(cx: &Cx) -> Produced<i64> {
-        let refs = [Ref::binding("0"), Ref::binding("1")];
-        let mut sum = 0;
-        for read in cx.read_all::<i64>(&refs).await {
-            match read {
-                Outcome::Value(value) => sum += *value,
-                other => return Produced::Outcome(other),
-            }
-        }
-        Produced::Outcome(Outcome::of(sum))
     }
 }
 

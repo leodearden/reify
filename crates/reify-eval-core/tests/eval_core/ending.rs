@@ -7,10 +7,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use reify_eval_core::{
     Answer, Binding, Core, Cx, Declaration, Held, InputKey, Kind, KindId, Outcome, Produced, Ref,
-    Snapshot, Turn,
+    RequestId, Snapshot, Turn,
 };
 
-use crate::toy::{self, BoxHandle, BoxShape, Scope, Shape, ToyKernel, Watch};
+use crate::toy::{self, BoxHandle, BoxShape, Pair, Scope, Shape, ToyKernel, Watch};
 
 #[test]
 fn a_request_ended_while_its_body_s_section_runs_leaves_the_kernel_holding_nothing_after_a_drain() {
@@ -320,4 +320,80 @@ fn a_body_queued_when_its_request_ended_and_demanded_again_waits_only_on_the_cor
 
     let answer = toy::the_answer(&core.take_events(), &second, &a);
     assert_eq!(answer.downcast::<i64>(), Answer::Final(Outcome::of(2)));
+}
+
+/// A gated core with the toy kinds, scopes, `Volume` and `Pair`, and a
+/// snapshot of root scope R whose members `a` and `b` read each other, `b`
+/// also reading `vol`, the volume of the shape `box` of side 2.
+fn ring_over_a_section(watch: &Watch) -> (Core, toy::GateKeeper, Snapshot) {
+    let builder = toy::with_toys()
+        .kind::<Scope>()
+        .and_then(|builder| builder.kind::<Volume>())
+        .and_then(|builder| builder.kind::<Pair>())
+        .expect("distinct kinds");
+    let (mut core, keeper) = toy::gated(builder, watch);
+    let pair = Declaration::new(Pair::ID)
+        .bind("0", toy::sibling(&["a"]))
+        .bind("1", toy::sibling(&["vol"]));
+    let volume = Declaration::new(Volume::ID).bind("shape", toy::sibling(&["box"]));
+    let mut inputs = vec![toy::named("side", 2_i64)];
+    inputs.extend(toy::root_scope(
+        "R",
+        toy::members([
+            ("a", toy::cell_over([toy::sibling(&["b"])])),
+            ("b", pair),
+            ("vol", volume),
+            ("box", toy::shape("side")),
+        ]),
+    ));
+    let snapshot = core.snapshot(inputs);
+    (core, keeper, snapshot)
+}
+
+/// Ends a request for R/a once `box`'s section has been entered, so that
+/// `a` and `b` await each other and `b` awaits `vol`, which awaits that
+/// running section.
+fn end_while_a_ring_awaits_a_section(
+    core: &mut Core,
+    keeper: &toy::GateKeeper,
+    snapshot: &Snapshot,
+) -> RequestId {
+    let a = toy::below("R", &["a"]);
+    let request = core.evaluate(snapshot, toy::demand([&a]));
+    let ended = request.id();
+    assert_eq!(core.turn(), Turn::SectionsRunning(1));
+    keeper.entered();
+    core.end(request);
+    ended
+}
+
+#[test]
+fn ending_a_request_drops_a_ring_and_the_section_it_awaits() {
+    let watch = Watch::default();
+    let (mut core, keeper, snapshot) = ring_over_a_section(&watch);
+    let ended = end_while_a_ring_awaits_a_section(&mut core, &keeper, &snapshot);
+
+    drop(snapshot);
+    keeper.open();
+    core.drain();
+
+    assert!(watch.saw_cancelled());
+    assert_eq!(watch.live_boxes(), 0);
+    assert!(toy::answers(&core.take_events(), ended).is_empty());
+}
+
+#[test]
+fn ending_a_request_drops_a_ring_while_its_snapshot_is_held() {
+    let watch = Watch::default();
+    let (mut core, keeper, snapshot) = ring_over_a_section(&watch);
+    let ended = end_while_a_ring_awaits_a_section(&mut core, &keeper, &snapshot);
+
+    keeper.open();
+    core.drain();
+
+    assert!(watch.saw_cancelled());
+    assert_eq!(watch.live_boxes(), 0, "nothing filed the box");
+    assert_eq!(core.counters().body_runs(Shape::ID), 1);
+    assert!(toy::answers(&core.take_events(), ended).is_empty());
+    drop(snapshot);
 }
