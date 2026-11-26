@@ -36,6 +36,9 @@ impl<K: Kind> ErasedKind for Of<K> {
 
     fn declares(&self, out: &Erased, step: &Step) -> Option<Declaration> {
         let out: &dyn Any = out;
-        K::declares(out.downcast_ref::<K::Out>()?, step)
+        let out = out
+            .downcast_ref::<K::Out>()
+            .expect("a node's value is its kind's Out");
+        K::declares(out, step)
     }
 }

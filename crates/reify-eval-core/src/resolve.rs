@@ -70,8 +70,14 @@ pub(crate) fn declaration_of(step: &Step, entry: &Entry, kinds: &Kinds) -> Outco
         (Outcome::Failure(failure), _) => Outcome::Failure(failure.clone()),
         (Outcome::Value(value), Some(node)) => kinds
             .get(node.kind())
-            .and_then(|kind| kind.declares(&**value, step))
+            .expect("a node whose body ran has a kind the core was built with")
+            .declares(&**value, step)
             .map_or(Outcome::Absent, Outcome::of),
-        (Outcome::Value(_), None) | (Outcome::Absent, _) => Outcome::Absent,
+        (Outcome::Value(_), None) => {
+            unreachable!(
+                "a value in the index was produced by a body, whose declaration is filed with it"
+            )
+        }
+        (Outcome::Absent, _) => Outcome::Absent,
     }
 }
