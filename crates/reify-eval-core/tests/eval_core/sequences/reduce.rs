@@ -339,7 +339,7 @@ mod tests {
     }
 
     #[test]
-    fn every_candidate_is_smaller_well_formed_and_acyclic() {
+    fn every_candidate_is_smaller_and_well_formed() {
         for (seed, case) in gate_cases() {
             let smaller = candidates(&case);
             assert!(!smaller.is_empty(), "seed {seed} has no candidate");

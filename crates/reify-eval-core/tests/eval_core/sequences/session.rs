@@ -60,6 +60,12 @@ shapes! {
     DivisionByZero,
     /// A cell blocked by the failure at a ref it read.
     BlockedBy,
+    /// "cycle" at a path where a node is declared: a node on a ring of
+    /// waits, or one that answers what it read there.
+    Cycle,
+    /// "cycle" at a path with no declaration of its own: one whose
+    /// declaration waited on a ring.
+    CycleThroughStructure,
     /// A box a shape made on the toy kernel.
     BoxValue,
     /// The volume a measure read from the toy kernel.
@@ -871,6 +877,31 @@ mod tests {
         let case = driven_then_edited(Then::End);
         let reach = check(&case, &toy_core).unwrap_or_else(|mismatch| panic!("{mismatch}"));
         assert!(reach.count(Shape::DriveZeroEnded) > 0, "{reach:?}");
+    }
+
+    #[test]
+    fn a_ring_is_counted_at_its_nodes_and_at_a_path_that_waited_on_it() {
+        let case = Case {
+            inputs: inputs([
+                (root("r"), declaration(scope("r.m"))),
+                (
+                    named("r.m"),
+                    members([
+                        (step("a"), cell([declarer([step("b")])])),
+                        (step("b"), cell([declarer([step("a")])])),
+                        (step("c"), cell([declarer([step("c"), step("x")])])),
+                    ]),
+                ),
+            ]),
+            events: vec![HostEvent::Evaluate {
+                on: 0,
+                paths: vec![r(&["a"]), r(&["b"]), r(&["c", "x"])],
+                then: Then::End,
+            }],
+        };
+        let reach = check(&case, &toy_core).unwrap_or_else(|mismatch| panic!("{mismatch}"));
+        assert!(reach.count(Shape::Cycle) > 0, "{reach:?}");
+        assert!(reach.count(Shape::CycleThroughStructure) > 0, "{reach:?}");
     }
 
     /// Registered in place of the toy cell: answers 0 whatever it binds.

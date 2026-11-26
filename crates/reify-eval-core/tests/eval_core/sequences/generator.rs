@@ -606,9 +606,11 @@ fn of_kind(siblings: &[Sibling], kind: ToyKind) -> Vec<usize> {
 mod tests {
     use std::collections::BTreeSet;
 
+    use reify_eval_core::Failure;
+
     use super::super::case::{Case, HostEvent, Then};
     use super::super::design::{Bind, Decl, Key, ToyKind, Val};
-    use super::super::reference::first_invalid;
+    use super::super::reference::{Expect, Reference, first_invalid};
     use super::{
         BLOCKED_PAIR_ZERO, Features, GATE_EVENTS, GATE_SEEDS, gate_case, gate_cases, generate,
     };
@@ -687,8 +689,10 @@ mod tests {
             collection: true,
             divide: true,
             kernel: true,
+            cycles: true,
         };
         assert_eq!(Features::every(), every);
+        assert!(!Features::structure().cycles);
         for seed in GATE_SEEDS {
             let case = generate(seed, every, GATE_EVENTS);
             assert_eq!(gate_case(seed), case, "seed {seed}");
@@ -714,6 +718,7 @@ mod tests {
             collection: false,
             divide: false,
             kernel: false,
+            cycles: false,
         };
         let every = Features::every();
         let some_off = [
@@ -742,6 +747,34 @@ mod tests {
                         features.divide || !divides,
                         "seed {seed}, {features:?}: {decl:?}"
                     );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn with_cycles_off_no_case_answers_cycle() {
+        let cycles_off = [
+            Features::structure(),
+            Features {
+                cycles: false,
+                ..Features::every()
+            },
+        ];
+        for features in cycles_off {
+            for seed in GATE_SEEDS {
+                let case = generate(seed, features, GATE_EVENTS);
+                let demanded: BTreeSet<_> = case.demanded().collect();
+                for inputs in case.snapshots() {
+                    let mut reference = Reference::new(inputs);
+                    for path in &demanded {
+                        let outcome = reference.answer(path).map(|answer| answer.outcome);
+                        assert_ne!(
+                            outcome,
+                            Ok(Expect::Failure(Failure::Cycle)),
+                            "seed {seed}, {features:?}: {path:?}"
+                        );
+                    }
                 }
             }
         }
