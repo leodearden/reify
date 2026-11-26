@@ -20,10 +20,25 @@ use super::reference::{Expect, Expected, Invalid, Out, Reference};
 use super::seen::Seen;
 use crate::toy;
 
-/// A shape of design or event a run reached, counted to show the run is
-/// not vacuous (PRD 12.1 rule 9).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Shape {
+/// Declares `Shape` and `Shape::ALL` from one list, so every shape the
+/// enum names is one the census looks for.
+macro_rules! shapes {
+    ($($(#[$doc:meta])* $shape:ident,)*) => {
+        /// A shape of design or event a run reached, counted to show the run
+        /// is not vacuous (PRD 12.1 rule 9).
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+        pub enum Shape {
+            $($(#[$doc])* $shape,)*
+        }
+
+        impl Shape {
+            /// Every shape, in the order declared.
+            pub const ALL: &'static [Shape] = &[$(Shape::$shape),*];
+        }
+    };
+}
+
+shapes! {
     /// A cell's value.
     CellValue,
     ScopeValue,
@@ -50,25 +65,6 @@ pub enum Shape {
     EditFromNonLatest,
     /// An answer the order check compared.
     OrderComparison,
-}
-
-impl Shape {
-    pub const ALL: [Shape; 14] = [
-        Shape::CellValue,
-        Shape::ScopeValue,
-        Shape::GuardValue,
-        Shape::GuardAbsentOnFalse,
-        Shape::UnderAbsentGuard,
-        Shape::CollectionValue,
-        Shape::CollectionElement,
-        Shape::IndexPastCount,
-        Shape::PickerValue,
-        Shape::WrongType,
-        Shape::LeftLiveAnswer,
-        Shape::DriveZeroEnded,
-        Shape::EditFromNonLatest,
-        Shape::OrderComparison,
-    ];
 }
 
 /// What a run reached.
@@ -115,7 +111,8 @@ impl Reach {
     /// The shapes never reached, in the order of `Shape::ALL`.
     pub fn missing(&self) -> Vec<Shape> {
         Shape::ALL
-            .into_iter()
+            .iter()
+            .copied()
             .filter(|shape| self.count(*shape) == 0)
             .collect()
     }
