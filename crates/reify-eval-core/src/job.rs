@@ -4,6 +4,8 @@
 use std::any::Any;
 use std::sync::Arc;
 
+use crate::failure::ResourceDeath;
+
 /// What a section returned, erased on its way back to the body.
 pub(crate) type Product = Box<dyn Any + Send>;
 
@@ -34,6 +36,6 @@ pub(crate) enum SectionFault {
     Panicked {
         message: String,
     },
-    /// Its resource is dead: an earlier section on it panicked.
-    Dead,
+    /// Its resource is dead, so the section did not run.
+    Dead(ResourceDeath),
 }

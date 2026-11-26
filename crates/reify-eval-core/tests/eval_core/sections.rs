@@ -6,8 +6,8 @@ use std::any::type_name;
 use std::thread;
 
 use reify_eval_core::{
-    Answer, Builder, Cx, Declaration, Kind, KindId, Outcome, OutsideFailure, Path, Produced, Root,
-    Turn,
+    Answer, Builder, Cx, Declaration, Held, Kind, KindId, Outcome, OutsideFailure, Path, Produced,
+    Release, ResourceDeath, Root, Turn,
 };
 
 use crate::toy::{self, BoxHandle, BoxShape, ToyKernel, Watch};
@@ -215,6 +215,9 @@ fn after_a_section_panics_its_resource_is_dead_and_later_sections_for_it_fail_th
     ]);
     let dead = OutsideFailure::ResourceDead {
         resource: type_name::<ToyKernel>(),
+        death: ResourceDeath::SectionPanicked {
+            message: String::from("toy kernel broke"),
+        },
     };
 
     let request = core.evaluate(&snapshot, [Root::named("fragile"), Root::named("shape")]);
@@ -263,5 +266,98 @@ fn a_release_for_a_dead_resource_does_not_hang_the_drain() {
     )));
 
     drop(kept);
+    core.drain();
+}
+
+/// A resource whose making panics.
+struct Unmade;
+
+/// Runs a section on `Unmade`.
+struct OnUnmade;
+
+impl Kind for OnUnmade {
+    type Out = i64;
+    const ID: KindId = KindId("toy.on_unmade");
+
+    async fn run(cx: &Cx) -> Produced<i64> {
+        let made = cx.exclusive(|_: &mut Unmade, _| 1_i64).await;
+        Produced::Outcome(Outcome::of(made))
+    }
+}
+
+#[test]
+fn a_section_on_a_resource_whose_making_panicked_is_pending_with_that_panic() {
+    let mut core = Builder::new().kind::<OnUnmade>().expect("one kind").build();
+    core.add_resource(|| -> Unmade { panic!("the resource could not be made") });
+    let snapshot = core.snapshot([toy::root("doomed", Declaration::new(OnUnmade::ID))]);
+
+    let request = core.evaluate(&snapshot, [Root::named("doomed")]);
+    core.run();
+
+    let answer = toy::the_answer(&core.take_events(), &request, "doomed");
+    let dead = OutsideFailure::ResourceDead {
+        resource: type_name::<Unmade>(),
+        death: ResourceDeath::MakePanicked {
+            message: String::from("the resource could not be made"),
+        },
+    };
+    assert_eq!(toy::pending(answer), dead);
+    core.drain();
+}
+
+/// A resource whose shards panic when they are given back.
+struct Brittle;
+
+#[derive(Debug)]
+struct Shard;
+
+impl Release<Brittle> for Shard {
+    fn release(self, _: &mut Brittle) {
+        panic!("giving back a shard broke the resource")
+    }
+}
+
+/// Makes a shard in `Brittle` and holds it.
+struct MakeShard;
+
+impl Kind for MakeShard {
+    type Out = Held<Brittle, Shard>;
+    const ID: KindId = KindId("toy.make_shard");
+
+    async fn run(cx: &Cx) -> Produced<Self::Out> {
+        let shard = cx
+            .exclusive(|_: &mut Brittle, section| section.hold(Shard))
+            .await;
+        Produced::Outcome(Outcome::of(shard))
+    }
+}
+
+#[test]
+fn after_a_release_panics_its_resource_is_dead_and_later_sections_name_that_panic() {
+    let mut core = Builder::new()
+        .kind::<MakeShard>()
+        .expect("one kind")
+        .build();
+    core.add_resource(|| Brittle);
+    let snapshot = core.snapshot([toy::root("shard", Declaration::new(MakeShard::ID))]);
+
+    let first = core.evaluate(&snapshot, [Root::named("shard")]);
+    core.run();
+    let events = core.take_events();
+    let made = toy::the_answer(&events, &first, "shard");
+    assert!(matches!(made, Answer::Final(Outcome::Value(_))), "{made:?}");
+    drop((made, events));
+    core.drain();
+
+    let second = core.evaluate(&snapshot, [Root::named("shard")]);
+    core.run();
+    let answer = toy::the_answer(&core.take_events(), &second, "shard");
+    let dead = OutsideFailure::ResourceDead {
+        resource: type_name::<Brittle>(),
+        death: ResourceDeath::ReleasePanicked {
+            message: String::from("giving back a shard broke the resource"),
+        },
+    };
+    assert_eq!(toy::pending(answer), dead);
     core.drain();
 }

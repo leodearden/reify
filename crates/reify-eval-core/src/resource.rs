@@ -2,8 +2,8 @@
 //! one job at a time, and the one channel their reports come back on.
 
 use std::any::{TypeId, type_name};
+use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, BTreeSet};
 use std::mem;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
@@ -12,7 +12,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::{self, JoinHandle};
 
 use crate::cancel::Cancel;
-use crate::failure::panic_message;
+use crate::failure::{ResourceDeath, panic_message};
 use crate::held::ReleaseHome;
 use crate::job::{Job, Report, SectionFault, SectionRun};
 use crate::mailbox::SectionJob;
@@ -33,12 +33,12 @@ impl ResourceThread {
 /// Why a section could not be queued.
 pub(crate) enum Unstarted {
     NoResource,
-    Dead,
+    Dead(ResourceDeath),
 }
 
 pub(crate) struct Resources {
     threads: BTreeMap<TypeId, ResourceThread>,
-    dead: BTreeSet<TypeId>,
+    dead: BTreeMap<TypeId, ResourceDeath>,
     reports_in: Sender<Report>,
     reports: Receiver<Report>,
     pending_releases: Arc<AtomicUsize>,
@@ -50,7 +50,7 @@ impl Resources {
         let (reports_in, reports) = channel();
         Self {
             threads: BTreeMap::new(),
-            dead: BTreeSet::new(),
+            dead: BTreeMap::new(),
             reports_in,
             reports,
             pending_releases: Arc::default(),
@@ -85,8 +85,8 @@ impl Resources {
         cancel: Cancel,
         job: SectionJob,
     ) -> Result<u64, Unstarted> {
-        if self.dead.contains(&resource) {
-            return Err(Unstarted::Dead);
+        if let Some(death) = self.dead.get(&resource) {
+            return Err(Unstarted::Dead(death.clone()));
         }
         let thread = self.threads.get(&resource).ok_or(Unstarted::NoResource)?;
         self.serial += 1;
@@ -101,14 +101,14 @@ impl Resources {
         thread
             .jobs
             .send(Job::Section { serial, run })
-            .map_err(|_| Unstarted::Dead)?;
+            .expect("a resource thread runs until the core stops it");
         Ok(serial)
     }
 
-    /// Marks `resource` dead once the core has delivered its section's panic,
-    /// so later sections for it fail without being queued.
-    pub fn mark_dead(&mut self, resource: TypeId) {
-        self.dead.insert(resource);
+    /// Marks `resource` dead once the core has delivered a section's report
+    /// that it died, so later sections for it fail without being queued.
+    pub fn mark_dead(&mut self, resource: TypeId, death: ResourceDeath) {
+        self.dead.entry(resource).or_insert(death);
     }
 
     /// Blocks until a resource thread reports.
@@ -144,41 +144,79 @@ impl Drop for Resources {
     }
 }
 
-/// A resource thread. After a section panics the resource is dead: the
-/// thread never touches it again, answers each later section `Dead` and
-/// each release `Released` without running either, and drops it on `Stop`.
-/// Every job is answered, so the core never waits on a report that will
-/// not come.
+/// A resource thread's resource. A dead one is never touched again; what
+/// is left of it is dropped when the thread stops.
+enum State<R> {
+    Alive(R),
+    Dead {
+        death: ResourceDeath,
+        _remains: Option<R>,
+    },
+}
+
+impl<R> State<R> {
+    fn made(make: impl FnOnce() -> R) -> Self {
+        match guarded(make) {
+            Ok(resource) => State::Alive(resource),
+            Err(message) => State::Dead {
+                death: ResourceDeath::MakePanicked { message },
+                _remains: None,
+            },
+        }
+    }
+
+    fn killed(self, death: ResourceDeath) -> Self {
+        match self {
+            State::Alive(resource) => State::Dead {
+                death,
+                _remains: Some(resource),
+            },
+            dead => dead,
+        }
+    }
+}
+
+/// A resource thread. Once making the resource, a section on it or a
+/// release in it panics, the resource is dead: the thread answers each
+/// later section `Dead` with what killed it and each release `Released`,
+/// running neither, and drops what is left on `Stop`. Every job is
+/// answered, so the core never waits on a report that will not come.
 fn serve<R: 'static>(make: impl FnOnce() -> R, jobs: Receiver<Job>, reports: Sender<Report>) {
-    let mut resource = guarded(make).ok();
-    let mut alive = resource.is_some();
+    let mut state = State::made(make);
     for job in jobs {
         match job {
             Job::Section { serial, run } => {
-                let product = match resource.as_mut() {
-                    Some(resource) if alive => guarded(|| run(resource))
+                let product = match &mut state {
+                    State::Alive(resource) => guarded(|| run(resource))
                         .map_err(|message| SectionFault::Panicked { message }),
-                    _ => {
+                    State::Dead { death, .. } => {
                         let _ = guarded(move || drop(run));
-                        Err(SectionFault::Dead)
+                        Err(SectionFault::Dead(death.clone()))
                     }
                 };
-                alive = alive && product.is_ok();
+                if let Err(SectionFault::Panicked { message }) = &product {
+                    let message = message.clone();
+                    state = state.killed(ResourceDeath::SectionPanicked { message });
+                }
                 let _ = reports.send(Report::Finished { serial, product });
             }
             Job::Release(release) => {
-                match resource.as_mut() {
-                    Some(resource) if alive => alive = guarded(|| release(resource)).is_ok(),
-                    _ => {
+                let failed = match &mut state {
+                    State::Alive(resource) => guarded(|| release(resource)).err(),
+                    State::Dead { .. } => {
                         let _ = guarded(move || drop(release));
+                        None
                     }
+                };
+                if let Some(message) = failed {
+                    state = state.killed(ResourceDeath::ReleasePanicked { message });
                 }
                 let _ = reports.send(Report::Released);
             }
             Job::Stop => break,
         }
     }
-    let _ = guarded(move || drop(resource));
+    let _ = guarded(move || drop(state));
 }
 
 /// Runs `work`, turning a panic into its message.

@@ -5,7 +5,7 @@ use std::any::TypeId;
 use std::collections::{BTreeMap, VecDeque};
 
 use crate::cancel::Cancel;
-use crate::failure::OutsideFailure;
+use crate::failure::{OutsideFailure, ResourceDeath};
 use crate::job::{Product, SectionFault};
 use crate::mailbox::SectionAsk;
 use crate::resource::{Resources, Unstarted};
@@ -60,8 +60,9 @@ impl InFlight {
                     Unstarted::NoResource => OutsideFailure::NoResource {
                         resource: resource_name,
                     },
-                    Unstarted::Dead => OutsideFailure::ResourceDead {
+                    Unstarted::Dead(death) => OutsideFailure::ResourceDead {
                         resource: resource_name,
+                        death,
                     },
                 })?;
         let started = Started {
@@ -77,8 +78,8 @@ impl InFlight {
         self.finished.push_back((serial, product));
     }
 
-    /// The earliest finished section, no longer in flight. A panic marks
-    /// its resource dead.
+    /// The earliest finished section, no longer in flight. A report that
+    /// its resource died marks the resource dead.
     pub fn deliver(&mut self, resources: &mut Resources) -> Option<Delivery> {
         let (serial, product) = self.finished.pop_front()?;
         let started = self
@@ -87,15 +88,22 @@ impl InFlight {
             .expect("a section reports once, after it was started");
         let product = product.map_err(|fault| match fault {
             SectionFault::Panicked { message } => {
-                resources.mark_dead(started.resource);
+                let death = ResourceDeath::SectionPanicked {
+                    message: message.clone(),
+                };
+                resources.mark_dead(started.resource, death);
                 OutsideFailure::SectionPanicked {
                     resource: started.resource_name,
                     message,
                 }
             }
-            SectionFault::Dead => OutsideFailure::ResourceDead {
-                resource: started.resource_name,
-            },
+            SectionFault::Dead(death) => {
+                resources.mark_dead(started.resource, death.clone());
+                OutsideFailure::ResourceDead {
+                    resource: started.resource_name,
+                    death,
+                }
+            }
         });
         Some(Delivery {
             key: started.key,

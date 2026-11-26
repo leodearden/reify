@@ -33,18 +33,34 @@ pub enum OutsideFailure {
     NoResource {
         resource: &'static str,
     },
+    /// The section a body waited on panicked; its resource is dead from
+    /// then on.
     SectionPanicked {
         resource: &'static str,
         message: String,
     },
-    /// A section was asked of a resource on which an earlier section panicked.
+    /// A body asked for a section on a dead resource; `death` says what
+    /// killed it.
     ResourceDead {
         resource: &'static str,
+        death: ResourceDeath,
     },
     /// A kind's own work ran out of memory in `resource`.
     OutOfMemory {
         resource: &'static str,
     },
+}
+
+/// What killed a resource: the work on its thread that panicked, with the
+/// panic's message. A dead resource is never touched again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResourceDeath {
+    /// Making it panicked, so it never existed.
+    MakePanicked { message: String },
+    /// A section on it panicked.
+    SectionPanicked { message: String },
+    /// Giving back a thing held in it panicked.
+    ReleasePanicked { message: String },
 }
 
 /// The text a panic was raised with.

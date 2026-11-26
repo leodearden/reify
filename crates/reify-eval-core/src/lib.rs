@@ -38,7 +38,7 @@ pub use cx::Cx;
 pub use declaration::{Binding, Declaration, KindId};
 pub use event::{Event, RequestId};
 pub use executor::Turn;
-pub use failure::{Failure, OutsideFailure};
+pub use failure::{Failure, OutsideFailure, ResourceDeath};
 pub use hash::Hash128;
 pub use held::{Held, Release};
 pub use host::Core;
