@@ -15,8 +15,8 @@
 //! **(b) OCCT-GATED partial proof (degraded contract)** —
 //!   `std_process_dfm_build_volume_flip_pinned`: the constraint Satisfied/Violated flip
 //!   WORKS under the default UnifiedDag scheduler (Stage-4 cutover #4362 ι), and at
-//!   least one diagnostic IS emitted. Does NOT assert DFM-specific codes — those are
-//!   deferred to #4727. Self-skips without OCCT.
+//!   least one diagnostic IS emitted. The DFM-specific codes are asserted by (c),
+//!   routed since #4734. Self-skips without OCCT.
 //!
 //! **(c) FULL GATE (DFM diagnostic routing fixed, task #4734)** —
 //!   `std_process_dfm_build_volume_flip_and_severity_diagnostics`: asserts that
@@ -339,8 +339,9 @@ fn std_process_dfm_build_volume_flip_pinned() {
     );
 
     // Degraded-contract pin: the violated constraint emits at least one diagnostic
-    // under the default UnifiedDag scheduler, even though DFM-specific codes are not
-    // yet routed correctly (tracked by #4727).
+    // under the default UnifiedDag scheduler. The DFM-specific codes are asserted by
+    // the full-gate test `std_process_dfm_build_volume_flip_and_severity_diagnostics`
+    // (#4734).
     assert!(
         !result.diagnostics.is_empty(),
         "expected at least one diagnostic from the violated FitsBuildVolume constraint \
