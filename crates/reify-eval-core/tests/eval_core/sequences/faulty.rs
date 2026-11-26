@@ -20,6 +20,7 @@ struct FaultyCell;
 impl Kind for FaultyCell {
     type Out = i64;
     const ID: KindId = toy::Cell::ID;
+    const VERSION: u32 = toy::Cell::VERSION;
 
     async fn run(cx: &Cx) -> Produced<i64> {
         match <toy::Cell as Kind>::run(cx).await {

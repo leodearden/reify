@@ -85,6 +85,7 @@ struct Total;
 impl Kind for Total {
     type Out = i64;
     const ID: KindId = KindId("toy.total");
+    const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<i64> {
         let count = match cx.read::<i64>(&Ref::binding("count")).await {

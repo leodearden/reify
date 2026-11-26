@@ -155,6 +155,7 @@ struct Fragile;
 impl Kind for Fragile {
     type Out = i64;
     const ID: KindId = KindId("toy.fragile");
+    const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<i64> {
         let made = cx
@@ -296,6 +297,7 @@ struct OnUnmade;
 impl Kind for OnUnmade {
     type Out = i64;
     const ID: KindId = KindId("toy.on_unmade");
+    const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<i64> {
         let made = cx.exclusive(|_: &mut Unmade, _| 1_i64).await;
@@ -341,6 +343,7 @@ struct MakeShard;
 impl Kind for MakeShard {
     type Out = Held<Brittle, Shard>;
     const ID: KindId = KindId("toy.make_shard");
+    const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<Self::Out> {
         let shard = cx

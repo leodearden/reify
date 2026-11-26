@@ -8,6 +8,7 @@ mod belonging;
 mod bindings;
 mod bodies;
 mod building;
+mod contents;
 mod ending;
 mod growth;
 mod hash;

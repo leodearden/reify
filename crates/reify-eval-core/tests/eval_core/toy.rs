@@ -11,10 +11,76 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, ThreadId};
 
 use reify_eval_core::{
-    Answer, Binding, Builder, Core, Cx, Declaration, Demand, Erased, Event, Failure, Held, Input,
-    InputKey, Kind, KindId, Outcome, OutsideFailure, Path, Produced, Ref, Release, Request,
+    Answer, Binding, Builder, Core, Cx, Declaration, Demand, Erased, Event, Failure, Hash128, Held,
+    Input, InputKey, Kind, KindId, Outcome, OutsideFailure, Path, Produced, Ref, Release, Request,
     RequestId, Root, Section, Snapshot, Step, Turn, Value,
 };
+
+/// The content a test gives the core for one of its values: a hash of
+/// everything a reader can see of it (O7). The core tags it with the
+/// value's type, so two types may hash the same bytes.
+pub trait Contented {
+    fn content(&self) -> Hash128;
+}
+
+impl Contented for i64 {
+    fn content(&self) -> Hash128 {
+        Hash128::of_bytes(&self.to_le_bytes())
+    }
+}
+
+impl Contented for bool {
+    fn content(&self) -> Hash128 {
+        Hash128::of_bytes(&[u8::from(*self)])
+    }
+}
+
+impl Contented for String {
+    fn content(&self) -> Hash128 {
+        Hash128::of_bytes(self.as_bytes())
+    }
+}
+
+impl Contented for Declaration {
+    fn content(&self) -> Hash128 {
+        Declaration::content(self)
+    }
+}
+
+/// A test's own encoding of a step: a tag, then the name or the index.
+fn step_bytes(step: &Step) -> Vec<u8> {
+    match step {
+        Step::Named(name) => [b"n", &name.len().to_le_bytes()[..], name.as_bytes()].concat(),
+        Step::Index(index) => [b"i", &index.to_le_bytes()[..]].concat(),
+    }
+}
+
+impl Contented for Members {
+    fn content(&self) -> Hash128 {
+        let bytes: Vec<u8> = self
+            .0
+            .iter()
+            .flat_map(|(step, declaration)| {
+                [step_bytes(step), declaration.content().as_u128().to_le_bytes().to_vec()].concat()
+            })
+            .collect();
+        Hash128::of_bytes(&bytes)
+    }
+}
+
+impl Contented for Elements {
+    fn content(&self) -> Hash128 {
+        let count = self.count.to_le_bytes();
+        let element = self.element.content().as_u128().to_le_bytes();
+        Hash128::of_bytes(&[&count[..], &element[..]].concat())
+    }
+}
+
+/// `value` as a snapshot input, with its content.
+pub fn input_of<T: Value + Contented>(value: T) -> Input {
+    let content = value.content();
+    Input::of(value, content)
+}
 
 /// Adds the i64s bound at "0", "1", … until a binding reads absent. Then,
 /// if "pick" reads an i64 i, adds the i64 at "from"/[i], a ref computed
@@ -25,6 +91,7 @@ pub struct Cell;
 impl Kind for Cell {
     type Out = i64;
     const ID: KindId = KindId("toy.cell");
+    const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<i64> {
         let mut sum = 0;
@@ -51,6 +118,10 @@ impl Kind for Cell {
             other => Produced::Outcome(other),
         }
     }
+
+    fn content(out: &i64) -> Option<Hash128> {
+        Some(out.content())
+    }
 }
 
 /// Adds the i64s at "0" and "1", read in one read.
@@ -59,6 +130,7 @@ pub struct Pair;
 impl Kind for Pair {
     type Out = i64;
     const ID: KindId = KindId("toy.pair");
+    const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<i64> {
         let refs = [Ref::binding("0"), Ref::binding("1")];
@@ -70,6 +142,10 @@ impl Kind for Pair {
             }
         }
         Produced::Outcome(Outcome::of(sum))
+    }
+
+    fn content(out: &i64) -> Option<Hash128> {
+        Some(out.content())
     }
 }
 
@@ -150,9 +226,14 @@ pub struct Scope;
 impl Kind for Scope {
     type Out = Members;
     const ID: KindId = KindId("toy.scope");
+    const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<Members> {
         Produced::Outcome(read_members(cx).await)
+    }
+
+    fn content(out: &Members) -> Option<Hash128> {
+        Some(out.content())
     }
 
     fn declares(out: &Members, step: &Step) -> Option<Declaration> {
@@ -175,6 +256,7 @@ pub struct Guard;
 impl Kind for Guard {
     type Out = Members;
     const ID: KindId = KindId("toy.guard");
+    const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<Members> {
         match cx.read::<bool>(&Ref::binding("condition")).await {
@@ -183,6 +265,10 @@ impl Kind for Guard {
             Outcome::Absent => Produced::Outcome(Outcome::Absent),
             Outcome::Failure(failure) => Produced::Outcome(Outcome::Failure(failure)),
         }
+    }
+
+    fn content(out: &Members) -> Option<Hash128> {
+        Some(out.content())
     }
 
     fn declares(out: &Members, step: &Step) -> Option<Declaration> {
@@ -210,6 +296,7 @@ pub struct Collection;
 impl Kind for Collection {
     type Out = Elements;
     const ID: KindId = KindId("toy.collection");
+    const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<Elements> {
         let count = match cx.read::<i64>(&Ref::binding("count")).await {
@@ -225,6 +312,10 @@ impl Kind for Collection {
             Outcome::Absent => Produced::Outcome(Outcome::Absent),
             Outcome::Failure(failure) => Produced::Outcome(Outcome::Failure(failure)),
         }
+    }
+
+    fn content(out: &Elements) -> Option<Hash128> {
+        Some(out.content())
     }
 
     fn declares(out: &Elements, step: &Step) -> Option<Declaration> {
@@ -247,7 +338,7 @@ pub fn collection(count: Binding, element: Binding) -> Declaration {
 pub fn root_scope(name: &str, members: Members) -> [(InputKey, Input); 2] {
     let input = format!("{name}.members");
     [
-        (InputKey::named(input.as_str()), Input::of(members)),
+        (InputKey::named(input.as_str()), input_of(members)),
         root(name, scope(&input)),
     ]
 }
@@ -291,6 +382,7 @@ pub struct Shape;
 impl Kind for Shape {
     type Out = BoxShape;
     const ID: KindId = KindId("toy.shape");
+    const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<BoxShape> {
         let side = match cx.read::<i64>(&Ref::binding("side")).await {
@@ -529,13 +621,13 @@ pub fn core() -> Core {
 }
 
 /// The input that declares root `name`.
-pub fn root<T: Value>(name: &str, declaration: T) -> (InputKey, Input) {
-    (InputKey::root(name), Input::of(declaration))
+pub fn root<T: Value + Contented>(name: &str, declaration: T) -> (InputKey, Input) {
+    (InputKey::root(name), input_of(declaration))
 }
 
 /// The host-named input `name`.
-pub fn named<T: Value>(name: &str, value: T) -> (InputKey, Input) {
-    (InputKey::named(name), Input::of(value))
+pub fn named<T: Value + Contented>(name: &str, value: T) -> (InputKey, Input) {
+    (InputKey::named(name), input_of(value))
 }
 
 /// The path of root `name`.

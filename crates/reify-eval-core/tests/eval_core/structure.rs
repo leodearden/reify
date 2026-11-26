@@ -282,7 +282,7 @@ fn an_input_attached_to_a_scope_s_path_adds_a_member() {
         inputs.extend(toy::root_scope("R", toy::members([])));
         if attached {
             let extra = toy::members([("x", toy::cell(&["v"]))]);
-            inputs.push((InputKey::attached(toy::at("R"), "extra"), Input::of(extra)));
+            inputs.push((InputKey::attached(toy::at("R"), "extra"), toy::input_of(extra)));
         }
         let snapshot = core.snapshot(inputs);
 
@@ -309,7 +309,7 @@ fn a_ref_computed_from_an_earlier_answer_reads_the_element_it_names() {
         for i in 0..3_u64 {
             let at = toy::below("R", &["elems"]).child(Step::index(i));
             let value = 10 * i64::try_from(i).expect("small");
-            inputs.push((InputKey::attached(at, "value"), Input::of(value)));
+            inputs.push((InputKey::attached(at, "value"), toy::input_of(value)));
         }
         inputs.extend(toy::root_scope(
             "R",

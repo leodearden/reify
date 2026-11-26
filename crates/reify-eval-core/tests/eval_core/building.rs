@@ -14,6 +14,7 @@ struct Impostor;
 impl Kind for Impostor {
     type Out = i64;
     const ID: KindId = Cell::ID;
+    const VERSION: u32 = Cell::VERSION;
 
     async fn run(_: &Cx) -> Produced<i64> {
         Produced::Outcome(Outcome::Absent)

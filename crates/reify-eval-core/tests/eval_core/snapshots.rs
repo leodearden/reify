@@ -105,7 +105,7 @@ fn an_edit_makes_a_new_snapshot_whose_answers_follow_the_edited_input() {
         toy::named("a", 2_i64),
         toy::root("total", toy::cell(&["a"])),
     ]);
-    let second = first.edit([(InputKey::named("a"), Some(Input::of(3_i64)))]);
+    let second = first.edit([(InputKey::named("a"), Some(toy::input_of(3_i64)))]);
     assert_ne!(first.id(), second.id());
     let total = toy::at("total");
 
@@ -129,7 +129,7 @@ fn the_snapshot_an_edit_came_from_keeps_its_answers_and_its_index() {
     assert_eq!(answer.downcast::<i64>(), Answer::Final(Outcome::of(2)));
     let runs = core.counters().body_runs(Cell::ID);
 
-    let _second = first.edit([(InputKey::named("a"), Some(Input::of(3_i64)))]);
+    let _second = first.edit([(InputKey::named("a"), Some(toy::input_of(3_i64)))]);
     let answer = toy::answer_alone(&mut core, &first, &total);
     assert_eq!(answer.downcast::<i64>(), Answer::Final(Outcome::of(2)));
     assert_eq!(core.counters().body_runs(Cell::ID), runs);
@@ -165,7 +165,7 @@ fn an_edit_can_attach_an_input_to_a_path() {
     let extra = toy::members([("x", toy::cell(&["v"]))]);
     let second = first.edit([(
         InputKey::attached(toy::at("R"), "extra"),
-        Some(Input::of(extra)),
+        Some(toy::input_of(extra)),
     )]);
     let x = toy::below("R", &["x"]);
 

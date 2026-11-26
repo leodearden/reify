@@ -768,6 +768,7 @@ mod tests {
     impl Kind for ZeroCell {
         type Out = i64;
         const ID: KindId = toy::Cell::ID;
+        const VERSION: u32 = toy::Cell::VERSION;
 
         async fn run(_cx: &Cx) -> Produced<i64> {
             Produced::Outcome(Outcome::of(0))
@@ -780,6 +781,7 @@ mod tests {
     impl Kind for OutsideCell {
         type Out = i64;
         const ID: KindId = toy::Cell::ID;
+        const VERSION: u32 = toy::Cell::VERSION;
 
         async fn run(_cx: &Cx) -> Produced<i64> {
             Produced::Outside(OutsideFailure::OutOfMemory { resource: "test" })
@@ -894,6 +896,7 @@ mod tests {
     impl Kind for CountingCell {
         type Out = i64;
         const ID: KindId = toy::Cell::ID;
+        const VERSION: u32 = toy::Cell::VERSION;
 
         async fn run(cx: &Cx) -> Produced<i64> {
             let before = cx
@@ -943,6 +946,7 @@ mod tests {
     impl Kind for LoopCell {
         type Out = i64;
         const ID: KindId = toy::Cell::ID;
+        const VERSION: u32 = toy::Cell::VERSION;
 
         async fn run(cx: &Cx) -> Produced<i64> {
             let _ = cx.read::<i64>(&Ref::binding("loop")).await;

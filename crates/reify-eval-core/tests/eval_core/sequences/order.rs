@@ -124,6 +124,7 @@ mod tests {
     impl Kind for Turnstile {
         type Out = u64;
         const ID: KindId = KindId("test.turnstile");
+        const VERSION: u32 = 1;
 
         async fn run(cx: &Cx) -> Produced<u64> {
             let before = cx
@@ -158,11 +159,11 @@ mod tests {
         let inputs = vec![
             (
                 InputKey::root("a"),
-                Input::of(Declaration::new(Turnstile::ID)),
+                toy::input_of(Declaration::new(Turnstile::ID)),
             ),
             (
                 InputKey::root("b"),
-                Input::of(Declaration::new(Turnstile::ID)),
+                toy::input_of(Declaration::new(Turnstile::ID)),
             ),
         ];
         let mut core = turnstile_core();

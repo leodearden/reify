@@ -153,10 +153,10 @@ pub fn core_members(members: &BTreeMap<Step, Decl>) -> BTreeMap<Step, Declaratio
 impl Val {
     pub fn to_core(&self) -> Input {
         match self {
-            Val::Int(value) => Input::of(*value),
-            Val::Bool(value) => Input::of(*value),
-            Val::Members(members) => Input::of(toy::Members(core_members(members))),
-            Val::Decl(decl) => Input::of(decl.to_core()),
+            Val::Int(value) => toy::input_of(*value),
+            Val::Bool(value) => toy::input_of(*value),
+            Val::Members(members) => toy::input_of(toy::Members(core_members(members))),
+            Val::Decl(decl) => toy::input_of(decl.to_core()),
         }
     }
 }
