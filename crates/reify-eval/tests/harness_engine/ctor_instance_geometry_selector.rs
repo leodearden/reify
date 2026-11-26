@@ -195,3 +195,80 @@ fn let_instance_selector_in_param_default_agrees_with_template_and_sub() {
         "no selector cell may be minted in the caller template: {caller_sel_cells:?}"
     );
 }
+
+const SUB_READING_DIRECT_SRC: &str = r#"
+structure def Inner {
+    param w : Length = 50mm
+}
+
+structure def Beam {
+    sub inner = Inner()
+    let body = box(inner.w, 100mm, 100mm)
+    let tip = vertex(body, "tip")
+}
+
+structure def NestedAssembly {
+    let primary = Beam()
+    sub secondary = Beam()
+}
+"#;
+
+const SUB_READING_TRANSITIVE_SRC: &str = r#"
+structure def Inner {
+    param w : Length = 50mm
+}
+
+structure def Beam {
+    sub inner = Inner()
+    let w2 = inner.w
+    let body = box(w2, 100mm, 100mm)
+    let tip = vertex(body, "tip")
+}
+
+structure def NestedAssembly {
+    let primary = Beam()
+    sub secondary = Beam()
+}
+"#;
+
+/// A geometry let whose op args read a `sub` member cannot be resolved in a
+/// let-constructed instance's member scope, because a ctor carries no subs.
+/// The instance's selector must then be Undef or the template's, never a third
+/// identity hashed over the unresolved input.
+#[track_caller]
+fn assert_let_instance_selector_is_never_a_third_identity(what: &str, source: &str) {
+    let result = eval_with_stdlib(source);
+    assert_no_error_diagnostics(&result, what);
+
+    let template_tip = cell(&result, "Beam", "tip");
+    assert_selector(&template_tip, &format!("template Beam.tip ({what})"));
+    let sub_tip = cell(&result, "NestedAssembly.secondary", "tip");
+    assert_eq!(
+        sub_tip, template_tip,
+        "{what}: the `sub` selector must agree with the template's"
+    );
+
+    let primary_tip = ctor_field(&result, "NestedAssembly", "primary", "tip");
+    assert!(
+        primary_tip == template_tip || primary_tip == Value::Undef,
+        "{what}: NestedAssembly.primary.tip must equal the template's selector \
+         or be Undef, never a third identity.\n  primary:   {primary_tip:?}\n  \
+         template:  {template_tip:?}\n  secondary: {sub_tip:?}"
+    );
+}
+
+#[test]
+fn let_instance_selector_over_sub_reading_geometry_is_never_a_third_identity() {
+    assert_let_instance_selector_is_never_a_third_identity(
+        "a geometry let reading a sub member",
+        SUB_READING_DIRECT_SRC,
+    );
+}
+
+#[test]
+fn let_instance_selector_over_geometry_reading_a_sub_through_a_let_is_never_a_third_identity() {
+    assert_let_instance_selector_is_never_a_third_identity(
+        "a geometry let reading a sub member through a sibling let",
+        SUB_READING_TRANSITIVE_SRC,
+    );
+}

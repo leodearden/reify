@@ -182,3 +182,80 @@ fn geometry_member_reading_a_sibling_let_sees_it() {
          dependency order"
     );
 }
+
+/// A cell no ctor member provides: a `sub` member, which a ctor never carries.
+fn absent() -> CompiledExpr {
+    CompiledExpr::value_ref(ValueCellId::new("B.inner", "w"), Type::length())
+}
+
+#[track_caller]
+fn assert_tip_is_undef(data: &StructureInstanceData, what: &str) {
+    assert_eq!(
+        field(data, "tip"),
+        &Value::Undef,
+        "{what}: a geometry member whose input member scope cannot resolve must \
+         not be minted, so its sibling selector stays Undef"
+    );
+}
+
+#[test]
+fn geometry_member_over_an_unresolved_input_is_not_minted() {
+    let data = construct(&ctor(
+        vec![],
+        tip_reading_body(),
+        vec![body_reading(absent())],
+    ));
+    assert_tip_is_undef(&data, "a direct unresolved input");
+    assert!(
+        data.fields.get("body").is_none(),
+        "the refused geometry member must not become a field either: {:?}",
+        data.fields
+    );
+}
+
+#[test]
+fn geometry_member_over_a_sibling_let_that_is_unresolved_is_not_minted() {
+    let mut lets = tip_reading_body();
+    lets.push(("w2", absent()));
+    let data = construct(&ctor(vec![], lets, vec![body_reading(vref("w2"))]));
+    assert_tip_is_undef(&data, "an input unresolved through a sibling let");
+}
+
+#[test]
+fn geometry_member_over_an_input_holding_a_nested_undef_is_not_minted() {
+    let nested = CompiledExpr::list_literal(
+        vec![absent(), length(1.0)],
+        Type::List(Box::new(Type::length())),
+    );
+    let data = construct(&ctor(
+        vec![],
+        tip_reading_body(),
+        vec![body_reading(nested)],
+    ));
+    assert_tip_is_undef(&data, "an input whose Undef sits inside a list literal");
+}
+
+#[test]
+fn cross_sub_geometry_arg_is_skipped_so_the_member_still_mints() {
+    let body = CtorGeometryLet {
+        member: "body".to_string(),
+        realization: RealizationNodeId::new(TYPE, 0),
+        upstream_args: vec![
+            ("width".to_string(), vref("len")),
+            (
+                "target".to_string(),
+                CompiledExpr::cross_sub_geometry_ref(
+                    ValueCellId::new("B.inner", "body"),
+                    Type::Geometry,
+                ),
+            ),
+        ],
+    };
+    let data = construct(&ctor(vec![], tip_reading_body(), vec![body]));
+    assert_eq!(
+        field(&data, "tip"),
+        &expected_body_handle(length(1.0)),
+        "the fold skips a CrossSubGeometryRef arg unevaluated, so it neither \
+         refuses the mint nor changes the hash"
+    );
+}
