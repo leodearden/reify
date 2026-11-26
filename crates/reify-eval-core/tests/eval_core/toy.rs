@@ -301,6 +301,14 @@ pub fn the_answer(events: &[Event], request: &Request, name: &str) -> Answer<Era
     answer
 }
 
+/// The one answer `request` received for root `name`, among others.
+pub fn answer_at(events: &[Event], request: &Request, name: &str) -> Answer<Erased> {
+    let at = Path::root(Root::named(name));
+    let mut answers: Vec<_> = answers(events, request.id()).into_iter().filter(|(path, _)| *path == at).collect();
+    assert_eq!(answers.len(), 1, "one answer for {name}: {answers:?}");
+    answers.remove(0).1
+}
+
 /// The value of the one answer `request` received, for root `name`.
 pub fn the_value<T: Value + Debug>(events: &[Event], request: &Request, name: &str) -> Arc<T> {
     match the_answer(events, request, name).downcast::<T>() {

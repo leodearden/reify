@@ -5,7 +5,10 @@
 use std::any::type_name;
 use std::thread;
 
-use reify_eval_core::{Answer, Outcome, OutsideFailure, Path, Root, Turn};
+use reify_eval_core::{
+    Answer, Builder, Cx, Declaration, Kind, KindId, Outcome, OutsideFailure, Path, Produced, Root,
+    Turn,
+};
 
 use crate::toy::{self, BoxHandle, BoxShape, ToyKernel, Watch};
 
@@ -115,4 +118,103 @@ fn a_section_sees_cancelled_when_its_request_is_ended_without_waiting() {
 
     assert!(watch.saw_cancelled());
     assert_eq!(watch.live_boxes(), 0);
+}
+
+/// Runs a section that panics on the toy kernel.
+struct Fragile;
+
+impl Kind for Fragile {
+    type Out = i64;
+    const ID: KindId = KindId("toy.fragile");
+
+    async fn run(cx: &Cx) -> Produced<i64> {
+        let made = cx.exclusive(|_: &mut ToyKernel, _| -> i64 { panic!("toy kernel broke") }).await;
+        Produced::Outcome(Outcome::of(made))
+    }
+}
+
+fn with_fragile() -> Builder {
+    toy::with_toys().kind::<Fragile>().expect("distinct kinds")
+}
+
+fn assert_section_panicked(failure: OutsideFailure) {
+    match failure {
+        OutsideFailure::SectionPanicked { resource, message } => {
+            assert_eq!(resource, type_name::<ToyKernel>());
+            assert!(message.contains("toy kernel broke"), "{message}");
+        }
+        other => panic!("expected a section panic, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_section_that_panics_ends_its_node_pending_with_a_failure_outside_the_inputs_and_no_later_call_hangs() {
+    let watch = Watch::default();
+    let mut core = toy::ungated(with_fragile(), &watch);
+    let snapshot = core.snapshot([
+        toy::named("a", 1_i64),
+        toy::named("b", 2_i64),
+        toy::root("fragile", Declaration::new(Fragile::ID)),
+        toy::root("total", toy::cell(&["a", "b"])),
+    ]);
+
+    let request = core.evaluate(&snapshot, [Root::named("fragile")]);
+    core.run();
+    assert_section_panicked(toy::pending(toy::the_answer(&core.take_events(), &request, "fragile")));
+
+    assert_eq!(core.turn(), Turn::Idle);
+    assert_eq!(core.wait(), Turn::Idle);
+    core.run();
+    core.drain();
+
+    let later = core.evaluate(&snapshot, [Root::named("total")]);
+    core.run();
+    let total = toy::the_answer(&core.take_events(), &later, "total");
+    assert_eq!(total.downcast::<i64>(), Answer::Final(Outcome::of(3)));
+}
+
+#[test]
+fn after_a_section_panics_its_resource_is_dead_and_later_sections_for_it_fail_the_same_way() {
+    let watch = Watch::default();
+    let mut core = toy::ungated(with_fragile(), &watch);
+    let snapshot = core.snapshot([
+        toy::named("side", 2_i64),
+        toy::root("fragile", Declaration::new(Fragile::ID)),
+        toy::root("shape", toy::shape("side")),
+    ]);
+    let dead = OutsideFailure::ResourceDead { resource: type_name::<ToyKernel>() };
+
+    let request = core.evaluate(&snapshot, [Root::named("fragile"), Root::named("shape")]);
+    assert_eq!(core.turn(), Turn::SectionsRunning(2), "both sections reach the kernel, the panicking one first");
+    core.run();
+    let events = core.take_events();
+    assert_section_panicked(toy::pending(toy::answer_at(&events, &request, "fragile")));
+    assert_eq!(toy::pending(toy::answer_at(&events, &request, "shape")), dead);
+
+    let later = core.evaluate(&snapshot, [Root::named("shape")]);
+    core.run();
+    assert_eq!(toy::pending(toy::the_answer(&core.take_events(), &later, "shape")), dead);
+    core.drain();
+}
+
+#[test]
+fn a_release_for_a_dead_resource_does_not_hang_the_drain() {
+    let watch = Watch::default();
+    let mut core = toy::ungated(with_fragile(), &watch);
+    let snapshot = core.snapshot([
+        toy::named("side", 2_i64),
+        toy::root("fragile", Declaration::new(Fragile::ID)),
+        toy::root("shape", toy::shape("side")),
+    ]);
+    let made = core.evaluate(&snapshot, [Root::named("shape")]);
+    core.run();
+    let kept = core.take_events();
+    assert_eq!(toy::the_value::<BoxShape>(&kept, &made, "shape").volume, 8);
+
+    let broken = core.evaluate(&snapshot, [Root::named("fragile")]);
+    core.run();
+    assert_section_panicked(toy::pending(toy::the_answer(&core.take_events(), &broken, "fragile")));
+
+    drop(kept);
+    core.drain();
 }
