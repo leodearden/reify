@@ -423,6 +423,24 @@ The contract as landed let a binding name "a snapshot input attached to this nod
 
 Contract 2.1 and 7.3 are amended (third row of the contract's amendment log). The toy `scope` reads its members and nothing else (section 5.4). The catalogue entry `equal_roots_share_results_but_not_place` is restated with two roots whose declarations are equal. Task #10617 removes the kind from the crate and its test bed. It runs after leaf δ, and leaves ε and η depend on it, so that no later leaf builds on the kind. It is not a leaf: it adds no named test, and the manifest is unchanged. *Cost:* one more task on the path from α to π. The tests of the test bed that exist only for the kind are deleted or restated, and the generator loses one of its two ways of changing what a scope declares; the other, an edit to the scope's list of members, stays.
 
+### D14. What a kind outside the crate needs that the toy kinds did not (decided here, 2026-11-26)
+
+The session writing the PRD for the instance kinds read the crate as landed and the store leaf's branch. It found three things that the contract has and that no leaf was named to build, because no toy kind needed them, and two things the interface lacked. None changes the contract.
+
+| What | Why it was missing | Built by |
+|---|---|---|
+| A binding to a constant (contract 2.1) | no leaf named it, though leaf θ's toy `call` builds a declaration from argument values | leaf θ |
+| `steps` of the kind interface (contract 2.2): the steps a result declares | the limit on children per node counts them, and leaf η's text did not say so | leaf η |
+| A structured description on a kind's failure (contract 9 and 5.2) | the toy `cell` fails in one way and needs only a code | task #10621 |
+| Reading the root and the steps of a path, and the parts of a ref, from outside the crate | no test took a path apart | task #10621 |
+| A space on a step, so that a member's name, a call-site step and a child every node of a kind has are different steps when their text is equal | the toy kinds have only named members and indexed elements | task #10621; leaf θ puts the steps of body-declared children in a space of their own (section 15, 5) |
+
+**"Presence undetermined" stays a failure.** Contract 7.3 says a guarded member whose guard is undefined answers with that failure; Leo ruled it with the instance design. The instance PRD session asked whether it could be a value that declares no children instead, because a kind's failure on the store leaf's branch carries a static code and their kind must name the undefined guard by ref. The failure is right for more than its wording. A path below a failed node answers that node's failure (leaf β built it so), so everything that reads below such a member learns that presence is undetermined, and why. Below a value that declares nothing it would read "absent", as it does under a false guard, and the two cases could not be told apart there. Task #10621 gives the failure its description. The contract does not yet say what a path below a failed node answers; that sentence is put to Leo.
+
+**A crate outside this one may implement kinds before the interface stops changing** (rule 11 of section 12.1). The instance kinds can start after leaf δ. What changes after δ, as far as this PRD knows. For a kind: leaf θ widens `read_all`; leaf ο adds `deterministic` to what a body returns, and from ο a result is shared as a deterministic one only if its body says so (contract 5.6); leaf σ adds `emit` and `progress`, which break nothing. For a host: leaf η gives `evaluate` a budget of paths, leaves ρ and τ change budgets and demand, and leaf σ makes a pending answer carry the last result. *Cost:* the tasks of those leaves gain a file outside the crate, and their own verify then builds that crate too. The alternative, every instance kind waiting for leaf ο, puts them behind eleven more leaves. A leaf that stops on a contradiction (section 6) may change the interface in a way this list does not have. The instance PRD's session plans two such files, `crates/reify-eval-instances/src/core_seam.rs` for what its kinds build and call, and `crates/reify-eval-instances/src/host/core_calls.rs` for its host's calls, and will confirm the paths when its PRD is decomposed (the crate's name is not yet ruled). It says every result built through the first is claimed deterministic, and that file's head will say so for each helper. It will ask that leaf ο's task switch on the debug mode's re-run of determinism claims in the second.
+
+**The toy solver is not offered outside this crate's tests.** The toy kinds live in the crate's test binary. A PRD that needs a solve kind before the solve PRD exists writes a small one in its own tests against the public view interface, from leaf ι on.
+
 ## 8. Preconditions, and what was verified
 
 Nothing in any Reify crate is assumed. What is assumed, with how each was checked (workspace facts at main `61b77ee152`; read again at main `db25257628` when the batch was filed, and each still held):
@@ -453,7 +471,7 @@ This PRD owns the core crate and the contract document. It owns no file under `c
 
 | Neighbour | Direction | What crosses the seam | Owner of the seam | State |
 |---|---|---|---|---|
-| Instance kinds on the core (migration step 3). Being designed with Leo in the Instance design session. | consumes | The kind interface and `Cx`; declarations and bindings; what a snapshot input is. | This PRD owns the interface. The instance PRD owns its kinds, the roots, and the compiler change that gives each unit of source a content (contract 3.1). | not authored |
+| Instance kinds on the core (migration step 3). Being designed with Leo in the Instance design session. | consumes | The kind interface and `Cx`; declarations and bindings; what a snapshot input is. | This PRD owns the interface. The instance PRD owns its kinds, the roots, and the compiler change that gives each unit of source a content (contract 3.1). | in draft since 2026-11-26; decision D14 records what it asked of this crate |
 | Solve kinds (step 4). Replaces the solve-node milestone #10296 and takes in #8422. | consumes | Views. A bridge for a solver library that calls back synchronously (contract 2.5). | This PRD owns views. The bridge is not built here: no toy kind needs it. The solve PRD owns it, as an addition to this crate. Section 5.2 says what this crate keeps open for it. | not authored |
 | Geometry and compute kinds (step 5) | consumes | `exclusive`, `release`, content of results not hashed by value, `emit`, `progress`. | This PRD owns the calls. The geometry PRD owns freeing one shape in a kernel, which contract 5.5 names as a precondition of the geometry kinds, not of the core. | not authored |
 | Session layer, surfaces, retirement (step 6) | consumes | `snapshot`, `edit`, `evaluate`, demand and budgets, `reads`, `readers`. | This PRD owns the calls. The session PRD owns "current", previews and commits, and where limit settings are read from (`reify.toml`, a pragma, the binary's defaults). The core holds no default. | not authored |
@@ -518,7 +536,7 @@ The crate has two boundaries: with a node kind, and with a host. In this PRD the
 - **No hold applies.** No task of this PRD depends on #10510 (the holder that parks work on the old core) or on #9739 (the gate that parks the backlog behind the alpha release). The tasks are new and touch no old-core file. A task filed now is not parked unless an edge is added, so nothing has to be released.
 - **Nothing from the held set has to land first.** The crate uses no Reify code. No change to kept code is a precondition of any leaf.
 - **Priority** (PROPOSED, decision D8). Every leaf is filed at priority `high`. After the batch is committed, each leaf on the path from α to π is pinned with `set_task_priority_override(pinned=True, pin_order=N)`, in dependency order, after the six pins that exist today. Those six (tasks 9100, 9101, 9103, 9104, 9108 and 9112, leaves of the verify-pipeline port) each depend on #9739, so the new chain would in practice be first. A pinned task still waits for its dependencies; pinning only decides which ready task takes the next free slot.
-- **Cost on the machine.** Every leaf but α touches only files inside the new crate, so its task-level verify builds and tests that crate alone. The merge gate builds the whole workspace for every merge, as it does for any task. α also edits the root `Cargo.toml` and `Cargo.lock`, which makes its task-level verify a full-workspace one. All third-party dependencies are declared by α for that reason. The new ones (decisions D5 and D9) are fetched before the batch is filed, so no leaf downloads anything.
+- **Cost on the machine.** Every leaf but α touches only files inside the new crate, so its task-level verify builds and tests that crate alone (rule 11 of section 12.1 makes an exception of a leaf that must update a crate outside). The merge gate builds the whole workspace for every merge, as it does for any task. α also edits the root `Cargo.toml` and `Cargo.lock`, which makes its task-level verify a full-workspace one. All third-party dependencies are declared by α for that reason. The new ones (decisions D5 and D9) are fetched before the batch is filed, so no leaf downloads anything.
 
 ## 12. Decomposition plan
 
@@ -536,6 +554,7 @@ Twenty-six leaves. Labels are Greek, with a subscript where one mechanism is cut
 8. **No test asserts a wall-clock bound, and no test depends on timing.** Growth is asserted on counters. A test that uses a resource thread waits for it through the core (`wait`, or the drain call of leaf α), never by sleeping.
 9. **Each leaf of phase 3 shows that the generator reaches its mechanism.** The leaf's signal names the shapes its rule is about, each as a property of the design and the events that the reference interpreter can detect; the test counts how many generated cases have each shape at the gate's seeds and fails if a count is zero.
 10. **The must-not-compile programs keep failing for their stated reasons.** A leaf that changes the interface the programs of leaf χ are written against (the kind interface, `Cx`, `Section`, what a body returns) updates those programs, and their expected compiler output where only its wording or position moved, so that each still fails with the error section 5.2 names, or still compiles. It never changes which error a program is expected to fail with.
+11. **A change to what a crate outside this one is compiled against keeps the whole workspace compiling.** Once such a crate implements a kind or drives a core as its host, a leaf that changes a signature it is written against updates that crate in the same change, in the file the crate keeps for the purpose, and the leaf's task names that file. For a kind that is the kind interface, `Cx`, what a body returns, and how a declaration or an input is made. For a host it is the calls of contract 2.4: budgets, demand, answers. The merge gate builds the whole workspace, so a leaf that did not could not land. A leaf that only adds to the interface edits nothing outside. No such crate exists yet (decision D14).
 
 ### 12.2 The leaves
 
@@ -581,18 +600,18 @@ Signals are named tests that run in the merge gate. A name in `code font` is a t
   *Prereqs:* δ. *Unlocks:* θ.
 
 - **η (#10559). Limits as settings, and the paths budget.**
-  Depth of a path (the number of steps below its root, counting steps a body declared) and children per node, checked when a path is first answered in a snapshot, against snapshot settings; never stored (contract 7.6). A budget of paths resolved, given with a request: exhausting it ends the request with an error, and nothing is stored or kept for anything that met it.
-  *New files:* `limits`, `limit_check`, `budget`. *Edits:* `serve/read`, `requests`, `host`, `counters`.
+  Depth of a path (the number of steps below its root, counting steps a body declared) and children per node, checked when a path is first answered in a snapshot, against snapshot settings; never stored (contract 7.6). The kind interface gains `steps` here (contract 2.2), the steps a result declares: the limit on children per node counts them, and the toy kinds that declare children supply it (decision D14). A budget of paths resolved, given with a request: exhausting it ends the request with an error, and nothing is stored or kept for anything that met it.
+  *New files:* `limits`, `limit_check`, `budget`. *Edits:* `serve/read`, `requests`, `host`, `counters`, `kind`, `erased_kind`.
   *Signal:* G0 with limit settings in the generated designs, and with the host events that change a limit setting and that end a request by its budget (until leaf μ₁ each snapshot is answered afresh through the store, so neither needs inheritance); `depth_limit_failure_is_a_fact_about_the_path_not_shared_by_content`; `shared_exponential_tree_ends_by_paths_budget_not_node_budget`.
   *Prereqs:* δ. *Unlocks:* θ.
 
 **Phase 3. The three mechanisms.** One rule family per leaf. Until the leaf that inherits it lands, a kind of node is simply not inherited (rule 1).
 
 - **θ (#10560). Children declared by a running body** (contract 7.1; mechanism 3).
-  `cx.child`. The declaration is recorded with the read, so an identical parent elsewhere is found without running its body and the child can be reached by path from outside. The child exists while its parent's current answer records declaring it. Children per node counts both sorts. Toy kind: `call`.
-  *New files:* `serve/child`. *Edits:* `mailbox`, `cx`, `record`, `resolve`, `lookup`, `limit_check`.
+  `cx.child`. The declaration is recorded with the read, so an identical parent elsewhere is found without running its body and the child can be reached by path from outside. The child exists while its parent's current answer records declaring it. Children per node counts both sorts. Toy kind: `call`. A declaration built from argument values needs a binding to a constant (contract 2.1), and it enters here: a value with a content, held in the declaration and part of the declaration's content; a read through it answers the value, and steps below it name nothing. The form of a step for a child a body declares is chosen here (section 15, 5), in a space of its own (decision D14).
+  *New files:* `serve/child`. *Edits:* `mailbox`, `cx`, `record`, `resolve`, `lookup`, `limit_check`, `declaration`, `step`.
   *Signal:* G0 with `call`, reaching a body that declares a child on one branch only and a child declared inside a loop; `children_declared_in_a_loop_get_distinct_paths`; `one_inner_call_site_reached_from_two_outer_calls_gets_two_paths`; `body_declared_child_is_shared_and_resolvable_without_rerunning_its_parent`; `unbounded_body_declared_recursion_stops_at_the_depth_limit_with_one_failure`; one `read_all` of three child declarations on three resources starts all three children before the parent's single wait completes (the part of `read_all_of_child_declarations_starts_every_child_before_waiting` that needs no view of what was recorded; leaf υ owns that test).
-  *Prereqs:* ε, η. *Unlocks:* ι.
+  *Prereqs:* ε, η, task #10621. *Unlocks:* ι.
 
 - **ι (#10561). Views** (contract 6; mechanism 1, first part).
   `cx.suppose`, reading through a view, a substitution at one path, structure under a view, which answers depended on a substitution, and the rule that a body which has opened a view reads nothing outside it afterwards (O9). **In this leaf the result of a body that opened a view is not stored**, and such a body runs again whenever it is asked for in a new snapshot. A result computed under a view is stored only when it did not depend on the substitution. Toy kinds: `solve`, `solved`.
@@ -718,7 +737,7 @@ Eighteen leaves lie one after another from α to π, and the longest path has tw
 
 The four leaves after π have no order among themselves, but each edits `host`, and the orchestrator runs one task at a time on a file. Expect them to land one after another in whatever order the scheduler picks.
 
-Two tasks are not leaves and are not drawn. Task #10617 (decision D13) depends on δ, and ε and η depend on it. Task #10619 (decision D9) depends on χ, and φ depends on it.
+Three tasks are not leaves and are not drawn. Task #10617 (decision D13) depends on δ, and ε and η depend on it. Task #10619 (decision D9) depends on χ, and φ depends on it. Task #10621 (decision D14) depends on δ, and θ and ω depend on it.
 
 ### 12.4 The manifest
 
@@ -834,7 +853,7 @@ Walked against `docs/legibility/design-invariants.md`.
 2. **How a waiter that is not a body is represented** in the wait relation (section 5.2). Leaf δ.
 3. **The seeds the gate runs, and how many events each.** Suggested: enough for every counter-example marked "the generator must reach it" to be reached at a fixed seed, within a tenth of the default test timeout on a loaded machine. Leaves γ and μ₁.
 4. **Whether a ready read is served in the first poll.** Only if leaf φ's measurement shows the second poll matters. Leaf φ reports; no leaf changes it without Leo's say, because it gives a body a way to reach the index.
-5. **The form of a step for a child a body declares** (the chain of call sites and iteration indices). Leaf θ.
+5. **The form of a step for a child a body declares** (the chain of call sites and iteration indices). Leaf θ. Since task #10621 (decision D14) a step is a key in a space: a static name chosen by the kind that declares the child, which the core compares and never interprets, so that steps with equal keys in different spaces are different steps. A step made by name or by index alone is in a default space. Required of the form leaf θ chooses: the steps of body-declared children are in a space of their own, and a host can still read a step's space and key.
 6. **Where the generic part of the random-sequence checker lives.** It stays under `tests/` because nothing outside the crate uses it yet. A later PRD for real kinds may lift it into the crate; it is written free of toy types so that it can be.
 7. **The unit of a request's memory budget for the store.** Contract 7.6 says "memory for the store" and names no unit. Suggested: each kind reports a size for a result, one unit when it reports none, and the budget is a sum of those. That report is a new item of the kind interface, entering with this leaf, and so an amendment to contract 2.2 under section 6. A count of stored entries would need no amendment and is not memory. Leaf ρ.
 
