@@ -1,12 +1,12 @@
-//! The live requests, and which running tasks each wants: one relation,
+//! The live requests, and which nodes in progress each wants: one relation,
 //! seen from both ends, with one owner.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::core_id::CoreId;
 use crate::event::RequestId;
+use crate::index::NodeKey;
 use crate::snapshot::SnapshotId;
-use crate::task::TaskKey;
 
 /// The host's handle on a request, given back to end it.
 #[derive(Debug)]
@@ -24,8 +24,8 @@ impl Request {
 pub(crate) struct Requests {
     core: CoreId,
     on: BTreeMap<RequestId, SnapshotId>,
-    wants: BTreeMap<RequestId, BTreeSet<TaskKey>>,
-    wanted_by: BTreeMap<TaskKey, BTreeSet<RequestId>>,
+    wants: BTreeMap<RequestId, BTreeSet<NodeKey>>,
+    wanted_by: BTreeMap<NodeKey, BTreeSet<RequestId>>,
     opened: u64,
 }
 
@@ -52,7 +52,7 @@ impl Requests {
         Request { id }
     }
 
-    pub fn want(&mut self, request: RequestId, key: TaskKey) {
+    pub fn want(&mut self, request: RequestId, key: NodeKey) {
         if let Some(wanted) = self.wants.get_mut(&request) {
             wanted.insert(key);
             self.wanted_by.entry(key).or_default().insert(request);
@@ -65,13 +65,13 @@ impl Requests {
     }
 
     /// The live requests that want `key`.
-    pub fn wanting(&self, key: &TaskKey) -> impl Iterator<Item = RequestId> + '_ {
+    pub fn wanting(&self, key: &NodeKey) -> impl Iterator<Item = RequestId> + '_ {
         self.wanted_by.get(key).into_iter().flatten().copied()
     }
 
     /// The live requests that wanted `key`, which has now been answered, so
     /// none of them wants it any more.
-    pub fn settle(&mut self, key: &TaskKey) -> BTreeSet<RequestId> {
+    pub fn settle(&mut self, key: &NodeKey) -> BTreeSet<RequestId> {
         let wanting = self.wanted_by.remove(key).unwrap_or_default();
         for request in &wanting {
             if let Some(wanted) = self.wants.get_mut(request) {
@@ -82,13 +82,13 @@ impl Requests {
     }
 
     /// Every node some live request wants.
-    pub fn wanted(&self) -> impl Iterator<Item = TaskKey> + '_ {
+    pub fn wanted(&self) -> impl Iterator<Item = NodeKey> + '_ {
         self.wanted_by.keys().copied()
     }
 
     /// Each live request that still wants a node, with its snapshot and
     /// the nodes it wants.
-    pub fn wanting_any(&self) -> Vec<(RequestId, SnapshotId, Vec<TaskKey>)> {
+    pub fn wanting_any(&self) -> Vec<(RequestId, SnapshotId, Vec<NodeKey>)> {
         self.wants
             .iter()
             .filter(|(_, wanted)| !wanted.is_empty())

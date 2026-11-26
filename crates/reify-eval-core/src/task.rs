@@ -12,17 +12,8 @@ use crate::erased_kind::{Body, ErasedKind};
 use crate::job::Product;
 use crate::mailbox::{Mailbox, Posted, Reply};
 use crate::outcome::{Erased, Outcome};
-use crate::path_table::PathId;
 use crate::produced::Produced;
 use crate::record::Reading;
-use crate::snapshot::SnapshotId;
-
-/// A node of one snapshot: within a snapshot, one body runs for a path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct TaskKey {
-    pub snapshot: SnapshotId,
-    pub path: PathId,
-}
 
 pub(crate) struct Task {
     declaration: Arc<Declaration>,

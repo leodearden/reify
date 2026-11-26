@@ -16,7 +16,7 @@ use crate::demand::Demand;
 use crate::event::{Event, RequestError, RequestId};
 use crate::failure::{Failure, OutsideFailure, panic_message};
 use crate::finish;
-use crate::index::{self, Entry, Indexes};
+use crate::index::{self, Entry, Indexes, NodeKey};
 use crate::input::{Input, InputKey};
 use crate::job::Report;
 use crate::kinds::Kinds;
@@ -32,7 +32,7 @@ use crate::resource::Resources;
 use crate::serve;
 use crate::serve::section::{Delivery, InFlight};
 use crate::snapshot::{Snapshot, SnapshotId};
-use crate::task::{Task, TaskKey};
+use crate::task::Task;
 use crate::waits::Waits;
 
 /// What is left after a turn.
@@ -45,10 +45,10 @@ pub enum Turn {
 /// What is left to do after a node's answer, worked in order.
 enum Work {
     /// The node at the key has its final answer.
-    Answered(TaskKey, Entry),
+    Answered(NodeKey, Entry),
     /// The path at the key can now be worked out: it is a root, or its
     /// parent has its final answer.
-    Resolve(TaskKey),
+    Resolve(NodeKey),
 }
 
 pub(crate) struct Executor {
@@ -56,11 +56,11 @@ pub(crate) struct Executor {
     kinds: Kinds,
     paths: PathTable,
     indexes: Indexes,
-    tasks: BTreeMap<TaskKey, Task>,
+    tasks: BTreeMap<NodeKey, Task>,
     /// The paths waiting on their parent's answer.
-    resolving: BTreeSet<TaskKey>,
+    resolving: BTreeSet<NodeKey>,
     waits: Waits,
-    ready: ReadyQueue<TaskKey>,
+    ready: ReadyQueue<NodeKey>,
     requests: Requests,
     counters: Counters,
     events: Vec<Event>,
@@ -200,7 +200,7 @@ impl Executor {
     /// Tells a path already answered in the snapshot at once; otherwise
     /// the request wants it until it is answered.
     fn demand(&mut self, request: RequestId, snapshot: SnapshotId, path: &Path) {
-        let key = TaskKey {
+        let key = NodeKey {
             snapshot,
             path: self.paths.intern(path),
         };
@@ -212,24 +212,24 @@ impl Executor {
         self.ensure(key);
     }
 
-    fn in_progress(&self, key: TaskKey) -> bool {
+    fn in_progress(&self, key: NodeKey) -> bool {
         self.tasks.contains_key(&key) || self.resolving.contains(&key)
     }
 
-    fn answered(&self, key: TaskKey) -> bool {
+    fn answered(&self, key: NodeKey) -> bool {
         self.indexes.of(key.snapshot).entry(key.path).is_some()
     }
 
     /// Sees that `key` will be answered: walks up to the nearest ancestor
     /// that is answered or in progress, each path on the way waiting on its
     /// parent, and works out the topmost path that can be worked out now.
-    fn ensure(&mut self, key: TaskKey) {
+    fn ensure(&mut self, key: NodeKey) {
         if self.answered(key) || self.in_progress(key) {
             return;
         }
         let mut at = key;
         while let Some((parent, _)) = self.paths.parent(at.path) {
-            let parent = TaskKey {
+            let parent = NodeKey {
                 snapshot: key.snapshot,
                 path: parent,
             };
@@ -278,7 +278,7 @@ impl Executor {
     /// Whether no live request wants `key` and nothing awaits it: a path
     /// its parent's answer released after the reader that awaited it was
     /// dropped.
-    fn unwanted(&self, key: TaskKey) -> bool {
+    fn unwanted(&self, key: NodeKey) -> bool {
         self.requests.wanting(&key).next().is_none() && !self.waits.is_awaited(key)
     }
 
@@ -286,7 +286,7 @@ impl Executor {
     /// read with the typed read a body uses (decision D11); any other path
     /// from its parent's final answer. A declaration starts the body; any
     /// other outcome is the path's answer.
-    fn resolve(&mut self, key: TaskKey) -> Option<Work> {
+    fn resolve(&mut self, key: NodeKey) -> Option<Work> {
         self.counters.count_path_resolved();
         let index = self.indexes.of(key.snapshot);
         let declared = match self.paths.parent(key.path) {
@@ -322,7 +322,7 @@ impl Executor {
         }
     }
 
-    fn start(&mut self, key: TaskKey, declaration: Arc<Declaration>) {
+    fn start(&mut self, key: NodeKey, declaration: Arc<Declaration>) {
         let kind_id = declaration.kind();
         let Some(kind) = self.kinds.get(kind_id) else {
             let unknown = OutsideFailure::UnknownKind { kind: kind_id.0 };
@@ -335,7 +335,7 @@ impl Executor {
 
     /// Queues the body at `key` to be polled, once however often it is
     /// queued before its poll.
-    fn queue(&mut self, key: TaskKey) {
+    fn queue(&mut self, key: NodeKey) {
         if let Some(task) = self.tasks.get_mut(&key)
             && task.owe_poll()
         {
@@ -395,7 +395,7 @@ impl Executor {
     /// The bodies reachable from `wanted` through the wait relation, in path
     /// order. A path waiting on its parent passes through to it; only
     /// bodies are named.
-    fn bodies_waited_on(&self, wanted: Vec<TaskKey>) -> Vec<Path> {
+    fn bodies_waited_on(&self, wanted: Vec<NodeKey>) -> Vec<Path> {
         let mut bodies: Vec<_> = self
             .waits
             .reach(wanted)
@@ -408,7 +408,7 @@ impl Executor {
     }
 
     /// Polls the body at `key` if it is owed a poll.
-    fn advance(&mut self, key: TaskKey) {
+    fn advance(&mut self, key: NodeKey) {
         let Some(task) = self.tasks.get_mut(&key) else {
             return;
         };
@@ -458,10 +458,10 @@ impl Executor {
     /// of them is worked out, so that none can answer the reading early.
     /// Stops once the reader is dropped: a node that fails outside the
     /// inputs as it is worked out drops it at once.
-    fn await_nodes(&mut self, key: TaskKey, awaited: BTreeSet<PathId>) {
+    fn await_nodes(&mut self, key: NodeKey, awaited: BTreeSet<PathId>) {
         let nodes: Vec<_> = awaited
             .into_iter()
-            .map(|path| TaskKey {
+            .map(|path| NodeKey {
                 snapshot: key.snapshot,
                 path,
             })
@@ -479,7 +479,7 @@ impl Executor {
 
     /// Replies to the body at `key`, whose reading awaits nothing more, and
     /// queues it.
-    fn resume_reader(&mut self, key: TaskKey) {
+    fn resume_reader(&mut self, key: NodeKey) {
         let Some(task) = self.tasks.get_mut(&key) else {
             return;
         };
@@ -490,7 +490,7 @@ impl Executor {
     }
 
     /// Ends a node whose body produced `outcome`.
-    fn finish(&mut self, key: TaskKey, outcome: Outcome<Erased>) {
+    fn finish(&mut self, key: NodeKey, outcome: Outcome<Erased>) {
         let declaration = self.tasks.remove(&key).map(|task| {
             let declaration = Arc::clone(task.declaration());
             task.discard();
@@ -510,7 +510,7 @@ impl Executor {
     /// pending to every live request that wanted it. Then, if any of them
     /// awaited something, drops the work no live request still waits on; a
     /// node that awaits nothing keeps no other work.
-    fn end_outside(&mut self, key: TaskKey, failure: OutsideFailure) {
+    fn end_outside(&mut self, key: NodeKey, failure: OutsideFailure) {
         let mut released_a_wait = self.waits.awaits(key).next().is_some();
         let mut queue = VecDeque::from([key]);
         while let Some(key) = queue.pop_front() {
@@ -530,7 +530,7 @@ impl Executor {
         }
     }
 
-    fn tell(&mut self, request: RequestId, key: TaskKey, answer: Answer<Erased>) {
+    fn tell(&mut self, request: RequestId, key: NodeKey, answer: Answer<Erased>) {
         self.events.push(Event::Answered {
             request,
             snapshot: key.snapshot,
@@ -582,7 +582,7 @@ impl Executor {
 
     /// The task still waiting on section `serial`: the one that started it
     /// may have been dropped, and another started in its place.
-    fn waiting_on(&self, serial: u64) -> Option<TaskKey> {
+    fn waiting_on(&self, serial: u64) -> Option<NodeKey> {
         let key = self.in_flight.starter(serial)?;
         let task = self.tasks.get(key)?;
         task.waits_on(serial).then_some(*key)

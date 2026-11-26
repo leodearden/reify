@@ -14,6 +14,14 @@ use crate::outcome::{Erased, Outcome};
 use crate::path_table::PathId;
 use crate::snapshot::{Snapshot, SnapshotId, SnapshotWatch};
 
+/// A node of one snapshot, where its final answer is filed: within a
+/// snapshot a path is answered once, by at most one body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct NodeKey {
+    pub snapshot: SnapshotId,
+    pub path: PathId,
+}
+
 /// A path's final answer: its outcome and, when a body produced it, the
 /// declaration of the node that body ran for.
 #[derive(Clone)]

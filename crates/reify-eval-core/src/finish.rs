@@ -5,9 +5,8 @@
 use std::collections::BTreeSet;
 
 use crate::event::RequestId;
-use crate::index::{Entry, Indexes};
+use crate::index::{Entry, Indexes, NodeKey};
 use crate::requests::Requests;
-use crate::task::TaskKey;
 use crate::waits::Waits;
 
 /// Who a final answer concerns: the live requests to tell, the paths that
@@ -15,20 +14,20 @@ use crate::waits::Waits;
 /// whose reads it was the last to answer.
 pub(crate) struct Answered {
     pub tell: BTreeSet<RequestId>,
-    pub resolve: Vec<TaskKey>,
-    pub resume: Vec<TaskKey>,
+    pub resolve: Vec<NodeKey>,
+    pub resume: Vec<NodeKey>,
 }
 
 /// Files `entry` as the final answer at `key`, which no request wants and
 /// nothing awaits from then on. `resolving` holds the paths waiting on
 /// their parent.
 pub(crate) fn answered(
-    key: TaskKey,
+    key: NodeKey,
     entry: Entry,
     indexes: &mut Indexes,
     waits: &mut Waits,
     requests: &mut Requests,
-    resolving: &mut BTreeSet<TaskKey>,
+    resolving: &mut BTreeSet<NodeKey>,
 ) -> Answered {
     indexes.file(key.snapshot, key.path, entry);
     let (resolve, resume) = waits
@@ -47,14 +46,14 @@ pub(crate) fn answered(
 /// dropped and fail the same way.
 pub(crate) struct FailedOutside {
     pub tell: BTreeSet<RequestId>,
-    pub dropped: Vec<TaskKey>,
+    pub dropped: Vec<NodeKey>,
 }
 
 /// Ends the node at `key` with a failure outside the inputs (contract 9):
 /// nothing is indexed, no request wants it from then on, and it and each
 /// node waiting on it stop waiting on anything (point 13).
 pub(crate) fn failed_outside(
-    key: TaskKey,
+    key: NodeKey,
     waits: &mut Waits,
     requests: &mut Requests,
 ) -> FailedOutside {
