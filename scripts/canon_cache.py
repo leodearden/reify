@@ -50,6 +50,13 @@ class Backend(StrEnum):
     NONE = "none"
 
 
+class RecordMode(StrEnum):
+    """C6's mode field: where the recorded invocation ran."""
+
+    CANON = "canon"
+    REAL_PATH = "real_path"
+
+
 class Reason(StrEnum):
     NONE = ""
     STORE_UNREACHABLE = "store_unreachable"
@@ -716,9 +723,9 @@ def is_invocation_file(name: str) -> bool:
 
 @dataclass(frozen=True)
 class BuildCacheRecord:
-    """C6's record of one outermost invocation; mode is canon_run's mode value."""
+    """C6's record of one outermost invocation."""
 
-    mode: str
+    mode: RecordMode
     policy: Policy
     backend: Backend
     reason: Reason
@@ -738,7 +745,7 @@ def write_record(record: BuildCacheRecord, subcommand: str, channel: str | None,
     Never fatal, like the lib itself: a failed write is dropped.
     """
     arguments = [
-        str(record.mode),
+        record.mode.value,
         record.policy.value,
         record.backend.value,
         record.reason.value,
@@ -774,7 +781,7 @@ class CommandNotFound(Exception):
 class RecordBase:
     """What the caller knows before the command runs; a session supplies the rest."""
 
-    mode: str
+    mode: RecordMode
     policy: Policy
     backend: Backend = Backend.NONE
     reason: Reason = Reason.NONE

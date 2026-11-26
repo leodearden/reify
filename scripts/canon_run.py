@@ -1012,7 +1012,7 @@ def supervise_at_canon(call: Call, host: HostConfig) -> int:
         invocation.env,
         invocation.cwd,
         session=session,
-        record_base=canon_cache.RecordBase(Mode.CANON.value, host.policy),
+        record_base=canon_cache.RecordBase(canon_cache.RecordMode.CANON, host.policy),
         subcommand=call.subcommand,
         channel=call.channel,
         journal=canon_cache.journal_path(rebase(str(call.build_dir), call.tree, call.canon)),
@@ -1031,7 +1031,9 @@ def supervise_real_path(call: Call, host: HostConfig, reason: canon_cache.Reason
         env,
         call.cwd,
         session=None,
-        record_base=canon_cache.RecordBase(Mode.REAL_PATH.value, host.policy, canon_cache.Backend.NONE, reason),
+        record_base=canon_cache.RecordBase(
+            canon_cache.RecordMode.REAL_PATH, host.policy, canon_cache.Backend.NONE, reason
+        ),
         subcommand=call.subcommand,
         channel=call.channel,
         journal=canon_cache.journal_path(call.build_dir),
