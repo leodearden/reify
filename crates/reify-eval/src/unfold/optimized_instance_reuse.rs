@@ -54,8 +54,10 @@ use crate::snapshot::Snapshot;
 /// top-level [`super::elaborate_child_instance`] call — i.e. once per sub, and
 /// once per COLLECTION ELEMENT, since `engine_eval.rs` loops elements at its
 /// own call site. Collapsing that last factor means building the index where
-/// the slice is owned for the whole pass (`engine_eval.rs`) and passing it in;
-/// tracked by #7267.
+/// the slice is owned for the whole pass (`engine_eval.rs`) and passing it in
+/// (recorded in #7267). That is not being done in this code: the old
+/// evaluation orchestration is being replaced
+/// (docs/notes/old-evaluation-core-hold.md).
 pub(crate) struct OptimizedNameIndex<'f> {
     functions: &'f [CompiledFunction],
     names: OnceCell<HashSet<&'f str>>,
@@ -92,10 +94,12 @@ impl<'f> OptimizedNameIndex<'f> {
 /// body-inlined forever. This function is the definition;
 /// `is_optimized_userfn_cell` is `optimized_target_of(..).is_some()` over the
 /// same inputs. Collapsing it into a call to this one needs an edit to
-/// `engine_eval.rs`, which #6662 held no lock on, and is tracked by #7130;
-/// meanwhile `optimized_probe_agrees_with_engine_eval_is_optimized_userfn_cell`
-/// (below) asserts the equivalence across every shape either probe can see, so
-/// a divergence reds rather than silently splitting.
+/// `engine_eval.rs`, which #6662 held no lock on (recorded in #7130); that
+/// edit is not being made, because the old evaluation orchestration is being
+/// replaced (docs/notes/old-evaluation-core-hold.md). Instead
+/// `optimized_probe_agrees_with_engine_eval_is_optimized_userfn_cell` (below)
+/// asserts the equivalence across every shape either probe can see, so a
+/// divergence reds rather than silently splitting.
 ///
 /// The [`OptimizedNameIndex`] lookup runs BEFORE
 /// `find_matching_compiled_function`, whose multi-tier overload scan walks
@@ -660,7 +664,9 @@ fn decline_message(key: &str, site: DeclineSite<'_>, cause: &DeclineCause) -> Op
 ///   of entering the cause gate, not the match. Only `key` is built ahead of
 ///   every filter, because the scan needs it and it must share ONE spelling
 ///   with the message. Making the repeat case O(1) needs a memo owned by
-///   `engine_eval.rs` — #7267.
+///   `engine_eval.rs` (recorded in #7267), which is not being added: the old
+///   evaluation orchestration is being replaced
+///   (docs/notes/old-evaluation-core-hold.md).
 pub(super) fn report_optimized_instance_decline(
     diagnostics: &mut Vec<Diagnostic>,
     snapshot: &Snapshot,
@@ -715,8 +721,9 @@ mod tests {
     /// the SAME shape rule, and a divergence between them is silent and
     /// expensive (a cell `@optimized` at one scope but not the other either has
     /// its dispatched value re-folded through plain `eval_expr` or stays
-    /// body-inlined forever). Until #7130 collapses them into one call, this
-    /// asserts the equivalence directly, over every shape either probe can see:
+    /// body-inlined forever). They are not being collapsed into one call
+    /// (recorded in #7130; see `optimized_target_of`'s doc), so this asserts
+    /// the equivalence directly, over every shape either probe can see:
     /// an `@optimized` call, a plain call, a non-call expression, and a call
     /// that merely WRAPS an `@optimized` call.
     #[test]
