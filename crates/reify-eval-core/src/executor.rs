@@ -26,6 +26,7 @@ use crate::path::Path;
 use crate::path_table::{PathId, PathTable};
 use crate::produced::Produced;
 use crate::ready::ReadyQueue;
+use crate::record::Reading;
 use crate::requests::{Request, Requests};
 use crate::resolve::declaration_of;
 use crate::resource::Resources;
@@ -60,6 +61,9 @@ pub(crate) struct Executor {
     /// The paths waiting on their parent's answer.
     resolving: BTreeSet<NodeKey>,
     waits: Waits,
+    /// The read each body waiting on its reads has outstanding, kept until
+    /// every node it awaits is answered and dropped with its body.
+    readings: BTreeMap<NodeKey, Reading>,
     ready: ReadyQueue<NodeKey>,
     requests: Requests,
     counters: Counters,
@@ -79,6 +83,7 @@ impl Executor {
             tasks: BTreeMap::new(),
             resolving: BTreeSet::new(),
             waits: Waits::default(),
+            readings: BTreeMap::new(),
             ready: ReadyQueue::default(),
             requests: Requests::new(core),
             counters: Counters::default(),
@@ -188,9 +193,7 @@ impl Executor {
         let requests = &self.requests;
         let dropped = self.indexes.prune(|snapshot| requests.any_on(snapshot));
         if let Some(key) = self
-            .tasks
-            .keys()
-            .chain(&self.resolving)
+            .nodes_in_progress()
             .find(|key| dropped.contains(&key.snapshot))
         {
             index::lost(key.snapshot);
@@ -212,6 +215,14 @@ impl Executor {
         self.ensure(key);
     }
 
+    /// Every node in progress: a body, or a path waiting on its parent's
+    /// answer.
+    fn nodes_in_progress(&self) -> impl Iterator<Item = &NodeKey> {
+        self.tasks.keys().chain(&self.resolving)
+    }
+
+    /// Whether `key` is among `nodes_in_progress`, found without walking
+    /// them.
     fn in_progress(&self, key: NodeKey) -> bool {
         self.tasks.contains_key(&key) || self.resolving.contains(&key)
     }
@@ -322,6 +333,12 @@ impl Executor {
         }
     }
 
+    /// Removes the body at `key`, with the read it waits on, if any.
+    fn remove_task(&mut self, key: NodeKey) -> Option<Task> {
+        self.readings.remove(&key);
+        self.tasks.remove(&key)
+    }
+
     fn start(&mut self, key: NodeKey, declaration: Arc<Declaration>) {
         let kind_id = declaration.kind();
         let Some(kind) = self.kinds.get(kind_id) else {
@@ -350,14 +367,12 @@ impl Executor {
     fn drop_unwanted_work(&mut self) {
         let kept = self.waits.reach(self.requests.wanted());
         let unwanted: BTreeSet<_> = self
-            .tasks
-            .keys()
-            .chain(&self.resolving)
+            .nodes_in_progress()
             .filter(|key| !kept.contains(key))
             .copied()
             .collect();
         for key in unwanted {
-            if let Some(task) = self.tasks.remove(&key) {
+            if let Some(task) = self.remove_task(key) {
                 task.abandon();
             }
             self.resolving.remove(&key);
@@ -434,7 +449,7 @@ impl Executor {
                     task.answer_read(reading.reply(index));
                     return self.queue(key);
                 }
-                task.wait_on(reading);
+                self.readings.insert(key, reading);
                 self.await_nodes(key, awaited);
             }
             Posted::Ask(Ask::Exclusive(ask)) => {
@@ -480,10 +495,10 @@ impl Executor {
     /// Replies to the body at `key`, whose reading awaits nothing more, and
     /// queues it.
     fn resume_reader(&mut self, key: NodeKey) {
-        let Some(task) = self.tasks.get_mut(&key) else {
+        let Some(task) = self.tasks.get(&key) else {
             return;
         };
-        if let Some(reading) = task.take_reading() {
+        if let Some(reading) = self.readings.remove(&key) {
             task.answer_read(reading.reply(self.indexes.of(key.snapshot)));
             self.queue(key);
         }
@@ -491,7 +506,7 @@ impl Executor {
 
     /// Ends a node whose body produced `outcome`.
     fn finish(&mut self, key: NodeKey, outcome: Outcome<Erased>) {
-        let declaration = self.tasks.remove(&key).map(|task| {
+        let declaration = self.remove_task(key).map(|task| {
             let declaration = Arc::clone(task.declaration());
             task.discard();
             declaration
@@ -514,7 +529,7 @@ impl Executor {
         let mut released_a_wait = self.waits.awaits(key).next().is_some();
         let mut queue = VecDeque::from([key]);
         while let Some(key) = queue.pop_front() {
-            if let Some(task) = self.tasks.remove(&key) {
+            if let Some(task) = self.remove_task(key) {
                 task.discard();
             }
             self.resolving.remove(&key);
@@ -612,12 +627,14 @@ impl Executor {
 }
 
 impl Drop for Executor {
-    /// Bodies, indexes and untaken answers go before the resources, so what
-    /// they hold is queued for release before each resource thread stops.
+    /// Bodies, the reads they wait on, indexes and untaken answers go
+    /// before the resources, so what they hold is queued for release before
+    /// each resource thread stops.
     fn drop(&mut self) {
         for (_, task) in mem::take(&mut self.tasks) {
             task.discard();
         }
+        self.readings.clear();
         self.indexes.clear();
         self.events.clear();
     }

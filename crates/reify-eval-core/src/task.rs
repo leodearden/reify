@@ -13,7 +13,6 @@ use crate::job::Product;
 use crate::mailbox::{Mailbox, Posted, Reply};
 use crate::outcome::{Erased, Outcome};
 use crate::produced::Produced;
-use crate::record::Reading;
 
 pub(crate) struct Task {
     declaration: Arc<Declaration>,
@@ -21,8 +20,6 @@ pub(crate) struct Task {
     cancel: Cancel,
     /// The section the body waits on, if it waits on one.
     section: Option<u64>,
-    /// The read the body waits on, while a node it reads is unanswered.
-    reading: Option<Reading>,
     /// Whether the body is queued to be polled. A ready-queue entry for a
     /// task that is not owed a poll is stale: left by a dropped task whose
     /// successor has the same key.
@@ -40,7 +37,6 @@ impl Task {
             mailbox,
             cancel,
             section: None,
-            reading: None,
             owed_poll: false,
             body,
         }
@@ -70,16 +66,6 @@ impl Task {
 
     pub fn answer_read(&self, outcomes: Vec<Outcome<Erased>>) {
         self.mailbox.reply(Reply::Outcomes(outcomes));
-    }
-
-    /// Keeps the body's read until the nodes it awaits are answered.
-    pub fn wait_on(&mut self, reading: Reading) {
-        self.reading = Some(reading);
-    }
-
-    /// The read the body waits on, which no longer waits.
-    pub fn take_reading(&mut self) -> Option<Reading> {
-        self.reading.take()
     }
 
     pub fn begin_section(&mut self, serial: u64) {
