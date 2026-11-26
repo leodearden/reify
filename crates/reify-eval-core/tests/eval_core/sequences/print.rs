@@ -76,14 +76,12 @@ fn key_text(key: &Key) -> String {
     match key {
         Key::Root(name) => format!("root({name:?})"),
         Key::Named(name) => format!("named({name:?})"),
-        Key::Attached(path, name) => format!("attached_to({}, {name:?})", path_text(path)),
     }
 }
 
 fn bind_text(bind: &Bind) -> String {
     match bind {
         Bind::Input(name) => format!("input({name:?})"),
-        Bind::Attached(name) => format!("attached({name:?})"),
         Bind::Declarer(place) => format!("declarer({})", steps_text(place)),
         Bind::Passed(r) => format!("passed({:?}, {})", r.binding, steps_text(&r.steps)),
     }

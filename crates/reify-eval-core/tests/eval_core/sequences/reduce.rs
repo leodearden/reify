@@ -163,7 +163,7 @@ fn bind_steps(bind: &Bind) -> u64 {
     match bind {
         Bind::Declarer(place) => place.len() as u64,
         Bind::Passed(r) => r.steps.len() as u64,
-        Bind::Input(_) | Bind::Attached(_) => 0,
+        Bind::Input(_) => 0,
     }
 }
 

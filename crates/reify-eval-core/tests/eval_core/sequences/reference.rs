@@ -218,9 +218,6 @@ impl Reference {
                 (Some(Bind::Input(input)), _) if steps.is_empty() => {
                     return Ok(self.input(&Key::Named(input)));
                 }
-                (Some(Bind::Attached(attached)), _) if steps.is_empty() => {
-                    return Ok(self.input(&Key::Attached(node, attached)));
-                }
                 (Some(Bind::Declarer(place)), Some(declarer)) => {
                     let target = place
                         .iter()
@@ -338,21 +335,15 @@ impl Reference {
         })
     }
 
-    /// The members at "members" with those at "extra" over them.
+    /// The members at "members".
     fn members(&mut self, at: &ModelPath, decl: &Rc<Decl>) -> Result<Expect, Invalid> {
-        let members = typed_members(self.read_binding(at, decl, "members")?);
-        let extra = typed_members(self.read_binding(at, decl, "extra")?);
-        Ok(match (members, extra) {
-            (Typed::Value(mut members), Typed::Value(extra)) => {
-                members.extend(extra);
-                Expect::Value(Out::Members(members))
-            }
-            (Typed::Value(members), Typed::Absent) => Expect::Value(Out::Members(members)),
-            (Typed::Value(_), Typed::Failure(failure)) | (Typed::Failure(failure), _) => {
-                Expect::Failure(failure)
-            }
-            (Typed::Absent, _) => Expect::Absent,
-        })
+        Ok(
+            match typed_members(self.read_binding(at, decl, "members")?) {
+                Typed::Value(members) => Expect::Value(Out::Members(members)),
+                Typed::Absent => Expect::Absent,
+                Typed::Failure(failure) => Expect::Failure(failure),
+            },
+        )
     }
 
     /// Its members while "condition" reads true; absent while it reads

@@ -13,9 +13,9 @@ use reify_eval_core::Step;
 
 use super::case::{Case, HostEvent, Then, edited};
 use super::design::{
-    Decl, Inputs, Key, ModelPath, ToyKind, Val, attached_to, cell, collection, declaration,
-    declarer, divided, flag, guard, index, input, int, measure, members, named, passed, path,
-    picker, root, scope, shape, step,
+    Decl, Inputs, Key, ModelPath, ToyKind, Val, cell, collection, declaration, declarer, divided,
+    flag, guard, index, input, int, measure, members, named, passed, path, picker, root, scope,
+    shape, step,
 };
 use super::rng::XorShift64Star;
 
@@ -139,7 +139,6 @@ enum Change {
     Flag,
     Count,
     Member,
-    Extra,
     Remove,
     Root,
 }
@@ -328,10 +327,6 @@ impl Generator {
 
     fn scope_at(&mut self, at: &ModelPath, depth: usize, needed: &mut Needed) -> Decl {
         let level = self.level(at, depth, ToyKind::Scope, needed);
-        if self.rng.chance(1, 4) {
-            let extra = self.extra(&level, &BTreeMap::new(), needed);
-            needed.push((attached_to(at.clone(), "extra"), extra));
-        }
         let decl = scope(&level.input);
         self.levels.push(level);
         decl
@@ -375,20 +370,6 @@ impl Generator {
         }
         needed.push((named(&level.input), members(held)));
         level
-    }
-
-    /// Extra members for `level`, whose members are `held`: each at an
-    /// ordinal up to one past the last, over a member or beside them.
-    fn extra(&mut self, level: &Level, held: &BTreeMap<Step, Decl>, needed: &mut Needed) -> Val {
-        let present = level.siblings(held);
-        let mut extra = BTreeMap::new();
-        for _ in 0..1 + self.rng.below(2) {
-            let ordinal = self.rng.below(present.len() + 1);
-            let earlier = before(&present, ordinal);
-            let decl = self.member(level, ordinal, &earlier, needed);
-            extra.insert(member_step(ordinal), decl);
-        }
-        Val::Members(extra)
     }
 
     /// A collection counting a new input, or an earlier sibling cell, of
@@ -498,9 +479,6 @@ impl Generator {
         if !self.levels.is_empty() {
             sorts.extend([Change::Member; 3]);
         }
-        if self.levels.iter().any(|level| level.kind == ToyKind::Scope) {
-            sorts.push(Change::Extra);
-        }
         let mut needed = Needed::new();
         let mut changes = match *self.rng.choose(&sorts) {
             Change::Int => {
@@ -516,7 +494,6 @@ impl Generator {
                 vec![(named(&name), Some(int(self.rng.below(5) as i64)))]
             }
             Change::Member => self.member_change(current, &mut needed),
-            Change::Extra => self.extra_change(current, &mut needed),
             Change::Remove => {
                 let present: Vec<_> = current
                     .keys()
@@ -568,29 +545,6 @@ impl Generator {
         let last = self.levels.len() - 1;
         self.levels.swap(at, last);
         vec![(key, Some(Val::Members(held)))]
-    }
-
-    /// The extra members attached to some scope set anew, or removed.
-    fn extra_change(&mut self, current: &Inputs, needed: &mut Needed) -> Vec<(Key, Option<Val>)> {
-        let scopes: Vec<_> = (0..self.levels.len())
-            .filter(|at| self.levels[*at].kind == ToyKind::Scope)
-            .collect();
-        let at = *self.rng.choose(&scopes);
-        let level = self.levels.swap_remove(at);
-        let key = attached_to(level.at.clone(), "extra");
-        let change = if current.contains_key(&key) && self.rng.chance(1, 3) {
-            None
-        } else {
-            let held = match current.get(&named(&level.input)) {
-                Some(Val::Members(held)) => held.clone(),
-                _ => BTreeMap::new(),
-            };
-            Some(self.extra(&level, &held, needed))
-        };
-        self.levels.push(level);
-        let last = self.levels.len() - 1;
-        self.levels.swap(at, last);
-        vec![(key, change)]
     }
 }
 

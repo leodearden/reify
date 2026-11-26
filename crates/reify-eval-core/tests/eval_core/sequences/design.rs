@@ -37,13 +37,11 @@ pub struct ModelRef {
 pub enum Key {
     Root(String),
     Named(String),
-    Attached(ModelPath, String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Bind {
     Input(String),
-    Attached(String),
     Declarer(Vec<Step>),
     Passed(ModelRef),
 }
@@ -108,7 +106,6 @@ impl Key {
         match self {
             Key::Root(name) => InputKey::root(name.as_str()),
             Key::Named(name) => InputKey::named(name.as_str()),
-            Key::Attached(path, name) => InputKey::attached(path.to_core(), name.as_str()),
         }
     }
 }
@@ -117,7 +114,6 @@ impl Bind {
     pub fn to_core(&self) -> Binding {
         match self {
             Bind::Input(name) => Binding::Input(InputKey::named(name.as_str())),
-            Bind::Attached(name) => Binding::Attached(name.as_str().into()),
             Bind::Declarer(place) => Binding::Declarer(place.clone()),
             Bind::Passed(r) => Binding::Passed(r.to_core()),
         }
@@ -193,11 +189,6 @@ pub fn input(name: &str) -> Bind {
     Bind::Input(name.to_owned())
 }
 
-/// A binding to the input `name` attached to the bound node's own path.
-pub fn attached(name: &str) -> Bind {
-    Bind::Attached(name.to_owned())
-}
-
 /// A binding to the place `steps` down from the bound node's declarer.
 pub fn declarer(steps: impl IntoIterator<Item = Step>) -> Bind {
     Bind::Declarer(steps.into_iter().collect())
@@ -245,13 +236,9 @@ pub fn picker(pick: Bind, from: Bind) -> Decl {
     decl(ToyKind::Cell, [("pick", pick), ("from", from)])
 }
 
-/// A scope over the host-named members input `members`, with the members
-/// of the input "extra" attached to its path.
+/// A scope over the host-named members input `members`.
 pub fn scope(members: &str) -> Decl {
-    decl(
-        ToyKind::Scope,
-        [("members", input(members)), ("extra", attached("extra"))],
-    )
+    decl(ToyKind::Scope, [("members", input(members))])
 }
 
 /// A guard on `condition` over the host-named members input `members`.
@@ -304,11 +291,6 @@ pub fn root(name: &str) -> Key {
 /// The key of the host-named input `name`.
 pub fn named(name: &str) -> Key {
     Key::Named(name.to_owned())
-}
-
-/// The key of the input `name` attached to the node at `path`.
-pub fn attached_to(path: ModelPath, name: &str) -> Key {
-    Key::Attached(path, name.to_owned())
 }
 
 pub fn inputs(entries: impl IntoIterator<Item = (Key, Val)>) -> Inputs {
