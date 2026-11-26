@@ -1,10 +1,42 @@
-//! What the tests share: host-side helpers for building a core, making
-//! snapshot inputs and reading the answers a request received.
+//! What the tests share: the toy kinds, and host-side helpers for building
+//! a core, making snapshot inputs and reading the answers a request received.
 
 use reify_eval_core::{
-    Answer, Builder, Core, Erased, Event, Failure, Input, InputKey, Outcome, OutsideFailure, Path,
-    Request, Root, Value,
+    Answer, Binding, Builder, Core, Cx, Declaration, Erased, Event, Failure, Input, InputKey, Kind,
+    KindId, Outcome, OutsideFailure, Path, Produced, Ref, Request, Root, Value,
 };
+
+/// Adds the i64s bound at "0", "1", … until a binding reads absent. A read
+/// that fails ends the body with that failure as its outcome.
+pub struct Cell;
+
+impl Kind for Cell {
+    type Out = i64;
+    const ID: KindId = KindId("toy.cell");
+
+    async fn run(cx: &Cx) -> Produced<i64> {
+        let mut sum = 0;
+        for index in 0_u32.. {
+            match cx.read::<i64>(&Ref::binding(index.to_string())).await {
+                Outcome::Value(value) => sum += *value,
+                Outcome::Absent => break,
+                Outcome::Failure(failure) => return Produced::Outcome(Outcome::Failure(failure)),
+            }
+        }
+        Produced::Outcome(Outcome::of(sum))
+    }
+}
+
+/// A cell over the host-named inputs `names`, bound at "0", "1", … in order.
+pub fn cell(names: &[&str]) -> Declaration {
+    names.iter().enumerate().fold(Declaration::new(Cell::ID), |declaration, (index, name)| {
+        declaration.bind(index.to_string(), Binding::Input(InputKey::named(*name)))
+    })
+}
+
+pub fn with_cell() -> Builder {
+    Builder::new().kind::<Cell>().expect("a fresh builder has no kinds")
+}
 
 pub fn core() -> Core {
     Builder::new().build()
