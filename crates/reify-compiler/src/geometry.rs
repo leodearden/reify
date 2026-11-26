@@ -1989,24 +1989,27 @@ fn compile_geometry_call_inner(
                 ],
             }])
         }
-        // half_space(px, py, pz, nx, ny, nz)
-        // Point on the boundary plane (px,py,pz) + outward normal (nx,ny,nz) toward
-        // the retained material side. Unbounded (Bounded=false) — first Bounded=false producer.
+        // half_space(origin, normal)
+        // A Point3 `origin` on the boundary plane and the outward Direction
+        // `normal` toward the retained material side (direction-typing ι-c).
+        // Unbounded (Bounded=false) — first Bounded=false producer.
         "half_space" => {
-            if !check_arg_count_exact("half_space", compiled_args.len(), 6, expr.span, diagnostics)
-            {
+            if !check_arg_count_exact_form(
+                "half_space",
+                compiled_args.len(),
+                2,
+                "point3(x, y, z), dir(x, y, z)",
+                expr.span,
+                diagnostics,
+            ) {
                 return None;
             }
             let mut it = compiled_args.into_iter();
             Some(vec![CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::HalfSpace,
                 args: vec![
-                    ("px".to_string(), it.next().unwrap()),
-                    ("py".to_string(), it.next().unwrap()),
-                    ("pz".to_string(), it.next().unwrap()),
-                    ("nx".to_string(), it.next().unwrap()),
-                    ("ny".to_string(), it.next().unwrap()),
-                    ("nz".to_string(), it.next().unwrap()),
+                    ("origin".to_string(), it.next().unwrap()),
+                    ("normal".to_string(), it.next().unwrap()),
                 ],
             }])
         }

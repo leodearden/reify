@@ -4284,71 +4284,43 @@
 
     // ---- units-length β (task 5743 step-9): the remaining 18 primitive slots ----
 
-    /// The β slice's remaining seven primitives, each as
-    /// `(kind, &[(arg name, is_length_semantic)])` in the op's own field order.
-    ///
-    /// The `bool` is the SLICE BOUNDARY made data: `true` marks a slot this leaf
-    /// gates, `false` marks one it must leave alone. Only `half_space` carries
-    /// `false` entries — `nx`/`ny`/`nz` are a DIMENSIONLESS unit normal, not a
-    /// point in space, and the same split is already documented at
-    /// `required_length_origin3` for the co-located `ax`/`ay`/`az` triple.
+    /// The β slice's remaining six primitives, each as `(kind, &[arg name])`
+    /// in the op's own field order; every listed slot is length-semantic.
     ///
     /// Arg names are the compiler's, read from the lowering arms in
     /// `reify-compiler/src/geometry.rs` — `outer_r`/`inner_r` (not
-    /// `outer_radius`), `px`/`py`/`pz` (not `ox`/`oy`/`oz`).
-    const BETA_PRIMITIVE_SLOTS: &[(reify_compiler::PrimitiveKind, &[(&str, bool)])] = &[
-        (
-            reify_compiler::PrimitiveKind::Cylinder,
-            &[("radius", true), ("height", true)],
-        ),
-        (reify_compiler::PrimitiveKind::Sphere, &[("radius", true)]),
+    /// `outer_radius`). `half_space` is absent: its origin is a Point3 that no
+    /// scalar slot table describes, and
+    /// `half_space_bare_origin_component_is_rejected_at_build`
+    /// (`tests/harness_geometry/direction_pattern_primitive_forms_e2e.rs`) pins
+    /// its gate.
+    const BETA_PRIMITIVE_SLOTS: &[(reify_compiler::PrimitiveKind, &[&str])] = &[
+        (reify_compiler::PrimitiveKind::Cylinder, &["radius", "height"]),
+        (reify_compiler::PrimitiveKind::Sphere, &["radius"]),
         (
             reify_compiler::PrimitiveKind::Tube,
-            &[("outer_r", true), ("inner_r", true), ("height", true)],
+            &["outer_r", "inner_r", "height"],
         ),
         (
             reify_compiler::PrimitiveKind::Cone,
-            &[
-                ("bottom_radius", true),
-                ("top_radius", true),
-                ("height", true),
-            ],
+            &["bottom_radius", "top_radius", "height"],
         ),
         (
             reify_compiler::PrimitiveKind::Wedge,
-            &[
-                ("width", true),
-                ("depth", true),
-                ("height", true),
-                ("top_width", true),
-            ],
+            &["width", "depth", "height", "top_width"],
         ),
         (
             reify_compiler::PrimitiveKind::Torus,
-            &[("major_radius", true), ("minor_radius", true)],
-        ),
-        (
-            reify_compiler::PrimitiveKind::HalfSpace,
-            &[
-                ("px", true),
-                ("py", true),
-                ("pz", true),
-                // NOT gated: a dimensionless unit normal.
-                ("nx", false),
-                ("ny", false),
-                ("nz", false),
-            ],
+            &["major_radius", "minor_radius"],
         ),
     ];
 
     /// Helper: build one of [`BETA_PRIMITIVE_SLOTS`]' primitives with `slot`
-    /// bound to `expr` and every other arg bound to a valid value for its own
-    /// kind — a LENGTH `Scalar` for a length-semantic slot, a bare `Real` for a
-    /// dimensionless one. Lets each slot's three-state table vary ONLY the
-    /// value under test.
+    /// bound to `expr` and every other arg bound to a valid LENGTH `Scalar`.
+    /// Lets each slot's three-state table vary ONLY the value under test.
     fn beta_primitive_with(
         kind: reify_compiler::PrimitiveKind,
-        arg_names: &[(&str, bool)],
+        arg_names: &[&str],
         slot: &str,
         expr: reify_ir::CompiledExpr,
     ) -> CompiledGeometryOp {
@@ -4356,13 +4328,11 @@
             kind,
             args: arg_names
                 .iter()
-                .map(|(name, is_length)| {
+                .map(|name| {
                     let bound = if *name == slot {
                         expr.clone()
-                    } else if *is_length {
-                        literal_length(0.05)
                     } else {
-                        literal_f64(1.0)
+                        literal_length(0.05)
                     };
                     ((*name).to_string(), bound)
                 })
@@ -4392,9 +4362,6 @@
             (G::Wedge { top_width, .. }, "top_width") => Some(top_width),
             (G::Torus { major_radius, .. }, "major_radius") => Some(major_radius),
             (G::Torus { minor_radius, .. }, "minor_radius") => Some(minor_radius),
-            (G::HalfSpace { px, .. }, "px") => Some(px),
-            (G::HalfSpace { py, .. }, "py") => Some(py),
-            (G::HalfSpace { pz, .. }, "pz") => Some(pz),
             _ => None,
         };
         found
@@ -4402,12 +4369,12 @@
             .clone()
     }
 
-    /// Contract C1's THREE-STATE mapping at the 18 remaining primitive LENGTH
+    /// Contract C1's THREE-STATE mapping at the 15 remaining primitive LENGTH
     /// slots — `cylinder` radius/height, `sphere` radius, `tube`
     /// outer_r/inner_r/height, `cone` bottom_radius/top_radius/height, `wedge`
-    /// width/depth/height/top_width, `torus` major_radius/minor_radius and
-    /// `half_space` px/py/pz — asserted through `compile_geometry_op`, the sole
-    /// IR-build funnel (contract C2).
+    /// width/depth/height/top_width and `torus` major_radius/minor_radius —
+    /// asserted through `compile_geometry_op`, the sole IR-build funnel
+    /// (contract C2).
     ///
     /// This is the box test's table, driven over the slot table rather than
     /// re-spelled per primitive. Every slot is exercised INDEPENDENTLY (the
@@ -4423,12 +4390,7 @@
         let values = ValueMap::new();
 
         for (kind, arg_names) in BETA_PRIMITIVE_SLOTS {
-            for (slot, is_length) in arg_names.iter() {
-                if !*is_length {
-                    // Slice boundary — covered by the dedicated negative test
-                    // below, not by this rejection table.
-                    continue;
-                }
+            for slot in arg_names.iter() {
                 let at = format!("{kind}.{slot}");
 
                 // (i) ACCEPTED — stored unchanged, no diagnostics.
@@ -4558,44 +4520,24 @@
         }
     }
 
-    /// SLICE BOUNDARY, and the load-bearing half of step-9: `half_space`'s
-    /// `nx`/`ny`/`nz` are a DIMENSIONLESS unit normal — a direction, not a point
-    /// — so they must STILL accept bare numbers after the origin triple is
-    /// gated.
+    /// `half_space`'s Direction `normal` is stored as its UNIT components, as
+    /// `Real`s (direction-typing ι-c; PRD §10 Q6 changes this pin on purpose:
+    /// the retired scalar form stored the bare components unnormalised).
     ///
-    /// The fixture is the shape of `examples/half_space.ri:18` — dimensioned
-    /// point, bare normal — with THREE DISTINCT normal components
-    /// `(0.25, 0.5, 1)` rather than the corpus's literal `(0, 0, 1)`. A
-    /// two-zero normal cannot see an `nx`/`ny` transposition, and the sibling
-    /// primitive tables use distinct values (0.02 vs 0.05) for exactly that
-    /// reason. Corpus fidelity itself is pinned separately, end to end, by
-    /// `half_space_bare_normal_still_builds_with_a_dimensioned_point` in
-    /// `tests/harness_geometry/primitive_profile_length_units_e2e.rs`.
-    ///
-    /// It must compile with ZERO diagnostics, and each normal component must be
-    /// stored as the bare `Real` it was written as — re-wrapping `nz` as a
-    /// LENGTH `Scalar` would be just as wrong as rejecting it.
-    ///
-    /// Without this assertion an over-broad gate that also caught the normal
-    /// would pass the rejection table above while breaking the shipped corpus.
-    /// The same dimensionless-direction carve-out is already documented at
-    /// `required_length_origin3` for the co-located `ax`/`ay`/`az` triple.
+    /// Three DISTINCT components `(0.25, 0.5, 1)` rather than the corpus's
+    /// `(0, 0, 1)`: a two-zero normal cannot see an `nx`/`ny` transposition, nor
+    /// a skipped normalisation. A dimensioned origin and a Direction normal push
+    /// ZERO diagnostics.
     #[test]
-    fn compile_geometry_op_half_space_normal_stays_dimensionless() {
+    fn compile_geometry_op_half_space_normal_is_the_unit_direction() {
         let values = ValueMap::new();
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
         let op = CompiledGeometryOp::Primitive {
             kind: reify_compiler::PrimitiveKind::HalfSpace,
             args: vec![
-                ("px".into(), literal_length(0.0)),
-                ("py".into(), literal_length(0.0)),
-                ("pz".into(), literal_length(0.0)),
-                // Three DISTINCT components so a slot transposition is
-                // detectable.
-                ("nx".into(), literal_f64(0.25)),
-                ("ny".into(), literal_f64(0.5)),
-                ("nz".into(), literal_f64(1.0)),
+                ("origin".into(), literal_length_point3([0.0, 0.0, 0.0])),
+                ("normal".into(), literal_direction([0.25, 0.5, 1.0])),
             ],
         };
         let compiled = compile_geometry_op(
@@ -4607,27 +4549,27 @@
             &HashMap::new(),
             &mut diagnostics,
         )
-        .expect(
-            "half_space(0mm,0mm,0mm, 0.25,0.5,1) is the shipped corpus SHAPE \
-             (dimensioned point, bare normal) and must compile",
-        );
+        .expect("half_space(point3(0mm, 0mm, 0mm), dir(0.25, 0.5, 1)) must compile");
 
         let reify_ir::GeometryOp::HalfSpace { nx, ny, nz, .. } = compiled else {
             panic!("expected GeometryOp::HalfSpace, got {compiled:?}");
         };
+        let [ux, uy, uz] = reify_ir::UnitVec3::from_vector([0.25, 0.5, 1.0])
+            .expect("non-degenerate")
+            .components();
         assert_eq!(
             (nx, ny, nz),
             (
-                reify_ir::Value::Real(0.25),
-                reify_ir::Value::Real(0.5),
-                reify_ir::Value::Real(1.0),
+                reify_ir::Value::Real(ux),
+                reify_ir::Value::Real(uy),
+                reify_ir::Value::Real(uz),
             ),
-            "the unit normal must be stored as the bare Reals it was written as, \
-             neither rejected nor re-wrapped as a LENGTH Scalar"
+            "the normal must be stored as the Direction's unit components, as Reals"
         );
         assert!(
             diagnostics.is_empty(),
-            "a bare unit normal must push ZERO diagnostics; got: {diagnostics:?}"
+            "a dimensioned origin and a Direction normal must push ZERO diagnostics; \
+             got: {diagnostics:?}"
         );
     }
 

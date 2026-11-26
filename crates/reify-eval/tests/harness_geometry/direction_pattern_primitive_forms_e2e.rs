@@ -77,9 +77,12 @@ fn half_space_direction_form_emits_the_retired_scalar_op() {
     assert_eq!(normal, [Some(0.0), Some(0.0), Some(1.0)], "{call}: normal");
 }
 
+/// The origin is written all-bare because `point3` of MIXED dimensions
+/// evaluates to Undef before any gate sees it (measured): the gate under test
+/// is `accept_length_point3`'s per-component rejection.
 #[test]
 fn half_space_bare_origin_component_is_rejected_at_build() {
-    let call = "half_space(point3(0mm, 0mm, 5), dir(0, 0, 1))";
+    let call = "half_space(point3(0, 0, 5), dir(0, 0, 1))";
     let (diagnostics, ops) = lenient_build(call);
     assert_rejected_naming(&diagnostics, &["origin.z", "half_space"]);
     assert!(

@@ -1571,9 +1571,9 @@ pub enum PrimitiveKind {
     /// layer via `BRepPrimAPI_MakeTorus`. The first non-convex primitive.
     Torus,
     /// Half-space (infinite solid on one side of a boundary plane):
-    /// `half_space(px, py, pz, nx, ny, nz)` where `(px, py, pz)` is a
-    /// point on the boundary plane and `(nx, ny, nz)` is the outward normal
-    /// pointing toward the retained material side. Built at the kernel layer
+    /// `half_space(origin, normal)` where `origin` is a `Point3<Length>` on the
+    /// boundary plane and `normal` is the outward `Direction` pointing toward
+    /// the retained material side. Built at the kernel layer
     /// via `BRepPrimAPI_MakeHalfSpace`. The first `Bounded=false` primitive.
     HalfSpace,
 }

@@ -217,9 +217,8 @@ fn probe_universe_is_the_compiler_registry_and_clears_the_floor() {
 ///
 /// This tuple is the ONLY suppression key in this file. Nothing is waved
 /// through by builtin name alone, because a builtin's gated and un-gated slots
-/// routinely sit next to each other — `half_space` gates its `px`/`py`/`pz`
-/// POINT while its `nx`/`ny`/`nz` NORMAL stays bare, and `circular_pattern`
-/// draws the same origin-vs-direction split.
+/// routinely sit next to each other: a gated length beside a dimensionless
+/// count, ratio or datum.
 ///
 /// `arity` is part of the key because Contract C's gated spans are
 /// arity-dependent: `nurbs` gates `2 .. 2 + 3·n_points`, a range computed from
@@ -652,8 +651,8 @@ mod seeded_classifier {
     /// suppress.
     ///
     /// Pins that suppression is keyed by the whole `(builtin, arity, index)`
-    /// tuple. A name-keyed allowlist would wave through `half_space`'s gated
-    /// `px`/`py`/`pz` point along with its bare `nx`/`ny`/`nz` normal.
+    /// tuple. A name-keyed allowlist would wave through a builtin's gated
+    /// positions along with its bare neighbour.
     #[test]
     fn an_entry_for_a_neighbouring_index_does_not_suppress() {
         let neighbour = Position {
@@ -1076,6 +1075,14 @@ const RESIDUAL_SPANS: &[(&str, usize, std::ops::Range<usize>, TaskCite, &str)] =
          by accept_length_point3",
     ),
     (
+        "half_space",
+        2,
+        0..1,
+        TaskCite(7714),
+        "origin — a Point3 origin no scalar filler produces; still gated at build \
+         by accept_length_point3",
+    ),
+    (
         "rotate_around",
         3,
         0..1,
@@ -1147,10 +1154,11 @@ const ALLOWLIST: &[(&str, usize, std::ops::Range<usize>, Justification, &str)] =
     ),
     (
         "half_space",
-        6,
-        3..6,
-        Justification::UnitVectorComponent,
-        "nx/ny/nz — the outward normal, beside the gated px/py/pz point",
+        2,
+        1..2,
+        Justification::Index,
+        "normal — a Direction (dir(x, y, z)), never a bare number; \
+         decode_direction rejects a scalar filler",
     ),
     (
         "linear_pattern",

@@ -1707,7 +1707,7 @@ fn half_space_at_bounded_param_emits_geometry_unbounded_diagnostic() {
             param g : Bounded
         }
         structure def Top {
-            sub x = Foo(g: half_space(0mm, 0mm, 0mm, 0, 0, 1))
+            sub x = Foo(g: half_space(point3(0mm, 0mm, 0mm), dir(0, 0, 1)))
         }
     "#;
     let compiled = compile_source_with_stdlib(source);
@@ -1736,7 +1736,7 @@ fn translate_of_half_space_at_bounded_param_emits_geometry_unbounded() {
             param g : Bounded
         }
         structure def Top {
-            sub x = Foo(g: translate(half_space(0mm, 0mm, 0mm, 0, 0, 1), 0mm, 0mm, 1mm))
+            sub x = Foo(g: translate(half_space(point3(0mm, 0mm, 0mm), dir(0, 0, 1)), 0mm, 0mm, 1mm))
         }
     "#;
     let compiled = compile_source_with_stdlib(source);
@@ -1785,7 +1785,7 @@ fn translate_of_box_at_bounded_param_emits_no_geometry_unbounded() {
 
 // ─── binary booleans see their direct-call operands (task #6188 / #8191) ─────
 
-const HALF_SPACE: &str = "half_space(0mm, 0mm, 0mm, 0, 0, 1)";
+const HALF_SPACE: &str = "half_space(point3(0mm, 0mm, 0mm), dir(0, 0, 1))";
 const UNIT_BOX: &str = "box(1mm, 1mm, 1mm)";
 
 /// How many `GeometryUnbounded` diagnostics compiling `geometry` at a
@@ -1940,7 +1940,7 @@ fn union_all_over_a_geometry_list_literal_at_bounded_param_emits_geometry_unboun
             param g : Bounded
         }
         structure def Top {
-            sub x = Foo(g: union_all([box(1mm, 1mm, 1mm), half_space(0mm, 0mm, 0mm, 0, 0, 1)]))
+            sub x = Foo(g: union_all([box(1mm, 1mm, 1mm), half_space(point3(0mm, 0mm, 0mm), dir(0, 0, 1))]))
         }
     "#;
     let compiled = compile_source_with_stdlib(source);
@@ -2000,7 +2000,7 @@ fn union_all_multi_arg_with_half_space_at_bounded_param_emits_geometry_unbounded
             param g : Bounded
         }
         structure def Top {
-            sub x = Foo(g: union_all(box(1mm, 1mm, 1mm), half_space(0mm, 0mm, 0mm, 0, 0, 1)))
+            sub x = Foo(g: union_all(box(1mm, 1mm, 1mm), half_space(point3(0mm, 0mm, 0mm), dir(0, 0, 1))))
         }
     "#;
     let compiled = compile_source_with_stdlib(source);
@@ -2038,7 +2038,7 @@ fn union_all_over_an_inline_generate_of_half_space_at_bounded_param_emits_geomet
             param g : Bounded
         }
         structure def Top {
-            sub x = Foo(g: union_all(generate(2, |i| half_space(0mm, 0mm, 0mm, 0, 0, 1))))
+            sub x = Foo(g: union_all(generate(2, |i| half_space(point3(0mm, 0mm, 0mm), dir(0, 0, 1)))))
         }
     "#;
     let compiled = compile_source_with_stdlib(source);

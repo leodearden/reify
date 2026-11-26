@@ -587,7 +587,7 @@ pub(crate) fn optional_length_value(
 /// spacing slots (`LinearPattern`/`LinearPattern2D`), since task 5743 the
 /// primitive and profile dimensions (`Box` size_x/size_y/size_z, `Cylinder`
 /// radius/height, `Sphere` radius, `Tube`, `Cone`, `Wedge`, `Torus`,
-/// `HalfSpace`'s origin, `Rectangle`, `Circle`, `Ellipse`), and since task
+/// `Rectangle`, `Circle`, `Ellipse`), and since task
 /// 5744 the modify + sweep MAGNITUDES (`Fillet` radius, `Chamfer` distance,
 /// `ChamferAsymmetric` `d1`/`d2`, `Shell` thickness, `Thicken` offset,
 /// `ZoneSlab` width, `OffsetSolid`/`OffsetCurve` distance, `Extrude`/
@@ -860,13 +860,13 @@ fn required_length_values<const N: usize>(
 /// Read a GROUP of length-semantic arguments of a scalar-form geometry builtin
 /// as LENGTHs, in the given name order, diagnosing EVERY failing member.
 ///
-/// A point in space (an origin `ox`/`oy`/`oz`, a boundary point `px`/`py`/`pz`,
-/// a curve endpoint `x1`/`y1`/`z1`, an arc centre `cx`/`cy`/`cz`), a displacement
+/// A point in space (an origin `ox`/`oy`/`oz`, a curve endpoint
+/// `x1`/`y1`/`z1`, an arc centre `cx`/`cy`/`cz`), a displacement
 /// (`dx`/`dy`/`dz`) and an independent length group (`helix`'s
 /// `radius`/`pitch`/`height`) are alike length-semantic in every member, so
 /// each must be a finite LENGTH `Scalar`: a bare/dimensionless member would be
 /// silently read as SI **metres** by `Value::as_f64` (the `12` vs `12mm` 1000×
-/// hazard). The co-located DIRECTION triple (`ax`/`ay`/`az`, `nx`/`ny`/`nz`) is
+/// hazard). The co-located DIRECTION triple (`ax`/`ay`/`az`) is
 /// a dimensionless unit vector and deliberately stays on the bare-accepting
 /// `eval_named_arg_f64` path — callers that have one keep their own `f64_arg`
 /// closure for it. Callers whose every argument is gated drop that closure.
@@ -3149,43 +3149,36 @@ fn prim_half_space(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    // `half_space` is the ONE primitive whose args are split across the units
-    // boundary, so it is the ONE primitive that reads its args through two
-    // different paths.
-    //
-    // `(px, py, pz)` is a point on the boundary plane — length-semantic, and
-    // gated: a bare component would be read as SI METRES by `Value::as_f64`
-    // (the `12` vs `12mm` 1000× hazard). `(nx, ny, nz)` is the outward unit
-    // NORMAL — a dimensionless direction, which stays on the bare-accepting
-    // `eval_named_arg` path. That is the same split already documented at
-    // `required_length_origin3` for the co-located `ax`/`ay`/`az` and
-    // `nx`/`ny`/`nz` triples, and `examples/half_space.ri` depends on it:
-    // `half_space(0mm, 0mm, 0mm, 0, 0, 1)`.
-    //
-    // The point triple goes through the GROUP reader, so it inherits
-    // all-failures-at-once, `Unresolved`-beats-`Invalid` precedence and the
-    // borrow ordering the group readers document (see `required_length_args`),
-    // rather than restating any of them here.
-    let [px, py, pz] = required_length_values(
-        ["px", "py", "pz"],
+    // Both are read before either `?`, so a bad normal and a bare origin are
+    // reported in one build.
+    let origin = required_length_point3_arg(
+        "origin",
+        ["origin.x", "origin.y", "origin.z"],
         kind,
         args,
         values,
         functions,
         meta_map,
         diagnostics,
-    )?;
-    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
-    };
+    );
+    let normal = required_direction_arg(
+        "normal",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    );
+    let [px, py, pz] = origin?.map(reify_ir::Value::length);
+    let [nx, ny, nz] = normal?.components().map(reify_ir::Value::Real);
     Ok(reify_ir::GeometryOp::HalfSpace {
         px,
         py,
         pz,
-        nx: eval_arg("nx")?,
-        ny: eval_arg("ny")?,
-        nz: eval_arg("nz")?,
+        nx,
+        ny,
+        nz,
     })
 }
 

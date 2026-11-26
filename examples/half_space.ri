@@ -1,8 +1,9 @@
 // half_space.ri — demonstrates the half_space primitive as a boolean cutting tool.
 //
-// `half_space(px, py, pz, nx, ny, nz)` creates an unbounded solid occupying
-// all points on the material side of the plane through (px, py, pz) with
-// outward normal (nx, ny, nz) pointing toward the retained material.
+// `half_space(origin, normal)` creates an unbounded solid occupying all points
+// on the material side of the plane through `origin` (a `point3` of lengths)
+// with the outward `normal` (a Direction, `dir(x, y, z)`) pointing toward the
+// retained material.
 //
 // Because a half-space is Bounded=false, it cannot be used directly wherever
 // a Bounded shape is required — but intersecting it with a finite solid
@@ -13,9 +14,9 @@ structure HalfSpaceExample {
     param size : Length = 40mm
 
     // A half-space whose boundary plane is z = 0, retaining the +z side.
-    // The boundary point (0, 0, 0) lies on z = 0; the normal (0, 0, 1)
+    // The boundary point (0, 0, 0) lies on z = 0; the normal dir(0, 0, 1)
     // points toward the retained material side (+z).
-    let cutter = half_space(0mm, 0mm, 0mm, 0, 0, 1)
+    let cutter = half_space(point3(0mm, 0mm, 0mm), dir(0, 0, 1))
 
     // Intersect with a centred box: keeps the upper half of the cube.
     // The result is Bounded (a finite solid) — suitable for export and

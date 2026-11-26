@@ -284,23 +284,21 @@ fn dimensioned_profile_radius_builds_clean() {
 }
 
 // ---------------------------------------------------------------------------
-// Row 5 — the slice boundary: half_space's normal stays dimensionless
+// Row 5 — half_space's dimensioned origin and Direction normal build
 // ---------------------------------------------------------------------------
 
-/// LOAD-BEARING NEGATIVE ASSERTION. `half_space`'s `(px, py, pz)` is a point
-/// (length-semantic, gated) but `(nx, ny, nz)` is a dimensionless unit NORMAL
-/// and must STILL accept bare numbers.
-///
-/// This is the exact shape of the shipped `examples/half_space.ri`. Without
-/// this row, an over-broad gate that also caught the direction triple would
-/// pass every positive test in this file while breaking the corpus — a
-/// negative-space assertion is the only thing that can catch over-reach.
+/// `half_space`'s origin is a `point3` of lengths and its normal a Direction
+/// (direction-typing ι-c), the shape of the shipped `examples/half_space.ri`.
+/// That dimensioned form must build clean and reach the kernel; a bare origin
+/// component is pinned as rejected by
+/// `half_space_bare_origin_component_is_rejected_at_build`
+/// (`direction_pattern_primitive_forms_e2e.rs`).
 #[test]
-fn half_space_bare_normal_still_builds_with_a_dimensioned_point() {
+fn half_space_dimensioned_origin_and_direction_normal_build() {
     let (diagnostics, ops) = build_capturing_ops(
         r#"
         structure def HalfSpaceMixed {
-            let body = half_space(0mm, 0mm, 0mm, 0, 0, 1)
+            let body = half_space(point3(0mm, 0mm, 0mm), dir(0, 0, 1))
         }
         "#,
     );
@@ -310,9 +308,7 @@ fn half_space_bare_normal_still_builds_with_a_dimensioned_point() {
         .collect();
     assert!(
         errors.is_empty(),
-        "half_space's DIRECTION triple is a dimensionless unit vector and must \
-         still accept bare numbers — gating it would break examples/half_space.ri; \
-         got: {errors:?}"
+        "a dimensioned origin and a Direction normal must build clean; got: {errors:?}"
     );
     assert!(
         ops.iter()

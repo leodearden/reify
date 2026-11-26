@@ -67,8 +67,9 @@
 //!   `orient_look_at` and `orient_basis` (direction-typing θ-a), rotate's and
 //!   rotate_around's axis and mirror's normal (direction-typing ι-a), and the
 //!   direction of `revolve` / `revolve_full` / `extrude_infinite` /
-//!   `extrude_infinite_symmetric` (direction-typing ι-b); later leaves add rows
-//!   on the same constructor.
+//!   `extrude_infinite_symmetric` (direction-typing ι-b), and `half_space`'s
+//!   normal (direction-typing ι-c); later leaves add rows on the same
+//!   constructor.
 //!
 //! The RULES that decide whether a position inside a covered family gets a
 //! slot — each one is why some argument sitting right next to a slotted one is
@@ -77,17 +78,18 @@
 //! - **arg0 of a geometry builtin is never checked.** A geometry handle is
 //!   ε=4358's territory. A builtin whose arg0 is not a handle (`orient_euler`,
 //!   the joint ctors' axis) may slot it.
-//! - **ORIGIN vs DIRECTION.** A point in space (`half_space`'s `px`/`py`/`pz`,
-//!   `translate`'s displacement) IS a LENGTH — a bare component is silently
-//!   read as SI metres, the 1000×-too-big hazard this whole gate exists to
-//!   close. A point passed as one composite `Point3` VALUE (`rotate_around`'s
-//!   pivot, `mirror`'s origin) has no slot kind and is gated at build instead;
-//!   see the NOT-covered list below. A unit-vector DIRECTION (`nx`/`ny`/`nz`,
-//!   `ax`/`ay`/`az`, a pattern's `dx`/`dy`/`dz`) is dimensionless and
-//!   legitimately bare in correct `.ri`, so a slot there would reject valid
-//!   code. (`revolve` and `extrude_infinite` no longer take scalar triples:
-//!   since direction-typing ι-b their origin is a Point3 value, gated at build,
-//!   and their direction a `Direction` slot.) Stated
+//! - **ORIGIN vs DIRECTION.** A position in space written as scalar
+//!   components (`translate`'s displacement) IS a LENGTH — a bare component is
+//!   silently read as SI metres, the 1000×-too-big hazard this whole gate
+//!   exists to close. A point passed as one composite `Point3` VALUE
+//!   (`rotate_around`'s pivot, `mirror`'s and `half_space`'s origin) has no
+//!   slot kind and is gated at build instead; see the NOT-covered list below. A
+//!   unit-vector DIRECTION written as scalar components (`ax`/`ay`/`az`, a
+//!   pattern's `dx`/`dy`/`dz`) is dimensionless and legitimately bare in
+//!   correct `.ri`, so a slot there would reject valid code. (`revolve`,
+//!   `extrude_infinite` and `half_space` no longer take scalar triples: since
+//!   direction-typing ι-b and ι-c an origin is a Point3 value, gated at build,
+//!   and a direction or normal a `Direction` slot.) Stated
 //!   binding by the `UnitVectorComponent` rows of the closure guard's
 //!   `ALLOWLIST`. The builtins whose arguments STRADDLE this line carry the
 //!   split on their own arm — deliberately UNCOUNTED here, because a tally
@@ -165,7 +167,8 @@
 //!   passes through a positional argument index for this table to key on.
 //!
 //! - The `Point3` origin of `mirror(target, origin, normal)` and pivot of
-//!   `rotate_around(target, pivot, axis, angle)` (direction-typing ι-a).
+//!   `rotate_around(target, pivot, axis, angle)` (direction-typing ι-a), and
+//!   the origin of `half_space(origin, normal)` (direction-typing ι-c).
 //!   Structural: [`ExpectedArg`] has no Point kind, so `accept_length_point3`
 //!   gates the point at build. An accepted narrowing, recorded in the decompose
 //!   amendments of `docs/prds/v0_6/direction-typing.md` §8.
@@ -891,24 +894,15 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
             length_arg(1, "minor_radius"),
         ] },
 
-        // half_space(px, py, pz, nx, ny, nz)
-        //   args0-2: the boundary-plane POINT → LENGTH ("Length").
-        //   args3-5: the outward NORMAL `nx`/`ny`/`nz` — a DIMENSIONLESS unit
-        //            vector, deliberately UNSLOTTED. Its components are
-        //            legitimately bare in correct `.ri` (a normal's scale is
-        //            irrelevant to the plane it defines), so a LENGTH slot here
-        //            would reject valid code. This is the one builtin whose
-        //            args STRADDLE the boundary, and it draws the same
-        //            ORIGIN-vs-DIRECTION split the circular pattern already
-        //            draws for `ox`/`oy`/`oz` vs `ax`/`ay`/`az` — stated
-        //            binding by the `UnitVectorComponent` rows of the closure
-        //            guard's `ALLOWLIST` (`units_length_closure_guard.rs`).
-        //            Pinned by `half_space_slots_the_point_but_never_the_normal`.
-        "half_space" => const { &[
-            length_arg(0, "px"),
-            length_arg(1, "py"),
-            length_arg(2, "pz"),
-        ] },
+        // half_space(origin, normal)
+        //   arg0:    the `origin`, a Point3<Length> on the boundary plane:
+        //            UNSLOTTED (no `ExpectedArg` kind describes a point), gated
+        //            at build by `accept_length_point3`, as `rotate_around`'s
+        //            pivot is.
+        //   arg1:    the outward `normal` → Direction (direction-typing ι-c).
+        //   Single-form, so the arm is arity-agnostic. Pinned by
+        //   `half_space_slots_its_normal_as_a_direction_but_never_its_point3_origin`.
+        "half_space" => const { &[direction_arg(1, "normal")] },
 
         // ── Transform producers (task 5750) ─────────────────────────────────
         //

@@ -80,19 +80,19 @@ torus(major_radius, minor_radius)                    -> Solid
 wedge(width, depth, height, top_width)               -> Solid
 tube(outer_radius, inner_radius, height)             -> Solid   // outer cylinder minus inner cylinder
 rounded_box(width, depth, height, corner_r)          -> Solid   // box with the 4 vertical edges rounded
-half_space(px, py, pz, nx, ny, nz)                   -> Solid   // UNBOUNDED — Bounded = false
+half_space(origin, normal)                           -> Solid   // UNBOUNDED — Bounded = false
 ```
 
-`half_space` is the one primitive that is not a finite body: `(px, py, pz)` is a point **on** the
-boundary plane (a Length position, so `mm` literals), and `(nx, ny, nz)` is the **outward normal**
-pointing toward the side whose material is retained — a direction, so plain dimensionless numbers,
-not lengths. Because the result has `Bounded = false` it cannot be used where a Bounded shape is
-required; intersect it with a finite solid, as `bounded` does here, to get a bounded result usable
-for export and mass-property queries:
+`half_space` is the one primitive that is not a finite body: `origin` is a `point3` of lengths
+**on** the boundary plane (so `mm` literals), and `normal` is the **outward normal** pointing toward
+the side whose material is retained — a `Direction`, written `dir(0, 0, 1)`. Because the result
+has `Bounded = false` it cannot be used where a Bounded shape is required; intersect it with a
+finite solid, as `bounded` does here, to get a bounded result usable for export and mass-property
+queries:
 
 ```reify
 structure def BoundedHalfSpace {
-    let bounded = intersection(half_space(0mm, 0mm, 0mm, 0, 0, 1), box(40mm, 40mm, 40mm))
+    let bounded = intersection(half_space(point3(0mm, 0mm, 0mm), dir(0, 0, 1)), box(40mm, 40mm, 40mm))
 }
 ```
 
@@ -258,9 +258,9 @@ dimensionless slot generally is not. Measured 2026-08-30: `scale(g, 2mm)` is acc
 dimensioned axis direction in `linear_pattern`. Write those bare because it is what you
 mean — nothing will tell you otherwise.
 A `Direction`-typed argument is the exception: the four directional selectors, `angle`'s operands,
-`rotate`'s and `rotate_around`'s axis, `mirror`'s normal, `offset_curve`'s direction and the
-direction of `revolve`, `revolve_full`, `extrude_infinite` and `extrude_infinite_symmetric` take a
-typed operand, so a `vec3(…)` there, dimensioned or not, is rejected (at check for all but
+`rotate`'s and `rotate_around`'s axis, `mirror`'s and `half_space`'s normal, `offset_curve`'s
+direction and the direction of `revolve`, `revolve_full`, `extrude_infinite` and
+`extrude_infinite_symmetric` take a typed operand, so a `vec3(…)` there, dimensioned or not, is rejected (at check for all but
 `offset_curve`, at eval for `offset_curve`); write `dir(x, y, z)`.
 
 The rejected forms and their migrations are tabulated once, in the `units` chunk under "What it

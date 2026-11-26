@@ -330,18 +330,13 @@ fn primitive_case(k: PrimitiveKind) -> CompiledGeometryOp {
             ("major_radius".to_string(), length_literal(0.03)),
             ("minor_radius".to_string(), length_literal(0.01)),
         ],
-        // MIXED, and deliberately so: `(px, py, pz)` is a point on the boundary
-        // plane and is gated, but `(nx, ny, nz)` is a DIMENSIONLESS unit normal
-        // and stays a bare `real_literal(..)`. Swapping the normal to `length_literal` here
-        // would hide an over-broad gate rather than characterize the real one —
-        // `examples/half_space.ri` writes exactly this shape.
+        // The Point3 `origin` and the Direction `normal` of
+        // `half_space(point3(0mm, 0mm, 0mm), dir(0, 0, 1))` (direction-typing
+        // ι-c), the shape `examples/half_space.ri` writes. The golden is the
+        // one the retired scalar form produced: LENGTH px..pz, Real nx..nz.
         PrimitiveKind::HalfSpace => vec![
-            ("px".to_string(), length_literal(0.0)),
-            ("py".to_string(), length_literal(0.0)),
-            ("pz".to_string(), length_literal(0.0)),
-            ("nx".to_string(), real_literal(0.0)),
-            ("ny".to_string(), real_literal(0.0)),
-            ("nz".to_string(), real_literal(1.0)),
+            ("origin".to_string(), lit_raw(point3_len([0.0, 0.0, 0.0]))),
+            ("normal".to_string(), lit_raw(direction_val(0.0, 0.0, 1.0))),
         ],
     };
     CompiledGeometryOp::Primitive { kind: k, args }
