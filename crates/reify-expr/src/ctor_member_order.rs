@@ -115,8 +115,9 @@ pub(crate) fn ctor_member_order<'e>(
 
 #[cfg(test)]
 mod tests {
+    use reify_core::identity::RealizationNodeId;
     use reify_core::{Type, ValueCellId};
-    use reify_ir::{BinOp, CompiledExpr, Value};
+    use reify_ir::{BinOp, CompiledExpr, CtorGeometryLet, Value};
 
     use super::{CtorMember, ctor_member_order};
 
@@ -223,6 +224,31 @@ mod tests {
             order(&stored),
             ["a", "b"],
             "`Other.b` is not this ctor's `b`, so `a` need not follow it"
+        );
+    }
+
+    #[test]
+    fn a_geometry_member_follows_the_field_its_upstream_arg_reads() {
+        let stored = members(vec![("tip", read("body")), ("w", lit(2))]);
+        let body = CtorGeometryLet {
+            member: "body".to_string(),
+            realization: RealizationNodeId::new(TYPE, 0),
+            upstream_args: vec![("width".to_string(), read("w"))],
+        };
+        let given = vec![
+            CtorMember::Field(&stored[0]),
+            CtorMember::Geometry(&body),
+            CtorMember::Field(&stored[1]),
+        ];
+        let names: Vec<&str> = ctor_member_order(TYPE, given)
+            .into_iter()
+            .map(CtorMember::name)
+            .collect();
+        assert_eq!(
+            names,
+            ["w", "body", "tip"],
+            "a geometry member's upstream args are its reads, and a field reading \
+             the geometry member follows it"
         );
     }
 

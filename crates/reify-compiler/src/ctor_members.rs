@@ -29,10 +29,10 @@ pub(crate) fn ctor_template_members(template: &TopologyTemplate) -> CtorTemplate
         .value_cells
         .iter()
         .filter(|vc| vc.kind == ValueCellKind::Let && !vc.id.member.starts_with("__count_"));
-    let (geometry, scalar): (Vec<&ValueCellDecl>, Vec<&ValueCellDecl>) =
+    let (geometry_cells, non_geometry): (Vec<&ValueCellDecl>, Vec<&ValueCellDecl>) =
         source_lets.partition(|vc| vc.cell_type == Type::Geometry);
     CtorTemplateMembers {
-        lets: scalar
+        lets: non_geometry
             .into_iter()
             .filter_map(|vc| {
                 vc.default_expr
@@ -40,7 +40,7 @@ pub(crate) fn ctor_template_members(template: &TopologyTemplate) -> CtorTemplate
                     .map(|e| (vc.id.member.clone(), e.clone()))
             })
             .collect(),
-        geometry_lets: geometry
+        geometry_lets: geometry_cells
             .into_iter()
             .filter_map(|vc| geometry_let(template, &vc.id.member))
             .collect(),

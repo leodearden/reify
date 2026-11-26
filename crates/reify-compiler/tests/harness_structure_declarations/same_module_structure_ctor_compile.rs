@@ -612,6 +612,62 @@ fn let_constructed_ctor_carries_template_geometry_let() {
     assert!(!let_names.contains(&"body"), "lets: {let_names:?}");
 }
 
+const GEOMETRY_LIST_LET_CTOR_SRC: &str = r#"
+module test.geometry_list_let_ctor
+
+structure def Rack {
+    param len : Length = 1000mm
+    let body = box(len, 100mm, 100mm)
+    let parts = [box(len, 1mm, 1mm), box(2mm, len, 2mm)]
+}
+
+structure def Shelf {
+    let r = Rack()
+}
+"#;
+
+/// A geometry-list let is backed by one list-bound realization per element and
+/// by no realization named after the let itself, so a let-constructed ctor
+/// carries no `CtorGeometryLet` for it: only the single geometry let `body`.
+#[test]
+fn let_constructed_ctor_carries_no_geometry_list_let() {
+    let module = reify_test_support::parse_and_compile_with_stdlib(GEOMETRY_LIST_LET_CTOR_SRC);
+    let template = |name: &str| {
+        module
+            .templates
+            .iter()
+            .find(|t| t.name == name)
+            .unwrap_or_else(|| panic!("no template {name}"))
+    };
+    let list_bound: Vec<&str> = template("Rack")
+        .realizations
+        .iter()
+        .filter(|r| {
+            r.list_binding
+                .as_ref()
+                .is_some_and(|b| b.list_name == "parts")
+        })
+        .filter_map(|r| r.name.as_deref())
+        .collect();
+    assert_eq!(
+        list_bound,
+        ["parts#0", "parts#1"],
+        "premise: `parts` lowers to one list-bound realization per element"
+    );
+    let shelf_r = template("Shelf")
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "r")
+        .and_then(|vc| vc.default_expr.as_ref())
+        .expect("Shelf.r default");
+
+    let CompiledExprKind::StructureInstanceCtor { geometry_lets, .. } = &shelf_r.kind else {
+        panic!("Shelf.r must lower to a StructureInstanceCtor, got {shelf_r:?}");
+    };
+    let members: Vec<&str> = geometry_lets.iter().map(|g| g.member.as_str()).collect();
+    assert_eq!(members, ["body"]);
+}
+
 // ─── fn-call param default through a fn-returned ctor ─────────────────────────
 
 /// A structure-def param default that calls a SAME-MODULE fn, consumed through a
