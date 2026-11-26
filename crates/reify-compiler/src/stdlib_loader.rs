@@ -353,7 +353,8 @@ fn assert_no_cross_module_name_collisions(modules: &[CompiledModule]) {
         for c in &module.constraint_defs {
             record("constraint def", c.name.clone(), &c.name, &m);
         }
-        for p in &module.compiled_purposes {
+        // Own purposes only: an importer's merged prelude copies are not declarations.
+        for p in crate::name_env::own_purposes(module) {
             record("purpose", p.name.clone(), &p.name, &m);
         }
         for f in &module.fields {
