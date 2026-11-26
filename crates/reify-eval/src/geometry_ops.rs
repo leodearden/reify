@@ -1996,14 +1996,14 @@ fn labelled(kind_label: impl std::fmt::Display, failure: impl std::fmt::Display)
 /// - the ORIGIN is a POINT IN SPACE and is LENGTH-gated through
 ///   [`accept_length_point3`], the decoded-value route into the Contract C
 ///   chokepoint. Its components must be LENGTH-dimensioned `Scalar`s; a bare
-///   `Real`/`Int` or a wrong-dimension `Scalar` is rejected with the SAME
-///   `ox`/`oy`/`oz` names and the SAME `ArgRejection::message` wording the
-///   SCALAR form of `mirror` has used since task 5214. Until δ this route
-///   BYPASSED that gate entirely: `mirror(b, plane_yz(10))` reached the kernel
-///   as a 10 SI-**metre** plane offset with zero diagnostics while its scalar
-///   sibling `mirror(b, 10, 0, 0, 1, 0, 0)` was rejected — the 1000× hazard
-///   arriving through the route an author is most likely to take (PRD decision
-///   D3);
+///   `Real`/`Int` or a wrong-dimension `Scalar` is rejected under the names
+///   `ox`/`oy`/`oz`, which [`decode_axis`] and `circular_pattern`'s scalar
+///   origin also use, in the SAME `ArgRejection::message` wording. Until δ
+///   this route BYPASSED that gate entirely: `mirror(b, plane_yz(10))` reached
+///   the kernel as a 10 SI-**metre** plane offset with zero diagnostics while
+///   its then-current scalar sibling `mirror(b, 10, 0, 0, 1, 0, 0)` was
+///   rejected — the 1000× hazard arriving through the route an author is most
+///   likely to take (PRD decision D3);
 /// - the NORMAL is a `Value::Direction`, read through
 ///   [`reify_ir::decode_direction`] (ε, task 9638). A Direction is
 ///   dimensionless by type and unit by construction, so there is neither a

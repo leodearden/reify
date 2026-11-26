@@ -17,7 +17,7 @@
 //! 1. **Arity.** The fixture compiles with ZERO Error-severity diagnostics —
 //!    i.e. every documented form is accepted AT THE ARITY WRITTEN, *for the
 //!    names the compiler resolves*. See "What is NOT established" below: this
-//!    is an arity property, not a type-check.
+//!    is an arity property, and a type-check only where a slot exists.
 //! 2. **Name existence, fixture → compiler.** Every call name in the fixture is
 //!    a real entry in the compiler's own registries (`GEOMETRY_FUNCTION_NAMES` /
 //!    `GEOMETRY_TOPOLOGY_SELECTOR_NAMES`). This is NOT implied by (1): an
@@ -46,14 +46,17 @@
 //!
 //! # What is NOT established
 //!
-//! - **Argument dimension/type.** Only arity is enforced for these ops.
-//!   Mutation-tested: `extrude(prof, 5)`, `rotate(solid, 0,0,1, 90mm)` and
-//!   `linear_pattern(solid, 1mm,0mm,0mm, 3mm, 5)` all leave this suite GREEN.
-//!   `builtin_signatures.rs`'s checkable-arg-slot table covers topology
-//!   selectors and `generate` only — no Key Geometry Operation has a checked
-//!   slot. The chunk's "positions/lengths take a `Length`; angles take an
-//!   `Angle`; direction/axis/normal components and counts are plain numbers"
-//!   line is therefore a convention this fixture FOLLOWS but nothing enforces.
+//! - **Argument dimension/type of UNSLOTTED operands.**
+//!   `builtin_signatures.rs`'s checkable-arg-slot table checks the slotted
+//!   operands at compile time — lengths, angles, and the Direction axis/normal
+//!   of rotate/3, rotate_around/4 and mirror/3 — so a wrong type there is an
+//!   `ArgTypeMismatch` Error that reds (1). Pattern direction/axis components
+//!   and counts have no slot. Mutation-tested:
+//!   `linear_pattern(solid, 1mm, 0mm, 0mm, 3, 5mm)` and
+//!   `circular_pattern(solid, 0mm, 0mm, 0mm, 0mm, 0mm, 1mm, 6, 360deg)` both
+//!   leave this suite GREEN. The chunk's "positions/lengths take a `Length`;
+//!   angles take an `Angle`; direction/axis/normal components and counts are
+//!   plain numbers" line is therefore enforced only where a slot exists.
 //! - **Argument order / semantics.** A permutation of two same-dimension
 //!   arguments satisfies all four properties above.
 //!

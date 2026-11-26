@@ -21,13 +21,17 @@
 //      granularity (a second overload of an already-documented name must be
 //      mirrored too, not just the name; task 5583).
 // NOT enforced, and therefore review-time responsibilities:
-//   - argument DIMENSION/TYPE. Only arity is checked for these ops (no Key
-//     Geometry Operation has a checkable slot in builtin_signatures.rs), so
-//     `extrude(prof, 5)` would compile just as green. The unit convention used
-//     below — positions/lengths in `mm`, angles in `deg`, rotate's and
-//     rotate_around's axis and mirror's normal as `dir(..)`, other
-//     direction/axis components and counts as plain numbers — mirrors the
-//     chunk's prose line but nothing verifies it;
+//   - argument DIMENSION/TYPE of UNSLOTTED operands. builtin_signatures.rs
+//     checks the slotted ones at compile time (lengths, angles, and the
+//     Direction axis of rotate/rotate_around and normal of mirror), so a wrong
+//     type there is an Error that reds the compile. Pattern direction/axis
+//     components and counts have no slot, so
+//     `linear_pattern(solid, 1mm, 0mm, 0mm, 3, 5mm)` would compile just as
+//     green. The unit convention used below — positions/lengths in `mm`,
+//     angles in `deg`, rotate's and rotate_around's axis and mirror's normal
+//     as `dir(..)`, other direction/axis components and counts as plain
+//     numbers — mirrors the chunk's prose line, verified only where a slot
+//     exists;
 //   - argument ORDER.
 // Keep the two files in lockstep: if you edit a signature in one, edit it in the
 // other. Renaming a call here to something with no compiler arm goes RED.
