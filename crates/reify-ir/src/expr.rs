@@ -3119,6 +3119,117 @@ mod tests {
         );
     }
 
+    // ── task 10352: StructureInstanceCtor.geometry_lets ───────────────────────
+
+    fn body_geometry_let(index: u32, width: CompiledExpr) -> CtorGeometryLet {
+        CtorGeometryLet {
+            member: "body".to_string(),
+            realization: reify_core::identity::RealizationNodeId::new("Beam", index),
+            upstream_args: vec![("width".to_string(), width)],
+        }
+    }
+
+    fn beam_ctor(geometry_lets: Vec<CtorGeometryLet>) -> CompiledExpr {
+        let tip = make_function_call(
+            "vertex",
+            vec![CompiledExpr::value_ref(ValueCellId::new("Beam", "body"), Type::Geometry)],
+            Type::Geometry,
+        );
+        CompiledExpr::structure_instance_ctor(
+            crate::structure_type_id::StructureTypeId(0),
+            "Beam".to_string(),
+            1,
+            vec![],
+            vec![("len".to_string(), CompiledExpr::literal(Value::Int(1), Type::Int))],
+            vec![("tip".to_string(), tip)],
+            geometry_lets,
+            None,
+            Type::Bool,
+        )
+    }
+
+    fn geometry_lets_of(expr: &CompiledExpr) -> &[CtorGeometryLet] {
+        match &expr.kind {
+            CompiledExprKind::StructureInstanceCtor { geometry_lets, .. } => geometry_lets,
+            other => panic!("expected StructureInstanceCtor, got {other:?}"),
+        }
+    }
+
+    fn len_ref() -> CompiledExpr {
+        CompiledExpr::value_ref(ValueCellId::new("Beam", "len"), Type::length())
+    }
+
+    #[test]
+    fn structure_instance_ctor_stores_geometry_lets_verbatim() {
+        let ctor = beam_ctor(vec![body_geometry_let(0, len_ref())]);
+        let stored = geometry_lets_of(&ctor);
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].member, "body");
+        assert_eq!(
+            stored[0].realization,
+            reify_core::identity::RealizationNodeId::new("Beam", 0)
+        );
+        assert_eq!(stored[0].upstream_args.len(), 1);
+        assert_eq!(stored[0].upstream_args[0].0, "width");
+        assert_eq!(
+            stored[0].upstream_args[0].1.content_hash,
+            len_ref().content_hash
+        );
+    }
+
+    #[test]
+    fn map_value_refs_passes_geometry_lets_through_unremapped() {
+        let ctor = beam_ctor(vec![body_geometry_let(0, len_ref())]);
+
+        let identity = ctor.clone().map_value_refs(&mut |id| id);
+        assert_eq!(identity.content_hash, ctor.content_hash);
+
+        let remapped = ctor.map_value_refs(&mut |id| ValueCellId::new("Elsewhere", id.member));
+        let kept = geometry_lets_of(&remapped);
+        assert_eq!(kept.len(), 1, "geometry_lets must survive the rebuild");
+        match &kept[0].upstream_args[0].1.kind {
+            CompiledExprKind::ValueRef(id) => assert_eq!(
+                *id,
+                ValueCellId::new("Beam", "len"),
+                "template-local upstream args must not be remapped"
+            ),
+            other => panic!("expected the ValueRef upstream arg, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn geometry_lets_fold_into_ctor_content_hash() {
+        let with = beam_ctor(vec![body_geometry_let(0, len_ref())]);
+        let without = beam_ctor(vec![]);
+        let other_realization = beam_ctor(vec![body_geometry_let(1, len_ref())]);
+        let other_arg = beam_ctor(vec![body_geometry_let(
+            0,
+            CompiledExpr::literal(Value::Int(2), Type::Int),
+        )]);
+        assert_ne!(with.content_hash, without.content_hash);
+        assert_ne!(with.content_hash, other_realization.content_hash);
+        assert_ne!(with.content_hash, other_arg.content_hash);
+    }
+
+    #[test]
+    fn geometry_let_upstream_args_are_not_children() {
+        let marker = ValueCellId::new("Beam", "only_in_upstream_arg");
+        let ctor = beam_ctor(vec![body_geometry_let(
+            0,
+            CompiledExpr::value_ref(marker.clone(), Type::length()),
+        )]);
+        let mut visited_marker = false;
+        ctor.walk(&mut |node| {
+            if matches!(&node.kind, CompiledExprKind::ValueRef(id) if *id == marker) {
+                visited_marker = true;
+            }
+        });
+        assert!(!visited_marker, "no traversal may enter geometry_lets");
+        let mut direct = 0;
+        ctor.for_each_child(&mut |_| direct += 1);
+        assert_eq!(direct, 1, "only the `len` default is a child");
+    }
+
     // ── task 4089 step-3 RED: StructureInstanceCtor.span ─────────────────────
     //
     // The construction-site `span` must be excluded from `content_hash` —
