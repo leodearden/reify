@@ -1,50 +1,28 @@
 //! End-to-end tests for mirror and circular_pattern with value-form args (Plane/Axis).
 //!
 //! Step-5 (RED → GREEN after step-6): mirror value form, back-compat, wrong-variant rejection.
-//! Step-7 (RED → GREEN after step-8): circular_pattern value form, back-compat, wrong-variant.
+//! Step-7 (RED → GREEN after step-8): circular_pattern value form, wrong-variant.
 //!
-//! RED state for mirror tests (step-5): mirror(box, plane_xy(0mm)) fails compile with
-//! "expects 7 arguments" — parse_and_compile panics, making those tests RED.
-//! GREEN after step-6: compiler accepts 2-arg form; eval decodes the Plane value.
+//! Both scalar component forms are retired: `mirror`'s 7-arg one by
+//! direction-typing ι-a (task 9646), `circular_pattern`'s 9-arg one by ι-c
+//! (task 9648). `circular_pattern(target, axis, count, angle)` is now its only
+//! form, so a 9-arg call is an arity error naming it
+//! (`circular_pattern_nine_argument_call_is_an_arity_error`).
 //!
-//! RED state for circular_pattern tests (step-7): circular_pattern(box, axis_z(...), 4, 60deg)
-//! fails compile with "expects 9 arguments" — parse_and_compile panics.
-//! GREEN after step-8: compiler accepts 4-arg form; eval decodes the Axis value.
+//! # Where an origin is gated
 //!
-//! # THREE layers now guard these two builtins (task 5662)
-//!
-//! Task 5662 gave the 9-arg `circular_pattern` SCALAR origin triple (and the
-//! 7-arg `mirror` one, since retired by direction-typing ι-a, task 9646) a
-//! COMPILE-layer LENGTH slot in `crates/reify-compiler/src/builtin_signatures.rs`,
-//! so a bare scalar origin is now caught three times over:
-//!
-//! 1. compile — `DiagnosticCode::ArgTypeMismatch`, before anything is built;
-//! 2. eval — `DiagnosticCode::DimensionedArgRejected` (tasks 5214 / 5350 / 5745);
-//! 3. the op is DROPPED, so nothing reaches the kernel.
-//!
-//! The two layers keep DISTINCT codes ON PURPOSE — PRD decision D2, two-layer
-//! observability: a caller must be able to tell "the compiler rejected this
-//! statically" from "the evaluator rejected it while building", because only the
-//! second implies the design was actually evaluated. They share the C1 message
-//! template and the `5mm` migration hint (D9), so the wording is the same even
-//! though the code is not.
-//!
-//! The consequence for THIS file is mechanical: the row whose source carries a
-//! deliberately bare SCALAR origin can no longer use the strict
-//! `parse_and_compile`, which hard-asserts zero Error diagnostics. It routes
-//! through `compile_bare_origin` instead — a TIGHTENING, not a loosening; see
-//! that helper. Every dimensioned row, every VALUE-form row and every `mirror`
-//! point-form row stays on the strict helper: the value form is structurally
-//! excluded from the compile slot table, and `mirror`'s `Point3` origin has no
-//! slot kind, so both still compile clean. Why that exclusion is structural
-//! rather than a gap is stated once, on the `circular_pattern` arms of
-//! `builtin_arg_slots` in `crates/reify-compiler/src/builtin_signatures.rs`.
+//! An origin reaches these builtins only inside a decoded value — a `Plane`, an
+//! `Axis`, or `mirror`'s `Point3` — and no compile-layer slot kind describes
+//! one, so a bare origin component is caught at EVAL
+//! (`DiagnosticCode::DimensionedArgRejected`, tasks 5214 / 5350 / 5745) and the
+//! op is DROPPED, so nothing reaches the kernel. Every row here therefore
+//! compiles clean on the strict `parse_and_compile`. Why that exclusion is
+//! structural rather than a gap is stated once, on the `circular_pattern` arm
+//! of `builtin_arg_slots` in `crates/reify-compiler/src/builtin_signatures.rs`.
 
 use reify_core::Severity;
 use reify_ir::GeometryOp;
-use reify_test_support::{
-    build_against_mock_kernel, compile_expecting_only_arg_type_mismatch, parse_and_compile,
-};
+use reify_test_support::{build_against_mock_kernel, compile_source, parse_and_compile};
 
 // ── step-5: mirror consumer tests ─────────────────────────────────────────────
 
@@ -223,8 +201,8 @@ fn mirror_wrong_variant_axis_rejected_with_error_diagnostic() {
 /// with zero Error diagnostics and emits exactly one CircularPattern with
 /// axis_dir ≈ [0,0,1] (within 1e-9) and count == 6.
 ///
-/// RED today: parse_and_compile panics — 4-arg circular_pattern fails compile
-/// ("expects 9 arguments"). GREEN after step-8.
+/// RED at step-7: parse_and_compile panicked — the 4-arg circular_pattern
+/// failed compile. GREEN after step-8.
 #[test]
 fn circular_pattern_value_form_axis_z_emits_correct_op() {
     let source = r#"
@@ -301,55 +279,13 @@ fn circular_pattern_value_form_axis_z_emits_correct_op() {
     }
 }
 
-/// (b) Back-compat: legacy 9-arg scalar form
-/// circular_pattern(box, 0mm,0mm,0mm, 0,0,1, 6, 60deg) still builds without
-/// errors and emits CircularPattern with count==6.
-///
-/// GREEN before and after step-8 (back-compat must hold). The axis ORIGIN is
-/// dimensioned since task 5350 gated it as a Length; the axis DIRECTION stays
-/// a bare dimensionless unit vector.
-#[test]
-fn circular_pattern_scalar_back_compat_emits_correct_op() {
-    let source = r#"
-        structure def S {
-            let b = box(2mm, 2mm, 2mm)
-            let p = circular_pattern(b, 0mm, 0mm, 0mm, 0, 0, 1, 6, 60deg)
-        }
-    "#;
-
-    let compiled = parse_and_compile(source);
-    let (diagnostics, ops) = build_against_mock_kernel(compiled);
-
-    let error_diags: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        error_diags.is_empty(),
-        "expected zero Error diagnostics for back-compat scalar circular_pattern, got: {:?}",
-        error_diags
-    );
-
-    let cp_ops: Vec<_> = ops
-        .iter()
-        .filter(|op| matches!(op, GeometryOp::CircularPattern { .. }))
-        .collect();
-    assert_eq!(cp_ops.len(), 1, "expected exactly one CircularPattern op");
-
-    match cp_ops[0] {
-        GeometryOp::CircularPattern { count, .. } => {
-            assert_eq!(*count, 6, "count should be 6, got {}", count);
-        }
-        other => panic!("expected GeometryOp::CircularPattern, got {:?}", other),
-    }
-}
-
 /// (c) Wrong-variant rejection: circular_pattern(box, plane_xy(0mm), 6, 60deg) must
 /// produce an Error diagnostic because plane_xy yields Value::Plane, not Value::Axis.
 /// No CircularPattern op should be emitted.
 ///
-/// RED today: parse_and_compile panics — 4-arg circular_pattern fails compile.
-/// GREEN after step-8: 4-arg compiles; eval rejects Plane → Error diagnostic.
+/// RED at step-7: parse_and_compile panicked — the 4-arg circular_pattern
+/// failed compile. GREEN after step-8: 4-arg compiles; eval rejects Plane →
+/// Error diagnostic.
 #[test]
 fn circular_pattern_wrong_variant_plane_rejected_with_error_diagnostic() {
     let source = r#"
@@ -383,171 +319,33 @@ fn circular_pattern_wrong_variant_plane_rejected_with_error_diagnostic() {
     );
 }
 
-// ── task 5350: scalar-form axis-origin units lock ─────────────────────────────
+// ── direction-typing ι-c (task 9648): the retired 9-arg form ──────────────────
 
-/// Build `source` against a mock kernel and return
-/// `(error_diagnostic_count, circular_pattern_ops)`. Shared by the bare-origin /
-/// mm-origin pair below, which differ only in the source and expected counts.
-/// Modelled on `pattern_spacing_units_e2e.rs`'s `build_and_count`, but returns
-/// the ops themselves so the positive control can inspect `axis_origin`.
-#[track_caller]
-fn build_circular_ops(source: &str) -> (usize, Vec<GeometryOp>) {
-    build_circular_ops_compiled(parse_and_compile(source))
-}
-
-/// The BARE-source counterpart of [`build_circular_ops`] (task 5662).
-///
-/// Task 5662 gave the 9-arg scalar `circular_pattern` origin triple a
-/// compile-layer LENGTH slot, so the bare source below no longer compiles clean
-/// and the strict `parse_and_compile` — which hard-asserts zero Error
-/// diagnostics — would panic before eval ever ran.
-#[track_caller]
-fn build_circular_ops_bare(source: &str) -> (usize, Vec<GeometryOp>) {
-    build_circular_ops_compiled(compile_bare_origin(source))
-}
-
-/// Compile a source whose scalar `circular_pattern` ORIGIN components are
-/// deliberately BARE (task 5662).
-///
-/// Task 5662 gave that origin triple a compile-layer LENGTH slot, so the bare
-/// source in this file no longer compiles clean and the strict
-/// `parse_and_compile` — which hard-asserts zero Error diagnostics — would panic
-/// before eval ever ran. Delegates to the shared
-/// `reify_test_support::compile_expecting_only_arg_type_mismatch`, which is
-/// where that idiom now lives for every bare-argument e2e suite.
-///
-/// That shared helper's two assertions are what make swapping the lenient
-/// `compile_source` in for the strict `parse_and_compile` a TIGHTENING rather
-/// than a loosening — they re-assert BOTH halves of what the strict one used to
-/// guarantee:
-///
-/// (i) the compile-layer `ArgTypeMismatch` really IS emitted, so this file
-///     cannot silently stop noticing if task 5662's slots regress; and
-/// (ii) it is the ONLY Error-severity compile diagnostic, so an unrelated
-///     compile Error cannot make a caller's "no op reached the kernel"
-///     assertion hold for the wrong reason.
-///
-/// The eval-layer assertions still run afterwards because
-/// `check_builtin_arg_types` is anti-cascade: it touches only `diagnostics` and
-/// never lowering, so the op is still emitted and must still be DROPPED at build
-/// by the eval gate — which is the thing these rows actually test.
-#[track_caller]
-fn compile_bare_origin(source: &str) -> reify_compiler::CompiledModule {
-    compile_expecting_only_arg_type_mismatch(source, "scalar circular_pattern origin")
-}
-
-/// The kernel half of [`build_circular_ops`], shared with its bare counterpart.
-#[track_caller]
-fn build_circular_ops_compiled(
-    compiled: reify_compiler::CompiledModule,
-) -> (usize, Vec<GeometryOp>) {
-    let (diagnostics, ops) = build_against_mock_kernel(compiled);
-
-    let error_count = diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .count();
-    let circular_ops: Vec<GeometryOp> = ops
-        .into_iter()
-        .filter(|op| matches!(op, GeometryOp::CircularPattern { .. }))
-        .collect();
-    (error_count, circular_ops)
-}
-
-/// The headline behaviour of task 5350, locked at the outermost seam: a BARE
-/// (dimensionless) axis origin in the 9-arg scalar form must be REJECTED, so the
-/// op is DROPPED rather than silently placing the rotation axis 12 SI **metres**
-/// out (1000× a plausible 12 mm offset).
-///
-/// The unit tests in `geometry_ops/tests.rs` hand-build `CompiledExpr` fixtures;
-/// this drives the real parser and unit system, so it would catch a regression
-/// introduced anywhere between the `.ri` surface and the kernel call.
-///
-/// Routed through [`build_circular_ops_bare`] since task 5662 gave this same
-/// origin a COMPILE-layer slot: the strict `parse_and_compile` would now panic on
-/// the ArgTypeMismatch before eval ran. The eval-layer assertions below are
-/// unchanged and still run — see [`compile_bare_origin`] for why that is a
-/// tightening.
+/// The retired `circular_pattern(target, ox, oy, oz, ax, ay, az, count, angle)`
+/// is an arity error at compile that names the Axis form, the only one left.
+/// Its units half stays pinned by the Axis form's
+/// `circular_pattern_value_form_bare_axis_origin_drops_op_with_error` and
+/// `circular_pattern_value_form_dimensioned_axis_origin_builds_unchanged`.
 #[test]
-fn circular_pattern_scalar_bare_origin_drops_op_with_error() {
-    let (error_count, circular_ops) = build_circular_ops_bare(
+fn circular_pattern_nine_argument_call_is_an_arity_error() {
+    let compiled = compile_source(
         r#"
-        structure def BareOriginRing {
-            let b = box(2mm, 2mm, 2mm)
-            let p = circular_pattern(b, 12, 0, 0, 0, 0, 1, 6, 60deg)
-        }
-        "#,
-    );
-
-    assert!(
-        error_count > 0,
-        "a bare (dimensionless) circular_pattern axis origin must produce at \
-         least one Error diagnostic; got {error_count}"
-    );
-    assert!(
-        circular_ops.is_empty(),
-        "a bare-origin circular_pattern must be DROPPED, not silently built with \
-         a 12 SI-metre axis origin; emitted CircularPattern ops: {:?}",
-        circular_ops
-    );
-}
-
-/// The positive control that keeps the rejection case above from passing
-/// vacuously: a DIMENSIONED `12mm, 34mm, 56mm` origin builds with zero Errors
-/// and reaches the kernel as `[0.012, 0.034, 0.056]`, not `[12, 34, 56]`.
-///
-/// The three components are DISTINCT so this also pins the ox/oy/oz →
-/// `axis_origin` COMPONENT ORDERING end to end: the eval layer reads the triple
-/// outside its `f64_arg` closure and assembles the array separately, so a
-/// transposition to `[ox, oz, oy]` is a live regression that an all-zero (or
-/// single-non-zero) origin could not detect.
-///
-/// A tolerance rather than `==` because the parser computes `12 * 1e-3`; the f64
-/// error is at most ~1 ulp (order 1e-18 absolute at this magnitude), so `1e-12`
-/// clears it by six orders of magnitude while staying far tighter than the 1000×
-/// defect being guarded against.
-#[test]
-fn circular_pattern_scalar_mm_origin_builds_op() {
-    let (error_count, circular_ops) = build_circular_ops(
-        r#"
-        structure def MmOriginRing {
+        structure def NineArgRing {
             let b = box(2mm, 2mm, 2mm)
             let p = circular_pattern(b, 12mm, 34mm, 56mm, 0, 0, 1, 6, 60deg)
         }
         "#,
     );
-
-    assert_eq!(
-        error_count, 0,
-        "a dimensioned circular_pattern axis origin must build with zero Error \
-         diagnostics; got {error_count}"
+    let expected = "circular_pattern() expects 4 arguments: \
+                    circular_pattern(geo, axis, count, angle), got 9";
+    assert!(
+        compiled
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error && d.message == expected),
+        "expected the arity Error {expected:?}, got: {:#?}",
+        compiled.diagnostics
     );
-    assert_eq!(
-        circular_ops.len(),
-        1,
-        "expected exactly one CircularPattern op to reach the kernel, got {:?}",
-        circular_ops
-    );
-    match &circular_ops[0] {
-        GeometryOp::CircularPattern { axis_origin, .. } => {
-            // Component-wise AND in order: ox→[0], oy→[1], oz→[2].
-            for (i, (label, expected)) in
-                [("12mm", 0.012), ("34mm", 0.034), ("56mm", 0.056)]
-                    .into_iter()
-                    .enumerate()
-            {
-                assert!(
-                    (axis_origin[i] - expected).abs() < 1e-12,
-                    "{label} must reach the kernel as {expected} SI metres at \
-                     axis_origin[{i}] (NOT {} m, and NOT permuted into another \
-                     component); got axis_origin = {:?}",
-                    expected * 1000.0,
-                    axis_origin
-                );
-            }
-        }
-        other => panic!("expected GeometryOp::CircularPattern, got {:?}", other),
-    }
 }
 
 // ── units-length δ (task 5745): the decoded VALUE-FORM origin gate ────────────
@@ -567,8 +365,8 @@ fn circular_pattern_scalar_mm_origin_builds_op() {
 
 /// Build `source` against a mock kernel and return `(diagnostics, mirror_ops)`.
 ///
-/// Returns the diagnostics THEMSELVES rather than a count, unlike
-/// `build_circular_ops` above: the δ rows below assert on the specific
+/// Returns the diagnostics THEMSELVES rather than a count: the δ rows below
+/// assert on the specific
 /// `ArgRejection` diagnostic — its `DiagnosticCode` and its wording — not merely
 /// that "some Error was emitted". That distinction matters, because the
 /// op-compile Error which accompanies every rejection ALSO names the argument
@@ -796,9 +594,8 @@ fn mirror_point_form_dimensioned_origin_builds_clean() {
     assert_eq!(mirror_ops.len(), 1, "got {:?}", mirror_ops);
 }
 
-/// PRD §6 row 5, axis half — the counterpart of
-/// `circular_pattern_scalar_bare_origin_drops_op_with_error` directly above,
-/// for the route that BYPASSED the gate that test locks.
+/// PRD §6 row 5, axis half — the route that once BYPASSED the gate the retired
+/// 9-arg scalar form enforced, and since direction-typing ι-c the only route.
 ///
 /// A bare `axis_z(point3(12, 0, 0))` origin must be rejected and the op DROPPED,
 /// never silently built with a 12 SI-**metre** axis origin — 1000× a plausible
@@ -836,8 +633,7 @@ fn circular_pattern_value_form_bare_axis_origin_drops_op_with_error() {
     );
     assert!(
         rejection.message.contains("ox"),
-        "the rejection must name the ORIGIN component `ox`, matching the scalar \
-         form; got: {}",
+        "the rejection must name the ORIGIN component `ox`; got: {}",
         rejection.message
     );
     assert!(
@@ -852,10 +648,9 @@ fn circular_pattern_value_form_bare_axis_origin_drops_op_with_error() {
 /// passing vacuously, and the compatibility promise: the DIMENSIONED value form
 /// still builds and still reaches the kernel at `[0.012, 0, 0]`, not `[12, 0, 0]`.
 ///
-/// `1e-12` for `circular_pattern_scalar_mm_origin_builds_op`'s reason: the parser
-/// computes `12 * 1e-3`, so the f64 error is at most ~1 ulp (order 1e-18 here),
-/// six orders below this bound and far tighter than the 1000× defect guarded
-/// against.
+/// `1e-12` because the parser computes `12 * 1e-3`, so the f64 error is at most
+/// ~1 ulp (order 1e-18 here), six orders below this bound and far tighter than
+/// the 1000× defect guarded against.
 #[test]
 fn circular_pattern_value_form_dimensioned_axis_origin_builds_unchanged() {
     let (diagnostics, circular_ops) = build_circular(

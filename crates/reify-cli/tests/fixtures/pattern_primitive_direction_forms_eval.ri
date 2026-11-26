@@ -1,7 +1,7 @@
 // pattern_primitive_direction_forms_eval.ri — CLI eval fixture for
 // direction-typing ι-c (#9648): the Direction-form twins of the retired scalar
-// primitives and patterns build the same solids, so each member prints the
-// string the scalar form printed.
+// primitives and patterns (for circular_pattern, its Axis form) build the same
+// solids, so each member prints the string the scalar form printed.
 
 module pattern_primitive_direction_forms_eval
 
@@ -20,4 +20,8 @@ structure def LinearRow {
 
 structure def LinearGrid {
     let v = volume(linear_pattern_2d(box(2mm, 2mm, 2mm), dir(1, 0, 0), 2, 5mm, dir(0, 1, 0), 2, 5mm))
+}
+
+structure def CircularRing {
+    let v = volume(circular_pattern(translate(box(2mm, 2mm, 2mm), 10mm, 0mm, 0mm), axis_z(point3(0mm, 0mm, 0mm)), 4, 360deg))
 }

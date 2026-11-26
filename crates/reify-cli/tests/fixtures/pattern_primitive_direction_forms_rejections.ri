@@ -1,6 +1,6 @@
 // pattern_primitive_direction_forms_rejections.ri — CLI check fixture for
 // direction-typing ι-c (#9648): each retired scalar call is an arity error
-// that teaches the Direction form.
+// that teaches the Direction form (for circular_pattern, its Axis form).
 
 module pattern_primitive_direction_forms_rejections
 
@@ -20,4 +20,9 @@ structure def ScalarLinearPattern {
 structure def ScalarLinearGrid {
     let b = box(2mm, 2mm, 2mm)
     let g = linear_pattern_2d(b, 1, 0, 0, 2, 5mm, 0, 1, 0, 2, 5mm)
+}
+
+structure def ScalarCircularRing {
+    let b = box(2mm, 2mm, 2mm)
+    let g = circular_pattern(b, 0mm, 0mm, 0mm, 0, 0, 1, 4, 360deg)
 }

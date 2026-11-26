@@ -1052,37 +1052,10 @@ fn mirror_bare_point3_origin_draws_no_check_time_slot_mismatch() {
     );
 }
 
-/// SIGNAL — a bare 9-arg `circular_pattern` axis ORIGIN is rejected, naming
-/// `ox`/`oy`/`oz`.
-///
-/// Three errors, not seven: the axis DIRECTION `0, 0, 1`, the Int `count` and
-/// the `60deg` angle in this same call must all stay silent. The direction and
-/// count are never slotted; the angle IS slotted (PRD 3 leaf ζ), and is silent
-/// here because `60deg` SATISFIES its slot.
-#[test]
-fn circular_pattern_bare_origin_is_rejected_naming_the_origin_components() {
-    let compiled =
-        compile_struct_body("    let p = circular_pattern(b, 12, 0, 0, 0, 0, 1, 6, 60deg)\n");
-    let messages: Vec<&str> = arg_type_mismatch_errors(&compiled)
-        .iter()
-        .map(|d| d.message.as_str())
-        .collect();
-    assert_eq!(
-        messages,
-        vec![
-            "circular_pattern: ox argument expects Length, got Int; pass a dimensioned length such as `5mm`",
-            "circular_pattern: oy argument expects Length, got Int; pass a dimensioned length such as `5mm`",
-            "circular_pattern: oz argument expects Length, got Int; pass a dimensioned length such as `5mm`",
-        ],
-        "only the bare axis ORIGIN may fire — the direction and count are \
-         unslotted and the dimensioned angle satisfies its slot.\n\
-         All diagnostics: {:#?}",
-        compiled.diagnostics
-    );
-}
-
-/// BOUNDARY ok — dimensioned origins on both builtins (`mirror`'s `Point3`,
-/// `circular_pattern`'s scalar triple) produce NO `ArgTypeMismatch`.
+/// BOUNDARY ok — a dimensioned `mirror` `Point3` origin produces NO
+/// `ArgTypeMismatch`. (`circular_pattern`'s scalar origin triple was the other
+/// case until direction-typing ι-c retired that form; its origin now reaches it
+/// only inside an `Axis`.)
 ///
 /// A no-error guard that holds both BEFORE and after the slots land (this
 /// file's Case-2/4/5 convention): before, because there is no slot to fire;
@@ -1090,10 +1063,8 @@ fn circular_pattern_bare_origin_is_rejected_naming_the_origin_components() {
 /// reject the bare form specifically, not the shape of the call.
 #[test]
 fn dimensioned_pattern_origins_give_no_arg_type_mismatch() {
-    let compiled = compile_struct_body(
-        "    let m = mirror(b, point3(0mm, 0mm, 0mm), dir(1, 0, 0))\n\
-         \x20   let p = circular_pattern(b, 12mm, 0mm, 0mm, 0, 0, 1, 6, 60deg)\n",
-    );
+    let compiled =
+        compile_struct_body("    let m = mirror(b, point3(0mm, 0mm, 0mm), dir(1, 0, 0))\n");
     let errors = arg_type_mismatch_errors(&compiled);
     assert!(
         errors.is_empty(),
@@ -1107,11 +1078,9 @@ fn dimensioned_pattern_origins_give_no_arg_type_mismatch() {
 ///
 /// Also a no-error guard holding both before and after — but the one that
 /// matters most, because index 1 EXISTS in both of these calls, holding a
-/// `Plane` / an `Axis`. It is the arity guard on each arm, not the
-/// `compiled_args.get(index)` bounds check, that keeps them quiet; an
-/// arity-agnostic `ox@1 LENGTH` slot would demand a Length of a Plane here, on
-/// correct code. `circular_pattern`'s value form does slot its angle@3 (PRD 3
-/// leaf ζ), which `60deg` satisfies.
+/// `Plane` / an `Axis`, and no slot may name it: an `ox@1 LENGTH` slot would
+/// demand a Length of a Plane here, on correct code. `circular_pattern` does
+/// slot its angle@3 (PRD 3 leaf ζ), which `60deg` satisfies.
 #[test]
 fn pattern_value_forms_give_no_arg_type_mismatch() {
     let compiled = compile_struct_body(
@@ -1707,34 +1676,27 @@ fn draft_curated_form_does_not_reject_its_face_selector() {
     );
 }
 
-/// SIGNAL — a bare `circular_pattern` angle is rejected at BOTH forms, naming
-/// `angle`.
+/// SIGNAL — a bare `circular_pattern` angle is rejected, naming `angle`.
 ///
-/// Two separate compiles, each keyed independently (PRD row B4's third
-/// clause): the angle is arg8 of the 9-arg scalar form and arg3 of the 4-arg
-/// value form. Exactly one error each — the dimensioned origin, the axis
-/// DIRECTION, the decoded `Axis` value and the Int `count` must all stay
-/// silent.
+/// The angle is arg3 of `circular_pattern(target, axis, count, angle)`, the
+/// only form since direction-typing ι-c. Exactly one error — the decoded `Axis`
+/// value and the Int `count` must stay silent.
 #[test]
-fn circular_pattern_bare_angle_is_rejected_at_both_forms() {
-    for body in [
-        "    let p = circular_pattern(b, 0mm, 0mm, 0mm, 0, 0, 1, 6, 360)\n",
-        "    let p = circular_pattern(b, axis_z(point3(0mm, 0mm, 0mm)), 6, 360)\n",
-    ] {
-        let compiled = compile_struct_body(body);
-        let messages: Vec<&str> = arg_type_mismatch_errors(&compiled)
-            .iter()
-            .map(|d| d.message.as_str())
-            .collect();
-        assert_eq!(
-            messages,
-            vec![format!(
-                "circular_pattern: angle argument expects Angle, got Int; {ANGLE_HINT}"
-            )],
-            "body {body:?}: exactly the angle must be rejected.\nAll diagnostics: {:#?}",
-            compiled.diagnostics
-        );
-    }
+fn circular_pattern_bare_angle_is_rejected() {
+    let body = "    let p = circular_pattern(b, axis_z(point3(0mm, 0mm, 0mm)), 6, 360)\n";
+    let compiled = compile_struct_body(body);
+    let messages: Vec<&str> = arg_type_mismatch_errors(&compiled)
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(
+        messages,
+        vec![format!(
+            "circular_pattern: angle argument expects Angle, got Int; {ANGLE_HINT}"
+        )],
+        "body {body:?}: exactly the angle must be rejected.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
 }
 
 // ── direction-typing ι-c (task 9648): linear_pattern's Direction ──────────

@@ -194,3 +194,38 @@ fn linear_pattern_2d_direction_form_emits_the_retired_scalar_op() {
     assert_eq!(*count2, 2, "{call}: count2");
     assert_eq!(*spacing2, Value::length(0.005), "{call}: spacing2");
 }
+
+/// Retired `circular_pattern(translate(box(2mm, 2mm, 2mm), 10mm, 0mm, 0mm),
+/// 0mm, 0mm, 0mm, 0, 0, 1, 4, 360deg)` emitted `CircularPattern { axis_origin:
+/// [0, 0, 0], axis_dir: [0, 0, 1], count: 4, angle: Scalar{2π, ANGLE} }`. The
+/// Axis form is now the only form; no Direction form is added (PRD §10 Q3).
+#[test]
+fn circular_pattern_axis_form_emits_the_retired_scalar_op() {
+    let call = "circular_pattern(translate(box(2mm, 2mm, 2mm), 10mm, 0mm, 0mm), \
+                axis_z(point3(0mm, 0mm, 0mm)), 4, 360deg)";
+    assert_emits_the_retired_ring(call);
+}
+
+#[track_caller]
+fn assert_emits_the_retired_ring(call: &str) {
+    let rings: Vec<GeometryOp> = clean_ops(call)
+        .into_iter()
+        .filter(|op| matches!(op, GeometryOp::CircularPattern { .. }))
+        .collect();
+    let [
+        GeometryOp::CircularPattern {
+            axis_origin,
+            axis_dir,
+            count,
+            angle,
+            ..
+        },
+    ] = rings.as_slice()
+    else {
+        panic!("{call}: expected exactly one CircularPattern op, got {rings:?}");
+    };
+    assert_eq!(*axis_origin, [0.0, 0.0, 0.0], "{call}: axis_origin");
+    assert_eq!(*axis_dir, [0.0, 0.0, 1.0], "{call}: axis_dir");
+    assert_eq!(*count, 4, "{call}: count");
+    assert_eq!(*angle, Value::angle(std::f64::consts::TAU), "{call}: angle");
+}
