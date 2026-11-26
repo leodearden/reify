@@ -1,5 +1,6 @@
-//! What a node's final answer does to the index, the wait relation and the
-//! requests. The executor acts on what it returns.
+//! What a node's end does to the index, the wait relation and the
+//! requests: a final answer, or a failure outside the inputs. The executor
+//! acts on what each returns.
 
 use std::collections::BTreeSet;
 
@@ -38,5 +39,32 @@ pub(crate) fn answered(
         tell: requests.settle(&key),
         resolve,
         resume,
+    }
+}
+
+/// Who a failure outside the inputs at a node concerns: the live requests
+/// to tell it is pending, and the nodes that waited on it, which are to be
+/// dropped and fail the same way.
+pub(crate) struct FailedOutside {
+    pub tell: BTreeSet<RequestId>,
+    pub dropped: Vec<TaskKey>,
+}
+
+/// Ends the node at `key` with a failure outside the inputs (contract 9):
+/// nothing is indexed, no request wants it from then on, and each node
+/// waiting on it stops waiting on anything (point 13).
+pub(crate) fn failed_outside(
+    key: TaskKey,
+    waits: &mut Waits,
+    requests: &mut Requests,
+) -> FailedOutside {
+    waits.forget(key);
+    let dropped = waits.waiters(key);
+    for waiter in &dropped {
+        waits.forget(*waiter);
+    }
+    FailedOutside {
+        tell: requests.settle(&key),
+        dropped,
     }
 }

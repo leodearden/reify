@@ -35,6 +35,16 @@ impl Waits {
         freed
     }
 
+    /// The nodes waiting on `awaited`.
+    pub fn waiters(&self, awaited: TaskKey) -> Vec<TaskKey> {
+        self.awaited_by
+            .get(&awaited)
+            .into_iter()
+            .flatten()
+            .copied()
+            .collect()
+    }
+
     /// Ends every wait of `waiter`, which has been dropped, returning what
     /// it awaited.
     pub fn forget(&mut self, waiter: TaskKey) -> BTreeSet<TaskKey> {

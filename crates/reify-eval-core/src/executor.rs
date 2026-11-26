@@ -407,14 +407,21 @@ impl Executor {
         ));
     }
 
-    /// Ends a node with a failure outside the inputs: pending to every live
-    /// request that wanted it, and stored nowhere.
+    /// Ends a node with a failure outside the inputs, stored nowhere, and
+    /// with it every node that waited on it, in turn: each is dropped and
+    /// pending to every live request that wanted it.
     fn end_outside(&mut self, key: TaskKey, failure: OutsideFailure) {
-        if let Some(task) = self.tasks.remove(&key) {
-            task.discard();
-        }
-        for request in self.requests.settle(&key) {
-            self.tell(request, key, Answer::Pending(failure.clone()));
+        let mut queue = VecDeque::from([key]);
+        while let Some(key) = queue.pop_front() {
+            if let Some(task) = self.tasks.remove(&key) {
+                task.discard();
+            }
+            self.resolving.remove(&key);
+            let failed = finish::failed_outside(key, &mut self.waits, &mut self.requests);
+            for request in failed.tell {
+                self.tell(request, key, Answer::Pending(failure.clone()));
+            }
+            queue.extend(failed.dropped);
         }
     }
 
