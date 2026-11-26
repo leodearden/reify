@@ -61,7 +61,7 @@ shapes! {
     /// A cell blocked by the failure at a ref it read.
     BlockedBy,
     /// A box a shape made on the toy kernel.
-    ShapeValue,
+    BoxValue,
     /// The volume a measure read from the toy kernel.
     MeasureValue,
     /// An answer checked for a request left live after a Drive of no
@@ -702,7 +702,7 @@ impl Session {
                 }
             }
             (Some(ToyKind::Collection), Expect::Value(_)) => reached.push(Shape::CollectionValue),
-            (Some(ToyKind::Shape), Expect::Value(_)) => reached.push(Shape::ShapeValue),
+            (Some(ToyKind::Shape), Expect::Value(_)) => reached.push(Shape::BoxValue),
             (Some(ToyKind::Measure), Expect::Value(_)) => reached.push(Shape::MeasureValue),
             (_, Expect::Failure(Failure::WrongType { .. })) => reached.push(Shape::WrongType),
             (Some(ToyKind::Cell), Expect::Failure(Failure::OfKind { kind, code }))

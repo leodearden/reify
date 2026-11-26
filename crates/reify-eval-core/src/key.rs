@@ -34,17 +34,24 @@ impl Key {
     }
 }
 
-/// The keys a running body has passed through, each with the read request
-/// it made there, and the key it stands at now.
+/// A key a running body passed through, and the read request it made
+/// there.
+pub(crate) struct Passed {
+    pub key: Key,
+    pub refs: Arc<[Ref]>,
+}
+
+/// The keys a running body has passed through, and the key it stands at
+/// now.
 pub(crate) struct Chain {
-    steps: Vec<(Key, Arc<[Ref]>)>,
+    passed: Vec<Passed>,
     key: Key,
 }
 
 impl Chain {
     pub fn new(recipe: Recipe) -> Self {
         Self {
-            steps: Vec::new(),
+            passed: Vec::new(),
             key: Key::of_recipe(recipe),
         }
     }
@@ -52,7 +59,10 @@ impl Chain {
     /// Records that the body read `contents` at `refs` where it stands.
     pub fn read(&mut self, refs: Arc<[Ref]>, contents: &[Content]) {
         let next = self.key.then(&refs, contents);
-        self.steps.push((self.key, refs));
+        self.passed.push(Passed {
+            key: self.key,
+            refs,
+        });
         self.key = next;
     }
 
@@ -62,7 +72,7 @@ impl Chain {
 
     /// Each key passed through with its request, in order, and the key
     /// the chain ends at.
-    pub fn into_parts(self) -> (Vec<(Key, Arc<[Ref]>)>, Key) {
-        (self.steps, self.key)
+    pub fn into_parts(self) -> (Vec<Passed>, Key) {
+        (self.passed, self.key)
     }
 }

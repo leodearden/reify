@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::content::Content;
-use crate::key::{Chain, Key};
+use crate::key::{Chain, Key, Passed};
 use crate::kind_id::KindId;
 use crate::outcome::{Erased, Outcome};
 use crate::reference::Ref;
@@ -57,9 +57,9 @@ impl Store {
     /// What is already filed at a key stays: the first result filed there
     /// wins.
     pub(crate) fn file(&mut self, chain: Chain, result: StoredResult) {
-        let (steps, end) = chain.into_parts();
+        let (passed, end) = chain.into_parts();
         let mut parent = None;
-        for (key, refs) in steps {
+        for Passed { key, refs } in passed {
             self.insert(key, parent, Stored::Next(refs));
             parent = Some(key);
         }
