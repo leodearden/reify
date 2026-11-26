@@ -47,7 +47,9 @@
 #   - Safe under set -euo pipefail.
 #   - Workers are backgrounded and waited on with `wait`; EXIT trap reaps any
 #     survivors via a per-PID `kill` over the recorded worker PIDs (harmless
-#     if already exited). No process-group kill: callers may background this
+#     if already exited). TERM, INT and HUP reap them the same way before the
+#     fixture exits, a repeated signal included: it exits 128+n only once its
+#     workers are reaped. No process-group kill: callers may background this
 #     fixture from their own process group, and a group-wide kill would
 #     signal the caller too.
 #   - --emit-cgroup writes BEFORE workers are forked so the scope is visible
@@ -196,9 +198,32 @@ _cleanup() {
             kill "$_pid" 2>/dev/null || true
         done
         wait 2>/dev/null || true
+        _WORKER_PIDS=""
     fi
 }
+
+# _on_signal <exit_status>: reap the workers, then exit.  Further terminating
+# signals are ignored first, so a repeat can never cut the nested `wait` short.
+# Measured on bash 5.2.21, a repeat is survived without that line too; it keeps
+# the reap from depending on how another bash version interleaves a trap with
+# `wait`.  _cleanup empties _WORKER_PIDS, so the EXIT trap that `exit` fires is
+# then a no-op.
+_on_signal() {
+    trap '' TERM INT HUP
+    _cleanup
+    exit "$1"
+}
+
+# With an EXIT trap alone, bash runs the trap from its own termination handler,
+# and a second TERM then ends the shell on the spot, abandoning the reap.  GNU
+# timeout signals its child and then the child's process group, so a fixture run
+# under it is TERMed twice.  An explicit trap per signal runs as an ordinary
+# trap instead.  Guarded by the FIXTURE-RESIGNAL block of
+# tests/infra/test_cpu_load_governance.sh.
 trap '_cleanup' EXIT
+trap '_on_signal 143' TERM
+trap '_on_signal 130' INT
+trap '_on_signal 129' HUP
 
 # _await_pins_applied: with --pin-cpus, block until every live pinned worker
 # reports its own CPU as its whole affinity mask.  It is the forked child that

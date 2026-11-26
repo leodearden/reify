@@ -1157,8 +1157,9 @@ _row4_launch_role_burn() {
 
 # _row4_stop_burns
 #   SIGTERMs every recorded burn wrapper, waits for each, and clears the list.
-#   TERM rather than KILL: the fixture's EXIT trap reaps its workers on TERM,
-#   whereas killing a bare payload orphans its spinners into the next window.
+#   TERM rather than KILL: the fixture reaps its workers before it exits on TERM,
+#   a repeated TERM included (FIXTURE-RESIGNAL), whereas killing a bare payload
+#   orphans its spinners into the next window.
 #   Every error is ignored (a burn may already have ended), so the call is total
 #   and safe to run bare under `set -e`.
 _row4_stop_burns() {
