@@ -641,6 +641,11 @@ class CacheSettingsStore(unittest.TestCase):
     def test_no_store_without_a_store_url(self):
         self.assertIsNone(canon_cache.CacheSettings(store_user="u", store_password="p").store)
 
+    def test_a_store_url_the_store_refuses_is_refused_at_construction(self):
+        with self.assertRaises(ValueError) as caught:
+            canon_cache.CacheSettings(store_url="ftp://x")
+        self.assertIn(canon_store.store_url_problem("ftp://x"), str(caught.exception))
+
 
 STATS = {"hits": {"Rust": 3, "C/C++": 2}, "misses": {"Rust": 1, "C/C++": 1}, "write_errors": 1}
 DETACHED_STATS = {"hits": {"Rust": 40}, "misses": {"C/C++": 9}, "write_errors": 0}

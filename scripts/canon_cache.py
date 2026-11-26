@@ -104,6 +104,10 @@ class CacheSettings:
     fallback_dir: str = os.path.expanduser(DEFAULT_FALLBACK_DIR)
     fallback_cap: str = DEFAULT_FALLBACK_CAP
 
+    def __post_init__(self) -> None:
+        """A store_url that Store refuses is refused here, at construction, by Store's own check."""
+        _ = self.store
+
     @property
     def store(self) -> canon_store.Store | None:
         if self.store_url is None:
@@ -120,13 +124,12 @@ def parse_cache_settings(table: Mapping[str, object], path: str | Path) -> Cache
         if not isinstance(value, str):
             raise CacheConfigError(f"host config {path}: {key} {value!r} is not a string")
         values[key] = value
-    store_url = values.get("store_url")
-    problem = None if store_url is None else canon_store.store_url_problem(store_url)
-    if problem:
-        raise CacheConfigError(f"host config {path}: store_url {store_url!r} {problem}")
     if "fallback_dir" in values:
         values["fallback_dir"] = os.path.expanduser(values["fallback_dir"])
-    return CacheSettings(**values)
+    try:
+        return CacheSettings(**values)
+    except ValueError as exc:
+        raise CacheConfigError(f"host config {path}: {exc}") from exc
 
 
 def is_writable_dir(directory: str) -> bool:
@@ -661,7 +664,8 @@ def open_session(
     if not is_executable_file(sccache):
         raise CacheSessionError(f"cannot start {sccache}: not an executable file")
     rng = rng or random.Random()
-    probe = probe or (lambda: canon_store.probe_store(settings.store, knobs.link))
+    store = settings.store
+    probe = probe or (lambda: store is not None and canon_store.probe_store(store, knobs.link))
     with refusing_os_errors(f"create the build directory {canon_build_dir}"):
         os.makedirs(canon_build_dir, exist_ok=True)
     remove_stale_session_files(canon_build_dir, os.getpid())
@@ -670,7 +674,7 @@ def open_session(
     backend, reason = choose_backend(settings, probe)
     attempts, relay, process = 0, None, None
     try:
-        relay = canon_store.open_relay(settings.store) if backend is Backend.SHARED else None
+        relay = canon_store.open_relay(store) if store is not None and backend is Backend.SHARED else None
         if backend is Backend.SHARED and relay is None:
             backend, reason = Backend.LOCAL_FALLBACK, Reason.STORE_UNREACHABLE
         if relay is not None:

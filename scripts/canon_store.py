@@ -17,13 +17,30 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 
+def store_url_problem(store_url: str) -> str:
+    """Why store_url cannot name the store, or "" when it can."""
+    parts = urllib.parse.urlsplit(store_url)
+    if parts.scheme != "http" or not parts.hostname:
+        return "is not an http:// URL"
+    try:
+        parts.hostname.encode("idna")
+    except UnicodeError:
+        return "names a host that is not a valid DNS name"
+    return ""
+
+
 @dataclass(frozen=True)
 class Store:
-    """Where the WebDAV store is (C13's store_url) and who to say we are."""
+    """Where the WebDAV store is (C13's store_url) and who to say we are; ValueError when url cannot name it."""
 
     url: str
     user: str | None = None
     password: str | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        problem = store_url_problem(self.url)
+        if problem:
+            raise ValueError(f"store_url {self.url!r} {problem}")
 
     @property
     def key_prefix(self) -> str:
@@ -38,18 +55,6 @@ class LinkKnobs:
     slow: float = 2.0
     watchdog_interval: float = 15.0
     watchdog_failures: int = 2
-
-
-def store_url_problem(store_url: str) -> str:
-    """Why store_url cannot name the store, or "" when it can."""
-    parts = urllib.parse.urlsplit(store_url)
-    if parts.scheme != "http" or not parts.hostname:
-        return "is not an http:// URL"
-    try:
-        parts.hostname.encode("idna")
-    except UnicodeError:
-        return "names a host that is not a valid DNS name"
-    return ""
 
 
 def basic_auth(store: Store) -> dict[str, str]:

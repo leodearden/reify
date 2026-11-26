@@ -67,6 +67,16 @@ class StoreValue(unittest.TestCase):
     def test_key_prefix_is_the_url_path_without_its_slashes(self):
         self.assertEqual(canon_store.Store("http://s:8080/reify/cache/").key_prefix, "reify/cache")
 
+    def test_a_url_that_cannot_name_the_store_is_refused_at_construction(self):
+        for url in ("ftp://x", "https://store.invalid/reify", "http://a..b/reify", "http:///reify", ""):
+            with self.subTest(url=url):
+                with self.assertRaises(ValueError) as caught:
+                    canon_store.Store(url, "reify", "hunter2")
+                message = str(caught.exception)
+                self.assertIn(canon_store.store_url_problem(url), message)
+                self.assertIn(repr(url), message)
+                self.assertNotIn("hunter2", message)
+
 
 class StoreCase(unittest.TestCase):
     def setUp(self):
