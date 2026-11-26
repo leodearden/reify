@@ -23,7 +23,6 @@ is the thin wrapper tests/infra/test_canon_cache_units.sh.
 
 import dataclasses
 import fcntl
-import functools
 import itertools
 import json
 import os
@@ -901,6 +900,22 @@ time.sleep(600)
 """
 
 
+class TripwireClock:
+    """An injected clock ticking 1.0 per read; past `limit` it trips and reads inf, so every deadline passes."""
+
+    def __init__(self, start, limit):
+        self._ticks = itertools.count(start, 1.0)
+        self._limit = limit
+        self.tripped = False
+
+    def __call__(self):
+        now = next(self._ticks)
+        if now > self._limit:
+            self.tripped = True
+            return float("inf")
+        return now
+
+
 class SessionWaits(SessionCase):
     """Three waits, three knobs: ready_wait for a start, stop_wait for each reap step, client_timeout per call."""
 
@@ -916,10 +931,11 @@ class SessionWaits(SessionCase):
             self.env, SCCACHE_START_SERVER="1", SCCACHE_SERVER_UDS=files.socket, FAKE_SCCACHE_BEHAVIOUR="silent"
         )
         knobs = dataclasses.replace(self.knobs, ready_wait=3.0, stop_wait=3600.0, client_timeout=3600.0)
-        clock = functools.partial(next, itertools.count(1000.0, 1.0))
+        clock = TripwireClock(start=1000.0, limit=1020.0)
         process, failure = canon_cache.start_server(self.sccache, env, files, knobs, clock)
         self.addCleanup(process.wait)
         self.addCleanup(process.kill)
+        self.assertFalse(clock.tripped, "start_server polled past ready_wait=3 on the injected clock")
         self.assertIs(failure, canon_cache.StartFailure.NOT_READY)
         self.assertIsNone(process.poll(), "gave up by its deadline, not because the server exited")
         canon_cache.stop_now(process, 3600.0)
