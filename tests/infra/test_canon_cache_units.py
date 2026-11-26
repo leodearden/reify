@@ -923,6 +923,7 @@ class SessionWaits(SessionCase):
         thread.join(HANG_GUARD)
         if thread.is_alive():
             unstick()
+            thread.join(HANG_GUARD)
             self.fail(f"{what}: not within the {HANG_GUARD:.0f}s hang guard")
 
     def test_start_server_gives_up_on_a_silent_server_after_ready_wait(self):
@@ -953,7 +954,7 @@ class SessionWaits(SessionCase):
         self.assertEqual(child.returncode, -signal.SIGKILL)
 
     def test_close_bounds_each_client_call_by_client_timeout(self):
-        self.knobs = dataclasses.replace(self.knobs, ready_wait=60.0, stop_wait=0.2, client_timeout=1.0)
+        self.knobs = dataclasses.replace(self.knobs, ready_wait=3600.0, stop_wait=3600.0, client_timeout=0.2)
         session = self.open("mute")
         [server] = self.servers()
         outcomes = []

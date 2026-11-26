@@ -43,8 +43,9 @@ from verify_events_lib import read_events  # noqa: E402
 #   late_readonly  binds, and prints the write-check failure when asked for stats
 #   die            binds, then exits leaving its socket file once `die-now` exists
 #   silent         never binds and never exits: sleeps until a signal ends it
-#   mute           binds and reads each command line, but never answers, never
-#                  stops, and keeps every accepted connection open
+#   mute           binds and reads each command line but never answers; holds
+#                  every connection open, and exits once a client that sent
+#                  `stop` hangs up
 # Otherwise it is a client: --show-stats prints the server's stats in sccache
 # 0.14's JSON shape, --stop-server stops the server and waits for it to go, and
 # finding no listener is logged as `autostart`.
@@ -146,7 +147,10 @@ def serve():
         held = []
         while True:
             connection, _ = listener.accept()
-            connection.makefile().readline()
+            reader = connection.makefile()
+            if reader.readline().strip() == "stop":
+                reader.read()
+                sys.exit(0)
             held.append(connection)
     if behaviour == "die":
         listener.settimeout(0.02)
