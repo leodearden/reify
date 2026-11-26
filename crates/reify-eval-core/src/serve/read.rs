@@ -19,7 +19,7 @@ pub(crate) fn serve(
 ) -> Reading {
     let mut reading = Reading::default();
     for r in refs {
-        match target(reader, declaration, r, paths) {
+        match target(reader, declaration, r, paths, index) {
             Target::Absent => reading.settled(Outcome::Absent),
             Target::Input(key) => {
                 reading.settled(index.input(&key).map_or(Outcome::Absent, Input::outcome))

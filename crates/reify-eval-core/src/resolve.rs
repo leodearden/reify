@@ -2,7 +2,7 @@
 //! (contract 2.1, 7.1-7.4).
 
 use crate::declaration::{Binding, Declaration};
-use crate::index::Entry;
+use crate::index::{Entry, Index};
 use crate::input::InputKey;
 use crate::kinds::Kinds;
 use crate::outcome::Outcome;
@@ -19,32 +19,46 @@ pub(crate) enum Target {
 }
 
 /// The place `r` names when read by the node at `reader` whose declaration
-/// is `declaration`. An unset binding names nothing; a snapshot input,
-/// attached or not, declares no children, so steps below one name nothing;
-/// a place relative to the declarer names nothing on a root, which has no
-/// declarer.
-pub(crate) fn target(
+/// is `declaration`. A passed binding moves to the declarer, whose
+/// declaration the index holds (its answer declared the child), carrying
+/// the steps still to take; the walk ends at an input or a place. An unset
+/// binding names nothing; a snapshot input, attached or not, declares no
+/// children, so steps below one name nothing; a binding relative to the
+/// declarer names nothing on a root, which has no declarer.
+pub(crate) fn target<'a>(
     reader: PathId,
-    declaration: &Declaration,
-    r: &Ref,
+    declaration: &'a Declaration,
+    r: &'a Ref,
     paths: &mut PathTable,
+    index: &'a Index,
 ) -> Target {
-    match declaration.binding(r.binding_name()) {
-        None => Target::Absent,
-        Some(Binding::Input(key)) if r.steps().is_empty() => Target::Input(key.clone()),
-        Some(Binding::Attached(name)) if r.steps().is_empty() => {
-            Target::Input(InputKey::attached(paths.path(reader), name.clone()))
+    let (mut node, mut declaration, mut name) = (reader, declaration, r.binding_name());
+    let mut steps = r.steps().to_vec();
+    loop {
+        let declarer = paths.parent(node).map(|(declarer, _)| declarer);
+        match (declaration.binding(name), declarer) {
+            (Some(Binding::Input(key)), _) if steps.is_empty() => {
+                return Target::Input(key.clone());
+            }
+            (Some(Binding::Attached(attached)), _) if steps.is_empty() => {
+                return Target::Input(InputKey::attached(paths.path(node), attached.clone()));
+            }
+            (None | Some(Binding::Input(_) | Binding::Attached(_)), _)
+            | (Some(Binding::Declarer(_) | Binding::Passed(_)), None) => return Target::Absent,
+            (Some(Binding::Declarer(place)), Some(declarer)) => {
+                let below = place.iter().chain(&steps);
+                return Target::Node(below.fold(declarer, |at, step| paths.child(at, step)));
+            }
+            (Some(Binding::Passed(passed)), Some(declarer)) => {
+                declaration = index
+                    .entry(declarer)
+                    .and_then(|entry| entry.declaration.as_deref())
+                    .expect("a declarer's body ran, and its answer is indexed");
+                steps = passed.steps().iter().chain(&steps).cloned().collect();
+                name = passed.binding_name();
+                node = declarer;
+            }
         }
-        Some(Binding::Input(_) | Binding::Attached(_)) => Target::Absent,
-        Some(Binding::Declarer(steps)) => match paths.parent(reader) {
-            None => Target::Absent,
-            Some((declarer, _)) => Target::Node(
-                steps
-                    .iter()
-                    .chain(r.steps())
-                    .fold(declarer, |at, step| paths.child(at, step)),
-            ),
-        },
     }
 }
 
