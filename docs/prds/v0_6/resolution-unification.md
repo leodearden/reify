@@ -554,6 +554,21 @@ runs against P1's landed net)
   re-exports a's whole pub surface until ν #5527's narrowing lands. Pinned by
   `crates/reify-compiler/tests/harness_modules_ports/pub_import_reexport_tests.rs` and
   `crates/reify-cli/tests/harness_cli/cli_pub_import_reexport.rs`.
+  Limits at landing, measured with `reify check`: (1) For an import unit, re-export
+  visibility is compile-time only. If app does `import lib` (a facade over parts) and
+  declares `sub p = Pulley()`, app's own compile binds Pulley. Whole-program eval, though,
+  resolves an import unit's subs in the entry's environment, whose tier is the entry's
+  own. So that sub is still an eval-time `UnknownSubStructure` and check exits 1, exactly
+  as when app imports parts directly. The limit predates μ and is follow-up ticket
+  `tkt_0RXDQVQP7N8RAQ276PTCE66PR2`. (2) A D-6 collision report names a re-exported module
+  the user never imported. With `import lib` (lib `pub import parts`) followed by
+  `import other`, both declaring `pub structure def Pulley`, the report is `structure
+  'Pulley' declared in both 'parts' and 'other'; first-wins: 'parts' binds`, and it does
+  not name lib as the route (follow-up ticket `tkt_0RXDQVVXGA2J3JFP01EVB9XKGR`). (3) The
+  embedded-stdlib fallback inserts modules without walking them, so those modules record
+  no edges. Under `compile_project`, a stdlib `pub import` therefore re-exports only when
+  the stdlib is served from the filesystem. This is latent, since no stdlib module uses
+  `pub import` today, and `compile_program` never walks std (I4).
 - **ν — Entity-import narrowing** *(leaf)*. Modules: reify-compiler. Signal (#9).
   Deps: κ.
 - **ξ — Imported-file module-header mismatch surfacing** *(leaf)*. Modules:
