@@ -7,7 +7,9 @@
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 
-use reify_eval_core::{Answer, Core, Demand, Erased, Event, Input, InputKey, Path};
+use reify_eval_core::{
+    Answer, Core, Demand, Erased, Event, Input, InputKey, Path, RequestError, RequestId,
+};
 
 /// What a session first observed at `path` of snapshot `snapshot`.
 #[derive(Debug, Clone, PartialEq)]
@@ -17,13 +19,23 @@ pub struct Answered<O> {
     pub seen: O,
 }
 
-/// Where the fresh core's answer differs from the session's.
+/// Where the fresh core's answers differ from the session's.
 #[derive(Debug, Clone, PartialEq)]
-pub struct OrderMismatch<O> {
-    pub snapshot: usize,
-    pub path: Path,
-    pub session: O,
-    pub fresh: O,
+pub enum OrderMismatch<O> {
+    /// The fresh core answered `path` otherwise.
+    Differs {
+        snapshot: usize,
+        path: Path,
+        session: O,
+        fresh: O,
+    },
+    /// The fresh core told no answer at `path`: it ended the request with
+    /// `ended`, or left it with neither.
+    Unanswered {
+        snapshot: usize,
+        path: Path,
+        ended: Option<RequestError>,
+    },
 }
 
 /// Asks a fresh core for each of `answered` alone, latest first, on the
@@ -43,23 +55,20 @@ pub fn order_check<O: PartialEq + Debug + Clone>(
             .or_insert_with(|| core.snapshot(snapshots[first.snapshot].clone()));
         let request = core.evaluate(snapshot, Demand::of([first.path.clone()]));
         core.run();
-        let answer = core
-            .take_events()
-            .into_iter()
-            .find_map(|event| match event {
-                Event::Answered {
-                    request: to,
-                    path,
-                    answer,
-                    ..
-                } if to == request.id() && path == first.path => Some(answer),
-                _ => None,
-            });
+        let told = told(core.take_events(), request.id(), &first.path);
         core.end(request);
-        let answer = answer.unwrap_or_else(|| panic!("a fresh core gave no answer at {first:?}"));
-        let fresh = observe(answer);
+        let fresh = match told {
+            Ok(answer) => observe(answer),
+            Err(ended) => {
+                return Err(OrderMismatch::Unanswered {
+                    snapshot: first.snapshot,
+                    path: first.path.clone(),
+                    ended,
+                });
+            }
+        };
         if fresh != first.seen {
-            return Err(OrderMismatch {
+            return Err(OrderMismatch::Differs {
                 snapshot: first.snapshot,
                 path: first.path.clone(),
                 session: first.seen.clone(),
@@ -71,10 +80,35 @@ pub fn order_check<O: PartialEq + Debug + Clone>(
     Ok(answered.len())
 }
 
+/// The answer `request` was told at `at` among `events`; failing that, the
+/// error the core ended it with, if it did.
+fn told(
+    events: Vec<Event>,
+    request: RequestId,
+    at: &Path,
+) -> Result<Answer<Erased>, Option<RequestError>> {
+    let mut ended = None;
+    for event in events {
+        match event {
+            Event::Answered {
+                request: to,
+                path,
+                answer,
+                ..
+            } if to == request && path == *at => return Ok(answer),
+            Event::Ended {
+                request: to, error, ..
+            } if to == request => ended = Some(error),
+            _ => {}
+        }
+    }
+    Err(ended)
+}
+
 mod tests {
     use reify_eval_core::{
         Answer, Builder, Core, Cx, Declaration, Demand, Erased, Input, InputKey, Kind, KindId,
-        Outcome, Path, Produced, Root,
+        Outcome, Path, Produced, RequestError, Root,
     };
 
     use super::{Answered, OrderMismatch, order_check};
@@ -154,7 +188,7 @@ mod tests {
             [Answer::Final(Outcome::of(0)), Answer::Final(Outcome::of(1))]
         );
         let found = order_check(&turnstile_core, &[inputs], &answered, turns);
-        let expected = OrderMismatch {
+        let expected = OrderMismatch::Differs {
             snapshot: 0,
             path: at("b"),
             session: Answer::Final(Outcome::of(1)),
@@ -181,5 +215,27 @@ mod tests {
             answer.downcast::<i64>()
         });
         assert_eq!(found, Ok(2));
+    }
+
+    #[test]
+    fn a_fresh_core_that_ends_the_request_is_reported_with_its_error() {
+        let below_itself = toy::cell_over([toy::sibling(&["a", "x"])]);
+        let inputs = toy::root_scope("r", toy::members([("a", below_itself)])).to_vec();
+        let a = toy::below("r", &["a"]);
+        let answered = [Answered {
+            snapshot: 0,
+            path: a.clone(),
+            seen: Answer::Final(Outcome::of(0_i64)),
+        }];
+        let make_core = || toy::with_scope().build();
+        let found = order_check(&make_core, &[inputs], &answered, |answer| {
+            answer.downcast::<i64>()
+        });
+        let expected = OrderMismatch::Unanswered {
+            snapshot: 0,
+            path: a.clone(),
+            ended: Some(RequestError::NothingCanRun { waiting: vec![a] }),
+        };
+        assert_eq!(found, Err(expected));
     }
 }

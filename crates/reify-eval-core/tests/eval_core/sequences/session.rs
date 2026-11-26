@@ -15,7 +15,7 @@ use reify_eval_core::{
 
 use super::case::{Case, HostEvent, Then};
 use super::design::{Inputs, ModelPath, ModelRef, ToyKind, Val, to_core};
-use super::order::{Answered, order_check};
+use super::order::{Answered, OrderMismatch, order_check};
 use super::reference::{Expect, Expected, Invalid, Out, Reference};
 use super::seen::Seen;
 use crate::toy;
@@ -170,6 +170,14 @@ pub enum Mismatch {
         session: Box<Seen>,
         fresh: Box<Seen>,
     },
+    /// A fresh core, asked in another order, told no answer at a path the
+    /// session answered: it ended the request with `ended`, or left it
+    /// with neither.
+    OrderUnanswered {
+        snapshot: usize,
+        path: ModelPath,
+        ended: Option<RequestError>,
+    },
     /// The reference interpreter has no answer: the case is not one the
     /// checks can judge.
     Invalid {
@@ -189,6 +197,7 @@ pub enum MismatchKind {
     Twice,
     Ended,
     Order,
+    OrderUnanswered,
     Invalid,
 }
 
@@ -201,6 +210,7 @@ impl Mismatch {
             Mismatch::Twice { .. } => MismatchKind::Twice,
             Mismatch::Ended { .. } => MismatchKind::Ended,
             Mismatch::Order { .. } => MismatchKind::Order,
+            Mismatch::OrderUnanswered { .. } => MismatchKind::OrderUnanswered,
             Mismatch::Invalid { .. } => MismatchKind::Invalid,
         }
     }
@@ -264,6 +274,15 @@ impl fmt::Display for Mismatch {
                 f,
                 "at {path:?} on snapshot {snapshot}: the session answered {session:?}, a fresh \
                  core asked in reverse order {fresh:?}"
+            ),
+            Mismatch::OrderUnanswered {
+                snapshot,
+                path,
+                ended,
+            } => write!(
+                f,
+                "at {path:?} on snapshot {snapshot}: a fresh core asked in reverse order told no \
+                 answer, the request ended with {ended:?}"
             ),
             Mismatch::Invalid {
                 event,
@@ -391,17 +410,37 @@ impl Session {
     /// the same answers.
     fn order_check(&mut self, make_core: &dyn Fn() -> Core) -> Result<(), Mismatch> {
         let snapshots: Vec<_> = self.models.iter().map(to_core).collect();
-        let compared = order_check(make_core, &snapshots, &self.first, Seen::of_answer).map_err(
-            |mismatch| Mismatch::Order {
-                snapshot: mismatch.snapshot,
-                path: self.model_path(&mismatch.path),
-                session: Box::new(mismatch.session),
-                fresh: Box::new(mismatch.fresh),
-            },
-        )?;
+        let compared = order_check(make_core, &snapshots, &self.first, Seen::of_answer)
+            .map_err(|mismatch| self.order_mismatch(mismatch))?;
         let compared = u64::try_from(compared).expect("a count fits u64");
         *self.reach.shapes.entry(Shape::OrderComparison).or_default() += compared;
         Ok(())
+    }
+
+    /// `mismatch`, at the model path the session demanded.
+    fn order_mismatch(&self, mismatch: OrderMismatch<Seen>) -> Mismatch {
+        match mismatch {
+            OrderMismatch::Differs {
+                snapshot,
+                path,
+                session,
+                fresh,
+            } => Mismatch::Order {
+                snapshot,
+                path: self.model_path(&path),
+                session: Box::new(session),
+                fresh: Box::new(fresh),
+            },
+            OrderMismatch::Unanswered {
+                snapshot,
+                path,
+                ended,
+            } => Mismatch::OrderUnanswered {
+                snapshot,
+                path: self.model_path(&path),
+                ended,
+            },
+        }
     }
 
     /// The model path a request demanded as `path`.
@@ -623,10 +662,13 @@ impl Session {
 }
 
 mod tests {
-    use reify_eval_core::{Builder, Core, Cx, Kind, KindId, Outcome, OutsideFailure, Produced};
+    use reify_eval_core::{
+        Builder, Core, Cx, Kind, KindId, Outcome, OutsideFailure, Produced, Ref, RequestError,
+    };
 
     use super::super::case::{Case, HostEvent, Then};
     use super::super::design::*;
+    use super::super::reference::Invalid;
     use super::super::seen::Seen;
     use super::{Mismatch, Shape, check, toy_core};
     use crate::toy;
@@ -796,6 +838,139 @@ mod tests {
             path: path("c", []),
             core: Box::new(Seen::Pending(pending)),
             reference: Box::new(Seen::Int(5)),
+        };
+        assert_eq!(found, Err(expected));
+    }
+
+    /// Root scope "r" with the one member "a" declared `a`, and an
+    /// Evaluate of "a".
+    fn evaluate_a(a: Decl) -> Case {
+        Case {
+            inputs: inputs([
+                (root("r"), declaration(scope("r.m"))),
+                (named("r.m"), members([(step("a"), a)])),
+            ]),
+            events: vec![HostEvent::Evaluate {
+                on: 0,
+                paths: vec![r(&["a"])],
+                then: Then::End,
+            }],
+        }
+    }
+
+    /// A place below member "a" itself.
+    fn below_a() -> Bind {
+        declarer([step("a"), step("x")])
+    }
+
+    #[test]
+    fn a_request_the_core_ends_is_reported_with_its_error() {
+        let found = check(&evaluate_a(cell([below_a()])), &toy_core);
+        let expected = Mismatch::Ended {
+            event: 0,
+            snapshot: 0,
+            error: RequestError::NothingCanRun {
+                waiting: vec![r(&["a"]).to_core()],
+            },
+        };
+        assert_eq!(found, Err(expected));
+    }
+
+    #[test]
+    fn an_answer_on_a_case_the_reference_cannot_judge_is_reported_invalid() {
+        let found = check(&evaluate_a(cell([below_a()])), &with_cell_kind::<ZeroCell>);
+        let expected = Mismatch::Invalid {
+            event: 0,
+            snapshot: 0,
+            invalid: Invalid::Cycle { path: r(&["a"]) },
+        };
+        assert_eq!(found, Err(expected));
+    }
+
+    /// A resource that counts the cells run on its core.
+    struct Ran(i64);
+
+    /// Registered in place of the toy cell: answers how many cells ran on
+    /// its core before it, so its answer depends on the order of requests.
+    struct CountingCell;
+
+    impl Kind for CountingCell {
+        type Out = i64;
+        const ID: KindId = toy::Cell::ID;
+
+        async fn run(cx: &Cx) -> Produced<i64> {
+            let before = cx
+                .exclusive(|ran: &mut Ran, _| {
+                    ran.0 += 1;
+                    ran.0 - 1
+                })
+                .await;
+            Produced::Outcome(Outcome::of(before))
+        }
+    }
+
+    fn counting_core() -> Core {
+        let mut core = with_cell_kind::<CountingCell>();
+        core.add_resource(|| Ran(0));
+        core
+    }
+
+    #[test]
+    fn an_answer_that_depends_on_the_order_of_requests_is_reported_at_its_model_path() {
+        let evaluate = |name| HostEvent::Evaluate {
+            on: 0,
+            paths: vec![path(name, [])],
+            then: Then::End,
+        };
+        let case = Case {
+            inputs: inputs([
+                (root("c0"), declaration(cell([]))),
+                (root("c1"), declaration(cell([input("one")]))),
+                (named("one"), int(1)),
+            ]),
+            events: vec![evaluate("c0"), evaluate("c1")],
+        };
+        let expected = Mismatch::Order {
+            snapshot: 0,
+            path: path("c1", []),
+            session: Box::new(Seen::Int(1)),
+            fresh: Box::new(Seen::Int(0)),
+        };
+        assert_eq!(check(&case, &counting_core), Err(expected));
+    }
+
+    /// Registered in place of the toy cell: reads its binding "loop", then
+    /// answers 0.
+    struct LoopCell;
+
+    impl Kind for LoopCell {
+        type Out = i64;
+        const ID: KindId = toy::Cell::ID;
+
+        async fn run(cx: &Cx) -> Produced<i64> {
+            let _ = cx.read::<i64>(&Ref::binding("loop")).await;
+            Produced::Outcome(Outcome::of(0))
+        }
+    }
+
+    #[test]
+    fn a_fresh_core_that_ends_a_request_the_session_answered_is_reported() {
+        let made = std::cell::Cell::new(0);
+        let honest_then_looping = || {
+            made.set(made.get() + 1);
+            match made.get() {
+                1 => toy_core(),
+                _ => with_cell_kind::<LoopCell>(),
+            }
+        };
+        let looping = decl(ToyKind::Cell, [("loop", below_a())]);
+        let found = check(&evaluate_a(looping), &honest_then_looping);
+        let expected = Mismatch::OrderUnanswered {
+            snapshot: 0,
+            path: r(&["a"]),
+            ended: Some(RequestError::NothingCanRun {
+                waiting: vec![r(&["a"]).to_core()],
+            }),
         };
         assert_eq!(found, Err(expected));
     }
