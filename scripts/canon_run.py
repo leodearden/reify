@@ -402,10 +402,10 @@ def read_mountinfo() -> str:
         return ""
 
 
-def reachability_of(canon: str, tree: Tree) -> Callable[[], Reachability]:
+def reachability_of(canon: str, tree: Tree, mountinfo: Callable[[], str]) -> Callable[[], Reachability]:
     def compute() -> Reachability:
         return canon_reachability(
-            canon, tree, read_mountinfo(), lambda: namespace_refusal(tree.real_root, canon)
+            canon, tree, mountinfo(), lambda: namespace_refusal(tree.real_root, canon)
         )
 
     return compute
@@ -453,15 +453,15 @@ def decide_mode(
 
 
 def build_dir_decision(
-    tree: Tree, build_dir: Path, canon: str, host_enabled: Callable[[], bool]
+    tree: Tree, build_dir: Path, canon: str, host_enabled: Callable[[], bool], mountinfo: Callable[[], str]
 ) -> Decision:
     if not tree.contains(build_dir):
         return Decision(Mode.REAL_PATH, f"build directory {build_dir} is outside the tree")
     state = read_build_dir_state(build_dir)
-    return decide_mode(state, canon, host_enabled, reachability_of(canon, tree))
+    return decide_mode(state, canon, host_enabled, reachability_of(canon, tree, mountinfo))
 
 
-def status_report(environ: Mapping[str, str], cwd: str) -> dict[str, object]:
+def status_report(environ: Mapping[str, str], cwd: str, mountinfo: Callable[[], str]) -> dict[str, object]:
     canon = canon_root(environ)
     host = load_host_config(host_config_path(environ))
     report: dict[str, object] = {
@@ -480,7 +480,7 @@ def status_report(environ: Mapping[str, str], cwd: str) -> dict[str, object]:
         build_dir = build_dir_for(tree, cwd, environ)
         report["tree_root"] = str(tree.real_root)
         report["build_dir"] = str(build_dir)
-        decision = build_dir_decision(tree, build_dir, canon, lambda: host.enabled)
+        decision = build_dir_decision(tree, build_dir, canon, lambda: host.enabled, mountinfo)
         search_path = canon_search_path(
             environ.get("PATH", ""), tree, canon, environ.get("HOME"), guard=canon_cache.uses_guard(host.policy)
         )
@@ -1031,7 +1031,9 @@ def supervise_real_path(call: Call, host: HostConfig, reason: canon_cache.Reason
     )
 
 
-def run(command: list[str], *, cargo: bool, environ: Mapping[str, str]) -> int:
+def run(
+    command: list[str], *, cargo: bool, environ: Mapping[str, str], mountinfo: Callable[[], str]
+) -> int:
     """`exec` (command is the full command) or `cargo` (command is cargo's arguments).
 
     Returns the command's returncode as subprocess gives it; the exec paths never return.
@@ -1048,7 +1050,7 @@ def run(command: list[str], *, cargo: bool, environ: Mapping[str, str]) -> int:
     build_dir = build_dir_for(tree, cwd, environ, target_dir)
     canon = canon_root(environ)
     host = functools.cache(lambda: load_host_config(host_config_path(environ)))
-    decision = build_dir_decision(tree, build_dir, canon, lambda: host().enabled)
+    decision = build_dir_decision(tree, build_dir, canon, lambda: host().enabled, mountinfo)
     call = Call(tuple(command), cargo, environ, tree, canon, cwd, build_dir)
     if is_nested(active, tree, decision):
         if decision.mode is Mode.REAL_PATH:
@@ -1065,17 +1067,17 @@ def run(command: list[str], *, cargo: bool, environ: Mapping[str, str]) -> int:
     return supervise_at_canon(call, host())
 
 
-def main(argv: list[str]) -> int:
+def main(argv: list[str], *, mountinfo: Callable[[], str] = read_mountinfo) -> int:
     environ = caller_environ()
     try:
         match argv:
             case ["status"]:
-                print(json.dumps(status_report(environ, os.getcwd())))
+                print(json.dumps(status_report(environ, os.getcwd(), mountinfo)))
                 return 0
             case ["exec", "--", *command] if command:
-                return canon_cache.exit_like(run(command, cargo=False, environ=environ))
+                return canon_cache.exit_like(run(command, cargo=False, environ=environ, mountinfo=mountinfo))
             case ["cargo", *args]:
-                return canon_cache.exit_like(run(args, cargo=True, environ=environ))
+                return canon_cache.exit_like(run(args, cargo=True, environ=environ, mountinfo=mountinfo))
     except Refusal as refusal:
         print(f"canon_run: {flatten(refusal)}", file=sys.stderr)
         return EXIT_REFUSED
