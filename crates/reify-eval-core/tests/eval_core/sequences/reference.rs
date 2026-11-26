@@ -83,6 +83,7 @@ pub struct Reference {
     answers: BTreeMap<ModelPath, Result<Rc<Expected>, Invalid>>,
     declared: BTreeMap<ModelPath, Declared>,
     in_progress: BTreeSet<ModelPath>,
+    work_outs: usize,
 }
 
 impl Reference {
@@ -92,6 +93,7 @@ impl Reference {
             answers: BTreeMap::new(),
             declared: BTreeMap::new(),
             in_progress: BTreeSet::new(),
+            work_outs: 0,
         }
     }
 
@@ -113,9 +115,9 @@ impl Reference {
         answer
     }
 
-    /// How many distinct paths have been answered.
-    pub fn evaluations(&self) -> usize {
-        self.answers.len()
+    /// How many times a path's answer has been worked out, memo aside.
+    pub fn work_outs(&self) -> usize {
+        self.work_outs
     }
 
     /// The declaration of the node at `path`, if one is declared there.
@@ -136,6 +138,7 @@ impl Reference {
     }
 
     fn work_out(&mut self, path: &ModelPath) -> Result<Expected, Invalid> {
+        self.work_outs += 1;
         let decl = match self.declaration(path)? {
             Declared::Node(decl) => decl,
             Declared::Settled(outcome) => {
@@ -412,6 +415,7 @@ mod tests {
 
     use reify_eval_core::{Declaration, Failure};
 
+    use super::super::case::{HostEvent, Then};
     use super::super::design::*;
     use super::*;
     use crate::toy;
@@ -702,9 +706,34 @@ mod tests {
     }
 
     #[test]
-    fn each_path_is_evaluated_once_however_often_it_is_read() {
+    fn first_invalid_finds_a_cycle_an_edit_makes_at_a_demanded_path() {
+        let a_over = |term| members([(step("a"), cell([term]))]);
+        let mut case = Case {
+            inputs: scope_r(a_over(input("x")), &[("x", 1)]),
+            events: vec![HostEvent::Evaluate {
+                on: 0,
+                paths: vec![at("r", &["a"])],
+                then: Then::End,
+            }],
+        };
+        assert_eq!(first_invalid(&case), None);
+        let below_itself = a_over(declarer([step("a"), step("x")]));
+        case.events.push(HostEvent::Edit {
+            from: 0,
+            changes: vec![(named("r.m"), Some(below_itself))],
+        });
+        assert_eq!(
+            first_invalid(&case),
+            Some(Invalid::Cycle {
+                path: at("r", &["a"])
+            })
+        );
+    }
+
+    #[test]
+    fn each_path_is_worked_out_once_however_often_it_is_read() {
         let name = |k: usize| format!("c{k}");
-        let chain = (0..40).map(|k| {
+        let chain = (0..20).map(|k| {
             let terms = if k == 0 {
                 vec![input("unit")]
             } else {
@@ -714,13 +743,9 @@ mod tests {
         });
         let design = scope_r(members(chain), &[("unit", 3)]);
         let mut reference = Reference::new(design);
-        let last = reference.answer(&at("r", &["c39"]));
-        assert_eq!(last, int_of(ToyKind::Cell, 3 << 39));
-        assert_eq!(
-            reference.evaluations(),
-            41,
-            "the root and its forty members"
-        );
+        let last = reference.answer(&at("r", &["c19"]));
+        assert_eq!(last, int_of(ToyKind::Cell, 3 << 19));
+        assert_eq!(reference.work_outs(), 21, "the root and its twenty members");
     }
 
     #[test]

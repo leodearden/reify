@@ -301,8 +301,8 @@ fn smaller_decls(of: &Decl) -> Vec<Decl> {
 }
 
 mod tests {
-    use super::super::case::{Case, HostEvent};
-    use super::super::design::{ModelPath, ToyKind};
+    use super::super::case::{Case, HostEvent, Then};
+    use super::super::design::{Inputs, ModelPath, ToyKind, int, named, path};
     use super::super::generator::{Features, GATE_EVENTS, GATE_SEEDS, generate};
     use super::super::reference::{Reference, first_invalid};
     use super::super::shrink::shrink;
@@ -310,6 +310,36 @@ mod tests {
 
     fn gate_cases() -> impl Iterator<Item = (u64, Case)> {
         GATE_SEEDS.map(|seed| (seed, generate(seed, Features::structure(), GATE_EVENTS)))
+    }
+
+    #[test]
+    fn dropping_an_edit_moves_later_events_onto_the_snapshot_it_came_from() {
+        let edit = |from| HostEvent::Edit {
+            from,
+            changes: vec![(named("x"), Some(int(1)))],
+        };
+        let evaluate = |on| HostEvent::Evaluate {
+            on,
+            paths: vec![path("c", [])],
+            then: Then::End,
+        };
+        let case = Case {
+            inputs: Inputs::new(),
+            events: vec![
+                edit(0),
+                edit(1),
+                evaluate(2),
+                evaluate(1),
+                edit(2),
+                evaluate(3),
+            ],
+        };
+        let without_second_edit = Case {
+            inputs: Inputs::new(),
+            events: vec![edit(0), evaluate(1), evaluate(1), edit(1), evaluate(2)],
+        };
+        assert!(candidates(&case).contains(&without_second_edit));
+        assert!(without_second_edit.names_made_snapshots());
     }
 
     #[test]

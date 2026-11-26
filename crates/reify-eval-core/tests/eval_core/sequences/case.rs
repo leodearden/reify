@@ -88,3 +88,75 @@ pub enum Then {
     Leave,
     End,
 }
+
+mod tests {
+    use super::super::design::{Inputs, int, named, path};
+    use super::{Case, HostEvent, Then};
+
+    fn case(events: Vec<HostEvent>) -> Case {
+        Case {
+            inputs: Inputs::new(),
+            events,
+        }
+    }
+
+    fn edit(from: usize, x: Option<i64>) -> HostEvent {
+        HostEvent::Edit {
+            from,
+            changes: vec![(named("x"), x.map(int))],
+        }
+    }
+
+    fn evaluate(on: usize) -> HostEvent {
+        HostEvent::Evaluate {
+            on,
+            paths: vec![path("c", [])],
+            then: Then::End,
+        }
+    }
+
+    fn drive(on: usize) -> HostEvent {
+        HostEvent::Drive {
+            on,
+            paths: vec![path("c", [])],
+            turns: 0,
+            then: Then::Leave,
+        }
+    }
+
+    #[test]
+    fn events_on_snapshots_made_before_them_name_made_snapshots() {
+        let events = vec![
+            evaluate(0),
+            edit(0, Some(1)),
+            drive(1),
+            edit(1, Some(2)),
+            evaluate(2),
+            edit(0, None),
+            evaluate(3),
+        ];
+        assert!(case(events).names_made_snapshots());
+    }
+
+    #[test]
+    fn a_request_on_a_snapshot_no_edit_has_made_yet_names_none() {
+        assert!(!case(vec![evaluate(1), edit(0, Some(1))]).names_made_snapshots());
+        assert!(!case(vec![drive(1), edit(0, Some(1))]).names_made_snapshots());
+    }
+
+    #[test]
+    fn an_edit_from_a_snapshot_not_made_yet_names_none() {
+        assert!(!case(vec![edit(1, Some(1))]).names_made_snapshots());
+        assert!(!case(vec![edit(0, Some(1)), edit(2, Some(2))]).names_made_snapshots());
+    }
+
+    #[test]
+    fn each_edit_applies_to_the_snapshot_it_starts_from() {
+        let mut started = case(vec![edit(0, Some(2)), edit(0, None), edit(1, Some(3))]);
+        started.inputs.insert(named("x"), int(1));
+        let x = |inputs: &Inputs| inputs.get(&named("x")).cloned();
+        let snapshots = started.snapshots();
+        let seen: Vec<_> = snapshots.iter().map(x).collect();
+        assert_eq!(seen, [Some(int(1)), Some(int(2)), None, Some(int(3))]);
+    }
+}
