@@ -542,6 +542,76 @@ fn fn_returned_struct_ctor_excludes_geometry_let_alias() {
     }
 }
 
+// ─── geometry lets carried by a let-constructed ctor (task 10352) ─────────────
+
+const GEOMETRY_LET_CTOR_SRC: &str = r#"
+module test.geometry_let_ctor
+
+structure def Beam {
+    param len : Length = 1000mm
+    let body = box(len, 100mm, 100mm)
+    let tip = vertex(body, "tip")
+}
+
+structure def Holder {
+    let b = Beam()
+}
+"#;
+
+/// A let-constructed ctor carries its template's geometry let as a
+/// `CtorGeometryLet` naming the let's realization and that realization's op
+/// args, while the geometry let itself stays out of `lets`.
+#[test]
+fn let_constructed_ctor_carries_template_geometry_let() {
+    let module = reify_test_support::parse_and_compile_with_stdlib(GEOMETRY_LET_CTOR_SRC);
+    let template = |name: &str| {
+        module
+            .templates
+            .iter()
+            .find(|t| t.name == name)
+            .unwrap_or_else(|| panic!("no template {name}"))
+    };
+    let body_realization = template("Beam")
+        .realizations
+        .iter()
+        .find(|r| r.name.as_deref() == Some("body"))
+        .expect("Beam's `body` realization");
+    let holder_b = template("Holder")
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "b")
+        .and_then(|vc| vc.default_expr.as_ref())
+        .expect("Holder.b default");
+
+    let CompiledExprKind::StructureInstanceCtor {
+        lets,
+        geometry_lets,
+        ..
+    } = &holder_b.kind
+    else {
+        panic!("Holder.b must lower to a StructureInstanceCtor, got {holder_b:?}");
+    };
+
+    let members: Vec<&str> = geometry_lets.iter().map(|g| g.member.as_str()).collect();
+    assert_eq!(members, ["body"]);
+    let body = &geometry_lets[0];
+    assert_eq!(body.realization, body_realization.id);
+
+    let hashed = |args: &mut dyn Iterator<Item = &(String, CompiledExpr)>| {
+        args.map(|(name, e)| (name.clone(), e.content_hash))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        hashed(&mut body.upstream_args.iter()),
+        hashed(&mut body_realization.operations.iter().flat_map(|op| op.args())),
+        "upstream_args must be the `body` realization's op args"
+    );
+
+    let let_names: Vec<&str> = lets.iter().map(|(n, _)| n.as_str()).collect();
+    assert!(let_names.contains(&"tip"), "lets: {let_names:?}");
+    assert!(!let_names.contains(&"body"), "lets: {let_names:?}");
+}
+
 // ─── fn-call param default through a fn-returned ctor ─────────────────────────
 
 /// A structure-def param default that calls a SAME-MODULE fn, consumed through a
