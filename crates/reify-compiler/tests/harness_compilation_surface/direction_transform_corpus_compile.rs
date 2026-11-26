@@ -7,7 +7,8 @@
 //! `prj/printer_v01/printer.ri`, so without this witness a site left in a
 //! retired scalar form would surface only when someone next builds the design.
 //! Each file is compiled the way `reify check` compiles it, but with a mock
-//! constraint checker and no kernel.
+//! constraint checker and no kernel. It reads only paths whose edits run the
+//! Rust gate; the `docs/` and prd-gate fixtures' call shapes are mirrored inline.
 
 use std::path::Path;
 
@@ -65,14 +66,32 @@ const CORPUS: &[(&str, DirectionForms)] = &[
         floor(1, 0, 0),
     ),
     ("examples/best_practices/symmetry_mirror.ri", floor(0, 0, 1)),
-    (
-        "docs/prds/v0_6/fixtures/helix_sweep_dep_5342.ri",
-        floor(1, 0, 0),
-    ),
-    (
-        "tests/prd-gate/fixtures/pnrg_envelope_spline.ri",
-        floor(2, 0, 0),
-    ),
+];
+
+/// Mirrors docs/prds/v0_6/fixtures/helix_sweep_dep_5342.ri's `Test` structure.
+const HELIX_SWEEP_DEP_5342: &str = "structure def Test {
+    let path = helix(2.15mm, 0.8mm, 10mm)
+    aux let profile = translate(rotate(circle(0.4mm), dir(1.0, 0.0, 0.0), -90deg), 2.15mm, 0mm, 0mm)
+    let body = sweep(profile, path)
+}
+";
+
+/// Mirrors tests/prd-gate/fixtures/pnrg_envelope_spline.ri — pg-drift:allow — prose only, the source is inlined here.
+const PNRG_ENVELOPE_SPLINE: &str = "module pnrg_envelope_spline
+
+#precision(20mm)
+
+structure PnrgSpline {
+    let profile = rotate(rotate(circle(100mm), dir(1.0, 0.0, 0.0), -90deg), dir(0.0, 0.0, 1.0), -32.0053832deg)
+    let g = sweep(profile, bezier(0mm, 0mm, 0mm, 500mm, 800mm, 0mm, 1000mm, 0mm, 0mm))
+}
+";
+
+/// Each mirrored fixture's stem, used as its module path, with its call sites
+/// inlined and counted as a floor the way `CORPUS` counts them.
+const MIRRORED: &[(&str, &str, DirectionForms)] = &[
+    ("helix_sweep_dep_5342", HELIX_SWEEP_DEP_5342, floor(1, 0, 0)),
+    ("pnrg_envelope_spline", PNRG_ENVELOPE_SPLINE, floor(2, 0, 0)),
 ];
 
 /// What one file's lowered rotate/rotate_around/mirror ops look like.
@@ -152,17 +171,30 @@ fn compile_file(path: &Path) -> Result<CompiledProgram, String> {
         .ok_or_else(|| format!("{path:?} has no file stem"))?
         .to_string_lossy()
         .into_owned();
-    let parsed = parse_with_stdlib(&source, ModulePath::single(&stem));
-    if !parsed.errors.is_empty() {
-        return Err(format!("{path:?} does not parse: {:?}", parsed.errors));
-    }
     let dir = path
         .parent()
         .ok_or_else(|| format!("{path:?} has no parent directory"))?;
-    let resolver = ModuleResolver::new(dir, test_package::manifest_dir().join("stdlib"));
+    compile_source(path, &source, &stem, dir)
+}
+
+/// `entry_path` only labels the entry; the compile never opens it.
+fn compile_source(
+    entry_path: &Path,
+    source: &str,
+    stem: &str,
+    resolver_dir: &Path,
+) -> Result<CompiledProgram, String> {
+    let parsed = parse_with_stdlib(source, ModulePath::single(stem));
+    if !parsed.errors.is_empty() {
+        return Err(format!(
+            "{entry_path:?} does not parse: {:?}",
+            parsed.errors
+        ));
+    }
+    let resolver = ModuleResolver::new(resolver_dir, test_package::manifest_dir().join("stdlib"));
     Ok(compile_program_with_parsed_entry(
-        path,
-        &source,
+        entry_path,
+        source,
         &parsed,
         &resolver,
         &CfgSet::default(),
@@ -170,8 +202,12 @@ fn compile_file(path: &Path) -> Result<CompiledProgram, String> {
     ))
 }
 
-fn problems_in(rel: &str, floor: DirectionForms) -> Vec<String> {
-    let program = match compile_file(&workspace_root().join(rel)) {
+fn problems_in(
+    rel: &str,
+    compiled: Result<CompiledProgram, String>,
+    floor: DirectionForms,
+) -> Vec<String> {
+    let program = match compiled {
         Ok(program) => program,
         Err(why) => return vec![format!("{rel}: {why}")],
     };
@@ -192,16 +228,35 @@ fn problems_in(rel: &str, floor: DirectionForms) -> Vec<String> {
     problems
 }
 
-#[test]
-fn every_witnessed_corpus_site_lowers_through_a_direction_form() {
-    let problems: Vec<String> = CORPUS
-        .iter()
-        .flat_map(|(rel, floor)| problems_in(rel, *floor))
-        .collect();
+fn assert_no_problems(corpus: &str, problems: Vec<String>) {
     assert!(
         problems.is_empty(),
-        "{} problem(s) across the rotate/rotate_around/mirror corpus:\n{}",
+        "{} problem(s) across the {corpus}:\n{}",
         problems.len(),
         problems.join("\n")
     );
+}
+
+#[test]
+fn every_witnessed_corpus_site_lowers_through_a_direction_form() {
+    let problems = CORPUS
+        .iter()
+        .flat_map(|(rel, floor)| {
+            problems_in(rel, compile_file(&workspace_root().join(rel)), *floor)
+        })
+        .collect();
+    assert_no_problems("rotate/rotate_around/mirror corpus", problems);
+}
+
+#[test]
+fn every_mirrored_fixture_call_shape_lowers_through_a_direction_form() {
+    let problems = MIRRORED
+        .iter()
+        .flat_map(|(stem, source, floor)| {
+            let compiled =
+                compile_source(Path::new(stem), source, stem, test_package::manifest_dir());
+            problems_in(stem, compiled, *floor)
+        })
+        .collect();
+    assert_no_problems("mirrored fixture call shapes", problems);
 }
