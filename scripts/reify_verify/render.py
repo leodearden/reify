@@ -65,6 +65,11 @@ COMMANDS_MARKER = "# --- commands (executed in order; '&&' semantics — stop on
 EMPTY_PLAN = "# (no commands — nothing to verify for this action/scope)"
 LD_SCRUB = 'export LD_LIBRARY_PATH="${REIFY_AMBIENT_LD_LIBRARY_PATH-}"; '
 KILL_AFTER = "timeout --kill-after=60"
+INFRA_MEMBER_EXIT_ARM = (
+    '|| { _vrc=$?; echo "verify.sh: infra member $_vt exited rc=$_vrc'
+    '$(if [ "$_vrc" -gt 128 ] && _vsig=$(kill -l "$_vrc" 2>/dev/null); then printf " (signal %s)" "$_vsig"; fi)"'
+    ' >&2 || true; exit "$_vrc"; }'
+)
 NODE_BG_PID = "_VERIFY_NODE_BG_PID"
 JSON_VERSION = 1
 
@@ -297,7 +302,7 @@ def _infra_leaf_loop(leaf: InfraLeafLoop) -> str:
     unset = "".join(f" -u {name}" for name in leaf.unset)
     return (
         f'( for _vt in {leaf.glob}; do [ -f "$_vt" ] || continue; '
-        f'{env}{KILL_AFTER} {leaf.wall} {leaf.scrub_prefix}{unset} bash "$_vt" || exit $?; done )'
+        f'{env}{KILL_AFTER} {leaf.wall} {leaf.scrub_prefix}{unset} bash "$_vt" {INFRA_MEMBER_EXIT_ARM}; done )'
     )
 
 

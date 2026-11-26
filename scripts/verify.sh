@@ -4608,6 +4608,11 @@ build_plan() {
         # test_verify_ld_library_path_scope.sh asserts this file has exactly one
         # `for _vt in` emission site calling add_tool, so a second arm reds.
         local _leaf_env _leaf_wall
+        # The failure arm names the failing member and decodes a signal death,
+        # so a silent abort is attributable; its write is `|| true`, so it can
+        # never replace the member's status in an errexit context (#10333,
+        # tests/infra/test_verify_selective_infra_member_exit_record.py).
+        local _member_exit_arm='|| { _vrc=$?; echo "verify.sh: infra member $_vt exited rc=$_vrc$(if [ "$_vrc" -gt 128 ] && _vsig=$(kill -l "$_vrc" 2>/dev/null); then printf " (signal %s)" "$_vsig"; fi)" >&2 || true; exit "$_vrc"; }'
         # Each member runs with REIFY_VERIFY_EVENT_LOG removed, so its own
         # slot_acquire deadline or nested run_all.sh never writes into this
         # verify's channel (run-all-runner-infra-harness.md §4 C4, #8919). The
@@ -4618,7 +4623,7 @@ build_plan() {
         for _glob in $SELECTED_INFRA_GLOBS; do
             _leaf_env="$(selected_infra_leaf_env "$_glob")"
             _leaf_wall="$(selected_infra_leaf_wall "$_glob")"
-            add_tool "( for _vt in $_glob; do [ -f \"\$_vt\" ] || continue; ${_leaf_env}timeout --kill-after=60 ${_leaf_wall} $_git_scrub -u REIFY_VERIFY_EVENT_LOG bash \"\$_vt\" || exit \$?; done )"
+            add_tool "( for _vt in $_glob; do [ -f \"\$_vt\" ] || continue; ${_leaf_env}timeout --kill-after=60 ${_leaf_wall} $_git_scrub -u REIFY_VERIFY_EVENT_LOG bash \"\$_vt\" $_member_exit_arm; done )"
         done
         set +f
     fi

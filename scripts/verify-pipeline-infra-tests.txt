@@ -53,6 +53,14 @@ scripts/flake-density-report.py    tests/infra/test_flake_density_report.sh
 tests/infra/test_flake_density_report.py    tests/infra/test_flake_density_report.sh
 # Task 10282: the helper-mint guard's assertions live in its .py; a .py-only diff selects the wrapper.
 tests/infra/test_no_shared_tmp_python_helpers.py    tests/infra/test_no_shared_tmp_python_helpers.sh
+# Task 10333: the selective-infra leaf fixture builders; an edit selects every suite that imports them.
+tests/infra/selective_infra_leaf_fixture.py    tests/infra/test_verify_selective_infra_*.sh
+# Task 10333: the selective-infra member-exit record's assertions live in its .py.
+tests/infra/test_verify_selective_infra_member_exit_record.py    tests/infra/test_verify_selective_infra_member_exit_record.sh
+# Task 10333: the nextest-absent harness's exit record; its assertions live in the .py,
+# and an edit to the harness it copies selects it too.
+tests/infra/test_verify_nextest_absent_suites_exit_record.py    tests/infra/test_verify_nextest_absent_suites_exit_record.sh
+tests/infra/test_verify_nextest_absent_suites.sh    tests/infra/test_verify_nextest_absent_suites_exit_record.sh
 # Task 8678: the adoption-ratchet data table and engine select its wrapper.
 tests/infra/adoption-ratchet.manifest    tests/infra/test_infra_adoption_ratchet.sh
 tests/infra/adoption_ratchet.py    tests/infra/test_infra_adoption_ratchet.sh
