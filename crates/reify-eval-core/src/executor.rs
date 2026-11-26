@@ -53,7 +53,6 @@ enum Work {
 
 pub(crate) struct Executor {
     core: CoreId,
-    snapshots: u64,
     kinds: Kinds,
     paths: PathTable,
     indexes: Indexes,
@@ -74,7 +73,6 @@ impl Executor {
         let core = CoreId::fresh();
         Self {
             core,
-            snapshots: 0,
             kinds,
             paths: PathTable::default(),
             indexes: Indexes::default(),
@@ -95,12 +93,7 @@ impl Executor {
     }
 
     pub fn snapshot(&mut self, inputs: impl IntoIterator<Item = (InputKey, Input)>) -> Snapshot {
-        self.snapshots += 1;
-        let id = SnapshotId {
-            core: self.core,
-            serial: self.snapshots,
-        };
-        Snapshot::new(id, inputs)
+        Snapshot::new(self.core, inputs)
     }
 
     pub fn evaluate(&mut self, snapshot: &Snapshot, demand: Demand) -> Request {
