@@ -23,6 +23,11 @@ pub enum Seen {
         element: Declaration,
     },
     Declaration(Declaration),
+    /// A box on the toy kernel, by its description alone: where it lives
+    /// differs from core to core (contract 5.4).
+    Shape {
+        volume: i64,
+    },
     /// A value of a type no toy kind produces, by its type's name.
     Other(&'static str),
 }
@@ -49,6 +54,7 @@ impl Seen {
                 element: element.to_core(),
             },
             Expect::Value(Out::Decl(decl)) => Seen::Declaration(decl.to_core()),
+            Expect::Value(Out::Shape { volume }) => Seen::Shape { volume: *volume },
         }
     }
 
@@ -67,6 +73,10 @@ impl Seen {
             }
         } else if let Some(declaration) = any.downcast_ref::<Declaration>() {
             Seen::Declaration(declaration.clone())
+        } else if let Some(shape) = any.downcast_ref::<toy::BoxShape>() {
+            Seen::Shape {
+                volume: shape.volume,
+            }
         } else {
             Seen::Other(<Erased as Value>::type_name(value))
         }

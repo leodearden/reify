@@ -10,7 +10,7 @@ use reify_eval_core::{
     Produced, Release, ResourceDeath, Root, Turn,
 };
 
-use crate::toy::{self, BoxHandle, BoxShape, ToyKernel, Watch};
+use crate::toy::{self, BoxHandle, BoxShape, Cell, ToyKernel, Watch};
 
 #[test]
 fn a_second_body_runs_to_completion_while_a_first_waits_on_a_section_still_running() {
@@ -155,6 +155,7 @@ struct Fragile;
 impl Kind for Fragile {
     type Out = i64;
     const ID: KindId = KindId("toy.fragile");
+    const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<i64> {
         let made = cx
@@ -296,6 +297,7 @@ struct OnUnmade;
 impl Kind for OnUnmade {
     type Out = i64;
     const ID: KindId = KindId("toy.on_unmade");
+    const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<i64> {
         let made = cx.exclusive(|_: &mut Unmade, _| 1_i64).await;
@@ -341,6 +343,7 @@ struct MakeShard;
 impl Kind for MakeShard {
     type Out = Held<Brittle, Shard>;
     const ID: KindId = KindId("toy.make_shard");
+    const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<Self::Out> {
         let shard = cx
@@ -350,26 +353,44 @@ impl Kind for MakeShard {
     }
 }
 
+/// Makes a shard in `Brittle`, lets it go, and answers 1.
+struct ThrowShard;
+
+impl Kind for ThrowShard {
+    type Out = i64;
+    const ID: KindId = KindId("toy.throw_shard");
+    const VERSION: u32 = 1;
+
+    async fn run(cx: &Cx) -> Produced<i64> {
+        let shard = cx
+            .exclusive(|_: &mut Brittle, section| section.hold(Shard))
+            .await;
+        drop(shard);
+        Produced::Outcome(Outcome::of(1))
+    }
+}
+
 #[test]
 fn after_a_release_panics_its_resource_is_dead_and_later_sections_name_that_panic() {
     let mut core = Builder::new()
         .kind::<MakeShard>()
-        .expect("one kind")
+        .and_then(|builder| builder.kind::<ThrowShard>())
+        .expect("distinct kinds")
         .build();
     core.add_resource(|| Brittle);
-    let inputs = || [toy::root("shard", Declaration::new(MakeShard::ID))];
-    let snapshot = core.snapshot(inputs());
+    let snapshot = core.snapshot([
+        toy::root("thrown", Declaration::new(ThrowShard::ID)),
+        toy::root("shard", Declaration::new(MakeShard::ID)),
+    ]);
 
-    let first = core.evaluate(&snapshot, toy::roots(&["shard"]));
+    let first = core.evaluate(&snapshot, toy::roots(&["thrown"]));
     core.run();
     let events = core.take_events();
-    let made = toy::the_answer(&events, &first, &toy::at("shard"));
+    let made = toy::the_answer(&events, &first, &toy::at("thrown"));
     assert!(matches!(made, Answer::Final(Outcome::Value(_))), "{made:?}");
     core.end(first);
-    drop((made, events, snapshot));
     core.drain();
 
-    let snapshot = core.snapshot(inputs());
     let second = core.evaluate(&snapshot, toy::roots(&["shard"]));
     core.run();
     let answer = toy::the_answer(&core.take_events(), &second, &toy::at("shard"));
@@ -380,5 +401,37 @@ fn after_a_release_panics_its_resource_is_dead_and_later_sections_name_that_pani
         },
     };
     assert_eq!(toy::pending(answer), dead);
+    core.drain();
+}
+
+#[test]
+fn a_body_never_observes_an_unready_read() {
+    let watch = Watch::default();
+    let (mut core, keeper) = toy::gated(toy::with_every_kind(), &watch);
+    let mut inputs = vec![toy::named("side", 2_i64), toy::named("one", 1_i64)];
+    inputs.extend(toy::root_scope(
+        "R",
+        toy::members([
+            ("s", toy::shape("side")),
+            ("m", toy::measure(toy::sibling(&["s"]))),
+            (
+                "c",
+                toy::cell_over([toy::sibling(&["m"]), toy::input("one")]),
+            ),
+        ]),
+    ));
+    let snapshot = core.snapshot(inputs);
+    let c = toy::below("R", &["c"]);
+
+    let request = core.evaluate(&snapshot, toy::demand([&c]));
+    assert_eq!(core.turn(), Turn::SectionsRunning(1));
+    keeper.entered();
+    assert!(toy::answers(&core.take_events(), request.id()).is_empty());
+
+    keeper.open();
+    core.run();
+    let value = toy::the_value::<i64>(&core.take_events(), &request, &c);
+    assert_eq!(*value, 8 + 1);
+    assert_eq!(core.counters().body_runs(Cell::ID), 1);
     core.drain();
 }

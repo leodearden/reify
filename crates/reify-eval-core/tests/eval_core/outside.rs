@@ -16,6 +16,7 @@ struct Spent;
 impl Kind for Spent {
     type Out = i64;
     const ID: KindId = KindId("toy.spent");
+    const VERSION: u32 = 1;
 
     async fn run(_: &Cx) -> Produced<i64> {
         Produced::Outside(SPENT)

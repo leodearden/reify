@@ -6,8 +6,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use reify_eval_core::{
-    Answer, Binding, Core, Cx, Declaration, Held, InputKey, Kind, KindId, Outcome, Produced, Ref,
-    RequestId, Snapshot, Turn,
+    Answer, Binding, Core, Cx, Declaration, Hash128, Held, Input, InputKey, Kind, KindId, Outcome,
+    Produced, Ref, RequestId, Snapshot, Turn,
 };
 
 use crate::toy::{self, BoxHandle, BoxShape, Pair, Scope, Shape, ToyKernel, Watch};
@@ -51,6 +51,7 @@ struct Witnessed;
 impl Kind for Witnessed {
     type Out = i64;
     const ID: KindId = KindId("toy.witnessed");
+    const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<i64> {
         let Outcome::Value(seen) = cx.read::<Arc<AtomicBool>>(&Ref::binding("seen")).await else {
@@ -76,7 +77,10 @@ fn a_body_dropped_because_its_request_ended_reads_cancelled_as_it_is_dropped() {
     let witnessed =
         Declaration::new(Witnessed::ID).bind("seen", Binding::Input(InputKey::named("seen")));
     let snapshot = core.snapshot([
-        toy::named("seen", Arc::clone(&seen)),
+        (
+            InputKey::named("seen"),
+            Input::of(Arc::clone(&seen), Hash128::of_bytes(b"the witness's flag")),
+        ),
         toy::root("witnessed", witnessed),
     ]);
     let request = core.evaluate(&snapshot, toy::roots(&["witnessed"]));
@@ -98,6 +102,7 @@ struct TwoBoxes;
 impl Kind for TwoBoxes {
     type Out = [Held<ToyKernel, BoxHandle>; 2];
     const ID: KindId = KindId("toy.two_boxes");
+    const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<Self::Out> {
         let (first, _) = cx
@@ -165,6 +170,13 @@ fn an_answer_the_host_drops_is_released_on_the_kernel_s_thread() {
     core.end(request);
     drop(snapshot);
     core.drain();
+    assert_eq!(
+        watch.live_boxes(),
+        1,
+        "the store owns its results until they are trimmed (contract 5.5)"
+    );
+
+    drop(core);
     assert_eq!(watch.live_boxes(), 0);
 }
 
@@ -229,6 +241,7 @@ struct Volume;
 impl Kind for Volume {
     type Out = i64;
     const ID: KindId = KindId("toy.volume");
+    const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<i64> {
         match cx.read::<BoxShape>(&Ref::binding("shape")).await {

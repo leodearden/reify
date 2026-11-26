@@ -9,13 +9,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use reify_eval_core::{
-    Answer, Core, Demand, Erased, Event, Failure, Path, Request, RequestError, RequestId, Snapshot,
-    Step,
+    Answer, Core, Demand, Erased, Event, Failure, Kind, Path, Request, RequestError, RequestId,
+    Snapshot, Step, Store,
 };
 
 use super::case::{Case, HostEvent, Then};
 use super::design::{Inputs, ModelPath, ModelRef, ToyKind, Val, to_core};
-use super::order::{Answered, OrderMismatch, order_check};
+use super::fresh::{Answered, FreshMismatch, Order, fresh_check};
 use super::reference::{Expect, Expected, Invalid, Out, Reference};
 use super::seen::Seen;
 use crate::toy;
@@ -56,6 +56,14 @@ shapes! {
     PickerValue,
     /// A failure naming the type read and the type found.
     WrongType,
+    /// A cell answering its own failure: its divisor reads zero.
+    DivisionByZero,
+    /// A cell blocked by the failure at a ref it read.
+    BlockedBy,
+    /// A box a shape made on the toy kernel.
+    BoxValue,
+    /// The volume a measure read from the toy kernel.
+    MeasureValue,
     /// An answer checked for a request left live after a Drive of no
     /// turns, told after a later event.
     LeftLiveAnswer,
@@ -160,6 +168,22 @@ pub enum Mismatch {
         snapshot: usize,
         error: RequestError,
     },
+    /// A fresh core built on the session core's selection (check 2),
+    /// asked in the session's order, answered otherwise.
+    Fresh {
+        snapshot: usize,
+        path: ModelPath,
+        session: Box<Seen>,
+        fresh: Box<Seen>,
+    },
+    /// A fresh core built on the session core's selection told no answer
+    /// at a path the session answered: it ended the request with `ended`,
+    /// or left it with neither.
+    FreshUnanswered {
+        snapshot: usize,
+        path: ModelPath,
+        ended: Option<RequestError>,
+    },
     /// A fresh core, asked in another order, answered otherwise.
     Order {
         snapshot: usize,
@@ -193,6 +217,8 @@ pub enum MismatchKind {
     Unasked,
     Twice,
     Ended,
+    Fresh,
+    FreshUnanswered,
     Order,
     OrderUnanswered,
     Invalid,
@@ -206,6 +232,8 @@ impl Mismatch {
             Mismatch::Unasked { .. } => MismatchKind::Unasked,
             Mismatch::Twice { .. } => MismatchKind::Twice,
             Mismatch::Ended { .. } => MismatchKind::Ended,
+            Mismatch::Fresh { .. } => MismatchKind::Fresh,
+            Mismatch::FreshUnanswered { .. } => MismatchKind::FreshUnanswered,
             Mismatch::Order { .. } => MismatchKind::Order,
             Mismatch::OrderUnanswered { .. } => MismatchKind::OrderUnanswered,
             Mismatch::Invalid { .. } => MismatchKind::Invalid,
@@ -262,6 +290,25 @@ impl fmt::Display for Mismatch {
                 f,
                 "after event {event}, the core ended a request on snapshot {snapshot}: {error:?}"
             ),
+            Mismatch::Fresh {
+                snapshot,
+                path,
+                session,
+                fresh,
+            } => write!(
+                f,
+                "at {path:?} on snapshot {snapshot}: the session answered {session:?}, a fresh \
+                 core built on the session's selection {fresh:?}"
+            ),
+            Mismatch::FreshUnanswered {
+                snapshot,
+                path,
+                ended,
+            } => write!(
+                f,
+                "at {path:?} on snapshot {snapshot}: a fresh core built on the session's \
+                 selection told no answer, the request ended with {ended:?}"
+            ),
             Mismatch::Order {
                 snapshot,
                 path,
@@ -293,20 +340,35 @@ impl fmt::Display for Mismatch {
     }
 }
 
-/// A core with the honest toy kinds of structure.
-pub fn toy_core() -> Core {
-    toy::with_structure().build()
+/// A core with every honest toy kind and the toy kernel, built on
+/// `store`.
+pub fn toy_core(store: Store) -> Core {
+    toy::ungated(
+        toy::with_every_kind().on_store(store),
+        &toy::Watch::default(),
+    )
 }
 
-/// Runs `case` on a core `make_core` builds, checking after every host
-/// event.
-pub fn check(case: &Case, make_core: &dyn Fn() -> Core) -> Result<Reach, Mismatch> {
-    let mut session = Session::new(case, make_core());
+/// Which check asked a fresh core.
+#[derive(Clone, Copy)]
+enum FreshCheck {
+    /// Check 2: on the session core's selection, in the session's order.
+    Selection,
+    /// The order check: on an empty store, latest first.
+    Order,
+}
+
+/// Runs `case` on a core `make_core` builds on an empty store, checking
+/// after every host event; then check 2 and the order check, each on a
+/// core `make_core` builds on the store that check names.
+pub fn check(case: &Case, make_core: &dyn Fn(Store) -> Core) -> Result<Reach, Mismatch> {
+    let mut session = Session::new(case, make_core(Store::default()));
     for (at, event) in case.events.iter().enumerate() {
         session.host_event(at, event)?;
     }
     session.finish(case.events.len())?;
-    session.order_check(make_core)?;
+    session.fresh_check(FreshCheck::Selection, make_core)?;
+    session.fresh_check(FreshCheck::Order, make_core)?;
     Ok(session.reach)
 }
 
@@ -403,40 +465,79 @@ impl Session {
         Ok(())
     }
 
-    /// A fresh core asked for every answered path in reverse order gives
-    /// the same answers.
-    fn order_check(&mut self, make_core: &dyn Fn() -> Core) -> Result<(), Mismatch> {
+    /// A fresh core asked for every answered path gives the same answers.
+    /// Check 2 builds it on the session core's selection and asks in the
+    /// session's order. Every result is treated as deterministic until leaf
+    /// ο, so none is selected; ο selects those that are not. The order
+    /// check builds it on an empty store and asks latest first.
+    fn fresh_check(
+        &mut self,
+        check: FreshCheck,
+        make_core: &dyn Fn(Store) -> Core,
+    ) -> Result<(), Mismatch> {
+        let (core, order) = match check {
+            FreshCheck::Selection => (
+                make_core(self.core.selected_store(|_| false)),
+                Order::Session,
+            ),
+            FreshCheck::Order => (make_core(Store::default()), Order::Reverse),
+        };
         let snapshots: Vec<_> = self.models.iter().map(to_core).collect();
-        let compared = order_check(make_core, &snapshots, &self.first, Seen::of_answer)
-            .map_err(|mismatch| self.order_mismatch(mismatch))?;
-        let compared = u64::try_from(compared).expect("a count fits u64");
-        *self.reach.shapes.entry(Shape::OrderComparison).or_default() += compared;
+        let compared = fresh_check(core, order, &snapshots, &self.first, Seen::of_answer)
+            .map_err(|mismatch| self.fresh_mismatch(check, mismatch))?;
+        if let FreshCheck::Order = check {
+            let compared = u64::try_from(compared).expect("a count fits u64");
+            *self.reach.shapes.entry(Shape::OrderComparison).or_default() += compared;
+        }
         Ok(())
     }
 
-    /// `mismatch`, at the model path the session demanded.
-    fn order_mismatch(&self, mismatch: OrderMismatch<Seen>) -> Mismatch {
+    /// `mismatch`, found by `check`, at the model path the session
+    /// demanded.
+    fn fresh_mismatch(&self, check: FreshCheck, mismatch: FreshMismatch<Seen>) -> Mismatch {
         match mismatch {
-            OrderMismatch::Differs {
+            FreshMismatch::Differs {
                 snapshot,
                 path,
                 session,
                 fresh,
-            } => Mismatch::Order {
-                snapshot,
-                path: self.model_path(&path),
-                session: Box::new(session),
-                fresh: Box::new(fresh),
-            },
-            OrderMismatch::Unanswered {
+            } => {
+                let (path, session, fresh) =
+                    (self.model_path(&path), Box::new(session), Box::new(fresh));
+                match check {
+                    FreshCheck::Selection => Mismatch::Fresh {
+                        snapshot,
+                        path,
+                        session,
+                        fresh,
+                    },
+                    FreshCheck::Order => Mismatch::Order {
+                        snapshot,
+                        path,
+                        session,
+                        fresh,
+                    },
+                }
+            }
+            FreshMismatch::Unanswered {
                 snapshot,
                 path,
                 ended,
-            } => Mismatch::OrderUnanswered {
-                snapshot,
-                path: self.model_path(&path),
-                ended,
-            },
+            } => {
+                let path = self.model_path(&path);
+                match check {
+                    FreshCheck::Selection => Mismatch::FreshUnanswered {
+                        snapshot,
+                        path,
+                        ended,
+                    },
+                    FreshCheck::Order => Mismatch::OrderUnanswered {
+                        snapshot,
+                        path,
+                        ended,
+                    },
+                }
+            }
         }
     }
 
@@ -601,7 +702,17 @@ impl Session {
                 }
             }
             (Some(ToyKind::Collection), Expect::Value(_)) => reached.push(Shape::CollectionValue),
+            (Some(ToyKind::Shape), Expect::Value(_)) => reached.push(Shape::BoxValue),
+            (Some(ToyKind::Measure), Expect::Value(_)) => reached.push(Shape::MeasureValue),
             (_, Expect::Failure(Failure::WrongType { .. })) => reached.push(Shape::WrongType),
+            (Some(ToyKind::Cell), Expect::Failure(Failure::OfKind { kind, code }))
+                if *kind == toy::Cell::ID && *code == toy::DIVISION_BY_ZERO =>
+            {
+                reached.push(Shape::DivisionByZero)
+            }
+            (Some(ToyKind::Cell), Expect::Failure(Failure::BlockedBy { .. })) => {
+                reached.push(Shape::BlockedBy)
+            }
             _ => {}
         }
         if let Some((parent, step)) = path.parent()
@@ -661,6 +772,7 @@ impl Session {
 mod tests {
     use reify_eval_core::{
         Builder, Core, Cx, Kind, KindId, Outcome, OutsideFailure, Produced, Ref, RequestError,
+        Store,
     };
 
     use super::super::case::{Case, HostEvent, Then};
@@ -768,6 +880,7 @@ mod tests {
     impl Kind for ZeroCell {
         type Out = i64;
         const ID: KindId = toy::Cell::ID;
+        const VERSION: u32 = toy::Cell::VERSION;
 
         async fn run(_cx: &Cx) -> Produced<i64> {
             Produced::Outcome(Outcome::of(0))
@@ -780,17 +893,19 @@ mod tests {
     impl Kind for OutsideCell {
         type Out = i64;
         const ID: KindId = toy::Cell::ID;
+        const VERSION: u32 = toy::Cell::VERSION;
 
         async fn run(_cx: &Cx) -> Produced<i64> {
             Produced::Outside(OutsideFailure::OutOfMemory { resource: "test" })
         }
     }
 
-    fn with_cell_kind<K: Kind>() -> Core {
+    fn with_cell_kind<K: Kind>(store: Store) -> Core {
         Builder::new()
             .kind::<K>()
             .and_then(|builder| builder.kind::<toy::Scope>())
             .expect("the kind ids are distinct")
+            .on_store(store)
             .build()
     }
 
@@ -887,15 +1002,19 @@ mod tests {
     /// A resource that counts the cells run on its core.
     struct Ran(i64);
 
-    /// Registered in place of the toy cell: answers how many cells ran on
-    /// its core before it, so its answer depends on the order of requests.
+    /// Registered in place of the toy cell: reads its term "0", so that
+    /// cells over different terms are different results in the store, then
+    /// answers how many cells ran on its core before it, so its answer
+    /// depends on the order of requests.
     struct CountingCell;
 
     impl Kind for CountingCell {
         type Out = i64;
         const ID: KindId = toy::Cell::ID;
+        const VERSION: u32 = toy::Cell::VERSION;
 
         async fn run(cx: &Cx) -> Produced<i64> {
+            let _ = cx.read::<i64>(&Ref::binding("0")).await;
             let before = cx
                 .exclusive(|ran: &mut Ran, _| {
                     ran.0 += 1;
@@ -906,8 +1025,8 @@ mod tests {
         }
     }
 
-    fn counting_core() -> Core {
-        let mut core = with_cell_kind::<CountingCell>();
+    fn counting_core(store: Store) -> Core {
+        let mut core = with_cell_kind::<CountingCell>(store);
         core.add_resource(|| Ran(0));
         core
     }
@@ -936,6 +1055,37 @@ mod tests {
         assert_eq!(check(&case, &counting_core), Err(expected));
     }
 
+    #[test]
+    fn an_answer_that_depends_on_history_is_reported_by_the_fresh_core_check() {
+        let case = Case {
+            inputs: inputs([
+                (root("c0"), declaration(cell([]))),
+                (root("c1"), declaration(cell([input("one")]))),
+                (named("one"), int(1)),
+            ]),
+            events: vec![
+                HostEvent::Drive {
+                    on: 0,
+                    paths: vec![path("c0", [])],
+                    turns: 1,
+                    then: Then::End,
+                },
+                HostEvent::Evaluate {
+                    on: 0,
+                    paths: vec![path("c1", [])],
+                    then: Then::End,
+                },
+            ],
+        };
+        let expected = Mismatch::Fresh {
+            snapshot: 0,
+            path: path("c1", []),
+            session: Box::new(Seen::Int(1)),
+            fresh: Box::new(Seen::Int(0)),
+        };
+        assert_eq!(check(&case, &counting_core), Err(expected));
+    }
+
     /// Registered in place of the toy cell: reads its binding "loop", then
     /// answers 0.
     struct LoopCell;
@@ -943,6 +1093,7 @@ mod tests {
     impl Kind for LoopCell {
         type Out = i64;
         const ID: KindId = toy::Cell::ID;
+        const VERSION: u32 = toy::Cell::VERSION;
 
         async fn run(cx: &Cx) -> Produced<i64> {
             let _ = cx.read::<i64>(&Ref::binding("loop")).await;
@@ -950,25 +1101,46 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_fresh_core_that_ends_a_request_the_session_answered_is_reported() {
+    /// What `check` finds when the first `honest` cores it builds are
+    /// honest and every later one is built with `LoopCell`.
+    fn looping_after(honest: usize) -> Mismatch {
         let made = std::cell::Cell::new(0);
-        let honest_then_looping = || {
+        let honest_then_looping = |store| {
             made.set(made.get() + 1);
-            match made.get() {
-                1 => toy_core(),
-                _ => with_cell_kind::<LoopCell>(),
+            if made.get() <= honest {
+                toy_core(store)
+            } else {
+                with_cell_kind::<LoopCell>(store)
             }
         };
         let looping = decl(ToyKind::Cell, [("loop", below_a())]);
-        let found = check(&evaluate_a(looping), &honest_then_looping);
+        check(&evaluate_a(looping), &honest_then_looping).expect_err("a looping core ends it")
+    }
+
+    fn ended_waiting_on_a() -> Option<RequestError> {
+        Some(RequestError::NothingCanRun {
+            waiting: vec![r(&["a"]).to_core()],
+        })
+    }
+
+    #[test]
+    fn a_fresh_core_on_the_session_s_selection_that_ends_a_request_the_session_answered_is_reported()
+     {
+        let expected = Mismatch::FreshUnanswered {
+            snapshot: 0,
+            path: r(&["a"]),
+            ended: ended_waiting_on_a(),
+        };
+        assert_eq!(looping_after(1), expected);
+    }
+
+    #[test]
+    fn a_fresh_core_that_ends_a_request_the_session_answered_is_reported() {
         let expected = Mismatch::OrderUnanswered {
             snapshot: 0,
             path: r(&["a"]),
-            ended: Some(RequestError::NothingCanRun {
-                waiting: vec![r(&["a"]).to_core()],
-            }),
+            ended: ended_waiting_on_a(),
         };
-        assert_eq!(found, Err(expected));
+        assert_eq!(looping_after(2), expected);
     }
 }

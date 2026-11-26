@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use crate::hash::{Encoder, Hash128};
 use crate::outcome::{Erased, Outcome, Value};
 use crate::path::{Path, Root};
 
@@ -33,17 +34,53 @@ impl InputKey {
             name: name.into(),
         }
     }
+
+    pub(crate) fn encode(&self, encoder: &mut Encoder) {
+        match self {
+            InputKey::Root(root) => {
+                encoder.tag("input.root");
+                root.encode(encoder);
+            }
+            InputKey::Named(name) => {
+                encoder.tag("input.named").text(name);
+            }
+            InputKey::Attached { path, name } => {
+                encoder.tag("input.attached");
+                path.encode(encoder);
+                encoder.text(name);
+            }
+        }
+    }
 }
 
+/// A snapshot input's value, with the content its host gives it (PRD D4):
+/// a hash of everything a reader can see of the value, as a kind's
+/// `content` is. The core tags it with the value's type, so two inputs of
+/// one type with equal content are the same input.
 #[derive(Debug, Clone)]
-pub struct Input(Arc<Erased>);
+pub struct Input {
+    value: Arc<Erased>,
+    content: Hash128,
+}
 
 impl Input {
-    pub fn of<T: Value>(value: T) -> Self {
-        Self(Arc::new(value))
+    pub fn of<T: Value>(value: T, content: Hash128) -> Self {
+        Self {
+            value: Arc::new(value),
+            content,
+        }
     }
 
     pub(crate) fn outcome(&self) -> Outcome<Erased> {
-        Outcome::Value(Arc::clone(&self.0))
+        Outcome::Value(Arc::clone(&self.value))
+    }
+
+    /// The content the host gave, untagged.
+    pub(crate) fn leaf_content(&self) -> Hash128 {
+        self.content
+    }
+
+    pub(crate) fn value(&self) -> &Erased {
+        &*self.value
     }
 }

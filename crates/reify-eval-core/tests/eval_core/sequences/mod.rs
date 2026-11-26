@@ -5,6 +5,7 @@
 mod case;
 mod design;
 mod faulty;
+mod fresh;
 mod g0;
 mod generator;
 mod order;

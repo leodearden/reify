@@ -78,6 +78,7 @@ struct Gather;
 impl Kind for Gather {
     type Out = Vec<Outcome<i64>>;
     const ID: KindId = KindId("toy.gather");
+    const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<Self::Out> {
         let refs = ["input", "unset", "node", "node", "wrong"].map(Ref::binding);
@@ -141,6 +142,7 @@ struct ReadsNothing;
 impl Kind for ReadsNothing {
     type Out = usize;
     const ID: KindId = KindId("toy.reads_nothing");
+    const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<usize> {
         Produced::Outcome(Outcome::of(cx.read_all::<i64>(&[]).await.len()))

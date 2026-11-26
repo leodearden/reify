@@ -6,7 +6,8 @@ use reify_eval_core::Step;
 
 use super::case::{Case, HostEvent, Then};
 use super::design::{
-    Bind, Decl, Key, ModelPath, ToyKind, Val, cell, collection, guard, picker, scope,
+    Bind, Decl, Key, ModelPath, ToyKind, Val, cell, collection, guard, measure, picker, scope,
+    shape,
 };
 
 /// What the printed test asserts of its case.
@@ -96,6 +97,15 @@ fn kind_text(kind: ToyKind) -> String {
 /// as its kind and bindings.
 fn decl_text(decl: &Decl) -> String {
     let bound = |name: &str| decl.bindings.get(name).cloned();
+    if let (ToyKind::Cell, Some(divisor)) = (decl.kind, bound("divisor")) {
+        let mut undivided = decl.clone();
+        undivided.bindings.remove("divisor");
+        return format!(
+            "divided({}, {})",
+            decl_text(&undivided),
+            bind_text(&divisor)
+        );
+    }
     let terms: Vec<_> = (0..decl.bindings.len())
         .map_while(|at| bound(&at.to_string()))
         .collect();
@@ -121,6 +131,16 @@ fn decl_text(decl: &Decl) -> String {
         && *decl == collection(count.clone(), element.clone())
     {
         return format!("collection({}, {})", bind_text(&count), bind_text(&element));
+    }
+    if let Some(side) = bound("side")
+        && *decl == shape(side.clone())
+    {
+        return format!("shape({})", bind_text(&side));
+    }
+    if let Some(of) = bound("shape")
+        && *decl == measure(of.clone())
+    {
+        return format!("measure({})", bind_text(&of));
     }
     let bindings = decl
         .bindings
@@ -207,6 +227,12 @@ mod tests {
                     members([
                         (step("m0"), first),
                         (step("m1"), collection(input("n"), input("e"))),
+                        (
+                            step("m3"),
+                            divided(cell([input("i")]), declarer([step("m0")])),
+                        ),
+                        (step("m4"), shape(input("i"))),
+                        (step("m5"), measure(declarer([step("m4")]))),
                     ]),
                 ),
                 (
@@ -260,7 +286,7 @@ fn printed_case() {
             (named("e"), declaration(cell([attached("x")]))),
             (named("f"), flag(true)),
             (named("i"), int(-3)),
-            (named("s"), members([(step("m0"), cell([input("i"), declarer([step("m1"), index(2)]), passed("count", [index(0)])])), (step("m1"), collection(input("n"), input("e")))])),
+            (named("s"), members([(step("m0"), cell([input("i"), declarer([step("m1"), index(2)]), passed("count", [index(0)])])), (step("m1"), collection(input("n"), input("e"))), (step("m3"), divided(cell([input("i")]), declarer([step("m0")]))), (step("m4"), shape(input("i"))), (step("m5"), measure(declarer([step("m4")])))])),
             (attached_to(path("r", []), "extra"), members([(step("m2"), picker(input("i"), declarer([step("m1")])))])),
         ]),
         events: vec![

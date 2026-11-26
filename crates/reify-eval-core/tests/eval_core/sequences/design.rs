@@ -17,6 +17,8 @@ pub enum ToyKind {
     Scope,
     Guard,
     Collection,
+    Shape,
+    Measure,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -129,6 +131,8 @@ impl ToyKind {
             ToyKind::Scope => toy::Scope::ID,
             ToyKind::Guard => toy::Guard::ID,
             ToyKind::Collection => toy::Collection::ID,
+            ToyKind::Shape => toy::Shape::ID,
+            ToyKind::Measure => toy::Measure::ID,
         }
     }
 }
@@ -153,10 +157,10 @@ pub fn core_members(members: &BTreeMap<Step, Decl>) -> BTreeMap<Step, Declaratio
 impl Val {
     pub fn to_core(&self) -> Input {
         match self {
-            Val::Int(value) => Input::of(*value),
-            Val::Bool(value) => Input::of(*value),
-            Val::Members(members) => Input::of(toy::Members(core_members(members))),
-            Val::Decl(decl) => Input::of(decl.to_core()),
+            Val::Int(value) => toy::input_of(*value),
+            Val::Bool(value) => toy::input_of(*value),
+            Val::Members(members) => toy::input_of(toy::Members(core_members(members))),
+            Val::Decl(decl) => toy::input_of(decl.to_core()),
         }
     }
 }
@@ -230,6 +234,12 @@ pub fn cell(terms: impl IntoIterator<Item = Bind>) -> Decl {
     }
 }
 
+/// `cell`, its sum divided by what `divisor` names.
+pub fn divided(mut cell: Decl, divisor: Bind) -> Decl {
+    cell.bindings.insert(String::from("divisor"), divisor);
+    cell
+}
+
 /// A cell whose only term is the element at "from"/[the i64 at "pick"].
 pub fn picker(pick: Bind, from: Bind) -> Decl {
     decl(ToyKind::Cell, [("pick", pick), ("from", from)])
@@ -258,6 +268,16 @@ pub fn collection(count: Bind, element: Bind) -> Decl {
         ToyKind::Collection,
         [("count", count), ("element", element)],
     )
+}
+
+/// A box on the toy kernel whose side is what `side` names.
+pub fn shape(side: Bind) -> Decl {
+    decl(ToyKind::Shape, [("side", side)])
+}
+
+/// A measure of the box `shape` names.
+pub fn measure(shape: Bind) -> Decl {
+    decl(ToyKind::Measure, [("shape", shape)])
 }
 
 pub fn int(value: i64) -> Val {

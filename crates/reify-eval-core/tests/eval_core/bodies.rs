@@ -29,6 +29,7 @@ struct Impatient;
 impl Kind for Impatient {
     type Out = i64;
     const ID: KindId = KindId("toy.impatient");
+    const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<i64> {
         Produced::Outcome(two_reads_at_once(cx).await)
@@ -65,6 +66,7 @@ struct ImpatientHolder;
 impl Kind for ImpatientHolder {
     type Out = i64;
     const ID: KindId = KindId("toy.impatient_holder");
+    const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<i64> {
         let _fuse = Fuse;
@@ -93,6 +95,7 @@ struct Rogue;
 impl Kind for Rogue {
     type Out = i64;
     const ID: KindId = KindId("toy.rogue");
+    const VERSION: u32 = 1;
 
     async fn run(_: &Cx) -> Produced<i64> {
         pending().await
@@ -117,6 +120,7 @@ struct Panicking;
 impl Kind for Panicking {
     type Out = i64;
     const ID: KindId = KindId("toy.panicking");
+    const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<i64> {
         let _ = cx.read::<i64>(&Ref::binding("0")).await;
@@ -164,6 +168,7 @@ struct Exhausted;
 impl Kind for Exhausted {
     type Out = i64;
     const ID: KindId = KindId("toy.exhausted");
+    const VERSION: u32 = 1;
 
     async fn run(_: &Cx) -> Produced<i64> {
         Produced::Outside(OutsideFailure::OutOfMemory { resource: "toy" })

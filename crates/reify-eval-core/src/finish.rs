@@ -3,11 +3,45 @@
 //! acts on what each returns.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
+use crate::content::Content;
+use crate::declaration::Declaration;
 use crate::event::RequestId;
 use crate::index::{Entry, Indexes, NodeKey};
+use crate::key::Chain;
+use crate::kinds::Kinds;
+use crate::outcome::{Erased, Outcome};
 use crate::requests::Requests;
+use crate::store::{Store, StoredResult};
 use crate::waits::Waits;
+
+/// Files `outcome`, which the body of the node declared `declaration`
+/// produced, in `store` at the end of the `chain` its reads took it
+/// through, and returns the node's final answer with its content.
+pub(crate) fn filed(
+    declaration: Arc<Declaration>,
+    chain: Chain,
+    outcome: Outcome<Erased>,
+    kinds: &Kinds,
+    store: &mut Store,
+) -> Entry {
+    let kind = kinds
+        .get(declaration.kind())
+        .expect("a body runs only for a kind the core was built with");
+    let content = Content::of_produced(&outcome, kind, chain.key().hash());
+    let result = StoredResult {
+        kind: declaration.kind(),
+        outcome: outcome.clone(),
+        content,
+    };
+    store.file(chain, result);
+    Entry {
+        outcome,
+        declaration: Some(declaration),
+        content,
+    }
+}
 
 /// Who a final answer concerns: the live requests to tell, the paths that
 /// waited on it as their parent and can now be worked out, and the bodies

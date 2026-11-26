@@ -1,8 +1,10 @@
-//! The G0 gate at leaf γ: random sequences over cells, scopes, guards and
-//! collections at the gate's fixed seeds pass check 1 and the order check,
-//! and together reach every shape the census names, so the run is not
-//! vacuous. REIFY_EVAL_CORE_SEQUENCES=N widens the run to seeds 1..=N
-//! outside the gate (PRD 5.5).
+//! The G0 gate: random sequences of host events, edits among them, over
+//! every toy kind registered so far (cells that divide, scopes, guards,
+//! collections, and shapes and measures on the toy kernel), at the gate's
+//! fixed seeds, pass check 1, check 2 and the order check, and together
+//! reach every shape the census names, so the run is not vacuous.
+//! REIFY_EVAL_CORE_SEQUENCES=N widens the run to seeds 1..=N outside the
+//! gate (PRD 5.5).
 
 use std::env::{self, VarError};
 use std::ops::RangeInclusive;
@@ -43,7 +45,7 @@ fn regression(seed: u64, case: Case, mismatch: &Mismatch) -> String {
 }
 
 #[test]
-fn random_sequences_over_cells_scopes_guards_and_collections_satisfy_g0() {
+fn random_sequences_with_edits_over_every_toy_kind_satisfy_g0() {
     let mut reach = Reach::default();
     for seed in seeds() {
         let case = gate_case(seed);

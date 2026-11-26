@@ -3,14 +3,14 @@
 //! with no store, index or executor and no code shared with the core or the
 //! toy kinds' bodies. It remembers each path's answer within one snapshot,
 //! so a design whose nodes read one another many times stays linear, and it
-//! reports a design no evaluation can answer (a cycle, or a sum past i64)
-//! as invalid rather than as an outcome.
+//! reports a design no evaluation can answer (a cycle, or arithmetic past
+//! i64) as invalid rather than as an outcome.
 
 use std::any::type_name;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
-use reify_eval_core::{Declaration, Failure, Step};
+use reify_eval_core::{Declaration, Failure, Kind, Step};
 
 use super::case::Case;
 use super::design::{Bind, Decl, Inputs, Key, ModelPath, ModelRef, ToyKind, Val};
@@ -39,6 +39,7 @@ pub enum Out {
     Members(BTreeMap<Step, Decl>),
     Elements { count: u64, element: Decl },
     Decl(Decl),
+    Shape { volume: i64 },
 }
 
 /// Why a path has no answer in this snapshot.
@@ -46,7 +47,7 @@ pub enum Out {
 pub enum Invalid {
     /// Answering `path` needs its own answer.
     Cycle { path: ModelPath },
-    /// The sum the cell at `path` adds is past i64.
+    /// What the node at `path` works out is past i64.
     Overflow { path: ModelPath },
 }
 
@@ -153,6 +154,8 @@ impl Reference {
             ToyKind::Scope => self.members(path, &decl)?,
             ToyKind::Guard => self.guard(path, &decl)?,
             ToyKind::Collection => self.collection(path, &decl)?,
+            ToyKind::Shape => self.shape(path, &decl)?,
+            ToyKind::Measure => self.measure(path, &decl)?,
         };
         Ok(Expected {
             node: Some(decl.kind),
@@ -252,34 +255,86 @@ impl Reference {
         self.read(at, decl, &r)
     }
 
-    /// The i64s at "0", "1", … until one reads absent, a failure ending it;
-    /// then, if "pick" reads i, the i64 at "from"/[i] added, absent at a
-    /// negative i.
+    /// The i64s at "0", "1", … until one reads absent; then, if "pick"
+    /// reads i, the i64 at "from"/[i] added, absent at a negative i; then,
+    /// if "divisor" reads an i64, the sum divided by it, truncating, and
+    /// zero the cell's own failure.
     fn cell(&mut self, at: &ModelPath, decl: &Rc<Decl>) -> Result<Expect, Invalid> {
-        let mut sum = 0_i64;
-        for term in 0_u32.. {
-            match typed_int(self.read_binding(at, decl, &term.to_string())?) {
-                Typed::Value(value) => sum = add(sum, value, at)?,
-                Typed::Absent => break,
-                Typed::Failure(failure) => return Ok(Expect::Failure(failure)),
-            }
-        }
-        let pick = match typed_int(self.read_binding(at, decl, "pick")?) {
-            Typed::Value(pick) => pick,
-            Typed::Absent => return Ok(Expect::Value(Out::Int(sum))),
+        let sum = match self.cell_sum(at, decl)? {
+            Typed::Value(sum) => sum,
+            Typed::Absent => return Ok(Expect::Absent),
             Typed::Failure(failure) => return Ok(Expect::Failure(failure)),
         };
+        let divisor = ModelRef {
+            binding: String::from("divisor"),
+            steps: Vec::new(),
+        };
+        Ok(match self.term(at, decl, &divisor)? {
+            Typed::Absent => Expect::Value(Out::Int(sum)),
+            Typed::Value(0) => Expect::Failure(Failure::OfKind {
+                kind: toy::Cell::ID,
+                code: toy::DIVISION_BY_ZERO,
+            }),
+            Typed::Value(divisor) => {
+                let quotient = sum
+                    .checked_div(divisor)
+                    .ok_or_else(|| Invalid::Overflow { path: at.clone() })?;
+                Expect::Value(Out::Int(quotient))
+            }
+            Typed::Failure(failure) => Expect::Failure(failure),
+        })
+    }
+
+    /// The cell's terms added, with the picked element; absent where the
+    /// cell is.
+    fn cell_sum(&mut self, at: &ModelPath, decl: &Rc<Decl>) -> Result<Typed<i64>, Invalid> {
+        let mut sum = 0_i64;
+        for term in 0_u32.. {
+            let r = ModelRef {
+                binding: term.to_string(),
+                steps: Vec::new(),
+            };
+            match self.term(at, decl, &r)? {
+                Typed::Value(value) => sum = add(sum, value, at)?,
+                Typed::Absent => break,
+                failed @ Typed::Failure(_) => return Ok(failed),
+            }
+        }
+        let pick = ModelRef {
+            binding: String::from("pick"),
+            steps: Vec::new(),
+        };
+        let pick = match self.term(at, decl, &pick)? {
+            Typed::Value(pick) => pick,
+            Typed::Absent => return Ok(Typed::Value(sum)),
+            failed @ Typed::Failure(_) => return Ok(failed),
+        };
         let Ok(pick) = u64::try_from(pick) else {
-            return Ok(Expect::Absent);
+            return Ok(Typed::Absent);
         };
         let from = ModelRef {
             binding: String::from("from"),
             steps: vec![Step::index(pick)],
         };
-        Ok(match typed_int(self.read(at, decl, &from)?) {
-            Typed::Value(value) => Expect::Value(Out::Int(add(sum, value, at)?)),
-            Typed::Absent => Expect::Absent,
-            Typed::Failure(failure) => Expect::Failure(failure),
+        Ok(match self.term(at, decl, &from)? {
+            Typed::Value(value) => Typed::Value(add(sum, value, at)?),
+            other => other,
+        })
+    }
+
+    /// What the cell at `at` reads at `r` as an i64. A failure ends the
+    /// cell: a wrong type is its answer, whether found by this read or by
+    /// the node read, and any other makes it blocked by `r`.
+    fn term(
+        &mut self,
+        at: &ModelPath,
+        decl: &Rc<Decl>,
+        r: &ModelRef,
+    ) -> Result<Typed<i64>, Invalid> {
+        Ok(match typed_int(self.read(at, decl, r)?) {
+            Typed::Failure(wrong @ Failure::WrongType { .. }) => Typed::Failure(wrong),
+            Typed::Failure(_) => Typed::Failure(Failure::BlockedBy { at: r.to_core() }),
+            read => read,
         })
     }
 
@@ -324,6 +379,30 @@ impl Reference {
             Typed::Failure(failure) => Expect::Failure(failure),
         })
     }
+
+    /// A box whose volume is the cube of the i64 at "side".
+    fn shape(&mut self, at: &ModelPath, decl: &Rc<Decl>) -> Result<Expect, Invalid> {
+        Ok(match typed_int(self.read_binding(at, decl, "side")?) {
+            Typed::Value(side) => {
+                let volume = side
+                    .checked_mul(side)
+                    .and_then(|square| square.checked_mul(side))
+                    .ok_or_else(|| Invalid::Overflow { path: at.clone() })?;
+                Expect::Value(Out::Shape { volume })
+            }
+            Typed::Absent => Expect::Absent,
+            Typed::Failure(failure) => Expect::Failure(failure),
+        })
+    }
+
+    /// The volume of the box at "shape".
+    fn measure(&mut self, at: &ModelPath, decl: &Rc<Decl>) -> Result<Expect, Invalid> {
+        Ok(match typed_shape(self.read_binding(at, decl, "shape")?) {
+            Typed::Value(volume) => Expect::Value(Out::Int(volume)),
+            Typed::Absent => Expect::Absent,
+            Typed::Failure(failure) => Expect::Failure(failure),
+        })
+    }
 }
 
 /// The declaration a node of `kind` whose value is `out` gives the child
@@ -362,6 +441,7 @@ impl Out {
             Out::Members(_) => type_name::<toy::Members>(),
             Out::Elements { .. } => type_name::<toy::Elements>(),
             Out::Decl(_) => type_name::<Declaration>(),
+            Out::Shape { .. } => type_name::<toy::BoxShape>(),
         }
     }
 }
@@ -403,6 +483,14 @@ fn typed_members(read: Expect) -> Typed<BTreeMap<Step, Decl>> {
     })
 }
 
+/// A box read as the toy kernel's box: its volume.
+fn typed_shape(read: Expect) -> Typed<i64> {
+    typed(read, type_name::<toy::BoxShape>(), |out| match out {
+        Out::Shape { volume } => Some(volume),
+        _ => None,
+    })
+}
+
 fn typed_decl(read: Expect) -> Typed<Decl> {
     typed(read, type_name::<Declaration>(), |out| match out {
         Out::Decl(decl) => Some(decl),
@@ -413,7 +501,7 @@ fn typed_decl(read: Expect) -> Typed<Decl> {
 mod tests {
     use std::any::type_name;
 
-    use reify_eval_core::{Declaration, Failure};
+    use reify_eval_core::{Declaration, Failure, Kind, Ref};
 
     use super::super::case::{HostEvent, Then};
     use super::super::design::*;
@@ -655,6 +743,174 @@ mod tests {
         assert_eq!(
             answer(&design, &at("r", &["a"])),
             failed(Some(ToyKind::Cell), int, scope)
+        );
+    }
+
+    fn failure(failure: Failure) -> Result<Expected, Invalid> {
+        Ok(Expected {
+            node: Some(ToyKind::Cell),
+            outcome: Expect::Failure(failure),
+        })
+    }
+
+    fn blocked_at(binding: &str) -> Result<Expected, Invalid> {
+        failure(Failure::BlockedBy {
+            at: Ref::binding(binding),
+        })
+    }
+
+    #[test]
+    fn a_dividing_cell_truncates_toward_zero() {
+        for (sum, quotient) in [(7, 3), (-7, -3)] {
+            let design = inputs([
+                (
+                    root("q"),
+                    declaration(divided(cell([input("a")]), input("d"))),
+                ),
+                (named("a"), int(sum)),
+                (named("d"), int(2)),
+            ]);
+            assert_eq!(
+                answer(&design, &at("q", &[])),
+                int_of(ToyKind::Cell, quotient)
+            );
+        }
+    }
+
+    #[test]
+    fn a_cell_dividing_by_zero_fails_in_the_cell_s_own_terms() {
+        let design = inputs([
+            (
+                root("q"),
+                declaration(divided(cell([input("a")]), input("d"))),
+            ),
+            (named("a"), int(7)),
+            (named("d"), int(0)),
+        ]);
+        let by_zero = Failure::OfKind {
+            kind: toy::Cell::ID,
+            code: toy::DIVISION_BY_ZERO,
+        };
+        assert_eq!(answer(&design, &at("q", &[])), failure(by_zero));
+    }
+
+    #[test]
+    fn a_cell_reading_a_failed_node_is_blocked_by_the_ref_it_read() {
+        let held = members([
+            (step("z"), divided(cell([input("a")]), input("zero"))),
+            (step("r"), cell([input("a"), declarer([step("z")])])),
+            (
+                step("s"),
+                divided(cell([input("a")]), declarer([step("z")])),
+            ),
+            (step("t"), cell([declarer([step("r")])])),
+        ]);
+        let design = scope_r(held, &[("a", 7), ("zero", 0)]);
+        assert_eq!(answer(&design, &at("r", &["r"])), blocked_at("1"));
+        assert_eq!(answer(&design, &at("r", &["s"])), blocked_at("divisor"));
+        assert_eq!(answer(&design, &at("r", &["t"])), blocked_at("0"));
+    }
+
+    /// Root scope `r` whose members are a shape "s" over the side "side",
+    /// a cell "z" dividing by zero and `others`.
+    fn kernel_r(others: impl IntoIterator<Item = (Step, Decl)>, side: Val) -> Inputs {
+        let held = [
+            (step("s"), shape(input("side"))),
+            (step("z"), divided(cell([input("a")]), input("zero"))),
+        ];
+        let mut design = scope_r(
+            members(held.into_iter().chain(others)),
+            &[("a", 7), ("zero", 0)],
+        );
+        design.insert(named("side"), side);
+        design.insert(named("on"), flag(true));
+        design
+    }
+
+    #[test]
+    fn a_shape_is_a_box_of_its_side_cubed_passing_absent_and_a_failure_through() {
+        let held = [
+            (step("n"), shape(input("missing"))),
+            (step("w"), shape(input("on"))),
+            (step("f"), shape(declarer([step("z")]))),
+        ];
+        let design = kernel_r(held, int(3));
+        assert_eq!(
+            answer(&design, &at("r", &["s"])),
+            value(ToyKind::Shape, Out::Shape { volume: 27 })
+        );
+        assert_eq!(
+            answer(&kernel_r([], int(-2)), &at("r", &["s"])),
+            value(ToyKind::Shape, Out::Shape { volume: -8 })
+        );
+        assert_eq!(
+            answer(&design, &at("r", &["n"])),
+            absent(Some(ToyKind::Shape))
+        );
+        let (int, bool) = (type_name::<i64>(), type_name::<bool>());
+        assert_eq!(
+            answer(&design, &at("r", &["w"])),
+            failed(Some(ToyKind::Shape), int, bool)
+        );
+        let by_zero = Failure::OfKind {
+            kind: toy::Cell::ID,
+            code: toy::DIVISION_BY_ZERO,
+        };
+        assert_eq!(
+            answer(&design, &at("r", &["f"])),
+            Ok(Expected {
+                node: Some(ToyKind::Shape),
+                outcome: Expect::Failure(by_zero),
+            })
+        );
+    }
+
+    #[test]
+    fn a_measure_of_a_sibling_shape_is_its_volume_and_a_cell_reads_it_as_an_int() {
+        let held = [
+            (step("m"), measure(declarer([step("s")]))),
+            (step("c"), cell([declarer([step("m")]), input("a")])),
+            (step("n"), measure(declarer([step("none")]))),
+        ];
+        let design = kernel_r(held, int(2));
+        assert_eq!(
+            answer(&design, &at("r", &["m"])),
+            int_of(ToyKind::Measure, 8)
+        );
+        assert_eq!(answer(&design, &at("r", &["c"])), int_of(ToyKind::Cell, 15));
+        assert_eq!(
+            answer(&design, &at("r", &["n"])),
+            absent(Some(ToyKind::Measure))
+        );
+    }
+
+    #[test]
+    fn a_measure_of_what_is_not_a_shape_fails_naming_both_types() {
+        let held = [
+            (step("i"), measure(input("side"))),
+            (step("f"), measure(declarer([step("z")]))),
+            (step("k"), cell([declarer([step("s")])])),
+        ];
+        let design = kernel_r(held, int(2));
+        let (int, shape) = (type_name::<i64>(), type_name::<toy::BoxShape>());
+        assert_eq!(
+            answer(&design, &at("r", &["i"])),
+            failed(Some(ToyKind::Measure), shape, int)
+        );
+        let by_zero = Failure::OfKind {
+            kind: toy::Cell::ID,
+            code: toy::DIVISION_BY_ZERO,
+        };
+        assert_eq!(
+            answer(&design, &at("r", &["f"])),
+            Ok(Expected {
+                node: Some(ToyKind::Measure),
+                outcome: Expect::Failure(by_zero),
+            })
+        );
+        assert_eq!(
+            answer(&design, &at("r", &["k"])),
+            failed(Some(ToyKind::Cell), int, shape)
         );
     }
 
