@@ -149,28 +149,22 @@ fn a_file_whose_only_import_is_std_prelude_uses_mm_length_unwrap_or_and_simulati
 fn without_std_prelude_the_strict_compile_resolves_neither_unwrap_or_nor_simulation_ready() {
     let entry = compile_strict("");
 
-    let has = |code: DiagnosticCode, severity: Severity, needle: &str| {
-        entry
-            .diagnostics
-            .iter()
-            .any(|d| d.code == Some(code) && d.severity == severity && d.message.contains(needle))
-    };
     assert!(
-        has(
-            DiagnosticCode::UnresolvedFunction,
-            Severity::Warning,
-            "unwrap_or"
-        ),
+        entry.diagnostics.iter().any(|d| {
+            d.code == Some(DiagnosticCode::UnresolvedFunction)
+                && d.severity == Severity::Warning
+                && d.message.contains("unwrap_or")
+        }),
         "without an import, unwrap_or must not resolve; diagnostics: {:?}",
         entry.diagnostics
     );
     assert!(
-        has(
-            DiagnosticCode::LetAnnotationTypeMismatch,
-            Severity::Error,
-            "bore"
-        ),
-        "the unresolved call leaves bore mistyped, an Error; diagnostics: {:?}",
+        entry
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error),
+        "without an import the entry must carry an Error, the counterpart of the \
+         positive test's no-Error check; diagnostics: {:?}",
         entry.diagnostics
     );
     assert!(

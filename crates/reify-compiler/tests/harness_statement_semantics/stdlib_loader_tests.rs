@@ -1049,9 +1049,22 @@ fn a_module_importing_a_purpose_module_does_not_collide_with_it() {
             "module std.zz_user\nimport std.zz_purposes\n",
         ),
     ];
-    assert_no_collision_panic(
-        &sources,
-        "a module that imports a purpose module (its merged purpose copies are not declarations)",
+    let modules = stdlib_loader::build_stdlib_modules(&sources);
+
+    let user = modules
+        .iter()
+        .find(|module| module.path.to_dotted() == "std.zz_user")
+        .expect("std.zz_user is built");
+    assert!(
+        user.compiled_purposes
+            .iter()
+            .any(|p| p.name == "ready" && p.declaration_span.is_prelude()),
+        "std.zz_user must carry a merged, prelude-span copy of `ready` for this \
+         test to exercise the gate; got: {:?}",
+        user.compiled_purposes
+            .iter()
+            .map(|p| (&p.name, p.declaration_span.is_prelude()))
+            .collect::<Vec<_>>()
     );
 }
 
