@@ -675,22 +675,11 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 // Convention: silent `Value::Undef` on type errors (non-list
                 // input, non-lambda second arg, lambda result not a list,
                 // wrong lambda arity). Matches the existing list-helper
-                // convention; see task 2698 design decisions.
+                // convention; see task 2698 design decisions. Body in
+                // `eval_flat_map_dispatch` (`#[inline(never)]`) so its loop
+                // locals stay off this recursive frame.
                 "flat_map" if evaluated_args.len() == 2 => {
-                    match (&evaluated_args[0], &evaluated_args[1]) {
-                        (Value::List(items), lambda @ Value::Lambda { .. }) => {
-                            let mut out: Vec<Value> = Vec::with_capacity(items.len());
-                            for item in items {
-                                let r = apply_lambda(lambda, std::slice::from_ref(item), ctx);
-                                match r {
-                                    Value::List(sub) => out.extend(sub),
-                                    _ => return Value::Undef,
-                                }
-                            }
-                            Value::List(out)
-                        }
-                        _ => Value::Undef,
-                    }
+                    eval_flat_map_dispatch(&evaluated_args, ctx)
                 }
                 // worst_case(mcr, lambda): dispatched here (not in
                 // `reify_stdlib::eval_builtin` → `eval_fea`) because applying
@@ -1029,7 +1018,10 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             method,
             args,
         } => {
+            // No method takes an argument.
             if !args.is_empty() {
+                evaluate_for_reads(std::slice::from_ref(&**object), ctx);
+                evaluate_for_reads(args, ctx);
                 return Value::Undef;
             }
             // `self.<datum>` projects the structure's identity frame; its
@@ -1524,6 +1516,9 @@ fn eval_index_access(object: &CompiledExpr, index: &CompiledExpr, ctx: &EvalCont
 ///   not a LENGTH-dimensioned scalar.
 /// - `SelectorKind::Face | SelectorKind::Edge`: returns `Value::Undef` as a
 ///   placeholder for `Engine::post_process_ad_hoc_selectors` to overwrite.
+///
+/// Under a reader that may answer "not here yet" every argument is evaluated
+/// first, whatever decides the result (see [`evaluate_for_reads`]).
 fn eval_ad_hoc_selector(
     selector_kind: &SelectorKind,
     args: &[CompiledExpr],
@@ -1534,9 +1529,11 @@ fn eval_ad_hoc_selector(
             // @point(x, y, z): evaluate 3 coord args; if all are
             // LENGTH-dimensioned scalars, build Frame{origin, identity_basis}.
             if args.len() != 3 {
+                evaluate_for_reads(args, ctx);
                 return Value::Undef;
             }
             let mut si_coords = [0.0_f64; 3];
+            let mut every_coord_a_length = true;
             for (i, arg) in args.iter().enumerate() {
                 match eval_expr(arg, ctx) {
                     Value::Scalar { si_value, dimension }
@@ -1544,8 +1541,12 @@ fn eval_ad_hoc_selector(
                     {
                         si_coords[i] = si_value;
                     }
+                    _ if ctx.reads_every_operand() => every_coord_a_length = false,
                     _ => return Value::Undef,
                 }
+            }
+            if !every_coord_a_length {
+                return Value::Undef;
             }
             let origin = Value::Point(
                 si_coords
@@ -1570,7 +1571,10 @@ fn eval_ad_hoc_selector(
         // (Engine::post_process_ad_hoc_selectors) patches these cells
         // via kernel.extract_faces/edges + resolve_unique_by_attribute.
         // Return Undef here as a placeholder for the engine to overwrite.
-        SelectorKind::Face | SelectorKind::Edge => Value::Undef,
+        SelectorKind::Face | SelectorKind::Edge => {
+            evaluate_for_reads(args, ctx);
+            Value::Undef
+        }
     }
 }
 
@@ -2538,14 +2542,22 @@ fn eval_worst_case_dispatch(args: &[Value], ctx: &EvalContext) -> Value {
         _ => return Value::Undef,
     };
     let mut best: Option<(String, f64)> = None;
+    let mut every_key_a_string = true;
     for (case_key, elastic_result) in cases {
         // Guard: every case key must be a String (BTreeMap iteration is then
         // lexicographic on the UTF-8 bytes, giving the tie-break invariant).
+        // Under a reader that may answer "not here yet" the lambda is still
+        // applied to every case's value, and the call is Undef after the loop.
         let name = match case_key {
-            Value::String(s) => s.clone(),
+            Value::String(s) => Some(s.clone()),
+            _ if ctx.reads_every_operand() => None,
             _ => return Value::Undef,
         };
         let field_val = apply_lambda(lambda, std::slice::from_ref(elastic_result), ctx);
+        let Some(name) = name else {
+            every_key_a_string = false;
+            continue;
+        };
         // Guard: lambda must return a Sampled Field (or a value with a finite
         // numeric max). `compute_max` returns Undef on non-Field / non-Sampled
         // / empty-data inputs; `as_f64` then returns None and the case is
@@ -2566,9 +2578,38 @@ fn eval_worst_case_dispatch(args: &[Value], ctx: &EvalContext) -> Value {
             }
         }
     }
+    if !every_key_a_string {
+        return Value::Undef;
+    }
     match best {
         Some((name, _)) => Value::String(name),
         None => Value::Undef,
+    }
+}
+
+/// `flat_map(list, lambda)`: apply `lambda` to each element of `list`, expect
+/// each call to return a list, and concatenate the results; `Undef` when any
+/// result is not a list (or on a non-list / non-lambda argument). The old
+/// engine's reader stops at the first such result; a reader that may answer
+/// "not here yet" applies `lambda` to every element first.
+#[inline(never)]
+fn eval_flat_map_dispatch(args: &[Value], ctx: &EvalContext) -> Value {
+    let [Value::List(items), lambda @ Value::Lambda { .. }] = args else {
+        return Value::Undef;
+    };
+    let mut out: Vec<Value> = Vec::with_capacity(items.len());
+    let mut every_result_a_list = true;
+    for item in items {
+        match apply_lambda(lambda, std::slice::from_ref(item), ctx) {
+            Value::List(sub) => out.extend(sub),
+            _ if ctx.reads_every_operand() => every_result_a_list = false,
+            _ => return Value::Undef,
+        }
+    }
+    if every_result_a_list {
+        Value::List(out)
+    } else {
+        Value::Undef
     }
 }
 
@@ -3965,10 +4006,20 @@ fn eval_implies(left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalContext) ->
 /// under one that may answer "not here yet": only the condition of an `if` or
 /// a `match` decides whether something is read.
 fn decided_by_left(decided: Value, right: &CompiledExpr, ctx: &EvalContext) -> Value {
-    if ctx.reads_every_operand() {
-        eval_expr(right, ctx);
-    }
+    evaluate_for_reads(std::slice::from_ref(right), ctx);
     decided
+}
+
+/// Evaluate `exprs` whose values are not needed, for the cells they read,
+/// under a reader that may answer "not here yet", so that one round asks for
+/// every cell an expression reads outside the arms of an `if` or a `match`.
+/// Under the old engine's reader nothing is evaluated.
+fn evaluate_for_reads(exprs: &[CompiledExpr], ctx: &EvalContext) {
+    if ctx.reads_every_operand() {
+        for expr in exprs {
+            eval_expr(expr, ctx);
+        }
+    }
 }
 
 /// Apply a binary operation component-wise to two equal-length component slices,
