@@ -1328,4 +1328,195 @@ mod tests {
         let design = two_cell_ring([]);
         assert_eq!(paths_resolved_for(&design, &at("r", &["a", "x"])), 4);
     }
+
+    #[test]
+    fn a_read_through_a_constant_answers_its_value_and_a_step_below_it_absent() {
+        let design = inputs([
+            (
+                root("c"),
+                declaration(cell([constant(int(5)), input("a")])),
+            ),
+            (root("p"), declaration(picker(input("zero"), constant(int(9))))),
+            (named("a"), int(2)),
+            (named("zero"), int(0)),
+        ]);
+        assert_eq!(answer(&design, &at("c", &[])), int_of(ToyKind::Cell, 7));
+        assert_eq!(answer(&design, &at("p", &[])), absent(Some(ToyKind::Cell)));
+    }
+
+    /// Root scope `r` whose member p is `call`, beside the input "calls"
+    /// holding `calls` and the named ints `ints`.
+    fn call_r(call: Decl, calls: Val, ints: &[(&str, i64)]) -> Inputs {
+        let mut design = scope_r(members([(step("p"), call)]), ints);
+        design.insert(named("calls"), calls);
+        design
+    }
+
+    /// A call over the inputs "a" and "b" whose sites are at "calls".
+    fn over_a_and_b() -> Decl {
+        call([input("a"), input("b")], input("calls"))
+    }
+
+    fn p_child(step: Step) -> ModelPath {
+        at("r", &["p"]).child(step)
+    }
+
+    fn of_call(outcome: Expect) -> Result<Expected, Invalid> {
+        Ok(Expected {
+            node: Some(ToyKind::Call),
+            outcome,
+        })
+    }
+
+    #[test]
+    fn a_call_answers_its_sum_plus_its_child_and_the_child_s_path_answers_the_child() {
+        let calls = calls_value([site(&[1], false, 1, cell([]))]);
+        let design = call_r(over_a_and_b(), calls, &[("a", 2), ("b", 3)]);
+        let child = p_child(call_step(&[1], None));
+        assert_eq!(answer(&design, &at("r", &["p"])), int_of(ToyKind::Call, 11));
+        assert_eq!(answer(&design, &child), int_of(ToyKind::Cell, 6));
+    }
+
+    #[test]
+    fn a_looping_site_s_children_answer_at_their_iteration_paths_and_one_past_is_absent() {
+        let plus_a = decl(ToyKind::Cell, [("1", input("a"))]);
+        let calls = calls_value([site(&[1], true, 0, plus_a)]);
+        let design = call_r(over_a_and_b(), calls, &[("a", 2), ("b", 3)]);
+        let child = |index| p_child(call_step(&[1], Some(index)));
+        assert_eq!(answer(&design, &at("r", &["p"])), int_of(ToyKind::Call, 14));
+        assert_eq!(answer(&design, &child(0)), int_of(ToyKind::Cell, 4));
+        assert_eq!(answer(&design, &child(1)), int_of(ToyKind::Cell, 5));
+        assert_eq!(answer(&design, &child(2)), absent(None));
+    }
+
+    #[test]
+    fn a_false_when_declares_nothing_and_the_child_s_path_is_absent() {
+        let calls = calls_value([site(&[1], false, 1, cell([]))]);
+        let mut when = over_a_and_b();
+        when.bindings.insert(String::from("when"), input("off"));
+        let mut design = call_r(when, calls, &[("a", 2), ("b", 3)]);
+        design.insert(named("off"), flag(false));
+        assert_eq!(answer(&design, &at("r", &["p"])), int_of(ToyKind::Call, 5));
+        assert_eq!(
+            answer(&design, &p_child(call_step(&[1], None))),
+            absent(None)
+        );
+    }
+
+    #[test]
+    fn a_child_path_asked_before_its_parent_answers_the_child_and_is_resolved_once() {
+        let calls = calls_value([site(&[1], false, 1, cell([]))]);
+        let design = call_r(over_a_and_b(), calls, &[("a", 2), ("b", 3)]);
+        let child = p_child(call_step(&[1], None));
+        let mut reference = Reference::new(design);
+        assert_eq!(reference.answer(&child), int_of(ToyKind::Cell, 6));
+        assert_eq!(reference.paths_resolved(), 3, "r, r/p and the child");
+        assert_eq!(
+            reference.answer(&at("r", &["p"])),
+            int_of(ToyKind::Call, 11)
+        );
+    }
+
+    /// A site [1] declaring `callee`, its argument bound at "given", which
+    /// the cell reads nowhere.
+    fn given(callee: Decl) -> Site {
+        let mut given = site(&[1], false, 0, callee);
+        given.argument = String::from("given");
+        given
+    }
+
+    #[test]
+    fn a_child_reading_its_declarer_answers_cycle_and_so_does_the_declarer() {
+        let calls = calls_value([given(cell([declarer([])]))]);
+        let design = call_r(over_a_and_b(), calls, &[("a", 2), ("b", 3)]);
+        let (p, child) = (at("r", &["p"]), p_child(call_step(&[1], None)));
+        for first in [&p, &child] {
+            let mut reference = Reference::new(design.clone());
+            reference.answer(first).expect("the design is valid");
+            assert_eq!(reference.answer(&p), cycle(Some(ToyKind::Call)), "{first:?}");
+            assert_eq!(
+                reference.answer(&child),
+                cycle(Some(ToyKind::Cell)),
+                "{first:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_ring_through_a_child_and_its_declarer_s_sibling_leaves_the_declarer_off_it() {
+        let s = call_step(&[1], None);
+        let mut p = call([], input("calls"));
+        p.bindings.insert(String::from("x"), declarer([step("x")]));
+        let held = members([
+            (step("x"), cell([declarer([step("p"), s.clone()])])),
+            (step("p"), p),
+        ]);
+        let mut design = scope_r(held, &[]);
+        design.insert(named("calls"), calls_value([given(cell([passed("x", [])]))]));
+        let (x, p, child) = (at("r", &["x"]), at("r", &["p"]), p_child(s.clone()));
+        for first in [&x, &p, &child] {
+            let mut reference = Reference::new(design.clone());
+            reference.answer(first).expect("the design is valid");
+            assert_eq!(reference.answer(&x), cycle(Some(ToyKind::Cell)), "{first:?}");
+            assert_eq!(
+                reference.answer(&child),
+                cycle(Some(ToyKind::Cell)),
+                "{first:?}"
+            );
+            assert_eq!(
+                reference.answer(&p),
+                of_call(Expect::Failure(toy::blocked_by_child(s.clone()))),
+                "{first:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_child_past_the_depth_setting_is_too_deep_and_its_call_blocked_by_it() {
+        let s = call_step(&[1], None);
+        let calls = calls_value([site(&[1], false, 1, cell([]))]);
+        let mut design = call_r(over_a_and_b(), calls, &[("a", 2), ("b", 3)]);
+        design.insert(depth_limit(), bound(1));
+        assert_eq!(
+            answer(&design, &p_child(s.clone())),
+            settled(Failure::TooDeep { limit: 1 })
+        );
+        assert_eq!(
+            answer(&design, &at("r", &["p"])),
+            of_call(Expect::Failure(toy::blocked_by_child(s)))
+        );
+    }
+
+    #[test]
+    fn two_declarations_at_one_step_in_one_run_fail_the_call() {
+        let s = call_step(&[1], None);
+        let calls = calls_value([
+            site(&[1], false, 0, cell([])),
+            site(&[1], false, 1, cell([])),
+        ]);
+        let design = call_r(over_a_and_b(), calls, &[("a", 2), ("b", 3)]);
+        assert_eq!(
+            answer(&design, &at("r", &["p"])),
+            of_call(Expect::Failure(Failure::ConflictingChild { step: s.clone() }))
+        );
+        assert_eq!(answer(&design, &p_child(s)), int_of(ToyKind::Cell, 5));
+    }
+
+    #[test]
+    fn a_call_declaring_more_children_than_the_setting_fails_and_its_children_answer() {
+        let calls = calls_value([site(&[1], true, 0, cell([]))]);
+        let looping = call([input("a"), input("b"), input("c")], input("calls"));
+        let mut design = call_r(looping, calls, &[("a", 2), ("b", 3), ("c", 4)]);
+        design.insert(children_limit(), bound(2));
+        assert_eq!(
+            answer(&design, &at("r", &["p"])),
+            of_call(Expect::Failure(Failure::TooManyChildren { limit: 2 }))
+        );
+        for (index, value) in [(0, 2), (1, 3), (2, 4)] {
+            let child = p_child(call_step(&[1], Some(index)));
+            assert_eq!(answer(&design, &child), int_of(ToyKind::Cell, value));
+        }
+        design.insert(children_limit(), bound(3));
+        assert_eq!(answer(&design, &at("r", &["p"])), int_of(ToyKind::Call, 18));
+    }
 }
