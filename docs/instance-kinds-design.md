@@ -715,12 +715,14 @@ structure def Asm { let s = Shaft()   let h = Hub()   connect s.end -> h.bore }
 
 Each of these is a property over every expression or every file. Each of the three rounds found new counter-examples in them, in the fixes of the round before. They are given here in their current form. They belong in the PRD's behavioural corpus with the models from all three rounds, and their wording should follow the tests.
 
-**A. How the expression evaluator reads.**
+**A. How the expression evaluator reads.** **Built 2026-11-27** by leaf ζ₂ (#10641), as the PRD's section 5.5 records. The entries that decide it, `evaluator-reads/cycle-through-and-operand-cannot-be-caught`, `evaluator-reads/ring-through-unneeded-operand-is-cycle` and `evaluator-reads/quantifier-later-element-read-is-cycle`, first run at leaf ε₂ (#10645), which confirms this text.
 
-- Its stand-in for "not here yet" is a value of its own, distinct from undefined, and absorbing: every operation given one returns one, including a determinacy test and anything that can hold a value. **Amended 2026-11-26:** the PRD builds it as an outcome of the evaluator's walk and not as a value (its section 5.5), and the leaf that builds it rewrites this rule.
-- Only the condition of an `if` or a `match` decides whether something is read. Everything outside an arm whose condition is not yet known is asked for in one round. So a quantifier over ten thousand elements asks for all of them at once, as the contract's growth requirements need.
-- A child is declared only from values that contain no stand-in, and the list of made instances is declared after the last pass.
-- *Open:* draft 3's version skipped an operand once a stand-in could decide it; a critic showed that costs one pass per element and makes cycles depend on operand order.
+- "Not here yet" is an answer of the reader, not a value. The evaluator's entry `eval_expr_or_pending` returns a value or pending, and an evaluation is pending when any read it made was answered "not here yet".
+- The walk reads on past a pending read, so a node whose operand is pending is pending after its other operands are evaluated. No built-in is run, no function entered and no function applied with a pending operand.
+- Only the condition of an `if` or a `match` decides whether something is read. Such a node whose condition is pending evaluates no arm, and a quantifier whose collection is pending evaluates no body. Otherwise every operand, quantifier element and argument is evaluated, so a quantifier over ten thousand elements asks for all of them in one round, as the contract's growth requirements need.
+- Under the old engine's reader, which never answers "not here yet", everything is evaluated and skipped as before.
+- A child is declared only from values that contain no stand-in, and the list of made instances is declared after the last pass. Leaf κ₂ (#10651) builds this.
+- *Why draft 3's rule was not taken:* it skipped an operand once a stand-in could decide it; a critic showed that costs one pass per element and makes cycles depend on operand order.
 
 **B. Which made instances a summary reads.**
 
