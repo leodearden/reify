@@ -321,6 +321,11 @@ pub fn length_spec() -> ArgSpec {
 // from rad⁻¹ to rad⁻²; a reader carrying its own tuple would have silently
 // disagreed with the registry from that day on.)
 //
+// Later tasks add constructors under the same rule (task 8674:
+// [`impulse_spec`], for `ImpulseForce.impulse`), seventeen in all; the
+// registry test `prd5_spec_constructors_read_dimensions_from_the_core_registry`
+// lists every one of them.
+//
 // # Why every one of them sets `migration_hint: None`
 //
 // `reify_core::units` today holds exactly two shared hint consts —
@@ -330,10 +335,10 @@ pub fn length_spec() -> ArgSpec {
 // literals that the EVAL layer (this module) and the COMPILE layer
 // (`reify-compiler::builtin_signatures`) must render byte-identically for the
 // same authoring mistake, so they genuinely can drift and that is what earns
-// them a shared const. None of the eleven below has a compile-layer twin to
-// keep byte-identical yet, so minting eleven more consts there would add an
+// them a shared const. None of the specs below has a compile-layer twin to
+// keep byte-identical yet, so minting more consts there would add an
 // edit site with nothing on the other end of it. The slot is left
-// INTENTIONALLY EMPTY until a consuming leaf (β…ι) grows that twin; the leaf
+// INTENTIONALLY EMPTY until a consuming leaf grows that twin; the leaf
 // that does is the one that should hoist the const, following the same
 // hoist-not-a-copy argument.
 
@@ -350,14 +355,16 @@ pub fn length_spec() -> ArgSpec {
 /// `Value::Scalar` with `DimensionVector::ANGLE` (radians). Mirrors
 /// [`length_spec`].
 ///
-/// Two families of position share this spec:
+/// Three families of position share this spec:
 ///
 /// - the PRODUCER angles — `rotate`'s and `rotate_around`'s rotation angle,
 ///   `revolve`'s sweep angle, `arc`'s `start_angle` and `end_angle`, `draft`'s
 ///   draft angle and `circular_pattern`'s total sweep;
 /// - the SELECTOR tolerances — the `tol` of the four directional face
 ///   selectors (`faces_by_normal` and siblings), which is an angular tolerance
-///   rather than a length.
+///   rather than a length;
+/// - the FORCING phases — `HarmonicForce.phase`, the phase offset φ of the
+///   modal transient's `A·sin(ωt + φ)`.
 ///
 /// A bare `Value::Real`/`Int` in one of these positions is silently read as SI
 /// **radians** by `Value::as_f64`, so an author writing `45` meaning 45° gets
@@ -609,6 +616,19 @@ pub fn torque_spec() -> ArgSpec {
     ArgSpec {
         type_name: "Torque",
         dimension: reify_core::DimensionVector::TORQUE,
+        migration_hint: None,
+    }
+}
+
+/// Returns the [`ArgSpec`] for an IMPULSE reader position (N·s =
+/// kg·m·s⁻¹): `ImpulseForce.impulse`, the momentum a Dirac-delta forcing
+/// source transfers.
+///
+/// `migration_hint` is intentionally `None` — see the section banner above.
+pub fn impulse_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "Impulse",
+        dimension: reify_core::DimensionVector::IMPULSE,
         migration_hint: None,
     }
 }
@@ -991,7 +1011,7 @@ mod tests {
     fn prd5_spec_constructors_read_dimensions_from_the_core_registry() {
         use reify_core::DimensionVector as DV;
 
-        let cases: [(&str, ArgSpec, DV); 16] = [
+        let cases: [(&str, ArgSpec, DV); 17] = [
             ("pressure_spec", pressure_spec(), DV::PRESSURE),
             ("force_spec", force_spec(), DV::FORCE),
             ("mass_spec", mass_spec(), DV::MASS),
@@ -1036,6 +1056,7 @@ mod tests {
                 DV::ANGULAR_VELOCITY.div(&DV::TIME),
             ),
             ("torque_spec", torque_spec(), DV::TORQUE),
+            ("impulse_spec", impulse_spec(), DV::IMPULSE),
         ];
 
         for (name, spec, expected) in cases {

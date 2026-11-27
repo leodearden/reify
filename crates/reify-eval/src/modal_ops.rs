@@ -46,12 +46,15 @@ use reify_stdlib::modal::transient::{
 };
 use reify_stdlib::resolve_body_mass;
 
-use crate::arg_acceptance::{dimensionless_spec, frequency_spec, length_spec, time_spec};
+use crate::arg_acceptance::{
+    angle_spec, dimensionless_spec, force_spec, frequency_spec, impulse_spec, length_spec,
+    time_spec,
+};
 use crate::compute_targets::bc_resolve::named_leaf_target;
 use crate::compute_targets::result_topology::carried_topology_from_result;
 use crate::compute_targets::stdlib_inputs::{
-    self, DecodeStdlibInput, InputDecodeError, positional, read_list, read_positional,
-    required_field, structure_fields,
+    DecodeFailure, DecodeStdlibInput, InputDecodeError, positional, read_list, read_positional,
+    read_vec3, required_field, required_value, structure_fields,
 };
 use crate::topology_selectors::{nodes_for_faces, resolve_against_carried_topology};
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
@@ -2592,31 +2595,6 @@ fn field_ref<'a>(val: &'a Value, name: &str) -> Option<&'a Value> {
     None
 }
 
-/// Read a `Vector3` runtime value into `[f64; 3]`, tolerating both the
-/// `Value::Vector` encoding [`mode_shape_value`] emits and a `Value::List` of
-/// numerics; missing components / non-vector values read as `0.0` (defensive —
-/// the type-checker guarantees the shape upstream).
-fn read_vec3(val: &Value) -> [f64; 3] {
-    let comps = match val {
-        Value::Vector(c) | Value::List(c) => c,
-        _ => return [0.0; 3],
-    };
-    let mut out = [0.0; 3];
-    for (slot, v) in out.iter_mut().zip(comps.iter()) {
-        *slot = read_scalar_si(v);
-    }
-    out
-}
-
-/// Read a `List<Scalar>` runtime value into `Vec<f64>` (SI magnitudes); a
-/// non-list reads as empty. Used for `SampledForce.time_samples / force_samples`.
-fn read_real_list(val: &Value) -> Vec<f64> {
-    match val {
-        Value::List(items) => items.iter().map(read_scalar_si).collect(),
-        _ => Vec::new(),
-    }
-}
-
 /// The `modes` list of a `ModalResult` StructureInstance, by reference; an empty
 /// slice if absent / mis-shaped.
 fn modal_result_modes(modal_result: &Value) -> &[Value] {
@@ -2638,7 +2616,7 @@ fn read_mode_shape(mode: &Value) -> Result<Vec<[f64; 3]>, InputDecodeError> {
     match field_ref(mode, "shape") {
         Some(Value::List(nodes)) => nodes
             .iter()
-            .map(|node| stdlib_inputs::read_vec3(node, MODE, Some("shape"), &dimensionless_spec()))
+            .map(|node| read_vec3(node, MODE, Some("shape"), &dimensionless_spec()))
             .collect(),
         _ => Ok(Vec::new()),
     }
@@ -2765,14 +2743,25 @@ fn resolve_location_value(
     resolve_location_node(location_str, mode0_shape)
 }
 
+/// The input name a forcing source's decode diagnostics start with when its
+/// kind is not yet known.
+const FORCING_FUNCTION: &str = "ForcingFunction";
+
 /// A forcing source with its invariant (time-independent) fields pre-extracted
 /// once. Resolving each source into this form *before* the grid loop hoists the
-/// per-source `field_ref` reads — and, for `Sampled`, the `Vec<f64>` table clone
-/// — out of the per-timestep sampler, so [`ResolvedForcing::sample`] does only
-/// arithmetic. This removes the O(T) redundant field lookups/allocations per
-/// source that arose when the closed-form params were re-parsed on every one of
-/// the T timesteps.
-enum ResolvedForcing {
+/// per-source field reads — and, for `Sampled`, the `Vec<f64>` table — out of
+/// the per-timestep sampler, so [`ForcingSampler::sample`] does only
+/// arithmetic.
+struct ResolvedForcing {
+    /// The `direction : Vector3<Dimensionless>` the source pushes along.
+    direction: [f64; 3],
+    sampler: ForcingSampler,
+}
+
+/// The closed-form sampler family of the θ-solver
+/// (`reify-stdlib::modal::transient`), one variant per `ForcingFunction`
+/// conformer, with its fields in SI.
+enum ForcingSampler {
     Step {
         magnitude: f64,
         start_time: f64,
@@ -2790,44 +2779,82 @@ enum ResolvedForcing {
         times: Vec<f64>,
         forces: Vec<f64>,
     },
-    /// Unrecognised / non-struct source — contributes no force at any `t`.
-    Zero,
 }
 
 impl ResolvedForcing {
-    /// Pre-extract a forcing source's invariant fields once, dispatched by
-    /// `type_name` to the θ-solver closed-form sampler family
-    /// (`reify-stdlib::modal::transient`). An unrecognised / non-struct source
-    /// resolves to [`ResolvedForcing::Zero`].
-    fn from_value(source: &Value) -> Self {
-        let type_name = match source {
-            Value::StructureInstance(data) => data.type_name.as_str(),
-            _ => return ResolvedForcing::Zero,
+    /// Resolve one source, each field read through the spec its declaration
+    /// in `modal_analysis.ri` names. Loads stay quiet (B6): an `Undef` source,
+    /// or one with an unresolved field, is `None` and contributes no force. A
+    /// defined non-structure is not a `ForcingFunction`, and a conformer with
+    /// no sampler is an unsupported kind.
+    fn from_value(source: &Value) -> Result<Option<Self>, InputDecodeError> {
+        if matches!(source, Value::Undef) {
+            return Ok(None);
+        }
+        match Self::from_fields(structure_fields(source, FORCING_FUNCTION)?) {
+            Err(err) if err.is_unresolved() => Ok(None),
+            resolved => resolved.map(Some),
+        }
+    }
+
+    fn from_fields(data: &StructureInstanceData) -> Result<Self, InputDecodeError> {
+        let sampler = match data.type_name.as_str() {
+            "StepForce" => ForcingSampler::Step {
+                magnitude: required_field(data, "StepForce", "magnitude", &force_spec())?,
+                start_time: required_field(data, "StepForce", "start_time", &time_spec())?,
+            },
+            "HarmonicForce" => ForcingSampler::Harmonic {
+                amplitude: required_field(data, "HarmonicForce", "amplitude", &force_spec())?,
+                frequency: required_field(data, "HarmonicForce", "frequency", &frequency_spec())?,
+                phase: required_field(data, "HarmonicForce", "phase", &angle_spec())?,
+            },
+            "ImpulseForce" => ForcingSampler::Impulse {
+                impulse: required_field(data, "ImpulseForce", "impulse", &impulse_spec())?,
+                time: required_field(data, "ImpulseForce", "time", &time_spec())?,
+            },
+            "SampledForce" => ForcingSampler::Sampled {
+                times: required_list(data, "SampledForce", "time_samples", &time_spec())?,
+                forces: required_list(data, "SampledForce", "force_samples", &force_spec())?,
+            },
+            kind => {
+                return Err(InputDecodeError::new(
+                    FORCING_FUNCTION,
+                    None,
+                    DecodeFailure::UnsupportedKind {
+                        kind: kind.to_string(),
+                    },
+                ));
+            }
         };
-        let scalar = |name: &str| field_ref(source, name).map(read_scalar_si).unwrap_or(0.0);
-        match type_name {
-            "StepForce" => ResolvedForcing::Step {
-                magnitude: scalar("magnitude"),
-                start_time: scalar("start_time"),
-            },
-            "HarmonicForce" => ResolvedForcing::Harmonic {
-                amplitude: scalar("amplitude"),
-                frequency: scalar("frequency"),
-                phase: scalar("phase"),
-            },
-            "ImpulseForce" => ResolvedForcing::Impulse {
-                impulse: scalar("impulse"),
-                time: scalar("time"),
-            },
-            "SampledForce" => ResolvedForcing::Sampled {
-                times: field_ref(source, "time_samples")
-                    .map(read_real_list)
-                    .unwrap_or_default(),
-                forces: field_ref(source, "force_samples")
-                    .map(read_real_list)
-                    .unwrap_or_default(),
-            },
-            _ => ResolvedForcing::Zero,
+        let kind = sampler.structure();
+        let direction = read_vec3(
+            required_value(data, kind, "direction")?,
+            kind,
+            Some("direction"),
+            &dimensionless_spec(),
+        )?;
+        Ok(Self { direction, sampler })
+    }
+}
+
+/// The required list field `key` of `data`, each entry read through `spec`.
+fn required_list(
+    data: &StructureInstanceData,
+    input: &'static str,
+    key: &'static str,
+    spec: &crate::arg_acceptance::ArgSpec,
+) -> Result<Vec<f64>, InputDecodeError> {
+    read_list(required_value(data, input, key)?, input, Some(key), spec)
+}
+
+impl ForcingSampler {
+    /// The `ForcingFunction` conformer this sampler was read from.
+    fn structure(&self) -> &'static str {
+        match self {
+            ForcingSampler::Step { .. } => "StepForce",
+            ForcingSampler::Harmonic { .. } => "HarmonicForce",
+            ForcingSampler::Impulse { .. } => "ImpulseForce",
+            ForcingSampler::Sampled { .. } => "SampledForce",
         }
     }
 
@@ -2836,18 +2863,17 @@ impl ResolvedForcing {
     /// step (only the `Impulse` discrete-pulse approximation needs it).
     fn sample(&self, t: f64, dt: f64) -> f64 {
         match self {
-            ResolvedForcing::Step {
+            ForcingSampler::Step {
                 magnitude,
                 start_time,
             } => step_force_at(*magnitude, *start_time, t),
-            ResolvedForcing::Harmonic {
+            ForcingSampler::Harmonic {
                 amplitude,
                 frequency,
                 phase,
             } => harmonic_force_at(*amplitude, *frequency, *phase, t),
-            ResolvedForcing::Impulse { impulse, time } => impulse_force_at(*impulse, *time, t, dt),
-            ResolvedForcing::Sampled { times, forces } => sampled_force_at(times, forces, t),
-            ResolvedForcing::Zero => 0.0,
+            ForcingSampler::Impulse { impulse, time } => impulse_force_at(*impulse, *time, t, dt),
+            ForcingSampler::Sampled { times, forces } => sampled_force_at(times, forces, t),
         }
     }
 }
@@ -3089,25 +3115,31 @@ pub(crate) fn run_transient_response(
         dir: [f64; 3],
         samples: Vec<f64>,
     }
-    let projections: Vec<SourceProjection> = sources
-        .iter()
-        .map(|src| {
-            // Dispatch on the `at` Value: String → 3823 resolver; Selector →
-            // carried-topology resolution against the ModalResult's topology field
-            // → representative node (task 4122 R3b). Shares resolve_location_value
-            // with displacement_at so "force at <sel>" / "query at <sel>" agree.
-            let node = match field_ref(src, "at") {
-                Some(at_val) => resolve_location_value(at_val, Some(&modal_result), mode0_shape),
-                None => resolve_location_node("", mode0_shape),
-            };
-            let dir = field_ref(src, "direction")
-                .map(read_vec3)
-                .unwrap_or([0.0; 3]);
-            let resolved = ResolvedForcing::from_value(src);
-            let samples = grid.iter().map(|&t| resolved.sample(t, dt)).collect();
-            SourceProjection { node, dir, samples }
-        })
-        .collect();
+    let mut projections: Vec<SourceProjection> = Vec::with_capacity(sources.len());
+    for src in &sources {
+        let resolved = match ResolvedForcing::from_value(src) {
+            Ok(Some(resolved)) => resolved,
+            Ok(None) => continue,
+            Err(err) => return TransientTrampolineRun::decode_failed(err),
+        };
+        // Dispatch on the `at` Value: String → 3823 resolver; Selector →
+        // carried-topology resolution against the ModalResult's topology field
+        // → representative node (task 4122 R3b). Shares resolve_location_value
+        // with displacement_at so "force at <sel>" / "query at <sel>" agree.
+        let node = match field_ref(src, "at") {
+            Some(at_val) => resolve_location_value(at_val, Some(&modal_result), mode0_shape),
+            None => resolve_location_node("", mode0_shape),
+        };
+        let samples = grid
+            .iter()
+            .map(|&t| resolved.sampler.sample(t, dt))
+            .collect();
+        projections.push(SourceProjection {
+            node,
+            dir: resolved.direction,
+            samples,
+        });
+    }
 
     // ── (6) per-mode integration (+ cancellation poll between modes) ──────────
     let mut mode_coords: Vec<Value> = Vec::with_capacity(modes.len());
@@ -3203,7 +3235,7 @@ pub(crate) fn run_transient_response(
 ///   1. read `t_start/t_end/dt`, build the uniform grid (`uniform_time_grid`);
 ///   2. read each mode's `(ω = 2π·frequency, ζ = damping_ratio, Φ shape)`;
 ///   3. per forcing source: resolve its node (`resolve_location_node`), read its
-///      direction, and sample its scalar `p_src(tⱼ)` (`ResolvedForcing::sample`,
+///      direction, and sample its scalar `p_src(tⱼ)` (`ForcingSampler::sample`,
 ///      its invariant fields pre-resolved once per source);
 ///   4. project onto each mode: `f_i[j] = Σ_src (Φ_i[node]·dir)·p_src(tⱼ)`;
 ///   5. integrate each decoupled SDOF mode (`solve_modal_response`) → ξ_i(tⱼ);
@@ -3270,7 +3302,7 @@ fn reconstruct_displacement_at(
     value_inputs: &[Value],
 ) -> Result<Vec<f64>, InputDecodeError> {
     let location = value_inputs.get(1);
-    let direction = stdlib_inputs::read_vec3(
+    let direction = read_vec3(
         positional(value_inputs, 2, "direction")?,
         "direction",
         None,

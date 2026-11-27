@@ -207,6 +207,20 @@ pub(crate) fn required_field(
     }
 }
 
+/// The value of the required field `key` of `data`, part of `input`: absent
+/// or `none` is `Missing`, and `some(v)` is `v`.
+pub(crate) fn required_value<'a>(
+    data: &'a StructureInstanceData,
+    input: &'static str,
+    key: &'static str,
+) -> Result<&'a Value, InputDecodeError> {
+    match data.fields.get(key) {
+        None | Some(Value::Option(None)) => Err(InputDecodeError::missing(input, key)),
+        Some(Value::Option(Some(inner))) => Ok(inner),
+        Some(value) => Ok(value),
+    }
+}
+
 /// The positional input `input` at `index` of `value_inputs`: an absent one
 /// is `Missing`.
 pub(crate) fn positional<'a>(
