@@ -9,12 +9,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use reify_eval_core::{
-    Answer, Budget, Core, Demand, Erased, Event, Failure, Kind, Path, Request, RequestError,
+    Answer, Budget, Core, Demand, Erased, Event, Failure, Kind, Path, Ref, Request, RequestError,
     RequestId, Snapshot, Step, Store,
 };
 
 use super::case::{Case, HostEvent, Then};
-use super::design::{Inputs, ModelPath, ModelRef, ToyKind, Val, to_core};
+use super::design::{Inputs, Key, ModelPath, ModelRef, ToyKind, Val, to_core};
 use super::fresh::{Answered, FreshMismatch, Order, fresh_check};
 use super::reference::{Expect, Expected, Invalid, Out, Reference};
 use super::seen::Seen;
@@ -66,6 +66,13 @@ shapes! {
     /// "cycle" at a path with no declaration of its own: one whose
     /// declaration waited on a ring.
     CycleThroughStructure,
+    /// A node deeper than the depth setting, or a path below one.
+    TooDeep,
+    /// A node declaring more children than the children-per-node setting,
+    /// or a path below one.
+    TooManyChildren,
+    /// A cell blocked by a ref whose answer is a limit failure.
+    BlockedByLimit,
     /// A box a shape made on the toy kernel.
     BoxValue,
     /// The volume a measure read from the toy kernel.
@@ -77,6 +84,8 @@ shapes! {
     DriveZeroEnded,
     /// An Edit from a snapshot other than the latest.
     EditFromNonLatest,
+    /// An Edit that sets or removes a limit setting.
+    LimitEdited,
     /// An answer the order check compared.
     OrderComparison,
 }
@@ -346,6 +355,39 @@ impl fmt::Display for Mismatch {
     }
 }
 
+/// What the cell at `cell` reads at `at`, the ref it is blocked by: one of
+/// its bindings, or the element "from"/[i] its "pick" reads i for.
+fn blocking_read(reference: &mut Reference, cell: &ModelPath, at: &Ref) -> Option<Expect> {
+    let decl = reference.declaration_at(cell).ok()??;
+    let mut reads: Vec<ModelRef> = decl.bindings.into_keys().map(read_of).collect();
+    if let Ok(Expect::Value(Out::Int(pick))) = reference.read_at(cell, &read_of(String::from("pick")))
+        && let Ok(pick) = u64::try_from(pick)
+    {
+        reads.push(ModelRef {
+            binding: String::from("from"),
+            steps: vec![Step::index(pick)],
+        });
+    }
+    let read = reads.into_iter().find(|read| read.to_core() == *at)?;
+    reference.read_at(cell, &read).ok()
+}
+
+/// The ref to the binding `binding` itself.
+fn read_of(binding: String) -> ModelRef {
+    ModelRef {
+        binding,
+        steps: Vec::new(),
+    }
+}
+
+/// Whether `read` is the failure of a limit setting.
+fn is_limit_failure(read: &Expect) -> bool {
+    matches!(
+        read,
+        Expect::Failure(Failure::TooDeep { .. } | Failure::TooManyChildren { .. })
+    )
+}
+
 /// A core with every honest toy kind and the toy kernel, built on
 /// `store`.
 pub fn toy_core(store: Store) -> Core {
@@ -423,6 +465,9 @@ impl Session {
             HostEvent::Edit { from, changes } => {
                 if *from + 1 != self.snapshots.len() {
                     self.reach.reached(Shape::EditFromNonLatest);
+                }
+                if changes.iter().any(|(key, _)| matches!(key, Key::Limit(_))) {
+                    self.reach.reached(Shape::LimitEdited);
                 }
                 let changed = changes
                     .iter()
@@ -718,8 +763,15 @@ impl Session {
             {
                 reached.push(Shape::DivisionByZero)
             }
-            (Some(ToyKind::Cell), Expect::Failure(Failure::BlockedBy { .. })) => {
-                reached.push(Shape::BlockedBy)
+            (Some(ToyKind::Cell), Expect::Failure(Failure::BlockedBy { at })) => {
+                reached.push(Shape::BlockedBy);
+                if blocking_read(reference, path, at).is_some_and(|read| is_limit_failure(&read)) {
+                    reached.push(Shape::BlockedByLimit);
+                }
+            }
+            (_, Expect::Failure(Failure::TooDeep { .. })) => reached.push(Shape::TooDeep),
+            (_, Expect::Failure(Failure::TooManyChildren { .. })) => {
+                reached.push(Shape::TooManyChildren)
             }
             (Some(_), Expect::Failure(Failure::Cycle)) => reached.push(Shape::Cycle),
             (None, Expect::Failure(Failure::Cycle)) => reached.push(Shape::CycleThroughStructure),
@@ -906,6 +958,52 @@ mod tests {
         let reach = check(&case, &toy_core).unwrap_or_else(|mismatch| panic!("{mismatch}"));
         assert!(reach.count(Shape::Cycle) > 0, "{reach:?}");
         assert!(reach.count(Shape::CycleThroughStructure) > 0, "{reach:?}");
+    }
+
+    #[test]
+    fn limit_failures_a_cell_blocked_by_one_and_an_edit_of_a_limit_are_counted() {
+        let case = Case {
+            inputs: inputs([
+                (root("r"), declaration(scope("r.m"))),
+                (
+                    named("r.m"),
+                    members([
+                        (step("c"), collection(input("two"), input("e"))),
+                        (step("p"), picker(input("one"), declarer([step("c")]))),
+                    ]),
+                ),
+                (named("two"), int(2)),
+                (named("one"), int(1)),
+                (named("e"), declaration(cell([]))),
+                (depth_limit(), bound(1)),
+            ]),
+            events: vec![
+                HostEvent::Evaluate {
+                    on: 0,
+                    paths: vec![r(&["p"]), path("r", [step("c"), index(0)])],
+                    then: Then::End,
+                },
+                HostEvent::Edit {
+                    from: 0,
+                    changes: vec![(children_limit(), Some(bound(1)))],
+                },
+                HostEvent::Evaluate {
+                    on: 1,
+                    paths: vec![r(&[]), r(&["p"])],
+                    then: Then::End,
+                },
+            ],
+        };
+        let reach = check(&case, &toy_core).unwrap_or_else(|mismatch| panic!("{mismatch}"));
+        let shapes = [
+            Shape::TooDeep,
+            Shape::BlockedByLimit,
+            Shape::LimitEdited,
+            Shape::TooManyChildren,
+        ];
+        for shape in shapes {
+            assert!(reach.count(shape) > 0, "{shape:?}: {reach:?}");
+        }
     }
 
     /// Registered in place of the toy cell: answers 0 whatever it binds.

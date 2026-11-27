@@ -631,7 +631,7 @@ mod tests {
 
     use super::super::case::{Case, HostEvent, Then};
     use super::super::design::{Bind, Decl, Key, ToyKind, Val};
-    use super::super::reference::{Expect, Reference, first_invalid};
+    use super::super::reference::{Expect, Invalid, Reference, first_invalid};
     use super::{
         BLOCKED_PAIR_ZERO, Features, GATE_EVENTS, GATE_SEEDS, gate_case, gate_cases, generate,
     };
@@ -711,9 +711,11 @@ mod tests {
             divide: true,
             kernel: true,
             cycles: true,
+            limits: true,
         };
         assert_eq!(Features::every(), every);
         assert!(!Features::structure().cycles);
+        assert!(!Features::structure().limits);
         for seed in GATE_SEEDS {
             let case = generate(seed, every, GATE_EVENTS);
             assert_eq!(gate_case(seed), case, "seed {seed}");
@@ -740,6 +742,7 @@ mod tests {
             divide: false,
             kernel: false,
             cycles: false,
+            limits: false,
         };
         let every = Features::every();
         let some_off = [
@@ -799,6 +802,68 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Every key an edit of `case` sets or removes.
+    fn edited_keys(case: &Case) -> impl Iterator<Item = &Key> {
+        case.events.iter().flat_map(|event| match event {
+            HostEvent::Edit { changes, .. } => changes.iter().map(|(key, _)| key).collect(),
+            _ => Vec::new(),
+        })
+    }
+
+    fn is_limit(key: &&Key) -> bool {
+        matches!(key, Key::Limit(_))
+    }
+
+    fn is_limit_failure(outcome: &Result<Expect, Invalid>) -> bool {
+        matches!(
+            outcome,
+            Ok(Expect::Failure(
+                Failure::TooDeep { .. } | Failure::TooManyChildren { .. }
+            ))
+        )
+    }
+
+    #[test]
+    fn with_limits_off_no_case_holds_a_limit_key_or_answers_a_limit_failure() {
+        let limits_off = [
+            Features::structure(),
+            Features {
+                limits: false,
+                ..Features::every()
+            },
+        ];
+        for features in limits_off {
+            for seed in GATE_SEEDS {
+                let case = generate(seed, features, GATE_EVENTS);
+                let mut keys = case.inputs.keys().chain(edited_keys(&case));
+                let limit = keys.find(is_limit);
+                assert_eq!(limit, None, "seed {seed}, {features:?}");
+                let demanded: BTreeSet<_> = case.demanded().collect();
+                for inputs in case.snapshots() {
+                    let mut reference = Reference::new(inputs);
+                    for path in &demanded {
+                        let outcome = reference.answer(path).map(|answer| answer.outcome);
+                        assert!(
+                            !is_limit_failure(&outcome),
+                            "seed {seed}, {features:?}: {path:?} answers {outcome:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_gate_cases_set_limits_initially_and_by_edits() {
+        let (mut initial, mut edited) = (0, 0);
+        for (_, case) in gate_cases() {
+            initial += case.inputs.keys().filter(is_limit).count();
+            edited += edited_keys(&case).filter(is_limit).count();
+        }
+        assert!(initial > 0, "no gate case starts with a limit setting");
+        assert!(edited > 0, "no gate case edits a limit setting");
     }
 
     #[test]
