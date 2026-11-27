@@ -1934,7 +1934,7 @@ Every module implicitly imports `std.prelude`. The user never writes this import
 - **Linear algebra:** `dot`, `cross`, `normalize`, `magnitude`
 - **Geometry constructors:** `point2`, `point3`, `vec2`, `vec3`, `orient_axis_angle`, `orient_quaternion`, `orient_euler`, `orient_basis`, `orient_look_at`, `orient_identity`, `frame3`, `frame3_identity`, `transform3`, `transform3_identity`, `project`
 - **Ports:** `Port`, `Directionality`
-- **Determinacy predicates:** `determined()`, `constrained()`, `undetermined()`, `partially_determined()`
+- **Determinacy predicates:** `determined()`, `constrained()`, `undetermined()`, `partially_determined()`, `present()`
 
 **Suppression:** The pragma `#no_prelude` suppresses the implicit prelude import.
 
@@ -2325,7 +2325,7 @@ When the collection itself is `undef`, quantifiers produce `undef`.
 <!-- sc-anchor: sc-677679 -->
 #### 9.2.7 Function Application
 
-`undef` propagates strictly through function calls. If any argument is `undef`, the result is `undef`. Functions are pure and cannot inspect the determinacy state of their arguments.
+A user function is entered whatever its arguments. Its parameters are bound to the arguments, undefined ones included, and each operation inside propagates `undef` by the rules above. So `fn five(x : Length) -> Length { 5mm }` gives `5mm` for an undefined `x`, and `fn mk(t : Length) -> Plate { Plate(t: t) }` called with an undefined argument `u` makes the same plate as `Plate(t: u)` written inline. A built-in function called with an undefined argument is not run, and its result is `undef`. Functions are pure and cannot inspect the determinacy state of their arguments.
 
 <!-- sc-anchor: sc-46bce6 -->
 **Exception:** Determinacy predicates (`determined()`, `constrained()`, `undetermined()`, `partially_determined()`) operate on the determinacy state itself, not the value. `determined(undef_param)` returns `false`, not `undef`.
@@ -2356,6 +2356,8 @@ match outer {
 <!-- sc-anchor: sc-b6ef4d -->
 #### 9.2.9 Tracing
 
+An undefined value carries no cause, so two undefined values are equal however each came to be. A cell's or a constraint's result that is undefined or undetermined names, by ref, the undefined things it read. The reason for an undefined value is found by following those reads back to what was not there. The tracer below is that walk.
+
 A read-only undef-cause tracer reconstructs the complete, deduplicated set of root causes for an `undef` cell: `Unbound` (a required param with no value), `AwaitingSolve` (an `auto` param not yet resolved by the constraint solver), `SolveFailed` (the solve was infeasible or made no progress), `OpContractFailed` (an operation returned `undef` although every input was determined -- a type or contract violation), or `UserUndef` (an explicit `undef` literal). The tracer walks forward dependencies through undef cells only, so a value made `undef` by propagation (§9.2.1) reports its upstream roots, not itself.
 
 These causes classify as **expected** or **unexpected** (INV-SF-4, `docs/legibility/design-invariants.md`). `Unbound` and `UserUndef` are expected: the design is declaredly unfinished at that point. The rest are unexpected, because a mechanism failed to deliver a value: `SolveFailed`, `OpContractFailed`, and `AwaitingSolve` on a driver that resolves `auto` (§9.3, §10.2). What gates today: `reify check --strict` fails on every indeterminate constraint, whatever its cause. Plain `reify check` exits 0 for an indeterminate constraint and fails on errors, such as an infeasible solve or a strict `auto` missing a bound. Plain `check` does not yet fail on every unexpected cause: a constraint that reads a sub-instance member as `x.length` instead of `self.x.length` is reported INDETERMINATE (`operator undefined for these operand kinds: StructureInstance`), and `check` still exits 0.
@@ -2385,9 +2387,14 @@ This is a tooling/implementation concern, not a language semantics concern: the 
 Boolean predicate functions (compiler intrinsics, in prelude):
 
 - `determined(param)` -- the parameter has a specific value
-- `constrained(param)` -- the parameter has at least one constraint applied
+- `constrained(param)` -- true when some constraint that is present, written in the text of the definition of the instance that holds the parameter or of a definition below it, can read the parameter according to the source:
+  - "Can read" means directly, through a `let`, or through an argument into a sub or a constructor call whose own constraints can read that parameter, a call reached through a function's body included.
+  - A constraint the definition writes in the braces of its own sub counts. One written in the braces where this instance is declared does not, and neither does a purpose's.
+  - It is `undef` when the guard on the only such constraint is undefined.
+  - It does not depend on how the parameter got its value: `param x : Length = auto` with no constraint is not constrained, and `param y : Length = 5mm` with `constraint y > 3mm` is.
 - `undetermined(param)` -- the parameter is `undef` with no constraints
 - `partially_determined(param)` -- constrained and not determined
+- `present(x)` -- `true` when `x` is present, `false` when it is absent (§6.3), and `undef` when its presence is undetermined. Its argument is an instance or a member (`present(self.c.fan)`), not a value. It tests presence alone, so a fan that is there with an undefined `flow` is present, where `determined(self.c.fan.flow)` is false. Like the determinacy predicates, it is an exception to §9.2.7's built-in rule.
 
 These compose with `forall`, `exists`, `and`, `or`, participate in `where` guards.
 
@@ -2514,7 +2521,7 @@ Bottom-up is an approximation when scopes are coupled. Implementation should det
 
 ### 10.7 Default Objectives
 
-If no explicit purpose or objective is specified, a default purpose applies (provided by standard library). Expected default: robustness-oriented -- among feasible values, prefer those maximizing distance from constraint boundaries (centrality in the feasible region).
+If no objective is specified, the default objective applies (provided by the standard library); a purpose never supplies one, since it only checks (§4.4). Expected default: robustness-oriented -- among feasible values, prefer those maximizing distance from constraint boundaries (centrality in the feasible region).
 
 **Legibility:** Designer can always query what objective governs a given `auto` resolution.
 **Override:** Any scope can override with a local `minimize`/`maximize`.
