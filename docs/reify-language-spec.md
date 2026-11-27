@@ -3227,13 +3227,13 @@ where
 | # | Item | Target | Notes |
 |---|------|--------|-------|
 | 1 | Default robustness objective | v0.1.1 | Mechanism depends on constraint solver internals |
-| 2 | Rich structural query/traversal | v0.2 | `children`/`members` pseudo-collection filterable by trait |
+| 2 | Rich structural query/traversal | Realized (instances on the core) | `self.children`, `self.members` and `self.descendants` exist as lists of the values of present members (§8.6). Filtering one by trait is written with `filter`, as in `filter(self.descendants, Costed)` (§10.8). |
 | 3 | Geometry selector strengthening | v0.2 | Persistent naming, advanced topological queries |
 | 4 | `Result<T>` or `fallback` expressions | Realized (v0.6) | Layer A — `Option` recovery combinators (`unwrap_or`/`or_else`/`or_default`/`map_or`/`is_some`/`is_none`/`get_or`, plus the `fallback` alias of `unwrap_or`) shipped in v0.6, orthogonal to graph-`Failed` (§9.6 D1). Layer B — `Result<T,E>` error-handling shipped in v0.6 as a generic data-carrying prelude enum (`enum Result<T, E> { Ok { value: T }, Err { error: E } }`) with `Ok`/`Err` construction, match-on-`Result` payload binding, and the Result-specialized recovery combinators `unwrap_or`/`or_else`/`fallback`/`is_ok`/`is_err`/`map_err`/`ok_or` (the `Option`→`Result` bridge), built on the generic-data-carrying-enums substrate. `try`/`catch` and the postfix `?`-propagation operator (fork F-Question) remain deferred. See docs/prds/v0_6/result-and-fallback.md, docs/prds/v0_6/data-carrying-enums.md, and docs/prds/v0_6/generic-data-carrying-enums.md; runnable example `examples/m6_result_recovery.ri`. |
 | 5 | Associated `fn` in traits | v0.2+ | Procedural code in traits |
 | 6 | Data-carrying enums | Realized (v0.6) | Algebraic data types with named-field payload variants (named-field only; no positional/tuple) shipped in v0.6. See docs/prds/v0_6/data-carrying-enums.md. |
 | 7 | Tolerance stack-up analysis | Realized (v0.6) | `stackup_worst_case` / `stackup_rss` / `monte_carlo_stackup` eval builtins; v1 is explicit-chain only (assembly-graph auto-derivation deferred). See docs/prds/v0_6/tolerance-stackup-analysis.md. |
-| 8 | Keyed collection identity | v0.2 | Named/keyed members in collections instead of positional |
+| 8 | Keyed collection identity | Realized (instances on the core) | Keyed collections exist. An element is addressed by its key (`vents["intake"]`, the `chain_index` production of §15), and its key is its identity: elements keep their identity across an insertion, where a list's elements are identified by position (§3.4). |
 | 9 | Field-valued material properties | v0.2 | `Field<Temperature, Pressure>` for temperature-dependent properties |
 | 10 | Expression-body sugar for `fn` | Realized (v0.6) | `fn f(x: T) -> T = expr` shorthand; §4.3/§15 `fn_body`; see docs/prds/v0_6/expression-operator-completion.md |
 | 11 | No `Date` type | v0.1 | ISO 8601 strings used for timestamps |
