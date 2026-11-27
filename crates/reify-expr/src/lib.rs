@@ -7369,6 +7369,9 @@ mod tests {
         // needs strictly less), by bisecting this constant:
         //   * before task #4880:  overflows at 1792 KiB, passes at 2048 KiB
         //   * after  task #4880:  overflows at 2048 KiB, passes at 2304 KiB
+        //   * after  task #10641: overflows at 2048 KiB, passes at 2304 KiB (in 64 KiB
+        //     steps: overflows at 2176 KiB, passes at 2240 KiB; the tree before it,
+        //     on the same toolchain, overflows at 2240 KiB and passes at 2304 KiB)
         // i.e. adding `EvalContext::compute_dispatch` cost ~256 KiB across the chain
         // (< 1 KiB per level) and pushed the requirement just past the 2 MiB that Rust's
         // test harness gives a SPAWNED test thread — which is why this wrapper exists at
