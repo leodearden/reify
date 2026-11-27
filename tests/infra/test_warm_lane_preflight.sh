@@ -42,6 +42,10 @@ SCRIPT="$REPO_ROOT/scripts/warm-lane-preflight.sh"
 # shellcheck source=tests/infra/test_helpers.sh
 source "$SCRIPT_DIR/test_helpers.sh"
 
+# A block that wants a status oracle sets it per command. The orchestrator's
+# environment exports the live oracle.
+unset REIFY_LANE_LEAK_STATUS_CMD
+
 echo "=== scripts/warm-lane-preflight.sh hermetic tests (task 4661) ==="
 
 # ──────────────────────────────────────────────────────────────────────────────
