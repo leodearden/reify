@@ -61,6 +61,8 @@ pub struct Features {
     pub limits: bool,
     /// Evaluations given a paths budget.
     pub budgets: bool,
+    /// Calls, whose runs declare children.
+    pub call: bool,
 }
 
 impl Features {
@@ -75,6 +77,7 @@ impl Features {
             cycles: false,
             limits: false,
             budgets: false,
+            call: false,
         }
     }
 
@@ -86,6 +89,7 @@ impl Features {
             cycles: true,
             limits: true,
             budgets: true,
+            call: true,
             ..Self::structure()
         }
     }
@@ -807,11 +811,13 @@ mod tests {
             cycles: true,
             limits: true,
             budgets: true,
+            call: true,
         };
         assert_eq!(Features::every(), every);
         assert!(!Features::structure().cycles);
         assert!(!Features::structure().limits);
         assert!(!Features::structure().budgets);
+        assert!(!Features::structure().call);
         for seed in GATE_SEEDS {
             let case = generate(seed, every, GATE_EVENTS);
             assert_eq!(gate_case(seed), case, "seed {seed}");
@@ -826,7 +832,7 @@ mod tests {
             ToyKind::Guard => features.guard,
             ToyKind::Collection => features.collection,
             ToyKind::Shape | ToyKind::Measure => features.kernel,
-            ToyKind::Call => false,
+            ToyKind::Call => features.call,
         }
     }
 
@@ -841,6 +847,7 @@ mod tests {
             cycles: false,
             limits: false,
             budgets: false,
+            call: false,
         };
         let every = Features::every();
         let some_off = [
@@ -852,6 +859,10 @@ mod tests {
             },
             Features {
                 kernel: false,
+                ..every
+            },
+            Features {
+                call: false,
                 ..every
             },
         ];
@@ -1050,6 +1061,7 @@ mod tests {
             ToyKind::Collection,
             ToyKind::Shape,
             ToyKind::Measure,
+            ToyKind::Call,
         ];
         assert_eq!(kinds, BTreeSet::from(all));
         let counts = [

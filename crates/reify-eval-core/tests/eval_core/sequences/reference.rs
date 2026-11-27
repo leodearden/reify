@@ -137,8 +137,8 @@ pub struct Reference {
     /// Each child taken over whose ring is still to be finished from its
     /// own frame, with the path the ring entered.
     deferred: BTreeMap<ModelPath, ModelPath>,
-    /// How many distinct steps each call's run declared a child at.
-    run_children: BTreeMap<ModelPath, usize>,
+    /// The distinct steps each call's run declared a child at.
+    run_children: BTreeMap<ModelPath, BTreeSet<Step>>,
     work_outs: usize,
 }
 
@@ -231,6 +231,16 @@ impl Reference {
     /// answers it "cycle" without resolving it.
     pub fn paths_resolved(&self) -> usize {
         self.declared.len()
+    }
+
+    /// Whether a call's run declared a child at `path`, as answering it
+    /// found.
+    pub fn declared_by_run(&self, path: &ModelPath) -> bool {
+        path.parent().is_some_and(|(call, step)| {
+            self.run_children
+                .get(&call)
+                .is_some_and(|steps| steps.contains(step))
+        })
     }
 
     /// The declaration of the node at `path`, if one is declared there.
@@ -350,7 +360,7 @@ impl Reference {
         let children = match (kind, out) {
             (ToyKind::Scope | ToyKind::Guard, Out::Members(members)) => count(members.len()),
             (ToyKind::Collection, Out::Elements { count, .. }) => *count,
-            (ToyKind::Call, _) => count(self.run_children.get(path).copied().unwrap_or(0)),
+            (ToyKind::Call, _) => count(self.run_children.get(path).map_or(0, BTreeSet::len)),
             _ => 0,
         };
         if children > limit {
@@ -594,7 +604,8 @@ impl Reference {
         };
         let mut run = BTreeMap::new();
         let called = self.call_children(at, &sites, &terms, sum, &mut run);
-        self.run_children.insert(at.clone(), run.len());
+        self.run_children
+            .insert(at.clone(), run.into_keys().collect());
         called
     }
 

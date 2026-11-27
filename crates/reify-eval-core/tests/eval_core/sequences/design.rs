@@ -319,6 +319,13 @@ pub fn call(terms: impl IntoIterator<Item = Bind>, calls: Bind) -> Decl {
     call
 }
 
+/// `call`, declaring its children only while what `condition` names reads
+/// true or nothing.
+pub fn when(mut call: Decl, condition: Bind) -> Decl {
+    call.bindings.insert(String::from("when"), condition);
+    call
+}
+
 /// A call site at the chain `sites` declaring `callee`, its argument bound
 /// at "0".
 pub fn site(sites: &[u64], each: bool, offset: i64, callee: Decl) -> Site {

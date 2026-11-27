@@ -11,6 +11,7 @@ mod generator;
 mod order;
 mod print;
 mod printed_faulty_cell;
+mod reach;
 mod reduce;
 mod reference;
 mod rng;

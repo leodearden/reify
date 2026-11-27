@@ -1,6 +1,7 @@
 //! The G0 gate: random sequences of host events, edits among them, over
 //! every toy kind registered so far (cells that divide, scopes, guards,
-//! collections, and shapes and measures on the toy kernel) in designs that
+//! collections, shapes and measures on the toy kernel, and calls whose
+//! runs declare children, on a branch and in a loop) in designs that
 //! may hold rings of waits and limit settings, with evaluations that may
 //! be given a paths budget, at the gate's fixed seeds, pass check 1,
 //! check 2, the order check and the budget check, and together reach every
@@ -14,8 +15,9 @@ use std::ops::RangeInclusive;
 use super::case::Case;
 use super::generator::{GATE_SEEDS, gate_case};
 use super::print::{Expectation, print_test};
+use super::reach::Reach;
 use super::reduce::{candidates, size};
-use super::session::{Mismatch, Reach, check, toy_core};
+use super::session::{Mismatch, check, toy_core};
 use super::shrink::shrink;
 
 /// Widens the run to seeds 1..=N outside the gate.
