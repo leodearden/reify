@@ -380,3 +380,109 @@ structure def Shapes {
         MemberKind::GeometryMember
     );
 }
+
+/// Each member's name, kind and origin, in order.
+fn provenance(table: &MemberTable) -> Vec<(Option<&str>, MemberKind, MemberOrigin)> {
+    table
+        .iter()
+        .map(|m| {
+            (
+                m.name.as_ref().map(PathName::as_str),
+                m.kind,
+                m.origin.clone(),
+            )
+        })
+        .collect()
+}
+
+fn inherited_from(definition: DefinitionName) -> MemberOrigin {
+    MemberOrigin::Inherited(definition)
+}
+
+#[test]
+fn inherited_members_come_first_in_the_order_the_traits_are_listed() {
+    let output = accepted(
+        "
+trait Weighted { param mass : Mass = 1kg   constraint mass > 0kg }
+trait Sized { param size : Length = 1mm }
+trait Tagged : Sized { param tag : Int = 0 }
+structure def Plank : Weighted + Tagged { param t : Length = 1mm   constraint t > 2mm }
+
+trait Base { param base : Length = 1mm }
+trait Left : Base { param left : Length = 1mm }
+trait Right : Base { param right : Length = 1mm }
+structure def Both : Left + Right { param own : Length = 1mm }
+
+structure def Hot : TemperatureDependent { param t : Length = 1mm }
+",
+    );
+    let plank = table(&output, "Plank");
+    let weighted = inherited_from(entry_definition("Weighted"));
+    assert_eq!(
+        provenance(plank),
+        vec![
+            (Some("mass"), MemberKind::Cell, weighted.clone()),
+            (None, MemberKind::Constraint, weighted),
+            (
+                Some("size"),
+                MemberKind::Cell,
+                inherited_from(entry_definition("Sized"))
+            ),
+            (
+                Some("tag"),
+                MemberKind::Cell,
+                inherited_from(entry_definition("Tagged"))
+            ),
+            (Some("t"), MemberKind::Cell, MemberOrigin::Own),
+            (None, MemberKind::Constraint, MemberOrigin::Own),
+        ],
+        "a listed trait's refinements come before it, and the traits before the own members"
+    );
+    assert_eq!(
+        member(plank, "mass").declared_type,
+        DeclaredType::Value(Type::Scalar {
+            dimension: DimensionVector::MASS
+        })
+    );
+
+    let both = table(&output, "Both");
+    assert_eq!(
+        provenance(both),
+        vec![
+            (
+                Some("base"),
+                MemberKind::Cell,
+                inherited_from(entry_definition("Base"))
+            ),
+            (
+                Some("left"),
+                MemberKind::Cell,
+                inherited_from(entry_definition("Left"))
+            ),
+            (
+                Some("right"),
+                MemberKind::Cell,
+                inherited_from(entry_definition("Right"))
+            ),
+            (Some("own"), MemberKind::Cell, MemberOrigin::Own),
+        ],
+        "a trait reached twice contributes its members once, at its first position"
+    );
+
+    let hot = table(&output, "Hot");
+    assert_eq!(
+        provenance(hot),
+        vec![
+            (
+                Some("reference_temperature"),
+                MemberKind::Cell,
+                inherited_from(module_definition(
+                    "std.materials.mechanical",
+                    "TemperatureDependent"
+                ))
+            ),
+            (Some("t"), MemberKind::Cell, MemberOrigin::Own),
+        ],
+        "a stdlib trait's members are inherited, naming the trait under its std module"
+    );
+}
