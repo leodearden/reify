@@ -460,3 +460,189 @@ structure def Asm {
         "{tree:?}"
     );
 }
+
+/// The keys a keyed sub's braces give it, read from the parsed source as the
+/// compiler's own sub pre-pass reads them (the template does not record them).
+fn register_keyed_sub_keys(scope: &mut CompilationScope, source: &str, definition: &str) {
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("unit_mode"));
+    for decl in &parsed.declarations {
+        let reify_ast::Declaration::Structure(def) = decl else {
+            continue;
+        };
+        if def.name != definition {
+            continue;
+        }
+        for member in &def.members {
+            if let reify_ast::MemberDecl::Sub(sub) = member
+                && !sub.keyed_members.is_empty()
+            {
+                scope
+                    .keyed_sub_keys
+                    .entry(sub.name.clone())
+                    .or_default()
+                    .extend(sub.keyed_members.iter().map(|entry| entry.key.clone()));
+            }
+        }
+    }
+}
+
+const PATHS_SOURCE: &str = r#"
+trait Rated {
+    param rating : Real
+}
+structure def Shim {
+    param r : Real = 1
+}
+structure def Plate : Rated {
+    param t : Real = 3
+    param rating : Real = 7
+    pub let w = t * 2
+    sub q : Shim
+}
+structure def Vent {
+    param w : Real = 2
+}
+structure def Asm {
+    param k : Real = 1
+    sub p : Plate
+    sub vents : List<Vent>
+    constraint vents.count == 3
+    sub ks : Keyed<Vent> { "a" => { w = 4 } }
+    let d = Plate(t: 2)
+}
+"#;
+
+fn steps(items: &[SourceStep]) -> Vec<SourceStep> {
+    items.to_vec()
+}
+
+fn member(name: &str) -> SourceStep {
+    SourceStep::Member(name.to_string())
+}
+
+#[test]
+fn member_reads_through_subs_and_cells_are_references() {
+    let module = compile_clean(PATHS_SOURCE);
+    let registry = template_registry(&module);
+    let mut scope = definition_scope(&module, &registry, "Asm");
+    register_keyed_sub_keys(&mut scope, PATHS_SOURCE, "Asm");
+    let real = Type::dimensionless_scalar();
+
+    let expect_reference = |text: &str, expected: Vec<SourceStep>, ty: &Type| {
+        let (unit, diagnostics) = compile_unit(text, &scope, &module);
+        assert!(
+            errors_of(&diagnostics).is_empty(),
+            "{text}: {diagnostics:?}"
+        );
+        let (reference, actual) = sole_reference(&unit);
+        assert_eq!(shape(reference), own_value(expected), "{text}");
+        assert_eq!(actual, ty, "{text}");
+        reference.id.clone()
+    };
+
+    let through_self = expect_reference("self.p.t", members(&["p", "t"]), &real);
+    let bare = expect_reference("p.t", members(&["p", "t"]), &real);
+    assert_eq!(through_self, bare);
+    expect_reference("self.p.q.r", members(&["p", "q", "r"]), &real);
+    expect_reference(
+        "vents[1].w",
+        steps(&[member("vents"), SourceStep::Index(1), member("w")]),
+        &real,
+    );
+    expect_reference(
+        "vents[1]",
+        steps(&[member("vents"), SourceStep::Index(1)]),
+        &Type::StructureRef("Vent".into()),
+    );
+    expect_reference(
+        r#"ks["a"].w"#,
+        steps(&[member("ks"), SourceStep::Key("a".into()), member("w")]),
+        &real,
+    );
+    expect_reference("d.w", members(&["d", "w"]), &real);
+    expect_reference("d.t", members(&["d", "t"]), &real);
+    expect_reference("p.(Rated::rating)", members(&["p", "rating"]), &real);
+
+    let (unit, diagnostics) = compile_unit("vents.count", &scope, &module);
+    assert!(errors_of(&diagnostics).is_empty(), "{diagnostics:?}");
+    assert_eq!(unit.expr.result_type, Type::Int);
+    assert!(!matches!(unit.expr.kind, CompiledExprKind::ValueRef(_)));
+    assert_eq!(unit.references.len(), 1, "{:?}", unit.references);
+    assert_eq!(shape(&unit.references[0]), own_value(members(&["vents"])));
+
+    for text in ["self.p.nosuch", "d.nosuch"] {
+        let (_, diagnostics) = compile_unit(text, &scope, &module);
+        assert!(
+            has_error_code(&diagnostics, DiagnosticCode::StructureMemberNotFound),
+            "{text}: {diagnostics:?}"
+        );
+    }
+
+    let (unit, diagnostics) = compile_unit("self.origin", &scope, &module);
+    assert!(errors_of(&diagnostics).is_empty(), "{diagnostics:?}");
+    assert!(
+        unit.references
+            .iter()
+            .all(|r| shape(r) == own_value(vec![])),
+        "{:?}",
+        unit.references
+    );
+
+    // The existing compile, on the same scope.
+    let (tree, _) = compile_existing("self.p.t", &scope, &module);
+    assert!(
+        matches!(&tree.kind, CompiledExprKind::ValueRef(id) if id == &ValueCellId::new("Asm.p", "t")),
+        "{tree:?}"
+    );
+    for text in ["p.t", "d.w"] {
+        let (tree, _) = compile_existing(text, &scope, &module);
+        assert!(
+            matches!(tree.kind, CompiledExprKind::IndexAccess { .. }),
+            "{text}: {tree:?}"
+        );
+    }
+    let (tree, _) = compile_existing("vents.count", &scope, &module);
+    assert!(
+        matches!(&tree.kind, CompiledExprKind::ValueRef(id) if id == &ValueCellId::new("Asm", "__count_vents")),
+        "{tree:?}"
+    );
+    let (tree, _) = compile_existing("self.p.q.r", &scope, &module);
+    assert!(
+        every_value_ref(&tree)
+            .iter()
+            .all(|id| id.entity != LOCAL_REFERENCE_ENTITY),
+        "{tree:?}"
+    );
+}
+
+#[test]
+fn determinacy_tests_take_a_path_through_a_sub() {
+    let module = compile_clean(PATHS_SOURCE);
+    let registry = template_registry(&module);
+    let scope = definition_scope(&module, &registry, "Asm");
+
+    for test in ["determined", "constrained", "partially_determined"] {
+        let text = format!("{test}(p.t)");
+        let (unit, diagnostics) = compile_unit(&text, &scope, &module);
+        assert!(
+            errors_of(&diagnostics).is_empty(),
+            "{text}: {diagnostics:?}"
+        );
+        let CompiledExprKind::DeterminacyPredicate { cell, .. } = &unit.expr.kind else {
+            panic!("{text}: expected a determinacy test, got {:?}", unit.expr);
+        };
+        assert_eq!(
+            shape(reference_of(&unit, cell)),
+            own_value(members(&["p", "t"])),
+            "{text}"
+        );
+
+        let (_, diagnostics) = compile_existing(&text, &scope, &module);
+        assert!(
+            errors_of(&diagnostics).iter().any(|d| d
+                .message
+                .contains("argument must be a direct cell reference")),
+            "{text}: {diagnostics:?}"
+        );
+    }
+}
