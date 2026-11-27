@@ -466,6 +466,11 @@ export DF_VERIFY_ROLE=task
 # command, and that per-command assignment still overrides this.
 export REIFY_RELEASE_DELTA_SKIP=0
 
+# The orchestrator unit exports the live leak-status oracle for its own loops
+# (deploy/systemd/orchestrator-reify.service.d/warm-lane.conf); a member wanting one
+# passes --status-cmd with a stub. Ledger row: tests/infra/run-all-ambient-vars.manifest.
+unset REIFY_LANE_LEAK_STATUS_CMD
+
 # Worktree-removal self-check "armed" gate (task #5261, W4e). The merge
 # suite runs `bash run_all.sh` with NO positional arg, so INFRA_DIR ==
 # SCRIPT_DIR and $INFRA_DIR/run_all.sh IS the running script -- present at
