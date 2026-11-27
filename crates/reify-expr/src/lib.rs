@@ -3798,7 +3798,9 @@ fn eval_binop(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalCo
 
 /// Kleene AND: false ∧ Undef = false
 ///
-/// Delegates truth-table folding to [`kleene::kleene_and`] while preserving:
+/// Delegates truth-table folding to [`kleene::kleene_and`] while preserving
+/// (the right operand is still read under a reader that may answer "not here
+/// yet", see [`decided_by_left`]):
 /// - Short-circuit on type error (non-bool/non-undef left → `Value::Undef`,
 ///   right not evaluated).
 /// - Short-circuit on absorbing element (`False` left → `Value::Bool(false)`,
@@ -3807,11 +3809,11 @@ fn eval_and(left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalContext) -> Val
     let lv = eval_expr(left, ctx);
     let lk = match kleene::KBool::try_from(&lv) {
         Ok(k) => k,
-        Err(_) => return Value::Undef,
+        Err(_) => return decided_by_left(Value::Undef, right, ctx),
     };
     // Short-circuit on absorbing element: False ∧ anything = False.
     if matches!(lk, kleene::KBool::False) {
-        return Value::Bool(false);
+        return decided_by_left(Value::Bool(false), right, ctx);
     }
     let rv = eval_expr(right, ctx);
     let rk = match kleene::KBool::try_from(&rv) {
@@ -3823,7 +3825,9 @@ fn eval_and(left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalContext) -> Val
 
 /// Kleene OR: true ∨ Undef = true
 ///
-/// Delegates truth-table folding to [`kleene::kleene_or`] while preserving:
+/// Delegates truth-table folding to [`kleene::kleene_or`] while preserving
+/// (the right operand is still read under a reader that may answer "not here
+/// yet", see [`decided_by_left`]):
 /// - Short-circuit on type error (non-bool/non-undef left → `Value::Undef`,
 ///   right not evaluated).
 /// - Short-circuit on absorbing element (`True` left → `Value::Bool(true)`,
@@ -3832,11 +3836,11 @@ fn eval_or(left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalContext) -> Valu
     let lv = eval_expr(left, ctx);
     let lk = match kleene::KBool::try_from(&lv) {
         Ok(k) => k,
-        Err(_) => return Value::Undef,
+        Err(_) => return decided_by_left(Value::Undef, right, ctx),
     };
     // Short-circuit on absorbing element: True ∨ anything = True.
     if matches!(lk, kleene::KBool::True) {
-        return Value::Bool(true);
+        return decided_by_left(Value::Bool(true), right, ctx);
     }
     let rv = eval_expr(right, ctx);
     let rk = match kleene::KBool::try_from(&rv) {
@@ -3860,11 +3864,11 @@ fn eval_implies(left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalContext) ->
     let lv = eval_expr(left, ctx);
     let lk = match kleene::KBool::try_from(&lv) {
         Ok(k) => k,
-        Err(_) => return Value::Undef,
+        Err(_) => return decided_by_left(Value::Undef, right, ctx),
     };
     // Short-circuit on vacuous element: False ⇒ anything = True.
     if matches!(lk, kleene::KBool::False) {
-        return Value::Bool(true);
+        return decided_by_left(Value::Bool(true), right, ctx);
     }
     let rv = eval_expr(right, ctx);
     let rk = match kleene::KBool::try_from(&rv) {
@@ -3872,6 +3876,17 @@ fn eval_implies(left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalContext) ->
         Err(_) => return Value::Undef,
     };
     kleene::kleene_implies(lk, rk).into()
+}
+
+/// The value `decided` that a logical operator's left operand gave, without
+/// evaluating `right` under the old engine's reader, and after evaluating it
+/// under one that may answer "not here yet": only the condition of an `if` or
+/// a `match` decides whether something is read.
+fn decided_by_left(decided: Value, right: &CompiledExpr, ctx: &EvalContext) -> Value {
+    if ctx.reads_every_operand() {
+        eval_expr(right, ctx);
+    }
+    decided
 }
 
 /// Apply a binary operation component-wise to two equal-length component slices,
