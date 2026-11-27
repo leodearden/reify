@@ -70,7 +70,7 @@ def environment_keys(files):
 
 def _logical_lines(path):
     try:
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as err:
         raise UnitEnvError(f"{path}: unreadable: {err}") from err
     start, parts = None, []

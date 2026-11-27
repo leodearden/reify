@@ -7,6 +7,7 @@ test_run_all_ambient_isolation.sh calls the module's CLI as its fourth live
 source; the module's contract lives here.
 """
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -31,7 +32,7 @@ class UnitFixture(unittest.TestCase):
     def write(self, relpath, text):
         path = self.root / relpath
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text)
+        path.write_text(text, encoding="utf-8")
         return path
 
     def keys_of(self, *files):
@@ -149,9 +150,10 @@ class UnitFiles(UnitFixture):
 
 class Cli(UnitFixture):
 
-    def run_cli(self, *args):
+    def run_cli(self, *args, env=None):
         return subprocess.run([sys.executable, str(CLI), *args],
-                              capture_output=True, text=True, check=False)
+                              capture_output=True, text=True, check=False,
+                              env=env)
 
     def test_prints_sorted_key_and_path_lines(self):
         self.write("u.service.d/10-a.conf",
@@ -165,6 +167,16 @@ class Cli(UnitFixture):
                          f"ALPHA\t{drop_in}/10-a.conf\n"
                          f"MID\t{drop_in}/20-b.conf\n"
                          f"ZED\t{drop_in}/10-a.conf\n")
+
+    def test_reads_utf8_whatever_the_locale_encoding(self):
+        unit = self.write("a.conf",
+                          "# warm-lane — ── oracle\n"
+                          "[Service]\nEnvironment=FOO=1\n")
+        ascii_locale = dict(os.environ, LC_ALL="C", PYTHONCOERCECLOCALE="0",
+                            PYTHONUTF8="0")
+        result = self.run_cli(str(unit), env=ascii_locale)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, f"FOO\t{unit}\n")
 
     def test_unit_error_exits_1_with_one_diagnostic_line(self):
         unit = self.write("bad.conf",
