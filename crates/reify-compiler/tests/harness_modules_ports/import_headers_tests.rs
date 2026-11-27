@@ -352,6 +352,22 @@ fn a_std_callee_written_only_in_a_keyed_entry_assignment_guard_needs_its_module(
     );
 }
 
+#[test]
+fn a_std_callee_written_only_in_a_port_guard_needs_its_module() {
+    let universe = compile_universe(&[PREDICATES]);
+    let source = "trait T {}\n\
+                  structure def S {\n\
+                      port p : T where is_thick(1.0)\n\
+                  }\n";
+    let plan = derive(source, &universe);
+    assert_needs(
+        &plan,
+        "std.fake.predicates",
+        &[name_use("is_thick", NameRole::Callee)],
+        source,
+    );
+}
+
 // ─── e2: enum accesses in both lowerings ───────────────────────────────────
 
 #[test]

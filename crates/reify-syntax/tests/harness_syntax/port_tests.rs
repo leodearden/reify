@@ -236,3 +236,47 @@ fn parse_port_direction_override() {
     // Body direction (out) should override inline direction (in)
     assert_eq!(port.direction, Some(reify_core::PortDirection::Out));
 }
+
+// ── a port keeps its `where` guard ──────────────────────────────────
+
+#[test]
+fn port_guard_is_kept() {
+    let source = "trait T {}
+structure S {
+    param on : Bool = true
+    port a : in T where on
+    port b : T { direction = out } where on
+    port c : T
+}";
+    let (decls, errors) = parse_decls(source);
+    assert!(errors.is_empty(), "parse errors: {:?}", errors);
+
+    let structure = decls
+        .iter()
+        .find_map(|d| match d {
+            Declaration::Structure(s) => Some(s),
+            _ => None,
+        })
+        .expect("expected a Structure declaration");
+    let port = |name: &str| {
+        structure
+            .members
+            .iter()
+            .find_map(|m| match m {
+                MemberDecl::Port(p) if p.name == name => Some(p),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("expected port `{name}`"))
+    };
+    let guard_name = |name: &str| match port(name).where_clause.as_ref().map(|w| &w.condition.kind) {
+        Some(ExprKind::Ident(ident)) => ident.clone(),
+        other => panic!("port `{name}`: expected an identifier guard, got {other:?}"),
+    };
+
+    assert_eq!(guard_name("a"), "on", "the bodiless form keeps its guard");
+    assert_eq!(guard_name("b"), "on", "the bodied form keeps its guard");
+    assert!(
+        port("c").where_clause.is_none(),
+        "an unguarded port has no guard"
+    );
+}

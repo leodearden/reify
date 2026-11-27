@@ -50,6 +50,8 @@ mod import_headers_tests;
 mod import_resolve_tests;
 #[path = "harness_modules_ports/import_warning_tests.rs"]
 mod import_warning_tests;
+#[path = "harness_modules_ports/kept_guards_tests.rs"]
+mod kept_guards_tests;
 #[path = "harness_modules_ports/module_dag_tests.rs"]
 mod module_dag_tests;
 #[path = "harness_modules_ports/module_decl_remedy_tests.rs"]
