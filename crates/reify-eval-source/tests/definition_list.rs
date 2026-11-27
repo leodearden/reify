@@ -3,7 +3,10 @@
 
 use std::path::Path;
 
-use reify_core::{DefinitionName, ModuleName, ModulePath, PathName};
+use reify_ast::Declaration;
+use reify_compiler::parse_with_stdlib;
+use reify_compiler::stdlib_loader::stdlib_sources;
+use reify_core::{DefinitionName, ModuleName, ModulePath, PathName, Severity};
 use reify_eval_source::{DefinitionList, SourceOutput, SourceRefusal, compile_entry};
 
 fn name(text: &str) -> PathName {
@@ -188,4 +191,95 @@ fn an_import_the_program_could_not_compile_is_refused() {
 fn tables_are_send_and_sync() {
     fn check<T: Send + Sync>() {}
     check::<reify_eval_source::DefinitionList>();
+}
+
+/// Every structure and occurrence definition the standard library's sources
+/// write, in registration order, with whether it declares members of its own.
+fn stdlib_definitions_written() -> Vec<(DefinitionName, bool)> {
+    let mut written = Vec::new();
+    for (registered, source) in stdlib_sources() {
+        let path = ModulePath::from_dotted(registered)
+            .unwrap_or_else(|e| panic!("`{registered}` is a module path: {e:?}"));
+        let parsed = parse_with_stdlib(&source, path);
+        assert!(
+            parsed.errors.is_empty(),
+            "the stdlib module `{registered}` parses: {:?}",
+            parsed.errors
+        );
+        for declaration in &parsed.declarations {
+            let (definition, members) = match declaration {
+                Declaration::Structure(def) => (&def.name, &def.members),
+                Declaration::Occurrence(def) => (&def.name, &def.members),
+                _ => continue,
+            };
+            written.push((
+                module_definition(registered, definition),
+                !members.is_empty(),
+            ));
+        }
+    }
+    written
+}
+
+#[test]
+fn the_standard_library_lowers_with_no_error() {
+    let output = accepted(
+        Path::new("probe.ri"),
+        "structure def Probe { param x : Length = 1mm }\n",
+    );
+    let errors: Vec<_> = output
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "the standard library lowers with no error: {errors:#?}"
+    );
+
+    let written = stdlib_definitions_written();
+    assert!(!written.is_empty(), "the standard library writes definitions");
+    let listed: Vec<DefinitionName> = names(&output.definitions)
+        .into_iter()
+        .filter(|definition| {
+            definition
+                .module()
+                .is_some_and(|module| module.segments()[0].as_str() == "std")
+        })
+        .collect();
+    let expected: Vec<DefinitionName> = written.iter().map(|(name, _)| name.clone()).collect();
+    assert_eq!(
+        listed, expected,
+        "the list holds every stdlib structure and occurrence def, in registration order"
+    );
+    for (definition, declares_members) in &written {
+        let table = &output
+            .definitions
+            .get(definition)
+            .unwrap_or_else(|| panic!("{definition:?} is listed"))
+            .members;
+        assert!(
+            !declares_members || !table.is_empty(),
+            "{definition:?} declares members, so its table is not empty"
+        );
+    }
+}
+
+#[test]
+fn the_entry_is_deterministic() {
+    let source = "
+trait Weighted { param mass : Mass = 1kg }
+structure def Plate : Weighted {
+    param t : Length = 3mm
+    let area = t * t
+    sub tolerance : DimensionalTolerance
+}
+structure def Holder { sub p : Plate   let doubled = p.t * 2 }
+";
+    let first = accepted(Path::new("same.ri"), source);
+    let second = accepted(Path::new("same.ri"), source);
+    assert_eq!(
+        first.definitions, second.definitions,
+        "two lowerings of one source give equal lists"
+    );
 }
