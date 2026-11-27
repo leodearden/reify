@@ -9,7 +9,7 @@ use std::fmt::Debug;
 
 use reify_eval_core::{
     Answer, Binding, Core, Cx, Declaration, Description, Failure, Hash128, Input, InputKey, Kind,
-    KindId, Outcome, Path, Produced, Ref, Root, Snapshot, Space, Step, StepKey, Value,
+    KindId, Link, Outcome, Path, Produced, Ref, Root, Snapshot, Space, Step, StepKey, Value,
 };
 
 use crate::toy::{self, Contented, Members};
@@ -221,6 +221,22 @@ fn a_host_can_take_a_path_apart_and_put_it_together_again() {
         Step::named("p")
     );
     assert_eq!(Step::new(Space::Default, StepKey::Index(2)), Step::index(2));
+}
+
+#[test]
+fn a_host_reads_the_space_and_the_chain_of_a_body_declared_step() {
+    let space = Space::Named("toy.call");
+    let step = Step::chain(space, [Link::Site(1), Link::Iteration(2)]);
+    let path = Path::root(Root::named("R")).child(step);
+
+    let [step] = path.steps() else {
+        panic!("one step below the root: {path:?}");
+    };
+    assert_eq!(step.space(), space);
+    let StepKey::Chain(links) = step.key() else {
+        panic!("a body-declared step is a chain: {step:?}");
+    };
+    assert_eq!(&**links, [Link::Site(1), Link::Iteration(2)]);
 }
 
 #[test]

@@ -2,7 +2,9 @@
 //! the declaration's representation (contract 5.2): it follows the kind and
 //! what each binding names, never the order the bindings were set in.
 
-use reify_eval_core::{Binding, Declaration, InputKey, Kind, KindId, Ref, Space, Step, StepKey};
+use reify_eval_core::{
+    Binding, Declaration, InputKey, Kind, KindId, Link, Ref, Space, Step, StepKey,
+};
 
 use crate::toy::{self, Cell};
 
@@ -68,5 +70,42 @@ fn a_declaration_s_content_follows_its_kind_and_bindings() {
     ];
     for (what, declaration) in changed {
         assert_ne!(declaration.content(), base().content(), "{what}");
+    }
+}
+
+#[test]
+fn a_chain_step_s_links_and_space_enter_a_declaration_s_content() {
+    let declaring = |step: Step| Declaration::new(Cell::ID).bind("0", Binding::Declarer(vec![step]));
+    let chain = |space: Space, links: &[Link]| declaring(Step::chain(space, links.iter().copied()));
+    let call = Space::Named("toy.call");
+
+    assert_eq!(
+        chain(call, &[Link::Site(1), Link::Iteration(2)]).content(),
+        chain(call, &[Link::Site(1), Link::Iteration(2)]).content()
+    );
+    let differing = [
+        (
+            "a site and an iteration",
+            chain(call, &[Link::Site(1)]),
+            chain(call, &[Link::Iteration(1)]),
+        ),
+        (
+            "the order of the links",
+            chain(call, &[Link::Site(1), Link::Site(2)]),
+            chain(call, &[Link::Site(2), Link::Site(1)]),
+        ),
+        (
+            "the space",
+            chain(Space::Default, &[Link::Site(1)]),
+            chain(call, &[Link::Site(1)]),
+        ),
+        (
+            "a chain and a name",
+            chain(Space::Default, &[Link::Site(1)]),
+            declaring(Step::new(Space::Default, StepKey::Name("1".into()))),
+        ),
+    ];
+    for (what, one, other) in differing {
+        assert_ne!(one.content(), other.content(), "{what}");
     }
 }
