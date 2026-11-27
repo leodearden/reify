@@ -318,7 +318,7 @@ impl Executor {
     }
 
     /// Works through what `first` sets off, in order. Work on a view that
-    /// has closed, as its opener's run ended, is dropped.
+    /// has closed, as its opener's run ended or dropped it, is dropped.
     fn work(&mut self, first: Work) {
         let mut queue = VecDeque::from([first]);
         while let Some(work) = queue.pop_front() {
@@ -453,7 +453,7 @@ impl Executor {
     /// is above it under the view has been worked out there, so where the
     /// view gives it no node, it answers that instead (contract 6,
     /// structure follows). It waits, as a path waiting to be worked out,
-    /// until the view closes with the opener's run.
+    /// until the view closes.
     fn await_opener(&mut self, key: NodeKey) {
         let opener = NodeKey {
             state: StateId::of(key.state.snapshot),
@@ -544,7 +544,8 @@ impl Executor {
     }
 
     /// Removes the lookup or body at `key`, with the read it waits on, if
-    /// any, returning the body. The views the body's run opened close.
+    /// any, returning the body. The views the body's run opened and still
+    /// holds close.
     fn remove_reader(&mut self, key: NodeKey) -> Option<Task> {
         self.readings.remove(&key);
         self.lookups.remove(&key);
@@ -555,20 +556,37 @@ impl Executor {
         Some(task)
     }
 
-    /// Closes `view`, whose opener's run has ended: every node in progress
-    /// on it is withdrawn, each body abandoned, and its index dropped.
+    /// Closes `view`, whose opener's run has ended or dropped its handle:
+    /// every node in progress on it is withdrawn, each body abandoned, and
+    /// its index dropped.
     fn close(&mut self, view: StateId) {
-        let on_view: Vec<_> = self
-            .nodes_in_progress()
-            .filter(|key| key.state == view)
-            .copied()
-            .collect();
-        for key in on_view {
+        for key in self.nodes_on(view) {
             if let Some(task) = self.withdraw(key) {
                 task.abandon();
             }
         }
         self.indexes.close(view);
+    }
+
+    /// Every node in progress on `view`. Keys order by state first, so
+    /// each collection's keys of the view are found by ranging out both
+    /// ways from the view's key at its opener's path, at the cost of what
+    /// the view holds.
+    fn nodes_on(&self, view: StateId) -> Vec<NodeKey> {
+        let opener = self.indexes.of(view).opener();
+        let pivot = NodeKey {
+            state: view,
+            path: opener.expect("a view's index names its opener"),
+        };
+        let resolving = around(
+            self.resolving.range(pivot..),
+            self.resolving.range(..pivot).rev(),
+            view,
+        );
+        keys_around(&self.lookups, pivot)
+            .chain(keys_around(&self.tasks, pivot))
+            .chain(resolving)
+            .collect()
     }
 
     /// Takes the node at `key` out of the nodes in progress: the lookup or
@@ -743,6 +761,13 @@ impl Executor {
                 return self.end_outside(key, OutsideFailure::BodyPanicked { message });
             }
         };
+        for view in task.take_dropped_views() {
+            self.close(view);
+        }
+        let task = self
+            .tasks
+            .get_mut(&key)
+            .expect("closing a body's views leaves the body");
         match posted {
             Posted::Ask(Ask::Read(_)) if task.has_opened_view() => {
                 self.finish(key, Outcome::Failure(Failure::ReadOutsideView));
@@ -1089,6 +1114,27 @@ impl Executor {
             Report::Released => self.resources.acknowledge_release(),
         }
     }
+}
+
+/// The keys of `map` of `pivot`'s state, found by ranging out both ways
+/// from `pivot`.
+fn keys_around<V>(map: &BTreeMap<NodeKey, V>, pivot: NodeKey) -> impl Iterator<Item = NodeKey> {
+    let up = map.range(pivot..).map(|(key, _)| key);
+    let down = map.range(..pivot).rev().map(|(key, _)| key);
+    around(up, down, pivot.state)
+}
+
+/// The keys of `state` among `up`, the keys from one of `state`'s upward,
+/// and `down`, the keys below it downward.
+fn around<'a>(
+    up: impl Iterator<Item = &'a NodeKey>,
+    down: impl Iterator<Item = &'a NodeKey>,
+    state: StateId,
+) -> impl Iterator<Item = NodeKey> {
+    let on_state = move |key: &&NodeKey| key.state == state;
+    up.take_while(on_state)
+        .chain(down.take_while(on_state))
+        .copied()
 }
 
 impl Drop for Executor {

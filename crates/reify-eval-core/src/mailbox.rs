@@ -73,6 +73,9 @@ pub(crate) struct Mailbox {
     /// How many views the run has opened: a note the body leaves, which
     /// asks nothing of the core.
     views: AtomicU32,
+    /// The ordinals of the views whose handles the body has dropped since
+    /// the core last took them: notes, like `views`.
+    dropped_views: Mutex<Vec<u32>>,
 }
 
 impl Mailbox {
@@ -80,7 +83,19 @@ impl Mailbox {
         Self {
             slot: Mutex::new(Slot::Empty),
             views: AtomicU32::new(0),
+            dropped_views: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Notes that the body dropped the handle of its view `ordinal`, so
+    /// that nothing reads through it any more.
+    pub fn drop_view(&self, ordinal: u32) {
+        lock(&self.dropped_views).push(ordinal);
+    }
+
+    /// The ordinals of the views dropped since this was last asked.
+    pub fn take_dropped_views(&self) -> Vec<u32> {
+        mem::take(&mut *lock(&self.dropped_views))
     }
 
     /// Notes that the run opens a view, returning its ordinal: the number
@@ -118,8 +133,13 @@ impl Mailbox {
     }
 
     fn slot(&self) -> MutexGuard<'_, Slot> {
-        self.slot.lock().unwrap_or_else(PoisonError::into_inner)
+        lock(&self.slot)
     }
+}
+
+/// Locks `mutex`, whatever a panicking body left in it.
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// An ask in flight: posts on its first poll, then waits for the reply.

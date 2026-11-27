@@ -3,7 +3,8 @@
 //! snapshot, or a view a body of a snapshot opened, which has the
 //! snapshot's inputs and its own answers. Within a state a path is answered
 //! once; a snapshot's index is kept while the host holds its snapshot or a
-//! live request is on it, and a view's while the run that opened it runs.
+//! live request is on it, and a view's while the run that opened it runs
+//! and holds the view's handle.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;

@@ -1,7 +1,7 @@
 //! A view a body opened (contract 6): the state of its snapshot with the
 //! substitution's outcomes supposed. Each read through it is a request to
 //! the core, answered in that state, and tells whether its answer depended
-//! on the substitution.
+//! on the substitution. Dropping the handle closes the view.
 
 use std::sync::Arc;
 
@@ -17,6 +17,14 @@ pub struct View<'a> {
     /// Which of its run's views it is, in the order they were opened.
     ordinal: u32,
     substitution: Substitution,
+}
+
+impl Drop for View<'_> {
+    /// Notes that nothing reads through the view any more, so that the core
+    /// closes it when the body is next suspended or ends.
+    fn drop(&mut self) {
+        self.mailbox.drop_view(self.ordinal);
+    }
 }
 
 impl<'a> View<'a> {

@@ -56,7 +56,8 @@ impl Cx {
 
     /// Opens a view of the state the body runs in, which supposes the
     /// outcomes `with` gives (contract 6). Opening it asks nothing of the
-    /// core: the first read through it does.
+    /// core: the first read through it does. Dropping the handle closes
+    /// it, and what was worked out under it goes.
     pub fn suppose(&self, with: Substitution) -> View<'_> {
         View::new(&self.mailbox, self.mailbox.open_view(), with)
     }

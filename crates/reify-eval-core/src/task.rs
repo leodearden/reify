@@ -110,9 +110,20 @@ impl Task {
         self.mailbox.has_opened_view()
     }
 
-    /// The states of the views its run opened.
+    /// The states of the views its run opened that are still open.
     pub fn views(&self) -> impl Iterator<Item = StateId> + '_ {
         self.views.values().copied()
+    }
+
+    /// The states of the views whose handles its body has dropped since it
+    /// was last asked, which are no longer its open views. A view dropped
+    /// before any read through it opened it has no state.
+    pub fn take_dropped_views(&mut self) -> Vec<StateId> {
+        let dropped = self.mailbox.take_dropped_views();
+        dropped
+            .into_iter()
+            .filter_map(|ordinal| self.views.remove(&ordinal))
+            .collect()
     }
 
     /// The flag a section this body starts reads as `cancelled`.

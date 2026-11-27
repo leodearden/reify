@@ -1291,3 +1291,74 @@ fn a_call_under_a_solve_s_view_declaring_the_solve_again_reaches_the_running_sol
         );
     }
 }
+
+/// Reads the shape at "shape" through a view supposing x := 3, drops the
+/// view, then makes a box of its own in a section on the toy kernel, which
+/// it lets go, and answers its volume.
+struct DropsViewThenBuilds;
+
+impl Kind for DropsViewThenBuilds {
+    type Out = i64;
+    const ID: KindId = KindId("views.drops_view_then_builds");
+    const VERSION: u32 = 1;
+
+    async fn run(cx: &Cx) -> Produced<i64> {
+        let view = cx.suppose(Substitution::of([(Ref::binding("x"), supposed(3))]));
+        let read = view.read::<toy::BoxShape>(&Ref::binding("shape")).await;
+        if !matches!(read.outcome, Outcome::Value(_)) {
+            return Produced::Outcome(Outcome::Absent);
+        }
+        drop((read, view));
+        let (handle, _) = cx
+            .exclusive(|kernel: &mut toy::ToyKernel, section| kernel.make_box(2, section))
+            .await;
+        drop(handle);
+        Produced::Outcome(Outcome::of(8_i64))
+    }
+}
+
+#[test]
+fn a_view_closes_once_its_body_drops_its_handle() {
+    let builder = toy::with_scope()
+        .kind::<toy::Shape>()
+        .and_then(|builder| builder.kind::<DropsViewThenBuilds>())
+        .expect("distinct kinds");
+    let watch = Watch::default();
+    let (mut core, keeper) = toy::gated(builder, &watch);
+    let opener = Declaration::new(DropsViewThenBuilds::ID)
+        .bind("x", toy::sibling(&["x"]))
+        .bind("shape", toy::sibling(&["shape"]));
+    let over_x = Declaration::new(toy::Shape::ID).bind("side", toy::sibling(&["x"]));
+    let [members, root] = toy::root_scope(
+        "root",
+        toy::members([
+            ("x", toy::cell(&["x0"])),
+            ("shape", over_x),
+            ("probe", opener),
+        ]),
+    );
+    let snapshot = core.snapshot([members, root, toy::named("x0", 1_i64)]);
+    let at = member("probe");
+
+    let request = core.evaluate(&snapshot, toy::demand([&at]), Budget::unlimited());
+    assert_eq!(
+        core.turn(),
+        Turn::SectionsRunning(1),
+        "the shape's, under the view"
+    );
+    keeper.let_one_through();
+    assert_eq!(core.wait(), Turn::SectionsRunning(1), "the opener's own");
+    keeper.entered();
+    assert_eq!(
+        watch.live_boxes(),
+        0,
+        "the box the view's shape holds, which depended on x and is stored nowhere, \
+         went with the view before the opener's own section ran"
+    );
+    keeper.open();
+    core.run();
+    let answer = toy::the_answer(&core.take_events(), &request, &at);
+    assert_eq!(value_of::<i64>(answer), 8);
+    core.drain();
+    assert_eq!(watch.live_boxes(), 0);
+}
