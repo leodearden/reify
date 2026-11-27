@@ -28,6 +28,7 @@ pub mod kernel;
 pub mod hash;
 pub mod identity;
 pub mod instance_path;
+pub mod instance_path_text;
 pub mod overload;
 pub mod panic_payload;
 pub mod persistent_cache;
@@ -61,6 +62,7 @@ pub use instance_path::{
     AutoAnchor, AutoSite, AutoSiteSegment, CallChain, DefinitionName, InstancePath,
     InstancePathError, ModuleName, PathElement, PathKey, PathName, PathStep,
 };
+pub use instance_path_text::{PathTextError, PathTextProblem};
 pub use primitives::{
     DEPRECATED_ANNOTATION, DISPLAY_ANNOTATION, OPTIMIZED_ANNOTATION, PortDirection,
     SHELL_ANNOTATION, SOLID_ANNOTATION, SOLVER_HINT_ANNOTATION, TEST_ANNOTATION,
