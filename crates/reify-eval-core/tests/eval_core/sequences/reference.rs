@@ -1126,6 +1126,7 @@ mod tests {
             events: vec![HostEvent::Evaluate {
                 on: 0,
                 paths: vec![at("r", &["a"])],
+                budget: None,
                 then: Then::End,
             }],
         };

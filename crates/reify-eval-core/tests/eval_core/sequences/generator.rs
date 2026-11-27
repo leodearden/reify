@@ -534,6 +534,7 @@ impl Generator {
                     2 | 3 => HostEvent::Evaluate {
                         on: self.snapshot(snapshots.len()),
                         paths: self.demand(),
+                        budget: None,
                         then: *self.rng.choose(&[Then::Leave, Then::End]),
                     },
                     _ => {
@@ -787,10 +788,12 @@ mod tests {
             kernel: true,
             cycles: true,
             limits: true,
+            budgets: true,
         };
         assert_eq!(Features::every(), every);
         assert!(!Features::structure().cycles);
         assert!(!Features::structure().limits);
+        assert!(!Features::structure().budgets);
         for seed in GATE_SEEDS {
             let case = generate(seed, every, GATE_EVENTS);
             assert_eq!(gate_case(seed), case, "seed {seed}");
@@ -818,6 +821,7 @@ mod tests {
             kernel: false,
             cycles: false,
             limits: false,
+            budgets: false,
         };
         let every = Features::every();
         let some_off = [
@@ -930,6 +934,32 @@ mod tests {
         }
     }
 
+    /// The budget of each Evaluate of `case`.
+    fn budgets(case: &Case) -> impl Iterator<Item = Option<u64>> {
+        case.events.iter().filter_map(|event| match event {
+            HostEvent::Evaluate { budget, .. } => Some(*budget),
+            HostEvent::Edit { .. } | HostEvent::Drive { .. } => None,
+        })
+    }
+
+    #[test]
+    fn with_budgets_off_no_evaluate_has_a_budget() {
+        let budgets_off = [
+            Features::structure(),
+            Features {
+                budgets: false,
+                ..Features::every()
+            },
+        ];
+        for features in budgets_off {
+            for seed in GATE_SEEDS {
+                let case = generate(seed, features, GATE_EVENTS);
+                let budgeted = budgets(&case).find(Option::is_some);
+                assert_eq!(budgeted, None, "seed {seed}, {features:?}");
+            }
+        }
+    }
+
     #[test]
     fn the_gate_cases_set_limits_initially_and_by_edits() {
         let (mut initial, mut edited) = (0, 0);
@@ -948,7 +978,9 @@ mod tests {
         let (mut drawn_divisors, mut blocked_pairs) = (0, 0);
         let (mut edits_off_latest, mut evaluations_off_latest) = (0, 0);
         let (mut zero_left, mut zero_ended) = (0, 0);
+        let mut budgeted = 0;
         for (_, case) in gate_cases() {
+            budgeted += budgets(&case).filter(Option::is_some).count();
             for decl in decls(&case) {
                 kinds.insert(decl.kind);
                 pickers +=
@@ -1013,6 +1045,7 @@ mod tests {
             ),
             ("drives of no turns left live", zero_left),
             ("drives of no turns ended", zero_ended),
+            ("evaluations with a budget", budgeted),
         ];
         for (shape, count) in counts {
             assert!(count > 0, "the gate cases hold no {shape}");

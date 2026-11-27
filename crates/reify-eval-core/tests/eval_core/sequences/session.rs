@@ -86,6 +86,10 @@ shapes! {
     EditFromNonLatest,
     /// An Edit that sets or removes a limit setting.
     LimitEdited,
+    /// A request given a budget, which the core ended when it ran out.
+    EndedByBudget,
+    /// A request given a budget, answered at every path it demanded.
+    AnsweredWithinBudget,
     /// An answer the order check compared.
     OrderComparison,
 }
@@ -477,7 +481,9 @@ impl Session {
                 self.snapshots.push(next);
                 self.take_events(at)
             }
-            HostEvent::Evaluate { on, paths, then } => {
+            HostEvent::Evaluate {
+                on, paths, then, ..
+            } => {
                 let request = self.open(at, *on, paths, false);
                 self.core.run();
                 self.close(request, *then);
@@ -880,17 +886,20 @@ mod tests {
                 HostEvent::Evaluate {
                     on: 0,
                     paths: vec![r(&["a"]), r(&["b"])],
+                    budget: None,
                     then: Then::End,
                 },
                 edit_x(0, 5),
                 HostEvent::Evaluate {
                     on: 1,
                     paths: vec![r(&["b"])],
+                    budget: None,
                     then: Then::End,
                 },
                 HostEvent::Evaluate {
                     on: 0,
                     paths: vec![r(&["b"]), r(&[])],
+                    budget: None,
                     then: Then::Leave,
                 },
             ],
@@ -916,6 +925,7 @@ mod tests {
                 HostEvent::Evaluate {
                     on: 1,
                     paths: vec![r(&["b"])],
+                    budget: None,
                     then: Then::End,
                 },
             ],
@@ -953,6 +963,7 @@ mod tests {
             events: vec![HostEvent::Evaluate {
                 on: 0,
                 paths: vec![r(&["a"]), r(&["b"]), r(&["c", "x"])],
+                budget: None,
                 then: Then::End,
             }],
         };
@@ -982,6 +993,7 @@ mod tests {
                 HostEvent::Evaluate {
                     on: 0,
                     paths: vec![r(&["p"]), path("r", [step("c"), index(0)])],
+                    budget: None,
                     then: Then::End,
                 },
                 HostEvent::Edit {
@@ -991,6 +1003,7 @@ mod tests {
                 HostEvent::Evaluate {
                     on: 1,
                     paths: vec![r(&[]), r(&["p"])],
+                    budget: None,
                     then: Then::End,
                 },
             ],
@@ -1005,6 +1018,96 @@ mod tests {
         for shape in shapes {
             assert!(reach.count(shape) > 0, "{shape:?}: {reach:?}");
         }
+    }
+
+    /// Root cell "c" over two inputs, evaluated with `budgets` in turn.
+    fn sum_of_two_within(budgets: &[Option<u64>]) -> Case {
+        let evaluate = |budget| HostEvent::Evaluate {
+            on: 0,
+            paths: vec![path("c", [])],
+            budget,
+            then: Then::End,
+        };
+        Case {
+            inputs: inputs([
+                (root("c"), declaration(cell([input("a"), input("b")]))),
+                (named("a"), int(2)),
+                (named("b"), int(3)),
+            ]),
+            events: budgets.iter().copied().map(evaluate).collect(),
+        }
+    }
+
+    #[test]
+    fn a_request_the_core_ends_by_its_budget_is_owed_no_answer() {
+        let case = sum_of_two_within(&[Some(0)]);
+        let reach = check(&case, &toy_core).unwrap_or_else(|mismatch| panic!("{mismatch}"));
+        assert_eq!(reach.count(Shape::EndedByBudget), 1, "{reach:?}");
+        assert_eq!(reach.answered(), 0, "{reach:?}");
+    }
+
+    #[test]
+    fn a_request_within_its_budget_is_answered() {
+        let case = sum_of_two_within(&[Some(1)]);
+        let reach = check(&case, &toy_core).unwrap_or_else(|mismatch| panic!("{mismatch}"));
+        assert_eq!(reach.count(Shape::AnsweredWithinBudget), 1, "{reach:?}");
+        assert_eq!(reach.checked_on(0), 1, "{reach:?}");
+    }
+
+    #[test]
+    fn a_request_after_a_budget_end_on_the_same_snapshot_is_answered_and_checked() {
+        let case = sum_of_two_within(&[Some(0), None]);
+        let reach = check(&case, &toy_core).unwrap_or_else(|mismatch| panic!("{mismatch}"));
+        assert_eq!(reach.count(Shape::EndedByBudget), 1, "{reach:?}");
+        assert_eq!(reach.checked_on(0), 1, "{reach:?}");
+    }
+
+    /// Registered in place of the toy cell: reads its binding "extra",
+    /// which the reference's cell never reads, then runs the toy cell.
+    struct OverReadingCell;
+
+    impl Kind for OverReadingCell {
+        type Out = i64;
+        const ID: KindId = toy::Cell::ID;
+        const VERSION: u32 = toy::Cell::VERSION;
+
+        async fn run(cx: &Cx) -> Produced<i64> {
+            let _ = cx.read::<i64>(&Ref::binding("extra")).await;
+            <toy::Cell as Kind>::run(cx).await
+        }
+    }
+
+    #[test]
+    fn a_core_resolving_paths_the_demand_does_not_need_is_reported_against_the_budget() {
+        let over_reading = decl(
+            ToyKind::Cell,
+            [("0", input("y")), ("extra", declarer([step("a")]))],
+        );
+        let case = Case {
+            inputs: inputs([
+                (root("r"), declaration(scope("r.m"))),
+                (
+                    named("r.m"),
+                    members([(step("a"), cell([input("x")])), (step("b"), over_reading)]),
+                ),
+                (named("x"), int(1)),
+                (named("y"), int(2)),
+            ]),
+            events: vec![HostEvent::Evaluate {
+                on: 0,
+                paths: vec![r(&["b"])],
+                budget: Some(2),
+                then: Then::End,
+            }],
+        };
+        let expected = Mismatch::Budget {
+            event: 0,
+            snapshot: 0,
+            budget: 2,
+            needed: 2,
+            ended: true,
+        };
+        assert_eq!(check(&case, &with_cell_kind::<OverReadingCell>), Err(expected));
     }
 
     /// Registered in place of the toy cell: answers 0 whatever it binds.
@@ -1054,6 +1157,7 @@ mod tests {
                 HostEvent::Evaluate {
                     on: 1,
                     paths: vec![path("c", [])],
+                    budget: None,
                     then: Then::End,
                 },
             ],
@@ -1098,6 +1202,7 @@ mod tests {
             events: vec![HostEvent::Evaluate {
                 on: 0,
                 paths: vec![r(&["a"])],
+                budget: None,
                 then: Then::End,
             }],
         }
@@ -1153,6 +1258,7 @@ mod tests {
         let evaluate = |name| HostEvent::Evaluate {
             on: 0,
             paths: vec![path(name, [])],
+            budget: None,
             then: Then::End,
         };
         let case = Case {
@@ -1190,6 +1296,7 @@ mod tests {
                 HostEvent::Evaluate {
                     on: 0,
                     paths: vec![path("c1", [])],
+                    budget: None,
                     then: Then::End,
                 },
             ],

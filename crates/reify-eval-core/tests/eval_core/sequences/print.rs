@@ -190,7 +190,9 @@ fn event_text(event: &HostEvent) -> String {
                 list(each)
             )
         }
-        HostEvent::Evaluate { on, paths, then } => format!(
+        HostEvent::Evaluate {
+            on, paths, then, ..
+        } => format!(
             "HostEvent::Evaluate {{ on: {on}, paths: {}, then: {} }}",
             paths_text(paths),
             then_text(*then)
@@ -254,6 +256,7 @@ mod tests {
                 HostEvent::Evaluate {
                     on: 1,
                     paths: vec![path("r", [step("m0")]), path("g", [])],
+                    budget: Some(5),
                     then: Then::Leave,
                 },
                 HostEvent::Drive {
@@ -288,7 +291,7 @@ fn printed_case() {
         ]),
         events: vec![
             HostEvent::Edit { from: 0, changes: vec![(named("i"), Some(int(4))), (named("f"), None)] },
-            HostEvent::Evaluate { on: 1, paths: vec![path("r", [step("m0")]), path("g", [])], then: Then::Leave },
+            HostEvent::Evaluate { on: 1, paths: vec![path("r", [step("m0")]), path("g", [])], budget: Some(5), then: Then::Leave },
             HostEvent::Drive { on: 0, paths: vec![path("r", [step("m1"), index(3)])], turns: 2, then: Then::End },
         ],
     };

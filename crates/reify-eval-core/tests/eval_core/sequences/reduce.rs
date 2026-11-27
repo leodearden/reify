@@ -42,6 +42,7 @@ pub fn candidates(case: &Case) -> Vec<Case> {
         } => vec![HostEvent::Evaluate {
             on: *on,
             paths: paths.clone(),
+            budget: None,
             then: *then,
         }],
         _ => Vec::new(),
@@ -50,10 +51,12 @@ pub fn candidates(case: &Case) -> Vec<Case> {
         HostEvent::Evaluate {
             on,
             paths,
+            budget,
             then: Then::Leave,
         } => vec![HostEvent::Evaluate {
             on: *on,
             paths: paths.clone(),
+            budget: *budget,
             then: Then::End,
         }],
         HostEvent::Drive {
@@ -219,9 +222,12 @@ fn demanded(event: &HostEvent) -> Option<&Vec<ModelPath>> {
 
 fn with_paths(event: &HostEvent, paths: Vec<ModelPath>) -> HostEvent {
     match event {
-        HostEvent::Evaluate { on, then, .. } => HostEvent::Evaluate {
+        HostEvent::Evaluate {
+            on, budget, then, ..
+        } => HostEvent::Evaluate {
             on: *on,
             paths,
+            budget: *budget,
             then: *then,
         },
         HostEvent::Drive {
@@ -327,6 +333,7 @@ mod tests {
         let evaluate = |on| HostEvent::Evaluate {
             on,
             paths: vec![path("c", [])],
+            budget: None,
             then: Then::End,
         };
         let case = Case {
