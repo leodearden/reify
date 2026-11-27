@@ -169,15 +169,24 @@ none                // Option<T>: absent value
 
 `undef`, `auto`, `some`, `none` are keywords, not identifiers (§2.10). `undef` can appear anywhere a value expression is expected. `some(value)` and `none` are the constructors for `Option<T>`.
 
-`auto` and `auto(free)` are valid only at a **binding site** — a position where a named declaration slot directly receives its value:
+`auto` and `auto(free)` are valid only where an `auto` is the whole value of something the source declares:
 
 - a `param` default (`param wall_thickness : Length = auto`),
-- a sub-instance parameter override (`sub b : Bearing { bore = auto }`),
-- a `let` binding (`let m : Length = auto`),
-- a structure-construction named argument (`Bolt(length: auto)`),
-- a connect-parameter assignment (`connect a -> b { gain = auto }`).
+- an argument of a sub, in its braces (`sub b : Bearing { bore = auto }`) or in its call form,
+- a typed `let` (`let m : Length = auto`); the annotation is required (§4.7),
+- a placement (`at auto`),
+- an argument of a keyed entry, and an argument written for a collection's elements,
+- a connect-parameter assignment (`connect a -> b { gain = auto }`),
+- a constructor argument (`Bolt(length: auto)`), but only where the call is evaluated exactly once: not inside a lambda, a function body or a quantifier's body, and not in an arm of an `if` or a `match`. `let d = Plate(t: auto)` means `let u : Length = auto` followed by `let d = Plate(t: u)`.
 
-`auto` is **not** a general expression operand. It may not appear as a function-call argument, inside an arithmetic or logical expression, in a `constraint`/`minimize`/`maximize` body, in a field `source`, or in a collection literal — these are parse errors. To bound a solver-delegated value, attach a constraint to the binding rather than embedding `auto` in an expression: write `length = auto, length > 2mm`, not `length = auto + 2mm`. (Reconciled 2026-05-26 with the grammar, which admits `auto` only at binding sites; see `docs/prds/auto-binding-site-positions.md`. The prior "anywhere a value expression is expected" wording over-promised relative to the parser.)
+Each such `auto` is one unknown per instance of the declaration, and it belongs to the instance of the definition whose text contains it. An `auto` cannot sit where evaluation may skip it or repeat it an undeclared number of times, so an `auto` in an arm of an `if` or a `match`, in a lambda, in a function body or in a quantifier's body is a compile error. The fix is to put the member under `where`, to use a collection, or to write a typed `let` outside and pass it in.
+
+Two more placements are compile errors:
+
+- An `auto` anywhere in a purpose's body, because a purpose decides nothing (§4.4).
+- In a sub's braces, `let x : T = auto`, and an `auto` as a constructor argument inside a member written there. The `auto` would be in the parent's text while the member is the sub's, so it would have no single owner. Write the `let` in the parent and pass it in. An assignment `bore = auto` in the braces stays valid: it is an argument written by the parent (§8.7).
+
+`auto` is **not** a general expression operand. It may not appear as a function-call argument, inside an arithmetic or logical expression, in a `constraint`/`minimize`/`maximize` body, in a field `source`, or in a collection literal — these are compile errors. To bound a solver-delegated value, attach a constraint to the binding rather than embedding `auto` in an expression: write `length = auto, length > 2mm`, not `length = auto + 2mm`. (Reconciled 2026-05-26 with the grammar, which admits `auto` only at binding sites; see `docs/prds/auto-binding-site-positions.md`. The prior "anywhere a value expression is expected" wording over-promised relative to the parser.)
 
 **`auto` modes:**
 
@@ -1091,7 +1100,7 @@ let mass : Mass = volume * material.density                // Type annotated
 pub let torque_constant : Torque/Current = back_emf / rated_speed
 ```
 
-Named, typed, computed value with mandatory initialiser expression. Cannot be set from outside -- not a configurable parameter. Private by default; `pub let` to expose. Type annotation optional (type always inferrable from expression via dimensional analysis).
+Named, typed, computed value with mandatory initialiser expression. Cannot be set from outside -- not a configurable parameter. Private by default; `pub let` to expose. Type annotation optional (type always inferrable from expression via dimensional analysis). The one exception is `let x : T = auto`, where the annotation is required, because an `auto` has no expression to infer a type from (§2.9).
 
 `aux let` marks construction geometry (intermediate solids, reference sketches) that is realized and shipped to the GUI but excluded from product surfacing, export, and analysis; see §8.3 (boolean-composition idiom) and §15 (grammar).
 
