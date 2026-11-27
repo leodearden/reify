@@ -7,3 +7,4 @@ note = "the member line `purpose robust(self)` needs grammar-purpose (readings E
 
 [[expect]]
 compile_error = "a purpose applied in the braces of `b`; write `purpose robust(self.b)` in `Holder`"
+code = "PurposeApplicationMisplaced"

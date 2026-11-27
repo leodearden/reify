@@ -1,5 +1,6 @@
 //! The corpus is valid: every entry loads, every path an entry names parses
-//! and prints back the same, its sources parse or not as its needs require
+//! and prints back the same, every compile error of this PRD names its code,
+//! its sources parse or not as its needs require
 //! (one waiting on the purpose grammar fails on its purpose applications
 //! alone), no parsing source has a bare `Scalar`, every disputed row names an
 //! entry, and the waiting entries counted under each owner equal

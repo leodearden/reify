@@ -6,3 +6,4 @@ answer_basis = "stated: readings C20. The `auto` is in `Asm`'s text (ruling 4) a
 
 [[expect]]
 compile_error = "`auto` in a `let` in the braces of `r`; write `let u : Length = auto` in `Asm` and pass it"
+code = "AutoInSubBraces"

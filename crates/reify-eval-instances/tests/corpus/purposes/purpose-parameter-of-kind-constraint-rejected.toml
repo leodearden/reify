@@ -6,3 +6,4 @@ answer_basis = "traced. Part 15.2 states the refusal; readings C17 places it at 
 
 [[expect]]
 compile_error = "a purpose's parameter may not be of kind Constraint"
+code = "PurposeParameterKindRefused"

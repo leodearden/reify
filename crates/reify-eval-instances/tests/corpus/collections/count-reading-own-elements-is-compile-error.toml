@@ -7,3 +7,4 @@ today = "undefined, silently (design decision 10)."
 
 [[expect]]
 compile_error = "the count of `bolts` reads its own elements; write `let proto = Bolt()` and read `proto.rated_load`"
+code = "CollectionCountReadsOwnElements"

@@ -6,3 +6,4 @@ answer_basis = "stated: Part 6.3."
 
 [[expect]]
 compile_error = "`auto` inside an arm of an `if`; put the member under `where`, or use a collection"
+code = "AutoNotEvaluatedOnce"

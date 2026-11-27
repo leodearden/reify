@@ -7,3 +7,4 @@ today = "nothing rejects such a guard (design Part 4, seat report)."
 
 [[expect]]
 compile_error = "the guard of `fan` reads `fan`"
+code = "GuardReadsGuardedMember"

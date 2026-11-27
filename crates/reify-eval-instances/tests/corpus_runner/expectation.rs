@@ -1,7 +1,7 @@
 //! One `[[expect]]` row: what the host is answered at one path, in exactly
 //! one of the forms of docs/prds/instances-on-the-core.md section 5.8.
 
-use reify_core::InstancePath;
+use reify_core::{DiagnosticCode, InstancePath};
 use serde::Deserialize;
 
 use crate::expected_value::ExpectedValue;
@@ -13,8 +13,13 @@ pub struct Expectation {
     #[expect(dead_code, reason = "read once entries run")]
     pub path: Option<InstancePath>, // debt: ticket tkt_0RXF3RZ3T23TSSXGWCWN0S20BF
     pub after_edit: Option<u32>,
-    #[expect(dead_code, reason = "read once entries run")]
-    pub form: Form, // debt: ticket tkt_0RXF3RZ3T23TSSXGWCWN0S20BF
+    pub form: Form,
+}
+
+impl Expectation {
+    pub fn is_uncoded_compile_error(&self) -> bool {
+        matches!(self.form, Form::CompileError { code: None, .. })
+    }
 }
 
 #[derive(Debug)]
@@ -34,7 +39,7 @@ pub enum Form {
     Compile,
     CompileError {
         message: String,
-        code: Option<String>,
+        code: Option<DiagnosticCode>,
     },
 }
 
@@ -124,7 +129,7 @@ struct RawExpectation {
     roots: Option<Vec<String>>,
     compile: Option<Accepted>,
     compile_error: Option<String>,
-    code: Option<String>,
+    code: Option<DiagnosticCode>,
 }
 
 impl TryFrom<RawExpectation> for Expectation {

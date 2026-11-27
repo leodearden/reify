@@ -7,3 +7,4 @@ today = "accepted with no diagnostic; `Bracket.t = 5.5 mm` (run `purpose_obj.ri`
 
 [[expect]]
 compile_error = "an objective inside purpose `lean`; write it in the definition"
+code = "ObjectiveInPurpose"

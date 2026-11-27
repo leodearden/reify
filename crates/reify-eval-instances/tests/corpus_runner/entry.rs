@@ -125,6 +125,19 @@ impl EntryRecord {
         if self.expect.is_empty() {
             return Err("an entry needs at least one [[expect]] row".to_string());
         }
+        let uncoded = self
+            .expect
+            .iter()
+            .any(Expectation::is_uncoded_compile_error);
+        let owned_by_this_prd = self.needs.iter().all(|need| need.owned_by_this_prd());
+        if uncoded && owned_by_this_prd {
+            return Err(
+                "a `compile_error` row needs a `code`: every compile error this PRD adds has a \
+                 DiagnosticCode (crates/reify-core/src/diagnostics.rs); only an entry that \
+                 needs a word owned outside this PRD may leave it out"
+                    .to_string(),
+            );
+        }
         for row in &self.expect {
             if let Some(edit) = row.after_edit
                 && !(1..=self.edits.len()).contains(&(edit as usize))
