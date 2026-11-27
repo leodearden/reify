@@ -937,7 +937,7 @@ Semantics:
 
 ### 4.4 Purpose Declarations
 
-Purposes are named, parameterized declaration kinds with AST identity. A purpose body may contain `constraint` declarations, objectives (`minimize`/`maximize`), `let` bindings, and guarded (`where`) blocks, as well as `Output` occurrence instantiations. They have activation/deactivation mechanics via implementation-defined UX.
+Purposes are named, parameterized declaration kinds with AST identity. A purpose body may contain `constraint` declarations, applied constraint definitions (`constraint Name(args)`), `let` bindings, and guarded (`where`) blocks, as well as `Output` occurrence instantiations. An objective (`minimize`/`maximize`) or an `auto` in a purpose's body is a compile error, whose message says to write the objective in the definition.
 
 ```
 purpose_decl ::= 'pub'? 'purpose' IDENT type_params? '(' purpose_params ')' '{' purpose_member* '}'
@@ -953,15 +953,34 @@ purpose fits_within(part : Structure, envelope : Structure) {
     where exists p in part.material_params: constrained(p) {
         constraint forall p in part.material_params: determined(p)
     }
-    minimize part.mass
 }
 ```
 
-When activated, a purpose's constraints and outputs are present in the evaluation graph; when deactivated, they are absent. The checking/solving/proposing mode is determined by input determinacy state, not explicit mode selection.
+A purpose is declared, then **applied in source** by the member line `purpose Name(args)` in a definition's body. Arguments are written as in a constructor call, with an optional `where` guard.
 
-**Purpose parameters are entity references, not values.** Purpose parameters bind to entities in the evaluation graph, not to values on the determinacy spectrum. The type annotation is an entity-kind selector: `Structure`, `Occurrence`, `Constraint`, or `Field`. These are built-in keywords in purpose parameter position, not value types -- `param x : Structure` inside a structure body is not valid.
+- It may be applied any number of times, one line per application. Removing the line is the same as never writing it.
+- An applied purpose is a member of the definition it is written in. Its constraints are verdicts counted in the applying instance's summary.
+- A purpose only checks: its constraints never bear on an `auto` and never enter a solve. A requirement that should shape the design is a `constraint`, which a purpose can also check by applying the same `constraint def`.
+- A purpose line in a purpose's body, in a trait or in a sub's braces is a compile error. In the braces the message says to write the line in the parent with the sub as subject, because there `self` is the parent (§8.6).
 
-Entity references provide **compiler-generated reflective access** over the bound entity's schema:
+```
+purpose robust(subject : Structure) { constraint subject.t >= 3mm }
+
+structure def Rig {
+    sub bracket : Bracket
+    purpose robust(self.bracket)
+}
+```
+
+**A purpose's parameters are subjects or values.** A parameter whose declared type is a structure definition, a trait or `Structure` is a **subject**: it binds to an instance in the evaluation graph, not to a value on the determinacy spectrum. `Structure` is a built-in keyword in purpose parameter position, not a value type -- `param x : Structure` inside a structure body is not valid.
+
+- The argument of a subject names an instance: `self`, or a sub or element below it at any depth (`self.frame.bracket`, `self.vents[2]`), with an element's index or key written as a literal.
+- A value held in a cell is refused as a subject, and so is a whole collection; both are compile errors. A purpose over every element takes the container and uses `forall`.
+- Every other parameter is a value, written as an expression.
+- A parameter of kind `Constraint` or `Field` is refused at the declaration.
+- A purpose with no parameter is applied as `purpose name()`.
+
+A subject provides **compiler-generated reflective access** over the bound instance's schema:
 
 | Reflective member | Returns | Meaning |
 |-------------------|---------|---------|
@@ -974,7 +993,9 @@ Entity references provide **compiler-generated reflective access** over the boun
 
 These are schema queries resolved at elaboration time. Named members on the bound entity (e.g., `subject.cost`) resolve to the entity's ValueCells through the entity binding, and participate in the evaluation graph normally.
 
-Purposes are graph-level constructs. They express requirements and objectives over the *shape and state* of a design, not computations over values. This is what makes them universally applicable -- `manufacturing_ready` works on any structure without per-structure opt-in.
+A purpose's body reads only what is visible from outside its subject: parameters, subs, ports and `pub let`s (§7.4). Where the subject's type is a definition, a read of a private `let` is a compile error at the purpose's declaration. Where the type is `Structure` or a trait, the error is at the application line. A subject under a guard compiles. Where the subject is absent, the purpose's verdicts are undetermined (§6.3).
+
+Purposes are graph-level constructs. They express requirements over the *shape and state* of a design, not computations over values. This is what makes them universally applicable -- `manufacturing_ready` works on any structure without per-structure opt-in.
 
 ### 4.5 Enum Declarations
 
@@ -2337,7 +2358,7 @@ These compose with `forall`, `exists`, `and`, `or`, participate in `where` guard
 
 ### 9.5 Purposes
 
-A purpose is a named determinacy predicate -- requirements specifying which parameters must be determined for a particular downstream use to be viable. Purposes are activatable -- when active, their constraints and outputs are present; when deactivated, absent. A purpose body may contain constraints, objectives (`minimize`/`maximize`), `let` bindings, and guarded (`where`) blocks.
+A purpose is a named determinacy predicate -- requirements specifying which parameters must be determined for a particular downstream use to be viable. A purpose is applied by the member line `purpose Name(args)` (§4.4) and only checks. A purpose body may contain constraints, applied constraint definitions, `let` bindings, and guarded (`where`) blocks, with no objective and no `auto`.
 
 ```
 purpose fits_within(part : Structure, envelope : Structure) {
@@ -2347,7 +2368,6 @@ purpose fits_within(part : Structure, envelope : Structure) {
     where exists p in part.material_params: constrained(p) {
         constraint forall p in part.material_params: determined(p)
     }
-    minimize part.mass
 }
 ```
 
@@ -2881,11 +2901,12 @@ purpose_decl    ::= 'pub'? 'purpose' IDENT type_params?
 purpose_params  ::= purpose_param (',' purpose_param)*
 purpose_param   ::= IDENT ':' type_expr
 
-purpose_member  ::= constraint_line | sub_decl | let_decl | minimize_decl | maximize_decl
+purpose_member  ::= constraint_line | sub_decl | let_decl
                   | guarded_block
 
-(* Objectives take no guard, in either form (§6.3): minimize_decl/maximize_decl
-   carry no where_guard? suffix and are excluded from guarded bodies. *)
+(* A purpose takes no objective, guarded or not (§4.4): minimize_decl and
+   maximize_decl are members of definitions, not of purposes, and they carry no
+   where_guard? suffix (§6.3). *)
 guarded_purpose_member
                 ::= constraint_line | sub_decl | let_decl | guarded_block
 
@@ -2932,7 +2953,7 @@ member          ::= param_decl | port_decl | sub_decl | let_decl | type_alias_de
                    | constraint_line | connect_stmt | chain_stmt
                    | entity_decl | field_body | fn_decl
                    | where_block | match_block | meta_block
-                   | minimize_decl | maximize_decl
+                   | minimize_decl | maximize_decl | purpose_application
 
 (* Objectives take no guard, in either form (§6.3): excluded from guarded bodies.
    sub_decl/forall statements ARE admitted here -- the compiler's "not yet
@@ -2940,7 +2961,7 @@ member          ::= param_decl | port_decl | sub_decl | let_decl | type_alias_de
 guarded_member  ::= param_decl | port_decl | sub_decl | let_decl | type_alias_decl
                    | constraint_line | connect_stmt | chain_stmt
                    | entity_decl | field_body | fn_decl
-                   | where_block | match_block | meta_block
+                   | where_block | match_block | meta_block | purpose_application
 
 where_guard     ::= 'where' expr                         (* per-declaration guard *)
 
@@ -2964,6 +2985,8 @@ disposition     ::= 'keep' disposition_path ('using' expr)?   (* 'using' RESERVE
 disposition_path ::= IDENT ('.' IDENT)*
 let_decl        ::= 'pub'? 'aux'? 'let' IDENT (':' type_expr)? '=' expr where_guard?
 constraint_line ::= 'constraint' (constraint_ref | expr) where_guard?
+(* §4.4: a compile error in a purpose's body, a trait or a sub's braces. *)
+purpose_application ::= 'purpose' IDENT '(' args? ')' where_guard?
 
 constraint_ref  ::= TYPE_IDENT type_args? '(' args? ')'
 
