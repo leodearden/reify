@@ -17,37 +17,30 @@
 //! inputs and its call's first term, and, with cycles on, its call; a
 //! callee is a cell or a call of cells, so no call recurses.
 //! With solve on, the first level drawn ends, after the blocked pair, in
-//! the case's one solve group: a scope, at a step of a space of its own,
-//! holding a solve of a new problem input, its int and flag unknowns,
-//! which are solved parts of it, and the nodes its trials read (a guard on
-//! the flag unknown, a collection counting the int unknown, and a call
-//! over the int unknown, or with calls off a cell), which read only the
-//! group's unknowns, inputs and constants, so no trial reaches another
-//! solve: one view deep.
-//! The solve reads those nodes only through its view, where its unknowns
-//! are supposed, so the group forms no ring of waits: the one exception to
-//! the ordinal rule. With cycles on, at times a constraint reads the solve
-//! itself. An evaluation's demand may gain the solve or a solved part,
-//! and an edit may change a problem. A feature that is off draws
-//! nothing from the rng, so a later leaf's feature leaves this feature
-//! set's stream unchanged; the solve feature draws only from a stream of
-//! its own and names its inputs apart, so with it on the other features
-//! draw as they do with it off.
+//! the case's one solve group, one view deep (`solve_draws`); an
+//! evaluation's demand may gain the solve or a solved part, and an edit
+//! may change a problem. The solve reads the group's other nodes only
+//! through its view, where its unknowns are supposed, so the group forms
+//! no ring of waits: the one exception to the ordinal rule. A feature that
+//! is off draws nothing from the rng, so a later leaf's feature leaves this
+//! feature set's stream unchanged; the solve feature draws only from a
+//! stream of its own and names its inputs apart, so with it on the other
+//! features draw as they do with it off.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::iter;
 use std::ops::RangeInclusive;
 
-use reify_eval_core::{Limit, Space, Step, StepKey};
+use reify_eval_core::{Limit, Step};
 
 use super::case::{Case, HostEvent, Then, edited};
 use super::design::{
-    Bind, Decl, Inputs, Key, ModelPath, Part, Site, ToyKind, Val, bound, call, call_step,
-    calls_value, cell, collection, constant, declaration, declarer, divided, flag, guard, index,
-    input, int, measure, members, named, passed, path, picker, problem, root, scope, shape, site,
-    solve, solved_flag, solved_int, step, when,
+    Bind, Decl, Inputs, Key, ModelPath, Site, ToyKind, Val, bound, call, call_step, calls_value,
+    cell, collection, constant, declaration, declarer, divided, flag, guard, index, input, int,
+    measure, members, named, passed, path, picker, root, scope, shape, site, step, when,
 };
 use super::rng::XorShift64Star;
+use super::solve_draws::{SolveDraws, is_group_step};
 
 /// The seeds the gate runs, each for `GATE_EVENTS` host events.
 pub const GATE_SEEDS: RangeInclusive<u64> = 1..=64;
@@ -134,23 +127,12 @@ pub fn generate(seed: u64, features: Features, events: usize) -> Case {
         call_steps: BTreeMap::new(),
         paths: Vec::new(),
         named: 0,
-        solve_rng: XorShift64Star::new(seed ^ SOLVE_STREAM),
-        solve_named: 0,
-        solve_inputs: BTreeSet::new(),
-        problems: Vec::new(),
-        solve_scope: None,
+        solve: SolveDraws::new(seed, features.cycles, features.call),
     };
     let inputs = generator.design();
     let events = generator.events(&inputs, events);
     Case { inputs, events }
 }
-
-/// What the solve stream's seed is the case seed mixed with.
-const SOLVE_STREAM: u64 = 0x5017_E5EE_D5EE_D501;
-
-/// The space of the steps a solve group's members are at, apart from the
-/// ordinals of a level's other members.
-const SOLVE_SPACE: Space = Space::Named("toy.solve");
 
 /// The prefix of the name of each blocked pair's input held at zero.
 const BLOCKED_PAIR_ZERO: &str = "z";
@@ -201,7 +183,7 @@ impl Level {
                 Some((ordinal, decl.kind))
             })
             .collect();
-        let drawn = held.keys().filter(|at| at.space() != SOLVE_SPACE);
+        let drawn = held.keys().filter(|at| !is_group_step(at));
         assert_eq!(
             present.len(),
             drawn.count(),
@@ -247,15 +229,8 @@ struct Generator {
     /// Every path the design has declared, and a few it never declares.
     paths: Vec<ModelPath>,
     named: usize,
-    /// The stream every draw of the solve feature comes from.
-    solve_rng: XorShift64Star,
-    solve_named: usize,
-    /// The inputs the solve feature made, which the other edits leave.
-    solve_inputs: BTreeSet<String>,
-    /// Each problem input, with the number of constraints its solve binds.
-    problems: Vec<(String, u64)>,
-    /// The path of the scope of the case's solve group, once drawn.
-    solve_scope: Option<ModelPath>,
+    /// The solve feature's draws, from a stream of their own.
+    solve: SolveDraws,
 }
 
 impl Generator {
@@ -655,131 +630,12 @@ impl Generator {
         if self.features.divide {
             self.blocked_pair(&mut level, &mut held, needed);
         }
-        if self.features.solve && self.solve_scope.is_none() {
-            self.solve_group(&level.at, &mut held, needed);
+        if self.features.solve && !self.solve.drawn() {
+            let (at, group) = self.solve.group(&level.at, needed);
+            held.insert(at, group);
         }
         needed.push((named(&level.input), members(held)));
         level
-    }
-
-    /// Appends to `held`, the members of the level at `at`, a solve group,
-    /// drawn from the solve stream alone: a scope at the group's own step
-    /// over a new members input holding the solve, its unknowns n and f,
-    /// solved parts of it, and the nodes its constraints name.
-    fn solve_group(
-        &mut self,
-        at: &ModelPath,
-        held: &mut BTreeMap<Step, Decl>,
-        needed: &mut Needed,
-    ) {
-        let (solved, n, f) = (step("solve"), step("n"), step("f"));
-        let read = |step: &Step| declarer([step.clone()]);
-        let mut group = BTreeMap::new();
-        let (mut constraints, last) = self.trial_nodes(&n, &f, &mut group, needed);
-        if self.solve_rng.chance(1, 2) {
-            constraints.reverse();
-        }
-        if self.features.cycles && self.solve_rng.chance(1, 4) {
-            let place = self.solve_rng.below(constraints.len() + 1);
-            constraints.insert(place, read(&solved));
-        }
-        constraints.push(last);
-        let bound = u64::try_from(constraints.len()).expect("a count of constraints fits u64");
-        let value = self.problem_value(bound);
-        let name = self.solve_input("p", value, needed);
-        self.problems.push((name.clone(), bound));
-        let unknowns = [read(&n), read(&f)];
-        group.insert(solved.clone(), solve(input(&name), unknowns, constraints));
-        group.insert(n, solved_int(read(&solved), 0));
-        group.insert(f, solved_flag(read(&solved), 1));
-        let group_input = self.solve_input("pq", members(group), needed);
-        held.insert(solve_group_step(), scope(&group_input));
-        self.solve_scope = Some(at.child(solve_group_step()));
-    }
-
-    /// Puts into `group` the nodes a solve group's trials read, over its int
-    /// unknown at `n` and its flag unknown at `f`. Returns the reads of
-    /// them the constraints before the last make (the member of a guard on
-    /// f and an element of a collection counting n), and the last
-    /// constraint's: a node over n that the smallest candidates fail (a
-    /// call, or, with calls off, a cell), so that a trial that fails there
-    /// has read the others, and so has the next.
-    fn trial_nodes(
-        &mut self,
-        n: &Step,
-        f: &Step,
-        group: &mut BTreeMap<Step, Decl>,
-        needed: &mut Needed,
-    ) -> (Vec<Bind>, Bind) {
-        let (guarded, list) = (step("guard"), step("list"));
-        let member = cell([constant(int(self.small_from(-1)))]);
-        let guard_members = self.solve_input("pg", members([(step("m0"), member)]), needed);
-        group.insert(
-            guarded.clone(),
-            guard(declarer([f.clone()]), &guard_members),
-        );
-        let below_count = -1 - self.solve_rng.below(2) as i64;
-        let element = cell([passed("count", []), constant(int(below_count))]);
-        let element = self.solve_input("pe", declaration(element), needed);
-        group.insert(
-            list.clone(),
-            collection(declarer([n.clone()]), input(&element)),
-        );
-        let at_index = self.solve_rng.below(4) as u64;
-        let reads = vec![
-            declarer([guarded, step("m0")]),
-            declarer([list, index(at_index)]),
-        ];
-        let over = if self.features.call {
-            let offset = self.small_from(-4);
-            let sites = calls_value([site(&[1], false, offset, cell([]))]);
-            let sites = self.solve_input("pk", sites, needed);
-            (step("call"), call([declarer([n.clone()])], input(&sites)))
-        } else {
-            let offset = self.small_from(-4);
-            (
-                step("cell"),
-                cell([declarer([n.clone()]), constant(int(offset))]),
-            )
-        };
-        let last = declarer([over.0.clone()]);
-        group.insert(over.0, over.1);
-        (reads, last)
-    }
-
-    /// A problem of two to four candidates for a group's int and flag
-    /// unknowns, against `constraints` constraints: each candidate's flag is
-    /// the other of the one before, and its int differs from it, so that
-    /// trials differ in a guard and in a count. The ints start at zero or
-    /// one and mostly rise, and at times fall, so that some problems hold
-    /// no candidate.
-    fn problem_value(&mut self, constraints: u64) -> Val {
-        let falling = self.solve_rng.chance(1, 4);
-        let mut int = self.solve_rng.below(2) as i64;
-        let mut flag = self.solve_rng.chance(1, 2);
-        let count = 2 + self.solve_rng.below(3);
-        let mut candidates = Vec::new();
-        for _ in 0..count {
-            candidates.push(vec![Part::Int(int), Part::Flag(flag)]);
-            let step = 1 + self.solve_rng.below(2) as i64;
-            int += if falling { -step } else { step };
-            flag = !flag;
-        }
-        problem(candidates, constraints)
-    }
-
-    /// One of the four ints from `least` up, drawn from the solve stream.
-    fn small_from(&mut self, least: i64) -> i64 {
-        least + self.solve_rng.below(4) as i64
-    }
-
-    /// A new input of the solve feature's own naming, set to `value`.
-    fn solve_input(&mut self, prefix: &str, value: Val, needed: &mut Needed) -> String {
-        self.solve_named += 1;
-        let name = format!("{prefix}{}", self.solve_named);
-        needed.push((named(&name), value));
-        self.solve_inputs.insert(name.clone());
-        name
     }
 
     /// Appends to `held`, the members of `level`, a collection of one to
@@ -931,12 +787,7 @@ impl Generator {
         let mut paths: Vec<_> = (0..1 + self.rng.below(4))
             .map(|_| self.rng.choose(&self.paths).clone())
             .collect();
-        if let Some(group) = &self.solve_scope
-            && self.solve_rng.chance(3, 4)
-        {
-            let member = *self.solve_rng.choose(&["solve", "solve", "n", "f"]);
-            paths.push(group.child(step(member)));
-        }
+        paths.extend(self.solve.demand());
         paths
     }
 
@@ -946,10 +797,7 @@ impl Generator {
         for _ in 0..1 + self.rng.below(2) {
             changes.extend(self.change(current));
         }
-        if self.features.solve && !self.problems.is_empty() && self.solve_rng.chance(1, 3) {
-            let (name, constraints) = self.solve_rng.choose(&self.problems).clone();
-            changes.push((named(&name), Some(self.problem_value(constraints))));
-        }
+        changes.extend(self.solve.edit());
         HostEvent::Edit { from, changes }
     }
 
@@ -989,9 +837,7 @@ impl Generator {
             Change::Remove => {
                 let present: Vec<_> = current
                     .keys()
-                    .filter(
-                        |key| matches!(key, Key::Named(name) if !self.solve_inputs.contains(name)),
-                    )
+                    .filter(|key| matches!(key, Key::Named(name) if !self.solve.owns(name)))
                     .collect();
                 match present.is_empty() {
                     true => Vec::new(),
@@ -1079,11 +925,6 @@ impl Generator {
 
 fn member_step(ordinal: usize) -> Step {
     step(&format!("m{ordinal}"))
-}
-
-/// The step of a level's solve group, apart from its members' ordinals.
-fn solve_group_step() -> Step {
-    Step::new(SOLVE_SPACE, StepKey::Name("group".into()))
 }
 
 /// The steps of the children a site at `chain` declares in a call of

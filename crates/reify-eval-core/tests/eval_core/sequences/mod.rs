@@ -21,3 +21,4 @@ mod rng;
 mod seen;
 mod session;
 mod shrink;
+mod solve_draws;
