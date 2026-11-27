@@ -4,6 +4,7 @@
 
 use std::any::Any;
 
+use crate::description::Description;
 use crate::hash::Encoder;
 use crate::kind_id::KindId;
 use crate::reference::Ref;
@@ -25,6 +26,13 @@ pub enum Failure {
     /// A failure a body states in its kind's own terms, by a code the kind
     /// defines and the core never interprets.
     OfKind { kind: KindId, code: &'static str },
+    /// A failure a body states in its kind's own terms, by a code as
+    /// `OfKind` does, with a description of a type the kind chooses.
+    Described {
+        kind: KindId,
+        code: &'static str,
+        description: Description,
+    },
     /// The node is on a ring of waits, each node on it needing the next
     /// one's answer (contract 7.7). It names and counts no place, so every
     /// node on the ring, wherever the ring was entered, has this one value.
@@ -61,6 +69,14 @@ impl Failure {
             }
             Failure::OfKind { kind, code } => {
                 encoder.tag("failure.of_kind").text(kind.0).text(code);
+            }
+            Failure::Described {
+                kind,
+                code,
+                description,
+            } => {
+                encoder.tag("failure.described").text(kind.0).text(code);
+                description.encode(encoder);
             }
             Failure::Cycle => {
                 encoder.tag("failure.cycle");
