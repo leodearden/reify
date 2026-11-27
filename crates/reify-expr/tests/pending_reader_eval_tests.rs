@@ -200,3 +200,73 @@ fn a_list_with_a_pending_element_asks_for_every_element_and_is_pending() {
     assert_eq!(pending_eval(&expr, &reader), Evaluated::Pending);
     assert_eq!(asked(&reader), ids(&[&a, &b]));
 }
+
+// ── The logical operators read both operands ───────────────────────────────
+
+fn read_bool(id: &ValueCellId) -> CompiledExpr {
+    read(id, Type::Bool)
+}
+
+/// Each logical operator with each left value that decides it today: its
+/// absorbing element and a non-Bool.
+fn deciding_left_values() -> Vec<(BinOp, Value)> {
+    vec![
+        (BinOp::And, Value::Bool(false)),
+        (BinOp::And, Value::Int(3)),
+        (BinOp::Or, Value::Bool(true)),
+        (BinOp::Or, Value::Int(3)),
+        (BinOp::Implies, Value::Bool(false)),
+        (BinOp::Implies, Value::Int(3)),
+    ]
+}
+
+/// `op(read(x), read(y))` and `op(read(y), read(x))`.
+fn both_orders(op: BinOp, x: &ValueCellId, y: &ValueCellId) -> [(&'static str, CompiledExpr); 2] {
+    [
+        (
+            "x first",
+            binop(op, read_bool(x), read_bool(y), Type::Bool),
+        ),
+        (
+            "y first",
+            binop(op, read_bool(y), read_bool(x), Type::Bool),
+        ),
+    ]
+}
+
+#[test]
+fn a_logical_operator_whose_left_operand_decides_still_reads_the_right_and_keeps_its_value() {
+    let x = cell("x");
+    let y = cell("y");
+    for (op, left) in deciding_left_values() {
+        for (order, expr) in both_orders(op, &x, &y) {
+            let reader = TestReader::new()
+                .with(&x, left.clone())
+                .with(&y, Value::Bool(true));
+            let expected = old_eval(&expr, &reader);
+            assert_eq!(
+                pending_eval(&expr, &reader),
+                Evaluated::Value(expected),
+                "{op:?} with x = {left:?}, {order}"
+            );
+            assert_eq!(asked(&reader), ids(&[&x, &y]), "{op:?} with x = {left:?}, {order}");
+        }
+    }
+}
+
+#[test]
+fn a_logical_operator_whose_left_operand_decides_is_pending_when_the_other_is_not_here_yet() {
+    let x = cell("x");
+    let y = cell("y");
+    for (op, left) in deciding_left_values() {
+        for (order, expr) in both_orders(op, &x, &y) {
+            let reader = TestReader::new().with(&x, left.clone()).not_yet(&y);
+            assert_eq!(
+                pending_eval(&expr, &reader),
+                Evaluated::Pending,
+                "{op:?} with x = {left:?}, {order}"
+            );
+            assert_eq!(asked(&reader), ids(&[&x, &y]), "{op:?} with x = {left:?}, {order}");
+        }
+    }
+}
