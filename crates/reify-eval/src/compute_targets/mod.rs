@@ -51,6 +51,9 @@ mod fea_inputs;
 mod fea_loads;
 /// Task 6922 (γ1): the FEA value-shape error shared by the FEA trampolines.
 mod fea_value_shape;
+/// Task 8674 (S15 α): the decode of a compute trampoline's stdlib inputs, and
+/// the one point where a decode error becomes a `Failed` outcome.
+pub(crate) mod stdlib_inputs;
 pub mod form_find;
 /// Task 9219: the LoadCase sweep shared by the multi-case trampolines.
 mod load_cases;
