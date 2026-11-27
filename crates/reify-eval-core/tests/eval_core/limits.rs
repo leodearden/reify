@@ -1,6 +1,7 @@
 //! Limits that change answers, set in a snapshot (contract 7.6): a node
-//! deeper below its root than the depth setting allows fails, whatever the
-//! store holds, and the failure is a fact about the path, never stored.
+//! deeper below its root than the depth setting allows, or whose value
+//! declares more children than the children setting allows, fails whatever
+//! the store holds, and the failure is a fact about the path, never stored.
 
 use std::fmt::Debug;
 use std::iter;
@@ -290,4 +291,169 @@ fn a_depth_setting_that_is_not_a_u64_is_refused() {
     ]);
 
     let _ = toy::answer_alone(&mut core, &snapshot, &toy::at("total"));
+}
+
+/// The inputs of root scope R with `members`, each member a cell over the
+/// input "v", under the children setting `children`.
+fn scope_of(children: u64, members: &[&str]) -> Vec<(InputKey, Input)> {
+    let mut inputs = vec![
+        toy::named("v", 1_i64),
+        toy::limit(Limit::ChildrenPerNode, children),
+    ];
+    let cells = members.iter().map(|name| (*name, toy::cell(&["v"])));
+    inputs.extend(toy::root_scope("R", toy::members(cells)));
+    inputs
+}
+
+#[test]
+fn a_scope_declaring_more_members_than_the_children_setting_fails_and_so_does_each_member() {
+    let mut core = toy::with_scope().build();
+    let snapshot = core.snapshot(scope_of(2, &["a", "b", "c"]));
+    let paths = [
+        toy::at("R"),
+        toy::below("R", &["a"]),
+        toy::below("R", &["b"]),
+        toy::below("R", &["c"]),
+    ];
+
+    let answers = toy::answers_to(&mut core, &snapshot, &paths.iter().collect::<Vec<_>>());
+    let too_many = Failure::TooManyChildren { limit: 2 };
+    assert_eq!(
+        answers.into_iter().map(toy::failed).collect::<Vec<_>>(),
+        [
+            too_many.clone(),
+            too_many.clone(),
+            too_many.clone(),
+            too_many
+        ]
+    );
+    assert_eq!(core.counters().body_runs(Cell::ID), 0);
+}
+
+#[test]
+fn a_scope_declaring_as_many_members_as_the_children_setting_answers_them() {
+    let mut core = toy::with_scope().build();
+    let snapshot = core.snapshot(scope_of(3, &["a", "b", "c"]));
+
+    let answer = toy::answer_alone(&mut core, &snapshot, &toy::below("R", &["c"]));
+    assert_value(answer, 1_i64);
+}
+
+#[test]
+fn a_reader_of_a_member_of_a_node_with_too_many_children_is_blocked_by_it() {
+    let mut core = toy::with_scope().build();
+    let three = toy::members(["a", "b", "c"].map(|name| (name, toy::cell(&["v"]))));
+    let mut inputs = vec![
+        toy::named("v", 1_i64),
+        toy::named("inner.members", three),
+        toy::limit(Limit::ChildrenPerNode, 2),
+    ];
+    inputs.extend(toy::root_scope(
+        "R",
+        toy::members([
+            ("inner", toy::scope("inner.members")),
+            ("reader", toy::cell_over([toy::sibling(&["inner", "a"])])),
+        ]),
+    ));
+    let snapshot = core.snapshot(inputs);
+    let (inner, reader) = (toy::below("R", &["inner"]), toy::below("R", &["reader"]));
+
+    let answers = toy::answers_to(&mut core, &snapshot, &[&inner, &reader]);
+    assert_eq!(
+        answers.into_iter().map(toy::failed).collect::<Vec<_>>(),
+        [
+            Failure::TooManyChildren { limit: 2 },
+            Failure::BlockedBy {
+                at: Ref::binding("0")
+            },
+        ]
+    );
+}
+
+/// The answer at root collection "list" of `count` cells over "v", under
+/// the children setting `children`.
+fn collection_under(children: u64, count: i64) -> Answer<Erased> {
+    let mut core = toy::with_structure().build();
+    let snapshot = core.snapshot([
+        toy::named("v", 1_i64),
+        toy::named("n", count),
+        toy::named("element", toy::cell(&["v"])),
+        toy::limit(Limit::ChildrenPerNode, children),
+        toy::root(
+            "list",
+            toy::collection(toy::input("n"), toy::input("element")),
+        ),
+    ]);
+    toy::answer_alone(&mut core, &snapshot, &toy::at("list"))
+}
+
+#[test]
+fn a_collection_fails_past_the_children_setting_and_answers_at_it() {
+    assert_eq!(
+        toy::failed(collection_under(4, 5)),
+        Failure::TooManyChildren { limit: 4 }
+    );
+    for (children, count) in [(5, 5), (0, 0)] {
+        let answer = collection_under(children, count);
+        assert!(
+            matches!(answer, Answer::Final(Outcome::Value(_))),
+            "{count} elements under {children}: {answer:?}"
+        );
+    }
+}
+
+#[test]
+fn a_guard_under_a_false_condition_is_absent_and_not_checked() {
+    let mut core = toy::with_structure().build();
+    let three = toy::members(["a", "b", "c"].map(|name| (name, toy::cell(&["v"]))));
+    let snapshot = core.snapshot([
+        toy::named("v", 1_i64),
+        toy::named("off", false),
+        toy::named("guarded.members", three),
+        toy::limit(Limit::ChildrenPerNode, 0),
+        toy::root("guarded", toy::guard(toy::input("off"), "guarded.members")),
+    ]);
+
+    let answer = toy::answer_alone(&mut core, &snapshot, &toy::at("guarded"));
+    assert!(
+        matches!(answer, Answer::Final(Outcome::Absent)),
+        "{answer:?}"
+    );
+}
+
+/// A fresh request for R/a on `snapshot`, run to idle, and its answer.
+fn first_member(core: &mut Core, snapshot: &Snapshot) -> (Request, Answer<Erased>) {
+    let a = toy::below("R", &["a"]);
+    let (request, events) = toy::evaluate_to_idle(core, snapshot, &[&a]);
+    let answer = toy::the_answer(&events, &request, &a);
+    (request, answer)
+}
+
+#[test]
+fn the_children_limit_is_never_stored_whether_or_not_the_result_is_in_the_store() {
+    let too_many = Failure::TooManyChildren { limit: 2 };
+    let mut core = toy::with_scope().build();
+    let at_2 = core.snapshot(scope_of(2, &["a", "b", "c"]));
+    let (request, answer) = first_member(&mut core, &at_2);
+    assert_eq!(toy::failed(answer), too_many);
+    assert_eq!(core.counters().body_runs(Scope::ID), 1);
+    core.end(request);
+    drop(at_2);
+    let at_3 = core.snapshot(scope_of(3, &["a", "b", "c"]));
+    let (_at_3_request, answer) = first_member(&mut core, &at_3);
+    assert_value(answer, 1_i64);
+    assert_eq!(
+        core.counters().body_runs(Scope::ID),
+        1,
+        "the scope's value was filed though its snapshot failed it"
+    );
+
+    let mut fresh = toy::with_scope().build();
+    let at_3 = fresh.snapshot(scope_of(3, &["a", "b", "c"]));
+    let (_at_3_request, answer) = first_member(&mut fresh, &at_3);
+    assert_value(answer, 1_i64);
+    let at_2 = fresh.snapshot(scope_of(2, &["a", "b", "c"]));
+    let (_at_2_request, answer) = first_member(&mut fresh, &at_2);
+    assert_eq!(toy::failed(answer), too_many);
+    assert_eq!(fresh.counters().body_runs(Scope::ID), 1);
 }
