@@ -1,0 +1,10 @@
+structure def S {
+    param c : Bool
+    where c { let k : Length = 1mm } else { let k : Length = 2mm }
+    let r = k * 2
+}
+structure def Top {
+    sub on : S { c = true }
+    sub off : S { c = false }
+    sub unk : S { c = undef }
+}

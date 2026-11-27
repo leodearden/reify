@@ -1,0 +1,22 @@
+tests = "A constraint written in a sub's braces is a member of that instance and bears on its own `auto`."
+rule = "decision 4 (braces half); decision 1; Part 4; ruling 3 of `seat-context.md`"
+provenance = "design Part 14 decision 4 (braces model); Part 4. language-1 L5; language-2 C4. logic-2 Part C on decision 4; logic-3 holds-up (17.5 mm)."
+needs = ["instance", "braces", "constraint", "summary", "unknown", "solve-real"]
+answer_basis = "stated: decision 4, \"the braces give 17.5 mm\". Trace: the feasible range is (15 mm, 20 mm], middle 17.5 mm. All three verdicts (the braces' one and Motor's two bounds) hold at 17.5 mm, and `Rig.motor` has no arguments, so its `/arguments` verdict is satisfied and the summary counts nothing (readings B4, B5). The forced form of the same model is `braces-constraint-forces-instance-auto`."
+today = "the braces' constraint is dropped with no diagnostic, `Motor` is checked once at its definition, and `check` says \"All constraints satisfied\" (run, `p7.ri`)."
+
+[[expect]]
+path = "Rig.motor.shaft_d"
+value = "17.5 mm"
+
+[[expect]]
+path = "Rig.motor/braces/constraint[0]"
+verdict = "satisfied"
+
+[[expect]]
+path = "Rig.motor/constraint[1]"
+verdict = "satisfied"
+
+[[expect]]
+path = "Rig/summary"
+summary = { violated = 0, undetermined = 0, failed = 0 }

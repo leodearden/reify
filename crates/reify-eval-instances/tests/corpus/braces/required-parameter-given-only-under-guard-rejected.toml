@@ -1,0 +1,8 @@
+tests = "a parameter with no default that a sub's braces give only under a guard is a compile error."
+rule = "readings C21; task 7874's rule (a required argument must be given)."
+provenance = "the tracer's counter-example N7 (trace-braces-purposes-unknowns)."
+needs = ["compile-error", "braces", "guard", "required-arguments"]
+answer_basis = "stated: readings C21. With `long` false the argument is absent and `len` has no default; the compiler cannot decide `long`, so the guarded assignment alone does not give the argument. It waits for task 7874."
+
+[[expect]]
+compile_error = "`len` has no default and the braces of `b` give it only under `long`; give it unguarded, or give `len` a default"

@@ -1,0 +1,8 @@
+structure def P {
+    param v : Length = 1mm
+}
+structure def Asm {
+    sub a : P
+    sub b : P
+    sub extra : P where self.children.count > 2
+}

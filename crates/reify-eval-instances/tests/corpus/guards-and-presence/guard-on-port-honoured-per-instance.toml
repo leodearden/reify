@@ -1,0 +1,14 @@
+tests = "a guard on a port is honoured per instance."
+rule = "Part 15.2 (ports, \"A guard on a port is honoured, where today it is dropped\"); Part 4."
+provenance = "design Part 15.2; design Part 4 (Today: guards silently discarded on a port)."
+needs = ["instance", "guard", "connect"]
+answer_basis = "stated (Part 15.2). The compiler's handling of ports was not examined by the design, so this is a statement of the design, not a trace. Ports are leaf ο's (readings F, `connect`)."
+today = "the guard on a port is silently discarded (design Part 4, report)."
+
+[[expect]]
+path = "Asm.v.inlet"
+presence = "absent"
+
+[[expect]]
+path = "Asm.w.inlet"
+presence = "present"

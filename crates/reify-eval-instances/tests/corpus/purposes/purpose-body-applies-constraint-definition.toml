@@ -1,0 +1,22 @@
+tests = "a purpose's body may apply a constraint definition with `constraint Name(args)`; the application compiles and gives the purpose's verdict, while the same definition applied in a structure is an ordinary constraint of it."
+rule = "Part 10 (\"A `constraint def` gives it a name to reuse, and a purpose can call the same definition to check it\"); PRD D13 item 10"
+provenance = "design Part 10; PRD D13 item 10; the `constraint def` form of spec 4.1.3 and `examples/integration_full_v01.ri` (`InRange`)."
+needs = ["compile-error", "instance", "constraint", "summary", "purpose", "grammar-purpose"]
+answer_basis = "traced. In `Asm.b`, `AtMost(v: 5mm, hi: 8mm)` holds: `Asm.b/constraint[0]` satisfied. The purpose applied to `Asm.b` gives `AtMost(v: 5mm, hi: 4mm)`: violated. `AtMost`'s body has one predicate line, so each application is one verdict. Counted (readings B4): violated 1."
+today = "run `g11s.ri` (the application line taken out): \"warning: unresolved function: AtMost\" for the line in the purpose's body."
+note = "the member line `purpose thin(self.b)` needs grammar-purpose (readings E33). With it taken out, the source parses on main."
+
+[[expect]]
+compile = "ok"
+
+[[expect]]
+path = "Asm.b/constraint[0]"
+verdict = "satisfied"
+
+[[expect]]
+path = "Asm/purpose[0]/constraint[0]"
+verdict = "violated"
+
+[[expect]]
+path = "Asm/summary"
+summary = { violated = 1, undetermined = 0, failed = 0 }

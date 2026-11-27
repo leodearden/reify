@@ -1,0 +1,21 @@
+tests = "A definition that another definition of the entry file uses as a sub's type is not a default root, and its constraint is checked on the instance at the argument it was given."
+rule = "decision 2; decision 7; rule D; Part 3"
+provenance = "design Part 14 decision 2 (model); Part 3. design decision 2 (its model); claims-3 probe d2.ri; language-1 L4 model 2; second-design Q1."
+needs = ["roots", "instance", "constraint"]
+answer_basis = "stated: decision 2, \"one root, `Bracket`, and one verdict, at `Bracket.b`, checked at 8 mm\". `Bolt.d` is a path under a root that was never declared, which \"answers 'absent'\" (Part 3)."
+today = "two roots, and `Bolt` checked once at 6 mm; the bolt in the bracket is not checked (run, `p10.ri`: `OK Bolt#constraint[0]`, `Bolt.d = 0.006 m`)."
+
+[[expect]]
+roots = ["Bracket"]
+
+[[expect]]
+path = "Bracket.b.d"
+value = "8 mm"
+
+[[expect]]
+path = "Bracket.b/constraint[0]"
+verdict = "satisfied"
+
+[[expect]]
+path = "Bolt.d"
+presence = "absent"

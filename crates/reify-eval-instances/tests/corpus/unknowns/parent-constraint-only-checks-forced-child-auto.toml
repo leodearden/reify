@@ -1,0 +1,24 @@
+tests = "decision 1's negative half with a forced value: a constraint outside the instance that owns an `auto` is only checked against the result and cannot change it."
+rule = "decision 1; Part 6.1; seat-context ruling 4; contract section 8 (\"A constraint outside it is checked against the result and cannot change it\")."
+provenance = "the tracer of 2026-11-26 (trace-braces-purposes-unknowns, wrong tags, \"coverage that waits and need not\"): decision 1's model with `Beam`'s bounds pinched to 55 mm, so that the value is forced. The same model with the middle of a range is `auto-owned-by-writer-sub-and-value-alike`."
+needs = ["instance", "constraint", "summary", "unknown", "solve-forced"]
+answer_basis = "traced. The `auto` is in `Asm`'s text, so `TopS.asm` owns it, at `TopS.asm/auto[a.len]`. `Beam`'s bounds at `TopS.asm.a` are inside the owner and force 55 mm. `TopS`'s constraint is outside the owner and is not part of its problem: violated. Had it borne, no value would satisfy it with `Beam`'s bounds, and `a.len` would be undefined with `TopS/constraint[0]` undetermined. Summary: violated 1."
+
+[candidates]
+note = "70 mm meets `TopS`'s constraint and breaks `Beam`'s bounds, which depended on the trial; the first taken is 55 mm. `TopS`'s constraint is not read by the owner's solve."
+
+[[candidates.unknown]]
+path = "TopS.asm/auto[a.len]"
+values = ["70mm", "55mm"]
+
+[[expect]]
+path = "TopS.asm.a.len"
+value = "55 mm"
+
+[[expect]]
+path = "TopS/constraint[0]"
+verdict = "violated"
+
+[[expect]]
+path = "TopS/summary"
+summary = { violated = 1, undetermined = 0, failed = 0 }

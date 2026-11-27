@@ -1,0 +1,2 @@
+structure def Column { param w : Length = 50mm   constraint w > 0mm }
+@test structure def TestColumn { sub col : Column { w = 60mm }   constraint self.col.w < 100mm }

@@ -1,0 +1,6 @@
+structure def H2 { param g : Length }
+structure def Plate {
+    let body = 4mm
+    sub s_b = H2(g: body)
+    let h_body = H2(g: body)
+}

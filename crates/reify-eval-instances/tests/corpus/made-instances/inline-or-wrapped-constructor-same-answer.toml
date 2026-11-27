@@ -1,0 +1,24 @@
+tests = "a constructor call written inline and the same call wrapped in a function give the same answer, because the made instance's constraints are inside the caller either way."
+rule = "Part 6.4 requirement 1; Part 6.1 (\"It makes no difference how the instance holding the constraint came to exist ... one reached through a function\")."
+provenance = "logic-1 L5 (taken: 6.1 and 6.4 requirement 1); logic-2 Part A row L5 and holds-up (3 mm inline and wrapped). design 6.4 requirement 1. language-1 L7 and probe f1.ri. second-design Q6 and probe g3.ri; claims-1 row 1."
+needs = ["instance", "value", "made", "constraint", "summary", "unknown", "roots", "solve-real"]
+answer_basis = "stated (Part 6.4, requirement 1). `u` is each root's unknown. `Plate`'s `t >= 3mm` reads `t` = `u` and is inside the root, so it bears; with `u >= 1mm` and `minimize u`, 3 mm. `Plate` is used by `AsmA`, so it is not a root."
+
+[[expect]]
+roots = ["AsmA", "AsmB"]
+
+[[expect]]
+path = "AsmA.u"
+value = "3 mm"
+
+[[expect]]
+path = "AsmB.u"
+value = "3 mm"
+
+[[expect]]
+path = "AsmA.d/made[0]/constraint[0]"
+verdict = "satisfied"
+
+[[expect]]
+path = "AsmB/summary"
+summary = { violated = 0, undetermined = 0, failed = 0 }

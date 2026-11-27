@@ -1,0 +1,8 @@
+tests = "`auto` in a constructor argument inside an arm of an `if` is a compile error that says to use `where` or a collection."
+rule = "Part 6.3 rule 2; decision 5"
+provenance = "design Part 6.3 table (an arm of an `if` or a `match`). language-1 L11 point 3; second-design Q6."
+needs = ["compile-error", "unknown"]
+answer_basis = "stated: Part 6.3."
+
+[[expect]]
+compile_error = "`auto` inside an arm of an `if`; put the member under `where`, or use a collection"

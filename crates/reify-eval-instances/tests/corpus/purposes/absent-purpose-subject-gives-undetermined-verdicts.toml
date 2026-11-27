@@ -1,0 +1,22 @@
+tests = "an applied purpose whose subject is absent is still present, and its constraints are undetermined, with one subject or two."
+rule = "Part 10 (\"A subject that is not there. The purpose's constraints then read something that is not there and are undetermined\"); Part 4; readings B1, B4, B5, C16 and E33."
+provenance = "logic-1 L14 (two subjects); logic-2 N16 (one subject: \"no home to report in\"); logic-3 R17 (the two cases as different classes; a home of undetermined presence). Taken: draft 5 makes the purpose a member of the applying definition, so it has a place whatever its subject; \"subject absent\" as its own class was not kept. design Part 10. language-2 B12; language-1 L1 read 1."
+needs = ["instance", "guard", "constraint", "summary", "purpose", "grammar-purpose"]
+answer_basis = "stated (Part 10) for the verdicts; traced for the summary. `c.p` is absent, so the host answers `absent` at `Asm.c.p` (readings B1), and `subject.t` and `a.t`, read by the purposes' constraints, are undefined; `thin_enough`'s and `pair`'s constraints are undetermined. The purposes are applied in `Asm`, across an instance, so the compile rule of readings C16 does not fire. A subject is a place, not an argument, so neither purpose has an undetermined `/arguments` verdict (readings B5); neither has value parameters. Summary (readings B4): the two undetermined purpose verdicts; `Asm.c.p` is absent, not of undetermined presence, so it adds nothing."
+note = "the member lines `purpose thin_enough(self.c.p)` and `purpose pair(self.c.p, self.c.q)` need grammar-purpose (readings E33). With them taken out, the source parses on main."
+
+[[expect]]
+path = "Asm.c.p"
+presence = "absent"
+
+[[expect]]
+path = "Asm/purpose[0]/constraint[0]"
+verdict = "undetermined"
+
+[[expect]]
+path = "Asm/purpose[1]/constraint[0]"
+verdict = "undetermined"
+
+[[expect]]
+path = "Asm/summary"
+summary = { violated = 0, undetermined = 2, failed = 0 }

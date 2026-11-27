@@ -1,0 +1,22 @@
+tests = "a \"not here yet\" read held inside a list or an `Option`, or used as the index that selects an element, keeps a constructor call from declaring a child until the final values arrive, so each cell makes one instance, with the final argument."
+rule = "rule A (\"absorbing: every operation given one returns one, including a determinacy test and anything that can hold a value\"; \"A child is declared only from values that contain no stand-in\")"
+provenance = "logic-1 L9 (the rule \"slips through any operation that observes undefinedness\", naming a `filter` predicate and the containers Map, Option and a closure's environment); logic-2 N4 (L9 closed for `determined` only). A lambda passed to `filter` is refused today (catalogue entry `selecting-builtin-makes-no-instance`), so the selection here is by an index and by `unwrap_or`."
+needs = ["instance", "eval-reads", "value", "made", "summary"]
+answer_basis = '''
+traced.
+Pass 1: `self.k` and `self.i` are both missing and are asked for in one round. A list holding a stand-in, `some(...)` of one, an index that is one, and `unwrap_or` given one each give the stand-in (PRD 5.5: a node whose operand is pending is pending; a constructor call with a pending argument makes nothing). So neither cell declares a child.
+Pass 2: `[5mm, 2mm][0]` is 5 mm and `unwrap_or(some(5mm), 2mm)` is 5 mm. One `Plate` per cell, `t` 5 mm, satisfied.
+Had a stand-in been read as undefined, pass 1 would declare a `Plate` with `t` undefined at the same site as pass 2's: two undetermined verdicts or two declarations at one path, which the summary row would show.'''
+today = "run `g01.ri`: `Asm.p = Plate { t: 0.005 m }`, `Asm.q = Plate { t: 0.005 m }`."
+
+[[expect]]
+path = "Asm.p/made[0].t"
+value = "5 mm"
+
+[[expect]]
+path = "Asm.q/made[0].t"
+value = "5 mm"
+
+[[expect]]
+path = "Asm/summary"
+summary = { violated = 0, undetermined = 0, failed = 0 }

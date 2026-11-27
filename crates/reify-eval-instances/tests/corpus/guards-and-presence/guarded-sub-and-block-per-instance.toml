@@ -1,0 +1,46 @@
+tests = "a guarded sub and a guarded block are present or absent per instance, the sub reads its argument, and the child definition's constraint is checked on the instance."
+rule = "contract Example 3; Part 4; Part 12 (Example 3); decision 7; rule D."
+provenance = "contract Part B Example 3; design Part 12 \"Example 3\". The wrapper `Top` is added so that both values of the guard appear in one file. contract Example 3 (Plate and a second root added); second-design Q2."
+needs = ["instance", "guard", "constraint", "summary", "roots"]
+answer_basis = "traced. `on`: `use_plate` true, so `thin` present with `t` = 4 mm, `4 mm ≥ 3 mm` satisfied; `n` = 2 > 1, so `big` = 20 and `20 > 5` satisfied. `off`: `use_plate` false, so `thin` and everything below it absent; `n` = 1, so the block's `big` and constraint absent. `Plate` and `Asm` are used by another definition of the file, so the one root is `Top` (rule D)."
+today = "a guarded sub on a definition that is not recursive is never created; `Plate`'s constraint is checked once at the definition's default (contract Example 3, run)."
+not_pinned = "The example's incremental claim (changing `n` from 2 to 3 reruns the guard and nothing that read only the guard) is the core's, not pinned."
+
+[[expect]]
+roots = ["Top"]
+
+[[expect]]
+path = "Top.on.thin.t"
+value = "4 mm"
+
+[[expect]]
+path = "Top.on.thin/constraint[0]"
+verdict = "satisfied"
+
+[[expect]]
+path = "Top.on.big"
+value = "20"
+
+[[expect]]
+path = "Top.on/constraint[0]"
+verdict = "satisfied"
+
+[[expect]]
+path = "Top.off.thin"
+presence = "absent"
+
+[[expect]]
+path = "Top.off.thin.t"
+presence = "absent"
+
+[[expect]]
+path = "Top.off.big"
+presence = "absent"
+
+[[expect]]
+path = "Top.off/constraint[0]"
+presence = "absent"
+
+[[expect]]
+path = "Top/summary"
+summary = { violated = 0, undetermined = 0, failed = 0 }

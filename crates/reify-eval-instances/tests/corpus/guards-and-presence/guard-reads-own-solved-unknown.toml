@@ -1,0 +1,20 @@
+tests = "a guard may read a solved value."
+rule = "decision 12 (\"A guard may read a solved value\"); Part 4."
+provenance = "design decision 12 list; design Part 4. design Part 4."
+needs = ["instance", "guard", "constraint", "unknown", "solve-forced"]
+answer_basis = "traced. `t` ∈ [5 mm, 7 mm] for any solver, so `t > 4mm` holds and `rib` is present. The value of `t` is not forced, but every feasible value gives the pinned answers (forced in the sense of PRD 5.6), so only presence and `rib.h` are pinned. Under the candidates (readings E35): at 4 mm `constraint[0]` is violated and read the trial, so 4 mm is rejected (had it been taken, the guard would be false and `rib` absent); 6 mm violates nothing."
+today = "unknown for this model (the old binary violates a bound by a rounding residual in a pinched variant, `solvedguard.ri`, run)."
+
+[candidates]
+
+[[candidates.unknown]]
+path = "Panel.t"
+values = ["4 mm", "6 mm"]
+
+[[expect]]
+path = "Panel.rib"
+presence = "present"
+
+[[expect]]
+path = "Panel.rib.h"
+value = "2 mm"

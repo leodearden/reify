@@ -1,0 +1,28 @@
+tests = "the guard of an assignment in a sub's braces may read an unknown of the parent; the parent's solve reads it through its view, and a constraint on the argument's effect bears on that unknown."
+rule = "Part 6.1 (\"'Bears on' follows every chain of reads\"); Part 4; PRD section 5.4 (the condition of a guard written in the braces is a cell of the sub's instance); contract section 8 (a guard is read through the view)."
+provenance = "the tracer's interaction I4 (trace-braces-purposes-unknowns), with the bound on `n` widened so that the guard bears: `self.a.t == 6mm` is the only constraint that keeps `n` above 4 mm."
+needs = ["instance", "braces", "guard", "constraint", "summary", "unknown", "solve-forced"]
+answer_basis = "traced. `n` is `Asm`'s; `a` has no unknown and no solve. `Asm`'s three constraints are inside `Asm`, and `Asm/constraint[2]` reads `a.t`, which reads the guard `Asm.a/braces/guard[0]`, which reads `n`: it bears on `n`. Under `n := x` the guard holds exactly when x > 4 mm, and only then is `a.t` 6 mm. Every feasible `n` is in (4 mm, 5 mm], and each gives the rows pinned; `n` itself is not pinned. No cycle: `Asm`'s solve reads the guard through its view, and no argument of `Asm` is involved."
+
+[candidates]
+note = "3 mm meets `n >= 3mm` and `n <= 5mm` and leaves the guard false, so `a.t` is 3 mm and `Asm/constraint[2]` is violated; a reading in which a constraint reached only through a guard does not bear takes it. 5 mm is the first taken."
+
+[[candidates.unknown]]
+path = "Asm.n"
+values = ["3mm", "5mm"]
+
+[[expect]]
+path = "Asm.a/braces/guard[0]"
+value = "true"
+
+[[expect]]
+path = "Asm.a.t"
+value = "6 mm"
+
+[[expect]]
+path = "Asm/constraint[2]"
+verdict = "satisfied"
+
+[[expect]]
+path = "Asm/summary"
+summary = { violated = 0, undetermined = 0, failed = 0 }

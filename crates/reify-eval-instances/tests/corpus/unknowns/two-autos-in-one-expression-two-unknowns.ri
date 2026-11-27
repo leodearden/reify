@@ -1,0 +1,13 @@
+structure def Lo {
+    param t : Length
+    constraint t >= 1mm
+    constraint t <= 1mm
+}
+structure def Hi {
+    param t : Length
+    constraint t >= 5mm
+    constraint t <= 5mm
+}
+structure def Asm {
+    let both = Lo(t: auto).t + Hi(t: auto).t
+}

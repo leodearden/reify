@@ -1,0 +1,4 @@
+structure def Plate  { param t : Length   constraint t >= 3mm }
+structure def Widget { param p : Plate    constraint p.t >= 4mm }
+structure def Fidget { param q : Plate    constraint q.t <= 6mm }
+structure def Asm    { let c = Plate(t: auto)   sub d = Widget(p: c)   sub e = Fidget(q: c) }

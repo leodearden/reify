@@ -1,0 +1,21 @@
+tests = "applying a purpose to a guarded sub of the applying definition, on a line with no guard of its own, compiles; where the sub is absent the purpose's verdicts are undetermined and not partial."
+rule = "Part 10 (an applied purpose is a member of the definition it is written in; \"A subject that is not there. The purpose's constraints then read something that is not there and are undetermined\"); readings C16; Leo's ruling of 2026-11-26 on the PRD's D13 (a read of a member that may be absent compiles wherever it is written), which amends decision 3b line 1 and Part 4."
+provenance = "logic-1 L14's model with the purpose applied in the definition that holds the guarded sub. A compile error until Leo ruled. Renamed from `guarded-own-sub-as-purpose-subject-needs-a-guard`."
+needs = ["compile-error", "instance", "guard", "purpose", "grammar-purpose", "constraint", "summary"]
+answer_basis = "traced. `use` is false, so `Asm.p` is absent. The application line has no guard, so the purpose instance is there, and its constraint reads `subject.t` on a subject that is not: undetermined, other. Written `purpose thin_enough(self.p) where use`, neither the sub nor the purpose instance is there (`guarded-purpose-application-follows-its-guard`)."
+note = "the member line `purpose thin_enough(self.p)` needs grammar-purpose (readings E33). With it taken out, the source parses on main."
+
+[[expect]]
+compile = "ok"
+
+[[expect]]
+path = "Asm.p"
+presence = "absent"
+
+[[expect]]
+path = "Asm/purpose[0]/constraint[0]"
+undetermined_because = "other"
+
+[[expect]]
+path = "Asm/summary"
+summary = { violated = 0, undetermined = 1, failed = 0 }

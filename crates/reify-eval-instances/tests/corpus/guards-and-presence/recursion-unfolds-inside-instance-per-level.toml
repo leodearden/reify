@@ -1,0 +1,43 @@
+tests = "a recursive guarded sub unfolds inside a sub instance, one level per guard; its plain subs exist at every level; the first level whose guard is false is absent; and each level's constraints are checked with that level's values."
+rule = "Part 4 (\"Recursion needs no mechanism of its own\"); decision 7; Part 13 (task 10499 row)"
+provenance = "task 10499 (shapes a and b); task 9541 and task 9547 (their presence half: a grandchild whose guard is false is absent, so there is nothing to draw or export. Their export half is task 10611's)"
+needs = ["instance", "guard", "constraint", "summary"]
+answer_basis = '''
+traced.
+`Root.r` has n = 3. Its guard 3 > 0 holds, so `child` exists with n = 2, then n = 1, then n = 0.
+The level with n = 0 has a false guard, so its `child` is absent.
+`tag` is a plain sub at every level, with k = 7.
+`n <= 1` is violated at n = 3 and n = 2 and satisfied at 1 and 0, so `Root/summary` counts 2 violations. Every level's arguments are defined, so no `/arguments` verdict is undetermined, and nothing fails (readings B4, B5). `Node` is used by `Root`, so `Root` is the only root.'''
+today = "no `Root.r.child` cells at any depth, only a generic recursion warning, and `check` prints OK for `Node#constraint[0]`. Plain subs below the root level of a recursion are not created (task 10499 record, release binary at 9eae7048a4)."
+
+[[expect]]
+path = "Root.r.child.n"
+value = "2"
+
+[[expect]]
+path = "Root.r.child.child.n"
+value = "1"
+
+[[expect]]
+path = "Root.r.child.child.child.n"
+value = "0"
+
+[[expect]]
+path = "Root.r.child.child.child.child"
+presence = "absent"
+
+[[expect]]
+path = "Root.r.child.child.tag.k"
+value = "7"
+
+[[expect]]
+path = "Root.r/constraint[0]"
+verdict = "violated"
+
+[[expect]]
+path = "Root.r.child.child/constraint[0]"
+verdict = "satisfied"
+
+[[expect]]
+path = "Root/summary"
+summary = { violated = 2, undetermined = 0, failed = 0 }

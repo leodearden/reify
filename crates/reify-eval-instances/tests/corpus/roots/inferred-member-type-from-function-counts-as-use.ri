@@ -1,0 +1,3 @@
+structure def Plate { param t : Length = 3mm }
+fn mk() -> Plate = Plate(t: 2mm)
+structure def Asm { let b = mk() }

@@ -1,0 +1,43 @@
+tests = "an `auto` written as a sub's argument, in either form, is an unknown of the declaring instance that the declaring instance's constraints decide (the child's default is not used), and a sub read as a value is taken after that solve, so its fields and the members opened from it are the solved ones."
+rule = "Part 6.2; Part 6.3 (table, \"a sub's argument, either form\"); Part 7.2; decision 6; contract Example 11"
+provenance = "task 6340; task 7065; task 6657 (its half without geometry); task 6926 (its solved-auto half); design Part 13 (task 6340 row). design Part 13 row (task 6340). design Part 7.2."
+needs = ["instance", "value", "open", "constraint", "unknown", "solve-forced"]
+answer_basis = '''
+traced.
+`bore = auto` on `b` is an unknown of `Holder`. `margin == 8mm` reads it through a `let`, so that constraint bears on it, and it is forced to 10 mm.
+`Bearing(bore: auto)` on `c` is a second unknown of `Holder`, forced to 12 mm. `Bearing`'s default of 5 mm is read by neither.
+`Holder.e` is `b`'s as-value after its solves: `Bearing{bore: 10 mm}`. `bore` is a parameter, and `Bearing` decides nothing of its own.
+`e.half` is read through `Holder.e/open`, which is opened from that value: 10 mm / 2 = 5 mm.
+The two unknowns have no names of their own: `Holder/auto[b.bore]` and `Holder/auto[c.bore]` (readings A). Under the candidates (readings E35), 5 mm, the child's default, comes first for each: at 5 mm `margin` is 3 mm and `constraint[0]` is violated, and `constraint[1]` is violated, each having read the trial, so 5 mm is rejected for each. 10 mm and 12 mm violate nothing. A reading that kept the child's default would take 5 mm.
+Neither `Bearing` has an unknown of its own, so the entry does not need `nested-solve`.'''
+today = "the value of `Holder.b` keeps `bore: undef` after the solve, while the member cell resolves (task 6340 record, reported, not re-verified). In the dogfood probe of task 7065, a derived member reads that stale value. The design (Part 7, run) says `let e = self.a` reads undefined after a solve."
+
+[candidates]
+
+[[candidates.unknown]]
+path = "Holder/auto[b.bore]"
+values = ["5 mm", "10 mm"]
+
+[[candidates.unknown]]
+path = "Holder/auto[c.bore]"
+values = ["5 mm", "12 mm"]
+
+[[expect]]
+path = "Holder.b.bore"
+value = "10 mm"
+
+[[expect]]
+path = "Holder.c.bore"
+value = "12 mm"
+
+[[expect]]
+path = "Holder.b/as-value"
+value = "Bearing{bore: 10 mm}"
+
+[[expect]]
+path = "Holder.e"
+value = "Bearing{bore: 10 mm}"
+
+[[expect]]
+path = "Holder.eh"
+value = "5 mm"

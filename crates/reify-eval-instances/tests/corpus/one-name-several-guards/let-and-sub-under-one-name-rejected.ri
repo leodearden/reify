@@ -1,0 +1,8 @@
+structure def P {
+    param v : Length = 1mm
+}
+structure def Asm {
+    param use : Bool = true
+    sub p : P where use
+    let p = 5mm where not use
+}

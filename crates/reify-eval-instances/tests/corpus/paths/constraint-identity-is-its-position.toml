@@ -1,0 +1,29 @@
+tests = "two constraints with the same text have two verdicts at two paths; a constraint inherited through a trait is checked on the instance, and is numbered before the definition's own."
+rule = "rule F; Part 8; decision 7; catalogue decision A (constraint numbering)."
+provenance = "language-1 L15 (two constraints with the same text); failing.md M3 note (an inherited trait constraint's printed index is not its position among the definition's own). The design took L15's ordinal; the inherited ordering is the catalogue's decision A."
+needs = ["roots", "instance", "constraint", "summary", "paths"]
+answer_basis = "traced. `Plate` is unused, so a root; 1 mm fails both. Decision A: constraints inherited from traits come first, in trait order, then the definition's own. So `Asm.p/constraint[0]` is `Weighted`'s `mass > 0kg`, violated at −1 kg, and `constraint[1]` is `Plank`'s `t > 2mm`, violated at 1 mm. `/arguments` is satisfied. Summary: 2 violated."
+today = "`VIOLATED Plate#constraint[0]` and `[1]` (run `dup_constraint.ri`); for the trait, the inherited constraint prints as `Plank#constraint[0]` and the own one as `[1]`, both at the definition's defaults only (run `trait_index.ri`)."
+
+[[expect]]
+roots = ["Plate", "Asm"]
+
+[[expect]]
+path = "Plate/constraint[0]"
+verdict = "violated"
+
+[[expect]]
+path = "Plate/constraint[1]"
+verdict = "violated"
+
+[[expect]]
+path = "Asm.p/constraint[0]"
+verdict = "violated"
+
+[[expect]]
+path = "Asm.p/constraint[1]"
+verdict = "violated"
+
+[[expect]]
+path = "Asm/summary"
+summary = { violated = 2, undetermined = 0, failed = 0 }

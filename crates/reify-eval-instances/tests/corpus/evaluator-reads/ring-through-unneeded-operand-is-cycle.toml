@@ -1,0 +1,23 @@
+tests = "a ring of dependencies through an operand of `or`, or through an element of a quantifier, is a cycle even where that operand could not change the answer."
+rule = "rule A; decision 12 (\"a ring of dependencies through an operand that could not affect the answer is a cycle\")."
+provenance = "logic-2 N3 model 1 (its skip rule, which gave true and true, was not taken); logic-3 R1 (taken: one round, every element of a quantifier read); logic-3 R2 first half (the ring swapped was a cycle under draft 3 and true unswapped)."
+needs = ["instance", "eval-reads"]
+answer_basis = "stated (decision 12). `x.v` reads `x.use` and `x.other`; `x.other` is `self.y.v` in `Top`; `y.v` reads `y.other`, which is `self.x.v`. The same ring runs through `forall`'s list in `Q`. The rings run across instances; within one definition today's compiler already rejects a let cycle (\"circular let-binding dependency\", run `letcycle2.ri`), which is why this model uses subs. The braces hold only argument assignments, so the entry does not need `braces`."
+today = "run `orring.ri`: `Top.x.v = true`, `Top.y.v = true`; run `forallring.ri`: `Top.x.v = false`, `Top.y.v = false`."
+note = "the quantifier half does not separate rule A from a quantifier that stops early: building the list literal `[false, other]` reads `other` before the quantifier runs, so a short-circuiting `forall` gives the same cycle (tracer report, N5). Entry `quantifier-later-element-read-is-cycle` separates them. The `or` half does."
+
+[[expect]]
+path = "Top.x.v"
+failure = "cycle"
+
+[[expect]]
+path = "Top.y.v"
+failure = "cycle"
+
+[[expect]]
+path = "Top.m.v"
+failure = "cycle"
+
+[[expect]]
+path = "Top.n.v"
+failure = "cycle"

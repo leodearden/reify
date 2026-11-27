@@ -1,0 +1,5 @@
+structure def Peg { param w : Length = 10mm   let area = w * w }
+structure def Pair {
+    sub a : Peg { w = 10mm }
+    sub b : Peg
+}

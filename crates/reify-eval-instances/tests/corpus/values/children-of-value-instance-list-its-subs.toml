@@ -1,0 +1,22 @@
+tests = "`self.children` lists the present subs of the instance that declares them, inside a value as inside a place."
+rule = "Part 1 rule 4; Part 5 (a bare collection, `self.children`); decision 11; decision 3a."
+provenance = "language-1 L17 (`Pair` inside `Rig`) and L18; language-2 L17 row. Taken: rule 4 now says a sub is listed by its declaring instance \"wherever that instance is\"."
+needs = ["instance", "guard", "value", "made", "open"]
+answer_basis = "traced. `p` is a made `Pair` with `with_c` false: `a`, `b` present, `c` absent, so `n` is 2 and `k` reads it through `open`. `q` has `with_c` true: three present subs."
+today = "`Pair.n = 3` (the absent `c` is counted), `Rig.k = undef`, `Rig.q.n = undef` (run `children_value.ri`)."
+
+[[expect]]
+path = "Rig.k"
+value = "2"
+
+[[expect]]
+path = "Rig.q.n"
+value = "3"
+
+[[expect]]
+path = "Rig.q.c"
+presence = "present"
+
+[[expect]]
+path = "Rig.p/made[0].c"
+presence = "absent"

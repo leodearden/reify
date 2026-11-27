@@ -1,0 +1,2 @@
+structure def Fan  { param d : Length = 40mm }
+structure def Case { sub fan : Fan where self.fan.d > 30mm }

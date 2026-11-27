@@ -1,0 +1,37 @@
+tests = "a verdict that reads an undefined parameter back out of a structure value is partial when the cell that holds the value made it, in its own expression or in a function it called, and other when the value has flowed through another cell."
+rule = "PRD 5.4 (\"A cause across a constructor call\"); PRD D10(h), ruled by Leo on 2026-11-26 as recommended; PRD D10(d), as ruled, for the wrapped call; decision 12 of the design (telling a deliberately partial design from any other cause)."
+provenance = "the second design critic's finding F3 on draft 2 of the PRD. The rows for `e` and `f` were added when Leo ruled."
+needs = ["instance", "value", "constraint", "summary", "made", "open"]
+answer_basis = "stated: PRD D10(h) as Leo ruled it. `u` is a root's parameter with no value, so it is undefined with the class partial. `d` makes a plate and passes `u`: the plate's `t` is undefined, and the class travels with the argument, so the plate's own constraint and its verdict on arguments are partial. `Asm`'s first constraint reads `d.t` out of the value; the cell `d` made the value itself and knows the class of each argument it passed: partial. `e` holds the same value and made nothing, so the second constraint's read of `e.t` is other. `f` made its plate inside a function it called. Under D10(d) a function is entered and the wrapped call answers as the inline one, so the third constraint is partial: this row is the lead's reading of D10(h) after the ruling on D10(d), reported to Leo. Summary of `Asm`: its three constraints, and two verdicts at each of the two made instances: undetermined 7."
+
+[[expect]]
+path = "Asm.u"
+value = "undefined"
+
+[[expect]]
+path = "Asm.d/made[0]/constraint[0]"
+undetermined_because = "partial"
+
+[[expect]]
+path = "Asm.d/made[0]/arguments"
+undetermined_because = "partial"
+
+[[expect]]
+path = "Asm/constraint[0]"
+undetermined_because = "partial"
+
+[[expect]]
+path = "Asm/constraint[1]"
+undetermined_because = "other"
+
+[[expect]]
+path = "Asm.f/made[0,0]/constraint[0]"
+undetermined_because = "partial"
+
+[[expect]]
+path = "Asm/constraint[2]"
+undetermined_because = "partial"
+
+[[expect]]
+path = "Asm/summary"
+summary = { violated = 0, undetermined = 7, failed = 0 }

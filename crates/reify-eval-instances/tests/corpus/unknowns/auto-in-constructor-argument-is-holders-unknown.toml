@@ -1,0 +1,28 @@
+tests = "`auto` in the argument of a constructor call evaluated exactly once is an unknown of the instance whose member holds the call, and the callee's constraints bear on it."
+rule = "decision 5; Part 6.3 rule 1"
+provenance = "design Part 14 decision 5 (model); Part 6.3 table; Part 12 Example 11 (`let d = Plate(t: auto)`). language-1 L11; second-design Q6."
+needs = ["compile-error", "instance", "constraint", "unknown", "made", "open", "nested-solve", "solve-real"]
+answer_basis = "stated: decision 5, \"5.5 mm\". The unknown is `Asm`'s, at `Asm/auto[d#0.t]`; `Plate`'s `t >= 3mm` at the made instance and `Asm`'s `d.t <= 8mm` bear: [3 mm, 8 mm], middle 5.5 mm."
+today = "\"argument 't' has type 'Real' but param 't' requires type 'Scalar[m]'\" (run, `p6.ri`); for a plain number, a silent undefined (design Part 6.3)."
+
+[candidates]
+note = "2 mm breaks the made instance's bound (a reading in which the callee's constraints do not bear takes it); 9 mm breaks `Asm`'s (a reading in which the holder's constraint only checks takes it). The first taken is 5.5 mm, the pinned middle; the entry waits for task 10610 because that middle is the default objective's."
+
+[[candidates.unknown]]
+path = "Asm/auto[d#0.t]"
+values = ["2mm", "9mm", "5.5mm"]
+
+[[expect]]
+compile = "ok"
+
+[[expect]]
+path = "Asm.d/made[0].t"
+value = "5.5 mm"
+
+[[expect]]
+path = "Asm.d/made[0]/constraint[0]"
+verdict = "satisfied"
+
+[[expect]]
+path = "Asm/constraint[0]"
+verdict = "satisfied"

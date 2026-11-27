@@ -1,0 +1,14 @@
+structure def Plate { param t : Length = 5mm   constraint t >= 3mm }
+structure def Asm {
+    param use_plate : Bool = true
+    param n : Int = 2
+    sub thin : Plate where use_plate { t = 4mm }
+    where n > 1 {
+        let big = n * 10
+        constraint big > 5
+    }
+}
+structure def Top {
+    sub on : Asm
+    sub off : Asm { use_plate = false   n = 1 }
+}

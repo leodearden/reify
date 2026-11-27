@@ -1,0 +1,17 @@
+tests = "a purpose with no parameter is applied as `purpose name()`, gives one purpose instance, and its verdict is counted."
+rule = "readings C18 (\"A purpose with no parameter is applied as `purpose name()`\"); PRD D10(e); Part 10"
+provenance = "PRD D10(e); design Part 10 (4 of the 42 tracked purposes have no subject); the declaration form of `crates/reify-cli/tests/fixtures/purpose_zero_param.ri`."
+needs = ["compile-error", "instance", "constraint", "summary", "purpose", "grammar-purpose"]
+answer_basis = "stated (readings C18) for the form; traced for the verdict: `2mm < 1mm` is false, violated, counted in `Asm`'s summary (readings B4)."
+note = "the member line `purpose impossible()` needs grammar-purpose (readings E33). With it taken out, the source parses on main."
+
+[[expect]]
+compile = "ok"
+
+[[expect]]
+path = "Asm/purpose[0]/constraint[0]"
+verdict = "violated"
+
+[[expect]]
+path = "Asm/summary"
+summary = { violated = 1, undetermined = 0, failed = 0 }

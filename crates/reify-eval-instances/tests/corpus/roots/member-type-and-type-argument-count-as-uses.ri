@@ -1,0 +1,10 @@
+structure def Stock {
+    param e : Length = 1mm
+}
+structure def M6 {
+    param d : Length = 6mm
+}
+structure def Beam {
+    param mat : Stock
+    param fasteners : List<M6>
+}

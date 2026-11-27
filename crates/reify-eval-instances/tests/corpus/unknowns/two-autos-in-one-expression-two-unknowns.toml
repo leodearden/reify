@@ -1,0 +1,24 @@
+tests = "two `auto`s written in one expression are two unknowns of the instance, each decided from the constraints that bear on it."
+rule = "Part 6.3 (rule 1: \"one unknown for each instance of that declaration\"); decision 5; rule F (an unknown with no name of its own is named \"with the chain of call sites when it is inside an expression\")."
+provenance = "logic-3 R14 (\"Two unknowns in one expression get one step\"; taken: rule F)."
+needs = ["instance", "summary", "unknown", "made", "open", "nested-solve", "solve-forced"]
+answer_basis = "traced. Both calls are evaluated exactly once, so each `auto` is an unknown of `Asm`, at `Asm/auto[both#0.t]` and `Asm/auto[both#1.t]` (readings A). `Lo`'s bounds force the first to 1 mm and `Hi`'s the second to 5 mm. One shared unknown would be infeasible. Only the sum is pinned, so the entry does not pin path text and does not need `paths`."
+
+[candidates]
+note = "(5 mm, 1 mm) is the pair with the two unknowns swapped, which a reading that numbers the two steps the other way takes; it breaks both made instances' bounds. Tried as pairs in order, or as every combination in order, the first taken is (1 mm, 5 mm)."
+
+[[candidates.unknown]]
+path = "Asm/auto[both#0.t]"
+values = ["5mm", "1mm"]
+
+[[candidates.unknown]]
+path = "Asm/auto[both#1.t]"
+values = ["1mm", "5mm"]
+
+[[expect]]
+path = "Asm.both"
+value = "6 mm"
+
+[[expect]]
+path = "Asm/summary"
+summary = { violated = 0, undetermined = 0, failed = 0 }

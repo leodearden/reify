@@ -1,0 +1,27 @@
+tests = "a recursion guard that reads a `where`-guarded `let`, written inside the same guarded block, unfolds exactly as the same guard with a literal does, and the `let` is evaluated per level."
+rule = "Part 4 (a nested guard reads the outer one first; guards per instance; recursion); decision 3"
+provenance = "task 10150"
+needs = ["instance", "guard"]
+answer_basis = '''
+traced.
+At S, `on` is true, so `lim` = 0 and the guard 2 > 0 holds: `S.child` exists with depth 1.
+At `S.child`, `on` is true (its default), `lim` = 0 and 1 > 0, so `S.child.child` exists with depth 0.
+At `S.child.child`, 0 > 0 is false, so its `child` is absent.
+The guard reads `lim` and is nested inside `lim`'s own guard `on`, so it is never read where `lim` is absent (readings C15: a guard's condition is a declaration under the guards that enclose it, here `on`). `S` uses only itself, so it is the root.'''
+today = "with the record's form (the sub outside the `where` block, guarded `where depth > lim`), the recursion never unfolds and nothing is reported (task 10150 record, on task/10015). Probe `rec.ri` (run) prints `S.lim = 0` and no `S.child` cells."
+
+[[expect]]
+path = "S.child.depth"
+value = "1"
+
+[[expect]]
+path = "S.child.child.depth"
+value = "0"
+
+[[expect]]
+path = "S.child.child.lim"
+value = "0"
+
+[[expect]]
+path = "S.child.child.child"
+presence = "absent"

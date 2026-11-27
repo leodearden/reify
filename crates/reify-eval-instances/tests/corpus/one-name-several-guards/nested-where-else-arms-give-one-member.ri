@@ -1,0 +1,11 @@
+structure def K1 {
+    param a : Bool = false
+    param b : Bool = true
+    where a { let k = 1mm } else { where b { let k = 2mm } else { let k = 3mm } }
+    constraint k > 0mm
+}
+structure def K2 {
+    param n : Int = 3
+    let k = 1mm where n < 3
+    let k = 2mm where n >= 3
+}

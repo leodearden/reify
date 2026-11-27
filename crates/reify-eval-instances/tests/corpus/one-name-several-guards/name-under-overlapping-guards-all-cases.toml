@@ -1,0 +1,33 @@
+tests = "one name under several guards compiles, and is present only when one guard is true and every other is false; two true is a failure; all false is absent; anything else is presence undetermined."
+rule = "rule E (first and second bullets); decision 12 (\"More than one declaration of a name present at once is a failure\"); readings C11, B2, B4 and E28."
+provenance = "logic-3 R6 (one true and one undefined gave the true arm under draft 3; both undefined gave \"absent\"; taken: rule E); logic-1 doubts (one name under exclusive guards). design rule E; logic-3 R6. language-2 B7(c); logic-3 R6. language-1 L14 (first model); language-2 probe n3.ri."
+needs = ["instance", "guard", "one-name", "compile-error", "summary"]
+answer_basis = "traced. `a`: one true, one undefined: undetermined. `b`: `u` and `not u` both undefined: undetermined. `c`: two true: `failure ambiguous-declaration` (readings B2). `d`: both false: absent. `e`: one true, one false: present with `v` 1 mm. Summary (readings B4, E28): two undetermined presences, never counted as failed, and one failure. The compile row is readings C11: same-name declarations under guards compile whether or not the guards can be proved exclusive (spec 6.4's restriction to provably exclusive guards is to be amended); all five pairs give the same kind of node. Today's compiler accepts them too (run)."
+today = "run `dupguard.ri`: two guarded `sub a` compile; no `a` is printed (a guarded sub that is not recursive is never created, task 8414)."
+
+[[expect]]
+compile = "ok"
+
+[[expect]]
+path = "Asm.a"
+presence = "undetermined"
+
+[[expect]]
+path = "Asm.b"
+presence = "undetermined"
+
+[[expect]]
+path = "Asm.c"
+failure = "ambiguous-declaration"
+
+[[expect]]
+path = "Asm.d"
+presence = "absent"
+
+[[expect]]
+path = "Asm.e.v"
+value = "1 mm"
+
+[[expect]]
+path = "Asm/summary"
+summary = { violated = 0, undetermined = 2, failed = 1 }

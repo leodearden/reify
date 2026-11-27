@@ -1,0 +1,10 @@
+structure def Fan  { param d : Length = 40mm }
+structure def Case {
+    param a : Bool = true
+    param b : Bool = false
+    sub f1 : Fan where a
+    sub f2 : Fan where b
+    let v = Fan()
+    let n = self.children.count
+}
+structure def Top { sub x : Case   sub y : Case { b = undef } }

@@ -1,0 +1,10 @@
+structure def S {
+    param big : Bool = false
+    param w : Length = 3mm
+    where big { param w : Length = 5mm }
+}
+structure def Holder {
+    sub off : S
+    sub on : S { big = true }
+    sub unk : S { big = undef }
+}

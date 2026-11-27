@@ -1,0 +1,44 @@
+tests = "a constraint in a sub's braces may read a sibling's solved value, which is decided alone; two siblings whose braces constraints read each other's unknown are a cycle."
+rule = "decision 1; Part 6.1 (\"Where this meaning has no answer\"); contract section 6 (two solves inside each other's trials are a cycle); PRD section 5.6."
+provenance = "the tracer's interaction I3 (trace-braces-purposes-unknowns), here with forced values."
+needs = ["instance", "braces", "constraint", "unknown", "solve-forced"]
+answer_basis = "traced. In `Asm`, `b`'s braces force `b.shaft_d` to 4 mm, decided by `b` alone: `a`'s braces' constraint is outside `b` and does not bear on it. `a`'s braces' constraint reads `self.b.shaft_d`: 4 mm, so `a.shaft_d` is 8 mm. Read before `a`'s view (PRD section 5.6) or through it, the value is the same; through it the two solves nest, which needs core task 10563. In `Pair`, `a`'s solve reads `b.shaft_d`, whose solve reads `a.shaft_d`, which waits on `a`'s solve: a ring under either reading, `failure cycle` on each unknown. Neither constraint is inside the other's owner, so no joint group may form (contract section 8, ruled 2026-11-25)."
+
+[candidates]
+note = "20 mm for `b` and 4 mm for `a` meet `Motor`'s bounds and break the braces' constraint, which a reading in which the braces do not bear would take. The first taken are 4 mm and 8 mm. In `Pair` no candidate is tried: each solve meets the ring before it can take one."
+
+[[candidates.unknown]]
+path = "Asm.b.shaft_d"
+values = ["20mm", "4mm"]
+
+[[candidates.unknown]]
+path = "Asm.a.shaft_d"
+values = ["4mm", "8mm"]
+
+[[candidates.unknown]]
+path = "Pair.a.shaft_d"
+values = ["8mm"]
+
+[[candidates.unknown]]
+path = "Pair.b.shaft_d"
+values = ["4mm"]
+
+[[expect]]
+path = "Asm.b.shaft_d"
+value = "4 mm"
+
+[[expect]]
+path = "Asm.a.shaft_d"
+value = "8 mm"
+
+[[expect]]
+path = "Asm.a/braces/constraint[0]"
+verdict = "satisfied"
+
+[[expect]]
+path = "Pair.a.shaft_d"
+failure = "cycle"
+
+[[expect]]
+path = "Pair.b.shaft_d"
+failure = "cycle"

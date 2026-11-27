@@ -1,0 +1,10 @@
+structure def Plate {
+    param t : Length = auto
+    constraint t >= 3mm
+    constraint t <= 3mm
+    pub let via_solver = constrained(t)
+}
+structure def Asm {
+    let c = Plate()
+    let s = c.via_solver
+}

@@ -1,0 +1,24 @@
+tests = "a determinacy test given the stand-in for \"not here yet\" gives the stand-in, so a constructor call whose argument depends on it is declared once, with the final value."
+rule = "rule A (the stand-in is absorbing, \"including a determinacy test\"; a child is declared only from values with no stand-in)."
+provenance = "logic-1 L9 (taken: draft 2's absorbing stand-in); logic-2 N4 (closed)."
+needs = ["instance", "eval-reads", "value", "made", "summary", "roots"]
+answer_basis = "traced. In `Asm`, pass 1 has `self.k` missing: the stand-in, so `determined` and the `if` give the stand-in and no instance is declared. Pass 2: 5 mm, one instance with `t` 5 mm, satisfied. In `AsmU`, `k` is undefined (a value, not a stand-in): `determined` is false, `t` 2 mm, violated. Both are roots; `Plate` is used."
+
+[[expect]]
+roots = ["Asm", "AsmU"]
+
+[[expect]]
+path = "Asm.p/made[0].t"
+value = "5 mm"
+
+[[expect]]
+path = "Asm/summary"
+summary = { violated = 0, undetermined = 0, failed = 0 }
+
+[[expect]]
+path = "AsmU.p/made[0].t"
+value = "2 mm"
+
+[[expect]]
+path = "AsmU/summary"
+summary = { violated = 1, undetermined = 0, failed = 0 }

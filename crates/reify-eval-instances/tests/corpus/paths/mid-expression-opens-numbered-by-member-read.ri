@@ -1,0 +1,8 @@
+structure def Plate {
+    param t : Length = 2mm
+    pub let area = t * 40mm
+}
+structure def Asm {
+    let ps = [Plate(t: 1mm), Plate(t: 2mm)]
+    let q = ps[0].area + ps[1].area
+}

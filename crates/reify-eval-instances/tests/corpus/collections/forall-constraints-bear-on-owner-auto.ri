@@ -1,0 +1,7 @@
+structure def Bar { param length : Length = 100mm }
+structure def Asm {
+    param t : Length = auto
+    sub bs : List<Bar>
+    constraint bs.count == 2
+    forall b in bs: constraint b.length == t
+}

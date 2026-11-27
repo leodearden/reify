@@ -1,0 +1,9 @@
+structure def RecTree {
+    param depth : Int = 2
+    param span : Length = 100mm
+    sub child : RecTree where depth > 0 {
+        depth = self.depth - 1
+        span = self.span / 2
+    }
+    constraint span >= 10mm
+}

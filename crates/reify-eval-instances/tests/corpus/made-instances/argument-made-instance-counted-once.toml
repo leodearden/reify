@@ -1,0 +1,28 @@
+tests = "an instance made in a sub's argument is counted exactly once, by the instance the parameter cell belongs to, and gives the same count as the named form."
+rule = "rule B (\"Exactly one summary reads a cell's list ... For a parameter cell evaluating an argument, the mark arrives with the argument\")."
+provenance = "logic-2 N1(a) (the uncounted violation; taken); logic-3 R7 (the double count under draft 3; taken: \"exactly one summary\"). critic logic-3 R7; logic-2 AsmI/AsmII."
+needs = ["instance", "value", "made", "constraint", "summary", "roots"]
+answer_basis = "traced. `AsmI`: the cell `AsmI.d.p` evaluates `Plate(t: 1mm)` in `AsmI`'s scope and makes `AsmI.d.p/made[0]`, violated; the default `Plate(t: 5mm)` is never evaluated. `d`'s summary reads `p`'s list and `AsmI`'s reads `d`'s: once. `AsmII`: the instance is made at `AsmII.c/made[0]`; `d.p` holds the value and makes nothing. Both are roots."
+
+[[expect]]
+roots = ["AsmI", "AsmII"]
+
+[[expect]]
+path = "AsmI.d.p/made[0].t"
+value = "1 mm"
+
+[[expect]]
+path = "AsmI.d.p/made[0]/constraint[0]"
+verdict = "violated"
+
+[[expect]]
+path = "AsmI/summary"
+summary = { violated = 1, undetermined = 0, failed = 0 }
+
+[[expect]]
+path = "AsmII.c/made[0]/constraint[0]"
+verdict = "violated"
+
+[[expect]]
+path = "AsmII/summary"
+summary = { violated = 1, undetermined = 0, failed = 0 }

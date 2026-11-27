@@ -1,0 +1,24 @@
+tests = "an `auto` written for each entry of a keyed collection is one unknown per entry, and the text of each unknown's path carries the entry's key, so two unknowns never print alike."
+rule = "rule F; decisions A (row \"An unknown with no name of its own\": \"the member with its key for a keyed entry\", `M/auto[vents[\"a\"].w]`); decision 5; Part 6.3"
+provenance = "trace-structure counter-example 3 (without the key, both unknowns print `M/auto[vents.w]`)."
+needs = ["instance", "collection", "paths", "unknown", "solve-forced"]
+answer_basis = "traced. Both unknowns are `M`'s, the writer's (decision 5), one per key. `M`'s own constraints bear on them: the entry `\"a\"`'s is forced to 1 mm and `\"b\"`'s to 2 mm. The two paths differ only in the key. Different values make a path sent to the wrong unknown show."
+
+[candidates]
+note = "A reading in which the constraints did not bear would take 2 mm and 1 mm. Only 1 mm with 2 mm satisfies both constraints, whatever order the pairs are tried in."
+
+[[candidates.unknown]]
+path = "M/auto[vents[\"a\"].w]"
+values = ["2 mm", "1 mm"]
+
+[[candidates.unknown]]
+path = "M/auto[vents[\"b\"].w]"
+values = ["1 mm", "2 mm"]
+
+[[expect]]
+path = "M/auto[vents[\"a\"].w]"
+value = "1 mm"
+
+[[expect]]
+path = "M/auto[vents[\"b\"].w]"
+value = "2 mm"

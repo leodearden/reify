@@ -1,0 +1,17 @@
+tests = "an instance made in a cell that is not a member, here a collection's count cell, is counted."
+rule = "rule B (the rule speaks of a unit of source, not a member); Part 5; readings A (a count constraint is the source of the count cell and is not a verdict) and B4."
+provenance = "logic-2 N1(d) (taken: draft 3 said \"cell\", and draft 5 \"unit of source\")."
+needs = ["instance", "collection", "value", "made", "open", "summary"]
+answer_basis = "traced. The count cell `Asm/count[vents]` evaluates `Sizing(n: 2).n`: it makes a `Sizing` with `n` 2, whose `n >= 3` is violated, and gives 2. `vents` has elements 0 and 1. The count constraint is not a verdict and is not counted, so the one violation is the made `Sizing`'s; the summary reads the made list of the count cell, which is not a member (readings B4). `.n` is read through the opened value, whose verdicts are never counted."
+
+[[expect]]
+path = "Asm.vents[1]"
+presence = "present"
+
+[[expect]]
+path = "Asm.vents[2]"
+presence = "absent"
+
+[[expect]]
+path = "Asm/summary"
+summary = { violated = 1, undetermined = 0, failed = 0 }

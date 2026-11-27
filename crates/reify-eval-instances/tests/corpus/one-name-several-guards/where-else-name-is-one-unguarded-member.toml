@@ -1,0 +1,29 @@
+tests = "one name declared in both arms of a `where`/`else` is one member, readable without a guard, taking the arm whose guard holds, and undetermined in presence when the guard is undefined."
+rule = "rule E; Part 4 (\"A name declared in every arm of a `where`/`else` ... is not a guarded member\")."
+provenance = "design Part 15.1 rule E; design Part 4; critic `language-2.md` B7(a) (report, not re-checked)."
+needs = ["instance", "guard", "one-name", "compile-error"]
+answer_basis = "traced. `on`: `c` true, first arm, 1 mm. `off`: `else` desugars to `where not c`, true, 2 mm, `r` = 4 mm. `unk`: both guards undefined, so presence undetermined and `r` reads something not there: undefined."
+today = "a warning \"unguarded reference to guarded cell 'k'\", and `r` undef in every instance (run, `e_else.ri`)."
+
+[[expect]]
+compile = "ok"
+
+[[expect]]
+path = "Top.on.k"
+value = "1 mm"
+
+[[expect]]
+path = "Top.off.k"
+value = "2 mm"
+
+[[expect]]
+path = "Top.off.r"
+value = "4 mm"
+
+[[expect]]
+path = "Top.unk.k"
+presence = "undetermined"
+
+[[expect]]
+path = "Top.unk.r"
+value = "undefined"

@@ -1,0 +1,13 @@
+tests = "what a solve does with an unknown, and a constraint, whose presence is undetermined."
+rule = "Part 6.2; Part 6.4 (second question handed over); decision 3."
+provenance = "logic-2 N6; logic-3 R11. design 6.4, second question; logic-3 R11. Not taken: draft 5 hands the question to the solve design (6.4, \"What a group does when a constraint that might bear on it is undetermined\")."
+needs = ["instance", "guard", "unknown"]
+answer_basis = "open for `x`, for `Asm/constraint[0]` and for the summary: is `x` solved from `x == 20mm` alone (20 mm, with the guarded constraint reported undetermined), or undetermined? Owner: task 10610. The presence rows are stated (Part 6.2, Part 4; readings E28): `use_b` has no default at the root, so it is undefined, and the guarded sub and constraint are of undetermined presence. No pinned row reads a solve, so the entry runs (readings F, last note)."
+
+[[expect]]
+path = "Asm.b"
+presence = "undetermined"
+
+[[expect]]
+path = "Asm/constraint[1]"
+presence = "undetermined"

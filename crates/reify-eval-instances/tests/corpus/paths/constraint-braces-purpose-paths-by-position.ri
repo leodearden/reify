@@ -1,0 +1,8 @@
+structure def Plate { param t : Length = 3mm   constraint t >= 1mm }
+purpose thin_enough(subject : Structure) { constraint subject.t < 4mm }
+structure def Asm {
+    param w : Length = 2mm
+    sub p : Plate { constraint t >= 5mm }
+    constraint w > 1mm
+    purpose thin_enough(self.p)
+}

@@ -1,0 +1,7 @@
+structure def Vent { param area : Length = 10mm }
+structure def Asm {
+    param n : Int
+    sub vents : List<Vent>
+    constraint vents.count == n
+    let a0 = vents[0].area
+}

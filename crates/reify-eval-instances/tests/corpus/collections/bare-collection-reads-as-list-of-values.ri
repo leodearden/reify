@@ -1,0 +1,3 @@
+structure def Spec { param n : Int = 3 }
+structure def Vent { param w : Length = 2mm }
+structure def Asm  { sub s : Spec   sub vents : List<Vent>   constraint vents.count == self.s.n   let k = vents }

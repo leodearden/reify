@@ -1,0 +1,21 @@
+tests = "a parameter under a false guard is absent at the instance, and the instance's value does not carry it, even when the use gives it an argument; the argument is not dropped in silence: the instance's verdict on its arguments is violated."
+rule = "Part 15.2 (\"An argument given to a parameter that is absent\"); Part 4; Part 7.1; PRD D10(a), ruled by Leo on 2026-11-26 as recommended (readings B6)."
+provenance = "design Part 15.2. logic-3 R18."
+needs = ["instance", "guard", "value", "constraint", "summary"]
+answer_basis = "traced for the first two rows; stated for the verdict: PRD D10(a) as Leo ruled it. The `/arguments` verdict is violated, and its message says to put the assignment under the same guard (`t = 8mm where thick`). It is the only verdict below `Asm` that is not satisfied."
+
+[[expect]]
+path = "Asm.p.t"
+presence = "absent"
+
+[[expect]]
+path = "Asm.p/as-value"
+value = "Plate { thick: false }"
+
+[[expect]]
+path = "Asm.p/arguments"
+verdict = "violated"
+
+[[expect]]
+path = "Asm/summary"
+summary = { violated = 1, undetermined = 0, failed = 0 }

@@ -1,0 +1,38 @@
+tests = "a purpose applied in source never takes part in deciding an `auto`: the subject's own solve gives the same value as with no purpose, and the purpose's constraint is a violated verdict counted in the applying instance's summary."
+rule = "Part 10 (ruled 2026-11-26: a purpose only checks); decision 4 (its purpose half, reversed); contract Example 9 as reworked in design Part 12"
+provenance = "task 9420 (purpose half; its design note says the ruling answers \"no\"); design decision 4 (its purpose model, here with a forced `auto`). design decision 4 purpose model; Part 12 Example 9. language-1 L6; second-design Q9; contract Example 9. logic-1 L4; logic-3 holds-up. contract Example 9 as restated in design Part 12."
+needs = ["instance", "constraint", "summary", "unknown", "solve-forced", "purpose", "grammar-purpose", "roots"]
+answer_basis = '''
+traced.
+`t` is owned by `Holder.b`, and the purpose instance is at `Holder/purpose[0]`, outside that owner by path, so its constraint would not bear under design 6.1 even with no ruling on purposes; it is also left out of every problem by path (readings E34). So `Holder.b`'s solve sees only `t == 2mm`, and t = 2 mm.
+The purpose's constraint reads `subject.t` = 2 mm against 3 mm, so it is violated, and it is counted in `Holder`'s summary (readings B4).
+If the purpose bore on its subject's `auto`, as the ruling of 2026-11-25 had it, no value would satisfy `t == 2mm` and `t >= 3mm` together, and `t` would be `value undefined` (readings B3). The model tells that ruling from today's; it does not test the exclusion of a purpose inside the owner, which `purpose-inside-owner-still-only-checks` and `purpose-braces-and-use-site-auto-on-one-sub` do (tracer, contradiction C6).
+`Bracket` is used by `Holder`, and a purpose is not a structure definition, so `Holder` is the only root.'''
+today = "with a purpose active, a cold evaluation solves without the purpose's constraints and the edit path solves with them (task 9420 record)."
+note = "the member line `purpose robust(self.b)` needs grammar-purpose (readings E33). With it taken out, the source parses on main."
+
+[candidates]
+note = "3 mm meets the purpose and breaks `t == 2mm`, which depended on the trial; the first taken is 2 mm."
+
+[[candidates.unknown]]
+path = "Holder.b.t"
+values = ["3mm", "2mm"]
+
+[[expect]]
+roots = ["Holder"]
+
+[[expect]]
+path = "Holder.b.t"
+value = "2 mm"
+
+[[expect]]
+path = "Holder.b/constraint[0]"
+verdict = "satisfied"
+
+[[expect]]
+path = "Holder/purpose[0]/constraint[0]"
+verdict = "violated"
+
+[[expect]]
+path = "Holder/summary"
+summary = { violated = 1, undetermined = 0, failed = 0 }

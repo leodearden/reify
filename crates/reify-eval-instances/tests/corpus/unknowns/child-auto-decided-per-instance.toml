@@ -1,0 +1,25 @@
+tests = "a child's own `auto` is decided once per instance, from that instance's arguments."
+rule = "Part 13 row 2; Part 6.1; decision 1."
+provenance = "design Part 13 row \"A child's own `auto` is never decided per instance (9604)\". task 9604; task 7064 (its read half)."
+needs = ["instance", "unknown", "solve-forced"]
+answer_basis = "traced. Each instance owns its `len`; `len = 2 × base` forces 2 mm for `a` and 4 mm for `b`. The row rests on the solve kinds; a forced model is decided by any solver, this crate's test solver included."
+today = "no `len` on either instance; `Beam.len` is solved once at the definition, 2 mm (run, `perinst.ri`)."
+
+[candidates]
+note = "2 mm for `b` is the value decided once at the definition and shared, as today's engine does; 4 mm for `a` is `b`'s. Each breaks `len == base * 2` under its own instance's `base`, so the first taken are 2 mm and 4 mm."
+
+[[candidates.unknown]]
+path = "Asm.a.len"
+values = ["4mm", "2mm"]
+
+[[candidates.unknown]]
+path = "Asm.b.len"
+values = ["2mm", "4mm"]
+
+[[expect]]
+path = "Asm.a.len"
+value = "2 mm"
+
+[[expect]]
+path = "Asm.b.len"
+value = "4 mm"

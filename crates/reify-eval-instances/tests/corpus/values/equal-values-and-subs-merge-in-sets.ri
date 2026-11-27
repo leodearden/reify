@@ -1,0 +1,15 @@
+structure def Peg { param w : Length = 10mm }
+structure def Fan { param d : Length = 40mm }
+structure def Pair {
+    param with_fan : Bool = false
+    sub a : Peg
+    sub b : Peg { w = 10mm }
+    sub fan : Fan where with_fan
+    let n_vals = set{Peg(), Peg(w: 10mm)}.count
+    let n_subs = set{self.a, self.b}.count
+    let n_kids = self.children.count
+}
+structure def Top {
+    sub off : Pair
+    sub unk : Pair { with_fan = undef }
+}

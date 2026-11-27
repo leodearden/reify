@@ -1,0 +1,18 @@
+tests = "when the compiler cannot choose a strict `auto` type argument (two candidates fit), the sub reports a failure that says so, and nothing panics or goes silent."
+rule = "Part 6.3 (table, row \"A type argument\"); decisions B2; decisions D25; PRD 5.7 (row \"An `auto` type argument the compiler cannot choose is a failure at the sub\")"
+provenance = "task 6815; task 6851 (its fixture, with `param seal : T` replaced by a defaulted `Int` parameter. Under task 7874's ruling the original omits a required argument, which is a compile error for a different reason)"
+needs = ["compile-error", "instance", "generic"]
+answer_basis = '''
+traced.
+Part 6.3's table: "A choice that fails gives the sub a failure outcome that says so". Decisions B2 names that kind `type-argument-unresolved`, at the sub's own path.
+`GraphiteSeal` and `ORingSeal` both satisfy `Seal`, so the choice for `Assembly.b` fails: `Assembly.b` is `failure type-argument-unresolved`.
+Because the failure is the sub's outcome, the file compiles on the second output and evaluation reaches the sub (the record's E_AUTO_TYPE_PARAM_AMBIGUOUS no longer stops evaluation there).
+Side question (can a generic definition be a default root?): decisions D25, not while its type parameter has no default, so `Bearing<T: Seal>` is not one. The file's default roots would be `GraphiteSeal`, `ORingSeal` and `Assembly`; no roots row is pinned, and the host declares `Assembly` because the expected path starts there (PRD 5.8).'''
+today = "a debug build panics with \"unrepresentable cell_type\"; `check` and `eval` exit 1 on the compile error (task 6851 record)."
+
+[[expect]]
+compile = "ok"
+
+[[expect]]
+path = "Assembly.b"
+failure = "type-argument-unresolved"

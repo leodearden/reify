@@ -1,0 +1,24 @@
+tests = "An `auto` written at a constructor call is borne on by every constraint inside the creator that reads the result, including those of subs the value is passed to."
+rule = "Part 6.1 (\"'Bears on' follows every chain of reads\"); decision 5; contract Example 11"
+provenance = "contract Example 11 (\"With `let c = Plate(t: auto)`, `sub d = Widget(c)` and `sub e = Fidget(c)`, there is one unknown, and the constraints inside `Widget` and `Fidget` both bear on it\"); design Part 6.1"
+needs = ["instance", "constraint", "unknown", "made", "open", "nested-solve", "solve-real"]
+answer_basis = "traced. One unknown, `Asm`'s, at `Asm/auto[c#0.t]`. Bearing: `t >= 3mm` (made instance), `p.t >= 4mm` (in `Asm.d`), `q.t <= 6mm` (in `Asm.e`). Range [4, 6], middle 5 mm."
+
+[candidates]
+note = "3 mm meets the made instance's bound and breaks `Widget`'s (a reading in which the constraints of subs the value is passed to do not bear takes it); 7 mm breaks `Fidget`'s. The first taken is 5 mm, the pinned middle; the entry waits for task 10610 because that middle is the default objective's."
+
+[[candidates.unknown]]
+path = "Asm/auto[c#0.t]"
+values = ["3mm", "7mm", "5mm"]
+
+[[expect]]
+path = "Asm.c/made[0].t"
+value = "5 mm"
+
+[[expect]]
+path = "Asm.d/constraint[0]"
+verdict = "satisfied"
+
+[[expect]]
+path = "Asm.e/constraint[0]"
+verdict = "satisfied"

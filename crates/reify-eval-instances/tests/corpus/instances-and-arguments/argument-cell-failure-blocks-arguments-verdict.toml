@@ -1,0 +1,25 @@
+tests = "when an argument's cell is a failure, the instance's built-in verdict on its arguments is the failure `blocked`, not undetermined."
+rule = "decisions B5 (\"When an argument's cell is a failure, the verdict is `failure blocked`\"); decisions B4; decisions C14; contract 7.7; PRD 5.4 (the summary reads the verdict on arguments)"
+provenance = "appendix B5; the ring of `let`s of `let-cycle-fails-ring-blocks-readers`."
+needs = ["compile-error", "instance", "summary"]
+answer_basis = "traced. The ring of `let`s compiles (decisions C14). `x` and `y` are on the ring: cycle. `Asm.p.t` evaluates `x` in `Asm`'s scope: blocked. `p`'s argument verdict reads that cell, a failure: blocked (B5). The summary reads every child its instance declares, the verdict on arguments included, and counts as failed every node whose own answer is a failure, `blocked` included (decisions B4; PRD 5.4): `x`, `y`, `p.t` and `p/arguments`, failed 4."
+today = "run `g09.ri`: \"circular let-binding dependency in template Asm: [x, y]\", and `Asm.p.t = undef`."
+
+[[expect]]
+compile = "ok"
+
+[[expect]]
+path = "Asm.x"
+failure = "cycle"
+
+[[expect]]
+path = "Asm.p.t"
+failure = "blocked"
+
+[[expect]]
+path = "Asm.p/arguments"
+failure = "blocked"
+
+[[expect]]
+path = "Asm/summary"
+summary = { violated = 0, undetermined = 0, failed = 4 }

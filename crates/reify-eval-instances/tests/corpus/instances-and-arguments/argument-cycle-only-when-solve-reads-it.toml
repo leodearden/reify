@@ -1,0 +1,25 @@
+tests = "an argument that a child's solve reads and that reads what that solve decides is a cycle; an argument the solve does not read is not."
+rule = "decision 12 (\"An argument that depends on what it helps decide is a cycle\"); Part 4; Part 6.4 item 3."
+provenance = "design Part 4 (\"`sub a : Plate { note = self.a.area / 40mm }` is not one, as long as no constraint of `Plate` reads `note`\"). critic logic-3 R12. logic-3 R12."
+needs = ["instance", "unknown", "solve-forced"]
+answer_basis = "traced. In `a`, `Plate`'s constraint reads `floor`, so `a`'s `problem` lists `floor` among what its constraints read from outside, and the solve reads it before it opens its view (PRD 5.6). `floor` reads `a.t`, which reads that solve: a cycle. In `b`, the solve reads `floor` = 1 mm, not `note`; `t` = 1 mm; `note` = `b.area / 40mm` = 1 mm. The assignments are arguments only, so the entry does not need the braces leaf (decisions F)."
+today = "`Asm.a.floor` and `Asm.a.area` undef, and `Asm.b.note` undef, silently (run, `argcyc.ri`)."
+
+[candidates]
+note = "A reading in which `t == floor` did not bear would take 2 mm. Under 2 mm the constraint is violated and depended on the trial; under 1 mm it is satisfied, and nothing else depends on the trial."
+
+[[candidates.unknown]]
+path = "Asm.b.t"
+values = ["2 mm", "1 mm"]
+
+[[expect]]
+path = "Asm.a.t"
+failure = "cycle"
+
+[[expect]]
+path = "Asm.b.t"
+value = "1 mm"
+
+[[expect]]
+path = "Asm.b.note"
+value = "1 mm"

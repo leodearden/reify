@@ -1,0 +1,2 @@
+structure def Plate { param t : Length = auto   constraint t >= 3mm   constraint t <= 2mm }
+structure def Top   { let c = Plate()   let k = c.t }

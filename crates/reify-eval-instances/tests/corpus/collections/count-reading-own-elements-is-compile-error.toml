@@ -1,0 +1,9 @@
+tests = "A count that reads its own elements is a compile error whose message says to read a prototype value."
+rule = "Part 5; decision 10"
+provenance = "design Part 5; Part 14 decision 10 (model). decision 10's model, reduced to an Int. language-1 L13; language-2 B8."
+needs = ["compile-error", "collection"]
+answer_basis = "stated: decision 10."
+today = "undefined, silently (design decision 10)."
+
+[[expect]]
+compile_error = "the count of `bolts` reads its own elements; write `let proto = Bolt()` and read `proto.rated_load`"

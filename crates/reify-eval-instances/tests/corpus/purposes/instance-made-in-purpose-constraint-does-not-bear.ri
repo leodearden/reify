@@ -1,0 +1,7 @@
+structure def Gauge { param t : Length   constraint t >= 3mm }
+purpose fits(subject : Structure) { constraint Gauge(t: subject.t).t > 0mm }
+structure def Bracket {
+    param t : Length = auto
+    constraint t == 2mm
+    purpose fits(self)
+}

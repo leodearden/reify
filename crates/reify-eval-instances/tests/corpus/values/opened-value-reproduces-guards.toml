@@ -1,0 +1,17 @@
+tests = "an opened value reads its guards from the parameters the value carries, so a guarded member of a value is absent or present as it was at the made instance."
+rule = "Part 7.2 (reading any other member builds an instance from the value); Part 4 (a guard is read per instance); decision 3."
+provenance = "logic-3 holds-up (\"An opened value reproduces every guard, except through the determinacy tests\")."
+needs = ["instance", "guard", "value", "made", "open"]
+answer_basis = "traced. `c` carries `needs_fan` false: at `Top.c/open` the guard is false, `fan` is absent, and `c.fan.d` is undefined. `c2` carries true: its fan is present with `d` 40 mm."
+
+[[expect]]
+path = "Top.c/open.fan"
+presence = "absent"
+
+[[expect]]
+path = "Top.f"
+value = "undefined"
+
+[[expect]]
+path = "Top.f2"
+value = "40 mm"

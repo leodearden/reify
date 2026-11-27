@@ -1,0 +1,2 @@
+trait Seal {}
+structure def Box<T: Seal> { param n : Int = 1 }

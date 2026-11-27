@@ -1,0 +1,17 @@
+tests = "Whether the constraints of a recursive sub's levels bear on an unknown the root passes into it."
+rule = "6.4 (third question); Part 4 (recursion is a guarded sub)"
+provenance = "design Part 6.4, \"Three questions\", third; critic logic-1 (trace through `RecTree`); spec 8.9"
+needs = ["instance", "guard", "unknown"]
+answer_basis = "open for `s` and every verdict, owner task 10610: rule 6.1 read plainly gives `s` = 40 mm (the third level needs s / 4 >= 10 mm); spec 8.9's \"Resolution does not cross recursive instance boundaries\" gives, on one critic's reading, 1 mm with the tree's constraints violated. The contract leaves it to the solve design. The structure does not depend on `s` and is pinned; no pinned row reads a solve, so the entry runs (readings F, last note). The braces hold argument assignments only, so the entry does not need `braces`."
+
+[[expect]]
+path = "Top.tree.child.child"
+presence = "present"
+
+[[expect]]
+path = "Top.tree.child.child.depth"
+value = "0"
+
+[[expect]]
+path = "Top.tree.child.child.child"
+presence = "absent"

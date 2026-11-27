@@ -1,0 +1,8 @@
+trait Flow {}
+structure def Shaft { port end : out Flow {} }
+structure def Hub   { port bore : in Flow {} }
+structure def Asm {
+    let s = Shaft()
+    let h = Hub()
+    connect s.end -> h.bore
+}

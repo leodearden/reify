@@ -1,0 +1,10 @@
+structure def Plate {
+    param t : Length
+    constraint t >= 3mm
+}
+structure def Top {
+    param u : Length
+    param k : Real = 0.0
+    let c = Plate(t: u)
+    let d = Plate(t: 10mm / k)
+}

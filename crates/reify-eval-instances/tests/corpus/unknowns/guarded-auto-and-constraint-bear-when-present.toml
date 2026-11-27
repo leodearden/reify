@@ -1,0 +1,41 @@
+tests = "an `auto` under a guard is an unknown only while its guard is true, and a constraint under a true guard bears on an unknown of the same instance, whether the unknown is guarded or not."
+rule = "Part 6.2 (\"under the same guards\"); Part 6.4 item 4; Part 4; decision 3"
+provenance = "task 7489 (its probes 1 and 3. Probe 2 is in CG-20, which this draft's former compile-error entry merged into. Its guarded `x in C` domain is not modelled: I did not check the membership syntax)"
+needs = ["instance", "guard", "constraint", "unknown", "solve-forced"]
+answer_basis = '''
+traced.
+`Top.on`: g = 1.0 > 0, so `m` and its constraint are present. The constraint is inside the owner, so it bears, and `m` = 10 mm.
+`Top.off`: g = -1.0, so `m` and the constraint are absent. An absent unknown is left out of any solve (Part 6.4 item 4).
+`Top.k`: `m` is unguarded, and the guarded constraint is present with g = 1.0, so it bears, and `m` = 10 mm.'''
+today = "`GEP.m = undef` with an INDETERMINATE verdict, and `GK.m = undef` with \"not touched by any constraint\" (task 7489 record, release binary at 87b744b189)."
+
+[candidates]
+note = "5 mm is what a reading takes in which the guarded constraint does not bear (task 7489's \"not touched by any constraint\"); it breaks `self.m == 10mm`, so the first taken is 10 mm for each."
+
+[[candidates.unknown]]
+path = "Top.on.m"
+values = ["5mm", "10mm"]
+
+[[candidates.unknown]]
+path = "Top.k.m"
+values = ["5mm", "10mm"]
+
+[[expect]]
+path = "Top.on.m"
+value = "10 mm"
+
+[[expect]]
+path = "Top.on/constraint[0]"
+verdict = "satisfied"
+
+[[expect]]
+path = "Top.off.m"
+presence = "absent"
+
+[[expect]]
+path = "Top.off/constraint[0]"
+presence = "absent"
+
+[[expect]]
+path = "Top.k.m"
+value = "10 mm"

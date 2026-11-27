@@ -1,0 +1,9 @@
+structure def Motor { param shaft_d : Length = auto   constraint shaft_d >= 4mm   constraint shaft_d <= 20mm }
+structure def Asm {
+    sub a : Motor { constraint shaft_d == self.b.shaft_d * 2 }
+    sub b : Motor { constraint shaft_d <= 4mm }
+}
+structure def Pair {
+    sub a : Motor { constraint shaft_d == self.b.shaft_d * 2 }
+    sub b : Motor { constraint shaft_d == self.a.shaft_d / 2 }
+}
