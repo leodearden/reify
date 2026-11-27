@@ -1905,6 +1905,11 @@ Member-level visibility rules:
 - `pub let` exposes a computed value without promoting it to a parameter.
 - No `priv` modifier in v0.1.
 
+What the rules mean for a reader:
+- A read of a `let` that is not `pub`, from another definition's text, is a compile error.
+- The braces of a sub and the body of a purpose are another definition's text. They read only what is visible from outside the instance they concern: its parameters, subs, ports and `pub let`s.
+- A path is not source: a host or tool that reads a cell by path may read a private `let`, and a structure value carries it.
+
 ### 7.5 Re-exports
 
 ```
@@ -2019,23 +2024,6 @@ Implemented in task 3441 (cross-sub access); `at` placement and `aux` suppressio
    supported and continues to emit an actionable diagnostic. Per-element
    realization handles require per-instance realization, which is out of
    scope for v0.1.
-2. **Nested cross-sub access is deferred.** Chains deeper than one level —
-   e.g. `self.outer.inner.body` — are not yet supported.
-3. **Parameter overrides do not propagate into the child's body.** A sub's
-   body is realised once per build using the child structure's own parameter
-   defaults; parent-side parameter overrides on the sub do not flow into the
-   realised geometry. For per-instance variation, parameterise the child's
-   primitives and pass scalar arguments downward:
-
-```reify
-pub structure Inner {
-    param offset_x : Length = 0mm
-    let body = translate(box(10mm, 20mm, 30mm), offset_x, 0mm, 0mm)
-}
-pub structure Outer {
-    sub inner = Inner(offset_x: 10mm)
-}
-```
 
 ### 8.4 Upward Visibility
 
@@ -2049,14 +2037,38 @@ Warn, not forbid. When a declaration in a child scope uses the same name as a de
 
 ### 8.6 `self`
 
-The `self` keyword refers to the enclosing entity definition or specialization. `self.param_name` is equivalent to `param_name` for locally declared names. Required when the entity itself (rather than one of its members) is the referent. This equivalence extends to all locally-scoped names: a bare reference to a single-instance sub (`bolt`) resolves identically to `self.bolt` — a `StructureRef` value — and a bare reference to a collection sub (`bolts`) resolves identically to `self.bolts` — a `List<T>` value.
+`self` is the instance of the enclosing definition. `self.x` equals a bare `x` for locally declared names. Required when the instance itself (rather than one of its members) is the referent. The equivalence extends to all locally-scoped names:
+
+- A bare single-instance sub (`bolt`) resolves to `self.bolt`. Read as a value, it is that sub's structure value (§5.2), taken after its solves, and not a `StructureRef`.
+- A bare collection sub (`bolts`) resolves to `self.bolts`, a `List<T>` of its present elements as values.
+- `self.children`, `self.members` and `self.descendants` list the values of present members only, and are `undef` while a member's presence is undetermined.
+
+In a sub's braces (§8.7), `self` is the parent, meaning the instance whose definition declares the sub. A bare name in the braces resolves, in this order, to:
+
+1. a `let` written in the same braces;
+2. a member the sub's definition declares, present or not;
+3. a name of the declaring definition.
+
+```
+structure def Plate { param t : Length = 3mm }
+
+structure def Asm {
+    param t : Length = 10mm
+    sub p : Plate {
+        t = self.t / 2          // the parent's t: p.t is 5mm
+        constraint t >= 4mm     // the plate's own t
+    }
+}
+```
+
+`t = t / 2` in the braces would read the plate's own `t`, which is a cycle, reported when the design is evaluated. A bare name that resolves to a non-`pub` `let` of the sub's definition is a compile error (§7.4), and it does not fall through to the declaring definition's member of that name.
 
 `self` never refers to the module. The module is not an entity.
 
 ### 8.7 Specialization Scopes
 
-When a sub-entity is instantiated within a parent body, its body is a specialization scope:
-- Sees the parent scope (and transitively, all ancestor scopes)
+When a sub-entity is instantiated within a parent body, its braces are a specialization scope:
+- Sees the instance's own members first, then the parent scope (§8.6) and transitively all ancestor scopes
 - Can set parameters and add constraints on the instance
 - Does not modify the underlying definition
 
@@ -2064,13 +2076,20 @@ When a sub-entity is instantiated within a parent body, its body is a specializa
 
 | Member kind | Meaning |
 |-------------|---------|
-| Parameter assignments | `thickness = 3mm` -- set a value for an existing parameter |
-| `constraint` | Add constraints on the instance's parameters |
-| `let` bindings | Local computed values (scoped to the specialization) |
+| Parameter assignments | `thickness = 3mm`, optionally guarded: `t = 6mm where thick`. An argument written by the parent; under a false guard the parameter takes its default. `bore = auto` gives the parent an unknown (§2.9) |
+| `constraint` | An applied constraint definition and a `forall` block of constraints included. A member of the sub's instance; it bears on that instance's own `auto`, as a constraint of its definition does |
+| `let` without `auto` | A member of the sub's instance, read only by members in the same braces. A name that repeats a member of the sub's definition is a compile error |
 | `connect` | Connect the instance's ports |
-| `where` guards | Conditionally include any of the above |
+| `where` guards | A guard on the members inside the block |
+| `minimize` / `maximize` | Recorded as objectives of the instance. What they do is the solve design's (§10.5–10.8) |
 
-**Not permitted:** New `param`, `port`, or `sub` declarations. A specialization configures an existing definition; it does not extend its schema. To add members, define a new structure that inherits via trait or composition.
+**Not permitted** (each is a compile error):
+- `let x : T = auto`: write the `let` in the parent and pass it in.
+- An `auto` as a constructor argument inside a member written in the braces.
+- A purpose line: write it in the parent, with the sub as subject.
+- `param`, `port`, `sub`, `sketch`, `fn`, `meta`, and a `match` with declarations.
+
+A specialization configures an existing definition; it does not extend its schema. To add members, define a new structure that inherits via trait or composition.
 
 ```
 structure def Assembly {
@@ -2084,6 +2103,10 @@ structure def Assembly {
     }
 }
 ```
+
+In the call form, `sub p = Plate(t: t / 2)`, an argument is the caller's expression, as in every constructor call, so it reads the declaring definition's `t`. In the braces, `sub p : Plate { t = t / 2 }`, the bare name reads the plate's own `t` (§8.6).
+
+When a list sub gains braces (task 5482), a constraint written there is a member of every element.
 
 ### 8.8 Trait Member Merging
 
