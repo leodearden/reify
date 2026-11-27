@@ -1,6 +1,6 @@
 # Instances on the core: the catalogue of behavioural models
 
-**Status:** landed with the PRD `docs/prds/instances-on-the-core.md`, which Leo approved on 2026-11-26. 191 entries. It is the input of that PRD's first leaf.
+**Status:** frozen on the landing of task #10634, which converted its 191 entries into files. The maintained copy is `crates/reify-eval-instances/tests/corpus/`: one `<name>.ri` and one `<name>.toml` per entry in its theme's directory, the two-file entry as a directory holding its files beside its `.toml`. Edit those files, never this document.
 
 **What this is.** Each entry is a small `.ri` source and the answers it must give, by path. The first task of the PRD turns each entry into two files, `<name>.ri` and `<name>.toml`, under `crates/reify-eval-instances/tests/corpus/<theme>/`. From then on those files are the maintained copy and this document is a frozen record.
 
