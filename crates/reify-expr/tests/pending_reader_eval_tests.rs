@@ -385,3 +385,145 @@ fn an_if_or_a_match_whose_condition_is_here_evaluates_only_the_taken_arm() {
         assert_eq!(asked(&reader), expected_asks, "{name}: only the taken arm is evaluated");
     }
 }
+
+// ── A quantifier evaluates its body for every element ──────────────────────
+
+use reify_ast::QuantifierKind;
+
+const MANY: usize = 10_000;
+
+fn element(i: usize) -> ValueCellId {
+    cell(&format!("e{i}"))
+}
+
+fn loop_var() -> ValueCellId {
+    ValueCellId::new("$quant0.S", "p")
+}
+
+fn quantifier(kind: QuantifierKind, collection: CompiledExpr, predicate: CompiledExpr) -> CompiledExpr {
+    CompiledExpr::quantifier(kind, "p".to_string(), loop_var(), collection, predicate)
+}
+
+/// `<kind> p in <the MANY element cells, reflectively>: p > 0`.
+fn over_many_cells(kind: QuantifierKind) -> CompiledExpr {
+    let cells: Vec<CompiledExpr> = (0..MANY).map(|i| read_int(&element(i))).collect();
+    let collection = CompiledExpr::reflective_cell_list(cells, Type::List(Box::new(Type::Int)));
+    quantifier(
+        kind,
+        collection,
+        binop(BinOp::Gt, read_int(&loop_var()), int(0), Type::Bool),
+    )
+}
+
+/// `reader` was asked for each of the MANY element cells and nothing else.
+fn assert_asked_every_element(reader: &TestReader, kind: QuantifierKind) {
+    let every_element: BTreeSet<ValueCellId> = (0..MANY).map(element).collect();
+    let asked = asked(reader);
+    assert!(
+        asked == every_element,
+        "{kind:?}: asked for {} cells, {} of them among the {MANY} elements",
+        asked.len(),
+        asked.intersection(&every_element).count(),
+    );
+}
+
+/// For each quantifier, the first element's value that decides it (`p > 0`
+/// false for `forall`, true for `exists`) and a value that does not.
+fn deciding_first_elements() -> [(QuantifierKind, i64, i64, bool); 2] {
+    [
+        (QuantifierKind::ForAll, -1, 1, false),
+        (QuantifierKind::Exists, 1, -1, true),
+    ]
+}
+
+#[test]
+fn a_quantifier_over_ten_thousand_cells_asks_for_every_one_in_one_round() {
+    for (kind, deciding, _, _) in deciding_first_elements() {
+        let mut reader = TestReader::new().with(&element(0), Value::Int(deciding));
+        for i in 1..MANY {
+            reader = reader.not_yet(&element(i));
+        }
+        let expr = over_many_cells(kind);
+        assert_eq!(pending_eval(&expr, &reader), Evaluated::Pending, "{kind:?}");
+        assert_asked_every_element(&reader, kind);
+    }
+}
+
+#[test]
+fn a_quantifier_over_ten_thousand_cells_that_are_here_asks_for_every_one_and_keeps_its_value() {
+    for (kind, deciding, other, decided) in deciding_first_elements() {
+        let mut reader = TestReader::new().with(&element(0), Value::Int(deciding));
+        for i in 1..MANY {
+            reader = reader.with(&element(i), Value::Int(other));
+        }
+        let expr = over_many_cells(kind);
+        assert_eq!(old_eval(&expr, &reader), Value::Bool(decided), "{kind:?}");
+        assert_eq!(
+            pending_eval(&expr, &reader),
+            Evaluated::Value(Value::Bool(decided)),
+            "{kind:?}"
+        );
+        assert_asked_every_element(&reader, kind);
+    }
+}
+
+/// `forall p in [0, 1]: if p == 0 then false else read(other)`, after corpus
+/// entry `quantifier-later-element-read-is-cycle`.
+fn later_element_reads_other(other: &ValueCellId) -> CompiledExpr {
+    let body = reify_test_support::builders::conditional_expr(
+        binop(BinOp::Eq, read_int(&loop_var()), int(0), Type::Bool),
+        CompiledExpr::literal(Value::Bool(false), Type::Bool),
+        read_bool(other),
+    );
+    quantifier(QuantifierKind::ForAll, list_expr(vec![int(0), int(1)]), body)
+}
+
+#[test]
+fn a_value_quantifier_decided_by_its_first_element_still_evaluates_the_later_ones() {
+    let other = cell("other");
+
+    let reader = TestReader::new().not_yet(&other);
+    assert_eq!(pending_eval(&later_element_reads_other(&other), &reader), Evaluated::Pending);
+    assert_eq!(asked(&reader), ids(&[&other]));
+
+    let reader = TestReader::new().with(&other, Value::Bool(true));
+    let expr = later_element_reads_other(&other);
+    assert_eq!(old_eval(&expr, &reader), Value::Bool(false));
+    assert_eq!(pending_eval(&expr, &reader), Evaluated::Value(Value::Bool(false)));
+    assert_eq!(asked(&reader), ids(&[&other]));
+}
+
+#[test]
+fn a_quantifier_whose_collection_holds_a_pending_read_evaluates_no_body() {
+    let (a, b, c) = (cell("a"), cell("b"), cell("c"));
+    let reader = TestReader::new()
+        .not_yet(&c)
+        .with(&a, Value::Bool(true))
+        .with(&b, Value::Bool(true));
+    let body = reify_test_support::builders::conditional_expr(
+        binop(BinOp::Eq, read_int(&loop_var()), int(1), Type::Bool),
+        read_bool(&a),
+        read_bool(&b),
+    );
+    let expr = quantifier(
+        QuantifierKind::ForAll,
+        list_expr(vec![read_int(&c), int(1)]),
+        body,
+    );
+    assert_eq!(pending_eval(&expr, &reader), Evaluated::Pending);
+    assert_eq!(asked(&reader), ids(&[&c]));
+}
+
+#[test]
+fn a_quantifier_over_an_empty_list_asks_nothing_and_keeps_its_value() {
+    let a = cell("a");
+    for kind in [QuantifierKind::ForAll, QuantifierKind::Exists] {
+        let reader = TestReader::new().with(&a, Value::Bool(true));
+        let empty = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Int)));
+        let expr = quantifier(kind, empty, read_bool(&a));
+        let expected = old_eval(&expr, &reader);
+        assert!(!expected.is_undef(), "{kind:?}: the old entry gives a value");
+        assert_eq!(pending_eval(&expr, &reader), Evaluated::Value(expected), "{kind:?}");
+        assert_eq!(asked(&reader), BTreeSet::new(), "{kind:?}");
+    }
+}
