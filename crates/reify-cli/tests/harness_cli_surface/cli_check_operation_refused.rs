@@ -4,8 +4,8 @@
 //! Such a constraint is Indeterminate on every run, so it is reported as an
 //! error naming the refusing operation, never as a definite VIOLATED. The
 //! counterpart (task 10398): an idiomatic bare `0` against a purpose subject's
-//! member is checked, not refused. Drives the binary directly: this harness's
-//! seam rule forbids `tests/common` helpers.
+//! member or a generic fn param is checked, not refused. Drives the binary
+//! directly: this harness's seam rule forbids `tests/common` helpers.
 
 use std::process::{Command, Output};
 
@@ -107,7 +107,8 @@ fn equality_refuses_dimension_incomparable_operands_like_ordering() {
 
 const POSITIVE_WIDTH: &str = "purpose positive_width(subject : Structure) {\n    \
                               constraint subject.width > 0\n    \
-                              constraint subject.width > 0mm\n}";
+                              constraint subject.width > 0mm\n    \
+                              constraint 0 < subject.width < 10mm\n}";
 
 #[test]
 fn bare_zero_against_a_purpose_subject_member_is_checked_not_refused() {
@@ -115,7 +116,7 @@ fn bare_zero_against_a_purpose_subject_member_is_checked_not_refused() {
         "purpose_bare_zero",
         &format!(
             "{POSITIVE_WIDTH}\n\nstructure def Plate {{\n    param width : Length = 5mm\n    \
-             constraint width > 0\n}}"
+             constraint width > 0\n    constraint 0 < width < 10mm\n}}"
         ),
         &["--purpose", "positive_width=Plate"],
     );
@@ -126,7 +127,9 @@ fn bare_zero_against_a_purpose_subject_member_is_checked_not_refused() {
     for line in [
         "OK purpose:positive_width@Plate#constraint[0]",
         "OK purpose:positive_width@Plate#constraint[1]",
+        "OK purpose:positive_width@Plate#constraint[2]",
         "OK Plate#constraint[0]",
+        "OK Plate#constraint[1]",
     ] {
         assert!(
             stdout.contains(line),
@@ -170,6 +173,69 @@ fn bare_zero_against_a_purpose_subject_member_can_be_violated() {
     assert!(
         !stdout.contains("INDETERMINATE"),
         "a bare zero against a member is decided, never refused;{context}"
+    );
+    assert!(
+        !output.status.success(),
+        "a violated constraint must fail the check: {:?};{context}",
+        output.status
+    );
+}
+
+const POSITIVE_VIA_GENERIC_FN: &str = "fn positive<T>(x : T) -> Bool {\n    x > 0\n}";
+
+/// A bare `0` against a generic fn param (`x : T`) takes the argument's
+/// runtime dimension, as it does against a purpose subject's member.
+#[test]
+fn bare_zero_against_a_generic_fn_param_is_checked_not_refused() {
+    let output = check_module(
+        "generic_fn_bare_zero",
+        &format!(
+            "{POSITIVE_VIA_GENERIC_FN}\n\nstructure def Plate {{\n    \
+             param width : Length = 5mm\n    constraint positive(width)\n}}"
+        ),
+        &[],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let context = format!("\nstdout:\n{stdout}\nstderr:\n{stderr}");
+
+    assert!(
+        stdout.contains("OK Plate#constraint[0]"),
+        "expected `OK Plate#constraint[0]` on stdout;{context}"
+    );
+    assert!(
+        !stdout.contains("INDETERMINATE"),
+        "a bare zero against a generic fn param is decided, never refused;{context}"
+    );
+    assert!(
+        output.status.success(),
+        "the check must pass: {:?};{context}",
+        output.status
+    );
+}
+
+/// Non-vacuity guard for the test above: a negative width VIOLATES it.
+#[test]
+fn bare_zero_against_a_generic_fn_param_can_be_violated() {
+    let output = check_module(
+        "generic_fn_bare_zero_violated",
+        &format!(
+            "{POSITIVE_VIA_GENERIC_FN}\n\nstructure def Narrow {{\n    \
+             param width : Length = -5mm\n    constraint positive(width)\n}}"
+        ),
+        &[],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let context = format!("\nstdout:\n{stdout}\nstderr:\n{stderr}");
+
+    assert!(
+        stdout.contains("VIOLATED Narrow#constraint[0]"),
+        "expected the generic-fn bare-zero constraint VIOLATED;{context}"
+    );
+    assert!(
+        !stdout.contains("INDETERMINATE"),
+        "a bare zero against a generic fn param is decided, never refused;{context}"
     );
     assert!(
         !output.status.success(),

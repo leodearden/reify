@@ -417,11 +417,16 @@ fn is_fallback_combinator(name: &str) -> bool {
 /// - a concrete `Type::Scalar{D}` with non-dimensionless D gives the
 ///   dimensioned literal `Scalar{0.0, D}`;
 /// - a `Type::TypeParam` (a generic purpose subject's member such as
-///   `subject.width`, or a generic param), whose dimension is known only at run
-///   time, gives `sibling * zero` (task 10398), which `eval_mul` evaluates to a
-///   zero of the sibling's own runtime kind and dimension.  Two consequences:
-///   the sibling subtree is evaluated twice (evaluation is pure), and for a
-///   sibling with no numeric zero the refusal is attributed to the `*`;
+///   `subject.width`, or a generic param), whose kind is known only at run
+///   time, gives `sibling * zero` (task 10398): whatever zero `eval_mul`
+///   produces for the sibling's runtime value.  For a Scalar, Int or Real that
+///   is a zero of the sibling's own kind and dimension.  For an aggregate
+///   (Vector, Point, Tensor, Direction, Complex) it is a zero aggregate, so
+///   `v + 0` on a Vector is `v`, and `p - 0` on a Point is `p - origin`, a
+///   Vector; a comparison against one still has no verdict.  For any other
+///   value (a String, Bool, Enum or structure instance, say) it is Undef, so
+///   the refusal is attributed to the `*`.  The sibling subtree is evaluated
+///   twice (evaluation is pure);
 /// - any other type leaves the zero unchanged.
 ///
 /// A dimensionless zero is never itself an adoptable sibling, so at most one
@@ -431,15 +436,16 @@ fn is_fallback_combinator(name: &str) -> bool {
 ///
 /// Placed here (not `type_compat`) because it constructs `CompiledExpr` /
 /// `Value::Scalar` objects — it is not a pure type predicate.  Called from
-/// `compile_binop` BEFORE `infer_binop_type` so that the result type and the
-/// downstream Add/Sub dimension guard see the rewritten operands.
+/// `compile_binop`, for a single binary operator and for each pair of a
+/// chained comparison, BEFORE `infer_binop_type` so that the result type and
+/// the downstream dimension guards see the rewritten operands.
 fn coerce_zero_operand(
     left_ast: &reify_ast::Expr,
     left: CompiledExpr,
     right_ast: &reify_ast::Expr,
     right: CompiledExpr,
 ) -> (CompiledExpr, CompiledExpr) {
-    fn is_zero(ast: &reify_ast::Expr, compiled: &CompiledExpr) -> bool {
+    fn is_dimensionless_zero(ast: &reify_ast::Expr, compiled: &CompiledExpr) -> bool {
         let dimensionless = match &compiled.result_type {
             Type::Int => true,
             Type::Scalar { dimension } => dimension.is_dimensionless(),
@@ -449,9 +455,9 @@ fn coerce_zero_operand(
             && (type_compat::is_syntactic_zero_literal(ast) || const_folds_to_zero(compiled))
     }
 
-    if is_zero(left_ast, &left) {
+    if is_dimensionless_zero(left_ast, &left) {
         (zero_adopting_sibling(left, &right), right)
-    } else if is_zero(right_ast, &right) {
+    } else if is_dimensionless_zero(right_ast, &right) {
         let right = zero_adopting_sibling(right, &left);
         (left, right)
     } else {
@@ -1842,8 +1848,13 @@ fn compile_expr_guarded_with_expected_inner(
                 for (i, op_str) in ops.iter().enumerate() {
                     match resolve_binop(op_str) {
                         Some(bin_op) => {
-                            let lhs = compiled_operands[i].clone();
-                            let rhs = compiled_operands[i + 1].clone();
+                            // §7.2 zero-coercion per pair, as in the single-comparison path.
+                            let (lhs, rhs) = coerce_zero_operand(
+                                operands[i],
+                                compiled_operands[i].clone(),
+                                operands[i + 1],
+                                compiled_operands[i + 1].clone(),
+                            );
                             // Operand-kind + dimension guard for each chained pair
                             // (task-4490/step-8 — same helper as the single-comparison path).
                             // The synthetic BinOp::And fold nodes built below bypass the

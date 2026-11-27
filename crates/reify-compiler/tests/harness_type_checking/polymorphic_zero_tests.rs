@@ -863,3 +863,63 @@ purpose labelled(subject : Structure) {
         reify_ir::Value::Undef,
     );
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Chained comparisons: `a < b < c` desugars to `a < b && b < c`, and each pair
+// takes the zero coercion exactly as a single comparison does.
+// ────────────────────────────────────────────────────────────────────────────
+
+/// `0 < member < 10mm` — the range idiom with a concrete Length sibling.
+#[test]
+fn chained_zero_lt_length_lt_bound_no_error() {
+    let compiled = compile_source_with_stdlib(
+        r#"
+structure S {
+    param len : Length = 5mm
+    constraint 0 < len < 10mm
+}
+"#,
+    );
+    assert_no_error_diagnostics(&compiled.diagnostics, "chained `0 < len < 10mm`");
+}
+
+/// NON-VACUITY GUARD for `chained_zero_lt_length_lt_bound_no_error`: the
+/// chained pair is operand-checked, so a NON-ZERO Int in the same position
+/// errors and the clean compile above is the coercion.
+#[test]
+fn chained_nonzero_int_lt_length_still_errors() {
+    let compiled = compile_source_with_stdlib(
+        r#"
+structure S {
+    param len : Length = 5mm
+    constraint 1 < len < 10mm
+}
+"#,
+    );
+    reify_test_support::assert_has_diagnostic(
+        &compiled.diagnostics,
+        reify_core::Severity::Error,
+        "incompatible types in comparison",
+    );
+}
+
+/// `0 < subject.width < 10mm` — the range idiom with a TypeParam sibling.
+#[test]
+fn chained_type_param_member_with_bare_zero_takes_the_members_dimension() {
+    let source = r#"
+purpose in_range(subject : Structure) {
+    constraint 0 < subject.width < 10mm
+}
+"#;
+    for (member_value, expected) in [
+        (length(0.005), true),
+        (length(-0.005), false),
+        (length(0.02), false),
+    ] {
+        assert_eq!(
+            eval_purpose_constraint(source, "in_range", 0, member_value.clone()),
+            reify_ir::Value::Bool(expected),
+            "`0 < subject.width < 10mm` with subject.width = {member_value:?}"
+        );
+    }
+}
