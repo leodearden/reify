@@ -6,12 +6,14 @@ use std::any::{Any, TypeId};
 use std::future::Future;
 use std::mem;
 use std::pin::Pin;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::task::{Context, Poll};
 
 use crate::job::Product;
 use crate::outcome::{Erased, Outcome};
 use crate::section::SectionParts;
+use crate::substitution::Substitution;
 use crate::wanted::Wanted;
 
 pub(crate) type SectionJob = Box<dyn FnOnce(&mut dyn Any, SectionParts) -> Product + Send>;
@@ -26,11 +28,21 @@ pub(crate) struct SectionAsk {
 pub(crate) enum Ask {
     /// The outcome of each item, in order, in one reply.
     Read(Vec<Wanted>),
+    /// The outcome of each item under the run's view `ordinal`, which
+    /// supposes `substitution`, in order, in one reply.
+    ViewRead {
+        ordinal: u32,
+        substitution: Substitution,
+        wanted: Arc<[Wanted]>,
+    },
     Exclusive(SectionAsk),
 }
 
 pub(crate) enum Reply {
     Outcomes(Vec<Outcome<Erased>>),
+    /// Each outcome read through a view, with whether it depended on the
+    /// substitution.
+    Viewed(Vec<(Outcome<Erased>, bool)>),
     Product(Product),
 }
 
@@ -49,13 +61,23 @@ enum Slot {
 
 pub(crate) struct Mailbox {
     slot: Mutex<Slot>,
+    /// How many views the run has opened: a note the body leaves, which
+    /// asks nothing of the core.
+    views: AtomicU32,
 }
 
 impl Mailbox {
     pub fn new() -> Self {
         Self {
             slot: Mutex::new(Slot::Empty),
+            views: AtomicU32::new(0),
         }
+    }
+
+    /// Notes that the run opens a view, returning its ordinal: the number
+    /// of views the run opened before it.
+    pub fn open_view(&self) -> u32 {
+        self.views.fetch_add(1, Ordering::Relaxed)
     }
 
     pub fn take_posted(&self) -> Posted {

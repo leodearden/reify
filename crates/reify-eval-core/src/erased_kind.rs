@@ -32,6 +32,10 @@ pub(crate) trait ErasedKind: Send + Sync {
     /// The steps at which `out`, a value this kind produced, declares
     /// children.
     fn steps<'a>(&self, out: &'a Erased) -> Box<dyn Iterator<Item = Step> + 'a>;
+
+    /// Whether `out` is of this kind's `Out`: a value a body produced is,
+    /// and a value a view supposes may not be.
+    fn is_out(&self, out: &Erased) -> bool;
 }
 
 pub(crate) struct Of<K>(PhantomData<fn() -> K>);
@@ -64,6 +68,11 @@ impl<K: Kind> ErasedKind for Of<K> {
 
     fn steps<'a>(&self, out: &'a Erased) -> Box<dyn Iterator<Item = Step> + 'a> {
         Box::new(K::steps(typed::<K>(out)))
+    }
+
+    fn is_out(&self, out: &Erased) -> bool {
+        let out: &dyn Any = out;
+        out.is::<K::Out>()
     }
 }
 

@@ -74,6 +74,7 @@ pub(crate) fn entry() -> Entry {
     Entry::settled(
         Outcome::Failure(Failure::Cycle),
         Content::of_failure(&Failure::Cycle),
+        false,
     )
 }
 

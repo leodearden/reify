@@ -1,5 +1,6 @@
 //! A running body and what it was started with.
 
+use std::collections::BTreeMap;
 use std::mem;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
@@ -10,6 +11,7 @@ use crate::cx::Cx;
 use crate::declaration::Declaration;
 use crate::declared_children::{ChildSteps, DeclaredChildren};
 use crate::erased_kind::{Body, ErasedKind};
+use crate::index::StateId;
 use crate::job::Product;
 use crate::key::Chain;
 use crate::mailbox::{Mailbox, Posted, Reply};
@@ -17,8 +19,25 @@ use crate::outcome::Erased;
 use crate::produced::Produced;
 use crate::record::Answers;
 
+/// What a finished body leaves for its node's answer.
+pub(crate) struct Finished {
+    pub declaration: Arc<Declaration>,
+    /// The keys its reads took it through.
+    pub chain: Chain,
+    /// The steps of the children its run declared.
+    pub children: ChildSteps,
+    /// Whether its answer depended on a substitution.
+    pub depended: bool,
+}
+
 pub(crate) struct Task {
     declaration: Arc<Declaration>,
+    /// Whether its answer depends on a substitution so far: its declaration
+    /// did, or a read of its own returned an answer that did.
+    depended: bool,
+    /// The state of each view its run opened, by ordinal, once its first
+    /// read opened it.
+    views: BTreeMap<u32, StateId>,
     /// The keys its reads have taken it through, from its recipe's key.
     chain: Chain,
     /// The children its answered reads declared.
@@ -35,12 +54,16 @@ pub(crate) struct Task {
 }
 
 impl Task {
-    pub fn start(kind: &dyn ErasedKind, declaration: Arc<Declaration>) -> Self {
+    /// Starts the body of `kind` for a node declared `declaration`, whose
+    /// declaration `depended` on a substitution or not.
+    pub fn start(kind: &dyn ErasedKind, declaration: Arc<Declaration>, depended: bool) -> Self {
         let mailbox = Arc::new(Mailbox::new());
         let cancel = Cancel::default();
         let body = kind.start(Cx::new(Arc::clone(&mailbox), cancel.clone()));
         Self {
             declaration,
+            depended,
+            views: BTreeMap::new(),
             chain: Chain::new(kind.recipe()),
             children: DeclaredChildren::default(),
             mailbox,
@@ -58,6 +81,27 @@ impl Task {
     /// The children its answered reads declared.
     pub fn children(&self) -> &DeclaredChildren {
         &self.children
+    }
+
+    /// Whether its answer depends on a substitution so far.
+    pub fn depended(&self) -> bool {
+        self.depended
+    }
+
+    /// The state of the view its run opened as `ordinal`, if a read has
+    /// opened it.
+    pub fn view(&self, ordinal: u32) -> Option<StateId> {
+        self.views.get(&ordinal).copied()
+    }
+
+    /// Records that `state` is the view its run opened as `ordinal`.
+    pub fn opened(&mut self, ordinal: u32, state: StateId) {
+        self.views.insert(ordinal, state);
+    }
+
+    /// The states of the views its run opened.
+    pub fn views(&self) -> impl Iterator<Item = StateId> + '_ {
+        self.views.values().copied()
     }
 
     /// The flag a section this body starts reads as `cancelled`.
@@ -79,8 +123,16 @@ impl Task {
     }
 
     /// Replies to its read, which its chain records, with the children it
-    /// declared.
+    /// declared; its answer depends on a substitution from then on if any
+    /// answer did. A read through a view it opened is replied to with what
+    /// depended on that view's substitution, which its own answer does not
+    /// depend on: its run is in the state that opened the view.
     pub fn answer_read(&mut self, mut answers: Answers) {
+        if answers.through_view() {
+            self.mailbox.reply(Reply::Viewed(answers.into_viewed()));
+            return;
+        }
+        self.depended |= answers.depended();
         answers.record_children(&mut self.children);
         self.chain
             .read(Arc::clone(answers.wanted()), answers.contents());
@@ -119,11 +171,12 @@ impl Task {
     }
 
     /// Discards the finished body, keeping what it was started with, the
-    /// chain its reads took it through and the steps of the children they
-    /// declared.
-    pub fn finish(self) -> (Arc<Declaration>, Chain, ChildSteps) {
+    /// chain its reads took it through, the steps of the children they
+    /// declared and whether its answer depended on a substitution.
+    pub fn finish(self) -> Finished {
         let Self {
             declaration,
+            depended,
             chain,
             children,
             mailbox,
@@ -131,7 +184,12 @@ impl Task {
             ..
         } = self;
         let _ = catch_unwind(AssertUnwindSafe(move || drop((body, mailbox))));
-        (declaration, chain, children.into_steps())
+        Finished {
+            declaration,
+            chain,
+            children: children.into_steps(),
+            depended,
+        }
     }
 
     /// Tells the section the body waits on, if any, that nobody wants the

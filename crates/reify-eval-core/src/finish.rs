@@ -3,32 +3,33 @@
 //! acts on what each returns.
 
 use std::collections::BTreeSet;
-use std::sync::Arc;
 
 use crate::content::Content;
-use crate::declaration::Declaration;
-use crate::declared_children::ChildSteps;
 use crate::event::RequestId;
 use crate::index::{Entry, Indexes, NodeKey};
-use crate::key::Chain;
 use crate::kinds::Kinds;
 use crate::outcome::{Erased, Outcome};
 use crate::requests::Requests;
 use crate::store::{Store, StoredResult};
+use crate::task::Finished;
 use crate::waits::Waits;
 
-/// Files `outcome`, which the body of the node declared `declaration`
-/// produced, in `store` at the end of the `chain` its reads took it
-/// through, and returns the node's final answer with its content and the
-/// steps of the `children` its run declared.
+/// Files `outcome`, which the body `finished` left produced, in `store` at
+/// the end of the chain its reads took it through, and returns the node's
+/// final answer with its content, the steps of the children its run
+/// declared and whether it depended on a substitution.
 pub(crate) fn filed(
-    declaration: Arc<Declaration>,
-    chain: Chain,
-    children: ChildSteps,
+    finished: Finished,
     outcome: Outcome<Erased>,
     kinds: &Kinds,
     store: &mut Store,
 ) -> Entry {
+    let Finished {
+        declaration,
+        chain,
+        children,
+        depended,
+    } = finished;
     let kind = kinds
         .get(declaration.kind())
         .expect("a body runs only for a kind the core was built with");
@@ -44,6 +45,7 @@ pub(crate) fn filed(
         declaration: Some(declaration),
         content,
         children_declared: children,
+        depended,
     }
 }
 
@@ -67,7 +69,7 @@ pub(crate) fn answered(
     requests: &mut Requests,
     resolving: &mut BTreeSet<NodeKey>,
 ) -> Answered {
-    indexes.file(key.snapshot, key.path, entry);
+    indexes.file(key.state, key.path, entry);
     let (resolve, resume) = waits
         .release(key)
         .into_iter()

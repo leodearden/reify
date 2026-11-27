@@ -64,19 +64,27 @@ pub(crate) fn target<'a>(
 }
 
 /// What the child at `step` below a node answered `entry` is: the
-/// declaration its kind gives for that step; absent where it gives none or
-/// the node is absent; the node's failure where it failed (design decision).
+/// declaration its kind gives for that step; absent where it gives none,
+/// where the node is absent, or where its value is not of its kind's `Out`,
+/// as only a supposed value can be; the node's failure where it failed
+/// (design decision).
 pub(crate) fn declaration_of(step: &Step, entry: &Entry, kinds: &Kinds) -> Outcome<Declaration> {
     match (&entry.outcome, &entry.declaration) {
         (Outcome::Failure(failure), _) => Outcome::Failure(failure.clone()),
-        (Outcome::Value(value), Some(node)) => kinds
-            .get(node.kind())
-            .expect("a node whose body ran has a kind the core was built with")
-            .declares(&**value, step)
-            .map_or(Outcome::Absent, Outcome::of),
+        (Outcome::Value(value), Some(node)) => {
+            let kind = kinds
+                .get(node.kind())
+                .expect("a node with a declaration has a kind the core was built with");
+            if !kind.is_out(&**value) {
+                return Outcome::Absent;
+            }
+            kind.declares(&**value, step)
+                .map_or(Outcome::Absent, Outcome::of)
+        }
         (Outcome::Value(_), None) => {
             unreachable!(
-                "a value in the index was produced by a body, whose declaration is filed with it"
+                "a value in the index was produced by a body or supposed at a node, whose \
+                 declaration is filed with it"
             )
         }
         (Outcome::Absent, _) => Outcome::Absent,

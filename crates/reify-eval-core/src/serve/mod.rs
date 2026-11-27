@@ -3,3 +3,4 @@
 pub(crate) mod child;
 pub(crate) mod read;
 pub(crate) mod section;
+pub(crate) mod view_read;

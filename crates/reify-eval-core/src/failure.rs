@@ -59,6 +59,11 @@ pub enum Failure {
     /// A run declared two different declarations at `step` below its own
     /// place (contract 7.1). It names no path.
     ConflictingChild { step: Step },
+    /// A run opened a view whose substitution supposes an outcome at `at`,
+    /// which names no node's place of its own: nothing, an input, a
+    /// constant, or a place an earlier item names. Anything a view may
+    /// substitute must have exactly one path (contract 6).
+    NotSupposable { at: Ref },
 }
 
 impl Failure {
@@ -98,6 +103,10 @@ impl Failure {
                 encoder.tag("failure.conflicting_child");
                 step.encode(encoder);
             }
+            Failure::NotSupposable { at } => {
+                encoder.tag("failure.not_supposable");
+                at.encode(encoder);
+            }
         }
     }
 }
@@ -135,6 +144,9 @@ pub enum OutsideFailure {
     OutOfMemory {
         resource: &'static str,
     },
+    /// A body evaluated under a view opened a view of its own, which the
+    /// core does not evaluate until views nest (leaf λ, #10563).
+    ViewInsideView,
 }
 
 /// What killed a resource: the work on its thread that panicked, with the

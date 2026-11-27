@@ -46,7 +46,8 @@ pub(crate) fn children(entry: Entry, limits: &Limits, kinds: &Kinds) -> Entry {
 /// Whether `entry`, whose value a body of the entry's kind produced,
 /// declares more than `limit` distinct children, by its run or its value.
 /// A kind's steps are distinct, so a step of the value's is counted unless
-/// the run declared it too.
+/// the run declared it too. A supposed value not of the kind's `Out`
+/// declares none.
 fn declares_more_than(entry: &Entry, limit: u64, kinds: &Kinds) -> bool {
     let (Outcome::Value(value), Some(declaration)) = (&entry.outcome, &entry.declaration) else {
         return false;
@@ -56,7 +57,10 @@ fn declares_more_than(entry: &Entry, limit: u64, kinds: &Kinds) -> bool {
     };
     let kind = kinds
         .get(declaration.kind())
-        .expect("a node whose body ran has a kind the core was built with");
+        .expect("a node with a declaration has a kind the core was built with");
+    if !kind.is_out(&**value) {
+        return false;
+    }
     let by_run = &entry.children_declared;
     let Some(past_the_run) = first_past.checked_sub(by_run.len()) else {
         return true;

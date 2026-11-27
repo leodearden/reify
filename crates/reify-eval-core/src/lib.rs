@@ -49,7 +49,9 @@ mod serve;
 mod snapshot;
 mod step;
 mod store;
+mod substitution;
 mod task;
+mod view;
 mod waits;
 mod wanted;
 
@@ -80,4 +82,6 @@ pub use section::Section;
 pub use snapshot::{Snapshot, SnapshotId};
 pub use step::{Link, Space, Step, StepKey};
 pub use store::{Store, StoredResult};
+pub use substitution::Substitution;
+pub use view::{View, Viewed};
 pub use wanted::Wanted;

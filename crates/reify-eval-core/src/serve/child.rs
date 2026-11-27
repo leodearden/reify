@@ -29,7 +29,7 @@ pub(crate) fn serve(
     reading.declare(step, declaration)?;
     let child = paths.child(reader, step);
     match index.entry(child) {
-        Some(entry) => reading.settled(entry.outcome.clone(), entry.content),
+        Some(entry) => reading.settled(entry.outcome.clone(), entry.content, entry.depended),
         None => reading.awaits_child(child, Arc::clone(declaration)),
     }
     Ok(())

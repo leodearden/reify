@@ -11,6 +11,8 @@ use crate::outcome::{Outcome, Value};
 use crate::reference::Ref;
 use crate::section::Section;
 use crate::step::Step;
+use crate::substitution::Substitution;
+use crate::view::View;
 use crate::wanted::Wanted;
 
 pub struct Cx {
@@ -41,13 +43,22 @@ impl Cx {
     pub async fn read_all<T: Value>(&self, wanted: &[Wanted]) -> Vec<Outcome<T>> {
         match self.mailbox.exchange(Ask::Read(wanted.to_vec())).await {
             Reply::Outcomes(outcomes) => outcomes.into_iter().map(Outcome::downcast).collect(),
-            Reply::Product(_) => unreachable!("the core replies to a read with outcomes"),
+            Reply::Viewed(_) | Reply::Product(_) => {
+                unreachable!("the core replies to a read with outcomes")
+            }
         }
     }
 
     async fn read_one<T: Value>(&self, wanted: Wanted) -> Outcome<T> {
         let mut outcomes = self.read_all(std::slice::from_ref(&wanted)).await;
         outcomes.pop().expect("a read gives an outcome per item")
+    }
+
+    /// Opens a view of the state the body runs in, which supposes the
+    /// outcomes `with` gives (contract 6). Opening it asks nothing of the
+    /// core: the first read through it does.
+    pub fn suppose(&self, with: Substitution) -> View<'_> {
+        View::new(&self.mailbox, self.mailbox.open_view(), with)
     }
 
     /// Runs `section` on the thread of resource `R`, with exclusive use of
@@ -72,7 +83,9 @@ impl Cx {
             Reply::Product(product) => *product
                 .downcast::<T>()
                 .expect("a section's product keeps its type"),
-            Reply::Outcomes(_) => unreachable!("the core replies to a section with its product"),
+            Reply::Outcomes(_) | Reply::Viewed(_) => {
+                unreachable!("the core replies to a section with its product")
+            }
         }
     }
 
