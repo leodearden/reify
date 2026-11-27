@@ -221,8 +221,12 @@ fn argument_unknown_read(
 
 /// The mode's invariant: every id the tree reads is a table entry or a
 /// binder minted under the unit's stamp, so no read names a definition. A
-/// form the mode's hooks miss reds here, naming the id it leaked.
+/// form the mode's hooks miss reds here, naming the id it leaked. A release
+/// build skips the census.
 fn debug_assert_reads_are_local(read: &HashSet<ValueCellId>, references: &[LocalReference]) {
+    if !cfg!(debug_assertions) {
+        return;
+    }
     let binder_suffix = format!(".{LOCAL_REFERENCE_ENTITY}");
     let leaked: Vec<&ValueCellId> = read
         .iter()
@@ -235,12 +239,14 @@ fn debug_assert_reads_are_local(read: &HashSet<ValueCellId>, references: &[Local
     );
 }
 
-/// Every cell id the tree reads, lambda bodies included. A table entry minted
-/// in a subtree the compile discarded is not among them.
+/// Every cell id the tree reads, lambda bodies included, by the node kinds
+/// reify-ir's own dependency visitor counts as reads. A table entry minted in
+/// a subtree the compile discarded is not among them.
 fn ids_read(tree: &CompiledExpr) -> HashSet<ValueCellId> {
     let mut ids = HashSet::new();
     tree.walk(&mut |node| match &node.kind {
         CompiledExprKind::ValueRef(id)
+        | CompiledExprKind::CrossSubGeometryRef(id)
         | CompiledExprKind::DeterminacyPredicate { cell: id, .. } => {
             ids.insert(id.clone());
         }
