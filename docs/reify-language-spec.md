@@ -169,15 +169,24 @@ none                // Option<T>: absent value
 
 `undef`, `auto`, `some`, `none` are keywords, not identifiers (§2.10). `undef` can appear anywhere a value expression is expected. `some(value)` and `none` are the constructors for `Option<T>`.
 
-`auto` and `auto(free)` are valid only at a **binding site** — a position where a named declaration slot directly receives its value:
+`auto` and `auto(free)` are valid only where an `auto` is the whole value of something the source declares:
 
 - a `param` default (`param wall_thickness : Length = auto`),
-- a sub-instance parameter override (`sub b : Bearing { bore = auto }`),
-- a `let` binding (`let m : Length = auto`),
-- a structure-construction named argument (`Bolt(length: auto)`),
-- a connect-parameter assignment (`connect a -> b { gain = auto }`).
+- an argument of a sub, in its braces (`sub b : Bearing { bore = auto }`) or in its call form,
+- a typed `let` (`let m : Length = auto`); the annotation is required (§4.7),
+- a placement (`at auto`),
+- an argument of a keyed entry, and an argument written for a collection's elements,
+- a connect-parameter assignment (`connect a -> b { gain = auto }`),
+- a constructor argument (`Bolt(length: auto)`), but only where the call is evaluated exactly once: not inside a lambda, a function body or a quantifier's body, and not in an arm of an `if` or a `match`. `let d = Plate(t: auto)` means `let u : Length = auto` followed by `let d = Plate(t: u)`.
 
-`auto` is **not** a general expression operand. It may not appear as a function-call argument, inside an arithmetic or logical expression, in a `constraint`/`minimize`/`maximize` body, in a field `source`, or in a collection literal — these are parse errors. To bound a solver-delegated value, attach a constraint to the binding rather than embedding `auto` in an expression: write `length = auto, length > 2mm`, not `length = auto + 2mm`. (Reconciled 2026-05-26 with the grammar, which admits `auto` only at binding sites; see `docs/prds/auto-binding-site-positions.md`. The prior "anywhere a value expression is expected" wording over-promised relative to the parser.)
+Each such `auto` is one unknown per instance of the declaration, and it belongs to the instance of the definition whose text contains it. An `auto` cannot sit where evaluation may skip it or repeat it an undeclared number of times, so an `auto` in an arm of an `if` or a `match`, in a lambda, in a function body or in a quantifier's body is a compile error. The fix is to put the member under `where`, to use a collection, or to write a typed `let` outside and pass it in.
+
+Two more placements are compile errors:
+
+- An `auto` at any binding site in a purpose's body, because a purpose decides nothing (§4.4).
+- In a sub's braces, `let x : T = auto`, and an `auto` as a constructor argument inside a member written there. The `auto` would be in the parent's text while the member is the sub's, so it would have no single owner. Write the `let` in the parent and pass it in. An assignment `bore = auto` in the braces stays valid: it is an argument written by the parent (§8.7).
+
+`auto` is **not** a general expression operand. It may not appear as a function-call argument, inside an arithmetic or logical expression, in a `constraint`/`minimize`/`maximize` body, in a field `source`, or in a collection literal. These are parse errors, except a named function-call argument (`clamp(x: auto)`), which parses and is a compile error (`E_AUTO_NOT_AT_BINDING_SITE`). To bound a solver-delegated value, attach a constraint to the binding rather than embedding `auto` in an expression: write `length = auto, length > 2mm`, not `length = auto + 2mm`. (Reconciled 2026-05-26 with the grammar, which admits `auto` only at binding sites; see `docs/prds/auto-binding-site-positions.md`. The prior "anywhere a value expression is expected" wording over-promised relative to the parser.)
 
 **`auto` modes:**
 
@@ -441,7 +450,9 @@ The `Geometry` supertrait is the parent of all geometric entity types. `Transfor
 - **`Map<K,V>`:** `[key]` lookup, `keys`, `values`, `count`, `contains_key`. Iteration via `forall`/`exists` over entries.
 - **`Range<T>`:** `contains`, `lower`, `upper`, `span` (upper - lower).
 
-**Out-of-bounds / missing key:** Evaluation-graph-level failure (see Section 9), not a language-level exception.
+**Out of bounds:** An index out of range reads something that is not there and gives `undef` (§6.3), so `i < xs.count and xs[i].area > 0mm^2` does not depend on which operand is written first.
+
+**Missing key:** Evaluation-graph-level failure (see Section 9), not a language-level exception.
 
 **Empty collections:**
 
@@ -452,7 +463,7 @@ The `Geometry` supertrait is the parent of all geometric entity types. `Transfor
 - `exists x in []: P(x)` evaluates to `false` (vacuous falsity -- standard mathematical convention).
 - Empty set literal `set{}` and empty map literal `map{}` require type context (e.g., `let s : Set<Material> = set{}`).
 
-**Counted sub-structures use `List<T>` uniformly.** The `[n]` syntax for counted sub-structure arrays is removed. Declaration: `sub vents : List<Vent>` plus `constraint vents.count == vent_count`. The runtime recognizes `count == N` constraints on `List<Structure>` sub-declarations as structure-controlling, triggering schema re-elaboration. v0.1 uses positional indexing (`vents[0]`, `vents[1]`, ...).
+**Counted sub-structures use `List<T>` uniformly.** The `[n]` syntax for counted sub-structure arrays is removed. Declaration: `sub vents : List<Vent>` plus `constraint vents.count == vent_count`. A `count == N` constraint on a `List<Structure>` sub is the source of its count and gives no verdict. The count is read in dependency order like any other value, with no phases, so a count a solve decides is read after that solve. A count that reads its own elements is a compile error. v0.1 uses positional indexing (`vents[0]`, `vents[1]`, ...).
 
 **Collection literals:**
 
@@ -928,7 +939,7 @@ Semantics:
 
 ### 4.4 Purpose Declarations
 
-Purposes are named, parameterized declaration kinds with AST identity. A purpose body may contain `constraint` declarations, objectives (`minimize`/`maximize`), `let` bindings, and guarded (`where`) blocks, as well as `Output` occurrence instantiations. They have activation/deactivation mechanics via implementation-defined UX.
+Purposes are named, parameterized declaration kinds with AST identity. A purpose body may contain `constraint` declarations, applied constraint definitions (`constraint Name(args)`), `let` bindings, and guarded (`where`) blocks, as well as `Output` occurrence instantiations. An objective (`minimize`/`maximize`) in a purpose's body is a compile error whose message says to write it in the definition; an `auto` there is an error too (§2.9).
 
 ```
 purpose_decl ::= 'pub'? 'purpose' IDENT type_params? '(' purpose_params ')' '{' purpose_member* '}'
@@ -944,15 +955,34 @@ purpose fits_within(part : Structure, envelope : Structure) {
     where exists p in part.material_params: constrained(p) {
         constraint forall p in part.material_params: determined(p)
     }
-    minimize part.mass
 }
 ```
 
-When activated, a purpose's constraints and outputs are present in the evaluation graph; when deactivated, they are absent. The checking/solving/proposing mode is determined by input determinacy state, not explicit mode selection.
+A purpose is declared, then **applied in source** by the member line `purpose Name(args)` in a definition's body. Arguments are written as in a constructor call, with an optional `where` guard.
 
-**Purpose parameters are entity references, not values.** Purpose parameters bind to entities in the evaluation graph, not to values on the determinacy spectrum. The type annotation is an entity-kind selector: `Structure`, `Occurrence`, `Constraint`, or `Field`. These are built-in keywords in purpose parameter position, not value types -- `param x : Structure` inside a structure body is not valid.
+- It may be applied any number of times, one line per application. Removing the line is the same as never writing it.
+- An applied purpose is a member of the definition it is written in. Its constraints are verdicts counted in the applying instance's summary.
+- A purpose only checks: its constraints never bear on an `auto` and never enter a solve. A requirement that should shape the design is a `constraint`, which a purpose can also check by applying the same `constraint def`.
+- A purpose line in a purpose's body, in a trait or in a sub's braces is a compile error. In the braces the message says to write the line in the parent with the sub as subject, because there `self` is the parent (§8.6).
 
-Entity references provide **compiler-generated reflective access** over the bound entity's schema:
+```
+purpose robust(subject : Structure) { constraint subject.t >= 3mm }
+
+structure def Rig {
+    sub bracket : Bracket
+    purpose robust(self.bracket)
+}
+```
+
+**A purpose's parameters are subjects or values.** A parameter whose declared type is a structure definition, a trait or `Structure` is a **subject**: it binds to an instance in the evaluation graph, not to a value on the determinacy spectrum. `Structure` is a built-in keyword in purpose parameter position, not a value type -- `param x : Structure` inside a structure body is not valid.
+
+- The argument of a subject names an instance: `self`, or a sub or element below it at any depth (`self.frame.bracket`, `self.vents[2]`), with an element's index or key written as a literal.
+- A value held in a cell is refused as a subject, and so is a whole collection; both are compile errors. A purpose over every element takes the container and uses `forall`.
+- Every other parameter is a value, written as an expression.
+- A parameter of kind `Constraint` or `Field` is refused at the declaration.
+- A purpose with no parameter is applied as `purpose name()`.
+
+A subject provides **compiler-generated reflective access** over the bound instance's schema:
 
 | Reflective member | Returns | Meaning |
 |-------------------|---------|---------|
@@ -965,7 +995,9 @@ Entity references provide **compiler-generated reflective access** over the boun
 
 These are schema queries resolved at elaboration time. Named members on the bound entity (e.g., `subject.cost`) resolve to the entity's ValueCells through the entity binding, and participate in the evaluation graph normally.
 
-Purposes are graph-level constructs. They express requirements and objectives over the *shape and state* of a design, not computations over values. This is what makes them universally applicable -- `manufacturing_ready` works on any structure without per-structure opt-in.
+A purpose's body reads only what is visible from outside its subject: parameters, subs, ports and `pub let`s (§7.4). Where the subject's type is a definition, a read of a private `let` is a compile error at the purpose's declaration. Where the type is `Structure` or a trait, the error is at the application line. A subject under a guard compiles. Where the subject is absent, the purpose's verdicts are undetermined (§6.3).
+
+Purposes are graph-level constructs. They express requirements over the *shape and state* of a design, not computations over values. This is what makes them universally applicable -- `manufacturing_ready` works on any structure without per-structure opt-in.
 
 ### 4.5 Enum Declarations
 
@@ -1091,7 +1123,7 @@ let mass : Mass = volume * material.density                // Type annotated
 pub let torque_constant : Torque/Current = back_emf / rated_speed
 ```
 
-Named, typed, computed value with mandatory initialiser expression. Cannot be set from outside -- not a configurable parameter. Private by default; `pub let` to expose. Type annotation optional (type always inferrable from expression via dimensional analysis).
+Named, typed, computed value with mandatory initialiser expression. Cannot be set from outside -- not a configurable parameter. Private by default; `pub let` to expose. Type annotation optional (type always inferrable from expression via dimensional analysis). The one exception is `let x : T = auto`, where the annotation is required, because an `auto` has no expression to infer a type from (§2.9).
 
 `aux let` marks construction geometry (intermediate solids, reference sketches) that is realized and shipped to the GUI but excluded from product surfacing, export, and analysis; see §8.3 (boolean-composition idiom) and §15 (grammar).
 
@@ -1328,7 +1360,7 @@ a == b      a != b
 a < b       a > b       a <= b      a >= b
 ```
 
-Equality is structural for value types, identity for structure references.
+Equality is structural for value types, and structure values are equal by content. Their content is their type, the value of every parameter that is present, and every value decided inside them, and nothing about how a value was reached: `Plate(t: 3mm)` equals a `Plate()` whose `t` was solved to 3 mm. This is the equality sets use, where two equal values are one member.
 
 `==` and `!=` on `Scalar<Q>` and `Real` operands are toleranced, not bit-exact: two values are equal when they differ by no more than the larger of a relative tolerance of the larger magnitude and an absolute floor chosen per dimension. The DimensionalSolver accepts equality constraints by the same rule, so a solved model never reports its own equalities violated. `Int`-to-`Int`, `Bool`, `String` and enum equality stay exact. An `Int` compared with a `Real` or dimensionless `Scalar` is promoted and compared by the toleranced rule, so `1000000001 == 1.0e9` holds while `1000000001 == 1000000000` does not. Toleranced equality is not transitive: `a == b` and `b == c` do not imply `a == c`. Ordering comparisons are never toleranced. The tolerance constants live in `crates/reify-core/src/scalar_tolerance.rs`.
 
@@ -1392,7 +1424,7 @@ v0.1 statement scope: `connect` and `constraint` only.
 
 **`undef` propagation:** Quantifiers follow Kleene semantics (iterated `and` / `or`). See Section 9.2.6 for the full truth table.
 
-**Guarded collections:** A quantifier over a `where`-guarded collection is subject to reference safety (Section 8.10) -- the quantifier must be under the same or stronger guard. When the guard is active, the quantifier operates on the collection's current contents. When the guard is inactive, the quantifier is absent from the evaluation graph entirely (not vacuously true -- simply not present).
+**Guarded collections:** A quantifier over a `where`-guarded collection compiles wherever it is written (§6.3). Where the guard holds, it operates on the collection's current contents. Where the collection is absent, it reads `undef`, not vacuously true. A quantifier that is itself under the collection's guard is absent with it.
 
 ### 5.5 Conditional Expressions
 
@@ -1537,7 +1569,7 @@ connect motor.shaft -> coupling.driver : SplineConnection { tooth_count = 24 }
 // or explicitly: let shaft_spline = connect motor.shaft -> coupling.driver : SplineConnection { ... }
 ```
 
-**Connector ownership:** The connector structure instance is owned by the nearest common ancestor of the connected ports by default. A designer override is available to place it elsewhere.
+**Connector ownership:** The connector structure instance is owned by the nearest common ancestor of the connected ports by default. An end of a `connect` is a port of the declaring instance, or of one of its subs or elements. For ends on different subs, or on the declaring instance's own ports, this ancestor is the declaring instance. An end that is a value held in a cell (a `let` bound to a structure value) is a compile error, whose message says to write a sub. A designer override is available to place it elsewhere.
 
 **Cyclic connection topology:** Cyclic connection graphs are supported (e.g., four-bar linkages, closed kinematic chains).
 
@@ -1744,18 +1776,27 @@ where needs_cooling {
 }
 ```
 
-**Reference safety rule:** Referencing a guarded entity from an unguarded context is a compile error. A reference is valid only if the referencing declaration's guard implies the referenced entity's guard.
+**Reading what may be absent.**
+
+- A member under a false guard is absent: no value, no verdict, and `self.children` and the like skip it. A guard that fails blocks the member it guards.
+- An undefined guard is not false. The member's presence is then undetermined, and it is counted with the undetermined verdicts.
+- A read of a member that may be absent compiles wherever it is written: in the member's own definition, under any guard or none, from another instance, in a guard's condition, and as a purpose's subject. Where the member is absent, or its presence is undetermined, the read gives `undef` (§9.2).
+- This composes with three-valued logic (§9.2.3): `constraint not needs_fan or self.fan.flow > 5` is satisfied where there is no fan.
+- A guard's condition is under the guards that enclose it, not under the guard it states. A nested guard is read only where the outer one holds.
+- A guard that reads the member it guards (`sub fan : Fan where self.fan.flow > 5`) is a compile error.
+- A name that no configuration declares is a compile error, like any unknown name.
+- To test presence alone, use `present(x)` (§9.4).
 
 ```
-where needs_cooling {
-    sub fan_mount : FanMount { size = 40mm }
+structure def Case {
+    param needs_fan : Bool = false
+    sub fan : Fan where needs_fan
+
+    // In a Case with no fan:
+    let f = self.fan.flow                              // undefined
+    constraint not needs_fan or self.fan.flow > 5      // satisfied
+    constraint self.fan.flow > 5 where needs_fan       // absent
 }
-
-// Compile error: fan_mount guarded by needs_cooling, case_width is not
-let case_width = fan_mount.width + 2 * wall_t
-
-// Valid: same guard covers the reference
-let case_width = fan_mount.width + 2 * wall_t where needs_cooling
 ```
 
 ### 6.4 `match` Blocks (Declaration-Level)
@@ -1777,7 +1818,9 @@ sub head : SocketHead where head_type == HeadType.Socket { ... }
 // ...
 ```
 
-**Same-name guarded declarations:** The desugaring produces multiple declarations with the same name (`head`) but different types. This is permitted when the guards are mutually exclusive (which exhaustive `match` guarantees). The declarations are treated as a single logical entity -- external references use the shared name (`self.head`), and the type at any reference site is the union of the possible types, narrowed by the active guard. This exception to the normal "one name per scope" rule applies only to declarations with provably mutually exclusive guards.
+**Same-name guarded declarations:** The desugaring produces multiple declarations with the same name (`head`) but different types. The declarations are treated as a single logical entity -- external references use the shared name (`self.head`), and the type at any reference site is the union of the possible types, narrowed by the active guard. This exception to the normal "one name per scope" rule does not depend on the guards being provably exclusive (an exhaustive `match` guarantees it, but nothing requires it): one name may be declared under guards the compiler cannot prove exclusive, and it compiles. At run time the name is present, as the declaration whose guard is true, when every other guard is false. Two present at once is a failure that names both. If all are false it is absent. An undefined guard leaves its presence undetermined.
+
+Two declarations of one name that give different kinds of member (a collection and a single sub) are a compile error. A read of a member that only some arms' definitions have compiles, and gives `undef` where the chosen arm lacks it (§6.3).
 
 Multiple variants with `|`: `Socket | Button => sub head : RecessedHead { ... }`.
 
@@ -1864,6 +1907,11 @@ Member-level visibility rules:
 - `pub let` exposes a computed value without promoting it to a parameter.
 - No `priv` modifier in v0.1.
 
+What the rules mean for a reader:
+- A read of a `let` that is not `pub`, from another definition's text, is a compile error.
+- The braces of a sub and the body of a purpose are another definition's text. They read only what is visible from outside the instance they concern: its parameters, subs, ports and `pub let`s.
+- A path is not source: a host or tool that reads a cell by path may read a private `let`, and a structure value carries it.
+
 ### 7.5 Re-exports
 
 ```
@@ -1886,7 +1934,7 @@ Every module implicitly imports `std.prelude`. The user never writes this import
 - **Linear algebra:** `dot`, `cross`, `normalize`, `magnitude`
 - **Geometry constructors:** `point2`, `point3`, `vec2`, `vec3`, `orient_axis_angle`, `orient_quaternion`, `orient_euler`, `orient_basis`, `orient_look_at`, `orient_identity`, `frame3`, `frame3_identity`, `transform3`, `transform3_identity`, `project`
 - **Ports:** `Port`, `Directionality`
-- **Determinacy predicates:** `determined()`, `constrained()`, `undetermined()`, `partially_determined()`
+- **Determinacy predicates:** `determined()`, `constrained()`, `undetermined()`, `partially_determined()`, `present()`
 
 **Suppression:** The pragma `#no_prelude` suppresses the implicit prelude import.
 
@@ -1932,23 +1980,24 @@ pub structure Assembly {
 
 **Cross-sub geometry composition (boolean idiom).** Geometry-typed members on
 a non-collection sub — whether declared as `param body : Solid = box(...)` or
-as `let body = box(...)` on the child — are accessible from the parent via
-`self.<sub>.<member>` dot notation. The access lowers to a stable reference to
+as `pub let body = box(...)` on the child — are accessible from the parent via
+`self.<sub>.<member>` dot notation. A `let` that is not `pub` is private and
+cannot be read from the parent (§7.4). The access lowers to a stable reference to
 the child's realization handle, so transforms and boolean ops in the parent
 compose directly over the child's body.  Use this idiom when a child body must
 be cut into or unioned with a parent solid:
 
 ```reify
 pub structure Inner {
-    let body = box(10mm, 20mm, 30mm)
+    pub let body = box(10mm, 20mm, 30mm)
 }
 pub structure Outer {
     sub inner = Inner()
     let placed = translate(self.inner.body, 10mm, 0mm, 0mm)
 }
 
-pub structure A { let body = box(10mm, 10mm, 10mm) }
-pub structure B { let body = cylinder(5mm, 10mm) }
+pub structure A { pub let body = box(10mm, 10mm, 10mm) }
+pub structure B { pub let body = cylinder(5mm, 10mm) }
 pub structure C {
     sub a = A()
     sub b = B()
@@ -1978,23 +2027,6 @@ Implemented in task 3441 (cross-sub access); `at` placement and `aux` suppressio
    supported and continues to emit an actionable diagnostic. Per-element
    realization handles require per-instance realization, which is out of
    scope for v0.1.
-2. **Nested cross-sub access is deferred.** Chains deeper than one level —
-   e.g. `self.outer.inner.body` — are not yet supported.
-3. **Parameter overrides do not propagate into the child's body.** A sub's
-   body is realised once per build using the child structure's own parameter
-   defaults; parent-side parameter overrides on the sub do not flow into the
-   realised geometry. For per-instance variation, parameterise the child's
-   primitives and pass scalar arguments downward:
-
-```reify
-pub structure Inner {
-    param offset_x : Length = 0mm
-    let body = translate(box(10mm, 20mm, 30mm), offset_x, 0mm, 0mm)
-}
-pub structure Outer {
-    sub inner = Inner(offset_x: 10mm)
-}
-```
 
 ### 8.4 Upward Visibility
 
@@ -2008,14 +2040,38 @@ Warn, not forbid. When a declaration in a child scope uses the same name as a de
 
 ### 8.6 `self`
 
-The `self` keyword refers to the enclosing entity definition or specialization. `self.param_name` is equivalent to `param_name` for locally declared names. Required when the entity itself (rather than one of its members) is the referent. This equivalence extends to all locally-scoped names: a bare reference to a single-instance sub (`bolt`) resolves identically to `self.bolt` — a `StructureRef` value — and a bare reference to a collection sub (`bolts`) resolves identically to `self.bolts` — a `List<T>` value.
+`self` is the instance of the enclosing definition. `self.x` equals a bare `x` for locally declared names. Required when the instance itself (rather than one of its members) is the referent. The equivalence extends to all locally-scoped names:
+
+- A bare single-instance sub (`bolt`) resolves to `self.bolt`. Read as a value, it is that sub's structure value (§5.2), taken after its solves, and not a `StructureRef`.
+- A bare collection sub (`bolts`) resolves to `self.bolts`, a `List<T>` of its present elements as values.
+- `self.children`, `self.members` and `self.descendants` list the values of present members only, and are `undef` while a member's presence is undetermined.
+
+In a sub's braces (§8.7), `self` is the parent, meaning the instance whose definition declares the sub. A bare name in the braces resolves, in this order, to:
+
+1. a `let` written in the same braces;
+2. a member the sub's definition declares, present or not;
+3. a name of the declaring definition.
+
+```
+structure def Plate { param t : Length = 3mm }
+
+structure def Asm {
+    param t : Length = 10mm
+    sub p : Plate {
+        t = self.t / 2          // the parent's t: p.t is 5mm
+        constraint t >= 4mm     // the plate's own t
+    }
+}
+```
+
+`t = t / 2` in the braces would read the plate's own `t`, which is a cycle, reported when the design is evaluated. A bare name that resolves to a non-`pub` `let` of the sub's definition is a compile error (§7.4), and it does not fall through to the declaring definition's member of that name.
 
 `self` never refers to the module. The module is not an entity.
 
 ### 8.7 Specialization Scopes
 
-When a sub-entity is instantiated within a parent body, its body is a specialization scope:
-- Sees the parent scope (and transitively, all ancestor scopes)
+When a sub-entity is instantiated within a parent body, its braces are a specialization scope:
+- Sees the instance's own members first, then the parent scope (§8.6) and transitively all ancestor scopes
 - Can set parameters and add constraints on the instance
 - Does not modify the underlying definition
 
@@ -2023,13 +2079,20 @@ When a sub-entity is instantiated within a parent body, its body is a specializa
 
 | Member kind | Meaning |
 |-------------|---------|
-| Parameter assignments | `thickness = 3mm` -- set a value for an existing parameter |
-| `constraint` | Add constraints on the instance's parameters |
-| `let` bindings | Local computed values (scoped to the specialization) |
+| Parameter assignments | `thickness = 3mm`, optionally guarded: `t = 6mm where thick`. An argument written by the parent; under a false guard the parameter takes its default. `bore = auto` gives the parent an unknown (§2.9) |
+| `constraint` | An applied constraint definition and a `forall` block of constraints included. A member of the sub's instance; it bears on that instance's own `auto`, as a constraint of its definition does |
+| `let` without `auto` | A member of the sub's instance, read only by members in the same braces. A name that repeats a member of the sub's definition is a compile error |
 | `connect` | Connect the instance's ports |
-| `where` guards | Conditionally include any of the above |
+| `where` guards | A guard on the members inside the block |
+| `minimize` / `maximize` | Recorded as objectives of the instance. What they do is the solve design's (§10.5–10.8) |
 
-**Not permitted:** New `param`, `port`, or `sub` declarations. A specialization configures an existing definition; it does not extend its schema. To add members, define a new structure that inherits via trait or composition.
+**Not permitted** (each is a compile error):
+- `let x : T = auto`: write the `let` in the parent and pass it in.
+- An `auto` as a constructor argument inside a member written in the braces.
+- A purpose line: write it in the parent, with the sub as subject.
+- `param`, `port`, `sub`, `sketch`, `fn`, `meta`, and a `match` with declarations.
+
+A specialization configures an existing definition; it does not extend its schema. To add members, define a new structure that inherits via trait or composition.
 
 ```
 structure def Assembly {
@@ -2043,6 +2106,10 @@ structure def Assembly {
     }
 }
 ```
+
+In the call form, `sub p = Plate(t: t / 2)`, an argument is the caller's expression, as in every constructor call, so it reads the declaring definition's `t`. In the braces, `sub p : Plate { t = t / 2 }`, the bare name reads the plate's own `t` (§8.6).
+
+When a list sub gains braces (task 5482), a constraint written there is a member of every element.
 
 ### 8.8 Trait Member Merging
 
@@ -2058,7 +2125,7 @@ Conflict resolution:
 
 ### 8.9 Recursive Structures
 
-Recursive structure definitions are permitted. Structural unfolding is eager -- once the parameters controlling recursion depth are determined, the full instance tree is materialized.
+Recursive structure definitions are permitted. Recursion is a guarded sub whose guard is read per level (§6.3), with no phases. Each level's guard reads that level's own arguments, and an undefined guard leaves that level's presence undetermined.
 
 ```
 structure def TreeBracket {
@@ -2075,11 +2142,9 @@ structure def TreeBracket {
 
 **Termination requirement:** A recursive structure definition must have a termination condition (`where` guard, `Option` type, or variant type base case). A recursive definition with no reachable termination condition is a static error.
 
-**Recursive generic enums:** A recursive enum such as `enum Tree<T> { Leaf { value: T }, Node { left: Tree<T>, right: Tree<T> } }` (§3.9.2) needs no separate termination check. A `Value::Enum` is a finite value built bottom-up — leaves constructed first, then each `Node` built from already-constructed children — so no single construction expression can build an unbounded value. The non-recursive variant (`Leaf`) is exactly the "variant type base case" named in the termination requirement above. This is consistent with §4.3's note that the compiler does not attempt termination checking: infinite recursion in a value-building function is a runtime stack overflow, as today, not a compile error. Contrast recursive *structures* (this section), whose eager unfolding is depth-controlled by a `where`-guarded `sub` — a recursive enum value has no analogous unfolding step to guard.
+**Recursive generic enums:** A recursive enum such as `enum Tree<T> { Leaf { value: T }, Node { left: Tree<T>, right: Tree<T> } }` (§3.9.2) needs no separate termination check. A `Value::Enum` is a finite value built bottom-up — leaves constructed first, then each `Node` built from already-constructed children — so no single construction expression can build an unbounded value. The non-recursive variant (`Leaf`) is exactly the "variant type base case" named in the termination requirement above. This is consistent with §4.3's note that the compiler does not attempt termination checking: infinite recursion in a value-building function is a runtime stack overflow, as today, not a compile error. Contrast recursive *structures* (this section), whose recursion is stopped by a `where`-guarded `sub` read per level (§6.3) — a recursive enum value has no analogous guarded member.
 
 **`undef` is NOT a valid termination mechanism.** `undef` means "not yet decided," not "structurally absent."
-
-**Unfolding preconditions:** Recursion-controlling parameters must be determined before structural unfolding proceeds.
 
 **Resolution order:** Resolution does not cross recursive instance boundaries. Each instance resolves its own `auto` parameters independently. The evaluation graph resolves in dependency order (typically leaves first).
 
@@ -2091,7 +2156,7 @@ structure def TreeBracket {
 
 ### 8.10 Guarded Declaration Reference Safety
 
-Referencing a guarded entity from an unguarded context is a compile error. A reference is valid only if the referencing declaration's guard implies the referenced entity's guard. Static implication check on boolean guard expressions.
+The rule that a reference to a guarded declaration must sit under a guard implying that declaration's guard was removed (ruling of 2026-11-26). Presence, and what a read of a member that may be absent gives, are defined in §6.3; one name under several guards is in §6.4.
 
 ### 8.11 Imports and Scoping
 
@@ -2235,6 +2300,7 @@ When the condition is determined, only the selected branch's determinacy matters
 | `list.count` | List itself `undef` | `undef` |
 | `list.sum` | Structure determined | `undef` if any element is `undef` |
 | `list[i]` | Structure determined, valid index | Element value (may be `undef`) |
+| `list[i]` | Structure determined, index out of range | `undef` (§3.4) |
 | `list[i]` | List itself `undef` | `undef` |
 | `map[key]` | Structure determined, key present | Value (may be `undef`) |
 | `map[key]` | Structure determined, key absent | Evaluation failure (not `undef`) |
@@ -2260,7 +2326,7 @@ When the collection itself is `undef`, quantifiers produce `undef`.
 <!-- sc-anchor: sc-677679 -->
 #### 9.2.7 Function Application
 
-`undef` propagates strictly through function calls. If any argument is `undef`, the result is `undef`. Functions are pure and cannot inspect the determinacy state of their arguments.
+A user function is entered whatever its arguments. Its parameters are bound to the arguments, undefined ones included, and each operation inside propagates `undef` by the rules above. So `fn five(x : Length) -> Length { 5mm }` gives `5mm` for an undefined `x`, and `fn mk(t : Length) -> Plate { Plate(t: t) }` called with an undefined argument `u` makes the same plate as `Plate(t: u)` written inline. A built-in function called with an undefined argument is not run, and its result is `undef`. Functions are pure and cannot inspect the determinacy state of their arguments.
 
 <!-- sc-anchor: sc-46bce6 -->
 **Exception:** Determinacy predicates (`determined()`, `constrained()`, `undetermined()`, `partially_determined()`) operate on the determinacy state itself, not the value. `determined(undef_param)` returns `false`, not `undef`.
@@ -2291,6 +2357,8 @@ match outer {
 <!-- sc-anchor: sc-b6ef4d -->
 #### 9.2.9 Tracing
 
+An undefined value carries no cause. A cell's or a constraint's result that is undefined or undetermined names, by ref, the undefined things it read. The reason for an undefined value is found by following those reads back to what was not there. The tracer below is that walk.
+
 A read-only undef-cause tracer reconstructs the complete, deduplicated set of root causes for an `undef` cell: `Unbound` (a required param with no value), `AwaitingSolve` (an `auto` param not yet resolved by the constraint solver), `SolveFailed` (the solve was infeasible or made no progress), `OpContractFailed` (an operation returned `undef` although every input was determined -- a type or contract violation), or `UserUndef` (an explicit `undef` literal). The tracer walks forward dependencies through undef cells only, so a value made `undef` by propagation (§9.2.1) reports its upstream roots, not itself.
 
 These causes classify as **expected** or **unexpected** (INV-SF-4, `docs/legibility/design-invariants.md`). `Unbound` and `UserUndef` are expected: the design is declaredly unfinished at that point. The rest are unexpected, because a mechanism failed to deliver a value: `SolveFailed`, `OpContractFailed`, and `AwaitingSolve` on a driver that resolves `auto` (§9.3, §10.2). What gates today: `reify check --strict` fails on every indeterminate constraint, whatever its cause. Plain `reify check` exits 0 for an indeterminate constraint and fails on errors, such as an infeasible solve or a strict `auto` missing a bound. Plain `check` does not yet fail on every unexpected cause: a constraint that reads a sub-instance member as `x.length` instead of `self.x.length` is reported INDETERMINATE (`operator undefined for these operand kinds: StructureInstance`), and `check` still exits 0.
@@ -2320,15 +2388,20 @@ This is a tooling/implementation concern, not a language semantics concern: the 
 Boolean predicate functions (compiler intrinsics, in prelude):
 
 - `determined(param)` -- the parameter has a specific value
-- `constrained(param)` -- the parameter has at least one constraint applied
+- `constrained(param)` -- true when some constraint that is present, written in the text of the definition of the instance that holds the parameter or of a definition below it, can read the parameter according to the source:
+  - "Can read" means directly, through a `let`, or through an argument into a sub or a constructor call whose own constraints can read that parameter, a call reached through a function's body included.
+  - A constraint the definition writes in the braces of its own sub counts. One written in the braces where this instance is declared does not, and neither does a purpose's.
+  - It is `undef` when the guard on the only such constraint is undefined.
+  - It does not depend on how the parameter got its value: `param x : Length = auto` with no constraint is not constrained, and `param y : Length = 5mm` with `constraint y > 3mm` is.
 - `undetermined(param)` -- the parameter is `undef` with no constraints
 - `partially_determined(param)` -- constrained and not determined
+- `present(x)` -- `true` when `x` is present, `false` when it is absent (§6.3), and `undef` when its presence is undetermined. Its argument is an instance or a member (`present(self.c.fan)`), not a value. It tests presence alone, so a fan that is there with an undefined `flow` is present, where `determined(self.c.fan.flow)` is false. Like the determinacy predicates, it is an exception to §9.2.7's built-in rule.
 
 These compose with `forall`, `exists`, `and`, `or`, participate in `where` guards.
 
 ### 9.5 Purposes
 
-A purpose is a named determinacy predicate -- requirements specifying which parameters must be determined for a particular downstream use to be viable. Purposes are activatable -- when active, their constraints and outputs are present; when deactivated, absent. A purpose body may contain constraints, objectives (`minimize`/`maximize`), `let` bindings, and guarded (`where`) blocks.
+A purpose is a named determinacy predicate -- requirements specifying which parameters must be determined for a particular downstream use to be viable. A purpose is applied by the member line `purpose Name(args)` (§4.4) and only checks. A purpose body may contain constraints, applied constraint definitions, `let` bindings, and guarded (`where`) blocks, with no objective and no `auto`.
 
 ```
 purpose fits_within(part : Structure, envelope : Structure) {
@@ -2338,7 +2411,6 @@ purpose fits_within(part : Structure, envelope : Structure) {
     where exists p in part.material_params: constrained(p) {
         constraint forall p in part.material_params: determined(p)
     }
-    minimize part.mass
 }
 ```
 
@@ -2450,7 +2522,7 @@ Bottom-up is an approximation when scopes are coupled. Implementation should det
 
 ### 10.7 Default Objectives
 
-If no explicit purpose or objective is specified, a default purpose applies (provided by standard library). Expected default: robustness-oriented -- among feasible values, prefer those maximizing distance from constraint boundaries (centrality in the feasible region).
+If no objective is specified, the default objective applies (provided by the standard library); a purpose never supplies one, since it only checks (§4.4). Expected default: robustness-oriented -- among feasible values, prefer those maximizing distance from constraint boundaries (centrality in the feasible region).
 
 **Legibility:** Designer can always query what objective governs a given `auto` resolution.
 **Override:** Any scope can override with a local `minimize`/`maximize`.
@@ -2846,7 +2918,7 @@ trait_decl      ::= 'pub'? 'trait' TYPE_IDENT type_params?
                      '{' trait_member* '}'
 
 trait_member    ::= param_decl | sub_decl | let_decl | constraint_line
-                   | assoc_type_decl
+                   | assoc_type_decl | purpose_application
                    (* port_decl: deferred -- see section 4.2 and
                       prds/v0_6/generic-assemblies-interface-traits.md *)
 
@@ -2872,13 +2944,15 @@ purpose_decl    ::= 'pub'? 'purpose' IDENT type_params?
 purpose_params  ::= purpose_param (',' purpose_param)*
 purpose_param   ::= IDENT ':' type_expr
 
-purpose_member  ::= constraint_line | sub_decl | let_decl | minimize_decl | maximize_decl
-                  | guarded_block
+purpose_member  ::= constraint_line | sub_decl | let_decl
+                  | guarded_block | purpose_application
 
-(* Objectives take no guard, in either form (§6.3): minimize_decl/maximize_decl
-   carry no where_guard? suffix and are excluded from guarded bodies. *)
+(* A purpose takes no objective, guarded or not (§4.4): minimize_decl and
+   maximize_decl are members of definitions, not of purposes, and they carry no
+   where_guard? suffix (§6.3). *)
 guarded_purpose_member
                 ::= constraint_line | sub_decl | let_decl | guarded_block
+                  | purpose_application
 
 guarded_block   ::= 'where' expr '{' guarded_purpose_member* '}'
                     ('else' '{' guarded_purpose_member* '}')?
@@ -2923,7 +2997,7 @@ member          ::= param_decl | port_decl | sub_decl | let_decl | type_alias_de
                    | constraint_line | connect_stmt | chain_stmt
                    | entity_decl | field_body | fn_decl
                    | where_block | match_block | meta_block
-                   | minimize_decl | maximize_decl
+                   | minimize_decl | maximize_decl | purpose_application
 
 (* Objectives take no guard, in either form (§6.3): excluded from guarded bodies.
    sub_decl/forall statements ARE admitted here -- the compiler's "not yet
@@ -2931,7 +3005,7 @@ member          ::= param_decl | port_decl | sub_decl | let_decl | type_alias_de
 guarded_member  ::= param_decl | port_decl | sub_decl | let_decl | type_alias_decl
                    | constraint_line | connect_stmt | chain_stmt
                    | entity_decl | field_body | fn_decl
-                   | where_block | match_block | meta_block
+                   | where_block | match_block | meta_block | purpose_application
 
 where_guard     ::= 'where' expr                         (* per-declaration guard *)
 
@@ -2955,6 +3029,10 @@ disposition     ::= 'keep' disposition_path ('using' expr)?   (* 'using' RESERVE
 disposition_path ::= IDENT ('.' IDENT)*
 let_decl        ::= 'pub'? 'aux'? 'let' IDENT (':' type_expr)? '=' expr where_guard?
 constraint_line ::= 'constraint' (constraint_ref | expr) where_guard?
+(* §4.4: a compile error in a purpose's body, a trait or a sub's braces. It
+   parses there (purpose_member, guarded_purpose_member, trait_member) so the
+   compiler can reject it with a message. *)
+purpose_application ::= 'purpose' IDENT '(' args? ')' where_guard?
 
 constraint_ref  ::= TYPE_IDENT type_args? '(' args? ')'
 
@@ -3153,13 +3231,13 @@ where
 | # | Item | Target | Notes |
 |---|------|--------|-------|
 | 1 | Default robustness objective | v0.1.1 | Mechanism depends on constraint solver internals |
-| 2 | Rich structural query/traversal | v0.2 | `children`/`members` pseudo-collection filterable by trait |
+| 2 | Rich structural query/traversal | Realized (instances on the core) | `self.children`, `self.members` and `self.descendants` exist as lists of the values of present members (§8.6). Filtering one by trait is written with `filter`, as in `filter(self.descendants, Costed)`. See docs/prds/v0_6/structural-query-traversal.md. |
 | 3 | Geometry selector strengthening | v0.2 | Persistent naming, advanced topological queries |
 | 4 | `Result<T>` or `fallback` expressions | Realized (v0.6) | Layer A — `Option` recovery combinators (`unwrap_or`/`or_else`/`or_default`/`map_or`/`is_some`/`is_none`/`get_or`, plus the `fallback` alias of `unwrap_or`) shipped in v0.6, orthogonal to graph-`Failed` (§9.6 D1). Layer B — `Result<T,E>` error-handling shipped in v0.6 as a generic data-carrying prelude enum (`enum Result<T, E> { Ok { value: T }, Err { error: E } }`) with `Ok`/`Err` construction, match-on-`Result` payload binding, and the Result-specialized recovery combinators `unwrap_or`/`or_else`/`fallback`/`is_ok`/`is_err`/`map_err`/`ok_or` (the `Option`→`Result` bridge), built on the generic-data-carrying-enums substrate. `try`/`catch` and the postfix `?`-propagation operator (fork F-Question) remain deferred. See docs/prds/v0_6/result-and-fallback.md, docs/prds/v0_6/data-carrying-enums.md, and docs/prds/v0_6/generic-data-carrying-enums.md; runnable example `examples/m6_result_recovery.ri`. |
 | 5 | Associated `fn` in traits | v0.2+ | Procedural code in traits |
 | 6 | Data-carrying enums | Realized (v0.6) | Algebraic data types with named-field payload variants (named-field only; no positional/tuple) shipped in v0.6. See docs/prds/v0_6/data-carrying-enums.md. |
 | 7 | Tolerance stack-up analysis | Realized (v0.6) | `stackup_worst_case` / `stackup_rss` / `monte_carlo_stackup` eval builtins; v1 is explicit-chain only (assembly-graph auto-derivation deferred). See docs/prds/v0_6/tolerance-stackup-analysis.md. |
-| 8 | Keyed collection identity | v0.2 | Named/keyed members in collections instead of positional |
+| 8 | Keyed collection identity | Realized (instances on the core) | Keyed collections exist. An element is addressed by its key (`vents["intake"]`, the index expression `expr '[' expr ']'` of §15), and its key is its identity: elements keep their identity across an insertion, where a list's elements are identified by position (§3.4). |
 | 9 | Field-valued material properties | v0.2 | `Field<Temperature, Pressure>` for temperature-dependent properties |
 | 10 | Expression-body sugar for `fn` | Realized (v0.6) | `fn f(x: T) -> T = expr` shorthand; §4.3/§15 `fn_body`; see docs/prds/v0_6/expression-operator-completion.md |
 | 11 | No `Date` type | v0.1 | ISO 8601 strings used for timestamps |
