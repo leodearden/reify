@@ -113,4 +113,6 @@ impl CellReader for RoundReader<'_> {
 }
 
 #[cfg(test)]
+mod round_reader_tests;
+#[cfg(test)]
 mod tests;
