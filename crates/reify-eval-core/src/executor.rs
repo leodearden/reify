@@ -157,10 +157,12 @@ impl Executor {
             while let Some(key) = self.ready.pop() {
                 self.advance(key);
             }
-            match self.in_flight.running() {
-                0 if self.break_rings() => {}
-                0 => break,
-                running => return Turn::SectionsRunning(running),
+            let running = self.in_flight.running();
+            if running > 0 {
+                return Turn::SectionsRunning(running);
+            }
+            if !self.break_rings() {
+                break;
             }
         }
         self.refuse_stuck();
@@ -382,6 +384,16 @@ impl Executor {
         self.tasks.remove(&key)
     }
 
+    /// Takes the node at `key` out of the nodes in progress: the lookup or
+    /// body there with the read it waits on, or the path waiting on its
+    /// parent; and ends every wait of its own. Returns the body, for the
+    /// caller to discard or abandon.
+    fn withdraw(&mut self, key: NodeKey) -> Option<Task> {
+        self.resolving.remove(&key);
+        self.waits.forget(key);
+        self.remove_reader(key)
+    }
+
     /// Queues a lookup for the node at `key`, which starts at its recipe's
     /// key; a kind the core was not built with fails outside the inputs.
     fn look_up(&mut self, key: NodeKey, declaration: Arc<Declaration>) {
@@ -446,11 +458,9 @@ impl Executor {
             .copied()
             .collect();
         for key in unwanted {
-            if let Some(task) = self.remove_reader(key) {
+            if let Some(task) = self.withdraw(key) {
                 task.abandon();
             }
-            self.resolving.remove(&key);
-            self.waits.forget(key);
         }
     }
 
@@ -473,11 +483,9 @@ impl Executor {
             self.miss(key);
         }
         for key in &broken.answered {
-            if let Some(task) = self.remove_reader(*key) {
+            if let Some(task) = self.withdraw(*key) {
                 task.discard();
             }
-            self.resolving.remove(key);
-            self.waits.forget(*key);
         }
         for key in broken.answered {
             self.work(Work::Answered(key, cycle::entry()));
@@ -660,10 +668,9 @@ impl Executor {
         let mut released_a_wait = self.waits.awaits(key).next().is_some();
         let mut queue = VecDeque::from([key]);
         while let Some(key) = queue.pop_front() {
-            if let Some(task) = self.remove_reader(key) {
+            if let Some(task) = self.withdraw(key) {
                 task.discard();
             }
-            self.resolving.remove(&key);
             let failed = finish::failed_outside(key, &mut self.waits, &mut self.requests);
             for request in failed.tell {
                 self.tell(request, key, Answer::Pending(failure.clone()));
