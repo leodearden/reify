@@ -32,19 +32,24 @@ pub(crate) trait DecodeStdlibInput: Sized {
     /// Decode from the input `Value`: an `Undef` input is unresolved, and any
     /// other non-structure is not a structure.
     fn decode(value: &Value) -> Result<Self, InputDecodeError> {
-        match value {
-            Value::StructureInstance(data) => Self::decode_fields(data),
-            Value::Undef => Err(InputDecodeError::new(
-                Self::STRUCTURE,
-                None,
-                DecodeFailure::Unresolved,
-            )),
-            other => Err(InputDecodeError::not_a_structure(
-                Self::STRUCTURE,
-                None,
-                other,
-            )),
-        }
+        Self::decode_fields(structure_fields(value, Self::STRUCTURE)?)
+    }
+}
+
+/// The fields of `value`, decoded as the structure `input`: an `Undef` value
+/// is unresolved, and any other non-structure is not a structure.
+pub(crate) fn structure_fields<'a>(
+    value: &'a Value,
+    input: &'static str,
+) -> Result<&'a StructureInstanceData, InputDecodeError> {
+    match value {
+        Value::StructureInstance(data) => Ok(data),
+        Value::Undef => Err(InputDecodeError::new(
+            input,
+            None,
+            DecodeFailure::Unresolved,
+        )),
+        other => Err(InputDecodeError::not_a_structure(input, None, other)),
     }
 }
 
@@ -202,17 +207,106 @@ pub(crate) fn required_field(
     }
 }
 
+/// The positional input `input` at `index` of `value_inputs`: an absent one
+/// is `Missing`.
+pub(crate) fn positional<'a>(
+    value_inputs: &'a [Value],
+    index: usize,
+    input: &'static str,
+) -> Result<&'a Value, InputDecodeError> {
+    value_inputs
+        .get(index)
+        .ok_or_else(|| InputDecodeError::new(input, None, DecodeFailure::Missing))
+}
+
 /// A positional input `input`, read through `spec`: `Undef` is `Unresolved`.
 pub(crate) fn read_positional(
     value: &Value,
     input: &'static str,
     spec: &ArgSpec,
 ) -> Result<f64, InputDecodeError> {
-    match read_component(value, input, None, spec) {
+    read_number(value, input, None, spec)
+}
+
+/// A `Vector3` at `input[.field]`: exactly three components of a
+/// `Value::Vector` or `Value::List`, each read through `spec`. `Undef`, for
+/// the vector or a component, is `Unresolved`; any other shape is a
+/// `WrongShape`.
+pub(crate) fn read_vec3(
+    value: &Value,
+    input: &'static str,
+    field: Option<&'static str>,
+    spec: &ArgSpec,
+) -> Result<[f64; 3], InputDecodeError> {
+    match value {
+        Value::Vector(components) | Value::List(components) => match components.as_slice() {
+            [x, y, z] => Ok([
+                read_number(x, input, field, spec)?,
+                read_number(y, input, field, spec)?,
+                read_number(z, input, field, spec)?,
+            ]),
+            _ => Err(InputDecodeError::wrong_shape(
+                input,
+                field,
+                "Vector3",
+                format!("{} components", components.len()),
+            )),
+        },
+        Value::Undef => Err(InputDecodeError::new(
+            input,
+            field,
+            DecodeFailure::Unresolved,
+        )),
+        other => Err(InputDecodeError::wrong_shape(
+            input,
+            field,
+            "Vector3",
+            format!("{other:?}"),
+        )),
+    }
+}
+
+/// A `List` at `input[.field]`, each entry read through `spec`. `Undef`, for
+/// the list or an entry, is `Unresolved`; any other non-list is a
+/// `WrongShape`.
+pub(crate) fn read_list(
+    value: &Value,
+    input: &'static str,
+    field: Option<&'static str>,
+    spec: &ArgSpec,
+) -> Result<Vec<f64>, InputDecodeError> {
+    match value {
+        Value::List(items) => items
+            .iter()
+            .map(|item| read_number(item, input, field, spec))
+            .collect(),
+        Value::Undef => Err(InputDecodeError::new(
+            input,
+            field,
+            DecodeFailure::Unresolved,
+        )),
+        other => Err(InputDecodeError::wrong_shape(
+            input,
+            field,
+            "List",
+            format!("{other:?}"),
+        )),
+    }
+}
+
+/// One number at `input[.field]`, read through `spec`: `Undef` is
+/// `Unresolved`.
+fn read_number(
+    value: &Value,
+    input: &'static str,
+    field: Option<&'static str>,
+    spec: &ArgSpec,
+) -> Result<f64, InputDecodeError> {
+    match read_component(value, input, field, spec) {
         ComponentRead::Accepted(si) => Ok(si),
         ComponentRead::Undefined => Err(InputDecodeError::new(
             input,
-            None,
+            field,
             DecodeFailure::Unresolved,
         )),
         ComponentRead::Rejected(err) => Err(err),
@@ -280,7 +374,7 @@ mod tests {
     use super::*;
     use crate::ComputeOutcome;
     use crate::arg_acceptance::{
-        ArgRejection, FieldRejection, dimensionless_spec, length_spec, pressure_spec,
+        ArgRejection, FieldRejection, dimensionless_spec, length_spec, pressure_spec, time_spec,
     };
     use crate::compute_targets::{scalar, structure};
 
@@ -539,6 +633,95 @@ mod tests {
                 assert_eq!(rejection.expected, "Length");
             }
             other => panic!("a MASS length must be Rejected, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_absent_positional_is_missing_at_the_input_name() {
+        assert_eq!(
+            positional(&[Value::Undef], 1, "direction"),
+            Err(InputDecodeError {
+                input: "direction",
+                field: None,
+                failure: DecodeFailure::Missing,
+            })
+        );
+    }
+
+    // ── the vector and list readers ──────────────────────────────────────────
+
+    #[test]
+    fn a_vec3_reads_exactly_three_components_of_a_vector_or_a_list() {
+        let components = vec![Value::Real(1.0), Value::Int(2), Value::Real(3.0)];
+        for value in [Value::Vector(components.clone()), Value::List(components)] {
+            assert_eq!(
+                read_vec3(&value, "Mode", Some("shape"), &dimensionless_spec()),
+                Ok([1.0, 2.0, 3.0])
+            );
+        }
+        for wrong in [
+            Value::Vector(vec![Value::Real(1.0), Value::Real(2.0)]),
+            Value::Real(1.0),
+        ] {
+            match read_vec3(&wrong, "Mode", Some("shape"), &dimensionless_spec()) {
+                Err(InputDecodeError {
+                    input: "Mode",
+                    field: Some("shape"),
+                    failure: DecodeFailure::WrongShape { expected, .. },
+                }) => assert_eq!(expected, "Vector3"),
+                other => panic!("{wrong:?} must be WrongShape, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn an_undef_vec3_or_component_is_unresolved() {
+        let unresolved = Err(InputDecodeError {
+            input: "direction",
+            field: None,
+            failure: DecodeFailure::Unresolved,
+        });
+        let undef_component = Value::Vector(vec![Value::Real(0.0), Value::Undef, Value::Real(1.0)]);
+        for value in [Value::Undef, undef_component] {
+            assert_eq!(
+                read_vec3(&value, "direction", None, &dimensionless_spec()),
+                unresolved
+            );
+        }
+    }
+
+    #[test]
+    fn a_list_reads_every_entry_through_the_spec() {
+        let times = Value::List(vec![
+            scalar(0.0, DimensionVector::TIME),
+            scalar(0.5, DimensionVector::TIME),
+        ]);
+        assert_eq!(
+            read_list(&times, "SampledForce", Some("time_samples"), &time_spec()),
+            Ok(vec![0.0, 0.5])
+        );
+        let mixed = Value::List(vec![
+            scalar(0.0, DimensionVector::TIME),
+            scalar(0.5, DimensionVector::LENGTH),
+        ]);
+        match read_list(&mixed, "SampledForce", Some("time_samples"), &time_spec()) {
+            Err(InputDecodeError {
+                failure: DecodeFailure::Rejected(FieldRejection { path, .. }),
+                ..
+            }) => assert_eq!(path, "SampledForce.time_samples"),
+            other => panic!("a LENGTH entry must be Rejected, got {other:?}"),
+        }
+        match read_list(
+            &Value::Real(0.5),
+            "SampledForce",
+            Some("time_samples"),
+            &time_spec(),
+        ) {
+            Err(InputDecodeError {
+                failure: DecodeFailure::WrongShape { expected, .. },
+                ..
+            }) => assert_eq!(expected, "List"),
+            other => panic!("a non-list must be WrongShape, got {other:?}"),
         }
     }
 

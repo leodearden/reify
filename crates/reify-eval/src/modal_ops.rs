@@ -46,10 +46,13 @@ use reify_stdlib::modal::transient::{
 };
 use reify_stdlib::resolve_body_mass;
 
-use crate::arg_acceptance::length_spec;
+use crate::arg_acceptance::{dimensionless_spec, frequency_spec, length_spec, time_spec};
 use crate::compute_targets::bc_resolve::named_leaf_target;
 use crate::compute_targets::result_topology::carried_topology_from_result;
-use crate::compute_targets::stdlib_inputs::{DecodeStdlibInput, InputDecodeError, read_positional};
+use crate::compute_targets::stdlib_inputs::{
+    self, DecodeStdlibInput, InputDecodeError, positional, read_list, read_positional,
+    required_field, structure_fields,
+};
 use crate::topology_selectors::{nodes_for_faces, resolve_against_carried_topology};
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
@@ -2625,23 +2628,40 @@ fn modal_result_modes(modal_result: &Value) -> &[Value] {
     &[]
 }
 
-/// Read one `Mode`'s `shape` field (a `List<Vector3>`) into per-node `[f64; 3]`
-/// displacements; empty if absent / mis-shaped.
-fn read_mode_shape(mode: &Value) -> Vec<[f64; 3]> {
+/// The input name a `Mode`'s decode diagnostics start with.
+const MODE: &str = "Mode";
+
+/// Read one `Mode`'s `shape` field (a `List<Vector3<Real>>`) into per-node
+/// `[f64; 3]` displacements, each component dimensionless. A shape that is not
+/// a list reads as empty: the mechanism solve degrades `shape` to `Undef`.
+fn read_mode_shape(mode: &Value) -> Result<Vec<[f64; 3]>, InputDecodeError> {
     match field_ref(mode, "shape") {
-        Some(Value::List(nodes)) => nodes.iter().map(read_vec3).collect(),
-        _ => Vec::new(),
+        Some(Value::List(nodes)) => nodes
+            .iter()
+            .map(|node| stdlib_inputs::read_vec3(node, MODE, Some("shape"), &dimensionless_spec()))
+            .collect(),
+        _ => Ok(Vec::new()),
     }
 }
 
 /// Per-mode node shapes Φᵢ of a `ModalResult` (one `Vec<[f64; 3]>` per mode).
 /// Shared by [`solve_transient_response_trampoline`] (forcing projection) and
 /// [`displacement_at_trampoline`] (reconstruction) — both form Φᵢ[node]·dir.
-fn extract_mode_shapes(modal_result: &Value) -> Vec<Vec<[f64; 3]>> {
+fn extract_mode_shapes(modal_result: &Value) -> Result<Vec<Vec<[f64; 3]>>, InputDecodeError> {
     modal_result_modes(modal_result)
         .iter()
         .map(read_mode_shape)
         .collect()
+}
+
+/// One `Mode`'s `(frequency_hz, damping_ratio)`: `frequency : Frequency` and
+/// `damping_ratio : Real`, both required.
+fn read_mode_params(mode: &Value) -> Result<(f64, f64), InputDecodeError> {
+    let data = structure_fields(mode, MODE)?;
+    Ok((
+        required_field(data, MODE, "frequency", &frequency_spec())?,
+        required_field(data, MODE, "damping_ratio", &dimensionless_spec())?,
+    ))
 }
 
 /// The forcing sources of a `ForcingTimeHistory` StructureInstance, cloned; empty
@@ -2903,6 +2923,28 @@ pub(crate) struct TransientTrampolineRun {
     pub(crate) reused_setup: bool,
 }
 
+/// The stdlib fn [`run_transient_response`] implements, named in its decode
+/// diagnostics.
+const TRANSIENT_RESPONSE: &str = "transient_response";
+
+impl TransientTrampolineRun {
+    /// The run that fails `transient_response` on a decode error.
+    fn decode_failed(err: InputDecodeError) -> Self {
+        Self {
+            outcome: err.into_failed(TRANSIENT_RESPONSE),
+            reused_setup: false,
+        }
+    }
+}
+
+/// `transient_response`'s `(t_start, t_end, dt)`, each read as a Time.
+fn read_time_window(value_inputs: &[Value]) -> Result<(f64, f64, f64), InputDecodeError> {
+    let time = |index: usize, input: &'static str| {
+        read_positional(positional(value_inputs, index, input)?, input, &time_spec())
+    };
+    Ok((time(2, "t_start")?, time(3, "t_end")?, time(4, "dt")?))
+}
+
 /// In-crate transient core behind [`solve_transient_response_trampoline`],
 /// adding the task-λ warm-state cache — reuse the pre-derived grid + per-mode
 /// integrators across calls whose [`TransientCacheKey`] matches — on top of
@@ -2949,9 +2991,10 @@ pub(crate) fn run_transient_response(
     // value_inputs = [modal_result, forcing, t_start, t_end, dt]
     let modal_result = value_inputs.first().cloned().unwrap_or(Value::Undef);
     let forcing = value_inputs.get(1).cloned().unwrap_or(Value::Undef);
-    let t_start = value_inputs.get(2).map(read_scalar_si).unwrap_or(0.0);
-    let t_end = value_inputs.get(3).map(read_scalar_si).unwrap_or(0.0);
-    let dt = value_inputs.get(4).map(read_scalar_si).unwrap_or(0.0);
+    let (t_start, t_end, dt) = match read_time_window(value_inputs) {
+        Ok(window) => window,
+        Err(err) => return TransientTrampolineRun::decode_failed(err),
+    };
 
     // ── (1) missing-modal-result guard ───────────────────────────────────────
     // modal_result is the primary positional input: Undef / non-ModalResult /
@@ -2982,22 +3025,17 @@ pub(crate) fn run_transient_response(
     // supplies them, so a key match over (freq, zeta, dt, t_range) fully certifies
     // the cached payload — mode shapes are explicitly excluded from the key).
     let modes = modal_result_modes(&modal_result);
-    let shapes = extract_mode_shapes(&modal_result);
+    let shapes = match extract_mode_shapes(&modal_result) {
+        Ok(shapes) => shapes,
+        Err(err) => return TransientTrampolineRun::decode_failed(err),
+    };
 
     // Collect (frequency_hz, damping_ratio) pairs for the cache key; also used
-    // to compute omega below. Borrowed from the modal_result via field_ref.
-    let mode_params: Vec<(f64, f64)> = modes
-        .iter()
-        .map(|mode| {
-            let freq = field_ref(mode, "frequency")
-                .map(read_scalar_si)
-                .unwrap_or(0.0);
-            let zeta = field_ref(mode, "damping_ratio")
-                .map(read_scalar_si)
-                .unwrap_or(0.0);
-            (freq, zeta)
-        })
-        .collect();
+    // to compute omega below.
+    let mode_params: Vec<(f64, f64)> = match modes.iter().map(read_mode_params).collect() {
+        Ok(params) => params,
+        Err(err) => return TransientTrampolineRun::decode_failed(err),
+    };
 
     // ── (4) cache lookup: try to reuse the grid + prepared integrators ────────
     // Key excludes `forcing` (cheap-varying) and mode shapes (not needed by
@@ -3216,15 +3254,35 @@ pub fn displacement_at_trampoline(
         Some(h) => h,
         None => return displacement_series_outcome(Vec::new()),
     };
+    match reconstruct_displacement_at(history, value_inputs) {
+        Ok(series) => displacement_series_outcome(series),
+        Err(err) => err.into_failed(DISPLACEMENT_AT),
+    }
+}
+
+/// The stdlib fn [`displacement_at_trampoline`] implements, named in its
+/// decode diagnostics.
+const DISPLACEMENT_AT: &str = "displacement_at";
+
+/// The queried node's displacement series `u(tⱼ)` of `history`, in SI metres.
+fn reconstruct_displacement_at(
+    history: &Value,
+    value_inputs: &[Value],
+) -> Result<Vec<f64>, InputDecodeError> {
     let location = value_inputs.get(1);
-    let direction = value_inputs.get(2).map(read_vec3).unwrap_or([0.0; 3]);
+    let direction = stdlib_inputs::read_vec3(
+        positional(value_inputs, 2, "direction")?,
+        "direction",
+        None,
+        &dimensionless_spec(),
+    )?;
 
     // The echoed ModalResult carries both the per-mode node shapes Φᵢ (Φᵢ[node]
     // supplies each projection coefficient) and — task 4122 R3b — the `topology`
     // field a `Selector` location resolves against. Borrowed off the history.
     let modal_result = field_ref(history, "modal_result");
     let shapes = match modal_result {
-        Some(mr) => extract_mode_shapes(mr),
+        Some(mr) => extract_mode_shapes(mr)?,
         None => Vec::new(),
     };
     let mode0_shape: &[[f64; 3]] = shapes.first().map(Vec::as_slice).unwrap_or(&[]);
@@ -3246,11 +3304,21 @@ pub fn displacement_at_trampoline(
 
     // The stored modal-coordinate matrix ξ_i(tⱼ) as Vec<Vec<f64>> (List<List<Real>>).
     let mode_coords: Vec<Vec<f64>> = match field_ref(history, "mode_coords") {
-        Some(Value::List(series)) => series.iter().map(read_real_list).collect(),
+        Some(Value::List(series)) => series
+            .iter()
+            .map(|coords| {
+                read_list(
+                    coords,
+                    "DisplacementTimeHistory",
+                    Some("mode_coords"),
+                    &dimensionless_spec(),
+                )
+            })
+            .collect::<Result<_, _>>()?,
         _ => Vec::new(),
     };
 
-    displacement_series_outcome(reconstruct_series(&coeffs, &mode_coords))
+    Ok(reconstruct_series(&coeffs, &mode_coords))
 }
 
 /// Wrap a reconstructed displacement series in a `ComputeOutcome::Completed`
