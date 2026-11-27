@@ -51,6 +51,11 @@ impl<'a> ScopeChain<'a> {
         }
     }
 
+    /// The store's reader, below every frame.
+    pub(crate) fn reader(&self) -> &'a dyn CellReader {
+        self.reader
+    }
+
     /// The value of `id` in this scope: the innermost frame binding it, else
     /// `Undef` at a sealed frame, else the reader's value.
     pub(crate) fn read(&self, id: &ValueCellId) -> Value {

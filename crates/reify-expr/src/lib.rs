@@ -43,6 +43,7 @@ pub use dual_env::DualEnv;
 pub use dual_eval::{eval_dual, eval_dual_with_env, jacobian_row, jacobian_row_with_env};
 pub use dual_seeds::Seeds;
 pub use non_differentiable::NonDifferentiable;
+pub use reader::{CellRead, PendingReader};
 pub use upstream_values_hash::realization_upstream_values_hash;
 
 use std::cell::RefCell;
@@ -57,6 +58,7 @@ use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, Compiled
 
 use ctor_member_order::{CtorMember, ctor_member_order};
 use datum_projection::{datum_vec3, eval_datum_projection, eval_self_datum_projection};
+use reader::{CellReader, RoundReader};
 use scope_chain::{Frame, ScopeChain};
 
 /// Maximum recursion depth for user-defined function calls.
@@ -302,10 +304,28 @@ impl<'a> EvalContext<'a> {
     where
         'a: 'b,
     {
+        self.child(frame.chain(), self.recursion_depth + 1)
+    }
+
+    /// This context's functions, depth and attachments, with no local frame,
+    /// reading every store cell through `reader`.
+    fn reading_from<'b>(&self, reader: &'b dyn CellReader) -> EvalContext<'b>
+    where
+        'a: 'b,
+    {
+        self.child(ScopeChain::over(reader), self.recursion_depth)
+    }
+
+    /// This context's store, functions and attachments, reading through
+    /// `scope` at `recursion_depth`.
+    fn child<'b>(&self, scope: ScopeChain<'b>, recursion_depth: u32) -> EvalContext<'b>
+    where
+        'a: 'b,
+    {
         EvalContext {
             values: self.values,
             functions: self.functions,
-            recursion_depth: self.recursion_depth + 1,
+            recursion_depth,
             meta: self.meta,
             determinacy: self.determinacy,
             diagnostics: self.diagnostics,
@@ -313,7 +333,7 @@ impl<'a> EvalContext<'a> {
             containment: self.containment,
             compute_dispatch: self.compute_dispatch,
             symbolic_selector_ctor: self.symbolic_selector_ctor,
-            scope: frame.chain(),
+            scope,
         }
     }
 
@@ -321,6 +341,38 @@ impl<'a> EvalContext<'a> {
     fn read(&self, id: &ValueCellId) -> Value {
         self.scope.read(id)
     }
+
+    /// Whether every operand outside an arm is evaluated, so that one round
+    /// asks for every cell the expression reads: true under a reader that may
+    /// answer "not here yet", false under the old engine's.
+    fn reads_every_operand(&self) -> bool {
+        self.scope.reader().may_answer_not_here_yet()
+    }
+
+    /// A mark to hand [`Self::pending_since`] after evaluating some operands.
+    fn pending_mark(&self) -> PendingMark {
+        PendingMark(self.scope.reader().not_here_yet_count())
+    }
+
+    /// Whether a read made since `mark` was answered "not here yet". Every node
+    /// a pending read is an operand of is pending, so the operands evaluated
+    /// since `mark` are pending exactly when this is true.
+    fn pending_since(&self, mark: PendingMark) -> bool {
+        self.scope.reader().not_here_yet_count() != mark.0
+    }
+}
+
+/// How many reads had been answered "not here yet" when the mark was taken.
+#[derive(Clone, Copy)]
+struct PendingMark(usize);
+
+/// What [`eval_expr_or_pending`] gives.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Evaluated {
+    /// Every read the evaluation made was here: its value.
+    Value(Value),
+    /// A read the evaluation made was answered "not here yet".
+    Pending,
 }
 
 /// Evaluate a compiled expression against an evaluation context.
@@ -381,7 +433,13 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
         CompiledExprKind::UnOp { op, operand } => eval_unop(*op, operand, ctx),
 
         CompiledExprKind::FunctionCall { function, args } => {
+            let mark = ctx.pending_mark();
             let evaluated_args: Vec<Value> = args.iter().map(|a| eval_expr(a, ctx)).collect();
+            // A built-in is not run with a pending argument, nor is the
+            // interpolation renderer, which would render the stand-in.
+            if ctx.pending_since(mark) {
+                return Value::Undef;
+            }
             // __interp_render intercept — MUST sit before the strict-Undef
             // short-circuit below. This placement is load-bearing: the
             // determinacy decision (PRD §6.3, task 3964) requires that an
@@ -614,22 +672,11 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 // Convention: silent `Value::Undef` on type errors (non-list
                 // input, non-lambda second arg, lambda result not a list,
                 // wrong lambda arity). Matches the existing list-helper
-                // convention; see task 2698 design decisions.
+                // convention; see task 2698 design decisions. Body in
+                // `eval_flat_map_dispatch` (`#[inline(never)]`) so its loop
+                // locals stay off this recursive frame.
                 "flat_map" if evaluated_args.len() == 2 => {
-                    match (&evaluated_args[0], &evaluated_args[1]) {
-                        (Value::List(items), lambda @ Value::Lambda { .. }) => {
-                            let mut out: Vec<Value> = Vec::with_capacity(items.len());
-                            for item in items {
-                                let r = apply_lambda(lambda, std::slice::from_ref(item), ctx);
-                                match r {
-                                    Value::List(sub) => out.extend(sub),
-                                    _ => return Value::Undef,
-                                }
-                            }
-                            Value::List(out)
-                        }
-                        _ => Value::Undef,
-                    }
+                    eval_flat_map_dispatch(&evaluated_args, ctx)
                 }
                 // worst_case(mcr, lambda): dispatched here (not in
                 // `reify_stdlib::eval_builtin` → `eval_fea`) because applying
@@ -750,9 +797,12 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
         }
 
         CompiledExprKind::Match { discriminant, arms } => {
+            let mark = ctx.pending_mark();
             let disc_val = eval_expr(discriminant, ctx);
             // §9.2.5 — wholly-undef discriminant short-circuits before any arm is tried.
-            if disc_val.is_undef() {
+            // So does one that read a cell not here yet: no arm is chosen on a pending
+            // discriminant, whatever its tag.
+            if disc_val.is_undef() || ctx.pending_since(mark) {
                 return Value::Undef;
             }
             match &disc_val {
@@ -801,7 +851,13 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             then_branch,
             else_branch,
         } => {
+            let mark = ctx.pending_mark();
             let cond = eval_expr(condition, ctx);
+            // No arm is chosen on a condition that read a cell not here yet,
+            // whatever its value.
+            if ctx.pending_since(mark) {
+                return Value::Undef;
+            }
             match cond {
                 Value::Bool(true) => eval_expr(then_branch, ctx),
                 Value::Bool(false) => eval_expr(else_branch, ctx),
@@ -830,13 +886,15 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 // yet). Wrong-arity calls fall straight through to
                 // eval_user_function_call without paying arg-evaluation cost here
                 // and without triggering double-evaluation on the decline path.
+                let mark = ctx.pending_mark();
                 let evaluated_args: Vec<Value> =
                     args.iter().map(|a| eval_expr(a, ctx)).collect();
                 // Strict Undef propagation: return Undef directly (consistent with
                 // eval_user_function_call's own Undef check) so the decline path
                 // does not re-evaluate the args a second time inside
-                // eval_user_function_call.
-                if evaluated_args.iter().any(|v| v.is_undef()) {
+                // eval_user_function_call. The solve runs only on defined
+                // arguments, under either reader, and never on a pending one.
+                if evaluated_args.iter().any(|v| v.is_undef()) || ctx.pending_since(mark) {
                     return Value::Undef;
                 }
                 return eval_solve_load_cases(&evaluated_args, ctx);
@@ -957,7 +1015,10 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             method,
             args,
         } => {
+            // No method takes an argument.
             if !args.is_empty() {
+                evaluate_if_reading_every_operand(std::slice::from_ref(&**object), ctx);
+                evaluate_if_reading_every_operand(args, ctx);
                 return Value::Undef;
             }
             // `self.<datum>` projects the structure's identity frame; its
@@ -1178,6 +1239,52 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
         // handles requires a `GeometryKernel`, so the real coercion happens in
         // the kernel-bearing post-process (reify-eval), not here.
         CompiledExprKind::ResolveSelector { selector } => eval_expr(selector, ctx),
+    }
+}
+
+/// Evaluate `expr` under `ctx`'s functions and attachments, reading every
+/// store cell from `reader` (the new engine's store) rather than `ctx`'s.
+///
+/// The evaluation is [`Evaluated::Pending`] when any read it made was answered
+/// "not here yet". The walk reads on past such a read, so one call asks for
+/// every cell the expression reads: every operand, quantifier element and
+/// argument is evaluated, except the arms of an `if` or a `match`, of which
+/// only the one its condition takes is, and none when the condition is
+/// pending.
+///
+/// While an operand is pending, nothing that acts beyond giving a value runs:
+/// no built-in is dispatched (nor the selector hook), no `@optimized`
+/// function's compute dispatch probed, no `solve_load_cases` solve run, no
+/// user function entered and no function of `map_or` or `map_err` applied.
+/// Pure operations, the operators and the option-recovery combinators
+/// (`unwrap_or`, `ok_or`, ...), do run on the stand-in; the evaluation is then
+/// pending, so their value is discarded.
+///
+/// Two ways the outcome can differ from [`eval_expr`]'s over the same cells:
+/// - An operand evaluated only for the cells it reads (the right operand of a
+///   logical operator its left decides, a method call's arguments, the
+///   argument of `map_or` or `map_err` that the subject does not use) pushes
+///   to `ctx`'s runtime-diagnostic and undef-cause sinks like any other
+///   evaluation, so a round can carry a diagnostic or an `OpContractFailed`
+///   cause the old engine never produces. Whether to detach the sinks for
+///   such operands is for the adapter, #10645.
+/// - An attached [`SymbolicSelectorCtorFn`] is handed the local binders in
+///   scope but no store cell: the new engine's store is not a map. A hook
+///   that reads store cells from that map, as reify-eval's does to evaluate
+///   the call's arguments, sees none, so such a selector call can give Undef
+///   here where `eval_expr` builds a selector. The fix is owned by #10645.
+// G-allow: consumed by the instances-on-the-core adapter, task #10645
+pub fn eval_expr_or_pending(
+    expr: &CompiledExpr,
+    ctx: &EvalContext,
+    reader: &dyn PendingReader,
+) -> Evaluated {
+    let round = RoundReader::new(reader);
+    let value = eval_expr(expr, &ctx.reading_from(&round));
+    if round.not_here_yet_count() == 0 {
+        Evaluated::Value(value)
+    } else {
+        Evaluated::Pending
     }
 }
 
@@ -1428,6 +1535,9 @@ fn eval_index_access(object: &CompiledExpr, index: &CompiledExpr, ctx: &EvalCont
 ///   not a LENGTH-dimensioned scalar.
 /// - `SelectorKind::Face | SelectorKind::Edge`: returns `Value::Undef` as a
 ///   placeholder for `Engine::post_process_ad_hoc_selectors` to overwrite.
+///
+/// Under a reader that may answer "not here yet" every argument is evaluated
+/// first, whatever decides the result (see [`evaluate_if_reading_every_operand`]).
 fn eval_ad_hoc_selector(
     selector_kind: &SelectorKind,
     args: &[CompiledExpr],
@@ -1438,9 +1548,11 @@ fn eval_ad_hoc_selector(
             // @point(x, y, z): evaluate 3 coord args; if all are
             // LENGTH-dimensioned scalars, build Frame{origin, identity_basis}.
             if args.len() != 3 {
+                evaluate_if_reading_every_operand(args, ctx);
                 return Value::Undef;
             }
             let mut si_coords = [0.0_f64; 3];
+            let mut every_coord_a_length = true;
             for (i, arg) in args.iter().enumerate() {
                 match eval_expr(arg, ctx) {
                     Value::Scalar { si_value, dimension }
@@ -1448,8 +1560,12 @@ fn eval_ad_hoc_selector(
                     {
                         si_coords[i] = si_value;
                     }
+                    _ if ctx.reads_every_operand() => every_coord_a_length = false,
                     _ => return Value::Undef,
                 }
+            }
+            if !every_coord_a_length {
+                return Value::Undef;
             }
             let origin = Value::Point(
                 si_coords
@@ -1474,7 +1590,10 @@ fn eval_ad_hoc_selector(
         // (Engine::post_process_ad_hoc_selectors) patches these cells
         // via kernel.extract_faces/edges + resolve_unique_by_attribute.
         // Return Undef here as a placeholder for the engine to overwrite.
-        SelectorKind::Face | SelectorKind::Edge => Value::Undef,
+        SelectorKind::Face | SelectorKind::Edge => {
+            evaluate_if_reading_every_operand(args, ctx);
+            Value::Undef
+        }
     }
 }
 
@@ -1682,12 +1801,23 @@ fn eval_compiled_function_with_values(
 }
 
 /// Evaluate a user-defined function call.
+///
+/// A function is not entered with a pending argument. Under the old engine's
+/// reader it is not entered with an undefined one either; under a reader that
+/// may answer "not here yet" it is (decision D10(d)), though an `@optimized`
+/// function is dispatched only when every argument is defined.
 fn eval_user_function_call(function_name: &str, args: &[CompiledExpr], ctx: &EvalContext) -> Value {
     // Evaluate arguments
+    let mark = ctx.pending_mark();
     let evaluated_args: Vec<Value> = args.iter().map(|a| eval_expr(a, ctx)).collect();
+    if ctx.pending_since(mark) {
+        return Value::Undef;
+    }
 
-    // Strict Undef propagation: if any arg is Undef, short-circuit
-    if evaluated_args.iter().any(|v| v.is_undef()) {
+    // Strict Undef propagation under the old engine's reader: if any arg is
+    // Undef, short-circuit.
+    let every_arg_defined = !evaluated_args.iter().any(|v| v.is_undef());
+    if !every_arg_defined && !ctx.reads_every_operand() {
         return Value::Undef;
     }
 
@@ -1707,8 +1837,11 @@ fn eval_user_function_call(function_name: &str, args: &[CompiledExpr], ctx: &Eva
 
     // `@optimized` compute-dispatch hook (task #4880). See
     // `try_compute_dispatch_reporting_fallback`'s doc for why this is a separate
-    // `#[inline(never)]` call rather than inline `if let`s.
-    if let Some(v) = try_compute_dispatch_reporting_fallback(func, &evaluated_args, ctx) {
+    // `#[inline(never)]` call rather than inline `if let`s. A dispatcher takes
+    // determined arguments only (`ComputeDispatch::dispatch`'s contract).
+    if every_arg_defined
+        && let Some(v) = try_compute_dispatch_reporting_fallback(func, &evaluated_args, ctx)
+    {
         return v;
     }
 
@@ -1865,9 +1998,12 @@ fn eval_variant_bind_arm(
 ///   collection, bind each element value under `variable_id`, evaluate the
 ///   predicate.
 ///
-/// Both modes share Kleene short-circuit semantics: forall short-circuits on
-/// `false`, exists short-circuits on `true`, `Undef` is tracked through the
-/// loop and yields `Undef` if no short-circuit fired.
+/// Both modes share Kleene short-circuit semantics ([`QuantifierFold`]): forall
+/// short-circuits on `false`, exists short-circuits on `true`, `Undef` is
+/// tracked through the loop and yields `Undef` if no short-circuit fired.
+/// Under a reader that may answer "not here yet" the predicate is evaluated
+/// for every element, so one round asks for every cell, and the outcome is
+/// the same.
 fn eval_quantifier(
     kind: QuantifierKind,
     variable_id: &ValueCellId,
@@ -1890,7 +2026,7 @@ fn eval_quantifier(
             })
             .collect();
 
-        let mut has_undef = false;
+        let mut fold = QuantifierFold::new(kind);
         for cell_id in &cell_ids {
             let mut pred_clone = predicate.clone();
             pred_clone.remap_cell(variable_id, cell_id);
@@ -1910,28 +2046,19 @@ fn eval_quantifier(
             let frame = ctx.scope.open_frame(&binding);
 
             let pred_val = eval_expr(&pred_clone, &ctx.with_frame(&frame));
-            match (kind, pred_val) {
-                (QuantifierKind::ForAll, Value::Bool(false)) => return Value::Bool(false),
-                (QuantifierKind::ForAll, Value::Bool(true)) => {}
-                (QuantifierKind::Exists, Value::Bool(true)) => return Value::Bool(true),
-                (QuantifierKind::Exists, Value::Bool(false)) => {}
-                (_, Value::Undef) => has_undef = true,
-                (_, _) => return Value::Undef, // type error
+            if fold.take(pred_val) && !ctx.reads_every_operand() {
+                break;
             }
         }
-        return if has_undef {
-            Value::Undef
-        } else {
-            match kind {
-                QuantifierKind::ForAll => Value::Bool(true),
-                QuantifierKind::Exists => Value::Bool(false),
-            }
-        };
+        return fold.outcome();
     }
 
     // ── Value-iteration fallback ──────────────────────────────────────────
+    // A collection that read a cell not here yet has no known elements: no
+    // body is evaluated over it.
+    let mark = ctx.pending_mark();
     let coll_val = eval_expr(collection, ctx);
-    if coll_val.is_undef() {
+    if coll_val.is_undef() || ctx.pending_since(mark) {
         return Value::Undef;
     }
 
@@ -1942,43 +2069,63 @@ fn eval_quantifier(
         _ => return Value::Undef, // not a collection
     };
 
-    match kind {
-        QuantifierKind::ForAll => {
-            // Kleene forall: false short-circuits, undef tracked
-            let mut has_undef = false;
-            for elem in &elements {
-                let pred_val = eval_pred_for_value_elem(elem, variable_id, predicate, ctx);
-                match pred_val {
-                    Value::Bool(false) => return Value::Bool(false),
-                    Value::Bool(true) => {}
-                    Value::Undef => has_undef = true,
-                    _ => return Value::Undef, // type error
+    let mut fold = QuantifierFold::new(kind);
+    for elem in &elements {
+        let pred_val = eval_pred_for_value_elem(elem, variable_id, predicate, ctx);
+        if fold.take(pred_val) && !ctx.reads_every_operand() {
+            break;
+        }
+    }
+    fold.outcome()
+}
+
+/// A quantifier's Kleene outcome over the predicate values taken so far: the
+/// first deciding value (`false` for forall, `true` for exists, a non-Bool's
+/// type error), else `Undef` when some value was `Undef`, else the neutral
+/// value (`true` for forall, `false` for exists).
+struct QuantifierFold {
+    kind: QuantifierKind,
+    decided: Option<Value>,
+    has_undef: bool,
+}
+
+impl QuantifierFold {
+    fn new(kind: QuantifierKind) -> Self {
+        Self {
+            kind,
+            decided: None,
+            has_undef: false,
+        }
+    }
+
+    /// Take one element's predicate value; true once the outcome is decided.
+    /// A value taken after that changes nothing.
+    fn take(&mut self, pred_val: Value) -> bool {
+        if self.decided.is_none() {
+            match (self.kind, pred_val) {
+                (QuantifierKind::ForAll, Value::Bool(false)) => {
+                    self.decided = Some(Value::Bool(false))
                 }
-            }
-            if has_undef {
-                Value::Undef
-            } else {
-                Value::Bool(true)
+                (QuantifierKind::Exists, Value::Bool(true)) => {
+                    self.decided = Some(Value::Bool(true))
+                }
+                (_, Value::Bool(_)) => {}
+                (_, Value::Undef) => self.has_undef = true,
+                (_, _) => self.decided = Some(Value::Undef), // type error
             }
         }
-        QuantifierKind::Exists => {
-            // Kleene exists: true short-circuits, undef tracked
-            let mut has_undef = false;
-            for elem in &elements {
-                let pred_val = eval_pred_for_value_elem(elem, variable_id, predicate, ctx);
-                match pred_val {
-                    Value::Bool(true) => return Value::Bool(true),
-                    Value::Bool(false) => {}
-                    Value::Undef => has_undef = true,
-                    _ => return Value::Undef, // type error
-                }
+        self.decided.is_some()
+    }
+
+    fn outcome(self) -> Value {
+        self.decided.unwrap_or(if self.has_undef {
+            Value::Undef
+        } else {
+            match self.kind {
+                QuantifierKind::ForAll => Value::Bool(true),
+                QuantifierKind::Exists => Value::Bool(false),
             }
-            if has_undef {
-                Value::Undef
-            } else {
-                Value::Bool(false)
-            }
-        }
+        })
     }
 }
 
@@ -2414,14 +2561,22 @@ fn eval_worst_case_dispatch(args: &[Value], ctx: &EvalContext) -> Value {
         _ => return Value::Undef,
     };
     let mut best: Option<(String, f64)> = None;
+    let mut every_key_a_string = true;
     for (case_key, elastic_result) in cases {
         // Guard: every case key must be a String (BTreeMap iteration is then
         // lexicographic on the UTF-8 bytes, giving the tie-break invariant).
+        // Under a reader that may answer "not here yet" the lambda is still
+        // applied to every case's value, and the call is Undef after the loop.
         let name = match case_key {
-            Value::String(s) => s.clone(),
+            Value::String(s) => Some(s.clone()),
+            _ if ctx.reads_every_operand() => None,
             _ => return Value::Undef,
         };
         let field_val = apply_lambda(lambda, std::slice::from_ref(elastic_result), ctx);
+        let Some(name) = name else {
+            every_key_a_string = false;
+            continue;
+        };
         // Guard: lambda must return a Sampled Field (or a value with a finite
         // numeric max). `compute_max` returns Undef on non-Field / non-Sampled
         // / empty-data inputs; `as_f64` then returns None and the case is
@@ -2442,9 +2597,38 @@ fn eval_worst_case_dispatch(args: &[Value], ctx: &EvalContext) -> Value {
             }
         }
     }
+    if !every_key_a_string {
+        return Value::Undef;
+    }
     match best {
         Some((name, _)) => Value::String(name),
         None => Value::Undef,
+    }
+}
+
+/// `flat_map(list, lambda)`: apply `lambda` to each element of `list`, expect
+/// each call to return a list, and concatenate the results; `Undef` when any
+/// result is not a list (or on a non-list / non-lambda argument). The old
+/// engine's reader stops at the first such result; a reader that may answer
+/// "not here yet" applies `lambda` to every element first.
+#[inline(never)]
+fn eval_flat_map_dispatch(args: &[Value], ctx: &EvalContext) -> Value {
+    let [Value::List(items), lambda @ Value::Lambda { .. }] = args else {
+        return Value::Undef;
+    };
+    let mut out: Vec<Value> = Vec::with_capacity(items.len());
+    let mut every_result_a_list = true;
+    for item in items {
+        match apply_lambda(lambda, std::slice::from_ref(item), ctx) {
+            Value::List(sub) => out.extend(sub),
+            _ if ctx.reads_every_operand() => every_result_a_list = false,
+            _ => return Value::Undef,
+        }
+    }
+    if every_result_a_list {
+        Value::List(out)
+    } else {
+        Value::Undef
     }
 }
 
@@ -3123,22 +3307,27 @@ fn push_op_contract_failure(ctx: &EvalContext, code: DiagnosticCode) {
 /// Reify eval can have observable effects — a failing contract/op pushes a
 /// diagnostic into the RefCell-backed `EvalContext` — so eagerly evaluating the
 /// unused branch could surface a spurious diagnostic that a lazy map_or would
-/// not.  This mirrors Rust's own `Option::map_or` laziness.
+/// not.  This mirrors Rust's own `Option::map_or` laziness. Under a reader that
+/// may answer "not here yet" every argument is evaluated up front instead (see
+/// [`CombinatorArg`]), and a pending one makes the call pending with `f` unapplied.
 ///
 /// Precondition: `args.len() == 3` (guaranteed by the caller's arity gate).
 fn eval_map_or(args: &[CompiledExpr], ctx: &EvalContext) -> Value {
+    let mark = ctx.pending_mark();
     let subject = eval_expr(&args[0], ctx);
+    let dflt = CombinatorArg::of(&args[1], ctx);
+    let f = CombinatorArg::of(&args[2], ctx);
+    if ctx.pending_since(mark) {
+        return Value::Undef;
+    }
     match subject {
-        // some(x) -> apply f to the inner value; `dflt` (args[1]) is NOT evaluated.
-        Value::Option(Some(inner)) => {
-            let f = eval_expr(&args[2], ctx);
-            apply_lambda(&f, &[*inner], ctx)
-        }
-        // none -> dflt; the function arg `f` (args[2]) is NOT evaluated.
-        Value::Option(None) => eval_expr(&args[1], ctx),
-        // undef subject (Kleene INV-2) — propagate Undef; neither branch evaluated.
+        // some(x) -> f(x)
+        Value::Option(Some(inner)) => apply_lambda(&f.into_value(ctx), &[*inner], ctx),
+        // none -> dflt
+        Value::Option(None) => dflt.into_value(ctx),
+        // undef subject (Kleene INV-2) -> Undef
         Value::Undef => Value::Undef,
-        // non-Option subject (type error) — degrade gracefully; neither branch evaluated.
+        // non-Option subject (type error) -> Undef
         _ => Value::Undef,
     }
 }
@@ -3187,12 +3376,19 @@ fn eval_map_or(args: &[CompiledExpr], ctx: &EvalContext) -> Value {
 /// Evaluation is LAZY: `f` (args[1]) is only evaluated in the `Err` arm,
 /// mirroring `eval_map_or`'s laziness convention (the Ok-case never evaluates
 /// `f`, so a failing/side-effecting `f` expression never runs when unneeded).
+/// Under a reader that may answer "not here yet" `f` is evaluated up front, as
+/// in `eval_map_or`, and applied only to an `Err` payload.
 ///
 /// Precondition: `args.len() == 2` (guaranteed by the caller's arity gate).
 fn eval_map_err(args: &[CompiledExpr], ctx: &EvalContext) -> Value {
+    let mark = ctx.pending_mark();
     let subject = eval_expr(&args[0], ctx);
+    let f = CombinatorArg::of(&args[1], ctx);
+    if ctx.pending_since(mark) {
+        return Value::Undef;
+    }
     match subject {
-        // Ok{..} -> return the subject unchanged; `f` (args[1]) is NOT evaluated.
+        // Ok{..} -> the subject unchanged
         Value::Enum {
             ref type_name,
             ref variant,
@@ -3204,7 +3400,7 @@ fn eval_map_err(args: &[CompiledExpr], ctx: &EvalContext) -> Value {
             ref variant,
             ref payload,
         } if type_name == "Result" && variant == "Err" => {
-            let f = eval_expr(&args[1], ctx);
+            let f = f.into_value(ctx);
             // The compiler (variant_construct.rs) guarantees every `Err`
             // payload carries exactly one field named "error" — surface a
             // violation via debug_assert (a wiring bug, not a user-reachable
@@ -3233,10 +3429,35 @@ fn eval_map_err(args: &[CompiledExpr], ctx: &EvalContext) -> Value {
                 payload: vec![("error".to_string(), mapped)],
             }
         }
-        // undef subject (Kleene INV-2) — propagate Undef; f is NOT evaluated.
+        // undef subject (Kleene INV-2) -> Undef
         Value::Undef => Value::Undef,
-        // non-Result subject (type error) — degrade gracefully; f is NOT evaluated.
+        // non-Result subject (type error) -> Undef
         _ => Value::Undef,
+    }
+}
+
+/// An argument of `map_or` / `map_err` that only some subjects use: evaluated
+/// up front under a reader that may answer "not here yet", so that one round
+/// asks for every cell it reads, and otherwise only when a subject uses it.
+enum CombinatorArg<'e> {
+    Evaluated(Value),
+    Unevaluated(&'e CompiledExpr),
+}
+
+impl<'e> CombinatorArg<'e> {
+    fn of(expr: &'e CompiledExpr, ctx: &EvalContext) -> Self {
+        if ctx.reads_every_operand() {
+            CombinatorArg::Evaluated(eval_expr(expr, ctx))
+        } else {
+            CombinatorArg::Unevaluated(expr)
+        }
+    }
+
+    fn into_value(self, ctx: &EvalContext) -> Value {
+        match self {
+            CombinatorArg::Evaluated(value) => value,
+            CombinatorArg::Unevaluated(expr) => eval_expr(expr, ctx),
+        }
     }
 }
 
@@ -3719,7 +3940,9 @@ fn eval_binop(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalCo
 
 /// Kleene AND: false ∧ Undef = false
 ///
-/// Delegates truth-table folding to [`kleene::kleene_and`] while preserving:
+/// Delegates truth-table folding to [`kleene::kleene_and`] while preserving
+/// (the right operand is still read under a reader that may answer "not here
+/// yet", see [`decided_by_left`]):
 /// - Short-circuit on type error (non-bool/non-undef left → `Value::Undef`,
 ///   right not evaluated).
 /// - Short-circuit on absorbing element (`False` left → `Value::Bool(false)`,
@@ -3728,11 +3951,11 @@ fn eval_and(left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalContext) -> Val
     let lv = eval_expr(left, ctx);
     let lk = match kleene::KBool::try_from(&lv) {
         Ok(k) => k,
-        Err(_) => return Value::Undef,
+        Err(_) => return decided_by_left(Value::Undef, right, ctx),
     };
     // Short-circuit on absorbing element: False ∧ anything = False.
     if matches!(lk, kleene::KBool::False) {
-        return Value::Bool(false);
+        return decided_by_left(Value::Bool(false), right, ctx);
     }
     let rv = eval_expr(right, ctx);
     let rk = match kleene::KBool::try_from(&rv) {
@@ -3744,7 +3967,9 @@ fn eval_and(left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalContext) -> Val
 
 /// Kleene OR: true ∨ Undef = true
 ///
-/// Delegates truth-table folding to [`kleene::kleene_or`] while preserving:
+/// Delegates truth-table folding to [`kleene::kleene_or`] while preserving
+/// (the right operand is still read under a reader that may answer "not here
+/// yet", see [`decided_by_left`]):
 /// - Short-circuit on type error (non-bool/non-undef left → `Value::Undef`,
 ///   right not evaluated).
 /// - Short-circuit on absorbing element (`True` left → `Value::Bool(true)`,
@@ -3753,11 +3978,11 @@ fn eval_or(left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalContext) -> Valu
     let lv = eval_expr(left, ctx);
     let lk = match kleene::KBool::try_from(&lv) {
         Ok(k) => k,
-        Err(_) => return Value::Undef,
+        Err(_) => return decided_by_left(Value::Undef, right, ctx),
     };
     // Short-circuit on absorbing element: True ∨ anything = True.
     if matches!(lk, kleene::KBool::True) {
-        return Value::Bool(true);
+        return decided_by_left(Value::Bool(true), right, ctx);
     }
     let rv = eval_expr(right, ctx);
     let rk = match kleene::KBool::try_from(&rv) {
@@ -3781,11 +4006,11 @@ fn eval_implies(left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalContext) ->
     let lv = eval_expr(left, ctx);
     let lk = match kleene::KBool::try_from(&lv) {
         Ok(k) => k,
-        Err(_) => return Value::Undef,
+        Err(_) => return decided_by_left(Value::Undef, right, ctx),
     };
     // Short-circuit on vacuous element: False ⇒ anything = True.
     if matches!(lk, kleene::KBool::False) {
-        return Value::Bool(true);
+        return decided_by_left(Value::Bool(true), right, ctx);
     }
     let rv = eval_expr(right, ctx);
     let rk = match kleene::KBool::try_from(&rv) {
@@ -3793,6 +4018,27 @@ fn eval_implies(left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalContext) ->
         Err(_) => return Value::Undef,
     };
     kleene::kleene_implies(lk, rk).into()
+}
+
+/// The value `decided` that a logical operator's left operand gave, without
+/// evaluating `right` under the old engine's reader, and after evaluating it
+/// under one that may answer "not here yet": only the condition of an `if` or
+/// a `match` decides whether something is read.
+fn decided_by_left(decided: Value, right: &CompiledExpr, ctx: &EvalContext) -> Value {
+    evaluate_if_reading_every_operand(std::slice::from_ref(right), ctx);
+    decided
+}
+
+/// Evaluate `exprs` whose values are not needed, for the cells they read,
+/// under a reader that may answer "not here yet", so that one round asks for
+/// every cell an expression reads outside the arms of an `if` or a `match`.
+/// Under the old engine's reader nothing is evaluated.
+fn evaluate_if_reading_every_operand(exprs: &[CompiledExpr], ctx: &EvalContext) {
+    if ctx.reads_every_operand() {
+        for expr in exprs {
+            eval_expr(expr, ctx);
+        }
+    }
 }
 
 /// Apply a binary operation component-wise to two equal-length component slices,
@@ -7142,6 +7388,9 @@ mod tests {
         // needs strictly less), by bisecting this constant:
         //   * before task #4880:  overflows at 1792 KiB, passes at 2048 KiB
         //   * after  task #4880:  overflows at 2048 KiB, passes at 2304 KiB
+        //   * after  task #10641: overflows at 2048 KiB, passes at 2304 KiB (in 64 KiB
+        //     steps: overflows at 2176 KiB, passes at 2240 KiB; the tree before it,
+        //     on the same toolchain, overflows at 2240 KiB and passes at 2304 KiB)
         // i.e. adding `EvalContext::compute_dispatch` cost ~256 KiB across the chain
         // (< 1 KiB per level) and pushed the requirement just past the 2 MiB that Rust's
         // test harness gives a SPAWNED test thread — which is why this wrapper exists at
