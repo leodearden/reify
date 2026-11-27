@@ -11445,6 +11445,45 @@ mod tests {
         );
     }
 
+    /// One refusal rule: a value its spec refuses is coded alike whether it
+    /// sits in a scalar field, a list entry or a vector component.
+    #[test]
+    fn transient_response_codes_one_refusal_alike_at_a_field_an_entry_and_a_component() {
+        use crate::compute_targets::stdlib_inputs::test_support::assert_one_coded_error;
+        let force = |n| dimensioned(n, DimensionVector::FORCE);
+        let refusals = [
+            (
+                0,
+                "magnitude",
+                Value::Real(1.0),
+                "StepForce.magnitude argument expects Force",
+            ),
+            (
+                3,
+                "force_samples",
+                Value::List(vec![force(0.0), Value::Real(3.0), force(0.0)]),
+                "SampledForce.force_samples argument expects Force",
+            ),
+            (
+                0,
+                "direction",
+                Value::Vector(vec![
+                    Value::Real(0.0),
+                    Value::String("up".to_string()),
+                    Value::Real(1.0),
+                ]),
+                "StepForce.direction argument expects Real",
+            ),
+        ];
+        for (index, key, refused, path) in refusals {
+            assert_one_coded_error(
+                &run_with_edited_source(index, |source| with_field(source, key, Some(refused))),
+                reify_core::DiagnosticCode::DimensionedArgRejected,
+                &format!("transient_response: {path}"),
+            );
+        }
+    }
+
     /// A conformer the trampoline has no sampler for fails the solve naming
     /// its type, instead of contributing a silent zero force.
     #[test]

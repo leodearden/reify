@@ -409,7 +409,8 @@ mod tests {
     use super::*;
     use crate::ComputeOutcome;
     use crate::arg_acceptance::{
-        ArgRejection, FieldRejection, dimensionless_spec, length_spec, pressure_spec, time_spec,
+        ArgRejection, FieldRejection, dimensionless_spec, force_spec, length_spec, pressure_spec,
+        time_spec,
     };
     use crate::compute_targets::{scalar, structure};
 
@@ -757,6 +758,101 @@ mod tests {
                 ..
             }) => assert_eq!(expected, "List"),
             other => panic!("a non-list must be WrongShape, got {other:?}"),
+        }
+    }
+
+    /// `err` is `Rejected` at `path`, by a spec expecting `expected`.
+    fn assert_rejected_at(err: &InputDecodeError, path: &str, expected: &str) {
+        match &err.failure {
+            DecodeFailure::Rejected(FieldRejection {
+                path: got_path,
+                rejection,
+            }) => {
+                assert_eq!(got_path, path, "{err:?}");
+                assert_eq!(rejection.expected, expected, "{err:?}");
+            }
+            other => panic!("expected Rejected at {path}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_refused_component_or_entry_is_rejected_whatever_its_shape() {
+        let non_numeric_direction = Value::Vector(vec![
+            Value::Real(0.0),
+            Value::String("up".to_string()),
+            Value::Real(1.0),
+        ]);
+        let err = read_vec3(
+            &non_numeric_direction,
+            "StepForce",
+            Some("direction"),
+            &dimensionless_spec(),
+        )
+        .expect_err("a String component is refused");
+        assert_rejected_at(&err, "StepForce.direction", "Real");
+
+        let err = read_list(
+            &Value::List(vec![Value::Real(1.0)]),
+            "SampledForce",
+            Some("force_samples"),
+            &force_spec(),
+        )
+        .expect_err("a bare entry is refused at a Force list");
+        assert_rejected_at(&err, "SampledForce.force_samples", "Force");
+
+        match read_component(
+            &Value::Bool(true),
+            "AsPrintedZones",
+            Some("aabb_min"),
+            &length_spec(),
+        ) {
+            ComponentRead::Rejected(err) => {
+                assert_rejected_at(&err, "AsPrintedZones.aabb_min", "Length")
+            }
+            ComponentRead::Accepted(_) | ComponentRead::Undefined => {
+                panic!("a Bool component must be Rejected")
+            }
+        }
+    }
+
+    #[test]
+    fn a_bare_number_is_one_refusal_at_a_scalar_field_a_list_entry_and_a_component() {
+        let bare = Value::Real(1.0);
+        let at_field = required_field(
+            &data("StepForce", vec![("magnitude", bare.clone())]),
+            "StepForce",
+            "magnitude",
+            &force_spec(),
+        );
+        let at_entry = read_list(
+            &Value::List(vec![bare.clone()]),
+            "SampledForce",
+            Some("force_samples"),
+            &force_spec(),
+        )
+        .map(|_| ());
+        let at_component = read_vec3(
+            &Value::Vector(vec![
+                scalar(0.0, DimensionVector::FORCE),
+                scalar(0.0, DimensionVector::FORCE),
+                bare,
+            ]),
+            "StepForce",
+            Some("direction"),
+            &force_spec(),
+        )
+        .map(|_| ());
+        for (position, err) in [
+            ("field", at_field.map(|_| ()).expect_err("refused")),
+            ("list entry", at_entry.expect_err("refused")),
+            ("vec3 component", at_component.expect_err("refused")),
+        ] {
+            let d = only_diagnostic(err.into_failed(TARGET));
+            assert_eq!(
+                d.code,
+                Some(DiagnosticCode::DimensionedArgRejected),
+                "a bare number at a {position}: {d:?}"
+            );
         }
     }
 

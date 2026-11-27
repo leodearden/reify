@@ -9357,10 +9357,11 @@ mod tests {
     }
 
     /// [reviewer_comprehensive] test-coverage (task #7019): the sibling
-    /// REJECT case to the dimensioned-Scalar test above — a DEFINED,
-    /// non-numeric direction component inside an otherwise correctly-shaped
-    /// 3-element direction must also be rejected, not just a wrong-dimension
-    /// Scalar. This pins the OTHER side of the boundary
+    /// REJECT case to the dimensioned-Scalar test above. One refusal rule: a
+    /// DEFINED, non-numeric direction component inside an otherwise
+    /// correctly-shaped 3-element direction is refused by the position's
+    /// spec exactly as a wrong-dimension Scalar is, so it is `Rejected` at
+    /// `PointLoad.direction`. This pins the OTHER side of the boundary
     /// `read_direction_or_neg_z` draws between a present-but-unreadable
     /// component (`Err`) and a mis-SHAPED whole `direction` field (the
     /// documented `-Z` fallback, pinned by
@@ -9378,16 +9379,17 @@ mod tests {
         let res = extract_loads(&loads, 0.0);
         assert!(
             matches!(
-                res,
+                &res,
                 Err(InputDecodeError {
-                    failure: DecodeFailure::WrongShape { .. },
+                    failure: DecodeFailure::Rejected(FieldRejection { path, rejection }),
                     ..
-                })
+                }) if path == "PointLoad.direction" && rejection.expected == "Real"
             ),
-            "expected a WrongShape for a non-numeric direction \
-             component inside an otherwise correctly-shaped 3-element \
-             direction — distinct from a mis-shaped WHOLE direction field, \
-             which keeps the documented -Z fallback instead; got: {:?}",
+            "expected a Rejected PointLoad.direction expecting \"Real\" for a \
+             non-numeric direction component inside an otherwise \
+             correctly-shaped 3-element direction — distinct from a \
+             mis-shaped WHOLE direction field, which keeps the documented -Z \
+             fallback instead; got: {:?}",
             res
         );
     }
@@ -11398,8 +11400,9 @@ mod tests {
     }
 
     /// Amendment (task #5080 review, suggestion 1): a `Value::Point` with 3
-    /// components where one is not a `Value::Scalar` must report a
-    /// `WrongShape` naming `Length` from the per-component check.
+    /// components where one is not a `Value::Scalar` is refused by the
+    /// corner's `Length` spec, and one refusal rule makes that a `Rejected`
+    /// at `AsPrintedZones.aabb_min`, as a wrong-dimension component is.
     #[test]
     fn extract_point3_si_rejects_non_scalar_component() {
         let scalar = |v: f64| Value::Scalar {
@@ -11410,16 +11413,14 @@ mod tests {
         let res = extract_point3_si(&mixed, "aabb_min");
         assert!(
             matches!(
-                res,
+                &res,
                 Err(InputDecodeError {
-                    failure: DecodeFailure::WrongShape {
-                        expected: "Length",
-                        ..
-                    },
+                    failure: DecodeFailure::Rejected(FieldRejection { path, rejection }),
                     ..
-                })
+                }) if path == "AsPrintedZones.aabb_min" && rejection.expected == "Length"
             ),
-            "expected a WrongShape naming Length for a Point with a non-Scalar component, got: {:?}",
+            "expected a Rejected AsPrintedZones.aabb_min expecting Length for a \
+             Point with a non-Scalar component, got: {:?}",
             res
         );
     }
@@ -11555,8 +11556,10 @@ mod tests {
     }
 
     /// task 6940: `layer_height` / `line_width` (idx 2, 3) are typed
-    /// `Length`, so a bare `Value::Real` there is a missing dimension — a
-    /// `WrongShape` naming `Length`, not a silent read as metres.
+    /// `Length`, so a bare `Value::Real` there is a missing dimension. One
+    /// refusal rule makes it a `Rejected` at `AsPrintedZones.params`
+    /// expecting `Length`, as a wrong-dimension band width is, not a silent
+    /// read as metres.
     #[test]
     fn extract_zone_process_params_rejects_a_bare_length() {
         let list = Value::List(vec![
@@ -11571,16 +11574,14 @@ mod tests {
         let res = extract_zone_process_params(&list);
         assert!(
             matches!(
-                res,
+                &res,
                 Err(InputDecodeError {
-                    failure: DecodeFailure::WrongShape {
-                        expected: "Length",
-                        ..
-                    },
+                    failure: DecodeFailure::Rejected(FieldRejection { path, rejection }),
                     ..
-                })
+                }) if path == "AsPrintedZones.params" && rejection.expected == "Length"
             ),
-            "expected a WrongShape naming Length for a bare line_width, got: {res:?}"
+            "expected a Rejected AsPrintedZones.params expecting Length for a \
+             bare line_width, got: {res:?}"
         );
     }
 
