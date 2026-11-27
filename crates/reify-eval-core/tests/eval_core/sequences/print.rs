@@ -2,7 +2,7 @@
 //! call of design.rs's constructors or an enum variant, so a failing case
 //! found by the random run can be pasted in as a named test.
 
-use reify_eval_core::Step;
+use reify_eval_core::{Limit, Step};
 
 use super::case::{Case, HostEvent, Then};
 use super::design::{
@@ -76,6 +76,8 @@ fn key_text(key: &Key) -> String {
     match key {
         Key::Root(name) => format!("root({name:?})"),
         Key::Named(name) => format!("named({name:?})"),
+        Key::Limit(Limit::Depth) => String::from("depth_limit()"),
+        Key::Limit(Limit::ChildrenPerNode) => String::from("children_limit()"),
     }
 }
 
@@ -158,6 +160,7 @@ fn val_text(value: &Val) -> String {
             format!("members([{}])", list(each))
         }
         Val::Decl(decl) => format!("declaration({})", decl_text(decl)),
+        Val::Bound(bound) => format!("bound({bound})"),
     }
 }
 

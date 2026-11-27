@@ -147,6 +147,7 @@ fn value_size(value: &Val) -> u64 {
         Val::Bool(value) => u64::from(*value),
         Val::Members(members) => members.values().map(|decl| 1 + decl_size(decl)).sum(),
         Val::Decl(decl) => decl_size(decl),
+        Val::Bound(bound) => *bound,
     }
 }
 
@@ -235,9 +236,9 @@ fn with_paths(event: &HostEvent, paths: Vec<ModelPath>) -> HostEvent {
     }
 }
 
-/// The values one step smaller than `value`: an int toward zero, true
-/// made false, a member dropped or made smaller, a declaration made
-/// smaller.
+/// The values one step smaller than `value`: an int or a bound toward
+/// zero, true made false, a member dropped or made smaller, a declaration
+/// made smaller.
 fn smaller_values(value: &Val) -> Vec<Val> {
     match value {
         Val::Int(value) => {
@@ -267,6 +268,15 @@ fn smaller_values(value: &Val) -> Vec<Val> {
             dropped.chain(shrunk).map(Val::Members).collect()
         }
         Val::Decl(decl) => smaller_decls(decl).into_iter().map(Val::Decl).collect(),
+        Val::Bound(bound) => {
+            let mut smaller = Vec::new();
+            for toward in [0, bound / 2, bound.saturating_sub(1)] {
+                if toward != *bound && !smaller.contains(&toward) {
+                    smaller.push(toward);
+                }
+            }
+            smaller.into_iter().map(Val::Bound).collect()
+        }
     }
 }
 

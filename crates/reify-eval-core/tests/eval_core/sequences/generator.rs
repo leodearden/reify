@@ -654,7 +654,7 @@ mod tests {
             match value {
                 Val::Decl(decl) => vec![decl],
                 Val::Members(members) => members.values().collect(),
-                Val::Int(_) | Val::Bool(_) => Vec::new(),
+                Val::Int(_) | Val::Bool(_) | Val::Bound(_) => Vec::new(),
             }
         }
         values(case)

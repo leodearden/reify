@@ -11,7 +11,7 @@ use std::any::type_name;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
-use reify_eval_core::{Declaration, Failure, Kind, Step};
+use reify_eval_core::{Declaration, Failure, Kind, Limit, Step};
 
 use super::case::Case;
 use super::design::{Bind, Decl, Inputs, Key, ModelPath, ModelRef, ToyKind, Val};
@@ -113,6 +113,10 @@ enum Typed<T> {
 /// The answers of one snapshot.
 pub struct Reference {
     inputs: Inputs,
+    /// The snapshot's depth setting.
+    depth: Option<u64>,
+    /// The snapshot's children-per-node setting.
+    children: Option<u64>,
     answers: BTreeMap<ModelPath, Result<Rc<Expected>, Invalid>>,
     declared: BTreeMap<ModelPath, Declared>,
     in_progress: BTreeSet<ModelPath>,
@@ -122,6 +126,8 @@ pub struct Reference {
 impl Reference {
     pub fn new(inputs: Inputs) -> Self {
         Self {
+            depth: setting(&inputs, Limit::Depth),
+            children: setting(&inputs, Limit::ChildrenPerNode),
             inputs,
             answers: BTreeMap::new(),
             declared: BTreeMap::new(),
@@ -185,6 +191,14 @@ impl Reference {
         self.work_outs
     }
 
+    /// How many distinct paths the reference has worked out the
+    /// declaration of: the paths the core resolves for the same reads. A
+    /// path waiting on a ring halts before it is worked out, as the core
+    /// answers it "cycle" without resolving it.
+    pub fn paths_resolved(&self) -> usize {
+        self.declared.len()
+    }
+
     /// The declaration of the node at `path`, if one is declared there.
     pub fn declaration_at(&mut self, path: &ModelPath) -> Result<Option<Decl>, Invalid> {
         Ok(match self.declaration(path).map_err(Halt::invalid)? {
@@ -225,12 +239,13 @@ impl Reference {
         };
         Ok(Expected {
             node: Some(decl.kind),
-            outcome,
+            outcome: self.within_children(decl.kind, outcome),
         })
     }
 
     /// A root from its snapshot input, read as a declaration; any other
-    /// path from what its parent's answer declares at its step.
+    /// path from what its parent's answer declares at its step. A node
+    /// deeper than the depth setting is that failure instead.
     fn declaration(&mut self, path: &ModelPath) -> Result<Declared, Halt> {
         if let Some(known) = self.declared.get(path) {
             return Ok(known.clone());
@@ -255,8 +270,40 @@ impl Reference {
                 }
             }
         };
+        let declared = match (declared, self.too_deep(path)) {
+            (Declared::Node(_), Some(failure)) => Declared::Settled(Expect::Failure(failure)),
+            (declared, _) => declared,
+        };
         self.declared.insert(path.clone(), declared.clone());
         Ok(declared)
+    }
+
+    /// The failure of a node at `path` if it is more steps below its root
+    /// than the depth setting allows.
+    fn too_deep(&self, path: &ModelPath) -> Option<Failure> {
+        let limit = self.depth?;
+        let depth = u64::try_from(path.steps.len()).expect("a path's depth fits in a u64");
+        (depth > limit).then_some(Failure::TooDeep { limit })
+    }
+
+    /// `outcome`, what a node of `kind` works out, or the failure of a
+    /// value that declares more children than the children setting allows.
+    fn within_children(&self, kind: ToyKind, outcome: Expect) -> Expect {
+        let (Some(limit), Expect::Value(out)) = (self.children, &outcome) else {
+            return outcome;
+        };
+        let children = match (kind, out) {
+            (ToyKind::Scope | ToyKind::Guard, Out::Members(members)) => {
+                u64::try_from(members.len()).expect("a count of members fits in a u64")
+            }
+            (ToyKind::Collection, Out::Elements { count, .. }) => *count,
+            _ => 0,
+        };
+        if children > limit {
+            Expect::Failure(Failure::TooManyChildren { limit })
+        } else {
+            outcome
+        }
     }
 
     fn input(&self, key: &Key) -> Expect {
@@ -476,6 +523,21 @@ fn out_of(value: &Val) -> Out {
         Val::Bool(value) => Out::Bool(*value),
         Val::Members(members) => Out::Members(members.clone()),
         Val::Decl(decl) => Out::Decl(decl.clone()),
+        Val::Bound(_) => {
+            unreachable!("a limit setting is under a limit key, which no binding reads")
+        }
+    }
+}
+
+/// The snapshot's setting of `limit`, if any.
+///
+/// # Panics
+///
+/// If the setting is not a bound, as the core refuses it.
+fn setting(inputs: &Inputs, limit: Limit) -> Option<u64> {
+    match inputs.get(&Key::Limit(limit))? {
+        Val::Bound(bound) => Some(*bound),
+        other => panic!("the limit setting {limit:?} must be a bound, and is {other:?}"),
     }
 }
 
