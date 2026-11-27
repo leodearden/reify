@@ -964,3 +964,88 @@ fn auto_constructor_argument_is_an_unknown_reference() {
     );
     assert_eq!(argument.result_type, Type::dimensionless_scalar());
 }
+
+/// The scope of `Asm` in the may-be-absent fixture, with the guarded sub `fan`
+/// declared as the member table will declare it.
+fn may_be_absent_scope<'a>(
+    module: &'a CompiledModule,
+    registry: &'a HashMap<String, &'a TopologyTemplate>,
+) -> CompilationScope<'a> {
+    let mut scope = definition_scope(module, registry, "Asm");
+    scope.sub_component_types.insert("fan".into(), "Fan".into());
+    scope
+}
+
+/// PRD §5.5 "The tests of state": `present(x)` compiles to a read whose outcome
+/// the evaluator's caller tests, not to a new node.
+#[test]
+fn present_resolves_to_a_presence_read() {
+    let module = compile_clean(MAY_BE_ABSENT_SOURCE);
+    let registry = template_registry(&module);
+    let scope = may_be_absent_scope(&module, &registry);
+    let presence = |path: &[&str]| (ReferenceRoot::Own, members(path), ReferenceRead::Presence);
+
+    let mut ids = Vec::new();
+    for (text, path) in [
+        ("present(self.p)", &["p"][..]),
+        ("present(p)", &["p"]),
+        ("present(self.fan)", &["fan"]),
+        ("present(self.p.extra)", &["p", "extra"]),
+    ] {
+        let (unit, diagnostics) = compile_unit(text, &scope, &module);
+        assert!(diagnostics.is_empty(), "{text}: {diagnostics:?}");
+        let (reference, ty) = sole_reference(&unit);
+        assert_eq!(shape(reference), presence(path), "{text}");
+        assert_eq!(ty, &Type::Bool, "{text}");
+        ids.push(reference.id.clone());
+    }
+
+    // A presence read and a value read of the same path are two entries.
+    let (unit, diagnostics) = compile_unit(
+        "if present(self.p) then self.p else self.p",
+        &scope,
+        &module,
+    );
+    assert!(errors_of(&diagnostics).is_empty(), "{diagnostics:?}");
+    let mut shapes: Vec<_> = unit.references.iter().map(shape).collect();
+    shapes.sort_by_key(|(_, _, read)| read == &ReferenceRead::Value);
+    assert_eq!(shapes, vec![presence(&["p"]), own_value(members(&["p"]))]);
+
+    // A user's function named `present` shadows the test.
+    let shadowing = compile_clean(&format!(
+        "{MAY_BE_ABSENT_SOURCE}\nfn present(x: Bool) -> Bool {{ x }}\n"
+    ));
+    let shadowing_registry = template_registry(&shadowing);
+    let shadowing_scope = may_be_absent_scope(&shadowing, &shadowing_registry);
+    let (unit, diagnostics) = compile_unit("present(needs_fan)", &shadowing_scope, &shadowing);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    assert!(
+        matches!(&unit.expr.kind, CompiledExprKind::UserFunctionCall { function_name, .. } if function_name == "present"),
+        "{:?}",
+        unit.expr
+    );
+
+    // An argument that is not a path keeps the existing handling (measured
+    // when this test was written: an unresolved function, in both modes).
+    let (unit, new_diagnostics) = compile_unit("present(1 + 2)", &scope, &module);
+    let (tree, old_diagnostics) = compile_existing("present(1 + 2)", &scope, &module);
+    assert_eq!(unit.expr.content_hash, tree.content_hash);
+    assert!(unit.references.is_empty(), "{:?}", unit.references);
+    for diagnostics in [&new_diagnostics, &old_diagnostics] {
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code == Some(DiagnosticCode::UnresolvedFunction)),
+            "{diagnostics:?}"
+        );
+    }
+
+    // The existing compile does not know the test.
+    let (_, diagnostics) = compile_existing("present(self.p)", &scope, &module);
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::UnresolvedFunction)),
+        "{diagnostics:?}"
+    );
+}
