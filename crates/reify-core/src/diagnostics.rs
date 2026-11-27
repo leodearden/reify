@@ -6009,6 +6009,33 @@ mod tests {
         assert_eq!(d.severity, Severity::Error);
     }
 
+    // --- ComputeInputMalformed tests (trampoline-decode α, task 8674) ---
+
+    /// Under `feature = "serde"`, `DiagnosticCode::ComputeInputMalformed`
+    /// serializes as `"ComputeInputMalformed"` and deserializes back to the
+    /// same variant: the wire form downstream tooling reads.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn compute_input_malformed_serializes_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::ComputeInputMalformed).unwrap();
+        assert_eq!(s, "\"ComputeInputMalformed\"");
+
+        let back: DiagnosticCode = serde_json::from_str(&s).unwrap();
+        assert_eq!(back, DiagnosticCode::ComputeInputMalformed);
+    }
+
+    #[test]
+    fn compute_input_malformed_attaches_to_an_error_diagnostic() {
+        use super::Severity;
+
+        let d = Diagnostic::error(
+            "solve_elastic_static_trampoline: ElasticMaterial.poisson_ratio: missing field",
+        )
+        .with_code(DiagnosticCode::ComputeInputMalformed);
+        assert_eq!(d.code, Some(DiagnosticCode::ComputeInputMalformed));
+        assert_eq!(d.severity, Severity::Error);
+    }
+
     /// Under `feature = "serde"`, `DiagnosticCode::DimensionedArgRejected`
     /// serializes as `"DimensionedArgRejected"` (PascalCase, from
     /// `rename_all = "PascalCase"`). This is the wire form the GUI reads as an
