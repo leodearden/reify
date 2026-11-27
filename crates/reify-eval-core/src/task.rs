@@ -1,5 +1,6 @@
 //! A running body and what it was started with.
 
+use std::collections::BTreeMap;
 use std::mem;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
@@ -15,11 +16,14 @@ use crate::mailbox::{Mailbox, Posted, Reply};
 use crate::outcome::Erased;
 use crate::produced::Produced;
 use crate::record::Answers;
+use crate::step::Step;
 
 pub(crate) struct Task {
     declaration: Arc<Declaration>,
     /// The keys its reads have taken it through, from its recipe's key.
     chain: Chain,
+    /// The children its answered reads declared, by step.
+    children: BTreeMap<Step, Arc<Declaration>>,
     mailbox: Arc<Mailbox>,
     cancel: Cancel,
     /// The section the body waits on, if it waits on one.
@@ -39,6 +43,7 @@ impl Task {
         Self {
             declaration,
             chain: Chain::new(kind.recipe()),
+            children: BTreeMap::new(),
             mailbox,
             cancel,
             section: None,
@@ -69,10 +74,16 @@ impl Task {
         self.mailbox.take_posted()
     }
 
-    /// Replies to its read, which its chain records.
+    /// Replies to its read, which its chain records, with the children it
+    /// declared.
     pub fn answer_read(&mut self, answers: Answers) {
+        for (step, declaration) in answers.children() {
+            self.children
+                .entry(step.clone())
+                .or_insert_with(|| Arc::clone(declaration));
+        }
         self.chain
-            .read(Arc::clone(answers.refs()), answers.contents());
+            .read(Arc::clone(answers.wanted()), answers.contents());
         self.mailbox.reply(Reply::Outcomes(answers.into_outcomes()));
     }
 
@@ -107,18 +118,20 @@ impl Task {
         let _ = catch_unwind(AssertUnwindSafe(move || drop(self)));
     }
 
-    /// Discards the finished body, keeping what it was started with and
-    /// the chain its reads took it through.
-    pub fn finish(self) -> (Arc<Declaration>, Chain) {
+    /// Discards the finished body, keeping what it was started with, the
+    /// chain its reads took it through and the steps of the children they
+    /// declared.
+    pub fn finish(self) -> (Arc<Declaration>, Chain, Arc<[Step]>) {
         let Self {
             declaration,
             chain,
+            children,
             mailbox,
             body,
             ..
         } = self;
         let _ = catch_unwind(AssertUnwindSafe(move || drop((body, mailbox))));
-        (declaration, chain)
+        (declaration, chain, children.into_keys().collect())
     }
 
     /// Tells the section the body waits on, if any, that nobody wants the

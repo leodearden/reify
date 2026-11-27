@@ -9,7 +9,7 @@ use crate::content::Content;
 use crate::key::{Chain, Key, Passed};
 use crate::kind_id::KindId;
 use crate::outcome::{Erased, Outcome};
-use crate::reference::Ref;
+use crate::wanted::Wanted;
 
 /// A result as the store holds it: the kind that produced it, its outcome
 /// and its content.
@@ -30,7 +30,7 @@ impl StoredResult {
 #[derive(Clone)]
 pub(crate) enum Stored {
     /// The read request a body made at this key.
-    Next(Arc<[Ref]>),
+    Next(Arc<[Wanted]>),
     Result(StoredResult),
 }
 
@@ -59,8 +59,8 @@ impl Store {
     pub(crate) fn file(&mut self, chain: Chain, result: StoredResult) {
         let (passed, end) = chain.into_parts();
         let mut parent = None;
-        for Passed { key, refs } in passed {
-            self.insert(key, parent, Stored::Next(refs));
+        for Passed { key, wanted } in passed {
+            self.insert(key, parent, Stored::Next(wanted));
             parent = Some(key);
         }
         self.insert(end, parent, Stored::Result(result));

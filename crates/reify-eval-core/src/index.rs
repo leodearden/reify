@@ -15,6 +15,7 @@ use crate::limits::Limits;
 use crate::outcome::{Erased, Outcome};
 use crate::path_table::PathId;
 use crate::snapshot::{Snapshot, SnapshotId};
+use crate::step::Step;
 
 /// A node of one snapshot, where its final answer is filed: within a
 /// snapshot a path is answered once, by at most one body.
@@ -25,18 +26,37 @@ pub(crate) struct NodeKey {
 }
 
 /// A path's final answer: its outcome, its content and, when a body
-/// produced it, the declaration of the node that body ran for.
+/// produced it, the declaration of the node that body ran for and the
+/// steps of the children that run declared (contract 7.1).
 #[derive(Clone)]
 pub(crate) struct Entry {
     pub outcome: Outcome<Erased>,
     pub declaration: Option<Arc<Declaration>>,
     pub content: Content,
+    pub children_declared: Arc<[Step]>,
+}
+
+impl Entry {
+    /// An answer no body produced: it has no declaration and declared no
+    /// children.
+    pub fn settled(outcome: Outcome<Erased>, content: Content) -> Self {
+        Self {
+            outcome,
+            declaration: None,
+            content,
+            children_declared: Arc::new([]),
+        }
+    }
 }
 
 pub(crate) struct Index {
     inputs: OrdMap<InputKey, Input>,
     limits: Limits,
     entries: OrdMap<PathId, Entry>,
+    /// The declaration of each node whose run has declared a child, filed
+    /// when it first declares one: a child's passed binding is read
+    /// through it while its declarer may still be running.
+    declarers: OrdMap<PathId, Arc<Declaration>>,
 }
 
 impl Index {
@@ -51,6 +71,16 @@ impl Index {
 
     pub fn entry(&self, path: PathId) -> Option<&Entry> {
         self.entries.get(&path)
+    }
+
+    /// The declaration of the node at `path`, known where its run declared
+    /// a child or its answer is filed with one.
+    pub fn declaration(&self, path: PathId) -> Option<&Declaration> {
+        let filed = || self.entries.get(&path)?.declaration.as_ref();
+        self.declarers
+            .get(&path)
+            .or_else(filed)
+            .map(|declaration| &**declaration)
     }
 }
 
@@ -72,6 +102,7 @@ impl Indexes {
                 inputs: snapshot.inputs().clone(),
                 limits: Limits::of(snapshot.inputs()),
                 entries: OrdMap::new(),
+                declarers: OrdMap::new(),
             });
     }
 
@@ -94,6 +125,28 @@ impl Indexes {
             lost(snapshot)
         };
         index.entries.insert(path, entry);
+    }
+
+    /// Files `declaration` as that of the node at `path` in the index of
+    /// `snapshot`, which declares a child: within a snapshot a node has one
+    /// declaration.
+    ///
+    /// # Panics
+    ///
+    /// If the index of `snapshot` was never opened or has been dropped.
+    pub fn file_declarer(
+        &mut self,
+        snapshot: SnapshotId,
+        path: PathId,
+        declaration: &Arc<Declaration>,
+    ) {
+        let Some(index) = self.by_snapshot.get_mut(&snapshot) else {
+            lost(snapshot)
+        };
+        index
+            .declarers
+            .entry(path)
+            .or_insert_with(|| Arc::clone(declaration));
     }
 
     /// Drops the index of each snapshot `live` says is not live, returning

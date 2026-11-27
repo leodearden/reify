@@ -14,7 +14,7 @@ use reify_eval_core::{
     Answer, Binding, Budget, Builder, Core, Cx, Declaration, Demand, Description, DuplicateKind,
     Erased, Event, Failure, Hash128, Held, Input, InputKey, Kind, KindId, Limit, Link, Outcome,
     OutsideFailure, Path, Produced, Ref, Release, Request, RequestId, Root, Section, Snapshot,
-    Space, Step, StepKey, Turn, Value,
+    Space, Step, StepKey, Turn, Value, Wanted,
 };
 
 /// The content a test gives the core for one of its values: a hash of
@@ -194,7 +194,7 @@ impl Kind for Pair {
     const VERSION: u32 = 1;
 
     async fn run(cx: &Cx) -> Produced<i64> {
-        let refs = [Ref::binding("0"), Ref::binding("1")];
+        let refs = [Ref::binding("0"), Ref::binding("1")].map(Wanted::from);
         let mut sum = 0;
         for read in cx.read_all::<i64>(&refs).await {
             match read {

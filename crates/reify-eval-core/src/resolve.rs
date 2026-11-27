@@ -21,7 +21,8 @@ pub(crate) enum Target {
 
 /// The place `r` names when read by the node at `reader` whose declaration
 /// is `declaration`. A passed binding moves to the declarer, whose
-/// declaration the index holds (its answer declared the child), carrying
+/// declaration the index holds (its answer, or its running body, declared
+/// the child), carrying
 /// the steps still to take; the walk ends at an input, a constant or a
 /// place. An unset binding names nothing; a snapshot input or a constant
 /// declares no children, so steps below one name nothing; a binding
@@ -52,9 +53,8 @@ pub(crate) fn target<'a>(
             }
             (Some(Binding::Passed(passed)), Some(declarer)) => {
                 declaration = index
-                    .entry(declarer)
-                    .and_then(|entry| entry.declaration.as_deref())
-                    .expect("a declarer's body ran, and its answer is indexed");
+                    .declaration(declarer)
+                    .expect("a declarer's answer or its run's first child filed its declaration");
                 steps = passed.steps().iter().chain(&steps).cloned().collect();
                 name = passed.binding_name();
                 node = declarer;

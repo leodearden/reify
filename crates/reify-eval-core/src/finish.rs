@@ -13,15 +13,18 @@ use crate::key::Chain;
 use crate::kinds::Kinds;
 use crate::outcome::{Erased, Outcome};
 use crate::requests::Requests;
+use crate::step::Step;
 use crate::store::{Store, StoredResult};
 use crate::waits::Waits;
 
 /// Files `outcome`, which the body of the node declared `declaration`
 /// produced, in `store` at the end of the `chain` its reads took it
-/// through, and returns the node's final answer with its content.
+/// through, and returns the node's final answer with its content and the
+/// steps of the `children` its run declared.
 pub(crate) fn filed(
     declaration: Arc<Declaration>,
     chain: Chain,
+    children: Arc<[Step]>,
     outcome: Outcome<Erased>,
     kinds: &Kinds,
     store: &mut Store,
@@ -40,6 +43,7 @@ pub(crate) fn filed(
         outcome,
         declaration: Some(declaration),
         content,
+        children_declared: children,
     }
 }
 

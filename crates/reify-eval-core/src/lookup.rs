@@ -41,7 +41,7 @@ impl Lookup {
 
     /// Moves on past the request stored at its key, given what it read.
     pub fn advance(&mut self, answers: &Answers) {
-        self.key = self.key.then(answers.refs(), answers.contents());
+        self.key = self.key.then(answers.wanted(), answers.contents());
     }
 
     /// Marks it queued: `false` if it already was.

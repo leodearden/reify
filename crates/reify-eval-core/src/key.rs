@@ -1,13 +1,14 @@
 //! Where a result is filed (contract 5.1): the recipe's key, then one step
-//! per read request, over its refs and the contents they read, in order.
-//! A request of several refs is one step.
+//! per read request, over its items and the contents they read, in order.
+//! A request of several items is one step; a child item enters with its
+//! step and declaration.
 
 use std::sync::Arc;
 
 use crate::content::Content;
 use crate::hash::{Encoder, Hash128};
 use crate::recipe::Recipe;
-use crate::reference::Ref;
+use crate::wanted::Wanted;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct Key(Hash128);
@@ -17,13 +18,13 @@ impl Key {
         Self(recipe.hash())
     }
 
-    /// The key one read request further on: `refs` read `contents`.
-    pub fn then(self, refs: &[Ref], contents: &[Content]) -> Self {
+    /// The key one read request further on: `wanted` read `contents`.
+    pub fn then(self, wanted: &[Wanted], contents: &[Content]) -> Self {
         let mut encoder = Encoder::new("key.read");
         encoder
             .hash(self.0)
-            .sequence(refs.iter().zip(contents), |encoder, (r, content)| {
-                r.encode(encoder);
+            .sequence(wanted.iter().zip(contents), |encoder, (item, content)| {
+                item.encode(encoder);
                 encoder.hash(content.hash());
             });
         Self(encoder.finish())
@@ -38,7 +39,7 @@ impl Key {
 /// there.
 pub(crate) struct Passed {
     pub key: Key,
-    pub refs: Arc<[Ref]>,
+    pub wanted: Arc<[Wanted]>,
 }
 
 /// The keys a running body has passed through, and the key it stands at
@@ -56,12 +57,12 @@ impl Chain {
         }
     }
 
-    /// Records that the body read `contents` at `refs` where it stands.
-    pub fn read(&mut self, refs: Arc<[Ref]>, contents: &[Content]) {
-        let next = self.key.then(&refs, contents);
+    /// Records that the body read `contents` for `wanted` where it stands.
+    pub fn read(&mut self, wanted: Arc<[Wanted]>, contents: &[Content]) {
+        let next = self.key.then(&wanted, contents);
         self.passed.push(Passed {
             key: self.key,
-            refs,
+            wanted,
         });
         self.key = next;
     }

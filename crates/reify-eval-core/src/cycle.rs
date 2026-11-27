@@ -71,11 +71,10 @@ fn rings(waits: &Waits, from: impl IntoIterator<Item = NodeKey>) -> Vec<BTreeSet
 /// The final answer of a node on a ring. No body produced it, so it has
 /// no declaration.
 pub(crate) fn entry() -> Entry {
-    Entry {
-        content: Content::of_failure(&Failure::Cycle),
-        outcome: Outcome::Failure(Failure::Cycle),
-        declaration: None,
-    }
+    Entry::settled(
+        Outcome::Failure(Failure::Cycle),
+        Content::of_failure(&Failure::Cycle),
+    )
 }
 
 /// Tarjan's walk for strongly connected sets.

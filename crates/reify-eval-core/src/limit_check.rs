@@ -37,7 +37,7 @@ pub(crate) fn children(entry: Entry, limits: &Limits, kinds: &Kinds) -> Entry {
     Entry {
         content: Content::of_failure(&failure),
         outcome: Outcome::Failure(failure),
-        declaration: entry.declaration,
+        ..entry
     }
 }
 

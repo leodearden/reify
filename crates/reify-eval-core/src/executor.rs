@@ -45,6 +45,7 @@ use crate::snapshot::{Snapshot, SnapshotId, SnapshotTokens};
 use crate::store::{Store, Stored, StoredResult};
 use crate::task::Task;
 use crate::waits::Waits;
+use crate::wanted::Wanted;
 
 /// What is left after a turn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -343,16 +344,8 @@ impl Executor {
 
     /// Works out what the path at `key` is: a root from its snapshot input,
     /// read with the typed read a body uses (decision D11); any other path
-    /// from its parent's final answer. A declaration of a node too deep for
-    /// the snapshot's depth setting answers that failure; any other
-    /// declaration starts a lookup; any other outcome is the path's answer.
-    /// A path no live request needs once its resolution is charged is not
-    /// worked out.
+    /// from its parent's final answer.
     fn resolve(&mut self, key: NodeKey) -> Option<Work> {
-        if !self.charge_resolution(key) {
-            return None;
-        }
-        self.counters.count_path_resolved();
         let index = self.indexes.of(key.snapshot);
         let declared = match self.paths.parent(key.path) {
             None => {
@@ -372,10 +365,25 @@ impl Executor {
                 declaration_of(step, entry, &self.kinds)
             }
         };
+        self.work_out(key, declared)
+    }
+
+    /// Works out the path at `key`, which resolved to `declared`, or which
+    /// a body declared so (contract 7.1). A declaration of a node too deep
+    /// for the snapshot's depth setting answers that failure; any other
+    /// declaration starts a lookup; any other outcome is the path's answer.
+    /// A path no live request needs once its resolution is charged is not
+    /// worked out.
+    fn work_out(&mut self, key: NodeKey, declared: Outcome<Declaration>) -> Option<Work> {
+        if !self.charge_resolution(key) {
+            return None;
+        }
+        self.counters.count_path_resolved();
         let declared = match declared {
             Outcome::Value(_) => {
                 let depth = self.paths.depth(key.path);
-                limit_check::depth(depth, index.limits()).map_or(declared, Outcome::Failure)
+                let limits = self.indexes.of(key.snapshot).limits();
+                limit_check::depth(depth, limits).map_or(declared, Outcome::Failure)
             }
             other => other,
         };
@@ -387,14 +395,24 @@ impl Executor {
             Outcome::Failure(failure) => (Content::of_failure(&failure), Outcome::Failure(failure)),
             Outcome::Absent => (Content::absent(), Outcome::Absent),
         };
-        Some(Work::Answered(
-            key,
-            Entry {
-                content,
-                outcome,
-                declaration: None,
-            },
-        ))
+        Some(Work::Answered(key, Entry::settled(outcome, content)))
+    }
+
+    /// Works out the child at `key`, which the reader at its parent
+    /// declared `declaration` and awaits. A path already answered, or
+    /// already a lookup or a body, is left as it is; a path waiting on its
+    /// parent is taken over, its wait on the parent ended, since the
+    /// parent's run is what declares it.
+    fn declare(&mut self, key: NodeKey, declaration: Arc<Declaration>) {
+        if self.answered(key) || self.is_reader(key) {
+            return;
+        }
+        if self.resolving.remove(&key) {
+            self.waits.forget(key);
+        }
+        if let Some(work) = self.work_out(key, Outcome::Value(declaration)) {
+            self.work(work);
+        }
     }
 
     /// Charges the resolution of `key` to every live request that needs it:
@@ -591,18 +609,28 @@ impl Executor {
             }
         };
         match posted {
-            Posted::Ask(Ask::Read(refs)) => {
+            Posted::Ask(Ask::Read(wanted)) => {
                 let index = self.indexes.of(key.snapshot);
                 let declaration = task.declaration();
-                let reading =
-                    serve::read::serve(key.path, declaration, refs.into(), &mut self.paths, index);
+                let mut reading = serve::read::serve(
+                    key.path,
+                    declaration,
+                    wanted.into(),
+                    &mut self.paths,
+                    index,
+                );
                 let awaited = reading.awaited();
                 if awaited.is_empty() {
                     task.answer_read(reading.reply(index));
                     return self.queue(key);
                 }
+                let to_declare = reading.take_to_declare();
+                if !to_declare.is_empty() {
+                    let snapshot = key.snapshot;
+                    self.indexes.file_declarer(snapshot, key.path, declaration);
+                }
                 self.readings.insert(key, reading);
-                self.await_nodes(key, awaited);
+                self.await_nodes(key, awaited, to_declare);
             }
             Posted::Ask(Ask::Exclusive(ask)) => {
                 let cancel = task.cancel_flag();
@@ -626,7 +654,8 @@ impl Executor {
     /// each request stored can be answered at once. A result found is the
     /// node's answer, with the node's own declaration, and no body runs; a
     /// request that awaits a node makes the lookup wait as a body would;
-    /// a key where nothing is filed starts the body from its beginning.
+    /// a key where nothing is filed, or a request that declares a child,
+    /// starts the body from its beginning.
     fn step_lookup(&mut self, key: NodeKey) {
         let Some(lookup) = self.lookups.get_mut(&key) else {
             return;
@@ -640,44 +669,63 @@ impl Executor {
         }
         loop {
             self.counters.count_store_lookup();
-            let refs = match self.store.probe(lookup.key()) {
-                Some(Stored::Next(refs)) => Arc::clone(refs),
+            let wanted = match self.store.probe(lookup.key()) {
+                Some(Stored::Next(wanted)) if wanted.iter().any(declares_a_child) => {
+                    return self.miss(key);
+                }
+                Some(Stored::Next(wanted)) => Arc::clone(wanted),
                 Some(Stored::Result(result)) => {
                     let entry = Entry {
                         outcome: result.outcome.clone(),
                         declaration: Some(Arc::clone(lookup.declaration())),
                         content: result.content,
+                        children_declared: Arc::new([]),
                     };
                     self.lookups.remove(&key);
                     return self.work(Work::Answered(key, entry));
                 }
                 None => return self.miss(key),
             };
-            let reading =
-                serve::read::serve(key.path, lookup.declaration(), refs, &mut self.paths, index);
+            let reading = serve::read::serve(
+                key.path,
+                lookup.declaration(),
+                wanted,
+                &mut self.paths,
+                index,
+            );
             let awaited = reading.awaited();
             if !awaited.is_empty() {
                 self.readings.insert(key, reading);
-                return self.await_nodes(key, awaited);
+                return self.await_nodes(key, awaited, Vec::new());
             }
             lookup.advance(&reading.reply(index));
         }
     }
 
     /// Makes the reader at `key` wait on each node in `awaited` before any
-    /// of them is worked out, so that none can answer the reading early.
-    /// Stops once the reader is dropped: a node that fails outside the
-    /// inputs as it is worked out drops it at once.
-    fn await_nodes(&mut self, key: NodeKey, awaited: BTreeSet<PathId>) {
-        let nodes: Vec<_> = awaited
-            .into_iter()
-            .map(|path| NodeKey {
-                snapshot: key.snapshot,
-                path,
-            })
-            .collect();
+    /// of them is worked out, so that none can answer the reading early;
+    /// then declares each child in `to_declare`, and sees that each other
+    /// node will be answered. Stops once the reader is dropped: a node that
+    /// fails outside the inputs as it is worked out drops it at once.
+    fn await_nodes(
+        &mut self,
+        key: NodeKey,
+        awaited: BTreeSet<PathId>,
+        to_declare: Vec<(PathId, Arc<Declaration>)>,
+    ) {
+        let at = |path| NodeKey {
+            snapshot: key.snapshot,
+            path,
+        };
+        let nodes: Vec<_> = awaited.into_iter().map(at).collect();
         for node in &nodes {
             self.waits.add(key, *node);
+        }
+        for (path, declaration) in to_declare {
+            if !self.is_reader(key) {
+                return;
+            }
+            self.declare(at(path), declaration);
         }
         for node in nodes {
             if !self.is_reader(key) {
@@ -708,8 +756,9 @@ impl Executor {
         let Some(task) = self.remove_reader(key) else {
             return;
         };
-        let (declaration, chain) = task.finish();
-        let entry = finish::filed(declaration, chain, outcome, &self.kinds, &mut self.store);
+        let (declaration, chain, children) = task.finish();
+        let store = &mut self.store;
+        let entry = finish::filed(declaration, chain, children, outcome, &self.kinds, store);
         self.work(Work::Answered(key, entry));
     }
 
@@ -816,6 +865,11 @@ impl Executor {
             Report::Released => self.resources.acknowledge_release(),
         }
     }
+}
+
+/// Whether `wanted` declares a child.
+fn declares_a_child(wanted: &Wanted) -> bool {
+    matches!(wanted, Wanted::Child(..))
 }
 
 impl Drop for Executor {

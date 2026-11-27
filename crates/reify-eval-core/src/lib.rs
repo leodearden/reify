@@ -50,6 +50,7 @@ mod step;
 mod store;
 mod task;
 mod waits;
+mod wanted;
 
 pub use answer::Answer;
 pub use budget::Budget;
@@ -78,3 +79,4 @@ pub use section::Section;
 pub use snapshot::{Snapshot, SnapshotId};
 pub use step::{Link, Space, Step, StepKey};
 pub use store::{Store, StoredResult};
+pub use wanted::Wanted;
