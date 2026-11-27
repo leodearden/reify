@@ -5,8 +5,8 @@ use std::collections::BTreeSet;
 use std::thread::ThreadId;
 
 use reify_eval_core::{
-    Answer, Builder, Core, Cx, Declaration, Erased, Held, Input, InputKey, Kind, KindId, Outcome,
-    Path, Produced, Ref, Snapshot, Step, Value,
+    Answer, Budget, Builder, Core, Cx, Declaration, Erased, Held, Input, InputKey, Kind, KindId,
+    Outcome, Path, Produced, Ref, Snapshot, Step, Value,
 };
 
 use crate::toy::{
@@ -145,7 +145,7 @@ fn places(entry: &Entry) -> Vec<(InputKey, Input)> {
 
 /// The answer at `at` to a request for it alone, run until no section is.
 fn run_alone(core: &mut Core, snapshot: &Snapshot, at: &Path) -> Answer<Erased> {
-    let request = core.evaluate(snapshot, toy::demand([at]));
+    let request = core.evaluate(snapshot, toy::demand([at]), Budget::unlimited());
     core.run();
     toy::the_answer(&core.take_events(), &request, at)
 }

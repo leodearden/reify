@@ -2,7 +2,9 @@
 //! failure, stated in its kind's terms, and a reader blocked by what it
 //! read. The toy cell divides, and division by zero is its own failure.
 
-use reify_eval_core::{Answer, Cx, Declaration, Failure, Kind, KindId, Outcome, Produced, Ref};
+use reify_eval_core::{
+    Answer, Budget, Cx, Declaration, Failure, Kind, KindId, Outcome, Produced, Ref,
+};
 
 use crate::toy::{self, Cell};
 
@@ -120,7 +122,7 @@ fn a_cell_that_read_a_shape_whose_section_panicked_is_stored_nowhere_and_an_iden
 
     for place in ["P1", "P2"] {
         let c = toy::below(place, &["c"]);
-        let request = core.evaluate(&snapshot, toy::demand([&c]));
+        let request = core.evaluate(&snapshot, toy::demand([&c]), Budget::unlimited());
         core.run();
         toy::pending(toy::the_answer(&core.take_events(), &request, &c));
     }

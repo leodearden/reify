@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::task::Poll;
 
 use crate::answer::Answer;
+use crate::budget::Budget;
 use crate::content::Content;
 use crate::core_id::CoreId;
 use crate::counters::Counters;
@@ -116,7 +117,7 @@ impl Executor {
         Snapshot::new(self.core, &self.snapshots, inputs)
     }
 
-    pub fn evaluate(&mut self, snapshot: &Snapshot, demand: Demand) -> Request {
+    pub fn evaluate(&mut self, snapshot: &Snapshot, demand: Demand, _budget: Budget) -> Request {
         self.core.refuse_foreign(snapshot.id().core, "a snapshot");
         self.prune();
         self.indexes.open(snapshot);

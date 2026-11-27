@@ -6,7 +6,7 @@ use std::any::type_name;
 use std::sync::Arc;
 
 use reify_eval_core::{
-    Answer, Cx, Declaration, Failure, Kind, KindId, Outcome, Produced, Ref, Turn,
+    Answer, Budget, Cx, Declaration, Failure, Kind, KindId, Outcome, Produced, Ref, Turn,
 };
 
 use crate::toy::{self, Cell, Members};
@@ -20,7 +20,7 @@ fn a_root_cell_adds_the_snapshot_inputs_its_declaration_binds() {
         toy::root("total", toy::cell(&["a", "b"])),
     ]);
 
-    let request = core.evaluate(&snapshot, toy::roots(&["total"]));
+    let request = core.evaluate(&snapshot, toy::roots(&["total"]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::Idle);
 
     let answer = toy::the_answer(&core.take_events(), &request, &toy::at("total"));
@@ -36,7 +36,7 @@ fn a_read_at_the_wrong_type_gives_the_reader_a_failure_naming_both_types() {
         toy::root("total", toy::cell(&["a"])),
     ]);
 
-    let request = core.evaluate(&snapshot, toy::roots(&["total"]));
+    let request = core.evaluate(&snapshot, toy::roots(&["total"]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::Idle);
 
     let answer = toy::the_answer(&core.take_events(), &request, &toy::at("total"));
@@ -56,8 +56,8 @@ fn two_live_requests_on_one_snapshot_each_receive_the_answer_of_a_root_they_both
         toy::root("total", toy::cell(&["a", "b"])),
     ]);
 
-    let first = core.evaluate(&snapshot, toy::roots(&["total"]));
-    let second = core.evaluate(&snapshot, toy::roots(&["total"]));
+    let first = core.evaluate(&snapshot, toy::roots(&["total"]), Budget::unlimited());
+    let second = core.evaluate(&snapshot, toy::roots(&["total"]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::Idle);
 
     let events = core.take_events();
@@ -112,7 +112,7 @@ fn read_all_gives_each_outcome_in_the_order_of_its_refs() {
     let snapshot = core.snapshot(inputs);
     let at = toy::below("R", &["gather"]);
 
-    let request = core.evaluate(&snapshot, toy::demand([&at]));
+    let request = core.evaluate(&snapshot, toy::demand([&at]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::Idle);
 
     let read = toy::the_value::<Vec<Outcome<i64>>>(&core.take_events(), &request, &at);
@@ -157,7 +157,7 @@ fn read_all_of_no_refs_returns_an_empty_list() {
         .build();
     let snapshot = core.snapshot([toy::root("idle", Declaration::new(ReadsNothing::ID))]);
 
-    let request = core.evaluate(&snapshot, toy::roots(&["idle"]));
+    let request = core.evaluate(&snapshot, toy::roots(&["idle"]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::Idle);
 
     let read = toy::the_value::<usize>(&core.take_events(), &request, &toy::at("idle"));

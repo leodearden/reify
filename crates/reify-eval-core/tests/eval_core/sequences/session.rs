@@ -9,8 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use reify_eval_core::{
-    Answer, Core, Demand, Erased, Event, Failure, Kind, Path, Request, RequestError, RequestId,
-    Snapshot, Step, Store,
+    Answer, Budget, Core, Demand, Erased, Event, Failure, Kind, Path, Request, RequestError,
+    RequestId, Snapshot, Step, Store,
 };
 
 use super::case::{Case, HostEvent, Then};
@@ -567,9 +567,11 @@ impl Session {
             .map(|path| (path.to_core(), path.clone()))
             .collect();
         let snapshot = self.snapshot(at, on).clone();
-        let handle = self
-            .core
-            .evaluate(&snapshot, Demand::of(demanded.keys().cloned()));
+        let handle = self.core.evaluate(
+            &snapshot,
+            Demand::of(demanded.keys().cloned()),
+            Budget::unlimited(),
+        );
         let id = handle.id();
         let opened = Opened {
             handle: Some(handle),

@@ -6,8 +6,8 @@
 use std::sync::Arc;
 
 use reify_eval_core::{
-    Answer, Binding, Core, Cx, Declaration, Event, Failure, Hash128, Input, InputKey, Kind, KindId,
-    Outcome, Path, Produced, Ref, Snapshot, Step, Turn,
+    Answer, Binding, Budget, Core, Cx, Declaration, Event, Failure, Hash128, Input, InputKey, Kind,
+    KindId, Outcome, Path, Produced, Ref, Snapshot, Step, Turn,
 };
 
 use crate::toy::{self, Cell, Members, ToyKernel, Watch};
@@ -27,7 +27,11 @@ fn blocked_by_its_first_term() -> Answer<i64> {
 /// The answers at `paths`, in order, to a fresh request for them on
 /// `snapshot`, which the core runs until no section is running.
 fn run_for(core: &mut Core, snapshot: &Snapshot, paths: &[&Path]) -> Vec<Answer<i64>> {
-    let request = core.evaluate(snapshot, toy::demand(paths.iter().copied()));
+    let request = core.evaluate(
+        snapshot,
+        toy::demand(paths.iter().copied()),
+        Budget::unlimited(),
+    );
     core.run();
     let events = core.take_events();
     assert!(
@@ -335,8 +339,8 @@ fn a_request_that_wants_no_node_on_a_ring_is_answered() {
     let snapshot = core.snapshot(inputs);
     let (a, c) = (r("a"), r("c"));
 
-    let on_ring = core.evaluate(&snapshot, toy::demand([&a]));
-    let beside = core.evaluate(&snapshot, toy::demand([&c]));
+    let on_ring = core.evaluate(&snapshot, toy::demand([&a]), Budget::unlimited());
+    let beside = core.evaluate(&snapshot, toy::demand([&c]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::Idle);
 
     let events = core.take_events();
@@ -358,7 +362,7 @@ fn a_ring_does_not_stop_turn_wait_or_run_from_returning() {
     let snapshot = core.snapshot(ring_inputs([]));
     let a = r("a");
 
-    let request = core.evaluate(&snapshot, toy::demand([&a]));
+    let request = core.evaluate(&snapshot, toy::demand([&a]), Budget::unlimited());
     core.run();
     assert_eq!(core.wait(), Turn::Idle);
     assert_eq!(core.turn(), Turn::Idle);
@@ -511,7 +515,11 @@ fn answers_once_the_section_has_run(requests: &[&[&Path]]) -> Vec<Answer<i64>> {
     let made: Vec<_> = requests
         .iter()
         .map(|paths| {
-            let request = core.evaluate(&snapshot, toy::demand(paths.iter().copied()));
+            let request = core.evaluate(
+                &snapshot,
+                toy::demand(paths.iter().copied()),
+                Budget::unlimited(),
+            );
             assert_eq!(core.turn(), Turn::SectionsRunning(1));
             request
         })

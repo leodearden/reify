@@ -5,8 +5,8 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 use reify_eval_core::{
-    Answer, Binding, Core, Cx, Declaration, Event, Input, InputKey, Kind, KindId, Outcome, Path,
-    Produced, Ref, Step, Turn, Value,
+    Answer, Binding, Budget, Core, Cx, Declaration, Event, Input, InputKey, Kind, KindId, Outcome,
+    Path, Produced, Ref, Step, Turn, Value,
 };
 
 use crate::toy::{self, Cell};
@@ -107,7 +107,7 @@ fn a_body_learns_its_declaration_only_through_recorded_reads() {
 
         for name in &order {
             let at = toy::below("R", &[name]);
-            let _request = core.evaluate(&snapshot, toy::demand([&at]));
+            let _request = core.evaluate(&snapshot, toy::demand([&at]), Budget::unlimited());
             assert_eq!(core.turn(), Turn::Idle);
             match *name {
                 "P1" => assert_eq!(*value_at::<Vec<i64>>(&mut core, &at), [1, 2]),
@@ -166,7 +166,7 @@ fn a_child_bound_to_its_declarer_s_binding_reads_the_place_that_binding_names_an
         toy::below("R", &["holder", "a"]),
     );
 
-    let first = core.evaluate(&snapshot, toy::demand([&holder]));
+    let first = core.evaluate(&snapshot, toy::demand([&holder]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::Idle);
     let answer = toy::the_answer(&core.take_events(), &first, &holder);
     assert!(
@@ -179,7 +179,7 @@ fn a_child_bound_to_its_declarer_s_binding_reads_the_place_that_binding_names_an
         "the place the holder binds is not read by binding it"
     );
 
-    let second = core.evaluate(&snapshot, toy::demand([&a]));
+    let second = core.evaluate(&snapshot, toy::demand([&a]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::Idle);
     let answer = toy::the_answer(&core.take_events(), &second, &a);
     assert_eq!(answer.downcast::<i64>(), Answer::Final(Outcome::of(5)));

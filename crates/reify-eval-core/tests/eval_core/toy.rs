@@ -11,9 +11,9 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, ThreadId};
 
 use reify_eval_core::{
-    Answer, Binding, Builder, Core, Cx, Declaration, Demand, DuplicateKind, Erased, Event, Failure,
-    Hash128, Held, Input, InputKey, Kind, KindId, Outcome, OutsideFailure, Path, Produced, Ref,
-    Release, Request, RequestId, Root, Section, Snapshot, Step, Turn, Value,
+    Answer, Binding, Budget, Builder, Core, Cx, Declaration, Demand, DuplicateKind, Erased, Event,
+    Failure, Hash128, Held, Input, InputKey, Kind, KindId, Outcome, OutsideFailure, Path, Produced,
+    Ref, Release, Request, RequestId, Root, Section, Snapshot, Step, Turn, Value,
 };
 
 /// The content a test gives the core for one of its values: a hash of
@@ -762,7 +762,7 @@ pub fn evaluate_to_idle(
     snapshot: &Snapshot,
     paths: &[&Path],
 ) -> (Request, Vec<Event>) {
-    let request = core.evaluate(snapshot, demand(paths.iter().copied()));
+    let request = core.evaluate(snapshot, demand(paths.iter().copied()), Budget::unlimited());
     assert_eq!(core.turn(), Turn::Idle);
     (request, core.take_events())
 }

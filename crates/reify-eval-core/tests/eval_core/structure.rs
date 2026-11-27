@@ -4,7 +4,7 @@
 
 use std::any::type_name;
 
-use reify_eval_core::{Answer, Declaration, Erased, Failure, Kind, Outcome, Step, Turn};
+use reify_eval_core::{Answer, Budget, Declaration, Erased, Failure, Kind, Outcome, Step, Turn};
 
 use crate::toy::{self, Cell, Scope};
 
@@ -22,7 +22,11 @@ fn a_path_below_a_node_whose_kind_declares_no_children_answers_absent() {
     ]);
     let (total, below) = (toy::at("total"), toy::below("total", &["x"]));
 
-    let request = core.evaluate(&snapshot, toy::demand([&total, &below]));
+    let request = core.evaluate(
+        &snapshot,
+        toy::demand([&total, &below]),
+        Budget::unlimited(),
+    );
     assert_eq!(core.turn(), Turn::Idle);
 
     let events = core.take_events();
@@ -43,7 +47,7 @@ fn a_path_below_a_root_with_no_input_answers_absent() {
     let snapshot = core.snapshot([]);
     let below = toy::below("missing", &["x"]);
 
-    let request = core.evaluate(&snapshot, toy::demand([&below]));
+    let request = core.evaluate(&snapshot, toy::demand([&below]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::Idle);
 
     let answer = toy::the_answer(&core.take_events(), &request, &below);
@@ -59,7 +63,7 @@ fn a_path_below_a_root_whose_input_is_not_a_declaration_answers_that_failure() {
     let snapshot = core.snapshot([toy::root("seven", 7_i64)]);
     let below = toy::below("seven", &["x"]);
 
-    let request = core.evaluate(&snapshot, toy::demand([&below]));
+    let request = core.evaluate(&snapshot, toy::demand([&below]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::Idle);
 
     let answer = toy::the_answer(&core.take_events(), &request, &below);
@@ -79,7 +83,7 @@ fn a_demanded_path_already_answered_in_the_snapshot_is_told_without_resolving_it
     ]);
     let below = toy::below("total", &["x"]);
 
-    let first = core.evaluate(&snapshot, toy::demand([&below]));
+    let first = core.evaluate(&snapshot, toy::demand([&below]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::Idle);
     let answer = toy::the_answer(&core.take_events(), &first, &below);
     assert!(
@@ -88,7 +92,7 @@ fn a_demanded_path_already_answered_in_the_snapshot_is_told_without_resolving_it
     );
     assert_eq!(core.counters().paths_resolved(), 2);
 
-    let second = core.evaluate(&snapshot, toy::demand([&below]));
+    let second = core.evaluate(&snapshot, toy::demand([&below]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::Idle);
     let answer = toy::the_answer(&core.take_events(), &second, &below);
     assert!(
@@ -116,12 +120,12 @@ fn a_scope_s_member_resolves_by_reading_the_scope_s_result() {
     let snapshot = core.snapshot(inputs);
     let (reader, m) = (toy::below("R", &["reader"]), toy::below("R", &["s", "m"]));
 
-    let first = core.evaluate(&snapshot, toy::demand([&reader]));
+    let first = core.evaluate(&snapshot, toy::demand([&reader]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::Idle);
     let answer = toy::the_answer(&core.take_events(), &first, &reader);
     assert_eq!(answer.downcast::<i64>(), Answer::Final(Outcome::of(4)));
 
-    let second = core.evaluate(&snapshot, toy::demand([&m]));
+    let second = core.evaluate(&snapshot, toy::demand([&m]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::Idle);
     let answer = toy::the_answer(&core.take_events(), &second, &m);
     assert_eq!(answer.downcast::<i64>(), Answer::Final(Outcome::of(4)));
@@ -146,7 +150,7 @@ fn a_body_that_reads_a_node_not_yet_computed_runs_once() {
     let snapshot = core.snapshot(inputs);
     let a = toy::below("R", &["a"]);
 
-    let request = core.evaluate(&snapshot, toy::demand([&a]));
+    let request = core.evaluate(&snapshot, toy::demand([&a]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::Idle);
 
     let answer = toy::the_answer(&core.take_events(), &request, &a);
@@ -160,7 +164,7 @@ fn a_member_the_scope_does_not_declare_answers_absent() {
     let snapshot = core.snapshot(toy::root_scope("R", toy::members([("b", toy::cell(&[]))])));
     let nope = toy::below("R", &["nope"]);
 
-    let request = core.evaluate(&snapshot, toy::demand([&nope]));
+    let request = core.evaluate(&snapshot, toy::demand([&nope]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::Idle);
 
     let answer = toy::the_answer(&core.take_events(), &request, &nope);
@@ -188,7 +192,7 @@ fn a_chain_of_100000_dependent_cells_is_evaluated_on_the_default_test_thread_sta
     let snapshot = core.snapshot(inputs);
     let last = toy::below("R", &[&names[CELLS - 1]]);
 
-    let request = core.evaluate(&snapshot, toy::demand([&last]));
+    let request = core.evaluate(&snapshot, toy::demand([&last]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::Idle);
 
     let answer = toy::the_answer(&core.take_events(), &request, &last);

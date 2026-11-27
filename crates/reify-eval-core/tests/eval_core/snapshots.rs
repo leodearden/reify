@@ -5,7 +5,8 @@
 //! Every count of live boxes is read after a drain.
 
 use reify_eval_core::{
-    Answer, Core, Erased, Event, Input, InputKey, Kind, Outcome, Path, Snapshot, SnapshotId, Turn,
+    Answer, Budget, Core, Erased, Event, Input, InputKey, Kind, Outcome, Path, Snapshot,
+    SnapshotId, Turn,
 };
 
 use crate::toy::{self, BoxShape, Cell, Watch};
@@ -37,12 +38,12 @@ fn a_second_request_on_a_snapshot_is_answered_from_its_index_without_running_the
         toy::root("total", toy::cell(&["a", "b"])),
     ]);
 
-    let first = core.evaluate(&snapshot, toy::roots(&["total"]));
+    let first = core.evaluate(&snapshot, toy::roots(&["total"]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::Idle);
     let answered = toy::the_answer(&core.take_events(), &first, &toy::at("total"));
     assert_eq!(answered.downcast::<i64>(), Answer::Final(Outcome::of(5)));
 
-    let second = core.evaluate(&snapshot, toy::roots(&["total"]));
+    let second = core.evaluate(&snapshot, toy::roots(&["total"]), Budget::unlimited());
     assert_eq!(core.turn(), Turn::Idle);
     let again = toy::the_answer(&core.take_events(), &second, &toy::at("total"));
     assert_eq!(again.downcast::<i64>(), Answer::Final(Outcome::of(5)));
@@ -57,7 +58,7 @@ fn a_result_is_kept_while_a_live_snapshot_s_index_points_at_it() {
         toy::named("side", 2_i64),
         toy::root("box", toy::shape("side")),
     ]);
-    let request = core.evaluate(&snapshot, toy::roots(&["box"]));
+    let request = core.evaluate(&snapshot, toy::roots(&["box"]), Budget::unlimited());
     core.run();
     let events = core.take_events();
     assert_eq!(
@@ -97,7 +98,7 @@ fn a_result_in_an_index_is_released_on_its_kernel_s_thread_when_the_core_is_drop
         toy::named("side", 2_i64),
         toy::root("box", toy::shape("side")),
     ]);
-    let _request = core.evaluate(&snapshot, toy::roots(&["box"]));
+    let _request = core.evaluate(&snapshot, toy::roots(&["box"]), Budget::unlimited());
     core.run();
     drop(core.take_events());
 

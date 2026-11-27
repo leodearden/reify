@@ -2,6 +2,7 @@
 //! Part A of docs/evaluation-core-contract.md specifies.
 
 mod answer;
+mod budget;
 mod builder;
 mod cancel;
 mod content;
@@ -48,6 +49,7 @@ mod task;
 mod waits;
 
 pub use answer::Answer;
+pub use budget::Budget;
 pub use builder::Builder;
 pub use counters::Counters;
 pub use cx::Cx;
