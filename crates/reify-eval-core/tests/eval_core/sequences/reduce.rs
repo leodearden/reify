@@ -7,8 +7,9 @@ use super::design::{Bind, Decl, ModelPath, ModelRef, ToyKind, Val, decl};
 
 /// The cases one step smaller than `case`, largest reductions first: an
 /// event dropped, a demanded path dropped or shortened, a Drive made an
-/// Evaluate, a request ended rather than left, an edit's change dropped,
-/// an initial input dropped, then one value made smaller.
+/// Evaluate, a request ended rather than left, an Evaluate's budget
+/// dropped, an edit's change dropped, an initial input dropped, then one
+/// value made smaller.
 pub fn candidates(case: &Case) -> Vec<Case> {
     let mut all: Vec<_> = (0..case.events.len())
         .map(|at| without_event(case, at))
@@ -73,6 +74,20 @@ pub fn candidates(case: &Case) -> Vec<Case> {
         _ => Vec::new(),
     }));
     all.extend(each_event(case, |event| match event {
+        HostEvent::Evaluate {
+            on,
+            paths,
+            budget: Some(_),
+            then,
+        } => vec![HostEvent::Evaluate {
+            on: *on,
+            paths: paths.clone(),
+            budget: None,
+            then: *then,
+        }],
+        _ => Vec::new(),
+    }));
+    all.extend(each_event(case, |event| match event {
         HostEvent::Edit { from, changes } => (0..changes.len())
             .map(|at| {
                 let mut fewer = changes.clone();
@@ -117,9 +132,9 @@ pub fn candidates(case: &Case) -> Vec<Case> {
 }
 
 /// A measure each candidate of a case strictly lowers: a count of its
-/// events, paths, steps, inputs, changes and bindings, a Drive above an
-/// Evaluate, a request left above one ended, any other kind above a cell,
-/// and an int by its distance from zero.
+/// events, paths, steps, inputs, changes, budgets and bindings, a Drive
+/// above an Evaluate, a request left above one ended, any other kind above
+/// a cell, and an int by its distance from zero.
 pub fn size(case: &Case) -> u64 {
     let inputs: u64 = case
         .inputs
@@ -139,7 +154,12 @@ fn event_size(event: &HostEvent) -> u64 {
             let change = |value: &Option<Val>| 1 + value.as_ref().map_or(0, value_size);
             1 + changes.iter().map(|(_, value)| change(value)).sum::<u64>()
         }
-        HostEvent::Evaluate { paths, then, .. } => 2 + request(paths, then),
+        HostEvent::Evaluate {
+            paths,
+            budget,
+            then,
+            ..
+        } => 2 + u64::from(budget.is_some()) + request(paths, then),
         HostEvent::Drive { paths, then, .. } => 3 + request(paths, then),
     }
 }

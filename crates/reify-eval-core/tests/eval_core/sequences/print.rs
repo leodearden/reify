@@ -171,6 +171,13 @@ fn then_text(then: Then) -> &'static str {
     }
 }
 
+fn budget_text(budget: Option<u64>) -> String {
+    match budget {
+        Some(budget) => format!("Some({budget})"),
+        None => String::from("None"),
+    }
+}
+
 fn paths_text(paths: &[ModelPath]) -> String {
     format!("vec![{}]", list(paths.iter().map(path_text)))
 }
@@ -191,10 +198,14 @@ fn event_text(event: &HostEvent) -> String {
             )
         }
         HostEvent::Evaluate {
-            on, paths, then, ..
+            on,
+            paths,
+            budget,
+            then,
         } => format!(
-            "HostEvent::Evaluate {{ on: {on}, paths: {}, then: {} }}",
+            "HostEvent::Evaluate {{ on: {on}, paths: {}, budget: {}, then: {} }}",
             paths_text(paths),
+            budget_text(*budget),
             then_text(*then)
         ),
         HostEvent::Drive {

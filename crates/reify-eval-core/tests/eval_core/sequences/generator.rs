@@ -1,7 +1,8 @@
 //! Seeded random cases: a toy design of cells and, as features allow,
 //! scopes, guards, collections, dividing cells, shapes and measures on the
 //! toy kernel, and limit settings, and a sequence of host events on it,
-//! whose edits may set or remove a limit setting. With dividing
+//! whose edits may set or remove a limit setting and whose evaluations may
+//! be given a paths budget. With dividing
 //! cells on, every members input the generator makes ends in a pair: a
 //! cell dividing by an input held at zero, and a sibling cell blocked by
 //! it. With limits on, a members input at times holds, before that pair,
@@ -58,6 +59,8 @@ pub struct Features {
     pub cycles: bool,
     /// Limit settings, in the initial design and set or removed by edits.
     pub limits: bool,
+    /// Evaluations given a paths budget.
+    pub budgets: bool,
 }
 
 impl Features {
@@ -71,6 +74,7 @@ impl Features {
             kernel: false,
             cycles: false,
             limits: false,
+            budgets: false,
         }
     }
 
@@ -81,6 +85,7 @@ impl Features {
             kernel: true,
             cycles: true,
             limits: true,
+            budgets: true,
             ..Self::structure()
         }
     }
@@ -534,7 +539,7 @@ impl Generator {
                     2 | 3 => HostEvent::Evaluate {
                         on: self.snapshot(snapshots.len()),
                         paths: self.demand(),
-                        budget: None,
+                        budget: self.budget(),
                         then: *self.rng.choose(&[Then::Leave, Then::End]),
                     },
                     _ => {
@@ -566,6 +571,16 @@ impl Generator {
         } else {
             self.rng.below(made)
         }
+    }
+
+    /// With budgets on, at times a paths budget, spread around what a
+    /// demand needs resolved: each path, its ancestors, and what their
+    /// nodes read.
+    fn budget(&mut self) -> Option<u64> {
+        if !(self.features.budgets && self.rng.chance(1, 2)) {
+            return None;
+        }
+        Some(self.rng.below(12) as u64)
     }
 
     fn demand(&mut self) -> Vec<ModelPath> {
