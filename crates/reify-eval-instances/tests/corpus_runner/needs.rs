@@ -17,9 +17,11 @@ impl fmt::Display for Owner {
 }
 
 /// One row per word: the variant, the word as an entry spells it, and its
-/// owner. The enum, `Need::ALL`, `word` and `owner` are all made from it.
+/// owner, a `leaf` of docs/prds/instances-on-the-core.md or a `task` outside
+/// it. The enum, `Need::ALL`, `word`, `owner` and `owned_by_this_prd` are all
+/// made from it.
 macro_rules! vocabulary {
-    ($($need:ident = $word:literal, owner $owner:literal;)*) => {
+    ($($need:ident = $word:literal, $kind:ident $owner:literal;)*) => {
         /// A word of the vocabulary. An entry spelling any other word fails
         /// to load, naming the word.
         #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
@@ -42,41 +44,58 @@ macro_rules! vocabulary {
                     $(Need::$need => Owner($owner),)*
                 }
             }
+
+            /// Whether a leaf of this PRD builds the word.
+            pub fn owned_by_this_prd(self) -> bool {
+                match self {
+                    $(Need::$need => owned_by_this_prd!($kind),)*
+                }
+            }
         }
     };
 }
 
+/// The ownership column of one `vocabulary!` row.
+macro_rules! owned_by_this_prd {
+    (leaf) => {
+        true
+    };
+    (task) => {
+        false
+    };
+}
+
 vocabulary! {
-    TwoFiles = "two-files", owner 10634;
-    Paths = "paths", owner 10635;
-    GrammarPurpose = "grammar-purpose", owner 10637;
-    CompileError = "compile-error", owner 10643;
-    Instance = "instance", owner 10645;
-    EvalReads = "eval-reads", owner 10645;
-    Constraint = "constraint", owner 10646;
-    Summary = "summary", owner 10646;
-    Guard = "guard", owner 10647;
-    OneName = "one-name", owner 10648;
-    Collection = "collection", owner 10649;
-    Value = "value", owner 10650;
-    Made = "made", owner 10651;
-    Open = "open", owner 10652;
-    Braces = "braces", owner 10653;
-    Unknown = "unknown", owner 10655;
-    SolveForced = "solve-forced", owner 10655;
-    SolveInfeasible = "solve-infeasible", owner 10655;
-    NestedSolve = "nested-solve", owner 10656;
-    Purpose = "purpose", owner 10657;
-    Roots = "roots", owner 10658;
-    Connect = "connect", owner 10659;
-    Generic = "generic", owner 10660;
-    StateTests = "state-tests", owner 10661;
-    Edits = "edits", owner 10662;
-    SolveReal = "solve-real", owner 10610;
-    Geometry = "geometry", owner 10611;
-    Session = "session", owner 10551;
-    IndexedSubs = "indexed-subs", owner 5482;
-    RequiredArguments = "required-arguments", owner 7874;
+    TwoFiles = "two-files", leaf 10634;
+    Paths = "paths", leaf 10635;
+    GrammarPurpose = "grammar-purpose", leaf 10637;
+    CompileError = "compile-error", leaf 10643;
+    Instance = "instance", leaf 10645;
+    EvalReads = "eval-reads", leaf 10645;
+    Constraint = "constraint", leaf 10646;
+    Summary = "summary", leaf 10646;
+    Guard = "guard", leaf 10647;
+    OneName = "one-name", leaf 10648;
+    Collection = "collection", leaf 10649;
+    Value = "value", leaf 10650;
+    Made = "made", leaf 10651;
+    Open = "open", leaf 10652;
+    Braces = "braces", leaf 10653;
+    Unknown = "unknown", leaf 10655;
+    SolveForced = "solve-forced", leaf 10655;
+    SolveInfeasible = "solve-infeasible", leaf 10655;
+    NestedSolve = "nested-solve", leaf 10656;
+    Purpose = "purpose", leaf 10657;
+    Roots = "roots", leaf 10658;
+    Connect = "connect", leaf 10659;
+    Generic = "generic", leaf 10660;
+    StateTests = "state-tests", leaf 10661;
+    Edits = "edits", leaf 10662;
+    SolveReal = "solve-real", task 10610;
+    Geometry = "geometry", task 10611;
+    Session = "session", task 10551;
+    IndexedSubs = "indexed-subs", task 5482;
+    RequiredArguments = "required-arguments", task 7874;
 }
 
 impl fmt::Display for Need {

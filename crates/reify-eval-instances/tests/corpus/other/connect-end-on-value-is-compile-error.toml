@@ -7,3 +7,4 @@ today = "compiles (design decision 9)."
 
 [[expect]]
 compile_error = "a connect end must be a port of this instance or of one of its subs or elements; `s` and `h` are values held in cells, write them as subs"
+code = "ConnectEndNotAPlace"

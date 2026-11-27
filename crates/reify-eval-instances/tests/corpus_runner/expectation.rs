@@ -1,6 +1,7 @@
 //! One `[[expect]]` row: what the host is answered at one path, in exactly
 //! one of the forms of docs/prds/instances-on-the-core.md section 5.8.
 
+use reify_core::{DiagnosticCode, InstancePath};
 use serde::Deserialize;
 
 use crate::expected_value::ExpectedValue;
@@ -10,10 +11,15 @@ use crate::needs::Owner;
 #[serde(try_from = "RawExpectation")]
 pub struct Expectation {
     #[expect(dead_code, reason = "read once entries run")]
-    pub path: Option<String>, // debt: ticket tkt_0RXF3RZ3T23TSSXGWCWN0S20BF
+    pub path: Option<InstancePath>, // debt: ticket tkt_0RXF3RZ3T23TSSXGWCWN0S20BF
     pub after_edit: Option<u32>,
-    #[expect(dead_code, reason = "read once entries run")]
-    pub form: Form, // debt: ticket tkt_0RXF3RZ3T23TSSXGWCWN0S20BF
+    pub form: Form,
+}
+
+impl Expectation {
+    pub fn is_uncoded_compile_error(&self) -> bool {
+        matches!(self.form, Form::CompileError { code: None, .. })
+    }
 }
 
 #[derive(Debug)]
@@ -25,7 +31,7 @@ pub enum Form {
     Presence(Presence),
     Failure(FailureCode),
     UndeterminedBecause(UndeterminedClass),
-    SameAs(String),
+    SameAs(InstancePath),
     Open {
         owner: Option<Owner>,
     },
@@ -33,7 +39,7 @@ pub enum Form {
     Compile,
     CompileError {
         message: String,
-        code: Option<String>,
+        code: Option<DiagnosticCode>,
     },
 }
 
@@ -108,7 +114,8 @@ enum Accepted {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawExpectation {
-    path: Option<String>,
+    #[serde(default, deserialize_with = "crate::path_text::optional_path")]
+    path: Option<InstancePath>,
     after_edit: Option<u32>,
     value: Option<ExpectedValue>,
     verdict: Option<Verdict>,
@@ -116,12 +123,13 @@ struct RawExpectation {
     presence: Option<Presence>,
     failure: Option<FailureCode>,
     undetermined_because: Option<UndeterminedClass>,
-    same_as: Option<String>,
+    #[serde(default, deserialize_with = "crate::path_text::optional_path")]
+    same_as: Option<InstancePath>,
     open: Option<OpenRow>,
     roots: Option<Vec<String>>,
     compile: Option<Accepted>,
     compile_error: Option<String>,
-    code: Option<String>,
+    code: Option<DiagnosticCode>,
 }
 
 impl TryFrom<RawExpectation> for Expectation {

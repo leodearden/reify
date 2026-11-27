@@ -6,3 +6,4 @@ answer_basis = "stated: rule E; readings C11 (same-name declarations under guard
 
 [[expect]]
 compile_error = "`s` is declared as a collection and as a single sub"
+code = "OneNameDifferentMemberKinds"

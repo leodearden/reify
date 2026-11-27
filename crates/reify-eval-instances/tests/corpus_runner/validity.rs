@@ -1,7 +1,9 @@
-//! The corpus is valid: every entry loads, its sources parse or not as its
-//! needs require (one waiting on the purpose grammar fails on its purpose
-//! applications alone), no parsing source has a bare `Scalar`, every disputed row
-//! names an entry, and the waiting entries counted under each owner equal
+//! The corpus is valid: every entry loads, every path an entry names parses
+//! and prints back the same, every compile error of this PRD names its code,
+//! its sources parse or not as its needs require
+//! (one waiting on the purpose grammar fails on its purpose applications
+//! alone), no parsing source has a bare `Scalar`, every disputed row names an
+//! entry, and the waiting entries counted under each owner equal
 //! waiting.toml. One test over the whole corpus: it collects every problem,
 //! each naming its entry or file, and fails once at the end.
 

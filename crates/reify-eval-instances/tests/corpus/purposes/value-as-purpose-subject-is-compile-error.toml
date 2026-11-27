@@ -8,3 +8,4 @@ note = "the member line `purpose thin_enough(v)` needs grammar-purpose (readings
 
 [[expect]]
 compile_error = "a purpose's subject must name an instance (`self`, or a sub or element below it), not a value held in a cell; write `sub v : Bracket`"
+code = "PurposeSubjectNotAnInstance"

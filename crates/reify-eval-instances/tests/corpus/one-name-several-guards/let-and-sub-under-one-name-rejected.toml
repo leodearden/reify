@@ -6,3 +6,4 @@ answer_basis = "traced. A `let` is a cell and a `sub` an instance: different kin
 
 [[expect]]
 compile_error = "`p` is declared as a sub and as a let; declarations of one name must give the same kind of member"
+code = "OneNameDifferentMemberKinds"

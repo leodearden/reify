@@ -7,3 +7,4 @@ today = "run `priv2.ri`: compiles; the constraint in the braces is dropped."
 
 [[expect]]
 compile_error = "the constraint in the braces of `p` reads `area`, a `let` of `Plate` that is not `pub`; the parent's member is `self.area`"
+code = "PrivateLetReadFromAnotherDefinition"

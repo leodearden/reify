@@ -7,3 +7,4 @@ today = "run `g08a.ri`: \"error: unknown member 'zz' on sub 's'\" (the braces `l
 
 [[expect]]
 compile_error = "`zz` is a `let` written in the braces of `s` and can be read only there; write the `let` in `Asm`"
+code = "BracesLetReadFromOutside"

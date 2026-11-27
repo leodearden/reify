@@ -9,4 +9,5 @@ mod expected_value;
 mod loader_refusal;
 mod needs;
 mod parse_check;
+mod path_text;
 mod validity;

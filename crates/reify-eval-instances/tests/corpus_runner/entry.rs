@@ -3,6 +3,7 @@
 
 use std::fmt;
 
+use reify_core::InstancePath;
 use serde::Deserialize;
 
 use crate::expectation::Expectation;
@@ -53,7 +54,8 @@ pub struct Candidates {
 #[serde(deny_unknown_fields)]
 #[expect(dead_code, reason = "read once entries run")] // debt: ticket tkt_0RXF3RZ3T23TSSXGWCWN0S20BF
 pub struct CandidateList {
-    pub path: String,
+    #[serde(deserialize_with = "crate::path_text::path")]
+    pub path: InstancePath,
     pub values: Vec<ExpectedValue>,
 }
 
@@ -122,6 +124,19 @@ impl EntryRecord {
         }
         if self.expect.is_empty() {
             return Err("an entry needs at least one [[expect]] row".to_string());
+        }
+        let uncoded = self
+            .expect
+            .iter()
+            .any(Expectation::is_uncoded_compile_error);
+        let owned_by_this_prd = self.needs.iter().all(|need| need.owned_by_this_prd());
+        if uncoded && owned_by_this_prd {
+            return Err(
+                "a `compile_error` row needs a `code`: every compile error this PRD adds has a \
+                 DiagnosticCode (crates/reify-core/src/diagnostics.rs); only an entry that \
+                 needs a word owned outside this PRD may leave it out"
+                    .to_string(),
+            );
         }
         for row in &self.expect {
             if let Some(edit) = row.after_edit

@@ -1,3 +1,4 @@
 built = [
+    "paths",
     "two-files",
 ]

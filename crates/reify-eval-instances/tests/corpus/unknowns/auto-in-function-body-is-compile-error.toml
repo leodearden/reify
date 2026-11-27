@@ -7,3 +7,4 @@ today = "a type error for a length, a silent undefined for a plain number (desig
 
 [[expect]]
 compile_error = "`auto` inside a function body; write `let u : Length = auto` outside it and pass `u` in"
+code = "AutoNotEvaluatedOnce"

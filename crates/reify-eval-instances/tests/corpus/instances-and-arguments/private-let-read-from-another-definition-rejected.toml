@@ -7,6 +7,8 @@ today = "run `priv1.ri`: compiles; `Asm.a = 0.00012 m^2`, `Asm.b = 0.00008 m^2`.
 
 [[expect]]
 compile_error = "`a` reads `area`, a `let` of `Plate` that is not `pub`"
+code = "PrivateLetReadFromAnotherDefinition"
 
 [[expect]]
 compile_error = "`b` reads `area`, a `let` of `Plate` that is not `pub`"
+code = "PrivateLetReadFromAnotherDefinition"

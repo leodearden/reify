@@ -7,3 +7,4 @@ today = "run `priv3.ri`: compiles."
 
 [[expect]]
 compile_error = "the purpose `big_enough` reads `area`, a `let` of `Plate` that is not `pub`"
+code = "PrivateLetReadFromAnotherDefinition"

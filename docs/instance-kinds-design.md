@@ -752,17 +752,50 @@ Each of these is a property over every expression or every file. Each of the thr
 - The declarations must give the same kind of node: a collection and a single sub under one name is a compile error.
 - Reading a member that only some arms' definitions have is governed by the spec's narrowing (6.4) at compile time and gives undefined at run time.
 
-**F. The kinds of step in a path, and their text.**
+**F. The kinds of step in a path, and their text.** **Settled 2026-11-27, by building.**
 
-- A member name, an index, a key.
-- A constraint, by its position in the member list. A member written in a sub's braces, by the sub and its position there.
-- An unknown with no name of its own, by where it was written: the member and argument, or the `connect` and parameter, with the chain of call sites when it is inside an expression.
-- A guard's cell by the number of its block or declaration; a count's cell by its collection; a placement's cell by its sub.
-- A made instance, by the chain of call sites and iteration indices from the cell's own expression to the constructor call.
-- An opened value: `open` for the cell's own value, and `open` with such a chain for a value opened in mid-expression.
-- A per-element constraint of a `forall`; a connector's sub; an applied purpose, by its position in the member list.
-- The fixed children: `defs`, `as-value`, `summary`, the list of made instances, the solve design's nodes.
-- *Open:* that the text is one-to-one is a requirement to test, not something shown.
+A path is a root, then a flat sequence of steps, and any step may follow any other except as the first rule below says. A member's name follows a dot and everything else follows a slash. No name holds a dot or a slash, and a bracket's content is read as a whole, so each step's text ends where the next begins.
+
+| Step | Text | Example |
+|---|---|---|
+| Root: a definition of the entry file's module, which is not written | the name | `Asm` |
+| Root: a definition of another module | the module's dotted path, `::`, the name | `std.units::Plate` |
+| A member, by name | `.name` | `Asm.thin.t` |
+| An element, by position or by key | `[n]`, `["key"]` | `Asm.vents[2]`, `Asm.vents["intake"]` |
+| The instance's summary | `/summary` | `Asm.b/summary` |
+| The instance read as a value | `/as-value` | `Asm.a/as-value` |
+| A definition's member table, named as a root is | `/defs[root]` | `Asm/defs[Plate]`, `Asm/defs[lib::Motor]` |
+| The `k`th constraint that gives a verdict; a `forall` block's constraint for one element adds an element step | `/constraint[k]` | `Asm.b/constraint[0]`, `Asm/constraint[1][3]` |
+| What is written in a sub's braces, followed by the step to a constraint, a `let` or a guard there | `/braces` | `Rig.motor/braces/constraint[0]`, `Asm.s/braces.zz`, `Asm.p/braces/guard[0]` |
+| The `k`th applied purpose | `/purpose[k]` | `Asm/purpose[0]/constraint[0]` |
+| The built-in verdict on an instance's arguments | `/arguments` | `Asm.b/arguments` |
+| The `k`th guard's condition | `/guard[k]` | `Case/guard[0]` |
+| A collection's count | `/count[name]` | `Asm/count[vents]` |
+| A sub's placement | `/at[name]` | `Asm/at[a]` |
+| An unknown with no name of its own, by its site (below) | `/auto[site]` | `Asm/auto[a.len]` |
+| The list of what a cell made | `/made` | `Asm.c/made` |
+| A made instance, by the chain of call sites and iteration indices from the cell's expression to the call | `/made[i,j,...]` | `Asm.c/made[0]`, `Asm.c/made[0,2]` |
+| A cell's value opened as an instance; for a value opened in mid-expression, by its chain | `/open`, `/open[i,j,...]` | `Asm.c/open.area`, `Asm.m/open[0].area` |
+| What an instance tells a solve | `/problem` | `Asm.a/problem` |
+| The solve design's nodes | `/solves` | `Asm.a/solves` |
+
+An unknown's site is an anchor, then at least one segment:
+
+| Part | Text | Example |
+|---|---|---|
+| Anchor: a member, or a keyed collection's entry | `name`, `name["key"]` | `Asm/auto[a.len]`, `M/auto[vents["a"].w]` |
+| Anchor: the `k`th `connect` | `connect[k]` | `Asm/auto[connect[0].p]` |
+| Segment: the argument the unknown fills | `.argument` | `Asm/auto[d.p#0.t]` |
+| Segment: the chain to a call inside the expression, always followed by the argument it fills | `#i,j,...` | `Asm/auto[both#1.t]` |
+| Segment: the anchor sub's placement | `/at` | `Asm/auto[a/at]` |
+
+- A key is written in quotes. Inside it `\"` is a quote and `\\` a backslash, and there is no other escape: `Asm.k["say \"hi\" \\ bye"]`. A `]`, a dot or a slash inside a key is plain text: `Asm.ducts["a.b/c]"].area`. A member anchor's element is only ever a key, so `connect[0]` is always a `connect`.
+- Numbers are plain decimal, with no sign and no leading zero, and fit in 64 bits. There is no whitespace anywhere. The parser accepts only this text, so printing a path and parsing its text give each other back exactly.
+- Two rules make the text one-to-one. No element step comes directly after a bare `/made` or `/open`: the made list's instances are named by their chain, and an opened value is an instance, not a collection, so `/made[0]` is always a made instance. The placement's unknown is `/auto[name/at]`, not the starting form's `/auto[name.at]`, because `at` can also be the name of an argument.
+- A member named like a fixed child is written after a dot, so `Asm.summary.area` is a member and `Asm/summary` the summary; `Asm.braces.x` is a member's member and `Asm/braces.x` a `let` in braces. No word is reserved: `at` and `connect` are valid names.
+- The steps are a free sequence, not a grammar of which step may follow which, because `Bracket/purpose[0]/constraint[0]/made[0]/constraint[0]` names a constraint of an instance made under a constraint (`purposes/instance-made-in-purpose-constraint-does-not-bear`).
+- Decided by building: the round trip over generated paths and `scenario_h1` in `crates/reify-core/tests/instance_path_text.rs`, and every path of the corpus parsed at load. The entries that decided it: `paths/path-text-round-trips-one-to-one` (a key holding a dot, a slash and `]`; a sub named `summary`), `paths/unnamed-steps-name-their-nodes`, `paths/keyed-entry-autos-have-distinct-paths`, `paths/mid-expression-opens-numbered-by-member-read`, `paths/made-open-as-value-paths`, `paths/constraint-braces-purpose-paths-by-position`, `paths/braces-guard-and-definition-guard-distinct-paths` and `purposes/instance-made-in-purpose-constraint-does-not-bear`.
+- The type is `crates/reify-core/src/instance_path.rs`; its text, both ways, is `crates/reify-core/src/instance_path_text.rs`.
 
 **G. The parameter row's control.** Settled by Leo on 2026-11-26 and moved to Part 9. What remains to settle by building: the refusals at the edges (an element of a list, which has no arguments of its own until task 5482; an imported definition; a unit that cannot be written back exactly; an argument assigned under a guard in the braces) and the positions the parser must keep to add an argument.
 

@@ -6,3 +6,4 @@ answer_basis = "stated: Part 6.3 table. The typed form, an unknown of the instan
 
 [[expect]]
 compile_error = "`let u = auto` needs a type, as in `let u : Length = auto`"
+code = "UntypedAutoLet"
