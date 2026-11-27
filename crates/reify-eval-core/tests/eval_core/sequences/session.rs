@@ -60,6 +60,12 @@ shapes! {
     DivisionByZero,
     /// A cell blocked by the failure at a ref it read.
     BlockedBy,
+    /// "cycle" at a path where a node is declared: a node on a ring of
+    /// waits, or one that answers what it read there.
+    Cycle,
+    /// "cycle" at a path with no declaration of its own: one whose
+    /// declaration waited on a ring.
+    CycleThroughStructure,
     /// A box a shape made on the toy kernel.
     BoxValue,
     /// The volume a measure read from the toy kernel.
@@ -713,6 +719,8 @@ impl Session {
             (Some(ToyKind::Cell), Expect::Failure(Failure::BlockedBy { .. })) => {
                 reached.push(Shape::BlockedBy)
             }
+            (Some(_), Expect::Failure(Failure::Cycle)) => reached.push(Shape::Cycle),
+            (None, Expect::Failure(Failure::Cycle)) => reached.push(Shape::CycleThroughStructure),
             _ => {}
         }
         if let Some((parent, step)) = path.parent()
@@ -771,8 +779,7 @@ impl Session {
 
 mod tests {
     use reify_eval_core::{
-        Builder, Core, Cx, Kind, KindId, Outcome, OutsideFailure, Produced, Ref, RequestError,
-        Store,
+        Builder, Core, Cx, Kind, KindId, Outcome, OutsideFailure, Produced, Ref, Store,
     };
 
     use super::super::case::{Case, HostEvent, Then};
@@ -874,6 +881,31 @@ mod tests {
         assert!(reach.count(Shape::DriveZeroEnded) > 0, "{reach:?}");
     }
 
+    #[test]
+    fn a_ring_is_counted_at_its_nodes_and_at_a_path_that_waited_on_it() {
+        let case = Case {
+            inputs: inputs([
+                (root("r"), declaration(scope("r.m"))),
+                (
+                    named("r.m"),
+                    members([
+                        (step("a"), cell([declarer([step("b")])])),
+                        (step("b"), cell([declarer([step("a")])])),
+                        (step("c"), cell([declarer([step("c"), step("x")])])),
+                    ]),
+                ),
+            ]),
+            events: vec![HostEvent::Evaluate {
+                on: 0,
+                paths: vec![r(&["a"]), r(&["b"]), r(&["c", "x"])],
+                then: Then::End,
+            }],
+        };
+        let reach = check(&case, &toy_core).unwrap_or_else(|mismatch| panic!("{mismatch}"));
+        assert!(reach.count(Shape::Cycle) > 0, "{reach:?}");
+        assert!(reach.count(Shape::CycleThroughStructure) > 0, "{reach:?}");
+    }
+
     /// Registered in place of the toy cell: answers 0 whatever it binds.
     struct ZeroCell;
 
@@ -970,31 +1002,15 @@ mod tests {
         }
     }
 
-    /// A place below member "a" itself.
-    fn below_a() -> Bind {
-        declarer([step("a"), step("x")])
-    }
-
-    #[test]
-    fn a_request_the_core_ends_is_reported_with_its_error() {
-        let found = check(&evaluate_a(cell([below_a()])), &toy_core);
-        let expected = Mismatch::Ended {
-            event: 0,
-            snapshot: 0,
-            error: RequestError::NothingCanRun {
-                waiting: vec![r(&["a"]).to_core()],
-            },
-        };
-        assert_eq!(found, Err(expected));
-    }
-
     #[test]
     fn an_answer_on_a_case_the_reference_cannot_judge_is_reported_invalid() {
-        let found = check(&evaluate_a(cell([below_a()])), &with_cell_kind::<ZeroCell>);
+        let mut case = evaluate_a(cell([input("big"), input("big")]));
+        case.inputs.insert(named("big"), int(i64::MAX));
+        let found = check(&case, &with_cell_kind::<ZeroCell>);
         let expected = Mismatch::Invalid {
             event: 0,
             snapshot: 0,
-            invalid: Invalid::Cycle { path: r(&["a"]) },
+            invalid: Invalid::Overflow { path: r(&["a"]) },
         };
         assert_eq!(found, Err(expected));
     }
@@ -1084,63 +1100,5 @@ mod tests {
             fresh: Box::new(Seen::Int(0)),
         };
         assert_eq!(check(&case, &counting_core), Err(expected));
-    }
-
-    /// Registered in place of the toy cell: reads its binding "loop", then
-    /// answers 0.
-    struct LoopCell;
-
-    impl Kind for LoopCell {
-        type Out = i64;
-        const ID: KindId = toy::Cell::ID;
-        const VERSION: u32 = toy::Cell::VERSION;
-
-        async fn run(cx: &Cx) -> Produced<i64> {
-            let _ = cx.read::<i64>(&Ref::binding("loop")).await;
-            Produced::Outcome(Outcome::of(0))
-        }
-    }
-
-    /// What `check` finds when the first `honest` cores it builds are
-    /// honest and every later one is built with `LoopCell`.
-    fn looping_after(honest: usize) -> Mismatch {
-        let made = std::cell::Cell::new(0);
-        let honest_then_looping = |store| {
-            made.set(made.get() + 1);
-            if made.get() <= honest {
-                toy_core(store)
-            } else {
-                with_cell_kind::<LoopCell>(store)
-            }
-        };
-        let looping = decl(ToyKind::Cell, [("loop", below_a())]);
-        check(&evaluate_a(looping), &honest_then_looping).expect_err("a looping core ends it")
-    }
-
-    fn ended_waiting_on_a() -> Option<RequestError> {
-        Some(RequestError::NothingCanRun {
-            waiting: vec![r(&["a"]).to_core()],
-        })
-    }
-
-    #[test]
-    fn a_fresh_core_on_the_session_s_selection_that_ends_a_request_the_session_answered_is_reported()
-     {
-        let expected = Mismatch::FreshUnanswered {
-            snapshot: 0,
-            path: r(&["a"]),
-            ended: ended_waiting_on_a(),
-        };
-        assert_eq!(looping_after(1), expected);
-    }
-
-    #[test]
-    fn a_fresh_core_that_ends_a_request_the_session_answered_is_reported() {
-        let expected = Mismatch::OrderUnanswered {
-            snapshot: 0,
-            path: r(&["a"]),
-            ended: ended_waiting_on_a(),
-        };
-        assert_eq!(looping_after(2), expected);
     }
 }

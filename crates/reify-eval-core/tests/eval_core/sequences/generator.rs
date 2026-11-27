@@ -4,10 +4,13 @@
 //! cells on, every members input the generator makes ends in a pair: a
 //! cell dividing by an input held at zero, and a sibling cell blocked by
 //! it.
-//! Every design is acyclic by construction (the ordinal rule: member m_k
-//! reaches through its declarer only the declarer itself or members m_j
-//! with j < k), and a feature that is off draws nothing from the rng, so
-//! a later leaf's feature leaves this feature set's stream unchanged.
+//! With cycles off every design is acyclic by construction (the ordinal
+//! rule: member m_k reaches through its declarer only the declarer itself
+//! or members m_j with j < k). With cycles on, a member cell's term may
+//! name a sibling at its own ordinal or a later one, so a design may hold
+//! rings of waits, which answer "cycle". A feature that is off draws
+//! nothing from the rng, so a later leaf's feature leaves this feature
+//! set's stream unchanged.
 
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
@@ -48,6 +51,8 @@ pub struct Features {
     pub divide: bool,
     /// Shapes and measures, on the toy kernel.
     pub kernel: bool,
+    /// Member cells naming a sibling at their own ordinal or a later one.
+    pub cycles: bool,
 }
 
 impl Features {
@@ -59,6 +64,7 @@ impl Features {
             collection: true,
             divide: false,
             kernel: false,
+            cycles: false,
         }
     }
 
@@ -67,6 +73,7 @@ impl Features {
         Self {
             divide: true,
             kernel: true,
+            cycles: true,
             ..Self::structure()
         }
     }
@@ -249,7 +256,7 @@ impl Generator {
             ToyKind::Cell if self.features.kernel && self.rng.chance(1, 3) => {
                 self.on_kernel(earlier)
             }
-            ToyKind::Cell => self.member_cell(&at, level.kind, earlier, needed),
+            ToyKind::Cell => self.member_cell(&at, level, earlier, needed),
             ToyKind::Scope => self.scope_at(&at, depth, needed),
             ToyKind::Guard => self.guard_at(&at, depth, Some(level.kind), needed),
             ToyKind::Collection => self.collection_at(&at, earlier, needed),
@@ -266,11 +273,12 @@ impl Generator {
         shape(input(&self.some_int()))
     }
 
-    /// A picker of an earlier collection, or a cell of terms.
+    /// A picker of an earlier collection, or a cell of terms, as a member
+    /// of `level`.
     fn member_cell(
         &mut self,
         at: &ModelPath,
-        declarer_kind: ToyKind,
+        level: &Level,
         earlier: &[Sibling],
         needed: &mut Needed,
     ) -> Decl {
@@ -285,8 +293,19 @@ impl Generator {
             let from = declarer([member_step(*self.rng.choose(&collections))]);
             return picker(pick, from);
         }
-        let terms = self.terms(at, earlier, Some(declarer_kind));
+        let siblings = self.nameable(level, earlier);
+        let terms = self.terms(at, &siblings, Some(level.kind));
         self.maybe_divided(terms, earlier, needed)
+    }
+
+    /// The ordinals of the siblings a term of a member of `level` may
+    /// name: the `earlier` ones; with cycles on, at times every ordinal of
+    /// the level, the member's own and later ones included.
+    fn nameable(&mut self, level: &Level, earlier: &[Sibling]) -> Vec<usize> {
+        if self.features.cycles && self.rng.chance(1, 2) {
+            return (0..level.ordinals).collect();
+        }
+        earlier.iter().map(|(ordinal, _)| *ordinal).collect()
     }
 
     /// `cell`, or `cell` divided by an earlier sibling cell or by a new int
@@ -305,12 +324,12 @@ impl Generator {
         divided(cell, input(&name))
     }
 
-    /// A cell of up to three terms: mostly inputs, else earlier siblings,
-    /// places below them, or the declarer itself.
+    /// A cell of up to three terms: mostly inputs, else the siblings at
+    /// the ordinals `siblings`, places below them, or the declarer itself.
     fn terms(
         &mut self,
         at: &ModelPath,
-        earlier: &[Sibling],
+        siblings: &[usize],
         declarer_kind: Option<ToyKind>,
     ) -> Decl {
         if self.rng.chance(1, 4) {
@@ -319,9 +338,11 @@ impl Generator {
         let count = self.rng.below(4);
         let terms: Vec<_> = (0..count)
             .map(|_| match self.rng.below(10) {
-                5..=7 if !earlier.is_empty() => declarer([member_step(self.rng.choose(earlier).0)]),
-                8 if !earlier.is_empty() => {
-                    declarer([member_step(self.rng.choose(earlier).0), step("x")])
+                5..=7 if !siblings.is_empty() => {
+                    declarer([member_step(*self.rng.choose(siblings))])
+                }
+                8 if !siblings.is_empty() => {
+                    declarer([member_step(*self.rng.choose(siblings)), step("x")])
                 }
                 9 if declarer_kind.is_some() => declarer([]),
                 9 => passed("members", []),
@@ -606,9 +627,11 @@ fn of_kind(siblings: &[Sibling], kind: ToyKind) -> Vec<usize> {
 mod tests {
     use std::collections::BTreeSet;
 
+    use reify_eval_core::Failure;
+
     use super::super::case::{Case, HostEvent, Then};
     use super::super::design::{Bind, Decl, Key, ToyKind, Val};
-    use super::super::reference::first_invalid;
+    use super::super::reference::{Expect, Reference, first_invalid};
     use super::{
         BLOCKED_PAIR_ZERO, Features, GATE_EVENTS, GATE_SEEDS, gate_case, gate_cases, generate,
     };
@@ -687,8 +710,10 @@ mod tests {
             collection: true,
             divide: true,
             kernel: true,
+            cycles: true,
         };
         assert_eq!(Features::every(), every);
+        assert!(!Features::structure().cycles);
         for seed in GATE_SEEDS {
             let case = generate(seed, every, GATE_EVENTS);
             assert_eq!(gate_case(seed), case, "seed {seed}");
@@ -714,6 +739,7 @@ mod tests {
             collection: false,
             divide: false,
             kernel: false,
+            cycles: false,
         };
         let every = Features::every();
         let some_off = [
@@ -742,6 +768,34 @@ mod tests {
                         features.divide || !divides,
                         "seed {seed}, {features:?}: {decl:?}"
                     );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn with_cycles_off_no_case_answers_cycle() {
+        let cycles_off = [
+            Features::structure(),
+            Features {
+                cycles: false,
+                ..Features::every()
+            },
+        ];
+        for features in cycles_off {
+            for seed in GATE_SEEDS {
+                let case = generate(seed, features, GATE_EVENTS);
+                let demanded: BTreeSet<_> = case.demanded().collect();
+                for inputs in case.snapshots() {
+                    let mut reference = Reference::new(inputs);
+                    for path in &demanded {
+                        let outcome = reference.answer(path).map(|answer| answer.outcome);
+                        assert_ne!(
+                            outcome,
+                            Ok(Expect::Failure(Failure::Cycle)),
+                            "seed {seed}, {features:?}: {path:?}"
+                        );
+                    }
                 }
             }
         }

@@ -8,6 +8,7 @@ mod content;
 mod core_id;
 mod counters;
 mod cx;
+mod cycle;
 mod declaration;
 mod demand;
 mod erased_kind;

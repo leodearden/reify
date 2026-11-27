@@ -25,6 +25,13 @@ pub enum Failure {
     /// A failure a body states in its kind's own terms, by a code the kind
     /// defines and the core never interprets.
     OfKind { kind: KindId, code: &'static str },
+    /// The node is on a ring of waits, each node on it needing the next
+    /// one's answer (contract 7.7). It names and counts no place, so every
+    /// node on the ring, wherever the ring was entered, has this one value.
+    /// A node on the ring is answered in the snapshot's index only, and
+    /// nothing is filed in the store for it; a reader off the ring that
+    /// answers this failure as its own is filed like any other result.
+    Cycle,
 }
 
 impl Failure {
@@ -42,6 +49,9 @@ impl Failure {
             }
             Failure::OfKind { kind, code } => {
                 encoder.tag("failure.of_kind").text(kind.0).text(code);
+            }
+            Failure::Cycle => {
+                encoder.tag("failure.cycle");
             }
         }
     }
