@@ -304,19 +304,7 @@ impl<'a> EvalContext<'a> {
     where
         'a: 'b,
     {
-        EvalContext {
-            values: self.values,
-            functions: self.functions,
-            recursion_depth: self.recursion_depth + 1,
-            meta: self.meta,
-            determinacy: self.determinacy,
-            diagnostics: self.diagnostics,
-            undef_causes: self.undef_causes,
-            containment: self.containment,
-            compute_dispatch: self.compute_dispatch,
-            symbolic_selector_ctor: self.symbolic_selector_ctor,
-            scope: frame.chain(),
-        }
+        self.child(frame.chain(), self.recursion_depth + 1)
     }
 
     /// This context's functions, depth and attachments, with no local frame,
@@ -325,10 +313,19 @@ impl<'a> EvalContext<'a> {
     where
         'a: 'b,
     {
+        self.child(ScopeChain::over(reader), self.recursion_depth)
+    }
+
+    /// This context's store, functions and attachments, reading through
+    /// `scope` at `recursion_depth`.
+    fn child<'b>(&self, scope: ScopeChain<'b>, recursion_depth: u32) -> EvalContext<'b>
+    where
+        'a: 'b,
+    {
         EvalContext {
             values: self.values,
             functions: self.functions,
-            recursion_depth: self.recursion_depth,
+            recursion_depth,
             meta: self.meta,
             determinacy: self.determinacy,
             diagnostics: self.diagnostics,
@@ -336,7 +333,7 @@ impl<'a> EvalContext<'a> {
             containment: self.containment,
             compute_dispatch: self.compute_dispatch,
             symbolic_selector_ctor: self.symbolic_selector_ctor,
-            scope: ScopeChain::over(reader),
+            scope,
         }
     }
 
@@ -1020,8 +1017,8 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
         } => {
             // No method takes an argument.
             if !args.is_empty() {
-                evaluate_for_reads(std::slice::from_ref(&**object), ctx);
-                evaluate_for_reads(args, ctx);
+                evaluate_if_reading_every_operand(std::slice::from_ref(&**object), ctx);
+                evaluate_if_reading_every_operand(args, ctx);
                 return Value::Undef;
             }
             // `self.<datum>` projects the structure's identity frame; its
@@ -1540,7 +1537,7 @@ fn eval_index_access(object: &CompiledExpr, index: &CompiledExpr, ctx: &EvalCont
 ///   placeholder for `Engine::post_process_ad_hoc_selectors` to overwrite.
 ///
 /// Under a reader that may answer "not here yet" every argument is evaluated
-/// first, whatever decides the result (see [`evaluate_for_reads`]).
+/// first, whatever decides the result (see [`evaluate_if_reading_every_operand`]).
 fn eval_ad_hoc_selector(
     selector_kind: &SelectorKind,
     args: &[CompiledExpr],
@@ -1551,7 +1548,7 @@ fn eval_ad_hoc_selector(
             // @point(x, y, z): evaluate 3 coord args; if all are
             // LENGTH-dimensioned scalars, build Frame{origin, identity_basis}.
             if args.len() != 3 {
-                evaluate_for_reads(args, ctx);
+                evaluate_if_reading_every_operand(args, ctx);
                 return Value::Undef;
             }
             let mut si_coords = [0.0_f64; 3];
@@ -1594,7 +1591,7 @@ fn eval_ad_hoc_selector(
         // via kernel.extract_faces/edges + resolve_unique_by_attribute.
         // Return Undef here as a placeholder for the engine to overwrite.
         SelectorKind::Face | SelectorKind::Edge => {
-            evaluate_for_reads(args, ctx);
+            evaluate_if_reading_every_operand(args, ctx);
             Value::Undef
         }
     }
@@ -4028,7 +4025,7 @@ fn eval_implies(left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalContext) ->
 /// under one that may answer "not here yet": only the condition of an `if` or
 /// a `match` decides whether something is read.
 fn decided_by_left(decided: Value, right: &CompiledExpr, ctx: &EvalContext) -> Value {
-    evaluate_for_reads(std::slice::from_ref(right), ctx);
+    evaluate_if_reading_every_operand(std::slice::from_ref(right), ctx);
     decided
 }
 
@@ -4036,7 +4033,7 @@ fn decided_by_left(decided: Value, right: &CompiledExpr, ctx: &EvalContext) -> V
 /// under a reader that may answer "not here yet", so that one round asks for
 /// every cell an expression reads outside the arms of an `if` or a `match`.
 /// Under the old engine's reader nothing is evaluated.
-fn evaluate_for_reads(exprs: &[CompiledExpr], ctx: &EvalContext) {
+fn evaluate_if_reading_every_operand(exprs: &[CompiledExpr], ctx: &EvalContext) {
     if ctx.reads_every_operand() {
         for expr in exprs {
             eval_expr(expr, ctx);
