@@ -1,0 +1,19 @@
+error[E0308]: mismatched types
+ --> tests/must_not_compile/async_closure_section.rs:4:13
+  |
+4 |       let _ = cx.exclusive(async |numbers: &mut Vec<i64>, _| {
+  |  _____________^
+5 | |         std::future::ready(()).await;
+6 | |         numbers.len()
+7 | |     });
+  | |______^ one type is more general than the other
+  |
+  = note: expected `async` closure body `{async closure body@$DIR/tests/must_not_compile/async_closure_section.rs:4:60: 7:6}`
+             found `async` closure body `{async closure body@$DIR/tests/must_not_compile/async_closure_section.rs:4:60: 7:6}`
+  = note: no two async blocks, even if identical, have the same type
+  = help: consider pinning your async block and casting it to a trait object
+note: the lifetime requirement is introduced here
+ --> src/cx.rs
+  |
+  |         F: FnOnce(&mut R, &Section<R>) -> T + Send + 'static,
+  |                                           ^
