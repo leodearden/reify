@@ -8,18 +8,18 @@
 
 use std::collections::HashSet;
 
-use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan, Type};
+use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan, Type, ValueCellId};
 use reify_ir::{CompiledExpr, CompiledFunction, MemberKey};
 
 use crate::datum_projection::{DatumProjectionResolution, datum_projection_result_type};
 use crate::expr::{
-    WILDCARD_STRUCTURE_KIND, keyed_computed_index_poison, keyed_missing_key_poison,
-    make_poison_literal,
+    WILDCARD_STRUCTURE_KIND, is_declared_param, keyed_computed_index_poison,
+    keyed_missing_key_poison, make_poison_literal,
 };
 use crate::scope::CompilationScope;
 use crate::source_unit::SourceUnitRecorder;
 use crate::source_unit_tables::{ReferenceRead, ReferenceRoot, SourceStep, StructuralQuery};
-use crate::types::{GuardedDeclGroup, TopologyTemplate};
+use crate::types::{GuardedDeclGroup, TopologyTemplate, ValueCellDecl};
 
 /// Why the source-unit mode does not compile an expression as a path.
 pub(crate) enum NotAPath {
@@ -54,29 +54,26 @@ pub(crate) fn compile_member_path(
     recorder: &SourceUnitRecorder,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> PathOutcome {
-    match walk_path(expr, scope, diagnostics) {
-        Ok(Walked::Reached { steps, target }) => {
+    let Walked { root, steps, end } = match walk_path(expr, scope, diagnostics) {
+        Ok(walked) => walked,
+        Err(Halt::Poison(poison)) => return Ok(*poison),
+        Err(Halt::NotAPath(why)) => return Err(why),
+    };
+    match end {
+        End::Target(target) => {
             let ty = target.value_type(scope).ok_or(NotAPath::ByReceiverType)?;
-            Ok(recorder.reference(ReferenceRoot::Own, steps, ReferenceRead::Value, ty))
+            Ok(recorder.reference(root, steps, ReferenceRead::Value, ty))
         }
-        Ok(Walked::Query { steps, query }) => {
+        End::Query(query) => {
             let instance = Type::StructureRef(WILDCARD_STRUCTURE_KIND.to_string());
             let ty = Type::List(Box::new(instance));
-            let read = ReferenceRead::Query(query);
-            Ok(recorder.reference(ReferenceRoot::Own, steps, read, ty))
+            Ok(recorder.reference(root, steps, ReferenceRead::Query(query), ty))
         }
-        Ok(Walked::Datum { steps, name, ty }) => {
+        End::Datum { name, ty } => {
             let ty_of_prefix = Type::StructureRef(name.definition);
-            let receiver = recorder.reference(
-                ReferenceRoot::Own,
-                steps,
-                ReferenceRead::Value,
-                ty_of_prefix,
-            );
+            let receiver = recorder.reference(root, steps, ReferenceRead::Value, ty_of_prefix);
             Ok(CompiledExpr::method_call(receiver, name.member, vec![], ty))
         }
-        Err(Halt::Poison(poison)) => Ok(*poison),
-        Err(Halt::NotAPath(why)) => Err(why),
     }
 }
 
@@ -100,36 +97,33 @@ pub(crate) fn compile_presence(
     // An argument that does not resolve cleanly is compiled, and its errors
     // reported, by the existing compile.
     let mut unreported = Vec::new();
-    let Ok(Walked::Reached { steps, target }) = walk_path(argument, scope, &mut unreported) else {
+    let Ok(Walked {
+        root,
+        steps,
+        end: End::Target(target),
+    }) = walk_path(argument, scope, &mut unreported)
+    else {
         return None;
     };
     target.value_type(scope)?;
-    Some(recorder.reference(
-        ReferenceRoot::Own,
-        steps,
-        ReferenceRead::Presence,
-        Type::Bool,
-    ))
+    Some(recorder.reference(root, steps, ReferenceRead::Presence, Type::Bool))
 }
 
-/// Where a path written in the source leads.
-enum Walked<'s> {
+/// Where a path written in the source leads: from `root`, through `steps`,
+/// to `end`.
+struct Walked<'s> {
+    root: ReferenceRoot,
+    steps: Vec<SourceStep>,
+    end: End<'s>,
+}
+
+enum End<'s> {
     /// The steps reach `target`.
-    Reached {
-        steps: Vec<SourceStep>,
-        target: Target<'s>,
-    },
-    /// The path ends in a structural query of the instance the steps reach.
-    Query {
-        steps: Vec<SourceStep>,
-        query: StructuralQuery,
-    },
-    /// The path ends in an intrinsic datum of the instance the steps reach.
-    Datum {
-        steps: Vec<SourceStep>,
-        name: DatumName,
-        ty: Type,
-    },
+    Target(Target<'s>),
+    /// A structural query of the instance the steps reach.
+    Query(StructuralQuery),
+    /// An intrinsic datum of the instance the steps reach.
+    Datum { name: DatumName, ty: Type },
 }
 
 /// Resolve `expr` as a path, hop by hop.
@@ -138,24 +132,75 @@ fn walk_path<'s>(
     scope: &'s CompilationScope,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<Walked<'s>, Halt> {
-    let (root, hops) = path_of(expr).ok_or(Halt::NotAPath(NotAPath::ByReceiverType))?;
-    let (mut steps, mut target) = root_target(root, scope).map_err(Halt::NotAPath)?;
+    let (name, hops) = path_of(expr).ok_or(Halt::NotAPath(NotAPath::ByReceiverType))?;
+    let (root, mut steps, mut target, hops) =
+        match opened_binder(name, &hops, scope, expr.span, diagnostics)? {
+            Some((root, steps, target)) => (root, steps, target, &hops[1..]),
+            None => {
+                let (steps, target) = root_target(name, scope).map_err(Halt::NotAPath)?;
+                (ReferenceRoot::Own, steps, target, &hops[..])
+            }
+        };
     let last = hops.len().saturating_sub(1);
     for (position, hop) in hops.iter().enumerate() {
-        match next_target(target, hop, &mut steps, scope, expr.span, diagnostics)? {
-            Next::Into(next) => target = next,
-            Next::Datum { name, ty } if position == last => {
-                return Ok(Walked::Datum { steps, name, ty });
+        let end = match next_target(target, hop, &mut steps, scope, expr.span, diagnostics)? {
+            Next::Into(next) => {
+                target = next;
+                continue;
             }
-            Next::Query(query) if position == last => {
-                return Ok(Walked::Query { steps, query });
-            }
-            Next::Datum { .. } | Next::Query(_) => {
+            Next::Datum { .. } | Next::Query(_) if position != last => {
                 return Err(Halt::NotAPath(NotAPath::ByReceiverType));
             }
-        }
+            Next::Datum { name, ty } => End::Datum { name, ty },
+            Next::Query(query) => End::Query(query),
+        };
+        return Ok(Walked { root, steps, end });
     }
-    Ok(Walked::Reached { steps, target })
+    let end = End::Target(target);
+    Ok(Walked { root, steps, end })
+}
+
+/// A path that opens the structure value a binder of the unit's own
+/// expression holds, from its first hop `.m`: `None` when the root is not
+/// such a binder. The evaluator binds a binder locally and a value carries
+/// its parameters as fields (PRD §5.4), so `x.<parameter>` stays the
+/// existing field projection; any other member of the value's definition (a
+/// `let`, a geometry member, a sub) is reached by opening the value.
+fn opened_binder<'s>(
+    name: &str,
+    hops: &[Hop],
+    scope: &'s CompilationScope,
+    span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<Option<(ReferenceRoot, Vec<SourceStep>, Target<'s>)>, Halt> {
+    let not_a_path = Halt::NotAPath(NotAPath::ByReceiverType);
+    let Some((id, ty)) = binder(name, scope) else {
+        return Ok(None);
+    };
+    let (Type::StructureRef(definition), Some(Hop::Member(member))) = (ty, hops.first()) else {
+        return Err(not_a_path);
+    };
+    let Some(template) = template_of(definition, scope) else {
+        return Err(not_a_path);
+    };
+    if declared_cells(template).any(|cell| cell.id.member == *member && is_declared_param(cell)) {
+        return Err(not_a_path);
+    }
+    let Some(target) = template_member(template, member) else {
+        let intrinsic = StructuralQuery::from_member(member).is_some()
+            || matches!(
+                datum_projection_result_type(ty, member),
+                DatumProjectionResolution::Resolved(_)
+            );
+        if intrinsic {
+            return Err(not_a_path);
+        }
+        let owner = format!("structure '{definition}'");
+        return Err(member_not_found(&owner, member, span, diagnostics));
+    };
+    let root = ReferenceRoot::Binder { id: id.clone() };
+    let steps = vec![SourceStep::Member((*member).to_string())];
+    Ok(Some((root, steps, target)))
 }
 
 /// One step of a path as the AST writes it.
@@ -285,7 +330,7 @@ fn root_target<'s>(
     if name == "self" && scope.is_entity_scope {
         return Ok((Vec::new(), Target::Instance(Definition::Own)));
     }
-    if name == "none" || is_binder(name, scope) {
+    if name == "none" || binder(name, scope).is_some() {
         return Err(NotAPath::ByReceiverType);
     }
     match member_of(&Definition::Own, name, scope) {
@@ -296,12 +341,13 @@ fn root_target<'s>(
 }
 
 /// A binder of the unit's own expression (a lambda's, a quantifier's or a
-/// match arm's), told from a member by its id: binders are minted in an
-/// entity of their own, members in the definition's.
-fn is_binder(name: &str, scope: &CompilationScope) -> bool {
+/// match arm's), with its id and type. A binder is told from a member by its
+/// id: binders are minted in an entity of their own, members in the
+/// definition's.
+fn binder<'s>(name: &str, scope: &'s CompilationScope) -> Option<(&'s ValueCellId, &'s Type)> {
     scope
         .resolve(name)
-        .is_some_and(|(id, _)| id.entity != scope.entity_name)
+        .filter(|(id, _)| id.entity != scope.entity_name)
 }
 
 fn next_target<'s>(
@@ -496,15 +542,8 @@ fn own_member<'s>(member: &str, scope: &'s CompilationScope) -> Option<Target<'s
 
 /// A member of another definition, from its template.
 fn template_member<'s>(template: &'s TopologyTemplate, member: &str) -> Option<Target<'s>> {
-    let guarded = template
-        .guarded_groups
-        .iter()
-        .flat_map(|g| g.member_decls());
-    if let Some(cell) = template
-        .value_cells
-        .iter()
-        .chain(guarded)
-        .find(|cell| cell.id.member == member && !member.starts_with("__"))
+    if let Some(cell) =
+        declared_cells(template).find(|cell| cell.id.member == member && !member.starts_with("__"))
     {
         return Some(Target::Cell(cell.cell_type.clone()));
     }
@@ -541,6 +580,15 @@ fn template_member<'s>(template: &'s TopologyTemplate, member: &str) -> Option<T
             definition: Definition::Named(template.name.clone()),
             port: member.to_string(),
         })
+}
+
+/// A definition's value cells, guarded ones included.
+fn declared_cells(template: &TopologyTemplate) -> impl Iterator<Item = &ValueCellDecl> {
+    let guarded = template
+        .guarded_groups
+        .iter()
+        .flat_map(|g| g.member_decls());
+    template.value_cells.iter().chain(guarded)
 }
 
 fn cluster<'s>(group: &GuardedDeclGroup) -> Target<'s> {

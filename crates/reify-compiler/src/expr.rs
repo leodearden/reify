@@ -154,7 +154,7 @@ pub(crate) fn keyed_computed_index_poison(
 /// A parameter the structure declares: a `Param` cell, or an `Auto` cell whose
 /// visibility says param. This is the structure-ctor branch's view (b); its
 /// comment there says why a `Private` `Auto` cell is read as an auto `let`.
-fn is_declared_param(cell: &ValueCellDecl) -> bool {
+pub(crate) fn is_declared_param(cell: &ValueCellDecl) -> bool {
     match cell.kind {
         ValueCellKind::Param => true,
         ValueCellKind::Auto { .. } => cell.visibility == Visibility::Public,
