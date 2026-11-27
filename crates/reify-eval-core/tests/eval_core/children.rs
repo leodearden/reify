@@ -643,13 +643,13 @@ fn an_identical_parent_of_a_run_that_conflicted_across_two_requests_finds_the_st
     let mut core = with_twice();
     let snapshot = core.snapshot(twice(7, 8, false));
     let (p, q) = (toy::below("R", &["P"]), toy::below("R", &["Q"]));
-    let conflict = failure(Failure::ConflictingChild { step: twice_step() });
+    let conflict = || failure(Failure::ConflictingChild { step: twice_step() });
 
-    assert_eq!(i64s(&mut core, &snapshot, &[&p]), [conflict.clone()]);
+    assert_eq!(i64s(&mut core, &snapshot, &[&p]), [conflict()]);
     let runs = core.counters().body_runs(Twice::ID);
     assert_eq!(
         i64s(&mut core, &snapshot, &[&q, &child_of("Q", twice_step())]),
-        [conflict, value(7)]
+        [conflict(), value(7)]
     );
     assert_eq!(core.counters().body_runs(Twice::ID), runs);
 }
@@ -745,13 +745,15 @@ fn unbounded_body_declared_recursion_stops_at_the_depth_limit_with_one_failure()
         [("a", spin()), ("b", spin())],
         [toy::named("work", 1000_i64)],
     ));
-    let out_of_work = failure(Failure::OfKind {
-        kind: Spin::ID,
-        code: OUT_OF_WORK,
-    });
+    let out_of_work = || {
+        failure(Failure::OfKind {
+            kind: Spin::ID,
+            code: OUT_OF_WORK,
+        })
+    };
     let (a, b) = (toy::below("R", &["a"]), toy::below("R", &["b"]));
-    assert_eq!(i64s(&mut core, &snapshot, &[&a]), [out_of_work.clone()]);
-    assert_eq!(i64s(&mut core, &snapshot, &[&b]), [out_of_work]);
+    assert_eq!(i64s(&mut core, &snapshot, &[&a]), [out_of_work()]);
+    assert_eq!(i64s(&mut core, &snapshot, &[&b]), [out_of_work()]);
     assert_eq!(core.counters().body_runs(Spin::ID), 1);
 }
 
@@ -808,12 +810,12 @@ fn children_per_node_counts_the_children_a_body_declares() {
     let found: Vec<Path> = (1..=3)
         .map(|site| second.child(toy::call_step(&[site], None)))
         .collect();
-    let too_many = failure(Failure::TooManyChildren { limit: 2 });
-    assert_eq!(i64s(&mut core, &snapshot, &[&first]), [too_many.clone()]);
+    let too_many = || failure(Failure::TooManyChildren { limit: 2 });
+    assert_eq!(i64s(&mut core, &snapshot, &[&first]), [too_many()]);
     let paths: Vec<&Path> = [&second].into_iter().chain(&found).collect();
     assert_eq!(
         i64s(&mut core, &snapshot, &paths),
-        [too_many, value(4), value(5), value(6)]
+        [too_many(), value(4), value(5), value(6)]
     );
     assert_eq!(core.counters().body_runs(Call::ID), 1, "found, not run");
     let snapshot = core.snapshot(three_sites(3));

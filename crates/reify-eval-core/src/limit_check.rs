@@ -4,6 +4,8 @@
 //! finds is a fact about the path, so it is given in the snapshot's index
 //! only and never filed in the store.
 
+use std::collections::BTreeSet;
+
 use crate::content::Content;
 use crate::failure::Failure;
 use crate::index::Entry;
@@ -21,11 +23,13 @@ pub(crate) fn depth(depth: usize, limits: &Limits) -> Option<Failure> {
     (depth > limit).then_some(Failure::TooDeep { limit })
 }
 
-/// `entry`, a node's final answer in a snapshot, or, where its value
-/// declares more children than the children setting allows, that failure
-/// with the node's declaration. The kind's steps are counted only up to one
-/// past the setting. A failure, an absent answer, or a value no body
-/// produced comes back unchanged.
+/// `entry`, a node's final answer in a snapshot, or, where it declares more
+/// children than the children setting allows, that failure with the node's
+/// declaration. Both sorts of child count (contract 7.6): the steps the run
+/// that produced it declared, and the steps its value declares, a step
+/// declared both ways once; they are counted only up to one past the
+/// setting. A failure, an absent answer, or a value no body produced (by
+/// its own run, or by the run a lookup found) comes back unchanged.
 pub(crate) fn children(entry: Entry, limits: &Limits, kinds: &Kinds) -> Entry {
     let Some(limit) = limits.children_per_node() else {
         return entry;
@@ -41,8 +45,8 @@ pub(crate) fn children(entry: Entry, limits: &Limits, kinds: &Kinds) -> Entry {
     }
 }
 
-/// Whether the value of `entry`, which a body of the entry's kind produced,
-/// declares more than `limit` children.
+/// Whether `entry`, whose value a body of the entry's kind produced,
+/// declares more than `limit` distinct children, by its run or its value.
 fn declares_more_than(entry: &Entry, limit: u64, kinds: &Kinds) -> bool {
     let (Outcome::Value(value), Some(declaration)) = (&entry.outcome, &entry.declaration) else {
         return false;
@@ -53,5 +57,11 @@ fn declares_more_than(entry: &Entry, limit: u64, kinds: &Kinds) -> bool {
     let kind = kinds
         .get(declaration.kind())
         .expect("a node whose body ran has a kind the core was built with");
-    kind.steps(&**value).nth(first_past).is_some()
+    let by_run = entry.children_declared.iter().cloned();
+    let mut seen = BTreeSet::new();
+    by_run
+        .chain(kind.steps(&**value))
+        .filter(|step| seen.insert(step.clone()))
+        .nth(first_past)
+        .is_some()
 }
