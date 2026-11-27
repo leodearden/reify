@@ -6230,6 +6230,12 @@ fn compile_expr_guarded_with_expected_inner(
                 );
             }
 
+            if let Some(unit) = scope.source_unit()
+                && let Some(read) = source_unit_paths::compile_trait_qualified(member, scope, unit)
+            {
+                return read;
+            }
+
             // Resolve the member in the current scope (the structure should have it
             // because it conforms to the trait).
             match scope.resolve(member) {

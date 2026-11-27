@@ -619,6 +619,32 @@ fn member_reads_through_subs_and_cells_are_references() {
 }
 
 #[test]
+fn a_trait_qualified_read_of_an_own_member_is_a_reference() {
+    let module = compile_clean(PATHS_SOURCE);
+    let registry = template_registry(&module);
+    let mut scope = definition_scope(&module, &registry, "Plate");
+    let rating = std::iter::once("rating".to_string()).collect();
+    scope.trait_members.insert("Rated".to_string(), rating);
+
+    let (unit, diagnostics) = compile_unit("Rated::rating", &scope, &module);
+    assert!(errors_of(&diagnostics).is_empty(), "{diagnostics:?}");
+    let (reference, ty) = sole_reference(&unit);
+    assert_eq!(shape(reference), own_value(members(&["rating"])));
+    assert_eq!(ty, &Type::dimensionless_scalar());
+    assert!(
+        matches!(&unit.expr.kind, CompiledExprKind::ValueRef(id) if id == &reference.id),
+        "{:?}",
+        unit.expr
+    );
+
+    let (tree, _) = compile_existing("Rated::rating", &scope, &module);
+    assert!(
+        matches!(&tree.kind, CompiledExprKind::ValueRef(id) if id == &ValueCellId::new("Plate", "rating")),
+        "{tree:?}"
+    );
+}
+
+#[test]
 fn determinacy_tests_take_a_path_through_a_sub() {
     let module = compile_clean(PATHS_SOURCE);
     let registry = template_registry(&module);

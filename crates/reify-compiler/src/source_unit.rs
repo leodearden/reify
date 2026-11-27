@@ -152,6 +152,7 @@ pub fn compile_source_unit(
         .into_iter()
         .filter(|r| read.contains(&r.id))
         .collect();
+    debug_assert_reads_are_local(&read, &references);
     let instance_requests = instance_requests(&tree, &references);
     CompiledSourceUnit {
         expr: tree,
@@ -216,6 +217,22 @@ fn argument_unknown_read(
         .find(|r| &r.id == id)
         .filter(|r| matches!(r.read, ReferenceRead::ArgumentUnknown { .. }))
         .map(|r| r.id.clone())
+}
+
+/// The mode's invariant: every id the tree reads is a table entry or a
+/// binder minted under the unit's stamp, so no read names a definition. A
+/// form the mode's hooks miss reds here, naming the id it leaked.
+fn debug_assert_reads_are_local(read: &HashSet<ValueCellId>, references: &[LocalReference]) {
+    let binder_suffix = format!(".{LOCAL_REFERENCE_ENTITY}");
+    let leaked: Vec<&ValueCellId> = read
+        .iter()
+        .filter(|id| !references.iter().any(|r| &r.id == *id))
+        .filter(|id| !(id.entity.starts_with('$') && id.entity.ends_with(&binder_suffix)))
+        .collect();
+    debug_assert!(
+        leaked.is_empty(),
+        "a source unit reads ids that are neither local references nor its binders: {leaked:?}"
+    );
 }
 
 /// Every cell id the tree reads, lambda bodies included. A table entry minted

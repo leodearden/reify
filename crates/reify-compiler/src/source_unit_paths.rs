@@ -187,6 +187,20 @@ fn qualified_member(
     }
 }
 
+/// `Trait::member` in the source-unit mode, a read of a member the unit's
+/// definition declares: looked up as a bare name is, except never as a `let`
+/// of a sub's braces, since a trait's member is a definition's. `None` leaves
+/// the existing compile's handling of a member that is not a value.
+pub(crate) fn compile_trait_qualified(
+    member: &str,
+    scope: &CompilationScope,
+    recorder: &SourceUnitRecorder,
+) -> Option<CompiledExpr> {
+    let (root, steps, target) = declared_member(member, scope, recorder.names())?;
+    let ty = target.value_type()?;
+    Some(recorder.reference(root, steps, ReferenceRead::Value, ty))
+}
+
 /// The traits a definition declares conformance to.
 fn trait_bounds_of<'s>(definition: &str, scope: &'s CompilationScope) -> Option<&'s [String]> {
     match template_of(definition, scope) {
@@ -441,16 +455,9 @@ fn root_target<'s>(
     if name == "none" || binder(name, scope).is_some() {
         return Err(NotAPath::ByReceiverType);
     }
-    let (lets, declaring, (self_root, writer)) = match names {
-        SourceUnitNames::Own => {
-            let own = (ReferenceRoot::Own, scope);
-            (None, vec![own.clone()], own)
-        }
-        SourceUnitNames::Braces { lets, writer } => {
-            let writer = (ReferenceRoot::Writer, writer);
-            let own = (ReferenceRoot::Own, scope);
-            (Some(lets), vec![own, writer.clone()], writer)
-        }
+    let (lets, (self_root, writer)) = match names {
+        SourceUnitNames::Own => (None, (ReferenceRoot::Own, scope)),
+        SourceUnitNames::Braces { lets, writer } => (Some(lets), (ReferenceRoot::Writer, writer)),
     };
     if name == "self" {
         if !writer.is_entity_scope {
@@ -459,19 +466,34 @@ fn root_target<'s>(
         let target = Target::Instance(Definition::OfScope(writer));
         return Ok((self_root, Vec::new(), target));
     }
-    let steps = vec![SourceStep::Member(name.to_string())];
     if let Some(ty) = lets.and_then(|lets| lets.get(name)) {
+        let steps = vec![SourceStep::Member(name.to_string())];
         return Ok((ReferenceRoot::BracesLet, steps, Target::Cell(ty.clone())));
     }
-    for (root, declarer) in declaring {
-        if let Some(target) = own_member(name, declarer) {
-            return Ok((root, steps, target));
-        }
+    if let Some(rooted) = declared_member(name, scope, names) {
+        return Ok(rooted);
     }
     Err(if name == "meta" {
         NotAPath::Existing
     } else {
         NotAPath::ByReceiverType
+    })
+}
+
+/// A member a definition declares, looked up in the order `names` gives: the
+/// definition the scope describes, then, in a sub's braces, the writer.
+fn declared_member<'s>(
+    name: &str,
+    scope: &'s CompilationScope<'s>,
+    names: SourceUnitNames<'s>,
+) -> Option<Rooted<'s>> {
+    let mut declaring = vec![(ReferenceRoot::Own, scope)];
+    if let SourceUnitNames::Braces { writer, .. } = names {
+        declaring.push((ReferenceRoot::Writer, writer));
+    }
+    declaring.into_iter().find_map(|(root, declarer)| {
+        let target = own_member(name, declarer)?;
+        Some((root, vec![SourceStep::Member(name.to_string())], target))
     })
 }
 
