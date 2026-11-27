@@ -7,6 +7,10 @@
 //! holds reads `Undef` there unless it was bound (a param, a `let`, a capture,
 //! a sibling member).
 //!
+//! A replacing scope opened inside an extending one (a function called in a
+//! match arm, a lambda applied in a quantifier predicate) replaces that one
+//! too: it sees neither the arm's binder or the bound element nor the store.
+//!
 //! These tests pin that visibility through the public evaluator only, so any
 //! rework of how scopes are built has to keep it.
 
@@ -91,10 +95,14 @@ fn call_f(arg: i64) -> CompiledExpr {
     user_fn_call("f", vec![int(arg)], Type::Int)
 }
 
-fn eval_in_f(function: CompiledFunction, arg: i64) -> Value {
+fn eval_with_f(function: CompiledFunction, expr: &CompiledExpr) -> Value {
     let values = store();
     let functions = [function];
-    eval_expr(&call_f(arg), &EvalContext::new(&values, &functions))
+    eval_expr(expr, &EvalContext::new(&values, &functions))
+}
+
+fn eval_in_f(function: CompiledFunction, arg: i64) -> Value {
+    eval_with_f(function, &call_f(arg))
 }
 
 // ── (a) a user function body sees its params and lets, never the caller's cells
@@ -161,17 +169,14 @@ fn a_lambda_body_reads_a_captured_cell_from_its_captures() {
 
 const STRUCT: &str = "B";
 
-fn construct_b(
-    defaults: Vec<(&str, CompiledExpr)>,
-    lets: Vec<(&str, CompiledExpr)>,
-) -> StructureInstanceData {
+fn ctor_b(defaults: Vec<(&str, CompiledExpr)>, lets: Vec<(&str, CompiledExpr)>) -> CompiledExpr {
     let named = |members: Vec<(&str, CompiledExpr)>| {
         members
             .into_iter()
             .map(|(name, expr)| (name.to_string(), expr))
             .collect()
     };
-    let ctor = CompiledExpr::structure_instance_ctor(
+    CompiledExpr::structure_instance_ctor(
         reify_ir::StructureTypeId(0),
         STRUCT.to_string(),
         1,
@@ -181,18 +186,33 @@ fn construct_b(
         Vec::new(),
         None,
         Type::StructureRef(STRUCT.to_string()),
-    );
+    )
+}
+
+fn ghost_id() -> ValueCellId {
+    ValueCellId::new(STRUCT, "ghost")
+}
+
+/// Evaluate `expr`, which must build a `B`, over a store holding `B::ghost = 5`.
+fn construct(expr: &CompiledExpr) -> StructureInstanceData {
     let mut values = ValueMap::new();
-    values.insert(ValueCellId::new(STRUCT, "ghost"), Value::Int(STORE_VALUE));
-    match eval_expr(&ctor, &EvalContext::simple(&values)) {
+    values.insert(ghost_id(), Value::Int(STORE_VALUE));
+    match eval_expr(expr, &EvalContext::simple(&values)) {
         Value::StructureInstance(data) => *data,
         other => panic!("ctor must build a StructureInstance, got {other:?}"),
     }
 }
 
+fn construct_b(
+    defaults: Vec<(&str, CompiledExpr)>,
+    lets: Vec<(&str, CompiledExpr)>,
+) -> StructureInstanceData {
+    construct(&ctor_b(defaults, lets))
+}
+
 #[test]
 fn a_ctor_member_does_not_see_a_caller_cell_named_like_a_non_member() {
-    let data = construct_b(vec![("n", read(ValueCellId::new(STRUCT, "ghost")))], vec![]);
+    let data = construct_b(vec![("n", read(ghost_id()))], vec![]);
     assert_eq!(data.fields.get("n"), Some(&Value::Undef));
 }
 
@@ -229,17 +249,25 @@ fn a_match_binder_shadows_a_store_cell_with_the_same_id() {
 
 // ── (e) a value-iteration quantifier sees its element AND the caller's cells
 
-/// `exists e in [4, 5]: e == Probe::x` is true only if the predicate reads both
-/// the bound element and the store cell.
-fn exists_element_equal_to_store_cell() -> CompiledExpr {
-    let element = ValueCellId::new("$quant", "e");
+fn element_id() -> ValueCellId {
+    ValueCellId::new("$quant", "e")
+}
+
+/// `exists e in [4, 5]: e == right`, with `e` the cell [`element_id`].
+fn exists_element_equal_to(right: CompiledExpr) -> CompiledExpr {
     CompiledExpr::quantifier(
         QuantifierKind::Exists,
         "e".to_string(),
-        element.clone(),
+        element_id(),
         list_expr(vec![int(4), int(5)]),
-        equals(read(element), read(store_id())),
+        equals(read(element_id()), right),
     )
+}
+
+/// `exists e in [4, 5]: e == Probe::x` is true only if the predicate reads both
+/// the bound element and the store cell.
+fn exists_element_equal_to_store_cell() -> CompiledExpr {
+    exists_element_equal_to(read(store_id()))
 }
 
 #[test]
@@ -337,4 +365,105 @@ fn the_hook_in_a_function_body_sees_the_param_and_not_the_store() {
     assert_eq!(eval_with_hook(&call_f(3), &store_probe), Value::Undef);
     let param_probe = [function_f(vec![], probe("probe_param"))];
     assert_eq!(eval_with_hook(&call_f(3), &param_probe), Value::Int(3));
+}
+
+// ── (h) a sealed scope nested in an open one sees neither the open one nor the store
+
+#[test]
+fn a_function_called_in_a_match_arm_sees_neither_the_arm_binder_nor_a_store_cell() {
+    let in_arm = match_binding(binder_id(), call_f(3));
+    assert_eq!(
+        eval_with_f(function_f(vec![], read(binder_id())), &in_arm),
+        Value::Undef,
+        "the arm binder"
+    );
+    assert_eq!(
+        eval_with_f(function_f(vec![], read(store_id())), &in_arm),
+        Value::Undef,
+        "the store cell"
+    );
+}
+
+#[test]
+fn a_function_called_in_a_match_arm_is_handed_the_arm_binder_as_an_argument() {
+    let in_arm = match_binding(
+        binder_id(),
+        user_fn_call("f", vec![read(binder_id())], Type::Int),
+    );
+    assert_eq!(
+        eval_with_f(function_f(vec![], read(param_id())), &in_arm),
+        Value::Int(BINDER_VALUE)
+    );
+}
+
+#[test]
+fn a_ctor_built_in_a_match_arm_sees_neither_the_arm_binder_nor_a_store_cell() {
+    let ctor = ctor_b(
+        vec![("n", read(binder_id())), ("g", read(ghost_id()))],
+        vec![],
+    );
+    let data = construct(&match_binding(binder_id(), ctor));
+    assert_eq!(data.fields.get("n"), Some(&Value::Undef), "the arm binder");
+    assert_eq!(data.fields.get("g"), Some(&Value::Undef), "the store cell");
+}
+
+/// `map_or(some(0), 0, |p| body)`, the lambda capturing `captures`: a call that
+/// applies the lambda in the scope the call is evaluated in.
+fn apply_lambda_reading(body: CompiledExpr, captures: Vec<ValueCellId>) -> CompiledExpr {
+    let p = ValueCellId::new("$lambda0", "p");
+    let lambda = CompiledExpr::lambda(
+        vec![("p".to_string(), None)],
+        vec![p],
+        body,
+        captures,
+        Type::Function {
+            params: vec![Type::Int],
+            return_type: Box::new(Type::Int),
+        },
+    );
+    let some_zero = CompiledExpr::option_some(int(0), Type::Option(Box::new(Type::Int)));
+    user_fn_call("map_or", vec![some_zero, int(0), lambda], Type::Int)
+}
+
+fn eval_over_store(expr: &CompiledExpr) -> Value {
+    let values = store();
+    eval_expr(expr, &EvalContext::simple(&values))
+}
+
+#[test]
+fn a_lambda_applied_in_a_quantifier_predicate_sees_neither_the_element_nor_a_store_cell() {
+    let reads_element = exists_element_equal_to(apply_lambda_reading(read(element_id()), vec![]));
+    assert_eq!(eval_over_store(&reads_element), Value::Undef, "the element");
+    let reads_store = exists_element_equal_to(apply_lambda_reading(read(store_id()), vec![]));
+    assert_eq!(
+        eval_over_store(&reads_store),
+        Value::Undef,
+        "the store cell"
+    );
+}
+
+#[test]
+fn a_lambda_applied_in_a_quantifier_predicate_sees_the_element_it_captured() {
+    let captured =
+        exists_element_equal_to(apply_lambda_reading(read(element_id()), vec![element_id()]));
+    assert_eq!(eval_over_store(&captured), Value::Bool(true));
+}
+
+#[test]
+fn the_hook_in_a_function_called_in_a_match_arm_sees_the_param_only() {
+    let in_arm = match_binding(binder_id(), call_f(3));
+    let binder_probe = [function_f(vec![], probe("probe_binder"))];
+    assert_eq!(
+        eval_with_hook(&in_arm, &binder_probe),
+        Value::Undef,
+        "the arm binder"
+    );
+    let store_probe = [function_f(vec![], probe("probe_store"))];
+    assert_eq!(
+        eval_with_hook(&in_arm, &store_probe),
+        Value::Undef,
+        "the store cell"
+    );
+    let param_probe = [function_f(vec![], probe("probe_param"))];
+    assert_eq!(eval_with_hook(&in_arm, &param_probe), Value::Int(3));
 }

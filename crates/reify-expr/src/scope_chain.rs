@@ -210,6 +210,20 @@ mod tests {
     }
 
     #[test]
+    fn a_sealed_frame_opened_over_an_open_frame_hides_that_frames_bindings_and_the_reader() {
+        let store = map(&[("x", 5)]);
+        let open_bindings = map(&[("v", 7)]);
+        let sealed_bindings = map(&[("p", 1)]);
+        let open = ScopeChain::over(&store).open_frame(&open_bindings);
+        let sealed = open.chain().sealed_frame(&sealed_bindings);
+        let chain = sealed.chain();
+        assert_eq!(reads(chain, "p"), Value::Int(1));
+        assert_eq!(reads(chain, "v"), Value::Undef, "the open frame below");
+        assert_eq!(reads(chain, "x"), Value::Undef, "the reader");
+        assert_eq!(entries(&chain.visible_values()), entries(&sealed_bindings));
+    }
+
+    #[test]
     fn a_frame_enters_the_chain_it_was_opened_over_and_leaves_that_chain_unchanged() {
         let store = map(&[("x", 5)]);
         let outer_bindings = map(&[("y", 2)]);
