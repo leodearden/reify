@@ -1422,7 +1422,7 @@ v0.1 statement scope: `connect` and `constraint` only.
 
 **`undef` propagation:** Quantifiers follow Kleene semantics (iterated `and` / `or`). See Section 9.2.6 for the full truth table.
 
-**Guarded collections:** A quantifier over a `where`-guarded collection is subject to reference safety (Section 8.10) -- the quantifier must be under the same or stronger guard. When the guard is active, the quantifier operates on the collection's current contents. When the guard is inactive, the quantifier is absent from the evaluation graph entirely (not vacuously true -- simply not present).
+**Guarded collections:** A quantifier over a `where`-guarded collection compiles wherever it is written (§6.3). Where the guard holds, it operates on the collection's current contents. Where the collection is absent, it reads `undef`, not vacuously true. A quantifier that is itself under the collection's guard is absent with it.
 
 ### 5.5 Conditional Expressions
 
@@ -1774,18 +1774,27 @@ where needs_cooling {
 }
 ```
 
-**Reference safety rule:** Referencing a guarded entity from an unguarded context is a compile error. A reference is valid only if the referencing declaration's guard implies the referenced entity's guard.
+**Reading what may be absent.**
+
+- A member under a false guard is absent: no value, no verdict, and `self.children` and the like skip it. A guard that fails blocks the member it guards.
+- An undefined guard is not false. The member's presence is then undetermined, and it is counted with the undetermined verdicts.
+- A read of a member that may be absent compiles wherever it is written: in the member's own definition, under any guard or none, from another instance, in a guard's condition, and as a purpose's subject. Where the member is absent, or its presence is undetermined, the read gives `undef` (§9.2).
+- This composes with three-valued logic (§9.2.3): `constraint not needs_fan or self.fan.flow > 5` is satisfied where there is no fan.
+- A guard's condition is under the guards that enclose it, not under the guard it states. A nested guard is read only where the outer one holds.
+- A guard that reads the member it guards (`sub fan : Fan where self.fan.flow > 5`) is a compile error.
+- A name that no configuration declares is a compile error, like any unknown name.
+- To test presence alone, use `present(x)` (§9.4).
 
 ```
-where needs_cooling {
-    sub fan_mount : FanMount { size = 40mm }
+structure def Case {
+    param needs_fan : Bool = false
+    sub fan : Fan where needs_fan
+
+    // In a Case with no fan:
+    let f = self.fan.flow                              // undefined
+    constraint not needs_fan or self.fan.flow > 5      // satisfied
+    constraint self.fan.flow > 5 where needs_fan       // absent
 }
-
-// Compile error: fan_mount guarded by needs_cooling, case_width is not
-let case_width = fan_mount.width + 2 * wall_t
-
-// Valid: same guard covers the reference
-let case_width = fan_mount.width + 2 * wall_t where needs_cooling
 ```
 
 ### 6.4 `match` Blocks (Declaration-Level)
@@ -1807,7 +1816,9 @@ sub head : SocketHead where head_type == HeadType.Socket { ... }
 // ...
 ```
 
-**Same-name guarded declarations:** The desugaring produces multiple declarations with the same name (`head`) but different types. This is permitted when the guards are mutually exclusive (which exhaustive `match` guarantees). The declarations are treated as a single logical entity -- external references use the shared name (`self.head`), and the type at any reference site is the union of the possible types, narrowed by the active guard. This exception to the normal "one name per scope" rule applies only to declarations with provably mutually exclusive guards.
+**Same-name guarded declarations:** The desugaring produces multiple declarations with the same name (`head`) but different types. The declarations are treated as a single logical entity -- external references use the shared name (`self.head`), and the type at any reference site is the union of the possible types, narrowed by the active guard. This exception to the normal "one name per scope" rule does not depend on the guards being provably exclusive (an exhaustive `match` guarantees it, but nothing requires it): one name may be declared under guards the compiler cannot prove exclusive, and it compiles. At run time the name is present, as the declaration whose guard is true, when every other guard is false. Two present at once is a failure that names both. If all are false it is absent. An undefined guard leaves its presence undetermined.
+
+Two declarations of one name that give different kinds of member (a collection and a single sub) are a compile error. A read of a member that only some arms' definitions have compiles, and gives `undef` where the chosen arm lacks it (§6.3).
 
 Multiple variants with `|`: `Socket | Button => sub head : RecessedHead { ... }`.
 
@@ -2121,7 +2132,7 @@ structure def TreeBracket {
 
 ### 8.10 Guarded Declaration Reference Safety
 
-Referencing a guarded entity from an unguarded context is a compile error. A reference is valid only if the referencing declaration's guard implies the referenced entity's guard. Static implication check on boolean guard expressions.
+The rule that a reference to a guarded declaration must sit under a guard implying that declaration's guard was removed (ruling of 2026-11-26). Presence, and what a read of a member that may be absent gives, are defined in §6.3; one name under several guards is in §6.4.
 
 ### 8.11 Imports and Scoping
 
