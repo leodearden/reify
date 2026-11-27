@@ -47,6 +47,22 @@ EXCLUSIONS = IR_AND_CTOR_PATH + TEST_ONLY + CTOR_EQUIVALENT_PLACEHOLDERS
 GUI_TEST_ONLY = ("gui/src-tauri/src/tests/",)
 MASS_PROPERTIES_OWNER = "crates/reify-stdlib/src/dynamics/mass_props.rs"
 
+REIFY_EVAL_SOURCES = "crates/reify-eval/src/**/*.rs"
+SRC_TEST_ONLY_NAMES = ("*tests.rs", "*test_support*.rs")
+COMPUTE_TARGETS = "crates/reify-eval/src/compute_targets/"
+STDLIB_INPUTS = COMPUTE_TARGETS + "stdlib_inputs/"
+MODAL_OPS = "crates/reify-eval/src/modal_ops.rs"
+SHELL_EXTRACT = "crates/reify-eval/src/shell_extract_compute.rs"
+STDLIB_INPUTS_CONSUMERS = tuple(
+    COMPUTE_TARGETS + name for name in
+    ("elastic_static.rs", "buckling.rs", "as_printed_material.rs", "as_printed_material_r0.rs")
+) + (MODAL_OPS,)
+ELASTIC_MATERIAL_PARAMS = ("youngs_modulus", "poisson_ratio")
+PARAM_LABEL_ALLOWLIST = {
+    "youngs_modulus": (COMPUTE_TARGETS + "membrane_load.rs",
+                       COMPUTE_TARGETS + "tensegrity_load.rs"),
+}
+
 REGISTRY_FREE_LITERAL = re.compile(r"StructureTypeId\(\s*(?:u32::MAX|0)\s*\)")
 REGISTRY_META_BY_ID = re.compile(
     r"\.(?:meta|declared_bounds|name_for)\(\s*&?\s*"
@@ -115,18 +131,35 @@ def rows(root):
     )
 
 
+FAILED_CONSTRUCTION = "\n".join((
+    "    return ComputeOutcome::Failed {",
+    "        diagnostics,",
+    "        structured_detail: vec![],",
+    "    };"))
+
 FIXTURE_LINES = {
     "registry-free-literal": "    let id = StructureTypeId(u32::MAX);",
     "registry-free-placeholder": "    let id = StructureTypeId(0);",
     "registry-free-gui": "    let id = StructureTypeId(u32::MAX);",
     "registry-meta-by-id": "    let m = registry.meta(data.type_id);",
     "result-type-literal-mass-properties": '    let v = mint_instance("MassProperties", fields);',
+    "decoded-param-read-elastic-material-youngs-modulus":
+        '    let e = data.fields.get("youngs_modulus");',
+    "decoded-param-read-elastic-material-poisson-ratio":
+        '    let nu = data.fields.get("poisson_ratio");',
+    "read-scalar-si": "    let x = read_scalar_si(v);",
+    "modal-silent-zero": "    let m = masses.get(i).copied().unwrap_or(0.0);",
+    "inline-failed": FAILED_CONSTRUCTION,
+    "inline-failed-shell-extract": FAILED_CONSTRUCTION,
 }
 
 PRODUCER = "crates/demo/src/producer.rs"
 GUI_FILE = "gui/src-tauri/src/demo.rs"
 GUI_TEST_FILE = "gui/src-tauri/src/tests/demo_tests.rs"
 EXCLUDED_FILE = "crates/reify-ir/src/v.rs"
+EVAL_TRAMPOLINE = COMPUTE_TARGETS + "demo_trampoline.rs"
+ELASTIC_STATIC = STDLIB_INPUTS_CONSUMERS[0]
+MEMBRANE_LOAD = PARAM_LABEL_ALLOWLIST["youngs_modulus"][0]
 
 
 def sample_file(row_id):
@@ -134,12 +167,19 @@ def sample_file(row_id):
             "registry-free-placeholder": CTOR_EQUIVALENT_PLACEHOLDERS[-1],
             "registry-free-gui": GUI_FILE,
             "registry-meta-by-id": GUI_FILE,
-            "result-type-literal-mass-properties": PRODUCER}[row_id]
+            "result-type-literal-mass-properties": PRODUCER,
+            "decoded-param-read-elastic-material-youngs-modulus": EVAL_TRAMPOLINE,
+            "decoded-param-read-elastic-material-poisson-ratio": EVAL_TRAMPOLINE,
+            "read-scalar-si": MODAL_OPS,
+            "modal-silent-zero": MODAL_OPS,
+            "inline-failed": ELASTIC_STATIC,
+            "inline-failed-shell-extract": SHELL_EXTRACT}[row_id]
 
 
 def write_clean_twin(root):
     """Every row's scope, holding exactly `baseline` samples per row."""
-    for rel in (PRODUCER, GUI_FILE, MASS_PROPERTIES_OWNER) + CTOR_EQUIVALENT_PLACEHOLDERS:
+    for rel in ((PRODUCER, GUI_FILE, MASS_PROPERTIES_OWNER, EVAL_TRAMPOLINE, SHELL_EXTRACT)
+                + CTOR_EQUIVALENT_PLACEHOLDERS + STDLIB_INPUTS_CONSUMERS):
         write_file(root, rel, rust_fn())
     for row in rows(root):
         if row.baseline:
@@ -187,6 +227,25 @@ class ScanSet(TempRoot):
             self.write(rel, rust_fn())
         self.assertEqual(scan_set(self.root, (GUI_SOURCES,), GUI_TEST_ONLY), tuple(sorted(kept)))
 
+    def test_reify_eval_production_drops_test_only_names_and_other_crates(self):
+        kept = (MODAL_OPS, ELASTIC_STATIC, STDLIB_INPUTS + "mod.rs")
+        dropped = ("crates/reify-eval/src/engine_build/tests.rs",
+                   COMPUTE_TARGETS + "elastic_static_tests.rs",
+                   STDLIB_INPUTS + "test_support.rs",
+                   "crates/reify-eval/src/realization_read_test_support.rs",
+                   "crates/reify-compiler/src/other.rs")
+        for rel in kept + dropped:
+            self.write(rel, rust_fn())
+        self.assertEqual(reify_eval_production(self.root), tuple(sorted(kept)))
+
+    def test_reify_eval_production_drops_excluded_entries(self):
+        kept = (MODAL_OPS,)
+        dropped = (STDLIB_INPUTS + "mod.rs", MEMBRANE_LOAD)
+        for rel in kept + dropped:
+            self.write(rel, rust_fn())
+        self.assertEqual(reify_eval_production(self.root, (STDLIB_INPUTS, MEMBRANE_LOAD)),
+                         kept)
+
 
 class RowsFlagAndClear(TempRoot):
 
@@ -225,6 +284,33 @@ REGISTRY_FREE_NOT_COUNTED = (
     Case(rust_fn("    let id = StructureTypeId(0);"), rel=EXCLUDED_FILE),
 )
 
+def decoded_param_not_counted(param):
+    read = f'let v = data.fields.get("{param}");'
+    return (
+        Case(rust_fn(f'    // data.fields.get("{param}")')),
+        Case(rust_fn(f'    /// read_field(material, "{param}", &spec)')),
+        Case(rust_fn(f'    let s = r#"fields.get("{param}")"#;')),
+        Case(cfg_test_module(read)),
+        Case(rust_fn("    " + read), rel=STDLIB_INPUTS + "elastic_material.rs"),
+        Case(rust_fn("    " + read), rel=COMPUTE_TARGETS + "elastic_static_tests.rs"),
+        Case(rust_fn("    " + read), rel="crates/reify-eval/src/realization_read_test_support.rs"),
+        Case(rust_fn("    " + read), rel="crates/reify-solver-elastic/src/material.rs"),
+    ) + tuple(Case(rust_fn("    " + read), rel=rel)
+              for rel in PARAM_LABEL_ALLOWLIST.get(param, ()))
+
+
+INLINE_FAILED_NOT_COUNTED = (
+    Case(rust_fn("    let failed = matches!(o, ComputeOutcome::Failed { .. });")),
+    Case(rust_fn("    if let ComputeOutcome::Failed { diagnostics, .. } = o {",
+                 "        drop(diagnostics);",
+                 "    }")),
+    Case(rust_fn("    // return ComputeOutcome::Failed {")),
+    Case(rust_fn('    let s = "ComputeOutcome::Failed { diagnostics: vec![] }";')),
+    Case(cfg_test_module("let o = ComputeOutcome::Failed { diagnostics: vec![], "
+                         "structured_detail: vec![] };")),
+    Case(rust_fn("    return e.into_failed(TARGET);")),
+)
+
 NOT_COUNTED = {
     "registry-free-literal": REGISTRY_FREE_NOT_COUNTED,
     "registry-free-placeholder": REGISTRY_FREE_NOT_COUNTED,
@@ -250,12 +336,63 @@ NOT_COUNTED = {
         Case(rust_fn('    let v = mint_instance("MassProperties", fields);'),
              rel=MASS_PROPERTIES_OWNER),
     ),
+    "decoded-param-read-elastic-material-youngs-modulus":
+        decoded_param_not_counted("youngs_modulus"),
+    "decoded-param-read-elastic-material-poisson-ratio":
+        decoded_param_not_counted("poisson_ratio"),
+    "read-scalar-si": (
+        Case(rust_fn("    // read_scalar_si(v) is gone")),
+        Case(rust_fn('    let s = "read_scalar_si";')),
+        Case(rust_fn("    let x = read_scalar_si_checked(v);")),
+        Case(cfg_test_module("let x = read_scalar_si(v);")),
+        Case(rust_fn("    let x = read_scalar_si(v);"),
+             rel="crates/reify-eval/src/geometry_ops/tests.rs"),
+        Case(rust_fn("    let x = read_scalar_si(v);"), rel="crates/reify-eval-fea/src/lib.rs"),
+    ),
+    "modal-silent-zero": (
+        Case(rust_fn("    // unwrap_or(0.0)")),
+        Case(rust_fn('    let s = "unwrap_or(0.0) / _ => 0.0, / [0.0; 3]";')),
+        Case(rust_fn("    let x = v.unwrap_or(0.05);")),
+        Case(rust_fn("    let a = [0.05; 3];")),
+        Case(rust_fn("    let x = match v {",
+                     "        Some(x) => x,",
+                     "        _ => 0.05,",
+                     "    };")),
+        Case(rust_fn("    let acc = vec![0.0_f64; n];")),
+        Case(cfg_test_module("let x = v.unwrap_or(0.0);")),
+        Case(rust_fn("    let x = v.unwrap_or(0.0);"), rel=ELASTIC_STATIC),
+    ),
+    "inline-failed": INLINE_FAILED_NOT_COUNTED + (
+        Case(rust_fn(FAILED_CONSTRUCTION), rel=STDLIB_INPUTS + "mod.rs"),
+        Case(rust_fn(FAILED_CONSTRUCTION), rel=SHELL_EXTRACT),
+    ),
+    "inline-failed-shell-extract": INLINE_FAILED_NOT_COUNTED + (
+        Case(rust_fn(FAILED_CONSTRUCTION), rel=ELASTIC_STATIC),
+    ),
 }
 
 REGISTRY_FREE_COUNTED = ((3, Case(rust_fn(
     "    let a = StructureTypeId(u32::MAX);",
     "    let b = StructureTypeId( 0 );",
     "    let c = reify_ir::StructureTypeId(0);"))),)
+
+def decoded_param_counted(param):
+    return ((4, Case(rust_fn(
+        f'    let a = data.fields.get("{param}");',
+        f'    let b = read_field(material, "{param}", &spec);',
+        f'    let c = accept_field(data, "{param}", &spec);',
+        "    let d = modulus_field(",
+        "        data,",
+        f'        "{param}",',
+        "    );"))),)
+
+
+INLINE_FAILED_COUNTED = ((2, Case(rust_fn(
+    "    return ComputeOutcome::Failed {",
+    "        diagnostics: vec![d],",
+    "        structured_detail: vec![],",
+    "    };",
+    "    let q = crate::ComputeOutcome::Failed { diagnostics: vec![], structured_detail: vec![] };"))),)
 
 COUNTED = {
     "registry-free-literal": REGISTRY_FREE_COUNTED,
@@ -284,6 +421,26 @@ COUNTED = {
             "        f,",
             "    );"))),
     ),
+    "decoded-param-read-elastic-material-youngs-modulus": decoded_param_counted("youngs_modulus"),
+    "decoded-param-read-elastic-material-poisson-ratio": decoded_param_counted("poisson_ratio") + (
+        (1, Case(rust_fn('    let nu = data.fields.get("poisson_ratio");'), rel=MEMBRANE_LOAD)),
+    ),
+    "read-scalar-si": (
+        (2, Case("fn read_scalar_si(v: &Value) -> f64 {\n    1.0\n}\n"
+                 + rust_fn("    let x = read_scalar_si(v);"))),
+        (1, Case(rust_fn("    let x = read_scalar_si(v);"), rel=STDLIB_INPUTS + "mod.rs")),
+    ),
+    "modal-silent-zero": ((3, Case(rust_fn(
+        "    let a = v.unwrap_or(0.0);",
+        "    let b = match v {",
+        "        Some(x) => x,",
+        "        _ => 0.0,",
+        "    };",
+        "    let c = shape.get(node).copied().unwrap_or([0.0; 3]);"))),),
+    "inline-failed": INLINE_FAILED_COUNTED + (
+        (1, Case(rust_fn(FAILED_CONSTRUCTION), rel=STDLIB_INPUTS_CONSUMERS[1])),
+    ),
+    "inline-failed-shell-extract": INLINE_FAILED_COUNTED,
 }
 
 
@@ -314,9 +471,23 @@ class RowExclusions(TempRoot):
 class LiveTree(unittest.TestCase):
 
     def test_every_exclusion_names_a_live_path(self):
-        for entry in EXCLUSIONS + GUI_TEST_ONLY + (MASS_PROPERTIES_OWNER,):
+        allowlisted = tuple(rel for rels in PARAM_LABEL_ALLOWLIST.values() for rel in rels)
+        for entry in (EXCLUSIONS + GUI_TEST_ONLY + (MASS_PROPERTIES_OWNER, STDLIB_INPUTS)
+                      + allowlisted):
             with self.subTest(entry):
                 self.assertTrue((REPO_ROOT / entry).exists(), f"{entry} names no path")
+
+    def test_every_allowlisted_pair_still_spells_its_param(self):
+        for param, rels in PARAM_LABEL_ALLOWLIST.items():
+            for rel in rels:
+                with self.subTest(param=param, rel=rel):
+                    probe = rcr.Row(row_id=f"allowlist-probe-{param}",
+                                    construct=param_literal(param),
+                                    view=rcr.View.STARTS_IN_CODE, paths=(rel,),
+                                    baseline=0, target=0, lowered_by="allowlist liveness")
+                    (result,) = rcr.evaluate((probe,), REPO_ROOT)
+                    self.assertGreater(result.count, 0,
+                                       f"stale allowlist entry: {rel} no longer spells {param!r}")
 
     def test_every_row_sits_exactly_at_its_baseline(self):
         for result in rcr.evaluate(rows(REPO_ROOT), REPO_ROOT):
