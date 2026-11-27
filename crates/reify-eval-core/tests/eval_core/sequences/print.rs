@@ -2,7 +2,7 @@
 //! call of design.rs's constructors or an enum variant, so a failing case
 //! found by the random run can be pasted in as a named test.
 
-use reify_eval_core::{Limit, Space, Step, StepKey};
+use reify_eval_core::{Limit, Link, Space, Step, StepKey};
 
 use super::case::{Case, HostEvent, Then};
 use super::design::{
@@ -58,12 +58,17 @@ fn list(items: impl Iterator<Item = String>) -> String {
 }
 
 /// A step as the call that rebuilds it, space and all: design.rs's
-/// constructors make only default-space steps, so a step in a named space
-/// prints as the core's own constructor.
+/// constructors make only default-space names and indices, so a chain, or
+/// a step in a named space, prints as the core's own constructor.
 fn step_text(step: &Step) -> String {
     match (step.space(), step.key()) {
         (Space::Default, StepKey::Name(name)) => format!("step({:?})", &**name),
         (Space::Default, StepKey::Index(index)) => format!("index({index})"),
+        (space, StepKey::Chain(links)) => format!(
+            "reify_eval_core::Step::chain({}, [{}])",
+            space_text(space),
+            list(links.iter().map(link_text))
+        ),
         (Space::Named(space), key) => format!(
             "reify_eval_core::Step::new(reify_eval_core::Space::Named({space:?}), {})",
             step_key_text(key)
@@ -75,6 +80,24 @@ fn step_key_text(key: &StepKey) -> String {
     match key {
         StepKey::Name(name) => format!("reify_eval_core::StepKey::Name({:?}.into())", &**name),
         StepKey::Index(index) => format!("reify_eval_core::StepKey::Index({index})"),
+        StepKey::Chain(links) => format!(
+            "reify_eval_core::StepKey::Chain([{}].into())",
+            list(links.iter().map(link_text))
+        ),
+    }
+}
+
+fn space_text(space: Space) -> String {
+    match space {
+        Space::Default => String::from("reify_eval_core::Space::Default"),
+        Space::Named(name) => format!("reify_eval_core::Space::Named({name:?})"),
+    }
+}
+
+fn link_text(link: &Link) -> String {
+    match link {
+        Link::Site(site) => format!("reify_eval_core::Link::Site({site})"),
+        Link::Iteration(index) => format!("reify_eval_core::Link::Iteration({index})"),
     }
 }
 

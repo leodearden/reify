@@ -19,6 +19,18 @@ pub enum Space {
 pub enum StepKey {
     Name(Arc<str>),
     Index(u64),
+    /// The chain of call sites and iteration indices from a body's own
+    /// expression to the place it declares a child (contract 7.1).
+    Chain(Arc<[Link]>),
+}
+
+/// One link of a chain: a call site, or an index of an iteration, each
+/// numbered by the kind that declares the child. The core only compares
+/// them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Link {
+    Site(u64),
+    Iteration(u64),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -42,6 +54,12 @@ impl Step {
         Self::new(Space::Default, StepKey::Index(index))
     }
 
+    /// The chain of `links` in `space`: the step of a child a body
+    /// declares.
+    pub fn chain(space: Space, links: impl IntoIterator<Item = Link>) -> Self {
+        Self::new(space, StepKey::Chain(links.into_iter().collect()))
+    }
+
     pub fn space(&self) -> Space {
         self.space
     }
@@ -58,6 +76,18 @@ impl Step {
         match &self.key {
             StepKey::Name(name) => encoder.tag("step.named").text(name),
             StepKey::Index(index) => encoder.tag("step.index").number(*index),
+            StepKey::Chain(links) => encoder
+                .tag("step.chain")
+                .sequence(links.iter(), |encoder, link| link.encode(encoder)),
+        };
+    }
+}
+
+impl Link {
+    fn encode(&self, encoder: &mut Encoder) {
+        match self {
+            Link::Site(site) => encoder.tag("link.site").number(*site),
+            Link::Iteration(index) => encoder.tag("link.iteration").number(*index),
         };
     }
 }

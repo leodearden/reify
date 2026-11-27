@@ -75,7 +75,8 @@ fn a_declaration_s_content_follows_its_kind_and_bindings() {
 
 #[test]
 fn a_chain_step_s_links_and_space_enter_a_declaration_s_content() {
-    let declaring = |step: Step| Declaration::new(Cell::ID).bind("0", Binding::Declarer(vec![step]));
+    let declaring =
+        |step: Step| Declaration::new(Cell::ID).bind("0", Binding::Declarer(vec![step]));
     let chain = |space: Space, links: &[Link]| declaring(Step::chain(space, links.iter().copied()));
     let call = Space::Named("toy.call");
 

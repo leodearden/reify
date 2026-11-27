@@ -76,5 +76,5 @@ pub use reference::Ref;
 pub use requests::Request;
 pub use section::Section;
 pub use snapshot::{Snapshot, SnapshotId};
-pub use step::{Space, Step, StepKey};
+pub use step::{Link, Space, Step, StepKey};
 pub use store::{Store, StoredResult};

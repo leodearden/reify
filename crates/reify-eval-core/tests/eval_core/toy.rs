@@ -12,9 +12,9 @@ use std::thread::{self, ThreadId};
 
 use reify_eval_core::{
     Answer, Binding, Budget, Builder, Core, Cx, Declaration, Demand, DuplicateKind, Erased, Event,
-    Failure, Hash128, Held, Input, InputKey, Kind, KindId, Limit, Outcome, OutsideFailure, Path,
-    Produced, Ref, Release, Request, RequestId, Root, Section, Snapshot, Space, Step, StepKey,
-    Turn, Value,
+    Failure, Hash128, Held, Input, InputKey, Kind, KindId, Limit, Link, Outcome, OutsideFailure,
+    Path, Produced, Ref, Release, Request, RequestId, Root, Section, Snapshot, Space, Step,
+    StepKey, Turn, Value,
 };
 
 /// The content a test gives the core for one of its values: a hash of
@@ -54,8 +54,8 @@ impl Contented for Declaration {
     }
 }
 
-/// A test's own encoding of a step: its space, then a tag and the name or
-/// the index.
+/// A test's own encoding of a step: its space, then a tag and the name,
+/// the index or the chain's links.
 pub fn step_bytes(step: &Step) -> Vec<u8> {
     let space = match step.space() {
         Space::Default => b"d".to_vec(),
@@ -64,6 +64,18 @@ pub fn step_bytes(step: &Step) -> Vec<u8> {
     let key = match step.key() {
         StepKey::Name(name) => [b"n", &name.len().to_le_bytes()[..], name.as_bytes()].concat(),
         StepKey::Index(index) => [b"i", &index.to_le_bytes()[..]].concat(),
+        StepKey::Chain(links) => {
+            let mut bytes = [&b"c"[..], &links.len().to_le_bytes()].concat();
+            for link in links.iter() {
+                let (tag, number) = match link {
+                    Link::Site(site) => (b's', site),
+                    Link::Iteration(index) => (b't', index),
+                };
+                bytes.push(tag);
+                bytes.extend_from_slice(&number.to_le_bytes());
+            }
+            bytes
+        }
     };
     [space, key].concat()
 }
