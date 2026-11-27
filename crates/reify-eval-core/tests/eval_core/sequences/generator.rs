@@ -959,16 +959,17 @@ fn of_kind(siblings: &[Sibling], kind: ToyKind) -> Vec<usize> {
 }
 
 mod tests {
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
 
     use reify_eval_core::Failure;
 
     use super::super::case::{Case, HostEvent, Then};
-    use super::super::design::{Bind, Decl, Key, PartType, ToyKind, Val};
+    use super::super::design::{Bind, Decl, Key, ModelPath, PartType, ToyKind, Val};
     use super::super::expected::{Expect, Invalid};
     use super::super::reference::{Reference, first_invalid};
     use super::{
         BLOCKED_PAIR_ZERO, Features, GATE_EVENTS, GATE_SEEDS, gate_case, gate_cases, generate,
+        is_group_step,
     };
 
     /// Every input value a case sets, initially or by an edit.
@@ -983,16 +984,18 @@ mod tests {
         case.inputs.iter().chain(edited).collect()
     }
 
+    /// The declarations `value` holds directly.
+    fn within(value: &Val) -> Vec<&Decl> {
+        match value {
+            Val::Decl(decl) => vec![decl],
+            Val::Members(members) => members.values().collect(),
+            Val::Calls(sites) => sites.iter().map(|site| &site.callee).collect(),
+            Val::Int(_) | Val::Bool(_) | Val::Bound(_) | Val::Problem(_) => Vec::new(),
+        }
+    }
+
     /// Every declaration a case holds, members' members included.
     fn decls(case: &Case) -> Vec<&Decl> {
-        fn within(value: &Val) -> Vec<&Decl> {
-            match value {
-                Val::Decl(decl) => vec![decl],
-                Val::Members(members) => members.values().collect(),
-                Val::Calls(sites) => sites.iter().map(|site| &site.callee).collect(),
-                Val::Int(_) | Val::Bool(_) | Val::Bound(_) | Val::Problem(_) => Vec::new(),
-            }
-        }
         values(case)
             .into_iter()
             .flat_map(|(_, value)| within(value))
@@ -1138,94 +1141,128 @@ mod tests {
         }
     }
 
-    /// A fingerprint of `case`: FNV-1a over its debug text.
-    fn fingerprint(case: &Case) -> u64 {
-        let text = format!("{case:?}");
-        text.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
-            (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
-        })
+    /// The names of the inputs the solve groups of `case` reach, through
+    /// their bindings and the values of the inputs those name: the inputs
+    /// the solve feature drew.
+    fn solve_inputs(case: &Case) -> BTreeSet<String> {
+        let mut named: BTreeMap<&str, Vec<&Val>> = BTreeMap::new();
+        for (key, value) in values(case) {
+            if let Key::Named(name) = key {
+                named.entry(name).or_default().push(value);
+            }
+        }
+        let mut unvisited: Vec<&Decl> = values(case)
+            .into_iter()
+            .flat_map(|(_, value)| match value {
+                Val::Members(members) => members
+                    .iter()
+                    .filter(|(at, _)| is_group_step(at))
+                    .map(|(_, group)| group)
+                    .collect(),
+                _ => Vec::new(),
+            })
+            .collect();
+        let mut reached = BTreeSet::new();
+        while let Some(decl) = unvisited.pop() {
+            for bind in decl.bindings.values() {
+                match bind {
+                    Bind::Input(name) if reached.insert(name.clone()) => {
+                        let held = named.get(name.as_str()).into_iter().flatten();
+                        unvisited.extend(held.flat_map(|value| within(value)));
+                    }
+                    Bind::Constant(value) => unvisited.extend(within(value)),
+                    _ => {}
+                }
+            }
+        }
+        reached
     }
 
-    /// The fingerprint of each gate seed's case, in order, as the
-    /// generator drew it with every feature before the solve feature
-    /// existed (leaf ι).
-    const BEFORE_SOLVE: [u64; 64] = [
-        0x0455c81721f022cc,
-        0xcc1eb15296a74a59,
-        0x80ed6a8b0cb942cd,
-        0xbacfb99ca655859c,
-        0x6b445fe3d2e752c5,
-        0x9489b8783eea8154,
-        0x0b19a01cb7112896,
-        0x5fe1b7581acd651c,
-        0xb310d30cf8de21c7,
-        0x6cb380adae69b717,
-        0x1242ca1843587d9e,
-        0xb07f3a121a650d55,
-        0xf0b6a8a2c5851c40,
-        0x6ce7ecbe82806987,
-        0x18a14314565cbbc8,
-        0xe0eeb7e4dfcef89e,
-        0x8c416d61dc9f3ae5,
-        0x0dab9f6a46ed5e4c,
-        0x02a311b63ff82bdf,
-        0x274005af827b9907,
-        0xda017719ca0db424,
-        0xc675596680fd1d85,
-        0x20986ceb5ed49e23,
-        0x644a1e305b7f4366,
-        0x9ed4b40eaf50ebfb,
-        0xf7ef0654a9a7da0a,
-        0xc8aac38020920171,
-        0xdb47a2b07f54f205,
-        0xb24de29144cc582d,
-        0x7ca5fdc9ade79417,
-        0x98f0ba90f571f75e,
-        0x0aec668d0188c92c,
-        0xb96fe880501a64a2,
-        0x069d6c64f6ef431a,
-        0x4a4155fc5cee5765,
-        0x49f5cbb2d2a79dcf,
-        0x9a908c40e8c90830,
-        0x9d8b7f41151738bd,
-        0xebacb083027f6b7e,
-        0x78d8a3b9f1c78633,
-        0x21869731fe5f4dd8,
-        0xd2430d6ac272a219,
-        0x2ab6fa2e9e00362a,
-        0x42865c56f15fc1e1,
-        0xac520093462441a4,
-        0x72c00d90060d2874,
-        0xbc4fbe5313eb1c9f,
-        0x03325ee034a3231f,
-        0xac7b0cff91cfb453,
-        0x4a49f7e315281f42,
-        0x532698737095df07,
-        0xb9c8e9c47794be10,
-        0x5f781765b41d51bf,
-        0x5d95b0949e8f3da5,
-        0x2aa05bf363ba2781,
-        0xe78ced7f812920b2,
-        0x6319bcfeea0e2f2c,
-        0xfc35f1bd8f2ade5f,
-        0xa478d214b2cfb090,
-        0x5a7912d16c20fd5f,
-        0x2a353867997e35c4,
-        0x8051f61de0b81c70,
-        0x9e5f9efce2f2bc7d,
-        0x6da27425b4d7447b,
-    ];
+    /// `case` with what the solve feature drew taken out: each solve group,
+    /// a member at its own step of a members value; the inputs the groups
+    /// reach, and every change to one; and each demanded path at or below
+    /// a group.
+    fn without_solve(case: &Case) -> Case {
+        let drawn = solve_inputs(case);
+        let kept = |key: &Key| !matches!(key, Key::Named(name) if drawn.contains(name));
+        let strip = |value: &Val| match value {
+            Val::Members(members) => {
+                let outside = members.iter().filter(|(at, _)| !is_group_step(at));
+                let outside = outside.map(|(at, decl)| (at.clone(), decl.clone()));
+                Val::Members(outside.collect())
+            }
+            other => other.clone(),
+        };
+        let outside = |paths: &[ModelPath]| -> Vec<ModelPath> {
+            let outside = |path: &&ModelPath| !path.steps.iter().any(is_group_step);
+            paths.iter().filter(outside).cloned().collect()
+        };
+        let inputs = case
+            .inputs
+            .iter()
+            .filter(|(key, _)| kept(key))
+            .map(|(key, value)| (key.clone(), strip(value)))
+            .collect();
+        let events = case
+            .events
+            .iter()
+            .map(|event| match event {
+                HostEvent::Edit { from, changes } => HostEvent::Edit {
+                    from: *from,
+                    changes: changes
+                        .iter()
+                        .filter(|(key, _)| kept(key))
+                        .map(|(key, value)| (key.clone(), value.as_ref().map(strip)))
+                        .collect(),
+                },
+                HostEvent::Evaluate {
+                    on,
+                    paths,
+                    budget,
+                    then,
+                } => HostEvent::Evaluate {
+                    on: *on,
+                    paths: outside(paths),
+                    budget: *budget,
+                    then: *then,
+                },
+                HostEvent::Drive {
+                    on,
+                    paths,
+                    turns,
+                    then,
+                } => HostEvent::Drive {
+                    on: *on,
+                    paths: outside(paths),
+                    turns: *turns,
+                    then: *then,
+                },
+            })
+            .collect();
+        Case { inputs, events }
+    }
 
+    /// The solve feature draws from a stream of its own and names its
+    /// inputs apart, so a case drawn with it on, its draws taken out, is
+    /// the case drawn with it off: turning it on shifts no other feature's
+    /// draws, which would lose a shape the gate reached.
     #[test]
-    fn with_solve_off_the_cases_of_the_other_features_are_unchanged() {
+    fn with_solve_on_the_other_features_draw_as_they_do_with_it_off() {
         let solve_off = Features {
             solve: false,
             ..Features::every()
         };
-        for (seed, before) in GATE_SEEDS.zip(BEFORE_SOLVE) {
-            let case = generate(seed, solve_off, GATE_EVENTS);
-            assert_eq!(fingerprint(&case), before, "seed {seed}: {case:?}");
+        let mut with_a_group = 0;
+        for seed in GATE_SEEDS {
+            let case = generate(seed, Features::every(), GATE_EVENTS);
+            with_a_group += usize::from(!solve_inputs(&case).is_empty());
+            assert_eq!(
+                without_solve(&case),
+                generate(seed, solve_off, GATE_EVENTS),
+                "seed {seed}"
+            );
         }
+        assert!(with_a_group > 0, "no gate case draws a solve group");
     }
 
     #[test]
