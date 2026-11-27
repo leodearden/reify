@@ -1,3 +1,277 @@
+//! The decode of a compute trampoline's stdlib inputs (PRD
+//! `docs/prds/v0_6/trampoline-decode-and-result-build.md` §4 C1/C2).
+//!
+//! A trampoline reads each `value_inputs` entry through a reader here, or
+//! through a [`DecodeStdlibInput`] decoder for a trait-typed input. Every
+//! reader fails with the ONE error type, [`InputDecodeError`], and
+//! [`InputDecodeError::into_failed`] is the one point where that error becomes
+//! a `ComputeOutcome::Failed`. Dimension policy comes only from
+//! `arg_acceptance` spec constructors, passed down by the caller.
+
+use reify_core::{Diagnostic, DiagnosticCode};
+use reify_ir::{StructureInstanceData, Value};
+
+use crate::ComputeOutcome;
+use crate::arg_acceptance::{
+    Acceptance, ArgRejection, ArgSpec, FieldAcceptance, FieldRejection, accept_arg, accept_field,
+};
+
+mod elastic_material;
+
+pub(crate) use elastic_material::{extract_material, isotropic_from_data};
+
+/// A stdlib structure (or trait) a trampoline decodes from one input `Value`.
+pub(crate) trait DecodeStdlibInput: Sized {
+    /// The name every path the decoder emits starts with: the trait name for
+    /// a trait-typed input, never a conformer's concrete `type_name`.
+    const STRUCTURE: &'static str;
+
+    /// Decode from an already-destructured instance.
+    fn decode_fields(data: &StructureInstanceData) -> Result<Self, InputDecodeError>;
+
+    /// Decode from the input `Value`: an `Undef` input is unresolved, and any
+    /// other non-structure is not a structure.
+    fn decode(value: &Value) -> Result<Self, InputDecodeError> {
+        match value {
+            Value::StructureInstance(data) => Self::decode_fields(data),
+            Value::Undef => Err(InputDecodeError::new(
+                Self::STRUCTURE,
+                None,
+                DecodeFailure::Unresolved,
+            )),
+            other => Err(InputDecodeError::not_a_structure(
+                Self::STRUCTURE,
+                None,
+                other,
+            )),
+        }
+    }
+}
+
+/// Why a stdlib input could not be decoded, and where: `input` names what was
+/// decoded (a structure or trait, a positional param, or a Rust-minted
+/// payload), `field` the field inside it, if any.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct InputDecodeError {
+    pub input: &'static str,
+    pub field: Option<&'static str>,
+    pub failure: DecodeFailure,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum DecodeFailure {
+    /// A defined value where a structure instance belongs.
+    NotAStructure { got: String },
+    /// A declared non-`Option` field that is absent or `none`.
+    Missing,
+    /// A value that has not resolved yet (`Undef`): not a mistake.
+    Unresolved,
+    /// A defined value of the wrong shape: not a number, the wrong arity, a
+    /// non-finite datum, a frame that does not decode.
+    WrongShape { expected: &'static str, got: String },
+    /// A number the position's `ArgSpec` refuses; the rejection names its
+    /// own path.
+    Rejected(FieldRejection),
+    /// A structure whose kind the trampoline does not support.
+    UnsupportedKind { kind: String },
+}
+
+impl InputDecodeError {
+    pub(crate) fn new(
+        input: &'static str,
+        field: Option<&'static str>,
+        failure: DecodeFailure,
+    ) -> Self {
+        Self {
+            input,
+            field,
+            failure,
+        }
+    }
+
+    pub(crate) fn not_a_structure(
+        input: &'static str,
+        field: Option<&'static str>,
+        got: &Value,
+    ) -> Self {
+        Self::new(
+            input,
+            field,
+            DecodeFailure::NotAStructure {
+                got: format!("{got:?}"),
+            },
+        )
+    }
+
+    pub(crate) fn missing(input: &'static str, field: &'static str) -> Self {
+        Self::new(input, Some(field), DecodeFailure::Missing)
+    }
+
+    pub(crate) fn wrong_shape(
+        input: &'static str,
+        field: Option<&'static str>,
+        expected: &'static str,
+        got: String,
+    ) -> Self {
+        Self::new(input, field, DecodeFailure::WrongShape { expected, got })
+    }
+
+    /// Lift a legacy reader's bare `FieldRejection`, which names its own path,
+    /// read inside `input`.
+    pub(crate) fn refused(input: &'static str, rejection: FieldRejection) -> Self {
+        Self::new(input, None, DecodeFailure::Rejected(rejection))
+    }
+
+    pub(crate) fn is_unresolved(&self) -> bool {
+        self.failure == DecodeFailure::Unresolved
+    }
+
+    /// The `Failed` outcome of `target` for this error: a refused number is
+    /// `DimensionedArgRejected` in the shared rejection wording, an
+    /// unsupported kind `FeaLoadKindUnsupported`, any other defined fault
+    /// `ComputeInputMalformed`, and an unresolved input fails quietly, with
+    /// no diagnostic.
+    pub(crate) fn into_failed(self, target: &str) -> ComputeOutcome {
+        let diagnostic = match &self.failure {
+            DecodeFailure::Unresolved => None,
+            DecodeFailure::Rejected(rejection) => Some(rejection.to_error(target)),
+            DecodeFailure::UnsupportedKind { .. } => Some(
+                Diagnostic::error(format!("{target}: {self}"))
+                    .with_code(DiagnosticCode::FeaLoadKindUnsupported),
+            ),
+            DecodeFailure::NotAStructure { .. }
+            | DecodeFailure::Missing
+            | DecodeFailure::WrongShape { .. } => Some(
+                Diagnostic::error(format!("{target}: {self}"))
+                    .with_code(DiagnosticCode::ComputeInputMalformed),
+            ),
+        };
+        ComputeOutcome::Failed {
+            diagnostics: diagnostic.into_iter().collect(),
+            structured_detail: vec![],
+        }
+    }
+}
+
+/// `"{input}[.{field}]: {reason}"`; a rejection renders in the shared
+/// rejection wording, which names its own path.
+impl std::fmt::Display for InputDecodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let DecodeFailure::Rejected(rejection) = &self.failure {
+            return write!(f, "{rejection}");
+        }
+        f.write_str(self.input)?;
+        if let Some(field) = self.field {
+            write!(f, ".{field}")?;
+        }
+        match &self.failure {
+            DecodeFailure::NotAStructure { got } => write!(f, ": expected a structure, got {got}"),
+            DecodeFailure::Missing => f.write_str(": missing"),
+            DecodeFailure::Unresolved => f.write_str(": unresolved (Undef)"),
+            DecodeFailure::WrongShape { expected, got } => {
+                write!(f, ": expected {expected}, got {got}")
+            }
+            DecodeFailure::UnsupportedKind { kind } => write!(f, ": unsupported kind '{kind}'"),
+            DecodeFailure::Rejected(_) => Ok(()),
+        }
+    }
+}
+
+/// The required field `key` of `data`, read through `spec` as part of
+/// `input`: absent or `none` is `Missing`, `Undef` is `Unresolved`, and a
+/// present value the spec refuses is `Rejected`, naming `<input>.<key>`.
+pub(crate) fn required_field(
+    data: &StructureInstanceData,
+    input: &'static str,
+    key: &'static str,
+    spec: &ArgSpec,
+) -> Result<f64, InputDecodeError> {
+    match accept_field(data, key, spec) {
+        FieldAcceptance::Accepted(si) => Ok(si),
+        FieldAcceptance::Absent => Err(InputDecodeError::missing(input, key)),
+        FieldAcceptance::Undefined => Err(InputDecodeError::new(
+            input,
+            Some(key),
+            DecodeFailure::Unresolved,
+        )),
+        FieldAcceptance::Rejected(rejection) => Err(InputDecodeError::new(
+            input,
+            Some(key),
+            DecodeFailure::Rejected(FieldRejection::new(input, key, rejection)),
+        )),
+    }
+}
+
+/// A positional input `input`, read through `spec`: `Undef` is `Unresolved`.
+pub(crate) fn read_positional(
+    value: &Value,
+    input: &'static str,
+    spec: &ArgSpec,
+) -> Result<f64, InputDecodeError> {
+    match read_component(value, input, None, spec) {
+        ComponentRead::Accepted(si) => Ok(si),
+        ComponentRead::Undefined => Err(InputDecodeError::new(
+            input,
+            None,
+            DecodeFailure::Unresolved,
+        )),
+        ComponentRead::Rejected(err) => Err(err),
+    }
+}
+
+/// The outcome of reading ONE numeric value — a component or a positional
+/// input — against an `ArgSpec`. `Undefined` stays distinct from `Rejected`
+/// because the caller decides what an unresolved value means at its position
+/// (PRD `dimension-checked-readers.md` decision 2).
+pub(crate) enum ComponentRead {
+    Accepted(f64),
+    Undefined,
+    Rejected(InputDecodeError),
+}
+
+/// Classify `value`, read at `input[.field]`, against `spec`: a refused
+/// `Scalar` is `Rejected` at that path, and any other refused value is a
+/// `WrongShape` naming the spec's type.
+pub(crate) fn read_component(
+    value: &Value,
+    input: &'static str,
+    field: Option<&'static str>,
+    spec: &ArgSpec,
+) -> ComponentRead {
+    match accept_arg(value, spec) {
+        Acceptance::Accepted(si) => ComponentRead::Accepted(si),
+        Acceptance::Undefined => ComponentRead::Undefined,
+        Acceptance::Rejected(rejection) if matches!(value, Value::Scalar { .. }) => {
+            ComponentRead::Rejected(InputDecodeError::new(
+                input,
+                field,
+                DecodeFailure::Rejected(rejection_at(input, field, rejection)),
+            ))
+        }
+        Acceptance::Rejected(rejection) => ComponentRead::Rejected(InputDecodeError::wrong_shape(
+            input,
+            field,
+            spec.type_name,
+            rejection.got,
+        )),
+    }
+}
+
+/// The rejection of the value at `input[.field]`.
+fn rejection_at(
+    input: &'static str,
+    field: Option<&'static str>,
+    rejection: ArgRejection,
+) -> FieldRejection {
+    match field {
+        Some(field) => FieldRejection::new(input, field, rejection),
+        None => FieldRejection {
+            path: input.to_string(),
+            rejection,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use reify_core::{DiagnosticCode, DimensionVector, Severity};
@@ -41,7 +315,11 @@ mod tests {
             ComputeOutcome::Failed {
                 mut diagnostics, ..
             } => {
-                assert_eq!(diagnostics.len(), 1, "exactly one diagnostic: {diagnostics:?}");
+                assert_eq!(
+                    diagnostics.len(),
+                    1,
+                    "exactly one diagnostic: {diagnostics:?}"
+                );
                 diagnostics.remove(0)
             }
             other => panic!("expected Failed, got {other:?}"),
@@ -57,7 +335,11 @@ mod tests {
             "the message names the target first: {:?}",
             d.message
         );
-        assert!(d.message.contains(path), "the message names {path}: {:?}", d.message);
+        assert!(
+            d.message.contains(path),
+            "the message names {path}: {:?}",
+            d.message
+        );
     }
 
     #[test]
@@ -94,7 +376,8 @@ mod tests {
 
     #[test]
     fn a_rejected_field_fails_in_the_shared_rejection_wording() {
-        let rejection = FieldRejection::new("ElasticMaterial", "youngs_modulus", length_rejection());
+        let rejection =
+            FieldRejection::new("ElasticMaterial", "youngs_modulus", length_rejection());
         let expected = rejection.to_error(TARGET);
         let d = only_diagnostic(
             error(Some("youngs_modulus"), DecodeFailure::Rejected(rejection)).into_failed(TARGET),
@@ -149,7 +432,10 @@ mod tests {
 
     #[test]
     fn the_field_reader_reads_an_accepted_value_in_si() {
-        assert_eq!(read(scalar(2.0e11, DimensionVector::PRESSURE), &pressure_spec()), Ok(2.0e11));
+        assert_eq!(
+            read(scalar(2.0e11, DimensionVector::PRESSURE), &pressure_spec()),
+            Ok(2.0e11)
+        );
     }
 
     #[test]
@@ -172,7 +458,10 @@ mod tests {
         let unresolved = Err(error(Some("youngs_modulus"), DecodeFailure::Unresolved));
         assert_eq!(read(Value::Undef, &pressure_spec()), unresolved);
         assert_eq!(
-            read(Value::Option(Some(Box::new(Value::Undef))), &pressure_spec()),
+            read(
+                Value::Option(Some(Box::new(Value::Undef))),
+                &pressure_spec()
+            ),
             unresolved
         );
     }
@@ -200,7 +489,11 @@ mod tests {
             (Value::Int(0), 0.0),
             (scalar(0.25, DimensionVector::DIMENSIONLESS), 0.25),
         ] {
-            assert_eq!(read(ratio.clone(), &dimensionless_spec()), Ok(expected), "{ratio:?}");
+            assert_eq!(
+                read(ratio.clone(), &dimensionless_spec()),
+                Ok(expected),
+                "{ratio:?}"
+            );
         }
     }
 
@@ -209,7 +502,11 @@ mod tests {
     #[test]
     fn the_positional_reader_reads_an_accepted_value() {
         assert_eq!(
-            read_positional(&scalar(2.5, DimensionVector::LENGTH), "length", &length_spec()),
+            read_positional(
+                &scalar(2.5, DimensionVector::LENGTH),
+                "length",
+                &length_spec()
+            ),
             Ok(2.5)
         );
     }
@@ -228,7 +525,11 @@ mod tests {
 
     #[test]
     fn a_wrong_dimension_positional_is_rejected_at_the_input_name() {
-        match read_positional(&scalar(2.5, DimensionVector::MASS), "length", &length_spec()) {
+        match read_positional(
+            &scalar(2.5, DimensionVector::MASS),
+            "length",
+            &length_spec(),
+        ) {
             Err(InputDecodeError {
                 input: "length",
                 failure: DecodeFailure::Rejected(FieldRejection { path, rejection }),

@@ -11,28 +11,27 @@
 //! contributes nothing, quietly (PRD decision 2). Any value refused — a
 //! `Scalar` of another dimension or not a number at all — is a
 //! [`FieldRejection`] naming `<Struct>.<field>`, coded `DimensionedArgRejected`.
-//! A field reader can fail no other way, so it returns the bare rejection; `?`
-//! lifts it into a [`FeaValueShapeError`].
+//! A field reader can fail no other way, so it returns the bare rejection, and
+//! its caller lifts it with [`InputDecodeError::refused`].
 
 use reify_ir::{StructureInstanceData, Value};
 
-use super::fea_value_shape::FeaValueShapeError;
+use super::stdlib_inputs::InputDecodeError;
 use crate::arg_acceptance::{
     FieldRejection, acceleration_spec, density_spec, force_spec, pressure_spec, read_field,
     read_field_or_bare,
 };
 
-/// The items of a `loads` list.
-pub(super) fn load_items<'a>(
-    loads: &'a Value,
-    context: &'static str,
-) -> Result<&'a [Value], FeaValueShapeError> {
+/// The items of the `loads` input.
+pub(super) fn load_items(loads: &Value) -> Result<&[Value], InputDecodeError> {
     match loads {
         Value::List(items) => Ok(items),
-        other => Err(FeaValueShapeError::ExpectedList {
-            context,
-            got: format!("{other:?}"),
-        }),
+        other => Err(InputDecodeError::wrong_shape(
+            "loads",
+            None,
+            "List",
+            format!("{other:?}"),
+        )),
     }
 }
 
