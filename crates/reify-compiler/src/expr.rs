@@ -405,18 +405,29 @@ fn is_fallback_combinator(name: &str) -> bool {
     FALLBACK_COMBINATORS.contains(&name)
 }
 
-/// §7.2 syntactic-zero coercion for binary operator operands (task-4485/β).
+/// §7.2 zero coercion for binary operator operands (task-4485/β): the zero
+/// adopts its sibling's type.
 ///
-/// If exactly one operand is a **syntactic literal zero** (see
-/// [`type_compat::is_syntactic_zero_literal`]) whose compiled type is
-/// dimensionless (`Type::Int` or `Type::Scalar{DIMENSIONLESS}`) AND the other
-/// operand's compiled type is `Type::Scalar{D}` with non-dimensionless D,
-/// return `(left, right)` with the zero operand replaced by
-/// `CompiledExpr::literal(Value::Scalar{0.0, D}, Type::Scalar{D})`.
+/// An operand is a zero when it is a syntactic literal zero (see
+/// [`type_compat::is_syntactic_zero_literal`]) or a constant expression that
+/// folds to exactly zero ([`const_folds_to_zero`]), AND its compiled type is
+/// dimensionless (`Type::Int` or `Type::Scalar{DIMENSIONLESS}`).  When one
+/// operand is a zero, [`zero_adopting_sibling`] replaces it according to the
+/// sibling's compiled type:
+/// - a concrete `Type::Scalar{D}` with non-dimensionless D gives the
+///   dimensioned literal `Scalar{0.0, D}`;
+/// - a `Type::TypeParam` (a generic purpose subject's member such as
+///   `subject.width`, or a generic param), whose dimension is known only at run
+///   time, gives `sibling * zero` (task 10398), which `eval_mul` evaluates to a
+///   zero of the sibling's own runtime kind and dimension.  Two consequences:
+///   the sibling subtree is evaluated twice (evaluation is pure), and for a
+///   sibling with no numeric zero the refusal is attributed to the `*`;
+/// - any other type leaves the zero unchanged.
 ///
-/// If the condition is not met (both zeros, both dimensionless, non-scalar
-/// sibling, etc.) the inputs are returned unchanged — this is a pure no-op for
-/// all HARD BOUND cases listed in §7.2.
+/// A dimensionless zero is never itself an adoptable sibling, so at most one
+/// operand is rewritten.  `Type::ScalarParam` siblings are deliberately not
+/// covered (owned by #7837).  The value layer is untouched: both forms are
+/// compile-time rewrites.
 ///
 /// Placed here (not `type_compat`) because it constructs `CompiledExpr` /
 /// `Value::Scalar` objects — it is not a pure type predicate.  Called from
@@ -428,49 +439,45 @@ fn coerce_zero_operand(
     right_ast: &reify_ast::Expr,
     right: CompiledExpr,
 ) -> (CompiledExpr, CompiledExpr) {
-    /// Returns `true` if `ty` is dimensionless: `Type::Int` or
-    /// `Type::Scalar` with `DIMENSIONLESS` dimension.
-    fn is_dimensionless(ty: &Type) -> bool {
-        match ty {
+    fn is_zero(ast: &reify_ast::Expr, compiled: &CompiledExpr) -> bool {
+        let dimensionless = match &compiled.result_type {
             Type::Int => true,
             Type::Scalar { dimension } => dimension.is_dimensionless(),
             _ => false,
-        }
+        };
+        dimensionless
+            && (type_compat::is_syntactic_zero_literal(ast) || const_folds_to_zero(compiled))
     }
 
-    // Left operand is zero (syntactic OR a dimensionless constant expression that
-    // folds to exactly 0, e.g. `1 - 1`), right is Scalar<D non-dimensionless>.
-    if (type_compat::is_syntactic_zero_literal(left_ast) || const_folds_to_zero(&left))
-        && is_dimensionless(&left.result_type)
-        && let Type::Scalar { dimension } = right.result_type
-        && !dimension.is_dimensionless()
-    {
-        return (
-            CompiledExpr::literal(
-                Value::Scalar { si_value: 0.0, dimension },
-                Type::Scalar { dimension },
-            ),
-            right,
-        );
+    if is_zero(left_ast, &left) {
+        (zero_adopting_sibling(left, &right), right)
+    } else if is_zero(right_ast, &right) {
+        let right = zero_adopting_sibling(right, &left);
+        (left, right)
+    } else {
+        (left, right)
     }
+}
 
-    // Right operand is zero (syntactic OR a dimensionless constant expression that
-    // folds to exactly 0, e.g. `1 - 1`), left is Scalar<D non-dimensionless>.
-    if (type_compat::is_syntactic_zero_literal(right_ast) || const_folds_to_zero(&right))
-        && is_dimensionless(&right.result_type)
-        && let Type::Scalar { dimension } = left.result_type
-        && !dimension.is_dimensionless()
-    {
-        return (
-            left,
-            CompiledExpr::literal(
-                Value::Scalar { si_value: 0.0, dimension },
-                Type::Scalar { dimension },
-            ),
-        );
+/// The operand [`coerce_zero_operand`] uses in place of `zero` when the other
+/// operand is `sibling`.
+fn zero_adopting_sibling(zero: CompiledExpr, sibling: &CompiledExpr) -> CompiledExpr {
+    match sibling.result_type {
+        Type::Scalar { dimension } if !dimension.is_dimensionless() => CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.0,
+                dimension,
+            },
+            Type::Scalar { dimension },
+        ),
+        Type::TypeParam(_) => CompiledExpr::binop(
+            reify_ir::BinOp::Mul,
+            sibling.clone(),
+            zero,
+            sibling.result_type.clone(),
+        ),
+        _ => zero,
     }
-
-    (left, right)
 }
 
 /// Best-effort compile-time fold of a numeric operand to its SI magnitude.
@@ -1894,11 +1901,9 @@ fn compile_expr_guarded_with_expected_inner(
             );
             match resolve_binop(op) {
                 Some(bin_op) => {
-                    // §7.2 zero-coercion: promote a syntactic literal `0`/`0.0`
-                    // (dimensionless) to `Scalar<D>(0.0)` when the sibling is
-                    // `Scalar<D>` with non-dimensionless D.  Applied BEFORE
-                    // `infer_binop_type` so result_type and the Add/Sub dimension
-                    // guard below both see the rewritten operands.
+                    // §7.2 zero-coercion (rule: `coerce_zero_operand`'s rustdoc).
+                    // Applied BEFORE `infer_binop_type` so result_type and the
+                    // Add/Sub dimension guard below both see the rewritten operands.
                     if matches!(
                         bin_op,
                         BinOp::Eq
