@@ -20,9 +20,11 @@ pub mod interp;
 pub mod kleene;
 mod non_differentiable;
 mod option_recovery;
+mod reader;
 pub mod sampled;
 mod sampled_fd;
 mod sanitize;
+mod scope_chain;
 mod upstream_values_hash;
 
 // Task #6672 (solver-unification ε): the forward-mode AD surface.  The AD
@@ -55,6 +57,7 @@ use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, Compiled
 
 use ctor_member_order::{CtorMember, ctor_member_order};
 use datum_projection::{datum_vec3, eval_datum_projection, eval_self_datum_projection};
+use scope_chain::{Frame, ScopeChain};
 
 /// Maximum recursion depth for user-defined function calls.
 const MAX_RECURSION_DEPTH: u32 = 256;
@@ -90,7 +93,10 @@ pub type SymbolicSelectorCtorFn =
 
 /// Evaluation context: provides values, user-defined functions, and recursion tracking.
 pub struct EvalContext<'a> {
-    /// Current values of all cells.
+    /// The store this context was built over. Evaluation never reads it: every
+    /// cell read goes through `scope`, whose reader is this store and whose frames
+    /// hold the local binders, so a child context keeps the same store. Public
+    /// because code outside this crate reads it.
     pub values: &'a ValueMap,
     /// User-defined functions available for evaluation.
     pub functions: &'a [CompiledFunction],
@@ -155,6 +161,8 @@ pub struct EvalContext<'a> {
     /// [`SymbolicSelectorCtorFn`] for the contract. When `None`, a selector ctor the
     /// builtins do not know evaluates to `Value::Undef` (legacy behaviour).
     pub symbolic_selector_ctor: Option<SymbolicSelectorCtorFn>,
+    /// The scope every cell read goes through: local frames over the store's reader.
+    scope: ScopeChain<'a>,
 }
 
 impl<'a> EvalContext<'a> {
@@ -171,6 +179,7 @@ impl<'a> EvalContext<'a> {
             containment: None,
             compute_dispatch: None,
             symbolic_selector_ctor: None,
+            scope: ScopeChain::over(values),
         }
     }
 
@@ -187,6 +196,7 @@ impl<'a> EvalContext<'a> {
             containment: None,
             compute_dispatch: None,
             symbolic_selector_ctor: None,
+            scope: ScopeChain::over(values),
         }
     }
 
@@ -204,6 +214,7 @@ impl<'a> EvalContext<'a> {
             containment: None,
             compute_dispatch: None,
             symbolic_selector_ctor: None,
+            scope: ScopeChain::over(values),
         }
     }
 
@@ -278,13 +289,21 @@ impl<'a> EvalContext<'a> {
         self
     }
 
-    /// Create a child context with a new scope (for function body evaluation).
-    fn with_scope<'b>(&self, values: &'b ValueMap) -> EvalContext<'b>
+    /// Read every store cell through `reader` instead of `values` — **test-only**:
+    /// with an empty `values`, a read that bypasses the reader sees nothing.
+    #[cfg(test)]
+    pub(crate) fn with_reader(mut self, reader: &'a dyn crate::reader::CellReader) -> Self {
+        self.scope = ScopeChain::over(reader);
+        self
+    }
+
+    /// A child context, one recursion level deeper, reading through `frame`.
+    fn with_frame<'b>(&self, frame: &'b Frame<'b>) -> EvalContext<'b>
     where
         'a: 'b,
     {
         EvalContext {
-            values,
+            values: self.values,
             functions: self.functions,
             recursion_depth: self.recursion_depth + 1,
             meta: self.meta,
@@ -294,7 +313,13 @@ impl<'a> EvalContext<'a> {
             containment: self.containment,
             compute_dispatch: self.compute_dispatch,
             symbolic_selector_ctor: self.symbolic_selector_ctor,
+            scope: frame.chain(),
         }
+    }
+
+    /// The value of cell `id` in this context's scope.
+    fn read(&self, id: &ValueCellId) -> Value {
+        self.scope.read(id)
     }
 }
 
@@ -309,7 +334,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
     match &expr.kind {
         CompiledExprKind::Literal(v) => v.clone(),
 
-        CompiledExprKind::ValueRef(id) => ctx.values.get_or_undef(id),
+        CompiledExprKind::ValueRef(id) => ctx.read(id),
 
         CompiledExprKind::CrossSubGeometryRef(_id) => {
             // This variant must be consumed by the bare-let drop site in
@@ -649,8 +674,8 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     // resolves to a captured `__field.<name>` cell. The compiler's
                     // `phase_augment_composed_captures` pass injects these cells
                     // into the lambda's `captures`, so by the time we reach this
-                    // arm — inside `apply_lambda`, with captures already cloned
-                    // into `ctx.values` — the field is in scope. We dispatch via
+                    // arm — inside `apply_lambda`, with the captures in the
+                    // lambda body's frame — the field is in scope. We dispatch via
                     // `apply_lambda_with_point_unpacking` to mirror the `sample`
                     // path. Builtins intercepted by the NAMED arms above (whole-
                     // field `max`/`min`/`argmax`/`argmin`, `flat_map`,
@@ -662,7 +687,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     // `Undef` from the cell lookup and fall through to
                     // `eval_builtin` unchanged.
                     let field_id = ValueCellId::new(FIELD_ENTITY_PREFIX, &function.name);
-                    let candidate = ctx.values.get_or_undef(&field_id);
+                    let candidate = ctx.read(&field_id);
                     if let Value::Field { lambda, .. } = &candidate
                         && evaluated_args.len() == 1
                     {
@@ -741,8 +766,8 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                                 // scope so binders are confined to exactly this arm's body.
                                 // Mirrors the `apply_lambda` child-scope idiom (lib.rs:2848).
                                 // Body extracted into `eval_variant_bind_arm` (`#[inline(never)]`)
-                                // to keep this recursive frame small — the `ValueMap` child
-                                // clone and loop locals would otherwise sit on every
+                                // to keep this recursive frame small — the binders' `ValueMap`,
+                                // its frame and loop locals would otherwise sit on every
                                 // `eval_expr` frame and overflow the 3 MiB test-thread stack
                                 // at MAX_RECURSION_DEPTH (pinned by
                                 // `eval_user_fn_recursion_depth_exceeded`).
@@ -885,7 +910,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
         } => {
             let mut capture_map = ValueMap::new();
             for cap_id in captures {
-                capture_map.insert(cap_id.clone(), ctx.values.get_or_undef(cap_id));
+                capture_map.insert(cap_id.clone(), ctx.read(cap_id));
             }
             Value::Lambda {
                 params: params
@@ -1207,8 +1232,8 @@ fn eval_structure_instance_ctor(
     // compiler lowers a sibling read in a structure-def default or let to
     // `ValueRef(ValueCellId::new(type_name, member))`, a cell the caller's
     // value map carries only by accident, and never for a fn-returned ctor
-    // (task 5494). `with_scope` REPLACES the value map, which is correct because
-    // a well-compiled member reads only its own structure's cells. The child is
+    // (task 5494). A sealed frame holds the member scope only, which is correct
+    // because a well-compiled member reads only its own structure's cells. The child is
     // built lazily, so a ctor whose members are all literals pays nothing, and
     // every field result is written into both maps, so `child` stays equal to
     // `member_scope(type_name, &fields)` plus the geometry members' symbolic
@@ -1237,7 +1262,8 @@ fn eval_structure_instance_ctor(
             eval_expr(expr, ctx)
         } else {
             let scope = child.get_or_insert_with(|| member_scope(type_name, &fields));
-            without_minted_handles(eval_expr(expr, &ctx.with_scope(scope)), &minted)
+            let frame = ctx.scope.sealed_frame(scope);
+            without_minted_handles(eval_expr(expr, &ctx.with_frame(&frame)), &minted)
         };
         if let Some(scope) = child.as_mut() {
             scope.insert(ValueCellId::new(type_name, name.as_str()), value.clone());
@@ -1272,7 +1298,8 @@ fn insert_symbolic_geometry_member(
     scope: &mut ValueMap,
     ctx: &EvalContext,
 ) -> Option<Value> {
-    let member_ctx = ctx.with_scope(scope);
+    let frame = ctx.scope.sealed_frame(scope);
+    let member_ctx = ctx.with_frame(&frame);
     let mut unresolved = false;
     let upstream_values_hash = realization_upstream_values_hash(&geometry.upstream_args, |e| {
         let value = eval_expr(e, &member_ctx);
@@ -1334,15 +1361,16 @@ fn eval_variant_ctor(
 /// `ValueCellId::new(type_name, member)`, the cell a structure-def default or
 /// let compiles a sibling reference to.
 ///
-/// The scope holds no outer cell. Should structure-def members ever read
-/// module-level constants, it would have to be layered over `ctx.values`.
+/// The scope holds no outer cell: it is entered as a sealed frame. Should
+/// structure-def members ever read module-level constants, it would have to be
+/// entered as an open frame instead.
 ///
 /// PERFORMANCE NOTE: an O(fields) deep-clone — one `value.clone()` per field.
 /// `eval_structure_instance_ctor` builds it only on its first non-literal
 /// member, so a ctor whose members are all literals pays nothing.  If
 /// profiling ever shows this on a hot path, consider an overlay/COW scope that
 /// borrows from `fields` directly rather than copying every entry (analogous
-/// to how `ctx.with_scope` borrows without cloning the full value map).
+/// to how a frame borrows its bindings rather than copying the scope below it).
 fn member_scope(type_name: &str, fields: &PersistentMap<String, Value>) -> ValueMap {
     let mut scope = ValueMap::new();
     for (member, value) in fields.iter() {
@@ -1644,12 +1672,13 @@ fn eval_compiled_function_with_values(
     }
     for (binding_name, binding_expr) in &func.body.let_bindings {
         let val = {
-            let body_ctx = ctx.with_scope(&scope);
-            eval_expr(binding_expr, &body_ctx)
+            let frame = ctx.scope.sealed_frame(&scope);
+            eval_expr(binding_expr, &ctx.with_frame(&frame))
         };
         scope.insert(ValueCellId::new(&func.name, binding_name), val);
     }
-    eval_expr(&func.body.result_expr, &ctx.with_scope(&scope))
+    let frame = ctx.scope.sealed_frame(&scope);
+    eval_expr(&func.body.result_expr, &ctx.with_frame(&frame))
 }
 
 /// Evaluate a user-defined function call.
@@ -1752,7 +1781,8 @@ fn resolve_symbolic_selector_on_undef(
         return result;
     };
     let mut diags = Vec::new();
-    let minted = mint(expr, ctx.values, &mut diags);
+    let visible = ctx.scope.visible_values();
+    let minted = mint(expr, &visible, &mut diags);
     if let Some(sink) = ctx.diagnostics {
         sink.borrow_mut().extend(diags);
     }
@@ -1762,7 +1792,7 @@ fn resolve_symbolic_selector_on_undef(
 /// Evaluate a `VariantBind` match arm body in a child scope with payload fields inserted.
 ///
 /// Extracted from `eval_expr`'s `Match` arm and marked `#[inline(never)]` to keep that
-/// recursive function's stack frame small — the `ValueMap` child clone and loop-local `val`
+/// recursive function's stack frame small — the binders' `ValueMap`, its frame and loop-local `val`
 /// would otherwise sit on every `eval_expr` frame and overflow the 3 MiB test-thread stack
 /// at `MAX_RECURSION_DEPTH` (256) levels of user-fn recursion (same rationale as
 /// `eval_structure_instance_ctor` / `eval_fn_field`; pinned by
@@ -1772,7 +1802,7 @@ fn resolve_symbolic_selector_on_undef(
 /// INV-4/D2: missing or unknown payload fields bind `Value::Undef`; undef propagates
 /// through the body naturally.
 ///
-/// **Recursion depth:** `ctx.with_scope` deliberately increments `recursion_depth` by 1
+/// **Recursion depth:** `ctx.with_frame` deliberately increments `recursion_depth` by 1
 /// (consistent with `apply_lambda`). A `VariantBind` arm therefore consumes one recursion
 /// slot per nesting level, whereas bare `Variant`/`Wildcard` arms call `eval_expr` on
 /// `ctx` directly and do not. In practice match nesting is source-bounded (bounded by the
@@ -1785,7 +1815,7 @@ fn eval_variant_bind_arm(
     body: &CompiledExpr,
     ctx: &EvalContext,
 ) -> Value {
-    let mut child = ctx.values.clone();
+    let mut bindings = ValueMap::new();
     for (field_name, cell) in binders {
         // INV-4/D2 — bind the payload value as-is; an undef payload field binds
         // Value::Undef, which then propagates through the body naturally.
@@ -1796,9 +1826,10 @@ fn eval_variant_bind_arm(
             .find(|(f, _)| f == field_name)
             .map(|(_, v)| v.clone())
             .unwrap_or(Value::Undef);
-        child.insert(cell.clone(), val);
+        bindings.insert(cell.clone(), val);
     }
-    eval_expr(body, &ctx.with_scope(&child))
+    let frame = ctx.scope.open_frame(&bindings);
+    eval_expr(body, &ctx.with_frame(&frame))
 }
 
 /// Evaluate a Quantifier (`forall` / `exists`) expression.
@@ -1874,11 +1905,11 @@ fn eval_quantifier(
             // references the loop variable by name without going through
             // `remap_cell` still sees a live binding instead of
             // `Value::Undef`. Cost is one map insert per iteration.
-            let mut scope = ctx.values.clone();
-            let cell_value = ctx.values.get_or_undef(cell_id);
-            scope.insert(variable_id.clone(), cell_value);
+            let mut binding = ValueMap::new();
+            binding.insert(variable_id.clone(), ctx.read(cell_id));
+            let frame = ctx.scope.open_frame(&binding);
 
-            let pred_val = eval_expr(&pred_clone, &ctx.with_scope(&scope));
+            let pred_val = eval_expr(&pred_clone, &ctx.with_frame(&frame));
             match (kind, pred_val) {
                 (QuantifierKind::ForAll, Value::Bool(false)) => return Value::Bool(false),
                 (QuantifierKind::ForAll, Value::Bool(true)) => {}
@@ -1970,9 +2001,10 @@ fn eval_pred_for_value_elem<'a>(
     predicate: &CompiledExpr,
     ctx: &EvalContext<'a>,
 ) -> Value {
-    // Bind the element value in the scope (existing behaviour).
-    let mut scope = ctx.values.clone();
-    scope.insert(variable_id.clone(), elem.clone());
+    // Bind the element value in an open frame over the current scope.
+    let mut binding = ValueMap::new();
+    binding.insert(variable_id.clone(), elem.clone());
+    let frame = ctx.scope.open_frame(&binding);
 
     if let Some(det) = ctx.determinacy {
         // Extend the determinacy snapshot with the loop variable's binding so
@@ -2011,31 +2043,19 @@ fn eval_pred_for_value_elem<'a>(
         if !ext_det.contains_key(variable_id) {
             ext_det.insert(variable_id.clone(), (elem.clone(), loop_var_state));
         }
-        // Directly construct EvalContext merging the new scope and extended
-        // determinacy snapshot.  Both are local, but they outlive the
-        // eval_expr call within this function.  All other fields are borrowed
-        // from `ctx` at the outer lifetime 'a, which is longer — coercion is
-        // sound (covariant lifetime shrink for shared references).
+        // The frame's child context, with the extended determinacy snapshot.
         eval_expr(
             predicate,
             &EvalContext {
-                values: &scope,
                 determinacy: Some(&ext_det),
-                functions: ctx.functions,
-                recursion_depth: ctx.recursion_depth + 1,
-                meta: ctx.meta,
-                diagnostics: ctx.diagnostics,
-                undef_causes: ctx.undef_causes,
-                containment: ctx.containment,
-                compute_dispatch: ctx.compute_dispatch,
-                symbolic_selector_ctor: ctx.symbolic_selector_ctor,
+                ..ctx.with_frame(&frame)
             },
         )
     } else {
         // No determinacy context — fall through to existing behaviour.
         // DeterminacyPredicate without a snapshot already returns Undef
         // (the else branch in eval_expr), so no special handling needed.
-        eval_expr(predicate, &ctx.with_scope(&scope))
+        eval_expr(predicate, &ctx.with_frame(&frame))
     }
 }
 
@@ -3215,7 +3235,8 @@ pub fn apply_lambda(lambda: &Value, args: &[Value], ctx: &EvalContext) -> Value 
                 eval_map.insert(id.clone(), arg.clone());
             }
 
-            eval_expr(body, &ctx.with_scope(&eval_map))
+            let frame = ctx.scope.sealed_frame(&eval_map);
+            eval_expr(body, &ctx.with_frame(&frame))
         }
         _ => Value::Undef,
     }
@@ -7857,7 +7878,7 @@ mod tests {
     // Pin the runtime fallthrough that turns a `field_name(p)` call inside
     // a composed lambda body into a dispatch to the captured
     // `__field.<field_name>` cell. The `_ =>` arm of the FunctionCall match
-    // (eval_expr) checks ctx.values for a `Value::Field` keyed by the
+    // (eval_expr) reads the current scope for a `Value::Field` keyed by the
     // resolved `__field.<name>` cell ID; if present, it dispatches via
     // `apply_lambda_with_point_unpacking`. Otherwise it falls through to
     // `reify_stdlib::eval_builtin` (preserving the prior behavior for
