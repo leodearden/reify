@@ -1,0 +1,6 @@
+structure def K {
+    param n : Int = 3
+    let k = 1mm where n < 3
+    let k = 2mm where n >= 3
+    let r = k * 2
+}

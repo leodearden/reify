@@ -1,0 +1,9 @@
+tests = "A guard that directly reads the member it guards is rejected by the compiler."
+rule = "Part 4 (\"A guard may read anything a cell may read, except what it guards\")"
+provenance = "design Part 4"
+needs = ["compile-error", "guard"]
+answer_basis = "stated: Part 4, \"The compiler rejects the direct case, such as a guard on `fan` that reads `fan.flow`\"."
+today = "nothing rejects such a guard (design Part 4, seat report)."
+
+[[expect]]
+compile_error = "the guard of `fan` reads `fan`"

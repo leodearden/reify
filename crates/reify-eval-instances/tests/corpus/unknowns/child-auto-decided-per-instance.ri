@@ -1,0 +1,9 @@
+structure def Beam {
+    param base : Length = 1mm
+    param len : Length = auto
+    constraint len == base * 2
+}
+structure def Asm {
+    sub a : Beam { base = 1mm }
+    sub b : Beam { base = 2mm }
+}

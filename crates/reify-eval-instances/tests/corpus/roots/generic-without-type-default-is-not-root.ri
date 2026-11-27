@@ -1,0 +1,7 @@
+trait Seal {}
+structure def ORing : Seal {
+    param t : Length = 3mm
+}
+structure def Bearing<T: Seal> {
+    param n : Int = 1
+}

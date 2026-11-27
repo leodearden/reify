@@ -1,0 +1,9 @@
+structure def Vent { param area : Length = 10mm }
+structure def Manifold {
+    param n : Int = auto
+    sub vents : List<Vent>
+    constraint n >= 4
+    constraint n <= 4
+    constraint vents.count == n
+    let a0 = vents[0].area
+}

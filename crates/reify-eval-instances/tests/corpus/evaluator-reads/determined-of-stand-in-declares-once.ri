@@ -1,0 +1,12 @@
+structure def Plate {
+    param t : Length
+    constraint t >= 3mm
+}
+structure def Asm {
+    param k : Length = 5mm
+    let p = Plate(t: if determined(self.k) then self.k else 2mm)
+}
+structure def AsmU {
+    param k : Length
+    let p = Plate(t: if determined(self.k) then self.k else 2mm)
+}

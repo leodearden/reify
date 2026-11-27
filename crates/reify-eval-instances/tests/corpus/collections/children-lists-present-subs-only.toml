@@ -1,0 +1,18 @@
+tests = "`self.children` lists present subs only, not values held in cells, and is undefined when a sub's presence is undetermined."
+rule = "Part 5 (\"A bare collection is a list of its elements as values\"); decision 11; Part 7.4"
+provenance = "design Part 5; Part 14 decision 11; Part 7.4 (a value is not listed by `self.children`)"
+needs = ["instance", "guard", "value"]
+answer_basis = "stated: Part 5, \"list present members only ... If a member's presence is undetermined, the list is undefined\" (decisions E30). `x`: `f1` present, `f2` absent, `v` a value: 1. `y`: `f2` presence undetermined (decisions E28), so the list is undefined and its reader `n` is pinned undefined at its own path. No collection sub is declared, so the entry does not need the collections leaf."
+today = "these are lists of path strings that include absent subs (design decision 11)."
+
+[[expect]]
+path = "Top.x.n"
+value = "1"
+
+[[expect]]
+path = "Top.y.f2"
+presence = "undetermined"
+
+[[expect]]
+path = "Top.y.n"
+value = "undefined"

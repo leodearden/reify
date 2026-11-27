@@ -1,0 +1,57 @@
+tests = "`where` decides presence for a plain sub, a list sub and a constraint alike: a true guard makes the member present, a false guard makes it absent (a guarded collection is absent, not empty), and an undefined guard makes its presence undetermined."
+rule = "decision 3 (3a, 3c); Part 4; contract Example 3"
+provenance = "task 8414 (its own model, `thin` with `t = 1mm`); task 9029 (a guarded constraint under a true, false and undefined guard); task 8450 (its guarded-constraint half. Its geometry half is task 10611's); design Part 12, Example 3. design Part 13 row (task 8414). design Part 4 (a guarded collection is absent, not empty)."
+needs = ["instance", "guard", "collection", "constraint"]
+answer_basis = '''
+traced.
+`on`: `use_plate` is true, so `thin` is present with `t` = 1 mm, and the guarded constraint is present and reads 1 mm, so it is violated. `use_list` is false, so `xs` is absent.
+`off`: `use_plate` is false, so `thin` and the guarded constraint are absent. `use_list` is true, so `xs` has two elements at their default of 100 mm.
+`unk`: `use_plate` is an explicit `undef`, so the presence of `thin` and of the guarded constraint is undetermined. `xs` is absent, because `use_list` keeps its default, false.
+`Top.n` reads the count of `Top.on.xs`, which is absent; reading what is not there gives undefined.
+The constraint `self.thin.t >= 2mm` is `Asm`'s first verdict-bearing constraint, so it is `constraint[0]`. The count constraint `xs.count == 2` is the source of the count cell and has no `constraint[k]` (readings A, last paragraph).
+A guarded constraint under an undefined guard answers `presence-undetermined`, like every guarded member (readings E28).'''
+today = "a guarded plain sub on a structure that is not recursive is never created, even with its guard true, and a guarded list sub is created whatever its guard (task 8414 record, release binary at 9eae7048a4)."
+
+[[expect]]
+path = "Top.on.thin"
+presence = "present"
+
+[[expect]]
+path = "Top.on.thin.t"
+value = "1 mm"
+
+[[expect]]
+path = "Top.on/constraint[0]"
+verdict = "violated"
+
+[[expect]]
+path = "Top.on.xs"
+presence = "absent"
+
+[[expect]]
+path = "Top.off.thin"
+presence = "absent"
+
+[[expect]]
+path = "Top.off/constraint[0]"
+presence = "absent"
+
+[[expect]]
+path = "Top.off.xs[1].length"
+value = "100 mm"
+
+[[expect]]
+path = "Top.unk.thin"
+presence = "undetermined"
+
+[[expect]]
+path = "Top.unk/constraint[0]"
+presence = "undetermined"
+
+[[expect]]
+path = "Top.unk.xs"
+presence = "absent"
+
+[[expect]]
+path = "Top.n"
+value = "undefined"

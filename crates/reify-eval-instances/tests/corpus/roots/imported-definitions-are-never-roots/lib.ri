@@ -1,0 +1,2 @@
+module lib
+pub structure def Motor { param d : Length = 8mm }

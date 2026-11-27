@@ -1,0 +1,17 @@
+structure def Fan {
+    param d : Length = 40mm
+}
+structure def Case {
+    param needs_fan : Bool = false
+    sub fan : Fan where needs_fan
+}
+structure def Plate {
+    param t : Length
+    constraint t >= 3mm
+    pub let ok = t >= 3mm
+}
+structure def Top {
+    sub c : Case
+    let g1 = Plate(t: self.c.fan.d).ok or not self.c.needs_fan
+    let g2 = not self.c.needs_fan or Plate(t: self.c.fan.d).ok
+}

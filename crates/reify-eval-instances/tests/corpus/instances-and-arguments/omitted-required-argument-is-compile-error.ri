@@ -1,0 +1,2 @@
+structure def Bolt { param d : Length   constraint d >= 3mm }
+structure def Asm  { sub a : Bolt   sub b : Bolt { d = undef }   let c = Bolt() }

@@ -1,0 +1,8 @@
+tests = "a typed `let` with `auto` written in a sub's braces is a compile error that says to write it in the parent and pass it."
+rule = "readings C20 (fourth bullet); PRD section 5.7, table \"What a sub's braces may hold\" (row `let x : T = auto`)."
+provenance = "the tracer's counter-example N1 (trace-braces-purposes-unknowns): rulings 3 and 4 give the `auto` two owners."
+needs = ["compile-error", "braces"]
+answer_basis = "stated: readings C20. The `auto` is in `Asm`'s text (ruling 4) and the member would be `Asm.r`'s (ruling 3), so it has no single owner."
+
+[[expect]]
+compile_error = "`auto` in a `let` in the braces of `r`; write `let u : Length = auto` in `Asm` and pass it"

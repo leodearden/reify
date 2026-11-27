@@ -1,0 +1,10 @@
+structure def GEP {
+    param g : Real = 1.0
+    where g > 0.0 { param m : Length = auto   constraint self.m == 10mm }
+}
+structure def GK {
+    param g : Real = 1.0
+    param m : Length = auto
+    where g > 0.0 { constraint self.m == 10mm }
+}
+structure def Top { sub on : GEP   sub off : GEP { g = -1.0 }   sub k : GK }

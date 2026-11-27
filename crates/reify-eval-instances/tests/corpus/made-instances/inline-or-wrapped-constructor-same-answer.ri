@@ -1,0 +1,17 @@
+structure def Plate {
+    param t : Length
+    constraint t >= 3mm
+}
+fn mk(t : Length) -> Plate { Plate(t: t) }
+structure def AsmA {
+    let u : Length = auto
+    constraint u >= 1mm
+    minimize u
+    let d = Plate(t: u)
+}
+structure def AsmB {
+    let u : Length = auto
+    constraint u >= 1mm
+    minimize u
+    let d = mk(u)
+}

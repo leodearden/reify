@@ -1,0 +1,34 @@
+tests = "a definition's constraints are checked on every instance, in the three sub and value forms, at that instance's arguments."
+rule = "decision 7; Part 7.6; Part 7.2 to 7.3; rule B."
+provenance = "design decision 7 (`Bar`/`Asm`); failing.md (its headline and probe `p/a1.ri`, from which this model is cut); `tests/prd-gate/fixtures/ivf_override_violates_constraint.ri` (failing.md M3). Taken. Also, from the merged entries: design decision 7 (model with a value added); Part 7.6. design Part 13 row 1. tasks 5765, 6609, 6926 (constraint half)."
+needs = ["instance", "constraint", "summary", "made"]
+answer_basis = "stated (decision 7: \"violated at `Asm.b`\"; 7.2: a made instance's verdicts are the ones that count). `s`, `s2`, `c` have t 1 mm: constraint[0] violated, constraint[1] (20 > 1) satisfied. `d` has t 5, w 1: constraint[0] satisfied, constraint[1] violated. Four violated, the made instances' counted once each, at the made instance (decisions B4); every `/arguments` verdict is satisfied, since every argument is defined. `sub s2 = Plate(t: 1mm)` is a sub in the call form, not a made instance."
+today = "\"All constraints satisfied\", checking `Plate` once at its defaults (run `every_inst.ri`)."
+
+[[expect]]
+path = "Asm.s/constraint[0]"
+verdict = "violated"
+
+[[expect]]
+path = "Asm.s/constraint[1]"
+verdict = "satisfied"
+
+[[expect]]
+path = "Asm.s2/constraint[0]"
+verdict = "violated"
+
+[[expect]]
+path = "Asm.c/made[0]/constraint[0]"
+verdict = "violated"
+
+[[expect]]
+path = "Asm.d/made[0]/constraint[0]"
+verdict = "satisfied"
+
+[[expect]]
+path = "Asm.d/made[0]/constraint[1]"
+verdict = "violated"
+
+[[expect]]
+path = "Asm/summary"
+summary = { violated = 4, undetermined = 0, failed = 0 }

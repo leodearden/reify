@@ -1,0 +1,18 @@
+tests = "a `forall` block over a collection whose count is undefined is itself of undetermined presence, and the summary counts the collection and the block once each."
+rule = "decisions E28 (\"A collection whose count is undefined is `presence-undetermined`, and so is a `forall` block over it; each counts once\"); decisions B4; Part 5"
+provenance = "trace-structure counter-example 6."
+needs = ["instance", "collection", "constraint", "summary"]
+answer_basis = "traced. `n` is undefined at the root, so the count is undefined and `vents` is `presence-undetermined` (decisions E28). The count constraint gives no verdict and takes no position (decisions A), so the `forall` block is `constraint[0]`; it ranges over `vents`, so it is `presence-undetermined` too, with no per-element verdicts below it. Summary: the collection and the block, undetermined 2; nothing inside either is counted."
+today = "not probed."
+
+[[expect]]
+path = "Asm.vents"
+presence = "undetermined"
+
+[[expect]]
+path = "Asm/constraint[0]"
+presence = "undetermined"
+
+[[expect]]
+path = "Asm/summary"
+summary = { violated = 0, undetermined = 2, failed = 0 }

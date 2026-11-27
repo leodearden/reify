@@ -1,0 +1,9 @@
+structure def Fan  { param d : Length = 40mm }
+structure def Case {
+    param needs_fan : Bool = false
+    param n : Int = 2
+    sub fan : Fan where needs_fan
+    let f = if needs_fan then self.fan.d else 0mm
+    let c = if n > 1 then self.fan.d else 0mm
+    where n > 1 { let b = self.fan.d }
+}

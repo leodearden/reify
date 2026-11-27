@@ -1,0 +1,18 @@
+structure def Beam {
+    param len : Length
+    param k : Length = auto
+    constraint k == 100mm - len / 2
+}
+structure def Asm {
+    sub a : Beam {
+        len = self.b.k
+    }
+    sub b : Beam {
+        len = self.a.k
+    }
+}
+structure def Loop {
+    sub a : Beam {
+        len = self.a.k * 2
+    }
+}

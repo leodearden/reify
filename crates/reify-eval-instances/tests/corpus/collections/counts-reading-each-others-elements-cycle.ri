@@ -1,0 +1,9 @@
+structure def Bolt {
+    param rated : Int = 2
+}
+structure def Asm {
+    sub xs : List<Bolt>
+    sub ys : List<Bolt>
+    constraint xs.count == ys[0].rated
+    constraint ys.count == xs[0].rated
+}

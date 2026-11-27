@@ -1,0 +1,15 @@
+tests = "a `let` with an `if` and a `let` over it evaluate per instance from the parameter's default."
+rule = "contract Example 1; Part 2 (cell)."
+provenance = "contract Part B Example 1."
+needs = ["instance"]
+answer_basis = "traced. `width` = 50 mm > 40 mm, so `w_eff` = 40 mm; `area` = 40 mm × 10 mm = 400 mm². Clamped is the only definition, so it is the root."
+today = "`w_eff` = 0.04 m (the contract marks the example \"checked\")."
+not_pinned = "The example's point, that an edit of 50 mm to 60 mm runs two bodies and stops, is about the core's incremental behaviour and is not pinned here (left out, core)."
+
+[[expect]]
+path = "Clamped.w_eff"
+value = "40 mm"
+
+[[expect]]
+path = "Clamped.area"
+value = "400 mm^2"

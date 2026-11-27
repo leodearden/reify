@@ -1,0 +1,15 @@
+structure def Inner {
+    param on : Bool = true
+    param base : Length = 2mm
+    where on {
+        param g : Length = 3mm
+        pub let q = base * 3
+    }
+}
+structure def Test {
+    sub s = Inner(base: 5mm)
+    sub t = Inner(on: false)
+    let gs = self.s.g
+    let qs = self.s.q
+    let gt = self.t.g
+}

@@ -1,0 +1,13 @@
+structure def Spec { param n : Int = 3 }
+structure def Vent { param area : Length = 10mm }
+structure def Bolt { param rated : Int = 3 }
+structure def Asm {
+    sub spec : Spec
+    sub vents : List<Vent>
+    constraint vents.count == spec.n
+    let proto = Bolt()
+    sub bolts : List<Bolt>
+    constraint bolts.count == proto.rated + 1
+    let a2 = vents[2].area
+    let a3 = vents[3].area
+}

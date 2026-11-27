@@ -1,0 +1,6 @@
+structure def Plate { param t : Length = 3mm }
+structure def Asm {
+    param t : Length = 10mm
+    param clearance : Length = 4mm
+    sub p : Plate { t = self.t / 2   constraint t <= 6mm   constraint t >= clearance }
+}

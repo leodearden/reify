@@ -1,0 +1,18 @@
+tests = "`constrained(p)` gives one answer at a sub that is constrained only from its braces, at that sub read as a value, and at the opened value: the model of PRD decision D3."
+rule = "PRD D3 (ruled by Leo on 2026-11-26 as recommended); readings B7; decision 6 (a value carries nothing about how it was reached); seat-context ruling 7 (a structure value carries every value decided at or below its instance)"
+provenance = "PRD D3 (the review's model, which showed that counting a constraint in the braces makes the sub and its value disagree); the brief of seat fix-structure."
+needs = ["instance", "braces", "value", "open", "state-tests"]
+answer_basis = "stated: PRD D3 as Leo ruled it (readings B7). A constraint that the declarer writes in a sub's braces does not count, and `Plate` itself has no constraint that reads `t`: false at every path. The design requires that the sub, the value and the opened value answer the same, which is pinned as well. `Asm.p.c` is the sub's own cell. `e` holds `p` read as a value, and `e.c` opens it at `Asm.e/open.c`; `x` reads that. A value carries no braces, so a reading that counted the braces constraint would make `Asm.p.c` true and `Asm.e/open.c` false, and the `same-as` rows would fail."
+today = "run `/tmp/instance-prd/fix-structure/d3.ri`: `Asm.p.c = false`, `Asm.x = false` (the braces constraint is dropped today)."
+
+[[expect]]
+path = "Asm.p.c"
+value = "false"
+
+[[expect]]
+path = "Asm.e/open.c"
+same_as = "Asm.p.c"
+
+[[expect]]
+path = "Asm.x"
+same_as = "Asm.p.c"

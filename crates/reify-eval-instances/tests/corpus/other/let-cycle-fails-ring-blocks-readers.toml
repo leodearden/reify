@@ -1,0 +1,36 @@
+tests = "a cycle between two `let`s of an instance fails only the cells on the ring, and a `let` or a child's argument that reads the ring is blocked by that failure, not part of the cycle."
+rule = "Part 2 (what a cell can return); Part 1 rule 2 (a parameter evaluates its argument in the writer's scope); contract 7.7 and the paragraph on failures as results; decisions C14 and B2"
+provenance = "task 5819; task 8051"
+needs = ["compile-error", "instance"]
+answer_basis = '''
+traced.
+Decisions C14: a ring of `let`s inside one definition compiles, so `(compile)` is ok.
+The core's cycle detection (core task 10558) is a prerequisite of leaf ε₁, which leaf ε₂ (the builder of `instance`) waits for, so the entry does not run before its answer can exist.
+The contract's 7.7 gives every node on the ring the failure "cycle"; its paragraph on failures gives a reader of a failed input "blocked".
+So `a` and `b` fail with cycle. `c` reads `a`, so it is blocked.
+`Parent.m.k.w` evaluates the argument `a` in `Mid`'s scope, so it is blocked too. `Parent.m.k` itself is present.
+Today the cycle is reported at evaluation (run).'''
+today = "probe `cyc.ri` (run) prints `circular let-binding dependency in template Mid: [a, b, c]` three times, and `Parent.m.k.w = undef`. Task 8051 is that `c` is named in the cycle."
+
+[[expect]]
+compile = "ok"
+
+[[expect]]
+path = "Parent.m.a"
+failure = "cycle"
+
+[[expect]]
+path = "Parent.m.b"
+failure = "cycle"
+
+[[expect]]
+path = "Parent.m.c"
+failure = "blocked"
+
+[[expect]]
+path = "Parent.m.k"
+presence = "present"
+
+[[expect]]
+path = "Parent.m.k.w"
+failure = "blocked"

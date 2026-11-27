@@ -1,0 +1,9 @@
+structure def Case {
+    param u : Bool
+    param w : Length = 2mm
+    where u { param rpm : Int = 1200 }
+}
+structure def Top {
+    sub c : Case { u = undef }
+    let e = self.c
+}

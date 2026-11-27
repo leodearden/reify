@@ -1,0 +1,10 @@
+structure def Bearing { param bore : Length = 5mm   pub let half = bore / 2 }
+structure def Holder {
+    sub b : Bearing { bore = auto }
+    sub c = Bearing(bore: auto)
+    let margin = self.b.bore - 2mm
+    constraint margin == 8mm
+    constraint self.c.bore == 12mm
+    let e = self.b
+    let eh = e.half
+}

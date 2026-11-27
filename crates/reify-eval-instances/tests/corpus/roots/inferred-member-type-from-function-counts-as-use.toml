@@ -1,0 +1,12 @@
+tests = "A member whose inferred type is a definition uses that definition, even when the only constructor call is inside a function, so a type annotation does not change the root set."
+rule = "rule D (clauses \"as the type of a member (... inferred)\" and \"a use in a function body does not count\")"
+provenance = "critic logic-3 R13 (`let b : Bracket = mk_bracket()` against the same line without the annotation); design Part 15.1 rule D. language-1 L4 model 4. logic-3 R13 (a type annotation changed the root set)."
+needs = ["roots", "instance", "made", "open"]
+answer_basis = "traced. The call inside `mk` is a use in a function body and does not count (decisions D22). `Asm.b` has inferred type `Plate`, which counts: decisions D24, a definition that is the type of a member, written or inferred, counts as used even when the value comes from a function. So `Plate`'s group is used; the only root is `Asm`. Writing `let b : Plate = mk()` gives the same. `mk()` makes `Plate(t: 2mm)` inside `mk`'s body (`Asm.b/made[0,0]`), and `b` holds its value. A cell declares no member `t`, so a read of the value's `t` is written through `/open` (decisions A): `Asm.b/open.t` is 2 mm."
+
+[[expect]]
+roots = ["Asm"]
+
+[[expect]]
+path = "Asm.b/open.t"
+value = "2 mm"

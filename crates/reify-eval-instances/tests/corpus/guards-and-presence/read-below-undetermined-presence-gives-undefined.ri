@@ -1,0 +1,16 @@
+structure def Fan {
+    param flow : Length = 2mm
+    constraint flow > 0mm
+}
+structure def Case {
+    param cooled : Bool
+    sub fan : Fan where cooled
+}
+structure def Top {
+    param x : Bool
+    sub c : Case {
+        cooled = x
+    }
+    let fl = self.c.fan.flow
+    constraint self.c.fan.flow > 1mm
+}

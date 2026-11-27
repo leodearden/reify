@@ -1,0 +1,12 @@
+structure def Plate {
+    param t : Length
+    constraint t >= 3mm
+    constraint t <= 3mm
+    pub let ok = t >= 3mm
+}
+structure def Asm {
+    param quick : Bool = true
+    let f1 = quick or Plate(t: 1mm).ok
+    let f2 = if quick then true else Plate(t: 1mm).ok
+    let f3 = quick or Plate(t: auto).ok
+}

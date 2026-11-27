@@ -1,0 +1,9 @@
+tests = "a file whose only definition is a generic with no default for its type parameter has no default root; rule D's fallback clause does not make it one."
+rule = "rule D (its fallback clause); decisions D25 (\"the rule's last clause included. A file that holds nothing else has no root\"); decisions D26"
+provenance = "trace-structure counter-example 1 (the fallback is reachable through D25's case, and would then contradict it); appendix D25; PRD D13 item 9."
+needs = ["roots", "generic"]
+answer_basis = "stated: readings D25, ruled by Leo on 2026-11-26 as PRD D13 item 9. Trace: clause 1 gives one group, {Box}, which nothing uses. `Box` has no default for `T`, so it is not a default root, and D25 says the fallback clause does not make it one. There is no test. So the file has no root. Read the other way, the fallback would make `Box` a root with no specialisation reached from the entry file, so no member table, and the reading avoids that."
+today = "run `/tmp/instance-prd/fix-structure/genonly.ri`: `Box.n = 1`, evaluated as a root."
+
+[[expect]]
+roots = []

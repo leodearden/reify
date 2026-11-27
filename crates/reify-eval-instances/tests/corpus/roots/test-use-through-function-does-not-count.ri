@@ -1,0 +1,9 @@
+structure def Column {
+    param w : Length = 50mm
+    constraint w > 0mm
+}
+fn fixture() -> Column { Column(w: 60mm) }
+@test structure def TestColumn {
+    let col = fixture()
+    constraint col.w < 100mm
+}

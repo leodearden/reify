@@ -1,0 +1,17 @@
+tests = "an inner guard is never read under a false outer one, so an undefined inner guard under a false outer guard gives absent, not presence undetermined."
+rule = "Part 4 (\"A nested guard reads the outer one first, so an inner condition is never evaluated under a false outer one\")."
+provenance = "logic-1 holds-up \"Nested guards\". design Part 4."
+needs = ["instance", "guard", "summary"]
+answer_basis = "stated (Part 4). `w`: outer `on` is false, so absent whatever `u` is. `w2`: outer `on2` is true and inner `u` is undefined, so presence undetermined, counted once."
+
+[[expect]]
+path = "Asm.w"
+presence = "absent"
+
+[[expect]]
+path = "Asm.w2"
+presence = "undetermined"
+
+[[expect]]
+path = "Asm/summary"
+summary = { violated = 0, undetermined = 1, failed = 0 }

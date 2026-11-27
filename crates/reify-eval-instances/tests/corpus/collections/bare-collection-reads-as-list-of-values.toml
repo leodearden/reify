@@ -1,0 +1,18 @@
+tests = "A count may read a member of a sibling sub, and a bare reference to the collection is the list of its elements as values."
+rule = "Part 5 (\"A count may read anything except its own elements\"; \"A bare collection is a list of its elements as values\")"
+provenance = "design Part 5; Part 13 (task 6604)"
+needs = ["collection", "instance", "value"]
+answer_basis = "stated: Part 5 and Part 13."
+today = "a count that reads a sibling sub gives no elements (task 6604, design Part 13); a bare reference to a collection gives its first member's values (design Part 5)."
+
+[[expect]]
+path = "Asm.vents[2]"
+presence = "present"
+
+[[expect]]
+path = "Asm.vents[3]"
+presence = "absent"
+
+[[expect]]
+path = "Asm.k"
+value = "[Vent{w: 2 mm}, Vent{w: 2 mm}, Vent{w: 2 mm}]"

@@ -1,0 +1,28 @@
+tests = "a constraint inside the owner bears on its unknown through a child's own solve, so the owner chooses the argument that makes the child's result meet it."
+rule = "decision 1; Part 6.1 (\"'Bears on' follows every chain of reads ... through a child's own solve\")."
+provenance = "logic-1 L7 (taken: 6.1's transitive \"bears on\"; logic-2 Part A row L7 closed, `h` = 60 mm)."
+needs = ["instance", "constraint", "unknown", "solve-forced", "nested-solve"]
+answer_basis = "traced. `a.len` (h) is `Asm`'s unknown, at `Asm/auto[a.len]`. `a`'s solve gives `k` = 100 mm − h for any h, under each trial of h (so the entry needs `nested-solve`; tracer, wrong tags). `Asm`'s constraint is inside `Asm` and reads `a.k`, so it bears on h: h = 60 mm is the only value. Then `k` is 40 mm and the constraint is satisfied. No note of 6.5 applies, since an unknown of `Asm` lies on the chain. The braces hold an argument assignment only, so the entry does not need `braces`."
+
+[candidates]
+note = "Under h = 50 mm, `a`'s solve rejects 40 mm (it breaks `k == 100mm - len`) and takes 50 mm, and then `Asm/constraint[0]` is violated and depended on the trial, so 50 mm is rejected; a reading in which `Asm`'s constraint only checks takes it. Under h = 60 mm, `a` takes 40 mm and everything holds. The first taken are 60 mm and 40 mm."
+
+[[candidates.unknown]]
+path = "Asm/auto[a.len]"
+values = ["50mm", "60mm"]
+
+[[candidates.unknown]]
+path = "Asm.a.k"
+values = ["40mm", "50mm"]
+
+[[expect]]
+path = "Asm.a.len"
+value = "60 mm"
+
+[[expect]]
+path = "Asm.a.k"
+value = "40 mm"
+
+[[expect]]
+path = "Asm/constraint[0]"
+verdict = "satisfied"

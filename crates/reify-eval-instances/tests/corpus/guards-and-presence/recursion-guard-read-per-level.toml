@@ -1,0 +1,29 @@
+tests = "a self-recursive guarded sub reads its guard per level and stops where it is false, and a self-recursive definition with no outside user is a default root."
+rule = "Part 4 (recursion is a guarded sub; a guard is read per instance); rule D; decision 2."
+provenance = "logic-1 L1, instance half (taken: member tables of a recursive definition form a loop, Part 2); logic-1 holds-up \"Recursion at the level of instances\"; logic-1 L11 (taken: rule D judges definitions that use one another as a group). design Part 13 row (task 10499); Part 4 recursion and names in the braces."
+needs = ["instance", "guard", "constraint", "summary", "roots"]
+answer_basis = "traced. RecTree is used only by itself, so its group has no outside user and it is a root (rule D). Root: depth 2 > 0, so `child` is present with depth 1, span 50 mm (`self` in the braces is the parent). Level 1: 1 > 0, so `child.child` is present with depth 0, span 25 mm. Level 2: 0 > 0 is false, so `child.child.child` is absent. Spans 100, 50, 25 mm all satisfy `span >= 10mm`."
+today = "run `rec.ri`: `RecTree.child.child.span = 0.025 m`, with \"recursive structure cycle detected\" as a warning."
+
+[[expect]]
+roots = ["RecTree"]
+
+[[expect]]
+path = "RecTree.child.depth"
+value = "1"
+
+[[expect]]
+path = "RecTree.child.child.depth"
+value = "0"
+
+[[expect]]
+path = "RecTree.child.child.span"
+value = "25 mm"
+
+[[expect]]
+path = "RecTree.child.child.child"
+presence = "absent"
+
+[[expect]]
+path = "RecTree/summary"
+summary = { violated = 0, undetermined = 0, failed = 0 }

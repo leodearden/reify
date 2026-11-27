@@ -1,0 +1,9 @@
+tests = "a generic definition whose type parameter has no default is not a default root, and a definition that satisfies its bound without being named stays one."
+rule = "rule D; decisions D25"
+provenance = "appendix D25; PRD D13 item 9; the side question of `failed-type-argument-choice-is-sub-failure`."
+needs = ["roots", "generic"]
+answer_basis = "stated: decisions D25. Trace: `Bearing<T: Seal>` has no default for `T`: not a default root. `Bearing` names the trait `Seal`, not `ORing`, and nothing else names `ORing`: a root. The file keeps a root, so rule D's fallback clause is not reached. A generic definition whose every type parameter has a default is not covered by D25 and is not modelled."
+today = "run `g05.ri`: `Bearing.n` and `ORing.t` are both printed."
+
+[[expect]]
+roots = ["ORing"]

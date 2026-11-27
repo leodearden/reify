@@ -1,0 +1,10 @@
+structure def Vent {
+    param w : Length = 2mm
+}
+structure def Manifold {
+    sub vents : Keyed<Vent> {
+        "intake" => { w = 6mm }
+        "exhaust" => { w = 3mm }
+    }
+    forall v in vents: constraint v.w > 4mm
+}

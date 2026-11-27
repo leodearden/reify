@@ -1,0 +1,12 @@
+structure def Plate {
+    param t : Length = auto
+    constraint t >= 3mm
+    minimize t
+    pub let area = t * 40mm
+}
+structure def Asm {
+    let c = Plate()
+    constraint c.t > 5mm
+    sub s : Plate
+    constraint self.s.t > 5mm
+}

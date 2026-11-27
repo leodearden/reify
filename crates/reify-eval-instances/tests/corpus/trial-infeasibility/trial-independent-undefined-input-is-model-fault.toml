@@ -1,0 +1,14 @@
+tests = "a constraint that is undefined because of an input that does not depend on the trial is undetermined, as a fault of the model, and is not reported as a bound the unknown cannot meet."
+rule = "rule C (second bullet, and \"How a solve tells them apart\")."
+provenance = "logic-2 N8 (proposed \"depended on the substitution\"; not closed in draft 3, logic-3 R10 first half); logic-3 R10 (taken: rule C decides by whether the undefined *input* depended on the trial)."
+needs = ["instance", "guard", "constraint", "unknown"]
+answer_basis = "traced for the verdict; open for `Top.x`. `fan`'s guard does not read `x`, so `fan` is absent at every trial and `self.c.fan.flow` is undefined with no dependence on the trial. The constraint is undetermined, and the solve must not fail with \"could not be jointly satisfied\" naming the bounds on `x`. Whether `x` is then solved from its bounds alone (3 mm) or undetermined is the solve design's (task 10610), so `Top.x` is not pinned."
+note = "both pinned rows hold whatever the solve does with `x`, decided or not, so no solve decides them and the entry does not carry `solve-real` (readings F, last paragraph; tracer report, wrong tags). It needs the unknown's cell (`unknown`), because without a kind for `solves` that cell is blocked and the verdict would be `failure blocked`. It carries no candidates: the test solver given none decides nothing, which leaves both rows as pinned."
+
+[[expect]]
+path = "Top.c.fan"
+presence = "absent"
+
+[[expect]]
+path = "Top/constraint[2]"
+verdict = "undetermined"

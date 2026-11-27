@@ -1,0 +1,11 @@
+structure def Plate {
+    param t : Length = 3mm
+    pub let c = constrained(t)
+}
+structure def Asm {
+    sub p : Plate {
+        constraint t >= 1mm
+    }
+    let e = self.p
+    let x = e.c
+}

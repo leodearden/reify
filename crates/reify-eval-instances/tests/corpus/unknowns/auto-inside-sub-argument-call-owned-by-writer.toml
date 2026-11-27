@@ -1,0 +1,20 @@
+tests = "an `auto` written in a constructor call inside a sub's argument belongs to the instance whose text contains it, so that instance's own constraints bear on it."
+rule = "Part 1 rule 3 and Part 6.1 (an `auto` belongs to the instance of the definition whose text contains it); Part 6.3; decision 5."
+provenance = "logic-2 N1, \"Also (6.3)\" (\"could mean `d` ... or `root` ... Rule 3 says `root`\"; taken: draft 5's rule)."
+needs = ["instance", "constraint", "unknown", "made", "open", "nested-solve", "solve-forced"]
+answer_basis = "traced. The call is in `Asm`'s text, so the unknown is `Asm`'s, at `Asm/auto[d.p#0.t]` (PRD section 5.3: an `auto` in a call inside a sub's argument). `Plate`'s `t >= 3mm` (at `Asm.d.p/made[0]`) and `Asm`'s `d.p.t == 5mm` are both inside `Asm`: 5 mm. Had `d` owned it, `Asm`'s constraint would only check, and `t >= 3mm` alone would not fix `t`."
+
+[candidates]
+note = "3 mm meets `Plate`'s bound and breaks `Asm`'s constraint; a reading in which `d` or the made instance owns the `auto` takes it. The first taken is 5 mm."
+
+[[candidates.unknown]]
+path = "Asm/auto[d.p#0.t]"
+values = ["3mm", "5mm"]
+
+[[expect]]
+path = "Asm.d.p/made[0].t"
+value = "5 mm"
+
+[[expect]]
+path = "Asm/constraint[0]"
+verdict = "satisfied"

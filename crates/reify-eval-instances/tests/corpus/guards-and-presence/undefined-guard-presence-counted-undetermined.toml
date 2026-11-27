@@ -1,0 +1,29 @@
+tests = "an undefined guard gives presence undetermined, a member list holding such a member is undefined, and the summary counts the presence with the undetermined verdicts."
+rule = "Part 4 (an undefined guard is not \"false\"); Part 5 (\"If a member's presence is undetermined, the list is undefined\"); decision 3c."
+provenance = "logic-1 L17 (taken: presence undetermined in place of a failure); logic-3 R19 (taken: the list rule restored in Part 5); logic-2 Part C on decision 3c (the root needed naming under draft 2's default-parameter bullet; draft 5 has no such bullet, so `Asm` is a default root). design decision 3c (its model). claims-3 probe d3c.ri; language-1 L12; language-2 B6."
+needs = ["instance", "guard", "value", "constraint", "summary"]
+answer_basis = "traced. `use_plate` has no default and `Asm` is a root, so it is undefined. `thin`'s guard is undefined: presence undetermined. `w` reads an undefined `if` condition: undefined; its constraint is undetermined. `self.children` holds a member of undetermined presence, so it is undefined (readings E30), and so is its count. `determined` of an undefined value is false. Summary (readings B4, E28): the constraint and `thin`'s presence; nothing is failed. `self.children` is leaf κ₁'s (`value`), not a collection's; `determined` is leaf ε₂'s, built with the first cells."
+
+[[expect]]
+path = "Asm.thin"
+presence = "undetermined"
+
+[[expect]]
+path = "Asm.w"
+value = "undefined"
+
+[[expect]]
+path = "Asm/constraint[0]"
+verdict = "undetermined"
+
+[[expect]]
+path = "Asm.n"
+value = "undefined"
+
+[[expect]]
+path = "Asm.known"
+value = "false"
+
+[[expect]]
+path = "Asm/summary"
+summary = { violated = 0, undetermined = 2, failed = 0 }

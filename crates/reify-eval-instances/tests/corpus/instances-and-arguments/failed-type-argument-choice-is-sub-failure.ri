@@ -1,0 +1,5 @@
+trait Seal {}
+structure def GraphiteSeal : Seal { param t : Length = 2mm }
+structure def ORingSeal : Seal { param t : Length = 3mm }
+structure def Bearing<T: Seal> { param n : Int = 1 }
+structure def Assembly { sub b = Bearing<auto: Seal>() }

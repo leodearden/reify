@@ -1,0 +1,18 @@
+tests = "a purpose applied with `self` inside a definition is checked on every instance of it, a sub and an instance a constructor call makes alike, and each verdict is counted once."
+rule = "design 7.4 (an applied purpose is the same on a value); Part 10; readings B4 (a made instance's verdicts are counted once, at the made instance); readings C18 (`self` is a subject)."
+provenance = "the tracer's interaction I5 (trace-braces-purposes-unknowns). The tracer's contradiction C7 (decision 9's \"place\" against 7.4) is answered by readings C18: the subject is `self`, an instance, whether the instance is a sub or made."
+needs = ["instance", "constraint", "summary", "made", "purpose", "grammar-purpose"]
+answer_basis = "traced. `Bracket` is used by `Asm`, so `Asm` is the root. `Asm.v/made[0]` and `Asm.s` are both `Bracket` instances with `t` 2 mm, and each declares its own purpose instance: 2 mm ≥ 3 mm is violated at each. The made instance's verdict is counted once, at the made instance. Summary: violated 2."
+note = "the member line `purpose robust(self)` needs grammar-purpose (readings E33). With it taken out, the source parses on main."
+
+[[expect]]
+path = "Asm.v/made[0]/purpose[0]/constraint[0]"
+verdict = "violated"
+
+[[expect]]
+path = "Asm.s/purpose[0]/constraint[0]"
+verdict = "violated"
+
+[[expect]]
+path = "Asm/summary"
+summary = { violated = 2, undetermined = 0, failed = 0 }

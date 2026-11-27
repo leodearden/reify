@@ -1,0 +1,8 @@
+tests = "A name declared as a collection under one guard and as a single sub under another is a compile error."
+rule = "rule E (\"The declarations must give the same kind of node\")"
+provenance = "design Part 15.1 rule E; critic logic-3 R6. logic-3 R6. critic logic-1 (arms of different kinds)."
+needs = ["compile-error", "guard", "one-name", "collection"]
+answer_basis = "stated: rule E; readings C11 (same-name declarations under guards compile, except two that give different kinds of node, a collection and a single sub, which is a compile error)."
+
+[[expect]]
+compile_error = "`s` is declared as a collection and as a single sub"

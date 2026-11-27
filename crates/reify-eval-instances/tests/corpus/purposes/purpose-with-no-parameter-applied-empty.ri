@@ -1,0 +1,7 @@
+purpose impossible() {
+    constraint 2mm < 1mm
+}
+structure def Asm {
+    param t : Length = 3mm
+    purpose impossible()
+}

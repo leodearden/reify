@@ -1,0 +1,29 @@
+tests = "a collection whose count is a solved unknown declares that many elements, and a read of element 0 finds it."
+rule = "contract Example 4; Part 12 (Example 4); Part 13 row 4 (the solved count)."
+provenance = "contract Part B Example 4; design Part 12 \"Example 4\"; design Part 13 row \"A count that reads a sibling sub gives no elements (6604); a solved count gives none\". `Vent` is added; the contract does not define it, and its default of 10 mm is what gives the contract's `a0` = 10 mm. design Part 5; Part 12 Example 4. second-design trace Example 4."
+needs = ["instance", "collection", "unknown", "solve-forced"]
+answer_basis = "traced. `n ≥ 4` and `n ≤ 4` force `n` = 4. The count constraint is the count cell's source and bears on nothing (decisions A). The collection reads its count cell, which reads `n`: four elements, `[0]` to `[3]`. `[4]` is not declared, so absent. `a0` = `vents[0].area` = 10 mm. Every feasible value gives these answers and no objective is written, so the entry is forced, not `solve-real` (trace-structure, wrong tags)."
+today = "the count is solved and no element is created; `a0` = undef (contract Example 4, run)."
+
+[candidates]
+note = "A reading in which the two bounds did not bear would take 3. Under 3 the first bound, and under 5 the second, is violated and depended on the trial; under 4 both are satisfied."
+
+[[candidates.unknown]]
+path = "Manifold.n"
+values = ["3", "5", "4"]
+
+[[expect]]
+path = "Manifold.n"
+value = "4"
+
+[[expect]]
+path = "Manifold.vents[3]"
+presence = "present"
+
+[[expect]]
+path = "Manifold.vents[4]"
+presence = "absent"
+
+[[expect]]
+path = "Manifold.a0"
+value = "10 mm"

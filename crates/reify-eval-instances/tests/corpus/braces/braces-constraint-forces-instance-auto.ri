@@ -1,0 +1,2 @@
+structure def Motor { param shaft_d : Length = auto   constraint shaft_d >= 4mm   constraint shaft_d <= 20mm }
+structure def Rig   { sub motor : Motor { constraint shaft_d >= 20mm } }

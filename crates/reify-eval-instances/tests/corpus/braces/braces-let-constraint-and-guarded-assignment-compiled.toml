@@ -1,0 +1,30 @@
+tests = "a guarded assignment, a constraint and a `let` written in a sub's braces are compiled as members of that instance."
+rule = "Part 13 row 10; Part 4 (\"What is written in a sub's braces\", \"Names inside the braces\"); decision 4 (braces half); seat-context ruling 3."
+provenance = "design Part 13 row \"A `let`, a constraint or a `where` in a sub's braces is dropped\". language-2 Part D; rule G's listed edge (an argument assigned under a guard in the braces)."
+needs = ["instance", "braces", "guard", "constraint", "summary"]
+answer_basis = "traced. `thick` is not a `let` of the braces and not a member of `Plate`, so it is `Asm`'s (readings C20); its condition is the cell `Asm.p/braces/guard[0]`, false, so the argument is absent and `p.t` keeps its default 3 mm. In `q`, bare `t` is the plate's own: 3 mm > 4 mm violated. In `r`, `u` is the braces' own `let`, at `Asm.r/braces.u` (readings A), read by a constraint of the same braces, which C20 allows under either answer to who else may read it: 6 mm, and 6 mm > 7 mm violated. Nothing is solved, so both are verdicts. No argument is undefined, so every `/arguments` verdict is satisfied (readings B5)."
+today = "the brace constraint is dropped and `check` says \"All constraints satisfied\"; the guard on the assignment is ignored, giving 6 mm with `thick` false (run, `braces2.ri`, `braces2f.ri`, `braces3.ri`)."
+
+[[expect]]
+path = "Asm.p/braces/guard[0]"
+value = "false"
+
+[[expect]]
+path = "Asm.p.t"
+value = "3 mm"
+
+[[expect]]
+path = "Asm.q/braces/constraint[0]"
+verdict = "violated"
+
+[[expect]]
+path = "Asm.r/braces.u"
+value = "6 mm"
+
+[[expect]]
+path = "Asm.r/braces/constraint[0]"
+verdict = "violated"
+
+[[expect]]
+path = "Asm/summary"
+summary = { violated = 2, undetermined = 0, failed = 0 }

@@ -1,0 +1,9 @@
+tests = "a `let` written in a sub's braces can be read only by the other members written in the same braces; a read of it from the parent is a compile error."
+rule = "readings C20 (second bullet: who may read a braces `let`; PRD D10(f), ruled by Leo on 2026-11-26 as recommended); readings A (row \"A `let` written in a sub's braces\"); Part 4 (members written in the braces are members of the instance); seat-context ruling 3"
+provenance = "appendix A; brief item 8. Renamed 2026-11-26 from `braces-let-member-readable-from-parent`, which pinned `Asm.s.zz` and `Asm.r` at 6 mm, and then from `braces-let-read-from-parent-left-open` when Leo ruled."
+needs = ["compile-error", "instance", "braces"]
+answer_basis = "stated: PRD D10(f) as Leo ruled it. The `let` is a member of the sub's instance that only the other members written in the same braces can read, so `self.s.zz` in `Asm` is a compile error. A value carries no braces, so `let e = self.s` could never have `e.zz`, and the sub and its value agree on what can be read."
+today = "run `g08a.ri`: \"error: unknown member 'zz' on sub 's'\" (the braces `let` is dropped)."
+
+[[expect]]
+compile_error = "`zz` is a `let` written in the braces of `s` and can be read only there; write the `let` in `Asm`"

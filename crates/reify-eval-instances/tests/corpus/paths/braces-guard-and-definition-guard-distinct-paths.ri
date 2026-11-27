@@ -1,0 +1,10 @@
+structure def Plate {
+    param thick : Bool = true
+    param thin : Bool = false
+    where thick { let a : Length = 1mm }
+}
+structure def Asm {
+    sub p : Plate {
+        where thin { let b : Length = 2mm }
+    }
+}

@@ -1,0 +1,9 @@
+tests = "A definition used only through a constructor call in another definition is not a default root."
+rule = "rule D (clause \"in a constructor call\"); Part 3"
+provenance = "design Part 3 (\"a definition used only through `let c = Child(...)` is exported alone\", as today); rule D"
+needs = ["roots"]
+answer_basis = "stated: rule D lists a constructor call among uses. Only the roots row is pinned."
+today = "`Plate` is evaluated as a root, and geometry export exports it alone at its defaults (design Part 3, run)."
+
+[[expect]]
+roots = ["Asm"]

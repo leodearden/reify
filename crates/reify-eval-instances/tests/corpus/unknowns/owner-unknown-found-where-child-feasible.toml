@@ -1,0 +1,28 @@
+tests = "an owner's unknown passed to a child whose own constraints are feasible for one argument only is decided at that point, not left undetermined in silence."
+rule = "Part 6.4 requirement 2; decision 1 (cost: \"A child that is feasible for only some arguments makes the parent's solve a search for where\")."
+provenance = "logic-1 L6 (taken: moved to 6.4 as a requirement on the solve design; logic-2 Part A row L6); logic-2 holds-up (\"Model 3: 48 mm and 2 mm\"); design 6.4 requirement 2. design 6.4 requirement 2; critic logic-1 (trace of the silent undetermined)."
+needs = ["instance", "constraint", "unknown", "solve-forced", "nested-solve"]
+answer_basis = "stated (Part 6.4, requirement 2). `a.len` is `Asm`'s unknown, at `Asm/auto[a.len]`; `a.k` is `a`'s. `k == 2mm` and `len + k == 50mm` admit only `len` 48 mm. The braces hold an argument assignment only, so the entry does not need `braces`."
+
+[candidates]
+note = "Under `len := 40mm`, `a`'s solve rejects 10 mm (`k == 2mm`) and 2 mm (`len + k == 50mm`), so `a.k` is undefined and `Beam`'s two verdicts are undetermined because of the trial: 40 mm is rejected (readings E35). A solver that rejects only a violated constraint takes it (critic-design F1). Under `len := 48mm`, `a` takes 2 mm and both hold. The first taken are 48 mm and 2 mm."
+
+[[candidates.unknown]]
+path = "Asm/auto[a.len]"
+values = ["40mm", "48mm"]
+
+[[candidates.unknown]]
+path = "Asm.a.k"
+values = ["10mm", "2mm"]
+
+[[expect]]
+path = "Asm.a.len"
+value = "48 mm"
+
+[[expect]]
+path = "Asm.a.k"
+value = "2 mm"
+
+[[expect]]
+path = "Asm.a/constraint[1]"
+verdict = "satisfied"

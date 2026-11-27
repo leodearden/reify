@@ -1,0 +1,11 @@
+structure def P { param w : Length = 10mm   pub let b = box(w, w, w) }
+purpose review(subject : Structure) { constraint volume(subject.b) > 1mm^3 }
+purpose review_local(subject : Structure) {
+    let b = box(subject.w, subject.w, subject.w)
+    constraint volume(b) > 1mm^3
+}
+structure def Holder {
+    sub p : P
+    purpose review(self.p)
+    purpose review_local(self.p)
+}

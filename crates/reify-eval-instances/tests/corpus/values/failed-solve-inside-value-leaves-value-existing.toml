@@ -1,0 +1,27 @@
+tests = "A solve that fails inside a value leaves the parameter undetermined, and the value and its made instance still exist."
+rule = "Part 7.1 (\"A solve that fails inside a value\"); contract section 8"
+provenance = "design Part 7.1"
+needs = ["instance", "value", "made", "open", "constraint", "unknown", "solve-infeasible"]
+answer_basis = "stated: Part 7.1, \"leaves the parameter it was to decide undetermined. The value still exists\". A failed solve is not a failure (readings B3): `t` is `value undefined` and the verdicts that read it are undetermined. Under the candidates (readings E35): at 2 mm `constraint[0]` (`t >= 3mm`) is violated and read the trial; at 3 mm `constraint[1]` (`t <= 2mm`) is; no candidate is taken. A solver that honoured only the upper bound would take 2 mm."
+
+[candidates]
+
+[[candidates.unknown]]
+path = "Top.c/made[0].t"
+values = ["2 mm", "3 mm"]
+
+[[expect]]
+path = "Top.c/made[0]"
+presence = "present"
+
+[[expect]]
+path = "Top.c/made[0].t"
+value = "undefined"
+
+[[expect]]
+path = "Top.c/made[0]/constraint[0]"
+verdict = "undetermined"
+
+[[expect]]
+path = "Top.k"
+value = "undefined"

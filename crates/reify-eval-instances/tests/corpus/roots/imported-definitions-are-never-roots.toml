@@ -1,0 +1,10 @@
+tests = "The `pub` definitions of an imported module are never default roots of the entry file."
+rule = "Part 3 (\"Imported definitions are not roots\"); decision 2 (\"made in passing\")"
+provenance = "design Part 3; Part 14 decision 2"
+needs = ["roots", "two-files"]
+answer_basis = "stated: Part 3. The `(file)` row is the entry file's, `main.ri`."
+today = "a direct import's `pub` definitions are evaluated as roots of the importing file (design Part 3, seat report `roots.md`)."
+entry_file = "main.ri"
+
+[[expect]]
+roots = ["App"]

@@ -1,0 +1,12 @@
+structure def Plate {
+    param t : Length = 3mm
+}
+structure def Bolt {
+    param d : Length = 6mm
+}
+fn bolt_d() -> Length { Bolt(d: 8mm).d }
+structure def Asm {
+    let f = |i : Int| Plate(t: i * 1mm).t
+    let ts = generate(2, f)
+    let d = bolt_d()
+}

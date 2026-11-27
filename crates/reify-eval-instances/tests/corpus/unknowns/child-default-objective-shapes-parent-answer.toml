@@ -1,0 +1,24 @@
+tests = "under ownership the parent sees the child's result as a function of the argument, so the child's own default objective shapes the parent's answer."
+rule = "Part 6.1 (\"Each instance chooses its own unknowns from the constraints inside it, given its arguments ... The answers must be the same\"); decision 1."
+provenance = "logic-2 N11, second model, and logic-2 doubts (\"6.1's bilevel meaning makes an outer answer depend on an inner default objective ... deserves a model in decision 1\"). Not taken as a model in the design."
+needs = ["instance", "constraint", "unknown", "nested-solve", "solve-real"]
+answer_basis = "traced. Given h = `a.len`, `a` decides `k` on [0, h] by the default objective: h/2. `Asm`'s `a.k == 30mm` bears on h: h = 60 mm, which meets `a.len <= 100mm`. One joint solve with the default objective over both would put h elsewhere in [30 mm, 100 mm]. The braces hold an argument assignment only, so the entry does not need `braces`."
+
+[candidates]
+note = "Under h = 20 mm, `a`'s solve finds no `k` (30 mm breaks `k <= len`), so `Asm/constraint[0]` is undetermined because of the trial and 20 mm is rejected; a solver that rejects only a violated constraint takes it (critic-design F1). Under h = 120 mm, `a.len <= 100mm` is violated. The first taken is 60 mm with `k` 30 mm. A first-feasible test solver cannot model the child's default objective, so this list reproduces the pinned answer without testing it; the entry waits for task 10610."
+
+[[candidates.unknown]]
+path = "Asm/auto[a.len]"
+values = ["20mm", "120mm", "60mm"]
+
+[[candidates.unknown]]
+path = "Asm.a.k"
+values = ["30mm"]
+
+[[expect]]
+path = "Asm.a.len"
+value = "60 mm"
+
+[[expect]]
+path = "Asm.a.k"
+value = "30 mm"

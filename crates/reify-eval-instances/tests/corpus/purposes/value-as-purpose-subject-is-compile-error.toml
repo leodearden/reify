@@ -1,0 +1,10 @@
+tests = "a value held in a cell cannot be a purpose's subject."
+rule = "decision 9; Part 10; Part 7.4."
+provenance = "design decision 9; design Part 10 (\"A value held in a cell is refused\"). design Part 7.4 table. claims-1 row 8; claims-3 decision 9; second-design Q5 and Q9."
+needs = ["compile-error", "purpose", "grammar-purpose"]
+answer_basis = "stated (decision 9: \"a value held in a cell cannot be named as a subject\"). The message follows readings C18: a subject names an instance, `self` or a sub or element below it, and not a value held in a cell."
+today = "a purpose made active on a `let`-bound value gives an undetermined verdict (design decision 9, report)."
+note = "the member line `purpose thin_enough(v)` needs grammar-purpose (readings E33). With it taken out, the source parses on main. Which parameters are subjects is PRD D10(e), ruled by Leo on 2026-11-26 as recommended (readings C18): `subject : Structure` is one."
+
+[[expect]]
+compile_error = "a purpose's subject must name an instance (`self`, or a sub or element below it), not a value held in a cell; write `sub v : Bracket`"

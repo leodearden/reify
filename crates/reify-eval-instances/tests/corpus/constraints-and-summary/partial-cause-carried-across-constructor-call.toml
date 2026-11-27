@@ -1,0 +1,30 @@
+tests = "a verdict inside a made instance whose argument is undefined because a root's parameter has no value keeps the class partial, and one whose argument is undefined for another cause keeps the class other: the class crosses the constructor call beside the argument's value."
+rule = "seat-context ruling 9; PRD 5.4 (\"A cause across a constructor call\"); decisions B5, B8 and C19 (a constructor call with an undefined argument makes an instance whose parameter is undefined)"
+provenance = "the brief of seat fix-structure (PRD 5.4's paragraph had no entry); `partial-design-told-from-other-undetermined-causes` for the classes."
+needs = ["instance", "constraint", "summary", "made"]
+answer_basis = "traced. `u` is a root's parameter with no value. `Plate(t: u)` makes `Top.c/made[0]` with `t` undefined (readings C19). A value carries no cause, so the adapter passes the class of `u`'s cause, partial, beside the value (PRD 5.4), and the made instance's parameter cell takes it: `constraint[0]` reads `t` and is undetermined, partial. Its `/arguments` verdict is undetermined (the argument is undefined and is not the literal `undef`, decisions B5), and it read the same cause: partial. In `d`, `10mm / k` with `k` = 0 has no value: other, at both verdicts. Summary of `Top`: the two made instances' verdicts, counted once each at the made instance (decisions B4): undetermined 4. `Top` is a root given no argument: its own `/arguments` is satisfied."
+today = "run `/tmp/instance-prd/fix-structure/partial_call.ri`: `Top.c = Plate { t: undef }`, `Top.d = Plate { t: undef }`; `check` reports one indeterminate verdict, at `Plate#constraint[0]`, the definition's defaults."
+
+[[expect]]
+path = "Top.c/made[0].t"
+value = "undefined"
+
+[[expect]]
+path = "Top.c/made[0]/constraint[0]"
+undetermined_because = "partial"
+
+[[expect]]
+path = "Top.c/made[0]/arguments"
+undetermined_because = "partial"
+
+[[expect]]
+path = "Top.d/made[0]/constraint[0]"
+undetermined_because = "other"
+
+[[expect]]
+path = "Top.d/made[0]/arguments"
+undetermined_because = "other"
+
+[[expect]]
+path = "Top/summary"
+summary = { violated = 0, undetermined = 4, failed = 0 }

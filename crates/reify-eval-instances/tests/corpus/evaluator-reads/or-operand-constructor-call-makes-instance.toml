@@ -1,0 +1,37 @@
+tests = "both operands of `or` are read, so a constructor call in an operand that cannot change the result still makes an instance whose verdicts count, an `auto` there is legal, and a call in an untaken `if` arm makes nothing."
+rule = "rule A (\"Only the condition of an `if` or a `match` decides whether something is read\"); decision 12; Part 6.3 (\"Evaluated exactly once\"); rule B."
+provenance = "logic-2 N3 model 2 (the \"phantom child\"; its proposed skip rule was not taken, reversed by logic-3 R1 and ruled in decision 12); logic-3 R9 (taken: the Words definition of \"evaluated exactly once\" excludes only lambdas, function bodies, quantifier bodies and `if`/`match` arms)."
+needs = ["instance", "eval-reads", "value", "made", "open", "constraint", "summary", "unknown", "solve-forced", "nested-solve", "compile-error"]
+answer_basis = '''
+traced. `f1`: `quick` is true, but the right operand is read, so `Plate(t: 1mm)` is made; its `t >= 3mm` is violated and counted. `f2`: the `else` arm is not taken, so nothing is made. `f3`: the `auto` is `Asm`'s unknown, at `Asm/auto[f3#0.t]` (readings A); `Plate`'s two constraints are inside `Asm` and force 3 mm. One violation in all.
+Under the candidates (readings E35): at 1 mm the made plate's `t >= 3mm` is violated and read the trial, so 1 mm is rejected; at 3 mm both its constraints are satisfied. The plate `f1` made is violated at every trial: it did not depend on the trial, so it does not bear and does not reject 3 mm; it stays one violated verdict. A solver that read only `Asm`'s own constraints would take 1 mm; one that let every violation reject would decide nothing.'''
+today = "logic-3 read-code `crates/reify-expr/src/lib.rs` (`and`/`or`/`implies` skip the right operand when the left decides), so `f1`'s instance would not be made; and constraints of values are not checked at all today (design 7.6)."
+
+[candidates]
+
+[[candidates.unknown]]
+path = "Asm/auto[f3#0.t]"
+values = ["1 mm", "3 mm"]
+
+[[expect]]
+compile = "ok"
+
+[[expect]]
+path = "Asm.f1"
+value = "true"
+
+[[expect]]
+path = "Asm.f1/made[0]/constraint[0]"
+verdict = "violated"
+
+[[expect]]
+path = "Asm.f2/made[0]"
+presence = "absent"
+
+[[expect]]
+path = "Asm.f3/made[0].t"
+value = "3 mm"
+
+[[expect]]
+path = "Asm/summary"
+summary = { violated = 1, undetermined = 0, failed = 0 }

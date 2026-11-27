@@ -1,0 +1,8 @@
+structure def Fan   { param d : Length = 40mm }
+structure def Case  { param needs_fan : Bool = false   sub fan : Fan where needs_fan }
+structure def Plate { param t : Length   let a = t * 2 }
+structure def Top {
+    sub c : Case
+    sub p : Plate { t = self.c.fan.d }
+    sub q : Plate { t = undef }
+}

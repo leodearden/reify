@@ -1,0 +1,18 @@
+tests = "the text form of a path through a member name, a list index and a key resolves to that instance's value, not the definition's default."
+rule = "rule F; Part 8; Part 13 row 8; decision 10 (an element's identity is its position or key)."
+provenance = "design Part 8 (`Asm.thin.t`, `Asm.vents[2].area`, `Asm.vents[\"intake\"].area`); design Part 13 row \"The GUI cannot address an instance's parameter (7717)\". The keyed collection is named `ducts` so that both kinds sit in one definition."
+needs = ["instance", "collection", "paths"]
+answer_basis = "stated (Part 8 gives the three spellings); values traced: `thin.t` is given 4 mm against `Plate`'s 3 mm; list elements take `Vent`'s default 1 mm; the \"intake\" entry gives 5 mm."
+today = "`Asm.thin.t` is refused as ambiguous (design Part 8, report)."
+
+[[expect]]
+path = "Asm.thin.t"
+value = "4 mm"
+
+[[expect]]
+path = "Asm.vents[2].area"
+value = "1 mm"
+
+[[expect]]
+path = "Asm.ducts[\"intake\"].area"
+value = "5 mm"

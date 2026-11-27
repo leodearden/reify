@@ -1,0 +1,29 @@
+tests = "an instance made by an expression inside a purpose's constraint is at or below the purpose instance, so its constraints never bear on an unknown, though they are inside the owner by path."
+rule = "seat-context ruling 1; readings E34 (the exclusion is by path); Part 6.1; PRD section 5.6 (\"everything at or below a purpose instance\" is left out of `problem`)."
+provenance = "the tracer's counter-example N2 (trace-braces-purposes-unknowns), and gap G4."
+needs = ["instance", "constraint", "summary", "unknown", "solve-forced", "made", "open", "purpose", "grammar-purpose"]
+answer_basis = "traced. `t` is `Bracket`'s, and `t == 2mm` bears: 2 mm. The purpose's constraint makes a `Gauge` at `Bracket/purpose[0]/constraint[0]/made[0]`, whose `t >= 3mm` depends on `Bracket.t` and is inside `Bracket` by path. It is below the purpose instance, so it is left out of the problem (readings E34): `t` is decided as without the purpose. The made `Gauge`'s verdict is violated (2 mm ≥ 3 mm) and counted once, at the made instance (readings B4); the purpose's own constraint reads the opened value, 2 mm > 0 mm, satisfied. Summary: violated 1. Under design 6.1 alone the `Gauge` constraint would bear, no value would satisfy both, and `t` would be undefined."
+note = "the member line `purpose fits(self)` needs grammar-purpose (readings E33). With it taken out, the source parses on main."
+
+[candidates]
+note = "3 mm meets the `Gauge` constraint and breaks `t == 2mm`; a reading in which the made instance's constraint bears rejects both and leaves `t` undefined. The first taken is 2 mm."
+
+[[candidates.unknown]]
+path = "Bracket.t"
+values = ["3mm", "2mm"]
+
+[[expect]]
+path = "Bracket.t"
+value = "2 mm"
+
+[[expect]]
+path = "Bracket/purpose[0]/constraint[0]"
+verdict = "satisfied"
+
+[[expect]]
+path = "Bracket/purpose[0]/constraint[0]/made[0]/constraint[0]"
+verdict = "violated"
+
+[[expect]]
+path = "Bracket/summary"
+summary = { violated = 1, undetermined = 0, failed = 0 }

@@ -1,0 +1,3 @@
+module main
+import lib
+structure def App { param x : Length = 1mm }

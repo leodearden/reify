@@ -1,0 +1,8 @@
+structure def P { param v : Length = 1mm }
+structure def Asm {
+    param yes : Bool = true
+    let r1 = r2 + 1
+    let r2 = r1 + 1
+    sub s : P where yes
+    sub s : P where r1 > 0
+}

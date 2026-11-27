@@ -1,0 +1,13 @@
+tests = "whether a guard on an argument that reads what the receiving instance's solve decides is a cycle, or is read through the solve's view."
+rule = "Part 4 (\"An argument that depends on what it helps decide is a cycle\"); contract section 8 (a solve reads its arguments before its view, and a guard through it); design 6.4 item 5; readings E27."
+provenance = "logic-2 N10, first half (logic-3 Part A row N10 \"The cycle closed\"). N10 also proposed that the compiler reject the direct case; draft 5 does not say so, so no compile outcome other than acceptance is pinned. Renamed 2026-11-26 from `guard-of-argument-reading-receivers-solve-cycles`, which pinned `failure cycle` on `Asm.wide` and `Asm.a.w`: the tracer (trace-braces-purposes-unknowns, wrong answers, low confidence) showed the cycle holds only if the guard of an argument is read before the view, and readings E27 gives that question to the solve design."
+needs = ["compile-error", "instance", "braces", "guard", "unknown"]
+answer_basis = "open for `Asm.wide`, `Asm.a.t` and `Asm.a.w`; owner task 10610 (readings E27). `wide` is a bare name in the braces that is no `let` of the braces and no member of `Plate`, so it is `Asm.wide` (readings C20), and `Asm.wide` reads `Asm.a.w`, which `a`'s solve decides. Read before the view, as part of the argument (design Part 4), the ring solve, guard, `wide`, `a.w`, solve is a `failure cycle` on each node. Read through the view (contract section 8, design 6.4 item 5), there is no ring, and two states are consistent: `t` 6 mm with `w` 12 mm, and `t` 3 mm with `w` 6 mm. The rows pinned are those no solve decides: the source compiles, and `a` has no guard of its own."
+note = "recommended in the source of this entry before 2026-11-26: `failure cycle` at `Asm.wide` and at `Asm.a.w`."
+
+[[expect]]
+compile = "ok"
+
+[[expect]]
+path = "Asm.a"
+presence = "present"

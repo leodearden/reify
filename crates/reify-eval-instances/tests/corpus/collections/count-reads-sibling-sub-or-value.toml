@@ -1,0 +1,30 @@
+tests = "a collection's count may read a sibling sub's member or a value made in a cell, and a read past the end is undefined, not a failure."
+rule = "Part 13 row 4; Part 5; decision 10 (the way out it names); decision 3 (an index out of range gives undefined)."
+provenance = "design Part 13 row \"A count that reads a sibling sub gives no elements (6604)\"; design decision 10 (`let proto = Bolt()` and read `proto.rated_load`). task 6604. language-1 L13 (the way out)."
+needs = ["instance", "collection", "made", "open"]
+answer_basis = "traced. `spec.n` = 3: elements `[0]` to `[2]`, each with `area` 10 mm; `[3]` absent, and its reader `a3` is undefined (decisions B1). `Bolt()` makes `Asm.proto/made[0]`, and `proto.rated` opens its value: 3, so `bolts` has 4 elements."
+today = "the bolts are created; the vents are not, and `a2` = undef (run, `count_sib.ri`). The spec's 3.4 calls an out-of-bounds read a failure."
+
+[[expect]]
+path = "Asm.vents[2].area"
+value = "10 mm"
+
+[[expect]]
+path = "Asm.vents[3]"
+presence = "absent"
+
+[[expect]]
+path = "Asm.a2"
+value = "10 mm"
+
+[[expect]]
+path = "Asm.a3"
+value = "undefined"
+
+[[expect]]
+path = "Asm.bolts[3]"
+presence = "present"
+
+[[expect]]
+path = "Asm.bolts[4]"
+presence = "absent"

@@ -1,0 +1,21 @@
+tests = "a `where` block written in a sub's braces and one in the sub's definition are two guard cells of the same instance at two paths, `/braces/guard[k]` and `/guard[k]`, and a `let` in the braces is at `/braces.name`."
+rule = "rule F; decisions A (rows \"The condition of a guard written in a sub's braces\", \"A guard's condition cell\", \"A `let` written in a sub's braces\"); ruling 3 of `seat-context.md` (members written in the braces are members of the instance); decisions C20 (a bare name in the braces is the instance's own member first)"
+provenance = "trace-structure counter-example 4 (numbered per list, both guards would print `Asm.p/guard[0]`); its two guards are made to differ so that a path sent to the wrong node shows."
+needs = ["instance", "guard", "braces", "paths"]
+answer_basis = "traced. `thick` and `thin` in the braces are bare names that `Plate` declares, so they are `p`'s own members (decisions C20): `thick` true, `thin` false. Both guard cells belong to `Asm.p`. The definition's block is `Asm.p/guard[0]`, true, so `Asm.p.a` is 1 mm. The braces' block is `Asm.p/braces/guard[0]`, false, so the braces' `let b`, at `Asm.p/braces.b`, is absent. Nothing reads `b`, so who may read a braces `let` (decisions C20, pending Leo) does not bear on the rows."
+
+[[expect]]
+path = "Asm.p/guard[0]"
+value = "true"
+
+[[expect]]
+path = "Asm.p/braces/guard[0]"
+value = "false"
+
+[[expect]]
+path = "Asm.p.a"
+value = "1 mm"
+
+[[expect]]
+path = "Asm.p/braces.b"
+presence = "absent"

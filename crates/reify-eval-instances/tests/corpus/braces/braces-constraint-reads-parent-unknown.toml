@@ -1,0 +1,32 @@
+tests = "a constraint in a sub's braces that reads the parent's unknown: the sub's solve takes the parent's trial value before it opens its view, so the two are decided with no cycle."
+rule = "Part 4 (names inside the braces); decision 1; contract O9; PRD section 5.6 (an instance's `problem` lists the names of the scope that wrote its braces that its constraints read; a solve makes those reads before it opens its view)."
+provenance = "critic-design F3 (the `Rig` model with `let w`)."
+needs = ["instance", "braces", "constraint", "summary", "unknown", "solve-forced", "nested-solve"]
+answer_basis = "traced. Bare `w` is no `let` of the braces and no member of `Motor`, so it is `Rig.w`, `Rig`'s unknown. `Rig`'s `w == 10mm` bears on it, and so does the braces' constraint, which is inside `Rig` and reads `w`: under a trial `w := x`, `m`'s solve reads `x` before its view and decides `shaft_d` = x + 5 mm, so the braces' constraint holds for any x up to 15 mm. `w` is 10 mm, and `shaft_d` 15 mm."
+
+[candidates]
+note = "Under `w := 5mm`, `w == 10mm` is violated. Under `w := 10mm`, `shaft_d := 10mm` breaks the braces' constraint; 10 mm is what `m`'s solve takes in a reading in which the braces' constraint bears only on `Rig`'s `w` and not on `m`'s `shaft_d`. The first pair taken is (10 mm, 15 mm)."
+
+[[candidates.unknown]]
+path = "Rig.w"
+values = ["5mm", "10mm"]
+
+[[candidates.unknown]]
+path = "Rig.m.shaft_d"
+values = ["10mm", "15mm"]
+
+[[expect]]
+path = "Rig.w"
+value = "10 mm"
+
+[[expect]]
+path = "Rig.m.shaft_d"
+value = "15 mm"
+
+[[expect]]
+path = "Rig.m/braces/constraint[0]"
+verdict = "satisfied"
+
+[[expect]]
+path = "Rig/summary"
+summary = { violated = 0, undetermined = 0, failed = 0 }

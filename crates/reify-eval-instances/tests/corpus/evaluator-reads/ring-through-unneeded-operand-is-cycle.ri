@@ -1,0 +1,23 @@
+structure def P {
+    param use : Bool = true
+    param other : Bool = false
+    pub let v = use or other
+}
+structure def Q {
+    param other : Bool = false
+    pub let v = forall f in [false, other]: f
+}
+structure def Top {
+    sub x : P {
+        other = self.y.v
+    }
+    sub y : P {
+        other = self.x.v
+    }
+    sub m : Q {
+        other = self.n.v
+    }
+    sub n : Q {
+        other = self.m.v
+    }
+}

@@ -1,0 +1,14 @@
+structure def Fan {
+    param flow : Length = 2mm
+}
+structure def Case {
+    param needs_fan : Bool = false
+    sub fan : Fan where needs_fan
+}
+structure def Top {
+    param x : Length = auto
+    constraint x >= 1mm
+    constraint x <= 5mm
+    sub c : Case
+    constraint self.c.fan.flow > x
+}

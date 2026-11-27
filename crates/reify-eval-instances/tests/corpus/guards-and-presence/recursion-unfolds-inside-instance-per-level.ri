@@ -1,0 +1,8 @@
+structure def Tag { param k : Int = 7 }
+structure def Node {
+    param n : Int = 0
+    constraint n <= 1
+    sub tag : Tag
+    sub child = Node(n: n - 1) where n > 0
+}
+structure def Root { sub r = Node(n: 3) }

@@ -1,0 +1,8 @@
+structure def Vent { param w : Length = 2mm }
+structure def Asm {
+    param n : Int = 2
+    sub vents : List<Vent>
+    constraint vents.count == n * 2
+    forall v in vents : constraint v.w > 5mm
+    constraint forall v in vents: v.w > 5mm
+}

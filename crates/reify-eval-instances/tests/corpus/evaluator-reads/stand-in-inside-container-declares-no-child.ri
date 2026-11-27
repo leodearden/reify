@@ -1,0 +1,10 @@
+structure def Plate {
+    param t : Length
+    constraint t >= 3mm
+}
+structure def Asm {
+    param k : Length = 5mm
+    param i : Int = 0
+    let p = Plate(t: [self.k, 2mm][self.i])
+    let q = Plate(t: unwrap_or(some(self.k), 2mm))
+}

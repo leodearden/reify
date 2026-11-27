@@ -1,0 +1,25 @@
+tests = "an argument that is undefined because it read something not there is reported once, by the `/arguments` verdict of the instance it was given to, and nowhere else; an explicit `undef` is not reported by that verdict."
+rule = "decision 12 (\"An undefined argument is reported once, by a built-in verdict of the instance it was given to\"; ruling 12.3); Part 2 (\"An argument that is undefined is reported\"); seat-context ruling 9; rule F."
+provenance = "design Part 2; design decision 12. task 9253."
+needs = ["instance", "guard", "summary"]
+answer_basis = "traced. `c.fan` is absent; `p`'s argument reads it. The argument's cell `Top.p.t` is the reader, so its undefined value is pinned there (decisions B1): `p.t` and `p.a` are undefined and `Top.p/arguments` is undetermined. `q` is given the literal `undef`, which does not make `/arguments` undetermined (decisions B5, following design 14.12, task 9345): satisfied. `Plate` has no constraint and `c.fan` is absent, not undetermined, so by B4 the summary has one undetermined verdict. Decisions B5 is the lead's reading, not a ruling of Leo's."
+
+[[expect]]
+path = "Top.p.t"
+value = "undefined"
+
+[[expect]]
+path = "Top.p.a"
+value = "undefined"
+
+[[expect]]
+path = "Top.p/arguments"
+verdict = "undetermined"
+
+[[expect]]
+path = "Top.q/arguments"
+verdict = "satisfied"
+
+[[expect]]
+path = "Top/summary"
+summary = { violated = 0, undetermined = 1, failed = 0 }

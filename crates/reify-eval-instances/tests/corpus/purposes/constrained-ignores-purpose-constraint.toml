@@ -1,0 +1,17 @@
+tests = "a purpose's constraint does not make `constrained(p)` true, so applying a purpose changes no value."
+rule = "readings B7 (`constrained(p)`; PRD D3, ruled by Leo on 2026-11-26 as recommended: a constraint the declarer writes in a sub's braces does not count, and neither does a purpose's); seat-context ruling 1."
+provenance = "the tracer's counter-example N3 (trace-braces-purposes-unknowns); critic-design F4."
+needs = ["compile-error", "instance", "constraint", "purpose", "grammar-purpose", "state-tests"]
+answer_basis = "stated for `Bracket.w`: PRD D3 as Leo ruled it. No constraint written in `Bracket`'s definition reads `t` and a purpose's does not count, so `constrained(t)` is false and `w` is 1 mm. Traced for the rest: the source compiles, and the purpose's constraint reads `t` = 2 mm against 3 mm, violated. Under D3's reading before its revision (a present constraint inside the instance that holds `p`), the purpose's constraint, inside `Bracket` by path, would count, and `w` would be 5 mm with the purpose line and 1 mm without it."
+note = "the member line `purpose robust(self)` needs grammar-purpose (readings E33); with it taken out, the source parses on main."
+
+[[expect]]
+compile = "ok"
+
+[[expect]]
+path = "Bracket/purpose[0]/constraint[0]"
+verdict = "violated"
+
+[[expect]]
+path = "Bracket.w"
+value = "1 mm"

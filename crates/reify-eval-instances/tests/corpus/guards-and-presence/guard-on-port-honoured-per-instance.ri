@@ -1,0 +1,6 @@
+trait Flow {}
+structure def Vent { param has_inlet : Bool = false   port inlet : in Flow where has_inlet {} }
+structure def Asm {
+    sub v : Vent
+    sub w : Vent { has_inlet = true }
+}

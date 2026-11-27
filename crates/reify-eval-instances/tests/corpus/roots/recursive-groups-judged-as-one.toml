@@ -1,0 +1,16 @@
+tests = "Definitions that use one another are judged as one group: a self-recursive definition used by nothing else is a root, and a mutually recursive pair used from outside contributes no root."
+rule = "rule D (clause \"group the entry file's definitions that use one another\"); Part 4 (recursion is a guarded sub)"
+provenance = "critic logic-1 L11 and language-1 L4 item 3 (self-recursive `RecTree` dropped); critic logic-2 N17(c) (`F`, `E`, `D`); design Part 15.1 rule D. language-1 L4 model 3 (RecTree in examples/integration_corner_cases.ri; a mutually recursive pair). logic-2 N17(c)."
+needs = ["roots", "instance", "guard"]
+answer_basis = "traced. Groups: {Tree}, {E, D}, {F}. No definition outside {Tree} names `Tree`: root. `F` names `E`, so {E, D} is used: no root from it. Nothing names `F`: root. Below `F`: `F.e.n` is 1, so `F.e.d` is present with `m = 0`; its guard `m > 0` is false, so `F.e.d.e` is absent."
+
+[[expect]]
+roots = ["Tree", "F"]
+
+[[expect]]
+path = "F.e.d.m"
+value = "0"
+
+[[expect]]
+path = "F.e.d.e"
+presence = "absent"

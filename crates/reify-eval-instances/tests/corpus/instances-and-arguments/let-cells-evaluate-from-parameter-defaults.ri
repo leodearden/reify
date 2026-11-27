@@ -1,0 +1,5 @@
+structure def Clamped {
+    param width : Length = 50mm
+    let w_eff = if width > 40mm then 40mm else width
+    let area = w_eff * 10mm
+}

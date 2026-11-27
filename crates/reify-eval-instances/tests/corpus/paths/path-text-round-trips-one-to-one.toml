@@ -1,0 +1,25 @@
+tests = "the text form is one-to-one: printing a typed path and parsing the text gives the same path, and no two paths print alike, including a member named like a fixed child and a key that holds `.`, `/` and `]`."
+rule = "rule F (\"that the text is one-to-one is a requirement to test\"); Part 8 (\"One module owns it, both ways\"); decision 12 (\"A path has one text form\")."
+provenance = "design Part 8; design Part 15.1 rule F. second-design Q7; claims-1 part B row on tasks 7717 and 8704."
+needs = ["instance", "collection", "summary", "paths"]
+answer_basis = "stated (Part 8 and rule F state the requirement); values traced. Every path that every entry of the corpus pins must also round-trip. `Asm.summary` is the sub; `Asm/summary` is the fixed child. The dotted key is read in source as well as by path (`Asm.a`). A key's text inside the quotes is taken whole; how a `\"` inside a key is escaped is open."
+
+[[expect]]
+path = "Asm.summary.area"
+value = "2 mm"
+
+[[expect]]
+path = "Asm/summary"
+summary = { violated = 0, undetermined = 0, failed = 0 }
+
+[[expect]]
+path = "Asm.ducts[\"a.b/c]\"].area"
+value = "3 mm"
+
+[[expect]]
+path = "Asm.ducts[\"a\"].area"
+value = "4 mm"
+
+[[expect]]
+path = "Asm.a"
+value = "3 mm"

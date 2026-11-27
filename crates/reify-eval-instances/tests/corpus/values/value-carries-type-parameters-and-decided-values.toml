@@ -1,0 +1,33 @@
+tests = "A value carries its type's name, its parameters and every value decided at or below its instance, so a given and a solved parameter of equal value give equal values, and equal fields under two type names do not."
+rule = "decision 6; Part 7.1; decision 11; ruling 7 of `seat-context.md`"
+provenance = "design Part 14 decision 6 (model); Part 7.1; contract Example 11 (`Plate{t: 3 mm}`). language-1 L21; claims-1 row 23; second-design Q5. logic-2 N12."
+needs = ["instance", "value", "made", "open", "unknown", "solve-real"]
+answer_basis = "stated: decision 6 (\"`Plate(t: 3mm)` equals a `Plate()` whose `t` was solved to 3 mm, and `A()` does not equal `B()`\"). `set{c, d}` has one member because equal values are one member (Part 7.4). The nested rows: `o`'s value carries `inner.t`, so the opened value agrees with the made instance. Because this solve is deterministic, these two rows cannot tell the ruled rule from a value that carries only its own parameters."
+
+[[expect]]
+path = "Top.c"
+value = "Plate{t: 3 mm}"
+
+[[expect]]
+path = "Top.d"
+value = "Plate{t: 3 mm}"
+
+[[expect]]
+path = "Top.k"
+value = "1"
+
+[[expect]]
+path = "Top.a"
+value = "A{v: 1 mm}"
+
+[[expect]]
+path = "Top.b"
+value = "B{v: 1 mm}"
+
+[[expect]]
+path = "Top.o/made[0].inner.t"
+value = "3 mm"
+
+[[expect]]
+path = "Top.o/open.inner.t"
+value = "3 mm"

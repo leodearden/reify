@@ -1,0 +1,5 @@
+structure def Beam { param len : Length   constraint len >= 10mm }
+structure def Asm  {
+    param long : Bool = false
+    sub b : Beam { len = 20mm where long }
+}

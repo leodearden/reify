@@ -1,0 +1,4 @@
+structure def Plate { param t : Length = 1mm   constraint t > 2mm   constraint t > 2mm }
+trait Weighted { param mass : Mass = 1kg   constraint mass > 0kg }
+structure def Plank : Weighted { param t : Length = 1mm   constraint t > 2mm }
+structure def Asm { sub p : Plank { mass = 0kg - 1kg } }

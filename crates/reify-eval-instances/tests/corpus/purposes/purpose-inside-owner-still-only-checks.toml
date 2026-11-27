@@ -1,0 +1,30 @@
+tests = "a purpose applied to the instance whose own `auto` it reads is checked against the result and never takes part in choosing it, even though it sits inside that instance by path."
+rule = "Part 10; seat-context ruling 1; decision 4 (purpose half, reversed 2026-11-26)."
+provenance = "design Part 10 (\"Its constraints are verdicts and nothing else\"); design decision 4's purpose model, made forced: decision 4 uses `t ≤ 10mm` with `minimize t` (giving 1 mm); here `t ≤ 2mm` and no objective, so that the answer needs no default objective."
+needs = ["instance", "constraint", "summary", "unknown", "solve-forced", "purpose", "grammar-purpose"]
+answer_basis = "traced. `Bracket`'s own constraints give `t` ∈ [1 mm, 2 mm], both satisfied for any solution; every feasible value gives the rows pinned, which is what `solve-forced` asks (PRD section 5.6). The purpose `t ≥ 3 mm` is at `Bracket/purpose[0]`, inside the owner by path, and is left out of the problem by path (readings E34): violated for any solution. Had it borne, the problem would be unsatisfiable and both of `Bracket`'s verdicts undetermined."
+today = "no `.ri` file can apply a purpose (design Part 10)."
+note = "the member line `purpose robust(self)` needs grammar-purpose (readings E33). With it taken out, the source parses on main."
+
+[candidates]
+note = "3 mm meets the purpose and breaks `t <= 2mm`; a reading in which only the purpose bore would take it, and a reading in which the purpose bears beside `Bracket`'s own finds no value. Under `t := 3mm` the definition's bound is violated and depended on the trial, so the first taken is 1 mm."
+
+[[candidates.unknown]]
+path = "Bracket.t"
+values = ["3mm", "1mm"]
+
+[[expect]]
+path = "Bracket/constraint[0]"
+verdict = "satisfied"
+
+[[expect]]
+path = "Bracket/constraint[1]"
+verdict = "satisfied"
+
+[[expect]]
+path = "Bracket/purpose[0]/constraint[0]"
+verdict = "violated"
+
+[[expect]]
+path = "Bracket/summary"
+summary = { violated = 1, undetermined = 0, failed = 0 }

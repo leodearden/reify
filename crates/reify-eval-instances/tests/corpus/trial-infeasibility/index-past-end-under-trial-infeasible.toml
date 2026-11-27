@@ -1,0 +1,22 @@
+tests = "a read past the end of a collection whose count is on trial makes that trial point infeasible, not a failure of the definition."
+rule = "rule C (first bullet; departs from spec 8.9's third category); Part 5 (an index out of range gives undefined); readings A (the count constraint `vents.count == n` has no `constraint[k]`, so `constraint[2]` is `vents[2].area >= 1mm`)."
+provenance = "logic-1 L15 (taken: an index out of range gives undefined, decision 3; and rule C's first bullet)."
+needs = ["instance", "collection", "constraint", "unknown", "solve-real"]
+answer_basis = "traced. Under the trial `n := 2`, `vents` has two elements and `vents[2].area` is undefined; that input depended on the trial's value, so the point is infeasible. Feasible: 3 to 6. `minimize n` gives 3. This needs a solver that tries integer values (Part 13: no kept solver does)."
+note = "this entry does not separate rule C from a solver that accepts an undetermined verdict: its own `n >= 3` excludes every point at which `vents[2]` is past the end before the index matters, so its answer is 3 either way (tracer report, N4). Entry `index-past-end-on-trial-rejects-candidate` tests rule C's first bullet with the test solver."
+
+[[expect]]
+path = "M.n"
+value = "3"
+
+[[expect]]
+path = "M.vents[2].area"
+value = "2 mm"
+
+[[expect]]
+path = "M.vents[3]"
+presence = "absent"
+
+[[expect]]
+path = "M/constraint[2]"
+verdict = "satisfied"

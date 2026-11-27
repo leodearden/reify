@@ -1,0 +1,8 @@
+tests = "`auto` as the value of a `let` with no type is rejected."
+rule = "Part 6.3 rule 1 and table (row \"A typed `let`\")"
+provenance = "design Part 6.3 table (\"The untyped form is rejected\", unchanged by the design)"
+needs = ["compile-error", "unknown"]
+answer_basis = "stated: Part 6.3 table. The typed form, an unknown of the instance, is pinned by `absent-sub-unknown-left-out-of-solve`."
+
+[[expect]]
+compile_error = "`let u = auto` needs a type, as in `let u : Length = auto`"

@@ -1,0 +1,3 @@
+structure def Kid { param w : Length = 10mm   pub let off = w * 2 }
+structure def Mid { sub k = Kid()   pub let relay = self.k.off }
+structure def Parent { sub m = Mid()   let echo = self.m.relay }

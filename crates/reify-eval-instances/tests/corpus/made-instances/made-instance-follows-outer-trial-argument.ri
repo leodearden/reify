@@ -1,0 +1,11 @@
+structure def Slot {
+    param width : Length
+    param depth : Length = auto
+    constraint depth == width / 2
+}
+structure def Asm {
+    let w : Length = auto
+    constraint w == 8mm
+    let c = Slot(width: w)
+    let dd = c.depth
+}

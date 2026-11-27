@@ -1,0 +1,9 @@
+structure def Vent { param w : Length = 1mm }
+structure def M {
+    sub vents : Keyed<Vent> {
+        "a" => { w = auto }
+        "b" => { w = auto }
+    }
+    constraint vents["a"].w == 1mm
+    constraint vents["b"].w == 2mm
+}

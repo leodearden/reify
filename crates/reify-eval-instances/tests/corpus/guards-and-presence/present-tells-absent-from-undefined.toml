@@ -1,0 +1,22 @@
+tests = "`present(...)` tells an absent member from a present one whose value is undefined, which `determined(...)` cannot."
+rule = "decision 3 (the `present` addition); Part 4 (\"A test for 'is it there'\")"
+provenance = "design Part 14 decision 3; Part 4; critic logic-3 R5. language-2 B5(a). logic-3 R5."
+needs = ["instance", "guard"]
+answer_basis = "stated: Part 4 and decision 3b, \"`determined(self.c.fan.flow)` is false when there is no fan. It is also false when there is a fan whose `flow` is undefined ... `present(self.c.fan)` would not\". The `determined` rows need no word of their own: `determined` is leaf ε₂'s, built with the first cells (readings F); `present` is leaf θ₁'s. The source has no purpose line and parses today (tracer, run `present.ri`)."
+today = "\"warning: unresolved function: present\" (run, `p2.ri`)."
+
+[[expect]]
+path = "Top.pa"
+value = "false"
+
+[[expect]]
+path = "Top.pb"
+value = "true"
+
+[[expect]]
+path = "Top.da"
+value = "false"
+
+[[expect]]
+path = "Top.db"
+value = "false"

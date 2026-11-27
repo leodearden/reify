@@ -1,0 +1,11 @@
+structure def Plate {
+    param t : Length = 3mm
+}
+structure def Asm {
+    param use_plate : Bool
+    sub thin : Plate where use_plate
+    let w = if use_plate then 4mm else 2mm
+    constraint w > 1mm
+    let n = self.children.count
+    let known = determined(self.n)
+}

@@ -1,0 +1,11 @@
+structure def Bracket {
+    param t : Length = 5mm
+}
+purpose thin_below(subject : Structure, limit : Length) {
+    constraint subject.t < limit
+}
+structure def Asm {
+    sub b : Bracket
+    purpose thin_below(self.b, 4mm)
+    purpose thin_below(subject: self.b, limit: 6mm)
+}

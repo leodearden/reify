@@ -187,6 +187,13 @@ const UNSWEPT_RI_TREES: &[UnsweptTree] = &[
         reason: "chartered must-reject residents of the spec-conformance corpus (that tree's \
                  README.md); declared members are still checked",
     },
+    UnsweptTree {
+        prefix: "crates/reify-eval-instances/tests/corpus/",
+        reason: "the instances-on-the-core corpus (docs/prds/instances-on-the-core.md \
+                 section 5.8): entries that apply a purpose need the purpose grammar; the \
+                 corpus's own validity test checks each source parses or not as its entry \
+                 requires; declared members are still checked",
+    },
 ];
 
 /// Declared entries the scope classifier marks inert. The swept listing omits

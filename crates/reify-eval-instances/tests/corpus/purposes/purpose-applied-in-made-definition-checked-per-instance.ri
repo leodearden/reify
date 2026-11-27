@@ -1,0 +1,9 @@
+purpose robust(subject : Structure) { constraint subject.t >= 3mm }
+structure def Bracket {
+    param t : Length = 2mm
+    purpose robust(self)
+}
+structure def Asm {
+    let v = Bracket()
+    sub s : Bracket
+}

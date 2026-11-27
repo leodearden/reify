@@ -1,0 +1,14 @@
+tests = "a geometric `Conforms` with an explicit `actual`, written inside a purpose, gets the verdict it would get written in the definition (measured), never the satisfied verdict that the scalar predicate alone would give."
+rule = "Part 10 (\"Its constraints are verdicts and nothing else\"); Part 16 (for the geometry design); decisions E36"
+provenance = "task 9452 (its purpose half. Its `forall` half follows from forall-constraints-bear-on-owner-auto, since per-element constraints are ordinary members); `examples/gdt_conformance_violated.ri` (the same `Conforms` written in a definition)"
+needs = ["instance", "constraint", "purpose", "grammar-purpose", "made", "geometry"]
+answer_basis = '''
+traced. This holds on the condition that the geometry kinds (task 10611) measure a `Conforms` with an explicit `actual`, as today's engine does for `gdt_conformance_violated.ri`.
+A purpose's constraint is an ordinary verdict over its subject (Part 10). The measured deviation is 0.5 mm and the zone is 0.1 mm, so the verdict is violated.
+The scalar predicate alone (0.1 mm >= 0 mm) would be satisfied, which is what the record says happens today.
+If the geometry kinds cannot measure it, the expected verdict is undetermined. Either way it is never satisfied.'''
+today = "the language-level predicate gives a false \"satisfied\" for a `Conforms` injected by a purpose (task 9452 record)."
+
+[[expect]]
+path = "Holder/purpose[0]/constraint[0]"
+verdict = "violated"

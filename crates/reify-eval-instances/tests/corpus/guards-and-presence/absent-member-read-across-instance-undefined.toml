@@ -1,0 +1,45 @@
+tests = "reading an absent member across an instance compiles and gives undefined; `and`, `or` and `implies` read both operands, so a guarding disjunct gives the same verdict in either order; a constraint under the member's own guard is absent with it."
+rule = "decision 3b (lines 3 and 4); decision 12 (both operands read); Part 15 rule A; ruling 5; ruling 6; Part 4."
+provenance = "design decision 3b; language-1 L1 (its read 2, from another instance, with `{ needs_fan = true }`); language-2 B3; claims-3 consistency finding (the `or` line is satisfied only across an instance; inside `Case` it is entry unguarded-read-in-own-definition-is-undefined-where-absent, which since Leo's ruling of 2026-11-26 answers the same). Taken. Also, from the merged entries: design decision 3b.3. decision 3b.4; spec 9.2.3; logic-3 R2. logic-2 N7; logic-3 holds-up."
+needs = ["instance", "guard", "eval-reads", "constraint", "summary", "compile-error"]
+answer_basis = "stated (decision 3b.3: \"`f` is undefined\"; 3b.4: \"satisfied, whichever way round it is written\"; Part 4: \"is written `constraint self.fan.flow > x where needs_fan`\"). Kleene: `true or undefined` is true, `false implies undefined` is true. `h` has its fan, 40 mm. Summary (readings B4, B5): four satisfied verdicts, a satisfied `/arguments` on every instance, `Top.c/constraint[0]` absent and not counted."
+today = "compile errors \"unknown member 'fan' on sub 'c'\" and \"on sub 'h'\" (run `cross_read.ri`)."
+
+[[expect]]
+compile = "ok"
+
+[[expect]]
+path = "Top.f"
+value = "undefined"
+
+[[expect]]
+path = "Top.g"
+value = "40 mm"
+
+[[expect]]
+path = "Top/constraint[0]"
+verdict = "satisfied"
+
+[[expect]]
+path = "Top/constraint[1]"
+verdict = "satisfied"
+
+[[expect]]
+path = "Top/constraint[2]"
+verdict = "satisfied"
+
+[[expect]]
+path = "Top.c/constraint[0]"
+presence = "absent"
+
+[[expect]]
+path = "Top.h/constraint[0]"
+verdict = "satisfied"
+
+[[expect]]
+path = "Top.c.fan"
+presence = "absent"
+
+[[expect]]
+path = "Top/summary"
+summary = { violated = 0, undetermined = 0, failed = 0 }

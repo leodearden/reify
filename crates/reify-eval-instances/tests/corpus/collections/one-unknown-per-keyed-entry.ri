@@ -1,0 +1,9 @@
+structure def Vent { param w : Length = 1mm }
+structure def Manifold {
+    sub vents : Keyed<Vent> {
+        "a" => { w = auto }
+        "b" => { w = auto }
+    }
+    constraint vents["a"].w == 2 * vents["b"].w
+    constraint vents["a"].w + vents["b"].w == 9mm
+}

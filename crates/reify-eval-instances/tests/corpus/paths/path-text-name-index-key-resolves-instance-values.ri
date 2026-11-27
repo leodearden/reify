@@ -1,0 +1,10 @@
+structure def Plate { param t : Length = 3mm }
+structure def Vent  { param area : Length = 1mm }
+structure def Asm {
+    sub thin : Plate { t = 4mm }
+    sub vents : List<Vent>
+    constraint vents.count == 3
+    sub ducts : Keyed<Vent> {
+        "intake" => { area = 5mm }
+    }
+}

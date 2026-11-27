@@ -1,0 +1,21 @@
+tests = "one name declared under several guards takes the declaration whose guard is true when every other is false, through nested `where`/`else` and through the spec's desugared pair."
+rule = "rule E; Part 4; readings C11."
+provenance = "language-2 B7 (a), (b), (c) and its probes `n1.ri`, `n2.ri`; claims-3 row 1; language-1 L14. Taken (rule E replaces draft 1's \"in order\")."
+needs = ["instance", "guard", "one-name", "constraint", "compile-error"]
+answer_basis = "traced. `K1`: `a` false, `b` true; the outer `where`/`else` has `k` in both arms, the inner one has `k` in both arms, so `k` is not a guarded member (applying Part 4's sentence at each level; the design does not say \"arms nest\" in words) and the constraint may read it: 2 mm, satisfied. `K2`: guard `n < 3` false, `n >= 3` true: 2 mm; the two declarations compile (readings C11). `K2` has no reader of `k`; a reader is entry `separate-wheres-read-without-guard`."
+today = "`K1.k = undef` and `INDETERMINATE K1#constraint[0]`; `K2.k = 2 mm` (run `alt_exclusive.ri`)."
+
+[[expect]]
+compile = "ok"
+
+[[expect]]
+path = "K1.k"
+value = "2 mm"
+
+[[expect]]
+path = "K1/constraint[0]"
+verdict = "satisfied"
+
+[[expect]]
+path = "K2.k"
+value = "2 mm"

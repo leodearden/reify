@@ -1,0 +1,17 @@
+tests = "when one of the guards on a name declared twice is itself a failure, the name is blocked by that failure, not of undetermined presence, and the summary counts it as failed."
+rule = "readings E28 (\"A guard that itself failed blocks the member\"); readings C14 (a ring of `let`s is a run-time cycle); readings B2 and B4; rule E."
+provenance = "tracer report `critics/trace-presence-and-values.md`, counter-example N3 (rule E's \"otherwise\" against PRD 5.4's blocking rule); readings E28, which answers it: rule E's \"otherwise\" covers only an undefined guard."
+needs = ["instance", "guard", "one-name", "summary"]
+answer_basis = "traced. `r1` and `r2` form a ring of `let`s in one definition: it compiles and each is `failure cycle` (readings C14). The second guard, `r1 > 0`, reads a failure, so its cell is `failure blocked` (readings B2). The first guard is true. A guard that failed blocks the member (readings E28), so the one node for `s` is `failure blocked`; it is not `presence-undetermined`, which rule E's text alone would give. Summary (readings B4): `r1`, `r2`, the second guard's cell and `s` are failures: failed 4. Nothing inside `s` is counted, and there is no verdict. The reading that treated the failed guard as undefined would give `undetermined 1 failed 3`."
+
+[[expect]]
+path = "Asm.r1"
+failure = "cycle"
+
+[[expect]]
+path = "Asm.s"
+failure = "blocked"
+
+[[expect]]
+path = "Asm/summary"
+summary = { violated = 0, undetermined = 0, failed = 4 }

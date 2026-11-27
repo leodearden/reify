@@ -1,0 +1,7 @@
+structure def RecTree {
+    param span : Length
+    param depth : Int = 2
+    constraint span >= 10mm
+    sub child : RecTree where depth > 0 { span = self.span / 2   depth = self.depth - 1 }
+}
+structure def Top { let s : Length = auto   sub tree = RecTree(span: s)   minimize s }
