@@ -630,3 +630,101 @@ fn determinacy_tests_take_a_path_through_a_sub() {
         );
     }
 }
+
+const MAY_BE_ABSENT_SOURCE: &str = "
+enum HeadKind { Hex, Round }
+structure def Fan {
+    param flow : Real = 6
+}
+structure def Plate {
+    param thick : Bool = false
+    where thick { param extra : Real = 1 }
+}
+structure def HexHead {
+    param across : Real = 8
+    param hex_only : Real = 1
+    param size : Real = 1
+}
+structure def RoundHead {
+    param across : Real = 9
+    param round_only : Real = 2
+    param size : Int = 2
+}
+structure def Bolt {
+    param kind : HeadKind = HeadKind.Hex
+    match kind {
+        Hex => sub head : HexHead,
+        Round => sub head : RoundHead
+    }
+}
+structure def Asm {
+    param needs_fan : Bool = false
+    sub p : Plate
+    sub b : Bolt
+}
+";
+
+/// Leo's ruling of 2026-11-26 (PRD D13 items 5, 7 and 19): a read of a member
+/// that may be absent compiles wherever it is written.
+#[test]
+fn member_reads_that_may_be_absent_are_references() {
+    let module = compile_clean(MAY_BE_ABSENT_SOURCE);
+    let registry = template_registry(&module);
+    let mut scope = definition_scope(&module, &registry, "Asm");
+    // The second output declares a guarded sub that today's compile does not
+    // elaborate (task 8414), as the member table will.
+    scope.sub_component_types.insert("fan".into(), "Fan".into());
+    let real = Type::dimensionless_scalar();
+
+    let real_or_int = Type::Union(vec![real.clone(), Type::Int]);
+    for (text, path, expected) in [
+        ("self.p.extra", &["p", "extra"][..], &real),
+        ("self.fan.flow", &["fan", "flow"], &real),
+        // A member only one arm's definition declares, in either arm.
+        ("b.head.hex_only", &["b", "head", "hex_only"], &real),
+        ("b.head.round_only", &["b", "head", "round_only"], &real),
+        // Both arms declare it: the type they agree on, or a union.
+        ("b.head.across", &["b", "head", "across"], &real),
+        ("b.head.size", &["b", "head", "size"], &real_or_int),
+    ] {
+        let (unit, diagnostics) = compile_unit(text, &scope, &module);
+        assert!(
+            errors_of(&diagnostics).is_empty(),
+            "{text}: {diagnostics:?}"
+        );
+        let (reference, ty) = sole_reference(&unit);
+        assert_eq!(shape(reference), own_value(members(path)), "{text}");
+        assert_eq!(ty, expected, "{text}");
+    }
+    for text in ["b.head.nosuch", "self.p.nosuch"] {
+        let (_, diagnostics) = compile_unit(text, &scope, &module);
+        assert!(
+            has_error_code(&diagnostics, DiagnosticCode::StructureMemberNotFound),
+            "{text}: {diagnostics:?}"
+        );
+    }
+
+    // The existing compile, on the same scope (outcomes measured when this
+    // test was written).
+    for (text, message) in [
+        ("self.p.extra", "unknown member 'extra' on sub 'p'"),
+        (
+            "b.head.hex_only",
+            "member access not yet supported: .hex_only",
+        ),
+    ] {
+        let (tree, diagnostics) = compile_existing(text, &scope, &module);
+        assert_eq!(tree.result_type, Type::Error, "{text}");
+        assert!(
+            errors_of(&diagnostics).iter().any(|d| d.message == message),
+            "{text}: {diagnostics:?}"
+        );
+    }
+    let (tree, diagnostics) = compile_existing("self.fan.flow", &scope, &module);
+    assert!(
+        matches!(&tree.kind, CompiledExprKind::ValueRef(id) if id == &ValueCellId::new("Asm.fan", "flow")),
+        "{tree:?}"
+    );
+    assert_eq!(tree.result_type, Type::Error);
+    assert!(errors_of(&diagnostics).is_empty(), "{diagnostics:?}");
+}
