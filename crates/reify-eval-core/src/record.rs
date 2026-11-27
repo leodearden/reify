@@ -15,6 +15,7 @@ use crate::index::{Index, StateId};
 use crate::outcome::{Erased, Outcome};
 use crate::path_table::PathId;
 use crate::step::Step;
+use crate::substitution::Substitution;
 use crate::wanted::Wanted;
 
 enum Slot {
@@ -28,9 +29,9 @@ pub(crate) struct Reading {
     slots: Vec<Slot>,
     /// The state whose index answers it.
     state: StateId,
-    /// Whether it is a read through a view the reader opened, so answered
-    /// in a state other than the reader's own.
-    through_view: bool,
+    /// The substitution of the view the reader opened, if it is a read
+    /// through one, answered in a state other than the reader's own.
+    through_view: Option<Substitution>,
     /// The children the request declares.
     declared: DeclaredChildren,
     /// Each child the request declares whose path is not answered yet,
@@ -46,7 +47,7 @@ pub(crate) struct Answers {
     contents: Vec<Content>,
     depended: Vec<bool>,
     declared: DeclaredChildren,
-    through_view: bool,
+    through_view: Option<Substitution>,
 }
 
 impl Answers {
@@ -69,9 +70,10 @@ impl Answers {
         self.depended.contains(&true)
     }
 
-    /// Whether these answer a read through a view the reader opened.
-    pub fn through_view(&self) -> bool {
-        self.through_view
+    /// The substitution of the view the reader opened, if these answer a
+    /// read through it.
+    pub fn through_view(&self) -> Option<&Substitution> {
+        self.through_view.as_ref()
     }
 
     pub fn into_outcomes(self) -> Vec<Outcome<Erased>> {
@@ -91,17 +93,17 @@ impl Reading {
             wanted,
             slots: Vec::new(),
             state,
-            through_view: false,
+            through_view: None,
             declared: DeclaredChildren::default(),
             to_declare: Vec::new(),
         }
     }
 
-    /// A read through `view`, which the reader opened, answered in its
-    /// index.
-    pub fn through(wanted: Arc<[Wanted]>, view: StateId) -> Self {
+    /// A read through `view`, which the reader opened supposing
+    /// `substitution`, answered in its index.
+    pub fn through(wanted: Arc<[Wanted]>, view: StateId, substitution: Substitution) -> Self {
         Self {
-            through_view: true,
+            through_view: Some(substitution),
             ..Self::new(wanted, view)
         }
     }

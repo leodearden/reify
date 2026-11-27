@@ -14,27 +14,40 @@ use crate::index::{Index, StateId, Supposed};
 use crate::outcome::Outcome;
 use crate::path_table::{PathId, PathTable};
 use crate::record::Reading;
+use crate::reference::Ref;
 use crate::resolve::{Target, target};
 use crate::serve::read;
 use crate::substitution::Substitution;
 use crate::wanted::Wanted;
 
-/// The outcome supposed at each place `substitution` names, read by the
-/// opener at `opener` declared `declaration` in `index`, its own state's.
-/// An item whose ref names no node's place, or a place an earlier item
-/// names, is the opener's failure (contract 6: what a view substitutes has
-/// exactly one path).
+/// The body that opened a view, which every ref of the view is relative
+/// to: its path, its declaration and its own state's index.
+pub(crate) struct Opener<'a> {
+    pub path: PathId,
+    pub declaration: &'a Declaration,
+    pub index: &'a Index,
+}
+
+impl Opener<'_> {
+    /// The place `r` names when the opener reads it.
+    fn target(&self, r: &Ref, paths: &mut PathTable) -> Target {
+        target(self.path, self.declaration, r, paths, self.index)
+    }
+}
+
+/// The outcome supposed at each place `substitution` names, read by
+/// `opener`. An item whose ref names no node's place, or a place an earlier
+/// item names, is the opener's failure (contract 6: what a view
+/// substitutes has exactly one path).
 pub(crate) fn open(
-    opener: PathId,
-    declaration: &Declaration,
+    opener: &Opener<'_>,
     substitution: &Substitution,
     paths: &mut PathTable,
-    index: &Index,
 ) -> Result<BTreeMap<PathId, Supposed>, Failure> {
     let mut supposed = BTreeMap::new();
     for (r, outcome) in substitution.items() {
         let not_supposable = || Failure::NotSupposable { at: r.clone() };
-        let Target::Node(place) = target(opener, declaration, r, paths, index) else {
+        let Target::Node(place) = opener.target(r, paths) else {
             return Err(not_supposable());
         };
         if supposed.contains_key(&place) {
@@ -57,25 +70,22 @@ pub(crate) fn open(
     Ok(supposed)
 }
 
-/// The reading of `wanted` through the view `view`, whose index is
-/// `view_index`, asked by the opener at `opener` declared `declaration`,
-/// whose own index is `opener_index`.
+/// The reading of `wanted` through the view `view`, which supposes
+/// `substitution` and whose index is `view_index`, asked by `opener`.
 pub(crate) fn serve(
-    opener: PathId,
-    declaration: &Declaration,
+    opener: &Opener<'_>,
+    substitution: &Substitution,
     wanted: Arc<[Wanted]>,
     paths: &mut PathTable,
-    opener_index: &Index,
     view: StateId,
     view_index: &Index,
 ) -> Reading {
-    let mut reading = Reading::through(Arc::clone(&wanted), view);
+    let mut reading = Reading::through(Arc::clone(&wanted), view, substitution.clone());
     for item in wanted.iter() {
         let Wanted::Ref(r) = item else {
             unreachable!("a read through a view names a place, and declares no child")
         };
-        let place = target(opener, declaration, r, paths, opener_index);
-        read::settle(place, &mut reading, view_index);
+        read::settle(opener.target(r, paths), &mut reading, view_index);
     }
     reading
 }

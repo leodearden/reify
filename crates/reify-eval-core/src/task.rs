@@ -28,6 +28,8 @@ pub(crate) struct Finished {
     pub children: ChildSteps,
     /// Whether its answer depended on a substitution.
     pub depended: bool,
+    /// Whether its run opened a view.
+    pub opened_view: bool,
 }
 
 pub(crate) struct Task {
@@ -128,7 +130,9 @@ impl Task {
     /// depended on that view's substitution, which its own answer does not
     /// depend on: its run is in the state that opened the view.
     pub fn answer_read(&mut self, mut answers: Answers) {
-        if answers.through_view() {
+        if let Some(substitution) = answers.through_view() {
+            let (wanted, contents) = (answers.wanted(), answers.contents());
+            self.chain.read_through_view(substitution, wanted, contents);
             self.mailbox.reply(Reply::Viewed(answers.into_viewed()));
             return;
         }
@@ -172,7 +176,8 @@ impl Task {
 
     /// Discards the finished body, keeping what it was started with, the
     /// chain its reads took it through, the steps of the children they
-    /// declared and whether its answer depended on a substitution.
+    /// declared, whether its answer depended on a substitution and whether
+    /// its run opened a view.
     pub fn finish(self) -> Finished {
         let Self {
             declaration,
@@ -183,12 +188,14 @@ impl Task {
             body,
             ..
         } = self;
+        let opened_view = mailbox.has_opened_view();
         let _ = catch_unwind(AssertUnwindSafe(move || drop((body, mailbox))));
         Finished {
             declaration,
             chain,
             children: children.into_steps(),
             depended,
+            opened_view,
         }
     }
 

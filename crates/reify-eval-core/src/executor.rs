@@ -42,6 +42,7 @@ use crate::resolve::declaration_of;
 use crate::resource::Resources;
 use crate::serve;
 use crate::serve::section::{Delivery, InFlight};
+use crate::serve::view_read::Opener;
 use crate::snapshot::{Snapshot, SnapshotId, SnapshotTokens};
 use crate::store::{Store, Stored, StoredResult};
 use crate::substitution::Substitution;
@@ -755,10 +756,12 @@ impl Executor {
         let view = match task.view(ordinal) {
             Some(view) => view,
             None => {
-                let index = self.indexes.of(key.state);
-                let declaration = task.declaration();
-                let paths = &mut self.paths;
-                match serve::view_read::open(key.path, declaration, substitution, paths, index) {
+                let opener = Opener {
+                    path: key.path,
+                    declaration: task.declaration(),
+                    index: self.indexes.of(key.state),
+                };
+                match serve::view_read::open(&opener, substitution, &mut self.paths) {
                     Ok(supposed) => {
                         let snapshot = key.state.snapshot;
                         let view = self.indexes.open_view(snapshot, supposed);
@@ -769,15 +772,14 @@ impl Executor {
                 }
             }
         };
-        let reading = serve::view_read::serve(
-            key.path,
-            task.declaration(),
-            wanted,
-            &mut self.paths,
-            self.indexes.of(key.state),
-            view,
-            self.indexes.of(view),
-        );
+        let opener = Opener {
+            path: key.path,
+            declaration: task.declaration(),
+            index: self.indexes.of(key.state),
+        };
+        let (paths, view_index) = (&mut self.paths, self.indexes.of(view));
+        let reading =
+            serve::view_read::serve(&opener, substitution, wanted, paths, view, view_index);
         let awaited = reading.awaited();
         if awaited.is_empty() {
             task.answer_read(reading.reply(self.indexes.of(view)));

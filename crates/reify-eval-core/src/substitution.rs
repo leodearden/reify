@@ -21,7 +21,7 @@ impl Substitution {
         }
     }
 
-    pub(crate) fn items(&self) -> impl Iterator<Item = &(Ref, Outcome<Input>)> {
+    pub(crate) fn items(&self) -> impl ExactSizeIterator<Item = &(Ref, Outcome<Input>)> {
         self.items.iter()
     }
 }

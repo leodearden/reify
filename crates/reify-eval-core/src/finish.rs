@@ -17,7 +17,11 @@ use crate::waits::Waits;
 /// Files `outcome`, which the body `finished` left produced, in `store` at
 /// the end of the chain its reads took it through, and returns the node's
 /// final answer with its content, the steps of the children its run
-/// declared and whether it depended on a substitution.
+/// declared and whether it depended on a substitution. The content of a
+/// value not hashed by value is that of the chain's key, which covers what
+/// the run read through its views. A result is filed unless its run opened
+/// a view or it depended on a substitution: this is leaf ι's rule, and
+/// leaf κ (#10562) files both sorts with what their trials rested on.
 pub(crate) fn filed(
     finished: Finished,
     outcome: Outcome<Erased>,
@@ -29,6 +33,7 @@ pub(crate) fn filed(
         chain,
         children,
         depended,
+        opened_view,
     } = finished;
     let kind = kinds
         .get(declaration.kind())
@@ -39,7 +44,9 @@ pub(crate) fn filed(
         outcome: outcome.clone(),
         content,
     };
-    store.file(chain, result);
+    if !opened_view && !depended {
+        store.file(chain, result);
+    }
     Entry {
         outcome,
         declaration: Some(declaration),

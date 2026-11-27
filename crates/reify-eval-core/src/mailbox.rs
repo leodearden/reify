@@ -80,6 +80,11 @@ impl Mailbox {
         self.views.fetch_add(1, Ordering::Relaxed)
     }
 
+    /// Whether the run has opened a view.
+    pub fn has_opened_view(&self) -> bool {
+        self.views.load(Ordering::Relaxed) > 0
+    }
+
     pub fn take_posted(&self) -> Posted {
         let mut slot = self.slot();
         match mem::replace(&mut *slot, Slot::Empty) {
