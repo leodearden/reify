@@ -323,13 +323,11 @@ fn bare_names_and_self_are_local_references() {
 
     let (unit, diagnostics) = compile_unit("k + k", &scope, &module);
     assert!(errors_of(&diagnostics).is_empty(), "{diagnostics:?}");
-    let refs = unit.expr.collect_value_refs();
-    assert!(
-        refs.iter().all(|id| id.entity == LOCAL_REFERENCE_ENTITY),
-        "{refs:?}"
-    );
     assert_eq!(unit.references.len(), 1, "{:?}", unit.references);
     assert_eq!(shape(&unit.references[0]), own_value(members(&["k"])));
+    let k = &unit.references[0].id;
+    assert_eq!(k.entity, LOCAL_REFERENCE_ENTITY);
+    assert_eq!(unit.expr.collect_value_refs(), vec![k.clone(); 2]);
 
     let (unit, diagnostics) = compile_unit("self", &scope, &module);
     assert!(errors_of(&diagnostics).is_empty(), "self: {diagnostics:?}");
@@ -373,10 +371,9 @@ fn bare_names_and_self_are_local_references() {
 
     // The existing compile, on the same scope.
     let (tree, _) = compile_existing("k + k", &scope, &module);
-    assert!(
-        tree.collect_value_refs()
-            .iter()
-            .all(|id| id == &ValueCellId::new("Asm", "k"))
+    assert_eq!(
+        tree.collect_value_refs(),
+        vec![ValueCellId::new("Asm", "k"); 2]
     );
     let (tree, _) = compile_existing("bolts", &scope, &module);
     assert!(
@@ -581,15 +578,24 @@ fn member_reads_through_subs_and_cells_are_references() {
     assert!(!errors_of(&diagnostics).is_empty(), "{diagnostics:?}");
     assert!(unit.references.is_empty(), "{:?}", unit.references);
 
-    let (unit, diagnostics) = compile_unit("self.origin", &scope, &module);
-    assert!(errors_of(&diagnostics).is_empty(), "{diagnostics:?}");
-    assert!(
-        unit.references
-            .iter()
-            .all(|r| shape(r) == own_value(vec![])),
-        "{:?}",
-        unit.references
-    );
+    // An intrinsic datum is a projection of its prefix's reference, in the
+    // shape the existing compile gives a sub's datum.
+    for (text, prefix) in [("self.origin", &[][..]), ("p.frame", &["p"])] {
+        let (unit, diagnostics) = compile_unit(text, &scope, &module);
+        assert!(
+            errors_of(&diagnostics).is_empty(),
+            "{text}: {diagnostics:?}"
+        );
+        let table: Vec<_> = unit.references.iter().map(shape).collect();
+        assert_eq!(table, vec![own_value(members(prefix))], "{text}");
+        let CompiledExprKind::IndexAccess { object, .. } = &unit.expr.kind else {
+            panic!("{text}: expected a datum projection, got {:?}", unit.expr);
+        };
+        assert!(
+            matches!(&object.kind, CompiledExprKind::ValueRef(id) if id == &unit.references[0].id),
+            "{text}: {object:?}"
+        );
+    }
 
     // The existing compile, on the same scope.
     let (tree, _) = compile_existing("self.p.t", &scope, &module);
@@ -757,18 +763,14 @@ fn member_reads_that_may_be_absent_are_references() {
     }
 
     // The existing compile, on the same scope (outcomes measured when this
-    // test was written).
-    for (text, message) in [
-        ("self.p.extra", "unknown member 'extra' on sub 'p'"),
-        (
-            "b.head.hex_only",
-            "member access not yet supported: .hex_only",
-        ),
-    ] {
+    // test was written): an error naming the member.
+    for (text, member) in [("self.p.extra", "extra"), ("b.head.hex_only", "hex_only")] {
         let (tree, diagnostics) = compile_existing(text, &scope, &module);
         assert_eq!(tree.result_type, Type::Error, "{text}");
         assert!(
-            errors_of(&diagnostics).iter().any(|d| d.message == message),
+            errors_of(&diagnostics)
+                .iter()
+                .any(|d| d.message.contains(member)),
             "{text}: {diagnostics:?}"
         );
     }
@@ -809,21 +811,17 @@ fn member_reads_that_may_be_absent_are_references() {
         "Bolt, head.nosuch: {diagnostics:?}"
     );
     // The existing compile, on Bolt's scope (outcomes measured when these
-    // cases were written).
-    for (text, message) in [
-        (
-            "self.head.hex_only",
-            "field 'hex_only' is not present in match-arm types: RoundHead",
-        ),
-        (
-            "self.head.size",
-            "field 'size' has divergent types across match-arm types: HexHead: Real, RoundHead: Int",
-        ),
+    // cases were written): an error naming the member.
+    for (text, member) in [
+        ("self.head.hex_only", "hex_only"),
+        ("self.head.size", "size"),
     ] {
         let (tree, diagnostics) = compile_existing(text, &bolt, &module);
         assert_eq!(tree.result_type, Type::Error, "Bolt, {text}");
         assert!(
-            errors_of(&diagnostics).iter().any(|d| d.message == message),
+            errors_of(&diagnostics)
+                .iter()
+                .any(|d| d.message.contains(member)),
             "Bolt, {text}: {diagnostics:?}"
         );
     }
@@ -1294,6 +1292,20 @@ fn geometry_member_of_a_value_is_a_reference() {
         assert_eq!(ty, &Type::Geometry, "{text}");
     }
 
+    // Through a literal index into a cell that holds a list of values.
+    let (unit, diagnostics) = compile_unit("tools[0].body", &scope, &module);
+    assert!(errors_of(&diagnostics).is_empty(), "{diagnostics:?}");
+    let (reference, ty) = sole_reference(&unit);
+    assert_eq!(
+        shape(reference),
+        own_value(steps(&[
+            member("tools"),
+            SourceStep::Index(0),
+            member("body")
+        ]))
+    );
+    assert_eq!(ty, &Type::Geometry);
+
     // Through a binder that holds an element of a list of values (a
     // quantifier's: a lambda's parameter is untyped here), the read opens the
     // value the binder holds.
@@ -1337,13 +1349,8 @@ fn geometry_member_of_a_value_is_a_reference() {
             if matches!(&object.kind, CompiledExprKind::ValueRef(id) if id == &binder))
     });
     assert_eq!(projections.len(), 1, "{:?}", unit.expr);
-    assert!(
-        unit.references
-            .iter()
-            .all(|r| shape(r) == own_value(members(&["tools"]))),
-        "{:?}",
-        unit.references
-    );
+    let table: Vec<_> = unit.references.iter().map(shape).collect();
+    assert_eq!(table, vec![own_value(members(&["tools"]))]);
 
     // A name the value's definition does not declare.
     let (_, diagnostics) = compile_unit("forall x in tools: x.nosuch > 0", &scope, &module);
@@ -1370,6 +1377,94 @@ fn geometry_member_of_a_value_is_a_reference() {
     assert!(
         matches!(&tree.kind, CompiledExprKind::ValueRef(id) if id == &ValueCellId::new("Asm.held", "body")),
         "{tree:?}"
+    );
+    let (tree, diagnostics) = compile_existing("tools[0].body", &scope, &module);
+    assert!(errors_of(&diagnostics).is_empty(), "{diagnostics:?}");
+    let CompiledExprKind::IndexAccess { object, .. } = &tree.kind else {
+        panic!("expected a field projection, got {tree:?}");
+    };
+    assert!(
+        matches!(&object.kind, CompiledExprKind::IndexAccess { .. }),
+        "{object:?}"
+    );
+}
+
+const PRIV_SOURCE: &str = "
+trait Iface {}
+structure def Inner {
+    param x : Real = 1
+}
+structure def Plate {
+    param t : Real = 3
+    priv param secret : Real = 1
+    priv sub hidden : Inner
+    priv port closed : Iface {}
+    port open : Iface {
+        priv param main : Real = 5
+        param vis : Real = 2
+    }
+}
+structure def Asm {
+    sub p : Plate
+    let v = Plate()
+    let plates = [Plate(), Plate()]
+}
+";
+
+/// C1-ii of the member-shape authority: a `priv` member is hidden from a read
+/// from outside its definition, at every hop, in both modes.
+#[test]
+fn a_priv_member_read_from_outside_is_an_error() {
+    let module = compile_clean(PRIV_SOURCE);
+    let registry = template_registry(&module);
+    let scope = definition_scope(&module, &registry, "Asm");
+
+    for text in [
+        "p.secret",
+        "self.p.secret",
+        "v.secret",
+        "plates[1].secret",
+        "p.hidden.x",
+        "self.p.closed",
+        "p.open.main",
+        "v.open.main",
+        "forall x in plates: x.hidden.x > 0",
+    ] {
+        let (unit, diagnostics) = compile_unit(text, &scope, &module);
+        assert!(
+            has_error_code(&diagnostics, DiagnosticCode::PrivMemberAccess),
+            "{text}: {diagnostics:?}"
+        );
+        let past_the_root = unit.references.iter().filter(|r| r.steps.len() > 1);
+        assert_eq!(past_the_root.count(), 0, "{text}: {:?}", unit.references);
+    }
+    for (text, path) in [
+        ("p.t", &["p", "t"][..]),
+        ("p.open.vis", &["p", "open", "vis"]),
+    ] {
+        let (unit, diagnostics) = compile_unit(text, &scope, &module);
+        assert!(
+            errors_of(&diagnostics).is_empty(),
+            "{text}: {diagnostics:?}"
+        );
+        let (reference, ty) = sole_reference(&unit);
+        assert_eq!(shape(reference), own_value(members(path)), "{text}");
+        assert_eq!(ty, &Type::dimensionless_scalar(), "{text}");
+    }
+
+    // Its own definition reads it.
+    let plate = definition_scope(&module, &registry, "Plate");
+    let (unit, diagnostics) = compile_unit("secret", &plate, &module);
+    assert!(errors_of(&diagnostics).is_empty(), "{diagnostics:?}");
+    let (reference, _) = sole_reference(&unit);
+    assert_eq!(shape(reference), own_value(members(&["secret"])));
+
+    // The existing compile, on the same scope.
+    let (tree, diagnostics) = compile_existing("p.secret", &scope, &module);
+    assert_eq!(tree.result_type, Type::Error);
+    assert!(
+        has_error_code(&diagnostics, DiagnosticCode::PrivMemberAccess),
+        "{diagnostics:?}"
     );
 }
 

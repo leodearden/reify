@@ -14,8 +14,9 @@ use reify_ir::{CompiledExpr, CompiledFunction, MemberKey};
 use crate::datum_projection::{DatumProjectionResolution, datum_projection_result_type};
 use crate::expr::{
     WILDCARD_STRUCTURE_KIND, is_declared_param, keyed_computed_index_poison,
-    keyed_missing_key_poison, make_poison_literal,
+    keyed_missing_key_poison, make_poison_literal, port_member_is_priv,
 };
+use crate::member_path::{self, MemberPathError};
 use crate::scope::CompilationScope;
 use crate::source_unit::{SourceUnitNames, SourceUnitRecorder};
 use crate::source_unit_tables::{ReferenceRead, ReferenceRoot, SourceStep, StructuralQuery};
@@ -68,11 +69,6 @@ pub(crate) fn compile_member_path(
             let instance = Type::StructureRef(WILDCARD_STRUCTURE_KIND.to_string());
             let ty = Type::List(Box::new(instance));
             Ok(recorder.reference(root, steps, ReferenceRead::Query(query), ty))
-        }
-        End::Datum { name, ty } => {
-            let ty_of_prefix = Type::StructureRef(name.definition);
-            let receiver = recorder.reference(root, steps, ReferenceRead::Value, ty_of_prefix);
-            Ok(CompiledExpr::method_call(receiver, name.member, vec![], ty))
         }
     }
 }
@@ -238,8 +234,6 @@ enum End<'s> {
     Target(Target<'s>),
     /// A structural query of the instance the steps reach.
     Query(StructuralQuery),
-    /// An intrinsic datum of the instance the steps reach.
-    Datum { name: DatumName, ty: Type },
 }
 
 /// Resolve `expr` as a path, hop by hop.
@@ -265,10 +259,9 @@ fn walk_path<'s>(
                 target = next;
                 continue;
             }
-            Next::Datum { .. } | Next::Query(_) if position != last => {
+            Next::Query(_) if position != last => {
                 return Err(Halt::NotAPath(NotAPath::ByReceiverType));
             }
-            Next::Datum { name, ty } => End::Datum { name, ty },
             Next::Query(query) => End::Query(query),
         };
         return Ok(Walked { root, steps, end });
@@ -302,6 +295,9 @@ fn opened_binder<'s>(
     };
     if declared_cells(template).any(|cell| cell.id.member == *member && is_declared_param(cell)) {
         return Err(not_a_path);
+    }
+    if let Some(private) = private_member(definition, member, scope, span, diagnostics) {
+        return Err(private);
     }
     let Some(target) = template_member(template, member) else {
         let intrinsic = StructuralQuery::from_member(member).is_some()
@@ -414,22 +410,10 @@ impl DeclaredKeys<'_> {
     }
 }
 
-/// An intrinsic datum of an instance (`origin`, `frame`, ...).
-struct DatumName {
-    definition: String,
-    member: String,
-}
-
 /// Where a hop leads.
 enum Next<'s> {
     Into(Target<'s>),
-    /// An intrinsic datum of the prefix: a projection of the prefix's
-    /// reference, so it can only end a path.
-    Datum {
-        name: DatumName,
-        ty: Type,
-    },
-    /// A structural query of the prefix, which also can only end a path.
+    /// A structural query of the prefix, which can only end a path.
     Query(StructuralQuery),
 }
 
@@ -563,10 +547,27 @@ fn next_target<'s>(
             }
             None => by_receiver_type,
         },
+        // An element of a list of values, which a further hop opens as it
+        // opens a cell holding one value.
+        (Target::Cell(Type::List(element)), Hop::Index(index)) if names_a_definition(&element) => {
+            match literal_position(index) {
+                Some(position) => {
+                    steps.push(SourceStep::Index(position));
+                    Ok(Next::Into(Target::Cell(*element)))
+                }
+                None => by_receiver_type,
+            }
+        }
         (Target::Keyed { definition, keys }, Hop::Index(index)) => {
             keyed_hop(definition, keys, index, steps, span, diagnostics)
         }
         (Target::Port { definition, port }, Hop::Member(member)) => {
+            if let Definition::Named(name) = &definition
+                && let Some(private) =
+                    private_port_member(name, &port, member, scope, span, diagnostics)
+            {
+                return Err(private);
+            }
             match port_member_type(&definition, &port, member, scope) {
                 Some(ty) => {
                     steps.push(SourceStep::Member((*member).to_string()));
@@ -584,7 +585,14 @@ fn next_target<'s>(
     }
 }
 
-/// A `.member` hop on an instance of `definition`.
+/// A structure type whose definition's members a hop can look up.
+fn names_a_definition(ty: &Type) -> bool {
+    matches!(ty, Type::StructureRef(definition) if definition != WILDCARD_STRUCTURE_KIND)
+}
+
+/// A `.member` hop on an instance of `definition`. An intrinsic datum
+/// (`origin`, `frame`, ...) is a projection of the prefix's reference, which
+/// the receiver-typed member read lowers.
 fn member_hop<'s>(
     definition: &Definition<'s>,
     member: &str,
@@ -593,6 +601,11 @@ fn member_hop<'s>(
     span: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<Next<'s>, Halt> {
+    if let Definition::Named(name) = definition
+        && let Some(private) = private_member(name, member, scope, span, diagnostics)
+    {
+        return Err(private);
+    }
     if let Some(target) = member_of(definition, member, scope) {
         steps.push(SourceStep::Member(member.to_string()));
         return Ok(Next::Into(target));
@@ -602,14 +615,10 @@ fn member_hop<'s>(
         Definition::Named(name) if template_of(name, scope).is_some() => name.clone(),
         Definition::Named(_) => return Err(Halt::NotAPath(NotAPath::ByReceiverType)),
     };
-    if let DatumProjectionResolution::Resolved(ty) =
+    if let DatumProjectionResolution::Resolved(_) =
         datum_projection_result_type(&Type::StructureRef(name.clone()), member)
     {
-        let name = DatumName {
-            definition: name,
-            member: member.to_string(),
-        };
-        return Ok(Next::Datum { name, ty });
+        return Err(Halt::NotAPath(NotAPath::ByReceiverType));
     }
     if let Some(query) = StructuralQuery::from_member(member) {
         return Ok(Next::Query(query));
@@ -620,6 +629,55 @@ fn member_hop<'s>(
         span,
         diagnostics,
     ))
+}
+
+/// A `priv` member of `definition` read from outside it, as the crate's
+/// member-shape authority judges it: its coded error, already reported.
+fn private_member(
+    definition: &str,
+    member: &str,
+    scope: &CompilationScope,
+    span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Halt> {
+    let receiver = Type::StructureRef(definition.to_string());
+    match member_path::resolve_hop(&receiver, member, scope) {
+        Err(verdict @ MemberPathError::PrivateMember { .. }) => {
+            private_poison(&verdict, span, diagnostics)
+        }
+        _ => None,
+    }
+}
+
+/// A `priv` param of `port` of `definition` read from outside it, which the
+/// existing compile's port-member check judges (the member-shape authority
+/// takes no hop past a port).
+fn private_port_member(
+    definition: &str,
+    port: &str,
+    member: &str,
+    scope: &CompilationScope,
+    span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Halt> {
+    if !port_member_is_priv(template_of(definition, scope)?, port, member) {
+        return None;
+    }
+    let verdict = MemberPathError::PrivateMember {
+        hop_index: 0,
+        structure: definition.to_string(),
+        member: member.to_string(),
+    };
+    private_poison(&verdict, span, diagnostics)
+}
+
+fn private_poison(
+    verdict: &MemberPathError,
+    span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Halt> {
+    let poison = make_poison_literal(diagnostics, verdict.to_diagnostic(span)?);
+    Some(Halt::Poison(Box::new(poison)))
 }
 
 /// A `.member` hop whose type a trait contract gives.
@@ -856,18 +914,18 @@ fn port_member_type(
     member: &str,
     scope: &CompilationScope,
 ) -> Option<Type> {
+    // A port's cells are named `<port>.<member>`.
+    let cell = format!("{port}.{member}");
     match definition {
-        Definition::OfScope(own) => own
-            .resolve(&format!("{port}.{member}"))
-            .map(|(_, ty)| ty.clone()),
+        Definition::OfScope(own) => own.resolve(&cell).map(|(_, ty)| ty.clone()),
         Definition::Named(name) => template_of(name, scope)?
             .ports
             .iter()
             .find(|p| p.name == port)?
             .members
             .iter()
-            .find(|cell| cell.id.member == member)
-            .map(|cell| cell.cell_type.clone()),
+            .find(|declared| declared.id.member == cell)
+            .map(|declared| declared.cell_type.clone()),
     }
 }
 

@@ -299,7 +299,11 @@ fn template_has_member(template: &TopologyTemplate, name: &str) -> bool {
 /// `member_path::value_cell_visibility`: a port may also declare `let` members,
 /// which default to `Visibility::Private` but are never externally accessible
 /// by name.
-fn port_member_is_priv(template: &TopologyTemplate, port_name: &str, member: &str) -> bool {
+pub(crate) fn port_member_is_priv(
+    template: &TopologyTemplate,
+    port_name: &str,
+    member: &str,
+) -> bool {
     template.ports.iter().any(|p| {
         // Short-circuit on the name check first so the `format!` allocation
         // below only happens for an actually-matching port, not on every
