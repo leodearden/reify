@@ -29,6 +29,7 @@
 //! `Value::Selector` and resolves it against the carried topology — this suite
 //! guards that flip rather than expecting it to fail.
 
+use reify_core::DimensionVector;
 use reify_core::identity::RealizationNodeId;
 use reify_core::ty::SelectorKind;
 use reify_ir::boundary_attachment::{BoundaryAssociation, NodeAttachment};
@@ -43,6 +44,14 @@ use reify_test_support::{
 };
 
 // ── Fixture constants ─────────────────────────────────────────────────────────
+
+/// A dimensioned value, as the compiler lowers `1Hz` / `10N` / `0s`.
+fn scalar(si_value: f64, dimension: DimensionVector) -> Value {
+    Value::Scalar {
+        si_value,
+        dimension,
+    }
+}
 
 /// Per-node mode-0 displacement shape Φ₀ (one `[x,y,z]` per node). Node 0 has the
 /// largest norm → it is the GLOBAL antinode A (what `dominant_antinode_index`
@@ -142,7 +151,10 @@ fn make_modal_result_with_topology(topology: Value) -> Value {
         ("shape".to_string(), mode0_shape_value()),
         // Dynamics for the transient forcing solve (step-08). Harmless to
         // displacement_at, which reads only `shape`: a 1 Hz lightly-damped mode.
-        ("frequency".to_string(), Value::Real(1.0)),
+        (
+            "frequency".to_string(),
+            scalar(1.0, DimensionVector::FREQUENCY),
+        ),
         ("damping_ratio".to_string(), Value::Real(0.05)),
     ]
     .into_iter()
@@ -355,8 +367,8 @@ fn string_location_preserves_antinode_3823() {
 /// direction (magnitude 1 N from t=0).
 fn make_step_force(at: Value) -> Value {
     let fields: PersistentMap<String, Value> = [
-        ("magnitude".to_string(), Value::Real(1.0)),
-        ("start_time".to_string(), Value::Real(0.0)),
+        ("magnitude".to_string(), scalar(1.0, DimensionVector::FORCE)),
+        ("start_time".to_string(), scalar(0.0, DimensionVector::TIME)),
         ("at".to_string(), at),
         ("direction".to_string(), direction_x()),
     ]
@@ -384,15 +396,15 @@ fn make_forcing(at: Value) -> Value {
     }))
 }
 
-/// Drive `solve_transient_response_trampoline([modal_result, forcing, 0, 1, 0.1])`
+/// Drive `solve_transient_response_trampoline([modal_result, forcing, 0s, 1s, 0.1s])`
 /// and return the resulting `DisplacementTimeHistory`.
 fn run_transient(modal_result: &Value, forcing: Value) -> Value {
     let value_inputs = vec![
         modal_result.clone(),
         forcing,
-        Value::Real(0.0), // t_start
-        Value::Real(1.0), // t_end
-        Value::Real(0.1), // dt → 11-point uniform grid
+        scalar(0.0, DimensionVector::TIME), // t_start
+        scalar(1.0, DimensionVector::TIME), // t_end
+        scalar(0.1, DimensionVector::TIME), // dt → 11-point uniform grid
     ];
     let no_realization: &[RealizationReadHandle] = &[];
     let no_warm_state: Option<&OpaqueState> = None;
