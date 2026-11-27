@@ -87,7 +87,7 @@ structure def MiniCollectionParent {
             &meta_map,
             &kernel,
             &mut diagnostics,
-            &compiled.templates,
+            crate::DefEnv::of_module(&compiled, &[]),
         );
 
         match values.get(&ValueCellId::new("MiniParent.c", "v")) {
@@ -153,7 +153,7 @@ structure def MiniCollectionParent {
             &meta_map,
             &kernel,
             &mut diagnostics,
-            &compiled.templates,
+            crate::DefEnv::of_module(&compiled, &[]),
         );
 
         assert!(
@@ -196,7 +196,7 @@ structure def MiniCollectionParent {
             &meta_map,
             &kernel,
             &mut diagnostics,
-            &compiled.templates,
+            crate::DefEnv::of_module(&compiled, &[]),
         );
 
         assert_eq!(

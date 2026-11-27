@@ -1,0 +1,25 @@
+tests = "the arm of a declaration-level `match` whose case holds creates its sub, per instance, and a member that every arm's definition has reads from it."
+rule = "rule E; Part 4 (Today: \"The arms of a `match` that declare subs are never created\")."
+provenance = "design Part 4; design Part 15.1 rule E; `crates/reify-eval/tests/fixtures/match_block_decls_bolt.ri` (same shape). logic-3 R4 (first half). language-1 L14 (second model); language-2 B7(d); claims-3 row 1."
+needs = ["instance", "guard", "one-name", "compile-error"]
+answer_basis = "traced. The unguarded `let af = self.head.af` reads a name declared in every arm of a covering `match`, so it compiles (rule E; Part 4). `hex`: `head_type` Hex, so `head` is a `HexHead`, `af` = 10 mm. `sock`: `head` is a `SocketHead`, `af` = 8 mm, `depth` = 5 mm."
+today = "`head` is not created and `af` is undef in both instances (run, `match_arms.ri`)."
+
+[[expect]]
+compile = "ok"
+
+[[expect]]
+path = "Top.hex.head.af"
+value = "10 mm"
+
+[[expect]]
+path = "Top.hex.af"
+value = "10 mm"
+
+[[expect]]
+path = "Top.sock.af"
+value = "8 mm"
+
+[[expect]]
+path = "Top.sock.head.depth"
+value = "5 mm"

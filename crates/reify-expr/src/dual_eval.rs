@@ -128,13 +128,13 @@ fn eval_dual_at(
         CompiledExprKind::Literal(v) => DualValue::constant(v.clone()),
 
         CompiledExprKind::ValueRef(id) | CompiledExprKind::CrossSubGeometryRef(id) => {
-            let value = ctx.values.get_or_undef(id);
+            let value = ctx.read(id);
             // Resolution order is OVERLAY → seed column → zero, and that order
             // is the scope rule: the overlay IS the inner scope.  Inside a
             // callee frame it holds exactly that frame's parameters and `let`s
             // (`eval_dual_fn_body` builds a fresh one), so an overlay binding
-            // must shadow the outer seed set for the same reason
-            // `ctx.with_scope` makes the VALUE shadow it.
+            // must shadow the outer seed set for the same reason the callee's
+            // sealed frame makes the VALUE shadow it.
             //
             // The two are not distinguishable by construction: a seed cell is
             // `(entity, auto_param)` and a callee cell is
@@ -483,16 +483,17 @@ fn eval_dual_match(
             // binders are confined to exactly this arm's body, mirroring
             // `eval_variant_bind_arm`.
             CompiledPattern::VariantBind { binders, .. } => {
-                let mut child = ctx.values.clone();
+                let mut bindings = reify_ir::ValueMap::new();
                 for (field_name, cell) in binders {
                     let val = payload
                         .iter()
                         .find(|(f, _)| f == field_name)
                         .map(|(_, v)| v.clone())
                         .unwrap_or(Value::Undef);
-                    child.insert(cell.clone(), val);
+                    bindings.insert(cell.clone(), val);
                 }
-                let child_ctx = ctx.with_scope(&child);
+                let frame = ctx.scope.open_frame(&bindings);
+                let child_ctx = ctx.with_frame(&frame);
                 descend(&arm.body, 1 + i, &child_ctx, seeds, env, record, path)
             }
             CompiledPattern::Variant { .. } | CompiledPattern::Wildcard => {
@@ -839,7 +840,7 @@ fn eval_dual_builtin(
     // exactly the `abs`/`sqrt` shapes above.
     if args.len() == 1
         && let Value::Field { lambda, .. } =
-            ctx.values.get_or_undef(&ValueCellId::new(FIELD_ENTITY_PREFIX, name))
+            ctx.read(&ValueCellId::new(FIELD_ENTITY_PREFIX, name))
     {
         return eval_dual_lambda_apply(&lambda, &duals[0], ctx, seeds, record, path);
     }
@@ -1561,7 +1562,8 @@ fn eval_dual_fn_body(
     path.push(CALLEE_MARKER);
     for (i, (binding_name, binding_expr)) in func.body.let_bindings.iter().enumerate() {
         let bound = {
-            let body_ctx = ctx.with_scope(&scope);
+            let frame = ctx.scope.sealed_frame(&scope);
+            let body_ctx = ctx.with_frame(&frame);
             path.push(i as u16);
             let d = eval_dual_at(binding_expr, &body_ctx, seeds, &body_env, record, path);
             path.pop();
@@ -1574,7 +1576,8 @@ fn eval_dual_fn_body(
 
     path.push(func.body.let_bindings.len() as u16);
     let result = {
-        let body_ctx = ctx.with_scope(&scope);
+        let frame = ctx.scope.sealed_frame(&scope);
+        let body_ctx = ctx.with_frame(&frame);
         eval_dual_at(&func.body.result_expr, &body_ctx, seeds, &body_env, record, path)
     };
     path.pop();
@@ -1635,7 +1638,8 @@ fn eval_dual_lambda_apply(
     path.push(CALLEE_MARKER);
     path.push(0);
     let result = {
-        let body_ctx = ctx.with_scope(&scope);
+        let frame = ctx.scope.sealed_frame(&scope);
+        let body_ctx = ctx.with_frame(&frame);
         eval_dual_at(body, &body_ctx, seeds, &body_env, record, path)
     };
     path.pop();

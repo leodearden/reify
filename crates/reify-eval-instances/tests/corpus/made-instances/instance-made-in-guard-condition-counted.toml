@@ -1,0 +1,13 @@
+tests = "an instance made in a guard's condition, a cell that is not a member, is counted by the summary of the instance that declares the guard."
+rule = "rule B (a unit of source may make instances, whatever the cell); readings B4 (\"The summary reads every child its instance declares, the cells that are not members included (a guard's condition ...), and whatever those cells made\")."
+provenance = "tracer report `critics/trace-presence-and-values.md`, counter-example N6 and its gap G3; readings B4, which answers it."
+needs = ["instance", "guard", "value", "made", "open", "summary"]
+answer_basis = "traced. The guard of `extra` is a cell of `Asm` (`Asm/guard[0]`). It evaluates `Sizing(n: 2).n`: it makes a `Sizing` with `n` 2, whose `n >= 3` is violated, and reads 2 through the opened value, so the guard is `2 > 1`, true, and `extra` is present. The made `Sizing`'s verdict is counted once, at the made instance, and `Asm`'s summary reaches it through the guard cell's made list (readings B4); the opened value's verdicts are never counted. A summary that read only members would give `violated 0`."
+
+[[expect]]
+path = "Asm.extra"
+presence = "present"
+
+[[expect]]
+path = "Asm/summary"
+summary = { violated = 1, undetermined = 0, failed = 0 }

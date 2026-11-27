@@ -1,0 +1,10 @@
+tests = "an end of a `connect` that is a port of a value held in a cell is a compile error that says to write subs."
+rule = "decision 9; Part 10 (\"An end must be a port of the declaring instance itself or of one of its subs or elements\"); Part 7.4."
+provenance = "design decision 9's model. claims-1 row 8 (probe c1.ri compiles today); second-design Q5."
+needs = ["compile-error", "connect"]
+answer_basis = "stated (decision 9: \"This compiles today and would be a compile error that says to write subs\"). The rejection is built by leaf ο, whose word is `connect` (decisions F; trace-structure, wrong tags)."
+today = "compiles (design decision 9)."
+
+[[expect]]
+compile_error = "a connect end must be a port of this instance or of one of its subs or elements; `s` and `h` are values held in cells, write them as subs"
+code = "ConnectEndNotAPlace"

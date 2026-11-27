@@ -1,0 +1,28 @@
+tests = "a determinacy predicate gives the same answer at a made instance and at its opened value."
+rule = "Part 15.2 (\"What `partially_determined` and `constrained` mean\"); decision 6 (a value carries nothing about how it was reached); readings B7 (PRD D3, ruled by Leo on 2026-11-26 as recommended)."
+provenance = "logic-1 L10; logic-2 N13 (moved, precise: logic-3 Part A row N13). Not taken: Part 15.2 leaves it to a later ruling. design Part 15.2 (a critic's model)."
+needs = ["instance", "made", "open", "unknown", "solve-forced", "state-tests"]
+answer_basis = "stated: PRD D3 as Leo ruled it (readings B7). `constrained(t)` is true when some present constraint written in the definition of the instance that holds `t` can read `t`, and `Plate`'s two bounds read it: true at both paths. The design requires the two to agree in any case, which is pinned with `same-as`. `t` is the made instance's own unknown, forced to 3 mm. Today `constrained(x)` reads \"the cell is `auto` or provisional\" (logic-2 read-code `crates/reify-expr/src/lib.rs`, determinacy predicates). At `Asm.c/made[0]` `t` comes from a solve; at `Asm.c/open` it is given from the value, which cannot record how it was reached."
+
+[candidates]
+note = "A reading in which `Plate`'s bounds did not bear would take 4 mm. Under 4 mm the bound `t <= 3mm` is violated and depended on the trial; under 3 mm both are satisfied."
+
+[[candidates.unknown]]
+path = "Asm.c/made[0].t"
+values = ["4 mm", "3 mm"]
+
+[[expect]]
+path = "Asm.c/made[0].t"
+value = "3 mm"
+
+[[expect]]
+path = "Asm.c/made[0].via_solver"
+value = "true"
+
+[[expect]]
+path = "Asm.c/made[0].via_solver"
+same_as = "Asm.c/open.via_solver"
+
+[[expect]]
+path = "Asm.s"
+value = "true"

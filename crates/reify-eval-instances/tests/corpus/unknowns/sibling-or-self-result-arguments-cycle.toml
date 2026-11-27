@@ -1,0 +1,35 @@
+tests = "two siblings each given the other's own result, or one sub given its own result, is a cycle."
+rule = "decision 1 (its cost); Part 6.1 (\"Where this meaning has no answer\"); Part 4 (an argument that depends on what it helps decide)."
+provenance = "logic-2 N11, first model (taken: 6.1 and decision 1's cost); logic-3 R12's companion rule (a solve reads only the arguments its constraints read: here `k == 100mm - len / 2` reads `len`). design decision 1 (cost, third bullet); Part 6.1; logic-2 trace of 66.7 mm."
+needs = ["instance", "unknown", "roots", "solve-forced"]
+answer_basis = "stated (Part 6.1; decision 1, cost). Each solve reads, before it opens its view, the arguments its constraints read (contract section 8; PRD section 5.6). `a`'s solve reads `len`, which is `self.b.k`, which reads `b`'s solve, which reads `b.len` = `self.a.k`, which reads `a`'s solve. In `Loop`, `a`'s solve reads `len` = `self.a.k * 2`, which reads `a`'s solve. One solve over both would give 66.7 mm each in `Asm`. The braces hold argument assignments only, and `self` is the parent whatever the rule for bare names, so the entry does not need `braces`."
+
+[candidates]
+note = "None is tried: each solve meets the ring when it reads its argument, before its view. 50 mm for `Loop.a.k` is what a solver takes that reads the argument through its view (tracer, gap G5)."
+
+[[candidates.unknown]]
+path = "Loop.a.k"
+values = ["50mm"]
+
+[[candidates.unknown]]
+path = "Asm.a.k"
+values = ["50mm"]
+
+[[candidates.unknown]]
+path = "Asm.b.k"
+values = ["75mm"]
+
+[[expect]]
+roots = ["Asm", "Loop"]
+
+[[expect]]
+path = "Asm.a.k"
+failure = "cycle"
+
+[[expect]]
+path = "Asm.b.k"
+failure = "cycle"
+
+[[expect]]
+path = "Loop.a.k"
+failure = "cycle"

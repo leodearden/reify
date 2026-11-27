@@ -1,0 +1,8 @@
+structure def Plate {
+    param t : Length = 3mm
+    let area = t * 40mm
+}
+structure def Asm {
+    param area : Length = 9mm
+    sub p : Plate { constraint area > 100mm * 1mm }
+}

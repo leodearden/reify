@@ -43,10 +43,7 @@ fn closed_range(lower: Value, upper: Value) -> Value {
 fn r_z(theta: f64) -> Value {
     eval_builtin(
         "orient_axis_angle",
-        &[
-            Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]),
-            Value::angle(theta),
-        ],
+        &[axis(0.0, 0.0, 1.0), Value::angle(theta)],
     )
 }
 

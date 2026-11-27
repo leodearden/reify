@@ -6012,7 +6012,7 @@ mod tests {
         // (c) Build a general quaternion via orient_axis_angle([1,1,0], π/3).
         // The rotation sits on a non-axis-aligned axis, so all four quaternion
         // components are non-zero.
-        let axis_xy = Value::Vector(vec![Value::Real(1.0), Value::Real(1.0), Value::Real(0.0)]);
+        let axis_xy = direction_val(1.0, 1.0, 0.0);
         let q_general = eval_builtin("orient_axis_angle", &[axis_xy, Value::Real(pi / 3.0)]);
         let (gw, gx, gy, gz) = match &q_general {
             Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
@@ -6188,8 +6188,8 @@ mod tests {
         use crate::loop_closure_value::JointValue;
 
         let theta = std::f64::consts::FRAC_PI_4;
-        let z_vector = Value::Vector(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)]);
-        let q = eval_builtin("orient_axis_angle", &[z_vector, Value::angle(theta)]);
+        let z_axis = direction_val(0.0, 0.0, 1.0);
+        let q = eval_builtin("orient_axis_angle", &[z_axis, Value::angle(theta)]);
         let (qw, qx, qy, qz) = match q {
             Value::Orientation { w, x, y, z } => (w, x, y, z),
             other => panic!("orient_axis_angle returned non-Orientation: {:?}", other),
@@ -7693,9 +7693,9 @@ mod tests {
     //
     // Tests for the `Value::Frame { origin, basis }` arm in `pivot_to_origin` (task 4394 δ).
 
-    /// Helper: create an orient_axis_angle(vec3(ax,ay,az), angle_rad) Value.
+    /// Helper: create an orient_axis_angle(dir(ax,ay,az), angle_rad) Value.
     fn make_orient_axis_angle(ax: f64, ay: f64, az: f64, angle_rad: f64) -> Value {
-        let axis = Value::Vector(vec![Value::Real(ax), Value::Real(ay), Value::Real(az)]);
+        let axis = direction_val(ax, ay, az);
         eval_builtin("orient_axis_angle", &[axis, Value::angle(angle_rad)])
     }
 

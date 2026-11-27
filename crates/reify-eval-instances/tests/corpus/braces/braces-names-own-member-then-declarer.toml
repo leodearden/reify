@@ -1,0 +1,18 @@
+tests = "in a sub's braces a bare name is the instance's own member first, then the declaring definition's; `self` is the parent."
+rule = "Part 4 (\"Names inside the braces\", ruled 2026-11-26); decision 4; readings C20 (first bullet)."
+provenance = "design Part 4 (its `Plate`/`Asm` model, extended by one bare name the child lacks); language-1 L5 and language-2 C4 (name resolution was unsettled and blocked decision 4). Taken. Also, from the merged entries: design Part 4 model, the bound changed to 6 mm."
+needs = ["instance", "braces", "constraint"]
+answer_basis = "stated (Part 4: \"`p.t` is 5 mm and the constraint reads the plate's `t`\"). `self.t` is `Asm`'s 10 mm, so the argument is 5 mm. `clearance` is no `let` of the braces and not a member of `Plate`, so it is `Asm`'s, 4 mm (readings C20). Had bare `t` named `Asm`'s 10 mm, constraint[0] would be violated."
+today = "`Asm.p.t = 5 mm`; the braces constraints are dropped (run `braces_names.ri`)."
+
+[[expect]]
+path = "Asm.p.t"
+value = "5 mm"
+
+[[expect]]
+path = "Asm.p/braces/constraint[0]"
+verdict = "satisfied"
+
+[[expect]]
+path = "Asm.p/braces/constraint[1]"
+verdict = "satisfied"

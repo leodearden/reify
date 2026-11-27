@@ -3,8 +3,9 @@
 //
 // Key concepts:
 //
-//   1. extrude_infinite(profile, dx, dy, dz, direction) yields an UNBOUNDED
-//      solid (semi-infinite or bi-infinite).  Passing it directly to a slot
+//   1. extrude_infinite(profile, direction) yields an UNBOUNDED, semi-infinite
+//      solid (extrude_infinite_symmetric(profile, direction) a bi-infinite
+//      one).  Passing it directly to a slot
 //      constrained by the `Bounded` geometry trait —
 //
 //          param g : Bounded = extrude_infinite(...)  // ← ERROR E_GEOMETRY_UNBOUNDED
@@ -32,9 +33,7 @@ structure def ExtrudeInfiniteClipDemo {
     // This solid is UNBOUNDED — it has no finite upper face.
     // NOTE: placing `infinite_prism` at a `param g : Bounded` slot would
     // raise E_GEOMETRY_UNBOUNDED at compile time.
-    let infinite_prism = extrude_infinite(
-        circle(profile_radius), 0, 0, 1, "positive"
-    )
+    let infinite_prism = extrude_infinite(circle(profile_radius), dir(0, 0, 1))
 
     // Clip to a finite solid via boolean intersection with a box centred at
     // the origin (Z from −5mm to +5mm).  The result spans z ∈ [0, +5mm]

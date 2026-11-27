@@ -153,7 +153,7 @@ structure def TrajPiSurface {
 
     let track   = EndEffectorTrack()
     let loc_box = box(10mm, 10mm, 10mm)
-    let loc_dir = vec3(1.0, 0.0, 0.0)
+    let loc_dir = dir(1, 0, 0)
     let loc_tol = 1deg
     let loc     = faces_by_normal(loc_box, loc_dir, loc_tol)
     let series  = end_effector_track(track, loc)

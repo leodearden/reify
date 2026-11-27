@@ -1,0 +1,17 @@
+tests = "every element of a quantifier is read, even after an earlier element has decided the result, so a ring through a later element's body is a cycle."
+rule = "rule A (\"Only the condition of an `if` or a `match` decides whether something is read\"); ruling 6 of `seat-context.md` (\"every element of a quantifier ... are read\"); decision 12; readings B2."
+provenance = "tracer report `critics/trace-presence-and-values.md`, counter-example N5 (the quantifier half of `ring-through-unneeded-operand-is-cycle` reads `other` when building its list literal, so it does not test this)."
+needs = ["instance", "eval-reads"]
+answer_basis = "traced. In `Q`, element 0 of the quantifier gives `false`, which decides `forall`; element 1 is read all the same, and there the condition `i == 0` is false, so its else arm reads `other`. In `Top`, `m.other` is `self.n.v` and `n.other` is `self.m.v` (`self` in the braces is the parent; the braces hold only argument assignments). So `Top.m.v` reads `Top.m.other`, which reads `Top.n.v`, which reads `Top.n.other`, which reads `Top.m.v`: a ring, and every node on it is `failure cycle` (readings B2). A quantifier that stopped at element 0 would give `false` for both and no cycle."
+
+[[expect]]
+path = "Top.m.v"
+failure = "cycle"
+
+[[expect]]
+path = "Top.n.v"
+failure = "cycle"
+
+[[expect]]
+path = "Top.m.other"
+failure = "cycle"

@@ -1,0 +1,53 @@
+tests = "with an undefined argument, a constructor call written inline and the same call wrapped in a user function give the same answers: the function is entered, the instance is made, and its verdicts and their class are the same."
+rule = "PRD D10(d), ruled by Leo on 2026-11-26 (readings C19): a user function is entered whatever its arguments, and each operation inside propagates; design 6.4 requirement 1 (\"Inline or wrapped, the same answer\"). It amends spec 9.2.7 (`undef` propagates strictly through a function call)."
+provenance = "readings C19; PRD D10(d). The draft recommended the spec's rule and Leo took the alternative."
+needs = ["instance", "value", "made", "open", "constraint", "summary", "roots"]
+answer_basis = "stated: PRD D10(d) as Leo ruled it. `u` is a root's parameter with no value: undefined, class partial. Inline, `Plate(t: u)` makes `AsmA.d/made[0]` with `t` undefined; its constraint and its verdict on arguments are undetermined, partial (PRD 5.4, \"A cause across a constructor call\"). Wrapped, `mk` is entered with `t` bound to the undefined argument, and the constructor call in its body makes `AsmB.d/made[0,0]` (the call site of `mk`, then the constructor call in its body; readings A) with the same parameter, the same two verdicts and the same class: the parameter of a function keeps the class of the argument it was bound to. `w` reads `d.w` through `open` and is 40 mm in both. `five` ignores its parameter, so `k` is 5 mm, where the spec's rule and today's engine give undefined. Summary of each root: the made instance's two verdicts, counted once."
+today = "run `g06.ri` (the first form of this entry): `AsmA.d = Plate { t: undef }`; `AsmB.d = undef` (because: `AsmB.u` unbound). Today's engine does not enter the function."
+
+[[expect]]
+roots = ["AsmA", "AsmB"]
+
+[[expect]]
+path = "AsmA.d/made[0].t"
+value = "undefined"
+
+[[expect]]
+path = "AsmA.d/made[0]/constraint[0]"
+undetermined_because = "partial"
+
+[[expect]]
+path = "AsmA.d/made[0]/arguments"
+undetermined_because = "partial"
+
+[[expect]]
+path = "AsmA.w"
+value = "40 mm"
+
+[[expect]]
+path = "AsmA/summary"
+summary = { violated = 0, undetermined = 2, failed = 0 }
+
+[[expect]]
+path = "AsmB.d/made[0,0].t"
+value = "undefined"
+
+[[expect]]
+path = "AsmB.d/made[0,0]/constraint[0]"
+undetermined_because = "partial"
+
+[[expect]]
+path = "AsmB.d/made[0,0]/arguments"
+undetermined_because = "partial"
+
+[[expect]]
+path = "AsmB.w"
+value = "40 mm"
+
+[[expect]]
+path = "AsmB.k"
+value = "5 mm"
+
+[[expect]]
+path = "AsmB/summary"
+summary = { violated = 0, undetermined = 2, failed = 0 }

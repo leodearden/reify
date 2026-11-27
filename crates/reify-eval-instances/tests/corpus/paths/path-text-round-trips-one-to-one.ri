@@ -1,0 +1,9 @@
+structure def Vent { param area : Length = 1mm }
+structure def Asm {
+    sub summary : Vent { area = 2mm }
+    sub ducts : Keyed<Vent> {
+        "a.b/c]" => { area = 3mm }
+        "a" => { area = 4mm }
+    }
+    let a = ducts["a.b/c]"].area
+}

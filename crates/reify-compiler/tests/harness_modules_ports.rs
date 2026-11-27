@@ -50,6 +50,8 @@ mod import_headers_tests;
 mod import_resolve_tests;
 #[path = "harness_modules_ports/import_warning_tests.rs"]
 mod import_warning_tests;
+#[path = "harness_modules_ports/kept_guards_tests.rs"]
+mod kept_guards_tests;
 #[path = "harness_modules_ports/module_dag_tests.rs"]
 mod module_dag_tests;
 #[path = "harness_modules_ports/module_decl_remedy_tests.rs"]
@@ -68,12 +70,16 @@ mod pin_cell_id_namespace_tests;
 mod port_compile_tests;
 #[path = "harness_modules_ports/prelude_context_tests.rs"]
 mod prelude_context_tests;
+#[path = "harness_modules_ports/pub_import_reexport_tests.rs"]
+mod pub_import_reexport_tests;
 #[path = "harness_modules_ports/qualified_access_compile_tests.rs"]
 mod qualified_access_compile_tests;
 #[path = "harness_modules_ports/reserved_name_lint_tests.rs"]
 mod reserved_name_lint_tests;
 #[path = "harness_modules_ports/standard_gravity_tests.rs"]
 mod standard_gravity_tests;
+#[path = "harness_modules_ports/std_prelude_facade_tests.rs"]
+mod std_prelude_facade_tests;
 #[path = "harness_modules_ports/stdlib_shadow_warning_tests.rs"]
 mod stdlib_shadow_warning_tests;
 #[path = "harness_modules_ports/stdlib_strict_build_tests.rs"]

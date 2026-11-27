@@ -352,9 +352,9 @@ structure def BT4Ref {
 /// ```ri
 /// structure def BT5SingleFace {
 ///     let b   = box(10mm, 10mm, 10mm)
-///     let dir = vec3(0.0, 0.0, 1.0)
+///     let up = dir(0, 0, 1)
 ///     let tol = 1deg
-///     let top = single(faces_by_normal(b, dir, tol))
+///     let top = single(faces_by_normal(b, up, tol))
 /// }
 /// ```
 ///
@@ -451,9 +451,9 @@ fn bt5_single_face_by_normal_coercion() {
     let verify_src = r#"
 structure def BT5Verify {
     let b   = box(10mm, 10mm, 10mm)
-    let dir = vec3(0.0, 0.0, 1.0)
+    let up = dir(0, 0, 1)
     let tol = 1deg
-    let top = single(faces_by_normal(b, dir, tol))
+    let top = single(faces_by_normal(b, up, tol))
     let f0  = faces(b)[0]
     let f1  = faces(b)[1]
     let f2  = faces(b)[2]
@@ -834,7 +834,7 @@ fn bt2_same_kind_union_resolves_to_set_union() {
 // ── BT7: construction is kernel-free (K2 — zero query() round-trips) ─────────
 
 /// BT7 (producer / K2 invariant): building a bare, unconsumed
-/// `let sel = faces_by_normal(b, dir, tol)` must issue ZERO kernel `query()`
+/// `let sel = faces_by_normal(b, up, tol)` must issue ZERO kernel `query()`
 /// round-trips. The selector cell must hold a typed `Value::Selector(Face)`
 /// with a `ByNormal{+Z, tol>0}` Leaf whose `target.kernel_handle` is the
 /// box's realized handle.

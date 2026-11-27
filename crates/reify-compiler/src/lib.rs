@@ -14,6 +14,7 @@ mod compile_builder;
 mod conformance;
 mod connect;
 mod constants;
+mod ctor_members;
 /// Forward sub-component adjacency shared by `scc.rs` and `scope_containment.rs`.
 ///
 /// Kept `pub(crate)` (not a public module) to avoid widening the compiler's
@@ -506,11 +507,12 @@ pub fn merge_prelude_functions(
 /// Only `is_pub` purposes are merged; private prelude purposes remain scoped to
 /// their declaring module.
 ///
-/// A stdlib module inherits pub purposes only from the modules it imports, and
-/// no stdlib module imports `std.determinacy.purposes`, the only stdlib module
-/// with pub purposes. So only user modules (compiled against the full stdlib)
-/// gain the standard purposes: a prelude for users, not for sibling stdlib
-/// modules. (task-4016 ζ)
+/// A stdlib module inherits pub purposes only from the modules it imports, so
+/// of the stdlib modules only importers of `std.determinacy.purposes` (the only
+/// stdlib module with pub purposes) gain the standard purposes. The
+/// `std.prelude` facade imports it to re-export it; its merged copies carry
+/// the prelude sentinel and are never exported (`name_env::own_purposes`).
+/// (task-4016 ζ, task #5502)
 ///
 /// **Hash contract:** the merged purposes are included in `compute_module_hash`,
 /// so a user module's `content_hash` incorporates the full set of available
@@ -821,11 +823,11 @@ pub fn compile_with_prelude_context_checked_with_config(
         &rejected_param_defaults,
     );
 
-    // Compile-time existence check: every sub's structure_name must resolve in
-    // (local templates ∪ prelude).  Runs after all entity/auto/bound phases so
-    // templates are fully populated.  Mirrors eval's find_template_with_prelude
-    // contract (engine_eval.rs:55); see conformance/sub_component_validation.rs.
-    // task 4528.
+    // Compile-time existence check: every sub's structure must resolve among
+    // the templates this module can see (local, user imports' pub, stdlib).
+    // Runs after all entity/auto/bound phases so templates are fully
+    // populated. Mirrors eval's DefEnv template lookup set; see
+    // conformance/sub_component_validation.rs. task 4528.
     conformance::check_sub_structure_existence(
         &compile_ctx.templates,
         prelude_refs,

@@ -1,0 +1,6 @@
+structure def Node { param inp : Bool = false   pub let out : Bool = inp }
+structure def S {
+    sub a : Node { inp = false and self.b.out }
+    sub b : Node { inp = not self.a.out }
+    let z = if determined(self.a.out) then 1 else 2
+}

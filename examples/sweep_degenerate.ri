@@ -17,7 +17,7 @@ structure def ValidRevolveFullTurn {
     param ax : Real = 0.0
     param ay : Real = 0.0
     param az : Real = 1.0
-    let result = revolve_full(profile, ox, oy, oz, ax, ay, az)
+    let result = revolve_full(profile, point3(ox, oy, oz), dir(ax, ay, az))
 }
 
 structure def ValidLoftThreeProfiles {

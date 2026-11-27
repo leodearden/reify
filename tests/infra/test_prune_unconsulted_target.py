@@ -41,7 +41,8 @@ from refresh_warm_base_harness import env_without, write_executable  # noqa: E40
 REPO_ROOT = INFRA_DIR.parents[1]
 SCRIPT = REPO_ROOT / "scripts" / "prune-unconsulted-target.sh"
 
-DAY = 24 * 3600
+HOUR = 3600
+DAY = 24 * HOUR
 ANCHOR = datetime(2026, 3, 10, tzinfo=timezone.utc).timestamp()
 
 STUB_FINDMNT = """#!/bin/sh
@@ -72,16 +73,16 @@ sed -n "${n}p" "$REIFY_TEST_DF_SEQ_FILE"
 GIB = 1024 ** 3
 
 
-def make_unit(profile, pkg, hash16, last_use, deps_names):
+def make_unit(profile, pkg, hash16, last_use, deps_names, size=None):
     """One cargo unit: <profile>/.fingerprint/<pkg>-<hash16>/lib-<pkg> last
-    read and written at `last_use`, plus each named file under <profile>/deps.
-    Returns the deps paths."""
+    read and written at `last_use`, plus each named file under <profile>/deps,
+    each exactly `size` bytes when given. Returns the deps paths."""
     deps = profile / "deps"
     deps.mkdir(parents=True, exist_ok=True)
     paths = []
     for name in deps_names:
         path = deps / name
-        path.write_text(f"deps {name}\n")
+        path.write_text(f"deps {name}\n" if size is None else "x" * size)
         os.utime(path, (last_use, last_use))
         paths.append(path)
     fingerprint = profile / ".fingerprint" / f"{pkg}-{hash16}" / f"lib-{pkg}"
@@ -95,6 +96,13 @@ def make_anchor(profile, anchor=ANCHOR):
     """The unit consulted at the profile's anchor (FIXTURE RULE)."""
     return make_unit(profile, "anchor", "00000000000000a1", anchor,
                      ["libanchor-00000000000000a1.rlib"])
+
+
+def make_sized_unit(profile, pkg, hash16, last_use, count, size):
+    """A unit whose first `count` deps files of (.rlib, .rmeta, .d) each hold
+    exactly `size` bytes. Returns the deps paths."""
+    names = [f"lib{pkg}-{hash16}.rlib", f"lib{pkg}-{hash16}.rmeta", f"{pkg}-{hash16}.d"]
+    return make_unit(profile, pkg, hash16, last_use, names[:count], size=size)
 
 
 def make_core(profile):
@@ -649,96 +657,255 @@ class LaneLocks(PruneHarness):
         self.assertEqual(self.findmnt_calls(), [])
 
 
-class FreeSpaceFloor(PruneHarness):
-    """--free-floor-gib N --min-window-days M: while free space is below the
-    floor, tighten the window a day at a time, never below M."""
+# FreeSpaceEviction's debug units: hours before ANCHOR each was last consulted
+# -> (deps file count, bytes per file). The 30 h unit is the largest one outside
+# a 26 h protect window, so a size-first ranking would take it before the 50 h.
+AGED_UNITS = {50: (1, 4000), 40: (3, 1000), 30: (1, 8000), 20: (1, 5000), 10: (1, 6000)}
+FLOOR_GIB = 50
+PROTECT_HOURS = 26
+
+
+def aged_hash(hours):
+    return f"e{hours:015d}"
+
+
+class FreeSpaceEviction(PruneHarness):
+    """--free-floor-gib G --protect-hours H: after the age pass, while the
+    filesystem of the FIRST PROFILE_DIR has less than G GiB available, evict
+    whole units least recently consulted first, larger first on a tie, until
+    the evicted deps bytes cover the deficit. A unit consulted within H hours of
+    its own profile's anchor is never evicted. --window-days 3 throughout, so
+    the age pass alone deletes nothing from these fixtures."""
 
     def setUp(self):
         super().setUp()
+        self.df_seq = self.tmp / "df-seq"
+        self.make_debug_units()
+
+    def make_debug_units(self):
         self.anchor = make_anchor(self.debug)
         self.units = {
-            age: make_unit(self.debug, f"aged{tag}", f"a00000000000000{tag}",
-                           ANCHOR - age * DAY, [f"libaged{tag}-a00000000000000{tag}.rlib"])
-            for age, tag in ((6, "6"), (4.5, "5"), (3.5, "4"), (2.5, "3"), (1.5, "2"))
+            hours: make_sized_unit(self.debug, f"aged{hours}", aged_hash(hours),
+                                   ANCHOR - hours * HOUR, count, size)
+            for hours, (count, size) in AGED_UNITS.items()
         }
-        self.df_seq = self.tmp / "df-seq"
 
-    def run_floor(self, *floor_args, df_gib=(), env=None):
-        self.df_seq.write_text("".join(f"{int(g * GIB)}\n" for g in df_gib))
+    def unit_bytes(self, *hours):
+        return sum(p.stat().st_size for h in hours for p in self.units[h])
+
+    def run_evict(self, *args, df=(), env=None):
+        """Run at --window-days 3; successive df calls report the byte values
+        in `df`."""
+        self.df_seq.write_text("".join(f"{value}\n" for value in df))
         run_env = {"REIFY_TEST_DF_SEQ_FILE": str(self.df_seq), **(env or {})}
-        return self.run_prune("--window-days", 5, *floor_args, self.debug, env=run_env)
+        return self.run_prune("--window-days", 3, *args, env=run_env)
 
-    def assertPruned(self, gone_ages):
-        self.assertAbsent([p for age in gone_ages for p in self.units[age]])
-        kept = [p for age, paths in self.units.items() if age not in gone_ages for p in paths]
-        self.assertPresent(kept + self.anchor)
+    def run_floor(self, *args, df=(), env=None):
+        return self.run_evict("--free-floor-gib", FLOOR_GIB, "--protect-hours", PROTECT_HOURS,
+                              *args, df=df, env=env)
 
-    def test_without_a_floor_the_window_stays_put_and_df_is_never_asked(self):
-        result = self.run_floor(df_gib=[10])
+    @staticmethod
+    def short_by(deficit):
+        """The free-space reading `deficit` bytes below the floor."""
+        return FLOOR_GIB * GIB - deficit
+
+    def assertEvicted(self, gone_hours):
+        self.assertAbsent([p for h in gone_hours for p in self.units[h]])
+        self.assertPresent([p for h, paths in self.units.items() if h not in gone_hours
+                            for p in paths] + self.anchor)
+
+    def eviction_lines(self, stderr):
+        return re.findall(r"^.*prune deps=(\S+) .* free_floor_gib=.*$", stderr, re.M)
+
+    def make_release(self):
+        """release/, anchored 20 days before debug's anchor: units consulted
+        30 h (outside the protect window) and 10 h (inside it) before ITS
+        anchor. Against debug's anchor both would be evictable."""
+        release_anchor = ANCHOR - 20 * DAY
+        anchor = make_anchor(self.release, release_anchor)
+        outside = make_sized_unit(self.release, "rel30", "f000000000000030",
+                                  release_anchor - 30 * HOUR, 1, 3000)
+        inside = make_sized_unit(self.release, "rel10", "f000000000000010",
+                                 release_anchor - 10 * HOUR, 1, 3000)
+        return anchor, outside, inside
+
+    def test_without_a_floor_only_the_age_pass_runs_and_df_is_never_asked(self):
+        result = self.run_evict(self.debug, df=[GIB])
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertPruned({6})
+        self.assertEvicted(set())
         self.assertEqual(self.calls_of("df"), [])
+        self.assertEqual(self.eviction_lines(result.stderr), [])
 
-    def test_below_the_floor_the_window_tightens_down_to_but_not_past_the_minimum(self):
-        result = self.run_floor("--free-floor-gib", 50, "--min-window-days", 2, df_gib=[10])
+    def test_far_below_the_floor_every_unit_outside_the_protect_window_is_evicted(self):
+        result = self.run_floor(self.debug, df=[GIB])
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertPruned({6, 4.5, 3.5, 2.5})
+        self.assertEvicted({50, 40, 30})
+
+    def test_a_deficit_the_least_recently_consulted_unit_covers_evicts_only_it(self):
+        result = self.run_floor(self.debug, df=[self.short_by(self.unit_bytes(50))])
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEvicted({50})
+
+    def test_one_byte_more_also_evicts_the_next_least_recently_consulted_unit(self):
+        result = self.run_floor(self.debug, df=[self.short_by(self.unit_bytes(50) + 1)])
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEvicted({50, 40})
+
+    def test_on_a_last_use_tie_the_unit_with_more_summed_bytes_goes_first(self):
+        # The larger unit by summed bytes has the smaller files and the greater
+        # hash, so neither a per-file size nor a hash order picks it.
+        shutil.rmtree(self.target)
+        anchor = make_anchor(self.debug)
+        tie_at = ANCHOR - 40 * HOUR
+        larger = make_sized_unit(self.debug, "tiea", "f0000000000000aa", tie_at, 3, 100)
+        smaller = make_sized_unit(self.debug, "tieb", "f000000000000011", tie_at, 1, 200)
+
+        result = self.run_floor(self.debug, df=[self.short_by(1)])
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertAbsent(larger)
+        self.assertPresent(smaller + anchor)
+
+    def test_a_units_deps_files_are_evicted_together(self):
+        one_file_of_the_40h_unit = self.units[40][0].stat().st_size
+        for label, deficit, gone in (
+                ("covered by the 50 h unit", self.unit_bytes(50), {50}),
+                ("covered by one more deps file", self.unit_bytes(50) + one_file_of_the_40h_unit,
+                 {50, 40})):
+            with self.subTest(label):
+                shutil.rmtree(self.target)
+                self.make_debug_units()
+
+                result = self.run_floor(self.debug, df=[self.short_by(deficit)])
+
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEvicted(gone)
+
+    def test_at_or_above_the_floor_nothing_is_evicted_and_df_measures_the_first_profile(self):
+        make_anchor(self.release)
+        for label, free in (("at", FLOOR_GIB * GIB), ("above", (FLOOR_GIB + 1) * GIB)):
+            with self.subTest(label):
+                self.calls_file.write_text("")
+
+                result = self.run_floor(self.debug, self.release, df=[free])
+
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEvicted(set())
+                self.assertEqual(self.calls_of("df"), [f"df -B1 --output=avail -- {self.debug}"])
+                self.assertEqual(self.eviction_lines(result.stderr), [])
+
+    def test_a_failed_df_evicts_nothing(self):
+        result = self.run_floor(self.debug, df=[GIB], env={"REIFY_TEST_DF_FAIL": "1"})
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEvicted(set())
+        self.assertTrue(self.calls_of("df"), "df was never asked")
+
+    def test_a_later_profile_is_untouched_once_the_floor_is_met(self):
+        release_anchor, release_outside, release_inside = self.make_release()
+
+        result = self.run_floor(self.debug, self.release, df=[GIB, 100 * GIB])
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEvicted({50, 40, 30})
+        self.assertPresent(release_anchor + release_outside + release_inside)
+        self.assertEqual(self.eviction_lines(result.stderr), [str(self.debug / "deps")])
+
+    def test_still_below_the_floor_a_later_profile_is_evicted_against_its_own_anchor(self):
+        release_anchor, release_outside, release_inside = self.make_release()
+
+        result = self.run_floor(self.debug, self.release, df=[GIB, GIB])
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEvicted({50, 40, 30})
+        self.assertAbsent(release_outside)
+        self.assertPresent(release_anchor + release_inside)
         df_calls = self.calls_of("df")
-        self.assertTrue(df_calls)
+        self.assertEqual(len(df_calls), 2, df_calls)
         for call in df_calls:
             self.assertTrue(call.endswith(f" {self.debug}"), call)
+        self.assertEqual(self.eviction_lines(result.stderr),
+                         [str(self.debug / "deps"), str(self.release / "deps")])
 
-    def test_tightening_stops_once_the_floor_is_met(self):
-        result = self.run_floor("--free-floor-gib", 50, "--min-window-days", 2, df_gib=[10, 100])
+    def test_with_the_flag_an_evicted_unit_loses_its_record_and_shards(self):
+        shard = make_shard(self.debug, f"aged50-{aged_hash(50)}", aged_hash(10),
+                           ANCHOR - 50 * HOUR)
 
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertPruned({6, 4.5})
-        windows = re.findall(r"^.*prune deps=.* window_days=(\d+)", result.stderr, re.M)
-        self.assertEqual(windows, ["5", "4"])
-
-    def test_with_the_flag_each_tightened_pass_prunes_the_records_it_selected(self):
-        def record_dir(tag):
-            return self.debug / ".fingerprint" / f"aged{tag}-a00000000000000{tag}"
-
-        result = self.run_floor("--free-floor-gib", 50, "--min-window-days", 2,
-                                "--prune-dead-unit-records", df_gib=[10, 100])
+        result = self.run_floor("--prune-dead-unit-records", self.debug, df=[GIB])
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertPruned({6, 4.5})
-        self.assertAbsent([record_dir("6"), record_dir("5")])
-        self.assertPresent([record_dir(tag) / f"lib-aged{tag}" for tag in "432"]
+        self.assertEvicted({50, 40, 30})
+        self.assertAbsent([shard] + [self.debug / ".fingerprint" / f"aged{h}-{aged_hash(h)}"
+                                     for h in (50, 40, 30)])
+        self.assertPresent([record_file(self.debug, f"aged{h}", aged_hash(h)) for h in (20, 10)]
                            + [record_file(self.debug, "anchor", "00000000000000a1")])
-        records = re.findall(r"^.*prune deps=.* records=(\d+) dwo=\d+ window_days=\d+",
-                             result.stderr, re.M)
-        self.assertEqual(records, ["1", "1"])
+        self.assertRegex(result.stderr, re.compile(
+            r"prune deps=\S+ files=5 victim_bytes=\d+ records=3 dwo=1 "
+            rf"free_floor_gib={FLOOR_GIB} protect_hours={PROTECT_HOURS}$", re.M))
 
-    def test_a_failed_measurement_never_deletes_more(self):
-        result = self.run_floor("--free-floor-gib", 50, "--min-window-days", 2,
-                                env={"REIFY_TEST_DF_FAIL": "1"})
+    def test_without_the_flag_an_evicted_unit_keeps_its_record(self):
+        result = self.run_floor(self.debug, df=[GIB])
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertPruned({6})
+        self.assertEvicted({50, 40, 30})
+        self.assertPresent([record_file(self.debug, f"aged{h}", aged_hash(h))
+                            for h in AGED_UNITS])
 
-    def test_floor_usage_errors_exit_2_before_touching_the_tree(self):
+    def test_each_pass_writes_its_own_summary_line(self):
+        evicted_bytes = self.unit_bytes(50, 40, 30)
+
+        result = self.run_floor(self.debug, df=[GIB])
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        deps = re.escape(str(self.debug / "deps"))
+        self.assertRegex(result.stderr, re.compile(
+            rf"prune deps={deps} files=0 victim_bytes=0 records=0 dwo=0 window_days=3$", re.M))
+        self.assertRegex(result.stderr, re.compile(
+            rf"prune deps={deps} files=5 victim_bytes={evicted_bytes} records=0 dwo=0 "
+            rf"free_floor_gib={FLOOR_GIB} protect_hours={PROTECT_HOURS}$", re.M))
+        self.assertEqual(len(self.eviction_lines(result.stderr)), 1)
+
+    def test_protect_hours_may_equal_the_age_window(self):
+        result = self.run_evict("--free-floor-gib", FLOOR_GIB, "--protect-hours", 72,
+                                self.debug, df=[GIB])
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEvicted(set())
+
+    def test_eviction_usage_errors_exit_2_before_touching_the_tree(self):
         cases = (
-            ("floor without minimum", ["--free-floor-gib", 50]),
-            ("minimum without floor", ["--min-window-days", 2]),
-            ("minimum above the window", ["--free-floor-gib", 50, "--min-window-days", 6]),
-            ("zero minimum", ["--free-floor-gib", 50, "--min-window-days", 0]),
-            ("zero floor", ["--free-floor-gib", 0, "--min-window-days", 2]),
-            ("non-integer floor", ["--free-floor-gib", "lots", "--min-window-days", 2]),
+            ("floor without protect", ["--free-floor-gib", 50]),
+            ("protect without floor", ["--protect-hours", 26]),
+            ("zero floor", ["--free-floor-gib", 0, "--protect-hours", 26]),
+            ("non-integer floor", ["--free-floor-gib", "lots", "--protect-hours", 26]),
+            ("zero protect", ["--free-floor-gib", 50, "--protect-hours", 0]),
+            ("non-integer protect", ["--free-floor-gib", 50, "--protect-hours", "1.5"]),
+            ("protect beyond the age window", ["--free-floor-gib", 50, "--protect-hours", 73]),
         )
         before = self.tree()
         for label, floor_args in cases:
             with self.subTest(label):
-                result = self.run_floor(*floor_args, df_gib=[10])
+                result = self.run_evict(*floor_args, self.debug, df=[GIB])
 
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertEqual(self.tree(), before)
                 self.assertEqual(self.findmnt_calls(), [])
                 self.assertEqual(self.calls_of("df"), [])
+
+    def test_the_retired_min_window_days_is_an_unknown_flag(self):
+        before = self.tree()
+
+        result = self.run_evict("--free-floor-gib", FLOOR_GIB, "--min-window-days", 2,
+                                self.debug, df=[GIB])
+
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("Unknown flag: --min-window-days", result.stderr)
+        self.assertEqual(self.tree(), before)
+        self.assertEqual(self.calls_of("df"), [])
 
 
 # A stand-in sibling for refresh-warm-base.sh: records its argv, one call per

@@ -1,0 +1,15 @@
+tests = "the default operand of `unwrap_or` is read whatever its first operand holds, so a constructor call in the default makes an instance whose verdict counts, though the result is the first operand's content."
+rule = "rule A (\"Only the condition of an `if` or a `match` decides whether something is read\"); decision 12 (confirmed 2026-11-26); rule B"
+provenance = "logic-2 N3 (its smallest change listed \"the value given to `unwrap_or`\" among the positions to leave unevaluated on a stand-in; not taken: decision 12 reads everything outside an arm). The catalogue's `or-operand-constructor-call-makes-instance` is the same rule for `or`."
+needs = ["instance", "eval-reads", "value", "made", "open", "summary"]
+answer_basis = "traced. `unwrap_or` is a call, not an `if` or a `match`, so both arguments are read. `Plate(t: 1mm)` is made, its `t >= 3mm` is violated and counted once, at the made instance (rule B; readings B4). `o` is `some(5mm)`, so `x` is 5 mm. The made instance's path is not pinned: section A's `/made[chain]` text is not worked out for a call nested in another call's argument (as in `nested-and-listed-made-instances-counted-once`)."
+today = "the evaluator evaluates every argument before a recovery combinator runs (read-code `crates/reify-expr/src/lib.rs`, the `option_recovery::is_combinator` arm of `eval_expr`; kept code, not held). Run `g02.ri`: `Asm.x = 0.005 m`; `check` reports only `Plate#constraint[0]` at the definition's own missing default, INDETERMINATE, and not the made plate."
+note = "PRD 5.5 lists built-ins that select by the shape of a value (`map_or`, `map_err`, `flat_map` over nothing) as evaluating only what they select. Those apply a function; `unwrap_or`'s default is an ordinary argument expression, so it is not on that list. If the lead puts `unwrap_or` on it, the summary row becomes `violated 0`."
+
+[[expect]]
+path = "Asm.x"
+value = "5 mm"
+
+[[expect]]
+path = "Asm/summary"
+summary = { violated = 1, undetermined = 0, failed = 0 }

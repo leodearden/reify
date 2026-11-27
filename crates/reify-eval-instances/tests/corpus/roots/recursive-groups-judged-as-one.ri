@@ -1,0 +1,4 @@
+structure def Tree { param depth : Int = 1   sub left : Tree where depth > 0 { depth = self.depth - 1 } }
+structure def F { sub e : E }
+structure def E { param n : Int = 1   sub d : D where n > 0 { m = 0 } }
+structure def D { param m : Int = 0   sub e : E where m > 0 { n = 0 } }

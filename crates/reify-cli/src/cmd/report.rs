@@ -7,7 +7,7 @@ use reify_core::Severity;
 
 use crate::args::split_cfg_args_or_usage;
 use crate::help::REPORT_USAGE;
-use crate::{configured_eval_engine, parse_and_compile_program_entry};
+use crate::{configured_eval_engine, parse_and_compile_program};
 
 /// `reify report --bom <file>` — roll up and render a BOM / cost / waste /
 /// provenance report (io-lifecycle-bom-cost #4292, boundary α).
@@ -62,11 +62,12 @@ pub(crate) fn cmd_report(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     };
 
-    let compiled = match parse_and_compile_program_entry(path, &cfg) {
-        Ok(c) => c,
+    let program = match parse_and_compile_program(path, &cfg) {
+        Ok(p) => p,
         Err(code) => return code,
     };
-    if compiled
+    if program
+        .entry()
         .diagnostics
         .iter()
         .any(|d| d.severity == Severity::Error)
@@ -79,6 +80,7 @@ pub(crate) fn cmd_report(args: &[String]) -> ExitCode {
     let mut engine = configured_eval_engine(|posture| {
         reify_eval::Engine::new(posture, Box::new(SimpleConstraintChecker), None)
     });
+    let compiled = engine.load(program);
     let result = engine.eval(&compiled);
 
     // Check eval-level errors BEFORE rendering. stdout is the parseable BOM

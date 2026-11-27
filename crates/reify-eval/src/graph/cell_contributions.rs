@@ -1,19 +1,23 @@
-//! The value cells [`EvaluationGraph::from_templates`] puts in
+//! The value cells [`EvaluationGraph::from_env`] puts in
 //! `graph.value_cells`, enumerated once so callers can ask about them without
 //! building the graph.
 //!
-//! `from_templates` populates its value cells by folding [`contributed_cells`],
+//! `from_env` populates its value cells by folding [`contributed_cells`],
 //! so this iterator IS that set, not a description of it. A template's
 //! `ports.members` never reaches the graph and is deliberately not enumerated.
+//! The templates enumerated are the environment's declared module's; each
+//! sub's structure resolves through the environment.
 //!
-//! [`EvaluationGraph::from_templates`]: super::EvaluationGraph::from_templates
+//! [`EvaluationGraph::from_env`]: super::EvaluationGraph::from_env
 
 use reify_compiler::{
     CompiledGuardedGroup, GuardedGroupCell, SubComponentDecl, TopologyTemplate, ValueCellDecl,
-    ValueCellKind, find_template,
+    ValueCellKind,
 };
 use reify_core::{Type, ValueCellId};
 use reify_ir::{CompiledExpr, CompiledExprKind, MemberKey, Value};
+
+use crate::DefEnv;
 
 /// Every guarded group's guard cell is a `Bool` let over its guard expression.
 static GUARD_CELL_TYPE: Type = Type::Bool;
@@ -29,7 +33,7 @@ enum InsertPolicy {
     KeepExisting,
 }
 
-/// One value cell `from_templates` inserts, in insertion order.
+/// One value cell `from_env` inserts, in insertion order.
 #[derive(Clone, Copy, Debug)]
 pub struct ContributedCell<'a>(Source<'a>);
 
@@ -118,7 +122,7 @@ impl<'a> ContributedCell<'a> {
 
     /// The id to write this cell at in a value-cell map, or `None` when its
     /// policy keeps the cell `is_present` reports is already there.
-    /// `from_templates` folds every contribution through this.
+    /// `from_env` folds every contribution through this.
     pub fn landing_id(&self, is_present: impl FnOnce(&ValueCellId) -> bool) -> Option<ValueCellId> {
         let id = self.graph_id();
         let keeps_existing = self.insert_policy() == InsertPolicy::KeepExisting && is_present(&id);
@@ -140,21 +144,19 @@ impl<'a> ContributedCell<'a> {
     }
 }
 
-/// Every value cell `from_templates(templates)` inserts, in insertion order.
+/// Every value cell `from_env(env)` inserts, in insertion order.
 /// Per template: its own cells, then each resolvable sub's instance cells,
 /// then each guarded group's [`CompiledGuardedGroup::owned_cells`].
-pub fn contributed_cells(
-    templates: &[TopologyTemplate],
-) -> impl Iterator<Item = ContributedCell<'_>> {
-    enumerate(templates, Instances::Every)
+pub fn contributed_cells(env: DefEnv<'_>) -> impl Iterator<Item = ContributedCell<'_>> {
+    enumerate(env, Instances::Every)
 }
 
 /// The `cell_type` of every [`contributed_cells`] cell, with each sub's
 /// instances collapsed to its first. A sub-instance cell has its child
 /// declaration's type whatever its slot, so this yields the same set of types
 /// at a cost that does not grow with a collection's instance count.
-pub fn contributed_cell_types(templates: &[TopologyTemplate]) -> impl Iterator<Item = &Type> {
-    enumerate(templates, Instances::First).map(|cell| cell.cell_type())
+pub fn contributed_cell_types(env: DefEnv<'_>) -> impl Iterator<Item = &Type> {
+    enumerate(env, Instances::First).map(|cell| cell.cell_type())
 }
 
 /// Which of a sub's instance slots [`enumerate`] expands.
@@ -173,17 +175,15 @@ impl Instances {
     }
 }
 
-fn enumerate(
-    templates: &[TopologyTemplate],
-    instances: Instances,
-) -> impl Iterator<Item = ContributedCell<'_>> {
-    templates
+fn enumerate(env: DefEnv<'_>, instances: Instances) -> impl Iterator<Item = ContributedCell<'_>> {
+    env.module()
+        .templates
         .iter()
-        .flat_map(move |template| template_cells(templates, template, instances))
+        .flat_map(move |template| template_cells(env, template, instances))
 }
 
 fn template_cells<'a>(
-    templates: &'a [TopologyTemplate],
+    env: DefEnv<'a>,
     template: &'a TopologyTemplate,
     instances: Instances,
 ) -> impl Iterator<Item = ContributedCell<'a>> {
@@ -193,7 +193,7 @@ fn template_cells<'a>(
         .iter()
         .flat_map(CompiledGuardedGroup::owned_cells)
         .map(guarded_group_cell);
-    own.chain(sub_instance_cells(templates, template, instances))
+    own.chain(sub_instance_cells(env, template, instances))
         .chain(guarded)
 }
 
@@ -211,21 +211,19 @@ fn guarded_group_cell(cell: GuardedGroupCell<'_>) -> ContributedCell<'_> {
 /// Every sub instance whose cells [`contributed_cells`] yields: its scoped
 /// entity (`P.s`, `P.s[i]`, `P.s["k"]`) and the name of the child template
 /// its cells are stamped from.
-pub(crate) fn sub_instances(
-    templates: &[TopologyTemplate],
-) -> impl Iterator<Item = (String, &str)> {
-    templates.iter().flat_map(move |parent| {
-        instance_slots(templates, parent, Instances::Every)
+pub(crate) fn sub_instances(env: DefEnv<'_>) -> impl Iterator<Item = (String, &str)> {
+    env.module().templates.iter().flat_map(move |parent| {
+        instance_slots(env, parent, Instances::Every)
             .map(|(slot, child)| (slot.scoped_entity(), child.name.as_str()))
     })
 }
 
 fn sub_instance_cells<'a>(
-    templates: &'a [TopologyTemplate],
+    env: DefEnv<'a>,
     parent: &'a TopologyTemplate,
     instances: Instances,
 ) -> impl Iterator<Item = ContributedCell<'a>> {
-    instance_slots(templates, parent, instances).flat_map(|(slot, child)| {
+    instance_slots(env, parent, instances).flat_map(|(slot, child)| {
         child
             .value_cells
             .iter()
@@ -235,14 +233,14 @@ fn sub_instance_cells<'a>(
 
 /// `parent`'s instance slots, each with the child template it is stamped from.
 fn instance_slots<'a>(
-    templates: &'a [TopologyTemplate],
+    env: DefEnv<'a>,
     parent: &'a TopologyTemplate,
     instances: Instances,
 ) -> impl Iterator<Item = (InstanceSlot<'a>, &'a TopologyTemplate)> {
     parent
         .sub_components
         .iter()
-        .filter_map(move |sub| resolve_sub(templates, parent, sub))
+        .filter_map(move |sub| resolve_sub(env, parent, sub))
         .flat_map(move |elab| {
             let SubElaboration { sub, child, .. } = elab;
             elab.slot_indices()
@@ -258,7 +256,7 @@ fn instance_slots<'a>(
         })
 }
 
-/// A sub-component resolved against the template slice: the child template
+/// A sub-component resolved through the environment: the child template
 /// its instances are stamped from, and the shape of its instance slots.
 #[derive(Clone, Copy)]
 pub(crate) struct SubElaboration<'a> {
@@ -311,15 +309,15 @@ impl<'a> Iterator for SlotIndices<'a> {
     }
 }
 
-/// `None` when the sub's structure is not among `templates`; such a sub
+/// `None` when the sub's structure does not resolve in `env`; such a sub
 /// contributes no cells and is not registered.
 pub(crate) fn resolve_sub<'a>(
-    templates: &'a [TopologyTemplate],
+    env: DefEnv<'a>,
     parent: &'a TopologyTemplate,
     sub: &'a SubComponentDecl,
 ) -> Option<SubElaboration<'a>> {
-    let element_structure = element_structure_name(sub);
-    let child = find_template(templates, element_structure)?;
+    let element_structure = sub.element_structure_name();
+    let child = env.resolve_template(element_structure)?;
     let shape = if sub.is_collection {
         SubShape::Collection
     } else if !sub.keyed_members.is_empty() {
@@ -334,16 +332,6 @@ pub(crate) fn resolve_sub<'a>(
         element_structure,
         shape,
     })
-}
-
-fn element_structure_name(sub: &SubComponentDecl) -> &str {
-    if sub.keyed_members.is_empty() {
-        return &sub.structure_name;
-    }
-    match sub.type_args.first() {
-        Some(Type::StructureRef(name)) => name,
-        _ => &sub.structure_name,
-    }
 }
 
 /// The count cell's default when it is an Int literal, or a reference to a
@@ -403,6 +391,7 @@ mod tests {
 
     use super::fixtures::{compile, rig_with_every_slot_kind};
     use super::{Source, contributed_cell_types, contributed_cells, sub_instances};
+    use crate::DefEnv;
 
     #[test]
     fn contributed_cell_types_does_not_grow_with_instance_count() {
@@ -414,8 +403,9 @@ mod tests {
             ))
         };
         let (few, many) = (rack(2), rack(50));
-        let cell_count = |m: &CompiledModule| contributed_cells(&m.templates).count();
-        let type_count = |m: &CompiledModule| contributed_cell_types(&m.templates).count();
+        let cell_count = |m: &CompiledModule| contributed_cells(DefEnv::of_module(m, &[])).count();
+        let type_count =
+            |m: &CompiledModule| contributed_cell_types(DefEnv::of_module(m, &[])).count();
         assert!(
             cell_count(&many) > cell_count(&few),
             "anti-vacuity: 50 screws must contribute more cells than 2 ({} vs {})",
@@ -434,12 +424,12 @@ mod tests {
     fn sub_instances_maps_every_instance_slot_with_cells_to_its_child_template() {
         let module = rig_with_every_slot_kind();
         let in_fixture = |entity: &String| entity.starts_with("Rig.");
-        let registry: BTreeMap<String, &str> = sub_instances(&module.templates)
+        let registry: BTreeMap<String, &str> = sub_instances(DefEnv::of_module(&module, &[]))
             .filter(|(entity, _)| in_fixture(entity))
             .collect();
 
         let mut stamped: BTreeMap<String, &str> = BTreeMap::new();
-        for cell in contributed_cells(&module.templates) {
+        for cell in contributed_cells(DefEnv::of_module(&module, &[])) {
             if let Source::SubInstance { slot, decl } = cell.0
                 && in_fixture(&slot.scoped_entity())
             {

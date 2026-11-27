@@ -13,7 +13,8 @@ DeployContract mirrors those checks so that refusal is caught here first.
 
 HERMETIC: ExecStartRuns re-roots the service's own argv onto a temp worktree
 base and refuses to spawn while any element still names /home/leo/src/reify.
-`findmnt` (relatime) and `df` (ample free space) are PATH stubs.
+`findmnt` (relatime) and `df` (ample free space, unless a test swaps in a
+scarce one) are PATH stubs.
 """
 
 import configparser
@@ -42,9 +43,10 @@ LAPTOP_WORKTREES = f"{LAPTOP_CHECKOUT}/.worktrees"
 LANE_LOCKS = {f"{LAPTOP_WORKTREES}/_merge-verify.lock", f"{LAPTOP_WORKTREES}/.merge_verify.lock"}
 PROFILES = [f"{LAPTOP_WORKTREES}/_merge-verify/target/debug",
             f"{LAPTOP_WORKTREES}/_merge-verify/target/release"]
-VALUED_FLAGS = ("--window-days", "--atime-probe", "--lock", "--free-floor-gib", "--min-window-days")
+VALUED_FLAGS = ("--window-days", "--atime-probe", "--lock", "--free-floor-gib", "--protect-hours")
 
-DAY = 24 * 3600
+HOUR = 3600
+DAY = 24 * HOUR
 ANCHOR = datetime(2026, 3, 10, tzinfo=timezone.utc).timestamp()
 
 STUB_FINDMNT = """#!/bin/sh
@@ -54,6 +56,11 @@ echo "rw,relatime"
 STUB_DF = """#!/bin/sh
 echo "Avail"
 echo "10995116277760"
+"""
+
+STUB_DF_ONE_GIB = """#!/bin/sh
+echo "Avail"
+echo "1073741824"
 """
 
 
@@ -113,8 +120,9 @@ class UnitFiles(unittest.TestCase):
 
         self.assertEqual(argv[0], INSTALLED_PRUNE, "nothing may run from the laptop checkout")
         self.assertGreaterEqual(int(flags["--window-days"][-1]), 3)
-        if "--min-window-days" in flags:
-            self.assertGreaterEqual(int(flags["--min-window-days"][-1]), 2)
+        self.assertIn("--free-floor-gib", flags)
+        # relatime's up-to-24 h atime lag, plus one build.
+        self.assertGreaterEqual(int(flags["--protect-hours"][-1]), 26)
         self.assertEqual(set(flags["--lock"]), LANE_LOCKS)
         self.assertEqual(positionals, PROFILES)
 
@@ -150,15 +158,23 @@ class ExecStartRuns(unittest.TestCase):
         self.stub_dir = self.tmp / "stub-bin"
         self.stub_dir.mkdir()
         for name, body in (("findmnt", STUB_FINDMNT), ("df", STUB_DF)):
-            stub = self.stub_dir / name
-            stub.write_text(body)
-            stub.chmod(0o755)
-        self.kept, self.superseded = [], []
+            self.write_stub(name, body)
+        self.kept, self.superseded, self.outside_protect = [], [], []
         for profile in ("debug", "release"):
             root = self.worktrees / "_merge-verify" / "target" / profile
             self.kept.append(make_unit(root, "anchor", "00000000000000a1", ANCHOR))
             self.kept.append(make_unit(root, "widget", "1111111111111111", ANCHOR - 1 * DAY))
             self.superseded.append(make_unit(root, "widget", "2222222222222222", ANCHOR - 5 * DAY))
+            self.outside_protect.append(
+                make_unit(root, "widget", "3333333333333333", ANCHOR - 30 * HOUR))
+
+    def write_stub(self, name, body):
+        stub = self.stub_dir / name
+        stub.write_text(body)
+        stub.chmod(0o755)
+
+    def records(self):
+        return sorted(self.worktrees.glob("_merge-verify/target/*/.fingerprint/*/*"))
 
     def rerooted_args(self):
         """The ExecStart arguments (argv[0] dropped: the repo's own script runs
@@ -182,7 +198,8 @@ class ExecStartRuns(unittest.TestCase):
                               text=True, env=env, check=False)
 
     def assertUntouched(self):
-        self.assertEqual([str(p) for p in self.kept + self.superseded if not p.is_file()], [])
+        self.assertEqual([str(p) for p in self.kept + self.superseded + self.outside_protect
+                          if not p.is_file()], [])
 
     def test_a_held_lane_lock_succeeds_without_trimming(self):
         self.hold("_merge-verify.lock")
@@ -205,13 +222,25 @@ class ExecStartRuns(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([str(p) for p in self.superseded if p.exists()], [])
+        self.assertEqual([str(p) for p in self.kept + self.outside_protect if not p.is_file()],
+                         [], "with ample free space the trim evicted inside the age window")
+
+    def test_below_the_floor_the_service_evicts_units_outside_the_protect_window(self):
+        self.write_stub("df", STUB_DF_ONE_GIB)
+        records = self.records()
+
+        result = self.run_unit()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([str(p) for p in self.outside_protect if p.exists()], [])
         self.assertEqual([str(p) for p in self.kept if not p.is_file()], [])
+        self.assertEqual([str(p) for p in records if not p.is_file()], [])
 
     def test_the_laptop_trim_never_removes_a_fingerprint_record(self):
         """On this persistent target a removed record is gone for good, and
         with it the liveness evidence the next trim reads."""
-        records = sorted(self.worktrees.glob("_merge-verify/target/*/.fingerprint/*/*"))
-        self.assertEqual(len(records), 6)
+        records = self.records()
+        self.assertEqual(len(records), 8)
 
         result = self.run_unit()
 

@@ -50,6 +50,7 @@ pub mod structure_type_id;
 mod test_rng;
 pub mod traits;
 pub mod value;
+mod value_deep;
 pub mod warm;
 pub mod warm_registry;
 
@@ -62,7 +63,9 @@ pub use annotation::{Annotation, AnnotationArg, AnnotationArgValue, has_test_ann
 pub use color::Rgb8;
 pub use dense_sdf::{DenseSdfGrid, ImplicitGridError, ImplicitOptions};
 pub use direction::{DirectionFault, UnitVec3};
-pub use direction_decode::{DecodeDirectionError, decode_direction, frame_basis};
+pub use direction_decode::{
+    DecodeDirectionError, NotARotation, basis_quaternion, decode_direction, frame_basis,
+};
 pub use boundary_attachment::{BoundaryAssociation, NodeAttachment};
 pub use constraint::{
     AutoParam, ComputeDispatch, ComputeDispatchFailure, ComputeDispatchOutcome,
@@ -79,7 +82,7 @@ pub use solve_termination::{
 };
 pub use expr::{
     BinOp, CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction, CompiledMatchArm,
-    CompiledPattern, DeterminacyPredicateKind, ResolvedFunction, SelectorKind, TAG_AD_HOC_SELECTOR,
+    CompiledPattern, CtorGeometryLet, DeterminacyPredicateKind, ResolvedFunction, SelectorKind, TAG_AD_HOC_SELECTOR,
     TAG_BIN_OP, TAG_CONDITIONAL, TAG_DETERMINACY_PREDICATE, TAG_FUNCTION_CALL, TAG_INDEX_ACCESS,
     TAG_LAMBDA, TAG_LIST_LITERAL, TAG_LITERAL, TAG_MAP_LITERAL, TAG_MATCH, TAG_META_ACCESS,
     TAG_METHOD_CALL, TAG_OPTION_NONE, TAG_OPTION_SOME, TAG_QUANTIFIER, TAG_RANGE_CONSTRUCTOR,

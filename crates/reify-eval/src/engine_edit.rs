@@ -171,7 +171,6 @@ use crate::warm_pool::WarmStatePool;
 use crate::{
     CheckResult, Engine, EngineError, EvalResult, EvaluationState, GuardLookup,
     OptimizedComputeDispatcher, build_meta_map, eval_ctx_with_meta, guard_state_fingerprint,
-    merge_functions,
 };
 
 mod instance_mint_settle;
@@ -463,7 +462,7 @@ pub(crate) type ValueCellDiff = (
 /// - `removed`: present only in the old graph.
 ///
 /// The content_hash already combines the cell's ID hash and expression
-/// content_hash (see `EvaluationGraph::from_templates`), so a match signals
+/// content_hash (see `EvaluationGraph::from_env`), so a match signals
 /// "equivalent node; cached value is still valid" while a mismatch signals
 /// "re-evaluate". This is the identity/equivalence key used by
 /// `Engine::edit_source`.
@@ -483,7 +482,7 @@ pub(crate) fn diff_value_cells(
 /// `ConstraintNodeId` is positional (`entity, index`) within its template, so a
 /// re-ordering of constraint declarations in source surfaces here as a
 /// `changed` diff at the shifted indexes — not as add+remove. This matches
-/// `EvaluationGraph::from_templates`, which assigns indexes from the
+/// `EvaluationGraph::from_env`, which assigns indexes from the
 /// constraint's declaration order.
 pub(crate) fn diff_constraints(
     old_graph: &EvaluationGraph,
@@ -875,9 +874,12 @@ impl Drop for PendingWarmSeedsGuard<'_> {
 /// Used by `edit_source` step (4c) to drive the checkout half of the
 /// WarmStatePool round-trip uniformly across the `added` /
 /// `added_constraints` / `added_realizations` sets. The pool API itself
-/// is variant-agnostic, so a future `NodeId` variant (e.g. `Resolution`
-/// once a `diff_resolutions` (#4686) exists, or `ComputeNode` once it becomes a
-/// variant) drops in as a single additional call.
+/// is variant-agnostic, so each `NodeId` variant a `diff_*` helper produces
+/// costs one call here. The two variants no `diff_*` helper produces are
+/// `Resolution`, which first needs a `diff_resolutions` helper (the gap
+/// recorded in #4686; see the step-(6) block comment in `edit_source`), and
+/// `Compute`, whose nodes are runtime artefacts of per-cell eval rather than
+/// source-derived; `run_compute_dispatch`'s pool fallback checks them out.
 ///
 /// The `pending` guard owns the pool borrow, so callers do not need to pass
 /// both a `&mut WarmStatePool` and a separate sink map — both are accessed
@@ -922,8 +924,8 @@ where
 /// landed in `build_demand_for_graph` (only Value/Constraint/Realization are
 /// seeded today), so the Resolution arm is currently unreachable end-to-end
 /// via the `eval_set = dirty ∩ demand` intersection in `edit_source`. A
-/// separate `diff_resolutions` helper gap (#4686; see the step-(6) block comment)
-/// remains outstanding as a sibling concern.
+/// separate `diff_resolutions` helper gap (recorded in #4686; see the step-(6)
+/// block comment) is a sibling concern.
 fn dependent_still_present_in_graph(dep: &NodeId, new_graph: &EvaluationGraph) -> bool {
     match dep {
         NodeId::Value(vcid) => new_graph.value_cells.contains_key(vcid),
@@ -1391,7 +1393,10 @@ impl Engine {
                 // selector, over the graph's RealizationNodeData (same
                 // operations, same upstream_values_hash fold) because
                 // edit_param has no access to the CompiledModule. Folding that
-                // arm onto `symbolic_cell_mint` is #8209's. Its selector
+                // arm onto `symbolic_cell_mint` was proposed in #8209 and is
+                // not being done in this code, since the old evaluation
+                // orchestration is being replaced
+                // (docs/notes/old-evaluation-core-hold.md). Its selector
                 // diagnostics (e.g. a kind-closure violation leaving the cell
                 // `Undef`) are accumulated into `selector_mint_diagnostics`,
                 // since `diagnostics` is declared later in this function, and
@@ -3142,7 +3147,7 @@ impl Engine {
     /// 5. Seed the working `values` map and `new_snapshot.values`: for every
     ///    cell present in both graphs with unchanged `content_hash`, copy the
     ///    prior `(Value, DeterminacyState)`; for changed/added cells keep the
-    ///    `Snapshot::from_compiled_module` default (Undef) — the eval loop
+    ///    `Snapshot::from_env` default (Undef) — the eval loop
     ///    below fills these in.
     /// 6. Invalidate cache entries for removed and changed value cells.
     /// 7. Refresh `self.functions` / `self.compiled_purposes` / `self.meta_map`
@@ -3201,11 +3206,12 @@ impl Engine {
         let parent_id = eval_state.snapshot.id;
 
         // (2) Build the new snapshot from the incoming CompiledModule.
-        //     Snapshot::from_compiled_module seeds every value cell to
+        //     Snapshot::from_env seeds every value cell to
         //     (Undef, Undetermined) or (Undef, Auto); the seeding loop
         //     below overwrites those with the preserved prior values for
         //     cells whose content_hash matches the old graph.
-        let mut new_snapshot = crate::snapshot::Snapshot::from_compiled_module(module);
+        let env_scope = self.env_of(module);
+        let mut new_snapshot = crate::snapshot::Snapshot::from_env(env_scope.env());
         // Invariant mirror of engine_eval.rs:248-249 — covers the edit-time recompile path.
         #[cfg(debug_assertions)]
         crate::engine_eval::assert_value_cell_types_representable(&new_snapshot.graph);
@@ -3262,7 +3268,7 @@ impl Engine {
         // selective-realization-eviction β (#4729): carry `input_cone_hash`
         // FORWARD onto every realization that persists across the recompile.
         //
-        // `edit_source` rebuilds the graph, and `EvaluationGraph::from_templates`
+        // `edit_source` rebuilds the graph, and `EvaluationGraph::from_env`
         // seeds every new node's `input_cone_hash` to `None` (graph.rs:406).
         // That field means "the input cone as of the last EXECUTION", so
         // without this copy a recompile destroys the record and the §11.2
@@ -3276,7 +3282,7 @@ impl Engine {
         // guards the other's blind spot (the same argument that justifies the
         // union below at the β compare site):
         //
-        //   • `content_hash` sees the OPS but not the values. `from_templates`
+        //   • `content_hash` sees the OPS but not the values. `from_env`
         //     builds it as `of_str(id) ⊕ combine_all(of_str(format!("{:?}",
         //     op)))` (graph.rs:396) — a Debug render of the whole op IR — so
         //     "unchanged content_hash" implies the ops are identical.
@@ -3298,7 +3304,7 @@ impl Engine {
         // previously rendered mesh", so the GUI keeps showing the union
         // after the user typed `difference`. Restricting the carry-forward to
         // ops-identical nodes leaves a changed node with the `None`
-        // `from_templates` seeds, which is exactly the pre-diff state that
+        // `from_env` seeds, which is exactly the pre-diff state that
         // forces the gate down its re-execute branch. Cost is bounded to one
         // transient re-execution: the gate unconditionally re-stamps the hash
         // (its `hash_updates.push` runs on both arms), so a skipped node holds
@@ -3368,10 +3374,12 @@ impl Engine {
         //      Symmetric across all three NodeId variants currently produced
         //      by `diff_*` helpers — Value, Constraint, Realization — via
         //      the shared `checkout_added_warm_seeds` helper. Resolution is
-        //      not yet in any `diff_*` helper (tracked by #4686);
-        //      ComputeNode is not yet a NodeId variant. The pool API
-        //      itself is variant-agnostic, so any future variant slots in
-        //      as a single additional call to the helper.
+        //      in no `diff_*` helper (the gap recorded in #4686; see step
+        //      (6)). Compute is a NodeId variant but no `diff_*` helper
+        //      produces it: ComputeNodes are runtime artefacts of per-cell
+        //      eval, checked out by `run_compute_dispatch`'s pool fallback.
+        //      The pool API itself is variant-agnostic, so a variant a
+        //      `diff_*` helper produces slots in as one more helper call.
         let mut pending_warm_seeds = PendingWarmSeedsGuard::new(&mut self.warm_pool);
         checkout_added_warm_seeds(&mut pending_warm_seeds, &added, NodeId::Value);
         checkout_added_warm_seeds(
@@ -3418,7 +3426,9 @@ impl Engine {
         //     `diff_constraints` / `diff_realizations`. That gap means changed
         //     or removed Resolution nodes are never seeded into `dirty_cone`
         //     via the changed/added/removed diff paths (steps (3)-(5)/(9)).
-        //     This is tracked as a separate task, #4686; do not conflate it
+        //     The gap is recorded in #4686 and is not being closed in this
+        //     code: the old evaluation orchestration is being replaced
+        //     (docs/notes/old-evaluation-core-hold.md). Do not conflate it
         //     with the membership check above, which is now correct.
         {
             let old_reverse_index = &eval_state.reverse_index;
@@ -3477,7 +3487,7 @@ impl Engine {
         // (8) Seed values by preserving unchanged-content_hash entries from
         //     the old snapshot, with `param_overrides` winning for Param cells
         //     (step-12). Changed cells retain their
-        //     Snapshot::from_compiled_module default (Undef) so the eval loop
+        //     Snapshot::from_env default (Undef) so the eval loop
         //     fills them in; added cells are seeded from overrides (if any,
         //     for Param kind) else left Undef for the eval loop. Removed cells
         //     are simply absent from the new graph, and their override entries
@@ -3520,7 +3530,7 @@ impl Engine {
                 continue;
             }
             // Changed/added/no prior entry: read the Undef seed placed by
-            // Snapshot::from_compiled_module so the working values map has
+            // Snapshot::from_env so the working values map has
             // an entry for every present cell (downstream expressions can
             // fail-stop on missing reads).
             if let Some((val, _)) = new_snapshot.values.get(id) {
@@ -3569,8 +3579,8 @@ impl Engine {
         // `donate_with_cost` so the pool→cache reinsert half of the
         // round-trip (run_compute_dispatch's cache-miss → pool fallback)
         // can restore both warm state and cost on the next dispatch.
-        // Resolution is not yet in any `diff_*` helper (tracked by
-        // #4686), so it does not donate today.
+        // Resolution is in no `diff_*` helper (the gap recorded in #4686;
+        // see step (6)), so it does not donate.
         for id in &changed {
             self.cache.invalidate(&NodeId::Value(id.clone()));
         }
@@ -3691,7 +3701,7 @@ impl Engine {
         //      none are captured by the per-cell content_hash diff, so
         //      relying on cell-level diffing alone would silently serve
         //      stale tables (see eval() for the same refresh rationale).
-        self.functions = merge_functions(module, &self.prelude_functions);
+        self.functions = env_scope.env().function_table();
         self.compiled_purposes = module.compiled_purposes.clone();
         // Snapshot the field declarations so `Engine::edit_param` can
         // re-elaborate composed fields incrementally when their tracked
@@ -3706,8 +3716,8 @@ impl Engine {
             }
         }
 
-        // Arc::clone is O(1) — a refcount bump. The merged table was built and
-        // sealed by `merge_functions` (see lib.rs) at the assignment above
+        // Arc::clone is O(1) — a refcount bump. The table was built and
+        // sealed by `DefEnv::function_table` at the assignment above
         // (same pattern as Engine::eval). The local binding satisfies the borrow
         // checker the same way as edit_param() above.
         let functions = Arc::clone(&self.functions);
@@ -6562,9 +6572,9 @@ mod tests {
     /// step (6) to silently leave stale Resolution caches after the cell they
     /// depend on is removed — this test locks the correct behaviour in advance.
     ///
-    /// The `diff_resolutions` helper gap (#4686; see the block comment near
-    /// `diff_realizations` in `edit_source`) is a separate sibling concern
-    /// not addressed by this fix.
+    /// The `diff_resolutions` helper gap (recorded in #4686; see the block
+    /// comment near `diff_realizations` in `edit_source`) is a separate
+    /// sibling concern not addressed by this fix.
     #[test]
     fn dependent_still_present_in_graph_resolution_consults_new_graph_resolutions_map() {
         use crate::cache::NodeId;

@@ -1,0 +1,9 @@
+tests = "a purpose declared with a parameter of kind Constraint is refused for now, by a compile error at the declaration."
+rule = "Part 15.2; Part 10."
+provenance = "design Part 15.2 (\"A purpose whose subject is a constraint or a field stays refused\")."
+needs = ["compile-error", "purpose"]
+answer_basis = "traced. Part 15.2 states the refusal; readings C17 places it at the purpose's declaration, as a compile error, so the declaration alone is enough to raise it. The Field case stays without a model: a module-level `field def` is the geometry and compute design's (task 10611)."
+
+[[expect]]
+compile_error = "a purpose's parameter may not be of kind Constraint"
+code = "PurposeParameterKindRefused"

@@ -1,0 +1,9 @@
+tests = "Naming a definition as the element type of a collection sub counts as a use."
+rule = "rule D (clause \"an element's type\")"
+provenance = "design Part 15.1 rule D"
+needs = ["roots"]
+answer_basis = "stated: rule D lists \"an element's type\" among uses. Only the roots row is pinned, and the second output records what each definition uses (leaf δ₂), so the entry does not wait for collections."
+today = "every definition in the file is a root (design Part 3)."
+
+[[expect]]
+roots = ["Rack"]

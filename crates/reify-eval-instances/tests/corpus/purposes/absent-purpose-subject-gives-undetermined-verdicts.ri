@@ -1,0 +1,19 @@
+structure def Plate {
+    param t : Length = 5mm
+}
+structure def Case {
+    param use : Bool = false
+    sub p : Plate where use
+    sub q : Plate
+}
+purpose thin_enough(subject : Structure) {
+    constraint subject.t < 4mm
+}
+purpose pair(a : Structure, b : Structure) {
+    constraint a.t + b.t < 20mm
+}
+structure def Asm {
+    sub c : Case
+    purpose thin_enough(self.c.p)
+    purpose pair(self.c.p, self.c.q)
+}

@@ -35,7 +35,7 @@ fn helix_sweep_through_full_pipeline_succeeds() {
     }
 
     let source = r#"structure S {
-    let groove = sweep(translate(rotate(circle(3mm), 1.0, 0.0, 0.0, -90deg), 24mm, 0mm, 0mm), helix(24mm, 7mm, 63mm))
+    let groove = sweep(translate(rotate(circle(3mm), dir(1.0, 0.0, 0.0), -90deg), 24mm, 0mm, 0mm), helix(24mm, 7mm, 63mm))
 }"#;
 
     // ---- Parse ----

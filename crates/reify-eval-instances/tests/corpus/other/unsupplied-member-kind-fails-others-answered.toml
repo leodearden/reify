@@ -1,0 +1,27 @@
+tests = "a member whose kind nobody has supplied (a geometry member, with no geometry kinds) is the failure `no-kind-supplied`, what reads it is blocked, and the instance's other members are answered."
+rule = "PRD 5.4 (\"A member whose row is empty answers `no-kind-supplied`, and whatever reads it is blocked. Nothing is skipped in silence\"); PRD 12.1 rule 2; decisions B2 and B4"
+provenance = "PRD boundary scenario G1; brief item 12."
+needs = ["instance", "constraint", "summary"]
+answer_basis = "stated (PRD 5.4, G1) for the failures; traced for the rest. `body` is a geometry member: `no-kind-supplied`. `constraint[1]` reads it: blocked. `half` is 5 mm; `constraint[0]` is 10 mm > 5 mm, satisfied. Failed (decisions B4, blocked included): `body` and `constraint[1]`, 2."
+today = "run `g12.ri`: `Block.body = <Geometry: Block#realization[0]>`, `Block.half = 0.005 m`."
+note = "the entry holds only while the geometry entry of `member_kinds` is empty. Once task 10611 fills it, the runner must run this entry with that entry emptied, or the entry retires; the PRD does not yet say which."
+
+[[expect]]
+path = "Block.body"
+failure = "no-kind-supplied"
+
+[[expect]]
+path = "Block.half"
+value = "5 mm"
+
+[[expect]]
+path = "Block/constraint[0]"
+verdict = "satisfied"
+
+[[expect]]
+path = "Block/constraint[1]"
+failure = "blocked"
+
+[[expect]]
+path = "Block/summary"
+summary = { violated = 0, undetermined = 0, failed = 2 }

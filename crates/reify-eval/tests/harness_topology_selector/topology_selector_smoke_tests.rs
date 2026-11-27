@@ -7,34 +7,26 @@
 //! * `block_inertia.ri` — `moment_of_inertia` on a steel box
 //! * `fillet_top_edges.ri` — `single`/`flat_map`/`adjacent_faces`/`shared_edges`/`faces_by_normal`/`fillet`
 //!
-//! ## Scope: parse + compile-with-stdlib + `#[ignore]`-gated eval
-//!
 //! Coverage follows the four-level staircase from `field_source_kinds_smoke.rs`
 //! (parse → compile_with_stdlib → eval → constraints):
 //!
-//! | Fixture                              | Parse | Compile | Eval (gated) |
-//! |--------------------------------------|-------|---------|--------------|
+//! | Fixture                              | Parse | Compile | Eval |
+//! |--------------------------------------|-------|---------|------|
 //! | `all_topology_selectors_wiring.ri`   | ✓ (via examples_smoke walker) | ✓ active | ✗ (eval dispatch pending) |
-//! | `block_inertia.ri`                   | ✓     | ✓ active (`block_inertia_compiles_with_stdlib_no_errors`) | `#[ignore]` (dispatch pending) |
-//! | `fillet_top_edges.ri`                | ✓     | ✓ active (`fillet_top_edges_compiles_with_stdlib_no_errors`) | `#[ignore]` (bare mock cannot walk topology, #4727) |
+//! | `block_inertia.ri`                   | ✓     | ✓ active (`block_inertia_compiles_with_stdlib_no_errors`) | ✓ active (`block_inertia_evals_moment_of_inertia_to_tensor`, mock-seeded inertia reply) |
+//! | `fillet_top_edges.ri`                | ✓     | ✓ active (`fillet_top_edges_compiles_with_stdlib_no_errors`) | ✓ real OCCT (`fillet_top_edges_example_builds_clean_e2e` in `crates/reify-eval/tests/fillet_curated_edges_e2e.rs`) |
 //!
-//! The `#[ignore]`-gated eval tests document future-state contracts and pin the
-//! API surface so a follow-up agent knows exactly what to implement to unblock them.
-//! They are not run in CI but their presence is intentional — see each test's
-//! `#[ignore]` string for the precise blocker and pointer into the code.
-//!
-//! The 3-arg `fillet(solid, edges, radius)` binding is LIVE (#3205/#4360/#4362)
-//! and, since #5208, curated 3-arg fillet is reachable through the production
-//! `.ri` pipeline (`reify eval` + GUI).  The compile tier for
-//! `fillet_top_edges.ri` was un-ignored accordingly; the remaining `#[ignore]`
-//! on its eval tier is a *test-scaffolding* gap (bare `MockGeometryKernel`),
-//! not a capability gap — real-kernel coverage lives in
-//! `crates/reify-eval/tests/fillet_curated_edges_e2e.rs`.
+//! The 3-arg `fillet(solid, edges, radius)` binding is live (introduced by
+//! #3205/#4360/#4362), and curated 3-arg fillet has been reachable through the
+//! production `.ri` pipeline (`reify eval` + GUI) since #5208, which un-ignored
+//! the compile tier for `fillet_top_edges.ri`. Its eval tier runs on the real
+//! kernel because the bare `MockGeometryKernel` seeds no topology for the
+//! selector walk to resolve.
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{ModulePath, ValueCellId};
 use reify_eval::Engine;
-use reify_ir::{ExportFormat, GeometryOp, Value};
+use reify_ir::{ExportFormat, Value};
 use reify_test_support::{MockGeometryKernel, errors_only, parse_and_compile_with_stdlib};
 
 fn block_inertia_path() -> std::path::PathBuf {
@@ -68,11 +60,7 @@ fn all_topology_selectors_wiring_compiles_with_stdlib() {
 /// achievable once task 2699 wired `moment_of_inertia` (and its return type
 /// `Tensor<2,3,MomentOfInertia>`) as a language-level stdlib binding.
 ///
-/// Note: the runtime value of the `i` cell is still `Value::Undef` because
-/// eval-side dispatch for `moment_of_inertia` has not yet been added to
-/// `try_eval_topology_selector` in `crates/reify-eval/src/geometry_ops.rs`.
-/// That gap is documented by the `#[ignore]`-gated test
-/// `block_inertia_evals_moment_of_inertia_to_tensor` (step S5).
+/// The eval tier is `block_inertia_evals_moment_of_inertia_to_tensor`.
 #[test]
 fn block_inertia_compiles_with_stdlib_no_errors() {
     let source = std::fs::read_to_string(block_inertia_path())
@@ -206,119 +194,6 @@ fn fillet_top_edges_compiles_with_stdlib_no_errors() {
         "examples/topology_selectors/fillet_top_edges.ri should compile with no error-severity \
          diagnostics (unblocked by 3-arg fillet stdlib binding), got:\n{:#?}",
         errors_only(&compiled)
-    );
-}
-
-/// Eval-deepening contract: `engine.build()` on `fillet_top_edges.ri` must
-/// produce non-empty `geometry_output`, confirming that the topology-walk
-/// pipeline (`faces_by_normal` → `single` → `adjacent_faces` → `shared_edges`
-/// → `flat_map`) supplies real edge handles to the 3-arg `fillet` call so the
-/// kernel can produce a filleted solid.
-///
-/// Expected dataflow:
-/// 1. `top = single(faces_by_normal(b, vec3(0,0,1), 1deg))` — extract the single
-///    upward-facing face handle of the box via `faces_by_normal` + `single`.
-/// 2. `top_edges = flat_map(adjacent_faces(b, top), |f| shared_edges(top, f))` —
-///    walk topology: for each face adjacent to `top`, collect the edges shared
-///    between `top` and that face, giving the four top-perimeter edges.
-/// 3. `result = fillet(b, top_edges, 1mm)` — apply the 3-arg fillet to produce
-///    a new solid with the four top-perimeter edges rounded to r=1mm.
-///
-/// Architecture note: `fillet` is a geometry-modification operation; its output
-/// solid is produced by the kernel and surfaced via `BuildResult::geometry_output`
-/// (a serialised B-Rep blob), NOT via `BuildResult::values`.  Value cells in
-/// `values` are reserved for scalar/computed results (Point, Scalar, Tensor,
-/// etc.) from topology-query helpers such as `closest_point` / `is_on` /
-/// `moment_of_inertia`.  Therefore this test asserts `geometry_output.is_some()`
-/// — the kernel delivered a B-Rep — rather than checking a specific `Value`
-/// variant in `values` for the `result` cell.
-///
-/// **Prerequisites** (all landed — this is no longer a capability gap):
-///
-/// (a) ✅ 3-arg `fillet(solid, edges, radius)` stdlib binding — landed in task
-///     #3205 (commit b5d88c6).  `GeometryOp::Fillet` now carries an
-///     `edges: Vec<GeometryHandleId>` field alongside `target` and `radius`.
-///
-/// (b) ✅ In-loop curated-fillet dispatch (selector→op build) — landed in task
-///     #4360 (commit 9056d4b).
-///
-/// (c) ✅ UnifiedDag default flip — landed in task #4362 (Stage-4 cutover).
-///
-/// (d) ✅ Production-pipeline reachability (curated 3-arg fillet through
-///     `reify eval` and the GUI, incl. selectors over boolean-result and
-///     chained named-let parents) — landed in task #5208.
-///
-/// **Remaining gate (#4727) — test scaffolding, not capability:** un-gating
-/// needs a real-OCCT-kernel + `set_build_scheduler(UnifiedDag)` rewrite (see
-/// `crates/reify-eval/tests/fillet_curated_edges_e2e.rs`).  Re-verified with
-/// `--ignored` on 2026-07-26: under the bare `MockGeometryKernel` the last
-/// recorded op is `Box` — no `Fillet` is ever dispatched, because the mock
-/// cannot resolve the topology walk to concrete edge handles.  Real-kernel
-/// coverage already exists (`fillet_curated_edges_3205_e2e` and
-/// `bottom_deck_selectors_example_builds_clean_e2e` in that same file, plus a
-/// `reify eval` CLI e2e in
-/// `crates/reify-cli/tests/harness_cli/cli_eval_geometry.rs`), so this test is
-/// expected to be RETIRED under #4727 rather than rewritten.
-///
-/// **Test scaffolding note**: the test plumbs `MockGeometryKernel::new()` into
-/// `Engine::new(Box::new(checker), Some(Box::new(kernel)))` — no `.with_*_result()`
-/// configuration is needed for the `geometry_output.is_some()` assertion because the
-/// default mock returns `b"MOCK_EXPORT_DATA"` from `export()`.  Plumbing the kernel
-/// is a structural prerequisite of the assertion: `engine_build.rs:681` gates
-/// `geometry_output` on `self.geometry_kernel.is_some()`, so a `None`-kernel
-/// `Engine` would always produce `geometry_output = None` even after both (a) and
-/// (b) land.  This is not a third semantic gap — it is an invisible test-scaffolding
-/// requirement that would otherwise confuse a future agent removing the `#[ignore]`.
-#[test]
-#[ignore = "blocked on #4727 — test-scaffolding gap, NOT a capability gap: curated 3-arg \
-            fillet is live (field #3205, dispatch #4360, UnifiedDag default #4362) and \
-            reachable through the production .ri pipeline (#5208). The bare \
-            MockGeometryKernel cannot resolve the topology walk (records Box, never \
-            dispatches Fillet), so un-gating needs a real-OCCT-kernel rewrite (see \
-            fillet_curated_edges_e2e.rs). Expected to be RETIRED under #4727 — real-kernel \
-            coverage already in fillet_curated_edges_3205_e2e and \
-            bottom_deck_selectors_example_builds_clean_e2e."]
-fn fillet_top_edges_evals_to_solid_via_topology_walk() {
-    let source = std::fs::read_to_string(fillet_top_edges_path())
-        .expect("examples/topology_selectors/fillet_top_edges.ri should exist");
-    let compiled = parse_and_compile_with_stdlib(&source);
-    assert!(
-        errors_only(&compiled).is_empty(),
-        "compile errors (3-arg fillet binding must be present): {:#?}",
-        errors_only(&compiled)
-    );
-
-    let checker = SimpleConstraintChecker;
-    let kernel = MockGeometryKernel::new();
-    let ops_ref = kernel.operations_ref();
-    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
-    let result = engine.build(&compiled, ExportFormat::Step);
-
-    // geometry_output.is_some() alone is vacuous because the mock allocates
-    // a fresh handle per op (mocks.rs:1219); pin both ends of the
-    // box → … → fillet sequence by checking first/last recorded ops.
-    // (esc-2691-81 / esc-3282-96 reviewer_comprehensive)
-    let ops = ops_ref.lock().unwrap();
-
-    assert!(
-        matches!(ops.first().map(|r| &r.op), Some(GeometryOp::Box { .. })),
-        "expected first recorded op to be GeometryOp::Box, got: {:?}",
-        ops.first().map(|r| r.op.kind_name())
-    );
-
-    match ops.last().map(|r| &r.op) {
-        Some(GeometryOp::Fillet { edges, .. }) => {
-            assert!(!edges.is_empty(), "fillet recorded with empty edges")
-        }
-        other => panic!(
-            "expected last op to be Fillet, got: {:?}",
-            other.map(|o| o.kind_name())
-        ),
-    }
-
-    assert!(
-        result.geometry_output.is_some(),
-        "expected non-empty geometry_output after a successful Fillet op"
     );
 }
 

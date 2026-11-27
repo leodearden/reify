@@ -145,6 +145,16 @@ mod polymorphic_zero_trait_eval;
 // layout and stays a grandfathered top-level standalone.
 #[path = "harness_engine/instance_scope_param_default_order.rs"]
 mod instance_scope_param_default_order;
+// Readers shared by the two ctor-built-instance modules below, declared first
+// so each one's `use crate::ctor_instance_support::…` reads top-down.
+#[path = "harness_engine/ctor_instance_support.rs"]
+mod ctor_instance_support;
+// Task #10098's ctor-built-instance member-order pins land here beside #7418's.
+#[path = "harness_engine/ctor_instance_member_order.rs"]
+mod ctor_instance_member_order;
+// Task #10352's let-constructed-instance geometry-selector pins land beside #10098's.
+#[path = "harness_engine/ctor_instance_geometry_selector.rs"]
+mod ctor_instance_geometry_selector;
 // Task #10015's cold instance-scope guarded-template-let pins land here for the
 // same anti-re-accretion reason as #5196's and #5360's above, beside #7418's
 // `unfold.rs` instance-scope pins.

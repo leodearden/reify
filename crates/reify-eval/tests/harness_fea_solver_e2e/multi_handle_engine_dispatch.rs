@@ -133,7 +133,7 @@ fn engine_new_with_single_mock_kernel_builds_one_box_realization() {
 /// runs the per-realization op loop, every realization node's
 /// `produced_repr` must reflect what `execute_realization_ops` recorded —
 /// not just the construction-time `ReprKind::BRep` default that
-/// `EvaluationGraph::from_templates` initializes (graph.rs:329, pinned by
+/// `EvaluationGraph::from_env` initializes (pinned by
 /// the eval-only α forward-guard in
 /// `tests/realization_produced_repr_pinning.rs`).
 ///

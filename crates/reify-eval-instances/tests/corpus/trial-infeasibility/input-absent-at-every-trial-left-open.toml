@@ -1,0 +1,8 @@
+tests = "what a solve concludes when a read is past the end at every trial because of the unknown's own bounds."
+rule = "rule C (\"Open: what a solve concludes when an input is absent at every trial because of the unknown's bounds is the solve design's\"); readings A (the count constraint has no `constraint[k]`) and B3."
+provenance = "logic-3 R10, second half (`vents[9]` with a count between 5 and 8). Not taken: left open in rule C."
+needs = ["compile-error", "collection", "unknown"]
+answer_basis = "open. Every trial is infeasible by rule C's first bullet, so the solve finds no value; the model's fault is the index. Is this a failed solve, written by readings B3 as `M.n | value undefined` with `M/constraint[2] | verdict undetermined` (needs `solve-infeasible`), or is the constraint reported as the model's fault? No expected value for `M.n`, `M.vents` or the verdicts. Owner: task 10610. The entry pins only the compile outcome, which no solve decides, so it does not carry `solve-real` (readings F, last paragraph)."
+
+[[expect]]
+compile = "ok"

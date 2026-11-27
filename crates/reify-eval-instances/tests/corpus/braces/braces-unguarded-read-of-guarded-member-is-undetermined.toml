@@ -1,0 +1,20 @@
+tests = "a constraint in a sub's braces that reads, with no guard of its own, a member the sub's definition declares under a guard compiles and reads the instance's member, even when the parent has a member of that name; where the member is absent the constraint is undetermined."
+rule = "readings C20 (first and last bullets); Leo's ruling of 2026-11-26 on the PRD's D13 (a read of a member that may be absent compiles wherever it is written), which amends decision 3b line 1 and Part 4."
+provenance = "the tracer's counter-example N5 (trace-braces-purposes-unknowns), which found three possible outcomes. Readings C20 first chose a compile error; Leo's ruling makes it the run-time answer. Renamed from `braces-unguarded-read-of-guarded-member-rejected`."
+needs = ["compile-error", "instance", "braces", "guard", "constraint", "summary"]
+answer_basis = "traced. Bare `rib` is no `let` of the braces and is a member `Plate` declares, present or not, so it is `Asm.p.rib` and not `Asm`'s 9 mm. `big` is false, so `Asm.p.rib` is absent and the constraint reads something that is not there: undetermined, other. Resolved to `Asm`'s 9 mm it would be satisfied, so the entry also pins the resolution."
+
+[[expect]]
+compile = "ok"
+
+[[expect]]
+path = "Asm.p.rib"
+presence = "absent"
+
+[[expect]]
+path = "Asm.p/braces/constraint[0]"
+undetermined_because = "other"
+
+[[expect]]
+path = "Asm/summary"
+summary = { violated = 0, undetermined = 1, failed = 0 }

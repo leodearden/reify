@@ -1,0 +1,29 @@
+tests = "inside one definition, a declaration with no guard of its own that reads a guarded member compiles; where the member is absent the read is undefined, a constraint guarded by an `or` is satisfied, and a constraint that reads it plainly is undetermined and not partial."
+rule = "decision 3b (reading something that is not there gives undefined); Leo's ruling of 2026-11-26 on the PRD's D13 (a read of a member that may be absent compiles wherever it is written), which amends decision 3b line 1 and Part 4; readings C15."
+provenance = "design decision 3b.1 and Part 4, which made this a compile error until Leo ruled; claims-3 probe `d3b.ri` and its consistency finding; language-1 L1. Also, from the merged entries: spec 6.3 and 8.10. logic-3 R3. tasks 9538 and 7489 (probe 2); critic defects-1. Renamed from `unguarded-read-in-own-definition-is-compile-error`, and the second constraint added, when he ruled."
+needs = ["compile-error", "instance", "guard", "constraint", "summary"]
+answer_basis = "traced. `needs_fan` is false, so `Case.fan` is absent. `f` reads `self.fan.d`, which is not there: undefined. The first constraint is `true or undefined`, which is true (spec 9.2.3). The second reads the same absent member with nothing beside it: undetermined, and the cause is a read of something not there, so other. `Fan` is used by `Case`, so `Case` is the root."
+today = "run `own_read.ri`: compiles with no diagnostic; `Case.f = undef`; `OK Case#constraint[0]`; `INDETERMINATE Case#constraint[1]: undefined inputs: Case.fan.d`."
+
+[[expect]]
+compile = "ok"
+
+[[expect]]
+path = "Case.fan"
+presence = "absent"
+
+[[expect]]
+path = "Case.f"
+value = "undefined"
+
+[[expect]]
+path = "Case/constraint[0]"
+verdict = "satisfied"
+
+[[expect]]
+path = "Case/constraint[1]"
+undetermined_because = "other"
+
+[[expect]]
+path = "Case/summary"
+summary = { violated = 0, undetermined = 1, failed = 0 }

@@ -3,9 +3,9 @@
 //!
 //! Per kind, a bare name binds the entry's own declaration, then each direct
 //! import's `pub` surface in declaration order, then the stdlib (I6); a
-//! qualified lookup is keyed by `(module_key, name)` (I7). The entry's own
-//! templates are `entry_declared_templates()`, so a name the I5 merge copied
-//! into the entry binds the import unit's template. The rule is
+//! qualified lookup is keyed by `(module_key, name)` (I7). The entry holds only
+//! its own templates, so an imported name binds the import unit's template.
+//! The rule is
 //! `reify_compiler::name_env`'s; these pins hold DefEnv to it over real
 //! programs built by `reify_compiler::program::compile_program`.
 
@@ -16,8 +16,7 @@ use std::path::Path;
 use reify_compiler::cfg::CfgSet;
 use reify_compiler::module_dag::ModuleResolver;
 use reify_compiler::program::{CompiledProgram, compile_program};
-use reify_compiler::name_env::Definition;
-use reify_compiler::program_scope::ProgramDefinition;
+use reify_compiler::program_scope::{self, ProgramDefinition};
 use reify_compiler::stdlib_loader::load_stdlib;
 use reify_compiler::{
     CompiledConstraintDef, CompiledModule, CompiledPurpose, CompiledTrait, CompiledTypeAlias,
@@ -101,20 +100,16 @@ fn def_env_resolves_with_entry_then_imports_then_stdlib_precedence() {
     let dir = tempfile::tempdir().unwrap();
     let program = compile_fixture(dir.path());
     let env = DefEnv::from_program(&program);
-    let entry_own = program.entry_declared_templates();
+    let entry_own = &program.entry().templates;
     let parts_unit = &program.imports[0];
     assert_eq!(parts_unit.import_path, "parts");
 
     // (a) an entry-declared template binds the entry's own; an import's pub
-    // template binds the IMPORT UNIT's, not the copy the I5 merge made.
+    // template binds the IMPORT UNIT's.
     assert!(same(
         env.resolve_template("Rig"),
         template_in(entry_own, "Rig")
     ));
-    assert!(
-        program.entry().templates.iter().any(|t| t.name == "Pulley"),
-        "precondition: the I5 merge copied Pulley into the entry"
-    );
     assert!(
         same(
             env.resolve_template("Pulley"),
@@ -141,7 +136,7 @@ fn def_env_resolves_with_entry_then_imports_then_stdlib_precedence() {
     assert!(env.resolve_template("NoSuchThing").is_none());
     assert!(
         env.resolve_template("Hidden").is_none(),
-        "a non-pub import template is neither merged nor visible"
+        "a non-pub import template is not visible"
     );
 
     // (e) qualified lookup is keyed by (module_key, name), pub surface only;
@@ -157,7 +152,7 @@ fn def_env_resolves_with_entry_then_imports_then_stdlib_precedence() {
     ));
     assert!(
         env.resolve_template_in("main", "Pulley").is_none(),
-        "a merged copy is not part of the entry's own scope"
+        "an imported template is not part of the entry's own scope"
     );
     let stdlib_key = stdlib_only_home.path.to_dotted();
     assert!(same(
@@ -166,16 +161,16 @@ fn def_env_resolves_with_entry_then_imports_then_stdlib_precedence() {
     ));
     assert!(env.resolve_template_in("nope", "Rig").is_none());
 
-    // (f) the declared module is the entry itself.
-    assert!(std::ptr::eq(env.declared(), program.entry()));
+    // (f) the environment's module is the entry itself.
+    assert!(std::ptr::eq(env.module(), program.entry()));
 }
 
-/// (g) Over every entry-declared and stdlib name, DefEnv agrees with the
-/// compile-side rule: `name_env::resolve` over the entry's template list and
-/// the stdlib, as eval's `find_template_in_scope` calls it. A name the I5 merge
-/// copied binds the import unit's template, which the copy duplicates.
+/// (g) Over every entry-declared and stdlib name no import binds, DefEnv agrees
+/// with the compile-side rule: `name_env::resolve` over the entry's template
+/// list and the stdlib, as eval's pre-DefEnv sub lookup called it. An imported
+/// pub name binds the import unit's template.
 #[test]
-fn def_env_agrees_with_the_compile_side_rule_and_binds_merged_names_at_home() {
+fn def_env_agrees_with_the_compile_side_rule_and_binds_imported_names_at_home() {
     let dir = tempfile::tempdir().unwrap();
     let program = compile_fixture(dir.path());
     let env = DefEnv::from_program(&program);
@@ -184,19 +179,27 @@ fn def_env_agrees_with_the_compile_side_rule_and_binds_merged_names_at_home() {
         reify_compiler::name_env::resolve(&program.entry().templates, load_stdlib(), name)
     };
 
-    let declared = program.entry_declared_templates();
-    let merged = &program.entry().templates[declared.len()..];
+    let declared = &program.entry().templates;
+    let imported: Vec<&TopologyTemplate> = program
+        .imports
+        .iter()
+        .flat_map(|unit| unit.module.templates.iter())
+        .filter(|t| {
+            t.visibility == reify_compiler::Visibility::Public
+                && !declared.iter().any(|own| own.name == t.name)
+        })
+        .collect();
     assert!(
-        !merged.is_empty(),
-        "precondition: the I5 merge copied a template"
+        !imported.is_empty(),
+        "precondition: an import exports a template the entry does not declare"
     );
-    let merged_names: HashSet<&str> = merged.iter().map(|t| t.name.as_str()).collect();
+    let imported_names: HashSet<&str> = imported.iter().map(|t| t.name.as_str()).collect();
 
     let names = declared
         .iter()
         .chain(load_stdlib().iter().flat_map(|m| m.templates.iter()))
         .map(|t| t.name.as_str())
-        .filter(|name| !merged_names.contains(name));
+        .filter(|name| !imported_names.contains(name));
     let mut checked = 0;
     for name in names {
         let expected = reference(name).expect("every enumerated name resolves");
@@ -208,15 +211,8 @@ fn def_env_agrees_with_the_compile_side_rule_and_binds_merged_names_at_home() {
     }
     assert!(checked > declared.len(), "stdlib names were enumerated");
 
-    for copy in merged {
-        let home = program
-            .imports
-            .iter()
-            .find_map(|unit| unit.module.templates.iter().find(|t| t.name == copy.name))
-            .unwrap_or_else(|| panic!("`{}` has a home import", copy.name));
-        assert!(same(env.resolve_template(&copy.name), home));
-        assert_eq!(home.name, copy.name);
-        assert_eq!(home.content_hash, copy.content_hash);
+    for home in imported {
+        assert!(same(env.resolve_template(&home.name), home));
     }
 }
 
@@ -246,8 +242,8 @@ struct KindRow {
 /// The one side that reports a collision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Reporter {
-    /// `DefEnv::collision_warnings`.
-    DefEnv,
+    /// The program's collision report, `program_scope::collision_warnings`.
+    CollisionReport,
     /// The entry's own compile, whose prelude-only bind sees `a` and `b`.
     EntryCompile,
 }
@@ -260,7 +256,7 @@ fn rows() -> Vec<KindRow> {
             declare: |n| format!("structure def {n} {{\n    param x : Real = 1\n}}\n"),
             std_name: Some("Color"),
             entry_redeclares: true,
-            import_pairs: Reporter::DefEnv,
+            import_pairs: Reporter::CollisionReport,
         },
         KindRow {
             kind: "function",
@@ -272,7 +268,7 @@ fn rows() -> Vec<KindRow> {
             },
             std_name: Some("ramp_profile"),
             entry_redeclares: true,
-            import_pairs: Reporter::DefEnv,
+            import_pairs: Reporter::CollisionReport,
         },
         KindRow {
             kind: "enum",
@@ -280,7 +276,7 @@ fn rows() -> Vec<KindRow> {
             declare: |n| format!("enum {n} {{ Foo, Bar }}\n"),
             std_name: Some("SignalKind"),
             entry_redeclares: true,
-            import_pairs: Reporter::DefEnv,
+            import_pairs: Reporter::CollisionReport,
         },
         KindRow {
             kind: "unit",
@@ -304,7 +300,7 @@ fn rows() -> Vec<KindRow> {
             declare: |n| format!("trait {n} {{\n    param k : Real\n}}\n"),
             std_name: Some("Rigid"),
             entry_redeclares: true,
-            import_pairs: Reporter::DefEnv,
+            import_pairs: Reporter::CollisionReport,
         },
         KindRow {
             kind: "constraint def",
@@ -330,7 +326,7 @@ fn rows() -> Vec<KindRow> {
             },
             std_name: Some("design_review"),
             entry_redeclares: true,
-            import_pairs: Reporter::DefEnv,
+            import_pairs: Reporter::CollisionReport,
         },
     ]
 }
@@ -398,11 +394,14 @@ impl KindsFixture {
     }
 }
 
-/// A definition kind, with its DefEnv resolver.
+/// A definition kind.
 trait Kind: ProgramDefinition + Sized {
     /// Every definition of this kind `module` holds, `pub` or not.
     fn all_in(module: &CompiledModule) -> &[Self];
+}
 
+/// A kind DefEnv resolves by bare name, through its own typed resolver.
+trait ResolvedByBareName: Kind {
     /// What `env` binds `like`'s key to, through this kind's own resolver.
     fn resolve<'p>(env: &DefEnv<'p>, like: &Self) -> Option<&'p Self>;
 }
@@ -411,6 +410,9 @@ impl Kind for TopologyTemplate {
     fn all_in(module: &CompiledModule) -> &[Self] {
         &module.templates
     }
+}
+
+impl ResolvedByBareName for TopologyTemplate {
     fn resolve<'p>(env: &DefEnv<'p>, like: &Self) -> Option<&'p Self> {
         env.resolve_template(&like.name)
     }
@@ -424,6 +426,9 @@ impl Kind for CompiledFunction {
     fn all_in(module: &CompiledModule) -> &[Self] {
         &module.functions
     }
+}
+
+impl ResolvedByBareName for CompiledFunction {
     fn resolve<'p>(env: &DefEnv<'p>, like: &Self) -> Option<&'p Self> {
         env.resolve_function(&like.name, &param_types(like))
     }
@@ -433,6 +438,9 @@ impl Kind for EnumDef {
     fn all_in(module: &CompiledModule) -> &[Self] {
         &module.enum_defs
     }
+}
+
+impl ResolvedByBareName for EnumDef {
     fn resolve<'p>(env: &DefEnv<'p>, like: &Self) -> Option<&'p Self> {
         env.resolve_enum(&like.name)
     }
@@ -442,6 +450,9 @@ impl Kind for CompiledUnit {
     fn all_in(module: &CompiledModule) -> &[Self] {
         &module.units
     }
+}
+
+impl ResolvedByBareName for CompiledUnit {
     fn resolve<'p>(env: &DefEnv<'p>, like: &Self) -> Option<&'p Self> {
         env.resolve_unit(&like.name)
     }
@@ -451,6 +462,9 @@ impl Kind for CompiledTypeAlias {
     fn all_in(module: &CompiledModule) -> &[Self] {
         &module.type_aliases
     }
+}
+
+impl ResolvedByBareName for CompiledTypeAlias {
     fn resolve<'p>(env: &DefEnv<'p>, like: &Self) -> Option<&'p Self> {
         env.resolve_alias(&like.name)
     }
@@ -460,6 +474,9 @@ impl Kind for CompiledTrait {
     fn all_in(module: &CompiledModule) -> &[Self] {
         &module.trait_defs
     }
+}
+
+impl ResolvedByBareName for CompiledTrait {
     fn resolve<'p>(env: &DefEnv<'p>, like: &Self) -> Option<&'p Self> {
         env.resolve_trait(&like.name)
     }
@@ -469,17 +486,11 @@ impl Kind for CompiledConstraintDef {
     fn all_in(module: &CompiledModule) -> &[Self] {
         &module.constraint_defs
     }
-    fn resolve<'p>(env: &DefEnv<'p>, like: &Self) -> Option<&'p Self> {
-        env.resolve_constraint_def(&like.name)
-    }
 }
 
 impl Kind for CompiledPurpose {
     fn all_in(module: &CompiledModule) -> &[Self] {
         &module.compiled_purposes
-    }
-    fn resolve<'p>(env: &DefEnv<'p>, like: &Self) -> Option<&'p Self> {
-        env.resolve_purpose(&like.name)
     }
 }
 
@@ -507,7 +518,7 @@ fn std_home<D: Kind>(name: &str) -> (&'static CompiledModule, &'static D) {
         .unwrap_or_else(|| panic!("precondition: some stdlib module exports `{name}`"))
 }
 
-fn assert_binds<D: Kind>(env: &DefEnv<'_>, like: &D, expected: &D, what: String) {
+fn assert_binds<D: ResolvedByBareName>(env: &DefEnv<'_>, like: &D, expected: &D, what: String) {
     let found = D::resolve(env, like).unwrap_or_else(|| panic!("{what}: nothing bound"));
     assert!(std::ptr::eq(found, expected), "{what}: bound {found:?}");
 }
@@ -521,10 +532,34 @@ fn assert_qualified<D: Kind>(env: &DefEnv<'_>, module_key: &str, name: &str, exp
     );
 }
 
+/// Qualified lookup sees one module's surface alone: an import's `pub`
+/// definitions, never its non-pub ones, and a stdlib module's exports; an
+/// unknown module key binds nothing.
+fn assert_kind_qualified<D: Kind>(kind: &str) {
+    let row = row(kind);
+    let fx = KindsFixture::new();
+    let env = DefEnv::from_program(&fx.program);
+    let (a, b) = (fx.a(), fx.b());
+    let [_, peer, hidden, visible] = row.names;
+
+    assert_qualified(&env, "a", visible, Some(named::<D>(a, visible)));
+    assert_qualified::<D>(&env, "a", hidden, None);
+    assert_qualified(&env, "b", peer, Some(named::<D>(b, peer)));
+    let std_def = std_only::<D>(&row);
+    let (std_module, _) = std_home::<D>(std_def.name());
+    assert_qualified(
+        &env,
+        &std_module.path.to_dotted(),
+        std_def.name(),
+        Some(std_def),
+    );
+    assert_qualified::<D>(&env, "nope", visible, None);
+}
+
 /// entry > first import > second import > stdlib for one kind; a non-pub
 /// import definition is invisible; a stdlib-only name resolves; qualified
 /// lookup sees one module's surface alone.
-fn assert_kind_precedence<D: Kind>(kind: &str) {
+fn assert_kind_precedence<D: ResolvedByBareName>(kind: &str) {
     let row = row(kind);
     let fx = KindsFixture::new();
     let program = &fx.program;
@@ -584,17 +619,7 @@ fn assert_kind_precedence<D: Kind>(kind: &str) {
     let std_def = std_only::<D>(&row);
     assert_binds(&env, std_def, std_def, what("a stdlib-only name resolves"));
 
-    assert_qualified(&env, "a", visible, Some(visible_def));
-    assert_qualified::<D>(&env, "a", hidden, None);
-    assert_qualified(&env, "b", peer, Some(named::<D>(b, peer)));
-    let (std_module, _) = std_home::<D>(std_def.name());
-    assert_qualified(
-        &env,
-        &std_module.path.to_dotted(),
-        std_def.name(),
-        Some(std_def),
-    );
-    assert_qualified::<D>(&env, "nope", visible, None);
+    assert_kind_qualified::<D>(kind);
 }
 
 #[test]
@@ -628,13 +653,13 @@ fn traits_bind_entry_then_imports_in_order_then_stdlib() {
 }
 
 #[test]
-fn constraint_defs_bind_entry_then_imports_in_order_then_stdlib() {
-    assert_kind_precedence::<CompiledConstraintDef>("constraint def");
+fn constraint_defs_resolve_qualified_through_one_modules_surface() {
+    assert_kind_qualified::<CompiledConstraintDef>("constraint def");
 }
 
 #[test]
-fn purposes_bind_entry_then_imports_in_order_then_stdlib() {
-    assert_kind_precedence::<CompiledPurpose>("purpose");
+fn purposes_resolve_qualified_through_one_modules_surface() {
+    assert_kind_qualified::<CompiledPurpose>("purpose");
 }
 
 /// An entry re-declaring an imported unit is a compile Error that drops the
@@ -714,8 +739,8 @@ fn import_tier_collisions(
     let [shared, peer, ..] = row.names;
     let mut expected = vec![(peer, "a", "b", row.import_pairs)];
     if row.entry_redeclares {
-        expected.push((shared, "main", "a", Reporter::DefEnv));
-        expected.push((shared, "main", "b", Reporter::DefEnv));
+        expected.push((shared, "main", "a", Reporter::CollisionReport));
+        expected.push((shared, "main", "b", Reporter::CollisionReport));
     }
     if !row.entry_redeclares || row.import_pairs == Reporter::EntryCompile {
         expected.push((shared, "a", "b", row.import_pairs));
@@ -730,11 +755,11 @@ fn import_tier_collisions(
 fn assert_kind_collisions<D: Kind>(kind: &str) {
     let row = row(kind);
     let fx = KindsFixture::new();
-    let warnings = DefEnv::from_program(&fx.program).collision_warnings();
+    let warnings = program_scope::collision_warnings(&fx.program);
     let kind_word = named::<D>(fx.a(), row.names[0]).kind_word();
     let expected: Vec<(&str, &str, &str)> = import_tier_collisions(&row)
         .into_iter()
-        .filter(|&(.., reporter)| reporter == Reporter::DefEnv)
+        .filter(|&(.., reporter)| reporter == Reporter::CollisionReport)
         .map(|(name, winner, shadowed, _)| (name, winner, shadowed))
         .collect();
     let of_kind = collisions_of_kind(&warnings, kind_word);
@@ -798,18 +823,27 @@ fn purpose_collisions_are_reported_once_per_import_tier_shadowing() {
 #[test]
 fn the_kinds_fixture_reports_exactly_the_import_tier_shadowings() {
     let fx = KindsFixture::new();
-    let warnings = DefEnv::from_program(&fx.program).collision_warnings();
+    let warnings = program_scope::collision_warnings(&fx.program);
     let expected = rows()
         .iter()
         .flat_map(import_tier_collisions)
-        .filter(|&(.., reporter)| reporter == Reporter::DefEnv)
+        .filter(|&(.., reporter)| reporter == Reporter::CollisionReport)
         .count();
     assert_eq!(warnings.len(), expected, "got {warnings:#?}");
 }
 
-/// Whether `diagnostic` is a Warning reporting `kind` `name` bound by
-/// `winner` over `shadowed`, in any collision wording: the constraint-def
-/// prelude seed still has its own.
+/// Whether `diagnostic` is a Warning naming `name`, `winner` and `shadowed`,
+/// winner first, in any wording and under any kind word.
+fn mentions_collision(diagnostic: &Diagnostic, name: &str, winner: &str, shadowed: &str) -> bool {
+    let message = &diagnostic.message;
+    let position = |origin: &str| message.find(&format!("'{origin}'"));
+    diagnostic.severity == Severity::Warning
+        && message.contains(&format!("'{name}'"))
+        && matches!((position(winner), position(shadowed)), (Some(w), Some(s)) if w < s)
+}
+
+/// [`mentions_collision`] for a message that opens with `kind` `name`, in any
+/// collision wording: the constraint-def prelude seed still has its own.
 fn names_collision(
     diagnostic: &Diagnostic,
     kind: &str,
@@ -817,56 +851,39 @@ fn names_collision(
     winner: &str,
     shadowed: &str,
 ) -> bool {
-    let message = &diagnostic.message;
-    let position = |origin: &str| message.find(&format!("'{origin}'"));
-    diagnostic.severity == Severity::Warning
-        && message.starts_with(&format!("{kind} '{name}' "))
-        && matches!((position(winner), position(shadowed)), (Some(w), Some(s)) if w < s)
+    diagnostic.message.starts_with(&format!("{kind} '{name}' "))
+        && mentions_collision(diagnostic, name, winner, shadowed)
 }
 
-/// Every collision whose loser is a user import's definition has exactly one
-/// reporter, across the entry's own compile and DefEnv's report, and the
-/// reporter each kind's import-vs-import collisions go to is fixed: units,
-/// type aliases and constraint defs are the entry compile's prelude seeds',
-/// every other kind DefEnv's.
+/// Every collision whose loser is a user import's definition is reported
+/// exactly once on the entry, whichever compile computes it: the entry's own
+/// (units', type aliases' and constraint defs' import-vs-import collisions,
+/// through its prelude seeds) or the program's collision report (every other
+/// one). No second diagnostic reports it in another wording.
 #[test]
 fn each_import_tier_collision_has_exactly_one_reporter() {
     let fx = KindsFixture::new();
-    let def_env = DefEnv::from_program(&fx.program).collision_warnings();
-    let entry_compile: Vec<&Diagnostic> = fx.program.entry_own_diagnostics().collect();
+    let on_entry: Vec<&Diagnostic> = fx.program.entry().diagnostics.iter().collect();
     for row in rows() {
-        let kind_word = match row.kind {
-            "template" => named::<TopologyTemplate>(fx.a(), row.names[0]).kind_word(),
-            _ => row.kind,
-        };
-        for (name, winner, shadowed, reporter) in import_tier_collisions(&row) {
-            let reports = |diagnostics: &[&Diagnostic]| {
-                diagnostics
-                    .iter()
-                    .filter(|d| names_collision(d, kind_word, name, winner, shadowed))
-                    .count()
-            };
-            let counts = (
-                reports(&entry_compile),
-                reports(&def_env.iter().collect::<Vec<_>>()),
-            );
-            let expected = match reporter {
-                Reporter::EntryCompile => (1, 0),
-                Reporter::DefEnv => (0, 1),
-            };
+        for (name, winner, shadowed, _) in import_tier_collisions(&row) {
+            let reports = on_entry
+                .iter()
+                .filter(|d| mentions_collision(d, name, winner, shadowed))
+                .count();
             assert_eq!(
-                counts, expected,
-                "{} '{name}' ({winner} over {shadowed}): (entry compile, DefEnv) report \
-                 counts, expected only {reporter:?}",
+                reports, 1,
+                "{} '{name}' ({winner} over {shadowed}): reported once on the entry, \
+                 got {on_entry:#?}",
                 row.kind
             );
         }
     }
 }
 
-/// A shadowed STD definition is not DefEnv's to report: the entry's own
+/// A shadowed STD definition is not the collision report's: the entry's own
 /// compile reports entry-vs-std as `StdlibNameShadowed`, and the import's own
-/// compile reports import-vs-std the same way.
+/// compile reports import-vs-std the same way. The entry carries exactly one
+/// `DefinitionCollision`, for main-vs-a.
 #[test]
 fn a_shadowed_stdlib_definition_is_not_in_the_collision_report() {
     const STD_NAME: &str = "Color";
@@ -897,14 +914,19 @@ fn a_shadowed_stdlib_definition_is_not_in_the_collision_report() {
         "a's own compile reports import-vs-std"
     );
 
-    let warnings = DefEnv::from_program(&program).collision_warnings();
+    let collisions: Vec<&Diagnostic> = program
+        .entry()
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::DefinitionCollision))
+        .collect();
     assert_eq!(
-        warnings.len(),
+        collisions.len(),
         1,
-        "only main-vs-a is DefEnv's, got {warnings:#?}"
+        "only main-vs-a is a definition collision, got {collisions:#?}"
     );
     assert!(reports_collision(
-        &warnings[0],
+        collisions[0],
         "structure",
         STD_NAME,
         "main",
@@ -916,7 +938,7 @@ fn a_shadowed_stdlib_definition_is_not_in_the_collision_report() {
 fn a_program_without_import_tier_shadowing_reports_no_collision() {
     let dir = tempfile::tempdir().unwrap();
     let program = compile_fixture(dir.path());
-    let warnings = DefEnv::from_program(&program).collision_warnings();
+    let warnings = program_scope::collision_warnings(&program);
     assert!(warnings.is_empty(), "got {warnings:#?}");
 }
 
@@ -955,7 +977,7 @@ fn an_import_vs_import_function_collision_warns_and_the_first_import_binds() {
         env.resolve_function("twice", &param_types(twice_in_a)),
         twice_in_a
     ));
-    let warnings = env.collision_warnings();
+    let warnings = program_scope::collision_warnings(&program);
     assert_eq!(warnings.len(), 1, "got {warnings:#?}");
     assert!(reports_collision(
         &warnings[0],
@@ -982,7 +1004,7 @@ fn distinct_signatures_coexist_as_overloads_in_precedence_order() {
     );
     assert!(std::ptr::eq(overloads[1], imported));
     assert!(
-        !env.collision_warnings()
+        !program_scope::collision_warnings(&program)
             .iter()
             .any(|d| d.message.contains("'scale'")),
         "overloads are not collisions"
@@ -999,9 +1021,9 @@ fn signature(function: &CompiledFunction) -> (&str, Vec<&Type>) {
 
 /// §10 Q4 against the `eval_is_idempotent_for_prelude_functions` source
 /// (tests/stdlib_prelude_tests.rs): the entry's `symmetric_tolerance` shadows
-/// the stdlib's, and `function_table()` dispatches exactly as the engine's
-/// table does, the entry's functions followed by every stdlib module's in load
-/// order, first match per signature.
+/// the stdlib's, and `function_table()`, now the engine's table, dispatches
+/// exactly as the rule it replaced: the entry's functions followed by every
+/// stdlib module's in load order, first match per signature.
 #[test]
 fn the_function_table_dispatches_as_the_engine_table_does() {
     let source = "module main\n\
@@ -1020,7 +1042,7 @@ fn the_function_table_dispatches_as_the_engine_table_does() {
         "precondition: no Error"
     );
     let env = DefEnv::from_program(&program);
-    let own: &CompiledFunction = named(env.declared(), "symmetric_tolerance");
+    let own: &CompiledFunction = named(program.entry(), "symmetric_tolerance");
     assert!(
         load_stdlib()
             .iter()
@@ -1034,8 +1056,8 @@ fn the_function_table_dispatches_as_the_engine_table_does() {
     ));
 
     let table = env.function_table();
-    let reference: Vec<&CompiledFunction> = env
-        .declared()
+    let reference: Vec<&CompiledFunction> = program
+        .entry()
         .functions
         .iter()
         .chain(load_stdlib().iter().flat_map(|m| m.functions.iter()))
@@ -1084,4 +1106,87 @@ fn the_function_table_dispatches_as_the_engine_table_does() {
             signature(function)
         );
     }
+}
+
+/// The stdlib's own declaration of template `name`.
+fn stdlib_template(name: &str) -> &'static TopologyTemplate {
+    template_in(&stdlib_module_declaring(name).templates, name)
+}
+
+#[test]
+fn a_lone_modules_environment_binds_its_own_templates_then_the_prelude() {
+    let module =
+        reify_test_support::helpers::parse_and_compile_with_stdlib("structure def Local { }");
+    let env = DefEnv::of_module(&module, load_stdlib());
+
+    assert!(same(
+        env.resolve_template("Local"),
+        template_in(&module.templates, "Local")
+    ));
+    assert!(same(
+        env.resolve_template(STDLIB_ONLY),
+        stdlib_template(STDLIB_ONLY)
+    ));
+    assert!(env.resolve_template("NoSuchStructure").is_none());
+    assert!(std::ptr::eq(env.module(), &module));
+    assert!(program_scope::collision_warnings(&module).is_empty());
+}
+
+fn same_binding<D>(a: Option<&D>, b: Option<&D>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => std::ptr::eq(a, b),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+#[test]
+fn an_import_free_programs_environment_equals_its_entrys_lone_environment() {
+    let dir = tempfile::tempdir().unwrap();
+    let program = compile_in(
+        dir.path(),
+        &[],
+        "module main\n\
+         structure def Bracket {\n    param w : Real = 1\n}\n\
+         enum Side { Left, Right }\n",
+    );
+    assert!(
+        errors_of(&program).is_empty(),
+        "precondition: {:?}",
+        errors_of(&program)
+    );
+    let of_program = DefEnv::from_program(&program);
+    let of_entry = DefEnv::of_module(program.entry(), load_stdlib());
+
+    let names = program
+        .entry()
+        .templates
+        .iter()
+        .map(|t| t.name.as_str())
+        .chain([STDLIB_ONLY, "ZeroForce", "NoSuchStructure"]);
+    for name in names {
+        assert!(
+            same_binding(
+                of_program.resolve_template(name),
+                of_entry.resolve_template(name)
+            ),
+            "`{name}` binds differently in the program and its lone entry"
+        );
+    }
+    assert!(of_entry.resolve_enum("Side").is_some());
+    assert!(same_binding(
+        of_program.resolve_enum("Side"),
+        of_entry.resolve_enum("Side")
+    ));
+}
+
+#[test]
+fn a_lone_modules_own_template_shadows_the_stdlibs() {
+    let module =
+        reify_test_support::helpers::parse_and_compile_with_stdlib("structure def ZeroForce { }");
+    let env = DefEnv::of_module(&module, load_stdlib());
+
+    let own = template_in(&module.templates, "ZeroForce");
+    assert!(same(env.resolve_template("ZeroForce"), own));
+    assert!(!std::ptr::eq(own, stdlib_template("ZeroForce")));
 }

@@ -169,12 +169,10 @@ fn describe_arg(expr: &CompiledExpr) -> String {
 /// `deg`, and that stays correct; see
 /// `docs/notes/angle-literal-migration-ledger.md` §3.3 and §5.
 ///
-/// **Why the direction half is here too.** `ax`/`ay`/`az` are dimensionless
-/// unit-vector components and are explicitly NOT gated (PRD C1 invariant 4). That
-/// half is green today and must stay green: the likeliest future error on this
-/// file is an over-eager migration that dimensions the `0.0, 1.0, 0.0` as well,
-/// and pinning the negative here makes that surface as a named assertion failure
-/// instead of a mysterious downstream geometry break.
+/// **Why the direction half is here too.** The axis direction is one
+/// `Direction` argument (`dir(0.0, 1.0, 0.0)`, direction-typing ι-b), pinned by
+/// its type so a regression to bare components surfaces as a named assertion
+/// failure instead of a downstream geometry break.
 #[test]
 fn feature_datum_axis_example_revolve_angle_is_angle_dimensioned() {
     let module = compile_example();
@@ -245,18 +243,14 @@ fn feature_datum_axis_example_revolve_angle_is_angle_dimensioned() {
         ),
     }
 
-    // The axis DIRECTION components stay DIMENSIONLESS — PRD C1 invariant 4.
-    for name in ["ax", "ay", "az"] {
-        let dir = named_arg(args, name);
-        assert_eq!(
-            arg_dimension(dir),
-            Some(DimensionVector::DIMENSIONLESS),
-            "revolve's \"{name}\" is a unit-vector component and must stay DIMENSIONLESS — \
-             PRD C1 invariant 4 explicitly does not gate axis-direction components, so \
-             they must NOT be migrated along with the angle. Observed: {}",
-            describe_arg(dir)
-        );
-    }
+    // The axis DIRECTION is one `Direction` value (direction-typing ι-b).
+    let direction = named_arg(args, "direction");
+    assert_eq!(
+        direction.result_type,
+        Type::Direction,
+        "revolve's \"direction\" must be a `dir(x, y, z)` Direction. Observed: {}",
+        describe_arg(direction)
+    );
 }
 
 /// The B8 example parses + compiles clean under the stdlib prelude and exposes

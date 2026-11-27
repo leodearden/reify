@@ -1,0 +1,13 @@
+structure def Fan {
+    param d : Length = 40mm
+}
+structure def Case {
+    param needs_fan : Bool = false
+    sub fan : Fan where needs_fan
+}
+structure def Top {
+    let c = Case()
+    let c2 = Case(needs_fan: true)
+    let f = c.fan.d
+    let f2 = c2.fan.d
+}

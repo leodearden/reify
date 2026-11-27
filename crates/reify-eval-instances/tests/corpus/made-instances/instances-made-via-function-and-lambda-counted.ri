@@ -1,0 +1,10 @@
+structure def Plate {
+    param t : Length
+    constraint t >= 3mm
+}
+fn mk() -> Plate { Plate(t: 1mm) }
+structure def Asm {
+    let d = mk()
+    let f = |i : Int| Plate(t: i * 1mm)
+    let ps = generate(2, f)
+}

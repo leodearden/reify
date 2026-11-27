@@ -1,0 +1,26 @@
+tests = "a structure value made by `Plate()` decides its own `auto` inside the made instance; a constraint of the holder on it is checked, not bearing; a sub of the same definition gives the same answers."
+rule = "contract Example 11 (option B, ruled); Part 7.1; Part 7.2; Part 12 (Example 11); decision 1."
+provenance = "contract Part B Example 11, lines (1), (2), (5), (6); design Part 12 \"Example 11\". second-design trace Example 11."
+needs = ["instance", "value", "made", "open", "constraint", "unknown", "solve-real"]
+answer_basis = "stated (design Part 12, Example 11: `t` decided inside as 3 mm; the value is `Plate{t: 3 mm}`; `c.t > 5mm` violated; `sub s : Plate` gives the same answers as `c`)."
+today = "column A of the contract's table: `c.t` undefined and `Plate`'s constraint never checked; (2) indeterminate; `s.t` undefined."
+
+[[expect]]
+path = "Asm.c/made[0].t"
+value = "3 mm"
+
+[[expect]]
+path = "Asm.c"
+value = "Plate { t: 3 mm }"
+
+[[expect]]
+path = "Asm/constraint[0]"
+verdict = "violated"
+
+[[expect]]
+path = "Asm.s.t"
+value = "3 mm"
+
+[[expect]]
+path = "Asm/constraint[1]"
+verdict = "violated"

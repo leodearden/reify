@@ -805,13 +805,12 @@ fn check_exits_nonzero_on_dimensional_circular_let_binding() {
 /// #5386 repro — a non-`pub` structure used from a sibling module — exits 1,
 /// regardless of whether #5386's compile-time fix has landed.
 ///
-/// Today the reference is caught only at EVAL time (`sub-component "j"
-/// references unknown structure "InternalJig"`, printed beside "All
-/// constraints satisfied."), so it is the Severity::Error gate that moves the
-/// exit code.  #5386 / #5523 will replace that message with a
-/// visibility-specific COMPILE error and drop the summary line, so this test
-/// deliberately asserts neither the message wording nor stdout — only the
-/// exit status and that the diagnostic names the structure.
+/// The compile-time sub-existence check sees only a direct import's `pub`
+/// structures (introduced by #5523), so `check` stops at the COMPILE error
+/// `sub-component "j" references unknown structure "InternalJig"` before
+/// eval.  #5386 will replace that message with a visibility-specific one, so
+/// this test deliberately asserts neither the message wording nor stdout —
+/// only the exit status and that the diagnostic names the structure.
 #[test]
 fn check_exits_nonzero_on_cross_file_private_structure_reference() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
@@ -1044,15 +1043,14 @@ purpose thick_enough(subject : Structure) {
 ///     exit 0
 ///
 /// WHY THE FIXTURE MOVED (task 5662).  It used to carry the 7-arg scalar form
-/// `mirror(arm, 0, 0, 0, 1, 0, 0)`, which now short-circuits `cmd_check` before
-/// `build()` and would have destroyed every assertion below, including the dedup
-/// pin this test exists for.  It moved to the decoded-value form
+/// `mirror(arm, 0, 0, 0, 1, 0, 0)`, whose bare origin slots then short-circuited
+/// `cmd_check` before `build()` and would have destroyed every assertion below,
+/// including the dedup pin this test exists for (direction-typing ι-a has since
+/// retired that form outright).  It moved to the decoded-value form
 /// `mirror(arm, plane_yz(0))` and is still deliberately BARE — only the route
 /// changed, not the mistake.  The argument for why that route is the durable one
-/// is stated once, on the `mirror` / `circular_pattern` arms of
-/// `builtin_arg_slots` in `crates/reify-compiler/src/builtin_signatures.rs`.
-/// The exit-gate half is pinned by the `mirror` row of `ROWS` in
-/// `cli_check_bare_length_exit.rs`.
+/// is stated once, on the `circular_pattern` arms of `builtin_arg_slots` in
+/// `crates/reify-compiler/src/builtin_signatures.rs`.
 ///
 /// Baseline RE-MEASURED at task 5746 (units-length ε, R11), which moved the
 /// SPEAKER without touching this test's subject.  `plane_yz(0)` is now rejected

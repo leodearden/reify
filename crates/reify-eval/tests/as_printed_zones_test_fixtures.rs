@@ -60,13 +60,10 @@ pub fn het_ortho_law(e: f64, nu: f64) -> Value {
     }))
 }
 
-/// Build a `MaterialFrame` StructureInstance whose z-axis is `build_z`
-/// (the weak / build direction).  x and y are an orthonormal complement.
+/// Build the `Frame` datum whose z-axis is `build_z` (the weak / build
+/// direction).  x and y are an orthonormal complement.
 ///
-/// The `origin` field is set to the zero point (`Point3<Length>`).  Axis
-/// fields are `Value::Vector` of three `Value::Real` entries — the axes are
-/// `Vector3<Dimensionless>` (task 5848), and `Value::Real` is the house
-/// spelling for a dimensionless quantity (Invariant V), matching what the
+/// The origin is the zero point (`Point3<Length>`), matching what the
 /// production minter `as_printed_material::material_frame` emits.
 pub fn het_material_frame(build_z: [f64; 3]) -> Value {
     let mag = (build_z[0]*build_z[0] + build_z[1]*build_z[1] + build_z[2]*build_z[2]).sqrt();
@@ -84,26 +81,18 @@ pub fn het_material_frame(build_z: [f64; 3]) -> Value {
     // y = cross(z, x):
     let y = [z[1]*x[2]-z[2]*x[1], z[2]*x[0]-z[0]*x[2], z[0]*x[1]-z[1]*x[0]];
     let len_scalar = |v: f64| Value::Scalar { si_value: v, dimension: DimensionVector::LENGTH };
-    let vec3  = |v: [f64; 3]| Value::Vector(vec![Value::Real(v[0]), Value::Real(v[1]), Value::Real(v[2])]);
-    let point3 = |v: [f64; 3]| Value::Point(vec![len_scalar(v[0]), len_scalar(v[1]), len_scalar(v[2])]);
-    let frame_fields: PersistentMap<String, Value> = [
-        ("origin".to_string(), point3([0.0; 3])),
-        ("x_axis".to_string(), vec3(x)),
-        ("y_axis".to_string(), vec3(y)),
-        ("z_axis".to_string(), vec3(z)),
-    ].into_iter().collect();
-    Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: StructureTypeId(u32::MAX),
-        type_name: "MaterialFrame".to_string(),
-        version: 1,
-        fields: frame_fields,
-    }))
+    let [w, qx, qy, qz] = reify_ir::basis_quaternion([x, y, z])
+        .expect("an orthonormal complement of a unit z is a rotation");
+    Value::Frame {
+        origin: Box::new(Value::Point(vec![len_scalar(0.0), len_scalar(0.0), len_scalar(0.0)])),
+        basis: Box::new(Value::Orientation { w, x: qx, y: qy, z: qz }),
+    }
 }
 
 /// Build an `AnisotropicMaterial { law: OrthotropicMaterial, frame }` StructureInstance.
 ///
 /// Uses an isotropic-alias `OrthotropicMaterial` (`E` in all axes, `nu` Poisson
-/// ratio) and a `MaterialFrame` whose z-axis is `build_z` (the weak print axis).
+/// ratio) and a `Frame` whose z-axis is `build_z` (the weak print axis).
 pub fn het_aniso_material(e: f64, nu: f64, build_z: [f64; 3]) -> Value {
     let law = het_ortho_law(e, nu);
     let frame = het_material_frame(build_z);

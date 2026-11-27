@@ -1,0 +1,12 @@
+structure def Plate {
+    param t : Length = auto
+    constraint t >= 4mm
+    constraint t <= 4mm
+}
+structure def P {
+    param v : Length = 1mm
+}
+structure def Asm {
+    sub a : Plate
+    sub extra : P where self.a.t > 3mm
+}

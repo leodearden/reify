@@ -413,6 +413,14 @@ class CliCase(unittest.TestCase):
         self.assertEqual(fx.read_calls(self.fake), [])
 
 
+STARTUP_IGNORED = {signal.SIGPIPE, signal.SIGXFSZ}
+
+
+def sigign_probe(out):
+    """A command writing its SigIgn line to out, for fx.ignored_signals."""
+    return ("/bin/sh", "-c", 'grep SigIgn /proc/self/status > "$0"', out)
+
+
 class RealPathIsUntouched(CliCase):
     """Boundary row 9 at unit level, and C1's last row: the command gets the caller's exact env."""
 
@@ -426,6 +434,13 @@ class RealPathIsUntouched(CliCase):
         self.assert_one_untouched_call(result, ["x"])
         self.assertFalse(os.path.exists(os.path.join(self.target, ".reify-build-root")))
 
+    def test_exec_hands_the_command_sigpipe_and_sigxfsz_at_their_defaults(self):
+        """CPython ignores both at startup; the command must not inherit that."""
+        out = os.path.join(self.tmp, "sigign")
+        result = fx.run_canon(self.tree, self.sub, "exec", "--", *sigign_probe(out), env=self.env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(STARTUP_IGNORED & fx.ignored_signals(out), set())
+
     def test_build_dir_outside_the_tree_is_real_path(self):
         stamp(self.target, "/somewhere/else")
         self.env["CARGO_TARGET_DIR"] = os.path.join(self.tmp, "elsewhere")
@@ -437,6 +452,11 @@ class RealPathIsUntouched(CliCase):
         os.mkdir(plain)
         result = self.cargo("build", "-p", "x", cwd=plain)
         self.assert_one_untouched_call(result, ["build", "-p", "x"], cwd=plain)
+
+
+# A caller at default dispositions (a pool member may inherit INT/QUIT ignored)
+# that runs its arguments, then echoes CONTINUED with their status.
+BASH_CALLER = (*fx.AT_DEFAULT_SUPERVISED_SIGNALS, "/bin/bash", "-c", '"$@"; echo "CONTINUED rc=$?"', "bash")
 
 
 def journal_rows(build_dir):
@@ -587,6 +607,15 @@ class BoundRoute(CliCase):
         self.assertEqual(Path(self.target, ".reify-build-root").read_text(), self.tree + "\n")
         self.assertEqual(self.leftovers(), [])
 
+    def test_status_on_the_bound_route_reports_canon(self):
+        """status, too, reads mountinfo from the reader main is given."""
+        result = self.bound("status")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["build_dir_mode"], "canon")
+        self.assertIn("is already this tree", report["reason"])
+        self.assertIsNone(report["store_reachable"])
+
     def test_command_status_passes_through(self):
         self.env["FAKE_CARGO_EXIT"] = "5"
         self.one_call(self.bound("cargo", "build"), status=5)
@@ -653,11 +682,69 @@ class BoundRoute(CliCase):
                 for directory in (build_dir, self.target):
                     self.assertFalse(os.path.exists(canon_cache.journal_path(directory)), directory)
 
+    def start_bash_caller(self, *command):
+        """bash running the BOUND route on command, then echoing CONTINUED; its own session, killed at cleanup."""
+        caller = subprocess.Popen(
+            [*BASH_CALLER, *fx.bound_argv(self.tree, "exec", "--", *command, runner_dir=self.tmp)],
+            cwd=self.sub, env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            start_new_session=True,
+        )
+        def end():
+            if caller.poll() is None:
+                os.killpg(caller.pid, signal.SIGKILL)
+            caller.communicate()
+
+        self.addCleanup(end)
+        return caller
+
+    def test_a_bash_caller_does_not_continue_after_a_terminal_interrupt(self):
+        started = os.path.join(self.tmp, "started")
+        caller = self.start_bash_caller("/bin/sh", "-c", 'touch "$0"; exec sleep 60', started)
+        while not os.path.exists(started):
+            if caller.poll() is not None:
+                self.fail(f"the caller ended before the command started: {caller.communicate()[1]}")
+            time.sleep(0.02)
+        os.killpg(caller.pid, signal.SIGINT)
+        stdout, stderr = caller.communicate()
+        self.assertEqual(caller.returncode, -signal.SIGINT, stderr)
+        self.assertNotIn("CONTINUED", stdout)
+        self.assertEqual(len(journal_rows(self.target)), 1)
+        self.assertEqual(self.leftovers(), [])
+
+    def test_a_command_that_exits_130_itself_lets_a_bash_caller_continue(self):
+        caller = self.start_bash_caller("/bin/sh", "-c", "exit 130")
+        stdout, stderr = caller.communicate()
+        self.assertEqual(caller.returncode, 0, stderr)
+        self.assertIn("CONTINUED rc=130", stdout)
+
+    def test_every_canon_route_hands_the_command_sigpipe_and_sigxfsz_at_their_defaults(self):
+        """Only these two: a pool member may legitimately inherit INT/QUIT ignored."""
+        for route in ("outermost", "nested"):
+            with self.subTest(route=route):
+                if route == "nested":
+                    self.nest_under_a_canon_supervisor()
+                out = os.path.join(self.tmp, f"sigign-{route}")
+                result = self.bound("exec", "--", *sigign_probe(out))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(STARTUP_IGNORED & fx.ignored_signals(out), set())
+
     def test_sharing_without_a_real_sccache_is_refused_before_anything_runs(self):
         if shutil.which("sccache", path="/usr/bin:/bin"):
             self.skipTest("a real sccache is installed in /usr/bin or /bin")
         self.env["PATH"] = f"{self.tree}/scripts/canon-bin:{self.fake}:/usr/bin:/bin"
         self.assert_refused(self.bound("cargo", "build"), "sccache")
+        self.assertFalse(os.path.exists(os.path.join(self.target, ".reify-build-root")))
+
+    def test_with_neither_a_real_cargo_nor_a_real_sccache_the_missing_cargo_answers_127(self):
+        """The CANON PATH is checked for cargo before sccache, so this is not the sccache refusal's 126."""
+        if any(shutil.which(name, path="/usr/bin:/bin") for name in ("cargo", "sccache")):
+            self.skipTest("a real cargo or sccache is installed in /usr/bin or /bin")
+        self.env["PATH"] = f"{self.tree}/scripts/canon-bin:/usr/bin:/bin"
+        result = self.bound("cargo", "build")
+        self.assertEqual(result.returncode, 127, result.stderr)
+        lines = result.stderr.splitlines()
+        self.assertEqual(len(lines), 1, result.stderr)
+        self.assertIn("no cargo", lines[0])
         self.assertFalse(os.path.exists(os.path.join(self.target, ".reify-build-root")))
 
 
@@ -1120,23 +1207,30 @@ class NamespaceParent(unittest.TestCase):
             self.assertIsNone(parent.poll(), f"the parent ended before {name}")
             time.sleep(0.02)
 
-    def assert_forwarded(self, signum, status):
+    def assert_forwarded(self, signum):
         parent = self.start()
         self.wait_for("started", parent)
         os.kill(parent.pid, signum)
-        self.assertEqual(parent.wait(), status)
+        self.assertEqual(parent.wait(), fx.namespace_death_status(signum))
 
     def test_sigterm_to_the_parent_alone_reaches_the_command(self):
-        self.assert_forwarded(signal.SIGTERM, 143)
+        self.assert_forwarded(signal.SIGTERM)
 
     def test_sighup_to_the_parent_alone_reaches_the_command(self):
-        self.assert_forwarded(signal.SIGHUP, 129)
+        self.assert_forwarded(signal.SIGHUP)
 
     def test_sigint_to_the_parent_alone_reaches_the_command(self):
-        self.assert_forwarded(signal.SIGINT, 130)
+        self.assert_forwarded(signal.SIGINT)
 
     def test_sigquit_to_the_parent_alone_reaches_the_command(self):
-        self.assert_forwarded(signal.SIGQUIT, 131)
+        self.assert_forwarded(signal.SIGQUIT)
+
+    def test_a_command_that_traps_the_signal_and_exits_130_leaves_the_parent_exiting_130(self):
+        """bwrap reports 130 either way; only the pidfd's exit record tells a death from an exit."""
+        parent = self.start(trap_exit=True)
+        self.wait_for("started", parent)
+        os.kill(parent.pid, signal.SIGINT)
+        self.assertEqual(parent.wait(), 130)
 
     def test_a_signal_before_the_command_pid_is_known_is_delivered_once_it_is(self):
         parent = self.start(go=False)
@@ -1146,11 +1240,11 @@ class NamespaceParent(unittest.TestCase):
             time.sleep(0.02)
         os.kill(parent.pid, signal.SIGTERM)
         Path(self.tmp, "go").touch()
-        self.assertEqual(parent.wait(), 143)
+        self.assertEqual(parent.wait(), fx.namespace_death_status(signal.SIGTERM))
 
     def test_a_signal_while_bwrap_is_being_started_reaches_the_command(self):
         parent = self.start(signal_during_start=True, command_secs="5")
-        self.assertEqual(parent.wait(), 143)
+        self.assertEqual(parent.wait(), fx.namespace_death_status(signal.SIGTERM))
 
     def test_a_descriptor_the_caller_passes_reaches_bwrap(self):
         read_end, write_end = os.pipe()
@@ -1161,7 +1255,7 @@ class NamespaceParent(unittest.TestCase):
         self.wait_for("started", parent)
         self.assertIn(write_end, json.loads(Path(self.tmp, "bwrap_fds.json").read_text()))
         os.kill(parent.pid, signal.SIGTERM)
-        self.assertEqual(parent.wait(), 143)
+        self.assertEqual(parent.wait(), fx.namespace_death_status(signal.SIGTERM))
 
     def test_a_signal_the_caller_ignores_stays_ignored_and_the_rest_are_restored(self):
         parent = self.start(ignore=(signal.SIGHUP,))
@@ -1169,7 +1263,62 @@ class NamespaceParent(unittest.TestCase):
         ignored = fx.ignored_signals(os.path.join(self.tmp, "sigign"))
         self.assertEqual(ignored & set(canon_cache.SUPERVISED_SIGNALS), {signal.SIGHUP})
         os.kill(parent.pid, signal.SIGTERM)
-        self.assertEqual(parent.wait(), 143)
+        self.assertEqual(parent.wait(), fx.namespace_death_status(signal.SIGTERM))
+
+
+def at_default_sigint():
+    """A child's preexec_fn: SIGINT at default, which a pool member may have inherited ignored."""
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+
+
+class ExitedReturncode(unittest.TestCase):
+    """canon_run.exited_returncode: the kernel's exit record for the process a pidfd names, in subprocess's terms."""
+
+    def setUp(self):
+        if not fx.pidfd_exit_record_available():
+            self.skipTest(fx.PIDFD_EXIT_RECORD_MISSING)
+
+    def pidfd(self, pid):
+        pidfd = os.pidfd_open(pid)
+        self.addCleanup(os.close, pidfd)
+        return pidfd
+
+    def test_a_child_killed_by_sigint_gives_minus_sigint(self):
+        child = subprocess.Popen(["sleep", "30"], preexec_fn=at_default_sigint)
+        pidfd = self.pidfd(child.pid)
+        child.send_signal(signal.SIGINT)
+        child.wait()
+        self.assertEqual(canon_run.exited_returncode(pidfd), -signal.SIGINT)
+
+    def test_a_child_that_exited_130_gives_130(self):
+        child = subprocess.Popen(["/bin/sh", "-c", "exit 130"])
+        pidfd = self.pidfd(child.pid)
+        child.wait()
+        self.assertEqual(canon_run.exited_returncode(pidfd), 130)
+
+    def test_a_grandchild_its_own_parent_reaped_gives_how_it_died(self):
+        """The outer process -> bwrap -> re-run relation: the record outlives a reap by someone else.
+
+        sh starts `&` jobs with SIGINT ignored, so env gives the grandchild back its default first.
+        """
+        parent = subprocess.Popen(
+            ["/bin/sh", "-c", "/usr/bin/env --default-signal=INT sleep 30 & echo $!; wait $!"],
+            stdout=subprocess.PIPE, text=True,
+        )
+        self.addCleanup(parent.wait)
+        grandchild = int(parent.stdout.readline())
+        pidfd = self.pidfd(grandchild)
+        while Path(f"/proc/{grandchild}/comm").read_text() != "sleep\n":
+            time.sleep(0.01)
+        signal.pidfd_send_signal(pidfd, signal.SIGINT)
+        parent.communicate()
+        self.assertEqual(canon_run.exited_returncode(pidfd), -signal.SIGINT)
+
+    def test_a_running_process_gives_none(self):
+        child = subprocess.Popen(["sleep", "30"])
+        self.addCleanup(child.wait)
+        self.addCleanup(child.kill)
+        self.assertIsNone(canon_run.exited_returncode(self.pidfd(child.pid)))
 
 
 class ReadChildPid(unittest.TestCase):
@@ -1530,6 +1679,7 @@ class ActiveRecord(unittest.TestCase):
             {"mode": "canon", "cache": None},
             {"mode": "real_path", "cache": {"policy": "incremental", "server": None}},
             {"cache": None},
+            {"mode": "canon", "cache": {"policy": "shared", "server": None}},
         ):
             with self.subTest(section=section):
                 active = canon_run.parse_active(self.record(supervisor=section))

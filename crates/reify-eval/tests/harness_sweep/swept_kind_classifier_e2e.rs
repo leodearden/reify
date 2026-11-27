@@ -11,7 +11,8 @@ use reify_compiler::{
     CompiledGeometryOp, CurveKind, GeomRef, ModifyKind, PrimitiveKind, SweepKind,
 };
 use reify_eval::SweptKind;
-use reify_ir::{ExportFormat, Value};
+use reify_core::Type;
+use reify_ir::{CompiledExpr, ExportFormat, Value};
 use reify_test_support::*;
 
 
@@ -265,21 +266,15 @@ fn engine_swept_kind_table_resets_between_builds() {
 /// `CompiledGeometryOp::Sweep { kind: SweepKind::Revolve, profiles, args }` is
 /// compiled by `compile_geometry_op`'s Revolve arm into
 /// `GeometryOp::Revolve { profile, axis_origin, axis_dir, angle_rad }`. That arm
-/// reads **seven named f64 args**: `ox`, `oy`, `oz` (axis origin), `ax`, `ay`,
-/// `az` (axis direction), and `angle` (angle in radians). They are NOT all one
-/// type. The axis ORIGIN is a point in space, so `ox`/`oy`/`oz` are
-/// `Type::length()` — task 5623 routed them through the LENGTH units gate, and
-/// a bare `Real` in one of them is now REJECTED (it would have been read as SI
-/// metres). The axis DIRECTION `ax`/`ay`/`az` and the `angle` stay
-/// `Type::dimensionless_scalar()`: a unit vector is genuinely dimensionless,
-/// and all ANGLE gating belongs to PRD 3
-/// (`docs/prds/v0_6/angle-units-surface-convergence.md`), not to this gate.
+/// reads the lowered Direction form `revolve(profile, origin, direction,
+/// angle)`: `origin` a `Point3<Length>` (each component LENGTH-gated, task
+/// 5623), `direction` a `Direction` (unit by construction, task 9647) and
+/// `angle` a dimensioned Angle (PRD 3 leaf γ).
 ///
 /// # Non-degenerate parameters chosen
 ///
-/// axis_dir = (0, 0, 1) — unit-length +Z vector; axis_norm = 1.0, well above the
-/// `GEOMETRY_EPSILON ≈ 1e-12` degeneracy guard in `compile_geometry_op` and the
-/// `REVOLVE_DEGENERATE_TOLERANCE` check in the classifier. angle = π/2 (90°);
+/// axis_dir = dir(0, 0, 1), the +Z unit vector; the classifier's
+/// `REVOLVE_DEGENERATE_TOLERANCE` check passes. angle = π/2 (90°);
 /// |angle| = π/2, well above the `DEGENERATE_ANGLE_RAD = 1e-12` guard. Avoids
 /// any edge-case paths (full 2π, negative angle) — those are covered by the unit
 /// tests in `sweep_classifier.rs`.
@@ -304,21 +299,19 @@ fn engine_swept_kind_table_records_revolve_realization() {
         args: vec![("radius".into(), mm_literal(5.0))],
     };
 
-    // Op 1: Revolve(Step(0), axis=+Z, angle=π/2). The axis ORIGIN is
-    // length-typed (task 5623's units gate rejects a bare Real there) and the
-    // angle is a dimensioned Angle (PRD 3 leaf γ); only the axis DIRECTION
-    // stays Type::dimensionless_scalar(). Reverting ox/oy/oz or the angle to
-    // real_literal here re-trips a gate, not a golden.
+    // Op 1: Revolve(Step(0), axis=+Z, angle=π/2).
     let revolve_op = CompiledGeometryOp::Sweep {
         kind: SweepKind::Revolve,
         profiles: vec![GeomRef::Step(0)],
         args: vec![
-            ("ox".into(), mm_literal(0.0)),
-            ("oy".into(), mm_literal(0.0)),
-            ("oz".into(), mm_literal(0.0)),
-            ("ax".into(), real_literal(0.0)),
-            ("ay".into(), real_literal(0.0)),
-            ("az".into(), real_literal(1.0)),
+            (
+                "origin".into(),
+                CompiledExpr::literal(point3(0.0, 0.0, 0.0), Type::point3(Type::length())),
+            ),
+            (
+                "direction".into(),
+                CompiledExpr::literal(direction_val(0.0, 0.0, 1.0), Type::direction()),
+            ),
             ("angle".into(), angle_literal(std::f64::consts::FRAC_PI_2)),
         ],
     };

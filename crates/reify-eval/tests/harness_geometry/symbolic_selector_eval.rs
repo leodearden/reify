@@ -9,7 +9,7 @@
 //! **Step-5 (RED):** `top_eval_yields_symbolic_selector` — asserts that
 //! `Engine::eval` (no build, no kernel) produces a `Value::Selector(Face)` with
 //! `ByNormal { dir: +z, tol_rad > 0 }` and `target.kernel_handle = None` for a
-//! `faces_by_normal(body, dir, tol)` cell.  FAILS until step-6 wires
+//! `faces_by_normal(body, up, tol)` cell.  FAILS until step-6 wires
 //! `mint_symbolic_topology_selectors_into_values`.
 //!
 //! **Step-5 (RED):** `eval_and_build_selectors_are_content_hash_equal` and
@@ -29,8 +29,8 @@ use reify_test_support::{
 /// Fixture: Widget with a body (box), a let-bound direction + tolerance, and a
 /// `faces_by_normal` selector on top.
 ///
-/// `let`-binding `dir` and `tol` avoids the out-of-scope inline-arg dispatcher
-/// issue (PRD §5): inline `vec3(0,0,1)` / `1deg` args in `faces_by_normal`
+/// `let`-binding `up` and `tol` avoids the out-of-scope inline-arg dispatcher
+/// issue (PRD §5): inline `dir(0, 0, 1)` / `1deg` args in `faces_by_normal`
 /// would need the eval-path dispatcher to evaluate inline function-call args,
 /// which is not part of R2b scope.  The `let`-bound form pre-resolves the args
 /// into `values` before the selector-mint pass runs.
@@ -39,9 +39,9 @@ const WIDGET_SRC: &str = r#"structure def Widget {
     param height : Length = 20mm
     param depth  : Length = 30mm
     param body   : Solid  = box(width, height, depth)
-    let dir = vec3(0.0, 0.0, 1.0)
+    let up = dir(0, 0, 1)
     let tol = 1deg
-    let top = faces_by_normal(body, dir, tol)
+    let top = faces_by_normal(body, up, tol)
 }"#;
 
 /// SIGNAL — `Engine::eval` (kernel-free, no build) must yield a

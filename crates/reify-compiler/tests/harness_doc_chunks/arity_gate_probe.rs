@@ -167,29 +167,29 @@ fn parses_as_call(name: &str, arity: usize) -> bool {
 /// arities are both known.
 ///
 /// Without this, a matcher that silently stopped recognising arity diagnostics
-/// — or a compiler that stopped arity-gating `rotate` at all — would make every
+/// — or a compiler that stopped arity-gating `translate` at all — would make every
 /// live-chunk gate pass trivially, which is the one failure a guard of this
 /// kind must never have.
 #[test]
-fn arg_count_rejection_is_detected_for_the_builtin_rotate_arity_gate() {
+fn arg_count_rejection_is_detected_for_the_builtin_translate_arity_gate() {
     let compiled = compile_source_with_stdlib(
         "module arity_gate_probe_control\n\
          \n\
          structure def ArgCountControl {\n\
-         \x20   let bad = rotate(1mm, 1mm, 1mm)\n\
-         \x20   let good = rotate(1mm, 1mm)\n\
+         \x20   let bad = translate(1mm, 1mm, 1mm)\n\
+         \x20   let good = translate(1mm, 1mm, 1mm, 1mm)\n\
          }\n",
     );
 
-    let rejected = arg_count_rejections(&compiled.diagnostics, "rotate", 3);
+    let rejected = arg_count_rejections(&compiled.diagnostics, "translate", 3);
     assert_eq!(
         rejected.len(),
         1,
-        "the builtin `rotate` rejects arity 3 (geometry_transform.rs's `n =>` arm), so exactly \
-         one arg-count diagnostic must be matched; got {rejected:#?}"
+        "the builtin `translate` rejects arity 3 (geometry_transform.rs's check_arg_count_exact), \
+         so exactly one arg-count diagnostic must be matched; got {rejected:#?}"
     );
     assert_eq!(
-        rejected[0].message, "rotate() expects 2 or 5 arguments, got 3",
+        rejected[0].message, "translate() expects 4 arguments, got 3",
         "the arity rejection's wording is the matcher's anchor — see arg_count_rejections"
     );
     assert_eq!(
@@ -202,14 +202,14 @@ fn arg_count_rejection_is_detected_for_the_builtin_rotate_arity_gate() {
             .labels
             .iter()
             .any(|label| label.message == ARG_COUNT_LABEL),
-        "this arm routes through push_labeled_arg_count_error, so it must carry the centralised \
-         label (crates/reify-compiler/src/arg_check.rs:72); got {:#?}",
+        "this arm routes through check_arg_count_exact, so it must carry the centralised \
+         label (crates/reify-compiler/src/arg_check.rs); got {:#?}",
         rejected[0].labels
     );
 
     assert!(
-        arg_count_rejections(&compiled.diagnostics, "rotate", 2).is_empty(),
-        "arity 2 is one of `rotate`'s accepted arities, so the matcher must report nothing for \
+        arg_count_rejections(&compiled.diagnostics, "translate", 4).is_empty(),
+        "arity 4 is `translate`'s accepted arity, so the matcher must report nothing for \
          it — a matcher that fires here would make every gate built on it unconditionally red"
     );
 }
@@ -224,43 +224,43 @@ fn arg_count_rejections_reads_the_tail_first_and_the_label_only_as_a_fallback() 
             .with_label(DiagnosticLabel::new(SourceSpan::empty(0), ARG_COUNT_LABEL))
     };
 
-    let twelve = [labelled("rotate() expects 2 or 5 arguments, got 12")];
+    let twelve = [labelled("translate() expects 4 arguments, got 12")];
     assert!(
-        arg_count_rejections(&twelve, "rotate", 1).is_empty(),
+        arg_count_rejections(&twelve, "translate", 1).is_empty(),
         "the tail is read whole from the right, so `, got 1` is never read out of `, got 12`"
     );
     assert_eq!(
-        arg_count_rejections(&twelve, "rotate", 12).len(),
+        arg_count_rejections(&twelve, "translate", 12).len(),
         1,
         "a readable tail is attributed to exactly the arity it reports"
     );
 
-    let unreadable = "rotate() expects 2 or 5 arguments, got several";
+    let unreadable = "translate() expects 4 arguments, got several";
     for arity in [0, 1, 3, 12] {
         assert_eq!(
-            arg_count_rejections(&[labelled(unreadable)], "rotate", arity).len(),
+            arg_count_rejections(&[labelled(unreadable)], "translate", arity).len(),
             1,
             "an unreadable tail carrying the arg-count label is attributed to EVERY arity \
              (arity {arity}) — a false red forces a human look, a false green hides a defect"
         );
         assert!(
-            arg_count_rejections(&[Diagnostic::error(unreadable)], "rotate", arity).is_empty(),
+            arg_count_rejections(&[Diagnostic::error(unreadable)], "translate", arity).is_empty(),
             "an unreadable tail WITHOUT the label is attributed to no arity (arity {arity})"
         );
     }
 
     assert!(
-        arg_count_rejections(&[labelled("box() expects 3 arguments, got 2")], "rotate", 2)
+        arg_count_rejections(&[labelled("box() expects 3 arguments, got 2")], "translate", 2)
             .is_empty(),
-        "another builtin's rejection is never attributed to `rotate`, even at its arity"
+        "another builtin's rejection is never attributed to `translate`, even at its arity"
     );
 }
 
 #[test]
 fn arity_rejections_reports_exactly_the_forms_a_builtin_rejects_on_arity() {
     let forms: Vec<(String, usize)> = [
-        ("rotate", 3),
-        ("rotate", 2),
+        ("translate", 3),
+        ("translate", 4),
         ("box", 2),
         ("box", 3),
         ("align", 3),
@@ -279,12 +279,12 @@ fn arity_rejections_reports_exactly_the_forms_a_builtin_rejects_on_arity() {
                 message: "box() expects 3 arguments, got 2".to_string(),
             },
             ArityRejection {
-                name: "rotate".to_string(),
+                name: "translate".to_string(),
                 arity: 3,
-                message: "rotate() expects 2 or 5 arguments, got 3".to_string(),
+                message: "translate() expects 4 arguments, got 3".to_string(),
             },
         ],
-        "exactly the rejected arities come back: rotate/3 and box/2. Not rotate/2 or box/3 \
+        "exactly the rejected arities come back: translate/3 and box/2. Not translate/4 or box/3 \
          (accepted arities), not align/3 (no builtin of that name), and not auto/1 — `auto` is a \
          keyword, so `let v = auto(1mm)` does not parse; it must be left unprobed rather than \
          panic the one compile every other form shares"

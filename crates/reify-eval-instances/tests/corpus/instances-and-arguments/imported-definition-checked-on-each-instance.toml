@@ -1,0 +1,25 @@
+tests = "an imported standard-library definition is not a root, its member table is found through the definition table, and its constraints are checked on each instance, sub or value."
+rule = "rule D; decision 2 (\"imported definitions are never roots\"); Part 2 (the definition table covers every module the root reaches, by qualified name); decision 7."
+provenance = "logic-2 N2 (taken: Part 2's definition table)."
+needs = ["roots", "instance", "constraint", "summary", "made", "open"]
+answer_basis = "traced. `DimensionalTolerance` (in `std.tolerancing`, read at main) has `constraint upper_deviation >= lower_deviation`. Both the sub and the made instance `Shaft.tol/made[0]` have 0 mm against 0.1 mm: violated at each, the made instance's counted once (decisions B4). `tolerance_band` is 0 − 0.1 mm. `tol.tolerance_band` opens the value through the standard library's member table."
+today = "run `tol.ri`: `Shaft.band = -0.0001 m`; `check` prints \"All constraints satisfied.\""
+
+[[expect]]
+roots = ["Shaft"]
+
+[[expect]]
+path = "Shaft.dia.tolerance_band"
+value = "-0.1 mm"
+
+[[expect]]
+path = "Shaft.dia/constraint[0]"
+verdict = "violated"
+
+[[expect]]
+path = "Shaft.band"
+value = "-0.1 mm"
+
+[[expect]]
+path = "Shaft/summary"
+summary = { violated = 2, undetermined = 0, failed = 0 }

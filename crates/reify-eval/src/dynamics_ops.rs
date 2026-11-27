@@ -4,8 +4,9 @@
 //! This is the `Value`/diagnostic/kernel-seam half of the modal-style split:
 //! the dependency-free `f64` math (density ladder, analytic box inertia) lives
 //! in `reify_stdlib::dynamics::mass_props`; this module extracts `Value`s,
-//! emits diagnostics, wires the (deferred) geometry-kernel seam, and assembles
-//! the `MassProperties` `Value::StructureInstance`.
+//! emits diagnostics, wires the (deferred) geometry-kernel seam, and mints the
+//! `MassProperties` instance through its owner,
+//! `reify_stdlib::dynamics::mass_props::MassProperties`.
 //!
 //! Two entry points (mirroring `geometry_ops::try_eval_*`):
 //!   * [`eval_body_mass_props_core`] — pure core: given an already-resolved
@@ -24,13 +25,10 @@
 
 use std::sync::Arc;
 
-use reify_core::dimension::DimensionVector;
 use reify_core::{ContentHash, Diagnostic, DiagnosticCode};
-use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, Value};
-use reify_stdlib::dynamics::eval::{
-    cell_f64, default_frame3, inverse_dynamics_sample, motion_trajectory_samples,
-};
-use reify_stdlib::dynamics::mass_props::{resolve_density, resolve_density_strict};
+use reify_ir::{OpaqueState, Value};
+use reify_stdlib::dynamics::eval::{cell_f64, inverse_dynamics_sample, motion_trajectory_samples};
+use reify_stdlib::dynamics::mass_props::{MassProperties, resolve_density, resolve_density_strict};
 use reify_stdlib::dynamics::rnea::default_gravity;
 use reify_stdlib::dynamics::trampoline::{InverseDynamicsCacheKey, body_solid_hashes};
 
@@ -140,84 +138,12 @@ pub(crate) fn resolve_body_density(
     }
 }
 
-/// Mass `Value` for the `MassProperties.mass : Mass` field (dimensioned scalar).
-fn mass_value(mass: f64) -> Value {
-    Value::Scalar {
-        si_value: mass,
-        dimension: DimensionVector::MASS,
-    }
-}
-
-/// Centre-of-mass `Value` for `MassProperties.com : Point3<Length>` — a
-/// `Value::Point` of three Length-dimensioned scalars.
-fn com_value(com: [f64; 3]) -> Value {
-    Value::Point(
-        com.iter()
-            .map(|&x| Value::Scalar {
-                si_value: x,
-                dimension: DimensionVector::LENGTH,
-            })
-            .collect(),
-    )
-}
-
-/// Inertia `Value` for `MassProperties.inertia : Matrix<3,3,MomentOfInertia>` —
-/// a 3×3 `Value::Matrix` of `MomentOfInertia`-dimensioned `Value::Scalar` cells
-/// (kg·m²). Each cell carries `si_value` == the raw f64 from the geometric query
-/// and `dimension == DimensionVector::MOMENT_OF_INERTIA`.
-///
-/// The PSD hook (`dynamics_psd`) and the RNEA extraction path
-/// (`inertia_3x3_from_value`) both read cells via `cell_f64`, which accepts
-/// `Value::Scalar{si_value,..}` and strips to `si_value` — so all downstream
-/// numeric outputs (eigenvalues, RNEA τ) are byte-identical to the former
-/// `Value::Real` encoding. Mirrors `com_value`'s `LENGTH` pattern.
-fn inertia_value(inertia: [[f64; 3]; 3]) -> Value {
-    Value::Matrix(
-        inertia
-            .iter()
-            .map(|row| {
-                row.iter()
-                    .map(|&x| Value::Scalar {
-                        si_value: x,
-                        dimension: DimensionVector::MOMENT_OF_INERTIA,
-                    })
-                    .collect()
-            })
-            .collect(),
-    )
-}
-
-/// Assemble a `MassProperties` `Value::StructureInstance` from its four field
-/// values. The geometric fields (`mass`, `com`, `inertia`) are passed as
-/// `Value`s so this single assembler serves both the concrete-geometry core and
-/// the deferred-kernel dispatch path (which passes `Value::Undef` for them).
-/// `origin` is a default zero-`Frame3` (task 4547 retarget — was a `Real`
-/// placeholder), minted via `reify_stdlib`'s shared [`default_frame3`] so this
-/// producer and `make_mass_properties` emit an identical `origin`.
-///
-/// Reuses the `modal_ops`/`StructureInstanceData` construction pattern (task
-/// 3822 MassProperties structure_def, `dynamics.ri`).
-fn assemble_mass_properties(mass: Value, com: Value, inertia: Value) -> Value {
-    let fields: PersistentMap<String, Value> = [
-        ("mass".to_string(), mass),
-        ("com".to_string(), com),
-        ("inertia".to_string(), inertia),
-        ("origin".to_string(), default_frame3()),
-    ]
-    .into_iter()
-    .collect();
-    Value::StructureInstance(Box::new(StructureInstanceData::registry_free(
-        "MassProperties",
-        fields,
-    )))
-}
-
 /// Pure eval core for `body_mass_props`: resolve the density (emitting
 /// `E_DynamicsNoDensity` when no density is resolvable), invoke the injected
-/// geometric query, and assemble the `MassProperties` instance.
+/// geometric query, and mint the `MassProperties` instance.
 ///
-/// `geom_query` is the kernel seam abstracted as a closure `density -> (mass,
-/// com, inertia)`; this keeps the core kernel-free and exactly unit-testable
+/// `geom_query` is the kernel seam abstracted as a closure `density ->
+/// MassProperties`; this keeps the core kernel-free and exactly unit-testable
 /// (the tests inject `reify_stdlib::dynamics::mass_props::uniform_box_inertia`).
 /// `try_eval_body_mass_props` builds a kernel-backed `geom_query` closure
 /// (task 4237 / KGQ-λ seam) and routes it through this core so the density
@@ -225,17 +151,14 @@ fn assemble_mass_properties(mass: Value, com: Value, inertia: Value) -> Value {
 pub fn eval_body_mass_props_core(
     body: &Value,
     density_arg: Option<&Value>,
-    geom_query: impl Fn(f64) -> (f64, [f64; 3], [[f64; 3]; 3]),
+    geom_query: impl Fn(f64) -> MassProperties,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Value {
     match resolve_body_density(body, density_arg, diagnostics) {
-        Some(density) => {
-            let (mass, com, inertia) = geom_query(density);
-            assemble_mass_properties(mass_value(mass), com_value(com), inertia_value(inertia))
-        }
+        Some(density) => geom_query(density).to_value(),
         // Rejected or undefined explicit density: degrade to Undef without
         // invoking the geometry query (mirrors kernel-failure degradation shape).
-        None => assemble_mass_properties(Value::Undef, Value::Undef, Value::Undef),
+        None => MassProperties::unresolved_value(),
     }
 }
 
@@ -281,15 +204,14 @@ fn body_geometry_handle(body: &Value) -> Option<reify_ir::GeometryHandleId> {
 /// [`eval_body_mass_props_core`] so density resolution happens exactly once
 /// and all three queries see the same value.
 ///
-/// Returns `(mass, com, inertia)` on success, or a [`reify_ir::QueryError`] on
+/// Returns the [`MassProperties`] on success, or a [`reify_ir::QueryError`] on
 /// the first failing/malformed query. The caller is responsible for emitting
 /// diagnostics and downgrading to `Value::Undef` on error.
-#[allow(clippy::type_complexity)]
 fn query_body_mass_props_from_kernel(
     kernel: &dyn reify_ir::GeometryKernel,
     handle: reify_ir::GeometryHandleId,
     density: f64,
-) -> Result<(f64, [f64; 3], [[f64; 3]; 3]), reify_ir::QueryError> {
+) -> Result<MassProperties, reify_ir::QueryError> {
     // (a) Volume → mass = density × V
     let vol_reply = kernel.query(&reify_ir::GeometryQuery::Volume(handle))?;
     let volume = cell_f64(&vol_reply).ok_or_else(|| {
@@ -307,13 +229,23 @@ fn query_body_mass_props_from_kernel(
     // (c) InertiaTensor{handle, density} → List-of-lists → [[f64;3];3]
     let inertia_reply =
         kernel.query(&reify_ir::GeometryQuery::InertiaTensor { handle, density })?;
-    let inertia = crate::dynamics_psd::inertia_3x3_from_value(&inertia_reply).ok_or_else(|| {
-        reify_ir::QueryError::QueryFailed(format!(
-            "body_mass_props InertiaTensor reply is not a 3×3 matrix: {inertia_reply:?}"
-        ))
-    })?;
+    let inertia = match MassProperties::read_inertia(&inertia_reply) {
+        Ok(Some(inertia)) => inertia,
+        Ok(None) => {
+            return Err(reify_ir::QueryError::QueryFailed(format!(
+                "body_mass_props InertiaTensor reply is not a 3×3 matrix: {inertia_reply:?}"
+            )));
+        }
+        Err(r) => {
+            return Err(reify_ir::QueryError::QueryFailed(format!(
+                "body_mass_props InertiaTensor reply expects {} cells, got {}: \
+                 {inertia_reply:?}",
+                r.expected, r.got
+            )));
+        }
+    };
 
-    Ok((mass, com, inertia))
+    Ok(MassProperties { mass, com, inertia })
 }
 
 /// Dispatch recognition for a `body_mass_props(body, density?)` call cell,
@@ -409,11 +341,7 @@ pub fn try_eval_body_mass_props(
                     Some(v) => Some(v),
                     // Missing cell: quiet data-indeterminacy degrade.
                     None => {
-                        return Some(assemble_mass_properties(
-                            Value::Undef,
-                            Value::Undef,
-                            Value::Undef,
-                        ));
+                        return Some(MassProperties::unresolved_value());
                     }
                 }
             }
@@ -427,11 +355,7 @@ pub fn try_eval_body_mass_props(
                      (unsupported expression shape); mass properties set to Undef"
                         .to_string(),
                 ));
-                return Some(assemble_mass_properties(
-                    Value::Undef,
-                    Value::Undef,
-                    Value::Undef,
-                ));
+                return Some(MassProperties::unresolved_value());
             }
         },
     };
@@ -448,7 +372,7 @@ pub fn try_eval_body_mass_props(
             // INVARIANT: eval_body_mass_props_core calls geom_query exactly once
             // (l.188 — single `geom_query(density)` call after density resolution).
             // If the core ever called the closure more than once, only the LAST
-            // error would be captured and any prior successful triple would be
+            // error would be captured and any prior successful record would be
             // silently overwritten with the (0,0,0) sentinel, producing wrong mass
             // properties with no diagnostic. The debug_assert below makes that
             // contract violation fail loudly under any test run.
@@ -456,10 +380,14 @@ pub fn try_eval_body_mass_props(
             let q = |d: f64| {
                 invocation_count.set(invocation_count.get() + 1);
                 match query_body_mass_props_from_kernel(kernel, h, d) {
-                    Ok(triple) => triple,
+                    Ok(mass_properties) => mass_properties,
                     Err(e) => {
                         *err.borrow_mut() = Some(e);
-                        (0.0_f64, [0.0_f64; 3], [[0.0_f64; 3]; 3])
+                        MassProperties {
+                            mass: 0.0,
+                            com: [0.0; 3],
+                            inertia: [[0.0; 3]; 3],
+                        }
                     }
                 }
             };
@@ -484,11 +412,7 @@ pub fn try_eval_body_mass_props(
                     "body_mass_props kernel query failed — geometric fields \
                      (mass/com/inertia) set to Undef: {e}"
                 )));
-                Some(assemble_mass_properties(
-                    Value::Undef,
-                    Value::Undef,
-                    Value::Undef,
-                ))
+                Some(MassProperties::unresolved_value())
             } else {
                 Some(mp)
             }
@@ -497,11 +421,7 @@ pub fn try_eval_body_mass_props(
             // No geometry handle: run the density ladder for its diagnostic
             // side effect, then return the deferred-Undef sentinel.
             let _density = resolve_body_density(body, density_arg, diagnostics);
-            Some(assemble_mass_properties(
-                Value::Undef,
-                Value::Undef,
-                Value::Undef,
-            ))
+            Some(MassProperties::unresolved_value())
         }
     }
 }
@@ -642,7 +562,7 @@ pub fn derive_mechanism_mass_props(
 
         // Issue the three KGQ queries.
         //
-        // NOTE: We call query_body_mass_props_from_kernel + assemble_mass_properties
+        // NOTE: We call query_body_mass_props_from_kernel + MassProperties::to_value
         // directly here rather than routing through eval_body_mass_props_core
         // because the two functions have different error contracts:
         // - eval_body_mass_props_core always returns a Value (on kernel failure it
@@ -653,12 +573,8 @@ pub fn derive_mechanism_mass_props(
         // Routing through eval_body_mass_props_core would silently produce an
         // Undef-carrying MassProperties instead of skipping the body.
         match query_body_mass_props_from_kernel(kernel, handle, density) {
-            Ok((mass, com, inertia)) => {
-                let mp = assemble_mass_properties(
-                    mass_value(mass),
-                    com_value(com),
-                    inertia_value(inertia),
-                );
+            Ok(mass_properties) => {
+                let mp = mass_properties.to_value();
                 // Write derived_mass_props additively — preserve the existing body
                 // keys (including solid).
                 let mut new_body: std::collections::BTreeMap<Value, Value> = body_map
@@ -698,6 +614,7 @@ pub fn derive_mechanism_mass_props(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reify_core::dimension::DimensionVector;
     use reify_core::{DiagnosticCode, Severity};
     use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
     use reify_stdlib::dynamics::mass_props::uniform_box_inertia;
@@ -741,44 +658,9 @@ mod tests {
         }))
     }
 
-    /// Extract an f64 from a numeric cell (`Real` / `Int` / `Scalar`),
-    /// delegating to the shared `cell_f64` (imported via `use super::*`) so the
-    /// numeric-extraction logic is single-sourced rather than re-spelled in the
-    /// tests. Panics on a non-numeric cell (the tests want a
-    /// hard failure, not the `None` the production helper returns).
-    fn num(v: &Value) -> f64 {
-        cell_f64(v).unwrap_or_else(|| panic!("expected numeric value, got {v:?}"))
-    }
-
-    /// Extract the three component magnitudes from a `Value::Point`.
-    fn point3(v: &Value) -> [f64; 3] {
-        match v {
-            Value::Point(comps) => {
-                assert_eq!(comps.len(), 3, "com must have 3 components");
-                [num(&comps[0]), num(&comps[1]), num(&comps[2])]
-            }
-            other => panic!("expected com to be a Value::Point, got {other:?}"),
-        }
-    }
-
-    /// Pull the four MassProperties fields out of an assembled result, asserting
-    /// the type_name and parsing mass / com / inertia.
-    fn mass_props_fields(result: &Value) -> (f64, [f64; 3], [[f64; 3]; 3]) {
-        let data = match result {
-            Value::StructureInstance(d) => d,
-            other => panic!("expected a MassProperties StructureInstance, got {other:?}"),
-        };
-        assert_eq!(
-            data.type_name, "MassProperties",
-            "assembled instance must be type MassProperties"
-        );
-        let mass = num(data.fields.get("mass").expect("mass field"));
-        let com = point3(data.fields.get("com").expect("com field"));
-        let inertia = crate::dynamics_psd::inertia_3x3_from_value(
-            data.fields.get("inertia").expect("inertia field"),
-        )
-        .expect("inertia field must parse as a 3×3 matrix via inertia_3x3_from_value");
-        (mass, com, inertia)
+    /// Read an assembled result through the one `MassProperties` reader.
+    fn mass_props_fields(result: &Value) -> MassProperties {
+        MassProperties::from_value(result).expect("result must be a resolved MassProperties")
     }
 
     fn assert_close(got: f64, want: f64, what: &str) {
@@ -789,8 +671,12 @@ mod tests {
     }
 
     fn assert_matches_geom(result: &Value, density: f64) {
-        let (mass, com, inertia) = mass_props_fields(result);
-        let (exp_mass, exp_com, exp_inertia) = uniform_box_inertia(DIMS, density);
+        let MassProperties { mass, com, inertia } = mass_props_fields(result);
+        let MassProperties {
+            mass: exp_mass,
+            com: exp_com,
+            inertia: exp_inertia,
+        } = uniform_box_inertia(DIMS, density);
         assert_close(mass, exp_mass, "mass");
         for i in 0..3 {
             assert_close(com[i], exp_com[i], "com");
@@ -1377,7 +1263,7 @@ mod tests {
             .expect("recognised body_mass_props with GeometryHandle must return Some");
 
         // mass = density × volume = 2000.0 × 3.0 = 6000.0 kg
-        let (mass, com, inertia) = mass_props_fields(&result);
+        let MassProperties { mass, com, inertia } = mass_props_fields(&result);
         assert_close(mass, 6000.0, "mass");
         assert_close(com[0], 0.01, "com[0]");
         assert_close(com[1], 0.02, "com[1]");
@@ -1398,7 +1284,7 @@ mod tests {
 
     // ── malformed-reply defensive paths in query_body_mass_props_from_kernel ──
     //
-    // The three ok_or_else / parse_xyz_value / inertia_3x3_from_value branches
+    // The three ok_or_else / parse_xyz_value / MassProperties::read_inertia branches
     // in query_body_mass_props_from_kernel are exercised below. Each should
     // propagate the error through the closure capture, triggering the Undef
     // downgrade and the kernel-failure Warning — the same contract as a missing
@@ -1507,8 +1393,8 @@ mod tests {
     //
     // Kernel-independent pin: eval_body_mass_props_core must populate the inertia
     // field of the assembled MassProperties with Value::Scalar{MOMENT_OF_INERTIA}
-    // cells, not plain Value::Real. Fails RED until step-4 (task 4494) changes
-    // inertia_value to emit dimensioned scalars.
+    // cells, not plain Value::Real (task 4494; the cells are now minted by
+    // MassProperties::to_value).
 
     /// The populated inertia matrix must be a Value::Matrix of
     /// Value::Scalar{dimension == MOMENT_OF_INERTIA} cells with si_value equal
@@ -1531,7 +1417,7 @@ mod tests {
         };
         assert_eq!(inertia_rows.len(), 3, "inertia must have 3 rows");
 
-        let (_, _, expected_inertia) = uniform_box_inertia(DIMS, 2700.0);
+        let expected_inertia = uniform_box_inertia(DIMS, 2700.0).inertia;
         for r in 0..3 {
             assert_eq!(
                 inertia_rows[r].len(),
@@ -1614,6 +1500,68 @@ mod tests {
         assert!(
             !warnings.is_empty(),
             "malformed CenterOfMass JSON must emit at least one Warning, got: {diags:?}"
+        );
+    }
+
+    /// Wrong-dimension InertiaTensor reply: Volume and CenterOfMass succeed but
+    /// the inertia reply is a 3×3 of LENGTH cells. `read_inertia` refuses it, and
+    /// the Undef-downgrade Warning names the refused dimension rather than
+    /// calling a 3×3 numeric matrix the wrong shape.
+    #[test]
+    fn try_eval_body_mass_props_wrong_dimension_inertia_reply_names_the_refusal() {
+        use reify_core::RealizationNodeId;
+        use reify_ir::GeometryHandleId;
+
+        let body_cell = ValueCellId::new("Design", "body");
+        let rho_cell = ValueCellId::new("Design", "rho");
+        let mut values = ValueMap::new();
+        values.insert(
+            body_cell.clone(),
+            Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new("Design", 0),
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: Some(GeometryHandleId(16)),
+            },
+        );
+        values.insert(
+            rho_cell.clone(),
+            Value::Scalar {
+                si_value: 2000.0,
+                dimension: DimensionVector::MASS_DENSITY,
+            },
+        );
+
+        let length_inertia = Value::List(vec![Value::List(vec![Value::length(1.0); 3]); 3]);
+        let kernel = MockGeometryKernel::new()
+            .with_volume_result(GeometryHandleId(16), Value::Real(5.0))
+            .with_center_of_mass_result(
+                GeometryHandleId(16),
+                2000.0,
+                Value::String("{\"x\":0.0,\"y\":0.0,\"z\":0.0}".to_string()),
+            )
+            .with_inertia_tensor_result(GeometryHandleId(16), 2000.0, length_inertia);
+
+        let expr = call_expr("body_mass_props", &[body_cell, rho_cell]);
+        let mut diags = Vec::new();
+        let result = try_eval_body_mass_props(&expr, &values, &kernel, &mut diags)
+            .expect("a refused InertiaTensor reply must still return Some(MassProperties)");
+
+        assert_deferred_mass_props(&result);
+        let warning = diags
+            .iter()
+            .find(|d| d.severity == Severity::Warning && d.message.contains("InertiaTensor"))
+            .unwrap_or_else(|| panic!("expected an InertiaTensor Warning, got: {diags:?}"));
+        assert!(
+            warning
+                .message
+                .contains("reply expects MomentOfInertia cells, got Length Scalar"),
+            "got {:?}",
+            warning.message
+        );
+        assert!(
+            !warning.message.contains("is not a 3×3 matrix"),
+            "a 3×3 numeric reply of the wrong dimension is not a shape failure; got {:?}",
+            warning.message
         );
     }
 
@@ -2248,14 +2196,14 @@ mod inverse_dynamics_trampoline_tests {
     }
 
     /// A `MassProperties` instance: mass (Mass-scalar), com (Point3<Length>),
-    /// inertia (3×3 Matrix of **`Value::Real`**), origin (Real).
+    /// inertia (3×3 Matrix of **`Value::Real`**).
     ///
     /// The inertia cells are intentionally `Value::Real` (the legacy / user-authored
     /// encoding) rather than `Value::Scalar{MOMENT_OF_INERTIA}` (production path).
     /// This exercises the backward-compatible code path: `cell_f64` accepts both
     /// `Value::Real(x)` and `Value::Scalar { si_value: x, .. }`, so RNEA extraction
     /// is dimension-agnostic and produces identical numerics for both encodings.
-    /// See `make_mass_properties` / `mass_properties_fixture` in `reify-stdlib` for
+    /// See `MassProperties::to_value` in `reify_stdlib::dynamics::mass_props` for
     /// the production-faithful dimensioned shape.
     fn mass_properties(mass: f64, com: [f64; 3], inertia: [[f64; 3]; 3]) -> Value {
         let com_point = Value::Point(com.iter().map(|&c| Value::length(c)).collect());
@@ -2277,7 +2225,6 @@ mod inverse_dynamics_trampoline_tests {
                 ),
                 ("com".to_string(), com_point),
                 ("inertia".to_string(), inertia_matrix),
-                ("origin".to_string(), Value::Real(0.0)),
             ],
         )
     }

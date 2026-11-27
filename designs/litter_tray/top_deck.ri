@@ -108,7 +108,7 @@ structure def TopDeck : Rigid {
     let cav_r = corner_r - wall_t
     let end_x = outer_length / 2                           // end-wall mid-plane
     let slot_flat = slot_w - slot_h                        // straight part of slot
-    let up = vec3(0.0, 0.0, 1.0)
+    let up = dir(0, 0, 1)
 
     // Shell: rounded prism minus rounded cavity above the floor.
     aux let outer_blank = translate(box(outer_length, outer_width, deck_height), 0mm, 0mm, deck_height / 2)
@@ -140,11 +140,11 @@ structure def TopDeck : Rigid {
     // Hand slots through both end walls (rounded ends).
     aux let slots = union_all(
         translate(box(4 * wall_t, slot_flat, slot_h), end_x, 0mm, slot_z),
-        translate(rotate(cylinder(slot_h / 2, 4 * wall_t), 0, 1, 0, 90deg), end_x - 2 * wall_t, slot_flat / 2, slot_z),
-        translate(rotate(cylinder(slot_h / 2, 4 * wall_t), 0, 1, 0, 90deg), end_x - 2 * wall_t, 0mm - slot_flat / 2, slot_z),
+        translate(rotate(cylinder(slot_h / 2, 4 * wall_t), dir(0, 1, 0), 90deg), end_x - 2 * wall_t, slot_flat / 2, slot_z),
+        translate(rotate(cylinder(slot_h / 2, 4 * wall_t), dir(0, 1, 0), 90deg), end_x - 2 * wall_t, 0mm - slot_flat / 2, slot_z),
         translate(box(4 * wall_t, slot_flat, slot_h), 0mm - end_x, 0mm, slot_z),
-        translate(rotate(cylinder(slot_h / 2, 4 * wall_t), 0, 1, 0, 90deg), 0mm - end_x - 2 * wall_t, slot_flat / 2, slot_z),
-        translate(rotate(cylinder(slot_h / 2, 4 * wall_t), 0, 1, 0, 90deg), 0mm - end_x - 2 * wall_t, 0mm - slot_flat / 2, slot_z)
+        translate(rotate(cylinder(slot_h / 2, 4 * wall_t), dir(0, 1, 0), 90deg), 0mm - end_x - 2 * wall_t, slot_flat / 2, slot_z),
+        translate(rotate(cylinder(slot_h / 2, 4 * wall_t), dir(0, 1, 0), 90deg), 0mm - end_x - 2 * wall_t, 0mm - slot_flat / 2, slot_z)
     )
 
     param geometry : Solid = difference(padded, slots)

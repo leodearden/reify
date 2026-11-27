@@ -1,0 +1,13 @@
+tests = "`t = t / 2` in the braces reads the instance's own `t`, which is a cycle and is reported."
+rule = "Part 4 (\"Names inside the braces\")"
+provenance = "design Part 4. design Part 4; language-2 C4."
+needs = ["compile-error", "instance", "braces"]
+answer_basis = "stated: Part 4, \"`t = t / 2` in the braces ... would read the plate's own, which is a cycle and is reported\". The right-hand `t` is not a `let` of the braces and is a member `Plate` declares, so it is the instance's own (readings C20). That the source compiles and the cycle is reported at run time, at the parameter's cell, is readings C13. The call form reads the parent's `t`: `call-form-sub-argument-reads-parent-name`."
+today = "the right-hand `t` reads the parent's `t` (design Part 4)."
+
+[[expect]]
+compile = "ok"
+
+[[expect]]
+path = "Asm.p.t"
+failure = "cycle"

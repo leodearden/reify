@@ -1,0 +1,11 @@
+// sweep_direction_forms_bare_origin.ri — CLI check fixture for direction-typing
+// ι-b (#9647): revolve's Point3 origin is gated at BUILD, not at compile, so a
+// bare origin is a build Error naming the `ox` component. It has a fixture of
+// its own because `reify check` stops before the build when compile errors
+// exist.
+
+module sweep_direction_forms_bare_origin
+
+structure def BareOriginRevolve {
+    let g = revolve(rectangle(20mm, 10mm), point3(0, 0, 0), dir(0, 0, 1), 90deg)
+}

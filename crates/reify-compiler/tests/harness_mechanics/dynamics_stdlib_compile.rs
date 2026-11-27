@@ -76,21 +76,19 @@ fn std_dynamics_module_loads_with_no_errors() {
 
 // ─── MassProperties shape ─────────────────────────────────────────────────────
 
-/// MassProperties has exactly (mass, com, inertia, origin) with the expected
-/// types. `origin` is retargeted from the old `Real` placeholder to the real
-/// `Frame3` struct (declared in std.ports, shipped constructible by task 4254;
-/// std.dynamics reaches it through its `import std.ports`). A nominal struct
-/// param compiles to `Type::StructureRef` — cf.
-/// `analysis_stress_fn_compile.rs`'s `StressInvariants`.
+/// MassProperties has exactly (mass, com, inertia) with the expected types.
+/// It carries no frame of its own: `com` and `inertia` are expressed in the
+/// body's own frame, the one its joint places it in (direction-typing η
+/// deleted the former `origin : Frame3` member).
 #[test]
-fn mass_properties_has_four_params_with_correct_types() {
+fn mass_properties_has_three_params_with_correct_types() {
     let template = find_structure("MassProperties");
     let params = param_cells(template);
     let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
     assert_eq!(
         names,
-        vec!["mass", "com", "inertia", "origin"],
-        "MassProperties should have exactly (mass, com, inertia, origin) in that order"
+        vec!["mass", "com", "inertia"],
+        "MassProperties should have exactly (mass, com, inertia) in that order"
     );
 
     let mass_ty = Type::Scalar {
@@ -110,13 +108,11 @@ fn mass_properties_has_four_params_with_correct_types() {
             dimension: DimensionVector::MOMENT_OF_INERTIA,
         }),
     };
-    let origin_ty = Type::StructureRef("Frame3".to_string());
 
     let expected: &[(&str, Type)] = &[
         ("mass", mass_ty),
         ("com", com_ty),
         ("inertia", inertia_ty),
-        ("origin", origin_ty),
     ];
 
     for (member, expected_ty) in expected {
@@ -130,6 +126,46 @@ fn mass_properties_has_four_params_with_correct_types() {
             member, expected_ty, cell.cell_type
         );
     }
+}
+
+/// B10: `origin:` is no longer a MassProperties member, so passing one is a
+/// ctor unknown-field error, and the same construction without it is clean.
+#[test]
+fn mass_properties_origin_argument_is_an_unknown_field() {
+    let source = |origin_arg: &str| {
+        format!(
+            r#"
+structure def MassPropsOriginProbe {{
+    let mp = MassProperties(mass: 1kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.1, 0.0, 0.0], [0.0, 0.1, 0.0], [0.0, 0.0, 0.1]]{origin_arg})
+}}
+"#
+        )
+    };
+    let with_origin = compile_source_with_stdlib(&source(
+        ", origin: frame_at(point3(0mm, 0mm, 0mm), dir(1, 0, 0), dir(0, 0, 1))",
+    ));
+    let unknown_origin: Vec<_> = reify_test_support::errors_only(&with_origin)
+        .into_iter()
+        .filter(|d| d.code == Some(DiagnosticCode::CtorUnknownField))
+        .collect();
+    assert_eq!(
+        unknown_origin.len(),
+        1,
+        "expected exactly one E_CTOR_UNKNOWN_FIELD error, got: {:?}",
+        with_origin.diagnostics
+    );
+    assert!(
+        unknown_origin[0].message.contains("'origin'"),
+        "the unknown field must be named: {}",
+        unknown_origin[0].message
+    );
+
+    let without_origin = compile_source_with_stdlib(&source(""));
+    assert!(
+        reify_test_support::errors_only(&without_origin).is_empty(),
+        "MassProperties(mass, com, inertia) must check clean, got: {:?}",
+        reify_test_support::errors_only(&without_origin)
+    );
 }
 
 #[test]
@@ -782,8 +818,8 @@ structure def Probe {
 // `inverse_dynamics` and `inverse_dynamics_at_snapshot` take the real
 // `Mechanism`/`Snapshot` structure types from `std.kinematic` (task 4311),
 // not the pre-task-4311 `Real` placeholders — mirrors what
-// `mass_properties_has_four_params_with_correct_types` guards for the
-// `Frame3`/`std.ports` half (task 4547). Not a load-order position check:
+// `mass_properties_has_three_params_with_correct_types` guards for
+// MassProperties' member types. Not a load-order position check:
 // a reversed `std.kinematic`/`std.dynamics` order panics the stdlib loader
 // for every test in this binary before a position assertion could run, so
 // only a silent type regression (order correct, types wrong) is worth

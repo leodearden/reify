@@ -1,0 +1,45 @@
+tests = "an argument written under a guard in a sub's braces is given when the guard holds, and otherwise the definition's own `auto` is an unknown of that instance."
+rule = "Part 6.2 (\"The parameter's cell reads the guard first\"); Part 4 (a guarded assignment is an argument present under that guard)."
+provenance = "logic-1 L2 (taken: 6.2); logic-2 Part A row L2 and holds-up (traced 6 and 12; 3 and 6). design Part 4 and 6.2; critic logic-1 (the thick model). The tracer of 2026-11-26 (trace-braces-purposes-unknowns, wrong tags): `Plate`'s `minimize t` replaced by an upper bound in `b`'s braces, so that `b` is forced and the entry runs without a real solver."
+needs = ["instance", "braces", "guard", "constraint", "summary", "unknown", "solve-forced"]
+answer_basis = "traced. In `a`, `thick` holds, so `t` is given 6 mm and is not an unknown (design 6.2); `w` is `a`'s unknown and `w == 2 * t` forces 12 mm. In `b`, `thin` is false, so the argument is absent and `t` and `w` are both `b`'s unknowns; `Plate`'s `t >= 3mm` and the braces' `t <= 3mm` force 3 mm, and `w` is 6 mm. Every verdict holds; no argument is undefined (readings B5)."
+today = "run `bracesguard.ri` (with `minimize t` in `Plate`, no braces constraint): `Asm.a` and `Asm.b` print with no `t` or `w`; the definition-level `Plate.t` prints about 5 m."
+
+[candidates]
+note = "For `a`, 6 mm is the `w` a reading takes that ignores the guarded argument and decides `t` at 3 mm; under the given 6 mm it breaks `w == 2 * t`. For `b`, (6 mm, 12 mm) is what a reading takes that gives `t` the argument although its guard is false; it breaks the braces' `t <= 3mm`. Tried in order, or as every pair in order, the first taken is (3 mm, 6 mm)."
+
+[[candidates.unknown]]
+path = "Asm.a.w"
+values = ["6mm", "12mm"]
+
+[[candidates.unknown]]
+path = "Asm.b.t"
+values = ["6mm", "3mm"]
+
+[[candidates.unknown]]
+path = "Asm.b.w"
+values = ["12mm", "6mm"]
+
+[[expect]]
+path = "Asm.a.t"
+value = "6 mm"
+
+[[expect]]
+path = "Asm.a.w"
+value = "12 mm"
+
+[[expect]]
+path = "Asm.b.t"
+value = "3 mm"
+
+[[expect]]
+path = "Asm.b.w"
+value = "6 mm"
+
+[[expect]]
+path = "Asm.b/braces/constraint[0]"
+verdict = "satisfied"
+
+[[expect]]
+path = "Asm/summary"
+summary = { violated = 0, undetermined = 0, failed = 0 }

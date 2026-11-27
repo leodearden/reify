@@ -15,6 +15,7 @@
 structure def PreludeListing {
     let p2  = point2(0mm, 0mm)
     let v2  = vec2(1.0, 0.0)
+    let v3  = vec3(1.0, 0.0, 0.0)
     // Every vertex coordinate is a length; three vertices is the minimum.
     let tri = polygon(0mm, 0mm, 10mm, 0mm, 5mm, 10mm)
 }

@@ -1,0 +1,22 @@
+structure def Fan {
+    param d : Length = 40mm
+}
+structure def Case {
+    param needs_fan : Bool = false
+    sub fan : Fan where needs_fan
+}
+structure def Plate {
+    param t : Length
+}
+structure def Top {
+    param u : Length
+    param k : Length = 0mm
+    sub c : Case
+    sub p : Plate {
+        t = undef
+    }
+    constraint u > 1mm
+    constraint self.p.t > 1mm
+    constraint self.c.fan.d > 1mm
+    constraint 10mm / k > 1
+}

@@ -19,5 +19,5 @@
 module struct_ctor_conformance_pose_at_selector_field
 
 structure def PoseAtSelectorField {
-    let pl = PressureLoad(face: frame3(point3(0mm, 0mm, 0mm), orient_axis_angle(vec3(0.0, 0.0, 1.0), 0rad)))
+    let pl = PressureLoad(face: frame3(point3(0mm, 0mm, 0mm), orient_axis_angle(dir(0, 0, 1), 0rad)))
 }

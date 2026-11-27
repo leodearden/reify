@@ -8,6 +8,7 @@ mod analysis;
 mod branch_signature;
 mod calculus;
 mod complex;
+mod ctor_member_order;
 mod datum_projection;
 mod dual;
 mod dual_builtin_rules;
@@ -19,9 +20,12 @@ pub mod interp;
 pub mod kleene;
 mod non_differentiable;
 mod option_recovery;
+mod reader;
 pub mod sampled;
 mod sampled_fd;
 mod sanitize;
+mod scope_chain;
+mod upstream_values_hash;
 
 // Task #6672 (solver-unification ε): the forward-mode AD surface.  The AD
 // modules are PRIVATE and these flat re-exports are the only path to them, so
@@ -39,6 +43,7 @@ pub use dual_env::DualEnv;
 pub use dual_eval::{eval_dual, eval_dual_with_env, jacobian_row, jacobian_row_with_env};
 pub use dual_seeds::Seeds;
 pub use non_differentiable::NonDifferentiable;
+pub use upstream_values_hash::realization_upstream_values_hash;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -48,9 +53,11 @@ use reify_ast::QuantifierKind;
 use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, FIELD_ENTITY_PREFIX, SourceSpan, Type, ValueCellId};
 use reify_core::overload::{slot_matches_head_tier, slot_matches_wildcard_tier};
 use reify_core::scalar_tolerance::scalars_equal;
-use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, CompiledPattern, DeterminacyPredicateKind, DeterminacyState, FieldSourceKind, InterpolationKind, PersistentMap, SampledField, SampledGridKind, SelectorKind, StructureInstanceData, StructureTypeId, UnOp, UndefCause, Value, ValueMap, quaternion_is_finite};
+use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, CompiledPattern, CtorGeometryLet, DeterminacyPredicateKind, DeterminacyState, FieldSourceKind, InterpolationKind, PersistentMap, SampledField, SampledGridKind, SelectorKind, StructureInstanceData, StructureTypeId, UnOp, UndefCause, Value, ValueMap, quaternion_is_finite};
 
+use ctor_member_order::{CtorMember, ctor_member_order};
 use datum_projection::{datum_vec3, eval_datum_projection, eval_self_datum_projection};
+use scope_chain::{Frame, ScopeChain};
 
 /// Maximum recursion depth for user-defined function calls.
 const MAX_RECURSION_DEPTH: u32 = 256;
@@ -86,7 +93,10 @@ pub type SymbolicSelectorCtorFn =
 
 /// Evaluation context: provides values, user-defined functions, and recursion tracking.
 pub struct EvalContext<'a> {
-    /// Current values of all cells.
+    /// The store this context was built over. Evaluation never reads it: every
+    /// cell read goes through `scope`, whose reader is this store and whose frames
+    /// hold the local binders, so a child context keeps the same store. Public
+    /// because code outside this crate reads it.
     pub values: &'a ValueMap,
     /// User-defined functions available for evaluation.
     pub functions: &'a [CompiledFunction],
@@ -151,6 +161,8 @@ pub struct EvalContext<'a> {
     /// [`SymbolicSelectorCtorFn`] for the contract. When `None`, a selector ctor the
     /// builtins do not know evaluates to `Value::Undef` (legacy behaviour).
     pub symbolic_selector_ctor: Option<SymbolicSelectorCtorFn>,
+    /// The scope every cell read goes through: local frames over the store's reader.
+    scope: ScopeChain<'a>,
 }
 
 impl<'a> EvalContext<'a> {
@@ -167,6 +179,7 @@ impl<'a> EvalContext<'a> {
             containment: None,
             compute_dispatch: None,
             symbolic_selector_ctor: None,
+            scope: ScopeChain::over(values),
         }
     }
 
@@ -183,6 +196,7 @@ impl<'a> EvalContext<'a> {
             containment: None,
             compute_dispatch: None,
             symbolic_selector_ctor: None,
+            scope: ScopeChain::over(values),
         }
     }
 
@@ -200,6 +214,7 @@ impl<'a> EvalContext<'a> {
             containment: None,
             compute_dispatch: None,
             symbolic_selector_ctor: None,
+            scope: ScopeChain::over(values),
         }
     }
 
@@ -274,13 +289,21 @@ impl<'a> EvalContext<'a> {
         self
     }
 
-    /// Create a child context with a new scope (for function body evaluation).
-    fn with_scope<'b>(&self, values: &'b ValueMap) -> EvalContext<'b>
+    /// Read every store cell through `reader` instead of `values` — **test-only**:
+    /// with an empty `values`, a read that bypasses the reader sees nothing.
+    #[cfg(test)]
+    pub(crate) fn with_reader(mut self, reader: &'a dyn crate::reader::CellReader) -> Self {
+        self.scope = ScopeChain::over(reader);
+        self
+    }
+
+    /// A child context, one recursion level deeper, reading through `frame`.
+    fn with_frame<'b>(&self, frame: &'b Frame<'b>) -> EvalContext<'b>
     where
         'a: 'b,
     {
         EvalContext {
-            values,
+            values: self.values,
             functions: self.functions,
             recursion_depth: self.recursion_depth + 1,
             meta: self.meta,
@@ -290,7 +313,13 @@ impl<'a> EvalContext<'a> {
             containment: self.containment,
             compute_dispatch: self.compute_dispatch,
             symbolic_selector_ctor: self.symbolic_selector_ctor,
+            scope: frame.chain(),
         }
+    }
+
+    /// The value of cell `id` in this context's scope.
+    fn read(&self, id: &ValueCellId) -> Value {
+        self.scope.read(id)
     }
 }
 
@@ -305,7 +334,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
     match &expr.kind {
         CompiledExprKind::Literal(v) => v.clone(),
 
-        CompiledExprKind::ValueRef(id) => ctx.values.get_or_undef(id),
+        CompiledExprKind::ValueRef(id) => ctx.read(id),
 
         CompiledExprKind::CrossSubGeometryRef(_id) => {
             // This variant must be consumed by the bare-let drop site in
@@ -645,8 +674,8 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     // resolves to a captured `__field.<name>` cell. The compiler's
                     // `phase_augment_composed_captures` pass injects these cells
                     // into the lambda's `captures`, so by the time we reach this
-                    // arm — inside `apply_lambda`, with captures already cloned
-                    // into `ctx.values` — the field is in scope. We dispatch via
+                    // arm — inside `apply_lambda`, with the captures in the
+                    // lambda body's frame — the field is in scope. We dispatch via
                     // `apply_lambda_with_point_unpacking` to mirror the `sample`
                     // path. Builtins intercepted by the NAMED arms above (whole-
                     // field `max`/`min`/`argmax`/`argmin`, `flat_map`,
@@ -658,7 +687,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     // `Undef` from the cell lookup and fall through to
                     // `eval_builtin` unchanged.
                     let field_id = ValueCellId::new(FIELD_ENTITY_PREFIX, &function.name);
-                    let candidate = ctx.values.get_or_undef(&field_id);
+                    let candidate = ctx.read(&field_id);
                     if let Value::Field { lambda, .. } = &candidate
                         && evaluated_args.len() == 1
                     {
@@ -737,8 +766,8 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                                 // scope so binders are confined to exactly this arm's body.
                                 // Mirrors the `apply_lambda` child-scope idiom (lib.rs:2848).
                                 // Body extracted into `eval_variant_bind_arm` (`#[inline(never)]`)
-                                // to keep this recursive frame small — the `ValueMap` child
-                                // clone and loop locals would otherwise sit on every
+                                // to keep this recursive frame small — the binders' `ValueMap`,
+                                // its frame and loop locals would otherwise sit on every
                                 // `eval_expr` frame and overflow the 3 MiB test-thread stack
                                 // at MAX_RECURSION_DEPTH (pinned by
                                 // `eval_user_fn_recursion_depth_exceeded`).
@@ -881,7 +910,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
         } => {
             let mut capture_map = ValueMap::new();
             for cap_id in captures {
-                capture_map.insert(cap_id.clone(), ctx.values.get_or_undef(cap_id));
+                capture_map.insert(cap_id.clone(), ctx.read(cap_id));
             }
             Value::Lambda {
                 params: params
@@ -1113,13 +1142,8 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
         // lowering time (reify-expr stays registry-free,
         // design-decision-2; type_id is the StructureTypeId(0) placeholder,
         // identity is (name, version) per esc-3540-177 RULING 2+3).
-        // Evaluate every supplied `ordered_arg` in declaration order, then
-        // fill each `default` whose name is NOT covered by an ordered_arg,
-        // evaluated in the SAME `EvalContext` — so a default that is itself
-        // a structure ctor recurses through `eval_expr` and yields a nested
-        // `Value::StructureInstance`. An `Undef` field value is kept in its
-        // own slot: the structure is still constructed (no
-        // `FunctionCall`-style strict whole-value short-circuit).
+        // Ordered args first, then the uncovered defaults, the geometry lets
+        // and the lets in dependency order; see `eval_structure_instance_ctor`.
         CompiledExprKind::StructureInstanceCtor {
             type_id,
             type_name,
@@ -1127,6 +1151,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             ordered_args,
             defaults,
             lets,
+            geometry_lets,
             span,
         } => eval_structure_instance_ctor(
             *type_id,
@@ -1135,6 +1160,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             ordered_args,
             defaults,
             lets,
+            geometry_lets,
             *span,
             ctx,
         ),
@@ -1171,13 +1197,20 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
 ///
 /// No registry lookup — reify-expr stays registry-free (design-decision-2);
 /// `type_id` is the `StructureTypeId(0)` placeholder, identity is
-/// `(type_name, version)` per esc-3540-177 RULING 2+3. `ordered_args`
-/// evaluate in declaration order; each `default` whose name is not covered
-/// by an ordered arg fills its slot, evaluated in the SAME `EvalContext`
-/// (so a default that is itself a structure ctor recurses through
-/// `eval_expr` → nested `Value::StructureInstance`). An `Undef` field value
-/// is kept in its own slot — the structure is still constructed (no
-/// `FunctionCall`-style strict whole-value short-circuit).
+/// `(type_name, version)` per esc-3540-177 RULING 2+3.
+///
+/// `ordered_args` evaluate first, in stored order, against `ctx`. Then the
+/// `defaults` no ordered arg covers, the `geometry_lets` and the `lets`
+/// evaluate as ONE list, in the dependency order [`ctor_member_order`] gives
+/// (task 10098): a member sees every sibling it reads, whichever was declared
+/// first, as at template scope and under a `sub`. A geometry let whose inputs
+/// resolve in member scope becomes a symbolic handle there only, never a field
+/// (task 10352): a field member whose value would carry such a handle holds
+/// Undef in its place, so only a selector consumes it. A default that is
+/// itself a structure ctor recurses through `eval_expr` → nested
+/// `Value::StructureInstance`. An
+/// `Undef` field value is kept in its own slot — the structure is still
+/// constructed (no `FunctionCall`-style strict whole-value short-circuit).
 #[inline(never)]
 #[allow(clippy::too_many_arguments)]
 fn eval_structure_instance_ctor(
@@ -1187,6 +1220,7 @@ fn eval_structure_instance_ctor(
     ordered_args: &[(String, CompiledExpr)],
     defaults: &[(String, CompiledExpr)],
     lets: &[(String, CompiledExpr)],
+    geometry_lets: &[CtorGeometryLet],
     span: Option<SourceSpan>,
     ctx: &EvalContext,
 ) -> Value {
@@ -1194,48 +1228,47 @@ fn eval_structure_instance_ctor(
     for (name, arg) in ordered_args {
         fields.insert(name.clone(), eval_expr(arg, ctx));
     }
-    // Defaults that reference a SIBLING param must be evaluated against a child
-    // scope keyed by `ValueCellId::new(type_name, member)` — exactly like
-    // `materialize_template_lets` below, and for exactly the same reason.  The
-    // compiler compiles a structure-def param default in a `CompilationScope`
-    // registering the structure's own members, so `param y : Real = x + 1.0`
-    // lowers to `ValueRef(ValueCellId{entity: type_name, member: "x"})`.  In the
-    // OUTER `ctx` that cell exists only when the caller's own value map happens
-    // to carry it, which is true when the enclosing entity materializes the
-    // instance itself but NOT when the instance arrives from a fn-returned ctor
-    // — there the ref missed and the field silently became `Undef` (task 5494,
-    // boundary #5: correct value at eval or a loud diagnostic, never silent
-    // divergence).  The same SCOPE INVARIANT documented on
-    // `materialize_template_lets` applies: `with_scope` REPLACES the value map,
-    // which is correct because a well-compiled default can only carry
-    // `type_name`-stamped refs, all of which are in `child`.
-    //
-    // The child map is built LAZILY: a literal default (the overwhelmingly
-    // common case) needs no scope at all, so ctors whose defaults are all
-    // constants and that carry no lets pay nothing.  Once built, every
-    // subsequent default is written into BOTH maps so a later default sees
-    // earlier ones, matching the left-to-right scoping the compiler enforces —
-    // which keeps the child equal to `member_scope(type_name, &fields)`, so the
-    // lets reuse it rather than building a second one.
+    // A non-literal member evaluates against `member_scope`, not `ctx`: the
+    // compiler lowers a sibling read in a structure-def default or let to
+    // `ValueRef(ValueCellId::new(type_name, member))`, a cell the caller's
+    // value map carries only by accident, and never for a fn-returned ctor
+    // (task 5494). A sealed frame holds the member scope only, which is correct
+    // because a well-compiled member reads only its own structure's cells. The child is
+    // built lazily, so a ctor whose members are all literals pays nothing, and
+    // every field result is written into both maps, so `child` stays equal to
+    // `member_scope(type_name, &fields)` plus the geometry members' symbolic
+    // handles, which stay out of `fields` (uniform-member-access.md D5).
+    let members: Vec<CtorMember> = defaults
+        .iter()
+        .filter(|(name, _)| !fields.contains_key(name))
+        .map(CtorMember::Field)
+        .chain(geometry_lets.iter().map(CtorMember::Geometry))
+        .chain(lets.iter().map(CtorMember::Field))
+        .collect();
     let mut child: Option<ValueMap> = None;
-    for (name, def) in defaults {
-        if fields.contains_key(name) {
-            continue;
-        }
-        let value = if matches!(def.kind, CompiledExprKind::Literal(_)) {
-            eval_expr(def, ctx)
+    let mut minted: Vec<Value> = Vec::new();
+    for member in ctor_member_order(type_name, members) {
+        let (name, expr) = match member {
+            CtorMember::Field(field) => field,
+            CtorMember::Geometry(geometry) => {
+                let scope = child.get_or_insert_with(|| member_scope(type_name, &fields));
+                minted.extend(insert_symbolic_geometry_member(
+                    type_name, geometry, scope, ctx,
+                ));
+                continue;
+            }
+        };
+        let value = if matches!(expr.kind, CompiledExprKind::Literal(_)) {
+            eval_expr(expr, ctx)
         } else {
             let scope = child.get_or_insert_with(|| member_scope(type_name, &fields));
-            eval_expr(def, &ctx.with_scope(scope))
+            let frame = ctx.scope.sealed_frame(scope);
+            without_minted_handles(eval_expr(expr, &ctx.with_frame(&frame)), &minted)
         };
         if let Some(scope) = child.as_mut() {
             scope.insert(ValueCellId::new(type_name, name.as_str()), value.clone());
         }
         fields.insert(name.clone(), value);
-    }
-    if !lets.is_empty() {
-        let child = child.unwrap_or_else(|| member_scope(type_name, &fields));
-        materialize_template_lets(type_name, lets, child, &mut fields, ctx);
     }
     Value::StructureInstance(Box::new(
         reify_ir::StructureInstanceData {
@@ -1246,6 +1279,58 @@ fn eval_structure_instance_ctor(
         }
         .with_source_span(span),
     ))
+}
+
+/// Put a ctor's geometry let into its member `scope` as a symbolic handle,
+/// hashed over the realization's upstream args evaluated in that scope, so a
+/// sibling selector over it resolves as at template scope and under a `sub`.
+///
+/// A handle is minted only when every input the fold evaluates resolves in
+/// member scope: one hashed over an unresolved input names no geometry the
+/// template or a `sub` produces. Otherwise the member stays out of scope, and a
+/// sibling selector over it is Undef. Returns the minted handle, if any.
+///
+/// Out of line for the stack budget pinned by `eval_user_fn_recursion_depth_exceeded`.
+#[inline(never)]
+fn insert_symbolic_geometry_member(
+    type_name: &str,
+    geometry: &CtorGeometryLet,
+    scope: &mut ValueMap,
+    ctx: &EvalContext,
+) -> Option<Value> {
+    let frame = ctx.scope.sealed_frame(scope);
+    let member_ctx = ctx.with_frame(&frame);
+    let mut unresolved = false;
+    let upstream_values_hash = realization_upstream_values_hash(&geometry.upstream_args, |e| {
+        let value = eval_expr(e, &member_ctx);
+        unresolved |= value.contains_undef();
+        value
+    });
+    if unresolved {
+        return None;
+    }
+    let handle = Value::GeometryHandle {
+        realization_ref: geometry.realization.clone(),
+        upstream_values_hash,
+        kernel_handle: None,
+    };
+    scope.insert(
+        ValueCellId::new(type_name, geometry.member.as_str()),
+        handle.clone(),
+    );
+    Some(handle)
+}
+
+/// `value` with every handle in `minted` replaced by `Undef`, at any depth. A
+/// ctor's symbolic geometry handle serves selectors in member scope only, so a
+/// field member that carries one by value holds Undef in its place, while a
+/// selector beside it keeps what it resolved over the handle.
+fn without_minted_handles(value: Value, minted: &[Value]) -> Value {
+    let is_minted = |v: &Value| minted.contains(v);
+    if minted.is_empty() || !value.any_deep(&is_minted) {
+        return value;
+    }
+    value.map_deep(&|v| is_minted(v).then_some(Value::Undef))
 }
 
 /// Build a `Value::Enum` for a runtime enum-variant constructor (task 7456),
@@ -1276,79 +1361,22 @@ fn eval_variant_ctor(
 /// `ValueCellId::new(type_name, member)`, the cell a structure-def default or
 /// let compiles a sibling reference to.
 ///
+/// The scope holds no outer cell: it is entered as a sealed frame. Should
+/// structure-def members ever read module-level constants, it would have to be
+/// entered as an open frame instead.
+///
 /// PERFORMANCE NOTE: an O(fields) deep-clone — one `value.clone()` per field.
-/// Both callers gate it on actual need (a non-literal default, or a non-empty
-/// `lets`), so ctors with neither pay nothing.  If profiling ever shows this
-/// on a hot path, consider an overlay/COW scope that borrows from `fields`
-/// directly rather than copying every entry (analogous to how
-/// `ctx.with_scope` borrows without cloning the full value map).
+/// `eval_structure_instance_ctor` builds it only on its first non-literal
+/// member, so a ctor whose members are all literals pays nothing.  If
+/// profiling ever shows this on a hot path, consider an overlay/COW scope that
+/// borrows from `fields` directly rather than copying every entry (analogous
+/// to how a frame borrows its bindings rather than copying the scope below it).
 fn member_scope(type_name: &str, fields: &PersistentMap<String, Value>) -> ValueMap {
     let mut scope = ValueMap::new();
     for (member, value) in fields.iter() {
         scope.insert(ValueCellId::new(type_name, member.as_str()), value.clone());
     }
     scope
-}
-
-/// Eagerly materialize template `Let` cells into a just-built structure
-/// instance's `fields` map (task-4342, step-6).
-///
-/// Marked `#[inline(never)]` for the same reason `eval_structure_instance_ctor`
-/// is hoisted out: the locals here (a `ValueMap` plus loop temporaries) must
-/// NOT inflate `eval_expr`'s stack frame or widen the frame the
-/// `eval_user_fn_recursion_depth_exceeded` safety test relies on.  This
-/// function is called only when `!lets.is_empty()`, so the deep user-fn path
-/// (no struct lets) never pays the extra frame.
-///
-/// `child` must equal [`member_scope`]`(type_name, fields)`: the let exprs
-/// reference sibling params by their `ValueCellId` (entity == type_name).
-/// Iterate `lets` in declaration order; evaluate each against
-/// `ctx.with_scope(&child)` (so earlier lets are visible to later ones), and
-/// write the result into BOTH the child map and `fields`.
-#[inline(never)]
-fn materialize_template_lets(
-    type_name: &str,
-    lets: &[(String, CompiledExpr)],
-    mut child: ValueMap,
-    fields: &mut PersistentMap<String, Value>,
-    ctx: &EvalContext,
-) {
-    // Evaluate lets in declaration order.  For each let:
-    //   1. evaluate its compiled expr against ctx.with_scope(&child) — the
-    //      temporary borrow is released after eval_expr returns, so
-    //      child.insert on the next line is safe;
-    //   2. insert the result into `child` so later lets see earlier ones;
-    //   3. insert into `fields` for the final StructureInstance.
-    //
-    // Declaration order is a valid eval order: the compiler enforces left-to-right
-    // scoping (a let can only reference earlier params/lets), so no topological
-    // sort or cycle guard is needed here (unlike elaborate_child_lets_only).
-    //
-    // SCOPE INVARIANT (suggestion 2): `ctx.with_scope(&child)` REPLACES the value
-    // map entirely.  This is intentional and correct for structure-def lets because:
-    //
-    //   (a) The compiler compiles each let expr in a `CompilationScope` that only
-    //       registers the structure's own param names and earlier lets
-    //       (entity.rs:1107 / entity.rs:4107,4136).  Any identifier not in that
-    //       scope produces a compile error or an unresolved-ICE Undef expr — so a
-    //       well-compiled let expr can only carry `ValueRef(ValueCellId{entity ==
-    //       type_name, ...})` refs, all of which are present in `child`.
-    //
-    //   (b) The `sub`-path reference implementation (`elaborate_child_lets_only`,
-    //       reify-eval/src/unfold.rs:570-574) ALSO evaluates let exprs against a
-    //       child-scoped context (`eval_ctx_with_meta(&child_values, ...)`), not
-    //       the full module ValueMap.  Our behavior is therefore identical to the
-    //       sub baseline, guaranteeing sub-consistency by construction.
-    //
-    // If a future language feature adds module-level constants accessible inside
-    // structure-def lets (analogous to C++ `static constexpr`), the child scope
-    // would need to be layered over `ctx.values` for unresolved ids.  For now no
-    // such feature exists; the invariant is enforced by the compiler.
-    for (name, let_expr) in lets {
-        let value = eval_expr(let_expr, &ctx.with_scope(&child));
-        child.insert(ValueCellId::new(type_name, name.as_str()), value.clone());
-        fields.insert(name.clone(), value);
-    }
 }
 
 /// Evaluate `CompiledExprKind::IndexAccess`. Extracted from `eval_expr`'s
@@ -1644,12 +1672,13 @@ fn eval_compiled_function_with_values(
     }
     for (binding_name, binding_expr) in &func.body.let_bindings {
         let val = {
-            let body_ctx = ctx.with_scope(&scope);
-            eval_expr(binding_expr, &body_ctx)
+            let frame = ctx.scope.sealed_frame(&scope);
+            eval_expr(binding_expr, &ctx.with_frame(&frame))
         };
         scope.insert(ValueCellId::new(&func.name, binding_name), val);
     }
-    eval_expr(&func.body.result_expr, &ctx.with_scope(&scope))
+    let frame = ctx.scope.sealed_frame(&scope);
+    eval_expr(&func.body.result_expr, &ctx.with_frame(&frame))
 }
 
 /// Evaluate a user-defined function call.
@@ -1752,7 +1781,8 @@ fn resolve_symbolic_selector_on_undef(
         return result;
     };
     let mut diags = Vec::new();
-    let minted = mint(expr, ctx.values, &mut diags);
+    let visible = ctx.scope.visible_values();
+    let minted = mint(expr, &visible, &mut diags);
     if let Some(sink) = ctx.diagnostics {
         sink.borrow_mut().extend(diags);
     }
@@ -1762,7 +1792,7 @@ fn resolve_symbolic_selector_on_undef(
 /// Evaluate a `VariantBind` match arm body in a child scope with payload fields inserted.
 ///
 /// Extracted from `eval_expr`'s `Match` arm and marked `#[inline(never)]` to keep that
-/// recursive function's stack frame small — the `ValueMap` child clone and loop-local `val`
+/// recursive function's stack frame small — the binders' `ValueMap`, its frame and loop-local `val`
 /// would otherwise sit on every `eval_expr` frame and overflow the 3 MiB test-thread stack
 /// at `MAX_RECURSION_DEPTH` (256) levels of user-fn recursion (same rationale as
 /// `eval_structure_instance_ctor` / `eval_fn_field`; pinned by
@@ -1772,7 +1802,7 @@ fn resolve_symbolic_selector_on_undef(
 /// INV-4/D2: missing or unknown payload fields bind `Value::Undef`; undef propagates
 /// through the body naturally.
 ///
-/// **Recursion depth:** `ctx.with_scope` deliberately increments `recursion_depth` by 1
+/// **Recursion depth:** `ctx.with_frame` deliberately increments `recursion_depth` by 1
 /// (consistent with `apply_lambda`). A `VariantBind` arm therefore consumes one recursion
 /// slot per nesting level, whereas bare `Variant`/`Wildcard` arms call `eval_expr` on
 /// `ctx` directly and do not. In practice match nesting is source-bounded (bounded by the
@@ -1785,7 +1815,7 @@ fn eval_variant_bind_arm(
     body: &CompiledExpr,
     ctx: &EvalContext,
 ) -> Value {
-    let mut child = ctx.values.clone();
+    let mut bindings = ValueMap::new();
     for (field_name, cell) in binders {
         // INV-4/D2 — bind the payload value as-is; an undef payload field binds
         // Value::Undef, which then propagates through the body naturally.
@@ -1796,9 +1826,10 @@ fn eval_variant_bind_arm(
             .find(|(f, _)| f == field_name)
             .map(|(_, v)| v.clone())
             .unwrap_or(Value::Undef);
-        child.insert(cell.clone(), val);
+        bindings.insert(cell.clone(), val);
     }
-    eval_expr(body, &ctx.with_scope(&child))
+    let frame = ctx.scope.open_frame(&bindings);
+    eval_expr(body, &ctx.with_frame(&frame))
 }
 
 /// Evaluate a Quantifier (`forall` / `exists`) expression.
@@ -1874,11 +1905,11 @@ fn eval_quantifier(
             // references the loop variable by name without going through
             // `remap_cell` still sees a live binding instead of
             // `Value::Undef`. Cost is one map insert per iteration.
-            let mut scope = ctx.values.clone();
-            let cell_value = ctx.values.get_or_undef(cell_id);
-            scope.insert(variable_id.clone(), cell_value);
+            let mut binding = ValueMap::new();
+            binding.insert(variable_id.clone(), ctx.read(cell_id));
+            let frame = ctx.scope.open_frame(&binding);
 
-            let pred_val = eval_expr(&pred_clone, &ctx.with_scope(&scope));
+            let pred_val = eval_expr(&pred_clone, &ctx.with_frame(&frame));
             match (kind, pred_val) {
                 (QuantifierKind::ForAll, Value::Bool(false)) => return Value::Bool(false),
                 (QuantifierKind::ForAll, Value::Bool(true)) => {}
@@ -1970,9 +2001,10 @@ fn eval_pred_for_value_elem<'a>(
     predicate: &CompiledExpr,
     ctx: &EvalContext<'a>,
 ) -> Value {
-    // Bind the element value in the scope (existing behaviour).
-    let mut scope = ctx.values.clone();
-    scope.insert(variable_id.clone(), elem.clone());
+    // Bind the element value in an open frame over the current scope.
+    let mut binding = ValueMap::new();
+    binding.insert(variable_id.clone(), elem.clone());
+    let frame = ctx.scope.open_frame(&binding);
 
     if let Some(det) = ctx.determinacy {
         // Extend the determinacy snapshot with the loop variable's binding so
@@ -2011,31 +2043,19 @@ fn eval_pred_for_value_elem<'a>(
         if !ext_det.contains_key(variable_id) {
             ext_det.insert(variable_id.clone(), (elem.clone(), loop_var_state));
         }
-        // Directly construct EvalContext merging the new scope and extended
-        // determinacy snapshot.  Both are local, but they outlive the
-        // eval_expr call within this function.  All other fields are borrowed
-        // from `ctx` at the outer lifetime 'a, which is longer — coercion is
-        // sound (covariant lifetime shrink for shared references).
+        // The frame's child context, with the extended determinacy snapshot.
         eval_expr(
             predicate,
             &EvalContext {
-                values: &scope,
                 determinacy: Some(&ext_det),
-                functions: ctx.functions,
-                recursion_depth: ctx.recursion_depth + 1,
-                meta: ctx.meta,
-                diagnostics: ctx.diagnostics,
-                undef_causes: ctx.undef_causes,
-                containment: ctx.containment,
-                compute_dispatch: ctx.compute_dispatch,
-                symbolic_selector_ctor: ctx.symbolic_selector_ctor,
+                ..ctx.with_frame(&frame)
             },
         )
     } else {
         // No determinacy context — fall through to existing behaviour.
         // DeterminacyPredicate without a snapshot already returns Undef
         // (the else branch in eval_expr), so no special handling needed.
-        eval_expr(predicate, &ctx.with_scope(&scope))
+        eval_expr(predicate, &ctx.with_frame(&frame))
     }
 }
 
@@ -2077,8 +2097,10 @@ fn interp_render(value: &Value) -> String {
 /// Emit the post-`Undef` builtin diagnostics — stackup (§4.4), multi-load-case
 /// FEA (`linear_combine`, task #10), the geometry-builtin dimension family (see
 /// `geometry_diagnose`'s own doc for the name list), inverse-dynamics body
-/// mass, ISO tolerancing, the `orient_exp` rotation-vector dimension gate
-/// (#6080), the `dir` direction constructor (`direction_diagnose`), and the
+/// mass, ISO tolerancing, the orientation builtins (`orient_exp`'s
+/// rotation-vector dimension gate, #6080, and a non-Direction at
+/// `orient_axis_angle` / `orient_look_at` / `orient_basis`'s Direction
+/// positions), the `dir` direction constructor (`direction_diagnose`), and the
 /// joint LENGTH positions (`joints_diagnose`) — for a builtin call whose
 /// `result` is `Value::Undef`.
 ///
@@ -2093,7 +2115,8 @@ fn interp_render(value: &Value) -> String {
 ///
 /// The classifiers' name families (stackup math builtins / `"linear_combine"` /
 /// the geometry-builtin family (`geometry_diagnose`) / dynamics /
-/// `"iso_it_tolerance"` / `"orient_exp"` / `"dir"` / `"transform_at"`,
+/// `"iso_it_tolerance"` / `"orient_exp"`, `"orient_axis_angle"`,
+/// `"orient_look_at"`, `"orient_basis"` / `"dir"` / `"transform_at"`,
 /// `"couple"`, `"screw"`, `"rack_and_pinion"`) are disjoint, so at most
 /// one classifier returns `Some` for any single `Undef`; each returns `None`
 /// for every other name or for valid input, making this a cheap no-op for
@@ -2127,10 +2150,13 @@ fn emit_undef_builtin_diagnostics(name: &str, args: &[Value], result: &Value, ct
         // IT5–IT18 / nominal > 500 mm) — well-typed but unsupported, surfaced as
         // Severity::Error instead of a silent Undef.
         reify_stdlib::tolerancing_diagnose(name, args),
-        // Rotation-vector dimension (#6080): `orient_exp` requires Vector3<Angle>,
-        // since log(q) = axis * angle. DIMENSIONLESS used to be the accepted
-        // spelling, so this Severity::Error is the migration mechanism for that
-        // breaking change rather than a silent Undef.
+        // Orientation builtins. Rotation-vector dimension (#6080): `orient_exp`
+        // requires Vector3<Angle>, since log(q) = axis * angle. DIMENSIONLESS
+        // used to be the accepted spelling, so this Severity::Error is the
+        // migration mechanism for that breaking change rather than a silent
+        // Undef. And a non-Direction that reaches orient_axis_angle /
+        // orient_look_at / orient_basis's Direction positions at eval ->
+        // ArgTypeMismatch.
         reify_stdlib::orientation_diagnose(name, args),
         // `dir`: dimensioned component -> DimensionedArgRejected; zero or
         // non-finite vector -> E_DegenerateDirection.
@@ -3241,7 +3267,8 @@ pub fn apply_lambda(lambda: &Value, args: &[Value], ctx: &EvalContext) -> Value 
                 eval_map.insert(id.clone(), arg.clone());
             }
 
-            eval_expr(body, &ctx.with_scope(&eval_map))
+            let frame = ctx.scope.sealed_frame(&eval_map);
+            eval_expr(body, &ctx.with_frame(&frame))
         }
         _ => Value::Undef,
     }
@@ -6370,6 +6397,7 @@ mod tests {
             lets.into_iter()
                 .map(|(n, e)| (n.to_string(), e))
                 .collect(),
+            Vec::new(),
             None, // test fixture: no user source span
             Type::StructureRef(name.to_string()),
         )
@@ -6514,6 +6542,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            Vec::new(),
             span,
             Type::StructureRef(name.to_string()),
         )
@@ -6556,7 +6585,7 @@ mod tests {
     //
     // `eval_expr` on a `StructureInstanceCtor` carrying `lets` must eagerly
     // materialize derived members into `fields`.  RED until step-6 implements
-    // `materialize_template_lets` (currently a stub that does nothing).
+    // let materialization.
 
     /// task 5494: a non-literal default that references a SIBLING param is
     /// evaluated in the instance's own member scope, not the caller's — the
@@ -7881,7 +7910,7 @@ mod tests {
     // Pin the runtime fallthrough that turns a `field_name(p)` call inside
     // a composed lambda body into a dispatch to the captured
     // `__field.<field_name>` cell. The `_ =>` arm of the FunctionCall match
-    // (eval_expr) checks ctx.values for a `Value::Field` keyed by the
+    // (eval_expr) reads the current scope for a `Value::Field` keyed by the
     // resolved `__field.<name>` cell ID; if present, it dispatches via
     // `apply_lambda_with_point_unpacking`. Otherwise it falls through to
     // `reify_stdlib::eval_builtin` (preserving the prior behavior for

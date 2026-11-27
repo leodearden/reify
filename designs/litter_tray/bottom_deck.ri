@@ -126,7 +126,7 @@ structure def BottomDeck : Rigid {
     // boolean-compose lowering leaves seam edges in the rim-height faces and
     // every later `edges_at_height` fillet then fails in OCCT (round-3 finding,
     // 2026-09-03 — see dogfood-findings.md).
-    let up = vec3(0.0, 0.0, 1.0)
+    let up = dir(0, 0, 1)
     aux let outer_blank  = translate(box(outer_length, outer_width, wall_height), 0mm, 0mm, wall_height / 2)
     aux let outer        = fillet(outer_blank, edges_parallel_to(outer_blank, up, 1deg), corner_radius)
     aux let recess_blank = translate(box(recess_length, recess_width, recess_h), 0mm, 0mm, ledge_z + recess_h / 2)
@@ -156,12 +156,12 @@ structure def BottomDeck : Rigid {
     aux let channels = union_all(
         translate(box(void_d + 1mm, void_w, void_h), inner_x - void_d / 2 + 0.5mm, 0mm, floor_thickness + void_h / 2),
         translate(box(4 * lower_wall, slot_flat, slot_h), end_x, 0mm, slot_z),
-        translate(rotate(cylinder(slot_h / 2, 4 * lower_wall), 0, 1, 0, 90deg), end_x - 2 * lower_wall, slot_flat / 2, slot_z),
-        translate(rotate(cylinder(slot_h / 2, 4 * lower_wall), 0, 1, 0, 90deg), end_x - 2 * lower_wall, 0mm - slot_flat / 2, slot_z),
+        translate(rotate(cylinder(slot_h / 2, 4 * lower_wall), dir(0, 1, 0), 90deg), end_x - 2 * lower_wall, slot_flat / 2, slot_z),
+        translate(rotate(cylinder(slot_h / 2, 4 * lower_wall), dir(0, 1, 0), 90deg), end_x - 2 * lower_wall, 0mm - slot_flat / 2, slot_z),
         translate(box(void_d + 1mm, void_w, void_h), void_d / 2 - inner_x - 0.5mm, 0mm, floor_thickness + void_h / 2),
         translate(box(4 * lower_wall, slot_flat, slot_h), 0mm - end_x, 0mm, slot_z),
-        translate(rotate(cylinder(slot_h / 2, 4 * lower_wall), 0, 1, 0, 90deg), 0mm - end_x - 2 * lower_wall, slot_flat / 2, slot_z),
-        translate(rotate(cylinder(slot_h / 2, 4 * lower_wall), 0, 1, 0, 90deg), 0mm - end_x - 2 * lower_wall, 0mm - slot_flat / 2, slot_z)
+        translate(rotate(cylinder(slot_h / 2, 4 * lower_wall), dir(0, 1, 0), 90deg), 0mm - end_x - 2 * lower_wall, slot_flat / 2, slot_z),
+        translate(rotate(cylinder(slot_h / 2, 4 * lower_wall), dir(0, 1, 0), 90deg), 0mm - end_x - 2 * lower_wall, 0mm - slot_flat / 2, slot_z)
     )
 
     param geometry : Solid = difference(base_soft, channels)

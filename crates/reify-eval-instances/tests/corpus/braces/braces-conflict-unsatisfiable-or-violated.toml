@@ -1,0 +1,32 @@
+tests = "A braces constraint that conflicts with the definition's own makes the instance's solve unsatisfiable when the value is being chosen, and is violated when the value is given."
+rule = "decision 4 (\"A conflicting constraint is an error, unsatisfiable\"); contract section 8 (a failed solve is a result)"
+provenance = "design Part 14 decision 4 (both `Motor` variants). design decision 4 (Leo's question on a conflicting constraint); language-1 L5. claims-3 probe b1.ri; failing.md M6 and probe p/a4.ri; language-1 L5."
+needs = ["instance", "braces", "constraint", "summary", "unknown", "solve-infeasible"]
+answer_basis = "stated: decision 4. `m1`: no value satisfies the constraints that bear, so the solve finds none; `shaft_d` is `value undefined` and nothing falls back to a default, so the braces' verdict and Motor's two bounds, which read it, are undetermined (readings B3). `m2`: `shaft_d` is given, so it is no unknown and nothing is chosen; 12 mm against `> 15mm` is violated, and Motor's bounds hold. Neither sub's `/arguments` verdict is undetermined: `m1` has no arguments and `m2`'s is defined (readings B5). The failed solve's own node belongs to the solve design (task 10610) and is not pinned; it is not counted as a failure (readings B3, B4). Summary: violated 1 (m2's braces), undetermined 3 (m1)."
+
+[candidates]
+note = "12 mm and 20 mm meet Motor's bounds and not the braces (a reading in which the braces do not bear takes 12 mm); 26 mm meets the braces and not Motor's `<= 20mm` (a reading in which the definition's bounds do not bear at the instance takes it). Each candidate leaves a constraint that depended on the trial violated, so none is taken."
+
+[[candidates.unknown]]
+path = "Rig.m1.shaft_d"
+values = ["12mm", "20mm", "26mm"]
+
+[[expect]]
+path = "Rig.m1.shaft_d"
+value = "undefined"
+
+[[expect]]
+path = "Rig.m1/braces/constraint[0]"
+verdict = "undetermined"
+
+[[expect]]
+path = "Rig.m2.shaft_d"
+value = "12 mm"
+
+[[expect]]
+path = "Rig.m2/braces/constraint[0]"
+verdict = "violated"
+
+[[expect]]
+path = "Rig/summary"
+summary = { violated = 1, undetermined = 3, failed = 0 }

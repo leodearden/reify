@@ -44,7 +44,7 @@ use crate::topology_attribute_propagation::{
     populate_sweep_attributes, propagate_attributes_via_brepalgoapi_history,
 };
 use crate::volume_mesh_sources::{MeshedVolume, VolumeMeshSources};
-use crate::{BuildResult, Engine, EvaluationState, MeshSurface, TessellateResult};
+use crate::{BuildResult, DefEnv, Engine, EvaluationState, MeshSurface, TessellateResult};
 
 /// The four build/tessellate entry-point "surfaces" whose per-build engine
 /// state is reset unconditionally by [`Engine::reset_per_build_state`]
@@ -826,7 +826,7 @@ fn seed_cross_sub_named_steps(
     functions: &[CompiledFunction],
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
-    templates: &[reify_compiler::TopologyTemplate],
+    env: DefEnv<'_>,
 ) {
     // Same-call dedup: (child_template_name, args_fingerprint, realization_name) → handle.
     // Two subs of the same child with identical override declarations share one
@@ -854,14 +854,11 @@ fn seed_cross_sub_named_steps(
         } else {
             // ── override path: per-instance re-realization ─────────────────
             //
-            // 1. Locate the child template.  If it isn't in the module (e.g.
-            //    an external or forward-declared structure) skip silently —
-            //    the missing-structure diagnostic was already emitted during
-            //    compilation.
-            let child_template = match reify_compiler::find_template(templates, &sub.structure_name)
-            {
-                Some(t) => t,
-                None => continue,
+            // 1. Locate the child template.  A structure that does not
+            //    resolve in `env` is skipped: check-time conformance and graph
+            //    build already diagnose it (`UnknownSubStructure`).
+            let Some(child_template) = env.resolve_template(&sub.structure_name) else {
+                continue;
             };
 
             // 2. Build the per-instance overlay: `values` with each arg's
@@ -1059,10 +1056,9 @@ fn realize_overridden_instance_into(
 /// handles via `resolve_geometry_handle_arg`'s `IndexAccess` arm (which
 /// already reconstructs `"<binding>.<member>"`).
 ///
-/// Forward-declared or external defs not yet present in
-/// `module_named_steps` are skipped silently on the no-args path, and
-/// handled via [`reify_compiler::find_template`] on the args path (which
-/// searches the full templates slice regardless of order).
+/// Defs not yet present in `module_named_steps` (declared later, or outside
+/// the module) are skipped on the no-args path, and resolved in `env` on the
+/// args path (regardless of declaration order).
 ///
 /// # Scope boundary
 ///
@@ -1083,7 +1079,7 @@ fn seed_cross_let_named_steps(
     functions: &[CompiledFunction],
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
-    templates: &[reify_compiler::TopologyTemplate],
+    env: DefEnv<'_>,
 ) {
     use reify_core::identity::ValueCellId;
 
@@ -1121,13 +1117,12 @@ fn seed_cross_let_named_steps(
         } else {
             // ── override path: per-instance re-realization ─────────────────
 
-            // 1. Locate the child template.  If absent (forward-declared / external
-            //    def) skip silently — same policy as seed_cross_sub_named_steps.
-            let child_template =
-                match reify_compiler::find_template(templates, def_name.as_str()) {
-                    Some(t) => t,
-                    None => continue,
-                };
+            // 1. Locate the child template.  A def that does not resolve in
+            //    `env` is skipped — its constructor was already diagnosed at
+            //    compile time; same policy as seed_cross_sub_named_steps.
+            let Some(child_template) = env.resolve_template(def_name.as_str()) else {
+                continue;
+            };
 
             // 2. Obtain the default kernel.  The build() entry-point guards verify
             //    `kernels.contains_key(default_kernel_name)` before entering the
@@ -2674,7 +2669,8 @@ impl Engine {
     /// `solve_load_cases`) is absent from a compiled user module's
     /// `functions` table — `compile_with_stdlib` keeps stdlib fns in a
     /// separate prelude — but present in `self.functions` once `build()` →
-    /// `check()` merges module + prelude (`merge_functions`), which runs
+    /// `check()` builds the environment's table (`DefEnv::function_table`),
+    /// which runs
     /// BEFORE this pass. Scanning `module.functions` alone therefore misses
     /// every stdlib consumer. `self.functions` is a superset of
     /// `module.functions` on the build path, but names dedup in the
@@ -2737,8 +2733,8 @@ impl Engine {
         // `functions` table — `compile_with_stdlib` keeps stdlib fns in a
         // separate prelude — so scanning `module.functions` alone misses it and
         // the demand never fires. `self.functions: Arc<[CompiledFunction]>`
-        // (`lib.rs:674`) holds the merged prelude+module table populated by
-        // `build()` → `check()` (`merge_functions`), which runs BEFORE this
+        // (`lib.rs:674`) holds the prelude+module table populated by
+        // `build()` → `check()` (`DefEnv::function_table`), which runs BEFORE this
         // demand pass (`build_with_geometry_output`'s `self.check(module)`
         // precedes its `compute_demanded_reprs` call) — so it is already
         // populated here on the real build path. `self.functions` is a
@@ -3366,9 +3362,11 @@ fn resolve_instance_color(
 /// callers today, and the shared key's cold-path hazard predates this scope.
 /// Before `build_snapshot` acquires a production caller, two things must
 /// happen, in order. First, the shared key is fixed, owned by #7052. Second,
-/// the per-build cost is paid down by a FRESHNESS gate, owned by #7576: skip
-/// when the output cell's cache freshness is `Final` and no realization in the
-/// node's `realization_inputs` moved on this tick. That record is a superset of
+/// the per-build cost is paid down by a FRESHNESS gate (recorded in #7576, and
+/// not being built in this code: the old evaluation orchestration is being
+/// replaced, docs/notes/old-evaluation-core-hold.md): skip when the output
+/// cell's cache freshness is `Final` and no realization in the node's
+/// `realization_inputs` moved on this tick. That record is a superset of
 /// what the node reads (see `redispatched`), so such a gate errs toward
 /// re-dispatching. It must NOT be built by widening `redispatched`'s lifetime:
 /// a signal that outlives the build closes later builds to the node.
@@ -3577,7 +3575,6 @@ impl Engine {
             solve_stage: _,        // constructor-named solve profile + fallback solver
             cache: _,              // node cache (engine-scoped config)
             prelude: _,            // 'static compiled prelude
-            prelude_functions: _,  // pre-flattened prelude fns
             loaded_program: _,     // Engine::load's program (resolution environment)
             structure_registry: _, // SIR structure meta (eval state)
             param_overrides: _,    // set_param_and_invalidate overrides
@@ -3912,6 +3909,8 @@ impl Engine {
             // and deliberately keeps a non-projectable node a candidate across
             // all of them — see `RedispatchPassState`.
             let mut redispatch_pass_state = RedispatchPassState::default();
+            let env_scope = self.env_of(module);
+            let env = env_scope.env();
             for (t_idx, template) in module.templates.iter().enumerate() {
                 // `named_steps` is scoped per-template so that two structures
                 // that each declare `let body = …` cannot clobber each other's
@@ -3935,7 +3934,7 @@ impl Engine {
                     &self.functions,
                     &self.meta_map,
                     &mut diagnostics,
-                    &module.templates,
+                    env,
                 );
                 let build_steps = template_build_steps(template, unified_schedule.as_deref(), None);
                 let terminal_idx = terminal_realization_index(template);
@@ -4224,7 +4223,7 @@ impl Engine {
                     &self.swept_kind_table,
                     &realized_reprs,
                     &mut diagnostics,
-                    &module.templates,
+                    env,
                 );
                 // task 4222 δ: re-evaluate Undef Let cells with containment hook.
                 // Mirrors the identical call in `build()` — see that site for the
@@ -4731,6 +4730,8 @@ impl Engine {
             // and deliberately keeps a non-projectable node a candidate across
             // all of them — see `RedispatchPassState`.
             let mut redispatch_pass_state = RedispatchPassState::default();
+            let env_scope = self.env_of(module);
+            let env = env_scope.env();
             for (t_idx, template) in module.templates.iter().enumerate() {
                 // `named_steps` is scoped per-template so that two structures
                 // that each declare `let body = …` cannot clobber each other's
@@ -4754,7 +4755,7 @@ impl Engine {
                     &self.functions,
                     &self.meta_map,
                     &mut diagnostics,
-                    &module.templates,
+                    env,
                 );
                 // Task 4628: seed per-binding cross-`let` handles. Runs on both
                 // schedulers (same as seed_cross_sub_named_steps); named_steps entries
@@ -4770,7 +4771,7 @@ impl Engine {
                     &self.functions,
                     &self.meta_map,
                     &mut diagnostics,
-                    &module.templates,
+                    env,
                 );
                 // Task 4358 ε: this template's realizations + selector/query
                 // value-cells in build-walk order (see `template_build_steps`).
@@ -5077,7 +5078,7 @@ impl Engine {
                     &self.swept_kind_table,
                     &realized_reprs,
                     &mut diagnostics,
-                    &module.templates,
+                    env,
                 );
                 // task 4222 δ: re-evaluate Undef Let cells with the live
                 // containment hook so `sample(restrict(field, region), point)`
@@ -5393,8 +5394,8 @@ impl Engine {
     ///    and run constraints. Its serialized `geometry_output` is discarded —
     ///    export is driven by the recognized occurrences below, not that format.
     /// 2. Walk `module.templates × sub_components` in declaration order. Each
-    ///    `sub`'s occurrence template is resolved module-first, then via the
-    ///    stdlib prelude ([`crate::engine_eval::find_template_with_prelude`]) —
+    ///    `sub`'s occurrence template is resolved in the module's environment
+    ///    ([`crate::DefEnv::resolve_template`]), stdlib prelude included —
     ///    stdlib `Output` templates (`STLOutput` et al.) live in the prelude, not
     ///    `CompiledModule::templates`. An occurrence is an `Output` iff it is an
     ///    `EntityKind::Occurrence` AND its trait bounds transitively conform to
@@ -5436,15 +5437,14 @@ impl Engine {
         //     argument is irrelevant when `emit_geometry_output == false`.
         let r = self.build_with_geometry_output(module, ExportFormat::Step, false);
 
-        // Merge module trait defs with the prelude's: the `trait Output : Sink`
-        // lattice lives in the prelude std.io module, and `module.trait_defs` is
-        // empty for user modules. Built once; supports transitive user-defined
-        // Output occurrences (`occurrence def Foo : MyExport`, `trait MyExport :
-        // Output`). The direct `["Output"]` bound greens even without the merge.
-        let mut merged_trait_defs: Vec<reify_compiler::CompiledTrait> = module.trait_defs.clone();
-        for pm in self.prelude {
-            merged_trait_defs.extend(pm.trait_defs.iter().cloned());
-        }
+        // The environment's bound traits: the `trait Output : Sink` lattice
+        // lives in the prelude std.io module. Built once; supports transitive
+        // user-defined Output occurrences (`occurrence def Foo : MyExport`,
+        // `trait MyExport : Output`). The direct `["Output"]` bound greens even
+        // without the lattice.
+        let env_scope = self.env_of(module);
+        let env = env_scope.env();
+        let bound_traits: Vec<reify_compiler::CompiledTrait> = env.traits().cloned().collect();
 
         let default_kernel_name = self.default_kernel_name.clone();
         let mut artifacts: Vec<crate::ExportArtifact> = Vec::new();
@@ -5527,12 +5527,8 @@ impl Engine {
         //     emit one artifact per recognized Output occurrence (step-10).
         for template in &module.templates {
             for sub in &template.sub_components {
-                // Resolve the occurrence template — module first, then prelude.
-                let Some(occ_template) = crate::engine_eval::find_template_with_prelude(
-                    module,
-                    self.prelude,
-                    &sub.structure_name,
-                ) else {
+                // Resolve the occurrence template in the module's environment.
+                let Some(occ_template) = env.resolve_template(&sub.structure_name) else {
                     continue;
                 };
                 // Gate: Output == an `occurrence def … : Output` (trait-bound
@@ -5540,7 +5536,7 @@ impl Engine {
                 if occ_template.entity_kind != reify_compiler::EntityKind::Occurrence {
                     continue;
                 }
-                if !conforms_to_output(&occ_template.trait_bounds, &merged_trait_defs) {
+                if !conforms_to_output(&occ_template.trait_bounds, &bound_traits) {
                     continue;
                 }
 
@@ -5898,6 +5894,9 @@ impl Engine {
         // per-iteration.
         let mesh_contract_mode = self.mesh_contract_mode;
 
+        let env_scope = self.env_of(module);
+
+        let env = env_scope.env();
         for (t_idx, template) in module.templates.iter().enumerate() {
             let mut named_steps: HashMap<String, KernelHandle> = HashMap::new();
             // Task 5033 Gap #2 Gap A: by-name repr sibling of `named_steps`.
@@ -5913,7 +5912,7 @@ impl Engine {
                 &self.functions,
                 &self.meta_map,
                 &mut diagnostics,
-                &module.templates,
+                env,
             );
             let terminal_idx = terminal_realization_index(template);
             for (r_idx, realization) in template.realizations.iter().enumerate() {
@@ -6397,11 +6396,13 @@ impl Engine {
             } else {
                 HashSet::new()
             };
+        let env_scope = self.env_of(module);
+        let env = env_scope.env();
         let meshes = Self::tessellate_from_values(
             &mut self.geometry_kernels,
             &registry_borrowed,
             self.default_kernel_name.as_deref(),
-            module,
+            env,
             &mut values,
             &self.functions,
             &mut diagnostics,
@@ -6743,7 +6744,9 @@ impl Engine {
         geometry_kernels: &mut BTreeMap<String, Box<dyn GeometryKernel>>,
         registry: &BTreeMap<String, &CapabilityDescriptor>,
         default_kernel_name: Option<&str>,
-        module: &CompiledModule,
+        // The module to tessellate is `env.module()`; its subs and
+        // let-bound instances resolve in `env`.
+        env: DefEnv<'_>,
         values: &mut ValueMap,
         functions: &[CompiledFunction],
         diagnostics: &mut Vec<Diagnostic>,
@@ -6810,6 +6813,7 @@ impl Engine {
         // cannot abort a build; this one can.)
         mesh_contract_mode: reify_ir::geometry::MeshContractMode,
     ) -> Vec<MeshSurface> {
+        let module = env.module();
         let mut meshes = Vec::new();
 
         // Task ε (3436): the engine's default kernel is fetched by name from
@@ -6894,7 +6898,7 @@ impl Engine {
                 functions,
                 meta_map,
                 diagnostics,
-                &module.templates,
+                env,
             );
             // θ (task 4361) step-6: this template's realizations + selector/
             // query value-cells in tessellate-walk order — the same
@@ -7106,7 +7110,7 @@ impl Engine {
                 &*swept_kind_table,
                 &realized_reprs_tess,
                 diagnostics,
-                &module.templates,
+                env,
             );
             // Task 3441: snapshot this template's `named_steps` so a later
             // template that subs from it can seed compound-key entries.
@@ -11494,7 +11498,7 @@ impl Engine {
         swept_kinds: &SweptKindTable,
         realized_reprs: &HashMap<RealizationNodeId, ReprKind>,
         diagnostics: &mut Vec<Diagnostic>,
-        templates: &[reify_compiler::TopologyTemplate],
+        env: DefEnv<'_>,
     ) {
         // GHR-ζ (task 3608): whole-handle geometry-query dispatch
         // (volume / area / centroid / bounding_box). Added here — rather than a
@@ -11549,7 +11553,7 @@ impl Engine {
             meta_map,
             &*kernel,
             diagnostics,
-            templates,
+            env,
         );
         // Sub-instance copies of kinematic-query cells. Must run BEFORE
         // `post_process_derived_lets` so a parent let over
@@ -11560,7 +11564,7 @@ impl Engine {
             values,
             kernel,
             diagnostics,
-            templates,
+            env,
         );
         // task 4229: re-evaluate Let cells whose expressions depend on
         // topology-selector-derived cells (e.g. `moi_principal =
@@ -11825,14 +11829,14 @@ impl Engine {
         meta_map: &HashMap<String, HashMap<String, String>>,
         kernel: &dyn GeometryKernel,
         diagnostics: &mut Vec<Diagnostic>,
-        templates: &[reify_compiler::TopologyTemplate],
+        env: DefEnv<'_>,
     ) {
         // Collect (scoped_cell_id, rescoped_expr) candidates first to avoid
         // holding a borrow on `values` while also inserting into it (parallels
         // `post_process_derived_lets` / `post_process_feature_datum_projections`).
         let mut candidates: Vec<(reify_core::ValueCellId, reify_ir::CompiledExpr)> = Vec::new();
 
-        for instance in direct_sub_instances(template, templates, values) {
+        for instance in direct_sub_instances(template, env, values) {
             for child_cell in &instance.child_template().value_cells {
                 let Some(default_expr) = &child_cell.default_expr else {
                     continue;
@@ -11886,13 +11890,13 @@ impl Engine {
         values: &mut ValueMap,
         kernel: &mut dyn GeometryKernel,
         diagnostics: &mut Vec<Diagnostic>,
-        templates: &[reify_compiler::TopologyTemplate],
+        env: DefEnv<'_>,
     ) {
         let mut pose_cache: HashMap<
             (reify_ir::GeometryHandleId, [u64; 4], [u64; 3]),
             reify_ir::GeometryHandleId,
         > = HashMap::new();
-        for instance in direct_sub_instances(template, templates, values) {
+        for instance in direct_sub_instances(template, env, values) {
             let steps = instance.named_steps_view(named_steps);
             let mut instance_diagnostics = Vec::new();
             for cell in &instance.child_template().value_cells {
@@ -12625,11 +12629,13 @@ impl Engine {
             registry_owned.iter().map(|(k, v)| (k.clone(), v)).collect();
         // (Per-build attribute tables + `achieved_repr_tol` were reset at the
         // TOP of this surface by `reset_per_build_state(TessellateSnapshot)`.)
+        let env_scope = self.env_of(module);
+        let env = env_scope.env();
         let meshes = Self::tessellate_from_values(
             &mut self.geometry_kernels,
             &registry_borrowed,
             self.default_kernel_name.as_deref(),
-            module,
+            env,
             &mut values,
             &self.functions,
             &mut diagnostics,

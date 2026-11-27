@@ -1,20 +1,202 @@
-//! Pure `f64` mass-properties helpers for the `body_mass_props` stdlib fn
-//! (RBD-β, task 3829; PRD `docs/prds/v0_3/rigid-body-dynamics.md` §2.1/§5.4).
+//! The `MassProperties` owner (S15 η, task 8697; PRD
+//! `docs/prds/v0_6/trampoline-decode-and-result-build.md` §6 D8), plus the pure
+//! density / box math behind the `body_mass_props` stdlib fn (RBD-β, task 3829;
+//! PRD `docs/prds/v0_3/rigid-body-dynamics.md` §2.1/§5.4).
 //!
-//! Dependency-free `f64` math — no `reify_ir::Value`, no diagnostics sink, no
-//! geometry kernel. Mirrors the modal split (`reify-stdlib/src/modal/
-//! free_vibration.rs` holds pure scalar math; `reify-eval/src/dynamics_ops.rs`
-//! owns the `Value`/diagnostic/kernel wiring that calls into this module).
+//! [`MassProperties`] is the typed record of a body's mass, centre of mass and
+//! inertia about it, and the one owner of its `Value` shape:
+//!   * [`MassProperties::to_value`] and [`MassProperties::unresolved_value`] are
+//!     the only minters of a `MassProperties` `Value::StructureInstance`;
+//!   * [`MassProperties::from_value`] is the one dimension-checked reader, and
+//!     [`MassProperties::read_inertia`] the one inertia reader, shared by RNEA,
+//!     the PSD hook and the kernel `InertiaTensor` reply parse;
+//!   * [`MassProperties::inertia_field`] is how the PSD hook recognises an
+//!     instance and finds its inertia.
 //!
-//! Two responsibilities:
+//! The density half stays `Value`-free:
 //!   * [`resolve_density_strict`] — the shared explicit→material rung-walk,
 //!     returning `None` when neither source is present (strict / no-water tail).
 //!   * [`resolve_density`] — thin wrapper over `resolve_density_strict` that
 //!     adds the `DEFAULT_DENSITY_KG_M3` water tail used by `body_mass_props`
 //!     (explicit arg > body `Material` density > default water).
-//!   * `uniform_box_inertia` (added in step-4) — the closed-form analytic
-//!     ground-truth mass/com/inertia for a uniform-density box, the value the
-//!     deferred KGQ kernel query (task 3620) will later be cross-checked against.
+//!   * [`uniform_box_inertia`] — the closed-form analytic ground-truth
+//!     mass/com/inertia for a uniform-density box, the value the KGQ kernel
+//!     query (task 3620) is cross-checked against.
+
+use crate::helpers::{mint_registry_free_instance, vec3_cells};
+use reify_core::dimension::DimensionVector;
+use reify_ir::arg_acceptance::{
+    ArgRejection, ArgSpec, FieldRejection, length_spec, mass_spec, moment_of_inertia_spec,
+    read_arg_or_bare,
+};
+use reify_ir::{PersistentMap, Value};
+
+/// The nominal `type_name` of `std.dynamics`' `MassProperties` structure: the
+/// one write-site literal, and the type check of [`MassProperties::from_value`].
+const TYPE_NAME: &str = "MassProperties";
+
+/// A body's mass properties in SI: `mass` (kg), `com` (m, body frame) and
+/// `inertia` (kg·m², about the centre of mass).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MassProperties {
+    pub mass: f64,
+    pub com: [f64; 3],
+    pub inertia: [[f64; 3]; 3],
+}
+
+impl MassProperties {
+    /// The resolved instance: `mass` a MASS scalar, `com` a `Value::Point` of
+    /// LENGTHs, and `inertia` a 3×3 `Value::Matrix` of MOMENT_OF_INERTIAs.
+    pub fn to_value(&self) -> Value {
+        let scalar = |si_value, dimension| Value::Scalar {
+            si_value,
+            dimension,
+        };
+        let com = Value::Point(self.com.iter().map(|&c| Value::length(c)).collect());
+        let inertia = Value::Matrix(
+            self.inertia
+                .iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|&x| scalar(x, DimensionVector::MOMENT_OF_INERTIA))
+                        .collect()
+                })
+                .collect(),
+        );
+        instance(scalar(self.mass, DimensionVector::MASS), com, inertia)
+    }
+
+    /// The instance of a body whose geometric fields cannot be computed (no
+    /// geometry handle, a kernel failure, no usable density): `mass`, `com` and
+    /// `inertia` are the honest `Value::Undef`.
+    pub fn unresolved_value() -> Value {
+        instance(Value::Undef, Value::Undef, Value::Undef)
+    }
+
+    /// Read a `MassProperties` instance; see [`MassProperties::read`] for the
+    /// accepted spellings. `None` for any other value, a malformed or absent
+    /// field, or a refused field ([`MassProperties::rejection`] names which).
+    pub fn from_value(v: &Value) -> Option<Self> {
+        let [mass, com, inertia] = fields(v)?;
+        Self::read(mass, com, inertia).ok().flatten()
+    }
+
+    /// The `inertia` field of a `MassProperties` instance, or `None` for any
+    /// other value or an instance carrying no `inertia`.
+    pub fn inertia_field(v: &Value) -> Option<&Value> {
+        instance_fields(v)?.get("inertia")
+    }
+
+    /// The field of a `MassProperties` value its reader refuses, named
+    /// `MassProperties.<field>`, or `None` when every field reads.
+    pub(crate) fn rejection(v: &Value) -> Option<FieldRejection> {
+        let [mass, com, inertia] = fields(v)?;
+        let (field, rejection) = Self::read(mass, com, inertia).err()?;
+        Some(FieldRejection::new(TYPE_NAME, field, rejection))
+    }
+
+    /// Read the three fields through their specs — `mass` as a MASS, `com` as
+    /// LENGTHs, `inertia` through [`MassProperties::read_inertia`], each also
+    /// taking the bare legacy spelling. `Ok(None)` for a malformed shape or an
+    /// unresolved cell; `Err` names the first field holding a cell its reader
+    /// refuses. The one reader behind the `mass_properties` builtin, every
+    /// consumer and the `diagnose` classifier.
+    pub(crate) fn read(
+        mass: &Value,
+        com: &Value,
+        inertia: &Value,
+    ) -> Result<Option<Self>, (&'static str, ArgRejection)> {
+        let mass = read_arg_or_bare(mass, &mass_spec()).map_err(|r| ("mass", r))?;
+        let com = match vec3_cells(com) {
+            Some(cells) => dimensioned_row(cells, &length_spec()).map_err(|r| ("com", r))?,
+            None => None,
+        };
+        let inertia = Self::read_inertia(inertia).map_err(|r| ("inertia", r))?;
+        Ok(mass
+            .zip(com)
+            .zip(inertia)
+            .map(|((mass, com), inertia)| Self { mass, com, inertia }))
+    }
+
+    /// Read a 3×3 inertia — a `Value::Matrix`, or a `Value::List` of
+    /// `List`/`Vector` rows — of MOMENT_OF_INERTIA cells or bare numbers.
+    /// `Ok(None)` unless the value is exactly 3×3 with every cell resolved;
+    /// `Err` on the first refused cell.
+    pub fn read_inertia(v: &Value) -> Result<Option<[[f64; 3]; 3]>, ArgRejection> {
+        let Some(rows) = matrix3_rows(v) else {
+            return Ok(None);
+        };
+        let spec = moment_of_inertia_spec();
+        let [r0, r1, r2] = [
+            dimensioned_row(rows[0], &spec)?,
+            dimensioned_row(rows[1], &spec)?,
+            dimensioned_row(rows[2], &spec)?,
+        ];
+        Ok(r0.zip(r1).zip(r2).map(|((r0, r1), r2)| [r0, r1, r2]))
+    }
+}
+
+/// The one `MassProperties` mint: exactly its three declared fields.
+fn instance(mass: Value, com: Value, inertia: Value) -> Value {
+    mint_registry_free_instance(
+        TYPE_NAME,
+        vec![
+            ("mass".to_string(), mass),
+            ("com".to_string(), com),
+            ("inertia".to_string(), inertia),
+        ],
+    )
+}
+
+/// The field map of a `MassProperties` instance, or `None` for any other value.
+fn instance_fields(v: &Value) -> Option<&PersistentMap<String, Value>> {
+    match v {
+        Value::StructureInstance(d) if d.type_name == TYPE_NAME => Some(&d.fields),
+        _ => None,
+    }
+}
+
+/// The `mass` / `com` / `inertia` fields of a `MassProperties` instance.
+fn fields(v: &Value) -> Option<[&Value; 3]> {
+    let fields = instance_fields(v)?;
+    Some([
+        fields.get("mass")?,
+        fields.get("com")?,
+        fields.get("inertia")?,
+    ])
+}
+
+/// The three rows of a 3×3 `Value::Matrix` (or nested `Value::List` of
+/// `List`/`Vector` rows), or `None` unless the value is exactly 3×3.
+fn matrix3_rows(v: &Value) -> Option<[&[Value]; 3]> {
+    fn row(cells: &[Value]) -> Option<&[Value]> {
+        (cells.len() == 3).then_some(cells)
+    }
+    match v {
+        Value::Matrix(rows) if rows.len() == 3 => {
+            Some([row(&rows[0])?, row(&rows[1])?, row(&rows[2])?])
+        }
+        Value::List(outer) if outer.len() == 3 => {
+            fn nested(r: &Value) -> Option<&[Value]> {
+                match r {
+                    Value::List(cells) | Value::Vector(cells) => row(cells),
+                    _ => None,
+                }
+            }
+            Some([nested(&outer[0])?, nested(&outer[1])?, nested(&outer[2])?])
+        }
+        _ => None,
+    }
+}
+
+/// Three cells read through `spec`: `Ok(None)` if any is unresolved, `Err` on
+/// the first one refused.
+fn dimensioned_row(cells: &[Value], spec: &ArgSpec) -> Result<Option<[f64; 3]>, ArgRejection> {
+    let x = read_arg_or_bare(&cells[0], spec)?;
+    let y = read_arg_or_bare(&cells[1], spec)?;
+    let z = read_arg_or_bare(&cells[2], spec)?;
+    Ok(x.zip(y).zip(z).map(|((x, y), z)| [x, y, z]))
+}
 
 /// Default mass density (kg/m³) used when `body_mass_props` can resolve no
 /// other density: the density of water at ~4 °C.
@@ -94,7 +276,7 @@ pub fn resolve_density(explicit: Option<f64>, material: Option<f64>) -> (f64, De
 /// (kg/m³), expressed in a **corner-origin** body frame (one corner at the
 /// frame origin, edges along +x/+y/+z).
 ///
-/// Returns `(mass, com, inertia)` where:
+/// Returns the [`MassProperties`] where:
 ///   * `mass = ρ·a·b·c`,
 ///   * `com = [a/2, b/2, c/2]` (the box's geometric centre relative to the
 ///     corner origin),
@@ -109,7 +291,7 @@ pub fn resolve_density(explicit: Option<f64>, material: Option<f64>) -> (f64, De
 /// is `pub` so that future supervisor wiring and its cross-validation test can
 /// reuse the exact same closed form.
 #[allow(dead_code)] // G-allow: test-only analytic ground-truth closed form; KGQ wiring into body_mass_props landed via #3829 (done) + #4237 dynamics_ops seam (done); fn is permanent test-only helper, zero production callers by design
-pub fn uniform_box_inertia(dims: [f64; 3], density: f64) -> (f64, [f64; 3], [[f64; 3]; 3]) {
+pub fn uniform_box_inertia(dims: [f64; 3], density: f64) -> MassProperties {
     let [a, b, c] = dims;
     let mass = density * a * b * c;
     let com = [a / 2.0, b / 2.0, c / 2.0];
@@ -119,12 +301,280 @@ pub fn uniform_box_inertia(dims: [f64; 3], density: f64) -> (f64, [f64; 3], [[f6
         [0.0, coeff * (a * a + c * c), 0.0],
         [0.0, 0.0, coeff * (a * a + b * b)],
     ];
-    (mass, com, inertia)
+    MassProperties { mass, com, inertia }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reify_core::dimension::DimensionVector;
+    use reify_ir::{StructureInstanceData, Value};
+
+    // ── MassProperties owner: the one Value shape (S15 η, task 8697) ─────────
+
+    const ASYMMETRIC_INERTIA: [[f64; 3]; 3] =
+        [[0.10, 0.01, 0.02], [0.03, 0.20, 0.04], [0.05, 0.06, 0.30]];
+
+    fn moi(x: f64) -> Value {
+        Value::Scalar {
+            si_value: x,
+            dimension: DimensionVector::MOMENT_OF_INERTIA,
+        }
+    }
+
+    fn instance_data(v: &Value) -> &StructureInstanceData {
+        match v {
+            Value::StructureInstance(d) => d,
+            other => panic!("expected a StructureInstance, got {other:?}"),
+        }
+    }
+
+    fn field<'a>(v: &'a Value, name: &str) -> &'a Value {
+        instance_data(v)
+            .fields
+            .get(name)
+            .unwrap_or_else(|| panic!("missing field {name} in {v:?}"))
+    }
+
+    fn sample() -> MassProperties {
+        MassProperties {
+            mass: 2.5,
+            com: [0.1, -0.2, 0.3],
+            inertia: ASYMMETRIC_INERTIA,
+        }
+    }
+
+    #[test]
+    fn to_value_emits_the_declared_shape() {
+        let v = sample().to_value();
+        let data = instance_data(&v);
+        assert_eq!(data.type_name, "MassProperties");
+        let mut keys: Vec<&str> = data.fields.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["com", "inertia", "mass"]);
+
+        assert_eq!(
+            field(&v, "mass"),
+            &Value::Scalar {
+                si_value: 2.5,
+                dimension: DimensionVector::MASS,
+            }
+        );
+        assert_eq!(
+            field(&v, "com"),
+            &Value::Point(vec![
+                Value::length(0.1),
+                Value::length(-0.2),
+                Value::length(0.3),
+            ])
+        );
+        let Value::Matrix(rows) = field(&v, "inertia") else {
+            panic!(
+                "inertia must be a Value::Matrix, got {:?}",
+                field(&v, "inertia")
+            )
+        };
+        assert_eq!(rows.len(), 3, "inertia must have 3 rows");
+        for (r, row) in rows.iter().enumerate() {
+            let want: Vec<Value> = ASYMMETRIC_INERTIA[r].iter().map(|&x| moi(x)).collect();
+            assert_eq!(
+                row, &want,
+                "inertia row {r} must be MOMENT_OF_INERTIA scalars"
+            );
+        }
+    }
+
+    #[test]
+    fn from_value_inverts_to_value() {
+        let mp = sample();
+        assert_eq!(MassProperties::from_value(&mp.to_value()), Some(mp));
+    }
+
+    #[test]
+    fn from_value_accepts_the_legacy_spellings() {
+        let mp = sample();
+        let bare = crate::helpers::mint_registry_free_instance(
+            "MassProperties",
+            vec![
+                ("mass".to_string(), Value::Real(mp.mass)),
+                (
+                    "com".to_string(),
+                    Value::List(mp.com.iter().map(|&c| Value::length(c)).collect()),
+                ),
+                (
+                    "inertia".to_string(),
+                    Value::Matrix(
+                        mp.inertia
+                            .iter()
+                            .map(|row| row.iter().map(|&x| Value::Real(x)).collect())
+                            .collect(),
+                    ),
+                ),
+            ],
+        );
+        assert_eq!(
+            MassProperties::from_value(&bare),
+            MassProperties::from_value(&mp.to_value()),
+            "bare Real mass/inertia cells and a List com read like the dimensioned twin"
+        );
+        assert_eq!(MassProperties::from_value(&bare), Some(mp));
+    }
+
+    #[test]
+    fn from_value_rejects_non_mass_properties() {
+        assert_eq!(MassProperties::from_value(&Value::Real(1.0)), None);
+        let other = crate::helpers::mint_registry_free_instance(
+            "Block",
+            vec![
+                ("mass".to_string(), Value::Real(1.0)),
+                ("com".to_string(), Value::List(vec![Value::Real(0.0); 3])),
+                (
+                    "inertia".to_string(),
+                    Value::Matrix(vec![vec![Value::Real(0.0); 3]; 3]),
+                ),
+            ],
+        );
+        assert_eq!(MassProperties::from_value(&other), None);
+    }
+
+    #[test]
+    fn unresolved_value_is_honest_undef() {
+        let v = MassProperties::unresolved_value();
+        assert_eq!(instance_data(&v).type_name, "MassProperties");
+        for name in ["mass", "com", "inertia"] {
+            assert_eq!(
+                field(&v, name),
+                &Value::Undef,
+                "{name} must be the honest Undef"
+            );
+        }
+        assert!(
+            instance_data(&v).fields.get("origin").is_none(),
+            "MassProperties carries no origin"
+        );
+        assert_eq!(MassProperties::from_value(&v), None);
+    }
+
+    #[test]
+    fn read_inertia_reads_one_shape() {
+        let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let cells = |f: fn(f64) -> Value| -> Vec<Vec<Value>> {
+            identity
+                .iter()
+                .map(|row| row.iter().map(|&x| f(x)).collect())
+                .collect()
+        };
+        let list_of = |rows: Vec<Vec<Value>>, wrap: fn(Vec<Value>) -> Value| {
+            Value::List(rows.into_iter().map(wrap).collect())
+        };
+
+        let read = |v: &Value| MassProperties::read_inertia(v);
+        assert_eq!(read(&Value::Matrix(cells(moi))), Ok(Some(identity)));
+        assert_eq!(
+            read(&list_of(cells(|x| Value::Int(x as i64)), Value::List)),
+            Ok(Some(identity)),
+            "List-of-List of Int"
+        );
+        assert_eq!(
+            read(&list_of(cells(Value::Real), Value::List)),
+            Ok(Some(identity)),
+            "List-of-List of Real: the OCCT InertiaTensor reply shape"
+        );
+        assert_eq!(
+            read(&list_of(cells(moi), Value::Vector)),
+            Ok(Some(identity)),
+            "List of Vector rows"
+        );
+
+        let mut two_by_three = cells(moi);
+        two_by_three.pop();
+        assert_eq!(
+            read(&Value::Matrix(two_by_three)),
+            Ok(None),
+            "2×3 is shape-malformed"
+        );
+        let mut one_undef = cells(moi);
+        one_undef[1][2] = Value::Undef;
+        assert_eq!(
+            read(&Value::Matrix(one_undef)),
+            Ok(None),
+            "an Undef cell is unresolved"
+        );
+
+        assert!(
+            read(&Value::Matrix(cells(Value::length))).is_err(),
+            "LENGTH cells are refused"
+        );
+        let mut one_bool = cells(moi);
+        one_bool[0][0] = Value::Bool(true);
+        assert!(
+            read(&Value::Matrix(one_bool)).is_err(),
+            "a Bool cell is refused"
+        );
+    }
+
+    /// `sample()`'s instance with `name` overwritten by `value`.
+    fn sample_with(name: &str, value: Value) -> Value {
+        let mut data = instance_data(&sample().to_value()).clone();
+        data.fields.insert(name.to_string(), value);
+        Value::StructureInstance(Box::new(data))
+    }
+
+    #[test]
+    fn rejection_names_the_refused_field() {
+        assert_eq!(MassProperties::rejection(&sample().to_value()), None);
+
+        let mass_scalar = Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::MASS,
+        };
+        let cases = [
+            ("mass", Value::length(1.0), "Mass", "Length Scalar"),
+            (
+                "com",
+                Value::Point(vec![mass_scalar; 3]),
+                "Length",
+                "Mass Scalar",
+            ),
+            (
+                "inertia",
+                Value::Matrix(vec![vec![Value::length(1.0); 3]; 3]),
+                "MomentOfInertia",
+                "Length Scalar",
+            ),
+        ];
+        for (name, refused, expected, got) in cases {
+            let v = sample_with(name, refused);
+            let rejection = MassProperties::rejection(&v)
+                .unwrap_or_else(|| panic!("a refused {name} must be named"));
+            assert_eq!(rejection.path, format!("MassProperties.{name}"));
+            assert_eq!(rejection.rejection.expected, expected, "{name}");
+            assert_eq!(rejection.rejection.got, got, "{name}");
+            assert_eq!(MassProperties::from_value(&v), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn inertia_field_finds_only_a_mass_properties_inertia() {
+        let v = sample().to_value();
+        assert_eq!(
+            MassProperties::inertia_field(&v),
+            Some(field(&v, "inertia"))
+        );
+
+        let mut no_inertia = instance_data(&v).clone();
+        no_inertia.fields.remove(&"inertia".to_string());
+        assert_eq!(
+            MassProperties::inertia_field(&Value::StructureInstance(Box::new(no_inertia))),
+            None
+        );
+
+        let other = crate::helpers::mint_registry_free_instance(
+            "Block",
+            vec![("inertia".to_string(), field(&v, "inertia").clone())],
+        );
+        assert_eq!(MassProperties::inertia_field(&other), None);
+    }
 
     // ── resolve_density priority ladder ──────────────────────────────────────
 
@@ -241,7 +691,7 @@ mod tests {
         //   Iyy  = m/12·(a²+c²) = 6/12·(0.01+0.09) = 0.5·0.10 = 0.05
         //   Izz  = m/12·(a²+b²) = 6/12·(0.01+0.04) = 0.5·0.05 = 0.025
         //   all products of inertia = 0
-        let (mass, com, inertia) = uniform_box_inertia([0.1, 0.2, 0.3], 1000.0);
+        let MassProperties { mass, com, inertia } = uniform_box_inertia([0.1, 0.2, 0.3], 1000.0);
 
         assert!((mass - 6.0).abs() < 1e-12, "mass should be 6.0 kg, got {mass}");
 

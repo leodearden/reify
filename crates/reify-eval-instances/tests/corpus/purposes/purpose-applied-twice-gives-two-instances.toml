@@ -1,0 +1,19 @@
+tests = "one purpose applied twice, to two subjects, gives two purpose instances with their own verdicts."
+rule = "Part 10 (\"A purpose may be applied any number of times\"); decision 12 (same rule)."
+provenance = "design Part 10; design decision 12 list. claims-1 part D item 10; language-1 L6."
+needs = ["instance", "constraint", "summary", "purpose", "grammar-purpose"]
+answer_basis = "traced. `k` in `/purpose[k]` is the position among the applications, in source order (readings A). `a.t` = 2 mm < 4 mm: satisfied. `b.t` = 5 mm < 4 mm: violated. `Bracket`'s own `t > 1mm` holds on both."
+today = "a second activation on another subject is dropped with no message (design Part 10, run there)."
+note = "the two member lines `purpose thin_enough(...)` need grammar-purpose (readings E33). With them taken out, the source parses on main."
+
+[[expect]]
+path = "Asm/purpose[0]/constraint[0]"
+verdict = "satisfied"
+
+[[expect]]
+path = "Asm/purpose[1]/constraint[0]"
+verdict = "violated"
+
+[[expect]]
+path = "Asm/summary"
+summary = { violated = 1, undetermined = 0, failed = 0 }

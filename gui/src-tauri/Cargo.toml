@@ -44,6 +44,7 @@ reify-kernel-openvdb.workspace = true
 reify-stdlib.workspace = true
 reify-lsp.workspace = true
 reify-mcp.workspace = true
+reify-version.workspace = true
 tower-lsp.workspace = true
 tauri = { workspace = true, optional = true }
 tauri-plugin-dialog = { version = "2", optional = true }

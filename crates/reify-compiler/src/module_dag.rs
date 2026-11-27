@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use indexmap::IndexSet;
 
-use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, ModulePathParseError, SourceSpan};
+use reify_core::{Diagnostic, DiagnosticCode, ModulePathParseError};
 
 use crate::CompiledModule;
 use crate::cfg::{CfgSet, cfg_satisfied};
@@ -131,7 +131,7 @@ impl StdlibVisibility {
         }
     }
 
-    /// Compile one unit against its direct imports. Import units always use the
+    /// Compile one unit against its import tier. Import units always use the
     /// compile-time stub checker; only a program's entry receives a real one.
     fn compile_unit(
         self,
@@ -184,6 +184,25 @@ pub struct ModuleDag {
     sources: HashMap<String, ModuleSource>,
     /// How the stdlib becomes visible to the units this DAG compiles.
     stdlib: StdlibVisibility,
+    /// Each module's re-export edges (resolution-unification D-7), keyed like
+    /// `modules`: its `pub import` targets in declaration order, one per path.
+    /// For a file-compiled module, the targets its walk followed (a
+    /// cfg-gated-out import, or a `std.*` one this DAG does not walk, is never
+    /// an edge); for a module the embedded-stdlib fallback inserts, every
+    /// `pub import` it was built with. Both go through [`re_export_edges`].
+    re_exports: HashMap<String, Vec<String>>,
+}
+
+/// A module's re-export edges from its `pub import` target paths in
+/// declaration order: one edge per path, at its first occurrence.
+fn re_export_edges<'a>(pub_targets: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    let mut edges: Vec<String> = Vec::new();
+    for target in pub_targets {
+        if !edges.iter().any(|edge| edge == target) {
+            edges.push(target.to_string());
+        }
+    }
+    edges
 }
 
 /// Build an "invalid module path" [`Diagnostic`] vec.
@@ -319,6 +338,7 @@ impl ModuleDag {
             cfg: CfgSet::default(),
             sources: HashMap::new(),
             stdlib: StdlibVisibility::Imported,
+            re_exports: HashMap::new(),
         }
     }
 
@@ -353,6 +373,30 @@ impl ModuleDag {
     /// by the in-walk loop and by a program entry's direct imports.
     pub(crate) fn follows_import(&self, import: &reify_ast::ImportDecl) -> bool {
         import_cfg_satisfied(import, &self.cfg) && self.stdlib.follows(import)
+    }
+
+    /// The import tier of a unit whose followed direct imports are `direct`,
+    /// in precedence order (resolution-unification D-6, D-7): each direct
+    /// import, followed depth-first by every module it re-exports along
+    /// followed `pub import` edges, each module once, at its first position.
+    /// A direct import that failed to compile is still listed, with no edges.
+    pub(crate) fn visible_imports(&self, direct: &[&str]) -> Vec<String> {
+        let mut tier = IndexSet::new();
+        for path in direct {
+            self.extend_with_re_exports(path, &mut tier);
+        }
+        tier.into_iter().collect()
+    }
+
+    /// Append `path` and then, depth-first, its re-export closure to `tier`,
+    /// skipping every module `tier` already holds.
+    fn extend_with_re_exports(&self, path: &str, tier: &mut IndexSet<String>) {
+        if !tier.insert(path.to_string()) {
+            return;
+        }
+        for target in self.re_exports.get(path).into_iter().flatten() {
+            self.extend_with_re_exports(target, tier);
+        }
     }
 
     /// Compile a module and all its transitive dependencies.
@@ -499,6 +543,12 @@ impl ModuleDag {
                     // stdlib[j+1..=idx] unconditionally (no per-entry contains_key).
                     // This is faster on repeat calls with overlapping prefixes and makes
                     // the invariant explicit in code.
+                    //
+                    // Each inserted module records its re-export edges as it was
+                    // built: every `pub import`, with no `#cfg` filter, because the
+                    // stdlib build compiles a module against all its declared
+                    // imports. Topological order means every edge target is
+                    // inserted before the module that re-exports it.
                     let start = (0..=idx)
                         .rev()
                         .find(|&j| self.modules.contains_key(&stdlib[j].path.0.join(".")))
@@ -506,6 +556,13 @@ impl ModuleDag {
                         .unwrap_or(0);
                     for embedded in &stdlib[start..=idx] {
                         let dotted = embedded.path.0.join(".");
+                        let pub_targets = embedded
+                            .imports
+                            .iter()
+                            .filter(|import| import.is_pub)
+                            .map(|import| import.path.as_str());
+                        self.re_exports
+                            .insert(dotted.clone(), re_export_edges(pub_targets));
                         self.topo_order.push(dotted.clone());
                         self.modules.insert(dotted, embedded.clone());
                     }
@@ -556,12 +613,12 @@ impl ModuleDag {
         self.in_progress.insert(module_path.to_string());
 
         // Use inner closure to guarantee in_progress cleanup on all exit paths
-        let result = (|| -> Result<CompiledModule, Vec<Diagnostic>> {
-            // Single pass: compile each import dependency and collect its path.
-            // Merges the previous two-pass pattern (compile + collect_import_preludes)
-            // into one iteration over parsed.declarations.
+        let result = (|| -> Result<(CompiledModule, Vec<String>), Vec<Diagnostic>> {
+            // Single pass: compile each import dependency and collect its path,
+            // and the path of each `pub import` as a re-export edge.
             // Imports with unsatisfied `#cfg(...)` predicates are skipped entirely.
             let mut import_paths: Vec<String> = Vec::new();
+            let mut pub_targets: Vec<&str> = Vec::new();
             for decl in &parsed.declarations {
                 if let reify_ast::Declaration::Import(import) = decl {
                     if !self.follows_import(import) {
@@ -569,15 +626,22 @@ impl ModuleDag {
                     }
                     self.compile_module(&import.path, resolver)?;
                     import_paths.push(import.path.clone());
+                    if import.is_pub {
+                        pub_targets.push(&import.path);
+                    }
                 }
             }
+            let re_export_paths = re_export_edges(pub_targets);
 
             // Block-scope the shared borrows of self.modules so they are
             // dropped before the later self.modules.insert call.
             let compiled = {
-                // Topological ordering guarantees every import was just compiled and inserted.
-                // Use .map().expect() so a violation is loud in both debug and release builds.
-                let preludes: Vec<&CompiledModule> = import_paths
+                let direct: Vec<&str> = import_paths.iter().map(String::as_str).collect();
+                // Every visible module is a direct import or one it re-exports,
+                // all compiled during the recursion above. Use .map().expect()
+                // so a violation is loud in both debug and release builds.
+                let preludes: Vec<&CompiledModule> = self
+                    .visible_imports(&direct)
                     .iter()
                     .map(|p| {
                         self.modules
@@ -587,7 +651,7 @@ impl ModuleDag {
                     .collect();
                 self.stdlib.compile_unit(&parsed, &preludes)
             };
-            Ok(compiled)
+            Ok((compiled, re_export_paths))
         })();
 
         // Always remove from in-progress, whether the inner block succeeded or failed.
@@ -596,7 +660,7 @@ impl ModuleDag {
         self.in_progress.shift_remove(module_path);
 
         // Propagate error after cleanup
-        let mut compiled = result?;
+        let (mut compiled, re_export_paths) = result?;
 
         // Commit filesystem mode now that the module has compiled successfully.
         // Deferred from the Ok-and-std match arm above so that a parse/compile
@@ -638,6 +702,8 @@ impl ModuleDag {
                 source,
             },
         );
+        self.re_exports
+            .insert(module_path.to_string(), re_export_paths);
 
         Ok(())
     }
@@ -816,37 +882,35 @@ pub fn compile_project_with_entry_source_cfg(
 
     let mut dag = ModuleDag::with_cfg(cfg.clone());
 
-    // Recursively compile imports that satisfy the active cfg.
-    for decl in &parsed.declarations {
-        if let reify_ast::Declaration::Import(import) = decl {
-            if !import_cfg_satisfied(import, cfg) {
-                continue;
+    // The entry's followed direct imports, through the DAG's one import gate,
+    // shared by the compile loop and the prelude so they cannot drift.
+    let direct: Vec<&str> = parsed
+        .declarations
+        .iter()
+        .filter_map(|d| match d {
+            reify_ast::Declaration::Import(import) if dag.follows_import(import) => {
+                Some(import.path.as_str())
             }
-            dag.compile_module(&import.path, resolver)?;
-        }
+            _ => None,
+        })
+        .collect();
+
+    // Recursively compile the followed imports.
+    for import_path in &direct {
+        dag.compile_module(import_path, resolver)?;
     }
 
-    // Collect imported modules as prelude so their pub units (and other
+    // Collect the entry's import tier as prelude so its pub units (and other
     // exported definitions) are visible in the entry module.
     // Block-scope the preludes so the shared borrows of dag.modules are
     // dropped before the mutable borrow in dag.modules.insert below.
-    // Only satisfied imports were compiled above, so the same gate is applied
-    // here to avoid a `.expect()` panic on an uncompiled (gated-out) import.
     let compiled_entry = {
-        let preludes: Vec<&CompiledModule> = parsed
-            .declarations
+        let preludes: Vec<&CompiledModule> = dag
+            .visible_imports(&direct)
             .iter()
-            .filter_map(|d| {
-                if let reify_ast::Declaration::Import(import) = d {
-                    Some(import)
-                } else {
-                    None
-                }
-            })
-            .filter(|import| import_cfg_satisfied(import, cfg))
-            .map(|import| {
+            .map(|path| {
                 dag.modules
-                    .get(&import.path)
+                    .get(path)
                     .expect("invariant: satisfied import compiled before entry prelude collection")
             })
             .collect();
@@ -891,71 +955,4 @@ pub(crate) fn entry_module_name(entry_path: &Path) -> &str {
 /// seeded into every unit's prelude via `stdlib_loader::load_stdlib_context()`.
 fn is_std_import_path(path: &str) -> bool {
     path == "std" || path.starts_with("std.")
-}
-
-/// Merge the `pub` templates of already-compiled direct imports into `entry`'s
-/// own template list, **first-wins** with a `Warning` on every name collision.
-///
-/// This is the single home of the cross-import template-merge policy — the
-/// visibility filter, the first-wins de-dup, and the collision-warning wording.
-/// Its one caller is the program compile
-/// ([`crate::program::compile_program_with_parsed_entry`]), which the CLI's
-/// `reify check` and the GUI's file-backed reload enter through; PRD
-/// resolution-unification κ #5524 deletes it with the interim merge.
-///
-/// - `entry_origin` is the entry module's own path/name, used only to label
-///   entry-vs-import collisions in the warning message.
-/// - `imports` is the ordered list of `(import path, compiled module)` pairs for
-///   the **followed** (cfg-satisfied, non-`std`) direct imports. Callers own the
-///   gating; this function merges whatever it is given, in order.
-///
-/// Only `Visibility::Public` imported templates are merged — private imports
-/// must not leak, mirroring compile-time import semantics. A template name that
-/// already exists (declared by the entry or merged from an earlier import) is
-/// skipped and a `Severity::Warning` is pushed onto `entry.diagnostics` naming
-/// both declaring sides and the `first-wins` policy. The warning is phrased
-/// kind-neutrally ("imported pub template") because `templates` can hold
-/// non-structure template kinds.
-pub(crate) fn merge_imported_pub_templates(
-    entry: &mut CompiledModule,
-    entry_origin: &str,
-    imports: &[(&str, &CompiledModule)],
-) {
-    // `templates_origin` (template name → declaring module path) is pre-seeded
-    // with the entry's own templates so BOTH entry-vs-import and
-    // import-vs-import collisions emit a Warning naming both sides.
-    let mut templates_origin: HashMap<String, String> = HashMap::new();
-    for tmpl in &entry.templates {
-        templates_origin.insert(tmpl.name.clone(), entry_origin.to_string());
-    }
-    for &(import_path, imported_module) in imports {
-        for template in &imported_module.templates {
-            if template.visibility != crate::Visibility::Public {
-                continue;
-            }
-            if let Some(prior_origin) = templates_origin.get(&template.name) {
-                entry.diagnostics.push(
-                    Diagnostic::warning(format!(
-                        "imported pub template '{}' declared in both '{}' and '{}'; first-wins",
-                        template.name, prior_origin, import_path
-                    ))
-                    .with_label(DiagnosticLabel::new(
-                        SourceSpan::prelude(),
-                        "cross-import collision",
-                    )),
-                );
-                continue;
-            }
-            // Whole-template clone — per-member visibility is PRESERVED, NOT
-            // stripped (task #3978 δ, PRD §6). A `priv` member (priv param/sub
-            // → Visibility::Private, priv port → is_priv) of an imported `pub`
-            // def must remain private so cross-module dot-access to it is gated
-            // by the same `expr.rs` member-access enforcement used in-module.
-            // Stripping member visibility here would silently un-hide priv
-            // members across the import boundary; `priv_import_boundary_tests.rs`
-            // is the regression guard.
-            entry.templates.push(template.clone());
-            templates_origin.insert(template.name.clone(), import_path.to_string());
-        }
-    }
 }

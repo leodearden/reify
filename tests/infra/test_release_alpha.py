@@ -34,6 +34,11 @@ version its tag names. Release and Preflight pin the release's end;
 BuildBundleVersion pins build-bundle.sh's, running a copy of the real script
 with every tool it runs stubbed: the `--version` usage refusal, the version
 overlay on both `cargo tauri` calls, and the deb control-Version post-check.
+Since task 10485 it also pins the binaries' end: both cargo builds see the
+version as REIFY_RELEASE_VERSION, a built binary whose `--version` reports
+another one is refused before bundling, and with no `--version` the version
+is Cargo.toml's workspace version, whatever REIFY_RELEASE_VERSION the caller
+carries.
 """
 
 import json
@@ -141,16 +146,20 @@ case "$1" in info) exit 0 ;; create) exec sleep 60 ;; *) exit 1 ;; esac
 '''
 
 BUILD_BUNDLE_USAGE = "usage: scripts/build-bundle.sh [--version <semver>]"
-TAURI_CONF_VERSION = "4.5.6"
+WORKSPACE_VERSION = "4.5.6"
 
 # One stub for every tool build-bundle.sh runs; it dispatches on the name it was
 # invoked under and logs [name, *argv]. The tauri calls leave the files the
 # script checks for, bundle_closure.py stages one library and names it in the
 # overlay, dpkg-deb extracts the members the post-check requires and reports
 # the control Version the fixture chose, and docker create hangs when the
-# fixture asks.
+# fixture asks. Like reify_version::VERSION, each built binary's `--version`
+# reports the REIFY_RELEASE_VERSION its cargo call saw when that is non-empty,
+# else the workspace version, unless the fixture forces what it reports.
 BUNDLE_TOOL_STUB = r'''#!@PYTHON@
 import json
+import os
+import shlex
 import shutil
 import sys
 import time
@@ -174,11 +183,22 @@ def make(path, data=b"stub", mode=0o644):
     path.chmod(mode)
 
 
+def build_binary(binary):
+    forced = state / "binaries-report"
+    if forced.exists():
+        stamp = forced.read_text(encoding="utf-8").strip()
+    else:
+        stamp = os.environ.get("REIFY_RELEASE_VERSION") or "@WORKSPACE_VERSION@"
+    line = shlex.quote(f"{binary} {stamp}")
+    script = f'#!/bin/sh\ncase "$1" in --version|-V) echo {line} ;; *) exit 64 ;; esac\n'
+    make(target / "release" / binary, script.encode(), mode=0o755)
+
+
 if name == "cargo":
     if args[:2] == ["tauri", "build"]:
-        make(target / "release" / "reify-gui", mode=0o755)
+        build_binary("reify-gui")
     elif args[:1] == ["build"]:
-        make(target / "release" / "reify", mode=0o755)
+        build_binary("reify")
     elif args[:1] == ["metadata"]:
         print(json.dumps({"target_directory": str(target)}))
     elif args[:2] == ["tauri", "bundle"]:
@@ -539,7 +559,8 @@ class BuildBundleFixture:
             d.mkdir(parents=True)
         tool.write_text(BUNDLE_TOOL_STUB.replace("@PYTHON@", sys.executable)
                         .replace("@STATE@", str(self.state))
-                        .replace("@TARGET@", str(self.target)), encoding="utf-8")
+                        .replace("@TARGET@", str(self.target))
+                        .replace("@WORKSPACE_VERSION@", WORKSPACE_VERSION), encoding="utf-8")
         tool.chmod(0o755)
         for link in (home / ".cargo" / "bin" / "cargo",
                      *(home / ".local" / "bin" / n for n in ("docker", "npm", "dpkg-deb")),
@@ -552,12 +573,26 @@ class BuildBundleFixture:
                 f'exec "{tool.parent / name}" "$@"\n', encoding="utf-8")
         shutil.copy2(BUILD_BUNDLE, self.repo / "scripts" / "build-bundle.sh")
         shutil.copy2(DOCKER_CREATE_PROBE, self.repo / "scripts" / "docker-create-probe.sh")
+        (self.repo / "Cargo.toml").write_text(
+            f'[workspace.package]\nversion = "{WORKSPACE_VERSION}"\n', encoding="utf-8")
         (self.repo / "gui" / "src-tauri" / "tauri.conf.json").write_text(
-            json.dumps({"version": TAURI_CONF_VERSION}), encoding="utf-8")
-        self.env = {**os.environ, "HOME": str(home), "TMPDIR": str(root / "tmp")}
+            json.dumps({}), encoding="utf-8")
+        self.env = {k: v for k, v in os.environ.items() if k != "REIFY_RELEASE_VERSION"}
+        self.env.update({"HOME": str(home), "TMPDIR": str(root / "tmp")})
 
     def deb_reports_version(self, version):
         (self.state / "deb-version").write_text(version + "\n", encoding="utf-8")
+
+    def binaries_report(self, version):
+        (self.state / "binaries-report").write_text(version + "\n", encoding="utf-8")
+
+    def reported_versions(self):
+        """What the built target/release/{reify,reify-gui} print for --version."""
+        return {binary: subprocess.run(
+                    [str(self.target / "release" / binary), "--version"],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True,
+                ).stdout
+                for binary in ("reify", "reify-gui")}
 
     def docker_create_hangs(self):
         (self.state / "docker-create-hangs").write_text("", encoding="utf-8")
@@ -627,17 +662,50 @@ class BuildBundleVersion(unittest.TestCase):
         self.assertIn(f"has control Version 0.1.0; expected {BUNDLE_VERSION}", proc.stderr)
         self.assertEqual(proc.stdout, "")
 
-    def test_without_a_version_tauri_conf_names_it(self):
-        self.fx.deb_reports_version(TAURI_CONF_VERSION)
+    def test_the_version_is_stamped_into_both_binaries(self):
+        self.fx.deb_reports_version(BUNDLE_VERSION)
+        proc = self.fx.run("--version", BUNDLE_VERSION)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self.fx.reported_versions(),
+                         {"reify": f"reify {BUNDLE_VERSION}\n",
+                          "reify-gui": f"reify-gui {BUNDLE_VERSION}\n"})
+
+    def test_a_binary_reporting_another_version_is_refused_before_bundling(self):
+        self.fx.deb_reports_version(BUNDLE_VERSION)
+        self.fx.binaries_report("0.1.0")
+        proc = self.fx.run("--version", BUNDLE_VERSION)
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertIn("'reify-gui 0.1.0'", proc.stderr)
+        self.assertIn(f"'reify-gui {BUNDLE_VERSION}'", proc.stderr)
+        self.assertEqual(proc.stdout, "")
+        calls = self.fx.calls()
+        self.assertEqual([c for c in calls if c[:3] == ["cargo", "tauri", "bundle"]], [])
+        self.assertEqual([c for c in calls if c[0] == "bundle_closure.py"], [])
+
+    def test_without_a_version_the_workspace_version_names_it(self):
+        self.fx.deb_reports_version(WORKSPACE_VERSION)
         proc = self.fx.run()
         self.assertEqual(proc.returncode, 0, proc.stderr)
         for verb in ("build", "bundle"):
             with self.subTest(verb=verb):
-                self.assertEqual(_inline_configs(self.fx.tauri_call(verb)), [])
+                self.assertEqual(_inline_configs(self.fx.tauri_call(verb)),
+                                 [{"version": WORKSPACE_VERSION}])
+        self.assertEqual(self.fx.reported_versions(),
+                         {"reify": f"reify {WORKSPACE_VERSION}\n",
+                          "reify-gui": f"reify-gui {WORKSPACE_VERSION}\n"})
         self.fx.deb_reports_version(BUNDLE_VERSION)
         refused = self.fx.run()
         self.assertEqual(refused.returncode, 2, refused.stderr)
-        self.assertIn(f"expected {TAURI_CONF_VERSION}", refused.stderr)
+        self.assertIn(f"expected {WORKSPACE_VERSION}", refused.stderr)
+
+    def test_a_callers_release_version_does_not_reach_a_build_without_one(self):
+        self.fx.deb_reports_version(WORKSPACE_VERSION)
+        self.fx.env["REIFY_RELEASE_VERSION"] = "7.7.7"
+        proc = self.fx.run()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self.fx.reported_versions(),
+                         {"reify": f"reify {WORKSPACE_VERSION}\n",
+                          "reify-gui": f"reify-gui {WORKSPACE_VERSION}\n"})
 
 
 class BuildBundleDockerPreflight(unittest.TestCase):

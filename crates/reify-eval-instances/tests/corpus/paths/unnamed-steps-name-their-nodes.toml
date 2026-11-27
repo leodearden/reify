@@ -1,0 +1,44 @@
+tests = "each kind of step that rule F lists without a name in the source names a node that holds the value below."
+rule = "rule F; Part 6.2 (an unknown with no name of its own); Part 7.2 (a value in mid-expression); rule B."
+provenance = "design Part 15.1 rule F."
+needs = ["instance", "guard", "collection", "made", "open", "paths", "unknown", "solve-forced"]
+answer_basis = "traced, with the path text of decisions A and PRD 5.3. `a.len` is `Asm`'s unknown, `Asm/auto[a.len]`, forced to 20 mm. The `where` block's guard cell is true. The count cell is 2. `mk(3mm)` makes a `Plate` inside `mk`'s body with `t` = 3 mm; its chain is the call site of `mk` in `m`'s expression (0), then the constructor call in `mk`'s body (0): `Asm.m/made[0,0]`. The value is opened in mid-expression by the read `.area`, which is in `m`'s own expression (no call site lies between) and is the first member read of the unit: `Asm.m/open[0]`, 120 mm². The second element of `ps` is made with `t` = 5 mm: `Asm.ps/made[1]`. Not modelled: a placement's cell (`/at`, geometry, task 10611), a connector's sub, the solve design's fixed children, and a member table (`/defs[Name]`)."
+
+[candidates]
+note = "A reading in which `Asm`'s constraint did not bear would take 50 mm, `Beam`'s default. Under 50 mm the constraint is violated and depended on the trial; under 20 mm it is satisfied."
+
+[[candidates.unknown]]
+path = "Asm/auto[a.len]"
+values = ["50 mm", "20 mm"]
+
+[[expect]]
+path = "Asm/auto[a.len]"
+value = "20 mm"
+
+[[expect]]
+path = "Asm.a.len"
+value = "20 mm"
+
+[[expect]]
+path = "Asm/guard[0]"
+value = "true"
+
+[[expect]]
+path = "Asm/count[vents]"
+value = "2"
+
+[[expect]]
+path = "Asm.m/made[0,0].t"
+value = "3 mm"
+
+[[expect]]
+path = "Asm.m/open[0].area"
+value = "120 mm^2"
+
+[[expect]]
+path = "Asm.m"
+value = "120 mm^2"
+
+[[expect]]
+path = "Asm.ps/made[1].t"
+value = "5 mm"

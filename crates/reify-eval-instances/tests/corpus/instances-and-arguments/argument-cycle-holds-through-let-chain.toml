@@ -1,0 +1,17 @@
+tests = "an argument that a child's constraint reads only through a `let` of the child is still read by the child's solve before its view, so an argument that reads what that solve decides is a cycle; inserting a `let` does not turn the cycle into a value."
+rule = "decision 12 (\"An argument that depends on what it helps decide is a cycle\"); Part 4; Part 6.4 item 3; PRD 5.6 (\"what its constraints can read from outside, through any chain of its own cells\")"
+provenance = "trace-structure counter-example 2 (the same model as `argument-cycle-only-when-solve-reads-it` with `let f = floor` inserted)."
+needs = ["instance", "unknown"]
+answer_basis = "traced. `Plate`'s constraint reads `f`, and `f` reads the argument `floor`, so `a`'s `problem` lists `floor` among what its constraints read from outside (through a chain of its own cells, PRD 5.6), and the solve reads `floor` before it opens its view. `floor` reads `self.a.t`, which reads that solve: a cycle at `Asm.a.t`. Under the other reading, where the solve reads only the arguments a constraint reads directly, `floor` would be read through the view: under the trial `t := x`, `f` = x / 2, and `x == x / 2` would take 0 mm, the first candidate."
+today = "run `/tmp/instance-prd/fix-structure/argletcyc.ri`: `Asm.a.floor` and `Asm.a.f` undef, `Asm.a.t` not printed."
+
+[candidates]
+note = "The wrong reading takes 0 mm; the pinned answer is a cycle, so no candidate is tried."
+
+[[candidates.unknown]]
+path = "Asm.a.t"
+values = ["0 mm", "1 mm"]
+
+[[expect]]
+path = "Asm.a.t"
+failure = "cycle"

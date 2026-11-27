@@ -1,0 +1,26 @@
+tests = "an `auto` written in the definition is decided inside each instance from that instance's constraints alone; the parent's constraints are only checked against the results."
+rule = "contract Example 5 (last paragraph); Part 12 (Example 5); Part 6.1; decision 1."
+provenance = "contract Part B Example 5, \"If `len = auto` is written in `Beam` itself\"; design Part 12 \"Example 5\"."
+needs = ["instance", "constraint", "summary", "unknown", "solve-real"]
+answer_basis = "traced, with the design's assumption that the default objective picks the middle of the feasible range: each `len` is 55 mm. 110 mm ≠ 120 mm: violated. 0 ≠ 20 mm: violated (this one holds for any solver that gives two identical problems the same answer)."
+today = "that form gives the instances no `len` at all (contract Example 5, run)."
+
+[[expect]]
+path = "Asm.a.len"
+value = "55 mm"
+
+[[expect]]
+path = "Asm.b.len"
+value = "55 mm"
+
+[[expect]]
+path = "Asm/constraint[0]"
+verdict = "violated"
+
+[[expect]]
+path = "Asm/constraint[1]"
+verdict = "violated"
+
+[[expect]]
+path = "Asm/summary"
+summary = { violated = 2, undetermined = 0, failed = 0 }

@@ -1,6 +1,6 @@
 # Getting Started with Reify
 
-This walks through editing your first `.ri` file, re-running it, and opening the GUI. Assumes you've already finished the `Install` section in the top-level [README](../README.md) (the `.deb` or AppImage from the release page). Contributors building from source, from the checkout root: use `./target/release/reify` and `examples/m5_geometry.ri` wherever this guide says `reify` and `m5_geometry.ri`, and skip the curl.
+This walks through editing your first `.ri` file, re-running it, and opening the GUI. Assumes you've already finished the `Install` section in the top-level [README](../README.md) (the `.deb` or AppImage from the release page). AppImage users: use `./Reify_*_amd64.AppImage cli` wherever this guide says `reify`, except `reify gui`. To open a file in the GUI, pass it to the AppImage itself (`./Reify_*_amd64.AppImage m5_geometry.ri`). Contributors building from source, from the checkout root: use `./target/release/reify` and `examples/m5_geometry.ri` wherever this guide says `reify` and `m5_geometry.ri`, and skip the curl.
 
 The examples live in the repository, not in the package. Fetch the one this guide uses into your current directory:
 
@@ -19,13 +19,10 @@ reify check m5_geometry.ri
 You should see:
 
 ```
-warning: W_MODULE_DECL_MISSING: file has no top-of-file `module` declaration; expected `module m5_geometry` (spec §7.1)
   OK Flange#constraint[0]
   OK Flange#constraint[1]
 All constraints satisfied.
 ```
-
-The warning is harmless: the example has no `module` line.
 
 ## 2. Build a STEP file
 
@@ -40,6 +37,8 @@ Open `/tmp/flange.step` in any STEP viewer (FreeCAD, KiCad's 3D viewer, Online o
 `m5_geometry.ri` looks like:
 
 ```
+module m5_geometry
+
 structure def Flange {
     param radius : Length = 50mm
     param height : Length = 10mm
@@ -108,7 +107,7 @@ Choose **Open…** and pick `m5_geometry.ri`. The GUI shows a 3D viewer, an outl
 
 To see the model's edges, press the **Edges** button in the toolbar or the `E` key: every edge is drawn in black over the shaded mesh, whatever is selected. Press it again to turn it off. The setting is off by default.
 
-You can also skip the Start view by passing the file: `reify-gui m5_geometry.ri` (or `reify gui m5_geometry.ri`).
+You can also skip the Start view by passing the file: `reify-gui m5_geometry.ri` (or, with the `.deb`, `reify gui m5_geometry.ri`). With the AppImage, pass it to the downloaded file: `./Reify_*_amd64.AppImage m5_geometry.ri`.
 
 ### For contributors: running the GUI from a checkout
 

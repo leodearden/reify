@@ -272,7 +272,7 @@ impl ReverseDependencyIndex {
 }
 
 /// GHR-δ: yield each `(realization_id, geometry_cell)` link recorded on the
-/// graph by [`crate::graph::EvaluationGraph::from_templates`] (S2) — the single
+/// graph by [`crate::graph::EvaluationGraph::from_env`] (S2) — the single
 /// source of truth for the Realization→ValueCell freshness edge. Consumed by
 /// the forward trace builder ([`build_trace_map_and_fields`]), the reverse
 /// index builder ([`ReverseDependencyIndex::build_from_graph_and_fields`]), and
@@ -280,7 +280,7 @@ impl ReverseDependencyIndex {
 ///
 /// **Cardinality.** A geometry cell is backed by one realization, OR — for a
 /// geometry-LIST cell (task #5385) — by one realization per element:
-/// `from_templates` links a single-geometry realization to the `Type::Geometry`
+/// `from_env` links a single-geometry realization to the `Type::Geometry`
 /// cell whose `member == realization.name`, and links each `<list>#k` element
 /// realization to the one `Type::List(Box::new(Type::Geometry))` cell named by
 /// its `list_binding`. That list fan-in is N:1 by design. Realization names are
@@ -793,6 +793,7 @@ fn extract_realization_edges(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::DefEnv;
     use crate::cache::NodeId;
     use reify_core::{ConstraintNodeId, Type, ValueCellId};
     use reify_ir::{BinOp, Value};
@@ -940,7 +941,7 @@ mod tests {
     param width : Length = 10mm
 }"#,
         );
-        let graph = EvaluationGraph::from_templates(&module.templates);
+        let graph = EvaluationGraph::from_env(DefEnv::of_module(&module, &[]));
 
         let body = ValueCellId::new("Widget", "body");
         let width = ValueCellId::new("Widget", "width");
@@ -950,7 +951,7 @@ mod tests {
         assert_eq!(
             graph.realizations.get(&r0).unwrap().geometry_cell,
             Some(body.clone()),
-            "precondition: from_templates must link Widget#0 -> Widget.body"
+            "precondition: from_env must link Widget#0 -> Widget.body"
         );
 
         // (a) forward trace carries realization_reads on the GH cell only.
@@ -1084,14 +1085,14 @@ mod tests {
         };
         let elements = (0..3).map(|k| id_named(&format!("holes#{k}"))).collect();
         let merged = id_named("merged");
-        let graph = EvaluationGraph::from_templates(&module.templates);
+        let graph = EvaluationGraph::from_env(DefEnv::of_module(&module, &[]));
         (graph, elements, merged)
     }
 
     /// GHR-δ S2 for geometry lists: each element realization must link to the
     /// `List<Geometry>` cell its list occupies.
     ///
-    /// `from_templates` derived `geometry_cell` by a name match against a
+    /// `from_env` derived `geometry_cell` by a name match against a
     /// `Type::Geometry` cell only. A list element is named `holes#k` and its
     /// cell is `holes` with type `List(Geometry)`, so BOTH halves of that
     /// predicate failed and every element's `geometry_cell` was `None`.
@@ -1362,7 +1363,7 @@ mod tests {
         use reify_test_support::bracket_compiled_module;
 
         let module = bracket_compiled_module();
-        let graph = EvaluationGraph::from_templates(&module.templates);
+        let graph = EvaluationGraph::from_env(DefEnv::of_module(&module, &[]));
         let index = ReverseDependencyIndex::build_from_graph(&graph);
 
         let e = "Bracket";
@@ -1453,7 +1454,7 @@ mod tests {
                 let out = p \
             }",
         );
-        let graph = EvaluationGraph::from_templates(&module.templates);
+        let graph = EvaluationGraph::from_env(DefEnv::of_module(&module, &[]));
         let index = ReverseDependencyIndex::build_from_graph_and_fields(&graph, &[]);
 
         let drum_d_id = ValueCellId::new("T", "drum_d");
@@ -1497,7 +1498,7 @@ mod tests {
                 let out = p \
             }",
         );
-        let graph = EvaluationGraph::from_templates(&module.templates);
+        let graph = EvaluationGraph::from_env(DefEnv::of_module(&module, &[]));
         let traces = build_trace_map_and_fields(&graph, &[]);
 
         let p_id = ValueCellId::new("T", "p");
@@ -1544,7 +1545,7 @@ mod tests {
                 let out = p \
             }",
         );
-        let graph = EvaluationGraph::from_templates(&module.templates);
+        let graph = EvaluationGraph::from_env(DefEnv::of_module(&module, &[]));
         let traces = build_trace_map_and_fields(&graph, &[]);
         let _index = ReverseDependencyIndex::build_from_graph_and_fields(&graph, &[]);
 
@@ -2184,7 +2185,7 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
 "#,
         );
 
-        let graph = EvaluationGraph::from_templates(&module.templates);
+        let graph = EvaluationGraph::from_env(DefEnv::of_module(&module, &[]));
         let index = ReverseDependencyIndex::build_from_graph_and_fields(&graph, &module.fields);
 
         let f1_cell = ValueCellId::new(FIELD_ENTITY_PREFIX, "f1");
@@ -3146,7 +3147,7 @@ mod dependency_map_tests {
     #[test]
     fn dependency_map_forward_deps_bracket() {
         let module = bracket_compiled_module();
-        let graph = EvaluationGraph::from_templates(&module.templates);
+        let graph = EvaluationGraph::from_env(crate::DefEnv::of_module(&module, &[]));
         let dep_map = DependencyMap::from_graph(&graph);
 
         let e = "Bracket";
@@ -3190,7 +3191,7 @@ mod dependency_map_tests {
     #[test]
     fn dependency_map_contains_all_value_cells() {
         let module = bracket_compiled_module();
-        let graph = EvaluationGraph::from_templates(&module.templates);
+        let graph = EvaluationGraph::from_env(crate::DefEnv::of_module(&module, &[]));
         let dep_map = DependencyMap::from_graph(&graph);
 
         let e = "Bracket";
@@ -3218,7 +3219,7 @@ mod dependency_map_tests {
     #[test]
     fn dependency_map_dependents_of_width() {
         let module = bracket_compiled_module();
-        let graph = EvaluationGraph::from_templates(&module.templates);
+        let graph = EvaluationGraph::from_env(crate::DefEnv::of_module(&module, &[]));
         let dep_map = DependencyMap::from_graph(&graph);
 
         let e = "Bracket";
@@ -3237,7 +3238,7 @@ mod dependency_map_tests {
     #[test]
     fn dependency_map_dependents_of_height() {
         let module = bracket_compiled_module();
-        let graph = EvaluationGraph::from_templates(&module.templates);
+        let graph = EvaluationGraph::from_env(crate::DefEnv::of_module(&module, &[]));
         let dep_map = DependencyMap::from_graph(&graph);
 
         let e = "Bracket";
@@ -3256,7 +3257,7 @@ mod dependency_map_tests {
     #[test]
     fn dependency_map_dependents_of_thickness() {
         let module = bracket_compiled_module();
-        let graph = EvaluationGraph::from_templates(&module.templates);
+        let graph = EvaluationGraph::from_env(crate::DefEnv::of_module(&module, &[]));
         let dep_map = DependencyMap::from_graph(&graph);
 
         let e = "Bracket";
@@ -3275,7 +3276,7 @@ mod dependency_map_tests {
     #[test]
     fn dependency_map_volume_has_no_dependents() {
         let module = bracket_compiled_module();
-        let graph = EvaluationGraph::from_templates(&module.templates);
+        let graph = EvaluationGraph::from_env(crate::DefEnv::of_module(&module, &[]));
         let dep_map = DependencyMap::from_graph(&graph);
 
         let e = "Bracket";

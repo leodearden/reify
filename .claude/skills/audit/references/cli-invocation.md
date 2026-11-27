@@ -56,7 +56,7 @@ trap 'rm -f "$TMPFILE"' EXIT
 
 $REIFY_AUDIT_BIN \
   [--task <id>] \
-  [--pattern P1|P2|P5|PTODO|PDSSENTINEL|PDEAD|PUNTESTED|PLAYER|PDIAG|PDOCCOVER|PDCHECK|PCITE|PPRDSTATUS|PLINECITE] \
+  [--pattern P1|P2|P5|PTODO|PDSSENTINEL|PDEAD|PUNTESTED|PLAYER|PDIAG|PDOCCOVER|PDCHECK|PCITE|PPRDSTATUS|PLINECITE|POLDCORE] \
   [--fused-memory-url <url>] \  # default: $FUSED_MEMORY_URL or http://localhost:8002/mcp (no trailing slash)
   [--jcodemunch-url <url>]   \  # default: $JCODEMUNCH_URL or http://127.0.0.1:8901/mcp
   [--jcodemunch-repo <id>]   \  # NO default: derived per-path as local/<basename>-<sha1(abs project_root)[..8]>
@@ -140,7 +140,7 @@ Each failure mode yields exit code 125. The skill should surface the human-reada
 | Broken stderr serialization | `error serializing findings to JSON (broken stderr?)` | Rare; may indicate a resource limit; retry or report as infra issue |
 | Unknown flag or missing value | `error: unknown flag '…'` or `error: --<flag> requires a value` | Bug in skill argv construction — check `references/modes.md` |
 | Unusable jcodemunch index (**conditional**) | `E_JC_INDEX_STALE` / `E_JC_INDEX_EMPTY` / `E_JC_INDEX_UNREADABLE`, or a token-less `cannot verify jcodemunch index freshness for …` | Only refuses on an all-jcodemunch `--pattern` set; a mixed or pattern-less run fail-softs instead. Codes, remedies and the two-arm rule: §4.1 |
-| Empty task corpus (**conditional**) | `the task corpus is empty and every selected detector needs it; refusing …` | Only refuses on a PPRDSTATUS-only `--pattern` run; a mixed run prints a PPRDSTATUS breadcrumb instead (§4.1). Confirm fused-memory actually holds tasks for this `--project-root` |
+| Empty task corpus (**conditional**) | `the task corpus is empty and every selected detector needs it; refusing …` | Only refuses when every selected detector needs the corpus (PPRDSTATUS, POLDCORE), as in `--pattern PPRDSTATUS`, `--pattern POLDCORE` or both; a mixed run prints a breadcrumb for each such detector instead (§4.1). Confirm fused-memory actually holds tasks for this `--project-root` |
 | Literal 125 High findings (boundary) | tempfile contains a JSON array of 125 Finding objects | NOT an infra error — route as findings per §3.1 disambiguator |
 
 ### §4.1 jcodemunch unreachable — fail-soft (NOT an infra error)
@@ -154,7 +154,7 @@ Each failure mode yields exit code 125. The skill should surface the human-reada
   ```
   (`absent` reads `query failed` when the file exists but cannot be queried.) Zero PDCHECK findings behind that line mean "not checked", not "clean". Run from the main checkout, or point `REIFY_PTODO_TASKS_DB` at the DB.
 
-PPRDSTATUS is unaffected too: it opens no jcodemunch connection and reads no `tasks.db`. Its task source is the task corpus the fused-memory live loader returns, so an empty corpus is its one degraded state, handled with the same two arms as an unusable index. A PPRDSTATUS-only run refuses with exit 125 and prints no JSON array (§4 table). In a mixed run the other detectors still run, and PPRDSTATUS prints `reify-audit: PPRDSTATUS skipped — the task corpus is empty; this is NOT a clean bill of health` ahead of the JSON array; zero PPRDSTATUS findings behind it mean "not checked".
+PPRDSTATUS and POLDCORE are unaffected too: neither opens a jcodemunch connection or reads `tasks.db`. Their task source is the task corpus the fused-memory live loader returns, so an empty corpus is their one degraded state, handled with the same two arms as an unusable index. A run whose every selected detector needs the corpus (PPRDSTATUS, POLDCORE, or both) refuses with exit 125 and prints no JSON array (§4 table). In a mixed run the other detectors still run, and each corpus-only detector prints `reify-audit: <TOKEN> skipped — the task corpus is empty; this is NOT a clean bill of health` ahead of the JSON array; zero findings from it behind that line mean "not checked".
 
 See `references/modes.md` §4 notes for detail.
 

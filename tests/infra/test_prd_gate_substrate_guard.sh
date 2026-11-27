@@ -838,6 +838,7 @@ if ! _resolve_e2e_bin; then
     echo "        Reason: $_E2E_BIN_NOTE"
     echo "        (the hermetic unit blocks above still ran)"
     test_summary
+    exit 0
 fi
 
 if [ "$_E2E_BIN_TRUSTED" = "1" ]; then

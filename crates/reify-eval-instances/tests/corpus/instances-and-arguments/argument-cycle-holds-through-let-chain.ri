@@ -1,0 +1,11 @@
+structure def Plate {
+    param t : Length = auto
+    param floor : Length = 1mm
+    let f = floor
+    constraint t == f
+}
+structure def Asm {
+    sub a : Plate {
+        floor = self.a.t / 2
+    }
+}

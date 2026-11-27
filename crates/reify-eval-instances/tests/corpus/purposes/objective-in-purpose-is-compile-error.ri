@@ -1,0 +1,1 @@
+purpose lean(subject : Structure) { minimize subject.t }

@@ -1,0 +1,14 @@
+tests = "each constraint of a root is a verdict at its own path, one of which reads a geometry measure."
+rule = "contract Example 2; Part 2 (constraint)."
+provenance = "contract Part B Example 2."
+needs = ["instance", "constraint", "geometry"]
+answer_basis = "traced. `t` = 5 mm ≥ 3 mm: satisfied. `box(40 mm, 40 mm, 5 mm)` has volume 8000 mm³ ≤ 10000 mm³: satisfied. Row 1 needs no geometry; row 2 does."
+today = "the contract marks it \"checked\"."
+
+[[expect]]
+path = "Plate/constraint[0]"
+verdict = "satisfied"
+
+[[expect]]
+path = "Plate/constraint[1]"
+verdict = "satisfied"

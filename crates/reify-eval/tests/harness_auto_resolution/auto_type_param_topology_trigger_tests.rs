@@ -18,8 +18,10 @@
 
 use reify_compiler::AutoTypeSubstitution;
 use reify_core::Type;
+use reify_eval::DefEnv;
 use reify_eval::graph::EvaluationGraph;
 use reify_test_support::TopologyTemplateBuilder;
+use reify_test_support::module_of;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -55,8 +57,9 @@ fn two_param_template() -> reify_compiler::TopologyTemplate {
 #[test]
 fn different_substitution_flips_topology_fingerprint() {
     let template = single_param_template();
-    let mut graph_a = EvaluationGraph::from_templates(std::slice::from_ref(&template));
-    let mut graph_b = EvaluationGraph::from_templates(&[template]);
+    let mut graph_a =
+        EvaluationGraph::from_env(DefEnv::of_module(&module_of([template.clone()]), &[]));
+    let mut graph_b = EvaluationGraph::from_env(DefEnv::of_module(&module_of([template]), &[]));
 
     graph_a.auto_type_substitution = vec![("T".into(), "ORingSeal".into())];
     graph_b.auto_type_substitution = vec![("T".into(), "GasketSeal".into())];
@@ -79,8 +82,9 @@ fn different_substitution_flips_topology_fingerprint() {
 #[test]
 fn same_substitution_yields_same_topology_fingerprint() {
     let template = single_param_template();
-    let mut graph_a = EvaluationGraph::from_templates(std::slice::from_ref(&template));
-    let mut graph_b = EvaluationGraph::from_templates(&[template]);
+    let mut graph_a =
+        EvaluationGraph::from_env(DefEnv::of_module(&module_of([template.clone()]), &[]));
+    let mut graph_b = EvaluationGraph::from_env(DefEnv::of_module(&module_of([template]), &[]));
 
     graph_a.auto_type_substitution = vec![("T".into(), "ORingSeal".into())];
     graph_b.auto_type_substitution = vec![("T".into(), "ORingSeal".into())];
@@ -104,8 +108,9 @@ fn same_substitution_yields_same_topology_fingerprint() {
 #[test]
 fn substitution_vec_insertion_order_does_not_affect_fingerprint() {
     let template = two_param_template();
-    let mut graph_x = EvaluationGraph::from_templates(std::slice::from_ref(&template));
-    let mut graph_y = EvaluationGraph::from_templates(&[template]);
+    let mut graph_x =
+        EvaluationGraph::from_env(DefEnv::of_module(&module_of([template.clone()]), &[]));
+    let mut graph_y = EvaluationGraph::from_env(DefEnv::of_module(&module_of([template]), &[]));
 
     // Same logical map, different insertion order.
     graph_x.auto_type_substitution = vec![("A".into(), "X1".into()), ("B".into(), "Y1".into())];
@@ -133,14 +138,17 @@ fn empty_substitution_yields_back_compat_fingerprint() {
     let template = single_param_template();
 
     // Default: auto_type_substitution is never touched (empty Vec from Default).
-    let graph_default = EvaluationGraph::from_templates(std::slice::from_ref(&template));
+    let graph_default =
+        EvaluationGraph::from_env(DefEnv::of_module(&module_of([template.clone()]), &[]));
 
     // Explicit empty Vec.
-    let mut graph_explicit_empty = EvaluationGraph::from_templates(std::slice::from_ref(&template));
+    let mut graph_explicit_empty =
+        EvaluationGraph::from_env(DefEnv::of_module(&module_of([template.clone()]), &[]));
     graph_explicit_empty.auto_type_substitution = vec![];
 
     // Non-empty substitution.
-    let mut graph_with_sub = EvaluationGraph::from_templates(&[template]);
+    let mut graph_with_sub =
+        EvaluationGraph::from_env(DefEnv::of_module(&module_of([template]), &[]));
     graph_with_sub.auto_type_substitution = vec![("T".into(), "ORingSeal".into())];
 
     assert_eq!(
@@ -174,12 +182,14 @@ fn substitution_flip_and_revert_restores_topology_fingerprint() {
     let template = single_param_template();
 
     // graph_a: substitution_a = ORingSeal.
-    let mut graph_a = EvaluationGraph::from_templates(std::slice::from_ref(&template));
+    let mut graph_a =
+        EvaluationGraph::from_env(DefEnv::of_module(&module_of([template.clone()]), &[]));
     graph_a.auto_type_substitution = vec![("T".into(), "ORingSeal".into())];
     let fp_a = graph_a.topology_fingerprint();
 
     // graph_b: substitution_b = GasketSeal (flip).
-    let mut graph_b = EvaluationGraph::from_templates(std::slice::from_ref(&template));
+    let mut graph_b =
+        EvaluationGraph::from_env(DefEnv::of_module(&module_of([template.clone()]), &[]));
     graph_b.auto_type_substitution = vec![("T".into(), "GasketSeal".into())];
     let fp_b = graph_b.topology_fingerprint();
 
@@ -190,7 +200,7 @@ fn substitution_flip_and_revert_restores_topology_fingerprint() {
     );
 
     // graph_c: substitution_a again (revert).
-    let mut graph_c = EvaluationGraph::from_templates(&[template]);
+    let mut graph_c = EvaluationGraph::from_env(DefEnv::of_module(&module_of([template]), &[]));
     graph_c.auto_type_substitution = vec![("T".into(), "ORingSeal".into())];
     let fp_c = graph_c.topology_fingerprint();
 
@@ -220,16 +230,16 @@ fn substitution_flip_and_revert_restores_topology_fingerprint() {
 #[should_panic(expected = "param names must be unique")]
 fn duplicate_param_name_panics_in_debug() {
     let template = single_param_template();
-    let mut graph = EvaluationGraph::from_templates(&[template]);
+    let mut graph = EvaluationGraph::from_env(DefEnv::of_module(&module_of([template]), &[]));
     // "T" appears twice — violates the uniqueness invariant.
     graph.auto_type_substitution = vec![("T".into(), "A".into()), ("T".into(), "B".into())];
     graph.topology_fingerprint(); // triggers the debug_assert!
 }
 
 // ─── snapshot propagation: CompiledModule.auto_type_substitution → ───────────
-//                           EvaluationGraph via Snapshot::from_compiled_module
+//                           EvaluationGraph via Snapshot::from_env
 
-/// `Snapshot::from_compiled_module` must propagate
+/// `Snapshot::from_env` must propagate
 /// `CompiledModule.auto_type_substitution` verbatim into
 /// `EvaluationGraph.auto_type_substitution` AND the substitution must flip
 /// `topology_fingerprint` end-to-end through the production pipeline.
@@ -240,7 +250,7 @@ fn duplicate_param_name_panics_in_debug() {
 /// (`multi_param_resolution_outcome_substitution_drives_topology_fingerprint`)
 /// pins the by-hand graph-level assignment path; this test pins the
 /// *production-pipeline* propagation from `CompiledModule` through
-/// `Snapshot::from_compiled_module`.
+/// `Snapshot::from_env`.
 #[test]
 fn snapshot_from_compiled_module_propagates_auto_type_substitution_to_graph() {
     use reify_eval::snapshot::Snapshot;
@@ -261,15 +271,15 @@ fn snapshot_from_compiled_module_propagates_auto_type_substitution_to_graph() {
     module_resolved.auto_type_substitution =
         AutoTypeSubstitution::new(vec![("T".into(), "ORingSeal".into())]);
 
-    let snap_resolved = Snapshot::from_compiled_module(&module_resolved);
-    let snap_baseline = Snapshot::from_compiled_module(&module_baseline);
+    let snap_resolved = Snapshot::from_env(DefEnv::of_module(&module_resolved, &[]));
+    let snap_baseline = Snapshot::from_env(DefEnv::of_module(&module_baseline, &[]));
 
     // The field must propagate through the production wiring.
     assert_eq!(
         snap_resolved.graph.auto_type_substitution,
         vec![("T".to_string(), "ORingSeal".to_string())],
         "auto_type_substitution must propagate from CompiledModule to \
-         EvaluationGraph via Snapshot::from_compiled_module"
+         EvaluationGraph via Snapshot::from_env"
     );
 
     // The substitution must flip the fingerprint end-to-end through the
@@ -277,7 +287,7 @@ fn snapshot_from_compiled_module_propagates_auto_type_substitution_to_graph() {
     assert_ne!(
         snap_resolved.topology_fingerprint, snap_baseline.topology_fingerprint,
         "auto_type_substitution must flip topology_fingerprint end-to-end \
-         through Snapshot::from_compiled_module"
+         through Snapshot::from_env"
     );
 }
 
@@ -349,10 +359,10 @@ fn multi_param_resolution_outcome_substitution_drives_topology_fingerprint() {
     );
 
     // Build resolved and baseline graphs from the module's templates.
-    let mut graph_resolved = EvaluationGraph::from_templates(&module.templates);
+    let mut graph_resolved = EvaluationGraph::from_env(DefEnv::of_module(&module, &[]));
     graph_resolved.auto_type_substitution = outcome.substitution.clone();
 
-    let graph_baseline = EvaluationGraph::from_templates(&module.templates);
+    let graph_baseline = EvaluationGraph::from_env(DefEnv::of_module(&module, &[]));
 
     assert_ne!(
         graph_resolved.topology_fingerprint(),

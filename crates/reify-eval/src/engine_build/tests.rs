@@ -990,7 +990,7 @@ structure Assembly {
         let functions: Vec<CompiledFunction> = Vec::new();
         let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let templates: Vec<TopologyTemplate> = Vec::new();
+        let empty_module = reify_test_support::module_of([]);
 
         seed_cross_sub_named_steps(
             &template,
@@ -1002,7 +1002,7 @@ structure Assembly {
             &functions,
             &meta_map,
             &mut diagnostics,
-            &templates,
+            crate::DefEnv::of_module(&empty_module, &[]),
         );
 
         let got = named_steps
@@ -8417,7 +8417,7 @@ structure Assembly {
             &mut geometry_kernels,
             &registry,
             Some(Engine::DEFAULT_KERNEL_NAME),
-            &module,
+            crate::DefEnv::of_module(&module, &[]),
             &mut values,
             &functions,
             &mut diagnostics,
@@ -8483,7 +8483,7 @@ structure Assembly {
             &mut geometry_kernels,
             &registry,
             Some(Engine::DEFAULT_KERNEL_NAME),
-            &module,
+            crate::DefEnv::of_module(&module, &[]),
             &mut values,
             &functions,
             &mut diagnostics,
@@ -9901,6 +9901,8 @@ structure Assembly {
             );
         }
 
+        let empty_module = reify_test_support::module_of([]);
+
         // ── MAIN ASSERTION ────────────────────────────────────────────────────
         //
         // Before task 4538 (post_process_body_mass_props ran BEFORE selectors):
@@ -9922,7 +9924,7 @@ structure Assembly {
             &SweptKindTable::default(),
             &HashMap::new(),
             &mut diagnostics,
-            &[],
+            crate::DefEnv::of_module(&empty_module, &[]),
         );
 
         let mp_val = values
@@ -9975,8 +9977,10 @@ structure Assembly {
             .fields
             .get("inertia")
             .expect("MassProperties must have an `inertia` field");
-        let inertia = crate::dynamics_psd::inertia_3x3_from_value(inertia_field)
-            .expect("inertia must parse as 3×3 via inertia_3x3_from_value");
+        let inertia =
+            reify_stdlib::dynamics::mass_props::MassProperties::read_inertia(inertia_field)
+                .expect("inertia cells must be accepted")
+                .expect("inertia must be a resolved 3×3");
         assert!(
             (inertia[0][0] - 1.0).abs() < 1e-9,
             "inertia[0][0] must be 1.0; got {}",
@@ -10107,6 +10111,7 @@ structure Assembly {
         let table = TopologyAttributeTable::default();
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
+        let empty_module = reify_test_support::module_of([]);
         Engine::run_post_processes(
             &template,
             &named_steps,
@@ -10118,7 +10123,7 @@ structure Assembly {
             &SweptKindTable::default(),
             &HashMap::new(),
             &mut diagnostics,
-            &[],
+            crate::DefEnv::of_module(&empty_module, &[]),
         );
 
         let mp_val = values

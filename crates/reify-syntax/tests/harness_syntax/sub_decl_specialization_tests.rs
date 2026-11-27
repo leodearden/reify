@@ -97,6 +97,7 @@ fn make_sub_with_body(name: &str, body: Option<Vec<MemberDecl>>) -> SubDecl {
         where_clause: None,
         body,
         spec_param_overrides: Vec::new(),
+        spec_param_override_guards: Vec::new(),
         keyed_members: Vec::new(),
         is_aux: false,
         is_priv: false,
@@ -303,5 +304,50 @@ fn walker_recurses_into_guarded_group_branches() {
         tags,
         vec![Tag::GuardedGroup, Tag::Param, Tag::Constraint],
         "walker must visit the GuardedGroup, then its `then` members, then its `else` members"
+    );
+}
+
+// ── (c) a braces assignment keeps its `where` guard ──────────────────────
+
+fn ident_name(expr: &Expr) -> &str {
+    match &expr.kind {
+        ExprKind::Ident(name) => name,
+        other => panic!("expected an Ident expression, got {other:?}"),
+    }
+}
+
+#[test]
+fn braces_assignment_guard_is_kept() {
+    let members = parse_first_structure_members(
+        "structure S {
+    param thick : Bool = true
+    sub p : Plate {
+        t = 6mm where thick
+        w = 1mm
+    }
+}",
+    );
+    let sub = first_sub(&members);
+
+    let overrides: Vec<_> = sub.guarded_spec_param_overrides().collect();
+    assert_eq!(
+        overrides
+            .iter()
+            .map(|(name, _, _)| *name)
+            .collect::<Vec<_>>(),
+        vec!["t", "w"],
+        "both assignments stay overrides, in source order"
+    );
+    let t_guard = overrides[0]
+        .2
+        .expect("`t = 6mm where thick` must keep its guard");
+    assert_eq!(ident_name(&t_guard.condition), "thick");
+    assert!(
+        overrides[1].2.is_none(),
+        "`w = 1mm` carries no guard, so its slot is None"
+    );
+    assert!(
+        sub.where_clause.is_none(),
+        "an assignment's guard must not be absorbed as the sub's own guard"
     );
 }

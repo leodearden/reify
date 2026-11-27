@@ -1,0 +1,9 @@
+structure def Plate {
+    param t : Length
+    constraint t >= 3mm
+    pub let area = t * 40mm
+}
+fn mk(t : Length) -> Plate { Plate(t: t) }
+structure def Asm {
+    let both = mk(1mm).area + mk(2mm).area
+}

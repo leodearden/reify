@@ -1,0 +1,16 @@
+constraint def AtMost {
+    param v : Length
+    param hi : Length
+    v <= hi
+}
+structure def Bracket {
+    param t : Length = 5mm
+    constraint AtMost(v: t, hi: 8mm)
+}
+purpose thin(subject : Structure) {
+    constraint AtMost(v: subject.t, hi: 4mm)
+}
+structure def Asm {
+    sub b : Bracket
+    purpose thin(self.b)
+}

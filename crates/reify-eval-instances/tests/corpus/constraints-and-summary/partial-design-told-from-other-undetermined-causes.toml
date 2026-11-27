@@ -1,0 +1,31 @@
+tests = "each undetermined verdict says whether it is undetermined only because the design is deliberately partial (a root's parameter with no value, an argument written as the literal `undef`) or for another cause (a read of something not there, a division by zero)."
+rule = "seat-context ruling 9; design 14.12 (\"12.3 Agreed\"); PRD 5.4 (\"Telling a partial design from any other cause\"); decisions B5 and B8"
+provenance = "PRD boundary scenario H4; the two classes of spec 9.2's cause tracer (`Unbound` and `UserUndef` expected; the rest unexpected)."
+needs = ["instance", "constraint", "summary", "guard"]
+answer_basis = '''
+traced.
+`constraint[0]` reads `u`, a root's parameter with no value: partial.
+`constraint[1]` reads `p.t`, whose source is the literal `undef`: partial. That argument does not trip `p`'s argument verdict (decisions B5).
+`constraint[2]` reads `c.fan.d`; `fan` is absent (`needs_fan` false), and the read across an instance compiles and gives undefined (Part 4): other.
+`constraint[3]` reads `10mm / k` with `k` = 0 mm, an operation with no value: other. Summary: the four, undetermined 4.'''
+today = "run `g13.ri`: \"error: unknown member 'fan' on sub 'c'\". Run `divz.ri`: `10mm / k` with `k = 0 m` is undef \"because: op contract failed (OpContractViolation)\"."
+
+[[expect]]
+path = "Top/constraint[0]"
+undetermined_because = "partial"
+
+[[expect]]
+path = "Top/constraint[1]"
+undetermined_because = "partial"
+
+[[expect]]
+path = "Top/constraint[2]"
+undetermined_because = "other"
+
+[[expect]]
+path = "Top/constraint[3]"
+undetermined_because = "other"
+
+[[expect]]
+path = "Top/summary"
+summary = { violated = 0, undetermined = 4, failed = 0 }

@@ -2160,6 +2160,10 @@ mod tests {
             consumer_ref: None,
             audit_foundation: None,
             done_at: None,
+            dependencies: vec![],
+            has_old_core_release: false,
+            has_deferred_watch: false,
+            trigger_met: false,
         };
 
         let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc);
@@ -2191,6 +2195,10 @@ mod tests {
             consumer_ref: None,
             audit_foundation: None,
             done_at: None,
+            dependencies: vec![],
+            has_old_core_release: false,
+            has_deferred_watch: false,
+            trigger_met: false,
         }
     }
 
@@ -2277,6 +2285,10 @@ mod tests {
                 consumer_ref: None,
                 audit_foundation: None,
                 done_at: None,
+                dependencies: vec![],
+                has_old_core_release: false,
+                has_deferred_watch: false,
+                trigger_met: false,
             },
         );
 

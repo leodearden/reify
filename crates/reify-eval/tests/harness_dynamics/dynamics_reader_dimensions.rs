@@ -1,19 +1,20 @@
 //! Task 6922 (PRD `dimension-checked-readers.md` leaf ε): the `MassProperties`
 //! reader gates the dimension of `mass` / `com` / `inertia`, and the
 //! inverse-dynamics consumer refuses (and diagnoses) a body whose mass is not a
-//! mass. Driven through public seams only: `mass_properties_from_value`,
+//! mass. Driven through public seams only: `MassProperties::from_value`,
 //! `eval_builtin` and `dynamics_diagnose`, plus an engine eval of an inline copy
 //! of `examples/dynamics/pendulum_idyn.ri`.
 
 use reify_core::{DiagnosticCode, DimensionVector, Severity, ValueCellId};
 use reify_ir::{StructureInstanceData, StructureTypeId, Value};
-use reify_stdlib::{dynamics_diagnose, eval_builtin, mass_properties_from_value};
+use reify_stdlib::dynamics::mass_props::MassProperties;
+use reify_stdlib::{dynamics_diagnose, eval_builtin};
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
 /// Inline copy of `examples/dynamics/pendulum_idyn.ri` (a 1 kg point mass
 /// 100 mm below a revolute joint, held at θ = −30°).
 const PENDULUM_SOURCE: &str = "structure def PendulumIdyn {
-    let mp = MassProperties(mass: 1kg, com: point3(0mm, 0mm, -100mm), inertia: [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]], origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0, 0, 0), y_axis: vec3(0, 0, 0), z_axis: vec3(0, 0, 0)))
+    let mp = MassProperties(mass: 1kg, com: point3(0mm, 0mm, -100mm), inertia: [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
     let axis_y = dir(0, 1, 0)
     let joint = revolute(axis_y, -180deg .. 180deg)
     let m0 = mechanism()
@@ -23,6 +24,13 @@ const PENDULUM_SOURCE: &str = "structure def PendulumIdyn {
 }";
 
 const IDENTITY: [[f64; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+
+/// The 2 kg, origin-com, identity-inertia record every readable twin reads as.
+const TWO_KG: MassProperties = MassProperties {
+    mass: 2.0,
+    com: [0.0; 3],
+    inertia: IDENTITY,
+};
 
 fn scalar(si_value: f64, dimension: DimensionVector) -> Value {
     Value::Scalar {
@@ -70,14 +78,14 @@ fn mass_properties_reader_rejects_a_wrong_dimension_field() {
 
     let length_mass = mass_properties(scalar(2.0, DimensionVector::LENGTH), origin(), identity());
     assert_eq!(
-        mass_properties_from_value(&length_mass),
+        MassProperties::from_value(&length_mass),
         None,
         "a 2 m mass is not a mass"
     );
     let kilograms = mass_properties(scalar(2.0, DimensionVector::MASS), origin(), identity());
     assert_eq!(
-        mass_properties_from_value(&kilograms),
-        Some((2.0, [0.0; 3], IDENTITY)),
+        MassProperties::from_value(&kilograms),
+        Some(TWO_KG),
         "the 2 kg twin reads unchanged"
     );
 
@@ -87,18 +95,18 @@ fn mass_properties_reader_rejects_a_wrong_dimension_field() {
         Value::length(0.0),
     ]);
     let wrong_com = mass_properties(scalar(2.0, DimensionVector::MASS), mass_com, identity());
-    assert_eq!(mass_properties_from_value(&wrong_com), None);
+    assert_eq!(MassProperties::from_value(&wrong_com), None);
     let length_inertia = mass_properties(
         scalar(2.0, DimensionVector::MASS),
         origin(),
         inertia(IDENTITY, Value::length),
     );
-    assert_eq!(mass_properties_from_value(&length_inertia), None);
+    assert_eq!(MassProperties::from_value(&length_inertia), None);
 
     let bare = mass_properties(Value::Real(2.0), origin(), inertia(IDENTITY, Value::Real));
     assert_eq!(
-        mass_properties_from_value(&bare),
-        Some((2.0, [0.0; 3], IDENTITY)),
+        MassProperties::from_value(&bare),
+        Some(TWO_KG),
         "bare mass and bare inertia cells stay the transitional legacy spelling"
     );
 }

@@ -2,7 +2,6 @@
 
 use std::process::ExitCode;
 
-use reify_compiler::CompiledModule;
 use reify_core::Severity;
 
 use crate::args::{doc_usage_error, split_cfg_args_or_usage};
@@ -196,14 +195,10 @@ pub(crate) fn cmd_doc(args: &[String]) -> ExitCode {
         }
     };
 
-    // The entry's own defs only (D-12): the I5-merged import templates carry
-    // spans into other files.
-    let templates = program.entry_declared_templates().to_vec();
-    let declared = CompiledModule {
-        templates,
-        ..program.into_entry()
-    };
-    let model = reify_doc_build::build_doc_model(&declared, &source);
+    // The entry's own defs only (D-12): the entry holds no import's templates,
+    // whose spans index other files.
+    let declared = program.entry();
+    let model = reify_doc_build::build_doc_model(declared, &source);
     let xrefs = reify_doc_build::cross_refs::build_cross_refs(&declared.templates);
 
     match format {

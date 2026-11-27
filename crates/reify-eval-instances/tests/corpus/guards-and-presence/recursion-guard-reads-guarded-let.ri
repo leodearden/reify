@@ -1,0 +1,8 @@
+structure def S {
+    param depth : Int = 2
+    param on : Bool = true
+    where on {
+        let lim = 0
+        sub child = S(depth: depth - 1) where depth > lim
+    }
+}

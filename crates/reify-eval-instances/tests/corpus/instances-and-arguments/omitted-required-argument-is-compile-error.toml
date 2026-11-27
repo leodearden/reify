@@ -1,0 +1,12 @@
+tests = "Omitting a required argument where a sub is declared, or in a constructor call, is a compile error, while an explicit `undef` is accepted."
+rule = "Part 3 (task 7874 ruling); Part 9 (\"omitting a required argument is a compile error\")"
+provenance = "design Part 3; task 7874 (pending; covers `sub x : T` and bare `sub x : T`). language-1 L19; failing.md M5 and probe p/a5.ri."
+needs = ["compile-error", "made", "required-arguments"]
+answer_basis = "stated: task 7874's ruling, cited by design Part 3 and Part 9. The error names `d`. No leaf of this PRD builds the rejection, so the entry waits for task 7874 (PRD D9: \"relied on, no edge\"); `made` because the second row is about a constructor call's site in the second output (leaf κ₂)."
+today = "the omitted parameter is undefined, \"because: Req.w unbound\", and `check` exits 0 (task 7874 record, run on 2026-09-30)."
+
+[[expect]]
+compile_error = "the sub `a` omits the required argument `d` of `Bolt` (nothing is reported for `b`)"
+
+[[expect]]
+compile_error = "the call Bolt() omits the required argument d of Bolt"

@@ -1,0 +1,8 @@
+structure def Q {
+    param other : Bool = false
+    pub let v = forall i in [0, 1]: if i == 0 then false else other
+}
+structure def Top {
+    sub m : Q { other = self.n.v }
+    sub n : Q { other = self.m.v }
+}

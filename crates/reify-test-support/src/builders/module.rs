@@ -4,6 +4,17 @@ use reify_compiler::{
 };
 use reify_core::{ContentHash, SourceSpan};
 
+/// A module `test` declaring `templates` and nothing else.
+pub fn module_of(templates: impl IntoIterator<Item = TopologyTemplate>) -> CompiledModule {
+    templates
+        .into_iter()
+        .fold(
+            CompiledModuleBuilder::new(reify_core::ModulePath::single("test")),
+            CompiledModuleBuilder::template,
+        )
+        .build()
+}
+
 /// Builder for `CompiledModule`.
 pub struct CompiledModuleBuilder {
     path: reify_core::ModulePath,

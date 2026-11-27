@@ -135,13 +135,14 @@ scope** (owned by the stdlib-namespace/shadowing PRD, §6).
 // reify-compiler (program.rs)
 pub struct CompiledImportUnit {
     pub import_path: String,        // as written: "parts", "lib.fasteners"
+    pub reach: ImportReach,         // Direct | ReExported (μ, D-7)
     pub module: CompiledModule,
     pub origin: Option<PathBuf>,    // None for embedded-stdlib-resolved units
 }
 
 pub struct CompiledProgram {
     entry: CompiledModule,          // private: read via entry() / into_entry()
-    pub imports: Vec<CompiledImportUnit>, // followed direct imports, declaration order
+    pub imports: Vec<CompiledImportUnit>, // import tier: direct imports + their pub re-exports (μ)
     pub sources: Vec<ModuleSource>, // { module_key, path, source }; topological, entry last
     /* private: the re-homed-diagnostics block, the entry-declared template count */
 }
@@ -219,16 +220,19 @@ impl DefEnv {
     pub fn resolve_template(&self, name: &str) -> Option<&TopologyTemplate>;
     pub fn resolve_function(&self, name: &str /* + sig */) -> …;
     pub fn resolve_enum(&self, name: &str) -> Option<&EnumDef>;
-    // …units, aliases, traits, constraint defs, purposes: same pattern.
+    // …units, aliases, traits: same pattern (purposes, constraint defs: §8 ι amendment).
     // Presentation view — entity enumeration, doc, BOM, GUI tree:
-    pub fn declared(&self) -> &CompiledModule; // the entry, pure post-P2
+    pub fn module(&self) -> &CompiledModule; // the module the engine walks: the entry, or the
+                                             // engine's evaluation module, which is the entry
+                                             // plus the program's user templates (§8 κ amendment)
 }
 ```
 
 Consumption rule post-P2: a call site either **resolves a name** (→ `resolve_*`) or
-**enumerates the user's declarations** (→ `declared()`); passing a raw template slice
-across a subsystem boundary is retired. `Engine::prelude`, `prelude_functions`, and
-`find_template_with_prelude` are deleted; `merge_functions` folds into env construction.
+**enumerates the user's declarations** (→ `module()`; the entry's own declarations are
+`program.entry()`); passing a raw template slice across a subsystem boundary is retired.
+`Engine::prelude`, `prelude_functions`, and `find_template_with_prelude` are deleted;
+`merge_functions` folds into env construction.
 
 ---
 
@@ -337,7 +341,7 @@ touched.
 | 13 | Collision matrix | entry-vs-import, import-vs-import, import-vs-stdlib, per kind | first-wins per I6, Warning naming both origins; units flip pinned (D-6) | P2 (κ) |
 | 14 | Templates purity | any importing entry | post-P2 `entry.templates` contains only entry-declared names; GUI tree / doc unchanged vs P1 for user-visible content | P2 (κ) |
 | 15 | Silent-skip retirement | sub naming an unknown structure reaching graph build | structured diagnostic, not silent node omission | P2 (ι) |
-| 16 | Imported-file module-header mismatch | import whose file has wrong/missing `module` decl | Warning naming the *imported* file path | P3 (ξ) |
+| 16 | Imported-file module-header mismatch | import whose file has wrong/missing `module` decl | Warning naming the *imported* file path *(amended 2026-11-25, ξ #6953: "Warning" reads as the module-header diagnostic — an Error for a wrong declaration, a Warning for a missing one)* | P3 (ξ) |
 | 17 | GUI files panel | multi-file project | imported files listed (from `sources`), debug-MCP observable | P3 (ο) |
 | 18 | Stale-mirror removal | ports_breadth.ri stripped | eval output shows stdlib `thread_form`; examples_smoke green | P0 (α) |
 | 19 | Imported module *consuming* stdlib names (β amendment 2026-07-25) | imported module with a dimensioned param + si-unit default + stdlib trait bound (`param w : Length = 10mm`, `: ElasticMaterial`) | resolves at check AND eval — today it silently compiles poison (import units get no stdlib prelude: module_dag.rs:474-486, GUI twin engine.rs:946) *(probe)* | P1 (β) |
@@ -415,14 +419,117 @@ runs against P1's landed net)
   reify-compiler/conformance (sub_component_validation mirrors the env lookup set).
   Lookup sites → `resolve_*`; iterate sites → `declared()`; graph.rs silent skip →
   diagnostic (#15). Deps: θ.
+  *Amended 2026-11-24 (ι #5523, landed shape):* no production caller loads a
+  program, so eval holds only a `CompiledModule`; `DefEnv` therefore also wraps a lone
+  module, through `program_scope::ProgramRoot` (`Program` | `Module`). `DefEnv::of_module`
+  is the environment of the import-free program whose entry that module is (I1), and
+  over an `into_entry()` module it reproduces the interim module-then-prelude rule. The
+  engine's one seam is `Engine::env_of(module)`; κ points it at the loaded program.
+  unfold, the evaluation graph (`EvaluationGraph::from_env` / `Snapshot::from_env`),
+  structural queries and the walks mirroring them, the solver-problem builders and
+  engine_build's sub/let seeders and cross-sub post-processes resolve through it. The
+  graph is eval's single detector of an unresolvable sub (#15): it records
+  `DiagnosticCode::UnknownSubStructure`, built by `SubComponentDecl::unknown_structure_diagnostic`,
+  the constructor check-time conformance shares. Conformance mirrors the env's template
+  lookup set through `name_env::resolve_visible`: a direct import's `pub` surface (D-5),
+  then the stdlib. `find_template_with_prelude` remains for κ, re-pointed at
+  `DefEnv::of_module`; `eval_cached`'s validation-only loop over it is already gone.
+  Cross-reference to λ's 2026-11-23 amendment (task #10453): for the TEMPLATE kind at
+  sub positions, a direct import's non-pub structure is now unknown at check time,
+  measured by `a_sub_naming_an_imports_non_pub_structure_is_unknown_at_check`
+  (`crates/reify-compiler/tests/harness_modules_ports/sub_structure_existence_tests.rs`).
+  Template visibility at other compile sites (constructor calls, type positions) is
+  unchanged and stays with that amendment's follow-up ticket. `DefEnv` carries a typed
+  bare-name `resolve_*` only for a kind with an eval consumer or a live owner: templates
+  (ι), and functions, enums, units, aliases and traits (λ / κ). `resolve_purpose` and
+  `resolve_constraint_def` were removed as orphan producers: no eval site resolves a
+  constraint def by name, and engine_purposes' purpose lookups still read
+  `Engine::compiled_purposes`, a migration owned by follow-up ticket
+  tkt_0RXBWT36GNPZN1B7WHSWRA555P (task #10495). Both kinds stay reachable through
+  the qualified `DefEnv::resolve_in`, whose consumer is stdlib-namespace ν #5505.
+  Known interim gap, closed by κ: `ProgramRoot::Module` counts every template a module
+  holds as declared, so over an `into_entry()` module the graph also walks the
+  templates the I5 merge copied in from its imports. If such a copy's sub does not
+  resolve in the entry's env, the eval-time `UnknownSubStructure` Error now carries
+  the sub's span label, as the check-time one does. A `SourceSpan` carries no file
+  id, so that span indexes the import's source, and a renderer that positions labels
+  against the entry's text (the CLI's `diagnostic_line`) prints a position in the
+  entry file. The old eval loop's label-less Error had no position. The renderer is
+  not special-cased for this: κ's templates purity leaves `declared()` holding only
+  the entry's own templates, which removes the case.
 - **κ — Delete the interim: merge consumption + `find_template_with_prelude` +
   `Engine::prelude` statics; templates purity** *(leaf)*. Modules: reify-eval,
   reify-compiler, gui. Signals: #13, #14; `git grep find_template_with_prelude` empty;
   full multi-file + stdlib suites green. Deps: ι.
+  *Amended 2026-11-24 (κ #5524, landed shape):* `entry.templates` is pure: the I5
+  merge (`merge_imported_pub_templates`), `CompiledProgram`'s declared-template prefix
+  and `entry_declared_templates()` are deleted, so `program.entry()` holds only the
+  entry's own declarations (#14, pinned by `an_importing_entrys_templates_are_only_its_own`).
+  The D-6 collision report rides the program compile: θ's `DefEnv::collision_warnings`
+  moved to `program_scope::collision_warnings`, which `compile_program` appends to the
+  entry's diagnostics after the re-homed block. It binds over no prelude: the ambient
+  tier binds after every import, so it cannot change a report of import-tier losers. Every surface therefore prints each
+  collision once, coded `DefinitionCollision`, and the merge's code-less template
+  warning went with the merge (#13, pinned by
+  `the_program_compile_reports_each_import_tier_collision_on_the_entry` and
+  `a_template_collision_is_reported_once_with_its_code`). Eval itself was not
+  re-plumbed onto `declared()`-plus-`resolve_*`: every per-template walk in reify-eval
+  (graph roots and per-template constraint checks, the positional realization arrays,
+  the sub-geometry walks) is index-aligned with `module.templates`, and an imported
+  template is checked and realized only because it is one of those roots. So
+  `Engine::load(program)` returns the module the engine evaluates the program as,
+  `reify_eval::evaluation_module(&program)`: the entry with `DefEnv::user_templates()`
+  as its templates (the entry's own, then each direct import's `pub` templates,
+  first-wins). The CLI, GUI and LSP load their program and evaluate exactly the
+  returned `Arc`, so their user-visible content is unchanged from P1. `load` takes a
+  `reify_eval::LoadedProgram`, the program paired with its evaluation module, or a
+  program it prepares into one. A caller whose routing gates read that module before
+  it picks an engine (the CLI's `check`, `build` and `eval`, and the LSP's document)
+  prepares one, gates on `LoadedProgram::evaluated`, and loads it, so the module is
+  built once and the gates read the very `Arc` `load` returns. `Engine::env_of`
+  is identity-checked through `EnvScope`. For exactly the evaluation module (pointer
+  identity) the engine's environment is the loaded program's own: it binds every name,
+  bare or qualified (I7), as `DefEnv::from_program` does, and differs only in that its
+  `module()` is the evaluation module. Any other module, including a copy of it,
+  resolves in its own environment (I1); a copy with the evaluation module's path and
+  content hash draws a `tracing` warning, since it silently drops every imported
+  function, trait and enum. Making the pairing structural is follow-up work. `ProgramRoot` is a plain `{entry, imports}`
+  and `ProgramRoot::new` is private, so a root is built only from a compiled program
+  or a lone module. `DefEnv::declared()` was renamed `module()` because, for the loaded
+  program, it is the evaluation module and not the entry's declarations.
+  `merge_functions` folded into `DefEnv::function_table()`
+  (closing §10 Q4's hand-off), and `prelude_functions`, `Engine::prelude()`,
+  `Engine::def_env()` and the eval-side `find_template_with_prelude` are deleted; the
+  hand-rolled prelude-then-module trait and template reads in bom_report,
+  engine_build, engine_constraints and engine_eval resolve through the scope's
+  `DefEnv`. The `Engine` prelude field survives only as `DefEnv`'s ambient tier. The
+  compile-side namesake from #5867, `reify_compiler::types::find_template_with_prelude`,
+  is a different resolver (sub-target lookup against the compile's prelude
+  registries) and was renamed `resolve_sub_target_template`, so the
+  `git grep find_template_with_prelude` signal reads empty across `crates/` and `gui/`.
 - **λ — Cross-kind end-to-end signals** *(leaf)*. Modules: reify-eval tests +
   reify-cli tests (fixtures). Signals: #10 (fn `42` not `undef`), #11 (#5387
   acceptance: construction/type/match, non-pub invisible), #12 (unit/alias/trait).
   Deps: ι. (#5391 gate 3, first half.)
+  *Amended 2026-11-23 (task #10453, esc-5522-6):* λ BUILDS #11's non-pub-invisible
+  half; it does not only observe it. The cause is not enum-specific: `compile_program`
+  hands the entry's direct imports to its compile as ambient prelude, so every
+  `name_env::bind` caller there sees them as `Surface::Ambient` and D-5's
+  `Surface::DirectImport` filter never applies. Units, type aliases, constraint defs
+  and purposes filter `pub` in `Definition::exported_by` anyway; enums, traits,
+  functions and templates do not. For enums, θ's D-9 resolves an imported `E.V`
+  against that env, so a non-pub enum's value compiles to a literal before eval's
+  D-5-filtered DefEnv is consulted; ι's eval-side migration cannot close that. λ
+  therefore narrows compile-side enum visibility, at `E.V` and at enum type positions,
+  to a direct import's `pub` surface (D-5), so reify-compiler joins λ's modules; row
+  11's acceptance is the enum kind. Routing direct imports through
+  `Surface::DirectImport` once at that seam narrows every `name_env::bind` caller;
+  `is_pub` filters at enum sites narrow enums alone. In the same diff λ inverts
+  `imported_non_pub_enum_variant_access_still_compiles`
+  (`crates/reify-compiler/tests/harness_modules_ports/compile_program_tests.rs`).
+  Traits, functions and templates have no owner in this PRD, and whether a non-pub
+  one is reachable from an importer is unmeasured; task #10453 filed follow-up
+  ticket `tkt_0RXAZ2VBKR240CFP0BGSA9H3XE` to measure that and assign an owner.
 
 **P3 — exposure policy**
 
@@ -430,10 +537,56 @@ runs against P1's landed net)
   (compile_program frontier). Signal (#8): facade fixture — entry imports lib,
   lib pub-imports parts; `reify check` + `reify eval` resolve Pulley; plain-import
   chain does not leak. Deps: κ. (#5391 gate 3, second half.)
+  *Amended 2026-11-25 (μ #6953, landed shape):* `ModuleDag` records each followed
+  `pub import` as a re-export edge during the walk, behind the one import gate
+  (`follows_import`), so a cfg-gated-out import, or a `std.*` one the DAG does not
+  walk, is never an edge (I3, I4). `ModuleDag::visible_imports` is the one
+  import-tier rule, for an import unit's prelude, `compile_program`'s entry and
+  `compile_project`'s entry: each direct import followed depth-first by its
+  re-export closure, one unit per module, so a re-exported definition ranks with its
+  re-exporter under D-6 first-wins. `CompiledProgram.imports` carries that tier, each
+  unit marked by `CompiledImportUnit.reach` (`ImportReach::Direct` / `ReExported`),
+  so check (the compile prelude) and eval (`ProgramRoot` → `DefEnv` →
+  `evaluation_module`) see re-exports with no reify-eval change. Qualified lookup
+  (`module_surface`, I7) reaches only `Direct` units: neither `parts.X` nor `lib.X`
+  qualifies through a re-export, which is left to the stdlib-namespace PRD's
+  qualified-reference work (consumer #5505). An entity-form `pub import a.Helper`
+  re-exports a's whole pub surface until ν #5527's narrowing lands. Pinned by
+  `crates/reify-compiler/tests/harness_modules_ports/pub_import_reexport_tests.rs` and
+  `crates/reify-cli/tests/harness_cli/cli_pub_import_reexport.rs`.
+  Limits at landing, measured with `reify check`: (1) For an import unit, re-export
+  visibility is compile-time only. If app does `import lib` (a facade over parts) and
+  declares `sub p = Pulley()`, app's own compile binds Pulley. Whole-program eval, though,
+  resolves an import unit's subs in the entry's environment, whose tier is the entry's
+  own. So that sub is still an eval-time `UnknownSubStructure` and check exits 1, exactly
+  as when app imports parts directly. The limit predates μ and is follow-up ticket
+  `tkt_0RXDQVQP7N8RAQ276PTCE66PR2`. (2) A D-6 collision report names a re-exported module
+  the user never imported. With `import lib` (lib `pub import parts`) followed by
+  `import other`, both declaring `pub structure def Pulley`, the report is `structure
+  'Pulley' declared in both 'parts' and 'other'; first-wins: 'parts' binds`, and it does
+  not name lib as the route (follow-up ticket `tkt_0RXDQVVXGA2J3JFP01EVB9XKGR`). (3) The
+  embedded-stdlib fallback inserts modules without walking them, so those modules record
+  no edges. Under `compile_project`, a stdlib `pub import` therefore re-exports only when
+  the stdlib is served from the filesystem. This is latent, since no stdlib module uses
+  `pub import` today, and `compile_program` never walks std (I4). *Closed by
+  stdlib-namespace ι (#5502):* the fallback now records each inserted embedded module's
+  `pub import` edges, which `std.prelude`'s re-exports rely on under `compile_project`.
 - **ν — Entity-import narrowing** *(leaf)*. Modules: reify-compiler. Signal (#9).
   Deps: κ.
 - **ξ — Imported-file module-header mismatch surfacing** *(leaf)*. Modules:
   reify-compiler (module_dag.rs:527-529 region). Signal (#16). Deps: β.
+  *Amended 2026-11-25 (ξ #6953, landed shape):* β's I2 aggregation already re-homed an
+  import unit's header diagnostic onto the entry, prefixed `in imported module '<key>'
+  (<path>)`, so the imported file is named. ξ codes both at their single constructor,
+  `compile_builder/pre_pass.rs::module_path_decl_diag`, as
+  `DiagnosticCode::ModulePathMismatch` and `DiagnosticCode::ModuleDeclMissing`, so the
+  entry, every import unit and the stdlib build carry the codes (INV-SF-6); the
+  `E_MODULE_PATH_MISMATCH:` / `W_MODULE_DECL_MISSING:` message prefixes are unchanged.
+  Severity policy: a wrong header stays an Error, as it is for the entry and for
+  `reify check` run on that file itself, because severity belongs to the condition,
+  not to the route that reached the file; a missing header stays a Warning. Pinned by
+  `crates/reify-compiler/tests/harness_modules_ports/module_decl_remedy_tests.rs` and
+  `crates/reify-cli/tests/harness_cli/cli_module_decl_remedy.rs`.
 - **ο — GUI files panel from `sources`** *(leaf)*. Modules: gui (engine.rs source_map,
   frontend files panel). Signal (#17): debug-MCP store_state lists the imported file.
   Deps: ε.

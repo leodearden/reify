@@ -211,7 +211,7 @@ pub structure Capstan {
     // helical spine (which spans `groove_len`) and re-centred on the drum mid-plane.
     // The spine runs at the seat's ARC CENTRE, which is where the section is centred
     // — not at pitch_r, which is where the seated rope's centreline ends up.
-    aux let groove_profile = translate(rotate(circle(groove_r), 1.0, 0.0, 0.0, 0deg - 90deg), seat_c, 0mm, 0mm)
+    aux let groove_profile = translate(rotate(circle(groove_r), dir(1.0, 0.0, 0.0), 0deg - 90deg), seat_c, 0mm, 0mm)
     aux let groove_path    = helix(seat_c, lead, groove_len)
     aux let groove_cutter  = translate(sweep(groove_profile, groove_path), 0mm, 0mm, 0mm - groove_len / 2)
 
@@ -317,8 +317,8 @@ pub structure Fairlead {
     /// here and `CapstanDrive` asserts the coverage as a constraint instead.
     param stroke   : Length = 63mm
 
-    let rot_to_x = orient_axis_angle(vec3(0mm, 1mm, 0mm), 90deg)  // idler +Z → +X (spin axis)
-    let rot_to_y = orient_axis_angle(vec3(1mm, 0mm, 0mm), 90deg)  // idler +Z → +X (spin axis)
+    let rot_to_x = orient_axis_angle(dir(0, 1, 0), 90deg)  // idler +Z → +X (spin axis)
+    let rot_to_y = orient_axis_angle(dir(1, 0, 0), 90deg)  // idler +Z → +X (spin axis)
     let neg_x = 0mm - x_corner
     let neg_y = 0mm - y_corner
     // Idlers stand proud of the carrier on a bracket standoff (axle + bracket not

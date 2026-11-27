@@ -1,0 +1,18 @@
+tests = "two values opened in one expression, neither following a call site, are two opened instances at two paths, numbered by the position of each member read among the unit's member reads, and the cell gets its value."
+rule = "rule F; decisions A (row \"A cell's value opened as an instance\": \"opened in mid-expression, `/open[chain]`, the chain ending with the position of the member read among the unit's member reads\"); PRD 5.3; Part 7.2"
+provenance = "trace-structure counter-example 5 (with an empty chain, both opens would be declared at one step with different declarations, and by contract 7.5 the run of `q` would fail)."
+needs = ["instance", "made", "open", "paths"]
+answer_basis = "traced. `ps` holds two made plates, `Asm.ps/made[0]` (t = 1 mm) and `Asm.ps/made[1]` (t = 2 mm). In `q`, `ps[0].area` and `ps[1].area` each open a value in mid-expression; no call site lies between `q`'s expression and either read, so each chain is the read's position among `q`'s member reads: `Asm.q/open[0]` with area 40 mm², `Asm.q/open[1]` with area 80 mm². `q` = 120 mm²."
+today = "run `/tmp/instance-prd/fix-structure/twoopen.ri`: `Asm.q = 0.00012000000000000002 m^2`."
+
+[[expect]]
+path = "Asm.q/open[0].t"
+value = "1 mm"
+
+[[expect]]
+path = "Asm.q/open[1].t"
+value = "2 mm"
+
+[[expect]]
+path = "Asm.q"
+value = "120 mm^2"

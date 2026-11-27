@@ -5,6 +5,7 @@
 #![allow(clippy::mutable_key_type)]
 
 pub mod adoption_ratchet;
+pub mod bare_scalar;
 pub mod builders;
 pub mod ctor_conformance;
 pub mod ctor_conformance_debt;
@@ -23,6 +24,7 @@ pub mod orphan_audit;
 pub mod panic_capture;
 pub mod prd_gate_probe_set;
 pub mod ptodo_cite_marker;
+pub mod result_parity;
 pub mod rust_fixture_scan;
 pub mod sampled_field_fixtures;
 pub mod selector_fixtures;
@@ -51,6 +53,7 @@ pub mod workspace_sweep;
 // - `design_files`
 // - `examples_corpus`
 // - `mesh_fixtures`
+// - `result_parity`
 // - `rust_fixture_scan`
 // - `selector_fixtures`
 // - `stdlib_prelude`

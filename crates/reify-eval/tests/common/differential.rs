@@ -825,8 +825,9 @@ pub const SEED_CORPUS: &[CorpusCase] = &[
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// `examples/structure-instance.ri` — SIR-α: flat + nested structure-instance
-/// construction (Steel/PointLoad/Beam/NestedAssembly). Pure value evaluation, no
-/// geometry. (golden: `tests/golden/structure_instance.txt`.)
+/// construction (Steel/PointLoad/Beam/NestedAssembly), with symbolic selectors
+/// over geometry lets at template scope and inside let-constructed instances.
+/// (golden: `tests/golden/structure_instance.txt`.)
 const SRC_STRUCTURE_INSTANCE: &str = include_str!("../../../../examples/structure-instance.ri");
 
 /// `examples/tensegrity_t_prism.ri` — T0a/T1b: a `Tensegrity` instance, an
@@ -1054,7 +1055,7 @@ structure SmallPart {
 ///
 /// SHAPE NOTE — `param part : Solid` (NOT `let part = box(…)`): the
 /// constraint→realization edge δ's guard walks is `geometry_cell`, populated by
-/// `EvaluationGraph::from_templates` ONLY for a value cell whose `cell_type ==
+/// `EvaluationGraph::from_env` ONLY for a value cell whose `cell_type ==
 /// Type::Geometry` (a `Solid` cell IS `Type::Geometry`) whose member name matches
 /// the realization's name. A `let part = box(…)` inferred-type binding leaves
 /// `geometry_cell == None`, so `collect_constraint_realization_reads` finds no

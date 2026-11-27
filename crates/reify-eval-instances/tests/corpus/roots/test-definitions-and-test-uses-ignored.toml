@@ -1,0 +1,17 @@
+tests = "a `@test` definition is not a default root, and its use of a definition does not stop that definition being a root."
+rule = "rule D; decision 2; Part 3."
+provenance = "language-1 L4 model 1 (the spec's own form, spec 2651-2658); claims-3 probe `t1.ri`; language-1 probe `t1.ri`. Taken: rule D's \"a use by a test does not count\" and \"a `@test` definition is not a default root\". Also, from the merged entries: language-1 L4 item 1; logic-3 R13; spec 12.1."
+needs = ["roots", "instance", "constraint"]
+answer_basis = "traced. Entry file holds `Column` and `TestColumn`. Rule D: `TestColumn` is a test, so its use of `Column` does not count; `Column` is unused, so a root. `TestColumn` is a `@test` definition, so not a default root, and a path under an undeclared root answers absent (Part 3). `Column.w` is 50 mm, so its constraint holds."
+today = "`check` checks both, printing `OK Column#constraint[0]` and `OK TestColumn#constraint[0]` as two designs (run `roots_test.ri`); `build -o` on language-1's `t1.ri` exported the two test fixtures overlapped and not the design (report: language-1 L4)."
+
+[[expect]]
+roots = ["Column"]
+
+[[expect]]
+path = "Column/constraint[0]"
+verdict = "satisfied"
+
+[[expect]]
+path = "TestColumn.col.w"
+presence = "absent"

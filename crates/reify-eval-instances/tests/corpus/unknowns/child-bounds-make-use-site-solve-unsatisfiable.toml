@@ -1,0 +1,45 @@
+tests = "a child's own bounds bear on an `auto` written at its use site, so a parent requirement beyond them makes the solve fail, its unknowns undetermined, and every verdict that reads them undetermined."
+rule = "contract Example 5; Part 6.1; decision 4 (a conflicting constraint is unsatisfiable); contract section 8 (\"A failed solve is a stored result. Each unknown it owned is then undetermined\")."
+provenance = "the contract's run under Example 5 (constants 200 mm and 100 mm)."
+needs = ["instance", "constraint", "summary", "unknown", "solve-infeasible"]
+answer_basis = "traced. The equalities force `a.len` = 150 mm, `b.len` = 50 mm; `Beam`'s `len ≤ 100 mm` is inside `Asm` and bears, so no point is feasible and any correct solver finds none. Each unknown it owned is `value undefined` (readings B3); every constraint reading one is undetermined: Asm's 2, Beam's 2, Rod's 2. Each sub's argument is an unknown left undefined by the failed solve, so each `/arguments` verdict is undetermined (readings B5). Summary by readings B4: 6 + 2 = 8 undetermined. The solve node's own path and outcome are the solve design's (task 10610) and are not pinned; a failed solve is not a failure (readings B3)."
+today = "the solve returned 150 mm and `Beam`'s bound was not checked on the instance (contract Example 5, run)."
+
+[candidates]
+note = "(150 mm, 50 mm) meets both equalities and breaks `Beam`'s `len <= 100mm`; a reading in which the child's bounds do not bear at the instance takes it, which is the old engine's defect. (100 mm, 100 mm) breaks `Asm/constraint[1]`. As pairs in order or as every combination, each candidate breaks a constraint that depended on the trial, so none is taken."
+
+[[candidates.unknown]]
+path = "Asm/auto[a.len]"
+values = ["150mm", "100mm"]
+
+[[candidates.unknown]]
+path = "Asm/auto[b.len]"
+values = ["50mm", "100mm"]
+
+[[expect]]
+path = "Asm.a.len"
+value = "undefined"
+
+[[expect]]
+path = "Asm.b.len"
+value = "undefined"
+
+[[expect]]
+path = "Asm/constraint[0]"
+verdict = "undetermined"
+
+[[expect]]
+path = "Asm.a/constraint[1]"
+verdict = "undetermined"
+
+[[expect]]
+path = "Asm.a/arguments"
+verdict = "undetermined"
+
+[[expect]]
+path = "Asm.b/arguments"
+verdict = "undetermined"
+
+[[expect]]
+path = "Asm/summary"
+summary = { violated = 0, undetermined = 8, failed = 0 }

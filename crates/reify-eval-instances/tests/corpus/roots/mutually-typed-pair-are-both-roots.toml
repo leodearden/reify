@@ -1,0 +1,9 @@
+tests = "Two definitions that each have a parameter of the other's type form one unused group, so both are roots and the file is not left with none."
+rule = "rule D (grouping clause; fallback clause)"
+provenance = "critic logic-3 R13 (\"Two definitions that each have a parameter of the other's type leave a file with no root\"); design Part 15.1 rule D. logic-3 R13; logic-1 L11."
+needs = ["roots"]
+answer_basis = "traced for the row: `A` names `B` and `B` names `A`, so they are one group; nothing outside names either, so both are roots. The grouping clause decides the row, not the fallback clause. Open: whether rule D's fallback clause (\"if that leaves no root ... every one of those is a root\") is ever reached (readings D26). No pinned row depends on it; rule D's final text is written by leaf ξ."
+note = "the fallback clause appears unreachable (decisions D26). Every file with a non-test definition has at least one unused group, except one whose only non-test definitions are generics with no default for a type parameter, and decisions D25 says such a file has no root, the fallback included (entry `generic-only-file-has-no-root`). This is the only entry in the catalogue that carries the question, and the question pins no row."
+
+[[expect]]
+roots = ["A", "B"]

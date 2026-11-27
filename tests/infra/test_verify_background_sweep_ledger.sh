@@ -203,11 +203,10 @@ assert "B3: its exit_code is the run's OWN observed exit code" \
     bash -c '[ "$(ledger_field "$1" 1 exit_code)" = "$2" ]' \
     _ "$LEDGER" "$RUN_RC"
 
-# The stub's 17 does not survive the executor (reaper_run_in_pgroup collapses a
-# plan command's code to 1 — pre-existing, and not this task's to change), so
-# B4 asserts the run FAILED rather than a specific number. B3 above is the
-# assertion that matters: whatever the process exited with, that is what the
-# record says.
+# B4 asserts only that the run FAILED, not a specific number: B3 above is the
+# assertion that matters here — whatever the process exited with, that is what
+# the record says. The executor's own status propagation is pinned elsewhere
+# (test_proc_reaper.sh Test 3a-rc, test_verify_ledger_e2e.py).
 assert "B4: and the run really did fail, so B3 is not comparing two zeros" \
     test "$RUN_RC" -ne 0
 

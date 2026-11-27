@@ -1,0 +1,21 @@
+tests = "a read of a guarded member inside an arm of an `if`, or from a declaration under some other guard, compiles; at run time it gives the arm's value or undefined."
+rule = "decision 3b (line 2); Part 4 (\"Everything else is left to run time\"); Part 15 rule A; ruling 5; ruling 6."
+provenance = "design decision 3b.2; language-1 L1 (its `if` idiom, probe `g1.ri`) and its \"implies is not defined\" point (probe `g3.ri`); language-2 B4 and probe `n4.ri`. Taken: the design dropped draft 2's compile error for a reader under another guard. Also, from the merged entries: decision 3b.2. logic-2 N7 (second half); logic-3 R4 (second half)."
+needs = ["instance", "guard", "eval-reads", "compile-error"]
+answer_basis = "traced. `fan` is absent (`needs_fan` false). `f`: the `if` condition is false, the else arm gives 0 mm. `c`: `n > 1` is true, the then arm reads `self.fan.d`, which is not there: undefined. `b` has a guard of its own (`n > 1`, true), so it compiles and is present, and reads undefined."
+today = "`Case.f = 0 m`, `Case.c = undef`, `Case.b = undef`, no diagnostic (run `arm_read.ri`)."
+
+[[expect]]
+compile = "ok"
+
+[[expect]]
+path = "Case.f"
+value = "0 mm"
+
+[[expect]]
+path = "Case.c"
+value = "undefined"
+
+[[expect]]
+path = "Case.b"
+value = "undefined"

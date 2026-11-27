@@ -1,0 +1,18 @@
+structure def Motor {
+    param d : Length = auto
+    param floor : Length = 0mm
+    constraint d >= floor
+    constraint d <= 15mm
+}
+structure def Rig {
+    param bore : Length = 15mm
+    sub m : Motor { constraint d >= self.bore }
+}
+structure def RigA {
+    let half = self.m.d / 2
+    sub m : Motor { floor = self.half   constraint d == 10mm }
+}
+structure def RigB {
+    let half = self.m.d / 2
+    sub m : Motor { constraint d == 10mm   constraint d > self.half }
+}

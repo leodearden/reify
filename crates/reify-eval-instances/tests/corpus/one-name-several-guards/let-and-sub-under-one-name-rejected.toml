@@ -1,0 +1,9 @@
+tests = "a `let` and a `sub` declared under one name is a compile error."
+rule = "rule E (third bullet: \"The declarations must give the same kind of node\"); readings C11 (the exception: two declarations that give different kinds of node are a compile error)."
+provenance = "logic-1 doubts (\"One name under exclusive guards, with arms of different kinds (a `let` in one arm, a `sub` in the other). They cannot be one node with one recipe\")."
+needs = ["compile-error", "guard", "one-name"]
+answer_basis = "traced. A `let` is a cell and a `sub` an instance: different kinds of node, so rule E's third bullet rejects it. The bullet's only example is a collection against a single sub."
+
+[[expect]]
+compile_error = "`p` is declared as a sub and as a let; declarations of one name must give the same kind of member"
+code = "OneNameDifferentMemberKinds"

@@ -1,0 +1,14 @@
+structure def Beam  { param len : Length = 50mm }
+structure def Vent  { param area : Length = 1mm }
+structure def Plate { param t : Length = 2mm   pub let area = t * 40mm }
+fn mk(t : Length) -> Plate = Plate(t: t)
+structure def Asm {
+    param on : Bool = true
+    sub a : Beam { len = auto }
+    constraint self.a.len == 20mm
+    where on { let g : Length = 1mm }
+    sub vents : List<Vent>
+    constraint vents.count == 2
+    let m = mk(3mm).area
+    let ps = [Plate(t: 4mm), Plate(t: 5mm)]
+}

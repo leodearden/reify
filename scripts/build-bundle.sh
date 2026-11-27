@@ -2,11 +2,15 @@
 # scripts/build-bundle.sh [--version <semver>] — build Reify's Linux installers: a .deb and
 # an AppImage.
 #
-# VERSION. With --version, both assets are built at <semver> (a `--config` overlay on
-# gui/src-tauri/tauri.conf.json's "version", which names the deb and the AppImage and sets
-# the deb's control Version); scripts/release-alpha.sh passes the version its tag names.
-# Without it they take tauri.conf.json's "version", the unreleased default. Any other
-# argument is a usage error (exit 2) before any step runs.
+# VERSION. One source for each case: --version <semver>, which scripts/release-alpha.sh
+# takes from its tag, else the unreleased default, Cargo.toml's [workspace.package]
+# version. It reaches the assets through a `--config {"version": ...}` overlay on both
+# tauri calls (the deb and AppImage names, the deb's control Version), and the binaries
+# through REIFY_RELEASE_VERSION, which crates/reify-version stamps into the version
+# reify and reify-gui report. Both are set on every build, so a REIFY_RELEASE_VERSION
+# the caller carries never leaks in. It is checked twice: the built binaries'
+# --version before bundling, and the deb's control Version after. Any other argument
+# is a usage error (exit 2) before any step runs.
 #
 # STDOUT CONTRACT. On success stdout carries exactly two lines, the absolute
 # paths of the .deb and of the .AppImage, and nothing else; every other byte
@@ -61,11 +65,13 @@ bash scripts/docker-create-probe.sh || fail "docker preflight failed (scripts/do
 for tool in npm python3 dpkg-deb tar cmp; do
     command -v "$tool" >/dev/null || fail "$tool is not on PATH"
 done
-VERSION_CONFIG=()
-if [ -n "$VERSION" ]; then
-    VERSION_CONFIG=(--config "$(python3 -c 'import json, sys; print(json.dumps({"version": sys.argv[1]}))' "$VERSION")")
+if [ -z "$VERSION" ]; then
+    VERSION="$(python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["workspace"]["package"]["version"])' Cargo.toml)" \
+        || fail "cannot read [workspace.package] version from Cargo.toml"
 fi
-EXPECTED_VERSION="${VERSION:-$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["version"])' "$TAURI_CONF")}"
+[ -n "$VERSION" ] || fail "Cargo.toml's [workspace.package] version is empty"
+export REIFY_RELEASE_VERSION="$VERSION"
+VERSION_CONFIG=(--config "$(python3 -c 'import json, sys; print(json.dumps({"version": sys.argv[1]}))' "$VERSION")")
 
 # ---- 2. frontend and sidecar --------------------------------------------------
 # gui and gui/sidecar are separate npm roots; lockfile-exact installs.
@@ -96,6 +102,11 @@ STAGE="$TARGET_DIR/bundle-stage"
 OVERLAY="$STAGE/overlay.json"
 for bin in reify-gui reify; do
     [ -x "$RELEASE/$bin" ] || fail "cargo produced no $RELEASE/$bin"
+done
+for bin in reify-gui reify; do
+    reported="$("$RELEASE/$bin" --version)" || fail "$RELEASE/$bin --version failed"
+    [ "$reported" = "$bin $VERSION" ] \
+        || fail "$RELEASE/$bin reports '$reported'; expected '$bin $VERSION'"
 done
 
 # ---- 4. shared-library closure --------------------------------------------------
@@ -135,8 +146,8 @@ for member in usr/bin/reify-gui usr/bin/reify usr/bin/reify-sidecar; do
     [ -f "$DEB_ROOT/$member" ] || fail "$DEB does not contain /$member"
 done
 DEB_VERSION="$(dpkg-deb -f "$DEB" Version)"
-[ "$DEB_VERSION" = "$EXPECTED_VERSION" ] \
-    || fail "$DEB has control Version $DEB_VERSION; expected $EXPECTED_VERSION"
+[ "$DEB_VERSION" = "$VERSION" ] \
+    || fail "$DEB has control Version $DEB_VERSION; expected $VERSION"
 
 # Every deb.files entry of the overlay ships as staged: the RUNPATH-patched
 # copies, not cargo's, which tauri copies first and deb.files must overwrite.

@@ -29,6 +29,9 @@ reify-git-env.workspace = true
 # reify-syntax: the language keyword table pdoccover's mention-side filter reads
 # (PRD D15).
 reify-syntax.workspace = true
+# toml: reads the old-core hold list (src/old_core_hold.rs); already a
+# workspace dependency, so it adds no new crate.
+toml.workspace = true
 
 [[bin]]
 name = "reify-audit"

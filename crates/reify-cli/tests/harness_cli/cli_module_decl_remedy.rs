@@ -4,6 +4,9 @@
 //!
 //! `eval` reaches the check through the CLI's own parse-and-compile path, and
 //! `check` through the module DAG, so both are exercised.
+//!
+//! An imported file's header defect names that file at the entry (task #6953,
+//! PRD resolution-unification ξ, boundary #16).
 
 use crate::common;
 
@@ -50,6 +53,55 @@ fn the_named_declaration_is_accepted_on_every_cli_route() {
         assert!(
             !stderr.contains("E_MODULE_PATH_MISMATCH"),
             "reify {sc} should raise no E_MODULE_PATH_MISMATCH for `{CORRECTIVE_DECLARATION}`.\n\
+             stdout: {stdout}\nstderr: {stderr}"
+        );
+    }
+}
+
+const ENTRY_IMPORTING_PARTS: &str =
+    "module main\nimport parts\nstructure def Rig { param x : Length = 1mm }\n";
+const PARTS_BODY: &str = "pub structure def Pulley { param d : Length = 1mm }\n";
+
+#[test]
+fn an_imported_files_header_defect_names_the_imported_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let main = tmp.path().join("main.ri");
+    let parts = tmp.path().join("parts.ri");
+    std::fs::write(&main, ENTRY_IMPORTING_PARTS).unwrap();
+    let main = main.to_str().unwrap();
+    let parts_path = parts.display().to_string();
+
+    std::fs::write(&parts, format!("module wrongname\n{PARTS_BODY}")).unwrap();
+    let (status, stdout, stderr) = common::run_with_args(&["check", main]);
+    assert!(
+        !status.success(),
+        "an imported file's wrong header is an Error, so check should fail.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    for needle in [
+        "in imported module 'parts'",
+        parts_path.as_str(),
+        "E_MODULE_PATH_MISMATCH",
+        "module parts",
+    ] {
+        assert!(
+            stderr.contains(needle),
+            "check should report {needle:?} for parts.ri's wrong header.\n\
+             stdout: {stdout}\nstderr: {stderr}"
+        );
+    }
+
+    std::fs::write(&parts, PARTS_BODY).unwrap();
+    let (status, stdout, stderr) = common::run_with_args(&["check", main]);
+    assert!(
+        status.success(),
+        "an imported file's missing header is only a Warning, so check should pass.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    for needle in [parts_path.as_str(), "W_MODULE_DECL_MISSING"] {
+        assert!(
+            stderr.contains(needle),
+            "check should report {needle:?} for parts.ri's missing header.\n\
              stdout: {stdout}\nstderr: {stderr}"
         );
     }

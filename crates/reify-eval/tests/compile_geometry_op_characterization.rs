@@ -1529,23 +1529,19 @@ fn transform_case(k: TransformKind) -> CompiledGeometryOp {
             ("dy".to_string(), length_literal(0.02)),
             ("dz".to_string(), length_literal(0.03)),
         ],
+        // The axis is a `Direction` (direction-typing ι-a, task 9646). Golden
+        // unchanged: a basis Direction's components are the literal's bits.
         TransformKind::Rotate => vec![
-            ("ax".to_string(), real_literal(0.0)),
-            ("ay".to_string(), real_literal(0.0)),
-            ("az".to_string(), real_literal(1.0)),
+            ("axis".to_string(), lit_raw(direction_val(0.0, 0.0, 1.0))),
             ("angle".to_string(), angle_literal(1.0)),
         ],
         TransformKind::Scale => vec![("factor".to_string(), real_literal(2.0))],
-        // Only the PIVOT is LENGTH-semantic (task 5623); the ax/ay/az direction
-        // stays on `real_literal`, and `angle` is ANGLE-dimensioned via
+        // The PIVOT is a `Point3<Length>` and the axis a `Direction`
+        // (direction-typing ι-a, task 9646); `angle` is ANGLE-dimensioned via
         // `angle_literal` (angle-units PRD leaf γ). Golden unchanged.
         TransformKind::RotateAround => vec![
-            ("px".to_string(), length_literal(0.05)),
-            ("py".to_string(), length_literal(0.0)),
-            ("pz".to_string(), length_literal(0.0)),
-            ("ax".to_string(), real_literal(0.0)),
-            ("ay".to_string(), real_literal(0.0)),
-            ("az".to_string(), real_literal(1.0)),
+            ("pivot".to_string(), lit_raw(point3_len([0.05, 0.0, 0.0]))),
+            ("axis".to_string(), lit_raw(direction_val(0.0, 0.0, 1.0))),
             ("angle".to_string(), angle_literal(1.0)),
         ],
         TransformKind::ApplyTransform => vec![(
@@ -2457,8 +2453,9 @@ const ALL_PATTERN: [PatternKind; 5] = [
 ];
 
 /// The Pattern kinds with a distinct scalar-form vs Value-form code path. The
-/// base `pattern_case` exercises the scalar (back-compat) form; the `:value`
-/// extra cases below exercise the `axis`/`plane` Value-form decode branch.
+/// base `pattern_case` exercises the argument-list form (for Mirror, its
+/// `origin`/`normal` form); the `:value` extra cases below exercise the
+/// `axis`/`plane` Value-form decode branch.
 const PATTERN_VALUE_VARIANTS: [PatternKind; 2] = [PatternKind::Circular, PatternKind::Mirror];
 
 /// Build a representative base `Pattern` op for `k` (the scalar/back-compat form
@@ -2487,15 +2484,11 @@ fn pattern_case(k: PatternKind) -> CompiledGeometryOp {
             ("count".to_string(), real_literal(4.0)),
             ("angle".to_string(), angle_literal(std::f64::consts::FRAC_PI_2)),
         ],
+        // The plane ORIGIN is a `Point3<Length>` and the NORMAL a `Direction`
+        // (direction-typing ι-a, task 9646). Golden unchanged.
         PatternKind::Mirror => vec![
-            // Plane ORIGIN is length-semantic → dimensioned Length (task 5214);
-            // plane NORMAL stays a bare dimensionless unit vector.
-            ("ox".to_string(), length_literal(0.0)),
-            ("oy".to_string(), length_literal(0.0)),
-            ("oz".to_string(), length_literal(0.0)),
-            ("nx".to_string(), real_literal(0.0)),
-            ("ny".to_string(), real_literal(0.0)),
-            ("nz".to_string(), real_literal(1.0)),
+            ("origin".to_string(), lit_raw(point3_len([0.0, 0.0, 0.0]))),
+            ("normal".to_string(), lit_raw(direction_val(0.0, 0.0, 1.0))),
         ],
         PatternKind::Linear2D => vec![
             ("dx1".to_string(), real_literal(1.0)),
@@ -2688,18 +2681,16 @@ fn sweep_case(k: SweepKind) -> CompiledGeometryOp {
         ),
         SweepKind::Revolve => (
             vec![GeomRef::Step(0)],
+            // The lowered Direction form (task 9647): a Point3<Length>
+            // origin, a Direction and an ANGLE. A basis-vector Direction
+            // carries bit-identical components, so the golden is unchanged.
             vec![
-                ("ax".to_string(), real_literal(0.0)),
-                ("ay".to_string(), real_literal(0.0)),
-                ("az".to_string(), real_literal(1.0)),
+                ("origin".to_string(), lit_raw(point3_len([0.0, 0.0, 0.0]))),
+                (
+                    "direction".to_string(),
+                    lit_raw(direction_val(0.0, 0.0, 1.0)),
+                ),
                 ("angle".to_string(), angle_literal(1.0)),
-                // Only the axis ORIGIN is LENGTH-semantic (task 5623); the
-                // ax/ay/az direction stays on `real_literal`, and `angle` is
-                // ANGLE-dimensioned via `angle_literal` (angle-units PRD leaf γ).
-                // Golden unchanged.
-                ("ox".to_string(), length_literal(0.0)),
-                ("oy".to_string(), length_literal(0.0)),
-                ("oz".to_string(), length_literal(0.0)),
             ],
         ),
         SweepKind::Sweep => (vec![GeomRef::Step(0), GeomRef::Step(1)], vec![]),
@@ -2721,13 +2712,15 @@ fn sweep_case(k: SweepKind) -> CompiledGeometryOp {
         ),
         SweepKind::ExtrudeInfinite => (
             vec![GeomRef::Step(0)],
+            // The lowered `extrude_infinite(profile, dir(0, 0, 1))` (task
+            // 9647): `symmetric` is the compiler-synthesized Bool. Golden
+            // unchanged.
             vec![
-                // `dx`/`dy`/`dz` are a dimensionless DIRECTION, not a length —
-                // they stay on `real_literal` (task 5744 boundary). Golden unchanged.
-                ("dx".to_string(), real_literal(0.0)),
-                ("dy".to_string(), real_literal(0.0)),
-                ("dz".to_string(), real_literal(1.0)),
-                ("direction".to_string(), lit_raw(Value::String("positive".into()))),
+                (
+                    "direction".to_string(),
+                    lit_raw(direction_val(0.0, 0.0, 1.0)),
+                ),
+                ("symmetric".to_string(), lit_raw(Value::Bool(false))),
             ],
         ),
     };

@@ -79,10 +79,13 @@ requires a census row in the same change.**
 | intra-crate module import cycles | module_scc_ratchet (INV-ARCH-1; reify-compiler excluded until S7 κ) | shipped |
 | code-less `Diagnostic::error`/`warning` sites | PDIAG | shipped |
 | PRD terminal-status markers | PPRDSTATUS (#6346) | chartered |
+| old-core hold edge on tasks listing held files; holder state | POLDCORE | shipped |
 | verify knob registry and role/profile policy fields | `tests/infra/test_verify_policy.py` — every RolePolicy/ProfilePolicy field appears in `--print-role-policy`; every knob is documented in `docs/notes/verify-pipeline-knobs.md`; consumption itself is convention-only (`verify-structured-plan-and-role-table.md` D14) | shipped |
 | prose task-promises naming an owner (`owned by #N`, `deferred to task N`, `#N will …`, `until #N lands`) | PTODO lane δ-C → `orphaned` via the §19(b) cadenced liveness sweep (`reify-audit-ptodo-detector.md` §8.1, §21) | shipped |
 | prose task-promises outside δ-C's grammar (uncited "in a later task"; trailing `(task N)` on a future clause; promise split across lines) | convention-only — measured and declined (`reify-audit-ptodo-detector.md` §21) | unenforced |
 | whether a declared knob should exist at all | convention-only — deliberately unaudited (`trampoline-param-drop-closure.md` §11) | unenforced |
+| obligations O1–O10 on a node body of `reify-eval-core` (`docs/evaluation-core-contract.md` §2.2) | O4's lending: the compiler, its evidence kept by leaf χ's must-not-compile test (#10554); O9: the core fails the run; O2 and O8: the debug mode's sampled re-run (leaf ο, #10571); O3: the two-places test (leaf δ, #10557); convention-only: O1, O5, O6, O7, the two obligations PRD 13.2 point 29 adds to O4 (a resource type hands out no shared ownership of itself; a section blocks on nothing a body or the host must supply) and O10 (wrap what is made inside a resource) — `docs/prds/evaluation-core.md` §14 | chartered; the convention-only obligations unenforced (leaf ω, #10578, refreshes this row) |
+| the waiting entries of the instances-on-the-core corpus and its needs vocabulary (`crates/reify-eval-instances/tests/corpus/`) | the corpus validity test (`crates/reify-eval-instances/tests/corpus_runner/validity.rs`): a word outside the vocabulary is refused, and the waiting entries counted under every owner of an unbuilt word must equal `waiting.toml` | shipped |
 
 ## INV-SF-1 `undef-has-provenance`
 

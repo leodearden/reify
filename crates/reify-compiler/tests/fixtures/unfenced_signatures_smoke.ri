@@ -39,8 +39,8 @@ structure def GeometryQueryForms {
     let prof   = rectangle(40mm, 20mm)
     let rim    = line_segment(0mm, 0mm, 0mm, 20mm, 0mm, 0mm)
     let origin = point3(0mm, 0mm, 0mm)
-    let up     = vec3(0.0, 0.0, 1.0)
-    let across = vec3(1.0, 0.0, 0.0)
+    let up     = dir(0, 0, 1)
+    let across = dir(1, 0, 0)
     let tol    = 0.001mm
     let top    = single(faces(plate))
 
@@ -81,8 +81,8 @@ structure def MechanismForms {
 
 structure def TopologySelectorForms {
     let b       = box(10mm, 10mm, 10mm)
-    let up      = vec3(0.0, 0.0, 1.0)
-    let across  = vec3(1.0, 0.0, 0.0)
+    let up      = dir(0, 0, 1)
+    let across  = dir(1, 0, 0)
     let tol     = 1deg
     let etol    = 0.001mm
     let plane   = "Plane"

@@ -1,0 +1,34 @@
+tests = "An index past the end of a collection reads something that is not there: undefined, a verdict over it is undetermined, and a guarded read gives the same verdict in either operand order."
+rule = "decision 3 (3b, line 5); Part 5 (\"`xs[i]` with a computed `i`\"); decision 12 (both operands are read)"
+provenance = "design Part 14 decision 3b.5; Part 5 (`i < xs.count and xs[i].area > 0mm^2`); departs from spec 3.4. language-1 L20 and L1; language-2 B3."
+needs = ["instance", "collection", "constraint", "summary", "eval-reads"]
+answer_basis = "traced. The count constraint is not a verdict and takes no position (decisions A), so the three verdicts are `constraint[0]` to `[2]`. `x` and constraint[0] read `vents[7]`, not there: undefined, undetermined. Constraints [1] and [2]: `7 < 3` is false, and Kleene `false and undefined` is false in either order, so both are violated (not a failure, which the spec's 3.4 would give). `vents[2]` is the last element, at the default 2 mm; `vents[3]` is past the end."
+today = "undefined with no message (design Part 5)."
+
+[[expect]]
+path = "Asm.vents[2].w"
+value = "2 mm"
+
+[[expect]]
+path = "Asm.vents[3]"
+presence = "absent"
+
+[[expect]]
+path = "Asm.x"
+value = "undefined"
+
+[[expect]]
+path = "Asm/constraint[0]"
+verdict = "undetermined"
+
+[[expect]]
+path = "Asm/constraint[1]"
+verdict = "violated"
+
+[[expect]]
+path = "Asm/constraint[2]"
+verdict = "violated"
+
+[[expect]]
+path = "Asm/summary"
+summary = { violated = 2, undetermined = 1, failed = 0 }

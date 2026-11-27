@@ -1,0 +1,7 @@
+structure def Rib { param h : Length = 2mm }
+structure def Panel {
+    param t : Length = auto
+    constraint t >= 5mm
+    constraint t <= 7mm
+    sub rib : Rib where t > 4mm
+}

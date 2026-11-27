@@ -43,8 +43,10 @@ pub(crate) enum RealizationSource<'a> {
     /// The compiled template's declarations, which `eval()` has.
     Template(&'a TopologyTemplate),
     /// The graph's realization nodes, which carry the same operations, for the
-    /// edit path, which has no template. This is the hook #8209 folds the
-    /// `edit_param` walk's template-scope mint onto.
+    /// edit path, which has no template. Folding the `edit_param` walk's
+    /// template-scope mint onto this hook was proposed in #8209; that fold is
+    /// not being done in this code, because the old evaluation orchestration
+    /// is being replaced (docs/notes/old-evaluation-core-hold.md).
     Graph(&'a EvaluationGraph),
 }
 
@@ -446,6 +448,7 @@ mod tests {
         InstanceMintOutcome, InstanceMintPath, InstanceMintScope, SymbolicMintOrder,
         instance_mint_reads, project_instance_reads, slot_commit_order,
     };
+    use crate::DefEnv;
     use crate::deps::extract_dependency_trace;
     use crate::geometry_ops::try_eval_symbolic_topology_selector;
     use crate::graph::geometry_cell_link_fixture::{
@@ -519,7 +522,7 @@ mod tests {
 
     /// The evaluation graph of `src`, which must compile.
     fn graph_of(src: &str) -> EvaluationGraph {
-        EvaluationGraph::from_templates(&parse_and_compile(src).templates)
+        EvaluationGraph::from_env(DefEnv::of_module(&parse_and_compile(src), &[]))
     }
 
     /// The graph of the shared geometry-cell fixture: template `T`, and `P`

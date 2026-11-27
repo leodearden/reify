@@ -1,0 +1,6 @@
+structure def Bracket { param t : Length = 5mm }
+purpose thin_enough(subject : Structure) { constraint subject.t < 4mm }
+structure def Asm {
+    let v = Bracket()
+    purpose thin_enough(v)
+}

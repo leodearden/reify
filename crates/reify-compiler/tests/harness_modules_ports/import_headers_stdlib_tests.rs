@@ -6,7 +6,7 @@
 use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
-use reify_ast::ParsedModule;
+use reify_ast::{Declaration, ParsedModule};
 use reify_compiler::cfg::CfgSet;
 use reify_compiler::import_headers::{
     ImportPlan, cfg_satisfied_imports, derive_std_imports, insert_imports,
@@ -24,6 +24,19 @@ struct DerivedModule {
 
 fn module_path(name: &str) -> ModulePath {
     ModulePath::from_dotted(name).expect("stdlib module names are dotted paths")
+}
+
+/// The paths `parsed` re-exports through `pub import`. A re-export is a declared
+/// part of the module's surface (D-7), not a dependency derivation can find.
+fn declared_re_exports(parsed: &ParsedModule) -> Vec<ModulePath> {
+    parsed
+        .declarations
+        .iter()
+        .filter_map(|declaration| match declaration {
+            Declaration::Import(import) if import.is_pub => Some(module_path(&import.path)),
+            _ => None,
+        })
+        .collect()
 }
 
 fn derive_for(name: &str, source: &str) -> (ParsedModule, ImportPlan<'static>) {
@@ -85,9 +98,9 @@ fn every_stdlib_module_compiles_against_its_derived_imports_alone() {
     let offenders: Vec<String> = derived_stdlib()
         .iter()
         .filter_map(|module| {
-            let residual = module
-                .plan
-                .residual_diagnostics(&module.parsed, &module.plan.modules());
+            let mut imports = module.plan.modules();
+            imports.extend(declared_re_exports(&module.parsed));
+            let residual = module.plan.residual_diagnostics(&module.parsed, &imports);
             (!residual.is_empty()).then(|| {
                 let lines: Vec<String> = residual
                     .iter()
@@ -194,8 +207,12 @@ fn every_stdlib_module_declares_exactly_its_derived_imports() {
                 &CfgSet::host_default(),
             ));
             let derived = dotted_set(&module.plan.modules());
+            let re_exports = dotted_set(&declared_re_exports(&module.parsed));
             let missing: Vec<&String> = derived.difference(&declared).collect();
-            let extra: Vec<&String> = declared.difference(&derived).collect();
+            let extra: Vec<&String> = declared
+                .difference(&derived)
+                .filter(|path| !re_exports.contains(*path))
+                .collect();
             (!missing.is_empty() || !extra.is_empty())
                 .then(|| format!("{}: missing {missing:?}, extra {extra:?}", module.name))
         })

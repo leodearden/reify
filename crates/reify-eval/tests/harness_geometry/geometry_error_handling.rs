@@ -1606,25 +1606,40 @@ fn build_extrude_nonfinite_distance_emits_diagnostic() {
     );
 }
 
+/// A `revolve(profile, point3(0mm, 0mm, 0mm), direction, angle)` op as the
+/// compiler lowers it, with the profile at `Step(0)`.
+fn revolve_op(direction: Value, angle: reify_ir::CompiledExpr) -> CompiledGeometryOp {
+    CompiledGeometryOp::Sweep {
+        kind: reify_compiler::SweepKind::Revolve,
+        profiles: vec![GeomRef::Step(0)],
+        args: vec![
+            (
+                "origin".into(),
+                reify_ir::CompiledExpr::literal(
+                    point3(0.0, 0.0, 0.0),
+                    Type::point3(Type::length()),
+                ),
+            ),
+            (
+                "direction".into(),
+                reify_ir::CompiledExpr::literal(direction, Type::direction()),
+            ),
+            ("angle".into(), angle),
+        ],
+    }
+}
+
 // ---------------------------------------------------------------------------
-// Regression guard: degenerate revolve axis → compile-time rejection, specific Warning
+// Regression guard: unresolved revolve direction → compile-time rejection
 // ---------------------------------------------------------------------------
 
-/// When a Sweep::Revolve op has a zero-length axis (ax=ay=az=0.0), build() should:
-/// 1. Call kernel exactly once — for the preceding Sphere that provides the
-///    profile handle — but never call kernel for the Revolve op itself.
-/// 2. Return geometry_output=None (the realization as a whole fails).
-/// 3. Emit a Warning whose message contains both 'revolve dropped' and 'axis'
-///    (the site-specific diagnostic from lib.rs:3699).
-/// 4. Emit an Error containing 'failed to compile geometry operation'.
-/// 5. NOT emit any diagnostic containing "geometry error" (kernel was never
-///    called for the Revolve op).
-///
-/// This specifically exercises the axis-magnitude check at lib.rs:3698, which
-/// is distinct from the angle check tested in build_revolve_zero_angle_emits_diagnostic.
+/// An Undef `direction` (what a degenerate `dir(0, 0, 0)` cell evaluates to)
+/// drops the Revolve op before the kernel sees it, reporting the shared
+/// unresolved sentence. The retired zero-axis Warning ("revolve dropped …
+/// axis") must not come back: a `Direction` is unit by construction (task
+/// 9647), so there is no magnitude left to check.
 #[test]
-fn build_revolve_degenerate_axis_emits_diagnostic() {
-    use reify_compiler::SweepKind;
+fn build_revolve_undef_direction_drops_the_op_as_unresolved() {
     let e = "TestShape";
 
     // Op 0: Sphere primitive — provides step_handles[0] as the Revolve's profile handle
@@ -1632,21 +1647,7 @@ fn build_revolve_degenerate_axis_emits_diagnostic() {
         kind: PrimitiveKind::Sphere,
         args: vec![("radius".into(), mm_literal(50.0))],
     };
-
-    // Op 1: Revolve with ax=ay=az=0.0 (zero-length axis) — rejected before angle is evaluated
-    let revolve_op = CompiledGeometryOp::Sweep {
-        kind: SweepKind::Revolve,
-        profiles: vec![GeomRef::Step(0)],
-        args: vec![
-            ("ox".into(), mm_literal(0.0)),
-            ("oy".into(), mm_literal(0.0)),
-            ("oz".into(), mm_literal(0.0)),
-            ("ax".into(), real_literal(0.0)),
-            ("ay".into(), real_literal(0.0)),
-            ("az".into(), real_literal(0.0)),
-            ("angle".into(), angle_literal(std::f64::consts::PI)),
-        ],
-    };
+    let revolve_op = revolve_op(Value::Undef, angle_literal(std::f64::consts::PI));
 
     let template = TopologyTemplateBuilder::new(e)
         .param(e, "radius", Type::length(), Some(mm_literal(50.0)))
@@ -1654,7 +1655,7 @@ fn build_revolve_degenerate_axis_emits_diagnostic() {
         .build();
 
     let module = CompiledModuleBuilder::new(reify_core::ModulePath::single(
-        "test_revolve_degenerate_axis",
+        "test_revolve_undef_direction",
     ))
     .template(template)
     .build();
@@ -1665,11 +1666,31 @@ fn build_revolve_degenerate_axis_emits_diagnostic() {
     let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
-    assert_rejected_at_compile(
-        &result,
-        &ops_ref.lock().unwrap(),
-        Some(|op| matches!(op, reify_ir::GeometryOp::Sphere { .. })),
-        &["revolve dropped", "axis"],
+    let ops = ops_ref.lock().unwrap();
+    assert!(
+        ops.len() == 1 && matches!(ops[0].op, GeometryOp::Sphere { .. }),
+        "only the profile Sphere may reach the kernel; got: {:?}",
+        ops.iter().map(|r| &r.op).collect::<Vec<_>>()
+    );
+    assert!(result.geometry_output.is_none());
+    let messages: Vec<&str> = result
+        .diagnostics
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == reify_core::Severity::Error
+                && d.message.contains("failed to compile geometry operation")
+                && d.message
+                    .contains("argument 'direction' for revolve is unresolved (Undef)")),
+        "got: {messages:?}"
+    );
+    assert!(
+        !messages.iter().any(|m| m.contains("revolve dropped")),
+        "got: {messages:?}"
     );
 }
 
@@ -1695,7 +1716,6 @@ fn build_revolve_degenerate_axis_emits_diagnostic() {
 /// no kernel error).
 #[test]
 fn build_revolve_zero_angle_emits_diagnostic() {
-    use reify_compiler::SweepKind;
     let e = "TestShape";
 
     // Op 0: Sphere primitive — provides step_handles[0] as the Revolve's profile handle
@@ -1704,21 +1724,9 @@ fn build_revolve_zero_angle_emits_diagnostic() {
         args: vec![("radius".into(), mm_literal(50.0))],
     };
 
-    // Op 1: Revolve with valid z-axis (az=1.0) but angle=0.0 — rejected because
+    // Op 1: Revolve about dir(0, 0, 1) but angle=0.0 — rejected because
     // |angle| < 1e-12 cannot produce a meaningful revolve
-    let revolve_op = CompiledGeometryOp::Sweep {
-        kind: SweepKind::Revolve,
-        profiles: vec![GeomRef::Step(0)],
-        args: vec![
-            ("ox".into(), mm_literal(0.0)),
-            ("oy".into(), mm_literal(0.0)),
-            ("oz".into(), mm_literal(0.0)),
-            ("ax".into(), real_literal(0.0)),
-            ("ay".into(), real_literal(0.0)),
-            ("az".into(), real_literal(1.0)),
-            ("angle".into(), angle_literal(0.0)),
-        ],
-    };
+    let revolve_op = revolve_op(direction_val(0.0, 0.0, 1.0), angle_literal(0.0));
 
     let template = TopologyTemplateBuilder::new(e)
         .param(e, "radius", Type::length(), Some(mm_literal(50.0)))
@@ -2260,7 +2268,6 @@ fn build_extrude_distance_at_threshold_accepted() {
 /// exactly 0.0) by pinning the `|angle| < 1e-12` near-zero boundary.
 #[test]
 fn build_revolve_angle_just_below_threshold_rejected() {
-    use reify_compiler::SweepKind;
     let e = "TestShape";
 
     let sphere_op = CompiledGeometryOp::Primitive {
@@ -2268,21 +2275,9 @@ fn build_revolve_angle_just_below_threshold_rejected() {
         args: vec![("radius".into(), mm_literal(50.0))],
     };
 
-    // Op 1: Revolve with valid z-axis (az=1.0) but angle=1e-13 rad —
+    // Op 1: Revolve about dir(0, 0, 1) but angle=1e-13 rad —
     // strictly below DEGENERATE_ANGLE_RAD=1e-12
-    let revolve_op = CompiledGeometryOp::Sweep {
-        kind: SweepKind::Revolve,
-        profiles: vec![GeomRef::Step(0)],
-        args: vec![
-            ("ox".into(), mm_literal(0.0)),
-            ("oy".into(), mm_literal(0.0)),
-            ("oz".into(), mm_literal(0.0)),
-            ("ax".into(), real_literal(0.0)),
-            ("ay".into(), real_literal(0.0)),
-            ("az".into(), real_literal(1.0)),
-            ("angle".into(), angle_literal(1e-13)),
-        ],
-    };
+    let revolve_op = revolve_op(direction_val(0.0, 0.0, 1.0), angle_literal(1e-13));
 
     let template = TopologyTemplateBuilder::new(e)
         .realization(e, 0, vec![sphere_op, revolve_op])
@@ -2315,7 +2310,6 @@ fn build_revolve_angle_just_below_threshold_rejected() {
 /// that regression.
 #[test]
 fn build_revolve_angle_negative_just_below_threshold_rejected() {
-    use reify_compiler::SweepKind;
     let e = "TestShape";
 
     let sphere_op = CompiledGeometryOp::Primitive {
@@ -2323,19 +2317,7 @@ fn build_revolve_angle_negative_just_below_threshold_rejected() {
         args: vec![("radius".into(), mm_literal(50.0))],
     };
 
-    let revolve_op = CompiledGeometryOp::Sweep {
-        kind: SweepKind::Revolve,
-        profiles: vec![GeomRef::Step(0)],
-        args: vec![
-            ("ox".into(), mm_literal(0.0)),
-            ("oy".into(), mm_literal(0.0)),
-            ("oz".into(), mm_literal(0.0)),
-            ("ax".into(), real_literal(0.0)),
-            ("ay".into(), real_literal(0.0)),
-            ("az".into(), real_literal(1.0)),
-            ("angle".into(), angle_literal(-1e-13)),
-        ],
-    };
+    let revolve_op = revolve_op(direction_val(0.0, 0.0, 1.0), angle_literal(-1e-13));
 
     let template = TopologyTemplateBuilder::new(e)
         .realization(e, 0, vec![sphere_op, revolve_op])
@@ -2488,9 +2470,9 @@ fn build_circular_pattern_missing_axis_no_kernel_error() {
     );
 }
 
-/// Mirror pattern dispatch rejects a missing `ox` (plane origin X) at
-/// compile time. First f64 arg in the Mirror arm; exercises the arm's
-/// entry.
+/// Mirror pattern dispatch rejects a missing `origin` (the plane origin) at
+/// compile time. The first arg the point-direction form reads; exercises the
+/// arm's entry.
 #[test]
 fn build_mirror_pattern_missing_plane_origin_no_kernel_error() {
     use reify_compiler::PatternKind;
@@ -2508,12 +2490,11 @@ fn build_mirror_pattern_missing_plane_origin_no_kernel_error() {
         kind: PatternKind::Mirror,
         target: GeomRef::Step(0),
         args: vec![
-            // ox deliberately omitted
-            ("oy".into(), real_literal(0.0)),
-            ("oz".into(), real_literal(0.0)),
-            ("nx".into(), real_literal(0.0)),
-            ("ny".into(), real_literal(0.0)),
-            ("nz".into(), real_literal(1.0)),
+            // origin deliberately omitted
+            (
+                "normal".into(),
+                reify_ir::CompiledExpr::literal(direction_val(0.0, 0.0, 1.0), Type::Direction),
+            ),
         ],
     };
 
@@ -2521,7 +2502,7 @@ fn build_mirror_pattern_missing_plane_origin_no_kernel_error() {
         .realization(e, 0, vec![box_op, mirror_op])
         .build();
     let module =
-        CompiledModuleBuilder::new(reify_core::ModulePath::single("test_mirror_missing_ox"))
+        CompiledModuleBuilder::new(reify_core::ModulePath::single("test_mirror_missing_origin"))
             .template(template)
             .build();
 
@@ -2535,7 +2516,7 @@ fn build_mirror_pattern_missing_plane_origin_no_kernel_error() {
         &result,
         &ops_ref.lock().unwrap(),
         Some(|op| matches!(op, reify_ir::GeometryOp::Box { .. })),
-        &["missing required geometry argument", "ox", "mirror"],
+        &["missing required geometry argument", "origin", "mirror"],
     );
 }
 

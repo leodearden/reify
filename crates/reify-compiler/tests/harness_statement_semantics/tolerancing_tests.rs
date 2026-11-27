@@ -2903,7 +2903,7 @@ mod mirror_gate {
     //! Five example files used to carry eval-time copies of stdlib tolerancing
     //! types. Task #5582 stripped them: every one of those types reaches eval
     //! through the prelude (Regime B — docs/prds/v0_6/resolution-unification.md §1,
-    //! `find_template_with_prelude`), so a local copy is not a harmless duplicate.
+    //! `reify_eval::DefEnv::resolve_template`), so a local copy is not a harmless duplicate.
     //! It shadows the stdlib type's trait bounds (dropping `nominal_zone` /
     //! `zone_shape`), becomes a standalone module root of its own, and is free to
     //! drift — io_export.ri's `Flatness` mirror still declared

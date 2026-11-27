@@ -60,7 +60,7 @@ module pnrg_envelope_spline
 // surface.  For the nurbs_surface alternative, see
 // tests/prd-gate/fixtures/pnrg_envelope_nurbs_surface.ri.
 structure PnrgSpline {
-    let profile = rotate(rotate(circle(100mm), 1.0, 0.0, 0.0, -90deg), 0.0, 0.0, 1.0, -32.0053832deg)
+    let profile = rotate(rotate(circle(100mm), dir(1.0, 0.0, 0.0), -90deg), dir(0.0, 0.0, 1.0), -32.0053832deg)
     let g = sweep(profile, bezier(0mm, 0mm, 0mm, 500mm, 800mm, 0mm, 1000mm, 0mm, 0mm))
 }
 

@@ -1,0 +1,2 @@
+structure def Bolt { param d : Length = 6mm }
+structure def Rack { sub bolts : List<Bolt>   constraint bolts.count == 2 }

@@ -1,0 +1,22 @@
+tests = "an undefined count makes the collection's elements undetermined, and a read of one is undefined."
+rule = "decision 12 (\"An undefined count makes a collection's elements undetermined\"); Part 5."
+provenance = "design decision 12 list; design Part 5. design Part 5."
+needs = ["instance", "collection", "summary"]
+answer_basis = "traced. `n` has no default and `Asm` is the root, so `n` is undefined; the count is undefined, so the collection is `presence-undetermined` (decisions E28), and so is every path below it (decisions B1); its reader `a0` is undefined. The summary counts the collection once as undetermined and nothing inside it (decisions B4, E28). The count constraint gives no verdict."
+today = "the count cell is undef, `a0` undef, with a note \"Asm.n unbound\" (run, `undefcount.ri`)."
+
+[[expect]]
+path = "Asm.vents"
+presence = "undetermined"
+
+[[expect]]
+path = "Asm.vents[0]"
+presence = "undetermined"
+
+[[expect]]
+path = "Asm.a0"
+value = "undefined"
+
+[[expect]]
+path = "Asm/summary"
+summary = { violated = 0, undetermined = 1, failed = 0 }

@@ -13,7 +13,8 @@
 //! instead of a value cell — silently, with zero diagnostics.
 //!
 //! This is the compile-side mirror of esc-5360-9, which fixed the same
-//! module-only assumption on the eval side (`unfold::find_template_in_scope`).
+//! module-only assumption on the eval side (eval now resolves sub targets
+//! through `reify_eval::DefEnv::resolve_template`).
 
 use reify_compiler::{TopologyTemplate, ValueCellKind};
 use reify_core::{DimensionVector, Type};
@@ -165,7 +166,7 @@ structure def Styler {
 }
 "#;
 
-/// Property 1 of `types::find_template_with_prelude` — module-local shadows
+/// Property 1 of `types::resolve_sub_target_template` — module-local shadows
 /// prelude — pinned with a name that ACTUALLY collides.
 ///
 /// Test (b) above uses `Kid`, which has no prelude counterpart, so it only
@@ -201,7 +202,7 @@ structure def Color {
 "#;
 
 /// The FORWARD-reference half of the same property, and the reason
-/// `find_template_with_prelude` takes a `local_entity_names` set rather than
+/// `resolve_sub_target_template` takes a `local_entity_names` set rather than
 /// relying on `find_template` losing the race.
 ///
 /// `compiled_templates` holds only the templates compiled EARLIER in the

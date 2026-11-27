@@ -141,7 +141,7 @@ anchor convention changes (e.g. a future `wedge_centered` variant):
 | `rounded_rect` (2D profile) | planar in the **XY plane at z=0**, **centred at origin** | same anchor as `rectangle`; all 4 corners rounded to `corner_r` |
 | `polygon` (2D profile) | planar in the **XY plane at z=0**; position set by its **explicit vertices** — not auto-centred | same consumers as above; a caller-supplied vertex set can sit off-origin, unlike the other 2D profiles |
 | `extrude(profile, distance)` | extrudes along the profile plane's normal, starting at the profile's own z=0 plane | inherits the profile's XY centring |
-| `revolve(profile, ox, oy, oz, ax, ay, az, angle)` | sweeps the profile about a caller-supplied origin + axis direction (6 scalars) | anchor is whatever the profile + axis define — no implicit centring |
+| `revolve(profile, origin, direction, angle)` | sweeps the profile about a caller-supplied axis: a `Point3` origin and a `dir(x, y, z)` direction (or one `Axis` datum: `revolve(profile, axis, angle)`) | anchor is whatever the profile + axis define — no implicit centring |
 
 **Rule of thumb:** `box`-family and `sphere`/`torus` are centred; `cylinder`-family (`cylinder`,
 `cone`, `tube`) sits base-first on the origin along +Z; `wedge` sits corner-first in the +octant.
@@ -162,7 +162,7 @@ structure def PosedSweep {
     // The path starts along +Y. A -90deg turn about +X takes the circle's +Z
     // normal onto +Y; the unposed XY-plane circle would be refused.
     let path = line_segment(0mm, 0mm, 0mm, 0mm, 200mm, 0mm)
-    let profile = rotate(circle(3mm), 1.0, 0.0, 0.0, -90deg)
+    let profile = rotate(circle(3mm), dir(1.0, 0.0, 0.0), -90deg)
     let body = sweep(profile, path)
 }
 ```
@@ -208,7 +208,7 @@ rule and why it is a rejection rather than a default; this section says which po
 |---|---|---|
 | `translate` | all three components | — |
 | `rotate_around` | the pivot point | axis direction, angle |
-| `revolve` | the axis origin | axis direction, angle |
+| `revolve` | the axis origin (a point3) | axis direction (a dir), angle |
 | `line_segment` | both endpoints, every coordinate | — |
 | `arc` | centre coordinates and radius | axis direction, start/end angles |
 | `helix` | **all three arguments** — `helix(radius, pitch, height)` | — |
@@ -229,9 +229,9 @@ structure def LengthArguments {
     // `-h/2` needs no unit of its own: a Length over a bare number is a Length.
     let centred = translate(cylinder(10mm, h), 0mm, 0mm, -h/2)
 
-    // `rotate_around`: the PIVOT is length-semantic, the AXIS (0, 0, 1) is a
-    // unit vector, and the angle carries its own unit.
-    let turned = rotate_around(centred, 0mm, 0mm, 0mm, 0, 0, 1, 45deg)
+    // `rotate_around`: the PIVOT is a point of lengths, the AXIS is a
+    // Direction, and the angle carries its own unit.
+    let turned = rotate_around(centred, point3(0mm, 0mm, 0mm), dir(0, 0, 1), 45deg)
 
     // `polygon` has NO dimensionless position — every vertex coordinate is a
     // length, at every arity.
@@ -255,8 +255,13 @@ structure def LengthArguments {
 **The dimensionless column is an authoring rule you uphold, not one the compiler enforces.** The
 gate runs in one direction only: a bare number in a length slot is rejected, but a unit in a
 dimensionless slot generally is not. Measured 2026-08-30: `scale(g, 2mm)` is accepted, as is a
-dimensioned axis direction in `mirror` or `linear_pattern`. Write those bare because it is what you
+dimensioned axis direction in `linear_pattern`. Write those bare because it is what you
 mean — nothing will tell you otherwise.
+A `Direction`-typed argument is the exception: the four directional selectors, `angle`'s operands,
+`rotate`'s and `rotate_around`'s axis, `mirror`'s normal, `offset_curve`'s direction and the
+direction of `revolve`, `revolve_full`, `extrude_infinite` and `extrude_infinite_symmetric` take a
+typed operand, so a `vec3(…)` there, dimensioned or not, is rejected (at check for all but
+`offset_curve`, at eval for `offset_curve`); write `dir(x, y, z)`.
 
 The rejected forms and their migrations are tabulated once, in the `units` chunk under "What it
 looks like when you get it wrong" — one row per form, each row executed by

@@ -24,6 +24,7 @@ One row per `reify-audit --pattern` token, the CLI vocabulary defined in `reify_
 | `PCITE` | `PManifestCite` | no | repo path: a `docs/prds/**/*.capability-manifest.md` | §2 PCITE |
 | `PPRDSTATUS` | `PPrdStatus` | no | repo path: the PRD (`docs/prds/**.md`) | §2 PPRDSTATUS (batched) |
 | `PLINECITE` | `PLineCite` | no | repo path: the citing file, or `crates/reify-audit/plinecite-baseline.txt` for ledger/scope findings | §2 PLINECITE (grouped per file) |
+| `POLDCORE` | `POldCoreHold` | no | task id for hold-missed, hold-missed-registration-only and holder-state (the holder); repo path `docs/notes/old-evaluation-core-hold.toml` for hold-list-invalid | §2 POLDCORE |
 
 ---
 
@@ -50,7 +51,7 @@ mcp__escalation__escalate_info(
 )
 ```
 
-**Subject rule:** `subject = finding.task_id` when §0 says that finding carries a task id (P1, P2, P5, PDCHECK); otherwise the fixed subject `"audit"`. Every High from PTODO, PDIAG, PDOCCOVER and PPRDSTATUS is path-keyed, so it takes `"audit"`. The two parameters beyond the obvious ones are load-bearing:
+**Subject rule:** `subject = finding.task_id` when §0 says that finding carries a task id (P1, P2, P5, PDCHECK, and POLDCORE's `hold-missed` and `holder-state`); otherwise the fixed subject `"audit"`. Every High from PTODO, PDIAG, PDOCCOVER and PPRDSTATUS is path-keyed, and so is POLDCORE's `hold-list-invalid`, so each takes `"audit"`. The two parameters beyond the obvious ones are load-bearing:
 
 - **The subject, not the raw `task_id`:** the escalation server mints the escalation id from `task_id` (`make_id` names its counter files `esc-<task_id>.seq…`), and a repo path cannot mint one. Measured 2026-09-23 against a scratch queue: `make_id('crates/reify-compiler/src/units.rs')` raises `FileNotFoundError`, while `make_id('audit')` mints `esc-audit-1`.
 - **`terminal_state_is_the_bug=True`:** without it the server auto-resolves, on arrival, any filing whose task is done or cancelled — and every `P5PhantomDone` is about a done task.
@@ -125,6 +126,7 @@ After either of the last two, the proposal stays as submitted; report its `task_
 | **PCITE** (capability-manifest cite) — Medium `fabricated-cite` | `Fix fabricated manifest cite (PCITE fabricated-cite <name> at <path>)` |
 | **PPRDSTATUS** (PRD status-prose drift) | _(High only: batched escalation via scripts/pprdstatus-escalate.py, no Medium template)_ |
 | **PLINECITE** (hard line cite) — Medium `line-cite` | `De-number line cites in <path> (PLINECITE line-cite)` |
+| **POLDCORE** (old-core hold) | _(High only, plus a logged Low: no Medium template)_ |
 
 **P1/P2 templates:** Substitute `<symbol>` with the symbol name from `finding.evidence` (first reference that names the symbol, or fall back to `finding.summary` if not available). Substitute `<id>` with `finding.task_id`.
 
@@ -181,6 +183,8 @@ Every PDOCCOVER finding then records `action_taken: "escalated"` with that one `
 
 `$TMPFILE` is the captured stderr of this run's `--pattern PPRDSTATUS` invocation (`references/cli-invocation.md` §2), so route before that recipe's cleanup removes it. The script then raises exactly the findings the run artifact records, from the run's one task-corpus load. Pass a run of PPRDSTATUS alone: a mixed run that skipped PPRDSTATUS over an empty corpus still prints a findings array (`references/cli-invocation.md` §4.1), which the script cannot tell from a clean one. Outside the skill, `--reify-audit "$RELEASE_BIN" --project-root /home/leo/src/reify` in place of `--findings-file` makes the script run the detector itself. The script is the single source of that escalation's shape: subject `"audit"`, the finding count, the doc list and the sitting to run. So the skill must NOT also call `escalate_info` per finding, and must NOT rebuild the arguments by hand. It must NOT file follow-up tasks either: adjudication is a human docs-truth sitting (Leo's 2026-08-19 ruling), because each doc needs its own judgement — a still-active PRD whose prose needs correcting, a completed plan that needs a terminal stamp, or a dated snapshot that must not be edited. A filed escalation prints its record as one JSON object on stdout, `{"id", "status", "level", "finding_count"}`, and every PPRDSTATUS finding records `action_taken: "escalated"` with that object's `id`. An empty set prints nothing on stdout and files nothing. The script's exit codes are in its header: exit 0 means a findings array was read; exit 1 means the escalation was not filed; exit 125 means there was no parseable findings array, so nothing was checked or raised, whether the detector failed or refused an empty task corpus. Neither 1 nor 125 is a clean result. The recurring, unattended raise of this family (PPRDSTATUS with PCITE) is not this recipe but `scripts/docs-truth-sweep.py` on a weekly timer, which books one L2 sitting per novel finding set (`docs/notes/docs-truth-sweep.md`).
 
+**POLDCORE note:** each High escalates per finding through the §1 call. For `hold-missed`, Leo rules on the task: hold it with `add_dependency(task, holder)`, or release it with `metadata.old_core_release` (`docs/notes/old-evaluation-core-hold.md`). The skill never adds the edge or writes the release itself (§4). `holder-state` means held work can be released now: the holder is closed, absent, or no longer kept from dispatching. `hold-list-invalid` means nothing was checked; fix the list, then re-run. `hold-missed-registration-only` (Low) is logged only.
+
 ---
 
 ## §3 Dedupe contract
@@ -225,6 +229,7 @@ The `/audit` skill **never** calls:
 - `set_task_status` on any task (not the offending task, not the filed follow-up; releasing a proposal to `pending` is the human's call)
 - `mcp__fused-memory__update_task` to alter the offending task's status
 - Any operation that transitions a `done` task to `deferred`, `pending`, or `blocked`
+- `add_dependency` / `remove_dependency`, or a metadata write, to hold or release a task POLDCORE reports: that is Leo's ruling
 
 The skill is **advisory** in periodic-sweep context:
 - **High** findings raise an escalation alert. A human (Leo) decides whether to act.

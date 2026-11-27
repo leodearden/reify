@@ -1,0 +1,9 @@
+tests = "a constructor call inside a lambda written in a member's expression counts as a use, while one inside a function body does not, so only the definition built inside a function stays a default root."
+rule = "rule D; decisions D23 and D22"
+provenance = "appendix D23; PRD D13 item 9. The lambda and `generate` form is the one `instances-made-via-function-and-lambda-counted` already uses."
+needs = ["roots"]
+answer_basis = "traced. `Plate(...)` is inside the lambda in `f`'s expression, part of that member's source: a use (D23). `Bolt(...)` is only in `bolt_d`'s body: not a use (D22). No member's type names either definition (`f` is `Int -> Length`, `ts` is `List<Length>`, `d` is `Length`), so D24 decides nothing here. Roots: `Bolt` and `Asm`, compared as a set (decisions B10)."
+today = "run `g04.ri`: `Bolt.d` and `Plate.t` are printed as designs beside `Asm`."
+
+[[expect]]
+roots = ["Bolt", "Asm"]

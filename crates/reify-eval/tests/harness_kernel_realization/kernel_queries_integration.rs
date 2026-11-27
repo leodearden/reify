@@ -44,7 +44,7 @@
 //! | `intersects`        | overlap / apart                 | `kernel_queries_intersects_smoke::intersects_smoke_evals_expected_booleans` |
 //! | `geo_equiv`         | identical / within-tol / diff   | `kernel_queries_geo_equiv_smoke::geo_equiv_smoke_evals_expected_booleans`   |
 //! | `angle`             | orthogonal / parallel           | `kernel_queries_angle_smoke::angle_smoke_evals_to_ninety_degrees`           |
-//! | `normal`            | +z face / sphere                | `kernel_queries_normal_smoke::normal_smoke_compiles_as_vec3_real_and_face_normal_at_ffis` + OCCT-kernel-occt/tests/face_differential_integration.rs |
+//! | `normal`            | +z face / sphere                | `kernel_queries_normal_smoke::normal_smoke_compiles_as_direction_and_face_normal_at_ffis` + OCCT-kernel-occt/tests/face_differential_integration.rs |
 //! | `curvature(surface)`| sphere κ_max=κ_min=1/r          | `kernel_queries_curvature_smoke::curvature_smoke_compiles_and_occt_query_chain_live` |
 //! | `curvature(curve)`  | circular edge κ=1/r             | `kernel_queries_curvature_smoke::curvature_smoke_compiles_and_occt_query_chain_live` + reify-kernel-occt/tests/harness_occt/curve_curvature_integration.rs |
 //! | `length`            | 10/20/30mm box edges            | `kernel_queries_length_perimeter::length_perimeter_compiles_and_occt_queries_match_expected` |

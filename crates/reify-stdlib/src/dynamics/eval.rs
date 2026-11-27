@@ -30,12 +30,13 @@
 //!   * `inverse_dynamics_lower`              — trajectory variant (step-8)
 
 use crate::dynamics::closed_chain::{DEFAULT_PIVOT_EPS, loop_constraint_rows, solve_closed_chain};
+use crate::dynamics::mass_props::MassProperties;
 use crate::dynamics::rnea::{
     assemble_joint_space_inertia, default_gravity, inverse_dynamics_open_chain, JointCompliance,
     RneaLink,
 };
 use crate::dynamics::spatial::{Frame3, SpatialTransform6, SpatialVector6};
-use crate::helpers::mint_registry_free_instance as mint_instance;
+use crate::helpers::{mint_registry_free_instance as mint_instance, vec3_cells};
 use crate::joints::motion_subspace_columns;
 use crate::loop_closure::{
     DEFAULT_LOOP_JACOBIAN_FD_STEP, extract_loop_closure_chains, loop_residual_jacobian_by_joint,
@@ -46,9 +47,9 @@ use reify_core::diagnostics::{Diagnostic, DiagnosticCode};
 use reify_core::dimension::DimensionVector;
 use reify_ir::Value;
 use reify_ir::arg_acceptance::{
-    ArgRejection, ArgSpec, FieldRejection, length_spec, mass_spec, moment_of_inertia_spec,
-    read_arg_or_bare, read_entry_or_bare, rotational_damping_spec, rotational_stiffness_spec,
-    translational_damping_spec, translational_stiffness_spec,
+    ArgRejection, ArgSpec, FieldRejection, mass_spec, read_arg_or_bare, read_entry_or_bare,
+    rotational_damping_spec, rotational_stiffness_spec, translational_damping_spec,
+    translational_stiffness_spec,
 };
 use std::collections::BTreeMap;
 
@@ -113,42 +114,6 @@ fn compliance_cell_f64(v: &Value) -> Option<f64> {
             if f.is_finite() { Some(f) } else { None }
         }
     }
-}
-
-/// Mint the default zero-`Frame3` `Value::StructureInstance` used for
-/// `MassProperties.origin` (task 4547, Disposition 1).
-///
-/// `Frame3` (declared in `std.ports`, `ports.ri`) has four 3-vector members whose
-/// quantity slots are NOT uniform (task 5848): `origin` is a position, so
-/// `Vector3<Length>`; `x_axis` / `y_axis` / `z_axis` are directions, so
-/// `Vector3<Dimensionless>`. The default is therefore one zero length-vector plus
-/// three zero dimensionless vectors — the axes as `Value::Real`, the house
-/// representation for a dimensionless quantity (Invariant V), which is also what
-/// the DSL spelling `vec3(0.0, 0.0, 0.0)` evaluates to.
-/// This replaces the former `Value::Real(0.0)` `origin`
-/// sentinel: the `MassProperties` structure_def now declares `origin : Frame3`,
-/// so minting a real `Frame3` keeps the runtime value faithful to the declared
-/// type instead of leaving a type/value divergence. `frame3_from_transform_value`
-/// only builds the *internal* Rust [`Frame3`] (for RNEA), not a `Value`, so this
-/// is the sole `Frame3`-`Value` minter; it is shared with
-/// `dynamics_ops::assemble_mass_properties` so both producers emit an identical
-/// `origin`.
-pub fn default_frame3() -> Value {
-    // The ZERO magnitude is load-bearing, not a placeholder: this minter is shared
-    // with `dynamics_ops::assemble_mass_properties` and both producers must emit an
-    // identical `origin`, so the degenerate basis must NOT be "improved" into an
-    // identity basis here.
-    let zero_position = || Value::Vector(vec![Value::length(0.0); 3]);
-    let zero_direction = || Value::Vector(vec![Value::Real(0.0); 3]);
-    mint_instance(
-        "Frame3",
-        vec![
-            ("origin".to_string(), zero_position()),
-            ("x_axis".to_string(), zero_direction()),
-            ("y_axis".to_string(), zero_direction()),
-            ("z_axis".to_string(), zero_direction()),
-        ],
-    )
 }
 
 /// Evaluate an RBD-η dynamics intrinsic by name.
@@ -287,119 +252,12 @@ fn trajectory_sample(t: f64, q: f64, v: f64, a: f64) -> Value {
 // These are consumed by the open-chain dispatch (`snapshot_inverse_dynamics`,
 // step-6) and exercised directly by the step-4 unit tests.
 
-/// The three cells of a `Value::Point` / `Value::Vector` / `Value::List` of
-/// exactly three, or `None` for any other shape or arity.
-fn vec3_cells(v: &Value) -> Option<&[Value]> {
-    match v {
-        Value::Point(c) | Value::Vector(c) | Value::List(c) if c.len() == 3 => Some(c),
-        _ => None,
-    }
-}
-
-/// The three rows of a 3×3 `Value::Matrix` (or nested `Value::List` of
-/// `List`/`Vector` rows), or `None` unless the value is exactly 3×3.
-fn matrix3_rows(v: &Value) -> Option<[&[Value]; 3]> {
-    fn row(cells: &[Value]) -> Option<&[Value]> {
-        (cells.len() == 3).then_some(cells)
-    }
-    match v {
-        Value::Matrix(rows) if rows.len() == 3 => {
-            Some([row(&rows[0])?, row(&rows[1])?, row(&rows[2])?])
-        }
-        Value::List(outer) if outer.len() == 3 => {
-            fn nested(r: &Value) -> Option<&[Value]> {
-                match r {
-                    Value::List(cells) | Value::Vector(cells) => row(cells),
-                    _ => None,
-                }
-            }
-            Some([nested(&outer[0])?, nested(&outer[1])?, nested(&outer[2])?])
-        }
-        _ => None,
-    }
-}
-
 /// Extract three SI-unit components (dimensions stripped via [`cell_f64`])
 /// from a three-cell vector; see [`vec3_cells`] for the accepted shapes. Shared
 /// with Transform translations (`frame3_from_transform_value`).
 fn vec3_from_value(v: &Value) -> Option<[f64; 3]> {
     let c = vec3_cells(v)?;
     Some([cell_f64(&c[0])?, cell_f64(&c[1])?, cell_f64(&c[2])?])
-}
-
-/// Three cells read through `spec`: `Ok(None)` if any is unresolved, `Err` on
-/// the first one refused.
-fn dimensioned_row(cells: &[Value], spec: &ArgSpec) -> Result<Option<[f64; 3]>, ArgRejection> {
-    let x = read_arg_or_bare(&cells[0], spec)?;
-    let y = read_arg_or_bare(&cells[1], spec)?;
-    let z = read_arg_or_bare(&cells[2], spec)?;
-    Ok(x.zip(y).zip(z).map(|((x, y), z)| [x, y, z]))
-}
-
-/// `(mass, com, inertia)` in SI.
-type MassPropertiesSi = (f64, [f64; 3], [[f64; 3]; 3]);
-
-/// Read the three `MassProperties` fields through their specs — `mass` as a
-/// MASS, `com` as LENGTHs, `inertia` as MOMENT_OF_INERTIAs, each also taking
-/// the bare legacy spelling. `Ok(None)` for a malformed shape or an unresolved
-/// cell; `Err` names the first field holding a cell its reader refuses.
-/// The one reader behind the `mass_properties` builtin, every consumer
-/// ([`mass_properties_from_value`]) and the `diagnose` classifier.
-fn read_mass_properties(
-    mass: &Value,
-    com: &Value,
-    inertia: &Value,
-) -> Result<Option<MassPropertiesSi>, (&'static str, ArgRejection)> {
-    let mass = read_arg_or_bare(mass, &mass_spec()).map_err(|r| ("mass", r))?;
-    let com = match vec3_cells(com) {
-        Some(cells) => dimensioned_row(cells, &length_spec()).map_err(|r| ("com", r))?,
-        None => None,
-    };
-    let inertia = match matrix3_rows(inertia) {
-        Some(rows) => {
-            let spec = moment_of_inertia_spec();
-            let row = |cells| dimensioned_row(cells, &spec).map_err(|r| ("inertia", r));
-            let [r0, r1, r2] = [row(rows[0])?, row(rows[1])?, row(rows[2])?];
-            r0.zip(r1).zip(r2).map(|((r0, r1), r2)| [r0, r1, r2])
-        }
-        None => None,
-    };
-    Ok(mass.zip(com).zip(inertia).map(|((m, c), i)| (m, c, i)))
-}
-
-/// The `mass` / `com` / `inertia` fields of a `MassProperties` instance.
-fn mass_properties_fields(v: &Value) -> Option<[&Value; 3]> {
-    match v {
-        Value::StructureInstance(d) if d.type_name == "MassProperties" => Some([
-            d.fields.get("mass")?,
-            d.fields.get("com")?,
-            d.fields.get("inertia")?,
-        ]),
-        _ => None,
-    }
-}
-
-/// Extract `(mass, com, inertia)` from a `MassProperties` `Value::StructureInstance`.
-///
-/// Accepts the canonical `dynamics_ops::assemble_mass_properties` shape (mass: a
-/// Mass-scalar; com: a `Value::Point` of Length-scalars; inertia: a 3×3
-/// `Value::Matrix` of MomentOfInertia-dimensioned scalars, kg·m²) plus the
-/// equivalent list-shaped and bare-number encodings a user-authored
-/// MassProperties may produce. Each field is dimension-checked by
-/// [`read_mass_properties`]; returns `None` for any non-MassProperties value, a
-/// malformed/absent field, or a refused field ([`mass_properties_rejection`]
-/// names which).
-pub fn mass_properties_from_value(v: &Value) -> Option<MassPropertiesSi> {
-    let [mass, com, inertia] = mass_properties_fields(v)?;
-    read_mass_properties(mass, com, inertia).ok().flatten()
-}
-
-/// The field of a `MassProperties` value its reader refuses, named
-/// `MassProperties.<field>`, or `None` when every field reads.
-pub fn mass_properties_rejection(v: &Value) -> Option<FieldRejection> {
-    let [mass, com, inertia] = mass_properties_fields(v)?;
-    let (field, rejection) = read_mass_properties(mass, com, inertia).err()?;
-    Some(FieldRejection::new("MassProperties", field, rejection))
 }
 
 // ── resolve_body_mass — single mass read-path (task 4278) ────────────────────
@@ -418,7 +276,7 @@ pub fn mass_properties_rejection(v: &Value) -> Option<FieldRejection> {
 /// (c) **Unresolvable** — neither rung above matched → `None`.
 ///
 /// Consumers extract fields from the returned `Value` via
-/// [`mass_properties_from_value`].
+/// [`MassProperties::from_value`].
 pub fn resolve_body_mass(body: &Value) -> Option<Value> {
     let bm = match body {
         Value::Map(m) => m,
@@ -481,7 +339,7 @@ pub fn resolve_body_mass(body: &Value) -> Option<Value> {
 pub fn diagnose(name: &str, args: &[Value]) -> Option<Diagnostic> {
     match (name, args) {
         ("mass_properties", [mass, com, inertia]) => {
-            let (field, rejection) = read_mass_properties(mass, com, inertia).err()?;
+            let (field, rejection) = MassProperties::read(mass, com, inertia).err()?;
             Some(rejection.to_error(name, field))
         }
         ("point_mass", [mass]) => {
@@ -531,7 +389,7 @@ fn diagnose_inverse_dynamics(args: &[Value]) -> Option<Diagnostic> {
             );
         };
         // The same readers the RNEA uses (I1): a field they refuse is named.
-        let rejection = mass_properties_rejection(&mass_properties).or_else(|| match body {
+        let rejection = MassProperties::rejection(&mass_properties).or_else(|| match body {
             Value::Map(bm) => joint_compliance(map_get(bm, "at")?, None).err(),
             _ => None,
         });
@@ -542,61 +400,16 @@ fn diagnose_inverse_dynamics(args: &[Value]) -> Option<Diagnostic> {
     None
 }
 
-// ── MassProperties constructor helpers (task 4278) ──────────────────────────
-
-/// Build a canonical registry-free `MassProperties` `Value::StructureInstance`
-/// matching the `assemble_mass_properties` shape:
-/// - `mass`   → `Value::Scalar { dimension: MASS }`
-/// - `com`    → `Value::Point` of `Value::length` scalars (SI metres)
-/// - `inertia`→ `Value::Matrix` of `Value::Scalar { dimension: MOMENT_OF_INERTIA }` (3×3, kg·m²)
-/// - `origin` → default zero-`Frame3` via [`default_frame3`] (task 4547 retarget;
-///   was a `Value::Real(0.0)` placeholder before the `origin : Frame3` field type)
-///
-/// Inertia cells are MomentOfInertia-dimensioned scalars (kg·m²), matching the
-/// `inertia_value` populate pattern in `dynamics_ops`. The PSD hook reads them
-/// via `cell_f64`, and [`read_mass_properties`] via `moment_of_inertia_spec`.
-fn make_mass_properties(mass: f64, com: [f64; 3], inertia: [[f64; 3]; 3]) -> Value {
-    let com_point = Value::Point(com.iter().map(|&c| Value::length(c)).collect());
-    let inertia_matrix = Value::Matrix(
-        inertia
-            .iter()
-            .map(|row| {
-                row.iter()
-                    .map(|&x| Value::Scalar {
-                        si_value: x,
-                        dimension: DimensionVector::MOMENT_OF_INERTIA,
-                    })
-                    .collect()
-            })
-            .collect(),
-    );
-    mint_instance(
-        "MassProperties",
-        vec![
-            (
-                "mass".to_string(),
-                Value::Scalar {
-                    si_value: mass,
-                    dimension: DimensionVector::MASS,
-                },
-            ),
-            ("com".to_string(), com_point),
-            ("inertia".to_string(), inertia_matrix),
-            ("origin".to_string(), default_frame3()),
-        ],
-    )
-}
-
 /// Evaluate `mass_properties(mass, com, inertia)` — a full `MassProperties`
 /// with caller-supplied centre-of-mass and inertia tensor. Validates arity and
-/// reads the fields through [`read_mass_properties`]; returns `Value::Undef` on
+/// reads the fields through [`MassProperties::read`]; returns `Value::Undef` on
 /// any malformed input or a field of the wrong dimension (e.g. a `Length` mass).
 fn eval_mass_properties(args: &[Value]) -> Value {
     let [mass, com, inertia] = args else {
         return Value::Undef;
     };
-    match read_mass_properties(mass, com, inertia) {
-        Ok(Some((mass, com, inertia))) => make_mass_properties(mass, com, inertia),
+    match MassProperties::read(mass, com, inertia) {
+        Ok(Some(mass_properties)) => mass_properties.to_value(),
         _ => Value::Undef,
     }
 }
@@ -613,7 +426,12 @@ fn eval_point_mass(args: &[Value]) -> Value {
     let Ok(Some(mass)) = cell_mass_f64(&args[0]) else {
         return Value::Undef;
     };
-    make_mass_properties(mass, [0.0, 0.0, 0.0], [[0.0; 3]; 3])
+    MassProperties {
+        mass,
+        com: [0.0; 3],
+        inertia: [[0.0; 3]; 3],
+    }
+    .to_value()
 }
 
 /// Convert a `Value::Transform { rotation: Orientation, translation: Vector }`
@@ -851,7 +669,11 @@ fn snapshot_inverse_dynamics(
     let mut links: Vec<RneaLink> = Vec::with_capacity(n);
     for &bi in &ordered {
         let mp = resolve_body_mass(&bodies[bi])?;
-        let (mass, com, inertia_about_com) = mass_properties_from_value(&mp)?;
+        let MassProperties {
+            mass,
+            com,
+            inertia: inertia_about_com,
+        } = MassProperties::from_value(&mp)?;
         let child_frame = frame3_from_transform_value(world_tf.get(&ids[bi])?)?;
         let xc = SpatialTransform6::from_frame3(&child_frame);
         // X_{p→i}: base link is ᶜXᵂ = from_frame3(world_transform) (pins the
@@ -1095,7 +917,7 @@ fn joint_force_value(kind: &str, tau: &[f64]) -> Option<Value> {
     let components = |t: &[f64]| Value::List(t.iter().map(|&x| Value::Real(x)).collect());
     // `ScalarForce.magnitude` / `ScalarTorque.magnitude` are declared `: Force`
     // / `: Torque` in stdlib/dynamics.ri (task 6098), so mint them dimensioned —
-    // same shape `make_mass_properties` already uses for `mass`. A bare
+    // same shape `MassProperties::to_value` already uses for `mass`. A bare
     // `Value::Real` here would pass `reify check` but evaluate to undef with an
     // OpContractViolation as soon as the field is read into dimensioned
     // arithmetic.
@@ -1479,7 +1301,11 @@ fn closed_chain_inverse_dynamics(
     let mut links: Vec<RneaLink> = Vec::with_capacity(n_tree);
     for &bi in &ordered {
         let mp = resolve_body_mass(&tree_bodies[bi])?;
-        let (mass, com, inertia_about_com) = mass_properties_from_value(&mp)?;
+        let MassProperties {
+            mass,
+            com,
+            inertia: inertia_about_com,
+        } = MassProperties::from_value(&mp)?;
         let child_frame = frame3_from_transform_value(world_tf.get(&ids[bi])?)?;
         let xc = SpatialTransform6::from_frame3(&child_frame);
         let parent_to_child = match parent_idx[bi] {
@@ -1590,121 +1416,9 @@ mod tests {
     use super::*;
     use crate::dynamics::spatial::Frame3;
 
-    /// The default zero-`Frame3` that `MassProperties.origin` now carries (task
-    /// 4547, Disposition 1). Delegates to the production [`super::default_frame3`]
-    /// minter so test expectations stay byte-identical to what
-    /// `make_mass_properties` / `assemble_mass_properties` emit.
-    fn default_frame3_fixture() -> Value {
-        super::default_frame3()
-    }
-
-    /// Task 5848: `default_frame3()` must mint each member with the quantity the
-    /// retyped `Frame3` declaration gives it — `origin` a LENGTH zero (it is a
-    /// position), the three axes DIMENSIONLESS zeros (they are directions).
-    ///
-    /// This guards task 4547's stated invariant, quoted in `default_frame3`'s own
-    /// doc: the mint exists so "minting a real `Frame3` keeps the runtime value
-    /// faithful to the declared type instead of leaving a type/value divergence".
-    /// Once ports.ri retypes the axes, an all-`Value::length(0.0)` mint
-    /// reintroduces exactly the divergence 4547 removed — and the ctor-conformance
-    /// walker cannot catch it, because its Vector arm is arity-only (accepts any
-    /// vector-shaped arg regardless of quantity). So this test is the only thing
-    /// standing between the retype and a silent regression.
-    ///
-    /// The axes are `Value::Real`, not `Value::Scalar { dimension: DIMENSIONLESS }`:
-    /// a dimensionless quantity is represented as `Value::Real` house-wide
-    /// (Invariant V — see `reify-eval/tests/dimensionless_unification_example_e2e.rs`),
-    /// which is also what the DSL spelling `vec3(0.0, 0.0, 0.0)` evaluates to.
-    #[test]
-    fn default_frame3_mints_length_origin_and_dimensionless_axes() {
-        let frame = super::default_frame3();
-        let Value::StructureInstance(data) = &frame else {
-            panic!("default_frame3() must mint a StructureInstance, got {frame:?}")
-        };
-
-        let components = |member: &str| -> Vec<Value> {
-            match data.fields.get(member) {
-                Some(Value::Vector(c)) if c.len() == 3 => c.clone(),
-                other => panic!("Frame3.{member} must be a 3-component Vector, got {other:?}"),
-            }
-        };
-
-        // origin is a POSITION — Length-dimensioned zeros.
-        for (i, c) in components("origin").into_iter().enumerate() {
-            assert_eq!(
-                c,
-                Value::length(0.0),
-                "Frame3.origin[{i}] is a position component, so it must be a \
-                 LENGTH-dimensioned zero"
-            );
-        }
-
-        // The three axes are DIRECTIONS — dimensionless zeros.
-        for member in ["x_axis", "y_axis", "z_axis"] {
-            for (i, c) in components(member).into_iter().enumerate() {
-                assert_eq!(
-                    c,
-                    Value::Real(0.0),
-                    "Frame3.{member}[{i}] is a direction component, so it must be a \
-                     dimensionless zero (Value::Real per Invariant V), not a Length"
-                );
-                assert!(
-                    c.dimension().is_dimensionless(),
-                    "Frame3.{member}[{i}] must carry a dimensionless quantity"
-                );
-            }
-        }
-
-        // The ZERO magnitude is deliberate and must be preserved: this degenerate
-        // basis is the production default shared with
-        // `dynamics_ops::assemble_mass_properties`, so "improving" it into an
-        // identity basis would smuggle a behaviour change into a retype.
-        assert!(
-            components("z_axis").iter().all(|c| c.as_f64() == Some(0.0)),
-            "default_frame3()'s basis must stay all-zero (shared with \
-             assemble_mass_properties; both producers must emit an identical origin)"
-        );
-    }
-
-    /// Build a canonical `MassProperties` `Value::StructureInstance` matching
-    /// `dynamics_ops::assemble_mass_properties`'s shape: `mass` a Mass-scalar,
-    /// `com` a `Value::Point` of Length-scalars, `inertia` a 3×3 `Value::Matrix`
-    /// of MomentOfInertia-dimensioned scalars (kg·m²), `origin` a default
-    /// zero-`Frame3` (task 4547 retarget — was a `Real` sentinel).
-    fn mass_properties_fixture(
-        mass: f64,
-        com: [f64; 3],
-        inertia: [[f64; 3]; 3],
-    ) -> Value {
-        let com_point = Value::Point(com.iter().map(|&c| Value::length(c)).collect());
-        let inertia_matrix = Value::Matrix(
-            inertia
-                .iter()
-                .map(|row| {
-                    row.iter()
-                        .map(|&x| Value::Scalar {
-                            si_value: x,
-                            dimension: DimensionVector::MOMENT_OF_INERTIA,
-                        })
-                        .collect()
-                })
-                .collect(),
-        );
-        mint_instance(
-            "MassProperties",
-            vec![
-                (
-                    "mass".to_string(),
-                    Value::Scalar {
-                        si_value: mass,
-                        dimension: DimensionVector::MASS,
-                    },
-                ),
-                ("com".to_string(), com_point),
-                ("inertia".to_string(), inertia_matrix),
-                ("origin".to_string(), default_frame3_fixture()),
-            ],
-        )
+    /// A resolved `MassProperties` value through the owner's one minter.
+    fn mass_properties_fixture(mass: f64, com: [f64; 3], inertia: [[f64; 3]; 3]) -> Value {
+        MassProperties { mass, com, inertia }.to_value()
     }
 
     /// Build a `Value::Transform` from a `(w, x, y, z)` quaternion and a metres
@@ -1722,41 +1436,6 @@ mod tests {
                 translation.iter().map(|&t| Value::length(t)).collect(),
             )),
         }
-    }
-
-    // ── step-3 RED: mass_properties_from_value ─────────────────────────────────
-
-    #[test]
-    fn mass_properties_from_value_extracts_mass_com_inertia() {
-        let inertia = [
-            [0.10, 0.01, 0.02],
-            [0.03, 0.20, 0.04],
-            [0.05, 0.06, 0.30],
-        ];
-        let mp = mass_properties_fixture(1.0, [0.0, 0.0, -0.1], inertia);
-
-        let (mass, com, got_inertia) = mass_properties_from_value(&mp)
-            .expect("a well-formed MassProperties must parse");
-        assert!((mass - 1.0).abs() < 1e-12, "mass");
-        assert!((com[0]).abs() < 1e-12 && (com[1]).abs() < 1e-12, "com x/y");
-        assert!((com[2] - (-0.1)).abs() < 1e-12, "com z");
-        for r in 0..3 {
-            for c in 0..3 {
-                assert!(
-                    (got_inertia[r][c] - inertia[r][c]).abs() < 1e-12,
-                    "inertia[{r}][{c}]"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn mass_properties_from_value_rejects_non_mass_properties() {
-        // A plain numeric cell is not a MassProperties.
-        assert!(mass_properties_from_value(&Value::Real(1.0)).is_none());
-        // A StructureInstance with a different type_name is rejected.
-        let other = mint_instance("Block", vec![("name".to_string(), Value::Real(0.0))]);
-        assert!(mass_properties_from_value(&other).is_none());
     }
 
     // ── step-3 RED: frame3_from_transform_value ────────────────────────────────
@@ -4300,8 +3979,8 @@ mod tests {
             !matches!(result, Value::Undef),
             "point_mass with valid arg must not return Undef"
         );
-        let (mass, com, inertia) =
-            mass_properties_from_value(&result).expect("result must be a MassProperties");
+        let MassProperties { mass, com, inertia } =
+            MassProperties::from_value(&result).expect("result must be a MassProperties");
         assert!((mass - 2.5).abs() < 1e-12, "mass should be 2.5 kg, got {mass}");
         for &c in &com {
             assert!(c.abs() < 1e-12, "com should be origin, got {com:?}");
@@ -4368,14 +4047,15 @@ mod tests {
             !matches!(r, Value::Undef),
             "dimensionless Real must still be accepted, got {r:?}"
         );
-        let (mass, _, _) = mass_properties_from_value(&r).expect("must be MassProperties");
+        let MassProperties { mass, .. } =
+            MassProperties::from_value(&r).expect("must be MassProperties");
         assert!((mass - 3.0).abs() < 1e-12, "mass should be 3.0, got {mass}");
     }
 
     // ── task-4278 step-3 RED: mass_properties(mass, com, inertia) constructor ───
     //
     // eval_dynamics("mass_properties", &[mass, com, inertia]) must round-trip via
-    // mass_properties_from_value. RED until step-4 adds the dispatch arm.
+    // MassProperties::from_value. RED until step-4 adds the dispatch arm.
 
     #[test]
     fn eval_dynamics_mass_properties_roundtrip() {
@@ -4390,8 +4070,11 @@ mod tests {
             .expect("mass_properties is a recognised dynamics constructor");
         assert!(!matches!(result, Value::Undef), "valid args must not return Undef");
 
-        let (m, com, got_inertia) = mass_properties_from_value(&result)
-            .expect("result must be a MassProperties");
+        let MassProperties {
+            mass: m,
+            com,
+            inertia: got_inertia,
+        } = MassProperties::from_value(&result).expect("result must be a MassProperties");
         assert!((m - 3.0).abs() < 1e-12, "mass mismatch: {m}");
         assert!((com[0] - 0.1).abs() < 1e-12, "com[0] mismatch: {}", com[0]);
         assert!((com[1] - 0.2).abs() < 1e-12, "com[1] mismatch: {}", com[1]);
@@ -4410,49 +4093,32 @@ mod tests {
         }
     }
 
-    // ── task-4547 step-3 RED: MassProperties.origin is a Frame3, not Real ───────
+    // ── B10 (direction-typing η): MassProperties carries no origin ──────────────
     //
-    // Disposition 1 retargets `MassProperties.origin` from the `Real` placeholder
-    // (the `Value::Real(0.0)` sentinel) to the real `Frame3` struct (declared in
-    // std.ports). Both production minters route through `make_mass_properties`, so
-    // `mass_properties(...)` and `point_mass(...)` must mint `origin` as a
-    // `Value::StructureInstance` with `type_name == "Frame3"`. RED until step-4
-    // wires `default_frame3()` into `make_mass_properties` / `assemble_mass_properties`.
+    // Both constructors mint through `MassProperties::to_value`, so neither
+    // `mass_properties(...)` nor `point_mass(...)` may print an `origin` field.
     #[test]
-    fn mass_properties_origin_is_frame3_not_real() {
-        fn origin_of(mp: &Value) -> Value {
+    fn mass_properties_and_point_mass_mint_no_origin_field() {
+        fn assert_no_origin(mp: &Value, ctor: &str) {
             match mp {
-                Value::StructureInstance(d) => d
-                    .fields
-                    .get("origin")
-                    .cloned()
-                    .expect("MassProperties must carry an `origin` field"),
-                other => panic!("expected a MassProperties StructureInstance, got {other:?}"),
-            }
-        }
-        fn assert_frame3(origin: &Value, ctor: &str) {
-            match origin {
-                Value::StructureInstance(d) => assert_eq!(
-                    d.type_name, "Frame3",
-                    "{ctor}: origin must be a Frame3 StructureInstance, got type_name {:?}",
-                    d.type_name
+                Value::StructureInstance(d) => assert!(
+                    d.fields.get("origin").is_none(),
+                    "{ctor}: MassProperties must carry no `origin` field, got {:?}",
+                    d.fields.get("origin")
                 ),
-                other => panic!(
-                    "{ctor}: origin must be a Frame3 StructureInstance (not the old \
-                     Value::Real(0.0) placeholder), got {other:?}"
-                ),
+                other => panic!("{ctor}: expected a MassProperties StructureInstance, got {other:?}"),
             }
         }
 
-        // point_mass(mass) → make_mass_properties
+        // point_mass(mass) → MassProperties::to_value
         let pm = eval_dynamics(
             "point_mass",
             &[Value::Scalar { si_value: 2.5, dimension: DimensionVector::MASS }],
         )
         .expect("point_mass is a recognised dynamics constructor");
-        assert_frame3(&origin_of(&pm), "point_mass");
+        assert_no_origin(&pm, "point_mass");
 
-        // mass_properties(mass, com, inertia) → make_mass_properties
+        // mass_properties(mass, com, inertia) → MassProperties::to_value
         let com_val =
             Value::Point(vec![Value::length(0.1), Value::length(0.2), Value::length(0.3)]);
         let inertia_val = Value::Matrix(
@@ -4470,7 +4136,7 @@ mod tests {
             ],
         )
         .expect("mass_properties is a recognised dynamics constructor");
-        assert_frame3(&origin_of(&mp), "mass_properties");
+        assert_no_origin(&mp, "mass_properties");
     }
 
     #[test]
@@ -4484,7 +4150,8 @@ mod tests {
         let result = eval_dynamics("mass_properties", &[mass_val, com_val, inertia_val])
             .expect("mass_properties recognised");
         assert!(!matches!(result, Value::Undef), "List com must be accepted");
-        let (_, com, _) = mass_properties_from_value(&result).expect("must be MassProperties");
+        let MassProperties { com, .. } =
+            MassProperties::from_value(&result).expect("must be MassProperties");
         assert!((com[2] - 0.5).abs() < 1e-12, "com[2] via List: {}", com[2]);
     }
 
@@ -4607,7 +4274,7 @@ mod tests {
         let body = body_with_solid_and_derived(Value::Real(0.0), mp.clone());
         let resolved = resolve_body_mass(&body)
             .expect("body with derived_mass_props must resolve to Some");
-        let (mass, com, _) = mass_properties_from_value(&resolved)
+        let MassProperties { mass, com, .. } = MassProperties::from_value(&resolved)
             .expect("resolved value must be a valid MassProperties");
         assert!((mass - 1.0).abs() < 1e-12, "mass = {mass}");
         assert!((com[2] - (-0.1)).abs() < 1e-12, "com[2] = {}", com[2]);
@@ -4621,7 +4288,7 @@ mod tests {
         let body = body_with_solid_and_derived(mp_solid, mp_derived);
         let resolved = resolve_body_mass(&body)
             .expect("body with MassProperties solid must resolve via rung (a)");
-        let (mass, _, _) = mass_properties_from_value(&resolved)
+        let MassProperties { mass, .. } = MassProperties::from_value(&resolved)
             .expect("resolved value must be a valid MassProperties");
         // Rung (a) wins: mass = 5.0 (from solid), not 1.0 (from derived).
         assert!((mass - 5.0).abs() < 1e-12, "rung (a) mass = {mass}; expected 5.0");
@@ -4749,7 +4416,7 @@ mod tests {
         let body = body_with_solid(pm);
 
         let resolved = resolve_body_mass(&body).expect("MassProperties solid must resolve");
-        let (mass, com, _) = mass_properties_from_value(&resolved)
+        let MassProperties { mass, com, .. } = MassProperties::from_value(&resolved)
             .expect("resolved value must be a valid MassProperties");
         assert!((mass - 2.5).abs() < 1e-12, "mass should be 2.5 kg, got {mass}");
         for &c in &com {
@@ -4913,56 +4580,10 @@ mod tests {
         );
     }
 
-    // ── step-5 RED (task 4494): make_mass_properties + eval_point_mass populate ──
+    // ── step-5 RED (task 4494): eval_point_mass populate ──
     //
-    // make_mass_properties/eval_point_mass must produce inertia cells as
+    // eval_point_mass must produce inertia cells as
     // Value::Scalar{MOMENT_OF_INERTIA}, not plain Value::Real.
-    // RED until step-6 (task 4494) changes make_mass_properties to emit
-    // dimensioned scalars.
-
-    /// make_mass_properties must build the inertia field as a Value::Matrix of
-    /// Value::Scalar{dimension == MOMENT_OF_INERTIA} cells, mirroring the
-    /// eval_body_mass_props_core populate pattern. si_value must equal the
-    /// supplied f64 entry within 1e-12.
-    #[test]
-    fn make_mass_properties_inertia_cells_are_moment_of_inertia_scalars() {
-        let input_inertia = [[1.0_f64, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 3.0]];
-        let mp = make_mass_properties(2.5, [0.1, 0.2, 0.3], input_inertia);
-
-        let data = match &mp {
-            Value::StructureInstance(d) => d,
-            other => panic!("expected MassProperties StructureInstance, got {other:?}"),
-        };
-        assert_eq!(data.type_name, "MassProperties");
-        let inertia_rows = match data.fields.get("inertia").expect("inertia field") {
-            Value::Matrix(rows) => rows,
-            other => panic!("inertia field must be Value::Matrix, got {other:?}"),
-        };
-        assert_eq!(inertia_rows.len(), 3, "inertia must have 3 rows");
-        for r in 0..3 {
-            assert_eq!(inertia_rows[r].len(), 3, "inertia row {r} must have 3 cols");
-            for c in 0..3 {
-                match &inertia_rows[r][c] {
-                    Value::Scalar { si_value, dimension } => {
-                        assert_eq!(
-                            *dimension,
-                            DimensionVector::MOMENT_OF_INERTIA,
-                            "inertia[{r}][{c}] must be MOMENT_OF_INERTIA-dimensioned, got {dimension:?}"
-                        );
-                        assert!(
-                            (si_value - input_inertia[r][c]).abs() < 1e-12,
-                            "inertia[{r}][{c}] si_value: expected {}, got {}",
-                            input_inertia[r][c],
-                            si_value
-                        );
-                    }
-                    other => panic!(
-                        "inertia[{r}][{c}] must be Value::Scalar{{MOMENT_OF_INERTIA}}, got {other:?}"
-                    ),
-                }
-            }
-        }
-    }
 
     /// eval_point_mass (zero inertia) must also populate inertia cells as
     /// Value::Scalar{MOMENT_OF_INERTIA} with si_value == 0.0.
@@ -5002,77 +4623,6 @@ mod tests {
                         "point_mass inertia[{r}][{c}] must be Value::Scalar{{MOMENT_OF_INERTIA}}, got {other:?}"
                     ),
                 }
-            }
-        }
-    }
-
-    // ── step-5 (task 4494): numeric-identity round-trip for RNEA extraction ──────
-    //
-    // A MassProperties whose inertia cells are Value::Scalar{MOMENT_OF_INERTIA}
-    // yields the same (mass, com, inertia) f64 triple as the equivalent bare
-    // Value::Real-celled fixture: both are accepted spellings of the inertia
-    // position (task 6922 gates the dimension, it does not change the value).
-
-    /// mass_properties_from_value returns identical f64 triples whether the
-    /// inertia cells are plain Value::Real or Value::Scalar{MOMENT_OF_INERTIA},
-    /// so RNEA τ output is byte-identical after the step-6 populate change.
-    #[test]
-    fn mass_properties_from_value_round_trip_is_identical_for_dimensioned_inertia() {
-        let mass = 3.0_f64;
-        let com = [0.01, -0.02, 0.05];
-        let inertia = [[0.1, 0.0, 0.0], [0.0, 0.2, 0.0], [0.0, 0.0, 0.3]];
-
-        // Existing fixture: Value::Real inertia cells.
-        let mp_real = mass_properties_fixture(mass, com, inertia);
-
-        // New fixture: Value::Scalar{MOMENT_OF_INERTIA} inertia cells.
-        let com_point = Value::Point(com.iter().map(|&c| Value::length(c)).collect());
-        let inertia_dimensioned = Value::Matrix(
-            inertia
-                .iter()
-                .map(|row| {
-                    row.iter()
-                        .map(|&x| Value::Scalar {
-                            si_value: x,
-                            dimension: DimensionVector::MOMENT_OF_INERTIA,
-                        })
-                        .collect()
-                })
-                .collect(),
-        );
-        let mp_dimensioned = mint_instance(
-            "MassProperties",
-            vec![
-                (
-                    "mass".to_string(),
-                    Value::Scalar {
-                        si_value: mass,
-                        dimension: DimensionVector::MASS,
-                    },
-                ),
-                ("com".to_string(), com_point),
-                ("inertia".to_string(), inertia_dimensioned),
-                ("origin".to_string(), default_frame3_fixture()),
-            ],
-        );
-
-        let (m_real, c_real, i_real) =
-            mass_properties_from_value(&mp_real).expect("Value::Real inertia must parse");
-        let (m_dim, c_dim, i_dim) =
-            mass_properties_from_value(&mp_dimensioned).expect("MOMENT_OF_INERTIA inertia must parse");
-
-        assert!((m_real - m_dim).abs() < 1e-15, "mass must be identical");
-        for i in 0..3 {
-            assert!((c_real[i] - c_dim[i]).abs() < 1e-15, "com[{i}] must be identical");
-        }
-        for r in 0..3 {
-            for c in 0..3 {
-                assert!(
-                    (i_real[r][c] - i_dim[r][c]).abs() < 1e-15,
-                    "inertia[{r}][{c}] must be identical (got real={}, dim={})",
-                    i_real[r][c],
-                    i_dim[r][c]
-                );
             }
         }
     }

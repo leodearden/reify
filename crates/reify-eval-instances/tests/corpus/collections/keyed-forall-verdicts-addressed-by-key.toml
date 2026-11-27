@@ -1,0 +1,18 @@
+tests = "a `forall` block over a keyed collection gives one verdict per entry, addressed by the entry's key."
+rule = "rule F (a per-element constraint of a `forall`); Part 5 (a `forall` block gives one constraint per element); decision 10 (an element's identity is its position or its key); decision 12 (`forall`, \"Your rec LGTM\")"
+provenance = "`examples/keyed_forall.ri` (its form, with one entry made to fail); appendix A row \"A constraint declared by a `forall` block\"."
+needs = ["instance", "collection", "constraint", "summary", "paths"]
+answer_basis = "traced. A keyed collection has no count constraint, so the block is `constraint[0]`, and its per-entry constraints are `/constraint[0][\"key\"]` (decisions A). `\"intake\"`: 6 mm > 4 mm, satisfied. `\"exhaust\"`: 3 mm > 4 mm, violated. Violated 1."
+today = "run `g15.ri`: `OK forall@v[0]`, `VIOLATED forall@v[1]` (positional ids, no key)."
+
+[[expect]]
+path = "Manifold/constraint[0][\"intake\"]"
+verdict = "satisfied"
+
+[[expect]]
+path = "Manifold/constraint[0][\"exhaust\"]"
+verdict = "violated"
+
+[[expect]]
+path = "Manifold/summary"
+summary = { violated = 1, undetermined = 0, failed = 0 }

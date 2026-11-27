@@ -1620,6 +1620,7 @@ is_occt_crate() {
 #     harness_engine/interval_refutation_e2e.rs, task 6655)
 #     s6_joint_position_display.ri (`reify eval` by cli_eval_joint_position_enum.rs, task 8834)
 #     dce_runtime_payload.ri (`reify check`/`reify eval` by cli_eval_data_carrying_enum.rs, task 7456)
+#     the six realized_world_*.ri (`reify check` by cli_sweep_direction_forms.rs, task 9647)
 #   compile-time embeds (include_str! bakes the bytes straight into the test
 #   binary — a tighter coupling than a runtime read, since the fixture is a
 #   build input of the target, not just a file it happens to open):
@@ -1712,7 +1713,7 @@ is_occt_crate() {
 # (mirrors select_infra_tests/select_harness_kloc_guard) — required here
 # because one name is a strict prefix of another
 # (geometry_let_selector_consumer.ri vs …_consumer_edit.ri).
-_RUST_COUPLED_RI_FIXTURES=" adt_mirror_of_arm.ri adt_relation_verbs.ri arrow_type.ri cmc_bolt_feasible.ri cmc_bolt_gap.ri cmc_bolt_two_fit.ri cmc_int_range.ri cmc_local_catalogs.ri cmc_membership_check.ri cmc_sugar_equivalence.ri cmc_unextractable.ri compiler_type_hygiene_trait_args_silent_accept.ri coordinate_target_fea_pose_rejected.ri cost_robustness_tradeoff_form.ri curvature_rad_literal.ri damped_material_mixin_conformance.ri damped_material_preset_conformance.ri dce_runtime_payload.ri dcr_load_ctor_dimension_silent.ri dcr_material_dimension_silent.ri dcr_reader_ctor_dimension_silent.ri dcr_shaper_frequency_dimension_silent.ri dcr_solver_load_dropped_dimensioned.ri dcr_yield_stress_dimension_silent.ri decl_passes_purpose_body_sub_swallowed.ri direction_typing_p1_bad_int.ri direction_typing_p1_bad_str.ri driver_parity_auto_ctl.ri driver_parity_one_sided_auto.ri driver_parity_one_sided_auto_free.ri driver_parity_two_sided_auto.ri geometry_let_selector_consumer.ri geometry_let_selector_consumer_edit.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_spec_arm_baseline.ri jacobian_column_members.ri joint_constrained_dof_compliance.ri migration_v0_2_ctor_field_type_before.ri migration_v0_2_ctor_unknown_field_before.ri occt_internals_centroid_translated_profile.ri occt_internals_fillet_extruded_wire.ri occt_internals_fillet_translated_disjoint_union.ri r3b_displacement_at_selector_grammar.ri s6_corexy_tie_orientation.ri s6_joint_position_display.ri s8_geometry_ctor_conformance_inline.ri shift_invert_modal_shifted.ri shift_invert_modal_unshifted.ri sketch_auto_seed_target.ri sketch_aux_let_premise.ri sketch_block_target.ri sketch_member_extrude_premise.ri slc_annotation_arg_fault.ri slc_field_analytical_fault.ri slc_field_imported_fault.ri slc_purpose_body_error.ri slc_purpose_param_missing.ri slc_root_error.ri slc_struct_header_fault.ri slc_trait_body_port.ri ssc_refuted_pair.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri step_import_surface.ri struct_ctor_conformance_int_at_string_field.ri struct_ctor_conformance_over_arity.ri struct_ctor_conformance_pose_at_selector_field.ri struct_ctor_conformance_string_at_selector_field.ri struct_ctor_conformance_unknown_field.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri "
+_RUST_COUPLED_RI_FIXTURES=" adt_mirror_of_arm.ri adt_relation_verbs.ri arrow_type.ri cmc_bolt_feasible.ri cmc_bolt_gap.ri cmc_bolt_two_fit.ri cmc_int_range.ri cmc_local_catalogs.ri cmc_membership_check.ri cmc_sugar_equivalence.ri cmc_unextractable.ri compiler_type_hygiene_trait_args_silent_accept.ri coordinate_target_fea_pose_rejected.ri cost_robustness_tradeoff_form.ri curvature_rad_literal.ri damped_material_mixin_conformance.ri damped_material_preset_conformance.ri dce_runtime_payload.ri dcr_load_ctor_dimension_silent.ri dcr_material_dimension_silent.ri dcr_reader_ctor_dimension_silent.ri dcr_shaper_frequency_dimension_silent.ri dcr_solver_load_dropped_dimensioned.ri dcr_yield_stress_dimension_silent.ri decl_passes_purpose_body_sub_swallowed.ri direction_typing_p1_bad_int.ri direction_typing_p1_bad_str.ri driver_parity_auto_ctl.ri driver_parity_one_sided_auto.ri driver_parity_one_sided_auto_free.ri driver_parity_two_sided_auto.ri geometry_let_selector_consumer.ri geometry_let_selector_consumer_edit.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_spec_arm_baseline.ri jacobian_column_members.ri joint_constrained_dof_compliance.ri migration_v0_2_ctor_field_type_before.ri migration_v0_2_ctor_unknown_field_before.ri occt_internals_centroid_translated_profile.ri occt_internals_fillet_extruded_wire.ri occt_internals_fillet_translated_disjoint_union.ri r3b_displacement_at_selector_grammar.ri realized_world_datum_axis_inline.ri realized_world_datum_axis_let.ri realized_world_datum_user_fn.ri realized_world_guarded_branch.ri realized_world_override_instance_datum.ri realized_world_override_instance_datum_let.ri s6_corexy_tie_orientation.ri s6_joint_position_display.ri s8_geometry_ctor_conformance_inline.ri shift_invert_modal_shifted.ri shift_invert_modal_unshifted.ri sketch_auto_seed_target.ri sketch_aux_let_premise.ri sketch_block_target.ri sketch_member_extrude_premise.ri slc_annotation_arg_fault.ri slc_field_analytical_fault.ri slc_field_imported_fault.ri slc_purpose_body_error.ri slc_purpose_param_missing.ri slc_root_error.ri slc_struct_header_fault.ri slc_trait_body_port.ri ssc_refuted_pair.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri step_import_surface.ri struct_ctor_conformance_int_at_string_field.ri struct_ctor_conformance_over_arity.ri struct_ctor_conformance_pose_at_selector_field.ri struct_ctor_conformance_string_at_selector_field.ri struct_ctor_conformance_unknown_field.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri "
 
 # GUI-COUPLED prd-gate fixtures (task 6435). Basenames PINNED in EXPECTED_CLEAN
 # in gui/src/__tests__/reifyGrammarCorpus.test.ts — the grammar drift ledger,
@@ -2117,6 +2118,23 @@ selected_infra_leaf_env() {
                 printf 'REIFY_PTODO_RATCHET_REQUIRED=1 '
             fi
             ;;
+    esac
+}
+
+# selected_infra_leaf_wall <glob-or-path> — print the `timeout` wall a single
+# selective-infra leaf runs under: 10m, unless the leaf's glob selects a member
+# named here. The member is matched AGAINST the glob (the unquoted `$1` is the
+# case pattern), so a wildcard row that selects it carries its wall to the
+# whole loop instead of cutting it at 10m. Printf-only, so the caller's
+# command-substitution assignment keeps status 0 under set -euo pipefail
+# (selected_infra_leaf_env's reason). Python twin:
+# scripts/reify_verify/selection.py _leaf_wall, held equal by
+# test_verify_plan_parity_region.py TestSelectiveInfraLeafWalls. Derivation:
+# docs/notes/verify-pipeline-knobs.md, "Selective-infra leaf walls".
+selected_infra_leaf_wall() {
+    case tests/infra/test_tree_sitter_pipeline.sh in
+        $1) printf '30m' ;;
+        *) printf '10m' ;;
     esac
 }
 
@@ -2995,7 +3013,7 @@ add() { PLAN+=("$1"); }
 # A leading `export ...;` STATEMENT is shape-agnostic — it composes ahead of
 # `if`, `{`, `(` and `for` alike, so no plan line needs restructuring — and it
 # does not leak forward, because reaper_run_in_pgroup normally runs each plan
-# line in its own background subshell (`set -m; eval "$cmd" &`).
+# line in its own background subshell (`set -m; { set +e; eval "$cmd"; } &`).
 #
 # That containment is NOT unconditional. Under the break-glass knob
 # REIFY_PROC_REAPER_DISABLE=1, lib_proc_reaper.sh evaluates each plan line in
@@ -4254,7 +4272,7 @@ build_plan() {
     # LOADER SCRUB — the ONE add_tool() exception (task 5730). The node lane is
     # a tool line and needs the scrub, but this plan line is the only one the
     # executor eval's in its MAIN shell (everything else goes through
-    # reaper_run_in_pgroup's `set -m; eval "$cmd" &` subshell). A leading
+    # reaper_run_in_pgroup's `set -m; { set +e; eval "$cmd"; } &` subshell). A leading
     # `export ...;` here would therefore persist into every SUBSEQUENT plan
     # line, including the cargo ones — silently stripping the OCCT search dir
     # from the rest of the gate. It goes INSIDE the `{ ... ; } &` braces, which
@@ -4589,7 +4607,12 @@ build_plan() {
         # always being an `env ...` invocation. ONE add_tool call is kept —
         # test_verify_ld_library_path_scope.sh asserts this file has exactly one
         # `for _vt in` emission site calling add_tool, so a second arm reds.
-        local _leaf_env
+        local _leaf_env _leaf_wall
+        # The failure arm names the failing member and decodes a signal death,
+        # so a silent abort is attributable; its write is `|| true`, so it can
+        # never replace the member's status in an errexit context (#10333,
+        # tests/infra/test_verify_selective_infra_member_exit_record.py).
+        local _member_exit_arm='|| { _vrc=$?; echo "verify.sh: infra member $_vt exited rc=$_vrc$(if [ "$_vrc" -gt 128 ] && _vsig=$(kill -l "$_vrc" 2>/dev/null); then printf " (signal %s)" "$_vsig"; fi)" >&2 || true; exit "$_vrc"; }'
         # Each member runs with REIFY_VERIFY_EVENT_LOG removed, so its own
         # slot_acquire deadline or nested run_all.sh never writes into this
         # verify's channel (run-all-runner-infra-harness.md §4 C4, #8919). The
@@ -4599,7 +4622,8 @@ build_plan() {
         set -f  # disable pathname expansion: keep glob tokens as literals
         for _glob in $SELECTED_INFRA_GLOBS; do
             _leaf_env="$(selected_infra_leaf_env "$_glob")"
-            add_tool "( for _vt in $_glob; do [ -f \"\$_vt\" ] || continue; ${_leaf_env}timeout --kill-after=60 10m $_git_scrub -u REIFY_VERIFY_EVENT_LOG bash \"\$_vt\" || exit \$?; done )"
+            _leaf_wall="$(selected_infra_leaf_wall "$_glob")"
+            add_tool "( for _vt in $_glob; do [ -f \"\$_vt\" ] || continue; ${_leaf_env}timeout --kill-after=60 ${_leaf_wall} $_git_scrub -u REIFY_VERIFY_EVENT_LOG bash \"\$_vt\" $_member_exit_arm; done )"
         done
         set +f
     fi

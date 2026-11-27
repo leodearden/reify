@@ -56,15 +56,12 @@
 //                         in the SKIP_SET of
 //                         crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs,
 //                         so the bulk walker compiles it too.
-//   eval (bare MockGeometryKernel) → #[ignore] (fillet_top_edges_evals_to_solid_via_topology_walk)
-//                         — still blocked on #4727: the bare mock kernel has no
-//                         seeded topology, so it records only the Box op and
-//                         never reaches Fillet. The real-kernel eval of the
-//                         walk is fillet_top_edges_example_builds_clean_e2e.
+//   eval                → fillet_top_edges_example_builds_clean_e2e in
+//                         crates/reify-eval/tests/fillet_curated_edges_e2e.rs (real kernel)
 
 structure def FilletTopEdges {
     let b = box(50mm, 30mm, 10mm)
-    let top = single(faces_by_normal(b, vec3(0.0, 0.0, 1.0), 1deg))
+    let top = single(faces_by_normal(b, dir(0, 0, 1), 1deg))
     let top_edges = flat_map(adjacent_faces(b, top), |f| shared_edges(top, f))
     let result = fillet(b, top_edges, 1mm)
 }

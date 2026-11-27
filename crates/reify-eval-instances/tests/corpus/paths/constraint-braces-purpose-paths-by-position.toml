@@ -1,0 +1,21 @@
+tests = "the text form of a path to a definition's constraint, a constraint in a sub's braces, and an applied purpose's constraint, each by position."
+rule = "rule F; Part 8; Part 10."
+provenance = "design Part 15.1 rule F (\"A constraint, by its position in the member list. A member written in a sub's braces, by the sub and its position there ... an applied purpose, by its position\"); the path text of decisions A."
+needs = ["instance", "constraint", "braces", "purpose", "paths", "grammar-purpose"]
+answer_basis = "traced, with the path text of decisions A: `k` for an applied purpose counts the applications in the member table, so `thin_enough` is `purpose[0]` although it is `Asm`'s fourth member. The subject `self.p` is an unguarded sub, so the application compiles (decisions C16). `w` = 2 mm > 1 mm satisfied; `p.t` = 3 mm ≥ 1 mm satisfied; the braces' `t ≥ 5mm` violated; the purpose's `t < 4mm` satisfied. The verdicts differ so that a path sent to the wrong node shows."
+
+[[expect]]
+path = "Asm/constraint[0]"
+verdict = "satisfied"
+
+[[expect]]
+path = "Asm.p/constraint[0]"
+verdict = "satisfied"
+
+[[expect]]
+path = "Asm.p/braces/constraint[0]"
+verdict = "violated"
+
+[[expect]]
+path = "Asm/purpose[0]/constraint[0]"
+verdict = "satisfied"

@@ -1,0 +1,28 @@
+tests = "a constraint inside the owner whose verdict does not depend on the unknown does not bear on it: it is a violated verdict, and the unknown is decided by the constraints that do."
+rule = "Part 6.1 (a constraint bears only if its verdict depends on the unknown); readings E35; PRD section 5.6 (\"A constraint that is violated whatever the trial does not bear\")."
+provenance = "the tracer's counter-example N8 (trace-braces-purposes-unknowns), and gap G6."
+needs = ["instance", "constraint", "summary", "unknown", "solve-forced"]
+answer_basis = "traced. `w` is a parameter with a default, so `w >= 2mm` is violated whatever `x` is, and does not bear. `x == 20mm` bears: 20 mm. Summary: violated 1. A solver that rejects a candidate for any violated constraint rejects every candidate and leaves `x` undefined."
+
+[candidates]
+note = "Under 10 mm, `x == 20mm` is violated and depended on the trial. Under 20 mm, only `Asm/constraint[0]` is violated, and it did not depend on the trial, so 20 mm is taken."
+
+[[candidates.unknown]]
+path = "Asm.x"
+values = ["10mm", "20mm"]
+
+[[expect]]
+path = "Asm.x"
+value = "20 mm"
+
+[[expect]]
+path = "Asm/constraint[0]"
+verdict = "violated"
+
+[[expect]]
+path = "Asm/constraint[1]"
+verdict = "satisfied"
+
+[[expect]]
+path = "Asm/summary"
+summary = { violated = 1, undetermined = 0, failed = 0 }

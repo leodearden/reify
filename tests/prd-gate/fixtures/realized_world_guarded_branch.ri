@@ -3,7 +3,7 @@
 module realized_world_guarded_branch
 
 structure P {
-    let cyl = revolve(rectangle(20mm, 10mm), -10mm, 0mm, 0mm, 0.0, 1.0, 0.0, 6.283185307179586rad)
+    let cyl = revolve(rectangle(20mm, 10mm), point3(-10mm, 0mm, 0mm), dir(0.0, 1.0, 0.0), 6.283185307179586rad)
     let g = box(2mm, 2mm, 2mm)
     let r = circular_pattern(g, if false then cyl.axis else axis_z(point3(0mm, 0mm, 0mm)), 4, 90deg)
 }

@@ -1,0 +1,1 @@
+structure def Asm { let u = auto   constraint u >= 1mm }

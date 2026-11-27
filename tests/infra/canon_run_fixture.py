@@ -14,6 +14,7 @@ import importlib.util
 import json
 import os
 import pwd
+import re
 import shutil
 import signal
 import subprocess
@@ -26,11 +27,14 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 CANON_RUN = REPO_ROOT / "scripts" / "canon_run.py"
 TRAMPOLINE = REPO_ROOT / "scripts" / "canon-bin" / "cargo"
 GUARD = REPO_ROOT / "scripts" / "canon-bin" / "guard" / "sccache"
-CANON_RUN_SIBLINGS = ("canon_cache.py", "lib_event_log.sh")
+CANON_RUN_SIBLINGS = ("canon_cache.py", "canon_store.py", "lib_event_log.sh")
 PYTHON = "/usr/bin/python3"
 BWRAP = "/usr/bin/bwrap"
 LANDLOCK_EXEC = REPO_ROOT / "gui" / "src-tauri" / "sandbox" / "landlock_exec.py"
 FIXTURE_DATA = "fixture data\n"
+# A caller prefix that starts its command with every supervised signal at default:
+# a run_all pool or a background `&` may start a suite with INT and QUIT ignored.
+AT_DEFAULT_SUPERVISED_SIGNALS = ("/usr/bin/env", "--default-signal=HUP,INT,QUIT,TERM")
 
 
 @functools.cache
@@ -102,10 +106,11 @@ def run(argv, *, cwd, env):
     return subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True, check=False)
 
 
-# Runs <scripts dir>/canon_run.py's main with one extra mountinfo line naming
-# CANON as a mount point. With REIFY_CANON_ROOT set to the tree's own path, C3's
-# bound check then holds (same directory, listed as a mount), so the BOUND route
-# runs where no mount namespace can be entered (argv: scripts dir, canon_run args).
+# Runs <scripts dir>/canon_run.py's main, passing it a mountinfo reader that adds
+# one line naming CANON as a mount point. With REIFY_CANON_ROOT set to the tree's
+# own path, C3's bound check then holds (same directory, listed as a mount), so
+# the BOUND route runs where no mount namespace can be entered (argv: scripts
+# dir, canon_run args).
 BOUND_RUNNER = r"""
 import sys
 
@@ -115,18 +120,21 @@ import canon_run
 canon = canon_run.canon_root(canon_run.caller_environ())
 escaped = canon.replace("\\", "\\134").replace(" ", "\\040")
 bound = f"36 35 0:51 / {escaped} rw,relatime shared:1 - ext4 /dev/vda1 rw\n"
-host_mountinfo = canon_run.read_mountinfo
-canon_run.read_mountinfo = lambda: host_mountinfo() + bound
-sys.exit(canon_run.main(sys.argv[2:]))
+sys.exit(canon_run.main(sys.argv[2:], mountinfo=lambda: canon_run.read_mountinfo() + bound))
 """
+
+
+def bound_argv(tree, *args, runner_dir):
+    """The BOUND runner's argv for canon_run args, writing the runner into runner_dir if absent."""
+    runner = Path(runner_dir, "bound_runner.py")
+    if not runner.exists():
+        runner.write_text(BOUND_RUNNER)
+    return [PYTHON, "-I", str(runner), str(Path(tree, "scripts")), *args]
 
 
 def run_bound(tree, cwd, *args, env, runner_dir):
     """run_canon on the BOUND route: env's REIFY_CANON_ROOT must be the tree's own path."""
-    runner = Path(runner_dir, "bound_runner.py")
-    if not runner.exists():
-        runner.write_text(BOUND_RUNNER)
-    return run([PYTHON, "-I", str(runner), str(Path(tree, "scripts")), *args], cwd=cwd, env=env)
+    return run(bound_argv(tree, *args, runner_dir=runner_dir), cwd=cwd, env=env)
 
 
 # The NAMESPACE route's outer process, canon_run.run_in_namespace, around a fake
@@ -136,7 +144,8 @@ def run_bound(tree, cwd, *args, env, runner_dir):
 # With options' signal_during_start, the argv callback sends this process
 # SIGTERM, so the signal arrives while run_in_namespace is starting bwrap. The
 # command writes its SigIgn line to `sigign`, touches `started`, then sleeps
-# options' command_secs.
+# options' command_secs; with options' trap_exit it traps SIGINT and then exits
+# 130 itself. The runner ends through exit_like, as canon_run.main does.
 #
 # The fake bwrap behaves as bwrap 0.9.0 does: it keeps the dispositions it was
 # started with, starts what follows its `--` (run_in_namespace's env layer
@@ -156,10 +165,13 @@ import canon_run
 
 directory, options = sys.argv[2], json.loads(sys.argv[3])
 fake_bwrap = os.path.join(directory, "fake_bwrap.py")
-command = [
-    "/bin/sh", "-c", 'grep SigIgn /proc/self/status > "$0/sigign"; touch "$0/started"; exec sleep "$1"',
-    directory, options["command_secs"],
-]
+report = 'grep SigIgn /proc/self/status > "$0/sigign"; touch "$0/started"; '
+script = (
+    "trap 'kill $!; exit 130' INT; " + report + 'sleep "$1" & wait'
+    if options["trap_exit"]
+    else report + 'exec sleep "$1"'
+)
+command = ["/bin/sh", "-c", script, directory, options["command_secs"]]
 
 
 def bwrap_for(info_fd):
@@ -172,7 +184,9 @@ for number in canon_cache.SUPERVISED_SIGNALS:
     signal.signal(number, signal.default_int_handler if number == signal.SIGINT else signal.SIG_DFL)
 for name in options["ignore"]:
     signal.signal(signal.Signals[name], signal.SIG_IGN)
-sys.exit(canon_run.run_in_namespace(bwrap_for, command, {"PATH": "/usr/bin:/bin"}, canon_cache.SignalForwarder()))
+sys.exit(canon_cache.exit_like(
+    canon_run.run_in_namespace(bwrap_for, command, {"PATH": "/usr/bin:/bin"}, canon_cache.SignalForwarder())
+))
 """
 FAKE_BWRAP = r"""
 import json
@@ -198,7 +212,7 @@ sys.exit(128 - status if status < 0 else status)
 
 
 def start_namespace_parent(
-    directory, *, go=True, pass_fds=(), signal_during_start=False, command_secs="60", ignore=()
+    directory, *, go=True, pass_fds=(), signal_during_start=False, command_secs="60", ignore=(), trap_exit=False
 ):
     """The runner above as its own session's leader; `go` lets the fake bwrap start the command at once."""
     Path(directory, "fake_bwrap.py").write_text(FAKE_BWRAP)
@@ -210,6 +224,7 @@ def start_namespace_parent(
         "signal_during_start": signal_during_start,
         "command_secs": command_secs,
         "ignore": [signal.Signals(number).name for number in ignore],
+        "trap_exit": trap_exit,
     }
     return subprocess.Popen(
         [PYTHON, "-I", str(runner), str(REPO_ROOT / "scripts"), str(directory), json.dumps(options)],
@@ -227,6 +242,32 @@ def catches(pid, signum):
     return False
 
 
+PIDFD_INFO_EXIT_RELEASE = (6, 15)
+
+
+def pidfd_exit_record_available():
+    """Whether this kernel keeps a reaped process's exit record behind its pidfd (PIDFD_INFO_EXIT, Linux 6.15).
+
+    Read from the kernel release, never by calling canon_run.exited_returncode: that is the
+    code under test, and an oracle sharing its defect would turn its checks into skips.
+    A backport to an older release can only make the suites fail loudly, not pass silently.
+    """
+    release = re.match(r"(\d+)\.(\d+)", os.uname().release)
+    return release is not None and tuple(map(int, release.groups())) >= PIDFD_INFO_EXIT_RELEASE
+
+
+PIDFD_EXIT_RECORD_MISSING = "this kernel keeps no pidfd exit record: PIDFD_INFO_EXIT needs Linux 6.15"
+
+
+def namespace_death_status(signum):
+    """The NAMESPACE route's status for a re-run that died of signum.
+
+    -signum where the pidfd exit record tells a death from an exit; otherwise bwrap's
+    128+signum, the documented degrade on an older kernel.
+    """
+    return -signum if pidfd_exit_record_available() else 128 + signum
+
+
 def ignored_signals(path):
     """The signal numbers set in the `SigIgn:` hex mask a command wrote to path."""
     mask = int(Path(path).read_text().split(":", 1)[1], 16)
@@ -241,7 +282,7 @@ def start_canon(tree, cwd, *args, env, pass_fds=()):
     """
     script = Path(tree, "scripts", "canon_run.py")
     return subprocess.Popen(
-        ["/usr/bin/env", "--default-signal=HUP,INT,QUIT,TERM", PYTHON, "-I", str(script), *args],
+        [*AT_DEFAULT_SUPERVISED_SIGNALS, PYTHON, "-I", str(script), *args],
         cwd=cwd,
         env=env,
         pass_fds=pass_fds,

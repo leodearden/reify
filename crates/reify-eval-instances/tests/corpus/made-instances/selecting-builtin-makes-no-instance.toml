@@ -1,0 +1,17 @@
+tests = "a built-in that selects or passes on a structure value makes no instance, so a value made once and selected is counted once."
+rule = "rule B (\"A built-in that only selects or passes a value along (`xs[0]`, `filter`, `max_by`) makes nothing\")."
+provenance = "logic-3 R8, second half (taken). `filter` with a lambda is refused today (run `made.ri`), so only indexing is modelled."
+needs = ["instance", "value", "made", "open", "summary"]
+answer_basis = "traced. `qs` makes two `Plate`s, at 1 mm (violated) and 4 mm. `qs[0]` is a value read: `first` makes nothing and reads `t` as a field."
+
+[[expect]]
+path = "Asm.first/open.t"
+value = "1 mm"
+
+[[expect]]
+path = "Asm.first/made[0]"
+presence = "absent"
+
+[[expect]]
+path = "Asm/summary"
+summary = { violated = 1, undetermined = 0, failed = 0 }

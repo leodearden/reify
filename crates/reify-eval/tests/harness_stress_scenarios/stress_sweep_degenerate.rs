@@ -12,8 +12,8 @@
 use std::f64::consts::PI;
 
 use reify_compiler::{CompiledGeometryOp, GeomRef, PrimitiveKind, SweepKind};
-use reify_core::{ModulePath, Severity};
-use reify_ir::{ExportFormat, GeometryOp};
+use reify_core::{ModulePath, Severity, Type};
+use reify_ir::{CompiledExpr, ExportFormat, GeometryOp};
 use reify_test_support::*;
 
 
@@ -99,6 +99,22 @@ fn zero_extrude_distance() {
 // step-17/18: revolve_720_degrees — edge-case valid operation
 // ---------------------------------------------------------------------------
 
+/// The op args of `revolve(profile, point3(0mm, 0mm, 0mm), dir(0, 0, 1), angle)`
+/// as the compiler lowers it.
+fn revolve_about_z_args(angle_rad: f64) -> Vec<(String, CompiledExpr)> {
+    vec![
+        (
+            "origin".into(),
+            CompiledExpr::literal(point3(0.0, 0.0, 0.0), Type::point3(Type::length())),
+        ),
+        (
+            "direction".into(),
+            CompiledExpr::literal(direction_val(0.0, 0.0, 1.0), Type::direction()),
+        ),
+        ("angle".into(), angle_literal(angle_rad)),
+    ]
+}
+
 /// Build a Revolve op with angle=4π (720° — double full revolution).
 /// This is a valid but edge-case operation (double full revolution).
 /// The evaluator should dispatch it with angle_rad ≈ 4π.
@@ -118,16 +134,7 @@ fn revolve_720_degrees() {
     let revolve_op = CompiledGeometryOp::Sweep {
         kind: SweepKind::Revolve,
         profiles: vec![GeomRef::Step(0)],
-        args: vec![
-            ("profile".into(), mm_literal(5.0)),
-            ("ox".into(), mm_literal(0.0)),
-            ("oy".into(), mm_literal(0.0)),
-            ("oz".into(), mm_literal(0.0)),
-            ("ax".into(), real_literal(0.0)),
-            ("ay".into(), real_literal(0.0)),
-            ("az".into(), real_literal(1.0)), // z-axis
-            ("angle".into(), angle_literal(angle_720_rad)),
-        ],
+        args: revolve_about_z_args(angle_720_rad),
     };
 
     let template = TopologyTemplateBuilder::new(e)
@@ -295,16 +302,7 @@ fn negative_revolve_angle_is_valid() {
     let revolve_op = CompiledGeometryOp::Sweep {
         kind: SweepKind::Revolve,
         profiles: vec![GeomRef::Step(0)],
-        args: vec![
-            ("profile".into(), mm_literal(5.0)),
-            ("ox".into(), mm_literal(0.0)),
-            ("oy".into(), mm_literal(0.0)),
-            ("oz".into(), mm_literal(0.0)),
-            ("ax".into(), real_literal(0.0)),
-            ("ay".into(), real_literal(0.0)),
-            ("az".into(), real_literal(1.0)), // z-axis
-            ("angle".into(), angle_literal(angle_neg_180_rad)), // NEGATIVE angle — clockwise
-        ],
+        args: revolve_about_z_args(angle_neg_180_rad),
     };
 
     let template = TopologyTemplateBuilder::new(e)

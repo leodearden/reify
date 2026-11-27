@@ -1,0 +1,10 @@
+tests = "a `let` in a sub's braces that repeats a name the sub's definition declares is a compile error."
+rule = "readings C20 (third bullet); PRD D10(f) (\"A name that repeats a member of the sub's definition is a compile error\")"
+provenance = "appendix A; brief item 8."
+needs = ["compile-error", "braces"]
+answer_basis = "stated: readings C20."
+today = "run `g08b.ri`: accepted; the braces `let` is dropped and `Asm.s.zz = 0.006 m`, `Plate`'s."
+
+[[expect]]
+compile_error = "`zz` is declared twice for `s`, by `Plate` and in the braces of `s`; the message names both"
+code = "BracesLetRepeatsDefinitionMember"

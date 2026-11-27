@@ -1,0 +1,9 @@
+tests = "`Plate(t: auto)` in a `let` evaluated exactly once compiles and gives the holder an unknown on which `Plate`'s constraint and the holder's constraint both bear."
+rule = "contract Example 11, lines (3) and (4); Part 6.3; Part 12 (Example 11)."
+provenance = "contract Part B Example 11, lines (3), (4); design Part 12 \"Example 11\"."
+needs = ["compile-error", "unknown", "made", "nested-solve"]
+answer_basis = "open. `d.t` is `Asm`'s unknown with `t ≥ 3 mm` and `t > 5 mm` bearing and nothing bounding it above; `Plate`'s `minimize t` does not reach an unknown moved to the use \"unless the solve design says so\" (Part 6.5). So the value of `Asm.d/made[0].t` and the verdict of `Asm/constraint[0]` depend on the solve design: open, owner task 10610 (readings E37). Only compilation is pinned, so the entry runs (readings F, last note)."
+today = "form (3) does not compile (contract Example 11); a length `auto` in a constructor argument is a type error (design Part 6.3, run)."
+
+[[expect]]
+compile = "ok"

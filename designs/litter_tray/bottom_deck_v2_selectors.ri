@@ -74,7 +74,7 @@ structure def BottomDeck : Rigid {
     constraint base_fillet < floor_thickness
 
     // ── Geometry ────────────────────────────────────────────────────────
-    let up = vec3(0.0, 0.0, 1.0)
+    let up = dir(0, 0, 1)
     let recess_h = recess_depth + 20mm               // cavity pokes above the rim
 
     // Outer envelope: box with vertical edges filleted to the corner radius.

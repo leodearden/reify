@@ -1,0 +1,22 @@
+tests = "structure values are equal by content, so a set merges equal values and equal subs; `self.children` lists present subs only, and is undefined when a sub's presence is undetermined."
+rule = "decision 11; Part 5 (\"A bare collection is a list of its elements as values\"); Part 7.1; Part 7.4."
+provenance = "design decision 11."
+needs = ["instance", "guard", "value", "made"]
+answer_basis = "traced. `Peg()` and `Peg(w: 10mm)` carry type `Peg` and `w` = 10 mm: one member. `a` and `b` both have `w` = 10 mm: one member. In `off`, `fan` is absent: children are `a` and `b`, 2. In `unk`, `fan`'s presence is undetermined, so the list is undefined (readings E30). `self.children` and a set of values are leaf κ₁'s (`value`); the entry has no collection sub."
+today = "both sets have one member; `self.children` is a list of path strings that includes absent subs (design decision 11 and Part 5, report; `setv.ri` gives 1, 1 and 2 with no guarded sub, run)."
+
+[[expect]]
+path = "Top.off.n_vals"
+value = "1"
+
+[[expect]]
+path = "Top.off.n_subs"
+value = "1"
+
+[[expect]]
+path = "Top.off.n_kids"
+value = "2"
+
+[[expect]]
+path = "Top.unk.n_kids"
+value = "undefined"

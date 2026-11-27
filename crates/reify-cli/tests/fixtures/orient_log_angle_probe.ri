@@ -11,5 +11,5 @@
 module orient_log_angle_probe
 
 structure def RotVecProbe {
-    let lv = orient_log(orient_axis_angle(vec3(0,0,1), 90deg))
+    let lv = orient_log(orient_axis_angle(dir(0,0,1), 90deg))
 }

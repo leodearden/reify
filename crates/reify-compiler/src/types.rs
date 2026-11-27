@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use reify_core::{
-    ConstraintNodeId, ContentHash, DimensionVector, RealizationNodeId, SourceSpan, Type,
-    ValueCellId,
+    ConstraintNodeId, ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, DimensionVector,
+    RealizationNodeId, SourceSpan, Type, ValueCellId,
 };
 use reify_ir::{CompiledExpr, ConstraintDomain, ObjectiveSet};
 
@@ -327,7 +327,7 @@ pub struct CompiledPurpose {
 /// `auto_type_param::resolve_auto_type_params`; the caller wraps the result via
 /// `AutoTypeSubstitution::new(outcome.substitution)`.
 ///
-/// **Consumer:** `Snapshot::from_compiled_module` calls `.clone().into_inner()`
+/// **Consumer:** `Snapshot::from_env` calls `.clone().into_inner()`
 /// to populate `EvaluationGraph::auto_type_substitution` (still a plain `Vec`).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct AutoTypeSubstitution(Vec<(String, String)>);
@@ -357,7 +357,7 @@ impl AutoTypeSubstitution {
 
     /// Consumes the newtype and returns the underlying `Vec<(String, String)>`.
     ///
-    /// Used by `Snapshot::from_compiled_module` to populate the still-`Vec`
+    /// Used by `Snapshot::from_env` to populate the still-`Vec`
     /// `EvaluationGraph::auto_type_substitution` field.
     pub fn into_inner(self) -> Vec<(String, String)> {
         self.0
@@ -870,11 +870,11 @@ pub(crate) struct PreludeRegistries<'r, 't> {
     /// Prelude templates for SUB-TARGET resolution, each name bound by
     /// [`crate::name_env`] (NS-P1) — UNFILTERED by `EntityKind`, because a sub
     /// target may be an occurrence (`sub o = STLOutput(…)`). Read only via
-    /// [`find_template_with_prelude`].
+    /// [`resolve_sub_target_template`].
     pub(crate) sub_target: &'r HashMap<String, &'t TopologyTemplate>,
     /// Entity names THIS module declares itself (local only — never seeded
     /// from the prelude). Suppresses the prelude fallback for a name the
-    /// module owns; see property 1 of [`find_template_with_prelude`].
+    /// module owns; see property 1 of [`resolve_sub_target_template`].
     pub(crate) local_entity_names: &'r HashSet<String>,
 }
 
@@ -883,7 +883,7 @@ pub(crate) struct PreludeRegistries<'r, 't> {
 ///
 /// This is the compile-side single source of truth for the question "which
 /// template does `sub x = Foo(…)` / `sub x : Foo` point at?", mirroring
-/// `reify_eval::unfold::find_template_in_scope` on the eval side. Every
+/// `reify_eval::DefEnv::resolve_template` on the eval side. Every
 /// sub-target lookup in `entity.rs` routes through here so no resolver on the
 /// path is left module-only — the asymmetry that caused esc-5360-9, where one
 /// resolver gained the prelude fallback and its sibling did not.
@@ -929,7 +929,7 @@ pub(crate) struct PreludeRegistries<'r, 't> {
 ///    targets may be occurrences — `sub o = STLOutput(…)` is a shipped shape —
 ///    and a Structure-filtered registry leaves exactly that case broken
 ///    (MEASURED, task #5867).
-pub(crate) fn find_template_with_prelude<'a>(
+pub(crate) fn resolve_sub_target_template<'a>(
     templates: &'a [TopologyTemplate],
     prelude: &PreludeRegistries<'_, 'a>,
     name: &str,
@@ -1131,6 +1131,34 @@ pub struct SubComponentDecl {
     pub keyed_member_overrides: Vec<(reify_ir::MemberKey, Vec<(String, CompiledExpr)>)>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
+}
+
+impl SubComponentDecl {
+    /// The structure each instance of this sub is: a keyed sub's element
+    /// structure from `type_args[0]` (its `structure_name` is the `Keyed`
+    /// wrapper), otherwise `structure_name`. A `List<T>` sub already holds
+    /// `T` in `structure_name`.
+    pub fn element_structure_name(&self) -> &str {
+        match (self.keyed_members.is_empty(), self.type_args.first()) {
+            (false, Some(Type::StructureRef(name))) => name,
+            _ => &self.structure_name,
+        }
+    }
+
+    /// The Error that this sub's [`Self::element_structure_name`] names no
+    /// template its module can see, at check time and at eval time alike.
+    pub fn unknown_structure_diagnostic(&self) -> Diagnostic {
+        Diagnostic::error(format!(
+            "sub-component \"{}\" references unknown structure \"{}\"",
+            self.name,
+            self.element_structure_name()
+        ))
+        .with_code(DiagnosticCode::UnknownSubStructure)
+        .with_label(DiagnosticLabel::new(
+            self.span,
+            "references unknown structure",
+        ))
+    }
 }
 
 /// A compiled guarded group — a set of members/constraints active only when a guard condition is true.
@@ -1520,6 +1548,24 @@ pub enum CompiledGeometryOp {
         grid: GeomRef,
         args: Vec<(String, CompiledExpr)>,
     },
+}
+
+impl CompiledGeometryOp {
+    /// The op's named scalar arguments; a `Boolean` has none, only operands.
+    pub fn args(&self) -> &[(String, CompiledExpr)] {
+        match self {
+            CompiledGeometryOp::Boolean { .. } => &[],
+            CompiledGeometryOp::Primitive { args, .. }
+            | CompiledGeometryOp::Modify { args, .. }
+            | CompiledGeometryOp::Transform { args, .. }
+            | CompiledGeometryOp::Pattern { args, .. }
+            | CompiledGeometryOp::Sweep { args, .. }
+            | CompiledGeometryOp::Curve { args, .. }
+            | CompiledGeometryOp::Profile { args, .. }
+            | CompiledGeometryOp::Surface { args, .. }
+            | CompiledGeometryOp::Isosurface { args, .. } => args,
+        }
+    }
 }
 
 /// Primitive geometry kinds.
@@ -2303,6 +2349,80 @@ mod reflective_param_type_predicate_tests {
             !is_material_param_type(&Type::length()),
             "Length must be excluded"
         );
+    }
+}
+
+#[cfg(test)]
+mod sub_component_decl_tests {
+    use reify_core::{DiagnosticCode, ModulePath};
+
+    use super::{CompiledModule, SubComponentDecl};
+
+    const KEYED_AND_PLAIN: &str = "structure def Vent { param area : Length = 1mm }\n\
+        structure def Manifold {\n\
+            sub vents : Keyed<Vent> {\n\
+                \"intake\" => { area = 5mm }\n\
+            }\n\
+            sub spare = Vent()\n\
+        }\n";
+
+    fn compile(src: &str) -> CompiledModule {
+        let parsed = reify_syntax::parse(src, ModulePath::single("test"));
+        assert!(
+            parsed.errors.is_empty(),
+            "fixture must parse: {:?}",
+            parsed.errors
+        );
+        crate::compile(&parsed)
+    }
+
+    fn manifold_sub<'a>(module: &'a CompiledModule, name: &str) -> &'a SubComponentDecl {
+        module
+            .templates
+            .iter()
+            .find(|t| t.name == "Manifold")
+            .and_then(|t| t.sub_components.iter().find(|sub| sub.name == name))
+            .unwrap_or_else(|| panic!("fixture declares Manifold.{name}"))
+    }
+
+    #[test]
+    fn a_keyed_sub_names_its_element_structure_not_its_container() {
+        let module = compile(KEYED_AND_PLAIN);
+        let vents = manifold_sub(&module, "vents");
+
+        assert_ne!(
+            vents.structure_name, "Vent",
+            "the keyed sub's raw structure name must differ from its element's, else this \
+             test passes vacuously"
+        );
+        assert_eq!(vents.element_structure_name(), "Vent");
+    }
+
+    #[test]
+    fn a_plain_sub_names_its_own_structure() {
+        let module = compile(KEYED_AND_PLAIN);
+        let spare = manifold_sub(&module, "spare");
+
+        assert_eq!(spare.structure_name, "Vent");
+        assert_eq!(spare.element_structure_name(), "Vent");
+    }
+
+    #[test]
+    fn the_unknown_structure_diagnostic_is_coded_names_the_element_and_labels_the_sub() {
+        let module = compile(KEYED_AND_PLAIN);
+        let vents = manifold_sub(&module, "vents");
+
+        let diagnostic = vents.unknown_structure_diagnostic();
+
+        assert_eq!(diagnostic.code, Some(DiagnosticCode::UnknownSubStructure));
+        assert_eq!(
+            diagnostic.message,
+            "sub-component \"vents\" references unknown structure \"Vent\""
+        );
+        let [label] = diagnostic.labels.as_slice() else {
+            panic!("expected one label, got {:?}", diagnostic.labels);
+        };
+        assert_eq!(label.span, vents.span);
     }
 }
 

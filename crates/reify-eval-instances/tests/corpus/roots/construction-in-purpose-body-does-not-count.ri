@@ -1,0 +1,10 @@
+structure def Plate {
+    param t : Length = 3mm
+}
+purpose fits(subject : Structure) {
+    constraint subject.w > Plate().t
+}
+structure def Asm {
+    param w : Length = 5mm
+    purpose fits(self)
+}

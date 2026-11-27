@@ -1,0 +1,9 @@
+tests = "in the call form of a sub an argument is the caller's expression, so a bare name in it is the parent's, where the same assignment in the braces reads the instance's own."
+rule = "readings C13; PRD section 5.4 (\"In the call form of a sub ... an argument is the caller's expression\"); PRD D13 item 20."
+provenance = "the tracer's counter-example N6 (trace-braces-purposes-unknowns). The braces form is `bare-name-assignment-reading-itself-is-cycle`."
+needs = ["instance"]
+answer_basis = "traced. `t / 2` is evaluated in `Asm`, whose `t` is 10 mm: 5 mm."
+
+[[expect]]
+path = "Asm.p.t"
+value = "5 mm"

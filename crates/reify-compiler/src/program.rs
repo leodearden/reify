@@ -2,14 +2,14 @@
 //!
 //! [`compile_program`] compiles an entry module against the full stdlib plus
 //! its `#cfg`-satisfied user-import DAG and returns a [`CompiledProgram`]: the
-//! entry (with the direct imports' pub templates merged in), the direct import
-//! units, and the source of every compiled user module (PRD
-//! docs/prds/v0_6/resolution-unification.md §3.1). It upholds I1 (an
+//! entry, the units of its import tier (each direct import followed by what it
+//! re-exports through `pub import`, D-5 + D-7), and the source of every
+//! compiled user module (PRD docs/prds/v0_6/resolution-unification.md §3.1). It upholds I1 (an
 //! import-free entry compiles exactly as the single-file stdlib compile does),
 //! I2 (a broken import surfaces as a diagnostic on the entry, never as a
-//! dropped compile), I3 (a gated-out import is inert), I4 (`std.*` is never
-//! walked through the DAG) and I5 (the entry's template list is the 1-hop pub
-//! merge).
+//! dropped compile), I3 (a gated-out import is inert) and I4 (`std.*` is never
+//! walked through the DAG). The entry holds only its own declarations; an
+//! import's definitions stay in its unit, and `program_scope` binds them.
 
 use std::path::{Path, PathBuf};
 
@@ -19,19 +19,30 @@ use reify_ir::ConstraintChecker;
 use crate::CompiledModule;
 use crate::cfg::CfgSet;
 use crate::compile_builder::pre_pass::{ExpectedPathOrigin, attach_module_path_diag};
-use crate::module_dag::{
-    ModuleDag, ModuleResolver, ModuleSource, entry_module_name, merge_imported_pub_templates,
-};
+use crate::module_dag::{ModuleDag, ModuleResolver, ModuleSource, entry_module_name};
 
-/// One direct import of a program's entry, compiled.
+/// One module of a program entry's import tier, compiled.
 #[derive(Debug, Clone)]
 pub struct CompiledImportUnit {
-    /// The dotted path the entry imported it by.
+    /// The dotted path that imports it: the entry's own import, or the
+    /// re-exporting `pub import`. It equals the module key.
     pub import_path: String,
+    /// How the entry reaches it.
+    pub reach: ImportReach,
     /// The compiled module.
     pub module: CompiledModule,
     /// The file it was compiled from; `None` for an embedded-stdlib module.
     pub origin: Option<PathBuf>,
+}
+
+/// How a program's entry reaches one of its import units.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImportReach {
+    /// The entry imports it.
+    Direct,
+    /// Reached only through a direct import's chain of `pub import` edges
+    /// (resolution-unification D-7).
+    ReExported,
 }
 
 /// A compiled program: an entry module plus everything it was compiled with.
@@ -39,8 +50,10 @@ pub struct CompiledImportUnit {
 pub struct CompiledProgram {
     /// See [`Self::entry`].
     entry: CompiledModule,
-    /// The entry's followed, successfully compiled direct imports, in
-    /// declaration order, one per distinct import path.
+    /// The entry's import tier in precedence order, one unit per module: each
+    /// followed, successfully compiled direct import, in declaration order,
+    /// followed depth-first by the units it re-exports through `pub import`
+    /// edges.
     pub imports: Vec<CompiledImportUnit>,
     /// The source of every user module compiled into the program, in
     /// topological order (dependencies first), entry last.
@@ -48,9 +61,6 @@ pub struct CompiledProgram {
     /// Where among [`Self::entry`]'s diagnostics the re-homed copies of the
     /// compiled user modules' own diagnostics sit.
     rehomed: RehomedBlock,
-    /// How many of `entry.templates`, from the front, the entry's own compile
-    /// produced: a prefix of that list, which the I5 merge only appends to.
-    declared_templates: usize,
 }
 
 /// The entry's re-homed copies: one contiguous run of its diagnostics, the
@@ -77,34 +87,33 @@ impl RehomedBlock {
 }
 
 impl CompiledProgram {
-    /// Assemble a program, checking each of its invariants once up front; the
-    /// accessors check them again where they rely on them.
+    /// Assemble a program, checking its invariant once up front; the accessors
+    /// check it again where they rely on it.
     fn new(
         entry: CompiledModule,
         imports: Vec<CompiledImportUnit>,
         sources: Vec<ModuleSource>,
         rehomed: RehomedBlock,
-        declared_templates: usize,
     ) -> Self {
         let program = Self {
             entry,
             imports,
             sources,
             rehomed,
-            declared_templates,
         };
         let _ = program.rehomed.range_in(&program.entry.diagnostics);
-        let _ = program.entry_declared_templates();
         program
     }
 
-    /// The entry module, with the direct imports' pub templates merged into its
-    /// template list and every import failure attached to its diagnostics.
+    /// The entry module, holding only its own declarations, with every import
+    /// failure and definition collision attached to its diagnostics.
     pub fn entry(&self) -> &CompiledModule {
         &self.entry
     }
 
-    /// The same module as [`Self::entry`], handed back by value.
+    /// The same module as [`Self::entry`], handed back by value. It holds only
+    /// the entry's own declarations, so evaluating it resolves none of the
+    /// program's imports.
     pub fn into_entry(self) -> CompiledModule {
         self.entry
     }
@@ -132,22 +141,6 @@ impl CompiledProgram {
             .iter()
             .chain(&diagnostics[range.end..])
     }
-
-    /// The templates the entry's own compile produced, excluding the I5 interim
-    /// pub-template merge. Their spans index the entry's source, except an
-    /// `auto:` monomorph of a stdlib or imported generic, which keeps that
-    /// generic's spans.
-    pub fn entry_declared_templates(&self) -> &[crate::TopologyTemplate] {
-        let templates = &self.entry.templates;
-        assert!(
-            self.declared_templates <= templates.len(),
-            "CompiledProgram invariant: the entry's {} declared templates must be a prefix of \
-             its {} templates",
-            self.declared_templates,
-            templates.len(),
-        );
-        &templates[..self.declared_templates]
-    }
 }
 
 /// Compile the program rooted at `entry_path`, taking the entry's text from
@@ -169,7 +162,9 @@ impl CompiledProgram {
 /// entry too, attributed to its file (see `rehome_imported`);
 /// [`CompiledProgram::rehomed_from`] and
 /// [`CompiledProgram::entry_own_diagnostics`] tell those copies apart from the
-/// entry's own diagnostics.
+/// entry's own diagnostics. After the copies comes the program's definition
+/// collision report ([`crate::program_scope::collision_warnings`]), which is
+/// entry-own too.
 ///
 /// **Entry/import checker asymmetry.** Only the entry's compile receives
 /// `checker`; import units are compiled with the compile-time stub checker,
@@ -219,8 +214,8 @@ pub fn compile_program_with_parsed_entry(
     // full cached stdlib, and no `std.*` import is walked at any depth.
     let mut dag = ModuleDag::with_ambient_stdlib(cfg.clone());
 
-    // Computed once and shared by the compile loop, the prelude, the merge and
-    // the returned units, so they cannot drift.
+    // Computed once and shared by the compile loop, the prelude and the
+    // returned units, so they cannot drift.
     let followed: Vec<&str> = followed_direct_imports(parsed, &dag)
         .into_iter()
         .map(|import| import.path.as_str())
@@ -235,22 +230,20 @@ pub fn compile_program_with_parsed_entry(
         }
     }
 
-    // A satisfied-but-failed import is absent from `dag.modules`; `filter_map`
+    // The entry's import tier (D-5, D-7), shared by the prelude and the
+    // returned units so check and eval see the same modules. A
+    // satisfied-but-failed import is absent from `dag.modules`; `filter_map`
     // skips it (its failure is already collected).
-    let compiled_imports: Vec<(&str, &CompiledModule)> = followed
+    let visible = dag.visible_imports(&followed);
+    let import_refs: Vec<&CompiledModule> = visible
         .iter()
-        .filter_map(|path| dag.modules.get(*path).map(|module| (*path, module)))
+        .filter_map(|path| dag.modules.get(path))
         .collect();
-    let import_refs: Vec<&CompiledModule> =
-        compiled_imports.iter().map(|(_, module)| *module).collect();
     let mut entry = crate::compile_with_stdlib_and_imports_checked(parsed, &import_refs, checker);
 
     attach_module_path_diag(&mut entry, parsed, ExpectedPathOrigin::FileLocation);
     entry.diagnostics.extend(import_error_diags);
     let rehomed = rehome_unit_diagnostics(&dag, &mut entry.diagnostics);
-    let entry_origin = entry.path.0.join(".");
-    let declared_templates = entry.templates.len();
-    merge_imported_pub_templates(&mut entry, &entry_origin, &compiled_imports);
 
     let mut sources: Vec<ModuleSource> = dag
         .topo_order
@@ -263,19 +256,28 @@ pub fn compile_program_with_parsed_entry(
         source: entry_source.to_string(),
     });
 
-    let imports: Vec<CompiledImportUnit> = followed
-        .iter()
+    let imports: Vec<CompiledImportUnit> = visible
+        .into_iter()
         .filter_map(|path| {
-            let origin = dag.source(path).map(|s| s.path.clone());
-            dag.modules.remove(*path).map(|module| CompiledImportUnit {
-                import_path: path.to_string(),
+            let origin = dag.source(&path).map(|s| s.path.clone());
+            let reach = if followed.contains(&path.as_str()) {
+                ImportReach::Direct
+            } else {
+                ImportReach::ReExported
+            };
+            dag.modules.remove(&path).map(|module| CompiledImportUnit {
+                import_path: path,
+                reach,
                 module,
                 origin,
             })
         })
         .collect();
 
-    CompiledProgram::new(entry, imports, sources, rehomed, declared_templates)
+    let mut program = CompiledProgram::new(entry, imports, sources, rehomed);
+    let collisions = crate::program_scope::collision_warnings(&program);
+    program.entry.diagnostics.extend(collisions);
+    program
 }
 
 /// True iff compiling `parsed` as a program entry under `cfg` follows at least
@@ -487,38 +489,6 @@ mod tests {
             Vec::new(),
             Vec::new(),
             rehomed_block(len + 1, &["a"]),
-            1,
         );
-    }
-
-    #[test]
-    #[should_panic(
-        expected = "CompiledProgram invariant: the entry's 2 declared templates must be \
-                    a prefix of its 1 templates"
-    )]
-    fn compiled_program_new_rejects_a_declared_prefix_longer_than_the_templates() {
-        let program = compile_one_template_entry();
-
-        let _ = CompiledProgram::new(
-            program.entry,
-            Vec::new(),
-            Vec::new(),
-            rehomed_block(0, &[]),
-            2,
-        );
-    }
-
-    /// A shrunk `entry.templates` below the declared prefix gets a panic naming
-    /// the invariant and both counts, not a bare slice-index panic.
-    #[test]
-    #[should_panic(
-        expected = "CompiledProgram invariant: the entry's 1 declared templates must be \
-                    a prefix of its 0 templates"
-    )]
-    fn entry_declared_templates_names_a_shrunk_template_list() {
-        let mut program = compile_one_template_entry();
-        program.entry.templates.clear();
-
-        let _ = program.entry_declared_templates();
     }
 }

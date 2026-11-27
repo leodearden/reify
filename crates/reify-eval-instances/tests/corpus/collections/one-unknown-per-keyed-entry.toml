@@ -1,0 +1,25 @@
+tests = "`auto` written for each entry of a keyed collection gives one unknown per entry, owned by the declaring instance."
+rule = "decision 5 (for a collection's elements); Part 6.3 table (keyed entry); Part 5 (keys carry their arguments); path text for keys"
+provenance = "design Part 14 decision 5 (model in words: \"Per element: 6 and 3. One shared unknown: infeasible\"), written here with keys because the list form waits for task 5482; Part 6.3 table"
+needs = ["instance", "collection", "unknown", "solve-forced"]
+answer_basis = "stated: decision 5, 6 and 3 per element. Trace: a = 2b and a + b = 9 mm give b = 3 mm, a = 6 mm, the only solution. Both unknowns are `Manifold`'s, the writer's (decision 5), and the two constraints are `Manifold`'s own, so they bear. The entry pins the parameters, not the unknowns' path text (that is `keyed-entry-autos-have-distinct-paths`)."
+today = "both entries undefined and both constraints INDETERMINATE (run, `p3.ri`)."
+
+[candidates]
+note = "A reading that left the entries at `Vent`'s default would take 1 mm; one shared unknown has no feasible value. Only 6 mm with 3 mm satisfies both constraints, whatever order the pairs are tried in."
+
+[[candidates.unknown]]
+path = "Manifold/auto[vents[\"a\"].w]"
+values = ["1 mm", "3 mm", "6 mm"]
+
+[[candidates.unknown]]
+path = "Manifold/auto[vents[\"b\"].w]"
+values = ["1 mm", "6 mm", "3 mm"]
+
+[[expect]]
+path = "Manifold.vents[\"a\"].w"
+value = "6 mm"
+
+[[expect]]
+path = "Manifold.vents[\"b\"].w"
+value = "3 mm"

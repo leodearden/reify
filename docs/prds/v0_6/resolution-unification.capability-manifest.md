@@ -194,6 +194,9 @@ Cross-PRD notes:
   importer. λ keeps 5387's acceptance tests (correct-syntax fixtures);
   non-pub invisibility is the rejection half, built by θ/ι's
   visibility-filtered DefEnv and observed by λ's tests.
+  *Corrected 2026-11-23, task #10453:* the compile side resolves `E.V` with
+  ambient import visibility before DefEnv's D-5 filter applies, so the
+  rejection is not built upstream; λ both builds and observes it (PRD §8 λ).
 - **unit-alias-trait-crossing** (#12) → PASS *(probe)*. Verified split:
   `pub unit fortnight : Time = 1209600.0` crosses at **check** (satisfied)
   but fails at **eval** (`error: unknown unit: fortnight`) — the per-kind

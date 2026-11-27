@@ -17,7 +17,7 @@
 //! 1. **Arity.** The fixture compiles with ZERO Error-severity diagnostics —
 //!    i.e. every documented form is accepted AT THE ARITY WRITTEN, *for the
 //!    names the compiler resolves*. See "What is NOT established" below: this
-//!    is an arity property, not a type-check.
+//!    is an arity property, and a type-check only where a slot exists.
 //! 2. **Name existence, fixture → compiler.** Every call name in the fixture is
 //!    a real entry in the compiler's own registries (`GEOMETRY_FUNCTION_NAMES` /
 //!    `GEOMETRY_TOPOLOGY_SELECTOR_NAMES`). This is NOT implied by (1): an
@@ -46,14 +46,17 @@
 //!
 //! # What is NOT established
 //!
-//! - **Argument dimension/type.** Only arity is enforced for these ops.
-//!   Mutation-tested: `extrude(prof, 5)`, `rotate(solid, 0,0,1, 90mm)` and
-//!   `linear_pattern(solid, 1mm,0mm,0mm, 3mm, 5)` all leave this suite GREEN.
-//!   `builtin_signatures.rs`'s checkable-arg-slot table covers topology
-//!   selectors and `generate` only — no Key Geometry Operation has a checked
-//!   slot. The chunk's "positions/lengths take a `Length`; angles take an
-//!   `Angle`; direction/axis/normal components and counts are plain numbers"
-//!   line is therefore a convention this fixture FOLLOWS but nothing enforces.
+//! - **Argument dimension/type of UNSLOTTED operands.**
+//!   `builtin_signatures.rs`'s checkable-arg-slot table checks the slotted
+//!   operands at compile time — lengths, angles, and the Direction axis/normal
+//!   of rotate/3, rotate_around/4 and mirror/3 — so a wrong type there is an
+//!   `ArgTypeMismatch` Error that reds (1). Pattern direction/axis components
+//!   and counts have no slot. Mutation-tested:
+//!   `linear_pattern(solid, 1mm, 0mm, 0mm, 3, 5mm)` and
+//!   `circular_pattern(solid, 0mm, 0mm, 0mm, 0mm, 0mm, 1mm, 6, 360deg)` both
+//!   leave this suite GREEN. The chunk's "positions/lengths take a `Length`;
+//!   angles take an `Angle`; direction/axis/normal components and counts are
+//!   plain numbers" line is therefore enforced only where a slot exists.
 //! - **Argument order / semantics.** A permutation of two same-dimension
 //!   arguments satisfies all four properties above.
 //!
@@ -129,9 +132,10 @@ fn stdlib_chunk_geometry_ops_compile_with_stdlib_no_errors() {
 /// documented ops. Exact-match and deliberately minimal: these are datum/value
 /// constructors, NOT entries in stdlib.md's "Key Geometry Operations"/"Curves"
 /// table, and none of them is reachable from an integration test through an
-/// exported name slice (the `point3`/`plane_xy`/`axis_z`/`orient_identity`
+/// exported name slice (the `point3`/`dir`/`plane_xy`/`axis_z`/`orient_identity`
 /// datum constructors are resolved by an arg-aware resolver with no exported
-/// slice at all). Widening more `pub use` exports purely to satisfy a test
+/// slice at all). `dir` builds the Direction axis and normal that rotate/3,
+/// rotate_around/4 and mirror/3 take. Widening more `pub use` exports purely to satisfy a test
 /// would enlarge reify-compiler's public API for names that are not under
 /// review here. Because the allowlist is exact-match, a typo'd scaffold call
 /// (`point33`) is still reported.
@@ -144,13 +148,20 @@ fn stdlib_chunk_geometry_ops_compile_with_stdlib_no_errors() {
 /// precisely because it adds two names to this exact-match allowlist instead of
 /// four — every entry here is a name the fixture guard stops checking, so the
 /// smallest sufficient extension is the right one.
+///
+/// `dir` builds the `Direction` the sweeps take since direction-typing ι-b
+/// (`revolve`, `revolve_full`, `extrude_infinite`,
+/// `extrude_infinite_symmetric`); the revolve Axis form reuses `axis_z` rather
+/// than adding another axis constructor.
 const SCAFFOLD_CTORS: &[&str] = &[
     "point3",
+    "dir",
     "plane_xy",
     "axis_z",
     "orient_identity",
     "transform3_identity",
     "affine_scale",
+    "dir",
 ];
 
 /// Is `name` a call the compiler recognises for the purposes of this guard?
@@ -1028,7 +1039,7 @@ fn geometry_call_forms_records_distinct_arities_of_the_same_name() {
     let source = r#"
 structure def TwoArities {
     let solid = box(10mm, 10mm, 10mm)
-    let r5 = rotate(solid, 0, 0, 1, 90deg)
+    let r3 = rotate(solid, dir(0, 0, 1), 90deg)
     let r2 = rotate(solid, orient_identity())
 }
 "#;
@@ -1037,9 +1048,10 @@ structure def TwoArities {
         call_forms(source, "two-arities snippet"),
         vec![
             ("box".to_string(), 3),
+            ("dir".to_string(), 3),
             ("orient_identity".to_string(), 0),
             ("rotate".to_string(), 2),
-            ("rotate".to_string(), 5),
+            ("rotate".to_string(), 3),
         ],
         "two calls to the same name at different arities must both survive as distinct forms, \
          not collapse to one"
@@ -1048,6 +1060,7 @@ structure def TwoArities {
         geometry_call_names(source, "two-arities snippet"),
         vec![
             "box".to_string(),
+            "dir".to_string(),
             "orient_identity".to_string(),
             "rotate".to_string(),
         ],
@@ -1138,7 +1151,10 @@ structure def SortedAndDeduped {
 // name-only guard cannot see this — `rotate` and `translate` are both real
 // names, exercised by the fixture, just not at THAT arity. Each test feeds a
 // SYNTHETIC markdown snippet — never editing stdlib.md or the fixture — but
-// checks it against the REAL fixture source via `read_fixture`.
+// checks it against the REAL fixture source via `read_fixture`. Since
+// direction-typing ι-a made `rotate(geo, axis, angle)` real and mirrored, the
+// replay documents the retired `rotate(geo, ax, ay, az, angle)` in its place:
+// the same shape, a real name at an arity the fixture never calls.
 
 /// Every documented form in `markdown` with no matching call in
 /// `fixture_source` — the doc → fixture direction at FORM granularity, by
@@ -1158,7 +1174,7 @@ fn unmirrored_documented_forms_replays_the_printer_v01_regression() {
     let markdown = r#"
 ## Key Geometry Operations
 
-**Transform:** `translate(geo, vector)`, `rotate(geo, axis, angle)`, `scale(geo, factor)`
+**Transform:** `translate(geo, vector)`, `rotate(geo, ax, ay, az, angle)`, `scale(geo, factor)`
 "#;
 
     assert_eq!(
@@ -1170,15 +1186,15 @@ fn unmirrored_documented_forms_replays_the_printer_v01_regression() {
         vec![
             DocForm {
                 name: "rotate".to_string(),
-                arity: Arity::Exact(3),
+                arity: Arity::Exact(5),
             },
             DocForm {
                 name: "translate".to_string(),
                 arity: Arity::Exact(2),
             },
         ],
-        "this is the reviewer's exact repro of the printer_v01 regression (task 5347): \
-         rotate/3 and translate/2 must be reported unmirrored even though `rotate` and \
+        "the shape of the printer_v01 regression (task 5347): \
+         rotate/5 and translate/2 must be reported unmirrored even though `rotate` and \
          `translate` are both real, fixture-exercised names — scale/2 IS mirrored and must \
          NOT be reported, proving this is not merely the name-only guard in disguise"
     );
@@ -1189,7 +1205,7 @@ fn unmirrored_documented_forms_reports_nothing_for_the_corrected_row() {
     let markdown = r#"
 ## Key Geometry Operations
 
-**Transform:** `translate(geo, dx, dy, dz)`, `rotate(geo, ax, ay, az, angle)` or `rotate(geo, orientation)`, `scale(geo, factor)`
+**Transform:** `translate(geo, dx, dy, dz)`, `rotate(geo, axis, angle)` or `rotate(geo, orientation)`, `scale(geo, factor)`
 "#;
 
     assert_eq!(
@@ -1277,7 +1293,7 @@ fn assert_form_scan_not_vacuous(documented: &[DocForm]) {
     for sentinel in [
         DocForm {
             name: "rotate".to_string(),
-            arity: Arity::Exact(5),
+            arity: Arity::Exact(3),
         },
         DocForm {
             name: "rotate".to_string(),
@@ -1289,7 +1305,7 @@ fn assert_form_scan_not_vacuous(documented: &[DocForm]) {
         },
         DocForm {
             name: "mirror".to_string(),
-            arity: Arity::Exact(7),
+            arity: Arity::Exact(3),
         },
         DocForm {
             name: "circular_pattern".to_string(),

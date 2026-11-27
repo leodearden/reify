@@ -1,0 +1,8 @@
+tests = "A file whose only definitions are tests has no default root."
+rule = "rule D (clause \"a `@test` definition is not a default root\"; the fallback applies only to \"a file that has definitions other than tests\")"
+provenance = "design Part 15.1 rule D; decision 12 (\"A file with no root\"). design decision 12 list (a file with no root); rule D. logic-2 N17(a)."
+needs = ["roots"]
+answer_basis = "stated: rule D. What `check` prints for it is the session's (decision 12)."
+
+[[expect]]
+roots = []

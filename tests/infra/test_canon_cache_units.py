@@ -2,30 +2,40 @@
 """
 test_canon_cache_units.py — stdlib unittest for scripts/canon_cache.py, the
 cache half of the canonical-build-path primitive (dark-factory
-plans/canonical-build-path-shared-cache-prd.md C4-C6): the per-policy cargo
-and command environment, the host.toml cache settings, real-sccache
-resolution and the fallback directory.
+plans/canonical-build-path-shared-cache-prd.md C4-C7): C4's per-policy cargo
+and command environment table and its CARGO_HOME pin, the environment's server
+invariant, the host.toml cache settings, real-sccache resolution with the
+marker reader and PATH walk canon_run shares, the fallback directory, the
+guard, the backend choice and status's store check, the private session
+(start, start-up retry, its three waits, the stale session-file sweep,
+teardown), the build_cache writer, supervise's measurement and signal policy,
+and exit_like.
 
-No case enters a mount namespace or starts a real sccache.
+The store link itself (probe, relay, watchdog) lives in scripts/canon_store.py
+since task 10441; its cases are in test_canon_store_units.py.
+
+Every session runs canon_cache_fixture's fake sccache; no case enters a mount
+namespace or starts a real sccache.
 
 WHAT RUNS THIS: run_all.sh discovers `test_*.sh` only, so the discovered member
 is the thin wrapper tests/infra/test_canon_cache_units.sh.
 """
 
-import base64
 import dataclasses
 import fcntl
-import http.client
+import itertools
 import json
 import os
 import random
 import re
+import resource
 import shutil
 import signal
-import socket
+import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -33,9 +43,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import canon_cache_fixture as cfx  # noqa: E402  (imported after sys.path manipulation)
 import canon_run_fixture as fx  # noqa: E402
+import canon_store_fixture as sfx  # noqa: E402
 
 sys.path.insert(0, str(fx.REPO_ROOT / "scripts"))
 import canon_cache  # noqa: E402
+import canon_store  # noqa: E402
 from verify_events_lib import read_events  # noqa: E402
 
 ORCHESTRATOR_CONFIG = fx.REPO_ROOT / "dark-factory-orchestrator.yaml"
@@ -72,6 +84,25 @@ def scratch(test):
     tmp = tempfile.TemporaryDirectory(prefix="test-canon-cache-units-")
     test.addCleanup(tmp.cleanup)
     return os.path.realpath(tmp.name)
+
+
+HANG_GUARD = 60.0
+
+
+def wait_until(test, predicate, what):
+    """Poll until predicate holds; past HANG_GUARD fail naming what never happened (a hang guard, not a bound)."""
+    deadline = time.monotonic() + HANG_GUARD
+    while not predicate():
+        if time.monotonic() > deadline:
+            test.fail(f"{what}: not within the {HANG_GUARD:.0f}s hang guard")
+        time.sleep(0.02)
+
+
+def assert_one_line_naming(test, error, path):
+    """A refusal a caller can print as one line, naming the path it is about."""
+    message = str(error)
+    test.assertNotIn("\n", message)
+    test.assertIn(path, message)
 
 
 def executable(directory, name, text):
@@ -174,6 +205,29 @@ class ForCommand(CacheEnvironmentCase):
         self.assertFalse(self.environment(canon_cache.Policy.INCREMENTAL).uses_guard)
 
 
+class ServerInvariant(CacheEnvironmentCase):
+    """A server address exactly when the policy runs sccache: refused at construction, None at decode."""
+
+    def test_a_mismatched_server_is_refused_naming_the_policy(self):
+        for policy, server in (
+            (canon_cache.Policy.SHARED, None),
+            (canon_cache.Policy.MIXED, None),
+            (canon_cache.Policy.INCREMENTAL, self.SERVER),
+        ):
+            with self.subTest(policy=policy):
+                with self.assertRaises(ValueError) as refused:
+                    canon_cache.CacheEnvironment(policy, server)
+                assert_one_line_naming(self, refused.exception, "server")
+                self.assertIn(policy.value, str(refused.exception))
+
+    def test_uses_guard_needs_no_server(self):
+        """The PATH probe's seam: which policies put the guard first, before any server exists."""
+        self.assertEqual(
+            {policy: canon_cache.uses_guard(policy) for policy in canon_cache.Policy},
+            {canon_cache.Policy.SHARED: True, canon_cache.Policy.MIXED: True, canon_cache.Policy.INCREMENTAL: False},
+        )
+
+
 class CacheEnvironmentRecord(CacheEnvironmentCase):
     def test_round_trips_through_json(self):
         for policy in canon_cache.Policy:
@@ -193,6 +247,8 @@ class CacheEnvironmentRecord(CacheEnvironmentCase):
             dict(good, server="x"),
             dict(good, server=dict(good["server"], socket=7)),
             {key: value for key, value in good.items() if key != "server"},
+            dict(good, server=None),
+            {"policy": "incremental", "server": good["server"]},
         ):
             with self.subTest(value=value):
                 self.assertIsNone(canon_cache.CacheEnvironment.from_record(value))
@@ -285,6 +341,59 @@ class ResolveRealSccache(unittest.TestCase):
         self.assertIsNone(self.resolve())
 
 
+class CarriesMarker(unittest.TestCase):
+    """The one marker reader: the marker within a file's first MARKER_WINDOW bytes."""
+
+    MARKER = b"reify-canon-test-marker"
+
+    def setUp(self):
+        self.tmp = scratch(self)
+
+    def file_with(self, data):
+        path = Path(self.tmp, "candidate")
+        path.write_bytes(data)
+        return str(path)
+
+    def test_a_marker_inside_the_first_1024_bytes_is_carried(self):
+        for data in (b"#!/bin/sh\n# " + self.MARKER + b"\n", b"x" * (1024 - len(self.MARKER)) + self.MARKER):
+            with self.subTest(at=data.index(self.MARKER)):
+                self.assertTrue(canon_cache.carries_marker(self.file_with(data), self.MARKER))
+
+    def test_a_marker_starting_after_byte_1024_is_not(self):
+        self.assertFalse(canon_cache.carries_marker(self.file_with(b"x" * 1024 + self.MARKER), self.MARKER))
+
+    def test_a_missing_path_or_a_directory_does_not_carry_it(self):
+        self.assertFalse(canon_cache.carries_marker(os.path.join(self.tmp, "missing"), self.MARKER))
+        self.assertFalse(canon_cache.carries_marker(self.tmp, self.MARKER))
+
+
+class ExecutablesNamed(unittest.TestCase):
+    """The one PATH walk: every <entry>/<name> that is an executable regular file, in PATH order."""
+
+    def setUp(self):
+        self.tmp = scratch(self)
+        self.a, self.b, self.c, self.d = (os.path.join(self.tmp, name) for name in "abcd")
+        executable(self.a, "cargo", REAL_LINE)
+        executable(self.a, "sccache", REAL_LINE)
+        Path(self.b).mkdir()
+        Path(self.b, "cargo").write_text(REAL_LINE)
+        executable(self.c, "cargo", REAL_LINE)
+        Path(self.d, "cargo").mkdir(parents=True)
+        self.path = ":".join((self.a, "", self.b, self.c, self.d))
+
+    def test_executable_regular_files_in_path_order(self):
+        self.assertEqual(
+            canon_cache.executables_named(self.path, "cargo"),
+            [os.path.join(self.a, "cargo"), os.path.join(self.c, "cargo")],
+        )
+
+    def test_only_the_name_asked_for(self):
+        self.assertEqual(canon_cache.executables_named(self.path, "sccache"), [os.path.join(self.a, "sccache")])
+
+    def test_an_empty_path_names_none(self):
+        self.assertEqual(canon_cache.executables_named("", "cargo"), [])
+
+
 class ChooseFallbackDir(unittest.TestCase):
     def setUp(self):
         self.tmp = scratch(self)
@@ -308,6 +417,60 @@ class ChooseFallbackDir(unittest.TestCase):
         chosen = canon_cache.choose_fallback_dir(self.settings(str(parent / "fallback")), tmp_root=self.tmp)
         self.assertEqual(chosen, os.path.join(self.tmp, f"reify-canon-fallback-{os.getuid()}"))
         self.assertTrue(os.path.isdir(chosen))
+
+    def settings_with_an_unusable_configured_dir(self):
+        """A fallback_dir under a regular file, so the per-user directory under self.tmp is the one chosen."""
+        blocker = Path(self.tmp, "configured-file")
+        blocker.write_text("")
+        return self.settings(str(blocker / "fallback"))
+
+    def per_user(self):
+        return os.path.join(self.tmp, f"reify-canon-fallback-{os.getuid()}")
+
+    def assert_per_user_refused(self):
+        with self.assertRaises(canon_cache.CacheSessionError) as refused:
+            canon_cache.choose_fallback_dir(self.settings_with_an_unusable_configured_dir(), tmp_root=self.tmp)
+        assert_one_line_naming(self, refused.exception, self.per_user())
+
+    def test_a_per_user_directory_writable_by_others_is_refused(self):
+        os.mkdir(self.per_user())
+        for mode in (0o777, 0o770):
+            with self.subTest(mode=oct(mode)):
+                os.chmod(self.per_user(), mode)
+                self.assert_per_user_refused()
+
+    def test_a_per_user_path_that_is_a_symlink_is_refused(self):
+        private = Path(self.tmp, "private")
+        private.mkdir()
+        private.chmod(0o700)
+        os.symlink(private, self.per_user())
+        self.assert_per_user_refused()
+
+    def test_a_directory_closed_to_writes_is_refused_only_when_another_user_owns_it(self):
+        """0o755 passes the mode check, so ownership alone keeps out another user's planted entries."""
+        shared = Path(self.tmp, "shared")
+        shared.mkdir()
+        shared.chmod(0o755)
+        info, uid = os.lstat(shared), os.getuid()
+        self.assertEqual(canon_cache.private_dir_problem(info, uid), "")
+        problem = canon_cache.private_dir_problem(info, uid + 1)
+        self.assertIn(f"uid {uid}", problem)
+        self.assertIn(f"not {uid + 1}", problem)
+
+    def test_an_existing_private_per_user_directory_is_used(self):
+        os.mkdir(self.per_user())
+        os.chmod(self.per_user(), 0o700)
+        chosen = canon_cache.choose_fallback_dir(self.settings_with_an_unusable_configured_dir(), tmp_root=self.tmp)
+        self.assertEqual(chosen, self.per_user())
+
+    def test_a_tmp_root_that_cannot_hold_the_directory_is_a_session_error(self):
+        """Regular files in the way, so neither directory can be made even as root."""
+        configured_parent, tmp_root = Path(self.tmp, "configured-file"), Path(self.tmp, "tmp-root-file")
+        configured_parent.write_text("")
+        tmp_root.write_text("")
+        with self.assertRaises(canon_cache.CacheSessionError) as refused:
+            canon_cache.choose_fallback_dir(self.settings(str(configured_parent / "fallback")), tmp_root=str(tmp_root))
+        assert_one_line_naming(self, refused.exception, os.path.join(tmp_root, f"reify-canon-fallback-{os.getuid()}"))
 
 
 class Guard(unittest.TestCase):
@@ -426,60 +589,8 @@ class Guard(unittest.TestCase):
         self.assertFalse(os.path.exists(self.uncached))
 
     def test_guard_carries_the_marker_canon_cache_skips(self):
-        self.assertTrue(canon_cache.is_guard(str(GUARD)))
+        self.assertTrue(canon_cache.carries_marker(str(GUARD), canon_cache.GUARD_MARKER))
         self.assertEqual(sorted(os.listdir(GUARD.parent)), ["sccache"])
-
-
-FAST_KNOBS = dataclasses.replace(canon_cache.SessionKnobs(), probe_timeout=0.3)
-
-
-def store_settings(url, user="reify", password="hunter2"):
-    return canon_cache.CacheSettings(store_url=url, store_user=user, store_password=password)
-
-
-class StoreCase(unittest.TestCase):
-    def setUp(self):
-        self.store = cfx.FakeStore()
-        self.addCleanup(self.store.stop)
-        self.settings = store_settings(self.store.url)
-
-    def probe(self, settings=None, knobs=FAST_KNOBS, **kwargs):
-        return canon_cache.probe_store(settings or self.settings, knobs, **kwargs)
-
-
-class ProbeStore(StoreCase):
-    """C5's probe: GET <store_url>/.sccache_check, judged on the injected clock."""
-
-    def test_reachable_on_404_and_200(self):
-        for status in (404, 200):
-            with self.subTest(status=status):
-                self.store.check_status = status
-                self.assertTrue(self.probe())
-        self.assertEqual(self.store.requests[-1], ("GET", "/reify/.sccache_check"))
-
-    def test_sends_basic_auth(self):
-        self.probe()
-        expected = "Basic " + base64.b64encode(b"reify:hunter2").decode()
-        self.assertEqual(self.store.authorizations, [expected])
-
-    def test_unreachable_on_401(self):
-        self.store.set_mode("auth")
-        self.assertFalse(self.probe())
-
-    def test_unreachable_on_a_refused_port(self):
-        self.assertFalse(self.probe(store_settings(f"http://127.0.0.1:{cfx.closed_port()}/reify")))
-
-    def test_unreachable_when_the_store_never_answers(self):
-        self.store.set_mode("hang")
-        self.assertFalse(self.probe())
-
-    def test_unreachable_when_the_clock_says_the_answer_was_slow(self):
-        readings = iter((100.0, 100.0 + FAST_KNOBS.slow + 0.5))
-        self.assertFalse(self.probe(clock=lambda: next(readings)))
-
-    def test_reachable_when_the_clock_says_the_answer_was_quick(self):
-        readings = iter((100.0, 100.0 + FAST_KNOBS.slow - 0.5))
-        self.assertTrue(self.probe(clock=lambda: next(readings)))
 
 
 class ChooseBackend(unittest.TestCase):
@@ -496,201 +607,44 @@ class ChooseBackend(unittest.TestCase):
 
     def test_refusing_store_falls_back(self):
         self.assertEqual(
-            canon_cache.choose_backend(store_settings("http://s/r"), lambda: False),
+            canon_cache.choose_backend(canon_cache.CacheSettings(store_url="http://s/r"), lambda: False),
             (canon_cache.Backend.LOCAL_FALLBACK, canon_cache.Reason.STORE_UNREACHABLE),
         )
 
     def test_reachable_store_is_shared(self):
         self.assertEqual(
-            canon_cache.choose_backend(store_settings("http://s/r"), lambda: True),
+            canon_cache.choose_backend(canon_cache.CacheSettings(store_url="http://s/r"), lambda: True),
             (canon_cache.Backend.SHARED, canon_cache.Reason.NONE),
         )
 
 
-class RelayCase(StoreCase):
-    def setUp(self):
-        super().setUp()
-        self.relay = canon_cache.Relay("127.0.0.1", self.store.port)
-        self.relay.start()
-        self.addCleanup(self.relay.close)
-        self.relay_port = int(self.relay.endpoint.rsplit(":", 1)[1])
+class StoreReachable(unittest.TestCase):
+    """status's store check: None with no store configured, else what canon_store's probe says."""
 
-    def start_slow_transfer(self):
-        """A GET through the relay that has received SLOW_HEAD and waits for the rest."""
-        connection = http.client.HTTPConnection("127.0.0.1", self.relay_port, timeout=30)
-        self.addCleanup(connection.close)
-        connection.request("GET", "/slow/object")
-        response = connection.getresponse()
-        self.assertEqual(response.read(len(cfx.SLOW_HEAD)), cfx.SLOW_HEAD)
-        return response
+    def test_none_without_a_store_url(self):
+        self.assertIsNone(canon_cache.store_reachable(canon_cache.CacheSettings()))
 
-    def assert_cut_short(self, response):
-        received = 0
-        try:
-            while chunk := response.read1(65536):
-                received += len(chunk)
-        except (ConnectionResetError, http.client.IncompleteRead):
-            pass
-        self.assertLess(len(cfx.SLOW_HEAD) + received, cfx.SLOW_LENGTH)
+    def test_true_for_an_answering_store(self):
+        with sfx.FakeStore() as store:
+            self.assertIs(canon_cache.store_reachable(canon_cache.CacheSettings(store_url=store.url)), True)
+
+    def test_false_for_a_refused_port(self):
+        settings = canon_cache.CacheSettings(store_url=f"http://127.0.0.1:{sfx.closed_port()}/reify")
+        self.assertIs(canon_cache.store_reachable(settings), False)
 
 
-class Relay(RelayCase):
-    """C5's loopback relay: owned, cuttable, and holding its port until closed."""
+class CacheSettingsStore(unittest.TestCase):
+    def test_the_store_is_built_from_the_three_store_keys(self):
+        settings = canon_cache.CacheSettings(store_url="http://s:8080/r", store_user="u", store_password="p")
+        self.assertEqual(settings.store, canon_store.Store("http://s:8080/r", "u", "p"))
 
-    def test_endpoint_is_loopback(self):
-        self.assertEqual(self.relay.endpoint, f"http://127.0.0.1:{self.relay_port}")
+    def test_no_store_without_a_store_url(self):
+        self.assertIsNone(canon_cache.CacheSettings(store_user="u", store_password="p").store)
 
-    def test_get_through_the_relay_is_byte_for_byte_the_store_answer(self):
-        direct = cfx.raw_get(self.store.port, "/reify/object")
-        self.assertTrue(direct.startswith(b"HTTP/1.1 200"), direct)
-        self.assertEqual(cfx.raw_get(self.relay_port, "/reify/object"), direct)
-
-    def test_cut_resets_an_in_flight_transfer(self):
-        response = self.start_slow_transfer()
-        self.relay.cut()
-        self.store.release()
-        self.assert_cut_short(response)
-
-    def test_after_cut_new_connections_get_no_answer_and_the_port_stays_bound(self):
-        self.relay.cut()
-        self.assertEqual(cfx.raw_get(self.relay_port, "/reify/object"), b"")
-        self.assertFalse(cfx.can_bind(self.relay_port))
-
-    def test_close_releases_the_port(self):
-        self.relay.cut()
-        self.relay.close()
-        self.assertTrue(cfx.can_bind(self.relay_port))
-
-    def test_a_refusing_target_resets_the_client_and_still_cuts_and_closes(self):
-        relay = canon_cache.Relay("127.0.0.1", cfx.closed_port())
-        relay.start()
-        self.addCleanup(relay.close)
-        self.assertEqual(cfx.raw_get(relay.port, "/reify/object"), b"")
-        relay.cut()
-        relay.close()
-        self.assertTrue(cfx.can_bind(relay.port))
-
-    def test_an_unresolvable_store_fails_at_construction(self):
-        with self.assertRaises(OSError):
-            canon_cache.Relay(UNRESOLVABLE_HOST, 80)
-
-
-class RelayOutOfDescriptors(StoreCase):
-    """A relay that cannot get a descriptor resets what it holds and never strands a caller."""
-
-    def run_case(self, case):
-        runner = cfx.write_relay_fd_runner(scratch(self))
-        completed = subprocess.run(
-            [sys.executable, "-I", runner, str(fx.REPO_ROOT / "scripts"), str(self.store.port), case],
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        self.assertNotIn("Traceback", completed.stderr)
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-        return json.loads(completed.stdout)
-
-    def test_a_client_whose_upstream_gets_no_descriptor_is_reset_and_the_relay_serves_on(self):
-        self.assertEqual(self.run_case("accept"), {"first": "reset", "second": 200, "closed": True})
-
-    def test_a_loop_that_cannot_start_still_lets_cut_and_close_return_and_refuses(self):
-        self.assertEqual(self.run_case("loop"), {"cut": True, "refused": True, "closed": True})
-
-    def test_a_client_that_cannot_be_accepted_does_not_spin_the_relay_and_is_served_later(self):
-        """Processor time, not wall time: the relay thread backs off instead of re-selecting a readable listener."""
-        verdict = self.run_case("backoff")
-        self.assertLess(verdict.pop("cpu_secs"), 0.25)
-        self.assertEqual(verdict, {"served": 200, "closed": True})
-
-
-class FakeClock:
-    def __init__(self):
-        self.now = 1000.0
-
-    def __call__(self):
-        return self.now
-
-
-class ScriptedLink:
-    """A scripted probe ('ok', 'slow' or 'fail' per call), a recording relay, and an instant wait."""
-
-    def __init__(self, test, script):
-        self.clock = FakeClock()
-        self.script = list(script)
-        self.probes = 0
-        self.cuts = 0
-        self.watchdog = canon_cache.Watchdog(self.probe, self, test.knobs, self.clock, self.wait)
-
-    def probe(self):
-        outcome = self.script[self.probes]
-        self.probes += 1
-        if outcome == "slow":
-            self.clock.now += FAST_KNOBS.slow + 1.0
-        return outcome != "fail"
-
-    def wait(self, stopped, seconds):
-        if stopped.is_set() or self.probes == len(self.script):
-            return True
-        self.clock.now += seconds
-        return False
-
-    def cut(self):
-        self.cuts += 1
-
-    def run(self):
-        self.watchdog.start()
-        self.watchdog.join()
-        return self.watchdog
-
-
-class Watchdog(unittest.TestCase):
-    """Boundary row 7's trigger: two consecutive failed or slow probes cut the relay."""
-
-    knobs = FAST_KNOBS
-
-    def test_no_two_consecutive_failures_do_not_cut(self):
-        link = ScriptedLink(self, ["ok", "slow", "ok", "fail"])
-        self.assertFalse(link.run().lost)
-        self.assertEqual((link.probes, link.cuts), (4, 0))
-
-    def test_fail_then_slow_cuts_after_the_third_probe(self):
-        link = ScriptedLink(self, ["ok", "fail", "slow"])
-        self.assertTrue(link.run().lost)
-        self.assertEqual((link.probes, link.cuts), (3, 1))
-
-    def test_no_probe_after_the_cut(self):
-        link = ScriptedLink(self, ["fail", "fail", "ok", "ok"])
-        self.assertTrue(link.run().lost)
-        self.assertEqual((link.probes, link.cuts), (2, 1))
-
-    def test_stop_ends_the_thread_without_loss(self):
-        link = ScriptedLink(self, [])
-        watchdog = canon_cache.Watchdog(link.probe, link, self.knobs, link.clock)
-        watchdog.start()
-        watchdog.stop()
-        self.assertFalse(watchdog.lost)
-        self.assertEqual((link.probes, link.cuts), (0, 0))
-
-
-class StoreLost(RelayCase):
-    """Row 7 against the real relay: a store that stops answering mid-transfer is cut."""
-
-    def test_two_failed_probes_cut_the_relay_and_reset_the_transfer(self):
-        response = self.start_slow_transfer()
-        self.store.set_mode("hang")
-        probes = []
-
-        def probe():
-            probes.append(canon_cache.probe_store(self.settings, FAST_KNOBS))
-            return probes[-1]
-
-        watchdog = canon_cache.Watchdog(probe, self.relay, FAST_KNOBS, wait=lambda stopped, seconds: False)
-        watchdog.start()
-        watchdog.join()
-        self.assertTrue(watchdog.lost)
-        self.assertEqual(probes, [False, False])
-        self.store.release()
-        self.assert_cut_short(response)
+    def test_a_store_url_the_store_refuses_is_refused_at_construction(self):
+        with self.assertRaises(ValueError) as caught:
+            canon_cache.CacheSettings(store_url="ftp://x")
+        self.assertIn(canon_store.store_url_problem("ftp://x"), str(caught.exception))
 
 
 STATS = {"hits": {"Rust": 3, "C/C++": 2}, "misses": {"Rust": 1, "C/C++": 1}, "write_errors": 1}
@@ -707,9 +661,7 @@ class SessionCase(unittest.TestCase):
         self.build = os.path.join(self.tmp, "build")
         os.mkdir(self.build)
         self.lock = os.path.join(self.tmp, "start.lock")
-        self.knobs = dataclasses.replace(
-            canon_cache.SessionKnobs(), start_lock=self.lock, tmp_root=self.tmp, socket_wait=60.0
-        )
+        self.knobs = dataclasses.replace(canon_cache.SessionKnobs(), start_lock=self.lock, tmp_root=self.tmp)
         self.delays = []
         self.socket = os.path.join(self.build, f".reify-sccache.{os.getpid()}.sock")
         self.env = {
@@ -728,13 +680,16 @@ class SessionCase(unittest.TestCase):
             fallback_cap="3G",
         )
 
-    def open(self, plan, *, settings=None, reachable=True, policy=canon_cache.Policy.SHARED):
+    def open(
+        self, plan, *, settings=None, reachable=True, policy=canon_cache.Policy.SHARED, sccache=None,
+        canon_build_dir=None,
+    ):
         cfx.set_plan(self.fake, plan)
         session = canon_cache.open_session(
             policy,
             settings or self.settings,
-            canon_build_dir=self.build,
-            sccache=self.sccache,
+            canon_build_dir=canon_build_dir or self.build,
+            sccache=sccache or self.sccache,
             knobs=self.knobs,
             env=self.env,
             probe=lambda: reachable,
@@ -858,6 +813,38 @@ class OpenSession(SessionCase):
             self.open("ok", policy=canon_cache.Policy.INCREMENTAL)
         self.assertEqual(self.servers(), [])
 
+    def test_a_sccache_that_is_not_executable_is_refused_before_any_start_attempt(self):
+        """With or without /usr/bin/setpriv: no store retry, and the refusal names the real cause."""
+        plain = Path(self.tmp, "plain-file-sccache")
+        plain.write_text("#!/bin/sh\nexit 0\n")
+        plain.chmod(0o644)
+        for sccache in (str(plain), os.path.join(self.tmp, "no-such-sccache")):
+            with self.subTest(sccache=sccache):
+                self.delays.clear()
+                with self.assertRaises(canon_cache.CacheSessionError) as refused:
+                    self.open("ok", sccache=sccache)
+                assert_one_line_naming(self, refused.exception, sccache)
+                self.assertEqual(self.delays, [])
+                self.assertEqual([name for name in os.listdir(self.build) if name.startswith(".reify-sccache.")], [])
+
+    def test_a_build_directory_that_cannot_be_created_is_a_session_error(self):
+        blocker = Path(self.tmp, "a-file")
+        blocker.write_text("")
+        build = str(blocker / "build")
+        with self.assertRaises(canon_cache.CacheSessionError) as refused:
+            self.open("ok", canon_build_dir=build)
+        assert_one_line_naming(self, refused.exception, build)
+
+    def test_an_unwritable_build_directory_is_a_session_error(self):
+        if os.geteuid() == 0:
+            self.skipTest("root writes into a read-only directory regardless of its mode")
+        os.chmod(self.build, 0o500)
+        self.addCleanup(os.chmod, self.build, 0o755)
+        with self.assertRaises(canon_cache.CacheSessionError) as refused:
+            self.open("ok")
+        assert_one_line_naming(self, refused.exception, os.path.join(self.build, f".reify-sccache.{os.getpid()}.err"))
+        self.assertEqual(self.servers(), [])
+
 
 class CloseSession(SessionCase):
     """C4's teardown: stats, then stop, then the relay; nothing left behind."""
@@ -889,8 +876,7 @@ class CloseSession(SessionCase):
     def test_detached_server_on_the_socket_is_counted_and_stopped(self):
         session = self.open("die")
         Path(self.fake, "die-now").touch()
-        while self.answers(self.socket):
-            time.sleep(0.02)
+        wait_until(self, lambda: not canon_cache.answers(self.socket), "the dying server released its socket")
         os.unlink(self.socket)
         detached = subprocess.Popen(
             [self.sccache],
@@ -904,26 +890,178 @@ class CloseSession(SessionCase):
             stdin=subprocess.DEVNULL,
         )
         self.addCleanup(detached.kill)
-        while not self.answers(self.socket):
-            time.sleep(0.02)
+        wait_until(self, lambda: canon_cache.answers(self.socket), "the detached server answers on the socket")
         outcome = session.close()
         self.assertEqual(outcome.detached_server, 1)
         self.assertEqual((outcome.hits, outcome.misses, outcome.write_errors), (40, 9, 0))
         self.assertEqual(detached.wait(), 0)
 
+
+IGNORES_TERM = """
+import pathlib, signal, sys, time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+pathlib.Path(sys.argv[1]).touch()
+time.sleep(600)
+"""
+
+
+class TripwireClock:
+    """An injected clock ticking 1.0 per read; past `limit` it trips and reads inf, so every deadline passes."""
+
+    def __init__(self, start, limit):
+        self._ticks = itertools.count(start, 1.0)
+        self._limit = limit
+        self.tripped = False
+
+    def __call__(self):
+        now = next(self._ticks)
+        if now > self._limit:
+            self.tripped = True
+            return float("inf")
+        return now
+
+
+class SessionWaits(SessionCase):
+    """Three waits, three knobs: ready_wait for a start, stop_wait for each reap step, client_timeout per call."""
+
+    def join_or_fail(self, thread, what, unstick):
+        thread.join(HANG_GUARD)
+        if thread.is_alive():
+            unstick()
+            thread.join(HANG_GUARD)
+            self.fail(f"{what}: not within the {HANG_GUARD:.0f}s hang guard")
+
+    def test_start_server_gives_up_on_a_silent_server_after_ready_wait(self):
+        files = canon_cache.SessionFiles.in_build_dir(self.build, os.getpid())
+        env = dict(
+            self.env, SCCACHE_START_SERVER="1", SCCACHE_SERVER_UDS=files.socket, FAKE_SCCACHE_BEHAVIOUR="silent"
+        )
+        knobs = dataclasses.replace(self.knobs, ready_wait=3.0, stop_wait=3600.0, client_timeout=3600.0)
+        clock = TripwireClock(start=1000.0, limit=1020.0)
+        process, failure = canon_cache.start_server(self.sccache, env, files, knobs, clock)
+        self.addCleanup(process.wait)
+        self.addCleanup(process.kill)
+        self.assertFalse(clock.tripped, "start_server polled past ready_wait=3 on the injected clock")
+        self.assertIs(failure, canon_cache.StartFailure.NOT_READY)
+        self.assertIsNone(process.poll(), "gave up by its deadline, not because the server exited")
+        stopper = threading.Thread(target=canon_cache.stop_now, args=(process, 3600.0), daemon=True)
+        stopper.start()
+        self.join_or_fail(stopper, "stop_now on the silent server", process.kill)
+        self.assertTrue(cfx.process_gone(process.pid))
+
+    def test_reap_kills_a_process_that_ignores_term_after_two_stop_waits(self):
+        ready = os.path.join(self.tmp, "ready")
+        child = subprocess.Popen([sys.executable, "-I", "-c", IGNORES_TERM, ready])
+        self.addCleanup(child.wait)
+        self.addCleanup(child.kill)
+        wait_until(self, lambda: os.path.exists(ready), "the TERM-ignoring child started")
+        reaper = threading.Thread(target=canon_cache.reap, args=(child, 0.1), daemon=True)
+        reaper.start()
+        self.join_or_fail(reaper, "reap", child.kill)
+        self.assertEqual(child.returncode, -signal.SIGKILL)
+
+    def test_close_bounds_each_client_call_by_client_timeout(self):
+        self.knobs = dataclasses.replace(self.knobs, ready_wait=3600.0, stop_wait=3600.0, client_timeout=2.0)
+        session = self.open("mute")
+        [server] = self.servers()
+        outcomes = []
+        closer = threading.Thread(target=lambda: outcomes.append(session.close()), daemon=True)
+        closer.start()
+        self.join_or_fail(closer, "close() against a mute server", lambda: os.kill(server["pid"], signal.SIGKILL))
+        [outcome] = outcomes
+        self.assertEqual((outcome.hits, outcome.misses, outcome.write_errors, outcome.detached_server), (0, 0, 0, 0))
+        clients = [call["argv"][0] for call in cfx.read_sccache_calls(self.fake) if call["role"] == "client"]
+        self.assertEqual(clients, ["--show-stats", "--stop-server"])
+        self.assertTrue(cfx.process_gone(server["pid"]))
+        self.assertEqual(sorted(name for name in os.listdir(self.build) if name.startswith(".reify-sccache")), [])
+
+
+class StaleSessionFiles(SessionCase):
+    """Opening a session removes the session files no live supervisor owns, and nothing else."""
+
+    def dead_pid(self):
+        process = subprocess.Popen(["true"])
+        process.wait()
+        self.assertTrue(cfx.process_gone(process.pid), "fixture precondition: the pid is dead")
+        return process.pid
+
+    def live_pid(self):
+        process = subprocess.Popen(["sleep", "300"])
+        self.addCleanup(process.wait)
+        self.addCleanup(process.kill)
+        return process.pid
+
+    def leave(self, pid):
+        """The three files a supervisor with this pid leaves behind, with their (type, text) by path."""
+        files = canon_cache.SessionFiles.in_build_dir(self.build, pid)
+        os.mknod(files.socket, stat.S_IFSOCK | 0o600)
+        Path(files.err).write_text(f"server {pid} said goodbye\n")
+        Path(files.uncached_log).write_text(f"cc {pid}\n")
+        return files
+
     @staticmethod
-    def answers(path):
-        with socket.socket(socket.AF_UNIX) as probe:
-            try:
-                probe.connect(path)
-            except OSError:
-                return False
-        return True
+    def kind_and_text(path):
+        mode = os.lstat(path).st_mode
+        return stat.S_IFMT(mode), Path(path).read_text() if stat.S_ISREG(mode) else None
+
+    def test_a_dead_supervisors_session_files_are_removed_when_a_session_opens(self):
+        left = self.leave(self.dead_pid())
+        session = self.open("ok")
+        for path in (left.socket, left.err, left.uncached_log):
+            self.assertFalse(os.path.lexists(path), path)
+        self.assertEqual(session.backend, canon_cache.Backend.SHARED)
+        self.assertTrue(canon_cache.answers(session.environment.server.socket))
+
+    def test_a_live_supervisors_session_files_are_kept(self):
+        left = self.leave(self.live_pid())
+        paths = (left.socket, left.err, left.uncached_log)
+        before = {path: self.kind_and_text(path) for path in paths}
+        self.open("ok")
+        self.assertEqual({path: self.kind_and_text(path) for path in paths}, before)
+
+    def test_a_supervisor_this_user_may_not_signal_counts_as_live(self):
+        try:
+            os.kill(1, 0)
+        except PermissionError:
+            pass
+        else:
+            self.skipTest("this user may signal pid 1, so it cannot stand for another user's supervisor")
+        left = self.leave(1)
+        paths = (left.socket, left.err, left.uncached_log)
+        before = {path: self.kind_and_text(path) for path in paths}
+        self.open("ok")
+        self.assertEqual([path for path in paths if not os.path.lexists(path)], [])
+        self.assertEqual({path: self.kind_and_text(path) for path in paths}, before)
+
+    def test_a_leftover_named_by_the_opening_process_is_removed(self):
+        """Otherwise this session would count the stale lines as its own uncached compiles."""
+        own = canon_cache.SessionFiles.in_build_dir(self.build, os.getpid())
+        Path(own.uncached_log).write_text("cc one\ncc two\n")
+        self.open("ok")
+        self.assertFalse(os.path.lexists(own.uncached_log))
+
+    def test_names_outside_the_session_grammar_are_kept(self):
+        dead = self.dead_pid()
+        names = (
+            ".reify-canon-journal.jsonl",
+            ".reify-build-root",
+            ".reify-sccache.0.sock",
+            f".reify-sccache.0{dead}.sock",
+            f".reify-sccache.{dead}.sock.old",
+            f".reify-sccache.{dead}.log",
+            f"x.reify-sccache.{dead}.sock",
+            f".reify-canon-uncached.{dead}.err",
+        )
+        for name in names:
+            Path(self.build, name).write_text(name)
+        self.open("ok")
+        for name in names:
+            self.assertTrue(os.path.lexists(os.path.join(self.build, name)), name)
 
 
 def sample_record(**changes):
     fields = dict(
-        mode="canon",
+        mode=canon_cache.RecordMode.CANON,
         policy=canon_cache.Policy.SHARED,
         backend=canon_cache.Backend.SHARED,
         reason=canon_cache.Reason.NONE,
@@ -984,6 +1122,14 @@ class BuildCacheRecordWriter(unittest.TestCase):
                              "store_attempts"):
                     self.assertIs(type(rec[name]), int, name)
                 self.assertEqual((rec["wall_secs"], rec["cpu_secs"]), (12.346, 67.8))
+
+    def test_every_record_mode_is_written_as_its_value(self):
+        for mode in canon_cache.RecordMode:
+            with self.subTest(mode=mode):
+                Path(self.journal).unlink(missing_ok=True)
+                self.write(sample_record(mode=mode), channel=None)
+                (written,) = read_events(self.journal).records
+                self.assertEqual(written["mode"], mode.value)
 
     def test_without_a_channel_only_the_journal_is_written(self):
         self.write(channel=None)
@@ -1049,7 +1195,7 @@ class Supervise(SessionCase):
             env,
             self.tmp,
             session=session,
-            record_base=record_base or canon_cache.RecordBase("canon", canon_cache.Policy.SHARED),
+            record_base=record_base or canon_cache.RecordBase(canon_cache.RecordMode.CANON, canon_cache.Policy.SHARED),
             subcommand=subcommand,
             channel=channel,
             journal=self.journal,
@@ -1100,8 +1246,10 @@ class Supervise(SessionCase):
         self.assertEqual(Path(self.channel).read_bytes(), Path(self.journal).read_bytes())
         self.assertEqual(sorted(name for name in os.listdir(self.build) if name.startswith(".reify-sccache")), [])
 
-    def test_command_killed_by_a_signal_returns_128_plus_it(self):
-        self.assertEqual(self.supervise(["/bin/sh", "-c", "kill -TERM $$"]), 143)
+    def test_command_killed_by_a_signal_returns_minus_it_and_is_recorded(self):
+        self.caller_dispositions(INTERACTIVE_CALLER)
+        self.assertEqual(self.supervise(["/bin/sh", "-c", "kill -TERM $$"]), -signal.SIGTERM)
+        self.row()
 
     def test_cpu_secs_covers_a_grandchild(self):
         spent = os.path.join(self.tmp, "spent")
@@ -1124,7 +1272,7 @@ class Supervise(SessionCase):
                 Path(lost).touch()
             return len(calls) == 1
 
-        self.knobs = dataclasses.replace(self.knobs, watchdog_interval=0.01)
+        self.knobs = dataclasses.replace(self.knobs, link=canon_store.LinkKnobs(watchdog_interval=0.01))
         cfx.set_plan(self.fake, "ok")
         session = canon_cache.open_session(
             canon_cache.Policy.SHARED, self.settings, canon_build_dir=self.build, sccache=self.sccache,
@@ -1138,7 +1286,7 @@ class Supervise(SessionCase):
         self.assertEqual(self.row()["reason"], "store_lost")
 
     def test_incremental_starts_no_server(self):
-        base = canon_cache.RecordBase("canon", canon_cache.Policy.INCREMENTAL)
+        base = canon_cache.RecordBase(canon_cache.RecordMode.CANON, canon_cache.Policy.INCREMENTAL)
         self.assertEqual(self.supervise(["/bin/true"], session=None, record_base=base), 0)
         self.assertEqual(self.servers(), [])
         row = self.row()
@@ -1148,7 +1296,10 @@ class Supervise(SessionCase):
 
     def test_real_path_record(self):
         base = canon_cache.RecordBase(
-            "real_path", canon_cache.Policy.SHARED, canon_cache.Backend.NONE, canon_cache.Reason.LEGACY_BUILD_DIR
+            canon_cache.RecordMode.REAL_PATH,
+            canon_cache.Policy.SHARED,
+            canon_cache.Backend.NONE,
+            canon_cache.Reason.LEGACY_BUILD_DIR,
         )
         self.supervise(["/bin/true"], session=None, record_base=base)
         row = self.row()
@@ -1169,7 +1320,7 @@ class Supervise(SessionCase):
     def test_sigterm_to_the_supervisor_is_forwarded_and_teardown_runs(self):
         supervisor = self.start_supervise_runner("600")
         supervisor.send_signal(signal.SIGTERM)
-        self.assertEqual(supervisor.wait(), 143)
+        self.assertEqual(supervisor.wait(), -signal.SIGTERM)
         self.assertEqual(sorted(name for name in os.listdir(self.build) if name.startswith(".reify-sccache")), [])
         self.assertEqual(self.row()["subcommand"], "")
 
@@ -1182,10 +1333,10 @@ class Supervise(SessionCase):
         self.row()
 
     def test_sigint_to_the_supervisor_alone_reaches_the_command_and_teardown_runs(self):
-        self.assert_ended_by_a_signal_to_the_supervisor_alone(signal.SIGINT, 130)
+        self.assert_ended_by_a_signal_to_the_supervisor_alone(signal.SIGINT, -signal.SIGINT)
 
     def test_sigquit_to_the_supervisor_alone_reaches_the_command_and_teardown_runs(self):
-        self.assert_ended_by_a_signal_to_the_supervisor_alone(signal.SIGQUIT, 131)
+        self.assert_ended_by_a_signal_to_the_supervisor_alone(signal.SIGQUIT, -signal.SIGQUIT)
 
     def test_command_starts_with_default_dispositions_when_the_caller_has_them(self):
         self.caller_dispositions(INTERACTIVE_CALLER)
@@ -1208,7 +1359,7 @@ class Supervise(SessionCase):
     def test_group_sigint_ends_the_command_and_teardown_runs(self):
         supervisor = self.start_supervise_runner("60", start_new_session=True)
         os.killpg(supervisor.pid, signal.SIGINT)
-        self.assertEqual(supervisor.wait(), 130)
+        self.assertEqual(supervisor.wait(), -signal.SIGINT)
         self.assertEqual(sorted(name for name in os.listdir(self.build) if name.startswith(".reify-sccache")), [])
         self.row()
 
@@ -1260,9 +1411,65 @@ class SignalForwarding(unittest.TestCase):
         )
 
 
+class ExitLike(unittest.TestCase):
+    """canon_cache.exit_like: a process ends as its command ended, through cfx.EXIT_LIKE_RUNNER.
+
+    The runner starts at default dispositions, since a pool member may inherit INT/QUIT ignored.
+    """
+
+    def setUp(self):
+        self.runner = cfx.write_exit_like_runner(scratch(self))
+
+    def argv(self, returncode, ignored=(), closing=""):
+        names = ",".join(signal.Signals(number).name for number in ignored)
+        closer = ["/bin/sh", "-c", f'exec "$@" {closing}', "sh"] if closing else []
+        return [*fx.AT_DEFAULT_SUPERVISED_SIGNALS, *closer, sys.executable, "-I", self.runner,
+                str(fx.REPO_ROOT / "scripts"), str(returncode), names]
+
+    def assert_ends_with(self, returncode, expected, ignored=(), closing=""):
+        result = subprocess.run(self.argv(returncode, ignored, closing=closing), capture_output=True, text=True,
+                                check=False)
+        self.assertEqual(result.returncode, expected, result.stderr)
+
+    def test_death_by_sigterm_kills_it_with_sigterm(self):
+        self.assert_ends_with(-signal.SIGTERM, -signal.SIGTERM)
+
+    def test_death_by_sigterm_kills_it_with_sigterm_when_a_standard_stream_is_closed(self):
+        for closing in (">&-", "2>&-"):
+            with self.subTest(closing=closing):
+                self.assert_ends_with(-signal.SIGTERM, -signal.SIGTERM, closing=closing)
+
+    def test_death_by_sigint_kills_it_with_sigint_despite_pythons_handler(self):
+        self.assert_ends_with(-signal.SIGINT, -signal.SIGINT)
+
+    def test_death_by_sigquit_kills_it_with_sigquit_and_dumps_no_core(self):
+        if resource.getrlimit(resource.RLIMIT_CORE)[1] == 0:
+            self.skipTest("RLIMIT_CORE's hard limit is 0 here: the runner cannot raise its own, so no core check")
+        argv = self.argv(-signal.SIGQUIT)
+        _, status = os.waitpid(os.posix_spawn(argv[0], argv, os.environ), 0)
+        signalled = os.WTERMSIG(status) if os.WIFSIGNALED(status) else None
+        self.assertEqual((signalled, os.WCOREDUMP(status)), (signal.SIGQUIT, False))
+
+    def test_a_signal_the_caller_ignores_exits_128_plus_it(self):
+        self.assert_ends_with(-signal.SIGTERM, 128 + signal.SIGTERM, ignored=(signal.SIGTERM,))
+
+    def test_an_unsupervised_signal_exits_128_plus_it(self):
+        self.assert_ends_with(-signal.SIGKILL, 128 + signal.SIGKILL)
+
+    def test_an_exit_status_is_the_exit_status(self):
+        for returncode in (3, 0):
+            with self.subTest(returncode=returncode):
+                self.assert_ends_with(returncode, returncode)
+
+
 class PolicyMembers(unittest.TestCase):
     def test_members(self):
         self.assertEqual([policy.value for policy in canon_cache.Policy], ["shared", "mixed", "incremental"])
+
+
+class RecordModeMembers(unittest.TestCase):
+    def test_members(self):
+        self.assertEqual([mode.value for mode in canon_cache.RecordMode], ["canon", "real_path"])
 
 
 if __name__ == "__main__":

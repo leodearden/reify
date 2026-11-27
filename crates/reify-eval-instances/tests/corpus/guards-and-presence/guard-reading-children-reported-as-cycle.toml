@@ -1,0 +1,16 @@
+tests = "a guard that reads the member list containing what it guards compiles and is reported by the core as a cycle."
+rule = "Part 4 (\"An indirect one, such as a guard that reads `self.children.count`, is reported by the core as a cycle\")."
+provenance = "logic-1 L19 (taken: Part 4 now says the indirect cases reach the core). design Part 4. language-1 L18."
+needs = ["instance", "guard", "value", "compile-error"]
+answer_basis = "stated (Part 4). `extra`'s presence reads its guard; the guard reads `self.children`, which needs `extra`'s presence (readings E30: the list reads every member's presence). `a` and `b` are not on the ring. `self.children` is leaf κ₁'s (`value`), not a collection's."
+
+[[expect]]
+compile = "ok"
+
+[[expect]]
+path = "Asm.extra"
+failure = "cycle"
+
+[[expect]]
+path = "Asm.a.v"
+value = "1 mm"

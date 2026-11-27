@@ -20,10 +20,12 @@
         "reify-config",
         "reify-core",
         "reify-doc",
+        "reify-eval-core",
         "reify-exec-lookup",
         "reify-git-env",
         "reify-ir",
         "reify-syntax",
+        "reify-version",
         "tree-sitter-reify"
       ]
     },
@@ -92,6 +94,7 @@
       ],
       "packages": [
         "reify-eval",
+        "reify-eval-instances",
         "reify-mesh-morph",
         "reify-runtime"
       ]

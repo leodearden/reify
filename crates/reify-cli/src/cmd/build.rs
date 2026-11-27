@@ -12,7 +12,7 @@ use crate::check_verdict::{ConstraintOutcome, build_is_success, has_error_diagno
 use crate::constraint_report::report_eval_output;
 use crate::help::BUILD_USAGE;
 use crate::module_capabilities::module_has_isosurface;
-use crate::{configured_check_build_engine, parse_and_compile_program_entry};
+use crate::{configured_check_build_engine, parse_and_prepare_program};
 
 pub(crate) fn cmd_build(args: &[String]) -> ExitCode {
     let (cfg, rest) = match split_cfg_args_or_usage(args, BUILD_USAGE) {
@@ -97,12 +97,13 @@ pub(crate) fn cmd_build(args: &[String]) -> ExitCode {
         }
     }
 
-    let compiled = match parse_and_compile_program_entry(file, &cfg) {
-        Ok(c) => c,
+    let program = match parse_and_prepare_program(file, &cfg) {
+        Ok(program) => program,
         Err(code) => return code,
     };
 
-    if compiled
+    if program
+        .evaluated()
         .diagnostics
         .iter()
         .any(|d| d.severity == Severity::Error)
@@ -114,6 +115,7 @@ pub(crate) fn cmd_build(args: &[String]) -> ExitCode {
     let mut engine = configured_check_build_engine(|posture| {
         reify_eval::Engine::with_registered_kernel(posture, Box::new(checker))
     });
+    let evaluated = engine.load(program);
     // Lazily acquire the OpenVDB kernel when the module contains an
     // `isosurface(...)` realization op (task δ/5002). Without OpenVDB
     // registered, the operand's Mesh→Voxel voxelize stage and the terminal
@@ -125,7 +127,7 @@ pub(crate) fn cmd_build(args: &[String]) -> ExitCode {
     // OCCT alloc-cost posture (engine_admin.rs). cfg(not(has_openvdb)) →
     // registry lacks "openvdb" → returns false → no-op (an isosurface build
     // would still degrade in that configuration).
-    if module_has_isosurface(&compiled) {
+    if module_has_isosurface(&evaluated) {
         engine.ensure_openvdb_kernel();
     }
     match output_path {
@@ -181,7 +183,9 @@ pub(crate) fn cmd_build(args: &[String]) -> ExitCode {
             // gate-cost rule forbids. A user who wants the constraint state runs
             // `reify check` — which the refusal message itself tells them to do.
             if let Some(diag) =
-                reify_eval::tolerance_combine::unenforced_representation_bound_diagnostic(&compiled)
+                reify_eval::tolerance_combine::unenforced_representation_bound_diagnostic(
+                    &evaluated,
+                )
             {
                 // Report through the EXISTING report_eval_output path rather
                 // than a bespoke stderr write, so the refusal lands in the same
@@ -236,7 +240,7 @@ pub(crate) fn cmd_build(args: &[String]) -> ExitCode {
                 }
             };
 
-            let result = engine.build(&compiled, format);
+            let result = engine.build(&evaluated, format);
 
             let outcome = report_eval_output(
                 &result.constraint_results,
@@ -348,7 +352,8 @@ pub(crate) fn cmd_build(args: &[String]) -> ExitCode {
             // constraint-checked, and serialized the discarded Phase-B STEP output
             // twice. Kernel provenance is read from engine state below, populated
             // by this single realization.
-            let outputs = engine.build_outputs_with_result(&compiled, design_dir, out_dir_override);
+            let outputs =
+                engine.build_outputs_with_result(&evaluated, design_dir, out_dir_override);
             let artifacts = &outputs.artifacts;
 
             // Surface BOTH the build diagnostics AND every per-artifact

@@ -1,0 +1,7 @@
+structure def Plate {
+    param t : Length = 5mm
+    param w : Length = 40mm
+    let body = box(w, w, t)
+    constraint t >= 3mm
+    constraint volume(body) <= 10000mm^3
+}

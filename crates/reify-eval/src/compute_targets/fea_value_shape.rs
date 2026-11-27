@@ -54,6 +54,12 @@ pub(super) enum FeaValueShapeError {
     },
     /// A numeric datum that is present and correctly shaped but NaN or ±Inf.
     NonFinite { context: &'static str, got: String },
+    /// A value that should be the `Frame` datum but does not decode as one,
+    /// carrying `reify_ir::frame_basis`'s own reason.
+    MalformedFrame {
+        context: &'static str,
+        error: reify_ir::DecodeDirectionError,
+    },
     /// A present field value its reader's `ArgSpec` refuses, a non-number
     /// included: a `fea_loads` magnitude or an elastic law's field,
     /// lifted by `?` through the `From` impl below. Rendered through
@@ -95,6 +101,9 @@ impl std::fmt::Display for FeaValueShapeError {
             FeaValueShapeError::NonFinite { context, got } => {
                 write!(f, "expected a finite value for {context}, got {got}")
             }
+            FeaValueShapeError::MalformedFrame { context, error } => {
+                write!(f, "{context}: {error}")
+            }
             FeaValueShapeError::Rejected(field) => write!(f, "{field}"),
         }
     }
@@ -114,7 +123,8 @@ impl FeaValueShapeError {
             | FeaValueShapeError::ExpectedList { .. }
             | FeaValueShapeError::MissingField { .. }
             | FeaValueShapeError::Unresolved { .. }
-            | FeaValueShapeError::NonFinite { .. } => None,
+            | FeaValueShapeError::NonFinite { .. }
+            | FeaValueShapeError::MalformedFrame { .. } => None,
         }
     }
 }

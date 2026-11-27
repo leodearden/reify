@@ -1,0 +1,16 @@
+tests = "an instance made inside another constructor call's argument, inside a list literal, or inside a sub's argument has its definition's constraint checked, and each such violation is counted exactly once."
+rule = "rule B; Part 7.3; decision 7"
+provenance = "task 8322"
+needs = ["instance", "value", "made", "summary"]
+answer_basis = '''
+traced.
+The cell `Root.g` evaluates `Thing(w: -3mm)` and then `Holder(...)`: two made instances, and the `Thing` is violated.
+The cell `Root.loads` makes two `Thing`s, one violated (-3 mm) and one satisfied (2 mm).
+The parameter cell `Root.h.t` evaluates its argument in `Root`'s scope and makes one `Thing`, which is violated. Rule B: exactly one summary reads that list.
+`Holder` has no constraint and reads no member of `t`, so nothing is opened. Violations: 1 + 1 + 1 = 3 (readings B4: a made instance's verdicts are counted once, at the made instance). Every argument is defined, so no `/arguments` verdict is undetermined.
+The made-instance paths are left unpinned: section A's `/made[chain]` text is not worked out here for a call nested in another call's argument or in a list literal.'''
+today = "per the task record (release binary, 2026-10-07), `Root.g = Holder { t: Thing { w: -0.003 m } }` exists but `Thing`'s constraint is not checked for it. Instances inside list values are not checked either."
+
+[[expect]]
+path = "Root/summary"
+summary = { violated = 3, undetermined = 0, failed = 0 }

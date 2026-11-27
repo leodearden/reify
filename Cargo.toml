@@ -38,6 +38,9 @@ members = [
     "crates/reify-test-support",
     "crates/reify-builtins",
     "crates/reify-exec-lookup",
+    "crates/reify-version",
+    "crates/reify-eval-core",
+    "crates/reify-eval-instances",
     "crates/workspace-feature-union",
     "tree-sitter-reify",
     "gui/src-tauri",
@@ -82,6 +85,9 @@ reify-git-env = { path = "crates/reify-git-env" }
 reify-test-support = { path = "crates/reify-test-support" }
 reify-builtins = { path = "crates/reify-builtins" }
 reify-exec-lookup = { path = "crates/reify-exec-lookup" }
+reify-version = { path = "crates/reify-version" }
+reify-eval-core = { path = "crates/reify-eval-core" }
+reify-eval-instances = { path = "crates/reify-eval-instances" }
 workspace-feature-union = { path = "crates/workspace-feature-union" }
 reify-gui = { path = "gui/src-tauri" }
 
@@ -92,6 +98,7 @@ bincode = "=1.3" # wire-format pin: see ELASTIC_RESULT_FORMAT_VERSION docs; bump
 bytemuck = "1"
 
 im = "15"
+imbl = "=7.0.2"
 indexmap = "2"
 inventory = "0.3"
 
@@ -113,6 +120,8 @@ tauri = { version = "2", features = ["devtools"] }
 notify = "6"
 
 tempfile = "3"
+
+trybuild = "=1.0.125"
 
 tar = "0.4"
 

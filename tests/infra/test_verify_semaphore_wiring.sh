@@ -265,6 +265,18 @@ exit 0
 VSTUB
     chmod +x "$dir/scripts/verify.sh"
 
+    # STUB canon_run.py: the hook launches verify.sh through it; a real-path
+    # build directory gets the command exec'd untouched, which is all this does.
+    cat > "$dir/scripts/canon_run.py" <<'CSTUB'
+#!/usr/bin/python3
+import os
+import sys
+if sys.argv[1:3] != ["exec", "--"] or len(sys.argv) < 4:
+    sys.exit(f"canon_run.py stub: expected 'exec -- <cmd>', got {sys.argv[1:]}")
+os.execvp(sys.argv[3], sys.argv[3:])
+CSTUB
+    chmod +x "$dir/scripts/canon_run.py"
+
     # REAL pre-merge-commit (sourced from repo).
     cp "$REPO_ROOT/hooks/pre-merge-commit" "$dir/hooks/pre-merge-commit"
     chmod +x "$dir/hooks/pre-merge-commit"

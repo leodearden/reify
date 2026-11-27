@@ -1,0 +1,16 @@
+tests = "Definitions that do not use one another are each a default root, and each is evaluated as its own instance."
+rule = "rule D; Part 3"
+provenance = "design Part 3 (\"With several roots, `check` checks each\"); decision 2 (\"Alone in a file, `Bolt` is the root\")"
+needs = ["roots", "instance", "constraint"]
+answer_basis = "traced. Neither definition names the other, so each is its own unused group. Each root is evaluated at its defaults: d = 2 mm, and `d >= 3mm` is violated at each."
+
+[[expect]]
+roots = ["Bolt", "Nut"]
+
+[[expect]]
+path = "Bolt/constraint[0]"
+verdict = "violated"
+
+[[expect]]
+path = "Nut/constraint[0]"
+verdict = "violated"

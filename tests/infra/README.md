@@ -588,7 +588,7 @@ or boolean field may be `null`; the lib header says when.
 | `member_finish` | `member`, `attempt`, `rc`, `verdict` (`PASS`/`FAIL`/`FLAKY_PASS`/`SKIP`), `duration_ms`, `queued_ns`, `started_ns`, `ended_ns`, `fail_detail` (list), `fail_detail_omitted` | `_ra_record_result`, once per member; `_ra_record_subset_skip` for `SKIP` |
 | `phase_finish` | `phase` (`pool`/`serial`/`retry` on the pool branch, `serial` on every serial branch), `started_ns`, `ended_ns` | `_ra_phase_finish`, once per phase, at its end |
 | `slot_timeout` | `reason`, `slots`, `waited`, `disposition` (`fatal`/`soft`), `lock`, `emitter` | `slot_emit_timeout` |
-| `build_cache` | `mode` (`canon`/`real_path`), `policy` (`shared`/`mixed`/`incremental`), `backend` (`shared`/`local_fallback`/`none`), `reason` (`""`, `store_unreachable`, `store_lost`, `store_not_configured`, `read_only_server`, `legacy_build_dir`, `canon_unavailable`), `hits`, `misses`, `write_errors`, `uncached_machine_flags`, `detached_server`, `store_attempts` (int), `wall_secs`, `cpu_secs` (number), `subcommand` (cargo's, or `""` for `exec`) | `scripts/canon_cache.py` through `event_log_emit_build_cache`, once per outermost `scripts/canon_run.py` invocation |
+| `build_cache` | `mode` (`canon`/`real_path`), `policy` (`shared`/`mixed`/`incremental`), `backend` (`shared`/`local_fallback`/`none`), `reason` (`""`, `store_unreachable`, `store_lost`, `store_not_configured`, `read_only_server`, `legacy_build_dir`, `canon_unavailable`), `hits`, `misses`, `write_errors`, `uncached_machine_flags`, `detached_server`, `store_attempts` (int), `wall_secs`, `cpu_secs` (number), `subcommand` (cargo's, or `""` for `exec`) | `scripts/canon_cache.py` through `event_log_emit_build_cache`, once per supervised outermost `scripts/canon_run.py` invocation (which ones: `docs/notes/sccache-key-path-sensitivity.md`) |
 | `run_finish` | `discovered`, `failures`, `failed`, `flaky`, `skipped` (lists), `interrupted`, `names_omitted` | `run_all.sh`, once per run: whichever of the normal path, `_ra_on_term` and the worktree-gone exit 99 comes first |
 
 The same `build_cache` line is appended to `<build dir>/.reify-canon-journal.jsonl`,
@@ -790,7 +790,7 @@ That is the same infrastructure verdict: a column-0
 It is never a SKIP (a vacuous pass) and never a FAIL.
 `test_tree_sitter_pipeline.sh`'s `run_guarded_cargo_check` is the first user.
 That suite stops at the first such case, because each timeout spends 300s of
-its 10m selective-infra wall, and an assertion that already FAILed still wins.
+its 30m selective-infra wall, and an assertion that already FAILed still wins.
 A build that hangs on a real defect also reads as 75, on every run: the guard
 prints the tail of cargo's output so a lock wait can be told from a hang.
 
@@ -828,6 +828,7 @@ runs every adopting member with an empty `CARGO_HOME` and
 | `run_all.sh` | Discovery runner — runs every member `classification_discovered_set` returns |
 | `run-all-classification-lib.sh` | Shared library: the discovery predicate (`classification_discovered_set`) and the manifest bucket accessors |
 | `run-all-member-budget-lib.sh` | Shared library: runs one member under its wall-clock budget in a process group of its own (`member_budget_run`) and attributes a timeout (`member_budget_exceeded`) |
+| `run-all-member-tmpdir-lib.sh` | Shared library: runs one member with a private, flock-leased TMPDIR that is removed when it exits (`member_tmpdir_run`), and removes the unleased ones a killed run left behind (`member_tmpdir_reap`); neither removes a dir a live process was started with as its TMPDIR |
 | `adoption_ratchet.py` | Adoption-ratchet engine and report CLI |
 | `adoption-ratchet.manifest` | Adoption-ratchet rows (grammar in its header) |
 | `test_infra_adoption_ratchet.sh` | Regression guard: no adoption-ratchet row exceeds its ceiling |

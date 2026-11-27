@@ -31,6 +31,7 @@ use reify_compiler::{CompiledTrait, TopologyTemplate};
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, ValueCellId};
 use reify_ir::{CompiledExpr, CompiledFunction, ValueMap};
 
+use crate::DefEnv;
 use crate::deps::{extract_dependency_trace, extract_value_deps};
 
 /// Result of computing the dependency-ordered resolution pass over a module's
@@ -133,6 +134,10 @@ pub(crate) struct ClusterFormationCtx<'a> {
     pub(crate) max_unfold_depth: usize,
     /// `self.descendants` node-count budget (mirrors `Engine::max_unfold_nodes`).
     pub(crate) max_unfold_nodes: usize,
+    /// The definition environment the expansion resolves descendant
+    /// structures in. The templates it declares are the ones `resolve_order`
+    /// orders: cluster scopes index that one slice.
+    pub(crate) env: DefEnv<'a>,
 }
 
 /// Output of [`build_read_dag`]: `(auto_owner, adj, objective_reads)`.
@@ -381,6 +386,13 @@ fn resolve_order_impl(
     templates: &[TopologyTemplate],
     cluster_ctx: Option<&ClusterFormationCtx>,
 ) -> ResolveOrder {
+    debug_assert!(
+        cluster_ctx
+            .is_none_or(|ctx| std::ptr::eq(templates, ctx.env.module().templates.as_slice())),
+        "resolve_order's templates must be its cluster context's \
+         `env.module()`'s templates: cluster scopes index the one, instance \
+         paths are walked from the other"
+    );
     let n = templates.len();
     if n == 0 {
         return ResolveOrder {
@@ -709,7 +721,7 @@ fn expanded_objective_reads(
             crate::engine_eval::expand_solver_position_expr(
                 &mut expanded,
                 template,
-                templates,
+                ctx.env,
                 ctx.values,
                 ctx.max_unfold_depth,
                 ctx.max_unfold_nodes,
@@ -822,8 +834,9 @@ fn union_via_transitive_auto_owners(
 ///
 /// Mirrors `enumerate_descendants`' path composition
 /// (structural_query.rs:213 `{prefix}.{sub}`, :187 `{prefix}.{sub}[{idx}]`),
-/// seeded once per template at `prefix = &template.name` exactly as
-/// `expand_structural_query` seeds it.  A COLLECTION sub contributes its
+/// seeded once per template of `env.module()` at `prefix = &template.name` exactly
+/// as `expand_structural_query` seeds it, and resolving each child structure in
+/// `env` exactly as it does.  A COLLECTION sub contributes its
 /// INDEX-STRIPPED base path — `Rig.bolts[0]` and `Rig.bolts[7]` both denote
 /// structure `Bolt`, and the runtime index is not knowable statically — which is
 /// why [`normalize_cell_id`] strips `[...]` before consulting the map.
@@ -863,13 +876,13 @@ fn union_via_transitive_auto_owners(
 /// budget ONCE (for its index-stripped base path) rather than once per runtime
 /// index, so this side is strictly cheaper and can only ever truncate later.
 pub(crate) fn build_instance_path_structure_map(
-    templates: &[TopologyTemplate],
+    env: DefEnv<'_>,
     max_depth: usize,
     max_nodes: usize,
 ) -> HashMap<String, String> {
     fn walk(
         template: &TopologyTemplate,
-        templates: &[TopologyTemplate],
+        env: DefEnv<'_>,
         prefix: &str,
         depth: usize,
         max_depth: usize,
@@ -892,12 +905,12 @@ pub(crate) fn build_instance_path_structure_map(
             let node_path = format!("{}.{}", prefix, sub.name);
             out.entry(node_path.clone())
                 .or_insert_with(|| sub.structure_name.clone());
-            let Some(child) = templates.iter().find(|t| t.name == sub.structure_name) else {
+            let Some(child) = env.resolve_template(&sub.structure_name) else {
                 continue;
             };
             walk(
                 child,
-                templates,
+                env,
                 &node_path,
                 depth + 1,
                 max_depth,
@@ -909,10 +922,10 @@ pub(crate) fn build_instance_path_structure_map(
 
     let mut out: HashMap<String, String> = HashMap::new();
     let mut node_budget = max_nodes;
-    for template in templates {
+    for template in &env.module().templates {
         walk(
             template,
-            templates,
+            env,
             &template.name,
             0,
             max_depth,
@@ -1076,7 +1089,7 @@ fn compute_clusters(
             // See [`normalize_cell_id`] for the two-sided root cause, and
             // [`build_instance_path_structure_map`] for why it is budgeted.
             let path_map = build_instance_path_structure_map(
-                templates,
+                ctx.env,
                 ctx.max_unfold_depth,
                 ctx.max_unfold_nodes,
             );
@@ -1149,14 +1162,15 @@ mod tests {
         BinOp, CompiledFnBody, CompiledFunction, ObjectiveSense, ObjectiveSet, Value, ValueMap,
     };
     use reify_test_support::{
-        TopologyTemplateBuilder, binop, fn_call, gt, literal, method_call_expr, mm, user_fn_call,
-        value_ref, value_ref_typed,
+        TopologyTemplateBuilder, binop, fn_call, gt, literal, method_call_expr, mm, module_of,
+        user_fn_call, value_ref, value_ref_typed,
     };
 
     use super::{
         ClusterDisposition, ClusterFormationCtx, WHOLE_MODEL_CLUSTER_DIM_CAP, resolve_order,
         resolve_order_ordering_and_clusters,
     };
+    use crate::DefEnv;
 
     // DIVISION OF LABOUR (task #5334, review round 2). The
     // `TopologyTemplateBuilder` fixtures below pin the union RULE in isolation —
@@ -1827,7 +1841,8 @@ mod tests {
             )
             .build();
 
-        let templates = vec![parent, child];
+        let module = module_of([parent, child]);
+        let templates = &module.templates;
 
         let values = ValueMap::default();
         let no_fns: [CompiledFunction; 0] = [];
@@ -1838,8 +1853,9 @@ mod tests {
             trait_registry: &registry,
             max_unfold_depth: 64,
             max_unfold_nodes: 10_000,
+            env: DefEnv::of_module(&module, &[]),
         };
-        let ro = resolve_order(&templates, Some(&ctx));
+        let ro = resolve_order(templates, Some(&ctx));
 
         assert_eq!(
             ro.clusters.len(),
@@ -1906,7 +1922,8 @@ mod tests {
             )
             .build();
 
-        let templates = vec![parent, child];
+        let module = module_of([parent, child]);
+        let templates = &module.templates;
 
         let values = ValueMap::default();
         let no_fns: [CompiledFunction; 0] = [];
@@ -1917,8 +1934,9 @@ mod tests {
             trait_registry: &registry,
             max_unfold_depth: 64,
             max_unfold_nodes: 10_000,
+            env: DefEnv::of_module(&module, &[]),
         };
-        let ro = resolve_order(&templates, Some(&ctx));
+        let ro = resolve_order(templates, Some(&ctx));
 
         assert_eq!(
             ro.clusters.len(),
@@ -2006,7 +2024,8 @@ mod tests {
             )
             .build();
 
-        let templates = vec![parent, child];
+        let module = module_of([parent, child]);
+        let templates = &module.templates;
 
         let values = ValueMap::default();
         let fns = [optimized_length_fn("opt_fn", "kernel::line_cost")];
@@ -2017,8 +2036,9 @@ mod tests {
             trait_registry: &registry,
             max_unfold_depth: 64,
             max_unfold_nodes: 10_000,
+            env: DefEnv::of_module(&module, &[]),
         };
-        let ro = resolve_order(&templates, Some(&ctx));
+        let ro = resolve_order(templates, Some(&ctx));
 
         assert!(
             ro.clusters.is_empty(),
@@ -2096,7 +2116,8 @@ mod tests {
             )
             .build();
 
-        let templates = vec![parent, child];
+        let module = module_of([parent, child]);
+        let templates = &module.templates;
 
         let values = ValueMap::default();
         let no_fns: [CompiledFunction; 0] = [];
@@ -2107,8 +2128,9 @@ mod tests {
             trait_registry: &registry,
             max_unfold_depth: 64,
             max_unfold_nodes: 10_000,
+            env: DefEnv::of_module(&module, &[]),
         };
-        let ro = resolve_order(&templates, Some(&ctx));
+        let ro = resolve_order(templates, Some(&ctx));
 
         assert!(
             ro.clusters.is_empty(),
@@ -2156,9 +2178,10 @@ mod tests {
             .constraint("Y", 0, None, gt(value_ref("Y", "b"), literal(mm(0.0))))
             .build();
 
-        let templates = vec![x, y];
+        let module = module_of([x, y]);
+        let templates = &module.templates;
 
-        let ro_legacy = resolve_order(&templates, None);
+        let ro_legacy = resolve_order(templates, None);
 
         let values = ValueMap::default();
         let no_fns: [CompiledFunction; 0] = [];
@@ -2169,8 +2192,9 @@ mod tests {
             trait_registry: &registry,
             max_unfold_depth: 64,
             max_unfold_nodes: 10_000,
+            env: DefEnv::of_module(&module, &[]),
         };
-        let ro_delta = resolve_order(&templates, Some(&ctx));
+        let ro_delta = resolve_order(templates, Some(&ctx));
 
         assert_eq!(
             ro_delta.order,
@@ -2238,7 +2262,8 @@ mod tests {
             )
             .build();
 
-        let templates = vec![parent, child];
+        let module = module_of([parent, child]);
+        let templates = &module.templates;
 
         let values = ValueMap::default();
         let no_fns: [CompiledFunction; 0] = [];
@@ -2249,10 +2274,11 @@ mod tests {
             trait_registry: &registry,
             max_unfold_depth: 64,
             max_unfold_nodes: 10_000,
+            env: DefEnv::of_module(&module, &[]),
         };
 
-        let cold = resolve_order(&templates, Some(&ctx));
-        let warm = resolve_order_ordering_and_clusters(&templates, Some(&ctx));
+        let cold = resolve_order(templates, Some(&ctx));
+        let warm = resolve_order_ordering_and_clusters(templates, Some(&ctx));
 
         assert!(
             !cold.clusters.is_empty(),
@@ -2385,6 +2411,7 @@ structure Rig {
             trait_registry: &registry,
             max_unfold_depth: 64,
             max_unfold_nodes: 10_000,
+            env: DefEnv::of_module(&compiled, prelude),
         };
         let ro = resolve_order(templates, Some(&ctx));
 
@@ -2496,6 +2523,7 @@ structure Rig {
             trait_registry: &registry,
             max_unfold_depth: 64,
             max_unfold_nodes: 10_000,
+            env: DefEnv::of_module(&compiled, prelude),
         };
 
         // Non-vacuity: the seeds really are INDEXED instance paths, so the union
@@ -2574,7 +2602,8 @@ structure Rig {
             .sub_component("washer", "Washer", vec![])
             .build();
         let washer = TopologyTemplateBuilder::new("Washer").build();
-        let templates = vec![rig, head, bolt, washer];
+        let module = module_of([rig, head, bolt, washer]);
+        let templates = &module.templates;
 
         let mut values = ValueMap::default();
         values.insert(count_cell, Value::Int(2));
@@ -2583,7 +2612,7 @@ structure Rig {
         let mut diags: Vec<Diagnostic> = Vec::new();
         let emitted = crate::structural_query::enumerate_descendants(
             &templates[0],
-            &templates,
+            DefEnv::of_module(&module, &[]),
             &values,
             "Rig",
             0,
@@ -2602,7 +2631,8 @@ structure Rig {
         // when both run unbudgeted-in-practice (asserted for the oracle by
         // `diags.is_empty()`); under truncation the map is a strict subset by
         // design.
-        let map = super::build_instance_path_structure_map(&templates, 64, 10_000);
+        let map =
+            super::build_instance_path_structure_map(DefEnv::of_module(&module, &[]), 64, 10_000);
         assert!(
             !map.is_empty(),
             "the instance-path map must be non-empty, else this guard passes vacuously"
@@ -2684,14 +2714,15 @@ structure Rig {
         let b = TopologyTemplateBuilder::new("B")
             .sub_component("a", "A", vec![])
             .build();
-        let templates = vec![a, b];
+        let module = module_of([a, b]);
+        let templates = &module.templates;
         let values = ValueMap::default();
 
         let mut node_budget = 10_000usize;
         let mut diags: Vec<Diagnostic> = Vec::new();
         let emitted = crate::structural_query::enumerate_descendants(
             &templates[0],
-            &templates,
+            DefEnv::of_module(&module, &[]),
             &values,
             "A",
             0,
@@ -2721,7 +2752,11 @@ structure Rig {
             oracle_paths
         );
 
-        let map = super::build_instance_path_structure_map(&templates, MAX_DEPTH, 10_000);
+        let map = super::build_instance_path_structure_map(
+            DefEnv::of_module(&module, &[]),
+            MAX_DEPTH,
+            10_000,
+        );
         for (path, structure_name) in &oracle_paths {
             assert_eq!(
                 map.get(path.as_str()),
@@ -2810,7 +2845,8 @@ structure Rig {
             )
             .build();
 
-        let templates = vec![parent, child];
+        let module = module_of([parent, child]);
+        let templates = &module.templates;
 
         let values = ValueMap::default();
         let no_fns: [CompiledFunction; 0] = [];
@@ -2821,8 +2857,9 @@ structure Rig {
             trait_registry: &registry,
             max_unfold_depth: 64,
             max_unfold_nodes: 10_000,
+            env: DefEnv::of_module(&module, &[]),
         };
-        let ro = resolve_order(&templates, Some(&ctx));
+        let ro = resolve_order(templates, Some(&ctx));
 
         assert_eq!(
             ro.clusters.len(),
@@ -2924,7 +2961,8 @@ structure Rig {
             )
             .build();
 
-        let templates = vec![parent, child];
+        let module = module_of([parent, child]);
+        let templates = &module.templates;
 
         let values = ValueMap::default();
         let no_fns: [CompiledFunction; 0] = [];
@@ -2935,8 +2973,9 @@ structure Rig {
             trait_registry: &registry,
             max_unfold_depth: 64,
             max_unfold_nodes: 10_000,
+            env: DefEnv::of_module(&module, &[]),
         };
-        let ro = resolve_order(&templates, Some(&ctx));
+        let ro = resolve_order(templates, Some(&ctx));
 
         assert_eq!(
             ro.clusters.len(),
@@ -2999,7 +3038,8 @@ structure Rig {
             )
             .build();
 
-        let templates = vec![parent, child];
+        let module = module_of([parent, child]);
+        let templates = &module.templates;
 
         let values = ValueMap::default();
         let no_fns: [CompiledFunction; 0] = [];
@@ -3010,8 +3050,9 @@ structure Rig {
             trait_registry: &registry,
             max_unfold_depth: 64,
             max_unfold_nodes: 10_000,
+            env: DefEnv::of_module(&module, &[]),
         };
-        let ro = resolve_order(&templates, Some(&ctx));
+        let ro = resolve_order(templates, Some(&ctx));
 
         assert!(
             ro.clusters.is_empty(),

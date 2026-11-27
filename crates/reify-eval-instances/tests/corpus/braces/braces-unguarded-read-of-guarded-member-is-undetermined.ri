@@ -1,0 +1,8 @@
+structure def Plate {
+    param big : Bool = false
+    where big { param rib : Length = 2mm }
+}
+structure def Asm {
+    param rib : Length = 9mm
+    sub p : Plate { constraint rib > 1mm }
+}

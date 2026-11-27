@@ -45,7 +45,7 @@ fn parse_centroid_x(val: &Value) -> f64 {
     }
 }
 
-/// `apply_transform(box(10mm,10mm,10mm), transform3(orient_axis_angle(vec3(0,0,1),90deg), vec3(5mm,0,0)))`
+/// `apply_transform(box(10mm,10mm,10mm), transform3(orient_axis_angle(dir(0,0,1),90deg), vec3(5mm,0,0)))`
 /// must emit exactly two kernel ops: Box then ApplyTransform, with the correct rotation/translation.
 ///
 /// RED: "apply_transform" not yet in GEOMETRY_FUNCTION_NAMES → call unrecognized → Undef →
@@ -55,7 +55,7 @@ fn apply_transform_happy_path_mock() {
     let source = r#"structure S {
     let g = apply_transform(
         box(10mm, 10mm, 10mm),
-        transform3(orient_axis_angle(vec3(0.0, 0.0, 1.0), 90deg), vec3(5mm, 0mm, 0mm))
+        transform3(orient_axis_angle(dir(0, 0, 1), 90deg), vec3(5mm, 0mm, 0mm))
     )
 }"#;
     let compiled = compile_source_with_stdlib(source);
@@ -246,7 +246,7 @@ fn apply_transform_occt_acceptance() {
     let source = r#"structure S {
     let g = apply_transform(
         box(10mm, 10mm, 10mm),
-        transform3(orient_axis_angle(vec3(0.0, 0.0, 1.0), 90deg), vec3(5mm, 0mm, 0mm))
+        transform3(orient_axis_angle(dir(0, 0, 1), 90deg), vec3(5mm, 0mm, 0mm))
     )
 }"#;
     let compiled = compile_source_with_stdlib(source);
@@ -380,7 +380,7 @@ fn apply_transform_occt_strict_dispatch() {
     let source = r#"structure S {
     let g = apply_transform(
         box(10mm, 10mm, 10mm),
-        transform3(orient_axis_angle(vec3(0.0, 0.0, 1.0), 90deg), vec3(5mm, 0mm, 0mm))
+        transform3(orient_axis_angle(dir(0, 0, 1), 90deg), vec3(5mm, 0mm, 0mm))
     )
 }"#;
     let compiled = compile_source_with_stdlib(source);

@@ -12,7 +12,7 @@ structure def Bracket<M: Material> : Rigid {
 
     port mount_face : MechanicalPort {
         direction = in
-        frame = Frame3 { origin = point3(0mm, 0mm, 0mm) }
+        frame = frame_at(point3(0mm, 0mm, 0mm), dir(1, 0, 0), dir(0, 0, 1))
     }
 
     sub rib : Rib { height = thickness * 0.8 }

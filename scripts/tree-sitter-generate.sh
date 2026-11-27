@@ -28,12 +28,6 @@ MAX_WAIT_SECS=120
 # buffer between giving up and treating a held lock as stale.
 MAX_LOCK_WAIT_SECS=75
 
-if ! command -v tree-sitter >/dev/null 2>&1; then
-    echo "ERROR: tree-sitter CLI not found on PATH." >&2
-    echo "Install via: cargo install tree-sitter-cli" >&2
-    exit 1
-fi
-
 if [ ! -f "$TS_DIR/grammar.js" ]; then
     echo "ERROR: $TS_DIR/grammar.js not found." >&2
     exit 1
@@ -198,6 +192,13 @@ _write_stamps() {
 if [ "$FORCE" = false ] && _stamp_is_current; then
     echo "tree-sitter: up to date (grammar.js unchanged)"
     exit 0
+fi
+
+# Only generation needs the CLI: a current src/ is answered above without one (tests/infra/test_tree_sitter_generate_without_cli.py).
+if ! command -v tree-sitter >/dev/null 2>&1; then
+    echo "ERROR: tree-sitter CLI not found on PATH." >&2
+    echo "Install via: cargo install tree-sitter-cli" >&2
+    exit 1
 fi
 
 # Acquire exclusive advisory lock to prevent concurrent generation from

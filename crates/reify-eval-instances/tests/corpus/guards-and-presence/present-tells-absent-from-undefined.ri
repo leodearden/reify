@@ -1,0 +1,10 @@
+structure def Fan  { param d : Length = undef }
+structure def Case { param needs_fan : Bool = false   sub fan : Fan where needs_fan }
+structure def Top {
+    sub a : Case
+    sub b : Case { needs_fan = true }
+    let pa = present(self.a.fan)
+    let pb = present(self.b.fan)
+    let da = determined(self.a.fan.d)
+    let db = determined(self.b.fan.d)
+}

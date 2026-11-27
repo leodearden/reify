@@ -1,0 +1,37 @@
+tests = "a constructor call in either operand of `or`, given an argument that reads something absent, makes an instance with that parameter undefined whichever way round the operands are written."
+rule = "rule A; decision 3; decision 12 (an undefined argument is reported by a built-in verdict); Part 2; readings B4, B5 and C19."
+provenance = "logic-3 R2, second half (under draft 3's skip rule, operand order decided whether the `Plate` was made; taken: decision 12 reads both operands); logic-3 holds-up (\"An undefined argument gives a made instance with that parameter undefined\")."
+needs = ["instance", "guard", "eval-reads", "value", "made", "open", "constraint", "summary"]
+answer_basis = "traced. `fan` is absent, so `self.c.fan.d` is undefined, a value, not a stand-in: the `Plate` is made with `t` undefined, in both `g1` and `g2` (readings C19: a constructor call, unlike a user function, is made). Its `t >= 3mm` is undetermined, and so is its `/arguments` verdict (readings B5). `ok` is undefined; `undefined or true` is true. Summary (readings B4): two undetermined verdicts at each of the two made instances, undetermined 4."
+
+[[expect]]
+path = "Top.g1"
+value = "true"
+
+[[expect]]
+path = "Top.g2"
+value = "true"
+
+[[expect]]
+path = "Top.g1/made[0].t"
+value = "undefined"
+
+[[expect]]
+path = "Top.g1/made[0]/constraint[0]"
+verdict = "undetermined"
+
+[[expect]]
+path = "Top.g2/made[0]/constraint[0]"
+verdict = "undetermined"
+
+[[expect]]
+path = "Top.g1/made[0]/arguments"
+verdict = "undetermined"
+
+[[expect]]
+path = "Top.g2/made[0]/arguments"
+verdict = "undetermined"
+
+[[expect]]
+path = "Top/summary"
+summary = { violated = 0, undetermined = 4, failed = 0 }

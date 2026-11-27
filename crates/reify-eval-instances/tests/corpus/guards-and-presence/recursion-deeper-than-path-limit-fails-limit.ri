@@ -1,0 +1,6 @@
+structure def Tree {
+    param depth : Int = 10
+    sub left : Tree where depth > 0 {
+        depth = self.depth - 1
+    }
+}

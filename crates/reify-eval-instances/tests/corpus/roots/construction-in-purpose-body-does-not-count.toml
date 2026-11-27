@@ -1,0 +1,10 @@
+tests = "a definition constructed only inside a purpose's body is still a default root, even where the purpose is applied."
+rule = "rule D; decisions D22 (\"A use inside a function body or a purpose body does not count\")"
+provenance = "appendix D22; PRD D13 item 9. The function-body half is `function-body-construction-does-not-count-as-use`; this is the purpose-body half."
+needs = ["roots", "purpose", "grammar-purpose"]
+answer_basis = "stated: decisions D22. Trace: the only place `Plate` is named is `Plate()` in `fits`'s body, which does not count, so `Plate`'s group is unused: a root. Nothing names `Asm`: a root. A purpose is not a structure definition and is never a root."
+today = "run `g03s.ri` (the application line taken out): `Asm.w` and `Plate.t` are both printed, as two designs."
+note = "the member line `purpose fits(self)` is the applied form of decisions E33 and parses once leaf γ₁ lands. With it taken out, the source parses on main."
+
+[[expect]]
+roots = ["Plate", "Asm"]

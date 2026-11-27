@@ -1,0 +1,29 @@
+tests = "Under a false guard a sub, a `let` and a constraint are all absent, with no value and no verdict, and the verdicts inside the absent sub are not counted."
+rule = "decision 3 (3a); Part 4"
+provenance = "design Part 14 decision 3 (model, 3a); Part 4 (\"`where` means presence for every member kind\"). second-design Q3 and probe g1.ri; claims-1 part D item 10."
+needs = ["instance", "guard", "constraint", "summary", "roots"]
+answer_basis = "stated: decision 3a and Part 4 (\"its path answers 'absent', it has no value and no verdict, its verdicts are not counted\"; a path below an absent member is absent, Part 12 Example 3)."
+today = "`Fan`'s constraint is reported violated at `Fan`'s own defaults, and `Case.k` is a cell holding undefined (run, `p8.ri`)."
+
+[[expect]]
+roots = ["Case"]
+
+[[expect]]
+path = "Case.fan"
+presence = "absent"
+
+[[expect]]
+path = "Case.fan.d"
+presence = "absent"
+
+[[expect]]
+path = "Case.k"
+presence = "absent"
+
+[[expect]]
+path = "Case/constraint[0]"
+presence = "absent"
+
+[[expect]]
+path = "Case/summary"
+summary = { violated = 0, undetermined = 0, failed = 0 }

@@ -1,0 +1,10 @@
+tests = "a `purpose Name(args)` line written in a sub's braces is a compile error that says to write it in the parent with the sub as subject."
+rule = "readings C20 (fifth bullet); PRD decision D2 (\"In a sub's braces the line is a compile error\"); PRD section 5.7, table \"What a sub's braces may hold\"."
+provenance = "the tracer's counter-example N4 (trace-braces-purposes-unknowns); critic-design F6."
+needs = ["compile-error", "braces", "purpose", "grammar-purpose"]
+answer_basis = "stated: readings C20. Inside the braces `self` is `Holder`, so nothing there names `Holder.b`."
+note = "the member line `purpose robust(self)` needs grammar-purpose (readings E33). With it taken out, the source parses on main."
+
+[[expect]]
+compile_error = "a purpose applied in the braces of `b`; write `purpose robust(self.b)` in `Holder`"
+code = "PurposeApplicationMisplaced"

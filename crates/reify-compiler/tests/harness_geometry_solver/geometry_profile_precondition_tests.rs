@@ -107,7 +107,7 @@ fn extrude_of_box_is_rejected() {
 #[test]
 fn revolve_of_box_is_rejected() {
     let n = profile_required_count(
-        "structure def S { let r = revolve(box(10mm, 10mm, 10mm), 0mm, 0mm, 0mm, 0.0, 1.0, 0.0, 3.14rad) }",
+        "structure def S { let r = revolve(box(10mm, 10mm, 10mm), point3(0mm, 0mm, 0mm), dir(0.0, 1.0, 0.0), 3.14rad) }",
     );
     assert!(
         n >= 1,
@@ -243,7 +243,7 @@ fn extrude_of_circle_is_accepted() {
 #[test]
 fn revolve_of_rectangle_is_accepted() {
     let n = profile_required_count(
-        "structure def S { let r = revolve(rectangle(20mm, 10mm), 0mm, 0mm, 0mm, 0.0, 1.0, 0.0, 3.14rad) }",
+        "structure def S { let r = revolve(rectangle(20mm, 10mm), point3(0mm, 0mm, 0mm), dir(0.0, 1.0, 0.0), 3.14rad) }",
     );
     assert_eq!(
         n, 0,
@@ -364,7 +364,7 @@ fn extrude_of_translated_rectangle_is_accepted() {
 fn sweep_of_posed_circle_along_helix_is_accepted() {
     let n = profile_required_count(
         "structure def S { let r = sweep(\
-            translate(rotate(circle(3mm), 1.0, 0.0, 0.0, 0deg - 90deg), 24mm, 0mm, 0mm), \
+            translate(rotate(circle(3mm), dir(1.0, 0.0, 0.0), 0deg - 90deg), 24mm, 0mm, 0mm), \
             helix(24mm, 7mm, 63mm)) }",
     );
     assert_eq!(

@@ -1,0 +1,8 @@
+tests = "A definition constructed only inside a function body, and held in no member of its type, stays a default root."
+rule = "rule D (clause \"a use in a function body does not count\")"
+provenance = "design Part 15.1 rule D; critic logic-2 N17(b); critic language-1 L4 item 4"
+needs = ["roots"]
+answer_basis = "stated: rule D, \"a definition constructed only inside functions stays a root\". `Asm.a` has type `Length`, so no member names `Plate`."
+
+[[expect]]
+roots = ["Plate", "Asm"]

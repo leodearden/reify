@@ -14,7 +14,7 @@ module printer
 // site, via `at transform3(orient, translation)`; placed child geometry
 // auto-surfaces, composed into the parent's frame, all the way up the tree.
 // Rotate a leaf's local +Z onto a world axis with
-// `orient_axis_angle(vec3(1m,0,0), 90deg)` (→Y) / `(vec3(0,1m,0), 90deg)` (→X).
+// `orient_axis_angle(dir(1,0,0), 90deg)` (→Y) / `(dir(0,1,0), 90deg)` (→X).
 //
 // PER-INSTANCE SIZING (task 4147 — landed; #6592 CAVEAT, 2026-08-25):
 // constructor-arg overrides flow into a child's OWN geometry (LEAF overrides:
@@ -347,7 +347,7 @@ pub structure Capstan {
     // helical spine and re-centred on the drum mid-plane. The spine runs at the
     // seat's ARC CENTRE — not at pitch_r, which is where the seated rope's
     // centreline ends up.
-    aux let groove_profile = translate(rotate(circle(groove_r), 1.0, 0.0, 0.0, 0deg - 90deg), seat_c, 0mm, 0mm)
+    aux let groove_profile = translate(rotate(circle(groove_r), dir(1.0, 0.0, 0.0), 0deg - 90deg), seat_c, 0mm, 0mm)
     aux let groove_path    = helix(seat_c, lead, groove_len)
     aux let groove_cutter  = translate(sweep(groove_profile, groove_path), 0mm, 0mm, 0mm - groove_len / 2)
 
@@ -464,8 +464,8 @@ pub structure FairleadPair {
     /// This winding's tangent plane (local y; the C2 placement negates it).
     param tangent_y : Length = 0mm - 24mm
 
-    let rot_spin_y = orient_axis_angle(vec3(1m, 0mm, 0mm), 90deg)  // leaf +Z (spin) → Y
-    let rot_to_x   = orient_axis_angle(vec3(0mm, 1m, 0mm), 90deg)  // leads run along X
+    let rot_spin_y = orient_axis_angle(dir(1, 0, 0), 90deg)  // leaf +Z (spin) → Y
+    let rot_to_x   = orient_axis_angle(dir(0, 1, 0), 90deg)  // leads run along X
     let in_x   = 0mm - pulley_x * side
     let out_x  = pulley_x * side
     // Drum-side horizontals are EXACT: pulley tangent → drum tangent line
@@ -498,8 +498,8 @@ pub structure FairleadPairMirrored {
     param w_out     : Length = 0mm - 6.956719mm
     param tangent_y : Length = 0mm - 24mm
 
-    let rot_spin_y = orient_axis_angle(vec3(1m, 0mm, 0mm), 90deg)
-    let rot_to_x   = orient_axis_angle(vec3(0mm, 1m, 0mm), 90deg)
+    let rot_spin_y = orient_axis_angle(dir(1, 0, 0), 90deg)
+    let rot_to_x   = orient_axis_angle(dir(0, 1, 0), 90deg)
     let in_x   = 0mm - pulley_x * side
     let out_x  = pulley_x * side
     let in_hx  = 0mm - pulley_x * side / 2
@@ -623,7 +623,7 @@ pub structure CapstanUnit {
     // 180° about the drum-centre X axis, so the balance symmetry is enforced
     // by placement — it cannot be broken by editing one height. (w2_in/w2_out
     // above are kept as the same image for relays and constraints.)
-    let rot_c2 = orient_axis_angle(vec3(1m, 0mm, 0mm), 180deg)
+    let rot_c2 = orient_axis_angle(dir(1, 0, 0), 180deg)
     // NO constructor args (#6592): a ctor arg never reaches the pair's sub
     // placements, so the pairs realize from their own DEFAULTS; the pins in
     // the constraint block compare those defaults against this unit's
@@ -719,7 +719,7 @@ pub structure CapstanUnitMirrored {
     let w2_in  = 0mm - w1_out
     let w2_out = 0mm - w1_in
 
-    let rot_c2 = orient_axis_angle(vec3(1m, 0mm, 0mm), 180deg)
+    let rot_c2 = orient_axis_angle(dir(1, 0, 0), 180deg)
     // The mirrored PAIR variant, no ctor args (#6592: args never reach sub
     // placements — the side −1 must live in the pair's own DEFAULT).
     sub pair_w1 = FairleadPairMirrored() at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
@@ -824,7 +824,7 @@ pub structure TendonQuad {
     /// Inner (belt B) half-separation (still clears the air-bearing OD).
     param z_b : Length = 55mm
 
-    let rot_to_y = orient_axis_angle(vec3(1m, 0mm, 0mm), 90deg)  // span runs along local +Y
+    let rot_to_y = orient_axis_angle(dir(1, 0, 0), 90deg)  // span runs along local +Y
     let neg_z_a  = 0mm - z_a
     let neg_z_b  = 0mm - z_b
 
@@ -860,7 +860,7 @@ pub structure RailTendons {
     param span_bu : Length = 400mm
     param span_bl : Length = 400mm
 
-    let rot_to_y = orient_axis_angle(vec3(1m, 0mm, 0mm), 90deg)  // span runs along local +Y
+    let rot_to_y = orient_axis_angle(dir(1, 0, 0), 90deg)  // span runs along local +Y
     // Each rail belt run is a HALF span (carriage → rail end): a LinearTendon
     // overridden to its span. Centre offset = span / 2, so a +half span is
     // y∈[0,+span] (front) and a −half span is y∈[−span,0] (back) — both anchored
@@ -950,8 +950,8 @@ pub structure DriveTendons {
     param z_a : Length = 80mm
     param z_b : Length = 55mm
 
-    let rot_to_cross = orient_axis_angle(vec3(0mm, 0mm, 1m), 90deg)  // Y runs → gantry X-cross
-    let flip_ab      = orient_axis_angle(vec3(0mm, 0mm, 1m), 180deg) // swap A↔B fore/aft (rails + idlers)
+    let rot_to_cross = orient_axis_angle(dir(0, 0, 1), 90deg)  // Y runs → gantry X-cross
+    let flip_ab      = orient_axis_angle(dir(0, 0, 1), 180deg) // swap A↔B fore/aft (rails + idlers)
     let neg_rail_x   = 0mm - rail_x
 
     // Y rails: HALF spans (RailTendons), A-front/B-back on the right; the left
@@ -1006,8 +1006,8 @@ pub structure DriveTendons {
     // belt land at the back. The REAR ends of the rails/returns feed the
     // rear-routing section below (which owns all the back pulleys since the
     // back-crosses were retired — the capstans close the loops now).
-    let rot_to_y    = orient_axis_angle(vec3(1m, 0mm, 0mm), 90deg)  // return runs along +Y
-    let rot_to_x    = orient_axis_angle(vec3(0mm, 1m, 0mm), 90deg)  // X-runs / X-axis pulleys
+    let rot_to_y    = orient_axis_angle(dir(1, 0, 0), 90deg)  // return runs along +Y
+    let rot_to_x    = orient_axis_angle(dir(0, 1, 0), 90deg)  // X-runs / X-axis pulleys
     let neg_z_a     = 0mm - z_a
     let neg_z_b     = 0mm - z_b
     let rail_half   = 400mm   // == BearingRod.length / 2 — rail runs end at ±rail_half
@@ -1385,16 +1385,16 @@ pub structure DriveTendons {
     // rot_to_x / rot_to_y are the axis-aligned specials of the same
     // construction; axis sign only flips disc normal / tendon direction,
     // both symmetric.
-    let rot_disc_b2 = orient_axis_angle(vec3(sl_b2_dx, cap_pitch_m, 0mm), 90deg)
-    let rot_run_b2  = orient_axis_angle(vec3(0mm - cap_pitch_m, sl_b2_dx, 0mm), 90deg)
+    let rot_disc_b2 = orient_axis_angle(dir(sl_b2_ux, sl_b2_uy, 0), 90deg)
+    let rot_run_b2  = orient_axis_angle(dir(0 - sl_b2_uy, sl_b2_ux, 0), 90deg)
     // v3.2 orientations via orient_look_at (leaf +Z → forward; roll is
     // irrelevant for tendons and discs, up just breaks the parallel case):
     // diagonal tendon +Z → ê; dnturn disc axis ŷ×ê ∝ (−dz, 0, dx) (leaves
     // the horizontal — compound-angle bracket); up-turn disc axis ê×ẑ ∝
     // (−dy, dx, 0) (horizontal, vertical wrap plane).
-    let rot_diag_a1 = orient_look_at(vec3(0mm - fa1_dx, 0mm - fa1_dy, 0mm - fa1_dz), vec3(0mm, 1m, 0mm))
-    let rot_dnt_a1  = orient_look_at(vec3(0mm - fa1_dz, 0mm, fa1_dx), vec3(0mm, 1m, 0mm))
-    let rot_up_a1   = orient_look_at(vec3(0mm - fa1_dy, fa1_dx, 0mm), vec3(0mm, 0mm, 1m))
+    let rot_diag_a1 = orient_look_at(dir(0 - fa1_ux, 0 - fa1_uy, 0 - fa1_uz), dir(0, 1, 0))
+    let rot_dnt_a1  = orient_look_at(dir(0 - fa1_uz, 0, fa1_ux), dir(0, 1, 0))
+    let rot_up_a1   = orient_look_at(dir(0 - fa1_uy, fa1_ux, 0), dir(0, 0, 1))
     // Low corner + up-turn stations, named ONCE so the placements below and
     // the wrap-sense constraints at the end read the SAME cells (a constraint
     // that re-states the offset instead of reading it cannot catch a flipped
@@ -1796,8 +1796,8 @@ pub structure CoreXY {
     ///     built with a -65mm Y extent.
     param y_rail_len : Length = 800mm
 
-    let rot_to_y   = orient_axis_angle(vec3(1m, 0mm, 0mm), 90deg)   // leaf +Z → +Y
-    let rot_to_x   = orient_axis_angle(vec3(0mm, 1m, 0mm), 90deg)   // leaf +Z → +X
+    let rot_to_y   = orient_axis_angle(dir(1, 0, 0), 90deg)   // leaf +Z → +Y
+    let rot_to_x   = orient_axis_angle(dir(0, 1, 0), 90deg)   // leaf +Z → +X
     let neg_y_rail = 0mm - y_rail_offset
     let neg_x_rail = 0mm - x_rail_offset
 
@@ -2333,7 +2333,7 @@ pub structure AFrame {
                 // Rail bore: one Y-axis cylinder cuts both sockets' C-grips
                 // (R_x(−90°) maps the cylinder's +Z axis onto +Y; base at y0).
                 translate(
-                    rotate(cylinder(rail_d_m / 2 + 0.5mm, rail_span_m), 1.0, 0.0, 0.0, 0deg - 90deg),
+                    rotate(cylinder(rail_d_m / 2 + 0.5mm, rail_span_m), dir(1.0, 0.0, 0.0), 0deg - 90deg),
                     rail_x_w, centre_y - rail_span_m / 2, rail_z_m),
                 // Rear-pillar tendon-routing window (open outboard + rear).
                 translate(box(50mm, pil_wy + 10mm, win_z1 - win_z0), win_x0 + 25mm, pil_r_cy - 5mm, win_cz)
@@ -2388,13 +2388,13 @@ pub structure AFrame {
         // outside per spec) — linear_pattern as a boolean cutter.
         linear_pattern(
             translate(
-                rotate(cylinder(grom_d / 2, side_t * 3), 1.0, 0.0, 0.0, 90deg),
+                rotate(cylinder(grom_d / 2, side_t * 3), dir(1.0, 0.0, 0.0), 90deg),
                 centre_x - 150mm, y0 + side_t * 1.5, 0mm - 50mm),
             1, 0, 0, 2, 300mm)
     )
 
     let body = union(
-        union(side_r, mirror(side_r, centre_x, 0mm, 0mm, 1.0, 0.0, 0.0)),
+        union(side_r, mirror(side_r, point3(centre_x, 0mm, 0mm), dir(1.0, 0.0, 0.0))),
         centre_faces
     )
 

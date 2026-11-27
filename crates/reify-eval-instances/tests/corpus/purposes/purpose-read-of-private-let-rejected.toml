@@ -1,0 +1,10 @@
+tests = "a purpose's body reads only the `pub` members of its subject: a read of a private `let` is a compile error at the purpose's declaration."
+rule = "spec 7.4 and 8.3; PRD D13 item 14, ruled by Leo on 2026-11-26; readings E38 (a purpose is another definition: the lead's reading of the ruling)."
+provenance = "Leo's ruling on the PRD's D13 item 14."
+needs = ["compile-error", "purpose"]
+answer_basis = "stated: readings E38. The subject's declared type is `Plate`, whose `area` is a `let` without `pub`. The purpose is declared and never applied; the error is in its body."
+today = "run `priv3.ri`: compiles."
+
+[[expect]]
+compile_error = "the purpose `big_enough` reads `area`, a `let` of `Plate` that is not `pub`"
+code = "PrivateLetReadFromAnotherDefinition"

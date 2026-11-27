@@ -40,7 +40,7 @@
 # Keystone for H2 (reads intra-run-serial), H3/H9 (read host-exclusive), and
 # H5-H7 (reclassify entries as they rescue/split host-exclusive files).
 
-# --- intra-run-serial (10) ---------------------------------------------------
+# --- intra-run-serial ----------------------------------------------------------
 # test_reify_audit_pdiag.sh (task #5405) drives `reify_audit_guard ...
 # rebuild-budget-safe`, which forks `cargo build --release -p reify-audit` on a
 # stale binary and so mutates the lane-shared CoW target/ — the identical reason
@@ -74,8 +74,13 @@ test_canon_run_host.sh intra-run-serial
 # runs real sccache servers and a private rclone store, and compiles scratch
 # workspaces at a per-test CANON; PRD §6 classifies such members intra-run-serial.
 test_canon_cache_host.sh intra-run-serial
+# test_canon_launch_sites.sh (task #10230), like test_canon_run_host.sh, enters mount
+# namespaces with /usr/bin/bwrap; PRD §6 classifies such members intra-run-serial.
+test_canon_launch_sites.sh intra-run-serial
+# test_canon_interactive.sh (task #10231) enters mount namespaces with /usr/bin/bwrap (PRD §6).
+test_canon_interactive.sh intra-run-serial
 
-# --- host-exclusive (5) ------------------------------------------------------
+# --- host-exclusive ------------------------------------------------------------
 # test_bundle_clean_install.sh (task #9732) is default-SKIPPING: armed only by
 # REIFY_RUN_BUNDLE_CLEAN_INSTALL=1, when it runs a cold scripts/build-bundle.sh
 # (cargo release builds, npm, tauri bundling) plus two docker containers —
@@ -106,6 +111,7 @@ test_await_merge_landing.sh pool
 test_bundle_closure.sh pool
 test_canon_cache_units.sh pool
 test_canon_run_units.sh pool
+test_canon_store_units.sh pool
 test_cargo_incremental_lane_decision.sh pool
 test_cargo_inputs_lib.sh pool
 test_cargo_test_tally.sh pool
@@ -122,6 +128,7 @@ test_docker_create_probe.sh pool
 # pool: stub reify-audit + stub MCP server; its entrypoint cases run reify_audit_guard only over a non-git temp root, where it fails open before any cargo build.
 test_docs_truth_sweep.sh pool
 test_docs_truth_sweep_units.sh pool
+test_drop_canon_invocation_files.sh pool
 test_e3_analysis.sh pool
 test_engine_hash_closure.sh pool
 test_ensure_gui_sidecar_placeholder.sh pool
@@ -251,6 +258,8 @@ test_run_all.sh pool
 test_run_all_clock_marker_sanitize.sh pool
 test_run_all_content_skip.sh pool
 test_run_all_member_lifetime.sh pool
+test_run_all_member_tmpdir.sh pool
+test_run_all_phase_log.sh pool
 test_run_all_pool_lock_host_global.sh pool
 test_run_all_tiering.sh pool
 test_run_all_timing.sh pool
@@ -263,6 +272,7 @@ test_scope_boundary.sh pool
 test_seed_depinfo_relocation.sh pool
 test_seed_warm_base_initial.sh pool
 test_seed_warm_lane.sh pool
+test_seed_warm_lane_canon_stamp.sh pool
 test_setup_dev_no_ldconfig.sh pool
 test_setup_worktree_debug_port.sh pool
 test_sidecar_typecheck_test_path.sh pool
@@ -283,7 +293,9 @@ test_test_run_semaphore.sh pool
 test_thin_warm_lane.sh pool
 test_trampoline_decode_ratchet.sh pool
 test_tree_sitter_abi_pin.sh pool
+test_tree_sitter_generate_without_cli.sh pool
 test_tree_sitter_parse_isolation.sh pool
+test_tree_sitter_stale_run_eviction.sh pool
 test_typecheck_compiles_tests.sh pool
 test_unlimited_holder_lock_pins.sh pool
 test_verify_admission_knob_parity.sh pool
@@ -302,6 +314,7 @@ test_verify_ledger_cli.sh pool
 test_verify_ledger_e2e.sh pool
 test_verify_ledger_lane_seed.sh pool
 test_verify_narrowing_selection.sh pool
+test_verify_nextest_absent_suites_exit_record.sh pool
 test_verify_nextest_probe.sh pool
 test_verify_offline_partition.sh pool
 test_verify_pipeline_guard.sh pool
@@ -322,6 +335,7 @@ test_verify_scope.sh pool
 test_verify_scope_record.sh pool
 test_verify_scope_source_mode.sh pool
 test_verify_selective_infra_event_log_isolation.sh pool
+test_verify_selective_infra_member_exit_record.sh pool
 test_verify_selector_copies.sh pool
 test_verify_semaphore_wiring.sh pool
 test_verify_test_threads.sh pool

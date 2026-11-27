@@ -299,7 +299,7 @@ class NamespaceRows(HostCase):
             time.sleep(0.01)
         os.kill(process.pid, signal.SIGTERM)
         _, stderr = process.communicate()
-        self.assertIn(process.returncode, {7, 143}, stderr)
+        self.assertIn(process.returncode, {7, fx.namespace_death_status(signal.SIGTERM)}, stderr)
 
     def test_a_descriptor_the_caller_passes_reaches_the_command(self):
         read_end, write_end = os.pipe()

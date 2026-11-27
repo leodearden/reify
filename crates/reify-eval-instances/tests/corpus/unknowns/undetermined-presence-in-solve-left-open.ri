@@ -1,0 +1,13 @@
+structure def Beam {
+    param len : Length
+    constraint len == 7mm
+}
+structure def Asm {
+    param use_b : Bool
+    let x : Length = auto
+    constraint x == 20mm
+    sub b : Beam where use_b {
+        len = auto
+    }
+    constraint self.b.len == x / 2 where use_b
+}

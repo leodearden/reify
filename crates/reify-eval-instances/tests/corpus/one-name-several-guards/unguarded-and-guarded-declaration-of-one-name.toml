@@ -1,0 +1,27 @@
+tests = "a name declared once without a guard and once under a guard is the unguarded declaration while the guard is false, a failure naming both while the guard is true, and of undetermined presence while the guard is undefined."
+rule = "rule E; decision 12 (\"More than one declaration of a name present at once is a failure\"); readings C11, B2 and E28"
+provenance = "task 10049 (its shape: a top-level `param body : Solid` shadowed by a guarded `param body : Solid`, here with a `Length` in place of the solid)"
+needs = ["instance", "guard", "one-name", "compile-error"]
+answer_basis = '''
+traced.
+Compile: readings C11 says same-name declarations under guards compile whether or not the guards are exclusive (spec 6.4 to be amended); both are parameters, so `(compile)` is ok.
+Reading (not stated by rule E): an unguarded declaration is treated as one whose guard is always true. Rule E speaks of declarations under guards; this entry applies it to that reading.
+`off`: one declaration present, the other absent, so the unguarded one applies: 3 mm.
+`on`: two declarations present at once, so `failure ambiguous-declaration` (readings B2).
+`unk`: one present and one of undetermined presence, so presence undetermined.'''
+today = "in the `Solid` form it compiles with no diagnostic, and three resolvers choose different realizations (task 10049 record)."
+
+[[expect]]
+compile = "ok"
+
+[[expect]]
+path = "Holder.off.w"
+value = "3 mm"
+
+[[expect]]
+path = "Holder.on.w"
+failure = "ambiguous-declaration"
+
+[[expect]]
+path = "Holder.unk.w"
+presence = "undetermined"

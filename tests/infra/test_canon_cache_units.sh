@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Infrastructure test for task 10232 (scripts/canon_cache.py: the per-policy
-# cache environment, the compile guard, the store link, the private sccache
-# session, supervision and the build_cache record; canonical-build-path PRD C4-C7).
+# cache environment, the compile guard, the private sccache session,
+# supervision and the build_cache record; canonical-build-path PRD C4-C7).
+# Task 10441 split the store link out into scripts/canon_store.py, whose suite
+# is test_canon_store_units.sh.
 #
 # This wrapper is the member run_all.sh actually discovers: it globs
 # `test_*.sh` only. The real assertions live in the sibling .py; without this

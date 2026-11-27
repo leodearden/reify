@@ -5,7 +5,7 @@ module realized_world_datum_user_fn
 fn ax_of(c : Solid) -> Axis { c.axis }
 
 structure P {
-    let cyl = revolve(rectangle(20mm, 10mm), -10mm, 0mm, 0mm, 0.0, 1.0, 0.0, 6.283185307179586rad)
+    let cyl = revolve(rectangle(20mm, 10mm), point3(-10mm, 0mm, 0mm), dir(0.0, 1.0, 0.0), 6.283185307179586rad)
     let g = box(2mm, 2mm, 2mm)
     let a = ax_of(cyl)
     let r = circular_pattern(g, ax_of(cyl), 4, 90deg)

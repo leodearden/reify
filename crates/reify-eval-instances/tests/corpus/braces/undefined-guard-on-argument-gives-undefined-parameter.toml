@@ -1,0 +1,24 @@
+tests = "a parameter whose argument's guard is undefined is undefined, and the instance's built-in verdict on its arguments is undetermined."
+rule = "Part 6.2; Part 4 (an undefined guard gives presence undetermined, said of members, not of arguments); readings E27 and B5."
+provenance = "logic-2 N10, second half (\"Under an undefined guard the parameter is undefined, with the guard's cause, and is not an unknown\", proposed); logic-3 Part A row N10 (\"an undefined guard on an assignment still unstated\"). Draft 5 does not say; settled in part by readings E27."
+needs = ["compile-error", "instance", "braces", "guard", "constraint", "summary", "unknown"]
+answer_basis = "traced for the guard, `t` and `/arguments`; open for the rest. `Asm` is a root and `thick` has no default, so `thick` is undefined, and so is the guard's cell `Asm.a/braces/guard[0]`. By readings E27 the parameter `t` is then `value undefined`, not an unknown. By readings B5 an argument whose own guard is undefined makes `/arguments` undetermined. Open: what `a`'s other unknown `w` and its solve do, and so the summary; owner task 10610 (readings E27). None of the pinned rows reads a solve, so the entry runs."
+
+[[expect]]
+compile = "ok"
+
+[[expect]]
+path = "Asm.a"
+presence = "present"
+
+[[expect]]
+path = "Asm.a/braces/guard[0]"
+value = "undefined"
+
+[[expect]]
+path = "Asm.a.t"
+value = "undefined"
+
+[[expect]]
+path = "Asm.a/arguments"
+verdict = "undetermined"

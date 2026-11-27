@@ -21,12 +21,17 @@
 //      granularity (a second overload of an already-documented name must be
 //      mirrored too, not just the name; task 5583).
 // NOT enforced, and therefore review-time responsibilities:
-//   - argument DIMENSION/TYPE. Only arity is checked for these ops (no Key
-//     Geometry Operation has a checkable slot in builtin_signatures.rs), so
-//     `extrude(prof, 5)` would compile just as green. The unit convention used
-//     below — positions/lengths in `mm`, angles in `deg`, direction/axis/normal
-//     components and counts as plain numbers — mirrors the chunk's prose line
-//     but nothing verifies it;
+//   - argument DIMENSION/TYPE of UNSLOTTED operands. builtin_signatures.rs
+//     checks the slotted ones at compile time (lengths, angles, and the
+//     Direction axis of rotate/rotate_around and normal of mirror), so a wrong
+//     type there is an Error that reds the compile. Pattern direction/axis
+//     components and counts have no slot, so
+//     `linear_pattern(solid, 1mm, 0mm, 0mm, 3, 5mm)` would compile just as
+//     green. The unit convention used below — positions/lengths in `mm`,
+//     angles in `deg`, rotate's and rotate_around's axis and mirror's normal
+//     as `dir(..)`, other direction/axis components and counts as plain
+//     numbers — mirrors the chunk's prose line, verified only where a slot
+//     exists;
 //   - argument ORDER.
 // Keep the two files in lockstep: if you edit a signature in one, edit it in the
 // other. Renaming a call here to something with no compiler arm goes RED.
@@ -35,7 +40,7 @@
 // the match arms in reify-compiler/src/geometry{,_transform,_boolean,_modify,
 // _curve}.rs). Where an ergonomic value-form overload exists (mirror/plane,
 // circular_pattern/axis, rotate/orientation) it is exercised alongside the
-// all-scalar form.
+// scalar or Direction form.
 
 structure def StdlibGeometryOpsSmoke {
     // ── Inputs (real constructors) ──────────────────────────────────────────
@@ -74,24 +79,26 @@ structure def StdlibGeometryOpsSmoke {
 
     // ── Sweep ────────────────────────────────────────────────────────────────
     let ex = extrude(prof, 5mm)                                  // extrude(profile, distance)
-    let rv = revolve(prof, 0mm, 0mm, 0mm, 0, 1, 0, 360deg)      // revolve(profile, ox,oy,oz, ax,ay,az, angle)
+    let rv = revolve(prof, point3(0mm, 0mm, 0mm), dir(0, 1, 0), 360deg)  // revolve(profile, origin, direction, angle)
+    let rva = revolve(prof, axis_z(point3(0mm, 0mm, 0mm)), 360deg)       // revolve(profile, axis, angle)
     let sw = sweep(prof2, path)                                  // sweep(profile, path)
     let lf = loft(prof, prof2)                                   // loft(profile1, profile2, …)
     let exs = extrude_symmetric(prof, 10mm)                      // extrude_symmetric(profile, total_distance) [total extent]
-    let exi = extrude_infinite(prof, 0, 0, 1, "positive")        // extrude_infinite(profile, dx,dy,dz, direction) [unbounded]
-    let rvf = revolve_full(prof, 0mm, 0mm, 0mm, 0, 1, 0)        // revolve_full(profile, ox,oy,oz, ax,ay,az) [no angle]
+    let exi = extrude_infinite(prof, dir(0, 0, 1))               // extrude_infinite(profile, direction) [unbounded, one side]
+    let exis = extrude_infinite_symmetric(prof, dir(0, 0, 1))    // extrude_infinite_symmetric(profile, direction) [unbounded, both sides]
+    let rvf = revolve_full(prof, point3(0mm, 0mm, 0mm), dir(0, 1, 0))   // revolve_full(profile, origin, direction) [no angle]
     let swg = sweep_guided(prof2, path, guide)                   // sweep_guided(profile, path, guide)
     let pip = pipe(path, 2mm)                                    // pipe(path, radius) [path FIRST, no profile arg]
     let lfg = loft_guided(prof, prof2, guide)                    // loft_guided(profile1, profile2, …, guide) [guide TRAILING]
 
     // ── Transform ─────────────────────────────────────────────────────────────
     let tr  = translate(solid, 1mm, 2mm, 3mm)      // translate(geo, dx, dy, dz)
-    let ro5 = rotate(solid, 0, 0, 1, 90deg)        // rotate(geo, ax, ay, az, angle)  [5, scalar]
+    let ro3 = rotate(solid, dir(0, 0, 1), 90deg)  // rotate(geo, axis, angle)        [3, direction]
     let ro2 = rotate(solid, orient_identity())     // rotate(geo, orientation)        [2, value]
     let mi2 = mirror(solid, plane_xy(0mm))         // mirror(geo, plane)              [2, value]
-    let mi7 = mirror(solid, 0mm, 0mm, 0mm, 1, 0, 0)  // mirror(geo, ox,oy,oz, nx,ny,nz) [7, scalar]
+    let mi3 = mirror(solid, point3(0mm, 0mm, 0mm), dir(1, 0, 0))  // mirror(geo, origin, normal) [3, direction]
     let sc  = scale(solid, 2.0)                    // scale(geo, factor)
-    let rar = rotate_around(solid, 0mm, 0mm, 0mm, 0, 0, 1, 90deg)  // rotate_around(geo, px,py,pz, ax,ay,az, angle)
+    let rar = rotate_around(solid, point3(0mm, 0mm, 0mm), dir(0, 0, 1), 90deg)  // rotate_around(geo, pivot, axis, angle)
     let apt = apply_transform(solid, transform3_identity())         // apply_transform(geo, transform)  [rigid]
     let afa = affine_apply(solid, affine_scale(1.0, 1.0, 1.5))      // affine_apply(geo, map)           [general affine]
 

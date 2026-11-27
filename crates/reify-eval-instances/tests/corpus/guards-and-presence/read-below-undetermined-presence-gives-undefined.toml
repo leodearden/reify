@@ -1,0 +1,29 @@
+tests = "a read below an instance whose presence is undetermined gives undefined, and the verdict that reads it is undetermined, not failed."
+rule = "Part 4 (\"Reading something that is not there gives undefined\", which covers \"a member whose presence is undetermined ... and anything below\"); decision 3; readings B1, B4, B5 and E28."
+provenance = "logic-2 N5 (taken in outcome: logic-3 Part A row N5 \"Closed in outcome\")."
+needs = ["instance", "guard", "constraint", "summary"]
+answer_basis = "traced. `cooled = x` is an argument; the bare `x` is not a member of `Case`, so it is `Top.x`, undefined at the root. `Top.c.fan`'s guard is undefined: presence undetermined. `Top.c.fan.flow` is below it, so the host asking for that path is answered `presence-undetermined` (readings B1); the reader `Top.fl` turns that into undefined, and that is pinned at `Top.fl`. `Top`'s constraint reads it: undetermined. `c`'s argument `x` is undefined and is not the literal `undef`, so `Top.c/arguments` is undetermined (readings B5). Summary (readings B4, E28): `Top/constraint[0]`, `Top.c/arguments`, and one for `fan`'s undetermined presence (its own constraint not counted): undetermined 3; `fl` is a cell with an undefined value, not a failure, and no verdict. `Top` is a root and is given no arguments, so `Top/arguments` is satisfied. The braces hold only an argument assignment, so the entry does not need `braces` (readings F)."
+
+[[expect]]
+path = "Top.c.fan"
+presence = "undetermined"
+
+[[expect]]
+path = "Top.c.fan.flow"
+presence = "undetermined"
+
+[[expect]]
+path = "Top.fl"
+value = "undefined"
+
+[[expect]]
+path = "Top/constraint[0]"
+verdict = "undetermined"
+
+[[expect]]
+path = "Top.c/arguments"
+verdict = "undetermined"
+
+[[expect]]
+path = "Top/summary"
+summary = { violated = 0, undetermined = 3, failed = 0 }

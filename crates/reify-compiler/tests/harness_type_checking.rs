@@ -81,14 +81,20 @@ mod mul_div_operand_guard_tests;
 mod mul_div_static_runtime_parity;
 #[path = "harness_type_checking/numeric_and_range_literals_example.rs"]
 mod numeric_and_range_literals_example;
+#[path = "harness_type_checking/orientation_direction_slot_tests.rs"]
+mod orientation_direction_slot_tests;
 #[path = "harness_type_checking/polymorphic_zero_tests.rs"]
 mod polymorphic_zero_tests;
 #[path = "harness_type_checking/real_dimensionless_unification_tests.rs"]
 mod real_dimensionless_unification_tests;
+#[path = "harness_type_checking/selector_angle_direction_slot_tests.rs"]
+mod selector_angle_direction_slot_tests;
 #[path = "harness_type_checking/self_datum_projection_tests.rs"]
 mod self_datum_projection_tests;
 #[path = "harness_type_checking/self_keyword_tests.rs"]
 mod self_keyword_tests;
+#[path = "harness_type_checking/sweep_direction_slot_tests.rs"]
+mod sweep_direction_slot_tests;
 #[path = "harness_type_checking/undef_literal_compile_tests.rs"]
 mod undef_literal_compile_tests;
 #[path = "harness_type_checking/unresolved_function_tests.rs"]

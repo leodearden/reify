@@ -1,0 +1,33 @@
+tests = "the text form of a path to a made instance, a cell's opened value, and an instance read as a value."
+rule = "rule F; Part 8; Part 7.2; Part 7.3."
+provenance = "design Part 8 (`Asm.c/made[0].t`, `Asm.c/open.area`) and Words (`root/a/as-value`); the path text of decisions A. design Part 7.2; Part 8 path `Asm.c/open.area`."
+needs = ["instance", "value", "constraint", "summary", "made", "open", "paths"]
+answer_basis = "traced. `Plate()` makes `Asm.c/made[0]` with `t` = 2 mm, its constraint violated and counted once; `c.area` opens the value: 80 mm²; `s`'s value carries `t` = 4 mm and nothing derived."
+
+[[expect]]
+path = "Asm.c/made[0].t"
+value = "2 mm"
+
+[[expect]]
+path = "Asm.c/made[0]/constraint[0]"
+verdict = "violated"
+
+[[expect]]
+path = "Asm.c/open.area"
+value = "80 mm^2"
+
+[[expect]]
+path = "Asm.a"
+value = "80 mm^2"
+
+[[expect]]
+path = "Asm.s/as-value"
+value = "Plate { t: 4 mm }"
+
+[[expect]]
+path = "Asm.e"
+value = "Plate { t: 4 mm }"
+
+[[expect]]
+path = "Asm/summary"
+summary = { violated = 1, undetermined = 0, failed = 0 }

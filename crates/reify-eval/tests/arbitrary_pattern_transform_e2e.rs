@@ -15,7 +15,7 @@ use reify_core::Severity;
 use reify_ir::{ExportFormat, GeometryOp};
 use reify_test_support::{MockConstraintChecker, MockGeometryKernel, compile_source_with_stdlib};
 
-/// `arbitrary_pattern(box(2mm,2mm,10mm), [transform3(orient_axis_angle(vec3(0.0,1.0,0.0),90deg),
+/// `arbitrary_pattern(box(2mm,2mm,10mm), [transform3(orient_axis_angle(dir(0,1,0),90deg),
 /// vec3(0mm,0mm,0mm))])` (2-arg LIST form) must decode to exactly ONE instance whose rotation
 /// quaternion is the Y-90 scalar-first quat `[0.7071,0,0.7071,0]` and whose translation is
 /// `[0,0,0]`.
@@ -28,7 +28,7 @@ fn arbitrary_pattern_list_form_happy_path_mock() {
     let source = r#"structure S {
     let g = arbitrary_pattern(
         box(2mm, 2mm, 10mm),
-        [transform3(orient_axis_angle(vec3(0.0, 1.0, 0.0), 90deg), vec3(0mm, 0mm, 0mm))]
+        [transform3(orient_axis_angle(dir(0, 1, 0), 90deg), vec3(0mm, 0mm, 0mm))]
     )
 }"#;
     let compiled = compile_source_with_stdlib(source);

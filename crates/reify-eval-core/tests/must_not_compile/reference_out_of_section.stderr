@@ -1,0 +1,13 @@
+error: lifetime may not live long enough
+ --> tests/must_not_compile/reference_out_of_section.rs:4:47
+  |
+4 |     *cx.exclusive(|numbers: &mut Vec<i64>, _| &numbers[0]).await
+  |                             -               - ^^^^^^^^^^^ returning this value requires that `'1` must outlive `'2`
+  |                             |               |
+  |                             |               return type of closure is &'2 i64
+  |                             let's call the lifetime of this reference `'1`
+  |
+help: dereference the return value
+  |
+4 |     *cx.exclusive(|numbers: &mut Vec<i64>, _| *&numbers[0]).await
+  |                                               +

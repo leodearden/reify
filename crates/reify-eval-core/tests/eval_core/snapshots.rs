@@ -1,0 +1,244 @@
+//! The index of a snapshot: within a snapshot a path is answered once, and
+//! a result is kept while a live snapshot's index points at it (contract
+//! 4.4, 5.5); an edit makes a new snapshot (contract 2.4), and two
+//! snapshots with the same inputs are the same snapshot (contract 3.1).
+//! Every count of live boxes is read after a drain.
+
+use reify_eval_core::{
+    Answer, Budget, Core, Erased, Event, Input, InputKey, Kind, Outcome, Path, Snapshot,
+    SnapshotId, Turn,
+};
+
+use crate::toy::{self, BoxShape, Cell, Watch};
+
+/// The answer at `at` to a fresh request for it alone on `snapshot`, and
+/// the snapshot the answer is tagged with.
+fn tagged_answer_alone(
+    core: &mut Core,
+    snapshot: &Snapshot,
+    at: &Path,
+) -> (Answer<Erased>, SnapshotId) {
+    let (request, events) = toy::evaluate_to_idle(core, snapshot, &[at]);
+    let tagged = events
+        .iter()
+        .find_map(|event| match event {
+            Event::Answered { snapshot, .. } => Some(*snapshot),
+            _ => None,
+        })
+        .expect("an answer was given");
+    (toy::the_answer(&events, &request, at), tagged)
+}
+
+#[test]
+fn a_second_request_on_a_snapshot_is_answered_from_its_index_without_running_the_body_again() {
+    let mut core = toy::with_cell().build();
+    let snapshot = core.snapshot([
+        toy::named("a", 2_i64),
+        toy::named("b", 3_i64),
+        toy::root("total", toy::cell(&["a", "b"])),
+    ]);
+
+    let first = core.evaluate(&snapshot, toy::roots(&["total"]), Budget::unlimited());
+    assert_eq!(core.turn(), Turn::Idle);
+    let answered = toy::the_answer(&core.take_events(), &first, &toy::at("total"));
+    assert_eq!(answered.downcast::<i64>(), Answer::Final(Outcome::of(5)));
+
+    let second = core.evaluate(&snapshot, toy::roots(&["total"]), Budget::unlimited());
+    assert_eq!(core.turn(), Turn::Idle);
+    let again = toy::the_answer(&core.take_events(), &second, &toy::at("total"));
+    assert_eq!(again.downcast::<i64>(), Answer::Final(Outcome::of(5)));
+    assert_eq!(core.counters().body_runs(Cell::ID), 1);
+}
+
+#[test]
+fn a_result_is_kept_while_a_live_snapshot_s_index_points_at_it() {
+    let watch = Watch::default();
+    let mut core = toy::ungated(toy::with_toys(), &watch);
+    let snapshot = core.snapshot([
+        toy::named("side", 2_i64),
+        toy::root("box", toy::shape("side")),
+    ]);
+    let request = core.evaluate(&snapshot, toy::roots(&["box"]), Budget::unlimited());
+    core.run();
+    let events = core.take_events();
+    assert_eq!(
+        toy::the_value::<BoxShape>(&events, &request, &toy::at("box")).volume,
+        8
+    );
+
+    drop(events);
+    core.drain();
+    assert_eq!(
+        watch.live_boxes(),
+        1,
+        "the snapshot is held and the request is live"
+    );
+
+    core.end(request);
+    core.drain();
+    assert_eq!(watch.live_boxes(), 1, "the host still holds the snapshot");
+
+    drop(snapshot);
+    core.drain();
+    assert_eq!(
+        watch.live_boxes(),
+        1,
+        "the store owns its results until they are trimmed (contract 5.5)"
+    );
+
+    drop(core);
+    assert_eq!(watch.live_boxes(), 0);
+}
+
+#[test]
+fn a_result_in_an_index_is_released_on_its_kernel_s_thread_when_the_core_is_dropped() {
+    let watch = Watch::default();
+    let mut core = toy::ungated(toy::with_toys(), &watch);
+    let snapshot = core.snapshot([
+        toy::named("side", 2_i64),
+        toy::root("box", toy::shape("side")),
+    ]);
+    let _request = core.evaluate(&snapshot, toy::roots(&["box"]), Budget::unlimited());
+    core.run();
+    drop(core.take_events());
+
+    drop(core);
+    assert_eq!(watch.live_boxes(), 0);
+    drop(snapshot);
+}
+
+#[test]
+fn an_edit_makes_a_new_snapshot_whose_answers_follow_the_edited_input() {
+    let mut core = toy::with_cell().build();
+    let first = core.snapshot([
+        toy::named("a", 2_i64),
+        toy::root("total", toy::cell(&["a"])),
+    ]);
+    let second = first.edit([(InputKey::named("a"), Some(toy::input_of(3_i64)))]);
+    assert_ne!(first.id(), second.id());
+    let total = toy::at("total");
+
+    let (answer, tagged) = tagged_answer_alone(&mut core, &first, &total);
+    assert_eq!(answer.downcast::<i64>(), Answer::Final(Outcome::of(2)));
+    assert_eq!(tagged, first.id());
+    let (answer, tagged) = tagged_answer_alone(&mut core, &second, &total);
+    assert_eq!(answer.downcast::<i64>(), Answer::Final(Outcome::of(3)));
+    assert_eq!(tagged, second.id());
+}
+
+#[test]
+fn the_snapshot_an_edit_came_from_keeps_its_answers_and_its_index() {
+    let mut core = toy::with_cell().build();
+    let first = core.snapshot([
+        toy::named("a", 2_i64),
+        toy::root("total", toy::cell(&["a"])),
+    ]);
+    let total = toy::at("total");
+    let answer = toy::answer_alone(&mut core, &first, &total);
+    assert_eq!(answer.downcast::<i64>(), Answer::Final(Outcome::of(2)));
+    let runs = core.counters().body_runs(Cell::ID);
+
+    let _second = first.edit([(InputKey::named("a"), Some(toy::input_of(3_i64)))]);
+    let answer = toy::answer_alone(&mut core, &first, &total);
+    assert_eq!(answer.downcast::<i64>(), Answer::Final(Outcome::of(2)));
+    assert_eq!(core.counters().body_runs(Cell::ID), runs);
+}
+
+#[test]
+fn an_edit_that_removes_an_input_makes_its_reads_absent() {
+    let mut core = toy::with_cell().build();
+    let first = core.snapshot([
+        toy::named("a", 2_i64),
+        toy::root("total", toy::cell(&["a"])),
+    ]);
+    let total = toy::at("total");
+
+    let without_a = first.edit([(InputKey::named("a"), None)]);
+    let answer = toy::answer_alone(&mut core, &without_a, &total);
+    assert_eq!(answer.downcast::<i64>(), Answer::Final(Outcome::of(0)));
+
+    let without_root = first.edit([(InputKey::root("total"), None)]);
+    let answer = toy::answer_alone(&mut core, &without_root, &total);
+    assert!(
+        matches!(answer, Answer::Final(Outcome::Absent)),
+        "{answer:?}"
+    );
+}
+
+#[test]
+fn an_edit_can_add_an_input_the_snapshot_it_came_from_lacks() {
+    let mut core = toy::with_scope().build();
+    let first = core.snapshot(toy::root_scope(
+        "R",
+        toy::members([("x", toy::cell(&["v"]))]),
+    ));
+    let second = first.edit([(InputKey::named("v"), Some(toy::input_of(9_i64)))]);
+    let x = toy::below("R", &["x"]);
+
+    let answer = toy::answer_alone(&mut core, &second, &x);
+    assert_eq!(answer.downcast::<i64>(), Answer::Final(Outcome::of(9)));
+    let answer = toy::answer_alone(&mut core, &first, &x);
+    assert_eq!(answer.downcast::<i64>(), Answer::Final(Outcome::of(0)));
+}
+
+/// The inputs of a root cell "total" over the named input "a" holding `a`.
+fn total_over(a: i64) -> [(InputKey, Input); 2] {
+    [toy::named("a", a), toy::root("total", toy::cell(&["a"]))]
+}
+
+fn set_a(a: i64) -> [(InputKey, Option<Input>); 1] {
+    [(InputKey::named("a"), Some(toy::input_of(a)))]
+}
+
+#[test]
+fn an_edit_and_its_reversal_are_the_same_snapshot() {
+    let mut core = toy::core();
+    let first = core.snapshot(total_over(1));
+    assert_eq!(first.edit(set_a(2)).edit(set_a(1)).id(), first.id());
+    assert_eq!(core.snapshot(total_over(1)).id(), first.id());
+
+    assert_ne!(core.snapshot(total_over(2)).id(), first.id());
+    let other_key = [
+        toy::named("b", 1_i64),
+        toy::root("total", toy::cell(&["a"])),
+    ];
+    assert_ne!(core.snapshot(other_key).id(), first.id());
+    let fewer = first.edit([(InputKey::root("total"), None)]);
+    assert_ne!(fewer.id(), first.id());
+}
+
+#[test]
+fn a_request_on_a_snapshot_equal_to_an_answered_one_is_answered_from_its_index() {
+    let mut core = toy::with_cell().build();
+    let first = core.snapshot(total_over(1));
+    let total = toy::at("total");
+    let answer = toy::answer_alone(&mut core, &first, &total);
+    assert_eq!(answer.downcast::<i64>(), Answer::Final(Outcome::of(1)));
+    let (runs, lookups) = (
+        core.counters().body_runs(Cell::ID),
+        core.counters().store_lookups(),
+    );
+
+    let reversal = first.edit(set_a(2)).edit(set_a(1));
+    let answer = toy::answer_alone(&mut core, &reversal, &total);
+    assert_eq!(answer.downcast::<i64>(), Answer::Final(Outcome::of(1)));
+    assert_eq!(core.counters().body_runs(Cell::ID), runs);
+    assert_eq!(core.counters().store_lookups(), lookups);
+}
+
+#[test]
+fn an_index_stays_while_any_equal_snapshot_is_held() {
+    let mut core = toy::with_cell().build();
+    let (first, second) = (core.snapshot(total_over(1)), core.snapshot(total_over(1)));
+    let total = toy::at("total");
+    let (request, events) = toy::evaluate_to_idle(&mut core, &first, &[&total]);
+    let answer = toy::the_answer(&events, &request, &total);
+    assert_eq!(answer.downcast::<i64>(), Answer::Final(Outcome::of(1)));
+    core.end(request);
+    drop(first);
+    let lookups = core.counters().store_lookups();
+
+    let answer = toy::answer_alone(&mut core, &second, &total);
+    assert_eq!(answer.downcast::<i64>(), Answer::Final(Outcome::of(1)));
+    assert_eq!(core.counters().store_lookups(), lookups);
+}

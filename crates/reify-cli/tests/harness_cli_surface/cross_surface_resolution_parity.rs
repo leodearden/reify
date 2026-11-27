@@ -418,7 +418,7 @@ fn importing_entry_reports_one_diagnostic_set_on_every_surface() {
         observed.gui.load_error.is_none()
             && gui_verdict == Some("satisfied")
             && gui_pulley_diameter.is_some_and(|metres| (metres - 0.04).abs() < 1e-12),
-        "the GUI must load, merge parts' Pulley first-wins (Pulley.diameter 40 mm) and satisfy \
+        "the GUI must load, evaluate parts' Pulley (Pulley.diameter 40 mm) and satisfy \
          Rig#constraint[0] with it; load error {:?}, Rig#constraint[0] {gui_verdict:?}, \
          Pulley.diameter {gui_pulley_diameter:?} m\nconstraints {:#?}\nvalues {:#?}",
         observed.gui.load_error,
@@ -496,10 +496,7 @@ fn broken_import_errors_reach_every_surface_attributed_to_the_import() {
             program.entry().diagnostics
         );
         assert!(
-            program
-                .entry_declared_templates()
-                .iter()
-                .any(|t| t.name == "Rig"),
+            program.entry().templates.iter().any(|t| t.name == "Rig"),
             "{stem}: the entry must still compile despite its broken import"
         );
 
@@ -611,8 +608,12 @@ fn cfg_unsatisfied_import_is_inert_on_every_surface() {
         "the program's sources must name no gated module; found {gated_sources:?}"
     );
     assert!(
-        program.entry().templates.iter().all(|t| t.name != "WasmOnly"),
-        "the I5 merge must not take WasmOnly from a gated-out import"
+        program
+            .entry()
+            .templates
+            .iter()
+            .all(|t| t.name != "WasmOnly"),
+        "the entry must not hold WasmOnly from a gated-out import"
     );
     let env = reify_eval::DefEnv::from_program(program);
     assert!(

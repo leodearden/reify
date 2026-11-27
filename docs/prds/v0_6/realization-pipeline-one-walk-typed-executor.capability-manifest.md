@@ -1,6 +1,6 @@
 # Capability manifest — realization-pipeline-one-walk-typed-executor
 
-PRD: `docs/prds/v0_6/realization-pipeline-one-walk-typed-executor.md`. Machine-readable twin: `realization-pipeline-one-walk-typed-executor.capability-manifest.yaml` (schema: dark-factory `shared.capability_manifest.CapabilityManifestDoc`; 16 task blocks, 62 capabilities). Leaves: α #4727, β₁ #9154, β₂ #9155, γ #9156, δ #9158, ε #9157, ζ #8534, η #9159, θ #9160, ι₁ #9161, ι₂ #9162, ι₃ #9163, κ #9263, λ #9264, μ #9265, ω #9164. This file is generated from the parsed YAML, so a binding the YAML truncated would show here truncated.
+**AS-AUTHORED record: the PRD was stamped SUPERSEDED on 2026-11-26** (by the new evaluation engine, `docs/prds/evaluation-core.md` and the PRDs under capstone #10552). The capabilities below are decompose-time evidence about the old orchestration, not current claims or work to do. PRD: `docs/prds/v0_6/realization-pipeline-one-walk-typed-executor.md`. Machine-readable twin: `realization-pipeline-one-walk-typed-executor.capability-manifest.yaml` (schema: dark-factory `shared.capability_manifest.CapabilityManifestDoc`; 16 task blocks, 62 capabilities). Leaves: α #4727, β₁ #9154, β₂ #9155, γ #9156, δ #9158, ε #9157, ζ #8534, η #9159, θ #9160, ι₁ #9161, ι₂ #9162, ι₃ #9163, κ #9263, λ #9264, μ #9265, ω #9164. This file is generated from the parsed YAML, so a binding the YAML truncated would show here truncated.
 
 **Code anchors** verified against main `d4cd598fee` (2026-10-14). Cite-by-symbol; re-locate lines at implementation time.
 

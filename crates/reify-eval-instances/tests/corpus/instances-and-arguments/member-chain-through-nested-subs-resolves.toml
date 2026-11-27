@@ -1,0 +1,16 @@
+tests = "a `let` that reads a member of a sub, which itself reads a member of its own sub, resolves at every level of nesting."
+rule = "Part 1 rule 1 (one kind makes every instance); Part 2 (cell)"
+provenance = "task 5401 (the task 5360 reproduction it carries)"
+needs = ["instance"]
+answer_basis = '''
+traced.
+`Parent.m.k.off` = 10 mm × 2 = 20 mm. `Parent.m.relay` reads it, and `Parent.echo` reads `Parent.m.relay`. Each is an ordinary cell of its own instance.'''
+today = "`Parent.echo = undef` and `Parent.m.relay = undef`, with no diagnostic (task 5401 record, probe of 2026-07-23 at 0408733da2; tasks 5360 and 6937 may since have changed this)."
+
+[[expect]]
+path = "Parent.m.relay"
+value = "20 mm"
+
+[[expect]]
+path = "Parent.echo"
+value = "20 mm"

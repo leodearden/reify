@@ -1,0 +1,13 @@
+structure def Plate {
+    param t : Length = auto
+    param w : Length = auto
+    constraint t >= 3mm
+    constraint w == 2 * t
+    minimize t
+}
+structure def Asm {
+    param thick : Bool
+    sub a : Plate {
+        t = 6mm where thick
+    }
+}

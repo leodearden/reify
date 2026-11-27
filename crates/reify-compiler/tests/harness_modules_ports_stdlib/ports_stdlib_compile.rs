@@ -290,11 +290,12 @@ structure def Sender {
     );
 }
 
-/// std/ports cardinality lock: exactly 1 trait (Port), 1 enum (Directionality),
-/// 1 structure (Frame3). Updated incrementally by task α steps:
-///   step-4: structures 0→1 (Frame3)
-///   step-6: traits 1→2 (+ LocatedPort)
-///   step-8: traits 2→3 (+ RegionPort)
+/// std/ports cardinality lock: exactly 3 traits (Port, LocatedPort,
+/// RegionPort), 1 enum (Directionality), 0 structures. Updated incrementally:
+///   task α step-4: structures 0→1 (Frame3)
+///   task α step-6: traits 1→2 (+ LocatedPort)
+///   task α step-8: traits 2→3 (+ RegionPort)
+///   task 9639: structures 1→0 (Frame3 deleted; a port frame is the `Frame` datum)
 #[test]
 fn std_ports_module_cardinality_locked() {
     let module = load_module("std/ports");
@@ -327,113 +328,26 @@ fn std_ports_module_cardinality_locked() {
         .filter(|t| t.entity_kind == EntityKind::Structure)
         .map(|t| t.name.as_str())
         .collect();
-    assert_eq!(
-        structure_names.len(),
-        1,
-        "std/ports should declare exactly 1 structure (Frame3), got: {:?}",
+    assert!(
+        structure_names.is_empty(),
+        "std/ports should declare no structure (a port frame is the `Frame` datum), \
+         got: {:?}",
         structure_names
     );
     assert!(
-        module
-            .templates
-            .iter()
-            .any(|t| t.name == "Frame3" && t.entity_kind == EntityKind::Structure),
-        "std/ports should contain 'Frame3' structure, got: {:?}",
-        structure_names
+        !module.templates.iter().any(|t| t.name == "Frame3"),
+        "std/ports must not declare a 'Frame3' template, got: {:?}",
+        module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
     );
-}
-
-// ─── step-3 (task α): Frame3 structure surface ───────────────────────────────
-
-/// std/ports should contain a `structure def Frame3` with exactly 4 Param-kind
-/// value cells, SPLIT by what each member denotes (task 5848):
-///   - `origin` is a POSITION  → `Type::Vector { n: 3, quantity: Length }`
-///   - `x_axis`/`y_axis`/`z_axis` are DIRECTIONS → quantity `Dimensionless`
-///
-/// The `origin` half is the load-bearing fence: it proves the retype
-/// discriminates position from direction rather than sweeping the whole
-/// structure dimensionless.
-///
-/// Frame3 is the port-frame structure added by task α, step-4.
-#[test]
-fn frame3_structure_surface() {
-    let module = load_module("std/ports");
-
-    let frame3 = module
-        .templates
-        .iter()
-        .find(|t| t.name == "Frame3" && t.entity_kind == EntityKind::Structure)
-        .expect(
-            "std/ports should contain 'structure def Frame3'; \
-             check ports.ri for the Frame3 definition",
-        );
-
-    // Collect Param-kind value cells (excluding Let/Auto).
-    let param_cells: Vec<&ValueCellDecl> = frame3
-        .value_cells
-        .iter()
-        .filter(|vc| matches!(vc.kind, ValueCellKind::Param))
-        .collect();
-
-    let param_names: Vec<&str> = param_cells.iter().map(|vc| vc.id.member.as_str()).collect();
-
-    assert_eq!(
-        param_cells.len(),
-        4,
-        "Frame3 should have exactly 4 param cells \
-         (origin, x_axis, y_axis, z_axis), got: {:?}",
-        param_names
-    );
-
-    // A 3-vector over the given quantity dimension.
-    let vec3_of = |dimension| Type::Vector {
-        n: 3,
-        quantity: Box::new(Type::Scalar { dimension }),
-    };
-    // origin denotes a POSITION (Length); the three axes denote DIRECTIONS
-    // (dimensionless unit vectors) — task 5848.
-    for (expected_name, expected_type, why) in [
-        ("origin", vec3_of(DimensionVector::LENGTH), "a POSITION"),
-        (
-            "x_axis",
-            vec3_of(DimensionVector::DIMENSIONLESS),
-            "a DIRECTION",
-        ),
-        (
-            "y_axis",
-            vec3_of(DimensionVector::DIMENSIONLESS),
-            "a DIRECTION",
-        ),
-        (
-            "z_axis",
-            vec3_of(DimensionVector::DIMENSIONLESS),
-            "a DIRECTION",
-        ),
-    ] {
-        let cell = param_cells
-            .iter()
-            .find(|vc| vc.id.member == expected_name)
-            .unwrap_or_else(|| {
-                panic!(
-                    "Frame3 missing param '{}'; got: {:?}",
-                    expected_name, param_names
-                )
-            });
-        assert_eq!(
-            cell.cell_type, expected_type,
-            "Frame3.{} denotes {}, so it must be {:?}; got {:?}",
-            expected_name, why, expected_type, cell.cell_type
-        );
-    }
 }
 
 // ─── step-5 (task α): LocatedPort trait surface ──────────────────────────────
 
 /// LocatedPort refines exactly ["Port"] and has exactly one required member:
-/// `frame : Frame3`.  Proves:
+/// `frame : Frame`, the Frame datum.  Proves:
 ///   - LocatedPort.refinements == ["Port"]
-///   - LocatedPort.required_members == [{ name: "frame", kind: Param(StructureRef("Frame3")) }]
-///   - param_type helper finds "frame" as Type::StructureRef("Frame3")
+///   - LocatedPort.required_members == [{ name: "frame", kind: Param(Frame(3)) }]
+///   - param_type helper finds "frame" as Type::Frame(3)
 ///
 /// RED on current main (LocatedPort absent → find_trait panics).
 #[test]
@@ -464,8 +378,8 @@ fn located_port_trait_surface() {
 
     assert_eq!(
         param_type("std/ports", "LocatedPort", "frame"),
-        Type::StructureRef("Frame3".into()),
-        "LocatedPort.frame must be Type::StructureRef(\"Frame3\")"
+        Type::Frame(3),
+        "LocatedPort.frame must be the Frame datum, Type::Frame(3)"
     );
 }
 
@@ -736,12 +650,7 @@ fn rotary_port_concrete_conformer_compiles() {
 import std.ports.mechanical
 
 structure def RotaryConformer : RotaryPort {
-    param frame : Frame3 = Frame3(
-        origin: vec3(0mm, 0mm, 0mm),
-        x_axis: vec3(1, 0, 0),
-        y_axis: vec3(0, 1, 0),
-        z_axis: vec3(0, 0, 1),
-    )
+    param frame : Frame = frame_at(point3(0mm, 0mm, 0mm), dir(1, 0, 0), dir(0, 0, 1))
     param max_speed : AngularVelocity = 1rad / 1s
     param max_torque : Torque = 1N * 1m / 1rad
     param axis : Direction = dir(0, 0, 1)
@@ -786,12 +695,7 @@ fn rotary_port_conformer_inherited_option_default_does_not_satisfy_max_torque() 
 import std.ports.mechanical
 
 structure def RotaryConformerMissingTorque : RotaryPort {
-    param frame : Frame3 = Frame3(
-        origin: vec3(0mm, 0mm, 0mm),
-        x_axis: vec3(1, 0, 0),
-        y_axis: vec3(0, 1, 0),
-        z_axis: vec3(0, 0, 1),
-    )
+    param frame : Frame = frame_at(point3(0mm, 0mm, 0mm), dir(1, 0, 0), dir(0, 0, 1))
     param max_speed : AngularVelocity = 1rad / 1s
     param axis : Direction = dir(0, 0, 1)
 }
@@ -829,12 +733,7 @@ fn rotary_port_conformer_length_typed_axis_is_rejected() {
 import std.ports.mechanical
 
 structure def RotaryConformerLengthAxis : RotaryPort {
-    param frame : Frame3 = Frame3(
-        origin: vec3(0mm, 0mm, 0mm),
-        x_axis: vec3(1, 0, 0),
-        y_axis: vec3(0, 1, 0),
-        z_axis: vec3(0, 0, 1),
-    )
+    param frame : Frame = frame_at(point3(0mm, 0mm, 0mm), dir(1, 0, 0), dir(0, 0, 1))
     param max_speed : AngularVelocity = 1rad / 1s
     param max_torque : Torque = 1N * 1m / 1rad
     param axis : Vector3<Length> = vec3(0mm, 0mm, 1mm)
@@ -1863,7 +1762,7 @@ structure def PinHeader<P: PinPort> {
 ///         Port  (direction : Directionality = Bidi — defaulted, can omit)
 ///        /    \
 ///  ElectrPort  LocatedPort
-///   (voltage_  (frame : Frame3)
+///   (voltage_  (frame : Frame)
 ///    current_)
 ///        \    /
 ///        PinPort
@@ -1872,7 +1771,7 @@ structure def PinHeader<P: PinPort> {
 /// Required supplied here:
 ///   voltage_rating : Voltage  (from ElectricalPort)
 ///   current_rating : Current  (from ElectricalPort)
-///   frame          : Frame3   (from LocatedPort)
+///   frame          : Frame    (from LocatedPort)
 ///   pin_id         : String   (own PinPort)
 ///   direction                 (omitted — Port default = Directionality.Bidi)
 ///
@@ -1889,12 +1788,7 @@ structure def PinConformer {
     port p : in PinPort {
         param voltage_rating : Voltage = 3.3V
         param current_rating : Current = 0.1A
-        param frame : Frame3 = Frame3(
-            origin: vec3(0mm, 0mm, 0mm),
-            x_axis: vec3(1, 0, 0),
-            y_axis: vec3(0, 1, 0),
-            z_axis: vec3(0, 0, 1),
-        )
+        param frame : Frame = frame_at(point3(0mm, 0mm, 0mm), dir(1, 0, 0), dir(0, 0, 1))
         param pin_id : String = "A1"
     }
 }
@@ -2344,7 +2238,7 @@ structure def ContactInterface<C: ThermalContactPort> { port contact : C }
 /// member of ThermalContactPort compiles clean.
 ///
 /// Required members supplied:
-///   frame         : Frame3    (from LocatedPort)  — zero-origin identity frame
+///   frame         : Frame     (from LocatedPort)  — zero-origin identity frame
 ///   region        : Geometry  (from RegionPort)   — box geometry (Geometry alias
 ///                                                    == Solid, box() returns Geometry)
 ///   heat_flow     : Power     (from ThermalPort)  — 1N * 1m / 1s (= 1 W)
@@ -2367,12 +2261,7 @@ fn thermal_contact_port_concrete_conformer_compiles() {
 import std.ports.thermal
 
 structure def ContactPatch : ThermalContactPort {
-    param frame : Frame3 = Frame3(
-        origin: vec3(0mm, 0mm, 0mm),
-        x_axis: vec3(1, 0, 0),
-        y_axis: vec3(0, 1, 0),
-        z_axis: vec3(0, 0, 1),
-    )
+    param frame : Frame = frame_at(point3(0mm, 0mm, 0mm), dir(1, 0, 0), dir(0, 0, 1))
     param region : Geometry = box(10mm, 10mm, 1mm)
     param heat_flow : Power = 1N * 1m / 1s
     param contact_area : Area = 1m * 1m
@@ -2735,7 +2624,7 @@ fn piped_fluid_port_trait_surface() {
 ///          Port  (direction : Directionality = Bidi — defaulted, can omit)
 ///         /    \
 ///   FluidPort  LocatedPort
-///   (pressure,  (frame : Frame3)
+///   (pressure,  (frame : Frame)
 ///    flow_rate,
 ///    medium,
 ///    fluid_type)
@@ -2763,12 +2652,7 @@ structure def PipeConformer {
         param flow_rate : VolumetricFlowRate = 1gal / 1s
         param medium : String = "water"
         param fluid_type : FluidType = FluidType.Liquid
-        param frame : Frame3 = Frame3(
-            origin: vec3(0mm, 0mm, 0mm),
-            x_axis: vec3(1, 0, 0),
-            y_axis: vec3(0, 1, 0),
-            z_axis: vec3(0, 0, 1),
-        )
+        param frame : Frame = frame_at(point3(0mm, 0mm, 0mm), dir(1, 0, 0), dir(0, 0, 1))
         param inner_diameter : Length = 25mm
         param connection_type : PipeConnectionType = PipeConnectionType.Threaded
     }
@@ -2912,7 +2796,7 @@ fn hydraulic_port_trait_surface() {
 ///          Port  (direction : Directionality = Bidi — defaulted, can omit)
 ///         /    \
 ///   FluidPort  MechanicalPort (: LocatedPort)
-///   (pressure,  (frame : Frame3, max_load : Option<Force> = none,
+///   (pressure,  (frame : Frame, max_load : Option<Force> = none,
 ///    flow_rate,  max_torque : Option<Torque> = none — both have defaults, can omit)
 ///    medium,
 ///    fluid_type)
@@ -2945,12 +2829,7 @@ structure def HydroConformer {
         param flow_rate : VolumetricFlowRate = 1gal / 1s
         param medium : String = "hydraulic_oil"
         param fluid_type : FluidType = FluidType.Liquid
-        param frame : Frame3 = Frame3(
-            origin: vec3(0mm, 0mm, 0mm),
-            x_axis: vec3(1, 0, 0),
-            y_axis: vec3(0, 1, 0),
-            z_axis: vec3(0, 0, 1),
-        )
+        param frame : Frame = frame_at(point3(0mm, 0mm, 0mm), dir(1, 0, 0), dir(0, 0, 1))
         param fitting_type : FittingStandard = FittingStandard.NPT
     }
 }

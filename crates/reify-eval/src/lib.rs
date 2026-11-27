@@ -26,7 +26,7 @@ pub mod compute_targets;
 pub use compute_targets::MorphRegistration;
 pub use compute_cache_key::compute_cache_key;
 pub mod def_env;
-pub use def_env::DefEnv;
+pub use def_env::{DefEnv, EnvScope, LoadedProgram, evaluation_module};
 pub mod demand;
 pub mod observed_demand;
 pub use observed_demand::{DemandPruneMeasurement, WouldPruneByKind};
@@ -496,21 +496,13 @@ pub struct Engine {
     /// the engine holds a solver iff it holds a resolution profile.
     solve_stage: Option<solver_posture::SolveStage>,
     cache: CacheStore,
-    /// Compiled stdlib prelude modules (cached via OnceLock; zero-cost borrow).
+    /// Compiled stdlib prelude modules (cached via OnceLock; zero-cost borrow):
+    /// the ambient tier of every environment [`Engine::env_of`] builds.
     prelude: &'static [CompiledModule],
-    /// Pre-flattened cache of all functions from every prelude module, computed
-    /// once at Engine construction time. Avoids iterating over the nested
-    /// `prelude: &'static [CompiledModule]` structure on every `eval()` call;
-    /// the per-eval clone cost (one `CompiledFunction` clone per entry) is
-    /// unchanged — only the outer module-level iteration is eliminated.
-    ///
-    /// Note: this duplicates data already held in the static `prelude` slice,
-    /// adding per-Engine memory proportional to the number of prelude functions.
-    prelude_functions: Vec<CompiledFunction>,
-    /// The program installed by [`Engine::load`]: the program whose [`DefEnv`]
-    /// ι #5523 migrates eval lookups onto (PRD resolution-unification §3.2);
-    /// `None` until a load.
-    loaded_program: Option<Arc<reify_compiler::program::CompiledProgram>>,
+    /// The program installed by [`Engine::load`], with the module `load`
+    /// returned: the one module [`Engine::env_of`] resolves in the program's
+    /// environment (PRD resolution-unification §3.2). `None` until a load.
+    loaded_program: Option<Arc<def_env::LoadedProgram>>,
     /// Per-Engine structure-definition side-table (task 3540 / SIR-α).
     ///
     /// Maps interned `StructureTypeId`s to `StructureMeta` (declared trait
@@ -678,8 +670,8 @@ pub struct Engine {
     last_param_override_dimension_rejections: usize,
     /// Count of sub-component elaboration errors due to an unknown structure
     /// reference during the most recent `eval()` or `eval_cached()` call.
-    /// Reset to 0 at the start of each call. Incremented directly at both
-    /// writer sites in `engine_eval.rs` (eval path and eval_cached path).
+    /// Reset to 0 at the start of each call, then set from the evaluation
+    /// graph's unresolved subs by `report_unresolved_subs` in `engine_eval.rs`.
     ///
     /// Exposed to callers only under `#[cfg(any(test, feature = "test-instrumentation"))]`
     /// via `Engine::last_sub_component_unknown_structure_errors()` in `engine_admin.rs`.
@@ -1663,45 +1655,6 @@ pub(crate) fn build_meta_map(
             .map(|t| (t.name.clone(), t.meta.clone()))
             .collect(),
     )
-}
-
-/// Merge a module's user functions with the prelude function table into a new
-/// `Arc<[CompiledFunction]>`.
-///
-/// # SHADOWING INVARIANT
-/// Module (user) functions are stored **first**, then prelude functions are
-/// appended after. `reify_expr::eval_user_function_call` resolves calls via a
-/// first-match-wins linear scan on `(name, arity, param_types)`. Therefore,
-/// any user function whose signature matches a prelude function takes precedence
-/// and shadows the prelude implementation. The compiler's duplicate-function
-/// check only compares user functions against each other (not the prelude), so
-/// user code may freely redefine prelude signatures without diagnostics.
-///
-/// # COEXISTENCE COROLLARY
-/// A user function whose `(name, arity, param_types)` triple differs from all
-/// prelude functions does NOT shadow those prelude functions — both remain
-/// independently callable.
-///
-/// # Unfiltered append
-/// All prelude entries are appended unconditionally; entries whose signature
-/// collides with a user function are permanently unreachable at dispatch time
-/// (shadowed by the earlier match), so filtering is unnecessary. This diverges
-/// from `reify_compiler::merge_prelude_functions`, which applies an explicit
-/// filter to avoid ambiguous-overload errors at compile time; the eval dispatch
-/// table is safe without it because first-match-wins is unambiguous by
-/// construction.
-///
-/// # Performance
-/// The merged table is built once per `eval()`/`edit_source()` call into a
-/// local `Vec`, then sealed by `.into()`. Subsequent clones (e.g. in
-/// `edit_param`) are O(1) refcount bumps.
-pub(crate) fn merge_functions(
-    module: &CompiledModule,
-    prelude: &[CompiledFunction],
-) -> Arc<[CompiledFunction]> {
-    let mut v = module.functions.clone();
-    v.extend(prelude.iter().cloned());
-    v.into()
 }
 
 #[cfg(test)]

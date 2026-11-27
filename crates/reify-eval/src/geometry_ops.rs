@@ -7,8 +7,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use reify_core::Diagnostic;
 use reify_ir::{
-    CompiledFunction, GeometryHandleId, GeometryKernel, KernelHandle, KernelId, ValueMap,
-    decode_direction,
+    CompiledFunction, GeometryHandleId, GeometryKernel, KernelHandle, KernelId, UnitVec3,
+    ValueMap, decode_direction,
 };
 use reify_solver_elastic::DEGENERATE_RING_AREA_TOLERANCE;
 
@@ -33,10 +33,6 @@ pub(crate) const DEGENERATE_LENGTH_M: f64 = 1e-12;
 /// well-defined revolved solid. Boundary semantics are pinned by
 /// `build_revolve_angle_*_threshold_*` tests.
 pub(crate) const DEGENERATE_ANGLE_RAD: f64 = 1e-12;
-
-/// Generic geometry epsilon for axis-magnitude / direction-vector checks
-/// (e.g. rejecting near-zero revolve axes).
-pub(crate) const GEOMETRY_EPSILON: f64 = 1e-12;
 
 /// Routing outcome returned by [`gate_query_capability`].
 ///
@@ -282,8 +278,8 @@ pub(crate) enum LengthArg {
 ///
 /// This is the units chokepoint for the length-semantic args that reach an
 /// `f64` through a NAMED-ARG read: the pattern spacings and origins, the
-/// transform components and pivot, the sweep axis origins, and the curve
-/// coordinates and radii. It is NOT the chokepoint for every length-semantic
+/// transform components and pivot, and the curve coordinates and radii. It is
+/// NOT the chokepoint for every length-semantic
 /// arg of a scalar-form geometry builtin — the modify + sweep MAGNITUDES
 /// (`fillet` radius, `extrude` distance, …) are placed into their `GeometryOp`
 /// field as a raw `Value` and coerced as SI metres only at the kernel boundary,
@@ -300,8 +296,8 @@ pub(crate) enum LengthArg {
 /// spacing can never scatter instances 1000× too far, and a bare `translate`
 /// component can never displace a part by a kilometre. Same hazard and
 /// discipline as `joints::read_length3` (the canonical "reject bare Real to
-/// avoid silent 40 m vs 40 mm" precedent), `point3_components`, and
-/// `resolve_length_scalar_arg`; the dimension classification + diagnostic
+/// avoid silent 40 m vs 40 mm" precedent) and `resolve_length_scalar_arg`;
+/// the dimension classification + diagnostic
 /// wording are delegated to `arg_acceptance::{accept_arg, length_spec}`.
 ///
 /// | evaluated arg value                        | return                 | diagnostic pushed?      |
@@ -864,8 +860,8 @@ fn required_length_values<const N: usize>(
 /// Read a GROUP of length-semantic arguments of a scalar-form geometry builtin
 /// as LENGTHs, in the given name order, diagnosing EVERY failing member.
 ///
-/// A point in space (an origin `ox`/`oy`/`oz`, a pivot `px`/`py`/`pz`, a curve
-/// endpoint `x1`/`y1`/`z1`, an arc centre `cx`/`cy`/`cz`), a displacement
+/// A point in space (an origin `ox`/`oy`/`oz`, a boundary point `px`/`py`/`pz`,
+/// a curve endpoint `x1`/`y1`/`z1`, an arc centre `cx`/`cy`/`cz`), a displacement
 /// (`dx`/`dy`/`dz`) and an independent length group (`helix`'s
 /// `radius`/`pitch`/`height`) are alike length-semantic in every member, so
 /// each must be a finite LENGTH `Scalar`: a bare/dimensionless member would be
@@ -917,8 +913,9 @@ fn required_length_args<const N: usize>(
 }
 
 /// [`required_length_args`] specialised to the `ox`/`oy`/`oz` ORIGIN triple —
-/// the name shared by `pattern_circular` (task 5350), `pattern_mirror`
-/// (task 5214) and `sweep_revolve` (task 5623).
+/// the name used by `pattern_circular` (task 5350). `pattern_mirror` (task
+/// 5214) and `sweep_revolve` (task 5623) read it too until direction-typing ι-a
+/// and ι-b moved their origins to one `Point3` (`required_length_point3_arg`).
 fn required_length_origin3(
     kind_label: impl std::fmt::Display + Copy,
     args: &[(String, reify_ir::CompiledExpr)],
@@ -1223,8 +1220,7 @@ fn accept_variadic_length_args(
 /// A wrong SHAPE is deliberately NOT a units rejection: it hands the caller's
 /// `shape_err` the diagnostic sink and returns its `String` VERBATIM, minting
 /// nothing of its own — so the wording of a shape message, label prefix
-/// included, is entirely the caller's. This helper replaces
-/// [`point3_components`]' ACCEPTANCE policy, not its shape check.
+/// included, is entirely the caller's.
 ///
 /// `shape_err` takes the sink so that ONE closure owns BOTH halves of a shape
 /// rejection — the `Diagnostic` a caller wants the user to see AND the `Err`
@@ -1241,7 +1237,7 @@ fn accept_variadic_length_args(
 /// Every `to_string()` sits inside a rejection branch, so the clean path renders
 /// nothing.
 ///
-/// # Per-argument triage for every [`point3_components`] position
+/// # Per-argument triage for every [`accept_length_point3`] position
 ///
 /// Written down HERE, in one place, for the reason
 /// [`accept_variadic_length_args`]' table is: task 5752's closure-guard
@@ -1252,16 +1248,17 @@ fn accept_variadic_length_args(
 /// |----------------------------------------|---------------------------|---------------|--------|
 /// | [`decode_plane`]                       | plane ORIGIN              | **LENGTH**    | yes — a point in space |
 /// | [`decode_axis`]                        | axis ORIGIN               | **LENGTH**    | yes — a point in space |
+/// | [`required_length_point3_arg`]         | `revolve` axis ORIGIN     | **LENGTH**    | yes — a point in space |
 /// | `compile_geometry_op` `SurfaceKind::Nurbs` | control-point grid    | **LENGTH**    | yes — pole POSITIONS, the SURFACE sibling of the curve poles task 5658 gated |
-/// | `modify_offset_curve`                  | `third` → `direction`     | dimensionless | no — its own production diagnostic already calls it "a direction vec3" |
+/// | [`pattern_mirror`]                     | mirror ORIGIN             | **LENGTH**    | yes — a point in space (ι-a, task 9646) |
+/// | [`transform_rotate_around`]            | rotate_around PIVOT       | **LENGTH**    | yes — a point in space (ι-a, task 9646) |
 ///
-/// The DIRECTION row is the D3 adversary finding's ORIGIN-vs-DIRECTION split
-/// (2026-07-28, BINDING): gating it would reject correct `.ri` code, since a
-/// unit vector legitimately has bare components. [`point3_components`]
-/// therefore SURVIVES δ as the un-gated decoder for that position — it is not
-/// dead, and must not be deleted or renamed. The plane NORMAL and the axis
-/// DIRECTION are no longer rows: since ε (task 9638) both are
-/// `Value::Direction`s read through [`reify_ir::decode_direction`].
+/// DIRECTIONS are not rows — the D3 adversary finding's ORIGIN-vs-DIRECTION
+/// split (2026-07-28, BINDING). The plane NORMAL, the axis DIRECTION (ε, task
+/// 9638), `offset_curve`'s direction (θ-b, task 9645), mirror's normal and
+/// rotate/rotate_around's axis (ι-a, task 9646), and the `revolve` /
+/// `extrude_infinite` direction (ι-b, task 9647) are each a `Value::Direction`
+/// read through [`reify_ir::decode_direction`].
 fn accept_length_point3<N: std::fmt::Display + Copy>(
     value: &reify_ir::Value,
     names: [N; 3],
@@ -1269,9 +1266,9 @@ fn accept_length_point3<N: std::fmt::Display + Copy>(
     shape_err: impl FnOnce(&mut Vec<Diagnostic>) -> String,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<[f64; 3], String> {
-    // SHAPE check, mirroring `point3_components` exactly — same variants, same
-    // arity. A mismatch returns the caller's `shape_err` text and mints nothing
-    // here: whatever that closure pushes is the whole of it.
+    // SHAPE check: a 3-component `Point` or `Vector`. A mismatch returns the
+    // caller's `shape_err` text and mints nothing here: whatever that closure
+    // pushes is the whole of it.
     let comps = match value {
         reify_ir::Value::Point(c) | reify_ir::Value::Vector(c) if c.len() == 3 => c,
         _ => return Err(shape_err(diagnostics)),
@@ -1384,13 +1381,13 @@ impl std::fmt::Display for GridCoordName {
 }
 
 /// Canonicalize sub-handle `kernel_handle` ids into the canonical edge/face
-/// order: ascending `kernel_handle` id, deduplicated. Single source of truth
-/// for the "canonical order + dedup" step, shared by `resolve_subhandle_list`
-/// (which layers the cross-solid membership gate on top) and the
-/// `compile_geometry_op` `ModifyKind::Fillet` eval arm, so the two never drift
-/// on ordering/dedup (task 3205 reviewer note). Ascending id matches
-/// `extract_edges`' TopExp mint order, so a curated subset lines up with the
-/// kernel's edge map.
+/// order: ascending `kernel_handle` id, deduplicated. The single
+/// canonicalization used by every curated-selector eval arm of
+/// `compile_geometry_op` — [`resolve_curated_edges_p2`] (Fillet, Chamfer,
+/// ChamferAsymmetric), the 3-arg `shell_open` arm and the 4-arg curated `draft`
+/// arm — so they never drift on ordering/dedup (task 3205 reviewer note).
+/// Ascending id matches `extract_edges`' TopExp mint order, so a curated subset
+/// lines up with the kernel's edge map.
 fn canonical_subhandle_ids(
     ids: impl IntoIterator<Item = GeometryHandleId>,
 ) -> Vec<GeometryHandleId> {
@@ -1400,117 +1397,6 @@ fn canonical_subhandle_ids(
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect()
-}
-
-/// Lower a `List<Geometry>` of KGQ topology sub-handles to a canonical
-/// `Vec<GeometryHandleId>` (task 3205 — the curated edge/face SELECTION SEAM).
-///
-/// This helper is **kernel-free** (pure `Value` → `Value`): it never touches
-/// the geometry kernel, so it is callable from BOTH [`compile_geometry_op`]
-/// (the legacy eval lowering site, which has no kernel parameter and runs in a
-/// phase where the parent shape is not yet realized) AND the unified
-/// build-DAG driver (engine-unified-build-dag task η).
-///
-/// The cross-solid gate is `realization_ref` equality: every KGQ sub-handle
-/// inherits its parent solid's `realization_ref` unchanged (KGQ-η PRD §4
-/// invariant i, see [`crate::topology_selectors::make_sub_handle`]), so a
-/// handle minted from a different solid carries a different `realization_ref`
-/// and is rejected. The hash domain for these sub-handles is
-/// [`crate::topology_selectors::compose_sub_handle_hash`] /
-/// [`crate::topology_selectors::SubKind`]; this resolver reads only the
-/// already-built `realization_ref` + `kernel_handle`, so it needs no rehash.
-///
-/// Contract:
-///   - `arg` MUST be a `Value::List`; any other shape is a hard `Err`.
-///   - `parent` MUST be a `Value::GeometryHandle`; its `realization_ref` is the
-///     membership key.
-///   - every element MUST be a `Value::GeometryHandle` whose `realization_ref`
-///     equals the parent's — an element from a different solid is `Err`
-///     (cross-solid).
-///   - the resulting ids are **deduped** by `kernel_handle` and returned in
-///     **ascending canonical order** (matching `extract_edges`' TopExp mint
-///     order, so a curated subset lines up with the kernel's edge map).
-///   - an **empty** input list is a legitimate `Ok(vec![])`. The anti-zero-
-///     edges (`E_EMPTY_SELECTION`) guard — which distinguishes "selector
-///     present but resolved to nothing" from "no selector at all" — is the
-///     eval arm's job, NOT this structural resolver's.
-// `#[allow(dead_code)]`: forward-looking selection-resolver seam. The legacy
-// eval arm (`compile_geometry_op`'s `ModifyKind::Fillet`) cannot call the full
-// resolver because the parent solid's `Value::GeometryHandle` is not realized in
-// phase P2 (it enters `values` only in P3 — see the task-3205 plan), so that arm
-// shares only the structural `canonical_subhandle_ids` canonicalization and skips
-// the cross-solid membership gate. The full cross-solid resolver is consumed by
-// engine-unified-build-dag η/ε, whose in-loop driver has the realized parent
-// handle. Exercised now by the `resolve_subhandle_list_*` unit tests below.
-// TODO(#4727): Stage-4 cutover (#4362) landed — UnifiedDag is now the default —
-// but `resolve_subhandle_list` still has no production caller (the in-loop driver
-// has not been wired to invoke it). Drop this `#[allow(dead_code)]` once Stage-5
-// (#4727) wires the caller or removes this dead path entirely.
-#[allow(dead_code)]
-pub(crate) fn resolve_subhandle_list(
-    arg: &reify_ir::Value,
-    parent: &reify_ir::Value,
-) -> Result<Vec<GeometryHandleId>, String> {
-    let parent_ref = match parent {
-        reify_ir::Value::GeometryHandle {
-            realization_ref, ..
-        } => realization_ref,
-        other => {
-            return Err(format!(
-                "resolve_subhandle_list: parent must be a Geometry handle, got {:?}",
-                other
-            ));
-        }
-    };
-
-    let elems = match arg {
-        reify_ir::Value::List(elems) => elems,
-        other => {
-            return Err(format!(
-                "resolve_subhandle_list: edge selector must be a List<Geometry>, got {:?}",
-                other
-            ));
-        }
-    };
-
-    // Validate every element (cross-solid membership gate), collecting raw
-    // kernel_handles; `canonical_subhandle_ids` then dedups + sorts them into
-    // canonical order — the SAME canonicalization the eval Fillet arm uses, so
-    // the two cannot drift on ordering/dedup.
-    let mut ids: Vec<GeometryHandleId> = Vec::with_capacity(elems.len());
-    for (i, elem) in elems.iter().enumerate() {
-        match elem {
-            reify_ir::Value::GeometryHandle {
-                realization_ref,
-                kernel_handle,
-                ..
-            } => {
-                if realization_ref != parent_ref {
-                    return Err(format!(
-                        "resolve_subhandle_list: edge[{}] belongs to a different solid \
-                         ({} != parent {}) — cross-solid edge selection is rejected",
-                        i, realization_ref, parent_ref
-                    ));
-                }
-                let Some(kh) = *kernel_handle else {
-                    return Err(format!(
-                        "resolve_subhandle_list: edge[{}] is a symbolic (unrealized) handle \
-                         — edge selection requires a realized geometry handle",
-                        i
-                    ));
-                };
-                ids.push(kh);
-            }
-            other => {
-                return Err(format!(
-                    "resolve_subhandle_list: edge[{}] must be a Geometry sub-handle, got {:?}",
-                    i, other
-                ));
-            }
-        }
-    }
-
-    Ok(canonical_subhandle_ids(ids))
 }
 
 /// The curated sub-shape selector argument names carried by a
@@ -1764,8 +1650,7 @@ impl CuratedEdgeLabels {
 /// the caller has already confirmed an `edges` arg was present (the absent =
 /// all-edges back-compat path stays in the arm). Policy:
 ///   - `Value::List`: every element MUST be a `Value::GeometryHandle` — a
-///     non-handle element is a hard `Err` (never a silent drop, mirroring
-///     [`resolve_subhandle_list`]'s strictness); the ids are deduped +
+///     non-handle element is a hard `Err` (never a silent drop); the ids are deduped +
 ///     ascending-canonical via [`canonical_subhandle_ids`]. An EMPTY resolved
 ///     set pushes an `EmptyEdgeSelection` diagnostic and returns `Err`
 ///     (anti-zero-edges, task-3295 trap).
@@ -1773,9 +1658,9 @@ impl CuratedEdgeLabels {
 ///     resolves in P4, after this P2 arm): NOT an empty selection, so NO
 ///     `EmptyEdgeSelection`; returns a user-actionable `Err`.
 ///
-/// Kernel-free, and (like the legacy arms) shares only the cross-solid-gate-LESS
-/// canonicalization documented on [`resolve_subhandle_list`] — the P2 arm cannot
-/// run the membership gate because the parent solid handle is not yet realized.
+/// Kernel-free, and makes no cross-solid membership check: the P2 arm cannot
+/// compare an element against its parent solid because the parent solid handle
+/// is not yet realized.
 fn resolve_curated_edges_p2(
     edges_val: &reify_ir::Value,
     labels: CuratedEdgeLabels,
@@ -1978,48 +1863,6 @@ fn required_positive_profile_dimensions<const N: usize>(
     Ok(si.map(reify_ir::Value::length))
 }
 
-/// Extract three SI-valued `f64` components from a [`reify_ir::Value::Point`]
-/// or [`reify_ir::Value::Vector`] with exactly 3 numeric, finite components.
-///
-/// Returns `None` if:
-/// - the value is not a `Point` or `Vector`;
-/// - it does not have exactly 3 components;
-/// - any component does not yield a finite `f64` via [`reify_ir::Value::as_f64`].
-///
-/// Both `Point` (with LENGTH-dimensioned `Scalar` components — SI metres) and
-/// `Vector` (with dimensionless `Real` components) pass through correctly
-/// because `Value::as_f64` extracts `si_value` from `Scalar` and the raw
-/// float from `Real`.
-fn point3_components(value: &reify_ir::Value) -> Option<[f64; 3]> {
-    let comps = match value {
-        reify_ir::Value::Point(c) | reify_ir::Value::Vector(c) if c.len() == 3 => c,
-        _ => return None,
-    };
-    let a = comps[0].as_f64().filter(|v| v.is_finite())?;
-    let b = comps[1].as_f64().filter(|v| v.is_finite())?;
-    let c = comps[2].as_f64().filter(|v| v.is_finite())?;
-    Some([a, b, c])
-}
-
-/// Normalize a 3-component direction vector to unit length.
-///
-/// Returns `Err` when the vector magnitude is below [`GEOMETRY_EPSILON`]
-/// (zero or near-zero), preventing a degenerate `[0,0,0]` normal from
-/// propagating silently to the kernel.  The caller maps `Err(String)` to a
-/// `Diagnostic::error` via the standard `Err(String)` → diagnostic idiom
-/// (see `engine_build.rs`).
-fn unit_vector3(v: [f64; 3]) -> Result<[f64; 3], String> {
-    let mag = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-    if mag < GEOMETRY_EPSILON {
-        return Err(format!(
-            "zero-magnitude vector [{:.6e}, {:.6e}, {:.6e}] cannot be normalized \
-             to a unit direction",
-            v[0], v[1], v[2]
-        ));
-    }
-    Ok([v[0] / mag, v[1] / mag, v[2] / mag])
-}
-
 /// A decoder's OWN failure (wrong variant, wrong shape, degenerate vector), led
 /// by the label of the builtin it decodes for: `mirror: expected a Plane value,
 /// got …`.
@@ -2041,14 +1884,14 @@ fn labelled(kind_label: impl std::fmt::Display, failure: impl std::fmt::Display)
 /// - the ORIGIN is a POINT IN SPACE and is LENGTH-gated through
 ///   [`accept_length_point3`], the decoded-value route into the Contract C
 ///   chokepoint. Its components must be LENGTH-dimensioned `Scalar`s; a bare
-///   `Real`/`Int` or a wrong-dimension `Scalar` is rejected with the SAME
-///   `ox`/`oy`/`oz` names and the SAME `ArgRejection::message` wording the
-///   SCALAR form of `mirror` has used since task 5214. Until δ this route
-///   BYPASSED that gate entirely: `mirror(b, plane_yz(10))` reached the kernel
-///   as a 10 SI-**metre** plane offset with zero diagnostics while its scalar
-///   sibling `mirror(b, 10, 0, 0, 1, 0, 0)` was rejected — the 1000× hazard
-///   arriving through the route an author is most likely to take (PRD decision
-///   D3);
+///   `Real`/`Int` or a wrong-dimension `Scalar` is rejected under the names
+///   `ox`/`oy`/`oz`, which [`decode_axis`] and `circular_pattern`'s scalar
+///   origin also use, in the SAME `ArgRejection::message` wording. Until δ
+///   this route BYPASSED that gate entirely: `mirror(b, plane_yz(10))` reached
+///   the kernel as a 10 SI-**metre** plane offset with zero diagnostics while
+///   its then-current scalar sibling `mirror(b, 10, 0, 0, 1, 0, 0)` was
+///   rejected — the 1000× hazard arriving through the route an author is most
+///   likely to take (PRD decision D3);
 /// - the NORMAL is a `Value::Direction`, read through
 ///   [`reify_ir::decode_direction`] (ε, task 9638). A Direction is
 ///   dimensionless by type and unit by construction, so there is neither a
@@ -2071,7 +1914,7 @@ fn labelled(kind_label: impl std::fmt::Display, failure: impl std::fmt::Display)
 ///     `ArgRejection` and there is nothing to hang a dimension code on; its
 ///     promotion is tracked as task 6157's severity residual rather than
 ///     smuggled in here. δ DID move this input's behaviour — pre-δ
-///     [`point3_components`] filtered non-finite through `as_f64` and it landed
+///     `point3_components` filtered non-finite through `as_f64` and it landed
 ///     on the SHAPE message below with no diagnostic at all, whereas it now
 ///     reads "missing or non-Length argument 'ox' for {kind}" beside that one
 ///     Warning (pinned by
@@ -2199,6 +2042,131 @@ pub(crate) fn decode_axis(
     Ok((origin_arr, unit_dir.components()))
 }
 
+/// Read a REQUIRED named argument that must be RESOLVED before it can be
+/// decoded: the one owner of the missing-arg and Undef policy for the typed
+/// composite readers ([`required_direction_arg`],
+/// [`required_length_point3_arg`], and `revolve`'s Axis form ahead of
+/// [`decode_axis`]).
+///
+/// An absent argument takes [`eval_named_arg`]'s missing-arg Warning. An Undef
+/// value takes the shared unresolved sentence (PRD-1 D10), because a transient
+/// solver Undef, or a degenerate `dir(0, 0, 0)` cell, is not the author's
+/// mistake to fix; it pushes no diagnostic of its own.
+fn required_resolved_arg(
+    name: &str,
+    kind_label: impl std::fmt::Display + Copy,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<reify_ir::Value, String> {
+    let value = eval_named_arg(
+        name,
+        kind_label,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )
+    .ok_or_else(|| format!("missing required argument '{name}' for {kind_label}"))?;
+    if matches!(value, reify_ir::Value::Undef) {
+        return Err(unresolved_arg_message(name, kind_label));
+    }
+    Ok(value)
+}
+
+/// Read a REQUIRED `Direction`-typed named argument (`dir(x, y, z)`) —
+/// `rotate`/`rotate_around`'s `axis`, `mirror`'s `normal`, the `revolve` /
+/// `extrude_infinite` `direction` — through [`reify_ir::decode_direction`],
+/// the one direction reader.
+///
+/// The argument-list sibling of [`decode_plane`]'s and [`decode_axis`]'s
+/// direction halves. A Direction is dimensionless by type and unit by
+/// construction, so there is no units gate and no normalisation here.
+///
+/// Absent and Undef follow [`required_resolved_arg`]. Any other non-Direction
+/// value takes [`decode_direction`]'s message behind `{kind_label}: {name}: `,
+/// which ends in the `dir(x, y, z)` hint, and pushes no diagnostic.
+///
+/// Not θ-b's `resolve_direction_arg`: that is the selector path's quiet
+/// reader, which degrades to `None` with a Warning, while a failure here must
+/// drop the op.
+fn required_direction_arg(
+    name: &str,
+    kind_label: impl std::fmt::Display + Copy,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<UnitVec3, String> {
+    let value = required_resolved_arg(
+        name,
+        kind_label,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
+    decode_direction(&value).map_err(|e| labelled(kind_label, format_args!("{name}: {e}")))
+}
+
+/// Read a REQUIRED point-in-space named argument (`point3(x, y, z)`) as three
+/// SI metres, LENGTH-gated per component through [`accept_length_point3`].
+///
+/// `component_names` name the three components in a rejection, so a caller
+/// can keep the wording its scalar form used (`revolve` passes
+/// `ox`/`oy`/`oz`) or name them `{arg}.x|y|z` (`mirror`'s `origin`,
+/// `rotate_around`'s `pivot` — the `translation.x|y|z` precedent of
+/// [`accept_transform_to_arrays`]).
+///
+/// # Returns
+/// - `Ok(metres)`.
+/// - `Err(message)` — for any of:
+///   - an absent argument or a `Value::Undef` — per [`required_resolved_arg`];
+///   - a component that is not a finite LENGTH — [`accept_length_point3`]'s
+///     per-component rejection, every component diagnosed, FIRST error
+///     returned;
+///   - a wrong SHAPE (not a 3-component `Point`/`Vector`) — a labelled shape
+///     message and no diagnostic, because a wrong shape is not a units
+///     rejection.
+#[allow(clippy::too_many_arguments)]
+fn required_length_point3_arg<N: std::fmt::Display + Copy>(
+    name: &str,
+    component_names: [N; 3],
+    kind_label: impl std::fmt::Display + Copy,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<[f64; 3], String> {
+    let value = required_resolved_arg(
+        name,
+        kind_label,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
+    accept_length_point3(
+        &value,
+        component_names,
+        kind_label,
+        |_| {
+            labelled(
+                kind_label,
+                format_args!("'{name}' is not a valid 3-component numeric Point/Vector"),
+            )
+        },
+        diagnostics,
+    )
+}
+
 /// Translate a compiled geometry operation into a runtime `GeometryOp` by
 /// evaluating its argument expressions against the current value environment.
 ///
@@ -2208,7 +2176,7 @@ pub(crate) fn decode_axis(
 /// evaluation is incomplete: a required argument is absent, a value is
 /// non-finite, a `GeomRef` cannot be resolved, or an arm-level validation
 /// guard fires (e.g. negative scale factor, degenerate extrude distance,
-/// zero-length revolve axis).
+/// degenerate revolve angle).
 ///
 /// This is the intentional, convention-aligned alternative to silent defaults
 /// (see `review/briefing.yaml` line 9 and project norm
@@ -3082,11 +3050,10 @@ fn prim_half_space(
     // `nx`/`ny`/`nz` triples, and `examples/half_space.ri` depends on it:
     // `half_space(0mm, 0mm, 0mm, 0, 0, 1)`.
     //
-    // The point triple goes through the GROUP reader — the same
-    // `["px", "py", "pz"]` call `transform_rotate_around` makes — so it
-    // inherits all-failures-at-once, `Unresolved`-beats-`Invalid` precedence
-    // and the borrow ordering the group readers document (see
-    // `required_length_args`), rather than restating any of them here.
+    // The point triple goes through the GROUP reader, so it inherits
+    // all-failures-at-once, `Unresolved`-beats-`Invalid` precedence and the
+    // borrow ordering the group readers document (see `required_length_args`),
+    // rather than restating any of them here.
     let [px, py, pz] = required_length_values(
         ["px", "py", "pz"],
         kind,
@@ -3446,10 +3413,16 @@ fn modify_draft(
         meta_map,
         diagnostics,
     )?;
-    // plane is resolved via step_handles.last() (a pre-existing approximation —
-    // plane_xy yields a Value::Plane, not a sub-op; the full plane-handle plumbing
-    // fix is out of scope for δ). Filter INVALID so a preceding compile failure
-    // (sentinel) propagates as Err rather than forwarding INVALID to the kernel.
+    // TODO(#5818): resolve the `plane` argument here. It is read from
+    // step_handles.last() (a pre-existing approximation — plane_xy yields a
+    // Value::Plane, not a sub-op, so no plane handle is plumbed). When this is
+    // fixed, add the .ri-source e2e that #5818 owns: compile a 4-arg curated
+    // `draft(solid, faces, angle, neutral_plane)`, build it, and assert
+    // `GeometryOp::Draft.faces` is non-empty and the drafted solid has
+    // positive volume. Today that build stops at the Err below.
+    //
+    // Filter INVALID so a preceding compile failure (sentinel) propagates as
+    // Err rather than forwarding INVALID to the kernel.
     let plane_id = step_handles
         .last()
         .copied()
@@ -3689,22 +3662,30 @@ fn modify_offset_curve(
                     expr,
                     &eval_ctx_with_meta(values, functions, meta_map),
                 );
-                match point3_components(&v) {
-                    Some(dir) => {
-                        let unit_dir = unit_vector3(dir)
-                            .map_err(|e| format!("{kind}: degenerate direction: {e}"))?;
-                        (None, Some(unit_dir))
-                    }
-                    None => {
-                        diagnostics.push(Diagnostic::warning(
-                            "offset_curve: 3rd argument is neither a reference \
-                             Surface (bound geometry handle) nor a direction \
-                             vec3 — building a planar offset and ignoring it"
-                                .to_string(),
-                        ));
-                        (None, None)
-                    }
+                if matches!(v, reify_ir::Value::Undef) {
+                    return Err(unresolved_arg_message("third", kind));
                 }
+                if matches!(
+                    v,
+                    reify_ir::Value::GeometryHandle {
+                        kernel_handle: None,
+                        ..
+                    }
+                ) {
+                    return Err(labelled(
+                        kind,
+                        "reference Surface (3rd argument) is not realized",
+                    ));
+                }
+                let unit = decode_direction(&v).map_err(|e| {
+                    labelled(
+                        kind,
+                        format_args!(
+                            "3rd argument is neither a reference Surface nor a Direction: {e}"
+                        ),
+                    )
+                })?;
+                (None, Some(unit.components()))
             }
         }
     };
@@ -3773,20 +3754,10 @@ fn transform_rotate(
             }
         }
     } else {
-        // The axis DIRECTION is a dimensionless unit vector and stays bare
-        // (C1 inv. 4); the ANGLE is gated. The closure is SCOPED so its
-        // `diagnostics` borrow ends before the gate runs — that is what keeps
-        // the ax/ay/az-then-angle read order, and so the diagnostic order,
-        // exactly as it was.
-        let axis = {
-            let mut f64_arg = |name: &str| -> Result<f64, String> {
-                eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
-                    .ok_or_else(|| {
-                        format!("missing or non-finite argument '{}' for {}", name, kind)
-                    })
-            };
-            [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?]
-        };
+        // Both are read before either `?`: a bad axis must not hide a bare angle.
+        let axis =
+            required_direction_arg("axis", kind, args, values, functions, meta_map, diagnostics)
+                .map(|unit| unit.components());
         let angle_rad = required_angle_arg(
             "angle",
             kind,
@@ -3795,11 +3766,11 @@ fn transform_rotate(
             functions,
             meta_map,
             diagnostics,
-        )?;
+        );
         Ok(reify_ir::GeometryOp::Rotate {
             target: target_id,
-            axis,
-            angle_rad,
+            axis: axis?,
+            angle_rad: angle_rad?,
         })
     }
 }
@@ -3850,31 +3821,20 @@ fn transform_rotate_around(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    // The PIVOT is a point in space → gated. Read BEFORE `f64_arg` is declared
-    // (borrow ordering); this is also the existing source order, so both the
-    // read order and the diagnostic order are preserved exactly.
-    let point = required_length_args(
-        ["px", "py", "pz"],
+    // All three are read before any `?`: a bad pivot or axis must not hide a
+    // bare angle.
+    let point = required_length_point3_arg(
+        "pivot",
+        ["pivot.x", "pivot.y", "pivot.z"],
         kind,
         args,
         values,
         functions,
         meta_map,
         diagnostics,
-    )?;
-    // The axis is a dimensionless unit vector and stays on the bare-accepting
-    // path (C1 inv. 4). The ANGLE is gated as of PRD 3 leaf γ; its closure is
-    // SCOPED so the borrow ends before the gate runs, preserving the read and
-    // diagnostic order.
-    let axis = {
-        let mut f64_arg = |name: &str| -> Result<f64, String> {
-            eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
-                .ok_or_else(|| {
-                    format!("missing or non-finite argument '{}' for {}", name, kind)
-                })
-        };
-        [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?]
-    };
+    );
+    let axis = required_direction_arg("axis", kind, args, values, functions, meta_map, diagnostics)
+        .map(|unit| unit.components());
     let angle_rad = required_angle_arg(
         "angle",
         kind,
@@ -3883,12 +3843,12 @@ fn transform_rotate_around(
         functions,
         meta_map,
         diagnostics,
-    )?;
+    );
     Ok(reify_ir::GeometryOp::RotateAround {
         target: target_id,
-        point,
-        axis,
-        angle_rad,
+        point: point?,
+        axis: axis?,
+        angle_rad: angle_rad?,
     })
 }
 
@@ -4246,30 +4206,32 @@ fn pattern_mirror(
             plane_normal,
         })
     } else {
-        // The mirror-plane ORIGIN is length-semantic; see
-        // `required_length_origin3` for the units rationale AND for why it must
-        // be read before `f64_arg`.
-        let plane_origin =
-            required_length_origin3(kind, args, values, functions, meta_map, diagnostics)?;
-        // The plane NORMAL is a dimensionless unit vector — stays bare f64.
-        let mut f64_arg = |name: &str| -> Result<f64, String> {
-            eval_named_arg_f64(
-                name,
-                kind,
-                args,
-                values,
-                functions,
-                meta_map,
-                diagnostics,
-            )
-            .ok_or_else(|| {
-                format!("missing or non-finite argument '{}' for {}", name, kind)
-            })
-        };
+        // Both are read before either `?`, so a bad normal and a bare origin
+        // are reported in one build.
+        let plane_origin = required_length_point3_arg(
+            "origin",
+            ["origin.x", "origin.y", "origin.z"],
+            kind,
+            args,
+            values,
+            functions,
+            meta_map,
+            diagnostics,
+        );
+        let plane_normal = required_direction_arg(
+            "normal",
+            kind,
+            args,
+            values,
+            functions,
+            meta_map,
+            diagnostics,
+        )
+        .map(|unit| unit.components());
         Ok(reify_ir::GeometryOp::Mirror {
             target: target_id,
-            plane_origin,
-            plane_normal: [f64_arg("nx")?, f64_arg("ny")?, f64_arg("nz")?],
+            plane_origin: plane_origin?,
+            plane_normal: plane_normal?,
         })
     }
 }
@@ -4569,47 +4531,46 @@ fn sweep_revolve(
         step_handles,
         named_steps,
     )?;
-    // The axis ORIGIN is a point in space → gated. HOISTED here, above the
-    // `f64_arg` closure: the borrow-ordering contract on
-    // `required_length_origin3` makes this mandatory, not stylistic.
+    // Every argument is EVALUATED before the first `?`, and the first `Err` in
+    // source order is returned, so a bare origin still reports before a bad
+    // direction (the task-5623 precedence). Only the DIMENSION gates push a
+    // diagnostic of their own, so the origin's components (in either spelling)
+    // and the angle are what an author sees all of in one build. An unresolved
+    // or undecodable Direction or Axis is reported only through its `Err`, so
+    // it surfaces once nothing before it fails. The angle must be reached even
+    // when the axis fails; the units closure guard can fill only scalars, so it
+    // observes the angle gate through exactly that.
     //
-    // This is a deliberate PRECEDENCE change — the origin used to be read LAST,
-    // after the degenerate-axis and degenerate-angle checks — so a revolve with
-    // both a bare origin and a degenerate axis now reports the ORIGIN. Pinned by
-    // `compile_geometry_op_revolve_bare_origin_beats_degenerate_axis`. It also
-    // matches the two pre-existing `required_length_origin3` call sites
-    // (`pattern_circular`, `pattern_mirror`), where the origin is likewise read
-    // before the direction's magnitude check.
-    let axis_origin =
-        required_length_origin3(kind, args, values, functions, meta_map, diagnostics)?;
-    // Axis DIRECTION only — a dimensionless unit vector, un-gated (C1 inv. 4).
-    // SCOPED so the borrow ends before the angle gate below.
-    let axis_dir = {
-        let mut f64_arg = |name: &str| -> Result<f64, String> {
-            eval_named_arg_f64(
-                name,
-                kind,
-                args,
-                values,
-                functions,
-                meta_map,
-                diagnostics,
-            )
-            .ok_or_else(|| {
-                format!("missing or non-finite argument '{}' for {}", name, kind)
-            })
-        };
-        [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?]
+    // The axis comes in two spellings, told apart by the presence of `axis`:
+    // `revolve(profile, axis, angle)` takes an Axis datum, and
+    // `revolve(profile, origin, direction, angle)` (also revolve_full's
+    // lowering) a Point3 origin beside a Direction. Neither has a magnitude to
+    // check: a Direction is unit by construction.
+    let axis = if args.iter().any(|(n, _)| n == "axis") {
+        required_resolved_arg("axis", kind, args, values, functions, meta_map, diagnostics)
+            .and_then(|axis| decode_axis(&axis, kind, diagnostics))
+    } else {
+        let origin = required_length_point3_arg(
+            "origin",
+            ["ox", "oy", "oz"],
+            kind,
+            args,
+            values,
+            functions,
+            meta_map,
+            diagnostics,
+        );
+        let direction = required_direction_arg(
+            "direction",
+            kind,
+            args,
+            values,
+            functions,
+            meta_map,
+            diagnostics,
+        );
+        origin.and_then(|origin| direction.map(|direction| (origin, direction.components())))
     };
-    let mag = axis_dir.iter().map(|x| x * x).sum::<f64>().sqrt();
-    if !mag.is_finite() || mag < GEOMETRY_EPSILON {
-        diagnostics.push(Diagnostic::warning(format!(
-            "revolve dropped: rotation axis [{}, {}, {}] has \
-             degenerate magnitude={} (must be finite and >= 1e-12)",
-            axis_dir[0], axis_dir[1], axis_dir[2], mag
-        )));
-        return Err(format!("revolve axis has degenerate magnitude: {}", mag));
-    }
     // The DIMENSION gate runs BEFORE the degeneracy check below, deliberately:
     // a bare `0` is both bare and degenerate, and reporting it as "angle is
     // degenerate" would send the author to fix the wrong thing. Pinned by
@@ -4622,7 +4583,9 @@ fn sweep_revolve(
         functions,
         meta_map,
         diagnostics,
-    )?;
+    );
+    let (axis_origin, axis_dir) = axis?;
+    let angle_rad = angle_rad?;
     if angle_rad.abs() < DEGENERATE_ANGLE_RAD {
         diagnostics.push(Diagnostic::warning(format!(
             "revolve dropped: angle={} rad is degenerate \
@@ -4747,26 +4710,7 @@ fn sweep_extrude_infinite(
         step_handles,
         named_steps,
     )?;
-    let mut f64_arg = |name: &str| -> Result<f64, String> {
-        eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing or non-finite argument '{}' for {}", name, kind))
-    };
-    let dx = f64_arg("dx")?;
-    let dy = f64_arg("dy")?;
-    let dz = f64_arg("dz")?;
-    let mag = (dx * dx + dy * dy + dz * dz).sqrt();
-    if !mag.is_finite() || mag < GEOMETRY_EPSILON {
-        diagnostics.push(Diagnostic::warning(format!(
-            "extrude_infinite dropped: axis [{}, {}, {}] has \
-             degenerate magnitude={} (must be finite and >= 1e-12)",
-            dx, dy, dz, mag
-        )));
-        return Err(format!(
-            "extrude_infinite axis has degenerate magnitude: {}",
-            mag
-        ));
-    }
-    let direction_str = eval_named_arg(
+    let axis = required_direction_arg(
         "direction",
         kind,
         args,
@@ -4774,37 +4718,30 @@ fn sweep_extrude_infinite(
         functions,
         meta_map,
         diagnostics,
+    )?;
+    // `symmetric` is synthesized by the lowering: false for
+    // `extrude_infinite`, true for `extrude_infinite_symmetric`. It is
+    // required rather than defaulted, so a hand-built op that lacks it fails
+    // instead of quietly building one side.
+    let symmetric = eval_named_arg(
+        "symmetric",
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
     )
-    .ok_or_else(|| "missing required argument 'direction' for extrude_infinite".to_string())?;
-    let direction_s = match &direction_str {
-        reify_ir::Value::String(s) => s.as_str().to_owned(),
-        other => {
-            return Err(format!(
-                "extrude_infinite direction must be a string, got: {:?}",
-                other
-            ))
-        }
-    };
-    // Fold direction into (axis, both):
-    // "positive" → keep axis as-is, both=false
-    // "negative" → negate axis, both=false
-    // "both"     → keep axis as-is, both=true
-    let (axis, both) = match direction_s.as_str() {
-        "positive" => ([dx, dy, dz], false),
-        "negative" => ([-dx, -dy, -dz], false),
-        "both" => ([dx, dy, dz], true),
-        other => {
-            diagnostics.push(Diagnostic::error(format!(
-                "extrude_infinite: invalid direction {:?}; \
-                 must be one of \"positive\", \"negative\", or \"both\"",
-                other
-            )));
-            return Err(format!("extrude_infinite: invalid direction {:?}", other));
-        }
+    .ok_or_else(|| format!("missing required argument 'symmetric' for {kind}"))?;
+    let reify_ir::Value::Bool(both) = symmetric else {
+        return Err(labelled(
+            kind,
+            format_args!("symmetric must be a Bool, got {}", symmetric.kind_name()),
+        ));
     };
     Ok(reify_ir::GeometryOp::ExtrudeInfinite {
         profile: profile_handle,
-        axis,
+        axis: axis.components(),
         both,
     })
 }
@@ -7182,13 +7119,16 @@ fn try_build_kernel_free_leaf_selector(
         TopologySelectorHelper::FacesByNormal => {
             let target = resolve_symbolic_selector_target(&args[0], values)?;
             let dir =
-                resolve_vec3_arg(&args[1], values, function_name, "dir", diagnostics)?;
+                resolve_direction_arg(&args[1], values, function_name, "dir", diagnostics)?;
             let tol_rad =
                 resolve_angle_scalar_arg(&args[2], values, function_name, "tol", diagnostics)?;
             build_leaf_selector(
                 reify_core::ty::SelectorKind::Face,
                 target,
-                reify_ir::value::LeafQuery::ByNormal { dir, tol_rad },
+                reify_ir::value::LeafQuery::ByNormal {
+                    dir: dir.components(),
+                    tol_rad,
+                },
                 function_name,
                 diagnostics,
             )
@@ -7196,13 +7136,16 @@ fn try_build_kernel_free_leaf_selector(
         TopologySelectorHelper::EdgesParallelTo => {
             let target = resolve_symbolic_selector_target(&args[0], values)?;
             let axis =
-                resolve_vec3_arg(&args[1], values, function_name, "axis", diagnostics)?;
+                resolve_direction_arg(&args[1], values, function_name, "axis", diagnostics)?;
             let tol_rad =
                 resolve_angle_scalar_arg(&args[2], values, function_name, "tol", diagnostics)?;
             build_leaf_selector(
                 reify_core::ty::SelectorKind::Edge,
                 target,
-                reify_ir::value::LeafQuery::ByParallel { axis, tol_rad },
+                reify_ir::value::LeafQuery::ByParallel {
+                    axis: axis.components(),
+                    tol_rad,
+                },
                 function_name,
                 diagnostics,
             )
@@ -7228,13 +7171,16 @@ fn try_build_kernel_free_leaf_selector(
         TopologySelectorHelper::FacesPerpendicularTo => {
             let target = resolve_symbolic_selector_target(&args[0], values)?;
             let axis =
-                resolve_vec3_arg(&args[1], values, function_name, "axis", diagnostics)?;
+                resolve_direction_arg(&args[1], values, function_name, "axis", diagnostics)?;
             let tol_rad =
                 resolve_angle_scalar_arg(&args[2], values, function_name, "tol", diagnostics)?;
             build_leaf_selector(
                 reify_core::ty::SelectorKind::Face,
                 target,
-                reify_ir::value::LeafQuery::ByPerpendicular { axis, tol_rad },
+                reify_ir::value::LeafQuery::ByPerpendicular {
+                    axis: axis.components(),
+                    tol_rad,
+                },
                 function_name,
                 diagnostics,
             )
@@ -7242,13 +7188,16 @@ fn try_build_kernel_free_leaf_selector(
         TopologySelectorHelper::EdgesPerpendicularTo => {
             let target = resolve_symbolic_selector_target(&args[0], values)?;
             let axis =
-                resolve_vec3_arg(&args[1], values, function_name, "axis", diagnostics)?;
+                resolve_direction_arg(&args[1], values, function_name, "axis", diagnostics)?;
             let tol_rad =
                 resolve_angle_scalar_arg(&args[2], values, function_name, "tol", diagnostics)?;
             build_leaf_selector(
                 reify_core::ty::SelectorKind::Edge,
                 target,
-                reify_ir::value::LeafQuery::ByPerpendicular { axis, tol_rad },
+                reify_ir::value::LeafQuery::ByPerpendicular {
+                    axis: axis.components(),
+                    tol_rad,
+                },
                 function_name,
                 diagnostics,
             )
@@ -8954,48 +8903,14 @@ pub(crate) fn try_eval_topology_selector(
             dispatch_point_on_shape(kernel, &query, &function.name, diagnostics)
         }
         TopologySelectorHelper::Angle => {
-            // Both args: value-flow Vec3 ValueRefs → values map → [f64; 3].
-            // Pure-math: acos(clamp(dot(a,b)/(|a||b|), -1, 1)). No kernel call.
-            //
-            // The dot-product and L2-norm are hand-rolled on [f64; 3] rather than
-            // reusing `crates/reify-stdlib/src/linalg.rs` because that crate
-            // operates on `Value` tensors, not bare [f64; 3] slices.  If the
-            // degenerate-input semantics here ever diverge from linalg.rs's
-            // `magnitude`/`dot` handling, align them explicitly.  See also the
-            // unit tests for `angle` in this module (task 3614, KGQ-ε).
-            let a = resolve_vec3_arg(&args[0], values, &function.name, "a", diagnostics)?;
-            let b = resolve_vec3_arg(&args[1], values, &function.name, "b", diagnostics)?;
-            let dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-            let na = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
-            let nb = (b[0] * b[0] + b[1] * b[1] + b[2] * b[2]).sqrt();
-            // Primary degenerate guard: zero-length or explicitly non-finite
-            // (NaN/inf component → NaN magnitude, overflow → inf magnitude).
-            if na == 0.0 || nb == 0.0 || !na.is_finite() || !nb.is_finite() {
-                diagnostics.push(Diagnostic::warning(format!(
-                    "angle: degenerate input — zero-length or non-finite vector \
-                     (|a|={na}, |b|={nb}); cell left at Undef"
-                )));
-                return Some(reify_ir::Value::Undef);
-            }
-            let cos_theta = (dot / (na * nb)).clamp(-1.0, 1.0);
-            // Secondary degenerate guard: catch NaN from subnormal magnitude
-            // underflow (na*nb underflows to 0.0 while both na and nb
-            // individually passed the guard above — a rare but possible case
-            // with extremely small component values).  clamp() propagates NaN
-            // unchanged in IEEE 754, so this must be tested after clamping.
-            if !cos_theta.is_finite() {
-                diagnostics.push(Diagnostic::warning(format!(
-                    "angle: computed cosine is non-finite \
-                     (|a|={na}, |b|={nb}, dot={dot}); \
-                     possible subnormal magnitude underflow; cell left at Undef"
-                )));
-                return Some(reify_ir::Value::Undef);
-            }
-            let theta = cos_theta.acos();
-            Some(reify_ir::Value::angle(theta))
+            // `angle(Direction, Direction) -> Angle`, pure math with no kernel
+            // call.
+            let a = resolve_direction_arg(&args[0], values, &function.name, "a", diagnostics)?;
+            let b = resolve_direction_arg(&args[1], values, &function.name, "b", diagnostics)?;
+            Some(reify_ir::Value::angle(angle_between(a, b)))
         }
         TopologySelectorHelper::Normal => {
-            // `normal(surface, point) -> Vector3<Dimensionless>` (task 3615, KGQ-ζ).
+            // `normal(surface, point) -> Direction` (task 3615, KGQ-ζ; θ-b).
             // Arg order mirrors `contains`: Surface=args[0], Point3<Length>=args[1].
             // args[0]: surface geometry ValueRef → named_steps → GeometryHandleId.
             // args[1]: point ValueRef → values → Value::Point of three Length scalars → [f64;3] SI metres.
@@ -9008,7 +8923,7 @@ pub(crate) fn try_eval_topology_selector(
                 py: point[1],
                 pz: point[2],
             };
-            dispatch_normal_vector3(kernel, &query, &function.name, diagnostics)
+            dispatch_normal_direction(kernel, &query, &function.name, diagnostics)
         }
         TopologySelectorHelper::Curvature => {
             // `curvature(shape, point) -> Scalar<Curvature>|Matrix<2,2,Curvature>` (task 3621, KGQ-μ).
@@ -9830,11 +9745,11 @@ enum TopologySelectorHelper {
     /// `faces_by_area(geometry, Range<Area>) -> List<Geometry>` — faces whose
     /// surface area falls in the range (task 3560).
     FacesByArea,
-    /// `faces_by_normal(geometry, Vec3, Angle) -> List<Geometry>` — faces
+    /// `faces_by_normal(geometry, Direction, Angle) -> List<Geometry>` — faces
     /// whose outward normal is within an angular tolerance of a target
     /// direction (task 3560).
     FacesByNormal,
-    /// `edges_parallel_to(geometry, Vec3, Angle) -> List<Geometry>` — edges
+    /// `edges_parallel_to(geometry, Direction, Angle) -> List<Geometry>` — edges
     /// whose midpoint tangent is (anti-)parallel to an axis within an
     /// angular tolerance (task 3560).
     EdgesParallelTo,
@@ -9883,7 +9798,7 @@ enum TopologySelectorHelper {
     /// FUTURE: `geo_equiv_strict(a, b, tol) -> Bool` — symmetric Hausdorff
     /// distance variant deferred to v0.4 (PRD §5.1, Open Question §10).
     GeoEquiv,
-    /// `normal(surface, point) -> Vector3<Dimensionless>` — at-point outward
+    /// `normal(surface, point) -> Direction` — at-point outward
     /// unit surface normal (task 3615, KGQ-ζ, PRD §9). Projects the Cartesian
     /// `point` onto the face's parametric surface via `ShapeAnalysis_Surface::
     /// ValueOfUV` then returns the orientation-aware outward normal at the
@@ -10017,11 +9932,11 @@ enum TopologySelectorHelper {
     /// `SelectorKind::Vertex`.  Zero kernel queries at construction time (K2/BT7).
     Vertex,
     // ── Task 3523: selector_vocabulary_v2 leaf-predicate ctors ───────────────
-    /// `faces_perpendicular_to(geometry, Vec3, Angle) -> Selector(Face)` — faces
+    /// `faces_perpendicular_to(geometry, Direction, Angle) -> Selector(Face)` — faces
     /// whose normal is within `tol` of perpendicular to the axis. Arity 3,
     /// kernel-FREE; builds `LeafQuery::ByPerpendicular` (Face kind).
     FacesPerpendicularTo,
-    /// `edges_perpendicular_to(geometry, Vec3, Angle) -> Selector(Edge)` — edges
+    /// `edges_perpendicular_to(geometry, Direction, Angle) -> Selector(Edge)` — edges
     /// whose tangent is within `tol` of perpendicular to the axis. Arity 3,
     /// kernel-FREE; builds `LeafQuery::ByPerpendicular` (Edge kind).
     EdgesPerpendicularTo,
@@ -10367,8 +10282,7 @@ fn resolve_density_arg(
 
 /// Read a single Vec3 component: a `Value::Real` or a dimensionless
 /// `Value::Scalar`. Returns `None` for any dimensioned Scalar or non-numeric
-/// payload — the direction/axis args of `faces_by_normal` / `edges_parallel_to`
-/// are pure unit-vector numerics in v0.1.
+/// payload — `scale`'s `factors` are pure dimensionless numerics.
 fn vec3_component_si(value: &reify_ir::Value) -> Option<f64> {
     match value {
         reify_ir::Value::Real(v) => Some(*v),
@@ -10380,89 +10294,51 @@ fn vec3_component_si(value: &reify_ir::Value) -> Option<f64> {
     }
 }
 
-/// Short human-readable label for a `Value` that failed Vec3 classification,
-/// used as the `got` field of the rejection diagnostic (task ε). Vec3-aware: a
-/// `Value::Vector` of the wrong arity or carrying a dimensioned / non-numeric
-/// component is distinguished from a plainly non-Vector value, so the Warning
-/// names what actually went wrong.
-fn vec3_got_label(value: &reify_ir::Value) -> String {
-    match value {
-        reify_ir::Value::Vector(items) if items.len() != 3 => {
-            format!("Vector of {} components", items.len())
-        }
-        reify_ir::Value::Vector(_) => {
-            "Vector with a dimensioned or non-numeric component".to_string()
-        }
-        reify_ir::Value::Real(_) => "Real".to_string(),
-        reify_ir::Value::Scalar { dimension, .. } => dimension.diagnostic_scalar_label(),
-        reify_ir::Value::Point(_) => "Point".to_string(),
-        reify_ir::Value::Bool(_) => "Bool".to_string(),
-        reify_ir::Value::Int(_) => "Int".to_string(),
-        _ => "non-Vec3 value".to_string(),
-    }
-}
-
-/// Resolve a 3-component vector arg to its `[f64; 3]` SI components, emitting a
-/// `Severity::Warning` when the caller passes a defined-but-wrong value.
+/// Read a direction arg (the `dir` / `axis` of the directional selectors and
+/// `angle`'s operands) as the [`UnitVec3`] of a `Value::Direction`
+/// (direction-typing θ-b, PRD C3).
 ///
-/// Evaluate-then-accept (task ε): the arg expr is EVALUATED against `values`
-/// (via [`eval_arg_value`]) and the resulting `Value` classified. Inline
-/// `vec3(...)` constructor calls now WORK — `eval_expr` lowers the `vec3(...)`
-/// `FunctionCall` to a `Value::Vector` via `reify_stdlib::eval_builtin`, so the
-/// γ "Literal/`ValueRef` shape-match only → silent fall-through" behaviour is
-/// gone. Each component must still be a `Value::Real` or a dimensionless
-/// `Value::Scalar` (per [`vec3_component_si`]); the vector must have exactly
-/// three components — the direction/axis args of `faces_by_normal` /
-/// `edges_parallel_to` / `angle` are pure unit-vector numerics in v0.1.
+/// The arg expr is EVALUATED against `values` (via [`eval_arg_value`]) and the
+/// result read by [`decode_direction`], the one direction reader:
 ///
-/// | evaluated arg value                                | return       | diagnostic?     |
-/// |----------------------------------------------------|--------------|-----------------|
-/// | `Value::Undef` (missing/Undef cell, user-fn arg)   | `None`       | no — quiet      |
-/// | `Value::Vector` of 3 `Real`/dimensionless `Scalar` | `Some([..])` | no              |
-/// | non-Vector, wrong length, or dimensioned component | `None`       | yes — 1 Warning |
-fn resolve_vec3_arg(
+/// | evaluated arg value                              | return           | diagnostic?     |
+/// |--------------------------------------------------|------------------|-----------------|
+/// | `Value::Undef` (missing/Undef cell, user-fn arg) | `None`           | no — quiet      |
+/// | `Value::Direction`                               | `Some(UnitVec3)` | no              |
+/// | anything else, a raw `Value::Vector` included    | `None`           | yes — 1 Warning |
+///
+/// The Warning carries `decode_direction`'s own message, so it ends with the
+/// migration hint "write dir(x, y, z)". It is a Warning, not an Error: the
+/// static `ArgTypeMismatch` slot is the loud path, and this arm is reached only
+/// through gradual types.
+fn resolve_direction_arg(
     expr: &reify_ir::CompiledExpr,
     values: &reify_ir::ValueMap,
     builtin: &str,
     arg_name: &str,
     diagnostics: &mut Vec<Diagnostic>,
-) -> Option<[f64; 3]> {
-    use crate::arg_acceptance::ArgRejection;
-
+) -> Option<UnitVec3> {
     let value = eval_arg_value(expr, values);
-
-    // Quiet degradation: an Undef value (missing cell, or a user-fn/meta arg the
-    // local ctx can't evaluate) returns None with no diagnostic — behaviourally
-    // identical to the γ fall-through for missing cells.
     if matches!(value, reify_ir::Value::Undef) {
         return None;
     }
-
-    let as_vec3 = |v: &reify_ir::Value| -> Option<[f64; 3]> {
-        match v {
-            reify_ir::Value::Vector(items) if items.len() == 3 => Some([
-                vec3_component_si(&items[0])?,
-                vec3_component_si(&items[1])?,
-                vec3_component_si(&items[2])?,
-            ]),
-            _ => None,
+    match decode_direction(&value) {
+        Ok(direction) => Some(direction),
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{builtin}: {arg_name} argument: {err}"
+            )));
+            None
         }
-    };
-    if let Some(components) = as_vec3(&value) {
-        return Some(components);
     }
+}
 
-    // Defined-but-wrong: emit exactly one Warning naming builtin/arg/Vec3/got
-    // (byte-uniform wording with the density / scalar-bound paths).
-    diagnostics.push(Diagnostic::warning(
-        ArgRejection {
-            got: vec3_got_label(&value),
-            expected: "Vec3",
-            migration_hint: None,
-        }
-        .message(builtin, arg_name),
-    ));
-    None
+/// The angle in radians, in `[0, π]`, between two unit directions: the cosine
+/// is their dot product, clamped against rounding past ±1.
+fn angle_between(a: UnitVec3, b: UnitVec3) -> f64 {
+    let [ax, ay, az] = a.components();
+    let [bx, by, bz] = b.components();
+    (ax * bx + ay * by + az * bz).clamp(-1.0, 1.0).acos()
 }
 
 /// Shared evaluate-then-accept core for the SCALAR-dimension owned args
@@ -10874,18 +10750,19 @@ fn dispatch_point3_length_reply(
     }
 }
 
-/// Issue a `FaceNormalAt` query and unwrap the kernel's JSON-Point3 reply
-/// (`{"x":_,"y":_,"z":_}`) into a dimensionless `Value::Vector([Real, Real,
-/// Real])` — the canonical unit normal representation (matches `vec3()` output
-/// and `resolve_vec3_arg` expectations).
+/// Issue a `FaceNormalAt` query and mint the kernel's JSON-Point3 reply
+/// (`{"x":_,"y":_,"z":_}`) into a unit `Value::Direction` through
+/// `UnitVec3::from_vector`, which normalises a non-unit reply.
 ///
 /// Models the same defensive-downgrade contract as `dispatch_point3_length_reply`:
-/// - Kernel `Err` → one Warning ("`normal` kernel query failed: …") + `Some(Value::Undef)`
-/// - Malformed reply (non-String or bad JSON) → one Warning ("`normal` kernel reply parse
-///   failed: …") + `Some(Value::Undef)`
+/// each failure is one Warning plus `Some(Value::Undef)`.
+/// - Kernel `Err` → "`normal` kernel query failed: …"
+/// - Malformed reply (non-String or bad JSON) → "`normal` kernel reply parse failed: …"
+/// - A zero or non-finite reply → "`normal` kernel reply is not a unit direction: …"
 ///
-/// Powers `TopologySelectorHelper::Normal` (task 3615, KGQ-ζ).
-fn dispatch_normal_vector3(
+/// Powers `TopologySelectorHelper::Normal` (task 3615, KGQ-ζ; a Direction since
+/// direction-typing θ-b).
+fn dispatch_normal_direction(
     kernel: &mut dyn reify_ir::GeometryKernel,
     query: &reify_ir::GeometryQuery,
     helper_name: &str,
@@ -10893,11 +10770,15 @@ fn dispatch_normal_vector3(
 ) -> Option<reify_ir::Value> {
     match kernel.query(query) {
         Ok(value) => match crate::topology_selectors::parse_xyz_value(&value, helper_name) {
-            Ok([x, y, z]) => Some(reify_ir::Value::Vector(vec![
-                reify_ir::Value::Real(x),
-                reify_ir::Value::Real(y),
-                reify_ir::Value::Real(z),
-            ])),
+            Ok(raw) => match reify_ir::UnitVec3::from_vector(raw) {
+                Ok(unit) => Some(reify_ir::Value::Direction(unit)),
+                Err(fault) => {
+                    diagnostics.push(Diagnostic::warning(format!(
+                        "{helper_name} kernel reply is not a unit direction: {fault}"
+                    )));
+                    Some(reify_ir::Value::Undef)
+                }
+            },
             Err(err) => {
                 diagnostics.push(Diagnostic::warning(format!(
                     "{} kernel reply parse failed: {}",
@@ -11073,7 +10954,7 @@ fn dispatch_curvature(
 /// (rad·m⁻¹) cells.
 ///
 /// On any parse failure emits a Warning and returns `Value::Undef` (same
-/// defensive-downgrade contract as `dispatch_normal_vector3`).
+/// defensive-downgrade contract as `dispatch_normal_direction`).
 fn parse_curvature_matrix_reply(
     value: &reify_ir::Value,
     helper_name: &str,

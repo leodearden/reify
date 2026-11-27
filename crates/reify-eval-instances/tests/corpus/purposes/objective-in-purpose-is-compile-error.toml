@@ -1,0 +1,10 @@
+tests = "an objective inside a purpose is a compile error that says to write it in the definition."
+rule = "ruling 1; Part 10."
+provenance = "design Part 10 (Today: a purpose's `minimize` is stored and never read); language-1 L6 point 5; language-2 B12 and D2 (\"members\" includes a purpose's `minimize`). Taken. Also, from the merged entries: design Part 10. logic-2 N16 (Also)."
+needs = ["compile-error", "purpose"]
+answer_basis = "stated (Part 10: \"An objective inside a purpose is a compile error that says to write it in the definition\"); readings C17 places it at the declaration, so the declaration alone raises it. The `Bracket` of the earlier source, which nothing applied the purpose to, is left out."
+today = "accepted with no diagnostic; `Bracket.t = 5.5 mm` (run `purpose_obj.ri`, with a `Bracket` whose `t` is `auto` in [1 mm, 10 mm])."
+
+[[expect]]
+compile_error = "an objective inside purpose `lean`; write it in the definition"
+code = "ObjectiveInPurpose"

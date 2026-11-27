@@ -1,0 +1,8 @@
+structure def Kid { param w : Real = 1.0 }
+structure def Mid {
+    let a = b * 2.0
+    let b = a * 2.0
+    let c = a + 1.0
+    sub k = Kid(w: a)
+}
+structure def Parent { sub m = Mid() }

@@ -1,0 +1,3 @@
+structure def Plate { param t : Length   constraint t >= 3mm }
+fn mk() -> Plate = Plate(t: auto)
+structure def Asm { let d = mk() }

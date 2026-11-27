@@ -148,6 +148,10 @@ mod cli_objective_inheritance_golden;
 mod cli_one_sided_auto;
 #[path = "harness_cli/cli_orientation_rotvec_dimension.rs"]
 mod cli_orientation_rotvec_dimension;
+#[path = "harness_cli/cli_pub_import_reexport.rs"]
+mod cli_pub_import_reexport;
+#[path = "harness_cli/cli_std_prelude_facade.rs"]
+mod cli_std_prelude_facade;
 #[path = "harness_cli/cli_purpose.rs"]
 mod cli_purpose;
 #[path = "harness_cli/cli_purpose_stdlib.rs"]
@@ -178,6 +182,8 @@ mod cli_structure_instance_golden;
 mod cli_sub_placement_assembly;
 #[path = "harness_cli/cli_surface_finish_cost.rs"]
 mod cli_surface_finish_cost;
+#[path = "harness_cli/cli_sweep_direction_forms.rs"]
+mod cli_sweep_direction_forms;
 #[path = "harness_cli/cli_test.rs"]
 mod cli_test;
 #[path = "harness_cli/cli_tensegrity_e2e.rs"]

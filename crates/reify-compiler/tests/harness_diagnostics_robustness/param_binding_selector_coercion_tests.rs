@@ -30,7 +30,7 @@ fn takes_faces(g: List<Geometry>) -> Int {
 
 structure def ParamCoerceFaceArg {
     let b = box(10mm, 10mm, 10mm)
-    let n = takes_faces(faces_by_normal(b, [0, 0, 1], 1deg))
+    let n = takes_faces(faces_by_normal(b, dir(0, 0, 1), 1deg))
 }
 "#;
 
@@ -113,7 +113,7 @@ fn takes_reals(g: List<Real>) -> Int {
 
 structure def ParamCoerceWrongKind {
     let b = box(10mm, 10mm, 10mm)
-    let n = takes_reals(faces_by_normal(b, [0, 0, 1], 1deg))
+    let n = takes_reals(faces_by_normal(b, dir(0, 0, 1), 1deg))
 }
 "#;
 

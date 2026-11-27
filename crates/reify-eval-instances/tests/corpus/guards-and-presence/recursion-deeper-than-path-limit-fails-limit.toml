@@ -1,0 +1,21 @@
+tests = "a guarded recursive sub made deeper than the depth setting allows gets the failure `limit` at the first path that is too deep, and what is above it is answered."
+rule = "Part 4 (\"The limit on depth is the core's setting for the depth of a path\"); contract, section on limits (\"Exceeding one is a failure at that path\"); readings B2 (`limit`); PRD D9(c)"
+provenance = "design Part 4's recursion model, with a default deep enough to pass the setting; brief item 14."
+needs = ["instance", "guard"]
+answer_basis = "traced, counting one step per sub level under the root: `Tree` is level 0, `Tree.left` 1, `Tree.left.left` 2, `Tree.left.left.left` 3, `Tree.left.left.left.left` 4. `depth` is 10, 9, 8, 7 down those levels, so every guard shown is true and recursion would go on. Levels 0 to 3 are answered; level 4 is too deep: `limit`. The rows are chosen so that counting every step of the path text after the root, member steps included (PRD D9(c)), gives the same answers: the three rows have 3, 3 and 4 steps."
+note = "not pinned, because the two counts differ there: the members of `Tree.left.left.left` (4 steps by the core's count) and every summary (a summary below the level-3 instance is one step deeper). Both wait on PRD D9(c)."
+
+[settings]
+path_depth = 3
+
+[[expect]]
+path = "Tree.left.left.depth"
+value = "8"
+
+[[expect]]
+path = "Tree.left.left.left"
+presence = "present"
+
+[[expect]]
+path = "Tree.left.left.left.left"
+failure = "limit"

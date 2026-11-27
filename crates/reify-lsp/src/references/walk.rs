@@ -65,6 +65,9 @@ pub(super) fn sub_direct_exprs(s: &SubDecl) -> impl Iterator<Item = &Expr> {
         // `for_each_child_scope` (see doc comment above).
         body: _,
         spec_param_overrides,
+        // A braces guard's names resolve against the sub's instance first, a
+        // scope not built yet; walking them is owned by #10677.
+        spec_param_override_guards: _,
         // Nested member scope, not a direct expression — each entry's
         // `overrides` member list is reached through `for_each_child_scope`
         // and its `param_overrides` expressions through
@@ -123,6 +126,9 @@ pub(super) fn keyed_entry_param_override_exprs(
         // `SubDecl::body`.
         overrides: _,
         param_overrides,
+        // A braces guard's names resolve against the sub's instance first, a
+        // scope not built yet; walking them is owned by #10677.
+        param_override_guards: _,
         span: _,
     } = entry;
     param_overrides.iter().map(|(_, e)| e)
@@ -174,7 +180,7 @@ pub(super) fn for_each_child_scope(member: &MemberDecl, mut visit: impl FnMut(&[
 /// source order: param/let/constraint/objective expressions and their `where`
 /// clauses, constraint-instantiation args, a sub's constructor args /
 /// specialization overrides / pose / index domain / relate relations, a port's
-/// placement frame, a guarded group's condition, bare connect/chain elements,
+/// placement frame and guard, a guarded group's condition, bare connect/chain elements,
 /// `forall` connect/constraint bodies, a match-arm cluster's discriminant, and a
 /// member-level `relate` block's relations.
 ///
@@ -244,12 +250,13 @@ pub(super) fn for_each_member_direct_expr(member: &MemberDecl, visit: &mut dyn F
         // A guard condition is an OUTER-scope expression; the `where`/`else`
         // branches it guards are child scopes.
         MemberDecl::GuardedGroup(g) => visit(&g.condition),
-        // A port's placement frame is a direct expression; its member body is a
-        // child scope.
+        // A port's placement frame and guard are direct expressions; its member
+        // body is a child scope.
         MemberDecl::Port(p) => {
             if let Some(frame) = &p.frame_expr {
                 visit(frame);
             }
+            visit_where_condition(&p.where_clause, visit);
         }
         MemberDecl::Connect(c) => visit_connect_exprs(c, visit),
         MemberDecl::Chain(c) => {
@@ -452,5 +459,48 @@ pub(super) fn for_each_direct_subexpr(expr: &Expr, visit: &mut dyn FnMut(&Expr))
         | ExprKind::BoolLiteral(_)
         | ExprKind::EnumAccess { .. }
         | ExprKind::Undef => {}
+    }
+}
+
+#[cfg(test)]
+mod port_guard_tests {
+    use crate::convert::offset_to_position;
+    use crate::decl_oracle::test_fixtures::{occurrences, span_of};
+    use crate::references::{RefSymbolKind, collect_references};
+    use reify_core::ModulePath;
+
+    #[test]
+    fn find_references_reaches_a_port_guard() {
+        let source = "trait T {}
+structure S {
+    param armed : Bool = true
+    port a : in T where armed
+    port b : T { direction = out } where armed
+}";
+        let parsed = reify_syntax::parse(source, ModulePath::single("port_guard"));
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
+        let armed = occurrences(source, "armed");
+        assert_eq!(armed.len(), 3, "the param and the two port guards");
+
+        let refset = collect_references(
+            source,
+            &parsed,
+            offset_to_position(source, armed[0] as u32),
+            true,
+        )
+        .expect("the `armed` declaration resolves");
+        assert_eq!(refset.kind, RefSymbolKind::Param);
+        assert_eq!(
+            refset.references,
+            armed
+                .iter()
+                .map(|&at| span_of(at, "armed"))
+                .collect::<Vec<_>>(),
+            "the guard of each port form is a use of `armed`"
+        );
     }
 }

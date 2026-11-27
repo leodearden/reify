@@ -211,11 +211,11 @@ structure def PrinterPrintEnvelope {
     //   symbolic box + faces_by_normal selector that resolves to the sole
     //   end-effector monitoring index at the reify-stdlib trampoline layer.
     //   loc_box is a standalone addressing handle — never realized, geometry-free,
-    //   independent of the modal mesh; loc_dir/loc_tol let-bound so vec3/deg
+    //   independent of the modal mesh; loc_dir/loc_tol let-bound so dir/deg
     //   constants resolve as let-cells (not inlined literals).
 
     let loc_box = box(100mm, 100mm, 100mm)
-    let loc_dir = vec3(0.0, 0.0, 1.0)
+    let loc_dir = dir(0, 0, 1)
     let loc_tol = 1deg
     let loc     = faces_by_normal(loc_box, loc_dir, loc_tol)
 

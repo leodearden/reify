@@ -1,0 +1,21 @@
+tests = "both operands of `and` are read, so a ring through an operand that could not change the answer is a cycle; a cycle is a failure that `determined` cannot catch."
+rule = "decision 12 (both operands read; a failure cannot be caught by an expression); rule A; Part 2; contract 7.7 (\"every node on the cycle gets the failure cycle\")."
+provenance = "design decision 12 (\"So a ring of dependencies through an operand that could not affect the answer is a cycle. Today the evaluator skips a right operand once the left decides\"). The ring crosses two subs so that the compiler's check for cycles among `let`s does not catch it first (that check rejects a ring of `let`s in one definition today: run, `cyc.ri`)."
+needs = ["instance", "eval-reads", "compile-error"]
+answer_basis = "traced. `a.inp` reads `b.out`, which reads `b.inp`, which reads `a.out`, which reads `a.inp`: a ring of running bodies, each a cycle. `z` reads a failure: blocked (readings B2); `determined` cannot catch it. The braces hold only argument assignments, so the entry does not need `braces`; `determined` is leaf ε₂'s, built with the first cells (PRD 5.5 and 5.8)."
+today = "`a.inp` = false (right operand skipped) and `b.inp` = true (run, `xcyc.ri`)."
+
+[[expect]]
+compile = "ok"
+
+[[expect]]
+path = "S.a.inp"
+failure = "cycle"
+
+[[expect]]
+path = "S.b.inp"
+failure = "cycle"
+
+[[expect]]
+path = "S.z"
+failure = "blocked"

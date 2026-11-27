@@ -1,0 +1,7 @@
+structure def Plate { param t : Length = 3mm }
+structure def Asm {
+    param thick : Bool = false
+    sub p : Plate { t = 6mm where thick }
+    sub q : Plate { constraint t > 4mm }
+    sub r : Plate { let u = t * 2   constraint u > 7mm }
+}

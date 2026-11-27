@@ -1,0 +1,8 @@
+structure def Fan  { param d : Length = 40mm }
+structure def Case {
+    param needs_fan : Bool = false
+    sub fan : Fan where needs_fan
+    let f = self.fan.d
+    constraint not needs_fan or self.fan.d > 30mm
+    constraint self.fan.d > 30mm
+}

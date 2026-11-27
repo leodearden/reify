@@ -13,7 +13,10 @@ use reify_compiler::module_dag::{ModuleResolver, ModuleSource};
 use reify_compiler::program::{
     CompiledProgram, compile_program, compile_program_with_parsed_entry,
 };
-use reify_compiler::{CompiledModule, check_module_path_decl, compile_with_stdlib_checked};
+use reify_compiler::program_scope::bind_program;
+use reify_compiler::{
+    CompiledModule, TopologyTemplate, check_module_path_decl, compile_with_stdlib_checked,
+};
 use reify_core::{DiagnosticCode, DimensionVector, ModulePath, Severity, SourceSpan, Type};
 use reify_ir::{CompiledExpr, CompiledExprKind, Satisfaction, Value};
 use reify_test_support::mocks::MockConstraintChecker;
@@ -269,7 +272,8 @@ fn compile_program_entry_compiles_from_buffer_not_disk() {
 
 /// `imports` holds the direct, followed imports in declaration order (deduped);
 /// `sources` holds every compiled user module in topological order, entry
-/// last; the entry's merged templates carry the 1-hop pub surface only.
+/// last; the entry holds only its own templates, and the program binds the
+/// direct imports' pub templates after them (1-hop).
 #[test]
 fn compile_program_reports_direct_imports_and_topological_sources() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -314,58 +318,101 @@ fn compile_program_reports_direct_imports_and_topological_sources() {
     assert_eq!(source_keys(&program), vec!["c", "a", "b", "main"]);
     assert_eq!(program.sources, expected_sources);
 
-    let entry_templates = template_names(program.entry());
-    for name in ["Robot", "Arm", "Base"] {
-        assert!(
-            entry_templates.contains(&name),
-            "entry templates must contain {name}, got {entry_templates:?}"
-        );
-    }
-    assert!(
-        !entry_templates.contains(&"Core"),
-        "transitive pub templates are not merged (1-hop, I5), got {entry_templates:?}"
-    );
-    assert!(
-        !entry_templates.contains(&"ArmPrivate"),
-        "non-pub imported templates are not merged, got {entry_templates:?}"
+    assert_eq!(template_names(program.entry()), vec!["Robot"]);
+    assert_eq!(
+        bound_template_names(&program),
+        vec!["Robot", "Arm", "Base"],
+        "the program binds the entry's own templates, then each direct import's pub \
+         templates; a transitive or non-pub template is not bound"
     );
 }
 
-/// When two direct imports export the same pub template name, the existing
-/// first-wins collision Warning still reaches the entry.
+fn bound_template_names(program: &CompiledProgram) -> Vec<&str> {
+    bind_program::<TopologyTemplate>(program, &[])
+        .winners()
+        .map(|t| t.name.as_str())
+        .collect()
+}
+
+/// An importing entry's template list holds exactly the templates it declares
+/// (resolution-unification boundary #14): no import's pub template is copied
+/// into it, and a non-pub one is not visible at all.
 #[test]
-fn compile_program_keeps_cross_import_collision_warning() {
+fn an_importing_entrys_templates_are_only_its_own() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(
+        dir.path(),
+        "parts.ri",
+        "module parts\n\
+         pub structure def Pulley {\n    param d : Length = 10mm\n}\n\
+         pub structure def Bracket {\n    param t : Length = 2mm\n}\n\
+         structure def Hidden {\n    param h : Length = 1mm\n}\n",
+    );
+    let main_src = "module main\nimport parts\nstructure def Rig {\n    sub p = Pulley()\n}\n";
+
+    let program = compile_entry(dir.path(), "main", main_src, &CfgSet::default());
+
+    assert_eq!(template_names(program.entry()), vec!["Rig"]);
+    assert_eq!(
+        bound_template_names(&program),
+        vec!["Rig", "Pulley", "Bracket"]
+    );
+}
+
+/// A template collision, entry-vs-import or import-vs-import, is reported once
+/// on the entry, coded `DefinitionCollision` and naming the winner before the
+/// shadowed module (resolution-unification boundary #13); no other diagnostic
+/// reports it.
+#[test]
+fn a_template_collision_is_reported_once_with_its_code() {
     let dir = tempfile::tempdir().expect("tempdir");
     write(
         dir.path(),
         "a.ri",
-        "module a\npub structure def Same {\n    param x : Real = 1\n}\n",
+        "module a\npub structure def Same {\n    param x : Real = 1\n}\n\
+         pub structure def Both {\n    param x : Real = 1\n}\n",
     );
     write(
         dir.path(),
         "b.ri",
-        "module b\npub structure def Same {\n    param y : Real = 2\n}\n",
+        "module b\npub structure def Both {\n    param y : Real = 2\n}\n",
     );
-    let main_src = "module main\nimport a\nimport b\nstructure def Top {\n    sub s = Same()\n}\n";
+    let main_src = "module main\nimport a\nimport b\n\
+                    structure def Same {\n    param z : Real = 3\n}\n\
+                    structure def Top {\n    sub s = Same()\n    sub t = Both()\n}\n";
 
     let program = compile_entry(dir.path(), "main", main_src, &CfgSet::default());
 
-    let collisions: Vec<&str> = program
-        .entry()
-        .diagnostics
-        .iter()
-        .filter(|d| {
-            d.severity == Severity::Warning
-                && d.message.contains("imported pub template 'Same'")
-                && d.message.contains("first-wins")
-        })
-        .map(|d| d.message.as_str())
-        .collect();
-    assert_eq!(
-        collisions.len(),
-        1,
-        "expected one cross-import collision warning, got {:?}",
-        program.entry().diagnostics
+    let all = &program.entry().diagnostics;
+    for (name, winner, shadowed) in [("Same", "'main'", "'a'"), ("Both", "'a'", "'b'")] {
+        let mentioning: Vec<&reify_core::Diagnostic> = all
+            .iter()
+            .filter(|d| d.message.contains(&format!("'{name}'")))
+            .collect();
+        assert_eq!(
+            mentioning.len(),
+            1,
+            "exactly one diagnostic reports the {name} collision, got {all:?}"
+        );
+        let report = mentioning[0];
+        let position = |origin: &str| report.message.find(origin);
+        assert!(
+            report.severity == Severity::Warning
+                && report.code == Some(DiagnosticCode::DefinitionCollision)
+                && report.message.starts_with(&format!("structure '{name}' "))
+                && report.message.contains("first-wins")
+                && matches!(
+                    (position(winner), position(shadowed)),
+                    (Some(w), Some(s)) if w < s
+                ),
+            "the {name} report is a coded first-wins Warning naming {winner} before \
+             {shadowed}: {report:?}"
+        );
+    }
+    assert!(
+        all.iter()
+            .all(|d| !d.message.contains("imported pub template")),
+        "no code-less template-merge warning remains, got {all:?}"
     );
 }
 
@@ -438,6 +485,80 @@ fn compile_program_unit_collision_between_imports_is_first_wins() {
         1,
         "the warning is raised by the entry's own compile, not re-homed"
     );
+}
+
+/// The program compile reports each first-wins collision whose loser is an
+/// import's definition (resolution-unification D-6) on the entry, once, coded
+/// `DefinitionCollision`: import-vs-import (`twice`) and entry-vs-import
+/// (`Pick`). The report follows the re-homed copies of the imports' own
+/// diagnostics (`b`'s `SignalKind` shadows the stdlib's).
+#[test]
+fn the_program_compile_reports_each_import_tier_collision_on_the_entry() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(
+        dir.path(),
+        "a.ri",
+        "module a\n\
+         pub fn twice(x: Real) -> Real { x * 2 }\n\
+         pub enum Pick { Left, Right }\n",
+    );
+    write(
+        dir.path(),
+        "b.ri",
+        "module b\n\
+         pub fn twice(x: Real) -> Real { x + x }\n\
+         pub enum SignalKind { Foo, Bar }\n",
+    );
+    let main_src = "module main\nimport a\nimport b\nenum Pick { Up, Down }\n";
+
+    let program = compile_entry(dir.path(), "main", main_src, &CfgSet::default());
+
+    let all = &program.entry().diagnostics;
+    let copies: Vec<&reify_core::Diagnostic> = program.rehomed_from("b").collect();
+    assert!(
+        !copies.is_empty(),
+        "precondition: b's own compile reports its stdlib shadowing, got {all:?}"
+    );
+    let index_of = |target: &reify_core::Diagnostic| {
+        all.iter()
+            .position(|d| std::ptr::eq(d, target))
+            .expect("a diagnostic of the entry")
+    };
+    let last_copy = copies.iter().map(|copy| index_of(copy)).max();
+    for (prefix, winner, shadowed) in [
+        ("function 'twice' ", "'a'", "'b'"),
+        ("enum 'Pick' ", "'main'", "'a'"),
+    ] {
+        let reports: Vec<&reify_core::Diagnostic> = all
+            .iter()
+            .filter(|d| {
+                let position = |origin: &str| d.message.find(origin);
+                d.severity == Severity::Warning
+                    && d.code == Some(DiagnosticCode::DefinitionCollision)
+                    && d.message.starts_with(prefix)
+                    && d.message.contains("first-wins")
+                    && matches!(
+                        (position(winner), position(shadowed)),
+                        (Some(w), Some(s)) if w < s
+                    )
+            })
+            .collect();
+        assert_eq!(
+            reports.len(),
+            1,
+            "one coded report of {prefix}({winner} over {shadowed}), got {all:?}"
+        );
+        assert!(
+            program
+                .entry_own_diagnostics()
+                .any(|own| std::ptr::eq(own, reports[0])),
+            "{prefix}is the program compile's own report, not a re-homed copy"
+        );
+        assert!(
+            Some(index_of(reports[0])) > last_copy,
+            "{prefix}follows the re-homed copies, got {all:?}"
+        );
+    }
 }
 
 fn errors(module: &CompiledModule) -> Vec<&str> {
@@ -622,7 +743,7 @@ fn compile_program_cfg_gated_imports_are_inert() {
     }
     assert!(
         !template_names(program.entry()).contains(&"BrokenThing"),
-        "no template from a gated-out import may be merged"
+        "no template from a gated-out import may reach the entry"
     );
     assert_eq!(import_keys(&program), vec!["mid"]);
 }
@@ -633,8 +754,8 @@ const HEALTHY_SRC: &str =
     "module healthy\npub structure def Healthy {\n    param h : Real = 1\n}\n";
 
 /// Write `healthy.ri` plus `extra` siblings, compile `main_src` as `main`, and
-/// assert the entry still compiled: its own `Rig` and the healthy import's
-/// `Healthy` are both in the merged template list.
+/// assert the entry still compiled: it declares its own `Rig`, and the healthy
+/// import is one of the program's import units.
 fn compile_with_healthy_sibling(
     dir: &Path,
     extra: &[(&str, &str)],
@@ -647,8 +768,10 @@ fn compile_with_healthy_sibling(
     let program = compile_entry(dir, "main", main_src, &CfgSet::default());
     let names = template_names(program.entry());
     assert!(
-        names.contains(&"Rig") && names.contains(&"Healthy"),
-        "the entry must still compile despite a broken import, got templates {names:?}"
+        names.contains(&"Rig") && import_keys(&program).contains(&"healthy"),
+        "the entry must still compile despite a broken import, got templates {names:?} \
+         and imports {:?}",
+        import_keys(&program)
     );
     program
 }
@@ -931,7 +1054,7 @@ fn compile_program_rehomes_an_erroring_diamond_leaf_once() {
 }
 
 /// (h) The re-homed copies sit between entry-own diagnostics on both sides —
-/// the entry's own and missing-import Errors before them, the I5 merge's
+/// the entry's own and missing-import Errors before them, the program's coded
 /// collision Warning after — and `entry_own_diagnostics` plus `rehomed_from`
 /// still partition the entry's diagnostics exactly, in order.
 #[test]
@@ -1002,8 +1125,8 @@ fn compile_program_partitions_entry_diagnostics_around_the_rehomed_block() {
         .iter()
         .find(|d| {
             d.severity == Severity::Warning
-                && d.message.contains("imported pub template 'Same'")
-                && d.message.contains("first-wins")
+                && d.code == Some(DiagnosticCode::DefinitionCollision)
+                && d.message.starts_with("structure 'Same' ")
         })
         .unwrap_or_else(|| panic!("no cross-import collision Warning in {all:?}"));
     assert!(
@@ -1131,7 +1254,7 @@ fn compile_program_with_parsed_entry_compiles_the_callers_parse() {
         program.entry().diagnostics
     );
     assert_eq!(
-        declared_names(&program),
+        template_names(program.entry()),
         ["Main", "OnlyInCallersParse"],
         "the seam must compile the caller's parse, not a re-parse of the text"
     );
@@ -1210,7 +1333,7 @@ fn imported_enum_unknown_variant_is_reported_as_such() {
 /// D-9 tests `E` against the compile env's enums, which still bind a direct
 /// import's NON-pub enums (the compile side's ambient import visibility), so
 /// a hidden enum's `E.V` compiles today. Narrowing that to the D-5 `pub`
-/// surface DefEnv already applies is owned by ι #5523, which inverts this pin.
+/// surface DefEnv already applies is owned by λ #5525, which inverts this pin.
 #[test]
 fn imported_non_pub_enum_variant_access_still_compiles() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1369,58 +1492,4 @@ fn entry_dir_resolver_resolves_imports_beside_the_entry() {
         "the sibling import must resolve, got {:?}",
         errors(program.entry())
     );
-}
-
-fn declared_names(program: &CompiledProgram) -> Vec<&str> {
-    program
-        .entry_declared_templates()
-        .iter()
-        .map(|t| t.name.as_str())
-        .collect()
-}
-
-/// `entry_declared_templates` is the entry's own template list: the I5 pub
-/// merge is excluded, and an entry template that collides with an imported
-/// one is the entry's copy (first-wins).
-#[test]
-fn compile_program_entry_declared_templates_exclude_merged_imports() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    write(
-        dir.path(),
-        "parts.ri",
-        "module parts\npub structure def Pulley {\n    param d : Length = 10mm\n}\n",
-    );
-
-    let importing = compile_entry(
-        dir.path(),
-        "main",
-        "module main\nimport parts\nstructure def Rig {\n    sub p = Pulley()\n}\n",
-        &CfgSet::default(),
-    );
-    assert_eq!(declared_names(&importing), vec!["Rig"]);
-    let merged = template_names(importing.entry());
-    assert!(
-        merged.contains(&"Rig") && merged.contains(&"Pulley"),
-        "the entry's template list must still carry the merge, got {merged:?}"
-    );
-
-    let solo = compile_entry(
-        dir.path(),
-        "main",
-        "module main\nstructure def Rig {\n    param x : Length = 1mm\n}\n",
-        &CfgSet::default(),
-    );
-    assert_eq!(declared_names(&solo), template_names(solo.entry()));
-
-    let colliding = compile_entry(
-        dir.path(),
-        "main",
-        "module main\nimport parts\n\
-         structure def Pulley {\n    param d : Length = 3mm\n}\n\
-         structure def Rig {\n    sub p = Pulley()\n}\n",
-        &CfgSet::default(),
-    );
-    let count = |names: Vec<&str>| names.into_iter().filter(|n| *n == "Pulley").count();
-    assert_eq!(count(declared_names(&colliding)), 1);
-    assert_eq!(count(template_names(colliding.entry())), 1);
 }

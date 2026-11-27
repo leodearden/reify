@@ -1,0 +1,10 @@
+tests = "`auto` in a constructor argument inside a function body is a compile error that says to write a typed `let` outside and pass it in."
+rule = "Part 6.3 rule 2; decision 5"
+provenance = "design Part 6.3 table (lambda or function body; a quantifier's body by the same rule); contract Example 11. design 6.3 table; language-1 L11; claims-1 row 22."
+needs = ["compile-error", "unknown"]
+answer_basis = "stated: Part 6.3."
+today = "a type error for a length, a silent undefined for a plain number (design Part 6.3, run)."
+
+[[expect]]
+compile_error = "`auto` inside a function body; write `let u : Length = auto` outside it and pass `u` in"
+code = "AutoNotEvaluatedOnce"

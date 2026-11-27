@@ -1,16 +1,21 @@
 //! Integration tests for orientation stdlib functions.
 //!
 //! Tests the public API `reify_stdlib::eval_builtin()` for:
-//! - orient_look_at: Gram-Schmidt constructor
+//! - orient_axis_angle / orient_look_at / orient_basis: Direction-typed inputs
+//! - orient_to_axis_angle: the Map's "axis" is a Direction
+//! - orientation_diagnose: a non-Direction at a Direction position is an Error
 //! - orient_euler / orient_to_euler: EulerConvention enum-value path
 //!
 //! These lock the G2 boundary signals over the completed impl; they complement
 //! the in-module RED→GREEN tests in src/orientation.rs by exercising the same
 //! functions through the public eval_builtin surface.
 
-use reify_core::DimensionVector;
+use std::f64::consts::{FRAC_1_SQRT_2, FRAC_PI_2, FRAC_PI_4};
+
+use reify_core::{DiagnosticCode, DimensionVector, Severity};
 use reify_ir::Value;
-use reify_stdlib::eval_builtin;
+use reify_stdlib::{eval_builtin, orientation_diagnose};
+use reify_test_support::direction_val;
 
 const TOLERANCE: f64 = 1e-10;
 
@@ -64,27 +69,402 @@ fn euler_extract(v: &Value) -> Option<[f64; 3]> {
     Some(out)
 }
 
+// ── orient_axis_angle takes a Direction axis ──────────────────────────────────
+
+/// B14: a Direction axis keeps the exact bits a `vec3(1.0, 0.0, 0.0)` axis gave
+/// before the axis became Direction-typed (0.7071067811865476,
+/// 0.7071067811865475, 0, 0), because dir(1, 0, 0)'s components are exactly
+/// 1, 0, 0.
+#[test]
+fn integration_orient_axis_angle_direction_x_quarter_turn_is_bitwise_stable() {
+    let result = eval_builtin(
+        "orient_axis_angle",
+        &[direction_val(1.0, 0.0, 0.0), Value::angle(FRAC_PI_2)],
+    );
+    let Value::Orientation { w, x, y, z } = result else {
+        panic!("orient_axis_angle(dir(1, 0, 0), 90deg) should be an Orientation, got {result:?}");
+    };
+    assert_eq!(
+        [w, x, y, z].map(f64::to_bits),
+        [FRAC_1_SQRT_2, FRAC_1_SQRT_2.next_down(), 0.0, 0.0].map(f64::to_bits),
+        "orient_axis_angle(dir(1, 0, 0), 90deg) drifted: got ({w}, {x}, {y}, {z})"
+    );
+}
+
+#[test]
+fn integration_orient_axis_angle_direction_z_quarter_turn() {
+    let result = eval_builtin(
+        "orient_axis_angle",
+        &[direction_val(0.0, 0.0, 1.0), Value::angle(FRAC_PI_2)],
+    );
+    assert_orientation_approx(&result, FRAC_PI_4.cos(), 0.0, 0.0, FRAC_PI_4.sin());
+}
+
 // ── orient_look_at G2 signals ─────────────────────────────────────────────────
 
 #[test]
 fn integration_orient_look_at_forward_x_up_z() {
     // forward=(1,0,0), up=(0,0,1) → Shepperd r22-branch → (0.5, 0.5, 0.5, 0.5)
-    let result = eval_builtin("orient_look_at", &[t3(1.0, 0.0, 0.0), t3(0.0, 0.0, 1.0)]);
+    let result = eval_builtin(
+        "orient_look_at",
+        &[direction_val(1.0, 0.0, 0.0), direction_val(0.0, 0.0, 1.0)],
+    );
     assert_orientation_approx(&result, 0.5, 0.5, 0.5, 0.5);
 }
 
 #[test]
 fn integration_orient_look_at_forward_z_up_y_is_identity() {
     // forward=(0,0,1), up=(0,1,0) → identity basis → (1, 0, 0, 0)
-    let result = eval_builtin("orient_look_at", &[t3(0.0, 0.0, 1.0), t3(0.0, 1.0, 0.0)]);
+    let result = eval_builtin(
+        "orient_look_at",
+        &[direction_val(0.0, 0.0, 1.0), direction_val(0.0, 1.0, 0.0)],
+    );
     assert_orientation_approx(&result, 1.0, 0.0, 0.0, 0.0);
 }
 
 #[test]
 fn integration_orient_look_at_parallel_forward_up_returns_undef() {
     // forward ∥ up → cross product = 0 → Undef
-    let result = eval_builtin("orient_look_at", &[t3(0.0, 0.0, 1.0), t3(0.0, 0.0, 1.0)]);
+    let result = eval_builtin(
+        "orient_look_at",
+        &[direction_val(0.0, 0.0, 1.0), direction_val(0.0, 0.0, 1.0)],
+    );
     assert!(result.is_undef(), "parallel forward and up should return Undef, got {result:?}");
+}
+
+// ── orient_basis takes three Direction axes ───────────────────────────────────
+
+#[test]
+fn integration_orient_basis_world_axes_is_identity() {
+    let result = eval_builtin(
+        "orient_basis",
+        &[
+            direction_val(1.0, 0.0, 0.0),
+            direction_val(0.0, 1.0, 0.0),
+            direction_val(0.0, 0.0, 1.0),
+        ],
+    );
+    assert_orientation_approx(&result, 1.0, 0.0, 0.0, 0.0);
+}
+
+/// The columns of R_z(90°) are x' = (0, 1, 0), y' = (-1, 0, 0), z' = (0, 0, 1).
+#[test]
+fn integration_orient_basis_quarter_turn_about_z() {
+    let result = eval_builtin(
+        "orient_basis",
+        &[
+            direction_val(0.0, 1.0, 0.0),
+            direction_val(-1.0, 0.0, 0.0),
+            direction_val(0.0, 0.0, 1.0),
+        ],
+    );
+    assert_orientation_approx(&result, FRAC_PI_4.cos(), 0.0, 0.0, FRAC_PI_4.sin());
+}
+
+#[test]
+fn integration_orient_basis_left_handed_directions_return_undef() {
+    let result = eval_builtin(
+        "orient_basis",
+        &[
+            direction_val(1.0, 0.0, 0.0),
+            direction_val(0.0, 1.0, 0.0),
+            direction_val(0.0, 0.0, -1.0),
+        ],
+    );
+    assert!(
+        result.is_undef(),
+        "a left-handed basis should return Undef, got {result:?}"
+    );
+}
+
+#[test]
+fn integration_orient_basis_non_orthogonal_directions_return_undef() {
+    let result = eval_builtin(
+        "orient_basis",
+        &[
+            direction_val(1.0, 0.0, 0.0),
+            direction_val(1.0, 1.0, 0.0),
+            direction_val(0.0, 0.0, 1.0),
+        ],
+    );
+    assert!(
+        result.is_undef(),
+        "a non-orthogonal basis should return Undef, got {result:?}"
+    );
+}
+
+// ── A non-Direction at any Direction position is Undef ────────────────────────
+
+fn v3(x: f64, y: f64, z: f64) -> Value {
+    Value::Vector(vec![Value::Real(x), Value::Real(y), Value::Real(z)])
+}
+
+/// The values a Direction parameter must refuse: the Vector and Tensor
+/// spellings it replaced, and a non-numeric kind.
+fn non_directions() -> [Value; 3] {
+    [
+        v3(1.0, 0.0, 0.0),
+        t3(1.0, 0.0, 0.0),
+        Value::String("x".to_string()),
+    ]
+}
+
+/// `valid` with its argument at `position` replaced by each non-Direction.
+fn assert_every_non_direction_is_undef(name: &str, valid: &[Value], position: usize) {
+    assert!(
+        !eval_builtin(name, valid).is_undef(),
+        "control: {name} on its valid arguments {valid:?} should not be Undef"
+    );
+    for bad in non_directions() {
+        let mut args = valid.to_vec();
+        args[position] = bad.clone();
+        let result = eval_builtin(name, &args);
+        assert!(
+            result.is_undef(),
+            "{name} with {bad:?} at argument {position} should be Undef, got {result:?}"
+        );
+    }
+}
+
+#[test]
+fn integration_orient_axis_angle_rejects_a_non_direction_axis() {
+    let valid = [direction_val(0.0, 0.0, 1.0), Value::angle(FRAC_PI_2)];
+    assert_every_non_direction_is_undef("orient_axis_angle", &valid, 0);
+}
+
+#[test]
+fn integration_orient_look_at_rejects_a_non_direction_at_either_position() {
+    let valid = [direction_val(1.0, 0.0, 0.0), direction_val(0.0, 0.0, 1.0)];
+    for position in 0..valid.len() {
+        assert_every_non_direction_is_undef("orient_look_at", &valid, position);
+    }
+}
+
+#[test]
+fn integration_orient_basis_rejects_a_non_direction_at_any_position() {
+    let valid = [
+        direction_val(1.0, 0.0, 0.0),
+        direction_val(0.0, 1.0, 0.0),
+        direction_val(0.0, 0.0, 1.0),
+    ];
+    for position in 0..valid.len() {
+        assert_every_non_direction_is_undef("orient_basis", &valid, position);
+    }
+}
+
+// ── orient_to_axis_angle returns a Direction axis ─────────────────────────────
+
+/// The Map's (axis, angle) entries; panics naming `v` on any other shape.
+fn axis_angle_entries(v: &Value) -> (&Value, &Value) {
+    let Value::Map(m) = v else {
+        panic!("orient_to_axis_angle should return a Map, got {v:?}");
+    };
+    let entry = |key: &str| {
+        m.get(&Value::String(key.to_string()))
+            .unwrap_or_else(|| panic!("orient_to_axis_angle's Map has no {key:?} entry: {v:?}"))
+    };
+    (entry("axis"), entry("angle"))
+}
+
+#[test]
+fn integration_orient_to_axis_angle_axis_is_a_direction() {
+    let q = Value::Orientation {
+        w: FRAC_PI_4.cos(),
+        x: 0.0,
+        y: 0.0,
+        z: FRAC_PI_4.sin(),
+    };
+    let result = eval_builtin("orient_to_axis_angle", &[q]);
+    let (axis, angle) = axis_angle_entries(&result);
+    let Value::Direction(u) = axis else {
+        panic!("orient_to_axis_angle's axis should be a Direction, got {axis:?}");
+    };
+    let [ax, ay, az] = u.components();
+    assert!(
+        ax.abs() < TOLERANCE && ay.abs() < TOLERANCE && (az - 1.0).abs() < TOLERANCE,
+        "a 90° turn about Z should have axis ≈ (0, 0, 1), got ({ax}, {ay}, {az})"
+    );
+    match angle {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } if *dimension == DimensionVector::ANGLE => assert!(
+            (si_value - FRAC_PI_2).abs() < TOLERANCE,
+            "a 90° turn about Z should have angle ≈ π/2, got {si_value}"
+        ),
+        other => panic!("orient_to_axis_angle's angle should be an ANGLE Scalar, got {other:?}"),
+    }
+}
+
+#[test]
+fn integration_orient_to_axis_angle_identity_axis_is_canonical_x_direction() {
+    let identity = Value::Orientation {
+        w: 1.0,
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+    };
+    let result = eval_builtin("orient_to_axis_angle", &[identity]);
+    let (axis, angle) = axis_angle_entries(&result);
+    let Value::Direction(u) = axis else {
+        panic!("the identity's axis should be a Direction, got {axis:?}");
+    };
+    assert_eq!(
+        u.components(),
+        [1.0, 0.0, 0.0],
+        "the identity's canonical axis is +x"
+    );
+    assert_eq!(angle, &Value::angle(0.0), "the identity's angle is 0");
+}
+
+// ── orientation_diagnose: a non-Direction at a Direction position ──────────────
+//
+// The static Direction slot catches every vector it can see; this runtime arm
+// covers what reaches eval anyway (an argument typed Type::Error or a type
+// parameter, say).
+
+/// The user-visible fix hint, hard-coded on purpose so a drift in the shared
+/// hint text reds here.
+const DIRECTION_HINT: &str = "write dir(x, y, z)";
+
+/// `orientation_diagnose(name, args)` is one Error-severity `ArgTypeMismatch`
+/// starting `prefix`, naming the received `kind` and ending with the dir hint.
+fn assert_direction_arg_error(name: &str, args: &[Value], prefix: &str, kind: &str) {
+    let diagnostic = orientation_diagnose(name, args)
+        .unwrap_or_else(|| panic!("{name}({args:?}) should be diagnosed"));
+    assert_eq!(diagnostic.severity, Severity::Error, "{diagnostic:?}");
+    assert_eq!(
+        diagnostic.code,
+        Some(DiagnosticCode::ArgTypeMismatch),
+        "{diagnostic:?}"
+    );
+    let message = &diagnostic.message;
+    assert!(
+        message.starts_with(prefix),
+        "expected a message starting {prefix:?}: {message:?}"
+    );
+    assert!(
+        message.contains(kind),
+        "the message must name {kind}: {message:?}"
+    );
+    assert!(
+        message.ends_with(DIRECTION_HINT),
+        "the message must end with the hint: {message:?}"
+    );
+}
+
+fn assert_not_diagnosed(name: &str, args: &[Value], why: &str) {
+    let diagnostic = orientation_diagnose(name, args);
+    assert!(
+        diagnostic.is_none(),
+        "{why}: {name}({args:?}) must stay silent, got {diagnostic:?}"
+    );
+}
+
+#[test]
+fn diagnose_a_vector_axis_names_the_axis_param() {
+    assert_direction_arg_error(
+        "orient_axis_angle",
+        &[v3(1.0, 0.0, 0.0), Value::angle(FRAC_PI_2)],
+        "orient_axis_angle: axis: ",
+        "Vector",
+    );
+}
+
+#[test]
+fn diagnose_blames_the_param_holding_the_non_direction() {
+    assert_direction_arg_error(
+        "orient_look_at",
+        &[direction_val(1.0, 0.0, 0.0), v3(0.0, 0.0, 1.0)],
+        "orient_look_at: up: ",
+        "Vector",
+    );
+    assert_direction_arg_error(
+        "orient_basis",
+        &[
+            direction_val(1.0, 0.0, 0.0),
+            direction_val(0.0, 1.0, 0.0),
+            v3(0.0, 0.0, 1.0),
+        ],
+        "orient_basis: z_axis: ",
+        "Vector",
+    );
+    assert_direction_arg_error(
+        "orient_axis_angle",
+        &[Value::String("z".to_string()), Value::angle(FRAC_PI_2)],
+        "orient_axis_angle: axis: ",
+        "String",
+    );
+}
+
+#[test]
+fn diagnose_stays_silent_for_an_undef_argument() {
+    assert_not_diagnosed(
+        "orient_axis_angle",
+        &[Value::Undef, Value::angle(FRAC_PI_2)],
+        "an Undef axis was reported where it arose (dir(0, 0, 0)'s E_DegenerateDirection)",
+    );
+    assert_not_diagnosed(
+        "orient_basis",
+        &[
+            direction_val(1.0, 0.0, 0.0),
+            Value::Undef,
+            direction_val(0.0, 0.0, 1.0),
+        ],
+        "an Undef basis axis was reported where it arose",
+    );
+}
+
+#[test]
+fn diagnose_stays_silent_at_the_wrong_arity() {
+    assert_not_diagnosed("orient_axis_angle", &[v3(1.0, 0.0, 0.0)], "arity 1");
+    assert_not_diagnosed(
+        "orient_look_at",
+        &[v3(1.0, 0.0, 0.0), v3(0.0, 0.0, 1.0), v3(0.0, 1.0, 0.0)],
+        "arity 3",
+    );
+    assert_not_diagnosed("orient_basis", &[v3(1.0, 0.0, 0.0)], "arity 1");
+}
+
+#[test]
+fn diagnose_never_blames_a_geometric_failure_on_valid_directions() {
+    assert_not_diagnosed(
+        "orient_look_at",
+        &[direction_val(0.0, 0.0, 1.0), direction_val(0.0, 0.0, 1.0)],
+        "forward ∥ up",
+    );
+    assert_not_diagnosed(
+        "orient_basis",
+        &[
+            direction_val(1.0, 0.0, 0.0),
+            direction_val(1.0, 1.0, 0.0),
+            direction_val(0.0, 0.0, 1.0),
+        ],
+        "a non-orthogonal basis",
+    );
+    assert_not_diagnosed(
+        "orient_basis",
+        &[
+            direction_val(1.0, 0.0, 0.0),
+            direction_val(0.0, 1.0, 0.0),
+            direction_val(0.0, 0.0, -1.0),
+        ],
+        "a left-handed basis",
+    );
+}
+
+#[test]
+fn diagnose_still_reports_orient_exp_s_dimensionless_rotation_vector() {
+    let diagnostic = orientation_diagnose("orient_exp", &[v3(0.0, 0.0, FRAC_PI_2)])
+        .expect("a dimensionless rotation vector should be diagnosed");
+    assert_eq!(
+        diagnostic.code,
+        Some(DiagnosticCode::DimensionedArgRejected)
+    );
+    assert!(
+        diagnostic.message.contains("E_RotationVectorDimension"),
+        "{diagnostic:?}"
+    );
 }
 
 // ── orient_euler EulerConvention enum G2 signals ──────────────────────────────

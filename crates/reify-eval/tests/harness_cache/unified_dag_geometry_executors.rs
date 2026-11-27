@@ -715,7 +715,7 @@ structure MultiPrinter {
 ///
 /// SHAPE NOTE — why `param part : Solid` and NOT `let part = box(…)`: the
 /// constraint→realization edge that δ's guard walks is `geometry_cell`, populated
-/// by `EvaluationGraph::from_templates` ONLY for a value cell whose
+/// by `EvaluationGraph::from_env` ONLY for a value cell whose
 /// `cell_type == Type::Geometry` and whose member name matches the realization's
 /// name (graph.rs `from_templates_populates_realization_geometry_cell`). A
 /// `param … : Solid = box(…)` cell satisfies that (a `Solid` cell IS
@@ -1280,7 +1280,7 @@ fn geometry_sibling_realization_cycle_produces_error_diagnostics() {
     // whether a's result handle was recorded; in practice both fail.
     let source = r#"structure S {
     let a = translate(b, 1mm, 0mm, 0mm)
-    let b = rotate(a, 0, 0, 1, 90deg)
+    let b = rotate(a, dir(0, 0, 1), 90deg)
 }"#;
 
     let kernel = MockGeometryKernel::new();
@@ -1524,7 +1524,7 @@ fn unified_dag_curated_fillet_result_consumed_blank_let_builds_clean() {
     }
     let source = r#"pub structure S {
     let b = box(40mm, 30mm, 20mm)
-    let f = fillet(b, edges_parallel_to(b, vec3(0.0, 0.0, 1.0), 1deg), 3mm)
+    let f = fillet(b, edges_parallel_to(b, dir(0, 0, 1), 1deg), 3mm)
     let g = translate(f, 0mm, 0mm, 5mm)
 }"#;
     let (result, ops) = build_occt_recording(source);
@@ -1716,7 +1716,7 @@ fn unified_dag_chained_curated_chamfers_resolve_every_stage() {
 /// neighbours, and the edge each neighbour shares with it.
 const FLAT_MAP_FILLET_SOURCE: &str = r#"pub structure S {
     let b = box(10mm, 10mm, 10mm)
-    let top = single(faces_by_normal(b, vec3(0.0, 0.0, 1.0), 1deg))
+    let top = single(faces_by_normal(b, dir(0, 0, 1), 1deg))
     let top_edges = flat_map(adjacent_faces(b, top), |f| shared_edges(top, f))
     let f = fillet(b, top_edges, 1mm)
 }"#;
@@ -1923,7 +1923,7 @@ fn build_snapshot_resolves_flat_map_lambda_curated_selector_under_unified_dag() 
 fn unified_dag_curated_fillet_over_flat_map_of_a_list_cell_resolves_edges() {
     let source = r#"pub structure S {
     let b = box(10mm, 10mm, 10mm)
-    let top = single(faces_by_normal(b, vec3(0.0, 0.0, 1.0), 1deg))
+    let top = single(faces_by_normal(b, dir(0, 0, 1), 1deg))
     let sides = adjacent_faces(b, top)
     let top_edges = flat_map(sides, |f| shared_edges(top, f))
     let f = fillet(b, top_edges, 1mm)
@@ -1976,7 +1976,7 @@ fn unified_dag_flat_map_over_a_non_selector_body_keeps_its_pure_eval_list() {
 /// observes only how the `flat_map` cell itself resolves.
 const FLAT_MAP_WALK_SOURCE: &str = r#"pub structure S {
     let b = box(10mm, 10mm, 10mm)
-    let top = single(faces_by_normal(b, vec3(0.0, 0.0, 1.0), 1deg))
+    let top = single(faces_by_normal(b, dir(0, 0, 1), 1deg))
     let top_edges = flat_map(adjacent_faces(b, top), |f| shared_edges(top, f))
 }"#;
 

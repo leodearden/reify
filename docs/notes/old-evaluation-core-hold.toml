@@ -1,0 +1,47 @@
+# The files held behind the old-evaluation-core holder. The rule, and how to
+# hold or release a task: old-evaluation-core-hold.md beside this file.
+# A trailing slash names a directory: it holds every path below it.
+
+holder = 10510
+
+files = [
+    "crates/reify-eval/src/engine_eval.rs",
+    "crates/reify-eval/src/engine_edit.rs",
+    "crates/reify-eval/src/engine_edit/",
+    "crates/reify-eval/src/engine_build.rs",
+    "crates/reify-eval/src/engine_build/",
+    "crates/reify-eval/src/unfold.rs",
+    "crates/reify-eval/src/unfold/",
+    "crates/reify-eval/src/deps.rs",
+    "crates/reify-eval/src/deps/",
+    "crates/reify-eval/src/dirty.rs",
+    "crates/reify-eval/src/demand.rs",
+    "crates/reify-eval/src/engine_demand.rs",
+    "crates/reify-eval/src/observed_demand.rs",
+    "crates/reify-eval/src/freshness_walk.rs",
+    "crates/reify-eval/src/cache.rs",
+    "crates/reify-eval/src/cache/",
+    "crates/reify-eval/src/graph.rs",
+    "crates/reify-eval/src/graph/",
+    "crates/reify-eval/src/snapshot.rs",
+    "crates/reify-eval/src/engine_constraints.rs",
+    "crates/reify-eval/src/engine_constraints/",
+    "crates/reify-eval/src/engine_purposes.rs",
+    "crates/reify-eval/src/engine_fixpoint.rs",
+    "crates/reify-eval/src/resolve_order.rs",
+    "crates/reify-eval/src/engine_admin.rs",
+    "crates/reify-eval/src/engine_compute.rs",
+    "crates/reify-eval/src/cell_commit.rs",
+    "crates/reify-eval/src/cell_eval_ctx.rs",
+    "crates/reify-eval/src/sub_instance_scope.rs",
+    "crates/reify-eval/src/scope_containment.rs",
+    "crates/reify-eval/src/realization_cache.rs",
+    "crates/reify-eval/src/realization_staleness.rs",
+    "crates/reify-eval/src/realization_content.rs",
+    "crates/reify-eval/src/geometry_ops/symbolic_cell_mint.rs",
+    "crates/reify-eval/src/lib.rs",
+]
+
+# Held, but a task whose only held files are these is reported at Low:
+# it usually lists lib.rs only to register a module.
+registration_only = ["crates/reify-eval/src/lib.rs"]

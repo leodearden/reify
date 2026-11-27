@@ -26,7 +26,7 @@ use reify_ir::{OpaqueState, Value, ValueMap};
 use reify_test_support::compile_source_with_stdlib;
 
 /// Fixture: Widget with a NAMED `body` param (Solid = box) + let-bound dir/tol
-/// + topology selector `loc = faces_by_normal(body, dir, tol)` + downstream
+/// + topology selector `loc = faces_by_normal(body, up, tol)` + downstream
 ///   consumer `n_top = loc`.
 ///
 /// Using a NAMED `body` param exercises BOTH relocations transitively:
@@ -37,9 +37,9 @@ const WIDGET_SRC: &str = r#"structure def Widget {
     param height : Length = 20mm
     param depth  : Length = 30mm
     param body   : Solid  = box(width, height, depth)
-    let dir = vec3(0.0, 0.0, 1.0)
+    let up = dir(0, 0, 1)
     let tol = 1deg
-    let loc = faces_by_normal(body, dir, tol)
+    let loc = faces_by_normal(body, up, tol)
     let n_top = loc
 }"#;
 
@@ -243,12 +243,12 @@ structure def R3eWidget {
     param height : Length = 20mm
     param depth  : Length = 30mm
     param body   : Solid  = box(width, height, depth)
-    let dir = vec3(0.0, 0.0, 1.0)
+    let up = dir(0, 0, 1)
     let tol = 1deg
     let track = r3e_track_test("#,
     end_effector_track_fixture!(),
     r#")
-    let loc = faces_by_normal(body, dir, tol)
+    let loc = faces_by_normal(body, up, tol)
     let peak = peak_deviation_at(track, loc)
 }"#
 );
@@ -408,7 +408,7 @@ fn value_eval_template_consumer_reads_minted_selector_finite_after_edit() {
 //
 // A geometry LET (`let loc_box = box(...)`) lowers to a realization with NO
 // value cell, so the in-walk retry can never resolve it: `loc =
-// faces_by_normal(loc_box, dir, tol)` stays `Value::Undef` for the entire
+// faces_by_normal(loc_box, up, tol)` stays `Value::Undef` for the entire
 // in-walk pass and NEVER enters `minted_in_walk`. `loc_box`'s GeometryHandle
 // — and therefore `loc` itself — is resolved ONLY by the two POST-WALK mints
 // (`mint_symbolic_geometry_handles_into_values` then
@@ -441,12 +441,12 @@ structure def R3fWidget {
     param height : Length = 20mm
     param depth  : Length = 30mm
     let loc_box = box(width, height, depth)
-    let dir = vec3(0.0, 0.0, 1.0)
+    let up = dir(0, 0, 1)
     let tol = 1deg
     let track = r3f_track_test("#,
     end_effector_track_fixture!(),
     r#")
-    let loc = faces_by_normal(loc_box, dir, tol)
+    let loc = faces_by_normal(loc_box, up, tol)
     let peak = peak_deviation_at(track, loc)
 }"#
 );

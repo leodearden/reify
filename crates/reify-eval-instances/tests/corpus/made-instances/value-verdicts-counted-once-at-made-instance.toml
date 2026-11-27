@@ -1,0 +1,38 @@
+tests = "a value's verdicts are counted once, at its made instance, however many cells and subs read it; a value taken into a list, into another `let`, or read in mid-expression makes no new instance."
+rule = "Part 7.2 and 7.3; rule B; contract Example 11; Part 2 (summary); readings B4."
+provenance = "second-design Q5 and Q6 (probe `g3.ri`, cut); design Part 12 Example 11 (\"one made instance, its verdicts counted once\"); design 6.5 (`Widget { param p : Plate }`); language-1 L9 session 3 (the verdict half; the note's text is the session's). Taken. Also, from the merged entries: design Part 12 Example 11; logic-1 counting trace. design Part 12 Example 11. logic-1 holds-up (counting; Bracket(mat: Steel()))."
+needs = ["instance", "value", "made", "open", "constraint", "summary"]
+answer_basis = "traced. Made instances: `Asm.c/made[0]` (t 1 mm, violated) and `Asm.xs/made[0]` (t 5 mm, satisfied; `c` inside the list makes nothing, rule B). `e` holds `c`'s value; `c` opened is the made plate, area 1 × 40 mm²; `xs[0].area` is opened by the reading body, the same. `d` and `w` read `p.t` = 1 mm: violated each. Counted (readings B4): 1 + 2 = 3; every `/arguments` verdict is satisfied."
+today = "`Asm.a` 40 mm²; only the definitions' verdicts print, both INDETERMINATE (their parameters have no default) (run `values_once.ri`)."
+
+[[expect]]
+path = "Asm.c/made[0]/constraint[0]"
+verdict = "violated"
+
+[[expect]]
+path = "Asm.xs/made[0]/constraint[0]"
+verdict = "satisfied"
+
+[[expect]]
+path = "Asm.e/open.t"
+value = "1 mm"
+
+[[expect]]
+path = "Asm.a"
+value = "40 mm^2"
+
+[[expect]]
+path = "Asm.d/constraint[0]"
+verdict = "violated"
+
+[[expect]]
+path = "Asm.w/constraint[0]"
+verdict = "violated"
+
+[[expect]]
+path = "Asm.c/open.area"
+value = "40 mm^2"
+
+[[expect]]
+path = "Asm/summary"
+summary = { violated = 3, undetermined = 0, failed = 0 }

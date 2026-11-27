@@ -2,23 +2,21 @@
 //! 5593, PRD docs/prds/v0_6/placeholder-type-eradication-ratchet.md §8 BT10.
 //!
 //! The helper's whole purpose is to reproduce the PRODUCTION runtime dispatch
-//! table so that `e2e_*_with_stdlib` guards evaluate the way `reify_eval` does.
-//! There are two plausible tables to copy and they are NOT the same function:
+//! so that `e2e_*_with_stdlib` guards evaluate the way `reify_eval` does. Two
+//! table shapes dispatch identically, and they are NOT the same list:
 //!
-//!  - `reify_eval::merge_functions` (reify-eval/src/lib.rs:1425-1432) — the
-//!    RUNTIME table. `module.functions.clone()` then `extend(prelude)`, with NO
-//!    filtering. This is what production evaluation actually uses (callsites at
-//!    engine_eval.rs:3641, engine_eval.rs:6419, engine_edit.rs:3208).
-//!  - `reify_compiler::merge_prelude_functions` (reify-compiler/src/lib.rs:332)
-//!    — the COMPILE-TIME overload-resolution table. It FILTERS out prelude
-//!    entries whose `(name, arity, param_types)` triple collides with a user fn,
-//!    because a duplicate triple is an ambiguous-overload error at compile time.
+//!  - UNFILTERED: `module.functions.clone()` then `extend(prelude)`. This is
+//!    the helper's shape, and reify-eval's runtime shape until task #5524
+//!    replaced it with `reify_eval::DefEnv::function_table`.
+//!  - FILTERED: one function per `(name, param_types)` signature, first wins.
+//!    This is `reify_eval::DefEnv::function_table`, the table production
+//!    evaluation uses now, and `reify_compiler::merge_prelude_functions`, the
+//!    COMPILE-TIME overload-resolution table, where a duplicate signature is an
+//!    ambiguous-overload error.
 //!
 //! The two are dispatch-EQUIVALENT under first-match-wins (a shadowed prelude
-//! entry is unreachable either way), so this is a fidelity choice rather than a
-//! behaviour fix. But a harness whose entire reason for existing is "evaluate
-//! the way production does" should not quietly diverge from production in how it
-//! builds its table — so these tests pin the runtime shape.
+//! entry is unreachable either way), so the helper's choice is one of fidelity,
+//! not behaviour. These tests pin the helper's own unfiltered shape.
 
 use reify_ir::CompiledFunction;
 
@@ -46,8 +44,8 @@ fn sig(f: &CompiledFunction) -> (String, Vec<reify_core::Type>) {
 ///
 /// `reify_expr::eval_user_function_call` resolves via a first-match-wins linear
 /// scan, so ordering IS the shadowing mechanism: a user fn whose signature
-/// matches a prelude fn must win precisely because it is scanned first. This is
-/// the invariant documented at reify-eval/src/lib.rs:1398-1405.
+/// matches a prelude fn must win precisely because it is scanned first. That is
+/// why `reify_eval::DefEnv::function_table` keeps precedence order too.
 #[test]
 fn user_functions_come_first_in_original_order() {
     let module = reify_test_support::compile_source_with_stdlib(
@@ -75,13 +73,13 @@ fn user_functions_come_first_in_original_order() {
         head, user,
         "the first module.functions.len() entries must be module.functions, in \
          order — first-match-wins dispatch is what makes user fns shadow prelude \
-         fns (reify-eval/src/lib.rs:1398-1405)"
+         fns"
     );
 }
 
 /// (b) UNFILTERED APPEND — a prelude entry whose signature COLLIDES with a user
-/// fn must still be PRESENT in the table (merely unreachable), matching
-/// `reify_eval::merge_functions` rather than `merge_prelude_functions`.
+/// fn must still be PRESENT in the table (merely unreachable): the helper's
+/// unfiltered shape rather than `merge_prelude_functions`.
 ///
 /// The fixture redefines `through<T>(x: T) -> T`, whose `(name, arity,
 /// param_types)` triple is exactly that of the stdlib's
@@ -131,12 +129,10 @@ fn colliding_prelude_entry_is_appended_not_filtered() {
         table.len(),
         module.functions.len() + prelude_fn_count(),
         "unfiltered append: EVERY prelude entry must be present, including the \
-         one shadowed by the user `through`. reify_eval::merge_functions \
-         (reify-eval/src/lib.rs:1429-1431) appends unconditionally because \
-         first-match-wins makes shadowed entries unreachable anyway; \
+         one shadowed by the user `through`. The helper appends unconditionally \
+         because first-match-wins makes shadowed entries unreachable anyway; \
          merge_prelude_functions instead FILTERS them, which is correct for the \
-         compile-time overload table but is not the production runtime shape \
-         this harness must mirror"
+         compile-time overload table but is not the helper's shape"
     );
 
     // ...and the shadowed duplicate is genuinely in there, twice.

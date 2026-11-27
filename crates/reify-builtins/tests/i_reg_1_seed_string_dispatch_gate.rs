@@ -165,6 +165,7 @@ const RELATION_SIGNATURES: &str = "crates/reify-compiler/src/relation_signatures
 const CONSTRAINTS_RELATE_SOLVE: &str = "crates/reify-constraints/src/relate_solve.rs";
 const EVAL_RELATE_SOLVE: &str = "crates/reify-eval/src/relate_solve.rs";
 const COMPILER_UNITS: &str = "crates/reify-compiler/src/units.rs";
+const COMPILER_BUILTIN_SIGNATURES: &str = "crates/reify-compiler/src/builtin_signatures.rs";
 const STDLIB_GEOMETRY: &str = "crates/reify-stdlib/src/geometry.rs";
 const EVAL_GEOMETRY_OPS: &str = "crates/reify-eval/src/geometry_ops.rs";
 const EVAL_GEOMETRY_OPS_TESTS: &str = "crates/reify-eval/src/geometry_ops/tests.rs";
@@ -182,6 +183,9 @@ const WHY_DESCRIBE_DEMAND: &str =
     "relate-solve `describe_demand` — S6 γ #8830 binds RelationKind exhaustively";
 const WHY_GEOMETRY_QUERY_DERIVE: &str =
     "GEOMETRY_QUERY_NAMES' arity-2 DERIVE form, a different builtin — τ8 rows in #6944";
+const WHY_ARG_SLOT_TABLE: &str =
+    "builtin_arg_slots' arity-2 `angle(a, b)` Direction slots, a different builtin — #6944 \
+     deletes builtin_arg_slots (fk-ffa4ba4c2d0b)";
 const WHY_DATUM_OFFSET: &str =
     "arity-2 construction datum `offset(Plane, Length)`, a different builtin — τ7 rows in #6944";
 const WHY_TOPOLOGY_SELECTOR_HELPER: &str =
@@ -307,6 +311,7 @@ const SEED_STRING_DISPATCH_LEDGER: &[LedgerEntry] = &[
     ledgered(COMPILER_UNITS, "angle", 2, WHY_GEOMETRY_QUERY_DERIVE),
     ledgered(COMPILER_UNITS, "distance", 2, WHY_GEOMETRY_QUERY_DERIVE),
     ledgered(STDLIB_GEOMETRY, "offset", 2, WHY_DATUM_OFFSET),
+    ledgered(COMPILER_BUILTIN_SIGNATURES, "angle", 1, WHY_ARG_SLOT_TABLE),
     //
     // The topology-selector helper string map, which #6944 replaces with one
     // `BuiltinId`-keyed dispatch.
