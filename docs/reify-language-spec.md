@@ -186,7 +186,7 @@ Two more placements are compile errors:
 - An `auto` anywhere in a purpose's body, because a purpose decides nothing (§4.4).
 - In a sub's braces, `let x : T = auto`, and an `auto` as a constructor argument inside a member written there. The `auto` would be in the parent's text while the member is the sub's, so it would have no single owner. Write the `let` in the parent and pass it in. An assignment `bore = auto` in the braces stays valid: it is an argument written by the parent (§8.7).
 
-`auto` is **not** a general expression operand. It may not appear as a function-call argument, inside an arithmetic or logical expression, in a `constraint`/`minimize`/`maximize` body, in a field `source`, or in a collection literal — these are compile errors. To bound a solver-delegated value, attach a constraint to the binding rather than embedding `auto` in an expression: write `length = auto, length > 2mm`, not `length = auto + 2mm`. (Reconciled 2026-05-26 with the grammar, which admits `auto` only at binding sites; see `docs/prds/auto-binding-site-positions.md`. The prior "anywhere a value expression is expected" wording over-promised relative to the parser.)
+`auto` is **not** a general expression operand. It may not appear as a function-call argument, inside an arithmetic or logical expression, in a `constraint`/`minimize`/`maximize` body, in a field `source`, or in a collection literal. These are parse errors, except a named function-call argument (`clamp(x: auto)`), which parses and is a compile error (`E_AUTO_NOT_AT_BINDING_SITE`). To bound a solver-delegated value, attach a constraint to the binding rather than embedding `auto` in an expression: write `length = auto, length > 2mm`, not `length = auto + 2mm`. (Reconciled 2026-05-26 with the grammar, which admits `auto` only at binding sites; see `docs/prds/auto-binding-site-positions.md`. The prior "anywhere a value expression is expected" wording over-promised relative to the parser.)
 
 **`auto` modes:**
 
@@ -2917,7 +2917,7 @@ trait_decl      ::= 'pub'? 'trait' TYPE_IDENT type_params?
                      '{' trait_member* '}'
 
 trait_member    ::= param_decl | sub_decl | let_decl | constraint_line
-                   | assoc_type_decl
+                   | assoc_type_decl | purpose_application
                    (* port_decl: deferred -- see section 4.2 and
                       prds/v0_6/generic-assemblies-interface-traits.md *)
 
@@ -2944,13 +2944,14 @@ purpose_params  ::= purpose_param (',' purpose_param)*
 purpose_param   ::= IDENT ':' type_expr
 
 purpose_member  ::= constraint_line | sub_decl | let_decl
-                  | guarded_block
+                  | guarded_block | purpose_application
 
 (* A purpose takes no objective, guarded or not (§4.4): minimize_decl and
    maximize_decl are members of definitions, not of purposes, and they carry no
    where_guard? suffix (§6.3). *)
 guarded_purpose_member
                 ::= constraint_line | sub_decl | let_decl | guarded_block
+                  | purpose_application
 
 guarded_block   ::= 'where' expr '{' guarded_purpose_member* '}'
                     ('else' '{' guarded_purpose_member* '}')?
@@ -3027,7 +3028,9 @@ disposition     ::= 'keep' disposition_path ('using' expr)?   (* 'using' RESERVE
 disposition_path ::= IDENT ('.' IDENT)*
 let_decl        ::= 'pub'? 'aux'? 'let' IDENT (':' type_expr)? '=' expr where_guard?
 constraint_line ::= 'constraint' (constraint_ref | expr) where_guard?
-(* §4.4: a compile error in a purpose's body, a trait or a sub's braces. *)
+(* §4.4: a compile error in a purpose's body, a trait or a sub's braces. It
+   parses there (purpose_member, guarded_purpose_member, trait_member) so the
+   compiler can reject it with a message. *)
 purpose_application ::= 'purpose' IDENT '(' args? ')' where_guard?
 
 constraint_ref  ::= TYPE_IDENT type_args? '(' args? ')'
