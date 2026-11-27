@@ -12,7 +12,8 @@ fn a_body_cannot_wait_in_a_section_or_carry_the_resource_out_but_two_loopholes_c
     programs.pass(loopholes);
 }
 
-/// trybuild passes an empty glob, so this fails unless `directory` holds PRD 12.2's `count` programs.
+/// trybuild passes a glob that matches no file, so this fails unless `directory` holds exactly
+/// `count` programs.
 fn glob_of_exactly(directory: &str, count: usize) -> String {
     let paths: std::io::Result<Vec<_>> = std::fs::read_dir(directory)
         .and_then(|entries| entries.map(|entry| Ok(entry?.path())).collect());
