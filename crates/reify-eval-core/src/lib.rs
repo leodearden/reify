@@ -11,6 +11,7 @@ mod counters;
 mod cx;
 mod cycle;
 mod declaration;
+mod declared_children;
 mod demand;
 mod description;
 mod erased_kind;

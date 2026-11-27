@@ -4,8 +4,6 @@
 //! finds is a fact about the path, so it is given in the snapshot's index
 //! only and never filed in the store.
 
-use std::collections::BTreeSet;
-
 use crate::content::Content;
 use crate::failure::Failure;
 use crate::index::Entry;
@@ -47,6 +45,8 @@ pub(crate) fn children(entry: Entry, limits: &Limits, kinds: &Kinds) -> Entry {
 
 /// Whether `entry`, whose value a body of the entry's kind produced,
 /// declares more than `limit` distinct children, by its run or its value.
+/// A kind's steps are distinct, so a step of the value's is counted unless
+/// the run declared it too.
 fn declares_more_than(entry: &Entry, limit: u64, kinds: &Kinds) -> bool {
     let (Outcome::Value(value), Some(declaration)) = (&entry.outcome, &entry.declaration) else {
         return false;
@@ -57,11 +57,12 @@ fn declares_more_than(entry: &Entry, limit: u64, kinds: &Kinds) -> bool {
     let kind = kinds
         .get(declaration.kind())
         .expect("a node whose body ran has a kind the core was built with");
-    let by_run = entry.children_declared.iter().cloned();
-    let mut seen = BTreeSet::new();
-    by_run
-        .chain(kind.steps(&**value))
-        .filter(|step| seen.insert(step.clone()))
-        .nth(first_past)
+    let by_run = &entry.children_declared;
+    let Some(past_the_run) = first_past.checked_sub(by_run.len()) else {
+        return true;
+    };
+    kind.steps(&**value)
+        .filter(|step| !by_run.contains(step))
+        .nth(past_the_run)
         .is_some()
 }

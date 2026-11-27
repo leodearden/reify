@@ -7,13 +7,13 @@ use std::sync::Arc;
 
 use crate::content::Content;
 use crate::declaration::Declaration;
+use crate::declared_children::ChildSteps;
 use crate::event::RequestId;
 use crate::index::{Entry, Indexes, NodeKey};
 use crate::key::Chain;
 use crate::kinds::Kinds;
 use crate::outcome::{Erased, Outcome};
 use crate::requests::Requests;
-use crate::step::Step;
 use crate::store::{Store, StoredResult};
 use crate::waits::Waits;
 
@@ -24,7 +24,7 @@ use crate::waits::Waits;
 pub(crate) fn filed(
     declaration: Arc<Declaration>,
     chain: Chain,
-    children: Arc<[Step]>,
+    children: ChildSteps,
     outcome: Outcome<Erased>,
     kinds: &Kinds,
     store: &mut Store,

@@ -22,11 +22,11 @@ pub(crate) enum Target {
 /// The place `r` names when read by the node at `reader` whose declaration
 /// is `declaration`. A passed binding moves to the declarer, whose
 /// declaration the index holds (its answer, or its running body, declared
-/// the child), carrying
-/// the steps still to take; the walk ends at an input, a constant or a
-/// place. An unset binding names nothing; a snapshot input or a constant
-/// declares no children, so steps below one name nothing; a binding
-/// relative to the declarer names nothing on a root, which has no declarer.
+/// the child), carrying the steps still to take; the walk ends at an
+/// input, a constant or a place. An unset binding names nothing; a
+/// snapshot input or a constant declares no children, so steps below one
+/// name nothing; a binding relative to the declarer names nothing on a
+/// root, which has no declarer.
 pub(crate) fn target<'a>(
     reader: PathId,
     declaration: &'a Declaration,

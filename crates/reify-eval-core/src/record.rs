@@ -1,14 +1,15 @@
 //! What a body or a lookup read: the one read request it has outstanding,
 //! each item settled at once or awaiting a node, assembled in order into
-//! its answers, each outcome with its content; and the children the
-//! request declares that are still to be worked out.
+//! its answers, each outcome with its content; the children the request
+//! declares, and those of them that are still to be worked out.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::mem;
 use std::sync::Arc;
 
 use crate::content::Content;
 use crate::declaration::Declaration;
+use crate::declared_children::{Conflict, DeclaredChildren};
 use crate::index::Index;
 use crate::outcome::{Erased, Outcome};
 use crate::path_table::PathId;
@@ -24,16 +25,20 @@ enum Slot {
 pub(crate) struct Reading {
     wanted: Arc<[Wanted]>,
     slots: Vec<Slot>,
+    /// The children the request declares.
+    declared: DeclaredChildren,
     /// Each child the request declares whose path is not answered yet,
     /// with its declaration, in the order asked.
     to_declare: Vec<(PathId, Arc<Declaration>)>,
 }
 
-/// A read request's items, and what each read, in order.
+/// A read request's items, and what each read, in order; and the children
+/// it declared.
 pub(crate) struct Answers {
     wanted: Arc<[Wanted]>,
     outcomes: Vec<Outcome<Erased>>,
     contents: Vec<Content>,
+    declared: DeclaredChildren,
 }
 
 impl Answers {
@@ -41,16 +46,10 @@ impl Answers {
         &self.wanted
     }
 
-    /// Adds each child the request declared to `children`, the children
-    /// of the run that made it, by step.
-    pub fn record_children(&self, children: &mut BTreeMap<Step, Arc<Declaration>>) {
-        for wanted in self.wanted.iter() {
-            if let Wanted::Child(step, declaration) = wanted {
-                children
-                    .entry(step.clone())
-                    .or_insert_with(|| Arc::clone(declaration));
-            }
-        }
+    /// Moves the children the request declared to `children`, those of the
+    /// run that made it, which the request was served in agreement with.
+    pub fn record_children(&mut self, children: &mut DeclaredChildren) {
+        children.extend(mem::take(&mut self.declared));
     }
 
     pub fn contents(&self) -> &[Content] {
@@ -67,6 +66,7 @@ impl Reading {
         Self {
             wanted,
             slots: Vec::new(),
+            declared: DeclaredChildren::default(),
             to_declare: Vec::new(),
         }
     }
@@ -79,8 +79,14 @@ impl Reading {
         self.slots.push(Slot::Awaits(node));
     }
 
+    /// Notes that the request declares the child `declaration` at `step`,
+    /// unless it declared a different one there.
+    pub fn declare(&mut self, step: &Step, declaration: &Arc<Declaration>) -> Result<(), Conflict> {
+        self.declared.declare(step, declaration)
+    }
+
     /// Awaits the child at `node`, which is to be declared `declaration`.
-    pub fn declares(&mut self, node: PathId, declaration: Arc<Declaration>) {
+    pub fn awaits_child(&mut self, node: PathId, declaration: Arc<Declaration>) {
         self.awaits(node);
         self.to_declare.push((node, declaration));
     }
@@ -121,6 +127,7 @@ impl Reading {
             wanted: self.wanted,
             outcomes,
             contents,
+            declared: self.declared,
         }
     }
 }

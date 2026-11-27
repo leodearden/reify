@@ -4,20 +4,19 @@
 //! stored request that declares children declares them again, at the
 //! lookup's own path (contract 7.1).
 
-use std::collections::BTreeMap;
 use std::mem;
 use std::sync::Arc;
 
 use crate::declaration::Declaration;
+use crate::declared_children::{ChildSteps, DeclaredChildren};
 use crate::key::Key;
 use crate::record::Answers;
-use crate::step::Step;
 
 pub(crate) struct Lookup {
     declaration: Arc<Declaration>,
     key: Key,
-    /// The children the requests it moved past declared, by step.
-    children: BTreeMap<Step, Arc<Declaration>>,
+    /// The children the requests it moved past declared.
+    children: DeclaredChildren,
     /// Whether it is queued to be stepped; as a task's `owed_poll`.
     queued: bool,
 }
@@ -27,7 +26,7 @@ impl Lookup {
         Self {
             declaration,
             key,
-            children: BTreeMap::new(),
+            children: DeclaredChildren::default(),
             queued: false,
         }
     }
@@ -36,8 +35,8 @@ impl Lookup {
         &self.declaration
     }
 
-    /// The children the requests it moved past declared, by step.
-    pub fn children(&self) -> &BTreeMap<Step, Arc<Declaration>> {
+    /// The children the requests it moved past declared.
+    pub fn children(&self) -> &DeclaredChildren {
         &self.children
     }
 
@@ -49,8 +48,8 @@ impl Lookup {
 
     /// Gives up the lookup, which found a result: the node's declaration
     /// and the steps of the children it declared.
-    pub fn found(self) -> (Arc<Declaration>, Arc<[Step]>) {
-        (self.declaration, self.children.into_keys().collect())
+    pub fn found(self) -> (Arc<Declaration>, ChildSteps) {
+        (self.declaration, self.children.into_steps())
     }
 
     pub fn key(&self) -> Key {
@@ -58,7 +57,7 @@ impl Lookup {
     }
 
     /// Moves on past the request stored at its key, given what it read.
-    pub fn advance(&mut self, answers: &Answers) {
+    pub fn advance(&mut self, mut answers: Answers) {
         answers.record_children(&mut self.children);
         self.key = self.key.then(answers.wanted(), answers.contents());
     }

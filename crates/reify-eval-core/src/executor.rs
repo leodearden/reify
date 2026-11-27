@@ -18,6 +18,7 @@ use crate::core_id::CoreId;
 use crate::counters::Counters;
 use crate::cycle;
 use crate::declaration::Declaration;
+use crate::declared_children::Conflict;
 use crate::demand::Demand;
 use crate::event::{Event, RequestError, RequestId};
 use crate::failure::{Failure, OutsideFailure, panic_message};
@@ -40,7 +41,6 @@ use crate::requests::{Request, Requests};
 use crate::resolve::declaration_of;
 use crate::resource::Resources;
 use crate::serve;
-use crate::serve::child::Conflict;
 use crate::serve::section::{Delivery, InFlight};
 use crate::snapshot::{Snapshot, SnapshotId, SnapshotTokens};
 use crate::store::{Store, Stored, StoredResult};
@@ -398,12 +398,26 @@ impl Executor {
         Some(Work::Answered(key, Entry::settled(outcome, content)))
     }
 
-    /// Works out the child at `key`, which the reader at its parent
-    /// declared `declaration` and awaits. A path already answered, or
-    /// already a lookup or a body, is left as it is; a path waiting on its
-    /// parent is taken over, its wait on the parent ended, since the
-    /// parent's run is what declares it.
-    fn declare(&mut self, key: NodeKey, declaration: Arc<Declaration>) {
+    /// Works out the child at `path`, which the reader at `reader`, its
+    /// parent, declared `declaration` and awaits. The reader's own
+    /// declaration, `declarer`, is filed first, so that the child's passed
+    /// bindings can be read through it while the reader runs. A path
+    /// already answered, or already a lookup or a body, is left as it is; a
+    /// path waiting on its parent is taken over, its wait on the parent
+    /// ended, since the parent's run is what declares it.
+    fn declare(
+        &mut self,
+        reader: NodeKey,
+        declarer: &Arc<Declaration>,
+        path: PathId,
+        declaration: Arc<Declaration>,
+    ) {
+        self.indexes
+            .file_declarer(reader.snapshot, reader.path, declarer);
+        let key = NodeKey {
+            snapshot: reader.snapshot,
+            path,
+        };
         if self.answered(key) || self.is_reader(key) {
             return;
         }
@@ -659,9 +673,11 @@ impl Executor {
     /// node's answer, with the node's own declaration, and no body runs; a
     /// request that awaits a node makes the lookup wait as a body would;
     /// a request that declares a child declares it at the lookup's own path
-    /// and awaits it; a key where nothing is filed, or a request in
-    /// conflict with the children the lookup declared, starts the body from
-    /// its beginning.
+    /// and awaits it; a key where nothing is filed starts the body from its
+    /// beginning, and so would a request in conflict with the children the
+    /// lookup declared. Only keys that collide could file one: a key hashes
+    /// every child item of the requests on the way to it, so those requests
+    /// are one run's, and that run met no conflict among them.
     fn step_lookup(&mut self, key: NodeKey) {
         let Some(lookup) = self.lookups.get_mut(&key) else {
             return;
@@ -671,7 +687,7 @@ impl Executor {
         }
         let index = self.indexes.of(key.snapshot);
         if let Some(reading) = self.readings.remove(&key) {
-            lookup.advance(&reading.reply(index));
+            lookup.advance(reading.reply(index));
         }
         loop {
             self.counters.count_store_lookup();
@@ -707,15 +723,13 @@ impl Executor {
                 let declaration = Arc::clone(lookup.declaration());
                 return self.await_reading(key, reading, awaited, &declaration);
             }
-            lookup.advance(&reading.reply(index));
+            lookup.advance(reading.reply(index));
         }
     }
 
     /// Keeps the reading of the reader at `key`, declared `declaration`,
     /// until each node in `awaited` is answered, and makes the reader wait
-    /// on them, declaring the children the reading lists. The reader's
-    /// declaration is filed first, so a child's passed binding can be read
-    /// through it.
+    /// on them, declaring the children the reading lists.
     fn await_reading(
         &mut self,
         key: NodeKey,
@@ -724,24 +738,22 @@ impl Executor {
         declaration: &Arc<Declaration>,
     ) {
         let to_declare = reading.take_to_declare();
-        if !to_declare.is_empty() {
-            let snapshot = key.snapshot;
-            self.indexes.file_declarer(snapshot, key.path, declaration);
-        }
         self.readings.insert(key, reading);
-        self.await_nodes(key, awaited, to_declare);
+        self.await_nodes(key, awaited, to_declare, declaration);
     }
 
-    /// Makes the reader at `key` wait on each node in `awaited` before any
-    /// of them is worked out, so that none can answer the reading early;
-    /// then declares each child in `to_declare`, and sees that each other
-    /// node will be answered. Stops once the reader is dropped: a node that
-    /// fails outside the inputs as it is worked out drops it at once.
+    /// Makes the reader at `key`, declared `declaration`, wait on each node
+    /// in `awaited` before any of them is worked out, so that none can
+    /// answer the reading early; then declares each child in `to_declare`,
+    /// and sees that each other node will be answered. Stops once the
+    /// reader is dropped: a node that fails outside the inputs as it is
+    /// worked out drops it at once.
     fn await_nodes(
         &mut self,
         key: NodeKey,
         awaited: BTreeSet<PathId>,
         to_declare: Vec<(PathId, Arc<Declaration>)>,
+        declaration: &Arc<Declaration>,
     ) {
         let at = |path| NodeKey {
             snapshot: key.snapshot,
@@ -751,11 +763,11 @@ impl Executor {
         for node in &nodes {
             self.waits.add(key, *node);
         }
-        for (path, declaration) in to_declare {
+        for (path, child) in to_declare {
             if !self.is_reader(key) {
                 return;
             }
-            self.declare(at(path), declaration);
+            self.declare(key, declaration, path, child);
         }
         for node in nodes {
             if !self.is_reader(key) {

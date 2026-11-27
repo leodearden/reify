@@ -3,39 +3,36 @@
 //! the node it names; a child item goes to the child server, which may
 //! find the request in conflict with what the run declared.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::content::Content;
 use crate::declaration::Declaration;
+use crate::declared_children::{Conflict, DeclaredChildren};
 use crate::index::Index;
 use crate::outcome::Outcome;
 use crate::path_table::{PathId, PathTable};
 use crate::record::Reading;
 use crate::reference::Ref;
 use crate::resolve::{Target, target};
-use crate::serve::child::{self, Conflict, Declared};
-use crate::step::Step;
+use crate::serve::child;
 use crate::wanted::Wanted;
 
 /// The reading of `wanted`, asked by the node at `reader` declared
-/// `declaration`, whose run has declared `children`.
+/// `declaration`, whose run has declared `by_run`.
 pub(crate) fn serve(
     reader: PathId,
     declaration: &Declaration,
     wanted: Arc<[Wanted]>,
-    children: &BTreeMap<Step, Arc<Declaration>>,
+    by_run: &DeclaredChildren,
     paths: &mut PathTable,
     index: &Index,
 ) -> Result<Reading, Conflict> {
     let mut reading = Reading::new(Arc::clone(&wanted));
-    let mut declared = Declared::new(children);
     for item in wanted.iter() {
         match item {
             Wanted::Ref(r) => serve_ref(reader, declaration, r, paths, index, &mut reading),
             Wanted::Child(step, child) => {
-                let item = (step, child);
-                child::serve(reader, item, &mut declared, paths, index, &mut reading)?;
+                child::serve(reader, step, child, by_run, paths, index, &mut reading)?;
             }
         }
     }

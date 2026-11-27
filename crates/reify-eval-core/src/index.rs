@@ -10,12 +10,12 @@ use imbl::OrdMap;
 
 use crate::content::Content;
 use crate::declaration::Declaration;
+use crate::declared_children::ChildSteps;
 use crate::input::{Input, InputKey};
 use crate::limits::Limits;
 use crate::outcome::{Erased, Outcome};
 use crate::path_table::PathId;
 use crate::snapshot::{Snapshot, SnapshotId};
-use crate::step::Step;
 
 /// A node of one snapshot, where its final answer is filed: within a
 /// snapshot a path is answered once, by at most one body.
@@ -33,7 +33,7 @@ pub(crate) struct Entry {
     pub outcome: Outcome<Erased>,
     pub declaration: Option<Arc<Declaration>>,
     pub content: Content,
-    pub children_declared: Arc<[Step]>,
+    pub children_declared: ChildSteps,
 }
 
 impl Entry {
@@ -44,7 +44,7 @@ impl Entry {
             outcome,
             declaration: None,
             content,
-            children_declared: Arc::new([]),
+            children_declared: ChildSteps::none(),
         }
     }
 }
