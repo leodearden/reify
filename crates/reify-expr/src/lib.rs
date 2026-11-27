@@ -1253,8 +1253,30 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
 /// every cell the expression reads: every operand, quantifier element and
 /// argument is evaluated, except the arms of an `if` or a `match`, of which
 /// only the one its condition takes is, and none when the condition is
-/// pending. No built-in is run, no function entered and no function applied
-/// with a pending operand.
+/// pending.
+///
+/// While an operand is pending, nothing that acts beyond giving a value runs:
+/// no built-in is dispatched (nor the selector hook), no `@optimized`
+/// function's compute dispatch probed, no `solve_load_cases` solve run, no
+/// user function entered and no function of `map_or` or `map_err` applied.
+/// Pure operations, the operators and the option-recovery combinators
+/// (`unwrap_or`, `ok_or`, ...), do run on the stand-in; the evaluation is then
+/// pending, so their value is discarded.
+///
+/// Two ways the outcome can differ from [`eval_expr`]'s over the same cells:
+/// - An operand evaluated only for the cells it reads (the right operand of a
+///   logical operator its left decides, a method call's arguments, the
+///   argument of `map_or` or `map_err` that the subject does not use) pushes
+///   to `ctx`'s runtime-diagnostic and undef-cause sinks like any other
+///   evaluation, so a round can carry a diagnostic or an `OpContractFailed`
+///   cause the old engine never produces. Whether to detach the sinks for
+///   such operands is for the adapter, #10645.
+/// - An attached [`SymbolicSelectorCtorFn`] is handed the local binders in
+///   scope but no store cell: the new engine's store is not a map. A hook
+///   that reads store cells from that map, as reify-eval's does to evaluate
+///   the call's arguments, sees none, so such a selector call can give Undef
+///   here where `eval_expr` builds a selector. The fix is owned by #10645.
+// G-allow: consumed by the instances-on-the-core adapter, task #10645
 pub fn eval_expr_or_pending(
     expr: &CompiledExpr,
     ctx: &EvalContext,
