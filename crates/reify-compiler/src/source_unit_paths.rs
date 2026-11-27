@@ -191,11 +191,18 @@ fn qualified_member(
 fn trait_bounds_of<'s>(definition: &str, scope: &'s CompilationScope) -> Option<&'s [String]> {
     match template_of(definition, scope) {
         Some(template) => Some(&template.trait_bounds),
-        None => scope.sub_structure_traits.get(definition).map(Vec::as_slice),
+        None => scope
+            .sub_structure_traits
+            .get(definition)
+            .map(Vec::as_slice),
     }
 }
 
-fn unknown_sub(sub: &str, span: SourceSpan, diagnostics: &mut Vec<Diagnostic>) -> Box<CompiledExpr> {
+fn unknown_sub(
+    sub: &str,
+    span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Box<CompiledExpr> {
     Box::new(make_poison_literal(
         diagnostics,
         Diagnostic::error(format!("unknown sub-component '{sub}'"))
