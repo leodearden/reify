@@ -386,14 +386,8 @@ fn a_reader_of_a_failed_node_can_reach_its_description() {
     };
     assert_eq!(at, Ref::binding("0"));
 
-    // r's binding "0" names its declarer's member p, so the place `at`
-    // names is R/p, then `at`'s steps.
-    assert_eq!(at.binding_name(), "0");
-    let cause = at
-        .steps()
-        .iter()
-        .cloned()
-        .fold(toy::below("R", &["p"]), |path, step| path.child(step));
+    // r's binding "0" names its declarer's member p, so `at` names R/p.
+    let cause = toy::below("R", &["p"]);
     let failure = toy::failed(toy::answer_alone(&mut core, &snapshot, &cause));
     assert_eq!(
         described(&failure),
