@@ -91,6 +91,20 @@ fn render(module: &CompiledModule) -> String {
     format!("{module:#?}\n{ordered:#?}")
 }
 
+/// The first line at which two renders differ, as `(line number, kept,
+/// cleared)`. A render that has already ended shows `None` on that side, so a
+/// difference in length alone still names the first extra line.
+fn first_differing_line<'a>(
+    kept: &'a str,
+    cleared: &'a str,
+) -> Option<(usize, Option<&'a str>, Option<&'a str>)> {
+    let (mut kept, mut cleared) = (kept.lines(), cleared.lines());
+    (1..)
+        .map(|number| (number, kept.next(), cleared.next()))
+        .take_while(|(_, kept, cleared)| kept.is_some() || cleared.is_some())
+        .find(|(_, kept, cleared)| kept != cleared)
+}
+
 #[test]
 fn scenario_c4_kept_guards() {
     let kept = reify_syntax::parse(FIXTURE, ModulePath::single("kept_guards"));
@@ -119,10 +133,8 @@ fn scenario_c4_kept_guards() {
     let cleared_render = render(&cleared_output);
     assert!(
         kept_render == cleared_render,
-        "keeping the guards changed the old compile's output; first differing line: {:?}",
-        kept_render
-            .lines()
-            .zip(cleared_render.lines())
-            .find(|(kept, cleared)| kept != cleared)
+        "keeping the guards changed the old compile's output; first differing line \
+         (number, kept, cleared): {:?}",
+        first_differing_line(&kept_render, &cleared_render)
     );
 }
