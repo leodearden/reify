@@ -1178,3 +1178,116 @@ fn a_ring_under_a_view_answers_cycle_there_and_its_dependence_follows_its_reads(
         ]
     );
 }
+
+/// A solve S at root/g/s inside guard g, whose condition f, a flag read
+/// from the input "on", is S's one unknown, and whose one constraint c
+/// reads S's own path. Both are named through g's bindings. In the snapshot
+/// f holds, so g declares S; the one candidate supposes f false.
+fn solve_inside_its_unknown_s_guard() -> Vec<(InputKey, Input)> {
+    let passed = |name: &str| Binding::Passed(Ref::binding(name));
+    let solve = toy::solve(toy::input("problem"), [passed("condition")], [passed("c")]);
+    let gate = toy::guard(toy::sibling(&["f"]), "g.members").bind("c", toy::sibling(&["c"]));
+    let [members, root] = toy::root_scope(
+        "root",
+        toy::members([
+            ("f", Declaration::new(Or::ID).bind("p", toy::input("on"))),
+            ("g", gate),
+            ("c", toy::cell_over([toy::sibling(&["g", "s"])])),
+        ]),
+    );
+    vec![
+        members,
+        root,
+        toy::named("g.members", toy::members([("s", solve)])),
+        toy::named("on", true),
+        toy::named("problem", toy::problem([vec![Part::Flag(false)]], 1)),
+    ]
+}
+
+#[test]
+fn a_solve_s_own_path_under_its_view_follows_the_structure_its_unknowns_give() {
+    let builder = toy::with_solve().kind::<Or>().expect("distinct kinds");
+    let mut core = builder.build();
+    let snapshot = core.snapshot(solve_inside_its_unknown_s_guard());
+    let solve = toy::below("root", &["g", "s"]);
+
+    let answer = toy::answer_alone(&mut core, &snapshot, &solve);
+    assert_eq!(
+        value_of::<Solution>(answer),
+        Solution(vec![Part::Flag(false)]),
+        "under the view g is absent, so S's own path is too, which c reads as nothing"
+    );
+    let constraint = toy::below("root", &["c"]);
+    let answer = toy::answer_alone(&mut core, &snapshot, &constraint);
+    assert_eq!(
+        toy::failed(answer),
+        Failure::WrongType {
+            expected: std::any::type_name::<i64>(),
+            found: std::any::type_name::<Solution>(),
+        },
+        "in the snapshot c reads S's solution"
+    );
+}
+
+/// A call at root/call over x whose one site declares a solve S, which
+/// supposes x, named through the call's first term, and whose one
+/// constraint is what `constraint` names below the call: under S's view the
+/// call's run declares S again, at S's own path.
+fn call_declaring_its_own_reader(constraint: Vec<Step>) -> Vec<(InputKey, Input)> {
+    let solve = toy::solve(
+        toy::input("problem"),
+        [Binding::Passed(Ref::binding("0"))],
+        [Binding::Declarer(constraint)],
+    );
+    let calls = toy::Calls(vec![toy::site(&[1], false, 0, solve)]);
+    let [members, root] = toy::root_scope(
+        "root",
+        toy::members([
+            ("x", toy::cell(&["x0"])),
+            (
+                "call",
+                toy::call([toy::sibling(&["x"])], toy::input("calls")),
+            ),
+        ]),
+    );
+    vec![
+        members,
+        root,
+        toy::named("x0", 1_i64),
+        toy::named("calls", calls),
+        toy::named("problem", toy::problem([vec![Part::Int(2)]], 1)),
+    ]
+}
+
+/// S's constraint reads the call, which declares S's path under the view;
+/// or S's own path, which waits on the call there until the call's run
+/// declares it and takes it over.
+#[test]
+fn a_call_under_a_solve_s_view_declaring_the_solve_again_reaches_the_running_solve() {
+    let site_step = toy::call_step(&[1], None);
+    for (constraint, reads) in [
+        (Vec::new(), "the call"),
+        (vec![site_step.clone()], "itself"),
+    ] {
+        let mut core = toy::with_every_kind().build();
+        let snapshot = core.snapshot(call_declaring_its_own_reader(constraint));
+        let call = toy::below("root", &["call"]);
+        let solve = call.child(site_step.clone());
+
+        let request = core.evaluate(&snapshot, toy::demand([&solve]), Budget::unlimited());
+        core.run();
+        let answer = toy::the_answer(&core.take_events(), &request, &solve);
+        assert_eq!(toy::failed(answer), Failure::Cycle, "reading {reads}");
+        assert_eq!(
+            core.counters().body_runs(Solve::ID),
+            1,
+            "reading {reads}: S's own path under its view is the running S, not a second body"
+        );
+        let answer = toy::answer_alone(&mut core, &snapshot, &call);
+        assert_eq!(
+            toy::failed(answer),
+            toy::blocked_by_child(site_step.clone()),
+            "reading {reads}"
+        );
+    }
+}

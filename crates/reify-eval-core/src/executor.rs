@@ -84,7 +84,9 @@ pub(crate) struct Executor {
     /// The nodes following the store for a result filed for them.
     lookups: BTreeMap<NodeKey, Lookup>,
     tasks: BTreeMap<NodeKey, Task>,
-    /// The paths waiting on their parent's answer.
+    /// The paths waiting to be worked out: each on its parent's answer,
+    /// or, at a view's opener's own path under that view, on the opener's
+    /// own node (contract 7.7).
     resolving: BTreeSet<NodeKey>,
     waits: Waits,
     /// The read each body or lookup waiting on its reads has outstanding,
@@ -289,21 +291,6 @@ impl Executor {
         self.indexes.of(key.state).entry(key.path).is_some()
     }
 
-    /// The node at `path` in `state`: under a view, the path of the view's
-    /// opener is the opener's own node, running in its snapshot (contract
-    /// 7.7), so that a node under the view that needs it waits on the
-    /// running opener, a ring. Every other path is the state's own node.
-    fn node_at(&self, state: StateId, path: PathId) -> NodeKey {
-        let opener = state.view.and(self.indexes.of(state).opener());
-        if opener == Some(path) {
-            return NodeKey {
-                state: StateId::of(state.snapshot),
-                path,
-            };
-        }
-        NodeKey { state, path }
-    }
-
     /// Sees that `key` will be answered: walks up to the nearest ancestor
     /// that is answered or in progress, each path on the way waiting on its
     /// parent, and works out the topmost path that can be worked out now.
@@ -313,7 +300,10 @@ impl Executor {
         }
         let mut at = key;
         while let Some((parent, _)) = self.paths.parent(at.path) {
-            let parent = self.node_at(key.state, parent);
+            let parent = NodeKey {
+                state: key.state,
+                path: parent,
+            };
             if self.answered(parent) {
                 break;
             }
@@ -403,8 +393,9 @@ impl Executor {
 
     /// Works out the path at `key`, which resolved to `declared`, or which
     /// a body declared so (contract 7.1). A declaration of a node too deep
-    /// for the snapshot's depth setting answers that failure; one at a path
-    /// its view supposes answers the supposed outcome; any other
+    /// for the snapshot's depth setting answers that failure; one at its
+    /// view's opener's own path is the opener's, which awaits it; one at a
+    /// path its view supposes answers the supposed outcome; any other
     /// declaration starts a lookup; any other outcome is the path's answer.
     /// A path no live request needs once its resolution is charged is not
     /// worked out.
@@ -426,6 +417,10 @@ impl Executor {
             other => other,
         };
         let (content, outcome) = match declaration {
+            Outcome::Value(_) if self.is_opener_under_its_view(key) => {
+                self.await_opener(key);
+                return None;
+            }
             Outcome::Value(declaration) => {
                 if let Some(supposed) = self.indexes.of(key.state).supposed(key.path) {
                     return Some(Work::Answered(key, Entry::supposed(supposed, declaration)));
@@ -444,6 +439,28 @@ impl Executor {
             key,
             Entry::settled(outcome, content, depended),
         ))
+    }
+
+    /// Whether `key` is the path of its view's opener, under that view.
+    fn is_opener_under_its_view(&self, key: NodeKey) -> bool {
+        key.state.view.is_some() && self.indexes.of(key.state).opener() == Some(key.path)
+    }
+
+    /// Makes the node at `key`, its view's opener's own path, which the
+    /// view's structure declares a node, wait on the opener's own node,
+    /// which is running in the snapshot: so a node under the view that
+    /// needs it waits on the running opener, a ring (contract 7.7). What
+    /// is above it under the view has been worked out there, so where the
+    /// view gives it no node, it answers that instead (contract 6,
+    /// structure follows). It waits, as a path waiting to be worked out,
+    /// until the view closes with the opener's run.
+    fn await_opener(&mut self, key: NodeKey) {
+        let opener = NodeKey {
+            state: StateId::of(key.state.snapshot),
+            path: key.path,
+        };
+        self.resolving.insert(key);
+        self.waits.add(key, opener);
     }
 
     /// Works out the child at `path`, which the reader at `reader`, its
@@ -909,7 +926,7 @@ impl Executor {
         let to_declare = reading.take_to_declare();
         let state = reading.state();
         self.readings.insert(key, reading);
-        let nodes = awaited.into_iter().map(|path| self.node_at(state, path));
+        let nodes = awaited.into_iter().map(|path| NodeKey { state, path });
         self.await_nodes(key, nodes.collect(), to_declare, declaration);
     }
 

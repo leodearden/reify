@@ -48,9 +48,14 @@ use crate::toy;
 /// every path worked out from there up to the latest is on one ring. With
 /// one ref per read in every generated kind, each node waits on one other,
 /// and these are the paths whose waits the core closes into a ring at rest.
+/// In a trial, the recursion may instead have reached the node of the
+/// solve that opened it, which is in progress outside the trial: every
+/// path of the trial worked out from there up is on a ring through that
+/// solve, and the trial hands the solve's own frame that ring.
 enum Halt {
     Invalid(Invalid),
     Ring { entered: ModelPath },
+    Reopened,
 }
 
 impl From<Invalid> for Halt {
@@ -65,13 +70,15 @@ impl Halt {
     /// # Panics
     ///
     /// On a ring: the path it re-entered was entered within the same call,
-    /// whose own frame answers it.
+    /// whose own frame answers it, and a trial, whose halt at its opener is
+    /// a ring of the opener's, is called by no public call.
     fn invalid(self) -> Invalid {
         match self {
             Halt::Invalid(invalid) => invalid,
             Halt::Ring { entered } => {
                 unreachable!("the ring entered at {entered:?} is answered by that path's frame")
             }
+            Halt::Reopened => unreachable!("a trial's halt at its opener is the opener's ring"),
         }
     }
 }
@@ -232,13 +239,15 @@ impl Reference {
     /// it is in progress halts the recursion; each path the halt passes
     /// back through is on the ring and answers "cycle", and the re-entered
     /// path's own frame returns that answer to its reader. In a trial, the
-    /// solve that opened it is in progress outside it. A child its call
-    /// took over with a ring still to finish passes the halt on from here.
+    /// solve that opened it is in progress outside it: a halt there passes
+    /// back through every frame of the trial, each but the solve's own path
+    /// answering "cycle". A child its call took over with a ring still to
+    /// finish passes the halt on from here.
     fn shared(&mut self, path: &ModelPath) -> Result<Rc<Expected>, Halt> {
         if let Some(known) = self.answers.get(path) {
             return Ok(Rc::clone(known.as_ref().map_err(Invalid::clone)?));
         }
-        if self.in_progress.contains_key(path) || self.opened_by(path) {
+        if self.in_progress.contains_key(path) {
             return Err(Halt::Ring {
                 entered: path.clone(),
             });
@@ -258,12 +267,24 @@ impl Reference {
                     Err(Halt::Ring { entered })
                 };
             }
+            Err(Halt::Reopened) => return Err(self.reopened(path)),
         };
         self.answers.insert(path.clone(), answer.clone());
         if let Some(entered) = self.deferred.remove(path) {
             return Err(Halt::Ring { entered });
         }
         answer.map_err(Halt::from)
+    }
+
+    /// Passes on, from the frame of `path`, a trial's halt at the solve
+    /// that opened it: `path` is on that solve's ring, and answers "cycle"
+    /// unless it is the solve's own path, which is the solve's node outside
+    /// the trial.
+    fn reopened(&mut self, path: &ModelPath) -> Halt {
+        if !self.opened_by(path) {
+            self.on_ring(path);
+        }
+        Halt::Reopened
     }
 
     /// Answers `path` "cycle", as a node on a ring.
@@ -389,7 +410,10 @@ impl Reference {
     }
 
     /// What the node `declared` at `path` works out to: in a trial whose
-    /// view substitutes there, the outcome supposed.
+    /// view substitutes there, the outcome supposed. In a trial, a node at
+    /// the path of the solve that opened it is that solve, in progress
+    /// outside the trial; only once the trial's structure declares a node
+    /// there, so that where it declares none, the trial answers that.
     fn run(&mut self, path: &ModelPath, declared: &Declared) -> Result<Expected, Halt> {
         let decl = match declared {
             Declared::Node(decl) => Rc::clone(decl),
@@ -400,6 +424,9 @@ impl Reference {
                 });
             }
         };
+        if self.opened_by(path) {
+            return Err(Halt::Reopened);
+        }
         if let Some(supposed) = self.supposed(path) {
             return Ok(Expected {
                 node: Some(decl.kind),
@@ -870,7 +897,8 @@ impl Reference {
 
     /// Whether each of the `constraints` of the solve at `at` holds, each
     /// resolved here and read in `trial`, stopping at the first that does
-    /// not.
+    /// not. A read that reached the solve's own node under the trial is a
+    /// ring entered at the solve.
     fn constraints_hold(
         &mut self,
         at: &ModelPath,
@@ -883,7 +911,13 @@ impl Reference {
                 Target::Settled(outcome) => outcome,
                 Target::Path(path) => {
                     trial.demand.push(path.clone());
-                    trial.reference.shared(&path)?.outcome.clone()
+                    let read = trial.reference.shared(&path).map_err(|halt| match halt {
+                        Halt::Reopened => Halt::Ring {
+                            entered: at.clone(),
+                        },
+                        other => other,
+                    });
+                    read?.outcome.clone()
                 }
             };
             let held = match typed_int(read) {
@@ -985,6 +1019,7 @@ impl Reference {
         let answer = match worked {
             Ok(answer) => Ok(Rc::new(answer)),
             Err(Halt::Invalid(invalid)) => Err(invalid),
+            Err(Halt::Reopened) => return Err(self.reopened(path)),
             Err(Halt::Ring { entered }) => {
                 let on_ring = self.on_ring(path);
                 if entered == *path {
@@ -2146,6 +2181,77 @@ mod tests {
                 reference.answer(&at("r", &["k"])),
                 blocked_at("0"),
                 "{first} first"
+            );
+        }
+    }
+
+    #[test]
+    fn a_solve_s_own_path_in_a_trial_follows_the_structure_its_unknowns_give() {
+        let mut gate = guard(declarer([step("f")]), "g.m");
+        gate.bindings
+            .insert(String::from("c"), declarer([step("c")]));
+        let held = members([
+            (step("t"), solve(input("pt"), [], [])),
+            (step("f"), solved_flag(declarer([step("t")]), 0)),
+            (step("g"), gate),
+            (step("c"), cell([declarer([step("g"), step("s")])])),
+        ]);
+        let s = solve(
+            input("problem"),
+            [passed("condition", [])],
+            [passed("c", [])],
+        );
+        let mut design = solve_r(held, problem([vec![Part::Flag(false)]], 1), &[]);
+        design.insert(named("pt"), problem([vec![Part::Flag(true)]], 0));
+        design.insert(named("g.m"), members([(step("s"), s)]));
+        let s = at("r", &["g", "s"]);
+        let mut reference = Reference::new(design);
+        assert_eq!(
+            reference.answer(&s),
+            value(ToyKind::Solve, Out::Solution(vec![Part::Flag(false)])),
+            "f, which g reads, is the solve's unknown"
+        );
+        let [trial] = reference.trials(&s) else {
+            panic!("one candidate, one trial")
+        };
+        let g = at("r", &["g"]);
+        assert_eq!(in_trial(trial, &g), absent(Some(ToyKind::Guard)).ok());
+        assert_eq!(
+            in_trial(trial, &s),
+            absent(None).ok(),
+            "the solve's own path is under the trial's absent guard"
+        );
+    }
+
+    /// A solve's one constraint reads its call, or its own path below the
+    /// call, so that its trial resolves the path only once the call's run
+    /// declares it, or first, the call taking it over.
+    #[test]
+    fn a_call_in_a_trial_declaring_the_trial_s_solve_again_reaches_the_solve() {
+        let site_step = call_step(&[1], None);
+        for (constraint, reads) in [
+            (declarer([]), "the call"),
+            (declarer([site_step.clone()]), "itself"),
+        ] {
+            let solve = solve(input("problem"), [passed("0", [])], [constraint]);
+            let held = members([
+                (step("x"), cell([input("x0")])),
+                (step("call"), call([declarer([step("x")])], input("calls"))),
+            ]);
+            let mut design = solve_r(held, problem([vec![Part::Int(2)]], 1), &[("x0", 1)]);
+            design.insert(named("calls"), calls_value([site(&[1], false, 0, solve)]));
+            let s = at("r", &["call"]).child(site_step.clone());
+            let mut reference = Reference::new(design);
+            assert_eq!(
+                reference.answer(&s),
+                cycle(Some(ToyKind::Solve)),
+                "reading {reads}"
+            );
+            assert!(
+                reference
+                    .every_trial()
+                    .all(|trial| in_trial(trial, &s).is_none()),
+                "reading {reads}: the solve's own path in its trial is the solve, outside it"
             );
         }
     }
