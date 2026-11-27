@@ -10,7 +10,7 @@
 
 #![allow(clippy::mutable_key_type)]
 
-use reify_core::ValueCellId;
+use reify_core::{DimensionVector, ValueCellId};
 use reify_core::ty::SelectorKind;
 use reify_ir::value::LeafQuery;
 use reify_ir::{PersistentMap, Value};
@@ -22,11 +22,25 @@ fn field<'a>(m: &'a PersistentMap<String, Value>, k: &str) -> Option<&'a Value> 
     m.get(&k.to_string())
 }
 
+fn pressure(pascals: f64) -> Value {
+    Value::Scalar {
+        si_value: pascals,
+        dimension: DimensionVector::PRESSURE,
+    }
+}
+
+fn force_density(newtons_per_cubic_metre: f64) -> Value {
+    Value::Scalar {
+        si_value: newtons_per_cubic_metre,
+        dimension: DimensionVector::FORCE_DENSITY,
+    }
+}
+
 // ── step-1 (RED) → step-2 (GREEN) : TractionLoad ────────────────────────────
 
 /// A `TractionLoad` supplying only its required `face` lowers to a
 /// `Value::StructureInstance` whose `type_name` is `"TractionLoad"` and whose
-/// `traction` carries the declared default `0.0`.
+/// `traction` carries the declared default `0Pa`.
 #[test]
 fn traction_load_in_source_lowers_to_structure_instance() {
     const SOURCE: &str = r#"
@@ -54,11 +68,11 @@ structure def TractionLoadFixture {
                  structure_def), got {:?}",
                 data.type_name
             );
-            // traction default = 0.0
+            // traction default = 0Pa
             assert_eq!(
                 field(&data.fields, "traction"),
-                Some(&Value::Real(0.0)),
-                "TractionLoad.traction default must be 0.0; fields: {:?}",
+                Some(&pressure(0.0)),
+                "TractionLoad.traction default must be 0Pa; fields: {:?}",
                 data.fields
             );
         }
@@ -69,7 +83,7 @@ structure def TractionLoadFixture {
     }
 }
 
-/// `TractionLoad(face: face(body, "top"), traction: 5.0)` constructor
+/// `TractionLoad(face: face(body, "top"), traction: 5.0Pa)` constructor
 /// round-trips the caller-supplied field values through the structure
 /// instance; `face` is a typed Face selector naming "top" (task 5312).
 #[test]
@@ -77,7 +91,7 @@ fn traction_load_ctor_field_override_round_trips() {
     const SOURCE: &str = r#"
 structure def TractionLoadFixture2 {
     let body = box(1m, 0.1m, 0.1m)
-    let load = TractionLoad(face: face(body, "top"), traction: 5.0)
+    let load = TractionLoad(face: face(body, "top"), traction: 5.0Pa)
 }
 "#;
 
@@ -101,8 +115,8 @@ structure def TractionLoadFixture2 {
             );
             assert_eq!(
                 field(&data.fields, "traction"),
-                Some(&Value::Real(5.0)),
-                "TractionLoad.traction override must be 5.0; fields: {:?}",
+                Some(&pressure(5.0)),
+                "TractionLoad.traction override must be 5.0Pa; fields: {:?}",
                 data.fields
             );
         }
@@ -117,7 +131,7 @@ structure def TractionLoadFixture2 {
 
 /// A `BodyForce` supplying only its required `body` lowers to a
 /// `Value::StructureInstance` whose `type_name` is `"BodyForce"` and whose
-/// `force_density` carries the declared default `0.0`.
+/// `force_density` carries the declared default `0N/m^3`.
 #[test]
 fn body_force_in_source_lowers_to_structure_instance() {
     const SOURCE: &str = r#"
@@ -145,11 +159,11 @@ structure def BodyForceFixture {
                  structure_def), got {:?}",
                 data.type_name
             );
-            // force_density default = 0.0
+            // force_density default = 0N/m^3
             assert_eq!(
                 field(&data.fields, "force_density"),
-                Some(&Value::Real(0.0)),
-                "BodyForce.force_density default must be 0.0; fields: {:?}",
+                Some(&force_density(0.0)),
+                "BodyForce.force_density default must be 0N/m^3; fields: {:?}",
                 data.fields
             );
         }
@@ -160,7 +174,7 @@ structure def BodyForceFixture {
     }
 }
 
-/// `BodyForce(body: solid_body(body, "all"), force_density: -77000.0)`
+/// `BodyForce(body: solid_body(body, "all"), force_density: -77000.0N/m^3)`
 /// constructor round-trips the caller-supplied field values through the
 /// structure instance; `body` is a typed Body selector naming "all" (task 5312).
 #[test]
@@ -168,7 +182,7 @@ fn body_force_ctor_field_override_round_trips() {
     const SOURCE: &str = r#"
 structure def BodyForceFixture2 {
     let body = box(1m, 0.1m, 0.1m)
-    let load = BodyForce(body: solid_body(body, "all"), force_density: -77000.0)
+    let load = BodyForce(body: solid_body(body, "all"), force_density: -77000.0N/m^3)
 }
 "#;
 
@@ -192,8 +206,8 @@ structure def BodyForceFixture2 {
             );
             assert_eq!(
                 field(&data.fields, "force_density"),
-                Some(&Value::Real(-77000.0)),
-                "BodyForce.force_density override must be -77000.0; fields: {:?}",
+                Some(&force_density(-77000.0)),
+                "BodyForce.force_density override must be -77000.0N/m^3; fields: {:?}",
                 data.fields
             );
         }
@@ -206,14 +220,14 @@ structure def BodyForceFixture2 {
 
 // ── task 5312 step-9 (RED) → step-10 (GREEN) : PointLoad.point ──────────────
 
-/// `PointLoad(point: vertex(body, "tip"), force: 1000.0)` round-trips through
+/// `PointLoad(point: vertex(body, "tip"), force: 1000.0N)` round-trips through
 /// the structure instance; `point` is a typed Vertex selector naming "tip".
 #[test]
 fn point_load_ctor_point_round_trips_as_a_vertex_selector() {
     const SOURCE: &str = r#"
 structure def PointLoadFixture {
     let body = box(1m, 0.1m, 0.1m)
-    let load = PointLoad(point: vertex(body, "tip"), force: 1000.0)
+    let load = PointLoad(point: vertex(body, "tip"), force: 1000N)
 }
 "#;
 
@@ -237,8 +251,11 @@ structure def PointLoadFixture {
             );
             assert_eq!(
                 field(&data.fields, "force"),
-                Some(&Value::Real(1000.0)),
-                "PointLoad.force override must be 1000.0; fields: {:?}",
+                Some(&Value::Scalar {
+                    si_value: 1000.0,
+                    dimension: DimensionVector::FORCE,
+                }),
+                "PointLoad.force override must be 1000N; fields: {:?}",
                 data.fields
             );
         }

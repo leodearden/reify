@@ -40,6 +40,7 @@ module std.fea.multi_case
 
 import std.fea.types
 import std.materials.fea
+import std.si_units
 import std.solver.elastic
 import std.units
 
@@ -308,9 +309,9 @@ structure def MultiCaseResult {
 //
 // Trait surface — `Load` and `Support` are empty marker traits declared in
 // `std.fea.types`, which this module imports for the trait bindings of its
-// conforming structure defs.  `Real`/`String` placeholders in
-// the structure defs are dimension-typed slots that tighten in follow-up waves
-// once the dimensional type aliases land.
+// conforming structure defs.  The load magnitudes are dimensioned (`Force`,
+// `Pressure`, `ForceDensity`), so a bare number at one of them is a compile
+// Error.
 
 // PointLoad — wave-1 replacement for the `point_load` builtin (loads.rs).
 //
@@ -321,10 +322,10 @@ structure def MultiCaseResult {
 //             yet: every PointLoad loads the cantilever's x_max face until
 //             Bmig2-consume (#5313, PRD D9) applies the force at the
 //             resolved vertex node set.
-//   `force` — applied force magnitude; defaults to 0.0.
+//   `force` — applied force magnitude, a `Force`; defaults to 0N.
 structure def PointLoad : Load {
     param point : VertexSelector
-    param force : Real = 0.0
+    param force : Force = 0N
     // Applied-force direction vector.  The total force contribution from this
     // load is `force * direction` component-wise (see elastic_static.rs
     // `extract_loads`); callers are expected to supply a unit vector so that
@@ -405,9 +406,8 @@ structure def PinnedSupport : Support {
 // pre-retirement `make_kind_map("pressure_load", ...)` call
 // (crates/reify-stdlib/src/loads.rs; Q-SIR-4 preserve-don't-redesign):
 //
-//   `magnitude`  — applied pressure. `Real` is a placeholder for
-//                  `Scalar<PRESSURE>` until the dimensional type aliases land;
-//                  mirrors the `magnitude` key in the retired builtin.
+//   `magnitude`  — applied pressure, a `Pressure`; mirrors the `magnitude`
+//                  key in the retired builtin.
 //   `face`       — geometry selector, now typed `Option<FaceSelector> = none`
 //                  (String → typed-selector migration completed in task 4370;
 //                  docs/prds/topology-selector-value-type.md — typed-selector
@@ -434,7 +434,7 @@ structure def PinnedSupport : Support {
 //      migration; FEA follow-on PRD owns the field change, task 4092 owns
 //      selector→node-set mapping).
 structure def PressureLoad : Load {
-    param magnitude : Real = 0.0
+    param magnitude : Pressure = 0Pa
     param face      : Option<FaceSelector> = none
     param direction : String = "normal"
 }
@@ -448,9 +448,9 @@ structure def PressureLoad : Load {
 //                `face(body, "top")` (task 5312;
 //                docs/prds/v0_6/fea-load-support-selector-migration.md D10).
 //                A bare String is a compile error.
-//   `traction` — applied traction. `Real` is a placeholder for
-//                `Vector3<Pressure>` until the dimensional vector type aliases
-//                land; mirrors the `traction` key in the retired builtin.
+//   `traction` — applied traction magnitude, a `Pressure` (a traction is
+//                physically a `Vector3<Pressure>`; the scalar slot mirrors the
+//                `traction` key in the retired builtin).
 //
 // PRD: task 2881 (FEA-2) design decision 4.
 // PRD: docs/prds/topology-selector-value-type.md §8 (FEA loads — string-to-selector
@@ -458,7 +458,7 @@ structure def PressureLoad : Load {
 //      selector→node-set mapping).
 structure def TractionLoad : Load {
     param face     : FaceSelector
-    param traction : Real   = 0.0
+    param traction : Pressure = 0Pa
 }
 
 // BodyForce — wave-3 replacement for the `body_force` builtin (loads.rs).
@@ -471,10 +471,9 @@ structure def TractionLoad : Load {
 //                     `solid_body(body, "all")` (task 5312;
 //                     docs/prds/v0_6/fea-load-support-selector-migration.md
 //                     D10). A bare String is a compile error.
-//   `force_density` — applied body-force density. `Real` is a placeholder for
-//                     `Vector3<ForceDensity>` until the dimensional vector type
-//                     aliases land; mirrors the `force_density` key in the
-//                     retired builtin.
+//   `force_density` — applied body-force density magnitude, a `ForceDensity`
+//                     (physically a `Vector3<ForceDensity>`; the scalar slot
+//                     mirrors the `force_density` key in the retired builtin).
 //
 // PRD: task 2881 (FEA-2) design decision 4.
 // PRD: docs/prds/topology-selector-value-type.md §8 (FEA loads — string-to-selector
@@ -482,7 +481,7 @@ structure def TractionLoad : Load {
 //      selector→node-set mapping).
 structure def BodyForce : Load {
     param body          : BodySelector
-    param force_density : Real   = 0.0
+    param force_density : ForceDensity = 0N/m^3
 }
 
 // Gravity — typed home for self-weight (body-gravity) loads (typed-fea-authoring α,

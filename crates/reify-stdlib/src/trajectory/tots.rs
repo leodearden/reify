@@ -36,50 +36,55 @@ use crate::dynamics::rnea::inverse_dynamics_open_chain;
 
 // ── Shaper-family recognition ─────────────────────────────────────────────────
 
-/// Is `type_name` a member of the TOTS shaper family? (task 6096)
+/// The joint kind a TOTS-family shaper constrains — the per-joint-kind duality
+/// declared in `trajectory.ri`. It selects the dimension every limit is read
+/// in (`input_shape::read_tots_shaper`); the solver itself is kind-agnostic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TotsKind {
+    /// `TOTSShaper` — prismatic/linear (`Scalar<Velocity>` /
+    /// `Scalar<Acceleration>` limits, `JointLimit` forces).
+    Linear,
+    /// `RevoluteTOTSShaper` — revolute/rotational (`Scalar<AngularVelocity>` /
+    /// `Rate<AngularVelocity>` limits, `RevoluteJointLimit` torques).
+    Revolute,
+}
+
+/// The [`TotsKind`] of a TOTS-family shaper `type_name`, or `None` for any
+/// other shaper (task 6096).
 ///
 /// **Single source of truth.** Both eval-side dispatch sites —
 /// `input_shape::eval_input_shape` and `trampoline::input_shape_value` — MUST
-/// route their TOTS-arm decision through this predicate rather than comparing
+/// route their TOTS-arm decision through this function rather than comparing
 /// the string themselves, so the two arms cannot drift apart. `tots.rs` holds
 /// it because both files already import from here, so the name set lives in
 /// exactly one place with no new module wiring.
 ///
-/// The family has two members, one per joint kind (the per-joint-kind duality
-/// declared in `trajectory.ri`):
-///
-/// - `TOTSShaper` — prismatic/linear (`Scalar<Velocity>` /
-///   `Scalar<Acceleration>` limits)
-/// - `RevoluteTOTSShaper` — revolute/rotational (`Scalar<AngularVelocity>` /
-///   `Rate<AngularVelocity>` limits)
-///
 /// **Why this must be widened in lockstep with the `.ri` surface.** A `Shaper`
 /// refiner that a dispatch site does not recognise falls through to
-/// `build_train_for_shaper`, which knows only ZV/ZVD/EI/Cascaded, gets `None`,
-/// and yields `Value::Undef` — exit 0, ZERO diagnostics. Adding a shaper type
-/// without adding it here therefore ships a booby-trapped surface that looks
-/// green from every angle except the value it produces.
-///
-/// Both kinds marshal identically downstream: `field_f64` → `read_scalar_si`
-/// discards the dimension, so the revolute shaper's rad·s⁻¹ / rad·s⁻² SI
-/// magnitudes flow into the canonical stand-in model exactly as the linear
-/// half's m·s⁻¹ / m·s⁻² do. Recognition is the only thing that differs.
+/// `build_train_for_shaper`, which knows only ZV/ZVD/EI/Cascaded, gets
+/// `Ok(None)`, and yields `Value::Undef` — exit 0, ZERO diagnostics. Adding a
+/// shaper type without adding it here therefore ships a booby-trapped surface
+/// that looks green from every angle except the value it produces.
 ///
 /// The prose invariant above is MECHANICALLY enforced by
 /// `shaper_family_guard::every_shipped_shaper_structure_is_recognised` below:
 /// it scans the shipped `trajectory.ri` for every `structure def <Name> :
-/// Shaper` and fails if any of them is recognised by neither this predicate
-/// nor `build_train_for_shaper`. That turns "must be widened in lockstep"
-/// from a comment into a RED at the source of the next drift.
-pub(crate) fn is_tots_shaper_type_name(type_name: &str) -> bool {
-    matches!(type_name, "TOTSShaper" | "RevoluteTOTSShaper")
+/// Shaper` and fails if any of them is recognised by neither this function
+/// nor `build_train_for_shaper`. That turns "must be widened in lockstep" from
+/// a comment into a RED at the source of the next drift.
+pub(crate) fn tots_kind(type_name: &str) -> Option<TotsKind> {
+    match type_name {
+        "TOTSShaper" => Some(TotsKind::Linear),
+        "RevoluteTOTSShaper" => Some(TotsKind::Revolute),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
 mod shaper_family_guard {
     use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
 
-    use super::is_tots_shaper_type_name;
+    use super::{TotsKind, tots_kind};
     use crate::trajectory::input_shape::build_train_for_shaper;
 
     /// The shipped stdlib source, embedded at COMPILE time so the guard needs
@@ -191,7 +196,7 @@ mod shaper_family_guard {
 
     /// LOCKSTEP GATE (task 6096). Every shaper structure shipped in
     /// `trajectory.ri` must be recognised by one of the two eval-side
-    /// recognisers — [`is_tots_shaper_type_name`] (the SQP family) or
+    /// recognisers — [`tots_kind`] (the SQP family) or
     /// [`build_train_for_shaper`] (the ZV/ZVD/EI/Cascaded impulse family).
     ///
     /// WHY this exists rather than a comment: a `Shaper` refiner that neither
@@ -201,7 +206,7 @@ mod shaper_family_guard {
     /// except the value it produces — which is exactly how the gap this task
     /// closed was opened. If you are reading this because it just went RED:
     /// add your new shaper to whichever arm evaluates it (widen
-    /// `is_tots_shaper_type_name` for an SQP-family shaper, add a
+    /// `tots_kind` for an SQP-family shaper, add a
     /// `build_train_for_shaper` arm for an impulse-family one). Do NOT add it
     /// to an allowlist here.
     /// The shaper structures shipped in `trajectory.ri`, sorted. Pinned as an
@@ -238,15 +243,18 @@ mod shaper_family_guard {
         );
 
         for name in &declared {
-            let by_tots = is_tots_shaper_type_name(name);
-            let by_impulse = build_train_for_shaper(&bare_shaper_instance(name)).is_some();
+            let by_tots = tots_kind(name).is_some();
+            let by_impulse = matches!(
+                build_train_for_shaper(&bare_shaper_instance(name)),
+                Ok(Some(_))
+            );
             assert!(
                 by_tots || by_impulse,
                 "`structure def {name} : Shaper` is shipped in trajectory.ri but no \
-                 eval-side dispatch arm recognises it: is_tots_shaper_type_name() is \
-                 false and build_train_for_shaper() returns None. Evaluating it would \
+                 eval-side dispatch arm recognises it: tots_kind() is None and \
+                 build_train_for_shaper() returns Ok(None). Evaluating it would \
                  yield a SILENT Value::Undef (exit 0, zero diagnostics). Widen \
-                 `is_tots_shaper_type_name` (SQP family) or add a \
+                 `tots_kind` (SQP family) or add a \
                  `build_train_for_shaper` arm (impulse family)."
             );
         }
@@ -320,18 +328,14 @@ mod shaper_family_guard {
         }
     }
 
-    /// Direct unit coverage of the predicate's name set: both family members
-    /// in, and the neighbouring shaper structures — which MUST be handled by
-    /// the impulse arm instead — out. Pins the boundary the guard above
-    /// checks only in aggregate.
+    /// Direct unit coverage of the family's name set: each member maps to its
+    /// own joint kind, and the neighbouring shaper structures — which MUST be
+    /// handled by the impulse arm instead — map to none. Pins the boundary the
+    /// guard above checks only in aggregate.
     #[test]
-    fn is_tots_shaper_type_name_matches_exactly_the_sqp_family() {
-        for member in ["TOTSShaper", "RevoluteTOTSShaper"] {
-            assert!(
-                is_tots_shaper_type_name(member),
-                "{member} is an SQP-family shaper and must be recognised"
-            );
-        }
+    fn tots_kind_maps_exactly_the_sqp_family() {
+        assert_eq!(tots_kind("TOTSShaper"), Some(TotsKind::Linear));
+        assert_eq!(tots_kind("RevoluteTOTSShaper"), Some(TotsKind::Revolute));
         for outsider in [
             "ZVShaper",
             "ZVDShaper",
@@ -341,8 +345,9 @@ mod shaper_family_guard {
             "totsshaper",
             "",
         ] {
-            assert!(
-                !is_tots_shaper_type_name(outsider),
+            assert_eq!(
+                tots_kind(outsider),
+                None,
                 "{outsider:?} is not an SQP-family shaper; recognising it would route \
                  it into the SQP loop instead of its own arm"
             );

@@ -175,7 +175,7 @@ fn solve_elastic_static_direct_point_load_compiles_clean() {
 structure FEACantileverTest {
     let result = solve_elastic_static(
         Steel_AISI_1045(), 1000mm, 100mm, 100mm,
-        [PointLoad(point: vertex(body, "tip"), force: 1000.0)],
+        [PointLoad(point: vertex(body, "tip"), force: 1000.0N)],
         [FixedSupport(target: face(body, "root"))],
         ElasticOptions()
     )
@@ -207,7 +207,7 @@ structure FEAPressureTest {
     let body = box(1000mm, 100mm, 100mm)
     let result = solve_elastic_static(
         Steel_AISI_1045(), 1000mm, 100mm, 100mm,
-        [PressureLoad(magnitude: 1000000.0, face: face(body, "x_max"), direction: "normal")],
+        [PressureLoad(magnitude: 1000000.0Pa, face: face(body, "x_max"), direction: "normal")],
         [FixedSupport(target: face(body, "root"))],
         ElasticOptions()
     )
@@ -274,7 +274,7 @@ structure FEAMultiCaseTest {
         Steel_AISI_1045(), 1000mm, 100mm, 100mm,
         [LoadCase(
             name: "c",
-            loads: [PointLoad(point: vertex(body, "tip"), force: 1000.0)],
+            loads: [PointLoad(point: vertex(body, "tip"), force: 1000.0N)],
             supports: [FixedSupport(target: face(body, "root"))]
         )],
         ElasticOptions()
@@ -350,7 +350,7 @@ fn constitutive_law_input_struct_is_retired() {
 structure DirectPassRegression {
     let result = solve_elastic_static(
         Steel_AISI_1045(), 1000mm, 100mm, 100mm,
-        [PointLoad(point: vertex(body, "tip"), force: 1000.0)],
+        [PointLoad(point: vertex(body, "tip"), force: 1000.0N)],
         [FixedSupport(target: face(body, "root"))],
         ElasticOptions()
     )
@@ -497,7 +497,7 @@ structure FEABodyCantilever {
     let result = solve_elastic_static(
         Steel_AISI_1045(),
         body,
-        [PointLoad(point: vertex(body, "tip"), force: 1000.0)],
+        [PointLoad(point: vertex(body, "tip"), force: 1000.0N)],
         [FixedSupport(target: face(body, "root"))],
         ElasticOptions()
     )
@@ -543,7 +543,7 @@ structure StressPredicateProbe {
     param yield_limit : Pressure = 250MPa
     let r = solve_elastic_static(
         Steel_AISI_1045(), 1000mm, 100mm, 100mm,
-        [PointLoad(point: vertex(body, "tip"), force: 1000.0)],
+        [PointLoad(point: vertex(body, "tip"), force: 1000.0N)],
         [FixedSupport(target: face(body, "root"))],
         ElasticOptions()
     )
@@ -667,14 +667,14 @@ fn assert_single_error(ctor: &str, code: DiagnosticCode, fragments: &[&str]) {
 
 #[test]
 fn traction_load_face_is_a_face_selector() {
-    assert_no_errors(r#"TractionLoad(face: face(body, "top"), traction: 5.0)"#);
+    assert_no_errors(r#"TractionLoad(face: face(body, "top"), traction: 5.0Pa)"#);
     assert_single_error(
-        r#"TractionLoad(face: "top", traction: 5.0)"#,
+        r#"TractionLoad(face: "top", traction: 5.0Pa)"#,
         DiagnosticCode::ArgTypeMismatch,
         &["face", "FaceSelector", "String"],
     );
     assert_single_error(
-        r#"TractionLoad(face: edge(body, "e"), traction: 5.0)"#,
+        r#"TractionLoad(face: edge(body, "e"), traction: 5.0Pa)"#,
         DiagnosticCode::SelectorKindMismatch,
         &["FaceSelector", "EdgeSelector"],
     );
@@ -682,14 +682,14 @@ fn traction_load_face_is_a_face_selector() {
 
 #[test]
 fn body_force_body_is_a_body_selector() {
-    assert_no_errors(r#"BodyForce(body: solid_body(body, "all"), force_density: -77000.0)"#);
+    assert_no_errors(r#"BodyForce(body: solid_body(body, "all"), force_density: -77000.0N/m^3)"#);
     assert_single_error(
-        r#"BodyForce(body: "all", force_density: -77000.0)"#,
+        r#"BodyForce(body: "all", force_density: -77000.0N/m^3)"#,
         DiagnosticCode::ArgTypeMismatch,
         &["body", "BodySelector", "String"],
     );
     assert_single_error(
-        r#"BodyForce(body: face(body, "f"), force_density: -77000.0)"#,
+        r#"BodyForce(body: face(body, "f"), force_density: -77000.0N/m^3)"#,
         DiagnosticCode::SelectorKindMismatch,
         &["BodySelector", "FaceSelector"],
     );
@@ -723,14 +723,14 @@ fn fixed_and_pinned_support_target_is_kind_agnostic() {
 
 #[test]
 fn point_load_point_is_a_vertex_selector() {
-    assert_no_errors(r#"PointLoad(point: vertex(body, "tip"), force: 1000.0)"#);
+    assert_no_errors(r#"PointLoad(point: vertex(body, "tip"), force: 1000N)"#);
     assert_single_error(
-        r#"PointLoad(point: "tip", force: 1000.0)"#,
+        r#"PointLoad(point: "tip", force: 1000N)"#,
         DiagnosticCode::ArgTypeMismatch,
         &["point", "VertexSelector", "String"],
     );
     assert_single_error(
-        r#"PointLoad(point: faces(body), force: 1000.0)"#,
+        r#"PointLoad(point: faces(body), force: 1000N)"#,
         DiagnosticCode::SelectorKindMismatch,
         &["VertexSelector", "FaceSelector"],
     );

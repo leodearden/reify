@@ -5058,6 +5058,23 @@ pub enum DiagnosticCode {
     ///
     /// Severity: Warning.
     ImportRequiresFileBackedBuffer,
+    /// Origin: `crates/reify-stdlib/src/trajectory/trampoline.rs::ShapeInputFault::to_error`
+    /// (the `UncoveredJoint` arm), task #6941.
+    ///
+    /// Emitted when a TOTS-arm profile joint has no `actuator_limits`
+    /// `JointLimit` bounding it: the field is absent, the list is empty, or the
+    /// only limits are on other joints. The solver never substitutes a default
+    /// bound.
+    ///
+    /// Canonical message: `"<builtin>: actuator_limits has no entry for profile
+    /// joint <j>; a TOTS shaper solves only the joints an actuator limit
+    /// bounds"`.
+    ///
+    /// Severity: Error.
+    ///
+    /// Distinct from [`Self::DimensionedArgRejected`]: a missing bound, not a
+    /// wrong-dimension field (one code per rejection reason).
+    TotsJointUncovered,
     /// Origins: `crates/reify-compiler/src/conformance/sub_component_validation.rs`
     /// at check time and the `reify-eval` evaluation-graph build at eval time
     /// (task #5523, PRD resolution-unification boundary #15; PRD prose

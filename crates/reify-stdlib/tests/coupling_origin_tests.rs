@@ -4,8 +4,10 @@
 
 use std::f64::consts::{FRAC_1_SQRT_2, FRAC_PI_2, FRAC_PI_3, PI};
 
+use reify_core::{DiagnosticCode, Severity};
 use reify_ir::Value;
-use reify_stdlib::{eval_builtin, set_mount_origin};
+use reify_ir::arg_acceptance::{Acceptance, accept_arg, length_spec};
+use reify_stdlib::{eval_builtin, joints_diagnose, set_mount_origin};
 
 const TOL: f64 = 1e-12;
 
@@ -318,4 +320,204 @@ fn snapshot_places_screw_follower_body_at_parent_pivot() {
         [0.1, 0.05, 0.05],
         "follower body bound only through its lift",
     );
+}
+
+// ── PRD 5 leaf δ (task #6941): joint LENGTH positions refuse a bare number ──
+//
+// A bare number at a LENGTH position used to be read as SI metres (the
+// 10-vs-10mm 1000× hazard); each position below now refuses it, named by one
+// coded Error, while its LENGTH-dimensioned twin is unchanged.
+
+fn planar_xy() -> Value {
+    eval_builtin(
+        "planar",
+        &[
+            axis(1.0, 0.0, 0.0),
+            axis(0.0, 1.0, 0.0),
+            closed_range(Value::length(-1.0), Value::length(1.0)),
+            closed_range(Value::length(-1.0), Value::length(1.0)),
+            closed_range(Value::angle(-PI), Value::angle(PI)),
+        ],
+    )
+}
+
+fn cylindrical_z() -> Value {
+    eval_builtin(
+        "cylindrical",
+        &[
+            axis(0.0, 0.0, 1.0),
+            closed_range(Value::length(0.0), Value::length(1.0)),
+            closed_range(Value::angle(0.0), Value::angle(PI)),
+        ],
+    )
+}
+
+/// A bare number refused at a joint LENGTH position evaluates to undef and is
+/// named: `joints_diagnose` returns one `DimensionedArgRejected` Error whose
+/// message is the shared reader's rendering of `wrong` at `arg`.
+fn assert_refusal_is_named(builtin: &str, args: &[Value], arg: &str, wrong: &Value) {
+    assert!(
+        eval_builtin(builtin, args).is_undef(),
+        "{builtin}: {wrong:?} at {arg} must be refused"
+    );
+    let Acceptance::Rejected(rejection) = accept_arg(wrong, &length_spec()) else {
+        unreachable!("{wrong:?} must be rejected at a LENGTH position");
+    };
+    let diagnostic = joints_diagnose(builtin, args)
+        .unwrap_or_else(|| panic!("{builtin}: the refusal of {wrong:?} at {arg} is named"));
+    assert_eq!(diagnostic.severity, Severity::Error, "{builtin} {arg}");
+    assert_eq!(
+        diagnostic.code,
+        Some(DiagnosticCode::DimensionedArgRejected),
+        "{builtin} {arg}"
+    );
+    assert_eq!(diagnostic.message, rejection.message(builtin, arg));
+}
+
+#[test]
+fn a_bare_prismatic_displacement_is_refused() {
+    let p = unpivoted_prismatic_x();
+    let bare = Value::Real(0.3);
+    assert_refusal_is_named("transform_at", &[p.clone(), bare.clone()], "v", &bare);
+    let twin = [p, Value::length(0.3)];
+    assert!(joints_diagnose("transform_at", &twin).is_none());
+    assert_transform_close(
+        &eval_builtin("transform_at", &twin),
+        IDENTITY,
+        [0.3, 0.0, 0.0],
+        "LENGTH twin",
+    );
+}
+
+#[test]
+fn a_bare_screw_lead_is_refused() {
+    let lift = unpivoted_prismatic_x();
+    let bare = Value::Real(0.005);
+    assert_refusal_is_named("screw", &[lift.clone(), bare.clone()], "lead", &bare);
+    let twin = [lift, Value::length(0.005)];
+    assert!(joints_diagnose("screw", &twin).is_none());
+    let nut = eval_builtin("screw", &twin);
+    assert_transform_close(
+        &eval_builtin("transform_at", &[nut, Value::length(TEN_LEADS_M)]),
+        IDENTITY,
+        [0.05, 0.0, 0.0],
+        "LENGTH-lead twin",
+    );
+}
+
+#[test]
+fn a_bare_rack_pitch_radius_is_refused() {
+    let rack = unpivoted_prismatic_x();
+    let bare = Value::Real(0.02);
+    assert_refusal_is_named(
+        "rack_and_pinion",
+        &[rack.clone(), bare.clone()],
+        "pitch_radius",
+        &bare,
+    );
+    let twin = [rack, Value::length(0.02)];
+    assert!(joints_diagnose("rack_and_pinion", &twin).is_none());
+    let pinion = eval_builtin("rack_and_pinion", &twin);
+    assert_transform_close(
+        &eval_builtin("transform_at", &[pinion, Value::length(10.0)]),
+        IDENTITY,
+        [0.2, 0.0, 0.0],
+        "LENGTH-pitch-radius twin",
+    );
+}
+
+#[test]
+fn a_bare_prismatic_coupling_offset_is_refused() {
+    let p = unpivoted_prismatic_x();
+    let bare = Value::Real(0.1);
+    assert_refusal_is_named(
+        "couple",
+        &[p.clone(), Value::Real(2.0), bare.clone()],
+        "offset",
+        &bare,
+    );
+    let twin = [p, Value::Real(2.0), Value::length(0.1)];
+    assert!(joints_diagnose("couple", &twin).is_none());
+    let c = eval_builtin("couple", &twin);
+    assert_transform_close(
+        &eval_builtin("transform_at", &[c, Value::length(0.2)]),
+        IDENTITY,
+        [0.5, 0.0, 0.0],
+        "LENGTH-offset twin",
+    );
+}
+
+#[test]
+fn a_bare_planar_length_component_is_refused() {
+    let p = planar_xy();
+    let bare = Value::Real(0.4);
+    let bare_y = Value::List(vec![Value::length(0.3), bare.clone(), Value::angle(0.0)]);
+    assert_refusal_is_named("transform_at", &[p.clone(), bare_y], "v[1]", &bare);
+    let twin = [
+        p,
+        Value::List(vec![
+            Value::length(0.3),
+            Value::length(0.4),
+            Value::angle(0.0),
+        ]),
+    ];
+    assert!(joints_diagnose("transform_at", &twin).is_none());
+    assert_transform_close(
+        &eval_builtin("transform_at", &twin),
+        IDENTITY,
+        [0.3, 0.4, 0.0],
+        "LENGTH-component twin",
+    );
+}
+
+#[test]
+fn a_bare_cylindrical_length_component_is_refused() {
+    let c = cylindrical_z();
+    let bare = Value::Real(0.3);
+    let bare_d = Value::List(vec![bare.clone(), Value::angle(0.0)]);
+    assert_refusal_is_named("transform_at", &[c.clone(), bare_d], "v[0]", &bare);
+    let twin = [c, Value::List(vec![Value::length(0.3), Value::angle(0.0)])];
+    assert!(joints_diagnose("transform_at", &twin).is_none());
+    assert_transform_close(
+        &eval_builtin("transform_at", &twin),
+        IDENTITY,
+        [0.0, 0.0, 0.3],
+        "LENGTH-component twin",
+    );
+}
+
+#[test]
+fn a_bare_coupling_drive_on_a_prismatic_parent_is_named() {
+    let c = eval_builtin("couple", &[unpivoted_prismatic_x(), Value::Real(2.0)]);
+    let bare = Value::Real(0.1);
+    assert_refusal_is_named("transform_at", &[c, bare.clone()], "v", &bare);
+}
+
+#[test]
+fn an_unresolved_or_non_joint_argument_is_never_named() {
+    let p = unpivoted_prismatic_x();
+    for (builtin, args) in [
+        ("screw", vec![p.clone(), Value::Undef]),
+        ("transform_at", vec![p.clone(), Value::Undef]),
+        ("rack_and_pinion", vec![p.clone(), Value::Undef]),
+    ] {
+        assert!(
+            joints_diagnose(builtin, &args).is_none(),
+            "{builtin}: an upstream undef is never misattributed"
+        );
+    }
+
+    let revolute = eval_builtin(
+        "revolute",
+        &[
+            axis(0.0, 0.0, 1.0),
+            closed_range(Value::angle(0.0), Value::angle(PI)),
+        ],
+    );
+    let bare_radians = [revolute, Value::Real(0.5)];
+    assert!(!eval_builtin("transform_at", &bare_radians).is_undef());
+    assert!(joints_diagnose("transform_at", &bare_radians).is_none());
+
+    assert!(joints_diagnose("couple", &[p.clone(), Value::Real(2.0)]).is_none());
+    assert!(joints_diagnose("dir", &[p, Value::Real(0.3)]).is_none());
 }

@@ -45,7 +45,7 @@ fn beam_structure(name: &str, loads: BeamLoads) -> String {
     let (pressure_let, load_list) = match loads {
         BeamLoads::TipOnly => ("", "[tip]"),
         BeamLoads::WithTypedPressureFace => (
-            r#"let press    = PressureLoad(magnitude: 1.0, face: face(body, "x_max"))"#,
+            r#"let press    = PressureLoad(magnitude: 1.0Pa, face: face(body, "x_max"))"#,
             "[tip, press]",
         ),
     };
@@ -55,7 +55,7 @@ fn beam_structure(name: &str, loads: BeamLoads) -> String {
             param span : Length = 1000mm
             param w    : Length = 100mm
             param h    : Length = 100mm
-            param load : Real   = 1000.0
+            param load : Force  = 1000N
 
             let material = Steel_AISI_1045()
             let body     = box(span, w, h)
@@ -67,7 +67,7 @@ fn beam_structure(name: &str, loads: BeamLoads) -> String {
                 material, span, w, h, {load_list}, [mount], ElasticOptions()
             )
             let defl     = max(r_static.displacement)
-            let k        : Stiffness = load * 1N / defl
+            let k        : Stiffness = load / defl
         }}
         "#
     )
@@ -200,7 +200,7 @@ fn assert_instance_fea_cells_equal_template(source: &str) -> CheckResult {
 
     // ── (3) The downstream chain is determinate ─────────────────────────────
     //
-    // `defl = max(r_static.displacement)` and `k = load * 1N / defl` are
+    // `defl = max(r_static.displacement)` and `k = load / defl` are
     // ordinary lets over the instance map. With the shell in place they went
     // Undef; this is the chain the task reports as undef.
     for member in ["defl", "k"] {

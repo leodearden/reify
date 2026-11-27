@@ -344,7 +344,7 @@ fn loadcase_bare_numeric_in_supports_emits_type_not_conforming() {
     let source = r#"
 structure def NegativeSupportsFixture {
     let body = box(1m, 0.1m, 0.1m)
-    let c = LoadCase(name: "x", loads: [PointLoad(point: vertex(body, "a"), force: 1.0)], supports: [4, 5, 6])
+    let c = LoadCase(name: "x", loads: [PointLoad(point: vertex(body, "a"), force: 1.0N)], supports: [4, 5, 6])
 }
 "#;
     let parsed = parse_with_stdlib(
@@ -418,7 +418,7 @@ fn loadcase_typed_conformers_emit_no_type_not_conforming() {
 structure def PositiveConformanceFixture {
     let c = LoadCase(
         name: "x",
-        loads: [PointLoad(point: vertex(body, "a"), force: 1.0), Gravity(magnitude: STANDARD_GRAVITY())],
+        loads: [PointLoad(point: vertex(body, "a"), force: 1.0N), Gravity(magnitude: STANDARD_GRAVITY())],
         supports: [FixedSupport(target: face(body, "r"))]
     )
     let body = box(1000mm, 100mm, 100mm)
@@ -567,8 +567,8 @@ structure def FEABodyMultiCase {
         Steel_AISI_1045(),
         body,
         [
-            LoadCase(name: "operating", loads: [PointLoad(point: vertex(body, "tip"), force: 1000.0)], supports: [FixedSupport(target: face(body, "root"))]),
-            LoadCase(name: "overload", loads: [PointLoad(point: vertex(body, "tip"), force: 2000.0)], supports: [FixedSupport(target: face(body, "root"))])
+            LoadCase(name: "operating", loads: [PointLoad(point: vertex(body, "tip"), force: 1000.0N)], supports: [FixedSupport(target: face(body, "root"))]),
+            LoadCase(name: "overload", loads: [PointLoad(point: vertex(body, "tip"), force: 2000.0N)], supports: [FixedSupport(target: face(body, "root"))])
         ],
         ElasticOptions()
     )

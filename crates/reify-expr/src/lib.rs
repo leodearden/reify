@@ -2100,8 +2100,9 @@ fn interp_render(value: &Value) -> String {
 /// mass, ISO tolerancing, the orientation builtins (`orient_exp`'s
 /// rotation-vector dimension gate, #6080, and a non-Direction at
 /// `orient_axis_angle` / `orient_look_at` / `orient_basis`'s Direction
-/// positions), and the `dir` direction constructor (`direction_diagnose`) — for
-/// a builtin call whose `result` is `Value::Undef`.
+/// positions), the `dir` direction constructor (`direction_diagnose`), and the
+/// joint LENGTH positions (`joints_diagnose`) — for a builtin call whose
+/// `result` is `Value::Undef`.
 ///
 /// Extracted from `eval_expr`'s `FunctionCall` arm — and marked
 /// `#[inline(never)]` — for the same stack-frame-shrinking reason as
@@ -2115,14 +2116,15 @@ fn interp_render(value: &Value) -> String {
 /// The classifiers' name families (stackup math builtins / `"linear_combine"` /
 /// the geometry-builtin family (`geometry_diagnose`) / dynamics /
 /// `"iso_it_tolerance"` / `"orient_exp"`, `"orient_axis_angle"`,
-/// `"orient_look_at"`, `"orient_basis"` / `"dir"`) are disjoint, so at most
+/// `"orient_look_at"`, `"orient_basis"` / `"dir"` / `"transform_at"`,
+/// `"couple"`, `"screw"`, `"rack_and_pinion"`) are disjoint, so at most
 /// one classifier returns `Some` for any single `Undef`; each returns `None`
 /// for every other name or for valid input, making this a cheap no-op for
 /// ordinary builtins.
 ///
 /// A classified `DimensionedArgRejected` also records that specific code as
 /// the cell's `UndefCause::OpContractFailed` (PRD-5 §7 I5), via
-/// [`push_op_contract_failure`].
+/// [`record_classified_cause`].
 #[inline(never)]
 fn emit_undef_builtin_diagnostics(name: &str, args: &[Value], result: &Value, ctx: &EvalContext) {
     // The classifiers run when EITHER sink is attached: the undef-cause capture
@@ -2159,18 +2161,32 @@ fn emit_undef_builtin_diagnostics(name: &str, args: &[Value], result: &Value, ct
         // `dir`: dimensioned component -> DimensionedArgRejected; zero or
         // non-finite vector -> E_DegenerateDirection.
         reify_stdlib::direction_diagnose(name, args),
+        // Joint LENGTH positions (transform_at / couple / screw / rack_and_pinion):
+        // a refused bare number -> DimensionedArgRejected.
+        reify_stdlib::joints_diagnose(name, args),
     ];
     for diag in classified.into_iter().flatten() {
-        // PRD-5 §7 I5: a dimension rejection records its SPECIFIC cause. This
-        // runs before the generic `OpContractViolation` push in `eval_expr`'s
-        // `FunctionCall` arm, and the engine keeps the first `OpContractFailed`
-        // per cell, so the specific code is the one recorded.
-        if diag.code == Some(DiagnosticCode::DimensionedArgRejected) {
-            push_op_contract_failure(ctx, DiagnosticCode::DimensionedArgRejected);
-        }
+        record_classified_cause(ctx, result, &diag);
         if let Some(sink) = ctx.diagnostics {
             sink.borrow_mut().push(diag);
         }
+    }
+}
+
+/// The one cause-recording rule of the classifier hooks (PRD-5 §7 I5): a
+/// `DimensionedArgRejected` classified for an `Undef` result records that
+/// SPECIFIC code as the cell's `UndefCause::OpContractFailed`.
+///
+/// Every hook that can classify a dimension rejection calls this —
+/// [`emit_undef_builtin_diagnostics`], [`emit_flexure_diagnostics`] and
+/// [`emit_snapshot_diagnostics`] — and each runs before the generic
+/// `OpContractViolation` push in `eval_expr`'s `FunctionCall` arm. The engine
+/// keeps the first `OpContractFailed` per cell, so the specific code is the
+/// one recorded. A no-op with no undef-cause sink attached.
+#[inline(never)]
+fn record_classified_cause(ctx: &EvalContext, result: &Value, diag: &Diagnostic) {
+    if result.is_undef() && diag.code == Some(DiagnosticCode::DimensionedArgRejected) {
+        push_op_contract_failure(ctx, DiagnosticCode::DimensionedArgRejected);
     }
 }
 
@@ -2192,12 +2208,21 @@ fn emit_undef_builtin_diagnostics(name: &str, args: &[Value], result: &Value, ct
 /// is a cheap no-op for every other builtin. The standing
 /// `W_FlexureFatigueCheckMissing` Info advisory is deduped to once per eval
 /// session (per sink): pushed only if the sink does not already carry that code.
+///
+/// Like [`emit_undef_builtin_diagnostics`], it also runs in the undef-cause
+/// capture pass (a cause sink and no diagnostics sink), where a classified
+/// dimension rejection records its specific cause via
+/// [`record_classified_cause`].
 #[inline(never)]
 fn emit_flexure_diagnostics(name: &str, args: &[Value], result: &Value, ctx: &EvalContext) {
-    let Some(sink) = ctx.diagnostics else {
+    if ctx.diagnostics.is_none() && ctx.undef_causes.is_none() {
         return;
-    };
+    }
     for diag in reify_stdlib::flexure_diagnose(name, args, result) {
+        record_classified_cause(ctx, result, &diag);
+        let Some(sink) = ctx.diagnostics else {
+            continue;
+        };
         if diag.code == Some(DiagnosticCode::FlexureFatigueCheckMissing) {
             // NOTE(perf, deferred): the once-per-session fatigue dedup re-scans
             // the whole sink for the code on every emitting flexure-ctor call —
@@ -2260,13 +2285,20 @@ fn emit_dfm_diagnostics(name: &str, args: &[Value], result: &Value, ctx: &EvalCo
 /// `Vec` for every non-`center_of_mass` name, so this is a cheap no-op for
 /// other builtins. Extracted `#[inline(never)]` for the same stack-shrinking
 /// reason as `emit_flexure_diagnostics` and `emit_dfm_diagnostics`.
+///
+/// Like [`emit_flexure_diagnostics`], it also runs in the undef-cause capture
+/// pass, recording a classified dimension rejection's specific cause via
+/// [`record_classified_cause`].
 #[inline(never)]
 fn emit_snapshot_diagnostics(name: &str, args: &[Value], result: &Value, ctx: &EvalContext) {
-    let Some(sink) = ctx.diagnostics else {
+    if ctx.diagnostics.is_none() && ctx.undef_causes.is_none() {
         return;
-    };
+    }
     for diag in reify_stdlib::snapshot_diagnose(name, args, result) {
-        sink.borrow_mut().push(diag);
+        record_classified_cause(ctx, result, &diag);
+        if let Some(sink) = ctx.diagnostics {
+            sink.borrow_mut().push(diag);
+        }
     }
 }
 
@@ -3036,8 +3068,8 @@ fn push_eval_error(ctx: &EvalContext, msg: &str, code: DiagnosticCode) {
 ///
 /// Both push the generic `OpContractViolation`. The one SPECIFIC cause is
 /// `DimensionedArgRejected` (PRD-5 §7 I5, task 6922), pushed by
-/// `emit_undef_builtin_diagnostics` when a classifier rejects an argument's
-/// dimension; it runs before site 1, and the engine keeps the first
+/// [`record_classified_cause`] when a classifier hook rejects an argument's
+/// dimension; every hook runs before site 1, and the engine keeps the first
 /// `OpContractFailed` per cell, so the specific code wins.
 ///
 /// Uses an **empty placeholder span** (`SourceSpan::default()`) because

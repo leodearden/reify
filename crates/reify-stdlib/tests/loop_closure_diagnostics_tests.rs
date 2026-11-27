@@ -743,3 +743,174 @@ fn solve_loop_closure_with_diagnostics_invalid_input_precedes_overconstrained() 
         report.is_singular()
     );
 }
+
+// ── PRD 5 leaf δ (task #6941): loop-closure binds are read per joint kind ──
+//
+// A binding whose value has the wrong dimension for its joint is refused —
+// never read raw as SI, and never silently replaced by the range midpoint —
+// and `snapshot`'s classifier names it at `bindings[i].value` (boundary row
+// B7).
+
+mod dimension_checked_binds {
+    use super::*;
+    use reify_ir::arg_acceptance::{Acceptance, ArgSpec, accept_arg, angle_spec, length_spec};
+    use reify_stdlib::loop_closure::extract_loop_closure_chains;
+    use reify_stdlib::snapshot_diagnose;
+
+    fn world() -> Value {
+        eval_builtin("world", &[])
+    }
+
+    fn body(mechanism: Value, solid: &str, at: &Value, parent: &Value) -> Value {
+        eval_builtin(
+            "body",
+            &[
+                mechanism,
+                Value::String(solid.to_string()),
+                at.clone(),
+                parent.clone(),
+            ],
+        )
+    }
+
+    fn bind(joint: &Value, value: Value) -> Value {
+        eval_builtin("bind", &[joint.clone(), value])
+    }
+
+    fn only_loop_closure(mechanism: &Value) -> &Value {
+        match mechanism {
+            Value::Map(m) => match m.get(&Value::String("loop_closures".to_string())) {
+                Some(Value::List(records)) if records.len() == 1 => &records[0],
+                other => panic!("expected one loop_closures record, got {other:?}"),
+            },
+            other => panic!("expected a mechanism Map, got {other:?}"),
+        }
+    }
+
+    /// `examples/dynamics/closed_2prismatic_idyn.ri`'s loop: the closing body
+    /// rides `j_b` on `j_a`, so `path_a = [world, j_b]`, `path_b = [world, j_a]`.
+    fn two_prismatic_loop() -> (Value, Value, Value) {
+        let j_a = prismatic_z_0_to_1();
+        let j_b = eval_builtin("prismatic", &[axis_z(), length_range(0.0, 2.0)]);
+        let mut m = eval_builtin("mechanism", &[]);
+        m = body(m, "a", &j_a, &world());
+        m = body(m, "b", &j_b, &world());
+        m = body(m, "c", &j_b, &j_a);
+        (m, j_a, j_b)
+    }
+
+    /// The same shape with two coaxial revolutes.
+    fn two_revolute_loop() -> (Value, Value) {
+        let j_r = revolute_z_0_to_pi();
+        let j_s = eval_builtin(
+            "revolute",
+            &[axis_z(), angle_range(-std::f64::consts::PI, std::f64::consts::PI)],
+        );
+        let mut m = eval_builtin("mechanism", &[]);
+        m = body(m, "r", &j_r, &world());
+        m = body(m, "s", &j_s, &world());
+        m = body(m, "t", &j_s, &j_r);
+        (m, j_r)
+    }
+
+    fn canonical_rejection(value: &Value, spec: &ArgSpec, path: &str) -> String {
+        let Acceptance::Rejected(rejection) = accept_arg(value, spec) else {
+            unreachable!("{value:?} must be rejected at {}", spec.type_name);
+        };
+        rejection.message("snapshot", path)
+    }
+
+    fn rejections(mechanism: &Value, bindings: &[Value]) -> Vec<Diagnostic> {
+        let args = [mechanism.clone(), Value::List(bindings.to_vec())];
+        snapshot_diagnose("snapshot", &args, &Value::Undef)
+    }
+
+    fn assert_one_rejection(diags: &[Diagnostic], expected: &str) {
+        assert_eq!(diags.len(), 1, "exactly one diagnostic, got {diags:#?}");
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert_eq!(diags[0].code, Some(DiagnosticCode::DimensionedArgRejected));
+        assert_eq!(diags[0].message, expected);
+    }
+
+    #[test]
+    fn an_angle_bound_to_a_prismatic_is_refused_not_read_as_metres() {
+        let (m, j_a, _) = two_prismatic_loop();
+        let wrong = Value::angle(0.3);
+        let bindings = [bind(&j_a, wrong.clone())];
+        assert!(
+            extract_loop_closure_chains(only_loop_closure(&m), &bindings).is_none(),
+            "a refused binding must not be read raw nor fall back to the midpoint"
+        );
+        assert_one_rejection(
+            &rejections(&m, &bindings),
+            &canonical_rejection(&wrong, &length_spec(), "bindings[0].value"),
+        );
+    }
+
+    #[test]
+    fn a_length_bound_to_a_revolute_is_refused_not_read_as_radians() {
+        let (m, j_r) = two_revolute_loop();
+        let wrong = Value::length(0.3);
+        let bindings = [bind(&j_r, wrong.clone())];
+        assert!(extract_loop_closure_chains(only_loop_closure(&m), &bindings).is_none());
+        assert_one_rejection(
+            &rejections(&m, &bindings),
+            &canonical_rejection(&wrong, &angle_spec(), "bindings[0].value"),
+        );
+    }
+
+    #[test]
+    fn correctly_dimensioned_binds_extract_as_before_and_are_not_diagnosed() {
+        let (m, j_a, j_b) = two_prismatic_loop();
+        let bindings = [bind(&j_a, Value::length(0.3))];
+        let (chain_a, vals_a, chain_b, vals_b, free_b) =
+            extract_loop_closure_chains(only_loop_closure(&m), &bindings)
+                .expect("the correctly-bound loop extracts");
+        assert_eq!(chain_a, vec![j_b]);
+        assert_eq!(vals_a, vec![JointValue::Scalar(1.0)], "j_b seeds at its midpoint");
+        assert_eq!(chain_b, vec![j_a]);
+        assert_eq!(vals_b, vec![JointValue::Scalar(0.3)]);
+        assert!(free_b.is_empty(), "the bound j_a is not free");
+        assert!(rejections(&m, &bindings).is_empty());
+
+        let snapshot = eval_builtin("snapshot", &[m.clone(), Value::List(bindings.to_vec())]);
+        assert!(
+            snapshot_diagnose("snapshot", &[m, Value::List(bindings.to_vec())], &snapshot)
+                .is_empty(),
+            "a correct snapshot is not diagnosed"
+        );
+
+        let (r_loop, j_r) = two_revolute_loop();
+        let angle_bind = [bind(&j_r, Value::angle(0.5))];
+        assert!(extract_loop_closure_chains(only_loop_closure(&r_loop), &angle_bind).is_some());
+        assert!(rejections(&r_loop, &angle_bind).is_empty());
+    }
+
+    #[test]
+    fn a_planar_component_is_named_by_its_index() {
+        let planar = eval_builtin(
+            "planar",
+            &[
+                axis_x(),
+                axis_y(),
+                length_range(-1.0, 1.0),
+                length_range(-1.0, 1.0),
+                angle_range(-std::f64::consts::PI, std::f64::consts::PI),
+            ],
+        );
+        let m = body(eval_builtin("mechanism", &[]), "p", &planar, &world());
+        let bare_y = Value::Real(0.4);
+        let bindings = [bind(
+            &planar,
+            Value::List(vec![Value::length(0.3), bare_y.clone(), Value::angle(0.0)]),
+        )];
+        assert!(
+            eval_builtin("snapshot", &[m.clone(), Value::List(bindings.to_vec())]).is_undef(),
+            "a bare planar y is not read as metres"
+        );
+        assert_one_rejection(
+            &rejections(&m, &bindings),
+            &canonical_rejection(&bare_y, &length_spec(), "bindings[0].value[1]"),
+        );
+    }
+}

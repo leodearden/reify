@@ -50,6 +50,18 @@ pub(crate) fn eval_flexures(name: &str, args: &[Value]) -> Option<Value> {
         .or_else(|| compound::eval_compound(name, args))
 }
 
+/// Why the PRB ctor `name` refuses `args`, re-derived by the family's own
+/// parse fn — the same one the ctor runs — so the classifier names exactly the
+/// fault the ctor refused on (PRD 5 §7 I1). `None` for an accepted call or a
+/// name that is not a PRB ctor.
+fn input_fault(name: &str, args: &[Value]) -> Option<common::InputFault> {
+    beam::input_fault(name, args)
+        .or_else(|| notch::input_fault(name, args))
+        .or_else(|| hinge::input_fault(name, args))
+        .or_else(|| prismatic::input_fault(name, args))
+        .or_else(|| compound::input_fault(name, args))
+}
+
 /// Surface the cached `FlexureCompliance` record from a PRB-emitting joint Map.
 ///
 /// For a single `Value::Map` argument carrying the reserved hidden

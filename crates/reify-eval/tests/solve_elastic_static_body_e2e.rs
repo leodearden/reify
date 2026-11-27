@@ -497,12 +497,12 @@ structure FeaBodyMultiCase {
     let body     = box(1000mm, 100mm, 100mm)
     let lc1 = LoadCase(
         name:     "operating",
-        loads:    [PointLoad(point: vertex(body, "tip"), force: 1000.0)],
+        loads:    [PointLoad(point: vertex(body, "tip"), force: 1000.0N)],
         supports: [FixedSupport(target: face(body, "root"))],
     )
     let lc2 = LoadCase(
         name:     "overload",
-        loads:    [PointLoad(point: vertex(body, "tip"), force: 2000.0)],
+        loads:    [PointLoad(point: vertex(body, "tip"), force: 2000.0N)],
         supports: [FixedSupport(target: face(body, "root"))],
     )
     let result = solve_load_cases(material, body, [lc1, lc2], ElasticOptions())
@@ -665,12 +665,12 @@ structure FeaBodyMultiCase {
     let body     = box(1000mm, 100mm, 100mm)
     let lc1 = LoadCase(
         name:     "operating",
-        loads:    [PointLoad(point: vertex(body, "tip"), force: 1000.0)],
+        loads:    [PointLoad(point: vertex(body, "tip"), force: 1000.0N)],
         supports: [FixedSupport(target: face(body, "root"))],
     )
     let lc2 = LoadCase(
         name:     "overload",
-        loads:    [PointLoad(point: vertex(body, "tip"), force: 2000.0)],
+        loads:    [PointLoad(point: vertex(body, "tip"), force: 2000.0N)],
         supports: [FixedSupport(target: face(body, "root"))],
     )
     let result = solve_load_cases(material, body, [lc1, lc2], ElasticOptions())
@@ -911,7 +911,7 @@ const NON_PRISMATIC_BODY_SOURCE: &str = r#"
 structure FeaBodyNonPrismatic {
     let material = Steel_AISI_1045()
     let body     = cylinder(50mm, 200mm)
-    let tip_load = PointLoad(point: vertex(body, "tip"), force: 1000.0)
+    let tip_load = PointLoad(point: vertex(body, "tip"), force: 1000.0N)
     let mount    = FixedSupport(target: face(body, "root"))
     let result = solve_elastic_static(material, body, [tip_load], [mount], ElasticOptions(deterministic: true))
 }
@@ -999,12 +999,12 @@ structure FeaBodyNonPrismaticMultiCase {
     let body     = cylinder(50mm, 200mm)
     let lc1 = LoadCase(
         name:     "operating",
-        loads:    [PointLoad(point: vertex(body, "tip"), force: 1000.0)],
+        loads:    [PointLoad(point: vertex(body, "tip"), force: 1000.0N)],
         supports: [FixedSupport(target: face(body, "root"))],
     )
     let lc2 = LoadCase(
         name:     "overload",
-        loads:    [PointLoad(point: vertex(body, "tip"), force: 2000.0)],
+        loads:    [PointLoad(point: vertex(body, "tip"), force: 2000.0N)],
         supports: [FixedSupport(target: face(body, "root"))],
     )
     let result = solve_load_cases(material, body, [lc1, lc2], ElasticOptions(deterministic: true))
@@ -1034,7 +1034,7 @@ structure FeaBodyNonPrismaticMultiCase {
     let body     = cylinder(50mm, 200mm)
     let lc1 = LoadCase(
         name:     "operating",
-        loads:    [PointLoad(point: vertex(body, "tip"), force: 1000.0)],
+        loads:    [PointLoad(point: vertex(body, "tip"), force: 1000.0N)],
         supports: [FixedSupport(target: face(body, "root"))],
     )
     let result = solve_load_cases(material, body, [lc1], ElasticOptions(deterministic: true))

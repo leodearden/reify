@@ -18,7 +18,7 @@ use reify_ir::CompiledExprKind;
 const SRC: &str = r#"
 structure def Widget {
     let b = box(1m, 1m, 1m)
-    let p = PressureLoad(face: faces(b), magnitude: 1.0e6)
+    let p = PressureLoad(face: faces(b), magnitude: 1.0e6Pa)
     let loads = [PressureLoad(face: faces(b))]
 }
 "#;

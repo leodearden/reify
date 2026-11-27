@@ -26,7 +26,7 @@
 ///
 /// Limitation: `/* … */` block comments are **not** stripped.  No such block
 /// comment with a bare-`Scalar` mention exists in the scanned corpus today.
-fn strip_trailing_line_comment(line: &str) -> &str {
+pub fn strip_trailing_line_comment(line: &str) -> &str {
     let bytes = line.as_bytes();
     let mut i = 0;
     while i + 1 < bytes.len() {

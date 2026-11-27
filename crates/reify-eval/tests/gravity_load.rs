@@ -206,7 +206,7 @@ structure def GravityMagOverride {
 ///
 /// Both params are supplied in declaration order (`magnitude` first, `direction`
 /// second) because structure-def constructors use positional binding — the same
-/// pattern as `PointLoad(point: vertex(body, "tip"), force: 0.0, direction: vec3(…))` in
+/// pattern as `PointLoad(point: vertex(body, "tip"), force: 0N, direction: vec3(…))` in
 /// `point_load_direction_field_default_and_override`
 /// (`structure_instance_e2e.rs`).
 ///
