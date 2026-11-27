@@ -2,7 +2,10 @@
 //! compile and the modules that compile bound its names over, read through
 //! the existing name binding (`reify_compiler::name_env`).
 
+use std::collections::HashMap;
+
 use reify_ast::ParsedModule;
+use reify_compiler::name_env::{self, Origin};
 use reify_compiler::{CompiledModule, TopologyTemplate};
 use reify_core::{DefinitionName, ModuleName, ModulePath, PathName};
 
@@ -12,7 +15,8 @@ pub(crate) struct ModuleContext<'m> {
     name: Option<ModuleName>,
     parsed: &'m ParsedModule,
     compiled: &'m CompiledModule,
-    prelude: Vec<&'m CompiledModule>,
+    /// Where the definition each name binds to is declared.
+    definitions: HashMap<&'m str, Origin<'m>>,
 }
 
 impl<'m> ModuleContext<'m> {
@@ -29,11 +33,17 @@ impl<'m> ModuleContext<'m> {
         } else {
             tier
         };
+        let definitions =
+            name_env::bind::<TopologyTemplate, _>(&compiled.templates, prelude.iter().copied())
+                .winning_candidates()
+                .iter()
+                .map(|candidate| (candidate.definition.name.as_str(), candidate.origin))
+                .collect();
         Self {
             name,
             parsed,
             compiled,
-            prelude,
+            definitions,
         }
     }
 
@@ -51,8 +61,15 @@ impl<'m> ModuleContext<'m> {
         self.compiled.templates.iter().find(|t| t.name == name)
     }
 
-    pub(crate) fn prelude(&self) -> &[&'m CompiledModule] {
-        &self.prelude
+    /// The structure or occurrence definition `written` names in this module,
+    /// bound as the existing compile binds it: this module's own, then its
+    /// imports', then the standard library's.
+    pub(crate) fn definition_named(&self, written: &str) -> Option<DefinitionName> {
+        let module = match self.definitions.get(written)?.module() {
+            None => self.name.clone(),
+            Some(path) => Some(module_name(path)),
+        };
+        Some(DefinitionName::new(module, definition_segment(written)))
     }
 }
 

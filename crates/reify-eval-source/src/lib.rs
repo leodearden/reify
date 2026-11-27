@@ -8,6 +8,7 @@
 //! disagree by design on what compiles.
 
 mod definition_list;
+mod member_kind;
 mod member_table;
 mod module_context;
 mod program_modules;
@@ -19,7 +20,8 @@ use reify_ast::ParseError;
 use reify_core::{DefinitionName, Diagnostic, ModulePath};
 
 pub use definition_list::{Definition, DefinitionList};
-pub use member_table::{Member, MemberTable};
+pub use member_kind::MemberKind;
+pub use member_table::{DeclaredType, Member, MemberOrigin, MemberTable};
 
 /// What the second output makes of a program.
 #[derive(Debug, Clone)]

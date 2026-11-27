@@ -1,11 +1,11 @@
 //! The definition list: every structure and occurrence definition of the
 //! program, each with its member table, keyed by its qualified name.
 
-use reify_ast::{Declaration, MemberDecl, TraitBoundRef};
+use reify_ast::{Declaration, MemberDecl};
 use reify_core::{DefinitionName, Diagnostic};
 
 use crate::SourceRefusal;
-use crate::member_table::MemberTable;
+use crate::member_table::{self, MemberTable};
 use crate::module_context::ModuleContext;
 
 /// One structure or occurrence definition.
@@ -57,7 +57,6 @@ impl<'l> IntoIterator for &'l DefinitionList {
 /// are written alike and lowered alike.
 pub(crate) struct DefinitionSource<'a> {
     pub(crate) name: &'a str,
-    pub(crate) trait_bounds: &'a [TraitBoundRef],
     pub(crate) members: &'a [MemberDecl],
 }
 
@@ -66,12 +65,10 @@ impl<'a> DefinitionSource<'a> {
         match declaration {
             Declaration::Structure(def) => Some(Self {
                 name: &def.name,
-                trait_bounds: &def.trait_bounds,
                 members: &def.members,
             }),
             Declaration::Occurrence(def) => Some(Self {
                 name: &def.name,
-                trait_bounds: &def.trait_bounds,
                 members: &def.members,
             }),
             _ => None,
@@ -82,7 +79,7 @@ impl<'a> DefinitionSource<'a> {
 /// The definitions one module declares, in source order.
 pub(crate) fn lower_module(
     module: &ModuleContext<'_>,
-    _diagnostics: &mut Vec<Diagnostic>,
+    diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<Vec<Definition>, SourceRefusal> {
     module
         .parsed()
@@ -91,13 +88,17 @@ pub(crate) fn lower_module(
         .filter_map(DefinitionSource::of)
         .map(|source| {
             let name = module.own_definition(source.name);
-            if module.own_template(source.name).is_none() {
+            let Some(template) = module.own_template(source.name) else {
                 return Err(SourceRefusal::TemplateMissing { definition: name });
-            }
-            Ok(Definition {
-                name,
-                members: MemberTable::default(),
-            })
+            };
+            let members = member_table::lower_definition(
+                &name,
+                source.members,
+                template,
+                module,
+                diagnostics,
+            );
+            Ok(Definition { name, members })
         })
         .collect()
 }
