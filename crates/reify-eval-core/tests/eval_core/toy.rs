@@ -728,8 +728,8 @@ impl Kind for Solve {
 }
 
 /// Whether each of a solve's `constraints` holds under a view supposing
-/// its unknowns to be `candidate`'s parts.
-async fn holds(cx: &Cx, candidate: &[Part], constraints: u64) -> bool {
+/// its unknowns to be `candidate`'s parts: the trial a toy solve runs.
+pub async fn holds(cx: &Cx, candidate: &[Part], constraints: u64) -> bool {
     let unknowns = candidate.iter().enumerate().map(|(index, part)| {
         let unknown = Ref::binding(format!("u{index}"));
         (unknown, Outcome::of(part.input()))

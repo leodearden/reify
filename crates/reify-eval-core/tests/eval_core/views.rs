@@ -812,3 +812,152 @@ fn work_under_a_view_ends_with_the_run_that_opened_it() {
     assert_eq!(core.turn(), Turn::Idle);
     core.drain();
 }
+
+/// The toy solve's trials, then a plain read of the i64 at "after".
+struct SolveThenRead;
+
+impl Kind for SolveThenRead {
+    type Out = Solution;
+    const ID: KindId = KindId("views.solve_then_read");
+    const VERSION: u32 = 1;
+
+    async fn run(cx: &Cx) -> Produced<Solution> {
+        let problem = match cx.read::<toy::Problem>(&Ref::binding("problem")).await {
+            Outcome::Value(problem) => problem,
+            other => panic!("the test's problem is a value, and is {other:?}"),
+        };
+        let mut found = None;
+        for candidate in &problem.candidates {
+            if found.is_none() && toy::holds(cx, candidate, problem.constraints).await {
+                found = Some(candidate.clone());
+            }
+        }
+        if let Outcome::Failure(failure) = cx.read::<i64>(&Ref::binding("after")).await {
+            return Produced::Outcome(Outcome::Failure(failure));
+        }
+        Produced::Outcome(found.map_or(Outcome::Absent, |found| Outcome::of(Solution(found))))
+    }
+}
+
+#[test]
+fn read_outside_view_after_opening_it_fails_the_run() {
+    let with_variant = || {
+        toy::with_solve()
+            .kind::<SolveThenRead>()
+            .expect("distinct kinds")
+    };
+    let solve = Declaration::new(SolveThenRead::ID)
+        .bind("problem", toy::input("problem"))
+        .bind("u0", toy::sibling(&["u"]))
+        .bind("c0", toy::sibling(&["c"]))
+        .bind("after", toy::sibling(&["x"]));
+    let [members, root] = toy::root_scope(
+        "root",
+        toy::members([
+            ("solve", solve),
+            ("u", toy::solved_int(toy::sibling(&["solve"]), 0)),
+            ("c", toy::cell_over([toy::sibling(&["u"])])),
+            ("x", toy::cell(&["x0"])),
+        ]),
+    );
+    let candidates = [vec![Part::Int(1)]];
+    let inputs = [
+        members,
+        root,
+        toy::named("x0", 1_i64),
+        toy::named("problem", toy::problem(candidates, 1)),
+    ];
+    let (solve, u) = (member("solve"), member("u"));
+
+    let mut first = with_variant().build();
+    let snapshot = first.snapshot(inputs.clone());
+    let answers = toy::answers_to(&mut first, &snapshot, &[&solve, &u]);
+    let [solve_answer, u_answer] = <[_; 2]>::try_from(answers).expect("two answers");
+    assert_eq!(toy::failed(solve_answer), Failure::ReadOutsideView);
+    assert_eq!(
+        toy::failed(u_answer),
+        Failure::BlockedBy {
+            at: Ref::binding("solve")
+        }
+    );
+    assert_eq!(first.counters().body_runs(SolveThenRead::ID), 1);
+
+    let mut second = with_variant().on_store(first.into_store()).build();
+    let snapshot = second.snapshot(inputs);
+    let answer = toy::answer_alone(&mut second, &snapshot, &solve);
+    assert_eq!(toy::failed(answer), Failure::ReadOutsideView);
+    assert_eq!(
+        second.counters().body_runs(SolveThenRead::ID),
+        1,
+        "nothing was filed for the run that read outside its view"
+    );
+}
+
+/// Opens a view supposing "x" to be 1, then declares and reads a child.
+struct ChildAfterView;
+
+impl Kind for ChildAfterView {
+    type Out = i64;
+    const ID: KindId = KindId("views.child_after_view");
+    const VERSION: u32 = 1;
+
+    async fn run(cx: &Cx) -> Produced<i64> {
+        let _view = cx.suppose(Substitution::of([(Ref::binding("x"), supposed(1))]));
+        let child = toy::cell(&["x0"]);
+        Produced::Outcome(cx.child::<i64>(Step::named("c"), child).await)
+    }
+}
+
+#[test]
+fn declaring_a_child_after_opening_a_view_fails_the_run() {
+    let builder = toy::with_scope()
+        .kind::<ChildAfterView>()
+        .expect("distinct kinds");
+    let mut core = builder.build();
+    let opener = Declaration::new(ChildAfterView::ID).bind("x", toy::sibling(&["x"]));
+    let [members, root] = toy::root_scope(
+        "root",
+        toy::members([("x", toy::cell(&["x0"])), ("opener", opener)]),
+    );
+    let snapshot = core.snapshot([members, root, toy::named("x0", 1_i64)]);
+
+    let answer = toy::answer_alone(&mut core, &snapshot, &member("opener"));
+    assert_eq!(toy::failed(answer), Failure::ReadOutsideView);
+}
+
+/// Opens a view supposing "x" to be 3, runs a section on the toy kernel,
+/// then reads the i64 at "y" through the view and answers it.
+struct SectionBetween;
+
+impl Kind for SectionBetween {
+    type Out = i64;
+    const ID: KindId = KindId("views.section_between");
+    const VERSION: u32 = 1;
+
+    async fn run(cx: &Cx) -> Produced<i64> {
+        let view = cx.suppose(Substitution::of([(Ref::binding("x"), supposed(3))]));
+        let made = cx
+            .exclusive(|kernel: &mut toy::ToyKernel, _section| kernel.is_marked(0))
+            .await;
+        assert!(!made, "the toy kernel marks nothing unasked");
+        Produced::Outcome(view.read::<i64>(&Ref::binding("y")).await.outcome)
+    }
+}
+
+#[test]
+fn a_section_after_opening_a_view_is_not_a_read_outside_it() {
+    let builder = toy::with_scope()
+        .kind::<SectionBetween>()
+        .expect("distinct kinds");
+    let mut core = toy::ungated(builder, &Watch::default());
+    let opener = Declaration::new(SectionBetween::ID)
+        .bind("x", toy::sibling(&["x"]))
+        .bind("y", toy::sibling(&["y"]));
+    let snapshot = core.snapshot(x_y_z(opener));
+    let at = member("probe");
+
+    let request = core.evaluate(&snapshot, toy::demand([&at]), Budget::unlimited());
+    core.run();
+    let answer = toy::the_answer(&core.take_events(), &request, &at);
+    assert_eq!(value_of::<i64>(answer), 4);
+}
