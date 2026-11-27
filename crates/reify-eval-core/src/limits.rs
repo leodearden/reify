@@ -2,12 +2,10 @@
 //! when its index opens. With no setting nothing is bounded: the default a
 //! host applies is the host's, never the core's (rule 7).
 
-use std::any::Any;
-
 use imbl::OrdMap;
 
 use crate::input::{Input, InputKey, Limit};
-use crate::outcome::{Erased, Value};
+use crate::outcome::Outcome;
 
 pub(crate) struct Limits {
     depth: Option<u64>,
@@ -38,11 +36,9 @@ impl Limits {
 }
 
 fn setting(inputs: &OrdMap<InputKey, Input>, limit: Limit) -> Option<u64> {
-    let value = inputs.get(&InputKey::Limit(limit))?.value();
-    let any: &dyn Any = value;
-    let bound = any.downcast_ref::<u64>().unwrap_or_else(|| {
-        let found = <Erased as Value>::type_name(value);
-        panic!("the limit setting {limit:?} must be a u64, and is a {found}")
-    });
-    Some(*bound)
+    let setting = inputs.get(&InputKey::Limit(limit))?;
+    match setting.outcome().downcast::<u64>() {
+        Outcome::Value(bound) => Some(*bound),
+        refused => panic!("the limit setting {limit:?} must be a u64: {refused:?}"),
+    }
 }
