@@ -17,6 +17,8 @@ use crate::arg_acceptance::{
 };
 
 mod elastic_material;
+#[cfg(test)]
+pub(crate) mod test_support;
 
 pub(crate) use elastic_material::{extract_material, isotropic_from_data};
 

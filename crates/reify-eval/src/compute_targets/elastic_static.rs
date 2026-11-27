@@ -13014,6 +13014,41 @@ mod tests {
         assert_gate_rejects(value_inputs, "width");
     }
 
+    /// S15 α T1/T2 (task 8674): a hand-built concrete conformer is decoded as
+    /// an `ElasticMaterial`, so a missing or wrong-dimension field fails with
+    /// ONE coded Error naming the trait path, never the conformer's own
+    /// type_name.
+    #[test]
+    fn trampoline_fails_a_malformed_elastic_material_naming_the_trait_path() {
+        use crate::compute_targets::stdlib_inputs::test_support::{
+            assert_one_coded_error, material_missing_poisson_ratio,
+            material_with_length_youngs_modulus,
+        };
+        for (material, code, path) in [
+            (
+                material_missing_poisson_ratio(),
+                DiagnosticCode::ComputeInputMalformed,
+                "ElasticMaterial.poisson_ratio",
+            ),
+            (
+                material_with_length_youngs_modulus(),
+                DiagnosticCode::DimensionedArgRejected,
+                "ElasticMaterial.youngs_modulus",
+            ),
+        ] {
+            let mut value_inputs = shell9_valid_inputs();
+            value_inputs[0] = material;
+            let outcome = solve_elastic_static_trampoline(
+                &value_inputs,
+                &[],
+                &Value::Undef,
+                None,
+                &CancellationHandle::new(),
+            );
+            assert_one_coded_error(&outcome, code, path);
+        }
+    }
+
     /// D9 review amendment (task #5087, suggestion 1): the gate above only
     /// covers material/length/width/height/loads — `options` ([6]) is read
     /// later by `extract_shell_route_params`/`extract_execution_params`/

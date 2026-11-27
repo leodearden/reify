@@ -1475,6 +1475,41 @@ mod tests {
         ]
     }
 
+    /// S15 α T1/T2 (task 8674): the material decodes as an `ElasticMaterial`,
+    /// so a hand-built conformer missing a field or carrying a LENGTH modulus
+    /// fails with ONE coded Error naming the trait path.
+    #[test]
+    fn solve_buckling_trampoline_fails_a_malformed_elastic_material_naming_the_trait_path() {
+        use crate::compute_targets::stdlib_inputs::test_support::{
+            assert_one_coded_error, material_missing_poisson_ratio,
+            material_with_length_youngs_modulus,
+        };
+        use reify_core::DiagnosticCode;
+        for (material, code, path) in [
+            (
+                material_missing_poisson_ratio(),
+                DiagnosticCode::ComputeInputMalformed,
+                "ElasticMaterial.poisson_ratio",
+            ),
+            (
+                material_with_length_youngs_modulus(),
+                DiagnosticCode::DimensionedArgRejected,
+                "ElasticMaterial.youngs_modulus",
+            ),
+        ] {
+            let mut inputs = buckling_inputs();
+            inputs[0] = material;
+            let outcome = super::solve_buckling_trampoline(
+                &inputs,
+                &[],
+                &Value::Undef,
+                None,
+                &CancellationHandle::new(),
+            );
+            assert_one_coded_error(&outcome, code, path);
+        }
+    }
+
     #[test]
     fn solve_buckling_trampoline_fails_malformed_inputs_instead_of_panicking() {
         let mut no_poisson = buckling_inputs();
