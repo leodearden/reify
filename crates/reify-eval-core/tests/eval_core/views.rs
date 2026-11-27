@@ -1057,21 +1057,22 @@ fn unassigned() -> Failure {
     }
 }
 
-/// Assigns p and supposes q unassigned.
-struct AssignsP;
+/// Assigns its unknowns one at a time: first p, supposing q unassigned,
+/// then q, supposing p unassigned; and reads c in each trial.
+struct AssignsOneAtATime;
 
-impl Plan for AssignsP {
-    const ID: KindId = KindId("views.probe.assigns_p");
+impl Plan for AssignsOneAtATime {
+    const ID: KindId = KindId("views.probe.assigns_one_at_a_time");
 
     fn trials() -> Vec<Trial> {
-        let true_ = Outcome::of(toy::input_of(true));
-        vec![Trial {
+        let assigning = |assigned: &str, left: &str| Trial {
             substitution: Substitution::of([
-                (Ref::binding("p"), true_),
-                (Ref::binding("q"), Outcome::Failure(unassigned())),
+                (Ref::binding(assigned), Outcome::of(toy::input_of(true))),
+                (Ref::binding(left), Outcome::Failure(unassigned())),
             ]),
             reads: vec![Read::Flag(Ref::binding("c"))],
-        }]
+        };
+        vec![assigning("p", "q"), assigning("q", "p")]
     }
 }
 
@@ -1118,11 +1119,16 @@ fn owned_unknowns<P: Plan>() -> Answer<Erased> {
 
 #[test]
 fn an_unassigned_unknown_inside_its_own_solve_never_reaches_the_solve() {
-    let assigned = value_of::<Vec<Saw>>(owned_unknowns::<AssignsP>());
-    let blocked_by_q = Failure::BlockedBy {
-        at: Ref::binding("q"),
+    let assigned = value_of::<Vec<Saw>>(owned_unknowns::<AssignsOneAtATime>());
+    let blocked_by = |operand: &str| {
+        let at = Ref::binding(operand);
+        saw(Seen::Failed(Failure::BlockedBy { at }), true)
     };
-    assert_eq!(assigned, vec![saw(Seen::Failed(blocked_by_q), true)]);
+    assert_eq!(
+        assigned,
+        vec![blocked_by("q"), blocked_by("p")],
+        "c is blocked by its unassigned operand, whether it reads it last or first"
+    );
 
     let faulty = owned_unknowns::<ForgetsQ>();
     assert_eq!(

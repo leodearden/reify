@@ -772,14 +772,14 @@ pub fn solve(
 
 /// A type a part of a solution can be read as, with the id of the solved
 /// kind that reads it so.
-pub trait PartType: Value + Contented + Sized {
+pub trait SolvedPart: Value + Contented + Sized {
     const SOLVED: KindId;
 
     /// The part as this type, if it is of it.
     fn of(part: Part) -> Option<Self>;
 }
 
-impl PartType for i64 {
+impl SolvedPart for i64 {
     const SOLVED: KindId = KindId("toy.solved.int");
 
     fn of(part: Part) -> Option<i64> {
@@ -790,7 +790,7 @@ impl PartType for i64 {
     }
 }
 
-impl PartType for bool {
+impl SolvedPart for bool {
     const SOLVED: KindId = KindId("toy.solved.flag");
 
     fn of(part: Part) -> Option<bool> {
@@ -807,7 +807,7 @@ impl PartType for bool {
 /// part of the other type is a wrong type naming both.
 pub struct Solved<T>(PhantomData<fn() -> T>);
 
-impl<T: PartType> Kind for Solved<T> {
+impl<T: SolvedPart> Kind for Solved<T> {
     type Out = T;
     const ID: KindId = T::SOLVED;
     const VERSION: u32 = 1;
@@ -848,7 +848,7 @@ impl<T: PartType> Kind for Solved<T> {
     }
 }
 
-fn solved<T: PartType>(solve: Binding, part: i64) -> Declaration {
+fn solved<T: SolvedPart>(solve: Binding, part: i64) -> Declaration {
     Declaration::new(Solved::<T>::ID)
         .bind("solve", solve)
         .bind("part", Binding::Constant(input_of(part)))

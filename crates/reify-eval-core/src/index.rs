@@ -230,7 +230,7 @@ impl Indexes {
     pub fn file(&mut self, state: StateId, path: PathId, entry: Entry) {
         assert!(
             state.view.is_some() || !entry.depended,
-            "an answer in a snapshot depends on no substitution"
+            "an answer in snapshot {state:?} depends on no substitution, but the one at {path:?} did"
         );
         let Some(index) = self.by_state.get_mut(&state) else {
             lost(state)
