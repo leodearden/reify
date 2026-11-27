@@ -1,3 +1,133 @@
+//! The chain of local scopes an evaluation reads cells through.
+//!
+//! A local binder (a function's params and lets, a lambda's captures and
+//! params, a structure ctor's members, a match arm's binders, a quantifier's
+//! element) lives in a [`Frame`]. A [`ScopeChain`] reads a cell from its
+//! innermost frame outward and, past the last frame, from its [`CellReader`].
+//! A frame is one of two kinds:
+//! - OPEN: a miss goes on to the chain the frame was opened over. A match arm
+//!   and a quantifier predicate extend the scope they appear in.
+//! - SEALED: a miss is `Undef` and never reaches the reader. A function body,
+//!   a lambda body and a ctor member see their own bindings only.
+//!
+//! A frame takes its reader and its outer link from the chain that opened it,
+//! and [`Frame::chain`] is the only way in, so a frame can never be entered
+//! from a chain other than the one it was opened over.
+
+use reify_core::ValueCellId;
+use reify_ir::{Value, ValueMap};
+
+use crate::reader::CellReader;
+
+/// The scope an expression is evaluated in: local frames, innermost first,
+/// over the store's reader.
+#[derive(Clone, Copy)]
+pub(crate) struct ScopeChain<'a> {
+    reader: &'a dyn CellReader,
+    innermost: Option<&'a Frame<'a>>,
+}
+
+/// One local scope's bindings, and where a read goes when they miss.
+pub(crate) struct Frame<'a> {
+    bindings: &'a ValueMap,
+    reader: &'a dyn CellReader,
+    beyond: Beyond<'a>,
+}
+
+/// Where a read that misses a frame's bindings goes next.
+enum Beyond<'a> {
+    /// Nowhere: the frame is sealed, and the read is `Undef`.
+    Nothing,
+    /// The frame this one was opened over, or the reader when there is none.
+    Outer(Option<&'a Frame<'a>>),
+}
+
+impl<'a> ScopeChain<'a> {
+    /// A chain with no local frame, reading every cell from `reader`.
+    pub(crate) fn over(reader: &'a dyn CellReader) -> Self {
+        Self {
+            reader,
+            innermost: None,
+        }
+    }
+
+    /// The value of `id` in this scope: the innermost frame binding it, else
+    /// `Undef` at a sealed frame, else the reader's value.
+    pub(crate) fn read(&self, id: &ValueCellId) -> Value {
+        let mut next = self.innermost;
+        while let Some(frame) = next {
+            if let Some(value) = frame.bindings.get(id) {
+                return value.clone();
+            }
+            match frame.beyond {
+                Beyond::Nothing => return Value::Undef,
+                Beyond::Outer(outer) => next = outer,
+            }
+        }
+        self.reader.read(id)
+    }
+
+    /// A frame over `bindings` whose misses go on to this chain.
+    pub(crate) fn open_frame<'b>(&self, bindings: &'b ValueMap) -> Frame<'b>
+    where
+        'a: 'b,
+    {
+        Frame {
+            bindings,
+            reader: self.reader,
+            beyond: Beyond::Outer(self.innermost),
+        }
+    }
+
+    /// A frame over `bindings` whose misses are `Undef`.
+    pub(crate) fn sealed_frame<'b>(&self, bindings: &'b ValueMap) -> Frame<'b>
+    where
+        'a: 'b,
+    {
+        Frame {
+            bindings,
+            reader: self.reader,
+            beyond: Beyond::Nothing,
+        }
+    }
+
+    /// Every cell this scope reads, as one map: the innermost sealed frame's
+    /// bindings (or, with no sealed frame, the store) with each open frame
+    /// above it laid over, inner shadowing outer.
+    pub(crate) fn visible_values(&self) -> ValueMap {
+        let mut open_bindings = Vec::new();
+        let mut next = self.innermost;
+        let mut visible = loop {
+            let Some(frame) = next else {
+                break self.reader.as_value_map().clone();
+            };
+            match frame.beyond {
+                Beyond::Nothing => break frame.bindings.clone(),
+                Beyond::Outer(outer) => {
+                    open_bindings.push(frame.bindings);
+                    next = outer;
+                }
+            }
+        };
+        for bindings in open_bindings.iter().rev() {
+            for (id, value) in bindings.iter() {
+                visible.insert(id.clone(), value.clone());
+            }
+        }
+        visible
+    }
+}
+
+impl Frame<'_> {
+    /// The chain this frame was opened over, with this frame innermost.
+    pub(crate) fn chain(&self) -> ScopeChain<'_> {
+        ScopeChain {
+            reader: self.reader,
+            innermost: Some(self),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use reify_core::ValueCellId;
@@ -82,17 +212,27 @@ mod tests {
     #[test]
     fn a_frame_enters_the_chain_it_was_opened_over_and_leaves_that_chain_unchanged() {
         let store = map(&[("x", 5)]);
-        let other_store = map(&[("x", 99)]);
         let outer_bindings = map(&[("y", 2)]);
         let inner_bindings = map(&[("z", 3)]);
         let outer = ScopeChain::over(&store).open_frame(&outer_bindings);
         let opened_over = outer.chain();
-        let _unrelated = ScopeChain::over(&other_store);
         let inner = opened_over.open_frame(&inner_bindings);
         assert_eq!(reads(inner.chain(), "z"), Value::Int(3));
-        assert_eq!(reads(inner.chain(), "y"), Value::Int(2), "the opening chain's frame");
-        assert_eq!(reads(inner.chain(), "x"), Value::Int(5), "the opening chain's reader");
-        assert_eq!(reads(opened_over, "z"), Value::Undef, "a binder stays in its frame");
+        assert_eq!(
+            reads(inner.chain(), "y"),
+            Value::Int(2),
+            "the opening chain's frame"
+        );
+        assert_eq!(
+            reads(inner.chain(), "x"),
+            Value::Int(5),
+            "the opening chain's reader"
+        );
+        assert_eq!(
+            reads(opened_over, "z"),
+            Value::Undef,
+            "a binder stays in its frame"
+        );
     }
 
     #[test]
@@ -106,7 +246,10 @@ mod tests {
             entries(&inner.chain().visible_values()),
             entries(&map(&[("x", 5), ("y", 3), ("w", 4), ("z", 6)])),
         );
-        assert_eq!(entries(&ScopeChain::over(&store).visible_values()), entries(&store));
+        assert_eq!(
+            entries(&ScopeChain::over(&store).visible_values()),
+            entries(&store)
+        );
     }
 
     #[test]

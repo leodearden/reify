@@ -128,7 +128,7 @@ fn eval_dual_at(
         CompiledExprKind::Literal(v) => DualValue::constant(v.clone()),
 
         CompiledExprKind::ValueRef(id) | CompiledExprKind::CrossSubGeometryRef(id) => {
-            let value = ctx.values.get_or_undef(id);
+            let value = ctx.read(id);
             // Resolution order is OVERLAY → seed column → zero, and that order
             // is the scope rule: the overlay IS the inner scope.  Inside a
             // callee frame it holds exactly that frame's parameters and `let`s
@@ -839,7 +839,7 @@ fn eval_dual_builtin(
     // exactly the `abs`/`sqrt` shapes above.
     if args.len() == 1
         && let Value::Field { lambda, .. } =
-            ctx.values.get_or_undef(&ValueCellId::new(FIELD_ENTITY_PREFIX, name))
+            ctx.read(&ValueCellId::new(FIELD_ENTITY_PREFIX, name))
     {
         return eval_dual_lambda_apply(&lambda, &duals[0], ctx, seeds, record, path);
     }

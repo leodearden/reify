@@ -57,6 +57,7 @@ use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, Compiled
 
 use ctor_member_order::{CtorMember, ctor_member_order};
 use datum_projection::{datum_vec3, eval_datum_projection, eval_self_datum_projection};
+use scope_chain::ScopeChain;
 
 /// Maximum recursion depth for user-defined function calls.
 const MAX_RECURSION_DEPTH: u32 = 256;
@@ -157,6 +158,8 @@ pub struct EvalContext<'a> {
     /// [`SymbolicSelectorCtorFn`] for the contract. When `None`, a selector ctor the
     /// builtins do not know evaluates to `Value::Undef` (legacy behaviour).
     pub symbolic_selector_ctor: Option<SymbolicSelectorCtorFn>,
+    /// The scope every cell read goes through: local frames over the store's reader.
+    scope: ScopeChain<'a>,
 }
 
 impl<'a> EvalContext<'a> {
@@ -173,6 +176,7 @@ impl<'a> EvalContext<'a> {
             containment: None,
             compute_dispatch: None,
             symbolic_selector_ctor: None,
+            scope: ScopeChain::over(values),
         }
     }
 
@@ -189,6 +193,7 @@ impl<'a> EvalContext<'a> {
             containment: None,
             compute_dispatch: None,
             symbolic_selector_ctor: None,
+            scope: ScopeChain::over(values),
         }
     }
 
@@ -206,6 +211,7 @@ impl<'a> EvalContext<'a> {
             containment: None,
             compute_dispatch: None,
             symbolic_selector_ctor: None,
+            scope: ScopeChain::over(values),
         }
     }
 
@@ -296,7 +302,13 @@ impl<'a> EvalContext<'a> {
             containment: self.containment,
             compute_dispatch: self.compute_dispatch,
             symbolic_selector_ctor: self.symbolic_selector_ctor,
+            scope: ScopeChain::over(values),
         }
+    }
+
+    /// The value of cell `id` in this context's scope.
+    fn read(&self, id: &ValueCellId) -> Value {
+        self.scope.read(id)
     }
 }
 
@@ -311,7 +323,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
     match &expr.kind {
         CompiledExprKind::Literal(v) => v.clone(),
 
-        CompiledExprKind::ValueRef(id) => ctx.values.get_or_undef(id),
+        CompiledExprKind::ValueRef(id) => ctx.read(id),
 
         CompiledExprKind::CrossSubGeometryRef(_id) => {
             // This variant must be consumed by the bare-let drop site in
@@ -664,7 +676,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     // `Undef` from the cell lookup and fall through to
                     // `eval_builtin` unchanged.
                     let field_id = ValueCellId::new(FIELD_ENTITY_PREFIX, &function.name);
-                    let candidate = ctx.values.get_or_undef(&field_id);
+                    let candidate = ctx.read(&field_id);
                     if let Value::Field { lambda, .. } = &candidate
                         && evaluated_args.len() == 1
                     {
@@ -887,7 +899,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
         } => {
             let mut capture_map = ValueMap::new();
             for cap_id in captures {
-                capture_map.insert(cap_id.clone(), ctx.values.get_or_undef(cap_id));
+                capture_map.insert(cap_id.clone(), ctx.read(cap_id));
             }
             Value::Lambda {
                 params: params
@@ -1877,7 +1889,7 @@ fn eval_quantifier(
             // `remap_cell` still sees a live binding instead of
             // `Value::Undef`. Cost is one map insert per iteration.
             let mut scope = ctx.values.clone();
-            let cell_value = ctx.values.get_or_undef(cell_id);
+            let cell_value = ctx.read(cell_id);
             scope.insert(variable_id.clone(), cell_value);
 
             let pred_val = eval_expr(&pred_clone, &ctx.with_scope(&scope));
@@ -2031,6 +2043,7 @@ fn eval_pred_for_value_elem<'a>(
                 containment: ctx.containment,
                 compute_dispatch: ctx.compute_dispatch,
                 symbolic_selector_ctor: ctx.symbolic_selector_ctor,
+                scope: ScopeChain::over(&scope),
             },
         )
     } else {
